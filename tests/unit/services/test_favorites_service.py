@@ -1,253 +1,188 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-FavoritesService 单元测试
+"""``FavoritesService``（freeassetfilter/services/favorites_service.py）单元测试。
+
+覆盖（happy + boundary/error 各至少一条）：
+
+* 生命周期 —— initialize 创建父目录、dispose 幂等并清空内存缓存、
+  销毁后可重初始化（磁盘数据保留）
+* 增删查 —— add/remove/contains 往返、重复添加返回 False、
+  不存在的移除返回 False
+* 持久化 —— save 落盘 + 新实例 load 一致、中文原文落盘、
+  缓存语义（首次 load 后磁盘改动不再可见）、损坏 JSON / 根类型错误 /
+  读取异常均安全回退空列表
+
+FavoritesService 非单例，每个测试通过 tmp_path 构造独立实例，
+不触碰真实 ``data/favorites.json``。
 """
 
+from __future__ import annotations
+
 import json
-import os
 from pathlib import Path
 
 import pytest
 
 from freeassetfilter.services.favorites_service import FavoritesService
 
-
-# ---------------------------------------------------------------------------
-# 辅助函数
-# ---------------------------------------------------------------------------
-
-def _make_service(tmp_path: Path) -> FavoritesService:
-    """创建一个指向临时目录的 FavoritesService 实例。"""
-    fav_file = str(tmp_path / "favorites.json")
-    service = FavoritesService(favorites_file=fav_file)
-    service.initialize()
-    return service
+pytestmark = pytest.mark.unit
 
 
-def _write_favorites(tmp_path: Path, data) -> str:
-    """向临时文件写入原始 JSON 数据，返回文件路径。"""
-    path = tmp_path / "favorites.json"
-    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    return str(path)
+@pytest.fixture
+def fav_file(tmp_path: Path) -> str:
+    """提供指向 tmp_path 的收藏夹文件路径。
+
+    Args:
+        tmp_path: pytest 内置的每测试临时目录。
+
+    Returns:
+        str: 收藏夹 JSON 文件路径。
+    """
+    return str(tmp_path / "favorites.json")
 
 
-# ---------------------------------------------------------------------------
-# 测试：初始化 / 路径默认值
-# ---------------------------------------------------------------------------
-
-class TestInit:
-    """构造与初始化相关测试。"""
-
-    def test_default_favorites_file(self) -> None:
-        """默认 favorites_file 指向项目 data/ 目录下的 favorites.json。"""
-        service = FavoritesService()
-        service.initialize()
-        assert "data" in service.favorites_file
-        assert service.favorites_file.endswith("favorites.json")
-        service.dispose()
-
-    def test_custom_favorites_file(self, tmp_path: Path) -> None:
-        """可传入自定义 favorites_file 路径。"""
-        custom_path = str(tmp_path / "custom_fav.json")
-        service = FavoritesService(favorites_file=custom_path)
-        service.initialize()
-        assert service.favorites_file == custom_path
-        service.dispose()
+# =============================================================================
+# 生命周期
+# =============================================================================
+class TestLifecycle:
+    """生命周期管理"""
 
     def test_initialize_creates_parent_dir(self, tmp_path: Path) -> None:
-        """initialize() 应自动创建父目录。"""
-        nested = tmp_path / "sub" / "deep" / "fav.json"
-        assert not nested.parent.exists()
-        service = FavoritesService(favorites_file=str(nested))
-        service.initialize()
-        assert nested.parent.exists()
-        service.dispose()
+        """initialize 确保收藏夹父目录存在。"""
+        target: Path = tmp_path / "nested" / "deep" / "favs.json"
+        svc: FavoritesService = FavoritesService(str(target))
+        assert svc.initialize() is True
+        assert (tmp_path / "nested" / "deep").is_dir()
+
+    def test_initialize_is_idempotent(self, fav_file: str) -> None:
+        """重复 initialize 均返回 True。"""
+        svc: FavoritesService = FavoritesService(fav_file)
+        assert svc.initialize() is True
+        assert svc.initialize() is True
+
+    def test_dispose_idempotent_and_clears_cache(self, fav_file: str) -> None:
+        """dispose 幂等，清空内存缓存且 is_initialized 归位。"""
+        svc: FavoritesService = FavoritesService(fav_file)
+        svc.initialize()
+        svc.add("C:\\a.png")
+        svc.dispose()
+        svc.dispose()  # 幂等：第二次不抛异常
+        assert svc.is_initialized is False
+        # 内存缓存已清空；磁盘无文件 → load 返回空列表
+        assert svc.load() == []
+
+    def test_reinitialize_keeps_disk_data(self, fav_file: str) -> None:
+        """销毁后重新初始化，磁盘数据仍可加载。"""
+        svc: FavoritesService = FavoritesService(fav_file)
+        svc.save(["C:\\persist.png"])
+        svc.dispose()
+        svc.initialize()
+        assert svc.load() == ["C:\\persist.png"]
 
 
-# ---------------------------------------------------------------------------
-# 测试：load()
-# ---------------------------------------------------------------------------
+# =============================================================================
+# 增删查
+# =============================================================================
+class TestCrud:
+    """增删查操作"""
 
-class TestLoad:
-    """从磁盘加载收藏夹数据。"""
+    def test_add_and_contains_happy(self, fav_file: str) -> None:
+        """添加后 contains 命中且处于待持久化内存列表。"""
+        svc: FavoritesService = FavoritesService(fav_file)
+        assert svc.add("C:\\a.png") is True
+        assert svc.contains("C:\\a.png") is True
+        assert svc._favorites == ["C:\\a.png"]
 
-    def test_load_returns_empty_when_no_file(self, tmp_path: Path) -> None:
-        """文件不存在时返回空列表。"""
-        service = _make_service(tmp_path)
-        assert service.load() == []
+    def test_add_duplicate_returns_false(self, fav_file: str) -> None:
+        """重复添加同一路径返回 False 且不重复。"""
+        svc: FavoritesService = FavoritesService(fav_file)
+        assert svc.add("C:\\a.png") is True
+        assert svc.add("C:\\a.png") is False
+        assert len(svc._favorites) == 1
 
-    def test_load_returns_list_from_file(self, tmp_path: Path) -> None:
-        """正常 JSON 列表文件应正确加载。"""
-        paths = ["/a/b.txt", "/c/d.png"]
-        _write_favorites(tmp_path, paths)
-        service = _make_service(tmp_path)
-        assert service.load() == paths
+    def test_remove_happy(self, fav_file: str) -> None:
+        """移除成功返回 True，contains 变为 False。"""
+        svc: FavoritesService = FavoritesService(fav_file)
+        svc.add("C:\\a.png")
+        assert svc.remove("C:\\a.png") is True
+        assert svc.contains("C:\\a.png") is False
+        assert svc._favorites == []
 
-    def test_load_returns_empty_on_corrupted_json(self, tmp_path: Path) -> None:
-        """损坏的 JSON 应返回空列表。"""
-        (tmp_path / "favorites.json").write_text("{bad json", encoding="utf-8")
-        service = _make_service(tmp_path)
-        assert service.load() == []
+    def test_remove_missing_returns_false(self, fav_file: str) -> None:
+        """移除不存在的路径返回 False。"""
+        assert FavoritesService(fav_file).remove("C:\\nope.png") is False
 
-    def test_load_returns_empty_on_wrong_type(self, tmp_path: Path) -> None:
-        """JSON 不是列表时（如 dict）应返回空列表。"""
-        _write_favorites(tmp_path, {"key": "value"})
-        service = _make_service(tmp_path)
-        assert service.load() == []
+    def test_contains_missing_returns_false(self, fav_file: str) -> None:
+        """不存在的路径 contains 返回 False。"""
+        assert FavoritesService(fav_file).contains("C:\\nope.png") is False
 
-    def test_load_caches_result(self, tmp_path: Path) -> None:
-        """多次调用 load() 应返回同一缓存结果。"""
-        paths = ["/a.txt"]
-        _write_favorites(tmp_path, paths)
-        service = _make_service(tmp_path)
-        assert service.load() == paths
-        # 修改文件内容（模拟外部修改）
-        _write_favorites(tmp_path, ["/b.txt"])
-        # 应返回旧缓存，而非新内容
-        assert service.load() == paths
-
-    def test_load_empty_json_array(self, tmp_path: Path) -> None:
-        """空 JSON 数组 [] 应正常加载为空列表。"""
-        _write_favorites(tmp_path, [])
-        service = _make_service(tmp_path)
-        assert service.load() == []
+    def test_add_multiple_distinct_paths(self, fav_file: str) -> None:
+        """多个不同路径可共存且保持添加顺序。"""
+        svc: FavoritesService = FavoritesService(fav_file)
+        svc.add("D:\\1.png")
+        svc.add("D:\\2.png")
+        assert svc._favorites == ["D:\\1.png", "D:\\2.png"]
 
 
-# ---------------------------------------------------------------------------
-# 测试：save()
-# ---------------------------------------------------------------------------
+# =============================================================================
+# 持久化
+# =============================================================================
+class TestPersistence:
+    """持久化与缓存语义"""
 
-class TestSave:
-    """持久化收藏夹数据到磁盘。"""
+    def test_save_then_new_instance_loads(self, fav_file: str) -> None:
+        """save 落盘后新实例 load 得到一致结果。"""
+        expected: list[str] = ["C:\\a.png", "D:\\素材\\b.jpg"]
+        FavoritesService(fav_file).save(expected)
+        assert FavoritesService(fav_file).load() == expected
 
-    def test_save_writes_file(self, tmp_path: Path) -> None:
-        """save() 应将数据写入 JSON 文件。"""
-        paths = ["/x/y.txt", "/z/w.png"]
-        service = _make_service(tmp_path)
-        service.save(paths)
-        saved = json.loads((tmp_path / "favorites.json").read_text(encoding="utf-8"))
-        assert saved == paths
+    def test_save_preserves_unicode_literal(self, fav_file: str) -> None:
+        """中文路径以原文写入磁盘（ensure_ascii=False）。"""
+        FavoritesService(fav_file).save(["D:\\素材\\图片.png"])
+        raw: str = Path(fav_file).read_text(encoding="utf-8")
+        assert "素材" in raw
 
-    def test_save_overwrites_existing(self, tmp_path: Path) -> None:
-        """save() 应覆盖已有文件内容。"""
-        _write_favorites(tmp_path, ["/old.txt"])
-        service = _make_service(tmp_path)
-        service.save(["/new.txt"])
-        saved = json.loads((tmp_path / "favorites.json").read_text(encoding="utf-8"))
-        assert saved == ["/new.txt"]
+    def test_load_missing_file_returns_empty(self, fav_file: str) -> None:
+        """文件不存在返回空列表。"""
+        assert FavoritesService(fav_file).load() == []
 
-    def test_save_updates_cache(self, tmp_path: Path) -> None:
-        """save() 后 load() 应返回新数据。"""
-        service = _make_service(tmp_path)
-        service.save(["/a.txt"])
-        assert service.load() == ["/a.txt"]
+    def test_load_corrupted_json_returns_empty(self, fav_file: str) -> None:
+        """损坏 JSON 静默回退空列表。"""
+        Path(fav_file).write_text("{bad", encoding="utf-8")
+        assert FavoritesService(fav_file).load() == []
 
+    def test_load_wrong_root_type_returns_empty(self, fav_file: str) -> None:
+        """根节点非 list 时静默回退空列表。"""
+        Path(fav_file).write_text('{"list": []}', encoding="utf-8")
+        assert FavoritesService(fav_file).load() == []
 
-# ---------------------------------------------------------------------------
-# 测试：add()
-# ---------------------------------------------------------------------------
+    def test_load_read_error_returns_empty(
+        self, fav_file: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """读取 IO 异常静默回退空列表。"""
+        Path(fav_file).write_text("[]", encoding="utf-8")
 
-class TestAdd:
-    """添加路径到收藏夹（仅内存操作）。"""
+        def _raise_open(*args: object, **kwargs: object) -> object:
+            raise OSError("denied")
 
-    def test_add_returns_true_for_new(self, tmp_path: Path) -> None:
-        """新路径应返回 True。"""
-        service = _make_service(tmp_path)
-        assert service.add("/new.txt") is True
+        monkeypatch.setattr("builtins.open", _raise_open)
+        assert FavoritesService(fav_file).load() == []
 
-    def test_add_returns_false_for_duplicate(self, tmp_path: Path) -> None:
-        """重复路径应返回 False。"""
-        service = _make_service(tmp_path)
-        service.add("/dup.txt")
-        assert service.add("/dup.txt") is False
+    def test_load_is_cached_after_first_call(self, fav_file: str) -> None:
+        """首次 load 后内存缓存生效：外部磁盘改动不再可见。"""
+        svc: FavoritesService = FavoritesService(fav_file)
+        svc.save(["C:\\first.png"])
+        assert svc.load() == ["C:\\first.png"]
+        Path(fav_file).write_text(
+            json.dumps(["C:\\changed.png"]), encoding="utf-8"
+        )
+        assert svc.load() == ["C:\\first.png"]
 
-    def test_add_increases_list(self, tmp_path: Path) -> None:
-        """添加后列表长度应 +1。"""
-        service = _make_service(tmp_path)
-        service.add("/a.txt")
-        service.add("/b.txt")
-        assert len(service.load()) == 2
-
-
-# ---------------------------------------------------------------------------
-# 测试：remove()
-# ---------------------------------------------------------------------------
-
-class TestRemove:
-    """从收藏夹移除路径。"""
-
-    def test_remove_returns_true_for_existing(self, tmp_path: Path) -> None:
-        """已收藏的路径移除应返回 True。"""
-        service = _make_service(tmp_path)
-        service.add("/rm.txt")
-        assert service.remove("/rm.txt") is True
-
-    def test_remove_returns_false_for_missing(self, tmp_path: Path) -> None:
-        """不存在的路径移除应返回 False。"""
-        service = _make_service(tmp_path)
-        assert service.remove("/nonexistent.txt") is False
-
-    def test_remove_decreases_list(self, tmp_path: Path) -> None:
-        """移除后列表长度应 -1。"""
-        service = _make_service(tmp_path)
-        service.add("/a.txt")
-        service.add("/b.txt")
-        service.remove("/a.txt")
-        assert len(service.load()) == 1
-
-
-# ---------------------------------------------------------------------------
-# 测试：contains()
-# ---------------------------------------------------------------------------
-
-class TestContains:
-    """检查路径是否已收藏。"""
-
-    def test_contains_returns_true_for_added(self, tmp_path: Path) -> None:
-        """已添加的路径应返回 True。"""
-        service = _make_service(tmp_path)
-        service.add("/present.txt")
-        assert service.contains("/present.txt") is True
-
-    def test_contains_returns_false_for_absent(self, tmp_path: Path) -> None:
-        """未添加的路径应返回 False。"""
-        service = _make_service(tmp_path)
-        assert service.contains("/absent.txt") is False
-
-    def test_contains_returns_false_after_remove(self, tmp_path: Path) -> None:
-        """移除后应返回 False。"""
-        service = _make_service(tmp_path)
-        service.add("/gone.txt")
-        service.remove("/gone.txt")
-        assert service.contains("/gone.txt") is False
-
-
-# ---------------------------------------------------------------------------
-# 测试：BaseService 生命周期
-# ---------------------------------------------------------------------------
-
-class TestLifecycle:
-    """BaseService 的 initialize/dispose 生命周期。"""
-
-    def test_initialize_called_once(self, tmp_path: Path) -> None:
-        """多次 initialize() 仅首次执行。"""
-        service = _make_service(tmp_path)
-        assert service.initialize() is True
-        assert service.initialize() is True  # 第二次应直接返回 True
-        assert service.is_initialized is True
-
-    def test_dispose_resets_state(self, tmp_path: Path) -> None:
-        """dispose() 后 is_initialized 为 False。"""
-        service = _make_service(tmp_path)
-        service.initialize()
-        service.dispose()
-        assert service.is_initialized is False
-
-    def test_load_after_reinitialize(self, tmp_path: Path) -> None:
-        """dispose + initialize 后可重新加载。"""
-        service = _make_service(tmp_path)
-        service.save(["/persist.txt"])
-        service.dispose()
-        service.initialize()
-        assert service.load() == ["/persist.txt"]
+    def test_save_updates_memory_cache(self, fav_file: str) -> None:
+        """save 直接更新内存缓存与加载标志。"""
+        svc: FavoritesService = FavoritesService(fav_file)
+        svc.save(["C:\\saved.png"])
+        assert svc.contains("C:\\saved.png") is True
+        # 磁盘内容与内存一致
+        assert json.loads(Path(fav_file).read_text(encoding="utf-8")) == [
+            "C:\\saved.png"
+        ]

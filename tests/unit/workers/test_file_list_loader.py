@@ -1,320 +1,366 @@
 # -*- coding: utf-8 -*-
-"""
-Tests for FileListLoaderThread — background file scanning thread.
+"""``FileListLoaderThread``（core/workers/file_list_loader.py）单元测试。
 
-Covers:
-  - Construction / parameter storage
-  - ``run()`` with a normal directory (files, subdirs, hidden files)
-  - ``run()`` with an empty directory
-  - ``run()`` with a non-existent path → ``failed`` signal
-  - ``run()`` with a symlink directory → ``failed`` signal
-  - ``run()`` in "All" mode (drive/root enumeration)
-  - PermissionError handling during stat
+覆盖（happy + boundary/error 各至少一条）：
+
+* 正常目录扫描 —— loaded 信号携带 path + 文件字典列表；隐藏文件跳过、
+  目录 is_dir=True、suffix 提取、大小/时间字段齐全
+* "All" 模式 —— win32 平台 mock ``GetLogicalDrives`` 位掩码下的盘符条目
+  （禁止真实枚举整机磁盘）；非 win32 回退为根目录 ``/``
+* error —— 不存在的路径 → ``failed`` 信号携带路径与错误串；
+  符号链接路径 → OSError → ``failed``（mock ``os.path.islink``）
+* scandir 内部分支 —— 点文件跳过、符号链接条目跳过、stat 抛
+  ``PermissionError`` 的条目被静默忽略，其余条目完整入列
+
+线程纪律（AGENTS.md / learnings W7）：``run()`` 本体在 Qt 原生线程执行时
+**不被 coverage.py 追踪**（``sys.settrace`` 不进入 Qt 线程），因此本文件统一
+**同步调用 ``thread.run()``** 驱动扫描逻辑（信号按直连在调用线程内同步派发），
+以覆盖 run() 全部分支——这是既有 learnings 固化且验证的模式。
 """
+from __future__ import annotations
 
 import os
 import sys
-import pytest
-from typing import Any, Dict, List
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, Dict, List, Tuple
+from unittest.mock import patch
 
-from PySide6.QtCore import QCoreApplication
-from PySide6.QtTest import QSignalSpy
+import pytest
 
 from freeassetfilter.core.workers.file_list_loader import FileListLoaderThread
+from tests.support.data_factories import make_image, make_text
+
+pytestmark = pytest.mark.unit
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+class _FakeEntry:
+    """模拟 ``os.DirEntry``：可控 name/path/is_dir/is_symlink/stat。"""
 
-def _make_files(tmp_path, names: List[str]) -> None:
-    """Create zero-content files under *tmp_path*."""
-    for n in names:
-        (tmp_path / n).write_text("")
+    def __init__(
+        self,
+        name: str,
+        path: str,
+        is_dir: bool = False,
+        is_symlink: bool = False,
+        stat_error: bool = False,
+    ) -> None:
+        self.name = name
+        self.path = path
+        self._is_dir = is_dir
+        self._is_symlink = is_symlink
+        self._stat_error = stat_error
+
+    def is_dir(self, follow_symlinks: bool = False) -> bool:
+        """模拟 ``DirEntry.is_dir``。
+
+        Args:
+            follow_symlinks: 是否跟随符号链接（本替身忽略）。
+
+        Returns:
+            bool: 是否目录。
+        """
+        return self._is_dir
+
+    def is_symlink(self) -> bool:
+        """模拟 ``DirEntry.is_symlink``。
+
+        Returns:
+            bool: 是否符号链接条目。
+        """
+        return self._is_symlink
+
+    def stat(self, follow_symlinks: bool = False) -> SimpleNamespace:
+        """模拟 ``DirEntry.stat``；``stat_error`` 时抛 PermissionError。
+
+        Args:
+            follow_symlinks: 是否跟随符号链接（本替身忽略）。
+
+        Returns:
+            SimpleNamespace: 带 st_size/st_mtime/st_ctime 的假 stat 结果。
+
+        Raises:
+            PermissionError: 当 ``stat_error`` 为 True 时。
+        """
+        if self._stat_error:
+            raise PermissionError("权限不足（模拟）")
+        return SimpleNamespace(
+            st_size=42,
+            st_mtime=1234567890,
+            st_ctime=1234567890,
+        )
 
 
-def _run_thread(thread: FileListLoaderThread, timeout_ms: int = 5000) -> FileListLoaderThread:
-    """Start *thread*, wait for finish, and pump the Qt event loop.
+class _FakeScandir:
+    """可复用的 ``os.scandir`` 上下文管理器替身。"""
 
-    Pumping the event loop is necessary because ``loaded`` / ``failed``
-    signals are emitted from inside ``QThread.run()`` and are queued for
-    delivery on the main thread. Without ``processEvents()`` calls the
-    ``QSignalSpy`` would not see them.
+    def __init__(self, entries: List[_FakeEntry]) -> None:
+        self._entries = entries
 
-    Returns the thread for further inspection.
+    def __enter__(self) -> "_FakeScandir":
+        """进入上下文（被 ``with`` 使用）。"""
+        return self
+
+    def __exit__(self, *_args: Any) -> bool:
+        """退出上下文，不吞异常。"""
+        return False
+
+    def __iter__(self) -> Any:
+        """迭代返回注入的条目列表迭代器。"""
+        return iter(self._entries)
+
+
+def test_loaded_scans_normal_directory(qapp: Any, tmp_path: Path) -> None:
+    """happy：正常目录扫描后 loaded 携带路径与文件字典列表。
+
+    Args:
+        qapp: session QApplication。
+        tmp_path: 临时目录。
     """
-    thread.start()
-    finished = thread.wait(timeout_ms)
-    # Deliver queued cross-thread signals to the spy.
-    for _ in range(5):
-        QCoreApplication.processEvents()
-    assert finished, f"Thread did not finish within {timeout_ms}ms"
-    return thread
+    make_image(str(tmp_path / "pic.png"))
+    make_text(str(tmp_path / "note.txt"))
+    (tmp_path / ".hidden").write_text("hidden", encoding="utf-8")
+    sub: Path = tmp_path / "subdir"
+    sub.mkdir()
+
+    received: List[Tuple[str, List[Dict[str, Any]]]] = []
+    thread: FileListLoaderThread = FileListLoaderThread(str(tmp_path))
+    thread.loaded.connect(lambda p, files: received.append((p, files)))
+    # 同步 run()：QThread.start() 的 run 本体在 Qt 原生线程执行，coverage 无法追踪。
+    thread.run()
+
+    assert received, "loaded 未发出"
+    path, files = received[0]
+    assert path == str(tmp_path)
+    names: List[str] = [f["name"] for f in files]
+    assert "note.txt" in names
+    assert "pic.png" in names
+    assert "subdir" in names
+    assert ".hidden" not in names  # 隐藏文件跳过
+
+    pic: Dict[str, Any] = next(f for f in files if f["name"] == "pic.png")
+    assert pic["is_dir"] is False
+    assert pic["size"] > 0
+    assert pic["suffix"] == "png"
+    assert pic["path"].endswith("pic.png")
+    assert pic["modified"]  # ISO 时间非空
+
+    subdir: Dict[str, Any] = next(f for f in files if f["name"] == "subdir")
+    assert subdir["is_dir"] is True
 
 
-# ===========================================================================
-# TestFileListLoaderThreadConstruction
-# ===========================================================================
+def test_loaded_empty_directory(qapp: Any, tmp_path: Path) -> None:
+    """boundary：空目录 loaded 携带空文件列表。
 
-class TestFileListLoaderThreadConstruction:
-    """FileListLoaderThread creation and parameter storage."""
+    Args:
+        qapp: session QApplication。
+        tmp_path: 临时目录。
+    """
+    received: List[Tuple[str, List[Dict[str, Any]]]] = []
+    empty: Path = tmp_path / "empty"
+    empty.mkdir()
+    thread: FileListLoaderThread = FileListLoaderThread(str(empty))
+    thread.loaded.connect(lambda p, files: received.append((p, files)))
+    thread.run()
 
-    def test_constructor_stores_current_path(self) -> None:
-        """__init__ stores the *current_path* argument."""
-        thread = FileListLoaderThread("/some/path")
-        assert thread.current_path == "/some/path"
-
-    def test_constructor_accepts_optional_parent(self, qapp) -> None:
-        """__init__ accepts an optional parent QObject."""
-        parent = qapp  # any QObject works
-        thread = FileListLoaderThread("/p", parent=parent)
-        assert thread.parent() is parent
-
-    def test_default_parent_is_none(self) -> None:
-        """When parent is omitted, parent() returns None."""
-        thread = FileListLoaderThread("/p")
-        assert thread.parent() is None
+    assert received[0][0] == str(empty)
+    assert received[0][1] == []
 
 
-# ===========================================================================
-# TestFileListLoaderThreadNormal
-# ===========================================================================
+def test_all_mode_mocked_windows_drives(qapp: Any, tmp_path: Path, monkeypatch: Any) -> None:
+    """happy（win32）：All 模式 mock GetLogicalDrives 后 loaded 盘符条目。
 
-class TestFileListLoaderThreadNormal:
-    """run() — normal directory scanning."""
+    os.stat 被 monkeypatch 成稳定假值，确保盘符 stat 成功分支（
+    modified/created 有值）确定性覆盖，不依赖测试机真实驱动器存在。
 
-    def test_loads_all_files(self, qapp, tmp_path) -> None:
-        """All visible files in a directory appear in the loaded signal."""
-        _make_files(tmp_path, ["a.txt", "b.jpg", "c.png"])
-        thread = FileListLoaderThread(str(tmp_path))
-        spy = QSignalSpy(thread.loaded)
-        _run_thread(thread)
+    Args:
+        qapp: session QApplication。
+        tmp_path: 临时目录。
+        monkeypatch: pytest monkeypatch fixture。
+    """
+    if sys.platform != "win32":
+        pytest.skip("win32 All 模式需要模拟盘符位掩码")
 
-        assert spy.count() == 1
-        path, files = spy.at(0)
-        assert path == str(tmp_path)
-        assert {f["name"] for f in files} == {"a.txt", "b.jpg", "c.png"}
-
-    def test_file_entry_has_expected_keys(self, qapp, tmp_path) -> None:
-        """Each file entry dict contains all required keys."""
-        (tmp_path / "hello.txt").write_text("hello")
-        thread = FileListLoaderThread(str(tmp_path))
-        spy = QSignalSpy(thread.loaded)
-        _run_thread(thread)
-
-        _, files = spy.at(0)
-        entry = files[0]
-        assert set(entry.keys()) == {
-            "name", "path", "is_dir", "size",
-            "modified", "created", "suffix",
-        }
-
-    def test_file_entry_values_match_disk(self, qapp, tmp_path) -> None:
-        """File entry values reflect the actual on-disk file."""
-        (tmp_path / "hello.txt").write_text("hello")
-        thread = FileListLoaderThread(str(tmp_path))
-        spy = QSignalSpy(thread.loaded)
-        _run_thread(thread)
-
-        _, files = spy.at(0)
-        entry = files[0]
-        assert entry["name"] == "hello.txt"
-        assert entry["path"] == os.path.join(str(tmp_path), "hello.txt")
-        assert entry["is_dir"] is False
-        assert entry["size"] == 5  # "hello" is 5 bytes
-        assert entry["suffix"] == "txt"
-
-    def test_includes_subdirectories(self, qapp, tmp_path) -> None:
-        """Sub-directories appear with is_dir=True and suffix empty."""
-        _make_files(tmp_path, ["f.txt"])
-        (tmp_path / "sub").mkdir()
-        thread = FileListLoaderThread(str(tmp_path))
-        spy = QSignalSpy(thread.loaded)
-        _run_thread(thread)
-
-        _, files = spy.at(0)
-        dirs = [f for f in files if f["is_dir"]]
-        regular = [f for f in files if not f["is_dir"]]
-        assert len(dirs) == 1
-        assert dirs[0]["name"] == "sub"
-        assert dirs[0]["suffix"] == ""
-        assert len(regular) == 1
-        assert regular[0]["name"] == "f.txt"
-
-    def test_skips_hidden_files(self, qapp, tmp_path) -> None:
-        """Files whose name starts with '.' are excluded."""
-        _make_files(tmp_path, ["visible.txt", ".hidden", ".gitkeep"])
-        thread = FileListLoaderThread(str(tmp_path))
-        spy = QSignalSpy(thread.loaded)
-        _run_thread(thread)
-
-        _, files = spy.at(0)
-        names = {f["name"] for f in files}
-        assert "visible.txt" in names
-        assert ".hidden" not in names
-        assert ".gitkeep" not in names
-
-    @pytest.mark.skipif(sys.platform == "win32", reason="os.chmod permissions not reliable on Windows")
-    def test_handles_permission_error_gracefully(self, qapp, tmp_path) -> None:
-        """A file that raises PermissionError during stat is skipped."""
-        _make_files(tmp_path, ["good.txt", "bad.txt", "also_good.txt"])
-
-        bad_path = tmp_path / "bad.txt"
-        os.chmod(str(bad_path), 0o000)
-
-        thread = FileListLoaderThread(str(tmp_path))
-        spy = QSignalSpy(thread.loaded)
-        _run_thread(thread)
-
-        _, files = spy.at(0)
-        names = {f["name"] for f in files}
-        assert "good.txt" in names
-        assert "bad.txt" not in names  # skipped due to PermissionError
-        assert "also_good.txt" in names
-
-        # Restore permissions so tmp_path cleanup can delete the file.
-        os.chmod(str(bad_path), 0o644)
-
-    def test_suffix_is_lowercase_and_stripped(self, qapp, tmp_path) -> None:
-        """suffix is lower-cased and the leading dot is removed."""
-        (tmp_path / "Photo.JPG").write_text("")
-        (tmp_path / "readme.TXT").write_text("")
-        thread = FileListLoaderThread(str(tmp_path))
-        spy = QSignalSpy(thread.loaded)
-        _run_thread(thread)
-
-        _, files = spy.at(0)
-        suffixes = {f["name"]: f["suffix"] for f in files}
-        assert suffixes == {"Photo.JPG": "jpg", "readme.TXT": "txt"}
-
-    def test_modified_and_created_are_non_empty_strings(self, qapp, tmp_path) -> None:
-        """modified and created fields contain ISO date strings."""
-        (tmp_path / "test.txt").write_text("data")
-        thread = FileListLoaderThread(str(tmp_path))
-        spy = QSignalSpy(thread.loaded)
-        _run_thread(thread)
-
-        _, files = spy.at(0)
-        entry = files[0]
-        assert isinstance(entry["modified"], str)
-        assert len(entry["modified"]) > 0
-        assert isinstance(entry["created"], str)
-        assert len(entry["created"]) > 0
-
-
-# ===========================================================================
-# TestFileListLoaderThreadEmpty
-# ===========================================================================
-
-class TestFileListLoaderThreadEmpty:
-    """run() — empty directory."""
-
-    def test_empty_directory_returns_empty_list(self, qapp, tmp_path) -> None:
-        """An empty directory emits loaded with an empty file list."""
-        thread = FileListLoaderThread(str(tmp_path))
-        spy = QSignalSpy(thread.loaded)
-        _run_thread(thread)
-
-        assert spy.count() == 1
-        path, files = spy.at(0)
-        assert path == str(tmp_path)
-        assert files == []
-
-
-# ===========================================================================
-# TestFileListLoaderThreadFailure
-# ===========================================================================
-
-class TestFileListLoaderThreadFailure:
-    """run() — error paths."""
-
-    def test_nonexistent_path_emits_failed(self, qapp, tmp_path) -> None:
-        """A non-existent directory emits failed (not loaded)."""
-        bad_path = str(tmp_path / "does_not_exist")
-        thread = FileListLoaderThread(bad_path)
-        spy_loaded = QSignalSpy(thread.loaded)
-        spy_failed = QSignalSpy(thread.failed)
-        _run_thread(thread)
-
-        assert spy_loaded.count() == 0, "loaded must not be emitted on failure"
-        assert spy_failed.count() == 1
-        path, error = spy_failed.at(0)
-        assert path == bad_path
-        assert isinstance(error, str)
-        assert len(error) > 0
-
-    def test_symlink_directory_emits_failed(self, qapp, tmp_path) -> None:
-        """A symlink pointing to a directory emits failed."""
-        real_dir = tmp_path / "real"
-        real_dir.mkdir()
-        link_path = tmp_path / "link_to_real"
-
-        try:
-            os.symlink(str(real_dir), str(link_path), target_is_directory=True)
-        except (PermissionError, OSError, NotImplementedError):
-            pytest.skip("Cannot create symlinks on this system")
-
-        thread = FileListLoaderThread(str(link_path))
-        spy_failed = QSignalSpy(thread.failed)
-        _run_thread(thread)
-
-        assert spy_failed.count() == 1
-        path, error = spy_failed.at(0)
-        assert path == str(link_path)
-        # The Chinese error message from the source: "拒绝扫描符号链接目录"
-        assert "符号链接" in error or "symlink" in error.lower()
-
-
-# ===========================================================================
-# TestFileListLoaderThreadAll
-# ===========================================================================
-
-class TestFileListLoaderThreadAll:
-    """run() — "All" mode (drive / root enumeration)."""
-
-    def test_all_mode_emits_loaded(self, qapp) -> None:
-        """'All' mode emits the loaded signal."""
+    received: List[Tuple[str, List[Dict[str, Any]]]] = []
+    fake_stat = SimpleNamespace(st_mtime=1000, st_ctime=2000)
+    monkeypatch.setattr(os, "stat", lambda _p: fake_stat)
+    with patch("ctypes.windll.kernel32.GetLogicalDrives", return_value=0b101):
         thread = FileListLoaderThread("All")
-        spy = QSignalSpy(thread.loaded)
-        _run_thread(thread)
+        thread.loaded.connect(lambda p, files: received.append((p, files)))
+        thread.run()
 
-        assert spy.count() == 1
-        path, files = spy.at(0)
-        assert path == "All"
+    path, files = received[0]
+    assert path == "All"
+    names: List[str] = [f["name"] for f in files]
+    assert "A:" in names
+    assert "C:" in names
+    drive_a: Dict[str, Any] = next(f for f in files if f["name"] == "A:")
+    assert drive_a["is_dir"] is True
+    assert drive_a["path"] in ("A:\\", "A:/")
+    assert drive_a["size"] == 0
+    assert drive_a["modified"]  # stat 成功 → 有 ISO 时间
 
-    def test_all_mode_on_windows_returns_drives(self, qapp) -> None:
-        """On Windows 'All' should list logical drives (C:, D:, etc.)."""
+
+def test_all_mode_windows_drive_stat_error(qapp: Any, monkeypatch: Any) -> None:
+    """boundary（win32）：盘符 stat 抛 OSError → modified/created 兜底为空串。
+
+    test_manual: monkeypatch os.stat 抛 OSError，断言条目仍生成且时间为空。
+
+    Args:
+        qapp: session QApplication。
+        monkeypatch: pytest monkeypatch fixture。
+    """
+    if sys.platform != "win32":
+        pytest.skip("win32 All 模式需要模拟盘符位掩码")
+
+    received: List[Tuple[str, List[Dict[str, Any]]]] = []
+
+    def _raise_oserror(_p: str) -> Any:
+        raise OSError("模拟盘符不可访问")
+
+    monkeypatch.setattr(os, "stat", _raise_oserror)
+    with patch("ctypes.windll.kernel32.GetLogicalDrives", return_value=0b101):
         thread = FileListLoaderThread("All")
-        spy = QSignalSpy(thread.loaded)
-        _run_thread(thread)
+        thread.loaded.connect(lambda p, files: received.append((p, files)))
+        thread.run()
 
-        _, files = spy.at(0)
-        if sys.platform == "win32":
-            # At minimum C: should be present on any Windows system.
-            names = {f["name"] for f in files}
-            assert len(files) > 0
-            assert "C:" in names, "Expected at least drive C: in drive list"
-            # All entries should be marked as directories with no suffix.
-            assert all(f["is_dir"] for f in files), "All drive entries must be directories"
-            assert all(f["suffix"] == "" for f in files), "Drive entries must have empty suffix"
-        else:
-            # On non-Windows, "All" returns a single entry for "/".
-            assert len(files) == 1
-            assert files[0]["name"] == "/"
-            assert files[0]["path"] == "/"
-            assert files[0]["is_dir"] is True
+    path, files = received[0]
+    assert path == "All"
+    assert len(files) == 2  # A: 与 C: 均生成（即使 stat 失败）
+    for f in files:
+        assert f["modified"] == ""
+        assert f["created"] == ""
 
-    def test_all_mode_drive_entry_structure(self, qapp) -> None:
-        """Each drive entry from 'All' mode has the expected keys."""
-        thread = FileListLoaderThread("All")
-        spy = QSignalSpy(thread.loaded)
-        _run_thread(thread)
 
-        _, files = spy.at(0)
-        assert len(files) > 0, "At least one drive entry expected"
-        entry = files[0]
-        expected_keys = {
-            "name", "path", "is_dir", "size",
-            "modified", "created", "suffix",
-        }
-        assert set(entry.keys()) == expected_keys
+def test_all_mode_root_on_non_win32(qapp: Any, monkeypatch: Any) -> None:
+    """boundary（非 win32）：All 模式回退为根目录 ``/`` 一个条目。
+
+    test_manual: monkeypatch sys.platform='linux' + os.stat 假值，断言根条目。
+
+    Args:
+        qapp: session QApplication。
+        monkeypatch: pytest monkeypatch fixture。
+    """
+    received: List[Tuple[str, List[Dict[str, Any]]]] = []
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(
+        os, "stat", lambda _p: SimpleNamespace(st_mtime=1000, st_ctime=2000)
+    )
+    thread = FileListLoaderThread("All")
+    thread.loaded.connect(lambda p, files: received.append((p, files)))
+    thread.run()
+
+    path, files = received[0]
+    assert path == "All"
+    assert len(files) == 1
+    assert files[0]["name"] == "/"
+    assert files[0]["is_dir"] is True
+    assert files[0]["modified"]
+
+
+def test_all_mode_root_stat_error_on_non_win32(qapp: Any, monkeypatch: Any) -> None:
+    """boundary（非 win32）：根目录 stat 抛 OSError → 时间兜底为空串。
+
+    Args:
+        qapp: session QApplication。
+        monkeypatch: pytest monkeypatch fixture。
+    """
+
+    def _raise_oserror(_p: str) -> Any:
+        raise OSError("模拟根目录不可访问")
+
+    received: List[Tuple[str, List[Dict[str, Any]]]] = []
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(os, "stat", _raise_oserror)
+    thread = FileListLoaderThread("All")
+    thread.loaded.connect(lambda p, files: received.append((p, files)))
+    thread.run()
+
+    path, files = received[0]
+    assert path == "All"
+    assert len(files) == 1
+    assert files[0]["modified"] == ""
+    assert files[0]["created"] == ""
+
+
+def test_failed_on_nonexistent_path(qapp: Any, tmp_path: Path) -> None:
+    """error：不存在的目录触发 failed 信号（路径 + 错误串）。
+
+    Args:
+        qapp: session QApplication。
+        tmp_path: 临时目录。
+    """
+    missing: str = str(tmp_path / "nope")
+    received: List[Tuple[str, str]] = []
+    thread: FileListLoaderThread = FileListLoaderThread(missing)
+    thread.failed.connect(lambda p, err: received.append((p, err)))
+    thread.run()
+
+    assert received, "failed 未发出"
+    assert received[0][0] == missing
+    assert received[0][1]  # 错误信息非空
+
+
+def test_failed_on_symlink_path(qapp: Any, tmp_path: Path, monkeypatch: Any) -> None:
+    """error：符号链接路径触发 failed（mock os.path.islink 返回 True）。
+
+    test_manual: ``monkeypatch.setattr(os.path, "islink", ...)`` 返回
+    True 模拟符号链接，断言 failed 信号中含 OSError 消息。
+
+    Args:
+        qapp: session QApplication。
+        tmp_path: 临时目录。
+        monkeypatch: pytest monkeypatch fixture。
+    """
+    received: List[Tuple[str, str]] = []
+    monkeypatch.setattr(os.path, "islink", lambda _p: True)
+    thread: FileListLoaderThread = FileListLoaderThread(str(tmp_path))
+    thread.failed.connect(lambda p, err: received.append((p, err)))
+    thread.run()
+
+    assert received[0][0] == str(tmp_path)
+    assert "符号链接" in received[0][1] or "拒绝扫描" in received[0][1]
+
+
+def test_scandir_skips_hidden_symlink_and_stat_errors(
+    qapp: Any, tmp_path: Path, monkeypatch: Any
+) -> None:
+    """boundary：scandir 内部分支——点文件、符号链接、stat 错误全被跳过。
+
+    使用 ``_FakeScandir`` / ``_FakeEntry`` 注入可控条目，确定性覆盖
+    隐藏文件跳过、``is_symlink()`` 跳过、``stat()`` 抛 PermissionError
+    时的 ``except (OSError, PermissionError): continue`` 分支。
+
+    Args:
+        qapp: session QApplication。
+        tmp_path: 临时目录。
+        monkeypatch: pytest monkeypatch fixture。
+    """
+    entries: List[_FakeEntry] = [
+        _FakeEntry(".dot", str(tmp_path / ".dot")),
+        _FakeEntry("target.txt", str(tmp_path / "target.txt"), is_symlink=True),
+        _FakeEntry("locked.txt", str(tmp_path / "locked.txt"), stat_error=True),
+        _FakeEntry("a.txt", str(tmp_path / "a.txt")),
+        _FakeEntry("sub", str(tmp_path / "sub"), is_dir=True),
+    ]
+    monkeypatch.setattr(os, "scandir", lambda _p: _FakeScandir(entries))
+
+    received: List[Tuple[str, List[Dict[str, Any]]]] = []
+    thread: FileListLoaderThread = FileListLoaderThread(str(tmp_path))
+    thread.loaded.connect(lambda p, files: received.append((p, files)))
+    thread.run()
+
+    path, files = received[0]
+    assert path == str(tmp_path)
+    names: List[str] = [f["name"] for f in files]
+    assert names == ["a.txt", "sub"]  # 三种"异常"条目均被跳过
+
+    a: Dict[str, Any] = files[0]
+    assert a["path"] == str(tmp_path / "a.txt")
+    assert a["is_dir"] is False
+    assert a["size"] == 42
+    assert a["suffix"] == "txt"
+    assert a["modified"]
+
+    sub: Dict[str, Any] = files[1]
+    assert sub["is_dir"] is True

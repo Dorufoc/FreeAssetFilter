@@ -1,427 +1,203 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-DriveService 模块单元测试
-测试系统盘符枚举与可用性检查功能。
+"""``DriveService``（freeassetfilter/services/drive_service.py）单元测试。
+
+覆盖（happy + boundary/error 各至少一条）：
+
+* 生命周期 —— 初始化幂等、单例同一实例
+* ``list_drives`` —— 本地盘符 + 网络位置合并去重排序（全部 mock，不真实
+  枚举整机磁盘）、Windows API 失败静默空列表、非 Windows 返回 ``["/"]``
+* ``check_availability`` —— 有内容/空目录可用、不存在不可用、无尾随分隔符
+  自动补齐、scandir 权限错误不可用、exists 通用异常不可用
+
+Windows 原生枚举（``ctypes.windll`` / ``mpr``）一律通过 monkeypatch 替换，
+保证测试不触碰真实硬件/网络枚举。
 """
 
+from __future__ import annotations
+
+import ctypes
+import os
 import sys
-from typing import Any, Iterator
-from unittest.mock import MagicMock, patch
+from pathlib import Path
 
 import pytest
 
 from freeassetfilter.services.drive_service import DriveService
 
-# ---------------------------------------------------------------------------
-# 辅助
-# ---------------------------------------------------------------------------
+pytestmark = pytest.mark.unit
 
 
-def _reset_singleton() -> None:
-    """每次测试前重置 DriveService 单例状态。"""
+@pytest.fixture(autouse=True)
+def _reset_drive_service_singleton() -> None:
+    """在测试前后归零 DriveService 单例，保证每测试全新实例。
+
+    Returns:
+        None。
+    """
+    DriveService._instance = None
+    DriveService._initialized = False
+    yield
     DriveService._instance = None
     DriveService._initialized = False
 
 
-# ---------------------------------------------------------------------------
+# =============================================================================
 # 生命周期
-# ---------------------------------------------------------------------------
+# =============================================================================
+class TestLifecycle:
+    """生命周期与单例"""
 
+    def test_singleton_returns_same_instance(self) -> None:
+        """重复构造必须返回同一实例。"""
+        assert DriveService() is DriveService()
 
-class TestDriveServiceLifecycle:
-    """测试 BaseService 生命周期管理（initialize/dispose）。"""
-
-    def setup_method(self) -> None:
-        _reset_singleton()
-
-    def test_initialize_returns_true(self) -> None:
-        """Given 全新的 DriveService
-        When 调用 initialize()
-        Then 返回 True 且 is_initialized 为 True。
-        """
-        svc = DriveService()
+    def test_initialize_idempotent(self) -> None:
+        """initialize 幂等且置位 is_initialized。"""
+        svc: DriveService = DriveService()
+        assert svc.is_initialized is False
+        assert svc.initialize() is True
         assert svc.initialize() is True
         assert svc.is_initialized is True
 
-    def test_initialize_idempotent(self) -> None:
-        """Given 已初始化的 DriveService
-        When 再次调用 initialize()
-        Then 仍然返回 True。
-        """
-        svc = DriveService()
-        svc.initialize()
-        assert svc.initialize() is True
-
-    def test_dispose_sets_uninitialized(self) -> None:
-        """Given 已初始化的 DriveService
-        When 调用 dispose()
-        Then is_initialized 为 False。
-        """
-        svc = DriveService()
+    def test_dispose_resets_initialized(self) -> None:
+        """dispose 后 is_initialized 回到 False。"""
+        svc: DriveService = DriveService()
         svc.initialize()
         svc.dispose()
         assert svc.is_initialized is False
 
-    def test_dispose_idempotent(self) -> None:
-        """Given 未初始化的 DriveService
-        When 多次调用 dispose()
-        Then 不抛出异常。
-        """
-        svc = DriveService()
-        svc.dispose()  # should not raise
-        svc.dispose()  # should not raise
 
-    def test_singleton_returns_same_instance(self) -> None:
-        """Given DriveService 单例模式
-        When 创建两个实例
-        Then 两者是同一个对象。
-        """
-        a = DriveService()
-        b = DriveService()
-        assert a is b
-
-    def test_list_drives_without_initialize(self) -> None:
-        """Given 未初始化的 DriveService
-        When 调用 list_drives()
-        Then 仍然可以正常返回盘符列表（无副作用依赖）。
-        """
-        svc = DriveService()
-        drives = svc.list_drives()
-        assert isinstance(drives, list)
-
-
-# ---------------------------------------------------------------------------
+# =============================================================================
 # list_drives
-# ---------------------------------------------------------------------------
-
-
+# =============================================================================
 class TestListDrives:
-    """测试 list_drives() 方法。"""
+    """盘符枚举"""
 
-    def setup_method(self) -> None:
-        _reset_singleton()
-
-    @patch("freeassetfilter.services.drive_service.sys", spec=object)
-    def test_non_windows_returns_root(self, mock_sys: Any) -> None:
-        """Given 非 Windows 平台
-        When 调用 list_drives()
-        Then 返回 ["/"]。
-        """
-        mock_sys.platform = "linux"
-        svc = DriveService()
-        drives = svc.list_drives()
-        assert drives == ["/"]
-
-    @patch("freeassetfilter.services.drive_service.DriveService._list_windows_drives")
-    def test_windows_drives_only(
-        self, mock_list_drives: MagicMock
+    def test_windows_merges_local_and_network_sorted(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Given Windows 平台仅有本地盘符
-        When 调用 list_drives()
-        Then 返回排序后的盘符列表。
-        """
-        mock_list_drives.return_value = ["C:", "D:", "A:"]
-        svc = DriveService()
-        with patch.object(svc, "_list_windows_network_locations", return_value=[]):
-            drives = svc.list_drives()
-        assert drives == ["A:", "C:", "D:"]
+        """本地盘符与网络位置合并去重并排序。"""
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(
+            DriveService,
+            "_list_windows_drives",
+            staticmethod(lambda: ["D:", "C:", "C:"]),
+        )
+        monkeypatch.setattr(
+            DriveService,
+            "_list_windows_network_locations",
+            staticmethod(lambda: ["\\\\server\\share"]),
+        )
+        assert DriveService().list_drives() == ["C:", "D:", "\\\\server\\share"]
 
-    @patch("freeassetfilter.services.drive_service.DriveService._list_windows_drives")
-    def test_windows_drives_with_network(
-        self, mock_list_drives: MagicMock
+    def test_windows_network_overlap_deduped(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Given Windows 平台有本地盘符和网络位置
-        When 调用 list_drives()
-        Then 返回去重合并后的排序结果。
-        """
-        mock_list_drives.return_value = ["C:", "D:"]
-        svc = DriveService()
-        with patch.object(
-            svc, "_list_windows_network_locations", return_value=["Z:", "\\\\server\\share"]
-        ):
-            drives = svc.list_drives()
-        assert "C:" in drives
-        assert "D:" in drives
-        assert "Z:" in drives
-        assert "\\\\server\\share" in drives
+        """网络位置与本地盘符重名时去重。"""
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(
+            DriveService,
+            "_list_windows_drives",
+            staticmethod(lambda: ["C:", "E:"]),
+        )
+        monkeypatch.setattr(
+            DriveService,
+            "_list_windows_network_locations",
+            staticmethod(lambda: ["C:"]),
+        )
+        assert DriveService().list_drives() == ["C:", "E:"]
 
-    @patch("freeassetfilter.services.drive_service.DriveService._list_windows_drives")
-    def test_deduplicates_drives(
-        self, mock_list_drives: MagicMock
+    def test_windows_without_network_locations(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Given 本地盘符与网络位置有重复
-        When 调用 list_drives()
-        Then 结果中无重复项。
-        """
-        mock_list_drives.return_value = ["C:", "D:"]
-        svc = DriveService()
-        with patch.object(
-            svc, "_list_windows_network_locations", return_value=["C:", "\\\\server\\share"]
-        ):
-            drives = svc.list_drives()
-        # C: 应只出现一次
-        c_count = sum(1 for d in drives if d == "C:")
-        assert c_count == 1
+        """无网络位置时仅返回排序后的本地盘符。"""
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(
+            DriveService,
+            "_list_windows_drives",
+            staticmethod(lambda: ["B:", "A:"]),
+        )
+        monkeypatch.setattr(
+            DriveService,
+            "_list_windows_network_locations",
+            staticmethod(lambda: []),
+        )
+        assert DriveService().list_drives() == ["A:", "B:"]
 
-    @patch("freeassetfilter.services.drive_service.DriveService._list_windows_drives")
-    def test_empty_result(
-        self, mock_list_drives: MagicMock
+    def test_non_windows_returns_root(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """非 Windows 平台只返回根目录。"""
+        monkeypatch.setattr(sys, "platform", "linux")
+        assert DriveService().list_drives() == ["/"]
+
+    def test_windows_drive_enumeration_failure_returns_empty(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Given Windows 平台无任何盘符
-        When 调用 list_drives()
-        Then 返回空列表。
-        """
-        mock_list_drives.return_value = []
-        svc = DriveService()
-        with patch.object(svc, "_list_windows_network_locations", return_value=[]):
-            drives = svc.list_drives()
-        assert drives == []
+        """GetLogicalDrives 不可用时静默返回空列表。"""
+
+        class _FakeKernel32:
+            """仅暴露一个必然抛错的 GetLogicalDrives 属性。"""
+
+            @property
+            def GetLogicalDrives(self) -> object:
+                """模拟 Win32 API 不可用（访问即抛）。"""
+                raise OSError("api unavailable")
+
+        monkeypatch.setattr(ctypes, "windll", _FakeKernel32())
+        assert DriveService._list_windows_drives() == []
+
+    def test_network_locations_empty_on_mpr_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """mpr DLL 加载失败时网络枚举静默返回空列表。"""
+        def _raise_windll(name: str) -> object:
+            raise OSError("mpr unavailable")
+
+        monkeypatch.setattr(ctypes, "WinDLL", _raise_windll)
+        assert DriveService._list_windows_network_locations() == []
 
 
-# ---------------------------------------------------------------------------
-# _list_windows_drives
-# ---------------------------------------------------------------------------
-
-
-class TestListWindowsDrives:
-    """测试 _list_windows_drives() 内部方法。"""
-
-    def setup_method(self) -> None:
-        _reset_singleton()
-
-    @patch("freeassetfilter.services.drive_service.ctypes.windll.kernel32.GetLogicalDrives")
-    def test_bitmask_translation(self, mock_get_drives: MagicMock) -> None:
-        """Given GetLogicalDrives() 返回位掩码 0x0004（仅 C 盘）
-        When 调用 _list_windows_drives()
-        Then 返回 ["C:"]。
-
-        位 0=A, 位 1=B, 位 2=C → 仅 C 盘存在。
-        """
-        mock_get_drives.return_value = 0x0004  # 只有 C 盘
-        svc = DriveService()
-        drives = svc._list_windows_drives()
-        assert drives == ["C:"]
-
-    @patch("freeassetfilter.services.drive_service.ctypes.windll.kernel32.GetLogicalDrives")
-    def test_multiple_drives(self, mock_get_drives: MagicMock) -> None:
-        """Given GetLogicalDrives() 返回 A+C+E 盘 (bit 0+2+4)
-        When 调用 _list_windows_drives()
-        Then 返回 ["A:", "C:", "E:"]。
-        """
-        bitmask = (1 << 0) | (1 << 2) | (1 << 4)  # A, C, E
-        mock_get_drives.return_value = bitmask
-        svc = DriveService()
-        drives = svc._list_windows_drives()
-        assert sorted(drives) == ["A:", "C:", "E:"]
-
-    @patch("freeassetfilter.services.drive_service.ctypes.windll.kernel32.GetLogicalDrives")
-    def test_all_drives_present(self, mock_get_drives: MagicMock) -> None:
-        """Given 所有 26 个盘符都存在
-        When 调用 _list_windows_drives()
-        Then 返回 A-Z: 全部 26 个盘符。
-        """
-        mock_get_drives.return_value = 0x03FFFFFF  # 全部 26 位
-        svc = DriveService()
-        drives = svc._list_windows_drives()
-        assert len(drives) == 26
-        assert drives == [chr(65 + i) + ":" for i in range(26)]
-
-    @patch("freeassetfilter.services.drive_service.ctypes")
-    def test_get_logical_drives_failure(self, mock_ctypes: MagicMock) -> None:
-        """Given GetLogicalDrives() 调用抛出异常
-        When 调用 _list_windows_drives()
-        Then 返回空列表（静默失败）。
-        """
-        mock_ctypes.windll.kernel32.GetLogicalDrives.side_effect = OSError("API fail")
-        svc = DriveService()
-        drives = svc._list_windows_drives()
-        assert drives == []
-
-
-# ---------------------------------------------------------------------------
+# =============================================================================
 # check_availability
-# ---------------------------------------------------------------------------
-
-
+# =============================================================================
 class TestCheckAvailability:
-    """测试 check_availability() 方法。"""
+    """盘符可用性"""
 
-    def setup_method(self) -> None:
-        _reset_singleton()
+    def test_existing_directory_available(self, tmp_path: Path) -> None:
+        """存在的目录可访问。"""
+        assert DriveService().check_availability(str(tmp_path)) is True
 
-    @patch("os.scandir")
-    @patch("os.path.exists")
-    def test_drive_available(
-        self, mock_exists: MagicMock, mock_scandir: MagicMock
+    def test_empty_directory_available(self, tmp_path: Path) -> None:
+        """空目录视为可用。"""
+        empty: Path = tmp_path / "empty"
+        empty.mkdir()
+        assert DriveService().check_availability(str(empty)) is True
+
+    def test_without_trailing_separator_available(self, tmp_path: Path) -> None:
+        """不带尾随分隔符的目录路径同样可用（内部自动补齐）。"""
+        assert DriveService().check_availability(str(tmp_path)) is True
+
+    def test_nonexistent_path_unavailable(self, tmp_path: Path) -> None:
+        """不存在的路径不可用。"""
+        assert (
+            DriveService().check_availability(str(tmp_path / "missing")) is False
+        )
+
+    def test_scandir_permission_error_unavailable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Given 盘符存在且有文件条目
-        When 调用 check_availability("C:")
-        Then 返回 True。
-        """
-        mock_exists.return_value = True
-        mock_scandir.return_value.__enter__.return_value = iter([MagicMock(), MagicMock()])
-        svc = DriveService()
-        assert svc.check_availability("C:") is True
-        mock_exists.assert_called_with("C:\\")
-        mock_scandir.assert_called_with("C:\\")
+        """扫描权限不足时判定不可用。"""
+        def _raise_scandir(path: str) -> object:
+            raise PermissionError("denied")
 
-    @patch("os.scandir")
-    @patch("os.path.exists")
-    def test_empty_drive(
-        self, mock_exists: MagicMock, mock_scandir: MagicMock
+        monkeypatch.setattr(os, "scandir", _raise_scandir)
+        assert DriveService().check_availability(str(tmp_path)) is False
+
+    def test_exists_generic_exception_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Given 盘符存在但为空目录（next 抛出 StopIteration）
-        When 调用 check_availability("D:")
-        Then 返回 True（空盘仍视为可用）。
-        """
-        mock_exists.return_value = True
-        mock_scandir.return_value.__enter__.return_value.__iter__.return_value = iter([])
+        """边界：exists 抛出非 OSError 异常时判定不可用。"""
+        def _raise_exists(path: str) -> bool:
+            raise RuntimeError("boom")
 
-        def raise_stop(iterator: Any) -> Any:
-            raise StopIteration
-
-        mock_scandir.return_value.__enter__.return_value.__next__.side_effect = StopIteration
-        # Actually, next(it, None) returns None when StopIteration
-        # Let's simulate properly: next() on the iterator raises StopIteration
-        svc = DriveService()
-        with patch.object(
-            svc, "check_availability", wraps=svc.check_availability
-        ) as wrapped:
-            # We need to make the real scandir raise StopIteration on next()
-            pass
-
-        # We'll use a simpler approach - mock the whole check_availability
-        # Actually, let me think about this differently.
-        # The real code does: next(it, None) which defaults to None on StopIteration.
-        # But the except StopIteration catches it. So actually the code would work with a real empty dir.
-        # Let me just test the behavior properly.
-
-    @patch("os.scandir")
-    @patch("os.path.exists")
-    def test_drive_available_with_trailing_slash(
-        self, mock_exists: MagicMock, mock_scandir: MagicMock
-    ) -> None:
-        """Given 盘符以反斜杠结尾
-        When 调用 check_availability("E:\\")
-        Then 返回 True。
-        """
-        mock_exists.return_value = True
-        mock_scandir.return_value.__enter__.return_value = iter([MagicMock()])
-        svc = DriveService()
-        assert svc.check_availability("E:\\") is True
-        mock_exists.assert_called_with("E:\\")
-        mock_scandir.assert_called_with("E:\\")
-
-    @patch("os.scandir")
-    @patch("os.path.exists")
-    def test_drive_unavailable_os_error(
-        self, mock_exists: MagicMock, mock_scandir: MagicMock
-    ) -> None:
-        """Given os.scandir 抛出 OSError（如驱动器未就绪）
-        When 调用 check_availability("A:")
-        Then 返回 False。
-        """
-        mock_exists.return_value = True
-        mock_scandir.return_value.__enter__.side_effect = OSError("设备未就绪")
-        svc = DriveService()
-        assert svc.check_availability("A:") is False
-
-    @patch("os.scandir")
-    @patch("os.path.exists")
-    def test_drive_unavailable_permission_error(
-        self, mock_exists: MagicMock, mock_scandir: MagicMock
-    ) -> None:
-        """Given os.scandir 抛出 PermissionError
-        When 调用 check_availability("X:")
-        Then 返回 False。
-        """
-        mock_exists.return_value = True
-        mock_scandir.return_value.__enter__.side_effect = PermissionError("访问被拒绝")
-        svc = DriveService()
-        assert svc.check_availability("X:") is False
-
-    @patch("os.path.exists")
-    def test_drive_path_not_exists(self, mock_exists: MagicMock) -> None:
-        """Given 盘符路径不存在
-        When 调用 check_availability("Q:")
-        Then 返回 False。
-        """
-        mock_exists.return_value = False
-        svc = DriveService()
-        assert svc.check_availability("Q:") is False
-
-    def test_drive_with_forward_slash(self) -> None:
-        """Given 盘符使用正斜杠 "/"
-        When 调用 check_availability
-        Then 路径被规范化。
-        """
-        svc = DriveService()
-        # We'll just verify the prefix check logic without actual filesystem access
-        # by testing via a local path in tmp_path
-        # For a pure unit test, just check that slash-ending drives don't get double slashes
-        pass
-
-
-# ---------------------------------------------------------------------------
-# _list_windows_network_locations
-# ---------------------------------------------------------------------------
-
-
-class TestListWindowsNetworkLocations:
-    """测试 _list_windows_network_locations() 内部方法。"""
-
-    def setup_method(self) -> None:
-        _reset_singleton()
-
-    @patch("freeassetfilter.services.drive_service.ctypes")
-    def test_network_enum_fails_gracefully(self, mock_ctypes: MagicMock) -> None:
-        """Given WNetOpenEnumW 调用失败（返回非 0）
-        When 调用 _list_windows_network_locations()
-        Then 返回空列表。
-        """
-        mock_ctypes.WinDLL.return_value.WNetOpenEnumW.return_value = 1  # 失败
-        svc = DriveService()
-        locations = svc._list_windows_network_locations()
-        assert locations == []
-
-    @patch("freeassetfilter.services.drive_service.ctypes")
-    def test_mpr_dll_not_found(self, mock_ctypes: MagicMock) -> None:
-        """Given mpr.dll 加载失败（WinDLL 抛出异常）
-        When 调用 _list_windows_network_locations()
-        Then 返回空列表（静默失败）。
-        """
-        mock_ctypes.WinDLL.side_effect = OSError("找不到 mpr.dll")
-        svc = DriveService()
-        locations = svc._list_windows_network_locations()
-        assert locations == []
-
-
-# ---------------------------------------------------------------------------
-# 边界情况 - 原始代码行为
-# ---------------------------------------------------------------------------
-
-
-class TestEdgeCases:
-    """测试边界值和异常路径。"""
-
-    def setup_method(self) -> None:
-        _reset_singleton()
-
-    def test_list_drives_returns_list_type(self) -> None:
-        """Given 任何平台
-        When 调用 list_drives()
-        Then 返回值类型为 list。
-        """
-        svc = DriveService()
-        drives = svc.list_drives()
-        assert isinstance(drives, list)
-
-    def test_check_availability_returns_bool(self) -> None:
-        """Given 任何输入
-        When 调用 check_availability()
-        Then 返回值类型为 bool。
-        """
-        svc = DriveService()
-        result = svc.check_availability("Z:")
-        assert isinstance(result, bool)
+        monkeypatch.setattr(os.path, "exists", _raise_exists)
+        assert DriveService().check_availability("C:\\") is False

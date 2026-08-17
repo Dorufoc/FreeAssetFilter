@@ -1,79 +1,40 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-FileService 单元测试
+"""``FileService``（freeassetfilter/services/file_service.py）单元测试。
 
-测试 freeassetfilter.services.file_service.FileService 的全部 5 个公共方法：
-normalize_path, scan_directory, filter_files, sort_files 及单例模式。
-纯文件系统操作，无需 QApplication。
+覆盖（happy + boundary/error 各至少一条）：
+
+* ``normalize_path`` —— 空串/None/尾随分隔符/混合分隔符/点段规范化
+* ``scan_directory`` —— 正常目录（跳过隐藏文件）、空目录、目录路径、
+  不存在路径、不可读目录、文件路径传参，以及 symlink 条目跳过
+* ``filter_files`` —— ``*``/``?``/混合通配符/空模式/大小写不敏感/无匹配/缺 name 键
+* ``sort_files`` —— 目录优先 + 按 name/size/modified 排序、未知键回退、
+  reverse 语义、不改动原列表
+
+FileService 为单例且不在 conftest 的 ``reset_singletons`` 清单内，故本文件
+自带 autouse fixture 在测试前后归零 ``_instance``/``_initialized``。
 """
 
 from __future__ import annotations
 
 import os
-import re
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
-from unittest.mock import MagicMock, patch
+from typing import Any, Dict, Iterator, List
 
 import pytest
 
 from freeassetfilter.services.file_service import FileService
 
+pytestmark = pytest.mark.unit
 
-# ---------------------------------------------------------------------------
-# 辅助函数
-# ---------------------------------------------------------------------------
-
-def _make_file_dict(
-    name: str,
-    is_dir: bool = False,
-    size: int = 0,
-    modified: str = "",
-    created: str = "",
-) -> Dict:
-    """创建符合 FileService file_dict 格式的字典。
-
-    Args:
-        name: 文件名。
-        is_dir: 是否为目录。
-        size: 文件大小（字节）。
-        modified: ISO 格式修改时间。
-        created: ISO 格式创建时间。
-
-    Returns:
-        标准 file_dict。
-    """
-    suffix = ""
-    if not is_dir:
-        suffix = os.path.splitext(name)[1].lower().lstrip(".")
-    return {
-        "name": name,
-        "path": f"/fake/{name}",
-        "is_dir": is_dir,
-        "size": size,
-        "modified": modified,
-        "created": created,
-        "suffix": suffix,
-    }
-
-
-def _sorted_file_dicts() -> List[Dict]:
-    """创建用于排序测试的混杂顺序文件字典列表。"""
-    return [
-        _make_file_dict("zeta.txt", size=300, modified="2024-03-01", created="2024-01-01"),
-        _make_file_dict("Alpha.txt", size=100, modified="2024-01-01", created="2024-03-01"),
-        _make_file_dict("beta.txt", size=200, modified="2024-02-01", created="2024-02-01"),
-    ]
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
 def _reset_file_service_singleton() -> None:
-    """每个测试前重置 FileService 单例状态，保证测试隔离。"""
+    """在测试前后归零 FileService 单例，保证每测试全新实例。
+
+    Returns:
+        None。
+    """
     FileService._instance = None
     FileService._initialized = False
     yield
@@ -81,538 +42,369 @@ def _reset_file_service_singleton() -> None:
     FileService._initialized = False
 
 
-@pytest.fixture
-def service() -> FileService:
-    """提供已初始化的 FileService 单例。"""
-    svc = FileService()
-    svc.initialize()
-    return svc
+def _file_entry(
+    name: str,
+    is_dir: bool = False,
+    size: int = 0,
+    modified: str = "",
+    created: str = "",
+) -> Dict[str, Any]:
+    """构造 file_selector 兼容的文件信息字典（排序测试辅助）。
+
+    Args:
+        name: 文件名。
+        is_dir: 是否目录。
+        size: 文件大小（字节）。
+        modified: ISO 修改时间字符串。
+        created: ISO 创建时间字符串。
+
+    Returns:
+        Dict[str, Any]: 标准 file_info 字典。
+    """
+    return {
+        "name": name,
+        "path": name,
+        "is_dir": is_dir,
+        "size": size,
+        "modified": modified,
+        "created": created,
+        "suffix": "",
+    }
 
 
-# ===========================================================================
-# Test: normalize_path
-# ===========================================================================
+class _FakeEntry:
+    """最小 os.DirEntry 替身，用于 symlink 跳过逻辑测试。"""
 
+    def __init__(self, name: str, is_symlink: bool = False, is_dir: bool = False) -> None:
+        """初始化替身。
+
+        Args:
+            name: 条目名。
+            is_symlink: is_symlink() 返回值。
+            is_dir: is_dir() 返回值。
+        """
+        self.name: str = name
+        self._is_symlink: bool = is_symlink
+        self._is_dir: bool = is_dir
+
+    @property
+    def path(self) -> str:
+        """条目完整路径（此处即名称）。"""
+        return self.name
+
+    def is_symlink(self, follow_symlinks: bool = True) -> bool:
+        """是否符号链接。"""
+        return self._is_symlink
+
+    def is_dir(self, follow_symlinks: bool = True) -> bool:
+        """是否目录。"""
+        return self._is_dir
+
+    def stat(self, follow_symlinks: bool = True) -> os.stat_result:
+        """伪造固定 stat 结果。"""
+        fixed: int = 1_000_000_000
+        return os.stat_result(
+            (0o100644, 0, 0, 0, 0, 0, 100, fixed, fixed, fixed)
+        )
+
+
+class _FakeScandir:
+    """os.scandir 上下文管理器替身。"""
+
+    def __init__(self, entries: List[_FakeEntry]) -> None:
+        """初始化替身。
+
+        Args:
+            entries: 迭代产出的条目序列。
+        """
+        self._entries: List[_FakeEntry] = entries
+
+    def __enter__(self) -> "_FakeScandir":
+        """上下文进入。"""
+        return self
+
+    def __exit__(self, *args: object) -> bool:
+        """上下文退出（不吞异常）。"""
+        return False
+
+    def __iter__(self) -> Iterator[_FakeEntry]:
+        """返回条目迭代器。"""
+        return iter(self._entries)
+
+
+# =============================================================================
+# normalize_path
+# =============================================================================
 class TestNormalizePath:
-    """normalize_path() 静态方法测试。"""
+    """路径标准化"""
 
-    def test_normal_path(self) -> None:
-        """正常路径应被 os.path.normpath 标准化。"""
-        raw = "C:\\Users\\Test\\..\\Test\\file.txt"
-        expected = os.path.normpath(raw)
-        result = FileService.normalize_path(raw)
-        assert result == expected
+    def test_normalize_plain_relative(self) -> None:
+        """普通相对路径返回 normpath 结果。"""
+        assert FileService.normalize_path("folder/file.txt") == os.path.normpath(
+            "folder/file.txt"
+        )
 
-    def test_empty_string(self) -> None:
-        """空字符串应返回空字符串。"""
+    def test_normalize_mixed_separators_and_dotdot(self) -> None:
+        """混合分隔符 + 点段被规范化。"""
+        assert FileService.normalize_path("C:\\foo\\..\\bar") == os.path.normpath(
+            "C:\\foo\\..\\bar"
+        )
+
+    def test_normalize_trailing_separator(self) -> None:
+        """尾随分隔符被去除。"""
+        assert FileService.normalize_path("C:\\temp\\") == os.path.normpath(
+            "C:/temp/"
+        )
+
+    def test_normalize_empty_returns_empty(self) -> None:
+        """空字符串原样返回空字符串。"""
         assert FileService.normalize_path("") == ""
 
-    def test_none_like_empty(self) -> None:
-        """None 等效于空字符串，应返回空字符串。"""
-        # 实现中 file_path 为 falsy 时返回 ""
-        # 类型注解为 str，此处使用 type: ignore 通过类型检查
+    def test_normalize_none_returns_empty(self) -> None:
+        """边界：None 按空串处理返回空字符串。"""
         assert FileService.normalize_path(None) == ""  # type: ignore[arg-type]
 
-    def test_relative_path(self) -> None:
-        """相对路径也应标准化。"""
-        result = FileService.normalize_path("foo/bar/../baz")
-        assert ".." not in result
+    def test_normalize_unicode_path_kept(self) -> None:
+        """中文路径规范化后保留。"""
+        assert FileService.normalize_path("D:\\素材\\图片.png") == os.path.normpath(
+            "D:/素材/图片.png"
+        )
 
 
-# ===========================================================================
-# Test: scan_directory
-# ===========================================================================
-
+# =============================================================================
+# scan_directory
+# =============================================================================
 class TestScanDirectory:
-    """scan_directory() 测试。"""
+    """目录扫描"""
 
-    def test_scan_normal_directory(self, tmp_path: Path, service: FileService) -> None:
-        """扫描包含文件和子目录的正常目录，应返回完整的文件信息列表。"""
-        # 准备：创建混合的文件/目录结构
-        (tmp_path / "readme.txt").write_text("hello")
-        (tmp_path / "script.py").write_text("print('test')")
-        (tmp_path / "docs").mkdir()
+    def test_scan_happy_path(self, tmp_path: Path) -> None:
+        """正常目录：隐藏文件被跳过，字段完整，目录条目 is_dir=True。"""
+        (tmp_path / "a.txt").write_text("aaa", encoding="utf-8")
+        (tmp_path / "b.jpg").write_bytes(b"img")
+        (tmp_path / ".hidden.txt").write_text("h", encoding="utf-8")
+        (tmp_path / "sub").mkdir(parents=True)
 
-        result = service.scan_directory(str(tmp_path))
+        files: List[Dict] = FileService().scan_directory(str(tmp_path))
+        names: set[str] = {f["name"] for f in files}
+        assert {"a.txt", "b.jpg", "sub"} <= names
+        assert ".hidden.txt" not in names
 
-        assert len(result) == 3
-        names = {item["name"] for item in result}
-        assert names == {"readme.txt", "script.py", "docs"}
+        txt: Dict = next(f for f in files if f["name"] == "a.txt")
+        assert txt["path"] == str(tmp_path / "a.txt")
+        assert txt["is_dir"] is False
+        assert txt["size"] == 3
+        assert txt["suffix"] == "txt"
+        assert txt["modified"].startswith(datetime.now().strftime("%Y"))
+        assert "created" in txt
 
-        # 验证每个字典的键完整性
-        for item in result:
-            assert "name" in item
-            assert "path" in item
-            assert "is_dir" in item
-            assert "size" in item
-            assert "modified" in item
-            assert "created" in item
-            assert "suffix" in item
+        sub: Dict = next(f for f in files if f["name"] == "sub")
+        assert sub["is_dir"] is True
+        assert sub["size"] == 0
+        assert sub["suffix"] == ""
 
-        # 验证目录项的属性
-        dir_item = next(item for item in result if item["name"] == "docs")
-        assert dir_item["is_dir"] is True
-        assert dir_item["size"] == 0
-        assert dir_item["suffix"] == ""
+    def test_scan_suffix_uppercase_lowercased(self, tmp_path: Path) -> None:
+        """大写扩展名被转小写并不带点。"""
+        (tmp_path / "LOGO.PNG").write_bytes(b"img")
+        files: List[Dict] = FileService().scan_directory(str(tmp_path))
+        assert files[0]["suffix"] == "png"
 
-        # 验证文件项的属性
-        file_item = next(item for item in result if item["name"] == "readme.txt")
-        assert file_item["is_dir"] is False
-        assert file_item["size"] == 5  # "hello" 为 5 字节
-        assert file_item["suffix"] == "txt"
+    def test_scan_empty_directory(self, tmp_path: Path) -> None:
+        """空目录返回空列表。"""
+        assert FileService().scan_directory(str(tmp_path)) == []
 
-        # 验证时间戳格式为 ISO
-        for item in result:
-            if item["modified"]:
-                assert "T" in item["modified"] or len(item["modified"]) >= 10
-            if item["created"]:
-                assert "T" in item["created"] or len(item["created"]) >= 10
+    def test_scan_nonexistent_path_returns_empty(self, tmp_path: Path) -> None:
+        """不存在的路径返回空列表。"""
+        assert FileService().scan_directory(str(tmp_path / "nope")) == []
 
-    def test_empty_directory(self, tmp_path: Path, service: FileService) -> None:
-        """空目录应返回空列表。"""
-        empty_dir = tmp_path / "empty"
-        empty_dir.mkdir()
-        assert service.scan_directory(str(empty_dir)) == []
+    def test_scan_file_path_returns_empty(self, tmp_path: Path) -> None:
+        """传文件路径（非目录）返回空列表。"""
+        f: Path = tmp_path / "single.txt"
+        f.write_text("x", encoding="utf-8")
+        assert FileService().scan_directory(str(f)) == []
 
-    def test_hidden_files_skipped(self, tmp_path: Path, service: FileService) -> None:
-        """以 ``.`` 开头的隐藏文件和目录应被跳过。"""
-        (tmp_path / ".hidden_config").write_text("secret")
-        (tmp_path / ".hidden_dir").mkdir()
-        (tmp_path / "visible.txt").write_text("hello")
-
-        result = service.scan_directory(str(tmp_path))
-
-        names = {item["name"] for item in result}
-        assert names == {"visible.txt"}
-        assert ".hidden_config" not in names
-        assert ".hidden_dir" not in names
-
-    def test_nonexistent_path(self, service: FileService) -> None:
-        """不存在的路径应返回空列表。"""
-        nonexistent = "/nonexistent_path_that_does_not_exist_12345"
-        result = service.scan_directory(nonexistent)
-        assert result == []
-
-    def test_path_is_file(self, tmp_path: Path, service: FileService) -> None:
-        """传入文件路径（非目录）应返回空列表（NotADirectoryError 被捕获）。"""
-        test_file = tmp_path / "not_a_dir.txt"
-        test_file.write_text("content")
-        result = service.scan_directory(str(test_file))
-        assert result == []
-
-    def test_path_is_symlink_to_dir(
-        self, tmp_path: Path, service: FileService
+    def test_scan_permission_error_returns_empty(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """符号链接应被跳过（即使指向目录）。"""
-        real_dir = tmp_path / "real_dir"
-        real_dir.mkdir()
-        (real_dir / "inside.txt").write_text("data")
+        """目录不可读（PermissionError）返回空列表。"""
+        def _raise_scandir(path: str) -> object:
+            raise PermissionError("denied")
 
-        symlink_path = tmp_path / "link_to_dir"
-        try:
-            symlink_path.symlink_to(real_dir, target_is_directory=True)
-        except (OSError, NotImplementedError, AttributeError):
-            pytest.skip("当前环境不支持创建符号链接")
+        monkeypatch.setattr(os, "scandir", _raise_scandir)
+        assert FileService().scan_directory(str(tmp_path)) == []
 
-        result = service.scan_directory(str(tmp_path))
-        assert "link_to_dir" not in {item["name"] for item in result}
-
-    def test_scan_preserves_full_path(self, tmp_path: Path, service: FileService) -> None:
-        """返回的 path 应为完整绝对路径。"""
-        (tmp_path / "some_file.txt").write_text("data")
-        result = service.scan_directory(str(tmp_path))
-        for item in result:
-            # path 应以 tmp_path 开头
-            assert item["path"].startswith(str(tmp_path))
-            assert os.path.isabs(item["path"])
-
-    def test_scan_all_drives_returns_list(self, service: FileService) -> None:
-        """_scan_all_drives 应返回盘符/根目录列表。"""
-        result = service._scan_all_drives()
-        assert isinstance(result, list)
-        if os.name == "nt":
-            assert len(result) >= 1  # 至少 C: 盘
-            for item in result:
-                assert item["is_dir"] is True
-                assert item["size"] == 0
-                assert item["suffix"] == ""
-        else:
-            assert len(result) == 1
-            assert result[0]["name"] == "/"
-
-    def test_scan_all_drives_has_valid_entries(
-        self, service: FileService
+    def test_scan_type_error_returns_empty(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """_scan_all_drives 返回的每项均有有效字段。"""
-        result = service._scan_all_drives()
-        for item in result:
-            assert "name" in item
-            assert "path" in item
-            assert "is_dir" in item
-            assert "size" in item
-            assert "modified" in item
-            assert "created" in item
-            assert "suffix" in item
+        """边界：TypeError 同样被吞并返回空列表。"""
+        def _raise_scandir(path: str) -> object:
+            raise TypeError("bad type")
 
-    def test_scan_all_drives_stat_error(
-        self, service: FileService
+        monkeypatch.setattr(os, "scandir", _raise_scandir)
+        assert FileService().scan_directory(str(tmp_path)) == []
+
+    def test_scan_skips_symlink_entries(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """os.stat 失败时 modified/created 应为空字符串。"""
-        with patch("os.stat", side_effect=OSError("模拟驱动不可访问")):
-            result = service._scan_all_drives()
-        if os.name == "nt":
-            assert len(result) >= 1
-            for item in result:
-                assert item["modified"] == ""
-                assert item["created"] == ""
+        """符号链接条目被跳过（以 DirectoryIterator 替身实测）。"""
+        entries: List[_FakeEntry] = [
+            _FakeEntry("real.txt", is_symlink=False),
+            _FakeEntry("link.txt", is_symlink=True),
+            _FakeEntry("folder", is_symlink=False, is_dir=True),
+        ]
 
-    def test_scan_all_drives_unix_branch(
-        self, service: FileService
-    ) -> None:
-        """在 Unix 分支下应返回根目录 ``/``。"""
-        with patch("os.name", "posix"):
-            with patch("os.stat") as mock_stat:
-                mock_root = MagicMock()
-                mock_root.st_mtime = 1_700_000_000
-                mock_root.st_ctime = 1_700_000_000
-                mock_stat.return_value = mock_root
+        def _fake_scandir(path: str) -> _FakeScandir:
+            return _FakeScandir(entries)
 
-                result = service._scan_all_drives()
-
-        assert len(result) == 1
-        assert result[0]["name"] == "/"
-        assert result[0]["path"] == "/"
-        assert result[0]["is_dir"] is True
-
-    def test_scan_all_drives_unix_stat_error(
-        self, service: FileService
-    ) -> None:
-        """Unix 分支下 os.stat 失败时 modified/created 应为空字符串。"""
-        with patch("os.name", "posix"):
-            with patch("os.stat", side_effect=OSError("模拟错误")):
-                result = service._scan_all_drives()
-
-        assert len(result) == 1
-        assert result[0]["name"] == "/"
-        assert result[0]["modified"] == ""
-        assert result[0]["created"] == ""
-
-    def test_scan_skips_symlink(
-        self, tmp_path: Path, service: FileService
-    ) -> None:
-        """真实的符号链接文件应被跳过。"""
-        (tmp_path / "real_file.txt").write_text("real")
-        try:
-            symlink = tmp_path / "link.txt"
-            symlink.symlink_to(tmp_path / "real_file.txt")
-        except (OSError, NotImplementedError, AttributeError):
-            pytest.skip("当前环境不支持创建符号链接")
-
-        result = service.scan_directory(str(tmp_path))
-        names = {item["name"] for item in result}
-        assert "real_file.txt" in names
-        assert "link.txt" not in names
-
-    def test_scan_skips_symlink_mocked(
-        self, service: FileService
-    ) -> None:
-        """符号链接通过 is_symlink() 检测后被跳过（覆盖 line 281）。"""
-        symlink_entry = MagicMock(spec=os.DirEntry)
-        symlink_entry.name = "link_file.txt"
-        symlink_entry.path = "/fake/link_file.txt"
-        symlink_entry.is_symlink.return_value = True  # 触发 skip
-
-        normal_entry = MagicMock(spec=os.DirEntry)
-        normal_entry.name = "real_file.txt"
-        normal_entry.path = "/fake/real_file.txt"
-        normal_entry.is_symlink.return_value = False
-        normal_entry.is_dir.return_value = False
-        normal_stat = MagicMock()
-        normal_stat.st_size = 200
-        normal_stat.st_mtime = 1_700_000_000.0
-        normal_stat.st_ctime = 1_700_000_000.0
-        normal_entry.stat.return_value = normal_stat
-
-        with patch("os.scandir") as mock_scandir:
-            mock_scandir.return_value.__enter__.return_value = [
-                symlink_entry, normal_entry,
-            ]
-            result = service._scan_normal_directory("/fake")
-
-        assert len(result) == 1
-        assert result[0]["name"] == "real_file.txt"
-
-    def test_scan_skips_entry_on_stat_error(
-        self, service: FileService
-    ) -> None:
-        """stat 失败的文件项应被跳过（OSError/PermissionError 被捕获）。"""
-        good_entry = MagicMock(spec=os.DirEntry)
-        good_entry.name = "good.txt"
-        good_entry.path = "/fake/good.txt"
-        good_entry.is_symlink.return_value = False
-        good_entry.is_dir.return_value = False
-        good_stat = MagicMock()
-        good_stat.st_size = 100
-        good_stat.st_mtime = 1_700_000_000.0
-        good_stat.st_ctime = 1_700_000_000.0
-        good_entry.stat.return_value = good_stat
-
-        bad_entry = MagicMock(spec=os.DirEntry)
-        bad_entry.name = "bad.txt"
-        bad_entry.path = "/fake/bad.txt"
-        bad_entry.is_symlink.return_value = False
-        # stat 调用抛出异常
-        bad_entry.stat.side_effect = OSError("模拟权限错误")
-
-        with patch("os.scandir") as mock_scandir:
-            mock_scandir.return_value.__enter__.return_value = [
-                good_entry, bad_entry,
-            ]
-            result = service._scan_normal_directory("/fake")
-
-        assert len(result) == 1
-        assert result[0]["name"] == "good.txt"
+        monkeypatch.setattr(os, "scandir", _fake_scandir)
+        files: List[Dict] = FileService().scan_directory(str(tmp_path))
+        names: set[str] = {f["name"] for f in files}
+        assert names == {"real.txt", "folder"}
+        assert all(f["is_dir"] == (f["name"] == "folder") for f in files)
 
 
-# ===========================================================================
-# Test: filter_files
-# ===========================================================================
-
+# =============================================================================
+# filter_files
+# =============================================================================
 class TestFilterFiles:
-    """filter_files() 测试。"""
+    """通配符筛选"""
 
-    @staticmethod
-    def _sample() -> List[Dict]:
-        return [
-            _make_file_dict("readme.txt"),
-            _make_file_dict("script.py"),
-            _make_file_dict("data.json"),
-            _make_file_dict("notes.txt"),
+    def test_filter_default_and_star_return_all(self) -> None:
+        """默认模式与 ``*`` 均返回全部（含缺省 name 键条目）。"""
+        files: List[Dict] = [
+            _file_entry("a.txt"),
+            _file_entry("b.png"),
+            {"path": "no-name", "is_dir": False},
         ]
+        assert FileService().filter_files(files) == files
+        assert FileService().filter_files(files, "*") == files
 
-    def test_default_pattern_matches_all(self, service: FileService) -> None:
-        """默认 ``*`` 模式应匹配全部文件。"""
-        files = self._sample()
-        result = service.filter_files(files)
-        assert len(result) == 4
+    def test_filter_empty_pattern_is_star(self) -> None:
+        """空字符串模式等价于 ``*``。"""
+        files: List[Dict] = [_file_entry("x.txt")]
+        assert FileService().filter_files(files, "") == files
 
-    def test_specific_pattern_txt(self, service: FileService) -> None:
-        """模式 ``*.txt`` 应只匹配 .txt 文件。"""
-        files = self._sample()
-        result = service.filter_files(files, "*.txt")
-        assert len(result) == 2
-        assert all(f["name"].endswith(".txt") for f in result)
-
-    def test_empty_string_as_wildcard(self, service: FileService) -> None:
-        """空字符串模式应视为 ``*``，匹配全部文件。"""
-        files = self._sample()
-        result = service.filter_files(files, "")
-        assert len(result) == 4
-
-    def test_question_mark_pattern(self, service: FileService) -> None:
-        """``?`` 应匹配单个字符。"""
-        files = [
-            _make_file_dict("a.txt"),
-            _make_file_dict("ab.txt"),
-            _make_file_dict("abc.txt"),
+    def test_filter_extension_wildcard_case_insensitive(self) -> None:
+        """扩展名过滤：``*.txt`` 大小写不敏感匹配。"""
+        files: List[Dict] = [
+            _file_entry("a.txt"),
+            _file_entry("b.log"),
+            _file_entry("ACME.TXT"),
         ]
-        # ?? — 恰好匹配 2 个任意字符
-        result = service.filter_files(files, "??.txt")
-        assert len(result) == 1
-        assert result[0]["name"] == "ab.txt"
-        # ? — 恰好匹配 1 个任意字符
-        result2 = service.filter_files(files, "?.txt")
-        assert len(result2) == 1
-        assert result2[0]["name"] == "a.txt"
+        result: List[Dict] = FileService().filter_files(files, "*.txt")
+        assert {f["name"] for f in result} == {"a.txt", "ACME.TXT"}
 
-    def test_case_insensitive(self, service: FileService) -> None:
-        """筛选应不区分大小写。"""
-        files = [
-            _make_file_dict("README.TXT"),
-            _make_file_dict("readme.txt"),
-            _make_file_dict("readme.md"),
+    def test_filter_question_mark_matches_single_char(self) -> None:
+        """``?`` 匹配单个任意字符。"""
+        files: List[Dict] = [
+            _file_entry("a1.txt"),
+            _file_entry("aa.txt"),
+            _file_entry("a.txt"),
         ]
-        result = service.filter_files(files, "*.txt")
-        assert len(result) == 2
+        result: List[Dict] = FileService().filter_files(files, "a?.txt")
+        assert {f["name"] for f in result} == {"a1.txt", "aa.txt"}
 
-    def test_invalid_pattern_returns_empty(self, service: FileService) -> None:
-        """无效的通配符模式应返回空列表（防御性异常捕获）。"""
-        files = self._sample()
-        with patch.object(re, "compile", side_effect=re.error("mock")):
-            result = service.filter_files(files, "*.txt")
-            assert result == []
-
-    def test_no_matches_returns_empty(self, service: FileService) -> None:
-        """无匹配文件时应返回空列表。"""
-        files = self._sample()
-        result = service.filter_files(files, "*.xyz")
-        assert result == []
-
-    def test_filter_does_not_mutate_input(self, service: FileService) -> None:
-        """filter_files 不应修改传入的原始列表。"""
-        files = self._sample()
-        original_len = len(files)
-        service.filter_files(files, "*.txt")
-        assert len(files) == original_len
-
-    def test_pattern_matches_directory(self, service: FileService) -> None:
-        """模式应同时匹配文件和目录名。"""
-        files = [
-            _make_file_dict("assets", is_dir=True),
-            _make_file_dict("assets.txt", is_dir=False),
-            _make_file_dict("other.txt", is_dir=False),
+    def test_filter_mixed_pattern(self) -> None:
+        """混合 ``*`` 与 ``?`` 的通配符模式。"""
+        files: List[Dict] = [
+            _file_entry("photo.001.jpg"),
+            _file_entry("photo.002.jpg"),
+            _file_entry("photo..jpg"),
+            _file_entry("doc.txt"),
         ]
-        result = service.filter_files(files, "assets*")
-        assert len(result) == 2
-        assert {f["name"] for f in result} == {"assets", "assets.txt"}
+        result: List[Dict] = FileService().filter_files(files, "photo.???.jpg")
+        assert {f["name"] for f in result} == {"photo.001.jpg", "photo.002.jpg"}
+
+    def test_filter_no_match_returns_empty(self) -> None:
+        """无匹配时返回空列表。"""
+        files: List[Dict] = [_file_entry("a.png")]
+        assert FileService().filter_files(files, "*.jpg") == []
+
+    def test_filter_missing_name_key_never_matches_non_star(self) -> None:
+        """缺 name 键的条目在非 ``*`` 模式下不匹配。"""
+        files: List[Dict] = [{"path": "no-name", "is_dir": False}]
+        assert FileService().filter_files(files, "*.txt") == []
+
+    def test_filter_returns_new_list(self) -> None:
+        """命中模式返回新列表（不原地修改入参）。"""
+        files: List[Dict] = [_file_entry("a.txt"), _file_entry("b.txt")]
+        original: List[Dict] = list(files)
+        FileService().filter_files(files, "*.txt")
+        assert files == original
 
 
-# ===========================================================================
-# Test: sort_files
-# ===========================================================================
-
+# =============================================================================
+# sort_files
+# =============================================================================
 class TestSortFiles:
-    """sort_files() 测试。"""
+    """排序"""
 
-    def test_sort_by_name(self, service: FileService) -> None:
-        """按名称不区分大小写升序排序。"""
-        result = service.sort_files(_sorted_file_dicts(), key="name")
-        names = [f["name"] for f in result]
-        # 不区分大小写: Alpha → beta → zeta
-        assert names == ["Alpha.txt", "beta.txt", "zeta.txt"]
-
-    def test_sort_by_size(self, service: FileService) -> None:
-        """按文件大小升序排序。"""
-        result = service.sort_files(_sorted_file_dicts(), key="size")
-        sizes = [f["size"] for f in result]
-        assert sizes == [100, 200, 300]
-
-    def test_sort_by_modified(self, service: FileService) -> None:
-        """按修改时间升序排序。"""
-        result = service.sort_files(_sorted_file_dicts(), key="modified")
-        items = [(f["name"], f["modified"]) for f in result]
-        assert items[0][1] <= items[1][1] <= items[2][1]
-
-    def test_sort_by_created(self, service: FileService) -> None:
-        """按创建时间升序排序。"""
-        result = service.sort_files(_sorted_file_dicts(), key="created")
-        items = [(f["name"], f["created"]) for f in result]
-        assert items[0][1] <= items[1][1] <= items[2][1]
-
-    def test_directories_before_files(self, service: FileService) -> None:
-        """目录始终排在文件之前。"""
-        files = [
-            _make_file_dict("z_file.txt", is_dir=False),
-            _make_file_dict("a_dir", is_dir=True),
-            _make_file_dict("m_file.py", is_dir=False),
+    def test_sort_name_dirs_first_case_insensitive(self) -> None:
+        """默认按 name：目录优先且大小写不敏感。"""
+        files: List[Dict] = [
+            _file_entry("b.txt"),
+            _file_entry("dir_z", is_dir=True),
+            _file_entry("A.TXT"),
+            _file_entry("dir_a", is_dir=True),
         ]
-        result = service.sort_files(files, key="name")
-        # 目录 a_dir 应在两个文件之前
-        assert result[0]["name"] == "a_dir"
-        assert result[0]["is_dir"] is True
-        # 所有 is_dir=True 的项在 is_dir=False 之前
-        dir_indices = [i for i, f in enumerate(result) if f["is_dir"]]
-        file_indices = [i for i, f in enumerate(result) if not f["is_dir"]]
-        if dir_indices and file_indices:
-            assert max(dir_indices) < min(file_indices)
+        result: List[Dict] = FileService().sort_files(files)
+        assert [f["name"] for f in result] == ["dir_a", "dir_z", "A.TXT", "b.txt"]
 
-    def test_reverse_sort(self, service: FileService) -> None:
-        """逆序排序应反转结果。"""
-        forward = service.sort_files(_sorted_file_dicts(), key="name", reverse=False)
-        backward = service.sort_files(_sorted_file_dicts(), key="name", reverse=True)
-        assert list(reversed(forward)) == backward
-
-    def test_unknown_key_falls_back_to_name(self, service: FileService) -> None:
-        """未知排序键应回退为按 name 排序。"""
-        result = service.sort_files(_sorted_file_dicts(), key="nonexistent_key")
-        names = [f["name"] for f in result]
-        assert names == ["Alpha.txt", "beta.txt", "zeta.txt"]
-
-    def test_sort_does_not_mutate_input(self, service: FileService) -> None:
-        """sort_files 不应修改传入的原始列表。"""
-        files = _sorted_file_dicts()
-        original_ids = [id(f) for f in files]
-        service.sort_files(files, key="name")
-        assert [id(f) for f in files] == original_ids
-
-    def test_empty_list(self, service: FileService) -> None:
-        """空列表应返回空列表。"""
-        assert service.sort_files([], key="name") == []
-
-    def test_single_item(self, service: FileService) -> None:
-        """单元素列表应原样返回。"""
-        files = [_make_file_dict("only.txt")]
-        result = service.sort_files(files, key="name")
-        assert len(result) == 1
-        assert result[0]["name"] == "only.txt"
-
-    def test_stable_sort_maintains_order_for_equal_keys(
-        self, service: FileService
-    ) -> None:
-        """相同排序键的项应保留原始相对顺序（稳定排序，Python's sort 保证）。"""
-        files = [
-            _make_file_dict("b.txt", size=100),
-            _make_file_dict("a.txt", size=200),
-            _make_file_dict("c.txt", size=100),
+    def test_sort_by_size(self) -> None:
+        """按 size：目录仍优先，其后按大小升序。"""
+        files: List[Dict] = [
+            _file_entry("a.txt", size=300),
+            _file_entry("dir", is_dir=True, size=0),
+            _file_entry("c.txt", size=50),
+            _file_entry("b.txt", size=100),
         ]
-        # 按 size 排序，b.txt(size=100) 和 c.txt(size=100) 应保持原始顺序
-        result = service.sort_files(files, key="size")
-        size_100 = [f["name"] for f in result if f["size"] == 100]
-        assert size_100 == ["b.txt", "c.txt"]
+        result: List[Dict] = FileService().sort_files(files, key="size")
+        assert result[0]["name"] == "dir"
+        assert [f["name"] for f in result[1:]] == ["c.txt", "b.txt", "a.txt"]
 
+    def test_sort_by_modified(self) -> None:
+        """按修改时间升序，目录仍优先。"""
+        files: List[Dict] = [
+            _file_entry("old", modified="2020-01-01"),
+            _file_entry("new", modified="2023-05-05"),
+            _file_entry("dir", is_dir=True),
+        ]
+        result: List[Dict] = FileService().sort_files(files, key="modified")
+        assert result[0]["name"] == "dir"
+        assert [f["name"] for f in result[1:]] == ["old", "new"]
 
-# ===========================================================================
-# Test: 单例模式
-# ===========================================================================
+    def test_sort_unknown_key_falls_back_to_name(self) -> None:
+        """未知排序键回退为按 name。"""
+        files: List[Dict] = [_file_entry("z.txt"), _file_entry("a.txt")]
+        result: List[Dict] = FileService().sort_files(files, key="bogus")
+        assert [f["name"] for f in result] == ["a.txt", "z.txt"]
 
-class TestSingleton:
-    """FileService 单例模式验证。"""
+    def test_sort_reverse_reverses_full_order(self) -> None:
+        """reverse=True 反转整体：文件在前且降序，目录排最后（现状固化）。"""
+        files: List[Dict] = [
+            _file_entry("a.txt"),
+            _file_entry("z.txt"),
+            _file_entry("dir", is_dir=True),
+        ]
+        result: List[Dict] = FileService().sort_files(files, reverse=True)
+        assert [f["name"] for f in result] == ["z.txt", "a.txt", "dir"]
 
-    def test_same_instance(self) -> None:
-        """多次构造应返回同一实例。"""
-        service1 = FileService()
-        service2 = FileService()
-        assert service1 is service2
+    def test_sort_does_not_mutate_original(self) -> None:
+        """排序返回新列表，不影响原始列表。"""
+        files: List[Dict] = [_file_entry("b.txt"), _file_entry("a.txt")]
+        original: List[Dict] = list(files)
+        FileService().sort_files(files)
+        assert files == original
 
-    def test_initialize_once(self, service: FileService) -> None:
-        """initialize() 仅首次执行实际逻辑，后续返回 True 但不重复执行。"""
-        assert service.initialize() is True
-        assert service.initialize() is True
-        assert service.is_initialized is True
+    def test_sort_empty_list(self) -> None:
+        """空列表排序返回空列表。"""
+        assert FileService().sort_files([]) == []
 
-    def test_dispose_resets_state(self, service: FileService) -> None:
-        """dispose() 后 is_initialized 为 False。"""
-        service.dispose()
-        assert service.is_initialized is False
-
-    def test_reinitialize_after_dispose(self, service: FileService) -> None:
-        """dispose → initialize 后可重新进入已初始化状态。"""
-        service.dispose()
-        service.initialize()
-        assert service.is_initialized is True
-
-
-# ===========================================================================
-# Test: BaseService 生命周期集成
-# ===========================================================================
-
-class TestLifecycle:
-    """通过 FileService 验证 BaseService 生命周期管理。"""
-
-    def test_init_marks_as_initialized(self) -> None:
-        """构造后 is_initialized 为 True（__init__ 自动标记初始化完成）。"""
-        svc = FileService()
-        assert svc.is_initialized is True
-
-    def test_initialize_idempotent(self, service: FileService) -> None:
-        """多次调用 initialize() 均返回 True。"""
-        assert service.initialize() is True
-        assert service.initialize() is True
-
-    def test_scan_directory_works_after_initialize(
-        self, tmp_path: Path, service: FileService
-    ) -> None:
-        """初始化后可正常执行扫描操作。"""
-        (tmp_path / "hello.txt").write_text("data")
-        result = service.scan_directory(str(tmp_path))
-        assert len(result) == 1
+    def test_sort_directory_without_size_stays_first(self) -> None:
+        """目录缺省 size 时按 size 排序仍位于文件之前（目录优先谓词主导）。"""
+        files: List[Dict] = [
+            _file_entry("zz.txt", size=999),
+            _file_entry("dir", is_dir=True),
+        ]
+        result: List[Dict] = FileService().sort_files(files, key="size")
+        assert result[0]["name"] == "dir"
+        assert result[1]["name"] == "zz.txt"

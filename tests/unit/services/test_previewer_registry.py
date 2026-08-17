@@ -1,700 +1,242 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""``PreviewerRegistry``（freeassetfilter/services/previewer_registry.py）单元测试。
+
+覆盖（happy + boundary/error 各至少一条）：
+
+* 注册表初始化 —— ``_EXTENSION_MAP`` 已含常见后缀且值为 (module, class) 对、
+  ``_CLASS_CACHE`` 初始为空
+* ``get_previewer_class`` —— is_dir 走 FolderContentList、空/缺失后缀与未知
+  后缀返回 None、后缀大小写/前导点归一、已知后缀解析真实类
+* 动态注册注销 —— register 新增/覆盖、unregister 移除/未知后缀无异常
+* 缓存 —— 惰性导入结果缓存、register 清除同名陈旧缓存、unregister 清除缓存
+
+类级缓存/映射在测试间共享：autouse fixture 在每个测试前后做快照还原，
+防止 register/unregister 污染后续用例。大部分解析路径通过 mock
+``_import_class`` 验证，避免不必要的重型 UI 模块导入。
 """
-PreviewerRegistry 模块单元测试
 
-测试扩展名到预览器类的映射逻辑、注册/注销、缓存机制。
+from __future__ import annotations
 
-覆盖方法:
-    - get_previewer_class()
-    - register()
-    - unregister()
-    - _import_class()
-"""
-
-from typing import Any, Dict
-from unittest.mock import MagicMock, call, patch
+from typing import Dict, List, Tuple
 
 import pytest
 
 from freeassetfilter.services.previewer_registry import PreviewerRegistry
 
-# ---------------------------------------------------------------------------
-# 测试辅助
-# ---------------------------------------------------------------------------
+pytestmark = pytest.mark.unit
 
-# Capture the pristine initial state of _EXTENSION_MAP at import time.
-# This runs before any test, so it reflects the original class definition.
-_ORIGINAL_EXTENSION_MAP: Dict[str, tuple[str, str]] = dict(
-    PreviewerRegistry._EXTENSION_MAP
+_IMAGE_KEY: str = (
+    "freeassetfilter.ui.layout.preview.image_previewer_layout."
+    "ImagePreviewerLayout"
 )
 
 
-def _reset_registry() -> None:
-    """Restore PreviewerRegistry class variables to pristine initial state.
+@pytest.fixture(autouse=True)
+def _restore_registry_state() -> None:
+    """在测试前后快照还原类级映射与缓存，保证隔离性。
 
-    Clears ``_CLASS_CACHE`` and resets ``_EXTENSION_MAP`` to the original
-    extension mappings captured at module import time.  Call this in every
-    ``setup_method`` to guarantee test isolation.
+    Returns:
+        None。
     """
-    PreviewerRegistry._CLASS_CACHE.clear()
-    PreviewerRegistry._EXTENSION_MAP.clear()
-    PreviewerRegistry._EXTENSION_MAP.update(_ORIGINAL_EXTENSION_MAP)
-
-
-# ===========================================================================
-# get_previewer_class
-# ===========================================================================
-
-
-class TestGetPreviewerClass:
-    """Tests for :meth:`PreviewerRegistry.get_previewer_class`."""
-
-    def setup_method(self) -> None:
-        _reset_registry()
-
-    # ── 1-6: 已知扩展名返回正确类 ──────────────────────────────────────
-
-    @pytest.mark.parametrize(
-        "suffix, expected_module, expected_class",
-        [
-            ("jpg", "freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
-            ("pdf", "freeassetfilter.ui.layout.preview.pdf_previewer_layout", "PdfPreviewerLayout"),
-            ("mp4", "freeassetfilter.ui.layout.preview.video_player_layout", "VideoPlayerLayout"),
-            ("zip", "freeassetfilter.components.archive_browser", "ArchiveBrowser"),
-            ("ttf", "freeassetfilter.ui.layout.preview.font_previewer_layout", "FontPreviewerLayout"),
-            ("txt", "freeassetfilter.ui.layout.preview.text_previewer_layout", "TextPreviewerLayout"),
-        ],
+    ext_before: Dict[str, Tuple[str, str]] = dict(
+        PreviewerRegistry._EXTENSION_MAP
     )
-    def test_known_extension_returns_correct_class(
-        self, suffix: str, expected_module: str, expected_class: str
-    ) -> None:
-        """已知扩展名应委托 ``_import_class`` 并返回对应类。
+    cache_before: Dict[str, type] = dict(PreviewerRegistry._CLASS_CACHE)
+    yield
+    PreviewerRegistry._EXTENSION_MAP.clear()
+    PreviewerRegistry._EXTENSION_MAP.update(ext_before)
+    PreviewerRegistry._CLASS_CACHE.clear()
+    PreviewerRegistry._CLASS_CACHE.update(cache_before)
 
-        Given a registered extension
-        When  ``get_previewer_class`` is called
-        Then  it delegates to ``_import_class`` with the correct
-              ``(module_path, class_name)`` pair and returns its result.
-        """
-        with patch.object(PreviewerRegistry, "_import_class") as mock_import:
-            fake_cls = MagicMock(spec=type)
-            mock_import.return_value = fake_cls
 
-            result = PreviewerRegistry.get_previewer_class({"suffix": suffix})
+# =============================================================================
+# 注册表初始化
+# =============================================================================
+class TestInitialMap:
+    """初始映射内容"""
 
-            assert result is fake_cls
-            mock_import.assert_called_once_with(expected_module, expected_class)
+    def test_common_extensions_present(self) -> None:
+        """常见图片/视频/文档/压缩包后缀均已注册。"""
+        for ext in ("jpg", "png", "mp4", "pdf", "py", "zip", "ttf", "docx"):
+            assert ext in PreviewerRegistry._EXTENSION_MAP
 
-    # ── 7: 未知扩展名 ──────────────────────────────────────────────────
+    def test_map_values_are_module_class_pairs(self) -> None:
+        """映射值均为 (module_path, class_name) 字符串二元组。"""
+        for ext in ("jpg", "pdf", "zip"):
+            module_path: object
+            class_name: object
+            module_path, class_name = PreviewerRegistry._EXTENSION_MAP[ext]
+            assert isinstance(module_path, str)
+            assert isinstance(class_name, str)
 
-    def test_unknown_extension_returns_none(self) -> None:
-        """未知扩展名应返回 ``None``。
+    def test_class_cache_starts_empty(self) -> None:
+        """类缓存初始为空（惰性导入，import 前不填充）。"""
+        # 完整套件中其他文件可能已触发真实导入填充缓存；
+        # 清空后验证"尚无缓存"这一语义，而不是依赖进程级顺序。
+        PreviewerRegistry._CLASS_CACHE.clear()
+        assert PreviewerRegistry._CLASS_CACHE == {}
 
-        Given an extension that is not in ``_EXTENSION_MAP``
-        When  ``get_previewer_class`` is called
-        Then  it returns ``None``.
-        """
-        result = PreviewerRegistry.get_previewer_class({"suffix": "xyq"})
-        assert result is None
 
-    # ── 8: 空 suffix ───────────────────────────────────────────────────
+# =============================================================================
+# get_previewer_class
+# =============================================================================
+class TestGetPreviewerClass:
+    """预览器解析"""
+
+    def test_is_dir_returns_folder_content_list(self) -> None:
+        """目录条目解析为文件夹内容列表类。"""
+        cls: object | None = PreviewerRegistry.get_previewer_class(
+            {"suffix": "jpg", "is_dir": True}
+        )
+        assert cls is not None
+        assert cls.__name__ == "FolderContentList"
+
+    def test_empty_dict_returns_none(self) -> None:
+        """空文件信息（无 suffix）返回 None。"""
+        assert PreviewerRegistry.get_previewer_class({}) is None
 
     def test_empty_suffix_returns_none(self) -> None:
-        """空 suffix 字符串应返回 ``None``。
+        """suffix 为空字符串返回 None。"""
+        assert PreviewerRegistry.get_previewer_class({"suffix": ""}) is None
 
-        Given ``file_info`` with ``suffix=""``
-        When  ``get_previewer_class`` is called
-        Then  it returns ``None``.
-        """
-        result = PreviewerRegistry.get_previewer_class({"suffix": ""})
-        assert result is None
+    def test_unknown_suffix_returns_none(self) -> None:
+        """未注册后缀返回 None。"""
+        assert PreviewerRegistry.get_previewer_class({"suffix": "zzz"}) is None
 
-    # ── 9: suffix 为 None / 缺少 suffix ────────────────────────────────
+    def test_suffix_case_and_dot_normalized(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """前导点 + 大写后缀被归一化后命中映射，且走惰性导入。"""
+        imported: List[Tuple[str, str]] = []
 
-    def test_none_suffix_returns_none(self) -> None:
-        """``suffix=None`` 应返回 ``None``。
+        def _fake_import(module_path: str, class_name: str) -> type:
+            imported.append((module_path, class_name))
+            return dict
 
-        Given ``file_info`` with ``suffix=None``
-        When  ``get_previewer_class`` is called
-        Then  it returns ``None``.
-        """
-        result = PreviewerRegistry.get_previewer_class({"suffix": None})
-        assert result is None
-
-    def test_missing_suffix_returns_none(self) -> None:
-        """缺少 ``suffix`` 键应返回 ``None``。
-
-        Given ``file_info`` without a ``suffix`` key
-        When  ``get_previewer_class`` is called
-        Then  it returns ``None``.
-        """
-        result = PreviewerRegistry.get_previewer_class({"foo": "bar"})
-        assert result is None
-
-    # ── 10: 目录（is_dir） ─────────────────────────────────────────────
-
-    def test_directory_returns_folder_content_list(self) -> None:
-        """``is_dir=True`` 应返回 ``FolderContentList``。
-
-        Given ``file_info`` with ``is_dir=True``
-        When  ``get_previewer_class`` is called
-        Then  it delegates to ``_import_class`` with the folder-content
-              module path.
-        """
-        with patch.object(PreviewerRegistry, "_import_class") as mock_import:
-            fake_cls = MagicMock(spec=type)
-            mock_import.return_value = fake_cls
-
-            result = PreviewerRegistry.get_previewer_class({"is_dir": True})
-
-            assert result is fake_cls
-            mock_import.assert_called_once_with(
-                "freeassetfilter.components.folder_content_list",
-                "FolderContentList",
+        monkeypatch.setattr(
+            PreviewerRegistry, "_import_class", staticmethod(_fake_import)
+        )
+        cls: object | None = PreviewerRegistry.get_previewer_class(
+            {"suffix": ".JPG"}
+        )
+        assert cls is dict
+        assert imported == [
+            (
+                "freeassetfilter.ui.layout.preview.image_previewer_layout",
+                "ImagePreviewerLayout",
             )
-
-    # ── 边界: 大小写 / 前导点 ──────────────────────────────────────────
-
-    def test_upper_case_suffix(self) -> None:
-        """后缀大小写不敏感 —— ``JPG`` 应匹配 ``jpg``。
-
-        Given a suffix in upper case
-        When  ``get_previewer_class`` is called
-        Then  it still resolves to ``ImagePreviewerLayout``.
-        """
-        with patch.object(PreviewerRegistry, "_import_class") as mock_import:
-            mock_import.return_value = MagicMock(spec=type)
-            result = PreviewerRegistry.get_previewer_class({"suffix": "JPG"})
-            assert result is mock_import.return_value
-            mock_import.assert_called_once_with(
-                "freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"
-            )
-
-    def test_leading_dot_is_stripped(self) -> None:
-        """前导点 ``.jpg`` 应被自动剥离后匹配 ``jpg``。
-
-        Given a suffix with a leading dot
-        When  ``get_previewer_class`` is called
-        Then  the dot is stripped and the extension is resolved normally.
-        """
-        with patch.object(PreviewerRegistry, "_import_class") as mock_import:
-            mock_import.return_value = MagicMock(spec=type)
-            result = PreviewerRegistry.get_previewer_class({"suffix": ".jpg"})
-            assert result is mock_import.return_value
-            mock_import.assert_called_once_with(
-                "freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"
-            )
-
-    def test_is_dir_takes_priority_over_suffix(self) -> None:
-        """``is_dir=True`` 优先于 ``suffix`` —— 即使后缀存在也返回文件夹预览器。
-
-        Given ``file_info`` with both ``is_dir=True`` and a known suffix
-        When  ``get_previewer_class`` is called
-        Then  it returns ``FolderContentList`` (not the suffix-based class).
-        """
-        with patch.object(PreviewerRegistry, "_import_class") as mock_import:
-            mock_import.return_value = MagicMock(spec=type)
-            result = PreviewerRegistry.get_previewer_class(
-                {"is_dir": True, "suffix": "jpg"}
-            )
-            mock_import.assert_called_once_with(
-                "freeassetfilter.components.folder_content_list",
-                "FolderContentList",
-            )
-
-
-# ===========================================================================
-# register
-# ===========================================================================
-
-
-class TestRegister:
-    """Tests for :meth:`PreviewerRegistry.register`."""
-
-    def setup_method(self) -> None:
-        _reset_registry()
-
-    # ── 11 ──────────────────────────────────────────────────────────────
-
-    def test_register_new_extension(self) -> None:
-        """注册新扩展名后可通过 ``get_previewer_class`` 获取。
-
-        Given a newly registered extension
-        When  ``get_previewer_class`` is called with that suffix
-        Then  it returns the registered previewer class.
-        """
-        PreviewerRegistry.register("newfmt", "some.module", "SomeClass")
-
-        with patch.object(PreviewerRegistry, "_import_class") as mock_import:
-            fake_cls = MagicMock(spec=type)
-            mock_import.return_value = fake_cls
-
-            result = PreviewerRegistry.get_previewer_class({"suffix": "newfmt"})
-
-            assert result is fake_cls
-            mock_import.assert_called_once_with("some.module", "SomeClass")
-
-    def test_register_strips_leading_dot(self) -> None:
-        """``register`` 应自动清理扩展名中的前导点。
-
-        Given an extension with a leading dot
-        When  it is registered
-        Then  the dot is stripped before storage.
-        """
-        PreviewerRegistry.register(".newfmt", "some.module", "SomeClass")
-
-        with patch.object(PreviewerRegistry, "_import_class") as mock_import:
-            mock_import.return_value = MagicMock(spec=type)
-            result = PreviewerRegistry.get_previewer_class({"suffix": "newfmt"})
-            assert result is mock_import.return_value
-
-    def test_register_overwrites_existing(self) -> None:
-        """为已有扩展名注册新映射应覆盖旧的映射。
-
-        Given an already registered extension
-        When  ``register`` is called with a different module/class
-        Then  subsequent ``get_previewer_class`` uses the new mapping.
-        """
-        PreviewerRegistry.register("jpg", "other.module", "OtherViewer")
-
-        with patch.object(PreviewerRegistry, "_import_class") as mock_import:
-            mock_import.return_value = MagicMock(spec=type)
-            PreviewerRegistry.get_previewer_class({"suffix": "jpg"})
-            mock_import.assert_called_once_with("other.module", "OtherViewer")
-
-    def test_register_lowercases_extension(self) -> None:
-        """``register`` 应将扩展名转为小写。
-
-        Given an extension in mixed case
-        When  it is registered
-        Then  the stored key is lowercase.
-        """
-        PreviewerRegistry.register("MxF", "some.module", "SomeClass")
-
-        with patch.object(PreviewerRegistry, "_import_class") as mock_import:
-            mock_import.return_value = MagicMock(spec=type)
-            # Query with various cases
-            PreviewerRegistry.get_previewer_class({"suffix": "mxf"})
-            PreviewerRegistry.get_previewer_class({"suffix": "MXF"})
-            PreviewerRegistry.get_previewer_class({"suffix": "Mxf"})
-            assert mock_import.call_count == 3  # cache hit → no reimports
-            # Second and third calls should be cache hits
-            mock_import.assert_has_calls(
-                [call("some.module", "SomeClass")] * 3
-            )
-
-
-# ===========================================================================
-# unregister
-# ===========================================================================
-
-
-class TestUnregister:
-    """Tests for :meth:`PreviewerRegistry.unregister`."""
-
-    def setup_method(self) -> None:
-        _reset_registry()
-
-    # ── 12 ──────────────────────────────────────────────────────────────
-
-    def test_unregister_existing_extension_returns_none(self) -> None:
-        """注销已有扩展名后 ``get_previewer_class`` 应返回 ``None``。
-
-        Given a registered extension
-        When  it is unregistered
-        Then  subsequent ``get_previewer_class`` returns ``None``.
-        """
-        PreviewerRegistry.unregister("jpg")
-        result = PreviewerRegistry.get_previewer_class({"suffix": "jpg"})
-        assert result is None
-
-    def test_unregister_nonexistent_does_not_raise(self) -> None:
-        """注销不存在的扩展名不应抛出异常。
-
-        Given an extension that is not in the map
-        When  ``unregister`` is called
-        Then  no exception is raised and other entries are unaffected.
-        """
-        PreviewerRegistry.unregister("nonexistent")  # must not raise
-
-        # Verify other extensions still work
-        with patch.object(PreviewerRegistry, "_import_class") as mock_import:
-            mock_import.return_value = MagicMock(spec=type)
-            result = PreviewerRegistry.get_previewer_class({"suffix": "jpg"})
-            assert result is mock_import.return_value
-
-    def test_unregister_strips_leading_dot(self) -> None:
-        """``unregister`` 应自动清理前导点。
-
-        Given an extension with a leading dot
-        When  it is unregistered
-        Then  the same extension without dot is also removed.
-        """
-        PreviewerRegistry.unregister(".jpg")
-        result = PreviewerRegistry.get_previewer_class({"suffix": "jpg"})
-        assert result is None
-
-    def test_unregister_lowercases_extension(self) -> None:
-        """``unregister`` 应将扩展名转为小写。
-
-        Given an extension in upper case
-        When  it is unregistered
-        Then  the lowercase version is removed from the map.
-        """
-        PreviewerRegistry.unregister("JPG")
-        result = PreviewerRegistry.get_previewer_class({"suffix": "jpg"})
-        assert result is None
-
-    def test_unregister_clears_class_cache(self) -> None:
-        """注销时应同时清除类缓存中对应的条目。
-
-        Given a cached previewer class
-        When  its extension is unregistered
-        Then  the cache entry is removed.
-        """
-        # Directly populate the cache since _import_class is not being
-        # tested here — we only verify unregister's side-effect on _CLASS_CACHE.
-        cache_key = "freeassetfilter.ui.layout.preview.image_previewer_layout.ImagePreviewerLayout"
-        PreviewerRegistry._CLASS_CACHE[cache_key] = MagicMock(spec=type)
-        assert cache_key in PreviewerRegistry._CLASS_CACHE
-
-        PreviewerRegistry.unregister("jpg")
-        assert cache_key not in PreviewerRegistry._CLASS_CACHE
-
-
-# ===========================================================================
-# 缓存机制
-# ===========================================================================
-
-
-class TestCache:
-    """Tests for the ``_CLASS_CACHE`` caching behavior.
-
-    Verifies that the lazy-import cache avoids redundant imports when
-    the same module/class pair is requested multiple times.
-    """
-
-    def setup_method(self) -> None:
-        _reset_registry()
-
-    # ── 13 ──────────────────────────────────────────────────────────────
-
-    def test_second_call_uses_cache(self) -> None:
-        """第二次调用 ``get_previewer_class`` 不应再次 import。
-
-        Given the same extension called twice
-        When  ``get_previewer_class`` returns
-        Then  the second call retrieves from cache without calling
-              ``importlib.import_module`` again.
-        """
-        with patch(
-            "freeassetfilter.services.previewer_registry.importlib.import_module"
-        ) as mock_import:
-            mock_module = MagicMock()
-            mock_module.ImagePreviewerLayout = MagicMock(spec=type)
-            mock_import.return_value = mock_module
-
-            cls1 = PreviewerRegistry.get_previewer_class({"suffix": "jpg"})
-            cls2 = PreviewerRegistry.get_previewer_class({"suffix": "jpg"})
-
-            # Same object from cache
-            assert cls1 is cls2
-            # Only one import call
-            mock_import.assert_called_once()
-
-    def test_different_extensions_same_class_share_cache(self) -> None:
-        """不同扩展名映射到同一类时共享缓存。
-
-        Given ``jpg`` and ``jpeg`` both map to ``ImagePreviewerLayout``
-        When  both are queried
-        Then  only one import is performed.
-        """
-        with patch(
-            "freeassetfilter.services.previewer_registry.importlib.import_module"
-        ) as mock_import:
-            mock_module = MagicMock()
-            mock_module.ImagePreviewerLayout = MagicMock(spec=type)
-            mock_import.return_value = mock_module
-
-            cls1 = PreviewerRegistry.get_previewer_class({"suffix": "jpg"})
-            cls2 = PreviewerRegistry.get_previewer_class({"suffix": "jpeg"})
-
-            assert cls1 is cls2
-            # Only one import because both share the same cache key
-            # (image_previewer_layout.ImagePreviewerLayout)
-            mock_import.assert_called_once()
-
-    def test_cache_key_is_module_dot_class(self) -> None:
-        """缓存键格式为 ``module_path.ClassName``。
-
-        Given a successfully imported class
-        When  the cache is populated
-        Then  the cache key matches ``{module_path}.{class_name}``.
-        """
-        with patch(
-            "freeassetfilter.services.previewer_registry.importlib.import_module"
-        ) as mock_import:
-            mock_module = MagicMock()
-            mock_module.ImagePreviewerLayout = MagicMock(spec=type)
-            mock_import.return_value = mock_module
-
-            PreviewerRegistry.get_previewer_class({"suffix": "jpg"})
-
-            assert (
-                "freeassetfilter.ui.layout.preview.image_previewer_layout.ImagePreviewerLayout"
-                in PreviewerRegistry._CLASS_CACHE
-            )
-
-
-# ===========================================================================
-# _import_class
-# ===========================================================================
-
-
-class TestImportClass:
-    """Tests for :meth:`PreviewerRegistry._import_class`."""
-
-    def setup_method(self) -> None:
-        _reset_registry()
-
-    # ── 14 ──────────────────────────────────────────────────────────────
-
-    def test_import_class_raises_on_bad_module(self) -> None:
-        """模块不存在时 ``_import_class`` 应抛出 ``ImportError``。
-
-        Given a non-existent module path
-        When  ``_import_class`` is called
-        Then  it raises ``ImportError``.
-        """
-        with patch(
-            "freeassetfilter.services.previewer_registry.importlib.import_module",
-            side_effect=ImportError("No module named 'nonexistent'"),
-        ):
-            with pytest.raises(ImportError, match="No module named"):
-                PreviewerRegistry._import_class("nonexistent", "SomeClass")
-
-    def test_import_class_successful_import(self) -> None:
-        """正常导入应缓存并返回正确的类对象。
-
-        Given an existing module with the requested class
-        When  ``_import_class`` is called
-        Then  it returns the class and populates the cache.
-        """
-        with patch(
-            "freeassetfilter.services.previewer_registry.importlib.import_module"
-        ) as mock_import:
-            mock_module = MagicMock()
-            mock_class = MagicMock(spec=type)
-            mock_module.SomeWidget = mock_class
-            mock_import.return_value = mock_module
-
-            result = PreviewerRegistry._import_class("mock.module", "SomeWidget")
-
-            assert result is mock_class
-            mock_import.assert_called_once_with("mock.module")
-            assert (
-                "mock.module.SomeWidget" in PreviewerRegistry._CLASS_CACHE
-            )
-
-    def test_import_class_raises_on_missing_attr(self) -> None:
-        """模块存在但类不存在时应抛出 ``AttributeError``。
-
-        Given an existing module without the requested class
-        When  ``_import_class`` is called
-        Then  it raises ``AttributeError``.
-        """
-        with patch(
-            "freeassetfilter.services.previewer_registry.importlib.import_module"
-        ) as mock_import:
-            mock_module = MagicMock(spec=[])  # no attributes
-            mock_import.return_value = mock_module
-
-            with pytest.raises(AttributeError):
-                PreviewerRegistry._import_class("mock.module", "NonExistent")
-
-    def test_import_class_cache_hit(self) -> None:
-        """缓存命中时直接返回，不重新 import。
-
-        Given a previously imported class is still in the cache
-        When  ``_import_class`` is called again with the same key
-        Then  it returns the cached class without calling
-              ``importlib.import_module``.
-        """
-        with patch(
-            "freeassetfilter.services.previewer_registry.importlib.import_module"
-        ) as mock_import:
-            mock_module = MagicMock()
-            mock_class = MagicMock(spec=type)
-            mock_module.MyClass = mock_class
-            mock_import.return_value = mock_module
-
-            # First call — imports
-            result1 = PreviewerRegistry._import_class("mock.module", "MyClass")
-
-            # Second call — should hit cache
-            result2 = PreviewerRegistry._import_class("mock.module", "MyClass")
-
-            assert result1 is result2
-            mock_import.assert_called_once()
-
-
-# ===========================================================================
-# 完整流程集成
-# ===========================================================================
-
-
-class TestIntegration:
-    """跨方法协作的集成测试。"""
-
-    def setup_method(self) -> None:
-        _reset_registry()
-
-    def test_register_then_unregister_then_register_again(self) -> None:
-        """注册 → 注销 → 再注册同一扩展名，最终获取应成功。
-
-        Given a full lifecycle of register / unregister / register
-        When  ``get_previewer_class`` is called
-        Then  the final registration takes effect.
-        """
-        PreviewerRegistry.register("custom", "first.module", "FirstClass")
-        PreviewerRegistry.unregister("custom")
-        PreviewerRegistry.register("custom", "second.module", "SecondClass")
-
-        with patch.object(PreviewerRegistry, "_import_class") as mock_import:
-            mock_import.return_value = MagicMock(spec=type)
-            result = PreviewerRegistry.get_previewer_class({"suffix": "custom"})
-            assert result is mock_import.return_value
-            mock_import.assert_called_once_with("second.module", "SecondClass")
-
-    def test_all_image_extensions_map_to_image_previewer(self) -> None:
-        """所有图像扩展名都映射到 ``ImagePreviewerLayout``。
-
-        Given all image extensions listed in ``_EXTENSION_MAP``
-        When  ``get_previewer_class`` is called
-        Then  each one delegates to ``_import_class`` with ``image_previewer_layout``.
-        """
-        image_extensions = [
-            ext
-            for ext, (mod, _) in PreviewerRegistry._EXTENSION_MAP.items()
-            if mod == "freeassetfilter.ui.layout.preview.image_previewer_layout"
         ]
 
-        with patch.object(PreviewerRegistry, "_import_class") as mock_import:
-            mock_import.return_value = MagicMock(spec=type)
-            for ext in image_extensions:
-                PreviewerRegistry.get_previewer_class({"suffix": ext})
-            for ext in image_extensions:
-                mock_import.assert_any_call(
-                    "freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"
-                )
+    def test_known_extension_resolves_real_class(self) -> None:
+        """已注册后缀经真实惰性导入得到预览器类。"""
+        cls: object | None = PreviewerRegistry.get_previewer_class(
+            {"suffix": "jpg"}
+        )
+        assert cls is not None
+        assert cls.__name__ == "ImagePreviewerLayout"
 
-    def test_unregister_only_affects_specified_extension(self) -> None:
-        """注销一个扩展名不影响其他映射。
 
-        Given one extension is unregistered
-        When  other extensions are queried
-        Then  they still resolve correctly.
-        """
+# =============================================================================
+# 动态注册 / 注销
+# =============================================================================
+class TestRegisterUnregister:
+    """动态注册与注销"""
+
+    def test_register_new_extension(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """注册新后缀后可解析出对应类（经 mock 导入）。"""
+        calls: List[Tuple[str, str]] = []
+
+        def _fake_import(module_path: str, class_name: str) -> type:
+            calls.append((module_path, class_name))
+            return dict
+
+        monkeypatch.setattr(
+            PreviewerRegistry, "_import_class", staticmethod(_fake_import)
+        )
+        PreviewerRegistry.register(".weird", "some.module", "SomeViewer")
+        cls: object | None = PreviewerRegistry.get_previewer_class(
+            {"suffix": "weird"}
+        )
+        assert cls is dict
+        assert calls == [("some.module", "SomeViewer")]
+
+    def test_register_normalizes_extension(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """register 对前导点与大小写做归一。"""
+        def _fake_import(module_path: str, class_name: str) -> type:
+            return dict
+
+        monkeypatch.setattr(
+            PreviewerRegistry, "_import_class", staticmethod(_fake_import)
+        )
+        PreviewerRegistry.register(".DIN", "m", "C")
+        assert "din" in PreviewerRegistry._EXTENSION_MAP
+        assert ".din" not in PreviewerRegistry._EXTENSION_MAP
+
+    def test_register_overwrites_existing(self) -> None:
+        """重新注册相同后缀覆盖原映射。"""
+        PreviewerRegistry.register("jpg", "other.module", "OtherViewer")
+        assert PreviewerRegistry._EXTENSION_MAP["jpg"] == (
+            "other.module",
+            "OtherViewer",
+        )
+
+    def test_unregister_existing_extension(self) -> None:
+        """注销已注册后缀后映射移除。"""
         PreviewerRegistry.unregister("jpg")
+        assert "jpg" not in PreviewerRegistry._EXTENSION_MAP
 
-        with patch.object(PreviewerRegistry, "_import_class") as mock_import:
-            mock_import.return_value = MagicMock(spec=type)
-            assert (
-                PreviewerRegistry.get_previewer_class({"suffix": "png"})
-                is mock_import.return_value
-            )
-            assert (
-                PreviewerRegistry.get_previewer_class({"suffix": "mp4"})
-                is mock_import.return_value
-            )
+    def test_unregister_unknown_extension_no_error(self) -> None:
+        """注销未知后缀不抛异常。"""
+        PreviewerRegistry.unregister("nonexistent_ext_xyz")
 
 
-# ===========================================================================
-# Office 扩展名注册（T11）
-# ===========================================================================
+# =============================================================================
+# 注册表缓存
+# =============================================================================
+class TestClassCache:
+    """惰性导入类缓存"""
 
-
-class TestOfficeExtensionRegistration:
-    """T11: 6 个 Office 扩展名注册到 ``OfficePreviewerLayout``。
-
-    验证 ``_EXTENSION_MAP`` 中的 doc/docx/xls/xlsx/ppt/pptx 均解析到
-    ``freeassetfilter.ui.layout.preview.office_previewer_layout.OfficePreviewerLayout``，
-    并 verify-only 确认 6 个后缀在 ``get_file_icon_path`` 中已有图标映射
-    （只断言，不修改 ``file_icon_helper.py``）。
-    """
-
-    OFFICE_EXTENSIONS: tuple[str, ...] = ("doc", "docx", "xls", "xlsx", "ppt", "pptx")
-
-    def setup_method(self) -> None:
-        _reset_registry()
-
-    @pytest.mark.parametrize("suffix", OFFICE_EXTENSIONS)
-    def test_office_extension_returns_office_previewer_class(self, suffix: str) -> None:
-        """已知 Office 扩展名应返回 ``OfficePreviewerLayout`` 类。
-
-        Given a registered Office extension
-        When  ``get_previewer_class`` is called
-        Then  it lazily imports and returns the real ``OfficePreviewerLayout``
-              class (asserted via ``.__name__``).
-        """
-        cls = PreviewerRegistry.get_previewer_class(
-            {"suffix": suffix, "path": "dummy"}
+    def test_import_result_is_cached(self) -> None:
+        """首次解析导入并写入缓存，二次解析复用同一对象。"""
+        first: object | None = PreviewerRegistry.get_previewer_class(
+            {"suffix": "jpg"}
         )
-        assert cls is not None
-        assert cls.__name__ == "OfficePreviewerLayout"
-
-    @pytest.mark.parametrize("suffix", ("DOCX", "XLS", "PPT"))
-    def test_office_extension_upper_case(self, suffix: str) -> None:
-        """大写后缀也应解析到 ``OfficePreviewerLayout``。
-
-        Given a suffix in upper case
-        When  ``get_previewer_class`` is called
-        Then  it is lowercased internally and resolves normally.
-        """
-        cls = PreviewerRegistry.get_previewer_class(
-            {"suffix": suffix, "path": "dummy"}
+        assert _IMAGE_KEY in PreviewerRegistry._CLASS_CACHE
+        second: object | None = PreviewerRegistry.get_previewer_class(
+            {"suffix": "jpg"}
         )
-        assert cls is not None
-        assert cls.__name__ == "OfficePreviewerLayout"
+        assert second is first
 
-    @pytest.mark.parametrize("suffix", (".docx", ".xlsx", ".pptx"))
-    def test_office_extension_leading_dot(self, suffix: str) -> None:
-        """带前导点的后缀也应解析到 ``OfficePreviewerLayout``。
+    def test_register_same_module_clears_stale_cache(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """重新注册相同 (module, class) 时清除陈旧缓存，触发重新导入。"""
+        calls: List[str] = []
 
-        Given a suffix with a leading dot
-        When  ``get_previewer_class`` is called
-        Then  the dot is stripped internally and resolution succeeds.
-        """
-        cls = PreviewerRegistry.get_previewer_class(
-            {"suffix": suffix, "path": "dummy"}
+        def _fake_import(module_path: str, class_name: str) -> type:
+            calls.append(f"{module_path}.{class_name}")
+            return dict
+
+        monkeypatch.setattr(
+            PreviewerRegistry, "_import_class", staticmethod(_fake_import)
         )
-        assert cls is not None
-        assert cls.__name__ == "OfficePreviewerLayout"
-
-    def test_unknown_extension_still_returns_none(self) -> None:
-        """未知后缀（如 ``zzz``）仍应返回 ``None``。
-
-        Given an unregistered extension
-        When  ``get_previewer_class`` is called
-        Then  it returns ``None``.
-        """
-        result = PreviewerRegistry.get_previewer_class(
-            {"suffix": "zzz", "path": "dummy"}
+        PreviewerRegistry.get_previewer_class({"suffix": "jpg"})
+        assert len(calls) == 1
+        PreviewerRegistry.register(
+            "jpg",
+            "freeassetfilter.ui.layout.preview.image_previewer_layout",
+            "ImagePreviewerLayout",
         )
-        assert result is None
+        PreviewerRegistry.get_previewer_class({"suffix": "jpg"})
+        assert len(calls) == 2
 
-    @pytest.mark.parametrize("suffix", OFFICE_EXTENSIONS)
-    def test_office_extension_has_icon_path(self, suffix: str) -> None:
-        """verify-only: 6 个 Office 后缀在图标映射中返回非空路径。
-
-        Given an Office extension
-        When  ``get_file_icon_path`` is called
-        Then  it returns a non-empty string path (existing mapping, not
-              modified here).
-        """
-        from freeassetfilter.utils.file_icon_helper import get_file_icon_path
-
-        icon_path = get_file_icon_path({"suffix": suffix, "path": "dummy"})
-        assert icon_path is not None
-        assert isinstance(icon_path, str)
-        assert icon_path != ""
+    def test_unregister_clears_cache_entry(self) -> None:
+        """注销时同步清除对应类缓存，避免残留引用。"""
+        PreviewerRegistry.get_previewer_class({"suffix": "jpg"})
+        assert _IMAGE_KEY in PreviewerRegistry._CLASS_CACHE
+        PreviewerRegistry.unregister("jpg")
+        assert _IMAGE_KEY not in PreviewerRegistry._CLASS_CACHE

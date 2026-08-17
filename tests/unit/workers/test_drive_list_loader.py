@@ -1,504 +1,469 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-DriveListLoaderThread 单元测试
+"""``DriveListLoaderThread`` / ``_DriveAvailabilityCheckRunnable`` 单元测试。
 
-测试驱动器列表加载线程的创建、启动、信号发射和盘符可用性检查。
-"""
+覆盖（happy + boundary/error 各至少一条）：
 
+* ``DriveListLoaderThread`` —— **同步调用 ``run()``**（learnings W7：
+  ``QThread.start()`` 的 run 本体在 Qt 原生线程执行，coverage 无法追踪），
+  mock 盘符位掩码（禁止真实枚举整机磁盘）；覆盖 GetLogicalDrives 失败
+  warning、mpr WNetOpenEnumW 失败、完整网络枚举（NETRESOURCE → wstring_at
+  → 去重）、WinDLL 加载失败 debug、外层异常 error、非 Windows 回退 ``['/']``
+* ``_DriveAvailabilityCheckRunnable`` —— 存在目录返回 True、不存在路径
+  返回 False、路径缺失尾分隔符时自动补齐、空目录 StopIteration 分支、
+  OSError/PermissionError 分支、兜底 Exception 分支
+
+线程纪律（AGENTS.md / learnings W7）：信号等待全部经同步直连的断言；
+任何路径都**不启动真实后台线程**（禁止真实盘符/网络扫描）。
+"""
 from __future__ import annotations
 
-from typing import Any
-from unittest.mock import MagicMock, patch
+import ctypes
+import os
+import sys
+from ctypes import wintypes
+from pathlib import Path
+from typing import Any, List, Tuple
 
 import pytest
-from PySide6.QtCore import QThread
-from PySide6.QtTest import QSignalSpy
-from PySide6.QtWidgets import QApplication
+from unittest.mock import patch
 
+from freeassetfilter.core.workers import drive_list_loader as _dl
 from freeassetfilter.core.workers.drive_list_loader import (
+    DriveListLoaderThread,
     _DriveAvailabilityCheckRunnable,
     _DriveAvailabilitySignals,
-    DriveListLoaderThread,
 )
 
-
-# ==============================================================================
-# 辅助工具
-# ==============================================================================
+pytestmark = pytest.mark.unit
 
 
-def _spy_signal_args(signal):
-    """连接一个 slot 到 signal，返回一个列表用于收集发射参数。
+# ---------------------------------------------------------------------------
+# mpr 假 DLL
+# ---------------------------------------------------------------------------
+class _FakeMpr:
+    """``ctypes.WinDLL('mpr')`` 替身：枚举立即失败，避免真实网络扫描。"""
 
-    PySide6 的 QSignalSpy 在某些版本不支持索引访问，
-    因此使用此辅助函数替代 spy[0] 来获取参数。
-    """
-    args_list = []
+    def WNetOpenEnumW(self, *_args: Any, **_kwargs: Any) -> int:
+        """返回非零错误码以跳过网络位置枚举。"""
+        return 58  # ERROR_BAD_NET_RESP —— 挂起 if 分支
 
-    def _collect(*args):
-        args_list.append(args)
-
-    signal.connect(_collect)
-    return args_list
-
-
-# ==============================================================================
-# DriveListLoaderThread — 创建 & 基本属性
-# ==============================================================================
+    def WNetCloseEnum(self, *_args: Any, **_kwargs: Any) -> int:
+        """空实现。"""
+        return 0
 
 
-class TestDriveListLoaderThreadCreation:
-    """测试 DriveListLoaderThread 的创建和基本属性。"""
+class _NetResource(ctypes.Structure):
+    """与 run() 内 NETRESOURCE 对齐的 ctypes 结构（写入假枚举缓冲区用）。"""
 
-    def test_creation(self, qapp) -> None:
-        """Given 无参数
-        When 创建 DriveListLoaderThread 实例
-        Then 实例创建成功且 loaded 信号存在。
-        """
-        thread = DriveListLoaderThread()
-        assert thread is not None
-        assert hasattr(thread, "loaded")
-        thread.quit()
-        thread.wait(1000)
-
-    def test_is_qthread_subclass(self, qapp) -> None:
-        """Given DriveListLoaderThread 类
-        Then 它是 QThread 的子类。
-        """
-        assert issubclass(DriveListLoaderThread, QThread)
+    _fields_ = [
+        ("dwScope", wintypes.DWORD),
+        ("dwType", wintypes.DWORD),
+        ("dwDisplayType", wintypes.DWORD),
+        ("dwUsage", wintypes.DWORD),
+        ("lpLocalName", ctypes.c_wchar_p),
+        ("lpRemoteName", ctypes.c_wchar_p),
+        ("lpComment", ctypes.c_wchar_p),
+        ("lpProvider", ctypes.c_wchar_p),
+    ]
 
 
-# ==============================================================================
-# DriveListLoaderThread — run() 信号发射
-# ==============================================================================
+class _FakeMprEnum:
+    """成功枚举一次网络位置：第一次返回 0 并写一个 NETRESOURCE，第二次返回非零。"""
 
+    def __init__(self) -> None:
+        self._calls: int = 0
+        self.closed: int = 0
+        # 结构体引用必须存活到 run() 读取指针时（c_wchar_p 指向的缓冲驻留于此）。
+        self._struct = _NetResource(
+            wintypes.DWORD(1),
+            wintypes.DWORD(0),
+            wintypes.DWORD(0),
+            wintypes.DWORD(0),
+            ctypes.c_wchar_p("Z:"),  # lpLocalName —— 追加到本地盘符
+            ctypes.c_wchar_p(r"\\server\share"),  # lpRemoteName —— 追加到网络位置
+            None,
+            None,
+        )
 
-class TestDriveListLoaderThreadRun:
-    """测试 DriveListLoaderThread.run() 的信号发射逻辑。
+    def WNetOpenEnumW(self, *_args: Any, **_kwargs: Any) -> int:
+        """返回 0，进入枚举块。"""
+        return 0
 
-    通过 mock Windows API 来控制 GetLogicalDrives 和 WNetOpenEnumW 的返回值，
-    验证 loaded 信号在不同场景下按预期发射。
-    """
+    def WNetEnumResourceW(self, _h: Any, count: Any, buf: Any, buf_size: Any) -> int:
+        """第一次写 NETRESOURCE 到 buf 并置 count=1；此后返回非零结束循环。
 
-    # -- 工具方法 -----------------------------------------------------------
-
-    @staticmethod
-    def _run_thread_and_collect(
-        thread: DriveListLoaderThread,
-    ) -> tuple[list[str], list[str]]:
-        """启动线程，等待完成，处理事件队列，返回 loaded 信号参数。
+        Args:
+            _h: 枚举句柄（忽略）。
+            count: ``byref`` 指向的 DWORD（CArgObject，经 cast 写入）。
+            buf: ``create_string_buffer``（字符数组，memmove 写入）。
+            buf_size: ``byref`` 指向的 DWORD 缓冲区大小（CArgObject）。
 
         Returns:
-            (local_drives, network_locations)
+            int: 0 表示继续，非零表示枚举结束。
         """
-        spy = QSignalSpy(thread.loaded)
-        args = _spy_signal_args(thread.loaded)
-        thread.start()
-        assert thread.wait(5000), "Thread did not finish within 5s"
-        # 跨线程信号是 QueuedConnection，需要处理事件队列
-        QApplication.processEvents()
-        assert spy.count() >= 1, "loaded 信号应至少发射一次"
-        local_drives, network_locations = args[0]
-        return local_drives, network_locations
+        self._calls += 1
+        if self._calls == 1:
+            # CArgObject（byref 产物）无 .contents —— 须 cast 成指针再写值。
+            ctypes.cast(count, ctypes.POINTER(ctypes.c_ulong)).contents.value = 1
+            ctypes.cast(buf_size, ctypes.POINTER(ctypes.c_ulong)).contents.value = (
+                ctypes.sizeof(_NetResource)
+            )
+            ctypes.memmove(buf, ctypes.byref(self._struct), ctypes.sizeof(_NetResource))
+            return 0
+        return 1  # 非零 → while 中 break
 
-    # -- Windows 正常路径 ---------------------------------------------------
+    def WNetCloseEnum(self, _h: Any) -> int:
+        """记录关闭次数。"""
+        self.closed += 1
+        return 0
 
-    @patch("freeassetfilter.core.workers.drive_list_loader.sys.platform", "win32")
-    @patch(
-        "freeassetfilter.core.workers.drive_list_loader."
-        "ctypes.windll.kernel32.GetLogicalDrives"
-    )
-    @patch("freeassetfilter.core.workers.drive_list_loader.ctypes.WinDLL")
-    def test_emits_loaded_with_specific_drives(
-        self, mock_windll: MagicMock, mock_get_drives: MagicMock, qapp
-    ) -> None:
-        """Given GetLogicalDrives 返回 C+E 盘（位掩码 0x0014）
-        When run() 执行完毕
-        Then loaded 信号发射，携带 ["C:", "E:"] 和 []。
-        """
-        mock_get_drives.return_value = 0x0014  # bits 2 (C) and 4 (E)
-        mock_mpr = MagicMock()
-        mock_mpr.WNetOpenEnumW.return_value = 1  # 非 0 = 枚举失败
-        mock_windll.return_value = mock_mpr
 
+# ---------------------------------------------------------------------------
+# DriveListLoaderThread —— 同步 run()
+# ---------------------------------------------------------------------------
+def test_drive_list_loader_emits_mocked_drives(qapp: Any) -> None:
+    """happy：mock GetLogicalDrives 后 loaded 信号携带排序去重盘符列表。
+
+    test_manual: ``patch('ctypes.windll.kernel32.GetLogicalDrives')`` 制造
+    位掩码 ``0b101``（A、C 盘），mock ``ctypes.WinDLL`` 为 ``_FakeMpr``
+    （WNetOpenEnumW 返回 58 跳过网络枚举），``thread.run()`` 同步执行后
+    loaded 为 ``(['A:', 'C:'], [])``。
+
+    Args:
+        qapp: session QApplication。
+    """
+    if sys.platform != "win32":
+        pytest.skip("仅 Windows 支持 ctypes.windll 盘符枚举")
+
+    received: List[Tuple[List[str], List[str]]] = []
+    with patch(
+        "ctypes.windll.kernel32.GetLogicalDrives", return_value=0b101
+    ), patch("ctypes.WinDLL", side_effect=lambda _n: _FakeMpr()):
         thread = DriveListLoaderThread()
-        local_drives, network_locations = self._run_thread_and_collect(thread)
+        thread.loaded.connect(lambda drives, nets: received.append((drives, nets)))
+        thread.run()
 
-        assert local_drives == ["C:", "E:"]
-        assert network_locations == []
+    assert received, "loaded 未发出"
+    local_drives: List[str] = received[0][0]
+    assert local_drives == ["A:", "C:"]
+    # 网络位置列表 mock 场景下为空
+    assert received[0][1] == []
 
-    @patch("freeassetfilter.core.workers.drive_list_loader.sys.platform", "win32")
-    @patch(
-        "freeassetfilter.core.workers.drive_list_loader."
-        "ctypes.windll.kernel32.GetLogicalDrives"
-    )
-    @patch("freeassetfilter.core.workers.drive_list_loader.ctypes.WinDLL")
-    def test_emits_loaded_with_all_drives(
-        self, mock_windll: MagicMock, mock_get_drives: MagicMock, qapp
-    ) -> None:
-        """Given 所有 26 个盘符都存在（位掩码 0x03FFFFFF）
-        When run() 执行完毕
-        Then loaded 信号包含全部 A:-Z: 盘符。
-        """
-        mock_get_drives.return_value = 0x03FFFFFF  # 全部 26 位
-        mock_mpr = MagicMock()
-        mock_mpr.WNetOpenEnumW.return_value = 1
-        mock_windll.return_value = mock_mpr
 
+def test_drive_list_loader_deduplicates_and_sorts(qapp: Any) -> None:
+    """boundary：盘符结果排序 + 去重后经 loaded 发出。
+
+    test_manual: 位掩码 0b1110（B、C、D 盘）断言排序结果。
+
+    Args:
+        qapp: session QApplication。
+    """
+    if sys.platform != "win32":
+        pytest.skip("仅 Windows 支持 ctypes.windll 盘符枚举")
+
+    received: List[Tuple[List[str], List[str]]] = []
+    # 0b1110 = B、C、D 盘
+    with patch(
+        "ctypes.windll.kernel32.GetLogicalDrives", return_value=0b1110
+    ), patch("ctypes.WinDLL", side_effect=lambda _n: _FakeMpr()):
         thread = DriveListLoaderThread()
-        local_drives, _ = self._run_thread_and_collect(thread)
+        thread.loaded.connect(lambda drives, nets: received.append((drives, nets)))
+        thread.run()
 
-        assert len(local_drives) == 26
-        assert local_drives == [chr(65 + i) + ":" for i in range(26)]
+    assert received[0][0] == ["B:", "C:", "D:"]
 
-    # -- Windows 异常路径 ---------------------------------------------------
 
-    @patch("freeassetfilter.core.workers.drive_list_loader.sys.platform", "win32")
-    @patch(
-        "freeassetfilter.core.workers.drive_list_loader."
-        "ctypes.windll.kernel32.GetLogicalDrives"
-    )
-    @patch("freeassetfilter.core.workers.drive_list_loader.ctypes.WinDLL")
-    def test_get_logical_drives_failure_emits_empty(
-        self, mock_windll: MagicMock, mock_get_drives: MagicMock, qapp
-    ) -> None:
-        """Given GetLogicalDrives() 抛出异常
-        When run() 执行完毕
-        Then loaded 信号携带空 local_drives（静默失败）。
-        """
-        mock_get_drives.side_effect = OSError("API fail")
-        mock_mpr = MagicMock()
-        mock_mpr.WNetOpenEnumW.return_value = 1
-        mock_windll.return_value = mock_mpr
+def test_drive_list_loader_emits_root_on_non_win32(qapp: Any, monkeypatch: Any) -> None:
+    """boundary：非 win32 平台回退为根目录 ['/']。
 
+    test_manual: monkeypatch sys.platform='linux'，断言 loaded=['/']。
+
+    Args:
+        qapp: session QApplication。
+        monkeypatch: pytest monkeypatch fixture。
+    """
+    received: List[Tuple[List[str], List[str]]] = []
+    if sys.platform == "win32":
+        monkeypatch.setattr(sys, "platform", "linux")
+    thread = DriveListLoaderThread()
+    thread.loaded.connect(lambda drives, nets: received.append((drives, nets)))
+    thread.run()
+    assert received[0][0] == ["/"]
+
+
+def test_drive_list_loader_warns_when_getlogicaldrives_fails(
+    qapp: Any, monkeypatch: Any
+) -> None:
+    """error：GetLogicalDrives 抛异常 → warning 分支，仍以空列表 emit。
+
+    test_manual: patch GetLogicalDrives side_effect=OSError + WinDLL 假 DLL，
+    断言 warning 被调用、loaded 发出空盘符/空网络列表。
+
+    Args:
+        qapp: session QApplication。
+        monkeypatch: pytest monkeypatch fixture。
+    """
+    if sys.platform != "win32":
+        pytest.skip("仅 Windows 支持 ctypes.windll 盘符枚举")
+
+    warnings: List[str] = []
+    monkeypatch.setattr(_dl, "warning", lambda msg: warnings.append(str(msg)))
+    received: List[Tuple[List[str], List[str]]] = []
+    with patch(
+        "ctypes.windll.kernel32.GetLogicalDrives", side_effect=OSError("no api")
+    ), patch("ctypes.WinDLL", side_effect=lambda _n: _FakeMpr()):
         thread = DriveListLoaderThread()
-        local_drives, _ = self._run_thread_and_collect(thread)
+        thread.loaded.connect(lambda drives, nets: received.append((drives, nets)))
+        thread.run()
 
-        assert local_drives == []
+    assert warnings and "失败" in warnings[0]
+    assert received[0] == ([], [])
 
-    @patch("freeassetfilter.core.workers.drive_list_loader.sys.platform", "win32")
-    @patch(
-        "freeassetfilter.core.workers.drive_list_loader."
-        "ctypes.windll.kernel32.GetLogicalDrives"
-    )
-    def test_mpr_load_failure_still_emits_local_drives(
-        self, mock_get_drives: MagicMock, qapp
-    ) -> None:
-        """Given mpr.dll 加载失败
-        When run() 执行完毕
-        Then loaded 信号仍携带本地盘符，network_locations 为空。
-        """
-        mock_get_drives.return_value = 0x0054  # bits 2,4,6 → C:, E:, G:
 
-        with patch(
-            "freeassetfilter.core.workers.drive_list_loader.ctypes.WinDLL",
-            side_effect=OSError("找不到 mpr.dll"),
-        ):
-            thread = DriveListLoaderThread()
-            local_drives, network_locations = self._run_thread_and_collect(thread)
+def test_drive_list_loader_enumerates_network_locations(qapp: Any) -> None:
+    """happy：WNetOpenEnumW 成功 + 枚举一个 NETRESOURCE → 本地/网络都入列。
 
-        assert local_drives == ["C:", "E:", "G:"]
-        assert network_locations == []
+    使用 ``_FakeMprEnum``：GetLogicalDrives=0b101 得 A/C 盘；枚举的
+    lpLocalName="Z:" 追加本地盘符、lpRemoteName="\\\\server\\share" 追加
+    网络位置；断言去重排序后 loaded 输出。
 
-    # -- 非 Windows 路径 ----------------------------------------------------
+    Args:
+        qapp: session QApplication。
+    """
+    if sys.platform != "win32":
+        pytest.skip("仅 Windows 支持 ctypes.windll 盘符枚举")
 
-    @patch("freeassetfilter.core.workers.drive_list_loader.sys", spec=object)
-    def test_non_windows_emits_root(
-        self, mock_sys: Any, qapp
-    ) -> None:
-        """Given 非 Windows 平台（sys.platform == "linux"）
-        When run() 执行完毕
-        Then loaded 携带 ["/"] 和 []。
-        """
-        mock_sys.platform = "linux"
-
+    fake_mpr = _FakeMprEnum()
+    received: List[Tuple[List[str], List[str]]] = []
+    with patch(
+        "ctypes.windll.kernel32.GetLogicalDrives", return_value=0b101
+    ), patch("ctypes.WinDLL", side_effect=lambda _n: fake_mpr):
         thread = DriveListLoaderThread()
-        local_drives, network_locations = self._run_thread_and_collect(thread)
+        thread.loaded.connect(lambda drives, nets: received.append((drives, nets)))
+        thread.run()
 
-        assert local_drives == ["/"]
-        assert network_locations == []
+    assert received[0][0] == ["A:", "C:", "Z:"]
+    assert received[0][1] == [r"\\server\share"]
+    assert fake_mpr.closed == 1  # 枚举结束 finally 里关闭句柄
 
-    # -- 信号发射次数验证 ---------------------------------------------------
 
-    @patch("freeassetfilter.core.workers.drive_list_loader.sys.platform", "win32")
-    @patch(
-        "freeassetfilter.core.workers.drive_list_loader."
-        "ctypes.windll.kernel32.GetLogicalDrives"
-    )
-    @patch("freeassetfilter.core.workers.drive_list_loader.ctypes.WinDLL")
-    def test_loaded_emitted_exactly_once(
-        self, mock_windll: MagicMock, mock_get_drives: MagicMock, qapp
-    ) -> None:
-        """Given 正常 Windows 环境
-        When run() 执行完毕
-        Then loaded 信号恰好发射一次。
-        """
-        mock_get_drives.return_value = 0x0004
-        mock_mpr = MagicMock()
-        mock_mpr.WNetOpenEnumW.return_value = 1
-        mock_windll.return_value = mock_mpr
+def test_drive_list_loader_debug_when_windll_fails(qapp: Any, monkeypatch: Any) -> None:
+    """error：WinDLL('mpr') 加载失败 → debug 分支，保留本地盘符列表。
 
+    test_manual: patch ctypes.WinDLL side_effect=OSError，断言 debug 被调用
+    且 loaded 仍发出本地盘符。
+
+    Args:
+        qapp: session QApplication。
+        monkeypatch: pytest monkeypatch fixture。
+    """
+    if sys.platform != "win32":
+        pytest.skip("仅 Windows 支持 ctypes.windll 盘符枚举")
+
+    debug_msgs: List[str] = []
+    monkeypatch.setattr(_dl, "debug", lambda msg: debug_msgs.append(str(msg)))
+    received: List[Tuple[List[str], List[str]]] = []
+    with patch(
+        "ctypes.windll.kernel32.GetLogicalDrives", return_value=0b101
+    ), patch("ctypes.WinDLL", side_effect=OSError("mpr missing")):
         thread = DriveListLoaderThread()
-        spy = QSignalSpy(thread.loaded)
-        thread.start()
-        assert thread.wait(5000)
-        QApplication.processEvents()
+        thread.loaded.connect(lambda drives, nets: received.append((drives, nets)))
+        thread.run()
 
-        assert spy.count() == 1
+    assert debug_msgs and "网络位置失败" in debug_msgs[0]
+    assert received[0][0] == ["A:", "C:"]
+    assert received[0][1] == []
 
-    @patch("freeassetfilter.core.workers.drive_list_loader.sys.platform", "win32")
-    @patch(
-        "freeassetfilter.core.workers.drive_list_loader."
-        "ctypes.windll.kernel32.GetLogicalDrives"
-    )
-    @patch("freeassetfilter.core.workers.drive_list_loader.ctypes.WinDLL")
-    def test_at_least_one_drive_is_listed(
-        self, mock_windll: MagicMock, mock_get_drives: MagicMock, qapp
-    ) -> None:
-        """Given Windows 环境有至少一个盘符（C:）
-        When run() 执行完毕
-        Then local_drives 至少包含一个盘符。
-        """
-        mock_get_drives.return_value = 0x0004  # C:
-        mock_mpr = MagicMock()
-        mock_mpr.WNetOpenEnumW.return_value = 1
-        mock_windll.return_value = mock_mpr
 
+def test_drive_list_loader_run_outer_exception_logs_error(
+    qapp: Any, monkeypatch: Any
+) -> None:
+    """error：run() 外层兜底 except → error 分支（排序阶段触发）。
+
+    test_manual: monkeypatch builtins.sorted 抛 RuntimeError（run 的
+    ``sorted(set(...))`` 在内外层 try 之间，属外层兜底范围），断言模块级
+    ``error`` 被调用且含"异常"字样。
+
+    Args:
+        qapp: session QApplication。
+        monkeypatch: pytest monkeypatch fixture。
+    """
+    if sys.platform != "win32":
+        pytest.skip("仅 Windows 支持 ctypes.windll 盘符枚举")
+
+    error_msgs: List[str] = []
+    monkeypatch.setattr(_dl, "error", lambda msg: error_msgs.append(str(msg)))
+
+    def _boom(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("模拟排序失败")
+
+    monkeypatch.setattr("builtins.sorted", _boom)
+    with patch(
+        "ctypes.windll.kernel32.GetLogicalDrives", return_value=0b101
+    ), patch("ctypes.WinDLL", side_effect=lambda _n: _FakeMpr()):
         thread = DriveListLoaderThread()
-        local_drives, _ = self._run_thread_and_collect(thread)
+        # 不连接 collected —— run() 在 sorted 处抛错，绝不走到 emit。
+        thread.run()
 
-        assert len(local_drives) >= 1
+    assert error_msgs and "异常" in error_msgs[0]
 
-    # -- 全零位掩码 ---------------------------------------------------------
 
-    @patch("freeassetfilter.core.workers.drive_list_loader.sys.platform", "win32")
-    @patch(
-        "freeassetfilter.core.workers.drive_list_loader."
-        "ctypes.windll.kernel32.GetLogicalDrives"
+# ---------------------------------------------------------------------------
+# _DriveAvailabilityCheckRunnable —— 全部分支
+# ---------------------------------------------------------------------------
+def test_availability_runnable_true_for_existing_dir(tmp_path: Path) -> None:
+    """happy：存在的目录经 _DriveAvailabilityCheckRunnable 判定可用。
+
+    Args:
+        tmp_path: 临时目录。
+    """
+    signals: _DriveAvailabilitySignals = _DriveAvailabilitySignals()
+    results: List[Tuple[str, bool]] = []
+
+    def _on_finished(drive_path: str, available: bool) -> None:
+        results.append((drive_path, available))
+
+    signals.finished.connect(_on_finished)
+    runnable: _DriveAvailabilityCheckRunnable = _DriveAvailabilityCheckRunnable(
+        str(tmp_path), signals
     )
-    @patch("freeassetfilter.core.workers.drive_list_loader.ctypes.WinDLL")
-    def test_no_drives_at_all(
-        self, mock_windll: MagicMock, mock_get_drives: MagicMock, qapp
-    ) -> None:
-        """Given 没有任何盘符或网络位置
-        When run() 执行完毕
-        Then loaded 信号携带空列表和空列表。
-        """
-        mock_get_drives.return_value = 0x00000000  # 没有盘符
-        mock_mpr = MagicMock()
-        mock_mpr.WNetOpenEnumW.return_value = 1
-        mock_windll.return_value = mock_mpr
-
-        thread = DriveListLoaderThread()
-        spy = QSignalSpy(thread.loaded)
-        args = _spy_signal_args(thread.loaded)
-        thread.start()
-        assert thread.wait(5000)
-        QApplication.processEvents()
-
-        assert spy.count() == 1
-        local_drives, network_locations = args[0]
-        assert local_drives == []
-        assert network_locations == []
+    runnable.run()
+    assert results == [(str(tmp_path), True)]
 
 
-# ==============================================================================
-# _DriveAvailabilityCheckRunnable
-# ==============================================================================
+def test_availability_runnable_false_for_missing_path(tmp_path: Path) -> None:
+    """error：不存在的路径经 _DriveAvailabilityCheckRunnable 判定不可用。
+
+    Args:
+        tmp_path: 临时目录。
+    """
+    missing: Path = tmp_path / "nope"
+    signals: _DriveAvailabilitySignals = _DriveAvailabilitySignals()
+    results: List[Tuple[str, bool]] = []
+
+    def _on_finished(drive_path: str, available: bool) -> None:
+        results.append((drive_path, available))
+
+    signals.finished.connect(_on_finished)
+    runnable: _DriveAvailabilityCheckRunnable = _DriveAvailabilityCheckRunnable(
+        str(missing), signals
+    )
+    runnable.run()
+    assert results == [(str(missing), False)]
 
 
-class TestDriveAvailabilityCheckRunnableCreation:
-    """测试 _DriveAvailabilityCheckRunnable 的创建。"""
+def test_availability_runnable_appends_separator(tmp_path: Path) -> None:
+    """boundary：缺少尾分隔符的路径被自动补齐后再检查。
 
-    def test_creation(self, qapp) -> None:
-        """Given 盘符路径和 signals 对象
-        When 创建 _DriveAvailabilityCheckRunnable 实例
-        Then 实例创建成功，属性正确。
-        """
-        signals = _DriveAvailabilitySignals()
-        runnable = _DriveAvailabilityCheckRunnable("C:", signals)
-        assert runnable is not None
-        assert runnable._drive_path == "C:"
-        assert runnable._signals is signals
+    Args:
+        tmp_path: 临时目录。
+    """
+    signals: _DriveAvailabilitySignals = _DriveAvailabilitySignals()
+    results: List[Tuple[str, bool]] = []
 
-    def test_signals_object_has_finished(self, qapp) -> None:
-        """Given _DriveAvailabilitySignals 实例
-        Then finished 信号存在。
-        """
-        signals = _DriveAvailabilitySignals()
-        assert hasattr(signals, "finished")
+    def _on_finished(drive_path: str, available: bool) -> None:
+        results.append((drive_path, available))
+
+    signals.finished.connect(_on_finished)
+    # 不带尾分隔符的目录路径（Windows 风格反斜杠由 os.path.exists 兼容）
+    no_trailing: str = str(tmp_path).rstrip("\\/")
+    runnable: _DriveAvailabilityCheckRunnable = _DriveAvailabilityCheckRunnable(
+        no_trailing, signals
+    )
+    runnable.run()
+    assert results[0][0] == no_trailing
+    assert results[0][1] is True
 
 
-class TestDriveAvailabilityCheckRunnableRun:
-    """测试 _DriveAvailabilityCheckRunnable.run() 的盘符可用性检查逻辑。"""
+def test_availability_runnable_stop_iteration_on_empty_dir(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """boundary：scandir 抛 StopIteration（空/瞬时目录）→ 仍判定可用。
 
-    @staticmethod
-    def _run_runnable_and_collect(
-        runnable: _DriveAvailabilityCheckRunnable,
-        signals: _DriveAvailabilitySignals,
-    ) -> tuple[str, bool]:
-        """执行 runnable.run() 并收集 finished 信号参数。
+    test_manual: monkeypatch os.scandir 抛 StopIteration 触发 except 分支。
 
-        Returns:
-            (drive_path, available)
-        """
-        spy = QSignalSpy(signals.finished)
-        args = _spy_signal_args(signals.finished)
-        runnable.run()
-        # 同线程信号是 DirectConnection，无需 processEvents
-        assert spy.count() == 1
-        return args[0]
+    Args:
+        tmp_path: 临时目录。
+        monkeypatch: pytest monkeypatch fixture。
+    """
+    signals: _DriveAvailabilitySignals = _DriveAvailabilitySignals()
+    results: List[Tuple[str, bool]] = []
 
-    @patch("os.path.exists")
-    @patch("os.scandir")
-    def test_drive_available_with_files(
-        self, mock_scandir: MagicMock, mock_exists: MagicMock, qapp
-    ) -> None:
-        """Given 盘符存在且有文件条目
-        When run() 执行
-        Then finished 信号携带 (drive_path, True)。
-        """
-        mock_exists.return_value = True
-        mock_scandir.return_value.__enter__.return_value = iter([MagicMock()])
+    def _on_finished(drive_path: str, available: bool) -> None:
+        results.append((drive_path, available))
 
-        signals = _DriveAvailabilitySignals()
-        runnable = _DriveAvailabilityCheckRunnable("D:", signals)
-        drive_path, available = self._run_runnable_and_collect(runnable, signals)
+    signals.finished.connect(_on_finished)
+    monkeypatch.setattr(os.path, "exists", lambda _p: True)
 
-        assert drive_path == "D:"
-        assert available is True
-        mock_exists.assert_called_with("D:\\")
-        mock_scandir.assert_called_with("D:\\")
+    def _empty_scan(_p: str) -> Any:
+        """os.scandir 直接抛 StopIteration（模拟空/瞬时目录）。"""
+        raise StopIteration()
 
-    @patch("os.path.exists")
-    @patch("os.scandir")
-    def test_drive_available_empty_directory(
-        self, mock_scandir: MagicMock, mock_exists: MagicMock, qapp
-    ) -> None:
-        """Given 盘符存在但为空目录（next(it, None) 返回 None）
-        When run() 执行
-        Then finished 信号携带 (drive_path, True)。
-        """
-        mock_exists.return_value = True
-        mock_scandir.return_value.__enter__.return_value = iter([])
+    monkeypatch.setattr(os, "scandir", _empty_scan)
+    runnable: _DriveAvailabilityCheckRunnable = _DriveAvailabilityCheckRunnable(
+        str(tmp_path), signals
+    )
+    runnable.run()
+    assert results == [(str(tmp_path), True)]
 
-        signals = _DriveAvailabilitySignals()
-        runnable = _DriveAvailabilityCheckRunnable("D:", signals)
-        _, available = self._run_runnable_and_collect(runnable, signals)
 
-        assert available is True
+def test_availability_runnable_false_on_permission_error(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """error：scandir 抛 PermissionError → 判定不可用。
 
-    @patch("os.path.exists")
-    def test_drive_not_exists(
-        self, mock_exists: MagicMock, qapp
-    ) -> None:
-        """Given 盘符路径不存在
-        When run() 执行
-        Then finished 信号携带 (drive_path, False)。
-        """
-        mock_exists.return_value = False
+    test_manual: monkeypatch os.scandir 抛 PermissionError，断言 False。
 
-        signals = _DriveAvailabilitySignals()
-        runnable = _DriveAvailabilityCheckRunnable("X:", signals)
-        drive_path, available = self._run_runnable_and_collect(runnable, signals)
+    Args:
+        tmp_path: 临时目录。
+        monkeypatch: pytest monkeypatch fixture。
+    """
+    signals: _DriveAvailabilitySignals = _DriveAvailabilitySignals()
+    results: List[Tuple[str, bool]] = []
 
-        assert drive_path == "X:"
-        assert available is False
+    def _on_finished(drive_path: str, available: bool) -> None:
+        results.append((drive_path, available))
 
-    @patch("os.path.exists")
-    @patch("os.scandir")
-    def test_drive_unavailable_os_error(
-        self, mock_scandir: MagicMock, mock_exists: MagicMock, qapp
-    ) -> None:
-        """Given os.scandir 抛出 OSError（如设备未就绪）
-        When run() 执行
-        Then finished 信号携带 (drive_path, False)。
-        """
-        mock_exists.return_value = True
-        mock_scandir.return_value.__enter__.side_effect = OSError("设备未就绪")
+    signals.finished.connect(_on_finished)
+    monkeypatch.setattr(os.path, "exists", lambda _p: True)
 
-        signals = _DriveAvailabilitySignals()
-        runnable = _DriveAvailabilityCheckRunnable("A:", signals)
-        _, available = self._run_runnable_and_collect(runnable, signals)
+    def _deny(_p: str) -> Any:
+        raise PermissionError("拒绝访问")
 
-        assert available is False
+    monkeypatch.setattr(os, "scandir", _deny)
+    runnable: _DriveAvailabilityCheckRunnable = _DriveAvailabilityCheckRunnable(
+        str(tmp_path), signals
+    )
+    runnable.run()
+    assert results == [(str(tmp_path), False)]
 
-    @patch("os.path.exists")
-    @patch("os.scandir")
-    def test_drive_unavailable_permission_error(
-        self, mock_scandir: MagicMock, mock_exists: MagicMock, qapp
-    ) -> None:
-        """Given os.scandir 抛出 PermissionError（如访问被拒绝）
-        When run() 执行
-        Then finished 信号携带 (drive_path, False)。
-        """
-        mock_exists.return_value = True
-        mock_scandir.return_value.__enter__.side_effect = PermissionError("访问被拒绝")
 
-        signals = _DriveAvailabilitySignals()
-        runnable = _DriveAvailabilityCheckRunnable("R:", signals)
-        _, available = self._run_runnable_and_collect(runnable, signals)
+def test_availability_runnable_false_on_generic_exception(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """error：scandir 抛兜底 Exception → 判定不可用。
 
-        assert available is False
+    test_manual: monkeypatch os.scandir 抛 RuntimeError，断言 False。
 
-    @patch("os.path.exists")
-    @patch("os.scandir")
-    def test_drive_with_trailing_slash(
-        self, mock_scandir: MagicMock, mock_exists: MagicMock, qapp
-    ) -> None:
-        """Given 盘符路径以反斜杠结尾
-        When run() 执行
-        Then 路径不额外追加反斜杠，检查仍然成功。
-        """
-        mock_exists.return_value = True
-        mock_scandir.return_value.__enter__.return_value = iter([MagicMock()])
+    Args:
+        tmp_path: 临时目录。
+        monkeypatch: pytest monkeypatch fixture。
+    """
+    signals: _DriveAvailabilitySignals = _DriveAvailabilitySignals()
+    results: List[Tuple[str, bool]] = []
 
-        signals = _DriveAvailabilitySignals()
-        runnable = _DriveAvailabilityCheckRunnable("E:\\", signals)
-        drive_path, available = self._run_runnable_and_collect(runnable, signals)
+    def _on_finished(drive_path: str, available: bool) -> None:
+        results.append((drive_path, available))
 
-        assert drive_path == "E:\\"
-        assert available is True
-        mock_exists.assert_called_with("E:\\")
-        mock_scandir.assert_called_with("E:\\")
+    signals.finished.connect(_on_finished)
+    monkeypatch.setattr(os.path, "exists", lambda _p: True)
 
-    @patch("os.path.exists")
-    @patch("os.scandir")
-    def test_drive_with_forward_slash(
-        self, mock_scandir: MagicMock, mock_exists: MagicMock, qapp
-    ) -> None:
-        """Given 盘符路径以正斜杠结尾
-        When run() 执行
-        Then 路径不被追加斜杠。
-        """
-        mock_exists.return_value = True
-        mock_scandir.return_value.__enter__.return_value = iter([MagicMock()])
+    def _boom(_p: str) -> Any:
+        raise RuntimeError("意外错误")
 
-        signals = _DriveAvailabilitySignals()
-        runnable = _DriveAvailabilityCheckRunnable("F:/", signals)
-        _, available = self._run_runnable_and_collect(runnable, signals)
-
-        assert available is True
-        mock_exists.assert_called_with("F:/")
-        mock_scandir.assert_called_with("F:/")
-
-    @patch("os.path.exists")
-    @patch("os.scandir")
-    def test_drive_with_neither_slash(
-        self, mock_scandir: MagicMock, mock_exists: MagicMock, qapp
-    ) -> None:
-        """Given 盘符路径结尾没有斜杠
-        When run() 执行
-        Then 路径自动追加反斜杠。
-        """
-        mock_exists.return_value = True
-        mock_scandir.return_value.__enter__.return_value = iter([MagicMock()])
-
-        signals = _DriveAvailabilitySignals()
-        runnable = _DriveAvailabilityCheckRunnable("G:", signals)
-        _, available = self._run_runnable_and_collect(runnable, signals)
-
-        assert available is True
-        mock_exists.assert_called_with("G:\\")
-        mock_scandir.assert_called_with("G:\\")
+    monkeypatch.setattr(os, "scandir", _boom)
+    runnable: _DriveAvailabilityCheckRunnable = _DriveAvailabilityCheckRunnable(
+        str(tmp_path), signals
+    )
+    runnable.run()
+    assert results == [(str(tmp_path), False)]

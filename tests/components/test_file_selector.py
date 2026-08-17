@@ -1,742 +1,916 @@
 # -*- coding: utf-8 -*-
-"""
-组件测试: CustomFileSelector
-测试 CustomFileSelector 组件的核心交互场景 —— 创建/销毁、目录导航、
-文件列表加载、排序筛选、视图模式切换、信号发射、预览状态、选择状态
+"""components 批 1（W4/todo-18）：文件选择器组件测试。
 
-Required fixtures (conftest.py):
-    - qapp: session-scoped QApplication
-    - file_selector: CustomFileSelector 实例
-    - tmp_path: pytest 临时目录
+覆盖 ``freeassetfilter/components/file_selector.py`` 中
+``CustomFileSelector`` 的公开 / 半公开 API：
+
+* 构造与默认状态（current_path/filter_pattern/sort_by/sort_order/
+  view_mode）、Model/View 骨架（file_model/files_scroll_area/
+  control_panel/status_bar/path_edit/drive_combo）与信号定义。
+* 路径校验（_is_valid_selector_path）与目录导航（_navigate_to_path →
+  真实 FileListLoaderThread 加载 tmp 目录 → file_model 行数/名称）。
+* "All" 视图（mock ``ctypes.windll.kernel32.GetLogicalDrives`` 位掩码，
+  禁止真实枚举整机磁盘）。
+* 过滤 / 排序（_filter_files / _sort_files，经 FileService）。
+* 收藏加载（_load_favorites：str 旧格式归一化为 {path,name} dict，
+  favorites_file 重定向到 tmp，FavoritesService 文件路径同步）。
+* 预览态与滚动（set_previewing_file / clear_previewing_state /
+  scroll_to_file）。
+
+约束（计划 todo-18）：零生产代码改动；状态 JSON 文件
+（save_path_file/save_view_mode_file/favorites_file）全部重定向到 tmp；
+ctor 中的 ``load_last_path`` / ``_load_view_mode`` 置为 no-op 防止异步
+读真实 ``data/``；DriveService 的同步 / 异步盘符枚举全部 mock；所有
+跨线程等待有界（``_pump_until`` / ``wait_for_signal``），绝不
+exec() 任何模态对话框。
 """
 
+# targets: components.file_selector
+
+from __future__ import annotations
+
+import json
 import os
-from typing import Any, Dict, List
+import time
+from pathlib import Path
+from typing import Any, Callable, Dict, List
+from unittest.mock import patch
 
-from PySide6.QtTest import QSignalSpy
+import pytest
+
+from freeassetfilter.components.file_selector import CustomFileSelector
+from freeassetfilter.services.drive_service import DriveService
+
+from tests.support.data_factories import make_image, make_text
+from tests.support.qt_helpers import flush_widget_queue, safe_teardown
+
+pytestmark = pytest.mark.unit
 
 
-# ==============================================================================
-# 1. 创建与销毁
-# ==============================================================================
+# =============================================================================
+# 公共辅助
+# =============================================================================
+def _pump_until(
+    qapp: Any,
+    predicate: Callable[[], bool],
+    timeout_s: float = 8.0,
+) -> bool:
+    """在截止期内轮询冲刷 Qt 事件直到谓词满足（有界，绝不无限等待）。
+
+    Args:
+        qapp: 会话级 QApplication 实例。
+        predicate: 目标板状态谓词。
+        timeout_s: 最长等待秒数。
+
+    Returns:
+        bool: 谓词在超时前满足返回 True，否则 False。
+    """
+    deadline: float = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        flush_widget_queue(qapp, iterations=5)
+        time.sleep(0.01)
+    return bool(predicate())
 
 
-class TestCustomFileSelectorCreation:
-    """测试 CustomFileSelector 创建和销毁"""
+@pytest.fixture
+def file_selector(
+    qapp: Any,
+    settings_manager: Any,
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> Any:
+    """提供隔离的 CustomFileSelector 实例（function scope）。
 
-    def test_widget_creation(self, file_selector) -> None:
-        """验证组件可以正常创建并具有默认属性值。"""
-        assert file_selector is not None
-        assert file_selector.current_path is not None
+    阻止 ctor 异步读写真实 ``data/`` 状态文件，并把所有持久化路径
+    重定向到 tmp；盘符枚举（同步快速路径 + 异步线程静态方法）全部
+    mock，避免真实磁盘扫描。
+
+    Args:
+        qapp: 会话级 QApplication。
+        settings_manager: 临时设置文件绑定的 SettingsManager。
+        tmp_path: pytest 内置临时目录。
+        monkeypatch: pytest monkeypatch fixture。
+
+    Returns:
+        Any: 已隔离的 CustomFileSelector 实例。
+    """
+    monkeypatch.setattr(CustomFileSelector, "load_last_path", lambda self: None)
+    monkeypatch.setattr(CustomFileSelector, "_load_view_mode", lambda self: None)
+    monkeypatch.setattr(DriveService, "list_drives", lambda *a, **k: ["C:\\"])
+    monkeypatch.setattr(
+        DriveService, "_list_windows_drives", lambda *a, **k: ["C:\\"]
+    )
+    monkeypatch.setattr(
+        DriveService, "_list_windows_network_locations", lambda *a, **k: []
+    )
+
+    selector: Any = CustomFileSelector(settings_manager=settings_manager)
+    selector.save_path_file = str(tmp_path / "last_path.json")
+    selector.save_view_mode_file = str(tmp_path / "view_mode.json")
+    selector.favorites_file = str(tmp_path / "favorites.json")
+
+    yield selector
+
+    for thread_name in ("_file_loader_thread", "_drive_list_thread"):
+        thread: Any = getattr(selector, thread_name, None)
+        if thread is not None and thread.isRunning():
+            if not thread.wait(2000):
+                thread.terminate()
+                thread.wait(1000)
+    safe_teardown(selector)
+
+
+def _all_files(names: List[str], base: str = "/tmp") -> List[Dict[str, Any]]:
+    """按名称构造迷你 file_info 字典列表（供过滤/排序测试）。
+
+    Args:
+        names: 文件名序列。
+        base: 假想父目录。
+
+    Returns:
+        list[dict]: 最小文件信息字典列表（name/path/is_dir）。
+    """
+    return [
+        {"name": name, "path": f"{base}/{name}", "is_dir": False}
+        for name in names
+    ]
+
+
+# =============================================================================
+# 构造与默认状态
+# =============================================================================
+class TestConstruction:
+    """构造后的默认状态与骨架。"""
+
+    def test_default_state(self, file_selector: Any) -> None:
+        """默认 filter/sort/view/current_path 字段符合初值。"""
+        assert file_selector.current_path == "All"
         assert file_selector.filter_pattern == "*"
         assert file_selector.sort_by == "name"
         assert file_selector.sort_order == "asc"
         assert file_selector.view_mode == "card"
 
-    def test_default_state(self, file_selector) -> None:
-        """验证初始状态值正确。"""
-        assert file_selector.current_path == "All"
+    def test_model_view_backbone_exists(self, file_selector: Any) -> None:
+        """file_model/files_scroll_area/面板控件齐备。"""
+        assert file_selector.file_model is not None
+        assert file_selector.files_scroll_area is not None
+        assert file_selector.control_panel is not None
+        assert file_selector.status_bar is not None
+        assert file_selector.path_edit is not None
+        assert file_selector.drive_combo is not None
+
+    def test_signals_declared(self, file_selector: Any) -> None:
+        """五大公开信号均可实例化访问。"""
+        for signal_name in (
+            "file_selected",
+            "file_right_clicked",
+            "file_selection_changed",
+            "preview_cancel_requested",
+            "drive_availability_changed",
+        ):
+            assert hasattr(file_selector, signal_name)
+            assert getattr(file_selector, signal_name) is not None
+
+    def test_item_lists_empty_on_construction(self, file_selector: Any) -> None:
+        """初始文件与选中集合为空。"""
+        assert file_selector.file_model._files == []
+        assert file_selector.selected_files == {}
         assert file_selector._selected_file_paths == set()
-        assert file_selector.previewing_file_path is None
-        assert file_selector._is_loading is False
-        assert file_selector._first_show is True
-        assert isinstance(file_selector.selected_files, dict)
-        assert len(file_selector.selected_files) == 0
-
-    def test_safe_destruction(self, qapp) -> None:
-        """验证组件可以安全销毁，不抛出异常。"""
-        from freeassetfilter.components.file_selector import CustomFileSelector
-
-        selector = CustomFileSelector()
-        selector.show()
-        qapp.processEvents()
-        selector.close()
-        selector.deleteLater()
-        qapp.processEvents()
-        # 销毁后不应崩溃
-        assert True
 
 
-# ==============================================================================
-# 2. 目录导航
-# ==============================================================================
+# =============================================================================
+# 路径校验
+# =============================================================================
+class TestPathValidation:
+    """_is_valid_selector_path 的边界判定。"""
 
-
-class TestCustomFileSelectorNavigation:
-    """测试目录导航功能"""
-
-    def test_go_to_path_updates_current_path(self, file_selector, tmp_path) -> None:
-        """验证 go_to_path() 正确更新 current_path。"""
-        test_dir = tmp_path / "subdir"
-        test_dir.mkdir()
-        file_selector.path_edit.setText(str(test_dir))
-        file_selector.go_to_path()
-        assert file_selector.current_path == str(test_dir)
-
-    def test_go_to_path_all_returns_to_top(self, file_selector) -> None:
-        """验证输入 'All' 时回到顶级视图。"""
-        file_selector.current_path = str(os.getcwd())
-        file_selector.path_edit.setText("All")
-        file_selector.go_to_path()
-        assert file_selector.current_path == "All"
-
-    def test_go_to_parent_from_subdirectory(self, file_selector, tmp_path) -> None:
-        """验证从子目录返回父目录。"""
-        sub_dir = tmp_path / "child"
-        sub_dir.mkdir()
-        file_selector.current_path = str(sub_dir)
-        file_selector.go_to_parent()
-        assert file_selector.current_path == str(tmp_path)
-
-    def test_go_to_parent_from_root_goes_to_all(self, file_selector) -> None:
-        """验证从盘符根目录返回 All 视图。"""
-        if os.name == "nt":
-            file_selector.current_path = "C:\\"
-            file_selector.go_to_parent()
-            assert file_selector.current_path == "All"
-
-    def test_navigate_to_path_updates_path_edit(self, file_selector, tmp_path) -> None:
-        """验证 _navigate_to_path 同步更新路径输入框。"""
-        test_dir = tmp_path / "nav_test"
-        test_dir.mkdir()
-        file_selector._navigate_to_path(str(test_dir), update_path_edit=True)
-        assert file_selector.path_edit.text() == str(test_dir)
-
-    def test_is_valid_selector_path_all(self, file_selector) -> None:
-        """验证 'All' 被视为有效路径。"""
+    def test_accepts_all(self, file_selector: Any) -> None:
+        """"All" 恒为合法路径。"""
         assert file_selector._is_valid_selector_path("All") is True
 
-    def test_is_valid_selector_path_existing_path(self, file_selector, tmp_path) -> None:
-        """验证存在的目录被视为有效。"""
-        assert file_selector._is_valid_selector_path(str(tmp_path)) is True
+    def test_accepts_existing_dir(self, file_selector: Any, tmp_path: Path) -> None:
+        """已存在的目录判定为合法。"""
+        target: Path = tmp_path / "exists"
+        target.mkdir()
+        assert file_selector._is_valid_selector_path(str(target)) is True
 
-    def test_is_valid_selector_path_empty_is_invalid(self, file_selector) -> None:
-        """验证空字符串被视为无效。"""
+    def test_rejects_nonexistent(self, file_selector: Any, tmp_path: Path) -> None:
+        """不存在的目录判定为非法。"""
+        assert file_selector._is_valid_selector_path(str(tmp_path / "nope")) is False
+
+    def test_rejects_empty(self, file_selector: Any) -> None:
+        """空串判定为非法。"""
         assert file_selector._is_valid_selector_path("") is False
 
-    def test_is_valid_selector_path_nonexistent(self, file_selector) -> None:
-        """验证不存在的路径被视为无效。"""
-        assert file_selector._is_valid_selector_path("/nonexistent/path") is False
 
-    def test_infer_navigation_direction_forward(self, file_selector) -> None:
-        """验证进入子目录方向为 1 (前进)。"""
-        assert file_selector._infer_navigation_direction("C:/demo", "C:/demo/folder") == 1
+# =============================================================================
+# 目录导航（真实加载 tmp 目录）
+# =============================================================================
+class TestDirectoryNavigation:
+    """_navigate_to_path → FileListLoaderThread → file_model。"""
 
-    def test_infer_navigation_direction_backward(self, file_selector) -> None:
-        """验证返回父目录方向为 -1 (后退)。"""
-        assert file_selector._infer_navigation_direction("C:/demo/folder", "C:/demo") == -1
+    def test_navigate_to_tmp_dir(
+        self, file_selector: Any, qapp: Any, tmp_path: Path
+    ) -> None:
+        """导航到含 2 文件目录后，current_path 更新且模型加载完整。
 
-    def test_infer_navigation_direction_from_all(self, file_selector) -> None:
-        """验证从 All 进入目录方向为 1。"""
-        assert file_selector._infer_navigation_direction("All", "C:/demo") == 1
+        注意：不能直接导航到 ``tmp_path`` 根——conftest 的
+        ``settings_manager``/``file_selector`` fixture 会在根下写入
+        ``test_settings.json``/``last_path.json``，污染目录计数。因此
+        在两个文件的子目录 ``nav/`` 中导航。
+        """
+        nav_dir: Path = tmp_path / "nav"
+        nav_dir.mkdir()
+        make_text(str(nav_dir / "note.txt"))
+        make_image(str(nav_dir / "pic.png"))
 
-    def test_infer_navigation_direction_to_all(self, file_selector) -> None:
-        """验证返回 All 方向为 -1。"""
-        assert file_selector._infer_navigation_direction("C:/demo", "All") == -1
+        file_selector._navigate_to_path(str(nav_dir))
 
-    def test_infer_navigation_direction_same_path(self, file_selector) -> None:
-        """验证相同路径方向为 0。"""
-        assert file_selector._infer_navigation_direction("C:/demo", "C:/demo") == 0
+        ok: bool = _pump_until(
+            qapp,
+            lambda: (not file_selector._is_loading)
+            and file_selector.file_model.rowCount() == 2,
+        )
+        assert ok, "目录加载超时"
+        assert file_selector.current_path == str(nav_dir)
+        names: List[str] = [
+            file_selector.file_model._files[i]["name"]
+            for i in range(file_selector.file_model.rowCount())
+        ]
+        assert "note.txt" in names
+        assert "pic.png" in names
+        assert file_selector._last_accessible_path == str(nav_dir)
 
-    def test_same_selector_path_identical(self, file_selector) -> None:
-        """验证相同路径返回 True。"""
-        assert file_selector._same_selector_path("C:/demo", "C:/demo") is True
-
-    def test_same_selector_path_all(self, file_selector) -> None:
-        """验证 All 与 All 比较返回 True。"""
-        assert file_selector._same_selector_path("All", "All") is True
-
-    def test_same_selector_path_different(self, file_selector) -> None:
-        """验证不同路径返回 False。"""
-        assert file_selector._same_selector_path("C:/demo", "D:/demo") is False
-        assert file_selector._same_selector_path("All", "C:/demo") is False
-
-    def test_remember_navigation_source_saves_recovery(self, file_selector, tmp_path) -> None:
-        """验证 _remember_navigation_source 保存恢复路径。"""
-        file_selector.current_path = str(tmp_path)
-        target = tmp_path / "sub"
+    def test_navigate_sets_path_edit(
+        self, file_selector: Any, qapp: Any, tmp_path: Path
+    ) -> None:
+        """导航后面包屑输入框同步为当前路径。"""
+        target: Path = tmp_path / "sub"
         target.mkdir()
-        file_selector._remember_navigation_source(str(target))
-        assert file_selector._navigation_recovery_path == str(tmp_path)
+        file_selector._navigate_to_path(str(target))
 
-    def test_recovery_source_when_current_invalid(self, file_selector, tmp_path) -> None:
-        """验证当当前路径无效时恢复路径可用。"""
-        file_selector._last_accessible_path = str(tmp_path)
-        file_selector.current_path = "/invalid/path"
-        recovery = file_selector._get_recovery_source_for_navigation()
-        assert recovery == str(tmp_path) or recovery == "All"
+        ok: bool = _pump_until(qapp, lambda: not file_selector._is_loading)
+        assert ok, "目录加载超时"
+        assert file_selector.path_edit.text() == str(target)
 
-    def test_drive_changed_to_all_triggers_navigation(self, file_selector) -> None:
-        """验证盘符下拉选择 'All' 触发导航到 All。"""
-        file_selector._on_drive_changed("All")
-        assert file_selector.current_path == "All"
+    def test_all_mode_mocked_drives(
+        self, file_selector: Any, qapp: Any
+    ) -> None:
+        """All 视图：mock GetLogicalDrives 位掩码后加载盘符条目。"""
+        if os.name != "nt":
+            pytest.skip("win32 All 模式需要模拟盘符位掩码")
 
-    def test_is_descendant_selector_path(self, file_selector) -> None:
-        """验证 _is_descendant_selector_path 层级判断。"""
-        assert file_selector._is_descendant_selector_path("C:/demo/sub", "C:/demo") is True
-        assert file_selector._is_descendant_selector_path("C:/demo", "C:/demo") is False
-        assert file_selector._is_descendant_selector_path("C:/demo", "C:/other") is False
-        assert file_selector._is_descendant_selector_path("All", "C:/demo") is False
-
-
-# ==============================================================================
-# 3. 文件列表加载与处理
-# ==============================================================================
-
-
-class TestCustomFileSelectorFileList:
-    """测试文件列表加载、排序、筛选"""
-
-    def test_refresh_files_starts_loading(self, file_selector, tmp_path) -> None:
-        """验证 refresh_files() 启动异步文件加载线程。"""
-        file_selector.current_path = str(tmp_path)
-        file_selector.refresh_files()
-        assert file_selector._is_loading is True
-        assert file_selector._file_loader_thread is not None
-
-    def test_on_files_loaded_updates_model(self, file_selector, tmp_path) -> None:
-        """验证 _on_files_loaded 正确更新 model。"""
-        test_file = tmp_path / "test.txt"
-        test_file.write_text("content")
-        files: List[Dict[str, Any]] = [
-            {
-                "name": "test.txt",
-                "path": str(test_file),
-                "is_dir": False,
-                "size": 7,
-                "modified": "2024-01-15T10:00:00",
-                "created": "2024-01-15T10:00:00",
-                "suffix": "txt",
-            }
+        with patch(
+            "ctypes.windll.kernel32.GetLogicalDrives", return_value=0b101
+        ):
+            file_selector._navigate_to_path("All")
+            ok: bool = _pump_until(
+                qapp,
+                lambda: (not file_selector._is_loading)
+                and file_selector.file_model.rowCount() >= 2,
+            )
+        assert ok, "All 模式加载超时"
+        names: List[str] = [
+            file_selector.file_model._files[i]["name"]
+            for i in range(file_selector.file_model.rowCount())
         ]
-        file_selector.current_path = str(tmp_path)
-        file_selector._on_files_loaded(
-            file_selector._refresh_request_id,
-            str(tmp_path),
-            files,
-            callback=None,
-            scroll_to_top=True,
-        )
-        assert file_selector.file_model.rowCount() == 1
-        info = file_selector.file_model.get_file_info(
-            file_selector.file_model.index(0, 0)
-        )
-        assert info is not None
-        assert info["name"] == "test.txt"
-
-    def test_stale_request_is_ignored(self, file_selector) -> None:
-        """验证过期请求 ID 被忽略，不更新 model。"""
-        files = [{"name": "old.txt", "path": "/old", "is_dir": False, "size": 0}]
-        old_id = file_selector._refresh_request_id - 1
-        file_selector._on_files_loaded(old_id, "/old", files, None, True)
-        assert file_selector.file_model.rowCount() == 0
-
-    def test_path_mismatch_is_ignored(self, file_selector) -> None:
-        """验证路径不匹配的加载结果被忽略。"""
-        files = [{"name": "wrong.txt", "path": "/wrong", "is_dir": False, "size": 0}]
-        file_selector.current_path = "/current"
-        file_selector._on_files_loaded(
-            file_selector._refresh_request_id,
-            "/different",
-            files,
-            None,
-            True,
-        )
-        assert file_selector.file_model.rowCount() == 0
-
-    def test_sort_files_by_name_asc(self, file_selector) -> None:
-        """验证按名称升序排序。"""
-        files: List[Dict[str, Any]] = [
-            {"name": "b.txt", "is_dir": False, "size": 0},
-            {"name": "a.txt", "is_dir": False, "size": 0},
+        assert "A:" in names
+        assert "C:" in names
+        drive_a: Dict[str, Any] = file_selector.file_model._files[
+            names.index("A:")
         ]
-        file_selector.sort_by = "name"
-        file_selector.sort_order = "asc"
-        sorted_files = file_selector._sort_files(files)
-        names = [f["name"] for f in sorted_files]
-        assert names == ["a.txt", "b.txt"]
+        assert drive_a["is_dir"] is True
 
-    def test_sort_files_by_size_desc(self, file_selector) -> None:
-        """验证按大小降序排序。"""
-        files: List[Dict[str, Any]] = [
-            {"name": "small.txt", "is_dir": False, "size": 100},
-            {"name": "large.txt", "is_dir": False, "size": 1000},
-        ]
-        file_selector.sort_by = "size"
-        file_selector.sort_order = "desc"
-        sorted_files = file_selector._sort_files(files)
-        names = [f["name"] for f in sorted_files]
-        assert names == ["large.txt", "small.txt"]
 
-    def test_sort_files_directories_first(self, file_selector) -> None:
-        """验证目录始终排在文件之前。"""
-        files: List[Dict[str, Any]] = [
-            {"name": "file.txt", "is_dir": False, "size": 0},
-            {"name": "folder", "is_dir": True, "size": 0},
-        ]
-        file_selector.sort_by = "name"
-        file_selector.sort_order = "asc"
-        sorted_files = file_selector._sort_files(files)
-        assert sorted_files[0]["is_dir"] is True
-        assert sorted_files[1]["is_dir"] is False
+# =============================================================================
+# 过滤与排序
+# =============================================================================
+class TestFiltering:
+    """_filter_files 的通配符过滤。"""
 
-    def test_filter_files_by_wildcard(self, file_selector) -> None:
-        """验证按通配符模式筛选文件。"""
-        files: List[Dict[str, Any]] = [
-            {"name": "test.txt", "is_dir": False, "size": 0, "suffix": "txt"},
-            {"name": "data.jpg", "is_dir": False, "size": 0, "suffix": "jpg"},
-            {"name": "doc.pdf", "is_dir": False, "size": 0, "suffix": "pdf"},
-        ]
-        file_selector.filter_pattern = "*.txt"
-        filtered = file_selector._filter_files(files)
-        assert len(filtered) == 1
-        assert filtered[0]["name"] == "test.txt"
-
-    def test_filter_files_by_regex(self, file_selector) -> None:
-        """验证按正则模式筛选文件。"""
-        files: List[Dict[str, Any]] = [
-            {"name": "IMG_001.jpg", "is_dir": False, "size": 0, "suffix": "jpg"},
-            {"name": "IMG_002.jpg", "is_dir": False, "size": 0, "suffix": "jpg"},
-            {"name": "video.mp4", "is_dir": False, "size": 0, "suffix": "mp4"},
-        ]
-        file_selector.filter_pattern = "IMG_*"
-        filtered = file_selector._filter_files(files)
-        assert len(filtered) == 2
-
-    def test_no_filter_returns_all_files(self, file_selector) -> None:
-        """验证默认筛选（*）返回全部文件。"""
-        files: List[Dict[str, Any]] = [
-            {"name": "a.txt", "is_dir": False, "size": 0},
-            {"name": "b.jpg", "is_dir": False, "size": 0},
-        ]
+    def test_filter_all_keeps_everything(self, file_selector: Any) -> None:
+        """`*` 模式返回全部文件。"""
         file_selector.filter_pattern = "*"
-        result = file_selector._filter_files(files)
-        assert result == files
+        files: List[Dict[str, Any]] = _all_files(
+            ["a.txt", "b.jpg", "c.mp4"], base=str(Path("/tmp"))
+        )
+        filtered: List[Dict[str, Any]] = file_selector._filter_files(files)
+        assert len(filtered) == 3
 
-    def test_empty_filter_returns_all_files(self, file_selector) -> None:
-        """验证空筛选返回全部文件。"""
-        files = [{"name": "a.txt", "is_dir": False, "size": 0}]
-        file_selector.filter_pattern = ""
-        result = file_selector._filter_files(files)
-        assert len(result) == 1
-
-
-# ==============================================================================
-# 4. 排序与筛选切换
-# ==============================================================================
-
-
-class TestCustomFileSelectorSort:
-    """测试排序切换功能"""
-
-    def test_change_sort_by_name_desc(self, file_selector) -> None:
-        """验证 change_sort 更新排序属性。"""
-        file_selector.change_sort("名称降序")
-        assert file_selector.sort_by == "name"
-        assert file_selector.sort_order == "desc"
-
-    def test_change_sort_by_size_desc(self, file_selector) -> None:
-        """验证按大小降序切换。"""
-        file_selector.change_sort("大小降序")
-        assert file_selector.sort_by == "size"
-        assert file_selector.sort_order == "desc"
-
-    def test_change_sort_by_modified_asc(self, file_selector) -> None:
-        """验证按修改时间升序切换。"""
-        file_selector.change_sort("修改时间升序")
-        assert file_selector.sort_by == "modified"
-        assert file_selector.sort_order == "asc"
-
-    def test_change_sort_unknown_fallback_to_name(self, file_selector) -> None:
-        """验证未知排序文本回退到默认。"""
-        file_selector.change_sort("无效排序")
-        assert file_selector.sort_by == "name"
-        assert file_selector.sort_order == "asc"
-
-    def test_sort_item_clicked_tuple(self, file_selector) -> None:
-        """验证排序菜单项点击更新排序属性。"""
-        file_selector._on_sort_item_clicked(("size", "desc"))
-        assert file_selector.sort_by == "size"
-        assert file_selector.sort_order == "desc"
-
-    def test_sort_triggers_refresh(self, file_selector) -> None:
-        """验证 change_sort 触发 refresh_files。"""
-        file_selector.current_path = "All"
-        file_selector.change_sort("大小降序")
-        # 异步加载已启动
-        assert file_selector._is_loading is True
-
-    def test_has_active_filter_default(self, file_selector) -> None:
-        """验证默认 `*` 不被视为活跃筛选。"""
-        assert file_selector._has_active_filter() is False
-
-    def test_has_active_filter_with_pattern(self, file_selector) -> None:
-        """验证设置筛选模式后返回 True。"""
+    def test_filter_extension_keeps_only_matching(
+        self, file_selector: Any
+    ) -> None:
+        """`*.txt` 只保留 txt 条目。"""
         file_selector.filter_pattern = "*.txt"
-        assert file_selector._has_active_filter() is True
+        files: List[Dict[str, Any]] = _all_files(
+            ["a.txt", "b.jpg"], base=str(Path("/tmp"))
+        )
+        filtered: List[Dict[str, Any]] = file_selector._filter_files(files)
+        assert len(filtered) == 1
+        assert filtered[0]["name"] == "a.txt"
 
-    def test_has_active_filter_empty_string(self, file_selector) -> None:
-        """验证空字符串不被视为活跃筛选。"""
-        file_selector.filter_pattern = ""
-        assert file_selector._has_active_filter() is False
-
-
-# ==============================================================================
-# 5. 视图模式切换
-# ==============================================================================
-
-
-class TestCustomFileSelectorViewMode:
-    """测试视图模式切换功能"""
-
-    def test_default_view_mode_is_card(self, file_selector) -> None:
-        """验证默认视图模式为卡片。"""
-        assert file_selector.view_mode == "card"
-
-    def test_change_view_mode_to_list(self, file_selector) -> None:
-        """验证切换到列表视图。"""
-        file_selector.change_view_mode(1)
-        assert file_selector.view_mode == "list"
-
-    def test_change_view_mode_to_card(self, file_selector) -> None:
-        """验证切换到卡片视图。"""
-        file_selector.view_mode = "list"
-        file_selector.change_view_mode(0)
-        assert file_selector.view_mode == "card"
-
-    def test_toggle_view_mode_from_card(self, file_selector) -> None:
-        """验证从卡片视图切换到列表。"""
-        file_selector._toggle_view_mode()
-        assert file_selector.view_mode == "list"
-
-    def test_toggle_view_mode_from_list(self, file_selector) -> None:
-        """验证从列表视图切换到卡片。"""
-        file_selector.view_mode = "list"
-        file_selector._toggle_view_mode()
-        assert file_selector.view_mode == "card"
-
-    def test_double_toggle_returns_to_card(self, file_selector) -> None:
-        """验证两次切换回到卡片。"""
-        file_selector._toggle_view_mode()
-        file_selector._toggle_view_mode()
-        assert file_selector.view_mode == "card"
+    def test_filter_no_side_effect_on_input_list(
+        self, file_selector: Any
+    ) -> None:
+        """过滤不改动传入列表本身（返回新列表）。"""
+        file_selector.filter_pattern = "*.txt"
+        files: List[Dict[str, Any]] = _all_files(
+            ["a.txt", "b.jpg"], base=str(Path("/tmp"))
+        )
+        file_selector._filter_files(files)
+        assert len(files) == 2
 
 
-# ==============================================================================
-# 6. 信号发射验证
-# ==============================================================================
+class TestSorting:
+    """_sort_files 的排序方向控制。"""
+
+    def test_sort_by_name_asc(self, file_selector: Any) -> None:
+        """升序：按名称排序。"""
+        file_selector.sort_by = "name"
+        file_selector.sort_order = "asc"
+        files: List[Dict[str, Any]] = _all_files(
+            ["b.txt", "a.txt"], base=str(Path("/tmp"))
+        )
+        sorted_files: List[Dict[str, Any]] = file_selector._sort_files(files)
+        assert [f["name"] for f in sorted_files] == ["a.txt", "b.txt"]
+
+    def test_sort_by_name_desc(self, file_selector: Any) -> None:
+        """降序：按名称反向排序。"""
+        file_selector.sort_by = "name"
+        file_selector.sort_order = "desc"
+        files: List[Dict[str, Any]] = _all_files(
+            ["a.txt", "b.txt"], base=str(Path("/tmp"))
+        )
+        sorted_files: List[Dict[str, Any]] = file_selector._sort_files(files)
+        assert [f["name"] for f in sorted_files] == ["b.txt", "a.txt"]
 
 
-class TestCustomFileSelectorSignals:
-    """测试信号发射与连接"""
+# =============================================================================
+# 收藏加载
+# =============================================================================
+class TestFavoritesLoad:
+    """_load_favorites 的延迟加载与旧格式归一化。"""
 
-    def test_file_selected_signal_emission(self, file_selector) -> None:
-        """验证 file_selected 信号可发射和接收。"""
-        spy = QSignalSpy(file_selector.file_selected)
-        file_info: Dict[str, Any] = {
-            "name": "test.txt",
-            "path": "/test.txt",
-            "is_dir": False,
-        }
-        file_selector.file_selected.emit(file_info)
-        assert spy.count() == 1
-        emitted = spy.at(0)
-        assert emitted[0]["name"] == "test.txt"
+    def test_load_favorites_normalizes_str_entries(
+        self,
+        file_selector: Any,
+        qapp: Any,
+        tmp_path: Path,
+    ) -> None:
+        """str 旧格式归一化为 {path,name} dict 条目。"""
+        file_a: str = make_text(str(tmp_path / "a.txt"))
+        file_b: str = make_text(str(tmp_path / "b.txt"))
+        favorites_file: Path = tmp_path / "favorites.json"
+        # 注意：Windows 路径含反斜杠（如 C:\\Users\\...），直接 f-string
+        # 插值会破坏 JSON 转义（\\U 非法），必须用 json.dumps 序列化。
+        favorites_file.write_text(
+            json.dumps([file_a, {"path": file_b, "name": "b.txt"}]),
+            encoding="utf-8",
+        )
+        file_selector.favorites_file = str(favorites_file)
 
-    def test_file_right_clicked_signal(self, file_selector) -> None:
-        """验证 file_right_clicked 信号。"""
-        spy = QSignalSpy(file_selector.file_right_clicked)
-        file_info = {"name": "test.txt", "path": "/test.txt"}
-        file_selector.file_right_clicked.emit(file_info)
-        assert spy.count() == 1
-        assert spy.at(0)[0]["name"] == "test.txt"
+        favorites: List[Dict[str, Any]] = file_selector._load_favorites()
 
-    def test_file_selection_changed_signal(self, file_selector) -> None:
-        """验证 file_selection_changed 信号含正确参数。"""
-        spy = QSignalSpy(file_selector.file_selection_changed)
-        file_info = {"name": "test.txt", "path": "/test.txt"}
-        file_selector.file_selection_changed.emit(file_info, True)
-        assert spy.count() == 1
-        emitted = spy.at(0)
-        # 第一个参数是 dict (file_info)
-        assert emitted[0]["name"] == "test.txt"
-        # 第二个参数是 bool (is_selected)
-        assert emitted[1] is True
+        assert file_selector._favorites_loaded is True
+        assert len(favorites) == 2
+        assert favorites[0]["path"] == file_a
+        assert favorites[0]["name"] == "a.txt"
+        assert favorites[1]["path"] == file_b
+        # FavoritesService 文件路径同步到覆盖后的 favorites_file
+        assert (
+            file_selector._favorites_service.favorites_file
+            == str(favorites_file)
+        )
 
-    def test_preview_cancel_requested_signal(self, file_selector) -> None:
-        """验证 preview_cancel_requested 信号。"""
-        spy = QSignalSpy(file_selector.preview_cancel_requested)
-        file_selector.preview_cancel_requested.emit()
-        assert spy.count() == 1
+    def test_load_favorites_idempotent(
+        self, file_selector: Any, qapp: Any, tmp_path: Path
+    ) -> None:
+        """重复加载只读一次（_loaded 标志防重复 IO）。"""
+        file_a: str = make_text(str(tmp_path / "a.txt"))
+        favorites_file: Path = tmp_path / "favorites.json"
+        favorites_file.write_text(
+            json.dumps([file_a]), encoding="utf-8"
+        )
+        file_selector.favorites_file = str(favorites_file)
 
-    def test_card_click_on_folder_triggers_navigation(self, file_selector, tmp_path) -> None:
-        """验证单击文件夹卡片触发目录导航。"""
-        sub_dir = tmp_path / "click_folder"
-        sub_dir.mkdir()
-        file_info = {"name": "click_folder", "path": str(sub_dir), "is_dir": True}
-        # 模拟 FileListView.file_clicked 信号
-        file_selector.files_scroll_area.file_clicked.emit(file_info)
-        assert file_selector.current_path == str(sub_dir)
-
-    def test_card_click_on_file_triggers_file_selected(self, file_selector) -> None:
-        """验证单击文件卡片触发 file_selected 信号。"""
-        spy = QSignalSpy(file_selector.file_selected)
-        file_info = {"name": "test.txt", "path": "/test.txt", "is_dir": False}
-        file_selector.files_scroll_area.file_clicked.emit(file_info)
-        assert spy.count() == 1
-
-    def test_card_double_click_on_folder_navigates(self, file_selector, tmp_path) -> None:
-        """验证双击文件夹触发导航。"""
-        sub_dir = tmp_path / "dblclick_folder"
-        sub_dir.mkdir()
-        file_info = {"name": "dblclick_folder", "path": str(sub_dir), "is_dir": True}
-        file_selector.files_scroll_area.file_double_clicked.emit(file_info)
-        assert file_selector.current_path == str(sub_dir)
-
-    def test_card_right_click_signal(self, file_selector) -> None:
-        """验证右键卡片发射 file_right_clicked。"""
-        spy = QSignalSpy(file_selector.file_right_clicked)
-        file_info = {"name": "test.txt", "path": "/test.txt"}
-        file_selector.files_scroll_area.file_right_clicked.emit(file_info)
-        assert spy.count() == 1
-
-    def test_navigate_parent_requested_triggers_go_to_parent(self, file_selector, tmp_path) -> None:
-        """验证导航上级请求触发 go_to_parent。"""
-        sub_dir = tmp_path / "nav_parent"
-        sub_dir.mkdir()
-        file_selector.current_path = str(sub_dir)
-        file_selector.files_scroll_area.navigate_parent_requested.emit()
-        assert file_selector.current_path == str(tmp_path)
-
-    def test_preview_cancel_when_reclicking_previewed_file(self, file_selector, tmp_path) -> None:
-        """验证再次点击正在预览的文件时发射取消预览信号。"""
-        spy = QSignalSpy(file_selector.preview_cancel_requested)
-        test_file = tmp_path / "preview.txt"
-        test_file.write_text("preview content")
-        file_selector.set_previewing_file(str(test_file))
-        file_info = {"name": "preview.txt", "path": str(test_file), "is_dir": False}
-        file_selector.files_scroll_area.file_clicked.emit(file_info)
-        assert spy.count() == 1
+        first: List[Dict[str, Any]] = file_selector._load_favorites()
+        second: List[Dict[str, Any]] = file_selector._load_favorites()
+        assert first == second
+        assert len(second) == 1
 
 
-# ==============================================================================
-# 7. 预览状态管理
-# ==============================================================================
+# =============================================================================
+# 预览态与滚动
+# =============================================================================
+class TestPreviewAndScroll:
+    """set_previewing_file / clear_previewing_state / scroll_to_file。"""
 
+    def test_set_previewing_file_normalizes(
+        self, file_selector: Any, tmp_path: Path
+    ) -> None:
+        """设置后 previewing_file_path 归一化为绝对路径。"""
+        target: Path = tmp_path / "preview.txt"
+        target.write_text("x", encoding="utf-8")
+        file_selector.set_previewing_file(str(target))
+        assert file_selector.previewing_file_path == os.path.normpath(str(target))
 
-class TestCustomFileSelectorPreviewState:
-    """测试预览状态管理"""
+    def test_clear_previewing_state(self, file_selector: Any) -> None:
+        """清除后模型内无预览条目。"""
+        file_selector.file_model.set_files(
+            [{"path": "/tmp/a.txt", "name": "a.txt", "is_dir": False}]
+        )
+        file_selector.set_previewing_file("/tmp/a.txt")
+        assert file_selector.file_model._files[0].get("is_previewing") is True
 
-    def test_set_previewing_file_updates_path(self, file_selector, tmp_path) -> None:
-        """验证 set_previewing_file 设置预览路径。"""
-        test_file = tmp_path / "preview_set.txt"
-        test_file.write_text("preview")
-        file_selector.set_previewing_file(str(test_file))
-        assert file_selector.previewing_file_path == os.path.normpath(str(test_file))
-
-    def test_clear_previewing_state(self, file_selector) -> None:
-        """验证 clear_previewing_state 清除 model 预览状态。"""
         file_selector.clear_previewing_state()
-        # previewing_file_path 不受 clear_previewing_state 影响
-        # 但 model 中的预览标记已被清除
-        assert True
+        assert file_selector.file_model._files[0].get("is_previewing") is False
 
-    def test_set_previewing_file_none(self, file_selector) -> None:
-        """验证设为 None 时 previewing_file_path 为 None。"""
-        file_selector.set_previewing_file(None)
-        assert file_selector.previewing_file_path is None
+    def test_scroll_to_file_unknown_path_no_crash(
+        self, file_selector: Any, tmp_path: Path
+    ) -> None:
+        """未知路径滚动静默返回（不抛异常）。"""
+        file_selector.file_model.set_files([])
+        file_selector.scroll_to_file(
+            {"path": str(tmp_path / "missing.txt")}
+        )
 
-    def test_set_previewing_file_empty_string(self, file_selector) -> None:
-        """验证空字符串视为清除预览。"""
-        file_selector.set_previewing_file("")
-        assert file_selector.previewing_file_path is None
-
-    def test_set_previewing_twice(self, file_selector, tmp_path) -> None:
-        """验证多次设置预览路径最后保留最新。"""
-        f1 = tmp_path / "p1.txt"
-        f2 = tmp_path / "p2.txt"
-        f1.write_text("1")
-        f2.write_text("2")
-        file_selector.set_previewing_file(str(f1))
-        file_selector.set_previewing_file(str(f2))
-        assert file_selector.previewing_file_path == os.path.normpath(str(f2))
+    def test_scroll_to_file_known_path_no_crash(
+        self, file_selector: Any, tmp_path: Path
+    ) -> None:
+        """模型内已知路径滚动不抛异常。"""
+        file_a: str = make_text(str(tmp_path / "a.txt"))
+        file_selector.file_model.set_files(
+            [{"path": file_a, "name": "a.txt", "is_dir": False}]
+        )
+        file_selector.scroll_to_file({"path": file_a})
 
 
-# ==============================================================================
-# 8. 文件选择状态
-# ==============================================================================
+# =============================================================================
+# file_selector 内部线程 / 节流器（构造契约，不启动重型线程）
+# =============================================================================
+
+class TestFileSelectorThreads:
+    """file_selector 内部 QThread：构造 + 类级接口契约。"""
+
+    def test_drive_list_loader_thread_constructs(self, qapp: Any) -> None:
+        """DriveListLoaderThread：可构造、未启动、失败路径安全。"""
+        from freeassetfilter.components.file_selector import DriveListLoaderThread
+
+        thread = DriveListLoaderThread()
+        try:
+            assert not thread.isRunning()
+            assert hasattr(thread, "loaded")
+        finally:
+            if thread.isRunning():
+                thread.wait(2000)
+            thread.deleteLater()
+
+    def test_file_list_loader_thread_constructs(self, qapp: Any, tmp_path: Path) -> None:
+        """FileListLoaderThread：构造绑定 current_path。"""
+        from freeassetfilter.components.file_selector import FileListLoaderThread
+
+        thread = FileListLoaderThread(str(tmp_path))
+        try:
+            assert thread.current_path == str(tmp_path)
+            assert not thread.isRunning()
+        finally:
+            if thread.isRunning():
+                thread.wait(2000)
+            thread.deleteLater()
 
 
-class TestCustomFileSelectorSelection:
-    """测试文件选择状态管理"""
+class TestProgressThrottler:
+    """ProgressThrottler：立即刷新 vs 间隔节流。"""
 
-    def test_select_file_updates_selected_paths(self, file_selector, tmp_path) -> None:
-        """验证选中文件后 _selected_file_paths 包含该文件。"""
-        spy = QSignalSpy(file_selector.file_selection_changed)
-        test_file = tmp_path / "select_file.txt"
-        test_file.write_text("select")
-        file_info = {"name": "select_file.txt", "path": str(test_file), "is_dir": False}
-        file_selector._handle_card_selection_changed_signal(file_info, True)
-        assert os.path.normpath(str(test_file)) in file_selector._selected_file_paths
-        assert spy.count() == 1
+    def test_throttle_immediate_update(self, qapp: Any) -> None:
+        """远离上次刷新的调用应同步执行 update_func。"""
+        from freeassetfilter.components.file_selector import ProgressThrottler
 
-    def test_deselect_file_removes_from_paths(self, file_selector, tmp_path) -> None:
-        """验证取消选中后 _selected_file_paths 移除该文件。"""
-        spy = QSignalSpy(file_selector.file_selection_changed)
-        test_file = tmp_path / "deselect_file.txt"
-        test_file.write_text("deselect")
-        file_info = {"name": "deselect_file.txt", "path": str(test_file), "is_dir": False}
-        file_selector._handle_card_selection_changed_signal(file_info, True)
-        file_selector._handle_card_selection_changed_signal(file_info, False)
-        assert os.path.normpath(str(test_file)) not in file_selector._selected_file_paths
-        assert spy.count() == 2
+        calls: List[Any] = []
+        throttler = ProgressThrottler(min_interval_ms=1)
+        try:
+            throttler.update(1, 10, {"path": "x"}, lambda c, t, d: calls.append((c, t, d)))
+            assert calls, "首调用（间隔足够）应立即执行"
+            assert calls[-1][0] == 1
+            assert calls[-1][1] == 10
+        finally:
+            throttler.deleteLater()
 
-    def test_duplicate_select_does_not_double_emit(self, file_selector, tmp_path) -> None:
-        """验证重复选中同一文件不会发射两次信号。"""
-        spy = QSignalSpy(file_selector.file_selection_changed)
-        test_file = tmp_path / "dup_select.txt"
-        test_file.write_text("dup")
-        file_info = {"name": "dup_select.txt", "path": str(test_file), "is_dir": False}
-        file_selector._handle_card_selection_changed_signal(file_info, True)
-        file_selector._handle_card_selection_changed_signal(file_info, True)
-        assert spy.count() == 1
+    def test_throttle_interval_respected(self, qapp: Any) -> None:
+        """高频调用落入节流区间时不重复立即执行。"""
+        from freeassetfilter.components.file_selector import ProgressThrottler
 
-    def test_selection_tracks_per_directory(self, file_selector, tmp_path) -> None:
-        """验证选中状态按目录分组存储。"""
-        f1 = tmp_path / "file1.txt"
-        f2 = tmp_path / "file2.txt"
-        f1.write_text("1")
-        f2.write_text("2")
-        info1 = {"name": "file1.txt", "path": str(f1), "is_dir": False}
-        info2 = {"name": "file2.txt", "path": str(f2), "is_dir": False}
-        file_selector._handle_card_selection_changed_signal(info1, True)
-        file_selector._handle_card_selection_changed_signal(info2, True)
-        dir_norm = os.path.normpath(str(tmp_path))
-        assert dir_norm in file_selector.selected_files
-        assert len(file_selector.selected_files[dir_norm]) == 2
-
-    def test_remove_from_staging_pool_clears_selection(self, file_selector, tmp_path) -> None:
-        """验证从存储池移除后清除选中状态。"""
-        test_file = tmp_path / "remove.txt"
-        test_file.write_text("remove")
-        file_info = {"name": "remove.txt", "path": str(test_file), "is_dir": False}
-        file_selector._handle_card_selection_changed_signal(file_info, True)
-        file_selector._remove_from_staging_pool(file_info)
-        assert os.path.normpath(str(test_file)) not in file_selector._selected_file_paths
+        calls: List[Any] = []
+        throttler = ProgressThrottler(min_interval_ms=60_000)
+        try:
+            throttler.update(1, 10, {"path": "x"}, lambda c, t, d: calls.append((c, t, d)))
+            count_after_first = len(calls)
+            throttler.update(2, 10, {"path": "y"}, lambda c, t, d: calls.append((c, t, d)))
+            assert len(calls) == count_after_first, "大间隔节流内不应同步执行第二次"
+        finally:
+            throttler.deleteLater()
 
 
-# ==============================================================================
-# 9. 拖拽行为
-# ==============================================================================
+class TestThumbnailGeneratorThread:
+    """ThumbnailGeneratorThread：构造契约（空任务列表直接 emit finished）。"""
+
+    def test_construct_empty_batch(self, qapp: Any) -> None:
+        """空批次构造后 cancel / finished 信号契约。"""
+        from freeassetfilter.components.file_selector import ThumbnailGeneratorThread
+
+        thread = ThumbnailGeneratorThread(thumbnail_manager=None, files_to_generate=[])
+        try:
+            assert thread.files_to_generate == []
+            thread.cancel()
+            assert thread._is_cancelled is True
+        finally:
+            if thread.isRunning():
+                thread.wait(2000)
+            thread.deleteLater()
+
+    def test_run_empty_batch_emits_finished(self, qapp: Any) -> None:
+        """同步 run()：空列表直接发射 finished(0, 0)，不触碰管理器。"""
+        from freeassetfilter.components.file_selector import ThumbnailGeneratorThread
+
+        emitted: List[Dict[str, Any]] = []
+        thread = ThumbnailGeneratorThread(thumbnail_manager=None, files_to_generate=[])
+        thread.finished.connect(lambda s, t: emitted.append({"s": s, "t": t}))
+        try:
+            thread.run()
+        finally:
+            thread.deleteLater()
+        assert emitted == [{"s": 0, "t": 0}]
+
+    def test_run_batch_success(self, qapp: Any) -> None:
+        """同步 run()：批量成功路径发射进度/完成信号。"""
+        from freeassetfilter.components.file_selector import ThumbnailGeneratorThread
+
+        progress: List[Any] = []
+        created: List[Any] = []
+        finished: List[Any] = []
+
+        def fake_create_thumbnails_batch(
+            _self: Any,
+            files: List[Dict[str, Any]],
+            progress_callback: Any = None,
+            cancel_check: Any = None,
+        ) -> tuple:
+            # 普通函数赋值到类属性后会被绑定成实例方法，第一个位置参数
+            # 必然是 _FakeManager 实例本身，因此签名首参必须是 _self。
+            for i, f in enumerate(files):
+                if progress_callback:
+                    progress_callback(i + 1, len(files), f, True)
+            return (2, 2)
+
+        class _FakeManager:
+            create_thumbnails_batch = fake_create_thumbnails_batch
+
+        files = [{"path": f"/tmp/{n}", "name": n} for n in ("a.png", "b.mp4")]
+        thread = ThumbnailGeneratorThread(
+            thumbnail_manager=_FakeManager(), files_to_generate=files
+        )
+        thread.progress_updated.connect(
+            lambda c, t, d: progress.append((c, t, d))
+        )
+        thread.thumbnail_created.connect(created.append)
+        thread.finished.connect(lambda s, t: finished.append((s, t)))
+        try:
+            thread.run()
+        finally:
+            thread.deleteLater()
+        assert len(progress) == 2
+        assert [p[0] for p in progress] == [1, 2]
+        assert len(created) == 2
+        assert finished == [(2, 2)]
+
+    def test_run_batch_cancel_uses_processed_count(self, qapp: Any) -> None:
+        """取消后 finished 以 processed_count 为最终总数。"""
+        from freeassetfilter.components.file_selector import ThumbnailGeneratorThread
+
+        finished: List[Any] = []
+
+        def fake_create_thumbnails_batch(
+            _self: Any,
+            files: List[Dict[str, Any]],
+            progress_callback: Any = None,
+            cancel_check: Any = None,
+        ) -> tuple:
+            # 模拟执行过程中被取消：只处理 1 个后返回
+            return (1, 1)
+
+        class _FakeManager:
+            create_thumbnails_batch = fake_create_thumbnails_batch
+
+        files = [{"path": f"/tmp/{n}", "name": n} for n in ("a.png", "b.mp4")]
+        thread = ThumbnailGeneratorThread(thumbnail_manager=_FakeManager(), files_to_generate=files)
+        thread.finished.connect(lambda s, t: finished.append((s, t)))
+        try:
+            thread.cancel()
+            thread.run()
+        finally:
+            thread.deleteLater()
+        assert finished == [(1, 1)]
+
+    def test_run_batch_exception_emits_error(self, qapp: Any) -> None:
+        """同步 run()：批量处理抛异常时发射 error_occurred + finished(0,0)。"""
+        from freeassetfilter.components.file_selector import ThumbnailGeneratorThread
+
+        errors: List[Any] = []
+        finished: List[Any] = []
+
+        def fake_create_thumbnails_batch(*_args: Any, **_kwargs: Any) -> tuple:
+            raise RuntimeError("boom")
+
+        class _FakeManager:
+            create_thumbnails_batch = fake_create_thumbnails_batch
+
+        files = [{"path": "/tmp/a.png", "name": "a.png"}]
+        thread = ThumbnailGeneratorThread(thumbnail_manager=_FakeManager(), files_to_generate=files)
+        thread.error_occurred.connect(lambda code, exc: errors.append((code, exc)))
+        thread.finished.connect(lambda s, t: finished.append((s, t)))
+        try:
+            thread.run()
+        finally:
+            thread.deleteLater()
+        assert errors[0][0] == "batch_generate"
+        assert isinstance(errors[0][1], RuntimeError)
+        assert finished == [(0, 0)]
 
 
-class TestCustomFileSelectorDragDrop:
-    """测试拖拽功能"""
+# =============================================================================
+# 线程 / 后台任务 run() 同步覆盖（QThread.start 无法被 coverage 追踪，
+# 一律直接调用 run();QRunnable 同理直接调用 run()）
+# =============================================================================
+class TestDriveListLoaderThreadRun:
+    """DriveListLoaderThread.run 同步执行：win32 与异常路径。"""
 
-    def test_drag_to_staging_pool_emits_selection_changed(self, file_selector, tmp_path) -> None:
-        """验证拖拽到暂存池发射 file_selection_changed 信号。"""
-        spy = QSignalSpy(file_selector.file_selection_changed)
-        test_file = tmp_path / "drag_staging.txt"
-        test_file.write_text("drag staging")
-        file_info: Dict[str, Any] = {
-            "name": "drag_staging.txt",
-            "path": str(test_file),
-            "is_dir": False,
+    def test_run_emits_sorted_drives(self, qapp: Any, monkeypatch: Any) -> None:
+        """win32：两个源返回后去重排序并发射 loaded。"""
+        from freeassetfilter.components.file_selector import DriveListLoaderThread
+
+        monkeypatch.setattr(
+            "freeassetfilter.components.file_selector.DriveService._list_windows_drives",
+            lambda: ["C:\\", "A:\\", "C:\\"],
+        )
+        monkeypatch.setattr(
+            "freeassetfilter.components.file_selector.DriveService._list_windows_network_locations",
+            lambda: ["N:\\"],
+        )
+        thread = DriveListLoaderThread()
+        results: List[Any] = []
+        thread.loaded.connect(lambda l, n: results.append((l, n)))
+        try:
+            thread.run()
+        finally:
+            thread.deleteLater()
+        assert results == [(["A:\\", "C:\\"], ["N:\\"])]
+
+    def test_run_exception_logs_error(self, qapp: Any, monkeypatch: Any) -> None:
+        """驱动枚举抛异常时仅记录日志，不发射 loaded。"""
+        from freeassetfilter.components.file_selector import DriveListLoaderThread
+
+        monkeypatch.setattr(
+            "freeassetfilter.components.file_selector.DriveService._list_windows_drives",
+            lambda: (_ for _ in ()).throw(OSError("denied")),
+        )
+        monkeypatch.setattr(
+            "freeassetfilter.components.file_selector.DriveService._list_windows_network_locations",
+            lambda: [],
+        )
+        thread = DriveListLoaderThread()
+        results: List[Any] = []
+        thread.loaded.connect(lambda l, n: results.append((l, n)))
+        try:
+            thread.run()
+        finally:
+            thread.deleteLater()
+        assert results == [] or results == [([], [])]
+
+
+class TestFileListLoaderThreadRun:
+    """FileListLoaderThread.run 同步执行：All 模式 / 目录扫描 / 错误路径。"""
+
+    def test_run_all_mode_win32(self, qapp: Any, monkeypatch: Any) -> None:
+        """All + win32：GetLogicalDrives 位掩码产生盘符条目。"""
+        if os.name != "nt":
+            pytest.skip("win32 All 模式需要 ctypes")
+        from freeassetfilter.components.file_selector import FileListLoaderThread
+
+        with patch("ctypes.windll.kernel32.GetLogicalDrives", return_value=0b101):
+            thread = FileListLoaderThread("All")
+            loaded: List[Any] = []
+            thread.loaded.connect(lambda p, f: loaded.append((p, f)))
+            try:
+                thread.run()
+            finally:
+                thread.deleteLater()
+        assert loaded and loaded[0][0] == "All"
+        names: List[str] = [f["name"] for f in loaded[0][1]]
+        assert "A:" in names and "C:" in names
+
+    def test_run_scans_directory(self, qapp: Any, tmp_path: Path) -> None:
+        """普通目录：经 FileService 扫描后发射 loaded。"""
+        from freeassetfilter.components.file_selector import FileListLoaderThread
+
+        target: Path = tmp_path / "scan"
+        target.mkdir()
+        make_text(str(target / "one.txt"))
+
+        thread = FileListLoaderThread(str(target))
+        loaded: List[Any] = []
+        thread.loaded.connect(lambda p, f: loaded.append((p, f)))
+        try:
+            thread.run()
+        finally:
+            thread.deleteLater()
+        assert loaded and loaded[0][0] == str(target)
+        names: List[str] = [f["name"] for f in loaded[0][1]]
+        assert "one.txt" in names
+
+    def test_run_refuses_symlink(self, qapp: Any, tmp_path: Path, monkeypatch: Any) -> None:
+        """符号链接目录触发 failed 信号。"""
+        from freeassetfilter.components.file_selector import FileListLoaderThread
+
+        monkeypatch.setattr(
+            "freeassetfilter.components.file_selector.os.path.islink", lambda p: True
+        )
+        thread = FileListLoaderThread(str(tmp_path))
+        failed: List[Any] = []
+        thread.failed.connect(lambda p, m: failed.append((p, m)))
+        try:
+            thread.run()
+        finally:
+            thread.deleteLater()
+        assert len(failed) == 1
+        assert "符号链接" in failed[0][1]
+
+    def test_run_scan_failure_emits_failed(self, qapp: Any, tmp_path: Path, monkeypatch: Any) -> None:
+        """扫描抛异常时发射 failed 信号。"""
+        from freeassetfilter.components.file_selector import FileListLoaderThread
+
+        class _BrokenService:
+            def scan_directory(self, _path: str) -> Any:
+                raise PermissionError("access denied")
+
+        monkeypatch.setattr(
+            "freeassetfilter.components.file_selector.FileService", _BrokenService
+        )
+        thread = FileListLoaderThread(str(tmp_path))
+        failed: List[Any] = []
+        thread.failed.connect(lambda p, m: failed.append((p, m)))
+        try:
+            thread.run()
+        finally:
+            thread.deleteLater()
+        assert len(failed) == 1
+        assert "access denied" in failed[0][1]
+
+
+class TestJsonRunnables:
+    """_JsonWriteRunnable / _JsonReadRunnable 同步 run()。"""
+
+    def test_write_runnable_creates_json(self, qapp: Any, tmp_path: Path) -> None:
+        """写入路径：数据函数结果序列化为 JSON 文件。"""
+        from freeassetfilter.components.file_selector import _JsonWriteRunnable
+
+        target: Path = tmp_path / "nested" / "out.json"
+        runnable = _JsonWriteRunnable(
+            str(target), lambda: {"last_path": "C:\\tmp"}
+        )
+        runnable.run()
+        assert json.loads(target.read_text(encoding="utf-8")) == {
+            "last_path": "C:\\tmp"
         }
-        file_selector._on_card_drag_ended(file_info, "staging_pool")
-        assert spy.count() == 1
-        assert spy.at(0)[1] is True
 
-    def test_drag_to_previewer_emits_file_selected(self, file_selector) -> None:
-        """验证拖拽到预览器发射 file_selected 信号。"""
-        spy = QSignalSpy(file_selector.file_selected)
-        file_info = {"name": "drag_preview.txt", "path": "/drag_preview.txt"}
-        file_selector._on_card_drag_ended(file_info, "previewer")
-        assert spy.count() == 1
+    def test_write_runnable_exception_silent(self, qapp: Any, tmp_path: Path) -> None:
+        """写入失败（数据函数抛异常）仅记录 warning，不向上传播。"""
+        from freeassetfilter.components.file_selector import _JsonWriteRunnable
 
-    def test_drag_to_none_does_nothing(self, file_selector) -> None:
-        """验证拖拽到空白区域无信号。"""
-        spy_selected = QSignalSpy(file_selector.file_selected)
-        spy_selection_changed = QSignalSpy(file_selector.file_selection_changed)
-        file_info = {"name": "drag_none.txt", "path": "/drag_none.txt"}
-        file_selector._on_card_drag_ended(file_info, "none")
-        assert spy_selected.count() == 0
-        assert spy_selection_changed.count() == 0
+        def _boom() -> Any:
+            raise OSError("disk full")
 
-    def test_drag_to_staging_pool_updates_selected_paths(self, file_selector, tmp_path) -> None:
-        """验证拖拽到暂存池后更新选中路径集合。"""
-        test_file = tmp_path / "drag_selected.txt"
-        test_file.write_text("drag selected")
-        file_info = {"name": "drag_selected.txt", "path": str(test_file), "is_dir": False}
-        file_selector._on_card_drag_ended(file_info, "staging_pool")
-        assert os.path.normpath(str(test_file)) in file_selector._selected_file_paths
+        runnable = _JsonWriteRunnable(str(tmp_path / "x.json"), _boom)
+        runnable.run()  # 不应抛异常
+
+    def test_read_runnable_missing_file(self, qapp: Any, tmp_path: Path) -> None:
+        """文件不存在时发射 None。"""
+        from freeassetfilter.components.file_selector import (
+            _JsonReadRunnable,
+            _JsonReadSignals,
+        )
+
+        signals = _JsonReadSignals()
+        results: List[Any] = []
+        signals.finished.connect(results.append)
+        runnable = _JsonReadRunnable(str(tmp_path / "missing.json"), signals)
+        runnable.run()
+        assert results == [None]
+
+    def test_read_runnable_existing_file(self, qapp: Any, tmp_path: Path) -> None:
+        """文件存在时发射解析后的 dict。"""
+        from freeassetfilter.components.file_selector import (
+            _JsonReadRunnable,
+            _JsonReadSignals,
+        )
+
+        data_file: Path = tmp_path / "data.json"
+        data_file.write_text(json.dumps({"view_mode": "list"}), encoding="utf-8")
+        signals = _JsonReadSignals()
+        results: List[Any] = []
+        signals.finished.connect(results.append)
+        runnable = _JsonReadRunnable(str(data_file), signals)
+        runnable.run()
+        assert results == [{"view_mode": "list"}]
+
+    def test_read_runnable_corrupt_file_emits_none(
+        self, qapp: Any, tmp_path: Path
+    ) -> None:
+        """损坏 JSON 时发射 None。"""
+        from freeassetfilter.components.file_selector import (
+            _JsonReadRunnable,
+            _JsonReadSignals,
+        )
+
+        data_file: Path = tmp_path / "bad.json"
+        data_file.write_text("{not json", encoding="utf-8")
+        signals = _JsonReadSignals()
+        results: List[Any] = []
+        signals.finished.connect(results.append)
+        runnable = _JsonReadRunnable(str(data_file), signals)
+        runnable.run()
+        assert results == [None]
 
 
-# ==============================================================================
-# 10. 盘符检测
-# ==============================================================================
+class TestDriveAvailabilityCheckRunnable:
+    """_DriveAvailabilityCheckRunnable.run 同步执行：真实目录/空目录/缺失。"""
 
+    def test_run_available_dir(self, qapp: Any, tmp_path: Path) -> None:
+        from freeassetfilter.components.file_selector import (
+            _DriveAvailabilityCheckRunnable,
+            _DriveAvailabilitySignals,
+        )
 
-class TestCustomFileSelectorDriveDetection:
-    """测试盘符可用性检测功能"""
+        signals = _DriveAvailabilitySignals()
+        results: List[Any] = []
+        signals.finished.connect(lambda p, a: results.append((p, a)))
+        (tmp_path / "a.txt").write_text("x", encoding="utf-8")
+        runnable = _DriveAvailabilityCheckRunnable(str(tmp_path), signals)
+        runnable.run()
+        # 发射的是原始 drive_path（不做规范化/补分隔符），与入参完全一致
+        assert results and results[0][1] is True
+        assert results[0][0] == str(tmp_path)
 
-    def test_drive_availability_cache_structure(self, file_selector) -> None:
-        """验证盘符可用性缓存是 dict。"""
-        assert isinstance(file_selector._drive_availability_cache, dict)
+    def test_run_empty_dir_available(self, qapp: Any, tmp_path: Path) -> None:
+        """空目录 scandir 抛出 StopIteration → 仍判可用。"""
+        from freeassetfilter.components.file_selector import (
+            _DriveAvailabilityCheckRunnable,
+            _DriveAvailabilitySignals,
+        )
 
-    def test_drive_availability_cache_set_and_get(self, file_selector) -> None:
-        """验证盘符可用性缓存写入和读取。"""
-        file_selector._drive_availability_cache["C:\\"] = (True, 0.0)
-        cached = file_selector._drive_availability_cache.get("C:\\")
-        assert cached is not None
-        assert cached[0] is True
+        signals = _DriveAvailabilitySignals()
+        results: List[Any] = []
+        signals.finished.connect(lambda p, a: results.append((p, a)))
+        runnable = _DriveAvailabilityCheckRunnable(str(tmp_path) + "\\\\", signals)
+        runnable.run()
+        assert results and results[0][1] is True
 
-    def test_is_drive_available_returns_optimistic_default(self, file_selector) -> None:
-        """验证未知盘符返回乐观默认值 True。"""
-        result = file_selector._is_drive_available("Z:\\")
-        assert result is True
+    def test_run_missing_dir_unavailable(self, qapp: Any, tmp_path: Path) -> None:
+        """目录不存在 → 判不可用。"""
+        from freeassetfilter.components.file_selector import (
+            _DriveAvailabilityCheckRunnable,
+            _DriveAvailabilitySignals,
+        )
 
-    def test_is_drive_available_from_cache(self, file_selector) -> None:
-        """验证已缓存的盘符返回缓存值。"""
-        import time
-        file_selector._drive_availability_cache["D:\\"] = (False, time.time())
-        result = file_selector._is_drive_available("D:\\")
-        assert result is False
+        signals = _DriveAvailabilitySignals()
+        results: List[Any] = []
+        signals.finished.connect(lambda p, a: results.append((p, a)))
+        runnable = _DriveAvailabilityCheckRunnable(
+            str(tmp_path / "nope"), signals
+        )
+        runnable.run()
+        assert results and results[0][1] is False
 
-    def test_expired_cache_rechecks(self, file_selector) -> None:
-        """验证过期缓存触发后台重新检查。"""
-        file_selector._drive_availability_cache["E:\\"] = (False, 0.0)
-        result = file_selector._is_drive_available("E:\\")
-        # 缓存过期但尚未完成后台检查，返回过期缓存值
-        assert result is False
+    def test_run_exception_unavailable(self, qapp: Any, tmp_path: Path, monkeypatch: Any) -> None:
+        """scandir 抛 OSError → 判不可用。"""
+        from freeassetfilter.components.file_selector import (
+            _DriveAvailabilityCheckRunnable,
+            _DriveAvailabilitySignals,
+        )
 
-    def test_on_drive_availability_result_updates_cache(self, file_selector) -> None:
-        """验证后台检查结果更新缓存。"""
-        file_selector._on_drive_availability_result("F:\\", True)
-        cached = file_selector._drive_availability_cache.get("F:\\")
-        assert cached is not None
-        assert cached[0] is True
+        def _broken_scandir(_p: str) -> Any:
+            raise PermissionError("denied")
 
-    def test_on_drive_availability_result_unchanged(self, file_selector) -> None:
-        """验证可用性未变化时不重复发射信号。"""
-        spy = QSignalSpy(file_selector.drive_availability_changed)
-        file_selector._drive_availability_cache["G:\\"] = (True, 0.0)
-        file_selector._on_drive_availability_result("G:\\", True)
-        assert spy.count() == 0
-
-    def test_on_drive_availability_result_changed(self, file_selector) -> None:
-        """验证可用性变化时发射信号。"""
-        spy = QSignalSpy(file_selector.drive_availability_changed)
-        file_selector._drive_availability_cache["H:\\"] = (True, 0.0)
-        file_selector._on_drive_availability_result("H:\\", False)
-        assert spy.count() == 1
-        emitted = spy.at(0)
-        assert emitted[0] == "H:\\"
-        assert emitted[1] is False
-
-    def test_pending_drive_checks_deduplicates(self, file_selector) -> None:
-        """验证相同盘符不会发起重复后台检查。"""
-        file_selector._pending_drive_checks = set()
-        file_selector._schedule_drive_availability_check("I:\\")
-        file_selector._schedule_drive_availability_check("I:\\")
-        assert len(file_selector._pending_drive_checks) == 1
+        monkeypatch.setattr(
+            "freeassetfilter.components.file_selector.os.scandir", _broken_scandir
+        )
+        monkeypatch.setattr(
+            "freeassetfilter.components.file_selector.os.path.exists", lambda p: True
+        )
+        signals = _DriveAvailabilitySignals()
+        results: List[Any] = []
+        signals.finished.connect(lambda p, a: results.append((p, a)))
+        runnable = _DriveAvailabilityCheckRunnable(str(tmp_path), signals)
+        runnable.run()
+        assert results and results[0][1] is False

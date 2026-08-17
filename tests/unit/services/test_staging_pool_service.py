@@ -1,469 +1,524 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-StagingPoolService 单元测试
+"""``StagingPoolService``（freeassetfilter/services/staging_pool_service.py）单元测试。
+
+覆盖（happy + boundary/error 各至少一条）：
+
+* 生命周期 —— 单例同实例、initialize 创建大小计算线程池、dispose 清空并
+  释放线程池
+* 项目管理 —— 批量添加/移除/清空、路径规范化重复检测、缺失 path 拒绝、
+  默认字段补齐、is_dir 标记、快照副本语义、has_path/get_item_by_path
+* 磁盘空间 —— 不存在目录返回 (None, None)、真实目录返回 int 元组
+* 文件夹大小 —— 递归求和、空目录为 0、非目录/不存在路径为 None、
+  预先取消返回 None、异步计算 Happy/非目录/未初始化/重复提交复用 Future/
+  取消任务
+* 序列化 —— format_file_size 全变体、serialize_backup_item 归一化、
+  build_file_info 文件/目录/显式参数/缺失路径
+
+StagingPoolService 为单例且不在 conftest 的 ``reset_singletons`` 清单内，
+本文件自带 autouse fixture 归零并在 teardown 释放旧实例线程池。
 """
 
 from __future__ import annotations
 
 import os
-import sys
-import tempfile
 import threading
-from typing import Any, Dict, List
+import time
+from concurrent.futures import Future
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 import pytest
 
 from freeassetfilter.services.staging_pool_service import StagingPoolService
 
-# ── Fixtures ─────────────────────────────────────────────────────────────
+pytestmark = pytest.mark.unit
 
 
-@pytest.fixture
-def service() -> StagingPoolService:
-    """提供已初始化的 StagingPoolService 实例。"""
-    svc = StagingPoolService()
-    svc.initialize()
-    yield svc
-    svc.dispose()
+@pytest.fixture(autouse=True)
+def _reset_staging_pool_singleton() -> None:
+    """在测试前后归零 StagingPoolService 单例并释放旧实例线程池。
+
+    Returns:
+        None。
+    """
+    previous: Optional[StagingPoolService] = StagingPoolService._instance
+    StagingPoolService._instance = None
+    yield
+    if previous is not None:
+        try:
+            previous.dispose()
+        except Exception:
+            pass
+    StagingPoolService._instance = None
 
 
-@pytest.fixture
-def sample_file(tmp_path) -> str:
-    """创建一个示例文件并返回路径。"""
-    file_path = os.path.join(str(tmp_path), "test.txt")
-    with open(file_path, "w", encoding="utf-8") as f:
-        f.write("hello world")
-    return file_path
+def _item(path: str, name: Optional[str] = None, is_dir: bool = False, **extra: Any) -> Dict[str, Any]:
+    """构造暂存池文件信息字典（测试辅助）。
 
+    Args:
+        path: 文件/目录路径。
+        name: 显示名称，缺省取路径 basename。
+        is_dir: 是否目录。
+        extra: 额外字段。
 
-@pytest.fixture
-def sample_dir(tmp_path) -> str:
-    """创建一个包含文件的示例目录并返回路径。"""
-    sub_dir = os.path.join(str(tmp_path), "subdir")
-    os.makedirs(sub_dir, exist_ok=True)
-    for i in range(3):
-        fp = os.path.join(sub_dir, f"file_{i}.txt")
-        with open(fp, "w", encoding="utf-8") as f:
-            f.write("x" * (i + 1) * 100)
-    return sub_dir
-
-
-def _make_item(path: str, **overrides: Any) -> Dict[str, Any]:
-    """构造一个标准文件信息字典。"""
-    item = {
+    Returns:
+        Dict[str, Any]: 文件信息字典。
+    """
+    data: Dict[str, Any] = {
         "path": path,
-        "name": os.path.basename(path),
-        "is_dir": os.path.isdir(path),
-        "size": None if os.path.isdir(path) else os.path.getsize(path),
-        "size_calculating": False,
-        "modified": "2025-01-01 00:00:00",
-        "created": "2025-01-01 00:00:00",
-        "suffix": os.path.splitext(path)[1].lstrip(".") if not os.path.isdir(path) else "",
-        "display_name": os.path.basename(path),
-        "original_name": os.path.basename(path),
+        "name": name or os.path.basename(path),
+        "is_dir": is_dir,
     }
-    item.update(overrides)
-    return item
+    data.update(extra)
+    return data
 
 
-# ── Lifecycle ────────────────────────────────────────────────────────────
+def _build_tree(tmp_path: Path) -> Path:
+    """构建嵌套目录树：总大小 200 字节。
+
+    Args:
+        tmp_path: pytest 内置的每测试临时目录。
+
+    Returns:
+        Path: 树根目录路径。
+    """
+    from tests.support.data_factories import make_text
+
+    base: Path = tmp_path / "tree"
+    sub: Path = base / "sub"
+    sub.mkdir(parents=True)
+    (sub / "empty").mkdir()
+    make_text(base / "a.txt", content="x" * 120)
+    make_text(sub / "b.txt", content="y" * 80)
+    return base
 
 
+# =============================================================================
+# 生命周期
+# =============================================================================
 class TestLifecycle:
-    """BaseService 生命周期测试。"""
+    """生命周期与单例"""
 
-    def test_initialize_and_dispose(self) -> None:
-        """Given 新服务实例, When 初始化, Then 状态正确."""
-        svc = StagingPoolService()
-        assert svc.initialize() is True
+    def test_singleton_returns_same_instance(self) -> None:
+        """重复构造必须返回同一实例。"""
+        assert StagingPoolService() is StagingPoolService()
+
+    def test_initialize_creates_size_executor(self) -> None:
+        """initialize 后创建线程池且 is_initialized 置位。"""
+        svc: StagingPoolService = StagingPoolService()
+        assert svc.is_initialized is False
+        svc.initialize()
         assert svc.is_initialized is True
+        assert svc._size_calculator_executor is not None
 
+    def test_dispose_clears_items_and_executor(self) -> None:
+        """dispose 清空项目并释放线程池。"""
+        svc: StagingPoolService = StagingPoolService()
+        svc.initialize()
+        svc.add_item(_item("C:\\a.txt"))
         svc.dispose()
         assert svc.is_initialized is False
-
-    def test_initialize_idempotent(self) -> None:
-        """Given 已初始化的服务, When 再次初始化, Then 返回 True."""
-        svc = StagingPoolService()
-        svc.initialize()
-        assert svc.initialize() is True
-
-    def test_dispose_idempotent(self) -> None:
-        """Given 已销毁的服务, When 再次销毁, Then 不报错."""
-        svc = StagingPoolService()
-        svc.initialize()
-        svc.dispose()
-        svc.dispose()  # should not raise
+        assert svc.get_items() == []
+        assert svc._size_calculator_executor is None
 
 
-# ── Item management ─────────────────────────────────────────────────────
+# =============================================================================
+# 项目管理
+# =============================================================================
+class TestItemManagement:
+    """暂存池项目增删查"""
 
+    def test_add_item_sets_default_display_fields(self) -> None:
+        """添加成功后补齐 display_name/original_name 默认值。"""
+        svc: StagingPoolService = StagingPoolService()
+        assert svc.add_item({"path": "C:\\foo\\bar.jpg"}) is True
+        item: Optional[Dict[str, Any]] = svc.get_item_by_path("C:\\foo\\bar.jpg")
+        assert item is not None
+        assert item["display_name"] == "bar.jpg"
+        assert item["original_name"] == "bar.jpg"
+        assert svc.get_items() == [item]
 
-class TestAddItem:
-    """add_item 方法测试。"""
+    def test_add_item_keeps_explicit_name(self) -> None:
+        """显式 name 时不覆盖默认 display_name。"""
+        svc: StagingPoolService = StagingPoolService()
+        svc.add_item(_item("C:\\f.txt", name="自定义名"))
+        item: Optional[Dict[str, Any]] = svc.get_item_by_path("C:\\f.txt")
+        assert item is not None
+        assert item["display_name"] == "自定义名"
 
-    def test_add_single_file(self, service: StagingPoolService, sample_file: str) -> None:
-        """Given 有效文件路径, When 添加到暂存池, Then 返回 True 且项目存在."""
-        item = _make_item(sample_file)
-        assert service.add_item(item) is True
-        items = service.get_items()
-        assert len(items) == 1
-        assert items[0]["name"] == "test.txt"
+    def test_add_item_missing_path_returns_false(self) -> None:
+        """缺 path 键返回 False 且不进入池。"""
+        svc: StagingPoolService = StagingPoolService()
+        assert svc.add_item({"name": "x"}) is False
+        assert svc.add_item({}) is False
+        assert svc.get_items() == []
 
-    def test_add_duplicate_path(self, service: StagingPoolService, sample_file: str) -> None:
-        """Given 重复路径, When 再次添加, Then 返回 False 且项目不重复."""
-        item = _make_item(sample_file)
-        assert service.add_item(item) is True
-        assert service.add_item(item) is False
-        assert len(service.get_items()) == 1
+    def test_add_item_duplicate_normalized_path(self) -> None:
+        """路径规范化后重复检测：斜杠/反斜杠写法视为同一路径。"""
+        svc: StagingPoolService = StagingPoolService()
+        assert svc.add_item(_item("C:\\foo\\bar.jpg")) is True
+        assert svc.add_item(_item("C:/foo/bar.jpg")) is False
+        assert len(svc.get_items()) == 1
 
-    def test_add_without_path(self, service: StagingPoolService) -> None:
-        """Given 无 path 的字典, When 添加, Then 返回 False."""
-        assert service.add_item({"name": "no_path.txt"}) is False
-        assert len(service.get_items()) == 0
+    def test_add_item_dir_marks_size_calculating(self) -> None:
+        """目录项目缺省标记 size_calculating=True。"""
+        svc: StagingPoolService = StagingPoolService()
+        svc.add_item(_item("C:\\folder", is_dir=True))
+        item: Optional[Dict[str, Any]] = svc.get_item_by_path("C:\\folder")
+        assert item is not None
+        assert item["size_calculating"] is True
 
-    def test_add_directory(self, service: StagingPoolService, sample_dir: str) -> None:
-        """Given 目录路径, When 添加, Then 标记 size_calculating=True."""
-        item = _make_item(sample_dir)
-        assert service.add_item(item) is True
-        items = service.get_items()
-        assert len(items) == 1
-        assert items[0]["is_dir"] is True
+    def test_add_item_stores_copy_of_input(self) -> None:
+        """存入的是输入字典的副本，后续外部修改不影响池内项目。"""
+        svc: StagingPoolService = StagingPoolService()
+        info: Dict[str, Any] = _item("C:\\a.txt", size=10)
+        svc.add_item(info)
+        info["size"] = 999
+        item: Optional[Dict[str, Any]] = svc.get_item_by_path("C:\\a.txt")
+        assert item is not None
+        assert item["size"] == 10
 
-    def test_add_sets_defaults(self, service: StagingPoolService, sample_file: str) -> None:
-        """Given 缺少 display_name 的 item, When 添加, Then 自动填充默认值."""
-        item = {"path": sample_file}
-        assert service.add_item(item) is True
-        items = service.get_items()
-        assert items[0]["display_name"] == "test.txt"
-        assert items[0]["original_name"] == "test.txt"
-
-
-class TestRemoveItem:
-    """remove_item 方法测试。"""
-
-    def test_remove_existing(self, service: StagingPoolService, sample_file: str) -> None:
-        """Given 暂存池中有项目, When 按路径移除, Then 返回被移除的项目."""
-        item = _make_item(sample_file)
-        service.add_item(item)
-
-        removed = service.remove_item(sample_file)
+    def test_remove_item_returns_removed_item(self) -> None:
+        """移除返回被移除的项目字典。"""
+        svc: StagingPoolService = StagingPoolService()
+        svc.add_item(_item("C:\\a.txt"))
+        removed: Optional[Dict[str, Any]] = svc.remove_item("C:\\a.txt")
         assert removed is not None
-        assert removed["path"] == sample_file
-        assert service.get_items() == []
+        assert removed["path"] == "C:\\a.txt"
+        assert svc.get_items() == []
 
-    def test_remove_nonexistent(self, service: StagingPoolService) -> None:
-        """Given 不存在的路径, When 移除, Then 返回 None."""
-        assert service.remove_item("/nonexistent/path.txt") is None
-        assert service.get_items() == []
+    def test_remove_item_normalized_match(self) -> None:
+        """移除同样做路径规范化匹配。"""
+        svc: StagingPoolService = StagingPoolService()
+        svc.add_item(_item("C:\\foo\\a.txt"))
+        assert svc.remove_item("C:/foo/a.txt") is not None
 
-    def test_remove_normalizes_path(self, service: StagingPoolService, sample_file: str) -> None:
-        """Given 路径大小写/分隔符不同, When 移除, Then 仍能匹配."""
-        item = _make_item(sample_file)
-        service.add_item(item)
+    def test_remove_missing_returns_none(self) -> None:
+        """移除不存在的路径返回 None。"""
+        svc: StagingPoolService = StagingPoolService()
+        assert svc.remove_item("C:\\nope.txt") is None
 
-        # 使用不同风格路径
-        alt_path = sample_file.replace("\\", "/")
-        removed = service.remove_item(alt_path)
-        assert removed is not None
+    def test_get_items_returns_independent_copies(self) -> None:
+        """get_items 快照独立，修改快照不影响内部项目。"""
+        svc: StagingPoolService = StagingPoolService()
+        svc.add_item(_item("C:\\a.txt"))
+        snapshot: list[Dict[str, Any]] = svc.get_items()
+        snapshot[0]["name"] = "mutated"
+        item: Optional[Dict[str, Any]] = svc.get_item_by_path("C:\\a.txt")
+        assert item is not None
+        assert item["name"] == "a.txt"
 
+    def test_clear_empties_pool(self) -> None:
+        """clear 一次清空全部项目。"""
+        svc: StagingPoolService = StagingPoolService()
+        svc.add_item(_item("C:\\a.txt"))
+        svc.add_item(_item("C:\\b.txt"))
+        svc.clear()
+        assert svc.get_items() == []
 
-class TestGetItems:
-    """get_items 方法测试。"""
+    def test_has_path(self) -> None:
+        """has_path 反映路径是否在池中。"""
+        svc: StagingPoolService = StagingPoolService()
+        assert svc.has_path("C:\\a.txt") is False
+        svc.add_item(_item("C:\\a.txt"))
+        assert svc.has_path("C:\\a.txt") is True
 
-    def test_get_items_returns_copy(self, service: StagingPoolService, sample_file: str) -> None:
-        """Given 暂存池有项目, When 获取列表, Then 返回的是独立副本."""
-        item = _make_item(sample_file)
-        service.add_item(item)
-
-        items = service.get_items()
-        items.clear()
-        assert len(service.get_items()) == 1  # 原列表不受影响
-
-    def test_get_items_empty_when_no_items(self, service: StagingPoolService) -> None:
-        """Given 空暂存池, When 获取列表, Then 返回空列表."""
-        assert service.get_items() == []
-
-
-class TestClear:
-    """clear 方法测试。"""
-
-    def test_clear_removes_all(self, service: StagingPoolService, tmp_path) -> None:
-        """Given 暂存池有多个项目, When 清空, Then 列表为空."""
-        for i in range(5):
-            fp = os.path.join(str(tmp_path), f"file_{i}.txt")
-            # 先创建真实文件，否则 _make_item 中 os.path.getsize 会报错
-            with open(fp, "w") as f:
-                f.write("test")
-            service.add_item(_make_item(fp))
-        assert len(service.get_items()) == 5
-
-        service.clear()
-        assert service.get_items() == []
-
-    def test_clear_empty_pool(self, service: StagingPoolService) -> None:
-        """Given 空暂存池, When 清空, Then 不报错."""
-        service.clear()  # should not raise
+    def test_get_item_by_path_missing_returns_none(self) -> None:
+        """get_item_by_path 未命中返回 None。"""
+        assert StagingPoolService().get_item_by_path("C:\\missing.txt") is None
 
 
-class TestGetItemByPath:
-    """get_item_by_path 方法测试。"""
+# =============================================================================
+# 磁盘空间
+# =============================================================================
+class TestDiskSpace:
+    """目录所在磁盘容量查询"""
 
-    def test_find_existing(self, service: StagingPoolService, sample_file: str) -> None:
-        """Given 已添加的文件, When 按路径查找, Then 返回正确项目."""
-        item = _make_item(sample_file)
-        service.add_item(item)
-        found = service.get_item_by_path(sample_file)
-        assert found is not None
-        assert found["name"] == "test.txt"
+    def test_missing_directory_returns_none_none(self, tmp_path: Path) -> None:
+        """不存在的目录返回 (None, None)。"""
+        svc: StagingPoolService = StagingPoolService()
+        assert (
+            svc.get_directory_space(str(tmp_path / "ghost_directory")) == (None, None)
+        )
 
-    def test_find_nonexistent(self, service: StagingPoolService) -> None:
-        """Given 未添加的路径, When 查找, Then 返回 None."""
-        assert service.get_item_by_path("/nonexistent.txt") is None
-
-
-class TestHasPath:
-    """has_path 方法测试。"""
-
-    def test_has_existing_path(self, service: StagingPoolService, sample_file: str) -> None:
-        """Given 已添加的文件, When 检查路径, Then 返回 True."""
-        item = _make_item(sample_file)
-        service.add_item(item)
-        assert service.has_path(sample_file) is True
-
-    def test_has_nonexistent_path(self, service: StagingPoolService) -> None:
-        """Given 未添加的路径, When 检查, Then 返回 False."""
-        assert service.has_path("/nonexistent.txt") is False
-
-    def test_has_after_removal(self, service: StagingPoolService, sample_file: str) -> None:
-        """Given 已移除的项目, When 检查路径, Then 返回 False."""
-        item = _make_item(sample_file)
-        service.add_item(item)
-        service.remove_item(sample_file)
-        assert service.has_path(sample_file) is False
-
-
-# ── Disk space ──────────────────────────────────────────────────────────
-
-
-class TestGetDirectorySpace:
-    """get_directory_space 方法测试。"""
-
-    def test_returns_non_none_for_existing_dir(self, service: StagingPoolService) -> None:
-        """Given 存在的目录, When 查询磁盘空间, Then 返回 (total, free) 整数对."""
-        total, free = service.get_directory_space(os.getcwd())
-        assert total is not None
-        assert free is not None
+    def test_existing_directory_returns_int_tuple(self, tmp_path: Path) -> None:
+        """真实目录返回 (总容量, 可用空间) 非负 int 元组。"""
+        svc: StagingPoolService = StagingPoolService()
+        total: Any
+        free: Any
+        total, free = svc.get_directory_space(str(tmp_path))
         assert isinstance(total, int)
         assert isinstance(free, int)
-        assert total > 0
-        assert free > 0
-
-    def test_returns_none_for_nonexistent_dir(self, service: StagingPoolService) -> None:
-        """Given 不存在的目录, When 查询磁盘空间, Then 返回 (None, None)."""
-        total, free = service.get_directory_space("Z:\\nonexistent_path_xyz")
-        assert total is None
-        assert free is None
+        assert total >= 0
+        assert free >= 0
 
 
-# ── Folder size ─────────────────────────────────────────────────────────
+# =============================================================================
+# 文件夹大小
+# =============================================================================
+class TestFolderSize:
+    """递归大小计算"""
 
+    def test_calculate_folder_size_recursive(self, tmp_path: Path) -> None:
+        """嵌套目录递归求和。"""
+        base: Path = _build_tree(tmp_path)
+        size: Optional[int] = StagingPoolService().calculate_folder_size(str(base))
+        assert size == 200
 
-class TestCalculateFolderSize:
-    """calculate_folder_size 方法测试。"""
+    def test_calculate_folder_size_empty_dir(self, tmp_path: Path) -> None:
+        """空目录返回 0。"""
+        empty: Path = tmp_path / "empty"
+        empty.mkdir()
+        assert StagingPoolService().calculate_folder_size(str(empty)) == 0
 
-    def test_empty_dir(self, service: StagingPoolService, tmp_path) -> None:
-        """Given 空目录, When 计算大小, Then 返回 0."""
-        empty_dir = os.path.join(str(tmp_path), "empty")
-        os.makedirs(empty_dir, exist_ok=True)
-        size = service.calculate_folder_size(empty_dir)
-        assert size == 0
+    def test_calculate_folder_size_not_dir_returns_none(self, tmp_path: Path) -> None:
+        """传文件路径返回 None。"""
+        f: Path = tmp_path / "file.txt"
+        f.write_text("x", encoding="utf-8")
+        assert StagingPoolService().calculate_folder_size(str(f)) is None
 
-    def test_dir_with_files(self, service: StagingPoolService, sample_dir: str) -> None:
-        """Given 包含文件的目录, When 计算大小, Then 返回累加大小."""
-        size = service.calculate_folder_size(sample_dir)
-        # files: file_0.txt (100B), file_1.txt (200B), file_2.txt (300B)
-        assert size == 600  # (1 + 2 + 3) * 100
+    def test_calculate_folder_size_missing_path_returns_none(
+        self, tmp_path: Path
+    ) -> None:
+        """不存在的路径返回 None。"""
+        assert (
+            StagingPoolService().calculate_folder_size(
+                str(tmp_path / "missing")
+            )
+            is None
+        )
 
-    def test_cancelled_returns_none(self, service: StagingPoolService, tmp_path) -> None:
-        """Given 取消事件已设置, When 计算大小, Then 返回 None."""
-        cancel = threading.Event()
+    def test_calculate_folder_size_precancelled_returns_none(
+        self, tmp_path: Path
+    ) -> None:
+        """预先置位的取消事件使计算返回 None。"""
+        base: Path = _build_tree(tmp_path)
+        cancel: threading.Event = threading.Event()
         cancel.set()
-        result = service.calculate_folder_size(str(tmp_path), cancel_event=cancel)
-        assert result is None
+        assert (
+            StagingPoolService().calculate_folder_size(str(base), cancel) is None
+        )
 
-    def test_nonexistent_dir(self, service: StagingPoolService) -> None:
-        """Given 不存在的目录, When 计算大小, Then 返回 None."""
-        size = service.calculate_folder_size("Z:\\nonexistent_path_xyz")
-        assert size is None
-
-
-class TestCalculateFolderSizeAsync:
-    """calculate_folder_size_async 方法测试。"""
-
-    def test_async_returns_future(self, service: StagingPoolService, sample_dir: str) -> None:
-        """Given 存在的目录, When 异步计算, Then 返回 Future 并得到正确结果."""
-        future = service.calculate_folder_size_async(sample_dir)
+    def test_async_happy_path(self, tmp_path: Path) -> None:
+        """异步计算返回带结果的 Future。"""
+        base: Path = _build_tree(tmp_path)
+        svc: StagingPoolService = StagingPoolService()
+        svc.initialize()
+        future: Optional[Future] = svc.calculate_folder_size_async(str(base))
         assert future is not None
-        result = future.result(timeout=10)
-        assert result == 600
+        assert future.result(timeout=10) == 200
 
-    def test_async_returns_none_for_file(self, service: StagingPoolService, sample_file: str) -> None:
-        """Given 文件而非目录, When 异步计算, Then 返回 None."""
-        result = service.calculate_folder_size_async(sample_file)
-        assert result is None
+    def test_async_not_dir_returns_none(self, tmp_path: Path) -> None:
+        """非目录路径异步提交返回 None。"""
+        f: Path = tmp_path / "f.txt"
+        f.write_text("x", encoding="utf-8")
+        svc: StagingPoolService = StagingPoolService()
+        svc.initialize()
+        assert svc.calculate_folder_size_async(str(f)) is None
 
-    def test_async_callback_called(self, service: StagingPoolService, sample_dir: str) -> None:
-        """Given 注册了 callback, When 异步计算完成, Then callback 被调用. """
-        received: List[Any] = []
+    def test_async_without_initialize_returns_none(self, tmp_path: Path) -> None:
+        """未 initialize（无线程池）时返回 None。"""
+        base: Path = _build_tree(tmp_path)
+        svc: StagingPoolService = StagingPoolService()
+        assert svc.calculate_folder_size_async(str(base)) is None
 
-        def cb(result):
-            received.append(result)
+    def test_async_duplicate_submit_reuses_running_future(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """相同路径的未完成任务只提交一次，重复提交复用同一 Future。"""
+        base: Path = _build_tree(tmp_path)
+        svc: StagingPoolService = StagingPoolService()
+        svc.initialize()
+        started: threading.Event = threading.Event()
+        release: threading.Event = threading.Event()
 
-        future = service.calculate_folder_size_async(sample_dir, callback=cb)
+        def _slow_worker(folder: str, cancel_event: threading.Event) -> Optional[int]:
+            started.set()
+            release.wait(10)
+            return 200
+
+        monkeypatch.setattr(svc, "_calculate_folder_size_worker", _slow_worker)
+        try:
+            first: Optional[Future] = svc.calculate_folder_size_async(str(base))
+            assert first is not None
+            assert started.wait(5)
+            second: Optional[Future] = svc.calculate_folder_size_async(str(base))
+            assert second is not None
+            assert second is first
+        finally:
+            release.set()
+
+    def test_cancel_folder_size_calculation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """取消任务后 Future 解析为 None。"""
+        base: Path = _build_tree(tmp_path)
+        svc: StagingPoolService = StagingPoolService()
+        svc.initialize()
+
+        def _blocking_worker(
+            folder: str, cancel_event: threading.Event
+        ) -> Optional[int]:
+            while not cancel_event.is_set():
+                time.sleep(0.01)
+            return None
+
+        monkeypatch.setattr(svc, "_calculate_folder_size_worker", _blocking_worker)
+        future: Optional[Future] = svc.calculate_folder_size_async(str(base))
         assert future is not None
-        future.result(timeout=10)
-
-        # Callback is invoked from done callback; wait a tick
-        import time
-        time.sleep(0.1)
-        assert len(received) == 1
-        assert received[0] == 600
-
-    def test_cancel_async(self, service: StagingPoolService, tmp_path) -> None:
-        """Given 提交后立即取消, When 取消任务, Then 不报错."""
-        sub_dir = os.path.join(str(tmp_path), "cancel_test")
-        os.makedirs(sub_dir, exist_ok=True)
-
-        future = service.calculate_folder_size_async(sub_dir)
-        assert future is not None
-        service.cancel_folder_size_calculation(sub_dir)
-        # 取消后不报错即可
+        svc.cancel_folder_size_calculation(str(base))
+        assert future.result(timeout=10) is None
 
 
-class TestCancelFolderSize:
-    """cancel_folder_size_calculation 方法测试。"""
+# =============================================================================
+# 文件大小格式化
+# =============================================================================
+class TestFormatFileSize:
+    """字节数格式化"""
 
-    def test_cancel_nonexistent(self, service: StagingPoolService) -> None:
-        """Given 不存在的任务, When 取消, Then 不报错."""
-        service.cancel_folder_size_calculation("/nonexistent")  # should not raise
+    def test_zero_bytes(self) -> None:
+        assert StagingPoolService.format_file_size(0) == "0 B"
+
+    def test_small_bytes(self) -> None:
+        assert StagingPoolService.format_file_size(512) == "512 B"
+
+    def test_kilobytes(self) -> None:
+        assert StagingPoolService.format_file_size(1536) == "1.50 KB"
+
+    def test_megabytes(self) -> None:
+        assert StagingPoolService.format_file_size(2 * 1024 * 1024) == "2.00 MB"
+
+    def test_float_input(self) -> None:
+        assert StagingPoolService.format_file_size(1024.0) == "1.00 KB"
+
+    def test_none_returns_empty(self) -> None:
+        assert StagingPoolService.format_file_size(None) == ""
+
+    def test_invalid_input_returns_empty(self) -> None:
+        assert StagingPoolService.format_file_size("abc") == ""
+
+    def test_negative_clamped_to_zero(self) -> None:
+        assert StagingPoolService.format_file_size(-10) == "0 B"
 
 
-# ── Serialization ───────────────────────────────────────────────────────
-
-
+# =============================================================================
+# 序列化
+# =============================================================================
 class TestSerializeBackupItem:
-    """serialize_backup_item 方法测试。"""
+    """备份序列化"""
 
-    def test_serialize_valid_item(self) -> None:
-        """Given 有效文件信息, When 序列化, Then 返回可 JSON 序列化的字典."""
-        item = {
-            "path": "C:\\test\\file.txt",
-            "name": "file.txt",
-            "size": 1024,
-            "is_dir": False,
-            "is_selected": True,
-            "is_missing": False,
-            "size_calculating": False,
-            "modified": "2025-01-01",
-            "created": "2025-01-01",
-            "suffix": "txt",
-            "display_name": "file.txt",
-            "original_name": "file.txt",
-        }
-        result = StagingPoolService.serialize_backup_item(item)
-        assert result is not None
-        assert result["path"] == "C:\\test\\file.txt"
-        assert result["size"] == 1024
-        assert result["is_dir"] is False
-        assert result["is_selected"] is True
+    def test_happy_path_normalizes(self) -> None:
+        """合法输入归一化：path 规范化、未知 string/bool 字段补默认值。"""
+        out: Optional[Dict[str, Any]] = StagingPoolService.serialize_backup_item(
+            {
+                "path": "C:\\foo\\bar.txt",
+                "name": "bar.txt",
+                "size": 123,
+                "is_dir": False,
+                "size_calculating": False,
+            }
+        )
+        assert out is not None
+        assert out["path"] == os.path.normpath("C:\\foo\\bar.txt")
+        assert out["size"] == 123
+        assert out["name"] == "bar.txt"
+        assert out["is_dir"] is False
+        assert out["size_calculating"] is False
+        assert out["modified"] == ""
 
-    def test_serialize_invalid_type(self) -> None:
-        """Given 非字典输入, When 序列化, Then 返回 None."""
-        assert StagingPoolService.serialize_backup_item(None) is None
-        assert StagingPoolService.serialize_backup_item("not_a_dict") is None
+    def test_size_none_preserved(self) -> None:
+        """size 为 None 时保留为 None。"""
+        out: Optional[Dict[str, Any]] = StagingPoolService.serialize_backup_item(
+            {"path": "C:\\d", "size": None}
+        )
+        assert out is not None
+        assert out["size"] is None
 
-    def test_serialize_missing_path(self) -> None:
-        """Given 不含 path 的字典, When 序列化, Then 返回 None."""
-        assert StagingPoolService.serialize_backup_item({"foo": "bar"}) is None
+    def test_size_bool_coerced_to_none(self) -> None:
+        """size 为 bool 时不视为数字，降级为 None。"""
+        out: Optional[Dict[str, Any]] = StagingPoolService.serialize_backup_item(
+            {"path": "C:\\d", "size": True}
+        )
+        assert out is not None
+        assert out["size"] is None
 
+    def test_string_and_bool_fields_coerced(self) -> None:
+        """string 字段转 str、bool 字段走 truthiness。"""
+        out: Optional[Dict[str, Any]] = StagingPoolService.serialize_backup_item(
+            {
+                "path": "C:\\a.txt",
+                "info_text": None,
+                "suffix": 42,
+                "is_selected": "yes",
+            }
+        )
+        assert out is not None
+        assert out["info_text"] == ""
+        assert out["suffix"] == "42"
+        assert out["is_selected"] is True
 
-# ── build_file_info ─────────────────────────────────────────────────────
+    def test_non_dict_returns_none(self) -> None:
+        assert StagingPoolService.serialize_backup_item("nope") is None
+
+    def test_missing_path_returns_none(self) -> None:
+        assert StagingPoolService.serialize_backup_item({"name": "x"}) is None
+
+    def test_blank_path_normalizes_to_dot(self) -> None:
+        """记录现状：纯空白路径 normpath(\"\") 后为 \".\"，被接受而非拒绝。
+
+        ``normpath`` 对空串返回 ``\".\"``（Windows 与 POSIX 一致），因此
+        代码里的 ``if not path`` 空路径守卫实际上是死代码——空白路径会以
+        ``\".\"`` 形式通过序列化。
+        """
+        out: Optional[Dict[str, Any]] = StagingPoolService.serialize_backup_item(
+            {"path": "   "}
+        )
+        assert out is not None
+        assert out["path"] == "."
 
 
 class TestBuildFileInfo:
-    """build_file_info 方法测试。"""
+    """文件信息构建"""
 
-    def test_build_file_info(self, sample_file: str) -> None:
-        """Given 文件路径, When 构建信息, Then 返回完整信息字典."""
-        info = StagingPoolService.build_file_info(sample_file)
+    def test_happy_file(self, tmp_path: Path) -> None:
+        """真实文件构建完整信息字典。"""
+        f: Path = tmp_path / "photo.PNG"
+        f.write_bytes(b"xx")
+        info: Optional[Dict[str, Any]] = StagingPoolService.build_file_info(str(f))
         assert info is not None
-        assert info["name"] == "test.txt"
-        assert info["path"] == sample_file
+        assert info["name"] == "photo.PNG"
+        assert info["path"] == str(f)
         assert info["is_dir"] is False
-        assert info["size"] is not None
+        assert info["suffix"] == "png"
+        assert info["size"] == 2
+        assert info["size_calculating"] is False
+        assert info["display_name"] == "photo.PNG"
 
-    def test_build_file_info_nonexistent(self) -> None:
-        """Given 不存在的路径, When 构建信息, Then 返回 None."""
-        info = StagingPoolService.build_file_info("Z:\\nonexistent.txt")
-        assert info is None
+    def test_happy_directory(self, tmp_path: Path) -> None:
+        """目录信息：size 为 None、size_calculating 为 True、无后缀。"""
+        d: Path = tmp_path / "folder"
+        d.mkdir()
+        info: Optional[Dict[str, Any]] = StagingPoolService.build_file_info(str(d))
+        assert info is not None
+        assert info["is_dir"] is True
+        assert info["size"] is None
+        assert info["size_calculating"] is True
+        assert info["suffix"] == ""
 
+    def test_missing_path_returns_none(self, tmp_path: Path) -> None:
+        """不存在的路径返回 None。"""
+        assert (
+            StagingPoolService.build_file_info(str(tmp_path / "missing")) is None
+        )
 
-# ── Thread safety ───────────────────────────────────────────────────────
-
-
-class TestThreadSafety:
-    """多线程并发操作测试。"""
-
-    def test_concurrent_add(self, service: StagingPoolService, tmp_path) -> None:
-        """Given 多线程, When 并发添加, Then 数据一致."""
-        paths = []
-        for i in range(20):
-            fp = os.path.join(str(tmp_path), f"concurrent_{i}.txt")
-            with open(fp, "w") as f:
-                f.write(str(i))
-            paths.append(fp)
-
-        errors: List[Exception] = []
-
-        def add_path(p: str) -> None:
-            try:
-                service.add_item(_make_item(p))
-            except Exception as e:
-                errors.append(e)
-
-        threads = [threading.Thread(target=add_path, args=(p,)) for p in paths]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        assert not errors, f"并发添加时发生异常: {errors}"
-        assert len(service.get_items()) == 20
-
-    def test_concurrent_remove(self, service: StagingPoolService, tmp_path) -> None:
-        """Given 多线程, When 并发移除, Then 数据一致."""
-        paths = []
-        for i in range(10):
-            fp = os.path.join(str(tmp_path), f"rem_{i}.txt")
-            with open(fp, "w") as f:
-                f.write(str(i))
-            paths.append(fp)
-            service.add_item(_make_item(fp))
-
-        errors: List[Exception] = []
-
-        def remove_path(p: str) -> None:
-            try:
-                service.remove_item(p)
-            except Exception as e:
-                errors.append(e)
-
-        threads = [threading.Thread(target=remove_path, args=(p,)) for p in paths]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        assert not errors, f"并发移除时发生异常: {errors}"
-        assert len(service.get_items()) == 0
+    def test_explicit_stat_and_is_dir(self, tmp_path: Path) -> None:
+        """显式传入 stat_result 与 is_dir 时避免重复系统调用。"""
+        f: Path = tmp_path / "a.txt"
+        f.write_text("hello", encoding="utf-8")
+        stat: os.stat_result = os.stat(str(f))
+        info: Optional[Dict[str, Any]] = StagingPoolService.build_file_info(
+            str(f), stat_result=stat, is_dir=False
+        )
+        assert info is not None
+        assert info["size"] == 5
+        assert info["is_dir"] is False

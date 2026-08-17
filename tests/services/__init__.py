@@ -1,1 +1,0 @@
-# StagingPoolService tests

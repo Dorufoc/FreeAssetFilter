@@ -49,6 +49,7 @@ htmlcov/
 *.cache
 .icon_cache/
 tests/gui/screenshots/
+tests/log/
 
 # --- Build artifacts (PyInstaller, Nuitka) ---
 build/
