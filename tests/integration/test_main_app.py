@@ -25,6 +25,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import sys
@@ -33,8 +34,9 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import pytest
-from PySide6.QtCore import QEvent, QSize
+from PySide6.QtCore import QEvent, QSize, Signal
 from PySide6.QtGui import QCloseEvent, QFocusEvent, QResizeEvent
+from PySide6.QtWidgets import QPushButton, QWidget
 
 from tests.support.qt_helpers import flush_widget_queue
 
@@ -466,6 +468,12 @@ class _FakeSelector:
     def scroll_to_file(self, file_info: Dict[str, Any]) -> None:
         pass
 
+    def save_current_path(self) -> None:
+        """桩：closeEvent 会调用，此处静默。"""
+
+    def save_view_mode(self) -> None:
+        """桩：closeEvent 会调用，此处静默。"""
+
 
 class _FakeStagingPool:
     """模拟 file_staging_pool 的最小桩。"""
@@ -494,6 +502,9 @@ class _FakeStagingPool:
 
     def save_backup(self, last_path: Optional[str] = None) -> None:
         """桩：真实实现会写盘，此处静默（防泄漏任务报错）。"""
+
+    def flush_backup_save_now(self, last_path: Optional[str] = None) -> None:
+        """桩：真实实现会立即写盘，此处静默。"""
 
     def refresh_all_card_icons(self) -> None:
         """桩：真实实现会重建图标，此处静默。"""
@@ -1215,10 +1226,12 @@ class _FakeMessageBox:
 
     last: "_FakeMessageBox" = None
     force_next: bool = False
+    # 类级累计计数：生产代码每次弹窗都新建 QMessageBox 实例，
+    # 若用实例属性，`>= 2` 断言永远只看到最后一次 exec 的 1 次调用。
+    exec_calls: int = 0
 
     def __init__(self) -> None:
         _FakeMessageBox.last = self
-        self.exec_calls: int = 0
         self.buttons: List[Tuple[str, int]] = []
         self.clicked: Optional[Tuple[str, int]] = None
 
@@ -1235,14 +1248,18 @@ class _FakeMessageBox:
         self.info_text = text
 
     def addButton(self, text: str, role: int) -> Tuple[str, int]:
-        self.buttons.append((text, role))
-        return (text, role)
+        # 必须返回与 buttons 中完全相同的对象：
+        # 生产代码用 `clicked_button is not force_restart_button` 做身份比较，
+        # 若此处新建第二个元组，身份比较永远为真 → 强制终止分支永远走不到。
+        button: Tuple[str, int] = (text, role)
+        self.buttons.append(button)
+        return button
 
     def setDefaultButton(self, button: Any) -> None:
         self.default = button
 
     def exec(self) -> None:
-        self.exec_calls += 1
+        _FakeMessageBox.exec_calls += 1
         if _FakeMessageBox.force_next and len(self.buttons) > 1:
             self.clicked = self.buttons[1]  # 强制终止后重新启动
         elif self.clicked is None and self.buttons:
@@ -1260,6 +1277,7 @@ class TestAlreadyRunningDialog:
         from PySide6 import QtWidgets as QW
 
         _FakeMessageBox.force_next = False
+        _FakeMessageBox.exec_calls = 0
         monkeypatch.setattr(QW, "QMessageBox", _FakeMessageBox)
 
     def test_ok_button_exits(self, main_module: Any, monkeypatch: Any) -> None:
@@ -1476,6 +1494,1189 @@ class TestMainWorkerBranches:
             main_module.main()
         assert calls and calls[0] == ("C:/x.exe", "1234")
         assert exited == [0]
+
+
+# ---------------------------------------------------------------------------
+# W19：FreeAssetFilterApp 方法级行为测试（QThread 清理 / 窗口事件 / 主题辅助）
+# ---------------------------------------------------------------------------
+def _build_main_app(main_module: Any, monkeypatch: Any) -> Any:
+    """构造真实 FreeAssetFilterApp 并抑制模块级退出副作用。
+
+    Args:
+        main_module: 已导入的 freeassetfilter.app.main 模块。
+        monkeypatch: pytest monkeypatch（本测试内生效）。
+
+    Returns:
+        Any: 真实的 FreeAssetFilterApp 实例。
+    """
+    monkeypatch.setattr(main_module, "cleanup_faulthandler", lambda: None)
+    monkeypatch.setattr(main_module, "debug_exit_threads", lambda: None)
+    return main_module.FreeAssetFilterApp()
+
+
+@pytest.fixture
+def app(main_module: Any, qapp: Any, monkeypatch: Any) -> Any:
+    """函数级 app fixture：真实构造主窗口，teardown 释放。
+
+    Args:
+        main_module: 已导入的 freeassetfilter.app.main 模块。
+        qapp: 会话级 QApplication。
+        monkeypatch: pytest monkeypatch。
+
+    Returns:
+        Any: 可复用的 FreeAssetFilterApp 实例。
+    """
+    a = _build_main_app(main_module, monkeypatch)
+    yield a
+    a.deleteLater()
+    flush_widget_queue(qapp)
+
+
+class _FakeQThreadStub:
+    """模拟 QThread 的最小桩：可配置 running / wait 结果。"""
+
+    def __init__(self, running: bool = False, wait_result: bool = True) -> None:
+        self._running = running
+        self._wait_result = wait_result
+        self.interrupted = 0
+        self.quitted = 0
+        self.waited = 0
+        self.terminated = 0
+        self.finished = SimpleNamespace(connect=lambda cb: None)
+
+    def isRunning(self) -> bool:
+        return self._running
+
+    def isFinished(self) -> bool:
+        return not self._running
+
+    def requestInterruption(self) -> None:
+        self.interrupted += 1
+
+    def cancel(self) -> None:
+        """兼容 _cleanup_preview_before_close 的 cancel() 调用。"""
+        self.interrupted += 1
+
+    def quit(self) -> None:
+        self.quitted += 1
+
+    def wait(self, ms: int) -> bool:
+        self.waited += 1
+        return self._wait_result
+
+    def terminate(self) -> None:
+        self.terminated += 1
+
+
+class _FakeUpdateControllerStub:
+    """模拟 update_controller 的最小桩。"""
+
+    def __init__(self) -> None:
+        self.cancel_calls = 0
+        self._silent_check_worker: Any = None
+        self._retired_silent_workers: List[Any] = []
+        self._check_worker: Any = None
+        self._download_worker: Any = None
+        self.silent_starts = 0
+        self.bound_buttons: List[Any] = []
+
+    def cancel_silent_check(self) -> None:
+        self.cancel_calls += 1
+
+    def bind_button(self, button: Any) -> None:
+        self.bound_buttons.append(button)
+
+    def start_silent_update_check(self) -> None:
+        self.silent_starts += 1
+
+
+class _SingleShotCapture:
+    """记录 QTimer.singleShot 调度，可选同步执行回调。"""
+
+    def __init__(self) -> None:
+        self.shots: List[Tuple[int, Any]] = []
+        self.auto_execute: bool = False
+
+    def __call__(self, ms: int, callback: Any) -> None:
+        self.shots.append((ms, callback))
+        if self.auto_execute:
+            callback()
+
+
+def _patch_single_shot(main_module: Any, monkeypatch: Any, auto_execute: bool = False) -> _SingleShotCapture:
+    """把 main 模块命名空间中的 QTimer 替换为捕获 singleShot 的子类。
+
+    Args:
+        main_module: 已导入的 freeassetfilter.app.main 模块。
+        monkeypatch: pytest monkeypatch。
+        auto_execute: True 时 singleShot 回调被同步执行（驱动真实行为）。
+
+    Returns:
+        _SingleShotCapture: 记录 (ms, callback) 的收集器。
+    """
+    real_qtimer = main_module.QTimer
+    capture = _SingleShotCapture()
+    capture.auto_execute = auto_execute
+
+    class _PatchedQTimer(real_qtimer):  # type: ignore[misc]
+        @staticmethod
+        def singleShot(*args: Any) -> None:  # type: ignore[override]
+            capture(*args)
+
+    monkeypatch.setattr(main_module, "QTimer", _PatchedQTimer)
+    return capture
+
+
+class TestAppThreadCleanup:
+    """_safe_stop_qthread / _cleanup_all_qthreads_before_exit 控制流。"""
+
+    def test_safe_stop_qthread_none(self, app: Any) -> None:
+        """boundary：线程为 None 直接返回。"""
+        assert app._safe_stop_qthread(None) is None
+
+    def test_safe_stop_qthread_not_running(self, app: Any) -> None:
+        """happy：未运行的线程直接返回 True，不调用 wait。"""
+        t = _FakeQThreadStub(running=False)
+        assert app._safe_stop_qthread(t) is True
+        assert t.interrupted == 0
+        assert t.quitted == 0
+        assert t.waited == 0
+
+    def test_safe_stop_qthread_stops_running_thread(self, app: Any) -> None:
+        """happy：运行中线程收到 interrupt + quit，wait 成功后返回 True。"""
+        t = _FakeQThreadStub(running=True, wait_result=True)
+        assert app._safe_stop_qthread(t, name="TestThread", timeout=500) is True
+        assert t.interrupted == 1
+        assert t.quitted == 1
+        assert t.waited == 1
+
+    def test_safe_stop_qthread_wait_timeout(self, app: Any) -> None:
+        """boundary：wait 超时返回 False 并记录警告。"""
+        t = _FakeQThreadStub(running=True, wait_result=False)
+        assert app._safe_stop_qthread(t, name="SlowThread", timeout=100) is False
+        assert t.quitted == 1
+
+    def test_safe_stop_qthread_exception_swallowed(self, app: Any) -> None:
+        """boundary：isRunning 抛异常时返回 False（不中断）。"""
+
+        class _BoomThread:
+            def isRunning(self) -> bool:
+                raise RuntimeError("boom")
+
+        assert app._safe_stop_qthread(_BoomThread()) is False
+
+    def test_cleanup_all_qthreads_no_components(self, app: Any) -> None:
+        """boundary：无 update_controller / 无线程属性时不抛。"""
+        app._cleanup_all_qthreads_before_exit()  # 不抛即可
+
+    def test_cleanup_all_qthreads_terminates_workers(self, app: Any) -> None:
+        """happy：静默/手动 worker 强制终止，下载线程走安全停止。"""
+        silent = _FakeQThreadStub(running=True)
+        retired = _FakeQThreadStub(running=True)
+        check = _FakeQThreadStub(running=True)
+        download = _FakeQThreadStub(running=True, wait_result=False)
+        sel_t = _FakeQThreadStub(running=True)
+        preview_t = _FakeQThreadStub(running=True)
+        pool_waits: List[int] = []
+
+        uc = _FakeUpdateControllerStub()
+        uc._silent_check_worker = silent
+        uc._retired_silent_workers = [retired]
+        uc._check_worker = check
+        uc._download_worker = download
+        app.update_controller = uc
+
+        sel_a = SimpleNamespace(
+            _drive_list_thread=sel_t, _file_loader_thread=None, _thumbnail_thread=None
+        )
+        sel_b = SimpleNamespace(
+            _drive_list_thread=None, _file_loader_thread=None, _thumbnail_thread=None
+        )
+        app.file_selector_a = sel_a
+        app.file_selector_b = sel_b
+
+        app.unified_previewer = SimpleNamespace(
+            _preview_thread=preview_t,
+            file_info_viewer=SimpleNamespace(load_thread=None),
+            photo_viewer=SimpleNamespace(
+                raw_processor=None,
+                heif_avif_processor=None,
+                ico_processor=None,
+                psd_processor=None,
+            ),
+            font_previewer=SimpleNamespace(_thread=None),
+            audio_background=SimpleNamespace(
+                _thread_pool=SimpleNamespace(
+                    waitForDone=lambda ms: pool_waits.append(ms)
+                )
+            ),
+        )
+
+        app._cleanup_all_qthreads_before_exit()
+
+        assert uc.cancel_calls == 1
+        assert silent.terminated == 1
+        assert silent.waited == 1
+        assert check.terminated == 1
+        assert download.quitted == 1
+        assert download.interrupted == 1
+        assert sel_t.quitted == 1
+        assert preview_t.quitted == 1
+        assert silent in app._retired_worker_refs
+        assert retired in app._retired_worker_refs
+        assert check in app._retired_worker_refs
+        assert pool_waits == [1500]
+
+    def test_cleanup_retired_worker_removes(self, app: Any) -> None:
+        """happy：_cleanup_retired_worker 从引用列表移除指定 worker。"""
+        w1 = _FakeQThreadStub()
+        w2 = _FakeQThreadStub()
+        app._retired_worker_refs = [w1, w2]
+        app._cleanup_retired_worker(w1)
+        assert w1 not in app._retired_worker_refs
+        assert w2 in app._retired_worker_refs
+
+
+class TestWindowEventsAndCards:
+    """标题栏主题、resize/change 事件与卡片尺寸更新回调。"""
+
+    def test_apply_title_bar_theme_calls_dwm(
+        self, app: Any, monkeypatch: Any
+    ) -> None:
+        """happy：DwmSetWindowAttribute 收到 hwnd/属性 20/大小 4。"""
+        import ctypes as ctypes_mod
+
+        class _FakeDwm:
+            def __init__(self) -> None:
+                self.calls: List[Tuple[Any, Any, Any, Any]] = []
+
+            def DwmSetWindowAttribute(self, hwnd: Any, attr: Any, value: Any, size: Any) -> None:
+                self.calls.append((hwnd, attr, value, size))
+
+        fake = _FakeDwm()
+        monkeypatch.setattr(ctypes_mod, "windll", SimpleNamespace(dwmapi=fake), raising=False)
+        app._apply_title_bar_theme()
+        assert len(fake.calls) == 1
+        hwnd, attr, _value, size = fake.calls[0]
+        assert hwnd == int(app.winId())
+        assert attr == 20
+        assert size == 4
+
+    def test_apply_title_bar_theme_passes_on_dwm_absence(
+        self, app: Any, monkeypatch: Any
+    ) -> None:
+        """boundary：无 dwmapi 时静默忽略（非 Windows 分支）。
+
+        Note:
+            生产代码 except 元组含 ``ctypes.WinError``（是函数而非异常类），
+            触发异常时会先抛 TypeError；测试把 ``WinError`` 替换为
+            ``OSError`` 以还原设计意图（DWM 缺失 → 静默忽略）。
+        """
+        import ctypes as ctypes_mod
+
+        monkeypatch.setattr(ctypes_mod, "WinError", OSError, raising=False)
+        monkeypatch.setattr(
+            ctypes_mod, "windll", SimpleNamespace(dwmapi=SimpleNamespace()), raising=False
+        )
+        app._apply_title_bar_theme()  # 不抛即可
+
+    def test_resize_event_schedules_stabilize_capture(
+        self, app: Any, main_module: Any, monkeypatch: Any
+    ) -> None:
+        """happy：resizeEvent 调用父类后调度 50ms 稳定回调。"""
+        capture = _patch_single_shot(main_module=main_module, monkeypatch=monkeypatch)
+        app.resizeEvent(QResizeEvent(QSize(800, 600), QSize(400, 300)))
+        assert len(capture.shots) == 1
+        assert capture.shots[0][0] == 50
+
+    def test_on_resize_stabilized_forwards_to_cards(
+        self, app: Any, monkeypatch: Any
+    ) -> None:
+        """happy：_on_resize_stabilized 转发到 _check_and_update_cards。"""
+        checked: List[Any] = []
+        monkeypatch.setattr(app, "_check_and_update_cards", lambda **kw: checked.append(kw))
+        app._on_resize_stabilized()
+        assert checked == [{"retry_count": 0}]
+
+    def test_check_and_update_cards_no_selector(self, app: Any) -> None:
+        """boundary：file_selector_a 不存在时静默返回。"""
+        app.file_selector_a = None
+        assert app._check_and_update_cards() is None
+
+    def test_check_and_update_cards_missing_method(self, app: Any) -> None:
+        """boundary：选择器缺 _update_all_cards_width 时静默返回。"""
+        sel = _FakeSelector()
+        sel.files_container = SimpleNamespace(width=lambda: 500)
+        app.file_selector_a = sel
+        assert app._check_and_update_cards() is None
+
+    def test_check_and_update_cards_updates_width(self, app: Any) -> None:
+        """happy：容器宽度有效时调用 _update_all_cards_width。"""
+        updates: List[int] = []
+        sel = _FakeSelector()
+        sel.files_container = SimpleNamespace(width=lambda: 500)
+        sel._update_all_cards_width = lambda: updates.append(1)
+        app.file_selector_a = sel
+        app._check_and_update_cards()
+        assert updates == [1]
+
+    def test_check_and_update_cards_zero_width_exhausts(
+        self, app: Any, main_module: Any, monkeypatch: Any
+    ) -> None:
+        """boundary：宽度 0 且重试次数用尽后放弃。"""
+        sel = _FakeSelector()
+        sel.files_container = SimpleNamespace(width=lambda: 0)
+        sel._update_all_cards_width = lambda: (_ for _ in ()).throw(AssertionError("不可到达"))
+        app.file_selector_a = sel
+        capture = _patch_single_shot(main_module=main_module, monkeypatch=monkeypatch)
+        app._check_and_update_cards(retry_count=15)
+        assert capture.shots == []
+
+    def test_check_and_update_cards_zero_width_schedules_retry(
+        self, app: Any, main_module: Any, monkeypatch: Any
+    ) -> None:
+        """boundary：宽度 0 时调度 30ms 重试（重试计数 +1）。"""
+        sel = _FakeSelector()
+        sel.files_container = SimpleNamespace(width=lambda: 0)
+        calls: List[int] = []
+        sel._update_all_cards_width = lambda: calls.append(1)
+        app.file_selector_a = sel
+        capture = _patch_single_shot(main_module=main_module, monkeypatch=monkeypatch)
+        app._check_and_update_cards(retry_count=0)
+        assert calls == []  # 未真正更新
+        assert len(capture.shots) == 1
+        assert capture.shots[0][0] == 30
+        captured_cb = capture.shots[0][1]
+        assert callable(captured_cb)
+
+    def test_change_event_window_state_schedules(
+        self, app: Any, main_module: Any, monkeypatch: Any
+    ) -> None:
+        """happy：WindowStateChange 调度 200ms 回调，其余类型透传。"""
+        capture = _patch_single_shot(main_module=main_module, monkeypatch=monkeypatch)
+        app.changeEvent(QEvent(QEvent.Type.WindowStateChange))
+        assert len(capture.shots) == 1
+        assert capture.shots[0] == (200, app._on_window_state_changed)
+
+        app.changeEvent(QEvent(QEvent.Type.ActivationChange))
+        assert len(capture.shots) == 1  # 不新增调度
+
+    def test_on_window_state_changed_updates_cards(
+        self, app: Any, monkeypatch: Any
+    ) -> None:
+        """happy：processEvents 后触发卡片更新；重入时提前返回。"""
+        checked: List[Any] = []
+        monkeypatch.setattr(app, "_check_and_update_cards", lambda **kw: checked.append(kw))
+        app._on_window_state_changed()
+        assert checked == [{"retry_count": 0}]
+        assert app._updating_cards is False
+
+        # 重入保护：_updating_cards 为 True 时直接返回
+        checked.clear()
+        app._updating_cards = True
+        app._on_window_state_changed()
+        assert checked == []
+
+
+class TestThemeAndPreviewHelpers:
+    """文件选择器创建、主题颜色、预览状态捕获/清理/恢复。"""
+
+    def test_create_file_selector_widget(self, app: Any, qapp: Any) -> None:
+        """happy：创建真实的 CustomFileSelector 组件。"""
+        w = app._create_file_selector_widget()
+        try:
+            assert w is not None
+            assert w.parent() is None  # 未挂载到任何布局
+        finally:
+            w.deleteLater()
+            flush_widget_queue(qapp)
+
+    def test_get_theme_colors_defaults(
+        self, app: Any, qapp: Any, monkeypatch: Any
+    ) -> None:
+        """boundary：无 settings_manager 时返回默认三色。"""
+        monkeypatch.setattr(qapp, "settings_manager", None)
+        assert app._get_theme_colors() == ("#f1f3f5", "#e0e0e0", "#212121")
+
+    def test_get_theme_colors_from_settings(
+        self, app: Any, qapp: Any, monkeypatch: Any
+    ) -> None:
+        """happy：settings_manager 提供面板/普通/基础三色。"""
+
+        class _DictSettings:
+            def __init__(self, data: Dict[str, str]) -> None:
+                self._data = data
+
+            def get_setting(self, key: str, default: Any = None) -> Any:
+                return self._data.get(key, default)
+
+        monkeypatch.setattr(
+            qapp,
+            "settings_manager",
+            _DictSettings(
+                {
+                    "appearance.colors.panel_background": "#101010",
+                    "appearance.colors.normal_color": "#202020",
+                    "appearance.colors.base_color": "#303030",
+                }
+            ),
+        )
+        assert app._get_theme_colors() == ("#101010", "#202020", "#303030")
+
+    def test_capture_preview_state_theme_dict(self, app: Any) -> None:
+        """happy：捕获当前预览文件信息（浅拷贝）。"""
+        info: Dict[str, Any] = {"path": "C:/a/b.png", "suffix": "png"}
+        app.unified_previewer = SimpleNamespace(current_file_info=info)
+        captured = app._capture_preview_state_for_theme_update()
+        assert captured == info
+        assert captured is not info
+
+    def test_capture_preview_state_theme_no_previewer(self, app: Any) -> None:
+        """boundary：无 previewer 或非 dict 时返回 None。"""
+        app.unified_previewer = None
+        assert app._capture_preview_state_for_theme_update() is None
+        app.unified_previewer = SimpleNamespace(current_file_info="not-a-dict")
+        assert app._capture_preview_state_for_theme_update() is None
+
+    def test_clear_preview_for_theme_update_no_previewer(self, app: Any) -> None:
+        """boundary：无 previewer 时直接返回。"""
+        app.unified_previewer = None
+        app._clear_preview_for_theme_update()  # 不抛即可
+
+    def test_clear_preview_for_theme_update_clears(self, app: Any) -> None:
+        """happy：清空预览 + 显示占位 + 隐藏操作按钮。"""
+        hidden: List[str] = []
+        pv = SimpleNamespace(
+            _clear_calls=[],
+            placeholder_shown=0,
+            stop_calls=0,
+            set_file_calls=[],
+            clear_preview_button=SimpleNamespace(hide=lambda: hidden.append("clear")),
+            open_with_system_button=SimpleNamespace(hide=lambda: hidden.append("open")),
+            copy_to_clipboard_button=SimpleNamespace(hide=lambda: hidden.append("copy")),
+            locate_in_selector_button=SimpleNamespace(hide=lambda: hidden.append("locate")),
+        )
+        pv._clear_preview = lambda *a, **k: pv._clear_calls.append(k)
+        pv._show_default_placeholder = lambda: setattr(pv, "placeholder_shown", pv.placeholder_shown + 1)
+        pv.current_file_info = {"path": "C:/a/b.png"}
+        app.unified_previewer = pv
+        app._clear_preview_for_theme_update()
+        assert pv._clear_calls == [{"emit_signal": False}]
+        assert pv.current_file_info is None
+        assert pv.placeholder_shown == 1
+        assert hidden == ["clear", "open", "copy", "locate"]
+
+    def test_clear_preview_for_theme_update_stop_fallback(self, app: Any) -> None:
+        """boundary：无 _clear_preview 时回退 stop_preview。"""
+        pv = SimpleNamespace(stop_calls=[])
+
+        def _fake_stop(*a: Any, **k: Any) -> None:
+            pv.stop_calls.append(1)
+
+        pv.stop_preview = _fake_stop
+        pv.current_file_info = {"path": "C:/a/b.png"}
+        app.unified_previewer = pv
+        app._clear_preview_for_theme_update()  # 不抛即可
+        assert pv.stop_calls == [1]
+
+    def test_restore_preview_for_theme_update_schedules(
+        self, app: Any, main_module: Any, monkeypatch: Any
+    ) -> None:
+        """happy：调度 0ms 恢复回调并经 set_file 恢复。"""
+        set_calls: List[Any] = []
+        pv = SimpleNamespace(set_file=lambda info: set_calls.append(info))
+        app.unified_previewer = pv
+        capture = _patch_single_shot(main_module=main_module, monkeypatch=monkeypatch, auto_execute=True)
+        app._restore_preview_for_theme_update({"path": "C:/a/b.png", "suffix": "png"})
+        assert len(capture.shots) == 1
+        assert capture.shots[0][0] == 0
+        assert set_calls == [{"path": "C:/a/b.png", "suffix": "png"}]
+
+    def test_restore_preview_for_theme_update_bad_info(self, app: Any) -> None:
+        """boundary：非 dict 或无 set_file 时直接返回。"""
+        app._restore_preview_for_theme_update(None)  # 不抛即可
+        app.unified_previewer = SimpleNamespace(set_file=lambda info: None)
+        app._restore_preview_for_theme_update("not-a-dict")  # 不抛即可
+
+    def test_refresh_widget_self_only(self, app: Any) -> None:
+        """happy：调用组件的 apply_theme_from_settings 并重新 polish。"""
+        from PySide6.QtWidgets import QWidget
+
+        applied: List[int] = []
+        w = QWidget()
+        w.apply_theme_from_settings = lambda: applied.append(1)
+        app._refresh_widget_self_only(w)
+        assert applied == [1]
+
+    def test_refresh_widget_self_only_none(self, app: Any) -> None:
+        """boundary：widget 为 None 直接返回。"""
+        app._refresh_widget_self_only(None)  # 不抛即可
+
+    def test_refresh_widget_theme_recursively_explicit_handler_skips_children(
+        self, app: Any
+    ) -> None:
+        """happy：组件自带 update_theme 时不重复遍历子树。"""
+        from PySide6.QtWidgets import QWidget
+
+        root = QWidget()
+        child = QWidget()
+        child.setParent(root)
+        root_updates: List[int] = []
+        child_updates: List[int] = []
+        root.update_theme = lambda: root_updates.append(1)
+        child.update_theme = lambda: child_updates.append(1)
+        app._refresh_widget_theme_recursively(root)
+        assert root_updates == [1]
+        assert child_updates == []  # 子树被跳过
+
+    def test_refresh_widget_theme_recursively_visits_children(
+        self, app: Any
+    ) -> None:
+        """happy：无显式 handler 时递归到直接子控件。"""
+        from PySide6.QtWidgets import QWidget
+
+        root = QWidget()
+        child = QWidget()
+        child.setParent(root)
+        child_updates: List[int] = []
+        child.update_theme = lambda: child_updates.append(1)
+        app._refresh_widget_theme_recursively(root)
+        assert child_updates == [1]
+
+    def test_refresh_widget_theme_recursively_visited_guard(
+        self, app: Any
+    ) -> None:
+        """boundary：visited 集合命中时提前返回，不重复刷新。"""
+        from PySide6.QtWidgets import QWidget
+
+        root = QWidget()
+        calls: List[int] = []
+        root.update_theme = lambda: calls.append(1)
+        visited: Set[int] = {id(root)}
+        app._refresh_widget_theme_recursively(root, visited)
+        assert calls == []
+
+    def test_apply_theme_to_existing_widgets(self, app: Any) -> None:
+        """happy：对中央部件/三列/状态标签应用样式并递归刷新选择器。"""
+        from PySide6.QtWidgets import QWidget
+
+        selector_calls: List[int] = []
+        sel = QWidget()
+        sel.update_theme = lambda: selector_calls.append(1)
+        app.file_selector_a = sel
+
+        panel_bg, _normal, _base = app._get_theme_colors()
+        app._apply_theme_to_existing_widgets()
+
+        assert panel_bg in app.central_widget.styleSheet()
+        assert "border:" in app.left_column.styleSheet()
+        assert "border:" in app.middle_column.styleSheet()
+        assert "border:" in app.right_column.styleSheet()
+        assert "color: #888888" in app.status_label.styleSheet()
+        assert selector_calls == [1]
+
+
+class TestUiStateBackupRestore:
+    """_backup_ui_state / _restore_ui_state 的内存备份恢复。"""
+
+    def test_backup_ui_state_defaults(self, app: Any) -> None:
+        """boundary：无选择器/存储池时仍返回默认结构。"""
+        assert app._backup_ui_state() is True
+        backup = app._ui_state_backup
+        assert backup["file_selector"]["view_mode"] == "card"
+        assert backup["file_staging_pool"]["items"] == []
+        assert len(backup["splitter_sizes"]) == 3
+
+    def test_backup_ui_state_captures_selector_and_pool(self, app: Any) -> None:
+        """happy：捕获选择器与存储池的完整状态。"""
+        sel = _FakeSelector()
+        sel.current_path = "C:/a"
+        sel.selected_files = {"C:/a": {"C:/a/b.txt"}}
+        sel._selected_file_paths = {"C:/a/b.txt"}
+        sel.previewing_file_path = "C:/a/b.txt"
+        sel.filter_pattern = "*.png"
+        sel.sort_by = "date"
+        sel.sort_order = "desc"
+        sel.view_mode = "list"
+        pool = _FakeStagingPool()
+        pool.items = [{"path": "C:/a/b.txt", "suffix": "txt"}]
+        pool.previewing_file_path = "C:/a/b.txt"
+        app.file_selector_a = sel
+        app.file_staging_pool = pool
+
+        assert app._backup_ui_state() is True
+        backup = app._ui_state_backup
+        assert backup["file_selector"]["current_path"] == "C:/a"
+        assert backup["file_selector"]["selected_files"] == {"C:/a": ["C:/a/b.txt"]}
+        assert backup["file_selector"]["_selected_file_paths"] == ["C:/a/b.txt"]
+        assert backup["file_selector"]["previewing_file_path"] == "C:/a/b.txt"
+        assert backup["file_selector"]["filter_pattern"] == "*.png"
+        assert backup["file_selector"]["sort_by"] == "date"
+        assert backup["file_selector"]["view_mode"] == "list"
+        assert backup["file_staging_pool"]["items"] == [{"path": "C:/a/b.txt", "suffix": "txt"}]
+
+    def test_restore_ui_state_no_backup(self, app: Any) -> None:
+        """boundary：无备份时返回 False。"""
+        app._ui_state_backup = None
+        assert app._restore_ui_state() is False
+
+    def test_restore_ui_state_restores_full(
+        self, app: Any, monkeypatch: Any
+    ) -> None:
+        """happy：恢复选择器、存储池与分割器尺寸。"""
+        sel = _FakeSelector()
+        pool = _FakeStagingPool()
+        app.file_selector_a = sel
+        app.file_staging_pool = pool
+        app._ui_state_backup = {
+            "file_selector": {
+                "current_path": "C:/a",
+                "selected_files": {"C:/a": ["C:/a/b.txt"]},
+                "_selected_file_paths": ["C:/a/b.txt"],
+                "previewing_file_path": "C:/a/b.txt",
+                "filter_pattern": "*.png",
+                "sort_by": "date",
+                "sort_order": "desc",
+                "view_mode": "card",
+            },
+            "file_staging_pool": {
+                "items": [{"path": "C:/a/c.txt", "suffix": "txt"}],
+                "previewing_file_path": "C:/a/c.txt",
+            },
+            "splitter_sizes": [300, 200, 400],
+        }
+        assert app._restore_ui_state() is True
+        assert sel.current_path == "C:/a"
+        assert sel.selected_files == {"C:/a": {"C:/a/b.txt"}}
+        assert sel._selected_file_paths == {"C:/a/b.txt"}
+        assert sel.previewing_file_path == "C:/a/b.txt"
+        assert sel.filter_pattern == "*.png"
+        assert sel.sort_by == "date"
+        assert sel.view_mode == "card"
+        assert pool.added == [{"path": "C:/a/c.txt", "suffix": "txt"}]
+        assert pool.previewing_file_path == "C:/a/c.txt"
+        set_sizes_calls: List[Any] = []
+        monkeypatch.setattr(app._splitter, "setSizes", lambda sizes: set_sizes_calls.append(sizes))
+        app._restore_ui_state()
+        assert set_sizes_calls == [[300, 200, 400]]
+
+    def test_restore_ui_state_skips_existing_pool_items(self, app: Any) -> None:
+        """boundary：存储池已有同路径条目时不重复 add。"""
+        pool = _FakeStagingPool()
+        pool.items = [{"path": os.path.normpath("C:/a/c.txt"), "suffix": "txt"}]
+        app.file_staging_pool = pool
+        app._ui_state_backup = {
+            "file_selector": {},
+            "file_staging_pool": {"items": [{"path": "C:/a/c.txt"}], "previewing_file_path": None},
+            "splitter_sizes": [0, 0, 0],
+        }
+        assert app._restore_ui_state() is True
+        assert pool.added == []
+
+
+class TestBottomBarSettingsAndGithub:
+    """底部按钮延迟创建、GitHub 与全局设置窗口打开。"""
+
+    def test_create_bottom_bar_buttons_creates_widgets(
+        self, app: Any, monkeypatch: Any
+    ) -> None:
+        """happy：创建三个按钮与悬浮提示并插入状态栏布局。"""
+        from PySide6.QtWidgets import QPushButton
+        from PySide6.QtWidgets import QWidget as QW
+
+        instances: List["_FakeCustomButton"] = []
+
+        class _FakeCustomButton(QPushButton):
+            def __init__(self, icon_path: Any, **kwargs: Any) -> None:
+                super().__init__()
+                self.icon_path = icon_path
+                self.kwargs = kwargs
+                instances.append(self)
+
+        class _FakeHoverTooltip(QW):
+            def __init__(self, parent: Any = None) -> None:
+                super().__init__(parent)
+                self.targets: List[Any] = []
+
+            def set_target_widget(self, w: Any) -> None:
+                self.targets.append(w)
+
+        import freeassetfilter.widgets.button_widgets as bw_mod
+        import freeassetfilter.widgets.hover_tooltip as ht_mod
+
+        monkeypatch.setattr(bw_mod, "CustomButton", _FakeCustomButton)
+        monkeypatch.setattr(ht_mod, "HoverTooltip", _FakeHoverTooltip)
+
+        app._create_bottom_bar_buttons()
+        assert len(instances) == 3
+        assert app.github_button is not None
+        assert app.update_button is not None
+        assert app.global_settings_button is not None
+        assert app.hover_tooltip.targets == [
+            app.github_button,
+            app.update_button,
+            app.global_settings_button,
+        ]
+
+    def test_create_bottom_bar_buttons_closing_early_return(self, app: Any) -> None:
+        """boundary：_is_closing 时直接返回，不创建按钮。"""
+        app._is_closing = True
+        app._create_bottom_bar_buttons()
+        assert app.github_button is None
+
+    def test_create_bottom_bar_buttons_missing_layout(
+        self, app: Any, main_module: Any, monkeypatch: Any
+    ) -> None:
+        """boundary：状态栏布局引用缺失时记错误并返回。"""
+        logged: List[str] = []
+        monkeypatch.setattr(main_module, "error", lambda msg: logged.append(str(msg)))
+        app._status_bar_layout = None
+        app._create_bottom_bar_buttons()
+        assert logged and "状态栏布局引用不存在" in logged[0]
+
+    def test_open_github(self, app: Any, monkeypatch: Any) -> None:
+        """happy：webbrowser.open 以 GitHub 主页 URL 调用。"""
+        import webbrowser
+
+        opened: List[str] = []
+        monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url))
+        app._open_github()
+        assert opened == ["https://github.com/Dorufoc/FreeAssetFilter"]
+
+    def test_open_global_settings_creates_once(
+        self, app: Any, monkeypatch: Any
+    ) -> None:
+        """happy：首次构造设置窗口，再次调用复用并 raise/激活。"""
+        from PySide6.QtWidgets import QWidget as QW
+
+        created: List["_FakeSettingsWindow"] = []
+
+        class _FakeSettingsWindow(QW):
+            def __init__(self, parent: Any = None) -> None:
+                super().__init__(parent)
+                self.shows = 0
+                self.raises = 0
+                self.activates = 0
+                created.append(self)
+
+            def show(self) -> None:
+                self.shows += 1
+
+            def raise_(self) -> None:
+                self.raises += 1
+
+            def activateWindow(self) -> None:
+                self.activates += 1
+
+        import freeassetfilter.components.settings_window as sw_mod
+
+        monkeypatch.setattr(sw_mod, "ModernSettingsWindow", _FakeSettingsWindow)
+
+        app._open_global_settings()
+        app._open_global_settings()
+        assert len(created) == 1
+        w = app._settings_window
+        assert w.shows == 2
+        assert w.raises == 2
+        assert w.activates == 2
+
+    def test_show_info_sets_status_label(self, app: Any) -> None:
+        """happy：show_info 拼接标题与消息写入状态标签。"""
+        labels: List[str] = []
+        app.status_label.setText = lambda text: labels.append(text)
+        app.show_info("标题", "内容")
+        assert labels == ["标题: 内容"]
+
+
+# ---------------------------------------------------------------------------
+# W19：模块级退出辅助 / 关闭前清理 / 主题更新流程 / 启动延迟任务
+# ---------------------------------------------------------------------------
+class TestCleanupFaulthandlerAndDebug:
+    """cleanup_faulthandler / debug_exit_threads 的真实行为。"""
+
+    def test_cleanup_faulthandler_disabled_state(self, main_module: Any) -> None:
+        """boundary：未启用时直接返回。"""
+        main_module._fault_handler_enabled = False
+        main_module._fault_handler_file = None
+        main_module.cleanup_faulthandler()
+        assert main_module._fault_handler_enabled is False
+        assert main_module._fault_handler_file is None
+
+    def test_cleanup_faulthandler_enabled_closes_file(
+        self, main_module: Any, monkeypatch: Any
+    ) -> None:
+        """happy：禁用 faulthandler、写入结束标记并关闭文件。"""
+        disabled: List[int] = []
+
+        class _NoCloseBuffer:
+            """write/flush/close 后可继续读回的录写缓冲（真实文件 close 后不可读）。"""
+
+            def __init__(self) -> None:
+                self._chunks: List[bytes] = []
+                self.closed = False
+
+            def write(self, data: bytes) -> None:
+                self._chunks.append(data)
+
+            def flush(self) -> None:
+                pass
+
+            def close(self) -> None:
+                self.closed = True
+
+            def getvalue(self) -> bytes:
+                return b"".join(self._chunks)
+
+        monkeypatch.setattr(main_module.faulthandler, "disable", lambda: disabled.append(1))
+        buf = _NoCloseBuffer()
+        main_module._fault_handler_enabled = True
+        main_module._fault_handler_file = buf
+        main_module.cleanup_faulthandler()
+        assert disabled == [1]
+        assert main_module._fault_handler_enabled is False
+        assert b"FAULTHANDLER OUTPUT END" in buf.getvalue()
+        assert buf.closed is True
+        assert main_module._fault_handler_file is None
+
+    def test_cleanup_faulthandler_disable_error_swallowed(
+        self, main_module: Any, monkeypatch: Any
+    ) -> None:
+        """boundary：faulthandler.disable 抛异常被吞、状态仍归零。"""
+        monkeypatch.setattr(
+            main_module.faulthandler, "disable", lambda: (_ for _ in ()).throw(OSError("no"))
+        )
+        main_module._fault_handler_enabled = True
+        main_module._fault_handler_file = io.BytesIO()
+        main_module.cleanup_faulthandler()
+        assert main_module._fault_handler_enabled is False
+        assert main_module._fault_handler_file is None
+
+    def test_cleanup_faulthandler_write_error_swallowed(
+        self, main_module: Any
+    ) -> None:
+        """boundary：文件写入失败被吞、引用仍被清空。"""
+
+        class _BadFile:
+            def write(self, data: bytes) -> None:
+                raise OSError("write fail")
+
+            def flush(self) -> None:
+                pass
+
+            def close(self) -> None:
+                pass
+
+        main_module._fault_handler_enabled = False
+        main_module._fault_handler_file = _BadFile()
+        main_module.cleanup_faulthandler()
+        assert main_module._fault_handler_file is None
+
+    def test_debug_exit_threads_no_crash(self, main_module: Any) -> None:
+        """happy：遍历当前线程帧不抛异常。"""
+        main_module.debug_exit_threads()  # 不抛即可
+
+
+class TestCleanupPreviewBeforeClose:
+    """_cleanup_preview_before_close 的线程/播放器/信息面板清理。"""
+
+    def test_cleanup_preview_before_close_no_previewer(self, app: Any) -> None:
+        """boundary：无 unified_previewer 时直接返回。"""
+        app.unified_previewer = None
+        app._cleanup_preview_before_close()  # 不抛即可
+
+    def test_cleanup_preview_before_close_full(self, app: Any) -> None:
+        """happy：停止线程、清理播放器、清空信息面板与按钮。"""
+        thread = _FakeQThreadStub(running=True, wait_result=True)
+        cleanup_modes: List[Any] = []
+        payloads: List[Any] = []
+        info_texts: List[str] = []
+        detail_texts: List[str] = []
+        hidden: List[str] = []
+
+        pv = SimpleNamespace(
+            _preview_thread=thread,
+            video_player=SimpleNamespace(cleanup=lambda async_mode=False: cleanup_modes.append(async_mode)),
+            file_info_viewer=SimpleNamespace(
+                current_file={"path": "C:/a/b.png"},
+                file_info={"path": "C:/a/b.png"},
+                basic_info_labels={
+                    "k1": SimpleNamespace(setPlainText=lambda t: info_texts.append(t))
+                },
+                details_info_widgets=[
+                    (
+                        SimpleNamespace(setText=lambda t: payloads.append(t)),
+                        SimpleNamespace(setPlainText=lambda t: detail_texts.append(t)),
+                    )
+                ],
+            ),
+            current_file_info={"path": "C:/a/b.png"},
+            _clear_calls=[],
+            placeholder_shown=0,
+            clear_preview_button=SimpleNamespace(hide=lambda: hidden.append("clear")),
+            open_with_system_button=SimpleNamespace(hide=lambda: hidden.append("open")),
+            copy_to_clipboard_button=SimpleNamespace(hide=lambda: hidden.append("copy")),
+            locate_in_selector_button=SimpleNamespace(hide=lambda: hidden.append("locate")),
+        )
+        pv._clear_preview = lambda **k: pv._clear_calls.append(k)
+        pv._show_default_placeholder = lambda: setattr(pv, "placeholder_shown", pv.placeholder_shown + 1)
+        app.unified_previewer = pv
+
+        app._cleanup_preview_before_close()
+
+        assert thread.interrupted == 1
+        assert thread.waited == 1
+        assert cleanup_modes == [False]
+        assert pv._clear_calls == [{"app_closing": True}]
+        assert pv.file_info_viewer.current_file is None
+        assert pv.file_info_viewer.file_info == {}
+        assert info_texts == ["-"]
+        assert payloads == [""]
+        assert detail_texts == ["-"]
+        assert pv.current_file_info is None
+        assert pv.placeholder_shown == 1
+        assert hidden == ["clear", "open", "copy", "locate"]
+
+
+class TestCloseEventCascade:
+    """closeEvent 的完整保存级联系列（真实实例 + 桩组件）。"""
+
+    def test_close_event_full_cascade(
+        self, app: Any, main_module: Any, monkeypatch: Any
+    ) -> None:
+        """happy：保存选择器路径/存储池/视图模式并停止心跳与线程。"""
+        monkeypatch.setattr(main_module.os.path, "exists", lambda p: False)
+        sel = _FakeSelector()
+        sel.current_path = "C:/a"
+        pool = _FakeStagingPool()
+        app.file_selector_a = sel
+        app.file_staging_pool = pool
+
+        app.closeEvent(QCloseEvent())
+
+        assert app._is_closing is True
+        assert app._pending_restore_items == []
+        assert app._restore_safe_mode is False
+        assert sel.current_path == "C:/a"
+
+    def test_close_event_uses_flush_backup_save_now(
+        self, app: Any, main_module: Any, monkeypatch: Any
+    ) -> None:
+        """happy：存储池优先走 flush_backup_save_now(last_path)。"""
+        monkeypatch.setattr(main_module.os.path, "exists", lambda p: False)
+        sel = _FakeSelector()
+        sel.current_path = "C:/nav"
+        flushed: List[Any] = []
+        pool = _FakeStagingPool()
+
+        def _fake_flush(last_path: Any) -> None:
+            flushed.append(last_path)
+
+        monkeypatch.setattr(pool, "flush_backup_save_now", _fake_flush, raising=True)
+        app.file_selector_a = sel
+        app.file_staging_pool = pool
+        app.closeEvent(QCloseEvent())
+        assert flushed == ["C:/nav"]
+
+
+class TestThemeUpdateRefreshFlow:
+    """update_theme / _perform_theme_update_refresh 的分阶段刷新流程。"""
+
+    def test_update_theme_schedules_refresh(
+        self, app: Any, main_module: Any, monkeypatch: Any
+    ) -> None:
+        """happy：非启动阶段调度 0ms 执行主窗口刷新。"""
+        app._is_startup_phase = False
+        app._update_theme_in_progress = False
+        app.unified_previewer = None
+        capture = _patch_single_shot(main_module=main_module, monkeypatch=monkeypatch)
+        app.update_theme()
+        assert len(capture.shots) == 1
+        assert capture.shots[0][0] == 0
+        assert app._update_theme_in_progress is True
+        assert app._theme_update_queued is False
+
+    def test_update_theme_reentrant_queues_single(
+        self, app: Any, main_module: Any, monkeypatch: Any
+    ) -> None:
+        """boundary：刷新进行中再次调用只排队一次 50ms 重放。"""
+        app._is_startup_phase = False
+        app._update_theme_in_progress = True
+        app._theme_update_queued = False
+        capture = _patch_single_shot(main_module=main_module, monkeypatch=monkeypatch)
+        app.update_theme()
+        assert app._theme_update_queued is True
+        assert len(capture.shots) == 1
+        assert capture.shots[0][0] == 50
+        # 已排队 → 不再重复调度
+        app.update_theme()
+        assert len(capture.shots) == 1
+
+    def test_update_theme_clears_preview_before_refresh(
+        self, app: Any, main_module: Any, monkeypatch: Any
+    ) -> None:
+        """happy：存在预览时先清预览再调度刷新。"""
+        app._is_startup_phase = False
+        app._update_theme_in_progress = False
+        app.unified_previewer = SimpleNamespace(current_file_info={"path": "C:/a/b.png"})
+        cleared: List[int] = []
+        refreshed: List[Any] = []
+        monkeypatch.setattr(app, "_clear_preview_for_theme_update", lambda: cleared.append(1))
+        monkeypatch.setattr(app, "_perform_theme_update_refresh", lambda info=None: refreshed.append(info))
+        capture = _patch_single_shot(main_module=main_module, monkeypatch=monkeypatch)
+        app.update_theme()
+        assert cleared == [1]
+        assert len(capture.shots) == 1
+        capture.shots[0][1]()  # 执行第二阶段调度
+        assert refreshed == [{"path": "C:/a/b.png"}]
+
+    def test_perform_theme_update_refresh_not_visible(
+        self, app: Any, monkeypatch: Any
+    ) -> None:
+        """happy：窗口未显示时走轻量样式刷新。"""
+        _patch_svg_invalidate_cache(monkeypatch)
+        appiled: List[int] = []
+        monkeypatch.setattr(app, "_apply_theme_to_existing_widgets", lambda: appiled.append(1))
+        monkeypatch.setattr(app, "_apply_title_bar_theme", lambda: None)
+        app.hide()
+        app._update_theme_in_progress = True
+        app._perform_theme_update_refresh()
+        assert appiled == [1]
+        assert app._update_theme_in_progress is False
+        assert app.updatesEnabled() is True
+
+    def test_perform_theme_update_refresh_rebuilds_when_visible(
+        self, app: Any, monkeypatch: Any
+    ) -> None:
+        """happy：窗口已显示时重建主布局。"""
+        _patch_svg_invalidate_cache(monkeypatch)
+        rebuilt: List[int] = []
+        monkeypatch.setattr(app, "_rebuild_main_layout", lambda: rebuilt.append(1) or True)
+        monkeypatch.setattr(app, "_apply_title_bar_theme", lambda: None)
+        app.show()
+        try:
+            app._perform_theme_update_refresh()
+        finally:
+            app.hide()
+        assert rebuilt == [1]
+        assert app._update_theme_in_progress is False
+
+    def test_perform_theme_update_refresh_falls_back_on_rebuild_fail(
+        self, app: Any, monkeypatch: Any
+    ) -> None:
+        """boundary：重建失败时回退到轻量刷新。"""
+        _patch_svg_invalidate_cache(monkeypatch)
+        applied: List[int] = []
+        monkeypatch.setattr(app, "_rebuild_main_layout", lambda: False)
+        monkeypatch.setattr(app, "_apply_theme_to_existing_widgets", lambda: applied.append(1))
+        monkeypatch.setattr(app, "_apply_title_bar_theme", lambda: None)
+        app.hide()
+        app._perform_theme_update_refresh()
+        assert applied == [1]
+
+    def test_perform_theme_update_refresh_restores_preview(
+        self, app: Any, main_module: Any, monkeypatch: Any
+    ) -> None:
+        """happy：携带预览信息时调度 0ms 恢复。"""
+        _patch_svg_invalidate_cache(monkeypatch)
+        restored: List[Any] = []
+        monkeypatch.setattr(app, "_apply_theme_to_existing_widgets", lambda: None)
+        monkeypatch.setattr(app, "_apply_title_bar_theme", lambda: None)
+        monkeypatch.setattr(app, "_restore_preview_for_theme_update", lambda info: restored.append(info))
+        capture = _patch_single_shot(main_module=main_module, monkeypatch=monkeypatch)
+        app.hide()
+        app._perform_theme_update_refresh({"path": "C:/a/b.png"})
+        assert len(capture.shots) == 1
+        assert capture.shots[0][0] == 0
+        capture.shots[0][1]()
+        assert restored == [{"path": "C:/a/b.png"}]
+
+
+class _FakeHeavyWidget(QWidget):
+    """与真实选择器/存储池/预览器接口兼容的桩（真实 Qt Signal）。"""
+
+    file_selected = Signal(object)
+    preview_cancel_requested = Signal(object)
+    file_selection_changed = Signal(object)
+    item_left_clicked = Signal(object)
+    remove_from_selector = Signal(object)
+    file_added_to_pool = Signal(object)
+    navigate_to_path = Signal(object)
+    open_in_selector_requested = Signal(object)
+    preview_started = Signal(object)
+    preview_cleared = Signal(object)
+
+    def set_file(self, *args: Any, **kwargs: Any) -> None:
+        pass
+
+    def clear_preview(self, *args: Any, **kwargs: Any) -> None:
+        pass
+
+
+class _FakeRebuildButton(QPushButton):
+    """与 CustomButton 构造签名兼容的按钮桩。"""
+
+    def __init__(self, icon_path: Any = None, **kwargs: Any) -> None:
+        super().__init__()
+        self.icon_path = icon_path
+        self.kwargs = kwargs
+
+
+class _FakeRebuildTooltip(QWidget):
+    """与 HoverTooltip 接口兼容的悬浮提示桩。"""
+
+    def __init__(self, parent: Any = None) -> None:
+        super().__init__(parent)
+        self.targets: List[Any] = []
+        self.safe_modes: List[bool] = []
+
+    def set_target_widget(self, w: Any) -> None:
+        self.targets.append(w)
+
+    def set_safe_mode(self, flag: bool) -> None:
+        self.safe_modes.append(flag)
+
+    def cleanup(self) -> None:
+        pass
+
+
+def _patch_svg_invalidate_cache(monkeypatch: Any) -> List[int]:
+    """生产 bug 缓解：真实代码调用不存在的 ``SvgRenderer._invalidate_color_cache``。
+
+    main.py 的 ``_perform_theme_update_refresh`` 通过本地 import 取得
+    ``freeassetfilter.core.preview.svg_renderer.SvgRenderer`` 类对象，因此
+    直接往该类上注入 staticmethod 即可（``raising=False`` 允许新建属性）。
+
+    Args:
+        monkeypatch: pytest monkeypatch。
+
+    Returns:
+        List[int]: _invalidate_color_cache 被调用的次数记录器。
+    """
+    from freeassetfilter.core.preview.svg_renderer import SvgRenderer
+
+    calls: List[int] = []
+    monkeypatch.setattr(
+        SvgRenderer,
+        "_invalidate_color_cache",
+        staticmethod(lambda: calls.append(1)),
+        raising=False,
+    )
+    return calls
+
+
+def _patch_heavy_components(monkeypatch: Any) -> None:
+    """把延迟创建路径中的重量级组件类替换为桩（真实 Signal 可连接）。"""
+    import freeassetfilter.components.file_selector as fs_mod
+    import freeassetfilter.components.file_staging_pool as fsp_mod
+    import freeassetfilter.components.unified_previewer as up_mod
+    import freeassetfilter.widgets.button_widgets as bw_mod
+    import freeassetfilter.widgets.hover_tooltip as ht_mod
+
+    monkeypatch.setattr(fs_mod, "CustomFileSelector", _FakeHeavyWidget)
+    monkeypatch.setattr(fsp_mod, "FileStagingPool", _FakeHeavyWidget)
+    monkeypatch.setattr(up_mod, "UnifiedPreviewer", _FakeHeavyWidget)
+    monkeypatch.setattr(bw_mod, "CustomButton", _FakeRebuildButton)
+    monkeypatch.setattr(ht_mod, "HoverTooltip", _FakeRebuildTooltip)
 
     def test_main_run_installer_worker_error(self, main_module: Any, monkeypatch: Any) -> None:
         """boundary：run-installer helper 抛异常 → exit(1)。"""

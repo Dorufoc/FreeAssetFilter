@@ -26,6 +26,7 @@ import ctypes
 import importlib.util
 import json
 import os
+import subprocess
 import winreg
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -391,6 +392,34 @@ def com_available() -> bool:
     return False
 
 
+@pytest.fixture(scope="session")
+def ffmpeg_available() -> bool:
+    """探测捆绑的 ffmpeg.exe 是否可执行（session scope）。
+
+    镜像 ``mpv_available`` / ``rust_available`` 的探测纪律：检查
+    ``freeassetfilter/core/native/bin/ffmpeg.exe`` 存在，且
+    ``subprocess.run([path, "-version"], timeout=5)`` 返回码为 0。
+    从不抛出异常——任何失败都返回 False。
+
+    Returns:
+        bool: ffmpeg.exe 存在且 ``-version`` 返回 0 则为 True。
+    """
+    ffmpeg_bin: Path = (
+        _PROJECT_ROOT / "freeassetfilter" / "core" / "native" / "bin" / "ffmpeg.exe"
+    )
+    if not ffmpeg_bin.is_file():
+        return False
+    try:
+        completed = subprocess.run(
+            [str(ffmpeg_bin), "-version"],
+            capture_output=True,
+            timeout=5,
+        )
+        return completed.returncode == 0
+    except Exception:
+        return False
+
+
 # =============================================================================
 # 数据生成器 fixtures（全部基于 tests.support.data_factories）
 # =============================================================================
@@ -646,6 +675,28 @@ def benchmark_dataset(tmp_path_factory: Any) -> List[str]:
     for i in range(20):
         paths.append(make_image(base_dir / f"bench_{i:03d}.png", fmt="PNG"))
     return paths
+
+
+@pytest.fixture(scope="session")
+def video_sample_paths(tmp_path_factory: Any) -> List[str]:
+    """把 ``tests/support/media/`` 的全部视频样本复制到临时目录（session scope）。
+
+    通过 ``tests.support.data_factories.make_video_sample`` 复制全部已提交
+    样本（10 个，见 ffmpeg-minimal-rebuild 计划 Todo 5），返回按文件名
+    排序的路径列表，保证参数化顺序稳定。
+
+    Args:
+        tmp_path_factory: pytest 内置的会话级临时目录工厂。
+
+    Returns:
+        list[str]: 排序后的视频样本路径列表。
+    """
+    from tests.support.data_factories import make_video_sample
+
+    media_dir: Path = _PROJECT_ROOT / "tests" / "support" / "media"
+    names: List[str] = sorted(p.name for p in media_dir.iterdir() if p.is_file())
+    target_dir: Path = tmp_path_factory.mktemp("video_samples")
+    return [make_video_sample(name, target_dir / name) for name in names]
 
 
 # =============================================================================

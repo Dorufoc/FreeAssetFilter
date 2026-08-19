@@ -42,7 +42,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 import pytest
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QDialog, QScrollArea
+from PySide6.QtWidgets import QDialog, QScrollArea, QWidget
 
 from tests.support.qt_helpers import (
     flush_widget_queue,
@@ -1622,8 +1622,24 @@ class TestUpdateControllerCheckFlowExtras:
     def test_show_check_progress_dialog(self, make_update_controller: Any, monkeypatch: Any) -> None:
         import freeassetfilter.components.update_controller as uc
 
+        class _FakeSpinner(QWidget):
+            """LoadingSpinner 假件：真实 QWidget 子类（addWidget 需要），避免 GC 时序抖动。"""
+
+            def __init__(self, **kwargs: Any) -> None:
+                super().__init__()
+
+            def set_background_color(self, *args: Any, **kwargs: Any) -> None:
+                return None
+
+            def start(self) -> None:
+                return None
+
+            def stop(self) -> None:
+                return None
+
         controller: Any = make_update_controller()
         monkeypatch.setattr(uc, "CustomMessageBox", _FakeMessageBox)
+        monkeypatch.setattr(uc, "LoadingSpinner", _FakeSpinner)
         controller._show_check_progress_dialog()
         assert controller._current_dialog is not None
         assert controller._current_loading_spinner is not None

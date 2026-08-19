@@ -327,6 +327,9 @@ fn candidate_native_dir_paths() -> Vec<PathBuf> {
         paths.push(cwd.join("freeassetfilter").join("core").join("native"));
         paths.push(cwd.join("core").join("native"));
         paths.push(cwd.join("native"));
+        paths.push(cwd.join("freeassetfilter").join("core").join("native").join("bin"));
+        paths.push(cwd.join("core").join("native").join("bin"));
+        paths.push(cwd.join("native").join("bin"));
     }
 
     if let Ok(exe) = env::current_exe() {
@@ -334,11 +337,16 @@ fn candidate_native_dir_paths() -> Vec<PathBuf> {
             paths.push(dir.join("freeassetfilter").join("core").join("native"));
             paths.push(dir.join("core").join("native"));
             paths.push(dir.join("native"));
+            paths.push(dir.join("freeassetfilter").join("core").join("native").join("bin"));
+            paths.push(dir.join("core").join("native").join("bin"));
+            paths.push(dir.join("native").join("bin"));
         }
     }
 
     paths.push(PathBuf::from("freeassetfilter").join("core").join("native"));
     paths.push(PathBuf::from("core").join("native"));
+    paths.push(PathBuf::from("freeassetfilter").join("core").join("native").join("bin"));
+    paths.push(PathBuf::from("core").join("native").join("bin"));
 
     let mut dedup = Vec::new();
     for p in paths {

@@ -141,8 +141,8 @@ def warmup_ffmpeg_tools(force: bool = False) -> Dict[str, bool]:
     result: Dict[str, bool] = {}
     with ThreadPoolExecutor(max_workers=3) as executor:
         future_map = {
-            executor.submit(_run_warmup_command, *args): name
-            for name, args in tasks.items()
+            executor.submit(_run_warmup_command, command, label=label, timeout=timeout): name
+            for name, (command, label, timeout) in tasks.items()
         }
         for future in as_completed(future_map):
             name = future_map[future]

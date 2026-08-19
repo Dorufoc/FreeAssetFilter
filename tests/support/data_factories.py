@@ -227,6 +227,33 @@ def make_font_path() -> Optional[str]:
     return None
 
 
+_MEDIA_DIR: Path = Path(__file__).resolve().parent / "media"
+
+
+def make_video_sample(name: str, target: Path) -> str:
+    """从 ``tests/support/media/`` 复制一个视频测试样本到目标路径。
+
+    样本（sample_h264.mp4 / sample_vp9.webm 等）由 Todo 5 生成并随仓库
+    跟踪，本函数仅做复制，与 :func:`make_font_path` 同款复制模式。
+
+    Args:
+        name: 样本文件名（须存在于 ``tests/support/media/``）。
+        target: 输出路径（复制到的目标文件）。
+
+    Returns:
+        str: 复制后的文件路径。
+
+    Raises:
+        FileNotFoundError: 源样本文件不存在。
+    """
+    src: Path = _MEDIA_DIR / name
+    if not src.is_file():
+        raise FileNotFoundError(f"视频测试样本不存在: {src}")
+    out: Path = _as_path(target)
+    shutil.copy2(str(src), str(out))
+    return str(out)
+
+
 def file_info_dict(path: Union[str, Path], ext: str = "png") -> Dict[str, Any]:
     """构造与产品 ``FileInfo`` 兼容的元信息字典。
 

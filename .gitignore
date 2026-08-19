@@ -63,6 +63,7 @@ nuitka-crash-report.xml
 # --- Design/markdown notes (not source code) ---
 *.cube
 *.md
+!tests/README.md
 
 # --- Backup & refactor notes ---
 *备份*

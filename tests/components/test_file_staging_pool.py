@@ -88,6 +88,14 @@ def _pump_until(
 ) -> bool:
     """在截止期内轮询冲刷 Qt 事件直到谓词满足（有界，绝不无限等待）。
 
+    W17：进入计时循环前先有界排空历史累积的 posted 事件积压。``safe_teardown``
+    采用 ``deleteLater`` 后不立即 ``processEvents`` 的安全策略（W11），而本文件
+    （staging）之前的 343 个 selector 测试几乎不泵事件——两相结合会在全局事件
+    队列累积数万 DeferredDelete / metacall 事件。积压未排空前单次
+    ``flush_widget_queue``（5 次 ``processEvents``）可耗时数秒，一条 flush 就会
+    耗尽 md5 等测试的 5s 预算（实测单次 flush 7.9s，回调永远等不到）。此处先
+    反复 ``processEvents`` 直至连续调用变快（积压排空），计时循环再推进谓词。
+
     Args:
         qapp: 会话级 QApplication 实例。
         predicate: 目标板状态谓词。
@@ -96,6 +104,14 @@ def _pump_until(
     Returns:
         bool: 谓词在超时前满足返回 True，否则 False。
     """
+    _drain_calls: int = 0
+    while _drain_calls < 60:
+        _drain_start: float = time.monotonic()
+        qapp.processEvents()
+        _drain_elapsed: float = time.monotonic() - _drain_start
+        _drain_calls += 1
+        if _drain_elapsed < 0.05 and _drain_calls > 2:
+            break
     deadline: float = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if predicate():
@@ -1473,7 +1489,7 @@ class TestMD5CalculationTask:
 
         computed: Optional[str] = None
         assert _pump_until(
-            qapp, lambda: bool(results), timeout_s=5.0
+            qapp, lambda: bool(results), timeout_s=15.0
         ), "回调未在超时前触发"
         computed = results[0]
         assert computed == hashlib.md5(payload).hexdigest()
