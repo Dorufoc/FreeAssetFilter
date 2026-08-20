@@ -8,11 +8,25 @@ name = "thumbnail_generator"
 crate-type = ["cdylib"]
 
 [dependencies]
-image = { version = "0.25", default-features = true, features = ["png", "jpeg", "gif", "webp", "tiff", "bmp"] }
+# Design Revision 5 point 5（todo 7 执行）：关闭 default-features，显式启用 11 个
+# 格式 features（bmp/dds/gif/ico/jpeg/png/pnm/qoi/tga/tiff/webp），剔除体积项
+# avif(ravif→rav1e)/exr/ff/hdr。DDS 支持在 image 0.25 即经 dds feature 内置；后续
+# bcdec_rs（todo 21）/ icns（todo 22）按各自 todo 引入，本 todo 不添加。
+image = { version = "0.25", default-features = false, features = ["bmp", "dds", "gif", "ico", "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp"] }
 once_cell = "1.20"
 sysinfo = "0.37"
 rayon = "1.10"
 serde_json = "1.0"
+# Design Revision 5 point 5 / todo 21：DDS BC4/BC5 兜底解码。MIT 纯 Rust no_std
+# （ScanMountGoat/image_dds 分拆 crate，BC1-7 全覆盖），静态合并进
+# thumbnail_generator.dll 无外部 DLL，AGPL-3.0 兼容（选型理由见 .omo/notepads）。
+bcdec_rs = "0.2"
+# Design Revision 5 point 5 / todo 22：ICNS 解码。icns 0.4（MIT，mdsteele/rust-icns），
+# 解析 icns 头/条目表、PNG 内嵌条目（ic04-ic14）与 is32+mask 合成；
+# jp2 依赖可选 feature（hayro-jpeg2000，MIT）默认开启但本 todo 主动返回
+# STATUS_UNSUPPORTED 交 T2/T3，故不依赖其解码路径。纯 Rust 静态合并进
+# thumbnail_generator.dll 无外部 DLL，AGPL-3.0 兼容（选型理由见 .omo/notepads）。
+icns = "0.4"
 
 [profile.release]
 lto = true

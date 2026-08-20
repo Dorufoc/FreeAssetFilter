@@ -655,17 +655,34 @@ class TeeStream(io.TextIOBase):
     """
     将文本同时写入原始控制台流和日志文件的简单双写流。
     用于捕获 print/sys.stdout.write/sys.stderr.write/traceback.print_exc 等输出。
-    可通过 filter_patterns 过滤不需要写入日志的行。
+
+    三类过滤/压缩能力（互相独立，可组合使用）：
+    - ``filter_patterns``: 命中则**不写入日志**，但保留控制台输出
+      （如 MPV "Unknown property" 等无害噪音）。
+    - ``console_filter_patterns``: 命中则**不写入控制台**，但仍写入日志
+      （如 MuPDF 语法警告——不打扰用户，但日志需要留痕）。
+    - ``dedup_enabled``: 对写入日志的**连续完全重复行**做压缩。首行先写入
+      日志，后续相同行仅在内存中计数；当计数结束（遇到不同行或 close）时，
+      将计数标签（如 ``【x3】``）追加到首行行尾，避免大量重复报错撑爆日志。
+      仅对以换行结尾的完整行生效，无换行的残片（如 ``\\r`` 进度行）原样
+      直写，不参与去重。
     """
 
     def __init__(self, original_stream, log_file_path: str, encoding: str = 'utf-8',
-                 filter_patterns: Optional[list] = None):
+                 filter_patterns: Optional[list] = None,
+                 console_filter_patterns: Optional[list] = None,
+                 dedup_enabled: bool = False):
         self.original_stream = original_stream
         self.log_file_path = log_file_path
         self.encoding_name = encoding or 'utf-8'
         self._log_stream = None
         self._closed = False
         self.filter_patterns = filter_patterns or []
+        self.console_filter_patterns = console_filter_patterns or []
+        self.dedup_enabled = dedup_enabled
+        # 去重管线状态（仅 dedup_enabled=True 时使用）
+        self._last_log_line: Optional[str] = None
+        self._dup_count: int = 0
 
         try:
             log_dir = os.path.dirname(log_file_path)
@@ -712,6 +729,16 @@ class TeeStream(io.TextIOBase):
                 return True
         return False
 
+    def _should_filter_console(self, s: str) -> bool:
+        """检查是否应过滤控制台输出（不写入控制台，但仍写入日志）"""
+        if not self.console_filter_patterns:
+            return False
+        line = s.strip()
+        for pattern in self.console_filter_patterns:
+            if pattern in line:
+                return True
+        return False
+
     def write(self, s):
         if s is None:
             return 0
@@ -721,20 +748,100 @@ class TeeStream(io.TextIOBase):
 
         written = 0
         filtered = self._should_filter(s)
+        console_filtered = self._should_filter_console(s)
 
-        if self.original_stream is not None:
+        if self.original_stream is not None and not console_filtered:
             try:
                 written = self.original_stream.write(s)
             except (OSError, IOError, ValueError, TypeError):
                 written = 0
 
         if self._log_stream is not None and not filtered:
+            self._write_log(s)
+
+        return written if written is not None else len(s)
+
+    def _write_log(self, s: str) -> None:
+        """将内容写入日志文件（支持连续重复行压缩）。
+
+        - dedup_enabled=False 时原样直写（保持旧行为）。
+        - 仅以换行结尾的完整行进入去重管线；无换行的残片原样直写，
+          避免跨 write 拼接造成乱序（如 ``\\r`` 进度行）。
+
+        Args:
+            s: 已字符串化的待写内容。
+        """
+        if not self.dedup_enabled:
             try:
                 self._log_stream.write(s)
             except (OSError, IOError, ValueError, TypeError):
                 pass
+            return
 
-        return written if written is not None else len(s)
+        if not s.endswith('\n'):
+            try:
+                self._log_stream.write(s)
+            except (OSError, IOError, ValueError, TypeError):
+                pass
+            return
+
+        for part in s[:-1].split('\n'):
+            self._process_log_line(part + '\n')
+
+    def _process_log_line(self, line: str) -> None:
+        """将一行完整文本送入去重管线（仅在 dedup_enabled=True 时调用）。
+
+        机制：首行**立即写入**日志（末尾换行暂缓），相同行在内存中累计
+        计数；遇到不同行或空行时先结束计数，把 ``【xN】`` 标签追加到首行
+        行尾再继续。空行不参与去重（作为视觉分隔符直写）。
+
+        Args:
+            line: 以换行结尾的完整行文本。
+        """
+        if line in ('\n', '\r\n'):
+            self._finish_counting()
+            try:
+                self._log_stream.write(line)
+            except (OSError, IOError, ValueError, TypeError):
+                pass
+            return
+
+        if self._last_log_line is None:
+            # 新一轮：先写入首行内容（末尾换行延迟到计数结束时补上）
+            self._last_log_line = line
+            self._dup_count = 1
+            try:
+                self._log_stream.write(line[:-1])
+            except (OSError, IOError, ValueError, TypeError):
+                pass
+            return
+
+        if line == self._last_log_line:
+            self._dup_count += 1
+            return
+
+        # 不同行：结束当前计数（补上标签），再按新一轮处理当前行
+        self._finish_counting()
+        self._process_log_line(line)
+
+    def _finish_counting(self) -> None:
+        """结束去重计数：将计数标签追加到首行行尾并补齐换行。
+
+        重复次数 > 1 时在首行行尾追加 ``【xN】``；仅出现一次时只补换行。
+        无论写入是否成功都清空计数状态，避免悬挂。
+        """
+        if self._log_stream is None or self._last_log_line is None:
+            return
+        try:
+            if self._dup_count > 1:
+                self._log_stream.write(f" 【x{self._dup_count}】\n")
+            else:
+                self._log_stream.write("\n")
+        except (OSError, IOError, ValueError, TypeError):
+            pass
+        finally:
+            self._last_log_line = None
+            self._dup_count = 0
 
     def flush(self):
         if self.original_stream is not None:
@@ -754,6 +861,8 @@ class TeeStream(io.TextIOBase):
             return
 
         self.flush()
+        # 结束去重计数，避免 close 后首行换行/标签缺失
+        self._finish_counting()
 
         if self._log_stream is not None:
             try:
@@ -1049,10 +1158,14 @@ def install_console_capture(log_file_path: Optional[str] = None) -> bool:
     original_stderr = _get_original_console_stream('stderr')
     if not isinstance(sys.stderr, TeeStream):
         try:
-            # 过滤 MPV "Unknown property" 等无害噪音
+            # 过滤 MPV "Unknown property" 等无害噪音（不写入日志，保留控制台）
             stderr_filters = ["Unknown property"]
+            # MuPDF 等第三方库的 stderr 噪音：不显示在控制台，但保留到日志文件
+            stderr_console_filters = ["MuPDF error"]
             sys.stderr = TeeStream(original_stderr, log_file_path,
-                                   filter_patterns=stderr_filters)
+                                   filter_patterns=stderr_filters,
+                                   console_filter_patterns=stderr_console_filters,
+                                   dedup_enabled=True)
             installed = True
         except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError):
             pass

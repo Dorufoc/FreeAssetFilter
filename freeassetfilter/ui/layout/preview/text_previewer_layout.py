@@ -14,7 +14,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 # 独立运行时的 sys.path 引导（在模块级导入前执行）
 _this_file = Path(__file__).resolve()
@@ -219,13 +219,20 @@ TEXT_EXTENSIONS = {
 class _ToolbarFrame(QFrame):
     """顶栏框架 —— 页面标签通过布局居中，操作按钮在 resizeEvent 中绝对定位到两侧。
 
-    这样页码标签是在整个顶栏宽度上真正居中，不会被两侧按钮挤偏。
+    这样标题标签是在整个顶栏宽度上真正居中，不会被两侧按钮挤偏。
+    当横向空间不足、整栏居中会侵入两侧按钮区域时，自动将布局区域收缩到
+    两侧按钮之间的可用范围，避免居中标签与按钮重叠。
     """
+
+    # QWidget 宽度上限（QWIDGETSIZE_MAX），用于解除最大宽度限制
+    _UNLIMITED_WIDTH = 16777215
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._left_buttons: list[QWidget] = []
         self._right_buttons: list[QWidget] = []
+        self._center_widget: Optional[QWidget] = None
+        self._ideal_width_provider: Optional[Callable[[], int]] = None
 
     def add_left_button(self, btn: QWidget) -> None:
         """注册一个左侧按钮，将其父对象设为此顶栏并在下次布局时自动定位。"""
@@ -236,6 +243,14 @@ class _ToolbarFrame(QFrame):
         """注册一个右侧按钮，将其父对象设为此顶栏并在下次布局时自动定位。"""
         self._right_buttons.append(btn)
         btn.setParent(self)
+
+    def set_center_widget(self, widget: QWidget) -> None:
+        """注册布局中间的居中标签，用于空间不足时收缩其布局区域。"""
+        self._center_widget = widget
+
+    def set_ideal_width_provider(self, provider: Callable[[], int]) -> None:
+        """注册居中标签理想宽度的回调（如完整文本宽度），约束计算时调用。"""
+        self._ideal_width_provider = provider
 
     def fixedHeight(self) -> int:
         """Return current fixed height (convenience for tests)."""
@@ -257,6 +272,63 @@ class _ToolbarFrame(QFrame):
                 continue
             btn.move(right - btn.width(), (self.height() - btn.height()) // 2)
             right = btn.geometry().left() - 6  # 按钮间距 6px
+        # 同步中间标签的布局约束，防止与两侧按钮重叠
+        self.update_center_constraint()
+
+    def _center_bounds(self) -> tuple[int, int]:
+        """计算中间可用区域的左右边界（含按钮间距，跳过隐藏按钮）。
+
+        Returns:
+            tuple[int, int]: (左边界, 右边界)
+        """
+        left_end = 8
+        for btn in self._left_buttons:
+            if not btn.isHidden():
+                left_end = max(left_end, btn.geometry().right() + 6)
+        right_start = self.width() - 8
+        for btn in self._right_buttons:
+            if not btn.isHidden():
+                right_start = min(right_start, btn.geometry().left() - 6)
+        return left_end, right_start
+
+    def center_available_width(self) -> int:
+        """返回两侧按钮之间可供居中标签使用的宽度。"""
+        left_end, right_start = self._center_bounds()
+        return max(right_start - left_end, 0)
+
+    def update_center_constraint(self, ideal_width: Optional[int] = None) -> None:
+        """根据两侧按钮占位收缩中间标签的布局区域，防止重叠。
+
+        空间充足时保持整栏居中（对称内边距）；空间不足时将布局区域
+        收缩到两侧按钮之间，并限制标签最大宽度，让其在可用区域内居中。
+
+        Args:
+            ideal_width: 居中标签的理想宽度（如完整文本宽度）。
+                省略时优先调用注册的 ideal_width_provider，最后退回 sizeHint。
+        """
+        layout = self.layout()
+        if layout is None or self._center_widget is None:
+            return
+        if ideal_width is None:
+            if self._ideal_width_provider is not None:
+                ideal_width = self._ideal_width_provider()
+            else:
+                ideal_width = self._center_widget.sizeHint().width()
+        left_end, right_start = self._center_bounds()
+        center_x = self.width() / 2.0
+        centered_ok = (
+            center_x - ideal_width / 2.0 >= left_end
+            and center_x + ideal_width / 2.0 <= right_start
+        )
+        if centered_ok:
+            # 空间充足：整栏居中（对称内边距，不限制最大宽度）
+            layout.setContentsMargins(8, 6, 8, 6)
+            self._center_widget.setMaximumWidth(self._UNLIMITED_WIDTH)
+        else:
+            # 空间不足：收缩布局区域到两侧按钮之间，并限制最大宽度防溢出
+            avail = max(right_start - left_end, 1)
+            layout.setContentsMargins(left_end, 6, self.width() - right_start, 6)
+            self._center_widget.setMaximumWidth(avail)
 
     def resizeEvent(self, event) -> None:
         """每次大小变化时重新定位可见按钮，不影响中间布局的居中计算。"""
@@ -1408,6 +1480,41 @@ class TextPreviewerLayout(QWidget):
         self._maxsize_btn.clicked.connect(self._on_maxsize_toggle)
         self._top_bar.add_right_button(self._maxsize_btn)
 
+        # 注册居中标签及其理想宽度回调：横向空间不足时自动收缩布局区域，
+        # 避免居中的统计标签与两侧绝对定位的按钮重叠
+        self._full_title_text = "文本预览"  # 完整标题文本（省略显示前）
+        self._top_bar.set_center_widget(self._title_label)
+        self._top_bar.set_ideal_width_provider(self._ideal_title_width)
+
+    def _set_title_text(self, text: str) -> None:
+        """设置完整标题文本并刷新约束与省略显示。"""
+        self._full_title_text = text
+        # 重新定位按钮并更新居中约束（标题宽度可能变化）
+        self._top_bar._layout_buttons()
+        self._apply_elided_title_text()
+        # singleShot 确保布局激活后再校正一次
+        QTimer.singleShot(0, self._apply_elided_title_text)
+
+    def _ideal_title_width(self) -> int:
+        """计算居中统计标签的理想宽度（基于完整文本）。
+
+        Returns:
+            int: 理想宽度（像素）
+        """
+        fm = self._title_label.fontMetrics()
+        return fm.horizontalAdvance(self._full_title_text)
+
+    def _apply_elided_title_text(self) -> None:
+        """根据顶栏可用宽度刷新标题文本，空间不足时省略显示。"""
+        text = self._full_title_text
+        avail = self._top_bar.center_available_width()
+        if avail > 0:
+            fm = self._title_label.fontMetrics()
+            if fm.horizontalAdvance(text) > avail:
+                text = fm.elidedText(text, Qt.ElideRight, avail)
+        if self._title_label.text() != text:
+            self._title_label.setText(text)
+
     # ── 公共接口 ────────────────────────────────────────────────────────────
 
     def set_text_content(
@@ -1536,12 +1643,11 @@ class TextPreviewerLayout(QWidget):
         if text is None:
             text = self._current_text
         if not text:
-            self._title_label.setText("文本预览")
+            self._set_title_text("文本预览")
             return
         chars = len(text.replace("\n", "").replace("\r", ""))
         lines = text.count("\n") + 1
-        self._title_label.setText(f"{chars}字 · {lines}行")
-        self._top_bar._layout_buttons()
+        self._set_title_text(f"{chars}字 · {lines}行")
 
     def _init_search_drawer(self) -> None:
         """初始化左侧搜索抽屉面板：搜索框、选项、懒加载结果列表。"""
@@ -1960,7 +2066,7 @@ class TextPreviewerLayout(QWidget):
         self._markdown_view._text_browser.clear()
         self._markdown_view.reset_scrollbars()
         self._content_stack.setCurrentIndex(2)
-        self._title_label.setText("文本预览")
+        self._set_title_text("文本预览")
         self._current_file = ""
         self._current_text = ""
         self._current_raw = None
@@ -2247,6 +2353,8 @@ class TextPreviewerLayout(QWidget):
     def resizeEvent(self, event) -> None:
         """窗口尺寸变化时同步更新左右侧边栏的遮罩和面板尺寸。"""
         super().resizeEvent(event)
+        # 布局激活后刷新标题省略文本（顶栏可用宽度可能已变化）
+        QTimer.singleShot(0, self._apply_elided_title_text)
         for drawer_attr in ("_search_drawer", "_ai_drawer"):
             drawer = getattr(self, drawer_attr, None)
             if drawer is not None and drawer._is_open:
@@ -2278,6 +2386,7 @@ class TextPreviewerLayout(QWidget):
                     self._zoom_popup.close_animated()
         if obj is self._render_toggle_btn and event.type() in (QEvent.Show, QEvent.Hide):
             self._top_bar._layout_buttons()
+            self._apply_elided_title_text()
         return super().eventFilter(obj, event)
 
     def _connect_theme(self) -> None:

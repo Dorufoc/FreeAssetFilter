@@ -396,6 +396,147 @@ class TestTeeStream:
         finally:
             tee.close()
 
+    def test_console_filter_patterns_skips_console_keeps_log(self, tmp_path) -> None:
+        """命中 console_filter_patterns 的行不写控制台，但正常写入日志。"""
+        mock_stream = MagicMock()
+        log_path = str(tmp_path / "tee.log")
+        tee = TeeStream(mock_stream, log_path, console_filter_patterns=["MuPDF error"])
+        try:
+            tee.write("MuPDF error: syntax error: cannot find ExtGState resource 'GS9'\n")
+            tee.write("normal line\n")
+            tee.flush()
+            # 控制台只收到 normal line
+            assert mock_stream.write.call_count == 1
+            assert mock_stream.write.call_args[0][0] == "normal line\n"
+            with open(log_path, "r", encoding="utf-8") as f:
+                content = f.read()
+                assert "MuPDF error" in content
+                assert "normal line" in content
+        finally:
+            tee.close()
+
+    def test_dedup_merges_consecutive_duplicate_lines(self, tmp_path) -> None:
+        """连续完全相同的行在日志中合并为一行并追加【xN】计数。"""
+        mock_stream = MagicMock()
+        log_path = str(tmp_path / "tee.log")
+        tee = TeeStream(mock_stream, log_path, dedup_enabled=True)
+        try:
+            tee.write("MuPDF error: GS9\n")
+            tee.write("MuPDF error: GS9\n")
+            tee.write("MuPDF error: GS9\n")
+            tee.write("another line\n")  # 触发累积行刷出
+            tee.flush()
+            # 控制台保持逐行即时输出，不做压缩
+            assert mock_stream.write.call_count == 4
+            with open(log_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            assert "MuPDF error: GS9 【x3】" in content
+            assert "another line" in content
+            assert content.count("GS9") == 1
+        finally:
+            tee.close()
+
+    def test_dedup_merges_within_single_write(self, tmp_path) -> None:
+        """一次 write 内的多行也参与连续去重。"""
+        log_path = str(tmp_path / "tee.log")
+        tee = TeeStream(MagicMock(), log_path, dedup_enabled=True)
+        try:
+            tee.write("err\nerr\nerr\n")
+            tee.write("ok\n")
+            tee.close()
+            with open(log_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            assert "err 【x3】\n" in content
+            assert "ok\n" in content
+        finally:
+            tee.close()
+
+    def test_dedup_resets_after_different_line(self, tmp_path) -> None:
+        """被不同行打断后重新计数，非连续重复不合并。"""
+        log_path = str(tmp_path / "tee.log")
+        tee = TeeStream(MagicMock(), log_path, dedup_enabled=True)
+        tee.write("A\n")
+        tee.write("A\n")
+        tee.write("B\n")
+        tee.write("A\n")
+        tee.write("A\n")
+        tee.close()  # close 时刷出最后累积行
+        with open(log_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        assert "A 【x2】\n" in lines
+        assert "B\n" in lines
+        assert lines.count("A 【x2】\n") == 2
+
+    def test_dedup_skips_fragments_without_newline(self, tmp_path) -> None:
+        """无换行残片原样直写，不进入去重管线。"""
+        log_path = str(tmp_path / "tee.log")
+        tee = TeeStream(MagicMock(), log_path, dedup_enabled=True)
+        try:
+            tee.write("fragment-")
+            tee.write("fragment-")
+            tee.write("done\n")
+            tee.write("done\n")
+            tee.close()
+            with open(log_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            assert "fragment-fragment-" in content  # 两个残片直写
+            assert "done 【x2】\n" in content          # 完整行去重
+        finally:
+            tee.close()
+
+    def test_dedup_empty_lines_written_directly(self, tmp_path) -> None:
+        """空行不参与去重，作为视觉分隔符直写。"""
+        log_path = str(tmp_path / "tee.log")
+        tee = TeeStream(MagicMock(), log_path, dedup_enabled=True)
+        try:
+            tee.write("A\n")
+            tee.write("\n")
+            tee.write("\n")
+            tee.write("B\n")
+            tee.close()
+            with open(log_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            assert "A\n" in content
+            assert "\n\n" in content  # 两个空行都保留
+            assert "B\n" in content
+        finally:
+            tee.close()
+
+    def test_dedup_first_line_written_immediately(self, tmp_path) -> None:
+        """首行先落盘；重复行仅内存计数，标记在计数结束时追加。"""
+        log_path = str(tmp_path / "tee.log")
+        tee = TeeStream(MagicMock(), log_path, dedup_enabled=True)
+        try:
+            tee.write("err line\n")
+            tee.write("err line\n")
+            tee.flush()  # 计数状态保留，仅把首行内容刷盘
+            with open(log_path, "r", encoding="utf-8") as f:
+                mid_content = f.read()
+            assert "err line" in mid_content      # 首行已写入
+            assert "x2" not in mid_content          # 计数标记尚未追加
+            tee.write("done\n")                     # 不同行触发计数结束
+            tee.close()
+            with open(log_path, "r", encoding="utf-8") as f:
+                final_content = f.read()
+            assert "err line 【x2】\n" in final_content  # 标签追加到首行行尾
+        finally:
+            tee.close()
+
+    def test_dedup_disabled_preserves_old_behavior(self, tmp_path) -> None:
+        """未启用去重时重复行原样写入（向后兼容）。"""
+        log_path = str(tmp_path / "tee.log")
+        tee = TeeStream(MagicMock(), log_path)
+        try:
+            tee.write("dup line\n")
+            tee.write("dup line\n")
+            tee.write("dup line\n")
+            tee.flush()
+            with open(log_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            assert content.count("dup line") == 3
+        finally:
+            tee.close()
+
 
 class TestComponentSourceFilter:
     """ComponentSourceFilter：为记录附加 source_file。"""
@@ -651,6 +792,37 @@ class TestInstallConsoleCapture:
             content = f.read()
         assert "real error line" in content
         assert "Unknown property" not in content
+
+    def test_stderr_mupdf_error_hidden_from_console_but_logged_deduped(self, tmp_path, monkeypatch) -> None:
+        """MuPDF error 不显示在控制台，但写入日志且连续重复被压缩。"""
+        mock_stdout = MagicMock()
+        mock_stderr = MagicMock()
+
+        def fake_original(stream_name: str):
+            return mock_stderr if stream_name == 'stderr' else mock_stdout
+
+        monkeypatch.setattr(_logger_module, "_get_original_console_stream", fake_original)
+        log_path = str(tmp_path / "capture.log")
+        assert install_console_capture(log_path) is True
+
+        sys.stderr.write("MuPDF error: syntax error: cannot find ExtGState resource 'GS9'\n")
+        sys.stderr.write("MuPDF error: syntax error: cannot find ExtGState resource 'GS9'\n")
+        sys.stderr.write("real failure line\n")
+        sys.stderr.write("done marker\n")
+        sys.stderr.flush()
+
+        # 控制台不出现 MuPDF 噪音，普通行照常输出
+        console_text = "".join(call.args[0] for call in mock_stderr.write.call_args_list)
+        assert "MuPDF error" not in console_text
+        assert "real failure line" in console_text
+
+        # 日志保留 MuPDF 错误，且连续重复压缩为一条带计数标记
+        with open(log_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "MuPDF error" in content
+        assert "【x2】" in content
+        assert content.count("MuPDF error") == 1
+        assert "real failure line" in content
 
     def test_second_install_is_idempotent(self, tmp_path) -> None:
         """重复调用同路径返回 False 且不崩溃（幂等）。"""

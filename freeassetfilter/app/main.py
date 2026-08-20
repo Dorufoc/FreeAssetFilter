@@ -611,12 +611,23 @@ class FreeAssetFilterApp(QMainWindow):
             if not hasattr(self, '_retired_worker_refs'):
                 self._retired_worker_refs = []
 
-            # 立即终止静默检查线程
+            # 请求中断静默检查线程（不强制 terminate）
             if _silent_worker and not _silent_worker.isFinished():
                 # requestInterruption() 已经由 cancel_silent_check() 调用
-                # 但 HTTP urlopen 是同步阻塞无法被中断，直接用 terminate()
-                _silent_worker.terminate()
-                _silent_worker.wait(500)
+                # SilentUpdateCheckWorker.run() 会透传 cancel_check=self.isInterruptionRequested，
+                # update_manager 的 HTTP 读取间隙会检查中断并抛出 UpdateCancelled，
+                # 且所有 HTTP 调用自带 5~10s 超时，线程会在下一次间隙或超时后自然退出。
+                #
+                # 注意：绝不能再调用 terminate()——terminate() 在线程持有 GIL 时强制杀死
+                # 会导致解释器死锁，使 app.exec() 永不返回，on_app_exit/写盘链全部跳过
+                # （历史 "播放视频后进程挂死" bug 的根因）。
+                #
+                # 线程对象安全：cancel_silent_check() → _retire_silent_worker() 已把 worker
+                # 加入 update_controller._retired_silent_workers 与模块级 _global_qthread_refs
+                # （含 atexit 5s 等待兜底）；此处再进 _retired_worker_refs 双层持有，
+                # 进程退出时 OS 自动回收线程，无需强制终止。
+                if not _silent_worker.wait(500):
+                    warning("[QThreadCleanup] 静默检查线程未在 500ms 内退出，交由进程退出时自动回收")
                 self._retired_worker_refs.append(_silent_worker)
                 _silent_worker.finished.connect(lambda w=_silent_worker: self._cleanup_retired_worker(w))
 
@@ -627,13 +638,17 @@ class FreeAssetFilterApp(QMainWindow):
                     self._retired_worker_refs.append(w)
                     w.finished.connect(lambda worker=w: self._cleanup_retired_worker(worker))
 
-            # 立即终止手动检查线程
+            # 请求中断手动检查线程（不强制 terminate）
             if hasattr(self.update_controller, '_check_worker') and self.update_controller._check_worker:
                 cw = self.update_controller._check_worker
                 if cw.isRunning():
                     cw.requestInterruption()
-                    cw.terminate()
-                    cw.wait(500)
+                    # 不调用 cw.terminate()：强制终止可能在线程持有 GIL 时导致解释器死锁，
+                    # 使 app.exec() 永不返回、退出写盘链被跳过（与静默检查线程同样的根因）。
+                    # 手动检查同样走 check_for_updates(cancel_check=...)，HTTP 间隙会响应中断，
+                    # 且请求自带 ≤10s 超时，线程会自然退出；进程退出时 OS 回收线程。
+                    if not cw.wait(500):
+                        warning("[QThreadCleanup] 手动检查线程未在 500ms 内退出，交由进程退出时自动回收")
                     if cw not in self._retired_worker_refs:
                         self._retired_worker_refs.append(cw)
                         cw.finished.connect(lambda w=cw: self._cleanup_retired_worker(w))
@@ -3086,9 +3101,20 @@ def main():
     def on_app_exit():
         nonlocal _mutex_handle
         exit_time = time.time()
-        settings_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data', 'settings.json')
         cur_settings_manager = getattr(app, 'settings_manager', None)
 
+        # 使用 SettingsManager 的实际配置文件路径（freeassetfilter/data/settings.json）。
+        # 不能再用三层 dirname(__file__) 解析——那会指向项目根 data/settings.json，
+        # 与 SettingsManager 读写的文件不一致，导致 last_exit_time 写入错误位置。
+        if cur_settings_manager is not None and getattr(cur_settings_manager, '_settings_file', None):
+            settings_file = cur_settings_manager._settings_file
+        else:
+            settings_file = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                'data', 'settings.json')
+        info(f"[退出] on_app_exit 开始: exit_time={exit_time:.3f}, settings_file={settings_file}")
+
+        write_ok = False
         try:
             if os.path.exists(settings_file):
                 with open(settings_file, 'r', encoding='utf-8') as f:
@@ -3101,13 +3127,30 @@ def main():
 
                 with open(settings_file, 'w', encoding='utf-8') as f:
                     json.dump(settings_data, f, indent=4, ensure_ascii=False)
+                write_ok = True
             else:
                 if cur_settings_manager is not None:
                     cur_settings_manager.set_setting("app.last_exit_time", exit_time)
+                    # 不能依赖 auto_save 的防抖 Timer——0.35s 延迟在退出瞬间可能来不及触发
+                    cur_settings_manager.save_settings()
+                    write_ok = True
 
         except (OSError, PermissionError, json.JSONDecodeError, TypeError) as e:
+            warning(f"[退出] settings.json 直接写盘失败: {e}，改用 SettingsManager 同步兜底")
             if cur_settings_manager is not None:
                 cur_settings_manager.set_setting("app.last_exit_time", exit_time)
+                cur_settings_manager.save_settings()
+                write_ok = True
+
+        info(f"[退出] last_exit_time 写入完成: {exit_time:.3f}" if write_ok
+             else "[退出] last_exit_time 写入失败")
+
+        # 显式 flush 全部日志 handler，确保退出链日志在进程终止前落盘
+        try:
+            for handler in getattr(logger, 'logger', None).handlers or []:
+                handler.flush()
+        except Exception:
+            pass
 
         try:
             _remove_runtime_instance_info(expected_pid=os.getpid())

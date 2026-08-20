@@ -4,7 +4,7 @@
 
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 # sys.path bootstrap
 _this_file = Path(__file__).resolve()
@@ -34,12 +34,22 @@ from freeassetfilter.ui.components.styled_slider import StyledSlider
 
 
 class _ToolbarFrame(QFrame):
-    """顶栏框架 —— 与 PdfPreviewerLayout 完全相同的顶栏框架。"""
+    """顶栏框架 —— 与 PdfPreviewerLayout 相同的顶栏框架（含防重叠约束）。
+
+    中间控件通过布局居中，操作按钮在 resizeEvent 中绝对定位到两侧。
+    当横向空间不足、整栏居中会侵入两侧按钮区域时，自动将布局区域
+    收缩到两侧按钮之间的可用范围，避免居中控件与按钮重叠。
+    """
+
+    # QWidget 宽度上限（QWIDGETSIZE_MAX），用于解除最大宽度限制
+    _UNLIMITED_WIDTH = 16777215
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._left_buttons: list[QWidget] = []
         self._right_buttons: list[QWidget] = []
+        self._center_widget: Optional[QWidget] = None
+        self._ideal_width_provider: Optional[Callable[[], int]] = None
 
     def add_left_button(self, btn: QWidget) -> None:
         """注册一个左侧按钮，将其父对象设为此顶栏并在下次布局时自动定位。"""
@@ -51,9 +61,16 @@ class _ToolbarFrame(QFrame):
         self._right_buttons.append(btn)
         btn.setParent(self)
 
-    def resizeEvent(self, event) -> None:
-        """每次大小变化时将按钮固定到两侧，不影响中间布局的居中计算。"""
-        super().resizeEvent(event)
+    def set_center_widget(self, widget: QWidget) -> None:
+        """注册布局中间的居中控件，用于空间不足时收缩其布局区域。"""
+        self._center_widget = widget
+
+    def set_ideal_width_provider(self, provider: Callable[[], int]) -> None:
+        """注册居中控件理想宽度的回调，约束计算时调用。"""
+        self._ideal_width_provider = provider
+
+    def _layout_buttons(self) -> None:
+        """将已注册的按钮固定到顶栏两侧。"""
         # 左侧按钮（从左往右排列）
         left = 8
         for btn in self._left_buttons:
@@ -64,6 +81,66 @@ class _ToolbarFrame(QFrame):
         for btn in reversed(self._right_buttons):
             btn.move(right - btn.width(), (self.height() - btn.height()) // 2)
             right = btn.geometry().left() - 6
+        # 同步中间控件的布局约束，防止与两侧按钮重叠
+        self.update_center_constraint()
+
+    def _center_bounds(self) -> tuple[int, int]:
+        """计算中间可用区域的左右边界（含按钮间距）。
+
+        Returns:
+            tuple[int, int]: (左边界, 右边界)
+        """
+        left_end = 8
+        for btn in self._left_buttons:
+            left_end = max(left_end, btn.geometry().right() + 6)
+        right_start = self.width() - 8
+        for btn in self._right_buttons:
+            right_start = min(right_start, btn.geometry().left() - 6)
+        return left_end, right_start
+
+    def center_available_width(self) -> int:
+        """返回两侧按钮之间可供居中控件使用的宽度。"""
+        left_end, right_start = self._center_bounds()
+        return max(right_start - left_end, 0)
+
+    def update_center_constraint(self, ideal_width: Optional[int] = None) -> None:
+        """根据两侧按钮占位收缩中间控件的布局区域，防止重叠。
+
+        空间充足时保持整栏居中（对称内边距）；空间不足时将布局区域
+        收缩到两侧按钮之间，并限制控件最大宽度，让其在可用区域内居中。
+
+        Args:
+            ideal_width: 居中控件的理想宽度。
+                省略时优先调用注册的 ideal_width_provider，最后退回 sizeHint。
+        """
+        layout = self.layout()
+        if layout is None or self._center_widget is None:
+            return
+        if ideal_width is None:
+            if self._ideal_width_provider is not None:
+                ideal_width = self._ideal_width_provider()
+            else:
+                ideal_width = self._center_widget.sizeHint().width()
+        left_end, right_start = self._center_bounds()
+        center_x = self.width() / 2.0
+        centered_ok = (
+            center_x - ideal_width / 2.0 >= left_end
+            and center_x + ideal_width / 2.0 <= right_start
+        )
+        if centered_ok:
+            # 空间充足：整栏居中（对称内边距，不限制最大宽度）
+            layout.setContentsMargins(8, 6, 8, 6)
+            self._center_widget.setMaximumWidth(self._UNLIMITED_WIDTH)
+        else:
+            # 空间不足：收缩布局区域到两侧按钮之间，并限制最大宽度防溢出
+            avail = max(right_start - left_end, 1)
+            layout.setContentsMargins(left_end, 6, self.width() - right_start, 6)
+            self._center_widget.setMaximumWidth(avail)
+
+    def resizeEvent(self, event) -> None:
+        """每次大小变化时将按钮固定到两侧，不影响中间布局的居中计算。"""
+        super().resizeEvent(event)
+        self._layout_buttons()
 
     def _get_colors(self) -> dict[str, QColor]:
         """获取当前主题下的顶栏颜色（paintEvent 中动态读取，确保主题切换生效）。"""
@@ -548,6 +625,11 @@ class ImagePreviewerLayout(QWidget):
         self._maxsize_btn.setFixedSize(32, 32)
         self._maxsize_btn.setToolTip("最大化")
         self._top_bar.add_right_button(self._maxsize_btn)
+
+        # 注册居中的 GIF 播放按钮及其理想宽度（固定 32px）：横向空间不足时
+        # 自动收缩布局区域，避免居中按钮与两侧绝对定位的按钮重叠
+        self._top_bar.set_center_widget(self._gif_play_btn)
+        self._top_bar.set_ideal_width_provider(lambda: self._gif_play_btn.width())
 
     # ── 公共 API ──
 

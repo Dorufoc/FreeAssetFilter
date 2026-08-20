@@ -4,7 +4,7 @@ PDF 预览器布局 — 顶栏（48px 固定高度）+ 内容区（自适应拉�
 
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 # 独立运行时的 sys.path 引导（在模块级导入前执行）
 _this_file = Path(__file__).resolve()
@@ -37,12 +37,19 @@ class _ToolbarFrame(QFrame):
     """顶栏框架 —— 页面标签通过布局居中，操作按钮在 resizeEvent 中绝对定位到两侧。
 
     这样页码标签是在整个顶栏宽度上真正居中，不会被两侧按钮挤偏。
+    当横向空间不足、整栏居中会侵入两侧按钮区域时，自动将布局区域收缩到
+    两侧按钮之间的可用范围，避免居中标签与按钮重叠。
     """
+
+    # QWidget 宽度上限（QWIDGETSIZE_MAX），用于解除最大宽度限制
+    _UNLIMITED_WIDTH = 16777215
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._left_buttons: list[QWidget] = []
         self._right_buttons: list[QWidget] = []
+        self._center_widget: Optional[QWidget] = None
+        self._ideal_width_provider: Optional[Callable[[], int]] = None
 
     def add_left_button(self, btn: QWidget) -> None:
         """注册一个左侧按钮，将其父对象设为此顶栏并在下次布局时自动定位。"""
@@ -54,8 +61,16 @@ class _ToolbarFrame(QFrame):
         self._right_buttons.append(btn)
         btn.setParent(self)
 
+    def set_center_widget(self, widget: QWidget) -> None:
+        """注册布局中间的居中标签，用于空间不足时收缩其布局区域。"""
+        self._center_widget = widget
+
+    def set_ideal_width_provider(self, provider: Callable[[], int]) -> None:
+        """注册居中标签理想宽度的回调（如完整文本宽度），约束计算时调用。"""
+        self._ideal_width_provider = provider
+
     def resizeEvent(self, event) -> None:
-        """每次大小变化时将按钮固定到两侧，不影响中间布局的居中计算。"""
+        """每次大小变化时将按钮固定到两侧，并同步收缩中间标签的布局区域。"""
         super().resizeEvent(event)
         # 左侧按钮（从左往右排列）
         left = 8  # 左侧内边距 8px
@@ -67,6 +82,63 @@ class _ToolbarFrame(QFrame):
         for btn in reversed(self._right_buttons):
             btn.move(right - btn.width(), (self.height() - btn.height()) // 2)
             right = btn.geometry().left() - 6  # 按钮间距 6px
+        # 同步中间标签的布局约束，防止与两侧按钮重叠
+        self.update_center_constraint()
+
+    def _center_bounds(self) -> tuple[int, int]:
+        """计算中间可用区域的左右边界（含按钮间距，跳过隐藏按钮）。
+
+        Returns:
+            tuple[int, int]: (左边界, 右边界)
+        """
+        left_end = 8
+        for btn in self._left_buttons:
+            if not btn.isHidden():
+                left_end = max(left_end, btn.geometry().right() + 6)
+        right_start = self.width() - 8
+        for btn in self._right_buttons:
+            if not btn.isHidden():
+                right_start = min(right_start, btn.geometry().left() - 6)
+        return left_end, right_start
+
+    def center_available_width(self) -> int:
+        """返回两侧按钮之间可供居中标签使用的宽度。"""
+        left_end, right_start = self._center_bounds()
+        return max(right_start - left_end, 0)
+
+    def update_center_constraint(self, ideal_width: Optional[int] = None) -> None:
+        """根据两侧按钮占位收缩中间标签的布局区域，防止重叠。
+
+        空间充足时保持整栏居中（对称内边距）；空间不足时将布局区域
+        收缩到两侧按钮之间，并限制标签最大宽度，让其在可用区域内居中。
+
+        Args:
+            ideal_width: 居中标签的理想宽度（如完整文本宽度）。
+                省略时优先调用注册的 ideal_width_provider，最后退回 sizeHint。
+        """
+        layout = self.layout()
+        if layout is None or self._center_widget is None:
+            return
+        if ideal_width is None:
+            if self._ideal_width_provider is not None:
+                ideal_width = self._ideal_width_provider()
+            else:
+                ideal_width = self._center_widget.sizeHint().width()
+        left_end, right_start = self._center_bounds()
+        center_x = self.width() / 2.0
+        centered_ok = (
+            center_x - ideal_width / 2.0 >= left_end
+            and center_x + ideal_width / 2.0 <= right_start
+        )
+        if centered_ok:
+            # 空间充足：整栏居中（对称内边距，不限制最大宽度）
+            layout.setContentsMargins(8, 6, 8, 6)
+            self._center_widget.setMaximumWidth(self._UNLIMITED_WIDTH)
+        else:
+            # 空间不足：收缩布局区域到两侧按钮之间，并限制最大宽度防溢出
+            avail = max(right_start - left_end, 1)
+            layout.setContentsMargins(left_end, 6, self.width() - right_start, 6)
+            self._center_widget.setMaximumWidth(avail)
 
     def _get_colors(self) -> dict[str, QColor]:
         """获取当前主题下的顶栏颜色（paintEvent 中动态读取，确保主题切换生效）。"""
@@ -391,6 +463,7 @@ class PdfPreviewerLayout(QWidget):
 
         self._current_page = 1
         self._total_pages = 1
+        self._full_page_text = "1 / 1"  # 完整页码文本（省略显示前）
         self._fullscreen: bool = False
         self._fullscreen_host: Optional[PreviewFullscreenHost] = None
         self._thumbnail_widgets: list[_IndexPageThumbnail] = []
@@ -583,6 +656,15 @@ class PdfPreviewerLayout(QWidget):
         self._maxsize_btn.setToolTip("最大化")
         self._top_bar.add_right_button(self._maxsize_btn)
 
+        # 注册居中标签及其理想宽度回调：横向空间不足时自动收缩布局区域，
+        # 避免居中的页码标签与两侧绝对定位的按钮重叠
+        self._top_bar.set_center_widget(self._page_container)
+        self._top_bar.set_ideal_width_provider(self._ideal_page_container_width)
+        # 允许页码按钮被压缩到较小宽度（配合文本省略显示）
+        self._page_button.setMinimumWidth(24)
+        # 监听按钮宽度变化，动态刷新省略文本
+        self._page_button.installEventFilter(self)
+
     def _init_index_drawer(self) -> None:
         """初始化索引侧边抽屉面板（bare 模式内部嵌入 StyledScrollArea）。"""
         self._index_drawer = StyledDrawer(
@@ -688,10 +770,56 @@ class PdfPreviewerLayout(QWidget):
         if line_edit is not None:
             line_edit.setFocus(Qt.MouseFocusReason)
             line_edit.selectAll()
+        # 编辑器宽度与按钮不同，重新计算居中约束避免与两侧按钮重叠
+        self._top_bar.update_center_constraint()
 
     def _update_page_button_text(self) -> None:
-        """刷新页码按钮显示文本。"""
-        self._page_button.setText(f"{self._current_page} / {self._total_pages}")
+        """刷新页码按钮显示文本，横向空间不足时自动省略。"""
+        self._full_page_text = f"{self._current_page} / {self._total_pages}"
+        # 先按完整文本的理想宽度更新布局约束（可能收缩居中区域）
+        self._top_bar.update_center_constraint()
+        # 再按当前可用宽度刷新省略文本；singleShot 确保布局激活后再校正一次
+        self._apply_elided_page_text()
+        QTimer.singleShot(0, self._apply_elided_page_text)
+
+    def _ideal_page_container_width(self) -> int:
+        """计算居中页码容器的理想宽度（基于完整页码文本）。
+
+        编辑态（数字输入器可见）时退回容器当前 sizeHint。
+
+        Returns:
+            int: 理想宽度（像素）
+        """
+        if self._page_input.isVisible() or not self._page_button.isVisible():
+            return self._page_container.sizeHint().width()
+        config = self._page_button.SIZE_CONFIG[self._page_button._size]
+        font = QFont("Microsoft YaHei UI", config["font_size"], QFont.Normal)
+        fm = QFontMetrics(font)
+        text_w = fm.horizontalAdvance(self._full_page_text)
+        m2 = int(2 * self._dpi_scale)
+        # 按钮文本宽 + 按钮水平内边距 + 容器内边距（左右各 m2）
+        return text_w + config["padding_h"] * 2 + m2 * 2
+
+    def _apply_elided_page_text(self) -> None:
+        """根据顶栏可用宽度刷新页码文本，空间不足时省略显示。
+
+        省略判断基于两侧按钮之间的可用宽度而非按钮当前宽度，
+        确保空间恢复后能自动还原完整文本。
+        """
+        text = self._full_page_text
+        avail = self._top_bar.center_available_width()
+        m2 = int(2 * self._dpi_scale)
+        # 扣除容器内边距后按钮可占用的宽度
+        btn_avail = avail - m2 * 2
+        if btn_avail > 0:
+            config = self._page_button.SIZE_CONFIG[self._page_button._size]
+            font = QFont("Microsoft YaHei UI", config["font_size"], QFont.Normal)
+            fm = QFontMetrics(font)
+            padding = config["padding_h"] * 2
+            if fm.horizontalAdvance(text) + padding > btn_avail:
+                text = fm.elidedText(text, Qt.ElideRight, max(btn_avail - padding, 1))
+        if self._page_button.text() != text:
+            self._page_button.setText(text)
 
     def _finish_page_edit(self) -> None:
         """退出编辑模式，恢复为页码按钮显示。"""
@@ -868,6 +996,8 @@ class PdfPreviewerLayout(QWidget):
     def resizeEvent(self, event) -> None:
         """窗口尺寸变化时同步更新索引和 AI 侧边栏的遮罩和面板尺寸。"""
         super().resizeEvent(event)
+        # 布局激活后刷新页码省略文本（顶栏可用宽度可能已变化）
+        QTimer.singleShot(0, self._apply_elided_page_text)
         if hasattr(self, '_index_drawer') and self._index_drawer._is_open:
             self._index_drawer._update_container_geom()
             cw, ch = self._index_drawer._cw, self._index_drawer._ch
@@ -892,6 +1022,9 @@ class PdfPreviewerLayout(QWidget):
 
     def eventFilter(self, obj: Any, event: QEvent) -> bool:
         """应用级事件过滤：页码编辑失焦 + 弹窗外部点击/窗口移动/缩放关闭。"""
+        # 页码按钮宽度变化时刷新省略文本（布局压缩/恢复后触发）
+        if obj is self._page_button and event.type() == QEvent.Resize:
+            self._apply_elided_page_text()
         # 窗口移动或缩放时关闭弹窗（但 WindowDeactivate 除外——
         # 交互缩放弹窗（Qt.Tool 独立窗口）会导致主窗口失活，这时候不应该关闭弹窗）
         if event.type() in (QEvent.Move, QEvent.Resize):

@@ -15,6 +15,19 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::System;
 
+// 模块骨架（todo 1）：T1 自研解码器 / T2 ffmpeg 管线 / T3 跳过记录 /
+// 输出编码器 / image crate 回退（todo 26 移除 legacy_image_decode）。
+mod decoders;
+mod encoders;
+mod infra;
+mod legacy_image_decode;
+mod t2;
+mod t3;
+
+// image crate 回退路径（todo 1 自本文件抽取至 legacy_image_decode.rs）；
+// todo 26 随 image crate 一并移除。
+use legacy_image_decode::{decode_image_bytes_to_rgba, decode_with_image_crate};
+
 const DEFAULT_MAX_MEMORY_BYTES: usize = 200 * 1024 * 1024;
 const DEFAULT_K: usize = 2;
 const FFPROBE_TIMEOUT_SECS: u64 = 8;
@@ -23,10 +36,16 @@ const DEFAULT_MAX_CONCURRENT_HW_VIDEO_DECODES: usize = 1;
 
 const STATUS_OK: i32 = 0;
 const STATUS_INVALID_ARG: i32 = -1;
-const STATUS_DECODE_FAILED: i32 = -2;
+pub(crate) const STATUS_DECODE_FAILED: i32 = -2;
 const STATUS_OOM: i32 = -3;
 const STATUS_NOT_FOUND: i32 = -4;
 const STATUS_INTERNAL: i32 = -5;
+// todo 25（T3 跳过）接入前暂未被消费；与 STATUS_OOM=-3 区分路由（-3 低内存交
+// Python 回退，-7 仅维度超限），见 plan todo 27 路由表。
+#[allow(dead_code)]
+pub(crate) const STATUS_UNSUPPORTED: i32 = -6;
+#[allow(dead_code)]
+pub(crate) const STATUS_TOO_LARGE: i32 = -7;
 
 #[repr(C)]
 pub struct NativeThumbnailResult {
@@ -277,26 +296,6 @@ impl Drop for HwDecodePermit {
     }
 }
 
-fn decode_with_image_crate(
-    path: &str,
-    width: u32,
-    height: u32,
-) -> Result<(Vec<u8>, u32, u32), i32> {
-    let input = image::open(path).map_err(|_| STATUS_DECODE_FAILED)?;
-    let resized = input.thumbnail(width, height).to_rgba8();
-    let rw = resized.width();
-    let rh = resized.height();
-    Ok((resized.into_raw(), rw, rh))
-}
-
-fn decode_image_bytes_to_rgba(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
-    let input = image::load_from_memory(bytes).map_err(|_| STATUS_DECODE_FAILED)?;
-    let rgba = input.to_rgba8();
-    let rw = rgba.width();
-    let rh = rgba.height();
-    Ok((rgba.into_raw(), rw, rh))
-}
-
 fn is_video_ext(path: &str) -> bool {
     let ext = Path::new(path)
         .extension()
@@ -367,11 +366,12 @@ fn resolve_tool_path(tool_name: &str) -> Option<PathBuf> {
     None
 }
 
-fn ffprobe_path() -> Result<PathBuf, i32> {
+// `pub(crate)`：供 todo 23 `t2::ffmpeg_capability` 能力探测复用（子进程路径解析）。
+pub(crate) fn ffprobe_path() -> Result<PathBuf, i32> {
     resolve_tool_path("ffprobe.exe").ok_or(STATUS_INTERNAL)
 }
 
-fn ffmpeg_path() -> Result<PathBuf, i32> {
+pub(crate) fn ffmpeg_path() -> Result<PathBuf, i32> {
     resolve_tool_path("ffmpeg.exe").ok_or(STATUS_INTERNAL)
 }
 
@@ -416,7 +416,11 @@ fn available_hwaccels_from_ffmpeg() -> Vec<String> {
     detected
 }
 
-fn run_command_with_timeout(mut command: Command, timeout: Duration) -> std::io::Result<Output> {
+// `pub(crate)`：供 todo 23 `t2::ffmpeg_capability` 能力探测复用（子进程超时保护）。
+pub(crate) fn run_command_with_timeout(
+    mut command: Command,
+    timeout: Duration,
+) -> std::io::Result<Output> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let mut child = command.spawn()?;
@@ -1130,6 +1134,27 @@ pub extern "C" fn native_reset_decode_stats() -> c_int {
 }
 
 #[no_mangle]
+pub extern "C" fn native_get_error_log_json() -> *mut c_char {
+    std::panic::catch_unwind(|| c_message(&infra::errorlog::error_log_to_json()))
+        .unwrap_or_else(|_| c_message("[]"))
+}
+
+#[no_mangle]
+pub extern "C" fn native_clear_error_log() -> c_int {
+    std::panic::catch_unwind(|| match infra::errorlog::clear_error_log() {
+        true => STATUS_OK,
+        false => STATUS_INTERNAL,
+    })
+    .unwrap_or_else(|_| STATUS_INTERNAL)
+}
+
+#[no_mangle]
+pub extern "C" fn native_get_supported_formats_json() -> *mut c_char {
+    std::panic::catch_unwind(|| c_message(&infra::registry::supported_formats_json()))
+        .unwrap_or_else(|_| c_message("{}"))
+}
+
+#[no_mangle]
 pub extern "C" fn native_get_available_hwaccels_json() -> *mut c_char {
     std::panic::catch_unwind(|| {
         let hwaccels = available_hwaccels_from_ffmpeg();
@@ -1250,4 +1275,49 @@ pub extern "C" fn native_free_batch_result(batch: *mut NativeThumbnailBatchResul
         }
     })
     .unwrap_or_else(|_| std::process::abort())
+}
+
+// todo 23：ffmpeg/ffprobe 能力表查询导出（实测能力矩阵驱动 T2 管线）。
+// 查询型导出沿 todo 5/7 约定：panic 时降级返回 "{}" 而非 abort。
+#[no_mangle]
+pub extern "C" fn native_get_ffmpeg_capabilities_json() -> *mut c_char {
+    std::panic::catch_unwind(|| c_message(&t2::ffmpeg_capability::capabilities_json()))
+        .unwrap_or_else(|_| c_message("{}"))
+}
+
+#[cfg(test)]
+mod lzw_wiring_tests {
+    //! Design Revision 5 验证：image 0.25.10 内建 GIF（gif crate）与 TIFF
+    //! （tiff crate → weezl 纯 Rust）覆盖 LZW 两变体（GIF LSB / TIFF MSB）。
+    //! 本测试不实现任何 LZW 算法，仅验证经 image 解码 LZW 压缩样本成功且尺寸合理。
+
+    /// 4x4 RGB GIF（LZW 压缩，gif crate 解码），PIL 确定性生成。
+    const GIF_4X4_LZW: &[u8] = &[
+        71, 73, 70, 56, 55, 97, 4, 0, 4, 0, 129, 0, 0, 255, 255, 0, 0, 255, 0, 255, 0, 0, 0, 0,
+        255, 44, 0, 0, 0, 0, 4, 0, 4, 0, 0, 8, 14, 0, 5, 4, 24, 0, 64, 32, 65, 131, 5, 7, 2, 8, 8, 0,
+        59,
+    ];
+
+    /// 4x4 RGB TIFF（little-endian, Compression=5 LZW，tiff crate → weezl 解码），PIL 确定性生成。
+    const TIFF_4X4_LZW: &[u8] = &[
+        73, 73, 42, 0, 34, 0, 0, 0, 128, 63, 192, 16, 56, 20, 17, 255, 2, 130, 128, 33, 48, 120, 68,
+        14, 21, 14, 134, 67, 224, 145, 8, 56, 2, 2, 10, 0, 0, 1, 3, 0, 1, 0, 0, 0, 4, 0, 0, 0, 1, 1,
+        3, 0, 1, 0, 0, 0, 4, 0, 0, 0, 2, 1, 3, 0, 3, 0, 0, 0, 160, 0, 0, 0, 3, 1, 3, 0, 1, 0, 0, 0,
+        5, 0, 0, 0, 6, 1, 3, 0, 1, 0, 0, 0, 2, 0, 0, 0, 17, 1, 4, 0, 1, 0, 0, 0, 8, 0, 0, 0, 21, 1,
+        3, 0, 1, 0, 0, 0, 3, 0, 0, 0, 22, 1, 3, 0, 1, 0, 0, 0, 4, 0, 0, 0, 23, 1, 4, 0, 1, 0, 0, 0,
+        26, 0, 0, 0, 28, 1, 3, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 8, 0, 8, 0, 8, 0,
+    ];
+
+    #[test]
+    fn lzw_gif_and_tiff_samples_decode_via_image_crate() {
+        let gif = image::load_from_memory(GIF_4X4_LZW).expect("GIF LZW 样本应解码成功");
+        assert_eq!((gif.width(), gif.height()), (4, 4), "GIF 尺寸应为 4x4");
+
+        let tiff = image::load_from_memory(TIFF_4X4_LZW).expect("TIFF LZW 样本应解码成功");
+        assert_eq!((tiff.width(), tiff.height()), (4, 4), "TIFF 尺寸应为 4x4");
+
+        // 像素数据完整输出（RGBA8），证明 LZW 解码两变体链路均可用。
+        assert_eq!(gif.to_rgba8().pixels().count(), 16);
+        assert_eq!(tiff.to_rgba8().pixels().count(), 16);
+    }
 }

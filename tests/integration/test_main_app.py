@@ -1669,8 +1669,8 @@ class TestAppThreadCleanup:
         """boundary：无 update_controller / 无线程属性时不抛。"""
         app._cleanup_all_qthreads_before_exit()  # 不抛即可
 
-    def test_cleanup_all_qthreads_terminates_workers(self, app: Any) -> None:
-        """happy：静默/手动 worker 强制终止，下载线程走安全停止。"""
+    def test_cleanup_all_qthreads_interrupts_workers(self, app: Any) -> None:
+        """happy：静默/手动 worker 请求中断并有限等待（不强制 terminate），下载线程走安全停止。"""
         silent = _FakeQThreadStub(running=True)
         retired = _FakeQThreadStub(running=True)
         check = _FakeQThreadStub(running=True)
@@ -1715,9 +1715,14 @@ class TestAppThreadCleanup:
         app._cleanup_all_qthreads_before_exit()
 
         assert uc.cancel_calls == 1
-        assert silent.terminated == 1
+        # 静默检查线程：requestInterruption 已由 cancel_silent_check() 触发，
+        # 只做有限 wait，绝不调用 terminate()（terminate 会造成 GIL 死锁，挂死退出链）
+        assert silent.terminated == 0
         assert silent.waited == 1
-        assert check.terminated == 1
+        # 手动检查线程：请求中断 + 有限 wait，同样不强制终止
+        assert check.interrupted == 1
+        assert check.terminated == 0
+        assert check.waited == 1
         assert download.quitted == 1
         assert download.interrupted == 1
         assert sel_t.quitted == 1
