@@ -30,7 +30,13 @@ from typing import Optional, Tuple, Callable, Dict, Set, List, Union
 from pathlib import Path
 from dataclasses import dataclass
 from freeassetfilter.core.native.bridges.media_probe import get_ffmpeg_path, get_ffprobe_path
-from freeassetfilter.core.native.bridges.rust_thumbnail_bridge import RustThumbnailBridge
+from freeassetfilter.core.native.bridges.rust_thumbnail_bridge import (
+    RustThumbnailBridge,
+    STATUS_BRIDGE_UNAVAILABLE,
+    STATUS_DECODE_FAILED,
+    STATUS_OK,
+    STATUS_TOO_LARGE,
+)
 from freeassetfilter.core.preview.image_color_utils import load_raw_image, normalize_pil_image
 
 # 导入日志模块
@@ -872,13 +878,26 @@ class ThumbnailManager:
                     or suffix == '.svg'
                 )
 
-                # 优先使用 Rust 原生引擎（RAW/PSD/SVG 保留 Python 专用链路）
+                # 优先使用 Rust 原生引擎（RAW/PSD/SVG 保留 Python 专用链路）。
+                # 经由 _create_native_thumbnail 旧名进入（兼容既有 spy/patch 打点，
+                # 其内部即 with_status 实现）；成功路径在此短路。
                 result = None
+                python_fallback_allowed = True
                 if not use_python_dedicated:
                     result = self._create_native_thumbnail(file_path, thumbnail_path, legacy_thumbnail_path)
+                    if result is None:
+                        # 失败路径补状态判定：仅 TOO_LARGE(-7) 跳过 Python 解码重试
+                        # （确定性维度超限已在原生预检判定；此处二次链查询仅发生在失败侧，
+                        # Rust 预检为微秒级嗅探，不构成有效开销）
+                        native_status: int = STATUS_BRIDGE_UNAVAILABLE
+                        result, native_status = self._create_native_thumbnail_with_status(
+                            file_path, thumbnail_path, legacy_thumbnail_path
+                        )
+                        if native_status == STATUS_TOO_LARGE:
+                            python_fallback_allowed = False
 
-                # 回退到 Python 实现
-                if result is None:
+                # 回退到 Python 实现（TOO_LARGE 时跳过）
+                if result is None and python_fallback_allowed:
                     increment_perf_counter("thumbnail.create_thumbnail", "python_fallback")
                     if self.is_image_file(file_path):
                         result = self._create_image_thumbnail(file_path, thumbnail_path)
@@ -985,8 +1004,12 @@ class ThumbnailManager:
 
             try:
                 if queue_name == "native_image":
-                    result_path = self._create_native_thumbnail(file_path, thumbnail_path, legacy_thumbnail_path)
-                    if result_path is None:
+                    item_status: int = STATUS_BRIDGE_UNAVAILABLE
+                    result_path, item_status = self._create_native_thumbnail_with_status(
+                        file_path, thumbnail_path, legacy_thumbnail_path
+                    )
+                    # TOO_LARGE(-7)：跳过 Python 解码重试（与单张路径路由一致）
+                    if result_path is None and item_status != STATUS_TOO_LARGE:
                         result_path = self._create_image_thumbnail(file_path, legacy_thumbnail_path)
                 elif queue_name == "native_video":
                     result_path = self._create_video_thumbnail_batch_safe(
@@ -1042,8 +1065,15 @@ class ThumbnailManager:
                         result_path = thumbnail_path
                         self._set_cached_path_exists(thumbnail_path, True)
                     else:
-                        result_path = self._create_native_thumbnail(file_path, thumbnail_path, legacy_thumbnail_path)
-                        if result_path is None:
+                        # 批量 FFI 结构体逐项含 status，但为最小侵入不动 generate_jpg_batch
+                        # 公开签名；失败项统一落单发 with_status 通道获取状态，
+                        # 与单张路径共用同一状态源（结构体直读），天然逐项一致。
+                        item_status: int = STATUS_BRIDGE_UNAVAILABLE
+                        result_path, item_status = self._create_native_thumbnail_with_status(
+                            file_path, thumbnail_path, legacy_thumbnail_path
+                        )
+                        # TOO_LARGE(-7)：跳过 Python 解码重试（与单张路径路由一致）
+                        if result_path is None and item_status != STATUS_TOO_LARGE:
                             if queue_name == "native_video":
                                 result_path = self._create_video_thumbnail_ffmpeg(file_path, thumbnail_path)
                             else:
@@ -1473,63 +1503,127 @@ class ThumbnailManager:
         Returns:
             Optional[str]: 成功返回缩略图路径，失败返回None
         """
+        result, _status = self._create_native_thumbnail_with_status(
+            file_path, thumbnail_path, legacy_thumbnail_path
+        )
+        return result
+
+    def _create_native_thumbnail_with_status(
+        self, file_path: str, thumbnail_path: str, legacy_thumbnail_path: str
+    ) -> Tuple[Optional[str], int]:
+        """原生缩略图生成 + 状态码透传路由（todo 33 状态通道核心入口）。
+
+        三级 native 链（JPG 直出 → JPEG 别名 → RGBA+PIL 落盘）全部改走桥的
+        ``*_with_status`` 入口，任一环节拿到确定性失败状态（非 -4 接口缺失）
+        即提前终止链条并按状态路由：
+
+        * ``STATUS_TOO_LARGE(-7)``：维度超限为解码前预检的确定性判定，写
+          app_logger 告警（含路径与状态码）后直接返回，调用方据此跳过
+          Python 解码重试；
+        * 其余失败状态（-2/-3/-6 等）：调用方走既有 Python 回退链。
+
+        Args:
+            file_path: 源文件路径。
+            thumbnail_path: 缩略图输出路径。
+            legacy_thumbnail_path: 兼容路径（本方法未使用，保持既有签名）。
+
+        Returns:
+            Tuple[Optional[str], int]: ``(缩略图路径或 None, 最终原生状态码)``。
+            成功时状态码恒为 0；失败时为聚合后的首个确定性失败码
+            （全为接口降级时返回 -4）。
+        """
         with track_perf("thumbnail.create_native_thumbnail"):
             if not self._is_native_available():
                 increment_perf_counter("thumbnail.create_native_thumbnail", "bridge_unavailable")
-                return None
+                return None, STATUS_BRIDGE_UNAVAILABLE
 
+            result, status = self._run_native_generation_chain(file_path, thumbnail_path)
+            if result is None and status == STATUS_TOO_LARGE:
+                warning(f"图像尺寸超限，跳过缩略图生成且不重试Python解码: {file_path}, status={status}")
+            return result, status
+
+    @staticmethod
+    def _first_deterministic_failure_status(*statuses: int) -> int:
+        """返回第一个非桥降级(-4)的状态码；全为降级时返回 STATUS_BRIDGE_UNAVAILABLE。
+
+        同一文件的三条 native 导出共享同一解码管线，失败状态一致，
+        取首个非 -4 的状态即代表整条链的确定性判定结果。
+
+        Args:
+            *statuses: 三级链各环节返回的状态码（按调用顺序）。
+
+        Returns:
+            int: 首个确定性失败状态码；无则返回 -4。
+        """
+        for status in statuses:
+            if status != STATUS_BRIDGE_UNAVAILABLE:
+                return status
+        return STATUS_BRIDGE_UNAVAILABLE
+
+    def _run_native_generation_chain(self, file_path: str, thumbnail_path: str) -> Tuple[Optional[str], int]:
+        """执行三级原生生成链并透传最终状态码。
+
+        Returns:
+            Tuple[Optional[str], int]: ``(缩略图路径或 None, 最终状态码)``。
+        """
+        try:
+            dpi_scaled_size = int(self.BASE_SIZE * self.dpi_scale)
+
+            # 优先使用 Rust 直接 JPG 输出，降低磁盘 IO 与批量预览开销
+            jpg_bytes, jpg_status = self._rust_bridge.generate_jpg_with_status(
+                file_path, dpi_scaled_size, dpi_scaled_size
+            )
+            if jpg_bytes:
+                increment_perf_counter("thumbnail.create_native_thumbnail", "jpg_direct")
+                with open(thumbnail_path, "wb") as f:
+                    f.write(jpg_bytes)
+                return thumbnail_path, STATUS_OK
+
+            # 回退到 Rust JPEG 输出（兼容别名接口）
+            jpeg_bytes, jpeg_status = self._rust_bridge.generate_jpeg_with_status(
+                file_path, dpi_scaled_size, dpi_scaled_size
+            )
+            if jpeg_bytes:
+                increment_perf_counter("thumbnail.create_native_thumbnail", "jpeg_direct")
+                with open(thumbnail_path, "wb") as f:
+                    f.write(jpeg_bytes)
+                return thumbnail_path, STATUS_OK
+
+            # 回退到 RGBA 路径
+            if not _ensure_pil():
+                increment_perf_counter("thumbnail.create_native_thumbnail", "pil_unavailable")
+                return None, self._first_deterministic_failure_status(jpg_status, jpeg_status)
+            from PIL import Image
+
+            generated, rgba_status = self._rust_bridge.generate_rgba_with_status(
+                file_path, dpi_scaled_size, dpi_scaled_size
+            )
+            if not generated:
+                increment_perf_counter("thumbnail.create_native_thumbnail", "rgba_fallback_miss")
+                return None, self._first_deterministic_failure_status(jpg_status, jpeg_status, rgba_status)
+
+            raw, width, height, channels = generated
+            if channels not in (3, 4):
+                increment_perf_counter("thumbnail.create_native_thumbnail", "invalid_channels")
+                return None, STATUS_DECODE_FAILED
+
+            increment_perf_counter("thumbnail.create_native_thumbnail", "rgba_fallback")
+            mode = "RGBA" if channels == 4 else "RGB"
+            img = Image.frombytes(mode, (width, height), raw)
+            if mode == "RGB":
+                img = img.convert("RGBA")
+            img = img.convert("RGB")
+            img.save(thumbnail_path, format='JPEG', quality=self.QUALITY)
             try:
-                dpi_scaled_size = int(self.BASE_SIZE * self.dpi_scale)
+                img.close()
+            except Exception:
+                pass
 
-                # 优先使用 Rust 直接 JPG 输出，降低磁盘 IO 与批量预览开销
-                jpg_bytes = self._rust_bridge.generate_jpg(file_path, dpi_scaled_size, dpi_scaled_size)
-                if jpg_bytes:
-                    increment_perf_counter("thumbnail.create_native_thumbnail", "jpg_direct")
-                    with open(thumbnail_path, "wb") as f:
-                        f.write(jpg_bytes)
-                    return thumbnail_path
-
-                # 回退到 Rust JPEG 输出（兼容别名接口）
-                jpeg_bytes = self._rust_bridge.generate_jpeg(file_path, dpi_scaled_size, dpi_scaled_size)
-                if jpeg_bytes:
-                    increment_perf_counter("thumbnail.create_native_thumbnail", "jpeg_direct")
-                    with open(thumbnail_path, "wb") as f:
-                        f.write(jpeg_bytes)
-                    return thumbnail_path
-
-                # 回退到 RGBA 路径
-                if not _ensure_pil():
-                    increment_perf_counter("thumbnail.create_native_thumbnail", "pil_unavailable")
-                    return None
-                from PIL import Image
-
-                generated = self._rust_bridge.generate_rgba(file_path, dpi_scaled_size, dpi_scaled_size)
-                if not generated:
-                    increment_perf_counter("thumbnail.create_native_thumbnail", "rgba_fallback_miss")
-                    return None
-
-                raw, width, height, channels = generated
-                if channels not in (3, 4):
-                    increment_perf_counter("thumbnail.create_native_thumbnail", "invalid_channels")
-                    return None
-
-                increment_perf_counter("thumbnail.create_native_thumbnail", "rgba_fallback")
-                mode = "RGBA" if channels == 4 else "RGB"
-                img = Image.frombytes(mode, (width, height), raw)
-                if mode == "RGB":
-                    img = img.convert("RGBA")
-                img = img.convert("RGB")
-                img.save(thumbnail_path, format='JPEG', quality=self.QUALITY)
-                try:
-                    img.close()
-                except Exception:
-                    pass
-
-                return thumbnail_path
-            except Exception as e:
-                increment_perf_counter("thumbnail.create_native_thumbnail", "failure")
-                warning(f"Rust生成失败，回退Python: {file_path}, {e}")
-                return None
+            return thumbnail_path, STATUS_OK
+        except Exception as e:
+            increment_perf_counter("thumbnail.create_native_thumbnail", "failure")
+            warning(f"Rust生成失败，回退Python: {file_path}, {e}")
+            return None, STATUS_INTERNAL
 
     def _create_image_thumbnail(self, file_path: str, thumbnail_path: str) -> Optional[str]:
         """
@@ -2449,10 +2543,16 @@ def _run_batch_video_thumbnail_subprocess(file_path: str, dpi_scale: float, pref
         legacy_thumbnail_path = manager.get_legacy_thumbnail_path(file_path)
 
         result = None
+        skip_python_retry = False
         if prefer_native:
-            result = manager._create_native_thumbnail(file_path, thumbnail_path, legacy_thumbnail_path)
+            native_status: int = STATUS_BRIDGE_UNAVAILABLE
+            result, native_status = manager._create_native_thumbnail_with_status(
+                file_path, thumbnail_path, legacy_thumbnail_path
+            )
+            # TOO_LARGE(-7)：跳过 ffmpeg 解码重试（告警已在 with_status 内部写入）
+            skip_python_retry = native_status == STATUS_TOO_LARGE
 
-        if result is None:
+        if result is None and not skip_python_retry:
             result = manager._create_video_thumbnail_ffmpeg(file_path, thumbnail_path)
 
         if result and os.path.exists(result):

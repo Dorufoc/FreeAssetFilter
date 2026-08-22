@@ -499,13 +499,14 @@ class PdfPreviewerLayout(QWidget):
         self._content_stack = QStackedLayout(self._content_area)
         self._content_stack.setContentsMargins(0, 0, 0, 0)
 
-        # ── index 0：PDF 渲染器 + 双 StyledScrollBar ──
-        # QGridLayout: (0,0)=renderer, (0,1)=vbar, (1,0)=hbar, (1,1)=corner
+        # ── index 0：PDF 渲染器 + 双悬浮覆盖式 StyledScrollBar ──
+        # 渲染器直接铺满整个内容容器（不再为滚动条预留网格列/行），
+        # 滚动条作为子控件悬浮在内容上方（raise_），不参与内容层布局占位，
+        # 从而保证左右/上下边距始终对称（参照 file_selector_layout 的覆盖式滚动条）。
         self._scroll_container = QWidget()
-        from PySide6.QtWidgets import QGridLayout
-        scroll_grid = QGridLayout(self._scroll_container)
-        scroll_grid.setContentsMargins(0, 0, 0, 0)
-        scroll_grid.setSpacing(0)
+        container_layout = QVBoxLayout(self._scroll_container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(0)
 
         self._renderer = NativePdfRenderer(
             self._content_area,
@@ -513,25 +514,26 @@ class PdfPreviewerLayout(QWidget):
             dpi_scale=self._dpi_scale,
             global_font=self._global_font,
         )
-        scroll_grid.addWidget(self._renderer, 0, 0)
+        container_layout.addWidget(self._renderer)
 
         from freeassetfilter.ui.components.styled_scroll_area import StyledScrollBar
+        # 垂直滚动条：悬浮在内容右边缘，宽度按 DPI 缩放
         self._vbar = StyledScrollBar(orientation=Qt.Vertical)
         self._vbar.setRange(0, 0)
-        self._vbar.setMaximumWidth(12)
+        self._vbar_w = max(6, int(8 * self._dpi_scale))
+        self._vbar.setFixedWidth(self._vbar_w)
+        self._vbar.setParent(self._scroll_container)
         self._vbar.valueChanged.connect(self._on_scroll_changed)
-        scroll_grid.addWidget(self._vbar, 0, 1)
+        self._vbar.raise_()
 
+        # 水平滚动条：悬浮在内容底部边缘，高度按 DPI 缩放
         self._hbar = StyledScrollBar(orientation=Qt.Horizontal)
         self._hbar.setRange(0, 0)
-        self._hbar.setMaximumHeight(12)
+        self._hbar_h = max(6, int(8 * self._dpi_scale))
+        self._hbar.setFixedHeight(self._hbar_h)
+        self._hbar.setParent(self._scroll_container)
         self._hbar.valueChanged.connect(self._on_hscroll_changed)
-        scroll_grid.addWidget(self._hbar, 1, 0)
-
-        # Corner spacer
-        corner = QWidget()
-        corner.setFixedSize(self._hbar.height(), self._vbar.width())
-        scroll_grid.addWidget(corner, 1, 1)
+        self._hbar.raise_()
 
         self._content_stack.addWidget(self._scroll_container)
 
@@ -869,38 +871,69 @@ class PdfPreviewerLayout(QWidget):
         if not hasattr(self, '_renderer') or self._renderer._view is None:
             return
         v = self._renderer._view
-        # 垂直
-        if not v._accum_page_heights:
-            self._vbar.setRange(0, 0)
-        else:
-            total_h: float = v._accum_page_heights[-1] * zoom
-            view_h: int = max(v.view_height, 1)
-            scroll_max: int = max(0, int(total_h - view_h))
-            self._vbar.setRange(0, scroll_max)
-            self._vbar.setSingleStep(20)
-            self._vbar.setPageStep(view_h)
-            # 同步滑块到当前 offset_y（避免缩放后滚动条位置失配导致跳变）
-            new_val = int((v.offset_y - v.view_height / (2.0 * zoom)) * zoom)
-            new_val = max(self._vbar.minimum(), min(self._vbar.maximum(), new_val))
-            self._vbar.blockSignals(True)
-            self._vbar.setValue(new_val)
+        # 统一屏蔽双滚动条信号：防止 setRange/setValue 触发 valueChanged
+        # 回写 offset_x/offset_y（例如 fit 后 hbar range 归零把 offset_x 覆盖
+        # 为视口中心 vw/(2*zoom)，导致内容水平偏向一侧）。
+        self._vbar.blockSignals(True)
+        self._hbar.blockSignals(True)
+        try:
+            # 垂直
+            if not v._accum_page_heights:
+                self._vbar.setRange(0, 0)
+            else:
+                total_h: float = v._accum_page_heights[-1] * zoom
+                view_h: int = max(v.view_height, 1)
+                scroll_max: int = max(0, int(total_h - view_h))
+                self._vbar.setRange(0, scroll_max)
+                self._vbar.setSingleStep(20)
+                self._vbar.setPageStep(view_h)
+                # 同步滑块到当前 offset_y（避免缩放后滚动条位置失配导致跳变）
+                new_val = int((v.offset_y - v.view_height / (2.0 * zoom)) * zoom)
+                new_val = max(self._vbar.minimum(), min(self._vbar.maximum(), new_val))
+                self._vbar.setValue(new_val)
+            # 水平
+            if not self._renderer._page_widths:
+                self._hbar.setRange(0, 0)
+            else:
+                total_w: float = self._renderer._page_widths[0] * zoom
+                view_w: int = max(v.view_width, 1)
+                scroll_max: int = max(0, int(total_w - view_w))
+                self._hbar.setRange(0, scroll_max)
+                self._hbar.setSingleStep(20)
+                self._hbar.setPageStep(view_w)
+                # 同步滑块到当前 offset_x
+                new_hval = int((v.offset_x - v.view_width / (2.0 * zoom)) * zoom)
+                new_hval = max(self._hbar.minimum(), min(self._hbar.maximum(), new_hval))
+                self._hbar.setValue(new_hval)
+        finally:
             self._vbar.blockSignals(False)
-        # 水平
-        if not self._renderer._page_widths:
-            self._hbar.setRange(0, 0)
-        else:
-            total_w: float = self._renderer._page_widths[0] * zoom
-            view_w: int = max(v.view_width, 1)
-            scroll_max: int = max(0, int(total_w - view_w))
-            self._hbar.setRange(0, scroll_max)
-            self._hbar.setSingleStep(20)
-            self._hbar.setPageStep(view_w)
-            # 同步滑块到当前 offset_x
-            new_hval = int((v.offset_x - v.view_width / (2.0 * zoom)) * zoom)
-            new_hval = max(self._hbar.minimum(), min(self._hbar.maximum(), new_hval))
-            self._hbar.blockSignals(True)
-            self._hbar.setValue(new_hval)
             self._hbar.blockSignals(False)
+        # 无滚动需求时隐藏滚动条，避免右侧/底部恒占 12px 间隙导致内容相对可视框偏移
+        self._sync_scrollbar_visibility()
+
+    def _sync_scrollbar_visibility(self) -> None:
+        """按是否有滚动需求显隐双滚动条。
+
+        覆盖式滚动条不参与内容层布局，显隐只影响自身悬浮层，
+        无论是否显示，渲染器都占据完整可视区域，边距始终对称。
+        """
+        v_need: bool = self._vbar.maximum() > self._vbar.minimum()
+        h_need: bool = self._hbar.maximum() > self._hbar.minimum()
+        self._vbar.setVisible(v_need)
+        self._hbar.setVisible(h_need)
+
+    def _relayout_overlay_scrollbars(self) -> None:
+        """将双滚动条绝对定位到内容容器右/下边缘上方，悬浮于渲染层之上。
+
+        覆盖式滚动条不与布局占位，仅在做为内容父容器的直接子控件时
+        通过 setGeometry 定位，并在每次定位后 raise_() 保持悬浮层级。
+        """
+        cw: int = self._scroll_container.width()
+        ch: int = self._scroll_container.height()
+        self._vbar.setGeometry(cw - self._vbar_w, 0, self._vbar_w, ch)
+        self._hbar.setGeometry(0, ch - self._hbar_h, cw, self._hbar_h)
+        self._vbar.raise_()
+        self._hbar.raise_()
 
     def _on_renderer_page_changed(self, page: int) -> None:
         """Slot for NativePdfRenderer.page_changed signal."""
@@ -998,6 +1031,8 @@ class PdfPreviewerLayout(QWidget):
         super().resizeEvent(event)
         # 布局激活后刷新页码省略文本（顶栏可用宽度可能已变化）
         QTimer.singleShot(0, self._apply_elided_page_text)
+        # 悬浮覆盖式滚动条随内容容器尺寸变化重新定位（不参与内容布局）
+        self._relayout_overlay_scrollbars()
         if hasattr(self, '_index_drawer') and self._index_drawer._is_open:
             self._index_drawer._update_container_geom()
             cw, ch = self._index_drawer._cw, self._index_drawer._ch

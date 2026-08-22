@@ -1,5 +1,3 @@
-use image::codecs::jpeg::JpegEncoder;
-use image::ColorType;
 use once_cell::sync::Lazy;
 use rayon::prelude::*;
 use std::collections::{HashMap, VecDeque};
@@ -9,7 +7,6 @@ use std::fs;
 use std::os::raw::{c_char, c_int};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -26,13 +23,20 @@ mod t3;
 
 // image crate 回退路径（todo 1 自本文件抽取至 legacy_image_decode.rs）；
 // todo 26 随 image crate 一并移除。
-use legacy_image_decode::{decode_image_bytes_to_rgba, decode_with_image_crate};
+use legacy_image_decode::decode_with_image_crate;
+// todo 24：ffmpeg 视频管线已整体搬迁至 t2/t2_ffmpeg.rs，本文件仅保留薄调用层。
+use t2::t2_ffmpeg::{
+    available_hwaccels_from_ffmpeg, decode_stats_to_json, decode_video_with_ffmpeg,
+    extract_best_video_frame_jpeg_bytes, is_video_ext, reset_decode_stats,
+    set_max_concurrent_hw_video_decodes,
+};
+// todo 25：T3 兜底通道——扩展名跳过清单路由与解码失败 errorlog 统一补录。
+use t3::skip::{
+    is_t3_skip_path, path_format, record_decode_failure, skip_with_status, T3_SKIP_MESSAGE,
+};
 
 const DEFAULT_MAX_MEMORY_BYTES: usize = 200 * 1024 * 1024;
 const DEFAULT_K: usize = 2;
-const FFPROBE_TIMEOUT_SECS: u64 = 8;
-const FFMPEG_TIMEOUT_SECS: u64 = 20;
-const DEFAULT_MAX_CONCURRENT_HW_VIDEO_DECODES: usize = 1;
 
 const STATUS_OK: i32 = 0;
 const STATUS_INVALID_ARG: i32 = -1;
@@ -40,11 +44,10 @@ pub(crate) const STATUS_DECODE_FAILED: i32 = -2;
 const STATUS_OOM: i32 = -3;
 const STATUS_NOT_FOUND: i32 = -4;
 const STATUS_INTERNAL: i32 = -5;
-// todo 25（T3 跳过）接入前暂未被消费；与 STATUS_OOM=-3 区分路由（-3 低内存交
-// Python 回退，-7 仅维度超限），见 plan todo 27 路由表。
-#[allow(dead_code)]
+// todo 25 已接线消费：-6 由 T3 扩展名清单路由返回、-2/-6/-7 失败补录经
+// t3::skip 引用；与 STATUS_OOM=-3 区分路由（-3 低内存交 Python 回退，-7 仅
+// 维度超限），见 plan todo 27 路由表。
 pub(crate) const STATUS_UNSUPPORTED: i32 = -6;
-#[allow(dead_code)]
 pub(crate) const STATUS_TOO_LARGE: i32 = -7;
 
 #[repr(C)]
@@ -195,129 +198,8 @@ impl NativeEngine {
     }
 }
 
-#[derive(Default, Debug, Clone)]
-struct VideoProbeInfo {
-    duration_secs: Option<f64>,
-}
-
-#[derive(Default, Debug, Clone)]
-struct DecodeStats {
-    d3d11va_attempts: u64,
-    d3d11va_hits: u64,
-    dxva2_attempts: u64,
-    dxva2_hits: u64,
-    qsv_attempts: u64,
-    qsv_hits: u64,
-    software_attempts: u64,
-    software_hits: u64,
-    software_fallbacks: u64,
-}
-
-impl DecodeStats {
-    fn record_attempt(&mut self, mode: Option<&str>) {
-        match mode {
-            Some("d3d11va") => self.d3d11va_attempts += 1,
-            Some("dxva2") => self.dxva2_attempts += 1,
-            Some("qsv") => self.qsv_attempts += 1,
-            _ => self.software_attempts += 1,
-        }
-    }
-
-    fn record_hit(&mut self, mode: Option<&str>) {
-        match mode {
-            Some("d3d11va") => self.d3d11va_hits += 1,
-            Some("dxva2") => self.dxva2_hits += 1,
-            Some("qsv") => self.qsv_hits += 1,
-            _ => self.software_hits += 1,
-        }
-    }
-
-    fn record_software_fallback(&mut self) {
-        self.software_fallbacks += 1;
-    }
-
-    fn to_json(&self) -> String {
-        format!(
-            "{{\"d3d11va_attempts\":{},\"d3d11va_hits\":{},\"dxva2_attempts\":{},\"dxva2_hits\":{},\"qsv_attempts\":{},\"qsv_hits\":{},\"software_attempts\":{},\"software_hits\":{},\"software_fallbacks\":{}}}",
-            self.d3d11va_attempts,
-            self.d3d11va_hits,
-            self.dxva2_attempts,
-            self.dxva2_hits,
-            self.qsv_attempts,
-            self.qsv_hits,
-            self.software_attempts,
-            self.software_hits,
-            self.software_fallbacks
-        )
-    }
-}
-
-#[derive(Debug, Clone)]
-struct FrameExtractResult {
-    bytes: Vec<u8>,
-    mode: Option<String>,
-    verified_hw: bool,
-    software_fallback: bool,
-}
-
-struct HwDecodePermit {
-    acquired: bool,
-}
-
-impl HwDecodePermit {
-    fn try_acquire() -> Self {
-        loop {
-            let max_slots = MAX_CONCURRENT_HW_VIDEO_DECODE_LIMIT
-                .load(Ordering::Acquire)
-                .max(1);
-            let current = HW_VIDEO_DECODE_SLOTS.load(Ordering::Acquire);
-            if current >= max_slots {
-                return Self { acquired: false };
-            }
-            if HW_VIDEO_DECODE_SLOTS
-                .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                return Self { acquired: true };
-            }
-        }
-    }
-
-    fn acquired(&self) -> bool {
-        self.acquired
-    }
-}
-
-impl Drop for HwDecodePermit {
-    fn drop(&mut self) {
-        if self.acquired {
-            HW_VIDEO_DECODE_SLOTS.fetch_sub(1, Ordering::AcqRel);
-        }
-    }
-}
-
-fn is_video_ext(path: &str) -> bool {
-    let ext = Path::new(path)
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    matches!(
-        ext.as_str(),
-        "mp4"
-            | "mov"
-            | "mkv"
-            | "flv"
-            | "3gp"
-            | "mxf"
-            | "avi"
-            | "webm"
-            | "wmv"
-            | "mpg"
-            | "mpeg"
-            | "m4v"
-    )
-}
+// todo 24：`VideoProbeInfo` / `DecodeStats` / `FrameExtractResult` /
+// `HwDecodePermit` 与 ffmpeg 编排函数群已整体迁至 `t2::t2_ffmpeg`。
 
 fn candidate_native_dir_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
@@ -375,47 +257,6 @@ pub(crate) fn ffmpeg_path() -> Result<PathBuf, i32> {
     resolve_tool_path("ffmpeg.exe").ok_or(STATUS_INTERNAL)
 }
 
-fn available_hwaccels_from_ffmpeg() -> Vec<String> {
-    let ffmpeg = match ffmpeg_path() {
-        Ok(path) => path,
-        Err(_) => return Vec::new(),
-    };
-
-    let mut command = Command::new(ffmpeg);
-    command
-        .arg("-hide_banner")
-        .arg("-loglevel")
-        .arg("quiet")
-        .arg("-hwaccels");
-
-    let output = match run_command_with_timeout(command, Duration::from_secs(5)) {
-        Ok(o) if o.status.success() => o,
-        _ => return Vec::new(),
-    };
-
-    let mut detected = Vec::new();
-    let combined_output = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    for line in combined_output.lines() {
-        let normalized = line.trim().to_ascii_lowercase();
-        if normalized.is_empty() || normalized == "hardware acceleration methods:" {
-            continue;
-        }
-
-        if matches!(normalized.as_str(), "d3d11va" | "dxva2" | "qsv")
-            && !detected.iter().any(|existing| existing == &normalized)
-        {
-            detected.push(normalized);
-        }
-    }
-
-    detected
-}
-
 // `pub(crate)`：供 todo 23 `t2::ffmpeg_capability` 能力探测复用（子进程超时保护）。
 pub(crate) fn run_command_with_timeout(
     mut command: Command,
@@ -440,263 +281,103 @@ pub(crate) fn run_command_with_timeout(
     }
 }
 
-fn run_ffprobe_basic_info(path: &str) -> VideoProbeInfo {
-    let ffprobe = match ffprobe_path() {
-        Ok(p) => p,
-        Err(_) => return VideoProbeInfo::default(),
-    };
+// todo 24：ffprobe 时长探测 / seek 候选 / HW 命中判定 / MJPEG 抽帧编排
+// （`run_ffprobe_basic_info`、`clamp_seek_time`、`build_seek_candidates`、
+// `ffmpeg_log_indicates_hw_hit`、`scale_filter`、`try_extract_frame_with_ffmpeg`、
+// `extract_best_video_frame_jpeg`、`decode_video_with_ffmpeg`）已整体迁至
+// `t2::t2_ffmpeg`，本文件仅经薄调用层（顶部 use）使用。
 
-    let mut command = Command::new(ffprobe);
-    command
-        .arg("-v")
-        .arg("error")
-        .arg("-select_streams")
-        .arg("v:0")
-        .arg("-show_entries")
-        .arg("format=duration")
-        .arg("-of")
-        .arg("default=noprint_wrappers=1:nokey=0")
-        .arg(path);
+/// AVIF 系能力门控图像容器：bundled ffmpeg 最小构建无对应 demuxer 时，
+/// 既不能走 T2，也没有 T1 解码器——按 todo 25 通则快速 -6 交 Python 回退链。
+const CAPABILITY_GATED_IMAGE_EXTS: &[&str] = &["avif", "heic", "heif", "jp2"];
 
-    let output = match run_command_with_timeout(command, Duration::from_secs(FFPROBE_TIMEOUT_SECS))
-    {
-        Ok(o) if o.status.success() => o,
-        _ => return VideoProbeInfo::default(),
-    };
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut info = VideoProbeInfo::default();
-
-    for line in stdout.lines() {
-        let trimmed = line.trim();
-        if let Some(value) = trimmed.strip_prefix("duration=") {
-            if let Ok(v) = value.trim().parse::<f64>() {
-                if v.is_finite() && v > 0.0 {
-                    info.duration_secs = Some(v);
-                }
-            }
-        }
-    }
-
-    info
-}
-
-fn clamp_seek_time(t: f64, duration: Option<f64>) -> f64 {
-    let mut time = if t.is_finite() { t } else { 0.0 };
-    if time < 0.0 {
-        time = 0.0;
-    }
-    if let Some(d) = duration {
-        if d.is_finite() && d > 0.0 {
-            let upper = (d - 0.05).max(0.0);
-            if time > upper {
-                time = upper;
-            }
-        }
-    }
-    time
-}
-
-fn build_seek_candidates(info: &VideoProbeInfo) -> Vec<f64> {
-    let mut candidates = Vec::new();
-
-    if let Some(duration) = info.duration_secs {
-        if duration.is_finite() && duration > 0.0 {
-            for ratio in [0.20f64, 0.35, 0.50, 0.10, 0.70] {
-                candidates.push(duration * ratio);
-            }
-        }
-    }
-
-    candidates.push(1.0 / 3.0);
-    candidates.push(0.0);
-
-    let mut normalized = Vec::new();
-    for v in candidates {
-        let clamped = clamp_seek_time(v, info.duration_secs);
-        if !normalized
-            .iter()
-            .any(|existing: &f64| (*existing - clamped).abs() < 0.05)
-        {
-            normalized.push(clamped);
-        }
-    }
-    normalized
-}
-
-fn ffmpeg_log_indicates_hw_hit(stderr: &str, hwaccel: &str) -> bool {
-    let log = stderr.to_ascii_lowercase();
-    match hwaccel {
-        "d3d11va" => {
-            (log.contains("d3d11va")
-                && (log.contains("hwaccel") || log.contains("using") || log.contains("decoder")))
-                || log.contains("using auto hwaccel type d3d11va")
-                || log.contains("using hwaccel d3d11va")
-                || log.contains("av_hwdevice_ctx_create")
-        }
-        "dxva2" => {
-            (log.contains("dxva2")
-                && (log.contains("hwaccel") || log.contains("using") || log.contains("decoder")))
-                || log.contains("using auto hwaccel type dxva2")
-                || log.contains("using hwaccel dxva2")
-        }
-        "qsv" => {
-            (log.contains("qsv")
-                && (log.contains("mfx") || log.contains("hwaccel") || log.contains("decoder")))
-                || log.contains("initialized an internal mfx session")
-                || log.contains("using hwaccel qsv")
-        }
-        _ => false,
-    }
-}
-
-fn scale_filter(width: u32, height: u32) -> String {
-    format!(
-        "scale={}:{}:force_original_aspect_ratio=decrease:flags=fast_bilinear",
-        width.max(1),
-        height.max(1)
-    )
-}
-
-fn try_extract_frame_with_ffmpeg(
-    path: &str,
-    seek_time: f64,
+/// 注册表魔数嗅探 → T1 解码器主路径（Design Revision 6：legacy image crate 兜底）。
+///
+/// 返回 `None` 表示未命中注册表（调用方落 legacy 兜底）；`Some(Ok)` 为 T1 成功；
+/// `Some(Err(-7))` 为维度超限权威判定（不兜底直接透传）；其余 Err 已尝试过
+/// legacy 兜底（兜底成功则已被替换为 Ok）。
+/// 与 image 0.25 `math::utils::resize_dimensions` 逐字同语义（该函数为
+/// `pub(crate)` 无法外部调用，故本地复刻；fill=false 即 legacy
+/// `image::thumbnail` 的保比例、不放大目标框算法）。
+fn resize_dimensions(
     width: u32,
     height: u32,
-    hwaccel: Option<&str>,
-    software_fallback: bool,
-) -> Option<FrameExtractResult> {
-    let ffmpeg = ffmpeg_path().ok()?;
-    let seek = format!("{seek_time:.3}");
+    nwidth: u32,
+    nheight: u32,
+    fill: bool,
+) -> (u32, u32) {
+    let wratio = f64::from(nwidth) / f64::from(width);
+    let hratio = f64::from(nheight) / f64::from(height);
 
-    {
-        let mut stats = DECODE_STATS.lock().ok()?;
-        stats.record_attempt(hwaccel);
-    }
-
-    let mut command = Command::new(ffmpeg);
-    command.arg("-hide_banner");
-    if hwaccel.is_some() {
-        command.arg("-loglevel").arg("info");
+    let ratio = if fill {
+        f64::max(wratio, hratio)
     } else {
-        command.arg("-loglevel").arg("error");
-    }
-
-    if let Some(accel) = hwaccel {
-        command.arg("-hwaccel").arg(accel);
-        if accel == "qsv" {
-            command.arg("-hwaccel_output_format").arg("qsv");
-        }
-    }
-
-    command.arg("-ss").arg(&seek);
-    command.arg("-i").arg(path);
-    command.arg("-frames:v").arg("1");
-    command.arg("-an");
-    command.arg("-sn");
-    command.arg("-dn");
-    command.arg("-vf").arg(scale_filter(width, height));
-    command.arg("-vcodec").arg("mjpeg");
-    command.arg("-q:v").arg("3");
-    command.arg("-f").arg("image2pipe");
-    command.arg("pipe:1");
-
-    let output =
-        run_command_with_timeout(command, Duration::from_secs(FFMPEG_TIMEOUT_SECS)).ok()?;
-    if !output.status.success() || output.stdout.is_empty() {
-        return None;
-    }
-
-    let verified_hw = if let Some(accel) = hwaccel {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        ffmpeg_log_indicates_hw_hit(&stderr, accel)
-    } else {
-        false
+        f64::min(wratio, hratio)
     };
 
-    {
-        let mut stats = DECODE_STATS.lock().ok()?;
-        if hwaccel.is_none() {
-            stats.record_hit(None);
-            if software_fallback {
-                stats.record_software_fallback();
-            }
-        } else if verified_hw {
-            stats.record_hit(hwaccel);
-        }
-    }
+    let nw = std::cmp::max((f64::from(width) * ratio).round() as u64, 1);
+    let nh = std::cmp::max((f64::from(height) * ratio).round() as u64, 1);
 
-    Some(FrameExtractResult {
-        bytes: output.stdout,
-        mode: hwaccel.map(|s| s.to_string()),
-        verified_hw,
-        software_fallback,
+    if nw > u64::from(u32::MAX) {
+        let ratio = f64::from(u32::MAX) / f64::from(width);
+        (
+            u32::MAX,
+            std::cmp::max((f64::from(height) * ratio).round() as u32, 1),
+        )
+    } else if nh > u64::from(u32::MAX) {
+        let ratio = f64::from(u32::MAX) / f64::from(height);
+        (
+            std::cmp::max((f64::from(width) * ratio).round() as u32, 1),
+            u32::MAX,
+        )
+    } else {
+        (nw as u32, nh as u32)
+    }
+}
+
+fn decode_via_t1(
+    path: &str,
+    width: u32,
+    height: u32,
+) -> Option<Result<(Vec<u8>, u32, u32), i32>> {
+    use infra::registry::{sniff_format, FormatId};
+
+    let fmt = sniff_format(path)?;
+    let bytes = fs::read(path).ok()?;
+
+    let t1 = match fmt {
+        FormatId::Pnm => decoders::pnm::decode_pnm(&bytes),
+        FormatId::Qoi => decoders::qoi::decode_qoi(&bytes),
+        FormatId::Bmp => decoders::bmp::decode_bmp(&bytes),
+        FormatId::Tga => decoders::tga::decode_tga(&bytes),
+        FormatId::Ico => decoders::ico::decode_ico(&bytes),
+        FormatId::Gif => decoders::gif::decode_gif(&bytes),
+        FormatId::Png => decoders::png::decode_png(&bytes),
+        FormatId::Jpeg => decoders::jpeg::decode_jpeg(&bytes),
+        FormatId::Tiff => decoders::tiff::decode_tiff(&bytes),
+        FormatId::Webp => decoders::webp::decode_webp(&bytes),
+        FormatId::Vp8 => decoders::vp8::decode_vp8(&bytes),
+        FormatId::Psd => decoders::psd::decode_psd(&bytes),
+        FormatId::Dds => decoders::dds::decode_dds(&bytes),
+        FormatId::Icns => decoders::icns::decode_icns(&bytes),
+    };
+
+    Some(match t1 {
+        Ok((data, sw, sh)) => {
+            // 与 legacy `image::thumbnail(width,height)` 同一目标尺寸算法
+            // （保比例、不放大）；像素用 todo 6 的 box_resize_rgba（面积平均，
+            // 与 image crate 抽样差值已验收 ≤3/255）。
+            let (dw, dh) =
+                resize_dimensions(sw, sh, width, height, false);
+            match infra::resize::box_resize_rgba(&data, sw, sh, dw, dh) {
+                Some(resized) => Ok((resized, dw, dh)),
+                // resize 拒绝（异常维度）时退回原图数据，保持可用性
+                None => Ok((data, sw, sh)),
+            }
+        }
+        Err(STATUS_TOO_LARGE) => Err(STATUS_TOO_LARGE),
+        Err(_) => decode_with_image_crate(path, width, height),
     })
-}
-
-fn extract_best_video_frame_jpeg(
-    path: &str,
-    width: u32,
-    height: u32,
-) -> Result<FrameExtractResult, i32> {
-    let info = run_ffprobe_basic_info(path);
-    let seek_candidates = build_seek_candidates(&info);
-    let hw_permit = HwDecodePermit::try_acquire();
-    let allow_hw = hw_permit.acquired();
-
-    for seek_time in seek_candidates {
-        let mut had_hw_attempt = false;
-
-        if allow_hw {
-            for accel in [Some("d3d11va"), Some("dxva2"), Some("qsv")] {
-                had_hw_attempt = true;
-                if let Some(result) =
-                    try_extract_frame_with_ffmpeg(path, seek_time, width, height, accel, false)
-                {
-                    if !result.bytes.is_empty() {
-                        eprintln!(
-                            "[thumbnail_generator] decode path file={} mode={} verified_hw={}",
-                            path,
-                            result.mode.as_deref().unwrap_or("software"),
-                            result.verified_hw
-                        );
-                        return Ok(result);
-                    }
-                }
-            }
-        }
-
-        if let Some(result) = try_extract_frame_with_ffmpeg(
-            path,
-            seek_time,
-            width,
-            height,
-            None,
-            had_hw_attempt || !allow_hw,
-        ) {
-            if !result.bytes.is_empty() {
-                eprintln!(
-                    "[thumbnail_generator] decode path file={} mode={} verified_hw={} software_fallback={}",
-                    path,
-                    result.mode.as_deref().unwrap_or("software"),
-                    result.verified_hw,
-                    result.software_fallback
-                );
-                return Ok(result);
-            }
-        }
-    }
-
-    Err(STATUS_DECODE_FAILED)
-}
-
-fn decode_video_with_ffmpeg(
-    path: &str,
-    width: u32,
-    height: u32,
-) -> Result<(Vec<u8>, u32, u32), i32> {
-    let result = extract_best_video_frame_jpeg(path, width, height)?;
-    decode_image_bytes_to_rgba(&result.bytes)
 }
 
 fn generate_entry(path: &str, width: u32, height: u32) -> Result<CacheEntry, i32> {
@@ -719,10 +400,48 @@ fn generate_entry(path: &str, width: u32, height: u32) -> Result<CacheEntry, i32
         }
     }
 
-    let (data, w, h) = if is_video_ext(path) {
-        decode_video_with_ffmpeg(path, width, height)?
+    // todo 25：T3 扩展名路由先于解码分发——RAW 系多为 TIFF 魔数，若走魔数
+    // 嗅探会误入 TIFF 解码器；命中清单即记录 errorlog 并快速返回 UNSUPPORTED。
+    if is_t3_skip_path(path) {
+        return Err(skip_with_status(
+            path,
+            &path_format(path),
+            STATUS_UNSUPPORTED,
+            T3_SKIP_MESSAGE,
+        ));
+    }
+
+    // AVIF 系能力门控容器：ffmpeg 无 demuxer 且无 T1 解码器 → 快速 -6 交 Python 回退链。
+    let ext_lower = path
+        .rsplit('.')
+        .next()
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    if !is_video_ext(path) && CAPABILITY_GATED_IMAGE_EXTS.contains(&ext_lower.as_str()) {
+        return Err(skip_with_status(
+            path,
+            &path_format(path),
+            STATUS_UNSUPPORTED,
+            "capability-gated image container unsupported by bundled ffmpeg",
+        ));
+    }
+
+    let decoded = if is_video_ext(path) {
+        decode_video_with_ffmpeg(path, width, height)
+    } else if let Some(t1) = decode_via_t1(path, width, height) {
+        t1
     } else {
-        decode_with_image_crate(path, width, height)?
+        decode_with_image_crate(path, width, height)
+    };
+
+    let (data, w, h) = match decoded {
+        Ok(out) => out,
+        // todo 25：解码失败路径（-2/-6/-7）统一补录 errorlog 后原样透传；
+        // dds-bc7/icns-jp2 等解码器内部的 -6 接线后也经此进入日志。
+        Err(code) => {
+            record_decode_failure(path, code);
+            return Err(code);
+        }
     };
 
     let candidate = CacheEntry {
@@ -745,7 +464,14 @@ fn generate_entry(path: &str, width: u32, height: u32) -> Result<CacheEntry, i32
 
 fn generate_jpeg_bytes(path: &str, width: u32, height: u32) -> Result<Vec<u8>, i32> {
     if is_video_ext(path) {
-        return extract_best_video_frame_jpeg(path, width, height).map(|r| r.bytes);
+        // todo 25：视频 JPEG 抽帧分支不经 generate_entry，失败同样补录 errorlog。
+        return match extract_best_video_frame_jpeg_bytes(path, width, height) {
+            Ok(bytes) => Ok(bytes),
+            Err(code) => {
+                record_decode_failure(path, code);
+                Err(code)
+            }
+        };
     }
 
     let entry = generate_entry(path, width, height)?;
@@ -753,10 +479,8 @@ fn generate_jpeg_bytes(path: &str, width: u32, height: u32) -> Result<Vec<u8>, i
 }
 
 static ENGINE: Lazy<Mutex<NativeEngine>> = Lazy::new(|| Mutex::new(NativeEngine::new()));
-static DECODE_STATS: Lazy<Mutex<DecodeStats>> = Lazy::new(|| Mutex::new(DecodeStats::default()));
-static HW_VIDEO_DECODE_SLOTS: Lazy<AtomicUsize> = Lazy::new(|| AtomicUsize::new(0));
-static MAX_CONCURRENT_HW_VIDEO_DECODE_LIMIT: Lazy<AtomicUsize> =
-    Lazy::new(|| AtomicUsize::new(DEFAULT_MAX_CONCURRENT_HW_VIDEO_DECODES));
+// todo 24：`DECODE_STATS` / `HW_VIDEO_DECODE_SLOTS` /
+// `MAX_CONCURRENT_HW_VIDEO_DECODE_LIMIT` 已迁至 `t2::t2_ffmpeg`（与编排逻辑同址）。
 
 fn c_message(msg: &str) -> *mut c_char {
     CString::new(msg)
@@ -781,36 +505,11 @@ fn make_result_from_entry(entry: CacheEntry) -> NativeThumbnailResult {
     }
 }
 
-fn rgba_to_jpeg_rgb(entry: &CacheEntry) -> Vec<u8> {
-    let mut rgb = Vec::with_capacity((entry.width as usize) * (entry.height as usize) * 3);
-    for px in entry.data.chunks_exact(4) {
-        let r = px[0] as u32;
-        let g = px[1] as u32;
-        let b = px[2] as u32;
-        let a = px[3] as u32;
-
-        let out_r = ((r * a) + (255 * (255 - a)) + 127) / 255;
-        let out_g = ((g * a) + (255 * (255 - a)) + 127) / 255;
-        let out_b = ((b * a) + (255 * (255 - a)) + 127) / 255;
-
-        rgb.push(out_r as u8);
-        rgb.push(out_g as u8);
-        rgb.push(out_b as u8);
-    }
-    rgb
-}
-
 fn encode_jpeg_bytes(entry: &CacheEntry) -> Result<Vec<u8>, i32> {
-    let rgb = rgba_to_jpeg_rgb(entry);
-    let mut jpeg_buf = Vec::with_capacity(entry.byte_size / 4 + 256);
-    let mut encoder = JpegEncoder::new_with_quality(&mut jpeg_buf, 90);
-    if encoder
-        .encode(&rgb, entry.width, entry.height, ColorType::Rgb8.into())
-        .is_err()
-    {
-        return Err(STATUS_INTERNAL);
-    }
-    Ok(jpeg_buf)
+    // todo 16：自研基线 JPEG 编码器（4:4:4 / BT.601 / 定点 FDCT / Q90）。
+    // 内部完成 alpha 预乘白底合成（等价原 `rgba_to_jpeg_rgb`），故不再单独合成。
+    encoders::jpeg_encoder::encode_jpeg_rgba(&entry.data, entry.width, entry.height, 90)
+        .map_err(|_| STATUS_INTERNAL)
 }
 
 fn make_jpeg_result(bytes: Vec<u8>) -> NativeThumbnailResult {
@@ -1114,21 +813,18 @@ pub extern "C" fn native_generate_batch_jpg(
 
 #[no_mangle]
 pub extern "C" fn native_get_decode_stats_json() -> *mut c_char {
-    std::panic::catch_unwind(|| match DECODE_STATS.lock() {
-        Ok(stats) => c_message(&stats.to_json()),
-        Err(_) => c_message("{}"),
-    })
-    .unwrap_or_else(|_| std::process::abort())
+    std::panic::catch_unwind(|| c_message(&decode_stats_to_json()))
+        .unwrap_or_else(|_| std::process::abort())
 }
 
 #[no_mangle]
 pub extern "C" fn native_reset_decode_stats() -> c_int {
-    std::panic::catch_unwind(|| match DECODE_STATS.lock() {
-        Ok(mut stats) => {
-            *stats = DecodeStats::default();
+    std::panic::catch_unwind(|| {
+        if reset_decode_stats() {
             STATUS_OK
+        } else {
+            STATUS_INTERNAL
         }
-        Err(_) => STATUS_INTERNAL,
     })
     .unwrap_or_else(|_| std::process::abort())
 }
@@ -1167,7 +863,7 @@ pub extern "C" fn native_get_available_hwaccels_json() -> *mut c_char {
 #[no_mangle]
 pub extern "C" fn native_set_max_concurrent_hw_video_decodes(max_slots: usize) -> c_int {
     std::panic::catch_unwind(|| {
-        MAX_CONCURRENT_HW_VIDEO_DECODE_LIMIT.store(max_slots.max(1), Ordering::Release);
+        set_max_concurrent_hw_video_decodes(max_slots);
         STATUS_OK
     })
     .unwrap_or_else(|_| std::process::abort())

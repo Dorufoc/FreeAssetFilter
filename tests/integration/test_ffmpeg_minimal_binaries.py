@@ -500,3 +500,41 @@ class TestFailurePath:
             corrupt_path, str(tmp_path / "corrupt.jpg")
         )
         assert not result
+
+
+# =============================================================================
+# ⑧ Rust 桥视频 RGBA 路径（todo 24：t2_ffmpeg → jpeg.rs 解码链打通验证）
+# =============================================================================
+class TestRustBridgeVideoRgba:
+    """``generate_rgba`` 对视频样本返回 4 通道 RGBA 数据（含非旧清单容器 .ts）。
+
+    ``sample_mpegts.ts`` 为 todo 24 新增样本：系统 ffmpeg 8.1.1 full build 经
+    lavfi testsrc 现场生成（mpeg2video/mpegts，8460 字节 <5MB）；bundled
+    minimal ffmpeg 的 mpegts demuxer 与 mpeg2video decoder 均在 allow-list 内，
+    ffprobe 实测 format.duration=0.500000。
+    """
+
+    @pytest.mark.parametrize(
+        "video_sample", ["sample_h264.mp4", "sample_mpegts.ts"], indirect=True
+    )
+    def test_generate_rgba_video_returns_4_channels(
+        self, video_sample: str, ffmpeg_ready: None, rust_available: bool
+    ) -> None:
+        """generate_rgba 返回 channels==4 且 len==w*h*4（视频 RGBA 缓存路径）。"""
+        if not rust_available:
+            pytest.skip("Rust 原生扩展不可用（rust_available=False），跳过")
+        from freeassetfilter.core.native.bridges.rust_thumbnail_bridge import (
+            RustThumbnailBridge,
+        )
+
+        bridge = RustThumbnailBridge()
+        result = bridge.generate_rgba(video_sample, 256, 256)
+        assert result is not None, f"generate_rgba 失败: {video_sample}"
+        data, width, height, channels = result
+        assert channels == 4, f"应为 4 通道 RGBA: channels={channels}"
+        assert width > 0 and height > 0, f"尺寸异常: {width}x{height}"
+        assert len(data) == width * height * 4, (
+            f"数据长度不符 RGBA8: {len(data)} != {width}*{height}*4"
+        )
+        # 内容非全零（纯零缓冲意味着解码失败被吞成空帧）。
+        assert any(data), "RGBA 数据全为零，疑似空帧"

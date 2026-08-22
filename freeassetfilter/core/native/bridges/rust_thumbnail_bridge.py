@@ -16,6 +16,17 @@ from typing import Dict, List, Optional, Tuple
 
 from freeassetfilter.utils.app_logger import debug, info, warning
 
+# 原生引擎状态码（与 Rust lib.rs 的 pub(crate) STATUS_* 常量同值；
+# -4 为 Python 桥专用降级语义：DLL 缺失/可选接口未导出等非解码类失败）
+STATUS_OK: int = 0
+STATUS_INVALID_ARG: int = -1
+STATUS_DECODE_FAILED: int = -2
+STATUS_OOM: int = -3
+STATUS_BRIDGE_UNAVAILABLE: int = -4
+STATUS_INTERNAL: int = -5
+STATUS_UNSUPPORTED: int = -6
+STATUS_TOO_LARGE: int = -7
+
 
 class NativeThumbnailResult(Structure):
     _fields_ = [
@@ -46,6 +57,10 @@ class RustThumbnailBridge:
         self._available = False
         self._supports_jpg = False
         self._supports_batch_jpg = False
+        # todo 25 新导出能力标记（errorlog 查询/清空、格式表、ffmpeg 能力表）
+        self._supports_errorlog = False
+        self._supports_formats = False
+        self._supports_caps = False
         self._dll_directory_handle = None
         self._preloaded_runtime_dlls = []
         self._load()
@@ -113,6 +128,9 @@ class RustThumbnailBridge:
     def _bind(self, dll):
         self._supports_jpg = False
         self._supports_batch_jpg = False
+        self._supports_errorlog = False
+        self._supports_formats = False
+        self._supports_caps = False
 
         dll.native_generate_thumbnail.argtypes = [c_char_p, c_int, c_int]
         dll.native_generate_thumbnail.restype = NativeThumbnailResult
@@ -164,6 +182,32 @@ class RustThumbnailBridge:
             self._supports_batch_jpg = True
         except Exception:
             self._supports_batch_jpg = False
+
+        # todo 25 新导出：错误日志查询/清空（Rust 导出自 todo 5 起存在）
+        try:
+            dll.native_get_error_log_json.argtypes = []
+            dll.native_get_error_log_json.restype = c_void_p
+            dll.native_clear_error_log.argtypes = []
+            dll.native_clear_error_log.restype = c_int
+            self._supports_errorlog = True
+        except Exception:
+            self._supports_errorlog = False
+
+        # todo 25 新导出：支持格式注册表查询（Rust 导出自 todo 7 起存在）
+        try:
+            dll.native_get_supported_formats_json.argtypes = []
+            dll.native_get_supported_formats_json.restype = c_void_p
+            self._supports_formats = True
+        except Exception:
+            self._supports_formats = False
+
+        # todo 23/25 新导出：ffmpeg 能力表查询（Rust 导出自 todo 23 起存在）
+        try:
+            dll.native_get_ffmpeg_capabilities_json.argtypes = []
+            dll.native_get_ffmpeg_capabilities_json.restype = c_void_p
+            self._supports_caps = True
+        except Exception:
+            self._supports_caps = False
 
     def set_cache_limit(self, max_bytes: int) -> bool:
         if not self.available:
@@ -244,6 +288,117 @@ class RustThumbnailBridge:
             warning(f"set_max_concurrent_hw_video_decodes 失败: {e}")
             return False
 
+    def get_error_log(self) -> str:
+        """获取原生错误日志环形缓冲的 JSON 字符串。
+
+        每条记录含 ``path`` / ``format`` / ``status`` / ``message`` /
+        ``timestamp`` 字段；环形上限 512 条，溢出丢弃最旧。写入侧由 Rust
+        T3 跳过路径与解码失败统一补录（thumbnail-rust-refactor todo 25）填充。
+
+        Returns:
+            JSON 数组字符串；DLL 不可用、绑定缺失、返回空指针或内容非法时
+            返回安全降级值 ``"[]"``（不抛异常）。
+        """
+        if not self.available or not self._supports_errorlog:
+            return "[]"
+        raw = None
+        try:
+            raw = self._dll.native_get_error_log_json()
+            if not raw:
+                return "[]"
+            payload = ctypes.cast(raw, c_char_p).value
+            if not payload:
+                return "[]"
+            text = payload.decode("utf-8", errors="replace")
+            json.loads(text)  # 非法 JSON 一律降级，保证返回值恒可解析
+            return text
+        except Exception as e:
+            warning(f"get_error_log 失败: {e}")
+            return "[]"
+        finally:
+            if raw is not None:
+                self._native_free_message(raw)
+
+    def clear_error_log(self) -> bool:
+        """清空原生错误日志环形缓冲。
+
+        Returns:
+            清空成功返回 ``True``；DLL 不可用、绑定缺失或调用失败返回
+            ``False``（不抛异常）。
+        """
+        if not self.available or not self._supports_errorlog:
+            return False
+        try:
+            code = self._dll.native_clear_error_log()
+            debug(f"清空错误日志, 结果: {code}")
+            return code == 0
+        except Exception as e:
+            warning(f"clear_error_log 失败: {e}")
+            return False
+
+    def get_supported_formats(self) -> str:
+        """获取原生支持格式注册表的 JSON 字符串。
+
+        形状：``{"formats": [{"id": str, "extensions": [str, ...]}, ...]}``，
+        覆盖魔数注册表全部格式组（顺序稳定）。
+
+        Returns:
+            JSON 对象字符串；DLL 不可用、绑定缺失或调用失败时返回安全降级值
+            ``"{}"``（与 Rust 查询型导出的 panic 降级口径一致，不抛异常）。
+        """
+        if not self.available or not self._supports_formats:
+            return "{}"
+        raw = None
+        try:
+            raw = self._dll.native_get_supported_formats_json()
+            if not raw:
+                return "{}"
+            payload = ctypes.cast(raw, c_char_p).value
+            if not payload:
+                return "{}"
+            text = payload.decode("utf-8", errors="replace")
+            if not isinstance(json.loads(text), dict):
+                return "{}"
+            return text
+        except Exception as e:
+            warning(f"get_supported_formats 失败: {e}")
+            return "{}"
+        finally:
+            if raw is not None:
+                self._native_free_message(raw)
+
+    def get_ffmpeg_capabilities(self) -> str:
+        """获取 ffmpeg/ffprobe 实测能力表的 JSON 字符串。
+
+        形状：``{"version": str, "formats": [...], "demuxer": [...],
+        "muxer": [...], "codecs": [...], "hwaccels": [...]}``
+        （thumbnail-rust-refactor todo 23 契约；OnceLock 缓存）。
+
+        Returns:
+            JSON 对象字符串；DLL 不可用、绑定缺失或调用失败时返回安全降级值
+            ``"{}"``（与 Rust 查询型导出的 panic 降级口径一致，不抛异常）。
+        """
+        if not self.available or not self._supports_caps:
+            return "{}"
+        raw = None
+        try:
+            raw = self._dll.native_get_ffmpeg_capabilities_json()
+            if not raw:
+                return "{}"
+            payload = ctypes.cast(raw, c_char_p).value
+            if not payload:
+                return "{}"
+            text = payload.decode("utf-8", errors="replace")
+            if not isinstance(json.loads(text), dict):
+                return "{}"
+            return text
+        except Exception as e:
+            warning(f"get_ffmpeg_capabilities 失败: {e}")
+            return "{}"
+        finally:
+            if raw is not None:
+                self._native_free_message(raw)
+
     def generate_rgba(self, file_path: str, width: int, height: int) -> Optional[Tuple[bytes, int, int, int]]:
         if not self.available:
             return None
@@ -264,6 +419,112 @@ class RustThumbnailBridge:
         except Exception as e:
             warning(f"generate_rgba 失败: {e}")
             return None
+
+    def _jpeg_like_with_status(
+        self,
+        dll_func_name: str,
+        file_path: str,
+        width: int,
+        height: int,
+        log_label: str,
+        capability_attr: Optional[str] = None,
+    ) -> Tuple[Optional[bytes], int]:
+        """内部通用：调用单个 native_generate_thumbnail(_jpg) 导出并透传结构体 status。
+
+        状态码直读 ``NativeThumbnailResult.status`` 字段（方案 A，结构体已在
+        ctypes 绑定中含该字段，零 Rust 改动），不回读 errorlog。
+
+        Args:
+            dll_func_name: DLL 导出函数名。
+            file_path: 文件路径。
+            width: 目标宽度。
+            height: 目标高度。
+            log_label: 日志前缀标签。
+            capability_attr: 可选能力标记属性名（如 ``"_supports_jpg"``）；
+                非 None 时该标记为 False 直接降级，不触碰 DLL。
+
+        Returns:
+            Tuple[Optional[bytes], int]: 成功 ``(图像字节, STATUS_OK)``；
+            失败 ``(None, 状态码)``——DLL 不可用或可选接口缺失返回
+            ``STATUS_BRIDGE_UNAVAILABLE(-4)``，路径无效返回
+            ``STATUS_INVALID_ARG(-1)``，FFI 异常返回 ``STATUS_INTERNAL(-5)``，
+            其余为 Rust 解码管线的原生状态码。不抛异常。
+        """
+        if not self.available:
+            return None, STATUS_BRIDGE_UNAVAILABLE
+        if capability_attr is not None and not getattr(self, capability_attr, False):
+            return None, STATUS_BRIDGE_UNAVAILABLE
+        if not file_path or not os.path.exists(file_path):
+            return None, STATUS_INVALID_ARG
+        try:
+            func = getattr(self._dll, dll_func_name)
+            result = func(file_path.encode("utf-8"), int(width), int(height))
+            status = int(result.status)
+            if status != STATUS_OK or not result.data or result.len <= 0:
+                debug(f"{log_label}失败: status={status}")
+                return None, status
+            payload = ctypes.string_at(result.data, result.len)
+            self._dll.native_free_buffer(result.data, result.len)
+            debug(f"{log_label}成功: {file_path}, 大小 {len(payload)} bytes")
+            return payload, STATUS_OK
+        except Exception as e:
+            warning(f"{log_label}异常: {e}")
+            return None, STATUS_INTERNAL
+
+    def generate_jpg_with_status(self, file_path: str, width: int, height: int) -> Tuple[Optional[bytes], int]:
+        """生成 JPG 缩略图并透传原生状态码（todo 33 状态通道入口）。
+
+        与 :meth:`generate_jpg` 的区别在于失败时不再吞掉状态码：直接读取
+        ctypes 结构体的 ``status`` 字段返回给调用方，供 ThumbnailManager 按
+        ``-7 TOO_LARGE / -6 UNSUPPORTED / -3 OOM / -2 DECODE_FAILED`` 路由
+        回退链。
+
+        Returns:
+            Tuple[Optional[bytes], int]: 成功 ``(jpg_bytes, 0)``；失败
+            ``(None, status_code)``（降级语义见 :meth:`_jpeg_like_with_status`）。
+        """
+        return self._jpeg_like_with_status(
+            "native_generate_thumbnail_jpg", file_path, width, height,
+            log_label="生成 JPG(带状态)", capability_attr="_supports_jpg",
+        )
+
+    def generate_jpeg_with_status(self, file_path: str, width: int, height: int) -> Tuple[Optional[bytes], int]:
+        """生成 JPEG 缩略图并透传原生状态码（兼容别名接口的状态通道版）。"""
+        return self._jpeg_like_with_status(
+            "native_generate_thumbnail_jpeg", file_path, width, height,
+            log_label="生成 JPEG(带状态)",
+        )
+
+    def generate_rgba_with_status(
+        self, file_path: str, width: int, height: int
+    ) -> Tuple[Optional[Tuple[bytes, int, int, int]], int]:
+        """生成 RGBA 像素并透传原生状态码（manager RGBA 回退路径专用）。
+
+        Returns:
+            Tuple[Optional[Tuple[bytes, int, int, int]], int]: 成功
+            ``((raw, w, h, channels), 0)``；失败 ``(None, status_code)``，
+            降级语义与 :meth:`_jpeg_like_with_status` 一致。不抛异常。
+        """
+        if not self.available:
+            return None, STATUS_BRIDGE_UNAVAILABLE
+        if not file_path or not os.path.exists(file_path):
+            return None, STATUS_INVALID_ARG
+        try:
+            result = self._dll.native_generate_thumbnail(file_path.encode("utf-8"), int(width), int(height))
+            status = int(result.status)
+            if status != STATUS_OK or not result.data or result.len <= 0:
+                debug(f"生成 RGBA(带状态) 失败: status={status}")
+                return None, status
+            raw = ctypes.string_at(result.data, result.len)
+            channels = int(result.channels) if result.channels else 4
+            w = int(result.width)
+            h = int(result.height)
+            self._dll.native_free_buffer(result.data, result.len)
+            debug(f"生成 RGBA(带状态) 成功: {file_path}, 尺寸 {w}x{h}, 通道 {channels}")
+            return (raw, w, h, channels), STATUS_OK
+        except Exception as e:
+            warning(f"generate_rgba_with_status 失败: {e}")
+            return None, STATUS_INTERNAL
 
     def generate_jpeg(self, file_path: str, width: int, height: int) -> Optional[bytes]:
         """

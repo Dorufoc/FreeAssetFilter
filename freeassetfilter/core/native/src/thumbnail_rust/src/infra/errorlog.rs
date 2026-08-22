@@ -106,6 +106,12 @@ impl ErrorBuffer {
 /// 全局错误缓冲（惰性初始化，Mutex 保护）。
 static ERROR_LOG: Lazy<Mutex<ErrorBuffer>> = Lazy::new(|| Mutex::new(ErrorBuffer::default()));
 
+/// 跨模块测试串行化锁（仅测试构建存在）：todo 25 起 `t3::skip` 的接线测试
+/// 与本模块全局缓冲用例并发运行，二者共享同一把锁，避免 cargo test 并行
+/// 线程互踩 `ERROR_LOG` 的计数断言（Task 5 GLOBAL_LOCK 模式的跨模块推广）。
+#[cfg(test)]
+pub(crate) static TEST_GLOBAL_LOCK: Mutex<()> = Mutex::new(());
+
 fn now_ts() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -252,8 +258,9 @@ mod tests {
         assert_eq!(item["timestamp"], 1_712_500_000_000u64);
     }
 
-    // 全局函数测试：互斥锁串行化，避免 cargo test 并行线程互相干扰共享缓冲。
-    static GLOBAL_LOCK: Mutex<()> = Mutex::new(());
+    // 全局函数测试：经模块级 TEST_GLOBAL_LOCK 串行化（t3::skip 接线测试共用
+    // 同一把锁），避免 cargo test 并行线程互相干扰共享缓冲。
+    use super::TEST_GLOBAL_LOCK as GLOBAL_LOCK;
 
     #[test]
     fn global_push_clear_json_functions_cooperate() {

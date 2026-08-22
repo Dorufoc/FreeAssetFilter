@@ -319,14 +319,23 @@ class NativePdfRenderer(QWidget):
         self.update()
 
     def fit_to_page(self) -> None:
-        """Zoom so that the page width fills the viewport."""
+        """缩放到自适应宽度，仅影响缩放而保持当前阅读位置。
+
+        中心模型下 ``offset_y`` 为视口中心对应的文档绝对 Y，与缩放无关；
+        因此回归默认尺寸时只需重设 zoom 与水平居中，保留原有 offset_y，
+        不跳回文档开头。缩放后仍由 ``_clamp_offset`` 保证垂直偏移合法。
+        """
         if self._view is None:
             return
+        # 记住缩放前视口中心的文档绝对 Y，缩放前后保持一致
+        prev_offset_y = self._view.offset_y
         target = self._view.fit_to_page_width(self.width(), self.height())
         self._view.zoom_level = target
-        # 重置水平偏移使页面左边缘对齐视口左边缘
+        # 重置水平偏移使页面水平居中
         if self._page_widths:
             self._view.offset_x = self._page_widths[0] / 2.0
+        # 保持阅读位置，不重置回文档顶部
+        self._view.offset_y = prev_offset_y
         self._clamp_offset(target)
         self._submit_render_for_visible_pages()
         self.zoom_changed.emit(target)

@@ -18,21 +18,131 @@ const MAX_IMAGE_DIMENSION: u32 = 8 * 1024;
 // `thumbnail_bridge.py` 按需接线，目前尚未在 registry.rs 中注册 TIFF 入口；
 // 待 todo 接线后移除该属性。`decode_tiff` 为公开 API，缩略图工作线程将直接调用。
 
+/// TIFF 魔术数（LE：`II*`；BE：`MM*`）。
+const MAGIC_LE: [u8; 4] = [b'I', b'I', 0x2A, 0x00];
+const MAGIC_BE: [u8; 4] = [b'M', b'M', 0x00, 0x2A];
+
+/// IFD 标签：ImageWidth / ImageLength。
+const TAG_IMAGE_WIDTH: u16 = 256;
+const TAG_IMAGE_LENGTH: u16 = 257;
+
 /// 解码 TIFF 为 RGBA8 像素。
 ///
-/// 支持 II/MM 字节序、IFD 内 256/257/259/273/274/277/278/279/317/320/
-/// 339/346/347 标签解析、无压缩/PackBits/LZW/Deflate/OldDeflate 压缩、
-/// 8/16bit、灰度/调色板/RGB/RGBA/CMYK、预测器 1/2、Orientation 旋转、
-/// 多页取第一页；JPEG-in-TIFF（压缩 6/7）委托 jpeg.rs 并注入 JPEGTables
-/// 标签 347（缺 347 返回 `STATUS_UNSUPPORTED`）。
+/// 支持 II/MM 字节序、IFD 内 256/257 标签宽高预检、无压缩/PackBits/LZW/
+/// Deflate/OldDeflate 压缩、8/16bit、灰度/调色板/RGB/RGBA/CMYK、预测器
+/// 1/2、Orientation 元数据、多页取第一页；实际像素解码委托 image crate
+/// 内建 TIFF 解码器（Design Revision 5：不自研 LZW/Deflate/PackBits）。
+/// 调色板/ZSTD/JPEG-in-TIFF 等 image crate 判定为不支持的特性经
+/// `ImageError::Unsupported` 映射为 `STATUS_UNSUPPORTED`。
 ///
-/// 返回 `(RGBA8 像素, 宽, 高)`。错误码：`STATUS_INVALID_ARG` 为空数据；
-/// `STATUS_DECODE_FAILED` 解码失败；`STATUS_TOO_LARGE` 超过 8K 限制；
-/// `STATUS_UNSUPPORTED` 不支持的压缩/缺 JPEGTables。
+/// 返回 `(RGBA8 像素, 宽, 高)`。错误码：`STATUS_DECODE_FAILED` 为空/
+/// 魔数不符/解码失败；`STATUS_TOO_LARGE` 超过 8K 限制（IFD0 宽高预检
+/// 或 image crate 内存限制）；`STATUS_UNSUPPORTED` 不支持的压缩/色彩
+/// 模型。
+#[allow(dead_code)] // 与 pnm/gif/jpeg 相同：待 todo 接线后移除（见文件头注释）。
 pub fn decode_tiff(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
-    // todo 17 实现中。
-    let _ = (bytes, STATUS_DECODE_FAILED, STATUS_TOO_LARGE, STATUS_UNSUPPORTED, MAX_IMAGE_DIMENSION);
-    Err(STATUS_DECODE_FAILED)
+    // 预检 A：最小头部长度 + 魔数（II*/MM*）。空输入 / 垃圾 / 非 TIFF → -2。
+    if bytes.len() < 8 {
+        return Err(STATUS_DECODE_FAILED);
+    }
+    let magic_ok = &bytes[0..4] == &MAGIC_LE || &bytes[0..4] == &MAGIC_BE;
+    if !magic_ok {
+        return Err(STATUS_DECODE_FAILED);
+    }
+    // 预检 B：解析 IFD0 的 ImageWidth/ImageLength 做解压炸弹防御——超限声明
+    // （如伪造 10000×10000）在进入 image crate 分配像素缓冲之前返回 -7。
+    // 解析失败（IFD 头部截断 / 结构损坏）不下结论，交 image crate 判定。
+    if let Some((w, h)) = scan_ifd0_size(bytes) {
+        if is_oversized(w, h) {
+            return Err(STATUS_TOO_LARGE);
+        }
+    }
+    // 委托 image crate 内建解码（Design Revision 5）。
+    // EXIF/GPS 段、条带/平铺组织、预测器 2、16bit 降采样等由 image crate
+    // 全权承担；`to_rgba8` 统一 RGBA8 输出契约。
+    let img = image::load_from_memory(bytes).map_err(map_image_error)?;
+    let rgba = img.to_rgba8();
+    let w = rgba.width();
+    let h = rgba.height();
+    Ok((rgba.into_raw(), w, h))
+}
+
+/// 将 image crate 错误映射为缩略图状态码。
+fn map_image_error(err: image::ImageError) -> i32 {
+    match err {
+        // 调色板/ZSTD/JPEG-in-TIFF 等：image crate 判定为不支持的格式特性 → -6。
+        image::ImageError::Unsupported(_) => STATUS_UNSUPPORTED,
+        // 内存/尺寸限制（如 OVERSIZE 由 tiff-rs 限额拦截）→ -7。
+        image::ImageError::Limits(_) => STATUS_TOO_LARGE,
+        // 解码失败 / 参数 / IO 等其余一切 → -2。
+        _ => STATUS_DECODE_FAILED,
+    }
+}
+
+/// 判断宽高是否超过解压炸弹上限（u64 乘法避免 u32 溢出）。
+fn is_oversized(w: u32, h: u32) -> bool {
+    u64::from(w).saturating_mul(u64::from(h))
+        > u64::from(MAX_IMAGE_DIMENSION) * u64::from(MAX_IMAGE_DIMENSION)
+}
+
+/// 解析 IFD0 的 `(ImageWidth, ImageLength)`（tags 256/257）。
+///
+/// 按文件字节序读取；type 3(SHORT) 值即 4 字节 value 字段的低 16 位、
+/// type 4(LONG) 值即全 32 位——两种情形下按文件字节序读回 u32 即为尺寸，
+/// 无需区分（SHORT 值天然 ≤ 0xFFFF）。任何边界越界 / 结构损坏 / 集会话
+/// 返回 `None`，调用方据此跳过预检交 image crate 判定。
+fn scan_ifd0_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    let little = bytes[0] == b'I';
+
+    let read_u16 = |off: usize| -> Option<u16> {
+        let arr: [u8; 2] = bytes.get(off..off + 2)?.try_into().ok()?;
+        Some(if little {
+            u16::from_le_bytes(arr)
+        } else {
+            u16::from_be_bytes(arr)
+        })
+    };
+    let read_u32 = |off: usize| -> Option<u32> {
+        let arr: [u8; 4] = bytes.get(off..off + 4)?.try_into().ok()?;
+        Some(if little {
+            u32::from_le_bytes(arr)
+        } else {
+            u32::from_be_bytes(arr)
+        })
+    };
+
+    let ifd_off = read_u32(4)? as usize;
+    let count = usize::from(read_u16(ifd_off)?);
+    let mut w = None;
+    let mut h = None;
+    for i in 0..count {
+        let entry = ifd_off.checked_add(2 + i * 12)?;
+        let tag = read_u16(entry)?;
+        if tag != TAG_IMAGE_WIDTH && tag != TAG_IMAGE_LENGTH {
+            continue;
+        }
+        // 值域字段即 4 字节 value/offset：count==1 时内联存储实际尺寸。
+        if read_u32(entry + 4)? != 1 {
+            continue;
+        }
+        // 按字段类型取尺寸：BYTE=1 字节首字节 / SHORT=前 2 字节（libtiff 约定
+        // 左对齐；LE 下同等于低 16 位）/ LONG=全 4 字节。
+        let v = match read_u16(entry + 2)? {
+            1 => u32::from(bytes[entry + 8]),
+            3 => u32::from(read_u16(entry + 8)?),
+            4 => read_u32(entry + 8)?,
+            _ => continue,
+        };
+        if tag == TAG_IMAGE_WIDTH {
+            w = Some(v);
+        } else {
+            h = Some(v);
+        }
+        if w.is_some() && h.is_some() {
+            break;
+        }
+    }
+    Some((w?, h?))
 }
 
 #[cfg(test)]
@@ -1216,65 +1326,134 @@ mod fixtures {
 }
 
 #[cfg(test)]
-mod smoke {
-    //! 临时验证：镜像 image crate 对全部夹具的解码结果（todo 17 证据用，实装后删除）。
-    use super::fixtures;
+mod tests {
+    //! 契约测试（todo 17 验收）：`decode_tiff` 对全部夹具的行为镜像 image crate
+    //! 直解基准；错误码映射确定性；截断/垃圾输入必出错且不 panic。
 
-    macro_rules! run {
-        ($name:ident) => {
-            match image::load_from_memory(fixtures::$name) {
-                Ok(img) => println!(
-                    "OK {:27} {}x{} px={}",
-                    stringify!($name),
-                    img.width(),
-                    img.height(),
-                    img.to_rgba8().into_raw().len()
-                ),
-                Err(e) => println!("ERR {:25} err={:?}", stringify!($name), e),
-            }
-        };
+    use super::{decode_tiff, fixtures, is_oversized};
+
+    /// `(夹具名, bytes, 期望宽, 期望高)`——与 image crate 直解基准一致。
+    const OK_CASES: &[(&str, &[u8], u32, u32)] = &[
+        ("TIFF_II_RAW_RGB_8X8", fixtures::TIFF_II_RAW_RGB_8X8, 8, 8),
+        ("TIFF_LZW_RGB_8X8", fixtures::TIFF_LZW_RGB_8X8, 8, 8),
+        ("TIFF_PACKBITS_RGB_8X8", fixtures::TIFF_PACKBITS_RGB_8X8, 8, 8),
+        ("TIFF_DEFLATE_RGB_8X8", fixtures::TIFF_DEFLATE_RGB_8X8, 8, 8),
+        ("TIFF_PRED2_DEFLATE_RGB_8X8", fixtures::TIFF_PRED2_DEFLATE_RGB_8X8, 8, 8),
+        ("TIFF_LZW_GRAY8_8X8", fixtures::TIFF_LZW_GRAY8_8X8, 8, 8),
+        ("TIFF_RAW_CMYK_8X8", fixtures::TIFF_RAW_CMYK_8X8, 8, 8),
+        ("TIFF_DEFLATE_GRAY16_8X8", fixtures::TIFF_DEFLATE_GRAY16_8X8, 8, 8),
+        ("TIFF_MULTIPAGE_2PAGE_4X4", fixtures::TIFF_MULTIPAGE_2PAGE_4X4, 4, 4),
+        ("TIFF_ORIENTATION6_4X8", fixtures::TIFF_ORIENTATION6_4X8, 4, 8),
+        ("TIFF_OLD_DEFLATE_RGB_8X8", fixtures::TIFF_OLD_DEFLATE_RGB_8X8, 8, 8),
+        ("TIFF_MM_BE_RAW_RGB_4X4", fixtures::TIFF_MM_BE_RAW_RGB_4X4, 4, 4),
+        ("TIFF_SAMPLE_00", fixtures::TIFF_SAMPLE_00, 3, 3),
+        ("TIFF_SAMPLE_01", fixtures::TIFF_SAMPLE_01, 4, 5),
+        ("TIFF_SAMPLE_02", fixtures::TIFF_SAMPLE_02, 7, 3),
+        ("TIFF_SAMPLE_04", fixtures::TIFF_SAMPLE_04, 9, 8),
+        ("TIFF_SAMPLE_05", fixtures::TIFF_SAMPLE_05, 16, 16),
+        ("TIFF_SAMPLE_06", fixtures::TIFF_SAMPLE_06, 2, 2),
+        ("TIFF_SAMPLE_07", fixtures::TIFF_SAMPLE_07, 4, 8),
+        ("TIFF_SAMPLE_08", fixtures::TIFF_SAMPLE_08, 6, 6),
+        ("TIFF_SAMPLE_09", fixtures::TIFF_SAMPLE_09, 2, 7),
+        ("TIFF_SAMPLE_10", fixtures::TIFF_SAMPLE_10, 8, 8),
+        ("TIFF_SAMPLE_11", fixtures::TIFF_SAMPLE_11, 3, 7),
+        ("TIFF_SAMPLE_12", fixtures::TIFF_SAMPLE_12, 10, 4),
+        ("TIFF_SAMPLE_14", fixtures::TIFF_SAMPLE_14, 7, 7),
+        ("TIFF_SAMPLE_15", fixtures::TIFF_SAMPLE_15, 6, 3),
+        ("TIFF_SAMPLE_16", fixtures::TIFF_SAMPLE_16, 9, 9),
+        ("TIFF_SAMPLE_17", fixtures::TIFF_SAMPLE_17, 4, 4),
+        ("TIFF_SAMPLE_18", fixtures::TIFF_SAMPLE_18, 8, 2),
+        ("TIFF_SAMPLE_19", fixtures::TIFF_SAMPLE_19, 3, 3),
+    ];
+
+    /// image crate 判定为不支持特性（调色板 / ZSTD / JPEG-in-TIFF）→ 必须 -6。
+    const UNSUPPORTED_CASES: &[(&str, &[u8])] = &[
+        ("TIFF_LZW_PALETTE_8X8", fixtures::TIFF_LZW_PALETTE_8X8),
+        ("TIFF_COMP_ZSTD_UNSUPPORTED_8X8", fixtures::TIFF_COMP_ZSTD_UNSUPPORTED_8X8),
+        ("TIFF_JPEG_IN_TIFF_TABLES_8X8", fixtures::TIFF_JPEG_IN_TIFF_TABLES_8X8),
+        ("TIFF_JPEG_IN_TIFF_NO_TABLES_8X8", fixtures::TIFF_JPEG_IN_TIFF_NO_TABLES_8X8),
+        ("TIFF_SAMPLE_03", fixtures::TIFF_SAMPLE_03),
+        ("TIFF_SAMPLE_13", fixtures::TIFF_SAMPLE_13),
+    ];
+
+    #[test]
+    fn decodes_all_valid_fixtures_matching_image_baseline() {
+        for (name, fixture, w, h) in OK_CASES {
+            let (px, got_w, got_h) =
+                decode_tiff(fixture).unwrap_or_else(|c| panic!("{name}: 应解码成功，got Err({c})"));
+            assert_eq!((got_w, got_h), (*w, *h), "{name}: 尺寸不符");
+            // 与 image crate 直解基准逐字节一致（同版本同解码路径）。
+            let baseline = image::load_from_memory(fixture)
+                .unwrap_or_else(|e| panic!("{name}: image 直解基准失败 {e:?}"))
+                .to_rgba8()
+                .into_raw();
+            assert_eq!(px, baseline, "{name}: RGBA8 输出与 image 直解不一致");
+        }
     }
 
     #[test]
-    fn image_crate_on_all_fixtures() {
-        // 主夹具。
-        run!(TIFF_II_RAW_RGB_8X8);
-        run!(TIFF_LZW_RGB_8X8);
-        run!(TIFF_PACKBITS_RGB_8X8);
-        run!(TIFF_DEFLATE_RGB_8X8);
-        run!(TIFF_PRED2_DEFLATE_RGB_8X8);
-        run!(TIFF_LZW_GRAY8_8X8);
-        run!(TIFF_LZW_PALETTE_8X8);
-        run!(TIFF_RAW_CMYK_8X8);
-        run!(TIFF_DEFLATE_GRAY16_8X8);
-        run!(TIFF_MULTIPAGE_2PAGE_4X4);
-        run!(TIFF_ORIENTATION6_4X8);
-        run!(TIFF_OLD_DEFLATE_RGB_8X8);
-        run!(TIFF_COMP_ZSTD_UNSUPPORTED_8X8);
-        run!(TIFF_MM_BE_RAW_RGB_4X4);
-        run!(TIFF_JPEG_IN_TIFF_TABLES_8X8);
-        run!(TIFF_JPEG_IN_TIFF_NO_TABLES_8X8);
-        run!(TIFF_OVERSIZE_10000X10000);
-        // 20 个对比样本。
-        run!(TIFF_SAMPLE_00);
-        run!(TIFF_SAMPLE_01);
-        run!(TIFF_SAMPLE_02);
-        run!(TIFF_SAMPLE_03);
-        run!(TIFF_SAMPLE_04);
-        run!(TIFF_SAMPLE_05);
-        run!(TIFF_SAMPLE_06);
-        run!(TIFF_SAMPLE_07);
-        run!(TIFF_SAMPLE_08);
-        run!(TIFF_SAMPLE_09);
-        run!(TIFF_SAMPLE_10);
-        run!(TIFF_SAMPLE_11);
-        run!(TIFF_SAMPLE_12);
-        run!(TIFF_SAMPLE_13);
-        run!(TIFF_SAMPLE_14);
-        run!(TIFF_SAMPLE_15);
-        run!(TIFF_SAMPLE_16);
-        run!(TIFF_SAMPLE_17);
-        run!(TIFF_SAMPLE_18);
-        run!(TIFF_SAMPLE_19);
+    fn unsupported_fixtures_return_status_unsupported() {
+        for (name, fixture) in UNSUPPORTED_CASES {
+            match decode_tiff(fixture) {
+                Err(c) => assert_eq!(c, -6, "{name}: 不支持特性应返回 -6，实际 {c}"),
+                Ok((_, w, h)) => panic!("{name}: 期望 Err(-6)，实际 Ok({w}x{h})"),
+            }
+        }
     }
+
+    #[test]
+    fn oversize_forged_ifd_returns_status_too_large_without_panic() {
+        // must-not-panic 由测试进程自身保证（panic→测试失败）。
+        assert!(is_oversized(10_000, 10_000), "10000×10000 必须判定超限");
+        match decode_tiff(fixtures::TIFF_OVERSIZE_10000X10000) {
+            Err(c) => {
+                assert_eq!(c, -7, "IFD0 预检应确定性返回 -7，实际 {c}");
+            }
+            Ok((_, w, h)) => panic!("超限伪造头不应解码成功，实际 Ok({w}x{h})"),
+        }
+    }
+
+    #[test]
+    fn valid_inputs_not_flagged_oversized() {
+        // 上限边界：8K×8K 恰好不超限；越界 1 像素即超限。
+        assert!(!is_oversized(MAX_EDGE, MAX_EDGE));
+        assert!(is_oversized(MAX_EDGE, MAX_EDGE + 1));
+        assert!(is_oversized(MAX_EDGE + 1, MAX_EDGE));
+    }
+
+    #[test]
+    fn invalid_garbage_and_empty_inputs_return_status_decode_failed() {
+        // 空输入 → -2（预检 A：len<8）。
+        assert_eq!(decode_tiff(&[]), Err(-2));
+        // 任意垃圾 / 非 TIFF 头 → -2（预检 A：魔数）。
+        assert_eq!(decode_tiff(b"not a tiff file at all........"), Err(-2));
+        assert_eq!(decode_tiff(&[0x49, 0x49]), Err(-2));
+        // 长度恰为 8 但魔数不符 → -2。
+        assert_eq!(decode_tiff(&[0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]), Err(-2));
+    }
+
+    #[test]
+    fn truncated_inputs_do_not_panic_and_return_error() {
+        // 对合法夹具做多级截断（落在 IFD 中段、像素数据区中段等关键区），
+        // 任一截断输入都必须返回非 0 错误码且不得 panic。
+        for trunc_len in [8usize, 100, 140, 200, 300, 331] {
+            let truncated = &fixtures::TIFF_II_RAW_RGB_8X8[..trunc_len];
+            match decode_tiff(truncated) {
+                Err(c) => assert_ne!(c, 0, "截断到 {trunc_len}B 应返回非 0 错误码"),
+                Ok((_, w, h)) => panic!("截断到 {trunc_len}B 不应解码成功，实际 Ok({w}x{h})"),
+            }
+        }
+        // 截断压缩夹具（OldDeflate strip 中段）。
+        let old_deflate = fixtures::TIFF_OLD_DEFLATE_RGB_8X8;
+        for trunc_len in [8usize, 64, 128, 200] {
+            let truncated = &old_deflate[..trunc_len];
+            match decode_tiff(truncated) {
+                Err(c) => assert_ne!(c, 0, "截断到 {trunc_len}B 应返回非 0 错误码"),
+                Ok((_, w, h)) => panic!("截断到 {trunc_len}B 不应解码成功，实际 Ok({w}x{h})"),
+            }
+        }
+    }
+
+    /// 解压炸弹上限边长（与 `MAX_IMAGE_DIMENSION` 一致）。
+    const MAX_EDGE: u32 = 8 * 1024;
 }
