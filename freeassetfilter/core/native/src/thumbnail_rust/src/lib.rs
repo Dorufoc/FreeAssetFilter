@@ -312,7 +312,11 @@ fn resize_dimensions(
     let ratio = if fill {
         f64::max(wratio, hratio)
     } else {
-        f64::min(wratio, hratio)
+        // 与 legacy `image::thumbnail` 一致：保比例模式下永不放大（钳制到 ≤1.0）。
+        // 历史 bug：64x48@128 曾因 ratio 未封顶输出 128x96 维度，而
+        // box_resize_rgba 按自身契约截断到源尺寸输出 64x48 数据，
+        // 维度与数据长度错配导致下游 JPEG 编码 -5 / PIL frombytes 崩溃。
+        f64::min(wratio, hratio).min(1.0)
     };
 
     let nw = std::cmp::max((f64::from(width) * ratio).round() as u64, 1);
@@ -364,13 +368,27 @@ fn decode_via_t1(
 
     Some(match t1 {
         Ok((data, sw, sh)) => {
-            // 与 legacy `image::thumbnail(width,height)` 同一目标尺寸算法
+            // 与 legacy `image::thumbnail` 同一目标尺寸算法
             // （保比例、不放大）；像素用 todo 6 的 box_resize_rgba（面积平均，
             // 与 image crate 抽样差值已验收 ≤3/255）。
             let (dw, dh) =
                 resize_dimensions(sw, sh, width, height, false);
             match infra::resize::box_resize_rgba(&data, sw, sh, dw, dh) {
-                Some(resized) => Ok((resized, dw, dh)),
+                Some(resized) => {
+                    // 长度守卫：box_resize_rgba 契约为「不放大」（请求维超过源时
+                    // 截断到源尺寸），输出长度必须与 (dw, dh) 严格一致；不一致
+                    // 说明上游给出了放大的目标尺寸，此时退回原图数据 + 原始
+                    // 尺寸保持维度自洽（否则 CacheEntry 的 len≠w*h*4 会让下游
+                    // JPEG 编码误报 -5 / Python frombytes 崩溃）。
+                    let expected_bytes = u64::from(dw)
+                        .checked_mul(u64::from(dh))
+                        .and_then(|px| px.checked_mul(4));
+                    if expected_bytes == Some(resized.len() as u64) {
+                        Ok((resized, dw, dh))
+                    } else {
+                        Ok((data, sw, sh))
+                    }
+                }
                 // resize 拒绝（异常维度）时退回原图数据，保持可用性
                 None => Ok((data, sw, sh)),
             }

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 Rust 缩略图引擎桥接层（ctypes）
 """
@@ -10,9 +9,17 @@ import ctypes
 import json
 import os
 import sys
-from ctypes import c_char_p, c_int, c_size_t, c_uint8, c_uint32, c_void_p, POINTER, Structure
+from ctypes import (
+    POINTER,
+    Structure,
+    c_char_p,
+    c_int,
+    c_size_t,
+    c_uint8,
+    c_uint32,
+    c_void_p,
+)
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 from freeassetfilter.utils.app_logger import debug, info, warning
 
@@ -75,7 +82,7 @@ class RustThumbnailBridge:
     def _is_frozen_app(self) -> bool:
         return bool(getattr(sys, "frozen", False))
 
-    def _candidate_paths(self) -> List[Path]:
+    def _candidate_paths(self) -> list[Path]:
         native_dir = Path(__file__).resolve().parent.parent
         bundled_dll = native_dir / "bin" / "thumbnail_generator.dll"
         dev_release_dll = native_dir / "src" / "thumbnail_rust" / "target" / "release" / "thumbnail_generator.dll"
@@ -99,7 +106,7 @@ class RustThumbnailBridge:
             try:
                 self._dll_directory_handle = os.add_dll_directory(str(runtime_dir))
                 debug(f"已添加 DLL 目录: {runtime_dir}")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
                 warning(f"添加 DLL 目录失败: {e}")
 
         # 运行时工具（如 ffmpeg/ffprobe）由 Rust 侧按路径直接调用，
@@ -119,7 +126,7 @@ class RustThumbnailBridge:
                 self._available = True
                 info(f"已加载原生引擎: {path}")
                 return
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
                 warning(f"加载失败 {path}: {e}")
         self._available = False
         self._dll = None
@@ -173,14 +180,14 @@ class RustThumbnailBridge:
             dll.native_generate_thumbnail_jpg.argtypes = [c_char_p, c_int, c_int]
             dll.native_generate_thumbnail_jpg.restype = NativeThumbnailResult
             self._supports_jpg = True
-        except Exception:
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             self._supports_jpg = False
 
         try:
             dll.native_generate_batch_jpg.argtypes = [POINTER(c_char_p), c_int, c_int, c_int]
             dll.native_generate_batch_jpg.restype = NativeThumbnailBatchResult
             self._supports_batch_jpg = True
-        except Exception:
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             self._supports_batch_jpg = False
 
         # todo 25 新导出：错误日志查询/清空（Rust 导出自 todo 5 起存在）
@@ -190,7 +197,7 @@ class RustThumbnailBridge:
             dll.native_clear_error_log.argtypes = []
             dll.native_clear_error_log.restype = c_int
             self._supports_errorlog = True
-        except Exception:
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             self._supports_errorlog = False
 
         # todo 25 新导出：支持格式注册表查询（Rust 导出自 todo 7 起存在）
@@ -198,7 +205,7 @@ class RustThumbnailBridge:
             dll.native_get_supported_formats_json.argtypes = []
             dll.native_get_supported_formats_json.restype = c_void_p
             self._supports_formats = True
-        except Exception:
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             self._supports_formats = False
 
         # todo 23/25 新导出：ffmpeg 能力表查询（Rust 导出自 todo 23 起存在）
@@ -206,7 +213,7 @@ class RustThumbnailBridge:
             dll.native_get_ffmpeg_capabilities_json.argtypes = []
             dll.native_get_ffmpeg_capabilities_json.restype = c_void_p
             self._supports_caps = True
-        except Exception:
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             self._supports_caps = False
 
     def set_cache_limit(self, max_bytes: int) -> bool:
@@ -216,7 +223,7 @@ class RustThumbnailBridge:
             code = self._dll.native_set_cache_limit(max(1, int(max_bytes)))
             debug(f"设置缓存限制: {max_bytes} bytes, 结果: {code}")
             return code == 0
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             warning(f"set_cache_limit 失败: {e}")
             return False
 
@@ -227,11 +234,11 @@ class RustThumbnailBridge:
             code = self._dll.native_clear_cache()
             debug(f"清除缓存, 结果: {code}")
             return code == 0
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             warning(f"clear_cache 失败: {e}")
             return False
 
-    def get_decode_stats(self) -> Dict[str, int]:
+    def get_decode_stats(self) -> dict[str, int]:
         if not self.available:
             return {}
         raw = self._dll.native_get_decode_stats_json()
@@ -241,7 +248,7 @@ class RustThumbnailBridge:
             result = json.loads(ctypes.cast(raw, c_char_p).value)
             debug(f"获取解码统计: {result}")
             return result
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             warning(f"get_decode_stats 失败: {e}")
             return {}
         finally:
@@ -254,11 +261,11 @@ class RustThumbnailBridge:
             code = self._dll.native_reset_decode_stats()
             debug(f"重置解码统计, 结果: {code}")
             return code == 0
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             warning(f"reset_decode_stats 失败: {e}")
             return False
 
-    def get_available_hwaccels(self) -> List[str]:
+    def get_available_hwaccels(self) -> list[str]:
         if not self.available:
             return []
         raw = self._dll.native_get_available_hwaccels_json()
@@ -271,7 +278,7 @@ class RustThumbnailBridge:
             result = [str(item).strip().lower() for item in parsed if str(item).strip()]
             debug(f"可用硬件加速: {result}")
             return result
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             warning(f"get_available_hwaccels 失败: {e}")
             return []
         finally:
@@ -284,7 +291,7 @@ class RustThumbnailBridge:
             code = self._dll.native_set_max_concurrent_hw_video_decodes(max(1, int(max_slots)))
             debug(f"设置最大并发硬件解码数: {max_slots}, 结果: {code}")
             return code == 0
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             warning(f"set_max_concurrent_hw_video_decodes 失败: {e}")
             return False
 
@@ -312,7 +319,7 @@ class RustThumbnailBridge:
             text = payload.decode("utf-8", errors="replace")
             json.loads(text)  # 非法 JSON 一律降级，保证返回值恒可解析
             return text
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             warning(f"get_error_log 失败: {e}")
             return "[]"
         finally:
@@ -332,7 +339,7 @@ class RustThumbnailBridge:
             code = self._dll.native_clear_error_log()
             debug(f"清空错误日志, 结果: {code}")
             return code == 0
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             warning(f"clear_error_log 失败: {e}")
             return False
 
@@ -360,7 +367,7 @@ class RustThumbnailBridge:
             if not isinstance(json.loads(text), dict):
                 return "{}"
             return text
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             warning(f"get_supported_formats 失败: {e}")
             return "{}"
         finally:
@@ -392,14 +399,14 @@ class RustThumbnailBridge:
             if not isinstance(json.loads(text), dict):
                 return "{}"
             return text
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             warning(f"get_ffmpeg_capabilities 失败: {e}")
             return "{}"
         finally:
             if raw is not None:
                 self._native_free_message(raw)
 
-    def generate_rgba(self, file_path: str, width: int, height: int) -> Optional[Tuple[bytes, int, int, int]]:
+    def generate_rgba(self, file_path: str, width: int, height: int) -> tuple[bytes, int, int, int] | None:
         if not self.available:
             return None
         if not file_path or not os.path.exists(file_path):
@@ -416,7 +423,7 @@ class RustThumbnailBridge:
             self._dll.native_free_buffer(result.data, result.len)
             debug(f"生成 RGBA 成功: {file_path}, 尺寸 {w}x{h}, 通道 {channels}")
             return raw, w, h, channels
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             warning(f"generate_rgba 失败: {e}")
             return None
 
@@ -427,8 +434,8 @@ class RustThumbnailBridge:
         width: int,
         height: int,
         log_label: str,
-        capability_attr: Optional[str] = None,
-    ) -> Tuple[Optional[bytes], int]:
+        capability_attr: str | None = None,
+    ) -> tuple[bytes | None, int]:
         """内部通用：调用单个 native_generate_thumbnail(_jpg) 导出并透传结构体 status。
 
         状态码直读 ``NativeThumbnailResult.status`` 字段（方案 A，结构体已在
@@ -467,11 +474,11 @@ class RustThumbnailBridge:
             self._dll.native_free_buffer(result.data, result.len)
             debug(f"{log_label}成功: {file_path}, 大小 {len(payload)} bytes")
             return payload, STATUS_OK
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             warning(f"{log_label}异常: {e}")
             return None, STATUS_INTERNAL
 
-    def generate_jpg_with_status(self, file_path: str, width: int, height: int) -> Tuple[Optional[bytes], int]:
+    def generate_jpg_with_status(self, file_path: str, width: int, height: int) -> tuple[bytes | None, int]:
         """生成 JPG 缩略图并透传原生状态码（todo 33 状态通道入口）。
 
         与 :meth:`generate_jpg` 的区别在于失败时不再吞掉状态码：直接读取
@@ -488,7 +495,7 @@ class RustThumbnailBridge:
             log_label="生成 JPG(带状态)", capability_attr="_supports_jpg",
         )
 
-    def generate_jpeg_with_status(self, file_path: str, width: int, height: int) -> Tuple[Optional[bytes], int]:
+    def generate_jpeg_with_status(self, file_path: str, width: int, height: int) -> tuple[bytes | None, int]:
         """生成 JPEG 缩略图并透传原生状态码（兼容别名接口的状态通道版）。"""
         return self._jpeg_like_with_status(
             "native_generate_thumbnail_jpeg", file_path, width, height,
@@ -497,7 +504,7 @@ class RustThumbnailBridge:
 
     def generate_rgba_with_status(
         self, file_path: str, width: int, height: int
-    ) -> Tuple[Optional[Tuple[bytes, int, int, int]], int]:
+    ) -> tuple[tuple[bytes, int, int, int] | None, int]:
         """生成 RGBA 像素并透传原生状态码（manager RGBA 回退路径专用）。
 
         Returns:
@@ -522,11 +529,11 @@ class RustThumbnailBridge:
             self._dll.native_free_buffer(result.data, result.len)
             debug(f"生成 RGBA(带状态) 成功: {file_path}, 尺寸 {w}x{h}, 通道 {channels}")
             return (raw, w, h, channels), STATUS_OK
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             warning(f"generate_rgba_with_status 失败: {e}")
             return None, STATUS_INTERNAL
 
-    def generate_jpeg(self, file_path: str, width: int, height: int) -> Optional[bytes]:
+    def generate_jpeg(self, file_path: str, width: int, height: int) -> bytes | None:
         """
         直接由 Rust 返回已编码 JPEG 字节。
         """
@@ -543,11 +550,11 @@ class RustThumbnailBridge:
             self._dll.native_free_buffer(result.data, result.len)
             debug(f"生成 JPEG 成功: {file_path}, 大小 {len(jpeg_bytes)} bytes")
             return jpeg_bytes
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             warning(f"generate_jpeg 失败: {e}")
             return None
 
-    def generate_jpg(self, file_path: str, width: int, height: int) -> Optional[bytes]:
+    def generate_jpg(self, file_path: str, width: int, height: int) -> bytes | None:
         """
         直接由 Rust 返回已编码 JPG 字节。
         """
@@ -564,11 +571,11 @@ class RustThumbnailBridge:
             self._dll.native_free_buffer(result.data, result.len)
             debug(f"生成 JPG 成功: {file_path}, 大小 {len(jpg_bytes)} bytes")
             return jpg_bytes
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             warning(f"generate_jpg 失败: {e}")
             return None
 
-    def generate_jpg_batch(self, file_paths: List[str], width: int, height: int) -> List[Optional[bytes]]:
+    def generate_jpg_batch(self, file_paths: list[str], width: int, height: int) -> list[bytes | None]:
         """
         批量调用 Rust 原生接口生成 JPG 缩略图字节。
         返回与输入路径等长的结果列表；失败项为 None。
@@ -580,7 +587,7 @@ class RustThumbnailBridge:
 
         debug(f"批量生成 JPG: {len(file_paths)} 个文件, 尺寸 {width}x{height}")
 
-        normalized_paths: List[str] = []
+        normalized_paths: list[str] = []
         for p in file_paths:
             if p and os.path.exists(p):
                 normalized_paths.append(p)
@@ -592,11 +599,11 @@ class RustThumbnailBridge:
         c_paths = arr_type(*encoded_paths)
 
         batch_result = None
-        outputs: List[Optional[bytes]] = [None for _ in file_paths]
+        outputs: list[bytes | None] = [None for _ in file_paths]
 
         try:
             batch_result = self._dll.native_generate_batch_jpg(
-                c_paths, int(len(encoded_paths)), int(width), int(height)
+                c_paths, len(encoded_paths), int(width), int(height)
             )
 
             if batch_result.status != 0 or not batch_result.results or batch_result.count <= 0:
@@ -615,12 +622,12 @@ class RustThumbnailBridge:
 
             debug(f"批量生成完成: {success_count}/{len(file_paths)} 成功")
             return outputs
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             warning(f"generate_jpg_batch 失败: {e}")
             return outputs
         finally:
             if batch_result is not None:
                 try:
                     self._dll.native_free_batch_result(ctypes.byref(batch_result))
-                except Exception:
+                except Exception:  # noqa: BLE001, S110  # broad catch intentional at ctypes FFI boundary; ignore intentional (ctypes FFI boundary)
                     pass

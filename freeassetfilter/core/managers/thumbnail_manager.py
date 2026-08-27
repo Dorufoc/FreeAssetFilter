@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 FreeAssetFilter v1.0
 
@@ -16,32 +15,49 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 统一处理文件选择器和文件储存池的缩略图生成需求
 """
 
-import os
-import sys
-import subprocess
+from __future__ import annotations
+
 import hashlib
 import json
+import os
 import re
+import subprocess
+import sys
 import threading
 import time
 from collections import OrderedDict, deque
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional, Tuple, Callable, Dict, Set, List, Union
-from pathlib import Path
 from dataclasses import dataclass
-from freeassetfilter.core.native.bridges.media_probe import get_ffmpeg_path, get_ffprobe_path
+from pathlib import Path
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from PIL import Image
+
+from freeassetfilter.core.native.bridges.media_probe import (
+    get_ffmpeg_path,
+    get_ffprobe_path,
+)
 from freeassetfilter.core.native.bridges.rust_thumbnail_bridge import (
-    RustThumbnailBridge,
     STATUS_BRIDGE_UNAVAILABLE,
     STATUS_DECODE_FAILED,
+    STATUS_INTERNAL,
     STATUS_OK,
     STATUS_TOO_LARGE,
 )
-from freeassetfilter.core.preview.image_color_utils import load_raw_image, normalize_pil_image
+from freeassetfilter.core.preview.image_color_utils import (
+    load_raw_image,
+    normalize_pil_image,
+)
 
 # 导入日志模块
-from freeassetfilter.utils.app_logger import info, debug, warning, error
-from freeassetfilter.utils.path_utils import contains_injection_chars, get_app_data_path, validate_safe_path
+from freeassetfilter.utils.app_logger import debug, error, info, warning
+from freeassetfilter.utils.path_utils import (
+    contains_injection_chars,
+    get_app_data_path,
+    validate_safe_path,
+)
 from freeassetfilter.utils.perf_metrics import (
     increment_perf_counter,
     set_perf_metadata,
@@ -56,8 +72,9 @@ def _ensure_pil():
     global _PIL_AVAILABLE
     if _PIL_AVAILABLE is None:
         try:
-            from PIL import Image, ImageDraw
-            _PIL_AVAILABLE = True
+            import importlib.util
+
+            _PIL_AVAILABLE = importlib.util.find_spec("PIL.Image") is not None
         except ImportError:
             _PIL_AVAILABLE = False
     return _PIL_AVAILABLE
@@ -77,7 +94,7 @@ class VideoFrameCache:
     """视频帧缓存管理器"""
     max_entries: int = 5
     max_bytes: int = 32 * 1024 * 1024
-    cache: Dict[int, FrameCacheEntry] = None
+    cache: dict[int, FrameCacheEntry] = None
     last_accessed: float = 0
     current_bytes: int = 0
 
@@ -96,8 +113,8 @@ class VideoFrameCache:
             if hasattr(frame, 'itemsize') and hasattr(frame, 'size'):
                 return int(frame.itemsize * frame.size)
             if hasattr(frame, '__len__'):
-                return int(len(frame))
-        except Exception:
+                return len(frame)
+        except Exception:  # noqa: BLE001, S110  # broad catch intentional at thumbnail pipeline; ignore intentional (thumbnail pipeline)
             pass
         return 0
 
@@ -163,14 +180,67 @@ class ThumbnailManager:
     统一管理缩略图的生成、缓存和清理
     """
 
-    # 支持的图片格式
-    IMAGE_FORMATS = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '.svg', '.avif', '.heic']
-    # 支持的RAW格式
-    RAW_FORMATS = ['.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf']
-    # 支持的PSD格式
-    PSD_FORMATS = ['.psd', '.psb']
-    # 支持的视频格式
-    VIDEO_FORMATS = ['.mp4', '.mov', '.avi', '.mkv', '.wmv', '.flv', '.webm', '.m4v', '.mpeg', '.mpg', '.mxf']
+    # ------------------------------------------------------------------
+    # 三级格式矩阵（todo 27：与 Rust infra/registry.rs FORMAT_SPECS、
+    # ffmpeg 视频全集、Python 回退链对齐；扩展名统一小写、含点号）
+    # ------------------------------------------------------------------
+    # T1 native 桶：Rust 原生注册表 14 组格式的扩展名全集（魔数嗅探优先、
+    # 扩展名兜底，见 core/native/src/thumbnail_rust/src/infra/registry.rs）。
+    NATIVE_IMAGE_FORMATS: tuple[str, ...] = (
+        # pnm 族
+        '.pbm', '.pgm', '.ppm', '.pnm', '.pam',
+        # qoi
+        '.qoi',
+        # bmp 族
+        '.bmp', '.dib',
+        # tga 族
+        '.tga', '.icb', '.vda', '.vst', '.tpic',
+        # ico/cursor
+        '.ico', '.cur',
+        '.gif',
+        '.png',
+        # jpeg 族
+        '.jpg', '.jpeg', '.jpe', '.jfif',
+        # tiff 族
+        '.tif', '.tiff',
+        '.webp',
+        '.vp8',
+        '.psd',
+        '.dds',
+        '.icns',
+    )
+    # T2 ffmpeg 桶：视频扩展名全集（常见 + 专业 + 移动设备容器）。
+    VIDEO_FORMATS: tuple[str, ...] = (
+        '.mp4', '.mov', '.avi', '.mkv', '.wmv', '.flv', '.webm', '.m4v',
+        '.mpeg', '.mpg', '.mxf', '.vob', '.m2ts', '.ts', '.mts', '.m2t',
+        '.dv', '.prores', '.3gp', '.hevc', '.h264',
+    )
+    # T2 能力门控图像容器：依赖 ffmpeg demuxer 能力（bundled 最小构建无
+    # avif/heic/heif demuxer），原生失败经状态路由落 Python 回退链。
+    GATED_IMAGE_FORMATS: tuple[str, ...] = ('.avif', '.heic', '.heif', '.jp2')
+    # T3 Python 桶——RAW 系：Rust 扩展名路由快速 -6 后交 Python（rawpy），
+    # 与 Rust t3/skip.rs 的 T3_SKIP_EXTS RAW 段对齐。
+    RAW_FORMATS: tuple[str, ...] = (
+        '.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf',
+        '.raf', '.rw2', '.pef', '.x3f',
+    )
+    # T3 Python 桶——无原生解码器的专业格式（svg 走专用渲染器；xcf/jxr
+    # 在 Rust 侧属 T3 跳过清单，manager 层保持"可尝试"不被排除）。
+    PYTHON_ONLY_IMAGE_FORMATS: tuple[str, ...] = ('.svg', '.xcf', '.jxr')
+    # T3 Python 桶——PSD 系：仅保留 .psb 的 Python 专用链路（psb 在 Rust
+    # 侧属 T3 跳过清单，语义一致）。.psd 已归属 T1 NATIVE_IMAGE_FORMATS，
+    # 走原生解码器（todo 20 自研 PSD 解码器提取 resource 1036 内嵌预览），
+    # 不再进入 PYTHON_DEDICATED_FORMATS，避免被强制走 Python 链路。
+    PSD_FORMATS: tuple[str, ...] = ('.psb',)
+    # Python 专用链路聚合（分桶判定用）：T3 全部扩展名。
+    PYTHON_DEDICATED_FORMATS: tuple[str, ...] = (
+        RAW_FORMATS + PYTHON_ONLY_IMAGE_FORMATS + PSD_FORMATS
+    )
+    # 聚合派生表（既有公共属性，向后兼容）：图片 = T1 ∪ T2 门控 ∪ T3；
+    # 媒体 = 图片 ∪ 视频。
+    IMAGE_FORMATS: tuple[str, ...] = (
+        NATIVE_IMAGE_FORMATS + GATED_IMAGE_FORMATS + PYTHON_DEDICATED_FORMATS
+    )
 
     # 缩略图基础尺寸
     BASE_SIZE = 128
@@ -251,13 +321,13 @@ class ThumbnailManager:
         os.makedirs(self._thumb_dir, exist_ok=True)
 
         # 视频帧缓存：文件路径 -> VideoFrameCache
-        self._frame_caches: Dict[str, VideoFrameCache] = {}
+        self._frame_caches: dict[str, VideoFrameCache] = {}
         self._frame_cache_lock = threading.Lock()
 
         # Rust 原生缩略图引擎（延迟加载，首次使用时初始化）
         self._rust_bridge = None
         self._native_cache_limit = 200 * 1024 * 1024
-        self._available_hwaccels: List[str] = []
+        self._available_hwaccels: list[str] = []
         self._native_batch_workers_image = self._get_cpu_count_safe()
         self._native_batch_workers_video = self.DEFAULT_NATIVE_BATCH_WORKERS_VIDEO
         self._python_batch_workers_video = self._get_python_batch_workers_video()
@@ -270,7 +340,7 @@ class ThumbnailManager:
         # SVG 渲染缓存：file_path -> SvgRenderCacheEntry
         self._svg_render_cache: OrderedDict[str, SvgRenderCacheEntry] = OrderedDict()
         self._svg_cache_lock = threading.Lock()
-        self._path_exists_cache: Dict[str, Tuple[bool, float]] = {}
+        self._path_exists_cache: dict[str, tuple[bool, float]] = {}
         self._path_exists_cache_lock = threading.Lock()
         set_perf_metadata("thumbnail.load_svg_image", "max_entries", self.MAX_SVG_CACHE_ENTRIES)
         set_perf_metadata(
@@ -280,7 +350,7 @@ class ThumbnailManager:
         )
 
         # 正在处理的视频文件集合（用于请求去重）
-        self._processing_videos: Set[str] = set()
+        self._processing_videos: set[str] = set()
         self._processing_lock = threading.Lock()
 
         # 进程内直连视频解码限流：批量模式已有队列调度，仅限制非批量直连路径
@@ -291,7 +361,7 @@ class ThumbnailManager:
         self._thumbnail_create_check_threshold = 50
 
         # 前一批缩略图的线程池引用，确保新批次前旧池已关闭
-        self._prev_batch_executor: Optional[ThreadPoolExecutor] = None
+        self._prev_batch_executor: ThreadPoolExecutor | None = None
 
         debug(
             f"初始化完成: thumb_dir={self._thumb_dir}, "
@@ -302,7 +372,9 @@ class ThumbnailManager:
     def _ensure_rust_bridge(self):
         """延迟加载 Rust 原生引擎，首次实际使用时才初始化"""
         if self._rust_bridge is None:
-            from freeassetfilter.core.native.bridges.rust_thumbnail_bridge import RustThumbnailBridge
+            from freeassetfilter.core.native.bridges.rust_thumbnail_bridge import (
+                RustThumbnailBridge,
+            )
             self._rust_bridge = RustThumbnailBridge()
             if self._is_native_available():
                 self._native_batch_workers_video = self._get_native_batch_workers_video()
@@ -340,7 +412,7 @@ class ThumbnailManager:
 
         try:
             hwaccels = self._rust_bridge.get_available_hwaccels()
-        except Exception:
+        except Exception:  # noqa: BLE001  # broad catch intentional at thumbnail pipeline
             hwaccels = []
 
         detected_count = len([name for name in hwaccels if name])
@@ -360,7 +432,7 @@ class ThumbnailManager:
         cpu_count = self._get_cpu_count_safe()
         return max(1, cpu_count - 1)
 
-    def _make_empty_subprocess_decode_stats(self) -> Dict[str, int]:
+    def _make_empty_subprocess_decode_stats(self) -> dict[str, int]:
         """创建父进程侧的子进程视频解码路径聚合统计结构"""
         return {
             "submitted": 0,
@@ -382,7 +454,7 @@ class ThumbnailManager:
             return
         try:
             image.close()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110  # broad catch intentional at thumbnail pipeline; ignore intentional (thumbnail pipeline)
             pass
 
     def _get_cached_path_exists(self, path: str, force_refresh: bool = False) -> bool:
@@ -422,7 +494,7 @@ class ThumbnailManager:
         self,
         thumbnail_path: str,
         legacy_thumbnail_path: str,
-    ) -> Optional[str]:
+    ) -> str | None:
         """返回当前存在的缩略图路径，优先主格式，其次兼容旧格式。"""
         if self._get_cached_path_exists(thumbnail_path):
             return thumbnail_path
@@ -434,7 +506,7 @@ class ThumbnailManager:
         """更新 SVG 缓存当前容量指标。调用方需持有 SVG 缓存锁。"""
         set_perf_metadata("thumbnail.load_svg_image", "current_entries", len(self._svg_render_cache))
 
-    def _pop_svg_cache_entry_locked(self, file_path: str) -> Optional[SvgRenderCacheEntry]:
+    def _pop_svg_cache_entry_locked(self, file_path: str) -> SvgRenderCacheEntry | None:
         """弹出 SVG 缓存条目并释放缓存图像。调用方需持有 SVG 缓存锁。"""
         entry = self._svg_render_cache.pop(file_path, None)
         if entry is not None:
@@ -532,7 +604,7 @@ class ThumbnailManager:
         def _shutdown() -> None:
             try:
                 executor.shutdown(wait=True, cancel_futures=cancel_futures)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001  # broad catch intentional at thumbnail pipeline
                 warning(f"异步关闭缩略图线程池失败({reason}): {exc}")
 
         cleanup_thread = threading.Thread(
@@ -547,7 +619,7 @@ class ThumbnailManager:
         with self._subprocess_decode_stats_lock:
             self._subprocess_decode_stats = self._make_empty_subprocess_decode_stats()
 
-    def _get_subprocess_decode_stats(self) -> Dict[str, int]:
+    def _get_subprocess_decode_stats(self) -> dict[str, int]:
         """获取父进程聚合的子进程视频解码路径统计快照"""
         with self._subprocess_decode_stats_lock:
             return dict(self._subprocess_decode_stats)
@@ -561,7 +633,7 @@ class ThumbnailManager:
         if not stderr_text:
             return ""
 
-        remaining_lines: List[str] = []
+        remaining_lines: list[str] = []
         decode_path_detected = False
 
         for raw_line in stderr_text.splitlines():
@@ -657,7 +729,7 @@ class ThumbnailManager:
         file_hash = self._get_thumbnail_hash(file_path)
         return os.path.join(self._thumb_dir, f"{file_hash}{self.THUMB_EXT_LEGACY}")
 
-    def get_existing_thumbnail_path(self, file_path: str) -> Optional[str]:
+    def get_existing_thumbnail_path(self, file_path: str) -> str | None:
         """
         获取当前实际存在的缩略图路径。
         优先返回主格式 JPG；若不存在则回退到历史/兼容 PNG。
@@ -698,12 +770,12 @@ class ThumbnailManager:
         try:
             now = time.time()
             os.utime(file_path, (now, now))
-        except Exception:
+        except Exception:  # noqa: BLE001, S110  # broad catch intentional at thumbnail pipeline; ignore intentional (thumbnail pipeline)
             pass
 
     def is_media_file(self, file_path: str) -> bool:
         """
-        判断文件是否为媒体文件（图片或视频）
+        判断文件是否为媒体文件（三级矩阵任一桶均算媒体）
 
         Args:
             file_path: 文件路径
@@ -712,16 +784,11 @@ class ThumbnailManager:
             bool: 是否为媒体文件
         """
         suffix = os.path.splitext(file_path)[1].lower()
-        return (
-            suffix in self.IMAGE_FORMATS
-            or suffix in self.RAW_FORMATS
-            or suffix in self.PSD_FORMATS
-            or suffix in self.VIDEO_FORMATS
-        )
+        return suffix in self.IMAGE_FORMATS or suffix in self.VIDEO_FORMATS
 
     def is_image_file(self, file_path: str) -> bool:
         """
-        判断文件是否为图片文件
+        判断文件是否为图片文件（T1 native / T2 门控容器 / T3 Python 全部图片桶）
 
         Args:
             file_path: 文件路径
@@ -730,7 +797,7 @@ class ThumbnailManager:
             bool: 是否为图片文件
         """
         suffix = os.path.splitext(file_path)[1].lower()
-        return suffix in self.IMAGE_FORMATS or suffix in self.RAW_FORMATS or suffix in self.PSD_FORMATS
+        return suffix in self.IMAGE_FORMATS
 
     def is_video_file(self, file_path: str) -> bool:
         """
@@ -745,7 +812,7 @@ class ThumbnailManager:
         suffix = os.path.splitext(file_path)[1].lower()
         return suffix in self.VIDEO_FORMATS
 
-    def _check_image_size_limit(self, img: 'Image.Image') -> bool:
+    def _check_image_size_limit(self, img: Image.Image) -> bool:
         """
         检查图像尺寸是否在限制范围内
 
@@ -788,7 +855,7 @@ class ThumbnailManager:
                     stat = os.stat(file_path)
                     file_info_list.append((file_path, stat.st_atime, stat.st_size))
                     total_size += stat.st_size
-                except (OSError, IOError):
+                except OSError:
                     continue
 
             current_file_count = len(file_info_list)
@@ -817,16 +884,16 @@ class ThumbnailManager:
                     deleted_count += 1
                     remaining_size -= file_size
                     remaining_count -= 1
-                except (OSError, IOError) as e:
+                except OSError as e:
                     debug(f"删除缓存文件失败 {file_path}: {e}")
 
             if deleted_count > 0:
                 debug(f"缓存清理: 删除{deleted_count}个, 剩余{max(remaining_count, 0)}个")
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at thumbnail pipeline
             warning(f"检查缓存限制失败: {e}")
 
-    def create_thumbnail(self, file_path: str, force_regenerate: bool = False) -> Optional[str]:
+    def create_thumbnail(self, file_path: str, force_regenerate: bool = False) -> str | None:
         """
         为文件创建缩略图
 
@@ -872,13 +939,9 @@ class ThumbnailManager:
             # 生成缩略图
             try:
                 suffix = os.path.splitext(file_path)[1].lower()
-                use_python_dedicated = (
-                    suffix in self.RAW_FORMATS
-                    or suffix in self.PSD_FORMATS
-                    or suffix == '.svg'
-                )
+                use_python_dedicated = suffix in self.PYTHON_DEDICATED_FORMATS
 
-                # 优先使用 Rust 原生引擎（RAW/PSD/SVG 保留 Python 专用链路）。
+                # 优先使用 Rust 原生引擎（RAW/SVG 保留 Python 专用链路；PSD 走原生解码器）。
                 # 经由 _create_native_thumbnail 旧名进入（兼容既有 spy/patch 打点，
                 # 其内部即 with_status 实现）；成功路径在此短路。
                 result = None
@@ -915,7 +978,7 @@ class ThumbnailManager:
                     increment_perf_counter("thumbnail.create_thumbnail", "failure")
 
                 return result
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # broad catch intentional at thumbnail pipeline
                 increment_perf_counter("thumbnail.create_thumbnail", "failure")
                 error(f"[ThumbnailManager] 生成缩略图失败: {file_path}, 错误: {e}")
 
@@ -923,10 +986,10 @@ class ThumbnailManager:
 
     def create_thumbnails_batch(
         self,
-        files_to_generate: List[Union[str, Dict]],
-        progress_callback: Optional[Callable[[int, int, Union[str, Dict], bool], None]] = None,
-        cancel_check: Optional[Callable[[], bool]] = None
-    ) -> Tuple[int, int]:
+        files_to_generate: list[str | dict],
+        progress_callback: Callable[[int, int, str | dict, bool], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None
+    ) -> tuple[int, int]:
         """
         批量创建缩略图（异步多队列 + 原生批处理版）。
 
@@ -993,7 +1056,7 @@ class ThumbnailManager:
             "python_image": 0.35,
             "python_video": 2.0,
         }
-        def _run_single_task(queue_name: str, item: Dict) -> Tuple[str, List[Tuple[Dict, bool, Optional[str]]], float]:
+        def _run_single_task(queue_name: str, item: dict) -> tuple[str, list[tuple[dict, bool, str | None]], float]:
             start_time = time.perf_counter()
             file_path = item["file_path"]
             thumbnail_path = item["thumbnail_path"]
@@ -1026,24 +1089,24 @@ class ThumbnailManager:
                 if success:
                     self._set_cached_path_exists(result_path, True)
                     self._update_file_access_time(result_path)
-            except Exception:
+            except Exception:  # noqa: BLE001  # broad catch intentional at thumbnail pipeline
                 success = False
 
             duration = time.perf_counter() - start_time
             return queue_name, [(item, success, result_path)], duration
 
-        def _run_native_batch_task(queue_name: str, items: List[Dict]) -> Tuple[str, List[Tuple[Dict, bool, Optional[str]]], float]:
+        def _run_native_batch_task(queue_name: str, items: list[dict]) -> tuple[str, list[tuple[dict, bool, str | None]], float]:
             start_time = time.perf_counter()
-            outputs: List[Tuple[Dict, bool, Optional[str]]] = []
+            outputs: list[tuple[dict, bool, str | None]] = []
 
             dpi_scaled_size = int(self.BASE_SIZE * self.dpi_scale)
             file_paths = [item["file_path"] for item in items]
-            batch_jpgs: List[Optional[bytes]] = []
+            batch_jpgs: list[bytes | None] = []
 
             try:
                 if self._is_native_available():
                     batch_jpgs = self._rust_bridge.generate_jpg_batch(file_paths, dpi_scaled_size, dpi_scaled_size)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # broad catch intentional at thumbnail pipeline
                 warning(f"Rust批量生成失败，逐项回退: {e}")
                 batch_jpgs = [None for _ in items]
 
@@ -1083,7 +1146,7 @@ class ThumbnailManager:
                     if success:
                         self._set_cached_path_exists(result_path, True)
                         self._update_file_access_time(result_path)
-                except Exception:
+                except Exception:  # noqa: BLE001  # broad catch intentional at thumbnail pipeline
                     success = False
                     result_path = None
 
@@ -1092,7 +1155,7 @@ class ThumbnailManager:
             duration = time.perf_counter() - start_time
             return queue_name, outputs, duration
 
-        def _normalize_batch_file_data(file_data: Union[str, Dict]) -> Tuple[str, Union[str, Dict]]:
+        def _normalize_batch_file_data(file_data: str | dict) -> tuple[str, str | dict]:
             """标准化批量任务输入，统一提取文件路径并保留原始回调对象。"""
             if isinstance(file_data, str):
                 return file_data, file_data
@@ -1132,11 +1195,7 @@ class ThumbnailManager:
 
                 suffix = os.path.splitext(file_path)[1].lower()
                 is_video_file = suffix in self.VIDEO_FORMATS
-                use_python_dedicated = (
-                    suffix in self.RAW_FORMATS
-                    or suffix in self.PSD_FORMATS
-                    or suffix == '.svg'
-                )
+                use_python_dedicated = suffix in self.PYTHON_DEDICATED_FORMATS
 
                 item = {
                     "file_data": callback_file_data,
@@ -1185,12 +1244,12 @@ class ThumbnailManager:
                 return base_limit
 
             borrowed_capacity = 0
-            for other_name in queue_limits:
+            for other_name, other_limit in queue_limits.items():
                 if other_name == queue_name:
                     continue
                 if task_queues[other_name]:
                     continue
-                idle_slots = max(0, queue_limits[other_name] - queue_active_counts[other_name])
+                idle_slots = max(0, other_limit - queue_active_counts[other_name])
                 borrowed_capacity += idle_slots
 
             return max(1, min(max_workers, base_limit + borrowed_capacity))
@@ -1215,7 +1274,7 @@ class ThumbnailManager:
 
             return backlog
 
-        def _select_queue_for_dispatch() -> Optional[str]:
+        def _select_queue_for_dispatch() -> str | None:
             candidate_name = None
             candidate_score = None
             total_active = sum(queue_active_counts.values())
@@ -1260,9 +1319,9 @@ class ThumbnailManager:
 
             return candidate_name
 
-        def _pop_batch_items_for_queue(queue_name: str, batch_size: int) -> List[Dict]:
+        def _pop_batch_items_for_queue(queue_name: str, batch_size: int) -> list[dict]:
             """按调度策略为目标队列取出待执行任务。"""
-            batch_items: List[Dict] = []
+            batch_items: list[dict] = []
 
             while task_queues[queue_name] and len(batch_items) < batch_size:
                 batch_items.append(task_queues[queue_name].popleft())
@@ -1315,7 +1374,7 @@ class ThumbnailManager:
                     result_queue_name, result_items, duration = future.result()
                     prev_avg = queue_avg_duration[result_queue_name]
                     queue_avg_duration[result_queue_name] = prev_avg * 0.7 + duration * 0.3
-                except Exception:
+                except Exception:  # noqa: BLE001  # broad catch intentional at thumbnail pipeline
                     result_items = []
 
                 for item, success, result_path in result_items:
@@ -1492,7 +1551,7 @@ class ThumbnailManager:
 
         return success_count, processed_count
 
-    def _create_native_thumbnail(self, file_path: str, thumbnail_path: str, legacy_thumbnail_path: str) -> Optional[str]:
+    def _create_native_thumbnail(self, file_path: str, thumbnail_path: str, legacy_thumbnail_path: str) -> str | None:
         """
         使用 Rust 原生引擎生成缩略图
 
@@ -1510,7 +1569,7 @@ class ThumbnailManager:
 
     def _create_native_thumbnail_with_status(
         self, file_path: str, thumbnail_path: str, legacy_thumbnail_path: str
-    ) -> Tuple[Optional[str], int]:
+    ) -> tuple[str | None, int]:
         """原生缩略图生成 + 状态码透传路由（todo 33 状态通道核心入口）。
 
         三级 native 链（JPG 直出 → JPEG 别名 → RGBA+PIL 落盘）全部改走桥的
@@ -1560,7 +1619,7 @@ class ThumbnailManager:
                 return status
         return STATUS_BRIDGE_UNAVAILABLE
 
-    def _run_native_generation_chain(self, file_path: str, thumbnail_path: str) -> Tuple[Optional[str], int]:
+    def _run_native_generation_chain(self, file_path: str, thumbnail_path: str) -> tuple[str | None, int]:
         """执行三级原生生成链并透传最终状态码。
 
         Returns:
@@ -1607,6 +1666,21 @@ class ThumbnailManager:
                 increment_perf_counter("thumbnail.create_native_thumbnail", "invalid_channels")
                 return None, STATUS_DECODE_FAILED
 
+            # 形状守卫：frombytes 要求缓冲长度恰为 w*h*channels，不匹配会在
+            # PIL 内部抛 "not enough image data" 并被下方 except 吞成 -5，
+            # 掩盖真实根因（历史 bug：native 维度放大而数据截断）。此处显式
+            # 校验并以 DECODE_FAILED(-2) 路由 Python 回退链，日志保留精确诊断。
+            expected_len: int = width * height * channels
+            if len(raw) != expected_len:
+                increment_perf_counter(
+                    "thumbnail.create_native_thumbnail", "rgba_shape_mismatch"
+                )
+                warning(
+                    f"RGBA 缓冲长度与维度不一致，回退Python解码: {file_path}, "
+                    f"len={len(raw)}, expect={expected_len} ({width}x{height}x{channels})"
+                )
+                return None, STATUS_DECODE_FAILED
+
             increment_perf_counter("thumbnail.create_native_thumbnail", "rgba_fallback")
             mode = "RGBA" if channels == 4 else "RGB"
             img = Image.frombytes(mode, (width, height), raw)
@@ -1616,16 +1690,16 @@ class ThumbnailManager:
             img.save(thumbnail_path, format='JPEG', quality=self.QUALITY)
             try:
                 img.close()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110  # broad catch intentional at thumbnail pipeline; ignore intentional (thumbnail pipeline)
                 pass
 
             return thumbnail_path, STATUS_OK
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at thumbnail pipeline
             increment_perf_counter("thumbnail.create_native_thumbnail", "failure")
             warning(f"Rust生成失败，回退Python: {file_path}, {e}")
             return None, STATUS_INTERNAL
 
-    def _create_image_thumbnail(self, file_path: str, thumbnail_path: str) -> Optional[str]:
+    def _create_image_thumbnail(self, file_path: str, thumbnail_path: str) -> str | None:
         """
         为图片文件创建缩略图
 
@@ -1676,7 +1750,7 @@ class ThumbnailManager:
 
             return thumbnail_path
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at thumbnail pipeline
             warning(f"生成图片缩略图失败: {file_path}, {e}")
             return None
         finally:
@@ -1684,17 +1758,17 @@ class ThumbnailManager:
             if img_converted is not None:
                 try:
                     img_converted.close()
-                except Exception:
+                except Exception:  # noqa: BLE001, S110  # broad catch intentional at thumbnail pipeline; ignore intentional (thumbnail pipeline)
                     pass
             if img is not None:
                 try:
                     img.close()
-                except Exception:
+                except Exception:  # noqa: BLE001, S110  # broad catch intentional at thumbnail pipeline; ignore intentional (thumbnail pipeline)
                     pass
             if thumbnail is not None:
                 try:
                     thumbnail.close()
-                except Exception:
+                except Exception:  # noqa: BLE001, S110  # broad catch intentional at thumbnail pipeline; ignore intentional (thumbnail pipeline)
                     pass
 
     def _get_total_frame_cache_bytes(self) -> int:
@@ -1754,7 +1828,7 @@ class ThumbnailManager:
         with self._processing_lock:
             self._processing_videos.discard(file_path)
 
-    def _create_video_thumbnail(self, file_path: str, thumbnail_path: str) -> Optional[str]:
+    def _create_video_thumbnail(self, file_path: str, thumbnail_path: str) -> str | None:
         """
         为视频文件创建缩略图
 
@@ -1787,11 +1861,11 @@ class ThumbnailManager:
                 startupinfo = subprocess.STARTUPINFO()
                 startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                 startupinfo.wShowWindow = subprocess.SW_HIDE
-            except Exception:
+            except Exception:  # noqa: BLE001, S110  # broad catch intentional at thumbnail pipeline; ignore intentional (thumbnail pipeline)
                 pass
         return startupinfo
 
-    def _get_video_duration_ffprobe(self, file_path: str) -> Optional[float]:
+    def _get_video_duration_ffprobe(self, file_path: str) -> float | None:
         """使用 ffprobe 获取视频时长（秒）"""
         try:
             file_path = validate_safe_path(file_path)
@@ -1830,7 +1904,7 @@ class ThumbnailManager:
             return None
         except subprocess.TimeoutExpired:
             return None
-        except Exception as e:
+        except Exception:  # noqa: BLE001  # broad catch intentional at thumbnail pipeline
             return None
 
         if completed.returncode != 0:
@@ -1840,10 +1914,10 @@ class ThumbnailManager:
 
         try:
             payload = json.loads(completed.stdout or "{}")
-        except Exception:
+        except Exception:  # noqa: BLE001  # broad catch intentional at thumbnail pipeline
             return None
 
-        duration_candidates: List[float] = []
+        duration_candidates: list[float] = []
 
         format_info = payload.get("format") or {}
         format_duration = format_info.get("duration")
@@ -1870,14 +1944,14 @@ class ThumbnailManager:
 
         return max(duration_candidates)
 
-    def _get_ffmpeg_seek_candidates(self, file_path: str) -> List[float]:
+    def _get_ffmpeg_seek_candidates(self, file_path: str) -> list[float]:
         """生成 FFmpeg 抽帧的候选时间点（秒）"""
         duration = self._get_video_duration_ffprobe(file_path)
         if duration is None or duration <= 0:
             return [0.0]
 
         base_ratios = [0.15, 0.5, 0.03, 0.75, 0.9, 0.0]
-        candidates: List[float] = []
+        candidates: list[float] = []
         max_seek = max(0.0, duration - 0.05)
 
         for ratio in base_ratios:
@@ -1893,7 +1967,7 @@ class ThumbnailManager:
             return [0.0]
         return candidates
 
-    def _create_video_thumbnail_ffmpeg(self, file_path: str, thumbnail_path: str) -> Optional[str]:
+    def _create_video_thumbnail_ffmpeg(self, file_path: str, thumbnail_path: str) -> str | None:
         """使用 FFmpeg 软解抽帧生成视频缩略图"""
         with track_perf("thumbnail.create_video_thumbnail_ffmpeg"):
             try:
@@ -1917,7 +1991,7 @@ class ThumbnailManager:
                 try:
                     if os.path.exists(temp_output_path):
                         os.remove(temp_output_path)
-                except Exception:
+                except Exception:  # noqa: BLE001, S110  # broad catch intentional at thumbnail pipeline; ignore intentional (thumbnail pipeline)
                     pass
 
                 command = [
@@ -1970,7 +2044,7 @@ class ThumbnailManager:
                 except subprocess.TimeoutExpired:
                     increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "timeout")
                     continue
-                except Exception as e:
+                except Exception:  # noqa: BLE001  # broad catch intentional at thumbnail pipeline
                     increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "subprocess_error")
                     continue
 
@@ -1979,7 +2053,7 @@ class ThumbnailManager:
                         os.replace(temp_output_path, thumbnail_path)
                         increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "success")
                         return thumbnail_path
-                    except Exception as e:
+                    except Exception:  # noqa: BLE001  # broad catch intentional at thumbnail pipeline
                         increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "replace_error")
                 else:
                     increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "attempt_failed")
@@ -1987,7 +2061,7 @@ class ThumbnailManager:
             try:
                 if os.path.exists(temp_output_path):
                     os.remove(temp_output_path)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110  # broad catch intentional at thumbnail pipeline; ignore intentional (thumbnail pipeline)
                 pass
 
             increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "failure")
@@ -1998,7 +2072,7 @@ class ThumbnailManager:
         self,
         file_path: str,
         prefer_native: bool
-    ) -> List[str]:
+    ) -> list[str]:
         """
         构建视频缩略图工作子进程命令。
 
@@ -2033,7 +2107,7 @@ class ThumbnailManager:
         thumbnail_path: str,
         legacy_thumbnail_path: str,
         prefer_native: bool = True
-    ) -> Optional[str]:
+    ) -> str | None:
         """批量模式下的视频缩略图生成入口
 
         通过独立子进程隔离底层阻塞风险：
@@ -2072,7 +2146,7 @@ class ThumbnailManager:
                 increment_perf_counter("thumbnail.create_video_thumbnail_batch_safe", "timeout")
                 warning(f"视频缩略图生成超时，已跳过: {file_path}")
                 return None
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # broad catch intentional at thumbnail pipeline
                 increment_perf_counter("thumbnail.create_video_thumbnail_batch_safe", "subprocess_error")
                 warning(f"启动视频缩略图子进程失败，已跳过: {file_path}, {e}")
                 return None
@@ -2103,7 +2177,7 @@ class ThumbnailManager:
 
             return None
 
-    def _load_image(self, file_path: str, suffix: str) -> Tuple[Optional['Image.Image'], bool]:
+    def _load_image(self, file_path: str, suffix: str) -> tuple[Image.Image | None, bool]:
         """
         加载图像文件（带尺寸限制和下采样）
 
@@ -2134,10 +2208,10 @@ class ThumbnailManager:
                 except ImportError:
                     warning(f"rawpy未安装，无法加载RAW: {file_path}")
                     return None, False
-            elif suffix in ['.avif', '.heic']:
-                # AVIF和HEIC格式
+            elif suffix in ('.avif', '.heic', '.heif'):
+                # AVIF/HEIC/HEIF 格式（T2 门控容器；jp2 由 Pillow 原生支持走通用分支）
                 try:
-                    import pillow_avif
+                    import pillow_avif  # noqa: F401  # side-effect: registers AVIF opener with Pillow
                 except ImportError:
                     pass
                 try:
@@ -2169,16 +2243,16 @@ class ThumbnailManager:
 
             return img, True
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at thumbnail pipeline
             warning(f"加载图像失败: {file_path}, {e}")
             if img is not None:
                 try:
                     img.close()
-                except Exception:
+                except Exception:  # noqa: BLE001, S110  # broad catch intentional at thumbnail pipeline; ignore intentional (thumbnail pipeline)
                     pass
             return None, False
 
-    def _apply_image_size_limit(self, img: 'Image.Image', file_path: str) -> 'Image.Image':
+    def _apply_image_size_limit(self, img: Image.Image, file_path: str) -> Image.Image:
         """
         应用图像尺寸限制，对超大图像进行下采样
 
@@ -2189,6 +2263,8 @@ class ThumbnailManager:
         Returns:
             Image.Image: 处理后的图像
         """
+        from PIL import Image
+
         width, height = img.size
         total_pixels = width * height
 
@@ -2216,7 +2292,7 @@ class ThumbnailManager:
 
         return img
 
-    def _load_svg_image(self, file_path: str) -> Tuple[Optional['Image.Image'], bool]:
+    def _load_svg_image(self, file_path: str) -> tuple[Image.Image | None, bool]:
         """
         加载SVG图像
 
@@ -2238,9 +2314,9 @@ class ThumbnailManager:
 
         try:
             with track_perf(event_name):
-                from PySide6.QtSvg import QSvgRenderer
-                from PySide6.QtGui import QImage, QPainter
                 from PySide6.QtCore import Qt
+                from PySide6.QtGui import QImage, QPainter
+                from PySide6.QtSvg import QSvgRenderer
 
                 cached_img = self._get_cached_svg_image(file_path)
                 if cached_img is not None:
@@ -2331,7 +2407,7 @@ class ThumbnailManager:
                 increment_perf_counter(event_name, "render_success")
                 return img, True
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at thumbnail pipeline
             increment_perf_counter(event_name, "failure")
             warning(f"加载SVG失败: {file_path}, {e}")
             return None, False
@@ -2340,7 +2416,7 @@ class ThumbnailManager:
             if painter is not None:
                 try:
                     painter.end()
-                except Exception:
+                except Exception:  # noqa: BLE001, S110  # broad catch intentional at thumbnail pipeline; ignore intentional (thumbnail pipeline)
                     pass
             qimage = None
             renderer = None
@@ -2371,7 +2447,7 @@ class ThumbnailManager:
                         os.remove(file_path)
                         self._set_cached_path_exists(file_path, False)
                         deleted_count += 1
-                    except (OSError, IOError) as e:
+                    except OSError as e:
                         debug(f"[ThumbnailManager] 删除缩略图文件失败 {file_path}: {e}")
 
             with self._frame_cache_lock:
@@ -2393,7 +2469,7 @@ class ThumbnailManager:
             info(f"已清理 {deleted_count} 个缩略图缓存")
             return deleted_count
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at thumbnail pipeline
             error(f"清理缩略图缓存失败: {e}")
             return 0
 
@@ -2414,39 +2490,39 @@ class ThumbnailManager:
             thumbnail_files.extend(glob.glob(os.path.join(self._thumb_dir, f"*{self.THUMB_EXT_LEGACY}")))
             return len(thumbnail_files)
 
-        except Exception as e:
+        except Exception:  # noqa: BLE001  # broad catch intentional at thumbnail pipeline
             return 0
 
-    def _get_all_thumbnail_files(self) -> List[Tuple[str, float]]:
+    def _get_all_thumbnail_files(self) -> list[tuple[str, float]]:
         """
         获取所有缩略图文件及其时间戳
 
         Returns:
             List[Tuple[str, float]]: [(文件路径, 时间戳)]
         """
-        thumbnail_files: List[Tuple[str, float]] = []
+        thumbnail_files: list[tuple[str, float]] = []
 
         try:
             if not os.path.exists(self._thumb_dir):
                 return thumbnail_files
 
             for filename in os.listdir(self._thumb_dir):
-                if filename.endswith(self.THUMB_EXT_PRIMARY) or filename.endswith(self.THUMB_EXT_LEGACY):
+                if filename.endswith((self.THUMB_EXT_PRIMARY, self.THUMB_EXT_LEGACY)):
                     file_path = os.path.join(self._thumb_dir, filename)
                     try:
                         file_time = os.path.getctime(file_path)
-                    except (OSError, IOError):
+                    except OSError:
                         try:
                             file_time = os.path.getmtime(file_path)
-                        except (OSError, IOError) as e:
+                        except OSError:
                             continue
                     thumbnail_files.append((file_path, file_time))
-        except (OSError, IOError) as e:
+        except OSError:
             pass
 
         return thumbnail_files
 
-    def clean_thumbnails(self, cleanup_period_days: Optional[int] = None, max_cache_size: int = 2000) -> Tuple[int, int]:
+    def clean_thumbnails(self, cleanup_period_days: int | None = None, max_cache_size: int = 2000) -> tuple[int, int]:
         """
         清理缩略图缓存，删除超过最大数量的旧文件，或删除超过指定天数的文件
 
@@ -2459,7 +2535,7 @@ class ThumbnailManager:
         """
         thumbnail_files = self._get_all_thumbnail_files()
         total_files = len(thumbnail_files)
-        files_to_delete_paths: List[str] = []
+        files_to_delete_paths: list[str] = []
 
         if cleanup_period_days:
             current_time = time.time()
@@ -2482,7 +2558,7 @@ class ThumbnailManager:
                     os.remove(file_path)
                     self._set_cached_path_exists(file_path, False)
                     deleted_count += 1
-            except (OSError, IOError) as e:
+            except OSError:
                 pass
 
         return deleted_count, total_files - deleted_count
@@ -2499,7 +2575,7 @@ class ThumbnailManager:
         """
         return self.has_thumbnail(file_path)
 
-    def get_cache_statistics(self, max_cache_size: int = 2000) -> Dict[str, Optional[float]]:
+    def get_cache_statistics(self, max_cache_size: int = 2000) -> dict[str, float | None]:
         """
         获取缓存统计信息
 
@@ -2558,7 +2634,7 @@ def _run_batch_video_thumbnail_subprocess(file_path: str, dpi_scale: float, pref
         if result and os.path.exists(result):
             return 0
         return 2
-    except Exception:
+    except Exception:  # noqa: BLE001  # broad catch intentional at thumbnail pipeline
         return 1
 
 
@@ -2584,7 +2660,7 @@ def get_thumbnail_manager(dpi_scale: float = 1.0) -> ThumbnailManager:
     return _thumbnail_manager
 
 
-def create_thumbnail(file_path: str, dpi_scale: float = 1.0, force_regenerate: bool = False) -> Optional[str]:
+def create_thumbnail(file_path: str, dpi_scale: float = 1.0, force_regenerate: bool = False) -> str | None:
     """
     便捷函数：为文件创建缩略图
 
@@ -2614,7 +2690,7 @@ def get_thumbnail_path(file_path: str) -> str:
     return manager.get_thumbnail_path(file_path)
 
 
-def get_existing_thumbnail_path(file_path: str) -> Optional[str]:
+def get_existing_thumbnail_path(file_path: str) -> str | None:
     """
     便捷函数：获取当前实际存在的缩略图路径。
     优先返回 JPG；若不存在则回退 PNG。
@@ -2690,7 +2766,7 @@ def clear_all_thumbnails() -> int:
     return manager.clear_all_thumbnails()
 
 
-def clean_thumbnails(cleanup_period_days: Optional[int] = None, max_cache_size: int = 2000) -> Tuple[int, int]:
+def clean_thumbnails(cleanup_period_days: int | None = None, max_cache_size: int = 2000) -> tuple[int, int]:
     """
     便捷函数：清理缩略图缓存
 
@@ -2705,7 +2781,7 @@ def clean_thumbnails(cleanup_period_days: Optional[int] = None, max_cache_size: 
     return manager.clean_thumbnails(cleanup_period_days=cleanup_period_days, max_cache_size=max_cache_size)
 
 
-def get_cache_statistics(max_cache_size: int = 2000) -> Dict[str, Optional[float]]:
+def get_cache_statistics(max_cache_size: int = 2000) -> dict[str, float | None]:
     """
     便捷函数：获取缩略图缓存统计信息
     """
@@ -2716,15 +2792,15 @@ def get_cache_statistics(max_cache_size: int = 2000) -> Dict[str, Optional[float
 # 模块导出
 __all__ = [
     'ThumbnailManager',
-    'get_thumbnail_manager',
-    'create_thumbnail',
-    'get_thumbnail_path',
-    'get_existing_thumbnail_path',
-    'has_thumbnail',
-    'is_media_file',
-    'is_image_file',
-    'is_video_file',
-    'clear_all_thumbnails',
     'clean_thumbnails',
+    'clear_all_thumbnails',
+    'create_thumbnail',
     'get_cache_statistics',
+    'get_existing_thumbnail_path',
+    'get_thumbnail_manager',
+    'get_thumbnail_path',
+    'has_thumbnail',
+    'is_image_file',
+    'is_media_file',
+    'is_video_file',
 ]
