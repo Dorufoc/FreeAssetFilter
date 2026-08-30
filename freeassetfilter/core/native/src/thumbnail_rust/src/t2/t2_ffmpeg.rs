@@ -7,7 +7,9 @@
 //! - `run_ffprobe_basic_info`：ffprobe 时长探测；`build_seek_candidates` 多 seek 候选
 //!   （0.20/0.35/0.50/0.10/0.70 比例 + 1/3s + 0s，去重阈值 0.05）；
 //! - HW 并发槽位默认 1（`HW_VIDEO_DECODE_SLOTS` / `MAX_CONCURRENT_HW_VIDEO_DECODE_LIMIT`）
-//!   与 `native_set_max_concurrent_hw_video_decodes` 导出对齐；
+//!   与 `native_set_max_concurrent_hw_video_decodes` 导出对齐；软件回退路径另有
+//!   独立并发槽位（`SW_VIDEO_DECODE_SLOTS`，默认 min(CPU 逻辑核数, 4)，内建
+//!   默认值不新增导出）——突发批量视频时软件 ffmpeg 子进程数有界；
 //! - `is_video_ext` 扩展覆盖 T2 清单全集：21 个视频扩展名恒路由 +
 //!   avif/heic/heif/jp2 图像容器经 `ffmpeg_capability` 实测 demuxer 表取交集
 //!   （**不硬编码可用性**，minimal build 无对应 demuxer 时自动排除）；
@@ -32,11 +34,13 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::thread;
 use std::time::Duration;
 
 const FFPROBE_TIMEOUT_SECS: u64 = 8;
 const FFMPEG_TIMEOUT_SECS: u64 = 20;
 const DEFAULT_MAX_CONCURRENT_HW_VIDEO_DECODES: usize = 1;
+const DEFAULT_MAX_CONCURRENT_SW_VIDEO_DECODES: usize = 4;
 
 /// T2 视频扩展名全集（恒路由 ffmpeg 管线；README 视频清单 ∩ 计划 T2 清单）。
 /// 对照：Python 侧 `thumbnail_manager.py` VIDEO_FORMATS 仅 11 项（无 vob/m2ts/ts/
@@ -159,10 +163,53 @@ impl Drop for HwDecodePermit {
     }
 }
 
+/// 软件解码默认并发上限：CPU 逻辑核数与 4 取较小值（突发批量视频场景
+/// 下软件 ffmpeg 子进程数有界；内建默认值，不新增 FFI 导出）。
+fn default_max_concurrent_sw_video_decodes() -> usize {
+    thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(DEFAULT_MAX_CONCURRENT_SW_VIDEO_DECODES)
+        .min(DEFAULT_MAX_CONCURRENT_SW_VIDEO_DECODES)
+        .max(1)
+}
+
+/// 软件解码并发许可：与 `HwDecodePermit` 相同的原子槽位模式，区别在于
+/// 获取为阻塞等待——软件路径是最终回退，拿不到槽位不能像 HW 一样降级
+/// 跳过；持有生命周期 = 单个 ffmpeg 子进程（无嵌套等待，故无死锁）。
+struct SwDecodePermit;
+
+impl SwDecodePermit {
+    fn acquire() -> Self {
+        loop {
+            let max_slots = MAX_CONCURRENT_SW_VIDEO_DECODE_LIMIT
+                .load(Ordering::Acquire)
+                .max(1);
+            let current = SW_VIDEO_DECODE_SLOTS.load(Ordering::Acquire);
+            if current < max_slots
+                && SW_VIDEO_DECODE_SLOTS
+                    .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+            {
+                return Self;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+impl Drop for SwDecodePermit {
+    fn drop(&mut self) {
+        SW_VIDEO_DECODE_SLOTS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 static DECODE_STATS: Lazy<Mutex<DecodeStats>> = Lazy::new(|| Mutex::new(DecodeStats::default()));
 static HW_VIDEO_DECODE_SLOTS: Lazy<AtomicUsize> = Lazy::new(|| AtomicUsize::new(0));
 static MAX_CONCURRENT_HW_VIDEO_DECODE_LIMIT: Lazy<AtomicUsize> =
     Lazy::new(|| AtomicUsize::new(DEFAULT_MAX_CONCURRENT_HW_VIDEO_DECODES));
+static SW_VIDEO_DECODE_SLOTS: Lazy<AtomicUsize> = Lazy::new(|| AtomicUsize::new(0));
+static MAX_CONCURRENT_SW_VIDEO_DECODE_LIMIT: Lazy<AtomicUsize> =
+    Lazy::new(|| AtomicUsize::new(default_max_concurrent_sw_video_decodes()));
 
 /// 能力表 demuxer 条目是否覆盖任一给定名称。
 ///
@@ -365,6 +412,14 @@ fn try_extract_frame_with_ffmpeg(
         stats.record_attempt(hwaccel);
     }
 
+    // 软件路径独立并发槽位：HW 槽位只约束 hwaccel 尝试，软件 ffmpeg
+    // 子进程若无独立上限，突发批量视频会同时起 N 个 ffmpeg.exe。
+    let _sw_permit = if hwaccel.is_none() {
+        Some(SwDecodePermit::acquire())
+    } else {
+        None
+    };
+
     let mut command = Command::new(ffmpeg);
     command.arg("-hide_banner");
     if hwaccel.is_some() {
@@ -414,6 +469,12 @@ fn try_extract_frame_with_ffmpeg(
             }
         } else if verified_hw {
             stats.record_hit(hwaccel);
+        } else {
+            // HW 标签尝试成功但日志无法证实硬件路径：ffmpeg d3d11va 可静默
+            // 回退软件解码且 info 级日志不可区分，此时按软件归因——HW 尝试
+            // 成功要么记 hit 要么记 software_fallback，不再两边落空（修复
+            // d3d11va_attempts 递增而 d3d11va_hits 恒 0 的统计失衡）。
+            stats.record_software_fallback();
         }
     }
 

@@ -7,6 +7,7 @@ use std::fs;
 use std::os::raw::{c_char, c_int};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -49,6 +50,17 @@ const STATUS_INTERNAL: i32 = -5;
 // 维度超限），见 plan todo 27 路由表。
 pub(crate) const STATUS_UNSUPPORTED: i32 = -6;
 pub(crate) const STATUS_TOO_LARGE: i32 = -7;
+
+/// 内存压力刷新节流窗口（毫秒）：`generate_entry` 持 ENGINE 锁调用
+/// `update_memory_pressure`，而 sysinfo `refresh_memory` 为全系统统计
+/// 刷新（较重）；窗口内直接沿用上次刷新的分级结果（`paused_preload` /
+/// `emergency_mode` 缓存于 engine 字段），高并发下避免所有线程在锁内
+/// 排队做重复刷新（80/90/95 三档分级逻辑不变，仅刷新频率受节流）。
+const MEMORY_PRESSURE_REFRESH_INTERVAL_MS: u64 = 250;
+
+/// 上次 `refresh_memory` 的 Unix 毫秒时间戳（0 = 从未刷新）。独立原子
+/// 而非 ENGINE 锁内字段——ENGINE 锁正是节流要消除的热点本身。
+static LAST_MEMORY_REFRESH_MS: AtomicU64 = AtomicU64::new(0);
 
 #[repr(C)]
 pub struct NativeThumbnailResult {
@@ -108,12 +120,18 @@ struct NativeEngine {
 
 impl NativeEngine {
     fn new() -> Self {
+        // 冷启动优化：`System::new_all()` 会全量扫描进程/CPU/磁盘/网络/组件
+        // （实测 ~440ms，冷启动首请求的主要时延），而本引擎仅消费
+        // `refresh_memory()` 后的 used/total 两个字段（首刷实测 <1ms）。
+        // 改用空构造 `System::new()`：不做任何扫描，内存数据由
+        // `update_memory_pressure` 首调时按需 `refresh_memory` 填充；
+        // 分级逻辑（80/90/95 三档）不变，仅构造期不再有全系统快照。
         Self {
             cache: HashMap::new(),
             max_memory_bytes: DEFAULT_MAX_MEMORY_BYTES,
             used_memory_bytes: 0,
             k: DEFAULT_K,
-            system: System::new_all(),
+            system: System::new(),
             paused_preload: false,
             emergency_mode: false,
         }
@@ -131,6 +149,20 @@ impl NativeEngine {
     }
 
     fn update_memory_pressure(&mut self) {
+        // 节流：距上次刷新不足窗口时直接沿用缓存分级结果（见
+        // MEMORY_PRESSURE_REFRESH_INTERVAL_MS 文档）；CAS 确保窗口起点只有
+        // 一个线程真正执行刷新，竞争失败方沿用现有分级状态。
+        let now = Self::now_ts();
+        let last = LAST_MEMORY_REFRESH_MS.load(Ordering::Relaxed);
+        if last != 0 && now.saturating_sub(last) < MEMORY_PRESSURE_REFRESH_INTERVAL_MS {
+            return;
+        }
+        if LAST_MEMORY_REFRESH_MS
+            .compare_exchange(last, now, Ordering::AcqRel, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
         self.system.refresh_memory();
         let total = self.system.total_memory() as f64;
         let used = self.system.used_memory() as f64;

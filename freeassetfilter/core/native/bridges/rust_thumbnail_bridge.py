@@ -91,7 +91,9 @@ class RustThumbnailBridge:
         if self._is_frozen_app():
             return [bundled_dll]
 
-        return [dev_release_dll, dev_debug_dll]
+        # dev 模式优先本地 cargo 产物（release/debug），最后兜底 bin/ 内置
+        # DLL——fresh clone 未编译过 cargo 时 Rust 引擎仍可用。
+        return [dev_release_dll, dev_debug_dll, bundled_dll]
 
     def _prepare_local_runtime(self):
         """
@@ -172,6 +174,9 @@ class RustThumbnailBridge:
         dll.native_free_batch_result.argtypes = [POINTER(NativeThumbnailBatchResult)]
         dll.native_free_batch_result.restype = None
 
+        dll.native_free_result.argtypes = [POINTER(NativeThumbnailResult)]
+        dll.native_free_result.restype = None
+
         self._native_free_message = dll.native_free_message
         self._native_free_message.argtypes = [c_void_p]
         self._native_free_message.restype = None
@@ -215,6 +220,20 @@ class RustThumbnailBridge:
             self._supports_caps = True
         except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             self._supports_caps = False
+
+    def _free_result(self, result: NativeThumbnailResult) -> None:
+        """释放单个结果结构体的 data 与 message（Rust 侧均为每次调用堆分配）。
+
+        经 ``native_free_result`` 一次性释放两者并置空指针，等价于
+        ``native_free_buffer`` + ``native_free_message`` 的组合；此前各生成
+        方法只释放 data 漏掉 message，长会话批量场景构成稳定泄漏。失败
+        静默（FFI 边界 broad catch，与批量路径 ``native_free_batch_result``
+        的释放口径一致）。
+        """
+        try:
+            self._dll.native_free_result(ctypes.byref(result))
+        except Exception:  # noqa: BLE001, S110  # broad catch intentional at ctypes FFI boundary; ignore intentional (ctypes FFI boundary)
+            pass
 
     def set_cache_limit(self, max_bytes: int) -> bool:
         if not self.available:
@@ -415,12 +434,13 @@ class RustThumbnailBridge:
             result = self._dll.native_generate_thumbnail(file_path.encode("utf-8"), int(width), int(height))
             if result.status != 0 or not result.data or result.len <= 0:
                 debug(f"生成 RGBA 失败: status={result.status}, data={result.data}, len={result.len}")
+                self._free_result(result)
                 return None
             raw = ctypes.string_at(result.data, result.len)
             channels = int(result.channels) if result.channels else 4
             w = int(result.width)
             h = int(result.height)
-            self._dll.native_free_buffer(result.data, result.len)
+            self._free_result(result)
             debug(f"生成 RGBA 成功: {file_path}, 尺寸 {w}x{h}, 通道 {channels}")
             return raw, w, h, channels
         except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
@@ -469,9 +489,10 @@ class RustThumbnailBridge:
             status = int(result.status)
             if status != STATUS_OK or not result.data or result.len <= 0:
                 debug(f"{log_label}失败: status={status}")
+                self._free_result(result)
                 return None, status
             payload = ctypes.string_at(result.data, result.len)
-            self._dll.native_free_buffer(result.data, result.len)
+            self._free_result(result)
             debug(f"{log_label}成功: {file_path}, 大小 {len(payload)} bytes")
             return payload, STATUS_OK
         except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
@@ -521,12 +542,13 @@ class RustThumbnailBridge:
             status = int(result.status)
             if status != STATUS_OK or not result.data or result.len <= 0:
                 debug(f"生成 RGBA(带状态) 失败: status={status}")
+                self._free_result(result)
                 return None, status
             raw = ctypes.string_at(result.data, result.len)
             channels = int(result.channels) if result.channels else 4
             w = int(result.width)
             h = int(result.height)
-            self._dll.native_free_buffer(result.data, result.len)
+            self._free_result(result)
             debug(f"生成 RGBA(带状态) 成功: {file_path}, 尺寸 {w}x{h}, 通道 {channels}")
             return (raw, w, h, channels), STATUS_OK
         except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
@@ -545,9 +567,10 @@ class RustThumbnailBridge:
             result = self._dll.native_generate_thumbnail_jpeg(file_path.encode("utf-8"), int(width), int(height))
             if result.status != 0 or not result.data or result.len <= 0:
                 debug(f"生成 JPEG 失败: status={result.status}")
+                self._free_result(result)
                 return None
             jpeg_bytes = ctypes.string_at(result.data, result.len)
-            self._dll.native_free_buffer(result.data, result.len)
+            self._free_result(result)
             debug(f"生成 JPEG 成功: {file_path}, 大小 {len(jpeg_bytes)} bytes")
             return jpeg_bytes
         except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
@@ -566,9 +589,10 @@ class RustThumbnailBridge:
             result = self._dll.native_generate_thumbnail_jpg(file_path.encode("utf-8"), int(width), int(height))
             if result.status != 0 or not result.data or result.len <= 0:
                 debug(f"生成 JPG 失败: status={result.status}")
+                self._free_result(result)
                 return None
             jpg_bytes = ctypes.string_at(result.data, result.len)
-            self._dll.native_free_buffer(result.data, result.len)
+            self._free_result(result)
             debug(f"生成 JPG 成功: {file_path}, 大小 {len(jpg_bytes)} bytes")
             return jpg_bytes
         except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
