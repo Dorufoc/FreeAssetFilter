@@ -1,8 +1,10 @@
 """Styled Button component - matches web button exactly."""
 
+from __future__ import annotations
+
 from PySide6.QtWidgets import QPushButton, QWidget, QSizePolicy
 from PySide6.QtCore import Qt, QRectF, QTimer, QPropertyAnimation, QEasingCurve, Property
-from PySide6.QtGui import QPainter, QColor, QPaintEvent, QFont, QPen, QFontMetrics, QIcon, QPixmap
+from PySide6.QtGui import QPainter, QColor, QPaintEvent, QFont, QPen, QFontMetrics, QIcon, QPixmap, QPainterPath
 from PySide6.QtSvgWidgets import QSvgWidget
 from PySide6.QtSvg import QSvgRenderer
 from pathlib import Path
@@ -106,6 +108,7 @@ class StyledButton(QPushButton):
         self._spinner_angle = 0
         self._scale = 1.0
         self._scale_anim = None
+        self._progress: float | None = None  # 运行时进度值（None = 非进度模式）
 
         self.setCursor(Qt.PointingHandCursor)
         self.setAttribute(Qt.WA_Hover, True)
@@ -117,10 +120,11 @@ class StyledButton(QPushButton):
         if icon and (icon.endswith('.svg') or Path(icon).exists()):
             self._load_svg_icon(icon)
         
+        # spinner 定时器统一惰性管理：loading 模式启动后不停止（旧行为）；
+        # 进度模式按需启停（见 set_progress / _start_spinner_timer）
+        self._timer = None
         if self._loading:
-            self._timer = QTimer(self)
-            self._timer.timeout.connect(self._spin)
-            self._timer.start(30)
+            self._start_spinner_timer()
 
         self._apply_size()
         self.update()
@@ -209,6 +213,50 @@ class StyledButton(QPushButton):
     def _spin(self):
         self._spinner_angle = (self._spinner_angle + 6) % 360
         self.update()
+
+    def set_progress(self, value: float | None) -> None:
+        """设置运行时进度模式（0.0 ~ 1.0），None 退出进度模式。
+
+        进度模式下背景绘制为「轨道 + 按比例填充」、内容绘制为
+        「旋转 spinner + 百分比文本」组合（见 paintEvent 进度分支）；
+        传入 float 会被钳制到 [0.0, 1.0]，并启动 spinner 定时器
+        驱动旋转；传入 None 退出进度模式——停止 spinner 定时器
+        （loading 模式除外，loading 启动后不停止）并恢复普通绘制。
+
+        Args:
+            value: 进度值（[0.0, 1.0]）；None 表示退出进度模式。
+        """
+        if value is None:
+            self._progress = None
+            if not self._loading:
+                self._stop_spinner_timer()
+            self.update()
+            return
+        self._progress = max(0.0, min(1.0, float(value)))
+        self._start_spinner_timer()
+        self.update()
+
+    def progress(self) -> float | None:
+        """读取当前进度值。
+
+        Returns:
+            float | None: 进度模式下的进度值（[0.0, 1.0]）；
+            非进度模式返回 None。
+        """
+        return self._progress
+
+    def _start_spinner_timer(self) -> None:
+        """惰性创建并启动 spinner 定时器（30ms 驱动 _spin 旋转）。"""
+        if self._timer is None:
+            self._timer = QTimer(self)
+            self._timer.timeout.connect(self._spin)
+        if not self._timer.isActive():
+            self._timer.start(30)
+
+    def _stop_spinner_timer(self) -> None:
+        """停止 spinner 定时器（未创建 / 未激活时不做任何事）。"""
+        if self._timer is not None and self._timer.isActive():
+            self._timer.stop()
 
     # ── Scale property for animation ─────────────────────────────
 
@@ -375,14 +423,66 @@ class StyledButton(QPushButton):
                 painter.drawRoundedRect(shadow_rect, config["radius"], config["radius"])
                 painter.setOpacity(1.0 if self.isEnabled() else 0.4)
 
-            # Draw background
+            # Draw background（进度模式：轨道 + 进度填充；普通模式：状态背景色）
             painter.setPen(Qt.NoPen)
-            painter.setBrush(bg)
-            painter.drawRoundedRect(
-                QRectF(btn_x, btn_y, btn_w, btn_h),
-                config["radius"],
-                config["radius"],
-            )
+            if self._progress is not None:
+                # 轨道：低透明度 accent 圆角矩形（进度模式不响应 hover/active）
+                painter.setBrush(tm.alpha_of(tm.accent, 60))
+                painter.drawRoundedRect(
+                    QRectF(btn_x, btn_y, btn_w, btn_h),
+                    config["radius"],
+                    config["radius"],
+                )
+                # 填充：圆角 clip 约束整按钮区域后按进度比例填充
+                # （填充色用 colors["bg"]，primary 变体时即 accent）
+                clip_path = QPainterPath()
+                clip_path.addRoundedRect(
+                    QRectF(btn_x, btn_y, btn_w, btn_h),
+                    config["radius"],
+                    config["radius"],
+                )
+                painter.save()
+                painter.setClipPath(clip_path)
+                painter.fillRect(
+                    QRectF(btn_x, btn_y, btn_w * self._progress, btn_h),
+                    colors["bg"],
+                )
+                painter.restore()
+            else:
+                painter.setBrush(bg)
+                painter.drawRoundedRect(
+                    QRectF(btn_x, btn_y, btn_w, btn_h),
+                    config["radius"],
+                    config["radius"],
+                )
+
+            # 进度模式：spinner + 百分比文本组合水平居中（优先于 loading 分支）
+            if self._progress is not None:
+                progress_text = f"{int(round(self._progress * 100))}%"
+                font = QFont("Microsoft YaHei UI", config["font_size"], QFont.Normal)
+                text_w = QFontMetrics(font).horizontalAdvance(progress_text)
+                spinner_r = 6
+                gap = 6  # spinner 与百分比文本的间距
+                content_w = spinner_r * 2 + gap + text_w
+                content_x = cx - content_w / 2.0
+                # spinner 圆圈：text_color 描边、起角随 _spinner_angle 旋转、270° 扫角
+                painter.setPen(QPen(text_color, 2))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawArc(
+                    int(content_x), int(cy - spinner_r),
+                    int(spinner_r * 2), int(spinner_r * 2),
+                    self._spinner_angle * 16,
+                    270 * 16,
+                )
+                # 百分比文本：spinner 右侧 gap 间距后绘制，垂直居中
+                painter.setFont(font)
+                painter.setPen(text_color)
+                painter.drawText(
+                    QRectF(content_x + spinner_r * 2 + gap, btn_y, text_w, btn_h),
+                    Qt.AlignCenter,
+                    progress_text,
+                )
+                return
 
             # Draw loading spinner
             if self._loading:

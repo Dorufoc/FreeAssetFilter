@@ -12,6 +12,8 @@ StyledTextarea / StyledScrollBar 等）和 `tm` 提供的颜色 token，不使�
 D_* 或 Custom* 控件。
 """
 
+from __future__ import annotations
+
 import os
 import sys
 from pathlib import Path

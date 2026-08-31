@@ -152,6 +152,92 @@ class TestIconRendering:
         assert_pixmap_nonempty(pixmap, "无缩略图 PNG 图标应为非空")
 
 
+# ── 图片/视频图标键隔离（滚动回退 bug 回归） ────────────────────────────
+
+
+class TestMediaIconKeyIsolation:
+    """图片/视频类型的图标必须走含路径的独立缓存键。
+
+    回归背景：若默认类型图标按 suffix 共享键缓存，目录中任一「无缩略图」
+    的同后缀文件先渲染后会把共享键污染为默认图标，导致「已有磁盘缩略图」
+    的同后缀文件在缓存命中时被劫持回退默认图标——表现为滚动重渲染后
+    缩略图消失。
+    """
+
+    @pytest.fixture
+    def thumb_env(self, monkeypatch: Any, tmp_path: Path) -> Dict[str, str]:
+        """受控缩略图环境：A 有 128×128 磁盘缩略图，B 无缩略图。
+
+        Args:
+            monkeypatch: pytest monkeypatch。
+            tmp_path: pytest 临时目录。
+
+        Returns:
+            Dict[str, str]: 含 A/B 文件路径与缩略图路径的字典。
+        """
+        thumb_path: str = make_image(tmp_path / "a_thumb.jpg", size=(128, 128), fmt="JPEG")
+        video_a: str = str(tmp_path / "video_a.mp4")
+        video_b: str = str(tmp_path / "video_b.mp4")
+        Path(video_a).write_bytes(b"fake-a")
+        Path(video_b).write_bytes(b"fake-b")
+        monkeypatch.setattr(
+            "freeassetfilter.services.file_icon_manager.get_existing_thumbnail_path",
+            lambda file_path: thumb_path if file_path == video_a else None,
+        )
+        return {"video_a": video_a, "video_b": video_b, "thumb_path": thumb_path}
+
+    def test_thumb_survives_suffix_default_icon_rendered(
+        self, icon_manager: FileIconManager, theme_colors: List[str], thumb_env: Dict[str, str]
+    ) -> None:
+        """回归：无缩略图文件先渲染默认图标后，有缩略图文件仍须显示缩略图。
+
+        顺序即滚动场景本质：B（无缩略图，滚动中先被重渲染）渲染默认图标
+        后，A（有磁盘缩略图）查询不得被 suffix 共享键劫持。
+
+        Args:
+            icon_manager: 图标管理器 fixture。
+            theme_colors: 固定主题色 fixture。
+            thumb_env: 受控缩略图环境 fixture。
+        """
+        info_b: Dict[str, Any] = _file_info("mp4", path=thumb_env["video_b"])
+        info_a: Dict[str, Any] = _file_info("mp4", path=thumb_env["video_a"])
+
+        # B 先渲染：无缩略图 → 默认类型图标（旧行为会污染 suffix 共享键）
+        pixmap_b = icon_manager.get_icon_pixmap(info_b, 48, 1.0)
+        assert_pixmap_nonempty(pixmap_b, "无缩略图视频应渲染默认图标")
+
+        # A 后查询：必须返回 128 宽的磁盘缩略图而非被劫持的 48 默认图标
+        pixmap_a = icon_manager.get_icon_pixmap(info_a, 48, 1.0)
+        assert pixmap_a.width() == 128, (
+            f"有缩略图的视频被 suffix 键劫持回退默认图标: width={pixmap_a.width()}"
+        )
+
+        # 模拟 files_ready 按路径失效 + 缓存淘汰后的重查（滚动场景）
+        icon_manager.clear_cache(thumb_env["video_a"])
+        pixmap_a2 = icon_manager.get_icon_pixmap(info_a, 48, 1.0)
+        assert pixmap_a2.width() == 128, "按路径失效后重查应仍命中磁盘缩略图"
+
+    def test_media_default_icons_cached_per_path(
+        self, icon_manager: FileIconManager, theme_colors: List[str], thumb_env: Dict[str, str]
+    ) -> None:
+        """回归：同后缀文件的默认图标必须按路径独立缓存。
+
+        Args:
+            icon_manager: 图标管理器 fixture。
+            theme_colors: 固定主题色 fixture。
+            thumb_env: 受控缩略图环境 fixture。
+        """
+        info_b: Dict[str, Any] = _file_info("mp4", path=thumb_env["video_b"])
+        other: str = thumb_env["video_b"].replace("video_b", "video_c")
+        info_c: Dict[str, Any] = _file_info("mp4", path=other)
+
+        pixmap_b = icon_manager.get_icon_pixmap(info_b, 48, 1.0)
+        pixmap_c = icon_manager.get_icon_pixmap(info_c, 48, 1.0)
+        assert pixmap_b is not pixmap_c, (
+            "同后缀不同文件的默认图标不得共享缓存条目（含路径键约束）"
+        )
+
+
 # ── 缓存行为 ─────────────────────────────────────────────────────────────
 
 

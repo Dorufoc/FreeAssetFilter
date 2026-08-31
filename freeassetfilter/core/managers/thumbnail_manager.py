@@ -2169,11 +2169,19 @@ class ThumbnailManager:
                     self._set_cached_path_exists(legacy_thumbnail_path, True)
                     return legacy_thumbnail_path
                 increment_perf_counter("thumbnail.create_video_thumbnail_batch_safe", "missing_output")
+                output_tail = filtered_stderr_text[-400:] if filtered_stderr_text else ""
+                warning(
+                    f"视频缩略图子进程正常退出但未产出文件，已跳过: {file_path}"
+                    + (f"，输出: {output_tail}" if output_tail else "")
+                )
                 return None
 
             increment_perf_counter("thumbnail.create_video_thumbnail_batch_safe", "failure")
-            if filtered_stderr_text:
-                debug(f"视频缩略图子进程异常输出: {filtered_stderr_text}")
+            error_tail = filtered_stderr_text[-400:] if filtered_stderr_text else ""
+            warning(
+                f"视频缩略图子进程失败(returncode={completed.returncode})，已跳过: {file_path}"
+                + (f"，异常输出: {error_tail}" if error_tail else "")
+            )
 
             return None
 

@@ -148,6 +148,17 @@ class FileIconManager(QObject):
             self._get_theme_colors()
         )
 
+        # ── 图片 / 视频类型：完全走含文件路径的缩略图键体系 ────────────
+        # NOTE: 图片/视频的图标内容按文件个体而定（磁盘缩略图或默认类型
+        # 图标），绝不能使用按 suffix 共享的键——否则目录中任一「无缩略图」
+        # 的同后缀文件先渲染默认图标后，会把共享键污染为默认图标，导致
+        # 其余「已有缩略图」的同后缀文件在缓存命中时被劫持，滚动重渲染
+        # 后缩略图消失回退默认图标（互串问题的镜像形态）。
+        if not is_dir and (suffix in self._PHOTO_SUFFIXES or suffix in self._VIDEO_SUFFIXES):
+            return self._get_media_icon_pixmap(
+                file_info, file_path, icon_size, dpr,
+            )
+
         # 4. 构建缓存键（含全部 5 个主题色 → 主题变更自动失效）
         cache_key = (
             "svg",
@@ -180,20 +191,6 @@ class FileIconManager(QObject):
                 self._icon_cache.move_to_end(cache_key)
                 self._trim_cache()
             return qp_cached
-
-        # ── 缩略图回退 ──────────────────────────────────────────────────
-        # 照片 / 视频优先使用已存在的磁盘缩略图
-        if not is_dir and (suffix in self._PHOTO_SUFFIXES or suffix in self._VIDEO_SUFFIXES):
-            thumb_path = get_existing_thumbnail_path(file_path)
-            if thumb_path and os.path.exists(thumb_path):
-                pixmap = QPixmap(thumb_path)
-                if pixmap and not pixmap.isNull():
-                    with self._cache_lock:
-                        self._icon_cache[cache_key] = pixmap
-                        self._icon_cache.move_to_end(cache_key)
-                        self._trim_cache()
-                    QPixmapCache.insert(qp_cache_key, pixmap)
-                    return pixmap
 
         # ── 系统图标缓存（exe / lnk / url） ────────────────────────────
         is_system_type = not is_dir and suffix in self._SYSTEM_ICON_SUFFIXES
@@ -269,7 +266,8 @@ class FileIconManager(QObject):
 
         Args:
             file_path: 如果为 ``None``，清除全部缓存（L1 + L2 + 系统图标）；
-                       如果提供，仅清除 L1 缓存。
+                       如果提供，仅失效该文件路径关联的磁盘缩略图缓存
+                       条目（含路径键的 L1 + L2）。
         """
         with self._cache_lock:
             if file_path is None:
@@ -278,7 +276,19 @@ class FileIconManager(QObject):
                     self._system_icon_cache.clear()
                 QPixmapCache.clear()
             else:
-                self._icon_cache.clear()
+                # 按 normcase 路径精确失效缩略图键（L1 + 对应 L2）
+                norm_path = os.path.normcase(file_path)
+                stale_keys = [
+                    key
+                    for key in self._icon_cache
+                    if isinstance(key, tuple)
+                    and len(key) >= 2
+                    and key[0] == "thumb"
+                    and key[1] == norm_path
+                ]
+                for key in stale_keys:
+                    self._icon_cache.pop(key, None)
+                    QPixmapCache.remove(f"faf_fim_thumb_{hash(key)}")
 
     def preload_icons(self, file_infos: list, icon_size: int, dpr: float) -> None:
         """预加载图标到缓存。
@@ -324,6 +334,86 @@ class FileIconManager(QObject):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _get_media_icon_pixmap(
+        self,
+        file_info: dict,
+        file_path: str,
+        icon_size: int,
+        dpr: float,
+    ) -> QPixmap:
+        """图片/视频类型的图标获取（含路径的独立缓存键体系）。
+
+        优先级：thumb 键 L1 → L2 → 磁盘缩略图 → 默认类型 SVG 图标。
+        缩略图与默认图标均写入含文件路径的 thumb 键（同键同内容），
+        不同文件互不干扰；缩略图生成后经 ``clear_cache(file_path)``
+        按路径失效即可正确更新。
+
+        Args:
+            file_info: 文件信息字典。
+            file_path: 文件路径。
+            icon_size: 图标逻辑尺寸。
+            dpr: 设备像素比。
+
+        Returns:
+            渲染完成的 QPixmap；失败时返回空 QPixmap。
+        """
+        if not file_path:
+            return QPixmap()
+
+        thumb_key = (
+            "thumb",
+            os.path.normcase(file_path),
+            icon_size,
+            dpr,
+        )
+        thumb_qp_key = f"faf_fim_thumb_{hash(thumb_key)}"
+
+        # 1. thumb 键 L1 / L2 查询（命中时跳过磁盘 stat 与解码）
+        with self._cache_lock:
+            thumb_cached = self._icon_cache.get(thumb_key)
+            if thumb_cached is not None and not thumb_cached.isNull():
+                self._icon_cache.move_to_end(thumb_key)
+                return thumb_cached
+        thumb_qp_cached = QPixmap()
+        if QPixmapCache.find(thumb_qp_key, thumb_qp_cached) and not thumb_qp_cached.isNull():
+            with self._cache_lock:
+                self._icon_cache[thumb_key] = thumb_qp_cached
+                self._icon_cache.move_to_end(thumb_key)
+                self._trim_cache()
+            return thumb_qp_cached
+
+        # 2. 磁盘缩略图（get_existing_thumbnail_path 内部含短 TTL 存在性缓存）
+        thumb_path = get_existing_thumbnail_path(file_path)
+        if thumb_path and os.path.exists(thumb_path):
+            pixmap = QPixmap(thumb_path)
+            if pixmap and not pixmap.isNull():
+                with self._cache_lock:
+                    self._icon_cache[thumb_key] = pixmap
+                    self._icon_cache.move_to_end(thumb_key)
+                    self._trim_cache()
+                QPixmapCache.insert(thumb_qp_key, pixmap)
+                return pixmap
+
+        # 3. 无缩略图：渲染默认类型 SVG 图标，同样写入含路径的 thumb 键
+        #    （不写入 suffix 共享键，避免污染同后缀其他文件的缩略图显示）
+        icon_path = get_file_icon_path(file_info)
+        if not icon_path or not os.path.exists(icon_path):
+            return QPixmap()
+        pixmap = SvgRenderer.render_svg_to_exact_pixmap(
+            icon_path,
+            icon_width=icon_size,
+            icon_height=icon_size,
+            replace_colors=True,
+            device_pixel_ratio=dpr,
+        )
+        if pixmap and not pixmap.isNull():
+            with self._cache_lock:
+                self._icon_cache[thumb_key] = pixmap
+                self._icon_cache.move_to_end(thumb_key)
+                self._trim_cache()
+            QPixmapCache.insert(thumb_qp_key, pixmap)
+        return pixmap
 
     def _get_theme_colors(self) -> tuple:
         """从 SettingsManager 读取 5 个主题色。"""

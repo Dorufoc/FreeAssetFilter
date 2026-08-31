@@ -251,6 +251,23 @@ class FileListModel(QAbstractListModel):
             bottom = self.index(self.rowCount() - 1, 0)
             self.dataChanged.emit(top, bottom, [IconPixmapRole])
 
+    def emit_icon_changed(self, file_paths: List[str]) -> None:
+        """批量刷新指定文件行的图标（IconPixmapRole）。
+
+        缩略图生成完成后的显示回填入口：对仍存在于模型中的路径发射
+        dataChanged（IconPixmapRole）触发委托重新取图；已从模型移除的
+        路径（目录已切换场景）静默跳过。
+
+        Args:
+            file_paths: 需要刷新图标的文件路径列表。
+        """
+        for file_path in file_paths:
+            row = self.get_row(file_path)
+            if row < 0:
+                continue
+            idx = self.index(row, 0)
+            self.dataChanged.emit(idx, idx, [IconPixmapRole])
+
     def get_file_info(self, index: QModelIndex) -> Dict[str, Any]:
         """获取索引对应的文件信息字典。
 

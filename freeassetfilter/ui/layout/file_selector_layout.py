@@ -17,15 +17,17 @@ from PySide6.QtGui import QFont, QFontMetrics
 
 from theme import tm
 from freeassetfilter.core._paths import get_app_data_path
+from freeassetfilter.core.workers.thumbnail_controller import ThumbnailController
 from components.styled_button import StyledButton
 from components.styled_lineedit import StyledLineEdit
 from components.styled_context_menu import StyledContextMenu
 from components.styled_dialog import StyledDialog, FOOTER_RIGHT, FOOTER_CENTER, create_basic_dialog, _show_dialog
 from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
-from components.file_list_model import FileListModel, FilePathRole, FileNameRole, IsDirRole, FileSizeRole, ModifiedRole, CreatedRole, SuffixRole, IsPreviewingRole
+from components.file_list_model import FileListModel, FilePathRole, FileNameRole, IsDirRole, FileSizeRole, ModifiedRole, CreatedRole, SuffixRole, IsPreviewingRole, IconPixmapRole
 from components.file_card_delegate import FileCardDelegate, CARD_CONFIG, LIST_CONFIG
 from components.animated_file_list_view import AnimatedFileListView
 from freeassetfilter.services.favorites_service import FavoritesService
+from freeassetfilter.services.file_icon_manager import FileIconManager
 
 
 class FileSelectorLayout(QWidget):
@@ -161,6 +163,16 @@ class FileSelectorLayout(QWidget):
         self._filter_pattern: str = ""
         self._active_dialogs: List = []  # 保持弹窗引用，防止被 GC
 
+        # ── 缩略图生成 / 清除控制器（parent=self 防 GC）──
+        # 生成进度文案（"done/total"），供生成中点击弹窗的提示语拼接
+        self._gen_progress_text: str = ""
+        self._thumb_controller = ThumbnailController(self)
+        self._thumb_controller.progress_emitted.connect(self._on_thumbnail_progress)
+        self._thumb_controller.files_ready.connect(self._on_thumbnails_ready)
+        self._thumb_controller.batch_finished.connect(self._on_thumbnail_batch_finished)
+        self._thumb_controller.clear_finished.connect(self._on_thumbnails_cleared)
+        self._thumb_controller.failed.connect(self._on_thumbnail_failed)
+
         # ── 信号连接 ──
         self._path_input.returnPressed.connect(self._navigate_to_input_path)
         self._arrow_btn.clicked.connect(self._navigate_to_input_path)
@@ -175,8 +187,8 @@ class FileSelectorLayout(QWidget):
         self._sift_btn.clicked.connect(self._show_filter_dialog)
         self._driver_btn.clicked.connect(self._navigate_to_all)
         self._star_btn.clicked.connect(self._add_current_path_to_favorites)
-        self._gen_thumb_btn.clicked.connect(lambda: None)
-        self._clean_btn.clicked.connect(lambda: None)
+        self._gen_thumb_btn.clicked.connect(self._on_generate_thumbnails)
+        self._clean_btn.clicked.connect(self._on_clear_thumbnails)
 
         self._sort_btn.setToolTip("排序: 名称↑")
         self._card_btn.setToolTip("切换为列表视图")
@@ -187,6 +199,7 @@ class FileSelectorLayout(QWidget):
         self._undo_btn.setToolTip("返回上一级")
         self._driver_btn.setToolTip("全部磁盘")
         self._arrow_btn.setToolTip("跳转路径")
+        self._clean_btn.setToolTip("清除缩略图")
 
         # 监听 viewport 和 file_list 自身的 resize（与旧 file_selector.py 一致）
         self._file_list.viewport().installEventFilter(self)
@@ -1202,6 +1215,178 @@ class FileSelectorLayout(QWidget):
             lambda *_: self._active_dialogs.remove(dialog)
             if dialog in self._active_dialogs else None
         )
+
+    # ── 缩略图生成 / 清除 ──────────────────────────────────────────────────
+
+    def _collect_thumbnail_targets(self) -> List[str]:
+        """收集缩略图生成目标：优先选中文件，无选中时取当前目录全部文件。
+
+        目录条目不参与收集；非媒体文件与已有缩略图的文件由
+        ``ThumbnailController.start_generation`` 内部过滤。
+
+        Returns:
+            List[str]: 候选文件路径列表。
+        """
+        selected = self._file_model.get_selected_files()
+        if selected:
+            return selected
+        paths: List[str] = []
+        model = self._file_model
+        for row in range(model.rowCount()):
+            idx = model.index(row, 0)
+            if model.data(idx, IsDirRole):
+                continue
+            file_path = model.data(idx, FilePathRole)
+            if file_path:
+                paths.append(file_path)
+        return paths
+
+    def _on_generate_thumbnails(self) -> None:
+        """「生成缩略图」按钮：收集目标并启动后台批量生成。
+
+        生成进行中再次点击：不再直接忽略，而是弹出「继续生成 /
+        取消任务」对话框——确认取消则中止当前任务（见
+        ``_cancel_generation``），继续则不打断当前生成流程。
+        """
+        if self._thumb_controller.is_busy:
+            progress_hint = (
+                f"（已生成 {self._gen_progress_text}）"
+                if self._gen_progress_text else ""
+            )
+            dialog = create_basic_dialog(
+                title="缩略图生成中",
+                message=f"正在生成缩略图{progress_hint}，是否取消当前任务？",
+                cancel_text="继续生成",
+                confirm_text="取消任务",
+            )
+            self._track_dialog(dialog)
+            dialog.finished.connect(
+                lambda result: self._cancel_generation() if result == 1 else None
+            )
+            return
+        paths = self._collect_thumbnail_targets()
+        self._enter_generation_busy()
+        # 空任务由 controller 同步 emit batch_finished(0,0)，
+        # 槽内恢复按钮并弹轻提示，随后才回到这里返回
+        if not self._thumb_controller.start_generation(paths):
+            self._set_thumbnail_buttons_busy(False)
+
+    def _enter_generation_busy(self) -> None:
+        """进入生成忙碌态：生成按钮切入进度模式，清除按钮禁用。
+
+        生成按钮保持可用——生成中再次点击可弹出「继续/取消」对话框；
+        进度模式下按钮自绘「轨道 + 填充 + spinner + 百分比」组合，
+        文案不再经 setText 更新（见 StyledButton.paintEvent 进度分支）。
+        """
+        self._gen_progress_text = ""
+        self._clean_btn.setEnabled(False)
+        self._gen_thumb_btn.set_progress(0.0)
+
+    def _cancel_generation(self) -> None:
+        """确认取消当前生成任务：释放互斥、恢复按钮并弹取消通知。
+
+        弹窗打开期间任务可能恰好已结束（``is_busy`` 为 False），此时
+        完成槽已恢复过按钮，这里仅做兜底恢复、不再重复弹提示。
+        """
+        if not self._thumb_controller.is_busy:
+            self._set_thumbnail_buttons_busy(False)
+            return
+        self._thumb_controller.cancel()  # 释放互斥；旧任务收尾事件被世代 token 丢弃
+        self._set_thumbnail_buttons_busy(False)
+        self._show_message_dialog("缩略图", "已取消缩略图生成任务")
+
+    def _on_clear_thumbnails(self) -> None:
+        """「清除缩略图」按钮：确认对话框后启动全量缩略图缓存清除。"""
+        if self._thumb_controller.is_busy:
+            return  # 防御：按钮已禁用，正常不可达
+        dialog = create_basic_dialog(
+            title="清除缩略图",
+            message="确定要清除全部缩略图缓存吗？此操作无法撤销。",
+            cancel_text="取消",
+            confirm_text="清除",
+        )
+        self._track_dialog(dialog)
+        dialog.finished.connect(
+            lambda result: self._start_clear_thumbnails() if result == 1 else None
+        )
+
+    def _start_clear_thumbnails(self) -> None:
+        """确认清除后启动清除任务：禁用按钮 + 后台执行。"""
+        if self._thumb_controller.is_busy:
+            return  # 确认框打开期间已有新任务启动，交给该任务的槽恢复按钮
+        self._set_thumbnail_buttons_busy(True, "清除中...")
+        if not self._thumb_controller.start_clear():
+            self._set_thumbnail_buttons_busy(False)
+
+    def _set_thumbnail_buttons_busy(self, busy: bool, text: str = "") -> None:
+        """切换生成 / 清除按钮的忙碌态（禁用 + 文案反馈）。
+
+        进入前先让生成按钮退出进度模式——进度条仅属于生成流程，
+        清除是另一忙碌状态；恢复场景（任务结束）同样需要退出进度
+        模式回到普通绘制。
+
+        Args:
+            busy: True 进入忙碌态（两按钮禁用）；False 恢复默认可用态。
+            text: 忙碌态下生成按钮的文案，恢复时回到默认文案。
+        """
+        self._gen_thumb_btn.set_progress(None)  # 退出进度模式（如在生成进度态）
+        self._gen_thumb_btn.setEnabled(not busy)
+        self._clean_btn.setEnabled(not busy)
+        self._gen_thumb_btn.setText(text if busy else "生成缩略图")
+
+    def _on_thumbnail_progress(self, done_count: int, total_count: int) -> None:
+        """生成进度槽：更新进度文案并驱动生成按钮进度模式。
+
+        进度模式下按钮自绘百分比文本，不再经 setText 更新文案；
+        ``_gen_progress_text`` 供生成中点击弹窗的提示语拼接。
+
+        Args:
+            done_count: 已完成文件数。
+            total_count: 总文件数。
+        """
+        self._gen_progress_text = f"{done_count}/{total_count}"
+        self._gen_thumb_btn.set_progress(
+            done_count / total_count if total_count > 0 else 0.0
+        )
+
+    def _on_thumbnails_ready(self, file_paths: List[str]) -> None:
+        """一批缩略图就绪槽：按路径失效图标缓存并回填刷新受影响行。
+
+        图片/视频类型的图标缓存键含文件路径（thumb 键），可按路径精确
+        失效——仅本批涉及文件重查磁盘，其余文件的图标缓存保持命中，
+        避免批量生成期间反复全清导致无关图标（含系统图标）反复重载。
+
+        Args:
+            file_paths: 本批就绪的文件路径列表。
+        """
+        if not file_paths:
+            return
+        icon_manager = FileIconManager()
+        for file_path in file_paths:
+            icon_manager.clear_cache(file_path)
+        self._file_model.emit_icon_changed(file_paths)
+
+    def _on_thumbnail_batch_finished(self, success_count: int, processed_count: int) -> None:
+        """生成完成槽：恢复按钮；空任务（无可生成项）时弹轻提示。"""
+        self._set_thumbnail_buttons_busy(False)
+        if processed_count == 0:
+            self._show_message_dialog("生成缩略图", "所选文件均已有缩略图或无媒体文件")
+
+    def _on_thumbnails_cleared(self, deleted_count: int) -> None:
+        """清除完成槽：全清图标缓存 + 全行刷新图标 + 弹结果通知。"""
+        FileIconManager().clear_cache()
+        model = self._file_model
+        if model.rowCount() > 0:
+            top = model.index(0, 0)
+            bottom = model.index(model.rowCount() - 1, 0)
+            model.dataChanged.emit(top, bottom, [IconPixmapRole])
+        self._set_thumbnail_buttons_busy(False)
+        self._show_message_dialog("清除缩略图", f"已清除 {deleted_count} 个缩略图缓存文件")
+
+    def _on_thumbnail_failed(self, message: str) -> None:
+        """后台任务异常槽：恢复按钮并弹错误提示（含异常消息）。"""
+        self._set_thumbnail_buttons_busy(False)
+        self._show_message_dialog("缩略图", f"缩略图任务失败：{message}")
 
     # ── 筛选 ──────────────────────────────────────────────────────────────
 
