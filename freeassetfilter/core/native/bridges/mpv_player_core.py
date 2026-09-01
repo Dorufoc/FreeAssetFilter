@@ -733,7 +733,9 @@ class MPVPlayerCore(QObject):
             "vo": "gpu-next",
             "hwdec": "auto-safe",
             "keep-open": "yes",
-            "idle": "once",
+            # 注意：捆绑的 libmpv 构建只接受 yes/once/no（不支持 always）。
+            # idle=yes 保持空闲常驻，防止 stop 命令清空播放列表后核心 SHUTDOWN 自杀。
+            "idle": "yes",
             "force-window": "no",
             "audio-display": "no",
             "input-cursor": "no",
@@ -805,10 +807,13 @@ class MPVPlayerCore(QObject):
                     value.encode('utf-8')
                 )
                 if result < 0:
-                    pass
+                    warning(
+                        f"MPV选项设置失败: {name}={value} "
+                        f"({self._dll_loader.get_error_string(result)})"
+                    )
             except (RuntimeError, AttributeError, OSError):
                 pass
-    
+
     def _observe_properties(self, mpv_handle: c_void_p):
         """设置属性观察（每个属性使用唯一 reply_userdata）"""
         properties = [
@@ -2846,6 +2851,23 @@ class MPVPlayerCore(QObject):
     def is_closing(self):
         """检查是否正在关闭"""
         return self._stop_event.is_set()
+
+    def is_operational(self) -> bool:
+        """检查核心是否可接受命令（worker 存活且未在关闭中）。
+
+        覆盖三类不可操作状态：worker 线程尚未启动或意外死亡
+        （GPU 崩溃、mpv SHUTDOWN 等）、stop_event 已置位、初始化未完成。
+
+        Returns:
+            bool: True 表示核心当前可接受命令
+        """
+        worker = self._worker_thread
+        return bool(
+            worker is not None
+            and worker.is_alive()
+            and not self._stop_event.is_set()
+            and self._initialized
+        )
 
     def get_queue_overflow_count(self) -> int:
         """获取事件队列溢出累计次数（诊断用）"""

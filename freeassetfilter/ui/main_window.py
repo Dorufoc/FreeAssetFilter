@@ -39,6 +39,7 @@ except ImportError:
 # from theme import tm 与从 freeassetfilter.ui.theme import tm 指向同一实例
 from theme import tm
 
+from components.custom_background import BACKGROUND_DIR_NAME, CustomImageBackgroundWidget
 from components.mica_material import MicaMaterial
 from components.mica_window import DEFAULT_MICA_CONFIG
 from components.styled_button import StyledButton
@@ -483,6 +484,9 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         """
         # 先初始化属性，防止父类初始化期间触发的事件访问未定义属性
         self._mica_background = None
+        self._custom_background = None
+        self._background_mode = "mica"
+        self._background_image_name = ""
         self._root = None
         self._content = None
         self._panels = []
@@ -506,6 +510,9 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 配置 Mica 参数（提前计算）：显式参数 > V2 保存值 > 项目默认
         cfg = DEFAULT_MICA_CONFIG
         mica_saved = self._load_mica_settings()
+        background_saved = self._load_background_settings()
+        self._background_mode = background_saved["mode"]
+        self._background_image_name = background_saved["image"]
         self._blur_radius = blur_radius if blur_radius is not None else mica_saved["blur_radius"]
         # 背景色仅作回退默认值；实际绘制由 mixin 按主题决定（深色纯黑/浅色纯白）
         self._surface_color = surface_color if surface_color is not None else cfg["surface_color"]
@@ -556,6 +563,32 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                     "contrast": float(saved.get("contrast", defaults["contrast"])),
                     "tint_opacity": int(saved.get("tint_opacity", defaults["tint_opacity"])),
                 }
+        except Exception:
+            pass
+        return defaults
+
+    @staticmethod
+    def _load_background_settings() -> dict:
+        """启动时从 SettingsManagerV2 恢复自定义背景设置（模式与图片文件名）。
+
+        读取 ``appearance.background`` 节点：mode 仅接受 "mica" / "image"
+        （非法值回退 "mica"），image 为持久化目录（data/backgrounds/）下的
+        文件名（空字符串表示未设置），统一转为 str。
+
+        Returns:
+            dict: {"mode": str, "image": str}
+        """
+        defaults = {"mode": "mica", "image": ""}
+        try:
+            from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+            v2 = SettingsManagerV2()
+            v2.load()
+            saved = v2.get("appearance.background", {})
+            if isinstance(saved, dict):
+                mode = saved.get("mode", "mica")
+                if mode not in ("mica", "image"):
+                    mode = "mica"
+                return {"mode": mode, "image": str(saved.get("image", ""))}
         except Exception:
             pass
         return defaults
@@ -623,14 +656,32 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         )
         self._mica_background.setAttribute(Qt.WA_TransparentForMouseEvents, True)
 
+        # 层 1.5：自定义图片背景层（image 模式下覆盖 Mica 层；鼠标穿透由组件自设）
+        self._custom_background = CustomImageBackgroundWidget(self._root)
+
         # 层 2：内容层（透明容器，叠在 Mica 之上）
         self._content = QWidget(self._root)
 
-        # 两层叠放在同一网格单元：Mica 在下、内容在上
+        # 三层叠放在同一网格单元（单元格内按添加顺序决定 z-order）：
+        # Mica 在最下、自定义图片居中、内容在最上
         overlay.addWidget(self._mica_background, 0, 0)
+        overlay.addWidget(self._custom_background, 0, 0)
         overlay.addWidget(self._content, 0, 0)
         self._mica_background.lower()
         self._content.raise_()
+
+        # 启动恢复：按持久化文件名拼绝对路径加载自定义背景；文件缺失时
+        # 组件内部回退纯色并记日志，不抛异常（见 CustomImageBackgroundWidget.set_image）
+        if self._background_image_name:
+            background_image_path = os.path.join(
+                get_app_data_path(), BACKGROUND_DIR_NAME, self._background_image_name
+            )
+            self._custom_background.set_image(background_image_path)
+
+        # 初始可见性：image 模式显示自定义层并隐藏 Mica 层，mica 模式反之
+        self._custom_background.setVisible(self._background_mode == "image")
+        if self._background_mode == "image":
+            self._mica_background.setVisible(False)
 
         # 创建主布局（内容层作为根容器）
         main_layout = QVBoxLayout(self._content)
@@ -946,6 +997,9 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 更新 Mica 背景（重烘焙 luminosity，背景色绘制期生效，复用已模糊 base）
         if self._mica_background is not None:
             self._mica_background.sync_theme()
+        # 同步自定义图片背景层（兜底色绘制期动态读取，仅需触发重绘）
+        if self._custom_background is not None:
+            self._custom_background.sync_theme()
         # 兜底层（root）也切到纯色背景，保证 GL 缺画时的底色与主题一致
         if self._root is not None:
             root_palette = self._root.palette()
@@ -1091,7 +1145,13 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 首帧提速：Mica 壁纸加载/高斯模糊/烘焙在 __init__ 阶段被延迟
         # （MicaMaterial lazy=True），这里在窗口显示后的第一轮事件循环里
         # 再执行。窗口先以纯色主题背景出现，模糊完成后无缝替换为 Mica。
-        if not getattr(self, '_mica_refresh_started', False) and self._mica_background is not None:
+        # image 模式启动时 Mica 层被隐藏，跳过壁纸后台刷新以节省资源
+        # （切回 mica 模式时由 set_background_mode 补刷）。
+        if (
+            not getattr(self, '_mica_refresh_started', False)
+            and self._mica_background is not None
+            and self._background_mode == "mica"
+        ):
             self._mica_refresh_started = True
             QTimer.singleShot(0, self._start_mica_refresh)
 
@@ -1230,6 +1290,48 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         """刷新背景（例如壁纸更改后）"""
         if self._mica_background is not None:
             self._mica_background.refresh_background()
+        if self._custom_background is not None:
+            self._custom_background.refresh_background()
+
+    def set_background_mode(self, mode: str) -> None:
+        """切换背景模式（mica / image）。
+
+        只切换背景层可见性、不销毁重建控件（两个背景层常驻，切换零构建成本）：
+
+        - "image"：显示自定义图片层、隐藏 Mica 层；
+        - "mica"：隐藏自定义图片层、显示 Mica 层；若本次会话尚未执行过
+          Mica 壁纸后台刷新（image 模式启动时 showEvent 跳过了调度），
+          这里补一次，避免 Mica 层停留在未烘焙的纯色状态。
+
+        Args:
+            mode: 目标模式："mica" 或 "image"；非法值记 warning 后忽略。
+        """
+        if mode not in ("mica", "image"):
+            warning(f"忽略非法背景模式: {mode!r}（仅支持 'mica' / 'image'）")
+            return
+        self._background_mode = mode
+        if mode == "image":
+            self._custom_background.setVisible(True)
+            self._mica_background.setVisible(False)
+        else:
+            self._custom_background.setVisible(False)
+            self._mica_background.setVisible(True)
+            # image 模式启动时 showEvent 跳过了 Mica 后台刷新，这里补一次
+            if not getattr(self, "_mica_refresh_started", False):
+                self._mica_refresh_started = True
+                self._start_mica_refresh()
+
+    def set_custom_background_image(self, path: str) -> bool:
+        """设置自定义背景图片（转发给背景层组件）。
+
+        Args:
+            path: 图片文件绝对路径。
+
+        Returns:
+            bool: 加载成功返回 True；路径无效或无法解码返回 False
+            （组件内部已记录日志并回退纯色兜底）。
+        """
+        return self._custom_background.set_image(path)
     
     # ---- 窗口事件处理 ----
     
@@ -1239,13 +1341,19 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 通知 MicaBackgroundWidget 刷新
         if self._mica_background is not None:
             self._mica_background.handle_window_resize()
-    
+        # 通知自定义图片背景层刷新（进入交互态，settle 后重建平滑缓存）
+        if self._custom_background is not None:
+            self._custom_background.handle_window_resize()
+
     def moveEvent(self, event: QMoveEvent) -> None:
         """窗口移动事件"""
         super().moveEvent(event)
         # 通知 MicaBackgroundWidget 刷新
         if self._mica_background is not None:
             self._mica_background.handle_window_move()
+        # 注意：不把移动事件转发给自定义图片层——图像固定于窗口客户区、
+        # 不随窗口屏幕位置偏移或重新裁切（这是与 Mica 按屏幕位置裁切的
+        # 核心差异），无需刷新；组件的 handle_window_move 亦为空操作。
 
 
 class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):

@@ -5,10 +5,11 @@
 from __future__ import annotations
 
 import copy
+import os
 
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QFrame, QLabel, QStackedWidget,
-    QApplication, QScrollArea,
+    QApplication, QScrollArea, QFileDialog,
 )
 from PySide6.QtCore import (
     Qt, Signal, QRectF, QPropertyAnimation, QEasingCurve, Property, QPoint,
@@ -26,9 +27,16 @@ from components.styled_toggle import StyledToggle
 from components.styled_button import StyledButton
 from components.styled_slider import StyledSlider
 from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
+from components.styled_segmented import StyledSegmented
+from components.styled_dialog import create_danger_dialog
 from components.styled_color_picker import _ColorPanel
+from components.custom_background import (
+    BACKGROUND_DIR_NAME,
+    import_custom_background_image,
+)
 from components.theme_transition_overlay import ThemeTransitionOverlay
 from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+from freeassetfilter.utils.path_utils import get_app_data_path
 
 
 # ── 预设主题色（参考旧 theme_editor.py） ──────────────────────────────
@@ -358,6 +366,10 @@ class AppearanceSettingsPage(QWidget):
         self._current_accent: str = ""  # tracked for save
         self._event_filter_installed: bool = False  # track event filter state
         self._event_filter_targets: list[QObject] = []
+        # 窗口背景状态（初值在 _build_ui 中从 V2 覆盖）
+        self._bg_mode: str = "mica"        # "mica" / "image"
+        self._bg_image_name: str = ""      # 持久化目录中的背景图片文件名
+        self._bg_updating: bool = False    # 编程式切换分段控件的守卫标志
         self._build_ui()
         self._load_v2_settings()
 
@@ -461,6 +473,59 @@ class AppearanceSettingsPage(QWidget):
             initial = max(spec["min"], min(spec["max"], initial))
             mica_rows.addWidget(self._build_mica_slider_row(key, spec, initial))
         layout.addLayout(mica_rows)
+
+        # ── 窗口背景（米卡效果 / 自定义图片） ──
+        saved_bg = v2.get("appearance.background", {}) or {}
+        saved_bg_mode = saved_bg.get("mode", "mica")
+        self._bg_mode = saved_bg_mode if saved_bg_mode in ("mica", "image") else "mica"
+        self._bg_image_name = str(saved_bg.get("image", "") or "")
+
+        bg_label = QLabel("窗口背景")
+        bg_label.setStyleSheet(
+            f"background: transparent; border: none;"
+            f"color: {tm.text.name()}; font-size: 13px; font-weight: 500;"
+        )
+        layout.addWidget(bg_label)
+        self._bg_label = bg_label
+
+        self._bg_segmented = StyledSegmented(variant="pill", size="sm")
+        self._bg_segmented.add_segment("米卡效果")
+        self._bg_segmented.add_segment("自定义图片")
+        self._bg_segmented.current_changed.connect(self._on_bg_segment_changed)
+        # 初始选中项来自 V2：image → 索引 1。守卫内编程式切换，
+        # 避免初始化期间触发 _on_bg_segment_changed 的应用/持久化逻辑。
+        self._bg_updating = True
+        try:
+            if self._bg_mode == "image":
+                self._bg_segmented.set_current_index(1, animate=False)
+        finally:
+            self._bg_updating = False
+        layout.addWidget(self._bg_segmented)
+
+        # 图片行（仅 image 模式可见）：当前文件名 + 「选择图片…」按钮
+        self._bg_image_row = QFrame()
+        self._bg_image_row.setStyleSheet("background: transparent; border: none;")
+        bg_row_layout = QHBoxLayout(self._bg_image_row)
+        bg_row_layout.setContentsMargins(0, 0, 0, 0)
+        bg_row_layout.setSpacing(12)
+
+        self._bg_file_label = QLabel(
+            self._bg_image_name if self._bg_image_name else "未设置"
+        )
+        self._bg_file_label.setStyleSheet(
+            f"background: transparent; border: none;"
+            f"color: {tm.text.name()}; font-size: 13px;"
+        )
+        bg_row_layout.addWidget(self._bg_file_label)
+        bg_row_layout.addStretch()
+
+        self._bg_choose_btn = StyledButton("选择图片…", variant="secondary", size="sm")
+        self._bg_choose_btn.clicked.connect(self._on_choose_bg_image_clicked)
+        bg_row_layout.addWidget(self._bg_choose_btn)
+        layout.addWidget(self._bg_image_row)
+
+        # 初始按模式设置图片行可见性与米卡滑动条可用性（不触发应用逻辑）
+        self._update_bg_ui_state()
 
         layout.addStretch()
 
@@ -585,6 +650,138 @@ class AppearanceSettingsPage(QWidget):
             v2.save()
         except Exception:
             pass
+
+    # ── 窗口背景：模式切换与图片导入 ─────────────────────────────────
+
+    def _on_bg_segment_changed(self, index: int) -> None:
+        """窗口背景分段控件切换处理。
+
+        Args:
+            index: 新选中的分段索引（0 = 米卡效果，1 = 自定义图片）。
+        """
+        if self._bg_updating:
+            return
+        if index == 1:
+            # 已有持久化图片且文件存在 → 直接切换；否则强制走选择流程
+            if self._bg_image_name and os.path.exists(self._bg_image_path()):
+                self._apply_background_settings("image")
+            else:
+                self._choose_bg_image(force=True)
+        else:
+            self._apply_background_settings("mica")
+
+    def _on_choose_bg_image_clicked(self) -> None:
+        """「选择图片…」按钮点击入口（非强制场景：取消/失败不回退分段）。"""
+        self._choose_bg_image(force=False)
+
+    def _choose_bg_image(self, force: bool = False) -> bool:
+        """打开文件对话框选择并导入背景图片。
+
+        Args:
+            force: True 表示由分段控件首次切入「自定义图片」触发的强制
+                选择场景——用户取消或导入失败时把分段控件编程式回退到
+                「米卡效果」；False 表示「选择图片…」按钮触发，取消或
+                失败时保持现状（不回退、不改设置）。
+
+        Returns:
+            bool: 成功导入并应用图片背景返回 True；用户取消或导入失败
+            返回 False。
+        """
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择背景图片", "",
+            "图片文件 (*.png *.jpg *.jpeg *.bmp *.webp *.gif);;所有文件 (*)",
+        )
+        if not path:
+            if force:
+                self._revert_bg_segment()
+            return False
+
+        dest = import_custom_background_image(path)
+        if dest is None:
+            create_danger_dialog(
+                title="导入失败",
+                message="背景图片导入失败，请确认所选文件为受支持的有效图片"
+                        "（PNG / JPG / JPEG / BMP / WEBP / GIF）。",
+            )
+            if force:
+                self._revert_bg_segment()
+            return False
+
+        self._bg_image_name = os.path.basename(dest)
+        self._apply_background_settings("image")
+        return True
+
+    def _revert_bg_segment(self) -> None:
+        """把分段控件编程式回退到「米卡效果」（守卫内切换不触发处理器）。"""
+        self._bg_updating = True
+        try:
+            self._bg_segmented.set_current_index(0)
+        finally:
+            self._bg_updating = False
+
+    def _bg_image_path(self) -> str:
+        """当前背景图片在持久化目录中的绝对路径。
+
+        Returns:
+            str: ``get_app_data_path()/backgrounds/<文件名>`` 拼接结果；
+            未设置文件名时返回目录路径（调用方需先判空）。
+        """
+        return os.path.join(
+            get_app_data_path(), BACKGROUND_DIR_NAME, self._bg_image_name
+        )
+
+    def _apply_background_settings(self, mode: str) -> None:
+        """切换窗口背景模式：应用到主窗口并持久化。
+
+        Args:
+            mode: 目标背景模式："mica" 或 "image"。
+        """
+        self._bg_mode = mode
+        mw = self._find_main_window()
+        if mw is not None:
+            if mode == "image":
+                if hasattr(mw, "set_custom_background_image"):
+                    mw.set_custom_background_image(self._bg_image_path())
+                if hasattr(mw, "set_background_mode"):
+                    mw.set_background_mode("image")
+            else:
+                if hasattr(mw, "set_background_mode"):
+                    mw.set_background_mode("mica")
+        self._save_background_settings()
+        self._update_bg_ui_state()
+
+    def _save_background_settings(self) -> None:
+        """将窗口背景设置持久化到 SettingsManagerV2（重启后恢复）。"""
+        try:
+            v2 = SettingsManagerV2()
+            v2.load()
+            v2.set("appearance.background", {
+                "mode": self._bg_mode,
+                "image": self._bg_image_name,
+            })
+            v2.save()
+        except Exception:
+            pass
+
+    def _update_bg_ui_state(self) -> None:
+        """按当前背景模式刷新图片行可见性与米卡控件可用性。"""
+        is_image = (self._bg_mode == "image")
+        self._bg_image_row.setVisible(is_image)
+        for slider in self._mica_sliders.values():
+            slider.setEnabled(not is_image)
+        # 数值标签带 QSS 颜色，需同步切换置灰色（禁用态不会自动变灰）
+        value_color = (
+            tm.alpha_of(tm.mid, 130).name() if is_image else tm.text.name()
+        )
+        for label in self._mica_value_labels.values():
+            label.setEnabled(not is_image)
+            label.setStyleSheet(
+                f"background: transparent; border: none;"
+                f"color: {value_color}; font-size: 13px; font-weight: 500;"
+            )
+        self._bg_file_label.setText(
+            self._bg_image_name if self._bg_image_name else "未设置"
+        )
 
     def _on_dark_toggle(self, checked: bool) -> None:
         """深色模式开关切换 — 仅记录状态，点击「应用」才全局生效。"""
@@ -767,6 +964,18 @@ class AppearanceSettingsPage(QWidget):
         self._dark_toggle.checked = tm.is_dark_theme()
         self._dark_toggle.toggled.connect(self._on_dark_toggle)
         # 由外部 _refresh_styles 统一刷新文字颜色
+        # 窗口背景区块：标题与文件名标签颜色跟随主题（覆盖统一刷新，
+        # 保证页面脱离 SettingsLayout 宿主单独使用时同样正确）
+        self._bg_label.setStyleSheet(
+            f"background: transparent; border: none;"
+            f"color: {tm.text.name()}; font-size: 13px; font-weight: 500;"
+        )
+        self._bg_file_label.setStyleSheet(
+            f"background: transparent; border: none;"
+            f"color: {tm.text.name()}; font-size: 13px;"
+        )
+        # 重新应用背景模式相关的可用性/置灰状态（米卡数值标签颜色）
+        self._update_bg_ui_state()
 
     def _load_v2_settings(self) -> None:
         """确保 UI 控件与 V2 保存的值一致（不修改 tm）。"""

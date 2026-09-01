@@ -12,6 +12,7 @@
 * 播放器音量/倍速存取
 * ``reset_to_defaults`` / ``get_colors_dict``
 * v2 兼容 smoke —— ``SettingsManagerV2`` 可导入且公开 API 一致
+* v2 ``appearance.background`` —— 默认值、旧文件平滑升级、写读往返一致
 
 所有测试均绑定 ``tmp_path`` 的临时设置文件，绝不触碰真实
 ``data/settings.json``（单例通过 reset_singletons autouse fixture 隔离）。
@@ -460,3 +461,67 @@ class TestSettingsManagerV2Compat:
         v2: SettingsManagerV2 = SettingsManagerV2(file_path=str(v2_file))
         assert v2.load()["version"] == 2
         assert v2.get("appearance.theme") == "dark"
+
+
+# =============================================================================
+# v2 appearance.background（自定义窗口背景）
+# =============================================================================
+class TestBackgroundSettings:
+    """V2 ``appearance.background`` 节点测试"""
+
+    def test_background_default_values(self, tmp_path: Path) -> None:
+        """新建实例 load() 后 background 为默认值（mode=mica、image 为空）。"""
+        v2_file: Path = tmp_path / "settings_v2_default.json"
+        v2: SettingsManagerV2 = SettingsManagerV2(file_path=str(v2_file))
+        v2.load()
+
+        assert v2.get("appearance.background") == {"mode": "mica", "image": ""}
+
+    def test_background_missing_in_old_file_upgrades_smoothly(
+        self, tmp_path: Path
+    ) -> None:
+        """旧版 V2 文件（无 background 键）加载后自动补默认值，已保存值正常读回。"""
+        old_file: Path = tmp_path / "settings_v2_old.json"
+        old_file.write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "appearance": {
+                        "theme": "light",
+                        "accent_color": "#FF0000",
+                        "mica": {
+                            "blur_radius": 120,
+                            "saturation": 3.0,
+                            "contrast": 1.2,
+                            "tint_opacity": 50,
+                        },
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        v2: SettingsManagerV2 = SettingsManagerV2(file_path=str(old_file))
+        v2.load()
+
+        # 旧文件缺 background 键：合并后补齐默认值。
+        assert v2.get("appearance.background") == {"mode": "mica", "image": ""}
+        # 旧文件已保存的值正常读回。
+        assert v2.get("appearance.theme") == "light"
+        assert v2.get("appearance.accent_color") == "#FF0000"
+        assert v2.get("appearance.mica.blur_radius") == 120
+        assert v2.get("appearance.mica.tint_opacity") == 50
+
+    def test_background_roundtrip_persists(self, tmp_path: Path) -> None:
+        """写读往返：set + save 后新实例 load 读回值与写入完全一致。"""
+        v2_file: Path = tmp_path / "settings_v2_roundtrip.json"
+        expected: Dict[str, Any] = {"mode": "image", "image": "custom_background.png"}
+
+        v2a: SettingsManagerV2 = SettingsManagerV2(file_path=str(v2_file))
+        v2a.load()
+        assert v2a.set("appearance.background", expected) is True
+        v2a.save()
+
+        v2b: SettingsManagerV2 = SettingsManagerV2(file_path=str(v2_file))
+        v2b.load()
+        assert v2b.get("appearance.background") == expected

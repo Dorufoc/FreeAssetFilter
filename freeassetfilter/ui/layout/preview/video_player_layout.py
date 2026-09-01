@@ -181,10 +181,43 @@ class VideoPlayerLayout(QWidget):
         """
         return self._audio_surface if self.is_audio_mode else self._video_surface
 
+    def _ensure_core_ready(self) -> bool:
+        """确保 MPV 核心可用，死亡时自动重建。
+
+        mpv 核心可能因 stop 命令触发 SHUTDOWN、GPU 驱动崩溃等原因死亡，
+        此时 MPVManager 单例中的核心对象虽在但所有命令都会失败。
+        检测到不可操作时调用 initialize() 重建 worker，并重置嵌入标记
+        （新 mpv 句柄的 wid 必须重新绑定）。
+
+        Returns:
+            bool: 核心当前可用（或已成功重建）
+        """
+        if self._mpv_manager is None:
+            return False
+        if self._mpv_manager.is_core_operational():
+            return True
+        warning("MPV 核心不可用，尝试重新初始化...")
+        # 核心重建后旧 wid 失效，标记需要重新嵌入
+        self._is_mpv_embedded = False
+        if not self._mpv_manager.initialize():
+            error("MPV 核心重新初始化失败")
+            return False
+        info("MPV 核心重新初始化成功")
+        return True
+
     def _load_video_file(self, file_path: str) -> bool:
         """加载视频文件并嵌入 MPV 窗口。"""
+        if not self._ensure_core_ready():
+            self._placeholder.setText("无法初始化播放器")
+            self._stack.setCurrentIndex(1)
+            return False
+
         if not self._is_mpv_embedded:
             self._embed_mpv_window()
+            if not self._is_mpv_embedded:
+                self._placeholder.setText("无法初始化播放器")
+                self._stack.setCurrentIndex(1)
+                return False
 
         if not self._mpv_manager:
             return False
@@ -197,6 +230,8 @@ class VideoPlayerLayout(QWidget):
             self._mpv_manager.play(component_id=self._component_id)
         else:
             self._placeholder.setText("无法加载文件")
+            # 切回 overlay 显示错误提示，避免停留在无渲染的黑色视频表面
+            self._stack.setCurrentIndex(1)
 
         return result
 
@@ -214,10 +249,10 @@ class VideoPlayerLayout(QWidget):
         if not self._mpv_manager:
             return False
 
-        if not self._mpv_manager.is_initialized():
-            if not self._mpv_manager.initialize():
-                error("无法初始化 MPV 播放器")
-                return False
+        if not self._ensure_core_ready():
+            self._placeholder.setText("无法初始化播放器")
+            self._stack.setCurrentIndex(1)
+            return False
 
         self._current_media_is_audio = True
         result = self._mpv_manager.load_file(
@@ -225,6 +260,7 @@ class VideoPlayerLayout(QWidget):
         )
         if not result:
             self._placeholder.setText("无法加载文件")
+            self._stack.setCurrentIndex(1)
             return False
 
         self._current_file = file_path

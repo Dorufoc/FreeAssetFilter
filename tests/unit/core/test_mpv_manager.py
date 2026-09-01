@@ -140,6 +140,71 @@ class TestSingletonAndDefaults:
         assert manager.is_initialized() is False
 
 
+class TestCoreOperational:
+    """is_core_operational：核心缺失/关闭中/核心不可操作三态判定。"""
+
+    def test_none_core_not_operational(self, qapp: object) -> None:
+        manager: MPVManager = MPVManager()
+        manager._mpv_core = None  # noqa: SLF001
+        assert manager.is_core_operational() is False
+
+    def test_shutting_down_not_operational(self, qapp: object) -> None:
+        manager: MPVManager = MPVManager()
+        fake: MagicMock = MagicMock()
+        fake.is_operational.return_value = True
+        manager._mpv_core = fake  # noqa: SLF001
+        manager._is_shutting_down = True  # noqa: SLF001
+        try:
+            assert manager.is_core_operational() is False
+        finally:
+            manager._is_shutting_down = False  # noqa: SLF001
+
+    def test_delegates_to_core(self, qapp: object) -> None:
+        manager: MPVManager = MPVManager()
+        fake: MagicMock = MagicMock()
+        fake.is_operational.return_value = False
+        manager._mpv_core = fake  # noqa: SLF001
+        assert manager.is_core_operational() is False
+        fake.is_operational.return_value = True
+        assert manager.is_core_operational() is True
+        manager._mpv_core = None  # noqa: SLF001
+
+    def test_initialize_connects_signals_once_across_reinit(
+        self, qapp: object, monkeypatch: MonkeyPatch
+    ) -> None:
+        """重复 _do_initialize（核心重建场景）信号连接幂等：连接不堆积。
+
+        幂等实现为 connect 前先 disconnect：每次 _do_initialize 对每个信号
+        恰好执行一次 disconnect + 一次 connect，两者次数恒相等 —— 真实 Qt
+        信号场景下重复初始化后槽仍只被连接一次，不会成倍发射
+        （回归：旧实现只 connect 不 disconnect，核心重建后信号被重复连接）。
+        """
+        manager: MPVManager = MPVManager()
+        monkeypatch.setattr(manager, "_register_luajit_veh", lambda: None)
+        monkeypatch.setattr(manager, "_unregister_luajit_veh", lambda: None)
+        fake: MagicMock = MagicMock()
+        fake.initialize.return_value = True
+        manager._mpv_core = fake  # noqa: SLF001
+
+        try:
+            assert manager._do_initialize() is True  # noqa: SLF001
+            assert manager._do_initialize() is True  # noqa: SLF001
+            for signal in (
+                fake.stateChanged,
+                fake.positionChanged,
+                fake.fileLoaded,
+                fake.fileEnded,
+                fake.errorOccurred,
+            ):
+                # 两次初始化 = 两次成对的 disconnect + connect（连接数恒为 1）
+                assert signal.connect.call_count == 2
+                assert signal.disconnect.call_count == 2
+        finally:
+            manager._mpv_core = None  # noqa: SLF001
+            if manager._operation_thread and manager._operation_thread.is_alive():  # noqa: SLF001
+                manager._stop_operation_thread(2.0)  # noqa: SLF001
+
+
 # =============================================================================
 # 真实分支（需 libmpv-2.dll）
 # =============================================================================
@@ -220,6 +285,68 @@ class TestRealMpvLifecycle:
         assert manager.initialize(timeout=15.0) is True
         _force_close(manager)
         process_qt_events(qapp, ms=50)
+
+    def test_real_stop_keeps_core_operational(
+        self, qapp: object, mpv_available: bool, tmp_path: object
+    ) -> None:
+        """stop 命令不再杀死核心（idle=yes 常驻空闲）：stop 后核心仍可操作、可继续加载。"""
+        if not mpv_available:
+            pytest.skip("libmpv-2.dll 不可用")
+        wav: str = _make_wav(tmp_path)
+        manager: MPVManager = MPVManager()
+
+        try:
+            assert manager.initialize(timeout=15.0) is True
+            process_qt_events(qapp, ms=50)
+            assert manager.load_file(wav, is_audio=True, timeout=30.0) is True
+            assert manager.play() is True
+            process_qt_events(qapp, ms=100)
+
+            # stop 后核心必须存活（回归：idle=once 时此处核心 SHUTDOWN 死亡）
+            assert manager.stop() is True
+            process_qt_events(qapp, ms=200)
+            assert manager.is_core_operational() is True
+
+            # 核心存活 → 无需重建即可继续加载第二个文件（多轮播放）
+            assert manager.load_file(wav, is_audio=True, timeout=30.0) is True
+            process_qt_events(qapp, ms=100)
+            assert manager.play() is True
+        finally:
+            _force_close(manager)
+            process_qt_events(qapp, ms=50)
+
+    def test_real_core_recovery_after_death(
+        self, qapp: object, mpv_available: bool, tmp_path: object
+    ) -> None:
+        """核心死亡（模拟 SHUTDOWN/崩溃）后：is_core_operational 为 False，initialize() 可重建并继续加载。"""
+        if not mpv_available:
+            pytest.skip("libmpv-2.dll 不可用")
+        wav: str = _make_wav(tmp_path)
+        manager: MPVManager = MPVManager()
+
+        try:
+            assert manager.initialize(timeout=15.0) is True
+            assert manager.load_file(wav, is_audio=True, timeout=30.0) is True
+            process_qt_events(qapp, ms=50)
+
+            # 模拟核心死亡：设置 stop_event 让 worker 退出
+            core = manager._mpv_core  # noqa: SLF001
+            core._stop_event.set()  # noqa: SLF001
+            for _ in range(100):  # 最多等 2s 让 worker 退出
+                if not core._worker_thread.is_alive():  # noqa: SLF001
+                    break
+                process_qt_events(qapp, ms=20)
+            assert not core._worker_thread.is_alive()  # noqa: SLF001
+            assert manager.is_core_operational() is False
+
+            # 自愈：initialize() 重建 worker 后核心可操作、可继续加载
+            assert manager.initialize(timeout=15.0) is True
+            assert manager.is_core_operational() is True
+            assert manager.load_file(wav, is_audio=True, timeout=30.0) is True
+            assert manager.play() is True
+        finally:
+            _force_close(manager)
+            process_qt_events(qapp, ms=50)
 
 
 # =============================================================================

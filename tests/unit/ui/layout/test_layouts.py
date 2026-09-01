@@ -26,6 +26,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from PySide6.QtCore import QEvent, QPointF, QObject, Qt, QThread, Signal
@@ -463,6 +464,83 @@ class TestVideoPlayerLayout:
             qapp.setProperty("faf_disable_animation", animation_enabled_original)
         layout.deleteLater()
 
+    def test_set_file_recovers_dead_core(
+        self, qapp: QApplication, heartbeat_manager: Any, tmp_path: object
+    ) -> None:
+        """核心死亡时 set_file 自动重建（initialize）并重新嵌入窗口后正常加载。"""
+        animation_enabled_original = qapp.property("faf_disable_animation")
+        try:
+            qapp.setProperty("faf_disable_animation", True)
+            media = tmp_path / "sample.mp4"
+            media.write_bytes(b"\x00" * 16)
+            layout = VideoPlayerLayout()
+
+            fake_manager: Any = MagicMock()
+            fake_manager.is_core_operational.return_value = False  # 核心已死
+            fake_manager.initialize.return_value = True
+            fake_manager.set_window_id.return_value = True
+            fake_manager.load_file.return_value = True
+            fake_manager.play.return_value = True
+            fake_manager.set_volume.return_value = True
+            fake_manager.set_speed.return_value = True
+            layout._mpv_manager = fake_manager  # noqa: SLF001
+
+            assert layout.set_file(str(media), is_audio=False) is True
+            fake_manager.initialize.assert_called_once()  # 自愈重建
+            fake_manager.set_window_id.assert_called_once()  # 重新嵌入
+            fake_manager.load_file.assert_called_once()
+            assert layout._stack.currentIndex() == 0  # noqa: SLF001
+        finally:
+            qapp.setProperty("faf_disable_animation", animation_enabled_original)
+        layout.deleteLater()
+
+    def test_load_failure_shows_overlay(
+        self, qapp: QApplication, heartbeat_manager: Any, tmp_path: object
+    ) -> None:
+        """load_file 失败时切回 overlay 显示错误（不再停留黑色视频表面）。"""
+        animation_enabled_original = qapp.property("faf_disable_animation")
+        try:
+            qapp.setProperty("faf_disable_animation", True)
+            media = tmp_path / "bad.mp4"
+            media.write_bytes(b"\x00" * 16)
+            layout = VideoPlayerLayout()
+
+            fake_manager: Any = MagicMock()
+            fake_manager.is_core_operational.return_value = True
+            fake_manager.set_window_id.return_value = True
+            fake_manager.load_file.return_value = False  # 加载失败
+            layout._mpv_manager = fake_manager  # noqa: SLF001
+
+            assert layout.set_file(str(media), is_audio=False) is False
+            assert layout._stack.currentIndex() == 1  # noqa: SLF001
+            assert "无法加载文件" in layout._placeholder.text()  # noqa: SLF001
+        finally:
+            qapp.setProperty("faf_disable_animation", animation_enabled_original)
+        layout.deleteLater()
+
+    def test_core_rebuild_failure_shows_overlay(
+        self, qapp: QApplication, heartbeat_manager: Any, tmp_path: object
+    ) -> None:
+        """核心重建失败时切回 overlay 显示"无法初始化播放器"。"""
+        animation_enabled_original = qapp.property("faf_disable_animation")
+        try:
+            qapp.setProperty("faf_disable_animation", True)
+            media = tmp_path / "dead.mp4"
+            media.write_bytes(b"\x00" * 16)
+            layout = VideoPlayerLayout()
+
+            fake_manager: Any = MagicMock()
+            fake_manager.is_core_operational.return_value = False
+            fake_manager.initialize.return_value = False  # 重建失败
+            layout._mpv_manager = fake_manager  # noqa: SLF001
+
+            assert layout.set_file(str(media), is_audio=False) is False
+            assert layout._stack.currentIndex() == 1  # noqa: SLF001
+            assert "无法初始化播放器" in layout._placeholder.text()  # noqa: SLF001
+        finally:
+            qapp.setProperty("faf_disable_animation", animation_enabled_original)
+        layout.deleteLater()
+
 
 # =============================================================================
 # ui.layout.preview.font_previewer_layout — FontLoadThread
@@ -720,4 +798,344 @@ class TestAppearanceSettingsPage:
         assert saved.get("appearance.mica.tint_opacity") == 40
         assert saved.get("appearance.mica.blur_radius") == 200
         assert saved.get("appearance.mica.contrast") == pytest.approx(1.5)
+        safe_teardown(page)
+
+    # ── 窗口背景区块（米卡效果 / 自定义图片） ─────────────────────
+
+    @staticmethod
+    def _make_fake_bg_main_window() -> Any:
+        """构造记录背景 API 调用顺序的假主窗口（无需真实 QWidget）。"""
+
+        class _FakeBgMainWindow:
+            """记录 set_background_mode / set_custom_background_image 调用。"""
+
+            def __init__(self) -> None:
+                self.mode_calls: list[str] = []
+                self.image_calls: list[str] = []
+
+            def set_background_mode(self, mode: str) -> None:
+                self.mode_calls.append(mode)
+
+            def set_custom_background_image(self, path: str) -> bool:
+                self.image_calls.append(path)
+                return True
+
+        return _FakeBgMainWindow()
+
+    @staticmethod
+    def _make_fake_file_dialog(result: tuple[str, str]) -> Any:
+        """构造 getOpenFileName 返回固定结果的假 QFileDialog。"""
+
+        class _FakeFileDialog:
+            """静态 getOpenFileName 返回预设 (path, filter) 元组。"""
+
+            @staticmethod
+            def getOpenFileName(*args: Any, **kwargs: Any) -> tuple[str, str]:
+                return result
+
+        return _FakeFileDialog
+
+    def test_background_default_mica_ui_state(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """默认（V2 无背景设置）：mica 模式——分段 0、图片行隐藏、滑动条可用。"""
+        import freeassetfilter.ui.layout.settings_layout as sl_mod
+        from freeassetfilter.core.managers.settings_manager_v2 import (
+            SettingsManagerV2,
+        )
+
+        tmp_file = str(tmp_path / "settings_v2.json")
+        monkeypatch.setattr(
+            sl_mod, "SettingsManagerV2", lambda *a, **k: SettingsManagerV2(tmp_file)
+        )
+
+        page = AppearanceSettingsPage()
+        assert page._bg_mode == "mica"
+        assert page._bg_image_name == ""
+        assert page._bg_segmented.current_index == 0
+        assert page._bg_image_row.isVisibleTo(page) is False
+        assert all(s.isEnabled() for s in page._mica_sliders.values())
+        assert all(l.isEnabled() for l in page._mica_value_labels.values())
+        assert page._bg_file_label.text() == "未设置"
+        safe_teardown(page)
+
+    def test_background_image_mode_loaded_from_v2(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """V2 保存 image 模式且文件存在：初始即 image UI 状态（不触发应用）。"""
+        import freeassetfilter.ui.layout.settings_layout as sl_mod
+        from freeassetfilter.core.managers.settings_manager_v2 import (
+            SettingsManagerV2,
+        )
+        from components.custom_background import BACKGROUND_DIR_NAME
+
+        tmp_file = str(tmp_path / "settings_v2.json")
+        v2 = SettingsManagerV2(tmp_file)
+        v2.load()
+        v2.set(
+            "appearance.background",
+            {"mode": "image", "image": "custom_background.png"},
+        )
+        v2.save()
+
+        bg_dir = tmp_path / BACKGROUND_DIR_NAME
+        bg_dir.mkdir()
+        pm = QPixmap(16, 16)
+        pm.fill(QColor("#336699"))
+        assert pm.save(str(bg_dir / "custom_background.png"), "PNG") is True
+
+        monkeypatch.setattr(
+            sl_mod, "SettingsManagerV2", lambda *a, **k: SettingsManagerV2(tmp_file)
+        )
+        monkeypatch.setattr(sl_mod, "get_app_data_path", lambda: str(tmp_path))
+
+        page = AppearanceSettingsPage()
+        assert page._bg_mode == "image"
+        assert page._bg_image_name == "custom_background.png"
+        assert page._bg_segmented.current_index == 1
+        assert page._bg_image_row.isVisibleTo(page) is True
+        assert all(not s.isEnabled() for s in page._mica_sliders.values())
+        assert all(not l.isEnabled() for l in page._mica_value_labels.values())
+        assert page._bg_file_label.text() == "custom_background.png"
+        safe_teardown(page)
+
+    def test_apply_background_settings_routes_and_saves(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """_apply_background_settings：先设图片再切模式；持久化并刷新 UI 状态。"""
+        import freeassetfilter.ui.layout.settings_layout as sl_mod
+        from freeassetfilter.core.managers.settings_manager_v2 import (
+            SettingsManagerV2,
+        )
+
+        tmp_file = str(tmp_path / "settings_v2.json")
+        monkeypatch.setattr(
+            sl_mod, "SettingsManagerV2", lambda *a, **k: SettingsManagerV2(tmp_file)
+        )
+        fake_mw = self._make_fake_bg_main_window()
+        monkeypatch.setattr(
+            sl_mod.AppearanceSettingsPage, "_find_main_window", lambda self: fake_mw
+        )
+        monkeypatch.setattr(sl_mod, "get_app_data_path", lambda: str(tmp_path))
+
+        page = AppearanceSettingsPage()
+        page._bg_image_name = "custom_background.png"
+
+        # image 模式：先 set_custom_background_image 再 set_background_mode
+        page._apply_background_settings("image")
+        expected_path = str(
+            tmp_path / "backgrounds" / "custom_background.png"
+        ).replace("/", "\\")
+        assert fake_mw.image_calls == [expected_path]
+        assert fake_mw.mode_calls == ["image"]
+        assert page._bg_image_row.isVisibleTo(page) is True
+        assert all(not s.isEnabled() for s in page._mica_sliders.values())
+
+        saved = SettingsManagerV2(tmp_file)
+        saved.load()
+        assert saved.get("appearance.background") == {
+            "mode": "image", "image": "custom_background.png",
+        }
+
+        # mica 模式：仅 set_background_mode，不动图片接口
+        page._apply_background_settings("mica")
+        assert fake_mw.mode_calls == ["image", "mica"]
+        assert len(fake_mw.image_calls) == 1
+        assert page._bg_image_row.isVisibleTo(page) is False
+        assert all(s.isEnabled() for s in page._mica_sliders.values())
+        saved = SettingsManagerV2(tmp_file)
+        saved.load()
+        assert saved.get("appearance.background.mode") == "mica"
+        safe_teardown(page)
+
+    def test_bg_segment_switch_with_existing_image(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """已有持久化图片时切换分段：直接应用 image 模式（不经文件对话框）。"""
+        import freeassetfilter.ui.layout.settings_layout as sl_mod
+        from freeassetfilter.core.managers.settings_manager_v2 import (
+            SettingsManagerV2,
+        )
+        from components.custom_background import BACKGROUND_DIR_NAME
+
+        tmp_file = str(tmp_path / "settings_v2.json")
+        bg_dir = tmp_path / BACKGROUND_DIR_NAME
+        bg_dir.mkdir()
+        pm = QPixmap(16, 16)
+        pm.fill(QColor("#336699"))
+        assert pm.save(str(bg_dir / "custom_background.png"), "PNG") is True
+
+        monkeypatch.setattr(
+            sl_mod, "SettingsManagerV2", lambda *a, **k: SettingsManagerV2(tmp_file)
+        )
+        monkeypatch.setattr(sl_mod, "get_app_data_path", lambda: str(tmp_path))
+        fake_mw = self._make_fake_bg_main_window()
+        monkeypatch.setattr(
+            sl_mod.AppearanceSettingsPage, "_find_main_window", lambda self: fake_mw
+        )
+
+        page = AppearanceSettingsPage()
+        page._bg_image_name = "custom_background.png"
+        # 模拟用户点击第二个分段（触发 current_changed → 处理器）
+        page._bg_segmented.set_current_index(1)
+
+        assert page._bg_mode == "image"
+        assert len(fake_mw.image_calls) == 1
+        assert fake_mw.mode_calls == ["image"]
+        saved = SettingsManagerV2(tmp_file)
+        saved.load()
+        assert saved.get("appearance.background.mode") == "image"
+        assert saved.get("appearance.background.image") == "custom_background.png"
+        safe_teardown(page)
+
+    def test_bg_segment_switch_cancel_reverts(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """无图片时切换分段后取消选择：分段回退、设置不变、不调用主窗口。"""
+        import freeassetfilter.ui.layout.settings_layout as sl_mod
+        from freeassetfilter.core.managers.settings_manager_v2 import (
+            SettingsManagerV2,
+        )
+
+        tmp_file = str(tmp_path / "settings_v2.json")
+        monkeypatch.setattr(
+            sl_mod, "SettingsManagerV2", lambda *a, **k: SettingsManagerV2(tmp_file)
+        )
+        monkeypatch.setattr(sl_mod, "get_app_data_path", lambda: str(tmp_path))
+        monkeypatch.setattr(
+            sl_mod, "QFileDialog", self._make_fake_file_dialog(("", ""))
+        )
+        fake_mw = self._make_fake_bg_main_window()
+        monkeypatch.setattr(
+            sl_mod.AppearanceSettingsPage, "_find_main_window", lambda self: fake_mw
+        )
+
+        page = AppearanceSettingsPage()
+        page._bg_segmented.set_current_index(1)
+
+        # 取消：分段编程式回退到 0，模式与持久化设置保持默认（未被写入）
+        assert page._bg_segmented.current_index == 0
+        assert page._bg_mode == "mica"
+        assert fake_mw.mode_calls == []
+        assert fake_mw.image_calls == []
+        saved = SettingsManagerV2(tmp_file)
+        saved.load()
+        assert saved.get("appearance.background") == {"mode": "mica", "image": ""}
+        safe_teardown(page)
+
+    def test_bg_segment_switch_import_failure_shows_dialog(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """导入失败：弹 danger 对话框、分段回退、不切换不改设置。"""
+        import freeassetfilter.ui.layout.settings_layout as sl_mod
+        from freeassetfilter.core.managers.settings_manager_v2 import (
+            SettingsManagerV2,
+        )
+
+        tmp_file = str(tmp_path / "settings_v2.json")
+        monkeypatch.setattr(
+            sl_mod, "SettingsManagerV2", lambda *a, **k: SettingsManagerV2(tmp_file)
+        )
+        monkeypatch.setattr(sl_mod, "get_app_data_path", lambda: str(tmp_path))
+        monkeypatch.setattr(
+            sl_mod, "QFileDialog",
+            self._make_fake_file_dialog(("D:/fake/pic.png", "图片文件 (*.png)")),
+        )
+        monkeypatch.setattr(
+            sl_mod, "import_custom_background_image", lambda path: None
+        )
+        dialog_calls: list[dict] = []
+        monkeypatch.setattr(
+            sl_mod, "create_danger_dialog",
+            lambda **kwargs: dialog_calls.append(kwargs),
+        )
+        fake_mw = self._make_fake_bg_main_window()
+        monkeypatch.setattr(
+            sl_mod.AppearanceSettingsPage, "_find_main_window", lambda self: fake_mw
+        )
+
+        page = AppearanceSettingsPage()
+        page._bg_segmented.set_current_index(1)
+
+        assert len(dialog_calls) == 1
+        assert dialog_calls[0]["title"] == "导入失败"
+        assert page._bg_segmented.current_index == 0
+        assert page._bg_mode == "mica"
+        assert fake_mw.mode_calls == []
+        saved = SettingsManagerV2(tmp_file)
+        saved.load()
+        assert saved.get("appearance.background") == {"mode": "mica", "image": ""}
+        safe_teardown(page)
+
+    def test_choose_bg_image_success_via_button(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """按钮点击选择图片成功：更新文件名、应用并持久化 image 模式。"""
+        import freeassetfilter.ui.layout.settings_layout as sl_mod
+        from freeassetfilter.core.managers.settings_manager_v2 import (
+            SettingsManagerV2,
+        )
+
+        tmp_file = str(tmp_path / "settings_v2.json")
+        monkeypatch.setattr(
+            sl_mod, "SettingsManagerV2", lambda *a, **k: SettingsManagerV2(tmp_file)
+        )
+        monkeypatch.setattr(sl_mod, "get_app_data_path", lambda: str(tmp_path))
+        monkeypatch.setattr(
+            sl_mod, "QFileDialog",
+            self._make_fake_file_dialog(("D:/fake/pic.png", "图片文件 (*.png)")),
+        )
+        dest = str(tmp_path / "backgrounds" / "custom_background.png")
+        monkeypatch.setattr(
+            sl_mod, "import_custom_background_image", lambda path: dest
+        )
+        fake_mw = self._make_fake_bg_main_window()
+        monkeypatch.setattr(
+            sl_mod.AppearanceSettingsPage, "_find_main_window", lambda self: fake_mw
+        )
+
+        page = AppearanceSettingsPage()
+        # 模拟按钮点击（clicked → _on_choose_bg_image_clicked → 非强制选择）
+        page._bg_choose_btn.click()
+
+        assert page._bg_image_name == "custom_background.png"
+        assert page._bg_file_label.text() == "custom_background.png"
+        assert page._bg_mode == "image"
+        assert page._bg_segmented.current_index == 0  # 按钮入口不切分段
+        assert fake_mw.image_calls == [dest]
+        assert fake_mw.mode_calls == ["image"]
+        saved = SettingsManagerV2(tmp_file)
+        saved.load()
+        assert saved.get("appearance.background") == {
+            "mode": "image", "image": "custom_background.png",
+        }
+        safe_teardown(page)
+
+    def test_update_bg_ui_state_toggles_mica_widgets(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """_update_bg_ui_state：image 模式置灰数值标签，mica 模式恢复。"""
+        import freeassetfilter.ui.layout.settings_layout as sl_mod
+        from freeassetfilter.core.managers.settings_manager_v2 import (
+            SettingsManagerV2,
+        )
+
+        tmp_file = str(tmp_path / "settings_v2.json")
+        monkeypatch.setattr(
+            sl_mod, "SettingsManagerV2", lambda *a, **k: SettingsManagerV2(tmp_file)
+        )
+
+        page = AppearanceSettingsPage()
+        normal_color = page._mica_value_labels["blur_radius"].styleSheet()
+
+        page._bg_mode = "image"
+        page._update_bg_ui_state()
+        assert all(not l.isEnabled() for l in page._mica_value_labels.values())
+        dimmed_color = page._mica_value_labels["blur_radius"].styleSheet()
+        assert dimmed_color != normal_color
+
+        page._bg_mode = "mica"
+        page._update_bg_ui_state()
+        assert all(l.isEnabled() for l in page._mica_value_labels.values())
+        assert page._mica_value_labels["blur_radius"].styleSheet() == normal_color
         safe_teardown(page)

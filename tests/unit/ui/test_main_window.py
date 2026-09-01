@@ -25,7 +25,7 @@ from typing import Any
 
 import pytest
 from PySide6.QtCore import QEvent, QPointF, Qt
-from PySide6.QtGui import QCloseEvent, QMouseEvent, QPixmap, QShowEvent
+from PySide6.QtGui import QCloseEvent, QColor, QMouseEvent, QPixmap, QShowEvent
 from PySide6.QtWidgets import QApplication, QWidget
 
 # main_window.py 自带 _ui_root bootstrap（第 22-30 行），
@@ -44,6 +44,24 @@ from freeassetfilter.ui.main_window import (  # noqa: E402
 )
 
 pytestmark = pytest.mark.unit
+
+
+class _StubMicaBackground(QWidget):
+    """make_mica_background 的 QWidget 替身。
+
+    带与真实 Mica 背景层一致的窗口事件入口（no-op）：
+    ``MainWindow.resizeEvent/moveEvent`` 会把窗口事件转发到 mica 层，
+    个别用例（如 ``grab()`` 触发布局与窗口事件链）会走到这些入口；
+    普通 ``QWidget`` 缺少它们会 AttributeError。``_mica`` 属性刻意
+    不存在——``_start_mica_refresh`` 内部以 ``getattr`` None 守卫跳过
+    后台刷新（见 ``_load_mica_settings`` 同款防御）。
+    """
+
+    def handle_window_resize(self) -> None:
+        """空实现：替身无需响应窗口缩放。"""
+
+    def handle_window_move(self) -> None:
+        """空实现：替身无需响应窗口移动。"""
 
 
 @pytest.fixture(autouse=True)
@@ -65,6 +83,9 @@ def _block_deferred_panel_build(monkeypatch: pytest.MonkeyPatch) -> None:
     - 仅替换 ``make_mica_background`` → 普通 ``QWidget`` 即零 failure 通过
       本文件 + workers 组合（25 passed × 5，含 drive_list/timeout 线程测试）。
 
+    替身带 no-op 的 ``handle_window_resize``/``handle_window_move``
+    （``_StubMicaBackground``）：MainWindow 的事件转发路径依赖这两个入口。
+
     本文件断言不依赖真实 Mica 视觉效果；``TestMicaBackgroundWidgetCpu/GL``
     直接构造真实 Mica 的测试不受本替换影响（未走 ``make_mica_background``）。
 
@@ -74,7 +95,7 @@ def _block_deferred_panel_build(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(
         "freeassetfilter.ui.main_window.make_mica_background",
-        lambda *a, **k: QWidget(),
+        lambda *a, **k: _StubMicaBackground(),
     )
 
 
@@ -200,6 +221,140 @@ class TestMainWindowClose:
         window._build_panel("right")
         window.closeEvent(QCloseEvent())
         window.deleteLater()
+        qapp.processEvents()
+
+
+class TestBackgroundMode:
+    """自定义窗口背景：启动恢复 / 模式切换 / 图片设置 / showEvent 门控。
+
+    所有用例通过 monkeypatch ``MainWindow._load_background_settings`` 控制
+    启动配置，与用户真实 data/settings_v2.json 完全隔离；沿用本文件模式：
+    qapp fixture、不调用 show()、每例结束 deleteLater + processEvents。
+    """
+
+    @staticmethod
+    def _patch_background_settings(
+        monkeypatch: pytest.MonkeyPatch, config: dict
+    ) -> None:
+        """把 MainWindow._load_background_settings 替换为返回固定配置。
+
+        Args:
+            monkeypatch: pytest monkeypatch 夹具。
+            config: 固定返回的背景配置（含 mode / image 键）。
+        """
+        monkeypatch.setattr(
+            MainWindow, "_load_background_settings", staticmethod(lambda: config)
+        )
+
+    def test_default_mica_mode(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """默认 mica 模式：custom 层隐藏、mica 层可见。"""
+        self._patch_background_settings(monkeypatch, {"mode": "mica", "image": ""})
+        window = MainWindow()
+        assert window._background_mode == "mica"
+        assert window._background_image_name == ""
+        assert window._custom_background.isHidden() is True
+        assert window._mica_background.isHidden() is False
+        window.deleteLater()
+        qapp.processEvents()
+
+    def test_startup_restore_image_mode_missing_file(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """image 模式启动恢复：图片缺失时纯色兜底，不抛异常。"""
+        self._patch_background_settings(
+            monkeypatch, {"mode": "image", "image": "missing.png"}
+        )
+        window = MainWindow()
+        assert window._background_mode == "image"
+        # custom 未被显式隐藏（image 模式可见），mica 被隐藏
+        assert window._custom_background.isHidden() is False
+        assert window._mica_background.isHidden() is True
+        # 图片文件不存在：set_image 失败 → 无图（纯色兜底路径）
+        assert window._custom_background.has_image() is False
+        window.deleteLater()
+        qapp.processEvents()
+
+    def test_set_background_mode_switch(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """运行时模式切换：翻转层可见性，切回 mica 时补调度后台刷新。"""
+        self._patch_background_settings(monkeypatch, {"mode": "mica", "image": ""})
+        window = MainWindow()
+        assert getattr(window, "_mica_refresh_started", False) is False
+
+        window.set_background_mode("image")
+        assert window._background_mode == "image"
+        assert window._custom_background.isHidden() is False
+        assert window._mica_background.isHidden() is True
+
+        window.set_background_mode("mica")
+        assert window._background_mode == "mica"
+        assert window._custom_background.isHidden() is True
+        assert window._mica_background.isHidden() is False
+        # image 模式启动跳过了 Mica 后台刷新，切回 mica 时补刷标志已置位
+        assert window._mica_refresh_started is True
+
+        # 非法模式被忽略：状态不被破坏
+        window.set_background_mode("bogus")
+        assert window._background_mode == "mica"
+        window.deleteLater()
+        qapp.processEvents()
+
+    def test_set_custom_background_image(
+        self,
+        qapp: QApplication,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """set_custom_background_image：成功/失败路径与绘制安全。"""
+        self._patch_background_settings(monkeypatch, {"mode": "mica", "image": ""})
+        window = MainWindow()
+
+        # 生成临时 png（64x32 填色）
+        pm = QPixmap(64, 32)
+        pm.fill(QColor(120, 40, 200))
+        image_path = str(tmp_path / "bg_test.png")
+        assert pm.save(image_path, "PNG")
+
+        assert window.set_custom_background_image(image_path) is True
+        assert window._custom_background.has_image() is True
+        assert window._custom_background.image_path == image_path
+
+        # 不存在路径：返回 False（组件内部清空并回退纯色兜底）
+        assert window.set_custom_background_image(str(tmp_path / "nope.png")) is False
+        assert window._custom_background.has_image() is False
+
+        # 绘制不崩溃：grab 强制执行 paintEvent，非 null
+        grabbed = window._custom_background.grab()
+        assert not grabbed.isNull()
+        window.deleteLater()
+        qapp.processEvents()
+
+    def test_show_event_gating(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """showEvent 门控：image 模式跳过 Mica 刷新调度，mica 模式才调度。"""
+        # 防止 100ms 备份恢复定时器访问未构建的 _file_pool（None）
+        monkeypatch.setattr(
+            MainWindow, "_check_and_restore_backup", lambda self: None
+        )
+
+        # image 模式：showEvent 后不调度 Mica 后台刷新
+        self._patch_background_settings(monkeypatch, {"mode": "image", "image": ""})
+        window = MainWindow()
+        window.showEvent(QShowEvent())
+        assert getattr(window, "_mica_refresh_started", False) is False
+        window.deleteLater()
+        qapp.processEvents()
+
+        # mica 模式：showEvent 后调度（置位标志）
+        self._patch_background_settings(monkeypatch, {"mode": "mica", "image": ""})
+        window2 = MainWindow()
+        window2.showEvent(QShowEvent())
+        assert window2._mica_refresh_started is True
+        window2.deleteLater()
         qapp.processEvents()
 
 

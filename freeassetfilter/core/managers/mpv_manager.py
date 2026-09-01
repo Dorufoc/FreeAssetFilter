@@ -559,16 +559,23 @@ class MPVManager(QObject):
             error("MPV核心为空")
             return False
 
-        # 连接信号
-        self._mpv_core.stateChanged.connect(self._on_state_changed)
-        self._mpv_core.positionChanged.connect(self._on_position_changed)
-        self._mpv_core.durationChanged.connect(self._on_duration_changed)
-        self._mpv_core.volumeChanged.connect(self._on_volume_changed)
-        self._mpv_core.speedChanged.connect(self._on_speed_changed)
-        self._mpv_core.mutedChanged.connect(self._on_muted_changed)
-        self._mpv_core.fileLoaded.connect(self._on_file_loaded)
-        self._mpv_core.fileEnded.connect(self._on_file_ended)
-        self._mpv_core.errorOccurred.connect(self._on_error_occurred)
+        # 连接信号（幂等：核心重建恢复时先断开旧连接，避免重复发射）
+        for signal, slot in (
+            (self._mpv_core.stateChanged, self._on_state_changed),
+            (self._mpv_core.positionChanged, self._on_position_changed),
+            (self._mpv_core.durationChanged, self._on_duration_changed),
+            (self._mpv_core.volumeChanged, self._on_volume_changed),
+            (self._mpv_core.speedChanged, self._on_speed_changed),
+            (self._mpv_core.mutedChanged, self._on_muted_changed),
+            (self._mpv_core.fileLoaded, self._on_file_loaded),
+            (self._mpv_core.fileEnded, self._on_file_ended),
+            (self._mpv_core.errorOccurred, self._on_error_occurred),
+        ):
+            try:
+                signal.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
+            signal.connect(slot)
 
         # 注册 LuaJIT VEH 处理器（在 mpv 初始化之前，确保最后一个注册）
         self._register_luajit_veh()
@@ -2312,6 +2319,20 @@ class MPVManager(QObject):
             是否已初始化
         """
         return self._mpv_core is not None
+
+    def is_core_operational(self) -> bool:
+        """检查 MPV 核心是否可操作（可接受命令）。
+
+        与 :meth:`is_initialized` 不同：核心对象存在但 worker 线程已死亡
+        （如 mpv SHUTDOWN、GPU 驱动崩溃）时本方法返回 False，
+        供 UI 层在加载文件前判断是否需要重建核心。
+
+        Returns:
+            bool: True 表示核心当前可接受命令
+        """
+        if self._mpv_core is None or self._is_shutting_down:
+            return False
+        return self._mpv_core.is_operational()
 
     def get_position_direct(self) -> Optional[float]:
         """

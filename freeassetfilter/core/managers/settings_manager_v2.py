@@ -527,6 +527,11 @@ DEFAULT_SETTINGS_V2: Dict[str, Any] = {
             "contrast": 1.5,       # 背景色对比度倍率（1.0 = 原始）
             "tint_opacity": 70,    # 叠加层透明度（%，0-100）
         },
+        # 自定义窗口背景（设置窗口「外观」页「窗口背景」区块）
+        "background": {
+            "mode": "mica",   # 背景模式："mica"（米卡效果） | "image"（自定义图片）
+            "image": "",      # 自定义图片文件名（位于 data/backgrounds/ 下，空字符串 = 未设置）
+        },
     },
 }
 
