@@ -394,6 +394,32 @@ class TestSettingsManagerV2Compat:
         assert hasattr(v2_module, "SettingsManagerV2")
         assert hasattr(v2_module, "DEFAULT_SETTINGS_V2")
 
+    def test_v2_default_mica_params_and_merge(self, tmp_path: Path) -> None:
+        """V2 默认树含 appearance.mica 三参数；旧文件加载后自动补默认值。"""
+        from freeassetfilter.core.managers.settings_manager_v2 import (
+            DEFAULT_SETTINGS_V2,
+        )
+
+        mica = DEFAULT_SETTINGS_V2["appearance"]["mica"]
+        assert mica["blur_radius"] == 200
+        assert mica["saturation"] == 4.5
+        assert mica["contrast"] == 1.5
+        assert mica["tint_opacity"] == 70
+
+        # 旧版 settings_v2.json（无 mica 键）合并后自动补齐默认值
+        old = {
+            "version": 2,
+            "appearance": {"theme": "dark", "accent_color": "#007AFF"},
+        }
+        old_file = tmp_path / "settings_v2.json"
+        old_file.write_text(json.dumps(old), encoding="utf-8")
+        v2 = SettingsManagerV2(str(old_file))
+        v2.load()
+        assert v2.get("appearance.mica.blur_radius") == 200
+        assert v2.get("appearance.mica.saturation") == 4.5
+        assert v2.get("appearance.mica.contrast") == 1.5
+        assert v2.get("appearance.mica.tint_opacity") == 70
+
     def test_v2_public_api_consistent_with_v1(self) -> None:
         """V1 与 V2 的公开读写 API 面一致（
 

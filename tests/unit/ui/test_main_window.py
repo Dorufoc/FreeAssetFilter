@@ -25,7 +25,7 @@ from typing import Any
 
 import pytest
 from PySide6.QtCore import QEvent, QPointF, Qt
-from PySide6.QtGui import QCloseEvent, QColor, QMouseEvent, QPixmap, QShowEvent
+from PySide6.QtGui import QCloseEvent, QMouseEvent, QPixmap, QShowEvent
 from PySide6.QtWidgets import QApplication, QWidget
 
 # main_window.py 自带 _ui_root bootstrap（第 22-30 行），
@@ -229,19 +229,65 @@ class TestMicaBackgroundWidgetCpu:
         bg.deleteLater()
 
     def test_sync_theme_and_refresh(self, qapp: QApplication) -> None:
-        """主题同步与背景刷新切换 tint/luminosity。"""
+        """主题同步与背景刷新切换纯色背景/luminosity。
+
+        背景为不透明纯色，随主题切换：
+        深色 → 纯黑 #000000，浅色 → 纯白 #FFFFFF（不再有灰色调 tint）。
+        """
         bg = MicaBackgroundWidgetCpu()
         bg.sync_theme()
-        assert bg._tint_color in ("#202020B4", "#FFFFFFB4")
+        assert bg._surface_color in ("#000000", "#FFFFFF")
+        assert len(bg._surface_color) == 7  # 不透明纯色（无 alpha 通道）
         bg.refresh_background()
         bg.deleteLater()
 
-    def test_parse_tint(self) -> None:
-        """#RRGGBBAA 解析为 QColor；非法值回落默认色。"""
-        color = MicaBackgroundWidgetCpu._parse_tint("#102030AA")
-        assert color.alpha() == 0xAA
-        fallback = MicaBackgroundWidgetCpu._parse_tint("garbage")
-        assert fallback == QColor(32, 32, 32, 160)
+    def test_apply_mica_parameters(self, qapp: QApplication, monkeypatch) -> None:
+        """滑动条实时预览入口：参数透传到 mixin 与 MicaMaterial。
+
+        置空壁纸路径禁用后台刷新线程（refresh_async 直接返回），
+        聚焦参数传递与壁纸缓存失效逻辑，避免测试中终止在途线程。
+        注意：main_window 经 ui 短路径导入了 components.mica_material，
+        与包路径 freeassetfilter.ui.components.mica_material 是两份模块
+        实例，必须按材质对象实际所属模块打补丁才生效。
+        """
+        import sys as _sys
+
+        bg = MicaBackgroundWidgetCpu(tint_opacity=50)
+        mica_material_mod = _sys.modules[type(bg._mica).__module__]
+        monkeypatch.setattr(mica_material_mod, "_get_wallpaper_path", lambda: "")
+        assert bg._tint_opacity == 50
+
+        bg.apply_mica_parameters(
+            blur_radius=120, saturation=2.0, contrast=1.0, tint_opacity=30,
+        )
+        assert bg._blur_radius == 120
+        assert bg._saturation == 2.0
+        assert bg._contrast == 1.0
+        assert bg._tint_opacity == 30
+        assert bg._mica._blur_radius == 120
+        assert bg._mica._saturation == 2.0
+        assert bg._mica._contrast == 1.0
+        assert bg._mica._overlay_opacity == pytest.approx(0.3)
+
+        # 仅叠加层透明度变化：绘制期生效，不失效壁纸缓存（无需重烘焙/重建）
+        bg._mica._wallpaper_path = "cached"
+        bg.apply_mica_parameters(tint_opacity=80)
+        assert bg._mica._wallpaper_path == "cached"
+        assert bg._mica._overlay_opacity == pytest.approx(0.8)
+
+        # 模糊半径变化：壁纸缓存失效（强制后台重算）
+        bg.apply_mica_parameters(blur_radius=300)
+        assert bg._mica._wallpaper_path == ""
+        assert bg._mica._blur_radius == 300
+
+        # 对比度变化：同样失效壁纸缓存（对比度参与增强+模糊管线）
+        bg.apply_mica_parameters(contrast=2.0)
+        assert bg._mica._wallpaper_path == ""
+        assert bg._mica._contrast == 2.0
+
+        bg._mica.dispose()
+        bg.deleteLater()
+        qapp.processEvents()
 
 
 class TestMicaBackgroundWidgetGL:

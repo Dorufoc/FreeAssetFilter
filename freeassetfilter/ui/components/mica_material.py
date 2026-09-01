@@ -52,6 +52,15 @@ REFRESH_MAX_RETRIES = 2
 # 重试退避延迟基数（毫秒），第 N 次重试延迟 = REFRESH_RETRY_DELAY_MS * N。
 REFRESH_RETRY_DELAY_MS = 500
 
+# 180° 色相偏移矩阵（CSS hue-rotate(180deg)，θ=180°: cosθ=-1, sinθ=0）。
+# 深色模式负片叠加管线最后一步对整张合成图应用，恢复负片反转的色相。
+# 使用纯元组存储（本模块惰性导入 numpy），在烘焙时经 np.asarray 转换。
+HUE_ROTATE_180_MATRIX = (
+    (-0.574, 1.430, 0.144),
+    (0.426, 0.430, 0.144),
+    (0.426, 1.430, -0.856),
+)
+
 
 def _get_wallpaper_path() -> str:
     """Retrieve the current desktop wallpaper file path via Win32 API."""
@@ -349,20 +358,26 @@ class MicaMaterial(QObject):
         self,
         widget: QWidget,
         blur_radius: int = 200,
-        tint_color: Union[str, QColor, None] = "#202020B4",
+        surface_color: Union[str, QColor, None] = None,
         luminosity: float = 0.65,
         contrast: float = 1.5,
         saturation: float = 4.5,
+        overlay_opacity: float = 0.7,
         lazy: bool = False,
     ):
         """
         Args:
             widget: The widget to apply the Mica effect to.
             blur_radius: Gaussian blur radius (higher = more blur).
-            tint_color: Overlay color. Hex string (e.g. "#202020A0") or QColor.
+            surface_color: Solid, fully-opaque background color underneath the
+                blurred wallpaper. Defaults to pure black (dark theme) or pure
+                white (light theme). Use ``set_theme`` to switch on theme change.
             luminosity: Brightness multiplier for the blurred image (0.0–1.0).
             contrast: Contrast multiplier. 1.0 = normal, 1.5 = +50%, 0.5 = -50%.
             saturation: Saturation multiplier. 1.0 = normal, 0.0 = grayscale.
+            overlay_opacity: Draw opacity (0.0–1.0) of the blurred wallpaper
+                over the solid background. Applied at paint time, so changing
+                it only triggers a repaint (no re-bake).
             lazy: When True, defer the expensive wallpaper load + blur + bake
                 until ``refresh()`` is called explicitly (e.g. from a QTimer
                 after the window is shown). Until then the widget paints the
@@ -371,10 +386,14 @@ class MicaMaterial(QObject):
         super().__init__()
         self._widget = widget
         self._blur_radius = blur_radius
-        self._tint_color = _parse_color(tint_color, QColor(32, 32, 32, 160))
+        self._surface_color = _parse_color(
+            surface_color,
+            QColor("#000000") if tm.is_dark_theme() else QColor("#FFFFFF"),
+        )
         self._luminosity = max(0.0, min(1.0, luminosity))
         self._contrast = max(0.0, contrast)
         self._saturation = max(0.0, saturation)
+        self._overlay_opacity = max(0.0, min(1.0, overlay_opacity))
 
         # Pre-computed noise tile for dithering (breaks 8-bit gradient banding)
         self._noise_tile = self._make_noise_tile()
@@ -411,6 +430,8 @@ class MicaMaterial(QObject):
         self._refresh_retries = 0           # 已失败重试次数
         self._pending_path = ""             # 本次刷新使用的壁纸路径（主线程赋值）
         self._refresh_outcome: Optional[str] = None  # "ok" | "fail" | "timeout"
+        # 参数变更（模糊/饱和度）到来时有刷新在途：挂起，待线程回收后重建
+        self._rebuild_pending = False
         self._watchdog = QTimer(self._widget)  # 卡死看门狗（父对象须为 QObject）
         self._watchdog.setSingleShot(True)
         self._watchdog.setInterval(REFRESH_WATCHDOG_MS)
@@ -673,6 +694,12 @@ class MicaMaterial(QObject):
             worker.deleteLater()
         thread.deleteLater()
 
+        # 滑动拖动期间参数再次变更（挂起中）：回收后立即用最新参数重建
+        if self._rebuild_pending and self._refresh_retries <= REFRESH_MAX_RETRIES:
+            self._rebuild_pending = False
+            self._wallpaper_path = ""
+            QTimer.singleShot(0, self.refresh_async)
+
     def dispose(self) -> None:
         """
         释放资源：标记放弃并强制回收任何在途的后台刷新线程。
@@ -682,6 +709,7 @@ class MicaMaterial(QObject):
         # 标记放弃，阻止任何挂起的重试重启
         self._refresh_retries = REFRESH_MAX_RETRIES + 1
         self._refresh_outcome = "fail"
+        self._rebuild_pending = False  # 丢弃挂起的参数重建请求
         # 移除焦点感知事件过滤器，停止任何渐变与绘制
         top = self._widget.window()
         if top is not None:
@@ -885,17 +913,19 @@ class MicaMaterial(QObject):
 
         if self._blurred_full is None or self._blurred_full.isNull():
             # No wallpaper – paint solid fallback
-            painter.fillRect(rect, tm.surface)
+            painter.fillRect(rect, self._surface_color)
             return
 
         # 失焦且已淡出完成（暂停）：仅画实色兜底，不做任何 Mica 绘制，省去渲染开销
         if self._paused:
-            painter.fillRect(rect, tm.surface)
+            painter.fillRect(rect, self._surface_color)
             return
 
-        # 先铺实色兜底层，再以 _fade_alpha 叠加 Mica，形成 surface→Mica 的线性渐变
-        # （淡入期间实色覆盖透明度 100→0，避免算完后“闪现”）。
-        painter.fillRect(rect, tm.surface)
+        # 纯色兜底层（深色纯黑 / 浅色纯白）铺满后，再以「淡入淡出 × 模糊图像透明度」
+        # 叠加模糊壁纸。强光（Hard Light）混合已在 _bake_image 中与纯色背景
+        # 预先融合进纹理，绘制期透明度仅作为「纯色 ↔ 强光结果」的插值量。
+        painter.fillRect(rect, self._surface_color)
+        draw_opacity = self._fade_alpha * self._overlay_opacity
 
         window_geo = self._get_window_global_rect()
 
@@ -905,7 +935,9 @@ class MicaMaterial(QObject):
             # 交互期间跳过 dither 平铺（拖拽时人眼注意不到），省去大窗口下
             # 每帧 drawTiledPixmap 的全屏平铺开销。
             painter.setRenderHint(QPainter.SmoothPixmapTransform, False)
+            painter.setOpacity(draw_opacity)
             self._blit(painter, rect, self._compute_source_rect(window_geo), dither=False)
+            painter.setOpacity(1.0)
             self._last_window_geo = window_geo
             return
 
@@ -921,7 +953,7 @@ class MicaMaterial(QObject):
             self._cached_pixmap = self._make_settled_cache(widget.size(), src_rect)
             self._last_window_geo = window_geo
 
-        painter.setOpacity(self._fade_alpha)
+        painter.setOpacity(draw_opacity)
         painter.drawPixmap(rect, self._cached_pixmap)
         painter.setOpacity(1.0)
 
@@ -950,16 +982,16 @@ class MicaMaterial(QObject):
         """
         rect = self._widget.rect()
         if self._blurred_full is None or self._blurred_full.isNull():
-            painter.fillRect(rect, tm.surface)
+            painter.fillRect(rect, self._surface_color)
             return
         # 失焦暂停：仅画实色兜底
         if self._paused:
-            painter.fillRect(rect, tm.surface)
+            painter.fillRect(rect, self._surface_color)
             return
-        # 实色兜底层 + 线性淡入（与 paint() 一致）
-        painter.fillRect(rect, tm.surface)
+        # 纯色兜底层 + 线性淡入（与 paint() 一致）：透明度 = 淡入淡出 × 模糊图像透明度
+        painter.fillRect(rect, self._surface_color)
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-        painter.setOpacity(self._fade_alpha)
+        painter.setOpacity(self._fade_alpha * self._overlay_opacity)
         self._blit(painter, rect, self._compute_source_rect(self._get_window_global_rect()))
         painter.setOpacity(1.0)
 
@@ -969,20 +1001,94 @@ class MicaMaterial(QObject):
         self.paint(painter, event)
         painter.end()
 
-    def set_theme_tint(self, tint_color: Union[str, QColor, None], luminosity: float) -> None:
+    def set_theme(self, surface_color: Union[str, QColor, None], luminosity: float) -> None:
         """
-        Re-bake tint + luminosity without re-blurring (fast; for theme changes).
+        Theme change: update the solid background color and luminosity.
 
         Reuses the cached ``_blurred_base`` so the expensive Gaussian blur is
-        not repeated.
+        not repeated. The solid color is read at paint time, so switching it
+        only needs a repaint; luminosity is re-baked (cheap, folded into the
+        existing image composite).
         """
-        self._tint_color = _parse_color(tint_color, self._tint_color)
+        self._surface_color = _parse_color(surface_color, self._surface_color)
         self._luminosity = max(0.0, min(1.0, luminosity))
         full = self._bake_image()
         if full is not None:
             self._blurred_full = QPixmap.fromImage(full)
         self._cached_pixmap = None
         self._widget.update()
+
+    def set_effect_parameters(
+        self,
+        blur_radius: Optional[int] = None,
+        overlay_opacity: Optional[float] = None,
+        saturation: Optional[float] = None,
+        contrast: Optional[float] = None,
+    ) -> None:
+        """
+        Update user-adjustable Mica effect parameters (settings sliders).
+
+        - ``overlay_opacity`` (0.0–1.0): draw opacity of the blurred wallpaper
+          over the solid background. Applied at paint time — only a repaint,
+          no re-bake or wallpaper rebuild, so live slider dragging is free.
+        - ``blur_radius`` / ``saturation`` / ``contrast``: these feed the
+          enhance + blur pipeline, so the wallpaper cache is invalidated and
+          the rebuild runs on the background thread (``refresh_async``) to
+          keep the UI responsive. If a refresh is already in flight, the
+          request is remembered (``_rebuild_pending``) and re-run once the
+          worker is reclaimed by ``_cleanup_worker``.
+
+        Args:
+            blur_radius: New Gaussian blur radius (px), or None to keep.
+            overlay_opacity: New wallpaper draw opacity (0.0–1.0), or None.
+            saturation: New saturation multiplier, or None to keep.
+            contrast: New contrast multiplier, or None to keep.
+        """
+        needs_full_rebuild = False
+        opacity_changed = False
+
+        if blur_radius is not None:
+            new_blur = max(0, int(blur_radius))
+            if new_blur != self._blur_radius:
+                self._blur_radius = new_blur
+                needs_full_rebuild = True
+
+        if saturation is not None:
+            new_sat = max(0.0, float(saturation))
+            if new_sat != self._saturation:
+                self._saturation = new_sat
+                needs_full_rebuild = True
+
+        if contrast is not None:
+            new_contrast = max(0.0, float(contrast))
+            if new_contrast != self._contrast:
+                self._contrast = new_contrast
+                needs_full_rebuild = True
+
+        if overlay_opacity is not None:
+            new_opacity = max(0.0, min(1.0, float(overlay_opacity)))
+            if new_opacity != self._overlay_opacity:
+                self._overlay_opacity = new_opacity
+                opacity_changed = True
+
+        if needs_full_rebuild:
+            self._request_rebuild()
+        elif opacity_changed:
+            # 绘制期直接生效：仅叠加透明度变化 → 触发重绘，无需重烘焙/重建壁纸
+            self._widget.update()
+
+    def _request_rebuild(self) -> None:
+        """Invalidate the wallpaper cache and rebuild on the worker thread.
+
+        Used when blur/saturation parameters change (the expensive enhance +
+        Gaussian blur pipeline must re-run). Never blocks the UI thread.
+        """
+        self._wallpaper_path = ""  # 强制 _compute() 重新执行
+        if self._worker_thread is not None:
+            # 已有刷新在途：挂起请求，待线程回收后自动用最新参数重建
+            self._rebuild_pending = True
+            return
+        self.refresh_async()
 
     def begin_interaction(self) -> None:
         """
@@ -1019,11 +1125,23 @@ class MicaMaterial(QObject):
 
     def _bake_image(self, base: Optional[QImage] = None) -> Optional[QImage]:
         """
-        Bake luminosity + tint + dithering into a QImage (thread-safe, no QPixmap).
+        Bake luminosity + (dark: negative-overlay pipeline / light: hard-light
+        blend) + dithering into a QImage.
 
         The composite runs in the float domain so the final 8-bit quantization
         can be TPDF-dithered, which removes the color banding that a heavy blur
         plus saturation boost otherwise produces in 8-bit.
+
+        混合方式（与纯色背景 ``_surface_color`` 之间）：
+        - **浅色模式**：强光混合（Hard Light）——以图像每像素亮度为「光源」，
+          暗于 50% 做乘法变暗、亮于 50% 做滤色变亮。
+        - **深色模式**：负片叠加管线，三步依次执行：
+          1) 负片：将每个像素 RGB 转为互补色（255 - v）；
+          2) 强光混合叠加到纯黑色背景（A=黑）——亮度反转使其在纯黑上可见；
+          3) 对叠加结果整体做 **180° 色相偏移**（hue-rotate 180°）——负片
+             造成的色相反转在此被还原，保留原始配色并保持亮度反转带来的清晰度。
+
+        绘制期的叠加透明度始终只作为「纯色 ↔ 合成结果」的插值量（lerp）。
 
         Args:
             base: Source blurred base (QImage). If omitted, uses ``self._blurred_base``
@@ -1050,16 +1168,39 @@ class MicaMaterial(QObject):
             if lum < 1.0:
                 rgb *= lum
 
-            # Tint overlay: rgb = rgb*(1 - a_t) + tint_rgb * a_t
-            a_t = self._tint_color.alpha() / 255.0
-            if a_t > 0.0:
-                tint_rgb = np.array(
-                    [self._tint_color.red(), self._tint_color.green(),
-                     self._tint_color.blue()],
-                    dtype=np.float32,
+            # 强光混合（Hard Light）：A=纯色背景，B=图像像素（0..255）
+            #   B <= 127.5: result = 2*A*B / 255            （乘法，变暗）
+            #   B >  127.5: result = 255 - 2*(255-A)*(255-B)/255（滤色，变亮）
+            solid_rgb = np.array(
+                [self._surface_color.red(), self._surface_color.green(),
+                 self._surface_color.blue()],
+                dtype=np.float32,
+            )
+
+            # ── 深色模式：负片叠加管线 ────────────────────────────────
+            # 1) 负片：RGB → 互补色（亮度反转，纯黑背景下原暗部变为可见亮部）
+            dark_mode = self._surface_color.lightness() < 128
+            if dark_mode:
+                rgb = 255.0 - rgb
+
+            above_half = rgb >= 127.5
+            low_part = (2.0 * solid_rgb * rgb) / 255.0
+            high_part = 255.0 - (2.0 * (255.0 - solid_rgb) * (255.0 - rgb)) / 255.0
+            rgb = np.where(above_half, high_part, low_part)
+
+            if dark_mode:
+                # 2) 负片已叠加纯黑背景（上一步 A=0）——亮度反转的壁纸直接
+                #    在纯黑背景上成形
+                # 3) 整体 180° 色相偏移：负片造成的色相反转在此还原，
+                #    保留原始配色（hue-rotate(180deg) 线性矩阵）
+                rgb = np.clip(
+                    np.einsum(
+                        'ij,hwj->hwi',
+                        np.asarray(HUE_ROTATE_180_MATRIX, dtype=np.float32),
+                        rgb,
+                    ),
+                    0.0, 255.0,
                 )
-                rgb *= (1.0 - a_t)
-                rgb += tint_rgb * a_t
 
             # TPDF dither: triangular noise in [-1, 1] per pixel (~ +/-1 LSB),
             # deterministic so the baked image is stable across repaints.
@@ -1078,17 +1219,32 @@ class MicaMaterial(QObject):
             return self._bake_fallback(base)
 
     def _bake_fallback(self, base: QImage) -> QImage:
-        """QPainter-based bake used when numpy is unavailable. Returns a QImage."""
+        """QPainter-based bake used when numpy is unavailable. Returns a QImage.
+
+        与 ``_bake_image`` 相同顺序：纯色背景铺底 →（深色模式先负片）→
+        以图像为光源做强光混合 → 压暗（luminosity 近似）→ 抖动。
+        深色模式的 180° 色相偏移需要颜色矩阵逐像素运算，numpy 缺失的
+        兜底环境暂不执行（视觉上色相略偏，仅作为应急降级路径）。
+        """
         result = QImage(base.size(), QImage.Format_RGBA8888)
         result.fill(Qt.transparent)
         painter = QPainter(result)
+        # 纯色背景铺底，随后以 base（图像）为光源做强光混合（Qt 的
+        # CompositionMode_HardLight 以绘制对象为光源，与 _bake_image 一致）
+        painter.fillRect(result.rect(), self._surface_color)
+        # 深色模式：先做负片（亮度反转），使图像在纯黑背景上可见
+        if self._surface_color.lightness() < 128:
+            try:
+                base = base.invertedPixels()
+            except AttributeError:
+                pass
+        painter.setCompositionMode(QPainter.CompositionMode_HardLight)
         painter.drawImage(0, 0, base)
+        painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
         if self._luminosity < 1.0:
             dark_alpha = int((1.0 - self._luminosity) * 255)
             if dark_alpha > 0:
                 painter.fillRect(result.rect(), QColor(0, 0, 0, dark_alpha))
-        if self._tint_color.alpha() > 0:
-            painter.fillRect(result.rect(), self._tint_color)
         painter.setOpacity(0.04)
         painter.drawTiledPixmap(result.rect(), self._noise_tile)
         painter.setOpacity(1.0)
@@ -1257,13 +1413,17 @@ class MicaWidget(QWidget):
         self,
         parent: Optional[QWidget] = None,
         blur_radius: int = 200,
-        tint_color: Union[str, QColor, None] = "#202020B4",
+        surface_color: Union[str, QColor, None] = None,
         luminosity: float = 0.65,
         contrast: float = 1.5,
         saturation: float = 4.5,
+        overlay_opacity: float = 0.7,
     ):
         super().__init__(parent)
-        self._mica = MicaMaterial(self, blur_radius, tint_color, luminosity, contrast, saturation)
+        self._mica = MicaMaterial(
+            self, blur_radius, surface_color, luminosity, contrast, saturation,
+            overlay_opacity,
+        )
         self.setAttribute(Qt.WA_OpaquePaintEvent, False)
         self.setAttribute(Qt.WA_TranslucentBackground, False)
 

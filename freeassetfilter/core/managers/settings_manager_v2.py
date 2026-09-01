@@ -520,6 +520,13 @@ DEFAULT_SETTINGS_V2: Dict[str, Any] = {
         "theme": "dark",           # "light" | "dark"
         "accent_color": "#3A9DCB",
         "colors": _build_default_colors(),
+        # 背景米卡效果可调参数（设置窗口「外观」页滑动条）
+        "mica": {
+            "blur_radius": 200,    # 背景模糊半径（px）
+            "saturation": 4.5,     # 背景色饱和度倍率（1.0 = 原始）
+            "contrast": 1.5,       # 背景色对比度倍率（1.0 = 原始）
+            "tint_opacity": 70,    # 叠加层透明度（%，0-100）
+        },
     },
 }
 

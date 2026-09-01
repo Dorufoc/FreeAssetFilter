@@ -762,7 +762,7 @@ class SettingsWindow(FramelessMainWindow):
         self._mica = MicaMaterial(
             self,
             blur_radius=self.MICA_CONFIG["blur_radius"],
-            tint_color=self.MICA_CONFIG["tint_color"],
+            surface_color=self.MICA_CONFIG["tint_color"][:7],
             luminosity=self.MICA_CONFIG["luminosity"],
             contrast=self.MICA_CONFIG["contrast"],
             saturation=self.MICA_CONFIG["saturation"],

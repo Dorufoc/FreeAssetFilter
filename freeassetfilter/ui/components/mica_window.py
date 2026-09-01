@@ -36,7 +36,7 @@ from components.mica_material import MicaMaterial
 # Current default config from main.py
 DEFAULT_MICA_CONFIG = {
     "blur_radius": 200,
-    "tint_color": "#202020B4",
+    "surface_color": "#000000",  # 纯色背景默认值；实际绘制由主题深浅色模式决定（深色黑/浅色白）
     "luminosity": 0.65,
     "contrast": 1.5,
     "saturation": 4.5,
@@ -58,7 +58,7 @@ class MicaWindow(QWidget):
         parent: Optional[QWidget] = None,
         window_title: str = "",
         blur_radius: Optional[int] = None,
-        tint_color: Optional[str] = None,
+        surface_color: Optional[str] = None,
         luminosity: Optional[float] = None,
         contrast: Optional[float] = None,
         saturation: Optional[float] = None,
@@ -71,7 +71,7 @@ class MicaWindow(QWidget):
 
         cfg = DEFAULT_MICA_CONFIG
         self._blur_radius = blur_radius if blur_radius is not None else cfg["blur_radius"]
-        self._tint_color = tint_color if tint_color is not None else cfg["tint_color"]
+        self._surface_color = surface_color if surface_color is not None else cfg["surface_color"]
         self._luminosity = luminosity if luminosity is not None else cfg["luminosity"]
         self._contrast = contrast if contrast is not None else cfg["contrast"]
         self._saturation = saturation if saturation is not None else cfg["saturation"]
@@ -81,7 +81,7 @@ class MicaWindow(QWidget):
 
         # Mica background
         self._mica = MicaMaterial(
-            self, self._blur_radius, self._tint_color,
+            self, self._blur_radius, self._surface_color,
             self._luminosity, self._contrast, self._saturation,
         )
 

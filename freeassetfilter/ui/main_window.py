@@ -67,65 +67,102 @@ class _MicaBackgroundMixin:
     def _init_mica_common(
         self,
         blur_radius: int,
-        tint_color: str,
+        surface_color: str,
         luminosity: float,
         contrast: float,
         saturation: float,
+        tint_opacity: int = 70,
     ) -> None:
-        """按当前主题设置 tint/luminosity，创建 MicaMaterial 并设置基底色。"""
+        """按当前主题设置纯色背景/luminosity，创建 MicaMaterial 并设置基底色。"""
         self._blur_radius = blur_radius
         self._contrast = contrast
         self._saturation = saturation
+        # 用户可调的模糊图像叠加透明度（%，0-100），绘制期生效（见 MicaMaterial.paint）
+        self._tint_opacity = max(0, min(100, int(tint_opacity)))
         if tm.is_dark_theme():
-            self._tint_color = "#202020B4"
             self._luminosity = 0.65
         else:
-            self._tint_color = "#FFFFFFB4"
             self._luminosity = 0.85
+        self._surface_color = self._theme_surface_color()
 
         self._mica = MicaMaterial(
             self,
             self._blur_radius,
-            self._tint_color,
-            self._luminosity,
-            self._contrast,
-            self._saturation,
+            surface_color=self._surface_color,
+            luminosity=self._luminosity,
+            contrast=self._contrast,
+            saturation=self._saturation,
+            overlay_opacity=self._tint_opacity / 100.0,
             lazy=True,  # 延迟壁纸加载/模糊到窗口显示后（首帧提速，见 showEvent）
         )
 
-        # 纯色不透明基底颜色（来自 tm.surface）
+        # 纯色不透明基底颜色：深色纯黑 / 浅色纯白（不再使用 tm.surface 灰色调）
         palette = self.palette()
-        palette.setColor(self.backgroundRole(), tm.surface)
+        palette.setColor(self.backgroundRole(), QColor(self._surface_color))
         self.setPalette(palette)
 
+    def _theme_surface_color(self) -> str:
+        """按当前系统深浅色模式返回纯色背景（完全不透明）。
+
+        背景固定为两种纯色，随系统深浅色模式自动切换：
+        - 深色模式 → 纯黑 #000000
+        - 浅色模式 → 纯白 #FFFFFF
+        模糊图像的显示状态由叠加层透明度（tint_opacity，0-100%）控制。
+        """
+        return "#000000" if tm.is_dark_theme() else "#FFFFFF"
+
+    def apply_mica_parameters(
+        self,
+        blur_radius: Optional[int] = None,
+        saturation: Optional[float] = None,
+        contrast: Optional[float] = None,
+        tint_opacity: Optional[int] = None,
+    ) -> None:
+        """更新米卡效果参数（设置窗口滑动条实时预览入口）。
+
+        叠加层透明度（模糊图像绘制透明度）绘制期即时生效（仅触发重绘，
+        不重烘焙）；模糊半径/饱和度/对比度在后台线程重建（不阻塞 UI）。
+        未指定的参数保持不变。
+        """
+        if blur_radius is not None:
+            self._blur_radius = max(0, int(blur_radius))
+        if saturation is not None:
+            self._saturation = max(0.0, float(saturation))
+        if contrast is not None:
+            self._contrast = max(0.0, float(contrast))
+        if tint_opacity is not None:
+            self._tint_opacity = max(0, min(100, int(tint_opacity)))
+        if self._mica is None:
+            return
+        self._mica.set_effect_parameters(
+            blur_radius=self._blur_radius if blur_radius is not None else None,
+            overlay_opacity=(
+                self._tint_opacity / 100.0
+                if tint_opacity is not None else None
+            ),
+            saturation=self._saturation if saturation is not None else None,
+            contrast=self._contrast if contrast is not None else None,
+        )
+
     def sync_theme(self) -> None:
-        """根据当前主题刷新 tint_color、luminosity 和基底颜色"""
+        """根据当前主题刷新纯色背景、luminosity 和基底颜色"""
         if tm.is_dark_theme():
-            self._tint_color = "#202020B4"
             self._luminosity = 0.65
         else:
-            self._tint_color = "#FFFFFFB4"
             self._luminosity = 0.85
+        # 背景色随主题切换（深色纯黑 / 浅色纯白），完全不透明
+        self._surface_color = self._theme_surface_color()
 
         # 更新基底颜色
         palette = self.palette()
-        palette.setColor(self.backgroundRole(), tm.surface)
+        palette.setColor(self.backgroundRole(), QColor(self._surface_color))
         self.setPalette(palette)
 
-        # 快速重烘焙 tint/luminosity（复用已模糊的 base，不再重新模糊）
+        # 快速重烘焙 luminosity（复用已模糊的 base，不再重新模糊）；
+        # 背景色为绘制期读取，切换主题仅需重绘
         if self._mica is not None:
-            self._mica.set_theme_tint(self._tint_color, self._luminosity)
+            self._mica.set_theme(self._surface_color, self._luminosity)
             self.update()
-
-    @staticmethod
-    def _parse_tint(value: str) -> QColor:
-        """将 #RRGGBBAA 格式解析为 QColor"""
-        s = value.lstrip("#")
-        if len(s) == 8:
-            r, g, b = int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
-            a = int(s[6:8], 16)
-            return QColor(r, g, b, a)
-        return QColor(32, 32, 32, 160)
 
     def refresh_background(self) -> None:
         """刷新背景（例如壁纸更改后）"""
@@ -146,17 +183,18 @@ class MicaBackgroundWidgetGL(QOpenGLWidget, _MicaBackgroundMixin):
         self,
         parent: Optional[QWidget] = None,
         blur_radius: int = 200,
-        tint_color: str = "#202020B4",
+        surface_color: str = "#000000",
         luminosity: float = 0.65,
         contrast: float = 1.5,
         saturation: float = 4.5,
+        tint_opacity: int = 70,
     ) -> None:
         # 应用级防护（静态属性，重复设置无副作用）：阻止原生子窗（MPV 视频面等）
         # 连带把兄弟控件原生化。否则嵌入视频时本 GL 背景被原生化→合成失效→
         # 客户区未绘制像素在 DWM 玻璃板上直接透出桌面（窗口“全透明”bug）。
         QApplication.setAttribute(Qt.ApplicationAttribute.AA_DontCreateNativeWidgetSiblings, True)
         super().__init__(parent)
-        self._init_mica_common(blur_radius, tint_color, luminosity, contrast, saturation)
+        self._init_mica_common(blur_radius, surface_color, luminosity, contrast, saturation, tint_opacity)
         # 背景恒不透明并铺满整窗，声明不透明绘制
         self.setAttribute(Qt.WA_OpaquePaintEvent, True)
 
@@ -187,20 +225,21 @@ class MicaBackgroundWidgetCpu(QWidget, _MicaBackgroundMixin):
         self,
         parent: Optional[QWidget] = None,
         blur_radius: int = 200,
-        tint_color: str = "#202020B4",
+        surface_color: str = "#000000",
         luminosity: float = 0.65,
         contrast: float = 1.5,
         saturation: float = 4.5,
+        tint_opacity: int = 70,
     ) -> None:
         super().__init__(parent)
         # 纯色不透明基底（挡住 win32 控件）
         self.setAutoFillBackground(True)
-        self._init_mica_common(blur_radius, tint_color, luminosity, contrast, saturation)
+        self._init_mica_common(blur_radius, surface_color, luminosity, contrast, saturation, tint_opacity)
         # 烘焙后 paint 始终铺满整个 rect 且不透明，声明不透明绘制
         self.setAttribute(Qt.WA_OpaquePaintEvent, True)
 
     def paintEvent(self, event: QPaintEvent) -> None:
-        """绘制 Mica 效果（模糊壁纸 + 半透明遮罩）"""
+        """绘制 Mica 效果（纯色背景 + 按透明度叠加的模糊壁纸）"""
         painter = QPainter(self)
         self._mica.paint(painter, event)
         painter.end()
@@ -228,10 +267,11 @@ def _opengl_available() -> bool:
 def make_mica_background(
     parent: Optional[QWidget] = None,
     blur_radius: int = 200,
-    tint_color: str = "#202020B4",
+    surface_color: str = "#000000",
     luminosity: float = 0.65,
     contrast: float = 1.5,
     saturation: float = 4.5,
+    tint_opacity: int = 70,
 ) -> QWidget:
     """
     创建 Mica 背景控件：默认 CPU 光栅版，环境变量 ``FAF_USE_GL_MICA=1`` 强制 GPU 版。
@@ -253,10 +293,11 @@ def make_mica_background(
     return cls(
         parent,
         blur_radius=blur_radius,
-        tint_color=tint_color,
+        surface_color=surface_color,
         luminosity=luminosity,
         contrast=contrast,
         saturation=saturation,
+        tint_opacity=tint_opacity,
     )
 
 
@@ -424,7 +465,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self,
         parent: Optional[QWidget] = None,
         blur_radius: Optional[int] = None,
-        tint_color: Optional[str] = None,
+        surface_color: Optional[str] = None,
         luminosity: Optional[float] = None,
         contrast: Optional[float] = None,
         saturation: Optional[float] = None,
@@ -435,7 +476,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         Args:
             parent: 父窗口
             blur_radius: Mica 模糊半径（默认使用项目配置）
-            tint_color: Mica 覆盖色（默认使用项目配置）
+            surface_color: Mica 纯色背景（深色纯黑/浅色纯白，默认使用主题决定）
             luminosity: Mica 亮度值（默认使用项目配置）
             contrast: Mica 对比度（默认使用项目配置）
             saturation: Mica 饱和度（默认使用项目配置）
@@ -462,13 +503,16 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._title_label = None
         self._close_btn = None
 
-        # 配置 Mica 参数（提前计算）
+        # 配置 Mica 参数（提前计算）：显式参数 > V2 保存值 > 项目默认
         cfg = DEFAULT_MICA_CONFIG
-        self._blur_radius = blur_radius if blur_radius is not None else cfg["blur_radius"]
-        self._tint_color = tint_color if tint_color is not None else cfg["tint_color"]
+        mica_saved = self._load_mica_settings()
+        self._blur_radius = blur_radius if blur_radius is not None else mica_saved["blur_radius"]
+        # 背景色仅作回退默认值；实际绘制由 mixin 按主题决定（深色纯黑/浅色纯白）
+        self._surface_color = surface_color if surface_color is not None else cfg["surface_color"]
         self._luminosity = luminosity if luminosity is not None else cfg["luminosity"]
-        self._contrast = contrast if contrast is not None else cfg["contrast"]
-        self._saturation = saturation if saturation is not None else cfg["saturation"]
+        self._contrast = contrast if contrast is not None else mica_saved["contrast"]
+        self._saturation = saturation if saturation is not None else mica_saved["saturation"]
+        self._tint_opacity = mica_saved["tint_opacity"]
 
         # 调用父类初始化
         super().__init__(parent)
@@ -485,6 +529,36 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
         # 将窗口定位到鼠标所在屏幕的中心
         self._center_on_mouse_screen()
+
+    @staticmethod
+    def _load_mica_settings() -> dict:
+        """启动时从 SettingsManagerV2 恢复米卡效果参数（应用保存的配置值）。
+
+        Returns:
+            dict: {"blur_radius": int, "saturation": float,
+                   "contrast": float, "tint_opacity": int}
+        """
+        defaults = {
+            "blur_radius": DEFAULT_MICA_CONFIG["blur_radius"],
+            "saturation": DEFAULT_MICA_CONFIG["saturation"],
+            "contrast": DEFAULT_MICA_CONFIG["contrast"],
+            "tint_opacity": 70,
+        }
+        try:
+            from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+            v2 = SettingsManagerV2()
+            v2.load()
+            saved = v2.get("appearance.mica", {})
+            if isinstance(saved, dict):
+                return {
+                    "blur_radius": int(saved.get("blur_radius", defaults["blur_radius"])),
+                    "saturation": float(saved.get("saturation", defaults["saturation"])),
+                    "contrast": float(saved.get("contrast", defaults["contrast"])),
+                    "tint_opacity": int(saved.get("tint_opacity", defaults["tint_opacity"])),
+                }
+        except Exception:
+            pass
+        return defaults
 
     def _setup_window(self) -> None:
         """设置窗口基本属性"""
@@ -524,9 +598,11 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._root = QWidget(self)
         self.setCentralWidget(self._root)
         # 不透明兜底：正常时被 Mica 层完全盖住；若 GL 合成因任何原因缺画，
-        # 窗口显示主题表面色而非透出桌面（DWM 玻璃板上未绘制像素会全透明）
+        # 窗口显示纯色背景（深色纯黑/浅色纯白）而非透出桌面（DWM 玻璃板上
+        # 未绘制像素会全透明）
+        main_surface = QColor("#000000" if tm.is_dark_theme() else "#FFFFFF")
         root_palette = self._root.palette()
-        root_palette.setColor(self._root.backgroundRole(), tm.surface)
+        root_palette.setColor(self._root.backgroundRole(), main_surface)
         self._root.setPalette(root_palette)
         self._root.setAutoFillBackground(True)
 
@@ -539,10 +615,11 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._mica_background = make_mica_background(
             self._root,
             blur_radius=self._blur_radius,
-            tint_color=self._tint_color,
+            surface_color=self._surface_color,
             luminosity=self._luminosity,
             contrast=self._contrast,
             saturation=self._saturation,
+            tint_opacity=self._tint_opacity,
         )
         self._mica_background.setAttribute(Qt.WA_TransparentForMouseEvents, True)
 
@@ -866,9 +943,17 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
     def _on_theme_changed(self, theme_name: str) -> None:
         """主题切换后的处理"""
-        # 更新 Mica 背景（快速重烘焙 tint/luminosity，复用已模糊的 base，不再重建/重新模糊）
+        # 更新 Mica 背景（重烘焙 luminosity，背景色绘制期生效，复用已模糊 base）
         if self._mica_background is not None:
             self._mica_background.sync_theme()
+        # 兜底层（root）也切到纯色背景，保证 GL 缺画时的底色与主题一致
+        if self._root is not None:
+            root_palette = self._root.palette()
+            root_palette.setColor(
+                self._root.backgroundRole(),
+                QColor("#000000" if tm.is_dark_theme() else "#FFFFFF"),
+            )
+            self._root.setPalette(root_palette)
         # 更新按钮图标和 tooltip（SVG，light=浅色，dark=深色）
         light_icon_path = Path(__file__).resolve().parent.parent / "icons" / "title_light.svg"
         dark_icon_path = Path(__file__).resolve().parent.parent / "icons" / "title_dark.svg"

@@ -143,6 +143,63 @@ class TestSettingsLayout:
         _assert_layout_geometry(layout, qapp)
         layout.deleteLater()
 
+    def test_appearance_page_uses_floating_styled_scrollbar(
+        self, qapp: QApplication,
+    ) -> None:
+        """外观页包在浮动滚动区中：styled 浮动滚动条接管，原生滚动条隐藏。"""
+        from PySide6.QtWidgets import QScrollArea
+
+        from components.styled_scroll_area import StyledScrollBar
+        from freeassetfilter.ui.layout.settings_layout import _FloatingScrollArea
+
+        layout = SettingsLayout()
+        scrolls = layout._stack.findChildren(QScrollArea)
+        floating = [s for s in scrolls if isinstance(s, _FloatingScrollArea)]
+        assert len(floating) == 1
+
+        area = floating[0]
+        # 原生滚动条隐藏，浮动 styled 滚动条存在且为其子控件
+        assert area.verticalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
+        assert area.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
+        assert isinstance(area._floating_bar, StyledScrollBar)
+        assert area._floating_bar.parent() is area
+        # 平滑滚动在 showEvent 中初始化（未显示前未施加）
+        assert area._scroller_ready is False
+        safe_teardown(layout)
+
+    def test_floating_scrollbar_range_and_value_sync(
+        self, qapp: QApplication,
+    ) -> None:
+        """浮动滚动条与内部滚动条范围/值双向同步，随内容显隐。"""
+        from freeassetfilter.ui.layout.settings_layout import _FloatingScrollArea
+
+        area = _FloatingScrollArea()
+        area.resize(400, 300)
+
+        inner = QWidget()
+        inner.setFixedHeight(800)  # 内容超出 → 产生滚动范围
+        area.setWidget(inner)
+        qapp.processEvents()
+        area.show()
+        qapp.processEvents()
+
+        vbar = area.verticalScrollBar()
+        bar = area._floating_bar
+        if vbar.maximum() > 0:
+            assert bar.maximum() == vbar.maximum()
+            assert bar.isVisible()
+
+            # 内部值变化 → 浮动条跟随
+            vbar.setValue(10)
+            assert bar.value() == 10
+            # 浮动条拖动 → 内部跟随
+            bar.setValue(20)
+            assert vbar.value() == 20
+            # 浮动条贴右侧边缘几何
+            assert bar.x() == area.width() - bar.width()
+        area.hide()
+        safe_teardown(area)
+
 
 # =============================================================================
 # ui.layout.unified_previewer_layout
@@ -593,4 +650,74 @@ class TestAppearanceSettingsPage:
         page = AppearanceSettingsPage()
         page.hideEvent(QHideEvent())
         page.closeEvent(QCloseEvent())
+        safe_teardown(page)
+
+    def test_mica_sliders_built_and_value_mapping(self, qapp: QApplication) -> None:
+        """四个米卡滑动条构建齐全；归一化映射与单位格式化正确。"""
+        page = AppearanceSettingsPage()
+        assert set(page._mica_sliders) == {
+            "saturation", "contrast", "blur_radius", "tint_opacity",
+        }
+        assert set(page._mica_value_labels) == set(page._mica_sliders)
+
+        # 归一化映射：区间端点与中点
+        assert page._to_norm("blur_radius", 0) == 0.0
+        assert page._to_norm("blur_radius", 300) == 1.0
+        assert page._to_norm("tint_opacity", 50) == pytest.approx(0.5)
+        assert page._from_norm("blur_radius", 0.5) == 150.0
+        assert page._from_norm("saturation", 0.5) == pytest.approx(4.0)
+        assert page._from_norm("contrast", 0.5) == pytest.approx(1.5)
+
+        # 单位格式化（× / px / %）
+        assert page._format_mica_value("saturation", 4.5) == "4.5×"
+        assert page._format_mica_value("contrast", 1.5) == "1.5×"
+        assert page._format_mica_value("blur_radius", 200) == "200 px"
+        assert page._format_mica_value("tint_opacity", 70) == "70%"
+        safe_teardown(page)
+
+    def test_mica_slider_preview_and_save(
+        self, qapp: QApplication, monkeypatch, tmp_path,
+    ) -> None:
+        """滑动条释放：实时预览应用到主窗口背景并持久化到 V2 临时文件。"""
+        import freeassetfilter.ui.layout.settings_layout as sl_mod
+        from freeassetfilter.core.managers.settings_manager_v2 import (
+            SettingsManagerV2,
+        )
+
+        calls: list[dict] = []
+
+        class _FakeMicaBg:
+            def apply_mica_parameters(self, **kwargs) -> None:
+                calls.append(kwargs)
+
+        class _FakeMainWindow(QWidget):
+            def __init__(self) -> None:
+                super().__init__()
+                self._mica_background = _FakeMicaBg()
+
+        fake_mw = _FakeMainWindow()
+        monkeypatch.setattr(
+            sl_mod.AppearanceSettingsPage, "_find_main_window", lambda self: fake_mw
+        )
+        # 临时 V2 文件，避免测试写真实 data/settings_v2.json
+        tmp_file = str(tmp_path / "settings_v2.json")
+        monkeypatch.setattr(
+            sl_mod, "SettingsManagerV2", lambda *a, **k: SettingsManagerV2(tmp_file)
+        )
+
+        page = AppearanceSettingsPage()
+        # 拖动中：值显示更新并触发（防抖）预览
+        page._on_mica_slider_changed("tint_opacity", 0.4)
+        assert page._mica_values["tint_opacity"] == 40.0
+        assert page._mica_value_labels["tint_opacity"].text() == "40%"
+        assert page._mica_preview_timer.isActive()
+
+        # 释放：立即应用预览 + 持久化
+        page._on_mica_slider_released("tint_opacity")
+        assert calls and calls[-1]["tint_opacity"] == 40
+        saved = SettingsManagerV2(tmp_file)
+        saved.load()
+        assert saved.get("appearance.mica.tint_opacity") == 40
+        assert saved.get("appearance.mica.blur_radius") == 200
+        assert saved.get("appearance.mica.contrast") == pytest.approx(1.5)
         safe_teardown(page)

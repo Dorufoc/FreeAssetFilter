@@ -8,10 +8,11 @@ import copy
 
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QFrame, QLabel, QStackedWidget,
+    QApplication, QScrollArea,
 )
 from PySide6.QtCore import (
     Qt, Signal, QRectF, QPropertyAnimation, QEasingCurve, Property, QPoint,
-    QEvent, QObject,
+    QEvent, QObject, QTimer,
 )
 from PySide6.QtGui import (
     QPainter, QColor, QPaintEvent, QPen, QFont, QHideEvent, QCloseEvent,
@@ -23,6 +24,8 @@ from theme.system_accent import get_system_accent_color
 from components.styled_sidebar import StyledSidebar
 from components.styled_toggle import StyledToggle
 from components.styled_button import StyledButton
+from components.styled_slider import StyledSlider
+from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
 from components.styled_color_picker import _ColorPanel
 from components.theme_transition_overlay import ThemeTransitionOverlay
 from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
@@ -39,6 +42,122 @@ PRESET_ACCENT_COLORS = [
     {"name": "魅力紫", "color": "#9554CF"},
     {"name": "清雅墨", "color": "#5A6C8B"},
 ]
+
+# ── 背景米卡效果可调参数（名称 / 取值区间 / 默认值 / 单位） ────────────
+# 对应 SettingsManagerV2 的 appearance.mica.* 键与主窗口 MicaMaterial 参数。
+MICA_PARAM_SPECS = {
+    "saturation": {
+        "name": "背景色饱和度", "min": 0.0, "max": 8.0,
+        "default": 4.5, "decimals": 1, "unit": "×",
+    },
+    "contrast": {
+        "name": "对比度", "min": 0.0, "max": 3.0,
+        "default": 1.5, "decimals": 1, "unit": "×",
+    },
+    "blur_radius": {
+        "name": "背景模糊度", "min": 0.0, "max": 300.0,
+        "default": 200.0, "decimals": 0, "unit": " px",
+    },
+    "tint_opacity": {
+        "name": "叠加层透明度", "min": 0.0, "max": 100.0,
+        "default": 70.0, "decimals": 0, "unit": "%",
+    },
+}
+
+# 实时预览防抖间隔（ms）：叠加层透明度绘制期生效可即时跟随；
+# 模糊/饱和度/对比度重建较重，防抖后在后台线程应用（不阻塞 UI）。
+MICA_PREVIEW_DEBOUNCE_MS = 200
+
+
+class _FloatingScrollArea(QScrollArea):
+    """设置页滚动区 — 浮动 StyledScrollBar + 丝滑滚动（参考文件选择器模式）。
+
+    - 隐藏 QScrollArea 原生滚动条，由覆盖在右侧边缘的浮动
+      ``StyledScrollBar`` 接管（自绘圆角胶囊 + hover 展开 + 拖拽）。
+    - 通过 ``StyledScrollArea.apply_to`` 施加平滑滚轮/触摸手势
+      （QScroller 丝滑减速 + 边界弹性回弹），与文件选择器一致。
+    - 背景保持透明，透出设置卡片底色；滚动条仅在内容溢出时可见。
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        self.viewport().setAutoFillBackground(False)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        # 浮动滚动条作为子控件覆盖在滚动区右侧，置于内容之上
+        self._bar_edge_padding = max(4, int(2 * self._dpi_scale()))
+        self._floating_bar = StyledScrollBar(self)
+        self._floating_bar.setFixedWidth(max(6, int(8 * self._dpi_scale())))
+        self._floating_bar.raise_()
+
+        # 与隐藏的原生垂直滚动条双向同步（value 相同不重发，无递归风险）
+        vbar = self.verticalScrollBar()
+        self._floating_bar.setRange(vbar.minimum(), vbar.maximum())
+        self._floating_bar.setSingleStep(1)  # 平滑滚动的细粒度步进
+        self._floating_bar.setPageStep(vbar.pageStep())
+        vbar.rangeChanged.connect(self._on_range_changed)
+        self._floating_bar.valueChanged.connect(vbar.setValue)
+        vbar.valueChanged.connect(self._floating_bar.setValue)
+        self._floating_bar.setVisible(vbar.maximum() > vbar.minimum())
+
+        self._scroller_ready = False
+
+    @staticmethod
+    def _dpi_scale() -> float:
+        """获取 DPI 缩放系数（未标注时回落 1.0）。"""
+        app = QApplication.instance()
+        return getattr(app, "dpi_scale_factor", 1.0) if app else 1.0
+
+    # ── 原生滚动条 → 浮动滚动条 同步 ─────────────────────────────────
+
+    def _on_range_changed(self, minimum: int, maximum: int) -> None:
+        """内容滚动范围变化：同步范围/步进并按需显隐浮动滚动条。"""
+        vbar = self.verticalScrollBar()
+        self._floating_bar.setRange(minimum, maximum)
+        self._floating_bar.setPageStep(vbar.pageStep())
+        self._floating_bar.setValue(vbar.value())
+        self._floating_bar.setVisible(maximum > minimum)
+        self._reposition_bar()
+
+    # ── 几何：浮动滚动条贴右侧边缘 ───────────────────────────────────
+
+    def _reposition_bar(self) -> None:
+        """把浮动滚动条放到滚动区右缘（内容不足时保持隐藏）。"""
+        bar = self._floating_bar
+        pad = self._bar_edge_padding
+        bar.setGeometry(
+            self.width() - bar.width(),
+            pad,
+            bar.width(),
+            max(0, self.height() - 2 * pad),
+        )
+        bar.raise_()
+
+    # ── 事件：尺寸变化重摆滚动条；首次显示施加丝滑滚动 ────────────────
+
+    def setWidget(self, widget: QWidget) -> None:
+        super().setWidget(widget)
+        # 新内容装载后立即同步范围（等待 rangeChanged 可能有帧延迟）
+        vbar = self.verticalScrollBar()
+        self._on_range_changed(vbar.minimum(), vbar.maximum())
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if not self._scroller_ready:
+            self._scroller_ready = True
+            # 平滑滚轮 + 触摸手势（与文件选择器同一套 QScroller 配置）
+            StyledScrollArea.apply_to(self, enable_mouse_drag=False)
+        self._reposition_bar()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        # viewport 高度变化会改变 pageStep，一并同步
+        self._floating_bar.setPageStep(self.verticalScrollBar().pageStep())
+        self._reposition_bar()
 
 
 class AccentColorButton(QWidget):
@@ -313,7 +432,159 @@ class AppearanceSettingsPage(QWidget):
 
         color_row.addStretch()  # 右侧弹性空间
         layout.addLayout(color_row)
+
+        # ── 背景米卡效果（滑动条配置项） ──
+        mica_label = QLabel("背景米卡效果")
+        mica_label.setStyleSheet(
+            f"background: transparent; border: none;"
+            f"color: {tm.text.name()}; font-size: 13px; font-weight: 500;"
+        )
+        layout.addWidget(mica_label)
+
+        # 实时预览防抖：拖动中合并高频 value_changed，超时后统一应用
+        self._mica_preview_timer = QTimer(self)
+        self._mica_preview_timer.setSingleShot(True)
+        self._mica_preview_timer.setInterval(MICA_PREVIEW_DEBOUNCE_MS)
+        self._mica_preview_timer.timeout.connect(self._apply_mica_preview)
+
+        self._mica_sliders: dict[str, StyledSlider] = {}
+        self._mica_value_labels: dict[str, QLabel] = {}
+        self._mica_values: dict[str, float] = {}
+
+        saved_mica = v2.get("appearance.mica", {}) or {}
+        mica_rows = QVBoxLayout()
+        mica_rows.setContentsMargins(0, 0, 0, 0)
+        mica_rows.setSpacing(16)
+        for key, spec in MICA_PARAM_SPECS.items():
+            initial = float(saved_mica.get(key, spec["default"]))
+            # 越界值（旧配置/手改 JSON）钳制回取值区间
+            initial = max(spec["min"], min(spec["max"], initial))
+            mica_rows.addWidget(self._build_mica_slider_row(key, spec, initial))
+        layout.addLayout(mica_rows)
+
         layout.addStretch()
+
+    # ── 背景米卡效果：滑动条构建与交互 ─────────────────────────────────
+
+    def _build_mica_slider_row(
+        self, key: str, spec: dict, initial: float,
+    ) -> QFrame:
+        """创建单个米卡参数行：参数名 + 当前值显示 + 滑动条。"""
+        row = QFrame()
+        row.setStyleSheet("background: transparent; border: none;")
+        row_layout = QVBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(6)
+
+        # 头部：参数名（左） + 当前值（右，含单位）
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(8)
+
+        name_label = QLabel(spec["name"])
+        name_label.setStyleSheet(
+            f"background: transparent; border: none;"
+            f"color: {tm.text.name()}; font-size: 13px; font-weight: 500;"
+        )
+        header.addWidget(name_label)
+        header.addStretch()
+
+        value_label = QLabel(self._format_mica_value(key, initial))
+        value_label.setStyleSheet(
+            f"background: transparent; border: none;"
+            f"color: {tm.text.name()}; font-size: 13px; font-weight: 500;"
+        )
+        value_label.setMinimumWidth(56)
+        value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        header.addWidget(value_label)
+        row_layout.addLayout(header)
+
+        # 滑动条（StyledSlider 为 0.0-1.0 归一化值，映射到参数实际区间）
+        slider = StyledSlider(value=self._to_norm(key, initial), size="sm")
+        slider.value_changed.connect(
+            lambda value, k=key: self._on_mica_slider_changed(k, value)
+        )
+        slider.released.connect(
+            lambda k=key: self._on_mica_slider_released(k)
+        )
+        row_layout.addWidget(slider)
+
+        self._mica_sliders[key] = slider
+        self._mica_value_labels[key] = value_label
+        self._mica_values[key] = initial
+        return row
+
+    def _to_norm(self, key: str, value: float) -> float:
+        """参数实际值 → 滑动条归一化值（0.0-1.0）。"""
+        spec = MICA_PARAM_SPECS[key]
+        span = spec["max"] - spec["min"]
+        if span <= 0:
+            return 0.0
+        return max(0.0, min(1.0, (value - spec["min"]) / span))
+
+    def _from_norm(self, key: str, norm: float) -> float:
+        """滑动条归一化值 → 参数实际值（按精度取整）。"""
+        spec = MICA_PARAM_SPECS[key]
+        value = spec["min"] + (spec["max"] - spec["min"]) * max(0.0, min(1.0, norm))
+        return round(value, spec["decimals"])
+
+    def _format_mica_value(self, key: str, value: float) -> str:
+        """格式化当前值显示（含单位，如 4.5× / 200 px / 70%）。"""
+        spec = MICA_PARAM_SPECS[key]
+        return f"{value:.{spec['decimals']}f}{spec['unit']}"
+
+    def _on_mica_slider_changed(self, key: str, norm: float) -> None:
+        """拖动中：更新当前值显示，并防抖触发实时预览。"""
+        self._mica_values[key] = self._from_norm(key, norm)
+        self._mica_value_labels[key].setText(
+            self._format_mica_value(key, self._mica_values[key])
+        )
+        self._mica_preview_timer.start()
+
+    def _on_mica_slider_released(self, key: str) -> None:
+        """释放滑动条：立即应用最终值并持久化到 V2。"""
+        self._mica_preview_timer.stop()
+        self._apply_mica_preview()
+        self._save_mica_settings()
+
+    def _find_main_window(self) -> QWidget | None:
+        """定位主窗口（按 _mica_background 属性鸭子类型判定，避免循环导入）。"""
+        for w in QApplication.topLevelWidgets():
+            if w is self.window():
+                continue
+            if getattr(w, "_mica_background", None) is not None:
+                return w
+        return None
+
+    def _apply_mica_preview(self) -> None:
+        """将当前滑动条值实时应用到主窗口的 Mica 背景（实时预览）。"""
+        mw = self._find_main_window()
+        if mw is None:
+            return
+        mica_bg = mw._mica_background
+        if mica_bg is None or not hasattr(mica_bg, "apply_mica_parameters"):
+            return
+        mica_bg.apply_mica_parameters(
+            blur_radius=int(round(self._mica_values["blur_radius"])),
+            saturation=float(self._mica_values["saturation"]),
+            contrast=float(self._mica_values["contrast"]),
+            tint_opacity=int(round(self._mica_values["tint_opacity"])),
+        )
+
+    def _save_mica_settings(self) -> None:
+        """将米卡效果参数持久化到 SettingsManagerV2（重启后恢复）。"""
+        try:
+            v2 = SettingsManagerV2()
+            v2.load()
+            v2.set("appearance.mica", {
+                "blur_radius": int(round(self._mica_values["blur_radius"])),
+                "saturation": float(self._mica_values["saturation"]),
+                "contrast": float(self._mica_values["contrast"]),
+                "tint_opacity": int(round(self._mica_values["tint_opacity"])),
+            })
+            v2.save()
+        except Exception:
+            pass
 
     def _on_dark_toggle(self, checked: bool) -> None:
         """深色模式开关切换 — 仅记录状态，点击「应用」才全局生效。"""
@@ -568,9 +839,11 @@ class SettingsLayout(QWidget):
         self._stack = QStackedWidget()
         self._stack.setStyleSheet("background: transparent; border: none;")
 
-        # 页面 0：外观
+        # 页面 0：外观（包进透明滚动区域，小窗口尺寸下内容可滚动访问）
         self._appearance_page = AppearanceSettingsPage()
-        appearance_card = self._create_page_card(self._appearance_page)
+        appearance_card = self._create_page_card(
+            self._wrap_page_in_scroll(self._appearance_page)
+        )
         self._stack.addWidget(appearance_card)
 
         # 页面 1：通用（占位）
@@ -595,6 +868,12 @@ class SettingsLayout(QWidget):
 
         # 主题切换时刷新内容区背景
         tm.theme_changed.connect(self._on_theme_changed)
+
+    def _wrap_page_in_scroll(self, page: QWidget) -> _FloatingScrollArea:
+        """将设置页包进浮动滚动条滚动区（styled 滚动条 + 丝滑滚动）。"""
+        scroll = _FloatingScrollArea()
+        scroll.setWidget(page)
+        return scroll
 
     def _create_page_card(self, inner_widget: QWidget | None) -> QFrame:
         """创建圆角卡片容器，内部放置给定 widget。"""
