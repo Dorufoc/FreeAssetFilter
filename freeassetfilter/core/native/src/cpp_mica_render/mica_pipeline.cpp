@@ -83,6 +83,36 @@ double NowMs() {
     return (static_cast<double>(now.QuadPart) * 1000.0) / static_cast<double>(freq.QuadPart);
 }
 
+/// 按需创建 ``R32G32B32A32_FLOAT`` STAGING 回读纹理（供 ``RunBakeFloat``）。
+
+/// ``CopyResource`` 要求源与目标格式、尺寸一致，故 float 合成输出必须用
+/// 同格式的 STAGING 回读，不能复用 ``EnsureReadback`` 的 BGRA8 回读纹理。
+mica_status EnsureReadbackF32(Context* c, int w, int h) {
+    w = Clamp(w, 1, kMaxPadSide);
+    h = Clamp(h, 1, kMaxPadSide);
+    if (c->readbackF32 && c->readbackF32W == w && c->readbackF32H == h) {
+        return MICA_OK;
+    }
+    c->readbackF32.Reset();
+
+    D3D11_TEXTURE2D_DESC td = {};
+    td.Width = static_cast<UINT>(w);
+    td.Height = static_cast<UINT>(h);
+    td.MipLevels = 1;
+    td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_STAGING;
+    td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    const HRESULT hr = c->device->CreateTexture2D(&td, nullptr, c->readbackF32.Put());
+    if (FAILED(hr)) {
+        return FailHr(c, MICA_ERR_OUT_OF_MEMORY, hr, "CreateTexture2D(staging f32)");
+    }
+    c->readbackF32W = w;
+    c->readbackF32H = h;
+    return MICA_OK;
+}
+
 }  // namespace
 
 mica_status RunBake(Context* c,
@@ -250,6 +280,193 @@ mica_status RunBake(Context* c,
         }
     }
     c->ctx->Unmap(c->readback.Get(), 0);
+
+    if (outResult != nullptr) {
+        outResult->width = gridW;
+        outResult->height = gridH;
+        outResult->pad_width = padW;
+        outResult->pad_height = padH;
+        outResult->sample_x = rectX;
+        outResult->sample_y = rectY;
+        outResult->sample_w = rectW;
+        outResult->sample_h = rectH;
+        outResult->duration_ms = static_cast<float>(NowMs() - t0);
+        outResult->backend = static_cast<int32_t>(c->canvasBackend);
+    }
+    return MICA_OK;
+}
+
+mica_status RunBakeFloat(Context* c,
+                         const mica_bake_params* p,
+                         float* outRgb,
+                         int capacity,
+                         mica_bake_result* outResult) {
+    if (p == nullptr || outRgb == nullptr) {
+        return Fail(c, MICA_ERR_INVALID_ARG, "params 或 out_rgb 为空");
+    }
+    if (!c->canvas || c->canvasBackend == MICA_BACKEND_NONE) {
+        return Fail(c, MICA_ERR_NO_SOURCE, "尚未构建画布");
+    }
+
+    const int gridW = Clamp(p->grid_w, 1, kMaxPadSide);
+    const int gridH = Clamp(p->grid_h, 1, kMaxPadSide);
+    // f32 输出：每像素 3 个 float。
+    const int needed = gridW * gridH * 3 * static_cast<int>(sizeof(float));
+    if (capacity < needed) {
+        return Fail(c, MICA_ERR_INVALID_ARG, "输出缓冲过小：需要 %d 字节，实际 %d", needed,
+                    capacity);
+    }
+
+    // 扩边受 pad 上限约束，保证中间纹理尺寸可控。
+    const int maxMargin = (kMaxPadSide - (std::max)(gridW, gridH)) / 2;
+    const int margin = Clamp(p->margin, 0, (std::max)(0, maxMargin));
+    const int padW = gridW + 2 * margin;
+    const int padH = gridH + 2 * margin;
+
+    const double t0 = NowMs();
+
+    mica_status st = EnsureRenderTexture(c, &c->stageA, padW, padH, kFieldFormat);
+    if (st != MICA_OK) {
+        return st;
+    }
+    st = EnsureRenderTexture(c, &c->stageB, padW, padH, kFieldFormat);
+    if (st != MICA_OK) {
+        return st;
+    }
+    // 合成的 float 版本：R32G32B32A32_FLOAT，让 PsComposite 返回的 float4 不做
+    // 8-bit 量化地写入，避免量化后再反算回 0..1 浮点带来的有限精度。
+    st = EnsureRenderTexture(c, &c->outTexF32, gridW, gridH, DXGI_FORMAT_R32G32B32A32_FLOAT);
+    if (st != MICA_OK) {
+        return st;
+    }
+    st = EnsureReadbackF32(c, gridW, gridH);
+    if (st != MICA_OK) {
+        return st;
+    }
+
+    // --- 采样矩形：对齐 engine.sample_rect_for -----------------------------
+    const float winW = (std::max)(1.0f, static_cast<float>(p->win_w));
+    const float winH = (std::max)(1.0f, static_cast<float>(p->win_h));
+    const float densityX = static_cast<float>(gridW) / winW;
+    const float densityY = static_cast<float>(gridH) / winH;
+    const float mx = static_cast<float>(margin) / (std::max)(densityX, 1e-6f);
+    const float my = static_cast<float>(margin) / (std::max)(densityY, 1e-6f);
+    const float rectX = static_cast<float>(p->win_x) - mx;
+    const float rectY = static_cast<float>(p->win_y) - my;
+    const float rectW = winW + 2.0f * mx;
+    const float rectH = winH + 2.0f * my;
+
+    BindFullscreenState(c);
+
+    // --- 阶段 A：分析 ------------------------------------------------------
+    // LOD 取两轴中较大的降采样倍率，避免高频壁纸在长边方向出现走样。
+    const float spanCanvasX = rectW * c->canvasScale;
+    const float spanCanvasY = rectH * c->canvasScale;
+    const float ratio = (std::max)(spanCanvasX / static_cast<float>(padW),
+                                   spanCanvasY / static_cast<float>(padH));
+    const float lod = (ratio > 1.0f) ? ::log2f(ratio) : 0.0f;
+
+    AnalyzeCB acb = {};
+    acb.srcRect[0] = rectX;
+    acb.srcRect[1] = rectY;
+    acb.srcRect[2] = rectW;
+    acb.srcRect[3] = rectH;
+    acb.canvas[0] = static_cast<float>(c->canvasW);
+    acb.canvas[1] = static_cast<float>(c->canvasH);
+    acb.canvas[2] = c->canvasScale;
+    acb.canvas[3] = Clamp(lod, 0.0f, static_cast<float>((std::max)(c->canvasMips - 1, 0)));
+    acb.virtualOrg[0] = static_cast<float>(c->vx);
+    acb.virtualOrg[1] = static_cast<float>(c->vy);
+    acb.gate[0] = p->gate_lo;
+    acb.gate[1] = p->gate_hi;
+    acb.gate[2] = (std::max)(p->gate_feather, 1e-6f);
+    if (!UploadCb(c, c->cbAnalyze.Get(), &acb, sizeof(acb))) {
+        return Fail(c, MICA_ERR_DEVICE_LOST, "更新 AnalyzeCB 失败（设备可能已丢失）");
+    }
+    DrawPass(c, c->psAnalyze.Get(), c->canvasSrv.Get(), c->cbAnalyze.Get(), c->stageA.rtv.Get(),
+             padW, padH);
+
+    // --- 阶段 B：归一化加权可分离高斯 -------------------------------------
+    const float sigma = (std::max)(p->sigma, 0.0f);
+    int radius = static_cast<int>(::ceilf(kGaussianRadiusSigmas * (std::max)(sigma, 1e-6f)));
+    radius = Clamp(radius, 1, kMaxBlurRadius);
+
+    BlurCB bcb = {};
+    bcb.kernel[0] = sigma;
+    bcb.kernel[1] = static_cast<float>(radius);
+    bcb.kernel[2] = 1.0f / (2.0f * (std::max)(sigma, 1e-6f) * (std::max)(sigma, 1e-6f));
+
+    if (sigma > 1e-4f) {
+        // 水平：stageA -> stageB
+        bcb.step[0] = 1.0f / static_cast<float>(padW);
+        bcb.step[1] = 0.0f;
+        if (!UploadCb(c, c->cbBlur.Get(), &bcb, sizeof(bcb))) {
+            return Fail(c, MICA_ERR_DEVICE_LOST, "更新 BlurCB(H) 失败");
+        }
+        DrawPass(c, c->psBlur.Get(), c->stageA.srv.Get(), c->cbBlur.Get(), c->stageB.rtv.Get(),
+                 padW, padH);
+
+        // 垂直：stageB -> stageA
+        bcb.step[0] = 0.0f;
+        bcb.step[1] = 1.0f / static_cast<float>(padH);
+        if (!UploadCb(c, c->cbBlur.Get(), &bcb, sizeof(bcb))) {
+            return Fail(c, MICA_ERR_DEVICE_LOST, "更新 BlurCB(V) 失败");
+        }
+        DrawPass(c, c->psBlur.Get(), c->stageB.srv.Get(), c->cbBlur.Get(), c->stageA.rtv.Get(),
+                 padW, padH);
+    }
+
+    // --- 阶段 C：合成 -----------------------------------------------------
+    float g1[3];
+    UnpackRgb(p->g1_rgb, g1);
+    CompositeCB ccb = {};
+    ccb.shape[0] = p->gain;
+    ccb.shape[1] = (std::max)(p->chroma_cap, 1e-6f);
+    ccb.shape[2] = Clamp(p->alpha, 0.0f, 1.0f);
+    ccb.shape[3] = p->l_ref;
+    ccb.base[0] = g1[0];
+    ccb.base[1] = g1[1];
+    ccb.base[2] = g1[2];
+    // f32 输出强制关闭 TPDF 抖动（gBase.w = 0）：量化/抖动由调用方在显示分辨率进行。
+    ccb.base[3] = 0.0f;
+    ccb.geom[0] = static_cast<float>(margin);
+    ccb.geom[1] = static_cast<float>(padW);
+    ccb.geom[2] = static_cast<float>(padH);
+    if (!UploadCb(c, c->cbComposite.Get(), &ccb, sizeof(ccb))) {
+        return Fail(c, MICA_ERR_DEVICE_LOST, "更新 CompositeCB 失败");
+    }
+    DrawPass(c, c->psComposite.Get(), c->stageA.srv.Get(), c->cbComposite.Get(),
+             c->outTexF32.rtv.Get(), gridW, gridH);
+
+    UnbindAll(c);
+
+    // --- 回读（R32G32B32A32_FLOAT -> 调用方 float32 RGB）-------------------
+    c->ctx->CopyResource(c->readbackF32.Get(), c->outTexF32.tex.Get());
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    // Map(READ) 会阻塞到 GPU 完成。整条管线的工作量极小（网格 <= 192²），
+    // 阻塞时间由驱动往返延迟主导，实测 0.3–1.5 ms。
+    const HRESULT hr = c->ctx->Map(c->readbackF32.Get(), 0, D3D11_MAP_READ, 0, &mapped);
+    if (FAILED(hr)) {
+        if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
+            return FailHr(c, MICA_ERR_DEVICE_LOST, hr, "Map(readbackF32)");
+        }
+        return FailHr(c, MICA_ERR_INTERNAL, hr, "Map(readbackF32)");
+    }
+
+    // 每像素 RGBA float（16 字节），取前三个分量 R/G/B 写入调用方紧密的 3-float 行。
+    const uint8_t* base = static_cast<const uint8_t*>(mapped.pData);
+    for (int y = 0; y < gridH; ++y) {
+        const uint8_t* srcRow = base + static_cast<size_t>(y) * mapped.RowPitch;
+        float* dstRow = outRgb + static_cast<size_t>(y) * static_cast<size_t>(gridW) * 3u;
+        for (int x = 0; x < gridW; ++x) {
+            const uint8_t* px = srcRow + static_cast<size_t>(x) * 16u;
+            const float* f = reinterpret_cast<const float*>(px);
+            dstRow[x * 3 + 0] = f[0];  // R
+            dstRow[x * 3 + 1] = f[1];  // G
+            dstRow[x * 3 + 2] = f[2];  // B
+        }
+    }
+    c->ctx->Unmap(c->readbackF32.Get(), 0);
 
     if (outResult != nullptr) {
         outResult->width = gridW;

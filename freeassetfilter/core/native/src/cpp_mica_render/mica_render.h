@@ -43,7 +43,10 @@ extern "C" {
 #endif
 
 /// ABI 版本号。Python 桥接层必须校验该值与自身预期一致，不一致则拒绝加载。
-#define MICA_API_VERSION 1
+///
+/// v2 新增 ``mica_bake_f32``（float32 RGB 合成输出）；v1 的 ``mica_bake``（uint8）
+/// 保持不变。
+#define MICA_API_VERSION 2
 
 /// 状态码。0 为成功，其余均为失败且已写入 ``mica_last_error`` 描述。
 typedef enum mica_status {
@@ -291,6 +294,26 @@ MICA_API mica_status mica_bake(mica_context* ctx,
                               uint8_t* out_rgb,
                               int32_t out_capacity,
                               mica_bake_result* out_result);
+
+/// 执行一次完整烘焙，输出紧密排列的 float32 RGB 网格图。
+///
+/// 与 :c:func:`mica_bake` 走完全相同的 Analyze→Blur→Composite 管线与几何
+/// （相同的采样矩形 / 扩边 / σ / gain / chroma_cap / alpha / l_ref / 门控），但把
+/// 合成结果渲染到 ``R32G32B32A32_FLOAT`` 目标纹理再回读，**不**做 8-bit 量化：
+///
+/// * 输出的每个像素是 0..1 sRGB 的 ``float``（3 个分量 RGB，行主序），由调用方
+///   在显示分辨率上自行量化/抖动，因此本函数**强制关闭**着色器内的 TPDF 抖动。
+/// * 单位：``out_capacity`` 以**字节**计，必须 >= ``grid_w * grid_h * 3 * sizeof(float)``。
+///
+/// @param params        输入参数，不可为 ``NULL``。
+/// @param out_rgb       输出缓冲，容量需 >= ``grid_w * grid_h * 3 * sizeof(float)``。
+/// @param out_capacity  ``out_rgb`` 的字节容量。
+/// @param out_result    可为 ``NULL``；非空时写入输出元数据（与 ``mica_bake`` 一致）。
+MICA_API mica_status mica_bake_f32(mica_context* ctx,
+                                   const mica_bake_params* params,
+                                   float* out_rgb,
+                                   int32_t out_capacity,
+                                   mica_bake_result* out_result);
 
 #ifdef __cplusplus
 }  // extern "C"

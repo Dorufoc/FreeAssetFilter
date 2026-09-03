@@ -54,7 +54,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 _LOG = logging.getLogger(__name__)
 
 #: 本桥接层要求的 ABI 版本，必须与 ``mica_render.h`` 的 ``MICA_API_VERSION`` 一致。
-REQUIRED_API_VERSION: int = 1
+REQUIRED_API_VERSION: int = 2
 
 #: DLL 文件名。
 LIBRARY_NAME: str = "mica_render.dll"
@@ -441,6 +441,15 @@ def _bind(lib: ctypes.WinDLL) -> None:
         POINTER(_BakeResultStruct),
     ]
     lib.mica_bake.restype = c_int32
+
+    lib.mica_bake_f32.argtypes = [
+        c_void_p,
+        POINTER(_BakeParamsStruct),
+        POINTER(c_float),
+        c_int32,
+        POINTER(_BakeResultStruct),
+    ]
+    lib.mica_bake_f32.restype = c_int32
 
 
 def load_library() -> Optional[ctypes.WinDLL]:
@@ -889,6 +898,74 @@ class MicaRenderContext:
             )
         )
         self._check(status, "mica_bake")
+        return image, BakeResult(
+            size=(int(meta.width), int(meta.height)),
+            pad_size=(int(meta.pad_width), int(meta.pad_height)),
+            sample_rect=(
+                float(meta.sample_x),
+                float(meta.sample_y),
+                float(meta.sample_w),
+                float(meta.sample_h),
+            ),
+            duration_ms=float(meta.duration_ms),
+            backend=BACKEND_NAMES.get(int(meta.backend), "none"),
+        )
+
+    def bake_float(self, params: BakeParams) -> Tuple[object, BakeResult]:
+        """执行一次完整烘焙，输出未量化的 float32 RGB 网格。
+
+        与 :meth:`bake` 唯一的区别是输出为 ``(grid_h, grid_w, 3)`` 的 float32
+        数组（0..1 sRGB，3 个 float/像素，row-major），未经过 uint8 量化，便于
+        上层按需求取更精细的色值。
+
+        Args:
+            params: 烘焙输入。
+
+        Returns:
+            ``(image, meta)``：``image`` 为 shape ``(grid_h, grid_w, 3)`` 的
+            float32 numpy 数组（由本方法新分配，调用方独占）；``meta`` 为
+            :class:`BakeResult`。
+
+        Raises:
+            MicaRenderError: 画布未构建、参数非法或 GPU 执行失败。
+        """
+        handle = self._require("bake_float")
+        import numpy as np
+
+        grid_w, grid_h = (max(1, int(v)) for v in params.grid_size)
+        wx, wy, ww, wh = (int(v) for v in params.window_rect)
+
+        raw = _BakeParamsStruct(
+            win_x=wx,
+            win_y=wy,
+            win_w=max(1, ww),
+            win_h=max(1, wh),
+            grid_w=grid_w,
+            grid_h=grid_h,
+            margin=max(0, int(params.margin)),
+            dither=1 if params.dither else 0,
+            sigma=float(params.sigma),
+            gain=float(params.gain),
+            chroma_cap=float(params.chroma_cap),
+            alpha=float(params.alpha),
+            l_ref=float(params.l_ref),
+            gate_lo=float(params.gate_lo),
+            gate_hi=float(params.gate_hi),
+            gate_feather=float(params.gate_feather),
+            g1_rgb=_pack_rgb(params.g1_rgb),
+        )
+        image = np.empty((grid_h, grid_w, 3), dtype=np.float32)
+        meta = _BakeResultStruct()
+        status = int(
+            self._lib.mica_bake_f32(
+                handle,
+                ctypes.byref(raw),
+                image.ctypes.data_as(POINTER(c_float)),
+                int(image.nbytes),
+                ctypes.byref(meta),
+            )
+        )
+        self._check(status, "mica_bake_f32")
         return image, BakeResult(
             size=(int(meta.width), int(meta.height)),
             pad_size=(int(meta.pad_width), int(meta.pad_height)),

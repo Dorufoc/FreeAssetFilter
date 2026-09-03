@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import ctypes
+import math
 import sys
 import time
 from ctypes import wintypes
@@ -33,6 +34,7 @@ EXPORTS = (
     "mica_dxgi_probe",
     "mica_canvas_mean_rgb",
     "mica_bake",
+    "mica_bake_f32",
 )
 
 STATUS_NAMES = {
@@ -145,9 +147,9 @@ def main() -> int:
     dll.mica_api_version.restype = ctypes.c_uint32
     dll.mica_api_version.argtypes = []
     ver = dll.mica_api_version()
-    print(f"  api_version = {ver}")
-    if ver != 1:
-        print("  [FAIL] 版本号不符")
+    print(f"  mica_api_version == {ver}")
+    if ver != 2:
+        print("  [FAIL] 版本号不符（应为 2）")
         return 1
 
     dll.mica_create.restype = ctypes.c_int32
@@ -187,6 +189,14 @@ def main() -> int:
         ctypes.POINTER(BakeParams),
         ctypes.c_void_p,
         ctypes.c_uint32,
+        ctypes.POINTER(BakeResult),
+    ]
+    dll.mica_bake_f32.restype = ctypes.c_int32
+    dll.mica_bake_f32.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(BakeParams),
+        ctypes.POINTER(ctypes.c_float),
+        ctypes.c_int32,
         ctypes.POINTER(BakeResult),
     ]
 
@@ -293,6 +303,75 @@ def main() -> int:
         print(f"  mica_build_canvas_solid -> {status_text(st)}")
         st = dll.mica_bake(ctx, ctypes.byref(params), out, cap, ctypes.byref(res))
         print(f"  mica_bake(solid) -> {status_text(st)} 首像素={tuple(out[0:3])}")
+
+        # --- v2: mica_bake_f32 最小 float32 往返 ---------------------------------
+        # 校验符号存在（getattr 不应抛 AttributeError）。
+        try:
+            bake_f32_fn = getattr(dll, "mica_bake_f32")
+        except AttributeError as exc:
+            print(f"  [FAIL] 缺失导出 mica_bake_f32: {exc}")
+            return 1
+        if bake_f32_fn is None:
+            print("  [FAIL] mica_bake_f32 解析为 None")
+            return 1
+        print("  [OK] mica_bake_f32 导出存在（getattr 解析成功）")
+
+        fw, fh = 32, 32
+        fparams = BakeParams(
+            win_x=100,
+            win_y=100,
+            win_w=1200,
+            win_h=800,
+            grid_w=fw,
+            grid_h=fh,
+            margin=8,
+            dither=1,
+            sigma=24.0,
+            gain=1.35,
+            chroma_cap=0.045,
+            alpha=0.85,
+            l_ref=0.32,
+            gate_lo=0.02,
+            gate_hi=0.98,
+            gate_feather=0.06,
+            g1_rgb=0x00202020,
+        )
+        fcount = fw * fh * 3
+        out_f32 = (ctypes.c_float * fcount)()  # float32 RGB，行主序
+        fres = BakeResult()
+        st = dll.mica_build_canvas_solid(ctx, 0x00336699)
+        if st != 0:
+            print(f"  [FAIL] mica_build_canvas_solid(f32) -> {status_text(st)}")
+            return 1
+        st = dll.mica_bake_f32(ctx, ctypes.byref(fparams), out_f32, fcount * 4, ctypes.byref(fres))
+        print(f"  mica_bake_f32({fw}x{fh}) -> {status_text(st)}")
+        if st != 0:
+            print(f"  [FAIL] {dll.mica_last_error(ctx).decode('utf-8', 'replace')}")
+            return 1
+
+        finite = all(math.isfinite(float(v)) for v in out_f32)
+        in_range = all(0.0 <= float(v) <= 1.0 for v in out_f32)
+        mn = min(float(v) for v in out_f32)
+        mx = max(float(v) for v in out_f32)
+        print(
+            f"    grid={fres.width}x{fres.height} pad={fres.pad_width}x{fres.pad_height} "
+            f"backend={BACKEND_NAMES.get(fres.backend)}"
+        )
+        print(f"    float[0:6] = {[round(float(out_f32[i]), 5) for i in range(6)]}")
+        print(f"    range=[{mn:.5f}, {mx:.5f}] finite={finite} in_[0,1]={in_range}")
+        if st != 0 or not finite or not in_range:
+            print("  [FAIL] float32 输出非有限或超出 [0,1] sRGB")
+            return 1
+        print("  [OK] float32 往返：返回 MICA_OK 且数值有限、位于 [0,1] sRGB")
+
+        # --- malformed: undersized out_capacity 应返回 INVALID_ARG 而非崩溃 -------
+        small = (ctypes.c_float * 1)()
+        st_small = dll.mica_bake_f32(ctx, ctypes.byref(fparams), small, 4, ctypes.byref(fres))
+        print(f"  mica_bake_f32(undersized capacity=4) -> {status_text(st_small)}")
+        if st_small != 1:
+            print("  [FAIL] undersized buffer 未返回 MICA_ERR_INVALID_ARG(1)")
+            return 1
+        print("  [OK] undersized buffer 返回 MICA_ERR_INVALID_ARG")
     finally:
         dll.mica_destroy(ctx)
         print("  mica_destroy -> done")

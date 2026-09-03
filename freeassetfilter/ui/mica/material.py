@@ -10,7 +10,7 @@
 * 重活（采壁纸 + 色调场管线）全部在 :mod:`ui.mica.engine` / :mod:`ui.mica.source`
   里完成，且天然可放进后台线程；本层只负责线程调度、QPixmap 转换、淡入淡出、
   焦点感知、噪声颗粒与绘制。
-* 烘焙产物是**已经按窗口尺寸生成的色调场**（网格 ≤192 长边），因此绘制时只需
+* 烘焙产物是**已经按窗口尺寸生成的色调场**（网格 ≤BAKE_LONG_MAX 长边），因此绘制时只需
   把它平滑放大铺满即可，**不再需要旧版那种「整块虚拟桌面模糊图 + 按窗口位置取子矩形」
   的复杂几何**——这正是「亮度锁死、只留低频色度」带来的简化红利。
 * 坐标空间统一为 Win32 物理像素：窗口矩形取自 ``winapi.window_rect``，与壁纸源
@@ -26,24 +26,25 @@
   壁纸采集只用 COM（``ensure_com`` 每线程幂等初始化），numpy 在后台线程释放 GIL，
   因此不阻塞 UI。
 
-拖动期的实时跟随
-----------------
-重烘焙天然是"按次计费"的（一次完整管线），无法逐帧承担。因此拖拽走的是
-:mod:`ui.mica.drag` 的**偏移采样**：拖到一半时烘一块**比窗口大一圈**的色调场，
-之后每个 ``moveEvent`` 只从这块场里按位移取一个子矩形做 blit —— 零重计算，
-逐帧成本恒为一次子矩形绘制。
+逐监视器视口层（持久化）
+------------------------
+重烘焙天然是"按次计费"的（一次完整管线），无法逐帧承担。因此每个监视器
+维护**一块**持久化的"视口层"：烘焙一次 —— 模糊 + 着色的壁纸，正好覆盖
+窗口当前所在的整块监视器（见 :func:`ui.mica.drag.layer_region_for` /
+:func:`ui.mica.drag.layer_grid`）。窗口在监视器内平移时，层不需要重烘焙，
+逐帧只需从层里按窗口位置取一个子矩形 blit，零重计算（子矩形取样的绘制细化
+见后续任务，本模块只负责把层烘焙到位并保存）。
 
-``moveEvent`` → :meth:`MicaMaterial.begin_interaction` 的调用链因此承担三件事：
-估计运动速度、按需申请拖动场、请求重绘。绘制路径见 :meth:`MicaMaterial.paint`。
-余量与画质由 :class:`~ui.mica.drag.DragSampler` 按实测烘焙延迟自适应调节，
-设备跟不上时自动冻结并退回"保持上一块色调场"的旧行为。
+主线程按 ``layer_key``（params、dark、source_signature、region、
+layer_display_long）判断层是否过期：主题 / 参数 / 壁纸 / 监视器变化时重烘焙
+一次；key 不变则跳过。worker 结果携带生成时的 ``layer_key``，主线程槽
+若发现已不匹配当前 key，则丢弃该过期的烘焙结果（陈旧结果绝不提交）。
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-import time
 import weakref
 from typing import Optional, Tuple, Union
 
@@ -52,14 +53,10 @@ from PySide6.QtCore import (
     QElapsedTimer,
     QEvent,
     QObject,
-    QPoint,
     QRect,
     QRectF,
-    QRunnable,
     QThread,
-    QThreadPool,
     QTimer,
-    Qt,
     Signal,
 )
 from PySide6.QtGui import (
@@ -75,6 +72,7 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 from . import winapi
 from .config import (
+    BAKE_LONG_MAX,
     BAKE_MAX_RETRIES,
     BAKE_RETRY_DELAY_MS,
     BAKE_WATCHDOG_MS,
@@ -82,23 +80,101 @@ from .config import (
     FADE_DURATION_MS,
     G1_DARK,
     G1_LIGHT,
-    NOISE_OPACITY,
-    NOISE_SEED,
-    NOISE_TILE_SIZE,
     SETTLE_INTERVAL_MS,
+    SIGMA_MAX,
+    SIGMA_MIN,
 )
 from .drag import (
-    DRAG_REQUEST_COOLDOWN_MS,
-    DRAG_VELOCITY_SMOOTHING,
-    DragField,
-    DragPlan,
-    DragSampler,
+    LAYER_DISPLAY_LONG_MAX,
+    ViewportLayer,
+    layer_grid,
+    layer_region_for,
+    layer_to_source,
+    layer_to_source_clamped,
 )
-from .engine import BakeRequest
+from .engine import BakeRequest, render_display
 from .gpu import gpu_bake
 from .source import WallpaperProvider
 
 _LOG = logging.getLogger(__name__)
+
+#: 静态场渲染到显示分辨率时的长边上限（像素）。足够高以在 2K 屏上
+#: 获得 1px 颗粒的抖动（色带被彻底打散），又给 4K 屏等极端尺寸封了内存顶。
+DISPLAY_LONG_CAP: int = 2048
+
+#: 混合预合成使用的默认纯色底（黑）。绘制端不再二次混合，见 render_display。
+_DEFAULT_SURFACE_RGB: Tuple[int, int, int] = (0, 0, 0)
+
+
+def _layer_display_long(region: Tuple[int, int, int, int]) -> int:
+    """视口层的显示参考长边（像素）。
+
+    层覆盖整块监视器，按层区域（= 监视器矩形）长边封顶
+    :data:`~ui.mica.drag.LAYER_DISPLAY_LONG_MAX`，**不是**窗口长边。
+    ``LAYER_DISPLAY_LONG_MAX`` 高于静态场的 :data:`DISPLAY_LONG_CAP`，因为
+    层要在显示分辨率上保留 1px 颗粒的抖动，且逐帧只取其中窗口大小的子矩形。
+
+    Args:
+        region: ``(x, y, w, h)`` 层覆盖矩形（= 监视器矩形）。
+
+    Returns:
+        目标长边（像素），恒 ≥ 1。
+    """
+    region_long = max(int(region[2]), int(region[3]))
+    return min(max(1, region_long), LAYER_DISPLAY_LONG_MAX)
+
+
+def _params_with_sigma(params, dark: bool, sigma: float):
+    """把引擎 σ 反解为等价 ``blur_radius``，保持层网格被钳制时物理模糊半径不变。
+
+    层网格按监视器换算后可能被 :data:`~ui.mica.drag.LAYER_GRID_CAP` 钳制，
+    实际密度低于常规烘焙。此时必须同步缩小 σ（网格像素），才能让色度低通的
+    **物理半径** ``σ_physical = sigma_eff / density`` 不变 —— 否则视口层与常规
+    烘焙观感不一致（松手出现糊→清晰跳变）。:func:`ui.mica.drag.layer_grid`
+    返回的 ``sigma_eff`` 即为此准备。
+
+    Args:
+        params: 用户参数。
+        dark: 是否深色模式（不影响换算，仅保留签名对称性）。
+        sigma: 目标引擎 σ（网格像素）。
+
+    Returns:
+        以等价 ``blur_radius`` 重建的 :class:`~ui.mica.config.MicaParams`。
+    """
+    k = BAKE_LONG_MAX / 192.0
+    base = float(sigma) / k
+    blur = min(300.0, max(0.0, (base - SIGMA_MIN) / (SIGMA_MAX - SIGMA_MIN) * 300.0))
+    if abs(blur - params.blur_radius) < 1e-6:
+        return params
+    return params.replace(blur_radius=blur)
+
+
+def _pixmap_from_rgb(image: np.ndarray) -> QPixmap:
+    """把 ``(H, W, 3)`` uint8 RGB 数组转为 QPixmap（拷贝脱离 numpy 缓冲）。
+
+    这是**主线程唯一允许执行**的图像转换：只做一次格式转换 + 拷贝，实测
+    1920×1080 约 2 ms。所有重活（双线性上采样、抖动量化）都已在 worker
+    线程完成。
+
+    Args:
+        image: ``(H, W, 3)`` uint8 RGB 数组（连续内存）。
+
+    Returns:
+        QPixmap；输入非法时返回空 QPixmap。
+    """
+    if image is None or image.ndim != 3 or image.shape[2] != 3:
+        return QPixmap()
+    h, w = int(image.shape[0]), int(image.shape[1])
+    if h <= 0 or w <= 0:
+        return QPixmap()
+    buf = np.ascontiguousarray(image, dtype=np.uint8)
+    # QImage 的这个重载**不拷贝**缓冲，只持有裸指针，因此 bytes 对象必须在
+    # QImage 整个使用周期内保持存活 —— 这里显式绑定到局部变量，直到转换完成。
+    data = buf.tobytes()
+    qimg = QImage(data, w, h, w * 3, QImage.Format_RGB888)
+    pixmap = QPixmap.fromImage(qimg)
+    del qimg, data
+    return pixmap
 
 
 # ---------------------------------------------------------------------------
@@ -158,14 +234,20 @@ def _is_dark_color(color: QColor) -> bool:
 
 
 class _BakeWorker(QObject):
-    """后台烘焙任务：在独立线程里跑 ``provider.acquire() + engine.bake``。
+    """后台层烘焙任务：在独立线程里烘一块覆盖当前监视器的"视口层"。
 
-    只消费 numpy / COM（无 Qt 控件访问），结果以信号把 :class:`~ui.mica.engine.BakedField`
-    回传主线程。``BakeRequest`` 所需的窗口矩形已在主线程算好（Qt 几何非线程安全），
-    经 ``job`` 传入。
+    只消费 numpy / COM（无 Qt 控件访问），结果以信号把
+    ``(display_image, layer_info, layer_key, gen)`` 回传主线程：
+    ``display_image`` 是已在**本线程**渲染好的 ``(H, W, 3)`` uint8 数组，
+    主线程只做 QImage→QPixmap 转换。``layer_info`` 为
+    :class:`~ui.mica.drag.ViewportLayer`（region / width / height / win_size）。
+
+    层覆盖整块监视器，因此窗口在监视器内平移**不**触发重烘焙 —— 逐帧只需从层里
+    按窗口位置取子矩形（见后续绘制细化任务）。本 worker 负责把层烘焙到位。
     """
 
-    done = Signal(object)  # BakedField
+    #: 参数为 ``(display_image, layer_info, layer_key, gen)``。
+    done = Signal(object)
     failed = Signal()
 
     def __init__(
@@ -174,116 +256,64 @@ class _BakeWorker(QObject):
         window_rect: Tuple[int, int, int, int],
         params,  # MicaParams（不可变 dataclass，跨线程只读安全）
         dark: bool,
+        monitor_rect: Tuple[int, int, int, int],
+        layer_display_long: int,
+        overlay: float,
+        surface_rgb: Tuple[int, int, int],
+        layer_key: Tuple[object, ...],
+        generation: int,
     ) -> None:
         super().__init__()
         self._provider = provider
         self._window_rect = window_rect
         self._params = params
         self._dark = dark
+        self._monitor_rect = monitor_rect
+        self._layer_display_long = layer_display_long
+        self._overlay = overlay
+        self._surface_rgb = surface_rgb
+        self._layer_key = layer_key
+        self._generation = generation
 
     def run(self) -> None:
-        """执行一次烘焙；任何异常都按失败上报，绝不抛出到线程之外。"""
+        """执行一次层烘焙并渲染到显示分辨率；异常按失败上报，绝不抛出到线程之外。
+
+        步骤：由窗口矩形 + 监视器矩形算层区域 → 由监视器 + 窗口尺寸 + σ 算层网格
+        （含 σ 守恒校正）→ 以层区域为 ``window_rect`` 烘焙（显式 ``grid_size``）
+        → 渲染到显示分辨率（long = 层区域长边 ≤ ``LAYER_DISPLAY_LONG_MAX``）。
+        """
         try:
             source = self._provider.acquire()
             if source.pixels.size == 0:
                 self.failed.emit()
                 return
-            request = BakeRequest(
-                self._window_rect, self._params, self._dark, source.signature
+            region = layer_region_for(self._window_rect, self._monitor_rect)
+            sigma = self._params.to_engine(self._dark).sigma
+            grid, sigma_eff = layer_grid(
+                self._monitor_rect, self._window_rect[2], self._window_rect[3], sigma
             )
-            field = gpu_bake(request, source)
+            # 网格被钳制时，σ 按密度比例回缩，保持物理模糊半径不变。
+            bake_params = _params_with_sigma(self._params, self._dark, sigma_eff)
+            request = BakeRequest(
+                region, bake_params, self._dark, source.signature
+            )
+            field = gpu_bake(request, source, grid_size=grid)
             if field is None:
                 self.failed.emit()
                 return
-            self.done.emit(field)
-        except Exception as exc:  # pragma: no cover - 防御性兜底
-            _LOG.debug("后台烘焙异常：%s", exc)
-            self.failed.emit()
-
-
-# ---------------------------------------------------------------------------
-# 拖动场烘焙任务（线程池；与上面的 QThread 通道互不干扰）
-# ---------------------------------------------------------------------------
-
-
-class _DragSignals(QObject):
-    """拖动场任务的结果桥（跨线程信号必须挂在 QObject 上）。"""
-
-    #: 参数为 :class:`~ui.mica.drag.DragField` 或 ``None``（失败）。
-    finished = Signal(object)
-
-
-class _DragTask(QRunnable):
-    """在线程池里烘焙一块放大色调场，供拖动期逐帧偏移取样。
-
-    与 :class:`_BakeWorker` 的区别：本任务**不做**重试与看门狗。拖动场是纯
-    加速用的投机产物，失败最坏情况是这一帧回退到旧色调场，不值得为它维护
-    一套重试状态机；真正的正确性由运动停止后的常规烘焙保证。
-
-    线程安全：``provider`` 的缓存由 ``lock`` 保护（与主线程同步烘焙互斥）。
-    """
-
-    def __init__(
-        self,
-        provider: WallpaperProvider,
-        plan: DragPlan,
-        params,  # MicaParams（不可变 dataclass，跨线程只读安全）
-        dark: bool,
-        lock: threading.Lock,
-        signals: _DragSignals,
-    ) -> None:
-        """初始化任务。
-
-        Args:
-            provider: 壁纸源提供者。
-            plan: 拖动场规划（区域 + 网格尺寸）。
-            params: 用户参数。
-            dark: 是否深色模式。
-            lock: 保护 ``provider`` 缓存的锁。
-            signals: 结果桥。
-        """
-        super().__init__()
-        self._provider = provider
-        self._plan = plan
-        self._params = params
-        self._dark = dark
-        self._lock = lock
-        self._signals = signals
-
-    def run(self) -> None:
-        """执行烘焙并回传结果；任何异常都按 ``None`` 上报，绝不抛出。"""
-        started = time.perf_counter()
-        try:
-            with self._lock:
-                source = self._provider.acquire()
-                if source.pixels.size == 0:
-                    self._signals.finished.emit(None)
-                    return
-                request = BakeRequest(
-                    self._plan.region, self._params, self._dark, source.signature
-                )
-                field = gpu_bake(request, source, grid_size=self._plan.grid)
-                if field is None:
-                    self._signals.finished.emit(None)
-                    return
-
-            duration = (time.perf_counter() - started) * 1000.0
-            self._signals.finished.emit(
-                DragField(
-                    image=field.image,
-                    region=self._plan.region,
-                    grid=self._plan.grid,
-                    win_size=self._plan.win_size,
-                    key=(self._params, self._dark, request.source_signature),
-                    backend=field.backend,
-                    duration_ms=duration,
-                    cover=self._plan.cover,
-                    quality=self._plan.quality,
-                )
+            display = render_display(
+                field, self._layer_display_long, self._overlay, self._surface_rgb
             )
+            layer_info = ViewportLayer(
+                region=region,
+                width=int(display.shape[1]),
+                height=int(display.shape[0]),
+                win_size=(int(self._window_rect[2]), int(self._window_rect[3])),
+            )
+            self.done.emit((display, layer_info, self._layer_key, self._generation))
         except Exception as exc:  # pragma: no cover - 防御性兜底
-            _LOG.debug("拖动场烘焙异常：%s", exc)
-            self._signals.finished.emit(None)
+            _LOG.debug("后台层烘焙异常：%s", exc)
+            self.failed.emit()
 
 
 # ---------------------------------------------------------------------------
@@ -359,9 +389,6 @@ class MicaMaterial(QObject):
         self._provider = WallpaperProvider(fallback_rgb=G1_DARK if self._dark else G1_LIGHT)
         self._bake_lock = threading.Lock()
 
-        # 噪声颗粒（掩盖 8-bit 渐变条带，肉眼几乎不可见）
-        self._noise_tile = self._make_noise_tile()
-
         # 烘焙产物
         self._pixmap: Optional[QPixmap] = None
         self._last_req: Optional[BakeRequest] = None
@@ -385,19 +412,21 @@ class MicaMaterial(QObject):
         self._watchdog.setInterval(BAKE_WATCHDOG_MS)
         self._watchdog.timeout.connect(self._on_bake_timeout)
 
-        # 拖动期偏移采样（详见 ui.mica.drag）
+        # 逐监视器持久化视口层（详见 ui.mica.drag）—— 代替旧的拖动场偏移采样。
+        # 层烘焙一次覆盖整块监视器；窗口在监视器内平移无需重烘焙，只逐帧取样
+        # （绘制期子矩形取样是后续任务，本模块只需把层烘焙到位并保存）。
         self._disposed = False
-        self._drag_sampler = DragSampler()
-        self._drag_field: Optional[DragField] = None
-        self._drag_pixmap: Optional[QPixmap] = None
-        self._drag_pending: bool = False
-        self._drag_requested_at: float = 0.0
-        self._drag_signals = _DragSignals()
-        self._drag_signals.finished.connect(self._on_drag_field_ready)
-        self._motion_last: Optional[Tuple[float, int, int]] = None
-        self._motion_size: Optional[Tuple[int, int]] = None
-        self._velocity: Tuple[float, float] = (0.0, 0.0)
-        self._resizing: bool = False
+        #: 层几何：region（虚拟桌面覆盖范围）、width/height（层实际渲染像素）、win_size。
+        self._layer: Optional[ViewportLayer] = None
+        #: 层在显示分辨率上的 QPixmap（worker 已渲染好，主线程只做转换）。
+        self._layer_pixmap: Optional[QPixmap] = None
+        #: 当前层的有效性判据 ``(params, dark, source_signature, region, layer_display_long)``；
+        #: 主题 / 参数 / 壁纸 / 监视器任一变化 ⇒ key 变化 ⇒ 重烘焙一层。
+        self._layer_key: Optional[Tuple[object, ...]] = None
+        #: 层代际单调递增计数器：每次请求新层烘焙时自增；主线程槽据此丢弃过期结果。
+        self._layer_gen: int = 0
+        #: 当前监视器的层显示参考长边（像素），随 refresh_async 更新。
+        self._layer_display_long: int = 0
 
         # 淡入淡出
         self._fade_alpha = 1.0
@@ -409,6 +438,14 @@ class MicaMaterial(QObject):
         self._fade_timer.timeout.connect(self._on_fade_tick)
         self._active = True
         self._paused = False
+
+        # overlay_opacity 现在会影响烘焙产物（混合预合成在 worker 完成），
+        # 因此滑块连拖用防抖合并，静置 250ms 后再重建。
+        self._opacity_render_pending = False
+        self._opacity_timer = QTimer(self._widget)
+        self._opacity_timer.setSingleShot(True)
+        self._opacity_timer.setInterval(250)
+        self._opacity_timer.timeout.connect(self._on_opacity_settle)
 
         # 焦点感知（失焦淡出并暂停绘制）
         self._focus_whitelist: set = set()
@@ -444,17 +481,40 @@ class MicaMaterial(QObject):
                 self._hide_immediately()
 
     def refresh_async(self) -> None:
-        """在后台线程异步烘焙（非阻塞）。
+        """在后台线程异步烘焙一块覆盖当前监视器的**视口层**（非阻塞）。
 
         有界重试：失败 / 超时累计超过 :data:`~ui.mica.config.BAKE_MAX_RETRIES` 后
-        放弃并保留上一块有效色调场（或纯色兜底）。已有在途任务时忽略。
+        放弃并保留上一块有效层（或纯色兜底）。已有在途任务时忽略。
+
+        请求前先在主线程算好监视器矩形、层区域、层显示长边与 ``layer_key``，
+        并提交时自增 ``_layer_gen`` —— worker 结果携带同一 key/gen，主线程槽
+        若发现 key/gen 已不匹配（一次更新的请求已提交）则丢弃过期结果。
         """
         if self._worker_thread is not None:
             return
         if self._refresh_retries > BAKE_MAX_RETRIES:
             return
-        job = (self._window_rect_tuple(), self._params, self._dark)
-        self._worker = _BakeWorker(self._provider, job[0], job[1], job[2])
+        win = self._window_rect_tuple()
+        monitor = self._monitor_rect_for(win)
+        region = layer_region_for(win, monitor)
+        layer_display_long = _layer_display_long(region)
+        layer_key = self._layer_key_for(region, layer_display_long)
+        self._layer_display_long = layer_display_long
+        self._layer_key = layer_key
+        self._layer_gen += 1
+        generation = self._layer_gen
+        self._worker = _BakeWorker(
+            self._provider,
+            win,
+            self._params,
+            self._dark,
+            monitor,
+            layer_display_long,
+            self._overlay_opacity,
+            self._surface_rgb(),
+            layer_key,
+            generation,
+        )
         self._worker_thread = QThread()
         self._worker.moveToThread(self._worker_thread)
         self._worker.done.connect(self._on_bake_done)
@@ -471,9 +531,17 @@ class MicaMaterial(QObject):
     ) -> None:
         """把 Mica 背景绘制到控件。
 
-        交互期优先走**偏移采样**：从缓存的放大色调场里按当前窗口位置取一个
-        浮点子矩形做一次 blit，不重跑任何管线。取不到（场未就绪 / 越界 /
-        缩放中）时自动退回"上一块整窗色调场"。
+        绘制优先取**视口层**（逐监视器持久化，覆盖当前监视器）的**窗口子矩形**：
+        窗口在监视器内平移无需重烘焙，绘制期只从层里按窗口位置取一个子矩形做
+        单次 blit（几何 100% 复用 :func:`ui.mica.drag.layer_to_source`）。
+
+        * `layer_to_source` 返回整型子矩形（层与虚拟区域 1:1 且恰好落在整像素）
+          ⇒ 真 1:1 blit —— ``SmoothPixmapTransform=False``（无重采样，最锐）。
+        * 返回浮点型子矩形（层分辨率与虚拟区域不同 / 落在亚像素）⇒ 双线性平滑
+          ``SmoothPixmapTransform=True``（亚像素取样，抗台阶）。
+        * 返回 ``None``（窗口部分/全部落在层区域之外，或缩放中尺寸不匹配）
+          ⇒ 回退到整窗静态场 ``_pixmap`` 整幅绘制；仍取不到则只画实色底（纯色 +
+          淡入渐出）；**绝不**把整块层缩放铺满窗口。
 
         Args:
             painter: 复用传入的画笔；为 ``None`` 时自建（调用方负责生命周期）。
@@ -488,49 +556,89 @@ class MicaMaterial(QObject):
             painter.fillRect(rect, self._surface_color)
             return
 
-        # 实色兜底层 + 线性淡入：透明度 = 淡入 × overlay，实现 surface→Mica 过渡
+        # 实色兜底层 + 线性淡入：透明度 = 淡入，实现 surface→Mica 过渡
+        # （混合已在 worker 端预合成进 pixmap，绘制端只承担淡入淡出）。
         painter.fillRect(rect, self._surface_color)
 
-        source = self._drag_source_rect() if self._interacting else None
-        pixmap = self._drag_pixmap if source is not None else self._pixmap
+        pixmap, src, smooth = self._layer_blit()
         if pixmap is None or pixmap.isNull():
             return
 
-        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-        painter.setOpacity(self._fade_alpha * self._overlay_opacity)
-        if source is None:
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, smooth)
+        # 混合已在 worker 端预合成进 pixmap（render_display 消费 overlay/surface），
+        # 绘制端**全不透明**，避免第二次 8-bit 量化（banding 根因）。
+        painter.setOpacity(self._fade_alpha)
+        if src is None:
+            # 回退到整窗静态场（已是窗口尺寸，1:1 平铺）。
             painter.drawPixmap(rect, pixmap)
+        elif smooth:
+            # 浮点源子矩形：亚像素双线性取样。
+            painter.drawPixmap(QRectF(rect), pixmap, QRectF(*src))
         else:
-            # 源矩形用 QRectF：让双线性取样落在亚像素位置，避免取整导致的
-            # 台阶式跳动（1 个网格像素放大到窗口就是若干个屏幕像素）。
-            painter.drawPixmap(QRectF(rect), pixmap, QRectF(*source))
+            # 整型源子矩形：真 1:1 blit（无重采样）。
+            painter.drawPixmap(QRect(rect), pixmap, QRect(*src))
         painter.setOpacity(1.0)
-
-        # 薄膜颗粒：仅以极低不透明度叠加，消除大渐变上的色带
-        if self._noise_tile is not None:
-            painter.setOpacity(self._fade_alpha * NOISE_OPACITY)
-            painter.drawTiledPixmap(rect, self._noise_tile)
-            painter.setOpacity(1.0)
 
     def paint_gpu(self, painter: QPainter) -> None:
         """在 GPU 画笔画笔（``QOpenGLWidget``）上绘制 Mica 背景。
+
+        与 :meth:`paint` 策略一致：优先取层内窗口子矩形（blit），回退整窗静态场，
+        再退实色底。
 
         Args:
             painter: 来自 ``paintGL`` 的画笔画笔。
         """
         rect = self._widget.rect()
-        if self._paused or self._pixmap is None or self._pixmap.isNull():
+        if self._paused:
             painter.fillRect(rect, self._surface_color)
             return
         painter.fillRect(rect, self._surface_color)
-        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-        painter.setOpacity(self._fade_alpha * self._overlay_opacity)
-        painter.drawPixmap(rect, self._pixmap)
+        pixmap, src, smooth = self._layer_blit()
+        if pixmap is None or pixmap.isNull():
+            return
+        # 混合已在 worker 端预合成进 pixmap，绘制端全不透明（见 paint）。
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, smooth)
+        painter.setOpacity(self._fade_alpha)
+        if src is None:
+            painter.drawPixmap(rect, pixmap)
+        elif smooth:
+            painter.drawPixmap(QRectF(rect), pixmap, QRectF(*src))
+        else:
+            painter.drawPixmap(QRect(rect), pixmap, QRect(*src))
         painter.setOpacity(1.0)
-        if self._noise_tile is not None:
-            painter.setOpacity(self._fade_alpha * NOISE_OPACITY)
-            painter.drawTiledPixmap(rect, self._noise_tile)
-            painter.setOpacity(1.0)
+
+    def _layer_blit(
+        self,
+    ) -> Tuple[Optional[QPixmap], Optional[tuple], bool]:
+        """绘制取材：返回应绘制的 pixmap 与可选的窗口子矩形。
+
+        返回 ``(pixmap, src, smooth)``：
+
+        * 视口层就绪（``_layer`` + ``_layer_pixmap`` 均存在且非空）时，**始终**返回
+          层本身与一个非 ``None`` 的子矩形 —— 用 :func:`ui.mica.drag.layer_to_source_clamped`
+          按窗口当前位置与**当前尺寸**映射并钳制（resize / 越界都取样，Mica 永不消失）：
+          整型 ⇒ 真 1:1（``smooth=False``）；浮点 ⇒ 亚像素平滑（``smooth=True``）。
+        * 仅当层**确实尚未就绪**（首帧之前从未烘焙过）时才回退到整窗静态场
+          ``_pixmap``（``src=None``，``smooth=True``）；仍无则 ``(None, None, True)``。
+
+        真正的区域 / 密度修正由 :meth:`_needs_layer_rebake` 在窗口稳定后重烘焙一层
+        完成；本方法只负责在层就绪后永远取样，杜绝"Mica 消失（只剩纯色）"。
+
+        CPU（``paint``）与 GPU（``paint_gpu``）两条路径共用此方法，确保子矩形
+        取材行为一致。
+
+        Returns:
+            ``(pixmap, src, smooth)``：``src`` 为 ``None`` 表示整幅绘制静态场。
+        """
+        if self._layer is not None and self._layer_pixmap is not None and not self._layer_pixmap.isNull():
+            win = self._window_rect_tuple()
+            src = layer_to_source_clamped(self._layer, win)
+            smooth = isinstance(src[0], float)
+            return (self._layer_pixmap, (int(src[0]), int(src[1]), int(src[2]), int(src[3])) if not smooth else src, smooth)
+        pixmap = self._pixmap
+        if pixmap is None or pixmap.isNull():
+            return (None, None, True)
+        return (pixmap, None, True)
 
     def set_theme(self, surface_color: Union[str, QColor, None], luminosity: float) -> None:
         """切换主题：更新实色层与深浅模式，并触发热重烘焙（G1 基色随主题变化）。
@@ -543,7 +651,9 @@ class MicaMaterial(QObject):
         self._luminosity = max(0.0, min(1.0, float(luminosity)))
         self._dark = _is_dark_color(self._surface_color)
         self._provider._fallback_rgb = G1_DARK if self._dark else G1_LIGHT
-        self._request_rebuild()
+        # 仅当主题导致 layer_key 变化（主要是 dark 翻转）才重烘焙一层；key 未变
+        # 则跳过 —— 浅色切换同深浅 / 仅改 luminosity 时零重烘焙。
+        self._maybe_rebake(force=False)
         self._widget.update()
 
     def set_effect_parameters(
@@ -555,7 +665,8 @@ class MicaMaterial(QObject):
     ) -> None:
         """更新用户可调的 Mica 参数。
 
-        * ``overlay_opacity``：仅绘制期生效 → 直接重绘，不重烘焙（拖动滑块零成本）。
+        * ``overlay_opacity``：现在影响烘焙产物（混合预合成在 worker 完成）
+          → 防抖 250ms 后触发重建（连续拖动滑块合并为一次）。
         * ``blur_radius`` / ``saturation`` / ``contrast``：影响烘焙 → 在后台线程重建。
 
         Args:
@@ -589,26 +700,80 @@ class MicaMaterial(QObject):
                 opacity_changed = True
 
         if needs_rebuild:
+            # 参数（模糊 / 饱和度 / 对比度）变化 → 层 key 变化 ⇒ 必须重烘焙一次。
+            # 走 _request_rebuild（内部 _maybe_rebake(force=True)），保证真正的参数
+            # 变更必然触发重建；测试与外部契约均依赖它。
             self._request_rebuild()
         elif opacity_changed:
-            self._widget.update()
+            # overlay 不在 layer_key 内，但影响 render_display 产物 → 防抖后强制重建。
+            self._opacity_render_pending = True
+            self._opacity_timer.start()
 
     def begin_interaction(self) -> None:
         """标记窗口拖拽 / 缩放开始或持续。
 
-        与旧实现的差别：不再只是"保持旧图 + 等运动停止"，而是顺带推进
-        :mod:`ui.mica.drag` 的偏移采样 —— 估计速度、按需申请 / 续接拖动场、
-        请求重绘。于是拖拽过程中每一帧的背景都是按当前位置重新取样的，
-        而非停在那里等稳定定时器。
+        视口层是**逐监视器持久化**的 —— 窗口在监视器内平移无需重烘焙，逐帧从层里
+        按位置取样即可。这里**只**在真正需要时才触发**一次**层重烘焙：
 
-        运动停止后仍由 :meth:`_on_settle` 触发一次全质量常规烘焙，保证静止
-        时的画质不受拖动期任何降级影响。
+        * 窗口离开当前层区域（= 跨监视器 / 越界到另一块监视器）；
+        * 监视器变化（区域变化）；
+        * 密度目标变化（层显示长边或窗口尺寸变化 —— 层网格密度随之改变）；
+        * 主题 / 参数 / 壁纸变化（由 ``layer_key`` 判据覆盖）。
+
+        触发时调用 :meth:`_maybe_rebake`（force），它会经 :meth:`refresh_async`
+        自增 ``_layer_gen`` 并提交新请求；若已有烘焙在途则置 ``_rebuild_pending``
+        交由回收逻辑续接，**绝不**清除旧层 —— 旧层保持可见直到新层就绪
+        （陈旧性守卫保证过期结果不被提交）。
+
+        其余帧仅重绘（``self._widget.update()``），零重计算。
         """
         self._interacting = True
-        self._track_motion()
-        self._ensure_drag_field()
+        win = self._window_rect_tuple()
+        monitor = self._monitor_rect_for(win)
+        region = layer_region_for(win, monitor)
+        layer_display_long = _layer_display_long(region)
+        if self._needs_layer_rebake(win, monitor, region, layer_display_long):
+            self._maybe_rebake(force=True)
         self._settle_timer.start()
         self._widget.update()
+
+    def _needs_layer_rebake(
+        self,
+        window_rect: Tuple[int, int, int, int],
+        monitor_rect: Tuple[int, int, int, int],
+        region: Tuple[int, int, int, int],
+        layer_display_long: int,
+    ) -> bool:
+        """判断当前窗口条件下的层是否需要重烘焙。
+
+        判据（任一成立即需）：
+
+        * 层尚未烘焙（``_layer`` 为 ``None``）；
+        * 层区域 != 当前监视器区域（窗口离开层区域 / 跨监视器）；
+        * 层显示长边 != 当前值，或层烘焙时的窗口尺寸 != 当前尺寸
+          （密度目标变化 —— 层网格密度随监视器 / 窗口尺寸变化）；
+        * ``layer_key`` 变化（主题 / 参数 / 壁纸变化）。
+
+        Args:
+            window_rect: ``(x, y, w, h)`` 当前窗口矩形。
+            monitor_rect: ``(x, y, w, h)`` 当前监视器矩形。
+            region: ``(x, y, w, h)`` 层区域（= 监视器矩形）。
+            layer_display_long: 当前层显示长边。
+
+        Returns:
+            ``True`` 表示需要重烘焙一层。
+        """
+        layer = self._layer
+        if layer is None:
+            return True
+        if tuple(int(v) for v in layer.region) != tuple(int(v) for v in region):
+            return True
+        if int(layer_display_long) != int(self._layer_display_long):
+            return True
+        if layer.win_size != (int(window_rect[2]), int(window_rect[3])):
+            return True
+        key = self._layer_key_for(region, layer_display_long)
+        return key != self._layer_key
 
     def invalidate_cache(self) -> None:
         """使缓存失效：下次绘制前强制重烘焙。"""
@@ -619,14 +784,9 @@ class MicaMaterial(QObject):
     def dispose(self) -> None:
         """释放资源：阻止重试、移除焦点过滤器、回收在途线程。窗口关闭时调用。"""
         self._disposed = True
-        # 先断连，防止线程池里在途的任务在我们析构后回传结果
-        try:
-            self._drag_signals.finished.disconnect(self._on_drag_field_ready)
-        except (TypeError, RuntimeError):
-            pass
-        self._drag_field = None
-        self._drag_pixmap = None
-        self._drag_pending = False
+        self._layer = None
+        self._layer_pixmap = None
+        self._pixmap = None
         self._refresh_retries = BAKE_MAX_RETRIES + 1
         self._refresh_outcome = "fail"
         self._rebuild_pending = False
@@ -642,6 +802,7 @@ class MicaMaterial(QObject):
         self._settle_timer.stop()
         self._deactivate_timer.stop()
         self._watchdog.stop()
+        self._opacity_timer.stop()
         if self._worker_thread is not None:
             thread = self._worker_thread
             worker = self._worker
@@ -745,6 +906,15 @@ class MicaMaterial(QObject):
         geo = w.geometry() if w is not None else self._widget.geometry()
         return (geo.x(), geo.y(), geo.width(), geo.height())
 
+    def _surface_rgb(self) -> Tuple[int, int, int]:
+        """当前实色底的 ``(r, g, b)``，供 worker 混合预合成使用。
+
+        Returns:
+            ``(r, g, b)`` 三元组。
+        """
+        c = self._surface_color
+        return (c.red(), c.green(), c.blue())
+
     def _bake_sync(self):
         """主线程同步烘焙（带锁，防止与后台 worker 并发访问 provider 缓存）。"""
         with self._bake_lock:
@@ -761,169 +931,138 @@ class MicaMaterial(QObject):
                 return None
 
     def _maybe_rebake(self, force: bool = False) -> None:
-        """按需触发热重烘焙：仅当相对上一次请求确有变化（尺寸 / 位移 / 参数 / 壁纸）时。
+        """按需触发热重烘焙（视口层）：仅当 ``layer_key`` 确有变化（参数 / 主题 /
+        壁纸 / 监视器区域 / 层显示长边）时才重烘焙一层。
 
         Args:
-            force: 强制重烘焙（忽略 ``needs_rebake`` 判据）。
+            force: 强制重烘焙（忽略 key 判据）。
         """
-        if self._worker_thread is not None:
-            self._rebuild_pending = True
+        win = self._window_rect_tuple()
+        monitor = self._monitor_rect_for(win)
+        region = layer_region_for(win, monitor)
+        layer_display_long = _layer_display_long(region)
+        key = self._layer_key_for(region, layer_display_long)
+        if not force and key == self._layer_key:
+            # key 未变化：层仍覆盖当前监视器，无需重烘焙（窗口在监视器内平移 /
+            # 主题参数未变，no-op）。
             return
-        candidate = BakeRequest(
-            self._window_rect_tuple(),
-            self._params,
-            self._dark,
-            self._provider.probe().signature(),
-        )
-        if not force and self._last_req is not None and not candidate.needs_rebake(self._last_req):
+        if self._worker_thread is not None:
+            # 在途烘焙：本次变化（主题 / 参数 / 壁纸 / 监视器）已使在途结果过期。
+            # 置 ``_layer_key`` 失效，令旧 key 的在途结果被陈旧性守卫丢弃（绝不
+            # 提交一份旧主题/旧区域的混合层），并交由回收逻辑按最新 key 续接请求。
+            self._layer_key = None
+            self._rebuild_pending = True
             return
         self.refresh_async()
 
     def _request_rebuild(self) -> None:
-        """使相对上一次请求的判据失效并触发热重烘焙。"""
+        """使相对上一次请求的判据失效并触发热重烘焙（视口层）。"""
+        self._layer_key = None
         self._last_req = None
         self._maybe_rebake(force=True)
 
     def _on_settle(self) -> None:
-        """交互停止：退出偏移采样路径，按当前位置决定是否重烘焙。
+        """交互停止：按当前条件决定是否重烘焙视口层。
 
-        这里触发的是**全质量**常规烘焙，因此拖动期可能发生的画质降级
-        （见 :data:`ui.mica.drag.DRAG_QUALITY_LEVELS`）不会残留到静止状态。
+        视口层逐监视器持久化 —— 窗口在监视器内平移不触发重烘焙；跨监视器 /
+        参数 / 主题 / 壁纸变化时，``_maybe_rebake`` 会按新 ``layer_key`` 重烘焙一层。
         """
         self._interacting = False
-        self._resizing = False
-        self._velocity = (0.0, 0.0)
-        self._motion_last = None
-        self._drag_sampler.reset()
         self._maybe_rebake(force=False)
 
+    def _on_opacity_settle(self) -> None:
+        """overlay_opacity 防抖静置：结束连续改动，触发烘焙重建。"""
+        self._opacity_render_pending = False
+        self._request_rebuild()
+
     # ------------------------------------------------------------------
-    # 拖动期偏移采样
+    # 视口层调度辅助
     # ------------------------------------------------------------------
 
-    def _active_key(self) -> Tuple[object, ...]:
-        """当前有效性判据 ``(params, dark, source_signature)``。
+    def _monitor_rect_for(
+        self, window_rect: Tuple[int, int, int, int]
+    ) -> Tuple[int, int, int, int]:
+        """返回包含窗口的监视器矩形（虚拟桌面物理像素）。
 
-        三者任一变化，缓存的拖动场即作废。首次烘焙完成前签名为空串，此时
-        任何已有拖动场都会被判为失效 —— 这是刻意的，避免出现"拖动场与常规
-        场来自不同壁纸"的混合画面。
-        """
-        signature = self._last_req.source_signature if self._last_req is not None else ""
-        return (self._params, self._dark, signature)
-
-    def _track_motion(self) -> None:
-        """按 ``moveEvent`` 的时间与位置估计速度，并识别"正在缩放"。
-
-        速度用于让 :class:`~ui.mica.drag.DragSampler` 预留足够余量，以及把
-        拖动场**沿运动方向前移**（余量更多落在即将经过的一侧）。间隔超过
-        0.25 s 视为新的一段运动并清零 —— 否则"停一会儿再拖"会算出一个跨越
-        停顿的巨大瞬时速度。
-        """
-        rect = self._window_rect_tuple()
-        now = time.perf_counter()
-        prev = self._motion_last
-        self._motion_last = (now, rect[0], rect[1])
-
-        if self._motion_size is not None and rect[2:] != self._motion_size:
-            # 尺寸在变 = 缩放中。此时网格尺寸随窗口尺寸变化，无法预测，
-            # 偏移采样无意义，交给稳定后的常规烘焙。
-            self._resizing = True
-        self._motion_size = rect[2:]
-
-        if prev is None:
-            return
-        dt = now - prev[0]
-        if dt <= 1e-4 or dt > 0.25:
-            self._velocity = (0.0, 0.0)
-            return
-        vx = (rect[0] - prev[1]) / dt
-        vy = (rect[1] - prev[2]) / dt
-        alpha = DRAG_VELOCITY_SMOOTHING
-        self._velocity = (
-            self._velocity[0] * alpha + vx * (1.0 - alpha),
-            self._velocity[1] * alpha + vy * (1.0 - alpha),
-        )
-
-    def _drag_source_rect(self) -> Optional[Tuple[float, float, float, float]]:
-        """取得当前窗口位置在拖动场中的子矩形。
-
-        Returns:
-            ``(sx, sy, sw, sh)`` 浮点源矩形；场未就绪、已作废或越界时 ``None``。
-        """
-        field = self._drag_field
-        if field is None or self._drag_pixmap is None or self._drag_pixmap.isNull():
-            return None
-        if field.key != self._active_key():
-            return None
-        return field.source_rect(self._window_rect_tuple())
-
-    def _ensure_drag_field(self) -> None:
-        """按需申请一块拖动场（幂等：已有可用场或在途请求时直接返回）。"""
-        if self._disposed or self._drag_pending or self._resizing:
-            return
-        if self._drag_sampler.frozen:
-            return
-
-        win = self._window_rect_tuple()
-        key = self._active_key()
-        field = self._drag_field
-
-        if field is not None:
-            if field.key != key or field.win_size != win[2:]:
-                # 参数 / 主题 / 壁纸 / 尺寸已变：本场作废，按当前条件重新申请。
-                self._drag_field = None
-                self._drag_pixmap = None
-            elif field.source_rect(win) is not None:
-                return  # 仍在覆盖范围内，无需重烘焙
-            else:
-                # 跑到覆盖范围之外了：记一次越界，交给控制器放大余量。
-                self._drag_sampler.note_miss()
-
-        now = time.perf_counter()
-        if now - self._drag_requested_at < DRAG_REQUEST_COOLDOWN_MS / 1000.0:
-            return
-
-        self._drag_requested_at = now
-        self._drag_pending = True
-        plan = self._drag_sampler.plan_for(
-            win, self._velocity, self._params.to_engine(self._dark).sigma
-        )
-        QThreadPool.globalInstance().start(
-            _DragTask(
-                self._provider,
-                plan,
-                self._params,
-                self._dark,
-                self._bake_lock,
-                self._drag_signals,
-            )
-        )
-
-    def _on_drag_field_ready(self, field: Optional[DragField]) -> None:
-        """主线程槽：接收拖动场并反馈耗时给自适应控制器。
+        取窗口中心点所在的监视器；找不到（罕见）回退到第一块（主）监视器。
+        监视器探测失败（无源 / 非 Windows）时回退到窗口矩形自身 —— 此时层
+        退化为覆盖窗口的静态场，仍能正常烘焙与绘制。
 
         Args:
-            field: 新的拖动场；``None`` 表示本次烘焙失败（保留旧场继续用）。
+            window_rect: ``(x, y, w, h)`` 窗口矩形（虚拟桌面物理像素）。
+
+        Returns:
+            监视器矩形 ``(x, y, w, h)``。
         """
-        if self._disposed:
-            return
-        self._drag_pending = False
-        if field is None:
-            return
-        self._drag_sampler.note_bake(field.duration_ms)
-        self._drag_field = field
-        self._drag_pixmap = self._make_pixmap(field.image)
-        self._widget.update()
+        try:
+            info = self._provider.probe()
+            monitors = info.monitors
+            if monitors:
+                cx = float(window_rect[0]) + float(window_rect[2]) / 2.0
+                cy = float(window_rect[1]) + float(window_rect[3]) / 2.0
+                for mon in monitors:
+                    mx, my, mw, mh = (int(v) for v in mon.rect)
+                    if mx <= cx < mx + mw and my <= cy < my + mh:
+                        return (mx, my, mw, mh)
+                first = monitors[0]
+                return (
+                    int(first.rect[0]),
+                    int(first.rect[1]),
+                    int(first.rect[2]),
+                    int(first.rect[3]),
+                )
+        except Exception as exc:  # pragma: no cover - 防御性兜底
+            _LOG.debug("监视器探测失败，回退到窗口矩形作为层区域：%s", exc)
+        return window_rect
+
+    def _layer_key_for(
+        self, region: Tuple[int, int, int, int], layer_display_long: int
+    ) -> Tuple[object, ...]:
+        """当前视口层的有效性判据。
+
+        Args:
+            region: ``(x, y, w, h)`` 层区域（= 监视器矩形）。
+            layer_display_long: 层显示参考长边。
+
+        Returns:
+            ``(params, dark, source_signature, region, layer_display_long)``；
+            任一成分变化即视为需重烘焙。
+        """
+        try:
+            signature = self._provider.probe().signature()
+        except Exception:  # pragma: no cover - 防御性兜底
+            signature = ""
+        return (self._params, self._dark, signature, region, int(layer_display_long))
 
     # -- worker 回调 ------------------------------------------------------
 
-    def _on_bake_done(self, field) -> None:
-        """主线程槽：应用后台结果并安排线程回收。"""
+    def _on_bake_done(self, payload: object) -> None:
+        """主线程槽：应用后台层烘焙结果并安排线程回收。
+
+        **key 陈旧性守卫** —— 一次性更新请求可能被主题 / 参数 / 壁纸 / 监视器
+        变化取代；若 worker 携带的 ``layer_key`` / ``gen`` 已不匹配当前值，该结果
+        视为过期并**丢弃**（陈旧结果绝不提交），避免显示一份与当前条件不符的层。
+
+        Args:
+            payload: ``(display, layer_info, layer_key, gen)``；
+                ``display`` 已在 worker 线程渲染成显示分辨率 uint8 数组。
+        """
         self._watchdog.stop()
         self._refresh_retries = 0
         self._refresh_outcome = "ok"
+        display, layer_info, layer_key, gen = payload
+        if layer_key != self._layer_key or gen != self._layer_gen:
+            # 过期结果：来自一次已被更新的请求（主题/参数/壁纸/监视器变化后新请求已提交）。
+            _LOG.debug("丢弃过期的视口层烘焙结果（key/gen 不匹配）")
+            if self._worker_thread is not None:
+                self._worker_thread.quit()
+            return
         was_shown = self._has_shown
-        self._apply_field(field)
+        self._layer = layer_info
+        self._layer_pixmap = _pixmap_from_rgb(display)
+        self._layer_key = layer_key
+        self._has_shown = True
+        self._widget.update()
         if self._active:
             self._start_fade_in(reset=not was_shown)
         else:
@@ -974,18 +1113,26 @@ class MicaMaterial(QObject):
 
         if self._rebuild_pending and self._refresh_retries <= BAKE_MAX_RETRIES:
             self._rebuild_pending = False
-            QTimer.singleShot(0, lambda: self._maybe_rebake(force=True))
+            # 续接被推迟的重烘焙：**按 key 判据**（force=False）—— 若延迟期间
+            # 条件已解析为与当前 key 一致，则不再多烘一层（保证"精确一次"）。
+            QTimer.singleShot(0, lambda: self._maybe_rebake(force=False))
 
-    def _apply_field(self, field) -> None:
+    def _apply_field(self, field, display: Optional[np.ndarray] = None) -> None:
         """保存烘焙产物并更新绘制。
 
         Args:
             field: :class:`~ui.mica.engine.BakedField`。
+            display: worker 线程已渲染好的显示分辨率图像；``None`` 时本方法
+                现场渲染（仅同步降级路径会走到，主线程一次性开销）。
         """
         if field is None:
             return
         self._last_req = field.request
-        self._pixmap = self._make_pixmap(field.image)
+        if display is None:
+            display = render_display(
+                field, self._display_long(field), self._overlay_opacity, self._surface_rgb()
+            )
+        self._pixmap = _pixmap_from_rgb(display)
         self._has_shown = True
         self._widget.update()
 
@@ -1054,38 +1201,17 @@ class MicaMaterial(QObject):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _make_pixmap(image: np.ndarray) -> QPixmap:
-        """把 ``(H, W, 3)`` uint8 RGB 数组转为 QPixmap（拷贝脱离 numpy 缓冲）。
+    def _display_long(field) -> int:
+        """静态场渲染长边：与窗口长边 1:1（封顶 :data:`DISPLAY_LONG_CAP`）。
 
         Args:
-            image: 烘焙产物色调场。
+            field: 含 ``request`` 的烘焙产物（``BakedField``）。
 
         Returns:
-            QPixmap。
+            目标长边（像素）。
         """
-        h, w = int(image.shape[0]), int(image.shape[1])
-        qimg = QImage(image.tobytes(), w, h, w * 3, QImage.Format_RGB888)
-        return QPixmap.fromImage(qimg.copy())
-
-    @staticmethod
-    def _make_noise_tile(size: int = NOISE_TILE_SIZE, seed: int = NOISE_SEED) -> QPixmap:
-        """生成薄膜颗粒平铺贴图：黑白随机点，极低不透明度即可消除色带。
-
-        Args:
-            size: 贴图边长（像素）。
-            seed: 固定随机种子，保证跨重绘稳定不闪烁。
-
-        Returns:
-            QPixmap（黑 / 白随机点，alpha 255；由绘制期 opacity 控制强度）。
-        """
-        rng = np.random.default_rng(seed)
-        mask = rng.integers(0, 2, size=(size, size), dtype=np.uint8)
-        arr = np.zeros((size, size, 4), dtype=np.uint8)
-        arr[..., 0] = arr[..., 1] = arr[..., 2] = np.where(mask, 255, 0)
-        arr[..., 3] = 255
-        qimg = QImage(arr.tobytes(), size, size, size * 4, QImage.Format_RGBA8888)
-        return QPixmap.fromImage(qimg.copy())
-
+        win_w, win_h = field.request.size
+        return max(1, min(max(win_w, win_h), DISPLAY_LONG_CAP))
 
 # ---------------------------------------------------------------------------
 # 便捷控件

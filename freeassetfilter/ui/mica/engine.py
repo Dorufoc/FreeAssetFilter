@@ -17,8 +17,9 @@
   背景色会**跟着窗口边界游动**，而真实 Mica 的色调只由屏幕位置决定。
 
 因此这里把采样矩形向外扩 :data:`EDGE_MARGIN_SIGMAS` 个 σ，在扩大后的网格上
-完成整条管线，最后再把中心区域裁出来。扩边只发生在极小的网格上（长边 ≤192），
-代价是可以忽略的，而它换来的是"色调只与屏幕位置有关"这一关键正确性。
+完成整条管线，最后再把中心区域裁出来。扩边只发生在极小的网格上（长边
+≤:data:`BAKE_LONG_MAX`），代价是可以忽略的，而它换来的是"色调只与屏幕位置有关"
+这一关键正确性。
 
 重烘焙策略
 ----------
@@ -35,7 +36,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 
@@ -152,6 +153,11 @@ class BakedField:
     backend: str
     duration_ms: float
     work_size: Tuple[int, int] = (0, 0)
+    #: **未量化**的浮点合成结果 ``(grid_h, grid_w, 3)``，sRGB 编码值 0..1。
+    #: 8-bit 量化必须推迟到显示分辨率再做（见 :func:`upscale_to_display`），
+    #: 否则亚 LSB 的渐变信息在网格分辨率上就被抹掉，放大后即成色带（断层）。
+    #: 仅 CPU 管线提供；GPU 管线为 ``None``，届时退回 uint8 网格放大。
+    image_float: Optional[np.ndarray] = None
 
     def mean_rgb(self) -> Tuple[int, int, int]:
         """色调场平均色，用于纯色降级与自动化校验。"""
@@ -228,7 +234,7 @@ def bake(request: BakeRequest, source: WallpaperSource) -> BakedField:
     分辨率        典型尺寸                    承担的工作
     ============  ==========================  ================================
     画布          ≤1600 长边                  壁纸解码 / 摆放，跨烘焙复用
-    网格          ≤192×192（含扩边 ≤~300²）   去明度 → 门控 → 低通 → 整形 →
+    网格          ≤BAKE_LONG_MAX×BAKE_LONG_MAX（含扩边 ≤~300²）   去明度 → 门控 → 低通 → 整形 →
                                               等亮度重建 → 颜色混合 → 量化
     ============  ==========================  ================================
 
@@ -264,7 +270,7 @@ def bake_with_grid(
     ------------
     拖动期偏移采样要一次性烘出一块**比窗口更大**的区域，供后续逐帧按位移做
     子矩形取样（见 :mod:`ui.mica.drag`）。若直接把放大后的矩形交给
-    :func:`bake`，:func:`config.bake_grid_size` 会把它的长边压回 192，
+    :func:`bake`，:func:`config.bake_grid_size` 会把它的长边压回 :data:`BAKE_LONG_MAX`，
     网格密度随之下降 —— 而 σ 是以**网格像素**为单位的，密度一变，色度低通
     相对窗口的物理半径就变了，结果会明显更糊。
 
@@ -308,7 +314,12 @@ def bake_with_grid(
     # 裁出窗口 interior（去掉边缘扩边），再在网格分辨率上做颜色混合 + 抖动量化。
     interior = source_layer[margin : margin + grid_h, margin : margin + grid_w]
     composite = tint.compose_tint_float(interior, ep.g1(), ep.alpha)
-    image = tint.quantize_u8(composite, dither=True)
+    # 不在网格分辨率上量化：色调场会被放大铺满窗口，此时网格级的量化台阶
+    # 与抖动噪声会被同步放大 —— 前者成色带（断层），后者成块状噪点（磨砂
+    # 玻璃感）。这里只保留 uint8 快照供纯色降级 / GPU 管线 / 单测使用；
+    # 真正用于绘制的是 :attr:`BakedField.image_float` 在**显示分辨率**上的
+    # 一次量化（见 :func:`upscale_to_display`）。
+    image = tint.quantize_u8(composite, dither=False)
 
     duration = (time.perf_counter() - started) * 1000.0
     _LOG.debug(
@@ -327,7 +338,231 @@ def bake_with_grid(
         backend=source.backend,
         duration_ms=duration,
         work_size=(pad_w, pad_h),
+        image_float=composite,
     )
+
+
+# ---------------------------------------------------------------------------
+# 显示分辨率上采样 + 确定性均匀噪声抖动
+# ---------------------------------------------------------------------------
+
+#: 最终空间抖动幅值（LSB，±0.7 LSB）。8×8 Bayer 有序抖动在超缓渐变（0.02
+#: LSB/px）上会呈 2 像素周期条纹，且台阶间有长平坦游程；换成**确定性均匀噪声**
+#: 后在最终颜色空间一次性量化，能更均匀地把 8-bit 台阶打散成不可辨的细微纹理。
+_DITHER_AMP_DEFAULT: float = 0.7
+#: 固定噪声种子。保证同一目标尺寸在不同次重建（窗口停留、拖动返回）下产生
+#: 完全相同的噪声图案，从而**跨重建稳定、不闪烁**。
+_DITHER_SEED: int = 1337
+
+#: 按 ``(th, tw, amp)`` 缓存的确定性均匀噪声抖动偏移。抖动图案只由目标尺寸与
+#: 幅值决定，同一组合可无限复用；窗口尺寸稳定时命中率 100%，省掉每次重新
+#: 生成 ``th×tw`` 噪声的毫秒级开销。
+_DITHER_TILE_CACHE: Dict[Tuple[int, int, float], np.ndarray] = {}
+#: 缓存条目上限（拖动场与静态场尺寸交替时防止无限增长）。
+_DITHER_TILE_CACHE_MAX: int = 6
+
+
+def _dither_offsets(th: int, tw: int, amp: float) -> np.ndarray:
+    """返回 ``(th, tw, 1)`` 的确定性均匀噪声抖动偏移，取值 ``±amp``。
+
+    用 :data:`_DITHER_SEED` 固定的可重现随机源生成均匀噪声，同一 ``(th, tw)``
+    下不同 ``amp`` 只是对**同一份噪声**的缩放（先按 size 生成再乘 amp），因此
+    跨次重建稳定、不闪烁；幅值 ``amp`` 取最终空间像素幅值（LSB）。
+
+    注意：返回的是缓存数组，调用方**不得原地修改**；如需可变副本请自行
+    ``.copy()``。抖动必须在上采样之后叠加，绝不能加在网格分辨率上，否则会被
+    Qt 双线性放大成块状噪点（磨砂玻璃感）。
+
+    Args:
+        th: 目标高度。
+        tw: 目标宽度。
+        amp: 抖动幅值（LSB），正值表示噪声覆盖 ``±amp``。
+
+    Returns:
+        float32 ``(th, tw, 1)`` 偏移数组，可直接与 0..255 的像素值相加。
+    """
+    key = (int(th), int(tw), float(amp))
+    cached = _DITHER_TILE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    if len(_DITHER_TILE_CACHE) >= _DITHER_TILE_CACHE_MAX:
+        _DITHER_TILE_CACHE.clear()
+    rng = np.random.default_rng(_DITHER_SEED)
+    noise = (rng.random((int(th), int(tw), 1), dtype=np.float32) - 0.5) * 2.0
+    offsets = noise * float(amp)
+    _DITHER_TILE_CACHE[key] = offsets
+    return offsets
+
+
+def _resize_bilinear(src: np.ndarray, tw: int, th: int) -> np.ndarray:
+    """可分离双线性放大：``(gh, gw, 3)`` float32 → ``(th, tw, 3)`` float32。
+
+    为什么可分离：二维双线性是可分离核，先横后纵与一次二维插值数学等价，
+    但内存流量从 O(4·th·tw) 降到 O(2·th·tw)。大图的内存带宽是这一步的
+    绝对瓶颈，故先做**输出更小的那个方向**，让中间结果尽量小。
+
+    每一步都用「取一行/列 → 原地乘 → 原地加」的方式把临时数组压到 1 个，
+    避免在同一块 2M 像素的缓冲上反复分配。
+
+    Args:
+        src: ``(gh, gw, 3)`` float32 源数组。
+        tw: 目标宽度。
+        th: 目标高度。
+
+    Returns:
+        ``(th, tw, 3)`` float32 **新数组**（永不与 ``src`` 共享内存）。
+    """
+    buf = np.ascontiguousarray(src, dtype=np.float32)
+    gh, gw = int(buf.shape[0]), int(buf.shape[1])
+    if tw == gw and th == gh:
+        return buf.copy()
+
+    def _axis1(b: np.ndarray, n_out: int) -> np.ndarray:
+        g = int(b.shape[1])
+        xs = np.linspace(0.0, float(g - 1), n_out, dtype=np.float32)
+        x0 = np.floor(xs).astype(np.intp)
+        wx = (xs - x0).astype(np.float32)
+        out = b[:, x0, :]  # 高级索引 ⇒ 副本，可安全原地修改
+        out *= (1.0 - wx)[None, :, None]
+        tmp = b[:, np.minimum(x0 + 1, g - 1), :]
+        tmp *= wx[None, :, None]
+        out += tmp
+        return out
+
+    def _axis0(b: np.ndarray, n_out: int) -> np.ndarray:
+        g = int(b.shape[0])
+        ys = np.linspace(0.0, float(g - 1), n_out, dtype=np.float32)
+        y0 = np.floor(ys).astype(np.intp)
+        wy = (ys - y0).astype(np.float32)
+        out = b[y0, :, :]
+        out *= (1.0 - wy)[:, None, None]
+        tmp = b[np.minimum(y0 + 1, g - 1), :, :]
+        tmp *= wy[:, None, None]
+        out += tmp
+        return out
+
+    # 中间结果更小的一侧先做：min(gh·tw, th·gw)。
+    if gh * tw <= th * gw:
+        return _axis0(_axis1(buf, tw), th)
+    return _axis1(_axis0(buf, th), tw)
+
+
+def upscale_to_display(
+    grid: np.ndarray,
+    target_long: int,
+    dither: bool = True,
+    dither_amp: float = _DITHER_AMP_DEFAULT,
+) -> np.ndarray:
+    """把低分辨率网格色调场双线性放大到目标显示分辨率，并可选叠加抖动。
+
+    设计要点
+    --------
+    色调场是低频量，直接把网格图像交给 Qt 双线性放大铺满窗口即可；但 8-bit
+    量化在大面积平滑渐变上会出现可见色带（断层）。在**网格分辨率**上加抖动
+    会被同步放大成块状噪点（磨砂玻璃感），因此抖动必须发生在**显示分辨率**
+    （1px 颗粒）。本函数在 worker 线程把网格上采样到目标分辨率后再叠加
+    **确定性均匀噪声**抖动（±:data:`_DITHER_AMP_DEFAULT` LSB，最终空间），
+    产出的图像在放大到窗口时色带被彻底打散、过渡连续。
+
+    Args:
+        grid: ``(gh, gw, 3)`` 网格色调场。``uint8``（0..255）或 ``float``
+            （0..1 的未量化合成结果）；后者能消除色带，优先使用。
+        target_long: 目标显示分辨率长边（像素）；短边按网格宽高比推算。
+        dither: 是否在显示分辨率上叠加 1px 抖动。
+        dither_amp: 抖动幅值（LSB，默认 :data:`_DITHER_AMP_DEFAULT`）；仅
+            ``dither=True`` 时生效。
+
+    Returns:
+        ``(th, tw, 3)`` uint8 图像，长边 ≈ ``target_long``。
+    """
+    if grid.ndim != 3 or grid.shape[2] != 3:
+        raise ValueError("grid 必须是 (H, W, 3) 的 RGB 数组")
+    gh = int(grid.shape[0])
+    gw = int(grid.shape[1])
+    if gh <= 0 or gw <= 0:
+        raise ValueError("grid 尺寸非法")
+    long_side = max(gw, gh)
+    scale = float(max(1, int(target_long))) / float(long_side)
+    tw = max(1, int(round(gw * scale)))
+    th = max(1, int(round(gh * scale)))
+
+    # 输入可以是 uint8（0..255）或 float（0..1，未量化的合成结果）。
+    # 后者保留了亚 LSB 精度，是消除色带的关键：量化只在最后发生一次。
+    if grid.dtype == np.uint8:
+        src = grid.astype(np.float32, copy=False)
+    else:
+        src = np.asarray(grid, dtype=np.float32) * 255.0
+
+    out = _resize_bilinear(src, tw, th)
+    if dither:
+        # ±0.7 LSB 的确定性均匀噪声，均匀打断 256 级量化台阶。
+        out += _dither_offsets(th, tw, dither_amp)
+
+    # 必须先 rint 再转 uint8。astype(uint8) 是**截断**而非四舍五入，会带来
+    # -0.5 LSB 的系统性偏置：加了抖动反而整体变暗，且抖动图案只有一半的
+    # 阈值被跨过，色带边缘退化成规则花纹 —— 实测比不抖动更容易看出断层。
+    return np.clip(np.rint(out), 0.0, 255.0).astype(np.uint8)
+
+
+def render_display(
+    field: "BakedField",
+    target_long: int,
+    overlay: float = 1.0,
+    surface_rgb: Tuple[int, int, int] = (0, 0, 0),
+) -> np.ndarray:
+    """把烘焙产物渲染到显示分辨率的 uint8 图像（先预合成、后一次性量化）。
+
+    渲染管线先双线性上采样到**显示分辨率**的 float，再在显示分辨率上做
+    「混合预合成」：``(1-o)*S + o*V``（``o=overlay``，``S=surface_rgb`` 纯色底，
+    ``V=上采样后的色调场``），最后才在最终颜色空间一次性量化 + 抖动。由此
+    Qt 绘制期**不再做第二次透明度混合**（旧路径的 pixmap ``setOpacity(0.7)``
+    会在 8-bit 上产生第二次量化，把相邻源色阶如 107/108/109 全部坍缩到同一
+    终值），抖动在最后一步有效打散台阶。
+
+    实现上不依赖 :func:`upscale_to_display` 完成全部工作，而是复用
+    :func:`_resize_bilinear` 与 :func:`_dither_offsets` 组合实现预合成；
+    :data:`_DITHER_AMP_DEFAULT` 为最终空间的一次性量化幅值。
+
+    Args:
+        field: :class:`BakedField`。
+        target_long: 目标显示分辨率长边（像素）。
+        overlay: 叠加层不透明度 ``o``，``0..1``。``1.0``（默认）表示不透底混合，
+            结果与「先缩放再抖动」一致（无底色偏移）；``<1.0`` 时按
+            ``(1-o)*S + o*V`` 预合成到底色 ``surface_rgb`` 上。
+        surface_rgb: 底色 ``(r, g, b)``（0..255），仅 ``overlay < 1.0`` 时使用。
+
+    Returns:
+        ``(th, tw, 3)`` uint8 图像，可直接转 QImage/QPixmap。
+    """
+    float_src = getattr(field, "image_float", None)
+    grid = float_src if float_src is not None else field.image
+
+    gh = int(grid.shape[0])
+    gw = int(grid.shape[1])
+    if gh <= 0 or gw <= 0:
+        raise ValueError("grid 尺寸非法")
+    long_side = max(gw, gh)
+    scale = float(max(1, int(target_long))) / float(long_side)
+    tw = max(1, int(round(gw * scale)))
+    th = max(1, int(round(gh * scale)))
+
+    # 输入可以是 uint8（0..255）或 float（0..1，未量化的合成结果）。
+    if grid.dtype == np.uint8:
+        src = grid.astype(np.float32, copy=False)
+    else:
+        src = np.asarray(grid, dtype=np.float32) * 255.0
+
+    out = _resize_bilinear(src, tw, th)
+
+    if overlay - 1.0 < 1e-9:
+        # 预合成：先混合再量化，避免 Qt 绘制期的第二次透明度量化。
+        o = float(overlay)
+        s = np.asarray(surface_rgb, dtype=np.float32).reshape(1, 1, 3)
+        out = out * o + s * (1.0 - o)
+
+    out += _dither_offsets(th, tw, _DITHER_AMP_DEFAULT)
+
+    return np.clip(np.rint(out), 0.0, 255.0).astype(np.uint8)
 
 
 def solid_field(request: BakeRequest, rgb: Tuple[int, int, int]) -> BakedField:
@@ -363,6 +598,8 @@ __all__ = [
     "bake",
     "bake_with_grid",
     "margin_px",
+    "render_display",
     "sample_rect_for",
     "solid_field",
+    "upscale_to_display",
 ]
