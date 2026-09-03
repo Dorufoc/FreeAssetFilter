@@ -1,116 +1,15 @@
-"""
-Mica Window — reusable base window with blurred desktop wallpaper background.
+"""向后兼容 shim —— 旧 ``components.mica_window.MicaWindow`` / ``DEFAULT_MICA_CONFIG`` 的导入入口。
 
-Usage:
-    from components.mica_window import MicaWindow
-
-    window = MicaWindow()
-    window.content_layout.addWidget(your_widget)
-    window.show()
-
-Or subclass:
-    class MyWindow(MicaWindow):
-        def __init__(self):
-            super().__init__(window_title="My App")
-            self.content_layout.addWidget(QLabel("Hello"))
+实际实现已迁移到 :mod:`freeassetfilter.ui.mica.material`。本文件仅做再导出，
+保证 ``main_window`` / ``demos`` / 测试等既有调用方无需改动。
 """
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-from typing import Optional, Union
+# 绝对导入：本模块既可能被 ``main_window`` 以顶层 ``components.*`` 形式加载
+# （main_window 会把 freeassetfilter/ui 加入 sys.path），也可能被测试以
+# ``freeassetfilter.ui.components.*`` 形式加载。相对导入在两种情况下不能兼得，
+# 故使用绝对包路径，确保无论哪种加载方式都可用。
+from freeassetfilter.ui.mica.material import DEFAULT_MICA_CONFIG, MicaWindow
 
-# Ensure project root is on sys.path (for both direct run and package import)
-_project_root = Path(__file__).resolve().parent.parent
-if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
-
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QPainter, QResizeEvent, QMoveEvent, QPaintEvent
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout
-
-from components.mica_material import MicaMaterial
-
-
-# Current default config from main.py
-DEFAULT_MICA_CONFIG = {
-    "blur_radius": 200,
-    "surface_color": "#000000",  # 纯色背景默认值；实际绘制由主题深浅色模式决定（深色黑/浅色白）
-    "luminosity": 0.65,
-    "contrast": 1.5,
-    "saturation": 4.5,
-}
-
-
-class MicaWindow(QWidget):
-    """
-    A QWidget with built-in Mica (blurred desktop wallpaper) background.
-
-    Call ``setLayout(your_layout)`` to add content. Use ``self.content_layout``
-    to access the current layout after setting it.
-
-    Window resize/move automatically updates the background crop.
-    """
-
-    def __init__(
-        self,
-        parent: Optional[QWidget] = None,
-        window_title: str = "",
-        blur_radius: Optional[int] = None,
-        surface_color: Optional[str] = None,
-        luminosity: Optional[float] = None,
-        contrast: Optional[float] = None,
-        saturation: Optional[float] = None,
-    ):
-        """
-        All Mica params default to the project-wide DEFAULT_MICA_CONFIG.
-        Pass explicit values to override per-window.
-        """
-        super().__init__(parent)
-
-        cfg = DEFAULT_MICA_CONFIG
-        self._blur_radius = blur_radius if blur_radius is not None else cfg["blur_radius"]
-        self._surface_color = surface_color if surface_color is not None else cfg["surface_color"]
-        self._luminosity = luminosity if luminosity is not None else cfg["luminosity"]
-        self._contrast = contrast if contrast is not None else cfg["contrast"]
-        self._saturation = saturation if saturation is not None else cfg["saturation"]
-
-        if window_title:
-            self.setWindowTitle(window_title)
-
-        # Mica background
-        self._mica = MicaMaterial(
-            self, self._blur_radius, self._surface_color,
-            self._luminosity, self._contrast, self._saturation,
-        )
-
-    # ---- Public ----
-
-    @property
-    def mica(self) -> MicaMaterial:
-        return self._mica
-
-    @property
-    def content_layout(self) -> Optional[Union[QVBoxLayout, QHBoxLayout]]:
-        """The widget's layout — returns self.layout()."""
-        return self.layout()
-
-    def refresh_background(self) -> None:
-        """Reload wallpaper and rebuild blur (e.g. after wallpaper change)."""
-        self._mica.refresh()
-
-    # ---- Internal ----
-
-    def paintEvent(self, event: QPaintEvent) -> None:
-        painter = QPainter(self)
-        self._mica.paint(painter, event)
-        painter.end()
-
-    def resizeEvent(self, event: QResizeEvent) -> None:
-        super().resizeEvent(event)
-        self._mica.begin_interaction()
-
-    def moveEvent(self, event: QMoveEvent) -> None:
-        super().moveEvent(event)
-        self._mica.begin_interaction()
+__all__ = ["DEFAULT_MICA_CONFIG", "MicaWindow"]

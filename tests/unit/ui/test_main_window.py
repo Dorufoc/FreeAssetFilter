@@ -399,17 +399,20 @@ class TestMicaBackgroundWidgetCpu:
     def test_apply_mica_parameters(self, qapp: QApplication, monkeypatch) -> None:
         """滑动条实时预览入口：参数透传到 mixin 与 MicaMaterial。
 
-        置空壁纸路径禁用后台刷新线程（refresh_async 直接返回），
-        聚焦参数传递与壁纸缓存失效逻辑，避免测试中终止在途线程。
-        注意：main_window 经 ui 短路径导入了 components.mica_material，
-        与包路径 freeassetfilter.ui.components.mica_material 是两份模块
-        实例，必须按材质对象实际所属模块打补丁才生效。
-        """
-        import sys as _sys
+        新架构下色彩参数落在 ``MicaMaterial._params``（``MicaParams`` 不可变
+        dataclass），叠加层透明度单独存于 ``_overlay_opacity``。本例以
+        ``_request_rebuild`` 打桩记录重建调度，避免真正去采壁纸、起后台线程。
 
+        关键行为：
+        - 模糊 / 饱和度 / 对比度变化 → 触发一次后台重建（绘制期无法即时生效）；
+        - 仅叠加层透明度变化 → 仅绘制期生效，不调度重建。
+        """
         bg = MicaBackgroundWidgetCpu(tint_opacity=50)
-        mica_material_mod = _sys.modules[type(bg._mica).__module__]
-        monkeypatch.setattr(mica_material_mod, "_get_wallpaper_path", lambda: "")
+        material = bg._mica
+        assert material is not None
+        # 桩掉重建调度：只记录调用次数，不真正去采壁纸 / 起线程
+        rebuild_calls: list = []
+        monkeypatch.setattr(material, "_request_rebuild", lambda: rebuild_calls.append(1))
         assert bg._tint_opacity == 50
 
         bg.apply_mica_parameters(
@@ -419,26 +422,31 @@ class TestMicaBackgroundWidgetCpu:
         assert bg._saturation == 2.0
         assert bg._contrast == 1.0
         assert bg._tint_opacity == 30
-        assert bg._mica._blur_radius == 120
-        assert bg._mica._saturation == 2.0
-        assert bg._mica._contrast == 1.0
-        assert bg._mica._overlay_opacity == pytest.approx(0.3)
+        # 新架构：参数落在 MicaParams dataclass，叠加层透明度另存
+        assert material._params.blur_radius == pytest.approx(120)
+        assert material._params.saturation == pytest.approx(2.0)
+        assert material._params.contrast == pytest.approx(1.0)
+        assert material._overlay_opacity == pytest.approx(0.3)
+        # 本次同时改了模糊 / 饱和度 / 对比度，必然调度一次重建
+        assert len(rebuild_calls) == 1
 
-        # 仅叠加层透明度变化：绘制期生效，不失效壁纸缓存（无需重烘焙/重建）
-        bg._mica._wallpaper_path = "cached"
+        # 仅叠加层透明度变化：绘制期生效，不调度重建
+        rebuild_calls.clear()
         bg.apply_mica_parameters(tint_opacity=80)
-        assert bg._mica._wallpaper_path == "cached"
-        assert bg._mica._overlay_opacity == pytest.approx(0.8)
+        assert material._overlay_opacity == pytest.approx(0.8)
+        assert rebuild_calls == []
 
-        # 模糊半径变化：壁纸缓存失效（强制后台重算）
+        # 模糊半径变化：调度重建
+        rebuild_calls.clear()
         bg.apply_mica_parameters(blur_radius=300)
-        assert bg._mica._wallpaper_path == ""
-        assert bg._mica._blur_radius == 300
+        assert material._params.blur_radius == pytest.approx(300)
+        assert len(rebuild_calls) == 1
 
-        # 对比度变化：同样失效壁纸缓存（对比度参与增强+模糊管线）
+        # 对比度变化：同样调度重建
+        rebuild_calls.clear()
         bg.apply_mica_parameters(contrast=2.0)
-        assert bg._mica._wallpaper_path == ""
-        assert bg._mica._contrast == 2.0
+        assert material._params.contrast == pytest.approx(2.0)
+        assert len(rebuild_calls) == 1
 
         bg._mica.dispose()
         bg.deleteLater()
