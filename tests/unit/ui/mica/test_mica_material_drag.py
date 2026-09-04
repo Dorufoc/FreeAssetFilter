@@ -224,6 +224,35 @@ def test_layer_blit_falls_back_to_static_pixmap(qapp, monkeypatch) -> None:
         widget.deleteLater()
 
 
+def test_layer_blit_samples_clamped_on_resize(qapp, monkeypatch) -> None:
+    """resize（窗口尺寸 != layer.win_size）时 ``_layer_blit`` 仍返回层 + 非 None 子矩形。
+
+    严格 ``layer_to_source`` 对尺寸不匹配判 ``None``；钳制版 ``layer_to_source_clamped``
+    必须对 resize / 越界窗口返回一个合法子矩形 —— Mica 不因 resize 而消失。当层存在时，
+    ``_layer_blit`` 绝不返回 ``(None, None, ...)``。
+    """
+    widget, mica = _widget_with_mica(qapp)
+    layer = ViewportLayer(region=MONITOR_A, width=512, height=288, win_size=WIN)
+    mica._layer = layer
+    mica._layer_pixmap = QPixmap(512, 288)
+    mica._pixmap = QPixmap(WIN[0], WIN[1])  # 兜底应被忽略（层存在）
+    # 窗口 resize 到 1800x1000（与 layer.win_size 不一致）且部分越界到负 x。
+    monkeypatch.setattr(mica, "_window_rect_tuple", lambda: (-50, 88, 1800, 1000))
+
+    try:
+        pixmap, src, smooth = mica._layer_blit()
+        assert pixmap is mica._layer_pixmap  # 绝不是 (None, None, ...)
+        assert src is not None
+        assert len(src) == 4
+        assert src[0] >= 0.0 and src[1] >= 0.0   # 越界后钳制到层边界（非负）
+        assert src[2] == pytest.approx(1800 * (512 / 2560), abs=1e-6)
+        assert src[3] == pytest.approx(1000 * (288 / 1440), abs=1e-6)
+        assert smooth is True
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
 def test_paint_draws_window_subrect(qapp, monkeypatch) -> None:
     """``paint`` 从层里按窗口位置取子矩形做一次 blit（平滑双线性）。"""
     widget, mica = _widget_with_mica(qapp)
