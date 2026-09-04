@@ -80,11 +80,19 @@ MICA_PREVIEW_DEBOUNCE_MS = 200
 class _FloatingScrollArea(QScrollArea):
     """设置页滚动区 — 浮动 StyledScrollBar + 丝滑滚动（参考文件选择器模式）。
 
-    - 隐藏 QScrollArea 原生滚动条，由覆盖在右侧边缘的浮动
-      ``StyledScrollBar`` 接管（自绘圆角胶囊 + hover 展开 + 拖拽）。
+    - 隐藏 QScrollArea 原生滚动条，由浮动 ``StyledScrollBar`` 接管
+      （自绘圆角胶囊 + hover 展开 + 拖拽）。
+    - 通过 ``attach_floating_bar_region`` 将浮动条锚定到所在外观卡片
+      （#SettingsCard）右侧边框内侧——与文件选择器/文件池浮动滚动条的
+      间距约定一致：右缘水平贴边（间隙 0）、上/下内缩 10*dpi。
     - 通过 ``StyledScrollArea.apply_to`` 施加平滑滚轮/触摸手势
       （QScroller 丝滑减速 + 边界弹性回弹），与文件选择器一致。
     - 背景保持透明，透出设置卡片底色；滚动条仅在内容溢出时可见。
+
+    注意：本类不得重写 ``eventFilter``——PySide6 下 QScrollArea 子类一旦
+    覆盖该虚函数，其构造期样式表 polish 路径会触发原生访问冲突（构造阶段
+    虚表分发到尚未就绪的 Python 对象）。区域尺寸变化必然传导为滚动区自身
+    的 resizeEvent，因此浮动条重定位挂接现有事件链即可，无需事件过滤器。
     """
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -96,8 +104,14 @@ class _FloatingScrollArea(QScrollArea):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
-        # 浮动滚动条作为子控件覆盖在滚动区右侧，置于内容之上
-        self._bar_edge_padding = max(4, int(2 * self._dpi_scale()))
+        # 浮动条相对所在区域内容矩形（边框内侧）的上/下内缩：与文件选择器/
+        # 文件池浮动滚动条几何约定一致（10*dpi）；右缘水平贴边（间隙 0）
+        self._edge_padding = int(10 * self._dpi_scale())
+        # 锚定区域（外观卡片 #SettingsCard）；未锚定时回退为滚动区自身
+        self._region: QWidget | None = None
+
+        # 浮动滚动条：默认先挂在滚动区自身，attach_floating_bar_region
+        # 会将父级改挂到锚定卡片上，使其贴卡片右缘悬浮（内容之上）
         self._floating_bar = StyledScrollBar(self)
         self._floating_bar.setFixedWidth(max(6, int(8 * self._dpi_scale())))
         self._floating_bar.raise_()
@@ -113,6 +127,21 @@ class _FloatingScrollArea(QScrollArea):
         self._floating_bar.setVisible(vbar.maximum() > vbar.minimum())
 
         self._scroller_ready = False
+
+    def attach_floating_bar_region(self, region: QWidget) -> None:
+        """把浮动滚动条挂到所在区域（外观卡片 #SettingsCard）上并贴其右缘。
+
+        文件选择器/文件池的浮动条均以各自内容区边框内侧为参照（右缘水平
+        间隙 0、上/下内缩 edge_padding），这里把卡片内容矩形作为同等参照，
+        使设置页滚动条与主窗口两侧滚动条的边缘间距逐像素一致。
+        卡片缩放必然传导为滚动区 resizeEvent，由既有事件链触发重定位。
+        """
+        if region is self._region:
+            return
+        self._region = region
+        self._floating_bar.setParent(region)
+        self._floating_bar.raise_()
+        self._reposition_bar()
 
     @staticmethod
     def _dpi_scale() -> float:
@@ -131,17 +160,28 @@ class _FloatingScrollArea(QScrollArea):
         self._floating_bar.setVisible(maximum > minimum)
         self._reposition_bar()
 
-    # ── 几何：浮动滚动条贴右侧边缘 ───────────────────────────────────
+    # ── 几何：浮动滚动条贴所在区域右缘 ───────────────────────────────
 
     def _reposition_bar(self) -> None:
-        """把浮动滚动条放到滚动区右缘（内容不足时保持隐藏）。"""
+        """把浮动滚动条贴到所在区域（默认滚动区自身）右缘。
+
+        内容不足时保持隐藏。几何以区域内容矩形（边框内侧）为参照：
+        右缘水平贴边（间隙 0）、上/下内缩 edge_padding，
+        与文件选择器/文件池浮动滚动条的间距约定逐像素一致。
+        """
         bar = self._floating_bar
-        pad = self._bar_edge_padding
+        if bar.parent() is None:
+            return
+        region = self._region if self._region is not None else self
+        if region.width() <= 0 or region.height() <= 0:
+            return
+        pad = self._edge_padding
+        cr = region.contentsRect()
         bar.setGeometry(
-            self.width() - bar.width(),
-            pad,
+            cr.x() + cr.width() - bar.width(),
+            cr.y() + pad,
             bar.width(),
-            max(0, self.height() - 2 * pad),
+            max(0, cr.height() - 2 * pad),
         )
         bar.raise_()
 
@@ -613,10 +653,16 @@ class AppearanceSettingsPage(QWidget):
         self._save_mica_settings()
 
     def _find_main_window(self) -> QWidget | None:
-        """定位主窗口（按 _mica_background 属性鸭子类型判定，避免循环导入）。"""
+        """定位主窗口（按 _mica_background 属性鸭子类型判定，避免循环导入）。
+
+        设置窗口是主窗口的 owned 子窗口后，self.window() 直接就是主窗口
+        （QWidget.window() 返回顶层祖先），因此优先直接判定；遍历
+        topLevelWidgets 仅作为回退路径（例如设置窗口未被挂载到主窗口的场景）。
+        """
+        w = self.window()
+        if w is not None and getattr(w, "_mica_background", None) is not None:
+            return w
         for w in QApplication.topLevelWidgets():
-            if w is self.window():
-                continue
             if getattr(w, "_mica_background", None) is not None:
                 return w
         return None
@@ -850,8 +896,12 @@ class AppearanceSettingsPage(QWidget):
             self._install_outside_click_filter()
 
     def _install_outside_click_filter(self) -> None:
-        """Install event filter on the top-level SettingsWindow.
-        
+        """在设置窗口顶层祖先上安装事件过滤器，用于点击外部区域关闭面板。
+
+        设置窗口是主窗口的 owned 子窗口，self.window() 返回主窗口，
+        因此过滤器会同时覆盖设置页自身及其子控件与主窗口——面板显示期间
+        点击主窗口任何区域同样会关闭面板。
+
         Safe when no top-level window exists yet (no-op).
         Idempotent: repeated calls have no effect.
         """
@@ -1017,8 +1067,17 @@ class AppearanceSettingsPage(QWidget):
 class SettingsLayout(QWidget):
     """设置布局"""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, host_window: QWidget | None = None):
+        """初始化设置布局。
+
+        Args:
+            parent: 父控件。
+            host_window: 宿主设置窗口（SettingsWindow）。设置窗口作为主窗口的
+                owned 子窗口时，QWidget.window() 返回的是主窗口而非设置窗口
+                本身，因此由创建方显式传入，供“应用”等需要整窗快照的逻辑使用。
+        """
         super().__init__(parent)
+        self._host_window = host_window
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -1050,9 +1109,11 @@ class SettingsLayout(QWidget):
 
         # 页面 0：外观（包进透明滚动区域，小窗口尺寸下内容可滚动访问）
         self._appearance_page = AppearanceSettingsPage()
-        appearance_card = self._create_page_card(
-            self._wrap_page_in_scroll(self._appearance_page)
-        )
+        appearance_scroll = self._wrap_page_in_scroll(self._appearance_page)
+        appearance_card = self._create_page_card(appearance_scroll)
+        # 浮动滚动条锚定到外观卡片（#SettingsCard）右缘：右缘水平贴边、
+        # 上下内缩 10*dpi，与文件选择器/文件池浮动滚动条间距一致
+        appearance_scroll.attach_floating_bar_region(appearance_card)
         self._stack.addWidget(appearance_card)
 
         # 页面 1：通用（占位）
@@ -1180,7 +1241,9 @@ class SettingsLayout(QWidget):
 
         # 先捕获设置窗口快照并启动过渡遮罩，再应用主题，实现平滑切换。
         # 使用 grabWindow(HWND) 而非 grab()，避免 OpenGL Mica 背景合成花屏。
-        settings_window = self.window()
+        # 设置窗口是主窗口的 owned 子窗口，QWidget.window() 会返回主窗口，
+        # 因此优先取创建方显式传入的 host_window。
+        settings_window = self._host_window if self._host_window is not None else self.window()
         if settings_window is not None:
             overlay = ThemeTransitionOverlay.from_widget(settings_window)
             overlay.start()
