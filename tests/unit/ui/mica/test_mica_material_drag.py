@@ -21,7 +21,7 @@ from unittest import mock
 
 import numpy as np
 import pytest
-from PySide6.QtCore import QRectF
+from PySide6.QtCore import QRectF, QThread
 from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import QWidget
 
@@ -353,3 +353,247 @@ def test_paint_steady_state_draws_opaque(qapp, monkeypatch) -> None:
     finally:
         mica.dispose()
         widget.deleteLater()
+
+
+# ---------------------------------------------------------------------------
+# 拖动期快速路径（逐帧零重绘）与松手收敛（settle 淡化 / 跨屏等待新层）
+# ---------------------------------------------------------------------------
+
+
+def _ready_mica(widget, mica, *, region=MONITOR_A, pix_w=512, pix_h=288) -> None:
+    """把 MicaMaterial 置为“层就绪”状态（1:1 整数裁剪路径）。"""
+    mica._layer = ViewportLayer(region=region, width=pix_w, height=pix_h, win_size=WIN)
+    mica._layer_pixmap = QPixmap(pix_w, pix_h)
+    mica._layer_key = ("params", True, "sig", region, 2560)
+    mica._layer_display_long = 2560
+
+
+def test_fast_path_pure_move_no_update_no_probe(qapp, monkeypatch) -> None:
+    """纯移动（层就绪、尺寸不变）：``begin_interaction`` 零重绘、零探测、零重烘。"""
+    widget, mica = _widget_with_mica(qapp)
+    _ready_mica(widget, mica)
+    updates = mock.Mock()
+    widget.update = updates
+    monitor_spy = mock.Mock(return_value=MONITOR_A)
+    key_spy = mock.Mock(return_value=mica._layer_key)
+    rebake_mock = mock.Mock()
+    monkeypatch.setattr(mica, "_monitor_rect_for", monitor_spy)
+    monkeypatch.setattr(mica, "_layer_key_for", key_spy)
+    monkeypatch.setattr(mica, "_maybe_rebake", rebake_mock)
+    monkeypatch.setattr(mica, "_window_rect_tuple", lambda: (300, 400, *WIN))
+
+    try:
+        mica.begin_interaction()
+        rebake_mock.assert_not_called()
+        monitor_spy.assert_not_called()  # 快速路径不做 COM 探测
+        key_spy.assert_not_called()
+        updates.assert_not_called()  # 快速路径不触发整窗重绘
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_fast_path_monitor_cross_rebakes_once_when_idle(qapp, monkeypatch) -> None:
+    """跨监视器且无在途烘焙：首个越区事件触发恰好一次 ``_maybe_rebake(force=True)``。"""
+    widget, mica = _widget_with_mica(qapp)
+    _ready_mica(widget, mica)
+    updates = mock.Mock()
+    widget.update = updates
+    monkeypatch.setattr(mica, "_window_rect_tuple", lambda: (300, 1800, *WIN))
+    rebake_mock = mock.Mock()
+    monkeypatch.setattr(mica, "_maybe_rebake", rebake_mock)
+
+    try:
+        mica.begin_interaction()
+        rebake_mock.assert_called_once_with(force=True)
+        updates.assert_not_called()
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_fast_path_skips_rebake_while_bake_inflight(qapp, monkeypatch) -> None:
+    """跨监视器但已有在途烘焙：不再重复提交（避免逐事件探测 / 重烘）。"""
+    widget, mica = _widget_with_mica(qapp)
+    _ready_mica(widget, mica)
+    monkeypatch.setattr(mica, "_window_rect_tuple", lambda: (300, 1800, *WIN))
+    rebake_mock = mock.Mock()
+    monkeypatch.setattr(mica, "_maybe_rebake", rebake_mock)
+    mica._worker_thread = QThread()
+
+    try:
+        mica.begin_interaction()
+        rebake_mock.assert_not_called()
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_drag_live_env_restores_legacy_update(qapp, monkeypatch) -> None:
+    """``FAF_MICA_DRAG_LIVE=1``：恢复逐事件重绘 / 探测的旧行为（回归对照）。"""
+    monkeypatch.setenv("FAF_MICA_DRAG_LIVE", "1")
+    widget, mica = _widget_with_mica(qapp)
+    _ready_mica(widget, mica)
+    updates = mock.Mock()
+    widget.update = updates
+    monitor_spy = mock.Mock(return_value=MONITOR_A)
+    key_spy = mock.Mock(return_value=mica._layer_key)
+    rebake_mock = mock.Mock()
+    monkeypatch.setattr(mica, "_monitor_rect_for", monitor_spy)
+    monkeypatch.setattr(mica, "_layer_key_for", key_spy)
+    monkeypatch.setattr(mica, "_maybe_rebake", rebake_mock)
+    monkeypatch.setattr(mica, "_window_rect_tuple", lambda: (300, 400, *WIN))
+
+    try:
+        mica.begin_interaction()
+        updates.assert_called_once()  # LIVE：每事件重绘
+        monitor_spy.assert_called_once()  # LIVE：逐事件探测
+        rebake_mock.assert_not_called()
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_on_settle_same_monitor_starts_settle_fade(qapp, monkeypatch) -> None:
+    """松手仍在同一监视器：启动旧裁剪 → 新裁剪的 settle 淡化。"""
+    widget, mica = _widget_with_mica(qapp)
+    _ready_mica(widget, mica)
+    mica._last_painted_win = (100, 100, *WIN)
+    monkeypatch.setattr(mica, "_window_rect_tuple", lambda: (300, 400, *WIN))
+    monkeypatch.setattr(mica, "_monitor_rect_for", lambda w: MONITOR_A)
+    monkeypatch.setattr(mica, "_needs_layer_rebake", lambda *a: False)
+    rebake_mock = mock.Mock()
+    monkeypatch.setattr(mica, "_maybe_rebake", rebake_mock)
+    updates = mock.Mock()
+    widget.update = updates
+
+    try:
+        mica._on_settle()
+        assert mica._interacting is False
+        assert mica._hide_until_new_layer is False
+        assert mica._settle_fade_active() is True
+        rebake_mock.assert_called_once_with(force=False)
+        updates.assert_called_once()
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_on_settle_same_spot_skips_fade(qapp, monkeypatch) -> None:
+    """松手位置与最近绘制位置几乎重合：跳过淡化，仅单次重绘。"""
+    widget, mica = _widget_with_mica(qapp)
+    _ready_mica(widget, mica)
+    mica._last_painted_win = (300, 400, *WIN)
+    monkeypatch.setattr(mica, "_window_rect_tuple", lambda: (300, 401, *WIN))
+    monkeypatch.setattr(mica, "_monitor_rect_for", lambda w: MONITOR_A)
+    monkeypatch.setattr(mica, "_needs_layer_rebake", lambda *a: False)
+    monkeypatch.setattr(mica, "_maybe_rebake", mock.Mock())
+    updates = mock.Mock()
+    widget.update = updates
+
+    try:
+        mica._on_settle()
+        assert mica._settle_fade_active() is False
+        updates.assert_called_once()
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_on_settle_cross_monitor_waits_new_layer(qapp, monkeypatch) -> None:
+    """跨监视器松手且新层烘焙在途：隐藏（纯色底）直到新层到达。"""
+    widget, mica = _widget_with_mica(qapp)
+    _ready_mica(widget, mica)
+    mica._layer_key = ("params", True, "sig", MONITOR_A, 2560)
+    monkeypatch.setattr(mica, "_window_rect_tuple", lambda: (300, 1800, *WIN))
+    monkeypatch.setattr(mica, "_monitor_rect_for", lambda w: MONITOR_B)
+    monkeypatch.setattr(mica, "_needs_layer_rebake", lambda *a: True)
+    monkeypatch.setattr(
+        mica, "_layer_key_for", lambda region, dl: ("params", True, "sig", region, int(dl))
+    )
+    updates = mock.Mock()
+    widget.update = updates
+    mica._worker_thread = QThread()  # 在途烘焙（B 层）
+
+    try:
+        mica._on_settle()
+        assert mica._hide_until_new_layer is True
+        assert mica._settle_fade_active() is False
+        updates.assert_called_once()
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_on_settle_cross_monitor_releases_when_no_bake_pending(qapp, monkeypatch) -> None:
+    """跨监视器松手但无在途烘焙且 key 未变（极端）：立即解除隐藏，不停纯色底。"""
+    widget, mica = _widget_with_mica(qapp)
+    _ready_mica(widget, mica)
+    monkeypatch.setattr(mica, "_window_rect_tuple", lambda: (300, 1800, *WIN))
+    monkeypatch.setattr(mica, "_monitor_rect_for", lambda w: MONITOR_B)
+    monkeypatch.setattr(mica, "_needs_layer_rebake", lambda *a: True)
+    monkeypatch.setattr(mica, "_layer_key_for", lambda region, dl: mica._layer_key)
+    updates = mock.Mock()
+    widget.update = updates
+
+    try:
+        mica._on_settle()
+        assert mica._hide_until_new_layer is False
+        updates.assert_called_once()
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_settle_fade_ticks_until_done(qapp, monkeypatch) -> None:
+    """settle 淡化按节拍推进并在时长耗尽后停机（回落到常规帧）。"""
+    widget, mica = _widget_with_mica(qapp)
+    try:
+        _ready_mica(widget, mica)
+        mica._last_painted_win = (100, 100, *WIN)
+        mica._settle_fade_ms = 120
+        mica._start_settle_fade((300, 400, *WIN))
+        assert mica._settle_fade_active() is True
+        assert mica._settle_fade_ticks == 0
+
+        for _ in range(8):  # 8 × 16ms = 128ms ≥ 120ms
+            mica._on_settle_fade_tick()
+        assert mica._settle_fade_active() is False
+        assert mica._settle_fade_old_src is None
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_paint_during_settle_fade_draws_old_then_new(qapp, monkeypatch) -> None:
+    """淡化帧绘制两笔：旧裁剪（不透明打底）+ 新裁剪（按进度叠入）。"""
+    widget, mica = _widget_with_mica(qapp)
+    _ready_mica(widget, mica)
+    mica._fade_alpha = 1.0
+    mica._settle_fade_ms = 120
+    mica._settle_fade_old_src = (5.0, 5.0, 300.0, 200.0)
+    mica._settle_fade_ticks = 2  # t ≈ 32/120
+    monkeypatch.setattr(mica, "_window_rect_tuple", lambda: (192, 88, *WIN))
+    draw_calls = []
+    orig_draw = QPainter.drawPixmap
+
+    def recorder(self, *args, **kwargs):
+        draw_calls.append(args)
+        return orig_draw(self, *args, **kwargs)
+
+    monkeypatch.setattr(QPainter, "drawPixmap", recorder)
+
+    try:
+        img = QImage(widget.rect().width(), widget.rect().height(), QImage.Format_RGB32)
+        img.fill(QColor(0, 0, 0))
+        painter = QPainter(img)
+        try:
+            mica.paint(painter, None)
+        finally:
+            painter.end()
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+    assert len(draw_calls) == 2, "淡化帧应绘制旧、新两笔裁剪"
+    assert all(isinstance(c[2], QRectF) for c in draw_calls)

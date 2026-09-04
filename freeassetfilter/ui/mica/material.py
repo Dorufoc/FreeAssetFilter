@@ -39,11 +39,32 @@
 layer_display_long）判断层是否过期：主题 / 参数 / 壁纸 / 监视器变化时重烘焙
 一次；key 不变则跳过。worker 结果携带生成时的 ``layer_key``，主线程槽
 若发现已不匹配当前 key，则丢弃该过期的烘焙结果（陈旧结果绝不提交）。
+
+拖动期快速路径（为什么拖动中“冻结”合成）
+-----------------------------------------
+系统 move 期间 DWM 只平移窗口位图，客户区**零重绘** —— 这是任何原生窗口
+拖动都流畅的根本原因。窗口是单面不透明光栅表面，无法让“内容”与“背景”
+相对位移：只要逐帧重绘背景（哪怕只 blit 一块子矩形），成本就随窗口面积
+增长（窗口越大帧率越低），数学上追不上 DWM。
+
+因此默认策略是：**拖动中完全不打扰窗口**（:meth:`MicaMaterial.begin_interaction`
+对“层就绪 + 尺寸不变”的纯移动事件只做 O(1) 记账，不重绘 / 不探测 / 不重烘），
+代价是拖动期间背景短暂“贴窗”（画面随窗口整体平移）；松手后由
+:meth:`MicaMaterial._on_settle` 单次重绘把背景重同步到按**最终位置**取样的
+正确壁纸裁剪 —— 同监视器用 ~120ms 交叉淡化（旧裁剪 → 新裁剪）掩盖位移，
+跨监视器则先画纯色底、等新层后台烘焙完成后淡入，绝不显示旧监视器的钳制伪色。
+与 :class:`~freeassetfilter.ui.components.custom_background.CustomImageBackgroundWidget`
+（图片层对 move 事件 no-op）共用同一套“拖动不重绘”先例。
+
+设环境变量 ``FAF_MICA_DRAG_LIVE=1`` 恢复旧的逐帧行为，``FAF_MICA_SETTLE_FADE_MS``
+可调淡化时长（``0`` 关闭）。拖动路径有专项回归门禁（``tests/unit/ui/mica/
+test_drag_perf.py``），禁止在该路径重新引入逐事件重绘 / COM 探测。
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import weakref
 from typing import Optional, Tuple, Union
@@ -104,6 +125,35 @@ DISPLAY_LONG_CAP: int = 2048
 
 #: 混合预合成使用的默认纯色底（黑）。绘制端不再二次混合，见 render_display。
 _DEFAULT_SURFACE_RGB: Tuple[int, int, int] = (0, 0, 0)
+
+# ---------------------------------------------------------------------------
+# 拖动期快速路径
+# ---------------------------------------------------------------------------
+#: 拖动期默认策略：**逐帧不重绘**（窗口画面交给 DWM 平移，客户区零合成负载，
+#: 帧成本与窗口尺寸无关）。与 ``custom_background.CustomImageBackgroundWidget``
+#: 对 move 事件 no-op 的先例一致 —— 静止观感零变化，代价是拖动中背景“贴窗”，
+#: 松手后由 settle 交叉淡化（见 :data:`_SETTLE_FADE_MS`）重同步到正确壁纸裁剪。
+#: 设 ``FAF_MICA_DRAG_LIVE=1`` 可恢复旧的“拖动中逐帧重绘”行为（对照回归用）。
+DRAG_LIVE_ENV: str = "FAF_MICA_DRAG_LIVE"
+
+#: 松手时旧裁剪 → 新裁剪的交叉淡化时长（毫秒）。掩盖“贴窗 → 贴壁纸”的一次
+#: 背景重同步。设 ``FAF_MICA_SETTLE_FADE_MS=0`` 可关闭（退化为瞬间重绘）。
+SETTLE_FADE_ENV: str = "FAF_MICA_SETTLE_FADE_MS"
+#: 默认淡化时长（毫秒）。
+_SETTLE_FADE_DEFAULT_MS: int = 120
+#: settle 淡化逐帧节拍（毫秒）。
+_FADE_TICK_MS: int = 16
+
+
+def _settle_fade_ms_from_env() -> int:
+    """读取 ``FAF_MICA_SETTLE_FADE_MS``（非法值回退默认）。"""
+    raw = os.environ.get(SETTLE_FADE_ENV, "").strip()
+    if not raw:
+        return _SETTLE_FADE_DEFAULT_MS
+    try:
+        return max(0, int(float(raw)))
+    except ValueError:
+        return _SETTLE_FADE_DEFAULT_MS
 
 
 def _layer_display_long(region: Tuple[int, int, int, int]) -> int:
@@ -401,6 +451,22 @@ class MicaMaterial(QObject):
         self._settle_timer.setInterval(SETTLE_INTERVAL_MS)
         self._settle_timer.timeout.connect(self._on_settle)
 
+        # 拖动期快速路径（详见模块头与 begin_interaction）：
+        # - 拖动会话期间窗口内容（含背景）由 DWM 平移，客户区零重绘；
+        # - 最近一次“真正把层画上去”时的窗口矩形 —— 它就是拖动开始时屏幕上
+        #   所见背景对应的采样位置（拖动中不重绘，位置不再前进）；
+        # - 跨监视器松手后、新层烘焙完成前只画纯色底（不显示旧监视器伪色）。
+        self._drag_live = os.environ.get(DRAG_LIVE_ENV, "").strip().lower() == "1"
+        self._last_painted_win: Optional[Tuple[int, int, int, int]] = None
+        self._hide_until_new_layer = False
+        # settle 淡化状态：旧裁剪 → 新裁剪，见 _start_settle_fade。
+        self._settle_fade_ms = _settle_fade_ms_from_env()
+        self._settle_fade_old_src: Optional[Tuple[float, float, float, float]] = None
+        self._settle_fade_ticks = 0
+        self._settle_fade_timer = QTimer(self._widget)
+        self._settle_fade_timer.setInterval(_FADE_TICK_MS)
+        self._settle_fade_timer.timeout.connect(self._on_settle_fade_tick)
+
         # 后台线程生命周期状态
         self._worker_thread: Optional[QThread] = None
         self._worker: Optional[_BakeWorker] = None
@@ -560,52 +626,33 @@ class MicaMaterial(QObject):
         # （混合已在 worker 端预合成进 pixmap，绘制端只承担淡入淡出）。
         painter.fillRect(rect, self._surface_color)
 
-        pixmap, src, smooth = self._layer_blit()
-        if pixmap is None or pixmap.isNull():
+        if self._hide_until_new_layer:
+            # 跨监视器松手后等待新层：只画纯色底（不显示旧监视器钳制伪色），
+            # 新层到达后由 _on_bake_done 淡入揭示。
             return
-
-        painter.setRenderHint(QPainter.SmoothPixmapTransform, smooth)
-        # 混合已在 worker 端预合成进 pixmap（render_display 消费 overlay/surface），
-        # 绘制端**全不透明**，避免第二次 8-bit 量化（banding 根因）。
-        painter.setOpacity(self._fade_alpha)
-        if src is None:
-            # 回退到整窗静态场（已是窗口尺寸，1:1 平铺）。
-            painter.drawPixmap(rect, pixmap)
-        elif smooth:
-            # 浮点源子矩形：亚像素双线性取样。
-            painter.drawPixmap(QRectF(rect), pixmap, QRectF(*src))
-        else:
-            # 整型源子矩形：真 1:1 blit（无重采样）。
-            painter.drawPixmap(QRect(rect), pixmap, QRect(*src))
-        painter.setOpacity(1.0)
+        if self._settle_fade_active():
+            # 拖动快速路径的松手重同步：旧裁剪（拖动期间所见）→ 新裁剪淡化。
+            self._draw_settle_fade(painter, rect)
+            return
+        self._draw_layer(painter, rect)
 
     def paint_gpu(self, painter: QPainter) -> None:
         """在 GPU 画笔画笔（``QOpenGLWidget``）上绘制 Mica 背景。
 
-        与 :meth:`paint` 策略一致：优先取层内窗口子矩形（blit），回退整窗静态场，
-        再退实色底。
-
-        Args:
-            painter: 来自 ``paintGL`` 的画笔画笔。
+        与 :meth:`paint` 策略一致（含拖动快速路径的隐藏 / settle 淡化分支），
+        只是画笔来自 ``paintGL``。
         """
         rect = self._widget.rect()
         if self._paused:
             painter.fillRect(rect, self._surface_color)
             return
         painter.fillRect(rect, self._surface_color)
-        pixmap, src, smooth = self._layer_blit()
-        if pixmap is None or pixmap.isNull():
+        if self._hide_until_new_layer:
             return
-        # 混合已在 worker 端预合成进 pixmap，绘制端全不透明（见 paint）。
-        painter.setRenderHint(QPainter.SmoothPixmapTransform, smooth)
-        painter.setOpacity(self._fade_alpha)
-        if src is None:
-            painter.drawPixmap(rect, pixmap)
-        elif smooth:
-            painter.drawPixmap(QRectF(rect), pixmap, QRectF(*src))
-        else:
-            painter.drawPixmap(QRect(rect), pixmap, QRect(*src))
-        painter.setOpacity(1.0)
+        if self._settle_fade_active():
+            self._draw_settle_fade(painter, rect)
+            return
+        self._draw_layer(painter, rect)
 
     def _layer_blit(
         self,
@@ -639,6 +686,76 @@ class MicaMaterial(QObject):
         if pixmap is None or pixmap.isNull():
             return (None, None, True)
         return (pixmap, None, True)
+
+    def _draw_layer(self, painter: QPainter, rect) -> None:
+        """常规路径：把层（或回退静态场）按窗口当前位置取样绘制到 ``rect``。
+
+        绘制结果**全不透明**（混合已在 worker 端预合成进 pixmap，见
+        :func:`ui.mica.engine.render_display`），避免第二次 8-bit 量化
+        （banding 根因）。绘制成功后记录 :attr:`_last_painted_win` —— 它代表
+        “屏幕上可见背景的采样位置”，拖动快速路径松手时据此做 settle 淡化。
+
+        CPU（:meth:`paint`）与 GPU（:meth:`paint_gpu`）共用本方法。
+
+        Args:
+            painter: 画笔（已叠好实色底）。
+            rect: 目标矩形（= 控件 rect）。
+        """
+        pixmap, src, smooth = self._layer_blit()
+        if pixmap is None or pixmap.isNull():
+            return
+
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, smooth)
+        painter.setOpacity(self._fade_alpha)
+        if src is None:
+            # 回退到整窗静态场（已是窗口尺寸，1:1 平铺）。
+            painter.drawPixmap(rect, pixmap)
+        elif smooth:
+            # 浮点源子矩形：亚像素双线性取样。
+            painter.drawPixmap(QRectF(rect), pixmap, QRectF(*src))
+        else:
+            # 整型源子矩形：真 1:1 blit（无重采样）。
+            painter.drawPixmap(QRect(rect), pixmap, QRect(*src))
+        painter.setOpacity(1.0)
+
+        if self._layer is not None:
+            self._last_painted_win = self._window_rect_tuple()
+
+    def _settle_fade_active(self) -> bool:
+        """settle 淡化是否在途（旧裁剪 → 新裁剪）。"""
+        return self._settle_fade_old_src is not None
+
+    def _draw_settle_fade(self, painter: QPainter, rect) -> None:
+        """绘制松手重同步的交叉淡化帧：旧裁剪打底，新裁剪按进度叠入。
+
+        旧裁剪 = 拖动期间屏幕上实际所见（= 拖动开始前最后绘制帧的取样位置，
+        DWM 平移整窗位图时它保持不变）；新裁剪 = 按**当前最终位置**取样。
+        结果是 ``(1-t)·old + t·new`` 的标准交叉淡化，掩盖“贴窗 → 贴壁纸”的
+        一次背景位移。淡化期无重烘焙（见 :meth:`_on_settle`），层恒定。
+
+        Args:
+            painter: 画笔（已叠好实色底）。
+            rect: 目标矩形（= 控件 rect）。
+        """
+        layer = self._layer
+        pixmap = self._layer_pixmap
+        old_src = self._settle_fade_old_src
+        if layer is None or pixmap is None or pixmap.isNull() or old_src is None:
+            # 状态异常兜底：直接画当前裁剪（幂等）。
+            self._draw_layer(painter, rect)
+            return
+        span = max(1, int(self._settle_fade_ms))
+        t = min(1.0, float(self._settle_fade_ticks) * _FADE_TICK_MS / float(span))
+        new_src = layer_to_source_clamped(layer, self._window_rect_tuple())
+
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        # 旧裁剪打底（不透明 —— 与拖动期间所见帧一致）。
+        painter.setOpacity(self._fade_alpha)
+        painter.drawPixmap(QRectF(rect), pixmap, QRectF(*old_src))
+        # 新裁剪按进度叠入；t→1 由 _on_settle_fade_tick 停机后的常规帧收尾。
+        painter.setOpacity(self._fade_alpha * max(0.0, min(1.0, t)))
+        painter.drawPixmap(QRectF(rect), pixmap, QRectF(*new_src))
+        painter.setOpacity(1.0)
 
     def set_theme(self, surface_color: Union[str, QColor, None], luminosity: float) -> None:
         """切换主题：更新实色层与深浅模式，并触发热重烘焙（G1 基色随主题变化）。
@@ -712,23 +829,50 @@ class MicaMaterial(QObject):
     def begin_interaction(self) -> None:
         """标记窗口拖拽 / 缩放开始或持续。
 
-        视口层是**逐监视器持久化**的 —— 窗口在监视器内平移无需重烘焙，逐帧从层里
-        按位置取样即可。这里**只**在真正需要时才触发**一次**层重烘焙：
+        拖动期快速路径（默认）
+        ---------------------
+        系统 move 期间 DWM 只平移窗口位图，客户区无需任何重绘 —— 本窗口内的
+        一切自绘（含本层整窗重绘 + 逐事件 COM 探测）都会打破这一免费机制，且
+        成本随窗口面积增长（窗口越大越卡，见模块头）。因此在**层已就绪且窗口
+        尺寸未变**（纯移动）时：只重启 settle 计时器，**不重绘、不探测、不重烘**
+        （O(1)/事件，帧成本与窗口大小无关，≈ DWM 原生手感）。拖动中窗口内容
+        （含背景）整体由 DWM 平移 —— 背景短暂“贴窗”，松手后由
+        :meth:`_on_settle` 单次重绘 + settle 交叉淡化重同步到正确壁纸裁剪。
 
-        * 窗口离开当前层区域（= 跨监视器 / 越界到另一块监视器）；
-        * 监视器变化（区域变化）；
-        * 密度目标变化（层显示长边或窗口尺寸变化 —— 层网格密度随之改变）；
-        * 主题 / 参数 / 壁纸变化（由 ``layer_key`` 判据覆盖）。
+        例外（保持可见正确性，仅低频发生）：
 
-        触发时调用 :meth:`_maybe_rebake`（force），它会经 :meth:`refresh_async`
-        自增 ``_layer_gen`` 并提交新请求；若已有烘焙在途则置 ``_rebuild_pending``
-        交由回收逻辑续接，**绝不**清除旧层 —— 旧层保持可见直到新层就绪
-        （陈旧性守卫保证过期结果不被提交）。
+        * 窗口中心首次离开当前层区域（跨监视器 / 越界）→ 该事件做一次
+          :meth:`_maybe_rebake`（在途守卫保证不叠加）；
+        * 缩放中 / 层未就绪 / 主题参数变化 → 走旧的重绘路径（缩放时 Qt 本就
+          整窗重排；启动期短暂，烘焙完成即进入快速路径）。
 
-        其余帧仅重绘（``self._widget.update()``），零重计算。
+        设 ``FAF_MICA_DRAG_LIVE=1``（见 :data:`DRAG_LIVE_ENV`）可恢复旧的
+        “逐事件重绘 + 探测”行为，用于对照回归。
         """
         self._interacting = True
         win = self._window_rect_tuple()
+        # 上一次松手的 settle 淡化若仍在途（用户很快再次拖拽）：立即以单次重绘
+        # 收尾到“新裁剪”完整帧（只发生在每次手势的第一个事件，非逐帧开销），
+        # 再进入冻结 —— 避免画面停留在“旧/新裁剪中间态”被拖走。
+        had_fade = self._settle_fade_active()
+        self._stop_settle_fade()
+        if not self._drag_live and self._layer_is_drag_ready(win):
+            # 快速路径：纯移动，层就绪 —— 零重绘 / 零重烘。
+            if had_fade:
+                self._widget.update()
+            self._settle_timer.start()
+            if (
+                self._worker_thread is None
+                and self._window_left_layer_region(win, self._layer)
+                and self._refresh_retries <= BAKE_MAX_RETRIES
+            ):
+                # 跨监视器：仅在越出当前层区域、且没有在途烘焙时触发一次重烘焙
+                # （在途任务完成即会更新层区域，无需重复探测 / 提交）；连续失败
+                # 放弃后（_refresh_retries 超限）不再尝试，保持 O(1)。
+                self._maybe_rebake(force=True)
+            return
+
+        # 旧路径：resize / 层未就绪 / LIVE 开关 —— 逐事件重绘，重烘判断照旧。
         monitor = self._monitor_rect_for(win)
         region = layer_region_for(win, monitor)
         layer_display_long = _layer_display_long(region)
@@ -736,6 +880,43 @@ class MicaMaterial(QObject):
             self._maybe_rebake(force=True)
         self._settle_timer.start()
         self._widget.update()
+
+    def _layer_is_drag_ready(self, win: Tuple[int, int, int, int]) -> bool:
+        """拖动期快速路径是否可用：层就绪且窗口尺寸与层烘焙时一致（纯移动）。
+
+        Args:
+            win: ``(x, y, w, h)`` 当前窗口矩形。
+
+        Returns:
+            可走快速路径则 ``True``。
+        """
+        layer = self._layer
+        if layer is None:
+            return False
+        if self._layer_pixmap is None or self._layer_pixmap.isNull():
+            return False
+        return (int(win[2]), int(win[3])) == layer.win_size
+
+    def _window_left_layer_region(
+        self, win: Tuple[int, int, int, int], layer: ViewportLayer
+    ) -> bool:
+        """窗口中心是否已离开层覆盖区域（= 跨监视器越界）。
+
+        层区域 == 烘焙时的监视器矩形（见 :func:`ui.mica.drag.layer_region_for`），
+        用窗口中心点判定与 :meth:`_monitor_rect_for` 一致 —— 无需每次事件都做
+        COM 探测即可发现跨屏。
+
+        Args:
+            win: ``(x, y, w, h)`` 当前窗口矩形。
+            layer: 当前视口层。
+
+        Returns:
+            中心已越出层区域则 ``True``。
+        """
+        cx = float(win[0]) + float(win[2]) / 2.0
+        cy = float(win[1]) + float(win[3]) / 2.0
+        rx, ry, rw, rh = (int(v) for v in layer.region)
+        return not (rx <= cx < rx + rw and ry <= cy < ry + rh)
 
     def _needs_layer_rebake(
         self,
@@ -800,6 +981,9 @@ class MicaMaterial(QObject):
         self._paused = True
         self._stop_fade()
         self._settle_timer.stop()
+        self._stop_settle_fade()
+        self._settle_fade_timer.stop()
+        self._hide_until_new_layer = False
         self._deactivate_timer.stop()
         self._watchdog.stop()
         self._opacity_timer.stop()
@@ -966,13 +1150,88 @@ class MicaMaterial(QObject):
         self._maybe_rebake(force=True)
 
     def _on_settle(self) -> None:
-        """交互停止：按当前条件决定是否重烘焙视口层。
+        """交互停止：把背景重同步到**最终窗口位置**的正确壁纸裁剪。
 
-        视口层逐监视器持久化 —— 窗口在监视器内平移不触发重烘焙；跨监视器 /
-        参数 / 主题 / 壁纸变化时，``_maybe_rebake`` 会按新 ``layer_key`` 重烘焙一层。
+        拖动快速路径（:meth:`begin_interaction`）在拖动中零重绘 —— 松手时屏幕
+        上仍是“贴窗”平移的最后帧（采样位置 = 拖动开始前最后一次真正绘制）。
+        这里按三种情况收敛：
+
+        * **同监视器**：:meth:`_start_settle_fade` —— 旧裁剪 → 新裁剪的短暂
+          交叉淡化，掩盖一次背景位移（可经 ``FAF_MICA_SETTLE_FADE_MS=0`` 关闭）；
+        * **已跨监视器**：置 :attr:`_hide_until_new_layer`（只画纯色底，不显示
+          旧监视器壁纸的钳制伪色），由重烘焙完成后的 :meth:`_on_bake_done`
+          淡入新层；新层彻底失败时由回收逻辑解除隐藏；
+        * **层未就绪 / 缩放中 / LIVE 开关**：沿用旧收敛 —— 只在必要时重烘焙
+          （期间画面已由逐事件重绘保证，无需在此补一次重绘）。
         """
         self._interacting = False
+        win = self._window_rect_tuple()
+        if not self._drag_live and self._layer_is_drag_ready(win):
+            monitor = self._monitor_rect_for(win)
+            region = layer_region_for(win, monitor)
+            layer_display_long = _layer_display_long(region)
+            if self._needs_layer_rebake(win, monitor, region, layer_display_long):
+                self._hide_until_new_layer = True
+                self._stop_settle_fade()
+                self._maybe_rebake(force=False)
+                if self._worker_thread is None:
+                    # 无在途任务且重烘焙实际未启动（key 恰好一致的极端情形）：
+                    # 不会再有新层到达，立即解除隐藏，避免永久停在纯色底。
+                    self._hide_until_new_layer = False
+                self._widget.update()
+                return
+            # 同监视器：key 未变则 _maybe_rebake 为 no-op。
+            self._maybe_rebake(force=False)
+            self._start_settle_fade(win)
+            return
+        # 层未就绪 / 缩放中 / LIVE：沿用旧收敛（画面已由逐事件重绘保证）。
         self._maybe_rebake(force=False)
+
+    def _start_settle_fade(self, final_win: Tuple[int, int, int, int]) -> None:
+        """启动松手背景重同步淡化（旧裁剪 → 新裁剪，约 120ms）。
+
+        旧裁剪取自 :attr:`_last_painted_win`（拖动期间屏幕上所见帧的采样位置）；
+        与当前裁剪几乎重合时跳过淡化直接重绘。时长经
+        ``FAF_MICA_SETTLE_FADE_MS`` 配置，0 表示关闭（瞬间重绘）。
+
+        Args:
+            final_win: ``(x, y, w, h)`` 松手时的最终窗口矩形。
+        """
+        self._stop_settle_fade()
+        # 能走到淡化 ⇒ 当前层已覆盖最终位置（settle 判据），跨监视器等待标志作废。
+        self._hide_until_new_layer = False
+        layer = self._layer
+        pixmap = self._layer_pixmap
+        if layer is None or pixmap is None or pixmap.isNull():
+            self._widget.update()
+            return
+        if self._settle_fade_ms <= 0 or self._last_painted_win is None:
+            self._widget.update()
+            return
+        old = layer_to_source_clamped(layer, self._last_painted_win)
+        new = layer_to_source_clamped(layer, final_win)
+        if all(abs(a - b) <= 0.5 for a, b in zip(old, new)):
+            # 采样位置几乎未变（原地小抖动 / 拖动又回到起点）：无需淡化。
+            self._widget.update()
+            return
+        self._settle_fade_old_src = tuple(float(v) for v in old)
+        self._settle_fade_ticks = 0
+        self._settle_fade_timer.start()
+        self._widget.update()
+
+    def _stop_settle_fade(self) -> None:
+        """立即结束松手淡化（幂等）。"""
+        if self._settle_fade_timer.isActive():
+            self._settle_fade_timer.stop()
+        self._settle_fade_old_src = None
+        self._settle_fade_ticks = 0
+
+    def _on_settle_fade_tick(self) -> None:
+        """settle 淡化逐帧推进：时长耗尽即停机，由随后的常规帧收尾到 t=1。"""
+        self._settle_fade_ticks += 1
+        if self._settle_fade_ticks * _FADE_TICK_MS >= self._settle_fade_ms:
+            self._stop_settle_fade()
+        self._widget.update()
 
     def _on_opacity_settle(self) -> None:
         """overlay_opacity 防抖静置：结束连续改动，触发烘焙重建。"""
@@ -1062,13 +1321,18 @@ class MicaMaterial(QObject):
                 self._worker_thread.quit()
             return
         was_shown = self._has_shown
+        was_hidden = self._hide_until_new_layer
+        self._hide_until_new_layer = False
+        # 新层到达：若正处于松手淡化（旧裁剪 → 新裁剪），该淡化基于的旧层已
+        # 被替换，立即停机，由新层直接接管（跨监视器等待期则由淡入揭示）。
+        self._stop_settle_fade()
         self._layer = layer_info
         self._layer_pixmap = _pixmap_from_rgb(display)
         self._layer_key = layer_key
         self._has_shown = True
         self._widget.update()
         if self._active:
-            self._start_fade_in(reset=not was_shown)
+            self._start_fade_in(reset=(not was_shown) or was_hidden)
         else:
             self._hide_immediately()
         if self._worker_thread is not None:
@@ -1110,6 +1374,11 @@ class MicaMaterial(QObject):
             )
         else:
             _LOG.warning("Mica 后台烘焙多次失败，已放弃，回退纯色背景")
+            if self._hide_until_new_layer:
+                # 跨监视器等待的新层已彻底失败：解除隐藏，回退到旧层（钳制取样）
+                # / 纯色底，避免窗口永久停留在纯色状态。
+                self._hide_until_new_layer = False
+                self._widget.update()
 
         if worker is not None:
             worker.deleteLater()

@@ -131,6 +131,123 @@ class TestFileSelectorLayout:
         _assert_layout_geometry(layout, qapp)
         layout.deleteLater()
 
+    @staticmethod
+    def _make_target_file(tmp_path) -> Path:
+        """在临时目录创建一个定位目标文件，返回其路径。"""
+        target = tmp_path / "locate_target.txt"
+        target.write_text("locate me", encoding="utf-8")
+        return target
+
+    def test_locate_file_navigates_and_highlights(
+        self, qapp: QApplication, tmp_path: object, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """文件池预览文件不在当前目录：locate_file 导航到所在目录并高亮卡片。"""
+        import os
+
+        import freeassetfilter.ui.layout.file_selector_layout as fsl_mod
+
+        messages: list = []
+        monkeypatch.setattr(
+            fsl_mod.FileSelectorLayout, "_show_message_dialog",
+            lambda self, t, m: messages.append((t, m)),
+        )
+
+        target = self._make_target_file(tmp_path)
+        layout = FileSelectorLayout()
+        _assert_layout_geometry(layout, qapp)
+        assert messages == []
+
+        layout.locate_file({"path": str(target), "name": target.name})
+
+        target_dir = os.path.abspath(os.path.normpath(str(tmp_path)))
+        assert os.path.normcase(layout._current_path) == os.path.normcase(target_dir)
+        assert layout._previewing_file_path is not None
+        assert (
+            os.path.normcase(layout._previewing_file_path)
+            == os.path.normcase(str(target))
+        )
+        # 等待延后滚动的 singleShot 触达后安全清理
+        import time
+
+        time.sleep(0.25)
+        qapp.processEvents()
+        layout.deleteLater()
+
+    def test_locate_file_same_directory_skips_navigation(
+        self, qapp: QApplication, tmp_path: object, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """目标文件已在当前目录：locate_file 不重复导航，仅高亮滚动。"""
+        import os
+
+        import freeassetfilter.ui.layout.file_selector_layout as fsl_mod
+
+        messages: list = []
+        monkeypatch.setattr(
+            fsl_mod.FileSelectorLayout, "_show_message_dialog",
+            lambda self, t, m: messages.append((t, m)),
+        )
+
+        target = self._make_target_file(tmp_path)
+        layout = FileSelectorLayout()
+        _assert_layout_geometry(layout, qapp)
+
+        layout._load_directory(os.path.abspath(str(tmp_path)))
+        assert messages == []
+
+        navigate_calls: list = []
+        original_navigate = layout._navigate_to
+
+        def _spy_navigate(path: str) -> None:
+            navigate_calls.append(path)
+            original_navigate(path)
+
+        monkeypatch.setattr(layout, "_navigate_to", _spy_navigate)
+
+        layout.locate_file({"path": str(target), "name": target.name})
+
+        assert navigate_calls == []  # 目录未变，不触发导航
+        assert layout._previewing_file_path is not None
+        assert (
+            os.path.normcase(layout._previewing_file_path)
+            == os.path.normcase(str(target))
+        )
+
+        import time
+
+        time.sleep(0.25)
+        qapp.processEvents()
+        layout.deleteLater()
+
+    def test_locate_file_missing_directory_shows_message(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """目标目录不存在：弹提示且不导航、不高亮。"""
+        import os
+
+        import freeassetfilter.ui.layout.file_selector_layout as fsl_mod
+
+        messages: list = []
+        monkeypatch.setattr(
+            fsl_mod.FileSelectorLayout, "_show_message_dialog",
+            lambda self, t, m: messages.append((t, m)),
+        )
+
+        layout = FileSelectorLayout()
+        _assert_layout_geometry(layout, qapp)
+
+        ghost = "D:/definitely/not/exists_dir/ghost.txt"
+        navigate_calls: list = []
+        monkeypatch.setattr(layout, "_navigate_to", lambda path: navigate_calls.append(path))
+
+        layout.locate_file({"path": ghost, "name": "ghost.txt"})
+
+        assert len(messages) == 1
+        assert messages[0][0] == "错误"
+        assert navigate_calls == []
+        assert not layout._previewing_file_path
+        assert os.path.normcase(layout._current_path) == os.path.normcase("All")
+        layout.deleteLater()
+
 
 # =============================================================================
 # ui.layout.settings_layout
@@ -224,6 +341,65 @@ class TestUnifiedPreviewerLayout:
         qapp.processEvents()
         assert layout._content_layout is not None
         layout.clear_preview()
+        layout.deleteLater()
+
+    @staticmethod
+    def _unsupported_file_info() -> dict:
+        """无对应预览器的文件信息（不触发真实预览加载，仅驱动底栏状态）。"""
+        return {"path": "D:/dummy/unsupported_sample.zzz", "suffix": "zzz", "is_dir": False}
+
+    def test_bottom_buttons_disabled_then_enabled(
+        self, qapp: QApplication,
+    ) -> None:
+        """无预览文件时底栏按钮禁用；set_file 后启用；clear_preview 后再禁用。"""
+        layout = UnifiedPreviewerLayout()
+        _assert_layout_geometry(layout, qapp)
+
+        assert layout._share_btn.isEnabled() is False
+        assert layout._open_default_btn.isEnabled() is False
+        assert layout._locate_btn.isEnabled() is False
+        assert layout._close_btn.isEnabled() is False
+
+        layout.set_file(self._unsupported_file_info())
+        qapp.processEvents()
+        assert layout._share_btn.isEnabled() is True
+        assert layout._open_default_btn.isEnabled() is True
+        assert layout._locate_btn.isEnabled() is True
+        assert layout._close_btn.isEnabled() is True
+
+        layout.clear_preview()
+        qapp.processEvents()
+        assert layout._share_btn.isEnabled() is False
+        assert layout._open_default_btn.isEnabled() is False
+        assert layout._locate_btn.isEnabled() is False
+        assert layout._close_btn.isEnabled() is False
+        layout.deleteLater()
+
+    def test_locate_button_emits_requested(self, qapp: QApplication) -> None:
+        """点击"定位到所在目录"发射 locate_requested(当前文件信息)。"""
+        layout = UnifiedPreviewerLayout()
+        _assert_layout_geometry(layout, qapp)
+        layout.set_file(self._unsupported_file_info())
+
+        received: list = []
+        layout.locate_requested.connect(lambda info: received.append(info))
+        layout._locate_btn.click()
+
+        assert len(received) == 1
+        assert received[0]["path"] == "D:/dummy/unsupported_sample.zzz"
+        layout.deleteLater()
+
+    def test_close_button_emits_clear_requested(self, qapp: QApplication) -> None:
+        """点击 close 按钮发射 clear_requested（清除预览请求）。"""
+        layout = UnifiedPreviewerLayout()
+        _assert_layout_geometry(layout, qapp)
+        layout.set_file(self._unsupported_file_info())
+
+        received: list = []
+        layout.clear_requested.connect(lambda: received.append(True))
+        layout._close_btn.click()
+
+        assert received == [True]
         layout.deleteLater()
 
 

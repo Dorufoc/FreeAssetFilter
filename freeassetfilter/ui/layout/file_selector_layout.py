@@ -1549,6 +1549,76 @@ class FileSelectorLayout(QWidget):
         """清除所有卡片的预览状态。"""
         self.set_previewing_file("")
 
+    # ── 定位 ──────────────────────────────────────────────────────────
+
+    def locate_file(self, file_info: Dict[str, Any]) -> None:
+        """定位到预览文件的所在目录：导航文件列表并高亮滚动到该文件卡片。
+
+        与旧版"定位到所在目录"语义一致：左侧文件选择器切到目标目录并定位
+        文件卡片（新 UI 中不修改文件池内容，仅做视觉定位）。
+
+        Args:
+            file_info: 目标文件信息（须含 'path'）。
+        """
+        if not file_info:
+            return
+        file_path = file_info.get("path", "")
+        if not file_path:
+            return
+
+        file_path = os.path.abspath(file_path)
+        file_dir = os.path.dirname(file_path)
+        if not file_dir or not os.path.isdir(file_dir):
+            self._show_message_dialog("错误", f"目录不存在: {file_dir}")
+            return
+
+        # 目标目录与当前显示的目录不同（含 All 视图）→ 先导航过去
+        current_path = self._current_path or ""
+        needs_navigation = not (
+            current_path
+            and os.path.normcase(os.path.normpath(current_path))
+            == os.path.normcase(os.path.normpath(file_dir))
+        )
+        if needs_navigation:
+            self._navigate_to(file_dir)
+
+        # 高亮目标文件卡片（用 model 中实际存储的路径，规避大小写不一致）
+        model_file_path = self._locate_model_file_path(file_path)
+        if model_file_path:
+            self.set_previewing_file(model_file_path)
+            # 目录过渡动画（120ms）结束后再滚动，避免与过渡快照错位
+            QTimer.singleShot(180, lambda p=model_file_path: self._scroll_to_file(p))
+
+    def _locate_model_file_path(self, file_path: str) -> Optional[str]:
+        """在 model 中按路径（忽略大小写）查找文件，返回 model 存储的路径。
+
+        Args:
+            file_path: 目标文件的绝对路径。
+
+        Returns:
+            model 中匹配条目的 'path' 值；未找到返回 None。
+        """
+        exact = self._file_model.get_row(file_path)
+        if exact >= 0:
+            idx = self._file_model.index(exact, 0)
+            return self._file_model.data(idx, FilePathRole) or file_path
+
+        target_key = os.path.normcase(file_path)
+        for row in range(self._file_model.rowCount()):
+            idx = self._file_model.index(row, 0)
+            entry_path = self._file_model.data(idx, FilePathRole)
+            if entry_path and os.path.normcase(entry_path) == target_key:
+                return entry_path
+        return None
+
+    def _scroll_to_file(self, file_path: str) -> None:
+        """滚动到指定文件卡片使其在视口中可见（文件不在列表中则忽略）。"""
+        row = self._file_model.get_row(file_path)
+        if row < 0:
+            return
+        idx = self._file_model.index(row, 0)
+        self._file_list.scrollTo(idx, QAbstractItemView.PositionAtCenter)
+
     # ── 网格布局 ──────────────────────────────────────────────────────────
 
     def _get_dpi_scale(self) -> float:

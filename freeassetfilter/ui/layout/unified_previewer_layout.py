@@ -3,13 +3,16 @@
 """
 
 import inspect
+import os
+import sys
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSplitter, QVBoxLayout, QWidget
+from PySide6.QtCore import QMimeData, QUrl, Qt, Signal
+from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QSplitter, QVBoxLayout, QWidget
 
 from components.styled_button import StyledButton
+from components.styled_dialog import create_custom_dialog
 from freeassetfilter.services.previewer_registry import PreviewerRegistry
 from theme import tm
 
@@ -21,8 +24,49 @@ _AUDIO_EXTS = {
 }
 
 
+def _show_custom_dialog(
+    title: str,
+    message: str,
+    buttons: list,
+    variants: Optional[list] = None,
+    dialog_type: str = "default",
+) -> None:
+    """Styled 弹窗包装（同步阻塞），替代旧版 CustomMessageBox。
+
+    Args:
+        title: 弹窗标题。
+        message: 主体文本。
+        buttons: 按钮文案列表。
+        variants: 与 buttons 一一对应的变体名。
+        dialog_type: 弹窗类型（default/danger 等）。
+    """
+    from PySide6.QtCore import QEventLoop
+
+    dlg = create_custom_dialog(
+        title=title,
+        message=message,
+        buttons=list(buttons),
+        variants=list(variants) if variants else None,
+        dialog_type=dialog_type,
+        show_close=False,
+    )
+    loop = QEventLoop()
+
+    def _on_finished(_result: int) -> None:
+        loop.quit()
+
+    dlg.finished.connect(_on_finished)
+    dlg.destroyed.connect(loop.quit)
+    loop.exec()
+
+
 class UnifiedPreviewerLayout(QWidget):
     """统一预览器布局（右侧栏）"""
+
+    # 定位到当前预览文件所在目录（请求文件选择器导航并高亮该文件）
+    locate_requested = Signal(dict)
+    # 清除预览（清空内容区 + 两侧面板的预览态）
+    clear_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -86,29 +130,126 @@ class UnifiedPreviewerLayout(QWidget):
         bottom_layout.setContentsMargins(10, 6, 10, 6)
         bottom_layout.setSpacing(6)
 
-        # 图标按钮 — share.svg
+        # 图标按钮 — share.svg（复制到剪切板）
         share_icon = str(icons_dir / "share.svg")
         self._share_btn = StyledButton("", variant="ghost", size="sm", icon=share_icon)
         self._share_btn.setFixedSize(32, 32)
+        self._share_btn.setToolTip("复制到剪切板")
+        self._share_btn.clicked.connect(self._on_copy_to_clipboard_clicked)
         bottom_layout.addWidget(self._share_btn)
 
         # 次选按钮 — 使用系统默认方式打开
         self._open_default_btn = StyledButton(
             "使用系统默认方式打开", variant="secondary", size="sm"
         )
+        self._open_default_btn.clicked.connect(self._on_open_with_system_clicked)
         bottom_layout.addWidget(self._open_default_btn)
 
         # 强调按钮 — 定位到所在目录
         self._locate_btn = StyledButton(
             "定位到所在目录", variant="primary", size="sm"
         )
+        self._locate_btn.clicked.connect(self._on_locate_requested)
         bottom_layout.addWidget(self._locate_btn)
 
-        # 图标按钮 — close.svg
+        # 图标按钮 — close.svg（清除预览）
         close_icon = str(icons_dir / "close.svg")
         self._close_btn = StyledButton("", variant="ghost", size="sm", icon=close_icon)
         self._close_btn.setFixedSize(32, 32)
+        self._close_btn.setToolTip("清除预览")
+        self._close_btn.clicked.connect(self._on_clear_preview_clicked)
         bottom_layout.addWidget(self._close_btn)
+
+        # 初始无预览文件：禁用底栏按钮（占位符状态）
+        self._update_bottom_buttons()
+
+    def _update_bottom_buttons(self) -> None:
+        """按当前是否有预览文件启停底栏按钮（无文件时全部禁用）。"""
+        has_file = self._current_file_info is not None
+        self._share_btn.setEnabled(has_file)
+        self._open_default_btn.setEnabled(has_file)
+        self._locate_btn.setEnabled(has_file)
+        self._close_btn.setEnabled(has_file)
+
+    def _on_copy_to_clipboard_clicked(self) -> None:
+        """复制当前预览文件到系统剪切板（文件引用），并提示成功。
+
+        与旧版统一预览器 copy_to_clipboard_button 行为一致。
+        """
+        if not self._current_file_info:
+            return
+
+        file_path = self._current_file_info.get("path", "")
+        if not file_path or not os.path.exists(file_path):
+            return
+
+        try:
+            clipboard = QApplication.clipboard()
+            mime_data = QMimeData()
+            url = QUrl.fromLocalFile(os.path.abspath(file_path))
+            mime_data.setUrls([url])
+            clipboard.setMimeData(mime_data)
+
+            _show_custom_dialog(
+                "复制成功",
+                "文件已复制到剪切板\n现在您可以将剪切板内的文件进行分享",
+                ["确定"],
+                ["primary"],
+                dialog_type="success",
+            )
+        except Exception as exc:  # noqa: BLE001
+            from freeassetfilter.utils.app_logger import error
+
+            error(f"[UnifiedPreviewerLayout] 复制文件到剪切板失败: {exc}")
+
+    def _on_open_with_system_clicked(self) -> None:
+        """使用系统默认方式打开当前预览文件。"""
+        if not self._current_file_info:
+            return
+
+        file_path = self._current_file_info.get("path", "")
+        if not file_path:
+            return
+
+        # 确保文件路径是绝对路径
+        file_path = os.path.abspath(file_path)
+
+        # 检查文件是否存在
+        if not os.path.exists(file_path):
+            _show_custom_dialog(
+                "错误",
+                f"文件不存在: {file_path}",
+                ["确定"],
+                ["primary"],
+                dialog_type="danger",
+            )
+            return
+
+        try:
+            if sys.platform == "win32":
+                os.startfile(file_path)  # noqa: S606
+            elif sys.platform == "darwin":
+                os.system(f'open "{file_path}"')  # noqa: S605
+            else:
+                os.system(f'xdg-open "{file_path}"')  # noqa: S605
+        except Exception as exc:  # noqa: BLE001
+            _show_custom_dialog(
+                "错误",
+                f"无法打开文件: {exc}",
+                ["确定"],
+                ["primary"],
+                dialog_type="danger",
+            )
+
+    def _on_locate_requested(self) -> None:
+        """请求在左侧文件选择器中定位当前预览文件（导航 + 高亮滚动）。"""
+        if not self._current_file_info:
+            return
+        self.locate_requested.emit(self._current_file_info)
+
+    def _on_clear_preview_clicked(self) -> None:
+        """请求清除预览（两侧面板的卡片预览态 + 预览内容）。"""
+        self.clear_requested.emit()
 
     def set_section_styles(self, fill_color: str, border_color: str) -> None:
         """应用面板样式到内容区、底栏（主题切换时由 MainWindow 调用）。
@@ -176,12 +317,14 @@ class UnifiedPreviewerLayout(QWidget):
         
         # 更新当前文件信息
         self._current_file_info = file_info
+        self._update_bottom_buttons()
         self._load_preview(file_info)
     
     def clear_preview(self) -> None:
         """清空预览区，显示占位符。"""
         self._cleanup_current_preview()
         self._current_file_info = None
+        self._update_bottom_buttons()
         self._show_placeholder()
     
     # ── 内部方法 ──

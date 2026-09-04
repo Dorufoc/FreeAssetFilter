@@ -388,6 +388,8 @@ class _ZoomPopup(QWidget):
 
     FONT_SIZE_MIN = FONT_SIZE_MIN
     FONT_SIZE_MAX = FONT_SIZE_MAX
+    POPUP_WIDTH = 220
+    POPUP_HEIGHT = 48
 
     def __init__(
         self,
@@ -398,7 +400,10 @@ class _ZoomPopup(QWidget):
         Args:
             parent: 父布局实例，用于同步字号。
         """
-        super().__init__(None, Qt.Tool | Qt.FramelessWindowHint)
+        # 以调用方（预览器布局）为真实 Qt 父级：弹窗成为主窗口的 owned tool
+        # 窗口，层级恒在主窗口之上；预览器销毁时弹窗随子对象一起销毁，
+        # 避免残留悬浮窗口与多实例问题。
+        super().__init__(parent, Qt.Tool | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self._parent_layout = parent
@@ -470,18 +475,25 @@ class _ZoomPopup(QWidget):
         p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), r, r)
         p.end()
 
-    def show_animated(self, anchor_br: QPoint) -> None:
-        """从按钮右下角向下展开，弹窗右对齐。"""
-        pw = 220
-        ph = 48
+    def _target_rect(self, anchor_br: QPoint) -> QRect:
+        """计算弹窗最终矩形：右对齐顶栏右下角锚点并钳位到屏幕内。"""
+        pw = self.POPUP_WIDTH
+        ph = self.POPUP_HEIGHT
         margin_r = 5
         x = anchor_br.x() - pw - margin_r
         y = anchor_br.y() + 7
 
         screen = QApplication.primaryScreen()
-        if screen:
+        if screen is not None:
             sg = screen.availableGeometry()
             x = max(sg.x() + 8, min(x, sg.right() - pw - 8))
+        return QRect(x, y, pw, ph)
+
+    def show_animated(self, anchor_br: QPoint) -> None:
+        """从按钮右下角向下展开，弹窗右对齐。"""
+        target = self._target_rect(anchor_br)
+        x, y, pw = target.x(), target.y(), target.width()
+        ph = target.height()
 
         start_h = 10
         self.setGeometry(x, y, pw, start_h)
@@ -498,10 +510,18 @@ class _ZoomPopup(QWidget):
         self._slide.stop()
         self._slide.setDuration(200)
         self._slide.setStartValue(self.geometry())
-        self._slide.setEndValue(QRectF(x, y, pw, ph))
+        self._slide.setEndValue(QRectF(target))
 
         self._fade.start()
         self._slide.start()
+
+    def reposition(self, anchor_br: QPoint) -> None:
+        """主窗口移动时把弹窗重新贴到当前锚点（不重播展开动画）。"""
+        if self._closing or not self.isVisible():
+            return
+        self._slide.stop()
+        self.setGeometry(self._target_rect(anchor_br))
+        self.update()
 
     def close_animated(self) -> None:
         """带动画关闭弹窗。"""
@@ -606,6 +626,8 @@ class _WeightPopup(QWidget):
 
     WEIGHT_MIN = 100
     WEIGHT_MAX = 1000
+    POPUP_WIDTH = 56
+    POPUP_HEIGHT = 200
 
     def __init__(
         self,
@@ -616,7 +638,10 @@ class _WeightPopup(QWidget):
         Args:
             parent: 父布局实例，用于同步字重。
         """
-        super().__init__(None, Qt.Tool | Qt.FramelessWindowHint)
+        # 以调用方（预览器布局）为真实 Qt 父级：弹窗成为主窗口的 owned tool
+        # 窗口，层级恒在主窗口之上；预览器销毁时弹窗随子对象一起销毁，
+        # 避免残留悬浮窗口与多实例问题。
+        super().__init__(parent, Qt.Tool | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self._parent_layout = parent
@@ -686,10 +711,10 @@ class _WeightPopup(QWidget):
         p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), r, r)
         p.end()
 
-    def show_animated(self, anchor: QPoint) -> None:
-        """从指定锚点（按钮左下角）向下展开弹窗。"""
-        pw = 56
-        ph = 200
+    def _target_rect(self, anchor: QPoint) -> QRect:
+        """计算弹窗最终矩形：从按钮左下角向下展开，贴近屏幕底边时上翻。"""
+        pw = self.POPUP_WIDTH
+        ph = self.POPUP_HEIGHT
         margin = 4
         x = anchor.x()
         y = anchor.y() + margin
@@ -700,6 +725,13 @@ class _WeightPopup(QWidget):
             x = max(sg.x() + 8, min(x, sg.right() - pw - 8))
             if y + ph > sg.bottom() - 8:
                 y = anchor.y() - ph - margin
+        return QRect(x, y, pw, ph)
+
+    def show_animated(self, anchor: QPoint) -> None:
+        """从指定锚点（按钮左下角）向下展开弹窗。"""
+        target = self._target_rect(anchor)
+        x, y, pw = target.x(), target.y(), target.width()
+        ph = target.height()
 
         start_h = 10
         self.setGeometry(x, y, pw, start_h)
@@ -716,10 +748,18 @@ class _WeightPopup(QWidget):
         self._slide.stop()
         self._slide.setDuration(200)
         self._slide.setStartValue(self.geometry())
-        self._slide.setEndValue(QRectF(x, y, pw, ph))
+        self._slide.setEndValue(QRectF(target))
 
         self._fade.start()
         self._slide.start()
+
+    def reposition(self, anchor: QPoint) -> None:
+        """主窗口移动时把弹窗重新贴到当前锚点（不重播展开动画）。"""
+        if self._closing or not self.isVisible():
+            return
+        self._slide.stop()
+        self.setGeometry(self._target_rect(anchor))
+        self.update()
 
     def close_animated(self) -> None:
         """带动画关闭弹窗。"""
@@ -833,6 +873,9 @@ class FontPreviewerLayout(QWidget):
         self._weight_combo: StyledComboBox | None = None
         self._weight_btn: StyledButton | None = None
         self._weight_popup: QWidget | None = None
+        # 弹窗外点击手势状态：按下挂起 → 释放时若无窗口拖拽则收起弹窗
+        self._popup_press_pending: bool = False
+        self._popup_drag_moved: bool = False
         self._current_variable_weight: int = 400
 
         self._current_style: str = "Regular"
@@ -1015,13 +1058,72 @@ class FontPreviewerLayout(QWidget):
         if self._weight_popup is not None and self._weight_popup.isVisible():
             self._weight_popup.close_animated()
             return
+        # 打开字重弹窗前收起缩放弹窗，避免两个弹窗叠显
+        self._close_zoom_popup()
         if self._weight_popup is None:
             self._weight_popup = _WeightPopup(parent=self)
         self._weight_popup.sync_from_parent()
-        anchor = self._weight_btn.mapToGlobal(
+        self._weight_popup.show_animated(self._weight_anchor_global())
+
+    def _zoom_anchor_global(self) -> QPoint:
+        """缩放弹窗锚点：顶栏右下角（屏幕坐标）。"""
+        return self._top_bar.mapToGlobal(
+            QPoint(self._top_bar.width(), self._top_bar.height())
+        )
+
+    def _weight_anchor_global(self) -> QPoint:
+        """字重弹窗锚点：字重按钮左下角（屏幕坐标）。"""
+        return self._weight_btn.mapToGlobal(
             QPoint(0, self._weight_btn.height())
         )
-        self._weight_popup.show_animated(anchor)
+
+    def _close_zoom_popup(self) -> None:
+        """收起缩放弹窗（带动画；实例保留复用）。"""
+        popup = self._zoom_popup
+        if popup is None:
+            return
+        try:
+            if popup.isVisible():
+                popup.close_animated()
+        except RuntimeError:
+            self._zoom_popup = None
+
+    def _close_weight_popup(self) -> None:
+        """收起字重弹窗（带动画；实例保留复用）。"""
+        popup = self._weight_popup
+        if popup is None:
+            return
+        try:
+            if popup.isVisible():
+                popup.close_animated()
+        except RuntimeError:
+            self._weight_popup = None
+
+    def _discard_zoom_popup(self) -> None:
+        """销毁缩放弹窗实例（全屏进出等 owner 上下文切换时调用）。
+
+        下一次打开会在当前顶层窗口（全屏宿主或主窗口）下重建，
+        保证弹窗原生 owner 指向正确窗口。
+        """
+        popup = self._zoom_popup
+        self._zoom_popup = None
+        if popup is not None:
+            try:
+                popup.close()
+                popup.deleteLater()
+            except RuntimeError:
+                pass
+
+    def _discard_weight_popup(self) -> None:
+        """销毁字重弹窗实例（全屏进出等 owner 上下文切换时调用）。"""
+        popup = self._weight_popup
+        self._weight_popup = None
+        if popup is not None:
+            try:
+                popup.close()
+                popup.deleteLater()
+            except RuntimeError:
+                pass
 
     def _apply_variable_weight(self, weight: int) -> None:
         """应用可变字重到预览文本。"""
@@ -1174,41 +1276,52 @@ class FontPreviewerLayout(QWidget):
             ai_drawer._end_pos = QPoint(cw - pw, 0)
 
     def eventFilter(self, obj: Any, event: QEvent) -> bool:
-        """应用级事件过滤：缩放/字重弹窗在窗口移动/缩放或点击外部时关闭。"""
+        """应用级事件过滤：缩放/字重弹窗手势关闭（拖拽豁免）+ 窗口移动跟随/缩放关闭。"""
+        me = event if isinstance(event, QMouseEvent) else None
+
+        # 弹窗外鼠标按下：仅记录手势起点（不立即关闭）。
+        # 拖动主窗口的起点（标题栏 MouseButtonPress → startSystemMove）也是
+        # 弹窗外按下，若按下即关闭会导致弹窗在拖拽开始瞬间消失。
+        if event.type() == QEvent.MouseButtonPress and me is not None:
+            click_global = me.globalPosition().toPoint()
+            self._popup_drag_moved = False
+            self._popup_press_pending = False
+            for popup in (self._zoom_popup, self._weight_popup):
+                if popup is not None and popup.isVisible():
+                    pr = QRect(popup.pos(), popup.size())
+                    if not pr.contains(click_global):
+                        self._popup_press_pending = True
+                        break
+        # 主窗口移动时把可见弹窗重新贴到各自锚点（跟随窗口移动、不被遮挡）。
+        # 挂起手势期间发生过窗口移动 → 本次为窗口拖拽，豁免释放时关闭
+        if event.type() == QEvent.Move and (obj is self.window() or obj is self):
+            if self._popup_press_pending:
+                self._popup_drag_moved = True
+            if self._zoom_popup is not None and self._zoom_popup.isVisible():
+                self._zoom_popup.reposition(self._zoom_anchor_global())
+            if self._weight_popup is not None and self._weight_popup.isVisible():
+                self._weight_popup.reposition(self._weight_anchor_global())
+        # 窗口/预览器缩放时关闭弹窗（锚点几何已失效）
+        if event.type() == QEvent.Resize and (obj is self.window() or obj is self):
+            if self._zoom_popup is not None and self._zoom_popup.isVisible():
+                self._zoom_popup.close_animated()
+            if self._weight_popup is not None and self._weight_popup.isVisible():
+                self._weight_popup.close_animated()
+
+        # 弹窗外释放：若期间窗口未被拖拽（普通点击）则收起可见弹窗
         if (
-            event.type() in (QEvent.Move, QEvent.Resize)
-            and (obj is self.window() or obj is self)
-            and self._zoom_popup is not None
-            and self._zoom_popup.isVisible()
+            event.type() == QEvent.MouseButtonRelease
+            and me is not None
+            and self._popup_press_pending
         ):
-            self._zoom_popup.close_animated()
-        if (
-            event.type() in (QEvent.Move, QEvent.Resize)
-            and (obj is self.window() or obj is self)
-            and self._weight_popup is not None
-            and self._weight_popup.isVisible()
-        ):
-            self._weight_popup.close_animated()
-        if event.type() == QEvent.MouseButtonPress:
-            me = event if isinstance(event, QMouseEvent) else None
-            if (
-                me is not None
-                and self._zoom_popup is not None
-                and self._zoom_popup.isVisible()
-            ):
+            self._popup_press_pending = False
+            if not self._popup_drag_moved:
                 click_global = me.globalPosition().toPoint()
-                pr = QRect(self._zoom_popup.pos(), self._zoom_popup.size())
-                if not pr.contains(click_global):
-                    self._zoom_popup.close_animated()
-            if (
-                me is not None
-                and self._weight_popup is not None
-                and self._weight_popup.isVisible()
-            ):
-                click_global = me.globalPosition().toPoint()
-                pr = QRect(self._weight_popup.pos(), self._weight_popup.size())
-                if not pr.contains(click_global):
-                    self._weight_popup.close_animated()
+                for popup in (self._zoom_popup, self._weight_popup):
+                    if popup is not None and popup.isVisible():
+                        pr = QRect(popup.pos(), popup.size())
+                        if not pr.contains(click_global):
+                            popup.close_animated()
         return super().eventFilter(obj, event)
 
     def _connect_theme(self) -> None:
@@ -1244,9 +1357,11 @@ class FontPreviewerLayout(QWidget):
                 f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
                 " padding: 24px;"
             )
-        # 刷新字重弹窗主题（如果可见）
+        # 刷新弹窗主题（如果可见）
         if self._weight_popup is not None and self._weight_popup.isVisible():
             self._weight_popup.refresh_theme()
+        if self._zoom_popup is not None and self._zoom_popup.isVisible():
+            self._zoom_popup.update()
         self.update()
 
     def set_section_styles(self, fill_color: str, border_color: str) -> None:
@@ -1332,6 +1447,9 @@ class FontPreviewerLayout(QWidget):
         Args:
             file_path: 字体文件路径。
         """
+        # 切换文件前收起弹窗，避免残留旧字体的缩放/字重状态
+        self._close_zoom_popup()
+        self._close_weight_popup()
         self._current_file = file_path
         self._cancel_load()
 
@@ -1499,13 +1617,12 @@ class FontPreviewerLayout(QWidget):
         if self._zoom_popup is not None and self._zoom_popup.isVisible():
             self._zoom_popup.close_animated()
             return
+        # 打开缩放弹窗前收起字重弹窗，避免两个弹窗叠显
+        self._close_weight_popup()
         if self._zoom_popup is None:
             self._zoom_popup = _ZoomPopup(parent=self)
         self._zoom_popup.sync_from_parent()
-        tb_br = self._top_bar.mapToGlobal(
-            QPoint(self._top_bar.width(), self._top_bar.height())
-        )
-        self._zoom_popup.show_animated(tb_br)
+        self._zoom_popup.show_animated(self._zoom_anchor_global())
 
     def _apply_font_size_from_zoom(self, font_size: int) -> None:
         """由缩放弹窗驱动，设置新的预览字号。
@@ -1547,6 +1664,10 @@ class FontPreviewerLayout(QWidget):
 
     def _enter_fullscreen(self) -> None:
         """分离到独立 frameless 全屏窗口。"""
+        # 先销毁弹窗：顶层 owner 即将切换为全屏宿主，旧实例的
+        # 原生 owner 仍指向主窗口，会落到全屏宿主之下无法显示
+        self._discard_zoom_popup()
+        self._discard_weight_popup()
         if self._fullscreen_host is None:
             self._fullscreen_host = PreviewFullscreenHost()
             self._fullscreen_host.escapePressed.connect(self._on_maxsize_toggle)
@@ -1563,6 +1684,8 @@ class FontPreviewerLayout(QWidget):
         if self._fullscreen_host is None:
             self._fullscreen = False
             return
+        self._discard_zoom_popup()
+        self._discard_weight_popup()
         self._fullscreen_host.exit_fullscreen()
         self._fullscreen_host.deleteLater()
         self._fullscreen_host = None
@@ -1574,6 +1697,9 @@ class FontPreviewerLayout(QWidget):
         """清理资源；若处于全屏先退出，避免内嵌 widget 被直接销毁。"""
         if self._fullscreen:
             self._exit_fullscreen()
+        # 防御：确保离开预览器前弹窗被销毁（Qt 父级已保证随预览器销毁）
+        self._discard_zoom_popup()
+        self._discard_weight_popup()
 
 
 # ──────────────────────────────────────────────────────────────────────────────

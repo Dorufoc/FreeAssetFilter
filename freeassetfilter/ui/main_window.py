@@ -840,6 +840,10 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             self._file_pool.preview_cancel_requested.connect(self._on_preview_cancelled)
             # 信号连接：文件池右键点击 → 移除文件池并取消选中
             self._file_pool.item_right_clicked.connect(self._on_pool_item_right_clicked)
+        if self._previewer is not None:
+            # 信号连接：统一预览器底栏 → 定位到所在目录 / 清除预览
+            self._previewer.locate_requested.connect(self._on_previewer_locate_requested)
+            self._previewer.clear_requested.connect(self._on_preview_cancelled)
 
         self._refresh_panel_styles()
 
@@ -1178,6 +1182,11 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._file_pool.clear_previewing_state()
         self._previewer.clear_preview()
 
+    def _on_previewer_locate_requested(self, file_info: dict) -> None:
+        """处理统一预览器底栏"定位到所在目录"请求：导航左侧选择器并高亮文件"""
+        if self._file_selector is not None and file_info:
+            self._file_selector.locate_file(file_info)
+
     def _on_pool_item_right_clicked(self, file_info: dict) -> None:
         """右键点击文件池卡片：移除文件池并取消文件选择器内的选中"""
         file_path = file_info.get("path", "")
@@ -1446,6 +1455,10 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self.setMinimumSize(700, 400)
         self.resize(700, 500)
 
+        # 定位：owned 窗口不显式定位时由 Windows 级联放置（落在屏幕右下），
+        # 这里居中到宿主主窗口；无宿主时回退到鼠标所在屏幕中心。
+        self._center_on_host()
+
         # 中央部件用纯 QWidget，保留 qframelesswindow 原生窗口特性；
         # tm.surface 不透明纯色背景（styled 弹窗同款），无 Mica 开销
         self._root = QWidget(self)
@@ -1471,6 +1484,22 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
         # 监听主题变化以刷新背景和按钮颜色
         tm.theme_changed.connect(self._on_theme_changed)
+
+    def _center_on_host(self) -> None:
+        """居中到宿主主窗口；无宿主时回退到鼠标所在屏幕中心"""
+        host = self.parentWidget()
+        if host is not None and host.isVisible():
+            geo = host.geometry()
+            x = geo.x() + (geo.width() - self.width()) // 2
+            y = geo.y() + (geo.height() - self.height()) // 2
+            self.move(x, y)
+            return
+        screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        geo = screen.geometry()
+        self.move(
+            geo.x() + (geo.width() - self.width()) // 2,
+            geo.y() + (geo.height() - self.height()) // 2,
+        )
 
     def _create_title_bar(self, parent_layout: QVBoxLayout) -> None:
         """创建标题栏（仅标题文字和关闭按钮）"""
