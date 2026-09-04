@@ -529,7 +529,11 @@ class GpuRenderer:
             job: 当前任务。
 
         Returns:
-            :class:`~ui.mica.engine.BakedField`。
+            :class:`~ui.mica.engine.BakedField`，其中 :attr:`BakedField.image_float`
+            携带 **未量化** 的 float32 合成网格（0..1 sRGB），:attr:`BakedField.image`
+            只是它的 uint8 快照（取整得到，两者始终一致）。量化 + 抖动推迟到
+            显示分辨率执行（见 :func:`ui.mica.engine.render_display`），避免在网格
+            分辨率上抹掉亚 LSB 渐变信息放大后成色带。
 
         Raises:
             MicaRenderError: 原生调用失败或输出形状不符。
@@ -558,16 +562,22 @@ class GpuRenderer:
             gate_lo=float(tint.CHROMA_LUMA_GATE_LO),
             gate_hi=float(tint.CHROMA_LUMA_GATE_HI),
             gate_feather=float(tint.CHROMA_LUMA_GATE_FEATHER),
-            dither=True,
+            # 不在网格分辨率上加抖动：色调场会被 Qt 双线性放大铺满窗口，
+            # 网格级抖动会变成块状噪点（磨砂玻璃感）。低频渐变无需抖动。
+            dither=False,
         )
-        image, meta = self._ctx.bake(params)
-        if image.shape[0] != grid_h or image.shape[1] != grid_w:
+        composite, meta = self._ctx.bake_float(params)
+        if composite.shape[0] != grid_h or composite.shape[1] != grid_w:
             raise _mr.MicaRenderError(
                 _mr.MICA_ERR_INTERNAL,
-                f"输出形状 {image.shape[:2]} 与期望 {(grid_h, grid_w)} 不符",
-                "mica_bake",
+                f"输出形状 {composite.shape[:2]} 与期望 {(grid_h, grid_w)} 不符",
+                "mica_bake_f32",
             )
 
+        # uint8 快照由 float 合成结果取整得到，二者保持一致（max 差 ≤ 0.5 LSB）；
+        # 真正用于绘制的是 image_float（float32 0..1），量化 + 抖动在显示分辨率
+        # 才发生，网格分辨率上的渐变精度得以保留，放大后不出现色带（断层）。
+        image = np.clip(np.rint(composite * 255.0), 0, 255).astype(np.uint8)
         return BakedField(
             image=image,
             request=request,
@@ -577,6 +587,7 @@ class GpuRenderer:
             backend=f"gpu:{meta.backend}",
             duration_ms=meta.duration_ms,
             work_size=meta.pad_size,
+            image_float=composite,
         )
 
     def _take_invalidate(self) -> bool:

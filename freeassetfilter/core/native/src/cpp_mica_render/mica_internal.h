@@ -244,10 +244,14 @@ struct Context {
     // --- 中间纹理（按 pad 尺寸缓存复用）---
     RenderTexture stageA;  ///< 分析输出 / 模糊乒乓 A（RGBA16F）
     RenderTexture stageB;  ///< 模糊乒乓 B（RGBA16F）
-    RenderTexture outTex;  ///< 合成输出（BGRA8）
+    RenderTexture outTex;  ///< 合成输出（BGRA8，供 mica_bake）
     ComPtr<ID3D11Texture2D> readback;  ///< STAGING 回读纹理
     int readbackW = 0;
     int readbackH = 0;
+    RenderTexture outTexF32;  ///< 合成输出（R32G32B32A32_FLOAT，供 mica_bake_f32）
+    ComPtr<ID3D11Texture2D> readbackF32;  ///< R32G32B32A32_FLOAT STAGING 回读纹理
+    int readbackF32W = 0;
+    int readbackF32H = 0;
 
     // --- DXGI 桌面复制 ---
     std::vector<DuplOutput> dupls;
@@ -319,6 +323,11 @@ mica_status RunBake(Context* c,
                     uint8_t* outRgb,
                     int capacity,
                     mica_bake_result* outResult);
+mica_status RunBakeFloat(Context* c,
+                         const mica_bake_params* p,
+                         float* outRgb,
+                         int capacity,
+                         mica_bake_result* outResult);
 mica_status CanvasMeanRgb(Context* c, uint32_t* outRgb);
 
 // ---------------------------------------------------------------------------

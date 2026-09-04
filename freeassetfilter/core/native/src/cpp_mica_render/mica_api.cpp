@@ -254,4 +254,22 @@ MICA_API mica_status mica_bake(mica_context* ctx,
     }
 }
 
+MICA_API mica_status mica_bake_f32(mica_context* ctx,
+                                   const mica_bake_params* params,
+                                   float* out_rgb,
+                                   int32_t out_capacity,
+                                   mica_bake_result* out_result) {
+    if (!ValidCtx(ctx) || out_rgb == nullptr) {
+        return MICA_ERR_INVALID_ARG;
+    }
+    Context* c = Inner(ctx);
+    try {
+        return RunBakeFloat(c, params, out_rgb, static_cast<int>(out_capacity), out_result);
+    } catch (const std::bad_alloc&) {
+        return Fail(c, MICA_ERR_OUT_OF_MEMORY, "烘焙(f32)时内存不足");
+    } catch (...) {
+        return Fail(c, MICA_ERR_INTERNAL, "烘焙(f32)时发生未知异常");
+    }
+}
+
 }  // extern "C"

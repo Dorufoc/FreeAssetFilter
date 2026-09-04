@@ -82,8 +82,11 @@ SIGMA_MAX: float = 40.0
 # ---------------------------------------------------------------------------
 
 #: 烘焙图长边下限 / 上限（像素）。
+#: 长边上移（192 → 320）让色调场在铺满大窗口时拥有更多采样点，渐变过渡更平滑、
+#: 8-bit 色带更细；σ 在 :meth:`MicaParams.to_engine` 中按比例同步放大，
+#: 因此相对窗口的物理模糊半径不变（Mica 观感不漂移），且与拖动场密度守恒。
 BAKE_LONG_MIN: int = 48
-BAKE_LONG_MAX: int = 192
+BAKE_LONG_MAX: int = 320
 
 # ---------------------------------------------------------------------------
 # 渲染与交互时序
@@ -97,14 +100,6 @@ SETTLE_INTERVAL_MS: int = 80
 MOVE_REBAKE_THRESHOLD_PX: int = 24
 #: 失焦后判定"焦点是否真正离开应用"的防抖延时（毫秒）。
 DEACTIVATE_DEBOUNCE_MS: int = 60
-
-#: 噪声叠加层不透明度 —— Win11 Mica 带一层极细的胶片颗粒，用于掩盖
-#: 8-bit 大面积渐变的色带。数值取经验值，肉眼几乎不可见但能消除 banding。
-NOISE_OPACITY: float = 0.035
-#: 噪声平铺贴图边长（像素）。
-NOISE_TILE_SIZE: int = 64
-#: 噪声固定随机种子（保证跨重绘稳定，不闪烁）。
-NOISE_SEED: int = 1337
 
 # ---------------------------------------------------------------------------
 # 后台线程
@@ -211,11 +206,16 @@ class MicaParams:
         """
         gain = max(0.0, self.saturation / SATURATION_REF)
         cap_scale = clamp(self.contrast / CONTRAST_REF, 0.0, CAP_SCALE_MAX)
-        sigma = clamp(
+        # σ 以「基准网格长边 192」为参照给出；实际烘焙长边可能更高
+        # （见 :data:`BAKE_LONG_MAX`）。须按比例放大 σ，才能保持色度低通相对
+        # 窗口的物理半径不变 —— 否则提高分辨率会让 Mica 整体变糊/变锐，并破坏
+        # 拖动场与常规烘焙的密度守恒（松手出现糊→清晰跳变）。
+        base_sigma = clamp(
             SIGMA_MIN + (self.blur_radius / 300.0) * (SIGMA_MAX - SIGMA_MIN),
             SIGMA_MIN,
             SIGMA_MAX,
         )
+        sigma = base_sigma * (BAKE_LONG_MAX / 192.0)
         alpha = clamp(self.tint_opacity / 100.0, 0.0, 1.0)
         return EngineParams(
             sigma=sigma,

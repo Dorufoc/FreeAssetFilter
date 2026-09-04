@@ -1,7 +1,11 @@
 """GPU 与 CPU 烘焙管线的一致性 / 性能对比脚本（开发期诊断工具）。
 
-在真实桌面上分别用原生 GPU 管线与 numpy CPU 管线烘焙同一组窗口矩形，报告
-逐像素差异与耗时。用于验证 HLSL 移植的正确性。
+在真实桌面画布（经 ``build_canvas_from_memory`` 与 CPU 源字节完全一致）上分别
+用原生 GPU 管线与 numpy CPU 管线烘焙同一组窗口矩形，报告：
+* **GPU-float**（:meth:`MicaRenderContext.bake_float` 的 0..1 未量化浮点复合）
+  与 **CPU-float**（:func:`engine.bake_with_grid` 的 ``image_float``）的逐像素
+  差异 —— 判据：平均绝对差 < 1.5/255、p99 ≤ 4；
+* 同时保留 uint8 快照对比与耗时统计，验证 HLSL 移植的正确性。
 
 用法::
 
@@ -94,8 +98,16 @@ def build_gpu_params(
         gate_lo=tint.CHROMA_LUMA_GATE_LO,
         gate_hi=tint.CHROMA_LUMA_GATE_HI,
         gate_feather=tint.CHROMA_LUMA_GATE_FEATHER,
-        dither=True,
+        # 不做网格级抖动：CPU 复合结果（image_float）从不抖动（量化 + 抖动推迟到
+        # 显示分辨率），GPU 若加抖动会引入与 CPU 无关的噪声。关闭后两条管线的
+        # **未量化浮点复合**才能逐像素对齐，差距只来自内核实现本身。
+        dither=False,
     )
+
+
+#: GPU-float 与 CPU-float 的逐像素容量判据（0–255 标度）。
+FLOAT_MEAN_TOLERANCE = 1.5
+FLOAT_P99_TOLERANCE = 4
 
 
 def main() -> int:
@@ -118,43 +130,40 @@ def main() -> int:
     print(f"GPU：{dev.adapter} FL{dev.feature_level_text} warp={dev.use_warp}")
 
     ctx.set_virtual_desktop(info.virtual_rect, source.CANVAS_MAX_LONG)
-    layouts = [
-        mr.MonitorLayout(
-            rect=m.rect,
-            position=info.position,
-            background_rgb=info.background_rgb,
-            wallpaper=m.wallpaper_path,
-        )
-        for m in info.monitors
-    ]
+    # 用 CPU 侧已解码的画布字节直接上传为 GPU 画布：两条管线看到**完全相同**的
+    # 输入像素，GPU-float 与 CPU-float 的差距只可能来自内核实现本身，而非画布
+    # 解码 / 摆放的差异。这也是 gpu.py 降级链里「memory」通道的语义。
     t0 = time.perf_counter()
-    ctx.build_canvas_from_wallpapers(layouts, (26, 26, 26))
+    ctx.build_canvas_from_memory(cpu_src.pixels)
     gpu_canvas_ms = (time.perf_counter() - t0) * 1000.0
 
-    print(f"\n画布构建：GPU {gpu_canvas_ms:7.1f} ms   CPU {cpu_canvas_ms:7.1f} ms   "
+    print(f"\n画布构建：GPU(memory) {gpu_canvas_ms:7.1f} ms   CPU {cpu_canvas_ms:7.1f} ms   "
           f"加速 {cpu_canvas_ms / max(gpu_canvas_ms, 1e-6):.1f}×")
     print(f"画布尺寸：GPU {ctx.device_info().canvas_size}  CPU {cpu_src.size}")
 
     # 预热：首次 bake 含着色器/资源惰性初始化，不计入统计。
     warm = build_gpu_params(CASES[0], PARAM_SETS[0][1], PARAM_SETS[0][2])
-    ctx.bake(warm)
+    ctx.bake_float(warm)
 
-    print(f"\n{'参数组':<12} {'窗口':<24} {'网格':<10} "
+    print(f"\n{'参数组':<10} {'窗口':<22} {'网格':<9} "
           f"{'GPU ms':>8} {'CPU ms':>8} {'加速':>6} "
-          f"{'Δmean':>7} {'Δp99':>6} {'Δmax':>6}")
-    print("-" * 104)
+          f"{'Δu8均值':>8} {'Δu8p99':>7} {'Δu8max':>7} "
+          f"{'Δfloat均值':>11} {'Δfloatp99':>10} {'Δfloatmax':>10}")
+    print("-" * 126)
 
     worst: Tuple[float, str, np.ndarray, np.ndarray] = (-1.0, "", np.zeros(1), np.zeros(1))
     gpu_total = cpu_total = 0.0
-    diffs: List[float] = []
+    f_diffs: List[float] = []
+    f_p99s: List[float] = []
 
     for label, params, dark in PARAM_SETS:
         for rect in CASES:
             gp = build_gpu_params(rect, params, dark)
 
             t0 = time.perf_counter()
-            gpu_img, meta = ctx.bake(gp)
+            gpu_f32, meta = ctx.bake_float(gp)
             gpu_ms = (time.perf_counter() - t0) * 1000.0
+            gpu_img = np.clip(np.rint(gpu_f32 * 255.0), 0, 255).astype(np.uint8)
 
             request = engine.BakeRequest(rect, params, dark, cpu_src.signature)
             t0 = time.perf_counter()
@@ -164,30 +173,57 @@ def main() -> int:
             gpu_total += gpu_ms
             cpu_total += cpu_ms
 
-            a = gpu_img.astype(np.int16)
-            b = cpu_field.image.astype(np.int16)
-            if a.shape != b.shape:
-                print(f"{label:<12} 形状不一致 GPU{a.shape} CPU{b.shape}")
+            a8 = gpu_img.astype(np.int16)
+            b8 = cpu_field.image.astype(np.int16)
+            if a8.shape != b8.shape:
+                print(f"{label:<10} 形状不一致 GPU{a8.shape} CPU{b8.shape}")
                 continue
-            delta = np.abs(a - b)
-            d_mean = float(delta.mean())
-            d_p99 = float(np.percentile(delta, 99))
-            d_max = int(delta.max())
-            diffs.append(d_mean)
+            d8 = np.abs(a8 - b8)
+            u8_mean = float(d8.mean())
+            u8_p99 = float(np.percentile(d8, 99))
+            u8_max = int(d8.max())
+
+            # GPU-float（ctx.bake_float）vs CPU-float（engine.bake_with_grid.image_float）。
+            # 两者都是 0..1 sRGB 的**未量化**浮点复合，无抖动 —— 差距只来自内核。
+            af = gpu_f32.astype(np.float64)
+            bf = np.asarray(cpu_field.image_float, dtype=np.float64)
+            if af.shape != bf.shape:
+                print(f"{label:<10} 形状不一致 GPU-float{af.shape} CPU-float{bf.shape}")
+                continue
+            d_float = np.abs(af - bf) * 255.0
+            f_mean = float(d_float.mean())
+            f_p99 = float(np.percentile(d_float, 99))
+            f_max = float(d_float.max())
+            f_diffs.append(f_mean)
+            f_p99s.append(f_p99)
 
             geo = f"{rect[0]},{rect[1]} {rect[2]}x{rect[3]}"
-            print(f"{label:<12} {geo:<24} {meta.size[0]}x{meta.size[1]:<7} "
-                  f"{gpu_ms:8.2f} {cpu_ms:8.2f} {cpu_ms / max(gpu_ms, 1e-6):5.1f}× "
-                  f"{d_mean:7.2f} {d_p99:6.1f} {d_max:6d}")
+            print(
+                f"{label:<10} {geo:<22} {meta.size[0]}x{meta.size[1]:<5} "
+                f"{gpu_ms:8.2f} {cpu_ms:8.2f} {cpu_ms / max(gpu_ms, 1e-6):5.1f}× "
+                f"{u8_mean:8.2f} {u8_p99:7.1f} {u8_max:7d} "
+                f"{f_mean:11.3f} {f_p99:10.1f} {f_max:10.1f}"
+            )
 
-            if d_mean > worst[0]:
-                worst = (d_mean, f"{label}_{geo}", gpu_img.copy(), cpu_field.image.copy())
+            if f_mean > worst[0]:
+                worst = (f_mean, f"{label}_{geo}", gpu_img.copy(), cpu_field.image.copy())
 
-    n = len(diffs)
-    print("-" * 104)
+    n = len(f_diffs)
+    print("-" * 126)
     print(f"合计 {n} 组：GPU {gpu_total:.1f} ms  CPU {cpu_total:.1f} ms  "
           f"平均加速 {cpu_total / max(gpu_total, 1e-6):.1f}×")
-    print(f"逐像素平均绝对差：均值 {np.mean(diffs):.2f} / 最大 {max(diffs):.2f}（0–255 标度）")
+    if f_diffs:
+        overall_mean = float(np.mean(f_diffs))
+        pass_count = sum(
+            1 for mean, p99 in zip(f_diffs, f_p99s)
+            if mean < FLOAT_MEAN_TOLERANCE and p99 <= FLOAT_P99_TOLERANCE
+        )
+        verdict = "PASS" if pass_count == n else f"FAIL ({n - pass_count}/{n} 组越界)"
+        print(
+            f"GPU-float vs CPU-float：逐像素平均绝对差 均值 {overall_mean:.3f} / "
+            f"最大 {max(f_diffs):.3f}（0–255 标度，判据 mean<{FLOAT_MEAN_TOLERANCE}、"
+            f"p99≤{FLOAT_P99_TOLERANCE}）→ {verdict}"
+        )
 
     if args.dump and worst[0] >= 0:
         out = Path(args.dump)
