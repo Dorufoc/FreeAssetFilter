@@ -506,6 +506,9 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._maximize_btn = None
         self._title_label = None
         self._close_btn = None
+        # 设置窗口实例引用：防止局部变量被 GC 后窗口闪退；
+        # 仅在设置窗口存活期间持有，关闭销毁后清空
+        self._settings_window = None
 
         # 配置 Mica 参数（提前计算）：显式参数 > V2 保存值 > 项目默认
         cfg = DEFAULT_MICA_CONFIG
@@ -963,12 +966,50 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         QDesktopServices.openUrl(QUrl("https://github.com/Dorufoc/FreeAssetFilter"))
 
     def _open_settings_window(self) -> None:
-        """打开设置窗口（每次新建，关闭即销毁，不缓存窗口实例）"""
-        window = SettingsWindow()
+        """打开设置窗口（每次新建，关闭即销毁，不缓存窗口实例）。
+
+        设置窗口以主窗口为 parent（Windows owned 窗口），从而：
+        - 始终相对主窗口置顶（主窗口激活/点击不会盖住设置窗口）；
+        - 主窗口关闭/退出时，设置窗口随宿主一并关闭销毁。
+        窗口实例保存在 self._settings_window：若仅用函数局部变量持有，
+        PySide6 会在函数返回后因 Python GC 销毁无父窗口的顶层窗口，
+        导致设置窗口闪现后立即消失；destroyed 后释放引用以便下次重建。
+        """
+        win = self._settings_window
+        if win is not None:
+            try:
+                visible = win.isVisible()
+            except RuntimeError:
+                # 兜底：C++ 对象已销毁但引用尚未清空，视为已关闭
+                visible = False
+            if visible:
+                # 已打开 → 聚焦到前台
+                win.raise_()
+                win.activateWindow()
+                return
+            # 防御：引用未随 destroyed 清空时手动兜底
+            self._settings_window = None
+
+        window = SettingsWindow(self)
+        self._settings_window = window
         window.setAttribute(Qt.WA_DeleteOnClose, True)
+        window.destroyed.connect(self._on_settings_window_closed)
         window.show()
         window.raise_()
         window.activateWindow()
+
+    def _on_settings_window_closed(self, obj: object = None) -> None:
+        """设置窗口被关闭/销毁（含主窗口关闭连带销毁）后释放引用。
+
+        Args:
+            obj: 触发 destroyed 的窗口对象（QObject.destroyed 信号参数）。
+                仅当引用仍指向该窗口时才清空，防止旧窗口销毁事件晚到时
+                误清已重建的新窗口引用。
+        """
+        if self._settings_window is not None and (
+            obj is None or self._settings_window is obj
+        ):
+            self._settings_window = None
 
     def _on_theme_toggle(self) -> None:
         """主题切换按钮点击事件"""
@@ -1251,6 +1292,11 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
     def closeEvent(self, event: QEvent) -> None:
         """窗口关闭时刷新备份保存到磁盘，释放服务资源，并回收后台 Mica 线程。"""
+        # 连带关闭设置窗口：设置窗口是主窗口的 owned 子窗口，原生层会随宿主
+        # 关闭，此处显式 close 使其走 WA_DeleteOnClose 及时销毁并释放引用，
+        # 避免隐藏后残留孤儿实例
+        if self._settings_window is not None:
+            self._settings_window.close()
         self._dispose_mica()
         try:
             self._file_pool.flush_backup_save_now()
@@ -1358,11 +1404,12 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
 class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
     """
-    设置窗口 — 独立窗口，tm.surface 纯色背景（不使用 Mica）
+    设置窗口 — 主窗口的 owned 子窗口，tm.surface 纯色背景（不使用 Mica）
 
     不构造 Mica（壁纸加载+模糊+烘焙开销大），以加快窗口打开速度；
     背景色与 styled 弹窗 DialogContent 一致（tm.surface）。
-    点击主窗口标题栏的设置按钮后弹出
+    点击主窗口标题栏的设置按钮后弹出；以主窗口为 parent（Windows owned
+    窗口）——始终相对主窗口置顶，主窗口关闭时设置窗口一并关闭销毁。
     """
 
     def __init__(self, parent=None):
@@ -1397,7 +1444,7 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 设置内容区
         from layout.settings_layout import SettingsLayout  # 延迟导入（启动提速）
 
-        self._settings_layout = SettingsLayout(self._root)
+        self._settings_layout = SettingsLayout(self._root, host_window=self)
         layout.addWidget(self._settings_layout)
 
         # 监听主题变化以刷新背景和按钮颜色

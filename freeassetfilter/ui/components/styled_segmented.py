@@ -13,6 +13,10 @@ Both variants animate position + width via two ``QPropertyAnimation``
 instances (200 ms, OutQuad), matching the animation language used by
 ``StyledTabWidget``.  Supports size variants (sm / default / lg), optional
 icons, disabled segments, and left/right arrow-key navigation.
+
+The control adapts to its own content: its width (and the ``pill``
+container background) matches the total length of the options instead of
+stretching across the host layout.
 """
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout
@@ -176,6 +180,14 @@ class _SegmentsHeader(QWidget):
 
     # ── Geometry ────────────────────────────────────────────────
 
+    @property
+    def content_width(self) -> float:
+        """Total width of all segments (container content extent, 0 when empty)."""
+        if not self._seg_rects:
+            return 0.0
+        last = self._seg_rects[-1]
+        return last.x() + last.width()
+
     def _make_font(self) -> QFont:
         return QFont("Microsoft YaHei UI", self._font_size, QFont.Weight.Medium)
 
@@ -336,12 +348,21 @@ class _SegmentsHeader(QWidget):
             fm = QFontMetrics(font)
 
             # ── 1. Container background ────────────────────────
+            # pill：胶囊背景只包住选项内容（content_width），自适应内容长度；
+            # underline：细条作为可横向延展的基线轨道，保持按整宽绘制。
             painter.setPen(Qt.NoPen)
             if self._variant == "underline":
                 painter.setBrush(self._container_bg_underline)
+                painter.drawRoundedRect(
+                    QRectF(0.0, 0.0, float(w), float(h)), self._radius, self._radius
+                )
             else:
                 painter.setBrush(self._container_bg)
-            painter.drawRoundedRect(QRectF(0.0, 0.0, float(w), float(h)), self._radius, self._radius)
+                cw = self.content_width
+                if cw > 0:
+                    painter.drawRoundedRect(
+                        QRectF(0.0, 0.0, cw, float(h)), self._radius, self._radius
+                    )
 
             # ── 2. Animated indicator — drawn UNDER the text so the
             #     pill never covers the active segment's label ───
@@ -424,6 +445,16 @@ class StyledSegmented(QWidget):
     Selection is mutually exclusive and changes are reported through the
     :attr:`current_changed` signal.
 
+    The control is content-adaptive by default: its width is pinned
+    (min == max) to the total width of its options on every content change,
+    so box/grid layouts give it exactly the option content width, and the
+    ``pill`` container background is painted over the option content extent
+    only.  Hosts that need an explicitly stretched segmented bar can lift the
+    pin afterwards (``setMinimumWidth(0)`` /
+    ``setMaximumWidth(QWIDGETSIZE_MAX)``); in that case the ``pill``
+    background still hugs the options while the ``underline`` strip spans the
+    widget width.
+
     Signals:
         current_changed(int) — emitted when the active segment switches.
     """
@@ -443,6 +474,9 @@ class StyledSegmented(QWidget):
         self._segments: list[dict] = []       # {"label": str, "icon": str, "disabled": bool}
         self._current_index = 0
 
+        # 内容自适应：控件宽度被钳制到选项内容总宽（min/max 动态同步），
+        # 父布局（如 QVBoxLayout 的交叉轴）无法再把控件横向拉宽；
+        # paintEvent 中胶囊背景同样按内容宽度绘制。
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -451,6 +485,21 @@ class StyledSegmented(QWidget):
         layout.addWidget(self._header)
 
         self._header.segment_clicked.connect(self._on_segment_clicked)
+
+    # ── 内容自适应：宽度钳制 ───────────────────────────────────
+
+    def _sync_content_width(self) -> None:
+        """把控件宽度钳制为选项内容总宽（min=max=内容宽）并通知父布局。
+
+        只设 maximumWidth 时，部分布局（QVBoxLayout 交叉轴分配）仍会给
+        出与内容不符的宽度；min/max 同时钳制可保证任意宿主下控件宽度
+        稳定等于选项内容总宽。需要显式拉宽的宿主可自行解除钳制
+        （setMinimumWidth(0) / setMaximumWidth(QWIDGETSIZE_MAX)）。
+        """
+        w = int(self._header.content_width)
+        self.setMinimumWidth(w)
+        self.setMaximumWidth(w)
+        self.updateGeometry()
 
     # ── Public API ──────────────────────────────────────────────
 
@@ -470,6 +519,8 @@ class StyledSegmented(QWidget):
         index = len(self._segments)
         self._segments.append({"label": label, "icon": icon, "disabled": disabled})
         self._header.update_segments(self._segments)
+        # 内容宽度变化 → 钳制宽度并通知父布局重新排布
+        self._sync_content_width()
 
         # Auto-select the first segment when it is the only (enabled) one.
         if index == 0 and not disabled:
@@ -509,6 +560,7 @@ class StyledSegmented(QWidget):
         self._current_index = 0
         self._header.update_segments([])
         self._header.set_current(0, animate=False)
+        self._sync_content_width()
 
     def set_segment_disabled(self, index: int, disabled: bool):
         """Enable or disable the segment at *index*."""
@@ -526,6 +578,7 @@ class StyledSegmented(QWidget):
             return
         self._variant = value
         self._header.reconfigure(value, self._size)
+        self._sync_content_width()
 
     @property
     def size(self) -> str:
@@ -537,6 +590,7 @@ class StyledSegmented(QWidget):
             return
         self._size = value
         self._header.reconfigure(self._variant, value)
+        self._sync_content_width()
 
     # ── Internal slots ──────────────────────────────────────────
 

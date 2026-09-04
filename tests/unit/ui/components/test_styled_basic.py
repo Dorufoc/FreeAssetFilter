@@ -652,6 +652,57 @@ class TestStyledSegmented:
         assert seg.current_index == 0
         seg.deleteLater()
 
+    def test_content_adaptive_width_in_layout(self, qapp: QApplication) -> None:
+        """置于宽 QVBoxLayout 中：控件宽度贴合选项内容而非被拉满整行。"""
+        from PySide6.QtWidgets import QVBoxLayout
+
+        host = QWidget()
+        host.resize(500, 200)
+        box = QVBoxLayout(host)
+        seg = StyledSegmented(variant="pill", size="sm")
+        seg.add_segment("One")
+        seg.add_segment("Two")
+        box.addWidget(seg)
+        qapp.processEvents()
+
+        hint = seg.sizeHint()
+        assert hint.width() > 0
+        # 内容自适应：宽度 = sizeHint（选项内容 + 内边距），远小于宿主整宽
+        assert seg.width() == hint.width()
+        assert seg.width() < host.width()
+        # pill 容器背景范围与控件（=内容）宽度一致
+        assert int(seg._header.content_width) == seg.width()
+        seg.deleteLater()
+        host.deleteLater()
+
+    def test_content_adaptive_width_tracks_changes(
+        self, qapp: QApplication,
+    ) -> None:
+        """内容变化时宽度随之增长，clear 后收缩为 0。"""
+        from PySide6.QtWidgets import QVBoxLayout
+
+        host = QWidget()
+        host.resize(500, 200)
+        box = QVBoxLayout(host)
+        seg = StyledSegmented(variant="pill")
+        box.addWidget(seg)
+        seg.add_segment("Short")
+        qapp.processEvents()
+        w1 = seg.width()
+        assert w1 > 0
+
+        seg.add_segment("A considerably longer segment label")
+        qapp.processEvents()
+        assert seg.width() > w1
+        assert seg.width() == seg.sizeHint().width()
+
+        seg.clear()
+        qapp.processEvents()
+        assert seg.sizeHint().width() == 0
+        assert seg.width() == 0
+        seg.deleteLater()
+        host.deleteLater()
+
 
 # =============================================================================
 # ui.components.styled_steps

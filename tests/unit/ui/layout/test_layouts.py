@@ -159,11 +159,13 @@ class TestSettingsLayout:
         assert len(floating) == 1
 
         area = floating[0]
-        # 原生滚动条隐藏，浮动 styled 滚动条存在且为其子控件
+        # 原生滚动条隐藏，浮动 styled 滚动条存在
         assert area.verticalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
         assert area.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
         assert isinstance(area._floating_bar, StyledScrollBar)
-        assert area._floating_bar.parent() is area
+        # 浮动条锚定挂在外观卡片（#SettingsCard）下，贴其右缘（而非滚动区自身）
+        assert area._region is area.parent()
+        assert area._floating_bar.parent() is area.parent()
         # 平滑滚动在 showEvent 中初始化（未显示前未施加）
         assert area._scroller_ready is False
         safe_teardown(layout)
@@ -751,6 +753,21 @@ class TestAppearanceSettingsPage:
         assert page._format_mica_value("contrast", 1.5) == "1.5×"
         assert page._format_mica_value("blur_radius", 200) == "200 px"
         assert page._format_mica_value("tint_opacity", 70) == "70%"
+        safe_teardown(page)
+
+    def test_bg_segmented_hugs_content_width(self, qapp: QApplication) -> None:
+        """「窗口背景」分段控件宽度贴合选项内容，不占满页面/卡片整宽。"""
+        page = AppearanceSettingsPage()
+        page.resize(640, 900)
+        qapp.processEvents()
+
+        seg = page._bg_segmented
+        hint = seg.sizeHint()
+        assert hint.width() > 0
+        assert seg.width() == hint.width()
+        assert seg.width() < page.width()
+        # pill 容器背景只包住选项内容
+        assert int(seg._header.content_width) == seg.width()
         safe_teardown(page)
 
     def test_mica_slider_preview_and_save(

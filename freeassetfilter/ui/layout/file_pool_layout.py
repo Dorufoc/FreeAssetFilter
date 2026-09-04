@@ -207,9 +207,11 @@ class FilePoolLayout(QWidget):
         # 防递归守卫：水平边距动态计算时避免 setContentsMargins 触发的布局重入
         self._updating_pool_margins = False
         # 初始左右边距用「无滚动条居中」默认值（10*dpi），后续由
-        # _update_pool_card_margins 根据滚动条状态动态覆盖；上下边距保留 6
+        # _update_pool_card_margins 根据滚动条状态动态覆盖；
+        # 顶部固定 6（与文件选择器网格/列表模式一致），
+        # 底部统一为 10*dpi（与文件选择器网格模式基准一致）
         _init_pad = int(10 * self._get_dpi_scale())
-        self._card_layout.setContentsMargins(_init_pad, 6, _init_pad, 6)
+        self._card_layout.setContentsMargins(_init_pad, 6, _init_pad, _init_pad)
         # 卡片间距与文件选择器 list 模式一致（其卡片间隙基准值为 5，
         # 且随 _card_scale 缩放：gap = int(5 * scale)），此处同样按当前缩放计算。
         self._card_layout.setSpacing(int(5 * self._card_scale))
