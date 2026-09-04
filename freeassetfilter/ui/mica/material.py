@@ -734,7 +734,11 @@ class MicaMaterial(QObject):
         """
         hwnd = 0
         try:
-            hwnd = int(self._widget.winId())
+            # 必须取顶层窗口句柄：对子控件调 winId() 会强制它原生化，
+            # 并连带原生化全部兄弟控件（未设 AA_DontCreateNativeWidgetSiblings
+            # 时），原生子窗口位置同步出错会导致整窗内容偏移/黑边。
+            top = self._widget.window()
+            hwnd = int(top.winId()) if top is not None else 0
         except (TypeError, RuntimeError, ValueError):
             hwnd = 0
         if winapi.IS_WINDOWS and hwnd:

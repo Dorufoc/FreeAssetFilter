@@ -524,8 +524,23 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._saturation = saturation if saturation is not None else mica_saved["saturation"]
         self._tint_opacity = mica_saved["tint_opacity"]
 
+        # 应用级防护（须在创建任何子控件前设置）：阻止某个子控件原生化时
+        # 连带把兄弟控件全部原生化。原生子窗口的位置由 Qt 异步同步，启动期
+        # 曾出现子 HWND 被摆到错误坐标（内容整体偏移右下、左上露出主窗口
+        # 残留的早期 raster 帧），且 Qt 侧几何数据完全正常、极难排查；
+        # 拖动触发重摆放后才恢复。MPV 视频面等显式 WA_NativeWindow 的控件
+        # 不受此属性影响，仍可正常嵌入。
+        QApplication.setAttribute(Qt.ApplicationAttribute.AA_DontCreateNativeWidgetSiblings, True)
+
         # 调用父类初始化
         super().__init__(parent)
+
+        # 隐藏 qframelesswindow 默认 TitleBar 覆盖层：它叠在自绘标题栏区域，
+        # 会拦截按钮点击/干扰命中（本项目标题栏完全自绘，见 _create_title_bar）。
+        # 普通 QMainWindow 回退路径没有该属性，用 getattr 兜底。
+        default_title_bar = getattr(self, "titleBar", None)
+        if default_title_bar is not None:
+            default_title_bar.hide()
 
         # 安装 WM_NCHITTEST 边缘穿透过滤器：嵌入 MPV 等原生子窗口覆盖窗口
         # 边缘时，仍由 qframelesswindow + win32 原生通道执行边缘拖拽缩放
@@ -1420,6 +1435,13 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._close_btn = None
 
         super().__init__(parent)
+
+        # 隐藏 qframelesswindow 默认 TitleBar 覆盖层（同 MainWindow，避免拦截
+        # 自绘标题栏的点击/命中）。普通 QMainWindow 回退路径没有该属性。
+        default_title_bar = getattr(self, "titleBar", None)
+        if default_title_bar is not None:
+            default_title_bar.hide()
+
         self.setWindowTitle("设置")
         self.setMinimumSize(700, 400)
         self.resize(700, 500)
