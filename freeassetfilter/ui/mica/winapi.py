@@ -199,14 +199,17 @@ class ComPtr:
         """``IUnknown::Release``（vtable 索引 2），幂等。"""
         if self._released:
             return
-        self._released = True
         try:
             if self._ptr.value:
+                # 先通过有效指针取出 Release；过早设置 _released 会让
+                # self.method() 拒绝访问，导致 COM 引用实际无法释放。
                 fn = self.method(2, ctypes.c_ulong)
                 fn(self._ptr)
         except (CaptureError, OSError, ValueError):
             pass
-        self._ptr = ctypes.c_void_p(0)
+        finally:
+            self._released = True
+            self._ptr = ctypes.c_void_p(0)
 
     def __del__(self) -> None:  # pragma: no cover - 析构路径
         try:
@@ -402,10 +405,15 @@ class DesktopWallpaperCom:
     def position(self) -> str:
         """壁纸放置方式；失败时回退 ``"Fill"``。"""
         try:
-            fn = self._itf.method(_DW_GET_POSITION, ctypes.c_int)
-            value = int(fn(self._itf.ptr))
-            if 0 <= value < len(_WALLPAPER_POSITIONS):
-                return _WALLPAPER_POSITIONS[value]
+            # GetPosition 的原生签名是 HRESULT GetPosition(out POSITION*)，
+            # 不能按无参数函数调用，否则会破坏 Win64 调用约定。
+            fn = self._itf.method(
+                _DW_GET_POSITION, _HRESULT, ctypes.POINTER(ctypes.c_int)
+            )
+            value = ctypes.c_int(0)
+            hr = fn(self._itf.ptr, ctypes.byref(value))
+            if succeeded(hr) and 0 <= value.value < len(_WALLPAPER_POSITIONS):
+                return _WALLPAPER_POSITIONS[value.value]
         except (CaptureError, OSError):
             pass
         return "Fill"
@@ -458,6 +466,10 @@ def virtual_screen_rect() -> Tuple[int, int, int, int]:
 if IS_WINDOWS:  # pragma: no cover
     _user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
     _user32.GetWindowRect.restype = ctypes.c_int
+    _user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    _user32.GetClientRect.restype = ctypes.c_int
+    _user32.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
+    _user32.ClientToScreen.restype = ctypes.c_int
 
 
 def window_rect(hwnd: int) -> Tuple[int, int, int, int]:
@@ -482,6 +494,34 @@ def window_rect(hwnd: int) -> Tuple[int, int, int, int]:
     return (
         int(rect.left),
         int(rect.top),
+        int(rect.right - rect.left),
+        int(rect.bottom - rect.top),
+    )
+
+
+def client_rect(hwnd: int) -> Tuple[int, int, int, int]:
+    """取得窗口客户区的屏幕矩形 ``(x, y, w, h)``（物理像素）。
+
+    与 :func:`window_rect` 不同，本函数排除非客户区边框。调用方可只传顶层
+    ``HWND``，避免为普通 Qt 子控件调用 ``winId()`` 而把内容树原生化。
+
+    Args:
+        hwnd: 顶层窗口句柄。
+
+    Returns:
+        客户区在虚拟桌面中的物理像素矩形；失败返回 ``(0, 0, 0, 0)``。
+    """
+    if not IS_WINDOWS or not hwnd:
+        return (0, 0, 0, 0)
+    rect = wintypes.RECT()
+    origin = wintypes.POINT(0, 0)
+    if not _user32.GetClientRect(int(hwnd), ctypes.byref(rect)):
+        return (0, 0, 0, 0)
+    if not _user32.ClientToScreen(int(hwnd), ctypes.byref(origin)):
+        return (0, 0, 0, 0)
+    return (
+        int(origin.x),
+        int(origin.y),
         int(rect.right - rect.left),
         int(rect.bottom - rect.top),
     )

@@ -13,8 +13,9 @@
 * 烘焙产物是**已经按窗口尺寸生成的色调场**（网格 ≤BAKE_LONG_MAX 长边），因此绘制时只需
   把它平滑放大铺满即可，**不再需要旧版那种「整块虚拟桌面模糊图 + 按窗口位置取子矩形」
   的复杂几何**——这正是「亮度锁死、只留低频色度」带来的简化红利。
-* 坐标空间统一为 Win32 物理像素：窗口矩形取自 ``winapi.window_rect``，与壁纸源
-  画布（``winapi.virtual_screen_rect``）同坐标系，HiDPI 下也严格对齐。
+* 坐标空间统一为 Win32 物理像素：顶层客户区取自 ``winapi.client_rect``，再按控件
+  相对顶层客户区的逻辑几何换算；结果与壁纸源画布（``winapi.virtual_screen_rect``）同坐标系，
+  HiDPI 下也严格对齐。
 
 线程模型
 --------
@@ -888,23 +889,41 @@ class MicaMaterial(QObject):
     # ------------------------------------------------------------------
 
     def _window_rect_tuple(self) -> Tuple[int, int, int, int]:
-        """取得窗口矩形（Win32 物理像素，与壁纸源画布同坐标系）。
+        """取得 Mica 控件的屏幕矩形（Win32 物理像素）。
+
+        直接调用普通子控件的 ``winId()`` 会把它及部分祖先强制原生化。若顶层
+        窗口随后居中移动，这些原生子窗口首次显示时可能仍停在移动前的屏幕坐标，
+        导致整个内容区偏移并被裁切，直到 resize 才同步。因此 Windows 路径只读取
+        顶层窗口句柄，再把控件相对客户区的 Qt 逻辑几何按实际客户区比例换算为
+        物理像素；既保持任意 Mica 子控件的取样语义，也让内容树保持 alien widgets。
 
         Returns:
-            ``(x, y, w, h)``。失败时回退到 Qt 逻辑几何（非 Windows / 无句柄时）。
+            ``(x, y, w, h)``。失败时回退到 Qt 逻辑屏幕几何。
         """
-        hwnd = 0
-        try:
-            hwnd = int(self._widget.winId())
-        except (TypeError, RuntimeError, ValueError):
+        widget = self._widget
+        window = widget.window()
+        if winapi.IS_WINDOWS and window is not None:
             hwnd = 0
-        if winapi.IS_WINDOWS and hwnd:
-            r = winapi.window_rect(hwnd)
-            if r[2] > 0 and r[3] > 0:
-                return r
-        w = self._widget.window()
-        geo = w.geometry() if w is not None else self._widget.geometry()
-        return (geo.x(), geo.y(), geo.width(), geo.height())
+            try:
+                hwnd = int(window.winId())
+            except (TypeError, RuntimeError, ValueError):
+                pass
+            if hwnd:
+                client = winapi.client_rect(hwnd)
+                logical_w = window.width()
+                logical_h = window.height()
+                if client[2] > 0 and client[3] > 0 and logical_w > 0 and logical_h > 0:
+                    pos = widget.mapTo(window, widget.rect().topLeft())
+                    scale_x = client[2] / logical_w
+                    scale_y = client[3] / logical_h
+                    return (
+                        client[0] + round(pos.x() * scale_x),
+                        client[1] + round(pos.y() * scale_y),
+                        max(1, round(widget.width() * scale_x)),
+                        max(1, round(widget.height() * scale_y)),
+                    )
+        top_left = widget.mapToGlobal(widget.rect().topLeft())
+        return (top_left.x(), top_left.y(), widget.width(), widget.height())
 
     def _surface_rgb(self) -> Tuple[int, int, int]:
         """当前实色底的 ``(r, g, b)``，供 worker 混合预合成使用。
