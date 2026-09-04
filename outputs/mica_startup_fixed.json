@@ -1,0 +1,36 @@
+{
+  "window": [
+    253,
+    133,
+    1200,
+    800
+  ],
+  "root_global": [
+    253,
+    133
+  ],
+  "content_global": [
+    253,
+    133
+  ],
+  "mica_global": [
+    253,
+    133
+  ],
+  "native_ids": {
+    "root": 0,
+    "content": 0,
+    "mica": 0
+  },
+  "splitter_sizes": [
+    387,
+    386,
+    387
+  ],
+  "mica_window_rect": [
+    380,
+    200,
+    1800,
+    1200
+  ]
+}

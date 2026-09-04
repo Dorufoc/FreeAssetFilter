@@ -16,7 +16,9 @@
 
 from __future__ import annotations
 
-from typing import Optional
+import ctypes
+from ctypes import wintypes
+from typing import Any, Optional
 from unittest import mock
 
 import numpy as np
@@ -55,6 +57,157 @@ def _layer_for(
         height=height if height is not None else monitor[3],
         win_size=win,
     )
+
+
+def test_window_rect_uses_top_level_client_without_native_child(
+    qapp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """子控件矩形由顶层客户区换算，不得把 Mica 内容子树原生化。"""
+    window = QWidget()
+    window.resize(1200, 800)
+    widget = QWidget(window)
+    widget.setGeometry(100, 50, 400, 300)
+    mica = material_mod.MicaMaterial(widget, lazy=True)
+    top_level_hwnd = int(window.winId())
+    calls = []
+
+    monkeypatch.setattr(material_mod.winapi, "IS_WINDOWS", True)
+    monkeypatch.setattr(
+        material_mod.winapi,
+        "client_rect",
+        lambda hwnd: calls.append(hwnd) or (380, 200, 1800, 1200),
+    )
+
+    try:
+        assert widget.internalWinId() == 0
+        assert mica._window_rect_tuple() == (530, 275, 600, 450)
+        assert calls == [top_level_hwnd]
+        assert widget.internalWinId() == 0
+    finally:
+        mica.dispose()
+        window.deleteLater()
+
+
+def test_com_ptr_release_calls_release_before_invalidating_pointer(monkeypatch) -> None:
+    """COM Release 必须在指针标记无效前调用，并且重复释放幂等。"""
+    com_ptr = material_mod.winapi.ComPtr(1234)
+    calls = []
+
+    def method(self, index, restype, *argtypes):
+        assert self.valid()
+        assert index == 2
+
+        def release_fn(pointer):
+            calls.append(pointer.value)
+            return 0
+
+        return release_fn
+
+    monkeypatch.setattr(material_mod.winapi.ComPtr, "method", method)
+
+    com_ptr.release()
+    com_ptr.release()
+
+    assert calls == [1234]
+    assert com_ptr.valid() is False
+
+
+def test_desktop_wallpaper_position_uses_output_parameter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GetPosition 按 HRESULT + 输出参数读取壁纸放置枚举。"""
+    fake_interface = mock.Mock()
+
+    def get_position(_this, value_ptr):
+        value = ctypes.cast(value_ptr, ctypes.POINTER(ctypes.c_int)).contents
+        value.value = 4
+        return 0
+
+    fake_interface.method.return_value = get_position
+    wallpaper = material_mod.winapi.DesktopWallpaperCom(fake_interface)
+
+    assert wallpaper.position() == "Fill"
+    fake_interface.method.assert_called_once()
+    assert fake_interface.method.call_args.args[:2] == (
+        material_mod.winapi._DW_GET_POSITION,
+        material_mod.winapi._HRESULT,
+    )
+
+
+def test_desktop_wallpaper_position_falls_back_on_hresult_failure() -> None:
+    """GetPosition 失败时回退到 Fill，不读取未初始化枚举。"""
+    fake_interface = mock.Mock()
+    fake_interface.method.return_value = lambda _this, _value_ptr: -1
+    wallpaper = material_mod.winapi.DesktopWallpaperCom(fake_interface)
+
+    assert wallpaper.position() == "Fill"
+
+
+def test_client_rect_returns_physical_client_geometry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Win32 客户区原点与尺寸组合为虚拟桌面物理矩形。"""
+    fake_user32 = mock.Mock()
+
+    def get_client_rect(hwnd: Any, rect_ptr: Any) -> int:
+        rect = ctypes.cast(rect_ptr, ctypes.POINTER(wintypes.RECT)).contents
+        rect.left, rect.top, rect.right, rect.bottom = 0, 0, 1800, 1200
+        return 1
+
+    def client_to_screen(hwnd: Any, point_ptr: Any) -> int:
+        point = ctypes.cast(point_ptr, ctypes.POINTER(wintypes.POINT)).contents
+        point.x, point.y = 380, 200
+        return 1
+
+    fake_user32.GetClientRect.side_effect = get_client_rect
+    fake_user32.ClientToScreen.side_effect = client_to_screen
+    monkeypatch.setattr(material_mod.winapi, "IS_WINDOWS", True)
+    monkeypatch.setattr(material_mod.winapi, "_user32", fake_user32)
+
+    assert material_mod.winapi.client_rect(1234) == (380, 200, 1800, 1200)
+    fake_user32.GetClientRect.assert_called_once()
+    fake_user32.ClientToScreen.assert_called_once()
+
+
+@pytest.mark.parametrize("get_ok, screen_ok", [(False, True), (True, False)])
+def test_client_rect_returns_zero_on_win32_failure(
+    monkeypatch: pytest.MonkeyPatch, get_ok: bool, screen_ok: bool
+) -> None:
+    """任一 Win32 几何查询失败时返回零矩形，交由上层回退。"""
+    fake_user32 = mock.Mock()
+    fake_user32.GetClientRect.return_value = int(get_ok)
+    fake_user32.ClientToScreen.return_value = int(screen_ok)
+    monkeypatch.setattr(material_mod.winapi, "IS_WINDOWS", True)
+    monkeypatch.setattr(material_mod.winapi, "_user32", fake_user32)
+
+    assert material_mod.winapi.client_rect(1234) == (0, 0, 0, 0)
+
+
+def test_window_rect_falls_back_to_qt_geometry_when_client_query_fails(
+    qapp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """客户区查询不可用时，材质层回退到 Qt 屏幕几何。"""
+    window = QWidget()
+    window.move(40, 60)
+    window.resize(1200, 800)
+    widget = QWidget(window)
+    widget.setGeometry(100, 50, 400, 300)
+    mica = material_mod.MicaMaterial(widget, lazy=True)
+    monkeypatch.setattr(material_mod.winapi, "IS_WINDOWS", True)
+    monkeypatch.setattr(material_mod.winapi, "client_rect", lambda hwnd: (0, 0, 0, 0))
+
+    try:
+        actual = mica._window_rect_tuple()
+        expected_top_left = widget.mapToGlobal(widget.rect().topLeft())
+        assert actual == (
+            expected_top_left.x(),
+            expected_top_left.y(),
+            widget.width(),
+            widget.height(),
+        )
+    finally:
+        mica.dispose()
+        window.deleteLater()
 
 
 # ---------------------------------------------------------------------------
