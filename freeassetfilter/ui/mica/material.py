@@ -905,6 +905,9 @@ class MicaMaterial(QObject):
         if winapi.IS_WINDOWS and window is not None:
             hwnd = 0
             try:
+                # 必须取顶层窗口句柄：对子控件调 winId() 会强制它原生化，
+                # 并连带原生化全部兄弟控件（未设 AA_DontCreateNativeWidgetSiblings
+                # 时），原生子窗口位置同步出错会导致整窗内容偏移/黑边。
                 hwnd = int(window.winId())
             except (TypeError, RuntimeError, ValueError):
                 pass
