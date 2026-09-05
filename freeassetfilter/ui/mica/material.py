@@ -616,6 +616,14 @@ class MicaMaterial(QObject):
         if self._native_backdrop or self._disposed:
             # 原生 DWM 云母模式下自研层停用：绝不起后台线程（零渲染开销）。
             return
+        if not self._widget.isVisible():
+            # 显示前几何守卫：窗口尚未显示时 ``_window_rect_tuple()`` 退化为
+            # Qt 逻辑几何（布局激活期子控件 resizeEvent 触发的请求会以退化
+            # 矩形起烘，产出网格密度退化 / 纵横比失真的层）。挂起重烘标志，
+            # 由 showEvent 后的首次异步刷新以真实几何起烘；若起烘时已有
+            # worker 在途，交付后由回收逻辑按本标志续接。
+            self._rebuild_pending = True
+            return
         if self._worker_thread is not None:
             return
         if self._refresh_retries > BAKE_MAX_RETRIES:
@@ -1268,9 +1276,17 @@ class MicaMaterial(QObject):
         layer_display_long = _layer_display_long(region)
         key = self._layer_key_for(region, layer_display_long)
         if not force and key == self._layer_key:
-            # key 未变化：层仍覆盖整块虚拟桌面，无需重烘焙（窗口在桌面内平移 /
-            # 缩放 / 跨监视器、主题参数未变，no-op）。
-            return
+            layer = self._layer
+            stale_geometry = layer is not None and tuple(
+                int(v) for v in layer.win_size
+            ) != (int(win[2]), int(win[3]))
+            if not stale_geometry:
+                # key 未变化且层几何与当前窗口一致：层仍覆盖整块虚拟桌面，
+                # 无需重烘焙（窗口在桌面内平移 / 缩放 / 跨监视器、主题参数
+                # 未变，no-op）。
+                return
+            # key 未变但层 win_size 过期（陈旧几何层，如退化矩形起烘的产物）：
+            # 继续走下方的重烘 / 挂起逻辑，按当前几何自愈。
         if self._worker_thread is not None:
             # 在途烘焙：本次变化（主题 / 参数 / 壁纸 / 区域）已使在途结果过期。
             # 置 ``_layer_key`` 失效，令旧 key 的在途结果被陈旧性守卫丢弃（绝不
@@ -1430,6 +1446,25 @@ class MicaMaterial(QObject):
             if self._worker_thread is not None:
                 self._worker_thread.quit()
             return
+        if self._widget.isVisible():
+            # 交付几何守卫：层烘焙时的窗口尺寸与当前显示尺寸不符（例：烘焙在途
+            # 期间窗口完成显示 / 被 resize）。网格密度随窗口尺寸而定，提交一份
+            # 与显示窗口失配的层会导致模糊各向异性 / 壁纸裁剪纵横比失真 ——
+            # 丢弃并挂起重烘，由回收逻辑按当前几何续接（自愈）。
+            win = self._window_rect_tuple()
+            if win is not None:
+                cur_size = (int(win[2]), int(win[3]))
+                if tuple(int(v) for v in layer_info.win_size) != cur_size:
+                    _LOG.debug(
+                        "丢弃几何陈旧的视口层（win_size=%s != 当前=%s）",
+                        tuple(layer_info.win_size),
+                        cur_size,
+                    )
+                    self._layer_key = None
+                    self._rebuild_pending = True
+                    if self._worker_thread is not None:
+                        self._worker_thread.quit()
+                    return
         was_shown = self._has_shown
         was_hidden = self._hide_until_new_layer
         self._hide_until_new_layer = False

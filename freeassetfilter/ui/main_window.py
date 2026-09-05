@@ -59,6 +59,36 @@ from freeassetfilter.utils.app_logger import debug, warning
 from freeassetfilter.services.staging_pool_service import StagingPoolService
 
 
+# ── 米卡效果固定参数（按深浅色主题各一组） ─────────────────────────────
+# 设置页不再提供米卡滑动条：参数为产品定值，随主题自动切换。
+# 亮色模式 → 饱和度 8×、对比度 1×、模糊 200px、透明度 100%；
+# 深色模式 → 饱和度 2×、对比度 1×、模糊 200px、透明度 80%。
+FIXED_MICA_PARAMS: dict = {
+    "light": {
+        "blur_radius": 200,
+        "saturation": 8.0,
+        "contrast": 1.0,
+        "tint_opacity": 100,
+    },
+    "dark": {
+        "blur_radius": 200,
+        "saturation": 2.0,
+        "contrast": 1.0,
+        "tint_opacity": 80,
+    },
+}
+
+
+def fixed_mica_params() -> dict:
+    """按当前主题返回固定的米卡效果参数（深浅色各一组）。
+
+    Returns:
+        dict: {"blur_radius": int, "saturation": float,
+               "contrast": float, "tint_opacity": int}
+    """
+    return dict(FIXED_MICA_PARAMS["dark" if tm.is_dark_theme() else "light"])
+
+
 class _MicaBackgroundMixin:
     """
     MicaBackgroundWidget 的共享逻辑（GPU 与 CPU 两种实现复用）。
@@ -165,6 +195,11 @@ class _MicaBackgroundMixin:
         # 背景色为绘制期读取，切换主题仅需重绘
         if self._mica is not None:
             self._mica.set_theme(self._surface_color, self._luminosity)
+            # 米卡参数按主题固定：主题切换时以新主题的固定参数更新。blur/sat/con
+            # 任一变化即触发一次强制重烘（overlay 新值随该次烘焙一并生效，不另起
+            # 防抖）；在途的旧表面色烘焙结果由 key/gen 守卫丢弃，回收逻辑按最新
+            # 条件（新参数 + 新表面色）续烘一次收敛。
+            self.apply_mica_parameters(**fixed_mica_params())
             # 原生 DWM 云母模式：深浅色属性随主题对齐（自研层停用，无需重烘焙）
             self._sync_native_dark_mode()
             self.update()
@@ -616,33 +651,17 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
     @staticmethod
     def _load_mica_settings() -> dict:
-        """启动时从 SettingsManagerV2 恢复米卡效果参数（应用保存的配置值）。
+        """返回当前主题固定的米卡效果参数（参数为产品定值，不再从设置读取）。
+
+        历史上此处从 ``SettingsManagerV2`` 恢复 ``appearance.mica`` 保存值；
+        参数固定后仅按深浅色主题返回对应定值（见 :data:`FIXED_MICA_PARAMS`），
+        设置页的米卡滑动条已移除。
 
         Returns:
             dict: {"blur_radius": int, "saturation": float,
                    "contrast": float, "tint_opacity": int}
         """
-        defaults = {
-            "blur_radius": DEFAULT_MICA_CONFIG["blur_radius"],
-            "saturation": DEFAULT_MICA_CONFIG["saturation"],
-            "contrast": DEFAULT_MICA_CONFIG["contrast"],
-            "tint_opacity": 70,
-        }
-        try:
-            from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
-            v2 = SettingsManagerV2()
-            v2.load()
-            saved = v2.get("appearance.mica", {})
-            if isinstance(saved, dict):
-                return {
-                    "blur_radius": int(saved.get("blur_radius", defaults["blur_radius"])),
-                    "saturation": float(saved.get("saturation", defaults["saturation"])),
-                    "contrast": float(saved.get("contrast", defaults["contrast"])),
-                    "tint_opacity": int(saved.get("tint_opacity", defaults["tint_opacity"])),
-                }
-        except Exception:
-            pass
-        return defaults
+        return fixed_mica_params()
 
     @staticmethod
     def _load_background_settings() -> dict:
@@ -759,19 +778,6 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._custom_background.setVisible(self._background_mode == "image")
         if self._background_mode == "image":
             self._mica_background.setVisible(False)
-
-        # 启动恢复：实验性原生 DWM 云母开关（持久化于 appearance.mica.native_dwm）。
-        # 仅 mica 模式生效；DWM 调用失败（非 Win11）时自动保持自研层，不影响启动。
-        if self._background_mode == "mica":
-            try:
-                from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
-                _v2 = SettingsManagerV2()
-                _v2.load()
-                _native = bool(_v2.get("appearance.mica.native_dwm", False))
-            except Exception:
-                _native = False
-            if _native and self._mica_background is not None:
-                self._mica_background.apply_native_mica(True)
 
         # 创建主布局（内容层作为根容器）
         main_layout = QVBoxLayout(self._content)

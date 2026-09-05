@@ -87,3 +87,4 @@ freeassetfilter/core/native/src/thumbnail_rust/target/
 
 # C++ build directory (msvc .obj, .lib, .exp intermediate files)
 freeassetfilter/core/native/src/cpp_lut_preview/build/
+outputs/*

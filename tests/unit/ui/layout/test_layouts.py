@@ -928,27 +928,14 @@ class TestAppearanceSettingsPage:
         page.closeEvent(QCloseEvent())
         safe_teardown(page)
 
-    def test_mica_sliders_built_and_value_mapping(self, qapp: QApplication) -> None:
-        """四个米卡滑动条构建齐全；归一化映射与单位格式化正确。"""
+    def test_mica_sliders_removed(self, qapp: QApplication) -> None:
+        """米卡参数已固定（按主题定值）：外观页不再构建滑动条配置项。"""
         page = AppearanceSettingsPage()
-        assert set(page._mica_sliders) == {
-            "saturation", "contrast", "blur_radius", "tint_opacity",
-        }
-        assert set(page._mica_value_labels) == set(page._mica_sliders)
-
-        # 归一化映射：区间端点与中点
-        assert page._to_norm("blur_radius", 0) == 0.0
-        assert page._to_norm("blur_radius", 300) == 1.0
-        assert page._to_norm("tint_opacity", 50) == pytest.approx(0.5)
-        assert page._from_norm("blur_radius", 0.5) == 150.0
-        assert page._from_norm("saturation", 0.5) == pytest.approx(4.0)
-        assert page._from_norm("contrast", 0.5) == pytest.approx(1.5)
-
-        # 单位格式化（× / px / %）
-        assert page._format_mica_value("saturation", 4.5) == "4.5×"
-        assert page._format_mica_value("contrast", 1.5) == "1.5×"
-        assert page._format_mica_value("blur_radius", 200) == "200 px"
-        assert page._format_mica_value("tint_opacity", 70) == "70%"
+        assert not hasattr(page, "_mica_sliders")
+        assert not hasattr(page, "_mica_value_labels")
+        assert not hasattr(page, "_mica_values")
+        assert not hasattr(page, "_mica_preview_timer")
+        assert not hasattr(page, "_native_mica_toggle")
         safe_teardown(page)
 
     def test_bg_segmented_hugs_content_width(self, qapp: QApplication) -> None:
@@ -964,53 +951,6 @@ class TestAppearanceSettingsPage:
         assert seg.width() < page.width()
         # pill 容器背景只包住选项内容
         assert int(seg._header.content_width) == seg.width()
-        safe_teardown(page)
-
-    def test_mica_slider_preview_and_save(
-        self, qapp: QApplication, monkeypatch, tmp_path,
-    ) -> None:
-        """滑动条释放：实时预览应用到主窗口背景并持久化到 V2 临时文件。"""
-        import freeassetfilter.ui.layout.settings_layout as sl_mod
-        from freeassetfilter.core.managers.settings_manager_v2 import (
-            SettingsManagerV2,
-        )
-
-        calls: list[dict] = []
-
-        class _FakeMicaBg:
-            def apply_mica_parameters(self, **kwargs) -> None:
-                calls.append(kwargs)
-
-        class _FakeMainWindow(QWidget):
-            def __init__(self) -> None:
-                super().__init__()
-                self._mica_background = _FakeMicaBg()
-
-        fake_mw = _FakeMainWindow()
-        monkeypatch.setattr(
-            sl_mod.AppearanceSettingsPage, "_find_main_window", lambda self: fake_mw
-        )
-        # 临时 V2 文件，避免测试写真实 data/settings_v2.json
-        tmp_file = str(tmp_path / "settings_v2.json")
-        monkeypatch.setattr(
-            sl_mod, "SettingsManagerV2", lambda *a, **k: SettingsManagerV2(tmp_file)
-        )
-
-        page = AppearanceSettingsPage()
-        # 拖动中：值显示更新并触发（防抖）预览
-        page._on_mica_slider_changed("tint_opacity", 0.4)
-        assert page._mica_values["tint_opacity"] == 40.0
-        assert page._mica_value_labels["tint_opacity"].text() == "40%"
-        assert page._mica_preview_timer.isActive()
-
-        # 释放：立即应用预览 + 持久化
-        page._on_mica_slider_released("tint_opacity")
-        assert calls and calls[-1]["tint_opacity"] == 40
-        saved = SettingsManagerV2(tmp_file)
-        saved.load()
-        assert saved.get("appearance.mica.tint_opacity") == 40
-        assert saved.get("appearance.mica.blur_radius") == 200
-        assert saved.get("appearance.mica.contrast") == pytest.approx(1.5)
         safe_teardown(page)
 
     # ── 窗口背景区块（米卡效果 / 自定义图片） ─────────────────────
@@ -1067,8 +1007,6 @@ class TestAppearanceSettingsPage:
         assert page._bg_image_name == ""
         assert page._bg_segmented.current_index == 0
         assert page._bg_image_row.isVisibleTo(page) is False
-        assert all(s.isEnabled() for s in page._mica_sliders.values())
-        assert all(l.isEnabled() for l in page._mica_value_labels.values())
         assert page._bg_file_label.text() == "未设置"
         safe_teardown(page)
 
@@ -1107,8 +1045,6 @@ class TestAppearanceSettingsPage:
         assert page._bg_image_name == "custom_background.png"
         assert page._bg_segmented.current_index == 1
         assert page._bg_image_row.isVisibleTo(page) is True
-        assert all(not s.isEnabled() for s in page._mica_sliders.values())
-        assert all(not l.isEnabled() for l in page._mica_value_labels.values())
         assert page._bg_file_label.text() == "custom_background.png"
         safe_teardown(page)
 
@@ -1142,7 +1078,6 @@ class TestAppearanceSettingsPage:
         assert fake_mw.image_calls == [expected_path]
         assert fake_mw.mode_calls == ["image"]
         assert page._bg_image_row.isVisibleTo(page) is True
-        assert all(not s.isEnabled() for s in page._mica_sliders.values())
 
         saved = SettingsManagerV2(tmp_file)
         saved.load()
@@ -1155,7 +1090,6 @@ class TestAppearanceSettingsPage:
         assert fake_mw.mode_calls == ["image", "mica"]
         assert len(fake_mw.image_calls) == 1
         assert page._bg_image_row.isVisibleTo(page) is False
-        assert all(s.isEnabled() for s in page._mica_sliders.values())
         saved = SettingsManagerV2(tmp_file)
         saved.load()
         assert saved.get("appearance.background.mode") == "mica"
@@ -1324,10 +1258,10 @@ class TestAppearanceSettingsPage:
         }
         safe_teardown(page)
 
-    def test_update_bg_ui_state_toggles_mica_widgets(
+    def test_update_bg_ui_state_toggles_image_row(
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
-        """_update_bg_ui_state：image 模式置灰数值标签，mica 模式恢复。"""
+        """_update_bg_ui_state：image 模式显示图片行，mica 模式隐藏。"""
         import freeassetfilter.ui.layout.settings_layout as sl_mod
         from freeassetfilter.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
@@ -1339,16 +1273,11 @@ class TestAppearanceSettingsPage:
         )
 
         page = AppearanceSettingsPage()
-        normal_color = page._mica_value_labels["blur_radius"].styleSheet()
-
         page._bg_mode = "image"
         page._update_bg_ui_state()
-        assert all(not l.isEnabled() for l in page._mica_value_labels.values())
-        dimmed_color = page._mica_value_labels["blur_radius"].styleSheet()
-        assert dimmed_color != normal_color
+        assert page._bg_image_row.isVisibleTo(page) is True
 
         page._bg_mode = "mica"
         page._update_bg_ui_state()
-        assert all(l.isEnabled() for l in page._mica_value_labels.values())
-        assert page._mica_value_labels["blur_radius"].styleSheet() == normal_color
+        assert page._bg_image_row.isVisibleTo(page) is False
         safe_teardown(page)

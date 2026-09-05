@@ -44,6 +44,21 @@ from tests.support.coverage_manifest import (
 
 pytestmark = pytest.mark.integration
 
+
+@pytest.fixture(autouse=True)
+def _neutralize_fd_capture(monkeypatch: pytest.MonkeyPatch) -> None:
+    """中和 fd_capture，阻止 pytest 进程的 fd 1/2 被劫持。
+
+    ``freeassetfilter.app.main`` 顶层会调用 ``install_fd_capture`` 接管
+    fd 1/2 并启动 daemon 转发线程；必须在首次导入前用完整虚线字符串靶
+    中和，否则真实 ``data/logs`` 被测试输出污染且线程泄漏。``sys.modules``
+    缓存保证只有首次导入执行模块顶层代码，故 fixture 必须默认 function
+    作用域、随每个测试提前生效。
+    """
+    monkeypatch.setattr("freeassetfilter.utils.fd_capture.install_fd_capture", lambda *a, **k: {})
+    monkeypatch.setattr("freeassetfilter.utils.fd_capture.uninstall_fd_capture", lambda: None)
+
+
 # ---------------------------------------------------------------------------
 # 环境对齐：与 ui/main_window.py:22-30 一致，把 freeassetfilter/ui 加入 sys.path
 # ---------------------------------------------------------------------------

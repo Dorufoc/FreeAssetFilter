@@ -35,6 +35,7 @@ if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
 from freeassetfilter.ui.main_window import (  # noqa: E402
+    FIXED_MICA_PARAMS,
     MainWindow,
     MicaBackgroundWidgetCpu,
     MicaBackgroundWidgetGL,
@@ -355,6 +356,82 @@ class TestBackgroundMode:
         window2.showEvent(QShowEvent())
         assert window2._mica_refresh_started is True
         window2.deleteLater()
+        qapp.processEvents()
+
+
+class TestFixedMicaParams:
+    """米卡参数按主题固定：常量值 / 主题取值 / 启动加载 / 构造消费。
+
+    米卡滑动条与原生 DWM 云母开关已移除，参数为产品定值：
+    亮色 8×/1×/200px/100%，深色 2×/1×/200px/80%。
+    """
+
+    def test_fixed_params_constant_values(self) -> None:
+        """FIXED_MICA_PARAMS 两组定值与产品规格一致。"""
+        assert FIXED_MICA_PARAMS["light"] == {
+            "blur_radius": 200, "saturation": 8.0,
+            "contrast": 1.0, "tint_opacity": 100,
+        }
+        assert FIXED_MICA_PARAMS["dark"] == {
+            "blur_radius": 200, "saturation": 2.0,
+            "contrast": 1.0, "tint_opacity": 80,
+        }
+
+    def test_fixed_params_follow_theme(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """fixed_mica_params 按当前主题返回对应定值（返回副本）。"""
+        import freeassetfilter.ui.main_window as mw_mod
+
+        monkeypatch.setattr(mw_mod.tm, "is_dark_theme", lambda: False)
+        assert mw_mod.fixed_mica_params() == FIXED_MICA_PARAMS["light"]
+        monkeypatch.setattr(mw_mod.tm, "is_dark_theme", lambda: True)
+        dark = mw_mod.fixed_mica_params()
+        assert dark == FIXED_MICA_PARAMS["dark"]
+        # 返回副本：修改结果不影响常量
+        dark["saturation"] = 0.0
+        assert FIXED_MICA_PARAMS["dark"]["saturation"] == 2.0
+
+    def test_load_mica_settings_returns_fixed_values(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """_load_mica_settings 返回主题定值，不再读取设置文件。"""
+        import freeassetfilter.ui.main_window as mw_mod
+
+        def _boom(*_a: Any, **_k: Any) -> None:
+            raise AssertionError("参数固定后不得读取 SettingsManagerV2")
+
+        monkeypatch.setattr(
+            "freeassetfilter.core.managers.settings_manager_v2."
+            "SettingsManagerV2.load",
+            _boom,
+        )
+        monkeypatch.setattr(mw_mod.tm, "is_dark_theme", lambda: True)
+        assert MainWindow._load_mica_settings() == FIXED_MICA_PARAMS["dark"]
+        monkeypatch.setattr(mw_mod.tm, "is_dark_theme", lambda: False)
+        assert MainWindow._load_mica_settings() == FIXED_MICA_PARAMS["light"]
+
+    def test_main_window_consumes_fixed_params(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """MainWindow 构造消费主题定值（参数字段与固定值一致）。
+
+        本文件的 autouse 夹具把 ``_mica_background`` 替换为
+        ``_StubMicaBackground``（无 ``_mica`` 属性），因此只断言
+        MainWindow 侧消费结果，不触达真实 MicaMaterial。
+        """
+        import freeassetfilter.ui.main_window as mw_mod
+
+        monkeypatch.setattr(
+            MainWindow, "_load_background_settings",
+            staticmethod(lambda: {"mode": "mica", "image": ""}),
+        )
+        monkeypatch.setattr(mw_mod.tm, "is_dark_theme", lambda: True)
+        window = MainWindow()
+        expected = FIXED_MICA_PARAMS["dark"]
+        assert window._blur_radius == expected["blur_radius"]
+        assert window._saturation == expected["saturation"]
+        assert window._contrast == expected["contrast"]
+        assert window._tint_opacity == expected["tint_opacity"]
+        window.deleteLater()
         qapp.processEvents()
 
 

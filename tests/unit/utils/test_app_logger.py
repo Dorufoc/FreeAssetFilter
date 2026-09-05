@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import re
 import sys
+import threading
 
 import pytest
 from unittest.mock import MagicMock, patch
@@ -537,6 +538,150 @@ class TestTeeStream:
         finally:
             tee.close()
 
+    def test_dedup_exempts_traceback_frames(self, tmp_path) -> None:
+        """相同 Traceback 帧连续 3 行不被折叠、无【x3】。"""
+        log_path = str(tmp_path / "tee.log")
+        tee = TeeStream(MagicMock(), log_path, dedup_enabled=True)
+        try:
+            frame = '  File "x.py", line 1, in <module>\n'
+            tee.write(frame)
+            tee.write(frame)
+            tee.write(frame)
+            tee.close()
+            with open(log_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            assert content.count('File "x.py"') == 3
+            assert "【x" not in content
+        finally:
+            tee.close()
+
+    def test_dedup_exempts_traceback_header_and_exception(self, tmp_path) -> None:
+        """Traceback 头与异常类型行不被折叠。"""
+        log_path = str(tmp_path / "tee.log")
+        tee = TeeStream(MagicMock(), log_path, dedup_enabled=True)
+        try:
+            tee.write("Traceback (most recent call last):\n")
+            tee.write("Traceback (most recent call last):\n")
+            tee.write("ValueError: bad value\n")
+            tee.write("ValueError: bad value\n")
+            tee.close()
+            with open(log_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            assert content.count("Traceback (most recent call last)") == 2
+            assert content.count("ValueError: bad value") == 2
+            assert "【x" not in content
+        finally:
+            tee.close()
+
+    def test_dedup_exempts_warning_keyword_line(self, tmp_path) -> None:
+        """整词关键词行 Warning: x 不被折叠。"""
+        log_path = str(tmp_path / "tee.log")
+        tee = TeeStream(MagicMock(), log_path, dedup_enabled=True)
+        try:
+            tee.write("Warning: x\n")
+            tee.write("Warning: x\n")
+            tee.write("Warning: x\n")
+            tee.close()
+            with open(log_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            assert content.count("Warning: x") == 3
+            assert "【x" not in content
+        finally:
+            tee.close()
+
+    def test_dedup_still_folds_mupdf_noise(self, tmp_path) -> None:
+        """MuPDF error 行首非关键词，重复行仍被折叠。"""
+        log_path = str(tmp_path / "tee.log")
+        tee = TeeStream(MagicMock(), log_path, dedup_enabled=True)
+        try:
+            tee.write("MuPDF error: x\n")
+            tee.write("MuPDF error: x\n")
+            tee.write("MuPDF error: x\n")
+            tee.write("done\n")
+            tee.close()
+            with open(log_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            assert "MuPDF error: x 【x3】" in content
+            assert content.count("MuPDF error: x") == 1
+        finally:
+            tee.close()
+
+    def test_log_write_failure_single_bootstrap_fallback(self, tmp_path) -> None:
+        """_log_stream 写失败时恰调用一次 fallback 且 write 不抛异常。"""
+
+        class _RaisingStream:
+            def write(self, s: str) -> int:
+                raise OSError("disk full")
+
+            def flush(self) -> None:
+                pass
+
+        log_path = str(tmp_path / "tee.log")
+        tee = TeeStream(MagicMock(), log_path)
+        tee._log_stream = _RaisingStream()  # type: ignore[assignment]
+        with patch.object(
+            _logger_module, "_write_bootstrap_fallback"
+        ) as mock_fallback:
+            tee.write("hello\n")
+            tee.write("world\n")
+            tee.write("again\n")
+            assert mock_fallback.call_count == 1
+        tee._log_stream = None  # type: ignore[assignment]
+        tee.close()
+
+    def test_init_open_failure_triggers_bootstrap_fallback(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """open 抛 OSError 时 __init__ 触发一次 bootstrap 告警。"""
+        import builtins
+
+        real_open = builtins.open
+        fail_path = str(tmp_path / "fail.log")
+
+        def _fake_open(file, *args, **kwargs):  # type: ignore[no-untyped-def]
+            if str(file) == fail_path:
+                raise OSError("permission denied")
+            return real_open(file, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", _fake_open)
+        with patch.object(
+            _logger_module, "_write_bootstrap_fallback"
+        ) as mock_fallback:
+            tee = TeeStream(MagicMock(), fail_path)
+            try:
+                assert tee._log_stream is None
+                assert mock_fallback.call_count == 1
+            finally:
+                tee.close()
+
+    def test_close_concurrent_write_no_state_loss(self, tmp_path) -> None:
+        """close 与并发 write 竞态不丢状态、不抛异常。"""
+        log_path = str(tmp_path / "tee.log")
+        tee = TeeStream(MagicMock(), log_path, dedup_enabled=True)
+        assert isinstance(tee.__dict__.get("_lock"), type(threading.RLock()))
+        errors: list = []
+
+        def _writer() -> None:
+            try:
+                for _ in range(50):
+                    tee.write("concurrent line\n")
+            except Exception as exc:  # pragma: no cover - 失败即用例失败
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_writer) for _ in range(4)]
+        for t in threads:
+            t.start()
+        try:
+            tee.close()
+        except Exception as exc:  # pragma: no cover - 失败即用例失败
+            errors.append(exc)
+        for t in threads:
+            t.join(timeout=15)
+        assert not errors
+        assert tee._last_log_line is None
+        assert tee._dup_count == 0
+        tee.close()
+
 
 class TestComponentSourceFilter:
     """ComponentSourceFilter：为记录附加 source_file。"""
@@ -712,6 +857,46 @@ class TestLogException:
             except ValueError:
                 log_exception(*sys.exc_info())
         assert _logger_module._log_exception_in_progress is False
+
+    def test_chained_exception_includes_full_traceback(self) -> None:
+        """链式异常输出完整堆栈、类型行与分隔行。
+
+        Returns:
+            None。
+        """
+        logger = get_logger()
+        with patch.object(logger.logger, "error") as mock_error:
+            try:
+                try:
+                    raise TypeError("root cause")
+                except TypeError as root:
+                    raise ValueError("wrapper failure") from root
+            except ValueError:
+                log_exception(*sys.exc_info())
+            mock_error.assert_called_once()
+            text = mock_error.call_args[0][0]
+            assert "检测到未捕获的异常" in text
+            assert "Traceback" in text
+            assert 'File "' in text
+            assert "ValueError" in text
+            assert "TypeError" in text
+            assert "ValueError: wrapper failure" in text
+            assert "TypeError: root cause" in text
+            assert "direct cause" in text
+
+    def test_none_traceback_does_not_raise(self) -> None:
+        """traceback 为 None 时不抛异常仍记录类型行。
+
+        Returns:
+            None。
+        """
+        logger = get_logger()
+        with patch.object(logger.logger, "error") as mock_error:
+            log_exception(ValueError, ValueError("x"), None)
+            mock_error.assert_called_once()
+            text = mock_error.call_args[0][0]
+            assert "ValueError" in text
+            assert "检测到未捕获的异常" in text
 
 
 class TestModuleLevelFunctions:

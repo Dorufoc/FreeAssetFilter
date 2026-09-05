@@ -30,7 +30,8 @@ from dataclasses import dataclass, replace
 from typing import Dict, Tuple
 
 # ---------------------------------------------------------------------------
-# 设置项区间与默认值（与 settings_layout.MICA_PARAM_SPECS 同步）
+# 参数区间与默认值（参数现按主题固定于 main_window.FIXED_MICA_PARAMS，
+# 此处区间/默认值仅作为 MicaParams 构造兜底）
 # ---------------------------------------------------------------------------
 
 #: 四项用户可调参数的取值区间。

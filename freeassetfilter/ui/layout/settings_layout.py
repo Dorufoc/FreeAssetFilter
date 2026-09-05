@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import (
     Qt, Signal, QRectF, QPropertyAnimation, QEasingCurve, Property, QPoint,
-    QEvent, QObject, QTimer,
+    QEvent, QObject,
 )
 from PySide6.QtGui import (
     QPainter, QColor, QPaintEvent, QPen, QFont, QHideEvent, QCloseEvent,
@@ -25,7 +25,6 @@ from theme.system_accent import get_system_accent_color
 from components.styled_sidebar import StyledSidebar
 from components.styled_toggle import StyledToggle
 from components.styled_button import StyledButton
-from components.styled_slider import StyledSlider
 from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
 from components.styled_segmented import StyledSegmented
 from components.styled_dialog import create_danger_dialog
@@ -50,31 +49,6 @@ PRESET_ACCENT_COLORS = [
     {"name": "魅力紫", "color": "#9554CF"},
     {"name": "清雅墨", "color": "#5A6C8B"},
 ]
-
-# ── 背景米卡效果可调参数（名称 / 取值区间 / 默认值 / 单位） ────────────
-# 对应 SettingsManagerV2 的 appearance.mica.* 键与主窗口 MicaMaterial 参数。
-MICA_PARAM_SPECS = {
-    "saturation": {
-        "name": "背景色饱和度", "min": 0.0, "max": 8.0,
-        "default": 4.5, "decimals": 1, "unit": "×",
-    },
-    "contrast": {
-        "name": "对比度", "min": 0.0, "max": 3.0,
-        "default": 1.5, "decimals": 1, "unit": "×",
-    },
-    "blur_radius": {
-        "name": "背景模糊度", "min": 0.0, "max": 300.0,
-        "default": 200.0, "decimals": 0, "unit": " px",
-    },
-    "tint_opacity": {
-        "name": "叠加层透明度", "min": 0.0, "max": 100.0,
-        "default": 70.0, "decimals": 0, "unit": "%",
-    },
-}
-
-# 实时预览防抖间隔（ms）：叠加层透明度绘制期生效可即时跟随；
-# 模糊/饱和度/对比度重建较重，防抖后在后台线程应用（不阻塞 UI）。
-MICA_PREVIEW_DEBOUNCE_MS = 200
 
 
 class _FloatingScrollArea(QScrollArea):
@@ -485,36 +459,9 @@ class AppearanceSettingsPage(QWidget):
         color_row.addStretch()  # 右侧弹性空间
         layout.addLayout(color_row)
 
-        # ── 背景米卡效果（滑动条配置项） ──
-        mica_label = QLabel("背景米卡效果")
-        mica_label.setStyleSheet(
-            f"background: transparent; border: none;"
-            f"color: {tm.text.name()}; font-size: 13px; font-weight: 500;"
-        )
-        layout.addWidget(mica_label)
-
-        # 实时预览防抖：拖动中合并高频 value_changed，超时后统一应用
-        self._mica_preview_timer = QTimer(self)
-        self._mica_preview_timer.setSingleShot(True)
-        self._mica_preview_timer.setInterval(MICA_PREVIEW_DEBOUNCE_MS)
-        self._mica_preview_timer.timeout.connect(self._apply_mica_preview)
-
-        self._mica_sliders: dict[str, StyledSlider] = {}
-        self._mica_value_labels: dict[str, QLabel] = {}
-        self._mica_values: dict[str, float] = {}
-
-        saved_mica = v2.get("appearance.mica", {}) or {}
-        mica_rows = QVBoxLayout()
-        mica_rows.setContentsMargins(0, 0, 0, 0)
-        mica_rows.setSpacing(16)
-        for key, spec in MICA_PARAM_SPECS.items():
-            initial = float(saved_mica.get(key, spec["default"]))
-            # 越界值（旧配置/手改 JSON）钳制回取值区间
-            initial = max(spec["min"], min(spec["max"], initial))
-            mica_rows.addWidget(self._build_mica_slider_row(key, spec, initial))
-        layout.addLayout(mica_rows)
-
         # ── 窗口背景（米卡效果 / 自定义图片） ──
+        # 米卡效果参数为按主题固定的产品定值（见 main_window.FIXED_MICA_PARAMS），
+        # 设置页不再提供滑动条配置。
         saved_bg = v2.get("appearance.background", {}) or {}
         saved_bg_mode = saved_bg.get("mode", "mica")
         self._bg_mode = saved_bg_mode if saved_bg_mode in ("mica", "image") else "mica"
@@ -564,122 +511,12 @@ class AppearanceSettingsPage(QWidget):
         bg_row_layout.addWidget(self._bg_choose_btn)
         layout.addWidget(self._bg_image_row)
 
-        # 初始按模式设置图片行可见性与米卡滑动条可用性（不触发应用逻辑）
+        # 初始按模式设置图片行可见性（不触发应用逻辑）
         self._update_bg_ui_state()
-
-        # ── 实验性：原生 DWM 云母（Windows 11） ──
-        # 开启后向 DWM 申请系统级云母背景（DWMWA_SYSTEMBACKDROP_TYPE），自研
-        # 渲染层停用 —— 合成完全交给 DWM，主线程零自研渲染开销；非 Win11 /
-        # dwmapi 调用失败时自动保持自研层（开关回弹由 apply 返回值驱动）。
-        native_row = QFrame()
-        native_row.setStyleSheet("background: transparent; border: none;")
-        native_layout = QHBoxLayout(native_row)
-        native_layout.setContentsMargins(0, 0, 0, 0)
-        native_layout.setSpacing(12)
-
-        native_label = QLabel("实验性：原生 DWM 云母（Windows 11）")
-        native_label.setStyleSheet(
-            f"background: transparent; border: none;"
-            f"color: {tm.text.name()}; font-size: 13px; font-weight: 500;"
-        )
-        native_layout.addWidget(native_label)
-        native_layout.addStretch()
-
-        saved_native = False
-        try:
-            saved_native = bool(v2.get("appearance.mica_native_dwm", False))
-        except Exception:
-            pass
-        self._native_mica_toggle = StyledToggle(checked=saved_native, size="default")
-        self._native_mica_toggle.toggled.connect(self._on_native_mica_toggle)
-        native_layout.addWidget(self._native_mica_toggle)
-
-        layout.addWidget(native_row)
 
         layout.addStretch()
 
-    # ── 背景米卡效果：滑动条构建与交互 ─────────────────────────────────
-
-    def _build_mica_slider_row(
-        self, key: str, spec: dict, initial: float,
-    ) -> QFrame:
-        """创建单个米卡参数行：参数名 + 当前值显示 + 滑动条。"""
-        row = QFrame()
-        row.setStyleSheet("background: transparent; border: none;")
-        row_layout = QVBoxLayout(row)
-        row_layout.setContentsMargins(0, 0, 0, 0)
-        row_layout.setSpacing(6)
-
-        # 头部：参数名（左） + 当前值（右，含单位）
-        header = QHBoxLayout()
-        header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(8)
-
-        name_label = QLabel(spec["name"])
-        name_label.setStyleSheet(
-            f"background: transparent; border: none;"
-            f"color: {tm.text.name()}; font-size: 13px; font-weight: 500;"
-        )
-        header.addWidget(name_label)
-        header.addStretch()
-
-        value_label = QLabel(self._format_mica_value(key, initial))
-        value_label.setStyleSheet(
-            f"background: transparent; border: none;"
-            f"color: {tm.text.name()}; font-size: 13px; font-weight: 500;"
-        )
-        value_label.setMinimumWidth(56)
-        value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        header.addWidget(value_label)
-        row_layout.addLayout(header)
-
-        # 滑动条（StyledSlider 为 0.0-1.0 归一化值，映射到参数实际区间）
-        slider = StyledSlider(value=self._to_norm(key, initial), size="sm")
-        slider.value_changed.connect(
-            lambda value, k=key: self._on_mica_slider_changed(k, value)
-        )
-        slider.released.connect(
-            lambda k=key: self._on_mica_slider_released(k)
-        )
-        row_layout.addWidget(slider)
-
-        self._mica_sliders[key] = slider
-        self._mica_value_labels[key] = value_label
-        self._mica_values[key] = initial
-        return row
-
-    def _to_norm(self, key: str, value: float) -> float:
-        """参数实际值 → 滑动条归一化值（0.0-1.0）。"""
-        spec = MICA_PARAM_SPECS[key]
-        span = spec["max"] - spec["min"]
-        if span <= 0:
-            return 0.0
-        return max(0.0, min(1.0, (value - spec["min"]) / span))
-
-    def _from_norm(self, key: str, norm: float) -> float:
-        """滑动条归一化值 → 参数实际值（按精度取整）。"""
-        spec = MICA_PARAM_SPECS[key]
-        value = spec["min"] + (spec["max"] - spec["min"]) * max(0.0, min(1.0, norm))
-        return round(value, spec["decimals"])
-
-    def _format_mica_value(self, key: str, value: float) -> str:
-        """格式化当前值显示（含单位，如 4.5× / 200 px / 70%）。"""
-        spec = MICA_PARAM_SPECS[key]
-        return f"{value:.{spec['decimals']}f}{spec['unit']}"
-
-    def _on_mica_slider_changed(self, key: str, norm: float) -> None:
-        """拖动中：更新当前值显示，并防抖触发实时预览。"""
-        self._mica_values[key] = self._from_norm(key, norm)
-        self._mica_value_labels[key].setText(
-            self._format_mica_value(key, self._mica_values[key])
-        )
-        self._mica_preview_timer.start()
-
-    def _on_mica_slider_released(self, key: str) -> None:
-        """释放滑动条：立即应用最终值并持久化到 V2。"""
-        self._mica_preview_timer.stop()
-        self._apply_mica_preview()
-        self._save_mica_settings()
+    # ── 窗口背景：模式切换与图片导入 ─────────────────────────────────
 
     def _find_main_window(self) -> QWidget | None:
         """定位主窗口（按 _mica_background 属性鸭子类型判定，避免循环导入）。
@@ -695,59 +532,6 @@ class AppearanceSettingsPage(QWidget):
             if getattr(w, "_mica_background", None) is not None:
                 return w
         return None
-
-    def _apply_mica_preview(self) -> None:
-        """将当前滑动条值实时应用到主窗口的 Mica 背景（实时预览）。"""
-        mw = self._find_main_window()
-        if mw is None:
-            return
-        mica_bg = mw._mica_background
-        if mica_bg is None or not hasattr(mica_bg, "apply_mica_parameters"):
-            return
-        mica_bg.apply_mica_parameters(
-            blur_radius=int(round(self._mica_values["blur_radius"])),
-            saturation=float(self._mica_values["saturation"]),
-            contrast=float(self._mica_values["contrast"]),
-            tint_opacity=int(round(self._mica_values["tint_opacity"])),
-        )
-
-    def _save_mica_settings(self) -> None:
-        """将米卡效果参数持久化到 SettingsManagerV2（重启后恢复）。"""
-        try:
-            v2 = SettingsManagerV2()
-            v2.load()
-            v2.set("appearance.mica", {
-                "blur_radius": int(round(self._mica_values["blur_radius"])),
-                "saturation": float(self._mica_values["saturation"]),
-                "contrast": float(self._mica_values["contrast"]),
-                "tint_opacity": int(round(self._mica_values["tint_opacity"])),
-            })
-            v2.save()
-        except Exception:
-            pass
-
-    def _on_native_mica_toggle(self, checked: bool) -> None:
-        """实验开关切换：持久化（appearance.mica_native_dwm）并即时应用到主窗口。
-
-        应用走 ``_mica_background.apply_native_mica``（最佳努力）：DWM 调用
-        失败（非 Win11 / dwmapi 缺失）时自研层保持接管，开关状态仅作记录。
-
-        Args:
-            checked: 是否启用原生 DWM 云母。
-        """
-        try:
-            v2 = SettingsManagerV2()
-            v2.load()
-            v2.set("appearance.mica_native_dwm", bool(checked))
-            v2.save()
-        except Exception:
-            pass
-        mw = self._find_main_window()
-        if mw is None:
-            return
-        mica_bg = getattr(mw, "_mica_background", None)
-        if mica_bg is not None and hasattr(mica_bg, "apply_native_mica"):
-            mica_bg.apply_native_mica(checked)
 
     # ── 窗口背景：模式切换与图片导入 ─────────────────────────────────
 
@@ -862,21 +646,9 @@ class AppearanceSettingsPage(QWidget):
             pass
 
     def _update_bg_ui_state(self) -> None:
-        """按当前背景模式刷新图片行可见性与米卡控件可用性。"""
+        """按当前背景模式刷新图片行可见性。"""
         is_image = (self._bg_mode == "image")
         self._bg_image_row.setVisible(is_image)
-        for slider in self._mica_sliders.values():
-            slider.setEnabled(not is_image)
-        # 数值标签带 QSS 颜色，需同步切换置灰色（禁用态不会自动变灰）
-        value_color = (
-            tm.alpha_of(tm.mid, 130).name() if is_image else tm.text.name()
-        )
-        for label in self._mica_value_labels.values():
-            label.setEnabled(not is_image)
-            label.setStyleSheet(
-                f"background: transparent; border: none;"
-                f"color: {value_color}; font-size: 13px; font-weight: 500;"
-            )
         self._bg_file_label.setText(
             self._bg_image_name if self._bg_image_name else "未设置"
         )
