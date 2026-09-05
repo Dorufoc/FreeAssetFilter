@@ -93,6 +93,12 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QApplication, QWidget
 
 from . import winapi
+from .compositor import (
+    PRESENT_DEFER,
+    PRESENT_NOW,
+    PRESENT_SKIP,
+    ViewportCompositor,
+)
 from .config import (
     BAKE_LONG_MAX,
     BAKE_MAX_RETRIES,
@@ -120,12 +126,20 @@ from .source import WallpaperProvider
 
 _LOG = logging.getLogger(__name__)
 
-#: 静态场渲染到显示分辨率时的长边上限（像素）。足够高以在 2K 屏上
-#: 获得 1px 颗粒的抖动（色带被彻底打散），又给 4K 屏等极端尺寸封了内存顶。
-DISPLAY_LONG_CAP: int = 2048
+#: 静态场（无层兜底路径）渲染到显示分辨率时的长边上限（像素）。与视口层
+#: 同理，必须以 1:1 窗口分辨率渲染：抖动图案锚定屏幕坐标、被 1:1 blit 原样
+#: 保留，双线性重采样才不会把抖动抹平、在渐变区重现色彩断层（banding）。8192
+#: 覆盖至单 4K / 单 5K / 双 4K 窗口的严格 1:1；静态场仅在层未就绪的启动 / 降级
+#: 期出现，渲染一次的成本可被接受。
+DISPLAY_LONG_CAP: int = 8192
 
 #: 混合预合成使用的默认纯色底（黑）。绘制端不再二次混合，见 render_display。
 _DEFAULT_SURFACE_RGB: Tuple[int, int, int] = (0, 0, 0)
+
+#: 原生 DWM 云母模式下铺在客户区的纯黑（扩展帧约定：被涂黑的区域由 DWM 以
+#: 系统背景即原生云母代替呈现）。与主题无关恒为纯黑 —— 深浅色观感由
+#: ``DWMWA_USE_IMMERSIVE_DARK_MODE`` 控制，见 :func:`ui.mica.winapi.dwm_use_dark_mode`。
+_NATIVE_BACKDROP_COLOR = QColor(0, 0, 0)
 
 # ---------------------------------------------------------------------------
 # 拖动期快速路径
@@ -285,7 +299,7 @@ def _is_dark_color(color: QColor) -> bool:
 
 
 class _BakeWorker(QObject):
-    """后台层烘焙任务：在独立线程里烘一块覆盖当前监视器的"视口层"。
+    """后台层烘焙任务：在独立线程里烘一块覆盖整块虚拟桌面的"视口层"。
 
     只消费 numpy / COM（无 Qt 控件访问），结果以信号把
     ``(display_image, layer_info, layer_key, gen)`` 回传主线程：
@@ -293,8 +307,10 @@ class _BakeWorker(QObject):
     主线程只做 QImage→QPixmap 转换。``layer_info`` 为
     :class:`~ui.mica.drag.ViewportLayer`（region / width / height / win_size）。
 
-    层覆盖整块监视器，因此窗口在监视器内平移**不**触发重烘焙 —— 逐帧只需从层里
-    按窗口位置取子矩形（见后续绘制细化任务）。本 worker 负责把层烘焙到位。
+    层覆盖整块虚拟桌面（所有监视器拼接），因此窗口在桌面内任意平移**不**触发
+    重烘焙 —— 逐帧只需从层里按窗口位置取子矩形（见 :meth:`MicaMaterial.paint`）。
+    本 worker 负责把层烘焙到位（1:1 屏幕分辨率，抖动锚定绝对屏幕坐标，杜绝渐变
+    区色彩断层）。
     """
 
     #: 参数为 ``(display_image, layer_info, layer_key, gen)``。
@@ -307,7 +323,7 @@ class _BakeWorker(QObject):
         window_rect: Tuple[int, int, int, int],
         params,  # MicaParams（不可变 dataclass，跨线程只读安全）
         dark: bool,
-        monitor_rect: Tuple[int, int, int, int],
+        screen_rect: Tuple[int, int, int, int],
         layer_display_long: int,
         overlay: float,
         surface_rgb: Tuple[int, int, int],
@@ -319,7 +335,7 @@ class _BakeWorker(QObject):
         self._window_rect = window_rect
         self._params = params
         self._dark = dark
-        self._monitor_rect = monitor_rect
+        self._screen_rect = screen_rect
         self._layer_display_long = layer_display_long
         self._overlay = overlay
         self._surface_rgb = surface_rgb
@@ -329,19 +345,20 @@ class _BakeWorker(QObject):
     def run(self) -> None:
         """执行一次层烘焙并渲染到显示分辨率；异常按失败上报，绝不抛出到线程之外。
 
-        步骤：由窗口矩形 + 监视器矩形算层区域 → 由监视器 + 窗口尺寸 + σ 算层网格
+        步骤：以整块虚拟桌面矩形为层区域 → 由虚拟矩形 + 窗口尺寸 + σ 算层网格
         （含 σ 守恒校正）→ 以层区域为 ``window_rect`` 烘焙（显式 ``grid_size``）
-        → 渲染到显示分辨率（long = 层区域长边 ≤ ``LAYER_DISPLAY_LONG_MAX``）。
+        → 渲染到显示分辨率（long = 层区域长边 ≤ ``LAYER_DISPLAY_LONG_MAX``，
+        常见配置下 == 层区域长边 ⇒ 1:1 屏幕分辨率，抖动不被重采样抹平）。
         """
         try:
             source = self._provider.acquire()
             if source.pixels.size == 0:
                 self.failed.emit()
                 return
-            region = layer_region_for(self._window_rect, self._monitor_rect)
+            region = layer_region_for(self._window_rect, self._screen_rect)
             sigma = self._params.to_engine(self._dark).sigma
             grid, sigma_eff = layer_grid(
-                self._monitor_rect, self._window_rect[2], self._window_rect[3], sigma
+                self._screen_rect, self._window_rect[2], self._window_rect[3], sigma
             )
             # 网格被钳制时，σ 按密度比例回缩，保持物理模糊半径不变。
             bake_params = _params_with_sigma(self._params, self._dark, sigma_eff)
@@ -353,7 +370,11 @@ class _BakeWorker(QObject):
                 self.failed.emit()
                 return
             display = render_display(
-                field, self._layer_display_long, self._overlay, self._surface_rgb
+                field,
+                self._layer_display_long,
+                self._overlay,
+                self._surface_rgb,
+                origin=(int(region[0]), int(region[1])),
             )
             layer_info = ViewportLayer(
                 region=region,
@@ -483,17 +504,27 @@ class MicaMaterial(QObject):
         # 层烘焙一次覆盖整块监视器；窗口在监视器内平移无需重烘焙，只逐帧取样
         # （绘制期子矩形取样是后续任务，本模块只需把层烘焙到位并保存）。
         self._disposed = False
-        #: 层几何：region（虚拟桌面覆盖范围）、width/height（层实际渲染像素）、win_size。
-        self._layer: Optional[ViewportLayer] = None
-        #: 层在显示分辨率上的 QPixmap（worker 已渲染好，主线程只做转换）。
-        self._layer_pixmap: Optional[QPixmap] = None
-        #: 当前层的有效性判据 ``(params, dark, source_signature, region, layer_display_long)``；
+        #: 自研合成器：整块虚拟桌面层 + 窗口视口取样 + 自适应呈现调度。
+        #: 层的像素与几何全部由它持有（见 :mod:`ui.mica.compositor`）；
+        #: ``_layer`` / ``_layer_pixmap`` 是它的只读视图（property 委托），
+        #: 保持旧字段名的读写契约。
+        self._compositor = ViewportCompositor()
+        #: 实验性「原生 DWM 云母」模式：自研层停用，绘制端只铺纯黑让 DWM 呈现
+        #: 系统背景（见 :meth:`set_native_backdrop`）。
+        self._native_backdrop = False
+        #: 层有效性判据 ``(params, dark, source_signature, region, layer_display_long)``；
         #: 主题 / 参数 / 壁纸 / 监视器任一变化 ⇒ key 变化 ⇒ 重烘焙一层。
-        self._layer_key: Optional[Tuple[object, ...]] = None
+        self._layer_key = None
         #: 层代际单调递增计数器：每次请求新层烘焙时自增；主线程槽据此丢弃过期结果。
-        self._layer_gen: int = 0
+        self._layer_gen = 0
         #: 当前监视器的层显示参考长边（像素），随 refresh_async 更新。
-        self._layer_display_long: int = 0
+        self._layer_display_long = 0
+        #: 交互期被节流推迟的呈现（补一次，保证最终位置一定被刷新）。
+        self._defer_timer = QTimer(self._widget)
+        self._defer_timer.setSingleShot(True)
+        self._defer_timer.timeout.connect(self._on_defer_present)
+        #: 绘制耗时采样（供合成器自适应节流；只测 blit，不含事件派发）。
+        self._paint_clock = QElapsedTimer()
 
         # 淡入淡出
         self._fade_alpha = 1.0
@@ -528,6 +559,28 @@ class MicaMaterial(QObject):
             self.refresh()
 
     # ------------------------------------------------------------------
+    # 层状态视图（property 委托到合成器，保持旧字段读写契约）
+    # ------------------------------------------------------------------
+
+    @property
+    def _layer(self) -> Optional[ViewportLayer]:
+        """当前视口层几何（由合成器持有）。"""
+        return self._compositor.layer
+
+    @_layer.setter
+    def _layer(self, value: Optional[ViewportLayer]) -> None:
+        self._compositor.set_geometry(value)
+
+    @property
+    def _layer_pixmap(self) -> Optional[QPixmap]:
+        """当前视口层像素（由合成器持有）。"""
+        return self._compositor.pixmap
+
+    @_layer_pixmap.setter
+    def _layer_pixmap(self, value: Optional[QPixmap]) -> None:
+        self._compositor.set_pixels(value)
+
+    # ------------------------------------------------------------------
     # 公开 API
     # ------------------------------------------------------------------
 
@@ -536,6 +589,9 @@ class MicaMaterial(QObject):
 
         若已有后台烘焙在途则直接返回（由 worker 交付结果），避免重复烘焙。
         """
+        if self._native_backdrop or self._disposed:
+            # 原生 DWM 云母模式下自研层停用：不烘焙、不改状态。
+            return
         if self._worker_thread is not None:
             return
         field = self._bake_sync()
@@ -557,13 +613,15 @@ class MicaMaterial(QObject):
         并提交时自增 ``_layer_gen`` —— worker 结果携带同一 key/gen，主线程槽
         若发现 key/gen 已不匹配（一次更新的请求已提交）则丢弃过期结果。
         """
+        if self._native_backdrop or self._disposed:
+            # 原生 DWM 云母模式下自研层停用：绝不起后台线程（零渲染开销）。
+            return
         if self._worker_thread is not None:
             return
         if self._refresh_retries > BAKE_MAX_RETRIES:
             return
         win = self._window_rect_tuple()
-        monitor = self._monitor_rect_for(win)
-        region = layer_region_for(win, monitor)
+        region = self._virtual_rect()
         layer_display_long = _layer_display_long(region)
         layer_key = self._layer_key_for(region, layer_display_long)
         self._layer_display_long = layer_display_long
@@ -575,7 +633,7 @@ class MicaMaterial(QObject):
             win,
             self._params,
             self._dark,
-            monitor,
+            region,
             layer_display_long,
             self._overlay_opacity,
             self._surface_rgb(),
@@ -619,39 +677,30 @@ class MicaMaterial(QObject):
             painter = QPainter(widget)
 
         rect = widget.rect()
+        if self._native_backdrop:
+            # 原生 DWM 云母：客户区铺纯黑（扩展帧约定 —— 帧扩展区域内被涂成
+            # 纯黑的部分由 DWM 以系统背景即原生云母代替呈现）。自研渲染全免。
+            painter.fillRect(rect, _NATIVE_BACKDROP_COLOR)
+            return
         if self._paused:
             painter.fillRect(rect, self._surface_color)
             return
 
-        # 实色兜底层 + 线性淡入：透明度 = 淡入，实现 surface→Mica 过渡
-        # （混合已在 worker 端预合成进 pixmap，绘制端只承担淡入淡出）。
-        painter.fillRect(rect, self._surface_color)
-
-        if self._hide_until_new_layer:
-            # 跨监视器松手后等待新层：只画纯色底（不显示旧监视器钳制伪色），
-            # 新层到达后由 _on_bake_done 淡入揭示。
-            return
-        if self._settle_fade_active():
-            # 拖动快速路径的松手重同步：旧裁剪（拖动期间所见）→ 新裁剪淡化。
-            self._draw_settle_fade(painter, rect)
-            return
+        # 整块虚拟桌面层覆盖全局、与窗口尺寸无关：背景在交互期已由实时 blit
+        # 严格跟随光标，这里始终直接绘制层子矩形（无跨屏等待 / 无松手淡化）。
         self._draw_layer(painter, rect)
 
     def paint_gpu(self, painter: QPainter) -> None:
         """在 GPU 画笔画笔（``QOpenGLWidget``）上绘制 Mica 背景。
 
-        与 :meth:`paint` 策略一致（含拖动快速路径的隐藏 / settle 淡化分支），
-        只是画笔来自 ``paintGL``。
+        与 :meth:`paint` 策略一致（整块虚拟桌面层路径），只是画笔来自 ``paintGL``。
         """
         rect = self._widget.rect()
+        if self._native_backdrop:
+            painter.fillRect(rect, _NATIVE_BACKDROP_COLOR)
+            return
         if self._paused:
             painter.fillRect(rect, self._surface_color)
-            return
-        painter.fillRect(rect, self._surface_color)
-        if self._hide_until_new_layer:
-            return
-        if self._settle_fade_active():
-            self._draw_settle_fade(painter, rect)
             return
         self._draw_layer(painter, rect)
 
@@ -693,19 +742,35 @@ class MicaMaterial(QObject):
 
         绘制结果**全不透明**（混合已在 worker 端预合成进 pixmap，见
         :func:`ui.mica.engine.render_display`），避免第二次 8-bit 量化
-        （banding 根因）。绘制成功后记录 :attr:`_last_painted_win` —— 它代表
-        “屏幕上可见背景的采样位置”，拖动快速路径松手时据此做 settle 淡化。
+        （banding 根因）。成功后记录 :attr:`_last_painted_win` —— 它代表
+        "屏幕上可见背景的采样位置"，拖动快速路径松手时据此做 settle 淡化。
+
+        性能要点：
+
+        * **条件化实色底**：层取样可铺满且完全不透明（``fade_alpha>=0.999``）
+          时跳过整窗 ``fillRect``（稳态省一次全窗内存写，绘制帧成本近乎减半）；
+          仅淡入期 / 静态场兜底 / 无任何产物时才先铺（或只铺）实色底。
+        * **呈现记账**：本次 blit 的实测耗时喂给合成器的成本 EMA（自适应呈现
+          间隔的输入），呈现锚点同步更新（后续 ``advise`` 的跳过 / 节流依据）。
 
         CPU（:meth:`paint`）与 GPU（:meth:`paint_gpu`）共用本方法。
 
         Args:
-            painter: 画笔（已叠好实色底）。
+            painter: 画笔。
             rect: 目标矩形（= 控件 rect）。
         """
         pixmap, src, smooth = self._layer_blit()
         if pixmap is None or pixmap.isNull():
+            # 无任何产物（层与静态场均缺失）：只画实色兜底层。
+            painter.fillRect(rect, self._surface_color)
             return
 
+        # 不透明且层取样可用 ⇒ 绘制必然铺满 ⇒ 省掉整窗实色填充；
+        # 淡入期 / 静态场兜底需要底色参与 surface→Mica 过渡（先铺后绘）。
+        if src is None or self._fade_alpha < 0.999:
+            painter.fillRect(rect, self._surface_color)
+
+        self._paint_clock.start()
         painter.setRenderHint(QPainter.SmoothPixmapTransform, smooth)
         painter.setOpacity(self._fade_alpha)
         if src is None:
@@ -718,9 +783,15 @@ class MicaMaterial(QObject):
             # 整型源子矩形：真 1:1 blit（无重采样）。
             painter.drawPixmap(QRect(rect), pixmap, QRect(*src))
         painter.setOpacity(1.0)
+        cost_ms = max(0.0, self._paint_clock.nsecsElapsed() / 1e6)
 
         if self._layer is not None:
-            self._last_painted_win = self._window_rect_tuple()
+            win = self._window_rect_tuple()
+            self._last_painted_win = win
+            if src is not None and self._compositor.ready:
+                # 记录一次真实呈现：锚点（后续 advise 的 SKIP/DEFER 判据）+
+                # 绘制成本 EMA（自适应目标间隔，见 ViewportCompositor.interval_ms）。
+                self._compositor.note_presented(win, cost_ms)
 
     def _settle_fade_active(self) -> bool:
         """settle 淡化是否在途（旧裁剪 → 新裁剪）。"""
@@ -830,73 +901,104 @@ class MicaMaterial(QObject):
     def begin_interaction(self) -> None:
         """标记窗口拖拽 / 缩放开始或持续。
 
-        拖动期快速路径（默认）
-        ---------------------
-        系统 move 期间 DWM 只平移窗口位图，客户区无需任何重绘 —— 本窗口内的
-        一切自绘（含本层整窗重绘 + 逐事件 COM 探测）都会打破这一免费机制，且
-        成本随窗口面积增长（窗口越大越卡，见模块头）。因此在**层已就绪且窗口
-        尺寸未变**（纯移动）时：只重启 settle 计时器，**不重绘、不探测、不重烘**
-        （O(1)/事件，帧成本与窗口大小无关，≈ DWM 原生手感）。拖动中窗口内容
-        （含背景）整体由 DWM 平移 —— 背景短暂“贴窗”，松手后由
-        :meth:`_on_settle` 单次重绘 + settle 交叉淡化重同步到正确壁纸裁剪。
+        整块虚拟桌面层 + 实时 blit 快速路径
+        ---------------------------------
+        视口层覆盖整块虚拟桌面、与窗口尺寸无关，因此拖动（含跨监视器）与缩放
+        期间**无需任何重烘焙 / COM 探测**。每个 move / resize 事件只需做 O(1)
+        的 ``widget.update()`` —— 由 Qt 在随后的 ``paintEvent`` 里合成一次子矩形
+        blit（GPU 纹理拷贝，成本与窗口面积、帧率都无关）：窗口作为"窗户"从已
+        烘焙好的层里按当前屏幕位置取子矩形绘制，背景严格跟随光标，不再"贴窗"、
+        不再有松手跳变。这正是抹掉色彩断层的前提——层以 1:1 屏幕分辨率渲染，
+        抖动图案锚定绝对屏幕坐标，blit 时原样保留。
 
-        例外（保持可见正确性，仅低频发生）：
-
-        * 窗口中心首次离开当前层区域（跨监视器 / 越界）→ 该事件做一次
-          :meth:`_maybe_rebake`（在途守卫保证不叠加）；
-        * 缩放中 / 层未就绪 / 主题参数变化 → 走旧的重绘路径（缩放时 Qt 本就
-          整窗重排；启动期短暂，烘焙完成即进入快速路径）。
-
-        设 ``FAF_MICA_DRAG_LIVE=1``（见 :data:`DRAG_LIVE_ENV`）可恢复旧的
-        “逐事件重绘 + 探测”行为，用于对照回归。
+        层未就绪（启动首帧 / 降级）时才走旧路径：确保异步烘焙在途并重绘兜底
+        静态场，不阻塞交互。
         """
         self._interacting = True
-        win = self._window_rect_tuple()
-        # 上一次松手的 settle 淡化若仍在途（用户很快再次拖拽）：立即以单次重绘
-        # 收尾到“新裁剪”完整帧（只发生在每次手势的第一个事件，非逐帧开销），
-        # 再进入冻结 —— 避免画面停留在“旧/新裁剪中间态”被拖走。
-        had_fade = self._settle_fade_active()
-        self._stop_settle_fade()
-        if not self._drag_live and self._layer_is_drag_ready(win):
-            # 快速路径：纯移动，层就绪 —— 零重绘 / 零重烘。
-            if had_fade:
-                self._widget.update()
-            self._settle_timer.start()
-            if (
-                self._worker_thread is None
-                and self._window_left_layer_region(win, self._layer)
-                and self._refresh_retries <= BAKE_MAX_RETRIES
-            ):
-                # 跨监视器：仅在越出当前层区域、且没有在途烘焙时触发一次重烘焙
-                # （在途任务完成即会更新层区域，无需重复探测 / 提交）；连续失败
-                # 放弃后（_refresh_retries 超限）不再尝试，保持 O(1)。
-                self._maybe_rebake(force=True)
+        if self._native_backdrop:
+            # 原生 DWM 云母：窗口移动/缩放由 DWM 自行重绘系统背景，
+            # 客户区零参与（O(1)/事件，零自研渲染开销）。
             return
+        win = self._window_rect_tuple()
+        if self._layer_is_drag_ready(win):
+            # 快速路径：纯移动 / 缩放 → 呈现调度（O(1)/事件），
+            # 零重烘焙、零探测、零运动态判断。
+            self._stop_settle_fade()
+            decision = self._compositor.advise(win)
+            if decision == PRESENT_NOW:
+                # 首帧 / 位置跳变（最大化、吸附、还原、跨屏瞬移）/ 节流窗口已过
+                # → 立即呈现，零延迟刷新。
+                self._defer_timer.stop()
+                self._widget.update()
+            elif decision == PRESENT_DEFER:
+                # 节流窗口内：安排一次补绘，保证最终位置必然被刷新
+                # （绘制便宜时 interval=16ms ≈ 逐帧，无感知延迟）。
+                self._defer_timer.start(self._compositor.defer_delay_ms())
+            # PRESENT_SKIP：取样结果与上次呈现一致（亚像素抖动 / 原地微动）
+            # → 零重绘，连带成本为零。
+            return
+        # 层未就绪：确保异步烘焙在途，并立即重绘兜底静态场（不阻塞交互）。
+        self._maybe_rebake(force=False)
+        self._widget.update()
 
-        # 旧路径：resize / 层未就绪 / LIVE 开关 —— 逐事件重绘，重烘判断照旧。
-        monitor = self._monitor_rect_for(win)
-        region = layer_region_for(win, monitor)
-        layer_display_long = _layer_display_long(region)
-        if self._needs_layer_rebake(win, monitor, region, layer_display_long):
+    def _on_defer_present(self) -> None:
+        """补上被节流推迟的一次呈现（保证被 DEFER 掉的最终位置必然被刷新）。"""
+        if self._disposed or self._paused or self._native_backdrop:
+            return
+        self._widget.update()
+
+    def set_native_backdrop(self, enabled: bool) -> None:
+        """切换「原生 DWM 云母」模式（实验性开关的材质层一侧）。
+
+        开启：自研合成器停用（清空层、停掉全部烘焙 / 节流计时器），绘制端只在
+        客户区铺纯黑 —— 配合 ``DwmExtendFrameIntoClientArea(margins=-1)`` 的
+        扩展帧约定，被涂黑的客户区由 DWM 以系统背景（原生云母）代替呈现，
+        主线程自研渲染开销降为零。深浅色观感由 ``DWMWA_USE_IMMERSIVE_DARK_MODE``
+        对齐（见 :func:`ui.mica.winapi.dwm_use_dark_mode`）。
+
+        关闭：恢复自研层 —— 立即强制重烘焙一块视口层并重绘。
+
+        Args:
+            enabled: 是否启用原生 DWM 云母。
+        """
+        enabled = bool(enabled)
+        if enabled == self._native_backdrop:
+            return
+        self._native_backdrop = enabled
+        if enabled:
+            self._compositor.clear()
+            self._pixmap = None
+            self._paused = True
+            self._stop_fade()
+            self._settle_timer.stop()
+            self._defer_timer.stop()
+            self._opacity_timer.stop()
+            self._stop_settle_fade()
+        else:
+            self._paused = False
+            self._fade_alpha = 1.0
+            self._fade_to = 1.0
+            self._last_req = None
             self._maybe_rebake(force=True)
-        self._settle_timer.start()
         self._widget.update()
 
     def _layer_is_drag_ready(self, win: Tuple[int, int, int, int]) -> bool:
-        """拖动期快速路径是否可用：层就绪且窗口尺寸与层烘焙时一致（纯移动）。
+        """拖动期快速路径是否可用：视口层已就绪（覆盖整块虚拟桌面）。
+
+        整块虚拟桌面层与窗口尺寸无关，因此只需判断层与层 pixmap 是否已就绪，
+        不再校验窗口尺寸（resize 也走同一路径，绝不退化为重烘焙 / 逐事件重绘）。
 
         Args:
-            win: ``(x, y, w, h)`` 当前窗口矩形。
+            win: ``(x, y, w, h)`` 当前窗口矩形（仅接口兼容）。
 
         Returns:
-            可走快速路径则 ``True``。
+            层就绪则可走快速路径 ``True``。
         """
-        layer = self._layer
-        if layer is None:
+        if self._layer is None:
             return False
         if self._layer_pixmap is None or self._layer_pixmap.isNull():
             return False
-        return (int(win[2]), int(win[3])) == layer.win_size
+        return True
 
     def _window_left_layer_region(
         self, win: Tuple[int, int, int, int], layer: ViewportLayer
@@ -966,6 +1068,7 @@ class MicaMaterial(QObject):
     def dispose(self) -> None:
         """释放资源：阻止重试、移除焦点过滤器、回收在途线程。窗口关闭时调用。"""
         self._disposed = True
+        self._compositor.clear()
         self._layer = None
         self._layer_pixmap = None
         self._pixmap = None
@@ -988,6 +1091,7 @@ class MicaMaterial(QObject):
         self._deactivate_timer.stop()
         self._watchdog.stop()
         self._opacity_timer.stop()
+        self._defer_timer.stop()
         if self._worker_thread is not None:
             thread = self._worker_thread
             worker = self._worker
@@ -1112,6 +1216,22 @@ class MicaMaterial(QObject):
         top_left = widget.mapToGlobal(widget.rect().topLeft())
         return (top_left.x(), top_left.y(), widget.width(), widget.height())
 
+    def _virtual_rect(self) -> Tuple[int, int, int, int]:
+        """当前进程的整块虚拟桌面矩形（所有监视器拼接，物理像素）。
+
+        视口层覆盖此矩形，因此层与窗口尺寸无关 —— 拖动（含跨监视器）期间
+        永不重烘焙，窗口只是"窗户"从已烘焙好的层里按当前屏幕位置取子矩形
+        blit。非 Windows / 探测失败时回退到 1920×1080 的默认虚拟矩形，保证
+        离线测试与无桌面环境下仍能正常烘焙与绘制。
+
+        Returns:
+            ``(x, y, w, h)`` 整块虚拟桌面矩形。
+        """
+        rect = winapi.virtual_screen_rect()
+        if rect[2] <= 0 or rect[3] <= 0:
+            return (0, 0, 1920, 1080)
+        return rect
+
     def _surface_rgb(self) -> Tuple[int, int, int]:
         """当前实色底的 ``(r, g, b)``，供 worker 混合预合成使用。
 
@@ -1137,23 +1257,22 @@ class MicaMaterial(QObject):
                 return None
 
     def _maybe_rebake(self, force: bool = False) -> None:
-        """按需触发热重烘焙（视口层）：仅当 ``layer_key`` 确有变化（参数 / 主题 /
-        壁纸 / 监视器区域 / 层显示长边）时才重烘焙一层。
+        """按需触发热重烘焙（整块虚拟桌面层）：仅当 ``layer_key`` 确有变化
+        （参数 / 主题 / 壁纸 / 层区域 / 层显示长边）时才重烘焙一层。
 
         Args:
             force: 强制重烘焙（忽略 key 判据）。
         """
         win = self._window_rect_tuple()
-        monitor = self._monitor_rect_for(win)
-        region = layer_region_for(win, monitor)
+        region = self._virtual_rect()
         layer_display_long = _layer_display_long(region)
         key = self._layer_key_for(region, layer_display_long)
         if not force and key == self._layer_key:
-            # key 未变化：层仍覆盖当前监视器，无需重烘焙（窗口在监视器内平移 /
-            # 主题参数未变，no-op）。
+            # key 未变化：层仍覆盖整块虚拟桌面，无需重烘焙（窗口在桌面内平移 /
+            # 缩放 / 跨监视器、主题参数未变，no-op）。
             return
         if self._worker_thread is not None:
-            # 在途烘焙：本次变化（主题 / 参数 / 壁纸 / 监视器）已使在途结果过期。
+            # 在途烘焙：本次变化（主题 / 参数 / 壁纸 / 区域）已使在途结果过期。
             # 置 ``_layer_key`` 失效，令旧 key 的在途结果被陈旧性守卫丢弃（绝不
             # 提交一份旧主题/旧区域的混合层），并交由回收逻辑按最新 key 续接请求。
             self._layer_key = None
@@ -1168,42 +1287,15 @@ class MicaMaterial(QObject):
         self._maybe_rebake(force=True)
 
     def _on_settle(self) -> None:
-        """交互停止：把背景重同步到**最终窗口位置**的正确壁纸裁剪。
+        """交互停止回调（拖动 / 缩放结束）。
 
-        拖动快速路径（:meth:`begin_interaction`）在拖动中零重绘 —— 松手时屏幕
-        上仍是“贴窗”平移的最后帧（采样位置 = 拖动开始前最后一次真正绘制）。
-        这里按三种情况收敛：
-
-        * **同监视器**：:meth:`_start_settle_fade` —— 旧裁剪 → 新裁剪的短暂
-          交叉淡化，掩盖一次背景位移（可经 ``FAF_MICA_SETTLE_FADE_MS=0`` 关闭）；
-        * **已跨监视器**：置 :attr:`_hide_until_new_layer`（只画纯色底，不显示
-          旧监视器壁纸的钳制伪色），由重烘焙完成后的 :meth:`_on_bake_done`
-          淡入新层；新层彻底失败时由回收逻辑解除隐藏；
-        * **层未就绪 / 缩放中 / LIVE 开关**：沿用旧收敛 —— 只在必要时重烘焙
-          （期间画面已由逐事件重绘保证，无需在此补一次重绘）。
+        整块虚拟桌面层下，背景在交互期间已由实时 blit 严格跟随光标，松手时
+        屏幕上所见即正确壁纸裁剪，无需任何重烘焙 / 交叉淡化 / 跨屏等待。此处
+        仅复位交互态并补一次重绘（幂等），保持与旧接口一致。
         """
         self._interacting = False
-        win = self._window_rect_tuple()
-        if not self._drag_live and self._layer_is_drag_ready(win):
-            monitor = self._monitor_rect_for(win)
-            region = layer_region_for(win, monitor)
-            layer_display_long = _layer_display_long(region)
-            if self._needs_layer_rebake(win, monitor, region, layer_display_long):
-                self._hide_until_new_layer = True
-                self._stop_settle_fade()
-                self._maybe_rebake(force=False)
-                if self._worker_thread is None:
-                    # 无在途任务且重烘焙实际未启动（key 恰好一致的极端情形）：
-                    # 不会再有新层到达，立即解除隐藏，避免永久停在纯色底。
-                    self._hide_until_new_layer = False
-                self._widget.update()
-                return
-            # 同监视器：key 未变则 _maybe_rebake 为 no-op。
-            self._maybe_rebake(force=False)
-            self._start_settle_fade(win)
-            return
-        # 层未就绪 / 缩放中 / LIVE：沿用旧收敛（画面已由逐事件重绘保证）。
-        self._maybe_rebake(force=False)
+        self._stop_settle_fade()
+        self._widget.update()
 
     def _start_settle_fade(self, final_win: Tuple[int, int, int, int]) -> None:
         """启动松手背景重同步淡化（旧裁剪 → 新裁剪，约 120ms）。
@@ -1348,6 +1440,8 @@ class MicaMaterial(QObject):
         self._layer_pixmap = _pixmap_from_rgb(display)
         self._layer_key = layer_key
         self._has_shown = True
+        # 新层已就绪：被节流推迟的呈现不再需要（新层会强制立即呈现）。
+        self._defer_timer.stop()
         self._widget.update()
         if self._active:
             self._start_fade_in(reset=(not was_shown) or was_hidden)
@@ -1421,7 +1515,14 @@ class MicaMaterial(QObject):
         self._last_req = field.request
         if display is None:
             display = render_display(
-                field, self._display_long(field), self._overlay_opacity, self._surface_rgb()
+                field,
+                self._display_long(field),
+                self._overlay_opacity,
+                self._surface_rgb(),
+                origin=(
+                    int(field.request.window_rect[0]),
+                    int(field.request.window_rect[1]),
+                ),
             )
         self._pixmap = _pixmap_from_rgb(display)
         self._has_shown = True

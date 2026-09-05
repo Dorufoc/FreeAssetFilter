@@ -44,6 +44,8 @@ from components.mica_material import MicaMaterial
 from components.mica_window import DEFAULT_MICA_CONFIG
 from components.styled_button import StyledButton
 from components.theme_transition_overlay import ThemeTransitionOverlay
+# 实验性原生 DWM 云母开关的底层桥接（dwmapi 薄封装，惰性加载，零 COM 初始化）
+from freeassetfilter.ui.mica import winapi as mica_winapi
 
 # 导入布局模块
 from layout.file_selector_layout import FileSelectorLayout
@@ -163,7 +165,64 @@ class _MicaBackgroundMixin:
         # 背景色为绘制期读取，切换主题仅需重绘
         if self._mica is not None:
             self._mica.set_theme(self._surface_color, self._luminosity)
+            # 原生 DWM 云母模式：深浅色属性随主题对齐（自研层停用，无需重烘焙）
+            self._sync_native_dark_mode()
             self.update()
+
+    def apply_native_mica(self, enabled: bool) -> bool:
+        """实验开关：切换「原生 DWM 云母」（最佳努力，失败时自研层继续接管）。
+
+        开启：``DwmSetWindowAttribute(DWMWA_SYSTEMBACKDROP_TYPE=2, ...)`` +
+        ``DwmExtendFrameIntoClientArea(margins=-1)``（帧扩展到整个客户区）+
+        ``DWMWA_USE_IMMERSIVE_DARK_MODE`` 对齐当前主题深浅色；随后自研 Mica
+        层停用（客户区铺纯黑，由 DWM 呈现原生云母，主线程零自研渲染开销）。
+        任一 DWM 调用失败（非 Win11 / dwmapi 缺失）则保持自研层不变。
+
+        关闭：背景类型置回 ``DWMSBT_DISABLED``、收回帧扩展，自研层重新
+        接管并即时重烘焙。
+
+        Args:
+            enabled: 是否启用原生 DWM 云母。
+
+        Returns:
+            开关是否实际生效（``enabled=True`` 时代表 DWM 调用成功）。
+        """
+        enabled = bool(enabled)
+        if self._mica is None:
+            return False
+        top = self.window()
+        hwnd = 0
+        try:
+            if top is not None:
+                hwnd = int(top.winId())
+        except (TypeError, RuntimeError, ValueError):
+            hwnd = 0
+        if enabled:
+            applied = False
+            if hwnd:
+                applied = mica_winapi.set_native_mica(hwnd, True)
+                if applied:
+                    # 深浅色正确性：让 DWM 按当前主题色调绘制原生云母。
+                    mica_winapi.dwm_use_dark_mode(hwnd, tm.is_dark_theme())
+            # 原生调用失败时保持自研层（applied=False → 不停用），避免整窗纯黑。
+            self._mica.set_native_backdrop(applied)
+            return applied
+        # 关闭：无论原生是否曾生效，都恢复自研层。
+        if hwnd:
+            mica_winapi.set_native_mica(hwnd, False)
+        self._mica.set_native_backdrop(False)
+        return True
+
+    def _sync_native_dark_mode(self) -> None:
+        """主题切换时把 DWM 深浅色属性与当前主题对齐（仅原生云母模式需要）。"""
+        if self._mica is None or not getattr(self._mica, "_native_backdrop", False):
+            return
+        top = self.window()
+        try:
+            hwnd = int(top.winId())
+        except (TypeError, RuntimeError, ValueError, AttributeError):
+            return
+        mica_winapi.dwm_use_dark_mode(hwnd, tm.is_dark_theme())
 
     def refresh_background(self) -> None:
         """刷新背景（例如壁纸更改后）"""
@@ -700,6 +759,19 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._custom_background.setVisible(self._background_mode == "image")
         if self._background_mode == "image":
             self._mica_background.setVisible(False)
+
+        # 启动恢复：实验性原生 DWM 云母开关（持久化于 appearance.mica.native_dwm）。
+        # 仅 mica 模式生效；DWM 调用失败（非 Win11）时自动保持自研层，不影响启动。
+        if self._background_mode == "mica":
+            try:
+                from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+                _v2 = SettingsManagerV2()
+                _v2.load()
+                _native = bool(_v2.get("appearance.mica.native_dwm", False))
+            except Exception:
+                _native = False
+            if _native and self._mica_background is not None:
+                self._mica_background.apply_native_mica(True)
 
         # 创建主布局（内容层作为根容器）
         main_layout = QVBoxLayout(self._content)

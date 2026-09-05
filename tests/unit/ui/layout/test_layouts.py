@@ -402,6 +402,26 @@ class TestUnifiedPreviewerLayout:
         assert received == [True]
         layout.deleteLater()
 
+    @pytest.mark.parametrize(
+        "file_info, expected",
+        [
+            ({"path": "x.mp3", "suffix": "mp3"}, True),   # 无点号音频
+            ({"path": "x.wav", "suffix": ".wav"}, True),  # 带点号音频
+            ({"path": "x.MP3", "suffix": "MP3"}, True),   # 大写后缀
+            ({"suffix": ""}, False),                       # 空后缀
+            ({"path": "x.txt", "suffix": "txt"}, False),   # 非音频（无点）
+            ({"path": "x.log", "suffix": ".txt"}, False),  # 非音频（带点）
+        ],
+    )
+    def test_is_audio_file_normalizes_suffix(
+        self, qapp: QApplication, file_info: dict, expected: bool
+    ) -> None:
+        """_is_audio_file 对 suffix 归一化（无点/带点/大小写）后再判音频。"""
+        layout = UnifiedPreviewerLayout()
+        _assert_layout_geometry(layout, qapp)
+        assert layout._is_audio_file(file_info) is expected
+        layout.deleteLater()
+
 
 # =============================================================================
 # ui.layout.preview.font_previewer_layout

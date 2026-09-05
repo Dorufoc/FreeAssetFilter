@@ -115,6 +115,50 @@ def test_noise_offsets_are_deterministic_and_stable() -> None:
     assert np.abs(big).max() > np.abs(small).max()
 
 
+def test_screen_anchored_dither_is_origin_stable() -> None:
+    """``origin != (0, 0)`` 时抖动**屏幕锚定**：同一绝对屏幕坐标必得同一偏移。
+
+    这是整块虚拟桌面层烘焙一次后、窗口按位移做子矩形 1:1 裁剪的观感正确性
+    基础 —— 拖动窗口时露出的不同屏幕位置应带「该位置专属」的噪声，而非「层
+    本地坐标」的噪声（否则多监视器副屏在左/上方、``SM_X/VIRTUALSCREEN`` 为负
+    时，抖动会整体错锚）；同时同一屏幕坐标跨重建必须稳定、不闪烁。
+    """
+    th, tw, amp = 50, 80, 0.7
+    ox, oy = -1920, -1080  # 典型「左上有副屏」的负原点
+
+    # 原点 (0,0) 的本地偏移（默认路径）。
+    base = engine._dither_offsets(th, tw, amp)
+    # 屏幕锚定偏移：层左上角在 (ox, oy)。
+    anchored = engine._dither_offsets(th, tw, amp, origin=(ox, oy))
+
+    # 1) 同一绝对屏幕坐标 (ox + i, oy + j) 跨重建稳定（可复现）。
+    again = engine._dither_offsets(th, tw, amp, origin=(ox, oy))
+    assert np.array_equal(anchored, again)
+
+    # 2) 屏幕锚定下，(i, j) 处承载的是绝对坐标 (ox+i, oy+j) 的噪声；而默认
+    #    路径 (0,0) 的 (i, j) 承载的是绝对坐标 (i, j) 的噪声 —— 二者在非零
+    #    原点下**不应**相同（否则锚定没生效）。
+    assert not np.array_equal(base, anchored)
+
+    # 3) 幅度约束与默认路径一致：±amp 包络内。
+    assert np.abs(anchored).max() <= amp + 1e-6
+    assert anchored.shape == (th, tw, 1)
+
+
+def test_render_display_origin_passthrough_screen_anchors() -> None:
+    """``render_display(origin=...)`` 把原点透传给抖动，产物随原点变化。"""
+    field = _make_gradient_field()
+    # 同一字段、同一目标尺寸，但因屏幕原点不同，抖动图案应随之改变。
+    at_origin = engine.render_display(field, 1920, overlay=1.0, surface_rgb=(0, 0, 0), origin=(0, 0))
+    off_origin = engine.render_display(
+        field, 1920, overlay=1.0, surface_rgb=(0, 0, 0), origin=(-1920, -1080)
+    )
+    # 抖动只会改变 ±0.7 LSB 的个别像素；整图应几乎一致、但非逐元素相等。
+    assert at_origin.shape == off_origin.shape
+    assert not np.array_equal(at_origin, off_origin)
+    assert float(np.abs(at_origin.astype(int) - off_origin.astype(int)).max()) <= 3
+
+
 def test_upscale_dither_false_is_pure_rounding() -> None:
     """``dither=False`` 应等于对 f32 上采样后直接 ``rint``（无系统偏置）。"""
     field = _make_gradient_field()
@@ -204,17 +248,87 @@ def test_float_field_is_band_free() -> None:
     assert g100 <= 2, f"float 字段在显示分辨率应 band-free：ge100={g100}"
 
 
-def test_uint8_only_field_bands() -> None:
-    """uint8-only（``image_float=None``，老 GPU 路径）在显示分辨率仍会色带。
+def test_uint8_only_field_is_also_band_free() -> None:
+    """uint8-only（``image_float=None``，GPU 路径）**同样** 应无 ≥100px 色带。
 
-    把 :attr:`engine.BakedField.image_float` 置 ``None`` 即强制走 uint8-only 老路径
-    （网格级已量化，无亚 LSB 精度）。同一超缓渐变下其 ≥100px 平坦游程明显多于
-    float 字段（实测 ``ge100=4`` > float 的 2），全图最大游程也更长（135 > 112）。
-    本测试对照锁定「uint8-only → bands」这一半：若回归把管线改回总是 uint8，
-    :func:`test_float_field_is_band_free` 会失败，而这里是明确断言老路径确实带带。
+    把 :attr:`engine.BakedField.image_float` 置 ``None`` 即强制走 uint8-only 路径
+    （网格级已量化，无亚 LSB 精度）—— 这正是 GPU 管线的产物（原生库只回传
+    uint8）。历史上这条路径会色带（旧实现用白噪声抖动时实测 ``ge100=4``、
+    最大游程 135），因为它同时吃了两记量化：网格级量化 + 显示级量化。
+
+    改用屏幕锚定的 IGN 抖动后，即便输入只剩 uint8 网格，显示分辨率上的台阶
+    也被充分打散，与 float 路径同样 band-free。本测试由原先的「uint8-only →
+    bands」对照**反转**为同等强度的正向回归锁：GPU 与 CPU 两条管线都不允许
+    出现可见色带。
     """
     field = dataclasses.replace(_make_gradient_field(), image_float=None)
     out = engine.render_display(field, 1920, overlay=0.7, surface_rgb=(0, 0, 0))
     _g60, g100, max_run = _banding_stats(out)
-    assert g100 > 2, f"uint8-only 老路径应出现 ≥100px 色带：ge100={g100}"
-    assert max_run > 112, f"uint8-only 老路径的最大游程应短于 float 路径：max_run={max_run}"
+    assert g100 <= 2, f"uint8-only 路径也不应出现 ≥100px 色带：ge100={g100}"
+    assert max_run <= 160, f"uint8-only 路径最大游程过长：max_run={max_run}"
+
+
+def test_dither_off_control_still_bands() -> None:
+    """对照组：关掉抖动**必然**出现长色带 —— 证明指标灵敏且抖动确为解药。
+
+    没有这个对照，上面两个「band-free」断言可能只是指标失灵（例如统计写错、
+    或渐变本身只有一个游程）。这里显式关掉抖动，要求同一渐变立刻出现
+    ≥100px 的长游程，从而证明：
+
+    * 指标确实测得到 banding；
+    * 消除 banding 的功劳来自抖动，而非别处。
+    """
+    field = _make_gradient_field()
+    out = engine.upscale_to_display(
+        field.image_float, 1920, dither=False, origin=(0, 0)
+    )
+    # 与 render_display(overlay=0.7) 等价的预合成，保证与上面的测量口径一致
+    out = np.clip(out.astype(np.float32) * 0.7, 0, 255).astype(np.uint8)
+    _g60, g100, max_run = _banding_stats(out)
+    assert g100 > 2, f"关掉抖动后应出现 ≥100px 色带（指标自检）：ge100={g100}"
+    assert max_run > 160, f"关掉抖动后最大游程应显著变长：max_run={max_run}"
+
+
+def test_ign_dither_is_translation_equivariant() -> None:
+    """IGN 抖动**平移等变** —— 这是「纹理锚定壁纸而非窗口」的数学保证。
+
+    ``IGN(ox+dx, oy+dy)[i, j] == IGN(ox, oy)[i+dy, j+dx]``
+
+    整块虚拟桌面层只烘一次；窗口移动时按位移做子矩形 1:1 裁剪，取到的噪声
+    必须等于该**绝对屏幕坐标**的噪声，否则拖动时抖动纹理会在窗口内游动
+    （可见的「噪声爬行」）。本测试锁定这一等变性。
+    """
+    amp, size = 0.7, 200
+    base = engine._dither_offsets(size, size, amp, origin=(0, 0))
+    dx, dy = 37, 11
+    shifted = engine._dither_offsets(size, size, amp, origin=(dx, dy))
+    # shifted 的 (i, j) 承载绝对坐标 (dx+j, dy+i) 的噪声 ⇒ 等于 base 的 (dy+i, dx+j)
+    assert np.allclose(
+        shifted[: size - dy, : size - dx], base[dy:, dx:], atol=1e-6
+    ), "IGN 抖动不满足平移等变性 —— 拖动时噪声纹理会在窗口内游动"
+
+
+def test_ign_dither_has_blue_noise_spectrum() -> None:
+    """IGN 抖动的低频能量占比应显著低于白噪声（≈1.6% → ≈0.14%）。
+
+    低频能量 = 8×8 块均值的方差 / 总方差。低频分量人眼最敏感（会被看成色块
+    /污渍），白噪声因聚簇残留大量低频；IGN 把能量推到高频，因此**同样幅值下
+    既更少色带、也更不易察觉**。这是选型 IGN 而非白噪声的核心依据。
+    """
+    def low_freq_ratio(n: np.ndarray) -> float:
+        v = n[..., 0].astype(np.float64)
+        v = v - v.mean()
+        total = float((v ** 2).mean())
+        h = (v.shape[0] // 8) * 8
+        w = (v.shape[1] // 8) * 8
+        blocks = v[:h, :w].reshape(h // 8, 8, w // 8, 8).mean(axis=(1, 3))
+        return float((blocks ** 2).mean()) / max(total, 1e-12)
+
+    ign = low_freq_ratio(engine._dither_offsets(512, 512, 1.0))
+    white = low_freq_ratio(
+        (np.random.default_rng(1337).random((512, 512, 1), dtype=np.float32) - 0.5) * 2.0
+    )
+    assert ign < 0.5, f"IGN 低频能量占比过高：{ign * 100:.2f}%"
+    assert ign < white / 3.0, (
+        f"IGN 未体现对白噪声的频谱优势：IGN {ign * 100:.2f}% vs 白噪声 {white * 100:.2f}%"
+    )

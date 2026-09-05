@@ -343,53 +343,143 @@ def bake_with_grid(
 
 
 # ---------------------------------------------------------------------------
-# 显示分辨率上采样 + 确定性均匀噪声抖动
+# 显示分辨率上采样 + 屏幕锚定抖动（消除渐变区色彩断层 / banding）
 # ---------------------------------------------------------------------------
 
-#: 最终空间抖动幅值（LSB，±0.7 LSB）。8×8 Bayer 有序抖动在超缓渐变（0.02
-#: LSB/px）上会呈 2 像素周期条纹，且台阶间有长平坦游程；换成**确定性均匀噪声**
-#: 后在最终颜色空间一次性量化，能更均匀地把 8-bit 台阶打散成不可辨的细微纹理。
+#: 最终空间抖动幅值（LSB，±0.7 LSB）。
+#:
+#: 幅值经全组合实测标定（见 ``scripts/diag_mica_dither.py``）：真实 Mica 色调场
+#: 明度被 ``SetLum`` 锁在 G1、色度被 cap 到 ~0.055 Oklab，整屏动态范围往往只有
+#: **几个 LSB** —— 8-bit 量化必然产生台阶。以「最长平坦游程 ≤ 16px 且不存在
+#: ≥64px 游程」为无可见色带判据，各图案的最小可用幅值为：
+#:
+#: ================  ======  ======  ======  ======  ======
+#: 图案              ±0.5    ±0.6    ±0.7    ±0.8    ±1.0
+#: ================  ======  ======  ======  ======  ======
+#: 白噪声（旧实现）  287px   58px    33px    24px    18px
+#: TPDF 三角        511px   249px   116px   75px    39px
+#: Bayer 8×8 有序   687px   543px   335px    7px     3px
+#: **IGN（采用）**   245px    **8px**  **6px**  **4px**  **2px**
+#: ================  ======  ======  ======  ======  ======
+#:
+#: 白噪声即使加到 ±1.2 仍有 18px 游程（肉眼可见色带）；IGN 在 ±0.6 即达标。
+#: 取 **±0.7** 留一档余量，且幅值与旧实现相同 —— 噪点可见度不升反降（见下）。
 _DITHER_AMP_DEFAULT: float = 0.7
-#: 固定噪声种子。保证同一目标尺寸在不同次重建（窗口停留、拖动返回）下产生
-#: 完全相同的噪声图案，从而**跨重建稳定、不闪烁**。
-_DITHER_SEED: int = 1337
 
-#: 按 ``(th, tw, amp)`` 缓存的确定性均匀噪声抖动偏移。抖动图案只由目标尺寸与
-#: 幅值决定，同一组合可无限复用；窗口尺寸稳定时命中率 100%，省掉每次重新
-#: 生成 ``th×tw`` 噪声的毫秒级开销。
-_DITHER_TILE_CACHE: Dict[Tuple[int, int, float], np.ndarray] = {}
-#: 缓存条目上限（拖动场与静态场尺寸交替时防止无限增长）。
-_DITHER_TILE_CACHE_MAX: int = 6
+#: 交错梯度噪声（Interleaved Gradient Noise, IGN）的两个方向频率与放大系数。
+#: 该式逐像素把 ``(x, y)`` 映射为 ``[0, 1)`` 上的低差异序列（Jorge Jimenez）。
+_IGN_C1: float = 0.06711056
+_IGN_C2: float = 0.00583715
+_IGN_K: float = 52.9829189
+
+#: 按 ``(th, tw, amp, ox, oy)`` 缓存的 IGN 抖动偏移。
+#: 图案只由目标尺寸、幅值与**层原点**决定，同一组合可无限复用；虚拟桌面尺寸
+#: 稳定时命中率 100%，只在层尺寸/原点变化时才付一次生成开销（2560×1440 约
+#: 30 ms，与烘焙同量级的一次性成本）。
+_DITHER_TILE_CACHE: Dict[Tuple[int, int, float, int, int], np.ndarray] = {}
+#: 缓存条目上限。IGN 图案**平移等变**（见 :func:`_dither_offsets`），同一尺寸的
+#: 不同原点理论上可由一份基准图案切片得到，但为负原点预生成整幅更省事；
+#: 实际只会同时存在「视口层」与「静态场」两种尺寸，2 条足够，且把常驻内存
+#: 从旧实现的 6×14 MB（≈84 MB）压到 ≈29 MB。
+_DITHER_TILE_CACHE_MAX: int = 2
 
 
-def _dither_offsets(th: int, tw: int, amp: float) -> np.ndarray:
-    """返回 ``(th, tw, 1)`` 的确定性均匀噪声抖动偏移，取值 ``±amp``。
+def _ign_offsets(th: int, tw: int, ox: int, oy: int, amp: float) -> np.ndarray:
+    """生成**屏幕锚定**的交错梯度噪声（IGN）抖动偏移 ``(th, tw, 1)``，取值 ``±amp``。
 
-    用 :data:`_DITHER_SEED` 固定的可重现随机源生成均匀噪声，同一 ``(th, tw)``
-    下不同 ``amp`` 只是对**同一份噪声**的缩放（先按 size 生成再乘 amp），因此
-    跨次重建稳定、不闪烁；幅值 ``amp`` 取最终空间像素幅值（LSB）。
+    为什么是 IGN 而不是白噪声
+    --------------------------
+    抖动的作用是给量化器注入扰动，把 8-bit 台阶打散成空间噪声。关键在于噪声的
+    **频谱**：人眼对低频扰动敏感、对高频噪点不敏感，因此理想抖动应把能量尽量
+    推到高频（蓝噪声）。实测低频能量占比（8×8 块均值方差 / 总方差）：
 
-    注意：返回的是缓存数组，调用方**不得原地修改**；如需可变副本请自行
-    ``.copy()``。抖动必须在上采样之后叠加，绝不能加在网格分辨率上，否则会被
-    Qt 双线性放大成块状噪点（磨砂玻璃感）。
+    ================  ==================
+    图案              低频能量占比
+    ================  ==================
+    白噪声 / TPDF      1.58 %
+    Bayer 8×8 有序     0.00 %（但周期性 ⇒ 可见规则花纹）
+    **IGN**           **0.14 %**
+    ================  ==================
+
+    白噪声会**聚簇** —— 局部若干像素的扰动同向，量化后仍连成大片同一种值，
+    实测最长平坦游程 33px（±0.7）；IGN 相邻像素的扰动高速交替，同样幅值下
+    最长游程仅 6px，且因低频能量低 11×，**观感上比白噪声更干净**。
+
+    为什么必须屏幕锚定
+    ------------------
+    噪声值由**绝对屏幕坐标** ``(ox + j, oy + i)`` 决定，而非层的本地坐标
+    ``(i, j)``。于是抖动纹理固定附着于壁纸：整块虚拟桌面层烘一次之后，窗口
+    按位移做子矩形 1:1 裁剪时，露出的是「该屏幕位置专属」的噪声，而不是
+    「抖动图案在窗口内乱跑」。真实 Mica 的纹理就锚定在壁纸上。
+
+    实现要点
+    --------
+    * 用 ``x -= floor(x)`` 取小数部分，比 ``np.mod(x, 1.0)`` 快约 3.2×
+      （2560×1440：30 ms vs 97 ms），结果逐位相同。
+    * 一维坐标换算保留 float64 精度（数组仅 ``tw`` / ``th`` 长度），只有最后的
+      广播加与取整降为 float32 —— 避免大图上的临时 float64 缓冲（29 MB）。
+    * IGN 是**平移等变**的：``IGN(ox+dx, oy+dy)[i, j] == IGN(ox, oy)[i+dy, j+dx]``，
+      这正是纹理锚定壁纸的数学保证（有专项测试锁定）。
 
     Args:
         th: 目标高度。
         tw: 目标宽度。
+        ox: 本区域左上角在虚拟桌面坐标系中的 x（屏幕原点，可负）。
+        oy: 本区域左上角在虚拟桌面坐标系中的 y（屏幕原点，可负）。
         amp: 抖动幅值（LSB），正值表示噪声覆盖 ``±amp``。
 
     Returns:
         float32 ``(th, tw, 1)`` 偏移数组，可直接与 0..255 的像素值相加。
     """
-    key = (int(th), int(tw), float(amp))
+    # 一维部分用 float64，保证大坐标（负原点屏）下的相位精度。
+    xs = (np.arange(int(tw), dtype=np.float64) + float(ox)) * _IGN_C1
+    ys = (np.arange(int(th), dtype=np.float64) + float(oy)) * _IGN_C2
+    # 广播加法在此物化为 th×tw 的 float32 —— 后续 floor 都在这块缓冲上原地做。
+    a = (xs.astype(np.float32).reshape(1, -1)
+         + ys.astype(np.float32).reshape(-1, 1))
+    a -= np.floor(a)          # frac(c1·x + c2·y)
+    a *= np.float32(_IGN_K)
+    a -= np.floor(a)          # frac(K · frac(...))
+    a -= np.float32(0.5)
+    a *= np.float32(2.0 * float(amp))
+    return a.reshape(int(th), int(tw), 1)
+
+
+def _dither_offsets(
+    th: int, tw: int, amp: float, origin: Tuple[int, int] = (0, 0)
+) -> np.ndarray:
+    """返回 ``(th, tw, 1)`` 的屏幕锚定 IGN 抖动偏移，取值 ``±amp``。
+
+    图案由**绝对屏幕坐标** ``(origin + (i, j))`` 唯一决定（见
+    :func:`_ign_offsets`），因此：
+
+    * 同一 ``(th, tw, amp, origin)`` 下不同次重建得到逐位相同的图案 ——
+      跨重建稳定、不闪烁；
+    * 整块虚拟桌面层烘一次后，窗口按位移做子矩形 1:1 裁剪时，抖动纹理固定
+      附着于壁纸而非窗口 —— 拖动时不会看到噪声在窗口内游动。
+
+    抖动必须在上采样之后叠加，绝不能加在网格分辨率上，否则会被 Qt 双线性
+    放大成块状噪点（磨砂玻璃感）。
+
+    注意：返回的是缓存数组，调用方**不得原地修改**；如需可变副本请自行
+    ``.copy()``。
+
+    Args:
+        th: 目标高度。
+        tw: 目标宽度。
+        amp: 抖动幅值（LSB），正值表示噪声覆盖 ``±amp``。
+        origin: 本区域左上角在虚拟桌面坐标系中的 ``(ox, oy)``；默认 ``(0, 0)``。
+
+    Returns:
+        float32 ``(th, tw, 1)`` 偏移数组，可直接与 0..255 的像素值相加。
+    """
+    key = (int(th), int(tw), float(amp), int(origin[0]), int(origin[1]))
     cached = _DITHER_TILE_CACHE.get(key)
     if cached is not None:
         return cached
     if len(_DITHER_TILE_CACHE) >= _DITHER_TILE_CACHE_MAX:
         _DITHER_TILE_CACHE.clear()
-    rng = np.random.default_rng(_DITHER_SEED)
-    noise = (rng.random((int(th), int(tw), 1), dtype=np.float32) - 0.5) * 2.0
-    offsets = noise * float(amp)
+    offsets = _ign_offsets(int(th), int(tw), int(origin[0]), int(origin[1]), float(amp))
     _DITHER_TILE_CACHE[key] = offsets
     return offsets
 
@@ -452,6 +542,7 @@ def upscale_to_display(
     target_long: int,
     dither: bool = True,
     dither_amp: float = _DITHER_AMP_DEFAULT,
+    origin: Tuple[int, int] = (0, 0),
 ) -> np.ndarray:
     """把低分辨率网格色调场双线性放大到目标显示分辨率，并可选叠加抖动。
 
@@ -471,6 +562,8 @@ def upscale_to_display(
         dither: 是否在显示分辨率上叠加 1px 抖动。
         dither_amp: 抖动幅值（LSB，默认 :data:`_DITHER_AMP_DEFAULT`）；仅
             ``dither=True`` 时生效。
+        origin: 层在虚拟桌面坐标系中的左上角 ``(ox, oy)``；非 ``(0, 0)`` 时
+            抖动改为屏幕锚定（见 :func:`_dither_offsets`），使纹理附着壁纸。
 
     Returns:
         ``(th, tw, 3)`` uint8 图像，长边 ≈ ``target_long``。
@@ -495,8 +588,8 @@ def upscale_to_display(
 
     out = _resize_bilinear(src, tw, th)
     if dither:
-        # ±0.7 LSB 的确定性均匀噪声，均匀打断 256 级量化台阶。
-        out += _dither_offsets(th, tw, dither_amp)
+        # ±0.7 LSB 的确定性均匀噪声，均匀打断 256 级量化台阶；非原点时屏幕锚定。
+        out += _dither_offsets(th, tw, dither_amp, origin)
 
     # 必须先 rint 再转 uint8。astype(uint8) 是**截断**而非四舍五入，会带来
     # -0.5 LSB 的系统性偏置：加了抖动反而整体变暗，且抖动图案只有一半的
@@ -509,6 +602,7 @@ def render_display(
     target_long: int,
     overlay: float = 1.0,
     surface_rgb: Tuple[int, int, int] = (0, 0, 0),
+    origin: Tuple[int, int] = (0, 0),
 ) -> np.ndarray:
     """把烘焙产物渲染到显示分辨率的 uint8 图像（先预合成、后一次性量化）。
 
@@ -530,6 +624,9 @@ def render_display(
             结果与「先缩放再抖动」一致（无底色偏移）；``<1.0`` 时按
             ``(1-o)*S + o*V`` 预合成到底色 ``surface_rgb`` 上。
         surface_rgb: 底色 ``(r, g, b)``（0..255），仅 ``overlay < 1.0`` 时使用。
+        origin: 层在虚拟桌面坐标系中的左上角 ``(ox, oy)``；非 ``(0, 0)`` 时抖动
+            改为屏幕锚定（见 :func:`_dither_offsets`），使整块层烘焙一次后窗口
+            子矩形裁剪时纹理固定附着于壁纸，避免拖动时抖动在窗口内游动。
 
     Returns:
         ``(th, tw, 3)`` uint8 图像，可直接转 QImage/QPixmap。
@@ -560,7 +657,7 @@ def render_display(
         s = np.asarray(surface_rgb, dtype=np.float32).reshape(1, 1, 3)
         out = out * o + s * (1.0 - o)
 
-    out += _dither_offsets(th, tw, _DITHER_AMP_DEFAULT)
+    out += _dither_offsets(th, tw, _DITHER_AMP_DEFAULT, origin)
 
     return np.clip(np.rint(out), 0.0, 255.0).astype(np.uint8)
 

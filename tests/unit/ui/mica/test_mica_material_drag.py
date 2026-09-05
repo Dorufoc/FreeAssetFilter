@@ -1,17 +1,19 @@
 # -*- coding: utf-8 -*-
 """``ui.mica.material`` 的视口层拖动行为测试。
 
-锁定的是「逐监视器持久化视口层」改造引入的可断言不变量（全部 offscreen 安全、
-不 show 窗口）：
+锁定的是「整块虚拟桌面持久化视口层 + 实时 blit」改造引入的可断言不变量
+（全部 offscreen 安全、不 show 窗口）：
 
 * **层烘焙状态** —— ``_on_bake_done`` 把 worker 结果应用为 ``_layer``
   （:class:`~ui.mica.drag.ViewportLayer`）与 ``_layer_pixmap``；
 * **陈旧性守卫** —— 代际/key 不匹配的过期层结果被丢弃（绝不提交旧主题/旧区域）；
-* **层内无重烘焙** —— 窗口在监视器内平移 ``begin_interaction`` 不触发重烘焙
-  （``_maybe_rebake`` 不被调用）；
-* **跨监视器重烘焙一次** —— 窗口跨监视器时 ``_maybe_rebake(force=True)`` 恰一次；
+* **全局层无运动态重烘焙** —— 窗口在桌面内平移 / 缩放 / 跨监视器，
+  ``begin_interaction`` 都**不**触发重烘焙（``_maybe_rebake`` 不被调用）；
+* **实时 blit 快速路径** —— 层就绪时 ``begin_interaction`` 仅调度一次重绘
+  （O(1)/事件，零探测、零重烘），背景严格跟随光标，无"贴窗"、无松手跳变；
 * **绘制取材** —— ``_layer_blit`` 返回窗口子矩形；``paint`` 按层内子矩形绘制
-  （1:1 整数 ⇒ 真 blit；浮点 ⇒ 亚像素平滑）。
+  （层与虚拟桌面 1:1 ⇒ 真 1:1 blit，抖动锚定屏幕坐标不打散色带；非 1:1 ⇒
+  亚像素平滑）。
 """
 
 from __future__ import annotations
@@ -273,6 +275,7 @@ def test_begin_interaction_no_rebake_within_monitor(qapp, monkeypatch) -> None:
     widget, mica = _widget_with_mica(qapp)
     key = ("params", True, "sig", MONITOR_A, 2560)
     mica._layer = _layer_for(MONITOR_A, WIN, width=512, height=288)
+    mica._layer_pixmap = QPixmap(512, 288)
     mica._layer_key = key
     mica._layer_display_long = 2560
     monkeypatch.setattr(mica, "_monitor_rect_for", lambda window_rect: MONITOR_A)
@@ -290,24 +293,20 @@ def test_begin_interaction_no_rebake_within_monitor(qapp, monkeypatch) -> None:
 
 
 def test_begin_interaction_rebakes_once_on_monitor_cross(qapp, monkeypatch) -> None:
-    """窗口跨到另一块监视器：``_maybe_rebake(force=True)`` 恰好一次。"""
+    """整块虚拟桌面层下跨监视器**不**触发重烘焙（层全局覆盖，与位置无关）。"""
     widget, mica = _widget_with_mica(qapp)
     mica._layer = _layer_for(MONITOR_A, WIN, width=512, height=288)
+    mica._layer_pixmap = QPixmap(512, 288)
     mica._layer_key = ("params", True, "sig", MONITOR_A, 2560)
     mica._layer_display_long = 2560
     monkeypatch.setattr(mica, "_monitor_rect_for", lambda window_rect: MONITOR_B)
-
-    def key_for(region, layer_display_long):
-        return ("params", True, "sig", region, int(layer_display_long))
-
-    monkeypatch.setattr(mica, "_layer_key_for", key_for)
-    monkeypatch.setattr(mica, "_window_rect_tuple", lambda: (300, 1800, *WIN))
     rebake_mock = mock.Mock()
     monkeypatch.setattr(mica, "_maybe_rebake", rebake_mock)
+    monkeypatch.setattr(mica, "_window_rect_tuple", lambda: (300, 1800, *WIN))
 
     try:
         mica.begin_interaction()
-        rebake_mock.assert_called_once_with(force=True)
+        rebake_mock.assert_not_called()
     finally:
         mica.dispose()
         widget.deleteLater()
@@ -521,8 +520,8 @@ def _ready_mica(widget, mica, *, region=MONITOR_A, pix_w=512, pix_h=288) -> None
     mica._layer_display_long = 2560
 
 
-def test_fast_path_pure_move_no_update_no_probe(qapp, monkeypatch) -> None:
-    """纯移动（层就绪、尺寸不变）：``begin_interaction`` 零重绘、零探测、零重烘。"""
+def test_fast_path_pure_move_schedules_update_no_rebake(qapp, monkeypatch) -> None:
+    """纯移动（层就绪）：``begin_interaction`` 仅调度一次重绘，零重烘焙、零探测、零 key 计算。"""
     widget, mica = _widget_with_mica(qapp)
     _ready_mica(widget, mica)
     updates = mock.Mock()
@@ -537,103 +536,58 @@ def test_fast_path_pure_move_no_update_no_probe(qapp, monkeypatch) -> None:
 
     try:
         mica.begin_interaction()
-        rebake_mock.assert_not_called()
-        monitor_spy.assert_not_called()  # 快速路径不做 COM 探测
-        key_spy.assert_not_called()
-        updates.assert_not_called()  # 快速路径不触发整窗重绘
-    finally:
-        mica.dispose()
-        widget.deleteLater()
-
-
-def test_fast_path_monitor_cross_rebakes_once_when_idle(qapp, monkeypatch) -> None:
-    """跨监视器且无在途烘焙：首个越区事件触发恰好一次 ``_maybe_rebake(force=True)``。"""
-    widget, mica = _widget_with_mica(qapp)
-    _ready_mica(widget, mica)
-    updates = mock.Mock()
-    widget.update = updates
-    monkeypatch.setattr(mica, "_window_rect_tuple", lambda: (300, 1800, *WIN))
-    rebake_mock = mock.Mock()
-    monkeypatch.setattr(mica, "_maybe_rebake", rebake_mock)
-
-    try:
-        mica.begin_interaction()
-        rebake_mock.assert_called_once_with(force=True)
-        updates.assert_not_called()
-    finally:
-        mica.dispose()
-        widget.deleteLater()
-
-
-def test_fast_path_skips_rebake_while_bake_inflight(qapp, monkeypatch) -> None:
-    """跨监视器但已有在途烘焙：不再重复提交（避免逐事件探测 / 重烘）。"""
-    widget, mica = _widget_with_mica(qapp)
-    _ready_mica(widget, mica)
-    monkeypatch.setattr(mica, "_window_rect_tuple", lambda: (300, 1800, *WIN))
-    rebake_mock = mock.Mock()
-    monkeypatch.setattr(mica, "_maybe_rebake", rebake_mock)
-    mica._worker_thread = QThread()
-
-    try:
-        mica.begin_interaction()
-        rebake_mock.assert_not_called()
-    finally:
-        mica.dispose()
-        widget.deleteLater()
-
-
-def test_drag_live_env_restores_legacy_update(qapp, monkeypatch) -> None:
-    """``FAF_MICA_DRAG_LIVE=1``：恢复逐事件重绘 / 探测的旧行为（回归对照）。"""
-    monkeypatch.setenv("FAF_MICA_DRAG_LIVE", "1")
-    widget, mica = _widget_with_mica(qapp)
-    _ready_mica(widget, mica)
-    updates = mock.Mock()
-    widget.update = updates
-    monitor_spy = mock.Mock(return_value=MONITOR_A)
-    key_spy = mock.Mock(return_value=mica._layer_key)
-    rebake_mock = mock.Mock()
-    monkeypatch.setattr(mica, "_monitor_rect_for", monitor_spy)
-    monkeypatch.setattr(mica, "_layer_key_for", key_spy)
-    monkeypatch.setattr(mica, "_maybe_rebake", rebake_mock)
-    monkeypatch.setattr(mica, "_window_rect_tuple", lambda: (300, 400, *WIN))
-
-    try:
-        mica.begin_interaction()
-        updates.assert_called_once()  # LIVE：每事件重绘
-        monitor_spy.assert_called_once()  # LIVE：逐事件探测
-        rebake_mock.assert_not_called()
-    finally:
-        mica.dispose()
-        widget.deleteLater()
-
-
-def test_on_settle_same_monitor_starts_settle_fade(qapp, monkeypatch) -> None:
-    """松手仍在同一监视器：启动旧裁剪 → 新裁剪的 settle 淡化。"""
-    widget, mica = _widget_with_mica(qapp)
-    _ready_mica(widget, mica)
-    mica._last_painted_win = (100, 100, *WIN)
-    monkeypatch.setattr(mica, "_window_rect_tuple", lambda: (300, 400, *WIN))
-    monkeypatch.setattr(mica, "_monitor_rect_for", lambda w: MONITOR_A)
-    monkeypatch.setattr(mica, "_needs_layer_rebake", lambda *a: False)
-    rebake_mock = mock.Mock()
-    monkeypatch.setattr(mica, "_maybe_rebake", rebake_mock)
-    updates = mock.Mock()
-    widget.update = updates
-
-    try:
-        mica._on_settle()
-        assert mica._interacting is False
-        assert mica._hide_until_new_layer is False
-        assert mica._settle_fade_active() is True
-        rebake_mock.assert_called_once_with(force=False)
+        # 实时 blit 快速路径：调度一次重绘（让背景跟随光标），但不重烘焙 / 不探测。
         updates.assert_called_once()
+        rebake_mock.assert_not_called()
+        monitor_spy.assert_not_called()
+        key_spy.assert_not_called()
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_fast_path_resize_no_rebake(qapp, monkeypatch) -> None:
+    """缩放（窗口尺寸变化）：整块虚拟桌面层与尺寸无关，仍不触发重烘焙。"""
+    widget, mica = _widget_with_mica(qapp)
+    _ready_mica(widget, mica)
+    updates = mock.Mock()
+    widget.update = updates
+    rebake_mock = mock.Mock()
+    monkeypatch.setattr(mica, "_maybe_rebake", rebake_mock)
+    monkeypatch.setattr(mica, "_window_rect_tuple", lambda: (300, 400, 2400, 1400))
+
+    try:
+        mica.begin_interaction()
+        updates.assert_called_once()
+        rebake_mock.assert_not_called()
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_fast_path_unready_triggers_rebake_and_update(qapp, monkeypatch) -> None:
+    """层未就绪（启动首帧 / 降级）：``begin_interaction`` 确保异步烘焙在途并刷新。"""
+    widget, mica = _widget_with_mica(qapp)
+    # 不调用 _ready_mica：层为空。
+    mica._layer = None
+    mica._layer_pixmap = None
+    updates = mock.Mock()
+    widget.update = updates
+    rebake_mock = mock.Mock()
+    monkeypatch.setattr(mica, "_maybe_rebake", rebake_mock)
+    monkeypatch.setattr(mica, "_window_rect_tuple", lambda: (300, 400, *WIN))
+
+    try:
+        mica.begin_interaction()
+        updates.assert_called_once()
+        rebake_mock.assert_called_once_with(force=False)
     finally:
         mica.dispose()
         widget.deleteLater()
 
 
 def test_on_settle_same_spot_skips_fade(qapp, monkeypatch) -> None:
-    """松手位置与最近绘制位置几乎重合：跳过淡化，仅单次重绘。"""
+    """松手位置与最近绘制位置几乎重合：不启动任何淡化，仅单次重绘（幂等）。"""
     widget, mica = _widget_with_mica(qapp)
     _ready_mica(widget, mica)
     mica._last_painted_win = (300, 400, *WIN)
@@ -653,100 +607,173 @@ def test_on_settle_same_spot_skips_fade(qapp, monkeypatch) -> None:
         widget.deleteLater()
 
 
-def test_on_settle_cross_monitor_waits_new_layer(qapp, monkeypatch) -> None:
-    """跨监视器松手且新层烘焙在途：隐藏（纯色底）直到新层到达。"""
+def test_on_settle_is_idempotent_no_rebake(qapp, monkeypatch) -> None:
+    """整块虚拟桌面层下，松手回调不触发重烘焙（背景已由实时 blit 正确跟随）。"""
     widget, mica = _widget_with_mica(qapp)
     _ready_mica(widget, mica)
-    mica._layer_key = ("params", True, "sig", MONITOR_A, 2560)
+    rebake_mock = mock.Mock()
+    monkeypatch.setattr(mica, "_maybe_rebake", rebake_mock)
     monkeypatch.setattr(mica, "_window_rect_tuple", lambda: (300, 1800, *WIN))
-    monkeypatch.setattr(mica, "_monitor_rect_for", lambda w: MONITOR_B)
-    monkeypatch.setattr(mica, "_needs_layer_rebake", lambda *a: True)
-    monkeypatch.setattr(
-        mica, "_layer_key_for", lambda region, dl: ("params", True, "sig", region, int(dl))
-    )
-    updates = mock.Mock()
-    widget.update = updates
-    mica._worker_thread = QThread()  # 在途烘焙（B 层）
 
     try:
         mica._on_settle()
-        assert mica._hide_until_new_layer is True
-        assert mica._settle_fade_active() is False
-        updates.assert_called_once()
+        assert mica._interacting is False
+        rebake_mock.assert_not_called()
     finally:
         mica.dispose()
         widget.deleteLater()
 
 
-def test_on_settle_cross_monitor_releases_when_no_bake_pending(qapp, monkeypatch) -> None:
-    """跨监视器松手但无在途烘焙且 key 未变（极端）：立即解除隐藏，不停纯色底。"""
+def test_layer_display_long_is_screen_1to1(qapp, monkeypatch) -> None:
+    """层显示长边 == 虚拟桌面长边（≤8192 的常见配置）⇒ 1:1 屏幕分辨率。
+
+    这是抹掉色彩断层的核心不变量：层以 1:1 渲染、抖动锚定绝对屏幕坐标，blit
+    时才不被双线性重采样抹平。超过 8192 的极端虚拟桌面才会轻微降采样。
+    """
+    region_small = (0, 0, 2560, 1440)
+    region_4k = (0, 0, 3840, 2160)
+    region_dual = (-1920, 0, 7680, 2160)
+    assert material_mod._layer_display_long(region_small) == 2560
+    assert material_mod._layer_display_long(region_4k) == 3840
+    assert material_mod._layer_display_long(region_dual) == 7680
+
+    region_triple = (0, 0, 11520, 2160)  # 三 4K：超过上限，封顶 8192。
+    assert material_mod._layer_display_long(region_triple) == 8192
+
+
+def test_paint_blits_1to1_when_layer_matches_screen(qapp, monkeypatch) -> None:
+    """层与虚拟桌面 1:1（常见配置）⇒ ``_layer_blit`` 返回整型子矩形、``smooth=False``。
+
+    这是抹掉色彩断层的关键不变量：1:1 blit 不做重采样，抖动图案被原样保留、
+    锚定在绝对屏幕坐标，渐变区不再出现色带。
+    """
+    widget, mica = _widget_with_mica(qapp)
+    region = (0, 0, 2560, 1440)
+    layer = ViewportLayer(region=region, width=2560, height=1440, win_size=WIN)
+    mica._layer = layer
+    mica._layer_pixmap = QPixmap(2560, 1440)
+    mica._pixmap = QPixmap(WIN[0], WIN[1])
+    monkeypatch.setattr(mica, "_window_rect_tuple", lambda: (640, 360, *WIN))
+
+    try:
+        pixmap, src, smooth = mica._layer_blit()
+        assert pixmap is mica._layer_pixmap
+        # 窗口在 (640,360)：相对虚拟原点的整型偏移。
+        assert src == (640, 360, WIN[0], WIN[1])
+        assert all(isinstance(v, int) for v in src)
+        assert smooth is False
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+# ---------------------------------------------------------------------------
+# 合成器状态单一数据源（_layer/_layer_pixmap property 委托）
+# ---------------------------------------------------------------------------
+
+
+def test_layer_attributes_delegate_to_compositor(qapp) -> None:
+    """``_layer`` / ``_layer_pixmap`` 读写委托到合成器（状态单一数据源）。
+
+    属性 setter 同步替换合成器几何 / 像素并作废呈现锚点；``dispose`` 后
+    合成器同样被清空，不留悬空引用。
+    """
+    widget, mica = _widget_with_mica(qapp)
+    layer = _layer_for(MONITOR_A, WIN, width=512, height=288)
+    pixmap = QPixmap(512, 288)
+
+    try:
+        mica._layer = layer
+        mica._layer_pixmap = pixmap
+        assert mica._compositor.layer is layer
+        assert mica._compositor.pixmap is pixmap
+        assert mica._compositor.ready is True
+        assert mica._layer is layer
+        assert mica._layer_pixmap is pixmap
+
+        mica.dispose()
+        assert mica._compositor.ready is False
+        assert mica._layer is None
+        assert mica._layer_pixmap is None
+    finally:
+        widget.deleteLater()
+
+
+# ---------------------------------------------------------------------------
+# 实验开关：原生 DWM 云母（set_native_backdrop）
+# ---------------------------------------------------------------------------
+
+
+def test_native_backdrop_stops_custom_layer_and_paints_black(qapp, monkeypatch) -> None:
+    """开启原生模式：层清空、烘焙停用、绘制只铺纯黑、交互 O(1) 零重绘。"""
     widget, mica = _widget_with_mica(qapp)
     _ready_mica(widget, mica)
-    monkeypatch.setattr(mica, "_window_rect_tuple", lambda: (300, 1800, *WIN))
-    monkeypatch.setattr(mica, "_monitor_rect_for", lambda w: MONITOR_B)
-    monkeypatch.setattr(mica, "_needs_layer_rebake", lambda *a: True)
-    monkeypatch.setattr(mica, "_layer_key_for", lambda region, dl: mica._layer_key)
     updates = mock.Mock()
     widget.update = updates
+    rebake_mock = mock.Mock()
+    monkeypatch.setattr(mica, "_maybe_rebake", rebake_mock)
 
     try:
-        mica._on_settle()
-        assert mica._hide_until_new_layer is False
-        updates.assert_called_once()
-    finally:
-        mica.dispose()
-        widget.deleteLater()
+        mica.set_native_backdrop(True)
+        assert mica._native_backdrop is True
+        assert mica._layer is None and mica._layer_pixmap is None
+        assert mica._paused is True
+        # 切换本身触发一次重绘（切到纯黑呈现），此后交互期零重绘。
+        assert updates.call_count == 1
 
+        # move/resize 事件：O(1) 记账，零重绘（DWM 自行重绘系统背景）。
+        mica.begin_interaction()
+        assert updates.call_count == 1
 
-def test_settle_fade_ticks_until_done(qapp, monkeypatch) -> None:
-    """settle 淡化按节拍推进并在时长耗尽后停机（回落到常规帧）。"""
-    widget, mica = _widget_with_mica(qapp)
-    try:
-        _ready_mica(widget, mica)
-        mica._last_painted_win = (100, 100, *WIN)
-        mica._settle_fade_ms = 120
-        mica._start_settle_fade((300, 400, *WIN))
-        assert mica._settle_fade_active() is True
-        assert mica._settle_fade_ticks == 0
+        # 不再起任何后台烘焙线程。
+        mica.refresh_async()
+        assert mica._worker_thread is None
 
-        for _ in range(8):  # 8 × 16ms = 128ms ≥ 120ms
-            mica._on_settle_fade_tick()
-        assert mica._settle_fade_active() is False
-        assert mica._settle_fade_old_src is None
-    finally:
-        mica.dispose()
-        widget.deleteLater()
-
-
-def test_paint_during_settle_fade_draws_old_then_new(qapp, monkeypatch) -> None:
-    """淡化帧绘制两笔：旧裁剪（不透明打底）+ 新裁剪（按进度叠入）。"""
-    widget, mica = _widget_with_mica(qapp)
-    _ready_mica(widget, mica)
-    mica._fade_alpha = 1.0
-    mica._settle_fade_ms = 120
-    mica._settle_fade_old_src = (5.0, 5.0, 300.0, 200.0)
-    mica._settle_fade_ticks = 2  # t ≈ 32/120
-    monkeypatch.setattr(mica, "_window_rect_tuple", lambda: (192, 88, *WIN))
-    draw_calls = []
-    orig_draw = QPainter.drawPixmap
-
-    def recorder(self, *args, **kwargs):
-        draw_calls.append(args)
-        return orig_draw(self, *args, **kwargs)
-
-    monkeypatch.setattr(QPainter, "drawPixmap", recorder)
-
-    try:
-        img = QImage(widget.rect().width(), widget.rect().height(), QImage.Format_RGB32)
-        img.fill(QColor(0, 0, 0))
+        # paint：客户区铺纯黑（扩展帧约定，由 DWM 呈现原生云母）。
+        img = QImage(64, 48, QImage.Format_RGB32)
         painter = QPainter(img)
         try:
             mica.paint(painter, None)
         finally:
             painter.end()
+        assert img.pixelColor(10, 10) == QColor(0, 0, 0)
     finally:
         mica.dispose()
         widget.deleteLater()
 
-    assert len(draw_calls) == 2, "淡化帧应绘制旧、新两笔裁剪"
-    assert all(isinstance(c[2], QRectF) for c in draw_calls)
+
+def test_native_backdrop_disable_restores_custom_layer(qapp, monkeypatch) -> None:
+    """关闭原生模式：恢复自研层并强制重烘焙一次视口层。"""
+    widget, mica = _widget_with_mica(qapp)
+    _ready_mica(widget, mica)
+    rebake_mock = mock.Mock()
+    monkeypatch.setattr(mica, "_maybe_rebake", rebake_mock)
+
+    try:
+        mica.set_native_backdrop(True)
+        mica.set_native_backdrop(False)
+        assert mica._native_backdrop is False
+        assert mica._paused is False
+        rebake_mock.assert_called_with(force=True)
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_native_backdrop_toggle_is_idempotent(qapp) -> None:
+    """重复设置同一状态为 no-op（不重复清层 / 重复重烘焙）。"""
+    widget, mica = _widget_with_mica(qapp)
+    _ready_mica(widget, mica)
+    layer = mica._layer
+
+    try:
+        mica.set_native_backdrop(False)
+        # 状态未变：层不被清除。
+        assert mica._layer is layer
+        mica.set_native_backdrop(True)
+        cleared = mica._layer is None
+        mica.set_native_backdrop(True)
+        assert cleared and mica._layer is None
+    finally:
+        mica.dispose()
+        widget.deleteLater()

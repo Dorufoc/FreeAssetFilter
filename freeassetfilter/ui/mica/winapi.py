@@ -1225,3 +1225,185 @@ def registry_background_color() -> Optional[Tuple[int, int, int]]:
         return tuple(max(0, min(255, int(p))) for p in parts[:3])  # type: ignore[return-value]
     except ValueError:
         return None
+
+
+# ---------------------------------------------------------------------------
+# DWM 原生云母桥接（实验性）
+# ---------------------------------------------------------------------------
+#
+# Windows 11 起 ``dwmapi.dll`` 暴露了「系统背景类型」（System Backdrop）能力，
+# 通过 ``DwmSetWindowAttribute(DWMWA_SYSTEMBACKDROP_TYPE=38, ...)`` 让 DWM 在
+# 窗口客户区直接绘制原生 Mica / Acrylic。本项目自研了一套纯 CPU 的云母实现
+# （见 :mod:`ui.mica.engine` / :mod:`ui.mica.material`），但原生路径在正确性
+# （与系统主题、圆角、标题栏完全一致）与零开销上无可替代，因此提供一个
+# 「实验性原生 DWM 开关」：开启时隐藏自研层并委托 DWM 绘制。
+#
+# 该桥接是**最佳努力**的：
+# * 非 Windows / ``dwmapi.dll`` 缺失 / 函数不存在（Win10 及更早）/ 调用失败，
+#   一律返回 ``False``，上层据此回退到自研层，绝不抛异常。
+# * ``DWMWA_SYSTEMBACKDROP_TYPE`` 是 Win11 才有的属性，老系统上
+#   ``DwmSetWindowAttribute`` 会返回 ``E_INVALIDARG``，这里静默失败即可。
+
+#: ``DwmSetWindowAttribute`` 的 ``dwAttribute`` 取值：系统背景类型（Win11+）。
+DWMWA_SYSTEMBACKDROP_TYPE: int = 38
+
+#: ``DwmSetWindowAttribute`` 的 ``dwAttribute`` 取值：窗口深浅色模式
+#: （Win10 1809+；早期 build 为 19，这里按公开文档的 20 处理，旧系统上
+#: ``E_INVALIDARG`` 静默失败即可）。
+DWMWA_USE_IMMERSIVE_DARK_MODE: int = 20
+
+#: ``DWMSBT_*`` 背景类型枚举（``DwmSetWindowAttribute`` 的 ``pvAttribute`` 值）。
+DWMSBT_DISABLED: int = 0
+DWMSBT_MAINWINDOW: int = 2          # 主窗口云母（Mica）
+DWMSBT_TRANSIENTWINDOW: int = 3     # 瞬态窗口（Mica Alt）
+DWMSBT_TABBEDWINDOW: int = 4       # 标签窗口（Mica Alt）
+
+
+class _MARGINS(ctypes.Structure):
+    """``DwmExtendFrameIntoClientArea`` 的 ``MARGINS`` 结构。"""
+
+    _fields_ = [
+        ("cxLeftWidth", ctypes.c_int),
+        ("cxRightWidth", ctypes.c_int),
+        ("cyTopHeight", ctypes.c_int),
+        ("cyBottomHeight", ctypes.c_int),
+    ]
+
+
+_dwmapi = None  # type: ignore[var-annotated]
+
+
+def _get_dwmapi() -> Optional[object]:
+    """惰性、幂等地取得 ``dwmapi.dll`` 的 ctypes 句柄；缺失时缓存 ``None``。
+
+    Returns:
+        ``ctypes.WinDLL("dwmapi")`` 句柄；非 Windows 或加载失败返回 ``None``。
+    """
+    global _dwmapi
+    if _dwmapi is not None:
+        return _dwmapi  # 可能是 None（已探测过缺失）
+    if not IS_WINDOWS:
+        _dwmapi = None
+        return None
+    try:
+        _dwmapi = ctypes.WinDLL("dwmapi", use_last_error=True)
+    except OSError:
+        _dwmapi = None
+    return _dwmapi
+
+
+def dwm_set_system_backdrop(hwnd: int, backdrop_type: int) -> bool:
+    """``DwmSetWindowAttribute(DWMWA_SYSTEMBACKDROP_TYPE, ...)`` 薄封装。
+
+    Args:
+        hwnd: 窗口句柄（``QWidget.winId()``）。
+        backdrop_type: ``DWMSBT_*`` 之一（如 :data:`DWMSBT_MAINWINDOW`）。
+
+    Returns:
+        调用成功（``SUCCEEDED``）返回 True；否则 False（含非 Windows / 缺失
+        / 旧系统不支持该属性）。
+    """
+    if not IS_WINDOWS or not hwnd:
+        return False
+    lib = _get_dwmapi()
+    if lib is None:
+        return False
+    fn = getattr(lib, "DwmSetWindowAttribute", None)
+    if fn is None:
+        return False
+    fn.argtypes = [wintypes.HWND, ctypes.c_uint, ctypes.c_void_p, ctypes.c_uint]
+    fn.restype = _HRESULT
+    value = ctypes.c_uint(int(backdrop_type))
+    hr = fn(
+        int(hwnd),
+        ctypes.c_uint(DWMWA_SYSTEMBACKDROP_TYPE),
+        ctypes.byref(value),
+        ctypes.c_uint(ctypes.sizeof(value)),
+    )
+    return succeeded(hr)
+
+
+def dwm_use_dark_mode(hwnd: int, dark: bool) -> bool:
+    """``DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE, ...)`` 薄封装。
+
+    原生云母开启时用它对齐 DWM 绘制的系统背景与当前应用主题：深色模式传
+    ``dark=True``，DWM 以深色调云母呈现；浅色传 ``False``。确保深浅两种
+    模式下原生云母都有正确观感。
+
+    Args:
+        hwnd: 窗口句柄。
+        dark: 是否深色模式。
+
+    Returns:
+        调用成功返回 True；否则 False（含非 Windows / 缺失 / 旧系统不支持）。
+    """
+    if not IS_WINDOWS or not hwnd:
+        return False
+    lib = _get_dwmapi()
+    if lib is None:
+        return False
+    fn = getattr(lib, "DwmSetWindowAttribute", None)
+    if fn is None:
+        return False
+    fn.argtypes = [wintypes.HWND, ctypes.c_uint, ctypes.c_void_p, ctypes.c_uint]
+    fn.restype = _HRESULT
+    value = ctypes.c_uint(1 if dark else 0)
+    hr = fn(
+        int(hwnd),
+        ctypes.c_uint(DWMWA_USE_IMMERSIVE_DARK_MODE),
+        ctypes.byref(value),
+        ctypes.c_uint(ctypes.sizeof(value)),
+    )
+    return succeeded(hr)
+
+
+def dwm_extend_frame_into_client_area(hwnd: int, extend: bool) -> bool:
+    """``DwmExtendFrameIntoClientArea`` 薄封装：把客户区帧扩展到窗内。
+
+    开启（``extend=True``）时四边 margin 设为 ``-1``，使整个客户区都成为
+    「可透出系统背景」的区域，原生 Mica 才能铺满；关闭（``extend=False``）
+    时四边归零，恢复正常客户区。
+
+    Args:
+        hwnd: 窗口句柄。
+        extend: 是否扩展帧到客户区。
+
+    Returns:
+        调用成功返回 True；否则 False（含非 Windows / 缺失）。
+    """
+    if not IS_WINDOWS or not hwnd:
+        return False
+    lib = _get_dwmapi()
+    if lib is None:
+        return False
+    fn = getattr(lib, "DwmExtendFrameIntoClientArea", None)
+    if fn is None:
+        return False
+    fn.argtypes = [wintypes.HWND, ctypes.POINTER(_MARGINS)]
+    fn.restype = _HRESULT
+    margins = _MARGINS(-1, -1, -1, -1) if extend else _MARGINS(0, 0, 0, 0)
+    hr = fn(int(hwnd), ctypes.byref(margins))
+    return succeeded(hr)
+
+
+def set_native_mica(hwnd: int, enabled: bool) -> bool:
+    """开启 / 关闭原生 DWM 云母（实验性开关的底层入口，最佳努力）。
+
+    开启时：把系统背景类型设为 :data:`DWMSBT_MAINWINDOW`（Mica），并把帧
+    扩展到整个客户区，使 DWM 绘制的云母铺满窗口；同时上层应**隐藏自研云母
+    层**以避免双重绘制。关闭时：把背景类型置回 :data:`DWMSBT_DISABLED` 并
+    收回帧扩展，恢复普通客户区（自研层重新接管）。
+
+    Args:
+        hwnd: 窗口句柄。
+        enabled: 是否启用原生 DWM 云母。
+
+    Returns:
+        两步均成功返回 True；任一失败返回 False（上层据此回退自研层）。
+    """
+    if not IS_WINDOWS or not hwnd:
+        return False
+    backdrop = DWMSBT_MAINWINDOW if enabled else DWMSBT_DISABLED
+    ok_backdrop = dwm_set_system_backdrop(hwnd, backdrop)
+    ok_extend = dwm_extend_frame_into_client_area(hwnd, enabled)
+    return ok_backdrop and ok_extend

@@ -567,6 +567,35 @@ class AppearanceSettingsPage(QWidget):
         # 初始按模式设置图片行可见性与米卡滑动条可用性（不触发应用逻辑）
         self._update_bg_ui_state()
 
+        # ── 实验性：原生 DWM 云母（Windows 11） ──
+        # 开启后向 DWM 申请系统级云母背景（DWMWA_SYSTEMBACKDROP_TYPE），自研
+        # 渲染层停用 —— 合成完全交给 DWM，主线程零自研渲染开销；非 Win11 /
+        # dwmapi 调用失败时自动保持自研层（开关回弹由 apply 返回值驱动）。
+        native_row = QFrame()
+        native_row.setStyleSheet("background: transparent; border: none;")
+        native_layout = QHBoxLayout(native_row)
+        native_layout.setContentsMargins(0, 0, 0, 0)
+        native_layout.setSpacing(12)
+
+        native_label = QLabel("实验性：原生 DWM 云母（Windows 11）")
+        native_label.setStyleSheet(
+            f"background: transparent; border: none;"
+            f"color: {tm.text.name()}; font-size: 13px; font-weight: 500;"
+        )
+        native_layout.addWidget(native_label)
+        native_layout.addStretch()
+
+        saved_native = False
+        try:
+            saved_native = bool(v2.get("appearance.mica_native_dwm", False))
+        except Exception:
+            pass
+        self._native_mica_toggle = StyledToggle(checked=saved_native, size="default")
+        self._native_mica_toggle.toggled.connect(self._on_native_mica_toggle)
+        native_layout.addWidget(self._native_mica_toggle)
+
+        layout.addWidget(native_row)
+
         layout.addStretch()
 
     # ── 背景米卡效果：滑动条构建与交互 ─────────────────────────────────
@@ -696,6 +725,29 @@ class AppearanceSettingsPage(QWidget):
             v2.save()
         except Exception:
             pass
+
+    def _on_native_mica_toggle(self, checked: bool) -> None:
+        """实验开关切换：持久化（appearance.mica_native_dwm）并即时应用到主窗口。
+
+        应用走 ``_mica_background.apply_native_mica``（最佳努力）：DWM 调用
+        失败（非 Win11 / dwmapi 缺失）时自研层保持接管，开关状态仅作记录。
+
+        Args:
+            checked: 是否启用原生 DWM 云母。
+        """
+        try:
+            v2 = SettingsManagerV2()
+            v2.load()
+            v2.set("appearance.mica_native_dwm", bool(checked))
+            v2.save()
+        except Exception:
+            pass
+        mw = self._find_main_window()
+        if mw is None:
+            return
+        mica_bg = getattr(mw, "_mica_background", None)
+        if mica_bg is not None and hasattr(mica_bg, "apply_native_mica"):
+            mica_bg.apply_native_mica(checked)
 
     # ── 窗口背景：模式切换与图片导入 ─────────────────────────────────
 
