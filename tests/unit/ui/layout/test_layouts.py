@@ -1005,7 +1005,7 @@ class TestAppearanceSettingsPage:
         page = AppearanceSettingsPage()
         assert page._bg_mode == "mica"
         assert page._bg_image_name == ""
-        assert page._bg_segmented.current_index == 0
+        assert page._bg_segmented.current_index == 1
         assert page._bg_image_row.isVisibleTo(page) is False
         assert page._bg_file_label.text() == "未设置"
         safe_teardown(page)
@@ -1043,7 +1043,7 @@ class TestAppearanceSettingsPage:
         page = AppearanceSettingsPage()
         assert page._bg_mode == "image"
         assert page._bg_image_name == "custom_background.png"
-        assert page._bg_segmented.current_index == 1
+        assert page._bg_segmented.current_index == 2
         assert page._bg_image_row.isVisibleTo(page) is True
         assert page._bg_file_label.text() == "custom_background.png"
         safe_teardown(page)
@@ -1083,6 +1083,7 @@ class TestAppearanceSettingsPage:
         saved.load()
         assert saved.get("appearance.background") == {
             "mode": "image", "image": "custom_background.png",
+            "ambient": True,
         }
 
         # mica 模式：仅 set_background_mode，不动图片接口
@@ -1123,8 +1124,8 @@ class TestAppearanceSettingsPage:
 
         page = AppearanceSettingsPage()
         page._bg_image_name = "custom_background.png"
-        # 模拟用户点击第二个分段（触发 current_changed → 处理器）
-        page._bg_segmented.set_current_index(1)
+        # 模拟用户点击图像分段（触发 current_changed → 处理器）
+        page._bg_segmented.set_current_index(2)
 
         assert page._bg_mode == "image"
         assert len(fake_mw.image_calls) == 1
@@ -1158,16 +1159,16 @@ class TestAppearanceSettingsPage:
         )
 
         page = AppearanceSettingsPage()
-        page._bg_segmented.set_current_index(1)
+        page._bg_segmented.set_current_index(2)
 
-        # 取消：分段编程式回退到 0，模式与持久化设置保持默认（未被写入）
-        assert page._bg_segmented.current_index == 0
+        # 取消：分段编程式回退到云母，模式与持久化设置保持默认（未被写入）
+        assert page._bg_segmented.current_index == 1
         assert page._bg_mode == "mica"
         assert fake_mw.mode_calls == []
         assert fake_mw.image_calls == []
         saved = SettingsManagerV2(tmp_file)
         saved.load()
-        assert saved.get("appearance.background") == {"mode": "mica", "image": ""}
+        assert saved.get("appearance.background") == {"mode": "mica", "image": "", "ambient": True}
         safe_teardown(page)
 
     def test_bg_segment_switch_import_failure_shows_dialog(
@@ -1202,16 +1203,16 @@ class TestAppearanceSettingsPage:
         )
 
         page = AppearanceSettingsPage()
-        page._bg_segmented.set_current_index(1)
+        page._bg_segmented.set_current_index(2)
 
         assert len(dialog_calls) == 1
         assert dialog_calls[0]["title"] == "导入失败"
-        assert page._bg_segmented.current_index == 0
+        assert page._bg_segmented.current_index == 1
         assert page._bg_mode == "mica"
         assert fake_mw.mode_calls == []
         saved = SettingsManagerV2(tmp_file)
         saved.load()
-        assert saved.get("appearance.background") == {"mode": "mica", "image": ""}
+        assert saved.get("appearance.background") == {"mode": "mica", "image": "", "ambient": True}
         safe_teardown(page)
 
     def test_choose_bg_image_success_via_button(
@@ -1248,13 +1249,14 @@ class TestAppearanceSettingsPage:
         assert page._bg_image_name == "custom_background.png"
         assert page._bg_file_label.text() == "custom_background.png"
         assert page._bg_mode == "image"
-        assert page._bg_segmented.current_index == 0  # 按钮入口不切分段
+        assert page._bg_segmented.current_index == 1  # 按钮入口不切分段
         assert fake_mw.image_calls == [dest]
         assert fake_mw.mode_calls == ["image"]
         saved = SettingsManagerV2(tmp_file)
         saved.load()
         assert saved.get("appearance.background") == {
             "mode": "image", "image": "custom_background.png",
+            "ambient": True,
         }
         safe_teardown(page)
 

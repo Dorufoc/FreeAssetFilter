@@ -95,6 +95,9 @@ BAKE_LONG_MAX: int = 320
 
 #: Mica 叠加层淡入淡出时长（毫秒）。
 FADE_DURATION_MS: int = 175
+#: 新视口层交付后的交叉过渡时长（毫秒）：旧态快照打底、新层按进度淡入
+#: （主题 / 参数 / 壁纸切换的背景平滑过渡，见 ``MicaMaterial._start_xfade``）。
+XFADE_DURATION_MS: int = 280
 #: 交互（拖拽/缩放）停止后重建缓存的延时（毫秒）。
 SETTLE_INTERVAL_MS: int = 80
 #: 窗口移动超过该像素阈值才在稳定后重烘焙（色调场是低频量，微小位移不可见）。

@@ -43,7 +43,8 @@ from components.custom_background import BACKGROUND_DIR_NAME, CustomImageBackgro
 from components.mica_material import MicaMaterial
 from components.mica_window import DEFAULT_MICA_CONFIG
 from components.styled_button import StyledButton
-from components.theme_transition_overlay import ThemeTransitionOverlay
+# 内容层主题过渡遮罩（旧外观快照自绘淡出，轻量自绘替代整窗遮罩的两处卡顿源）
+from components.theme_transition_overlay import ContentTransitionOverlay
 # 实验性原生 DWM 云母开关的底层桥接（dwmapi 薄封装，惰性加载，零 COM 初始化）
 from freeassetfilter.ui.mica import winapi as mica_winapi
 
@@ -57,6 +58,12 @@ from layout.unified_previewer_layout import UnifiedPreviewerLayout
 from freeassetfilter.utils.path_utils import get_app_data_path
 from freeassetfilter.utils.app_logger import debug, warning
 from freeassetfilter.services.staging_pool_service import StagingPoolService
+
+# 简约背景层（try 包裹：组件 PR 合并前主窗口仍可导入，各调用点配合 getattr 守卫）
+try:
+    from components.minimalist_background import MinimalistBackgroundWidget
+except ImportError:
+    MinimalistBackgroundWidget = None  # type: ignore[assignment,misc]
 
 
 # ── 米卡效果固定参数（按深浅色主题各一组） ─────────────────────────────
@@ -135,12 +142,17 @@ class _MicaBackgroundMixin:
         self.setPalette(palette)
 
     def _theme_surface_color(self) -> str:
-        """按当前系统深浅色模式返回纯色背景（完全不透明）。
+        """按当前系统深浅色模式返回纯色基底（完全不透明）。
 
-        背景固定为两种纯色，随系统深浅色模式自动切换：
+        基底固定为两种纯色，随系统深浅色模式自动切换：
         - 深色模式 → 纯黑 #000000
         - 浅色模式 → 纯白 #FFFFFF
+        用途：烘焙混合基色（render_display 的 overlay 预合成）与宿主 palette。
         模糊图像的显示状态由叠加层透明度（tint_opacity，0-100%）控制。
+
+        注意：**绘制期兜底填充**（失焦暂停 / 无产物 / 淡入淡出底色）不使用
+        本色 —— 由 MicaMaterial 以当前主题 G1 呈现（深 #1a1a1a / 浅 #f5f5f5，
+        见 ``MicaMaterial._background_fill_color``）。
         """
         return "#000000" if tm.is_dark_theme() else "#FFFFFF"
 
@@ -194,12 +206,19 @@ class _MicaBackgroundMixin:
         # 快速重烘焙 luminosity（复用已模糊的 base，不再重新模糊）；
         # 背景色为绘制期读取，切换主题仅需重绘
         if self._mica is not None:
-            self._mica.set_theme(self._surface_color, self._luminosity)
-            # 米卡参数按主题固定：主题切换时以新主题的固定参数更新。blur/sat/con
-            # 任一变化即触发一次强制重烘（overlay 新值随该次烘焙一并生效，不另起
-            # 防抖）；在途的旧表面色烘焙结果由 key/gen 守卫丢弃，回收逻辑按最新
-            # 条件（新参数 + 新表面色）续烘一次收敛。
-            self.apply_mica_parameters(**fixed_mica_params())
+            # 米卡参数按主题固定：与主题色 / 深浅标志一并在 key 计算前折入
+            # set_theme —— 主题切换只起**一次**烘焙（单次收敛，替代旧的
+            # 「set_theme 起烘 → 参数变更作废重烘」双烘链，等待期减半）；
+            # 新层交付后由 MicaMaterial 以旧态快照交叉淡入（平滑过渡）。
+            fixed = fixed_mica_params()
+            self._mica.set_theme(
+                self._surface_color,
+                self._luminosity,
+                blur_radius=fixed["blur_radius"],
+                saturation=fixed["saturation"],
+                contrast=fixed["contrast"],
+                overlay_opacity=fixed["tint_opacity"] / 100.0,
+            )
             # 原生 DWM 云母模式：深浅色属性随主题对齐（自研层停用，无需重烘焙）
             self._sync_native_dark_mode()
             self.update()
@@ -579,8 +598,10 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 先初始化属性，防止父类初始化期间触发的事件访问未定义属性
         self._mica_background = None
         self._custom_background = None
+        self._minimalist_background = None
         self._background_mode = "mica"
         self._background_image_name = ""
+        self._background_ambient = True
         self._root = None
         self._content = None
         self._panels = []
@@ -603,13 +624,20 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 设置窗口实例引用：防止局部变量被 GC 后窗口闪退；
         # 仅在设置窗口存活期间持有，关闭销毁后清空
         self._settings_window = None
+        # 设置窗口代际计数器：destroyed 信号发自 ~QObject，槽收到的 obj
+        # 是基类包装（实测为 'QWidget'），`is obj` 身份比对恒失败；
+        # 故创建窗口时递增代际并绑定到槽，槽内按代际比对清空引用
+        self._settings_window_gen = 0
+        # 内容层主题过渡遮罩（单实例去重引用；见 _start_content_theme_transition）
+        self._content_theme_overlay: QWidget | None = None
 
         # 配置 Mica 参数（提前计算）：显式参数 > V2 保存值 > 项目默认
         cfg = DEFAULT_MICA_CONFIG
         mica_saved = self._load_mica_settings()
         background_saved = self._load_background_settings()
-        self._background_mode = background_saved["mode"]
-        self._background_image_name = background_saved["image"]
+        self._background_mode = background_saved.get("mode", "mica")
+        self._background_image_name = background_saved.get("image", "")
+        self._background_ambient = bool(background_saved.get("ambient", True))
         self._blur_radius = blur_radius if blur_radius is not None else mica_saved["blur_radius"]
         # 背景色仅作回退默认值；实际绘制由 mixin 按主题决定（深色纯黑/浅色纯白）
         self._surface_color = surface_color if surface_color is not None else cfg["surface_color"]
@@ -665,16 +693,17 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
     @staticmethod
     def _load_background_settings() -> dict:
-        """启动时从 SettingsManagerV2 恢复自定义背景设置（模式与图片文件名）。
+        """启动时从 SettingsManagerV2 恢复自定义背景设置（模式、图片与氛围开关）。
 
-        读取 ``appearance.background`` 节点：mode 仅接受 "mica" / "image"
-        （非法值回退 "mica"），image 为持久化目录（data/backgrounds/）下的
-        文件名（空字符串表示未设置），统一转为 str。
+        读取 ``appearance.background`` 节点：mode 仅接受 "mica" / "image" /
+        "minimalist"（非法值回退 "mica"），image 为持久化目录
+        （data/backgrounds/）下的文件名（空字符串表示未设置，统一转为 str），
+        ambient 缺失时默认 True（经 bool() 归一）。
 
         Returns:
-            dict: {"mode": str, "image": str}
+            dict: {"mode": str, "image": str, "ambient": bool}
         """
-        defaults = {"mode": "mica", "image": ""}
+        defaults = {"mode": "mica", "image": "", "ambient": True}
         try:
             from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
             v2 = SettingsManagerV2()
@@ -682,9 +711,13 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             saved = v2.get("appearance.background", {})
             if isinstance(saved, dict):
                 mode = saved.get("mode", "mica")
-                if mode not in ("mica", "image"):
+                if mode not in ("mica", "image", "minimalist"):
                     mode = "mica"
-                return {"mode": mode, "image": str(saved.get("image", ""))}
+                return {
+                    "mode": mode,
+                    "image": str(saved.get("image", "")),
+                    "ambient": bool(saved.get("ambient", True)),
+                }
         except Exception:
             pass
         return defaults
@@ -752,19 +785,30 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         )
         self._mica_background.setAttribute(Qt.WA_TransparentForMouseEvents, True)
 
-        # 层 1.5：自定义图片背景层（image 模式下覆盖 Mica 层；鼠标穿透由组件自设）
+        # 层 1.5：自定义图像背景层（image 模式下覆盖云母层；鼠标穿透由组件自设）
         self._custom_background = CustomImageBackgroundWidget(self._root)
 
-        # 层 2：内容层（透明容器，叠在 Mica 之上）
+        # 层 1.75：简约背景层（minimalist 模式下盖住云母/图像层；组件不可用时为 None）
+        if MinimalistBackgroundWidget is not None:
+            self._minimalist_background = MinimalistBackgroundWidget(self._root)
+            self._minimalist_background.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        else:
+            self._minimalist_background = None
+
+        # 层 2：内容层（透明容器，叠在云母之上）
         self._content = QWidget(self._root)
 
         # 三层叠放在同一网格单元（单元格内按添加顺序决定 z-order）：
-        # Mica 在最下、自定义图片居中、内容在最上
+        # 云母在最下、自定义图像居中、简约在内容之下最上、内容在最上
         overlay.addWidget(self._mica_background, 0, 0)
         overlay.addWidget(self._custom_background, 0, 0)
+        if self._minimalist_background is not None:
+            overlay.addWidget(self._minimalist_background, 0, 0)
         overlay.addWidget(self._content, 0, 0)
         self._mica_background.lower()
         self._content.raise_()
+        if self._minimalist_background is not None:
+            self._minimalist_background.stackUnder(self._content)
 
         # 启动恢复：按持久化文件名拼绝对路径加载自定义背景；文件缺失时
         # 组件内部回退纯色并记日志，不抛异常（见 CustomImageBackgroundWidget.set_image）
@@ -774,10 +818,17 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             )
             self._custom_background.set_image(background_image_path)
 
-        # 初始可见性：image 模式显示自定义层并隐藏 Mica 层，mica 模式反之
+        # 初始可见性：三模式互斥，仅当前模式层可见
         self._custom_background.setVisible(self._background_mode == "image")
         if self._background_mode == "image":
             self._mica_background.setVisible(False)
+        elif self._background_mode == "minimalist":
+            self._mica_background.setVisible(False)
+            self._custom_background.setVisible(False)
+        minimalist = getattr(self, "_minimalist_background", None)
+        if minimalist is not None:
+            minimalist.setVisible(self._background_mode == "minimalist")
+            minimalist.set_ambient_enabled(self._background_ambient)
 
         # 创建主布局（内容层作为根容器）
         main_layout = QVBoxLayout(self._content)
@@ -1089,32 +1140,74 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
         window = SettingsWindow(self)
         self._settings_window = window
+        self._settings_window_gen += 1
+        gen = self._settings_window_gen
         window.setAttribute(Qt.WA_DeleteOnClose, True)
-        window.destroyed.connect(self._on_settings_window_closed)
+        window.destroyed.connect(lambda _obj=None, _gen=gen: self._on_settings_window_closed(_gen))
         window.show()
         window.raise_()
         window.activateWindow()
 
-    def _on_settings_window_closed(self, obj: object = None) -> None:
+    def _on_settings_window_closed(self, gen: object = None) -> None:
         """设置窗口被关闭/销毁（含主窗口关闭连带销毁）后释放引用。
 
         Args:
-            obj: 触发 destroyed 的窗口对象（QObject.destroyed 信号参数）。
-                仅当引用仍指向该窗口时才清空，防止旧窗口销毁事件晚到时
-                误清已重建的新窗口引用。
+            gen: 触发 destroyed 的窗口代际（创建窗口时绑定的计数器值）。
+                仅当传入代际与当前代际一致（或无代际参数的直接调用）时
+                才清空，防止旧窗口销毁事件晚到时误清已重建的新窗口引用。
+                注意：不得改回 `is obj` 身份比对——destroyed 发自 ~QObject，
+                槽收到的 obj 是基类包装，身份比对恒失败。
         """
-        if self._settings_window is not None and (
-            obj is None or self._settings_window is obj
-        ):
-            self._settings_window = None
+        if gen is not None and gen != self._settings_window_gen:
+            return
+        self._settings_window = None
+
+    def _start_content_theme_transition(self) -> None:
+        """启动内容层主题过渡：切前抓内容子树快照，切后旧外观淡出。
+
+        恢复此前被移除的整窗遮罩所承担的「组件渐变过渡」职责，但仅针对
+        内容层（``_content``），且旧遮罩的两处卡顿源均已消除：
+
+        - 快照用 ``QWidget.grab()`` 渲染内容子树——不含 OpenGL 的 Mica
+          背景兄弟层，无 GL 花屏风险；也没有 ``QScreen.grabWindow(HWND)``
+          的整窗同步截屏阻塞；
+        - 淡出由 :class:`ContentTransitionOverlay` 自绘（每帧单次
+          ``drawPixmap``），替代 ``QGraphicsOpacityEffect`` 的逐帧全窗
+          效果过滤合成。
+
+        Mica 背景过渡由 ``MicaMaterial._start_xfade`` 材质级交叉过渡承担：
+        遮罩只盖内容层、不遮背景层，两者独立并行、互不影响。未显示窗口
+        （测试/最小化）无过渡——与 Mica 交叉过渡的 ``isVisible`` 守卫语义
+        一致。
+        """
+        content = self._content
+        if content is None or not content.isVisible():
+            return
+        # 单实例去重：上一过渡未结束则立即完成，避免连点叠加多层遮罩
+        prev = self._content_theme_overlay
+        if prev is not None:
+            from shiboken6 import isValid
+
+            if isValid(prev):
+                prev.finish_now()
+            self._content_theme_overlay = None
+        try:
+            snapshot = content.grab()
+        except Exception:  # noqa: BLE001 - 快照失败不阻塞主题切换本身
+            return
+        if snapshot.isNull():
+            return
+        overlay = ContentTransitionOverlay(content, snapshot)
+        self._content_theme_overlay = overlay
+        overlay.start()
 
     def _on_theme_toggle(self) -> None:
         """主题切换按钮点击事件"""
-        # 先捕获当前窗口快照并启动过渡遮罩，再切换主题，
-        # 使新旧主题之间通过交叉淡化平滑过渡。
-        # 使用 grabWindow(HWND) 而非 grab()，避免 OpenGL Mica 背景合成花屏。
-        overlay = ThemeTransitionOverlay.from_widget(self)
-        overlay.start()
+        # 内容组件过渡：切前抓内容层快照，切后旧外观淡出（轻量自绘，
+        # 无 grabWindow 整窗截屏与 QGraphicsOpacityEffect 逐帧合成）。
+        # Mica 背景过渡由材质级交叉过渡承担（MicaMaterial._start_xfade），
+        # 遮罩只盖内容层，两者独立并行。
+        self._start_content_theme_transition()
 
         tm.toggle_theme()
         # 同步持久化到 SettingsManagerV2（重启后恢复）
@@ -1131,13 +1224,21 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 按钮图标和 tooltip 在 _on_theme_changed 中更新
 
     def _on_theme_changed(self, theme_name: str) -> None:
-        """主题切换后的处理"""
-        # 更新 Mica 背景（重烘焙 luminosity，背景色绘制期生效，复用已模糊 base）
+        """主题切换后的处理。
+
+        Args:
+            theme_name: 新主题名（"light" 或 "dark"）。
+        """
+        # 更新云母背景（重烘焙 luminosity，背景色绘制期生效，复用已模糊 base）
         if self._mica_background is not None:
             self._mica_background.sync_theme()
-        # 同步自定义图片背景层（兜底色绘制期动态读取，仅需触发重绘）
+        # 同步自定义图像背景层（兜底色绘制期动态读取，仅需触发重绘）
         if self._custom_background is not None:
             self._custom_background.sync_theme()
+        # 同步简约背景层（按新主题实时重算渐变）
+        minimalist = getattr(self, "_minimalist_background", None)
+        if minimalist is not None:
+            minimalist.sync_theme()
         # 兜底层（root）也切到纯色背景，保证 GL 缺画时的底色与主题一致
         if self._root is not None:
             root_palette = self._root.palette()
@@ -1218,8 +1319,16 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._splitter.setSizes([third, third, third])
 
     def _on_colors_updated(self, colors: dict) -> None:
-        """配色加载完成后的处理：重新套用三栏面板样式（确保颜色就绪后边框/填充正确）。"""
+        """配色加载完成后的处理：重新套用三栏面板样式（确保颜色就绪后边框/填充正确）。
+
+        Args:
+            colors: 更新后的配色字典。
+        """
         self._refresh_panel_styles()
+        # 同步简约背景层（按新配色实时重算渐变）
+        minimalist = getattr(self, "_minimalist_background", None)
+        if minimalist is not None:
+            minimalist.sync_theme()
 
     # ──── 信号处理 ─────────────────────────────────────────────────────
 
@@ -1285,10 +1394,10 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             self._restore_started = True
             QTimer.singleShot(100, self._check_and_restore_backup)
 
-        # 首帧提速：Mica 壁纸加载/高斯模糊/烘焙在 __init__ 阶段被延迟
+        # 首帧提速：云母壁纸加载/高斯模糊/烘焙在 __init__ 阶段被延迟
         # （MicaMaterial lazy=True），这里在窗口显示后的第一轮事件循环里
-        # 再执行。窗口先以纯色主题背景出现，模糊完成后无缝替换为 Mica。
-        # image 模式启动时 Mica 层被隐藏，跳过壁纸后台刷新以节省资源
+        # 再执行。窗口先以纯色主题背景出现，模糊完成后无缝替换为云母。
+        # image/minimalist 模式启动时云母层被隐藏，跳过壁纸后台刷新以节省资源
         # （切回 mica 模式时由 set_background_mode 补刷）。
         if (
             not getattr(self, '_mica_refresh_started', False)
@@ -1398,7 +1507,15 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 关闭，此处显式 close 使其走 WA_DeleteOnClose 及时销毁并释放引用，
         # 避免隐藏后残留孤儿实例
         if self._settings_window is not None:
-            self._settings_window.close()
+            try:
+                from shiboken6 import isValid
+
+                if isValid(self._settings_window):
+                    self._settings_window.close()
+            except RuntimeError:
+                pass
+            finally:
+                self._settings_window = None
         self._dispose_mica()
         try:
             self._file_pool.flush_backup_save_now()
@@ -1435,39 +1552,85 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
     # ---- Public API ----
 
     def refresh_background(self) -> None:
-        """刷新背景（例如壁纸更改后）"""
+        """刷新背景（例如壁纸更改后）。
+
+        云母/图像/简约三层各按自身逻辑重算（简约层按当前主题重算渐变）。
+        """
         if self._mica_background is not None:
             self._mica_background.refresh_background()
         if self._custom_background is not None:
             self._custom_background.refresh_background()
+        minimalist = getattr(self, "_minimalist_background", None)
+        if minimalist is not None:
+            minimalist.refresh_background()
 
     def set_background_mode(self, mode: str) -> None:
-        """切换背景模式（mica / image）。
+        """切换背景模式（mica / image / minimalist）。
 
-        只切换背景层可见性、不销毁重建控件（两个背景层常驻，切换零构建成本）：
+        只切换背景层可见性、不销毁重建控件（三个背景层常驻，切换零构建成本）：
 
-        - "image"：显示自定义图片层、隐藏 Mica 层；
-        - "mica"：隐藏自定义图片层、显示 Mica 层；若本次会话尚未执行过
-          Mica 壁纸后台刷新（image 模式启动时 showEvent 跳过了调度），
-          这里补一次，避免 Mica 层停留在未烘焙的纯色状态。
+        - "image"：显示自定义图像层、隐藏云母层与简约层；
+        - "minimalist"：显示简约层、隐藏云母层与自定义图像层，并把当前
+          氛围开关同步给简约层；
+        - "mica"：隐藏自定义图像层与简约层、显示云母层；若本次会话尚未执行过
+          云母壁纸后台刷新（image/minimalist 模式启动时 showEvent 跳过了调度），
+          这里补一次，避免云母层停留在未烘焙的纯色状态。
 
         Args:
-            mode: 目标模式："mica" 或 "image"；非法值记 warning 后忽略。
+            mode: 目标模式："mica"、"image" 或 "minimalist"；非法值记 warning 后忽略。
         """
-        if mode not in ("mica", "image"):
-            warning(f"忽略非法背景模式: {mode!r}（仅支持 'mica' / 'image'）")
+        if mode not in ("mica", "image", "minimalist"):
+            warning(f"忽略非法背景模式: {mode!r}（仅支持 'mica' / 'image' / 'minimalist'）")
             return
         self._background_mode = mode
+        minimalist = getattr(self, "_minimalist_background", None)
         if mode == "image":
             self._custom_background.setVisible(True)
             self._mica_background.setVisible(False)
+            if minimalist is not None:
+                minimalist.setVisible(False)
+        elif mode == "minimalist":
+            self._custom_background.setVisible(False)
+            self._mica_background.setVisible(False)
+            if minimalist is not None:
+                minimalist.setVisible(True)
+                minimalist.set_ambient_enabled(self._background_ambient)
         else:
             self._custom_background.setVisible(False)
+            if minimalist is not None:
+                minimalist.setVisible(False)
             self._mica_background.setVisible(True)
-            # image 模式启动时 showEvent 跳过了 Mica 后台刷新，这里补一次
+            # image/minimalist 模式启动时 showEvent 跳过了云母后台刷新，这里补一次
             if not getattr(self, "_mica_refresh_started", False):
                 self._mica_refresh_started = True
                 self._start_mica_refresh()
+
+    def set_ambient_enabled(self, enabled: bool) -> None:
+        """设置简约背景的氛围开关并转发给简约层。
+
+        Args:
+            enabled: True 开启氛围渐变，False 使用纯色；经 bool() 归一后记录。
+        """
+        self._background_ambient = bool(enabled)
+        minimalist = getattr(self, "_minimalist_background", None)
+        if minimalist is not None:
+            minimalist.set_ambient_enabled(self._background_ambient)
+
+    def get_background_mode(self) -> str:
+        """返回当前背景模式（供设置页实时联动与测试）。
+
+        Returns:
+            str: "mica"、"image" 或 "minimalist" 之一。
+        """
+        return self._background_mode
+
+    def is_ambient_enabled(self) -> bool:
+        """返回当前氛围开关状态（供设置页实时联动与测试）。
+
+        Returns:
+            bool: True 表示简约层氛围渐变开启。
+        """
+        return bool(self._background_ambient)
 
     def set_custom_background_image(self, path: str) -> bool:
         """设置自定义背景图片（转发给背景层组件）。
@@ -1484,14 +1647,22 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
     # ---- 窗口事件处理 ----
     
     def resizeEvent(self, event: QResizeEvent) -> None:
-        """窗口大小改变事件"""
+        """窗口大小改变事件。
+
+        Args:
+            event: Qt 缩放事件。
+        """
         super().resizeEvent(event)
         # 通知 MicaBackgroundWidget 刷新
         if self._mica_background is not None:
             self._mica_background.handle_window_resize()
-        # 通知自定义图片背景层刷新（进入交互态，settle 后重建平滑缓存）
+        # 通知自定义图像背景层刷新（进入交互态，settle 后重建平滑缓存）
         if self._custom_background is not None:
             self._custom_background.handle_window_resize()
+        # 通知简约背景层刷新（渐变固定于客户区，按新尺寸重绘）
+        minimalist = getattr(self, "_minimalist_background", None)
+        if minimalist is not None:
+            minimalist.handle_window_resize()
 
     def moveEvent(self, event: QMoveEvent) -> None:
         """窗口移动事件"""
@@ -1499,9 +1670,9 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 通知 MicaBackgroundWidget 刷新
         if self._mica_background is not None:
             self._mica_background.handle_window_move()
-        # 注意：不把移动事件转发给自定义图片层——图像固定于窗口客户区、
-        # 不随窗口屏幕位置偏移或重新裁切（这是与 Mica 按屏幕位置裁切的
-        # 核心差异），无需刷新；组件的 handle_window_move 亦为空操作。
+        # 注意：不把移动事件转发给自定义图像层与简约层——图像/渐变固定于
+        # 窗口客户区、不随窗口屏幕位置偏移或重新裁切（这是与云母按屏幕位置
+        # 裁切的核心差异），无需刷新；组件的 handle_window_move 亦为空操作。
 
 
 class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):

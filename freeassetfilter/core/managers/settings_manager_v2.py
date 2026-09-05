@@ -529,8 +529,9 @@ DEFAULT_SETTINGS_V2: Dict[str, Any] = {
         },
         # 自定义窗口背景（设置窗口「外观」页「窗口背景」区块）
         "background": {
-            "mode": "mica",   # 背景模式："mica"（米卡效果） | "image"（自定义图片）
+            "mode": "mica",   # 背景模式："mica"（云母） | "image"（图像） | "minimalist"（简约）
             "image": "",      # 自定义图片文件名（位于 data/backgrounds/ 下，空字符串 = 未设置）
+            "ambient": True,  # 弥散氛围开关（简约模式下将主题色作为背景氛围层，默认开启）
         },
     },
 }

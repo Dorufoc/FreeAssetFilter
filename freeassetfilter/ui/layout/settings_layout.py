@@ -27,6 +27,7 @@ from components.styled_toggle import StyledToggle
 from components.styled_button import StyledButton
 from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
 from components.styled_segmented import StyledSegmented
+from components.settings_card import SettingsRow
 from components.styled_dialog import create_danger_dialog
 from components.styled_color_picker import _ColorPanel
 from components.custom_background import (
@@ -381,8 +382,11 @@ class AppearanceSettingsPage(QWidget):
         self._event_filter_installed: bool = False  # track event filter state
         self._event_filter_targets: list[QObject] = []
         # 窗口背景状态（初值在 _build_ui 中从 V2 覆盖）
-        self._bg_mode: str = "mica"        # "mica" / "image"
+        self._bg_mode: str = "mica"        # "mica"（云母） / "image"（图像） / "minimalist"（简约）
         self._bg_image_name: str = ""      # 持久化目录中的背景图片文件名
+        self._bg_ambient: bool = True      # 弥散氛围开关（简约模式下将主题色作为背景氛围层）
+        self._ambient_toggle: StyledToggle | None = None  # 弥散氛围开关控件
+        self._ambient_row: QWidget | None = None          # 弥散氛围行容器（仅简约模式可见）
         self._bg_updating: bool = False    # 编程式切换分段控件的守卫标志
         self._build_ui()
         self._load_v2_settings()
@@ -459,13 +463,15 @@ class AppearanceSettingsPage(QWidget):
         color_row.addStretch()  # 右侧弹性空间
         layout.addLayout(color_row)
 
-        # ── 窗口背景（米卡效果 / 自定义图片） ──
-        # 米卡效果参数为按主题固定的产品定值（见 main_window.FIXED_MICA_PARAMS），
+        # ── 窗口背景（简约 / 云母 / 图像） ──
+        # 云母参数为按主题固定的产品定值（见 main_window.FIXED_MICA_PARAMS），
         # 设置页不再提供滑动条配置。
         saved_bg = v2.get("appearance.background", {}) or {}
         saved_bg_mode = saved_bg.get("mode", "mica")
-        self._bg_mode = saved_bg_mode if saved_bg_mode in ("mica", "image") else "mica"
+        self._bg_mode = saved_bg_mode if saved_bg_mode in ("mica", "image", "minimalist") else "mica"
         self._bg_image_name = str(saved_bg.get("image", "") or "")
+        _raw_ambient = saved_bg.get("ambient", True)
+        self._bg_ambient = _raw_ambient if isinstance(_raw_ambient, bool) else bool(_raw_ambient)
 
         bg_label = QLabel("窗口背景")
         bg_label.setStyleSheet(
@@ -476,15 +482,19 @@ class AppearanceSettingsPage(QWidget):
         self._bg_label = bg_label
 
         self._bg_segmented = StyledSegmented(variant="pill", size="sm")
-        self._bg_segmented.add_segment("米卡效果")
-        self._bg_segmented.add_segment("自定义图片")
+        self._bg_segmented.add_segment("简约")
+        self._bg_segmented.add_segment("云母")
+        self._bg_segmented.add_segment("图像")
         self._bg_segmented.current_changed.connect(self._on_bg_segment_changed)
-        # 初始选中项来自 V2：image → 索引 1。守卫内编程式切换，
-        # 避免初始化期间触发 _on_bg_segment_changed 的应用/持久化逻辑。
+        # 初始选中项来自 V2：简约 → 索引 0（默认选中，无需切换），
+        # 云母 → 索引 1，图像 → 索引 2。守卫内编程式切换，避免初始化期间
+        # 触发 _on_bg_segment_changed 的应用/持久化逻辑。
         self._bg_updating = True
         try:
-            if self._bg_mode == "image":
+            if self._bg_mode == "mica":
                 self._bg_segmented.set_current_index(1, animate=False)
+            elif self._bg_mode == "image":
+                self._bg_segmented.set_current_index(2, animate=False)
         finally:
             self._bg_updating = False
         layout.addWidget(self._bg_segmented)
@@ -511,7 +521,17 @@ class AppearanceSettingsPage(QWidget):
         bg_row_layout.addWidget(self._bg_choose_btn)
         layout.addWidget(self._bg_image_row)
 
-        # 初始按模式设置图片行可见性（不触发应用逻辑）
+        # 弥散氛围行（仅简约模式可见）：开关实时生效并持久化
+        self._ambient_row = SettingsRow(
+            title="弥散氛围",
+            description="启用后,将选取主题色作为背景氛围层提升质感",
+        )
+        self._ambient_toggle = StyledToggle(checked=self._bg_ambient, size="default")
+        self._ambient_toggle.toggled.connect(self._on_ambient_toggled)
+        self._ambient_row.set_control(self._ambient_toggle)
+        layout.addWidget(self._ambient_row)
+
+        # 初始按模式设置图片行与弥散氛围行的可见性（不触发应用逻辑）
         self._update_bg_ui_state()
 
         layout.addStretch()
@@ -539,18 +559,45 @@ class AppearanceSettingsPage(QWidget):
         """窗口背景分段控件切换处理。
 
         Args:
-            index: 新选中的分段索引（0 = 米卡效果，1 = 自定义图片）。
+            index: 新选中的分段索引（0 = 简约，1 = 云母，2 = 图像）。
         """
         if self._bg_updating:
             return
-        if index == 1:
+        if index == 2:
             # 已有持久化图片且文件存在 → 直接切换；否则强制走选择流程
             if self._bg_image_name and os.path.exists(self._bg_image_path()):
                 self._apply_background_settings("image")
             else:
                 self._choose_bg_image(force=True)
+        elif index == 0:
+            self._apply_background_settings("minimalist")
         else:
             self._apply_background_settings("mica")
+
+    def _on_ambient_toggled(self, checked: bool) -> None:
+        """弥散氛围开关切换处理：实时生效并持久化（无需点应用）。
+
+        非简约模式下先整体切入简约（新氛围值随本次切换一并带上）；
+        已处简约模式时直接把新氛围值实时转发给主窗口并持久化。
+
+        Args:
+            checked: 开关新状态；True 表示启用弥散氛围。
+        """
+        self._bg_ambient = bool(checked)
+        if self._bg_mode != "minimalist":
+            self._apply_background_settings("minimalist")
+            return
+        try:
+            mw = self._find_main_window()
+            if mw is not None:
+                if hasattr(mw, "set_ambient_enabled"):
+                    mw.set_ambient_enabled(self._bg_ambient)
+                if hasattr(mw, "set_background_mode"):
+                    mw.set_background_mode("minimalist")
+        except Exception:
+            pass
+        self._save_background_settings()
+        self._update_bg_ui_state()
 
     def _on_choose_bg_image_clicked(self) -> None:
         """「选择图片…」按钮点击入口（非强制场景：取消/失败不回退分段）。"""
@@ -560,9 +607,9 @@ class AppearanceSettingsPage(QWidget):
         """打开文件对话框选择并导入背景图片。
 
         Args:
-            force: True 表示由分段控件首次切入「自定义图片」触发的强制
+            force: True 表示由分段控件首次切入「图像」触发的强制
                 选择场景——用户取消或导入失败时把分段控件编程式回退到
-                「米卡效果」；False 表示「选择图片…」按钮触发，取消或
+                「云母」；False 表示「选择图片…」按钮触发，取消或
                 失败时保持现状（不回退、不改设置）。
 
         Returns:
@@ -594,10 +641,10 @@ class AppearanceSettingsPage(QWidget):
         return True
 
     def _revert_bg_segment(self) -> None:
-        """把分段控件编程式回退到「米卡效果」（守卫内切换不触发处理器）。"""
+        """把分段控件编程式回退到「云母」（索引 1，守卫内切换不触发处理器）。"""
         self._bg_updating = True
         try:
-            self._bg_segmented.set_current_index(0)
+            self._bg_segmented.set_current_index(1)
         finally:
             self._bg_updating = False
 
@@ -613,22 +660,31 @@ class AppearanceSettingsPage(QWidget):
         )
 
     def _apply_background_settings(self, mode: str) -> None:
-        """切换窗口背景模式：应用到主窗口并持久化。
+        """切换窗口背景模式：实时应用到主窗口并持久化（无需点应用）。
 
         Args:
-            mode: 目标背景模式："mica" 或 "image"。
+            mode: 目标背景模式："mica"（云母）、"image"（图像）或
+                "minimalist"（简约，附带当前弥散氛围开关状态）。
         """
         self._bg_mode = mode
-        mw = self._find_main_window()
-        if mw is not None:
-            if mode == "image":
-                if hasattr(mw, "set_custom_background_image"):
-                    mw.set_custom_background_image(self._bg_image_path())
-                if hasattr(mw, "set_background_mode"):
-                    mw.set_background_mode("image")
-            else:
-                if hasattr(mw, "set_background_mode"):
-                    mw.set_background_mode("mica")
+        try:
+            mw = self._find_main_window()
+            if mw is not None:
+                if mode == "image":
+                    if hasattr(mw, "set_custom_background_image"):
+                        mw.set_custom_background_image(self._bg_image_path())
+                    if hasattr(mw, "set_background_mode"):
+                        mw.set_background_mode("image")
+                elif mode == "minimalist":
+                    if hasattr(mw, "set_ambient_enabled"):
+                        mw.set_ambient_enabled(self._bg_ambient)
+                    if hasattr(mw, "set_background_mode"):
+                        mw.set_background_mode("minimalist")
+                else:
+                    if hasattr(mw, "set_background_mode"):
+                        mw.set_background_mode("mica")
+        except Exception:
+            pass
         self._save_background_settings()
         self._update_bg_ui_state()
 
@@ -640,18 +696,25 @@ class AppearanceSettingsPage(QWidget):
             v2.set("appearance.background", {
                 "mode": self._bg_mode,
                 "image": self._bg_image_name,
+                "ambient": self._bg_ambient,
             })
             v2.save()
         except Exception:
             pass
 
     def _update_bg_ui_state(self) -> None:
-        """按当前背景模式刷新图片行可见性。"""
+        """按当前背景模式刷新图片行与弥散氛围行的可见性。
+
+        图片行仅图像模式可见；弥散氛围行仅简约模式可见。
+        """
         is_image = (self._bg_mode == "image")
+        is_minimalist = (self._bg_mode == "minimalist")
         self._bg_image_row.setVisible(is_image)
         self._bg_file_label.setText(
             self._bg_image_name if self._bg_image_name else "未设置"
         )
+        if self._ambient_row is not None:
+            self._ambient_row.setVisible(is_minimalist)
 
     def _on_dark_toggle(self, checked: bool) -> None:
         """深色模式开关切换 — 仅记录状态，点击「应用」才全局生效。"""
@@ -848,6 +911,24 @@ class AppearanceSettingsPage(QWidget):
             f"background: transparent; border: none;"
             f"color: {tm.text.name()}; font-size: 13px;"
         )
+        # 弥散氛围开关：同步状态（避免信号循环：暂时断开）
+        if self._ambient_toggle is not None:
+            self._ambient_toggle.toggled.disconnect(self._on_ambient_toggled)
+            self._ambient_toggle.checked = self._bg_ambient
+            self._ambient_toggle.toggled.connect(self._on_ambient_toggled)
+        # 弥散氛围行标题/描述颜色跟随主题
+        if self._ambient_row is not None:
+            _ambient_title = getattr(self._ambient_row, "title_label", None)
+            if _ambient_title is not None:
+                _ambient_title.setStyleSheet(
+                    f"font-size: 13.5px; font-weight: 500; color: {tm.text.name()};"
+                )
+            _ambient_desc = getattr(self._ambient_row, "desc_label", None)
+            if _ambient_desc is not None:
+                _ambient_desc.setStyleSheet(
+                    f"font-size: 12px; color: {tm.alpha_of(tm.mid, 60).name()};"
+                    f" line-height: 1.5;"
+                )
         # 重新应用背景模式相关的可用性/置灰状态（米卡数值标签颜色）
         self._update_bg_ui_state()
 
@@ -873,6 +954,20 @@ class AppearanceSettingsPage(QWidget):
             self._custom_btn.selected = (
                 not is_preset and saved_accent.upper() != "AUTO"
             )
+
+        # 窗口背景：同步模式/图片名/弥散氛围开关状态（不触碰主题管理器）。
+        saved_bg = v2.get("appearance.background", {}) or {}
+        saved_bg_mode = saved_bg.get("mode", "mica")
+        if saved_bg_mode in ("mica", "image", "minimalist"):
+            self._bg_mode = saved_bg_mode
+        self._bg_image_name = str(saved_bg.get("image", "") or "")
+        _raw_ambient = saved_bg.get("ambient", True)
+        self._bg_ambient = _raw_ambient if isinstance(_raw_ambient, bool) else bool(_raw_ambient)
+        if self._ambient_toggle is not None:
+            self._ambient_toggle.toggled.disconnect(self._on_ambient_toggled)
+            self._ambient_toggle.checked = self._bg_ambient
+            self._ambient_toggle.toggled.connect(self._on_ambient_toggled)
+        self._update_bg_ui_state()
 
     def collect_settings(self) -> dict:
         """收集当前页面的 V2 设置值。

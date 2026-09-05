@@ -111,6 +111,7 @@ from .config import (
     SETTLE_INTERVAL_MS,
     SIGMA_MAX,
     SIGMA_MIN,
+    XFADE_DURATION_MS,
 )
 from .drag import (
     LAYER_DISPLAY_LONG_MAX,
@@ -140,6 +141,13 @@ _DEFAULT_SURFACE_RGB: Tuple[int, int, int] = (0, 0, 0)
 #: 系统背景即原生云母代替呈现）。与主题无关恒为纯黑 —— 深浅色观感由
 #: ``DWMWA_USE_IMMERSIVE_DARK_MODE`` 控制，见 :func:`ui.mica.winapi.dwm_use_dark_mode`。
 _NATIVE_BACKDROP_COLOR = QColor(0, 0, 0)
+
+#: 无 Mica 内容态（失焦暂停 / 无产物兜底 / 淡入淡出底色）的背景填充色：当前
+#: 主题模式的 G1 基色。G1 是项目主题灰阶最低层级（``gray.g1`` / ``gray_light.g1``，
+#: 见 ``ui/theme/colors.json``，与 ``ThemeManager.surface`` 一致）——失焦暂停期
+#: 自研层已淡出，客户区以主题表面色兜底，而非纯黑/纯白。
+_G1_FILL_DARK = QColor.fromRgb(*G1_DARK)
+_G1_FILL_LIGHT = QColor.fromRgb(*G1_LIGHT)
 
 # ---------------------------------------------------------------------------
 # 拖动期快速路径
@@ -537,6 +545,17 @@ class MicaMaterial(QObject):
         self._active = True
         self._paused = False
 
+        # 交叉过渡（新层交付时的旧态 → 新态渐隐渐现，见 _start_xfade）：
+        # `_xfade_backdrop` 是交付前屏幕背景外观的窗口尺寸快照 —— 常规切换时
+        # 即旧层取样；快速连切时为「旧底图 + 在淡入层 × 进度」的混合态，保证
+        # 过渡始终从屏幕现状连续出发。过渡结束即释放快照。
+        self._xfade_active = False
+        self._xfade_backdrop: Optional[QPixmap] = None
+        self._xfade_clock = QElapsedTimer()
+        self._xfade_timer = QTimer(self._widget)
+        self._xfade_timer.setInterval(_FADE_TICK_MS)
+        self._xfade_timer.timeout.connect(self._on_xfade_tick)
+
         # overlay_opacity 现在会影响烘焙产物（混合预合成在 worker 完成），
         # 因此滑块连拖用防抖合并，静置 250ms 后再重建。
         self._opacity_render_pending = False
@@ -657,6 +676,20 @@ class MicaMaterial(QObject):
         self._watchdog.start(BAKE_WATCHDOG_MS)
         self._worker_thread.start()
 
+    def _background_fill_color(self) -> QColor:
+        """无 Mica 内容态（失焦暂停 / 无产物兜底 / 淡入淡出底色）的背景填充色。
+
+        返回当前主题模式的 G1 基色（``config.G1_DARK`` / ``config.G1_LIGHT``，
+        与 ``ThemeManager.surface`` 即 ``gray.g1`` / ``gray_light.g1`` 一致），
+        使失焦暂停期的背景与主题表面色系统一致，而非纯黑/纯白。深浅模式跟随
+        :attr:`_dark`（由基底色感知亮度推导，随 :meth:`set_theme` 更新）。
+
+        注意：本填充色只用于**绘制期兜底**；烘焙混合基色（``_surface_rgb``，
+        进入 ``render_display`` 的 overlay 预合成）与宿主 palette 仍使用
+        ``surface_color``，活跃 Mica 外观不受影响。
+        """
+        return _G1_FILL_DARK if self._dark else _G1_FILL_LIGHT
+
     def paint(
         self,
         painter: Optional[QPainter] = None,
@@ -691,7 +724,8 @@ class MicaMaterial(QObject):
             painter.fillRect(rect, _NATIVE_BACKDROP_COLOR)
             return
         if self._paused:
-            painter.fillRect(rect, self._surface_color)
+            # 失焦暂停：自研层已淡出，以当前主题 G1 兜底（非纯黑/纯白）。
+            painter.fillRect(rect, self._background_fill_color())
             return
 
         # 整块虚拟桌面层覆盖全局、与窗口尺寸无关：背景在交互期已由实时 blit
@@ -708,7 +742,8 @@ class MicaMaterial(QObject):
             painter.fillRect(rect, _NATIVE_BACKDROP_COLOR)
             return
         if self._paused:
-            painter.fillRect(rect, self._surface_color)
+            # 失焦暂停：自研层已淡出，以当前主题 G1 兜底（非纯黑/纯白）。
+            painter.fillRect(rect, self._background_fill_color())
             return
         self._draw_layer(painter, rect)
 
@@ -769,18 +804,32 @@ class MicaMaterial(QObject):
         """
         pixmap, src, smooth = self._layer_blit()
         if pixmap is None or pixmap.isNull():
-            # 无任何产物（层与静态场均缺失）：只画实色兜底层。
-            painter.fillRect(rect, self._surface_color)
+            # 无任何产物（层与静态场均缺失）：只画实色兜底层（当前主题 G1）。
+            painter.fillRect(rect, self._background_fill_color())
             return
 
+        # 交叉过渡期（新层交付后）：旧态快照铺底（拉伸覆盖控件矩形），新层按
+        # 进度淡入 —— 两层交叉融合，替代生硬直替。快照使快速连切时过渡始终
+        # 从屏幕现状连续出发（捕获逻辑见 ``_on_bake_done`` / ``_capture_visual_state``）。
+        xfade_t = self._xfade_progress() if self._xfade_active else 1.0
+        backdrop = self._xfade_backdrop
+        xfade_covered = (
+            xfade_t < 1.0 and backdrop is not None and not backdrop.isNull()
+        )
+        if xfade_covered:
+            painter.setOpacity(max(0.0, min(1.0, self._fade_alpha)))
+            painter.drawPixmap(rect, backdrop)
+
         # 不透明且层取样可用 ⇒ 绘制必然铺满 ⇒ 省掉整窗实色填充；
-        # 淡入期 / 静态场兜底需要底色参与 surface→Mica 过渡（先铺后绘）。
-        if src is None or self._fade_alpha < 0.999:
-            painter.fillRect(rect, self._surface_color)
+        # 淡入期 / 静态场兜底需要底色参与过渡收敛（先铺后绘）：底色取当前
+        # 主题 G1 —— 失焦淡出直接收敛到暂停态同款填充，无跳变。
+        # （交叉过渡期快照已铺满整个矩形，实色底可省。）
+        if (src is None or self._fade_alpha * xfade_t < 0.999) and not xfade_covered:
+            painter.fillRect(rect, self._background_fill_color())
 
         self._paint_clock.start()
         painter.setRenderHint(QPainter.SmoothPixmapTransform, smooth)
-        painter.setOpacity(self._fade_alpha)
+        painter.setOpacity(max(0.0, min(1.0, self._fade_alpha * xfade_t)))
         if src is None:
             # 回退到整窗静态场（已是窗口尺寸，1:1 平铺）。
             painter.drawPixmap(rect, pixmap)
@@ -837,13 +886,41 @@ class MicaMaterial(QObject):
         painter.drawPixmap(QRectF(rect), pixmap, QRectF(*new_src))
         painter.setOpacity(1.0)
 
-    def set_theme(self, surface_color: Union[str, QColor, None], luminosity: float) -> None:
+    def set_theme(
+        self,
+        surface_color: Union[str, QColor, None],
+        luminosity: float,
+        *,
+        blur_radius: Optional[float] = None,
+        saturation: Optional[float] = None,
+        contrast: Optional[float] = None,
+        overlay_opacity: Optional[float] = None,
+    ) -> None:
         """切换主题：更新实色层与深浅模式，并触发热重烘焙（G1 基色随主题变化）。
+
+        可选效果参数（``blur_radius`` / ``saturation`` / ``contrast`` /
+        ``overlay_opacity``）在 key 计算前折入 —— 主题与参数单次切换只起
+        **一次**烘焙（代替旧链路「set_theme 起烘 → 参数变更作废重烘」的
+        两次烘焙，等待期减半）。
 
         Args:
             surface_color: 新的实色层颜色。
             luminosity: 旧版亮度系数（仅保留签名兼容，新模型不消费）。
+            blur_radius: 色度低通强度（px）；``None`` 保持不变。
+            saturation: 色度增益倍率；``None`` 保持不变。
+            contrast: 色度上限倍率；``None`` 保持不变。
+            overlay_opacity: 色调场烘焙不透明度（0–1）；``None`` 保持不变。
         """
+        params = self._params
+        if blur_radius is not None:
+            params = params.replace(blur_radius=max(0.0, float(blur_radius)))
+        if saturation is not None:
+            params = params.replace(saturation=max(0.0, float(saturation)))
+        if contrast is not None:
+            params = params.replace(contrast=max(0.0, float(contrast)))
+        self._params = params
+        if overlay_opacity is not None:
+            self._overlay_opacity = max(0.0, min(1.0, float(overlay_opacity)))
         self._surface_color = _parse_color(surface_color, self._surface_color)
         self._luminosity = max(0.0, min(1.0, float(luminosity)))
         self._dark = _is_dark_color(self._surface_color)
@@ -978,6 +1055,7 @@ class MicaMaterial(QObject):
             self._pixmap = None
             self._paused = True
             self._stop_fade()
+            self._finish_xfade()
             self._settle_timer.stop()
             self._defer_timer.stop()
             self._opacity_timer.stop()
@@ -1092,6 +1170,7 @@ class MicaMaterial(QObject):
         self._active = False
         self._paused = True
         self._stop_fade()
+        self._finish_xfade()
         self._settle_timer.stop()
         self._stop_settle_fade()
         self._settle_fade_timer.stop()
@@ -1471,12 +1550,27 @@ class MicaMaterial(QObject):
         # 新层到达：若正处于松手淡化（旧裁剪 → 新裁剪），该淡化基于的旧层已
         # 被替换，立即停机，由新层直接接管（跨监视器等待期则由淡入揭示）。
         self._stop_settle_fade()
+        # —— 交叉过渡准备：旧层仍在屏（窗口可见、激活、已展示过、非跨屏隐藏）
+        # 时，把当前背景外观捕获为窗口尺寸快照；新层提交后自快照淡入（主题 /
+        # 参数 / 壁纸切换平滑过渡，替代生硬直替）。快速连切时快照为当前混合态，
+        # 过渡从屏幕现状连续出发（见 ``_capture_visual_state``）。
+        xfade_backdrop: Optional[QPixmap] = None
+        if (
+            was_shown
+            and not was_hidden
+            and self._active
+            and self._fade_alpha > 0.001
+            and self._widget.isVisible()
+        ):
+            xfade_backdrop = self._capture_visual_state(self._window_rect_tuple())
         self._layer = layer_info
         self._layer_pixmap = _pixmap_from_rgb(display)
         self._layer_key = layer_key
         self._has_shown = True
         # 新层已就绪：被节流推迟的呈现不再需要（新层会强制立即呈现）。
         self._defer_timer.stop()
+        if xfade_backdrop is not None:
+            self._start_xfade(xfade_backdrop)
         self._widget.update()
         if self._active:
             self._start_fade_in(reset=(not was_shown) or was_hidden)
@@ -1622,6 +1716,111 @@ class MicaMaterial(QObject):
         self._paused = True
         self._fade_alpha = 0.0
         self._fade_to = 0.0
+
+    # ------------------------------------------------------------------
+    # 交叉过渡（新层交付：旧态渐隐、新层渐现）
+    # ------------------------------------------------------------------
+
+    def _xfade_progress(self) -> float:
+        """交叉过渡进度（0–1）；未激活时恒为 1.0（无过渡叠加）。"""
+        if not self._xfade_active or not self._xfade_clock.isValid():
+            return 1.0
+        t = self._xfade_clock.elapsed() / float(XFADE_DURATION_MS)
+        if t < 0.0:
+            return 0.0
+        return 1.0 if t > 1.0 else t
+
+    def _start_xfade(self, backdrop: QPixmap) -> None:
+        """以旧态快照为底图启动交叉过渡：新层自进度 0 淡入（280ms）。
+
+        Args:
+            backdrop: 交付前屏幕背景外观的窗口尺寸快照（见
+                ``_capture_visual_state``；连切时为当前混合态）。
+        """
+        self._xfade_backdrop = backdrop
+        self._xfade_active = True
+        self._xfade_clock.restart()
+        if not self._xfade_timer.isActive():
+            self._xfade_timer.start()
+
+    def _finish_xfade(self) -> None:
+        """结束并清理交叉过渡：释放旧态快照、停机（动画后资源回收）。"""
+        self._xfade_active = False
+        self._xfade_backdrop = None
+        if self._xfade_timer.isActive():
+            self._xfade_timer.stop()
+
+    def _on_xfade_tick(self) -> None:
+        """交叉过渡逐帧推进：到时即清理（此后一帧按全进度呈现新层）。"""
+        if not self._xfade_active:
+            if self._xfade_timer.isActive():
+                self._xfade_timer.stop()
+            return
+        if self._xfade_progress() >= 1.0:
+            self._finish_xfade()
+        self._widget.update()
+
+    def _blit_layer_sample(
+        self,
+        painter: QPainter,
+        pixmap: QPixmap,
+        layer: ViewportLayer,
+        win: Tuple[int, int, int, int],
+        opacity: float,
+    ) -> None:
+        """把一层按窗口当前位置取样绘制到 ``painter``（``_draw_layer`` 同款取样语义）。"""
+        src = layer_to_source_clamped(layer, win)
+        smooth = isinstance(src[0], float)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, smooth)
+        painter.setOpacity(max(0.0, min(1.0, opacity)))
+        if smooth:
+            painter.drawPixmap(QRectF(painter.viewport()), pixmap, QRectF(*src))
+        else:
+            painter.drawPixmap(
+                QRect(0, 0, int(win[2]), int(win[3])),
+                pixmap,
+                QRect(int(src[0]), int(src[1]), int(src[2]), int(src[3])),
+            )
+
+    def _capture_visual_state(
+        self, win: Tuple[int, int, int, int]
+    ) -> Optional[QPixmap]:
+        """把当前屏幕上的背景外观捕获为窗口尺寸快照（交叉过渡的出发帧）。
+
+        * 常规：当前层按窗口取样（G1 底兜边，覆盖层区域外的钳制边缘）。
+        * 连切（过渡进行中又交付新层）：把「旧底图 + 在淡入层 × 当前进度」
+          合成为新快照 —— 过渡从屏幕现状连续出发，不闪烁、无残留。
+
+        Args:
+            win: ``(x, y, w, h)`` 窗口矩形（仅使用宽高）。
+
+        Returns:
+            窗口尺寸快照；层缺失时 ``None``（调用方跳过过渡，直接提交）。
+        """
+        pixmap = self._layer_pixmap
+        layer = self._layer
+        if pixmap is None or pixmap.isNull() or layer is None:
+            return None
+        snap = QPixmap(max(1, int(win[2])), max(1, int(win[3])))
+        snap.fill(self._background_fill_color())
+        painter = QPainter(snap)
+        try:
+            if (
+                self._xfade_active
+                and self._xfade_backdrop is not None
+                and not self._xfade_backdrop.isNull()
+            ):
+                # 连切：底图 + 在淡入层 × 进度（f=1 契约；焦点系数由绘制期叠加）。
+                painter.setOpacity(1.0)
+                painter.drawPixmap(snap.rect(), self._xfade_backdrop)
+                self._blit_layer_sample(
+                    painter, pixmap, layer, win, self._xfade_progress()
+                )
+            else:
+                self._blit_layer_sample(painter, pixmap, layer, win, 1.0)
+        finally:
+            painter.end()
+        return snap
 
     # ------------------------------------------------------------------
     # 图像转换

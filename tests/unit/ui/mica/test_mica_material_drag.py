@@ -508,6 +508,282 @@ def test_paint_steady_state_draws_opaque(qapp, monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 无 Mica 内容态背景填充色（失焦暂停 / 无产物兜底 / 淡入淡出底色）= 主题 G1
+# ---------------------------------------------------------------------------
+
+
+def test_paused_paint_fills_theme_g1(qapp) -> None:
+    """失焦暂停态：背景填充为当前主题 G1（深 #1A1A1A / 浅 #F5F5F5），非纯黑/纯白。"""
+    widget, mica = _widget_with_mica(qapp)
+    try:
+        mica._paused = True
+        img = QImage(32, 24, QImage.Format_RGB32)
+        img.fill(QColor(255, 0, 255))  # 哨兵色：未被填充则断言失败
+
+        # 深色模式（默认基底纯黑 → _dark=True）。
+        painter = QPainter(img)
+        try:
+            mica.paint(painter, None)
+        finally:
+            painter.end()
+        assert img.pixelColor(10, 10) == QColor(0x1A, 0x1A, 0x1A)
+
+        # 切浅色基底（set_theme 按感知亮度推导 _dark=False）。
+        mica.set_theme(QColor("#FFFFFF"), 0.85)
+        img.fill(QColor(255, 0, 255))
+        painter = QPainter(img)
+        try:
+            mica.paint(painter, None)
+        finally:
+            painter.end()
+        assert img.pixelColor(10, 10) == QColor(0xF5, 0xF5, 0xF5)
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_no_product_fallback_fill_is_theme_g1(qapp) -> None:
+    """无任何产物（层与静态场均缺失）：实色兜底层为当前主题 G1。"""
+    widget, mica = _widget_with_mica(qapp)
+    try:
+        mica._paused = False
+        mica._layer = None
+        mica._layer_pixmap = None
+        mica._pixmap = None
+        mica._fade_alpha = 1.0
+
+        img = QImage(32, 24, QImage.Format_RGB32)
+        img.fill(QColor(255, 0, 255))
+        painter = QPainter(img)
+        try:
+            mica.paint(painter, None)
+        finally:
+            painter.end()
+        assert img.pixelColor(10, 10) == QColor(0x1A, 0x1A, 0x1A)
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_fade_base_fill_is_theme_g1(qapp, monkeypatch) -> None:
+    """淡入/淡出期底色为当前主题 G1：失焦淡出直接收敛到暂停态同款填充，无跳变。"""
+    widget, mica = _widget_with_mica(qapp)
+    monkeypatch.setattr(mica, "_layer_blit", lambda: (QPixmap(4, 4), None, True))
+    try:
+        mica._paused = False
+        mica._fade_alpha = 0.0  # 完全透明：底色即为可见色
+
+        img = QImage(32, 24, QImage.Format_RGB32)
+        img.fill(QColor(255, 0, 255))
+        painter = QPainter(img)
+        try:
+            mica.paint(painter, None)
+        finally:
+            painter.end()
+        assert img.pixelColor(10, 10) == QColor(0x1A, 0x1A, 0x1A)
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+# ---------------------------------------------------------------------------
+# 交叉过渡（新层交付：旧态快照渐隐、新层渐现；连切从屏幕现状连续出发）
+# ---------------------------------------------------------------------------
+
+
+def _make_display(color: tuple, h: int = 288, w: int = 512) -> np.ndarray:
+    """构造一帧纯色显示分辨率烘焙产物。"""
+    return np.full((h, w, 3), color, dtype=np.uint8)
+
+
+def _setup_visible_old_layer(
+    widget, mica, monkeypatch, color=(255, 0, 0)
+) -> None:
+    """置为「旧层在屏 + 窗口可见」状态（offscreen 下以桩模拟可见性/几何）。
+
+    widget 同步 resize 到窗口尺寸 —— ``paint`` 以 ``widget.rect()`` 为绘制
+    目标，像素级断言的采样点必须落在其中。
+    """
+    region = MONITOR_A
+    old_pix = QPixmap(512, 288)
+    old_pix.fill(QColor(*color))
+    mica._layer = _layer_for(region, WIN, width=512, height=288)
+    mica._layer_pixmap = old_pix
+    mica._layer_key = ("params", True, "sig", region, 2560)
+    mica._layer_gen = 1
+    mica._has_shown = True
+    mica._active = True
+    mica._fade_alpha = 1.0
+    widget.resize(WIN[0], WIN[1])
+    monkeypatch.setattr(mica._widget, "isVisible", lambda: True)
+    monkeypatch.setattr(mica, "_window_rect_tuple", lambda: (0, 0, *WIN))
+
+
+def _render_center(mica) -> QColor:
+    """执行一次 paint 并返回中心像素颜色。"""
+    img = QImage(WIN[0], WIN[1], QImage.Format_RGB32)
+    img.fill(QColor(255, 0, 255))  # 哨兵色
+    painter = QPainter(img)
+    try:
+        mica.paint(painter, None)
+    finally:
+        painter.end()
+    return img.pixelColor(WIN[0] // 2, WIN[1] // 2)
+
+
+def test_bake_done_starts_crossfade_when_layer_visible(qapp, monkeypatch) -> None:
+    """旧层在屏时交付新层：捕获旧态快照并启动交叉过渡（替代生硬直替）。"""
+    widget, mica = _widget_with_mica(qapp)
+    _setup_visible_old_layer(widget, mica, monkeypatch)
+
+    new_layer = _layer_for(MONITOR_A, WIN, width=512, height=288)
+    try:
+        mica._on_bake_done((_make_display((0, 0, 255)), new_layer, mica._layer_key, 1))
+        assert mica._layer is new_layer
+        assert mica._xfade_active is True
+        assert mica._xfade_backdrop is not None
+        assert not mica._xfade_backdrop.isNull()
+        assert mica._xfade_backdrop.size().width() == WIN[0]
+        assert mica._xfade_backdrop.size().height() == WIN[1]
+        assert mica._xfade_timer.isActive() is True
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_crossfade_draw_blends_old_and_new(qapp, monkeypatch) -> None:
+    """交叉过渡期绘制：旧态快照打底、新层按进度淡入（两层交叉融合）。"""
+    widget, mica = _widget_with_mica(qapp)
+    _setup_visible_old_layer(widget, mica, monkeypatch)
+
+    try:
+        mica._on_bake_done(
+            (_make_display((0, 0, 255)),
+             _layer_for(MONITOR_A, WIN, width=512, height=288), mica._layer_key, 1)
+        )
+        assert mica._xfade_active is True
+
+        # 进度 0：纯旧态（红）。
+        monkeypatch.setattr(mica, "_xfade_progress", lambda: 0.0)
+        assert _render_center(mica) == QColor(255, 0, 0)
+
+        # 进度 0.5：红蓝各半（±2 量化容差）。
+        monkeypatch.setattr(mica, "_xfade_progress", lambda: 0.5)
+        c = _render_center(mica)
+        assert abs(c.red() - 128) <= 2
+        assert c.green() <= 2
+        assert abs(c.blue() - 128) <= 2
+
+        # 进度 1：常规路径，纯新层（蓝）。
+        monkeypatch.setattr(mica, "_xfade_progress", lambda: 1.0)
+        assert _render_center(mica) == QColor(0, 0, 255)
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_rapid_switch_recaptures_blended_backdrop(qapp, monkeypatch) -> None:
+    """快速连切：过渡进行中又交付新层 —— 快照重捕获为当前混合态，无闪烁/残留。"""
+    widget, mica = _widget_with_mica(qapp)
+    _setup_visible_old_layer(widget, mica, monkeypatch)
+
+    try:
+        # 第一次交付：红 → 蓝。
+        mica._on_bake_done(
+            (_make_display((0, 0, 255)),
+             _layer_for(MONITOR_A, WIN, width=512, height=288), mica._layer_key, 1)
+        )
+        assert mica._xfade_active is True
+        first_backdrop = mica._xfade_backdrop
+
+        # 第一段过渡进行到 0.5 时第二层（绿）交付（连切）。
+        monkeypatch.setattr(mica, "_xfade_progress", lambda: 0.5)
+        mica._layer_gen = 2
+        mica._on_bake_done(
+            (_make_display((0, 255, 0)),
+             _layer_for(MONITOR_A, WIN, width=512, height=288), mica._layer_key, 2)
+        )
+        assert mica._layer is not None
+        assert mica._xfade_active is True
+        assert mica._xfade_backdrop is not first_backdrop
+
+        # 新快照 = 第一段过渡的混合态（红⊕蓝×0.5）；进度 0 时整屏即该混合态。
+        monkeypatch.setattr(mica, "_xfade_progress", lambda: 0.0)
+        c = _render_center(mica)
+        assert abs(c.red() - 128) <= 2
+        assert c.green() <= 2
+        assert abs(c.blue() - 128) <= 2
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_xfade_tick_finish_cleans_up(qapp, monkeypatch) -> None:
+    """过渡到时：tick 清理快照与计时器（动画后资源回收），绘制回归常规路径。"""
+    widget, mica = _widget_with_mica(qapp)
+    _setup_visible_old_layer(widget, mica, monkeypatch)
+
+    try:
+        mica._on_bake_done(
+            (_make_display((0, 0, 255)),
+             _layer_for(MONITOR_A, WIN, width=512, height=288), mica._layer_key, 1)
+        )
+        assert mica._xfade_active is True
+
+        monkeypatch.setattr(mica, "_xfade_progress", lambda: 1.0)
+        mica._on_xfade_tick()
+        assert mica._xfade_active is False
+        assert mica._xfade_backdrop is None
+        assert mica._xfade_timer.isActive() is False
+
+        # 清理后绘制回归常规路径（纯新层蓝）。
+        assert _render_center(mica) == QColor(0, 0, 255)
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_xfade_skipped_when_widget_hidden(qapp) -> None:
+    """窗口不可见（离屏 / 隐藏）时交付新层：不启动过渡（离屏测试语义不变）。"""
+    widget, mica = _widget_with_mica(qapp)
+    region = MONITOR_A
+    key = ("params", True, "sig", region, 2560)
+    mica._layer_key = key
+    mica._layer_gen = 1
+    try:
+        mica._on_bake_done(
+            (_make_display((0, 0, 255)),
+             _layer_for(region, WIN, width=512, height=288), key, 1)
+        )
+        assert mica._layer is not None
+        assert mica._xfade_active is False
+        assert mica._xfade_backdrop is None
+        assert mica._xfade_timer.isActive() is False
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_dispose_cleans_xfade_state(qapp, monkeypatch) -> None:
+    """dispose 清理交叉过渡状态（计时器停机 + 快照释放）。"""
+    widget, mica = _widget_with_mica(qapp)
+    _setup_visible_old_layer(widget, mica, monkeypatch)
+    try:
+        mica._on_bake_done(
+            (_make_display((0, 0, 255)),
+             _layer_for(MONITOR_A, WIN, width=512, height=288), mica._layer_key, 1)
+        )
+        assert mica._xfade_active is True
+
+        mica.dispose()
+        assert mica._xfade_active is False
+        assert mica._xfade_backdrop is None
+        assert mica._xfade_timer.isActive() is False
+    finally:
+        widget.deleteLater()
+
+
+# ---------------------------------------------------------------------------
 # 拖动期快速路径（逐帧零重绘）与松手收敛（settle 淡化 / 跨屏等待新层）
 # ---------------------------------------------------------------------------
 
