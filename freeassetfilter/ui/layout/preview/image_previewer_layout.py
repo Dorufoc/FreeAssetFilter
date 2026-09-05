@@ -101,25 +101,28 @@ class _ZoomPopup(QWidget):
         p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), r, r)
         p.end()
 
-    def _target_rect(self, anchor_br: QPoint) -> QRect:
-        """计算弹窗最终矩形：右对齐顶栏右下角锚点并钳位到屏幕内。"""
+    def _target_rect(self, anchor: QPoint) -> QRect:
+        """计算弹窗最终矩形：以锚点（按钮下缘中心）为水平中心向下展开，
+        贴近屏幕底边时上翻。"""
         pw = self.POPUP_WIDTH
         ph = self.POPUP_HEIGHT
         layout = self._parent_layout
         dpi = getattr(layout, "_dpi_scale", 1.0) if layout is not None else 1.0
-        margin_r = int(5 * dpi)
-        x = anchor_br.x() - pw - margin_r
-        y = anchor_br.y() + int(7 * dpi)
+        margin = max(4, round(6 * dpi))
+        x = anchor.x() - pw // 2
+        y = anchor.y() + margin
 
         screen = QApplication.primaryScreen()
         if screen is not None:
             sg = screen.availableGeometry()
             x = max(sg.x() + 8, min(x, sg.right() - pw - 8))
+            if y + ph > sg.bottom() - 8:
+                y = anchor.y() - ph - margin
         return QRect(x, y, pw, ph)
 
-    def show_animated(self, anchor_br: QPoint):
-        """从按钮右下角向下展开，弹窗右对齐。"""
-        target = self._target_rect(anchor_br)
+    def show_animated(self, anchor: QPoint):
+        """从按钮下缘中心向下展开，弹窗与按钮水平居中对齐。"""
+        target = self._target_rect(anchor)
         x, y, pw = target.x(), target.y(), target.width()
         ph = target.height()
 
@@ -343,6 +346,20 @@ class ImagePreviewerLayout(QWidget):
         self._last_pan_pos: QPoint = QPoint()
         self._color_picker_active: bool = False
 
+        # 自适应（fit-to-view）延迟校正状态：
+        # 预览器创建/加入布局的时序导致 _fit_to_view 常在 viewport 仍为
+        # 默认占位尺寸（未布局）时执行；真实尺寸要等布局激活后才落到
+        # QGraphicsView viewport。故所有 refit 都合并延后到事件循环末尾
+        # 以真实 viewport 尺寸执行一次，避免打开时按错误尺寸缩放。
+        self._fit_pending: bool = False      # 已排队待执行的 refit
+        self._fit_in_progress: bool = False  # fitInView 执行中（防重入）
+        self._last_fit_vp: tuple = (0, 0)    # 上次 fit 时 viewport 尺寸（同尺寸跳过）
+        # 随预览器销毁自动失效的延迟 fit 定时器（避免对象销毁后回调）
+        self._fit_timer = QTimer(self)
+        self._fit_timer.setSingleShot(True)
+        self._fit_timer.setInterval(0)
+        self._fit_timer.timeout.connect(self._flush_pending_fit)
+
         # GIF 动画支持
         self._is_gif_mode: bool = False
         self._gif_proxy_item: Optional[QGraphicsProxyWidget] = None
@@ -385,7 +402,11 @@ class ImagePreviewerLayout(QWidget):
         self._image_view.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self._image_view.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
         self._image_view.setViewportUpdateMode(QGraphicsView.SmartViewportUpdate)
-        self._image_view.setStyleSheet(f"background-color: {tm.surface.name()}; border: none;")
+        # 背景透明：与文本预览器一致，让下层面板填充色透出（不涂 tm.surface 深色块）。
+        # QAbstractScrollArea 的 viewport 默认按 palette 自绘底色，须显式关闭。
+        self._image_view.setStyleSheet("background: transparent; border: none;")
+        self._image_view.setAutoFillBackground(False)
+        self._image_view.viewport().setAutoFillBackground(False)
         self._image_view.setFrameShape(QFrame.NoFrame)
 
         # 使用 StyledScrollBar 替换默认滚动条
@@ -401,6 +422,7 @@ class ImagePreviewerLayout(QWidget):
         self._image_view.viewport().setCursor(Qt.OpenHandCursor)
 
         self._image_scene = QGraphicsScene(self._image_view)
+        self._image_scene.setBackgroundBrush(Qt.NoBrush)  # 不画场景底色，透出下层
         self._image_view.setScene(self._image_scene)
 
         self._pixmap_item = self._image_scene.addPixmap(QPixmap())
@@ -544,6 +566,9 @@ class ImagePreviewerLayout(QWidget):
         # 切换文件前收起缩放弹窗，避免残留旧文件的缩放状态
         self._close_zoom_popup()
 
+        # 新文件内容就位前重置 fit 去重标记，确保下方加载流程必然执行一次自适应
+        self._last_fit_vp = (0, 0)
+
         # 加载新文件时退出取色模式
         self._color_picker_active = False
         if hasattr(self, '_color_picker_overlay'):
@@ -623,6 +648,7 @@ class ImagePreviewerLayout(QWidget):
         self._current_file = file_path
 
         self._fit_to_view()
+        self._queue_fit()  # 布局尚未激活时以最终 viewport 尺寸校正
         self._content_stack.setCurrentIndex(0)
         return True
 
@@ -685,6 +711,7 @@ class ImagePreviewerLayout(QWidget):
 
         self._current_file = file_path
         self._fit_to_view()
+        self._queue_fit()  # 布局尚未激活时以最终 viewport 尺寸校正
         self._content_stack.setCurrentIndex(0)
         return True
 
@@ -740,6 +767,7 @@ class ImagePreviewerLayout(QWidget):
 
         self._current_file = file_path
         self._fit_to_view()
+        self._queue_fit()  # 布局尚未激活时以最终 viewport 尺寸校正
         self._content_stack.setCurrentIndex(0)
 
     def _on_decode_failed(self, error_msg: str, seq: int) -> None:
@@ -774,10 +802,12 @@ class ImagePreviewerLayout(QWidget):
         self._zoom_popup.show_animated(self._zoom_anchor_global())
 
     def _zoom_anchor_global(self) -> QPoint:
-        """缩放弹窗锚点：顶栏右下角（屏幕坐标）。"""
-        return self._top_bar.mapToGlobal(
-            QPoint(self._top_bar.width(), self._top_bar.height())
-        )
+        """缩放弹窗锚点：缩放按钮下缘水平中心（屏幕坐标）。
+
+        按钮被折叠进「更多」菜单时退回到「更多」按钮，保证从溢出菜单
+        触发时弹窗仍落在按钮附近。
+        """
+        return self._top_bar.popup_anchor_global(self._zoom_btn)
 
     def _close_zoom_popup(self) -> None:
         """收起缩放弹窗（带动画；实例保留复用）。"""
@@ -805,20 +835,71 @@ class ImagePreviewerLayout(QWidget):
             except RuntimeError:
                 pass
 
+    def _queue_fit(self) -> None:
+        """合并延后到事件循环末尾执行一次 fit（等真实 viewport 尺寸生效）。
+
+        预览器在加入宿主布局前尺寸尚未确定（QGraphicsView viewport 仍停留在
+        Qt 默认占位几何），此时立即 fit 会按错误尺寸计算基准缩放。所有调用点
+        （加载完成 / 控件 resize / viewport resize）统一走到这里，事件循环本
+        轮结束时以最终 viewport 尺寸校正一次。
+        """
+        if self._fit_pending or self._fit_in_progress:
+            return
+        self._fit_pending = True
+        self._fit_timer.start()
+
+    def _flush_pending_fit(self) -> None:
+        """执行已排队的 fit；条件不满足（非 fit 模式 / 无图 / 未显示）则放弃。"""
+        self._fit_pending = False
+        if self._zoom_pct != 100:
+            return
+        if self._content_stack is None or self._content_stack.currentIndex() != 0:
+            return
+        if not self._is_gif_mode and self._pixmap_item.pixmap().isNull():
+            return
+        self._fit_to_view()
+
     def _fit_to_view(self) -> None:
-        """自适应缩放，记录基准缩放作为 100%。"""
-        if self._is_gif_mode and self._gif_proxy_item is not None:
+        """自适应缩放，记录基准缩放作为 100%。
+
+        viewport 未布局（0 尺寸或极小占位几何）时跳过，等待真实 resize
+        事件到达后由 _queue_fit 校正，避免把占位尺寸固化为基准缩放。
+        """
+        if self._fit_in_progress:
+            return
+        vp = self._image_view.viewport()
+        if vp is None:
+            return
+        vw, vh = vp.width(), vp.height()
+        if vw <= 0 or vh <= 0:
+            self._last_fit_vp = (0, 0)
+            return
+
+        target = self._gif_proxy_item if self._is_gif_mode else self._pixmap_item
+        if target is None:
+            return
+        if not self._is_gif_mode and target.pixmap().isNull():
+            return
+
+        if (vw, vh) == self._last_fit_vp and self._zoom_pct == 100:
+            # 同尺寸重复触发（滚动条显隐等）直接跳过，防止震荡
+            return
+
+        self._fit_in_progress = True
+        try:
             self._reset_view()
-            self._image_view.fitInView(self._gif_proxy_item, Qt.KeepAspectRatio)
-            self._base_scale = self._image_view.transform().m11()
-            self._zoom_pct = 100
-            return
-        if self._pixmap_item.pixmap().isNull():
-            return
-        self._reset_view()
-        self._image_view.fitInView(self._pixmap_item, Qt.KeepAspectRatio)
+            self._image_view.fitInView(target, Qt.KeepAspectRatio)
+        finally:
+            self._fit_in_progress = False
         self._base_scale = self._image_view.transform().m11()
         self._zoom_pct = 100
+        self._last_fit_vp = (vw, vh)
+
+        # fit 过程中滚动条显隐等可能再次改变 viewport 尺寸：本次结果已过期，
+        # 重新排队以新尺寸校正一次（_fit_in_progress 已复位，可正常入队）
+        cur = self._image_view.viewport()
+        if cur is not None and (cur.width(), cur.height()) != self._last_fit_vp:
+            self._queue_fit()
 
     def _apply_zoom_pct(self, pct: int) -> None:
         """按百分比（相对 fit_to_view）缩放。"""
@@ -1150,6 +1231,20 @@ class ImagePreviewerLayout(QWidget):
                 self._image_view.viewport().setCursor(Qt.OpenHandCursor)
                 return True
 
+        # viewport 尺寸最终确定（布局激活 / 窗口缩放 / 滚动条显隐）：
+        # fit 模式下延后校正缩放，确保打开与窗口拉伸时按真实尺寸适配。
+        # 此处排在父控件 resize 之后，是能拿到真实 viewport 几何的时机。
+        if (
+            event.type() == QEvent.Resize
+            and obj is self._image_view.viewport()
+            and self._zoom_pct == 100
+            and self._content_stack is not None
+            and self._content_stack.currentIndex() == 0
+            and (self._is_gif_mode or not self._pixmap_item.pixmap().isNull())
+        ):
+            self._queue_fit()
+            return False  # 事件继续正常分发，不拦截
+
         if obj is self._image_view.viewport() and event.type() == QEvent.Wheel:
             we = QWheelEvent(event)
             delta = we.angleDelta().y()
@@ -1171,27 +1266,35 @@ class ImagePreviewerLayout(QWidget):
         return super().eventFilter(obj, event)
 
     def resizeEvent(self, event) -> None:
-        """窗口大小变化时如果处于 fit 模式则重新适配。"""
+        """窗口大小变化时如果处于 fit 模式则重新适配。
+
+        注意：本事件早于内部 QGraphicsView 及其 viewport 的布局完成，
+        直接在此 fit 会拿到旧尺寸。改为延后到事件循环末尾执行
+        （_queue_fit），届时 viewport 已是最终尺寸。
+        """
         super().resizeEvent(event)
         if hasattr(self, '_image_view') and self._content_stack.currentIndex() == 0:
             if self._zoom_pct == 100:
-                if self._is_gif_mode or not self._pixmap_item.pixmap().isNull():
-                    self._fit_to_view()
+                self._queue_fit()
         if hasattr(self, '_color_picker_overlay'):
             vp = self._image_view.viewport()
             self._color_picker_overlay.setGeometry(vp.rect())
             self._color_picker_overlay.raise_()
 
     def set_section_styles(self, fill_color: str, border_color: str) -> None:
-        """应用面板样式（主题切换时由 MainWindow 调用）。"""
+        """应用面板样式（主题切换时由 MainWindow 调用）。
+
+        与文本预览器一致：内容区/覆盖层背景全透明，透出下层面板统一填充，
+        不在预览区涂 tm.surface 深色块。
+        """
         # 顶栏透明无背景：不在此设置任何样式
         self._content_area.setStyleSheet(f"""
-            background-color: {tm.surface.name()};
+            background-color: transparent;
             border: 1px solid transparent;
             border-radius: 8px;
         """)
         self._overlay.setStyleSheet(f"""
-            background-color: {tm.surface.name()};
+            background-color: transparent;
         """)
         for _w in (self._top_bar, self._content_area, self._overlay):
             _w.style().unpolish(_w)

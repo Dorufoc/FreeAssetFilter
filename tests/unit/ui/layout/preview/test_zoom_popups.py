@@ -218,7 +218,7 @@ def test_font_popups_mutually_exclusive(qapp: QApplication) -> None:
     host = _make_host(previewer)
     try:
         previewer.current_font_family = "Arial"
-        assert previewer._weight_btn is not None
+        assert previewer._weight_value_btn is not None
 
         # 打开字重弹窗
         previewer._on_weight_clicked()
@@ -310,6 +310,63 @@ def test_zoom_popup_dismissed_by_plain_outside_click(
         _send_mouse_click(previewer, QEvent.MouseButtonRelease, press_global)
         _pump(250)  # 等待关闭动画完成
 
+        assert not popup.isVisible()
+    finally:
+        _shutdown_host(host, previewer)
+
+
+@pytest.mark.parametrize("previewer_cls", _ZOOM_CLASSES)
+def test_zoom_popup_centered_on_zoom_button(
+    qapp: QApplication, previewer_cls: Any
+) -> None:
+    """缩放弹窗水平中心与缩放按钮水平中心对齐（弹出菜单对齐功能按钮）。"""
+    previewer = previewer_cls()
+    host = _make_host(previewer)
+    try:
+        _open_zoom(previewer)
+        popup = previewer._zoom_popup
+        assert popup is not None and popup.isVisible()
+
+        zoom_btn = previewer._zoom_btn
+        anchor = previewer._zoom_anchor_global()
+        if zoom_btn.isVisible():
+            btn_center = zoom_btn.mapToGlobal(zoom_btn.rect().center())
+            # 锚点 = 按钮下缘水平中心
+            assert abs(anchor.x() - btn_center.x()) <= 1
+            assert abs(
+                anchor.y() - zoom_btn.mapToGlobal(QPoint(0, zoom_btn.height())).y()
+            ) <= 1
+        else:
+            # 折叠进「更多」菜单时退回到「更多」按钮下缘中心
+            more_btn = previewer._top_bar._more_btn
+            assert more_btn.isVisible()
+            assert abs(
+                anchor.x() - more_btn.mapToGlobal(more_btn.rect().center()).x()
+            ) <= 1
+
+        rect = popup._target_rect(anchor)
+        assert abs(rect.center().x() - anchor.x()) <= 1
+        assert rect.top() > anchor.y()  # 展开在锚点（按钮下缘）下方
+    finally:
+        _shutdown_host(host, previewer)
+
+
+def test_pdf_zoom_button_click_opens_popup_single_toggle(
+    qapp: QApplication,
+) -> None:
+    """PDF 缩放按钮点击只展开一次弹窗（回归：曾重复连接导致瞬时开+关=无反应）。"""
+    previewer = PdfPreviewerLayout()
+    host = _make_host(previewer)
+    try:
+        previewer._zoom_btn.click()
+        _pump(250)  # 展开动画完成；若重复连接，弹窗早已被第二次槽收起
+        popup = previewer._zoom_popup
+        assert popup is not None
+        assert popup.isVisible(), "点击缩放按钮后弹窗应保持展开"
+
+        # 再次点击 → 正常收起（切回开/关语义）
+        previewer._zoom_btn.click()
+        _pump(250)
         assert not popup.isVisible()
     finally:
         _shutdown_host(host, previewer)

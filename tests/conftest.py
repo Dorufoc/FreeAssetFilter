@@ -169,6 +169,37 @@ def reset_singletons() -> None:
     _reset_all_singletons()
 
 
+@pytest.fixture(autouse=True, scope="function")
+def redirect_layout_app_data_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """隔离 UI 布局层的持久化写入，测试一律落到 pytest 临时目录。
+
+    背景：FileSelectorLayout / FilePoolLayout 在导航/增删文件时会把
+    ``last_path.json`` / ``staging_pool_backup.json`` 写入真实的
+    ``freeassetfilter/data/`` 目录，导致测试结束后真实应用启动时可能
+    恢复并跳转到 pytest 的临时目录（``_pytest`` 会保留最近几次运行的
+    basetemp）。此处把两个布局模块命名空间中已绑定的
+    ``get_app_data_path`` 引用统一重定向到本用例的临时目录，保证布局
+    测试默认与正式数据隔离（旧版 CustomFileSelector 测试已自行重定向
+    ``save_path_file``，不受影响）。
+
+    Args:
+        tmp_path: pytest 内置的每测试临时目录。
+        monkeypatch: pytest monkeypatch fixture。
+
+    Returns:
+        None。
+    """
+    import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
+    import freeassetfilter.ui.layout.file_selector_layout as fsl_mod
+
+    _app_data: Path = tmp_path / "faf_test_appdata"
+    _app_data.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(fsl_mod, "get_app_data_path", lambda: _app_data)
+    monkeypatch.setattr(fpl_mod, "get_app_data_path", lambda: _app_data)
+
+
 @pytest.fixture
 def settings_manager(tmp_path: Path) -> Any:
     """提供使用临时设置文件的 SettingsManager 实例（function scope）。

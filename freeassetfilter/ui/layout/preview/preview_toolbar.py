@@ -37,9 +37,9 @@ _project_root = str(_this_file.parent.parent.parent.parent.parent)  # 项目根
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-from PySide6.QtCore import QEvent, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QTimer, Signal
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QSizePolicy, QWidget
+from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QSizePolicy, QWidget
 
 from components.styled_button import StyledButton
 from freeassetfilter.core._paths import icons_dir
@@ -74,6 +74,7 @@ class PreviewToolbarFrame(QFrame):
         self._trail_widgets: list[QWidget] = []
         self._overflow_priority: list[QWidget] = []
         self._folded: list[QWidget] = []
+        self._menu_labels: dict[int, str] = {}  # 溢出菜单命名：widget id → 文案
         self._info_widget: Optional[QWidget] = None
         self._info_avail = self._MAX
         self._applied_sig: Optional[tuple] = None
@@ -171,6 +172,15 @@ class PreviewToolbarFrame(QFrame):
         self._overflow_priority = list(widgets)
         self.request_reflow()
 
+    def set_overflow_label(self, widget: QWidget, label: str) -> None:
+        """为控件单独指定「更多」菜单项文案。
+
+        当控件本身不带 tooltip（或 tooltip 用途与折叠菜单名不一致）时使用，
+        优先级高于 tooltip（见 ``_menu_label``）。
+        """
+        self._menu_labels[id(widget)] = label
+        self.request_reflow()
+
     # ── 查询 / 触发 API ──────────────────────────────────────────
 
     def info_available_width(self) -> int:
@@ -180,6 +190,21 @@ class PreviewToolbarFrame(QFrame):
         调用方应自行缩小内容（缩字号 / 折行 / 省略）。
         """
         return self._info_avail
+
+    def popup_anchor_global(self, widget: QWidget) -> QPoint:
+        """返回功能按钮下缘水平中心（屏幕坐标），供弹出面板居中对齐。
+
+        控件被折叠进「更多(⋯)」菜单而不可见时，回退到「更多」按钮本身；
+        两者皆不可见时退回整个顶栏下缘中心。返回的点是按钮底边中点——
+        弹出面板 / 菜单以该点的 x 为自身水平中心，在其下方展开。
+        """
+        if widget is not None and not widget.isHidden():
+            target = widget
+        elif not self._more_btn.isHidden():
+            target = self._more_btn
+        else:
+            target = self
+        return target.mapToGlobal(QPoint(target.width() // 2, target.height()))
 
     def request_reflow(self) -> None:
         """请求一次布局重算（多次请求自动合并为一次）。"""
@@ -205,11 +230,21 @@ class PreviewToolbarFrame(QFrame):
     # ── 宽度测算 ─────────────────────────────────────────────────
 
     def _natural_w(self, widget: QWidget) -> int:
-        """取控件当前自然宽度（优先已布局宽度，其次 sizeHint）。"""
+        """取控件当前自然宽度（真实布局宽度优先，幽灵默认值退回 sizeHint）。
+
+        布局尚未激活时，QWidget 的宽度停留在 Qt 默认的 640×480「幽灵值」；
+        若折叠判定先于子控件布局发生（如主窗口动态创建预览器后立即 reflow），
+        按 640 估算会把正常控件误判为超宽而全部收进「更多」菜单；且控件被
+        隐藏后宽度冻结在该值、不再参与布局，折叠将永远无法恢复。此时
+        ``sizeHint()`` 反映真实内容宽度，可安全退回。
+        """
         w = widget.width()
-        if w > 0:
-            return w
-        return widget.sizeHint().width()
+        if w <= 0:
+            return widget.sizeHint().width()
+        hint = widget.sizeHint().width()
+        if hint > 0 and w >= 640 and hint < w:
+            return hint
+        return w
 
     def _included(self, widget: QWidget, chosen: set) -> bool:
         """控件是否参与宽度测算（被折叠项在 ``chosen`` 中视为已展开）。"""
@@ -415,8 +450,27 @@ class PreviewToolbarFrame(QFrame):
 
     # ── 「更多」溢出菜单 ─────────────────────────────────────────
 
+    def _overflow_menu_pos(self, menu_w: int) -> QPoint:
+        """计算「更多」菜单左上角位置：以按钮下缘中心为水平中心展开。
+
+        Args:
+            menu_w: 菜单自然宽度（sizeHint().width()）。
+
+        Returns:
+            QPoint: 菜单应 ``exec`` 的屏幕坐标（已按可用屏幕钳位）。
+        """
+        anchor = self.popup_anchor_global(self._more_btn)
+        margin = 4
+        x = anchor.x() - menu_w // 2
+        y = anchor.y() + margin
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            sg = screen.availableGeometry()
+            x = max(sg.x() + 8, min(x, sg.right() - menu_w - 8))
+        return QPoint(x, y)
+
     def _open_overflow_menu(self) -> None:
-        """弹出「更多」菜单：列出当前被折叠进菜单的功能。"""
+        """弹出「更多」菜单：列出当前被折叠进菜单的功能，与按钮居中对齐。"""
         if not self._folded:
             return
         menu = StyledContextMenu(parent=self)
@@ -428,13 +482,14 @@ class PreviewToolbarFrame(QFrame):
             icon_path = self._icon_path(widget)
             if icon_path:
                 action.setIcon(QIcon(icon_path))
-        anchor = self._more_btn.mapToGlobal(
-            self._more_btn.rect().bottomRight()
-        )
-        menu.exec(anchor)
+        pos = self._overflow_menu_pos(menu.sizeHint().width())
+        menu.exec(pos)
 
     def _menu_label(self, widget: QWidget) -> str:
-        """菜单项文案：优先取 tooltip，其次按钮文本 / 下拉当前值。"""
+        """菜单项文案：注册映射优先，其次 tooltip，再次按钮文本 / 下拉当前值。"""
+        registered = self._menu_labels.get(id(widget))
+        if registered:
+            return registered
         tip = getattr(widget, "toolTip", None)
         if callable(tip):
             tip_text = tip()

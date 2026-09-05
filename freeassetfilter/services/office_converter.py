@@ -14,7 +14,9 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 Office 转换分派服务
 普通类（非单例），classmethod 风格（镜像 ImageDecoderService）。
 能力探测（LibreOffice / MS Office / WPS COM）+ 后端分派：
-按「LibreOffice → COM → 纯 Python」顺序自动降级，每个后缀定义允许的后端集合。
+按「LibreOffice → COM → 纯 Python」顺序自动降级，每个后缀定义允许的后端集合；
+docx/pptx 无外部后端时可纯 Python 降级，xlsx 与旧二进制格式一样仅接受
+LO/COM 转 PDF（无外部后端时返回安装提示）。
 """
 
 from __future__ import annotations
@@ -44,14 +46,12 @@ class ConversionResult:
     ----------
     content_type :
         结果内容类型：``"pdf"``（LO/COM 转 PDF）、``"html"``（docx 降级）、
-        ``"outline"``（pptx 降级）、``"table"``（xlsx 降级）、``"error"``。
+        ``"outline"``（pptx 降级）、``"error"``。
     content :
         结果内容：转换产物路径（``Path``）或内联内容字符串（``str``）。
     backend_used :
         实际生效的后端标识：``"libreoffice"`` / ``"com"`` / ``"pure-python"``
         / ``"error"``。
-    truncated :
-        内容是否因行 / 列上限被截断（T7 xlsx 表格降级使用）。
     message :
         附加说明或错误提示文案。
     """
@@ -59,7 +59,6 @@ class ConversionResult:
     content_type: str
     content: str | Path
     backend_used: str
-    truncated: bool = False
     message: str = ""
 
 
@@ -73,7 +72,9 @@ SUPPORTED_SUFFIXES: frozenset[str] = frozenset({
     "docx", "pptx", "xlsx", "doc", "xls", "ppt",
 })
 
-# OOXML 现代格式：无任何外部后端时仍可纯 Python 降级。
+# OOXML 现代格式。docx/pptx 无外部后端时仍可纯 Python 降级；xlsx 预览只保留
+# PDF 视图，因此与旧二进制格式一致：无 LO/COM 时仅提示安装
+# （见 ``ERROR_MESSAGE``），不提供纯 Python 降级。
 MODERN_SUFFIXES: frozenset[str] = frozenset({"docx", "pptx", "xlsx"})
 
 # OOXML 之前的旧二进制格式：无 LO/COM 时仅提示安装，不提供纯 Python 降级。
@@ -83,7 +84,7 @@ LEGACY_SUFFIXES: frozenset[str] = frozenset({"doc", "xls", "ppt"})
 _ALLOWED_BACKENDS: Mapping[str, tuple[str, ...]] = MappingProxyType({
     "docx": ("libreoffice", "com", "pure-python"),
     "pptx": ("libreoffice", "com", "pure-python"),
-    "xlsx": ("libreoffice", "com", "pure-python"),
+    "xlsx": ("libreoffice", "com"),
     "doc": ("libreoffice", "com"),
     "xls": ("libreoffice", "com"),
     "ppt": ("libreoffice", "com"),
@@ -93,7 +94,6 @@ _ALLOWED_BACKENDS: Mapping[str, tuple[str, ...]] = MappingProxyType({
 _PURE_PYTHON_CONTENT_TYPE: Mapping[str, str] = MappingProxyType({
     "docx": "html",
     "pptx": "outline",
-    "xlsx": "table",
 })
 
 # COM 探测的 ProgID 顺序（镜像 ``tests/conftest.py`` 的 ``com_available`` fixture）。
@@ -106,7 +106,7 @@ _COM_PROG_IDS: tuple[str, ...] = (
     "Kwpp.Application",
 )
 
-# legacy 格式（doc/xls/ppt）在 LO/COM 均不可用时的提示文案（精确匹配计划措辞）。
+# 无外部后端（doc/xls/ppt 与 xlsx）时的安装提示文案（精确匹配计划措辞）。
 ERROR_MESSAGE = "请安装 LibreOffice 或 Microsoft Office/WPS 以获得完整预览"
 
 # LibreOffice 后端默认转换超时（秒）。T5/T9：测试通过注入更短的 ``timeout``
@@ -292,7 +292,8 @@ class OfficeConverter:
     1. 能力探测 —— 每次 ``convert()`` 调用时运行时重新评估 LibreOffice /
        MS Office / WPS COM 的可用性，探测函数永不抛出；
     2. 后端分派 —— 按「LO → COM → 纯 Python」顺序为每个后缀选择允许的
-       后端；doc/xls/ppt（legacy）在 LO/COM 均不可用时返回安装提示后端。
+       后端；doc/xls/ppt（legacy）与 xlsx 在 LO/COM 均不可用时返回安装
+       提示后端（无纯 Python 降级）。
 
     本类无 ``__init__`` 实例状态，全部入口为 classmethod；缓存清理
     （T8）通过 ``_maybe_cleanup_cache()`` 在 ``convert()`` 入口幂等触发。
@@ -357,7 +358,7 @@ class OfficeConverter:
                 # 仅 PDF 产物（LO/COM）落缓存，pure-python 文本产物不缓存
                 return cls._cache_pdf_result(file_info, result)
 
-        # legacy 格式（doc/xls/ppt）在 LO/COM 均不可用时走到这里。
+        # legacy 格式（doc/xls/ppt）与 xlsx 在 LO/COM 均不可用时走到这里。
         return cls._error_backend(suffix)
 
     # ── 能力探测（永不抛出；探测放服务内供运行时重新评估） ─────────────
@@ -943,19 +944,12 @@ class OfficeConverter:
         suffix: str,
     ) -> ConversionResult:
         """
-        纯 Python 后端：docx→HTML、pptx→大纲、xlsx→表格；失败时返回错误结果。
+        纯 Python 后端：docx→HTML、pptx→大纲；失败时返回错误结果。
 
-        仅当 LibreOffice 与 COM 均不可用时被调用（现代格式 docx/pptx/xlsx）。
-        全部第三方库（mammoth / python-pptx / openpyxl）都在各方法内部按需
-        惰性导入（Metis B4-4）—— 模块加载不依赖任何 Office 库。
-
-        xlsx 表格表示约定（T10 表格视图消费协议）：
-        ``content`` 为 TSV（制表符分隔）字符串 —— 行以 ``\\n`` 分隔、单元格以
-        ``\\t`` 分隔；每个单元格值统一转为 ``str``（``None`` → 空串），单元格内
-        原有制表符 / 换行符替换为空格以保证 TSV 结构完整。行上限 ``_XLSX_MAX_ROWS``
-        （5000）、列上限 ``_XLSX_MAX_COLS``（200）；任一超限时 ``truncated=True``
-        且 ``message`` 含「已截断」。T10 按 ``content.split("\\n")`` → 每行
-        ``split("\\t")`` 即可还原为表格。
+        仅当 LibreOffice 与 COM 均不可用时被调用（现代格式 docx/pptx）。
+        全部第三方库（mammoth / python-pptx）都在各方法内部按需惰性导入
+        （Metis B4-4）—— 模块加载不依赖任何 Office 库。xlsx 不支持纯
+        Python 降级（预览只保留 PDF 视图），不会分派到本方法。
 
         Parameters
         ----------
@@ -969,8 +963,7 @@ class OfficeConverter:
         ConversionResult
             - docx：``content_type="html"``，``content`` 为 mammoth 生成的 HTML 字符串；
             - pptx：``content_type="outline"``，``content`` 为逐页纯文本大纲；
-            - xlsx：``content_type="table"``，``content`` 为 TSV 字符串；
-            - legacy / 未知后缀（防御性兜底，正常分派不会到达）：错误结果；
+            - 其他后缀（防御性兜底，正常分派不会到达）：错误结果；
             - 依赖缺失 / 解析失败：``backend_used="error"`` 的错误结果，绝不抛出；
             - 文件缺失 / 路径无效：保持 ``content_type`` 与 ``backend_used`` 的
               降级结果（``content=""`` + 提示消息），绝不抛出。
@@ -979,9 +972,7 @@ class OfficeConverter:
             return cls._pure_python_docx(file_info)
         if suffix == "pptx":
             return cls._pure_python_pptx(file_info)
-        if suffix == "xlsx":
-            return cls._pure_python_xlsx(file_info)
-        # legacy（doc/xls/ppt）或未知后缀的防御性兜底 —— 正常分派不会走到这里。
+        # 其他后缀（doc/xls/ppt/xlsx）或未知后缀的防御性兜底 —— 正常分派不会走到这里。
         return ConversionResult(
             content_type="error",
             content="",
@@ -990,10 +981,6 @@ class OfficeConverter:
         )
 
     # ── 纯 Python 后端各格式实现（T7；所有第三方库导入均为惰性） ───────
-
-    # xlsx 表格提取上限（T7；与 ``_pure_python_xlsx`` 的 TSV 表示约定一致）。
-    _XLSX_MAX_ROWS: int = 5000
-    _XLSX_MAX_COLS: int = 200
 
     @classmethod
     def _pure_python_docx(cls, file_info: dict) -> ConversionResult:
@@ -1093,84 +1080,6 @@ class OfficeConverter:
             backend_used="pure-python",
         )
 
-    @classmethod
-    def _pure_python_xlsx(cls, file_info: dict) -> ConversionResult:
-        """
-        xlsx → TSV 表格字符串（openpyxl 只读模式）。失败时返回结果而不抛出。
-
-        表格表示约定见 ``_convert_pure_python`` 的 docstring：``content`` 为
-        TSV 字符串，行 / 列上限分别为 ``_XLSX_MAX_ROWS``（5000）与
-        ``_XLSX_MAX_COLS``（200），任一超限时 ``truncated=True`` 且
-        ``message`` 含「已截断」。不做排序 / 筛选 / 公式 / 编辑（Metis C2）。
-
-        Parameters
-        ----------
-        file_info : dict
-            含 ``"path"`` 的文件信息。
-
-        Returns
-        -------
-        ConversionResult
-            ``content_type="table"``；失败时为错误 / 降级结果。
-        """
-        path = cls._extract_path(file_info)
-        if path is None:
-            return cls._degraded_result("xlsx", "未提供有效的文件路径")
-        if not Path(path).is_file():
-            return cls._degraded_result("xlsx", f"文件不存在或不可读：{path}")
-
-        try:
-            import openpyxl
-        except ImportError:
-            warning("[OfficeConverter] openpyxl 不可用，xlsx 纯 Python 降级失败")
-            return cls._pure_python_error_result(
-                "无法预览 xlsx 表格：缺少 openpyxl 库，请安装依赖后重试"
-            )
-
-        max_rows = cls._XLSX_MAX_ROWS
-        max_cols = cls._XLSX_MAX_COLS
-        truncated = False
-        lines: list[str] = []
-        workbook = None
-        try:
-            workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
-        except Exception as e:
-            warning(f"[OfficeConverter] xlsx 解析失败: {e}")
-            return cls._pure_python_error_result(f"xlsx 文件解析失败：{e}")
-
-        try:
-            worksheet = workbook.active
-            for row_index, row in enumerate(
-                worksheet.iter_rows(values_only=True), start=1
-            ):
-                if row_index > max_rows:
-                    truncated = True
-                    break
-                cells = row if row is not None else ()
-                if len(cells) > max_cols:
-                    truncated = True
-                    cells = cells[:max_cols]
-                lines.append("\t".join(cls._sanitize_cell(v) for v in cells))
-        except Exception as e:
-            warning(f"[OfficeConverter] xlsx 读取失败: {e}")
-            return cls._pure_python_error_result(f"xlsx 表格读取失败：{e}")
-        finally:
-            if workbook is not None:
-                workbook.close()
-
-        message = (
-            f"已截断：仅显示前 {max_rows} 行 / 前 {max_cols} 列"
-            if truncated
-            else ""
-        )
-        return ConversionResult(
-            content_type="table",
-            content="\n".join(lines),
-            backend_used="pure-python",
-            truncated=truncated,
-            message=message,
-        )
-
     @staticmethod
     def _extract_path(file_info: dict) -> str | None:
         """
@@ -1247,31 +1156,13 @@ class OfficeConverter:
             message=message,
         )
 
-    @staticmethod
-    def _sanitize_cell(value: object) -> str:
-        """
-        将单元格值转为字符串并清洗制表符 / 换行，保证 TSV 结构完整。
-
-        Parameters
-        ----------
-        value : object
-            openpyxl 单元格原始值（可为 ``None``）。
-
-        Returns
-        -------
-        str
-            清洗后的单元格字符串；``None`` 返回空串。
-        """
-        if value is None:
-            return ""
-        return str(value).replace("\t", " ").replace("\r", " ").replace("\n", " ")
-
     # ── 错误 / 提示结果 ───────────────────────────────────────────────
 
     @classmethod
     def _error_backend(cls, suffix: str) -> ConversionResult:
         """
-        legacy 格式（doc/xls/ppt）在 LO/COM 均不可用时的安装提示后端。
+        legacy 格式（doc/xls/ppt）与 xlsx（仅 PDF 预览）在 LO/COM 均不可用
+        时的安装提示后端。
 
         Parameters
         ----------
@@ -1385,7 +1276,7 @@ class OfficeConverter:
         仅当 *result* 是真实的 PDF 产物（``content_type=="pdf"`` 且
         ``content`` 为 ``Path`` 且 ``backend_used`` 为 ``"libreoffice"`` /
         ``"com"``）时才调用 ``put_cache``；pure-python 后端的
-        html/outline/table **文本**产物没有 PDF 文件，不缓存。``put_cache``
+        html/outline **文本**产物没有 PDF 文件，不缓存。``put_cache``
         自带降级：缓存不可写返回原路径，不影响预览。
 
         Parameters
@@ -1420,7 +1311,6 @@ class OfficeConverter:
             content_type=result.content_type,
             content=cached_path,
             backend_used=result.backend_used,
-            truncated=result.truncated,
             message=result.message,
         )
 

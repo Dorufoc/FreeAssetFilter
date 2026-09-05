@@ -65,7 +65,7 @@ class OfficeConverterWorker(QThread):
 
     Signals:
         converted: ``(str)`` —— ``content_type == "pdf"`` 时为 PDF 路径字符串；
-            降级内容（html/outline/table）时为 ``"{content_type}:{content}"``
+            降级内容（html/outline）时为 ``"{content_type}:{content}"``
             标记字符串。
         failed: ``(str)`` —— 错误 / 取消 / 超时消息。取消消息含「取消」；超时
             消息必含「超时」（Metis E3）。
@@ -313,7 +313,7 @@ class OfficeConverterWorker(QThread):
         """把成功 / 降级结果编码为 ``converted`` 信号负载。
 
         - ``content_type == "pdf"``：PDF 产物路径字符串；
-        - 降级内容（html/outline/table）：「``{content_type}:{content}``」标记。
+        - 降级内容（html/outline）：「``{content_type}:{content}``」标记。
         """
         if result.content_type == "pdf":
             return str(result.content)

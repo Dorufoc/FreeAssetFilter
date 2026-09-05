@@ -16,8 +16,8 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QApplication, QLineEdit,
-    QPushButton, QStackedLayout,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFrame, QLabel, QApplication,
+    QLineEdit, QPushButton, QStackedLayout,
 )
 from PySide6.QtCore import Qt, Signal, QEvent, QPoint, QRect, QRectF, QTimer, QPropertyAnimation, QEasingCurve, QSize
 from PySide6.QtGui import QFont, QFontMetrics, QMouseEvent, QPainter, QPainterPath, QPen, QColor, QPaintEvent, QPixmap, QImage
@@ -93,25 +93,28 @@ class _ZoomPopup(QWidget):
         p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), r, r)
         p.end()
 
-    def _target_rect(self, anchor_br: QPoint) -> QRect:
-        """计算弹窗最终矩形：右对齐顶栏右下角锚点并钳位到屏幕内。"""
+    def _target_rect(self, anchor: QPoint) -> QRect:
+        """计算弹窗最终矩形：以锚点（按钮下缘中心）为水平中心向下展开，
+        贴近屏幕底边时上翻。"""
         pw = self.POPUP_WIDTH
         ph = self.POPUP_HEIGHT
         layout = self._parent_layout
         dpi = getattr(layout, "_dpi_scale", 1.0) if layout is not None else 1.0
-        margin_r = int(5 * dpi)
-        x = anchor_br.x() - pw - margin_r
-        y = anchor_br.y() + int(7 * dpi)
+        margin = max(4, round(6 * dpi))
+        x = anchor.x() - pw // 2
+        y = anchor.y() + margin
 
         screen = QApplication.primaryScreen()
         if screen is not None:
             sg = screen.availableGeometry()
             x = max(sg.x() + 8, min(x, sg.right() - pw - 8))
+            if y + ph > sg.bottom() - 8:
+                y = anchor.y() - ph - margin
         return QRect(x, y, pw, ph)
 
-    def show_animated(self, anchor_br: QPoint):
-        """从按钮右下角向下展开，弹窗右对齐。"""
-        target = self._target_rect(anchor_br)
+    def show_animated(self, anchor: QPoint):
+        """从按钮下缘中心向下展开，弹窗与按钮水平居中对齐。"""
+        target = self._target_rect(anchor)
         x, y, pw = target.x(), target.y(), target.width()
         ph = target.height()
 
@@ -337,6 +340,11 @@ class PdfPreviewerLayout(QWidget):
 
     close_requested = Signal()
 
+    # 滚动条列/行宽高（与文本预览器 _StyledPreviewScrollArea 的 12px 一致）
+    _SB_W = 12
+    # 垂直滚动到底时在内容底部预留的空隙（px），避免最后一页贴住预览器下缘
+    _CONTENT_BOTTOM_GAP = 2
+
     def __init__(
         self,
         parent: Optional[QWidget] = None,
@@ -389,12 +397,12 @@ class PdfPreviewerLayout(QWidget):
         self._content_stack = QStackedLayout(self._content_area)
         self._content_stack.setContentsMargins(0, 0, 0, 0)
 
-        # ── index 0：PDF 渲染器 + 双悬浮覆盖式 StyledScrollBar ──
-        # 渲染器直接铺满整个内容容器（不再为滚动条预留网格列/行），
-        # 滚动条作为子控件悬浮在内容上方（raise_），不参与内容层布局占位，
-        # 从而保证左右/上下边距始终对称（参照 file_selector_layout 的覆盖式滚动条）。
+        # ── index 0：PDF 渲染器 + StyledScrollBar（QGridLayout 预留右列/底行）──
+        # 网格布局与文本预览器 _StyledPreviewScrollArea 一致：渲染器位于
+        # (0,0)，垂直滚动条占据右侧固定列，水平滚动条与右下角占位格位于底行。
+        # 滚动条由布局托管，随容器尺寸自动定位，无需手动重排。
         self._scroll_container = QWidget()
-        container_layout = QVBoxLayout(self._scroll_container)
+        container_layout = QGridLayout(self._scroll_container)
         container_layout.setContentsMargins(0, 0, 0, 0)
         container_layout.setSpacing(0)
 
@@ -404,26 +412,31 @@ class PdfPreviewerLayout(QWidget):
             dpi_scale=self._dpi_scale,
             global_font=self._global_font,
         )
-        container_layout.addWidget(self._renderer)
+        container_layout.addWidget(self._renderer, 0, 0)
 
         from freeassetfilter.ui.components.styled_scroll_area import StyledScrollBar
-        # 垂直滚动条：悬浮在内容右边缘，宽度按 DPI 缩放
+        # 垂直滚动条：常驻右侧固定列（宽度与文本预览器一致），
+        # 内容无超高时滑块不绘制，超高时自动出现。
         self._vbar = StyledScrollBar(orientation=Qt.Vertical)
         self._vbar.setRange(0, 0)
-        self._vbar_w = max(6, int(8 * self._dpi_scale))
-        self._vbar.setFixedWidth(self._vbar_w)
-        self._vbar.setParent(self._scroll_container)
+        self._vbar.setFixedWidth(self._SB_W)
         self._vbar.valueChanged.connect(self._on_scroll_changed)
-        self._vbar.raise_()
+        container_layout.addWidget(self._vbar, 0, 1)
+        # 内容画布以「视口 + 右侧预留列」的整体中心为基准水平居中
+        # （页面右边缘无需扣除滚动条列宽度，左右边距保持对称）。
+        self._renderer.set_right_reserved_px(self._vbar.width())
 
-        # 水平滚动条：悬浮在内容底部边缘，高度按 DPI 缩放
+        # 水平滚动条：位于底部行，仅在有横向溢出时显示
         self._hbar = StyledScrollBar(orientation=Qt.Horizontal)
         self._hbar.setRange(0, 0)
-        self._hbar_h = max(6, int(8 * self._dpi_scale))
-        self._hbar.setFixedHeight(self._hbar_h)
-        self._hbar.setParent(self._scroll_container)
+        self._hbar.setFixedHeight(self._SB_W)
         self._hbar.valueChanged.connect(self._on_hscroll_changed)
-        self._hbar.raise_()
+        container_layout.addWidget(self._hbar, 1, 0)
+
+        # 右下角占位格（与水平滚动条同显同隐，避免悬空角块）
+        self._corner = QWidget()
+        self._corner.setFixedSize(self._SB_W, self._SB_W)
+        container_layout.addWidget(self._corner, 1, 1)
 
         self._content_stack.addWidget(self._scroll_container)
 
@@ -476,10 +489,6 @@ class PdfPreviewerLayout(QWidget):
         # 弹窗外点击手势状态：按下挂起 → 释放时若无窗口拖拽则收起弹窗
         self._popup_press_pending: bool = False
         self._popup_drag_moved: bool = False
-
-        # Wire toolbar buttons
-        self._zoom_btn.clicked.connect(self._on_zoom_clicked)
-        self._maxsize_btn.clicked.connect(self._on_maxsize_toggle)
 
     def _build_top_bar(self) -> None:
         """构建顶栏（参考 Windows 照片查看器功能栏布局）。
@@ -551,6 +560,7 @@ class PdfPreviewerLayout(QWidget):
         self._maxsize_btn = StyledButton("", variant="ghost", size="sm", icon=self._maxsize_icon_path)
         self._maxsize_btn.setFixedSize(32, 32)
         self._maxsize_btn.setToolTip("最大化")
+        self._maxsize_btn.clicked.connect(self._on_maxsize_toggle)
         self._top_bar.add_right(self._maxsize_btn)
 
         # 顶栏布局变化（折叠 / 空间重分配）后刷新页码省略文本
@@ -711,7 +721,8 @@ class PdfPreviewerLayout(QWidget):
         if hasattr(self, '_renderer') and self._renderer._view is not None:
             v = self._renderer._view
             zoom = max(v.zoom_level, 0.01)
-            v.offset_x = value / zoom + v.view_width / (2.0 * zoom)
+            # 以整个预览器画布中心（含右侧预留列）为基准换算
+            v.offset_x = value / zoom + v.frame_center_x() / zoom
             self._renderer.update()
 
     def _on_scroll_changed(self, value: int) -> None:
@@ -742,7 +753,7 @@ class PdfPreviewerLayout(QWidget):
         v = self._renderer._view
         # 统一屏蔽双滚动条信号：防止 setRange/setValue 触发 valueChanged
         # 回写 offset_x/offset_y（例如 fit 后 hbar range 归零把 offset_x 覆盖
-        # 为视口中心 vw/(2*zoom)，导致内容水平偏向一侧）。
+        # 为画布中心 frame_center_x/zoom，导致内容水平偏向一侧）。
         self._vbar.blockSignals(True)
         self._hbar.blockSignals(True)
         try:
@@ -753,6 +764,10 @@ class PdfPreviewerLayout(QWidget):
                 total_h: float = v._accum_page_heights[-1] * zoom
                 view_h: int = max(v.view_height, 1)
                 scroll_max: int = max(0, int(total_h - view_h))
+                # 底部预留空隙：有纵向滚动需求时，最后一页可停在预览器
+                # 下缘上方 _CONTENT_BOTTOM_GAP 像素处，不贴边
+                if scroll_max > 0:
+                    scroll_max += self._CONTENT_BOTTOM_GAP
                 self._vbar.setRange(0, scroll_max)
                 self._vbar.setSingleStep(20)
                 self._vbar.setPageStep(view_h)
@@ -770,39 +785,26 @@ class PdfPreviewerLayout(QWidget):
                 self._hbar.setRange(0, scroll_max)
                 self._hbar.setSingleStep(20)
                 self._hbar.setPageStep(view_w)
-                # 同步滑块到当前 offset_x
-                new_hval = int((v.offset_x - v.view_width / (2.0 * zoom)) * zoom)
+                # 同步滑块到当前 offset_x（以含预留列的画布中心为基准）
+                new_hval = int((v.offset_x - v.frame_center_x() / zoom) * zoom)
                 new_hval = max(self._hbar.minimum(), min(self._hbar.maximum(), new_hval))
                 self._hbar.setValue(new_hval)
         finally:
             self._vbar.blockSignals(False)
             self._hbar.blockSignals(False)
-        # 无滚动需求时隐藏滚动条，避免右侧/底部恒占 12px 间隙导致内容相对可视框偏移
+        # 按滚动需求刷新水平条与角块显隐（垂直条常驻右列）
         self._sync_scrollbar_visibility()
 
     def _sync_scrollbar_visibility(self) -> None:
-        """按是否有滚动需求显隐双滚动条。
+        """同步滚动条显隐：垂直条常驻，水平条与角块仅在横向溢出时显示。
 
-        覆盖式滚动条不参与内容层布局，显隐只影响自身悬浮层，
-        无论是否显示，渲染器都占据完整可视区域，边距始终对称。
+        垂直滚动条由网格布局托管在右侧固定列，滑块由 StyledScrollBar 在
+        range=0 时不绘制；水平滚动条行仅在有横向滚动需求时展开，
+        避免 PDF（默认 fit-to-width 无横向溢出）白白占用底部空间。
         """
-        v_need: bool = self._vbar.maximum() > self._vbar.minimum()
         h_need: bool = self._hbar.maximum() > self._hbar.minimum()
-        self._vbar.setVisible(v_need)
         self._hbar.setVisible(h_need)
-
-    def _relayout_overlay_scrollbars(self) -> None:
-        """将双滚动条绝对定位到内容容器右/下边缘上方，悬浮于渲染层之上。
-
-        覆盖式滚动条不与布局占位，仅在做为内容父容器的直接子控件时
-        通过 setGeometry 定位，并在每次定位后 raise_() 保持悬浮层级。
-        """
-        cw: int = self._scroll_container.width()
-        ch: int = self._scroll_container.height()
-        self._vbar.setGeometry(cw - self._vbar_w, 0, self._vbar_w, ch)
-        self._hbar.setGeometry(0, ch - self._hbar_h, cw, self._hbar_h)
-        self._vbar.raise_()
-        self._hbar.raise_()
+        self._corner.setVisible(h_need)
 
     def _on_renderer_page_changed(self, page: int) -> None:
         """Slot for NativePdfRenderer.page_changed signal."""
@@ -880,10 +882,12 @@ class PdfPreviewerLayout(QWidget):
         self._zoom_popup.show_animated(self._zoom_anchor_global())
 
     def _zoom_anchor_global(self) -> QPoint:
-        """缩放弹窗锚点：顶栏右下角（屏幕坐标）。"""
-        return self._top_bar.mapToGlobal(
-            QPoint(self._top_bar.width(), self._top_bar.height())
-        )
+        """缩放弹窗锚点：缩放按钮下缘水平中心（屏幕坐标）。
+
+        按钮被折叠进「更多」菜单时退回到「更多」按钮，保证从溢出菜单
+        触发时弹窗仍落在按钮附近。
+        """
+        return self._top_bar.popup_anchor_global(self._zoom_btn)
 
     def _close_zoom_popup(self) -> None:
         """收起缩放弹窗（带动画；实例保留复用）。"""
@@ -937,8 +941,7 @@ class PdfPreviewerLayout(QWidget):
         super().resizeEvent(event)
         # 布局激活后刷新页码省略文本（顶栏可用宽度可能已变化）
         QTimer.singleShot(0, self._apply_elided_page_text)
-        # 悬浮覆盖式滚动条随内容容器尺寸变化重新定位（不参与内容布局）
-        self._relayout_overlay_scrollbars()
+        # 滚动条由网格布局托管，随容器尺寸自动重排，无需手动定位
         if hasattr(self, '_index_drawer') and self._index_drawer._is_open:
             self._index_drawer._update_container_geom()
             cw, ch = self._index_drawer._cw, self._index_drawer._ch
@@ -1150,17 +1153,21 @@ class PdfPreviewerLayout(QWidget):
         layout.addStretch()
 
     def set_section_styles(self, fill_color: str, border_color: str) -> None:
-        """应用面板样式（主题切换时由 MainWindow 调用）。"""
+        """应用面板样式（主题切换时由 MainWindow 调用）。
+
+        与文本预览器一致：内容区与覆盖层全透明，不强制自绘深色背景，
+        底色由宿主面板（main_window 列容器）透出。
+        """
         # 顶栏透明无背景：不在此设置任何样式
-        # 内容区：背景使用 G1（主题 surface 色），边框透明
+        # 内容区：背景透明（透出宿主面板），边框透明
         self._content_area.setStyleSheet(f"""
-            background-color: {tm.surface.name()};
+            background-color: transparent;
             border: 1px solid transparent;
             border-radius: 8px;
         """)
-        # 覆盖层背景与内容区一致
+        # 覆盖层背景与内容区一致（透明）
         self._overlay.setStyleSheet(f"""
-            background-color: {tm.surface.name()};
+            background-color: transparent;
         """)
         for _w in (self._top_bar, self._content_area, self._overlay):
             _w.style().unpolish(_w)

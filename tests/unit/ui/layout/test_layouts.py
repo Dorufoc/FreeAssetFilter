@@ -31,7 +31,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from PySide6.QtCore import QEvent, QPointF, QObject, Qt, QThread, Signal
+from PySide6.QtCore import QEvent, QPoint, QPointF, QObject, Qt, QThread, Signal
 from PySide6.QtGui import (
     QCloseEvent,
     QColor,
@@ -52,6 +52,7 @@ if _UI_ROOT not in sys.path:
 from freeassetfilter.ui.layout.file_pool_layout import FilePoolLayout
 from freeassetfilter.ui.layout.file_selector_layout import FileSelectorLayout
 from freeassetfilter.ui.layout.preview.font_previewer_layout import (
+    DEFAULT_PREVIEW_TEXT,
     FontLoadThread,
     FontPreviewerLayout,
 )
@@ -573,6 +574,349 @@ class TestFontPreviewerLayout:
         layout.deleteLater()
 
 
+class TestFontPreviewTextDrawer:
+    """预览文本编辑抽屉：标题结构 / 展开收起 / 实时同步 / 重置 / 清理收起。"""
+
+    def _shown_layout(self, qapp: QApplication) -> FontPreviewerLayout:
+        layout = FontPreviewerLayout()
+        layout.show()
+        layout.resize(1200, 700)
+        _pump_events(qapp)
+        return layout
+
+    @staticmethod
+    def _settle_drawers(
+        qapp: QApplication,
+        layout: FontPreviewerLayout,
+        ms: float = 1500,
+    ) -> None:
+        """有界等待：直到左右抽屉的展开/收起动画全部结束。"""
+        deadline = time.time() + ms / 1000
+        while time.time() < deadline:
+            animating = [
+                getattr(layout, attr)._animating
+                for attr in ("_text_drawer", "_ai_drawer")
+                if getattr(layout, attr) is not None
+            ]
+            if not any(animating):
+                return
+            qapp.processEvents()
+            time.sleep(0.01)
+
+    def test_drawer_default_hidden_with_title(self, qapp: QApplication) -> None:
+        """初始隐藏；抽屉含标题「编辑预览文本」，编辑框不再自带重复 label。"""
+        from PySide6.QtWidgets import QLabel
+
+        layout = FontPreviewerLayout()
+        _assert_layout_geometry(layout, qapp)
+        assert not layout._text_drawer._is_open
+        assert layout._edit_preview_btn.toolTip() == "编辑预览文本"
+        titles = [
+            c
+            for c in layout._text_drawer._panel.findChildren(QLabel)
+            if c.text() == "编辑预览文本"
+        ]
+        assert titles
+        assert layout._preview_text_edit.label == ""
+        layout.deleteLater()
+
+    def test_toggle_drawer(self, qapp: QApplication) -> None:
+        """编辑按钮第一次点击展开、第二次点击收起抽屉。"""
+        layout = self._shown_layout(qapp)
+        layout._on_edit_preview_text()
+        self._settle_drawers(qapp, layout)
+        assert layout._text_drawer._is_open
+        assert layout._text_drawer.isVisible()
+        layout._on_edit_preview_text()
+        assert not layout._text_drawer._is_open
+        layout.deleteLater()
+
+    def test_edit_text_syncs_to_preview(self, qapp: QApplication) -> None:
+        """预览视图激活时：编辑框输入实时同步 _preview_text 与预览区。"""
+        layout = FontPreviewerLayout()
+        _assert_layout_geometry(layout, qapp)
+        layout._content_stack.setCurrentIndex(0)
+        layout._preview_text_edit.text = "自定义预览内容 ABC"
+        qapp.processEvents()
+        assert layout._preview_text == "自定义预览内容 ABC"
+        assert layout._preview_view._text_edit.toPlainText() == "自定义预览内容 ABC"
+        layout.deleteLater()
+
+    def test_reset_preview_text(self, qapp: QApplication) -> None:
+        """重置按钮恢复默认预览文本并同步到预览区。"""
+        layout = FontPreviewerLayout()
+        _assert_layout_geometry(layout, qapp)
+        layout._preview_text_edit.text = "临时内容"
+        layout._on_reset_preview_text()
+        assert layout._preview_text == DEFAULT_PREVIEW_TEXT
+        assert layout._preview_text_edit.text == DEFAULT_PREVIEW_TEXT
+        layout.deleteLater()
+
+    def test_cleanup_closes_drawers(self, qapp: QApplication) -> None:
+        """cleanup() 收起已展开的编辑与 AI 抽屉，不抛异常。"""
+        layout = self._shown_layout(qapp)
+        layout._on_edit_preview_text()
+        layout._toggle_ai_drawer()
+        self._settle_drawers(qapp, layout)
+        assert layout._text_drawer._is_open
+        assert layout._ai_drawer._is_open
+        layout.cleanup()
+        assert not layout._text_drawer._is_open
+        assert not layout._ai_drawer._is_open
+        layout.deleteLater()
+
+
+class TestFontWeightLabel:
+    """字重标签：数值→标准名映射与静态/可变/未加载三种状态显示。"""
+
+    @pytest.mark.parametrize(
+        "weight,expected",
+        [
+            (100, "Thin"),
+            (200, "ExtraLight"),
+            (300, "Light"),
+            (400, "Regular"),
+            (500, "Medium"),
+            (600, "SemiBold"),
+            (700, "Bold"),
+            (800, "ExtraBold"),
+            (900, "Black"),
+            (1000, "Black"),
+            (95, "Thin"),      # 最近档偏差 ≤100
+            (105, "Thin"),
+            (550, "Medium"),
+            (0, "Thin"),       # 越界钳制到下限 100
+            (2500, "Black"),   # 越界钳制到上限 1000
+        ],
+    )
+    def test_weight_name_mapping(
+        self, weight: int, expected: str,
+    ) -> None:
+        assert FontPreviewerLayout.weight_name(weight) == expected
+
+    def test_placeholder_when_not_loaded(self, qapp: QApplication) -> None:
+        """未加载字体：标签 Weight + 按钮 wght（占位禁用）。"""
+        layout = FontPreviewerLayout()
+        _assert_layout_geometry(layout, qapp)
+        assert layout._weight_label.text() == "Weight"
+        assert layout._weight_value_btn.text() == "wght"
+        assert not layout._weight_value_btn.isEnabled()
+        layout.deleteLater()
+
+    def test_static_font_shows_weight_name(self, qapp: QApplication) -> None:
+        """静态字体加载后：标签显示真实字重名，按钮显示数值。"""
+        layout = FontPreviewerLayout()
+        _assert_layout_geometry(layout, qapp)
+        layout.current_font_family = "SomeStatic"
+        layout._is_variable_font = False
+        layout._current_weight = 700
+        layout._sync_weight_controls()
+        assert layout._weight_label.text() == "Bold"
+        assert layout._weight_value_btn.text() == "700"
+        assert layout._weight_value_btn.isEnabled()
+        layout.current_font_family = ""
+        layout._is_variable_font = False
+        layout._sync_weight_controls()
+        assert layout._weight_label.text() == "Weight"
+        layout.deleteLater()
+
+    def test_variable_font_keeps_weight_label(self, qapp: QApplication) -> None:
+        """可变字体：标签保持 Weight，按钮显示数值。"""
+        layout = FontPreviewerLayout()
+        _assert_layout_geometry(layout, qapp)
+        layout.current_font_family = "SomeVariable"
+        layout._is_variable_font = True
+        layout._current_weight = 400
+        layout._sync_weight_controls()
+        assert layout._weight_label.text() == "Weight"
+        assert layout._weight_value_btn.text() == "400"
+        assert layout._weight_value_btn.isEnabled()
+        layout.deleteLater()
+
+
+class TestFontWeightControlsLayout:
+    """字重控件布局：统一间距 / tooltip 拆分 / 折叠菜单映射 / 弹窗居中。"""
+
+    def _shown_layout(self, qapp: QApplication) -> FontPreviewerLayout:
+        layout = FontPreviewerLayout()
+        layout.show()
+        layout.resize(1200, 700)
+        _pump_events(qapp)
+        return layout
+
+    def test_uniform_gap_after_weight_button(
+        self, qapp: QApplication,
+    ) -> None:
+        """字重数值按钮与 AI/缩放按钮间距为统一 6px。"""
+        from freeassetfilter.ui.layout.preview.preview_toolbar import (
+            PreviewToolbarFrame,
+        )
+
+        layout = self._shown_layout(qapp)
+        gap = PreviewToolbarFrame._GAP
+        weight_right = layout._weight_value_btn.x() + layout._weight_value_btn.width()
+        assert layout._ai_btn.x() - weight_right == gap
+        ai_right = layout._ai_btn.x() + layout._ai_btn.width()
+        assert layout._zoom_btn.x() - ai_right == gap
+        layout.deleteLater()
+
+    def test_tooltips_split_and_group_clean(
+        self, qapp: QApplication,
+    ) -> None:
+        """标签 tooltip Weight、按钮 wght；分组自身不再带 tooltip。"""
+        layout = FontPreviewerLayout()
+        _assert_layout_geometry(layout, qapp)
+        assert layout._weight_label.toolTip() == "Weight"
+        assert layout._weight_value_btn.toolTip() == "wght"
+        assert layout._weight_group.toolTip() == ""
+        layout.deleteLater()
+
+    def test_overflow_menu_label_mapping(
+        self, qapp: QApplication,
+    ) -> None:
+        """折叠「更多」菜单：字重组显示注册名「字重」，其余控件仍取 tooltip。"""
+        layout = FontPreviewerLayout()
+        _assert_layout_geometry(layout, qapp)
+        top_bar = layout._top_bar
+        assert top_bar._menu_label(layout._weight_group) == "字重"
+        assert top_bar._menu_label(layout._ai_btn) == "AI 功能"
+        layout.deleteLater()
+
+    def test_weight_popup_centered_with_button(
+        self, qapp: QApplication,
+    ) -> None:
+        """字重弹窗水平中心与数值按钮中心对齐。"""
+        import freeassetfilter.ui.layout.preview.font_previewer_layout as fpl_module
+
+        layout = self._shown_layout(qapp)
+        anchor = layout._weight_anchor_global()
+        button_center = (
+            layout._weight_value_btn.mapToGlobal(
+                layout._weight_value_btn.rect().center()
+            ).x()
+        )
+        assert abs(anchor.x() - button_center) <= 1  # 锚点即按钮下缘中心
+        popup = fpl_module._WeightPopup(parent=layout)
+        rect = popup._target_rect(anchor)
+        assert abs(rect.center().x() - anchor.x()) <= 1
+        popup.close()
+        popup.deleteLater()
+        layout.deleteLater()
+
+
+# =============================================================================
+# ui.layout.preview.preview_toolbar（弹窗/溢出菜单锚点）
+# =============================================================================
+class TestPreviewToolbarPopupAnchoring:
+    """顶栏弹窗锚点：功能按钮下缘中心对齐 + 折叠回退 + 溢出菜单居中。"""
+
+    def _shown_toolbar(self, qapp: QApplication) -> Any:
+        from freeassetfilter.ui.layout.preview.preview_toolbar import (
+            PreviewToolbarFrame,
+        )
+
+        host = QWidget()
+        lay = QVBoxLayout(host)
+        lay.setContentsMargins(0, 0, 0, 0)
+        toolbar = PreviewToolbarFrame()
+        toolbar.setFixedHeight(48)
+        lay.addWidget(toolbar)
+        host.resize(640, 120)
+        host.show()
+        _pump_events(qapp)
+        return host, toolbar
+
+    def test_anchor_is_widget_bottom_center(self, qapp: QApplication) -> None:
+        """可见功能按钮的弹窗锚点 = 按钮下缘水平中心。"""
+        from PySide6.QtWidgets import QPushButton
+
+        host, toolbar = self._shown_toolbar(qapp)
+        try:
+            button = QPushButton("X", toolbar)
+            button.setFixedSize(32, 32)
+            button.show()
+            _pump_events(qapp)
+            anchor = toolbar.popup_anchor_global(button)
+            center = button.mapToGlobal(
+                QPoint(button.width() // 2, button.height())
+            )
+            assert abs(anchor.x() - center.x()) <= 1
+            assert abs(anchor.y() - center.y()) <= 1
+        finally:
+            host.close()
+            host.deleteLater()
+            _pump_events(qapp)
+
+    def test_anchor_falls_back_to_more_button_when_widget_hidden(
+        self, qapp: QApplication,
+    ) -> None:
+        """功能按钮被折叠隐藏时，锚点回退到「更多」按钮下缘中心。"""
+        from PySide6.QtWidgets import QPushButton
+
+        host, toolbar = self._shown_toolbar(qapp)
+        try:
+            hidden = QPushButton("Z", toolbar)
+            hidden.hide()
+            toolbar._more_btn.show()
+            _pump_events(qapp)
+            assert toolbar._more_btn.isVisible()
+
+            anchor = toolbar.popup_anchor_global(hidden)
+            center = toolbar._more_btn.mapToGlobal(
+                QPoint(toolbar._more_btn.width() // 2, toolbar._more_btn.height())
+            )
+            assert abs(anchor.x() - center.x()) <= 1
+            assert abs(anchor.y() - center.y()) <= 1
+        finally:
+            host.close()
+            host.deleteLater()
+            _pump_events(qapp)
+
+    def test_anchor_falls_back_to_toolbar_when_all_hidden(
+        self, qapp: QApplication,
+    ) -> None:
+        """功能按钮与「更多」按钮都不可见时，锚点退回顶栏自身下缘中心。"""
+        from PySide6.QtWidgets import QPushButton
+
+        host, toolbar = self._shown_toolbar(qapp)
+        try:
+            hidden = QPushButton("Z", toolbar)
+            hidden.hide()
+            toolbar._more_btn.hide()
+            _pump_events(qapp)
+
+            anchor = toolbar.popup_anchor_global(hidden)
+            self_center = toolbar.mapToGlobal(
+                QPoint(toolbar.width() // 2, toolbar.height())
+            )
+            assert abs(anchor.x() - self_center.x()) <= 1
+            assert abs(anchor.y() - self_center.y()) <= 1
+        finally:
+            host.close()
+            host.deleteLater()
+            _pump_events(qapp)
+
+    def test_overflow_menu_pos_centered_below_more_button(
+        self, qapp: QApplication,
+    ) -> None:
+        """溢出菜单以「⋯」按钮下缘中心水平展开（居中对齐功能按钮）。"""
+        host, toolbar = self._shown_toolbar(qapp)
+        try:
+            toolbar._more_btn.show()
+            _pump_events(qapp)
+            menu_w = 220
+            pos = toolbar._overflow_menu_pos(menu_w)
+            center = toolbar._more_btn.mapToGlobal(
+                QPoint(toolbar._more_btn.width() // 2, toolbar._more_btn.height())
+            )
+            assert abs(pos.x() - (center.x() - menu_w // 2)) <= 1
+            assert pos.y() == center.y() + 4  # 按钮下缘 4px 间距
+        finally:
+            host.close()
+            host.deleteLater()
+            _pump_events(qapp)
+
+
 # =============================================================================
 # ui.layout.preview.fullscreen_host
 # =============================================================================
@@ -638,6 +982,187 @@ class TestImagePreviewerLayout:
         _assert_layout_geometry(layout, qapp)
         assert layout.set_file(_MISSING_FILE) is False
         layout.deleteLater()
+
+    # ── 打开即适配（真实 viewport 尺寸）与透明背景回归 ─────────────────────
+
+    @staticmethod
+    def _make_jpg(tmp_path: Any, name: str, width: int, height: int) -> str:
+        """生成指定尺寸的纯色 JPG 到 tmp_path，返回路径。"""
+        from PySide6.QtGui import QImage
+
+        img = QImage(width, height, QImage.Format.Format_RGB32)
+        img.fill(QColor(120, 160, 200))
+        path = str(tmp_path / name)
+        assert img.save(path, "JPG", 90)
+        return path
+
+    @staticmethod
+    def _expected_fit_scale(pv: Any) -> float:
+        """按 QGraphicsView 当前真实 viewport 计算期望 fit 比例。
+
+        fitInView 内置约 2px/边的防锯齿留白，此处用无留白上界做近似，
+        断言时允许 1% 相对误差即可排除“按默认 640×480 占位尺寸适配”
+        的旧缺陷（该场景比例相差远大于 1%）。
+        """
+        vp = pv._image_view.viewport()
+        item = pv._gif_proxy_item if pv._is_gif_mode else pv._pixmap_item
+        if pv._is_gif_mode:
+            rect = item.boundingRect()
+            iw, ih = rect.width(), rect.height()
+        else:
+            pix = item.pixmap()
+            iw, ih = pix.width(), pix.height()
+        if not iw or not ih:
+            return 0.0
+        return min(vp.width() / iw, vp.height() / ih)
+
+    def _shown_previewer(
+        self, qapp: QApplication, host_w: int = 1200, host_h: int = 900,
+        backdrop: str | None = None,
+    ) -> tuple[Any, QWidget]:
+        """按真实运行时时序构造：创建 → 加入宿主布局 → set_file 前宿主已可见。"""
+        host = QWidget()
+        host.resize(host_w, host_h)
+        root_lay = QVBoxLayout(host)
+        root_lay.setContentsMargins(0, 0, 0, 0)
+        outer = QWidget(host)
+        if backdrop is not None:
+            outer.setStyleSheet(f"background-color: {backdrop};")
+        root_lay.addWidget(outer)
+        lay = QVBoxLayout(outer)
+        lay.setContentsMargins(0, 0, 0, 0)
+        pv = ImagePreviewerLayout(parent=outer)
+        lay.addWidget(pv)
+        host.show()
+        qapp.processEvents()
+        return pv, host
+
+    def test_open_fits_to_real_viewport_not_placeholder(
+        self, qapp: QApplication, tmp_path: Any,
+    ) -> None:
+        """大图打开后按真实预览区尺寸适配，而非未布局前的默认占位尺寸。
+
+        旧实现：_fit_to_view 在 QGraphicsView 仍处于 Qt 默认几何
+        （未加入布局 / 布局未激活）时执行，此后真实尺寸生效也无人再校正，
+        观感即“打开不自动缩放”。本用例构造与统一预览器一致的时序
+        （先 set_file 后布局激活），断言最终缩放贴近真实 viewport 的 fit 值。
+        """
+        img = self._make_jpg(tmp_path, "wide.jpg", 3000, 2000)
+        pv, host = self._shown_previewer(qapp)
+        pv.set_file(img)
+        _pump_events(qapp, ms=600)
+        try:
+            vp = pv._image_view.viewport()
+            assert vp.width() > 800 and vp.height() > 500, "宿主布局应已生效"
+            expected = self._expected_fit_scale(pv)
+            assert expected > 0.1
+            actual = pv._image_view.transform().m11()
+            assert pv._zoom_pct == 100
+            assert abs(actual - expected) / expected <= 0.01, (
+                f"打开即适配应使用真实 viewport 尺寸: actual={actual:.4f} "
+                f"expected={expected:.4f} vp={vp.width()}x{vp.height()}"
+            )
+        finally:
+            pv.cleanup()
+            host.close()
+            host.deleteLater()
+        _pump_events(qapp, ms=100)
+
+    def test_switching_image_refits_at_unchanged_viewport(
+        self, qapp: QApplication, tmp_path: Any,
+    ) -> None:
+        """viewport 未变化时切换不同尺寸图片也必须重新适配（去重不误伤）。"""
+        img_a = self._make_jpg(tmp_path, "a_wide.jpg", 3000, 2000)
+        img_b = self._make_jpg(tmp_path, "b_square.jpg", 900, 900)
+        pv, host = self._shown_previewer(qapp)
+        try:
+            pv.set_file(img_a)
+            _pump_events(qapp, ms=500)
+            scale_a = pv._image_view.transform().m11()
+            vp_a = (pv._image_view.viewport().width(), pv._image_view.viewport().height())
+
+            pv.set_file(img_b)
+            _pump_events(qapp, ms=500)
+            assert pv._zoom_pct == 100
+            vp_b = (pv._image_view.viewport().width(), pv._image_view.viewport().height())
+            assert vp_a == vp_b, "本例应在 viewport 不变的条件下切换"
+            expected_b = self._expected_fit_scale(pv)
+            actual_b = pv._image_view.transform().m11()
+            assert abs(actual_b - expected_b) / expected_b <= 0.01, (
+                f"切换文件后需重新 fit: actual={actual_b:.4f} expected={expected_b:.4f}"
+            )
+            # 两张图片比例差异明显时，新比例不得残留旧图比例
+            expected_a = min(vp_a[0] / 3000.0, vp_a[1] / 2000.0)
+            assert abs(scale_a - expected_a) / expected_a <= 0.01
+            assert abs(actual_b - scale_a) / scale_a > 0.3, "正方形图不应沿用横图比例"
+        finally:
+            pv.cleanup()
+            host.close()
+            host.deleteLater()
+        _pump_events(qapp, ms=100)
+
+    def test_preview_area_background_is_transparent(
+        self, qapp: QApplication, tmp_path: Any,
+    ) -> None:
+        """预览区不再涂 tm.surface 深色底，透出下层面板背景（同文本预览器）。
+
+        静态断言：view 样式不含不透明 surface 填色、场景无背景画刷、
+        viewport 关闭 palette 自绘；
+        行为断言：方形图在宽视口内留出左右 letterbox，其区域像素应透明
+        （下层面板为纯红，若有深色底则采样为不透明非透明色）。
+        """
+        img = self._make_jpg(tmp_path, "square.jpg", 2000, 2000)
+        pv, host = self._shown_previewer(qapp, backdrop="#ff0000")
+        pv.set_file(img)
+        _pump_events(qapp, ms=600)
+        try:
+            view_ss = pv._image_view.styleSheet().lower()
+            assert "surface" not in view_ss and "background-color" not in view_ss
+            assert pv._image_scene.backgroundBrush().style() == Qt.NoBrush
+            assert pv._image_view.viewport().autoFillBackground() is False
+            vp = pv._image_view.viewport()
+            assert vp.width() > 800
+            image_pix = pv._pixmap_item.pixmap()
+            assert image_pix.width() == 2000
+            shot = vp.grab().toImage()
+            # 依据图像实际渲染矩形选取“必定落在留白区”的采样点：
+            # 选左右/上下四条留白中最宽的一条在其中间采样；采样坐标按比例
+            # 换算到 grab 位图，兼容高 DPI 屏幕（位图为物理像素）。
+            tl = pv._image_view.mapFromScene(
+                pv._pixmap_item.sceneBoundingRect().topLeft()
+            )
+            br = pv._image_view.mapFromScene(
+                pv._pixmap_item.sceneBoundingRect().bottomRight()
+            )
+            gaps = {
+                "left": tl.x(),
+                "right": vp.width() - 1 - br.x(),
+                "top": tl.y(),
+                "bottom": vp.height() - 1 - br.y(),
+            }
+            side, gap = max(gaps.items(), key=lambda kv: kv[1])
+            mid_x = vp.width() // 2
+            mid_y = vp.height() // 2
+            if side == "left":
+                log_x, log_y = gap // 2, mid_y
+            elif side == "right":
+                log_x, log_y = vp.width() - 1 - gap // 2, mid_y
+            elif side == "top":
+                log_x, log_y = mid_x, gap // 2
+            else:
+                log_x, log_y = mid_x, vp.height() - 1 - gap // 2
+            px = int(round(log_x * shot.width() / vp.width()))
+            py = int(round(log_y * shot.height() / vp.height()))
+            sample = shot.pixelColor(px, py)
+            assert gap >= 4, f"图片应被自适应缩放并留出留白: {gaps}"
+            assert sample.alpha() == 0, (
+                f"预览区留白应透明（side={side}）: {sample} gaps={gaps}"
+            )
+        finally:
+            pv.cleanup()
+            host.close()
+            host.deleteLater()
+        _pump_events(qapp, ms=100)
 
 
 # =============================================================================
@@ -712,7 +1237,37 @@ class TestOfficePreviewerLayout:
 # ui.layout.preview.pdf_previewer_layout
 # =============================================================================
 class TestPdfPreviewerLayout:
-    """PDF 预览布局：构造契约与 set_file 缺失路径返回 False。"""
+    """PDF 预览布局：构造契约、set_file 缺失路径与滚动/居中几何。"""
+
+    @staticmethod
+    def _write_pdf(tmp_path: Path, pages: int = 2) -> str:
+        """用 PyMuPDF 在内存构造多页 PDF（612×792pt）。"""
+        fitz = pytest.importorskip("fitz")
+        doc = fitz.open()
+        for i in range(pages):
+            page = doc.new_page(width=612, height=792)
+            page.insert_text((72, 72), f"Page {i + 1}")
+        target = tmp_path / "previewer_scroll.pdf"
+        doc.save(str(target))
+        doc.close()
+        return str(target)
+
+    @staticmethod
+    def _shown_loaded_layout(
+        qapp: QApplication, tmp_path: Path,
+    ) -> tuple[QWidget, PdfPreviewerLayout]:
+        """展示宿主并加载双页 PDF（完成 fit 与滚动条范围定时任务）。"""
+        host = QWidget()
+        host_layout = QVBoxLayout(host)
+        host_layout.setContentsMargins(0, 0, 0, 0)
+        layout = PdfPreviewerLayout()
+        host_layout.addWidget(layout)
+        host.resize(520, 420)
+        host.show()
+        _pump_events(qapp)
+        assert layout.set_file(TestPdfPreviewerLayout._write_pdf(tmp_path)) is True
+        _pump_events(qapp, 400)
+        return host, layout
 
     def test_construct_and_geometry(self, qapp: QApplication) -> None:
         """默认构造 + resize 后 geometry 非空。"""
@@ -726,6 +1281,84 @@ class TestPdfPreviewerLayout:
         _assert_layout_geometry(layout, qapp)
         assert layout.set_file(_MISSING_FILE) is False
         layout.deleteLater()
+
+    def test_content_centered_including_reserved_scrollbar_column(
+        self, qapp: QApplication, tmp_path: Path,
+    ) -> None:
+        """页面白色卡片相对预览器左右边缘等距（右侧预留滚动条列计入画布）。"""
+        host, layout = self._shown_loaded_layout(qapp, tmp_path)
+        try:
+            renderer = layout._renderer
+            view = renderer._view
+            assert view is not None
+            assert view.right_reserved_px == 12
+            # 画布中心 = (渲染器宽 + 预留列宽) / 2
+            assert abs(view.frame_center_x() - (renderer.width() + 12) / 2.0) <= 0.5
+
+            zoom = view.zoom_level
+            pwz = renderer._page_widths[0] * zoom
+            box_left = (0.0 - view.offset_x) * zoom + view.frame_center_x()
+            white_left = box_left + 6.0
+            white_right = box_left + pwz - 6.0
+            ml = white_left
+            mr = (renderer.width() + 12) - white_right
+            assert abs(ml - mr) <= 1.0
+            assert ml > 0 and mr > 0
+        finally:
+            host.close()
+            host.deleteLater()
+            _pump_events(qapp)
+
+    def test_vertical_scroll_range_reserves_bottom_gap(
+        self, qapp: QApplication, tmp_path: Path,
+    ) -> None:
+        """有纵向溢出时滚动条最大值 = 内容高 - 视口高 + 底部预留空隙。"""
+        host, layout = self._shown_loaded_layout(qapp, tmp_path)
+        try:
+            renderer = layout._renderer
+            view = renderer._view
+            total_h = view._accum_page_heights[-1] * view.zoom_level
+            view_h = max(view.view_height, 1)
+            overflow = int(total_h - view_h)
+            if overflow > 0:
+                assert layout._vbar.maximum() == (
+                    overflow + layout._CONTENT_BOTTOM_GAP
+                )
+            else:
+                assert layout._vbar.maximum() == 0
+        finally:
+            host.close()
+            host.deleteLater()
+            _pump_events(qapp)
+
+    def test_horizontal_scrollbar_shows_only_on_overflow(
+        self, qapp: QApplication, tmp_path: Path,
+    ) -> None:
+        """fit 态无横向溢出 → 底行滚动条隐藏；放大后出现，回到 fit 再隐藏。"""
+        host, layout = self._shown_loaded_layout(qapp, tmp_path)
+        try:
+            renderer = layout._renderer
+            view = renderer._view
+            assert not layout._hbar.isVisible()
+            assert layout._hbar.maximum() == 0
+            assert not layout._corner.isVisible()
+
+            base = view.get_zoom_for_scale(100)
+            renderer.set_zoom(base * 1.6)
+            _pump_events(qapp, 60)
+            assert layout._hbar.isVisible()
+            assert layout._hbar.maximum() > 0
+            assert layout._corner.isVisible()
+
+            renderer.fit_to_page()
+            _pump_events(qapp, 60)
+            assert not layout._hbar.isVisible()
+            assert layout._hbar.maximum() == 0
+            assert not layout._corner.isVisible()
+        finally:
+            host.close()
+            host.deleteLater()
+            _pump_events(qapp)
 
 
 # =============================================================================

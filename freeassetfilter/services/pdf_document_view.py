@@ -56,13 +56,18 @@ class PdfDocumentView:
 
     - Forward::
 
-        win_x = (abs_x - offset_x) * zoom_level + view_width / 2
+        win_x = (abs_x - offset_x) * zoom_level + center_x
         win_y = (abs_y - offset_y) * zoom_level + view_height / 2
 
     - Backward::
 
-        abs_x = (win_x - view_width / 2) / zoom_level + offset_x
+        abs_x = (win_x - center_x) / zoom_level + offset_x
         abs_y = (win_y - view_height / 2) / zoom_level + offset_y
+
+    其中 ``center_x = (view_width + right_reserved_px) / 2``：预览器布局在
+    内容右侧预留一条垂直滚动条列（``right_reserved_px``）时，内容画布仍以
+    **整个预览器宽度** 的水平中心为基准居中（右边缘无需扣除滚动条宽度），
+    使页面左右边距始终对称。
 
     Parameters
     ----------
@@ -78,6 +83,10 @@ class PdfDocumentView:
         Viewport width in pixels (default ``800``).
     view_height : int, optional
         Viewport height in pixels (default ``600``).
+    right_reserved_px : float, optional
+        Width in pixels reserved on the right of the viewport (e.g. a
+        scrollbar column).  Only affects the horizontal centring frame;
+        ``0`` keeps the classic viewport-centre model (default ``0.0``).
     page_space_x : float, optional
         Horizontal gap between rendered pages in pixels (default ``10.0``).
     page_space_y : float, optional
@@ -94,6 +103,7 @@ class PdfDocumentView:
         offset_y: float = 0.0,
         view_width: int = 800,
         view_height: int = 600,
+        right_reserved_px: float = 0.0,
         page_space_x: float = 10.0,
         page_space_y: float = 10.0,
     ) -> None:
@@ -111,6 +121,13 @@ class PdfDocumentView:
         # Viewport dimensions in device-independent pixels.
         self.view_width: int = view_width
         self.view_height: int = view_height
+
+        # Width (px) reserved on the right of the viewport by the host
+        # layout (scrollbar column).  The horizontal content frame used
+        # for centring is ``view_width + right_reserved_px`` wide, so the
+        # document stays centred in the *whole* previewer, not just in the
+        # area left of the scrollbar.
+        self.right_reserved_px: float = right_reserved_px
 
         # Gap between rendered page images in pixels.
         self.page_space_x: float = page_space_x
@@ -146,6 +163,18 @@ class PdfDocumentView:
         self._page_heights = list(self.doc.page_heights)
         self._accum_page_heights = list(self.doc.accum_page_heights)
 
+    def frame_center_x(self) -> float:
+        """Horizontal centre of the content frame in widget pixels.
+
+        The frame spans the whole previewer (viewport plus any column
+        reserved on the right by the host layout), so pages stay centred
+        with equal margins on both sides of the previewer.
+
+        Returns:
+            float: ``(view_width + right_reserved_px) / 2``.
+        """
+        return (self.view_width + self.right_reserved_px) / 2.0
+
     # ── Coordinate transforms ─────────────────────────────────────────
 
     def document_to_window_pos(
@@ -178,19 +207,22 @@ class PdfDocumentView:
         abs_x: float = x_pt
         abs_y: float = page_top + y_pt
 
-        # Absolute → Window (centre-based viewport model).
+        # Absolute → Window (centre-based viewport model).  The centre
+        # is measured on the whole previewer frame (viewport + reserved
+        # right column), so symmetric side margins are preserved.
+        center_x: float = self.frame_center_x()
         win_x: float = (
-            (abs_x - self.offset_x) * self.zoom_level + self.view_width / 2
+            (abs_x - self.offset_x) * self.zoom_level + center_x
         )
         win_y: float = (
             (abs_y - self.offset_y) * self.zoom_level + self.view_height / 2
         )
 
         # Per-page horizontal centering so the page sits in the middle of
-        # the viewport regardless of its width.
+        # the previewer regardless of its width.
         page_width_pt: float = self._page_widths[page]
         win_x += (
-            self.view_width - page_width_pt * self.zoom_level
+            center_x * 2 - page_width_pt * self.zoom_level
         ) / 2
 
         return (win_x, win_y)
@@ -217,7 +249,7 @@ class PdfDocumentView:
         self._ensure_cached()
         # Window → Absolute (inverse of centre-based viewport model).
         abs_x: float = (
-            win_x - self.view_width / 2
+            win_x - self.frame_center_x()
         ) / self.zoom_level + self.offset_x
         abs_y: float = (
             win_y - self.view_height / 2
@@ -246,7 +278,7 @@ class PdfDocumentView:
             ``(abs_x, abs_y)`` in the concatenated-Y absolute space.
         """
         abs_x: float = (
-            win_x - self.view_width / 2
+            win_x - self.frame_center_x()
         ) / self.zoom_level + self.offset_x
         abs_y: float = (
             win_y - self.view_height / 2
@@ -272,7 +304,7 @@ class PdfDocumentView:
         """
         win_x: float = (
             abs_x - self.offset_x
-        ) * self.zoom_level + self.view_width / 2
+        ) * self.zoom_level + self.frame_center_x()
         win_y: float = (
             abs_y - self.offset_y
         ) * self.zoom_level + self.view_height / 2

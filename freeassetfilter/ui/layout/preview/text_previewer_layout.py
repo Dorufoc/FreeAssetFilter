@@ -599,25 +599,28 @@ class _ZoomPopup(QWidget):
     POPUP_WIDTH = 220
     POPUP_HEIGHT = 48
 
-    def _target_rect(self, anchor_br: QPoint) -> QRect:
-        """计算弹窗最终矩形：右对齐顶栏右下角锚点并钳位到屏幕内。"""
+    def _target_rect(self, anchor: QPoint) -> QRect:
+        """计算弹窗最终矩形：以锚点（按钮下缘中心）为水平中心向下展开，
+        贴近屏幕底边时上翻。"""
         pw = self.POPUP_WIDTH
         ph = self.POPUP_HEIGHT
         layout = self._parent_layout
         dpi = getattr(layout, "_dpi_scale", 1.0) if layout is not None else 1.0
-        margin_r = int(5 * dpi)
-        x = anchor_br.x() - pw - margin_r
-        y = anchor_br.y() + int(7 * dpi)
+        margin = max(4, round(6 * dpi))
+        x = anchor.x() - pw // 2
+        y = anchor.y() + margin
 
         screen = QApplication.primaryScreen()
         if screen is not None:
             sg = screen.availableGeometry()
             x = max(sg.x() + 8, min(x, sg.right() - pw - 8))
+            if y + ph > sg.bottom() - 8:
+                y = anchor.y() - ph - margin
         return QRect(x, y, pw, ph)
 
-    def show_animated(self, anchor_br: QPoint) -> None:
-        """从按钮右下角向下展开，弹窗右对齐。"""
-        target = self._target_rect(anchor_br)
+    def show_animated(self, anchor: QPoint) -> None:
+        """从按钮下缘中心向下展开，弹窗与按钮水平居中对齐。"""
+        target = self._target_rect(anchor)
         x, y, pw = target.x(), target.y(), target.width()
         ph = target.height()
 
@@ -2100,10 +2103,12 @@ class TextPreviewerLayout(QWidget):
         self._zoom_popup.show_animated(self._zoom_anchor_global())
 
     def _zoom_anchor_global(self) -> QPoint:
-        """缩放弹窗锚点：顶栏右下角（屏幕坐标）。"""
-        return self._top_bar.mapToGlobal(
-            QPoint(self._top_bar.width(), self._top_bar.height())
-        )
+        """缩放弹窗锚点：缩放按钮下缘水平中心（屏幕坐标）。
+
+        按钮被折叠进「更多」菜单时退回到「更多」按钮，保证从溢出菜单
+        触发时弹窗仍落在按钮附近。
+        """
+        return self._top_bar.popup_anchor_global(self._zoom_btn)
 
     def _close_zoom_popup(self) -> None:
         """收起缩放弹窗（带动画；实例保留复用）。"""
