@@ -34,6 +34,7 @@ from components.styled_drawer import StyledDrawer
 from components.styled_slider import StyledSlider
 from components.styled_textarea import StyledTextarea
 from layout.preview.fullscreen_host import PreviewFullscreenHost
+from layout.preview.preview_toolbar import PreviewToolbarFrame
 from PySide6.QtCore import (
     QEasingCurve,
     QEvent,
@@ -105,103 +106,9 @@ ABCDEFGHIJKLMNOPQRSTUVWXYZ
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 顶栏框架（从 text_previewer_layout.py / pdf_previewer_layout.py 原样复制）
+# 顶栏框架：统一使用共享组件 PreviewToolbarFrame
+# （见 layout/preview/preview_toolbar.py 的模块说明）
 # ──────────────────────────────────────────────────────────────────────────────
-
-class _ToolbarFrame(QFrame):
-    """顶栏框架 —— 页面标签通过布局居中，操作按钮在 resizeEvent 中绝对定位到两侧。
-
-    这样标题标签是在整个顶栏宽度上真正居中，不会被两侧按钮挤偏。
-    """
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        """初始化顶栏框架。
-
-        Args:
-            parent: 父控件。
-        """
-        super().__init__(parent)
-        self._left_buttons: list[QWidget] = []
-        self._right_buttons: list[QWidget] = []
-
-    def add_left_button(self, btn: QWidget) -> None:
-        """注册一个左侧按钮，将其父对象设为此顶栏并在下次布局时自动定位。
-
-        Args:
-            btn: 要放置到左侧的按钮控件。
-        """
-        self._left_buttons.append(btn)
-        btn.setParent(self)
-
-    def add_right_button(self, btn: QWidget) -> None:
-        """注册一个右侧按钮，将其父对象设为此顶栏并在下次布局时自动定位。
-
-        Args:
-            btn: 要放置到右侧的按钮控件。
-        """
-        self._right_buttons.append(btn)
-        btn.setParent(self)
-
-    def fixedHeight(self) -> int:
-        """返回当前固定高度（便于测试使用）。
-
-        Returns:
-            当前控件高度，单位为像素。
-        """
-        return self.height()
-
-    def _layout_buttons(self) -> None:
-        """将已注册的可见按钮固定到顶栏两侧，跳过隐藏按钮。"""
-        # 左侧按钮（从左往右排列）
-        left = 8  # 左侧内边距 8px
-        for btn in self._left_buttons:
-            if not btn.isVisible():
-                continue
-            btn.move(left, (self.height() - btn.height()) // 2)
-            left = btn.geometry().right() + 6  # 按钮间距 6px
-        # 右侧按钮（从右往左排列）
-        right = self.width() - 8  # 右侧内边距 8px
-        for btn in reversed(self._right_buttons):
-            if not btn.isVisible():
-                continue
-            btn.move(right - btn.width(), (self.height() - btn.height()) // 2)
-            right = btn.geometry().left() - 6  # 按钮间距 6px
-
-    def resizeEvent(self, event) -> None:
-        """每次大小变化时重新定位可见按钮，不影响中间布局的居中计算。"""
-        super().resizeEvent(event)
-        self._layout_buttons()
-
-    def showEvent(self, event) -> None:
-        """首次显示时立即布局按钮（某些平台下初始 resizeEvent 可能不触发）。"""
-        super().showEvent(event)
-        self._layout_buttons()
-
-    def _get_colors(self) -> dict[str, QColor]:
-        """获取当前主题下的顶栏颜色（paintEvent 中动态读取，确保主题切换生效）。"""
-        return {
-            "bg": tm.fill,
-            "border": tm.alpha_of(tm.mid, 25),
-        }
-
-    def paintEvent(self, event: QPaintEvent) -> None:
-        """自绘顶栏圆角背景与边框，颜色跟随当前主题。"""
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        colors = self._get_colors()
-        rect = QRectF(self.rect())
-        radius = 8.0
-
-        path = QPainterPath()
-        path.addRoundedRect(rect, radius, radius)
-
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(colors["bg"])
-        painter.drawPath(path)
-
-        painter.setPen(QPen(colors["border"], 1))
-        painter.setBrush(Qt.NoBrush)
-        painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -892,7 +799,7 @@ class FontPreviewerLayout(QWidget):
         layout.setSpacing(0)
 
         # 顶栏（48px 固定高度，与 PDF / 图片 / 文本预览器一致）
-        self._top_bar = _ToolbarFrame()
+        self._top_bar = PreviewToolbarFrame()
         self._top_bar.setObjectName("FontPreviewerTopBar")
         self._top_bar.setFixedHeight(48)
         self._build_top_bar()
@@ -964,12 +871,11 @@ class FontPreviewerLayout(QWidget):
             app.installEventFilter(self)
 
     def _build_top_bar(self) -> None:
-        """构建顶栏：左侧编辑预览文本按钮，右侧 AI / 缩放 / 最大化按钮。"""
-        top_layout = QHBoxLayout(self._top_bar)
-        top_layout.setContentsMargins(8, 6, 8, 6)
-        top_layout.setSpacing(6)
+        """构建顶栏（参考 Windows 照片查看器功能栏布局）。
 
-        # 左侧：编辑预览文本图标按钮
+        中部功能组：编辑预览文本 / 字重 / 可变字重 + AI / 缩放；最右：全屏。
+        """
+        # 中部左段：编辑预览文本图标按钮
         edit_icon = str(icons_dir() / "font.svg")
         self._edit_preview_btn = StyledButton(
             "", variant="ghost", size="sm", icon=edit_icon
@@ -977,39 +883,48 @@ class FontPreviewerLayout(QWidget):
         self._edit_preview_btn.setFixedSize(32, 32)
         self._edit_preview_btn.setToolTip("编辑预览文本")
         self._edit_preview_btn.clicked.connect(self._on_edit_preview_text)
-        self._top_bar.add_left_button(self._edit_preview_btn)
+        self._top_bar.add_leading(self._edit_preview_btn)
 
-        # 左侧：字重/样式下拉框
+        # 中部左段：字重/样式下拉框
         self._weight_combo = StyledComboBox(items=[], size="sm")
         self._weight_combo.setFixedWidth(110)
         self._weight_combo.setToolTip("字重 / 样式")
         self._weight_combo.selection_made.connect(self._on_weight_selected)
-        self._top_bar.add_left_button(self._weight_combo)
+        self._top_bar.add_leading(self._weight_combo)
 
-        # 左侧：高级可变字重按钮
+        # 中部左段：高级可变字重按钮
         self._weight_btn = StyledButton("400", variant="ghost", size="sm")
         self._weight_btn.setFixedHeight(30)
         self._weight_btn.setFixedWidth(50)
         self._weight_btn.setToolTip("高级可变字重")
         self._weight_btn.clicked.connect(self._on_weight_clicked)
-        self._top_bar.add_left_button(self._weight_btn)
+        self._top_bar.add_leading(self._weight_btn)
 
-        # 右侧：AI 图标按钮（打开右侧 AI 抽屉）
+        # 中部右段：AI 图标按钮（打开右侧 AI 抽屉）
         ai_icon = str(icons_dir() / "ai.svg")
         self._ai_btn = StyledButton("", variant="ghost", size="sm", icon=ai_icon)
         self._ai_btn.setFixedSize(32, 32)
         self._ai_btn.setToolTip("AI 功能")
         self._ai_btn.clicked.connect(self._on_ai_clicked)
-        self._top_bar.add_right_button(self._ai_btn)
+        self._top_bar.add_trailing(self._ai_btn)
 
-        # 右侧：缩放图标按钮
+        # 中部右段：缩放图标按钮
         zoom_icon = str(icons_dir() / "zoom.svg")
         self._zoom_btn = StyledButton("", variant="ghost", size="sm", icon=zoom_icon)
         self._zoom_btn.setFixedSize(32, 32)
         self._zoom_btn.setToolTip("缩放")
-        self._top_bar.add_right_button(self._zoom_btn)
+        self._top_bar.add_trailing(self._zoom_btn)
 
-        # 右侧：最大化 / 还原图标按钮
+        # 折叠优先级：次要功能先收进「更多」菜单
+        self._top_bar.set_overflow_priority([
+            self._ai_btn,
+            self._zoom_btn,
+            self._weight_btn,
+            self._weight_combo,
+            self._edit_preview_btn,
+        ])
+
+        # 最右：最大化 / 还原图标按钮
         self._maxsize_icon_path = str(icons_dir() / "maxsize.svg")
         self._minisize_icon_path = str(icons_dir() / "minisize.svg")
         self._maxsize_btn = StyledButton(
@@ -1017,7 +932,7 @@ class FontPreviewerLayout(QWidget):
         )
         self._maxsize_btn.setFixedSize(32, 32)
         self._maxsize_btn.setToolTip("最大化")
-        self._top_bar.add_right_button(self._maxsize_btn)
+        self._top_bar.add_right(self._maxsize_btn)
 
     def _populate_weight_combo(self) -> None:
         """根据已发现的命名实例填充字重/样式下拉框。"""
@@ -1371,7 +1286,7 @@ class FontPreviewerLayout(QWidget):
             fill_color: 填充色（当前未使用，保留签名兼容）。
             border_color: 边框色（当前未使用，保留签名兼容）。
         """
-        self._top_bar.setStyleSheet("border-radius: 8px;")
+        # 顶栏透明无背景：不在此设置任何样式
         self._content_area.setStyleSheet(
             f"""
             background-color: {tm.surface.name()};

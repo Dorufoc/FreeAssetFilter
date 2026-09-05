@@ -212,7 +212,6 @@ class MarkdownRenderer:
         Selectors are kept simple to maximize compatibility with
         ``QTextBrowser`` / ``QTextDocument`` CSS support.
         """
-        bg = tm.surface.name()
         fg = tm.text.name()
         mid = tm.mid.name()
         fill = tm.fill.name()
@@ -229,7 +228,7 @@ class MarkdownRenderer:
 
         return f"""<style>
 body {{
-    background-color: {bg};
+    background-color: transparent;
     color: {fg};
     font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
     font-size: {self._font_size}px;

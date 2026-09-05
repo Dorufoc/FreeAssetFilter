@@ -95,6 +95,7 @@ from components.styled_tooltip import (
     PADDING_V,
     BORDER_RADIUS,
 )
+from layout.preview.preview_toolbar import PreviewToolbarFrame
 from freeassetfilter.ui.components.styled_scroll_area import (
     StyledScrollBar,
     StyledScrollArea,
@@ -213,158 +214,9 @@ TEXT_EXTENSIONS = {
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 顶栏框架（从 pdf_previewer_layout.py 原样复制）
+# 顶栏框架：统一使用共享组件 PreviewToolbarFrame
+# （见 layout/preview/preview_toolbar.py 的模块说明）
 # ──────────────────────────────────────────────────────────────────────────────
-
-class _ToolbarFrame(QFrame):
-    """顶栏框架 —— 页面标签通过布局居中，操作按钮在 resizeEvent 中绝对定位到两侧。
-
-    这样标题标签是在整个顶栏宽度上真正居中，不会被两侧按钮挤偏。
-    当横向空间不足、整栏居中会侵入两侧按钮区域时，自动将布局区域收缩到
-    两侧按钮之间的可用范围，避免居中标签与按钮重叠。
-    """
-
-    # QWidget 宽度上限（QWIDGETSIZE_MAX），用于解除最大宽度限制
-    _UNLIMITED_WIDTH = 16777215
-
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
-        self._left_buttons: list[QWidget] = []
-        self._right_buttons: list[QWidget] = []
-        self._center_widget: Optional[QWidget] = None
-        self._ideal_width_provider: Optional[Callable[[], int]] = None
-
-    def add_left_button(self, btn: QWidget) -> None:
-        """注册一个左侧按钮，将其父对象设为此顶栏并在下次布局时自动定位。"""
-        self._left_buttons.append(btn)
-        btn.setParent(self)
-
-    def add_right_button(self, btn: QWidget) -> None:
-        """注册一个右侧按钮，将其父对象设为此顶栏并在下次布局时自动定位。"""
-        self._right_buttons.append(btn)
-        btn.setParent(self)
-
-    def set_center_widget(self, widget: QWidget) -> None:
-        """注册布局中间的居中标签，用于空间不足时收缩其布局区域。"""
-        self._center_widget = widget
-
-    def set_ideal_width_provider(self, provider: Callable[[], int]) -> None:
-        """注册居中标签理想宽度的回调（如完整文本宽度），约束计算时调用。"""
-        self._ideal_width_provider = provider
-
-    def fixedHeight(self) -> int:
-        """Return current fixed height (convenience for tests)."""
-        return self.height()
-
-    def _layout_buttons(self) -> None:
-        """将已注册的可见按钮固定到顶栏两侧，跳过隐藏按钮。"""
-        # 左侧按钮（从左往右排列）
-        left = 8  # 左侧内边距 8px
-        for btn in self._left_buttons:
-            if not btn.isVisible():
-                continue
-            btn.move(left, (self.height() - btn.height()) // 2)
-            left = btn.geometry().right() + 6  # 按钮间距 6px
-        # 右侧按钮（从右往左排列）
-        right = self.width() - 8  # 右侧内边距 8px
-        for btn in reversed(self._right_buttons):
-            if not btn.isVisible():
-                continue
-            btn.move(right - btn.width(), (self.height() - btn.height()) // 2)
-            right = btn.geometry().left() - 6  # 按钮间距 6px
-        # 同步中间标签的布局约束，防止与两侧按钮重叠
-        self.update_center_constraint()
-
-    def _center_bounds(self) -> tuple[int, int]:
-        """计算中间可用区域的左右边界（含按钮间距，跳过隐藏按钮）。
-
-        Returns:
-            tuple[int, int]: (左边界, 右边界)
-        """
-        left_end = 8
-        for btn in self._left_buttons:
-            if not btn.isHidden():
-                left_end = max(left_end, btn.geometry().right() + 6)
-        right_start = self.width() - 8
-        for btn in self._right_buttons:
-            if not btn.isHidden():
-                right_start = min(right_start, btn.geometry().left() - 6)
-        return left_end, right_start
-
-    def center_available_width(self) -> int:
-        """返回两侧按钮之间可供居中标签使用的宽度。"""
-        left_end, right_start = self._center_bounds()
-        return max(right_start - left_end, 0)
-
-    def update_center_constraint(self, ideal_width: Optional[int] = None) -> None:
-        """根据两侧按钮占位收缩中间标签的布局区域，防止重叠。
-
-        空间充足时保持整栏居中（对称内边距）；空间不足时将布局区域
-        收缩到两侧按钮之间，并限制标签最大宽度，让其在可用区域内居中。
-
-        Args:
-            ideal_width: 居中标签的理想宽度（如完整文本宽度）。
-                省略时优先调用注册的 ideal_width_provider，最后退回 sizeHint。
-        """
-        layout = self.layout()
-        if layout is None or self._center_widget is None:
-            return
-        if ideal_width is None:
-            if self._ideal_width_provider is not None:
-                ideal_width = self._ideal_width_provider()
-            else:
-                ideal_width = self._center_widget.sizeHint().width()
-        left_end, right_start = self._center_bounds()
-        center_x = self.width() / 2.0
-        centered_ok = (
-            center_x - ideal_width / 2.0 >= left_end
-            and center_x + ideal_width / 2.0 <= right_start
-        )
-        if centered_ok:
-            # 空间充足：整栏居中（对称内边距，不限制最大宽度）
-            layout.setContentsMargins(8, 6, 8, 6)
-            self._center_widget.setMaximumWidth(self._UNLIMITED_WIDTH)
-        else:
-            # 空间不足：收缩布局区域到两侧按钮之间，并限制最大宽度防溢出
-            avail = max(right_start - left_end, 1)
-            layout.setContentsMargins(left_end, 6, self.width() - right_start, 6)
-            self._center_widget.setMaximumWidth(avail)
-
-    def resizeEvent(self, event) -> None:
-        """每次大小变化时重新定位可见按钮，不影响中间布局的居中计算。"""
-        super().resizeEvent(event)
-        self._layout_buttons()
-
-    def showEvent(self, event) -> None:
-        """首次显示时立即布局按钮（某些平台下初始 resizeEvent 可能不触发）。"""
-        super().showEvent(event)
-        self._layout_buttons()
-
-    def _get_colors(self) -> dict[str, QColor]:
-        """获取当前主题下的顶栏颜色（paintEvent 中动态读取，确保主题切换生效）。"""
-        return {
-            "bg": tm.fill,
-            "border": tm.alpha_of(tm.mid, 25),
-        }
-
-    def paintEvent(self, event: QPaintEvent) -> None:
-        """自绘顶栏圆角背景与边框，颜色跟随当前主题。"""
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        colors = self._get_colors()
-        rect = QRectF(self.rect())
-        radius = 8.0
-
-        path = QPainterPath()
-        path.addRoundedRect(rect, radius, radius)
-
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(colors["bg"])
-        painter.drawPath(path)
-
-        painter.setPen(QPen(colors["border"], 1))
-        painter.setBrush(Qt.NoBrush)
-        painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1329,7 +1181,7 @@ class TextPreviewerLayout(QWidget):
         self._fullscreen: bool = False
         self._fullscreen_host: Optional[PreviewFullscreenHost] = None
 
-        self._word_wrap: bool = True
+        # 源码视图默认（且固定）自动换行
         # 预览器正文字号固定为 14px，独立于全局控件字号，确保代码/文本/Markdown 可读。
         self._base_font_size: int = self.DEFAULT_FONT_SIZE
         self._font_size: int = self._base_font_size
@@ -1368,7 +1220,7 @@ class TextPreviewerLayout(QWidget):
         layout.setSpacing(0)
 
         # 顶栏（48px 固定高度，与 PDF / 图片预览器一致）
-        self._top_bar = _ToolbarFrame()
+        self._top_bar = PreviewToolbarFrame()
         self._top_bar.setObjectName("TextPreviewerTopBar")
         self._top_bar.setFixedHeight(48)
         self._build_top_bar()
@@ -1432,70 +1284,64 @@ class TextPreviewerLayout(QWidget):
         self._ai_drawer.hide()
 
     def _build_top_bar(self) -> None:
-        """构建顶栏：左侧 搜索/换行/编码，中间字符统计，右侧 AI/缩放/渲染/最大化。"""
-        top_layout = QHBoxLayout(self._top_bar)
-        top_layout.setContentsMargins(8, 6, 8, 6)
-        top_layout.setSpacing(6)
+        """构建顶栏（参考 Windows 照片查看器功能栏布局）。
 
-        # 中间：字符统计标签
-        self._title_label = QLabel("文本预览")
-        self._title_label.setAlignment(Qt.AlignCenter)
-        self._title_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        top_layout.addStretch(1)
-        top_layout.addWidget(self._title_label)
-        top_layout.addStretch(1)
-
-        # 左侧：搜索按钮（打开左侧搜索抽屉）
+        最左：搜索（固定角）；中部功能组：格式 / AI / 缩放 / 源码切换；最右：全屏。
+        """
+        # 最左固定角：搜索按钮（打开左侧搜索抽屉）
         search_icon = str(icons_dir() / "search.svg")
         self._search_btn = StyledButton("", variant="ghost", size="sm", icon=search_icon)
         self._search_btn.setFixedSize(32, 32)
         self._search_btn.setToolTip("搜索")
         self._search_btn.clicked.connect(self._toggle_search_drawer)
-        self._top_bar.add_left_button(self._search_btn)
+        self._top_bar.add_left(self._search_btn)
 
-        # 左侧：换行切换按钮
-        self._wrap_btn = StyledButton("换行", variant="ghost", size="sm")
-        self._wrap_btn.setFixedSize(40, 32)
-        self._wrap_btn.setToolTip("切换自动换行")
-        self._wrap_btn.clicked.connect(self._on_word_wrap_toggle)
-        self._top_bar.add_left_button(self._wrap_btn)
-
-        # 左侧：编码选择下拉框
+        # 中部左段：编码选择下拉框（无框标题模式：默认“格式▾”，选中后双行）
         self._encoding_combo = StyledComboBox(
-            items=["自动识别"] + ENCODING_LIST, size="sm"
+            items=["自动识别"] + ENCODING_LIST, size="sm", title="格式", flat=True
         )
         self._encoding_combo.setCurrentIndex(0)
-        self._encoding_combo.setFixedWidth(110)
+        # 新预览文件的初始默认态：仅显示“格式”+ 小三角
+        self._encoding_combo.reset_title_only()
+        self._update_encoding_combo_width()
         self._encoding_combo.setToolTip("选择解码编码")
         self._encoding_combo.selection_made.connect(self._on_encoding_selected)
-        self._top_bar.add_left_button(self._encoding_combo)
+        self._top_bar.add_leading(self._encoding_combo)
 
-        # 右侧：AI 图标按钮（打开右侧 AI 抽屉）
+        # 中部右段：AI 图标按钮（打开右侧 AI 抽屉）
         ai_icon = str(icons_dir() / "ai.svg")
         self._ai_btn = StyledButton("", variant="ghost", size="sm", icon=ai_icon)
         self._ai_btn.setFixedSize(32, 32)
         self._ai_btn.setToolTip("AI 功能")
         self._ai_btn.clicked.connect(self._toggle_ai_drawer)
-        self._top_bar.add_right_button(self._ai_btn)
+        self._top_bar.add_trailing(self._ai_btn)
 
-        # 右侧：缩放图标按钮（打开字号弹窗）
+        # 中部右段：缩放图标按钮（打开字号弹窗）
         zoom_icon = str(icons_dir() / "zoom.svg")
         self._zoom_btn = StyledButton("", variant="ghost", size="sm", icon=zoom_icon)
         self._zoom_btn.setFixedSize(32, 32)
         self._zoom_btn.setToolTip("缩放")
         self._zoom_btn.clicked.connect(self._on_zoom_clicked)
-        self._top_bar.add_right_button(self._zoom_btn)
+        self._top_bar.add_trailing(self._zoom_btn)
 
-        # 右侧：源码 / 渲染切换按钮（仅 Markdown 可见）
+        # 中部右段：源码 / 渲染切换按钮（仅 Markdown 可见）
         self._render_toggle_btn = StyledButton("源码", variant="ghost", size="sm")
         self._render_toggle_btn.setFixedSize(48, 32)
         self._render_toggle_btn.setToolTip("切换源码 / 渲染视图")
         self._render_toggle_btn.setVisible(False)
         self._render_toggle_btn.clicked.connect(self._on_render_toggle)
         self._render_toggle_btn.installEventFilter(self)
-        self._top_bar.add_right_button(self._render_toggle_btn)
+        self._top_bar.add_trailing(self._render_toggle_btn)
 
-        # 右侧：最大化 / 还原窗口按钮
+        # 折叠优先级：次要功能先收进「更多」菜单
+        self._top_bar.set_overflow_priority([
+            self._render_toggle_btn,
+            self._ai_btn,
+            self._zoom_btn,
+            self._encoding_combo,
+        ])
+
+        # 最右：最大化 / 还原窗口按钮
         self._maxsize_icon_path = str(icons_dir() / "maxsize.svg")
         self._minisize_icon_path = str(icons_dir() / "minisize.svg")
         self._maxsize_btn = StyledButton(
@@ -1504,42 +1350,7 @@ class TextPreviewerLayout(QWidget):
         self._maxsize_btn.setFixedSize(32, 32)
         self._maxsize_btn.setToolTip("最大化")
         self._maxsize_btn.clicked.connect(self._on_maxsize_toggle)
-        self._top_bar.add_right_button(self._maxsize_btn)
-
-        # 注册居中标签及其理想宽度回调：横向空间不足时自动收缩布局区域，
-        # 避免居中的统计标签与两侧绝对定位的按钮重叠
-        self._full_title_text = "文本预览"  # 完整标题文本（省略显示前）
-        self._top_bar.set_center_widget(self._title_label)
-        self._top_bar.set_ideal_width_provider(self._ideal_title_width)
-
-    def _set_title_text(self, text: str) -> None:
-        """设置完整标题文本并刷新约束与省略显示。"""
-        self._full_title_text = text
-        # 重新定位按钮并更新居中约束（标题宽度可能变化）
-        self._top_bar._layout_buttons()
-        self._apply_elided_title_text()
-        # singleShot 确保布局激活后再校正一次
-        QTimer.singleShot(0, self._apply_elided_title_text)
-
-    def _ideal_title_width(self) -> int:
-        """计算居中统计标签的理想宽度（基于完整文本）。
-
-        Returns:
-            int: 理想宽度（像素）
-        """
-        fm = self._title_label.fontMetrics()
-        return fm.horizontalAdvance(self._full_title_text)
-
-    def _apply_elided_title_text(self) -> None:
-        """根据顶栏可用宽度刷新标题文本，空间不足时省略显示。"""
-        text = self._full_title_text
-        avail = self._top_bar.center_available_width()
-        if avail > 0:
-            fm = self._title_label.fontMetrics()
-            if fm.horizontalAdvance(text) > avail:
-                text = fm.elidedText(text, Qt.ElideRight, avail)
-        if self._title_label.text() != text:
-            self._title_label.setText(text)
+        self._top_bar.add_right(self._maxsize_btn)
 
     # ── 公共接口 ────────────────────────────────────────────────────────────
 
@@ -1559,6 +1370,8 @@ class TextPreviewerLayout(QWidget):
         self._current_raw = None
         if hasattr(self, "_encoding_combo") and self._encoding_combo is not None:
             self._encoding_combo.setCurrentIndex(0)
+            self._encoding_combo.reset_title_only()
+            self._update_encoding_combo_width()
         self._set_decoded_text(text, file_path, encoding)
 
     def set_file(self, file_path: str) -> None:
@@ -1571,6 +1384,8 @@ class TextPreviewerLayout(QWidget):
         self._close_zoom_popup()
         if hasattr(self, "_encoding_combo") and self._encoding_combo is not None:
             self._encoding_combo.setCurrentIndex(0)
+            self._encoding_combo.reset_title_only()
+            self._update_encoding_combo_width()
 
         path = Path(file_path)
         if not path.exists() or not path.is_file():
@@ -1627,7 +1442,6 @@ class TextPreviewerLayout(QWidget):
         self._current_mode = self._detect_view_mode(file_path)
 
         self._clear_search_results()
-        self._update_stats(text)
 
         # 重置渲染/源码按钮可见性
         self._render_toggle_btn.setVisible(False)
@@ -1660,22 +1474,12 @@ class TextPreviewerLayout(QWidget):
 
     def _on_encoding_selected(self, text: str) -> None:
         """编码下拉框选择变化：使用内存中的原始字节重新解码。"""
+        self._update_encoding_combo_width()
         if self._current_raw is None:
             return
         encoding = text if text != "自动识别" else "auto"
         decoded, effective = self._decode_bytes(self._current_raw, encoding)
         self._set_decoded_text(decoded, self._current_file, effective)
-
-    def _update_stats(self, text: Optional[str] = None) -> None:
-        """更新顶栏字符统计标签。xxx字 · xxx行"""
-        if text is None:
-            text = self._current_text
-        if not text:
-            self._set_title_text("文本预览")
-            return
-        chars = len(text.replace("\n", "").replace("\r", ""))
-        lines = text.count("\n") + 1
-        self._set_title_text(f"{chars}字 · {lines}行")
 
     def _init_search_drawer(self) -> None:
         """初始化左侧搜索抽屉面板：搜索框、选项、懒加载结果列表。"""
@@ -1747,7 +1551,7 @@ class TextPreviewerLayout(QWidget):
         # 状态标签
         self._search_status = QLabel("")
         self._search_status.setStyleSheet(
-            f"color: {tm.mid.name()}; font-size: 12px; background: transparent;"
+            f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
         )
         self._search_status.setWordWrap(True)
         panel_layout.addWidget(self._search_status)
@@ -2096,7 +1900,6 @@ class TextPreviewerLayout(QWidget):
         self._markdown_view._text_browser.clear()
         self._markdown_view.reset_scrollbars()
         self._content_stack.setCurrentIndex(2)
-        self._set_title_text("文本预览")
         self._current_file = ""
         self._current_text = ""
         self._current_raw = None
@@ -2106,6 +1909,8 @@ class TextPreviewerLayout(QWidget):
         self._render_toggle_btn.setVisible(False)
         if hasattr(self, "_encoding_combo") and self._encoding_combo is not None:
             self._encoding_combo.setCurrentIndex(0)
+            self._encoding_combo.reset_title_only()
+            self._update_encoding_combo_width()
 
     def update_theme(self) -> None:
         """主题切换时刷新样式、高亮器和 Markdown 渲染颜色。"""
@@ -2136,14 +1941,14 @@ class TextPreviewerLayout(QWidget):
 
     def set_section_styles(self, fill_color: str, border_color: str) -> None:
         """应用面板样式（主题切换时由主窗口调用）。"""
-        self._top_bar.setStyleSheet("border-radius: 8px;")
+        # 顶栏透明无背景：不在此设置任何样式
         self._content_area.setStyleSheet(f"""
-            background-color: {tm.surface.name()};
+            background-color: transparent;
             border: 1px solid transparent;
             border-radius: 8px;
         """)
         self._overlay.setStyleSheet(f"""
-            background-color: {tm.surface.name()};
+            background-color: transparent;
         """)
         for _w in (self._top_bar, self._content_area, self._overlay):
             _w.style().unpolish(_w)
@@ -2211,23 +2016,13 @@ class TextPreviewerLayout(QWidget):
 
 
     def _apply_stylesheet(self) -> None:
-        """应用标题和 Markdown 视图的主题样式。"""
+        """应用 Markdown / 源码视图的主题样式。"""
         text_color = tm.text.name()
 
-        self._title_label.setStyleSheet(
-            f"""
-            color: {text_color};
-            font-size: 13px;
-            font-weight: 500;
-            background: transparent;
-            padding-left: 8px;
-            padding-right: 8px;
-        """
-        )
         self._markdown_view._text_browser.setStyleSheet(
             f"""
             QTextBrowser#TextPreviewerMarkdownView {{
-                background-color: {tm.surface.name()};
+                background-color: transparent;
                 color: {text_color};
                 border: none;
                 border-radius: 0px;
@@ -2245,6 +2040,9 @@ class TextPreviewerLayout(QWidget):
             }}
         """
         )
+        # QAbstractScrollArea 的 viewport 默认按 palette.Base 填色，关闭自绘底色才能透出底层
+        self._markdown_view._text_browser.viewport().setAutoFillBackground(False)
+        self._source_view._text_edit.viewport().setAutoFillBackground(False)
 
     def _apply_font_size(self) -> None:
         """将当前字号应用到源码视图和 Markdown 视图。"""
@@ -2349,17 +2147,13 @@ class TextPreviewerLayout(QWidget):
         if file_path:
             self.set_file(file_path)
 
-    def _on_word_wrap_toggle(self) -> None:
-        """切换源码视图自动换行。"""
-        self._word_wrap = not self._word_wrap
-        mode = (
-            QTextEdit.WidgetWidth
-            if self._word_wrap
-            else QTextEdit.NoWrap
-        )
-        self._source_view._text_edit.setLineWrapMode(mode)
-        self._source_view._sync_from_internal()
-        self._wrap_btn.setText("换行" if self._word_wrap else "不换行")
+    def _update_encoding_combo_width(self) -> None:
+        """编码下拉宽度跟随内容自适应（默认“格式”窄、选中编码后加宽）。"""
+        combo = self._encoding_combo
+        if combo is None:
+            return
+        combo.update_size_to_content()
+        self._top_bar.request_reflow()
 
     def _on_render_toggle(self) -> None:
         """在源码与渲染视图之间切换（仅 Markdown 模式）。"""
@@ -2418,8 +2212,6 @@ class TextPreviewerLayout(QWidget):
     def resizeEvent(self, event) -> None:
         """窗口尺寸变化时同步更新左右侧边栏的遮罩和面板尺寸。"""
         super().resizeEvent(event)
-        # 布局激活后刷新标题省略文本（顶栏可用宽度可能已变化）
-        QTimer.singleShot(0, self._apply_elided_title_text)
         for drawer_attr in ("_search_drawer", "_ai_drawer"):
             drawer = getattr(self, drawer_attr, None)
             if drawer is not None and drawer._is_open:
@@ -2483,9 +2275,6 @@ class TextPreviewerLayout(QWidget):
                 pr = QRect(self._zoom_popup.pos(), self._zoom_popup.size())
                 if not pr.contains(me.globalPosition().toPoint()):
                     self._zoom_popup.close_animated()
-        if obj is self._render_toggle_btn and event.type() in (QEvent.Show, QEvent.Hide):
-            self._top_bar._layout_buttons()
-            self._apply_elided_title_text()
         return super().eventFilter(obj, event)
 
     def _connect_theme(self) -> None:

@@ -96,7 +96,7 @@ class _XlsxTableView(QTabWidget):
         self._truncated_label = QLabel("")
         self._truncated_label.setVisible(False)
         self._truncated_label.setStyleSheet(
-            f"color: {tm.mid.name()}; font-size: 12px; background: transparent; padding: 4px;"
+            f"color: {tm.mid.name()}; font-size: 14px; background: transparent; padding: 4px;"
         )
         table_layout.addWidget(self._truncated_label)
 
@@ -275,7 +275,7 @@ class OfficePreviewerLayout(QWidget):
         self._error_view.setAlignment(Qt.AlignCenter)
         self._error_view.setWordWrap(True)
         self._error_view.setStyleSheet(
-            f"color: {tm.mid.name()}; font-size: 13px; background: transparent; padding: 24px;"
+            f"color: {tm.mid.name()}; font-size: 14px; background: transparent; padding: 24px;"
         )
         self._content_stack.addWidget(self._error_view)
 

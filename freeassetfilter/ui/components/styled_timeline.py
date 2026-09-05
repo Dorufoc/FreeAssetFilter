@@ -236,8 +236,10 @@ class _TimelineEmptyState(QWidget):
         render_icon(painter, "bell", icon_rect, self._text_tertiary, pen_width=1.5)
 
         # Text
-        painter.setFont(QFont("Microsoft YaHei UI", 12))
-        painter.setPen(self._text_tertiary)
+        hint_font = QFont("Microsoft YaHei UI")
+        hint_font.setPixelSize(14)
+        painter.setFont(hint_font)
+        painter.setPen(tm.mid)
         text_rect = QRectF(0, cy + 10, w, 20)
         painter.drawText(text_rect, Qt.AlignCenter, "暂无数据")
 

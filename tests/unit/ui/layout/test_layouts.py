@@ -23,7 +23,9 @@
 
 from __future__ import annotations
 
+import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -84,6 +86,14 @@ def _assert_layout_geometry(widget: QWidget, qapp: QApplication) -> None:
     qapp.processEvents()
     assert widget.width() > 0
     assert widget.height() == 480
+
+
+def _pump_events(qapp: QApplication, ms: float = 300) -> None:
+    """有界事件泵：让布局/尺寸事件与重绘完成。"""
+    deadline = time.time() + ms / 1000
+    while time.time() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
 
 
 # =============================================================================
@@ -333,6 +343,25 @@ class TestUnifiedPreviewerLayout:
         _assert_layout_geometry(layout, qapp)
         layout.deleteLater()
 
+    def test_info_panel_built_in_bottom_frame(self, qapp: QApplication) -> None:
+        """文件信息面板已挂载到下方内容区，且随 clear_preview 复位。"""
+        layout = UnifiedPreviewerLayout()
+        _assert_layout_geometry(layout, qapp)
+        # 与产品代码使用同一 sys.path 别名，避免同一模块被双重导入
+        import layout.preview.file_info_panel as fip_module
+
+        assert isinstance(layout._info_panel, fip_module.FileInfoPanel)
+        assert layout._content_bottom.layout() is not None
+
+        layout.set_file(self._unsupported_file_info())
+        qapp.processEvents()
+        assert layout._info_panel._file_info is not None
+
+        layout.clear_preview()
+        qapp.processEvents()
+        assert layout._info_panel._file_info is None
+        layout.deleteLater()
+
     def test_set_file_none_is_safe(self, qapp: QApplication) -> None:
         """set_file(None) 走安全清空路径，不抛异常。"""
         layout = UnifiedPreviewerLayout()
@@ -401,6 +430,125 @@ class TestUnifiedPreviewerLayout:
 
         assert received == [True]
         layout.deleteLater()
+
+    # ── 分割区高度规则 ──────────────────────────────────────────────────
+
+    def _show_split_layout(self, qapp: QApplication) -> UnifiedPreviewerLayout:
+        layout = UnifiedPreviewerLayout()
+        layout.show()
+        layout.resize(720, 920)
+        _pump_events(qapp)
+        return layout
+
+    @staticmethod
+    def _split_heights(layout: UnifiedPreviewerLayout) -> tuple[int, int]:
+        return layout._content_top.height(), layout._content_bottom.height()
+
+    def test_default_start_split_is_half(
+        self, qapp: QApplication,
+    ) -> None:
+        """默认起始状态：统一预览器与文件信息预览器各占可用高度的一半。"""
+        layout = self._show_split_layout(qapp)
+        available = layout._splitter.height() - layout._splitter.handleWidth()
+        assert available > 0
+        top, bottom = self._split_heights(layout)
+        assert abs(top - bottom) <= 2
+        assert abs(top - available // 2) <= 2
+        # 信息区最高高度即为其默认半高
+        assert layout._content_bottom.maximumHeight() == available // 2
+        layout._info_panel.stop()
+        safe_teardown(layout)
+
+    def test_info_pane_capped_at_half(
+        self, qapp: QApplication,
+    ) -> None:
+        """信息预览器最高高度不超过可用高度的一半（强制拉高也被钳制）。"""
+        layout = self._show_split_layout(qapp)
+        layout.set_file(self._unsupported_file_info())
+        _pump_events(qapp)
+        available = layout._splitter.height() - layout._splitter.handleWidth()
+        half = available // 2
+
+        # 程序化把底栏拉到远超半高 → 遵循最大高度，顶栏占余下部分
+        layout._splitter.setSizes([120, available * 4])
+        _pump_events(qapp)
+        top, bottom = self._split_heights(layout)
+        assert bottom <= half
+        assert top >= half
+        assert abs(top + bottom - available) <= 2
+        layout._info_panel.stop()
+        safe_teardown(layout)
+
+    def test_clear_preview_restores_default_split(
+        self, qapp: QApplication,
+    ) -> None:
+        """预览期间手动调高（顶部变大）后取消预览 → 恢复默认各半高度。"""
+        layout = self._show_split_layout(qapp)
+        layout.set_file(self._unsupported_file_info())
+        _pump_events(qapp)
+        available = layout._splitter.height() - layout._splitter.handleWidth()
+        half = available // 2
+
+        # 用户手动把信息区收窄、预览区放大
+        layout._splitter.setSizes([available - half // 3, half // 3])
+        _pump_events(qapp)
+        top, bottom = self._split_heights(layout)
+        assert bottom < half
+
+        layout.clear_preview()
+        _pump_events(qapp)
+        top, bottom = self._split_heights(layout)
+        assert abs(top - bottom) <= 2
+        assert abs(top - half) <= 2
+        assert layout._content_bottom.maximumHeight() == half
+        layout._info_panel.stop()
+        safe_teardown(layout)
+
+    # ── 底栏按钮：顺序与两文字按钮等宽 ────────────────────────────────
+
+    def test_bottom_bar_button_order(
+        self, qapp: QApplication,
+    ) -> None:
+        """底栏顺序：share → 打开方式 → 定位目录 → close。"""
+        layout = self._show_split_layout(qapp)
+        share_x = layout._share_btn.x()
+        open_x = layout._open_default_btn.x()
+        locate_x = layout._locate_btn.x()
+        close_x = layout._close_btn.x()
+        assert share_x < open_x < locate_x < close_x
+        assert not hasattr(layout, "_explorer_btn")
+        layout._info_panel.stop()
+        safe_teardown(layout)
+
+    def test_action_buttons_equal_width_and_track_width(
+        self, qapp: QApplication,
+    ) -> None:
+        """两个文字按钮等宽，随功能区宽度同步同增同减。"""
+        layout = self._show_split_layout(qapp)
+
+        def _widths() -> list[int]:
+            return [layout._open_default_btn.width(), layout._locate_btn.width()]
+
+        def _assert_equal(ws: list[int]) -> None:
+            assert max(ws) - min(ws) <= 1  # 等分取整误差不超过 1px
+
+        wide = _widths()
+        _assert_equal(wide)
+        assert wide[0] > 0
+
+        layout.resize(980, 920)  # 变宽 → 同步变大
+        _pump_events(qapp)
+        wider = _widths()
+        _assert_equal(wider)
+        assert wider[0] > wide[0]
+
+        layout.resize(600, 920)  # 变窄 → 同步变小
+        _pump_events(qapp)
+        narrow = _widths()
+        _assert_equal(narrow)
+        assert narrow[0] < wider[0]
+        layout._info_panel.stop()
+        safe_teardown(layout)
 
 
 # =============================================================================

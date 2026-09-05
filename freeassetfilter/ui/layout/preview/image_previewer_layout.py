@@ -26,147 +26,12 @@ from PySide6.QtGui import QFont, QPixmap, QImageReader, QWheelEvent, QPainter, Q
 from theme import tm
 from components.styled_button import StyledButton
 from layout.preview.fullscreen_host import PreviewFullscreenHost
+from layout.preview.preview_toolbar import PreviewToolbarFrame
 from freeassetfilter.core._paths import icons_dir
 from freeassetfilter.services.image_decode_worker import ImageDecodeWorker
 from freeassetfilter.services.image_decoder_service import ImageDecoderService
 from freeassetfilter.ui.components.styled_scroll_area import StyledScrollBar
 from freeassetfilter.ui.components.styled_slider import StyledSlider
-
-
-class _ToolbarFrame(QFrame):
-    """顶栏框架 —— 与 PdfPreviewerLayout 相同的顶栏框架（含防重叠约束）。
-
-    中间控件通过布局居中，操作按钮在 resizeEvent 中绝对定位到两侧。
-    当横向空间不足、整栏居中会侵入两侧按钮区域时，自动将布局区域
-    收缩到两侧按钮之间的可用范围，避免居中控件与按钮重叠。
-    """
-
-    # QWidget 宽度上限（QWIDGETSIZE_MAX），用于解除最大宽度限制
-    _UNLIMITED_WIDTH = 16777215
-
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
-        self._left_buttons: list[QWidget] = []
-        self._right_buttons: list[QWidget] = []
-        self._center_widget: Optional[QWidget] = None
-        self._ideal_width_provider: Optional[Callable[[], int]] = None
-
-    def add_left_button(self, btn: QWidget) -> None:
-        """注册一个左侧按钮，将其父对象设为此顶栏并在下次布局时自动定位。"""
-        self._left_buttons.append(btn)
-        btn.setParent(self)
-
-    def add_right_button(self, btn: QWidget) -> None:
-        """注册一个右侧按钮，将其父对象设为此顶栏并在下次布局时自动定位。"""
-        self._right_buttons.append(btn)
-        btn.setParent(self)
-
-    def set_center_widget(self, widget: QWidget) -> None:
-        """注册布局中间的居中控件，用于空间不足时收缩其布局区域。"""
-        self._center_widget = widget
-
-    def set_ideal_width_provider(self, provider: Callable[[], int]) -> None:
-        """注册居中控件理想宽度的回调，约束计算时调用。"""
-        self._ideal_width_provider = provider
-
-    def _layout_buttons(self) -> None:
-        """将已注册的按钮固定到顶栏两侧。"""
-        # 左侧按钮（从左往右排列）
-        left = 8
-        for btn in self._left_buttons:
-            btn.move(left, (self.height() - btn.height()) // 2)
-            left = btn.geometry().right() + 6
-        # 右侧按钮（从右往左排列）
-        right = self.width() - 8
-        for btn in reversed(self._right_buttons):
-            btn.move(right - btn.width(), (self.height() - btn.height()) // 2)
-            right = btn.geometry().left() - 6
-        # 同步中间控件的布局约束，防止与两侧按钮重叠
-        self.update_center_constraint()
-
-    def _center_bounds(self) -> tuple[int, int]:
-        """计算中间可用区域的左右边界（含按钮间距）。
-
-        Returns:
-            tuple[int, int]: (左边界, 右边界)
-        """
-        left_end = 8
-        for btn in self._left_buttons:
-            left_end = max(left_end, btn.geometry().right() + 6)
-        right_start = self.width() - 8
-        for btn in self._right_buttons:
-            right_start = min(right_start, btn.geometry().left() - 6)
-        return left_end, right_start
-
-    def center_available_width(self) -> int:
-        """返回两侧按钮之间可供居中控件使用的宽度。"""
-        left_end, right_start = self._center_bounds()
-        return max(right_start - left_end, 0)
-
-    def update_center_constraint(self, ideal_width: Optional[int] = None) -> None:
-        """根据两侧按钮占位收缩中间控件的布局区域，防止重叠。
-
-        空间充足时保持整栏居中（对称内边距）；空间不足时将布局区域
-        收缩到两侧按钮之间，并限制控件最大宽度，让其在可用区域内居中。
-
-        Args:
-            ideal_width: 居中控件的理想宽度。
-                省略时优先调用注册的 ideal_width_provider，最后退回 sizeHint。
-        """
-        layout = self.layout()
-        if layout is None or self._center_widget is None:
-            return
-        if ideal_width is None:
-            if self._ideal_width_provider is not None:
-                ideal_width = self._ideal_width_provider()
-            else:
-                ideal_width = self._center_widget.sizeHint().width()
-        left_end, right_start = self._center_bounds()
-        center_x = self.width() / 2.0
-        centered_ok = (
-            center_x - ideal_width / 2.0 >= left_end
-            and center_x + ideal_width / 2.0 <= right_start
-        )
-        if centered_ok:
-            # 空间充足：整栏居中（对称内边距，不限制最大宽度）
-            layout.setContentsMargins(8, 6, 8, 6)
-            self._center_widget.setMaximumWidth(self._UNLIMITED_WIDTH)
-        else:
-            # 空间不足：收缩布局区域到两侧按钮之间，并限制最大宽度防溢出
-            avail = max(right_start - left_end, 1)
-            layout.setContentsMargins(left_end, 6, self.width() - right_start, 6)
-            self._center_widget.setMaximumWidth(avail)
-
-    def resizeEvent(self, event) -> None:
-        """每次大小变化时将按钮固定到两侧，不影响中间布局的居中计算。"""
-        super().resizeEvent(event)
-        self._layout_buttons()
-
-    def _get_colors(self) -> dict[str, QColor]:
-        """获取当前主题下的顶栏颜色（paintEvent 中动态读取，确保主题切换生效）。"""
-        return {
-            "bg": tm.fill,
-            "border": tm.alpha_of(tm.mid, 25),
-        }
-
-    def paintEvent(self, event: QPaintEvent) -> None:
-        """自绘顶栏圆角背景与边框，颜色跟随当前主题。"""
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        colors = self._get_colors()
-        rect = QRectF(self.rect())
-        radius = 8.0
-
-        path = QPainterPath()
-        path.addRoundedRect(rect, radius, radius)
-
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(colors["bg"])
-        painter.drawPath(path)
-
-        painter.setPen(QPen(colors["border"], 1))
-        painter.setBrush(Qt.NoBrush)
-        painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
 
 
 class _StyledHScrollBar(StyledScrollBar):
@@ -499,7 +364,7 @@ class ImagePreviewerLayout(QWidget):
         layout.setSpacing(0)
 
         # 顶栏（固定高度 48px，与 PDF 预览器一致）
-        self._top_bar = _ToolbarFrame()
+        self._top_bar = PreviewToolbarFrame()
         self._top_bar.setObjectName("ImagePreviewerTopBar")
         self._top_bar.setFixedHeight(48)
         self._build_top_bar()
@@ -587,47 +452,43 @@ class ImagePreviewerLayout(QWidget):
             app.installEventFilter(self)
 
     def _build_top_bar(self) -> None:
-        """构建顶栏：左侧翻转/旋转按钮，右侧缩放、最大化按钮。"""
-        top_layout = QHBoxLayout(self._top_bar)
-        top_layout.setContentsMargins(8, 6, 8, 6)
-        top_layout.setSpacing(6)
+        """构建顶栏（参考 Windows 照片查看器功能栏布局）。
 
-        # 左侧：水平翻转图标按钮
+        中部功能组：翻转 / 旋转 / 取色 / GIF 播放 + 缩放；最右：全屏。
+        """
+        # 中部左段：水平翻转
         flip_h_icon = str(icons_dir() / "horizontalflip.svg")
         self._flip_h_btn = StyledButton("", variant="ghost", size="sm", icon=flip_h_icon)
         self._flip_h_btn.setFixedSize(32, 32)
         self._flip_h_btn.setToolTip("水平翻转")
         self._flip_h_btn.clicked.connect(self._toggle_flip_h)
-        self._top_bar.add_left_button(self._flip_h_btn)
+        self._top_bar.add_leading(self._flip_h_btn)
 
-        # 左侧：垂直翻转图标按钮
+        # 中部左段：垂直翻转
         flip_v_icon = str(icons_dir() / "verticalflip.svg")
         self._flip_v_btn = StyledButton("", variant="ghost", size="sm", icon=flip_v_icon)
         self._flip_v_btn.setFixedSize(32, 32)
         self._flip_v_btn.setToolTip("垂直翻转")
         self._flip_v_btn.clicked.connect(self._toggle_flip_v)
-        self._top_bar.add_left_button(self._flip_v_btn)
+        self._top_bar.add_leading(self._flip_v_btn)
 
-        # 左侧：旋转图标按钮
+        # 中部左段：旋转
         rotate_icon = str(icons_dir() / "rotate.svg")
         self._rotate_btn = StyledButton("", variant="ghost", size="sm", icon=rotate_icon)
         self._rotate_btn.setFixedSize(32, 32)
         self._rotate_btn.setToolTip("顺时针旋转 90°")
         self._rotate_btn.clicked.connect(self._rotate_cw)
-        self._top_bar.add_left_button(self._rotate_btn)
+        self._top_bar.add_leading(self._rotate_btn)
 
-        # 左侧：取色器图标按钮（紧挨旋转按钮右侧）
+        # 中部左段：取色器（紧挨旋转按钮右侧）
         colorpicker_icon = str(icons_dir() / "colorpicker.svg")
         self._colorpicker_btn = StyledButton("", variant="ghost", size="sm", icon=colorpicker_icon)
         self._colorpicker_btn.setFixedSize(32, 32)
         self._colorpicker_btn.setToolTip("取色")
         self._colorpicker_btn.clicked.connect(self._toggle_color_picker)
-        self._top_bar.add_left_button(self._colorpicker_btn)
+        self._top_bar.add_leading(self._colorpicker_btn)
 
-        # ── 中间弹性空间 ──
-        top_layout.addStretch(1)
-
-        # 中间：GIF 播放/暂停按钮（默认隐藏，GIF 加载后显示）
+        # 居中：GIF 播放/暂停按钮（默认隐藏，GIF 加载后显示；永不折叠）
         pause_icon_path = str(icons_dir() / "pause.svg")
         play_icon_path = str(icons_dir() / "play.svg")
         self._gif_pause_icon_path = pause_icon_path
@@ -637,30 +498,31 @@ class ImagePreviewerLayout(QWidget):
         self._gif_play_btn.setToolTip("暂停")
         self._gif_play_btn.clicked.connect(self._toggle_gif_playback)
         self._gif_play_btn.hide()
-        top_layout.addWidget(self._gif_play_btn)
+        self._top_bar.set_info_widget(self._gif_play_btn)
 
-        # ── 中间弹性空间 ──
-        top_layout.addStretch(1)
-
-        # 右侧：缩放图标按钮（由 _ToolbarFrame 绝对定位）
+        # 中部右段：缩放
         zoom_icon = str(icons_dir() / "zoom.svg")
         self._zoom_btn = StyledButton("", variant="ghost", size="sm", icon=zoom_icon)
         self._zoom_btn.setFixedSize(32, 32)
         self._zoom_btn.setToolTip("缩放")
-        self._top_bar.add_right_button(self._zoom_btn)
+        self._top_bar.add_trailing(self._zoom_btn)
 
-        # 右侧：最大化图标按钮
+        # 折叠优先级：次要功能先收进「更多」菜单（取色 → 翻转 → 缩放 → 旋转）
+        self._top_bar.set_overflow_priority([
+            self._colorpicker_btn,
+            self._flip_v_btn,
+            self._flip_h_btn,
+            self._zoom_btn,
+            self._rotate_btn,
+        ])
+
+        # 最右：全屏按钮
         self._maxsize_icon_path = str(icons_dir() / "maxsize.svg")
         self._minisize_icon_path = str(icons_dir() / "minisize.svg")
         self._maxsize_btn = StyledButton("", variant="ghost", size="sm", icon=self._maxsize_icon_path)
         self._maxsize_btn.setFixedSize(32, 32)
         self._maxsize_btn.setToolTip("最大化")
-        self._top_bar.add_right_button(self._maxsize_btn)
-
-        # 注册居中的 GIF 播放按钮及其理想宽度（固定 32px）：横向空间不足时
-        # 自动收缩布局区域，避免居中按钮与两侧绝对定位的按钮重叠
-        self._top_bar.set_center_widget(self._gif_play_btn)
-        self._top_bar.set_ideal_width_provider(lambda: self._gif_play_btn.width())
+        self._top_bar.add_right(self._maxsize_btn)
 
     # ── 公共 API ──
 
@@ -1322,7 +1184,7 @@ class ImagePreviewerLayout(QWidget):
 
     def set_section_styles(self, fill_color: str, border_color: str) -> None:
         """应用面板样式（主题切换时由 MainWindow 调用）。"""
-        self._top_bar.setStyleSheet("border-radius: 8px;")
+        # 顶栏透明无背景：不在此设置任何样式
         self._content_area.setStyleSheet(f"""
             background-color: {tm.surface.name()};
             border: 1px solid transparent;

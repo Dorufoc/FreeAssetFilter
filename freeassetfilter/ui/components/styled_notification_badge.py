@@ -343,9 +343,10 @@ class _EmptyStateWidget(QWidget):
         painter.setOpacity(1.0)
 
         # "暂无通知" text below icon
-        font = QFont("Microsoft YaHei UI", 13, QFont.Weight.Normal)
+        font = QFont("Microsoft YaHei UI")
+        font.setPixelSize(14)
         painter.setFont(font)
-        painter.setPen(self._text_tertiary)
+        painter.setPen(tm.mid)
         painter.drawText(
             QRectF(0, icon_rect.bottom() + 12, w, 24),
             Qt.AlignCenter,
