@@ -1842,6 +1842,19 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
         return False
 
+    def closeEvent(self, event) -> None:
+        """设置窗口关闭时触发暂存生命周期：未提交则自动清除缓存。
+
+        右上角 ``✕`` 等同于「取消」：丢弃暂存并恢复界面至原始状态。
+        """
+        try:
+            layout = getattr(self, "_settings_layout", None)
+            if layout is not None and hasattr(layout, "on_host_closing"):
+                layout.on_host_closing()
+        except Exception:
+            pass
+        super().closeEvent(event)
+
 
 def main() -> int:
     """

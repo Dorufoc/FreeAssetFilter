@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import copy
 import os
+import time
 
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QFrame, QLabel, QStackedWidget,
@@ -35,7 +36,11 @@ from components.custom_background import (
     import_custom_background_image,
 )
 from components.theme_transition_overlay import ThemeTransitionOverlay
-from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+from freeassetfilter.core.managers.settings_manager_v2 import (
+    DEFAULT_SETTINGS_V2,
+    SettingsManagerV2,
+)
+from freeassetfilter.ui.layout.settings_staging_cache import SettingsStagingCache
 from freeassetfilter.utils.path_utils import get_app_data_path
 
 
@@ -371,10 +376,23 @@ class CustomAccentButton(QWidget):
 
 
 class AppearanceSettingsPage(QWidget):
-    """外观设置页面 — 深色模式开关 + 主题色选择。"""
+    """外观设置页面 — 深色模式开关 + 主题色选择（暂存缓存优先）。
 
-    def __init__(self, parent=None):
+    所有控件修改首先写入 ``SettingsStagingCache``，未提交前不触碰
+    ``tm``、主窗口与 ``SettingsManagerV2`` 磁盘状态；控件展示以缓存为准。
+    """
+
+    def __init__(self, parent=None, staging_cache: SettingsStagingCache | None = None):
         super().__init__(parent)
+        if staging_cache is None:
+            staging_cache = SettingsStagingCache()
+            v2 = SettingsManagerV2()
+            snapshot = copy.deepcopy(v2.load())
+            staging_cache.begin(snapshot)
+        elif not staging_cache.is_active():
+            v2 = SettingsManagerV2()
+            staging_cache.begin(copy.deepcopy(v2.load()))
+        self._staging_cache = staging_cache
         self._color_buttons: list[AccentColorButton] = []
         self._custom_btn: CustomAccentButton | None = None
         self._custom_panel: _ColorPanel | None = None
@@ -411,11 +429,9 @@ class AppearanceSettingsPage(QWidget):
         dark_layout.addWidget(dark_label)
         dark_layout.addStretch()
 
-        # 从 V2 读取已保存的设置作为初始状态
-        v2 = SettingsManagerV2()
-        v2.load()
-        saved_theme = v2.get("appearance.theme", "light")
-        saved_accent = v2.get("appearance.accent_color", "#007AFF")
+        # 从暂存缓存读取初始状态（缓存已在 __init__ 中以 V2 快照开启）
+        saved_theme = self._staging_cache.get("appearance.theme", "light")
+        saved_accent = self._staging_cache.get("appearance.accent_color", "#007AFF")
 
         is_dark = (saved_theme == "dark")
         self._dark_toggle = StyledToggle(checked=is_dark, size="default")
@@ -465,8 +481,8 @@ class AppearanceSettingsPage(QWidget):
 
         # ── 窗口背景（简约 / 云母 / 图像） ──
         # 云母参数为按主题固定的产品定值（见 main_window.FIXED_MICA_PARAMS），
-        # 设置页不再提供滑动条配置。
-        saved_bg = v2.get("appearance.background", {}) or {}
+        # 设置页不再提供滑动条配置。初值来自暂存缓存（隔离层唯一数据源）。
+        saved_bg = self._staging_cache.get("appearance.background", {}) or {}
         saved_bg_mode = saved_bg.get("mode", "mica")
         self._bg_mode = saved_bg_mode if saved_bg_mode in ("mica", "image", "minimalist") else "mica"
         self._bg_image_name = str(saved_bg.get("image", "") or "")
@@ -556,7 +572,7 @@ class AppearanceSettingsPage(QWidget):
     # ── 窗口背景：模式切换与图片导入 ─────────────────────────────────
 
     def _on_bg_segment_changed(self, index: int) -> None:
-        """窗口背景分段控件切换处理。
+        """窗口背景分段控件切换处理（暂存优先，未提交不影响主窗口）。
 
         Args:
             index: 新选中的分段索引（0 = 简约，1 = 云母，2 = 图像）。
@@ -564,39 +580,31 @@ class AppearanceSettingsPage(QWidget):
         if self._bg_updating:
             return
         if index == 2:
-            # 已有持久化图片且文件存在 → 直接切换；否则强制走选择流程
+            # 已有持久化图片且文件存在 → 直接暂存；否则强制走选择流程
             if self._bg_image_name and os.path.exists(self._bg_image_path()):
-                self._apply_background_settings("image")
+                self._stage_background_settings("image")
             else:
                 self._choose_bg_image(force=True)
         elif index == 0:
-            self._apply_background_settings("minimalist")
+            self._stage_background_settings("minimalist")
         else:
-            self._apply_background_settings("mica")
+            self._stage_background_settings("mica")
 
     def _on_ambient_toggled(self, checked: bool) -> None:
-        """弥散氛围开关切换处理：实时生效并持久化（无需点应用）。
-
-        非简约模式下先整体切入简约（新氛围值随本次切换一并带上）；
-        已处简约模式时直接把新氛围值实时转发给主窗口并持久化。
+        """弥散氛围开关切换处理：仅写入暂存缓存，点击应用/确定才生效。
 
         Args:
             checked: 开关新状态；True 表示启用弥散氛围。
         """
         self._bg_ambient = bool(checked)
         if self._bg_mode != "minimalist":
-            self._apply_background_settings("minimalist")
+            self._stage_background_settings("minimalist")
             return
-        try:
-            mw = self._find_main_window()
-            if mw is not None:
-                if hasattr(mw, "set_ambient_enabled"):
-                    mw.set_ambient_enabled(self._bg_ambient)
-                if hasattr(mw, "set_background_mode"):
-                    mw.set_background_mode("minimalist")
-        except Exception:
-            pass
-        self._save_background_settings()
+        self._staging_cache.set("appearance.background", {
+            "mode": self._bg_mode,
+            "image": self._bg_image_name,
+            "ambient": self._bg_ambient,
+        })
         self._update_bg_ui_state()
 
     def _on_choose_bg_image_clicked(self) -> None:
@@ -637,7 +645,7 @@ class AppearanceSettingsPage(QWidget):
             return False
 
         self._bg_image_name = os.path.basename(dest)
-        self._apply_background_settings("image")
+        self._stage_background_settings("image")
         return True
 
     def _revert_bg_segment(self) -> None:
@@ -659,34 +667,32 @@ class AppearanceSettingsPage(QWidget):
             get_app_data_path(), BACKGROUND_DIR_NAME, self._bg_image_name
         )
 
-    def _apply_background_settings(self, mode: str) -> None:
-        """切换窗口背景模式：实时应用到主窗口并持久化（无需点应用）。
+    def _stage_background_settings(self, mode: str) -> None:
+        """暂存窗口背景模式：仅写入暂存缓存并刷新本页 UI，不触碰主窗口与磁盘。
+
+        提交时由 ``SettingsLayout._submit_settings`` 统一应用到主窗口并持久化。
 
         Args:
             mode: 目标背景模式："mica"（云母）、"image"（图像）或
                 "minimalist"（简约，附带当前弥散氛围开关状态）。
         """
         self._bg_mode = mode
-        try:
-            mw = self._find_main_window()
-            if mw is not None:
-                if mode == "image":
-                    if hasattr(mw, "set_custom_background_image"):
-                        mw.set_custom_background_image(self._bg_image_path())
-                    if hasattr(mw, "set_background_mode"):
-                        mw.set_background_mode("image")
-                elif mode == "minimalist":
-                    if hasattr(mw, "set_ambient_enabled"):
-                        mw.set_ambient_enabled(self._bg_ambient)
-                    if hasattr(mw, "set_background_mode"):
-                        mw.set_background_mode("minimalist")
-                else:
-                    if hasattr(mw, "set_background_mode"):
-                        mw.set_background_mode("mica")
-        except Exception:
-            pass
-        self._save_background_settings()
+        self._staging_cache.set("appearance.background", {
+            "mode": self._bg_mode,
+            "image": self._bg_image_name,
+            "ambient": self._bg_ambient,
+        })
         self._update_bg_ui_state()
+
+    def _apply_background_settings(self, mode: str) -> None:
+        """兼容旧直接调用：转入暂存（不再直写主窗口/磁盘）。
+
+        保留方法名以兼容存量测试与外部调用，语义已改为暂存优先。
+
+        Args:
+            mode: 目标背景模式。
+        """
+        self._stage_background_settings(mode)
 
     def _save_background_settings(self) -> None:
         """将窗口背景设置持久化到 SettingsManagerV2（重启后恢复）。"""
@@ -717,12 +723,13 @@ class AppearanceSettingsPage(QWidget):
             self._ambient_row.setVisible(is_minimalist)
 
     def _on_dark_toggle(self, checked: bool) -> None:
-        """深色模式开关切换 — 仅记录状态，点击「应用」才全局生效。"""
-        # 状态已记录在 self._dark_toggle.checked 中
+        """深色模式开关切换 — 写入暂存缓存，点击「应用」/「确定」才全局生效。"""
+        self._staging_cache.set("appearance.theme", "dark" if checked else "light")
 
     def _on_color_clicked(self, color_hex: str) -> None:
-        """主题色选择 — 仅记录状态，点击「应用」才全局生效。"""
+        """主题色选择 — 写入暂存缓存，点击「应用」/「确定」才全局生效。"""
         self._current_accent = color_hex
+        self._staging_cache.set("appearance.accent_color", color_hex)
         for btn in self._color_buttons:
             btn.selected = (btn.color_hex.upper() == color_hex.upper())
         if self._custom_btn is not None:
@@ -863,8 +870,9 @@ class AppearanceSettingsPage(QWidget):
         return False
 
     def _on_panel_color_changed(self, hex_color: str) -> None:
-        """浮动颜色选择面板值变化 — 实时更新当前强调色。"""
+        """浮动颜色选择面板值变化 — 写入暂存缓存（提交前不全局生效）。"""
         self._current_accent = hex_color
+        self._staging_cache.set("appearance.accent_color", hex_color)
         for btn in self._color_buttons:
             btn.selected = False
         if self._custom_btn is not None:
@@ -895,11 +903,21 @@ class AppearanceSettingsPage(QWidget):
         super().closeEvent(event)
 
     def refresh_theme(self) -> None:
-        """主题切换时刷新页面内文字颜色。"""
-        # 更新 toggle 状态（避免信号循环：暂时断开）
-        self._dark_toggle.toggled.disconnect(self._on_dark_toggle)
-        self._dark_toggle.checked = tm.is_dark_theme()
-        self._dark_toggle.toggled.connect(self._on_dark_toggle)
+        """主题切换时刷新页面内文字颜色（不覆盖未提交的暂存值）。"""
+        # toggle 展示以暂存缓存为准（避免外部主题切换冲掉未提交的修改）；
+        # 仅在缓存与控件不一致时同步，且全程断开信号防回写。
+        try:
+            self._dark_toggle.toggled.disconnect(self._on_dark_toggle)
+        except Exception:
+            pass
+        try:
+            staged_theme = self._staging_cache.get("appearance.theme", None)
+            if staged_theme in ("light", "dark"):
+                self._dark_toggle.checked = (staged_theme == "dark")
+            else:
+                self._dark_toggle.checked = tm.is_dark_theme()
+        finally:
+            self._dark_toggle.toggled.connect(self._on_dark_toggle)
         # 由外部 _refresh_styles 统一刷新文字颜色
         # 窗口背景区块：标题与文件名标签颜色跟随主题（覆盖统一刷新，
         # 保证页面脱离 SettingsLayout 宿主单独使用时同样正确）
@@ -933,30 +951,45 @@ class AppearanceSettingsPage(QWidget):
         self._update_bg_ui_state()
 
     def _load_v2_settings(self) -> None:
-        """确保 UI 控件与 V2 保存的值一致（不修改 tm）。"""
-        v2 = SettingsManagerV2()
-        v2.load()
+        """确保 UI 控件与暂存缓存一致（不修改 tm，不读盘）。
 
-        saved_theme = v2.get("appearance.theme", "light")
+        历史语义为从 V2 重载，现改为从隔离层同步，保证取消/关闭未提交时
+        界面可恢复至原始状态。保留方法名以兼容存量调用。
+        """
+        self.refresh_from_staging()
+
+    def refresh_from_staging(self) -> None:
+        """从暂存缓存刷新全部控件展示（实时更新机制的核心）。
+
+        所有开关、输入框、滑动条展示与暂存内容一致；编程式赋值全程守卫，
+        不回写缓存、不触发提交、不触碰主窗口与磁盘。
+        """
+        saved_theme = self._staging_cache.get("appearance.theme", "light")
         is_dark = (saved_theme == "dark")
-        self._dark_toggle.toggled.disconnect(self._on_dark_toggle)
+        try:
+            self._dark_toggle.toggled.disconnect(self._on_dark_toggle)
+        except Exception:
+            pass
         self._dark_toggle.checked = is_dark
         self._dark_toggle.toggled.connect(self._on_dark_toggle)
 
-        saved_accent = v2.get("appearance.accent_color", "#007AFF")
+        saved_accent = self._staging_cache.get("appearance.accent_color", "#007AFF")
         self._current_accent = saved_accent
         preset_values = {btn.color_hex.upper() for btn in self._color_buttons}
-        is_preset = saved_accent.upper() in preset_values
+        is_preset = isinstance(saved_accent, str) and saved_accent.upper() in preset_values
         for btn in self._color_buttons:
-            btn.selected = (btn.color_hex.upper() == saved_accent.upper())
+            btn.selected = (
+                isinstance(saved_accent, str)
+                and btn.color_hex.upper() == saved_accent.upper()
+            )
         if self._custom_btn is not None:
-            # 非预设且非 auto 的值视为自定义颜色
             self._custom_btn.selected = (
-                not is_preset and saved_accent.upper() != "AUTO"
+                isinstance(saved_accent, str)
+                and not is_preset
+                and saved_accent.upper() != "AUTO"
             )
 
-        # 窗口背景：同步模式/图片名/弥散氛围开关状态（不触碰主题管理器）。
-        saved_bg = v2.get("appearance.background", {}) or {}
+        saved_bg = self._staging_cache.get("appearance.background", {}) or {}
         saved_bg_mode = saved_bg.get("mode", "mica")
         if saved_bg_mode in ("mica", "image", "minimalist"):
             self._bg_mode = saved_bg_mode
@@ -964,27 +997,74 @@ class AppearanceSettingsPage(QWidget):
         _raw_ambient = saved_bg.get("ambient", True)
         self._bg_ambient = _raw_ambient if isinstance(_raw_ambient, bool) else bool(_raw_ambient)
         if self._ambient_toggle is not None:
-            self._ambient_toggle.toggled.disconnect(self._on_ambient_toggled)
+            try:
+                self._ambient_toggle.toggled.disconnect(self._on_ambient_toggled)
+            except Exception:
+                pass
             self._ambient_toggle.checked = self._bg_ambient
             self._ambient_toggle.toggled.connect(self._on_ambient_toggled)
+        self._sync_bg_segment()
         self._update_bg_ui_state()
 
-    def collect_settings(self) -> dict:
-        """收集当前页面的 V2 设置值。
+    def _sync_bg_segment(self) -> None:
+        """按暂存背景模式同步分段控件选中项（守卫内切换，不触发处理器）。"""
+        target = {"minimalist": 0, "mica": 1, "image": 2}.get(self._bg_mode, 1)
+        self._bg_updating = True
+        try:
+            self._bg_segmented.set_current_index(target, animate=False)
+        finally:
+            self._bg_updating = False
+
+    def get_staging_cache(self) -> SettingsStagingCache:
+        """返回本页绑定的暂存缓存（调试与提交链路使用）。
 
         Returns:
-            dict: V2 分类树格式的设置字典。
+            SettingsStagingCache: 隔离层实例。
+        """
+        return self._staging_cache
+
+    def get_cache_debug_info(self) -> dict:
+        """返回暂存缓存调试摘要。
+
+        Returns:
+            dict: 见 :meth:`SettingsStagingCache.debug_info`。
+        """
+        return self._staging_cache.debug_info()
+
+    def collect_settings(self) -> dict:
+        """收集暂存区的 V2 设置值（提交事务的数据源）。
+
+        Returns:
+            dict: V2 分类树格式的设置字典（含主题、强调色与窗口背景）。
         """
         return {
             "appearance": {
-                "theme": "dark" if self._dark_toggle.checked else "light",
-                "accent_color": self._current_accent,
+                "theme": self._staging_cache.get(
+                    "appearance.theme",
+                    "dark" if self._dark_toggle.checked else "light",
+                ),
+                "accent_color": self._staging_cache.get(
+                    "appearance.accent_color", self._current_accent
+                ),
+                "background": self._staging_cache.get(
+                    "appearance.background",
+                    {
+                        "mode": self._bg_mode,
+                        "image": self._bg_image_name,
+                        "ambient": self._bg_ambient,
+                    },
+                ),
             },
         }
 
 
 class SettingsLayout(QWidget):
-    """设置布局"""
+    """设置布局（暂存隔离 + 统一提交）。
+
+    底部按钮语义：``重置``（警告 ``danger``，回默认值但不落盘，居左）、
+    ``取消``（次选 ``secondary``，丢弃暂存并关闭）、``确定``（强调
+    ``primary``，提交并关闭）。仅「确定」绑定提交事件（无「应用」按钮）。
+    """
 
     def __init__(self, parent=None, host_window: QWidget | None = None):
         """初始化设置布局。
@@ -997,6 +1077,12 @@ class SettingsLayout(QWidget):
         """
         super().__init__(parent)
         self._host_window = host_window
+        # 暂存隔离层：快照 V2 全量，与主状态严格隔离
+        self._staging_cache = SettingsStagingCache()
+        _v2_boot = SettingsManagerV2()
+        self._staging_cache.begin(copy.deepcopy(_v2_boot.load()))
+        self._submitted: bool = False
+        self._last_submit_ms: float = 0.0
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -1027,7 +1113,7 @@ class SettingsLayout(QWidget):
         self._stack.setStyleSheet("background: transparent; border: none;")
 
         # 页面 0：外观（包进透明滚动区域，小窗口尺寸下内容可滚动访问）
-        self._appearance_page = AppearanceSettingsPage()
+        self._appearance_page = AppearanceSettingsPage(staging_cache=self._staging_cache)
         appearance_scroll = self._wrap_page_in_scroll(self._appearance_page)
         appearance_card = self._create_page_card(appearance_scroll)
         # 浮动滚动条锚定到外观卡片（#SettingsCard）右缘：右缘水平贴边、
@@ -1123,7 +1209,16 @@ class SettingsLayout(QWidget):
     # ── 底部按钮 ──────────────────────────────────────────────
 
     def _create_bottom_buttons(self) -> QFrame:
-        """创建底部按钮栏（重置 + 保存）。"""
+        """创建底部按钮栏（重置 + 取消 + 确定）。
+
+        样式映射（仅复用 ``StyledButton``，不自绘）：
+        确定 = ``primary``（强调，主题色）、取消 = ``secondary``（次选）、
+        重置 = ``danger``（警告）。
+        布局：左 ``重置``，右 ``取消`` + ``确定``（无「应用」按钮）。
+
+        Returns:
+            QFrame: 底部按钮栏容器。
+        """
         bar = QFrame()
         bar.setObjectName("SettingsBottomBar")
         bar.setStyleSheet("background: transparent; border: none;")
@@ -1131,59 +1226,192 @@ class SettingsLayout(QWidget):
         layout.setContentsMargins(0, 8, 0, 0)
         layout.setSpacing(8)
 
-        self._reset_btn = StyledButton("重置", variant="secondary", size="sm")
+        self._reset_btn = StyledButton("重置", variant="danger", size="sm")
         self._reset_btn.clicked.connect(self._on_reset_clicked)
         layout.addWidget(self._reset_btn)
 
         layout.addStretch()
 
-        self._apply_btn = StyledButton("应用", variant="primary", size="sm")
-        self._apply_btn.clicked.connect(self._on_apply_clicked)
-        layout.addWidget(self._apply_btn)
+        self._cancel_btn = StyledButton("取消", variant="secondary", size="sm")
+        self._cancel_btn.clicked.connect(self._on_cancel_clicked)
+        layout.addWidget(self._cancel_btn)
+
+        self._confirm_btn = StyledButton("确定", variant="primary", size="sm")
+        self._confirm_btn.clicked.connect(self._on_confirm_clicked)
+        layout.addWidget(self._confirm_btn)
+
+        # 兼容残留：历史「应用」按钮已移除，不再创建 _apply_btn；
+        # _on_apply_clicked 保留为内部别名，仅供旧调用方兼容。
+        self._apply_btn = None  # type: ignore[assignment]
 
         return bar
 
     def _on_reset_clicked(self) -> None:
-        """重置按钮 — 无功能（占位）。"""
+        """重置按钮 — 暂存区回默认值并刷新界面，不直接落盘（需确定提交）。"""
+        self._staging_cache.reset_to_defaults(copy.deepcopy(DEFAULT_SETTINGS_V2))
+        self._appearance_page.refresh_from_staging()
+
+    def _on_cancel_clicked(self) -> None:
+        """取消按钮 — 清除暂存并恢复界面至原始状态，然后关闭宿主窗口。"""
+        self._staging_cache.discard()
+        self._appearance_page.refresh_from_staging()
+        self._close_host_window()
 
     def _on_apply_clicked(self) -> None:
-        """应用按钮 — 将设置全局生效（应用到 tm）并持久化到 SettingsManagerV2。"""
-        # 收集当前设置
-        appearance = self._appearance_page.collect_settings().get("appearance", {})
-        theme = appearance.get("theme", "light")
-        accent = appearance.get("accent_color", "#007AFF")
+        """兼容旧「应用」调用：等价于提交但不关闭（按钮已移除）。"""
+        self._submit_settings(close_after=False)
 
-        # "auto" 表示跟随 Windows 系统强调色，应用时解析为实际颜色。
+    def _on_confirm_clicked(self) -> None:
+        """确定按钮 — 提交事件（立即应用并关闭设置窗口）。"""
+        if self._submit_settings(close_after=False):
+            self._submitted = True
+            self._close_host_window()
+
+    def _submit_settings(self, close_after: bool = False) -> bool:
+        """设置提交事件处理函数（确定按钮绑定，事务性提交）。
+
+        流程：暂存快照 → 校验 → 主题过渡遮罩 → 应用到 ``tm`` → 应用背景到
+        主窗口 → 持久化到 ``SettingsManagerV2`` → 基线前移。任一步失败则
+        回滚 ``tm`` 并返回 False，不污染磁盘与运行时。
+
+        Args:
+            close_after: 预留关闭标志（关闭统一由调用方执行，便于测试断言）。
+
+        Returns:
+            bool: 提交成功返回 True，失败返回 False。
+        """
+        t0 = time.perf_counter()
+        staged = self._staging_cache.commit_snapshot()
+        appearance = staged.get("appearance", {}) if isinstance(staged, dict) else {}
+        theme = appearance.get("theme", "light")
+        if theme not in ("light", "dark"):
+            theme = "light"
+        accent = appearance.get("accent_color", "#007AFF")
+        staged_bg = appearance.get("background", {}) or {}
+        bg_mode = staged_bg.get("mode", "mica")
+        if bg_mode not in ("mica", "image", "minimalist"):
+            bg_mode = "mica"
+
         saved_accent = accent
         if isinstance(accent, str) and accent.lower() == "auto":
             accent = get_system_accent_color()
 
-        # 先捕获设置窗口快照并启动过渡遮罩，再应用主题，实现平滑切换。
-        # 使用 grabWindow(HWND) 而非 grab()，避免 OpenGL Mica 背景合成花屏。
-        # 设置窗口是主窗口的 owned 子窗口，QWidget.window() 会返回主窗口，
-        # 因此优先取创建方显式传入的 host_window。
         settings_window = self._host_window if self._host_window is not None else self.window()
         if settings_window is not None:
-            overlay = ThemeTransitionOverlay.from_widget(settings_window)
-            overlay.start()
+            try:
+                overlay = ThemeTransitionOverlay.from_widget(settings_window)
+                overlay.start()
+            except Exception:
+                pass
 
-        # 全局生效：应用到 tm
-        tm.set_theme(theme)
-        tm._colors["accent"]["primary"] = accent
-        tm.colors_updated.emit(tm._colors)
+        prev_theme = "dark" if tm.is_dark_theme() else "light"
+        prev_colors = copy.deepcopy(tm._colors)
+        try:
+            tm.set_theme(theme)
+            tm._colors["accent"]["primary"] = accent
+            tm.colors_updated.emit(tm._colors)
 
-        # 持久化到 V2：theme + accent_color + 完整颜色树。
-        # 强调色保留原始值（"auto" 或具体 #RRGGBB），不持久化存储 DWM 获取到的
-        # 实际颜色数值；程序下次启动时会重新从 DWM 读取。
-        colors_dict = copy.deepcopy(tm._colors)
-        colors_dict["accent"]["primary"] = saved_accent
+            self._apply_staged_background_to_main_window(staged_bg)
 
-        v2 = SettingsManagerV2()
-        v2.load()
-        v2.set("appearance.theme", theme)
-        v2.set("appearance.accent_color", saved_accent)
-        v2.set("appearance.colors", colors_dict)
-        v2.save()
+            colors_dict = copy.deepcopy(tm._colors)
+            colors_dict["accent"]["primary"] = saved_accent
+
+            v2 = SettingsManagerV2()
+            v2.load()
+            v2.set("appearance.theme", theme)
+            v2.set("appearance.accent_color", saved_accent)
+            v2.set("appearance.colors", colors_dict)
+            v2.set("appearance.background", {
+                "mode": bg_mode,
+                "image": str(staged_bg.get("image", "") or ""),
+                "ambient": bool(staged_bg.get("ambient", True)),
+            })
+            v2.save()
+        except Exception:
+            try:
+                tm.set_theme(prev_theme)
+                tm._colors.update(prev_colors)
+                tm.colors_updated.emit(tm._colors)
+            except Exception:
+                pass
+            return False
+
+        self._staging_cache.mark_committed(staged)
+        self._last_submit_ms = (time.perf_counter() - t0) * 1000.0
+        if close_after:
+            self._submitted = True
+            self._close_host_window()
+        return True
+
+    def _apply_staged_background_to_main_window(self, staged_bg: dict) -> None:
+        """将暂存背景应用到主窗口（仅提交路径调用）。
+
+        Args:
+            staged_bg: 暂存的 ``appearance.background`` 字典。
+        """
+        mode = staged_bg.get("mode", "mica")
+        if mode not in ("mica", "image", "minimalist"):
+            mode = "mica"
+        image_name = str(staged_bg.get("image", "") or "")
+        ambient = staged_bg.get("ambient", True)
+        ambient = ambient if isinstance(ambient, bool) else bool(ambient)
+        try:
+            mw = self._appearance_page._find_main_window()
+            if mw is None:
+                return
+            if mode == "image" and image_name:
+                image_path = os.path.join(
+                    get_app_data_path(), BACKGROUND_DIR_NAME, image_name
+                )
+                if hasattr(mw, "set_custom_background_image"):
+                    mw.set_custom_background_image(image_path)
+                if hasattr(mw, "set_background_mode"):
+                    mw.set_background_mode("image")
+            elif mode == "minimalist":
+                if hasattr(mw, "set_ambient_enabled"):
+                    mw.set_ambient_enabled(ambient)
+                if hasattr(mw, "set_background_mode"):
+                    mw.set_background_mode("minimalist")
+            else:
+                if hasattr(mw, "set_background_mode"):
+                    mw.set_background_mode("mica")
+        except Exception:
+            pass
+
+    def _close_host_window(self) -> None:
+        """关闭宿主设置窗口（确定/取消路径）。"""
+        host = self._host_window if self._host_window is not None else self.window()
+        try:
+            if host is not None and hasattr(host, "close"):
+                host.close()
+        except Exception:
+            pass
+
+    def on_host_closing(self) -> None:
+        """宿主窗口关闭时的生命周期钩子：未提交则自动清除暂存并恢复界面。
+
+        由 ``SettingsWindow.closeEvent`` 调用，保证关闭未提交时缓存不泄漏、
+        下次打开为原始状态。
+        """
+        if self._submitted:
+            return
+        if self._staging_cache.is_dirty():
+            self._staging_cache.discard()
+            try:
+                self._appearance_page.refresh_from_staging()
+            except Exception:
+                pass
+
+    def get_cache_debug_info(self) -> dict:
+        """返回暂存缓存调试摘要（含最近提交耗时）。
+
+        Returns:
+            dict: 调试信息字典。
+        """
+        info = self._staging_cache.debug_info()
+        info["last_submit_ms"] = round(self._last_submit_ms, 3)
+        info["submitted"] = self._submitted
+        return info
 
     def refresh_theme(self) -> None:
         """公共方法：强制刷新当前主题下的所有样式"""

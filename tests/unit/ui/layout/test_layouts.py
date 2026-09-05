@@ -1051,7 +1051,11 @@ class TestAppearanceSettingsPage:
     def test_apply_background_settings_routes_and_saves(
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
-        """_apply_background_settings：先设图片再切模式；持久化并刷新 UI 状态。"""
+        """_apply_background_settings：暂存优先（未提交不触碰主窗口与磁盘）。
+
+        新语义：仅写入暂存缓存并刷新本页 UI；主窗口应用与 V2 落盘统一由
+        ``SettingsLayout._submit_settings`` 在点击应用/确定时执行。
+        """
         import freeassetfilter.ui.layout.settings_layout as sl_mod
         from freeassetfilter.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
@@ -1070,27 +1074,24 @@ class TestAppearanceSettingsPage:
         page = AppearanceSettingsPage()
         page._bg_image_name = "custom_background.png"
 
-        # image 模式：先 set_custom_background_image 再 set_background_mode
+        # image 暂存：不直调主窗口、不落盘，仅缓存 + UI 可见
         page._apply_background_settings("image")
-        expected_path = str(
-            tmp_path / "backgrounds" / "custom_background.png"
-        ).replace("/", "\\")
-        assert fake_mw.image_calls == [expected_path]
-        assert fake_mw.mode_calls == ["image"]
+        assert fake_mw.image_calls == []
+        assert fake_mw.mode_calls == []
+        assert page._staging_cache.get("appearance.background.mode") == "image"
+        assert page._staging_cache.get("appearance.background.image") == "custom_background.png"
         assert page._bg_image_row.isVisibleTo(page) is True
 
         saved = SettingsManagerV2(tmp_file)
         saved.load()
-        assert saved.get("appearance.background") == {
-            "mode": "image", "image": "custom_background.png",
-            "ambient": True,
-        }
+        assert saved.get("appearance.background.mode") == "mica"
 
-        # mica 模式：仅 set_background_mode，不动图片接口
+        # mica 暂存：同样仅缓存，不动主窗口图片接口
         page._apply_background_settings("mica")
-        assert fake_mw.mode_calls == ["image", "mica"]
-        assert len(fake_mw.image_calls) == 1
+        assert fake_mw.mode_calls == []
+        assert len(fake_mw.image_calls) == 0
         assert page._bg_image_row.isVisibleTo(page) is False
+        assert page._staging_cache.get("appearance.background.mode") == "mica"
         saved = SettingsManagerV2(tmp_file)
         saved.load()
         assert saved.get("appearance.background.mode") == "mica"
@@ -1099,7 +1100,7 @@ class TestAppearanceSettingsPage:
     def test_bg_segment_switch_with_existing_image(
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
-        """已有持久化图片时切换分段：直接应用 image 模式（不经文件对话框）。"""
+        """已有持久化图片时切换分段：暂存 image 模式（不经文件对话框、不直写）。"""
         import freeassetfilter.ui.layout.settings_layout as sl_mod
         from freeassetfilter.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
@@ -1124,16 +1125,16 @@ class TestAppearanceSettingsPage:
 
         page = AppearanceSettingsPage()
         page._bg_image_name = "custom_background.png"
-        # 模拟用户点击图像分段（触发 current_changed → 处理器）
+        # 模拟用户点击图像分段（触发 current_changed → 处理器，仅暂存）
         page._bg_segmented.set_current_index(2)
 
         assert page._bg_mode == "image"
-        assert len(fake_mw.image_calls) == 1
-        assert fake_mw.mode_calls == ["image"]
+        assert page._staging_cache.get("appearance.background.mode") == "image"
+        assert len(fake_mw.image_calls) == 0
+        assert fake_mw.mode_calls == []
         saved = SettingsManagerV2(tmp_file)
         saved.load()
-        assert saved.get("appearance.background.mode") == "image"
-        assert saved.get("appearance.background.image") == "custom_background.png"
+        assert saved.get("appearance.background.mode") == "mica"
         safe_teardown(page)
 
     def test_bg_segment_switch_cancel_reverts(
@@ -1218,7 +1219,7 @@ class TestAppearanceSettingsPage:
     def test_choose_bg_image_success_via_button(
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
-        """按钮点击选择图片成功：更新文件名、应用并持久化 image 模式。"""
+        """按钮点击选择图片成功：暂存文件名与 image 模式（提交前不直写）。"""
         import freeassetfilter.ui.layout.settings_layout as sl_mod
         from freeassetfilter.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
@@ -1250,14 +1251,12 @@ class TestAppearanceSettingsPage:
         assert page._bg_file_label.text() == "custom_background.png"
         assert page._bg_mode == "image"
         assert page._bg_segmented.current_index == 1  # 按钮入口不切分段
-        assert fake_mw.image_calls == [dest]
-        assert fake_mw.mode_calls == ["image"]
+        assert page._staging_cache.get("appearance.background.image") == "custom_background.png"
+        assert fake_mw.image_calls == []
+        assert fake_mw.mode_calls == []
         saved = SettingsManagerV2(tmp_file)
         saved.load()
-        assert saved.get("appearance.background") == {
-            "mode": "image", "image": "custom_background.png",
-            "ambient": True,
-        }
+        assert saved.get("appearance.background.mode") == "mica"
         safe_teardown(page)
 
     def test_update_bg_ui_state_toggles_image_row(
