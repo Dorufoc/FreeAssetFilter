@@ -65,6 +65,14 @@ def main_module(tmp_path_factory: Any, monkeypatch: Any) -> Any:
     monkeypatch.setattr(
         app_logger_mod, "install_console_capture", lambda _path=None: False
     )
+    # 1b) 阻止 fd 级重定向劫持 pytest 进程的 fd 1/2：install 返回空字典
+    # （无 saved 流，console capture 走旧路径），uninstall 为 no-op。
+    monkeypatch.setattr(
+        "freeassetfilter.utils.fd_capture.install_fd_capture", lambda *a, **k: {}
+    )
+    monkeypatch.setattr(
+        "freeassetfilter.utils.fd_capture.uninstall_fd_capture", lambda: None
+    )
     # 2) 阻止 faulthandler 写真实日志文件：get_log_file_path 指到 tmp。
     monkeypatch.setattr(
         app_logger_mod,

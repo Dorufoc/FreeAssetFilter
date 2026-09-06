@@ -18,7 +18,7 @@ import shutil
 from pathlib import Path
 from typing import Optional, Tuple
 
-from PySide6.QtCore import QRect, QSize, Qt, QTimer
+from PySide6.QtCore import QElapsedTimer, QRect, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QImage, QPaintEvent, QPainter, QPixmap, QResizeEvent
 from PySide6.QtWidgets import QWidget
 
@@ -38,6 +38,62 @@ BACKGROUND_DIR_NAME = "backgrounds"
 BACKGROUND_FILENAME_PREFIX = "custom_background"
 # 交互停止后重建平滑缓存的延时（毫秒）。
 SETTLE_INTERVAL_MS = 80
+# 主题交叉过渡时长（毫秒，对齐 Mica XFADE_DURATION_MS 与内容层过渡 280ms）。
+XFADE_DURATION_MS = 280
+# 交叉过渡逐帧间隔（毫秒，约 60fps）。
+XFADE_TICK_MS = 16
+# 自定义图像可调参数：模糊半径（px，0 = 不模糊）与不透明度（0~1）。
+IMAGE_BLUR_DEFAULT = 0.0
+IMAGE_BLUR_MAX = 200.0
+IMAGE_OPACITY_DEFAULT = 0.8
+
+
+def blur_pixmap(source: QPixmap, radius: float) -> QPixmap:
+    """对 pixmap 做高斯模糊（模糊烘焙进缓存，绘制期零成本）。
+
+    Args:
+        source: 源 pixmap（非 null）。
+        radius: 模糊半径 px；<= 0 时原样返回。
+
+    Returns:
+        QPixmap: 同尺寸的模糊结果；渲染失败时回退原图。
+    """
+    if source.isNull() or radius <= 0:
+        return source
+    try:
+        from PySide6.QtCore import QRectF
+        from PySide6.QtWidgets import (
+            QGraphicsBlurEffect,
+            QGraphicsPixmapItem,
+            QGraphicsScene,
+        )
+
+        margin = int(math.ceil(radius))
+        w, h = source.width(), source.height()
+        target = QPixmap(w + margin * 2, h + margin * 2)
+        target.fill(Qt.transparent)
+        scene = QGraphicsScene()
+        item = QGraphicsPixmapItem(source)
+        effect = QGraphicsBlurEffect()
+        effect.setBlurRadius(radius)
+        effect.setBlurHints(QGraphicsBlurEffect.PerformanceHint)
+        item.setGraphicsEffect(effect)
+        item.setPos(margin, margin)
+        scene.addItem(item)
+        scene.setSceneRect(0, 0, target.width(), target.height())
+        painter = QPainter(target)
+        try:
+            scene.render(
+                painter,
+                QRectF(0, 0, target.width(), target.height()),
+                QRectF(0, 0, target.width(), target.height()),
+            )
+        finally:
+            painter.end()
+        cropped = target.copy(margin, margin, w, h)
+        return cropped if not cropped.isNull() else source
+    except Exception:
+        return source
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +140,8 @@ class CustomImageBackgroundWidget(QWidget):
     """自定义图片背景层。
 
     以 cover 等比覆盖方式将一张图片绘制为窗口背景。作为独立背景层控件
-    使用：鼠标事件穿透（不干扰窗口边缘拖拽缩放）、始终铺满不透明绘制。
+    使用：鼠标事件穿透（不干扰窗口边缘拖拽缩放）、始终铺满绘制。
+    图片按不透明度与主题兜底色合成（默认 80%），模糊半径烘焙进平滑缓存。
     交互期（窗口拖拽/缩放期间）走快速缩放路径保证流畅；交互停止
     SETTLE_INTERVAL_MS 毫秒后重建平滑缩放缓存。
 
@@ -104,12 +161,28 @@ class CustomImageBackgroundWidget(QWidget):
         self._source_pixmap: Optional[QPixmap] = None
         # settle 之后按当前窗口尺寸平滑缩放的缓存（交互期清空）。
         self._cached_pixmap: Optional[QPixmap] = None
+        # 缓存构建时的模糊半径：变更即失配重建（模糊烘焙进缓存）。
+        self._cached_blur: float = -1.0
         self._interacting: bool = False
+        # 自定义图像可调参数（设置页滑动条驱动）。
+        self._blur_radius: float = IMAGE_BLUR_DEFAULT
+        self._opacity: float = IMAGE_OPACITY_DEFAULT
 
         self._settle_timer = QTimer(self)
         self._settle_timer.setSingleShot(True)
         self._settle_timer.setInterval(SETTLE_INTERVAL_MS)
         self._settle_timer.timeout.connect(self._on_settle)
+
+        # 主题交叉过渡状态（仿 MicaMaterial._start_xfade 材质内淡入）：
+        # _pending_backdrop 由切换前抓拍暂存，sync_theme 时转为正式底图；
+        # paint 期旧底图铺底 + 新帧按进度淡入，旧像素在重绘间隙始终可见。
+        self._pending_backdrop: Optional[QPixmap] = None
+        self._xfade_backdrop: Optional[QPixmap] = None
+        self._xfade_active: bool = False
+        self._xfade_clock = QElapsedTimer()
+        self._xfade_timer = QTimer(self)
+        self._xfade_timer.setInterval(XFADE_TICK_MS)
+        self._xfade_timer.timeout.connect(self._on_xfade_tick)
 
         # 背景层鼠标穿透，避免干扰窗口边缘拖拽缩放。
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
@@ -144,6 +217,7 @@ class CustomImageBackgroundWidget(QWidget):
         self._image_path = path
         self._source_pixmap = QPixmap.fromImage(img)
         self._cached_pixmap = None
+        self._cached_blur = -1.0
         self.update()
         return True
 
@@ -164,6 +238,57 @@ class CustomImageBackgroundWidget(QWidget):
     def image_path(self) -> str:
         """当前背景图片的源路径（未设置时为空字符串）。"""
         return self._image_path
+
+    @property
+    def blur_radius(self) -> float:
+        """当前模糊半径 px（0 = 不模糊）。
+
+        Returns:
+            float: 模糊半径。
+        """
+        return self._blur_radius
+
+    def set_blur_radius(self, radius: float) -> None:
+        """设置图像模糊半径（烘焙进平滑缓存，绘制期零成本）。
+
+        Args:
+            radius: 模糊半径 px，钳制到 0~IMAGE_BLUR_MAX。
+        """
+        try:
+            radius = float(radius)
+        except (TypeError, ValueError):
+            return
+        radius = max(0.0, min(IMAGE_BLUR_MAX, radius))
+        if radius == self._blur_radius:
+            return
+        self._blur_radius = radius
+        self._cached_pixmap = None
+        self.update()
+
+    @property
+    def opacity(self) -> float:
+        """当前图像不透明度（0~1，1 = 完全不透明）。
+
+        Returns:
+            float: 不透明度。
+        """
+        return self._opacity
+
+    def set_opacity(self, opacity: float) -> None:
+        """设置图像不透明度（绘制期与主题兜底色合成）。
+
+        Args:
+            opacity: 不透明度 0~1，钳制越界值。
+        """
+        try:
+            opacity = float(opacity)
+        except (TypeError, ValueError):
+            return
+        opacity = max(0.0, min(1.0, opacity))
+        if opacity == self._opacity:
+            return
+        self._opacity = opacity
+        self.update()
 
     def handle_window_resize(self) -> None:
         """窗口尺寸变化入口（由 MainWindow 的 resizeEvent 转发）。
@@ -188,9 +313,32 @@ class CustomImageBackgroundWidget(QWidget):
         """主题切换同步入口。
 
         兜底色在绘制期动态读取（见 _fallback_color），图片本身与主题
-        无关，因此仅需触发一次重绘。
+        无关。若切换前已抓拍（见 capture_pre_theme_state），以旧帧为底图
+        启动 280ms 材质内交叉淡入（仿 MicaMaterial._start_xfade），旧像素
+        在重绘间隙始终可见，不漏出 _root G1 兜底；无抓拍时仅触发重绘。
         """
+        pending = self._pending_backdrop
+        self._pending_backdrop = None
+        if pending is not None and not pending.isNull():
+            self._start_xfade(pending)
         self.update()
+
+    def capture_pre_theme_state(self) -> None:
+        """主题翻转前抓拍当前背景帧（由主窗口在 tm 切换前调用）。
+
+        用 ``grab()`` 渲染当前屏上状态；过渡中连切时抓到的是当前混合态，
+        新过渡从屏幕现状连续出发（同 Mica _capture_visual_state 连切语义）。
+        未显示或抓拍失败时不暂存，sync_theme 退化为普通重绘。
+        """
+        if not self.isVisible():
+            return
+        try:
+            snapshot = self.grab()
+        except Exception:  # noqa: BLE001 - 抓拍失败不阻塞主题切换
+            return
+        if snapshot.isNull():
+            return
+        self._pending_backdrop = snapshot
 
     def refresh_background(self) -> None:
         """按当前路径重新加载背景图片（磁盘内容变化时使用）。"""
@@ -206,14 +354,17 @@ class CustomImageBackgroundWidget(QWidget):
         self._image_path = ""
         self._source_pixmap = None
         self._cached_pixmap = None
+        self._cached_blur = -1.0
 
     def _fallback_color(self) -> QColor:
         """主题纯色兜底色（与 Mica 兜底一致，绘制期动态读取）。
 
         Returns:
-            QColor: 深色主题纯黑，浅色主题纯白。
+            QColor: 当前主题表面色（``tm.surface``，即 G1），与简约层
+                bottom（blend 0% = G1）同源。之前用纯黑/纯白，与 G1
+                存在亮度差，主题切换重绘间隙会透出一帧纯白造成闪现。
         """
-        return QColor("#000000" if tm.is_dark_theme() else "#FFFFFF")
+        return QColor(tm.surface)
 
     def _on_settle(self) -> None:
         """交互停止：退出交互态并清缓存，下次 paint 重建平滑缓存。"""
@@ -222,23 +373,120 @@ class CustomImageBackgroundWidget(QWidget):
         self.update()
 
     # ------------------------------------------------------------------
+    # 主题交叉过渡（仿 MicaMaterial._start_xfade 材质内淡入）
+    # ------------------------------------------------------------------
+
+    def _xfade_progress(self) -> float:
+        """交叉过渡进度（0~1）；未激活时恒为 1.0。"""
+        if not self._xfade_active or not self._xfade_clock.isValid():
+            return 1.0
+        t = self._xfade_clock.elapsed() / float(XFADE_DURATION_MS)
+        if t < 0.0:
+            return 0.0
+        return 1.0 if t > 1.0 else t
+
+    def _start_xfade(self, backdrop: QPixmap) -> None:
+        """以旧背景帧为底图启动交叉过渡：新帧自进度 0 淡入（280ms）。"""
+        self._xfade_backdrop = backdrop
+        self._xfade_active = True
+        self._xfade_clock.restart()
+        if not self._xfade_timer.isActive():
+            self._xfade_timer.start()
+
+    def _finish_xfade(self) -> None:
+        """结束并清理交叉过渡：释放旧帧、停机。"""
+        self._xfade_active = False
+        self._xfade_backdrop = None
+        if self._xfade_timer.isActive():
+            self._xfade_timer.stop()
+
+    def _on_xfade_tick(self) -> None:
+        """交叉过渡逐帧推进：到时即清理（此后一帧按全进度呈现新帧）。"""
+        if not self._xfade_active:
+            if self._xfade_timer.isActive():
+                self._xfade_timer.stop()
+            return
+        if self._xfade_progress() >= 1.0:
+            self._finish_xfade()
+        self.update()
+
+    # ------------------------------------------------------------------
     # Qt 事件
     # ------------------------------------------------------------------
 
-    def paintEvent(self, event: QPaintEvent) -> None:
-        """绘制背景：无图铺兜底色；有图按 cover 几何绘制。
+    def _render_current_frame(self) -> QImage | None:
+        """离屏合成当前背景帧（兜底色 + 图片，不呈现到屏幕）。
 
-        交互期关闭 SmoothPixmapTransform 直接 drawPixmap（快速缩放）；
-        非交互期命中/重建平滑缩放缓存后整图 blit。
+        供主题交叉过渡使用：新帧先在离屏合成完整，再按进度整体淡入，
+        避免直接在屏上 ``fillRect`` 兜底色盖住旧底图导致图像瞬间消失。
+
+        Returns:
+            QImage | None: 与控件同尺寸的当前帧；宽高非法时返回 None。
+        """
+        width = self.width()
+        height = self.height()
+        if width <= 0 or height <= 0:
+            return None
+        image = QImage(width, height, QImage.Format_RGB32)
+        painter = QPainter(image)
+        try:
+            self._paint_current(painter)
+        finally:
+            painter.end()
+        return image
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        """绘制背景：兜底色打底，图片按不透明度合成、按 cover 几何绘制。
+
+        交叉过渡期（主题切换后 280ms 内）：旧底图铺底、新帧离屏合成后按
+        进度整体淡入（仿 MicaMaterial._draw_layer：过渡期跳过屏上实色底，
+        旧像素在重绘间隙始终可见，不漏出 _root G1 兜底，图像全程不断连）。
+        稳态：交互期快速缩放（无模糊），非交互期平滑缓存整图 blit
+        （模糊已烘焙进缓存）。
 
         Args:
             event: Qt 绘制事件。
         """
         painter = QPainter(self)
-
-        if not self.has_image():
-            painter.fillRect(self.rect(), self._fallback_color())
+        try:
+            backdrop = self._xfade_backdrop
+            if (
+                self._xfade_active
+                and backdrop is not None
+                and not backdrop.isNull()
+            ):
+                t = self._xfade_progress()
+                if t >= 1.0:
+                    self._finish_xfade()
+                else:
+                    painter.setOpacity(1.0)
+                    painter.drawPixmap(self.rect(), backdrop)
+                    new_frame = self._render_current_frame()
+                    if new_frame is not None and not new_frame.isNull():
+                        painter.setOpacity(max(0.0, min(1.0, t)))
+                        painter.drawImage(0, 0, new_frame)
+                        painter.setOpacity(1.0)
+                    else:
+                        self._paint_current(
+                            painter, extra_opacity=max(0.0, min(1.0, t))
+                        )
+                    return
+            self._paint_current(painter)
+        finally:
             painter.end()
+
+    def _paint_current(
+        self, painter: QPainter, extra_opacity: float = 1.0
+    ) -> None:
+        """绘制当前背景帧：先铺主题兜底色，再按不透明度合成图片。
+
+        Args:
+            painter: 调用方创建的画笔。
+            extra_opacity: 额外透明度乘子（交叉过渡进度，稳态为 1.0）。
+        """
+        painter.setOpacity(1.0)
+        painter.fillRect(self.rect(), self._fallback_color())
+        if not self.has_image():
             return
 
         assert self._source_pixmap is not None  # has_image 已保证
@@ -248,28 +496,36 @@ class CustomImageBackgroundWidget(QWidget):
             self.width(),
             self.height(),
         )
+        opacity = max(0.0, min(1.0, extra_opacity)) * self._opacity
+        painter.setOpacity(opacity)
 
         if self._interacting:
-            # 快速缩放路径：一次 blit，保证拖拽流畅。
+            # 快速缩放路径：一次 blit，保证拖拽流畅（跳过模糊）。
             painter.setRenderHint(QPainter.SmoothPixmapTransform, False)
             painter.drawPixmap(QRect(x, y, w, h), self._source_pixmap)
-            painter.end()
+            painter.setOpacity(1.0)
             return
 
-        # 平滑路径：缓存缺失或尺寸不匹配时重建。
+        # 平滑路径：缓存缺失、尺寸不匹配或模糊半径变化时重建
+        # （模糊烘焙进缓存，绘制期零成本）。
         # w/h 本身保持原图比例（cover 等比），因此 IgnoreAspectRatio
         # 等效等比缩放。
         if (
             self._cached_pixmap is None
             or self._cached_pixmap.isNull()
             or self._cached_pixmap.size() != QSize(w, h)
+            or self._cached_blur != self._blur_radius
         ):
-            self._cached_pixmap = self._source_pixmap.scaled(
+            scaled = self._source_pixmap.scaled(
                 QSize(w, h), Qt.IgnoreAspectRatio, Qt.SmoothTransformation
             )
+            if self._blur_radius > 0:
+                scaled = blur_pixmap(scaled, self._blur_radius)
+            self._cached_pixmap = scaled
+            self._cached_blur = self._blur_radius
         painter.setRenderHint(QPainter.SmoothPixmapTransform, False)
         painter.drawPixmap(x, y, self._cached_pixmap)
-        painter.end()
+        painter.setOpacity(1.0)
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         """自身尺寸变化（布局驱动）同样走交互路径重建缓存。

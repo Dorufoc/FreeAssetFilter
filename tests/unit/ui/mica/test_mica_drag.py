@@ -367,7 +367,7 @@ def test_layer_to_source_clamped_identity_integer_when_1to1() -> None:
 def test_layer_constants() -> None:
     """层网格上限与层显示长边必须保持固定值。"""
     assert LAYER_GRID_CAP == 1024
-    assert LAYER_DISPLAY_LONG_MAX == 4096
+    assert LAYER_DISPLAY_LONG_MAX == 8192
 
 
 def test_viewport_layer_fields() -> None:

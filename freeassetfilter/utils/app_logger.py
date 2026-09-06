@@ -25,6 +25,7 @@ import logging
 import traceback
 import inspect
 import platform
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -664,9 +665,20 @@ class TeeStream(io.TextIOBase):
     - ``dedup_enabled``: 对写入日志的**连续完全重复行**做压缩。首行先写入
       日志，后续相同行仅在内存中计数；当计数结束（遇到不同行或 close）时，
       将计数标签（如 ``【x3】``）追加到首行行尾，避免大量重复报错撑爆日志。
-      仅对以换行结尾的完整行生效，无换行的残片（如 ``\\r`` 进度行）原样
-      直写，不参与去重。
+       仅对以换行结尾的完整行生效，无换行的残片（如 ``\\r`` 进度行）原样
+       直写，不参与去重。
+
+    线程安全：实例级 ``threading.RLock`` 覆盖 ``write``/``flush``/``close``
+    及内部去重管线的全部状态读写；可重入以允许 ``close`` → ``flush`` /
+    ``_finish_counting`` 的同线程嵌套调用。
     """
+
+    # 错误行豁免正则（行首锚定）：异常类型关键词行不参与 dedup 折叠。
+    # 可选前缀组允许 ``ValueError`` / ``logging.Warning`` 等形式；
+    # 行首锚定保证 ``MuPDF error: ...`` 等噪音仍照常折叠。
+    _ERROR_LINE_RE = re.compile(
+        r'^(?:[A-Za-z_][\w.]*)?(?:Error|Exception|Interrupt|Exit|Warning)(:|\s|$)'
+    )
 
     def __init__(self, original_stream, log_file_path: str, encoding: str = 'utf-8',
                  filter_patterns: Optional[list] = None,
@@ -675,8 +687,10 @@ class TeeStream(io.TextIOBase):
         self.original_stream = original_stream
         self.log_file_path = log_file_path
         self.encoding_name = encoding or 'utf-8'
+        self._lock = threading.RLock()
         self._log_stream = None
         self._closed = False
+        self._log_write_failed: bool = False
         self.filter_patterns = filter_patterns or []
         self.console_filter_patterns = console_filter_patterns or []
         self.dedup_enabled = dedup_enabled
@@ -689,8 +703,51 @@ class TeeStream(io.TextIOBase):
             if log_dir:
                 os.makedirs(log_dir, exist_ok=True)
             self._log_stream = open(log_file_path, 'a', encoding=self.encoding_name, buffering=1)
-        except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError):
+        except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError) as e:
             self._log_stream = None
+            self._report_log_write_failure(e)
+
+    @staticmethod
+    def _is_error_line(line: str) -> bool:
+        """判定一行是否为错误行（豁免 dedup 折叠）。
+
+        规则（满足任一即豁免）：
+        - 行以 ``Traceback (most recent call last)`` 开头；
+        - 行 strip 后以 ``File "`` 开头（Traceback 堆栈帧）；
+        - strip 后匹配 ``^(?:[A-Za-z_][\\w.]*)?(?:Error|Exception|Interrupt|Exit|Warning)(:|\\s|$)``
+          （异常类型关键词行，行首锚定——``MuPDF error: ...`` 不匹配）。
+
+        Args:
+            line: 以换行结尾的完整行文本。
+
+        Returns:
+            错误行返回 True，否则返回 False。
+        """
+        if line.startswith("Traceback (most recent call last)"):
+            return True
+        stripped = line.strip()
+        if stripped.startswith('File "'):
+            return True
+        return TeeStream._ERROR_LINE_RE.match(stripped) is not None
+
+    def _report_log_write_failure(self, exc: BaseException) -> None:
+        """首次日志文件写入失败时经 bootstrap 通道一次性告警。
+
+        每实例只告警一次（``_log_write_failed`` 置位后不再重复）。
+        先在锁内做检查并置位，再在锁外调用 fallback，避免持有锁做 I/O，
+        同时保证并发首次失败也只告警一次。
+
+        Args:
+            exc: 触发失败的异常对象（仅用于告警文本）。
+        """
+        with self._lock:
+            if self._log_write_failed:
+                return
+            self._log_write_failed = True
+        try:
+            _write_bootstrap_fallback(f"[警告] 日志文件写入失败，后续日志可能不完整: {exc}")
+        except Exception:
+            pass
 
     @property
     def encoding(self):
@@ -740,26 +797,27 @@ class TeeStream(io.TextIOBase):
         return False
 
     def write(self, s):
-        if s is None:
-            return 0
+        with self._lock:
+            if s is None:
+                return 0
 
-        if not isinstance(s, str):
-            s = str(s)
+            if not isinstance(s, str):
+                s = str(s)
 
-        written = 0
-        filtered = self._should_filter(s)
-        console_filtered = self._should_filter_console(s)
+            written = 0
+            filtered = self._should_filter(s)
+            console_filtered = self._should_filter_console(s)
 
-        if self.original_stream is not None and not console_filtered:
-            try:
-                written = self.original_stream.write(s)
-            except (OSError, IOError, ValueError, TypeError):
-                written = 0
+            if self.original_stream is not None and not console_filtered:
+                try:
+                    written = self.original_stream.write(s)
+                except (OSError, IOError, ValueError, TypeError):
+                    written = 0
 
-        if self._log_stream is not None and not filtered:
-            self._write_log(s)
+            if self._log_stream is not None and not filtered:
+                self._write_log(s)
 
-        return written if written is not None else len(s)
+            return written if written is not None else len(s)
 
     def _write_log(self, s: str) -> None:
         """将内容写入日志文件（支持连续重复行压缩）。
@@ -771,22 +829,23 @@ class TeeStream(io.TextIOBase):
         Args:
             s: 已字符串化的待写内容。
         """
-        if not self.dedup_enabled:
-            try:
-                self._log_stream.write(s)
-            except (OSError, IOError, ValueError, TypeError):
-                pass
-            return
+        with self._lock:
+            if not self.dedup_enabled:
+                try:
+                    self._log_stream.write(s)
+                except (OSError, IOError, ValueError, TypeError) as e:
+                    self._report_log_write_failure(e)
+                return
 
-        if not s.endswith('\n'):
-            try:
-                self._log_stream.write(s)
-            except (OSError, IOError, ValueError, TypeError):
-                pass
-            return
+            if not s.endswith('\n'):
+                try:
+                    self._log_stream.write(s)
+                except (OSError, IOError, ValueError, TypeError) as e:
+                    self._report_log_write_failure(e)
+                return
 
-        for part in s[:-1].split('\n'):
-            self._process_log_line(part + '\n')
+            for part in s[:-1].split('\n'):
+                self._process_log_line(part + '\n')
 
     def _process_log_line(self, line: str) -> None:
         """将一行完整文本送入去重管线（仅在 dedup_enabled=True 时调用）。
@@ -798,31 +857,42 @@ class TeeStream(io.TextIOBase):
         Args:
             line: 以换行结尾的完整行文本。
         """
-        if line in ('\n', '\r\n'):
+        with self._lock:
+            if self._is_error_line(line):
+                # 错误行豁免折叠：先结束上一轮计数，再直写本行且不进入计数。
+                self._finish_counting()
+                if self._log_stream is not None:
+                    try:
+                        self._log_stream.write(line)
+                    except (OSError, IOError, ValueError, TypeError) as e:
+                        self._report_log_write_failure(e)
+                return
+
+            if line in ('\n', '\r\n'):
+                self._finish_counting()
+                try:
+                    self._log_stream.write(line)
+                except (OSError, IOError, ValueError, TypeError) as e:
+                    self._report_log_write_failure(e)
+                return
+
+            if self._last_log_line is None:
+                # 新一轮：先写入首行内容（末尾换行延迟到计数结束时补上）
+                self._last_log_line = line
+                self._dup_count = 1
+                try:
+                    self._log_stream.write(line[:-1])
+                except (OSError, IOError, ValueError, TypeError) as e:
+                    self._report_log_write_failure(e)
+                return
+
+            if line == self._last_log_line:
+                self._dup_count += 1
+                return
+
+            # 不同行：结束当前计数（补上标签），再按新一轮处理当前行
             self._finish_counting()
-            try:
-                self._log_stream.write(line)
-            except (OSError, IOError, ValueError, TypeError):
-                pass
-            return
-
-        if self._last_log_line is None:
-            # 新一轮：先写入首行内容（末尾换行延迟到计数结束时补上）
-            self._last_log_line = line
-            self._dup_count = 1
-            try:
-                self._log_stream.write(line[:-1])
-            except (OSError, IOError, ValueError, TypeError):
-                pass
-            return
-
-        if line == self._last_log_line:
-            self._dup_count += 1
-            return
-
-        # 不同行：结束当前计数（补上标签），再按新一轮处理当前行
-        self._finish_counting()
-        self._process_log_line(line)
+            self._process_log_line(line)
 
     def _finish_counting(self) -> None:
         """结束去重计数：将计数标签追加到首行行尾并补齐换行。
@@ -830,47 +900,50 @@ class TeeStream(io.TextIOBase):
         重复次数 > 1 时在首行行尾追加 ``【xN】``；仅出现一次时只补换行。
         无论写入是否成功都清空计数状态，避免悬挂。
         """
-        if self._log_stream is None or self._last_log_line is None:
-            return
-        try:
-            if self._dup_count > 1:
-                self._log_stream.write(f" 【x{self._dup_count}】\n")
-            else:
-                self._log_stream.write("\n")
-        except (OSError, IOError, ValueError, TypeError):
-            pass
-        finally:
-            self._last_log_line = None
-            self._dup_count = 0
+        with self._lock:
+            if self._log_stream is None or self._last_log_line is None:
+                return
+            try:
+                if self._dup_count > 1:
+                    self._log_stream.write(f" 【x{self._dup_count}】\n")
+                else:
+                    self._log_stream.write("\n")
+            except (OSError, IOError, ValueError, TypeError) as e:
+                self._report_log_write_failure(e)
+            finally:
+                self._last_log_line = None
+                self._dup_count = 0
 
     def flush(self):
-        if self.original_stream is not None:
-            try:
-                self.original_stream.flush()
-            except (OSError, IOError, ValueError, TypeError):
-                pass
+        with self._lock:
+            if self.original_stream is not None:
+                try:
+                    self.original_stream.flush()
+                except (OSError, IOError, ValueError, TypeError):
+                    pass
 
-        if self._log_stream is not None:
-            try:
-                self._log_stream.flush()
-            except (OSError, IOError, ValueError, TypeError):
-                pass
+            if self._log_stream is not None:
+                try:
+                    self._log_stream.flush()
+                except (OSError, IOError, ValueError, TypeError):
+                    pass
 
     def close(self):
-        if self._closed:
-            return
+        with self._lock:
+            if self._closed:
+                return
 
-        self.flush()
-        # 结束去重计数，避免 close 后首行换行/标签缺失
-        self._finish_counting()
+            self.flush()
+            # 结束去重计数，避免 close 后首行换行/标签缺失
+            self._finish_counting()
 
-        if self._log_stream is not None:
-            try:
-                self._log_stream.close()
-            except (OSError, IOError, ValueError, TypeError):
-                pass
+            if self._log_stream is not None:
+                try:
+                    self._log_stream.close()
+                except (OSError, IOError, ValueError, TypeError):
+                    pass
 
-        self._closed = True
+            self._closed = True
 
     def __getattr__(self, item):
         if self.original_stream is not None:
@@ -1125,7 +1198,8 @@ def get_logger():
     return _app_logger
 
 
-def install_console_capture(log_file_path: Optional[str] = None) -> bool:
+def install_console_capture(log_file_path: Optional[str] = None,
+                            saved_stdout=None, saved_stderr=None) -> bool:
     """
     将 sys.stdout / sys.stderr 替换为双写流：
     - 有控制台时保留原始控制台输出
@@ -1133,6 +1207,11 @@ def install_console_capture(log_file_path: Optional[str] = None) -> bool:
 
     Args:
         log_file_path: 日志文件路径，未提供时使用当前 logger 的日志文件
+        saved_stdout: fd_capture 备份的 stdout 文本流；提供时直接用作
+            TeeStream 的 original_stream，不再调 _get_original_console_stream
+           （fd 接管后 sys.__stdout__ 底层 fd 已是管道，旧路径会导致
+            输出进管道 → 转发线程再写日志 → 双写 + 管道满死锁）
+        saved_stderr: fd_capture 备份的 stderr 文本流（同上）
 
     Returns:
         bool: 是否至少成功安装了一个 tee 流
@@ -1147,7 +1226,7 @@ def install_console_capture(log_file_path: Optional[str] = None) -> bool:
 
     installed = False
 
-    original_stdout = _get_original_console_stream('stdout')
+    original_stdout = saved_stdout if saved_stdout is not None else _get_original_console_stream('stdout')
     if not isinstance(sys.stdout, TeeStream):
         try:
             sys.stdout = TeeStream(original_stdout, log_file_path)
@@ -1155,7 +1234,7 @@ def install_console_capture(log_file_path: Optional[str] = None) -> bool:
         except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError):
             pass
 
-    original_stderr = _get_original_console_stream('stderr')
+    original_stderr = saved_stderr if saved_stderr is not None else _get_original_console_stream('stderr')
     if not isinstance(sys.stderr, TeeStream):
         try:
             # 过滤 MPV "Unknown property" 等无害噪音（不写入日志，保留控制台）
@@ -1273,7 +1352,7 @@ def log_exception(exc_type, exc_value, exc_traceback):
         error_msg += f"异常堆栈:\n"
 
         # 获取堆栈跟踪字符串并过滤敏感信息
-        stack_trace = ''.join(traceback.format_tb(exc_traceback))
+        stack_trace = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
         safe_stack_trace = sanitize_path(stack_trace)
         safe_stack_trace = sanitize_sensitive_info(safe_stack_trace)
         error_msg += safe_stack_trace

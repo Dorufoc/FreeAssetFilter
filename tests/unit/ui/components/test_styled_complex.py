@@ -27,8 +27,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QEnterEvent, QMouseEvent, QPainter, QPixmap
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSize, Qt
+from PySide6.QtGui import QColor, QEnterEvent, QImage, QMouseEvent, QPainter, QPixmap, QRegion
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QVBoxLayout, QWidget
 
 # 组件模块内部使用短路径导入（from theme import tm / components.*），
@@ -91,6 +91,7 @@ from freeassetfilter.ui.components.styled_table import (  # noqa: E402
 from freeassetfilter.ui.components.styled_tabs import StyledTabWidget  # noqa: E402
 from freeassetfilter.ui.components.styled_timeline import StyledTimeline  # noqa: E402
 from freeassetfilter.ui.components.theme_transition_overlay import (  # noqa: E402
+    ContentTransitionOverlay,
     ThemeTransitionOverlay,
 )
 
@@ -931,6 +932,72 @@ class TestThemeTransitionOverlay:
         assert isinstance(overlay, ThemeTransitionOverlay)
         safe_teardown(overlay)
         safe_teardown(window)
+
+
+# =============================================================================
+# ui.components.theme_transition_overlay — ContentTransitionOverlay
+# =============================================================================
+class TestContentTransitionOverlay:
+    """ContentTransitionOverlay：构造、自绘淡出与 finish_now 清理。"""
+
+    def test_construct_and_start(self, qapp: QApplication) -> None:
+        """构造 + start：默认 280ms、几何贴合父级、鼠标穿透、可见。"""
+        parent = QWidget()
+        parent.resize(120, 80)
+        overlay = ContentTransitionOverlay(parent, QPixmap(120, 80))
+        assert overlay.DEFAULT_DURATION_MS == 280
+        assert overlay.geometry() == parent.rect()
+        assert overlay.testAttribute(Qt.WA_TransparentForMouseEvents)
+        overlay.start()
+        # 父级未 show：isVisible 恒 False，断言相对父级的可见性
+        assert overlay.isVisibleTo(parent)
+        safe_teardown(overlay)
+        safe_teardown(parent)
+
+    def test_duration_min_clamped(self, qapp: QApplication) -> None:
+        """duration_ms 下限被钳到 50ms。"""
+        parent = QWidget()
+        overlay = ContentTransitionOverlay(parent, QPixmap(10, 10), duration_ms=5)
+        assert overlay._duration_ms >= 50
+        safe_teardown(overlay)
+        safe_teardown(parent)
+
+    def test_finish_now_hides_and_is_idempotent(self, qapp: QApplication) -> None:
+        """finish_now 立即隐藏遮罩，且重复调用不抛异常。"""
+        parent = QWidget()
+        overlay = ContentTransitionOverlay(parent, QPixmap(10, 10))
+        overlay.start()
+        assert overlay.isVisibleTo(parent)
+        overlay.finish_now()
+        assert not overlay.isVisibleTo(parent)
+        overlay.finish_now()  # 幂等：再调不抛
+        safe_teardown(parent)
+
+    def test_paint_fades_with_opacity(self, qapp: QApplication) -> None:
+        """paintEvent 按当前透明度绘制快照：1.0 全强度、0.0 不绘制。"""
+        parent = QWidget()
+        parent.resize(40, 40)
+        snapshot = QPixmap(40, 40)
+        snapshot.fill(QColor(255, 0, 0))
+        overlay = ContentTransitionOverlay(parent, snapshot)
+        # 仅绘制部件自身（DrawChildren）：render 默认的 DrawWindowBackground
+        # 会无条件填充 palette 背景，混入与 paintEvent 无关的不透明像素
+        render_flags = QWidget.DrawChildren
+
+        # opacity 1.0（初值）：整幅红
+        image = QImage(40, 40, QImage.Format_ARGB32)
+        image.fill(Qt.transparent)
+        overlay.render(image, QPoint(0, 0), QRegion(0, 0, 40, 40), render_flags)
+        assert image.pixelColor(20, 20).red() >= 250
+        assert image.pixelColor(20, 20).alpha() == 255
+
+        # opacity 0.0：不绘制（保持透明底）
+        overlay._on_value_changed(0.0)
+        image.fill(Qt.transparent)
+        overlay.render(image, QPoint(0, 0), QRegion(0, 0, 40, 40), render_flags)
+        assert image.pixelColor(20, 20).alpha() == 0
+        safe_teardown(overlay)
+        safe_teardown(parent)
 
 
 # =============================================================================

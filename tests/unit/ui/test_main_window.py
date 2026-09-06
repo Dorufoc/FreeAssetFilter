@@ -35,13 +35,19 @@ if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
 from freeassetfilter.ui.main_window import (  # noqa: E402
+    FIXED_MICA_PARAMS,
     MainWindow,
     MicaBackgroundWidgetCpu,
     MicaBackgroundWidgetGL,
     SettingsWindow,
+    fixed_mica_params,
     make_mica_background,
     main,
 )
+
+# 全局主题单例（与 main_window 同款短路径；不在 reset_singletons 清单，
+# 测试中切换主题后必须手动恢复）
+from theme import tm  # noqa: E402
 
 pytestmark = pytest.mark.unit
 
@@ -55,6 +61,12 @@ class _StubMicaBackground(QWidget):
     普通 ``QWidget`` 缺少它们会 AttributeError。``_mica`` 属性刻意
     不存在——``_start_mica_refresh`` 内部以 ``getattr`` None 守卫跳过
     后台刷新（见 ``_load_mica_settings`` 同款防御）。
+
+    ``sync_theme`` 同为类级 no-op：``MainWindow._on_theme_changed``
+    （``tm.theme_changed`` 广播路径）无条件调用它；主题切换测试
+    （``TestContentThemeTransition``）依赖该方法存在，且类级方法
+    不受 monkeypatch undo 影响（实例级补丁在测试结束后被撤销，
+    残留广播会撞 AttributeError）。
     """
 
     def handle_window_resize(self) -> None:
@@ -62,6 +74,9 @@ class _StubMicaBackground(QWidget):
 
     def handle_window_move(self) -> None:
         """空实现：替身无需响应窗口移动。"""
+
+    def sync_theme(self) -> None:
+        """空实现：替身无需重烘焙 Mica 主题。"""
 
 
 @pytest.fixture(autouse=True)
@@ -358,6 +373,82 @@ class TestBackgroundMode:
         qapp.processEvents()
 
 
+class TestFixedMicaParams:
+    """米卡参数按主题固定：常量值 / 主题取值 / 启动加载 / 构造消费。
+
+    米卡滑动条与原生 DWM 云母开关已移除，参数为产品定值：
+    亮色 8×/1×/200px/100%，深色 2×/1×/200px/80%。
+    """
+
+    def test_fixed_params_constant_values(self) -> None:
+        """FIXED_MICA_PARAMS 两组定值与产品规格一致。"""
+        assert FIXED_MICA_PARAMS["light"] == {
+            "blur_radius": 200, "saturation": 8.0,
+            "contrast": 1.0, "tint_opacity": 100,
+        }
+        assert FIXED_MICA_PARAMS["dark"] == {
+            "blur_radius": 200, "saturation": 2.0,
+            "contrast": 1.0, "tint_opacity": 80,
+        }
+
+    def test_fixed_params_follow_theme(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """fixed_mica_params 按当前主题返回对应定值（返回副本）。"""
+        import freeassetfilter.ui.main_window as mw_mod
+
+        monkeypatch.setattr(mw_mod.tm, "is_dark_theme", lambda: False)
+        assert mw_mod.fixed_mica_params() == FIXED_MICA_PARAMS["light"]
+        monkeypatch.setattr(mw_mod.tm, "is_dark_theme", lambda: True)
+        dark = mw_mod.fixed_mica_params()
+        assert dark == FIXED_MICA_PARAMS["dark"]
+        # 返回副本：修改结果不影响常量
+        dark["saturation"] = 0.0
+        assert FIXED_MICA_PARAMS["dark"]["saturation"] == 2.0
+
+    def test_load_mica_settings_returns_fixed_values(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """_load_mica_settings 返回主题定值，不再读取设置文件。"""
+        import freeassetfilter.ui.main_window as mw_mod
+
+        def _boom(*_a: Any, **_k: Any) -> None:
+            raise AssertionError("参数固定后不得读取 SettingsManagerV2")
+
+        monkeypatch.setattr(
+            "freeassetfilter.core.managers.settings_manager_v2."
+            "SettingsManagerV2.load",
+            _boom,
+        )
+        monkeypatch.setattr(mw_mod.tm, "is_dark_theme", lambda: True)
+        assert MainWindow._load_mica_settings() == FIXED_MICA_PARAMS["dark"]
+        monkeypatch.setattr(mw_mod.tm, "is_dark_theme", lambda: False)
+        assert MainWindow._load_mica_settings() == FIXED_MICA_PARAMS["light"]
+
+    def test_main_window_consumes_fixed_params(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """MainWindow 构造消费主题定值（参数字段与固定值一致）。
+
+        本文件的 autouse 夹具把 ``_mica_background`` 替换为
+        ``_StubMicaBackground``（无 ``_mica`` 属性），因此只断言
+        MainWindow 侧消费结果，不触达真实 MicaMaterial。
+        """
+        import freeassetfilter.ui.main_window as mw_mod
+
+        monkeypatch.setattr(
+            MainWindow, "_load_background_settings",
+            staticmethod(lambda: {"mode": "mica", "image": ""}),
+        )
+        monkeypatch.setattr(mw_mod.tm, "is_dark_theme", lambda: True)
+        window = MainWindow()
+        expected = FIXED_MICA_PARAMS["dark"]
+        assert window._blur_radius == expected["blur_radius"]
+        assert window._saturation == expected["saturation"]
+        assert window._contrast == expected["contrast"]
+        assert window._tint_opacity == expected["tint_opacity"]
+        window.deleteLater()
+        qapp.processEvents()
+
+
 class TestMicaBackgroundWidgetCpu:
     """MicaBackgroundWidgetCpu：构造/绘制/交互/主题同步。"""
 
@@ -450,6 +541,42 @@ class TestMicaBackgroundWidgetCpu:
 
         bg._mica.dispose()
         bg.deleteLater()
+
+    def test_sync_theme_single_rebake_with_folded_params(
+        self, qapp: QApplication, monkeypatch
+    ) -> None:
+        """主题切换：固定参数折入 set_theme，单次重烘收敛（无双烘链）。
+
+        旧链路 sync_theme = set_theme（R1 起烘）+ apply_mica_parameters
+        （R2 作废重烘）= 两次调度；现改为参数在 key 计算前折入 set_theme，
+        仅一次 ``_maybe_rebake``。本例先把材质参数拨到「另一主题」的值，
+        模拟真实切换时参数必然变化的场景。
+        """
+        bg = MicaBackgroundWidgetCpu()
+        material = bg._mica
+        assert material is not None
+        # 模拟「当前材质还是另一主题的参数」：拨一个必然不同的饱和度。
+        material._params = material._params.replace(saturation=99.0)
+        rebake_calls: list = []
+        monkeypatch.setattr(
+            material, "_maybe_rebake",
+            lambda force=False: rebake_calls.append(force),
+        )
+
+        bg.sync_theme()
+
+        fixed = fixed_mica_params()
+        assert material._params.saturation == pytest.approx(fixed["saturation"])
+        assert material._params.blur_radius == pytest.approx(fixed["blur_radius"])
+        assert material._params.contrast == pytest.approx(fixed["contrast"])
+        assert material._overlay_opacity == pytest.approx(
+            fixed["tint_opacity"] / 100.0
+        )
+        # 主题 + 参数单次收敛：仅 set_theme 内的一次调度（force=False）。
+        assert rebake_calls == [False]
+
+        bg._mica.dispose()
+        bg.deleteLater()
         qapp.processEvents()
 
 
@@ -518,6 +645,82 @@ class TestSettingsWindow:
         assert win.eventFilter(header, ev) is False
         win.deleteLater()
         qapp.processEvents()
+
+
+class TestContentThemeTransition:
+    """_on_theme_toggle 的内容层过渡（ContentTransitionOverlay 集成）。
+
+    恢复整窗遮罩移除后丢失的「组件渐变过渡」：切前抓内容子树快照，
+    切后旧外观淡出。Mica 背景过渡（材质级交叉淡入）不在本测试范围。
+    """
+
+    def _make_window(self, monkeypatch: pytest.MonkeyPatch) -> MainWindow:
+        """构建可测试的主题切换窗口（隔离持久化与 Mica 广播路径）。
+
+        Args:
+            monkeypatch: pytest monkeypatch 夹具。
+
+        Returns:
+            MainWindow: 补丁就绪的主窗口实例（未 show）。
+        """
+        window = MainWindow()
+        # 未显示窗口无过渡（isVisible 守卫）——补丁为 True 模拟在屏
+        if window._content is not None:
+            monkeypatch.setattr(window._content, "isVisible", lambda: True)
+        # _StubMicaBackground.sync_theme 为类级 no-op（见替身 docstring），
+        # theme_changed 广播路径无需额外补丁。
+        # 拦截持久化：SettingsManagerV2.save 默认写真实 data/settings_v2.json
+        monkeypatch.setattr(
+            "freeassetfilter.core.managers.settings_manager_v2.SettingsManagerV2.save",
+            lambda self: None,
+        )
+        return window
+
+    def _restore_theme(self, initial_dark: bool) -> None:
+        """恢复全局主题状态（ThemeManager 不在 reset_singletons 清单）。"""
+        while tm.is_dark_theme() is not initial_dark:
+            tm.toggle_theme()
+
+    def test_toggle_starts_content_transition(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """主题切换：内容过渡遮罩创建并显示，主题真实翻转。"""
+        initial_dark = tm.is_dark_theme()
+        window = self._make_window(monkeypatch)
+        try:
+            window._on_theme_toggle()
+            overlay = window._content_theme_overlay
+            assert overlay is not None
+            assert overlay.parent() is window._content
+            # 父级未 show：isVisible 恒 False，断言相对父级的可见性
+            assert overlay.isVisibleTo(window._content)
+            assert tm.is_dark_theme() is (not initial_dark)
+            overlay.finish_now()
+            assert not overlay.isVisibleTo(window._content)
+        finally:
+            self._restore_theme(initial_dark)
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_toggle_dedups_previous_overlay(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """快速连续切换：旧遮罩立即结束并被替换，不叠加多层遮罩。"""
+        initial_dark = tm.is_dark_theme()
+        window = self._make_window(monkeypatch)
+        try:
+            window._on_theme_toggle()
+            first = window._content_theme_overlay
+            assert first is not None
+            window._on_theme_toggle()
+            second = window._content_theme_overlay
+            assert second is not None
+            assert second is not first
+            assert second.isVisibleTo(window._content)
+        finally:
+            self._restore_theme(initial_dark)
+            window.deleteLater()
+            qapp.processEvents()
 
 
 class TestModuleEntryPoint:

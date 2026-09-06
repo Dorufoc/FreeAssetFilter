@@ -93,6 +93,12 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QApplication, QWidget
 
 from . import winapi
+from .compositor import (
+    PRESENT_DEFER,
+    PRESENT_NOW,
+    PRESENT_SKIP,
+    ViewportCompositor,
+)
 from .config import (
     BAKE_LONG_MAX,
     BAKE_MAX_RETRIES,
@@ -105,6 +111,7 @@ from .config import (
     SETTLE_INTERVAL_MS,
     SIGMA_MAX,
     SIGMA_MIN,
+    XFADE_DURATION_MS,
 )
 from .drag import (
     LAYER_DISPLAY_LONG_MAX,
@@ -120,12 +127,27 @@ from .source import WallpaperProvider
 
 _LOG = logging.getLogger(__name__)
 
-#: 静态场渲染到显示分辨率时的长边上限（像素）。足够高以在 2K 屏上
-#: 获得 1px 颗粒的抖动（色带被彻底打散），又给 4K 屏等极端尺寸封了内存顶。
-DISPLAY_LONG_CAP: int = 2048
+#: 静态场（无层兜底路径）渲染到显示分辨率时的长边上限（像素）。与视口层
+#: 同理，必须以 1:1 窗口分辨率渲染：抖动图案锚定屏幕坐标、被 1:1 blit 原样
+#: 保留，双线性重采样才不会把抖动抹平、在渐变区重现色彩断层（banding）。8192
+#: 覆盖至单 4K / 单 5K / 双 4K 窗口的严格 1:1；静态场仅在层未就绪的启动 / 降级
+#: 期出现，渲染一次的成本可被接受。
+DISPLAY_LONG_CAP: int = 8192
 
 #: 混合预合成使用的默认纯色底（黑）。绘制端不再二次混合，见 render_display。
 _DEFAULT_SURFACE_RGB: Tuple[int, int, int] = (0, 0, 0)
+
+#: 原生 DWM 云母模式下铺在客户区的纯黑（扩展帧约定：被涂黑的区域由 DWM 以
+#: 系统背景即原生云母代替呈现）。与主题无关恒为纯黑 —— 深浅色观感由
+#: ``DWMWA_USE_IMMERSIVE_DARK_MODE`` 控制，见 :func:`ui.mica.winapi.dwm_use_dark_mode`。
+_NATIVE_BACKDROP_COLOR = QColor(0, 0, 0)
+
+#: 无 Mica 内容态（失焦暂停 / 无产物兜底 / 淡入淡出底色）的背景填充色：当前
+#: 主题模式的 G1 基色。G1 是项目主题灰阶最低层级（``gray.g1`` / ``gray_light.g1``，
+#: 见 ``ui/theme/colors.json``，与 ``ThemeManager.surface`` 一致）——失焦暂停期
+#: 自研层已淡出，客户区以主题表面色兜底，而非纯黑/纯白。
+_G1_FILL_DARK = QColor.fromRgb(*G1_DARK)
+_G1_FILL_LIGHT = QColor.fromRgb(*G1_LIGHT)
 
 # ---------------------------------------------------------------------------
 # 拖动期快速路径
@@ -144,6 +166,9 @@ SETTLE_FADE_ENV: str = "FAF_MICA_SETTLE_FADE_MS"
 _SETTLE_FADE_DEFAULT_MS: int = 120
 #: settle 淡化逐帧节拍（毫秒）。
 _FADE_TICK_MS: int = 16
+
+#: 已交付层缓存容量（深/浅各一块，往返切换零烘焙；QPixmap 隐式共享，只多占一块层内存）。
+_LAYER_CACHE_MAX: int = 2
 
 
 def _settle_fade_ms_from_env() -> int:
@@ -285,7 +310,7 @@ def _is_dark_color(color: QColor) -> bool:
 
 
 class _BakeWorker(QObject):
-    """后台层烘焙任务：在独立线程里烘一块覆盖当前监视器的"视口层"。
+    """后台层烘焙任务：在独立线程里烘一块覆盖整块虚拟桌面的"视口层"。
 
     只消费 numpy / COM（无 Qt 控件访问），结果以信号把
     ``(display_image, layer_info, layer_key, gen)`` 回传主线程：
@@ -293,8 +318,10 @@ class _BakeWorker(QObject):
     主线程只做 QImage→QPixmap 转换。``layer_info`` 为
     :class:`~ui.mica.drag.ViewportLayer`（region / width / height / win_size）。
 
-    层覆盖整块监视器，因此窗口在监视器内平移**不**触发重烘焙 —— 逐帧只需从层里
-    按窗口位置取子矩形（见后续绘制细化任务）。本 worker 负责把层烘焙到位。
+    层覆盖整块虚拟桌面（所有监视器拼接），因此窗口在桌面内任意平移**不**触发
+    重烘焙 —— 逐帧只需从层里按窗口位置取子矩形（见 :meth:`MicaMaterial.paint`）。
+    本 worker 负责把层烘焙到位（1:1 屏幕分辨率，抖动锚定绝对屏幕坐标，杜绝渐变
+    区色彩断层）。
     """
 
     #: 参数为 ``(display_image, layer_info, layer_key, gen)``。
@@ -307,7 +334,7 @@ class _BakeWorker(QObject):
         window_rect: Tuple[int, int, int, int],
         params,  # MicaParams（不可变 dataclass，跨线程只读安全）
         dark: bool,
-        monitor_rect: Tuple[int, int, int, int],
+        screen_rect: Tuple[int, int, int, int],
         layer_display_long: int,
         overlay: float,
         surface_rgb: Tuple[int, int, int],
@@ -319,7 +346,7 @@ class _BakeWorker(QObject):
         self._window_rect = window_rect
         self._params = params
         self._dark = dark
-        self._monitor_rect = monitor_rect
+        self._screen_rect = screen_rect
         self._layer_display_long = layer_display_long
         self._overlay = overlay
         self._surface_rgb = surface_rgb
@@ -329,19 +356,20 @@ class _BakeWorker(QObject):
     def run(self) -> None:
         """执行一次层烘焙并渲染到显示分辨率；异常按失败上报，绝不抛出到线程之外。
 
-        步骤：由窗口矩形 + 监视器矩形算层区域 → 由监视器 + 窗口尺寸 + σ 算层网格
+        步骤：以整块虚拟桌面矩形为层区域 → 由虚拟矩形 + 窗口尺寸 + σ 算层网格
         （含 σ 守恒校正）→ 以层区域为 ``window_rect`` 烘焙（显式 ``grid_size``）
-        → 渲染到显示分辨率（long = 层区域长边 ≤ ``LAYER_DISPLAY_LONG_MAX``）。
+        → 渲染到显示分辨率（long = 层区域长边 ≤ ``LAYER_DISPLAY_LONG_MAX``，
+        常见配置下 == 层区域长边 ⇒ 1:1 屏幕分辨率，抖动不被重采样抹平）。
         """
         try:
             source = self._provider.acquire()
             if source.pixels.size == 0:
                 self.failed.emit()
                 return
-            region = layer_region_for(self._window_rect, self._monitor_rect)
+            region = layer_region_for(self._window_rect, self._screen_rect)
             sigma = self._params.to_engine(self._dark).sigma
             grid, sigma_eff = layer_grid(
-                self._monitor_rect, self._window_rect[2], self._window_rect[3], sigma
+                self._screen_rect, self._window_rect[2], self._window_rect[3], sigma
             )
             # 网格被钳制时，σ 按密度比例回缩，保持物理模糊半径不变。
             bake_params = _params_with_sigma(self._params, self._dark, sigma_eff)
@@ -353,7 +381,11 @@ class _BakeWorker(QObject):
                 self.failed.emit()
                 return
             display = render_display(
-                field, self._layer_display_long, self._overlay, self._surface_rgb
+                field,
+                self._layer_display_long,
+                self._overlay,
+                self._surface_rgb,
+                origin=(int(region[0]), int(region[1])),
             )
             layer_info = ViewportLayer(
                 region=region,
@@ -483,17 +515,27 @@ class MicaMaterial(QObject):
         # 层烘焙一次覆盖整块监视器；窗口在监视器内平移无需重烘焙，只逐帧取样
         # （绘制期子矩形取样是后续任务，本模块只需把层烘焙到位并保存）。
         self._disposed = False
-        #: 层几何：region（虚拟桌面覆盖范围）、width/height（层实际渲染像素）、win_size。
-        self._layer: Optional[ViewportLayer] = None
-        #: 层在显示分辨率上的 QPixmap（worker 已渲染好，主线程只做转换）。
-        self._layer_pixmap: Optional[QPixmap] = None
-        #: 当前层的有效性判据 ``(params, dark, source_signature, region, layer_display_long)``；
+        #: 自研合成器：整块虚拟桌面层 + 窗口视口取样 + 自适应呈现调度。
+        #: 层的像素与几何全部由它持有（见 :mod:`ui.mica.compositor`）；
+        #: ``_layer`` / ``_layer_pixmap`` 是它的只读视图（property 委托），
+        #: 保持旧字段名的读写契约。
+        self._compositor = ViewportCompositor()
+        #: 实验性「原生 DWM 云母」模式：自研层停用，绘制端只铺纯黑让 DWM 呈现
+        #: 系统背景（见 :meth:`set_native_backdrop`）。
+        self._native_backdrop = False
+        #: 层有效性判据 ``(params, dark, source_signature, region, layer_display_long)``；
         #: 主题 / 参数 / 壁纸 / 监视器任一变化 ⇒ key 变化 ⇒ 重烘焙一层。
-        self._layer_key: Optional[Tuple[object, ...]] = None
+        self._layer_key = None
         #: 层代际单调递增计数器：每次请求新层烘焙时自增；主线程槽据此丢弃过期结果。
-        self._layer_gen: int = 0
+        self._layer_gen = 0
         #: 当前监视器的层显示参考长边（像素），随 refresh_async 更新。
-        self._layer_display_long: int = 0
+        self._layer_display_long = 0
+        #: 交互期被节流推迟的呈现（补一次，保证最终位置一定被刷新）。
+        self._defer_timer = QTimer(self._widget)
+        self._defer_timer.setSingleShot(True)
+        self._defer_timer.timeout.connect(self._on_defer_present)
+        #: 绘制耗时采样（供合成器自适应节流；只测 blit，不含事件派发）。
+        self._paint_clock = QElapsedTimer()
 
         # 淡入淡出
         self._fade_alpha = 1.0
@@ -505,6 +547,35 @@ class MicaMaterial(QObject):
         self._fade_timer.timeout.connect(self._on_fade_tick)
         self._active = True
         self._paused = False
+
+        # 交叉过渡（新层交付时的旧态 → 新态渐隐渐现，见 _start_xfade）：
+        # `_xfade_backdrop` 是交付前屏幕背景外观的窗口尺寸快照 —— 常规切换时
+        # 即旧层取样；快速连切时为「旧底图 + 在淡入层 × 进度」的混合态，保证
+        # 过渡始终从屏幕现状连续出发。过渡结束即释放快照。
+        self._xfade_active = False
+        self._xfade_backdrop: Optional[QPixmap] = None
+        #: 已交付层缓存：完整缓存键 -> (ViewportLayer, QPixmap)，往返切换即时应用；
+        #: speculative 预烘结果也只进这里（见 prebake_theme_variant）。
+        self._layer_cache: dict = {}
+        #: 在途 speculative 烘焙的完整缓存键（单飞；交付时路由进缓存，不提交为当前层）。
+        self._speculative_key = None
+        #: 在途 speculative 烘焙的 (overlay, surface_rgb)（交付组缓存键用）。
+        self._speculative_extra = None
+        #: 在途 speculative 烘焙的线程对象（交付路由/抢占时定向回收，不碰真实线程）。
+        self._speculative_thread = None
+        #: 在途 worker 是否为 speculative（失败/超时不计入重试、不触发续接）。
+        self._worker_speculative = False
+        #: 静默回收标记（speculative 失败/超时/被抢占：只删对象，不重试不续接）。
+        self._silent_cleanup = False
+        #: 翻转瞬间预起钟标记（见 begin_theme_transition）：为 True 时，下一次
+        #: ``_on_bake_done`` 交付只换靶、不重启时钟，使背景与控件同一起止窗口；
+        #: 交付时消费（置 False），超时自然结束时亦复位。无预起钟的连续交付
+        #: 仍走连切重抓（快照为当前混合态，见 _capture_visual_state）。
+        self._xfade_prestarted = False
+        self._xfade_clock = QElapsedTimer()
+        self._xfade_timer = QTimer(self._widget)
+        self._xfade_timer.setInterval(_FADE_TICK_MS)
+        self._xfade_timer.timeout.connect(self._on_xfade_tick)
 
         # overlay_opacity 现在会影响烘焙产物（混合预合成在 worker 完成），
         # 因此滑块连拖用防抖合并，静置 250ms 后再重建。
@@ -528,6 +599,28 @@ class MicaMaterial(QObject):
             self.refresh()
 
     # ------------------------------------------------------------------
+    # 层状态视图（property 委托到合成器，保持旧字段读写契约）
+    # ------------------------------------------------------------------
+
+    @property
+    def _layer(self) -> Optional[ViewportLayer]:
+        """当前视口层几何（由合成器持有）。"""
+        return self._compositor.layer
+
+    @_layer.setter
+    def _layer(self, value: Optional[ViewportLayer]) -> None:
+        self._compositor.set_geometry(value)
+
+    @property
+    def _layer_pixmap(self) -> Optional[QPixmap]:
+        """当前视口层像素（由合成器持有）。"""
+        return self._compositor.pixmap
+
+    @_layer_pixmap.setter
+    def _layer_pixmap(self, value: Optional[QPixmap]) -> None:
+        self._compositor.set_pixels(value)
+
+    # ------------------------------------------------------------------
     # 公开 API
     # ------------------------------------------------------------------
 
@@ -536,6 +629,9 @@ class MicaMaterial(QObject):
 
         若已有后台烘焙在途则直接返回（由 worker 交付结果），避免重复烘焙。
         """
+        if self._native_backdrop or self._disposed:
+            # 原生 DWM 云母模式下自研层停用：不烘焙、不改状态。
+            return
         if self._worker_thread is not None:
             return
         field = self._bake_sync()
@@ -557,13 +653,23 @@ class MicaMaterial(QObject):
         并提交时自增 ``_layer_gen`` —— worker 结果携带同一 key/gen，主线程槽
         若发现 key/gen 已不匹配（一次更新的请求已提交）则丢弃过期结果。
         """
+        if self._native_backdrop or self._disposed:
+            # 原生 DWM 云母模式下自研层停用：绝不起后台线程（零渲染开销）。
+            return
+        if not self._widget.isVisible():
+            # 显示前几何守卫：窗口尚未显示时 ``_window_rect_tuple()`` 退化为
+            # Qt 逻辑几何（布局激活期子控件 resizeEvent 触发的请求会以退化
+            # 矩形起烘，产出网格密度退化 / 纵横比失真的层）。挂起重烘标志，
+            # 由 showEvent 后的首次异步刷新以真实几何起烘；若起烘时已有
+            # worker 在途，交付后由回收逻辑按本标志续接。
+            self._rebuild_pending = True
+            return
         if self._worker_thread is not None:
             return
         if self._refresh_retries > BAKE_MAX_RETRIES:
             return
         win = self._window_rect_tuple()
-        monitor = self._monitor_rect_for(win)
-        region = layer_region_for(win, monitor)
+        region = self._virtual_rect()
         layer_display_long = _layer_display_long(region)
         layer_key = self._layer_key_for(region, layer_display_long)
         self._layer_display_long = layer_display_long
@@ -575,7 +681,7 @@ class MicaMaterial(QObject):
             win,
             self._params,
             self._dark,
-            monitor,
+            region,
             layer_display_long,
             self._overlay_opacity,
             self._surface_rgb(),
@@ -590,6 +696,20 @@ class MicaMaterial(QObject):
         self._worker_thread.started.connect(self._worker.run)
         self._watchdog.start(BAKE_WATCHDOG_MS)
         self._worker_thread.start()
+
+    def _background_fill_color(self) -> QColor:
+        """无 Mica 内容态（失焦暂停 / 无产物兜底 / 淡入淡出底色）的背景填充色。
+
+        返回当前主题模式的 G1 基色（``config.G1_DARK`` / ``config.G1_LIGHT``，
+        与 ``ThemeManager.surface`` 即 ``gray.g1`` / ``gray_light.g1`` 一致），
+        使失焦暂停期的背景与主题表面色系统一致，而非纯黑/纯白。深浅模式跟随
+        :attr:`_dark`（由基底色感知亮度推导，随 :meth:`set_theme` 更新）。
+
+        注意：本填充色只用于**绘制期兜底**；烘焙混合基色（``_surface_rgb``，
+        进入 ``render_display`` 的 overlay 预合成）与宿主 palette 仍使用
+        ``surface_color``，活跃 Mica 外观不受影响。
+        """
+        return _G1_FILL_DARK if self._dark else _G1_FILL_LIGHT
 
     def paint(
         self,
@@ -619,39 +739,32 @@ class MicaMaterial(QObject):
             painter = QPainter(widget)
 
         rect = widget.rect()
+        if self._native_backdrop:
+            # 原生 DWM 云母：客户区铺纯黑（扩展帧约定 —— 帧扩展区域内被涂成
+            # 纯黑的部分由 DWM 以系统背景即原生云母代替呈现）。自研渲染全免。
+            painter.fillRect(rect, _NATIVE_BACKDROP_COLOR)
+            return
         if self._paused:
-            painter.fillRect(rect, self._surface_color)
+            # 失焦暂停：自研层已淡出，以当前主题 G1 兜底（非纯黑/纯白）。
+            painter.fillRect(rect, self._background_fill_color())
             return
 
-        # 实色兜底层 + 线性淡入：透明度 = 淡入，实现 surface→Mica 过渡
-        # （混合已在 worker 端预合成进 pixmap，绘制端只承担淡入淡出）。
-        painter.fillRect(rect, self._surface_color)
-
-        if self._hide_until_new_layer:
-            # 跨监视器松手后等待新层：只画纯色底（不显示旧监视器钳制伪色），
-            # 新层到达后由 _on_bake_done 淡入揭示。
-            return
-        if self._settle_fade_active():
-            # 拖动快速路径的松手重同步：旧裁剪（拖动期间所见）→ 新裁剪淡化。
-            self._draw_settle_fade(painter, rect)
-            return
+        # 整块虚拟桌面层覆盖全局、与窗口尺寸无关：背景在交互期已由实时 blit
+        # 严格跟随光标，这里始终直接绘制层子矩形（无跨屏等待 / 无松手淡化）。
         self._draw_layer(painter, rect)
 
     def paint_gpu(self, painter: QPainter) -> None:
         """在 GPU 画笔画笔（``QOpenGLWidget``）上绘制 Mica 背景。
 
-        与 :meth:`paint` 策略一致（含拖动快速路径的隐藏 / settle 淡化分支），
-        只是画笔来自 ``paintGL``。
+        与 :meth:`paint` 策略一致（整块虚拟桌面层路径），只是画笔来自 ``paintGL``。
         """
         rect = self._widget.rect()
+        if self._native_backdrop:
+            painter.fillRect(rect, _NATIVE_BACKDROP_COLOR)
+            return
         if self._paused:
-            painter.fillRect(rect, self._surface_color)
-            return
-        painter.fillRect(rect, self._surface_color)
-        if self._hide_until_new_layer:
-            return
-        if self._settle_fade_active():
-            self._draw_settle_fade(painter, rect)
+            # 失焦暂停：自研层已淡出，以当前主题 G1 兜底（非纯黑/纯白）。
+            painter.fillRect(rect, self._background_fill_color())
             return
         self._draw_layer(painter, rect)
 
@@ -693,21 +806,51 @@ class MicaMaterial(QObject):
 
         绘制结果**全不透明**（混合已在 worker 端预合成进 pixmap，见
         :func:`ui.mica.engine.render_display`），避免第二次 8-bit 量化
-        （banding 根因）。绘制成功后记录 :attr:`_last_painted_win` —— 它代表
-        “屏幕上可见背景的采样位置”，拖动快速路径松手时据此做 settle 淡化。
+        （banding 根因）。成功后记录 :attr:`_last_painted_win` —— 它代表
+        "屏幕上可见背景的采样位置"，拖动快速路径松手时据此做 settle 淡化。
+
+        性能要点：
+
+        * **条件化实色底**：层取样可铺满且完全不透明（``fade_alpha>=0.999``）
+          时跳过整窗 ``fillRect``（稳态省一次全窗内存写，绘制帧成本近乎减半）；
+          仅淡入期 / 静态场兜底 / 无任何产物时才先铺（或只铺）实色底。
+        * **呈现记账**：本次 blit 的实测耗时喂给合成器的成本 EMA（自适应呈现
+          间隔的输入），呈现锚点同步更新（后续 ``advise`` 的跳过 / 节流依据）。
 
         CPU（:meth:`paint`）与 GPU（:meth:`paint_gpu`）共用本方法。
 
         Args:
-            painter: 画笔（已叠好实色底）。
+            painter: 画笔。
             rect: 目标矩形（= 控件 rect）。
         """
         pixmap, src, smooth = self._layer_blit()
         if pixmap is None or pixmap.isNull():
+            # 无任何产物（层与静态场均缺失）：只画实色兜底层（当前主题 G1）。
+            painter.fillRect(rect, self._background_fill_color())
             return
 
+        # 交叉过渡期（新层交付后）：旧态快照铺底（拉伸覆盖控件矩形），新层按
+        # 进度淡入 —— 两层交叉融合，替代生硬直替。快照使快速连切时过渡始终
+        # 从屏幕现状连续出发（捕获逻辑见 ``_on_bake_done`` / ``_capture_visual_state``）。
+        xfade_t = self._xfade_progress() if self._xfade_active else 1.0
+        backdrop = self._xfade_backdrop
+        xfade_covered = (
+            xfade_t < 1.0 and backdrop is not None and not backdrop.isNull()
+        )
+        if xfade_covered:
+            painter.setOpacity(max(0.0, min(1.0, self._fade_alpha)))
+            painter.drawPixmap(rect, backdrop)
+
+        # 不透明且层取样可用 ⇒ 绘制必然铺满 ⇒ 省掉整窗实色填充；
+        # 淡入期 / 静态场兜底需要底色参与过渡收敛（先铺后绘）：底色取当前
+        # 主题 G1 —— 失焦淡出直接收敛到暂停态同款填充，无跳变。
+        # （交叉过渡期快照已铺满整个矩形，实色底可省。）
+        if (src is None or self._fade_alpha * xfade_t < 0.999) and not xfade_covered:
+            painter.fillRect(rect, self._background_fill_color())
+
+        self._paint_clock.start()
         painter.setRenderHint(QPainter.SmoothPixmapTransform, smooth)
-        painter.setOpacity(self._fade_alpha)
+        painter.setOpacity(max(0.0, min(1.0, self._fade_alpha * xfade_t)))
         if src is None:
             # 回退到整窗静态场（已是窗口尺寸，1:1 平铺）。
             painter.drawPixmap(rect, pixmap)
@@ -718,9 +861,15 @@ class MicaMaterial(QObject):
             # 整型源子矩形：真 1:1 blit（无重采样）。
             painter.drawPixmap(QRect(rect), pixmap, QRect(*src))
         painter.setOpacity(1.0)
+        cost_ms = max(0.0, self._paint_clock.nsecsElapsed() / 1e6)
 
         if self._layer is not None:
-            self._last_painted_win = self._window_rect_tuple()
+            win = self._window_rect_tuple()
+            self._last_painted_win = win
+            if src is not None and self._compositor.ready:
+                # 记录一次真实呈现：锚点（后续 advise 的 SKIP/DEFER 判据）+
+                # 绘制成本 EMA（自适应目标间隔，见 ViewportCompositor.interval_ms）。
+                self._compositor.note_presented(win, cost_ms)
 
     def _settle_fade_active(self) -> bool:
         """settle 淡化是否在途（旧裁剪 → 新裁剪）。"""
@@ -758,13 +907,41 @@ class MicaMaterial(QObject):
         painter.drawPixmap(QRectF(rect), pixmap, QRectF(*new_src))
         painter.setOpacity(1.0)
 
-    def set_theme(self, surface_color: Union[str, QColor, None], luminosity: float) -> None:
+    def set_theme(
+        self,
+        surface_color: Union[str, QColor, None],
+        luminosity: float,
+        *,
+        blur_radius: Optional[float] = None,
+        saturation: Optional[float] = None,
+        contrast: Optional[float] = None,
+        overlay_opacity: Optional[float] = None,
+    ) -> None:
         """切换主题：更新实色层与深浅模式，并触发热重烘焙（G1 基色随主题变化）。
+
+        可选效果参数（``blur_radius`` / ``saturation`` / ``contrast`` /
+        ``overlay_opacity``）在 key 计算前折入 —— 主题与参数单次切换只起
+        **一次**烘焙（代替旧链路「set_theme 起烘 → 参数变更作废重烘」的
+        两次烘焙，等待期减半）。
 
         Args:
             surface_color: 新的实色层颜色。
             luminosity: 旧版亮度系数（仅保留签名兼容，新模型不消费）。
+            blur_radius: 色度低通强度（px）；``None`` 保持不变。
+            saturation: 色度增益倍率；``None`` 保持不变。
+            contrast: 色度上限倍率；``None`` 保持不变。
+            overlay_opacity: 色调场烘焙不透明度（0–1）；``None`` 保持不变。
         """
+        params = self._params
+        if blur_radius is not None:
+            params = params.replace(blur_radius=max(0.0, float(blur_radius)))
+        if saturation is not None:
+            params = params.replace(saturation=max(0.0, float(saturation)))
+        if contrast is not None:
+            params = params.replace(contrast=max(0.0, float(contrast)))
+        self._params = params
+        if overlay_opacity is not None:
+            self._overlay_opacity = max(0.0, min(1.0, float(overlay_opacity)))
         self._surface_color = _parse_color(surface_color, self._surface_color)
         self._luminosity = max(0.0, min(1.0, float(luminosity)))
         self._dark = _is_dark_color(self._surface_color)
@@ -773,6 +950,65 @@ class MicaMaterial(QObject):
         # 则跳过 —— 浅色切换同深浅 / 仅改 luminosity 时零重烘焙。
         self._maybe_rebake(force=False)
         self._widget.update()
+
+    def begin_theme_transition(self) -> None:
+        """主题翻转瞬间预启动交叉过渡（与控件过渡同 280ms 窗口对齐）。
+
+        在 ``set_theme`` 提交后台重烘焙**之前**调用：以后台交付前的旧层外观
+        为底图立即起钟；新层经 ``_on_bake_done`` 交付时只换靶、不重启时钟，
+        混合在原窗口内揭示新层。控件过渡（内容遮罩 280ms）与背景过渡同起
+        同止，不再因烘焙等待整体延后。
+
+        已有过渡进行中（快速连切）时保持原时钟，不重复抓拍。
+        """
+        if self._native_backdrop:
+            return
+        if self._xfade_active:
+            return
+        if self._hide_until_new_layer:
+            return
+        if not (
+            self._has_shown
+            and self._active
+            and self._fade_alpha > 0.001
+        ):
+            return
+        try:
+            visible = self._widget.isVisible()
+        except Exception:  # noqa: BLE001 - 可见性查询失败则跳过过渡
+            return
+        if not visible:
+            return
+        try:
+            win = self._window_rect_tuple()
+        except Exception:  # noqa: BLE001 - 几何查询失败则跳过过渡
+            win = None
+        if win is None:
+            return
+        # 播种：被换下的旧层正是下次回切需要的目标，顺手入缓存（回切零烘焙）。
+        try:
+            if (
+                self._layer is not None
+                and self._layer_pixmap is not None
+                and not self._layer_pixmap.isNull()
+                and self._layer_key is not None
+            ):
+                self._store_layer_cache(
+                    self._layer_key,
+                    self._layer,
+                    self._layer_pixmap,
+                    self._overlay_opacity,
+                    self._surface_rgb(),
+                )
+        except Exception:  # noqa: BLE001 - 缓存播种失败不影响过渡本身
+            pass
+        try:
+            backdrop = self._capture_visual_state(win)
+        except Exception:  # noqa: BLE001 - 抓拍失败则退化为交付时过渡
+            backdrop = None
+        if backdrop is not None and not backdrop.isNull():
+            self._start_xfade(backdrop)
+            self._xfade_prestarted = True
 
     def set_effect_parameters(
         self,
@@ -830,73 +1066,105 @@ class MicaMaterial(QObject):
     def begin_interaction(self) -> None:
         """标记窗口拖拽 / 缩放开始或持续。
 
-        拖动期快速路径（默认）
-        ---------------------
-        系统 move 期间 DWM 只平移窗口位图，客户区无需任何重绘 —— 本窗口内的
-        一切自绘（含本层整窗重绘 + 逐事件 COM 探测）都会打破这一免费机制，且
-        成本随窗口面积增长（窗口越大越卡，见模块头）。因此在**层已就绪且窗口
-        尺寸未变**（纯移动）时：只重启 settle 计时器，**不重绘、不探测、不重烘**
-        （O(1)/事件，帧成本与窗口大小无关，≈ DWM 原生手感）。拖动中窗口内容
-        （含背景）整体由 DWM 平移 —— 背景短暂“贴窗”，松手后由
-        :meth:`_on_settle` 单次重绘 + settle 交叉淡化重同步到正确壁纸裁剪。
+        整块虚拟桌面层 + 实时 blit 快速路径
+        ---------------------------------
+        视口层覆盖整块虚拟桌面、与窗口尺寸无关，因此拖动（含跨监视器）与缩放
+        期间**无需任何重烘焙 / COM 探测**。每个 move / resize 事件只需做 O(1)
+        的 ``widget.update()`` —— 由 Qt 在随后的 ``paintEvent`` 里合成一次子矩形
+        blit（GPU 纹理拷贝，成本与窗口面积、帧率都无关）：窗口作为"窗户"从已
+        烘焙好的层里按当前屏幕位置取子矩形绘制，背景严格跟随光标，不再"贴窗"、
+        不再有松手跳变。这正是抹掉色彩断层的前提——层以 1:1 屏幕分辨率渲染，
+        抖动图案锚定绝对屏幕坐标，blit 时原样保留。
 
-        例外（保持可见正确性，仅低频发生）：
-
-        * 窗口中心首次离开当前层区域（跨监视器 / 越界）→ 该事件做一次
-          :meth:`_maybe_rebake`（在途守卫保证不叠加）；
-        * 缩放中 / 层未就绪 / 主题参数变化 → 走旧的重绘路径（缩放时 Qt 本就
-          整窗重排；启动期短暂，烘焙完成即进入快速路径）。
-
-        设 ``FAF_MICA_DRAG_LIVE=1``（见 :data:`DRAG_LIVE_ENV`）可恢复旧的
-        “逐事件重绘 + 探测”行为，用于对照回归。
+        层未就绪（启动首帧 / 降级）时才走旧路径：确保异步烘焙在途并重绘兜底
+        静态场，不阻塞交互。
         """
         self._interacting = True
-        win = self._window_rect_tuple()
-        # 上一次松手的 settle 淡化若仍在途（用户很快再次拖拽）：立即以单次重绘
-        # 收尾到“新裁剪”完整帧（只发生在每次手势的第一个事件，非逐帧开销），
-        # 再进入冻结 —— 避免画面停留在“旧/新裁剪中间态”被拖走。
-        had_fade = self._settle_fade_active()
-        self._stop_settle_fade()
-        if not self._drag_live and self._layer_is_drag_ready(win):
-            # 快速路径：纯移动，层就绪 —— 零重绘 / 零重烘。
-            if had_fade:
-                self._widget.update()
-            self._settle_timer.start()
-            if (
-                self._worker_thread is None
-                and self._window_left_layer_region(win, self._layer)
-                and self._refresh_retries <= BAKE_MAX_RETRIES
-            ):
-                # 跨监视器：仅在越出当前层区域、且没有在途烘焙时触发一次重烘焙
-                # （在途任务完成即会更新层区域，无需重复探测 / 提交）；连续失败
-                # 放弃后（_refresh_retries 超限）不再尝试，保持 O(1)。
-                self._maybe_rebake(force=True)
+        if self._native_backdrop:
+            # 原生 DWM 云母：窗口移动/缩放由 DWM 自行重绘系统背景，
+            # 客户区零参与（O(1)/事件，零自研渲染开销）。
             return
+        win = self._window_rect_tuple()
+        if self._layer_is_drag_ready(win):
+            # 快速路径：纯移动 / 缩放 → 呈现调度（O(1)/事件），
+            # 零重烘焙、零探测、零运动态判断。
+            self._stop_settle_fade()
+            decision = self._compositor.advise(win)
+            if decision == PRESENT_NOW:
+                # 首帧 / 位置跳变（最大化、吸附、还原、跨屏瞬移）/ 节流窗口已过
+                # → 立即呈现，零延迟刷新。
+                self._defer_timer.stop()
+                self._widget.update()
+            elif decision == PRESENT_DEFER:
+                # 节流窗口内：安排一次补绘，保证最终位置必然被刷新
+                # （绘制便宜时 interval=16ms ≈ 逐帧，无感知延迟）。
+                self._defer_timer.start(self._compositor.defer_delay_ms())
+            # PRESENT_SKIP：取样结果与上次呈现一致（亚像素抖动 / 原地微动）
+            # → 零重绘，连带成本为零。
+            return
+        # 层未就绪：确保异步烘焙在途，并立即重绘兜底静态场（不阻塞交互）。
+        self._maybe_rebake(force=False)
+        self._widget.update()
 
-        # 旧路径：resize / 层未就绪 / LIVE 开关 —— 逐事件重绘，重烘判断照旧。
-        monitor = self._monitor_rect_for(win)
-        region = layer_region_for(win, monitor)
-        layer_display_long = _layer_display_long(region)
-        if self._needs_layer_rebake(win, monitor, region, layer_display_long):
+    def _on_defer_present(self) -> None:
+        """补上被节流推迟的一次呈现（保证被 DEFER 掉的最终位置必然被刷新）。"""
+        if self._disposed or self._paused or self._native_backdrop:
+            return
+        self._widget.update()
+
+    def set_native_backdrop(self, enabled: bool) -> None:
+        """切换「原生 DWM 云母」模式（实验性开关的材质层一侧）。
+
+        开启：自研合成器停用（清空层、停掉全部烘焙 / 节流计时器），绘制端只在
+        客户区铺纯黑 —— 配合 ``DwmExtendFrameIntoClientArea(margins=-1)`` 的
+        扩展帧约定，被涂黑的客户区由 DWM 以系统背景（原生云母）代替呈现，
+        主线程自研渲染开销降为零。深浅色观感由 ``DWMWA_USE_IMMERSIVE_DARK_MODE``
+        对齐（见 :func:`ui.mica.winapi.dwm_use_dark_mode`）。
+
+        关闭：恢复自研层 —— 立即强制重烘焙一块视口层并重绘。
+
+        Args:
+            enabled: 是否启用原生 DWM 云母。
+        """
+        enabled = bool(enabled)
+        if enabled == self._native_backdrop:
+            return
+        self._native_backdrop = enabled
+        if enabled:
+            self._compositor.clear()
+            self._pixmap = None
+            self._paused = True
+            self._stop_fade()
+            self._finish_xfade()
+            self._settle_timer.stop()
+            self._defer_timer.stop()
+            self._opacity_timer.stop()
+            self._stop_settle_fade()
+        else:
+            self._paused = False
+            self._fade_alpha = 1.0
+            self._fade_to = 1.0
+            self._last_req = None
             self._maybe_rebake(force=True)
-        self._settle_timer.start()
         self._widget.update()
 
     def _layer_is_drag_ready(self, win: Tuple[int, int, int, int]) -> bool:
-        """拖动期快速路径是否可用：层就绪且窗口尺寸与层烘焙时一致（纯移动）。
+        """拖动期快速路径是否可用：视口层已就绪（覆盖整块虚拟桌面）。
+
+        整块虚拟桌面层与窗口尺寸无关，因此只需判断层与层 pixmap 是否已就绪，
+        不再校验窗口尺寸（resize 也走同一路径，绝不退化为重烘焙 / 逐事件重绘）。
 
         Args:
-            win: ``(x, y, w, h)`` 当前窗口矩形。
+            win: ``(x, y, w, h)`` 当前窗口矩形（仅接口兼容）。
 
         Returns:
-            可走快速路径则 ``True``。
+            层就绪则可走快速路径 ``True``。
         """
-        layer = self._layer
-        if layer is None:
+        if self._layer is None:
             return False
         if self._layer_pixmap is None or self._layer_pixmap.isNull():
             return False
-        return (int(win[2]), int(win[3])) == layer.win_size
+        return True
 
     def _window_left_layer_region(
         self, win: Tuple[int, int, int, int], layer: ViewportLayer
@@ -961,11 +1229,23 @@ class MicaMaterial(QObject):
         """使缓存失效：下次绘制前强制重烘焙。"""
         self._last_req = None
         self._pixmap = None
+        self._layer_cache.clear()
+        self._speculative_key = None
+        self._speculative_extra = None
+        self._speculative_thread = None
+        self._worker_speculative = False
         self._maybe_rebake(force=True)
 
     def dispose(self) -> None:
         """释放资源：阻止重试、移除焦点过滤器、回收在途线程。窗口关闭时调用。"""
         self._disposed = True
+        self._compositor.clear()
+        self._layer_cache.clear()
+        self._speculative_key = None
+        self._speculative_extra = None
+        self._speculative_thread = None
+        self._worker_speculative = False
+        self._silent_cleanup = False
         self._layer = None
         self._layer_pixmap = None
         self._pixmap = None
@@ -981,6 +1261,7 @@ class MicaMaterial(QObject):
         self._active = False
         self._paused = True
         self._stop_fade()
+        self._finish_xfade()
         self._settle_timer.stop()
         self._stop_settle_fade()
         self._settle_fade_timer.stop()
@@ -988,6 +1269,7 @@ class MicaMaterial(QObject):
         self._deactivate_timer.stop()
         self._watchdog.stop()
         self._opacity_timer.stop()
+        self._defer_timer.stop()
         if self._worker_thread is not None:
             thread = self._worker_thread
             worker = self._worker
@@ -1112,6 +1394,22 @@ class MicaMaterial(QObject):
         top_left = widget.mapToGlobal(widget.rect().topLeft())
         return (top_left.x(), top_left.y(), widget.width(), widget.height())
 
+    def _virtual_rect(self) -> Tuple[int, int, int, int]:
+        """当前进程的整块虚拟桌面矩形（所有监视器拼接，物理像素）。
+
+        视口层覆盖此矩形，因此层与窗口尺寸无关 —— 拖动（含跨监视器）期间
+        永不重烘焙，窗口只是"窗户"从已烘焙好的层里按当前屏幕位置取子矩形
+        blit。非 Windows / 探测失败时回退到 1920×1080 的默认虚拟矩形，保证
+        离线测试与无桌面环境下仍能正常烘焙与绘制。
+
+        Returns:
+            ``(x, y, w, h)`` 整块虚拟桌面矩形。
+        """
+        rect = winapi.virtual_screen_rect()
+        if rect[2] <= 0 or rect[3] <= 0:
+            return (0, 0, 1920, 1080)
+        return rect
+
     def _surface_rgb(self) -> Tuple[int, int, int]:
         """当前实色底的 ``(r, g, b)``，供 worker 混合预合成使用。
 
@@ -1137,28 +1435,73 @@ class MicaMaterial(QObject):
                 return None
 
     def _maybe_rebake(self, force: bool = False) -> None:
-        """按需触发热重烘焙（视口层）：仅当 ``layer_key`` 确有变化（参数 / 主题 /
-        壁纸 / 监视器区域 / 层显示长边）时才重烘焙一层。
+        """按需触发热重烘焙（整块虚拟桌面层）：仅当 ``layer_key`` 确有变化
+        （参数 / 主题 / 壁纸 / 层区域 / 层显示长边）时才重烘焙一层。
 
         Args:
             force: 强制重烘焙（忽略 key 判据）。
         """
         win = self._window_rect_tuple()
-        monitor = self._monitor_rect_for(win)
-        region = layer_region_for(win, monitor)
+        region = self._virtual_rect()
         layer_display_long = _layer_display_long(region)
         key = self._layer_key_for(region, layer_display_long)
+        try:
+            cached = self._lookup_layer_cache(
+                key, self._overlay_opacity, self._surface_rgb(), win
+            )
+        except Exception:  # noqa: BLE001 - 缓存查询失败则走正常烘焙
+            cached = None
+        if cached is not None:
+            # 命中：往返切换零烘焙即时应用（含过渡与呈现）。
+            self._apply_cached_layer(key, win, cached[0], cached[1])
+            return
         if not force and key == self._layer_key:
-            # key 未变化：层仍覆盖当前监视器，无需重烘焙（窗口在监视器内平移 /
-            # 主题参数未变，no-op）。
-            return
+            layer = self._layer
+            stale_geometry = layer is not None and tuple(
+                int(v) for v in layer.win_size
+            ) != (int(win[2]), int(win[3]))
+            if not stale_geometry:
+                # key 未变化且层几何与当前窗口一致：层仍覆盖整块虚拟桌面，
+                # 无需重烘焙（窗口在桌面内平移 / 缩放 / 跨监视器、主题参数
+                # 未变，no-op）。
+                return
+            # key 未变但层 win_size 过期（陈旧几何层，如退化矩形起烘的产物）：
+            # 继续走下方的重烘 / 挂起逻辑，按当前几何自愈。
         if self._worker_thread is not None:
-            # 在途烘焙：本次变化（主题 / 参数 / 壁纸 / 监视器）已使在途结果过期。
-            # 置 ``_layer_key`` 失效，令旧 key 的在途结果被陈旧性守卫丢弃（绝不
-            # 提交一份旧主题/旧区域的混合层），并交由回收逻辑按最新 key 续接请求。
-            self._layer_key = None
-            self._rebuild_pending = True
-            return
+            if self._worker_speculative:
+                # 真实请求抢占 speculative：同步终止并静默回收，随后直通真实烘焙。
+                self._worker_speculative = False
+                self._silent_cleanup = True
+                self._speculative_key = None
+                self._speculative_extra = None
+                self._speculative_thread = None
+                thread = self._worker_thread
+                worker = self._worker
+                self._worker_thread = None
+                self._worker = None
+                try:
+                    thread.quit()
+                    if not thread.wait(0) and not thread.isFinished():
+                        thread.terminate()
+                        thread.wait(3000)
+                except Exception:  # noqa: BLE001 - 线程回收失败则继续真实烘焙
+                    pass
+                try:
+                    if worker is not None:
+                        worker.deleteLater()
+                except Exception:
+                    pass
+                try:
+                    thread.deleteLater()
+                except Exception:
+                    pass
+            else:
+                # 在途烘焙：本次变化（主题 / 参数 / 壁纸 / 区域）已使在途结果过期。
+                # 置 ``_layer_key`` 失效，令旧 key 的在途结果被陈旧性守卫丢弃（绝不
+                # 提交一份旧主题/旧区域的混合层），并交由回收逻辑按最新 key 续接请求。
+                self._layer_key = None
+                self._rebuild_pending = True
+                return
         self.refresh_async()
 
     def _request_rebuild(self) -> None:
@@ -1168,42 +1511,15 @@ class MicaMaterial(QObject):
         self._maybe_rebake(force=True)
 
     def _on_settle(self) -> None:
-        """交互停止：把背景重同步到**最终窗口位置**的正确壁纸裁剪。
+        """交互停止回调（拖动 / 缩放结束）。
 
-        拖动快速路径（:meth:`begin_interaction`）在拖动中零重绘 —— 松手时屏幕
-        上仍是“贴窗”平移的最后帧（采样位置 = 拖动开始前最后一次真正绘制）。
-        这里按三种情况收敛：
-
-        * **同监视器**：:meth:`_start_settle_fade` —— 旧裁剪 → 新裁剪的短暂
-          交叉淡化，掩盖一次背景位移（可经 ``FAF_MICA_SETTLE_FADE_MS=0`` 关闭）；
-        * **已跨监视器**：置 :attr:`_hide_until_new_layer`（只画纯色底，不显示
-          旧监视器壁纸的钳制伪色），由重烘焙完成后的 :meth:`_on_bake_done`
-          淡入新层；新层彻底失败时由回收逻辑解除隐藏；
-        * **层未就绪 / 缩放中 / LIVE 开关**：沿用旧收敛 —— 只在必要时重烘焙
-          （期间画面已由逐事件重绘保证，无需在此补一次重绘）。
+        整块虚拟桌面层下，背景在交互期间已由实时 blit 严格跟随光标，松手时
+        屏幕上所见即正确壁纸裁剪，无需任何重烘焙 / 交叉淡化 / 跨屏等待。此处
+        仅复位交互态并补一次重绘（幂等），保持与旧接口一致。
         """
         self._interacting = False
-        win = self._window_rect_tuple()
-        if not self._drag_live and self._layer_is_drag_ready(win):
-            monitor = self._monitor_rect_for(win)
-            region = layer_region_for(win, monitor)
-            layer_display_long = _layer_display_long(region)
-            if self._needs_layer_rebake(win, monitor, region, layer_display_long):
-                self._hide_until_new_layer = True
-                self._stop_settle_fade()
-                self._maybe_rebake(force=False)
-                if self._worker_thread is None:
-                    # 无在途任务且重烘焙实际未启动（key 恰好一致的极端情形）：
-                    # 不会再有新层到达，立即解除隐藏，避免永久停在纯色底。
-                    self._hide_until_new_layer = False
-                self._widget.update()
-                return
-            # 同监视器：key 未变则 _maybe_rebake 为 no-op。
-            self._maybe_rebake(force=False)
-            self._start_settle_fade(win)
-            return
-        # 层未就绪 / 缩放中 / LIVE：沿用旧收敛（画面已由逐事件重绘保证）。
-        self._maybe_rebake(force=False)
+        self._stop_settle_fade()
+        self._widget.update()
 
     def _start_settle_fade(self, final_win: Tuple[int, int, int, int]) -> None:
         """启动松手背景重同步淡化（旧裁剪 → 新裁剪，约 120ms）。
@@ -1315,6 +1631,209 @@ class MicaMaterial(QObject):
             signature = ""
         return (self._params, self._dark, signature, region, int(layer_display_long))
 
+    # -- 层缓存与 speculative 预烘 ----------------------------------------
+
+    @staticmethod
+    def _cache_key_for(layer_key: object, overlay: object, surface_rgb: object) -> tuple:
+        """完整缓存键：layer_key + overlay + 实色（后两者不在 layer_key 内但影响产物）。"""
+        try:
+            key_tuple = tuple(layer_key)  # type: ignore[arg-type]
+        except TypeError:
+            key_tuple = (repr(layer_key),)
+        try:
+            overlay_part = round(float(overlay), 4)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            overlay_part = 0.0
+        try:
+            surface_part = tuple(int(v) for v in surface_rgb)  # type: ignore[union-attr]
+        except TypeError:
+            surface_part = (0, 0, 0)
+        return (key_tuple, overlay_part, surface_part)
+
+    def _store_layer_cache(
+        self,
+        layer_key: object,
+        layer_info: object,
+        pixmap: QPixmap,
+        overlay: object,
+        surface_rgb: object,
+    ) -> None:
+        """存一层到缓存（LRU，超容淘汰最旧；QPixmap 隐式共享，存的是引用）。"""
+        try:
+            key = self._cache_key_for(layer_key, overlay, surface_rgb)
+        except Exception:
+            return
+        self._layer_cache[key] = (layer_info, pixmap)
+        while len(self._layer_cache) > _LAYER_CACHE_MAX:
+            try:
+                del self._layer_cache[next(iter(self._layer_cache))]
+            except Exception:
+                break
+
+    def _lookup_layer_cache(
+        self,
+        layer_key: object,
+        overlay: object,
+        surface_rgb: object,
+        win: object,
+    ) -> Optional[tuple]:
+        """查缓存：命中且几何（win_size）与当前窗口一致才返回并 LRU 前移。"""
+        try:
+            key = self._cache_key_for(layer_key, overlay, surface_rgb)
+        except Exception:
+            return None
+        hit = self._layer_cache.get(key)
+        if hit is None:
+            return None
+        layer_info, pixmap = hit
+        try:
+            if pixmap is None or pixmap.isNull() or layer_info is None:
+                return None
+            cur_size = (int(win[2]), int(win[3]))  # type: ignore[index]
+            if tuple(int(v) for v in layer_info.win_size) != cur_size:
+                return None
+        except Exception:
+            return None
+        try:
+            self._layer_cache.move_to_end(key)
+        except Exception:
+            pass
+        return hit
+
+    def _apply_cached_layer(
+        self,
+        layer_key: object,
+        win: object,
+        layer_info: object,
+        pixmap: QPixmap,
+    ) -> None:
+        """命中缓存即时应用（零烘焙）：与 _on_bake_done 交付尾巴同语义（过渡+呈现）。"""
+        was_shown = self._has_shown
+        was_hidden = self._hide_until_new_layer
+        self._hide_until_new_layer = False
+        self._stop_settle_fade()
+        self._layer = layer_info
+        self._layer_pixmap = pixmap
+        self._layer_key = layer_key
+        self._has_shown = True
+        self._defer_timer.stop()
+        if self._xfade_prestarted:
+            self._xfade_prestarted = False
+        else:
+            backdrop = None
+            try:
+                if (
+                    was_shown
+                    and not was_hidden
+                    and self._active
+                    and self._fade_alpha > 0.001
+                    and self._widget.isVisible()
+                ):
+                    backdrop = self._capture_visual_state(win)  # type: ignore[arg-type]
+            except Exception:
+                backdrop = None
+            if backdrop is not None and not backdrop.isNull():
+                self._start_xfade(backdrop)
+        self._widget.update()
+        if self._active:
+            self._start_fade_in(reset=(not was_shown) or was_hidden)
+        else:
+            self._hide_immediately()
+
+    def prebake_theme_variant(
+        self,
+        *,
+        surface_color: object,
+        luminosity: float,
+        blur_radius: Optional[float] = None,
+        saturation: Optional[float] = None,
+        contrast: Optional[float] = None,
+        overlay_opacity: Optional[float] = None,
+    ) -> bool:
+        """空闲时预烘指定主题变体：结果只进层缓存，不应用、不 disturb 当前层。
+
+        由主窗口在主题切换 settled 后用对偶主题参数调用。繁忙（在途 worker /
+        过渡中 / 不可见 / 已缓存 / 已在途）时直接返回 False，不排队。
+
+        Returns:
+            已提交后台任务返回 True，否则 False。
+        """
+        if self._native_backdrop or self._disposed:
+            return False
+        if self._worker_thread is not None:
+            return False
+        if self._xfade_active:
+            return False
+        try:
+            visible = self._widget.isVisible()
+        except Exception:
+            return False
+        if not visible:
+            return False
+        params = self._params
+        try:
+            if blur_radius is not None:
+                params = params.replace(blur_radius=max(0.0, float(blur_radius)))
+            if saturation is not None:
+                params = params.replace(saturation=max(0.0, float(saturation)))
+            if contrast is not None:
+                params = params.replace(contrast=max(0.0, float(contrast)))
+        except Exception:
+            return False
+        if overlay_opacity is not None:
+            try:
+                overlay = max(0.0, min(1.0, float(overlay_opacity)))
+            except (TypeError, ValueError):
+                return False
+        else:
+            overlay = self._overlay_opacity
+        try:
+            surf_color = _parse_color(surface_color, self._surface_color)
+            surf_rgb = (surf_color.red(), surf_color.green(), surf_color.blue())
+            dark = _is_dark_color(surf_color)
+        except Exception:
+            return False
+        try:
+            win = self._window_rect_tuple()
+            region = self._virtual_rect()
+            long = _layer_display_long(region)
+        except Exception:
+            return False
+        if win is None or region is None:
+            return False
+        try:
+            signature = self._provider.probe().signature()
+        except Exception:
+            signature = ""
+        key = (params, dark, signature, region, int(long))
+        try:
+            cache_key = self._cache_key_for(key, overlay, surf_rgb)
+        except Exception:
+            return False
+        if cache_key in self._layer_cache or key == self._speculative_key:
+            return False
+        try:
+            self._worker = _BakeWorker(
+                self._provider, win, params, dark, region, long,
+                overlay, surf_rgb, key, -1,
+            )
+        except Exception:
+            return False
+        thread = QThread()
+        self._worker.moveToThread(thread)
+        self._worker.done.connect(self._on_bake_done)
+        self._worker.failed.connect(self._on_bake_failed)
+        thread.finished.connect(self._cleanup_worker)
+        thread.started.connect(self._worker.run)
+        self._worker_thread = thread
+        self._worker_speculative = True
+        self._speculative_key = key
+        self._speculative_extra = (overlay, surf_rgb)
+        self._speculative_thread = thread
+        self._watchdog.start(BAKE_WATCHDOG_MS)
+        thread.start()
+        return True
+
     # -- worker 回调 ------------------------------------------------------
 
     def _on_bake_done(self, payload: object) -> None:
@@ -1332,22 +1851,103 @@ class MicaMaterial(QObject):
         self._refresh_retries = 0
         self._refresh_outcome = "ok"
         display, layer_info, layer_key, gen = payload
+        if self._speculative_key is not None and layer_key == self._speculative_key:
+            # speculative 预烘交付：只进缓存，不提交为当前层、不 disturb 时钟。
+            self._speculative_key = None
+            extra = self._speculative_extra
+            self._speculative_extra = None
+            thread = self._speculative_thread
+            self._speculative_thread = None
+            self._worker_speculative = False
+            self._silent_cleanup = True
+            try:
+                pixmap = _pixmap_from_rgb(display) if display is not None else None
+                if (
+                    extra is not None
+                    and pixmap is not None
+                    and not pixmap.isNull()
+                    and layer_info is not None
+                ):
+                    self._store_layer_cache(
+                        layer_key, layer_info, pixmap, extra[0], extra[1]
+                    )
+            except Exception:  # noqa: BLE001 - 预烘缓存失败静默丢弃
+                pass
+            try:
+                if thread is not None:
+                    thread.quit()
+            except Exception:
+                pass
+            return
         if layer_key != self._layer_key or gen != self._layer_gen:
             # 过期结果：来自一次已被更新的请求（主题/参数/壁纸/监视器变化后新请求已提交）。
             _LOG.debug("丢弃过期的视口层烘焙结果（key/gen 不匹配）")
             if self._worker_thread is not None:
                 self._worker_thread.quit()
             return
+        if self._widget.isVisible():
+            # 交付几何守卫：层烘焙时的窗口尺寸与当前显示尺寸不符（例：烘焙在途
+            # 期间窗口完成显示 / 被 resize）。网格密度随窗口尺寸而定，提交一份
+            # 与显示窗口失配的层会导致模糊各向异性 / 壁纸裁剪纵横比失真 ——
+            # 丢弃并挂起重烘，由回收逻辑按当前几何续接（自愈）。
+            win = self._window_rect_tuple()
+            if win is not None:
+                cur_size = (int(win[2]), int(win[3]))
+                if tuple(int(v) for v in layer_info.win_size) != cur_size:
+                    _LOG.debug(
+                        "丢弃几何陈旧的视口层（win_size=%s != 当前=%s）",
+                        tuple(layer_info.win_size),
+                        cur_size,
+                    )
+                    self._layer_key = None
+                    self._rebuild_pending = True
+                    if self._worker_thread is not None:
+                        self._worker_thread.quit()
+                    return
         was_shown = self._has_shown
         was_hidden = self._hide_until_new_layer
         self._hide_until_new_layer = False
         # 新层到达：若正处于松手淡化（旧裁剪 → 新裁剪），该淡化基于的旧层已
         # 被替换，立即停机，由新层直接接管（跨监视器等待期则由淡入揭示）。
         self._stop_settle_fade()
+        # —— 交叉过渡准备：旧层仍在屏（窗口可见、激活、已展示过、非跨屏隐藏）
+        # 时，把当前背景外观捕获为窗口尺寸快照；新层提交后自快照淡入（主题 /
+        # 参数 / 壁纸切换平滑过渡，替代生硬直替）。快速连切时快照为当前混合态，
+        # 过渡从屏幕现状连续出发（见 ``_capture_visual_state``）。
+        xfade_backdrop: Optional[QPixmap] = None
+        if (
+            was_shown
+            and not was_hidden
+            and self._active
+            and self._fade_alpha > 0.001
+            and self._widget.isVisible()
+        ):
+            xfade_backdrop = self._capture_visual_state(self._window_rect_tuple())
         self._layer = layer_info
         self._layer_pixmap = _pixmap_from_rgb(display)
         self._layer_key = layer_key
         self._has_shown = True
+        # 入缓存：往返切换（深↔浅）命中即零烘焙。
+        try:
+            self._store_layer_cache(
+                layer_key,
+                layer_info,
+                self._layer_pixmap,
+                self._overlay_opacity,
+                self._surface_rgb(),
+            )
+        except Exception:  # noqa: BLE001 - 缓存失败不影响本次交付
+            pass
+        # 新层已就绪：被节流推迟的呈现不再需要（新层会强制立即呈现）。
+        self._defer_timer.stop()
+        # 翻转瞬间已预起钟（见 begin_theme_transition）时只换靶、不重启时钟：
+        # 在途混合按原 280ms 窗口揭示新层，与控件过渡同起同止；无在途过渡
+        # 时才按交付时快照新起一轮（慢烘焙回退路径）。预起标记本次消费——
+        # 后续交付回到连切重抓语义（快照为当前混合态）。
+        if self._xfade_prestarted:
+            self._xfade_prestarted = False
+        elif xfade_backdrop is not None:
+            self._start_xfade(xfade_backdrop)
         self._widget.update()
         if self._active:
             self._start_fade_in(reset=(not was_shown) or was_hidden)
@@ -1359,6 +1959,19 @@ class MicaMaterial(QObject):
     def _on_bake_failed(self) -> None:
         """主线程槽：后台烘焙失败 → 记录结果，由回收逻辑重试 / 放弃。"""
         self._watchdog.stop()
+        if self._worker_speculative:
+            # speculative 失败：静默回收，不计入重试、不触发续接。
+            self._worker_speculative = False
+            self._silent_cleanup = True
+            self._speculative_key = None
+            self._speculative_extra = None
+            self._speculative_thread = None
+            if self._worker_thread is not None:
+                try:
+                    self._worker_thread.quit()
+                except Exception:
+                    pass
+            return
         self._refresh_retries += 1
         self._refresh_outcome = "fail"
         if self._worker_thread is not None:
@@ -1369,6 +1982,18 @@ class MicaMaterial(QObject):
         if self._worker_thread is None:
             return
         self._watchdog.stop()
+        if self._worker_speculative:
+            # speculative 超时：静默终止回收，不计入重试。
+            self._worker_speculative = False
+            self._silent_cleanup = True
+            self._speculative_key = None
+            self._speculative_extra = None
+            self._speculative_thread = None
+            try:
+                self._worker_thread.terminate()
+            except Exception:
+                pass
+            return
         self._worker_thread.terminate()
         self._refresh_retries += 1
         self._refresh_outcome = "timeout"
@@ -1380,6 +2005,21 @@ class MicaMaterial(QObject):
         worker = self._worker
         self._worker_thread = None
         self._worker = None
+        self._worker_speculative = False
+        if self._silent_cleanup:
+            # speculative 静默回收：只删对象，不重试不续接。
+            self._silent_cleanup = False
+            try:
+                if worker is not None:
+                    worker.deleteLater()
+            except Exception:
+                pass
+            try:
+                if thread is not None:
+                    thread.deleteLater()
+            except Exception:
+                pass
+            return
         if thread is None:
             return
 
@@ -1421,7 +2061,14 @@ class MicaMaterial(QObject):
         self._last_req = field.request
         if display is None:
             display = render_display(
-                field, self._display_long(field), self._overlay_opacity, self._surface_rgb()
+                field,
+                self._display_long(field),
+                self._overlay_opacity,
+                self._surface_rgb(),
+                origin=(
+                    int(field.request.window_rect[0]),
+                    int(field.request.window_rect[1]),
+                ),
             )
         self._pixmap = _pixmap_from_rgb(display)
         self._has_shown = True
@@ -1486,6 +2133,112 @@ class MicaMaterial(QObject):
         self._paused = True
         self._fade_alpha = 0.0
         self._fade_to = 0.0
+
+    # ------------------------------------------------------------------
+    # 交叉过渡（新层交付：旧态渐隐、新层渐现）
+    # ------------------------------------------------------------------
+
+    def _xfade_progress(self) -> float:
+        """交叉过渡进度（0–1）；未激活时恒为 1.0（无过渡叠加）。"""
+        if not self._xfade_active or not self._xfade_clock.isValid():
+            return 1.0
+        t = self._xfade_clock.elapsed() / float(XFADE_DURATION_MS)
+        if t < 0.0:
+            return 0.0
+        return 1.0 if t > 1.0 else t
+
+    def _start_xfade(self, backdrop: QPixmap) -> None:
+        """以旧态快照为底图启动交叉过渡：新层自进度 0 淡入（280ms）。
+
+        Args:
+            backdrop: 交付前屏幕背景外观的窗口尺寸快照（见
+                ``_capture_visual_state``；连切时为当前混合态）。
+        """
+        self._xfade_backdrop = backdrop
+        self._xfade_active = True
+        self._xfade_clock.restart()
+        if not self._xfade_timer.isActive():
+            self._xfade_timer.start()
+
+    def _finish_xfade(self) -> None:
+        """结束并清理交叉过渡：释放旧态快照、停机（动画后资源回收）。"""
+        self._xfade_active = False
+        self._xfade_backdrop = None
+        self._xfade_prestarted = False
+        if self._xfade_timer.isActive():
+            self._xfade_timer.stop()
+
+    def _on_xfade_tick(self) -> None:
+        """交叉过渡逐帧推进：到时即清理（此后一帧按全进度呈现新层）。"""
+        if not self._xfade_active:
+            if self._xfade_timer.isActive():
+                self._xfade_timer.stop()
+            return
+        if self._xfade_progress() >= 1.0:
+            self._finish_xfade()
+        self._widget.update()
+
+    def _blit_layer_sample(
+        self,
+        painter: QPainter,
+        pixmap: QPixmap,
+        layer: ViewportLayer,
+        win: Tuple[int, int, int, int],
+        opacity: float,
+    ) -> None:
+        """把一层按窗口当前位置取样绘制到 ``painter``（``_draw_layer`` 同款取样语义）。"""
+        src = layer_to_source_clamped(layer, win)
+        smooth = isinstance(src[0], float)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, smooth)
+        painter.setOpacity(max(0.0, min(1.0, opacity)))
+        if smooth:
+            painter.drawPixmap(QRectF(painter.viewport()), pixmap, QRectF(*src))
+        else:
+            painter.drawPixmap(
+                QRect(0, 0, int(win[2]), int(win[3])),
+                pixmap,
+                QRect(int(src[0]), int(src[1]), int(src[2]), int(src[3])),
+            )
+
+    def _capture_visual_state(
+        self, win: Tuple[int, int, int, int]
+    ) -> Optional[QPixmap]:
+        """把当前屏幕上的背景外观捕获为窗口尺寸快照（交叉过渡的出发帧）。
+
+        * 常规：当前层按窗口取样（G1 底兜边，覆盖层区域外的钳制边缘）。
+        * 连切（过渡进行中又交付新层）：把「旧底图 + 在淡入层 × 当前进度」
+          合成为新快照 —— 过渡从屏幕现状连续出发，不闪烁、无残留。
+
+        Args:
+            win: ``(x, y, w, h)`` 窗口矩形（仅使用宽高）。
+
+        Returns:
+            窗口尺寸快照；层缺失时 ``None``（调用方跳过过渡，直接提交）。
+        """
+        pixmap = self._layer_pixmap
+        layer = self._layer
+        if pixmap is None or pixmap.isNull() or layer is None:
+            return None
+        snap = QPixmap(max(1, int(win[2])), max(1, int(win[3])))
+        snap.fill(self._background_fill_color())
+        painter = QPainter(snap)
+        try:
+            if (
+                self._xfade_active
+                and self._xfade_backdrop is not None
+                and not self._xfade_backdrop.isNull()
+            ):
+                # 连切：底图 + 在淡入层 × 进度（f=1 契约；焦点系数由绘制期叠加）。
+                painter.setOpacity(1.0)
+                painter.drawPixmap(snap.rect(), self._xfade_backdrop)
+                self._blit_layer_sample(
+                    painter, pixmap, layer, win, self._xfade_progress()
+                )
+            else:
+                self._blit_layer_sample(painter, pixmap, layer, win, 1.0)
+        finally:
+            painter.end()
+        return snap
 
     # ------------------------------------------------------------------
     # 图像转换

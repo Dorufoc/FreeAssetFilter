@@ -25,6 +25,7 @@ import traceback
 import threading
 import faulthandler
 import atexit
+import logging
 
 # 添加父目录到Python路径，确保包能被正确导入
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -34,13 +35,30 @@ from freeassetfilter.utils.app_logger import (
     get_logger, info, debug, warning, error, critical,
     log_exception, install_console_capture
 )
+from freeassetfilter.utils.fd_capture import install_fd_capture, uninstall_fd_capture
+from freeassetfilter.utils.qt_message_handler import install_qt_message_handler
 
 # 初始化日志系统
 logger = get_logger()
 
+# fd 级原生输出捕获必须先于 console capture 安装，并把备份的控制台流
+# 交给 TeeStream 与 AppLogger 控制台 handler，否则 Python 日志会经已接管
+# 的 fd 1 双写进日志（FileHandler 一次 + [native-stdout] 一次）。
+_fd_saved_streams = {}
+try:
+    _fd_saved_streams = install_fd_capture(logger.get_log_file_path())
+except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+    warning("fd capture init failed")
+except (ValueError, TypeError) as e:
+    warning("fd capture init failed")
+
 # 尽早安装 stdout/stderr 双写捕获
 try:
-    if install_console_capture(logger.get_log_file_path()):
+    if install_console_capture(
+        logger.get_log_file_path(),
+        saved_stdout=_fd_saved_streams.get(1),
+        saved_stderr=_fd_saved_streams.get(2),
+    ):
         pass
     else:
         info("console capture unavailable (non-fatal)")
@@ -48,6 +66,18 @@ except (OSError, IOError, PermissionError, FileNotFoundError) as e:
     warning("console capture init failed")
 except (ValueError, TypeError) as e:
     warning("console capture init failed")
+
+# 重指 AppLogger 控制台 handler 到备份的控制台流（防双写）。
+# 必须用 type(h) is 精确匹配：FileHandler 是 StreamHandler 子类，
+# isinstance 会误伤文件 handler，把文件日志重指到控制台流。
+try:
+    _fd_saved_stdout = _fd_saved_streams.get(1)
+    if _fd_saved_stdout is not None:
+        for _h in list(getattr(logger, "logger", None).handlers or []):
+            if type(_h) is logging.StreamHandler and _h.stream is sys.__stdout__:
+                _h.stream = _fd_saved_stdout
+except (OSError, ValueError, AttributeError, TypeError) as e:
+    warning("console handler repoint failed")
 
 
 # ──────────────────────────────────────────────────────────────
@@ -535,6 +565,11 @@ class FreeAssetFilterApp(QMainWindow):
 
         # 关闭 faulthandler 双写通道，促使 FaultHandlerTee 线程退出
         # 必须在 debug_exit_threads() 之前调用，否则调试输出会显示 FaultHandlerTee 仍在运行
+        # 先卸载 fd 捕获（排空管道+join），再清理 faulthandler（顺序固定，不可颠倒）
+        try:
+            uninstall_fd_capture()
+        except (OSError, ValueError) as e:
+            logger.warning(f"fd capture 卸载失败: {e}")
         cleanup_faulthandler()
 
         debug_exit_threads()
@@ -2988,6 +3023,10 @@ def main():
 
     # 先创建 QApplication，再执行单实例检测（使得弹窗复用已有 QApp）
     app = QApplication(sys.argv)
+    try:
+        install_qt_message_handler()
+    except (OSError, ValueError, TypeError) as e:
+        warning("qt message handler init failed")
     info(f"[启动] QApplication 创建: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
 
     # 设置 QPixmapCache 全局缓存上限为 50MB（L2 缓存层，配合各组件 L1 缓存使用）
@@ -3100,6 +3139,12 @@ def main():
     # 应用程序退出前记录当前时间
     def on_app_exit():
         nonlocal _mutex_handle
+        # 先卸载 fd 捕获（排空管道+join），再做 handler flush 与 faulthandler 清理
+        # （顺序固定：原生尾部输出必须在 flush 之前落盘；不依赖 console capture 成功）
+        try:
+            uninstall_fd_capture()
+        except (OSError, ValueError) as e:
+            warning(f"[退出] fd capture 卸载失败: {e}")
         exit_time = time.time()
         cur_settings_manager = getattr(app, 'settings_manager', None)
 
@@ -3174,6 +3219,11 @@ def main():
     exit_code = app.exec()
 
     # 安全退出机制（closeEvent 中已调用 cleanup_faulthandler()，此处作为兜底）
+    # 先卸载 fd 捕获（排空管道+join），再清理 faulthandler（顺序固定，不可颠倒）
+    try:
+        uninstall_fd_capture()
+    except (OSError, ValueError) as e:
+        warning(f"[退出] fd capture 卸载失败: {e}")
     cleanup_faulthandler()
 
     import threading

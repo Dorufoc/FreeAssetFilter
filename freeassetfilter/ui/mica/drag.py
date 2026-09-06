@@ -1,4 +1,4 @@
-"""逐监视器视口层 —— 一次烘焙出整块监视器色调场，逐帧仅做子矩形取样。
+"""整块虚拟桌面视口层 —— 一次烘焙出覆盖整块虚拟桌面的色调场，逐帧仅做子矩形取样。
 
 问题
 ----
@@ -9,14 +9,18 @@
 
 思路
 ----
-把旧的「自适应拖动场机器」换成**一块持久化的逐监视器视口层**：烘一次、之后只
-取样。由于色度低通之后的色调场是纯低频量，且管线（含边缘钳制扩边）是平移等变的，
+把旧的「自适应拖动场机器」换成**一块持久化的整块虚拟桌面视口层**：烘一次、之后
+只取样。色度低通之后的色调场是纯低频量，且管线（含边缘钳制扩边）是平移等变的，
 有：
 
-    Field(窗口在 P 处) == Layer[偏移 (P − 区域原点)]
+    Field(窗口在 P 处) == Layer[偏移 (P − 虚拟桌面原点)]
 
-因此只要烘一块**覆盖整块监视器**的层，之后任意位移都只是从这块场里取一个子矩形，
-**不再有任何计算**。逐帧成本从"整条管线"降为"一次子矩形 blit"。
+因此只要烘一块**覆盖整块虚拟桌面**的层（即所有监视器拼接的虚拟矩形），之后任意
+位移都只是从这块场里取一个子矩形，**不再有任何计算**。逐帧成本从"整条管线"降为
+"一次子矩形 blit"。由于层覆盖全局、与窗口尺寸无关，拖动（含跨监视器）期间**永不
+重烘焙**；窗口只是"窗户"，从已烘焙好的层里按当前屏幕位置取子矩形 blit 即可——这
+也是抹掉色彩断层（banding）的关键：层以 1:1 屏幕分辨率渲染，抖动（dither）图案
+锚定在绝对屏幕坐标，1:1 blit 时抖动被原样保留，不会被双线性重采样抹平。
 
 本模块只承载**纯几何**（无 Qt、无 GPU、无烘焙）：层如何覆盖监视器
 （:func:`layer_region_for`）、层网格尺寸与 σ 守恒（:func:`layer_grid`）、以及由
@@ -66,7 +70,12 @@ __all__ = [
 LAYER_GRID_CAP: int = 1024
 
 #: 层显示参考长边（用于把相对层尺寸换算成窗口等效显示尺寸）。
-LAYER_DISPLAY_LONG_MAX: int = 4096
+#: 整块虚拟桌面层必须以 1:1 屏幕分辨率渲染：抖动（dither）图案才能锚定在绝对
+#: 屏幕坐标、被 1:1 blit 原样保留，否则双线性重采样会把抖动抹平、渐变区重现
+#: 色彩断层。单 4K（3840）/ 双 4K（7680）/ 单 5K（5120）/ 单 6K（6016）均 < 8192，
+#: 因此这些常见配置下层与虚拟桌面严格 1:1；超过 8192 的极端多屏（如三 4K）
+#: 才不得不轻微降采样（仅该情形下渐变区可能残留极轻色带，属可接受的取舍）。
+LAYER_DISPLAY_LONG_MAX: int = 8192
 
 #: 越界判定的浮点容差（网格像素），吸收舍入误差。
 _EPS: float = 1e-3
@@ -79,13 +88,14 @@ _EPS: float = 1e-3
 
 @dataclass(frozen=True)
 class ViewportLayer:
-    """一块持久化、逐监视器烘焙的放大色调场（供逐帧子矩形取样）。
+    """一块持久化、覆盖整块虚拟桌面的放大色调场（供逐帧子矩形取样）。
 
     Attributes:
-        region: ``(x, y, w, h)`` 本层在虚拟桌面中的覆盖范围（整数）。
+        region: ``(x, y, w, h)`` 本层在虚拟桌面中的覆盖范围（整数，= 虚拟桌面矩形）。
         width: 本层实际渲染像素宽度（即层分辨率的宽）。
         height: 本层实际渲染像素高度（即层分辨率的高）。
-        win_size: ``(w, h)`` 烘焙时的窗口尺寸；窗口尺寸一变，本层失效（缩放中）。
+        win_size: ``(w, h)`` 烘焙时的窗口尺寸；整块虚拟桌面层与窗口尺寸无关，
+            本字段仅作兼容性保留，不再作为层有效性判据。
     """
 
     region: Tuple[int, int, int, int]
@@ -271,33 +281,34 @@ def grid_for_region(
 
 def layer_region_for(
     window_rect: Tuple[int, int, int, int],
-    monitor_rect: Tuple[int, int, int, int],
+    screen_rect: Tuple[int, int, int, int],
 ) -> Tuple[int, int, int, int]:
     """决定视口层覆盖的虚拟桌面矩形。
 
-    单层逐监视器烘焙：层覆盖整块监视器。任何位于该监视器内的窗口，其子矩形
-    都能从层内取到，无需重烘焙。
+    整块虚拟桌面层：层覆盖由调用方传入的**整块虚拟桌面矩形**（所有监视器拼接），
+    任何位于该矩形内的窗口，其子矩形都能从层内取到，拖动（含跨监视器）期间
+    无需重烘焙。
 
     Args:
-        window_rect: ``(x, y, w, h)`` 窗口矩形（虚拟桌面像素）。
-        monitor_rect: ``(x, y, w, h)`` 监视器矩形（虚拟桌面像素）。
+        window_rect: ``(x, y, w, h)`` 窗口矩形（虚拟桌面像素），仅用于接口兼容。
+        screen_rect: ``(x, y, w, h)`` 整块虚拟桌面矩形（虚拟桌面像素）。
 
     Returns:
-        ``(x, y, w, h)`` 层覆盖矩形（即 ``monitor_rect`` 原样）。
+        ``(x, y, w, h)`` 层覆盖矩形（即 ``screen_rect`` 原样）。
     """
-    return monitor_rect
+    return screen_rect
 
 
 def layer_grid(
-    monitor_rect: Tuple[int, int, int, int],
+    screen_rect: Tuple[int, int, int, int],
     win_w: int,
     win_h: int,
     sigma: float,
 ) -> Tuple[Tuple[int, int], float]:
-    """按「与常规烘焙相同的密度」把监视器矩形换算为层分辨率，并保持 σ 守恒。
+    """按「与常规烘焙相同的密度」把虚拟桌面矩形换算为层分辨率，并保持 σ 守恒。
 
     密度取自 ``_window_scale(win_w, win_h, BAKE_LONG_MAX)`` —— 与常规烘焙最高档
-    一致，否则松手会出现糊→清晰跳变。每个轴先 ``round(mon_side × density)``，
+    一致，否则松手会出现糊→清晰跳变。每个轴先 ``round(screen_side × density)``，
     再钳制到 ``[BAKE_LONG_MIN, LAYER_GRID_CAP]``。
 
     若任一轴被钳制（超上限），实际密度必然下降，而 σ（网格像素）必须同步缩小，
@@ -306,7 +317,7 @@ def layer_grid(
     ``sigma_eff`` 等于原 ``sigma``。
 
     Args:
-        monitor_rect: ``(x, y, w, h)`` 监视器矩形（虚拟桌面像素）。
+        screen_rect: ``(x, y, w, h)`` 整块虚拟桌面矩形（虚拟桌面像素）。
         win_w: 窗口宽度。
         win_h: 窗口高度。
         sigma: 色度低通标准差（网格像素）。
@@ -315,8 +326,8 @@ def layer_grid(
         ``((grid_w, grid_h), sigma_eff)``。``grid`` 每轴均在
         ``[BAKE_LONG_MIN, LAYER_GRID_CAP]`` 内。
     """
-    mon_w = max(1, int(monitor_rect[2]))
-    mon_h = max(1, int(monitor_rect[3]))
+    mon_w = max(1, int(screen_rect[2]))
+    mon_h = max(1, int(screen_rect[3]))
     density = _window_scale(win_w, win_h, BAKE_LONG_MAX)
     raw_w = int(round(mon_w * density))
     raw_h = int(round(mon_h * density))

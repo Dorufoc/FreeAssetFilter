@@ -451,8 +451,7 @@ class UnifiedPreviewerLayout(QWidget):
         suffix = file_info.get("suffix", "")
         if not suffix:
             return False
-        suffix = suffix.lower()
-        return suffix in _AUDIO_EXTS
+        return ("." + suffix.lstrip(".")).lower() in _AUDIO_EXTS
     
     def _show_placeholder(self) -> None:
         """在 _content_top 显示占位符标签。"""

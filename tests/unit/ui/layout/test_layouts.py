@@ -261,6 +261,264 @@ class TestFileSelectorLayout:
 
 
 # =============================================================================
+# ui.layout.file_selector_layout — _go_back 返回过渡动画
+# =============================================================================
+class TestGoBackTransition:
+    """_go_back 返回过渡：历史/上级/盘符根分支均一致触发 direction=-1 动画。
+
+    全部用例均用 MagicMock 计数 begin/finish，不跑真实动画（offscreen 下
+    ``FileSelectorLayout`` 真实构造，仅过渡与 IO 入口被替身替换）。
+    """
+
+    def test_history_branch_triggers_back_animation(
+        self, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """历史分支：有可回退历史时 _go_back 以 -1 触发过渡并加载上一条。
+
+        Args:
+            qapp: 会话级 QApplication（offscreen）。
+            tmp_path: pytest 临时目录（真实创建 tmpA/tmpB）。
+            monkeypatch: 用例级猴子补丁。
+        """
+        import os
+
+        tmp_a = tmp_path / "tmpA"
+        tmp_b = tmp_path / "tmpB"
+        tmp_a.mkdir()
+        tmp_b.mkdir()
+        str_a = os.path.abspath(str(tmp_a))
+        str_b = os.path.abspath(str(tmp_b))
+
+        layout = FileSelectorLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        qapp.processEvents()
+        try:
+            # 预置历史栈顶为 tmpB，回退应落到 tmpA。
+            layout._nav_history = [str_a, str_b]
+            layout._history_index = 1
+            layout._current_path = str_b
+            begin_mock: MagicMock = MagicMock(return_value=True)
+            finish_mock: MagicMock = MagicMock(return_value=True)
+            load_mock: MagicMock = MagicMock()
+            monkeypatch.setattr(layout._file_list, "begin_path_transition", begin_mock)
+            monkeypatch.setattr(layout._file_list, "finish_path_transition", finish_mock)
+            monkeypatch.setattr(layout, "_load_directory", load_mock)
+            monkeypatch.setattr(layout, "_navigate_to_all", MagicMock())
+            monkeypatch.setattr(layout, "_save_last_path", MagicMock())
+            monkeypatch.setattr(os.path, "isdir", lambda path: True)
+
+            layout._go_back()
+
+            begin_mock.assert_called_once_with(-1)
+            finish_mock.assert_called_once_with(-1)
+            load_mock.assert_called_once_with(str_a)
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+    def test_parent_fallback_triggers_back_animation(
+        self, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """上级回退（单条历史/首次访问）：parent 回退分支以 -1 触发过渡。
+
+        覆盖启动恢复、All 重置后等单历史场景：_history_index==0 时
+        _go_back 走 parent 回退分支（经 _load_directory_with_transition），
+        与历史分支一致触发 -1 动画并加载 dirname 上级。
+
+        Args:
+            qapp: 会话级 QApplication（offscreen）。
+            tmp_path: pytest 临时目录（真实创建 sub/inner）。
+            monkeypatch: 用例级猴子补丁。
+        """
+        import os
+
+        sub_dir = tmp_path / "sub"
+        deep_dir = sub_dir / "inner"
+        deep_dir.mkdir(parents=True)
+        str_parent = os.path.abspath(str(sub_dir))
+        str_deep = os.path.abspath(str(deep_dir))
+
+        layout = FileSelectorLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        qapp.processEvents()
+        try:
+            # 单条历史（首次访问/启动恢复场景）：栈顶即 deep，无可回退历史，
+            # 回退走 parent 分支，dirname 上级即 parent。
+            layout._nav_history = [str_deep]
+            layout._history_index = 0
+            layout._current_path = str_deep
+            begin_mock: MagicMock = MagicMock(return_value=True)
+            finish_mock: MagicMock = MagicMock(return_value=True)
+            load_mock: MagicMock = MagicMock()
+            monkeypatch.setattr(layout._file_list, "begin_path_transition", begin_mock)
+            monkeypatch.setattr(layout._file_list, "finish_path_transition", finish_mock)
+            monkeypatch.setattr(layout, "_load_directory", load_mock)
+            monkeypatch.setattr(layout, "_navigate_to_all", MagicMock())
+            monkeypatch.setattr(layout, "_save_last_path", MagicMock())
+            monkeypatch.setattr(os.path, "isdir", lambda path: True)
+
+            layout._go_back()
+
+            begin_mock.assert_called_once_with(-1)
+            finish_mock.assert_called_once_with(-1)
+            load_mock.assert_called_once_with(str_parent)
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+    def test_drive_root_delegates_to_all_with_animation(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """盘符根回退：parent == current 时委托 _navigate_to_all 且带 -1 动画。
+
+        Args:
+            qapp: 会话级 QApplication（offscreen）。
+            monkeypatch: 用例级猴子补丁。
+        """
+        import os
+
+        layout = FileSelectorLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        qapp.processEvents()
+        try:
+            # 无可回退历史、当前为盘符根：dirname 恒返自身以强制走 All 分支。
+            layout._nav_history = []
+            layout._history_index = -1
+            layout._current_path = "D:\\"
+            begin_mock: MagicMock = MagicMock(return_value=True)
+            finish_mock: MagicMock = MagicMock(return_value=True)
+            monkeypatch.setattr(layout._file_list, "begin_path_transition", begin_mock)
+            monkeypatch.setattr(layout._file_list, "finish_path_transition", finish_mock)
+            monkeypatch.setattr(layout, "_load_all", MagicMock())
+            monkeypatch.setattr(layout, "_save_last_path", MagicMock())
+            monkeypatch.setattr(layout, "_clear_last_path", MagicMock())
+            monkeypatch.setattr(os.path, "isdir", lambda path: True)
+            monkeypatch.setattr(os.path, "dirname", lambda path: path)
+            navigate_all_calls: list = []
+            original_navigate_to_all = layout._navigate_to_all
+
+            def _spy_navigate_to_all() -> None:
+                """记录委托并执行真实 All 导航（保留其内部 -1 动画）。"""
+                navigate_all_calls.append(True)
+                original_navigate_to_all()
+
+            monkeypatch.setattr(layout, "_navigate_to_all", _spy_navigate_to_all)
+
+            layout._go_back()
+
+            assert navigate_all_calls == [True]
+            begin_mock.assert_called_once_with(-1)
+            finish_mock.assert_called_once_with(-1)
+            assert layout._current_path == "All"
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+    def test_deep_nesting_sequential_go_back(
+        self, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """深层嵌套：逐级 _go_back 每次均触发 -1 动画。
+
+        Args:
+            qapp: 会话级 QApplication（offscreen）。
+            tmp_path: pytest 临时目录（真实创建 a/b/c）。
+            monkeypatch: 用例级猴子补丁。
+        """
+        import os
+
+        dir_a = tmp_path / "a"
+        dir_b = dir_a / "b"
+        dir_c = dir_b / "c"
+        dir_c.mkdir(parents=True)
+        str_a = os.path.abspath(str(dir_a))
+        str_b = os.path.abspath(str(dir_b))
+        str_c = os.path.abspath(str(dir_c))
+
+        layout = FileSelectorLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        qapp.processEvents()
+        try:
+            layout._nav_history = [str_a, str_b, str_c]
+            layout._history_index = 2
+            layout._current_path = str_c
+            begin_mock: MagicMock = MagicMock(return_value=True)
+            finish_mock: MagicMock = MagicMock(return_value=True)
+            load_mock: MagicMock = MagicMock()
+            monkeypatch.setattr(layout._file_list, "begin_path_transition", begin_mock)
+            monkeypatch.setattr(layout._file_list, "finish_path_transition", finish_mock)
+            monkeypatch.setattr(layout, "_load_directory", load_mock)
+            monkeypatch.setattr(layout, "_navigate_to_all", MagicMock())
+            monkeypatch.setattr(layout, "_save_last_path", MagicMock())
+            monkeypatch.setattr(os.path, "isdir", lambda path: True)
+
+            layout._go_back()
+            layout._go_back()
+
+            assert begin_mock.call_count == 2
+            assert finish_mock.call_count == 2
+            assert [c.args[0] for c in begin_mock.call_args_list] == [-1, -1]
+            assert [c.args[0] for c in finish_mock.call_args_list] == [-1, -1]
+            assert [c.args[0] for c in load_mock.call_args_list] == [str_b, str_a]
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+    @pytest.mark.parametrize("scenario", ["history", "parent"])
+    def test_direction_always_minus_one(
+        self, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        scenario: str,
+    ) -> None:
+        """direction 一致性：历史/上级两种前置下 begin 首参恒为 -1。
+
+        Args:
+            qapp: 会话级 QApplication（offscreen）。
+            tmp_path: pytest 临时目录。
+            monkeypatch: 用例级猴子补丁。
+            scenario: 前置场景（history=普通历史回退，parent=回到上级）。
+        """
+        import os
+
+        layout = FileSelectorLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        qapp.processEvents()
+        try:
+            if scenario == "history":
+                # 普通历史回退：tmpB -> tmpA。
+                tmp_a = tmp_path / "hA"
+                tmp_b = tmp_path / "hB"
+                tmp_a.mkdir(exist_ok=True)
+                tmp_b.mkdir(exist_ok=True)
+                layout._nav_history = [os.path.abspath(str(tmp_a)), os.path.abspath(str(tmp_b))]
+                layout._history_index = 1
+                layout._current_path = os.path.abspath(str(tmp_b))
+            else:
+                # 上级回退（单条历史/首次访问）：inner 经 parent 分支回到 sub。
+                sub_dir = tmp_path / "psub"
+                deep_dir = sub_dir / "pinner"
+                deep_dir.mkdir(parents=True, exist_ok=True)
+                layout._nav_history = [os.path.abspath(str(deep_dir))]
+                layout._history_index = 0
+                layout._current_path = os.path.abspath(str(deep_dir))
+            begin_mock: MagicMock = MagicMock(return_value=True)
+            finish_mock: MagicMock = MagicMock(return_value=True)
+            monkeypatch.setattr(layout._file_list, "begin_path_transition", begin_mock)
+            monkeypatch.setattr(layout._file_list, "finish_path_transition", finish_mock)
+            monkeypatch.setattr(layout, "_load_directory", MagicMock())
+            monkeypatch.setattr(layout, "_navigate_to_all", MagicMock())
+            monkeypatch.setattr(layout, "_save_last_path", MagicMock())
+            monkeypatch.setattr(os.path, "isdir", lambda path: True)
+
+            layout._go_back()
+
+            assert begin_mock.call_count == 1
+            assert begin_mock.call_args.args[0] == -1
+            assert finish_mock.call_args.args[0] == -1
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+
+# =============================================================================
 # ui.layout.settings_layout
 # =============================================================================
 class TestSettingsLayout:
@@ -430,6 +688,26 @@ class TestUnifiedPreviewerLayout:
         layout._close_btn.click()
 
         assert received == [True]
+        layout.deleteLater()
+
+    @pytest.mark.parametrize(
+        "file_info, expected",
+        [
+            ({"path": "x.mp3", "suffix": "mp3"}, True),   # 无点号音频
+            ({"path": "x.wav", "suffix": ".wav"}, True),  # 带点号音频
+            ({"path": "x.MP3", "suffix": "MP3"}, True),   # 大写后缀
+            ({"suffix": ""}, False),                       # 空后缀
+            ({"path": "x.txt", "suffix": "txt"}, False),   # 非音频（无点）
+            ({"path": "x.log", "suffix": ".txt"}, False),  # 非音频（带点）
+        ],
+    )
+    def test_is_audio_file_normalizes_suffix(
+        self, qapp: QApplication, file_info: dict, expected: bool
+    ) -> None:
+        """_is_audio_file 对 suffix 归一化（无点/带点/大小写）后再判音频。"""
+        layout = UnifiedPreviewerLayout()
+        _assert_layout_geometry(layout, qapp)
+        assert layout._is_audio_file(file_info) is expected
         layout.deleteLater()
 
     # ── 分割区高度规则 ──────────────────────────────────────────────────
@@ -1689,27 +1967,14 @@ class TestAppearanceSettingsPage:
         page.closeEvent(QCloseEvent())
         safe_teardown(page)
 
-    def test_mica_sliders_built_and_value_mapping(self, qapp: QApplication) -> None:
-        """四个米卡滑动条构建齐全；归一化映射与单位格式化正确。"""
+    def test_mica_sliders_removed(self, qapp: QApplication) -> None:
+        """米卡参数已固定（按主题定值）：外观页不再构建滑动条配置项。"""
         page = AppearanceSettingsPage()
-        assert set(page._mica_sliders) == {
-            "saturation", "contrast", "blur_radius", "tint_opacity",
-        }
-        assert set(page._mica_value_labels) == set(page._mica_sliders)
-
-        # 归一化映射：区间端点与中点
-        assert page._to_norm("blur_radius", 0) == 0.0
-        assert page._to_norm("blur_radius", 300) == 1.0
-        assert page._to_norm("tint_opacity", 50) == pytest.approx(0.5)
-        assert page._from_norm("blur_radius", 0.5) == 150.0
-        assert page._from_norm("saturation", 0.5) == pytest.approx(4.0)
-        assert page._from_norm("contrast", 0.5) == pytest.approx(1.5)
-
-        # 单位格式化（× / px / %）
-        assert page._format_mica_value("saturation", 4.5) == "4.5×"
-        assert page._format_mica_value("contrast", 1.5) == "1.5×"
-        assert page._format_mica_value("blur_radius", 200) == "200 px"
-        assert page._format_mica_value("tint_opacity", 70) == "70%"
+        assert not hasattr(page, "_mica_sliders")
+        assert not hasattr(page, "_mica_value_labels")
+        assert not hasattr(page, "_mica_values")
+        assert not hasattr(page, "_mica_preview_timer")
+        assert not hasattr(page, "_native_mica_toggle")
         safe_teardown(page)
 
     def test_bg_segmented_hugs_content_width(self, qapp: QApplication) -> None:
@@ -1725,53 +1990,6 @@ class TestAppearanceSettingsPage:
         assert seg.width() < page.width()
         # pill 容器背景只包住选项内容
         assert int(seg._header.content_width) == seg.width()
-        safe_teardown(page)
-
-    def test_mica_slider_preview_and_save(
-        self, qapp: QApplication, monkeypatch, tmp_path,
-    ) -> None:
-        """滑动条释放：实时预览应用到主窗口背景并持久化到 V2 临时文件。"""
-        import freeassetfilter.ui.layout.settings_layout as sl_mod
-        from freeassetfilter.core.managers.settings_manager_v2 import (
-            SettingsManagerV2,
-        )
-
-        calls: list[dict] = []
-
-        class _FakeMicaBg:
-            def apply_mica_parameters(self, **kwargs) -> None:
-                calls.append(kwargs)
-
-        class _FakeMainWindow(QWidget):
-            def __init__(self) -> None:
-                super().__init__()
-                self._mica_background = _FakeMicaBg()
-
-        fake_mw = _FakeMainWindow()
-        monkeypatch.setattr(
-            sl_mod.AppearanceSettingsPage, "_find_main_window", lambda self: fake_mw
-        )
-        # 临时 V2 文件，避免测试写真实 data/settings_v2.json
-        tmp_file = str(tmp_path / "settings_v2.json")
-        monkeypatch.setattr(
-            sl_mod, "SettingsManagerV2", lambda *a, **k: SettingsManagerV2(tmp_file)
-        )
-
-        page = AppearanceSettingsPage()
-        # 拖动中：值显示更新并触发（防抖）预览
-        page._on_mica_slider_changed("tint_opacity", 0.4)
-        assert page._mica_values["tint_opacity"] == 40.0
-        assert page._mica_value_labels["tint_opacity"].text() == "40%"
-        assert page._mica_preview_timer.isActive()
-
-        # 释放：立即应用预览 + 持久化
-        page._on_mica_slider_released("tint_opacity")
-        assert calls and calls[-1]["tint_opacity"] == 40
-        saved = SettingsManagerV2(tmp_file)
-        saved.load()
-        assert saved.get("appearance.mica.tint_opacity") == 40
-        assert saved.get("appearance.mica.blur_radius") == 200
-        assert saved.get("appearance.mica.contrast") == pytest.approx(1.5)
         safe_teardown(page)
 
     # ── 窗口背景区块（米卡效果 / 自定义图片） ─────────────────────
@@ -1826,10 +2044,8 @@ class TestAppearanceSettingsPage:
         page = AppearanceSettingsPage()
         assert page._bg_mode == "mica"
         assert page._bg_image_name == ""
-        assert page._bg_segmented.current_index == 0
+        assert page._bg_segmented.current_index == 1
         assert page._bg_image_row.isVisibleTo(page) is False
-        assert all(s.isEnabled() for s in page._mica_sliders.values())
-        assert all(l.isEnabled() for l in page._mica_value_labels.values())
         assert page._bg_file_label.text() == "未设置"
         safe_teardown(page)
 
@@ -1866,17 +2082,19 @@ class TestAppearanceSettingsPage:
         page = AppearanceSettingsPage()
         assert page._bg_mode == "image"
         assert page._bg_image_name == "custom_background.png"
-        assert page._bg_segmented.current_index == 1
+        assert page._bg_segmented.current_index == 2
         assert page._bg_image_row.isVisibleTo(page) is True
-        assert all(not s.isEnabled() for s in page._mica_sliders.values())
-        assert all(not l.isEnabled() for l in page._mica_value_labels.values())
         assert page._bg_file_label.text() == "custom_background.png"
         safe_teardown(page)
 
     def test_apply_background_settings_routes_and_saves(
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
-        """_apply_background_settings：先设图片再切模式；持久化并刷新 UI 状态。"""
+        """_apply_background_settings：暂存优先（未提交不触碰主窗口与磁盘）。
+
+        新语义：仅写入暂存缓存并刷新本页 UI；主窗口应用与 V2 落盘统一由
+        ``SettingsLayout._submit_settings`` 在点击应用/确定时执行。
+        """
         import freeassetfilter.ui.layout.settings_layout as sl_mod
         from freeassetfilter.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
@@ -1895,28 +2113,24 @@ class TestAppearanceSettingsPage:
         page = AppearanceSettingsPage()
         page._bg_image_name = "custom_background.png"
 
-        # image 模式：先 set_custom_background_image 再 set_background_mode
+        # image 暂存：不直调主窗口、不落盘，仅缓存 + UI 可见
         page._apply_background_settings("image")
-        expected_path = str(
-            tmp_path / "backgrounds" / "custom_background.png"
-        ).replace("/", "\\")
-        assert fake_mw.image_calls == [expected_path]
-        assert fake_mw.mode_calls == ["image"]
+        assert fake_mw.image_calls == []
+        assert fake_mw.mode_calls == []
+        assert page._staging_cache.get("appearance.background.mode") == "image"
+        assert page._staging_cache.get("appearance.background.image") == "custom_background.png"
         assert page._bg_image_row.isVisibleTo(page) is True
-        assert all(not s.isEnabled() for s in page._mica_sliders.values())
 
         saved = SettingsManagerV2(tmp_file)
         saved.load()
-        assert saved.get("appearance.background") == {
-            "mode": "image", "image": "custom_background.png",
-        }
+        assert saved.get("appearance.background.mode") == "mica"
 
-        # mica 模式：仅 set_background_mode，不动图片接口
+        # mica 暂存：同样仅缓存，不动主窗口图片接口
         page._apply_background_settings("mica")
-        assert fake_mw.mode_calls == ["image", "mica"]
-        assert len(fake_mw.image_calls) == 1
+        assert fake_mw.mode_calls == []
+        assert len(fake_mw.image_calls) == 0
         assert page._bg_image_row.isVisibleTo(page) is False
-        assert all(s.isEnabled() for s in page._mica_sliders.values())
+        assert page._staging_cache.get("appearance.background.mode") == "mica"
         saved = SettingsManagerV2(tmp_file)
         saved.load()
         assert saved.get("appearance.background.mode") == "mica"
@@ -1925,7 +2139,7 @@ class TestAppearanceSettingsPage:
     def test_bg_segment_switch_with_existing_image(
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
-        """已有持久化图片时切换分段：直接应用 image 模式（不经文件对话框）。"""
+        """已有持久化图片时切换分段：暂存 image 模式（不经文件对话框、不直写）。"""
         import freeassetfilter.ui.layout.settings_layout as sl_mod
         from freeassetfilter.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
@@ -1950,16 +2164,16 @@ class TestAppearanceSettingsPage:
 
         page = AppearanceSettingsPage()
         page._bg_image_name = "custom_background.png"
-        # 模拟用户点击第二个分段（触发 current_changed → 处理器）
-        page._bg_segmented.set_current_index(1)
+        # 模拟用户点击图像分段（触发 current_changed → 处理器，仅暂存）
+        page._bg_segmented.set_current_index(2)
 
         assert page._bg_mode == "image"
-        assert len(fake_mw.image_calls) == 1
-        assert fake_mw.mode_calls == ["image"]
+        assert page._staging_cache.get("appearance.background.mode") == "image"
+        assert len(fake_mw.image_calls) == 0
+        assert fake_mw.mode_calls == []
         saved = SettingsManagerV2(tmp_file)
         saved.load()
-        assert saved.get("appearance.background.mode") == "image"
-        assert saved.get("appearance.background.image") == "custom_background.png"
+        assert saved.get("appearance.background.mode") == "mica"
         safe_teardown(page)
 
     def test_bg_segment_switch_cancel_reverts(
@@ -1985,16 +2199,16 @@ class TestAppearanceSettingsPage:
         )
 
         page = AppearanceSettingsPage()
-        page._bg_segmented.set_current_index(1)
+        page._bg_segmented.set_current_index(2)
 
-        # 取消：分段编程式回退到 0，模式与持久化设置保持默认（未被写入）
-        assert page._bg_segmented.current_index == 0
+        # 取消：分段编程式回退到云母，模式与持久化设置保持默认（未被写入）
+        assert page._bg_segmented.current_index == 1
         assert page._bg_mode == "mica"
         assert fake_mw.mode_calls == []
         assert fake_mw.image_calls == []
         saved = SettingsManagerV2(tmp_file)
         saved.load()
-        assert saved.get("appearance.background") == {"mode": "mica", "image": ""}
+        assert saved.get("appearance.background") == {"mode": "mica", "image": "", "ambient": True, "blur": 0, "transparency": 80}
         safe_teardown(page)
 
     def test_bg_segment_switch_import_failure_shows_dialog(
@@ -2029,22 +2243,22 @@ class TestAppearanceSettingsPage:
         )
 
         page = AppearanceSettingsPage()
-        page._bg_segmented.set_current_index(1)
+        page._bg_segmented.set_current_index(2)
 
         assert len(dialog_calls) == 1
         assert dialog_calls[0]["title"] == "导入失败"
-        assert page._bg_segmented.current_index == 0
+        assert page._bg_segmented.current_index == 1
         assert page._bg_mode == "mica"
         assert fake_mw.mode_calls == []
         saved = SettingsManagerV2(tmp_file)
         saved.load()
-        assert saved.get("appearance.background") == {"mode": "mica", "image": ""}
+        assert saved.get("appearance.background") == {"mode": "mica", "image": "", "ambient": True, "blur": 0, "transparency": 80}
         safe_teardown(page)
 
     def test_choose_bg_image_success_via_button(
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
-        """按钮点击选择图片成功：更新文件名、应用并持久化 image 模式。"""
+        """按钮点击选择图片成功：暂存文件名与 image 模式（提交前不直写）。"""
         import freeassetfilter.ui.layout.settings_layout as sl_mod
         from freeassetfilter.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
@@ -2075,20 +2289,19 @@ class TestAppearanceSettingsPage:
         assert page._bg_image_name == "custom_background.png"
         assert page._bg_file_label.text() == "custom_background.png"
         assert page._bg_mode == "image"
-        assert page._bg_segmented.current_index == 0  # 按钮入口不切分段
-        assert fake_mw.image_calls == [dest]
-        assert fake_mw.mode_calls == ["image"]
+        assert page._bg_segmented.current_index == 1  # 按钮入口不切分段
+        assert page._staging_cache.get("appearance.background.image") == "custom_background.png"
+        assert fake_mw.image_calls == []
+        assert fake_mw.mode_calls == []
         saved = SettingsManagerV2(tmp_file)
         saved.load()
-        assert saved.get("appearance.background") == {
-            "mode": "image", "image": "custom_background.png",
-        }
+        assert saved.get("appearance.background.mode") == "mica"
         safe_teardown(page)
 
-    def test_update_bg_ui_state_toggles_mica_widgets(
+    def test_update_bg_ui_state_toggles_image_row(
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
-        """_update_bg_ui_state：image 模式置灰数值标签，mica 模式恢复。"""
+        """_update_bg_ui_state：image 模式显示图片行，mica 模式隐藏。"""
         import freeassetfilter.ui.layout.settings_layout as sl_mod
         from freeassetfilter.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
@@ -2100,16 +2313,11 @@ class TestAppearanceSettingsPage:
         )
 
         page = AppearanceSettingsPage()
-        normal_color = page._mica_value_labels["blur_radius"].styleSheet()
-
         page._bg_mode = "image"
         page._update_bg_ui_state()
-        assert all(not l.isEnabled() for l in page._mica_value_labels.values())
-        dimmed_color = page._mica_value_labels["blur_radius"].styleSheet()
-        assert dimmed_color != normal_color
+        assert page._bg_image_row.isVisibleTo(page) is True
 
         page._bg_mode = "mica"
         page._update_bg_ui_state()
-        assert all(l.isEnabled() for l in page._mica_value_labels.values())
-        assert page._mica_value_labels["blur_radius"].styleSheet() == normal_color
+        assert page._bg_image_row.isVisibleTo(page) is False
         safe_teardown(page)
