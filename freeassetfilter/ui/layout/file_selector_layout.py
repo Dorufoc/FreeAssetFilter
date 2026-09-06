@@ -1369,7 +1369,7 @@ class FileSelectorLayout(QWidget):
             empty_label.setWordWrap(True)
             empty_label.setAlignment(Qt.AlignCenter)
             empty_label.setStyleSheet(
-                f"font-size: 12px; color: {tm.mid.name()}; background: transparent;"
+                f"font-size: 14px; color: {tm.mid.name()}; background: transparent;"
             )
             empty_label.setFixedHeight(120)
             body_layout.addWidget(empty_label)
@@ -1519,7 +1519,7 @@ class FileSelectorLayout(QWidget):
         body_layout.setSpacing(8)
 
         tip = QLabel(label_text)
-        tip.setStyleSheet(f"font-size: 13px; color: {tm.mid.name()}; background: transparent;")
+        tip.setStyleSheet(f"font-size: 14px; color: {tm.mid.name()}; background: transparent;")
         body_layout.addWidget(tip)
 
         edit = StyledLineEdit(size="default")
@@ -1548,7 +1548,7 @@ class FileSelectorLayout(QWidget):
 
         msg = QLabel(message)
         msg.setWordWrap(True)
-        msg.setStyleSheet(f"font-size: 13px; color: {tm.text.name()}; background: transparent;")
+        msg.setStyleSheet(f"font-size: 14px; color: {tm.text.name()}; background: transparent;")
         body_layout.addWidget(msg)
 
         dialog = StyledDialog(title=title, body_widget=body, footer_type=FOOTER_CENTER)
@@ -1751,7 +1751,7 @@ class FileSelectorLayout(QWidget):
 
         tip = QLabel("输入文件名筛选正则（不区分大小写）。\n例如：\\.png$ 仅显示 png，项目 匹配名称含“项目”的文件。")
         tip.setWordWrap(True)
-        tip.setStyleSheet(f"font-size: 12px; color: {tm.mid.name()}; background: transparent;")
+        tip.setStyleSheet(f"font-size: 14px; color: {tm.mid.name()}; background: transparent;")
         body_layout.addWidget(tip)
 
         edit = StyledLineEdit(size="default")

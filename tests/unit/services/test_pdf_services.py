@@ -314,6 +314,71 @@ def test_document_window_roundtrip_y(sample_pdf_file: str) -> None:
         doc.close()
 
 
+def test_frame_center_roundtrip_with_reserved_right(
+    sample_pdf_file: str,
+) -> None:
+    """happy：right_reserved_px>0 时帧中心右移半列，窗口↔绝对互逆保持自洽。
+
+    Args:
+        sample_pdf_file: 单页 PDF 路径。
+    """
+    doc: PdfDocument = PdfDocument(sample_pdf_file)
+    try:
+        view: PdfDocumentView = PdfDocumentView(
+            doc, zoom_level=1.5, right_reserved_px=12.0
+        )
+        view.offset_x = 40.0
+        view.offset_y = 50.0
+        # 帧中心 = 视口中心 + 预留列宽的一半
+        assert view.frame_center_x() == pytest.approx(
+            view.view_width / 2 + 6.0
+        )
+        # 窗口空间帧中心 ↔ 绝对空间 offset 互逆
+        center_px: float = view.frame_center_x()
+        abs_x: float
+        abs_y: float
+        abs_x, abs_y = view.window_to_absolute_document_pos(
+            center_px, view.view_height / 2
+        )
+        assert abs_x == pytest.approx(40.0)
+        assert abs_y == pytest.approx(50.0)
+        win_x: float
+        win_y: float
+        win_x, win_y = view.absolute_to_window_pos(40.0, 50.0)
+        assert win_x == pytest.approx(center_px)
+        assert win_y == pytest.approx(view.view_height / 2)
+    finally:
+        doc.close()
+
+
+def test_page_margins_symmetric_with_reserved_column(
+    sample_pdf_file: str,
+) -> None:
+    """happy：预留右侧滚动条列后，页面仍相对整个画布左右等距。
+
+    Args:
+        sample_pdf_file: 单页 PDF 路径。
+    """
+    doc: PdfDocument = PdfDocument(sample_pdf_file)
+    try:
+        view: PdfDocumentView = PdfDocumentView(
+            doc,
+            zoom_level=1.0,
+            view_width=788,
+            view_height=600,
+            right_reserved_px=12.0,
+        )
+        view.offset_x = 612.0 / 2  # fit-to-width 语义：文档中心对齐帧中心
+        frame: float = view.view_width + view.right_reserved_px
+        pwz: float = 612.0
+        # 页面卡片 = 页框内缩 6px；外缘到左右边框的距离应相等
+        left_margin: float = view.frame_center_x() - pwz / 2 + 6.0
+        right_margin: float = frame - (view.frame_center_x() + pwz / 2 - 6.0)
+        assert left_margin == pytest.approx(right_margin)
+    finally:
+        doc.close()
+
+
 def test_move_returns_bool(sample_pdf_file: str) -> None:
     """boundary：零位移 move 返回 False，非零返回 True。
 

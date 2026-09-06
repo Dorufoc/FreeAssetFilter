@@ -157,6 +157,10 @@ class NativePdfRenderer(QWidget):
         self._sel_end_abs: Tuple[float, float] = (0.0, 0.0)
         self._selected_text: str = ""
 
+        # 右侧被宿主布局预留的滚动条列宽度（px）：内容画布以「视口 + 该列」
+        # 的整体水平中心为基准居中，使页面左右边距对称。默认为 0（经典中心）。
+        self._right_reserved_px: float = 0.0
+
         # 点击非选区时隐藏高亮但保留剪贴板文字
         self._selection_hidden: bool = False
         # 追踪鼠标是否在 press 后有实质移动（区分"点击"与"拖拽"）
@@ -181,7 +185,9 @@ class NativePdfRenderer(QWidget):
         margin_abs = 30.0 / max(zoom, 0.01)
         if self._page_widths and self._view is not None:
             pw = self._page_widths[0]
-            half_vw = self._view.view_width / (2.0 * zoom)
+            # 水平以「视口 + 右侧预留滚动条列」的整体画布中心为基准，
+            # 保证缩放/拖动时左右边距相对预览器保持对称。
+            half_vw = self._view.frame_center_x() / zoom
             if pw * zoom < self._view.view_width - 60.0:
                 # 页面窄于视口 → 居中
                 self._view.offset_x = pw / 2.0
@@ -255,6 +261,7 @@ class NativePdfRenderer(QWidget):
             offset_y=0.0,
             view_width=w,
             view_height=h,
+            right_reserved_px=self._right_reserved_px,
         )
 
         # sioyek: fit-to-width as initial zoom.
@@ -301,6 +308,17 @@ class NativePdfRenderer(QWidget):
         self._submit_render_for_visible_pages()
         self.page_changed.emit(page)
         self.update()
+
+    def set_right_reserved_px(self, px: float) -> None:
+        """配置视口右侧被预留的滚动条列宽度（px）。
+
+        内容画布中心 = (视口宽度 + 预留宽度) / 2，页面因此在**整个预览器**
+        中水平居中，右边缘不需要扣除滚动条宽度。布局侧应在加载文档前调用
+        一次；已加载文档时同步到现有视图。
+        """
+        self._right_reserved_px = max(0.0, px)
+        if self._view is not None:
+            self._view.right_reserved_px = self._right_reserved_px
 
     def set_zoom(self, zoom: float) -> None:
         """Set the zoom level directly.
@@ -372,7 +390,7 @@ class NativePdfRenderer(QWidget):
         """Render the PDF pages and interaction overlays.
 
         Ported from sioyek's ``PdfViewOpenGLWidget::paintGL()`` which:
-        1. Clears the viewport.
+        1. Clears the viewport (transparent canvas; host paints the panel).
         2. Iterates visible pages, drawing each rendered texture.
         3. Overlays selection highlights.
         4. Draws a page-number HUD.
@@ -381,9 +399,8 @@ class NativePdfRenderer(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
 
-        # 1. 背景使用主题表面色，使卡片式白色页面凸显
-        painter.fillRect(self.rect(), QColor(tm.surface.name()))
-
+        # 1. 不自绘背景：与文本预览器一致，画布保持透明，
+        #    透出内容区/宿主面板底色（由外层容器负责填充）。
         # 2. 无文档时显示提示文字
         if self._doc is None or self._view is None:
             painter.setPen(QColor(160, 160, 160))
@@ -394,10 +411,9 @@ class NativePdfRenderer(QWidget):
             painter.end()
             return
 
+        # 2. 渲染所有可见页面
         zoom: float = self._view.zoom_level
         visible: List[int] = self._view.get_visible_pages()
-
-        # 3. 渲染所有可见页面
         for page_num in visible:
             if page_num >= len(self._page_widths):
                 continue
@@ -411,11 +427,12 @@ class NativePdfRenderer(QWidget):
             )
 
             # 绝对空间 → 窗口空间 (中心模型)
-            # offset_x 已设为 page_width/2，使页面左边缘对齐视口左边缘：
-            # win_x = (0 - pw/2) * zoom + vw/2 = (vw - pw*zoom)/2
+            # offset_x 已设为 page_width/2，使页面在「视口 + 右侧预留滚动条列」
+            # 的整体画布中居中（frame_center_x = (view_width + reserved)/2）：
+            # win_x = (0 - pw/2) * zoom + frame_center_x
             # zoom-in 时 win_x 为负（页面左边缘在视口左侧），zoom-out 时为正（居中）。
             win_x: float = (
-                (0.0 - self._view.offset_x) * zoom + self._view.view_width / 2
+                (0.0 - self._view.offset_x) * zoom + self._view.frame_center_x()
             )
             win_y: float = (
                 (page_top_abs - self._view.offset_y) * zoom + self._view.view_height / 2

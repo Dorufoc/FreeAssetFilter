@@ -174,6 +174,16 @@ class TestStyledTextarea:
         assert ta.text == "xyz"
         ta.deleteLater()
 
+    def test_unified_vertical_scrollbar(self, qapp: QApplication) -> None:
+        """内嵌编辑框使用统一 StyledScrollBar，长文本滚动不抛异常。"""
+        ta = StyledTextarea(label="Notes")
+        bar = ta._text_edit.verticalScrollBar()
+        assert isinstance(bar, StyledScrollBar)
+        ta.text = "行" * 4000  # 触发长文本重排
+        qapp.processEvents()
+        assert ta.text  # 文本保留
+        ta.deleteLater()
+
 
 # =============================================================================
 # ui.components.styled_checkbox

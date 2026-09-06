@@ -4,7 +4,7 @@
 
 覆盖：
 * 三模式后端 dispatch（LO → COM → pure-python）与探测函数 mock；
-* 真实 xlsx / docx 纯 Python 转换成功路径（openpyxl / mammoth）；
+* 真实 docx 纯 Python 转换成功路径（mammoth）；xlsx 无外部后端时返回安装提示；
 * legacy 格式在无后端时的安装提示；缓存命中跳过重新转换；
 * worker 的信号 / 取消 / 超时队列行为。
 
@@ -25,7 +25,7 @@ import threading
 import time
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import pytest
 
@@ -86,27 +86,6 @@ def office_cache_redirect(monkeypatch: Any, tmp_path: Path) -> Path:
 
 
 # ── 数据生成 ─────────────────────────────────────────────────────────────
-
-
-def make_xlsx(path: Union[str, Path], rows: Sequence[Sequence[Any]]) -> str:
-    """用 openpyxl 生成一个真实 xlsx 文件。
-
-    Args:
-        path: 输出路径（``.xlsx``）。
-        rows: 二维数据（行→单元格值）。
-
-    Returns:
-        str: 生成后的文件路径。
-    """
-    import openpyxl
-
-    workbook = openpyxl.Workbook()
-    sheet = workbook.active
-    for row_index, row in enumerate(rows, start=1):
-        for col_index, value in enumerate(row, start=1):
-            sheet.cell(row=row_index, column=col_index, value=value)
-    workbook.save(str(path))
-    return str(path)
 
 
 def make_docx(path: Union[str, Path], text: str = "Hello Docx World") -> str:
@@ -230,27 +209,24 @@ class TestBackendDispatch:
         assert result.backend_used == "com"
         assert result.content_type == "pdf"
 
-    def test_pure_python_xlsx_table_success(
+    def test_xlsx_returns_install_prompt_without_backends(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:
-        """happy：LO/COM 均缺→走纯 Python，真实 xlsx 转 TSV 表格。
+        """error：xlsx 无纯 Python 降级，LO/COM 均缺→返回安装提示。
 
         Args:
             monkeypatch: pytest monkeypatch。
             tmp_path: pytest 临时目录。
         """
         _set_probes(monkeypatch, soffice=False, com=False)
-        xlsx: str = make_xlsx(
-            tmp_path / "data.xlsx",
-            [["姓名", "分数"], ["张三", 99], ["李四", 88]],
-        )
+        xlsx: Path = tmp_path / "data.xlsx"
+        xlsx.write_bytes(b"xlsx bytes")
         result: ConversionResult = OfficeConverter.convert(
-            {"path": xlsx, "suffix": "xlsx"}
+            {"path": str(xlsx), "suffix": "xlsx"}
         )
-        assert result.backend_used == "pure-python"
-        assert result.content_type == "table"
-        assert "姓名\t分数" in result.content
-        assert "张三\t99" in result.content
+        assert result.backend_used == "error"
+        assert result.content_type == "error"
+        assert result.message == ERROR_MESSAGE
 
     def test_pure_python_docx_real_conversion(
         self, monkeypatch: Any, tmp_path: Path
@@ -276,23 +252,6 @@ class TestBackendDispatch:
         assert result.backend_used == "pure-python"
         assert result.content_type == "html"
         assert "Hello Docx World" in str(result.content)
-
-    def test_pure_python_sanitizes_cell_separators(
-        self, monkeypatch: Any, tmp_path: Path
-    ) -> None:
-        """boundary：单元格内的制表符/换行应被清洗为空格。
-
-        Args:
-            monkeypatch: pytest monkeypatch。
-            tmp_path: pytest 临时目录。
-        """
-        _set_probes(monkeypatch, soffice=False, com=False)
-        xlsx: str = make_xlsx(tmp_path / "dirty.xlsx", [["a\tb", "c\nd"]])
-        result: ConversionResult = OfficeConverter.convert(
-            {"path": xlsx, "suffix": "xlsx"}
-        )
-        assert result.content_type == "table"
-        assert result.content == "a b\tc d"  # 内部 \t/\n 已清洗，仅保留 TSV 分隔符
 
     def test_legacy_doc_returns_install_prompt_without_backends(
         self, monkeypatch: Any, tmp_path: Path
@@ -762,10 +721,10 @@ class TestOfficeConverterWorker:
         )
         pdf: Path = tmp_path / "out.pdf"
         assert worker._encode_content(_pdf_result(pdf, "com")) == str(pdf)
-        table: ConversionResult = ConversionResult(
-            content_type="table", content="a\tb", backend_used="pure-python"
+        outline: ConversionResult = ConversionResult(
+            content_type="outline", content="page1", backend_used="pure-python"
         )
-        assert worker._encode_content(table) == "table:a\tb"
+        assert worker._encode_content(outline) == "outline:page1"
 
 
 # ── T9 取消 seam：活动 soffice Popen 注册表 ─────────────────────────────

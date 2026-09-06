@@ -333,11 +333,10 @@ class StyledTable(QTableWidget):
         """Create the overlay label shown when the table has no rows."""
         self._empty_label = QLabel("暂无数据", self)
         self._empty_label.setAlignment(Qt.AlignCenter)
-        empty_color = tm.alpha_of(tm.mid, 60).name()
         self._empty_label.setStyleSheet(
             f"QLabel {{"
-            f"  color: {empty_color};"
-            f"  font-size: 13px;"
+            f"  color: {tm.mid.name()};"
+            f"  font-size: 14px;"
             f"  background: transparent;"
             f"  border: none;"
             f"  padding: 40px 16px;"

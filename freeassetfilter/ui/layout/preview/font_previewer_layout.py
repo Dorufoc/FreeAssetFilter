@@ -29,11 +29,11 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from components.styled_button import StyledButton
-from components.styled_combobox import StyledComboBox
 from components.styled_drawer import StyledDrawer
 from components.styled_slider import StyledSlider
 from components.styled_textarea import StyledTextarea
 from layout.preview.fullscreen_host import PreviewFullscreenHost
+from layout.preview.preview_toolbar import PreviewToolbarFrame
 from PySide6.QtCore import (
     QEasingCurve,
     QEvent,
@@ -105,103 +105,9 @@ ABCDEFGHIJKLMNOPQRSTUVWXYZ
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 顶栏框架（从 text_previewer_layout.py / pdf_previewer_layout.py 原样复制）
+# 顶栏框架：统一使用共享组件 PreviewToolbarFrame
+# （见 layout/preview/preview_toolbar.py 的模块说明）
 # ──────────────────────────────────────────────────────────────────────────────
-
-class _ToolbarFrame(QFrame):
-    """顶栏框架 —— 页面标签通过布局居中，操作按钮在 resizeEvent 中绝对定位到两侧。
-
-    这样标题标签是在整个顶栏宽度上真正居中，不会被两侧按钮挤偏。
-    """
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        """初始化顶栏框架。
-
-        Args:
-            parent: 父控件。
-        """
-        super().__init__(parent)
-        self._left_buttons: list[QWidget] = []
-        self._right_buttons: list[QWidget] = []
-
-    def add_left_button(self, btn: QWidget) -> None:
-        """注册一个左侧按钮，将其父对象设为此顶栏并在下次布局时自动定位。
-
-        Args:
-            btn: 要放置到左侧的按钮控件。
-        """
-        self._left_buttons.append(btn)
-        btn.setParent(self)
-
-    def add_right_button(self, btn: QWidget) -> None:
-        """注册一个右侧按钮，将其父对象设为此顶栏并在下次布局时自动定位。
-
-        Args:
-            btn: 要放置到右侧的按钮控件。
-        """
-        self._right_buttons.append(btn)
-        btn.setParent(self)
-
-    def fixedHeight(self) -> int:
-        """返回当前固定高度（便于测试使用）。
-
-        Returns:
-            当前控件高度，单位为像素。
-        """
-        return self.height()
-
-    def _layout_buttons(self) -> None:
-        """将已注册的可见按钮固定到顶栏两侧，跳过隐藏按钮。"""
-        # 左侧按钮（从左往右排列）
-        left = 8  # 左侧内边距 8px
-        for btn in self._left_buttons:
-            if not btn.isVisible():
-                continue
-            btn.move(left, (self.height() - btn.height()) // 2)
-            left = btn.geometry().right() + 6  # 按钮间距 6px
-        # 右侧按钮（从右往左排列）
-        right = self.width() - 8  # 右侧内边距 8px
-        for btn in reversed(self._right_buttons):
-            if not btn.isVisible():
-                continue
-            btn.move(right - btn.width(), (self.height() - btn.height()) // 2)
-            right = btn.geometry().left() - 6  # 按钮间距 6px
-
-    def resizeEvent(self, event) -> None:
-        """每次大小变化时重新定位可见按钮，不影响中间布局的居中计算。"""
-        super().resizeEvent(event)
-        self._layout_buttons()
-
-    def showEvent(self, event) -> None:
-        """首次显示时立即布局按钮（某些平台下初始 resizeEvent 可能不触发）。"""
-        super().showEvent(event)
-        self._layout_buttons()
-
-    def _get_colors(self) -> dict[str, QColor]:
-        """获取当前主题下的顶栏颜色（paintEvent 中动态读取，确保主题切换生效）。"""
-        return {
-            "bg": tm.fill,
-            "border": tm.alpha_of(tm.mid, 25),
-        }
-
-    def paintEvent(self, event: QPaintEvent) -> None:
-        """自绘顶栏圆角背景与边框，颜色跟随当前主题。"""
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        colors = self._get_colors()
-        rect = QRectF(self.rect())
-        radius = 8.0
-
-        path = QPainterPath()
-        path.addRoundedRect(rect, radius, radius)
-
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(colors["bg"])
-        painter.drawPath(path)
-
-        painter.setPen(QPen(colors["border"], 1))
-        painter.setBrush(Qt.NoBrush)
-        painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -261,6 +167,9 @@ class _PreviewScrollArea(_StyledPreviewScrollArea):
         self._content_widget = self._text_edit
         self._wheel_step_scale = 1.0
         super().__init__(parent)
+        # QAbstractScrollArea 的 viewport 默认按 palette.Base 填色，
+        # 关闭自绘底色才能透出底层内容区（与文本预览器行为一致）
+        self._text_edit.viewport().setAutoFillBackground(False)
 
     def update_wheel_step_scale(self) -> None:
         """像素滚动模式下保持 1.0 步长比例。"""
@@ -475,23 +384,28 @@ class _ZoomPopup(QWidget):
         p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), r, r)
         p.end()
 
-    def _target_rect(self, anchor_br: QPoint) -> QRect:
-        """计算弹窗最终矩形：右对齐顶栏右下角锚点并钳位到屏幕内。"""
+    def _target_rect(self, anchor: QPoint) -> QRect:
+        """计算弹窗最终矩形：以锚点（按钮下缘中心）为水平中心向下展开，
+        贴近屏幕底边时上翻。"""
         pw = self.POPUP_WIDTH
         ph = self.POPUP_HEIGHT
-        margin_r = 5
-        x = anchor_br.x() - pw - margin_r
-        y = anchor_br.y() + 7
+        layout = self._parent_layout
+        dpi = getattr(layout, "_dpi_scale", 1.0) if layout is not None else 1.0
+        margin = max(4, round(6 * dpi))
+        x = anchor.x() - pw // 2
+        y = anchor.y() + margin
 
         screen = QApplication.primaryScreen()
         if screen is not None:
             sg = screen.availableGeometry()
             x = max(sg.x() + 8, min(x, sg.right() - pw - 8))
+            if y + ph > sg.bottom() - 8:
+                y = anchor.y() - ph - margin
         return QRect(x, y, pw, ph)
 
-    def show_animated(self, anchor_br: QPoint) -> None:
-        """从按钮右下角向下展开，弹窗右对齐。"""
-        target = self._target_rect(anchor_br)
+    def show_animated(self, anchor: QPoint) -> None:
+        """从按钮下缘中心向下展开，弹窗与按钮水平居中对齐。"""
+        target = self._target_rect(anchor)
         x, y, pw = target.x(), target.y(), target.width()
         ph = target.height()
 
@@ -615,25 +529,26 @@ class _WeightSlider(StyledSlider):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 可变字重高级弹窗
+# 字重选择弹窗（横向滑块 + 数值标签）
 # ──────────────────────────────────────────────────────────────────────────────
 
 class _WeightPopup(QWidget):
-    """可变字重高级弹窗：含纵向滑块 + 数值标签。
+    """字重选择弹窗：含横向滑块 + 数值标签。
 
-    将滑动条 0.0~1.0 线性映射到 100~1000 的字重值。
+    点击顶栏字重数值按钮弹出；将滑动条 0.0~1.0 线性映射到 100~1000
+    的字重值，拖动时实时应用到预览字体。
     """
 
     WEIGHT_MIN = 100
     WEIGHT_MAX = 1000
-    POPUP_WIDTH = 56
-    POPUP_HEIGHT = 200
+    POPUP_WIDTH = 214
+    POPUP_HEIGHT = 44
 
     def __init__(
         self,
         parent: Optional["FontPreviewerLayout"] = None,
     ) -> None:
-        """初始化可变字重弹出面板。
+        """初始化字重选择弹出面板。
 
         Args:
             parent: 父布局实例，用于同步字重。
@@ -646,7 +561,7 @@ class _WeightPopup(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self._parent_layout = parent
         self._radius = 8
-        self._padding = 8
+        self._padding = 6
         self._closing = False
 
         # 动画
@@ -655,27 +570,28 @@ class _WeightPopup(QWidget):
         self._slide = QPropertyAnimation(self, b"geometry")
         self._slide.setEasingCurve(QEasingCurve.OutCubic)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(self._padding, self._padding, self._padding, self._padding)
-        layout.setSpacing(6)
-
-        self._value_label = QLabel("400")
-        self._value_label.setAlignment(Qt.AlignCenter)
-        self._value_label.setStyleSheet(
-            f"color: {tm.text.name()}; font-size: 12px; background: transparent;"
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(
+            self._padding, self._padding, self._padding, self._padding
         )
-        layout.addWidget(self._value_label)
+        layout.setSpacing(8)
 
         self._slider = _WeightSlider(
             value=self._weight_to_value(400),
             size="sm",
-            orientation=Qt.Vertical,
+            orientation=Qt.Horizontal,
         )
-        self._slider.setFixedSize(24, 140)
+        self._slider.setFixedWidth(150)
         self._slider.value_changed.connect(self._on_slider_changed)
-        layout.addWidget(self._slider, alignment=Qt.AlignHCenter)
+        layout.addWidget(self._slider)
 
-        layout.addStretch()
+        self._value_label = QLabel("400")
+        self._value_label.setAlignment(Qt.AlignCenter)
+        self._value_label.setFixedWidth(34)
+        self._value_label.setStyleSheet(
+            f"color: {tm.text.name()}; font-size: 12px; background: transparent;"
+        )
+        layout.addWidget(self._value_label)
 
     def refresh_theme(self) -> None:
         """刷新主题相关样式（主题切换时由父布局调用）。"""
@@ -712,11 +628,11 @@ class _WeightPopup(QWidget):
         p.end()
 
     def _target_rect(self, anchor: QPoint) -> QRect:
-        """计算弹窗最终矩形：从按钮左下角向下展开，贴近屏幕底边时上翻。"""
+        """计算弹窗最终矩形：以锚点为弹窗水平中心向下展开，贴近屏幕底边时上翻。"""
         pw = self.POPUP_WIDTH
         ph = self.POPUP_HEIGHT
         margin = 4
-        x = anchor.x()
+        x = anchor.x() - pw // 2
         y = anchor.y() + margin
 
         screen = QApplication.primaryScreen()
@@ -728,7 +644,7 @@ class _WeightPopup(QWidget):
         return QRect(x, y, pw, ph)
 
     def show_animated(self, anchor: QPoint) -> None:
-        """从指定锚点（按钮左下角）向下展开弹窗。"""
+        """从指定锚点（按钮下缘中心）向下展开弹窗，与按钮水平居中对齐。"""
         target = self._target_rect(anchor)
         x, y, pw = target.x(), target.y(), target.width()
         ph = target.height()
@@ -792,7 +708,7 @@ class _WeightPopup(QWidget):
         weight = self._value_to_weight(val)
         self._value_label.setText(str(weight))
         if self._parent_layout is not None:
-            self._parent_layout._apply_variable_weight(weight)
+            self._parent_layout._apply_weight(weight)
 
     def sync_from_parent(self) -> None:
         """从父布局当前字重同步滑条和标签。"""
@@ -803,7 +719,7 @@ class _WeightPopup(QWidget):
             self.WEIGHT_MIN,
             min(
                 self.WEIGHT_MAX,
-                getattr(layout, "_current_variable_weight", 400),
+                getattr(layout, "_current_weight", 400),
             ),
         )
         self._slider.value = self._weight_to_value(weight)
@@ -829,6 +745,32 @@ class FontPreviewerLayout(QWidget):
     """
 
     close_requested = Signal()
+
+    # 数值字重（100~1000）→ 标准字重名；供静态字体的字重标签显示
+    _WEIGHT_NAMES = {
+        100: "Thin",
+        200: "ExtraLight",
+        300: "Light",
+        400: "Regular",
+        500: "Medium",
+        600: "SemiBold",
+        700: "Bold",
+        800: "ExtraBold",
+        900: "Black",
+        1000: "Black",
+    }
+
+    @staticmethod
+    def weight_name(weight: int) -> str:
+        """数值字重 → 标准字重名（非整档取最近档，超出 100 偏差回退 Regular）。"""
+        value = max(100, min(1000, int(weight)))
+        direct = FontPreviewerLayout._WEIGHT_NAMES.get(value)
+        if direct is not None:
+            return direct
+        nearest = min(FontPreviewerLayout._WEIGHT_NAMES, key=lambda key: abs(key - value))
+        if abs(nearest - value) <= 100:
+            return FontPreviewerLayout._WEIGHT_NAMES[nearest]
+        return "Regular"
 
     def __init__(
         self,
@@ -870,13 +812,16 @@ class FontPreviewerLayout(QWidget):
         self._zoom_popup: QWidget | None = None
         self._text_drawer: StyledDrawer | None = None
         self._ai_drawer: StyledDrawer | None = None
-        self._weight_combo: StyledComboBox | None = None
-        self._weight_btn: StyledButton | None = None
+        self._weight_label: QLabel | None = None
+        self._weight_value_btn: StyledButton | None = None
         self._weight_popup: QWidget | None = None
         # 弹窗外点击手势状态：按下挂起 → 释放时若无窗口拖拽则收起弹窗
         self._popup_press_pending: bool = False
         self._popup_drag_moved: bool = False
-        self._current_variable_weight: int = 400
+        self._current_weight: int = 400
+        # 当前字体是否为可变字体（可变：标签显示 Weight + 数值可拖滑块调节 wght；
+        # 静态：标签显示真实字重名如 Regular/Thin）
+        self._is_variable_font: bool = False
 
         self._current_style: str = "Regular"
         self._available_styles: list[str] = []
@@ -892,7 +837,7 @@ class FontPreviewerLayout(QWidget):
         layout.setSpacing(0)
 
         # 顶栏（48px 固定高度，与 PDF / 图片 / 文本预览器一致）
-        self._top_bar = _ToolbarFrame()
+        self._top_bar = PreviewToolbarFrame()
         self._top_bar.setObjectName("FontPreviewerTopBar")
         self._top_bar.setFixedHeight(48)
         self._build_top_bar()
@@ -964,12 +909,12 @@ class FontPreviewerLayout(QWidget):
             app.installEventFilter(self)
 
     def _build_top_bar(self) -> None:
-        """构建顶栏：左侧编辑预览文本按钮，右侧 AI / 缩放 / 最大化按钮。"""
-        top_layout = QHBoxLayout(self._top_bar)
-        top_layout.setContentsMargins(8, 6, 8, 6)
-        top_layout.setSpacing(6)
+        """构建顶栏（参考 Windows 照片查看器功能栏布局）。
 
-        # 左侧：编辑预览文本图标按钮
+        最左：编辑预览文本（固定角）；中部功能组：字重 → AI → 缩放（6px 统一
+        间距）；最右：全屏。
+        """
+        # 最左固定角：编辑预览文本图标按钮（打开左侧预览文本编辑抽屉）
         edit_icon = str(icons_dir() / "font.svg")
         self._edit_preview_btn = StyledButton(
             "", variant="ghost", size="sm", icon=edit_icon
@@ -977,39 +922,58 @@ class FontPreviewerLayout(QWidget):
         self._edit_preview_btn.setFixedSize(32, 32)
         self._edit_preview_btn.setToolTip("编辑预览文本")
         self._edit_preview_btn.clicked.connect(self._on_edit_preview_text)
-        self._top_bar.add_left_button(self._edit_preview_btn)
+        self._top_bar.add_left(self._edit_preview_btn)
 
-        # 左侧：字重/样式下拉框
-        self._weight_combo = StyledComboBox(items=[], size="sm")
-        self._weight_combo.setFixedWidth(110)
-        self._weight_combo.setToolTip("字重 / 样式")
-        self._weight_combo.selection_made.connect(self._on_weight_selected)
-        self._top_bar.add_left_button(self._weight_combo)
+        # 中部左段：字重标签 + 字重数值按钮（点击弹出横向滑块选择字重）
+        self._weight_group = QWidget()
+        weight_layout = QHBoxLayout(self._weight_group)
+        weight_layout.setContentsMargins(0, 0, 0, 0)
+        weight_layout.setSpacing(6)
 
-        # 左侧：高级可变字重按钮
-        self._weight_btn = StyledButton("400", variant="ghost", size="sm")
-        self._weight_btn.setFixedHeight(30)
-        self._weight_btn.setFixedWidth(50)
-        self._weight_btn.setToolTip("高级可变字重")
-        self._weight_btn.clicked.connect(self._on_weight_clicked)
-        self._top_bar.add_left_button(self._weight_btn)
+        self._weight_label = QLabel("Weight")
+        self._weight_label.setToolTip("Weight")
+        self._weight_label.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
+        self._weight_label.setFixedHeight(30)
+        self._weight_label.setStyleSheet(
+            f"color: {tm.mid.name()}; background: transparent; font-size: 12px;"
+        )
+        weight_layout.addWidget(self._weight_label)
 
-        # 右侧：AI 图标按钮（打开右侧 AI 抽屉）
+        self._weight_value_btn = StyledButton("wght", variant="ghost", size="sm")
+        self._weight_value_btn.setFixedHeight(30)
+        self._weight_value_btn.setFixedWidth(56)
+        self._weight_value_btn.setToolTip("wght")
+        self._weight_value_btn.setEnabled(False)
+        self._weight_value_btn.clicked.connect(self._on_weight_clicked)
+        weight_layout.addWidget(self._weight_value_btn)
+
+        # 分组自身不带 tooltip；折叠进「更多」菜单时的命名单独注册映射
+        self._top_bar.add_leading(self._weight_group)
+        self._top_bar.set_overflow_label(self._weight_group, "字重")
+
+        # 中部左段续：AI 图标按钮（打开右侧 AI 抽屉）——与字重同组等间距
         ai_icon = str(icons_dir() / "ai.svg")
         self._ai_btn = StyledButton("", variant="ghost", size="sm", icon=ai_icon)
         self._ai_btn.setFixedSize(32, 32)
         self._ai_btn.setToolTip("AI 功能")
         self._ai_btn.clicked.connect(self._on_ai_clicked)
-        self._top_bar.add_right_button(self._ai_btn)
+        self._top_bar.add_leading(self._ai_btn)
 
-        # 右侧：缩放图标按钮
+        # 中部左段续：缩放图标按钮
         zoom_icon = str(icons_dir() / "zoom.svg")
         self._zoom_btn = StyledButton("", variant="ghost", size="sm", icon=zoom_icon)
         self._zoom_btn.setFixedSize(32, 32)
         self._zoom_btn.setToolTip("缩放")
-        self._top_bar.add_right_button(self._zoom_btn)
+        self._top_bar.add_leading(self._zoom_btn)
 
-        # 右侧：最大化 / 还原图标按钮
+        # 折叠优先级：次要功能先收进「更多」菜单
+        self._top_bar.set_overflow_priority([
+            self._ai_btn,
+            self._zoom_btn,
+            self._weight_group,
+        ])
+
+        # 最右：最大化 / 还原图标按钮
         self._maxsize_icon_path = str(icons_dir() / "maxsize.svg")
         self._minisize_icon_path = str(icons_dir() / "minisize.svg")
         self._maxsize_btn = StyledButton(
@@ -1017,42 +981,11 @@ class FontPreviewerLayout(QWidget):
         )
         self._maxsize_btn.setFixedSize(32, 32)
         self._maxsize_btn.setToolTip("最大化")
-        self._top_bar.add_right_button(self._maxsize_btn)
-
-    def _populate_weight_combo(self) -> None:
-        """根据已发现的命名实例填充字重/样式下拉框。"""
-        if self._weight_combo is None:
-            return
-        self._weight_combo.blockSignals(True)
-        styles = self._available_styles
-        if styles:
-            self._weight_combo.addItems(list(styles))
-            if "Regular" in styles:
-                self._weight_combo.setCurrentText("Regular")
-                self._current_style = "Regular"
-            else:
-                self._weight_combo.setCurrentIndex(0)
-                first = self._weight_combo.currentText()
-                if first:
-                    self._current_style = first
-            self._weight_combo.setEnabled(len(styles) > 1)
-        else:
-            self._weight_combo.addItems(["Regular"])
-            self._weight_combo.setCurrentIndex(0)
-            self._weight_combo.setEnabled(False)
-            self._current_style = "Regular"
-        self._weight_combo.blockSignals(False)
-
-    def _on_weight_selected(self, style_name: str) -> None:
-        """用户选择新的命名实例时刷新预览。"""
-        if not style_name or style_name == self._current_style:
-            return
-        self._current_style = style_name
-        self._apply_preview_font()
+        self._top_bar.add_right(self._maxsize_btn)
 
     def _on_weight_clicked(self) -> None:
-        """高级可变字重按钮点击：展开/收起弹窗。"""
-        # 字体未加载时禁用高级字重弹窗
+        """字重数值按钮点击：展开/收起字重滑块弹窗。"""
+        # 字体未加载时禁用字重弹窗
         if not self.current_font_family:
             return
         if self._weight_popup is not None and self._weight_popup.isVisible():
@@ -1066,16 +999,19 @@ class FontPreviewerLayout(QWidget):
         self._weight_popup.show_animated(self._weight_anchor_global())
 
     def _zoom_anchor_global(self) -> QPoint:
-        """缩放弹窗锚点：顶栏右下角（屏幕坐标）。"""
-        return self._top_bar.mapToGlobal(
-            QPoint(self._top_bar.width(), self._top_bar.height())
-        )
+        """缩放弹窗锚点：缩放按钮下缘水平中心（屏幕坐标）。
+
+        按钮被折叠进「更多」菜单时退回到「更多」按钮，保证从溢出菜单
+        触发时弹窗仍落在按钮附近。
+        """
+        return self._top_bar.popup_anchor_global(self._zoom_btn)
 
     def _weight_anchor_global(self) -> QPoint:
-        """字重弹窗锚点：字重按钮左下角（屏幕坐标）。"""
-        return self._weight_btn.mapToGlobal(
-            QPoint(0, self._weight_btn.height())
-        )
+        """字重弹窗锚点：数值按钮下缘水平中心（屏幕坐标），弹窗与按钮居中对齐。
+
+        控件被折叠进「更多」菜单时退回到「更多」按钮。
+        """
+        return self._top_bar.popup_anchor_global(self._weight_value_btn)
 
     def _close_zoom_popup(self) -> None:
         """收起缩放弹窗（带动画；实例保留复用）。"""
@@ -1125,24 +1061,32 @@ class FontPreviewerLayout(QWidget):
             except RuntimeError:
                 pass
 
-    def _apply_variable_weight(self, weight: int) -> None:
-        """应用可变字重到预览文本。"""
-        self._current_variable_weight = weight
+    def _apply_weight(self, weight: int) -> None:
+        """应用字重到预览文本。
+
+        静态字体按权重匹配最近的字形实例；Qt 识别为可变字体的族会通过
+        wght 轴请求生效（不支持时静默忽略）。
+        """
+        weight = max(100, min(1000, int(weight)))
+        self._current_weight = weight
         if not self.current_font_family:
             return
         font = self._preview_view._text_edit.font()
         font.setWeight(QFont.Weight(weight))
-        # 尝试使用可变字体轴
-        if hasattr(font, "variableAxisTags") and "wght" in font.variableAxisTags():
+        # 可变字体：请求 wght 轴值（静态字体抛 ValueError 时忽略）
+        try:
             font.setVariableAxis("wght", float(weight))
+        except (ValueError, RuntimeError):
+            pass
         self._preview_view._text_edit.setFont(font)
-        if self._weight_btn is not None:
-            self._weight_btn.setText(str(weight))
+        if self._weight_value_btn is not None:
+            self._weight_value_btn.setText(str(weight))
 
     def _init_text_drawer(self) -> None:
         """初始化左侧预览文本编辑抽屉。
 
-        抽屉嵌入在内容区内，包含一个 ``StyledTextarea`` 和一个重置按钮。
+        结构与文本预览器搜索抽屉一致：顶部标题 + 拉伸编辑区 + 底部整宽操作
+        按钮。抽屉嵌入在内容区内，编辑内容实时同步到预览区。
         """
         self._text_drawer = StyledDrawer(
             orientation="left",
@@ -1169,15 +1113,24 @@ class FontPreviewerLayout(QWidget):
         panel_layout.setContentsMargins(16, 16, 16, 16)
         panel_layout.setSpacing(12)
 
+        # 标题（与文本预览器搜索抽屉的标题样式一致）
+        title = QLabel("编辑预览文本")
+        title.setStyleSheet(
+            f"color: {tm.text.name()}; font-size: 16px; font-weight: 600;"
+            " background: transparent;"
+        )
+        panel_layout.addWidget(title)
+
         self._preview_text_edit = StyledTextarea(
             text=DEFAULT_PREVIEW_TEXT,
             placeholder="在此输入预览文本…",
-            label="预览文本",
         )
         self._preview_text_edit.text_changed.connect(self._on_preview_text_changed)
         panel_layout.addWidget(self._preview_text_edit, stretch=1)
 
-        self._reset_preview_btn = StyledButton("重置", variant="secondary", size="sm")
+        self._reset_preview_btn = StyledButton(
+            "重置", variant="secondary", size="sm", block=True
+        )
         self._reset_preview_btn.setFixedHeight(32)
         self._reset_preview_btn.clicked.connect(self._on_reset_preview_text)
         panel_layout.addWidget(self._reset_preview_btn)
@@ -1252,28 +1205,19 @@ class FontPreviewerLayout(QWidget):
     def resizeEvent(self, event) -> None:
         """窗口尺寸变化时同步更新左右两侧抽屉的遮罩和面板尺寸。"""
         super().resizeEvent(event)
-        drawer = getattr(self, "_text_drawer", None)
-        if drawer is not None and drawer._is_open:
-            drawer._update_container_geom()
-            cw, ch = drawer._cw, drawer._ch
-            drawer.setGeometry(0, 0, cw, ch)
-            drawer._backdrop.setGeometry(0, 0, cw, ch)
-            pw, _ = drawer._get_panel_size()
-            drawer._panel.resize(pw, ch)
-            drawer._panel.move(0, 0)
-
-        ai_drawer = getattr(self, "_ai_drawer", None)
-        if ai_drawer is not None and ai_drawer._is_open:
-            ai_drawer._update_container_geom()
-            cw, ch = ai_drawer._cw, ai_drawer._ch
-            ai_drawer.setGeometry(0, 0, cw, ch)
-            ai_drawer._backdrop.setGeometry(0, 0, cw, ch)
-            pw, _ = ai_drawer._get_panel_size()
-            ai_drawer._panel.resize(pw, ch)
-            # 右侧面板需要重新定位到新右边缘，并更新动画目标位置
-            ai_drawer._panel.move(cw - pw, 0)
-            ai_drawer._start_pos = QPoint(cw, 0)
-            ai_drawer._end_pos = QPoint(cw - pw, 0)
+        for drawer_attr in ("_text_drawer", "_ai_drawer"):
+            drawer = getattr(self, drawer_attr, None)
+            if drawer is not None and drawer._is_open:
+                drawer._update_container_geom()
+                cw, ch = drawer._cw, drawer._ch
+                drawer.setGeometry(0, 0, cw, ch)
+                drawer._backdrop.setGeometry(0, 0, cw, ch)
+                pw, _ = drawer._get_panel_size()
+                drawer._panel.resize(pw, ch)
+                if drawer._orientation == "right":
+                    drawer._panel.move(cw - pw, 0)
+                else:
+                    drawer._panel.move(0, 0)
 
     def eventFilter(self, obj: Any, event: QEvent) -> bool:
         """应用级事件过滤：缩放/字重弹窗手势关闭（拖拽豁免）+ 窗口移动跟随/缩放关闭。"""
@@ -1362,25 +1306,31 @@ class FontPreviewerLayout(QWidget):
             self._weight_popup.refresh_theme()
         if self._zoom_popup is not None and self._zoom_popup.isVisible():
             self._zoom_popup.update()
+        if self._weight_label is not None:
+            self._weight_label.setStyleSheet(
+                f"color: {tm.mid.name()}; background: transparent; font-size: 12px;"
+            )
         self.update()
 
     def set_section_styles(self, fill_color: str, border_color: str) -> None:
         """应用面板样式（主题切换时由 MainWindow 调用）。
 
+        与文本预览器一致：内容区 / 覆盖层背景透明，透出底层窗口内容。
+
         Args:
             fill_color: 填充色（当前未使用，保留签名兼容）。
             border_color: 边框色（当前未使用，保留签名兼容）。
         """
-        self._top_bar.setStyleSheet("border-radius: 8px;")
+        # 顶栏透明无背景：不在此设置任何样式
         self._content_area.setStyleSheet(
             f"""
-            background-color: {tm.surface.name()};
+            background-color: transparent;
             border: 1px solid transparent;
             border-radius: 8px;
             """
         )
         self._overlay.setStyleSheet(
-            f"background-color: {tm.surface.name()};"
+            "background-color: transparent;"
         )
         for _w in (self._top_bar, self._content_area, self._overlay):
             _w.style().unpolish(_w)
@@ -1391,11 +1341,14 @@ class FontPreviewerLayout(QWidget):
         self.set_section_styles("", "")
 
     def _apply_text_edit_theme(self) -> None:
-        """将当前主题颜色应用到预览 QTextEdit。"""
+        """将当前主题颜色应用到预览 QTextEdit。
+
+        背景设为透明，配合 viewport 关闭自绘底色后透出底层内容区。
+        """
         self._preview_view._text_edit.setStyleSheet(
             f"""
             QTextEdit {{
-                background-color: {tm.surface.name()};
+                background: transparent;
                 color: {tm.text.name()};
                 border: none;
             }}
@@ -1459,6 +1412,8 @@ class FontPreviewerLayout(QWidget):
             self._current_font_id = None
 
         self.current_font_family = ""
+        self._is_variable_font = False
+        self._sync_weight_controls()
         self._placeholder.setText(f"正在加载: {Path(file_path).name}")
         self._refresh_placeholder_style()
         self._content_stack.setCurrentIndex(1)
@@ -1525,6 +1480,33 @@ class FontPreviewerLayout(QWidget):
         else:
             self._current_style = "Regular"
 
+        # 以当前默认样式实例的真实字重初始化字重值
+        self._current_weight = 400
+        try:
+            if self._current_style:
+                _probe = QFontDatabase.font(
+                    self.current_font_family,
+                    self._current_style,
+                    self._current_font_size,
+                )
+            else:
+                _probe = QFont(self.current_font_family)
+                _probe.setPointSize(self._current_font_size)
+            if int(_probe.weight()) > 0:
+                self._current_weight = max(100, min(1000, int(_probe.weight())))
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 可变字体探测：能设置 wght 轴视为可变（保持 Weight+数值交互）；
+        # 静态字体在 _sync_weight_controls 中显示真实字重名（如 Regular/Thin）。
+        self._is_variable_font = False
+        try:
+            _axis_probe = QFont(self.current_font_family)
+            _axis_probe.setVariableAxis("wght", float(self._current_weight))
+            self._is_variable_font = True
+        except (ValueError, RuntimeError):
+            self._is_variable_font = False
+
         self._update_preview()
 
     def _on_load_error(self, request_id: int, error_msg: str) -> None:
@@ -1550,34 +1532,46 @@ class FontPreviewerLayout(QWidget):
         self._content_stack.setCurrentIndex(1)
 
     def _apply_preview_font(self) -> None:
-        """将当前字体族、样式和字号应用到预览 QTextEdit。"""
-        if not self.current_font_family:
-            return
-        if self._current_style:
-            font = QFontDatabase.font(
-                self.current_font_family, self._current_style, self._current_font_size
-            )
-        else:
-            font = QFont()
-            font.setFamily(self.current_font_family)
-            font.setPointSize(self._current_font_size)
-        self._preview_view._text_edit.setFont(font)
-        self._sync_weight_button()
+        """将当前字体族、字重和字号应用到预览 QTextEdit。
 
-    def _sync_weight_button(self) -> None:
-        """同步高级可变字重按钮的显示值为当前字体的字重，并根据字体加载状态启用/禁用按钮。"""
-        if self._weight_btn is None:
+        静态字体按字重匹配最近的字形实例；Qt 识别为可变字体的族会通过
+        wght 轴请求生效（不支持时静默忽略）。
+        """
+        if not self.current_font_family:
+            return
+        font = QFont(self.current_font_family)
+        font.setPointSize(self._current_font_size)
+        font.setWeight(QFont.Weight(self._current_weight))
+        # 可变字体：请求 wght 轴值（静态字体抛 ValueError 时忽略）
+        try:
+            font.setVariableAxis("wght", float(self._current_weight))
+        except (ValueError, RuntimeError):
+            pass
+        self._preview_view._text_edit.setFont(font)
+        self._sync_weight_controls()
+
+    def _sync_weight_controls(self) -> None:
+        """根据字体加载状态同步字重标签与数值按钮显示。
+
+        未加载（占位）：标签 Weight + 数值区 wght（禁用）；
+        静态字体加载后：标签显示真实字重名（Regular/Thin/Bold…），按钮显示数值；
+        可变字体加载后：标签保持 Weight，按钮显示当前 wght 数值。
+        """
+        if self._weight_value_btn is None or self._weight_label is None:
             return
         if not self.current_font_family:
-            # 字体未加载时禁用高级字重按钮
-            self._weight_btn.setEnabled(False)
-            self._weight_btn.setText("400")
+            self._weight_label.setText("Weight")
+            self._weight_value_btn.setEnabled(False)
+            self._weight_value_btn.setText("wght")
             return
-        self._weight_btn.setEnabled(True)
-        font = self._preview_view._text_edit.font()
-        weight = font.weight()
-        # QFont.weight() returns int 0-99? In Qt returns QFont.Weight enum (int)
-        self._weight_btn.setText(str(weight))
+        self._weight_value_btn.setEnabled(True)
+        self._weight_value_btn.setText(str(self._current_weight))
+        if self._is_variable_font:
+            self._weight_label.setText("Weight")
+        else:
+            self._weight_label.setText(self.weight_name(self._current_weight))
+        if self._weight_popup is not None and self._weight_popup.isVisible():
+            self._weight_popup.sync_from_parent()
 
     def _update_preview(self) -> None:
         """将加载好的字体应用到预览 QTextEdit 并切换到预览视图。"""
@@ -1585,7 +1579,6 @@ class FontPreviewerLayout(QWidget):
             return
 
         self._apply_preview_font()
-        self._populate_weight_combo()
         self._preview_view._text_edit.setPlainText(self._preview_text)
 
         self._placeholder.setText("选择字体文件开始预览")
@@ -1700,6 +1693,11 @@ class FontPreviewerLayout(QWidget):
         # 防御：确保离开预览器前弹窗被销毁（Qt 父级已保证随预览器销毁）
         self._discard_zoom_popup()
         self._discard_weight_popup()
+        # 收起左右抽屉，避免预览器切换后残留展开面板
+        for drawer_attr in ("_text_drawer", "_ai_drawer"):
+            drawer = getattr(self, drawer_attr, None)
+            if drawer is not None and drawer._is_open:
+                drawer.close_drawer()
 
 
 # ──────────────────────────────────────────────────────────────────────────────

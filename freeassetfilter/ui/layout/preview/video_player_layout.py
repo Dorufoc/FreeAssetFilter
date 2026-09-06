@@ -476,7 +476,7 @@ class VideoPlayerLayout(QWidget):
         self._placeholder = QLabel("拖放视频文件或选择文件以播放")
         self._placeholder.setAlignment(Qt.AlignCenter)
         self._placeholder.setStyleSheet(
-            "color: #666; font-size: 14px; background: transparent;"
+            f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
         )
         overlay_layout.addWidget(self._placeholder)
 

@@ -8,7 +8,7 @@ from PySide6.QtCore import (
     QEasingCurve, Property, QTimer, QEvent,
 )
 from PySide6.QtGui import (
-    QPainter, QColor, QPaintEvent, QFont, QMouseEvent, QPolygonF,
+    QPainter, QColor, QPaintEvent, QFont, QFontMetrics, QMouseEvent, QPolygonF,
     QPainterPath, QPen,
 )
 from theme import tm
@@ -293,7 +293,7 @@ class StyledComboBox(QWidget):
         "lg": {"h_pad": 16, "height": 44, "font_sz": 14, "rad": 8},
     }
 
-    def __init__(self, items: list = None, size: str = "default", align_right: bool = False, parent=None):
+    def __init__(self, items: list = None, size: str = "default", align_right: bool = False, parent=None, title: str = "", flat: bool = False):
         super().__init__(parent)
         self._size = size if size in self.SIZE_CONFIG else "default"
         self._items = items or []
@@ -303,9 +303,16 @@ class StyledComboBox(QWidget):
         self._chevron_progress = 0.0  # 0→1 on open
         self._align_right = align_right
         self._app_filter_installed = False
+        # 标题模式：默认项仅显示 title（如“格式”）+ 小三角；
+        # 手动选择后双行显示 title / 当前项（如“格式” / “GBK”）。
+        self._title = title
+        # 无框模式：不绘制背景与边框，功能像普通按钮一样直接显示在顶栏。
+        self._flat = flat
+        # 仅显示 title 的初始默认态：用户做过一次选择后不再自动退回。
+        self._title_only = True
 
         cfg = self.SIZE_CONFIG[self._size]
-        self.setFixedHeight(cfg["height"])
+        self.setFixedHeight(self._title and 36 or cfg["height"])
         self.setCursor(Qt.PointingHandCursor)
         self.setAttribute(Qt.WA_Hover, True)
         self.setAttribute(Qt.WA_StyledBackground, False)
@@ -358,6 +365,83 @@ class StyledComboBox(QWidget):
             return self._items[self._current_index]
         return ""
 
+    def set_title_mode(self, title: str) -> None:
+        """切换标题模式：非空 title 时默认项只显示 title，
+        手动选择后双行显示 title / 当前项；传空串则恢复单行模式。"""
+        self._title = title
+        cfg = self.SIZE_CONFIG[self._size]
+        self.setFixedHeight(self._title and 36 or cfg["height"])
+        self.update()
+
+    def set_flat(self, flat: bool) -> None:
+        """切换无框模式：True 时不绘制背景与边框（配合 title 模式）。"""
+        self._flat = flat
+        self.update()
+
+    def reset_title_only(self) -> None:
+        """恢复初始默认显示态（新预览文件）：默认项仅显示 title。"""
+        self._title_only = True
+        self.update()
+
+    # ── 内容测量（无框标题模式专用）────────────────────────────
+
+    _SIDE = 18   # 无框标题模式两侧留白（箭头与文字整体居中所需）
+
+    @property
+    def flat(self) -> bool:
+        return self._flat
+
+    def _fonts(self) -> tuple:
+        """返回 (title 小字, 值/主文本) 两组绘制字体。"""
+        cfg = self.SIZE_CONFIG[self._size]
+        title_font = QFont("Microsoft YaHei UI", cfg["font_sz"] - 3)
+        value_font = QFont("Microsoft YaHei UI", cfg["font_sz"])
+        return title_font, value_font
+
+    def _chevron_gap(self) -> int:
+        """箭头与文字之间的正常间距：约一个空格宽（4–8px）。"""
+        _, value_font = self._fonts()
+        fm = QFontMetrics(value_font)
+        return max(4, min(int(fm.horizontalAdvance(" ")), 8))
+
+    def showing_title_only(self) -> bool:
+        """当前是否处于「仅显示 title」的初始默认态（默认项且未手动选择过）。"""
+        return (
+            bool(self._title)
+            and self._title_only
+            and self._current_index <= 0
+        )
+
+    def content_width(self) -> int:
+        """无框标题模式下的紧凑宽度：较宽行文本宽 + 左右对称留白。
+
+        文字行以控件中心为轴居中，箭头紧跟较宽行的右端，
+        宽度保证左右观感对称且箭头不越界。
+        """
+        title_font, value_font = self._fonts()
+        if self._title:
+            if self.showing_title_only():
+                lines = [(value_font, self._title or "")]
+            else:
+                lines = [
+                    (title_font, self._title or ""),
+                    (value_font, self.currentText() or ""),
+                ]
+        else:
+            lines = [(value_font, self.currentText() or "")]
+        maxw = 0
+        for font, t in lines:
+            fm = QFontMetrics(font)
+            maxw = max(maxw, fm.horizontalAdvance(t))
+        return max(self._SIDE * 2 + maxw, 30)
+
+    def update_size_to_content(self) -> None:
+        """按当前内容自动设置紧凑宽度（仅无框标题模式生效）。"""
+        if not self._title:
+            return
+        self.setFixedWidth(self.content_width())
+        self.update()
+
     def setCurrentText(self, text: str):
         if text in self._items:
             self._current_index = self._items.index(text)
@@ -369,6 +453,8 @@ class StyledComboBox(QWidget):
 
     def sizeHint(self):
         cfg = self.SIZE_CONFIG[self._size]
+        if self._title:
+            return QSize(self.content_width(), self.height())
         fm = QApplication.fontMetrics()
         text = self.currentText() or "..."
         w = cfg["h_pad"] * 2 + fm.horizontalAdvance(text) + 30
@@ -395,51 +481,97 @@ class StyledComboBox(QWidget):
 
         w, h = self.width(), self.height()
         rad = cfg["rad"]
-
-        # Background — smooth hover transition
-        # 保持 alpha，作为半透明叠加层绘制，不要变成不透明的实色块
-        bg = tm.alpha_of(tm.mid, 12 + 10 * self._hover_progress)
-
-        p.setPen(Qt.NoPen)
-
-        p.setBrush(bg)
-        p.drawRoundedRect(QRectF(0, 0, w, h), rad, rad)
-
-        # Border
         accent = tm.accent
-        border_default = tm.mid
-        text_tertiary = tm.alpha_of(tm.mid, 60)
-        if self._open:
-            border = accent
-        else:
-            r = int(border_default.red() + (text_tertiary.red() - border_default.red()) * self._hover_progress)
-            g = int(border_default.green() + (text_tertiary.green() - border_default.green()) * self._hover_progress)
-            b = int(border_default.blue() + (text_tertiary.blue() - border_default.blue()) * self._hover_progress)
-            border = QColor(r, g, b)
 
-        pen = QPen(border, 1)
-        p.setPen(pen)
-        p.setBrush(Qt.NoBrush)
-        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), rad, rad)
+        if not self._flat:
+            # Background — smooth hover transition
+            # 保持 alpha，作为半透明叠加层绘制，不要变成不透明的实色块
+            bg = tm.alpha_of(tm.mid, 12 + 10 * self._hover_progress)
 
-        # Text
+            p.setPen(Qt.NoPen)
+
+            p.setBrush(bg)
+            p.drawRoundedRect(QRectF(0, 0, w, h), rad, rad)
+
+            # Border
+            border_default = tm.mid
+            text_tertiary = tm.alpha_of(tm.mid, 60)
+            if self._open:
+                border = accent
+            else:
+                r = int(border_default.red() + (text_tertiary.red() - border_default.red()) * self._hover_progress)
+                g = int(border_default.green() + (text_tertiary.green() - border_default.green()) * self._hover_progress)
+                b = int(border_default.blue() + (text_tertiary.blue() - border_default.blue()) * self._hover_progress)
+                border = QColor(r, g, b)
+
+            pen = QPen(border, 1)
+            p.setPen(pen)
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), rad, rad)
+
         text = self.currentText()
-        if text:
-            font = QFont("Microsoft YaHei UI", cfg["font_sz"])
-            p.setFont(font)
-            p.setPen(tm.text)
+        title_font, value_font = self._fonts()
+        chev_cx = w - cfg["h_pad"] - 10
+
+        if text and self._title:
+            # ── 无框标题模式：无背景边框，文字行以控件中心为轴居中，
+            #    小三角紧跟较宽行右端（正常间距）──
+            gap = self._chevron_gap()
+            sz = 5
+            title_fm = QFontMetrics(title_font)
+            value_fm = QFontMetrics(value_font)
+            if self.showing_title_only():
+                # 初始默认态：仅显示 title（如“格式”）+ 小三角
+                maxw = value_fm.horizontalAdvance(self._title)
+                p.setFont(value_font)
+                p.setPen(tm.text)
+                p.drawText(
+                    QRectF(0, 0, w, h),
+                    Qt.AlignVCenter | Qt.AlignHCenter,
+                    self._title,
+                )
+            else:
+                # 用户选择后：双行 title / 当前项（两行同轴居中）
+                maxw = max(
+                    title_fm.horizontalAdvance(self._title),
+                    value_fm.horizontalAdvance(text),
+                )
+                p.setFont(title_font)
+                p.setPen(tm.alpha_of(tm.mid, 150))
+                p.drawText(
+                    QRectF(0, 0, w, h * 0.5),
+                    Qt.AlignVCenter | Qt.AlignHCenter,
+                    self._title,
+                )
+                p.setFont(value_font)
+                p.setPen(tm.text)
+                p.drawText(
+                    QRectF(0, h * 0.52, w, h * 0.48),
+                    Qt.AlignVCenter | Qt.AlignHCenter,
+                    text,
+                )
+            # 箭头：文字块右端（较宽行）右侧一个正常间距，最右留 4px
+            chev_cx = min(
+                w / 2.0 + maxw / 2.0 + gap + sz,
+                w - 4.0,
+            )
+        elif text:
             arrow_x = w - cfg["h_pad"] - 22
-            text_w = arrow_x - cfg["h_pad"] - 4
-            p.drawText(QRectF(cfg["h_pad"], 0, max(text_w, 0), h),
-                       Qt.AlignVCenter | Qt.AlignLeft, text)
+            tw = arrow_x - cfg["h_pad"] - 4
+            p.setFont(value_font)
+            p.setPen(tm.text)
+            p.drawText(
+                QRectF(cfg["h_pad"], 0, max(tw, 0), h),
+                Qt.AlignVCenter | Qt.AlignLeft,
+                text,
+            )
 
         # Chevron — rotate 180° on open
-        cx = w - cfg["h_pad"] - 10
         cy = h / 2.0
         sz = 5.0
 
         p.save()
-        p.translate(cx, cy)
+        p.translate(chev_cx, cy)
         angle = 180.0 * self._chevron_progress
         p.rotate(angle)
         p.setPen(Qt.NoPen)
@@ -517,6 +649,9 @@ class StyledComboBox(QWidget):
             self.update()
             return
         self._current_index = index
+        # 用户在下拉中做出过选择（含再次选择默认项）后，
+        # 不再退回“仅显示 title”的初始默认态。
+        self._title_only = False
         self.current_index_changed.emit(index)
         self.selection_made.emit(self.currentText())
         self._close()

@@ -9,11 +9,15 @@ from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QMimeData, QUrl, Qt, Signal
-from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QSplitter, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication, QFrame, QHBoxLayout, QLabel, QSizePolicy, QSplitter,
+    QVBoxLayout, QWidget,
+)
 
 from components.styled_button import StyledButton
 from components.styled_dialog import create_custom_dialog
 from freeassetfilter.services.previewer_registry import PreviewerRegistry
+from layout.preview.file_info_panel import FileInfoPanel
 from theme import tm
 
 
@@ -98,13 +102,22 @@ class UnifiedPreviewerLayout(QWidget):
         self._content_top.setObjectName("PreviewerTop")
         self._splitter.addWidget(self._content_top)
 
-        # 内容区 2（下方）
+        # 内容区 2（下方）— 文件信息预览面板
         self._content_bottom = QFrame()
         self._content_bottom.setObjectName("PreviewerBottom")
         self._splitter.addWidget(self._content_bottom)
 
-        # 默认 1:1 比例
+        # 文件信息面板（占满内容区 2；背景透明，透出 PreviewerBottom 样式）
+        self._content_bottom_layout = QVBoxLayout(self._content_bottom)
+        self._content_bottom_layout.setContentsMargins(0, 0, 0, 0)
+        self._content_bottom_layout.setSpacing(0)
+        self._info_panel = FileInfoPanel(self._content_bottom)
+        self._content_bottom_layout.addWidget(self._info_panel)
+
+        # 默认 1:1 比例（可见后由 _apply_default_split 精确等分）
         self._splitter.setSizes([1, 1])
+        self._default_split_applied = False
+        self._splitter.splitterMoved.connect(self._on_splitter_moved)
 
         layout.addWidget(self._splitter, stretch=1)
 
@@ -143,14 +156,20 @@ class UnifiedPreviewerLayout(QWidget):
             "使用系统默认方式打开", variant="secondary", size="sm"
         )
         self._open_default_btn.clicked.connect(self._on_open_with_system_clicked)
-        bottom_layout.addWidget(self._open_default_btn)
 
         # 强调按钮 — 定位到所在目录
         self._locate_btn = StyledButton(
             "定位到所在目录", variant="primary", size="sm"
         )
         self._locate_btn.clicked.connect(self._on_locate_requested)
-        bottom_layout.addWidget(self._locate_btn)
+
+        # 两个文字按钮等宽且随功能区宽度同步增/减：
+        # Ignored 水平策略（忽略各自文本宽度差异）+ 最小宽 0 + 等 stretch=1，
+        # 布局把可分配宽度二等分给两者，避免用固定宽度撑大布局最小宽度。
+        for btn in (self._open_default_btn, self._locate_btn):
+            btn.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            btn.setMinimumWidth(0)
+            bottom_layout.addWidget(btn, 1)
 
         # 图标按钮 — close.svg（清除预览）
         close_icon = str(icons_dir / "close.svg")
@@ -291,6 +310,68 @@ class UnifiedPreviewerLayout(QWidget):
     def _on_theme_changed(self, theme: str) -> None:
         """主题切换时占位（样式由 MainWindow 统一刷新）"""
     
+    def cleanup(self) -> None:
+        """释放后台资源（主窗口关闭时调用）：停止文件信息面板的采集线程。"""
+        try:
+            self._info_panel.stop()
+        except (RuntimeError, AttributeError):
+            pass
+    
+    # ── 分割区高度规则 ──
+    # 规则：
+    # 1) 默认起始状态与「取消预览」后，上下两区各占可用高度的一半；
+    # 2) 文件信息预览器（下方）的最高高度被限制为可用高度的一半，
+    #    因此预览内容区始终至少占一半；把手只能把信息区在下限以上、
+    #    半高以内拖动，无法越过半高。
+
+    def _splitter_available_height(self) -> int:
+        """分割区内可用于两个内容区的总高度（不含把手）。"""
+        return max(0, self._splitter.height() - self._splitter.handleWidth())
+
+    def _apply_default_split(self) -> None:
+        """恢复默认等分：上下各占可用高度的一半。
+
+        分割区尚未布局（高度未知）时退回等比例 [1, 1]，
+        布局后 Qt 会按比例自然实现 50/50。
+        """
+        available = self._splitter_available_height()
+        if available <= 0:
+            self._splitter.setSizes([1, 1])
+            return
+        half = available // 2
+        self._splitter.setSizes([available - half, half])
+
+    def _ensure_split_rules(self) -> None:
+        """把信息面板最高高度限制为可用高度的一半，并对超限状态兜底钳制。
+
+        窗口尺寸变化 / 把手移动 / 程序化 setSizes 后都应调用（幂等）。
+        """
+        available = self._splitter_available_height()
+        if available <= 0:
+            return
+        half = available // 2
+        # QSplitter 拖动与 setSizes 均遵循该最大高度，信息区无法越过半高
+        self._content_bottom.setMaximumHeight(half)
+        if self._content_bottom.height() > half:
+            self._splitter.setSizes([available - half, half])
+
+    def _on_splitter_moved(self, _pos: int, _index: int) -> None:
+        """把手移动后：确保信息区不越过半高；首次获得尺寸时应用默认等分。"""
+        if not self._default_split_applied and self._splitter.height() > 0:
+            self._default_split_applied = True
+            if self._current_file_info is None:
+                self._apply_default_split()
+        self._ensure_split_rules()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        """窗口缩放：重算信息区半高上限；首次可见时精确应用默认等分。"""
+        super().resizeEvent(event)
+        if not self._default_split_applied and self._splitter.height() > 0:
+            self._default_split_applied = True
+            if self._current_file_info is None:
+                self._apply_default_split()
+        self._ensure_split_rules()
+    
     # ── 公共 API ──
     
     def set_file(self, file_info: Optional[dict]) -> None:
@@ -305,27 +386,34 @@ class UnifiedPreviewerLayout(QWidget):
             self.clear_preview()
             return
         
-        # 文件夹：清空预览（文件夹预览器未来实现）
-        if file_info.get("is_dir", False):
-            self.clear_preview()
-            return
-        
-        # 缺少必要字段：清空预览
-        if "path" not in file_info or "suffix" not in file_info:
+        # 文件夹：路由到文件夹预览器（仅文件池文件夹卡片点击触发，
+        # 与文件选择器的常规文件夹导航相独立）。
+        is_dir = bool(file_info.get("is_dir", False))
+        if is_dir:
+            if not file_info.get("path"):
+                self.clear_preview()
+                return
+        elif "path" not in file_info or "suffix" not in file_info:
+            # 缺少必要字段：清空预览
             self.clear_preview()
             return
         
         # 更新当前文件信息
         self._current_file_info = file_info
         self._update_bottom_buttons()
+        self._info_panel.set_file(file_info)
         self._load_preview(file_info)
     
     def clear_preview(self) -> None:
-        """清空预览区，显示占位符。"""
+        """清空预览区，显示占位符，并恢复默认等分（上下各半）。"""
         self._cleanup_current_preview()
         self._current_file_info = None
         self._update_bottom_buttons()
         self._show_placeholder()
+        self._info_panel.clear()
+        # 取消文件预览后恢复默认高度：两区各占一半
+        self._apply_default_split()
+        self._ensure_split_rules()
     
     # ── 内部方法 ──
     
@@ -375,7 +463,7 @@ class UnifiedPreviewerLayout(QWidget):
         
         # 创建占位符标签
         if self._placeholder_label is None:
-            self._placeholder_label = QLabel("选择文件以预览")
+            self._placeholder_label = QLabel("选择文件以预览内容")
             self._placeholder_label.setAlignment(Qt.AlignCenter)
             self._placeholder_label.setStyleSheet(
                 f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"

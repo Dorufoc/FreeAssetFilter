@@ -151,7 +151,7 @@ class DetachedVideoWindow(QWidget):
                 color: white;
                 padding: 8px 16px;
                 border-radius: 6px;
-                font-size: 16px;
+                font-size: 14px;
             }
         """)
         osd_main_layout.addWidget(self._osd_label)

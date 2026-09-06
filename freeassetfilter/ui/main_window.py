@@ -1796,6 +1796,11 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             self._file_pool.flush_backup_save_now()
         except Exception:
             pass
+        try:
+            if self._previewer is not None:
+                self._previewer.cleanup()
+        except Exception:
+            pass
         StagingPoolService().dispose()
         super().closeEvent(event)
 

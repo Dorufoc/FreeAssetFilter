@@ -125,15 +125,15 @@ class PreviewerRegistry:
         "json":  ("freeassetfilter.ui.layout.preview.text_previewer_layout", "TextPreviewerLayout"),
         "xml":   ("freeassetfilter.ui.layout.preview.text_previewer_layout", "TextPreviewerLayout"),
         # ── Archives ────────────────────────────────────────────────────
-        "zip":  ("freeassetfilter.components.archive_browser", "ArchiveBrowser"),
-        "rar":  ("freeassetfilter.components.archive_browser", "ArchiveBrowser"),
-        "tar":  ("freeassetfilter.components.archive_browser", "ArchiveBrowser"),
-        "gz":   ("freeassetfilter.components.archive_browser", "ArchiveBrowser"),
-        "tgz":  ("freeassetfilter.components.archive_browser", "ArchiveBrowser"),
-        "bz2":  ("freeassetfilter.components.archive_browser", "ArchiveBrowser"),
-        "xz":   ("freeassetfilter.components.archive_browser", "ArchiveBrowser"),
-        "7z":   ("freeassetfilter.components.archive_browser", "ArchiveBrowser"),
-        "iso":  ("freeassetfilter.components.archive_browser", "ArchiveBrowser"),
+        "zip":  ("freeassetfilter.ui.layout.preview.archive_previewer_layout", "ArchivePreviewerLayout"),
+        "rar":  ("freeassetfilter.ui.layout.preview.archive_previewer_layout", "ArchivePreviewerLayout"),
+        "tar":  ("freeassetfilter.ui.layout.preview.archive_previewer_layout", "ArchivePreviewerLayout"),
+        "gz":   ("freeassetfilter.ui.layout.preview.archive_previewer_layout", "ArchivePreviewerLayout"),
+        "tgz":  ("freeassetfilter.ui.layout.preview.archive_previewer_layout", "ArchivePreviewerLayout"),
+        "bz2":  ("freeassetfilter.ui.layout.preview.archive_previewer_layout", "ArchivePreviewerLayout"),
+        "xz":   ("freeassetfilter.ui.layout.preview.archive_previewer_layout", "ArchivePreviewerLayout"),
+        "7z":   ("freeassetfilter.ui.layout.preview.archive_previewer_layout", "ArchivePreviewerLayout"),
+        "iso":  ("freeassetfilter.ui.layout.preview.archive_previewer_layout", "ArchivePreviewerLayout"),
         # ── Fonts ───────────────────────────────────────────────────────
         "ttf":   ("freeassetfilter.ui.layout.preview.font_previewer_layout", "FontPreviewerLayout"),
         "otf":   ("freeassetfilter.ui.layout.preview.font_previewer_layout", "FontPreviewerLayout"),
@@ -173,11 +173,11 @@ class PreviewerRegistry:
             The previewer widget class, or ``None`` when no previewer is
             registered for the given file type.
         """
-        # Directory → FolderContentList
+        # Directory → FolderPreviewerLayout
         if file_info.get("is_dir", False):
             return cls._import_class(
-                "freeassetfilter.components.folder_content_list",
-                "FolderContentList",
+                "freeassetfilter.ui.layout.preview.folder_previewer_layout",
+                "FolderPreviewerLayout",
             )
 
         suffix = file_info.get("suffix", "")

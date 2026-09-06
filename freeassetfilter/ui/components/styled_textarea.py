@@ -11,6 +11,8 @@ Features:
     - Custom placeholder text
     - Size variants: sm, default, lg
     - text_changed(text: str) signal
+    - Unified scrollbar: the internal editor uses StyledScrollBar with the
+      same smooth-wheel handling as the previewer scroll areas / result lists
 """
 
 from typing import Optional
@@ -30,6 +32,10 @@ from PySide6.QtGui import (
     QPainterPath,
 )
 from theme import tm
+from freeassetfilter.ui.components.styled_scroll_area import (
+    StyledScrollArea,
+    StyledScrollBar,
+)
 
 
 class _StyledTextEdit(QPlainTextEdit):
@@ -63,6 +69,12 @@ class _StyledTextEdit(QPlainTextEdit):
         self.setTabChangesFocus(True)
         # Make viewport transparent => our paintEvent background shows through
         self.viewport().setAutoFillBackground(False)
+        # Unified scrollbar: replace the native scrollbar with the self-drawn
+        # StyledScrollBar and install the same smooth-wheel / touch scrolling
+        # used by the previewer result lists & scroll areas (auto-show/hide
+        # with the content range is preserved).
+        self.setVerticalScrollBar(StyledScrollBar(self))
+        StyledScrollArea.apply_to(self)
         self._apply_size()
         self._apply_stylesheet()
 
