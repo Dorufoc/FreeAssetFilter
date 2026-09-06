@@ -9,14 +9,15 @@ import sys
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QListView, QLabel, QAbstractItemView, QApplication, QMenu, QMessageBox, QListWidget, QListWidgetItem, QRubberBand
-from PySide6.QtCore import Qt, Signal, QSize, QTimer, QEvent, QUrl, QMargins, QPoint, QRect, QItemSelectionModel
+from PySide6.QtCore import Qt, Signal, QSize, QTimer, QEvent, QUrl, QMargins, QPoint, QRect, QItemSelectionModel, QObject
 from PySide6.QtGui import QFont, QFontMetrics
 
 from theme import tm
 from freeassetfilter.core._paths import get_app_data_path
+from freeassetfilter.utils.app_logger import debug as _rubber_log
 from freeassetfilter.core.workers.thumbnail_controller import ThumbnailController
 from components.styled_button import StyledButton
 from components.styled_lineedit import StyledLineEdit
@@ -28,6 +29,10 @@ from components.file_card_delegate import FileCardDelegate, CARD_CONFIG, LIST_CO
 from components.animated_file_list_view import AnimatedFileListView
 from freeassetfilter.services.favorites_service import FavoritesService
 from freeassetfilter.services.file_icon_manager import FileIconManager
+
+# 释放丢失守卫的轮询周期（毫秒）：框选期间周期性校验左键是否仍按下。
+# 仅在框选激活期间运行，100ms 对拖拽帧率与 CPU 均无可见影响。
+RUBBER_GUARD_INTERVAL_MS = 100
 
 
 class FileSelectorLayout(QWidget):
@@ -213,13 +218,33 @@ class FileSelectorLayout(QWidget):
         self._rubber_ctrl: bool = False                  # 按下时是否按住 Ctrl（追加模式）
         self._rubber_pressed_row: int = -1               # 按下位置所在行（空白处 = -1）
         self._rubber_preselect: set = set()              # 按下时已选中的行集合（Ctrl 追加基准）
-        self._rubber_last_rows: Optional[set] = None     # 上次应用的行集合（无变化时跳过刷新）
+        self._rubber_last_rows: Optional[Set[int]] = None  # 上次应用的行集合（无变化时跳过刷新）
+        self._rubber_last_pos: Optional[QPoint] = None   # 最后一次拖拽位置（释放丢失时守卫据此收尾）
+        # 释放丢失守卫：仅框选期间运行的 QTimer，轮询鼠标按键状态兜底收尾。
+        self._rubber_guard_timer: Optional[QTimer] = None
         # 网格指标（由 _apply_grid_layout / _update_list_grid 维护，用于框选时 O(1) 定位行）
         self._grid_metrics: Dict[str, int] = {}
+        # 主题切换时刷新框选样式（viewport overlay 配色跟随强调色）。
+        try:
+            tm.theme_changed.connect(self._refresh_rubber_band_style)
+        except (RuntimeError, TypeError, AttributeError):
+            pass
 
     # ── 事件过滤器：在 QListView resize 前更新网格 ──────────────────────
 
-    def eventFilter(self, obj, event):
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        """事件过滤器：网格自适应 + 缩放 + 左键框选 + 侧键后退。
+
+        同时监听 viewport 与 QListView 自身的 Resize；Wheel+Ctrl 走卡片缩放；
+        左键 press/move/release 委托给框选三件套；右键不拦截。
+
+        Args:
+            obj: 事件来源对象（viewport 或文件列表视图）。
+            event: Qt 事件对象。
+
+        Returns:
+            True 表示事件已消费，False 表示放行给默认处理。
+        """
         # 同时监听 viewport 和 QListView 的 Resize（与旧 file_selector.py 一致）
         if obj is self._file_list.viewport() or obj is self._file_list:
             if event.type() == QEvent.Resize:
@@ -234,82 +259,277 @@ class FileSelectorLayout(QWidget):
                     self._go_back()
                     return True
                 if event.button() == Qt.LeftButton:
-                    return self._on_rubber_press(event)
+                    return self._on_rubber_press(event, obj)
             elif event.type() == QEvent.MouseMove:
                 if self._rubber_start_pos is not None:
                     return self._on_rubber_move(event)
             elif event.type() == QEvent.MouseButtonRelease:
-                if event.button() == Qt.LeftButton and self._rubber_start_pos is not None:
-                    return self._on_rubber_release(event)
+                if event.button() == Qt.LeftButton and (
+                    self._rubber_active or self._rubber_start_pos is not None
+                ):
+                    return self._on_rubber_release(event, obj)
         return super().eventFilter(obj, event)
 
     # ── 框选多选（橡皮筋）─────────────────────────────────────────────
 
-    def _on_rubber_press(self, event) -> bool:
-        """左键按下：记录框选起点（不立即激活，等待移动超过拖拽阈值）。
+    def _on_rubber_press(self, event: QEvent, obj=None) -> bool:
+        """左键按下：单手势接管框选起点（不立即激活，等待移动超过拖拽阈值）。
 
-        空白处按下会吞掉事件，防止 Qt 原生 IconMode 橡皮筋与自定义框选同时启动；
-        卡片上按下放行给 Qt，保持普通点击的选中/预览语义不变。
+        空白/卡片起点一律吞掉事件：Qt 原生 IconMode 框选与自定义橡皮筋不可
+        共存（共存会导致松开事件被一方消费、另一方状态机残留）。单击语义
+        由松开时（未拖拽分支）合成调用 _on_file_clicked 还原。
+
+        Args:
+            event: 鼠标按下事件（viewport 坐标系）。
+            obj: 事件来源对象（仅用于诊断日志）。
+
+        Returns:
+            恒为 True（已消费）。
         """
         self._abort_rubber_selection()
-        index = self._file_list.indexAt(event.position().toPoint())
+        pos = event.position().toPoint()
+        index = self._file_list.indexAt(pos)
         self._rubber_pressed_row = index.row() if index.isValid() else -1
-        self._rubber_start_pos = event.position().toPoint()
+        self._rubber_start_pos = pos
         self._rubber_ctrl = bool(event.modifiers() & Qt.ControlModifier)
         self._rubber_preselect = set(self._file_model.get_selected_rows())
         self._rubber_last_rows = None
-        if self._rubber_pressed_row < 0:
-            return True
-        return False
+        self._rubber_last_pos = pos
+        try:
+            _rubber_log(
+                f"[rubber] press obj={type(obj).__name__} pos={pos.x()},{pos.y()} "
+                f"row={self._rubber_pressed_row}"
+            )
+        except Exception:
+            pass
+        return True
 
-    def _on_rubber_move(self, event) -> bool:
-        """左键拖拽：超过阈值后激活橡皮筋，实时更新框内卡片选中态。"""
+    def _on_rubber_move(self, event: QEvent) -> bool:
+        """左键拖拽：超过阈值后激活橡皮筋，实时更新框内卡片选中态。
+
+        Args:
+            event: 鼠标移动事件（viewport 坐标系）。
+
+        Returns:
+            True 已进入框选态并消费事件，False 尚未超过拖拽阈值。
+        """
+        if self._rubber_start_pos is None:
+            return False
+        # 无按键移动：此前某次释放丢失/中断导致的状态残留在此自愈清理，
+        # 保证选框永不跟随空移鼠标（正常拖拽中左键始终处于按下态）。
+        if not (event.buttons() & Qt.LeftButton):
+            self._abort_rubber_selection()
+            return False
         if not self._rubber_active:
             delta = event.position().toPoint() - self._rubber_start_pos
             threshold = max(4, QApplication.startDragDistance())
             if abs(delta.x()) < threshold and abs(delta.y()) < threshold:
                 return False
             self._rubber_active = True
+            try:
+                self._file_list.viewport().grabMouse()
+            except (RuntimeError, AttributeError, TypeError):
+                pass
             self._show_rubber_band()
-        self._update_rubber_selection(event.position().toPoint())
+            self._start_rubber_guard()
+            try:
+                _rubber_log(
+                    f"[rubber] activate pos={event.position().toPoint().x()},"
+                    f"{event.position().toPoint().y()}"
+                )
+            except Exception:
+                pass
+        self._rubber_last_pos = event.position().toPoint()
+        self._update_rubber_selection(self._rubber_last_pos)
         return True
 
-    def _on_rubber_release(self, event) -> bool:
-        """左键松开：框选拖拽只保留选中态（不入池，等待右键批量入池或左键取消）；未拖拽恢复普通点击语义。"""
+    def _on_rubber_release(self, event: QEvent, obj=None) -> bool:
+        """左键松开：框选结束自动入池（add-only）并清空选择器选中态；未拖拽合成单击。
+
+        按下已被单手势接管，Qt 收不到 press，因此卡片单击在此直接调用
+        _on_file_clicked 还原（选中清理 + 预览/进目录），不再放行给 Qt。
+
+        Args:
+            event: 鼠标松开事件（viewport 坐标系）。
+            obj: 事件来源对象（仅用于诊断日志）。
+
+        Returns:
+            恒为 True（已消费）。
+        """
+        try:
+            _rubber_log(
+                f"[rubber] release obj={type(obj).__name__} "
+                f"buttons={int(event.buttons())} active={self._rubber_active} "
+                f"pos={event.position().toPoint().x()},{event.position().toPoint().y()}"
+            )
+        except Exception:
+            pass
         if self._rubber_active:
-            self._abort_rubber_selection()
+            self._finish_rubber_selection(event.position().toPoint())
             return True
         # 未发生拖拽 = 普通点击
+        pressed_row = self._rubber_pressed_row
         self._rubber_start_pos = None
+        self._rubber_rect = None
+        self._rubber_last_rows = None
+        self._rubber_ctrl = False
+        self._rubber_pressed_row = -1
         self._rubber_preselect = set()
-        if self._rubber_pressed_row < 0:
+        self._rubber_last_pos = None
+        if pressed_row < 0:
             # 空白处单击：清空选中（兼容 Qt 默认行为）
             self._clear_selector_selection()
             return True
-        # 卡片上单击：放行给 Qt，触发 clicked → 预览（_on_file_clicked 内会清除选中）
-        return False
+        # 卡片上单击：合成点击（还原 clicked → _on_file_clicked 语义）。
+        model = self._file_model
+        index = self._file_list.indexAt(event.position().toPoint())
+        if not index.isValid() and 0 <= pressed_row < model.rowCount():
+            index = model.index(pressed_row, 0)
+        if index.isValid():
+            self._on_file_clicked(index)
+        else:
+            self._clear_selector_selection()
+        return True
+
+    def _finish_rubber_selection(self, pos: Optional[QPoint]) -> None:
+        """收尾一次已激活的框选：补终点更新 → 入池 → 清空选中 → 复位状态。
+
+        松开事件与守卫定时器共用同一条收尾路径，避免逻辑分叉导致状态残留。
+
+        Args:
+            pos: 收尾时的鼠标位置（viewport 坐标）；None 表示无可用终点，
+                跳过最后一次命中行补充（仍完成入池与清理）。
+        """
+        if not self._rubber_active:
+            self._abort_rubber_selection()
+            return
+        # 内层 finally：入池信号直连主窗口槽（池添加/备份/动画），其中抛异常
+        # 也不得跳过选中清理，否则模型高亮残留形成"粘连/幽灵框"。
+        # 外层 finally：任何中间异常都不导致选框/抓取/守卫定时器残留。
+        try:
+            if pos is not None:
+                self._update_rubber_selection(pos)
+            try:
+                self._add_selected_to_pool()
+            finally:
+                self._clear_selector_selection()
+                try:
+                    _rubber_log(
+                        "[rubber] released selected_remaining="
+                        f"{len(self._file_model.get_selected_rows())}"
+                    )
+                except Exception:
+                    pass
+        finally:
+            self._abort_rubber_selection()
+
+    def _start_rubber_guard(self) -> None:
+        """启动释放丢失守卫（主线程 QTimer，仅在框选期间运行）。
+
+        仅依赖 viewport 的 move 自愈存在盲区：松开事件若因窗口失焦、被其他
+        控件消费、鼠标抓取失效等原因未到达本控件，且鼠标不再回到列表区域，
+        状态将一直残留。守卫改为轮询 QApplication 的全局按键状态，不再依赖
+        任何事件到达，从机制上消除框选态/选框粘连。
+        """
+        timer = self._rubber_guard_timer
+        if timer is None:
+            timer = QTimer(self)
+            timer.setInterval(RUBBER_GUARD_INTERVAL_MS)
+            timer.timeout.connect(self._on_rubber_guard_tick)
+            self._rubber_guard_timer = timer
+        if not timer.isActive():
+            timer.start()
+
+    def _stop_rubber_guard(self) -> None:
+        """停止释放丢失守卫（幂等，未创建/未启动时无副作用）。"""
+        timer = getattr(self, "_rubber_guard_timer", None)
+        if timer is not None and timer.isActive():
+            timer.stop()
+
+    def _on_rubber_guard_tick(self) -> None:
+        """守卫轮询：左键已释放但框选态仍在时兜底收尾。
+
+        QTimer 与鼠标事件同处主线程，无跨线程竞争；正常拖拽中左键始终按下，
+        守卫不会干预。
+        """
+        if not self._rubber_active and self._rubber_start_pos is None:
+            self._stop_rubber_guard()
+            return
+        if QApplication.mouseButtons() & Qt.LeftButton:
+            return
+        try:
+            _rubber_log(
+                "[rubber] guard finalize: left button released without release event "
+                f"active={self._rubber_active} last_pos={self._rubber_last_pos}"
+            )
+        except Exception:
+            pass
+        if self._rubber_active:
+            self._finish_rubber_selection(self._rubber_last_pos)
+        else:
+            self._abort_rubber_selection()
 
     def _show_rubber_band(self) -> None:
-        """创建（首次）并显示橡皮筋矩形，使用主题强调色。"""
+        """创建（首次）并显示橡皮筋矩形，使用主题强调色半透明样式。
+
+        viewport overlay 方案：QRubberBand(Rectangle, viewport)，
+        坐标系为 viewport 坐标（event.position().toPoint()）。
+        """
         if self._rubber_band is None:
             self._rubber_band = QRubberBand(QRubberBand.Rectangle, self._file_list.viewport())
-            self._rubber_band.setStyleSheet(
-                f"QRubberBand {{ border: 1px solid {tm.accent.name()};"
-                f" background: {tm.alpha_of(tm.accent, 36).name()}; }}"
-            )
-        self._rubber_band.setGeometry(QRect(self._rubber_start_pos, QSize(0, 0)))
+            self._refresh_rubber_band_style()
+        if self._rubber_start_pos is not None:
+            self._rubber_band.setGeometry(QRect(self._rubber_start_pos, QSize(0, 0)))
         self._rubber_band.show()
         self._rubber_band.raise_()
 
+    def _refresh_rubber_band_style(self, *_args: Any) -> None:
+        """刷新橡皮筋样式以跟随主题（tm.theme_changed 槽函数）。
+
+        Args:
+            *_args: 主题信号附带参数（忽略，仅触发重算）。
+        """
+        if self._rubber_band is None:
+            return
+        self._rubber_band.setStyleSheet(
+            f"QRubberBand {{ border: 1px solid {tm.accent.name()};"
+            f" background: {tm.alpha_of(tm.accent, 36).name()}; }}"
+        )
+
     def _update_rubber_selection(self, pos: QPoint) -> None:
-        """根据当前框选矩形更新卡片选中态（模型驱动，delegate 同步高亮）。"""
+        """根据当前框选矩形更新卡片选中态（模型驱动，delegate 同步高亮）。
+
+        拖出 viewport 上下边时驱动垂直滚动条自动滚动：逻辑命中矩形可超出
+        viewport（扩展矩形参与完全包含判定），显示矩形钳制在 viewport 内。
+
+        Args:
+            pos: 当前鼠标位置（viewport 坐标，可为 viewport 之外）。
+        """
         start = self._rubber_start_pos
         if start is None:
             return
+        viewport = self._file_list.viewport()
+        vbar = self._file_list.verticalScrollBar()
+        # 越界自动滚动（DPI 无关，滚动步长取像素差）。
+        if vbar is not None and viewport is not None:
+            vp_h = viewport.height()
+            if pos.y() < 0:
+                vbar.setValue(vbar.value() + pos.y())
+            elif pos.y() > vp_h:
+                vbar.setValue(vbar.value() + (pos.y() - vp_h))
         rect = QRect(start, pos).normalized()
+        if rect.isNull():
+            return
+        empty_threshold = max(4, QApplication.startDragDistance())
+        if rect.width() < empty_threshold or rect.height() < empty_threshold:
+            return
         self._rubber_rect = rect
-        if self._rubber_band is not None:
-            self._rubber_band.setGeometry(rect)
+        if self._rubber_band is not None and viewport is not None:
+            display_rect = rect.intersected(QRect(QPoint(0, 0), viewport.size()))
+            if display_rect.isValid():
+                self._rubber_band.setGeometry(display_rect)
+            else:
+                self._rubber_band.setGeometry(rect)
 
         band_rows = self._rows_in_rect(rect)
         target_rows = band_rows | self._rubber_preselect if self._rubber_ctrl else band_rows
@@ -335,15 +555,24 @@ class FileSelectorLayout(QWidget):
                     model.index(row, 0), QItemSelectionModel.Select | QItemSelectionModel.Rows
                 )
 
-    def _rows_in_rect(self, rect: QRect) -> set:
-        """计算与框选矩形相交的行号集合。
+    def _rows_in_rect(self, rect: QRect) -> Set[int]:
+        """计算与框选矩形视觉重叠的行号集合（相交语义）。
 
-        以可见参考行的 visualRect 推导流布局原点（含滚动偏移），
-        再按网格间距解析式展开候选行 —— 与 Qt 实际 item 布局逐像素一致
-        （Qt6 的 QListView IconMode 不受 viewportMargins 影响 item 位置）。
+        两段式判定：先用 _grid_metrics 做 first_row/last_row 粗筛定位候选
+        范围，再对每个候选行用 view.visualRect 取 Qt 真实 item 矩形做
+        rect.intersects(visual) 精判（视觉重叠即选中）。_row_rect /
+        _resolve_flow_origin 仅提供粗筛原点兜底，不作为选中与否的最终依据。
+
+        Args:
+            rect: 框选矩形（viewport 坐标，已 normalized）。
+
+        Returns:
+            与框相交的行号集合；无指标/无数据时返回空集合。
         """
         metrics = self._grid_metrics
-        row_count = self._file_model.rowCount()
+        model = self._file_model
+        view = self._file_list
+        row_count = model.rowCount()
         if row_count <= 0 or not metrics:
             return set()
         cell_w = metrics.get("cell_w", 0)
@@ -357,16 +586,38 @@ class FileSelectorLayout(QWidget):
         x0, y0 = origin
         first_row = max(0, ((rect.top() - y0) // cell_h) * cols)
         last_row = min(row_count - 1, ((rect.bottom() - y0) // cell_h) * cols + cols - 1)
-        hit_rows = set()
+        hit_rows: Set[int] = set()
         for row in range(first_row, last_row + 1):
-            if self._row_rect(row, x0, y0, metrics).intersects(rect):
+            visual = view.visualRect(model.index(row, 0))
+            if not visual.isValid() or visual.isNull():
+                continue
+            if rect.intersects(visual):
                 hit_rows.add(row)
         return hit_rows
 
-    def _resolve_flow_origin(self, rect: QRect) -> Optional[tuple]:
-        """从框选矩形附近可见的参考行解析流布局原点（viewport 坐标，含滚动偏移）。"""
+    def _resolve_flow_origin(self, rect: QRect) -> Optional[Tuple[int, int]]:
+        """从框选矩形附近可见的参考行解析流布局原点（viewport 坐标，含滚动偏移）。
+
+        框全落空白时 indexAt 无命中，此时兜底：先扫描 viewport 可见首行
+        的 visualRect 推导原点；仍无可见行则按 viewport 边距 + 滚动条值估算，
+        避免大面积空白拖选直接返回空集合导致失效。
+
+        Args:
+            rect: 框选矩形（viewport 坐标）。
+
+        Returns:
+            原点 (x0, y0)；无数据/无指标时返回 None。
+        """
         model = self._file_model
         view = self._file_list
+        metrics = self._grid_metrics
+        if model.rowCount() <= 0 or not metrics:
+            return None
+        cell_w = metrics.get("cell_w", 0)
+        cell_h = metrics.get("cell_h", 0)
+        cols = metrics.get("cols", 0)
+        if cell_w <= 0 or cell_h <= 0 or cols <= 0:
+            return None
         ref_row = -1
         for point in (rect.center(), rect.topLeft() + QPoint(1, 1), rect.bottomRight() - QPoint(1, 1), QPoint(2, 0)):
             index = view.indexAt(point)
@@ -374,18 +625,47 @@ class FileSelectorLayout(QWidget):
                 ref_row = index.row()
                 break
         if ref_row < 0:
-            return None
+            # 兜底 1：扫描 viewport 可见首行（沿垂直中线多点探测）。
+            viewport = view.viewport()
+            if viewport is not None:
+                probe_x = max(2, viewport.width() // 2)
+                probe_ys = (2, viewport.height() // 4, viewport.height() // 2,
+                            viewport.height() * 3 // 4, max(2, viewport.height() - 3))
+                for probe_y in probe_ys:
+                    probe_index = view.indexAt(QPoint(probe_x, int(probe_y)))
+                    if probe_index.isValid():
+                        ref_row = probe_index.row()
+                        break
+        if ref_row < 0:
+            # 兜底 2：按 viewport 边距 + 垂直滚动条值估算原点。
+            viewport = view.viewport()
+            vbar = view.verticalScrollBar()
+            if viewport is None or vbar is None:
+                return None
+            margins = view.viewportMargins()
+            x0 = margins.left()
+            y0 = margins.top() - vbar.value()
+            return x0, y0
         ref_rect = view.visualRect(model.index(ref_row, 0))
         if not ref_rect.isValid():
             return None
-        cols = self._grid_metrics["cols"]
-        x0 = ref_rect.x() - (ref_row % cols) * self._grid_metrics["cell_w"]
-        y0 = ref_rect.y() - (ref_row // cols) * self._grid_metrics["cell_h"]
+        x0 = ref_rect.x() - (ref_row % cols) * cell_w
+        y0 = ref_rect.y() - (ref_row // cols) * cell_h
         return x0, y0
 
     @staticmethod
     def _row_rect(row: int, x0: int, y0: int, metrics: Dict[str, int]) -> QRect:
-        """计算指定行的网格单元格矩形（基于流布局原点 + 网格间距）。"""
+        """计算指定行的网格单元格矩形（基于流布局原点 + 网格间距）。
+
+        Args:
+            row: 行号（0-based）。
+            x0: 流布局原点横坐标（viewport 坐标）。
+            y0: 流布局原点纵坐标（viewport 坐标）。
+            metrics: 网格指标（含 cell_w/cell_h/cols）。
+
+        Returns:
+            该行的单元格矩形（viewport 坐标）。
+        """
         col = row % metrics["cols"]
         line = row // metrics["cols"]
         return QRect(
@@ -396,7 +676,11 @@ class FileSelectorLayout(QWidget):
         )
 
     def _add_selected_to_pool(self) -> None:
-        """将当前所有选中卡片追加加入存储池（add-only，已在池中的保持不变）。"""
+        """将当前所有选中卡片追加加入存储池（add-only，已在池中的保持不变）。
+
+        逐个发射 add_to_pool_requested，去重由 FilePoolLayout.add_file 负责。
+        空选中时不发射任何信号。
+        """
         model = self._file_model
         for file_path in model.get_selected_files():
             row = model.get_row(file_path)
@@ -415,7 +699,11 @@ class FileSelectorLayout(QWidget):
             self.add_to_pool_requested.emit(info)
 
     def _clear_selector_selection(self) -> None:
-        """清空文件选择器内所有卡片的选中态。"""
+        """清空文件选择器内所有卡片的选中态。
+
+        模型（FileListModel.set_rows_selected）与 QItemSelectionModel 双路同步，
+        卡片高亮由 delegate 按选中态自动绘制。
+        """
         model = self._file_model
         model.set_rows_selected(model.get_selected_rows(), False)
         selection_model = self._file_list.selectionModel()
@@ -423,7 +711,30 @@ class FileSelectorLayout(QWidget):
             selection_model.clearSelection()
 
     def _abort_rubber_selection(self) -> None:
-        """终止框选状态（隐藏橡皮筋、复位记录；不影响已应用的选中态）。"""
+        """终止框选状态（释放鼠标抓取、隐藏橡皮筋、复位记录；不触碰模型选中态）。
+
+        连续框选安全：重复调用无副作用，隐藏后的 QRubberBand 可复用。
+
+        幂等清理全部框选状态：_rubber_active/_start_pos/_rect/_ctrl/
+        _pressed_row/_preselect/_last_rows，并隐藏 QRubberBand，保证永不残留。
+        """
+        was_active = self._rubber_active
+        had_start = self._rubber_start_pos is not None
+        band_visible = False
+        try:
+            band_visible = bool(
+                self._rubber_band is not None and self._rubber_band.isVisible()
+            )
+        except (RuntimeError, AttributeError):
+            band_visible = False
+        if was_active or had_start or band_visible:
+            try:
+                _rubber_log(
+                    f"[rubber] abort was_active={was_active} had_start={had_start} "
+                    f"band_visible={band_visible}"
+                )
+            except Exception:
+                pass
         self._rubber_active = False
         self._rubber_start_pos = None
         self._rubber_rect = None
@@ -431,8 +742,23 @@ class FileSelectorLayout(QWidget):
         self._rubber_pressed_row = -1
         self._rubber_preselect = set()
         self._rubber_last_rows = None
+        self._rubber_last_pos = None
+        self._stop_rubber_guard()
         if self._rubber_band is not None:
-            self._rubber_band.hide()
+            try:
+                self._rubber_band.hide()
+            except (RuntimeError, AttributeError):
+                pass
+        viewport = None
+        try:
+            viewport = self._file_list.viewport()
+        except (RuntimeError, AttributeError):
+            viewport = None
+        if viewport is not None:
+            try:
+                viewport.releaseMouse()
+            except (RuntimeError, AttributeError, TypeError):
+                pass
 
     @staticmethod
     def _is_back_navigation_button(button: Any) -> bool:
@@ -440,6 +766,12 @@ class FileSelectorLayout(QWidget):
 
         兼容不同 Qt 枚举名：Qt6 中 XButton1 是 BackButton 的别名，
         旧版环境可能仅有 ExtraButton1 / BackButton 之一，因此逐一探测。
+
+        Args:
+            button: 鼠标按键枚举值。
+
+        Returns:
+            True 为后退侧键，False 为其他按键。
         """
         for button_name in ("BackButton", "XButton1", "ExtraButton1"):
             back_button = getattr(Qt, button_name, None)
