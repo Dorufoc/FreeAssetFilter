@@ -107,7 +107,7 @@ _COM_PROG_IDS: tuple[str, ...] = (
 )
 
 # 无外部后端（doc/xls/ppt 与 xlsx）时的安装提示文案（精确匹配计划措辞）。
-ERROR_MESSAGE = "请安装 LibreOffice 或 Microsoft Office/WPS 以获得完整预览"
+ERROR_MESSAGE = "请安装 Microsoft Office/WPS Office 或 LibreOffice 插件以获得完整预览"
 
 # LibreOffice 后端默认转换超时（秒）。T5/T9：测试通过注入更短的 ``timeout``
 # 验证超时路径；soffice 卡死时由 ``_convert_with_libreoffice`` 终止并强杀。

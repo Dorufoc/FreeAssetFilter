@@ -5,7 +5,7 @@
 
 * 注册表初始化 —— ``_EXTENSION_MAP`` 已含常见后缀且值为 (module, class) 对、
   ``_CLASS_CACHE`` 初始为空
-* ``get_previewer_class`` —— is_dir 走 FolderContentList、空/缺失后缀与未知
+* ``get_previewer_class`` —— is_dir 走 FolderPreviewerLayout、空/缺失后缀与未知
   后缀返回 None、后缀大小写/前导点归一、已知后缀解析真实类
 * 动态注册注销 —— register 新增/覆盖、unregister 移除/未知后缀无异常
 * 缓存 —— 惰性导入结果缓存、register 清除同名陈旧缓存、unregister 清除缓存
@@ -83,13 +83,13 @@ class TestInitialMap:
 class TestGetPreviewerClass:
     """预览器解析"""
 
-    def test_is_dir_returns_folder_content_list(self) -> None:
-        """目录条目解析为文件夹内容列表类。"""
+    def test_is_dir_returns_folder_previewer(self) -> None:
+        """目录条目解析为新版文件夹预览器类。"""
         cls: object | None = PreviewerRegistry.get_previewer_class(
             {"suffix": "jpg", "is_dir": True}
         )
         assert cls is not None
-        assert cls.__name__ == "FolderContentList"
+        assert cls.__name__ == "FolderPreviewerLayout"
 
     def test_empty_dict_returns_none(self) -> None:
         """空文件信息（无 suffix）返回 None。"""

@@ -386,13 +386,15 @@ class UnifiedPreviewerLayout(QWidget):
             self.clear_preview()
             return
         
-        # 文件夹：清空预览（文件夹预览器未来实现）
-        if file_info.get("is_dir", False):
-            self.clear_preview()
-            return
-        
-        # 缺少必要字段：清空预览
-        if "path" not in file_info or "suffix" not in file_info:
+        # 文件夹：路由到文件夹预览器（仅文件池文件夹卡片点击触发，
+        # 与文件选择器的常规文件夹导航相独立）。
+        is_dir = bool(file_info.get("is_dir", False))
+        if is_dir:
+            if not file_info.get("path"):
+                self.clear_preview()
+                return
+        elif "path" not in file_info or "suffix" not in file_info:
+            # 缺少必要字段：清空预览
             self.clear_preview()
             return
         
