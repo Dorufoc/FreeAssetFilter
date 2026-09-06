@@ -1053,3 +1053,123 @@ def test_native_backdrop_toggle_is_idempotent(qapp) -> None:
     finally:
         mica.dispose()
         widget.deleteLater()
+
+
+# ---------------------------------------------------------------------------
+# 层缓存与 speculative 预烘（主题往返切换零烘焙）
+# ---------------------------------------------------------------------------
+
+
+def test_bake_done_caches_accepted_layer(qapp, monkeypatch) -> None:
+    """交付被接受的新层同步入缓存，供往返切换命中。"""
+    widget, mica = _widget_with_mica(qapp)
+    _setup_visible_old_layer(widget, mica, monkeypatch)
+
+    try:
+        assert len(mica._layer_cache) == 0
+        new_layer = _layer_for(MONITOR_A, WIN, width=512, height=288)
+        mica._on_bake_done(
+            (_make_display((0, 0, 255)), new_layer, mica._layer_key, 1)
+        )
+        assert len(mica._layer_cache) == 1
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_maybe_rebake_applies_cached_layer_without_worker(
+    qapp, monkeypatch
+) -> None:
+    """缓存命中：零烘焙即时应用，不起后台线程，且过渡正常启动。"""
+    widget, mica = _widget_with_mica(qapp)
+    _setup_visible_old_layer(widget, mica, monkeypatch)
+
+    try:
+        region = mica._virtual_rect()
+        long = material_mod._layer_display_long(region)
+        key = mica._layer_key_for(region, long)
+        blue = QPixmap(512, 288)
+        blue.fill(QColor(0, 0, 255))
+        cached_layer = _layer_for(MONITOR_A, WIN, width=512, height=288)
+        mica._store_layer_cache(
+            key, cached_layer, blue, mica._overlay_opacity, mica._surface_rgb()
+        )
+        # 模拟判据失效（主题翻转后的新 key），且无在途过渡。
+        mica._layer_key = ("stale",)
+        mica._maybe_rebake()
+        assert mica._worker_thread is None
+        assert mica._layer is cached_layer
+        assert mica._xfade_active is True
+        assert mica._xfade_backdrop is not None
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_speculative_result_cached_not_applied(qapp, monkeypatch) -> None:
+    """speculative 交付只进缓存：当前层不变、不起过渡。"""
+    widget, mica = _widget_with_mica(qapp)
+    _setup_visible_old_layer(widget, mica, monkeypatch)
+    old_layer = mica._layer
+
+    try:
+        fake_key = ("spec", False, "sig", MONITOR_A, 2560)
+        mica._speculative_key = fake_key
+        mica._speculative_extra = (1.0, (255, 255, 255))
+        green_layer = _layer_for(MONITOR_A, WIN, width=512, height=288)
+        mica._on_bake_done((_make_display((0, 255, 0)), green_layer, fake_key, -1))
+        assert mica._layer is old_layer
+        assert mica._xfade_active is False
+        assert mica._speculative_key is None
+        assert len(mica._layer_cache) == 1
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_speculative_failure_ignored_for_retries(qapp, monkeypatch) -> None:
+    """speculative 失败：静默回收，不计入重试计数。"""
+    widget, mica = _widget_with_mica(qapp)
+
+    try:
+        mica._worker_thread = mock.Mock()
+        mica._worker_speculative = True
+        mica._on_bake_failed()
+        assert mica._refresh_retries == 0
+        assert mica._worker_speculative is False
+        assert mica._silent_cleanup is True
+        mica._worker_thread.quit.assert_called_once()
+    finally:
+        mica._worker_thread = None
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_real_rebake_preempts_speculative_worker(qapp, monkeypatch) -> None:
+    """真实请求抢占 speculative：在途线程被终止，真实烘焙直通。"""
+    widget, mica = _widget_with_mica(qapp)
+    _setup_visible_old_layer(widget, mica, monkeypatch)
+    calls = []
+    thread = mock.Mock()
+    thread.wait.return_value = True
+    thread.isFinished.return_value = True
+    mica._worker_thread = thread
+    mica._worker = mock.Mock()
+    mica._worker_speculative = True
+    mica._speculative_key = ("spec",)
+    monkeypatch.setattr(mica, "refresh_async", lambda: calls.append("refresh"))
+
+    try:
+        mica._layer_key = ("stale",)
+        mica._maybe_rebake()
+        thread.quit.assert_called_once()
+        assert mica._worker_speculative is False
+        assert mica._speculative_key is None
+        assert mica._silent_cleanup is True
+        assert calls == ["refresh"]
+        assert mica._worker_thread is None
+    finally:
+        mica._worker_thread = None
+        mica._worker = None
+        mica.dispose()
+        widget.deleteLater()

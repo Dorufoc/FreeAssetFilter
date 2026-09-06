@@ -167,6 +167,9 @@ _SETTLE_FADE_DEFAULT_MS: int = 120
 #: settle 淡化逐帧节拍（毫秒）。
 _FADE_TICK_MS: int = 16
 
+#: 已交付层缓存容量（深/浅各一块，往返切换零烘焙；QPixmap 隐式共享，只多占一块层内存）。
+_LAYER_CACHE_MAX: int = 2
+
 
 def _settle_fade_ms_from_env() -> int:
     """读取 ``FAF_MICA_SETTLE_FADE_MS``（非法值回退默认）。"""
@@ -551,6 +554,24 @@ class MicaMaterial(QObject):
         # 过渡始终从屏幕现状连续出发。过渡结束即释放快照。
         self._xfade_active = False
         self._xfade_backdrop: Optional[QPixmap] = None
+        #: 已交付层缓存：完整缓存键 -> (ViewportLayer, QPixmap)，往返切换即时应用；
+        #: speculative 预烘结果也只进这里（见 prebake_theme_variant）。
+        self._layer_cache: dict = {}
+        #: 在途 speculative 烘焙的完整缓存键（单飞；交付时路由进缓存，不提交为当前层）。
+        self._speculative_key = None
+        #: 在途 speculative 烘焙的 (overlay, surface_rgb)（交付组缓存键用）。
+        self._speculative_extra = None
+        #: 在途 speculative 烘焙的线程对象（交付路由/抢占时定向回收，不碰真实线程）。
+        self._speculative_thread = None
+        #: 在途 worker 是否为 speculative（失败/超时不计入重试、不触发续接）。
+        self._worker_speculative = False
+        #: 静默回收标记（speculative 失败/超时/被抢占：只删对象，不重试不续接）。
+        self._silent_cleanup = False
+        #: 翻转瞬间预起钟标记（见 begin_theme_transition）：为 True 时，下一次
+        #: ``_on_bake_done`` 交付只换靶、不重启时钟，使背景与控件同一起止窗口；
+        #: 交付时消费（置 False），超时自然结束时亦复位。无预起钟的连续交付
+        #: 仍走连切重抓（快照为当前混合态，见 _capture_visual_state）。
+        self._xfade_prestarted = False
         self._xfade_clock = QElapsedTimer()
         self._xfade_timer = QTimer(self._widget)
         self._xfade_timer.setInterval(_FADE_TICK_MS)
@@ -930,6 +951,65 @@ class MicaMaterial(QObject):
         self._maybe_rebake(force=False)
         self._widget.update()
 
+    def begin_theme_transition(self) -> None:
+        """主题翻转瞬间预启动交叉过渡（与控件过渡同 280ms 窗口对齐）。
+
+        在 ``set_theme`` 提交后台重烘焙**之前**调用：以后台交付前的旧层外观
+        为底图立即起钟；新层经 ``_on_bake_done`` 交付时只换靶、不重启时钟，
+        混合在原窗口内揭示新层。控件过渡（内容遮罩 280ms）与背景过渡同起
+        同止，不再因烘焙等待整体延后。
+
+        已有过渡进行中（快速连切）时保持原时钟，不重复抓拍。
+        """
+        if self._native_backdrop:
+            return
+        if self._xfade_active:
+            return
+        if self._hide_until_new_layer:
+            return
+        if not (
+            self._has_shown
+            and self._active
+            and self._fade_alpha > 0.001
+        ):
+            return
+        try:
+            visible = self._widget.isVisible()
+        except Exception:  # noqa: BLE001 - 可见性查询失败则跳过过渡
+            return
+        if not visible:
+            return
+        try:
+            win = self._window_rect_tuple()
+        except Exception:  # noqa: BLE001 - 几何查询失败则跳过过渡
+            win = None
+        if win is None:
+            return
+        # 播种：被换下的旧层正是下次回切需要的目标，顺手入缓存（回切零烘焙）。
+        try:
+            if (
+                self._layer is not None
+                and self._layer_pixmap is not None
+                and not self._layer_pixmap.isNull()
+                and self._layer_key is not None
+            ):
+                self._store_layer_cache(
+                    self._layer_key,
+                    self._layer,
+                    self._layer_pixmap,
+                    self._overlay_opacity,
+                    self._surface_rgb(),
+                )
+        except Exception:  # noqa: BLE001 - 缓存播种失败不影响过渡本身
+            pass
+        try:
+            backdrop = self._capture_visual_state(win)
+        except Exception:  # noqa: BLE001 - 抓拍失败则退化为交付时过渡
+            backdrop = None
+        if backdrop is not None and not backdrop.isNull():
+            self._start_xfade(backdrop)
+            self._xfade_prestarted = True
+
     def set_effect_parameters(
         self,
         blur_radius: Optional[int] = None,
@@ -1149,12 +1229,23 @@ class MicaMaterial(QObject):
         """使缓存失效：下次绘制前强制重烘焙。"""
         self._last_req = None
         self._pixmap = None
+        self._layer_cache.clear()
+        self._speculative_key = None
+        self._speculative_extra = None
+        self._speculative_thread = None
+        self._worker_speculative = False
         self._maybe_rebake(force=True)
 
     def dispose(self) -> None:
         """释放资源：阻止重试、移除焦点过滤器、回收在途线程。窗口关闭时调用。"""
         self._disposed = True
         self._compositor.clear()
+        self._layer_cache.clear()
+        self._speculative_key = None
+        self._speculative_extra = None
+        self._speculative_thread = None
+        self._worker_speculative = False
+        self._silent_cleanup = False
         self._layer = None
         self._layer_pixmap = None
         self._pixmap = None
@@ -1354,6 +1445,16 @@ class MicaMaterial(QObject):
         region = self._virtual_rect()
         layer_display_long = _layer_display_long(region)
         key = self._layer_key_for(region, layer_display_long)
+        try:
+            cached = self._lookup_layer_cache(
+                key, self._overlay_opacity, self._surface_rgb(), win
+            )
+        except Exception:  # noqa: BLE001 - 缓存查询失败则走正常烘焙
+            cached = None
+        if cached is not None:
+            # 命中：往返切换零烘焙即时应用（含过渡与呈现）。
+            self._apply_cached_layer(key, win, cached[0], cached[1])
+            return
         if not force and key == self._layer_key:
             layer = self._layer
             stale_geometry = layer is not None and tuple(
@@ -1367,12 +1468,40 @@ class MicaMaterial(QObject):
             # key 未变但层 win_size 过期（陈旧几何层，如退化矩形起烘的产物）：
             # 继续走下方的重烘 / 挂起逻辑，按当前几何自愈。
         if self._worker_thread is not None:
-            # 在途烘焙：本次变化（主题 / 参数 / 壁纸 / 区域）已使在途结果过期。
-            # 置 ``_layer_key`` 失效，令旧 key 的在途结果被陈旧性守卫丢弃（绝不
-            # 提交一份旧主题/旧区域的混合层），并交由回收逻辑按最新 key 续接请求。
-            self._layer_key = None
-            self._rebuild_pending = True
-            return
+            if self._worker_speculative:
+                # 真实请求抢占 speculative：同步终止并静默回收，随后直通真实烘焙。
+                self._worker_speculative = False
+                self._silent_cleanup = True
+                self._speculative_key = None
+                self._speculative_extra = None
+                self._speculative_thread = None
+                thread = self._worker_thread
+                worker = self._worker
+                self._worker_thread = None
+                self._worker = None
+                try:
+                    thread.quit()
+                    if not thread.wait(0) and not thread.isFinished():
+                        thread.terminate()
+                        thread.wait(3000)
+                except Exception:  # noqa: BLE001 - 线程回收失败则继续真实烘焙
+                    pass
+                try:
+                    if worker is not None:
+                        worker.deleteLater()
+                except Exception:
+                    pass
+                try:
+                    thread.deleteLater()
+                except Exception:
+                    pass
+            else:
+                # 在途烘焙：本次变化（主题 / 参数 / 壁纸 / 区域）已使在途结果过期。
+                # 置 ``_layer_key`` 失效，令旧 key 的在途结果被陈旧性守卫丢弃（绝不
+                # 提交一份旧主题/旧区域的混合层），并交由回收逻辑按最新 key 续接请求。
+                self._layer_key = None
+                self._rebuild_pending = True
+                return
         self.refresh_async()
 
     def _request_rebuild(self) -> None:
@@ -1502,6 +1631,209 @@ class MicaMaterial(QObject):
             signature = ""
         return (self._params, self._dark, signature, region, int(layer_display_long))
 
+    # -- 层缓存与 speculative 预烘 ----------------------------------------
+
+    @staticmethod
+    def _cache_key_for(layer_key: object, overlay: object, surface_rgb: object) -> tuple:
+        """完整缓存键：layer_key + overlay + 实色（后两者不在 layer_key 内但影响产物）。"""
+        try:
+            key_tuple = tuple(layer_key)  # type: ignore[arg-type]
+        except TypeError:
+            key_tuple = (repr(layer_key),)
+        try:
+            overlay_part = round(float(overlay), 4)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            overlay_part = 0.0
+        try:
+            surface_part = tuple(int(v) for v in surface_rgb)  # type: ignore[union-attr]
+        except TypeError:
+            surface_part = (0, 0, 0)
+        return (key_tuple, overlay_part, surface_part)
+
+    def _store_layer_cache(
+        self,
+        layer_key: object,
+        layer_info: object,
+        pixmap: QPixmap,
+        overlay: object,
+        surface_rgb: object,
+    ) -> None:
+        """存一层到缓存（LRU，超容淘汰最旧；QPixmap 隐式共享，存的是引用）。"""
+        try:
+            key = self._cache_key_for(layer_key, overlay, surface_rgb)
+        except Exception:
+            return
+        self._layer_cache[key] = (layer_info, pixmap)
+        while len(self._layer_cache) > _LAYER_CACHE_MAX:
+            try:
+                del self._layer_cache[next(iter(self._layer_cache))]
+            except Exception:
+                break
+
+    def _lookup_layer_cache(
+        self,
+        layer_key: object,
+        overlay: object,
+        surface_rgb: object,
+        win: object,
+    ) -> Optional[tuple]:
+        """查缓存：命中且几何（win_size）与当前窗口一致才返回并 LRU 前移。"""
+        try:
+            key = self._cache_key_for(layer_key, overlay, surface_rgb)
+        except Exception:
+            return None
+        hit = self._layer_cache.get(key)
+        if hit is None:
+            return None
+        layer_info, pixmap = hit
+        try:
+            if pixmap is None or pixmap.isNull() or layer_info is None:
+                return None
+            cur_size = (int(win[2]), int(win[3]))  # type: ignore[index]
+            if tuple(int(v) for v in layer_info.win_size) != cur_size:
+                return None
+        except Exception:
+            return None
+        try:
+            self._layer_cache.move_to_end(key)
+        except Exception:
+            pass
+        return hit
+
+    def _apply_cached_layer(
+        self,
+        layer_key: object,
+        win: object,
+        layer_info: object,
+        pixmap: QPixmap,
+    ) -> None:
+        """命中缓存即时应用（零烘焙）：与 _on_bake_done 交付尾巴同语义（过渡+呈现）。"""
+        was_shown = self._has_shown
+        was_hidden = self._hide_until_new_layer
+        self._hide_until_new_layer = False
+        self._stop_settle_fade()
+        self._layer = layer_info
+        self._layer_pixmap = pixmap
+        self._layer_key = layer_key
+        self._has_shown = True
+        self._defer_timer.stop()
+        if self._xfade_prestarted:
+            self._xfade_prestarted = False
+        else:
+            backdrop = None
+            try:
+                if (
+                    was_shown
+                    and not was_hidden
+                    and self._active
+                    and self._fade_alpha > 0.001
+                    and self._widget.isVisible()
+                ):
+                    backdrop = self._capture_visual_state(win)  # type: ignore[arg-type]
+            except Exception:
+                backdrop = None
+            if backdrop is not None and not backdrop.isNull():
+                self._start_xfade(backdrop)
+        self._widget.update()
+        if self._active:
+            self._start_fade_in(reset=(not was_shown) or was_hidden)
+        else:
+            self._hide_immediately()
+
+    def prebake_theme_variant(
+        self,
+        *,
+        surface_color: object,
+        luminosity: float,
+        blur_radius: Optional[float] = None,
+        saturation: Optional[float] = None,
+        contrast: Optional[float] = None,
+        overlay_opacity: Optional[float] = None,
+    ) -> bool:
+        """空闲时预烘指定主题变体：结果只进层缓存，不应用、不 disturb 当前层。
+
+        由主窗口在主题切换 settled 后用对偶主题参数调用。繁忙（在途 worker /
+        过渡中 / 不可见 / 已缓存 / 已在途）时直接返回 False，不排队。
+
+        Returns:
+            已提交后台任务返回 True，否则 False。
+        """
+        if self._native_backdrop or self._disposed:
+            return False
+        if self._worker_thread is not None:
+            return False
+        if self._xfade_active:
+            return False
+        try:
+            visible = self._widget.isVisible()
+        except Exception:
+            return False
+        if not visible:
+            return False
+        params = self._params
+        try:
+            if blur_radius is not None:
+                params = params.replace(blur_radius=max(0.0, float(blur_radius)))
+            if saturation is not None:
+                params = params.replace(saturation=max(0.0, float(saturation)))
+            if contrast is not None:
+                params = params.replace(contrast=max(0.0, float(contrast)))
+        except Exception:
+            return False
+        if overlay_opacity is not None:
+            try:
+                overlay = max(0.0, min(1.0, float(overlay_opacity)))
+            except (TypeError, ValueError):
+                return False
+        else:
+            overlay = self._overlay_opacity
+        try:
+            surf_color = _parse_color(surface_color, self._surface_color)
+            surf_rgb = (surf_color.red(), surf_color.green(), surf_color.blue())
+            dark = _is_dark_color(surf_color)
+        except Exception:
+            return False
+        try:
+            win = self._window_rect_tuple()
+            region = self._virtual_rect()
+            long = _layer_display_long(region)
+        except Exception:
+            return False
+        if win is None or region is None:
+            return False
+        try:
+            signature = self._provider.probe().signature()
+        except Exception:
+            signature = ""
+        key = (params, dark, signature, region, int(long))
+        try:
+            cache_key = self._cache_key_for(key, overlay, surf_rgb)
+        except Exception:
+            return False
+        if cache_key in self._layer_cache or key == self._speculative_key:
+            return False
+        try:
+            self._worker = _BakeWorker(
+                self._provider, win, params, dark, region, long,
+                overlay, surf_rgb, key, -1,
+            )
+        except Exception:
+            return False
+        thread = QThread()
+        self._worker.moveToThread(thread)
+        self._worker.done.connect(self._on_bake_done)
+        self._worker.failed.connect(self._on_bake_failed)
+        thread.finished.connect(self._cleanup_worker)
+        thread.started.connect(self._worker.run)
+        self._worker_thread = thread
+        self._worker_speculative = True
+        self._speculative_key = key
+        self._speculative_extra = (overlay, surf_rgb)
+        self._speculative_thread = thread
+        self._watchdog.start(BAKE_WATCHDOG_MS)
+        thread.start()
+        return True
+
     # -- worker 回调 ------------------------------------------------------
 
     def _on_bake_done(self, payload: object) -> None:
@@ -1519,6 +1851,34 @@ class MicaMaterial(QObject):
         self._refresh_retries = 0
         self._refresh_outcome = "ok"
         display, layer_info, layer_key, gen = payload
+        if self._speculative_key is not None and layer_key == self._speculative_key:
+            # speculative 预烘交付：只进缓存，不提交为当前层、不 disturb 时钟。
+            self._speculative_key = None
+            extra = self._speculative_extra
+            self._speculative_extra = None
+            thread = self._speculative_thread
+            self._speculative_thread = None
+            self._worker_speculative = False
+            self._silent_cleanup = True
+            try:
+                pixmap = _pixmap_from_rgb(display) if display is not None else None
+                if (
+                    extra is not None
+                    and pixmap is not None
+                    and not pixmap.isNull()
+                    and layer_info is not None
+                ):
+                    self._store_layer_cache(
+                        layer_key, layer_info, pixmap, extra[0], extra[1]
+                    )
+            except Exception:  # noqa: BLE001 - 预烘缓存失败静默丢弃
+                pass
+            try:
+                if thread is not None:
+                    thread.quit()
+            except Exception:
+                pass
+            return
         if layer_key != self._layer_key or gen != self._layer_gen:
             # 过期结果：来自一次已被更新的请求（主题/参数/壁纸/监视器变化后新请求已提交）。
             _LOG.debug("丢弃过期的视口层烘焙结果（key/gen 不匹配）")
@@ -1567,9 +1927,26 @@ class MicaMaterial(QObject):
         self._layer_pixmap = _pixmap_from_rgb(display)
         self._layer_key = layer_key
         self._has_shown = True
+        # 入缓存：往返切换（深↔浅）命中即零烘焙。
+        try:
+            self._store_layer_cache(
+                layer_key,
+                layer_info,
+                self._layer_pixmap,
+                self._overlay_opacity,
+                self._surface_rgb(),
+            )
+        except Exception:  # noqa: BLE001 - 缓存失败不影响本次交付
+            pass
         # 新层已就绪：被节流推迟的呈现不再需要（新层会强制立即呈现）。
         self._defer_timer.stop()
-        if xfade_backdrop is not None:
+        # 翻转瞬间已预起钟（见 begin_theme_transition）时只换靶、不重启时钟：
+        # 在途混合按原 280ms 窗口揭示新层，与控件过渡同起同止；无在途过渡
+        # 时才按交付时快照新起一轮（慢烘焙回退路径）。预起标记本次消费——
+        # 后续交付回到连切重抓语义（快照为当前混合态）。
+        if self._xfade_prestarted:
+            self._xfade_prestarted = False
+        elif xfade_backdrop is not None:
             self._start_xfade(xfade_backdrop)
         self._widget.update()
         if self._active:
@@ -1582,6 +1959,19 @@ class MicaMaterial(QObject):
     def _on_bake_failed(self) -> None:
         """主线程槽：后台烘焙失败 → 记录结果，由回收逻辑重试 / 放弃。"""
         self._watchdog.stop()
+        if self._worker_speculative:
+            # speculative 失败：静默回收，不计入重试、不触发续接。
+            self._worker_speculative = False
+            self._silent_cleanup = True
+            self._speculative_key = None
+            self._speculative_extra = None
+            self._speculative_thread = None
+            if self._worker_thread is not None:
+                try:
+                    self._worker_thread.quit()
+                except Exception:
+                    pass
+            return
         self._refresh_retries += 1
         self._refresh_outcome = "fail"
         if self._worker_thread is not None:
@@ -1592,6 +1982,18 @@ class MicaMaterial(QObject):
         if self._worker_thread is None:
             return
         self._watchdog.stop()
+        if self._worker_speculative:
+            # speculative 超时：静默终止回收，不计入重试。
+            self._worker_speculative = False
+            self._silent_cleanup = True
+            self._speculative_key = None
+            self._speculative_extra = None
+            self._speculative_thread = None
+            try:
+                self._worker_thread.terminate()
+            except Exception:
+                pass
+            return
         self._worker_thread.terminate()
         self._refresh_retries += 1
         self._refresh_outcome = "timeout"
@@ -1603,6 +2005,21 @@ class MicaMaterial(QObject):
         worker = self._worker
         self._worker_thread = None
         self._worker = None
+        self._worker_speculative = False
+        if self._silent_cleanup:
+            # speculative 静默回收：只删对象，不重试不续接。
+            self._silent_cleanup = False
+            try:
+                if worker is not None:
+                    worker.deleteLater()
+            except Exception:
+                pass
+            try:
+                if thread is not None:
+                    thread.deleteLater()
+            except Exception:
+                pass
+            return
         if thread is None:
             return
 
@@ -1747,6 +2164,7 @@ class MicaMaterial(QObject):
         """结束并清理交叉过渡：释放旧态快照、停机（动画后资源回收）。"""
         self._xfade_active = False
         self._xfade_backdrop = None
+        self._xfade_prestarted = False
         if self._xfade_timer.isActive():
             self._xfade_timer.stop()
 

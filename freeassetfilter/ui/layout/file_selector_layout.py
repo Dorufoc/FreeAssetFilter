@@ -786,32 +786,51 @@ class FileSelectorLayout(QWidget):
         elif self._current_path:
             self._load_directory(self._current_path)
 
-    def _go_back(self) -> None:
+    def _load_directory_with_transition(self, path: str, direction: int) -> None:
+        """带路径过渡动画的同步目录加载。
+
+        Args:
+            path: 要加载的目录绝对路径。
+            direction: 过渡方向（>0 前进，<0 后退，0 不做动画）。
+
+        复用 begin/finish 的 started 守卫：begin 返回 False（不可见/
+        快照为空）时静默跳过 finish，仅执行同步加载；不等待图标/
+        缩略图，不增加额外 IO。
+        """
         started = False
-        direction = 0
+        if direction != 0:
+            started = self._file_list.begin_path_transition(direction)
+        self._load_directory(path)
+        if started:
+            self._file_list.finish_path_transition(direction)
+
+    def _go_back(self) -> None:
+        """返回上级：历史栈命中、parent 回退、盘符根回退到 All。
+
+        所有路径统一触发 direction=-1 的过渡动画；历史命中 All 时
+        直接委托 `_navigate_to_all`（其内部已有动画），避免双重 begin。
+        历史栈与落盘语义与原实现保持一致。
+        """
         if self._history_index > 0:
             self._history_index -= 1
             path = self._nav_history[self._history_index]
-            direction = -1
-            started = self._file_list.begin_path_transition(direction)
             if path == "All":
                 self._navigate_to_all()
-            else:
-                self._load_directory(path)
-                self._save_last_path(path)
+                return
+            self._load_directory_with_transition(path, -1)
+            self._save_last_path(path)
+            return
         elif self._current_path and self._current_path != "All":
             # 向上回退到上级目录，替换历史栈防止循环
             parent = os.path.dirname(self._current_path)
             if parent and parent != self._current_path and os.path.isdir(parent):
-                self._load_directory(parent)
+                self._load_directory_with_transition(parent, -1)
                 self._nav_history = [parent]
                 self._history_index = 0
                 self._save_last_path(parent)
             elif parent == self._current_path:
                 # 盘符根目录（如 D:\）：跳到 All 视图
                 self._navigate_to_all()
-        if started:
-            self._file_list.finish_path_transition(direction)
 
     def _infer_navigation_direction(self, source_path: str, target_path: str) -> int:
         """根据源路径和目标路径推断导航方向。

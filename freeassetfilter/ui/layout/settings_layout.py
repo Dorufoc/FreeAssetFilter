@@ -28,6 +28,7 @@ from components.styled_toggle import StyledToggle
 from components.styled_button import StyledButton
 from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
 from components.styled_segmented import StyledSegmented
+from components.styled_slider import StyledSlider
 from components.settings_card import SettingsRow
 from components.styled_dialog import create_danger_dialog
 from components.styled_color_picker import _ColorPanel
@@ -42,6 +43,45 @@ from freeassetfilter.core.managers.settings_manager_v2 import (
 )
 from freeassetfilter.ui.layout.settings_staging_cache import SettingsStagingCache
 from freeassetfilter.utils.path_utils import get_app_data_path
+
+
+# ── 自定义图像背景可调参数（与 components/custom_background 对齐） ──
+# 模糊半径 px（整数 0-200，默认 0 不模糊），透明度 %（0-100，默认 80% 很透明）。
+IMAGE_BG_BLUR_MAX = 200
+IMAGE_BG_BLUR_DEFAULT = 0
+IMAGE_BG_TRANSPARENCY_DEFAULT = 80
+
+
+def _normalize_bg_blur(value: object) -> int:
+    """归一化图像背景模糊半径到 0~200px（整数）。
+
+    Args:
+        value: 待归一化值（非法输入回退默认值）。
+
+    Returns:
+        int: 钳制后的模糊半径。
+    """
+    try:
+        blur = int(round(float(value)))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return IMAGE_BG_BLUR_DEFAULT
+    return max(0, min(IMAGE_BG_BLUR_MAX, blur))
+
+
+def _normalize_bg_transparency(value: object) -> int:
+    """归一化图像背景透明度到 0~100。
+
+    Args:
+        value: 待归一化值（非法输入回退默认值）。
+
+    Returns:
+        int: 钳制后的透明度百分比。
+    """
+    try:
+        transparency = int(round(float(value)))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return IMAGE_BG_TRANSPARENCY_DEFAULT
+    return max(0, min(100, transparency))
 
 
 # ── 预设主题色（参考旧 theme_editor.py） ──────────────────────────────
@@ -375,12 +415,60 @@ class CustomAccentButton(QWidget):
         painter.end()
 
 
-class AppearanceSettingsPage(QWidget):
-    """外观设置页面 — 深色模式开关 + 主题色选择（暂存缓存优先）。
+class _DarkToggleCompat(QObject):
+    """旧深色开关的兼容垫片（非界面组件，仅保存量调用方）。
 
-    所有控件修改首先写入 ``SettingsStagingCache``，未提交前不触碰
-    ``tm``、主窗口与 ``SettingsManagerV2`` 磁盘状态；控件展示以缓存为准。
+    新版设置已改用「白天 / 夜晚 / 跟随系统」三段控件，本类仅保留
+    ``checked`` 读写与 ``toggled`` 信号，使 ``page._dark_toggle`` 与
+    ``page._on_dark_toggle`` 的存量访问继续有效。读返回当前实际生效
+    值（跟随模式下为系统解析结果），写等价于暂存夜晚/白天偏好
+    （点击确定才生效）。
     """
+
+    toggled = Signal(bool)
+
+    def __init__(self, page: AppearanceSettingsPage) -> None:
+        """初始化垫片。
+
+        Args:
+            page: 所属外观设置页（读写时代理到其主题方法）。
+        """
+        super().__init__(page)
+        self._page = page
+
+    @property
+    def checked(self) -> bool:
+        """当前实际是否为深色。
+
+        Returns:
+            深色返回 True，否则返回 False。
+        """
+        return tm.is_dark_theme()
+
+    @checked.setter
+    def checked(self, value: bool) -> None:
+        self._page._apply_theme_mode("dark" if value else "light")
+        self._page._sync_theme_segment()
+        try:
+            self.toggled.emit(bool(value))
+        except Exception:
+            pass
+
+
+class AppearanceSettingsPage(QWidget):
+    """外观设置页面 — 深色模式三段选择 + 主题色选择（暂存缓存优先）。
+
+    深色模式为「白天 / 夜晚 / 跟随系统」三态分段控件（与「窗口背景」
+    分段同款 ``StyledSegmented`` pill 样式）。暂存隔离铁律：所有控件
+    修改只写入 ``SettingsStagingCache``，未提交前不触碰 ``tm``、主窗口
+    与 ``SettingsManagerV2`` 磁盘状态；点击确定才全局应用并落盘。
+    控件展示以缓存为准。
+    """
+
+    # 深色模式三态与分段索引的双向映射（顺序与 _build_ui 添加顺序一致）。
+    THEME_MODES: tuple[str, ...] = ("light", "dark", "system")
+    THEME_LABELS: tuple[str, ...] = ("白天", "夜晚", "跟随系统")
+    THEME_INDEX: dict[str, int] = {"light": 0, "dark": 1, "system": 2}
 
     def __init__(self, parent=None, staging_cache: SettingsStagingCache | None = None):
         super().__init__(parent)
@@ -406,6 +494,19 @@ class AppearanceSettingsPage(QWidget):
         self._ambient_toggle: StyledToggle | None = None  # 弥散氛围开关控件
         self._ambient_row: QWidget | None = None          # 弥散氛围行容器（仅简约模式可见）
         self._bg_updating: bool = False    # 编程式切换分段控件的守卫标志
+        # 图像背景可调参数（初值在 _build_ui 中从暂存缓存覆盖）
+        self._bg_blur: int = IMAGE_BG_BLUR_DEFAULT  # 模糊半径 px（整数 0-200）
+        self._bg_transparency: int = IMAGE_BG_TRANSPARENCY_DEFAULT  # 透明度 %（0-100）
+        self._bg_params_updating: bool = False  # 编程式设置滑动条的守卫标志
+        self._bg_params_row: QFrame | None = None  # 参数区容器（仅图像模式可见）
+        self._blur_slider: StyledSlider | None = None
+        self._transparency_slider: StyledSlider | None = None
+        self._blur_value_label: QLabel | None = None
+        self._transparency_value_label: QLabel | None = None
+        # 深色模式三态状态（初值在 _build_ui 中从暂存缓存覆盖）
+        self._theme_mode: str = "dark"   # "light"（白天） / "dark"（夜晚） / "system"（跟随系统）
+        self._theme_updating: bool = False  # 编程式切换主题分段控件的守卫标志
+        self._theme_segmented: StyledSegmented | None = None
         self._build_ui()
         self._load_v2_settings()
 
@@ -414,7 +515,8 @@ class AppearanceSettingsPage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(20)
 
-        # ── 深色模式开关 ──
+        # ── 深色模式三段选择（白天 / 夜晚 / 跟随系统）──
+        # 与「窗口背景」分段同款 StyledSegmented（pill/sm），视觉与交互一致。
         dark_row = QFrame()
         dark_row.setStyleSheet("background: transparent; border: none;")
         dark_layout = QHBoxLayout(dark_row)
@@ -429,14 +531,30 @@ class AppearanceSettingsPage(QWidget):
         dark_layout.addWidget(dark_label)
         dark_layout.addStretch()
 
-        # 从暂存缓存读取初始状态（缓存已在 __init__ 中以 V2 快照开启）
-        saved_theme = self._staging_cache.get("appearance.theme", "light")
+        # 从暂存缓存读取初始偏好（缓存已在 __init__ 中以 V2 快照开启）；
+        # 旧快照缺 theme_mode 时由 appearance.theme 迁移。
         saved_accent = self._staging_cache.get("appearance.accent_color", "#007AFF")
+        self._theme_mode = self._resolve_staged_theme_mode()
 
-        is_dark = (saved_theme == "dark")
-        self._dark_toggle = StyledToggle(checked=is_dark, size="default")
-        self._dark_toggle.toggled.connect(self._on_dark_toggle)
-        dark_layout.addWidget(self._dark_toggle)
+        self._theme_segmented = StyledSegmented(variant="pill", size="sm")
+        for label in self.THEME_LABELS:
+            self._theme_segmented.add_segment(label)
+        self._theme_segmented.current_changed.connect(
+            self._on_theme_segment_changed
+        )
+        # 守卫内编程式切换，避免初始化期间触发应用/持久化逻辑。
+        self._theme_updating = True
+        try:
+            self._theme_segmented.set_current_index(
+                self.THEME_INDEX.get(self._theme_mode, 1), animate=False
+            )
+        finally:
+            self._theme_updating = False
+        dark_layout.addWidget(self._theme_segmented)
+
+        # 存量兼容：保留 _dark_toggle 属性（非界面垫片，不加入布局），
+        # 供旧测试/外部调用以 checked/toggled 方式读写实际生效值。
+        self._dark_toggle = _DarkToggleCompat(self)
 
         layout.addWidget(dark_row)
 
@@ -479,7 +597,7 @@ class AppearanceSettingsPage(QWidget):
         color_row.addStretch()  # 右侧弹性空间
         layout.addLayout(color_row)
 
-        # ── 窗口背景（简约 / 云母 / 图像） ──
+        # ── 窗口背景（简约 / 云母 / 图像，与深色模式同行布局） ──
         # 云母参数为按主题固定的产品定值（见 main_window.FIXED_MICA_PARAMS），
         # 设置页不再提供滑动条配置。初值来自暂存缓存（隔离层唯一数据源）。
         saved_bg = self._staging_cache.get("appearance.background", {}) or {}
@@ -488,13 +606,24 @@ class AppearanceSettingsPage(QWidget):
         self._bg_image_name = str(saved_bg.get("image", "") or "")
         _raw_ambient = saved_bg.get("ambient", True)
         self._bg_ambient = _raw_ambient if isinstance(_raw_ambient, bool) else bool(_raw_ambient)
+        self._bg_blur = _normalize_bg_blur(saved_bg.get("blur", IMAGE_BG_BLUR_DEFAULT))
+        self._bg_transparency = _normalize_bg_transparency(
+            saved_bg.get("transparency", IMAGE_BG_TRANSPARENCY_DEFAULT)
+        )
+
+        bg_row = QFrame()
+        bg_row.setStyleSheet("background: transparent; border: none;")
+        bg_title_layout = QHBoxLayout(bg_row)
+        bg_title_layout.setContentsMargins(0, 0, 0, 0)
+        bg_title_layout.setSpacing(12)
 
         bg_label = QLabel("窗口背景")
         bg_label.setStyleSheet(
             f"background: transparent; border: none;"
             f"color: {tm.text.name()}; font-size: 13px; font-weight: 500;"
         )
-        layout.addWidget(bg_label)
+        bg_title_layout.addWidget(bg_label)
+        bg_title_layout.addStretch()
         self._bg_label = bg_label
 
         self._bg_segmented = StyledSegmented(variant="pill", size="sm")
@@ -513,7 +642,8 @@ class AppearanceSettingsPage(QWidget):
                 self._bg_segmented.set_current_index(2, animate=False)
         finally:
             self._bg_updating = False
-        layout.addWidget(self._bg_segmented)
+        bg_title_layout.addWidget(self._bg_segmented)
+        layout.addWidget(bg_row)
 
         # 图片行（仅 image 模式可见）：当前文件名 + 「选择图片…」按钮
         self._bg_image_row = QFrame()
@@ -536,6 +666,65 @@ class AppearanceSettingsPage(QWidget):
         self._bg_choose_btn.clicked.connect(self._on_choose_bg_image_clicked)
         bg_row_layout.addWidget(self._bg_choose_btn)
         layout.addWidget(self._bg_image_row)
+
+        # 图像参数区（仅 image 模式可见）：模糊度 / 透明度可拖动滑动条。
+        # 默认模糊度 0（不模糊）、透明度 80%（很透明）。
+        self._bg_params_row = QFrame()
+        self._bg_params_row.setStyleSheet("background: transparent; border: none;")
+        params_layout = QVBoxLayout(self._bg_params_row)
+        params_layout.setContentsMargins(0, 0, 0, 0)
+        params_layout.setSpacing(8)
+
+        label_style = (
+            "background: transparent; border: none;"
+            f"color: {tm.text.name()}; font-size: 13px;"
+        )
+        value_style = (
+            "background: transparent; border: none;"
+            f"color: {tm.text.name()}; font-size: 12px;"
+        )
+
+        blur_row = QHBoxLayout()
+        blur_row.setContentsMargins(0, 0, 0, 0)
+        blur_row.setSpacing(12)
+        blur_name = QLabel("模糊度")
+        blur_name.setStyleSheet(label_style)
+        blur_name.setFixedWidth(48)
+        blur_row.addWidget(blur_name)
+        self._blur_slider = StyledSlider(
+            value=self._bg_blur / IMAGE_BG_BLUR_MAX, size="sm"
+        )
+        self._blur_slider.value_changed.connect(self._on_blur_changed)
+        blur_row.addWidget(self._blur_slider, stretch=1)
+        self._blur_value_label = QLabel(f"{self._bg_blur:g}")
+        self._blur_value_label.setStyleSheet(value_style)
+        self._blur_value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._blur_value_label.setFixedWidth(44)
+        blur_row.addWidget(self._blur_value_label)
+        params_layout.addLayout(blur_row)
+
+        opacity_row = QHBoxLayout()
+        opacity_row.setContentsMargins(0, 0, 0, 0)
+        opacity_row.setSpacing(12)
+        opacity_name = QLabel("透明度")
+        opacity_name.setStyleSheet(label_style)
+        opacity_name.setFixedWidth(48)
+        opacity_row.addWidget(opacity_name)
+        self._transparency_slider = StyledSlider(
+            value=self._bg_transparency / 100.0, size="sm"
+        )
+        self._transparency_slider.value_changed.connect(
+            self._on_transparency_changed
+        )
+        opacity_row.addWidget(self._transparency_slider, stretch=1)
+        self._transparency_value_label = QLabel(f"{self._bg_transparency}%")
+        self._transparency_value_label.setStyleSheet(value_style)
+        self._transparency_value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._transparency_value_label.setFixedWidth(44)
+        opacity_row.addWidget(self._transparency_value_label)
+        params_layout.addLayout(opacity_row)
+
+        layout.addWidget(self._bg_params_row)
 
         # 弥散氛围行（仅简约模式可见）：开关实时生效并持久化
         self._ambient_row = SettingsRow(
@@ -604,8 +793,55 @@ class AppearanceSettingsPage(QWidget):
             "mode": self._bg_mode,
             "image": self._bg_image_name,
             "ambient": self._bg_ambient,
+            "blur": self._bg_blur,
+            "transparency": self._bg_transparency,
         })
         self._update_bg_ui_state()
+
+    def _on_blur_changed(self, value: float) -> None:
+        """图像模糊度滑动条 — 仅写入暂存，点击确定才全局生效。
+
+        Args:
+            value: 滑动条归一化值 0~1，映射为 0~200px。
+        """
+        if self._bg_params_updating:
+            return
+        self._bg_blur = _normalize_bg_blur(
+            max(0.0, min(1.0, value)) * IMAGE_BG_BLUR_MAX
+        )
+        if self._blur_value_label is not None:
+            self._blur_value_label.setText(f"{self._bg_blur}")
+        self._stage_background_settings(self._bg_mode)
+
+    def _on_transparency_changed(self, value: float) -> None:
+        """图像透明度滑动条 — 仅写入暂存，点击确定才全局生效。
+
+        Args:
+            value: 滑动条归一化值 0~1，映射为 0~100%（80% 为很透明）。
+        """
+        if self._bg_params_updating:
+            return
+        self._bg_transparency = _normalize_bg_transparency(
+            max(0.0, min(1.0, value)) * 100.0
+        )
+        if self._transparency_value_label is not None:
+            self._transparency_value_label.setText(f"{self._bg_transparency}%")
+        self._stage_background_settings(self._bg_mode)
+
+    def _sync_bg_param_sliders(self) -> None:
+        """按当前参数同步两条滑动条与数值标签（守卫内设置，不触发处理器）。"""
+        if self._blur_slider is None or self._transparency_slider is None:
+            return
+        self._bg_params_updating = True
+        try:
+            self._blur_slider.value = self._bg_blur / IMAGE_BG_BLUR_MAX
+            self._transparency_slider.value = self._bg_transparency / 100.0
+        finally:
+            self._bg_params_updating = False
+        if self._blur_value_label is not None:
+            self._blur_value_label.setText(f"{self._bg_blur}")
+        if self._transparency_value_label is not None:
+            self._transparency_value_label.setText(f"{self._bg_transparency}%")
 
     def _on_choose_bg_image_clicked(self) -> None:
         """「选择图片…」按钮点击入口（非强制场景：取消/失败不回退分段）。"""
@@ -668,7 +904,7 @@ class AppearanceSettingsPage(QWidget):
         )
 
     def _stage_background_settings(self, mode: str) -> None:
-        """暂存窗口背景模式：仅写入暂存缓存并刷新本页 UI，不触碰主窗口与磁盘。
+        """暂存窗口背景：仅写入暂存缓存并刷新本页 UI，不触碰主窗口与磁盘。
 
         提交时由 ``SettingsLayout._submit_settings`` 统一应用到主窗口并持久化。
 
@@ -681,6 +917,8 @@ class AppearanceSettingsPage(QWidget):
             "mode": self._bg_mode,
             "image": self._bg_image_name,
             "ambient": self._bg_ambient,
+            "blur": self._bg_blur,
+            "transparency": self._bg_transparency,
         })
         self._update_bg_ui_state()
 
@@ -703,15 +941,18 @@ class AppearanceSettingsPage(QWidget):
                 "mode": self._bg_mode,
                 "image": self._bg_image_name,
                 "ambient": self._bg_ambient,
+                "blur": self._bg_blur,
+                "transparency": self._bg_transparency,
             })
             v2.save()
         except Exception:
             pass
 
     def _update_bg_ui_state(self) -> None:
-        """按当前背景模式刷新图片行与弥散氛围行的可见性。
+        """按当前背景模式刷新图片行、参数区与弥散氛围行的可见性。
 
-        图片行仅图像模式可见；弥散氛围行仅简约模式可见。
+        图片行与参数区（模糊度/透明度滑动条）仅图像模式可见；
+        弥散氛围行仅简约模式可见。
         """
         is_image = (self._bg_mode == "image")
         is_minimalist = (self._bg_mode == "minimalist")
@@ -719,12 +960,100 @@ class AppearanceSettingsPage(QWidget):
         self._bg_file_label.setText(
             self._bg_image_name if self._bg_image_name else "未设置"
         )
+        if self._bg_params_row is not None:
+            self._bg_params_row.setVisible(is_image)
         if self._ambient_row is not None:
             self._ambient_row.setVisible(is_minimalist)
 
+    def _resolve_staged_theme_mode(self) -> str:
+        """从暂存缓存解析主题偏好三态。
+
+        优先读 ``appearance.theme_mode``；旧快照缺失时由
+        ``appearance.theme``（dark/light）迁移；非法值回退为当前
+        ``tm`` 实际值对应的手动偏好。
+
+        Returns:
+            偏好值："light" | "dark" | "system"。
+        """
+        staged_mode = self._staging_cache.get("appearance.theme_mode", None)
+        if staged_mode in ("light", "dark", "system"):
+            return staged_mode
+        staged_theme = self._staging_cache.get("appearance.theme", None)
+        if staged_theme in ("light", "dark"):
+            return staged_theme
+        try:
+            return tm.get_theme_mode()
+        except Exception:
+            return "dark" if tm.is_dark_theme() else "light"
+
+    def _on_theme_segment_changed(self, index: int) -> None:
+        """深色模式分段切换 — 仅写入暂存，点击确定才全局生效。
+
+        与「窗口背景」分段同语义：切换只进 ``SettingsStagingCache``，
+        不触碰 ``tm``、主窗口与磁盘；应用与落盘统一由
+        ``SettingsLayout._submit_settings`` 在点击确定时执行。
+
+        Args:
+            index: 新选中的分段索引（0 = 白天，1 = 夜晚，2 = 跟随系统）。
+        """
+        if self._theme_updating:
+            return
+        if index < 0 or index >= len(self.THEME_MODES):
+            return
+        self._apply_theme_mode(self.THEME_MODES[index])
+
+    def _apply_theme_mode(self, mode: str) -> None:
+        """暂存主题偏好（不生效、不落盘，点击确定才全局应用）。
+
+        遵循设置页暂存隔离铁律：仅写入暂存缓存并同步分段选中；
+        应用到 ``tm`` 与 V2 落盘统一由 ``SettingsLayout._submit_settings``
+        执行。跟随系统模式的暂存生效值按当前系统主题只读推导（不触碰 ``tm``）。
+
+        Args:
+            mode: 偏好值，"light" | "dark" | "system"，非法值直接忽略。
+        """
+        if mode not in ("light", "dark", "system"):
+            return
+        self._theme_mode = mode
+        self._staging_cache.set("appearance.theme_mode", mode)
+        if mode == "system":
+            try:
+                from freeassetfilter.ui.theme.system_theme import (
+                    get_windows_system_theme,
+                )
+
+                effective = get_windows_system_theme()
+            except Exception:
+                effective = "dark" if tm.is_dark_theme() else "light"
+            if effective not in ("light", "dark"):
+                effective = "dark" if tm.is_dark_theme() else "light"
+        else:
+            effective = mode
+        self._staging_cache.set("appearance.theme", effective)
+        self._sync_theme_segment()
+
+    def _sync_theme_segment(self) -> None:
+        """按当前偏好同步分段控件选中项（守卫内切换，不触发处理器）。"""
+        if self._theme_segmented is None:
+            return
+        target = self.THEME_INDEX.get(self._theme_mode, 1)
+        self._theme_updating = True
+        try:
+            self._theme_segmented.set_current_index(target, animate=False)
+        finally:
+            self._theme_updating = False
+
     def _on_dark_toggle(self, checked: bool) -> None:
-        """深色模式开关切换 — 写入暂存缓存，点击「应用」/「确定」才全局生效。"""
-        self._staging_cache.set("appearance.theme", "dark" if checked else "light")
+        """兼容旧深色开关调用：等价于暂存夜晚/白天偏好（点击确定才生效）。
+
+        保留方法名以兼容存量测试与外部调用，语义为纯暂存
+        （与分段控件一致）。
+
+        Args:
+            checked: True 暂存为夜晚（深色），False 暂存为白天（浅色）。
+        """
+        self._apply_theme_mode("dark" if checked else "light")
+        self._sync_theme_segment()
 
     def _on_color_clicked(self, color_hex: str) -> None:
         """主题色选择 — 写入暂存缓存，点击「应用」/「确定」才全局生效。"""
@@ -903,21 +1232,31 @@ class AppearanceSettingsPage(QWidget):
         super().closeEvent(event)
 
     def refresh_theme(self) -> None:
-        """主题切换时刷新页面内文字颜色（不覆盖未提交的暂存值）。"""
-        # toggle 展示以暂存缓存为准（避免外部主题切换冲掉未提交的修改）；
-        # 仅在缓存与控件不一致时同步，且全程断开信号防回写。
+        """主题切换时刷新页面内文字颜色并同步三段控件。
+
+        暂存隔离铁律：本页的任何修改都不触碰 ``tm``；此处仅处理反方向
+        （顶栏按钮 / 系统跟随导致的 ``tm`` 变化）的单向镜像——以 ``tm``
+        当前偏好为准回写暂存并同步分段选中，保证设置面板与顶栏按钮一致；
+        守卫内编程式切换，不触发提交。
+        """
+        # 外部主题变化优先同步暂存（主题为实时项，不存在未提交覆盖问题）。
         try:
-            self._dark_toggle.toggled.disconnect(self._on_dark_toggle)
+            external_mode = tm.get_theme_mode()
         except Exception:
-            pass
-        try:
-            staged_theme = self._staging_cache.get("appearance.theme", None)
-            if staged_theme in ("light", "dark"):
-                self._dark_toggle.checked = (staged_theme == "dark")
-            else:
-                self._dark_toggle.checked = tm.is_dark_theme()
-        finally:
-            self._dark_toggle.toggled.connect(self._on_dark_toggle)
+            external_mode = "dark" if tm.is_dark_theme() else "light"
+        if external_mode in ("light", "dark", "system"):
+            if self._staging_cache.get("appearance.theme_mode", None) != external_mode:
+                self._staging_cache.set("appearance.theme_mode", external_mode)
+            try:
+                external_effective = tm.effective_theme()
+            except Exception:
+                external_effective = "dark" if tm.is_dark_theme() else "light"
+            if self._staging_cache.get("appearance.theme", None) != external_effective:
+                self._staging_cache.set("appearance.theme", external_effective)
+            self._theme_mode = external_mode
+        else:
+            self._theme_mode = self._resolve_staged_theme_mode()
+        self._sync_theme_segment()
         # 由外部 _refresh_styles 统一刷新文字颜色
         # 窗口背景区块：标题与文件名标签颜色跟随主题（覆盖统一刷新，
         # 保证页面脱离 SettingsLayout 宿主单独使用时同样正确）
@@ -964,14 +1303,8 @@ class AppearanceSettingsPage(QWidget):
         所有开关、输入框、滑动条展示与暂存内容一致；编程式赋值全程守卫，
         不回写缓存、不触发提交、不触碰主窗口与磁盘。
         """
-        saved_theme = self._staging_cache.get("appearance.theme", "light")
-        is_dark = (saved_theme == "dark")
-        try:
-            self._dark_toggle.toggled.disconnect(self._on_dark_toggle)
-        except Exception:
-            pass
-        self._dark_toggle.checked = is_dark
-        self._dark_toggle.toggled.connect(self._on_dark_toggle)
+        self._theme_mode = self._resolve_staged_theme_mode()
+        self._sync_theme_segment()
 
         saved_accent = self._staging_cache.get("appearance.accent_color", "#007AFF")
         self._current_accent = saved_accent
@@ -996,6 +1329,12 @@ class AppearanceSettingsPage(QWidget):
         self._bg_image_name = str(saved_bg.get("image", "") or "")
         _raw_ambient = saved_bg.get("ambient", True)
         self._bg_ambient = _raw_ambient if isinstance(_raw_ambient, bool) else bool(_raw_ambient)
+        self._bg_blur = _normalize_bg_blur(
+            saved_bg.get("blur", IMAGE_BG_BLUR_DEFAULT)
+        )
+        self._bg_transparency = _normalize_bg_transparency(
+            saved_bg.get("transparency", IMAGE_BG_TRANSPARENCY_DEFAULT)
+        )
         if self._ambient_toggle is not None:
             try:
                 self._ambient_toggle.toggled.disconnect(self._on_ambient_toggled)
@@ -1004,6 +1343,7 @@ class AppearanceSettingsPage(QWidget):
             self._ambient_toggle.checked = self._bg_ambient
             self._ambient_toggle.toggled.connect(self._on_ambient_toggled)
         self._sync_bg_segment()
+        self._sync_bg_param_sliders()
         self._update_bg_ui_state()
 
     def _sync_bg_segment(self) -> None:
@@ -1039,9 +1379,12 @@ class AppearanceSettingsPage(QWidget):
         """
         return {
             "appearance": {
+                "theme_mode": self._staging_cache.get(
+                    "appearance.theme_mode", self._theme_mode
+                ),
                 "theme": self._staging_cache.get(
                     "appearance.theme",
-                    "dark" if self._dark_toggle.checked else "light",
+                    "dark" if tm.is_dark_theme() else "light",
                 ),
                 "accent_color": self._staging_cache.get(
                     "appearance.accent_color", self._current_accent
@@ -1141,8 +1484,13 @@ class SettingsLayout(QWidget):
         # 默认选中第一项
         self._stack.setCurrentIndex(0)
 
-        # 主题切换时刷新内容区背景
+        # 主题切换时刷新内容区背景（生效值变化 + 偏好变化均需刷新，
+        # 后者覆盖生效值不变但分段需切换的场景，如 白天→跟随系统且系统正为浅色）。
         tm.theme_changed.connect(self._on_theme_changed)
+        try:
+            tm.theme_mode_changed.connect(self._on_theme_changed)
+        except Exception:
+            pass
 
     def _wrap_page_in_scroll(self, page: QWidget) -> _FloatingScrollArea:
         """将设置页包进浮动滚动条滚动区（styled 滚动条 + 丝滑滚动）。"""
@@ -1283,14 +1631,22 @@ class SettingsLayout(QWidget):
         t0 = time.perf_counter()
         staged = self._staging_cache.commit_snapshot()
         appearance = staged.get("appearance", {}) if isinstance(staged, dict) else {}
-        theme = appearance.get("theme", "light")
-        if theme not in ("light", "dark"):
-            theme = "light"
+        theme_mode = appearance.get("theme_mode", None)
+        if theme_mode not in ("light", "dark", "system"):
+            # 旧快照迁移：由生效值推导偏好。
+            legacy_theme = appearance.get("theme", "light")
+            theme_mode = "dark" if legacy_theme == "dark" else "light"
         accent = appearance.get("accent_color", "#007AFF")
         staged_bg = appearance.get("background", {}) or {}
         bg_mode = staged_bg.get("mode", "mica")
         if bg_mode not in ("mica", "image", "minimalist"):
             bg_mode = "mica"
+        bg_blur = _normalize_bg_blur(
+            staged_bg.get("blur", IMAGE_BG_BLUR_DEFAULT)
+        )
+        bg_transparency = _normalize_bg_transparency(
+            staged_bg.get("transparency", IMAGE_BG_TRANSPARENCY_DEFAULT)
+        )
 
         saved_accent = accent
         if isinstance(accent, str) and accent.lower() == "auto":
@@ -1304,10 +1660,23 @@ class SettingsLayout(QWidget):
             except Exception:
                 pass
 
+        prev_mode = tm.get_theme_mode()
         prev_theme = "dark" if tm.is_dark_theme() else "light"
         prev_colors = copy.deepcopy(tm._colors)
+        # 主窗口过渡预抓拍：tm 翻转后主窗槽内各背景层 sync 才能以旧帧为底
+        # 做 280ms 交叉淡入，否则退化为裸 update 露出 _root 形成闪现。
         try:
-            tm.set_theme(theme)
+            main_window = self._appearance_page._find_main_window()
+            if main_window is not None and hasattr(main_window, "begin_theme_transition"):
+                main_window.begin_theme_transition()
+        except Exception:  # noqa: BLE001 - 预抓拍失败不阻塞提交本身
+            pass
+        try:
+            tm.set_theme_mode(theme_mode)
+            try:
+                theme = tm.effective_theme()
+            except Exception:
+                theme = "dark" if tm.is_dark_theme() else "light"
             tm._colors["accent"]["primary"] = accent
             tm.colors_updated.emit(tm._colors)
 
@@ -1318,6 +1687,7 @@ class SettingsLayout(QWidget):
 
             v2 = SettingsManagerV2()
             v2.load()
+            v2.set("appearance.theme_mode", theme_mode)
             v2.set("appearance.theme", theme)
             v2.set("appearance.accent_color", saved_accent)
             v2.set("appearance.colors", colors_dict)
@@ -1325,10 +1695,13 @@ class SettingsLayout(QWidget):
                 "mode": bg_mode,
                 "image": str(staged_bg.get("image", "") or ""),
                 "ambient": bool(staged_bg.get("ambient", True)),
+                "blur": bg_blur,
+                "transparency": bg_transparency,
             })
             v2.save()
         except Exception:
             try:
+                tm.set_theme_mode(prev_mode)
                 tm.set_theme(prev_theme)
                 tm._colors.update(prev_colors)
                 tm.colors_updated.emit(tm._colors)
@@ -1355,6 +1728,12 @@ class SettingsLayout(QWidget):
         image_name = str(staged_bg.get("image", "") or "")
         ambient = staged_bg.get("ambient", True)
         ambient = ambient if isinstance(ambient, bool) else bool(ambient)
+        bg_blur = _normalize_bg_blur(
+            staged_bg.get("blur", IMAGE_BG_BLUR_DEFAULT)
+        )
+        bg_transparency = _normalize_bg_transparency(
+            staged_bg.get("transparency", IMAGE_BG_TRANSPARENCY_DEFAULT)
+        )
         try:
             mw = self._appearance_page._find_main_window()
             if mw is None:
@@ -1365,6 +1744,11 @@ class SettingsLayout(QWidget):
                 )
                 if hasattr(mw, "set_custom_background_image"):
                     mw.set_custom_background_image(image_path)
+                if hasattr(mw, "set_image_background_params"):
+                    # 透明度换算为不透明度后下发给图像层。
+                    mw.set_image_background_params(
+                        bg_blur, 1.0 - bg_transparency / 100.0
+                    )
                 if hasattr(mw, "set_background_mode"):
                     mw.set_background_mode("image")
             elif mode == "minimalist":

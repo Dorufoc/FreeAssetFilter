@@ -517,7 +517,8 @@ def _build_default_colors() -> Dict[str, Any]:
 DEFAULT_SETTINGS_V2: Dict[str, Any] = {
     "version": 2,
     "appearance": {
-        "theme": "dark",           # "light" | "dark"
+        "theme": "dark",           # 实际生效值："light" | "dark"（跟随模式下为系统解析结果）
+        "theme_mode": "dark",      # 用户偏好："light"（白天） | "dark"（夜晚） | "system"（跟随系统）
         "accent_color": "#3A9DCB",
         "colors": _build_default_colors(),
         # 背景米卡效果可调参数（设置窗口「外观」页滑动条）
@@ -532,6 +533,8 @@ DEFAULT_SETTINGS_V2: Dict[str, Any] = {
             "mode": "mica",   # 背景模式："mica"（云母） | "image"（图像） | "minimalist"（简约）
             "image": "",      # 自定义图片文件名（位于 data/backgrounds/ 下，空字符串 = 未设置）
             "ambient": True,  # 弥散氛围开关（简约模式下将主题色作为背景氛围层，默认开启）
+            "blur": 0,        # 图像模式模糊半径（整数 px，0-200，默认不模糊）
+            "transparency": 80,  # 图像模式透明度（%，0-100，默认 80% 很透明）
         },
     },
 }
@@ -738,6 +741,34 @@ class SettingsManagerV2:
                         merged["appearance"][key] = self._deep_merge_colors(
                             merged["appearance"][key], app_loaded[key]
                         )
+                    # background 浅合并：旧文件缺 blur/transparency 时以
+                    # 后续版本默认值补齐，已有值保持不变；中间版本的
+                    # opacity（不透明度 %）按 transparency = 100 - opacity
+                    # 迁移后清理（两者语义互补，视觉保持一致）。
+                    elif key == "background" and isinstance(
+                        app_loaded[key], dict
+                    ):
+                        loaded_bg = app_loaded[key]
+                        merged_bg = dict(merged["appearance"][key])
+                        merged_bg.update(loaded_bg)
+                        # 注意：缺键检测必须看落盘原始数据（loaded_bg），不能看
+                        # 合并后的 merged_bg——后者已被默认值预填 transparency。
+                        if "transparency" not in loaded_bg and (
+                            "opacity" in loaded_bg
+                        ):
+                            try:
+                                legacy = int(
+                                    round(float(loaded_bg.get("opacity", 20)))
+                                )
+                            except (TypeError, ValueError):
+                                legacy = 20
+                            merged_bg["transparency"] = max(
+                                0, min(100, 100 - legacy)
+                            )
+                        merged_bg.pop("opacity", None)
+                        merged_bg.setdefault("blur", 0)
+                        merged_bg.setdefault("transparency", 80)
+                        merged["appearance"][key] = merged_bg
                     else:
                         merged["appearance"][key] = app_loaded[key]
 

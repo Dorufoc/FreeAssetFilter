@@ -31,6 +31,11 @@ class ThemeTransitionOverlay(QWidget):
         self._duration_ms = max(50, duration_ms)
 
         self.setAttribute(Qt.WA_StyledBackground, False)
+        # 过渡遮罩必须全透明：否则遮罩自身底色（默认 Window 色偏白）
+        # 会在淡出期间盖住下方的图像/简约背景层，形成白色闪现。
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_OpaquePaintEvent, False)
+        self.setAutoFillBackground(False)
         self.setGeometry(parent.rect())
 
         self._opacity_effect = QGraphicsOpacityEffect(self)
@@ -116,6 +121,13 @@ class ContentTransitionOverlay(QWidget):
 
         self.setAttribute(Qt.WA_StyledBackground, False)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        # 内容层遮罩只盖 _content（背景层是兄弟层，不会被遮住），但遮罩
+        # 自身必须透明：image/minimalist 模式下 _content 大面积透明、
+        # 下方直接就是图像/渐变背景；若遮罩底色不透明，淡出期间会以
+        # 白色底盖住背景层，结束后才恢复为图像背景（即本次白闪故障）。
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_OpaquePaintEvent, False)
+        self.setAutoFillBackground(False)
         self.setGeometry(parent.rect())
 
         self._anim = QVariantAnimation(self)

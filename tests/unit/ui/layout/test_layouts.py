@@ -250,6 +250,264 @@ class TestFileSelectorLayout:
 
 
 # =============================================================================
+# ui.layout.file_selector_layout — _go_back 返回过渡动画
+# =============================================================================
+class TestGoBackTransition:
+    """_go_back 返回过渡：历史/上级/盘符根分支均一致触发 direction=-1 动画。
+
+    全部用例均用 MagicMock 计数 begin/finish，不跑真实动画（offscreen 下
+    ``FileSelectorLayout`` 真实构造，仅过渡与 IO 入口被替身替换）。
+    """
+
+    def test_history_branch_triggers_back_animation(
+        self, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """历史分支：有可回退历史时 _go_back 以 -1 触发过渡并加载上一条。
+
+        Args:
+            qapp: 会话级 QApplication（offscreen）。
+            tmp_path: pytest 临时目录（真实创建 tmpA/tmpB）。
+            monkeypatch: 用例级猴子补丁。
+        """
+        import os
+
+        tmp_a = tmp_path / "tmpA"
+        tmp_b = tmp_path / "tmpB"
+        tmp_a.mkdir()
+        tmp_b.mkdir()
+        str_a = os.path.abspath(str(tmp_a))
+        str_b = os.path.abspath(str(tmp_b))
+
+        layout = FileSelectorLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        qapp.processEvents()
+        try:
+            # 预置历史栈顶为 tmpB，回退应落到 tmpA。
+            layout._nav_history = [str_a, str_b]
+            layout._history_index = 1
+            layout._current_path = str_b
+            begin_mock: MagicMock = MagicMock(return_value=True)
+            finish_mock: MagicMock = MagicMock(return_value=True)
+            load_mock: MagicMock = MagicMock()
+            monkeypatch.setattr(layout._file_list, "begin_path_transition", begin_mock)
+            monkeypatch.setattr(layout._file_list, "finish_path_transition", finish_mock)
+            monkeypatch.setattr(layout, "_load_directory", load_mock)
+            monkeypatch.setattr(layout, "_navigate_to_all", MagicMock())
+            monkeypatch.setattr(layout, "_save_last_path", MagicMock())
+            monkeypatch.setattr(os.path, "isdir", lambda path: True)
+
+            layout._go_back()
+
+            begin_mock.assert_called_once_with(-1)
+            finish_mock.assert_called_once_with(-1)
+            load_mock.assert_called_once_with(str_a)
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+    def test_parent_fallback_triggers_back_animation(
+        self, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """上级回退（单条历史/首次访问）：parent 回退分支以 -1 触发过渡。
+
+        覆盖启动恢复、All 重置后等单历史场景：_history_index==0 时
+        _go_back 走 parent 回退分支（经 _load_directory_with_transition），
+        与历史分支一致触发 -1 动画并加载 dirname 上级。
+
+        Args:
+            qapp: 会话级 QApplication（offscreen）。
+            tmp_path: pytest 临时目录（真实创建 sub/inner）。
+            monkeypatch: 用例级猴子补丁。
+        """
+        import os
+
+        sub_dir = tmp_path / "sub"
+        deep_dir = sub_dir / "inner"
+        deep_dir.mkdir(parents=True)
+        str_parent = os.path.abspath(str(sub_dir))
+        str_deep = os.path.abspath(str(deep_dir))
+
+        layout = FileSelectorLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        qapp.processEvents()
+        try:
+            # 单条历史（首次访问/启动恢复场景）：栈顶即 deep，无可回退历史，
+            # 回退走 parent 分支，dirname 上级即 parent。
+            layout._nav_history = [str_deep]
+            layout._history_index = 0
+            layout._current_path = str_deep
+            begin_mock: MagicMock = MagicMock(return_value=True)
+            finish_mock: MagicMock = MagicMock(return_value=True)
+            load_mock: MagicMock = MagicMock()
+            monkeypatch.setattr(layout._file_list, "begin_path_transition", begin_mock)
+            monkeypatch.setattr(layout._file_list, "finish_path_transition", finish_mock)
+            monkeypatch.setattr(layout, "_load_directory", load_mock)
+            monkeypatch.setattr(layout, "_navigate_to_all", MagicMock())
+            monkeypatch.setattr(layout, "_save_last_path", MagicMock())
+            monkeypatch.setattr(os.path, "isdir", lambda path: True)
+
+            layout._go_back()
+
+            begin_mock.assert_called_once_with(-1)
+            finish_mock.assert_called_once_with(-1)
+            load_mock.assert_called_once_with(str_parent)
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+    def test_drive_root_delegates_to_all_with_animation(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """盘符根回退：parent == current 时委托 _navigate_to_all 且带 -1 动画。
+
+        Args:
+            qapp: 会话级 QApplication（offscreen）。
+            monkeypatch: 用例级猴子补丁。
+        """
+        import os
+
+        layout = FileSelectorLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        qapp.processEvents()
+        try:
+            # 无可回退历史、当前为盘符根：dirname 恒返自身以强制走 All 分支。
+            layout._nav_history = []
+            layout._history_index = -1
+            layout._current_path = "D:\\"
+            begin_mock: MagicMock = MagicMock(return_value=True)
+            finish_mock: MagicMock = MagicMock(return_value=True)
+            monkeypatch.setattr(layout._file_list, "begin_path_transition", begin_mock)
+            monkeypatch.setattr(layout._file_list, "finish_path_transition", finish_mock)
+            monkeypatch.setattr(layout, "_load_all", MagicMock())
+            monkeypatch.setattr(layout, "_save_last_path", MagicMock())
+            monkeypatch.setattr(layout, "_clear_last_path", MagicMock())
+            monkeypatch.setattr(os.path, "isdir", lambda path: True)
+            monkeypatch.setattr(os.path, "dirname", lambda path: path)
+            navigate_all_calls: list = []
+            original_navigate_to_all = layout._navigate_to_all
+
+            def _spy_navigate_to_all() -> None:
+                """记录委托并执行真实 All 导航（保留其内部 -1 动画）。"""
+                navigate_all_calls.append(True)
+                original_navigate_to_all()
+
+            monkeypatch.setattr(layout, "_navigate_to_all", _spy_navigate_to_all)
+
+            layout._go_back()
+
+            assert navigate_all_calls == [True]
+            begin_mock.assert_called_once_with(-1)
+            finish_mock.assert_called_once_with(-1)
+            assert layout._current_path == "All"
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+    def test_deep_nesting_sequential_go_back(
+        self, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """深层嵌套：逐级 _go_back 每次均触发 -1 动画。
+
+        Args:
+            qapp: 会话级 QApplication（offscreen）。
+            tmp_path: pytest 临时目录（真实创建 a/b/c）。
+            monkeypatch: 用例级猴子补丁。
+        """
+        import os
+
+        dir_a = tmp_path / "a"
+        dir_b = dir_a / "b"
+        dir_c = dir_b / "c"
+        dir_c.mkdir(parents=True)
+        str_a = os.path.abspath(str(dir_a))
+        str_b = os.path.abspath(str(dir_b))
+        str_c = os.path.abspath(str(dir_c))
+
+        layout = FileSelectorLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        qapp.processEvents()
+        try:
+            layout._nav_history = [str_a, str_b, str_c]
+            layout._history_index = 2
+            layout._current_path = str_c
+            begin_mock: MagicMock = MagicMock(return_value=True)
+            finish_mock: MagicMock = MagicMock(return_value=True)
+            load_mock: MagicMock = MagicMock()
+            monkeypatch.setattr(layout._file_list, "begin_path_transition", begin_mock)
+            monkeypatch.setattr(layout._file_list, "finish_path_transition", finish_mock)
+            monkeypatch.setattr(layout, "_load_directory", load_mock)
+            monkeypatch.setattr(layout, "_navigate_to_all", MagicMock())
+            monkeypatch.setattr(layout, "_save_last_path", MagicMock())
+            monkeypatch.setattr(os.path, "isdir", lambda path: True)
+
+            layout._go_back()
+            layout._go_back()
+
+            assert begin_mock.call_count == 2
+            assert finish_mock.call_count == 2
+            assert [c.args[0] for c in begin_mock.call_args_list] == [-1, -1]
+            assert [c.args[0] for c in finish_mock.call_args_list] == [-1, -1]
+            assert [c.args[0] for c in load_mock.call_args_list] == [str_b, str_a]
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+    @pytest.mark.parametrize("scenario", ["history", "parent"])
+    def test_direction_always_minus_one(
+        self, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        scenario: str,
+    ) -> None:
+        """direction 一致性：历史/上级两种前置下 begin 首参恒为 -1。
+
+        Args:
+            qapp: 会话级 QApplication（offscreen）。
+            tmp_path: pytest 临时目录。
+            monkeypatch: 用例级猴子补丁。
+            scenario: 前置场景（history=普通历史回退，parent=回到上级）。
+        """
+        import os
+
+        layout = FileSelectorLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        qapp.processEvents()
+        try:
+            if scenario == "history":
+                # 普通历史回退：tmpB -> tmpA。
+                tmp_a = tmp_path / "hA"
+                tmp_b = tmp_path / "hB"
+                tmp_a.mkdir(exist_ok=True)
+                tmp_b.mkdir(exist_ok=True)
+                layout._nav_history = [os.path.abspath(str(tmp_a)), os.path.abspath(str(tmp_b))]
+                layout._history_index = 1
+                layout._current_path = os.path.abspath(str(tmp_b))
+            else:
+                # 上级回退（单条历史/首次访问）：inner 经 parent 分支回到 sub。
+                sub_dir = tmp_path / "psub"
+                deep_dir = sub_dir / "pinner"
+                deep_dir.mkdir(parents=True, exist_ok=True)
+                layout._nav_history = [os.path.abspath(str(deep_dir))]
+                layout._history_index = 0
+                layout._current_path = os.path.abspath(str(deep_dir))
+            begin_mock: MagicMock = MagicMock(return_value=True)
+            finish_mock: MagicMock = MagicMock(return_value=True)
+            monkeypatch.setattr(layout._file_list, "begin_path_transition", begin_mock)
+            monkeypatch.setattr(layout._file_list, "finish_path_transition", finish_mock)
+            monkeypatch.setattr(layout, "_load_directory", MagicMock())
+            monkeypatch.setattr(layout, "_navigate_to_all", MagicMock())
+            monkeypatch.setattr(layout, "_save_last_path", MagicMock())
+            monkeypatch.setattr(os.path, "isdir", lambda path: True)
+
+            layout._go_back()
+
+            assert begin_mock.call_count == 1
+            assert begin_mock.call_args.args[0] == -1
+            assert finish_mock.call_args.args[0] == -1
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+
+# =============================================================================
 # ui.layout.settings_layout
 # =============================================================================
 class TestSettingsLayout:
@@ -1169,7 +1427,7 @@ class TestAppearanceSettingsPage:
         assert fake_mw.image_calls == []
         saved = SettingsManagerV2(tmp_file)
         saved.load()
-        assert saved.get("appearance.background") == {"mode": "mica", "image": "", "ambient": True}
+        assert saved.get("appearance.background") == {"mode": "mica", "image": "", "ambient": True, "blur": 0, "transparency": 80}
         safe_teardown(page)
 
     def test_bg_segment_switch_import_failure_shows_dialog(
@@ -1213,7 +1471,7 @@ class TestAppearanceSettingsPage:
         assert fake_mw.mode_calls == []
         saved = SettingsManagerV2(tmp_file)
         saved.load()
-        assert saved.get("appearance.background") == {"mode": "mica", "image": "", "ambient": True}
+        assert saved.get("appearance.background") == {"mode": "mica", "image": "", "ambient": True, "blur": 0, "transparency": 80}
         safe_teardown(page)
 
     def test_choose_bg_image_success_via_button(

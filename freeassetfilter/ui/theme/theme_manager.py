@@ -60,8 +60,9 @@ def _qcolor_to_hex(color: QColor) -> str:
 class ThemeManager(QObject):
     """Singleton theme manager. Use ThemeManager() to get instance."""
 
-    theme_changed = Signal(str)  # "dark" or "light"
+    theme_changed = Signal(str)  # "dark" or "light" (实际生效值)
     colors_updated = Signal(dict)  # current colors dict
+    theme_mode_changed = Signal(str)  # "light" | "dark" | "system" (用户偏好值)
 
     _instance = None
     _initialized = False
@@ -75,6 +76,7 @@ class ThemeManager(QObject):
         if self._initialized:
             return
         self._dark_mode = True
+        self._theme_mode: str = "dark"
         self._initialized = True
         super().__init__()
 
@@ -105,7 +107,28 @@ class ThemeManager(QObject):
             colors = v2.get("appearance.colors", {})
 
         self._colors = colors
-        self._dark_mode = (v2.get("appearance.theme", "dark") == "dark")
+        # 三态偏好：appearance.theme_mode (light|dark|system)，缺失时由
+        # 旧 appearance.theme (dark/light) 迁移，保证存量配置无感升级。
+        raw_mode = v2.get("appearance.theme_mode", None)
+        if raw_mode not in ("light", "dark", "system"):
+            legacy = v2.get("appearance.theme", "dark")
+            raw_mode = "dark" if legacy == "dark" else "light"
+        self._theme_mode = raw_mode
+        if self._theme_mode == "system":
+            try:
+                from freeassetfilter.ui.theme.system_theme import (
+                    get_windows_system_theme,
+                )
+
+                self._dark_mode = (
+                    get_windows_system_theme() == "dark"
+                )
+            except Exception:
+                self._dark_mode = (
+                    v2.get("appearance.theme", "dark") == "dark"
+                )
+        else:
+            self._dark_mode = (self._theme_mode == "dark")
         saved_accent = v2.get("appearance.accent_color")
         if saved_accent and isinstance(self._colors.get("accent"), dict):
             self._colors["accent"]["primary"] = saved_accent
@@ -114,7 +137,12 @@ class ThemeManager(QObject):
         if isinstance(self._colors.get("accent"), dict):
             primary = self._colors["accent"].get("primary", "")
             if isinstance(primary, str) and primary.lower() == "auto":
-                from theme.system_accent import get_system_accent_color
+                try:
+                    from freeassetfilter.ui.theme.system_accent import (
+                        get_system_accent_color,
+                    )
+                except ImportError:  # 兼容短路径别名（sys.modules['theme']）
+                    from theme.system_accent import get_system_accent_color
 
                 self._colors["accent"]["primary"] = get_system_accent_color()
 
@@ -234,23 +262,141 @@ class ThemeManager(QObject):
     # ------------------------------------------------------------------
 
     def set_theme(self, theme: str) -> None:
-        """Set theme mode: 'dark' or 'light'."""
+        """设置手动主题并同步偏好（顶栏切换入口）。
+
+        等价于 ``set_theme_mode(theme)`` 的手动分支：偏好切为对应手动值，
+        立即生效并广播。跟随系统模式下的顶栏点击应走此方法，从而自动
+        脱离跟随（切为白天/夜晚）。
+
+        Args:
+            theme: 目标主题，"dark" 或 "light"，非法值直接忽略。
+        """
         if theme not in ("dark", "light"):
             return
-        self._dark_mode = (theme == "dark")
-        self._clear_color_cache()
-        self.theme_changed.emit(theme)
-        self.colors_updated.emit(self._colors)
+        self.set_theme_mode(theme)
 
     def toggle_theme(self) -> str:
-        """Toggle between dark and light mode. Returns new theme name."""
+        """在实际生效值上翻转（浅色↔深色），并固定为手动偏好。
+
+        Returns:
+            翻转后的实际主题名。
+        """
         new_theme = "light" if self._dark_mode else "dark"
         self.set_theme(new_theme)
         return new_theme
 
     def is_dark_theme(self) -> bool:
-        """Return True if current mode is dark."""
+        """返回当前实际生效是否为深色（跟随模式下为系统解析结果）。
+
+        Returns:
+            深色返回 True，否则返回 False。
+        """
         return self._dark_mode
+
+    def get_theme_mode(self) -> str:
+        """返回用户主题偏好。
+
+        Returns:
+            偏好值："light"（白天）| "dark"（夜晚）| "system"（跟随系统）。
+        """
+        if self._theme_mode not in ("light", "dark", "system"):
+            return "dark" if self._dark_mode else "light"
+        return self._theme_mode
+
+    def effective_theme(self) -> str:
+        """返回当前实际生效主题。
+
+        Returns:
+            "dark" 或 "light"。
+        """
+        return "dark" if self._dark_mode else "light"
+
+    def set_theme_mode(self, mode: str) -> None:
+        """设置主题偏好并立即生效。
+
+        - 手动模式（light/dark）：直接生效；
+        - 跟随系统（system）：实时读取 Windows 系统主题后生效。
+
+        每次合法调用均发射 ``theme_mode_changed``（偏好值）、
+        ``theme_changed``（实际生效值）与 ``colors_updated``——与历史
+        ``set_theme`` 的"调用即广播"契约一致，订阅者幂等刷新即可。
+
+        Args:
+            mode: 偏好值，"light" | "dark" | "system"，非法值直接忽略。
+        """
+        if mode not in ("light", "dark", "system"):
+            return
+        self._theme_mode = mode
+        if mode == "system":
+            try:
+                from freeassetfilter.ui.theme.system_theme import (
+                    get_windows_system_theme,
+                )
+
+                self._dark_mode = (
+                    get_windows_system_theme() == "dark"
+                )
+            except Exception:
+                pass
+        else:
+            self._dark_mode = (mode == "dark")
+        self._clear_color_cache()
+        self.theme_mode_changed.emit(mode)
+        self.theme_changed.emit(self.effective_theme())
+        self.colors_updated.emit(self._colors)
+
+    def refresh_system_theme(self) -> bool:
+        """跟随模式下重新读取系统主题并应用。
+
+        仅当偏好为 system 且系统实际值发生变化时翻转生效值。
+
+        Returns:
+            发生切换返回 True，否则返回 False。
+        """
+        if self._theme_mode != "system":
+            return False
+        try:
+            from freeassetfilter.ui.theme.system_theme import (
+                get_windows_system_theme,
+            )
+
+            system_theme = get_windows_system_theme()
+        except Exception:
+            return False
+        if system_theme not in ("dark", "light"):
+            return False
+        should_dark = (system_theme == "dark")
+        if should_dark == self._dark_mode:
+            return False
+        self._dark_mode = should_dark
+        self._clear_color_cache()
+        self.theme_changed.emit(system_theme)
+        self.colors_updated.emit(self._colors)
+        return True
+
+    def apply_system_theme(self, theme: str) -> bool:
+        """应用外部传入的系统主题值（Watcher 回调入口）。
+
+        仅在偏好为 system 时生效，避免手动模式被系统变化冲掉。
+
+        Args:
+            theme: 系统主题值，"dark" 或 "light"。
+
+        Returns:
+            发生切换返回 True，否则返回 False。
+        """
+        if self._theme_mode != "system":
+            return False
+        if theme not in ("dark", "light"):
+            return False
+        should_dark = (theme == "dark")
+        if should_dark == self._dark_mode:
+            return False
+        self._dark_mode = should_dark
+        self._clear_color_cache()
+        self.theme_changed.emit(theme)
+        self.colors_updated.emit(self._colors)
+        return True
 
     # ------------------------------------------------------------------
     # Accent properties (loaded from V2 appearance.colors.accent)

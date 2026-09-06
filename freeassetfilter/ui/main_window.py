@@ -15,9 +15,9 @@ from PySide6.QtOpenGLWidgets import QOpenGLWidget
 import ctypes
 from ctypes import wintypes
 
-from PySide6.QtCore import Qt, QEvent, QUrl, QTimer, QAbstractNativeEventFilter
+from PySide6.QtCore import Qt, QEvent, QPoint, QUrl, QTimer, QAbstractNativeEventFilter
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtGui import QPainter, QPaintEvent, QResizeEvent, QMoveEvent, QMouseEvent, QColor, QCursor
+from PySide6.QtGui import QPainter, QPaintEvent, QPixmap, QRegion, QResizeEvent, QMoveEvent, QMouseEvent, QColor, QCursor
 
 # 确保 ui 目录在 sys.path 中（组件 __init__.py 使用短路径导入）
 _ui_root = Path(__file__).resolve().parent
@@ -206,10 +206,16 @@ class _MicaBackgroundMixin:
         # 快速重烘焙 luminosity（复用已模糊的 base，不再重新模糊）；
         # 背景色为绘制期读取，切换主题仅需重绘
         if self._mica is not None:
+            # 翻转瞬间先用旧层快照起钟（与控件 280ms 过渡同窗口对齐），再提交
+            # 后台重烘焙；新层交付时只换靶、不重启时钟（见
+            # MicaMaterial.begin_theme_transition），两者同起同止。
+            try:
+                self._mica.begin_theme_transition()
+            except Exception:  # noqa: BLE001 - 预起钟失败则退化为交付时过渡
+                pass
             # 米卡参数按主题固定：与主题色 / 深浅标志一并在 key 计算前折入
             # set_theme —— 主题切换只起**一次**烘焙（单次收敛，替代旧的
-            # 「set_theme 起烘 → 参数变更作废重烘」双烘链，等待期减半）；
-            # 新层交付后由 MicaMaterial 以旧态快照交叉淡入（平滑过渡）。
+            # 「set_theme 起烘 → 参数变更作废重烘」双烘链，等待期减半）。
             fixed = fixed_mica_params()
             self._mica.set_theme(
                 self._surface_color,
@@ -630,6 +636,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._settings_window_gen = 0
         # 内容层主题过渡遮罩（单实例去重引用；见 _start_content_theme_transition）
         self._content_theme_overlay: QWidget | None = None
+        # 系统主题监听器（跟随系统模式的实时链路；见 _start_system_theme_watcher）
+        self._system_theme_watcher = None
 
         # 配置 Mica 参数（提前计算）：显式参数 > V2 保存值 > 项目默认
         cfg = DEFAULT_MICA_CONFIG
@@ -638,6 +646,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._background_mode = background_saved.get("mode", "mica")
         self._background_image_name = background_saved.get("image", "")
         self._background_ambient = bool(background_saved.get("ambient", True))
+        self._background_blur = background_saved.get("blur", 0.0)
+        self._background_transparency = background_saved.get("transparency", 80)
         self._blur_radius = blur_radius if blur_radius is not None else mica_saved["blur_radius"]
         # 背景色仅作回退默认值；实际绘制由 mixin 按主题决定（深色纯黑/浅色纯白）
         self._surface_color = surface_color if surface_color is not None else cfg["surface_color"]
@@ -693,17 +703,27 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
     @staticmethod
     def _load_background_settings() -> dict:
-        """启动时从 SettingsManagerV2 恢复自定义背景设置（模式、图片与氛围开关）。
+        """启动时从 SettingsManagerV2 恢复自定义背景设置。
 
         读取 ``appearance.background`` 节点：mode 仅接受 "mica" / "image" /
         "minimalist"（非法值回退 "mica"），image 为持久化目录
         （data/backgrounds/）下的文件名（空字符串表示未设置，统一转为 str），
-        ambient 缺失时默认 True（经 bool() 归一）。
+        ambient 缺失时默认 True（经 bool() 归一），blur 钳制到 0~200px
+        整数（默认 0），transparency 归一到 0~100（默认 80，很透明）。
+        中间版本的 opacity（不透明度 %）键按 transparency = 100 - opacity
+        迁移（V2 合并层已处理，此处仅作读取兜底）。
 
         Returns:
-            dict: {"mode": str, "image": str, "ambient": bool}
+            dict: {"mode": str, "image": str, "ambient": bool,
+                "blur": int, "transparency": int}
         """
-        defaults = {"mode": "mica", "image": "", "ambient": True}
+        defaults = {
+            "mode": "mica",
+            "image": "",
+            "ambient": True,
+            "blur": 0,
+            "transparency": 80,
+        }
         try:
             from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
             v2 = SettingsManagerV2()
@@ -713,10 +733,31 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                 mode = saved.get("mode", "mica")
                 if mode not in ("mica", "image", "minimalist"):
                     mode = "mica"
+                try:
+                    blur = int(round(float(saved.get("blur", 0))))
+                except (TypeError, ValueError):
+                    blur = 0
+                blur = max(0, min(200, blur))
+                if "transparency" in saved:
+                    raw_transparency = saved.get("transparency", 80)
+                else:
+                    # 兼容中间版本的 opacity（不透明度 %）
+                    try:
+                        legacy = int(round(float(saved.get("opacity", 20))))
+                    except (TypeError, ValueError):
+                        legacy = 20
+                    raw_transparency = 100 - legacy
+                try:
+                    transparency = int(round(float(raw_transparency)))
+                except (TypeError, ValueError):
+                    transparency = 80
+                transparency = max(0, min(100, transparency))
                 return {
                     "mode": mode,
                     "image": str(saved.get("image", "")),
                     "ambient": bool(saved.get("ambient", True)),
+                    "blur": blur,
+                    "transparency": transparency,
                 }
         except Exception:
             pass
@@ -759,10 +800,14 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 干扰 WM_NCHITTEST 的缩放边框命中。
         self._root = QWidget(self)
         self.setCentralWidget(self._root)
-        # 不透明兜底：正常时被 Mica 层完全盖住；若 GL 合成因任何原因缺画，
-        # 窗口显示纯色背景（深色纯黑/浅色纯白）而非透出桌面（DWM 玻璃板上
-        # 未绘制像素会全透明）
-        main_surface = QColor("#000000" if tm.is_dark_theme() else "#FFFFFF")
+        # 不透明兜底：正常时被背景层完全盖住；若合成因任何原因缺画，
+        # 显示主题表面色（tm.surface = G1）而非透出桌面。与各背景层
+        # 绘制期兜底同源：Mica _background_fill_color（G1）、简约层
+        # bottom（blend 0% = G1）、图像层无图兜底。之前用纯黑/纯白，
+        # 浅色下纯白 #FFFFFF 与 G1 灰白存在亮度差，主题切换重绘间隙
+        # 会透出一帧纯白形成闪现。注意：Mica 烘焙混合基色仍用纯色
+        # （见 _theme_surface_color），此处只改视觉兜底，不影响烘焙。
+        main_surface = QColor(tm.surface)
         root_palette = self._root.palette()
         root_palette.setColor(self._root.backgroundRole(), main_surface)
         self._root.setPalette(root_palette)
@@ -817,6 +862,17 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                 get_app_data_path(), BACKGROUND_DIR_NAME, self._background_image_name
             )
             self._custom_background.set_image(background_image_path)
+        # 启动恢复图像可调参数（模糊度/透明度，无图时仅存状态不绘制）
+        try:
+            self._custom_background.set_blur_radius(self._background_blur)
+        except Exception:
+            pass
+        try:
+            self._custom_background.set_opacity(
+                1.0 - self._background_transparency / 100.0
+            )
+        except Exception:
+            pass
 
         # 初始可见性：三模式互斥，仅当前模式层可见
         self._custom_background.setVisible(self._background_mode == "image")
@@ -894,9 +950,12 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         container_layout.addWidget(self._splitter)
         main_layout.addWidget(splitter_container, stretch=1)
 
-        # 连接主题切换信号
+        # 连接主题切换信号（生效值变化刷新顶栏图标/面板）
         tm.theme_changed.connect(self._on_theme_changed)
         tm.colors_updated.connect(self._on_colors_updated)
+
+        # 跟随系统：启动系统主题轮询监听，系统变化时自动跟随切换。
+        self._start_system_theme_watcher()
 
     # ──── 分阶段延迟构建三栏（首屏提速） ─────────────────────────────────
 
@@ -1168,9 +1227,13 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         恢复此前被移除的整窗遮罩所承担的「组件渐变过渡」职责，但仅针对
         内容层（``_content``），且旧遮罩的两处卡顿源均已消除：
 
-        - 快照用 ``QWidget.grab()`` 渲染内容子树——不含 OpenGL 的 Mica
-          背景兄弟层，无 GL 花屏风险；也没有 ``QScreen.grabWindow(HWND)``
-          的整窗同步截屏阻塞；
+        - 快照用带透明通道的手动渲染（透明底 + 仅 ``DrawChildren``）绘制
+          内容子树——不含 OpenGL 的 Mica 背景兄弟层，无 GL 花屏风险；
+          也没有 ``QScreen.grabWindow(HWND)`` 的整窗同步截屏阻塞。
+          关键：``QWidget.grab()`` 会用默认窗口底色填充透明区，使快照整幅
+          不透明，遮罩淡出期间会把下方的图像/简约背景层严严盖住 280ms
+          （即“图像先消失、动画后才回来”）。手动渲染跳过顶层自身背景，
+          透明区保持透明，背景层全程可见；
         - 淡出由 :class:`ContentTransitionOverlay` 自绘（每帧单次
           ``drawPixmap``），替代 ``QGraphicsOpacityEffect`` 的逐帧全窗
           效果过滤合成。
@@ -1192,7 +1255,23 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                 prev.finish_now()
             self._content_theme_overlay = None
         try:
-            snapshot = content.grab()
+            size = content.size()
+            if size.isEmpty():
+                return
+            snapshot = QPixmap(size)
+            if snapshot.isNull():
+                return
+            snapshot.fill(Qt.transparent)
+            snapshot_painter = QPainter(snapshot)
+            try:
+                content.render(
+                    snapshot_painter,
+                    QPoint(),
+                    QRegion(),
+                    QWidget.RenderFlag.DrawChildren,
+                )
+            finally:
+                snapshot_painter.end()
         except Exception:  # noqa: BLE001 - 快照失败不阻塞主题切换本身
             return
         if snapshot.isNull():
@@ -1201,27 +1280,204 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._content_theme_overlay = overlay
         overlay.start()
 
-    def _on_theme_toggle(self) -> None:
-        """主题切换按钮点击事件"""
-        # 内容组件过渡：切前抓内容层快照，切后旧外观淡出（轻量自绘，
-        # 无 grabWindow 整窗截屏与 QGraphicsOpacityEffect 逐帧合成）。
-        # Mica 背景过渡由材质级交叉过渡承担（MicaMaterial._start_xfade），
-        # 遮罩只盖内容层，两者独立并行。
-        self._start_content_theme_transition()
+    def _capture_background_pre_theme_state(self) -> None:
+        """主题翻转前抓拍可见背景帧（tm 切换前调用）。
 
-        tm.toggle_theme()
-        # 同步持久化到 SettingsManagerV2（重启后恢复）
+        仿云母 ``_capture_visual_state`` 的“过渡从屏幕现状出发”语义：把旧背景
+        帧暂存进背景层，层在 ``sync_theme``（信号槽内同步触发）时以此为底图
+        启动材质内交叉淡入。过渡中连切时抓到的是当前混合态，新过渡连续出发。
+        mica 模式跳过（``MicaMaterial`` 在新层交付时自行捕获旧层）。
+        """
+        mode = getattr(self, "_background_mode", "mica")
+        try:
+            if mode == "image":
+                target = getattr(self, "_custom_background", None)
+                if target is not None:
+                    target.capture_pre_theme_state()
+            elif mode == "minimalist":
+                target = getattr(self, "_minimalist_background", None)
+                if target is not None:
+                    target.capture_pre_theme_state()
+        except Exception:  # noqa: BLE001 - 抓拍失败不阻塞主题切换
+            pass
+
+    def begin_theme_transition(self) -> None:
+        """主题翻转前预抓拍内容与背景旧帧（供所有切换链路复用）。
+
+        顶栏立即切换、系统跟随切换、设置页暂存提交三条链路在调用
+        ``tm.set_theme*/set_theme_mode/apply_system_theme`` 之前都必须先调
+        用本方法，否则背景层 ``sync_theme`` 因无 ``_pending_backdrop`` 退化
+        为裸 ``update()``，重绘间隙漏出 ``_root`` 形成闪现。
+        """
+        try:
+            self._start_content_theme_transition()
+        except Exception:  # noqa: BLE001 - 快照失败不阻塞主题切换本身
+            pass
+        try:
+            self._capture_background_pre_theme_state()
+        except Exception:  # noqa: BLE001 - 抓拍失败不阻塞主题切换
+            pass
+
+    def _on_theme_toggle(self) -> None:
+        """主题切换按钮点击事件（浅色↔深色立即切换，并固定为手动偏好）。
+
+        按钮永远反映当前实际生效值：跟随系统模式下显示系统当前实际
+        明暗；点击后翻转生效值，同时把设置页偏好从「跟随系统」自动
+        切为对应手动值（「白天」/「夜晚」），保证两处状态同步。
+        """
+        # 内容+背景过渡预抓拍：切前抓内容层快照与背景旧帧，切后旧外观
+        # 淡出、背景层以旧帧为底做 280ms 交叉淡入（见 begin_theme_transition）。
+        self.begin_theme_transition()
+
+        # 显式翻转生效值并固定为手动偏好（set_theme 语义即手动化，
+        # 跟随模式点击后自动脱离跟随）。
+        new_theme = "light" if tm.is_dark_theme() else "dark"
+        tm.set_theme(new_theme)
+        # 同步持久化到 SettingsManagerV2（偏好 + 生效值，重启后恢复）
+        self._persist_theme_state()
+        # 按钮图标和 tooltip 在 _on_theme_changed 中更新（按实际生效值）
+
+    def _persist_theme_state(self) -> None:
+        """持久化当前主题偏好与生效值到 SettingsManagerV2（重启后恢复）。
+
+        同时写 ``appearance.theme_mode``（白天/夜晚/跟随系统）与
+        ``appearance.theme``（实际生效深浅）及 ``appearance.colors`` 快照。
+        失败静默忽略，不阻塞主题切换。
+        """
         try:
             from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
             v2 = SettingsManagerV2()
             v2.load()
-            theme = "dark" if tm.is_dark_theme() else "light"
-            v2.set("appearance.theme", theme)
+            try:
+                mode = tm.get_theme_mode()
+            except Exception:
+                mode = "dark" if tm.is_dark_theme() else "light"
+            try:
+                effective = tm.effective_theme()
+            except Exception:
+                effective = "dark" if tm.is_dark_theme() else "light"
+            v2.set("appearance.theme_mode", mode)
+            v2.set("appearance.theme", effective)
             v2.set("appearance.colors", dict(tm._colors))
             v2.save()
         except Exception:
             pass
-        # 按钮图标和 tooltip 在 _on_theme_changed 中更新
+
+    def _schedule_mica_opposite_prebake(self) -> None:
+        """主题切换 settled 后空闲预烘对偶主题云母层（mica 模式）。
+
+        真实烘焙与 280ms 过渡错开 2.5s，避免抢 CPU；触发时若条件已变
+        （又一切换 / 切离 mica 模式）则跳过。预烘结果只进材质层缓存，
+        下次回切命中即零等待呈现，与控件过渡同起。
+        无头环境（offscreen，通常为测试）永不调度：预烘是真机优化，
+        且后台线程会扰动测试进程。
+        """
+        try:
+            if os.environ.get("QT_QPA_PLATFORM", "").strip().lower() == "offscreen":
+                return
+            if self._background_mode != "mica":
+                return
+            if getattr(self, "_mica_background", None) is None:
+                return
+            seq = getattr(self, "_theme_toggle_seq", 0) + 1
+            self._theme_toggle_seq = seq
+            QTimer.singleShot(2500, lambda: self._maybe_prebake_opposite(seq))
+        except Exception:  # noqa: BLE001 - 预烘调度失败不影响已应用的主题
+            pass
+
+    def _maybe_prebake_opposite(self, seq: int) -> None:
+        """空闲回调：条件未变才提交对偶主题预烘（见 _schedule_mica_opposite_prebake）。
+
+        Args:
+            seq: 调度时的切换代际；与当前不一致说明期间又发生切换，直接跳过。
+        """
+        try:
+            if seq != getattr(self, "_theme_toggle_seq", -1):
+                return
+            if self._background_mode != "mica":
+                return
+            try:
+                active = self.isActiveWindow()
+            except Exception:
+                active = False
+            if not active:
+                # 非激活窗口（最小化/切后台/无头测试）：不做后台预烘，
+                # 避免无谓 CPU 与测试进程扰动；回切仍有层缓存加速。
+                return
+            mica_widget = getattr(self, "_mica_background", None)
+            material = getattr(mica_widget, "_mica", None) if mica_widget is not None else None
+            if material is None:
+                return
+            other = "light" if tm.is_dark_theme() else "dark"
+            fixed = FIXED_MICA_PARAMS[other]
+            material.prebake_theme_variant(
+                surface_color="#FFFFFF" if other == "light" else "#000000",
+                luminosity=0.85 if other == "light" else 0.65,
+                blur_radius=fixed["blur_radius"],
+                saturation=fixed["saturation"],
+                contrast=fixed["contrast"],
+                overlay_opacity=fixed["tint_opacity"] / 100.0,
+            )
+        except Exception:  # noqa: BLE001 - 预烘失败静默跳过
+            pass
+
+    def _start_system_theme_watcher(self) -> None:
+        """启动 Windows 系统主题监听（跟随模式的实时跟随链路）。
+
+        轮询到达且偏好为「跟随系统」时自动切换生效值并持久化；
+        手动偏好下系统变化不做任何处理。启动失败静默忽略。
+        """
+        try:
+            from freeassetfilter.ui.theme.system_theme import (
+                get_system_theme_watcher,
+            )
+
+            watcher = get_system_theme_watcher()
+            try:
+                watcher.system_theme_changed.disconnect(
+                    self._on_system_theme_changed
+                )
+            except Exception:
+                pass
+            watcher.system_theme_changed.connect(
+                self._on_system_theme_changed
+            )
+            # 挂到主窗口，随窗口销毁自动回收。
+            try:
+                watcher.setParent(self)
+            except Exception:
+                pass
+            watcher.start()
+            self._system_theme_watcher = watcher
+        except Exception:
+            self._system_theme_watcher = None
+
+    def _on_system_theme_changed(self, system_theme: str) -> None:
+        """系统主题变化回调 — 仅跟随模式下跟随切换。
+
+        Args:
+            system_theme: 系统当前主题，"dark" 或 "light"。
+        """
+        try:
+            mode = tm.get_theme_mode()
+        except Exception:
+            return
+        if mode != "system":
+            return
+        try:
+            current = tm.effective_theme()
+        except Exception:  # noqa: BLE001 - 取不到生效值则按会变化处理
+            current = ""
+        if current == system_theme:
+            return
+        # 跟随切前同样预抓拍，否则主窗背景层无底图退化为裸重绘而闪现。
+        self.begin_theme_transition()
+        try:
+            changed = tm.apply_system_theme(system_theme)
+        except Exception:
+            return
+        if changed:
+            self._persist_theme_state()
 
     def _on_theme_changed(self, theme_name: str) -> None:
         """主题切换后的处理。
@@ -1229,52 +1485,71 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         Args:
             theme_name: 新主题名（"light" 或 "dark"）。
         """
-        # 更新云母背景（重烘焙 luminosity，背景色绘制期生效，复用已模糊 base）
-        if self._mica_background is not None:
-            self._mica_background.sync_theme()
-        # 同步自定义图像背景层（兜底色绘制期动态读取，仅需触发重绘）
-        if self._custom_background is not None:
-            self._custom_background.sync_theme()
-        # 同步简约背景层（按新主题实时重算渐变）
-        minimalist = getattr(self, "_minimalist_background", None)
-        if minimalist is not None:
-            minimalist.sync_theme()
-        # 兜底层（root）也切到纯色背景，保证 GL 缺画时的底色与主题一致
-        if self._root is not None:
-            root_palette = self._root.palette()
-            root_palette.setColor(
-                self._root.backgroundRole(),
-                QColor("#000000" if tm.is_dark_theme() else "#FFFFFF"),
-            )
-            self._root.setPalette(root_palette)
-        # 更新按钮图标和 tooltip（SVG，light=浅色，dark=深色）
-        light_icon_path = Path(__file__).resolve().parent.parent / "icons" / "title_light.svg"
-        dark_icon_path = Path(__file__).resolve().parent.parent / "icons" / "title_dark.svg"
-        if theme_name == "light":
-            # 当前浅色→点击切换为深色，显示深色图标
-            if dark_icon_path.exists():
-                self._theme_btn.set_svg_icon(str(dark_icon_path))
-            self._theme_btn.setToolTip("切换为深色")
-        else:
-            # 当前深色→点击切换为浅色，显示浅色图标
-            if light_icon_path.exists():
-                self._theme_btn.set_svg_icon(str(light_icon_path))
-            self._theme_btn.setToolTip("切换为浅色")
-        # 刷新标题文字颜色
-        if self._title_label is not None:
-            self._title_label.setStyleSheet(f'font-size: 14px; font-weight: 600; color: {tm.text.name()};')
-        # 刷新所有标题栏按钮的 styleSheet（tm 颜色值已变化）
-        self._github_btn.setStyleSheet(self._title_bar_button_style())
-        self._settings_btn.setStyleSheet(self._title_bar_button_style())
-        self._theme_btn.setStyleSheet(self._title_bar_button_style())
-        self._minimize_btn.setStyleSheet(self._title_bar_button_style())
-        self._maximize_btn.setStyleSheet(self._title_bar_button_style())
-        self._close_btn.setStyleSheet(self._title_bar_close_style())
-        # 刷新 QSS 样式
-        self.style().unpolish(self)
-        self.style().polish(self)
-        # 刷新三栏面板样式
-        self._refresh_panel_styles()
+        # 冻结 _root 更新：把兜底切色、背景层 sync、QSS 换肤合并为一次重绘，
+        # 消除 unpolish/polish 中间无样式白帧与背景层逐层重绘间隙。
+        root = self._root
+        updates_frozen = False
+        if root is not None:
+            try:
+                root.setUpdatesEnabled(False)
+                updates_frozen = True
+            except Exception:  # noqa: BLE001 - 冻结失败则按普通路径继续
+                updates_frozen = False
+        try:
+            # 兜底层（root）先切到主题表面色（tm.surface = G1），与各背景层
+            # 绘制期兜底同源；必须先于背景层 sync，否则重绘间隙漏出旧色。
+            # （见 _setup_content）。
+            if root is not None:
+                root_palette = root.palette()
+                root_palette.setColor(
+                    root.backgroundRole(),
+                    QColor(tm.surface),
+                )
+                root.setPalette(root_palette)
+            # 更新云母背景（重烘焙 luminosity，背景色绘制期生效，复用已模糊 base）
+            if self._mica_background is not None:
+                self._mica_background.sync_theme()
+            # 同步自定义图像背景层（兜底色绘制期动态读取，仅需触发重绘）
+            if self._custom_background is not None:
+                self._custom_background.sync_theme()
+            # 同步简约背景层（按新主题实时重算渐变）
+            minimalist = getattr(self, "_minimalist_background", None)
+            if minimalist is not None:
+                minimalist.sync_theme()
+            # 更新按钮图标和 tooltip（SVG，light=浅色，dark=深色）
+            light_icon_path = Path(__file__).resolve().parent.parent / "icons" / "title_light.svg"
+            dark_icon_path = Path(__file__).resolve().parent.parent / "icons" / "title_dark.svg"
+            if theme_name == "light":
+                # 当前浅色→点击切换为深色，显示深色图标
+                if dark_icon_path.exists():
+                    self._theme_btn.set_svg_icon(str(dark_icon_path))
+                self._theme_btn.setToolTip("切换为深色")
+            else:
+                # 当前深色→点击切换为浅色，显示浅色图标
+                if light_icon_path.exists():
+                    self._theme_btn.set_svg_icon(str(light_icon_path))
+                self._theme_btn.setToolTip("切换为浅色")
+            # 刷新标题文字颜色
+            if self._title_label is not None:
+                self._title_label.setStyleSheet(f'font-size: 14px; font-weight: 600; color: {tm.text.name()};')
+            # 刷新所有标题栏按钮的 styleSheet（tm 颜色值已变化）
+            self._github_btn.setStyleSheet(self._title_bar_button_style())
+            self._settings_btn.setStyleSheet(self._title_bar_button_style())
+            self._theme_btn.setStyleSheet(self._title_bar_button_style())
+            self._minimize_btn.setStyleSheet(self._title_bar_button_style())
+            self._maximize_btn.setStyleSheet(self._title_bar_button_style())
+            self._close_btn.setStyleSheet(self._title_bar_close_style())
+            # 刷新三栏面板样式（内部含全窗级 unpolish/polish 兜底，此处不再
+            # 单独做一次，避免连续两次无样式中间帧放大白闪）。
+            self._refresh_panel_styles()
+            # 空闲预烘对偶主题云母层（mica 模式）：下次回切零等待，与控件同起。
+            self._schedule_mica_opposite_prebake()
+        finally:
+            if updates_frozen and root is not None:
+                try:
+                    root.setUpdatesEnabled(True)
+                except Exception:  # noqa: BLE001 - 解冻失败不影响已应用的主题
+                    pass
 
     def _refresh_panel_styles(self) -> None:
         """刷新三个面板的 styleSheet（主题切换 / 延迟构建逐栏就绪时调用）。
@@ -1643,6 +1918,39 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             （组件内部已记录日志并回退纯色兜底）。
         """
         return self._custom_background.set_image(path)
+
+    def set_image_background_params(self, blur: float, opacity: float) -> None:
+        """设置自定义图像背景的模糊度与不透明度（转发给背景层组件）。
+
+        同步更新主窗口侧的记忆状态（``_background_blur`` /
+        ``_background_transparency``），供后续模式切换与提交链路读取。
+
+        Args:
+            blur: 模糊半径 px（整数 0~200，越界钳制）。
+            opacity: 不透明度 0~1（越界钳制；调用方需自行由透明度换算）。
+        """
+        try:
+            blur_value = int(round(float(blur)))
+        except (TypeError, ValueError):
+            return
+        blur_value = max(0, min(200, blur_value))
+        try:
+            opacity_value = max(0.0, min(1.0, float(opacity)))
+        except (TypeError, ValueError):
+            return
+        self._background_blur = blur_value
+        self._background_transparency = int(round((1.0 - opacity_value) * 100))
+        layer = getattr(self, "_custom_background", None)
+        if layer is None:
+            return
+        try:
+            layer.set_blur_radius(blur_value)
+        except Exception:
+            pass
+        try:
+            layer.set_opacity(opacity_value)
+        except Exception:
+            pass
     
     # ---- 窗口事件处理 ----
     
