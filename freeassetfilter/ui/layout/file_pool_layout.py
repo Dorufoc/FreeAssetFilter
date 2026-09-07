@@ -32,7 +32,7 @@ from typing import Optional
 
 from PySide6.QtCore import (
     Qt, Signal, QTimer, QEvent, QRunnable, QThreadPool, QEventLoop,
-    QRect, QEasingCurve, QPropertyAnimation, QParallelAnimationGroup,
+    QPoint, QRect, QEasingCurve, QPropertyAnimation, QParallelAnimationGroup,
     QAbstractAnimation,
 )
 from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDragLeaveEvent, QDropEvent, QPixmap
@@ -46,6 +46,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QFileDialog,
     QProgressDialog,
+    QRubberBand,
     QSpacerItem,
 )
 
@@ -58,7 +59,11 @@ from components.styled_dialog import create_input_dialog, ask_custom_dialog
 from freeassetfilter.utils.path_utils import get_app_data_path
 from freeassetfilter.services.staging_pool_service import StagingPoolService
 from freeassetfilter.utils.animation_settings import is_animation_enabled
+from freeassetfilter.utils.app_logger import debug as _pool_rubber_log
 from freeassetfilter.utils.app_logger import warning
+
+# 释放丢失守卫的轮询周期（毫秒）：框选期间周期性校验右键是否仍按下。
+POOL_RUBBER_GUARD_INTERVAL_MS = 100
 
 
 def _show_custom_dialog(parent, title, message, buttons, variants=None, vertical=False, dialog_type="default"):
@@ -114,6 +119,7 @@ class FilePoolLayout(QWidget):
     update_progress = Signal(int)          # 进度更新信号（导出等操作）
     _export_finished = Signal(int, int, object)  # 导出完成信号（成功数, 失败数, 错误列表）
     pool_changed = Signal()                # 池内容变更（添加/移除/清空），通知选择器刷新状态
+    _folder_size_ready = Signal(str, object)  # 文件夹大小就绪（路径, 大小），worker 线程经此信号回主线程更新 UI
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -226,6 +232,17 @@ class FilePoolLayout(QWidget):
         # 内容区尺寸变化时重新定位浮动滚动条
         self._content_area.installEventFilter(self)
 
+        # ── 右键框选批量移除状态（右键按住拖拽 = 警告色橡皮筋框选）────────
+        # 与选择器左键框选严格区分：此处仅响应右键，且移除语义用 warning 色。
+        self._card_container.installEventFilter(self)
+        self._pool_rubber_band: QRubberBand | None = None
+        self._pool_rubber_start_pos: QPoint | None = None  # 按下起点（viewport 坐标），None = 未按下
+        self._pool_rubber_rect: QRect | None = None  # 当前框选矩形（viewport 坐标）
+        self._pool_rubber_active: bool = False  # 是否已超过拖拽阈值进入框选态
+        self._pool_rubber_last_pos: QPoint | None = None  # 最后一次拖拽位置（释放丢失时守卫据此收尾）
+        # 释放丢失守卫：仅框选期间运行的 QTimer，轮询右键状态兜底收尾。
+        self._pool_rubber_guard_timer: QTimer | None = None
+
         # ── 备份系统 ────────────────────────────────────────────────────
         self.backup_file = os.path.join(
             get_app_data_path(), StagingPoolService.BACKUP_FILE_NAME
@@ -242,6 +259,8 @@ class FilePoolLayout(QWidget):
 
         # ── 主题切换 ────────────────────────────────────────────────────
         tm.theme_changed.connect(self._on_theme_changed)
+        # 文件夹大小计算经信号回主线程，避免 worker 线程直接触碰 QWidget。
+        self._folder_size_ready.connect(self._on_folder_size_ready_gui)
 
     # ═════════════════════════════════════════════════════════════════════
     #  底栏（骨架保留部分）
@@ -344,6 +363,7 @@ class FilePoolLayout(QWidget):
             f"color: {tm.mid.name()}; font-size: 10px;"
         )
         self._apply_pool_theme()
+        self._refresh_pool_rubber_style()
 
     def _apply_pool_theme(self) -> None:
         """为卡片容器和 scroll area 应用当前主题样式（保持透明，避免多层半透明叠加）"""
@@ -370,10 +390,38 @@ class FilePoolLayout(QWidget):
             self._update_pool_scrollbar_geometry()
             # 宽度/高度变化后同步重算卡片左右边距
             self._update_pool_card_margins()
-        if obj is self._scroll_area.viewport():
+        if obj is self._scroll_area.viewport() or obj is self._card_container:
             if event.type() == QEvent.Wheel:
                 if event.modifiers() & Qt.ControlModifier:
                     self._handle_card_zoom(event)
+                    return True
+            elif event.type() == QEvent.MouseButtonPress:
+                if event.button() == Qt.RightButton:
+                    return self._on_pool_rubber_press(event, obj)
+            elif event.type() == QEvent.MouseMove:
+                if self._pool_rubber_start_pos is not None:
+                    return self._on_pool_rubber_move(event, obj)
+            elif event.type() == QEvent.MouseButtonRelease:
+                if event.button() == Qt.RightButton and self._pool_rubber_start_pos is not None:
+                    return self._on_pool_rubber_release(event, obj)
+            elif event.type() == QEvent.ContextMenu:
+                if self._pool_rubber_active or self._pool_rubber_rect is not None:
+                    return True
+        if isinstance(obj, QWidget) and (
+            obj is self._card_container or self._card_container.isAncestorOf(obj)
+        ):
+            # 卡片及其全部子控件（标题/图标/按钮等）：右键手势统一在此处理。
+            if event.type() == QEvent.MouseButtonPress:
+                if event.button() == Qt.RightButton:
+                    return self._on_pool_rubber_press(event, obj)
+            elif event.type() == QEvent.MouseMove:
+                if self._pool_rubber_start_pos is not None:
+                    return self._on_pool_rubber_move(event, obj)
+            elif event.type() == QEvent.MouseButtonRelease:
+                if event.button() == Qt.RightButton and self._pool_rubber_start_pos is not None:
+                    return self._on_pool_rubber_release(event, obj)
+            elif event.type() == QEvent.ContextMenu:
+                if self._pool_rubber_active or self._pool_rubber_rect is not None:
                     return True
         return super().eventFilter(obj, event)
 
@@ -469,6 +517,408 @@ class FilePoolLayout(QWidget):
         # 卡片间距随缩放同步变化（与 FileSelectorLayout._update_list_grid 的
         # gap = int(5 * self._card_scale) 保持一致），缩放时卡片间空隙等比例缩放。
         self._card_layout.setSpacing(int(5 * new_scale))
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  右键框选批量移除（警告色橡皮筋，与选择器左键 accent 框选严格区分）
+    # ═════════════════════════════════════════════════════════════════════
+
+    def _pool_rubber_threshold(self) -> int:
+        """返回进入框选态的拖拽距离阈值（像素）。
+
+        Returns:
+            拖拽阈值，取 4px 与系统 startDragDistance 的较大值。
+        """
+        return max(4, QApplication.startDragDistance())
+
+    def _pool_rubber_stylesheet(self) -> str:
+        """构建右键框选橡皮筋的样式表（警告色边框 + 半透明填充）。
+
+        Returns:
+            QRubberBand 样式字符串。
+        """
+        dpi = 1.0
+        border_w = max(1, int(1 * dpi))
+        return (
+            f"QRubberBand {{ border: {border_w}px solid {tm.warning.name()};"
+            f" background: {tm.alpha_of(tm.warning, 36).name()}; }}"
+        )
+
+    def _install_pool_card_filter(self, card: QWidget) -> None:
+        """给卡片及其全部子控件安装事件过滤器（支持卡片任意位置右键框选）。
+
+        Args:
+            card: 池中的 StyledInfoCard。
+        """
+        targets = [card]
+        try:
+            targets.extend(card.findChildren(QWidget))
+        except RuntimeError:
+            return
+        for w in targets:
+            try:
+                w.installEventFilter(self)
+            except RuntimeError:
+                continue
+
+    def _remove_pool_card_filter(self, card: QWidget) -> None:
+        """移除卡片及其全部子控件的事件过滤器（与安装配对）。
+
+        Args:
+            card: 池中的 StyledInfoCard。
+        """
+        targets = [card]
+        try:
+            targets.extend(card.findChildren(QWidget))
+        except RuntimeError:
+            targets = [card]
+        for w in targets:
+            try:
+                w.removeEventFilter(self)
+            except RuntimeError:
+                continue
+
+    def _show_pool_rubber_band(self) -> None:
+        """创建（首次）并显示右键框选橡皮筋（viewport overlay）。
+
+        绘制层固定为 QRubberBand(Rectangle, viewport)，坐标统一为 viewport 坐标。
+        """
+        viewport = self._scroll_area.viewport()
+        if self._pool_rubber_band is None:
+            self._pool_rubber_band = QRubberBand(QRubberBand.Rectangle, viewport)
+            self._pool_rubber_band.setStyleSheet(self._pool_rubber_stylesheet())
+        else:
+            self._pool_rubber_band.setStyleSheet(self._pool_rubber_stylesheet())
+        if self._pool_rubber_start_pos is not None:
+            self._pool_rubber_band.setGeometry(QRect(self._pool_rubber_start_pos, self._pool_rubber_start_pos))
+        self._pool_rubber_band.show()
+        self._pool_rubber_band.raise_()
+
+    def _refresh_pool_rubber_style(self) -> None:
+        """主题切换时刷新橡皮筋颜色并重绘视口。
+
+        无框选控件时仅重绘视口，保证下次创建时使用新主题色。
+        """
+        if self._pool_rubber_band is not None:
+            self._pool_rubber_band.setStyleSheet(self._pool_rubber_stylesheet())
+        try:
+            self._scroll_area.viewport().update()
+        except RuntimeError:
+            pass
+
+    def _pool_viewport_pos(self, event, obj) -> QPoint:
+        """将鼠标事件位置统一换算为 viewport 坐标。
+
+        Args:
+            event: 鼠标事件（需提供 position()）。
+            obj: 事件目标对象（viewport、_card_container、卡片或卡片子控件）。
+
+        Returns:
+            viewport 坐标系下的点。
+        """
+        pos: QPoint = event.position().toPoint()
+        viewport = self._scroll_area.viewport()
+        if obj is viewport or obj is None:
+            return pos
+        if isinstance(obj, QWidget):
+            try:
+                return obj.mapTo(viewport, pos)
+            except RuntimeError:
+                return pos
+        return pos
+
+    def _pool_card_rect_in_viewport(self, card: QWidget) -> QRect:
+        """计算卡片在 viewport 坐标系下的矩形。
+
+        Args:
+            card: 池中的 StyledInfoCard（_card_container 的直接子控件）。
+
+        Returns:
+            viewport 坐标系下的卡片矩形。
+        """
+        viewport = self._scroll_area.viewport()
+        geo: QRect = card.geometry()
+        top_left: QPoint = self._card_container.mapTo(viewport, geo.topLeft())
+        return QRect(top_left, geo.size())
+
+    def _on_pool_rubber_press(self, event, obj) -> bool:
+        """右键按下：仅记录框选起点，放行事件以保留单击语义。
+
+        Args:
+            event: 鼠标按下事件。
+            obj: 事件目标对象。
+
+        Returns:
+            恒为 False（只记录起点，不吞事件），单击时保留
+            StyledInfoCard.clicked/right_clicked 原语义。
+        """
+        self._abort_pool_rubber_selection()
+        self._pool_rubber_start_pos = self._pool_viewport_pos(event, obj)
+        self._pool_rubber_active = False
+        self._pool_rubber_rect = None
+        self._pool_rubber_last_pos = self._pool_rubber_start_pos
+        try:
+            _pool_rubber_log(
+                f"[pool-rubber] press obj={type(obj).__name__} "
+                f"pos={self._pool_rubber_start_pos.x()},{self._pool_rubber_start_pos.y()}"
+            )
+        except Exception:
+            pass
+        return False
+
+    def _on_pool_rubber_move(self, event, obj) -> bool:
+        """右键拖拽：超过阈值后激活框选并实时更新选框几何。
+
+        Args:
+            event: 鼠标移动事件。
+            obj: 事件目标对象。
+
+        Returns:
+            未超阈值时返回 False（放行）；进入框选态后返回 True。
+        """
+        start = self._pool_rubber_start_pos
+        if start is None:
+            return False
+        # 无按键移动：释放丢失导致的状态残留在此自愈清理（同选择器）。
+        if not (event.buttons() & Qt.RightButton):
+            self._abort_pool_rubber_selection()
+            return False
+        pos = self._pool_viewport_pos(event, obj)
+        if not self._pool_rubber_active:
+            delta = pos - start
+            threshold = self._pool_rubber_threshold()
+            if abs(delta.x()) < threshold and abs(delta.y()) < threshold:
+                return False
+            self._pool_rubber_active = True
+            self._show_pool_rubber_band()
+            self._start_pool_rubber_guard()
+            try:
+                _pool_rubber_log(
+                    f"[pool-rubber] activate obj={type(obj).__name__} "
+                    f"pos={pos.x()},{pos.y()}"
+                )
+            except Exception:
+                pass
+            try:
+                self._scroll_area.viewport().grabMouse()
+            except RuntimeError:
+                pass
+        self._pool_rubber_last_pos = pos
+        self._update_pool_rubber_geometry(pos)
+        return True
+
+    def _update_pool_rubber_geometry(self, pos: QPoint) -> None:
+        """按当前鼠标位置更新选框几何，并在拖出视口上下边时自动滚动。
+
+        Args:
+            pos: 当前鼠标位置（viewport 坐标，可能越界）。
+        """
+        start = self._pool_rubber_start_pos
+        if start is None:
+            return
+        viewport = self._scroll_area.viewport()
+        vbar = self._scroll_area.verticalScrollBar()
+        # 拖出视口上下边时驱动垂直滚动条自动滚动。
+        if pos.y() < 0:
+            vbar.setValue(vbar.value() - vbar.singleStep())
+        elif pos.y() > viewport.height():
+            vbar.setValue(vbar.value() + vbar.singleStep())
+        clamped = QPoint(
+            max(0, min(pos.x(), viewport.width())),
+            max(0, min(pos.y(), viewport.height())),
+        )
+        rect = QRect(start, clamped).normalized()
+        self._pool_rubber_rect = rect
+        if self._pool_rubber_band is not None:
+            self._pool_rubber_band.setGeometry(rect)
+
+    def _on_pool_rubber_release(self, event, obj) -> bool:
+        """右键松开：区分单击与拖拽，拖拽则批量移除框内卡片。
+
+        Args:
+            event: 鼠标松开事件。
+            obj: 事件目标对象。
+
+        Returns:
+            未拖拽（单击）时返回 False，放行给 StyledInfoCard.clicked/right_clicked；
+            框选拖拽时返回 True（已消费）。
+        """
+        start = self._pool_rubber_start_pos
+        if start is None:
+            return False
+        try:
+            _pool_rubber_log(
+                f"[pool-rubber] release obj={type(obj).__name__} "
+                f"buttons={int(event.buttons())} active={self._pool_rubber_active}"
+            )
+        except Exception:
+            pass
+        # 未进入框选态 = 右键单击，放行保留原 clicked/right_clicked 语义。
+        if not self._pool_rubber_active:
+            self._abort_pool_rubber_selection()
+            return False
+        self._finish_pool_rubber_selection(
+            self._clamp_pool_pos(self._pool_viewport_pos(event, obj))
+        )
+        return True
+
+    def _clamp_pool_pos(self, pos: QPoint) -> QPoint:
+        """将鼠标位置钳制到池视口范围内（框选终点不允许越界）。
+
+        Args:
+            pos: 鼠标位置（viewport 坐标，可能越界）。
+
+        Returns:
+            钳制后的位置（viewport 坐标）。
+        """
+        viewport = self._scroll_area.viewport()
+        return QPoint(
+            max(0, min(pos.x(), viewport.width())),
+            max(0, min(pos.y(), viewport.height())),
+        )
+
+    def _finish_pool_rubber_selection(self, end_pos: QPoint) -> None:
+        """收尾一次已激活的右键框选：确定终点矩形 → 批量移除框内卡片 → 复位。
+
+        松开事件与守卫定时器共用同一条收尾路径，避免逻辑分叉导致状态残留。
+
+        Args:
+            end_pos: 收尾时的鼠标位置（viewport 坐标，已钳制）。
+        """
+        start = self._pool_rubber_start_pos
+        if start is None or not self._pool_rubber_active:
+            self._abort_pool_rubber_selection()
+            return
+        rect = QRect(start, end_pos).normalized()
+        threshold = self._pool_rubber_threshold()
+        # 空框直接 abort，不移除任何卡片。
+        if rect.width() < threshold or rect.height() < threshold:
+            self._abort_pool_rubber_selection()
+            return
+        self._pool_rubber_rect = rect
+        if self._pool_rubber_band is not None:
+            self._pool_rubber_band.hide()
+        # try/finally 保证移除中任何异常都不导致选框/抓取残留。
+        try:
+            self._remove_cards_in_pool_rect(rect)
+        finally:
+            # 保留 rect 用于压制本次拖拽后紧跟的 ContextMenu 事件（下次按下
+            # 开头即 abort 清理，不影响后续单击菜单）。
+            self._pool_rubber_start_pos = None
+            self._pool_rubber_active = False
+            self._pool_rubber_last_pos = None
+            self._stop_pool_rubber_guard()
+            for _w in (self._scroll_area.viewport(), self):
+                try:
+                    _w.releaseMouse()
+                except RuntimeError:
+                    pass
+            if self._pool_rubber_band is not None:
+                try:
+                    self._pool_rubber_band.hide()
+                except RuntimeError:
+                    pass
+
+    def _start_pool_rubber_guard(self) -> None:
+        """启动释放丢失守卫（主线程 QTimer，仅在框选期间运行）。
+
+        与选择器同策略：不依赖松开事件到达（可能因窗口失焦、右键菜单抢事件、
+        抓取失效而丢失），改为轮询 QApplication 的全局按键状态兜底收尾。
+        """
+        timer = self._pool_rubber_guard_timer
+        if timer is None:
+            timer = QTimer(self)
+            timer.setInterval(POOL_RUBBER_GUARD_INTERVAL_MS)
+            timer.timeout.connect(self._on_pool_rubber_guard_tick)
+            self._pool_rubber_guard_timer = timer
+        if not timer.isActive():
+            timer.start()
+
+    def _stop_pool_rubber_guard(self) -> None:
+        """停止释放丢失守卫（幂等，未创建/未启动时无副作用）。"""
+        timer = getattr(self, "_pool_rubber_guard_timer", None)
+        if timer is not None and timer.isActive():
+            timer.stop()
+
+    def _on_pool_rubber_guard_tick(self) -> None:
+        """守卫轮询：右键已释放但框选态仍在时兜底收尾。"""
+        if not self._pool_rubber_active and self._pool_rubber_start_pos is None:
+            self._stop_pool_rubber_guard()
+            return
+        if QApplication.mouseButtons() & Qt.RightButton:
+            return
+        try:
+            _pool_rubber_log(
+                "[pool-rubber] guard finalize: right button released without release event "
+                f"active={self._pool_rubber_active} last_pos={self._pool_rubber_last_pos}"
+            )
+        except Exception:
+            pass
+        if self._pool_rubber_active and self._pool_rubber_last_pos is not None:
+            self._finish_pool_rubber_selection(self._clamp_pool_pos(self._pool_rubber_last_pos))
+        else:
+            self._abort_pool_rubber_selection()
+
+    def _remove_cards_in_pool_rect(self, rect: QRect) -> None:
+        """移除与选框视觉重叠的池卡片（逐个复用 remove_file）。
+
+        相交语义（与选择器左键框选一致）：卡片矩形与选框相交即移除。
+        全包含判定对全宽池卡片过严，会导致框选看似无反应。
+
+        Args:
+            rect: 框选矩形（viewport 坐标，已 normalized）。
+        """
+        if rect.isNull():
+            return
+        # 先收集路径快照，避免遍历中修改 _card_widgets。
+        targets: list[str] = []
+        for path, card in list(self._card_widgets.items()):
+            try:
+                card_rect = self._pool_card_rect_in_viewport(card)
+            except RuntimeError:
+                continue
+            if rect.intersects(card_rect):
+                targets.append(path)
+        for path in targets:
+            self.remove_file(path)
+
+    def _abort_pool_rubber_selection(self) -> None:
+        """中止右键框选并隐藏选框（不移除任何卡片）。
+
+        幂等清理鼠标抓取，避免跨状态重复 releaseMouse 告警。
+        先隐藏选框再释放抓取；仅在确有残留状态时写诊断日志。
+        """
+        band_visible = False
+        try:
+            band_visible = bool(
+                self._pool_rubber_band is not None
+                and self._pool_rubber_band.isVisible()
+            )
+        except (RuntimeError, AttributeError):
+            band_visible = False
+        if self._pool_rubber_active or self._pool_rubber_start_pos is not None or band_visible:
+            try:
+                _pool_rubber_log(
+                    f"[pool-rubber] abort was_active={self._pool_rubber_active} "
+                    f"had_start={self._pool_rubber_start_pos is not None} "
+                    f"band_visible={band_visible}"
+                )
+            except Exception:
+                pass
+        self._pool_rubber_active = False
+        self._pool_rubber_start_pos = None
+        self._pool_rubber_rect = None
+        self._pool_rubber_last_pos = None
+        self._stop_pool_rubber_guard()
+        if self._pool_rubber_band is not None:
+            try:
+                self._pool_rubber_band.hide()
+            except RuntimeError:
+                pass
+        for _w in (self._scroll_area.viewport(), self):
+            try:
+                _w.releaseMouse()
+            except RuntimeError:
+                pass
 
     # 仅布局尺寸键参与缩放；文字字号（title/subtitle/desc）必须原样保留，
     # 与 FileCardDelegate._get_scaled_config / StyledInfoCard.set_scale 行为一致——
@@ -642,6 +1092,10 @@ class FilePoolLayout(QWidget):
         card.clicked.connect(self._handle_card_clicked)
         # 右键处理
         card.right_clicked.connect(self._handle_card_right_clicked)
+        # 卡片是复合控件（标题/图标/按钮等子控件会吃掉鼠标事件），仅给卡片
+        # 本体安装过滤器不够：递归给卡片及其全部子控件安装，才能在任意
+        # 位置按下右键都进入框选状态机。
+        self._install_pool_card_filter(card)
 
         # 设置初始状态
         is_selected = file_info.get("is_selected", False)
@@ -1017,6 +1471,7 @@ class FilePoolLayout(QWidget):
         self._removing_paths.discard(file_path)
         card = self._card_widgets.pop(file_path, None)
         if card is not None:
+            self._remove_pool_card_filter(card)
             card.deleteLater()
         self.items = [f for f in self.items if os.path.normpath(f.get("path", "")) != file_path]
         self.update_stats()
@@ -1835,16 +2290,25 @@ class FilePoolLayout(QWidget):
     # ═════════════════════════════════════════════════════════════════════
 
     def _calculate_folder_size(self, folder_path: str) -> None:
-        """异步提交文件夹大小计算任务。"""
+        """异步提交文件夹大小计算任务。
+
+        Args:
+            folder_path: 待计算的文件夹路径。
+        """
         service = StagingPoolService()
         service.initialize()
         service.calculate_folder_size_async(
             folder_path,
-            callback=lambda size: self._on_folder_size_ready(folder_path, size),
+            callback=lambda size, fp=folder_path: self._folder_size_ready.emit(fp, size),
         )
 
-    def _on_folder_size_ready(self, folder_path: str, size) -> None:
-        """文件夹大小计算完成后的回调，更新 items 和卡片副标题。"""
+    def _on_folder_size_ready_gui(self, folder_path: str, size) -> None:
+        """文件夹大小就绪的 GUI 槽（主线程执行，更新 items 与卡片）。
+
+        Args:
+            folder_path: 文件夹路径。
+            size: 计算出的总字节数，None 表示计算失败/取消。
+        """
         if size is None:
             return
         norm_path = os.path.normpath(folder_path)
@@ -1863,6 +2327,18 @@ class FilePoolLayout(QWidget):
                 card.set_subtitle(self._build_info_text({**fi, "size": int(size), "size_calculating": False}))
             self.update_stats()
             self._save_backup_if_needed()
+
+    def _on_folder_size_ready(self, folder_path: str, size) -> None:
+        """文件夹大小计算完成后的回调（历史入口，转发到 GUI 槽）。
+
+        Args:
+            folder_path: 文件夹路径。
+            size: 计算出的总字节数。
+
+        Returns:
+            无返回值；不得在 worker 线程直接调用触 UI，请经信号触发。
+        """
+        self._on_folder_size_ready_gui(folder_path, size)
 
     # ═════════════════════════════════════════════════════════════════════
     #  异步 MD5 计算（Phase 3）
