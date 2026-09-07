@@ -4,8 +4,8 @@
 本文件是 todo 7-29 各测试套件的容器 fixture 来源，遵循 AGENTS.md 的
 单例重置纪律与跨线程模式。要点：
 
-* ``qapp``（session）：全局唯一 QApplication，附带 ``dpi_scale_factor`` /
-  ``global_font`` 与应用级别的 ``settings_manager`` / ``theme_manager`` 属性，
+* ``qapp``（session）：全局唯一 QApplication，附带 ``global_font`` 与
+  应用级别的 ``settings_manager`` / ``theme_manager`` 属性，
   供 widget / component 初始化时不因缺少实例而 AttributeError。
 * ``reset_singletons``（autouse, function）：在每个测试函数前重置全部已知
   单例的真实内部状态。清单经 V3 事实审计（详见 conftest 内 docstring），
@@ -47,9 +47,8 @@ def qapp() -> Any:
     """提供全局唯一的 QApplication 实例（session scope）。
 
     镜像归档旧实现 old-tests-snapshot/tests/conftest.py:16-34：先取现有
-    实例（避免重复创建），再挂载 ``dpi_scale_factor=1.0`` 与
-    ``global_font=QFont("Microsoft YaHei", 9)``，最后补充
-    ``settings_manager`` / ``theme_manager`` 属性，防止组件初始化时因
+    实例（避免重复创建），再挂载 ``global_font=QFont("Microsoft YaHei", 9)``，
+    最后补充 ``settings_manager`` / ``theme_manager`` 属性，防止组件初始化时因
     缺少这两个应用级实例而抛 AttributeError。
 
     Returns:
@@ -58,18 +57,14 @@ def qapp() -> Any:
     from PySide6.QtGui import QFont
     from PySide6.QtWidgets import QApplication
 
-    from freeassetfilter.core.managers.theme_manager import ThemeManager
-    from freeassetfilter.core.managers.settings_manager import SettingsManager
-
     app = QApplication.instance()
     if app is None:
         app = QApplication(os.sys.argv)
-    app.dpi_scale_factor = 1.0
     app.global_font = QFont("Microsoft YaHei", 9)
+    # 旧版 SettingsManager/ThemeManager 已移除：应用级设置管理器由测试
+    # 需要时自行注入 SettingsManagerV2（默认 None 防止写真实数据文件）。
     if not hasattr(app, "settings_manager"):
-        app.settings_manager = SettingsManager()
-    if not hasattr(app, "theme_manager"):
-        app.theme_manager = ThemeManager()
+        app.settings_manager = None
     yield app
 
 
@@ -115,16 +110,14 @@ def _reset_all_singletons() -> None:
     * 不重置 ``core/managers/theme_manager.py`` 的 ``ThemeManager``——V3
       审计证实该模块**不是单例**（无 ``_instance``/``_initialized``）；
       带单例的是 ``ui/theme/theme_manager.py:66-67``，不在本清单范围。
-    * 不引用 ``core/managers/update_manager.py`` 的 ``UpdateManager``——该
-      模块是纯函数模块（``check_for_updates``/``compare_version_tuples`` +
-      ``UpdateError``/``UpdateCancelled``），不存在该类，赋值将 NameError。
+    * 更新管理器模块（``core/managers/update_manager.py``）已随更新功能
+      整体移除（2026-09 重构），无残留单例需重置。
 
     Returns:
         None。
     """
     from freeassetfilter.core.managers.heartbeat_manager import HeartbeatManager
     from freeassetfilter.core.managers.mpv_manager import MPVManager
-    from freeassetfilter.core.managers.settings_manager import SettingsManager
     from freeassetfilter.core.managers.thumbnail_manager import ThumbnailManager
     from freeassetfilter.utils.app_logger import AppLogger
     from freeassetfilter.utils.async_icon_loader import AsyncIconLoader
@@ -133,7 +126,6 @@ def _reset_all_singletons() -> None:
 
     # 类级 _instance 一律归零；_initialized 仅当类上真实存在该属性时才归零。
     for _singleton in (
-        SettingsManager,
         HeartbeatManager,
         ThumbnailManager,
         MPVManager,
@@ -202,23 +194,19 @@ def redirect_layout_app_data_writes(
 
 @pytest.fixture
 def settings_manager(tmp_path: Path) -> Any:
-    """提供使用临时设置文件的 SettingsManager 实例（function scope）。
+    """提供使用临时设置文件的 SettingsManagerV2 实例（function scope）。
 
     Args:
         tmp_path: pytest 内置的每测试临时目录。
 
     Returns:
-        SettingsManager: 绑定临时 ``settings.json`` 的新实例。
+        SettingsManagerV2: 绑定临时 ``settings_v2.json`` 的新实例。
     """
-    from freeassetfilter.core.managers.settings_manager import SettingsManager
+    from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
 
-    settings_file: Path = tmp_path / "test_settings.json"
-    SettingsManager._instance = None
-    SettingsManager._initialized = False
-    manager = SettingsManager(settings_file=str(settings_file))
+    settings_file: Path = tmp_path / "test_settings_v2.json"
+    manager = SettingsManagerV2(file_path=str(settings_file))
     yield manager
-    SettingsManager._instance = None
-    SettingsManager._initialized = False
 
 
 @pytest.fixture
@@ -295,15 +283,15 @@ def mpv_available() -> bool:
 def rust_available() -> bool:
     """探测 Rust 原生扩展 DLL 是否可用（session scope）。
 
-    检查 ``native/bin`` 下的 ``rust_color_extractor_native.dll`` 与
-    ``thumbnail_generator.dll``，任一个可用 ctypes 加载即判定可用。
-    走 ctypes 探测，避免导入整桥模块带来的重依赖副作用。
+    探测 ``native/bin`` 下的 ``thumbnail_generator.dll``，
+    用 ctypes 尝试加载以判断可用性。
+    用 ctypes 探测，避免导入模块时产生副作用。
 
     Returns:
-        bool: 任一 Rust DLL 可加载则为 True。
+        bool: 任一 Rust DLL 可加载即为 True。
     """
     return _probe_bundled_dll(
-        ["rust_color_extractor_native.dll", "thumbnail_generator.dll"]
+        ["thumbnail_generator.dll"]
     )
 
 

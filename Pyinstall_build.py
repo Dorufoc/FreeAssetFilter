@@ -335,14 +335,10 @@ def collect_hidden_imports() -> List[str]:
     
     hidden_imports = [
         # C++扩展模块
-        "freeassetfilter.core.native.src.cpp_color_extractor",  # NOTE: Likely dead code — no runtime import found (see section 4)
-        "freeassetfilter.core.native.src.cpp_lut_preview",      # actively used in core/lut_preview_generator.py + app/main.py
+        "freeassetfilter.core.native.src.cpp_lut_preview",      # actively used in core/lut_preview_generator.py + app/startup.py
         "freeassetfilter.core.native.bridges.rust_thumbnail_bridge",
         # 核心管理模块
-        "freeassetfilter.core.managers.settings_manager",
-        "freeassetfilter.core.managers.theme_manager",
         "freeassetfilter.core.managers.heartbeat_manager",
-        "freeassetfilter.core.managers.update_manager",
         # 预览模块（保留在 preview/ 中的模块）
         "freeassetfilter.core.preview.image_color_utils",
         "freeassetfilter.core.preview.svg_renderer",
@@ -351,7 +347,6 @@ def collect_hidden_imports() -> List[str]:
         "freeassetfilter.core.managers.mpv_manager",
         # 原生桥接模块（moved from preview/, video/, archive/）
         "freeassetfilter.core.native.bridges.media_probe",
-        "freeassetfilter.core.native.bridges.color_extractor",
         "freeassetfilter.core.native.bridges.lut_preview_generator",
         "freeassetfilter.core.native.bridges.mpv_player_core",
         "freeassetfilter.core.native.bridges.py7z_core",

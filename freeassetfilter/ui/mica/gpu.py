@@ -82,7 +82,7 @@ from typing import Optional, Tuple
 import numpy as np
 
 from . import tint
-from .config import BAKE_WATCHDOG_MS, bake_grid_size
+from .config import bake_grid_size
 from .engine import (
     BakeRequest,
     BakedField,

@@ -4,7 +4,7 @@ PDF 预览器布局 — 顶栏（48px 固定高度）+ 内容区（自适应拉�
 
 import sys
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 # 独立运行时的 sys.path 引导（在模块级导入前执行）
 _this_file = Path(__file__).resolve()
@@ -19,8 +19,8 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFrame, QLabel, QApplication,
     QLineEdit, QPushButton, QStackedLayout,
 )
-from PySide6.QtCore import Qt, Signal, QEvent, QPoint, QRect, QRectF, QTimer, QPropertyAnimation, QEasingCurve, QSize
-from PySide6.QtGui import QFont, QFontMetrics, QMouseEvent, QPainter, QPainterPath, QPen, QColor, QPaintEvent, QPixmap, QImage
+from PySide6.QtCore import Qt, Signal, QEvent, QPoint, QRect, QRectF, QTimer, QPropertyAnimation, QEasingCurve
+from PySide6.QtGui import QFont, QFontMetrics, QMouseEvent, QPainter, QPainterPath, QPen, QPaintEvent, QPixmap, QImage
 
 from theme import tm
 from components.styled_button import StyledButton
@@ -29,7 +29,7 @@ from components.styled_number_input import StyledNumberInput
 from layout.preview.fullscreen_host import PreviewFullscreenHost
 from layout.preview.preview_toolbar import PreviewToolbarFrame
 from freeassetfilter.core._paths import icons_dir
-from freeassetfilter.components.native_pdf_renderer import NativePdfRenderer
+from layout.preview.native_pdf_renderer import NativePdfRenderer
 from freeassetfilter.ui.components.styled_scroll_area import StyledScrollArea
 from freeassetfilter.ui.components.styled_slider import StyledSlider
 

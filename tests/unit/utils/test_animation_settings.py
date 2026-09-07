@@ -15,8 +15,8 @@ import pytest
 
 from freeassetfilter.utils.animation_settings import is_animation_enabled, resolve_settings_manager
 
-#: SettingsManager 导入目标（resolve_settings_manager 内部 from-import 用）。
-_SETTINGS_MODULE_NAME: str = "freeassetfilter.core.managers.settings_manager"
+#: SettingsManagerV2 导入目标（resolve_settings_manager 内部 from-import 用）。
+_SETTINGS_MODULE_NAME: str = "freeassetfilter.core.managers.settings_manager_v2"
 
 
 class FakeSettingsManager:
@@ -71,7 +71,7 @@ class TestResolveSettingsManager:
     def test_import_path_constructs_manager(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """无注入时经模块导入构造管理器。"""
         fake_module = types.ModuleType(_SETTINGS_MODULE_NAME)
-        fake_module.SettingsManager = FakeSettingsManager
+        fake_module.SettingsManagerV2 = FakeSettingsManager
         monkeypatch.setitem(sys.modules, _SETTINGS_MODULE_NAME, fake_module)
         manager = resolve_settings_manager(None)
         assert isinstance(manager, FakeSettingsManager)

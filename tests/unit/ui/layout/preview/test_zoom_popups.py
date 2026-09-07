@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, List
 
 import pytest
@@ -50,6 +51,17 @@ _ZOOM_CLASSES: List[Any] = [
     TextPreviewerLayout,
     FontPreviewerLayout,
 ]
+
+
+def _require_window_system() -> None:
+    """宿主移动/拖拽行为依赖真实窗口管理器。
+
+    ``QT_QPA_PLATFORM=offscreen`` 下没有窗口管理器：Qt.Tool 弹窗不会随
+    宿主移动而重新定位，``startSystemMove`` 拖拽更是空操作——相关断言
+    只能运行在真实桌面会话中。
+    """
+    if os.environ.get("QT_QPA_PLATFORM") == "offscreen":
+        pytest.skip("offscreen 无窗口管理器，宿主移动/拖拽行为不可测试")
 
 
 def _pump(ms: int = 30) -> None:
@@ -148,6 +160,7 @@ def test_zoom_popup_follows_host_window_move(
     qapp: QApplication, previewer_cls: Any
 ) -> None:
     """主窗口移动时缩放弹窗跟随锚点移动（不被遮挡/滞留原位）。"""
+    _require_window_system()
     previewer = previewer_cls()
     host = _make_host(previewer)
     try:
@@ -261,6 +274,7 @@ def test_zoom_popup_survives_window_drag_gesture(
     模拟真实场景：标题栏按下（startSystemMove 起点）是弹窗外 MouseButtonPress，
     期间窗口发生 Move；释放时不应把弹窗当普通外部点击收起。
     """
+    _require_window_system()
     previewer = previewer_cls()
     host = _make_host(previewer)
     try:

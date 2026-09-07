@@ -1,17 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-``freeassetfilter.core.native`` — Native extension package.
+"""``freeassetfilter.core.native`` — Native extension package.
 
-Re-exports the Rust color extractor bridge from ``bridges/`` so that
-``from freeassetfilter.core.native import rust_color_extractor`` works,
-preserving the pre-restructure import path.
+Python wrappers for Rust/C++ binaries live in ``bridges/``.
 """
 
 from __future__ import annotations
 
-from .bridges import rust_color_extractor
-
-__all__ = [
-    "rust_color_extractor",
-]
+__all__: list[str] = []

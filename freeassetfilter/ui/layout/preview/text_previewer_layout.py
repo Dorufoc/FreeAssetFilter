@@ -12,9 +12,9 @@
 
 import re
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 # 独立运行时的 sys.path 引导（在模块级导入前执行）
 _this_file = Path(__file__).resolve()
@@ -50,7 +50,6 @@ from PySide6.QtCore import (
     Signal,
     QTimer,
     QPoint,
-    QPointF,
     QSize,
     QRect,
     QRectF,
@@ -62,10 +61,8 @@ from PySide6.QtCore import (
     QModelIndex,
 )
 from PySide6.QtGui import (
-    QColor,
     QFont,
     QFontMetrics,
-    QTextCharFormat,
     QTextCursor,
     QSyntaxHighlighter,
     QPainter,
@@ -75,8 +72,6 @@ from PySide6.QtGui import (
     QMouseEvent,
     QContextMenuEvent,
     QDesktopServices,
-    QTransform,
-    QPaintEvent,
 )
 
 from theme import tm
@@ -90,7 +85,6 @@ from layout.preview.fullscreen_host import PreviewFullscreenHost
 from components.styled_tooltip import (
     StyledTooltip,
     GAP,
-    FONT_SIZE,
     PADDING_H,
     PADDING_V,
     BORDER_RADIUS,

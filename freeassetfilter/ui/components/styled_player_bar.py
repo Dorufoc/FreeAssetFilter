@@ -1,22 +1,22 @@
 """Styled Player Bar component - matches web player-bar exactly."""
 
 from PySide6.QtWidgets import (
-    QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QLabel,
+    QWidget, QHBoxLayout, QVBoxLayout, QLabel,
     QApplication, QSizePolicy, QProgressBar, QLayout,
 )
 from PySide6.QtCore import (
     Qt, Signal, QRect, QRectF, QPoint, QPropertyAnimation,
-    QEasingCurve, Property, QTimer, QEvent, QSize,
+    QEasingCurve, QTimer,
 )
 from PySide6.QtGui import (
-    QPainter, QColor, QPaintEvent, QFont, QMouseEvent,
-    QPen, QFontMetrics, QActionEvent, QCursor,
+    QPainter, QPaintEvent, QFont, QMouseEvent,
+    QPen, QCursor,
 )
 from pathlib import Path
 from typing import Callable, Optional
 
 from components.styled_button import StyledButton
-from components.styled_slider import StyledSlider, SliderTrack
+from components.styled_slider import StyledSlider
 from theme import tm
 
 
@@ -26,7 +26,13 @@ from theme import tm
 
 
 class _PlayerPopup(QWidget):
-    """Base popup window for player controls (frameless, dark themed)."""
+    """Base popup window for player controls (frameless, dark themed).
+
+    TODO(后续专项)：音量 / 倍速 / 设置三个浮层面板（_VolumePopup /
+    _SpeedPopup / _SettingsPopup）同构且共享本基类与 show_animated /
+    close_animated 生命周期；可评估将本基类提取为公共 ``FloatingPanel``
+    组件（ui/components/），供播放器之外的浮层复用。
+    """
 
     def __init__(self, parent=None):
         super().__init__(None, Qt.Tool | Qt.FramelessWindowHint)

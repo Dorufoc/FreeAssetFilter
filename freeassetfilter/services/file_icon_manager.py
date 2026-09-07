@@ -30,13 +30,11 @@ from PySide6.QtGui import (
     QFont,
     QFontMetrics,
     QColor,
-    QFontDatabase,
 )
-from PySide6.QtSvg import QSvgRenderer
 
-from freeassetfilter.core.managers.settings_manager import SettingsManager
 from freeassetfilter.core.managers.thumbnail_manager import get_existing_thumbnail_path
 from freeassetfilter.core.preview.svg_renderer import SvgRenderer
+from freeassetfilter.ui.theme import tm
 from freeassetfilter.utils.async_icon_loader import AsyncIconLoader
 from freeassetfilter.utils.file_icon_helper import get_file_icon_path
 
@@ -228,7 +226,7 @@ class FileIconManager(QObject):
                 if not display_text or len(display_text) >= 5:
                     display_text = "FILE"
             pixmap = self._build_unknown_icon_pixmap(
-                icon_path, display_text, icon_size, dpr, base_color,
+                icon_path, display_text, icon_size, dpr,
             )
         else:
             pixmap = SvgRenderer.render_svg_to_exact_pixmap(
@@ -416,20 +414,22 @@ class FileIconManager(QObject):
         return pixmap
 
     def _get_theme_colors(self) -> tuple:
-        """从 SettingsManager 读取 5 个主题色。"""
-        sm = SettingsManager()
-        base_color = sm.get_setting("appearance.colors.base_color", "#FFFFFF")
-        auxiliary_color = sm.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
-        normal_color = sm.get_setting("appearance.colors.normal_color", "#e0e0e0")
-        accent_color = sm.get_setting("appearance.colors.accent_color", "#007AFF")
-        secondary_color = sm.get_setting("appearance.colors.secondary_color", "#333333")
-        return base_color, auxiliary_color, normal_color, accent_color, secondary_color
+        """从新版主题令牌读取 5 个主题色（替代旧版 SettingsManager V1 配色）。
 
-    @staticmethod
-    def _get_icon_style() -> int:
-        """从 SettingsManager 读取图标样式索引。"""
-        sm = SettingsManager()
-        return sm.get_setting("appearance.icon_style", 3)
+        语义映射（对齐旧版 5 色用途）：
+          base_color      → tm.surface（背景基色）
+          auxiliary_color → tm.fill   （次要表面）
+          normal_color    → tm.mid    （次级内容色）
+          accent_color    → tm.accent （强调色）
+          secondary_color → tm.text   （主文本色）
+        """
+        return (
+            tm.surface.name(),
+            tm.fill.name(),
+            tm.mid.name(),
+            tm.accent.name(),
+            tm.text.name(),
+        )
 
     # ------------------------------------------------------------------
     # System icon async loading
@@ -477,19 +477,20 @@ class FileIconManager(QObject):
         text: str,
         icon_size: int,
         dpr: float = 1.0,
-        base_color: str = "#212121",
     ) -> QPixmap:
         """构建未知类型文件/压缩包的图标（SVG 底板 + 中央粗体文字叠加）。
 
         此方法从 ``FileBlockCard._build_unknown_icon_pixmap_static()`` 提取。
         # NOTE: extracted from FileBlockCard
 
+        产品仅保留多彩 v3 图标（浅色底板），叠加文字统一使用黑色；
+        历史上按图标样式（扁平/质感/统一/多彩）切换文字颜色的分支已移除。
+
         Args:
             icon_path: SVG 底板文件路径。
             text: 要叠加的文本（例如 "MP4"、".zip"）。
             icon_size: 逻辑尺寸。
             dpr: 设备像素比。
-            base_color: 主题基础色（用于统一样式的文字颜色）。
 
         Returns:
             合成完成的 QPixmap。
@@ -538,16 +539,7 @@ class FileIconManager(QObject):
                 text_width = font_metrics.horizontalAdvance(text)
                 text_height = font_metrics.height()
 
-            is_unified_style = " – 2.svg" in icon_path
-            is_textured_archive = "压缩文件 – 1.svg" in icon_path
-            if is_unified_style:
-                text_color = QColor(base_color)
-            elif icon_path.endswith("压缩文件.svg") or is_textured_archive:
-                text_color = QColor(255, 255, 255)
-            else:
-                text_color = QColor(0, 0, 0)
-
-            painter.setPen(text_color)
+            painter.setPen(QColor(0, 0, 0))
             painter.setFont(font)
             painter.drawText(
                 QRectF(0.0, 0.0, float(physical_canvas_size), float(physical_canvas_size)),

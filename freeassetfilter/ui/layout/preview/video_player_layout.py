@@ -41,10 +41,10 @@ for __entry in (_ui_root, _project_root):
         sys.path.insert(0, __entry)
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QApplication,
+    QWidget, QVBoxLayout, QLabel, QApplication,
     QStackedLayout, QPushButton, QGridLayout,
 )
-from PySide6.QtCore import Qt, Signal, QTimer, QRect, QEvent
+from PySide6.QtCore import Qt, Signal, QTimer, QEvent
 from PySide6.QtGui import QFont, QImage, QPixmap, QColor
 
 from theme import tm

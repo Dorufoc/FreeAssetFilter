@@ -34,18 +34,15 @@ TextMate 语法文件支持：
 - 支持从 VS Code 扩展加载语法
 """
 
-import os
-import sys
 import json
 import plistlib
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import List, Dict, Optional, Tuple, Union, Callable, Any, TYPE_CHECKING
+from typing import List, Dict, Optional, Union, Any
 from pathlib import Path
 
 # PySide6 导入
-from PySide6.QtGui import QColor, QTextCharFormat, QFont
-from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QTextCharFormat
 
 # 尝试导入 pysyntect
 try:
@@ -55,7 +52,6 @@ try:
         load_default_syntax,
         load_syntax_folder,
         load_theme_folder,
-        escape_to_console,
         Style
     )
     SYNTECT_AVAILABLE = True
@@ -66,9 +62,9 @@ except ImportError:
 # 尝试导入 Pygments 作为备选方案
 try:
     from pygments import lex
-    from pygments.lexers import get_lexer_by_name, get_lexer_for_filename, TextLexer, guess_lexer
+    from pygments.lexers import get_lexer_by_name, TextLexer, guess_lexer
     from pygments.token import Token
-    from pygments.styles import get_style_by_name, get_all_styles
+    from pygments.styles import get_style_by_name
     PYGMENTS_AVAILABLE = True
 except ImportError:
     PYGMENTS_AVAILABLE = False
@@ -1851,10 +1847,10 @@ def get_supported_languages() -> List[str]:
 
 
 def is_dark_mode() -> bool:
-    """检测是否为深色模式
+    """检测是否为深色模式。
 
-    优先从 SettingsManagerV2 读取 ``appearance.theme``，
-    不可用时回退到旧版 SettingsManager。
+    统一从 ``SettingsManagerV2`` 读取 ``appearance.theme``（新版唯一
+    配色配置源；旧版 SettingsManager 已移除）。
 
     Returns:
         是否为深色模式
@@ -1868,15 +1864,6 @@ def is_dark_mode() -> bool:
         # acquires _lock. Explicitly load once first.
         sm.load()
         return sm.get("appearance.theme", "dark") == "dark"
-    except Exception:
-        pass
-
-    try:
-        from freeassetfilter.core.managers.settings_manager import SettingsManager
-
-        sm = SettingsManager()
-        theme = sm.get_setting("appearance.theme", "default")
-        return theme == "dark"
     except Exception:
         pass
 

@@ -19,7 +19,6 @@ from PySide6.QtGui import (
     QPaintEvent,
     QFont,
     QMouseEvent,
-    QFontMetrics,
 )
 
 from theme import tm

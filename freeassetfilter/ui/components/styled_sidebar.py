@@ -5,8 +5,8 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QFrame, QScrollBar,
     QGraphicsOpacityEffect, QSizePolicy,
 )
-from PySide6.QtCore import Qt, Signal, QRectF, QPointF, QPoint, QSize, Property, QParallelAnimationGroup, QAbstractAnimation
-from PySide6.QtGui import QPainter, QColor, QPaintEvent, QMouseEvent, QPen, QPolygonF
+from PySide6.QtCore import Qt, Signal, QRectF, QPoint, QSize, Property, QParallelAnimationGroup
+from PySide6.QtGui import QPainter, QColor, QPaintEvent, QPen
 from PySide6.QtCore import QPropertyAnimation, QEasingCurve
 import math
 

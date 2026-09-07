@@ -4,7 +4,7 @@ from typing import Optional
 
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QPushButton, QLabel, QComboBox
 from PySide6.QtCore import Qt, Signal, QRectF
-from PySide6.QtGui import QPainter, QColor, QFont, QFontMetrics, QPaintEvent
+from PySide6.QtGui import QPainter, QFont, QPaintEvent
 
 from theme import tm
 

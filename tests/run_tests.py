@@ -8,7 +8,7 @@
   （benchmark 仅由显式 ``benchmark`` 子命令执行；同时保留 pytest.ini
   ``addopts`` 中 ``-m "not gui"`` 的排除语义——CLI ``-m`` 会整体覆盖 ini 的
   ``-m``，故必须在这里**合并**两个排除，V3 修正见计划 todo-5/29）；
-* **unit / widgets / components / integration** —— 按目录范围运行对应分层；
+* **unit / integration** —— 按目录范围运行对应分层；
   骨架期自动追加 ``tests/.omo_qa_smoke/``（探针）保证 collected ≥ 1，
   规避零收集退出码 5（todo-5 验收口径）；
 * **gui** —— 隐式 ``-m gui`` + ``FAF_VISUAL=1``，并**取消**默认 offscreen
@@ -60,7 +60,7 @@ ROOT_DIR: Path = Path(__file__).resolve().parents[1]
 
 #: 全部子命令清单（--help 展示、argparse choices）。
 SUBCOMMANDS: Tuple[str, ...] = (
-    "all", "unit", "widgets", "components", "integration",
+    "all", "unit", "integration",
     "gui", "benchmark", "coverage", "regression",
 )
 
@@ -140,7 +140,7 @@ def _configure_platform(command: str, visual: bool) -> None:
 def _scope_paths(command: str) -> List[str]:
     """计算子命令的 pytest 收集路径参数。
 
-    按分层目录划定范围；unit/widgets/components/integration 在骨架期
+    按分层目录划定范围；unit/integration 在骨架期
     （``tests/.omo_qa_smoke/`` 存在时）追加探针目录，保证每个子命令
     collected ≥ 1，规避零收集退出码 5——这是 todo-5 验收的前提。
 
@@ -152,7 +152,7 @@ def _scope_paths(command: str) -> List[str]:
     """
     tests_root: Path = ROOT_DIR / "tests"
     smoke_dir: Path = tests_root / ".omo_qa_smoke"
-    layered: Tuple[str, ...] = ("unit", "widgets", "components", "integration")
+    layered: Tuple[str, ...] = ("unit", "integration")
     if command == "all":
         return [str(tests_root)]
     if command in layered:
@@ -562,7 +562,7 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         nargs="?",
         default="all",
         choices=SUBCOMMANDS,
-        help="子命令（默认 all）：all | unit | widgets | components | integration "
+        help="子命令（默认 all）：all | unit | integration "
              "| gui | benchmark | coverage | regression",
     )
     parser.add_argument(

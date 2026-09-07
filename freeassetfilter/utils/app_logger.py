@@ -27,10 +27,7 @@ import inspect
 import platform
 import threading
 from datetime import datetime
-from pathlib import Path
 from typing import Optional, Dict, Any
-
-from freeassetfilter.utils.path_utils import get_app_data_path
 
 
 # ==================== 系统信息收集 ====================

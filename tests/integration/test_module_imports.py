@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# targets: freeassetfilter.app.main, freeassetfilter.components.unified_previewer, freeassetfilter.components.file_selector, freeassetfilter.components.file_staging_pool, freeassetfilter.core.managers.settings_manager, freeassetfilter.core.managers.theme_manager
+# targets: freeassetfilter.app.main
 """integration 批 1（W6/todo-24）：模块导入集成测试。
 
 基于 ``tests.support.coverage_manifest`` 动态导出 freeassetfilter 全部
@@ -14,8 +14,7 @@
   替换占位条目；本文件断言替换后 ``sys.modules`` 条目指向真实模块；
 * **脆弱名单**（复刻旧 test_module_imports.py:120-128 的
   ``_FRAGILE_MODULES`` 机制）：仅在原生 DLL 缺失时 import 即抛
-  ``ImportError`` 的模块（当前只有
-  ``core.native.bridges.rust_color_extractor``），按名单 try/except +
+  ``ImportError`` 的模块（当前为空），按名单 try/except +
   ``pytest.skip`` 而非硬失败。
 
 环境对齐：``ui/main_window.py:22-30`` 在应用启动时把 ``freeassetfilter/ui``
@@ -45,20 +44,6 @@ from tests.support.coverage_manifest import (
 pytestmark = pytest.mark.integration
 
 
-@pytest.fixture(autouse=True)
-def _neutralize_fd_capture(monkeypatch: pytest.MonkeyPatch) -> None:
-    """中和 fd_capture，阻止 pytest 进程的 fd 1/2 被劫持。
-
-    ``freeassetfilter.app.main`` 顶层会调用 ``install_fd_capture`` 接管
-    fd 1/2 并启动 daemon 转发线程；必须在首次导入前用完整虚线字符串靶
-    中和，否则真实 ``data/logs`` 被测试输出污染且线程泄漏。``sys.modules``
-    缓存保证只有首次导入执行模块顶层代码，故 fixture 必须默认 function
-    作用域、随每个测试提前生效。
-    """
-    monkeypatch.setattr("freeassetfilter.utils.fd_capture.install_fd_capture", lambda *a, **k: {})
-    monkeypatch.setattr("freeassetfilter.utils.fd_capture.uninstall_fd_capture", lambda: None)
-
-
 # ---------------------------------------------------------------------------
 # 环境对齐：与 ui/main_window.py:22-30 一致，把 freeassetfilter/ui 加入 sys.path
 # ---------------------------------------------------------------------------
@@ -80,13 +65,8 @@ PHYSICAL_MODULES: List[str] = sorted(_inventory.modules)
 ALIAS_MODULES: List[str] = sorted(_inventory.alias_to_real)
 
 #: 已知「import 时因原生依赖缺失而抛 ImportError」的模块（跳过而非失败）。
-#: 复刻 old-tests-snapshot/tests/integration/test_module_imports.py:120-128
-#: 的脆弱名单机制。旧名单中的 core.native.rust_color_extractor 与
-#: core.native.src.*.setup 已因扫描排除 core/native/src 或路径变更而消失；
-#: 现存的唯一实例是 bridges/rust_color_extractor.py:177 的显式 raise。
-_FRAGILE_MODULES: Set[str] = {
-    "freeassetfilter.core.native.bridges.rust_color_extractor",
-}
+#: 目前无已知脆弱模块（原 bridges/rust_color_extractor 已随色彩提取链移除）。
+_FRAGILE_MODULES: Set[str] = set()
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +118,7 @@ class TestLazyAliasCompatibility:
     def test_aliases_registered_in_sys_modules(self) -> None:
         """全部扁平别名应被 core/__init__.py 注册进 sys.modules。
 
-        导入 ``freeassetfilter.core`` 触发安装后，对清单中的 14 条别名
+        导入 ``freeassetfilter.core`` 触发安装后，对清单中的全部别名
         逐一断言条目存在（值可能为 _LazyModuleAlias 占位符或已解析真实模块）。
         """
         importlib.import_module("freeassetfilter.core")
@@ -148,25 +128,13 @@ class TestLazyAliasCompatibility:
     def test_alias_resolves_to_real_module(self) -> None:
         """触发包级 __getattr__ 后，sys.modules 条目应指向真实物理模块。
 
-        对应 ``from freeassetfilter.core import settings_manager`` 的
-        行为（core/__init__.py L156 会把 sys.modules[alias] 替换为真实模块）。
+        对应 ``from freeassetfilter.core import <flat_name>`` 的
+        行为（core/__init__.py 会把 sys.modules[alias] 替换为真实模块）。
         """
         importlib.import_module("freeassetfilter.core")
         for alias, real in _inventory.alias_to_real.items():
-            flat_name: str = alias.rsplit(".", 1)[-1]  # 如 settings_manager
+            flat_name: str = alias.rsplit(".", 1)[-1]  # 如 heartbeat_manager
             getattr(importlib.import_module("freeassetfilter.core"), flat_name)
             assert (
                 sys.modules[alias] is importlib.import_module(real)
             ), f"别名 {alias} 未能替换为真实模块 {real}"
-
-    def test_flat_import_style_symbols(self) -> None:
-        """旧式 ``from freeassetfilter.core import <symbol>`` 兼容性。
-
-        校验 __getattr__ 符号路径（SettingsManager/ThemeManager）可解析，
-        与 core/__init__.py 的 _SYMBOL_MAP 行为一致。
-        """
-        importlib.import_module("freeassetfilter.core")
-        from freeassetfilter.core import SettingsManager, ThemeManager  # type: ignore[attr-defined]
-
-        assert SettingsManager is not None
-        assert ThemeManager is not None

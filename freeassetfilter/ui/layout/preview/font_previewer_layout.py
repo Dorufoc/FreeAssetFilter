@@ -49,13 +49,10 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtGui import (
-    QColor,
     QFont,
     QFontDatabase,
     QMouseEvent,
-    QPaintEvent,
     QPainter,
-    QPainterPath,
     QPen,
     QWheelEvent,
 )

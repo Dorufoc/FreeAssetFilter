@@ -7,10 +7,10 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import (
     Qt, Signal, QRectF, QPoint, QDate, QSize, QTimer, QEvent,
-    QPropertyAnimation, QEasingCurve, Property,
+    QPropertyAnimation, QEasingCurve,
 )
 from PySide6.QtGui import (
-    QPainter, QColor, QPen, QPainterPath, QFont, QMouseEvent, QKeyEvent, QPaintEvent, QCursor
+    QPainter, QColor, QPen, QPainterPath, QFont, QMouseEvent, QPaintEvent, QCursor
 )
 
 from datetime import datetime

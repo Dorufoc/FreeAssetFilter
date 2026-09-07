@@ -2,18 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSizePolicy, QGraphicsOpacityEffect,
 )
 from PySide6.QtCore import (
     Qt, Signal, QRectF, QPropertyAnimation, QEasingCurve, QTimer,
-    Property, QPoint, QEvent, QParallelAnimationGroup,
+    Property, QParallelAnimationGroup,
 )
 from PySide6.QtGui import (
     QPainter, QColor, QPaintEvent, QFont, QFontMetrics,
-    QPen, QBrush, QMouseEvent, QActionEvent, QConicalGradient,
+    QPen, QBrush, QMouseEvent, QConicalGradient,
     QLinearGradient, QPainterPath,
 )
 

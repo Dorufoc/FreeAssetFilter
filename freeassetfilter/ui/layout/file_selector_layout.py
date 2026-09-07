@@ -11,12 +11,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QListView, QLabel, QAbstractItemView, QApplication, QMenu, QMessageBox, QListWidget, QListWidgetItem, QRubberBand
-from PySide6.QtCore import Qt, Signal, QSize, QTimer, QEvent, QUrl, QMargins, QPoint, QRect, QItemSelectionModel
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QListView, QLabel, QAbstractItemView, QApplication, QMessageBox, QListWidget, QListWidgetItem, QRubberBand
+from PySide6.QtCore import Qt, Signal, QSize, QTimer, QEvent, QMargins, QPoint, QRect, QItemSelectionModel
 from PySide6.QtGui import QFont, QFontMetrics
 
 from theme import tm
-from freeassetfilter.core._paths import get_app_data_path
+from freeassetfilter.utils.path_utils import get_app_data_path
 from freeassetfilter.core.workers.thumbnail_controller import ThumbnailController
 from components.styled_button import StyledButton
 from components.styled_lineedit import StyledLineEdit
@@ -129,7 +129,7 @@ class FileSelectorLayout(QWidget):
 
         # 滚动条作为浮动子控件覆盖在内容区右侧，置于文件列表之上
         self._file_scrollbar = StyledScrollBar(self._content_area)
-        self._file_scrollbar.setFixedWidth(max(6, int(8 * self._get_dpi_scale())))
+        self._file_scrollbar.setFixedWidth(max(6, int(8 * 1.0)))
         self._file_scrollbar.raise_()
 
         # 将 StyledScrollBar 连接至 QListView 的垂直滚动
@@ -515,7 +515,7 @@ class FileSelectorLayout(QWidget):
 
     # ── 上次路径恢复 ─────────────────────────────────────────────────────
     def _try_restore_last_path(self) -> bool:
-        save_file = get_app_data_path() / "last_path.json"
+        save_file = Path(get_app_data_path()) / "last_path.json"
         try:
             if not save_file.exists():
                 return False
@@ -531,7 +531,7 @@ class FileSelectorLayout(QWidget):
         return False
 
     def _save_last_path(self, path: str) -> None:
-        save_file = get_app_data_path() / "last_path.json"
+        save_file = Path(get_app_data_path()) / "last_path.json"
         try:
             import json
             with open(save_file, "w", encoding="utf-8") as f:
@@ -541,7 +541,7 @@ class FileSelectorLayout(QWidget):
 
     def _clear_last_path(self) -> None:
         """删除 last_path.json，使下次启动不恢复任何路径，直接落到 All。"""
-        save_file = get_app_data_path() / "last_path.json"
+        save_file = Path(get_app_data_path()) / "last_path.json"
         try:
             save_file.unlink(missing_ok=True)
         except Exception:
@@ -1640,13 +1640,6 @@ class FileSelectorLayout(QWidget):
 
     # ── 网格布局 ──────────────────────────────────────────────────────────
 
-    def _get_dpi_scale(self) -> float:
-        """获取 DPI 缩放因子。"""
-        app = QApplication.instance()
-        return getattr(app, 'dpi_scale_factor', 1.0) if app else 1.0
-
-    # ── 网格布局 ──────────────────────────────────────────────────────────
-
     def _update_grid_size(self) -> None:
         """
         自适应网格布局：根据视口宽度动态计算卡片宽度和每行数量。
@@ -1677,7 +1670,7 @@ class FileSelectorLayout(QWidget):
 
     def _calculate_card_base_width(self) -> int:
         """计算卡片的基础宽度（基于日期文本宽度），与旧 file_selector.py 保持一致。"""
-        dpi = self._get_dpi_scale()
+        dpi = 1.0
         base_min_width = int(50 * dpi)
 
         small_font = QFont(self.font())
@@ -1695,7 +1688,7 @@ class FileSelectorLayout(QWidget):
 
     def _update_minimum_width(self) -> None:
         """设置最小宽度，确保至少能显示 3 列卡片（与旧 file_selector.py 一致）。"""
-        dpi = self._get_dpi_scale()
+        dpi = 1.0
         card_width = self._calculate_card_base_width()
         spacing = int(4 * dpi)
         margin = int(5 * dpi)
@@ -1708,7 +1701,7 @@ class FileSelectorLayout(QWidget):
 
     def _apply_grid_layout(self, viewport) -> None:
         """卡片模式网格布局：基于 file_list 全宽居中卡片网格，滚动条浮动覆盖在右侧边距中。"""
-        dpi = self._get_dpi_scale()
+        dpi = 1.0
 
         # 滚动条为浮动覆盖层，file_list 独占 content_area 全宽
         file_list_width = self._file_list.width()
@@ -1782,7 +1775,7 @@ class FileSelectorLayout(QWidget):
         file_list_width = self._file_list.width()
         if file_list_width <= 0:
             return
-        dpi = self._get_dpi_scale()
+        dpi = 1.0
         # 边距以 dpi 为恒定基准，不随卡片缩放（_card_scale）变化，
         # 保证 ctrl+滚轮缩放时卡片列表距视口左右的距离始终不变。
         edge_padding = int(10 * dpi)

@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 FreeAssetFilter v1.0.0
-master
 Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 协议说明：本软件基于 AGPL-3.0 协议开源
@@ -11,2444 +10,192 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
 许可协议：https://github.com/Dorufoc/FreeAssetFilter/blob/main/LICENSE
 
-FreeAssetFilter 主程序
-核心功能应用程序，不包含视频播放器功能
+FreeAssetFilter 应用引导层（精简版）
+-------------------------------------
+只承担「引导 / 进程级设施」职责，不包含任何业务 UI：
+
+  - 日志与输出捕获（fd 级原生捕获 + stdout/stderr 双写）
+  - faulthandler（VEH/UEF 崩溃栈兜底，仅写日志文件）
+  - 未捕获异常钩子（sys.excepthook / threading.excepthook）
+  - AppUserModelID、DPI 感知、单实例互斥体、运行时实例信息
+  - 内部子进程分流：--faf-thumbnail-worker
+  - 首帧分阶段启动调度（见 freeassetfilter.app.startup）
+  - 退出链（心跳停止 → fd 卸载 → 设置落盘 → 日志 flush → 互斥体释放）
+
+模块级零副作用：全部设施安装发生在 ``main()`` 内，导入本模块不会
+接管 fd / 注册钩子（便于测试与复用）。
+
+主窗口为 ``freeassetfilter.ui.main_window.MainWindow``。
+单实例守卫见 ``freeassetfilter.app.instance_guard``；
+启动任务编排见 ``freeassetfilter.app.startup``。
+
+注意：``ui/main_window.py`` 底部保留了独立的调试入口 ``main()``
+（方便单独跑窗口调试；两入口在启动行为上应保持一致，后续若合并
+入口请同步删除该调试函数及相关注释）。
 """
 
-# 导入必要的模块用于异常处理
-import sys
-import os
-import json
-import warnings
-import time
-import traceback
-import threading
-import faulthandler
-import atexit
-import logging
+from __future__ import annotations
 
-# 添加父目录到Python路径，确保包能被正确导入
+import atexit
+import ctypes
+import faulthandler
+import logging
+import os
+import sys
+import threading
+import time
+import warnings
+
+# 确保包能被正确导入（PyInstaller 直接执行本脚本时也需要）
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-# 导入日志模块（必须在其他导入之前，确保日志功能可用）
 from freeassetfilter.utils.app_logger import (
-    get_logger, info, debug, warning, error, critical,
-    log_exception, install_console_capture
+    get_logger,
+    info,
+    warning,
+    error,
+    log_exception,
+    install_console_capture,
 )
 from freeassetfilter.utils.fd_capture import install_fd_capture, uninstall_fd_capture
 from freeassetfilter.utils.qt_message_handler import install_qt_message_handler
+from freeassetfilter.utils.path_utils import get_resource_path
 
-# 初始化日志系统
-logger = get_logger()
-
-# fd 级原生输出捕获必须先于 console capture 安装，并把备份的控制台流
-# 交给 TeeStream 与 AppLogger 控制台 handler，否则 Python 日志会经已接管
-# 的 fd 1 双写进日志（FileHandler 一次 + [native-stdout] 一次）。
-_fd_saved_streams = {}
-try:
-    _fd_saved_streams = install_fd_capture(logger.get_log_file_path())
-except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-    warning("fd capture init failed")
-except (ValueError, TypeError) as e:
-    warning("fd capture init failed")
-
-# 尽早安装 stdout/stderr 双写捕获
-try:
-    if install_console_capture(
-        logger.get_log_file_path(),
-        saved_stdout=_fd_saved_streams.get(1),
-        saved_stderr=_fd_saved_streams.get(2),
-    ):
-        pass
-    else:
-        info("console capture unavailable (non-fatal)")
-except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-    warning("console capture init failed")
-except (ValueError, TypeError) as e:
-    warning("console capture init failed")
-
-# 重指 AppLogger 控制台 handler 到备份的控制台流（防双写）。
-# 必须用 type(h) is 精确匹配：FileHandler 是 StreamHandler 子类，
-# isinstance 会误伤文件 handler，把文件日志重指到控制台流。
-try:
-    _fd_saved_stdout = _fd_saved_streams.get(1)
-    if _fd_saved_stdout is not None:
-        for _h in list(getattr(logger, "logger", None).handlers or []):
-            if type(_h) is logging.StreamHandler and _h.stream is sys.__stdout__:
-                _h.stream = _fd_saved_stdout
-except (OSError, ValueError, AttributeError, TypeError) as e:
-    warning("console handler repoint failed")
+from freeassetfilter.app import instance_guard
+from freeassetfilter.app.startup import StartupController
 
 
 # ──────────────────────────────────────────────────────────────
-# faulthandler 输出目标
-#
-# faulthandler 只写入日志文件，不输出到终端。
-# 所有异常（含 VEH/UEF 触发的栈跟踪）的 dump 内容
-# 均写至下方 faulthandler.enable() 指定的文件对象。
-# 日志中 faulthandler 输出以「=== FAULTHANDLER OUTPUT START
-# ===」和「=== FAULTHANDLER OUTPUT END ===」界定。
-#
-# faulthandler 注册的两个 Windows 异常处理机制：
-#   - AddVectoredExceptionHandler (VEH): 捕获所有首次异常
-#   - SetUnhandledExceptionFilter (UEF): 仅捕获未处理异常
-# 由于 VEH 的存在，0xe24c4a02 (LuaJIT 的 SEH 异常) 也会触发
-# 堆栈 dump。LuaJIT 自身的 VEH 仅在 Lua 后端初始化时注册；
-# 以 load-scripts=no 启动时 Lua 后端跳过初始化，该异常成为
-# 未处理异常导致崩溃。下方注册了一个独立的 VEH 来兜底。
-#
-# 输出策略：直接写入日志文件（不经过管道/tee/行过滤器）
+# 进程级设施安装 / 清理
 # ──────────────────────────────────────────────────────────────
 
+def _install_process_facilities() -> dict:
+    """安装日志捕获、faulthandler、异常钩子等进程级设施。
 
-# 启用 faulthandler（仅写入日志文件，不输出终端）
-_fault_handler_file = None
-_fault_handler_enabled = False
+    顺序固定：fd 捕获 → console 双写 → 控制台 handler 重指 → faulthandler
+    → 异常钩子 → 弃用警告过滤。返回供 ``_cleanup_process_facilities``
+    使用的状态字典。
+    """
+    state: dict = {}
 
-log_file_path = None
-try:
-    log_file_path = logger.get_log_file_path()
-except (AttributeError, OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError):
-    log_file_path = None
+    logger = get_logger()
 
-if log_file_path:
+    # 1) fd 级原生输出捕获必须最先安装；备份的控制台流交给 TeeStream
+    #    与 AppLogger 控制台 handler，否则 Python 日志会经已接管的 fd 1
+    #    双写进日志（FileHandler 一次 + [native-stdout] 一次）。
+    state["fd_streams"] = {}
     try:
-        _fault_handler_file = open(log_file_path, "ab", buffering=0)
-        _fault_handler_file.write(
-            "\n=== FAULTHANDLER OUTPUT START ===\n"
-            "以下栈跟踪由 faulthandler (VEH/UEF handler) 写入\n"
-            "=== FAULTHANDLER OUTPUT START ===\n"
-            .encode("utf-8")
-        )
-        _fault_handler_file.flush()
-        faulthandler.enable(file=_fault_handler_file, all_threads=True)
-        _fault_handler_enabled = True
-    except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+        state["fd_streams"] = install_fd_capture(logger.get_log_file_path())
+    except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError) as e:
+        warning("fd capture init failed")
+
+    # 2) stdout/stderr 双写捕获
+    try:
+        if not install_console_capture(
+            logger.get_log_file_path(),
+            saved_stdout=state["fd_streams"].get(1),
+            saved_stderr=state["fd_streams"].get(2),
+        ):
+            info("console capture unavailable (non-fatal)")
+    except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError) as e:
+        warning("console capture init failed")
+
+    # 3) 重指 AppLogger 控制台 handler 到备份的控制台流（防双写）。
+    #    必须用 type(h) is 精确匹配：FileHandler 是 StreamHandler 子类，
+    #    isinstance 会误伤文件 handler。
+    try:
+        saved_stdout = state["fd_streams"].get(1)
+        if saved_stdout is not None:
+            for handler in list(getattr(logger, "logger", None).handlers or []):
+                if type(handler) is logging.StreamHandler and handler.stream is sys.__stdout__:
+                    handler.stream = saved_stdout
+    except (OSError, ValueError, AttributeError, TypeError) as e:
+        warning("console handler repoint failed")
+
+    # 4) faulthandler：只写日志文件，不输出终端（VEH/UEF 兜底）。
+    #    VEH 的存在会使 LuaJIT 的 SEH 异常（0xe24c4a02）也触发 dump；
+    #    以 load-scripts=no 启动时该异常成为未处理异常导致崩溃——
+    #    故 faulthandler 的 VEH 兼作该场景的兜底。
+    state["fault_file"] = None
+    state["fault_enabled"] = False
+    try:
+        log_file_path = logger.get_log_file_path()
+        if log_file_path:
+            fault_file = open(log_file_path, "ab", buffering=0)
+            fault_file.write(
+                b"\n=== FAULTHANDLER OUTPUT START ===\n"
+                b"\n=== FAULTHANDLER OUTPUT START ===\n"
+            )
+            fault_file.flush()
+            faulthandler.enable(file=fault_file, all_threads=True)
+            state["fault_file"] = fault_file
+            state["fault_enabled"] = True
+    except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError) as e:
         warning("faulthandler init failed")
-    except (ValueError, TypeError) as e:
-        warning("faulthandler init failed")
+    if not state["fault_enabled"]:
+        info("faulthandler not enabled (non-fatal)")
 
-if not _fault_handler_enabled:
-    info("faulthandler not enabled (non-fatal)")
-
-
-def debug_exit_threads():
-    """
-    在程序退出前打印当前仍然活跃的线程，便于排查退出卡住问题
-    """
-    try:
-        current_frames = sys._current_frames()
-    except Exception as e:
-        current_frames = {}
-
-    try:
-        for thread in threading.enumerate():
-            try:
-                pass
-            except Exception as e:
-                pass
-    except Exception as e:
-        pass
-
-
-def cleanup_faulthandler():
-    """
-    退出前关闭 faulthandler，写入结束标记并关闭日志文件。
-
-    关闭顺序：
-    1. 禁用 faulthandler，避免继续写入即将关闭的文件对象
-    2. 写入结束标记
-    3. 关闭日志文件
-    """
-    global _fault_handler_file, _fault_handler_enabled
-
-    try:
-        if _fault_handler_enabled:
-            try:
-                faulthandler.disable()
-            except (OSError, ValueError):
-                pass
-            _fault_handler_enabled = False
-
-        if _fault_handler_file is not None:
-            try:
-                _fault_handler_file.write(
-                    b"\n=== FAULTHANDLER OUTPUT END ===\n"
-                )
-                _fault_handler_file.flush()
-            except (OSError, ValueError):
-                pass
-            try:
-                _fault_handler_file.close()
-            except (OSError, ValueError):
-                pass
-            _fault_handler_file = None
-    except Exception:
-        _fault_handler_file = None
-
-
-# 定义异常处理函数
-def handle_exception(exc_type, exc_value, exc_traceback):
-    """
-    处理未捕获的Python异常
-
-    Args:
-        exc_type: 异常类型
-        exc_value: 异常值
-        exc_traceback: 异常回溯信息
-    """
-    if issubclass(exc_type, KeyboardInterrupt):
-        # 如果是用户中断，使用系统默认的异常处理
-        sys.__excepthook__(exc_type, exc_value, exc_traceback)
-        return
-
-    # 使用日志模块记录异常
-    log_exception(exc_type, exc_value, exc_traceback)
-
-def handle_thread_exception(args):
-    """
-    处理 Python 子线程中的未捕获异常
-
-    Args:
-        args: threading.ExceptHookArgs
-    """
-    try:
-        if issubclass(args.exc_type, KeyboardInterrupt):
+    # 5) 未捕获异常钩子
+    def handle_exception(exc_type, exc_value, exc_traceback):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
             return
-    except TypeError:
-        pass
+        log_exception(exc_type, exc_value, exc_traceback)
 
-    log_exception(args.exc_type, args.exc_value, args.exc_traceback)
-
-
-# 将系统异常钩子绑定到自定义处理函数
-sys.excepthook = handle_exception
-threading.excepthook = handle_thread_exception
-
-# 忽略sipPyTypeDict相关的弃用警告
-warnings.filterwarnings("ignore", category=DeprecationWarning, module="PySide6")
-warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*sipPyTypeDict.*")
-
-from freeassetfilter.utils.path_utils import (
-    contains_injection_chars,
-    get_resource_path,
-    get_app_data_path,
-    get_config_path,
-    is_sensitive_path,
-    validate_safe_path,
-)
-
-from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QGroupBox, QGridLayout, QSizePolicy, QSplitter, QMessageBox
-)
-from PySide6.QtCore import Qt, QUrl, QEvent, QTimer, QThread
-from PySide6.QtGui import QFont, QIcon
-
-
-class StartupWarmupThread(QThread):
-    """
-    启动后后台预热线程
-    避免 LUT/C++ 与 FFmpeg 相关初始化阻塞主线程首屏展示
-    """
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("StartupWarmupThread")
-
-    def run(self):
+    def handle_thread_exception(args):
         try:
-            from freeassetfilter.core.native.bridges.media_probe import warmup_ffmpeg_tools
-
-            warmup_ffmpeg_tools()
-        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-            error(f"FFmpeg 预热失败: {e}")
-        except (ValueError, TypeError) as e:
-            error(f"FFmpeg 预热失败: {e}")
-        except (ImportError, ModuleNotFoundError) as e:
-            error(f"FFmpeg 预热失败: {e}")
-        except Exception as e:
-            error(f"FFmpeg 预热失败: {e}")
-
-        try:
-            from freeassetfilter.core.native.src.cpp_lut_preview import warmup as lut_cpp_warmup
-            lut_cpp_warmup()
-
-            from freeassetfilter.core.native.bridges.lut_preview_generator import get_preview_generator
-            get_preview_generator()
-        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-            error(f"LUT 预热失败: {e}")
-        except (ValueError, TypeError) as e:
-            error(f"LUT 预热失败: {e}")
-        except (ImportError, ModuleNotFoundError) as e:
-            error(f"LUT 预热失败: {e}")
-        except Exception as e:
-            error(f"LUT 预热失败: {e}")
-
-
-
-class FreeAssetFilterApp(QMainWindow):
-    """
-    FreeAssetFilter 主应用程序类
-    提供核心功能的主界面
-    """
-
-    def __init__(self):
-        super().__init__()
-
-        # 获取应用实例
-        app = QApplication.instance()
-
-        # 使用逻辑像素设置窗口大小，Qt会自动处理DPI
-        base_window_width = 650  # 基础逻辑像素（100%缩放时的大小）
-
-        # 获取当前光标所在的屏幕（多显示器环境下更准确）
-        from PySide6.QtGui import QCursor
-        cursor_pos = QCursor.pos()
-        screen = QApplication.screenAt(cursor_pos)
-        if screen is None:
-            screen = QApplication.primaryScreen()
-
-        # 获取系统缩放因子并设置为1.5倍
-        logical_dpi = screen.logicalDotsPerInch()
-        physical_dpi = screen.physicalDotsPerInch()
-        system_scale = physical_dpi / logical_dpi if logical_dpi > 0 else 1.0
-
-        # 设置默认大小为系统缩放的1.5倍
-        window_width = int(base_window_width * system_scale * 1.5)
-        window_height = int(window_width * (10 / 16))
-
-        # 获取当前屏幕的可用尺寸（逻辑像素）
-        # 使用 geometry() 而不是 availableGeometry() 避免多显示器虚拟桌面问题
-        screen_geometry = screen.geometry()
-        available_geometry = screen.availableGeometry()
-        available_width_logical = available_geometry.width()
-        available_height_logical = available_geometry.height()
-
-        # 确保窗口大小不超过当前屏幕可用尺寸（使用逻辑像素）
-        self.window_width = min(window_width, available_width_logical - 20)  # 留20px边距
-        self.window_height = min(window_height, available_height_logical - 20)  # 留20px边距
-
-        self.setWindowTitle("FreeAssetFilter")
-
-        # 设置窗口大小
-        self.resize(int(self.window_width), int(self.window_height))
-
-        # 使用PySide6内置方法将窗口居中到当前屏幕的可用区域
-        # 获取窗口的几何尺寸
-        window_geometry = self.frameGeometry()
-        # 获取当前屏幕可用区域的中心点
-        center_point = available_geometry.center()
-        # 将窗口的中心移动到屏幕可用区域的中心
-        window_geometry.moveCenter(center_point)
-        # 设置窗口位置（自动处理物理像素和逻辑像素的转换）
-        self.move(window_geometry.topLeft())
-
-        # 设置程序图标
-        icon_path = get_resource_path('freeassetfilter/icons/FAF-main.ico')
-        self.setWindowIcon(QIcon(icon_path))
-
-        # 用于生成唯一的文件选择器实例ID
-        self.file_selector_counter = 0
-
-        # 主题更新状态标志，防止重复调用
-        self._update_theme_in_progress = False
-        self._theme_update_queued = False
-        self._ui_state_backup = None
-        self._splitter = None
-
-        # 卡片尺寸更新重入保护，防止 processEvents 递归
-        self._updating_cards = False
-
-        # 启动阶段异步任务状态
-        self._pending_restore_items = []
-        self._pending_restore_unlinked_files = []
-        self._restore_total_count = 0
-        self._restore_success_count = 0
-        self._restore_batch_size = 50
-        self._restore_safe_mode = False
-        self._startup_warmup_thread = None
-        self._is_closing = False
-        self._is_startup_phase = True  # 启动阶段标志，防止启动时重建UI
-
-        # 初始化心跳管理器（用于协调所有主线程周期性工作）
-        from freeassetfilter.core.managers.heartbeat_manager import HeartbeatManager
-        self.heartbeat_manager = HeartbeatManager()
-
-        # 启动任务完成标志，全部完成后触发更新检查
-        self._startup_flags = {
-            "restore_done": False,
-            "warmup_done": False,
-            "cleanup_done": False,
-        }
-
-        # 启动看门狗定时器（延迟到 schedule_startup_tasks 中创建）
-        self._startup_watchdog_timer = None
-
-        # 更新控制器（延迟导入，避免连锁加载 urllib/subprocess 等模块）
-        from freeassetfilter.components.update_controller import UpdateController
-        self.update_controller = None  # 延迟到 schedule_startup_tasks 中创建
-
-        # 底部按钮将在延迟加载中创建
-        self.github_button = None
-        self.update_button = None
-        self.global_settings_button = None
-        self.hover_tooltip = None
-
-        # 获取全局字体
-        global_font = getattr(app, 'global_font', QFont())
-        # 创建全局字体的副本，避免修改全局字体对象
-        self.global_font = QFont(global_font)
-
-        # 设置窗口字体
-        self.setFont(self.global_font)
-
-        # 创建UI
-        self.init_ui()
-
-        # 启用窗口激活事件监听，用于焦点管理
-        self.setAttribute(Qt.WA_MacAlwaysShowToolWindow, False)
-
-        # 应用窗口标题栏深色模式（根据当前主题设置）
-        self._apply_title_bar_theme()
-
-    def _cleanup_preview_before_close(self):
-        """
-        在主窗口关闭前优先清理预览区域，避免预览组件在主程序销毁过程中残留资源。
-        """
-        if not hasattr(self, 'unified_previewer') or not self.unified_previewer:
-            return
-
-        try:
-            # 先停止任何正在运行的预览线程
-            if hasattr(self.unified_previewer, '_preview_thread') and self.unified_previewer._preview_thread:
-                if self.unified_previewer._preview_thread.isRunning():
-                    self.unified_previewer._preview_thread.cancel()
-                    # 增加等待时间，避免强制终止
-                    if not self.unified_previewer._preview_thread.wait(2000):
-                        logger.warning("预览线程未在2秒内退出，可能需要更长时间")
-                        # 不再使用 terminate()，允许线程自然结束
-                        # 标记为后台线程，让进程退出时自动清理
-                        # QThread 没有 setDaemon 方法，改为记录日志并继续清理
-                        logger.warning("预览线程仍在运行，将由进程退出时自动回收")
-
-            # 显式清理视频播放器（如果存在）
-            if hasattr(self.unified_previewer, 'video_player') and self.unified_previewer.video_player:
-                try:
-                    if hasattr(self.unified_previewer.video_player, 'cleanup'):
-                        # 使用同步模式关闭，确保资源完全释放
-                        self.unified_previewer.video_player.cleanup(async_mode=False)
-                except Exception as e:
-                    logger.warning(f"清理视频播放器失败: {e}")
-
-            # 清理预览区域内容
-            self.unified_previewer._clear_preview(app_closing=True)
-
-            # 清理文件信息面板内容
-            if hasattr(self.unified_previewer, 'file_info_viewer') and self.unified_previewer.file_info_viewer:
-                self.unified_previewer.file_info_viewer.current_file = None
-                self.unified_previewer.file_info_viewer.file_info = {}
-
-                if hasattr(self.unified_previewer.file_info_viewer, 'basic_info_labels'):
-                    for key, widget in self.unified_previewer.file_info_viewer.basic_info_labels.items():
-                        widget.setPlainText("-")
-
-                if hasattr(self.unified_previewer.file_info_viewer, 'details_info_widgets'):
-                    for label_widget, value_widget in self.unified_previewer.file_info_viewer.details_info_widgets:
-                        label_widget.setText("")
-                        value_widget.setPlainText("-")
-
-            # 重置当前预览状态，确保主程序继续退出前界面已被清空
-            self.unified_previewer.current_file_info = None
-            if hasattr(self.unified_previewer, '_show_default_placeholder'):
-                self.unified_previewer._show_default_placeholder()
-            elif hasattr(self.unified_previewer, 'default_label') and self.unified_previewer.default_label:
-                self.unified_previewer.default_label.show()
-            if hasattr(self.unified_previewer, 'clear_preview_button'):
-                self.unified_previewer.clear_preview_button.hide()
-            if hasattr(self.unified_previewer, 'open_with_system_button'):
-                self.unified_previewer.open_with_system_button.hide()
-            if hasattr(self.unified_previewer, 'copy_to_clipboard_button'):
-                self.unified_previewer.copy_to_clipboard_button.hide()
-            if hasattr(self.unified_previewer, 'locate_in_selector_button'):
-                self.unified_previewer.locate_in_selector_button.hide()
-        except Exception as e:
-            logger.warning(f"关闭主窗口前清理预览区域失败: {e}")
-
-    def closeEvent(self, event):
-        """
-        主窗口关闭事件，确保先清理预览区域，再保存状态并关闭主程序
-        """
-        self._is_closing = True
-        self._pending_restore_items = []
-        self._pending_restore_unlinked_files = []
-        self._restore_safe_mode = False
-
-        app = QApplication.instance()
-        if app is not None:
-            setattr(app, "_faf_restore_safe_mode", False)
-
-        # 提前停止鼠标监控器，避免阻塞退出
-        try:
-            from freeassetfilter.utils.global_mouse_monitor import GlobalMouseMonitor
-            GlobalMouseMonitor.stop_all()
-        except ImportError:
-            pass  # 模块不存在，忽略
-        except (RuntimeError, AttributeError, OSError) as e:
-            pass
-        except Exception as e:
-            logger.error(f"停止全局鼠标监控器时系统错误: {e}")
-
-        # 终止静默检查更新线程
-        # 注意：不在这里调用 cancel_silent_check()，因为会释放 _silent_check_worker 引用
-        # 导致后续 _cleanup_all_qthreads_before_exit() 无法获取线程对象进行等待
-        # 取消和等待逻辑统一在 _cleanup_all_qthreads_before_exit() 中处理
-        pass
-
-        # 用户尝试关闭程序时，优先清理预览区域
-        self._cleanup_preview_before_close()
-
-        # 关闭所有子窗口，确保全局设置窗口等随主窗口关闭而销毁
-        from PySide6.QtWidgets import QDialog
-        for widget in self.findChildren(QDialog):
-            widget.close()
-
-        # 保存文件选择器A的当前路径
-        last_path = 'All'
-        if hasattr(self, 'file_selector_a'):
-            self.file_selector_a.save_current_path()
-            last_path = self.file_selector_a.current_path
-        # 保存文件存储池状态，传递文件选择器的当前路径
-        if hasattr(self, 'file_staging_pool'):
-            try:
-                if hasattr(self.file_staging_pool, 'flush_backup_save_now'):
-                    self.file_staging_pool.flush_backup_save_now(last_path)
-                else:
-                    self.file_staging_pool.save_backup(last_path)
-                if hasattr(self.file_staging_pool, 'cleanup'):
-                    self.file_staging_pool.cleanup()
-            except Exception as e:
-                logger.warning(f"关闭主窗口时清理文件存储池失败: {e}")
-
-        # 保存文件选择器视图模式（列表/网格）
-        if hasattr(self, 'file_selector_a') and hasattr(self.file_selector_a, 'save_view_mode'):
-            try:
-                self.file_selector_a.save_view_mode()
-            except Exception as e:
-                logger.warning(f"保存视图模式失败: {e}")
-
-        # 统一清理：删除整个temp文件夹
-        import shutil
-        import os
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        temp_dir = os.path.join(project_root, "data", "temp")
-        if os.path.exists(temp_dir):
-            try:
-                shutil.rmtree(temp_dir)
-            except (OSError, PermissionError) as e:
-                logger.warning(f"删除临时文件夹失败: {e}")
-
-        # 停止后台预热线程（兼容旧逻辑，_cleanup_all_qthreads_before_exit 已处理）
-        if self._startup_warmup_thread and self._startup_warmup_thread.isRunning():
-            self._startup_warmup_thread.quit()
-            # 增加等待时间
-            if not self._startup_warmup_thread.wait(2000):
-                logger.warning("预热线程未在2秒内退出")
-                # 不再强制终止，允许其自然结束
-
-        # 停止心跳管理器（在所有 QThread 停止之前，确保所有 tick 回调已结束）
-        if hasattr(self, 'heartbeat_manager') and self.heartbeat_manager:
-            self.heartbeat_manager.stop_all()
-
-        # === 新增：在调用父类 closeEvent 之前，安全停止所有 QThread ===
-        self._cleanup_all_qthreads_before_exit()
-
-        # 关闭 faulthandler 双写通道，促使 FaultHandlerTee 线程退出
-        # 必须在 debug_exit_threads() 之前调用，否则调试输出会显示 FaultHandlerTee 仍在运行
-        # 先卸载 fd 捕获（排空管道+join），再清理 faulthandler（顺序固定，不可颠倒）
-        try:
-            uninstall_fd_capture()
-        except (OSError, ValueError) as e:
-            logger.warning(f"fd capture 卸载失败: {e}")
-        cleanup_faulthandler()
-
-        debug_exit_threads()
-
-        # 调用父类的closeEvent
-        super().closeEvent(event)
-
-    def _safe_stop_qthread(self, thread, name="QThread", timeout=2000):
-        """
-        安全停止一个 QThread：requestInterruption -> quit -> wait。
-        如果线程仍在运行则记录警告，但不会调用 deleteLater（避免 Destroyed while thread is still running）。
-        """
-        if thread is None:
-            return
-        try:
-            if thread.isRunning():
-                thread.requestInterruption()
-                thread.quit()
-                if not thread.wait(timeout):
-                    logger.warning(f"[QThreadCleanup] {name} 未在 {timeout}ms 内退出，将由进程退出时自动回收")
-                    return False
-                else:
-                    pass
-            else:
-                pass
-            return True
-        except Exception as e:
-            pass
-            return False
-
-    def _cleanup_retired_worker(self, worker):
-        """QThread.finished 信号回调：从 _retired_worker_refs 中自动移除已完成的线程。"""
-        if hasattr(self, '_retired_worker_refs') and worker in self._retired_worker_refs:
-            try:
-                self._retired_worker_refs.remove(worker)
-            except (ValueError, RuntimeError):
-                pass
-
-    def _cleanup_all_qthreads_before_exit(self):
-        """
-        在 closeEvent 中调用，确保所有已知的 QThread 子对象被安全停止。
-        避免在父窗口销毁时 Qt 报 "Destroyed while thread is still running"。
-
-        注意：调用此函数之前，调用方必须先停止 HeartbeatManager
-        （调用 self.heartbeat_manager.stop_all()），以断开所有 tick 定时器
-        的回调引用，防止在 QThread 等待期间心跳回调意外触发导致竞态条件。
-        参见 closeEvent() 中 HeartbeatManager.stop_all() 在第 0 步调用。
-        """
-        # 1) 启动预热线程
-        if hasattr(self, '_startup_warmup_thread') and self._startup_warmup_thread:
-            self._safe_stop_qthread(self._startup_warmup_thread, "StartupWarmupThread")
-
-        # 2) 更新控制器相关线程
-        if hasattr(self, 'update_controller') and self.update_controller:
-            # 在调用 cancel_silent_check() 之前保留静默检查线程的引用
-            # cancel_silent_check() 会断开 Qt 父子关系(setParent(None))并释放 Python 引用(self._silent_check_worker = None)
-            # 但 HTTP 请求是同步阻塞的，requestInterruption() 无法中断，线程仍在运行
-            # 若不保留引用，当 super().closeEvent() 销毁 UpdateController 时信号连接断开，
-            # QThread Python 包装器被 GC 时底层线程还在运行 → "QThread: Destroyed while thread '' is still running"
-            _silent_worker = getattr(self.update_controller, '_silent_check_worker', None)
-            self.update_controller.cancel_silent_check()
-
-            # ------------------------------------------------------------------
-            # _retired_worker_refs — 退休工人强引用列表（兜底）
-            #
-            # 用途：
-            #   保留 QThread 对象的强引用，防止 Python GC 在 QThread 对象仍持有
-            #   底层操作系统线程句柄时提前销毁它（terminate 后仍有短暂间隙）。
-            #
-            # 注意：deleteLater() 依赖事件循环来实际销毁对象，而静默检查线程
-            # 没有事件循环，因此唯一可靠的方案是持有强引用。
-            # 模块级 _global_qthread_refs 提供更长期的全局兜底。
-            # ------------------------------------------------------------------
-            if not hasattr(self, '_retired_worker_refs'):
-                self._retired_worker_refs = []
-
-            # 请求中断静默检查线程（不强制 terminate）
-            if _silent_worker and not _silent_worker.isFinished():
-                # requestInterruption() 已经由 cancel_silent_check() 调用
-                # SilentUpdateCheckWorker.run() 会透传 cancel_check=self.isInterruptionRequested，
-                # update_manager 的 HTTP 读取间隙会检查中断并抛出 UpdateCancelled，
-                # 且所有 HTTP 调用自带 5~10s 超时，线程会在下一次间隙或超时后自然退出。
-                #
-                # 注意：绝不能再调用 terminate()——terminate() 在线程持有 GIL 时强制杀死
-                # 会导致解释器死锁，使 app.exec() 永不返回，on_app_exit/写盘链全部跳过
-                # （历史 "播放视频后进程挂死" bug 的根因）。
-                #
-                # 线程对象安全：cancel_silent_check() → _retire_silent_worker() 已把 worker
-                # 加入 update_controller._retired_silent_workers 与模块级 _global_qthread_refs
-                # （含 atexit 5s 等待兜底）；此处再进 _retired_worker_refs 双层持有，
-                # 进程退出时 OS 自动回收线程，无需强制终止。
-                if not _silent_worker.wait(500):
-                    warning("[QThreadCleanup] 静默检查线程未在 500ms 内退出，交由进程退出时自动回收")
-                self._retired_worker_refs.append(_silent_worker)
-                _silent_worker.finished.connect(lambda w=_silent_worker: self._cleanup_retired_worker(w))
-
-            # 保留已退休的线程引用（防止 gc 在 terminate 生效前回收）
-            _retired_workers = getattr(self.update_controller, '_retired_silent_workers', [])
-            for w in _retired_workers:
-                if w and not w.isFinished() and w not in self._retired_worker_refs:
-                    self._retired_worker_refs.append(w)
-                    w.finished.connect(lambda worker=w: self._cleanup_retired_worker(worker))
-
-            # 请求中断手动检查线程（不强制 terminate）
-            if hasattr(self.update_controller, '_check_worker') and self.update_controller._check_worker:
-                cw = self.update_controller._check_worker
-                if cw.isRunning():
-                    cw.requestInterruption()
-                    # 不调用 cw.terminate()：强制终止可能在线程持有 GIL 时导致解释器死锁，
-                    # 使 app.exec() 永不返回、退出写盘链被跳过（与静默检查线程同样的根因）。
-                    # 手动检查同样走 check_for_updates(cancel_check=...)，HTTP 间隙会响应中断，
-                    # 且请求自带 ≤10s 超时，线程会自然退出；进程退出时 OS 回收线程。
-                    if not cw.wait(500):
-                        warning("[QThreadCleanup] 手动检查线程未在 500ms 内退出，交由进程退出时自动回收")
-                    if cw not in self._retired_worker_refs:
-                        self._retired_worker_refs.append(cw)
-                        cw.finished.connect(lambda w=cw: self._cleanup_retired_worker(w))
-
-            # 下载线程：不强制终止（涉及文件 I/O），使用安全停止
-            if hasattr(self.update_controller, '_download_worker') and self.update_controller._download_worker:
-                self._safe_stop_qthread(self.update_controller._download_worker, "UpdateDownloadWorker")
-
-        # 3) 统一预览器线程
-        if hasattr(self, 'unified_previewer') and self.unified_previewer:
-            if hasattr(self.unified_previewer, '_preview_thread') and self.unified_previewer._preview_thread:
-                self._safe_stop_qthread(self.unified_previewer._preview_thread, "PreviewLoaderThread")
-
-        # 4) 文件选择器相关线程
-        for attr in ('_drive_list_thread', '_file_loader_thread', '_thumbnail_thread'):
-            if hasattr(self, 'file_selector_a') and hasattr(self.file_selector_a, attr):
-                t = getattr(self.file_selector_a, attr)
-                if t:
-                    self._safe_stop_qthread(t, attr)
-            if hasattr(self, 'file_selector_b') and hasattr(self.file_selector_b, attr):
-                t = getattr(self.file_selector_b, attr)
-                if t:
-                    self._safe_stop_qthread(t, attr)
-
-        # 5) 文件夹内容列表线程
-        if hasattr(self, 'folder_content_list') and hasattr(self.folder_content_list, '_load_thread'):
-            t = self.folder_content_list._load_thread
-            if t:
-                self._safe_stop_qthread(t, "FolderContentLoaderThread")
-
-        # 6) 文件信息预览器线程
-        if hasattr(self, 'unified_previewer') and hasattr(self.unified_previewer, 'file_info_viewer'):
-            fv = self.unified_previewer.file_info_viewer
-            if hasattr(fv, 'load_thread') and fv.load_thread:
-                self._safe_stop_qthread(fv.load_thread, "FileInfoLoadThread")
-
-        # 7) 图片查看器处理线程
-        if hasattr(self, 'unified_previewer') and hasattr(self.unified_previewer, 'photo_viewer'):
-            pv = self.unified_previewer.photo_viewer
-            for attr in ('raw_processor', 'heif_avif_processor', 'ico_processor', 'psd_processor'):
-                if hasattr(pv, attr):
-                    t = getattr(pv, attr)
-                    if t:
-                        self._safe_stop_qthread(t, attr)
-
-        # 8) 字体预览线程
-        if hasattr(self, 'unified_previewer') and hasattr(self.unified_previewer, 'font_previewer'):
-            fp = self.unified_previewer.font_previewer
-            if hasattr(fp, '_thread') and fp._thread:
-                self._safe_stop_qthread(fp._thread, "FontLoadThread")
-
-        # 9) 音频背景线程池
-        if hasattr(self, 'unified_previewer') and hasattr(self.unified_previewer, 'audio_background'):
-            ab = self.unified_previewer.audio_background
-            if hasattr(ab, '_thread_pool') and ab._thread_pool:
-                try:
-                    ab._thread_pool.waitForDone(1500)
-                except Exception as e:
-                    pass
-
-    def _apply_title_bar_theme(self):
-        """
-        应用窗口标题栏主题（深色/浅色模式）
-        使用 Windows DWM API 设置标题栏颜色跟随系统/应用主题
-        """
-        try:
-            import ctypes
-            from ctypes import wintypes
-
-            # 获取窗口句柄
-            hwnd = int(self.winId())
-
-            # DWMWA_USE_IMMERSIVE_DARK_MODE = 20 (Windows 10 1903+)
-            # DWMWA_USE_IMMERSIVE_DARK_MODE = 19 (Windows 10 1809)
-            DWMWA_USE_IMMERSIVE_DARK_MODE = 20
-
-            # 获取当前主题模式
-            app = QApplication.instance()
-            is_dark_mode = False
-            if hasattr(app, 'settings_manager') and app.settings_manager is not None:
-                is_dark_mode = app.settings_manager.get_setting("appearance.theme", "default") == "dark"
-
-            # 设置深色模式属性 (1 = 启用深色, 0 = 禁用深色/使用浅色)
-            dark_mode_value = wintypes.BOOL(1 if is_dark_mode else 0)
-            ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                hwnd,
-                DWMWA_USE_IMMERSIVE_DARK_MODE,
-                ctypes.byref(dark_mode_value),
-                ctypes.sizeof(dark_mode_value)
-            )
-
-        except (AttributeError, OSError, ctypes.WinError) as e:
-            # 如果设置失败（非Windows系统或DWM API不可用），静默忽略
-            pass
-
-    def focusInEvent(self, event):
-        """
-        处理焦点进入事件
-        - 确保组件获得焦点时能够接收键盘事件
-        """
-        super().focusInEvent(event)
-
-    def resizeEvent(self, event):
-        """
-        处理窗口大小变化事件
-        - Qt会自动处理DPI变化
-        - 监听窗口尺寸变化，稳定后重新计算卡片尺寸
-        """
-        super().resizeEvent(event)
-        QTimer.singleShot(50, self._on_resize_stabilized)
-
-    def _on_resize_stabilized(self):
-        """
-        窗口尺寸稳定后的回调
-        - 使用连续检测机制确保窗口尺寸已完全稳定
-        """
-        self._check_and_update_cards(retry_count=0)
-
-    def _check_and_update_cards(self, retry_count=0):
-        """
-        检测并更新卡片尺寸
-        - 连续检测窗口尺寸是否稳定
-        """
-        if not hasattr(self, 'file_selector_a') or not self.file_selector_a:
-            return
-
-        if not hasattr(self.file_selector_a, '_update_all_cards_width'):
-            return
-
-        container = self.file_selector_a.files_container
-        current_width = container.width()
-
-        if current_width <= 0:
-            max_retries = 15
-            if retry_count < max_retries:
-                from PySide6.QtWidgets import QApplication
-                # 防止 processEvents 递归（changeEvent 通路相互重入）
-                if not self._updating_cards:
-                    self._updating_cards = True
-                    try:
-                        QApplication.processEvents()
-                    finally:
-                        self._updating_cards = False
-                QTimer.singleShot(30, lambda: self._check_and_update_cards(retry_count + 1))
-            return
-
-        self.file_selector_a._update_all_cards_width()
-
-    def changeEvent(self, event):
-        """
-        处理窗口状态变化事件
-        - 监听窗口最大化/窗口化状态变化
-        - 状态变化时重新计算文件选择器卡片尺寸
-        """
-        if event.type() == QEvent.WindowStateChange:
-            QTimer.singleShot(200, self._on_window_state_changed)
-        super().changeEvent(event)
-
-    def _on_window_state_changed(self):
-        """
-        窗口状态变化后的回调
-        - 延迟执行确保布局完成
-        - 连续检测直到窗口尺寸稳定
-        """
-        # 防止 processEvents 递归（changeEvent 通路相互重入）
-        if self._updating_cards:
-            return
-        self._updating_cards = True
-        try:
-            from PySide6.QtWidgets import QApplication
-            QApplication.processEvents()
-            self._check_and_update_cards(retry_count=0)
-        finally:
-            self._updating_cards = False
-
-    def _create_file_selector_widget(self):
-        """
-        创建内嵌式文件选择器组件
-
-        Returns:
-            QWidget: 内嵌式文件选择器组件
-        """
-        from freeassetfilter.components.file_selector import CustomFileSelector
-        return CustomFileSelector()
-
-    def _get_theme_colors(self):
-        """
-        获取当前主题相关颜色，优先使用设置管理器缓存接口
-        """
-        app = QApplication.instance()
-        panel_background = "#f1f3f5"
-        normal_color = "#e0e0e0"
-        base_color = "#212121"
-
-        if hasattr(app, "settings_manager") and app.settings_manager is not None:
-            panel_background = app.settings_manager.get_setting(
-                "appearance.colors.panel_background", "#f1f3f5"
-            )
-            normal_color = app.settings_manager.get_setting(
-                "appearance.colors.normal_color", "#e0e0e0"
-            )
-            base_color = app.settings_manager.get_setting(
-                "appearance.colors.base_color", "#212121"
-            )
-
-        return panel_background, normal_color, base_color
-
-    def _capture_preview_state_for_theme_update(self):
-        """
-        记录主题切换前当前预览文件信息，用于刷新后恢复预览组件。
-        """
-        preview_file_info = None
-
-        try:
-            unified_previewer = getattr(self, "unified_previewer", None)
-            current_file_info = getattr(unified_previewer, "current_file_info", None) if unified_previewer else None
-            if isinstance(current_file_info, dict) and current_file_info:
-                preview_file_info = dict(current_file_info)
-        except (RuntimeError, AttributeError, TypeError) as e:
-            pass
-
-        return preview_file_info
-
-    def _clear_preview_for_theme_update(self):
-        """
-        在主题刷新前主动清空当前预览区域，避免旧预览组件残留旧样式。
-        """
-        unified_previewer = getattr(self, "unified_previewer", None)
-        if not unified_previewer:
-            return
-
-        try:
-            if hasattr(unified_previewer, "_clear_preview"):
-                unified_previewer._clear_preview(emit_signal=False)
-            elif hasattr(unified_previewer, "stop_preview"):
-                unified_previewer.stop_preview()
-        except (RuntimeError, AttributeError, TypeError) as e:
-            pass
-
-        try:
-            unified_previewer.current_file_info = None
-            if hasattr(unified_previewer, "_show_default_placeholder"):
-                unified_previewer._show_default_placeholder()
-            elif hasattr(unified_previewer, "default_label") and unified_previewer.default_label:
-                unified_previewer.default_label.show()
-            if hasattr(unified_previewer, "clear_preview_button"):
-                unified_previewer.clear_preview_button.hide()
-            if hasattr(unified_previewer, "open_with_system_button"):
-                unified_previewer.open_with_system_button.hide()
-            if hasattr(unified_previewer, "copy_to_clipboard_button"):
-                unified_previewer.copy_to_clipboard_button.hide()
-            if hasattr(unified_previewer, "locate_in_selector_button"):
-                unified_previewer.locate_in_selector_button.hide()
-        except (RuntimeError, AttributeError, TypeError) as e:
-            pass
-
-    def _restore_preview_for_theme_update(self, preview_file_info):
-        """
-        主题刷新后恢复之前正在预览的文件。
-        """
-        if not isinstance(preview_file_info, dict) or not preview_file_info:
-            return
-
-        unified_previewer = getattr(self, "unified_previewer", None)
-        if not unified_previewer or not hasattr(unified_previewer, "set_file"):
-            return
-
-        def _restore():
-            try:
-                unified_previewer.set_file(dict(preview_file_info))
-            except (RuntimeError, AttributeError, TypeError) as e:
-                pass
-
-        QTimer.singleShot(0, _restore)
-
-    def _refresh_widget_self_only(self, widget):
-        """
-        仅刷新单个控件自身样式，不递归处理子控件
-        """
-        if not widget:
-            return
-
-        try:
-            if hasattr(widget, "apply_theme_from_settings"):
-                widget.apply_theme_from_settings()
-        except (RuntimeError, AttributeError, TypeError) as e:
-            pass
-
-        try:
-            style = widget.style()
-            if style is not None:
-                style.unpolish(widget)
-                style.polish(widget)
-        except (RuntimeError, AttributeError, TypeError) as e:
-            pass
-
-        try:
-            widget.update()
-        except (RuntimeError, AttributeError):
-            pass
-
-    def _refresh_widget_theme_recursively(self, root_widget, visited=None):
-        """
-        递归刷新控件树主题，优先调用组件自己的 update_theme，避免重复遍历整棵子树
-        """
-        if not root_widget:
-            return
-
-        if visited is None:
-            visited = set()
-
-        widget_id = id(root_widget)
-        if widget_id in visited:
-            return
-        visited.add(widget_id)
-
-        has_explicit_theme_handler = False
-
-        try:
-            if hasattr(root_widget, "update_theme"):
-                root_widget.update_theme()
-                has_explicit_theme_handler = True
-            elif hasattr(root_widget, "set_theme"):
-                root_widget.set_theme()
-                has_explicit_theme_handler = True
-            elif hasattr(root_widget, "_init_animations"):
-                root_widget._init_animations()
-        except (RuntimeError, AttributeError, TypeError) as e:
-            pass
-
-        self._refresh_widget_self_only(root_widget)
-
-        # 组件自己已经处理其内部主题时，不再对子树做重复遍历
-        if has_explicit_theme_handler:
-            return
-
-        try:
-            for child in root_widget.findChildren(QWidget, options=Qt.FindDirectChildrenOnly):
-                if child is root_widget:
-                    continue
-                self._refresh_widget_theme_recursively(child, visited)
-        except (RuntimeError, AttributeError, TypeError) as e:
-            pass
-
-    def _apply_theme_to_existing_widgets(self):
-        """
-        对当前已存在的控件树执行增量主题刷新，避免整棵布局重建
-        """
-        panel_background, normal_color, base_color = self._get_theme_colors()
-        border_radius = 8
-        visited = set()
-
-        if hasattr(self, "central_widget") and self.central_widget:
-            self.central_widget.setStyleSheet(f"background-color: {panel_background};")
-
-        column_style = (
-            f"background-color: {base_color}; "
-            f"border: 1px solid {normal_color}; "
-            f"border-radius: {border_radius}px;"
-        )
-
-        for widget_name in ("left_column", "middle_column", "right_column"):
-            widget = getattr(self, widget_name, None)
-            if widget:
-                widget.setStyleSheet(column_style)
-
-        if hasattr(self, "status_label") and self.status_label:
-            self.status_label.setStyleSheet("color: #888888; margin-top: 0px;")
-
-        themed_widgets = [
-            getattr(self, "file_selector_a", None),
-            getattr(self, "file_staging_pool", None),
-            getattr(self, "unified_previewer", None),
-            getattr(self, "github_button", None),
-            getattr(self, "update_button", None),
-
-            getattr(self, "hover_tooltip", None),
-        ]
-
-        for widget in themed_widgets:
-            if not widget:
-                continue
-
-            try:
-                self._refresh_widget_theme_recursively(widget, visited)
-            except (RuntimeError, AttributeError, TypeError) as e:
-                pass
-
-        # 顶层容器只刷新自身，避免把同一子树重复递归一遍
-        for container_name in ("left_column", "middle_column", "right_column", "central_widget"):
-            container = getattr(self, container_name, None)
-            if container:
-                try:
-                    self._refresh_widget_self_only(container)
-                except (RuntimeError, AttributeError, TypeError) as e:
-                    pass
-
-        if self._splitter:
-            try:
-                self._refresh_widget_self_only(self._splitter)
-            except (RuntimeError, AttributeError, TypeError) as e:
-                pass
-
-        if hasattr(self, "central_widget") and self.central_widget:
-            self.central_widget.update()
-        self.update()
-
-    def init_ui(self):
-        """
-        初始化用户界面
-        """
-        # 创建中央部件
-        self.central_widget = QWidget()
-        # 获取主题颜色（骨架屏已移除，只需中央背景色）
-        panel_background, _, _ = self._get_theme_colors()
-        self.central_widget.setStyleSheet(f"background-color: {panel_background};")
-        self.setCentralWidget(self.central_widget)
-
-        # 创建主布局：标题 + 三列
-        main_layout = QVBoxLayout(self.central_widget)
-        # 设置间距和边距
-        main_layout.setSpacing(10)
-        main_layout.setContentsMargins(10, 10, 10, 10)
-
-        # 创建三列布局，使用QSplitter实现可拖动分割
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.setContentsMargins(0, 0, 0, 0)
-        self._splitter = splitter
-
-        # 三列空白容器（骨架屏已移除，首帧后填充真实控件）
-        self.left_column = QWidget()
-        self.left_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        left_layout = QVBoxLayout(self.left_column)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-
-        self.middle_column = QWidget()
-        self.middle_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        middle_layout = QVBoxLayout(self.middle_column)
-        middle_layout.setContentsMargins(0, 0, 0, 0)
-
-        self.right_column = QWidget()
-        self.right_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        right_layout = QVBoxLayout(self.right_column)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-
-        # 将三列添加到分割器，调整初始比例
-        splitter.addWidget(self.left_column)
-        splitter.addWidget(self.middle_column)
-        splitter.addWidget(self.right_column)
-        splitter.setCollapsible(2, False)
-
-        # 设置分割器初始大小，每个栏目宽度定义为420
-        column_width = 420
-        sizes = [column_width, column_width, column_width]
-        splitter.setSizes(sizes)
-
-        # 添加分割器到主布局
-        main_layout.addWidget(splitter, 1)
-
-        # 创建状态标签和全局设置按钮的布局（按钮延迟到 show() 后创建）
-        status_container = QWidget()
-        status_container_layout = QVBoxLayout(status_container)
-        status_container_layout.setContentsMargins(0, 0, 0, 0)
-        status_container_layout.setAlignment(Qt.AlignCenter)
-
-        # 创建状态标签和全局设置按钮的水平布局
-        status_layout = QHBoxLayout()
-        status_layout.setContentsMargins(0, 0, 0, 0)
-
-        # 左侧占位，预留后续按钮位置
-        status_layout.addStretch()
-
-        # 状态标签
-        from freeassetfilter.core.managers.update_manager import get_app_version
-        self.status_label = QLabel(
-            f"FreeAssetFilter {get_app_version()} | By Dorufoc & renmoren | 遵循AGPL-3.0协议开源"
-        )
-        self.status_label.setAlignment(Qt.AlignCenter)
-        # 使用小一号的字体
-        status_font = QFont(self.global_font)
-        status_font.setPointSize(int(self.global_font.pointSize() * 0.85))
-        self.status_label.setFont(status_font)
-        margin = 0
-        self.status_label.setStyleSheet(f"color: #888888; margin-top: {margin}px;")
-        status_layout.addWidget(self.status_label)
-
-        # 右侧占位，预留后续按钮位置
-        status_layout.addStretch()
-
-        # 将水平布局添加到容器的垂直布局中
-        status_container_layout.addLayout(status_layout)
-        self._status_bar_layout = status_layout  # 保存引用供延迟创建按钮使用
-
-        # 添加状态容器到主布局
-        main_layout.addWidget(status_container)
-
-    def _create_bottom_bar_buttons(self):
-        """首帧后延迟创建底部按钮，加速首屏显示"""
-        if self._is_closing:
-            return
-        try:
-            status_layout = getattr(self, '_status_bar_layout', None)
-            if status_layout is None:
-                error("底部按钮延迟创建: 状态栏布局引用不存在")
+            if issubclass(args.exc_type, KeyboardInterrupt):
                 return
-
-            from freeassetfilter.widgets.button_widgets import CustomButton
-
-            # Add GitHub button before the first stretch
-            github_icon_path = get_resource_path('freeassetfilter/icons/github.svg')
-            self.github_button = CustomButton(github_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="跳转项目主页")
-            self.github_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-            self.github_button.clicked.connect(self._open_github)
-            # Insert at position 0 (before the first stretch)
-            status_layout.insertWidget(0, self.github_button)
-
-            # Add update button and settings button at the end
-            update_icon_path = get_resource_path('freeassetfilter/icons/update.svg')
-            self.update_button = CustomButton(update_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="检查更新")
-            self.update_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-            status_layout.addWidget(self.update_button)
-
-            settings_icon_path = get_resource_path('freeassetfilter/icons/setting.svg')
-            self.global_settings_button = CustomButton(settings_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="全局设置")
-            self.global_settings_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-            self.global_settings_button.clicked.connect(self._open_global_settings)
-            status_layout.addWidget(self.global_settings_button)
-
-            # 初始化自定义悬浮提示
-            from freeassetfilter.widgets.hover_tooltip import HoverTooltip
-            self.hover_tooltip = HoverTooltip(self)
-            self.hover_tooltip.set_target_widget(self.github_button)
-            self.hover_tooltip.set_target_widget(self.update_button)
-            self.hover_tooltip.set_target_widget(self.global_settings_button)
-        except Exception as e:
-            error(f"延迟创建底部按钮失败: {e}")
-
-    def _open_github(self):
-        """打开GitHub项目主页"""
-        import webbrowser
-        webbrowser.open("https://github.com/Dorufoc/FreeAssetFilter")
-
-    def _open_global_settings(self):
-        """打开全局设置窗口"""
-        from freeassetfilter.components.settings_window import ModernSettingsWindow
-        if not hasattr(self, '_settings_window') or self._settings_window is None:
-            self._settings_window = ModernSettingsWindow(self)
-        self._settings_window.show()
-        self._settings_window.raise_()
-        self._settings_window.activateWindow()
-
-    def show_info(self, title, message):
-        """
-        显示信息提示
-
-        Args:
-            title (str): 提示标题
-            message (str): 提示消息
-        """
-        # 简单的信息显示，使用状态标签
-        self.status_label.setText(f"{title}: {message}")
-
-    def _backup_ui_state(self):
-        """
-        备份当前UI状态到内存，避免主题切换过程中产生额外磁盘 I/O
-
-        Returns:
-            bool: 是否成功备份
-        """
-        try:
-            backup_data = {
-                "file_selector": {
-                    "current_path": None,
-                    "selected_files": {},
-                    "_selected_file_paths": [],
-                    "previewing_file_path": None,
-                    "filter_pattern": "*",
-                    "sort_by": "name",
-                    "sort_order": "asc",
-                    "view_mode": "card",
-                },
-                "file_staging_pool": {
-                    "items": [],
-                    "previewing_file_path": None,
-                },
-                "splitter_sizes": [100, 100, 100],
-            }
-
-            old_file_selector = getattr(self, "file_selector_a", None)
-            old_staging_pool = getattr(self, "file_staging_pool", None)
-
-            if old_file_selector:
-                try:
-                    if hasattr(old_file_selector, "current_path"):
-                        backup_data["file_selector"]["current_path"] = old_file_selector.current_path
-                    if hasattr(old_file_selector, "selected_files"):
-                        selected = old_file_selector.selected_files
-                        if isinstance(selected, dict):
-                            backup_data["file_selector"]["selected_files"] = {
-                                k: list(v) for k, v in selected.items()
-                            }
-                    if hasattr(old_file_selector, "_selected_file_paths"):
-                        backup_data["file_selector"]["_selected_file_paths"] = list(
-                            old_file_selector._selected_file_paths
-                        )
-                    if hasattr(old_file_selector, "previewing_file_path"):
-                        backup_data["file_selector"]["previewing_file_path"] = old_file_selector.previewing_file_path
-                    if hasattr(old_file_selector, "filter_pattern"):
-                        backup_data["file_selector"]["filter_pattern"] = old_file_selector.filter_pattern
-                    if hasattr(old_file_selector, "sort_by"):
-                        backup_data["file_selector"]["sort_by"] = old_file_selector.sort_by
-                    if hasattr(old_file_selector, "sort_order"):
-                        backup_data["file_selector"]["sort_order"] = old_file_selector.sort_order
-                    if hasattr(old_file_selector, "view_mode"):
-                        backup_data["file_selector"]["view_mode"] = old_file_selector.view_mode
-                except (RuntimeError, AttributeError) as e:
-                    pass
-
-            if old_staging_pool:
-                try:
-                    if hasattr(old_staging_pool, "items"):
-                        backup_data["file_staging_pool"]["items"] = list(old_staging_pool.items)
-                    if hasattr(old_staging_pool, "previewing_file_path"):
-                        backup_data["file_staging_pool"]["previewing_file_path"] = old_staging_pool.previewing_file_path
-                except (RuntimeError, AttributeError) as e:
-                    pass
-
-            if self._splitter:
-                try:
-                    backup_data["splitter_sizes"] = list(self._splitter.sizes())
-                except (RuntimeError, AttributeError) as e:
-                    pass
-
-            self._ui_state_backup = backup_data
-            return True
-        except (TypeError, AttributeError) as e:
-            logger.warning(f"备份UI状态失败: {e}")
-            return False
-
-    def _restore_ui_state(self):
-        """
-        从内存恢复 UI 状态
-
-        Returns:
-            bool: 是否成功恢复
-        """
-        backup_data = self._ui_state_backup
-        if not backup_data:
-            return False
-
-        try:
-            new_file_selector = getattr(self, "file_selector_a", None)
-            new_staging_pool = getattr(self, "file_staging_pool", None)
-
-            if new_file_selector:
-                try:
-                    file_selector_state = backup_data.get("file_selector", {})
-
-                    if "current_path" in file_selector_state:
-                        new_file_selector.current_path = file_selector_state["current_path"]
-                    if "selected_files" in file_selector_state:
-                        raw_selected = file_selector_state["selected_files"]
-                        if isinstance(raw_selected, dict):
-                            new_file_selector.selected_files = {
-                                k: set(v) if isinstance(v, list) else v
-                                for k, v in raw_selected.items()
-                            }
-                    if "_selected_file_paths" in file_selector_state:
-                        new_file_selector._selected_file_paths = set(file_selector_state["_selected_file_paths"])
-                    if "previewing_file_path" in file_selector_state:
-                        new_file_selector.previewing_file_path = file_selector_state["previewing_file_path"]
-                    if "filter_pattern" in file_selector_state:
-                        new_file_selector.filter_pattern = file_selector_state["filter_pattern"]
-                    if "sort_by" in file_selector_state:
-                        new_file_selector.sort_by = file_selector_state["sort_by"]
-                    if "sort_order" in file_selector_state:
-                        new_file_selector.sort_order = file_selector_state["sort_order"]
-                    if "view_mode" in file_selector_state:
-                        new_file_selector.view_mode = file_selector_state["view_mode"]
-                        if hasattr(new_file_selector, "_apply_view_mode"):
-                            new_file_selector._apply_view_mode()
-
-                    if hasattr(new_file_selector, "_update_filter_button_style"):
-                        new_file_selector._update_filter_button_style()
-                    if hasattr(new_file_selector, "_update_file_selection_state"):
-                        new_file_selector._update_file_selection_state()
-                    if (
-                        getattr(new_file_selector, "previewing_file_path", None)
-                        and hasattr(new_file_selector, "set_previewing_file")
-                    ):
-                        new_file_selector.set_previewing_file(new_file_selector.previewing_file_path)
-                except (RuntimeError, AttributeError) as e:
-                    pass
-
-            if new_staging_pool:
-                try:
-                    staging_pool_state = backup_data.get("file_staging_pool", {})
-                    if "items" in staging_pool_state:
-                        items_data = staging_pool_state["items"]
-                        existing_paths = set()
-                        if hasattr(new_staging_pool, "items"):
-                            existing_paths = {
-                                os.path.normpath(item.get("path", ""))
-                                for item in new_staging_pool.items
-                                if isinstance(item, dict) and item.get("path")
-                            }
-
-                        if hasattr(new_staging_pool, "add_file"):
-                            for item_data in items_data:
-                                try:
-                                    if isinstance(item_data, dict) and "path" in item_data:
-                                        item_path = os.path.normpath(item_data["path"])
-                                        if item_path not in existing_paths:
-                                            new_staging_pool.add_file(item_data)
-                                            existing_paths.add(item_path)
-                                except (TypeError, AttributeError) as e:
-                                    continue
-
-                    previewing_file_path = staging_pool_state.get("previewing_file_path")
-                    if previewing_file_path:
-                        if hasattr(new_staging_pool, "set_previewing_file"):
-                            new_staging_pool.set_previewing_file(previewing_file_path)
-                    elif hasattr(new_staging_pool, "clear_previewing_state"):
-                        new_staging_pool.clear_previewing_state()
-                except (RuntimeError, AttributeError) as e:
-                    pass
-
-            if "splitter_sizes" in backup_data and self._splitter:
-                try:
-                    old_sizes = backup_data["splitter_sizes"]
-                    if sum(old_sizes) > 0:
-                        self._splitter.setSizes(old_sizes)
-                except (RuntimeError, AttributeError) as e:
-                    pass
-
-            return True
-        except (TypeError, KeyError) as e:
-            logger.warning(f"恢复UI状态失败: {e}")
-            return False
-
-    def _rebuild_main_layout(self):
-        """
-        重建主布局，用于主题切换时确保所有组件使用正确样式
-        """
-        app = QApplication.instance()
-        if app is None:
-            return False
-
-        if not self.isVisible():
-            return False
-
-        if hasattr(app, 'global_font'):
-            self.global_font = QFont(app.global_font)
-            self.setFont(self.global_font)
-
-        # 在整个重建过程中禁用更新，防止闪烁
-        previous_updates_enabled = self.updatesEnabled()
-        self.setUpdatesEnabled(False)
-        
-        # 启用 HoverTooltip 安全模式，防止在重建过程中意外显示
-        if hasattr(self, 'hover_tooltip') and self.hover_tooltip:
-            try:
-                if hasattr(self.hover_tooltip, 'set_safe_mode'):
-                    self.hover_tooltip.set_safe_mode(True)
-            except (RuntimeError, AttributeError) as e:
-                pass
-
-        self._backup_ui_state()
-
-        old_hover_tooltip = getattr(self, 'hover_tooltip', None)
-
-        # 颜色直接从JSON文件读取，绕过内存缓存
-        panel_background = app.settings_manager.get_setting("appearance.colors.panel_background", "#f1f3f5")
-        normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0")
-        base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")
-        border_radius = 8
-
-        old_central_widget = getattr(self, 'central_widget', None)
-
-        try:
-            if old_central_widget:
-                # 彻底隐藏所有窗口类型的控件，包括直接子窗口和递归查找的所有子窗口
-                # 使用 findChildren 查找所有 QWidget 类型，检查它们是否是窗口
-                all_widgets = old_central_widget.findChildren(QWidget)
-                
-                for child in all_widgets:
-                    try:
-                        # 检查控件是否有效
-                        if not child or not hasattr(child, 'isWindow'):
-                            continue
-                        
-                        # 隐藏所有窗口类型的控件
-                        if child.isWindow():
-                            # 停止可能正在运行的动画
-                            if hasattr(child, 'stop'):
-                                try:
-                                    child.stop()
-                                except (RuntimeError, AttributeError):
-                                    pass
-                            # 彻底隐藏
-                            child.hide()
-                            # 确保不处理事件
-                            child.blockSignals(True)
-                    except (RuntimeError, AttributeError):
-                        continue
-                
-                # 额外检查主窗口的所有子窗口
-                for child in self.findChildren(QWidget):
-                    try:
-                        if child and child.isWindow() and child != self:
-                            child.hide()
-                            child.blockSignals(True)
-                    except (RuntimeError, AttributeError):
-                        continue
-
-                # 最后隐藏旧中央部件
-                old_central_widget.hide()
-                old_central_widget.blockSignals(True)
-        except (RuntimeError, AttributeError) as e:
+        except TypeError:
             pass
+        log_exception(args.exc_type, args.exc_value, args.exc_traceback)
 
-        self.central_widget = QWidget()
-        self.central_widget.setStyleSheet(f"background-color: {panel_background};")
-        self.setCentralWidget(self.central_widget)
+    sys.excepthook = handle_exception
+    threading.excepthook = handle_thread_exception
 
-        main_layout = QVBoxLayout(self.central_widget)
-        main_layout.setSpacing(10)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+    # 6) 弃用警告过滤
+    warnings.filterwarnings("ignore", category=DeprecationWarning, module="PySide6")
+    warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*sipPyTypeDict.*")
 
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.setContentsMargins(0, 0, 0, 0)
-        self._splitter = splitter
+    return state
 
-        self.left_column = QWidget()
-        self.left_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.left_column.setStyleSheet(column_qss)
-        left_layout = QVBoxLayout(self.left_column)
 
-        self.file_selector_a = self._create_file_selector_widget()
-        left_layout.addWidget(self.file_selector_a)
+def _cleanup_process_facilities(state: dict) -> None:
+    """卸载 fd 捕获、关闭 faulthandler（幂等，退出链可重复调用）。"""
+    try:
+        uninstall_fd_capture()
+    except (OSError, ValueError) as e:
+        warning(f"[退出] fd capture 卸载失败: {e}")
 
-        self.middle_column = QWidget()
-        self.middle_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.middle_column.setStyleSheet(column_qss)
-        middle_layout = QVBoxLayout(self.middle_column)
-
-        from freeassetfilter.components.file_staging_pool import FileStagingPool
-        self.file_staging_pool = FileStagingPool()
-        middle_layout.addWidget(self.file_staging_pool)
-
-        self.right_column = QWidget()
-        self.right_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.right_column.setStyleSheet(column_qss)
-        right_layout = QVBoxLayout(self.right_column)
-
-        from freeassetfilter.components.unified_previewer import UnifiedPreviewer
-        self.unified_previewer = UnifiedPreviewer(self)
-        right_layout.addWidget(self.unified_previewer, 1)
-        right_margins = right_layout.contentsMargins()
-        right_min_width = (
-            self.unified_previewer.minimumWidth()
-            + right_margins.left()
-            + right_margins.right()
-        )
-        self.right_column.setMinimumWidth(right_min_width)
-
-        splitter.addWidget(self.left_column)
-        splitter.addWidget(self.middle_column)
-        splitter.addWidget(self.right_column)
-        splitter.setCollapsible(2, False)
-
-        column_width = 420
-        splitter.setSizes([column_width, column_width, column_width])
-
-        self.file_selector_a.file_selected.connect(self.unified_previewer.set_file)
-        self.file_selector_a.preview_cancel_requested.connect(self.unified_previewer.clear_preview)
-        self.file_selector_a.file_selection_changed.connect(self.handle_file_selection_changed)
-        self.unified_previewer.open_in_selector_requested.connect(lambda path, file_info: self.handle_navigate_to_path(path, file_info))
-        self.file_staging_pool.item_left_clicked.connect(self.unified_previewer.set_file)
-        self.file_staging_pool.preview_cancel_requested.connect(self.unified_previewer.clear_preview)
-        self.file_staging_pool.remove_from_selector.connect(self.handle_remove_from_selector)
-        self.file_staging_pool.file_added_to_pool.connect(self.handle_file_added_to_pool)
-        self.file_staging_pool.navigate_to_path.connect(self.handle_navigate_to_path)
-        self.unified_previewer.preview_started.connect(self.handle_preview_started)
-        self.unified_previewer.preview_cleared.connect(self.handle_preview_cleared)
-
-        main_layout.addWidget(splitter, 1)
-
-        status_container = QWidget()
-        status_container_layout = QVBoxLayout(status_container)
-        status_container_layout.setContentsMargins(0, 0, 0, 0)
-        status_container_layout.setAlignment(Qt.AlignCenter)
-
-        status_layout = QHBoxLayout()
-        status_layout.setContentsMargins(0, 0, 0, 0)
-
-        from freeassetfilter.widgets.button_widgets import CustomButton
-        github_icon_path = get_resource_path('freeassetfilter/icons/github.svg')
-        self.github_button = CustomButton(github_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="跳转项目主页")
-        self.github_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.github_button.clicked.connect(self._open_github)
-        status_layout.addWidget(self.github_button)
-
-        status_layout.addStretch()
-
-        from freeassetfilter.core.managers.update_manager import get_app_version
-        self.status_label = QLabel(
-            f"FreeAssetFilter {get_app_version()} | By Dorufoc & renmoren | 遵循AGPL-3.0协议开源"
-        )
-        self.status_label.setAlignment(Qt.AlignCenter)
-        status_font = QFont(self.global_font)
-        status_font.setPointSize(int(self.global_font.pointSize() * 0.85))
-        self.status_label.setFont(status_font)
-        self.status_label.setStyleSheet("color: #888888; margin-top: 0px;")
-        status_layout.addWidget(self.status_label)
-
-        status_layout.addStretch()
-
-        update_icon_path = get_resource_path('freeassetfilter/icons/update.svg')
-        self.update_button = CustomButton(update_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="检查更新")
-        self.update_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        status_layout.addWidget(self.update_button)
-
-        # 全局设置按钮
-        settings_icon_path = get_resource_path('freeassetfilter/icons/setting.svg')
-        self.global_settings_button = CustomButton(settings_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="全局设置")
-        self.global_settings_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.global_settings_button.clicked.connect(self._open_global_settings)
-        status_layout.addWidget(self.global_settings_button)
-
-        if hasattr(self, "update_controller") and self.update_controller:
-            self.update_controller.bind_button(self.update_button)
-
-        status_container_layout.addLayout(status_layout)
-        main_layout.addWidget(status_container)
-
-        if old_hover_tooltip:
-            try:
-                if hasattr(old_hover_tooltip, 'cleanup'):
-                    old_hover_tooltip.cleanup()
-            except (RuntimeError, AttributeError) as e:
-                pass
-
-            try:
-                old_hover_tooltip.hide()
-            except (RuntimeError, AttributeError):
-                pass
-
-            try:
-                old_hover_tooltip.setParent(None)
-            except (RuntimeError, AttributeError):
-                pass
-
-            try:
-                old_hover_tooltip.deleteLater()
-            except (RuntimeError, AttributeError):
-                pass
-
-        from freeassetfilter.widgets.hover_tooltip import HoverTooltip
-        self.hover_tooltip = HoverTooltip(self)
-        self.hover_tooltip.set_target_widget(self.github_button)
-        self.hover_tooltip.set_target_widget(self.update_button)
-        self.hover_tooltip.set_target_widget(self.global_settings_button)
-
-        self._restore_ui_state()
-        
-        # 恢复主窗口更新状态
+    if state.get("fault_enabled"):
         try:
-            self.setUpdatesEnabled(previous_updates_enabled)
-        except (RuntimeError, AttributeError):
+            faulthandler.disable()
+        except (OSError, ValueError):
             pass
-        
-        # 强制更新主窗口
-        self.update()
-        
-        # 禁用 HoverTooltip 安全模式
-        if hasattr(self, 'hover_tooltip') and self.hover_tooltip:
-            try:
-                if hasattr(self.hover_tooltip, 'set_safe_mode'):
-                    self.hover_tooltip.set_safe_mode(False)
-            except (RuntimeError, AttributeError) as e:
-                pass
-
-        return True
-
-    def _perform_theme_update_refresh(self, preview_file_info=None):
-        """
-        第二阶段：执行主窗口主题刷新。
-        刷新完成后，再异步进入第三阶段恢复预览。
-        """
-        previous_updates_enabled = self.updatesEnabled()
-        self.setUpdatesEnabled(False)
-
-        # 清除SVG颜色缓存，确保新组件使用最新的主题颜色
-        from freeassetfilter.core.preview.svg_renderer import SvgRenderer
-        SvgRenderer._invalidate_color_cache()
-
+        state["fault_enabled"] = False
+    fault_file = state.get("fault_file")
+    if fault_file is not None:
         try:
-            # 启动阶段窗口未显示时，不做重建，避免无意义构造/销毁
-            if not self.isVisible():
-                if hasattr(self, "central_widget") and self.central_widget:
-                    self._apply_theme_to_existing_widgets()
-            else:
-                success = self._rebuild_main_layout()
-                if not success and hasattr(self, "central_widget") and self.central_widget:
-                    self._apply_theme_to_existing_widgets()
-        except (RuntimeError, AttributeError) as e:
-            logger.warning(f"更新主题时出错，回退到轻量刷新: {e}")
-            try:
-                if hasattr(self, "central_widget") and self.central_widget:
-                    self._apply_theme_to_existing_widgets()
-            except (RuntimeError, AttributeError) as fallback_error:
-                logger.warning(f"轻量刷新主题时出错: {fallback_error}")
-        finally:
-            self.setUpdatesEnabled(previous_updates_enabled)
-            self._update_theme_in_progress = False
-
-        self.update()
-
-        # 更新窗口标题栏主题
-        self._apply_title_bar_theme()
-
-        if preview_file_info:
-            QTimer.singleShot(0, lambda: self._restore_preview_for_theme_update(preview_file_info))
-
-    def update_theme(self, delayed=False):
-        """
-        更新应用主题：
-        - 启动阶段窗口尚未显示时，使用轻量样式刷新
-        - 窗口显示后，优先直接重建主布局，避免对整棵旧控件树做高成本增量刷新
-        - 预览区域采用"清空 → 刷新 → 恢复"的分阶段异步流程，降低切换卡顿
-
-        Args:
-            delayed: 是否延迟执行，用于防止在窗口关闭时调用
-        """
-        # 启动阶段只使用轻量级主题刷新，绝不重建UI
-        if self._is_startup_phase:
-            if hasattr(self, "central_widget") and self.central_widget:
-                self._apply_theme_to_existing_widgets()
-            return
-
-        if not delayed and self._update_theme_in_progress:
-            if not self._theme_update_queued:
-                self._theme_update_queued = True
-                QTimer.singleShot(50, lambda: self.update_theme(delayed=True))
-            return
-
-        self._update_theme_in_progress = True
-        self._theme_update_queued = False
-
-        preview_file_info = self._capture_preview_state_for_theme_update()
-
-        # 第一阶段：先清空旧预览，让旧组件先退出显示树
-        if preview_file_info:
-            self._clear_preview_for_theme_update()
-
-        # 第二阶段：下一轮事件循环再执行主窗口主题刷新
-        QTimer.singleShot(0, lambda: self._perform_theme_update_refresh(preview_file_info))
-
-    def _create_real_widgets_deferred(self):
-        """在窗口显示后创建真实重量级控件（延迟加载以加速首帧渲染）"""
-        if self._is_closing:
-            return
-
-        # 空白容器布局中直接插入真实控件（骨架屏已移除，无需清理占位）
-        left_layout = self.left_column.layout()
-        middle_layout = self.middle_column.layout()
-        right_layout = self.right_column.layout()
-
-        try:
-            # 1. 创建真实的 file_selector
-            try:
-                from freeassetfilter.components.file_selector import CustomFileSelector
-                self.file_selector_a = CustomFileSelector()
-                self.file_selector_a.setEnabled(True)
-                left_layout.addWidget(self.file_selector_a)
-            except Exception as e:
-                error(f"文件选择器创建失败: {e}")
-                import traceback
-                error(traceback.format_exc())
-                self.file_selector_a = type('Placeholder', (), {'setEnabled': lambda s, b: None, 'file_selected': type('Signal', (), {'connect': lambda s, c: None})(), 'preview_cancel_requested': type('Signal', (), {'connect': lambda s, c: None})(), 'file_selection_changed': type('Signal', (), {'connect': lambda s, c: None})()})()
-                placeholder = QLabel("文件选择器加载失败，请重启应用")
-                placeholder.setStyleSheet("color: #888888; padding: 20px;")
-                placeholder.setAlignment(Qt.AlignCenter)
-                left_layout.addWidget(placeholder)
-
-            # 2. 创建真实的 file_staging_pool
-            try:
-                from freeassetfilter.components.file_staging_pool import FileStagingPool
-                self.file_staging_pool = FileStagingPool()
-                self.file_staging_pool.setEnabled(True)
-                middle_layout.addWidget(self.file_staging_pool)
-            except Exception as e:
-                error(f"文件存储池创建失败: {e}")
-                import traceback
-                error(traceback.format_exc())
-                self.file_staging_pool = type('Placeholder', (), {'setEnabled': lambda s, b: None, 'item_left_clicked': type('Signal', (), {'connect': lambda s, c: None})(), 'preview_cancel_requested': type('Signal', (), {'connect': lambda s, c: None})(), 'remove_from_selector': type('Signal', (), {'connect': lambda s, c: None})(), 'file_added_to_pool': type('Signal', (), {'connect': lambda s, c: None})(), 'navigate_to_path': type('Signal', (), {'connect': lambda s, c: None})()})()
-                placeholder = QLabel("文件存储池加载失败，请重启应用")
-                placeholder.setStyleSheet("color: #888888; padding: 20px;")
-                placeholder.setAlignment(Qt.AlignCenter)
-                middle_layout.addWidget(placeholder)
-
-            # 3. 创建真实的 unified_previewer
-            try:
-                from freeassetfilter.components.unified_previewer import UnifiedPreviewer
-                self.unified_previewer = UnifiedPreviewer(self)
-                self.unified_previewer.setEnabled(True)
-                right_layout.addWidget(self.unified_previewer, 1)
-            except Exception as e:
-                error(f"统一预览器创建失败: {e}")
-                import traceback
-                error(traceback.format_exc())
-                self.unified_previewer = type('Placeholder', (), {'setEnabled': lambda s, b: None, 'set_file': lambda s, f: None, 'clear_preview': lambda s: None, 'open_in_selector_requested': type('Signal', (), {'connect': lambda s, c: None})(), 'preview_started': type('Signal', (), {'connect': lambda s, c: None})(), 'preview_cleared': type('Signal', (), {'connect': lambda s, c: None})()})()
-                placeholder = QLabel("统一预览器加载失败，请重启应用")
-                placeholder.setStyleSheet("color: #888888; padding: 20px;")
-                placeholder.setAlignment(Qt.AlignCenter)
-                right_layout.addWidget(placeholder)
-
-            # 4. 重建信号连接（每个连接单独保护）
-            try:
-                self.file_selector_a.file_selected.connect(self.unified_previewer.set_file)
-            except Exception as e:
-                error(f"信号连接[file_selected]失败: {e}")
-            try:
-                self.file_selector_a.preview_cancel_requested.connect(self.unified_previewer.clear_preview)
-            except Exception as e:
-                error(f"信号连接[preview_cancel_requested]失败: {e}")
-            try:
-                self.file_selector_a.file_selection_changed.connect(self.handle_file_selection_changed)
-            except Exception as e:
-                error(f"信号连接[file_selection_changed]失败: {e}")
-            try:
-                self.unified_previewer.open_in_selector_requested.connect(lambda path, file_info: self.handle_navigate_to_path(path, file_info))
-            except Exception as e:
-                error(f"信号连接[open_in_selector_requested]失败: {e}")
-            try:
-                self.file_staging_pool.item_left_clicked.connect(self.unified_previewer.set_file)
-            except Exception as e:
-                error(f"信号连接[item_left_clicked]失败: {e}")
-            try:
-                self.file_staging_pool.preview_cancel_requested.connect(self.unified_previewer.clear_preview)
-            except Exception as e:
-                error(f"信号连接[preview_cancel_requested]失败: {e}")
-            try:
-                self.file_staging_pool.remove_from_selector.connect(self.handle_remove_from_selector)
-            except Exception as e:
-                error(f"信号连接[remove_from_selector]失败: {e}")
-            try:
-                self.file_staging_pool.file_added_to_pool.connect(self.handle_file_added_to_pool)
-            except Exception as e:
-                error(f"信号连接[file_added_to_pool]失败: {e}")
-            try:
-                self.file_staging_pool.navigate_to_path.connect(self.handle_navigate_to_path)
-            except Exception as e:
-                error(f"信号连接[navigate_to_path]失败: {e}")
-            try:
-                self.unified_previewer.preview_started.connect(self.handle_preview_started)
-            except Exception as e:
-                error(f"信号连接[preview_started]失败: {e}")
-            try:
-                self.unified_previewer.preview_cleared.connect(self.handle_preview_cleared)
-            except Exception as e:
-                error(f"信号连接[preview_cleared]失败: {e}")
-
-        except Exception as e:
-            error(f"延迟创建控件失败: {e}")
-
-        self._cancel_startup_watchdog()
-
-    def _init_settings_deferred(self):
-        """首帧后异步加载真实设置配置"""
-        if self._is_closing:
-            return
-        app = QApplication.instance()
-        if app is None or hasattr(app, 'settings_manager') and app.settings_manager is not None:
-            return
-        try:
-            from freeassetfilter.core.managers.settings_manager import SettingsManager
-            settings_manager = SettingsManager()
-            app.settings_manager = settings_manager
-
-            # 应用真实字体设置
-            font_size = settings_manager.get_setting("font.size", 10)
-            font_style = settings_manager.get_setting("font.style", "Microsoft YaHei")
-            app.default_font_size = font_size
-            app._deferred_font_style = font_style
-
-            # 刷新已有控件的主题
-            self._apply_theme_to_existing_widgets()
-
-            info(f"[启动] 设置管理器异步加载完成")
-        except Exception as e:
-            error(f"延迟加载设置管理器失败: {e}")
-
-    def _safe_call(self, callback, name):
-        """安全执行启动回调，捕获异常并记录"""
-        if self._is_closing:
-            return
-        try:
-            callback()
-        except Exception as e:
-            error(f"启动回调 [{name}] 失败: {e}")
-            import traceback
-            error(traceback.format_exc())
-
-    def _on_startup_timeout(self):
-        """启动超时诊断"""
-        flags = getattr(self, '_startup_flags', {})
-        pending_items = getattr(self, '_pending_restore_items', [])
-        error(f"[启动超时] 看门狗触发 - startup_flags: {flags}, pending_restore: {len(pending_items)}项")
-        self._startup_watchdog_timer = None
-
-    def _cancel_startup_watchdog(self):
-        """取消启动看门狗计时器"""
-        if self._startup_watchdog_timer is not None:
-            try:
-                self._startup_watchdog_timer.stop()
-                self._startup_watchdog_timer.deleteLater()
-            except Exception:
-                pass
-            self._startup_watchdog_timer = None
-
-    def schedule_startup_tasks(self):
-        """
-        在首屏显示后分阶段执行启动任务，避免阻塞窗口显示
-        更新检查延迟到所有后台任务（备份恢复、预热、清理）完成后触发
-        """
-        QTimer.singleShot(0, lambda: self._safe_call(self._init_settings_deferred, "_init_settings_deferred"))  # 首帧后立即异步加载设置管理器（先于控件创建）
-        QTimer.singleShot(0, lambda: self._safe_call(self._create_real_widgets_deferred, "_create_real_widgets_deferred"))  # 首帧后创建真实控件（settings_manager 已可用）
-        QTimer.singleShot(0, lambda: self._safe_call(self._create_bottom_bar_buttons, "_create_bottom_bar_buttons"))  # 首帧后延迟创建底部按钮
-        QTimer.singleShot(0, lambda: self._safe_call(self._load_fonts_async, "_load_fonts_async"))
-        QTimer.singleShot(0, lambda: self._safe_call(self._lazy_import_pillow_avif, "_lazy_import_pillow_avif"))
-        # 首帧后启动心跳管理器（主线程周期性工作调度）
-        if hasattr(self, 'heartbeat_manager') and self.heartbeat_manager:
-            QTimer.singleShot(0, self.heartbeat_manager.start)
-        QTimer.singleShot(100, lambda: self._safe_call(self._apply_theme_to_existing_widgets, "_apply_theme_to_existing_widgets"))  # 控件创建完成后应用主题样式
-        QTimer.singleShot(100, lambda: self._safe_call(self.check_and_restore_backup, "check_and_restore_backup"))
-        QTimer.singleShot(0, lambda: self._safe_call(self._start_background_warmup, "_start_background_warmup"))
-        QTimer.singleShot(800, lambda: self._safe_call(self._schedule_thumbnail_cleanup, "_schedule_thumbnail_cleanup"))
-        # 延迟创建 UpdateController，避免 urllib/http import 链阻塞首帧
-        QTimer.singleShot(600, lambda: self._safe_call(self._init_update_controller_deferred, "_init_update_controller_deferred"))
-        # 启动看门狗定时器，防止启动过程卡死
-        self._startup_watchdog_timer = QTimer(self)
-        self._startup_watchdog_timer.setSingleShot(True)
-        self._startup_watchdog_timer.timeout.connect(self._on_startup_timeout)
-        self._startup_watchdog_timer.start(15000)
-
-    def _load_fonts_async(self):
-        """
-        窗口显示后延迟加载字体，避免 QFontDatabase.families() 阻塞首屏显示
-        """
-        try:
-            from PySide6.QtGui import QFontDatabase
-            app = QApplication.instance()
-            if app is None:
-                return
-
-            font_families = QFontDatabase.families()
-
-            # 加载 FiraCode-VF 字体（用于代码高亮显示）
-            firacode_font_path = get_resource_path('freeassetfilter/icons/FiraCode-VF.ttf')
-            firacode_font_family = None
-            if os.path.exists(firacode_font_path):
-                font_id = QFontDatabase.addApplicationFont(firacode_font_path)
-                if font_id != -1:
-                    firacode_font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
-            app.firacode_font_family = firacode_font_family
-
-            # 检查保存的字体是否可用
-            saved_font_style = getattr(app, '_deferred_font_style', "Microsoft YaHei")
-            DEFAULT_FONT_SIZE = app.default_font_size
-            selected_font = saved_font_style
-            if selected_font not in font_families:
-                yahei_fonts = ["Microsoft YaHei", "Microsoft YaHei UI"]
-                for font_name in yahei_fonts:
-                    if font_name in font_families:
-                        selected_font = font_name
-                        break
-                if selected_font not in font_families:
-                    selected_font = None
-
-            if selected_font:
-                app.setFont(QFont(selected_font, DEFAULT_FONT_SIZE, QFont.Normal))
-                global_font = QFont(selected_font, DEFAULT_FONT_SIZE, QFont.Normal)
-            else:
-                global_font = QFont()
-                global_font.setPointSize(DEFAULT_FONT_SIZE)
-                global_font.setWeight(QFont.Normal)
-
-            app.global_font = global_font
-
-            # 更新主窗口中已有控件的字体
-            if hasattr(self, 'central_widget') and self.central_widget:
-                self.central_widget.setFont(global_font)
-        except Exception as e:
-            warning(f"延迟加载字体失败: {e}")
-
-    def _lazy_import_pillow_avif(self):
-        """延迟导入 pillow_avif（仅在 AVIF 图像被打开前注册即可）"""
-        try:
-            import pillow_avif
-        except ImportError:
+            fault_file.write(b"\n=== FAULTHANDLER OUTPUT END ===\n")
+            fault_file.flush()
+        except (OSError, ValueError):
             pass
-
-    def _init_update_controller_deferred(self):
-        from freeassetfilter.components.update_controller import UpdateController
-        self.update_controller = UpdateController(self)
-        if hasattr(self, "update_button"):
-            self.update_controller.bind_button(self.update_button)
-
-    def _try_start_update_check(self):
-        """所有后台启动任务完成后，启动静默更新检查"""
-        if all(self._startup_flags.values()):
-            self._start_silent_update_check()
-
-    def _start_silent_update_check(self):
-        """
-        启动后台静默检查更新
-        """
-        if hasattr(self, "update_controller") and self.update_controller:
-            self.update_controller.start_silent_update_check()
-
-    def _start_background_warmup(self):
-        """
-        启动后台预热线程
-        """
-        if self._startup_warmup_thread and self._startup_warmup_thread.isRunning():
-            return
-
-        self._startup_warmup_thread = StartupWarmupThread(self)
-        self._startup_warmup_thread.finished.connect(self._on_startup_warmup_finished)
-        self._startup_warmup_thread.start()
-
-    def _on_startup_warmup_finished(self):
-        """
-        后台预热完成回调
-        """
-        info("[预热] 启动阶段后台预热任务结束")
-        self._startup_flags["warmup_done"] = True
-        self._try_start_update_check()
-        self._cancel_startup_watchdog()
-
-    def _schedule_thumbnail_cleanup(self):
-        """
-        将缩略图缓存清理延后到窗口显示后执行
-        """
-        app = QApplication.instance()
-        settings_manager = getattr(app, 'settings_manager', None)
-        if settings_manager is None:
-            self._startup_flags["cleanup_done"] = True
-            self._try_start_update_check()
-            self._cancel_startup_watchdog()
-            return
-
-        if not settings_manager.get_setting("file_selector.auto_clear_thumbnail_cache", True):
-            self._startup_flags["cleanup_done"] = True
-            self._try_start_update_check()
-            self._cancel_startup_watchdog()
-            return
-
-        cache_cleanup_period = settings_manager.get_setting("file_selector.cache_cleanup_period", 7)
-        last_cleanup_time = settings_manager.get_setting("file_selector.last_cleanup_time", None)
-        current_time = time.time()
-
-        if last_cleanup_time is None or (current_time - last_cleanup_time) > (cache_cleanup_period * 86400):
-            QTimer.singleShot(0, lambda: self._run_thumbnail_cleanup(cache_cleanup_period, current_time))
-        else:
-            self._startup_flags["cleanup_done"] = True
-            self._try_start_update_check()
-        self._cancel_startup_watchdog()
-
-    def _run_thumbnail_cleanup(self, cache_cleanup_period, current_time):
-        """
-        执行缩略图缓存清理
-        """
         try:
-            from freeassetfilter.core.managers.thumbnail_manager import clean_thumbnails
-            deleted_count, remaining_count = clean_thumbnails(cleanup_period_days=cache_cleanup_period)
-            info(f"[启动] 缩略图缓存清理完成: 删除 {deleted_count} 个文件，剩余 {remaining_count} 个文件")
+            fault_file.close()
+        except (OSError, ValueError):
+            pass
+        state["fault_file"] = None
 
-            app = QApplication.instance()
-            if hasattr(app, 'settings_manager') and app.settings_manager is not None:
-                app.settings_manager.set_setting("file_selector.last_cleanup_time", current_time)
-                app.settings_manager.save_settings()
-        except Exception as e:
-            warning(f"[启动] 缩略图缓存清理失败: {e}")
-        finally:
-            self._cancel_startup_watchdog()
-            self._startup_flags["cleanup_done"] = True
-            self._try_start_update_check()
 
-    def show_custom_window_demo(self):
-        """
-        演示自定义窗口的使用
-        """
-        # 设置窗口大小
-        window_width = 400
-        window_height = 300
+# ──────────────────────────────────────────────────────────────
+# 参数解析与内部分流
+# ──────────────────────────────────────────────────────────────
 
-        # 创建自定义窗口实例，并将其赋值给self，防止被垃圾回收
-        from freeassetfilter.widgets.D_widgets import CustomWindow
-        from freeassetfilter.widgets.D_widgets import CustomButton
-        self.custom_window = CustomWindow("自定义窗口演示", self)
-        self.custom_window.setGeometry(200, 200, window_width, window_height)
-
-        # 添加示例控件
-        title_label = QLabel("这是一个自定义窗口")
-        title_font = QFont(self.global_font)
-        title_font.setPointSize(int(self.global_font.pointSize() * 1.5))
-        title_font.setWeight(QFont.Weight.Bold)
-        title_label.setFont(title_font)
-        title_margin = 16
-        title_label.setStyleSheet(f"""
-            QLabel {{
-                color: #333333;
-                margin-bottom: {title_margin}px;
-                text-align: center;
-            }}
-        """)
-        self.custom_window.add_widget(title_label)
-
-        info_label = QLabel("这个窗口具有以下特点：\n\n"
-                            "• 纯白圆角矩形外观\n"
-                            "• 右上角圆形关闭按钮\n"
-                            "• 可拖拽移动（通过标题栏）\n"
-                            "• 支持内嵌其他控件\n"
-                            "• 带阴影效果")
-        info_margin = 24
-        info_label.setFont(self.global_font)
-        info_label.setStyleSheet(f"""
-            QLabel {{
-                color: #666666;
-                line-height: 1.6;
-                margin-bottom: {info_margin}px;
-            }}
-        """)
-        info_label.setWordWrap(True)
-        self.custom_window.add_widget(info_label)
-
-        demo_button = CustomButton("示例按钮")
-        demo_button.clicked.connect(lambda: QMessageBox.information(self.custom_window, "提示", "自定义按钮被点击了！"))
-        self.custom_window.add_widget(demo_button)
-
-        self.custom_window.show()
-
-    def handle_file_selection_changed(self, file_info, is_selected):
-        """
-        处理文件选择状态变化事件
-
-        Args:
-            file_info (dict): 文件信息
-            is_selected (bool): 是否被选中
-        """
-        file_path = os.path.normpath(file_info['path'])
-
-        if is_selected:
-            existing_paths = [os.path.normpath(item['path']) for item in self.file_staging_pool.items]
-            if file_path not in existing_paths:
-                self.file_staging_pool.add_file(file_info)
-        else:
-            self.file_staging_pool.remove_file(file_path)
-
-    def handle_remove_from_selector(self, file_info):
-        """
-        从文件选择器中删除文件（取消选中状态）
-
-        Args:
-            file_info (dict): 文件信息
-        """
-        file_path = os.path.normpath(file_info['path'])
-        file_dir = os.path.normpath(os.path.dirname(file_path))
-
-        if file_dir in self.file_selector_a.selected_files:
-            self.file_selector_a.selected_files[file_dir].discard(file_path)
-
-            if not self.file_selector_a.selected_files[file_dir]:
-                del self.file_selector_a.selected_files[file_dir]
-
-        if hasattr(self.file_selector_a, '_selected_file_paths'):
-            self.file_selector_a._selected_file_paths.discard(file_path)
-
-        self.file_selector_a._update_file_selection_state()
-
-    def handle_navigate_to_path(self, path, file_info=None):
-        """
-        处理导航到指定路径的请求，更新文件选择器的当前路径
-
-        Args:
-            path (str): 要导航到的路径
-            file_info (dict, optional): 文件信息，如果提供则导航后滚动到该文件位置
-        """
-        if hasattr(self, 'file_selector_a') and self.file_selector_a:
-            path = os.path.normpath(path)
-
-            def on_files_refreshed():
-                if file_info:
-                    self.file_staging_pool.add_file(file_info)
-                self.file_selector_a._update_file_selection_state()
-                # 滚动到目标文件位置
-                if file_info:
-                    self.file_selector_a.scroll_to_file(file_info)
-
-            self.file_selector_a._navigate_to_path(
-                path,
-                callback=on_files_refreshed,
-                scroll_to_top=not file_info,
-            )
-
-    def handle_file_added_to_pool(self, file_info):
-        """
-        处理文件被添加到储存池的事件，将文件添加到文件选择器的选中文件列表中
-
-        Args:
-            file_info (dict): 文件信息
-        """
-        file_path = os.path.normpath(file_info['path'])
-        file_dir = os.path.normpath(os.path.dirname(file_path))
-
-        if file_dir not in self.file_selector_a.selected_files:
-            self.file_selector_a.selected_files[file_dir] = set()
-
-        if file_path not in self.file_selector_a.selected_files[file_dir]:
-            self.file_selector_a.selected_files[file_dir].add(file_path)
-
-        if hasattr(self.file_selector_a, '_selected_file_paths'):
-            self.file_selector_a._selected_file_paths.add(file_path)
-
-        def on_files_refreshed():
-            self.file_selector_a._update_file_selection_state()
-
-        if self.file_selector_a.current_path == file_dir:
-            if self.file_selector_a._is_loading:
-                self.file_selector_a._refresh_callback = on_files_refreshed
-            else:
-                self.file_selector_a._update_file_selection_state()
-        else:
-            self.file_selector_a._update_file_selection_state()
-
-    def handle_preview_started(self, file_info):
-        """
-        处理预览开始事件，更新文件选择器和存储池中对应文件的预览态
-
-        Args:
-            file_info (dict): 文件信息
-        """
-        file_path = file_info.get('path', '')
-        if not file_path:
-            return
-
-        # 更新文件选择器中的卡片预览态
-        if hasattr(self, 'file_selector_a') and self.file_selector_a:
-            self.file_selector_a.set_previewing_file(file_path)
-
-        # 更新文件存储池中的卡片预览态
-        if hasattr(self, 'file_staging_pool') and self.file_staging_pool:
-            self.file_staging_pool.set_previewing_file(file_path)
-
-    def handle_preview_cleared(self):
-        """
-        处理预览清除事件，清除所有卡片的预览态
-        """
-        # 清除文件选择器中的卡片预览态
-        if hasattr(self, 'file_selector_a') and self.file_selector_a:
-            self.file_selector_a.clear_previewing_state()
-            self.file_selector_a.previewing_file_path = None
-
-        # 清除文件存储池中的卡片预览态
-        if hasattr(self, 'file_staging_pool') and self.file_staging_pool:
-            self.file_staging_pool.clear_previewing_state()
-            self.file_staging_pool.previewing_file_path = None
-
-    def _mark_restore_done(self):
-        """标记备份恢复任务完成并尝试触发更新检查"""
-        self._startup_flags["restore_done"] = True
-        self._try_start_update_check()
-
-    def check_and_restore_backup(self):
-        """
-        检查是否存在备份文件，并根据设置决定是否自动恢复或询问用户
-        注意：只恢复文件存储池，文件选择器的状态由其他模块处理
-        """
-        import json
-
-        backup_data = None
-        if hasattr(self, 'file_staging_pool') and hasattr(self.file_staging_pool, 'load_backup'):
-            backup_data = self.file_staging_pool.load_backup()
-        else:
-            backup_file = os.path.join(get_app_data_path(), 'staging_pool_backup.json')
-            if not os.path.exists(backup_file):
-                self._mark_restore_done()
-                return
-            try:
-                with open(backup_file, 'r', encoding='utf-8') as f:
-                    backup_data = json.load(f)
-            except (OSError, IOError, ValueError, TypeError) as e:
-                warning(f"读取备份文件失败: {e}")
-                self._mark_restore_done()
-                return
-
-        items = backup_data.get('items', []) if isinstance(backup_data, dict) else backup_data
-
-        if not items:
-            self._mark_restore_done()
-            return
-
-        auto_restore = True
-        app = QApplication.instance()
-        if hasattr(app, 'settings_manager') and app.settings_manager is not None:
-            auto_restore = app.settings_manager.get_setting("file_staging.auto_restore_records", True)
-
-        if auto_restore:
-            self.start_restore_backup(backup_data)
-        else:
-            from freeassetfilter.widgets.D_widgets import CustomMessageBox
-            confirm_msg = CustomMessageBox(self)
-            confirm_msg.set_title("恢复上次选中内容")
-            confirm_msg.set_text(f"检测到上次有 {len(items)} 个文件在文件存储池中，是否恢复？")
-            confirm_msg.set_buttons(["是", "否"], Qt.Horizontal, ["primary", "normal"])
-
-            is_confirmed = False
-
-            def on_confirm_clicked(button_index):
-                nonlocal is_confirmed
-                is_confirmed = (button_index == 0)
-                confirm_msg.close()
-
-            confirm_msg.buttonClicked.connect(on_confirm_clicked)
-            confirm_msg.exec()
-
-            if is_confirmed:
-                self.start_restore_backup(backup_data)
-            else:
-                self._mark_restore_done()
-
-    def start_restore_backup(self, backup_data):
-        """
-        启动分批异步恢复，避免主线程长时间阻塞
-
-        Args:
-            backup_data (dict or list): 备份数据
-        """
-        items = backup_data.get('items', []) if isinstance(backup_data, dict) else backup_data
-        if not items:
-            return
-
-        self._pending_restore_items = list(items)
-        self._pending_restore_unlinked_files = []
-        self._restore_total_count = len(items)
-        self._restore_success_count = 0
-        self._restore_safe_mode = True
-
-        app = QApplication.instance()
-        if app is not None:
-            setattr(app, "_faf_restore_safe_mode", True)
-
-        if hasattr(self, 'file_staging_pool'):
-            setattr(self.file_staging_pool, "_suspend_backup_save", True)
-
-        QTimer.singleShot(0, self._process_restore_batch)
-
-    def _process_restore_batch(self):
-        """
-        分批恢复备份项，每批处理少量数据，将控制权交还事件循环
-        """
-        if self._is_closing or not hasattr(self, 'file_staging_pool'):
-            return
-
-        batch = self._pending_restore_items[:self._restore_batch_size]
-        self._pending_restore_items = self._pending_restore_items[self._restore_batch_size:]
-
-        for file_info in batch:
-            try:
-                if not isinstance(file_info, dict):
-                    continue
-
-                file_path = file_info.get("path", "")
-                safe_file_path = ""
-                if file_path:
-                    try:
-                        safe_file_path = validate_safe_path(file_path)
-                    except ValueError as e:
-                        warning(f"恢复备份项路径验证失败: {e}")
-                        safe_file_path = ""
-
-                if safe_file_path and contains_injection_chars(safe_file_path):
-                    warning("恢复备份项包含命令注入风险字符，已跳过")
-                    safe_file_path = ""
-
-                if safe_file_path and is_sensitive_path(safe_file_path):
-                    warning("恢复备份项命中敏感系统路径，已跳过")
-                    safe_file_path = ""
-
-                if safe_file_path and os.path.exists(safe_file_path):
-                    restored_file_info = dict(file_info)
-                    restored_file_info["path"] = safe_file_path
-                    self.file_staging_pool.add_file(restored_file_info)
-                    self._restore_success_count += 1
-                else:
-                    self._pending_restore_unlinked_files.append({
-                        "original_file_info": file_info,
-                        "status": "unlinked",
-                        "new_path": None,
-                        "md5": None
-                    })
-            except Exception as e:
-                warning(f"恢复备份项失败: {e}")
-
-        processed_count = self._restore_total_count - len(self._pending_restore_items)
-
-        if self._pending_restore_items:
-            QTimer.singleShot(0, self._process_restore_batch)
-        else:
-            self._finish_restore_backup()
-
-    def _finish_restore_backup(self):
-        """
-        完成恢复流程，统一保存备份并处理未链接文件
-        """
-        self._restore_safe_mode = False
-        app = QApplication.instance()
-        if app is not None:
-            setattr(app, "_faf_restore_safe_mode", False)
-
-        if hasattr(self, 'file_staging_pool'):
-            setattr(self.file_staging_pool, "_suspend_backup_save", False)
-            try:
-                last_path = getattr(getattr(self, 'file_selector_a', None), 'current_path', 'All')
-                if hasattr(self.file_staging_pool, 'flush_backup_save_now'):
-                    self.file_staging_pool.flush_backup_save_now(last_path)
-                else:
-                    self.file_staging_pool.save_backup(last_path)
-            except Exception as e:
-                warning(f"恢复完成后统一保存备份失败: {e}")
-
-            try:
-                QTimer.singleShot(0, self.file_staging_pool.refresh_all_card_icons)
-            except Exception as e:
-                warning(f"恢复完成后刷新存储池图标失败: {e}")
-
-        if self._pending_restore_unlinked_files:
-            QTimer.singleShot(
-                0,
-                lambda: self.file_staging_pool.show_unlinked_files_dialog(self._pending_restore_unlinked_files)
-            )
-
-        self._mark_restore_done()
-        self._cancel_startup_watchdog()
-
-    def restore_backup(self, backup_data):
-        """
-        兼容旧调用入口：改为使用新的分批恢复流程
-
-        Args:
-            backup_data (dict or list): 备份数据
-        """
-        self.start_restore_backup(backup_data)
-
-
-def _parse_internal_worker_args(argv):
-    """
-    解析内部子进程参数
+def _parse_internal_worker_args(argv) -> tuple:
+    """解析内部子进程参数（仅缩略图 worker 保留）。
 
     Returns:
-        tuple[str | None, dict]:
-            (worker_type, worker_payload)
+        (worker_type, worker_payload)；非内部调用返回 (None, {})。
     """
     if len(argv) >= 5 and argv[1] == "--faf-thumbnail-worker":
         return "thumbnail", {
@@ -2456,110 +203,21 @@ def _parse_internal_worker_args(argv):
             "dpi_scale": argv[3],
             "prefer_native": argv[4],
         }
-
-    if len(argv) >= 5 and argv[1] == "--faf-run-installer":
-        return "run-installer", {
-            "installer_path": argv[2],
-            "expected_sha256": argv[3],
-            "parent_pid": argv[4],
-        }
-
     return None, {}
 
 
-def _wait_for_process_exit(pid, timeout_seconds=30):
-    """
-    等待指定进程退出
+def _run_thumbnail_worker(payload: dict) -> int:
+    """执行缩略图子进程任务（--faf-thumbnail-worker）。"""
+    from freeassetfilter.core.managers.thumbnail_manager import _run_batch_video_thumbnail_subprocess
 
-    NOTE: 仅在 --faf-run-installer 子进程中调用，不在 GUI 主线程中运行，
-    因此 time.sleep() 轮询在这里是可接受的，不会阻塞 UI。
-    """
-    try:
-        pid = int(pid)
-    except (TypeError, ValueError):
-        return
-
-    deadline = time.time() + max(1, timeout_seconds)
-    while time.time() < deadline:
-        if not _is_process_running(pid):
-            return
-        time.sleep(0.3)
-
-    time.sleep(1.0)
+    file_path = payload.get("file_path", "")
+    dpi_scale = float(payload.get("dpi_scale", 1.0))
+    prefer_native = str(payload.get("prefer_native", "1")).lower() in ("1", "true", "yes", "on")
+    return _run_batch_video_thumbnail_subprocess(file_path, dpi_scale, prefer_native)
 
 
-def _run_installer_after_parent_exit(installer_path, expected_sha256, parent_pid):
-    """
-    内部 helper：
-    - 等待主程序退出
-    - 再次校验安装包
-    - 拉起安装程序
-    """
-    from freeassetfilter.core.managers.update_manager import verify_installer_file
-
-    if not installer_path or not expected_sha256:
-        error("安装 helper: 缺少安装包路径或 SHA256")
-        return 1
-
-    installer_path = os.path.abspath(installer_path)
-    if not os.path.exists(installer_path):
-        error(f"安装 helper: 安装包不存在: {installer_path}")
-        return 1
-
-    _wait_for_process_exit(parent_pid, timeout_seconds=30)
-
-    if not verify_installer_file(installer_path, expected_sha256):
-        error(f"安装 helper: 安装包校验失败: {installer_path}")
-        return 1
-
-    import subprocess
-    try:
-        if sys.platform == "win32" and hasattr(os, "startfile"):
-            os.startfile(installer_path)
-        else:
-            subprocess.Popen(
-                [installer_path],
-                close_fds=True,
-                creationflags=getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            )
-        return 0
-    except Exception:
-        try:
-            subprocess.Popen(
-                [installer_path],
-                close_fds=True,
-                creationflags=getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            )
-            return 0
-        except Exception:
-            error(f"安装 helper: 启动安装包失败: {installer_path}")
-            return 1
-
-
-def _extract_associated_file_path(argv):
-    """
-    提取文件关联传入的文件路径，忽略内部工作进程参数
-    """
-    if len(argv) <= 1:
-        return None
-
-    candidate = argv[1]
-    if isinstance(candidate, str) and candidate.startswith("--faf-"):
-        return None
-
-    return candidate
-
-
-def _extract_open_path_arg(argv):
-    """
-    解析 --open-path 命令行参数，用于从右键菜单接收路径
-
-    Args:
-        argv: 命令行参数列表
-
-    Returns:
-        str | None: 解析出的路径，如果不存在则返回 None
-    """
+def _extract_open_path_arg(argv) -> str | None:
+    """解析 --open-path 命令行参数（右键菜单传入的路径）。"""
     try:
         idx = argv.index("--open-path")
         if idx + 1 < len(argv):
@@ -2569,678 +227,228 @@ def _extract_open_path_arg(argv):
     return None
 
 
-def _get_runtime_info_file_path():
-    """
-    获取运行实例信息文件路径
-    """
-    return os.path.join(get_app_data_path(), "runtime_instance.json")
-
-
-def _write_runtime_instance_info():
-    """
-    写入当前运行实例信息，供单实例冲突时定位残留进程
-    """
-    runtime_info = {
-        "pid": os.getpid(),
-        "started_at": time.time(),
-        "exe_path": os.path.abspath(sys.executable),
-        "argv": list(sys.argv),
-    }
-
-    runtime_file = _get_runtime_info_file_path()
-    os.makedirs(os.path.dirname(runtime_file), exist_ok=True)
-    with open(runtime_file, "w", encoding="utf-8") as f:
-        json.dump(runtime_info, f, indent=2, ensure_ascii=False)
-
-    return runtime_info
-
-
-def _remove_runtime_instance_info(expected_pid=None):
-    """
-    删除运行实例信息文件
-
-    Args:
-        expected_pid (int | None): 仅当文件中的 pid 与该值一致时才删除，避免误删其他实例信息
-    """
-    runtime_file = _get_runtime_info_file_path()
-    if not os.path.exists(runtime_file):
-        return
-
-    try:
-        if expected_pid is not None:
-            with open(runtime_file, "r", encoding="utf-8") as f:
-                runtime_info = json.load(f)
-            file_pid = runtime_info.get("pid")
-            if file_pid != expected_pid:
-                return
-    except (OSError, IOError, ValueError, TypeError):
-        if expected_pid is not None:
-            return
-
-    try:
-        os.remove(runtime_file)
-    except (OSError, IOError, PermissionError, FileNotFoundError):
-        pass
-
-
-def _read_runtime_instance_info():
-    """
-    读取运行实例信息
-    """
-    runtime_file = _get_runtime_info_file_path()
-    if not os.path.exists(runtime_file):
+def _resolve_initial_navigate_path(argv) -> str | None:
+    """由 --open-path 解析初始导航路径（文件→其所在目录，目录→原样）。"""
+    open_path = _extract_open_path_arg(argv)
+    if not open_path:
         return None
-
-    with open(runtime_file, "r", encoding="utf-8") as f:
-        runtime_info = json.load(f)
-
-    if not isinstance(runtime_info, dict):
-        return None
-
-    return runtime_info
+    open_path = os.path.normpath(open_path)
+    if os.path.isfile(open_path):
+        return os.path.dirname(open_path)
+    if os.path.isdir(open_path):
+        return open_path
+    return None
 
 
-def _is_process_running(pid):
-    """
-    判断指定 PID 是否仍在运行
-    """
-    if not isinstance(pid, int) or pid <= 0:
-        return False
+# ──────────────────────────────────────────────────────────────
+# Windows 进程级设置
+# ──────────────────────────────────────────────────────────────
 
+def _setup_windows_process() -> None:
+    """设置任务栏 AppUserModelID 与 DPI 感知。"""
     if sys.platform != "win32":
-        return False
+        return
 
-    import ctypes
-    from ctypes import wintypes
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("FreeAssetFilter.App")
 
-    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-    STILL_ACTIVE = 259
-
-    kernel32 = ctypes.windll.kernel32
-    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    kernel32.OpenProcess.restype = wintypes.HANDLE
-    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
-    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel32.CloseHandle.restype = wintypes.BOOL
-
-    process_handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-    if not process_handle:
-        return False
-
+    # DPI 感知声明（历史遗留保险）：
+    #   Qt6 默认已启用高 DPI 缩放（等效于声明 PerMonitorV2），本块在
+    #   常规环境下冗余；保留用于 PyInstaller 冻结 exe / Qt 行为变化的
+    #   保险（缺失时高 DPI 屏可能退化为 Windows 位图拉伸而模糊）。
+    #   TODO(优化整理)：后续评估是否随 Qt6 默认行为稳定后移除。
     try:
-        exit_code = wintypes.DWORD()
-        if not kernel32.GetExitCodeProcess(process_handle, ctypes.byref(exit_code)):
-            return False
-        return exit_code.value == STILL_ACTIVE
-    finally:
-        kernel32.CloseHandle(process_handle)
-
-
-def _get_process_image_path(pid):
-    """
-    获取进程可执行文件路径
-    """
-    if not isinstance(pid, int) or pid <= 0:
-        return None
-
-    if sys.platform != "win32":
-        return None
-
-    import ctypes
-    from ctypes import wintypes
-
-    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-
-    kernel32 = ctypes.windll.kernel32
-    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    kernel32.OpenProcess.restype = wintypes.HANDLE
-    kernel32.QueryFullProcessImageNameW.argtypes = [
-        wintypes.HANDLE,
-        wintypes.DWORD,
-        wintypes.LPWSTR,
-        ctypes.POINTER(wintypes.DWORD),
-    ]
-    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel32.CloseHandle.restype = wintypes.BOOL
-
-    process_handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-    if not process_handle:
-        return None
-
-    try:
-        buffer_length = wintypes.DWORD(32768)
-        buffer = ctypes.create_unicode_buffer(buffer_length.value)
-        success = kernel32.QueryFullProcessImageNameW(
-            process_handle,
-            0,
-            buffer,
-            ctypes.byref(buffer_length)
-        )
-        if not success:
-            return None
-        return os.path.normcase(os.path.normpath(buffer.value))
-    finally:
-        kernel32.CloseHandle(process_handle)
-
-
-def _is_expected_app_process(pid, runtime_info):
-    """
-    保守校验 PID 是否指向 FreeAssetFilter 主程序自身
-    """
-    if not _is_process_running(pid):
-        return False
-
-    process_image_path = _get_process_image_path(pid)
-    if not process_image_path:
-        return False
-
-    expected_paths = set()
-
-    runtime_exe_path = runtime_info.get("exe_path")
-    if isinstance(runtime_exe_path, str) and runtime_exe_path.strip():
-        expected_paths.add(os.path.normcase(os.path.normpath(runtime_exe_path)))
-
-    current_exe_path = os.path.abspath(sys.executable)
-    if current_exe_path:
-        expected_paths.add(os.path.normcase(os.path.normpath(current_exe_path)))
-
-    if process_image_path in expected_paths:
-        return True
-
-    process_name = os.path.basename(process_image_path).lower()
-    return "freeassetfilter" in process_name
-
-
-def _terminate_process(pid):
-    """
-    强制终止指定进程
-    """
-    if not isinstance(pid, int) or pid <= 0:
-        return False, "无效的进程 PID"
-
-    if sys.platform != "win32":
-        return False, "仅支持在 Windows 上强制终止实例"
-
-    import ctypes
-    from ctypes import wintypes
-
-    PROCESS_TERMINATE = 0x0001
-    SYNCHRONIZE = 0x00100000
-    WAIT_OBJECT_0 = 0x00000000
-    WAIT_TIMEOUT = 0x00000102
-
-    kernel32 = ctypes.windll.kernel32
-    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    kernel32.OpenProcess.restype = wintypes.HANDLE
-    kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
-    kernel32.TerminateProcess.restype = wintypes.BOOL
-    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-    kernel32.WaitForSingleObject.restype = wintypes.DWORD
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel32.CloseHandle.restype = wintypes.BOOL
-
-    process_handle = kernel32.OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, False, pid)
-    if not process_handle:
-        return False, "无法打开目标进程，可能权限不足或进程已退出"
-
-    try:
-        if not kernel32.TerminateProcess(process_handle, 1):
-            return False, "调用强制终止失败"
-
-        wait_result = kernel32.WaitForSingleObject(process_handle, 5000)
-        if wait_result == WAIT_OBJECT_0:
-            return True, ""
-        if wait_result == WAIT_TIMEOUT:
-            return False, "等待目标进程退出超时"
-
-        return False, f"等待目标进程退出失败，结果码: {wait_result}"
-    finally:
-        kernel32.CloseHandle(process_handle)
-
-
-def _restart_current_application():
-    """
-    使用当前启动参数重新启动应用程序
-    """
-    import subprocess
-    relaunch_args = [sys.executable] + list(sys.argv[1:])
-    subprocess.Popen(
-        relaunch_args,
-        close_fds=True,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    )
-
-
-def _show_already_running_dialog_and_handle_restart(mutex_handle):
-    """
-    显示"程序已在运行"弹窗，并在需要时执行强制终止后重启
-    """
-    from PySide6.QtWidgets import QMessageBox
-
-    # QApplication 已在 main() 中提前创建，无需创建临时实例
-    msg_box = QMessageBox()
-    msg_box.setWindowTitle("FreeAssetFilter")
-    msg_box.setIcon(QMessageBox.Warning)
-    msg_box.setText("程序已经在运行中")
-    msg_box.setInformativeText(
-        "FreeAssetFilter 已经在运行，不能启动多个实例。\n\n"
-        "仅当你已经确认程序窗口已关闭，但这里仍然反复提示程序正在运行时，"
-        "才点击“强制终止后重新启动”。\n"
-        "该操作会强制结束残留后台进程，未保存内容可能丢失。"
-    )
-    ok_button = msg_box.addButton("确定", QMessageBox.AcceptRole)
-    force_restart_button = msg_box.addButton("强制终止后重新启动", QMessageBox.DestructiveRole)
-    msg_box.setDefaultButton(ok_button)
-    msg_box.exec()
-
-    clicked_button = msg_box.clickedButton()
-    if clicked_button is not force_restart_button:
-        return
-
-    try:
-        runtime_info = _read_runtime_instance_info()
-    except (OSError, IOError, ValueError, TypeError) as e:
-        error_box = QMessageBox()
-        error_box.setWindowTitle("强制终止失败")
-        error_box.setIcon(QMessageBox.Critical)
-        error_box.setText("无法读取正在运行实例的信息")
-        error_box.setInformativeText(
-            f"读取运行实例信息失败：{e}\n\n"
-            "仅当你已经确认程序窗口已关闭，但仍然反复弹出本提示时，才应尝试此操作。"
-        )
-        error_box.exec()
-        return
-
-    if not runtime_info:
-        error_box = QMessageBox()
-        error_box.setWindowTitle("强制终止失败")
-        error_box.setIcon(QMessageBox.Critical)
-        error_box.setText("未找到可供终止的运行实例信息")
-        error_box.setInformativeText(
-            "没有找到残留实例记录，无法安全执行强制终止。\n\n"
-            "仅当你已经确认程序窗口已关闭，但仍然反复弹出本提示时，才应尝试此操作。"
-        )
-        error_box.exec()
-        return
-
-    target_pid = runtime_info.get("pid")
-    if not isinstance(target_pid, int) or target_pid <= 0:
-        error_box = QMessageBox()
-        error_box.setWindowTitle("强制终止失败")
-        error_box.setIcon(QMessageBox.Critical)
-        error_box.setText("运行实例信息中的 PID 无效")
-        error_box.setInformativeText("为避免误杀其他进程，已取消本次强制终止。")
-        error_box.exec()
-        return
-
-    if not _is_process_running(target_pid):
-        _remove_runtime_instance_info(expected_pid=target_pid)
-
-        error_box = QMessageBox()
-        error_box.setWindowTitle("未发现残留进程")
-        error_box.setIcon(QMessageBox.Information)
-        error_box.setText("记录中的运行实例已经不存在")
-        error_box.setInformativeText(
-            "程序残留记录已清理，请重新启动程序。\n\n"
-            "仅当你已经确认程序窗口已关闭，但仍然反复弹出本提示时，才应点击该按钮。"
-        )
-        error_box.exec()
-        return
-
-    if not _is_expected_app_process(target_pid, runtime_info):
-        error_box = QMessageBox()
-        error_box.setWindowTitle("强制终止失败")
-        error_box.setIcon(QMessageBox.Critical)
-        error_box.setText("检测到的目标进程与当前程序不匹配")
-        error_box.setInformativeText("为避免误杀其他进程，已取消本次强制终止。")
-        error_box.exec()
-        return
-
-    terminated, terminate_message = _terminate_process(target_pid)
-    if not terminated:
-        error_box = QMessageBox()
-        error_box.setWindowTitle("强制终止失败")
-        error_box.setIcon(QMessageBox.Critical)
-        error_box.setText("无法强制结束残留进程")
-        error_box.setInformativeText(terminate_message)
-        error_box.exec()
-        return
-
-    _remove_runtime_instance_info(expected_pid=target_pid)
-
-    if sys.platform == "win32" and mutex_handle:
+        user32 = ctypes.windll.user32
+        SetProcessDpiAwarenessContext = user32.SetProcessDpiAwarenessContext
+        SetProcessDpiAwarenessContext.restype = ctypes.c_void_p
+        SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+        result = SetProcessDpiAwarenessContext(0x3)  # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+        if result == 0:
+            shcore = ctypes.windll.shcore
+            SetProcessDpiAwareness = shcore.SetProcessDpiAwareness
+            SetProcessDpiAwareness.restype = ctypes.c_long
+            SetProcessDpiAwareness.argtypes = [ctypes.c_int]
+            SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
+    except (AttributeError, OSError):
         try:
-            import ctypes
-            ctypes.windll.kernel32.CloseHandle(mutex_handle)
-        except Exception:
-            pass
-
-    try:
-        _restart_current_application()
-    except Exception as e:
-        error_box = QMessageBox()
-        error_box.setWindowTitle("重新启动失败")
-        error_box.setIcon(QMessageBox.Critical)
-        error_box.setText("残留进程已被强制结束，但重新启动失败")
-        error_box.setInformativeText(str(e))
-        error_box.exec()
-        return
-
-    sys.exit(0)
-
-
-def main():
-    """
-    主程序入口函数
-    """
-    info("程序启动")
-    _start_ts = time.perf_counter()
-    import subprocess
-
-    # 内部缩略图子进程模式
-    worker_type, worker_payload = _parse_internal_worker_args(sys.argv)
-    if worker_type == "thumbnail":
-        try:
-            from freeassetfilter.core.managers.thumbnail_manager import _run_batch_video_thumbnail_subprocess
-
-            file_path = worker_payload.get("file_path", "")
-            dpi_scale = float(worker_payload.get("dpi_scale", 1.0))
-            prefer_native_raw = str(worker_payload.get("prefer_native", "1")).lower()
-            prefer_native = prefer_native_raw in ("1", "true", "yes", "on")
-
-            exit_code = _run_batch_video_thumbnail_subprocess(
-                file_path,
-                dpi_scale,
-                prefer_native,
-            )
-            sys.exit(exit_code)
-        except Exception as e:
-            error(f"缩略图子进程执行失败: {e}")
-            sys.exit(1)
-
-    if worker_type == "run-installer":
-        try:
-            exit_code = _run_installer_after_parent_exit(
-                worker_payload.get("installer_path", ""),
-                worker_payload.get("expected_sha256", ""),
-                worker_payload.get("parent_pid", "0"),
-            )
-            sys.exit(exit_code)
-        except Exception as e:
-            error(f"安装程序执行失败: {e}")
-            sys.exit(1)
-
-    # 修改sys.argv[0]以确保Windows任务栏显示正确图标
-    sys.argv[0] = os.path.abspath(__file__)
-
-    # 在Windows系统上设置应用程序身份，确保任务栏显示正确图标
-    if sys.platform == 'win32':
-        import ctypes
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("FreeAssetFilter.App")
-
-        # 设置DPI感知级别
-        try:
-            user32 = ctypes.windll.user32
-            SetProcessDpiAwarenessContext = user32.SetProcessDpiAwarenessContext
-            SetProcessDpiAwarenessContext.restype = ctypes.c_void_p
-            SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
-            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = 0x3
-            result = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
-            if result == 0:
-                shcore = ctypes.windll.shcore
-                SetProcessDpiAwareness = shcore.SetProcessDpiAwareness
-                SetProcessDpiAwareness.restype = ctypes.c_long
-                SetProcessDpiAwareness.argtypes = [ctypes.c_int]
-                PROCESS_PER_MONITOR_DPI_AWARE = 2
-                SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE)
+            SetProcessDPIAware = ctypes.windll.user32.SetProcessDPIAware
+            SetProcessDPIAware.restype = ctypes.c_bool
+            SetProcessDPIAware()
         except (AttributeError, OSError):
-            try:
-                user32 = ctypes.windll.user32
-                SetProcessDPIAware = user32.SetProcessDPIAware
-                SetProcessDPIAware.restype = ctypes.c_bool
-                SetProcessDPIAware()
-            except (AttributeError, OSError):
-                pass
-
-    # 获取通过文件关联传递的文件路径
-    associated_file_path = _extract_associated_file_path(sys.argv)
-    if associated_file_path:
-        pass
-
-    # 获取通过右键菜单 --open-path 传递的路径
-    open_path = _extract_open_path_arg(sys.argv)
-    initial_navigate_path = None
-    if open_path:
-        open_path = os.path.normpath(open_path)
-        if os.path.isfile(open_path):
-            initial_navigate_path = os.path.dirname(open_path)
-        elif os.path.isdir(open_path):
-            initial_navigate_path = open_path
-        if initial_navigate_path:
             pass
 
-    # 先创建 QApplication，再执行单实例检测（使得弹窗复用已有 QApp）
-    app = QApplication(sys.argv)
+
+# ──────────────────────────────────────────────────────────────
+# 应用对象装配
+# ──────────────────────────────────────────────────────────────
+
+def _init_settings_manager(app) -> None:
+    """提前创建并加载 SettingsManagerV2，挂到 app（主窗口复用，避免双加载）。"""
+    from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+
+    settings_manager = SettingsManagerV2()
+    settings_manager.load()
+    app.settings_manager = settings_manager
+    info("[启动] SettingsManagerV2 初始化完成")
+
+
+def _create_application(argv, initial_navigate_path):
+    """创建 QApplication 并挂载应用级属性。"""
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtGui import QIcon, QPixmapCache
+
+    app = QApplication(argv)
     try:
         install_qt_message_handler()
     except (OSError, ValueError, TypeError) as e:
         warning("qt message handler init failed")
-    info(f"[启动] QApplication 创建: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
 
-    # 设置 QPixmapCache 全局缓存上限为 50MB（L2 缓存层，配合各组件 L1 缓存使用）
-    from PySide6.QtGui import QPixmapCache
+    # L2 缓存层上限（配合各组件 L1 缓存使用）
     QPixmapCache.setCacheLimit(50 * 1024 * 1024)
 
-    # 将关联文件路径存储到app对象，供其他组件访问
-    app.associated_file_path = associated_file_path
-    # 将右键菜单初始导航路径存储到app对象，供文件选择器使用
+    # 右键菜单初始导航路径（文件选择器启动时消费）
     app.initial_navigate_path = initial_navigate_path
+    # 设置管理器：主窗口构造前加载（MainWindow 读取背景/恢复设置时复用）
+    _init_settings_manager(app)
 
-    # 设置全局DPI缩放因子为系统缩放的1.4倍
-    from PySide6.QtGui import QCursor, QFontDatabase, QFont
-    cursor_pos = QCursor.pos()
-    screen = QApplication.screenAt(cursor_pos)
-    if screen is None:
-        screen = QApplication.primaryScreen()
-    logical_dpi = screen.logicalDotsPerInch()
-    physical_dpi = screen.physicalDotsPerInch()
-    system_scale = physical_dpi / logical_dpi if logical_dpi > 0 else 1.0
-    app.dpi_scale_factor = system_scale * 1.4
-
-    # 设置应用程序图标，用于任务栏显示
-    icon_path = get_resource_path('freeassetfilter/icons/FAF-main.ico')
+    # 任务栏图标
+    icon_path = get_resource_path("freeassetfilter/icons/FAF-main.ico")
     app.setWindowIcon(QIcon(icon_path))
+    return app
 
-    # 单实例检测（QApplication 已存在，弹窗可直接复用）
-    _mutex_handle = None
-    if sys.platform == 'win32':
-        import ctypes
-        from ctypes import wintypes
 
-        mutex_name = "FreeAssetFilter_SingleInstance_Mutex"
-        kernel32 = ctypes.windll.kernel32
+# ──────────────────────────────────────────────────────────────
+# 主入口
+# ──────────────────────────────────────────────────────────────
 
-        kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
-        kernel32.CreateMutexW.restype = wintypes.HANDLE
+def main(argv=None) -> int:
+    """应用引导入口（返回退出码）。"""
+    argv = list(sys.argv) if argv is None else list(argv)
+    info("程序启动")
+    _start_ts = time.perf_counter()
 
-        _mutex_handle = kernel32.CreateMutexW(None, False, mutex_name)
+    # 内部子进程分流（在任何 Qt 初始化之前，保证 worker 轻量启动）
+    worker_type, worker_payload = _parse_internal_worker_args(argv)
+    if worker_type == "thumbnail":
+        try:
+            sys.exit(_run_thumbnail_worker(worker_payload))
+        except Exception as e:
+            error(f"缩略图子进程执行失败: {e}")
+            sys.exit(1)
 
-        if _mutex_handle:
-            error_code = kernel32.GetLastError()
-            if error_code == 183:  # ERROR_ALREADY_EXISTS
-                info("another instance already running")
-                try:
-                    _show_already_running_dialog_and_handle_restart(_mutex_handle)
-                except Exception as e:
-                    warning(f"多实例提示失败: {e}")
-                finally:
-                    if _mutex_handle:
-                        try:
-                            kernel32.CloseHandle(_mutex_handle)
-                        except Exception:
-                            pass
-                sys.exit(0)
-            else:
-                pass
+    # 任务栏图标与 DPI 感知
+    sys.argv[0] = os.path.abspath(__file__)
+    _setup_windows_process()
+
+    # 初始导航路径（--open-path）
+    initial_navigate_path = _resolve_initial_navigate_path(argv)
+
+    # 新版 UI 短路径导入约定（components/theme/layout ...）
+    _project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    _ui_root = os.path.join(_project_root, "freeassetfilter", "ui")
+    if _ui_root not in sys.path:
+        sys.path.insert(0, _ui_root)
+
+    # 进程级设施（fd/console/faulthandler/异常钩子）
+    facilities = _install_process_facilities()
+
+    # QApplication 与应用级属性
+    app = _create_application(argv, initial_navigate_path)
+    info(f"[启动] QApplication 创建: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
+
+    # 单实例互斥体（冲突时内部处理并退出进程）
+    mutex_handle = instance_guard._acquire_single_instance()
 
     try:
-        _write_runtime_instance_info()
+        instance_guard._write_runtime_instance_info()
     except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError) as e:
         warning(f"写入运行实例信息失败: {e}")
 
-    # 设置管理器延迟到首帧后加载，先用默认值创建窗口
-    DEFAULT_FONT_SIZE = 10
-    saved_font_style = "Microsoft YaHei"
-
-    # 启动阶段先用默认系统字体，完整的字体检测与 FiraCode 加载延迟到 show() 后
-    app.setFont(QFont("Microsoft YaHei", DEFAULT_FONT_SIZE, QFont.Normal))
-    global_font = QFont("Microsoft YaHei", DEFAULT_FONT_SIZE, QFont.Normal)
-
-    # 将默认字体大小存储到app对象中，方便其他组件访问
-    app.default_font_size = DEFAULT_FONT_SIZE
-
-    # settings_manager 将在 _init_settings_deferred 中延迟创建
-    app.settings_manager = None
-
-    # 将全局字体存储到app对象中，方便其他组件访问
-    app.global_font = global_font
-
-    # 保存延迟字体设置，供 _load_fonts_async 使用
-    app.firacode_font_family = None
-    app._deferred_font_style = saved_font_style
-
-    # 全局滚动条样式不再需要（所有滚动条已隐藏）
-
+    # 创建主窗口
     try:
-        window = FreeAssetFilterApp()
+        from freeassetfilter.ui.main_window import MainWindow
+
+        window = MainWindow()
     except Exception as e:
         error_msg = f"应用程序初始化失败：{e}\n\n请尝试重启程序。如果问题持续，请检查日志文件。"
         error(error_msg)
         try:
-            if sys.platform == 'win32':
-                import ctypes
+            if sys.platform == "win32":
                 ctypes.windll.user32.MessageBoxW(0, error_msg, "启动错误 - FreeAssetFilter", 0x10)
         except Exception:
             pass
         sys.exit(1)
     info(f"[启动] 主窗口创建: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
-    # 窗口启动时窗口化显示
+
+    controller = StartupController(app, window)
+
     window.show()
     info(f"[启动] 窗口显示: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
-    # 首帧渲染后轻量级应用主题设置已移至 schedule_startup_tasks(100ms)
-    # 窗口显示后清除启动阶段标志，允许后续主题更新重建UI
-    window._is_startup_phase = False
-    # 首屏显示后再分阶段执行恢复/预热/清理，避免阻塞启动
-    window.schedule_startup_tasks()
+    controller.schedule_startup_tasks()
     info(f"[启动] 启动任务已调度: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
 
-    # 应用程序退出前记录当前时间
+    # ── 退出链（单一处理器 + 幂等标志：aboutToQuit 与 atexit 双挂但只执行一次）──
+    exit_done = [False]
+
     def on_app_exit():
-        nonlocal _mutex_handle
-        # 先卸载 fd 捕获（排空管道+join），再做 handler flush 与 faulthandler 清理
-        # （顺序固定：原生尾部输出必须在 flush 之前落盘；不依赖 console capture 成功）
+        if exit_done[0]:
+            return
+        exit_done[0] = True
+
+        # 1) 引导层后台线程与心跳先行停止
         try:
-            uninstall_fd_capture()
-        except (OSError, ValueError) as e:
-            warning(f"[退出] fd capture 卸载失败: {e}")
+            controller.cleanup()
+        except Exception as e:
+            warning(f"[退出] 引导层清理失败: {e}")
+
+        # 2) 卸载 fd 捕获（排空管道 + join），再做 handler flush 与 faulthandler 清理
+        _cleanup_process_facilities(facilities)
         exit_time = time.time()
-        cur_settings_manager = getattr(app, 'settings_manager', None)
 
-        # 使用 SettingsManager 的实际配置文件路径（freeassetfilter/data/settings.json）。
-        # 不能再用三层 dirname(__file__) 解析——那会指向项目根 data/settings.json，
-        # 与 SettingsManager 读写的文件不一致，导致 last_exit_time 写入错误位置。
-        if cur_settings_manager is not None and getattr(cur_settings_manager, '_settings_file', None):
-            settings_file = cur_settings_manager._settings_file
-        else:
-            settings_file = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                'data', 'settings.json')
-        info(f"[退出] on_app_exit 开始: exit_time={exit_time:.3f}, settings_file={settings_file}")
-
-        write_ok = False
+        # 3) last_exit_time 写入 SettingsManagerV2
         try:
-            if os.path.exists(settings_file):
-                with open(settings_file, 'r', encoding='utf-8') as f:
-                    settings_data = json.load(f)
+            settings_manager = getattr(app, "settings_manager", None)
+            if settings_manager is None:
+                from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+                settings_manager = SettingsManagerV2()
+            settings_manager.set("app.last_exit_time", exit_time)
+            settings_manager.save()
+        except Exception as e:
+            warning(f"[退出] last_exit_time 写入失败: {e}")
 
-                if 'app' not in settings_data:
-                    settings_data['app'] = {}
-
-                settings_data['app']['last_exit_time'] = exit_time
-
-                with open(settings_file, 'w', encoding='utf-8') as f:
-                    json.dump(settings_data, f, indent=4, ensure_ascii=False)
-                write_ok = True
-            else:
-                if cur_settings_manager is not None:
-                    cur_settings_manager.set_setting("app.last_exit_time", exit_time)
-                    # 不能依赖 auto_save 的防抖 Timer——0.35s 延迟在退出瞬间可能来不及触发
-                    cur_settings_manager.save_settings()
-                    write_ok = True
-
-        except (OSError, PermissionError, json.JSONDecodeError, TypeError) as e:
-            warning(f"[退出] settings.json 直接写盘失败: {e}，改用 SettingsManager 同步兜底")
-            if cur_settings_manager is not None:
-                cur_settings_manager.set_setting("app.last_exit_time", exit_time)
-                cur_settings_manager.save_settings()
-                write_ok = True
-
-        info(f"[退出] last_exit_time 写入完成: {exit_time:.3f}" if write_ok
-             else "[退出] last_exit_time 写入失败")
-
-        # 显式 flush 全部日志 handler，确保退出链日志在进程终止前落盘
+        # 4) 显式 flush 全部日志 handler
         try:
-            for handler in getattr(logger, 'logger', None).handlers or []:
+            for handler in getattr(get_logger(), "logger", None).handlers or []:
                 handler.flush()
         except Exception:
             pass
 
+        # 5) 清理实例信息与互斥体
         try:
-            _remove_runtime_instance_info(expected_pid=os.getpid())
-        except Exception as e:
+            instance_guard._remove_runtime_instance_info(expected_pid=os.getpid())
+        except Exception:
             pass
+        instance_guard._release_mutex(mutex_handle)
 
-        if sys.platform == 'win32' and _mutex_handle:
-            try:
-                import ctypes
-                ctypes.windll.kernel32.CloseHandle(_mutex_handle)
-            except Exception:
-                pass
-            finally:
-                _mutex_handle = None
-
-    # 连接应用程序退出信号 (aboutToQuit + atexit 双重保障)
     app.aboutToQuit.connect(on_app_exit)
     atexit.register(on_app_exit)
 
     info(f"[启动] 总耗时: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
     exit_code = app.exec()
 
-    # 安全退出机制（closeEvent 中已调用 cleanup_faulthandler()，此处作为兜底）
-    # 先卸载 fd 捕获（排空管道+join），再清理 faulthandler（顺序固定，不可颠倒）
-    try:
-        uninstall_fd_capture()
-    except (OSError, ValueError) as e:
-        warning(f"[退出] fd capture 卸载失败: {e}")
-    cleanup_faulthandler()
+    # 兜底收尾（on_app_exit 中已清理，此处幂等重入）
+    _cleanup_process_facilities(facilities)
 
-    import threading
     non_daemon_alive = [
         t for t in threading.enumerate()
         if t.is_alive() and not t.daemon and t is not threading.main_thread()
     ]
-    if non_daemon_alive:
-        thread_names = ", ".join(t.name for t in non_daemon_alive)
-        for t in non_daemon_alive:
-            t.join(timeout=1.0)
-            if t.is_alive():
-                warning(f"线程 {t.name} 未能正常退出")
+    for thread in non_daemon_alive:
+        thread.join(timeout=1.0)
+        if thread.is_alive():
+            warning(f"线程 {thread.name} 未能正常退出")
 
-    sys.exit(exit_code)
+    return exit_code
 
 
-# 主程序入口
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

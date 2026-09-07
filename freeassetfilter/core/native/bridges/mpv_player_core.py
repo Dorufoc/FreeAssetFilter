@@ -24,7 +24,7 @@ from ctypes import c_void_p, c_int64, c_double, c_char_p, POINTER, Structure, by
 from typing import Optional, Dict, Any, List, Tuple, Union
 from enum import IntEnum
 
-from PySide6.QtCore import QObject, Signal, QTimer, Slot
+from PySide6.QtCore import QObject, Signal
 
 # 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning, error, exception_details, sanitize_path

@@ -96,7 +96,6 @@ from . import winapi
 from .compositor import (
     PRESENT_DEFER,
     PRESENT_NOW,
-    PRESENT_SKIP,
     ViewportCompositor,
 )
 from .config import (
@@ -118,7 +117,6 @@ from .drag import (
     ViewportLayer,
     layer_grid,
     layer_region_for,
-    layer_to_source,
     layer_to_source_clamped,
 )
 from .engine import BakeRequest, render_display

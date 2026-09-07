@@ -204,13 +204,20 @@ class TestScanDirectory:
 
     def test_scan_suffix_uppercase_lowercased(self, tmp_path: Path) -> None:
         """大写扩展名被转小写并不带点。"""
-        (tmp_path / "LOGO.PNG").write_bytes(b"img")
-        files: List[Dict] = FileService().scan_directory(str(tmp_path))
+        scan_dir: Path = tmp_path / "scan_upper"
+        scan_dir.mkdir()
+        (scan_dir / "LOGO.PNG").write_bytes(b"img")
+        files: List[Dict] = FileService().scan_directory(str(scan_dir))
         assert files[0]["suffix"] == "png"
 
     def test_scan_empty_directory(self, tmp_path: Path) -> None:
         """空目录返回空列表。"""
-        assert FileService().scan_directory(str(tmp_path)) == []
+        # 使用专用子目录：conftest 的 redirect_layout_app_data_writes
+        # 会自动在 tmp_path 下创建 faf_test_appdata，直接扫描 tmp_path
+        # 会误采到该 fixture 产物。
+        scan_dir: Path = tmp_path / "scan_empty"
+        scan_dir.mkdir()
+        assert FileService().scan_directory(str(scan_dir)) == []
 
     def test_scan_nonexistent_path_returns_empty(self, tmp_path: Path) -> None:
         """不存在的路径返回空列表。"""

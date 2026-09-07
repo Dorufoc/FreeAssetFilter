@@ -18,7 +18,7 @@
   子进程调用）。
 
 本文件仅依赖 numpy + PIL（二者均已在 session 级探明可用），真实库缺失时
-被 ``importorskip`` 跳过（镜像 ``test_rust_color_extractor.py`` 的写法）。
+被 ``importorskip`` 跳过。
 
 注：生产模块 ``generate_rgba / generate_jpeg / generate_jpg`` 只接受
 **文件路径字符串**，不支持 numpy 数组内存输入（``not file_path`` 对数组

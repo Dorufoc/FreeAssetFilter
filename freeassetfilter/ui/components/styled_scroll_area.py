@@ -14,7 +14,6 @@ from PySide6.QtCore import (
     QPoint,
     QRectF,
     QSize,
-    Signal,
 )
 from PySide6.QtWidgets import (
     QScrollArea,
@@ -26,7 +25,7 @@ from PySide6.QtWidgets import (
     QScrollBar,
     QWidget,
 )
-from PySide6.QtGui import QWheelEvent, QPainter, QPaintEvent, QColor
+from PySide6.QtGui import QWheelEvent, QPainter, QPaintEvent
 
 from theme import tm
 from freeassetfilter.utils.animation_settings import is_animation_enabled
@@ -79,8 +78,7 @@ class StyledScrollBar(QScrollBar):
         self._dragging: bool = False
         self._drag_offset: float = 0.0
 
-        app = QApplication.instance()
-        self._dpi_scale: float = getattr(app, 'dpi_scale_factor', 1.0) if app else 1.0
+        self._dpi_scale: float = 1.0
 
         self._bar_width: int = 4       # handle thickness in normal state
         self._hover_width: int = 6     # handle thickness on hover / press
@@ -593,10 +591,6 @@ class _ElasticContentOverscrollController(QObject):
 
         if dpi_scale is not None:
             self._dpi_scale = dpi_scale
-        else:
-            app = QApplication.instance()
-            if app:
-                self._dpi_scale = getattr(app, "dpi_scale_factor", 1.0)
 
         self._animation = QPropertyAnimation(self, b"_offset")
         self._animation.setDuration(duration)

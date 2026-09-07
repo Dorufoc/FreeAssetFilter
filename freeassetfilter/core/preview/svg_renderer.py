@@ -24,9 +24,7 @@ from PySide6.QtGui import QGuiApplication
 import os
 import re
 
-from freeassetfilter.core.managers.settings_manager import SettingsManager
-
-# 导入日志模块
+from freeassetfilter.ui.theme import tm
 from freeassetfilter.utils.app_logger import debug, warning
 from freeassetfilter.utils.perf_metrics import increment_perf_counter, set_perf_metadata, track_perf
 
@@ -85,11 +83,10 @@ class SvgRenderer:
         with track_perf("svg.replace_colors"):
             try:
                 increment_perf_counter("svg.replace_colors", "invocations")
-                settings_manager = SettingsManager()
-                accent_color = settings_manager.get_setting("appearance.colors.accent_color", "#007AFF")
-                base_color = settings_manager.get_setting("appearance.colors.base_color", "#f1f3f5")
-                secondary_color = settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
-                normal_color = settings_manager.get_setting("appearance.colors.normal_color", "#CECECE")
+                accent_color = tm.accent.name()
+                base_color = tm.fill.name()
+                secondary_color = tm.text.name()
+                normal_color = tm.mid.name()
 
                 black_replacement_color = base_color if force_black_to_base else secondary_color
                 processed_svg = svg_content
@@ -713,24 +710,10 @@ class SvgRenderer:
                         text_width = font_metrics.horizontalAdvance(text)
                         text_height = font_metrics.height()
 
-                    is_unified_style = " – 2.svg" in icon_path
-                    is_textured_archive = "压缩文件 – 1.svg" in icon_path
-                    if is_unified_style:
-                        base_color = SettingsManager().get_setting("appearance.colors.base_color", "#f1f3f5")
-                        text_label.setStyleSheet(
-                            f'color: {base_color}; font: {base_font_size}pt "{font.family()}"; '
-                            'font-weight: bold; background: transparent;'
-                        )
-                    elif icon_path.endswith("压缩文件.svg") or is_textured_archive:
-                        text_label.setStyleSheet(
-                            f'color: white; font: {base_font_size}pt "{font.family()}"; '
-                            'font-weight: bold; background: transparent;'
-                        )
-                    else:
-                        text_label.setStyleSheet(
-                            f'color: black; font: {base_font_size}pt "{font.family()}"; '
-                            'font-weight: bold; background: transparent;'
-                        )
+                    text_label.setStyleSheet(
+                        f'color: black; font: {base_font_size}pt "{font.family()}"; '
+                        'font-weight: bold; background: transparent;'
+                    )
 
                 increment_perf_counter("svg.render_unknown_file_icon", "success")
                 return container
@@ -778,17 +761,7 @@ class SvgRenderer:
                     text_width = font_metrics.horizontalAdvance(text)
                     text_height = font_metrics.height()
 
-                is_unified_style = " – 2.svg" in icon_path
-                is_textured_archive = "压缩文件 – 1.svg" in icon_path
-                if is_unified_style:
-                    base_color = SettingsManager().get_setting("appearance.colors.base_color", "#f1f3f5")
-                    text_color = QColor(base_color)
-                elif icon_path.endswith("压缩文件.svg") or is_textured_archive:
-                    text_color = QColor(255, 255, 255)
-                else:
-                    text_color = QColor(0, 0, 0)
-
-                painter.setPen(text_color)
+                painter.setPen(QColor(0, 0, 0))
                 painter.setFont(font)
                 text_x = (scaled_icon_size - text_width) // 2
                 text_y = (scaled_icon_size + font_metrics.ascent()) // 2

@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from components.styled_button import StyledButton
-from components.styled_dialog import create_custom_dialog
+from components.styled_dialog import ask_custom_dialog
 from freeassetfilter.services.previewer_registry import PreviewerRegistry
 from layout.preview.file_info_panel import FileInfoPanel
 from theme import tm
@@ -35,7 +35,10 @@ def _show_custom_dialog(
     variants: Optional[list] = None,
     dialog_type: str = "default",
 ) -> None:
-    """Styled 弹窗包装（同步阻塞），替代旧版 CustomMessageBox。
+    """同步提示弹窗（委托公共同步助手 ``styled_dialog.ask_custom_dialog``）。
+
+    预览器内的提示类弹窗只关心提示本身，不关心返回值；统一不显示
+    右上角关闭按钮（都有"确定"作为退出路径）。
 
     Args:
         title: 弹窗标题。
@@ -44,9 +47,7 @@ def _show_custom_dialog(
         variants: 与 buttons 一一对应的变体名。
         dialog_type: 弹窗类型（default/danger 等）。
     """
-    from PySide6.QtCore import QEventLoop
-
-    dlg = create_custom_dialog(
+    ask_custom_dialog(
         title=title,
         message=message,
         buttons=list(buttons),
@@ -54,14 +55,6 @@ def _show_custom_dialog(
         dialog_type=dialog_type,
         show_close=False,
     )
-    loop = QEventLoop()
-
-    def _on_finished(_result: int) -> None:
-        loop.quit()
-
-    dlg.finished.connect(_on_finished)
-    dlg.destroyed.connect(loop.quit)
-    loop.exec()
 
 
 class UnifiedPreviewerLayout(QWidget):

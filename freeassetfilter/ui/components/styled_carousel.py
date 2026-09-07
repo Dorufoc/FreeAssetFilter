@@ -4,7 +4,7 @@ from typing import Optional
 
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QPushButton, QGraphicsOpacityEffect
 from PySide6.QtCore import Qt, Signal, Property, QPropertyAnimation, QEasingCurve, QTimer, QRectF, QPoint
-from PySide6.QtGui import QPainter, QColor, QPen, QPaintEvent, QMouseEvent, QPainterPath, QRegion
+from PySide6.QtGui import QPainter, QPen, QPainterPath, QRegion
 
 from theme import tm
 from components.paint_utils import draw_chevron

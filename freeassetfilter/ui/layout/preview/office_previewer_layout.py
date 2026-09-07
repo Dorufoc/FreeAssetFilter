@@ -323,9 +323,6 @@ class OfficePreviewerLayout(QWidget):
             内嵌的 PdfPreviewerLayout（首次调用时创建）。
         """
         if self._pdf is None:
-            if self._settings_manager is None:
-                from freeassetfilter.core.managers.settings_manager import SettingsManager
-                self._settings_manager = SettingsManager()
             from freeassetfilter.ui.layout.preview.pdf_previewer_layout import PdfPreviewerLayout
             self._pdf = PdfPreviewerLayout(
                 self._pdf_holder,

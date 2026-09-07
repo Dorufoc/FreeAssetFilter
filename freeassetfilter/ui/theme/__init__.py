@@ -18,7 +18,7 @@ Usage:
 """
 
 import sys as _sys
-from .theme_manager import ThemeManager, get_theme_manager
+from .theme_manager import get_theme_manager
 
 # Singleton convenience instance
 tm = get_theme_manager()

@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from PySide6.QtCore import QEvent, QPointF, QRect, QSize, Qt
+from PySide6.QtCore import QEvent, QObject, QPointF, QRect, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QEnterEvent,
@@ -67,24 +67,11 @@ from freeassetfilter.ui.components.styled_dialog import (  # noqa: E402
     DialogAnimationEffect,
     DialogIconCircle,
     StyledDialog,
+    ask_custom_dialog,
     create_basic_dialog,
-    create_center_button_dialog,
     create_custom_dialog,
     create_danger_dialog,
-    create_help_link_dialog,
-    create_info_dialog,
     create_input_dialog,
-    create_large_dialog,
-    create_left_button_dialog,
-    create_no_border_dialog,
-    create_no_footer_dialog,
-    create_progress_circular_dialog,
-    create_progress_download_dialog,
-    create_progress_linear_dialog,
-    create_small_dialog,
-    create_stacked_button_dialog,
-    create_success_dialog,
-    create_three_button_dialog,
 )
 from freeassetfilter.ui.components.styled_divider import StyledDivider  # noqa: E402
 from freeassetfilter.ui.components.styled_drawer import StyledDrawer  # noqa: E402
@@ -949,32 +936,56 @@ class TestDialogFactories:
         monkeypatch.setattr(_sd, "_show_dialog", lambda dialog: None)
 
     def test_all_factories_return_dialog(self, qapp: QApplication) -> None:
-        """全部 18 个工厂（animate=False）均返回 StyledDialog 实例。"""
+        """全部生产工厂（animate=False）均返回 StyledDialog 实例。"""
         dialogs = [
             create_basic_dialog(animate=False),
-            create_center_button_dialog(animate=False),
             create_custom_dialog("标题", "消息", ["确定", "取消"], animate=False),
             create_danger_dialog(animate=False),
-            create_help_link_dialog(animate=False),
-            create_info_dialog(animate=False),
             create_input_dialog(animate=False),
-            create_large_dialog(animate=False),
-            create_left_button_dialog(animate=False),
-            create_no_border_dialog(animate=False),
-            create_no_footer_dialog(animate=False),
-            create_progress_circular_dialog(animate=False),
-            create_progress_download_dialog(animate=False),
-            create_progress_linear_dialog(animate=False),
-            create_small_dialog(animate=False),
-            create_stacked_button_dialog(animate=False),
-            create_success_dialog(animate=False),
-            create_three_button_dialog(animate=False),
         ]
         for dialog in dialogs:
             assert isinstance(dialog, StyledDialog)
         for dialog in dialogs:
             dialog.close_dialog(0)
             dialog.deleteLater()
+
+
+class TestAskCustomDialog:
+    """ask_custom_dialog 同步阻塞助手：返回被点击按钮索引。"""
+
+    @pytest.fixture(autouse=True)
+    def _stub_factory(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """用假对话框替换 create_custom_dialog，避免真实窗口。"""
+        import freeassetfilter.ui.components.styled_dialog as _sd
+
+        class FakeDialog(QObject):
+            finished = Signal(int)
+            destroyed = Signal()
+
+        monkeypatch.setattr(FakeDialog, "__module__", "tests.stub")
+        self._fake_cls = FakeDialog
+
+    def test_returns_clicked_index(self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+        import freeassetfilter.ui.components.styled_dialog as _sd
+
+        fake = self._fake_cls()
+        monkeypatch.setattr(_sd, "create_custom_dialog", lambda **kwargs: fake)
+        from PySide6.QtCore import QTimer
+
+        QTimer.singleShot(0, lambda: fake.finished.emit(2))
+        assert ask_custom_dialog("标题", "消息", ["甲", "乙", "丙"]) == 2
+
+    def test_destroyed_without_finished_falls_back_to_zero(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import freeassetfilter.ui.components.styled_dialog as _sd
+
+        fake = self._fake_cls()
+        monkeypatch.setattr(_sd, "create_custom_dialog", lambda **kwargs: fake)
+        from PySide6.QtCore import QTimer
+
+        QTimer.singleShot(0, lambda: fake.destroyed.emit())
+        assert ask_custom_dialog("标题", "消息", ["确定"]) == 0
 
 
 # =============================================================================

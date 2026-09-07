@@ -1,7 +1,7 @@
 """Styled Checkbox component - matches web checkbox exactly."""
 
 from PySide6.QtWidgets import QWidget, QApplication
-from PySide6.QtCore import Qt, Signal, Property, QRectF, QPropertyAnimation, QEasingCurve, QSize
+from PySide6.QtCore import Qt, Signal, Property, QRectF, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QPainter, QColor, QPen, QPaintEvent, QFont, QFontMetrics
 
 from theme import tm

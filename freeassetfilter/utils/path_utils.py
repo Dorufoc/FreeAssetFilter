@@ -19,7 +19,6 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 import sys
 import os
 import re
-from pathlib import Path
 from typing import List, Optional, Set
 
 # 延迟导入logger，避免循环依赖

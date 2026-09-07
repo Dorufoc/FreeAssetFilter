@@ -725,9 +725,15 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             "transparency": 80,
         }
         try:
-            from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
-            v2 = SettingsManagerV2()
-            v2.load()
+            # 优先复用应用引导层提前加载的设置管理器（app/main.py 在
+            # MainWindow 构造前已初始化），避免启动期二次磁盘加载；
+            # 独立运行（无 app.settings_manager）时自建实例。
+            app = QApplication.instance()
+            v2 = getattr(app, "settings_manager", None)
+            if v2 is None:
+                from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+                v2 = SettingsManagerV2()
+                v2.load()
             saved = v2.get("appearance.background", {})
             if isinstance(saved, dict):
                 mode = saved.get("mode", "mica")
@@ -1345,9 +1351,14 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         失败静默忽略，不阻塞主题切换。
         """
         try:
-            from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
-            v2 = SettingsManagerV2()
-            v2.load()
+            # 复用应用引导层加载的设置管理器（存在时），避免每次切换
+            # 主题都新建实例 + 重新读盘。
+            app = QApplication.instance()
+            v2 = getattr(app, "settings_manager", None)
+            if v2 is None:
+                from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+                v2 = SettingsManagerV2()
+                v2.load()
             try:
                 mode = tm.get_theme_mode()
             except Exception:
@@ -1701,37 +1712,20 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         if not items:
             return
 
-        # 检查 auto_restore 设置
+        # 检查 auto_restore 设置（新版 V2 设置树；默认自动恢复）
         app = QApplication.instance()
         auto_restore = True
-        if hasattr(app, 'settings_manager') and app.settings_manager is not None:
-            auto_restore = app.settings_manager.get_setting(
-                "file_staging.auto_restore_records", True
-            )
+        sm = getattr(app, 'settings_manager', None)
+        if sm is not None:
+            try:
+                auto_restore = bool(sm.get("file_staging.auto_restore_records", True))
+            except Exception:
+                auto_restore = True
 
         if auto_restore:
             self._start_restore_backup(backup_data)
-        else:
-            self._ask_restore_backup(backup_data)
-
-    def _ask_restore_backup(self, backup_data: dict) -> None:
-        """询问用户是否恢复备份"""
-        from freeassetfilter.widgets.D_widgets import CustomMessageBox
-        items = backup_data.get("items", [])
-        msg_box = CustomMessageBox(self)
-        msg_box.set_title("恢复上次选中内容")
-        msg_box.set_text(f"检测到上次有 {len(items)} 个文件在文件存储池中，是否恢复？")
-        msg_box.set_buttons(["是", "否"], Qt.Horizontal, ["primary", "normal"])
-
-        result = [False]
-        def on_click(btn_idx: int) -> None:
-            result[0] = (btn_idx == 0)
-            msg_box.close()
-        msg_box.buttonClicked.connect(on_click)
-        msg_box.exec()
-
-        if result[0]:
-            self._start_restore_backup(backup_data)
+        # auto_restore=False：静默不恢复（原「是否恢复」确认弹窗已随
+        # 2026-09 重构移除；自动恢复本体保留）。
 
     def _start_restore_backup(self, backup_data: dict) -> None:
         """启动分批恢复"""
@@ -2171,7 +2165,13 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
 def main() -> int:
     """
-    应用程序入口函数
+    调试用独立入口（保留便于单独运行窗口调试）。
+
+    注意：正式启动入口是 ``freeassetfilter.app.main``（含日志捕获 /
+    单实例 / 启动任务调度 / 退出链等完整引导设施）。本入口只创建
+    QApplication + MainWindow，两个入口共享同一 MainWindow 实现，
+    应保持观感一致；后续若决定合并入口，请删除本函数与下方
+    ``__main__`` 块及相关注释。
 
     Returns:
         int: 应用程序退出代码

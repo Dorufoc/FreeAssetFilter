@@ -7,12 +7,12 @@ Provides:
 """
 
 from PySide6.QtWidgets import (
-    QFrame, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QLineEdit, QGraphicsDropShadowEffect,
-    QSizePolicy, QApplication, QGraphicsEffect,
+    QApplication, QGraphicsEffect,
 )
 from PySide6.QtCore import (
-    Qt, Signal, QPropertyAnimation, QEasingCurve, Property, QRectF, QPoint, QTimer,
+    Qt, Signal, QEventLoop, QPropertyAnimation, QEasingCurve, Property, QRectF, QPoint,
 )
 from PySide6.QtGui import QPainter, QColor, QPaintEvent, QFont, QCursor, QMouseEvent
 from typing import Dict, List, Optional
@@ -20,8 +20,6 @@ from typing import Dict, List, Optional
 from theme import tm
 
 from components.styled_button import StyledButton
-from components.styled_progress import StyledProgress
-from components.styled_progress_circle import StyledProgressCircle
 
 
 # ── Constants ──────────────────────────────────────────────────────
@@ -716,20 +714,59 @@ def create_custom_dialog(
     return dialog
 
 
-def create_success_dialog(
-    title: str = "保存成功",
-    message: str = "您的设置已成功保存。所有更改已生效。",
-    confirm_text: str = "好的",
+
+
+def ask_custom_dialog(
+    title: str,
+    message: str,
+    buttons: List[str],
+    variants: Optional[List[str]] = None,
+    vertical: bool = False,
+    dialog_type: str = "default",
+    show_close: bool = False,
     animate: bool = True,
-) -> StyledDialog:
-    """Success dialog with green checkmark icon."""
-    body = _make_body_label(message)
-    dialog = StyledDialog(animate=animate, dialog_type="success", title=title, body_widget=body)
-    confirm_btn = StyledButton(confirm_text, variant="primary")
-    confirm_btn.clicked.connect(lambda: dialog.close_dialog(1))
-    dialog._footer_layout.addWidget(confirm_btn)
-    _show_dialog(dialog)
-    return dialog
+) -> int:
+    """同步阻塞的多按钮弹窗：返回被点击按钮的索引（0-based）。
+
+    ``StyledDialog`` 继承自 QWidget（无 ``exec()``），本助手以
+    ``QEventLoop`` 阻塞当前调用直至用户点击按钮 / 关闭对话框；
+    ``finished`` 未发射（ESC/关闭按钮）时兜底返回 0。
+
+    Args:
+        title: 弹窗标题。
+        message: 主体文本。
+        buttons: 按钮文案列表。
+        variants: 与 buttons 一一对应的变体名（primary/secondary/ghost/danger/info/normal）。
+        vertical: True 则按钮纵向排列，否则横向。
+        dialog_type: 弹窗类型（default/success/danger/info），影响图标。
+        show_close: 是否显示右上角关闭按钮。
+        animate: 是否启用入场/出场动画。
+
+    Returns:
+        int: 被点击按钮的索引；关闭路径兜底返回 0。
+    """
+    dialog = create_custom_dialog(
+        title=title,
+        message=message,
+        buttons=buttons,
+        variants=variants,
+        vertical=vertical,
+        dialog_type=dialog_type,
+        show_close=show_close,
+        animate=animate,
+    )
+    result: List[int] = [0]
+    loop = QEventLoop()
+
+    def _on_finished(idx: int) -> None:
+        result[0] = idx
+        loop.quit()
+
+    dialog.finished.connect(_on_finished)
+    # 兜底：用户用 ESC / 关闭按钮时 finished 可能不发射
+    dialog.destroyed.connect(loop.quit)
+    loop.exec()
+    return result[0]
 
 
 def create_danger_dialog(
@@ -748,22 +785,6 @@ def create_danger_dialog(
         dialog._footer_layout.addWidget(cancel_btn)
     # Web CSS: .dialog-danger .dialog-footer .btn-primary { background: #ef4444; }
     confirm_btn = StyledButton(confirm_text, variant="danger")
-    confirm_btn.clicked.connect(lambda: dialog.close_dialog(1))
-    dialog._footer_layout.addWidget(confirm_btn)
-    _show_dialog(dialog)
-    return dialog
-
-
-def create_info_dialog(
-    title: str = "提示信息",
-    message: str = "这是一条重要的提示信息，请仔细阅读。",
-    confirm_text: str = "知道了",
-    animate: bool = True,
-) -> StyledDialog:
-    """Info dialog with blue info icon."""
-    body = _make_body_label(message)
-    dialog = StyledDialog(animate=animate, dialog_type="info", title=title, body_widget=body)
-    confirm_btn = StyledButton(confirm_text, variant="info")
     confirm_btn.clicked.connect(lambda: dialog.close_dialog(1))
     dialog._footer_layout.addWidget(confirm_btn)
     _show_dialog(dialog)
@@ -820,408 +841,6 @@ def create_input_dialog(
     return dialog
 
 
-def create_small_dialog(
-    title: str = "提示",
-    message: str = "这是一个小尺寸的对话框。",
-    cancel_text: str = "取消",
-    confirm_text: str = "确认",
-    animate: bool = True,
-) -> StyledDialog:
-    """Small (320 px) dialog."""
-    body = _make_body_label(message)
-    dialog = StyledDialog(animate=animate, size="sm", title=title, body_widget=body)
-    if cancel_text:
-        cancel_btn = StyledButton(cancel_text, variant="ghost")
-        cancel_btn.clicked.connect(lambda: dialog.close_dialog(0))
-        dialog._footer_layout.addWidget(cancel_btn)
-    confirm_btn = StyledButton(confirm_text, variant="primary")
-    confirm_btn.clicked.connect(lambda: dialog.close_dialog(1))
-    dialog._footer_layout.addWidget(confirm_btn)
-    _show_dialog(dialog)
-    return dialog
-
-
-def create_large_dialog(
-    title: str = "关于此功能",
-    message: str = (
-        "这是一个大尺寸的对话框，适用于需要展示较多内容的场景。例如详细说明、条款确认、或者复杂的表单输入。\n\n"
-        "大对话框提供了更宽敞的阅读空间，确保用户能够完整理解需要确认的内容。"
-    ),
-    cancel_text: str = "关闭",
-    confirm_text: str = "我知道了",
-    animate: bool = True,
-) -> StyledDialog:
-    """Large (560 px) dialog."""
-    body = _make_body_label(message)
-    dialog = StyledDialog(animate=animate, size="lg", title=title, body_widget=body)
-    if cancel_text:
-        cancel_btn = StyledButton(cancel_text, variant="ghost")
-        cancel_btn.clicked.connect(lambda: dialog.close_dialog(0))
-        dialog._footer_layout.addWidget(cancel_btn)
-    confirm_btn = StyledButton(confirm_text, variant="primary")
-    confirm_btn.clicked.connect(lambda: dialog.close_dialog(1))
-    dialog._footer_layout.addWidget(confirm_btn)
-    _show_dialog(dialog)
-    return dialog
-
-
 # ── Progress dialogs ───────────────────────────────────────────────
 
-def create_progress_linear_dialog(
-    title: str = "正在处理中...",
-    message: str = "正在分析文件，请稍候...",
-    progress_value: float = 0.65,
-    progress_label: str = "65% 已完成",
-    progress_detail: str = "13/20 项",
-    animate: bool = True,
-) -> StyledDialog:
-    """Dialog with a linear progress bar."""
-    body = QWidget()
-    body.setStyleSheet("background: transparent;")
-    body_layout = QVBoxLayout(body)
-    body_layout.setContentsMargins(0, 0, 0, 0)
-    body_layout.setSpacing(8)
-
-    msg = QLabel(message)
-    msg.setStyleSheet(f"font-size: 13.5px; color: {tm.mid.name()}; background: transparent;")
-    body_layout.addWidget(msg)
-
-    # Web CSS: .dialog-progress .progress { margin-top: 12px; }
-    progress = StyledProgress(value=progress_value)
-    body_layout.addWidget(progress)
-
-    # Web CSS: .dialog-progress .progress-label { font-size: 12px; margin-top: 8px; }
-    label_row = QWidget()
-    label_row.setStyleSheet("background: transparent;")
-    lr = QHBoxLayout(label_row)
-    lr.setContentsMargins(0, 0, 0, 0)
-    lr.setSpacing(0)
-    left = QLabel(progress_label)
-    left.setStyleSheet(f"font-size: 12px; color: {tm.mid.name()}; background: transparent;")
-    lr.addWidget(left)
-    lr.addStretch()
-    right = QLabel(progress_detail)
-    right.setStyleSheet(f"font-size: 12px; color: {tm.mid.name()}; background: transparent;")
-    lr.addWidget(right)
-    body_layout.addWidget(label_row)
-
-    dialog = StyledDialog(animate=animate, title=title, body_widget=body)
-    dialog._progress = progress
-
-    cancel_btn = StyledButton("取消", variant="ghost")
-    cancel_btn.clicked.connect(lambda: dialog.close_dialog(0))
-    dialog._footer_layout.addWidget(cancel_btn)
-    _show_dialog(dialog)
-    return dialog
-
-
-def create_progress_circular_dialog(
-    title: str = "同步数据",
-    message: str = "正在同步云端数据...",
-    progress_value: float = 0.70,
-    confirm_text: str = "查看详情",
-    animate: bool = True,
-) -> StyledDialog:
-    """Dialog with a circular progress ring."""
-    body = QWidget()
-    body.setStyleSheet("background: transparent;")
-    body_layout = QVBoxLayout(body)
-    body_layout.setContentsMargins(0, 8, 0, 0)
-    body_layout.setSpacing(8)
-
-    # Web CSS: .progress-circle-wrapper { width: 120px; height: 120px; margin: 16px auto; }
-    circle = StyledProgressCircle(value=progress_value, size="lg")
-    body_layout.addWidget(circle, alignment=Qt.AlignCenter)
-
-    # Web CSS: .progress-circle-label { font-size: 13px; margin-top: 8px; }
-    label = QLabel(message)
-    label.setAlignment(Qt.AlignCenter)
-    label.setStyleSheet(
-        f"font-size: 13px; color: {tm.mid.name()}; background: transparent;"
-    )
-    body_layout.addWidget(label)
-
-    dialog = StyledDialog(animate=animate, 
-        title=title, body_widget=body, footer_type=FOOTER_CENTER,
-    )
-    dialog._progress_circle = circle
-
-    confirm_btn = StyledButton(confirm_text, variant="primary")
-    confirm_btn.clicked.connect(lambda: dialog.close_dialog(1))
-    dialog._footer_layout.addWidget(confirm_btn)
-    _show_dialog(dialog)
-    return dialog
-
-
-def create_progress_download_dialog(
-    progress_value: float = 0.35,
-    animate: bool = True,
-) -> StyledDialog:
-    """Download-progress dialog with three-button footer."""
-    body = QWidget()
-    body.setStyleSheet("background: transparent;")
-    body_layout = QVBoxLayout(body)
-    body_layout.setContentsMargins(0, 0, 0, 0)
-    body_layout.setSpacing(8)
-
-    # File info row
-    info_row = QWidget()
-    info_row.setStyleSheet("background: transparent;")
-    info_lr = QHBoxLayout(info_row)
-    info_lr.setContentsMargins(0, 0, 0, 0)
-    file_name = QLabel("v2.4.1 版本更新包")
-    file_name.setStyleSheet(f"font-size: 13px; color: {tm.text.name()}; background: transparent;")
-    info_lr.addWidget(file_name)
-    info_lr.addStretch()
-    file_size = QLabel("45.2 MB / 128 MB")
-    file_size.setStyleSheet(f"font-size: 12px; color: {tm.mid.name()}; background: transparent;")
-    info_lr.addWidget(file_size)
-    body_layout.addWidget(info_row)
-
-    # Progress bar (info-blue)
-    progress = StyledProgress(value=progress_value)
-    progress._track_widget.variant = "default"
-    body_layout.addWidget(progress)
-
-    # Progress labels
-    label_row = QWidget()
-    label_row.setStyleSheet("background: transparent;")
-    lr = QHBoxLayout(label_row)
-    lr.setContentsMargins(0, 0, 0, 0)
-    lr.setSpacing(0)
-    left = QLabel("35% — 2.3 MB/s")
-    left.setStyleSheet(f"font-size: 12px; color: {tm.mid.name()}; background: transparent;")
-    lr.addWidget(left)
-    lr.addStretch()
-    right = QLabel("预计剩余时间: 36 秒")
-    right.setStyleSheet(f"font-size: 12px; color: {tm.mid.name()}; background: transparent;")
-    lr.addWidget(right)
-    body_layout.addWidget(label_row)
-
-    dialog = StyledDialog(animate=animate, 
-        size="lg",
-        dialog_type="info",
-        title="下载更新",
-        body_widget=body,
-        footer_type=FOOTER_THREE,
-    )
-    dialog._progress = progress
-
-    # Left button
-    bg_btn = StyledButton("后台下载", variant="ghost")
-    bg_btn.clicked.connect(lambda: dialog.close_dialog(0))
-    dialog._left_footer_layout.addWidget(bg_btn)
-
-    # Right group
-    pause_btn = StyledButton("暂停", variant="ghost")
-    pause_btn.clicked.connect(lambda: dialog.close_dialog(0))
-    dialog._right_footer_layout.addWidget(pause_btn)
-
-    # Web CSS: style="background: var(--accent-info);"
-    download_btn = StyledButton("立即下载", variant="info")
-    download_btn.clicked.connect(lambda: dialog.close_dialog(1))
-    dialog._right_footer_layout.addWidget(download_btn)
-
-    _show_dialog(dialog)
-    return dialog
-
-
 # ── Button-layout variants ─────────────────────────────────────────
-
-def create_center_button_dialog(
-    title: str = "提示",
-    message: str = "操作已成功完成。",
-    confirm_text: str = "确 定",
-    animate: bool = True,
-) -> StyledDialog:
-    """Small dialog with a single centered button."""
-    body = _make_body_label(message)
-    dialog = StyledDialog(animate=animate, size="sm", title=title, body_widget=body,
-                          footer_type=FOOTER_CENTER)
-    confirm_btn = StyledButton(confirm_text, variant="primary")
-    confirm_btn.clicked.connect(lambda: dialog.close_dialog(1))
-    dialog._footer_layout.addWidget(confirm_btn)
-    _show_dialog(dialog)
-    return dialog
-
-
-def create_left_button_dialog(
-    title: str = "导出设置",
-    message: str = "请选择导出格式：",
-    animate: bool = True,
-) -> StyledDialog:
-    """Dialog with left-aligned footer buttons."""
-    body = QWidget()
-    body.setStyleSheet("background: transparent;")
-    body_layout = QVBoxLayout(body)
-    body_layout.setContentsMargins(0, 0, 0, 0)
-    body_layout.setSpacing(12)
-
-    msg = QLabel(message)
-    msg.setStyleSheet(f"font-size: 13.5px; color: {tm.mid.name()}; background: transparent;")
-    body_layout.addWidget(msg)
-
-    from components.styled_radio import StyledRadio
-    radio_row = QWidget()
-    radio_row.setStyleSheet("background: transparent;")
-    rr = QHBoxLayout(radio_row)
-    rr.setContentsMargins(0, 0, 0, 0)
-    rr.setSpacing(12)
-    rr.addWidget(StyledRadio(checked=True, text="JSON", group_name="export-fmt"))
-    rr.addWidget(StyledRadio(checked=False, text="YAML", group_name="export-fmt"))
-    rr.addWidget(StyledRadio(checked=False, text="TOML", group_name="export-fmt"))
-    rr.addStretch()
-    body_layout.addWidget(radio_row)
-
-    dialog = StyledDialog(animate=animate, title=title, body_widget=body, footer_type=FOOTER_LEFT)
-
-    export_btn = StyledButton("导出", variant="primary")
-    export_btn.clicked.connect(lambda: dialog.close_dialog(1))
-    dialog._footer_layout.addWidget(export_btn)
-
-    cancel_btn = StyledButton("取消", variant="ghost")
-    cancel_btn.clicked.connect(lambda: dialog.close_dialog(0))
-    dialog._footer_layout.addWidget(cancel_btn)
-
-    _show_dialog(dialog)
-    return dialog
-
-
-def create_stacked_button_dialog(
-    title: str = "选择操作",
-    message: str = "请选择您要进行的操作：",
-    animate: bool = True,
-) -> StyledDialog:
-    """Small dialog with full-width stacked buttons."""
-    body = _make_body_label(message)
-    dialog = StyledDialog(animate=animate, size="sm", title=title, body_widget=body,
-                          footer_type=FOOTER_STACKED)
-
-    # Web CSS: .dialog-footer-stacked .btn { width: 100%; }
-    btn1 = StyledButton("创建新项目", variant="primary", block=True)
-    btn1.clicked.connect(lambda: dialog.close_dialog(1))
-    dialog._footer_layout.addWidget(btn1)
-
-    btn2 = StyledButton("从模板导入", variant="secondary", block=True)
-    btn2.clicked.connect(lambda: dialog.close_dialog(2))
-    dialog._footer_layout.addWidget(btn2)
-
-    btn3 = StyledButton("暂不操作", variant="ghost", block=True)
-    btn3.clicked.connect(lambda: dialog.close_dialog(0))
-    dialog._footer_layout.addWidget(btn3)
-
-    _show_dialog(dialog)
-    return dialog
-
-
-def create_three_button_dialog(
-    title: str = "保存更改",
-    message: str = "您有未保存的更改，是否保存？",
-    animate: bool = True,
-) -> StyledDialog:
-    """Dialog with left + right button groups."""
-    body = _make_body_label(message)
-    dialog = StyledDialog(animate=animate, title=title, body_widget=body, footer_type=FOOTER_THREE)
-
-    cancel_btn = StyledButton("取消", variant="ghost")
-    cancel_btn.clicked.connect(lambda: dialog.close_dialog(0))
-    dialog._left_footer_layout.addWidget(cancel_btn)
-
-    no_save_btn = StyledButton("不保存", variant="ghost")
-    no_save_btn.clicked.connect(lambda: dialog.close_dialog(2))
-    dialog._right_footer_layout.addWidget(no_save_btn)
-
-    save_btn = StyledButton("保存", variant="primary")
-    save_btn.clicked.connect(lambda: dialog.close_dialog(1))
-    dialog._right_footer_layout.addWidget(save_btn)
-
-    _show_dialog(dialog)
-    return dialog
-
-
-def create_help_link_dialog(
-    title: str = "许可协议",
-    message: str = "请阅读并同意我们的服务条款和隐私政策，以继续使用本软件。",
-    animate: bool = True,
-) -> StyledDialog:
-    """Dialog with a help link in the footer."""
-    body = _make_body_label(message)
-    dialog = StyledDialog(animate=animate, title=title, body_widget=body, footer_type=FOOTER_WITH_HELP)
-
-    reject_btn = StyledButton("拒绝", variant="ghost")
-    reject_btn.clicked.connect(lambda: dialog.close_dialog(0))
-    dialog._right_footer_layout.addWidget(reject_btn)
-
-    accept_btn = StyledButton("同意并继续", variant="primary")
-    accept_btn.clicked.connect(lambda: dialog.close_dialog(1))
-    dialog._right_footer_layout.addWidget(accept_btn)
-
-    _show_dialog(dialog)
-    return dialog
-
-
-def create_no_border_dialog(
-    title: str = "快捷操作",
-    animate: bool = True,
-) -> StyledDialog:
-    """Dialog with no footer border and action buttons in the body."""
-    body = QWidget()
-    body.setStyleSheet("background: transparent;")
-    body_layout = QVBoxLayout(body)
-    body_layout.setContentsMargins(0, 0, 0, 0)
-    body_layout.setSpacing(8)
-
-    msg = QLabel("请选择一个快捷操作：")
-    msg.setStyleSheet(f"font-size: 13.5px; color: {tm.mid.name()}; background: transparent;")
-    body_layout.addWidget(msg)
-
-    for text in ["📋 复制选中文本", "🔗 生成分享链接", " 导出为文件"]:
-        btn = StyledButton(text, variant="ghost")
-        btn.setContentsMargins(12, 0, 0, 0)
-        body_layout.addWidget(btn, alignment=Qt.AlignLeft)
-
-    dialog = StyledDialog(animate=animate, title=title, body_widget=body, footer_type=FOOTER_NO_BORDER)
-
-    close_btn = StyledButton("关闭", variant="primary")
-    close_btn.clicked.connect(lambda: dialog.close_dialog(0))
-    dialog._footer_layout.addWidget(close_btn)
-
-    _show_dialog(dialog)
-    return dialog
-
-
-def create_no_footer_dialog(
-    title: str = "关于",
-    animate: bool = True,
-) -> StyledDialog:
-    """Dialog with no footer at all (about-style)."""
-    body = QWidget()
-    body.setStyleSheet("background: transparent;")
-    body_layout = QVBoxLayout(body)
-    body_layout.setContentsMargins(0, 8, 0, 8)
-    body_layout.setSpacing(4)
-
-    emoji = QLabel("🎉")
-    emoji.setAlignment(Qt.AlignCenter)
-    emoji.setStyleSheet("font-size: 48px; background: transparent;")
-    body_layout.addWidget(emoji)
-
-    name = QLabel("D-Fronted")
-    name.setAlignment(Qt.AlignCenter)
-    name.setStyleSheet(f"font-size: 16px; font-weight: 600; color: {tm.text.name()}; background: transparent;")
-    body_layout.addWidget(name)
-
-    version = QLabel("版本 2.4.1")
-    version.setAlignment(Qt.AlignCenter)
-    version.setStyleSheet(f"font-size: 13px; color: {tm.mid.name()}; background: transparent;")
-    body_layout.addWidget(version)
-
-    copyright_ = QLabel("© 2026 All rights reserved.")
-    copyright_.setAlignment(Qt.AlignCenter)
-    copyright_.setStyleSheet(f"font-size: 12px; color: {tm.alpha_of(tm.mid, 60).name()}; background: transparent; margin-top: 8px;")
-    body_layout.addWidget(copyright_)
-
-    dialog = StyledDialog(animate=animate, size="sm", title=title, body_widget=body,
-                          footer_type=FOOTER_NONE, show_close=True)
-    _show_dialog(dialog)
-    return dialog

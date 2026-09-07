@@ -126,14 +126,14 @@ class _FloatingScrollArea(QScrollArea):
 
         # 浮动条相对所在区域内容矩形（边框内侧）的上/下内缩：与文件选择器/
         # 文件池浮动滚动条几何约定一致（10*dpi）；右缘水平贴边（间隙 0）
-        self._edge_padding = int(10 * self._dpi_scale())
+        self._edge_padding = int(10 * 1.0)
         # 锚定区域（外观卡片 #SettingsCard）；未锚定时回退为滚动区自身
         self._region: QWidget | None = None
 
         # 浮动滚动条：默认先挂在滚动区自身，attach_floating_bar_region
         # 会将父级改挂到锚定卡片上，使其贴卡片右缘悬浮（内容之上）
         self._floating_bar = StyledScrollBar(self)
-        self._floating_bar.setFixedWidth(max(6, int(8 * self._dpi_scale())))
+        self._floating_bar.setFixedWidth(max(6, int(8 * 1.0)))
         self._floating_bar.raise_()
 
         # 与隐藏的原生垂直滚动条双向同步（value 相同不重发，无递归风险）
@@ -162,12 +162,6 @@ class _FloatingScrollArea(QScrollArea):
         self._floating_bar.setParent(region)
         self._floating_bar.raise_()
         self._reposition_bar()
-
-    @staticmethod
-    def _dpi_scale() -> float:
-        """获取 DPI 缩放系数（未标注时回落 1.0）。"""
-        app = QApplication.instance()
-        return getattr(app, "dpi_scale_factor", 1.0) if app else 1.0
 
     # ── 原生滚动条 → 浮动滚动条 同步 ─────────────────────────────────
 

@@ -44,12 +44,6 @@ from theme import tm
 from freeassetfilter.services import file_info_service as fis
 
 
-def _dpi() -> float:
-    """DPI 缩放系数（未标注时回落 1.0）。"""
-    app = QApplication.instance()
-    return float(getattr(app, "dpi_scale_factor", 1.0)) if app is not None else 1.0
-
-
 # 运行中工作线程的强引用注册表：防止面板销毁/解释器退出时 Python 包装器
 # 先行回收导致 QThread 仍运行时被销毁（Qt 会直接 abort）。
 _ACTIVE_THREADS: set = set()
@@ -321,13 +315,13 @@ class _InfoCanvas(QWidget):
         fm_title = QFontMetrics(self.FONT_TITLE)
         elided_name = fm_title.elidedText(name, Qt.ElideRight, content_width)
         blocks.append({"kind": "title", "text": elided_name, "full_text": name})
-        blocks.append({"kind": "gap", "height": int(3 * _dpi())})
+        blocks.append({"kind": "gap", "height": int(3 * 1.0)})
         blocks.append({"kind": "path", "text": path, "full_text": path})
-        blocks.append({"kind": "gap", "height": int(12 * _dpi())})
+        blocks.append({"kind": "gap", "height": int(12 * 1.0)})
 
         # ── 属性行（基础字段 + 类型字段）────────────────────────────
         self._append_grid_blocks(blocks, panel._rows, content_width, mono=False)
-        blocks.append({"kind": "gap", "height": int(4 * _dpi())})
+        blocks.append({"kind": "gap", "height": int(4 * 1.0)})
 
         # ── 详细信息折叠区块 ───────────────────────────────────────
         if panel._expanded == "details":
@@ -382,9 +376,9 @@ class _InfoCanvas(QWidget):
         return blocks
 
     def _append_section_blocks(self, blocks: List[dict], title: str) -> None:
-        blocks.append({"kind": "gap", "height": int(10 * _dpi())})
+        blocks.append({"kind": "gap", "height": int(10 * 1.0)})
         blocks.append({"kind": "heading", "text": title})
-        blocks.append({"kind": "gap", "height": int(2 * _dpi())})
+        blocks.append({"kind": "gap", "height": int(2 * 1.0)})
 
     def _append_grid_blocks(
         self,
@@ -462,7 +456,7 @@ class _InfoCanvas(QWidget):
         高度规则与既有视觉完全一致：字段行/标题/路径按文本高度，
         heading/note/busy 追加 4px、busy 进度再占 9px、link 追加行距。
         """
-        pad4 = int(4 * _dpi())
+        pad4 = int(4 * 1.0)
         if kind == "grid":
             row_height = int(block["row_height"])
             return _CanvasItem(
@@ -1251,7 +1245,7 @@ class FileInfoPanel(QWidget):
         viewport = self._scroll_area.viewport()
         if viewport is None:
             return
-        inset = max(int(self._canvas.PAD_TOP * _dpi() / 2), 2)
+        inset = max(int(self._canvas.PAD_TOP * 1.0 / 2), 2)
         x = viewport.width() - self._float_bar.width()
         self._float_bar.setGeometry(
             x, inset, self._float_bar.width(), max(0, viewport.height() - inset)

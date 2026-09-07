@@ -46,6 +46,7 @@ test_results/
 .coverage
 coverage.xml
 htmlcov/
+cov_*.json
 *.cache
 .icon_cache/
 tests/gui/screenshots/
@@ -61,6 +62,7 @@ nuitka-crash-report.xml
 .*
 
 # --- Design/markdown notes (not source code) ---
+docs/
 *.cube
 *.md
 !tests/README.md

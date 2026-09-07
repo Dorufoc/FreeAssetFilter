@@ -5,7 +5,7 @@ checkable items, and a smooth fade-in animation on show.
 """
 
 from PySide6.QtWidgets import QMenu, QGraphicsOpacityEffect
-from PySide6.QtCore import Qt, QPropertyAnimation, QAbstractAnimation, QEasingCurve
+from PySide6.QtCore import QPropertyAnimation, QAbstractAnimation, QEasingCurve
 from PySide6.QtGui import QColor, QAction
 
 from theme import tm

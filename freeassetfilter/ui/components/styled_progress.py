@@ -1,8 +1,8 @@
 """Styled Progress component - matches web progress bar exactly."""
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy
-from PySide6.QtCore import Qt, Signal, QRectF, QPropertyAnimation, QEasingCurve, Property, QTimer
-from PySide6.QtGui import QPainter, QColor, QPaintEvent, QFont, QLinearGradient, QBrush
+from PySide6.QtCore import Qt, QRectF, QPropertyAnimation, QEasingCurve, Property, QTimer
+from PySide6.QtGui import QPainter, QPaintEvent, QFont
 from theme import tm
 
 

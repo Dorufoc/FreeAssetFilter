@@ -1,6 +1,6 @@
 """Styled Tag component - matches web tag exactly."""
 
-from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel
+from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Qt, Signal, QRectF
 from PySide6.QtGui import QPainter, QColor, QPaintEvent, QFont, QFontMetrics
 from theme import tm

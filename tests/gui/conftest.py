@@ -2,7 +2,7 @@
 """GUI 视觉测试配置（tests-comprehensive-refactor todo-26 重写）。
 
 复用根 ``tests/conftest.py`` 的 session 级 ``qapp``（附带
-dpi_scale_factor / global_font / settings_manager / theme_manager 属性）
+global_font / settings_manager / theme_manager 属性）
 与 autouse ``reset_singletons``（核心管理器重置，**不**覆盖
 ui/theme 的 ThemeManager 单例——见 conftest.py:112-116 约定）。
 

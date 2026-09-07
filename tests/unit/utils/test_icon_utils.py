@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 import ctypes
 from typing import Any, Dict
 
@@ -243,3 +244,65 @@ class TestWin32Structures:
         if hicon:
             # 释放句柄，避免 GDI 泄漏
             iu.user32.DestroyIcon(ctypes.c_void_p(hicon))
+
+
+class TestCleanupIconCache:
+    """cleanup_icon_cache（任务 3 新增的磁盘图标缓存清理）。"""
+
+    @staticmethod
+    def _make_cache_dir(monkeypatch: Any, tmp_path) -> str:
+        cache_dir = tmp_path / "icons_cache"
+        cache_dir.mkdir()
+        monkeypatch.setattr(iu, "_ICON_CACHE_DIR", str(cache_dir))
+        return str(cache_dir)
+
+    @staticmethod
+    def _write_png(cache_dir: str, name: str, age_days: float) -> str:
+        path = os.path.join(cache_dir, name)
+        with open(path, "wb") as f:
+            f.write(b"fake-png-bytes")
+        old = time.time() - age_days * 86400
+        os.utime(path, (old, old))
+        return path
+
+    def test_expired_files_removed(self, monkeypatch: Any, tmp_path) -> None:
+        """超过 max_age_days 的文件被删除，新文件保留。"""
+        cache_dir = self._make_cache_dir(monkeypatch, tmp_path)
+        old_path = self._write_png(cache_dir, "old_icon.png", age_days=200)
+        new_path = self._write_png(cache_dir, "new_icon.png", age_days=1)
+
+        removed = iu.cleanup_icon_cache()
+        assert removed == 1
+        assert not os.path.exists(old_path)
+        assert os.path.exists(new_path)
+
+    def test_overflow_removed_oldest_first(self, monkeypatch: Any, tmp_path) -> None:
+        """超过 max_entries 时按最旧优先删除多余条目。"""
+        cache_dir = self._make_cache_dir(monkeypatch, tmp_path)
+        paths = [
+            self._write_png(cache_dir, f"icon_{i}.png", age_days=float(i))
+            for i in range(5)
+        ]
+
+        removed = iu.cleanup_icon_cache(max_entries=2, max_age_days=9999)
+        assert removed == 3
+        # 最新（age 0/1）保留，age 2/3/4 删除
+        for i in range(5):
+            assert os.path.exists(paths[i]) == (i < 2)
+
+    def test_non_png_ignored(self, monkeypatch: Any, tmp_path) -> None:
+        """非 .png 文件不参与清理计数。"""
+        cache_dir = self._make_cache_dir(monkeypatch, tmp_path)
+        keep = os.path.join(cache_dir, "notes.txt")
+        with open(keep, "wb") as f:
+            f.write(b"not an icon")
+        old = time.time() - 200 * 86400
+        os.utime(keep, (old, old))
+
+        assert iu.cleanup_icon_cache() == 0
+        assert os.path.exists(keep)
+
+    def test_missing_cache_dir_returns_zero(self, monkeypatch: Any) -> None:
+        """缓存目录不存在时返回 0 且不抛异常。"""
+        monkeypatch.setattr(iu, "_ICON_CACHE_DIR", None)
+        assert iu.cleanup_icon_cache() == 0

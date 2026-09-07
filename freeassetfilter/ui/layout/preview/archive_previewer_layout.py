@@ -67,7 +67,7 @@ from PySide6.QtGui import (
 from theme import tm
 from components.styled_button import StyledButton
 from components.styled_lineedit import StyledLineEdit
-from components.styled_dialog import create_custom_dialog
+from components.styled_dialog import ask_custom_dialog
 from freeassetfilter.ui.components.styled_scroll_area import (
     StyledScrollBar,
     StyledScrollArea,
@@ -112,10 +112,12 @@ def _show_custom_dialog(
     variants: Optional[list] = None,
     dialog_type: str = "default",
 ) -> None:
-    """Styled 弹窗包装（同步阻塞），替代旧版 QMessageBox。"""
-    from PySide6.QtCore import QEventLoop
+    """同步提示弹窗（委托公共同步助手 ``styled_dialog.ask_custom_dialog``）。
 
-    dlg = create_custom_dialog(
+    压缩包预览器内的提示只关心展示，不关心返回值；统一不显示右上角
+    关闭按钮。
+    """
+    ask_custom_dialog(
         title=title,
         message=message,
         buttons=list(buttons),
@@ -123,14 +125,6 @@ def _show_custom_dialog(
         dialog_type=dialog_type,
         show_close=False,
     )
-    loop = QEventLoop()
-
-    def _on_finished(_result: int) -> None:
-        loop.quit()
-
-    dlg.finished.connect(_on_finished)
-    dlg.destroyed.connect(loop.quit)
-    loop.exec()
 
 
 # ──────────────────────────────────────────────────────────────────────────────

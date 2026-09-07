@@ -1,15 +1,15 @@
 """Styled ComboBox component — dropdown with animations."""
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QScrollArea, QGraphicsDropShadowEffect, QApplication,
+    QWidget, QVBoxLayout, QApplication,
 )
 from PySide6.QtCore import (
     Qt, Signal, QRectF, QPoint, QSize, QPropertyAnimation,
-    QEasingCurve, Property, QTimer, QEvent,
+    QEasingCurve, Property, QEvent,
 )
 from PySide6.QtGui import (
     QPainter, QColor, QPaintEvent, QFont, QFontMetrics, QMouseEvent, QPolygonF,
-    QPainterPath, QPen,
+    QPen,
 )
 from theme import tm
 

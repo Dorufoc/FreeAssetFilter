@@ -16,14 +16,12 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 """
 
 import os
-import sys
 import subprocess
 import re
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
-from pathlib import Path
 
-from freeassetfilter.utils.app_logger import info, debug, warning, error, exception_details
+from freeassetfilter.utils.app_logger import info, warning, error, exception_details
 from freeassetfilter.utils.path_utils import validate_safe_path, contains_injection_chars
 from freeassetfilter.utils.perf_metrics import increment_perf_counter, set_perf_metadata, track_perf
 from freeassetfilter.utils.subprocess_utils import run_with_limited_output

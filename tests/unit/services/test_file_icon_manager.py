@@ -20,7 +20,6 @@ from typing import Any, Dict, List, Tuple
 
 import pytest
 
-from freeassetfilter.core.managers.settings_manager import SettingsManager
 from freeassetfilter.services.file_icon_manager import FileIconManager
 from tests.support.data_factories import make_image
 from tests.support.qt_helpers import assert_pixmap_nonempty, flush_widget_queue
@@ -343,18 +342,16 @@ class TestMissingFallback:
         )
         assert icon_manager.get_icon_path(_file_info("mp3")) == sentinel
 
-    def test_rendering_survives_reset_settings_singleton(self, icon_manager: FileIconManager, theme_colors: List[str], monkeypatch: Any) -> None:
-        """boundary：SettingsManager 单例被重置后渲染仍不崩溃。
+    def test_rendering_with_default_theme_tokens(self, icon_manager: FileIconManager, monkeypatch: Any) -> None:
+        """boundary：使用默认主题令牌（tm）渲染不崩溃。
 
-        缓存键使用内部 mock 的主题色，与 SettingsManager 解耦。
+        旧版依赖 SettingsManager V1 单例；新版主题色由 tm 令牌提供，
+        渲染路径与设置管理器解耦。
 
         Args:
             icon_manager: 图标管理器 fixture。
-            theme_colors: 固定主题色 fixture。
             monkeypatch: pytest monkeypatch。
         """
-        monkeypatch.setattr(SettingsManager, "_instance", None)
-        monkeypatch.setattr(SettingsManager, "_initialized", False)
         assert_pixmap_nonempty(icon_manager.get_icon_pixmap(_file_info("docx"), 48, 1.0))
 
 
@@ -385,7 +382,7 @@ class TestUnknownIconBuilder:
             theme_colors: 固定主题色 fixture。
         """
         pixmap = icon_manager._build_unknown_icon_pixmap(
-            self._unknown_board_svg(icon_manager), "MP4", 48, 1.0, "#212121"
+            self._unknown_board_svg(icon_manager), "MP4", 48, 1.0
         )
         assert_pixmap_nonempty(pixmap, "短文本叠加图标应为非空")
 
@@ -398,7 +395,7 @@ class TestUnknownIconBuilder:
         """
         long_text: str = "VERYLONGTEXTFILEEXTENSION"
         pixmap = icon_manager._build_unknown_icon_pixmap(
-            self._unknown_board_svg(icon_manager), long_text, 48, 1.0, "#212121"
+            self._unknown_board_svg(icon_manager), long_text, 48, 1.0
         )
         assert_pixmap_nonempty(pixmap, "长文本收缩后图标仍为非空")
 
@@ -410,7 +407,7 @@ class TestUnknownIconBuilder:
             theme_colors: 固定主题色 fixture。
         """
         pixmap = icon_manager._build_unknown_icon_pixmap(
-            self._unknown_board_svg(icon_manager), "", 48, 1.0, "#212121"
+            self._unknown_board_svg(icon_manager), "", 48, 1.0
         )
         assert_pixmap_nonempty(pixmap, "空文本底板图标应为非空")
 

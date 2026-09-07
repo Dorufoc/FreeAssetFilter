@@ -1,14 +1,10 @@
 # -*- coding: utf-8 -*-
-# targets: services.settings_repository, services.favorites_repository, services.office_cache
-"""``settings_repository`` / ``favorites_repository`` / ``office_cache`` 单元测试。
+# targets: services.office_cache
+"""``office_cache`` 单元测试。
 
-三个纯数据层模块（freeassetfilter/services/ 下）均只做文件 I/O，返回类型安全
-的静默降级。覆盖（每个模块 happy + boundary/error 各至少一条）：
+纯数据层模块（freeassetfilter/services/ 下）只做文件 I/O，返回类型安全
+的静默降级。覆盖：
 
-* ``SettingsRepository`` —— load/save/atomic_save 往返、缺失/损坏/超大/非法
-  UTF-8 文件回退空字典、父目录自动创建、权限异常吞掉、临时文件清理。
-* ``FavoritesRepository`` —— 列表往返、缺失/损坏/根类型错误回退空列表、
-  中文原始落盘。
 * ``office_cache`` —— 缓存目录调用期解析、稳定缓存键、put/get 往返、空文件
   视为未命中、不可写降级、LRU touch、过期与大小驱逐、周期清理线程幂等启停。
 
@@ -26,12 +22,10 @@ from typing import Dict, List
 import pytest
 
 from freeassetfilter.services import office_cache as office_cache_module
-from freeassetfilter.services.favorites_repository import FavoritesRepository
 from freeassetfilter.services.office_cache import (
     MAX_OFFICE_CACHE_AGE_DAYS,
     OFFICE_CACHE_DIR_NAME,
 )
-from freeassetfilter.services.settings_repository import SettingsRepository
 
 pytestmark = pytest.mark.unit
 
@@ -58,173 +52,6 @@ def office_cache_tmp(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
         lambda: str(tmp_path),
     )
     return tmp_path
-
-
-# =============================================================================
-# SettingsRepository
-# =============================================================================
-class TestSettingsRepository:
-    """JSON 设置数据访问层"""
-
-    def test_load_missing_file_returns_empty_dict(self, tmp_path: Path) -> None:
-        """文件不存在返回空字典。"""
-        repo: SettingsRepository = SettingsRepository(str(tmp_path / "missing.json"))
-        assert repo.load() == {}
-
-    def test_save_then_load_roundtrip(self, tmp_path: Path) -> None:
-        """保存后读取往返一致（含嵌套结构）。"""
-        repo: SettingsRepository = SettingsRepository(str(tmp_path / "cfg.json"))
-        data: Dict[str, object] = {
-            "appearance": {"theme": "dark"},
-            "custom": {"nested": {"a": 1}},
-        }
-        repo.save(data)
-        assert repo.load() == data
-
-    def test_save_preserves_unicode_literal(self, tmp_path: Path) -> None:
-        """ensure_ascii=False：中文以原文写入磁盘。"""
-        repo: SettingsRepository = SettingsRepository(str(tmp_path / "cfg.json"))
-        repo.save({"note": "你好，世界"})
-        raw: str = Path(repo.file_path).read_text(encoding="utf-8")
-        assert "你好，世界" in raw
-
-    def test_save_creates_parent_directories(self, tmp_path: Path) -> None:
-        """父目录不存在时自动创建。"""
-        target: Path = tmp_path / "nested" / "deep" / "cfg.json"
-        repo: SettingsRepository = SettingsRepository(str(target))
-        repo.save({"x": 1})
-        assert target.exists()
-
-    def test_load_corrupted_json_returns_empty(self, tmp_path: Path) -> None:
-        """损坏 JSON 静默回退空字典。"""
-        bad: Path = tmp_path / "bad.json"
-        bad.write_text("{not valid json!!", encoding="utf-8")
-        assert SettingsRepository(str(bad)).load() == {}
-
-    def test_load_invalid_utf8_returns_empty(self, tmp_path: Path) -> None:
-        """非法 UTF-8 字节静默回退空字典。"""
-        bad: Path = tmp_path / "bad_utf8.json"
-        bad.write_bytes(b"\xff\xfe\x00{broken}")
-        assert SettingsRepository(str(bad)).load() == {}
-
-    def test_load_oversized_file_returns_empty(self, tmp_path: Path) -> None:
-        """超过 MAX_JSON_SIZE 的文件回退空字典（缩小阈值实测）。"""
-        big: Path = tmp_path / "big.json"
-        big.write_text('{"padding": "' + "x" * 200 + '"}', encoding="utf-8")
-        repo: SettingsRepository = SettingsRepository(str(big))
-        repo.MAX_JSON_SIZE = 100
-        assert repo.load() == {}
-
-    def test_load_root_not_dict_passthrough(self, tmp_path: Path) -> None:
-        """记录现状：仓库层不校验根类型，合法 JSON list 原样返回。
-
-        根类型逃逸导致的 AttributeError 是 SettingsManager 层的既有缺陷
-        （见 learnings todo-7）；数据访问层本身忠实返回解析结果。
-        """
-        f: Path = tmp_path / "list.json"
-        f.write_text("[1, 2, 3]", encoding="utf-8")
-        assert SettingsRepository(str(f)).load() == [1, 2, 3]
-
-    def test_load_permission_error_returns_empty(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """读取权限不足时静默回退空字典。"""
-        f: Path = tmp_path / "cfg.json"
-        f.write_text("{}", encoding="utf-8")
-        repo: SettingsRepository = SettingsRepository(str(f))
-
-        def _raise_open(*args: object, **kwargs: object) -> object:
-            raise PermissionError("denied")
-
-        monkeypatch.setattr("builtins.open", _raise_open)
-        assert repo.load() == {}
-
-    def test_atomic_save_roundtrip_and_no_tmp_left(self, tmp_path: Path) -> None:
-        """atomic_save 往返一致且不留 .tmp 残留。"""
-        target: Path = tmp_path / "cfg.json"
-        repo: SettingsRepository = SettingsRepository(str(target))
-        repo.atomic_save({"a": 1, "nested": {"b": "好"}})
-        assert repo.load() == {"a": 1, "nested": {"b": "好"}}
-        assert list(tmp_path.glob("*.tmp")) == []
-
-    def test_atomic_save_creates_parent_dir(self, tmp_path: Path) -> None:
-        """atomic_save 同样确保父目录存在。"""
-        target: Path = tmp_path / "x" / "y" / "cfg.json"
-        repo: SettingsRepository = SettingsRepository(str(target))
-        repo.atomic_save({"k": "v"})
-        assert target.exists()
-
-    def test_file_path_property(self, tmp_path: Path) -> None:
-        """file_path 属性返回构造时传入的路径。"""
-        p: str = str(tmp_path / "cfg.json")
-        assert SettingsRepository(p).file_path == p
-
-    def test_default_path_points_to_data_settings(self) -> None:
-        """默认路径指向项目 data/settings.json（绝对路径）。"""
-        repo: SettingsRepository = SettingsRepository()
-        assert repo.file_path.endswith(os.path.join("data", "settings.json"))
-
-
-# =============================================================================
-# FavoritesRepository
-# =============================================================================
-class TestFavoritesRepository:
-    """收藏夹 JSON 数据访问层"""
-
-    def test_load_missing_file_returns_empty_list(self, tmp_path: Path) -> None:
-        """文件不存在返回空列表。"""
-        repo: FavoritesRepository = FavoritesRepository(str(tmp_path / "favs.json"))
-        assert repo.load() == []
-
-    def test_save_and_load_roundtrip(self, tmp_path: Path) -> None:
-        """路径列表往返一致。"""
-        fav_file: Path = tmp_path / "favs.json"
-        repo: FavoritesRepository = FavoritesRepository(str(fav_file))
-        paths: List[str] = [
-            r"C:\assets\a.png",
-            r"C:\assets\b.jpg",
-            "相对路径/文件.txt",
-        ]
-        repo.save(paths)
-        assert repo.load() == paths
-
-    def test_save_creates_parent_dir(self, tmp_path: Path) -> None:
-        """父目录不存在时自动创建。"""
-        fav_file: Path = tmp_path / "deep" / "favs.json"
-        repo: FavoritesRepository = FavoritesRepository(str(fav_file))
-        repo.save(["x"])
-        assert fav_file.exists()
-
-    def test_load_corrupted_json_returns_empty(self, tmp_path: Path) -> None:
-        """损坏 JSON 静默回退空列表。"""
-        fav_file: Path = tmp_path / "favs.json"
-        fav_file.write_text("{oops", encoding="utf-8")
-        assert FavoritesRepository(str(fav_file)).load() == []
-
-    def test_load_wrong_root_type_returns_empty(self, tmp_path: Path) -> None:
-        """根节点非 list 时静默回退空列表。"""
-        fav_file: Path = tmp_path / "favs.json"
-        fav_file.write_text('{"paths": ["x"]}', encoding="utf-8")
-        assert FavoritesRepository(str(fav_file)).load() == []
-
-    def test_load_empty_list(self, tmp_path: Path) -> None:
-        """合法的空数组正常返回 []。"""
-        fav_file: Path = tmp_path / "favs.json"
-        fav_file.write_text("[]", encoding="utf-8")
-        assert FavoritesRepository(str(fav_file)).load() == []
-
-    def test_save_unicode_preserved(self, tmp_path: Path) -> None:
-        """中文路径以原文落盘（ensure_ascii=False）。"""
-        fav_file: Path = tmp_path / "favs.json"
-        FavoritesRepository(str(fav_file)).save(["D:\\素材\\图片.png"])
-        text: str = fav_file.read_text(encoding="utf-8")
-        assert "素材" in text
-
-    def test_new_repository_instance_roundtrip(self, tmp_path: Path) -> None:
-        """新实例从磁盘重新加载已保存内容。"""
-        fav_file: Path = tmp_path / "favs.json"
-        FavoritesRepository(str(fav_file)).save(["a", "b"])
-        assert FavoritesRepository(str(fav_file)).load() == ["a", "b"]
 
 
 # =============================================================================

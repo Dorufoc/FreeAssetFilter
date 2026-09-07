@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import functools
-from typing import Optional
 
 from freeassetfilter.utils.app_logger import debug, warning
 

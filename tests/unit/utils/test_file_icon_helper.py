@@ -1,15 +1,19 @@
 # -*- coding: utf-8 -*-
 """file_icon_helper.py（freeassetfilter/utils/file_icon_helper.py）单元测试。
 
-覆盖 ``get_file_icon_path`` 的全类型后缀→图标名映射、未知后缀回退、
-目录分支、大写后缀归一化；以及 ``get_icon_path`` 的样式后缀解析（
-``ICON_STYLE_SUFFIX``）、样式图标缺失回退与无效样式值兜底。
-SettingsManager 读取通过 monkeypatch 替换为桩类，绝不触碰真实设置。
+产品仅保留一套多彩 v3 图标（文件名为 ``X – 3.svg``），不再存在图标样式
+选择能力。本测试覆盖：
+
+- ``get_file_icon_path`` 的全类型后缀→图标名映射、未知后缀回退、目录分支、
+  大写后缀归一化；
+- 固定解析规则：类型图标一律返回 ``X – 3.svg``；
+- v3 图标缺失时的无后缀兜底（防御性）与路径返回值契约。
 """
 
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -19,34 +23,14 @@ import freeassetfilter.utils.file_icon_helper as fih
 pytestmark = pytest.mark.unit
 
 
-def _patch_settings(monkeypatch: Any, icon_style: int) -> None:
-    """把模块内的 SettingsManager 换成只返回固定 icon_style 的桩类。
-
-    Args:
-        monkeypatch: pytest 的 monkeypatch 夹具。
-        icon_style: 固定的图标样式值。
-    """
-
-    class _FakeSettings:
-        def get_setting(self, key: str, default: Any = None) -> Any:
-            if key == "appearance.icon_style":
-                return icon_style
-            return default
-
-    monkeypatch.setattr(fih, "SettingsManager", _FakeSettings)
-
-
 class TestGetFileIconPath:
-    """文件信息 → 图标路径映射。"""
+    """文件信息 → 图标路径映射（固定 v3 后缀）。"""
 
-    def test_directory_uses_folder_icon(
-        self, monkeypatch: Any, tmp_path: Any
-    ) -> None:
-        """is_dir=True → 文件夹图标。"""
-        _patch_settings(monkeypatch, 0)
+    def test_directory_uses_folder_icon(self, tmp_path: Path) -> None:
+        """is_dir=True → 文件夹 v3 图标。"""
         info = {"is_dir": True, "suffix": ""}
         path = fih.get_file_icon_path(info, str(tmp_path))
-        assert path == os.path.join(str(tmp_path), "文件夹.svg")
+        assert path == os.path.join(str(tmp_path), "文件夹 – 3.svg")
 
     @pytest.mark.parametrize(
         "suffix, expect_icon",
@@ -85,38 +69,27 @@ class TestGetFileIconPath:
             ("", "未知底板"),
         ],
     )
-    def test_suffix_mapping(
-        self,
-        monkeypatch: Any,
-        tmp_path: Any,
-        suffix: str,
-        expect_icon: str,
+    def test_suffix_mapping_uses_v3_icon(
+        self, tmp_path: Path, suffix: str, expect_icon: str
     ) -> None:
-        """各已知后缀映射到正确图标名；未知后缀回退未知底板。"""
-        _patch_settings(monkeypatch, 0)
+        """各已知后缀映射到对应 v3 图标名；未知后缀回退未知底板 v3。"""
         info = {"is_dir": False, "suffix": suffix}
         path = fih.get_file_icon_path(info, str(tmp_path))
-        assert path == os.path.join(str(tmp_path), f"{expect_icon}.svg")
+        assert path == os.path.join(str(tmp_path), f"{expect_icon} – 3.svg")
 
-    def test_uppercase_suffix_lowered(
-        self, monkeypatch: Any, tmp_path: Any
-    ) -> None:
+    def test_uppercase_suffix_lowered(self, tmp_path: Path) -> None:
         """大写后缀被统一为小写后参与映射。"""
-        _patch_settings(monkeypatch, 0)
         path = fih.get_file_icon_path(
             {"is_dir": False, "suffix": "PDF"}, str(tmp_path)
         )
-        assert path == os.path.join(str(tmp_path), "PDF.svg")
+        assert path == os.path.join(str(tmp_path), "PDF – 3.svg")
 
-    def test_empty_dict_falls_back_to_unknown(
-        self, monkeypatch: Any, tmp_path: Any
-    ) -> None:
-        """空字典（无 is_dir/suffix）→ 未知底板，不崩溃。"""
-        _patch_settings(monkeypatch, 0)
+    def test_empty_dict_falls_back_to_unknown(self, tmp_path: Path) -> None:
+        """空字典（无 is_dir/suffix）→ 未知底板 v3，不崩溃。"""
         path = fih.get_file_icon_path({}, str(tmp_path))
-        assert path == os.path.join(str(tmp_path), "未知底板.svg")
+        assert path == os.path.join(str(tmp_path), "未知底板 – 3.svg")
 
-    def test_none_input_documents_contract(self, tmp_path: Any) -> None:
+    def test_none_input_documents_contract(self, tmp_path: Path) -> None:
         """None 输入违反契约（要求 dict）：记录为 AttributeError 而不静默吞掉。
 
         目标函数对 ``file_info.get`` 的调用决定了 None 输入必然抛
@@ -125,59 +98,47 @@ class TestGetFileIconPath:
         with pytest.raises(AttributeError):
             fih.get_file_icon_path(None, str(tmp_path))
 
+    def test_real_icons_resolve_to_v3_files(self) -> None:
+        """boundary：真实 icons 目录下每个类型都应命中现存 v3 文件。
 
-class TestGetIconPath:
-    """图标名 → 路径解析与样式后缀。"""
+        防止代码回退到无后缀（已删除的）路径仍能"工作"而无人察觉。
+        """
+        icon_dir = os.path.normpath(
+            os.path.join(os.path.dirname(fih.__file__), "..", "icons")
+        )
+        assert os.path.isdir(icon_dir)
+        probe = {
+            "文件夹": {"is_dir": True, "suffix": ""},
+            "视频": {"is_dir": False, "suffix": "mp4"},
+            "图像": {"is_dir": False, "suffix": "png"},
+            "音乐": {"is_dir": False, "suffix": "mp3"},
+            "字体": {"is_dir": False, "suffix": "ttf"},
+            "压缩文件": {"is_dir": False, "suffix": "zip"},
+            "PDF": {"is_dir": False, "suffix": "pdf"},
+            "PPT": {"is_dir": False, "suffix": "pptx"},
+            "表格": {"is_dir": False, "suffix": "xlsx"},
+            "Word文档": {"is_dir": False, "suffix": "docx"},
+            "文档": {"is_dir": False, "suffix": "md"},
+            "未知底板": {"is_dir": False, "suffix": "zzz"},
+        }
+        for icon_name, info in probe.items():
+            path = fih.get_file_icon_path(info, icon_dir)
+            assert os.path.exists(path), f"{icon_name} 图标缺失: {path}"
+            assert path.endswith(f"{icon_name} – 3.svg"), path
 
-    def test_non_styleable_icon_ignores_style(
-        self, monkeypatch: Any, tmp_path: Any
+
+class TestV3Fallback:
+    """v3 图标缺失时的防御性兜底。"""
+
+    def test_missing_v3_falls_back_to_plain(
+        self, tmp_path: Path
     ) -> None:
-        """非 STYLEABLE_ICONS 成员不被追加样式后缀。"""
-        _patch_settings(monkeypatch, 3)
-        path = fih.get_icon_path("自定义图标", str(tmp_path))
-        assert path == os.path.join(str(tmp_path), "自定义图标.svg")
+        """boundary：目录中只有无后缀图标时回退到该文件。"""
+        (tmp_path / "视频.svg").write_text("<svg/>", encoding="utf-8")
+        path = fih.get_file_icon_path({"is_dir": False, "suffix": "mp4"}, str(tmp_path))
+        assert path == os.path.join(str(tmp_path), "视频.svg")
 
-    def test_styleable_icon_uses_style_suffix(
-        self, monkeypatch: Any, tmp_path: Any
-    ) -> None:
-        """样式图标文件存在 → 返回带样式后缀的路径。"""
-        _patch_settings(monkeypatch, 3)
-        icon_dir = tmp_path / "style3"
-        icon_dir.mkdir()
-        (icon_dir / "视频 – 3.svg").write_text("<svg/>", encoding="utf-8")
-        path = fih.get_icon_path("视频", str(icon_dir))
-        assert path == str(icon_dir / "视频 – 3.svg")
-
-    def test_style_icon_missing_falls_back_default(
-        self, monkeypatch: Any, tmp_path: Any
-    ) -> None:
-        """样式图标缺失 → 回退无后缀默认图标。"""
-        _patch_settings(monkeypatch, 3)
-        icon_dir = tmp_path / "fallback"
-        icon_dir.mkdir()
-        (icon_dir / "视频.svg").write_text("<svg/>", encoding="utf-8")
-        path = fih.get_icon_path("视频", str(icon_dir))
-        assert path == str(icon_dir / "视频.svg")
-
-    def test_invalid_style_value_falls_back_flat(
-        self, monkeypatch: Any, tmp_path: Any
-    ) -> None:
-        """设置值为非法整数 → 兜底为扁平样式（无后缀）。"""
-        _patch_settings(monkeypatch, 42)
-        assert fih.get_icon_path("视频", str(tmp_path)).endswith("视频.svg")
-
-    def test_style_value_exception_falls_back_flat(
-        self, monkeypatch: Any, tmp_path: Any
-    ) -> None:
-        """读取设置抛异常（ValueError）→ 兜底为扁平样式。"""
-        class _BrokenSettings:
-            def get_setting(self, *args: Any, **kwargs: Any) -> Any:
-                raise ValueError("boom")
-
-        monkeypatch.setattr(fih, "SettingsManager", _BrokenSettings)
-        assert fih.get_icon_path("视频", str(tmp_path)).endswith("视频.svg")
-
-    def test_missing_icon_name_no_crash(self, tmp_path: Any) -> None:
-        """图标文件不存在也返回期望路径（由调用方决定显隐）。"""
-        path = fih.get_icon_path("不存在的图标", str(tmp_path))
-        assert path == os.path.join(str(tmp_path), "不存在的图标.svg")
+    def test_no_icon_at_all_returns_v3_path(self, tmp_path: Path) -> None:
+        """boundary：两个文件都不存在时返回 v3 路径（由调用方决定显隐）。"""
+        path = fih.get_file_icon_path({"is_dir": False, "suffix": "mp4"}, str(tmp_path))
+        assert path == os.path.join(str(tmp_path), "视频 – 3.svg")

@@ -3,7 +3,7 @@
 import math
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QSizePolicy
 from PySide6.QtCore import Qt, QRectF, QPropertyAnimation, QEasingCurve, Property, QPointF
-from PySide6.QtGui import QPainter, QColor, QPaintEvent, QFont, QPen
+from PySide6.QtGui import QPainter, QPaintEvent, QFont, QPen
 from theme import tm
 
 

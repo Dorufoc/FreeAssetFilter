@@ -221,7 +221,7 @@ python -m coverage report
 
 | Fixture | 作用域 | 用途 |
 | --- | --- | --- |
-| `qapp` | session | 全局唯一 QApplication，附带 `dpi_scale_factor`、`global_font` 及应用级 `settings_manager` / `theme_manager` |
+| `qapp` | session | 全局唯一 QApplication，附带 `global_font` 及应用级 `settings_manager` / `theme_manager` |
 | `qt_app` | function | `qapp` 的别名，兼容旧式引用 |
 | `reset_singletons` | function（autouse） | 每个测试前后重置 SettingsManager / HeartbeatManager / ThumbnailManager / MPVManager / AppLogger / AsyncIconLoader 等单例，保证隔离 |
 | `settings_manager` | function | 绑定临时 `settings.json` 的全新 SettingsManager 实例 |

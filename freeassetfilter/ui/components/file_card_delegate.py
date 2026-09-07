@@ -48,7 +48,6 @@ from components.file_list_model import (
     IsPreviewingRole,
     IconPixmapRole,
     CardWidthRole,
-    GridOffsetRole,
 )
 
 # 图标相对 media 区域的放大系数：>1 时图标超出 media 区域边界绘制，视觉更大。

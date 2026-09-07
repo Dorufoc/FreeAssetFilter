@@ -11,7 +11,7 @@ Provides:
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea,
-    QLabel, QPushButton, QStackedWidget, QSizePolicy,
+    QLabel, QPushButton, QStackedWidget,
 )
 from PySide6.QtCore import Qt, Signal, QRectF, Property, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QPainter, QColor, QPaintEvent, QFont, QFontMetrics, QPen

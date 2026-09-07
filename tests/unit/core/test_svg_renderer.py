@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import types
 from typing import Any
 
 import pytest
@@ -52,16 +53,34 @@ class TestSmartRenderSize:
 # _replace_svg_colors
 # ---------------------------------------------------------------------------
 class TestReplaceSvgColors:
-    """``_replace_svg_colors`` 颜色替换矩阵（绑定临时 SettingsManager）。"""
+    """``_replace_svg_colors`` 颜色替换矩阵（stub tm 令牌保证确定性）。"""
 
     @pytest.fixture(autouse=True)
-    def _bind_settings(self, settings_manager: Any) -> None:
-        """将 app 级颜色绑定到临时设置，保证断言与机器默认无关。"""
-        settings_manager.set_setting("appearance.colors.accent_color", "#FF0000")
-        settings_manager.set_setting("appearance.colors.base_color", "#FFFFFF")
-        settings_manager.set_setting("appearance.colors.secondary_color", "#333333")
-        settings_manager.set_setting("appearance.colors.normal_color", "#CECECE")
-        yield
+    def _bind_settings(self, monkeypatch: Any) -> None:
+        """将 svg_renderer 的 tm 主题令牌 stub 为固定颜色（与设置无关）。
+
+        新版颜色源为 ``ui.theme`` 的 tm 令牌；测试经 monkeypatch 把模块
+        内的 ``tm`` 替换为返回固定色值的桩，保证断言与机器主题无关。
+        """
+        import freeassetfilter.core.preview.svg_renderer as svg_mod
+
+        class _Color:
+            def __init__(self, value: str) -> None:
+                self._value = value
+
+            def name(self) -> str:
+                return self._value
+
+        monkeypatch.setattr(
+            svg_mod,
+            "tm",
+            types.SimpleNamespace(
+                accent=_Color("#FF0000"),
+                fill=_Color("#FFFFFF"),
+                text=_Color("#333333"),
+                mid=_Color("#CECECE"),
+            ),
+        )
 
     def test_svg_without_colors_is_unchanged(self) -> None:
         """不含可替换颜色的 SVG 保持原样。"""

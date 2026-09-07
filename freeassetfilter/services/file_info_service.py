@@ -20,7 +20,7 @@ import re
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from freeassetfilter.core.native.bridges.media_probe import run_ffprobe_json
 from freeassetfilter.utils.app_logger import debug, error
@@ -57,9 +57,19 @@ except ImportError:  # pragma: no cover - 依赖缺失时的兜底
 
 CACHE_VERSION = 2
 CACHE_FILE_NAME = "file_info_cache.json"
-_DEFAULT_CACHE_PATH = (
-    Path(__file__).resolve().parent.parent.parent / "data" / CACHE_FILE_NAME
-)
+
+
+def _default_cache_path() -> Path:
+    """默认缓存路径：统一走 ``utils.path_utils.get_app_data_path()``。
+
+    与 office_cache / thumbnails 等缓存通路同源（项目根 ``data/``），
+    替代原先硬编码的三级父目录推导。
+    """
+    from freeassetfilter.utils.path_utils import get_app_data_path
+    return Path(get_app_data_path()) / CACHE_FILE_NAME
+
+
+_DEFAULT_CACHE_PATH = _default_cache_path()
 
 # 表示「无法获取 / 无值」的通用占位
 UNAVAILABLE = "-"
@@ -170,13 +180,21 @@ def get_cache_path(cache_path: Optional[str] = None) -> Path:
 
 
 def _read_store(cache_path: Optional[str] = None) -> Dict[str, Any]:
-    """读取整份缓存仓库（失败返回空结构）。"""
+    """读取整份缓存仓库（失败返回空结构）。
+
+    校验：顶层为 dict、``version`` 匹配、``files`` 为 dict；不满足
+    均视为损坏缓存返回空结构（下次写入时整体重建）。
+    """
     cache_file = get_cache_path(cache_path)
     try:
         if cache_file.exists():
             with open(cache_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            if isinstance(data, dict) and data.get("version") == CACHE_VERSION:
+            if (
+                isinstance(data, dict)
+                and data.get("version") == CACHE_VERSION
+                and isinstance(data.get("files"), dict)
+            ):
                 return data
     except (OSError, ValueError, TypeError):
         pass
@@ -208,10 +226,20 @@ def read_cached(path: str, cache_path: Optional[str] = None) -> Optional[Dict[st
         return None
     if entry.get("mtime_ns") != fingerprint["mtime_ns"] or entry.get("size") != fingerprint["size"]:
         return None
-    return {
-        "details": entry.get("details") or [],
-        "hashes": entry.get("hashes") or {},
-    }
+
+    # 结构校验：details 必须是 [[label, value], ...] 的二维列表；
+    # hashes 必须是 dict。任一不符时丢弃对应字段（宁缺毋滥）。
+    result: Dict[str, Any] = {}
+    details = entry.get("details")
+    if isinstance(details, list) and all(
+        isinstance(row, list) and len(row) == 2 for row in details
+    ):
+        result["details"] = details
+    else:
+        result["details"] = []
+    hashes = entry.get("hashes")
+    result["hashes"] = hashes if isinstance(hashes, dict) else {}
+    return result
 
 
 def write_cached(
@@ -239,6 +267,11 @@ def write_cached(
         if hashes is not None:
             entry["hashes"] = dict(hashes)
         files = store["files"]
+        # LRU：本次写入的条目冒泡到末尾（最近使用），超出上限时从头部
+        # （最旧）驱逐。_read_store 返回 json.load 的普通 dict（无
+        # move_to_end），用「取出再放回」等价实现。
+        if key in files:
+            files[key] = files.pop(key)
         if len(files) > _MAX_CACHE_ENTRIES:
             for stale_key in list(files)[: len(files) - _MAX_CACHE_ENTRIES]:
                 files.pop(stale_key, None)

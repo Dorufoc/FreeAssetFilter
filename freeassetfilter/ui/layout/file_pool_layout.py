@@ -12,18 +12,26 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# 独立运行/无 GUI 测试环境的 sys.path 引导：styled 组件体系内部使用
+# ``from theme/components import ...`` 短路径导入（与各预览器布局一致），
+# 需保证 freeassetfilter/ui 在 sys.path 上。
+_this_file = Path(__file__).resolve()
+_ui_root = str(_this_file.parent.parent)  # freeassetfilter/ui/
+if _ui_root not in sys.path:
+    sys.path.insert(0, _ui_root)
+
 import hashlib
 import json
 import os
 import shutil
 import threading
-from pathlib import Path
 from typing import Optional
 
-import time
-
 from PySide6.QtCore import (
-    Qt, Signal, QTimer, QUrl, QEvent, QRunnable, QThreadPool, QEventLoop,
+    Qt, Signal, QTimer, QEvent, QRunnable, QThreadPool, QEventLoop,
     QRect, QEasingCurve, QPropertyAnimation, QParallelAnimationGroup,
     QAbstractAnimation,
 )
@@ -35,12 +43,10 @@ from PySide6.QtWidgets import (
     QFrame,
     QLabel,
     QApplication,
-    QMenu,
     QScrollArea,
     QFileDialog,
     QProgressDialog,
     QSpacerItem,
-    QSizePolicy,
 )
 
 from theme import tm
@@ -48,7 +54,7 @@ from components.styled_button import StyledButton
 from components.styled_info_card import StyledInfoCard
 from components.file_card_delegate import LIST_CONFIG
 from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
-from components.styled_dialog import create_input_dialog, create_custom_dialog
+from components.styled_dialog import create_input_dialog, ask_custom_dialog
 from freeassetfilter.utils.path_utils import get_app_data_path
 from freeassetfilter.services.staging_pool_service import StagingPoolService
 from freeassetfilter.utils.animation_settings import is_animation_enabled
@@ -56,11 +62,12 @@ from freeassetfilter.utils.app_logger import warning
 
 
 def _show_custom_dialog(parent, title, message, buttons, variants=None, vertical=False, dialog_type="default"):
-    """Styled 弹窗包装，仿 CustomMessageBox 接口（同步阻塞、返回按钮索引）。
+    """池内同步弹窗（委托公共同步助手 ``styled_dialog.ask_custom_dialog``）。
 
     文件池弹窗统一不显示右上角关闭按钮（所有场景都有"取消"按钮作为退出路径）。
+    ``parent`` 参数保留以兼容全部调用点签名（StyledDialog 为顶层窗口，无需父级）。
     """
-    dlg = create_custom_dialog(
+    return ask_custom_dialog(
         title=title,
         message=message,
         buttons=list(buttons),
@@ -69,18 +76,6 @@ def _show_custom_dialog(parent, title, message, buttons, variants=None, vertical
         dialog_type=dialog_type,
         show_close=False,
     )
-    result = [0]
-    loop = QEventLoop()
-
-    def _on_finished(r: int) -> None:
-        result[0] = r
-        loop.quit()
-
-    dlg.finished.connect(_on_finished)
-    # 兜底：用户用 ESC / 关闭按钮时 finished 可能不发射
-    dlg.destroyed.connect(loop.quit)
-    loop.exec()
-    return result[0]
 
 
 class _MD5CalculationTask(QRunnable):
@@ -119,24 +114,6 @@ class FilePoolLayout(QWidget):
     update_progress = Signal(int)          # 进度更新信号（导出等操作）
     _export_finished = Signal(int, int, object)  # 导出完成信号（成功数, 失败数, 错误列表）
     pool_changed = Signal()                # 池内容变更（添加/移除/清空），通知选择器刷新状态
-
-    # ── 备份常量 ───────────────────────────────────────────────────────────
-
-    _BACKUP_STRING_FIELDS = (
-        "name",
-        "display_name",
-        "original_name",
-        "modified",
-        "created",
-        "suffix",
-        "info_text",
-    )
-    _BACKUP_BOOL_FIELDS = (
-        "is_dir",
-        "is_selected",
-        "is_missing",
-        "size_calculating",
-    )
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -210,7 +187,7 @@ class FilePoolLayout(QWidget):
         # _update_pool_card_margins 根据滚动条状态动态覆盖；
         # 顶部固定 6（与文件选择器网格/列表模式一致），
         # 底部统一为 10*dpi（与文件选择器网格模式基准一致）
-        _init_pad = int(10 * self._get_dpi_scale())
+        _init_pad = int(10 * 1.0)
         self._card_layout.setContentsMargins(_init_pad, 6, _init_pad, _init_pad)
         # 卡片间距与文件选择器 list 模式一致（其卡片间隙基准值为 5，
         # 且随 _card_scale 缩放：gap = int(5 * scale)），此处同样按当前缩放计算。
@@ -225,7 +202,7 @@ class FilePoolLayout(QWidget):
 
         # 浮动覆盖层滚动条（贴 _content_area 右侧，覆盖在 _scroll_area 之上）
         self._pool_scrollbar = StyledScrollBar(self._content_area)
-        self._pool_scrollbar.setFixedWidth(max(6, int(8 * self._get_dpi_scale())))
+        self._pool_scrollbar.setFixedWidth(max(6, int(8 * 1.0)))
         self._pool_scrollbar.raise_()
 
         # 同步浮动滚动条与 _scroll_area 垂直滚动条的范围/值
@@ -250,7 +227,9 @@ class FilePoolLayout(QWidget):
         self._content_area.installEventFilter(self)
 
         # ── 备份系统 ────────────────────────────────────────────────────
-        self.backup_file = os.path.join(get_app_data_path(), "staging_pool_backup.json")
+        self.backup_file = os.path.join(
+            get_app_data_path(), StagingPoolService.BACKUP_FILE_NAME
+        )
         self._suspend_backup_save = False
         self._pending_backup_last_path = "All"
         self._backup_save_delay_ms = 1500
@@ -398,11 +377,6 @@ class FilePoolLayout(QWidget):
                     return True
         return super().eventFilter(obj, event)
 
-    def _get_dpi_scale(self) -> float:
-        """获取 DPI 缩放因子（与 FileSelectorLayout 行为一致）。"""
-        app = QApplication.instance()
-        return getattr(app, 'dpi_scale_factor', 1.0) if app else 1.0
-
     def _sync_pool_scrollbar_range(self, min_val: int, max_val: int) -> None:
         """当 _scroll_area 内部滚动范围变化时，同步浮动 StyledScrollBar 的范围。"""
         self._pool_scrollbar.setRange(min_val, max_val)
@@ -426,7 +400,7 @@ class FilePoolLayout(QWidget):
             return
         if self._scroll_area.width() <= 0 or self._scroll_area.height() <= 0:
             return
-        edge_padding = int(10 * self._get_dpi_scale())
+        edge_padding = int(10 * 1.0)
         scrollbar_w = self._pool_scrollbar.width()
         scrollbar_x = self._scroll_area.width() - scrollbar_w
         scrollbar_y = edge_padding
@@ -447,7 +421,7 @@ class FilePoolLayout(QWidget):
             return
         self._updating_pool_margins = True
         try:
-            dpi = self._get_dpi_scale()
+            dpi = 1.0
             scrollbar_w = self._pool_scrollbar.width()
             side_margin = int(10 * dpi)
             left = side_margin
@@ -538,37 +512,24 @@ class FilePoolLayout(QWidget):
         self.save_backup(self._pending_backup_last_path)
 
     def save_backup(self, last_path: str = "All") -> None:
-        """保存当前文件列表到备份文件。"""
+        """保存当前文件列表到备份文件（原子写盘：tmp + replace）。"""
         try:
             backup_data = self._build_backup_payload(last_path)
-            with open(self.backup_file, "w", encoding="utf-8") as f:
+            tmp_file = f"{self.backup_file}.tmp"
+            with open(tmp_file, "w", encoding="utf-8") as f:
                 json.dump(backup_data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_file, self.backup_file)
         except (IOError, OSError, TypeError, ValueError):
             pass  # 静默失败，不影响主流程
 
     @classmethod
     def _serialize_backup_item(cls, file_info: dict) -> Optional[dict]:
-        """将运行时文件信息压缩为可安全写入 JSON 的备份结构。"""
-        if not isinstance(file_info, dict):
-            return None
-        raw_path = file_info.get("path")
-        if raw_path is None:
-            return None
-        path = os.path.normpath(str(raw_path).strip())
-        if not path:
-            return None
-        serialized: dict = {"path": path}
-        size = file_info.get("size")
-        if isinstance(size, (int, float)) and not isinstance(size, bool):
-            serialized["size"] = int(size)
-        else:
-            serialized["size"] = None
-        for field in cls._BACKUP_STRING_FIELDS:
-            value = file_info.get(field)
-            serialized[field] = "" if value is None else str(value)
-        for field in cls._BACKUP_BOOL_FIELDS:
-            serialized[field] = bool(file_info.get(field, False))
-        return serialized
+        """将运行时文件信息压缩为可安全写入 JSON 的备份结构。
+
+        委派给 ``StagingPoolService.serialize_backup_item``——序列化
+        白名单（字符串/布尔字段）由服务层单一维护，避免字段漂移。
+        """
+        return StagingPoolService.serialize_backup_item(file_info)
 
     def _build_backup_payload(self, last_path: str = "All") -> dict:
         """构建统一的备份载荷，过滤不可序列化的运行时字段。"""

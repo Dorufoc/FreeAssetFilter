@@ -7,11 +7,11 @@ that were moved to sub-packages (``managers/``, ``preview/``,
 Usage:
 
     # Old flat-module import (returns the module object)
-    from freeassetfilter.core import settings_manager
+    from freeassetfilter.core import heartbeat_manager
     from freeassetfilter.core.heartbeat_manager import HeartbeatManager
 
     # Direct symbol import (returns the object)
-    from freeassetfilter.core import SettingsManager, HeartbeatManager
+    from freeassetfilter.core import HeartbeatManager
 """
 
 from __future__ import annotations
@@ -24,13 +24,9 @@ import types
 # Module map: old flat name → new sub-package dotted path
 # ---------------------------------------------------------------------------
 _MODULE_MAP: dict[str, str] = {
-    "settings_manager": "freeassetfilter.core.managers.settings_manager",
-    "theme_manager": "freeassetfilter.core.managers.theme_manager",
     "heartbeat_manager": "freeassetfilter.core.managers.heartbeat_manager",
-    "update_manager": "freeassetfilter.core.managers.update_manager",
     "thumbnail_manager": "freeassetfilter.core.managers.thumbnail_manager",
     "media_probe": "freeassetfilter.core.native.bridges.media_probe",
-    "color_extractor": "freeassetfilter.core.native.bridges.color_extractor",
     "image_color_utils": "freeassetfilter.core.preview.image_color_utils",
     "lut_preview_generator": "freeassetfilter.core.native.bridges.lut_preview_generator",
     "svg_renderer": "freeassetfilter.core.preview.svg_renderer",
@@ -47,21 +43,6 @@ _SYMBOL_MAP: dict[str, str] = {
     # heartbeat_manager
     "HeartbeatManager": "freeassetfilter.core.managers.heartbeat_manager",
     "FutureHandle": "freeassetfilter.core.managers.heartbeat_manager",
-    # settings_manager
-    "SettingsManager": "freeassetfilter.core.managers.settings_manager",
-    # theme_manager
-    "ThemeManager": "freeassetfilter.core.managers.theme_manager",
-    # update_manager
-    "UpdateError": "freeassetfilter.core.managers.update_manager",
-    "UpdateCancelled": "freeassetfilter.core.managers.update_manager",
-    # color_extractor — all public functions
-    "extract_cover_colors": "freeassetfilter.core.native.bridges.color_extractor",
-    "extract_cover_colors_from_path": "freeassetfilter.core.native.bridges.color_extractor",
-    "color_distance": "freeassetfilter.core.native.bridges.color_extractor",
-    "rgb_to_hex": "freeassetfilter.core.native.bridges.color_extractor",
-    "hex_to_qcolor": "freeassetfilter.core.native.bridges.color_extractor",
-    "sort_colors_by_brightness": "freeassetfilter.core.native.bridges.color_extractor",
-    "adjust_colors_for_gradient": "freeassetfilter.core.native.bridges.color_extractor",
     # thumbnail_manager
     "ThumbnailManager": "freeassetfilter.core.managers.thumbnail_manager",
     # svg_renderer
@@ -91,10 +72,10 @@ __all__ = sorted(list(_MODULE_MAP.keys()) + list(_SYMBOL_MAP.keys()))
 class _LazyModuleAlias(types.ModuleType):
     """延迟导入的旧式扁平模块别名（代替原先的 eager 导入循环）。
 
-    原先在包导入时强制导入全部 14 个核心模块，连锁拉入 PIL / numpy /
+    原先在包导入时强制导入全部核心模块，连锁拉入 PIL / numpy /
     QtSvg 等重依赖（数百 ms），拖慢应用首屏。本类在 ``sys.modules`` 中
     注册一个占位模块：首次属性访问（如 ``from
-    freeassetfilter.core.settings_manager import SettingsManager`` 的
+    freeassetfilter.core.heartbeat_manager import HeartbeatManager`` 的
     ``getattr``）时才真正导入目标模块，并把 ``sys.modules`` 条目替换为
     真实模块，使后续导入直接命中真实模块，行为与 eager 完全一致。
     """
@@ -124,7 +105,7 @@ class _LazyModuleAlias(types.ModuleType):
 
 # ---------------------------------------------------------------------------
 # Install lazy module aliases into sys.modules so that
-# ``from freeassetfilter.core.settings_manager import SettingsManager``
+# ``from freeassetfilter.core.heartbeat_manager import HeartbeatManager``
 # (sub-module import pattern) resolves correctly.  Python's ``__getattr__``
 # is only called for *attribute* access on the package, not for
 # sub-module import resolution — hence the placeholder modules above.
@@ -141,9 +122,9 @@ def __getattr__(name: str) -> types.ModuleType | object:
 
     Supports both:
 
-    * ``from freeassetfilter.core import settings_manager`` → returns the
+    * ``from freeassetfilter.core import heartbeat_manager`` → returns the
       module from its new location.
-    * ``from freeassetfilter.core import SettingsManager`` → returns the
+    * ``from freeassetfilter.core import HeartbeatManager`` → returns the
       class/function directly (via symbol resolution).
     """
     # 1) Module names → import the whole module

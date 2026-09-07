@@ -4,7 +4,7 @@ import math
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy
 from PySide6.QtCore import Qt, Signal, QRectF, QPropertyAnimation, QEasingCurve, Property
-from PySide6.QtGui import QPainter, QColor, QPaintEvent, QMouseEvent, QFont
+from PySide6.QtGui import QPainter, QPaintEvent, QMouseEvent, QFont
 
 from theme import tm
 

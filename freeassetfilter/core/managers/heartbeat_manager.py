@@ -24,9 +24,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from PySide6.QtCore import QObject, QTimer, Signal, QMetaObject, Qt
+from PySide6.QtCore import QObject, QTimer, QMetaObject, Qt
 
-from freeassetfilter.utils.app_logger import info, warning, error
+from freeassetfilter.utils.app_logger import info, warning
 
 
 class _OwnerRef:

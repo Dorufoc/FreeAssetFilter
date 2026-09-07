@@ -40,6 +40,24 @@ from tests.support.qt_helpers import safe_teardown
 pytestmark = pytest.mark.unit
 
 
+def _restore_theme_quietly(tm: Any, prev_theme: str, prev_colors: dict) -> None:
+    """静默恢复主题状态（不做信号广播）。
+
+    全局广播（set_theme）会同步触发所有历史控件树的 _on_theme_changed
+    刷新；整量套件中这些残留连接会让 polish() 在清理路径卡死（曾实测）。
+    测试只需恢复单例内部状态即可，直接按 set_theme_mode 的状态变更段
+    复制（_theme_mode/_dark_mode/颜色缓存）。
+    """
+    try:
+        tm._theme_mode = prev_theme
+        tm._dark_mode = prev_theme == "dark"
+        tm._colors.clear()
+        tm._colors.update(prev_colors)
+        tm._clear_color_cache()
+    except Exception:
+        pass
+
+
 def _make_cache(snapshot: dict | None = None) -> SettingsStagingCache:
     """构造已 begin 的缓存实例。
 
@@ -367,12 +385,10 @@ class TestBottomButtons:
             assert fresh.get("appearance.theme") == "dark"
             assert fresh.get("appearance.accent_color") == "#112233"
         finally:
-            try:
-                tm.set_theme(prev_theme)
-                tm._colors.update(prev_colors)
-            except Exception:
-                pass
+            # 先拆除布局（断开其与 tm 信号/事件过滤的连接），再静默恢复
+            # 主题单例状态——全局广播会同步触发历史控件树刷新造成卡死。
             safe_teardown(layout)
+            _restore_theme_quietly(tm, prev_theme, prev_colors)
 
     def test_confirm_applies_and_closes_host(
         self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
@@ -391,13 +407,9 @@ class TestBottomButtons:
             assert closed == [True]
             assert layout._submitted is True
         finally:
-            try:
-                tm.set_theme(prev_theme)
-                tm._colors.update(prev_colors)
-            except Exception:
-                pass
             layout._host_window = None
             safe_teardown(layout)
+            _restore_theme_quietly(tm, prev_theme, prev_colors)
 
     def test_cancel_discards_and_restores(
         self, qapp: QApplication, monkeypatch: Any, tmp_path: Path

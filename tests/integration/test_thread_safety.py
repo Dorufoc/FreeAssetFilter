@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# targets: core.managers.heartbeat_manager, core.managers.settings_manager
+# targets: core.managers.heartbeat_manager, core.managers.settings_manager_v2
 """跨模块并发安全集成测试（todo-25 integration 批 2 / test_thread_safety）。
 
 验证多个单例管理器在真实并发压力下的线程安全契约：
@@ -103,35 +103,33 @@ def _run_concurrently(
 # SettingsManager 并发读写
 # =============================================================================
 class TestSettingsManagerConcurrency:
-    """SettingsManager 并发 set/get 的键隔离与最终一致性。"""
+    """SettingsManagerV2 并发 set/get 的键隔离与最终一致性。"""
 
     def test_disjoint_keys_all_intact(
         self, tmp_path: Any, qapp: Any
     ) -> None:
         """50 线程各写各的 key，join 后每个 key 都保有各自写入值。"""
-        from freeassetfilter.core.managers.settings_manager import SettingsManager
+        from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
 
         start: float = time.monotonic()
 
-        SettingsManager._instance = None  # noqa: SLF001
-        SettingsManager._initialized = False  # noqa: SLF001
-        manager = SettingsManager(settings_file=str(tmp_path / "thr_safe.json"))
+        manager = SettingsManagerV2(file_path=str(tmp_path / "thr_safe.json"))
+        manager.load()
 
         def _worker(idx: int) -> None:
             key: str = f"thread_key_{idx}"
-            # 每轮写入不同值：set_setting 对"值未变化"返回 False（幂等 no-op），
-            # 只有值变化才返回 True——因此不能连写相同值。
+            # set() 对"值未变化"返回 False（幂等 no-op）——连写不同值。
             for round_idx in range(5):
                 value: str = f"value_{idx}_r{round_idx}"
-                assert manager.set_setting(key, value, auto_save=False) is True
-                assert manager.get_setting(key) == value
+                assert manager.set(key, value) is True
+                assert manager.get(key) == value
 
         results, errors = _run_concurrently(50, _worker)
         assert errors == [], f"并发写入出现异常: {errors}"
         assert len(results) == 50
 
         for idx in range(50):
-            assert manager.get_setting(f"thread_key_{idx}") == f"value_{idx}_r4"
+            assert manager.get(f"thread_key_{idx}") == f"value_{idx}_r4"
 
         elapsed: float = time.monotonic() - start
         assert elapsed < 10.0, f"并发 test 超过 10s 预算: {elapsed:.2f}s"
@@ -141,21 +139,20 @@ class TestSettingsManagerConcurrency:
         self, tmp_path: Any, qapp: Any
     ) -> None:
         """50 线程写同一 key，最终值必属于写入值集合（最后写入者胜）。"""
-        from freeassetfilter.core.managers.settings_manager import SettingsManager
+        from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
 
-        SettingsManager._instance = None  # noqa: SLF001
-        SettingsManager._initialized = False  # noqa: SLF001
-        manager = SettingsManager(settings_file=str(tmp_path / "thr_race.json"))
+        manager = SettingsManagerV2(file_path=str(tmp_path / "thr_race.json"))
+        manager.load()
         written: set[str] = {f"race_{i}" for i in range(50)}
 
         def _worker(idx: int) -> None:
-            manager.set_setting("contended_key", f"race_{idx}", auto_save=False)
+            manager.set("contended_key", f"race_{idx}")
 
         results, errors = _run_concurrently(50, _worker)
         assert errors == [], f"并发写入同一 key 出现异常: {errors}"
         assert len(results) == 50
 
-        final: Optional[Any] = manager.get_setting("contended_key")
+        final: Optional[Any] = manager.get("contended_key")
         assert final in written, f"最终值 {final!r} 不属于写入值集合"
         process_qt_events(qapp, ms=0)
 

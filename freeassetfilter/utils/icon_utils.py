@@ -18,14 +18,15 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 import os
 import sys
 import struct
+import time
 import hashlib
 import ctypes
-from ctypes import windll, byref, create_unicode_buffer, sizeof
+from ctypes import windll, byref, sizeof
 from ctypes.wintypes import (DWORD, MAX_PATH, HANDLE, UINT,
-                           LPCWSTR, LPWSTR, BOOL, HICON)
+                           LPCWSTR, BOOL, HICON)
 
 # 导入日志模块
-from freeassetfilter.utils.app_logger import debug, warning, error
+from freeassetfilter.utils.app_logger import debug, warning
 
 # 图标缓存目录
 _ICON_CACHE_DIR = None
@@ -110,6 +111,73 @@ def save_icon_to_cache(file_path: str, pixmap) -> bool:
     except Exception as e:
         debug(f"保存图标到缓存失败: {file_path}, {e}")
         return False
+
+
+def cleanup_icon_cache(max_entries: int = 2000, max_age_days: int = 90) -> int:
+    """磁盘图标缓存清理（任务 3 新增：补齐全无清理的既有缺口）。
+
+    策略（与缩略图/office 缓存一致的双阈值，最旧优先）：
+      - 条目数超过 ``max_entries`` 时按 mtime 升序删除最旧的多余文件；
+      - 单文件超过 ``max_age_days`` 未访问（atime 不可靠，以 mtime 计）
+        同样删除。
+
+    Args:
+        max_entries: 缓存文件数量上限。
+        max_age_days: 文件保留天数上限。
+
+    Returns:
+        int: 删除的文件数量（目录不可用或异常时为 0，绝不抛出）。
+    """
+    try:
+        cache_dir = _get_icon_cache_dir()
+        if cache_dir is None or not os.path.isdir(cache_dir):
+            return 0
+
+        now = time.time()
+        age_cutoff = now - max_age_days * 86400
+        removed = 0
+
+        entries = []
+        for name in os.listdir(cache_dir):
+            path = os.path.join(cache_dir, name)
+            if not name.endswith(".png") or not os.path.isfile(path):
+                continue
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                continue
+            entries.append((path, mtime))
+
+        # 1) 按 mtime 升序（最旧在前）
+        entries.sort(key=lambda item: item[1])
+
+        # 2) 超龄删除
+        for path, mtime in entries:
+            if mtime < age_cutoff:
+                try:
+                    os.remove(path)
+                    removed += 1
+                except OSError:
+                    pass
+
+        # 3) 超量删除（仍按最旧优先）
+        fresh = [(p, m) for p, m in entries if m >= age_cutoff]
+        overflow = len(fresh) - max_entries
+        if overflow > 0:
+            for path, _mtime in fresh[:overflow]:
+                try:
+                    os.remove(path)
+                    removed += 1
+                except OSError:
+                    pass
+
+        if removed:
+            debug(f"图标缓存清理完成: 删除 {removed} 个文件")
+        return removed
+    except Exception as e:
+        debug(f"图标缓存清理失败: {e}")
+        return 0
+
 
 # 定义Windows API常量
 SHGFI_ICON = 0x000000100
@@ -774,8 +842,7 @@ def hicon_to_pixmap(hicon, size, qt_app, device_pixel_ratio=None, keep_original_
     """
     debug(f"HICON转QPixmap: size={size}, keep_original={keep_original_size}")
     try:
-        from PySide6.QtGui import QPixmap, QImage, QPainter, QColor, QTransform, QGuiApplication
-        from PySide6.QtCore import Qt, QPoint
+        from PySide6.QtGui import QPixmap, QImage, QGuiApplication
         from PIL import Image, ImageFilter, ImageEnhance
         import io
 
@@ -977,7 +1044,7 @@ def hicon_to_pixmap(hicon, size, qt_app, device_pixel_ratio=None, keep_original_
         # 如果PIL处理失败，回退到Qt的处理方式
         debug(f"PIL图标处理失败，回退到Qt方式: {e}")
         try:
-            from PySide6.QtGui import QPixmap, QImage, QPainter
+            from PySide6.QtGui import QPixmap, QImage
             from PySide6.QtCore import Qt
             
             # 获取图标信息

@@ -117,8 +117,7 @@ def test_layer_equivariance_matches_direct_bake(offset: tuple) -> None:
     """``layer_to_source`` 子矩形取样必须重现一次直接烘焙 + ``render_display``。
 
     两层对照：
-    * **网格级** —— ``crop_resize``（u8，重现 ``verify_drag_equivariance.py``）
-      对比直接烘焙的 ``field.image``；
+    * **网格级** —— ``crop_resize``（u8）对比直接烘焙的 ``field.image``；
     * **显示级** —— 把取样结果重建为字段后 ``render_display`` 对比直接烘焙的
       ``render_display`` 输出。
     """

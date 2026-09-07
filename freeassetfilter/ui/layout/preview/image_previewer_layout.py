@@ -4,7 +4,7 @@
 
 import sys
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 # sys.path bootstrap
 _this_file = Path(__file__).resolve()
@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QGraphicsProxyWidget,
 )
 from PySide6.QtCore import Qt, Signal, QEvent, QPoint, QPointF, QRect, QRectF, QSize, QSizeF, QTimer, QPropertyAnimation, QEasingCurve
-from PySide6.QtGui import QFont, QPixmap, QImageReader, QWheelEvent, QPainter, QPainterPath, QPen, QColor, QPaintEvent, QMouseEvent, QAction, QTransform, QMovie
+from PySide6.QtGui import QFont, QPixmap, QImageReader, QWheelEvent, QPainter, QPen, QColor, QPaintEvent, QMouseEvent, QAction, QTransform, QMovie
 
 from theme import tm
 from components.styled_button import StyledButton

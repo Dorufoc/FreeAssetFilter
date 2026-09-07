@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QPushButton, QWidget, QSizePolicy
+from PySide6.QtWidgets import QPushButton, QSizePolicy
 from PySide6.QtCore import Qt, QRectF, QTimer, QPropertyAnimation, QEasingCurve, Property
-from PySide6.QtGui import QPainter, QColor, QPaintEvent, QFont, QPen, QFontMetrics, QIcon, QPixmap, QPainterPath
-from PySide6.QtSvgWidgets import QSvgWidget
+from PySide6.QtGui import QPainter, QColor, QPaintEvent, QFont, QPen, QFontMetrics, QPainterPath
 from PySide6.QtSvg import QSvgRenderer
 from pathlib import Path
-import math
 from theme import tm
 
 # 按钮配色映射缓存：(is_dark) → color_map。主题切换时以 is_dark_theme()

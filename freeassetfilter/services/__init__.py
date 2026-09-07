@@ -27,12 +27,10 @@ _SYMBOL_TO_MODULE: dict[str, str] = {
     "BaseService": "base",
     "DriveService": "drive_service",
     "FavoritesService": "favorites_service",
-    "FavoritesRepository": "favorites_repository",
     "FileService": "file_service",
     "MediaMetadataService": "media_metadata_service",
     "FileIconManager": "file_icon_manager",
     "PreviewerRegistry": "previewer_registry",
-    "SettingsRepository": "settings_repository",
     "StagingPoolService": "staging_pool_service",
 }
 
@@ -40,12 +38,10 @@ __all__ = [
     "BaseService",
     "DriveService",
     "FavoritesService",
-    "FavoritesRepository",
     "FileIconManager",
     "FileService",
     "MediaMetadataService",
     "PreviewerRegistry",
-    "SettingsRepository",
     "StagingPoolService",
 ]
 

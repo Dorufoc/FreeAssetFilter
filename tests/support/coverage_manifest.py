@@ -59,7 +59,7 @@ _ALIAS_DICT_NAMES: frozenset[str] = frozenset({"_MODULE_MAP", "_SYMBOL_MAP"})
 
 #: 文件名校验回退时的优先级顺序（多候选歧义时的确定性选择）。
 _PRIORITY_DIRS: tuple[str, ...] = (
-    "core", "components", "widgets", "services",
+    "core", "services",
     "ui", "utils", "app", "libs",
 )
 

@@ -18,10 +18,7 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 from __future__ import annotations
 
 import importlib
-from typing import Dict, Optional, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from PySide6.QtWidgets import QWidget
+from typing import Dict, Optional
 
 
 class PreviewerRegistry:

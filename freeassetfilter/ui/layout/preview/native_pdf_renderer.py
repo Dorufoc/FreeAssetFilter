@@ -26,13 +26,10 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
-from PySide6.QtCore import Qt, QRectF, QPointF, QSize, Signal
+from PySide6.QtCore import Qt, QRectF, QPointF, Signal
 from PySide6.QtGui import (
-    QAction,
     QColor,
     QFont,
-    QFontMetrics,
-    QImage,
     QPainter,
     QPen,
     QPixmap,
@@ -122,7 +119,7 @@ class NativePdfRenderer(QWidget):
         self._dpi_scale: float = (
             dpi_scale
             if dpi_scale is not None
-            else getattr(QApplication.instance(), "dpi_scale_factor", 1.0)
+            else 1.0
         )
         self._global_font: QFont = (
             global_font

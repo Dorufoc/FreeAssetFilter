@@ -561,10 +561,13 @@ class SettingsManagerV2:
 
     管理独立的 V2 分类树配置，与旧版 SettingsManager 完全解耦。
     支持点号分隔的 key 路径读写（如 ``appearance.theme``）。
-    线程安全：内部使用 ``threading.Lock()`` 保护所有读写操作。
+    线程安全：内部使用可重入锁（``RLock``）保护所有读写操作。
 
-    存储位置：``data/settings_v2.json``
+    存储位置：``data/settings_v2.json``（原子写盘 + 大小校验）。
     """
+
+    #: 设置文件大小上限（10MB）：超出视为损坏，加载时回退默认树并重写。
+    MAX_SETTINGS_FILE_BYTES: int = 10 * 1024 * 1024
 
     def __init__(self, file_path: Optional[str] = None) -> None:
         """初始化 V2 设置管理器。
@@ -573,7 +576,9 @@ class SettingsManagerV2:
             file_path: JSON 文件路径。为 ``None`` 时使用
                 ``data/settings_v2.json``。
         """
-        self._lock = threading.Lock()
+        # 使用可重入锁：get()/get_all() 在持锁状态下会调用 load()，
+        # 非重入 Lock 会在此自锁死锁（历史缺陷，2026-09 修复）。
+        self._lock = threading.RLock()
         self._file_path: str = file_path if file_path is not None else _default_settings_path()
         self._settings: Dict[str, Any] = {}
         self._loaded = False
@@ -607,6 +612,9 @@ class SettingsManagerV2:
                 return self._settings
 
             try:
+                # 大小校验：异常巨大的文件视为损坏（防手误/损坏写盘）。
+                if os.path.getsize(self._file_path) > self.MAX_SETTINGS_FILE_BYTES:
+                    raise ValueError("settings file too large")
                 with open(self._file_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 if not isinstance(data, dict):
@@ -709,12 +717,18 @@ class SettingsManagerV2:
         return result
 
     def _write(self) -> None:
-        """将 ``self._settings`` 写入 JSON 文件（已处于锁内）。"""
+        """将 ``self._settings`` 原子写入 JSON 文件（已处于锁内）。
+
+        先写 ``<file>.tmp`` 再 ``os.replace`` 原子替换，避免进程崩溃/
+        断电时截断 settings_v2.json 导致用户配置丢失。
+        """
         settings_dir = os.path.dirname(self._file_path)
         if settings_dir:
             os.makedirs(settings_dir, exist_ok=True)
-        with open(self._file_path, "w", encoding="utf-8") as f:
+        tmp_path = f"{self._file_path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(self._settings, f, ensure_ascii=False, indent=4)
+        os.replace(tmp_path, self._file_path)
 
     def _copy_defaults(self) -> Dict[str, Any]:
         """深拷贝默认 V2 设置。"""
@@ -769,6 +783,12 @@ class SettingsManagerV2:
                         merged_bg.setdefault("blur", 0)
                         merged_bg.setdefault("transparency", 80)
                         merged["appearance"][key] = merged_bg
+                    # mica 浅合并：旧文件只写入了部分 mica 参数时，缺失
+                    # 参数以当前版本默认值补齐（如 saturation/contrast）。
+                    elif key == "mica" and isinstance(app_loaded[key], dict):
+                        merged_mica = dict(merged["appearance"][key])
+                        merged_mica.update(app_loaded[key])
+                        merged["appearance"][key] = merged_mica
                     else:
                         merged["appearance"][key] = app_loaded[key]
 

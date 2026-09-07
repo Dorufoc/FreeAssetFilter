@@ -1,7 +1,7 @@
 """Styled Divider component - matches web divider exactly."""
 
 from PySide6.QtWidgets import QWidget, QSizePolicy
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QPainter, QPen, QFont, QFontMetrics
 
 from theme import tm
