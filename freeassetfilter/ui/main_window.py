@@ -1067,6 +1067,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         if self._file_selector is not None:
             # 信号连接：文件选择器 → 文件池
             self._file_selector.add_to_pool_requested.connect(self._on_add_to_pool_requested)
+            self._file_selector.remove_from_pool_requested.connect(self._on_remove_from_pool_requested)
             self._file_selector.toggle_pool_requested.connect(self._on_toggle_pool_requested)
             self._file_selector.file_selected.connect(self._on_file_selected)
             self._file_selector.preview_cancel_requested.connect(self._on_preview_cancelled)
@@ -1667,6 +1668,17 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         """处理文件选择器右键"添加到文件池"请求"""
         self._file_pool.add_file(file_info)
 
+    def _on_remove_from_pool_requested(self, file_info: dict) -> None:
+        """处理文件选择器右键框选"批量移出文件池"请求（逐文件移除）。
+
+        仅会收到已在池内的路径（选择器侧已按池路径集合过滤）；
+        remove_file 幂等，安全批量调用。池内容变更经 pool_changed 信号
+        回推选择器刷新"已在池中"边框标记。
+        """
+        file_path = file_info.get("path", "")
+        if file_path:
+            self._file_pool.remove_file(file_path)
+
     def _on_toggle_pool_requested(self, file_info: dict) -> None:
         """右键直连：已在池中则移除，否则添加。"""
         file_path = file_info.get("path", "")
@@ -1999,22 +2011,39 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
     # ---- 窗口事件处理 ----
     
     def resizeEvent(self, event: QResizeEvent) -> None:
-        """窗口大小改变事件。
+        """窗口大小改变事件（P0 节流：仅转发可见背景层）。
+
+        拖拽期间 Win32 每像素产生数十个 resize，三层全量
+        ``handle_window_resize`` 会造成 3 倍 ``update()`` 风暴。
+        三背景层互斥可见，仅转发可见层即可保持交互态快路，
+        不可见层跳过（其 settle 定时器与缓存不受影响）。
 
         Args:
             event: Qt 缩放事件。
         """
         super().resizeEvent(event)
-        # 通知 MicaBackgroundWidget 刷新
+        # 通知 MicaBackgroundWidget 刷新（仅可见时）
         if self._mica_background is not None:
-            self._mica_background.handle_window_resize()
+            try:
+                if self._mica_background.isVisible():
+                    self._mica_background.handle_window_resize()
+            except Exception:
+                pass
         # 通知自定义图像背景层刷新（进入交互态，settle 后重建平滑缓存）
         if self._custom_background is not None:
-            self._custom_background.handle_window_resize()
+            try:
+                if self._custom_background.isVisible():
+                    self._custom_background.handle_window_resize()
+            except Exception:
+                pass
         # 通知简约背景层刷新（渐变固定于客户区，按新尺寸重绘）
         minimalist = getattr(self, "_minimalist_background", None)
         if minimalist is not None:
-            minimalist.handle_window_resize()
+            try:
+                if minimalist.isVisible():
+                    minimalist.handle_window_resize()
+            except Exception:
+                pass
 
     def moveEvent(self, event: QMoveEvent) -> None:
         """窗口移动事件"""

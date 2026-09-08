@@ -365,6 +365,8 @@ class PdfPreviewerLayout(QWidget):
         self._fullscreen: bool = False
         self._fullscreen_host: Optional[PreviewFullscreenHost] = None
         self._thumbnail_widgets: list[_IndexPageThumbnail] = []
+        # P0 节流：省略文本合并序号，拖拽每帧 singleShot(0) 改为 24ms 合并。
+        self._elide_seq = 0
 
         self._init_ui()
         self._init_index_drawer()
@@ -681,6 +683,22 @@ class PdfPreviewerLayout(QWidget):
         self._apply_elided_page_text()
         QTimer.singleShot(0, self._apply_elided_page_text)
 
+    def _queue_elided_page_text(self) -> None:
+        """合并请求省略文本刷新（P0：24ms 可取消，替代每帧 singleShot(0)）。
+
+        拖拽中每帧全量 ``QFontMetrics.horizontalAdvance`` + ``setText``
+        会打断顶栏布局；合并到静止后一次执行。
+        """
+        self._elide_seq += 1
+        seq = self._elide_seq
+        QTimer.singleShot(24, lambda: self._flush_elided_page_text(seq))
+
+    def _flush_elided_page_text(self, seq: int) -> None:
+        """执行合并后的省略文本刷新；过期序号直接丢弃。"""
+        if seq != self._elide_seq:
+            return
+        self._apply_elided_page_text()
+
     def _apply_elided_page_text(self) -> None:
         """根据顶栏可用宽度刷新页码文本，空间不足时省略显示。
 
@@ -939,8 +957,8 @@ class PdfPreviewerLayout(QWidget):
     def resizeEvent(self, event) -> None:
         """窗口尺寸变化时同步更新索引和 AI 侧边栏的遮罩和面板尺寸。"""
         super().resizeEvent(event)
-        # 布局激活后刷新页码省略文本（顶栏可用宽度可能已变化）
-        QTimer.singleShot(0, self._apply_elided_page_text)
+        # 布局激活后刷新页码省略文本（P0 合并：拖拽期不每帧测量）
+        self._queue_elided_page_text()
         # 滚动条由网格布局托管，随容器尺寸自动重排，无需手动定位
         if hasattr(self, '_index_drawer') and self._index_drawer._is_open:
             self._index_drawer._update_container_geom()

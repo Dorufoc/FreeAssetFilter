@@ -169,6 +169,8 @@ class NativePdfRenderer(QWidget):
 
         # 需要重新 fit（首次真实 resize 时触发，解决 QStackedLayout 中隐藏时的尺寸 0 问题）
         self._resize_need_fit: bool = False
+        # P0 节流：渲染提交合并序号，拖拽每帧提交改为 32ms 合并一次。
+        self._render_seq: int = 0
 
 
 
@@ -678,6 +680,8 @@ class NativePdfRenderer(QWidget):
         Also triggers a deferred ``fit_to_page`` when the widget was
         hidden (size 0) at document-load time — common when the widget
         sits inside a ``QStackedLayout``.
+        P0 节流：视图尺寸同步 + ``update()`` 保留（坐标正确性必需，
+        开销极低）；渲染提交合并到 32ms 后一次，避免拖拽每帧提交。
         """
         super().resizeEvent(event)
         if self._view is not None:
@@ -687,8 +691,26 @@ class NativePdfRenderer(QWidget):
                 self._resize_need_fit = False
                 self.fit_to_page()
             else:
-                self._submit_render_for_visible_pages()
+                self._queue_render_for_visible_pages()
             self.update()
+
+    def _queue_render_for_visible_pages(self) -> None:
+        """合并请求可见页渲染（P0：32ms 可取消，替代 resize 直调提交）。
+
+        拖拽中每帧 ``_submit_render_for_visible_pages`` 会向后台渲染
+        队列压入大量过期任务；合并到静止后一次提交，后台去重压力骤降。
+        """
+        from PySide6.QtCore import QTimer as _QTimer
+
+        self._render_seq += 1
+        seq = self._render_seq
+        _QTimer.singleShot(32, lambda: self._flush_queued_render(seq))
+
+    def _flush_queued_render(self, seq: int) -> None:
+        """执行合并后的渲染提交；过期序号直接丢弃。"""
+        if seq != self._render_seq:
+            return
+        self._submit_render_for_visible_pages()
 
     def keyPressEvent(self, event: Any) -> None:  # noqa: N802
         """Track Ctrl key state."""

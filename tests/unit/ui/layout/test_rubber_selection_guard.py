@@ -1,13 +1,17 @@
 # -*- coding: utf-8 -*-
 """框选状态机与释放丢失守卫单元测试。
 
-覆盖文件选择器左键框选与暂存池右键框选的收尾契约：
+覆盖文件选择器左键框选、文件选择器右键框选（批量删除池内卡片）与
+暂存池右键框选的收尾契约：
 
 * 松开事件正常到达时，状态必须完全复位（选框隐藏、守卫停止）；
 * 松开事件丢失时，``QTimer`` 守卫必须兜底收尾——这是"框选态粘连"与
   "幽灵框"的共同根因（既有清理全部依赖事件到达 viewport，事件一旦丢失
   且鼠标不回到列表区，状态将永久残留）；
-* 真实按住按键期间，守卫不得误杀进行中的框选。
+* 真实按住按键期间，守卫不得误杀进行中的框选；
+* 选择器框选必须是单一自绘覆层（非 QRubberBand），锚点精确跟随按下位置；
+* 选择器右键框选只移除框内"已在存储池"的卡片，右键拖选后压制跟随菜单，
+  应用失活时兜底中止。
 
 两个布局均为模块级共享实例：离屏环境下同进程反复构造布局 + 框选操作序列
 存在既有段错误（详见 .workbuddy/memory/MEMORY.md），共享实例可规避。
@@ -26,7 +30,7 @@ from typing import Any, List
 
 import pytest
 from PySide6.QtCore import QEvent, QPoint, Qt
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtGui import QContextMenuEvent, QMouseEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -36,6 +40,7 @@ _UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "freeassetfilter" / "u
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
+from freeassetfilter.ui.components.file_list_model import FilePathRole  # noqa: E402
 from freeassetfilter.ui.layout.file_pool_layout import FilePoolLayout
 from freeassetfilter.ui.layout.file_selector_layout import FileSelectorLayout
 
@@ -314,3 +319,166 @@ class TestPoolRubberRelease:
 
         pool._abort_pool_rubber_selection()
         assert not timer.isActive(), "abort 后守卫必须停止"
+
+
+class TestSelectorRubberOverlay:
+    """文件选择器框选覆层的正确性：单框、锚点、按键区分。"""
+
+    def test_band_is_single_custom_overlay(self, selector: FileSelectorLayout) -> None:
+        """只有唯一的自绘覆层（非 QRubberBand），杜绝平台二次绘制双框。"""
+        from freeassetfilter.ui.layout.file_selector_layout import _RubberBandOverlay
+
+        viewport = selector._file_list.viewport()
+        _send(viewport, _mouse_event(QEvent.MouseButtonPress, _START, Qt.LeftButton, Qt.LeftButton))
+        _send(viewport, _mouse_event(QEvent.MouseMove, _END, Qt.NoButton, Qt.LeftButton))
+        band = selector._rubber_band
+        assert band is not None
+        assert isinstance(band, _RubberBandOverlay), "选框应为自绘单框覆层"
+        visible = [w for w in viewport.findChildren(_RubberBandOverlay) if w.isVisible()]
+        assert len(visible) == 1, "同时只能存在一个可见选框"
+        _send(viewport, _mouse_event(QEvent.MouseButtonRelease, _END, Qt.LeftButton, Qt.NoButton))
+        _assert_selector_clean(selector)
+
+    def test_anchor_stays_at_press_point(self, selector: FileSelectorLayout) -> None:
+        """拖拽后选框起点必须精确锚定在按下位置（起点不乱飞）。"""
+        viewport = selector._file_list.viewport()
+        anchor = QPoint(137, 85)
+        _send(viewport, _mouse_event(QEvent.MouseButtonPress, anchor, Qt.LeftButton, Qt.LeftButton))
+        _send(viewport, _mouse_event(QEvent.MouseMove, QPoint(anchor.x() + 30, anchor.y() + 30), Qt.NoButton, Qt.LeftButton))
+        _send(viewport, _mouse_event(QEvent.MouseMove, _END, Qt.NoButton, Qt.LeftButton))
+        band = selector._rubber_band
+        assert band is not None
+        geo = band.geometry()
+        assert (geo.left(), geo.top()) == (anchor.x(), anchor.y()), \
+            f"选框起点应为 {anchor.x()},{anchor.y()}，实际 {geo.left()},{geo.top()}"
+        assert selector._rubber_start_pos == anchor, "状态机起点必须等于按下位置"
+        _send(viewport, _mouse_event(QEvent.MouseButtonRelease, _END, Qt.LeftButton, Qt.NoButton))
+        _assert_selector_clean(selector)
+
+
+class TestSelectorRightRubber:
+    """文件选择器右键框选批量删除（仅作用于已在存储池的卡片）。"""
+
+    def _prime_pool(self, selector: FileSelectorLayout, rows: List[int]) -> None:
+        """把指定行的文件路径标记为"已在存储池"。"""
+        model = selector._file_model
+        paths = {model.data(model.index(r, 0), FilePathRole) for r in rows}
+        selector.sync_pool_status(paths)
+
+    def test_release_normal_removes_pooled_cards(self, selector: FileSelectorLayout) -> None:
+        """右键拖拽松开：仅移除框内"已在池"的卡片，未入池的保持不动。"""
+        removed: List[str] = []
+        selector.remove_from_pool_requested.connect(lambda info: removed.append(info["path"]))
+        # (20,20)-(320,320) 命中行固定为 [0,1,2,5,6,7,10,11,12,15]
+        self._prime_pool(selector, [0, 1, 2])
+        viewport = selector._file_list.viewport()
+
+        _send(viewport, _mouse_event(QEvent.MouseButtonPress, _START, Qt.RightButton, Qt.RightButton))
+        _send(viewport, _mouse_event(QEvent.MouseMove, _END, Qt.NoButton, Qt.RightButton))
+        assert selector._rubber_active, "右键拖拽超过阈值应进入框选态"
+        assert selector._rubber_button == Qt.RightButton
+        _send(viewport, _mouse_event(QEvent.MouseButtonRelease, _END, Qt.RightButton, Qt.NoButton))
+
+        model = selector._file_model
+        expected = sorted(model.data(model.index(r, 0), FilePathRole) for r in (0, 1, 2))
+        assert sorted(removed) == expected, "应只移除框内已在池的三张卡片"
+        assert [p for p in removed if "5" in p] == [], "未入池卡片不得被移除"
+        _assert_selector_clean(selector)
+        assert selector._context_menu_suppressed, "右键拖选后应置位菜单压制标记"
+
+    def test_context_menu_suppressed_after_right_drag(
+        self, selector: FileSelectorLayout
+    ) -> None:
+        """右键拖选结束后，紧随的 ContextMenu 不得触发直连文件池。"""
+        suppressed_flag: List[str] = []
+        selector._on_right_click_toggle_pool  # noqa: B018 - 确认存在
+        selector.customContextMenuRequested.connect(
+            lambda _pos: suppressed_flag.append("menu")
+        )
+        self._prime_pool(selector, [0])
+        viewport = selector._file_list.viewport()
+        _send(viewport, _mouse_event(QEvent.MouseButtonPress, _START, Qt.RightButton, Qt.RightButton))
+        _send(viewport, _mouse_event(QEvent.MouseMove, _END, Qt.NoButton, Qt.RightButton))
+        _send(viewport, _mouse_event(QEvent.MouseButtonRelease, _END, Qt.RightButton, Qt.NoButton))
+
+        # 拖选完成后紧跟一次右键菜单事件（Windows 松开右键的真实时序）
+        menu_event = QContextMenuEvent(QContextMenuEvent.Mouse, _END, viewport.mapToGlobal(_END))
+        QApplication.sendEvent(viewport, menu_event)
+
+        assert not suppressed_flag, "右键拖选后的 ContextMenu 必须被压制"
+
+    def test_guard_finalizes_right_drag(self, selector: FileSelectorLayout) -> None:
+        """右键松开事件丢失时，守卫兜底完成批量移除。"""
+        removed: List[str] = []
+        selector.remove_from_pool_requested.connect(lambda info: removed.append(info["path"]))
+        self._prime_pool(selector, [0, 1, 2, 5, 6, 7, 10, 11, 12, 15])
+        viewport = selector._file_list.viewport()
+        _send(viewport, _mouse_event(QEvent.MouseButtonPress, _START, Qt.RightButton, Qt.RightButton))
+        _send(viewport, _mouse_event(QEvent.MouseMove, _END, Qt.NoButton, Qt.RightButton))
+        assert selector._rubber_active
+
+        selector._on_rubber_guard_tick()
+
+        assert removed, "守卫收尾应完成右键批量移除"
+        _assert_selector_clean(selector)
+
+    def test_right_click_still_toggles_pool(self, selector: FileSelectorLayout) -> None:
+        """右键单击（未拖拽）保持既有直连文件池语义，不进入框选态。"""
+        toggled: List[dict] = []
+        selector.toggle_pool_requested.connect(toggled.append)
+        viewport = selector._file_list.viewport()
+        card_pos = QPoint(80, 80)
+        _send(viewport, _mouse_event(QEvent.MouseButtonPress, card_pos, Qt.RightButton, Qt.RightButton))
+        _send(viewport, _mouse_event(QEvent.MouseButtonRelease, card_pos, Qt.RightButton, Qt.NoButton))
+
+        assert not selector._rubber_active, "右键单击不得进入框选态"
+        _assert_selector_clean(selector)
+        # 右键单击会放开给 Qt，由 ContextMenu → customContextMenuRequested 驱动切换。
+        # 此处合成发送 ContextMenu 事件模拟真实时序，验证直连切换仍生效。
+        menu_event = QContextMenuEvent(
+            QContextMenuEvent.Mouse, card_pos, viewport.mapToGlobal(card_pos)
+        )
+        QApplication.sendEvent(viewport, menu_event)
+        assert toggled, "右键单击应保留直连文件池切换语义"
+
+    def test_left_drag_does_not_touch_right_delete(self, selector: FileSelectorLayout) -> None:
+        """左键框选只入池、绝不触发移除；右键框选只移除、不触碰选中态。"""
+        removed: List[str] = []
+        added: List[dict] = []
+        selector.remove_from_pool_requested.connect(lambda info: removed.append(info["path"]))
+        selector.add_to_pool_requested.connect(added.append)
+        self._prime_pool(selector, [1])
+        viewport = selector._file_list.viewport()
+
+        # 左键拖选：只入池不移除
+        _send(viewport, _mouse_event(QEvent.MouseButtonPress, _START, Qt.LeftButton, Qt.LeftButton))
+        _send(viewport, _mouse_event(QEvent.MouseMove, _END, Qt.NoButton, Qt.LeftButton))
+        _send(viewport, _mouse_event(QEvent.MouseButtonRelease, _END, Qt.LeftButton, Qt.NoButton))
+        assert added, "左键框选应入池"
+        assert not removed, "左键框选不得移除池卡片"
+        assert not selector._file_model.get_selected_rows(), "左键框选后选中态应清空"
+
+        # 右键拖选：只移除不改变选择器选中态
+        selected = set(selector._file_model.get_selected_rows())
+        _send(viewport, _mouse_event(QEvent.MouseButtonPress, _START, Qt.RightButton, Qt.RightButton))
+        _send(viewport, _mouse_event(QEvent.MouseMove, _END, Qt.NoButton, Qt.RightButton))
+        assert not selector._file_model.get_selected_rows(), "右键框选不得改变选中态"
+        _send(viewport, _mouse_event(QEvent.MouseButtonRelease, _END, Qt.RightButton, Qt.NoButton))
+        assert removed
+        assert selector._file_model.get_selected_rows() == selected, "右键框选后选中态应保持不变"
+        _assert_selector_clean(selector)
+
+    def test_application_inactive_aborts(self, selector: FileSelectorLayout) -> None:
+        """应用失活（真实鼠标拖拽中途 alt-tab）时框选必须中止复位。"""
+        viewport = selector._file_list.viewport()
+        _send(viewport, _mouse_event(QEvent.MouseButtonPress, _START, Qt.LeftButton, Qt.LeftButton))
+        _send(viewport, _mouse_event(QEvent.MouseMove, _END, Qt.NoButton, Qt.LeftButton))
+        assert selector._rubber_active
+
+        qapp = QApplication.instance()
+        qapp.applicationStateChanged.emit(Qt.ApplicationInactive)
+
+        _assert_selector_clean(selector)
+        # 失活中止后残留的松开事件抵达也不得再触发任何动作
+        _send(viewport, _mouse_event(QEvent.MouseButtonRelease, _END, Qt.LeftButton, Qt.NoButton))
+        _assert_selector_clean(selector)

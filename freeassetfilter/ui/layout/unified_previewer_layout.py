@@ -110,6 +110,9 @@ class UnifiedPreviewerLayout(QWidget):
         # 默认 1:1 比例（可见后由 _apply_default_split 精确等分）
         self._splitter.setSizes([1, 1])
         self._default_split_applied = False
+        # P0 节流：半高缓存，变化<=2px 时跳过约束重写，避免
+        # setSizes→layout→子resize 的递归放大。
+        self._last_half = 0
         self._splitter.splitterMoved.connect(self._on_splitter_moved)
 
         layout.addWidget(self._splitter, stretch=1)
@@ -338,11 +341,17 @@ class UnifiedPreviewerLayout(QWidget):
         """把信息面板最高高度限制为可用高度的一半，并对超限状态兜底钳制。
 
         窗口尺寸变化 / 把手移动 / 程序化 setSizes 后都应调用（幂等）。
+        P0 节流：半高变化<=2px 且未超限时直接返回，不碰
+        setMaximumHeight/setSizes，避免拖拽每帧递归触发布局。
         """
         available = self._splitter_available_height()
         if available <= 0:
             return
         half = available // 2
+        if abs(half - self._last_half) <= 2:
+            if self._content_bottom.height() <= half:
+                return
+        self._last_half = half
         # QSplitter 拖动与 setSizes 均遵循该最大高度，信息区无法越过半高
         self._content_bottom.setMaximumHeight(half)
         if self._content_bottom.height() > half:

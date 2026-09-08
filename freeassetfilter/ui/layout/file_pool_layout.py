@@ -748,7 +748,8 @@ class FilePoolLayout(QWidget):
         try:
             _pool_rubber_log(
                 f"[pool-rubber] release obj={type(obj).__name__} "
-                f"buttons={int(event.buttons())} active={self._pool_rubber_active}"
+                f"buttons={getattr(event.buttons(), 'value', event.buttons())} "
+                f"active={self._pool_rubber_active}"
             )
         except Exception:
             pass
