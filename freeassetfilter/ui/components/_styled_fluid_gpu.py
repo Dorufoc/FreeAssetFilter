@@ -109,17 +109,24 @@ vec3 base_gradient(vec2 uv)
     return mix(u_palette[0], u_palette[1], (t - 0.45) / 0.55);
 }
 
-vec3 sample_scene(vec2 uv)
+// The base gradient is sampled in unwarped screen space (grad_uv) while blobs
+// use the domain-warped blob_uv. Warping rotates/translates coordinates
+// outside [0,1]; if the gradient were sampled there, its clamped end-stops
+// would paint the out-of-range corner triangles with a flat palette end color
+// (visible as light wedges along the edges). soft_blob decays smoothly with
+// distance, so out-of-range blob_uv is harmless; the gradient must stay
+// anchored to the screen to guarantee full smooth coverage.
+vec3 sample_scene(vec2 grad_uv, vec2 blob_uv)
 {
     const float opacity[BLOB_COUNT] = float[](0.95, 0.90, 0.85, 0.80);
-    vec3 col = base_gradient(uv);
+    vec3 col = base_gradient(grad_uv);
 
     // Source-over blending keeps colors inside the palette gamut instead of
     // additively blowing out to white where blobs overlap.
     for (int i = 0; i < BLOB_COUNT; ++i) {
         int idx = u_blob_colors[i];
         vec3 blob_col = u_palette[idx % PALETTE_SIZE];
-        float field = soft_blob(uv, u_blob_centers[i], u_blob_radii[i]);
+        float field = soft_blob(blob_uv, u_blob_centers[i], u_blob_radii[i]);
         col = mix(col, blob_col, field * opacity[i]);
     }
     return col;
@@ -130,23 +137,27 @@ void main()
     vec2 uv = v_uv;
 
     // Two-octave domain warp: slow global swirl plus local turbulence for an
-    // organic, lava-lamp-like flow.
-    float n1 = noise(uv * 2.0 + u_noise_offset + u_time * 0.03);
-    float n2 = noise(uv * 3.5 - u_noise_offset * 0.7 - u_time * 0.02);
-    float angle = (n1 - 0.5) * 0.9 + u_time * 0.015;
+    // organic, lava-lamp-like flow. Time coefficients are tuned for a
+    // clearly visible drift (the CPU-side state already advances in real
+    // seconds, so these scale the on-screen speed directly).
+    float n1 = noise(uv * 2.0 + u_noise_offset + u_time * 0.12);
+    float n2 = noise(uv * 3.5 - u_noise_offset * 0.7 - u_time * 0.08);
+    float angle = (n1 - 0.5) * 0.9 + u_time * 0.05;
     mat2 rot = mat2(cos(angle), -sin(angle), sin(angle), cos(angle));
     vec2 centered = (uv - vec2(0.5)) * rot;
     uv = vec2(0.5) + centered;
     uv += vec2(n1 - 0.5, n2 - 0.5) * 0.12;
 
-    // 9-tap soft-blur approximation.
+    // 9-tap soft-blur approximation. The gradient tap stays clamped to the
+    // unit square so edge pixels never sample a clamped end-stop wedge; the
+    // blob tap follows the warped uv.
     vec2 texel = 1.0 / max(u_resolution, vec2(1.0));
     vec3 sum = vec3(0.0);
     float weight = 0.0;
     for (int x = -1; x <= 1; ++x) {
         for (int y = -1; y <= 1; ++y) {
             vec2 offset = vec2(float(x), float(y)) * texel * 2.5;
-            sum += sample_scene(uv + offset);
+            sum += sample_scene(clamp(v_uv + offset, 0.0, 1.0), uv + offset);
             weight += 1.0;
         }
     }
@@ -341,24 +352,40 @@ class _FluidGPUShaderWidget(QOpenGLWidget):
         self._vao = vao
         self._vbo = vbo
 
+    def _physical_size(self, width: int, height: int) -> tuple[int, int]:
+        """Convert logical widget dimensions to the framebuffer pixel size."""
+        dpr = max(1.0, float(self.devicePixelRatioF()))
+        return (
+            max(1, int(round(width * dpr))),
+            max(1, int(round(height * dpr))),
+        )
+
     def resizeGL(self, width: int, height: int) -> None:
-        """Update the viewport and resolution uniform.
+        """Update the viewport and resolution uniform in physical pixels.
+
+        ``resizeGL`` receives logical widget dimensions, while the
+        ``QOpenGLWidget`` framebuffer is allocated in physical pixels. Using
+        the logical values leaves the right/bottom framebuffer strip uncleared
+        on fractional-DPI screens.
 
         Args:
-            width: New widget width in pixels.
-            height: New widget height in pixels.
+            width: New widget width in logical pixels.
+            height: New widget height in logical pixels.
         """
         ctx = self.context()
         if ctx is None or not ctx.isValid():
             return
+        physical_width, physical_height = self._physical_size(width, height)
         functions = ctx.functions()
-        functions.glViewport(0, 0, max(0, width), max(0, height))
+        functions.glViewport(0, 0, physical_width, physical_height)
 
         if self._program is not None and self._program.isLinked():
             self._program.bind()
             loc = self._uniform_locations.get("u_resolution")
             if loc >= 0:
-                self._program.setUniformValue(loc, float(width), float(height))
+                self._program.setUniformValue(
+                    loc, float(physical_width), float(physical_height)
+                )
             self._program.release()
 
     def paintGL(self) -> None:

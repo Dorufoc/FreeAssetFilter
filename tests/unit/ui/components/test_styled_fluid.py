@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from PySide6.QtCore import QModelIndex, QSize, Qt
+from PySide6.QtCore import QModelIndex, QRect, QSize, Qt
 from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QListView, QWidget
 
@@ -249,6 +249,14 @@ class TestFluidGpu:
         assert hasattr(_fluid_gpu, "_FluidGPUShaderWidget")
         assert callable(_fluid_gpu._FluidGPUShaderWidget)
 
+    def test_resize_uses_physical_framebuffer_dimensions(self) -> None:
+        """DPI 缩放下 viewport 和 shader 分辨率必须使用物理像素尺寸。"""
+        source = Path(_fluid_gpu.__file__).read_text(encoding="utf-8")
+        assert "devicePixelRatioF()" in source
+        assert "physical_width" in source
+        assert "physical_height" in source
+        assert "glViewport(0, 0, physical_width, physical_height)" in source
+
 
 # =============================================================================
 # ui.components.styled_fluid_background
@@ -293,6 +301,21 @@ class TestStyledFluidBackground:
         """load 之前 renderer() 为 None。"""
         bg = StyledFluidBackground()
         assert bg.renderer() is None
+        safe_teardown(bg)
+
+    def test_background_layer_is_transparent(self, qapp: QApplication) -> None:
+        """流体宿主层不能用系统默认底色填充未覆盖区域。"""
+        bg = StyledFluidBackground()
+        assert bg.autoFillBackground() is False
+        assert bg.testAttribute(Qt.WA_TranslucentBackground)
+        assert bg.testAttribute(Qt.WA_NoSystemBackground) is True
+        safe_teardown(bg)
+
+    def test_gpu_geometry_expanded_one_pixel(self, qapp: QApplication) -> None:
+        """GPU 子控件几何在宿主基础上外扩 1 逻辑像素，覆盖 DPI 取整缺口。"""
+        bg = StyledFluidBackground()
+        bg.resize(401, 176)
+        assert bg._gpu_geometry() == QRect(-1, -1, 403, 178)
         safe_teardown(bg)
 
     def test_cpu_load_and_unload(self, qapp: QApplication, monkeypatch: Any) -> None:

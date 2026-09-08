@@ -706,8 +706,8 @@ class MPVManager(QObject):
 
         info(f"加载文件: {file_path}")
 
-        # MPVPlayerCore.load_file 只接受 file_path 参数
-        success = self._mpv_core.load_file(file_path)
+        # MPVPlayerCore.load_file 接受 file_path 和 is_audio 参数
+        success = self._mpv_core.load_file(file_path, is_audio=is_audio)
 
         return success
 

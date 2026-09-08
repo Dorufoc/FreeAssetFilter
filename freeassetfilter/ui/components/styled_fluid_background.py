@@ -22,10 +22,11 @@ from __future__ import annotations
 import logging
 import math
 import os
+import time
 from collections.abc import Callable
 from typing import Any, ClassVar, NamedTuple
 
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QPointF, QRect, Qt
 from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPixmap, QResizeEvent
 from PySide6.QtWidgets import QWidget, QApplication
 
@@ -76,9 +77,17 @@ class StyledFluidBackground(QWidget):
     _PALETTE_SIZE = 5
 
     # Angular velocity of the circular noise-offset drift in radians per
-    # second (one lap every ~45 s). Constant speed keeps the domain warp
+    # second (one lap every ~16 s). Constant speed keeps the domain warp
     # evolving uniformly with no periodic sprint.
-    _NOISE_ORBIT_RAD_PER_SEC = 2.0 * math.pi / 45.0
+    _NOISE_ORBIT_RAD_PER_SEC = 2.0 * math.pi / 16.0
+
+    # Palette breathing rate in phase cycles per second (~8 s per
+    # inhale-exhale cycle) and drift amplitudes. These are tuned so the
+    # color wash visibly breathes within a few seconds of playback.
+    _PALETTE_BREATH_PER_SEC = 0.12
+    _PALETTE_DRIFT_HUE = 18.0
+    _PALETTE_DRIFT_SAT = 10.0
+    _PALETTE_DRIFT_VAL = 7.0
 
     # Parameters for analogous palette generation from a single seed color.
     # Tuned for Apple Music-like backgrounds: high saturation, deep-to-mid
@@ -88,37 +97,42 @@ class StyledFluidBackground(QWidget):
     _VAL_MULS = (0.78, 0.92, 1.00, 0.66, 0.58)
 
     # Normalised blob parameters for the GPU/CPU shared model. ``speed`` is
-    # in orbit cycles per second; values are kept low (20-45 s per lap) so
-    # blobs drift ambiently instead of visibly circling.
+    # in orbit cycles per second; ~8-15 s per lap so blobs drift with a
+    # clearly visible lava-lamp flow instead of an almost-static wash.
     _FLUID_BLOBS: ClassVar[list[dict[str, Any]]] = [
         {"base": QPointF(0.16, 0.20), "orbit": QPointF(0.14, 0.10),
          "radius": 0.46, "scale_x": 1.34, "scale_y": 1.06,
-         "phase": 0.0, "speed": 0.040, "opacity": 0.72, "color_index": 0},
+         "phase": 0.0, "speed": 0.105, "opacity": 0.72, "color_index": 0},
         {"base": QPointF(0.84, 0.24), "orbit": QPointF(0.13, 0.11),
          "radius": 0.40, "scale_x": 1.20, "scale_y": 1.34,
-         "phase": 1.1, "speed": 0.033, "opacity": 0.62, "color_index": 1},
+         "phase": 1.1, "speed": 0.090, "opacity": 0.62, "color_index": 1},
         {"base": QPointF(0.30, 0.80), "orbit": QPointF(0.11, 0.12),
          "radius": 0.42, "scale_x": 1.28, "scale_y": 1.20,
-         "phase": 2.2, "speed": 0.026, "opacity": 0.56, "color_index": 2},
+         "phase": 2.2, "speed": 0.075, "opacity": 0.56, "color_index": 2},
         {"base": QPointF(0.78, 0.72), "orbit": QPointF(0.14, 0.10),
          "radius": 0.36, "scale_x": 1.42, "scale_y": 1.10,
-         "phase": 3.0, "speed": 0.036, "opacity": 0.54, "color_index": 3},
+         "phase": 3.0, "speed": 0.100, "opacity": 0.54, "color_index": 3},
         {"base": QPointF(0.50, 0.46), "orbit": QPointF(0.10, 0.10),
          "radius": 0.38, "scale_x": 1.10, "scale_y": 1.52,
-         "phase": 4.1, "speed": 0.022, "opacity": 0.44, "color_index": 4},
+         "phase": 4.1, "speed": 0.065, "opacity": 0.44, "color_index": 4},
         {"base": QPointF(0.60, 0.16), "orbit": QPointF(0.09, 0.08),
          "radius": 0.28, "scale_x": 1.30, "scale_y": 0.88,
-         "phase": 0.8, "speed": 0.046, "opacity": 0.42, "color_index": 2},
+         "phase": 0.8, "speed": 0.115, "opacity": 0.42, "color_index": 2},
         {"base": QPointF(0.20, 0.58), "orbit": QPointF(0.10, 0.06),
          "radius": 0.26, "scale_x": 0.96, "scale_y": 1.24,
-         "phase": 2.8, "speed": 0.043, "opacity": 0.38, "color_index": 1},
+         "phase": 2.8, "speed": 0.110, "opacity": 0.38, "color_index": 1},
         {"base": QPointF(0.84, 0.52), "orbit": QPointF(0.07, 0.09),
          "radius": 0.22, "scale_x": 1.12, "scale_y": 1.12,
-         "phase": 5.0, "speed": 0.050, "opacity": 0.34, "color_index": 0},
+         "phase": 5.0, "speed": 0.125, "opacity": 0.34, "color_index": 0},
     ]
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        # 宿主只负责承载 CPU/GPU 渲染层，未覆盖区域必须透出下方内容，
+        # 不能让 QWidget 的系统默认背景（通常为白色）参与合成。
+        self.setAutoFillBackground(False)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
         self._palette: list[QColor] = []
         self._mode = "accent"
         self._loaded = False
@@ -127,6 +141,7 @@ class StyledFluidBackground(QWidget):
         self._gpu_widget: QWidget | None = None
         self._static_pixmap: QPixmap | None = None
         self._tick_count = 0
+        self._last_tick_wall = 0.0
         self._time_state: _FluidTimeState | None = None
         self._parent_layout_slot: int | None = None
         self._theme_changed_slot: Callable | None = None
@@ -408,6 +423,23 @@ class StyledFluidBackground(QWidget):
             except RuntimeError:
                 pass
 
+    def _gpu_geometry(self) -> QRect:
+        """Return the host rect expanded by one logical pixel on each side.
+
+        ``QOpenGLWidget`` sizes its native GL surface from the logical size
+        times ``devicePixelRatio`` using its own rounding; on fractional-DPI
+        screens the surface can come out one device pixel short of the
+        widget's device rect, leaving a 1 px uncovered strip along the fluid
+        edge (visible as a stray light line in both themes). Expanding the
+        child geometry by one logical pixel keeps that rounding shortfall
+        outside the host bounds. The child is clipped to the host during
+        compositing, so the overdraw is never visible.
+
+        Returns:
+            QRect: The host rect inflated by one logical pixel on each side.
+        """
+        return self.rect().adjusted(-1, -1, 1, 1)
+
     def _choose_renderer(self) -> str:
         """Select GPU or CPU renderer based on environment and capability.
 
@@ -424,16 +456,35 @@ class StyledFluidBackground(QWidget):
         """
         self._gpu_attempted = True
         if os.environ.get("FAF_FORCE_FLUID_CPU") == "1":
+            self._release_gpu_widget()
             return "cpu"
         if self._has_native_sibling():
+            self._release_gpu_widget()
             return "cpu"
         if _FluidGPUShaderWidget is None:
+            self._release_gpu_widget()
             return "cpu"
+
+        # 复用已存在的 GPU 控件（切歌等重复 load 场景）：每次重建会泄漏
+        # 旧 QOpenGLWidget（残留上一首的颜色盖在下层），且新控件在部分
+        # 驱动下呈现空白；复用还避免了重复创建 GL 上下文的开销。
+        existing = self._gpu_widget
+        if existing is not None:
+            try:
+                ctx = existing.context()
+                if ctx is not None and ctx.isValid():
+                    existing.setGeometry(self._gpu_geometry())
+                    if not existing.isVisible():
+                        existing.show()
+                    return "gpu"
+            except RuntimeError:
+                pass
+            self._release_gpu_widget()
 
         gpu: QWidget | None = None
         try:
             gpu = _FluidGPUShaderWidget(parent=self)
-            gpu.setGeometry(self.rect())
+            gpu.setGeometry(self._gpu_geometry())
             # Qt's QOpenGLWidget creates its GL context lazily when the widget
             # is shown inside a visible top-level window. We must show the widget
             # and process events to force context creation before calling
@@ -445,6 +496,13 @@ class StyledFluidBackground(QWidget):
                 raise RuntimeError("OpenGL context is not valid after show()")
             gpu.initializeGL()
             self._gpu_widget = gpu
+            # 赋值后按当前几何再同步一次：show()+processEvents()
+            # 期间布局可能已经稳定，此前触发的 resizeEvent 发生于赋值
+            # 之前，同步的是旧控件，新控件会残留构造瞬间的过期尺寸。
+            try:
+                gpu.setGeometry(self._gpu_geometry())
+            except RuntimeError:
+                pass
             return "gpu"
         except Exception:
             logger.exception(
@@ -488,6 +546,9 @@ class StyledFluidBackground(QWidget):
     def _start_animation(self) -> None:
         """Register the ~30 FPS HeartbeatManager tick callback."""
         self._time_state = self._create_time_state()
+        # Reset the wall-clock baseline so the first post-start delta
+        # measures from here instead of from an arbitrarily old tick.
+        self._last_tick_wall = time.monotonic()
         hm = HeartbeatManager()
         try:
             hm.register_tick_callback(
@@ -513,8 +574,8 @@ class StyledFluidBackground(QWidget):
             blob_phases=tuple(0.0 for _ in range(len(self._FLUID_BLOBS))),
         )
 
-    def _advance_time_state(self, state: _FluidTimeState) -> _FluidTimeState:
-        """Advance the GPU animation state by one fixed tick.
+    def _advance_time_state(self, state: _FluidTimeState, delta: float = 0.033) -> _FluidTimeState:
+        """Advance the GPU animation state by one tick.
 
         All periodic quantities move at constant velocity. The previous
         implementation eased the noise offset and (via the sync step) the
@@ -524,14 +585,19 @@ class StyledFluidBackground(QWidget):
 
         Args:
             state: Current animation state.
+            delta: Real elapsed seconds since the previous tick. Using wall
+                time (instead of a fixed step) keeps the flow at 1x speed
+                even when the shared heartbeat runs slower than 30fps.
 
         Returns:
             _FluidTimeState: New state with updated time, palette phase,
             per-blob phases and noise offset.
         """
-        delta = 0.033
+        delta = max(0.0, min(0.25, float(delta)))
         new_time = state.time + delta
-        new_palette_phase = wrap_phase(state.palette_phase + 0.002)
+        new_palette_phase = wrap_phase(
+            state.palette_phase + self._PALETTE_BREATH_PER_SEC * delta
+        )
         new_blob_phases = tuple(
             wrap_phase(phase + blob["speed"] * delta)
             for phase, blob in zip(state.blob_phases, self._FLUID_BLOBS)
@@ -562,11 +628,15 @@ class StyledFluidBackground(QWidget):
         """Advance animation state and request a repaint (GPU path only)."""
         if not self._loaded or self._renderer != "gpu" or self._gpu_widget is None:
             return
+        now = time.monotonic()
+        last = self._last_tick_wall
+        self._last_tick_wall = now
+        delta = now - last if last > 0.0 else 0.033
         self._tick_count += 1
         if self._time_state is None:
             self._time_state = self._create_time_state()
         else:
-            self._time_state = self._advance_time_state(self._time_state)
+            self._time_state = self._advance_time_state(self._time_state, delta)
         self._sync_gpu_widget()
         self._gpu_widget.update()
 
@@ -581,7 +651,12 @@ class StyledFluidBackground(QWidget):
         # wrapped phase would produce.
         drift = math.sin(state.palette_phase * 2.0 * math.pi)
         drifted_palette = [
-            hsv_shift(color, drift * 10.0, drift * 6.0, drift * 4.0)
+            hsv_shift(
+                color,
+                drift * self._PALETTE_DRIFT_HUE,
+                drift * self._PALETTE_DRIFT_SAT,
+                drift * self._PALETTE_DRIFT_VAL,
+            )
             for color in self._palette
         ]
 
@@ -698,10 +773,15 @@ class StyledFluidBackground(QWidget):
     # ------------------------------------------------------------------
 
     def resizeEvent(self, event: QResizeEvent | None = None) -> None:
-        """Keep the GPU child widget sized to the host geometry."""
+        """Keep the GPU child widget sized to the host geometry.
+
+        The child is deliberately inflated by one logical pixel on each side
+        (see :meth:`_gpu_geometry`) so that its native GL surface always
+        covers the host's full device rect on fractional-DPI screens.
+        """
         super().resizeEvent(event)
         if self._gpu_widget is not None:
-            self._gpu_widget.setGeometry(self.rect())
+            self._gpu_widget.setGeometry(self._gpu_geometry())
 
     def paintEvent(self, event: QPaintEvent | None = None) -> None:
         """Paint the fluid background or a solid placeholder.
@@ -718,13 +798,10 @@ class StyledFluidBackground(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
-        if self._palette:
-            if self._loaded and self._renderer == "cpu":
-                pixmap = self._static_pixmap
-                if pixmap is not None and not pixmap.isNull():
-                    painter.drawPixmap(self.rect(), pixmap, pixmap.rect())
-                else:
-                    painter.fillRect(self.rect(), self._palette[0])
-            else:
-                painter.fillRect(self.rect(), self._palette[0])
+        if self._loaded and self._renderer == "cpu":
+            pixmap = self._static_pixmap
+            if pixmap is not None and not pixmap.isNull():
+                painter.drawPixmap(self.rect(), pixmap, pixmap.rect())
+        # GPU 模式由子 QOpenGLWidget 完整绘制；宿主层保持透明，不能再用
+        # palette[0] 绘制兜底底色，否则尺寸边缘会露出一圈非流体颜色。
         painter.end()

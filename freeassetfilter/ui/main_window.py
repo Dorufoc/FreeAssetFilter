@@ -384,6 +384,36 @@ def _opengl_available() -> bool:
         return False
 
 
+class _GLSurfaceWarmupWidget(QOpenGLWidget):
+    """1x1 透明 GL 占位：在主窗口首次显示前占据 GL 表面名额。
+
+    背景：QOpenGLWidget 在**已显示**的顶层窗口中首次创建时，会迫使 Qt
+    销毁并重建整个顶层 HWND（窗口类从普通 raster 类切换为 OwnDC 类）。
+    音频预览的流体背景（StyledFluidBackground GPU 路径）正是在窗口显示后
+    动态创建 QOpenGLWidget——这就是播放音频时主窗口消失、原地冒出一个
+    同尺寸黑窗的根因（重建后的新 HWND 丢失无边框样式/DWM 扩展帧，
+    内容来不及重绘便保持纯黑；MPV 音频不受影响故后台继续播放）。
+
+    本占位在主窗口 ``show()`` 之前就已存在并可见，顶层窗口从创建之初
+    就是 OwnDC 类，后续再创建流体背景等 GL 控件时不再触发 HWND 重建。
+    控件本身 1x1 全透明、鼠标穿透、压在最底层，无视觉与交互影响。
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(1, 1)
+        self.setAutoFillBackground(False)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+    def paintGL(self) -> None:
+        """仅清为全透明，不绘制任何内容。"""
+        painter = QPainter(self)
+        painter.setCompositionMode(QPainter.CompositionMode_Source)
+        painter.fillRect(self.rect(), Qt.transparent)
+        painter.end()
+
+
 def make_mica_background(
     parent: Optional[QWidget] = None,
     blur_radius: int = 200,
@@ -603,6 +633,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         """
         # 先初始化属性，防止父类初始化期间触发的事件访问未定义属性
         self._mica_background = None
+        self._gl_warmup = None
         self._custom_background = None
         self._minimalist_background = None
         self._background_mode = "mica"
@@ -860,6 +891,20 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._content.raise_()
         if self._minimalist_background is not None:
             self._minimalist_background.stackUnder(self._content)
+
+        # GL 表面预热（必须在窗口首次 show() 之前）：占据一个 GL 表面名额，
+        # 使顶层 HWND 从创建起就是 OwnDC 类。否则音频预览的流体背景在窗口
+        # 显示后动态创建首个 QOpenGLWidget，会触发顶层 HWND 销毁重建，
+        # 表现为播放音频时主窗口消失、原地出现同尺寸黑窗。无头/无 GL 环境
+        # 跳过（流体背景届时自动走 CPU 路径，不创建 GL 表面）。
+        self._gl_warmup: Optional[QWidget] = None
+        try:
+            if os.environ.get("QT_QPA_PLATFORM", "").strip().lower() != "offscreen" and _opengl_available():
+                self._gl_warmup = _GLSurfaceWarmupWidget(self._root)
+                overlay.addWidget(self._gl_warmup, 0, 0)
+                self._gl_warmup.lower()
+        except Exception:
+            self._gl_warmup = None
 
         # 启动恢复：按持久化文件名拼绝对路径加载自定义背景；文件缺失时
         # 组件内部回退纯色并记日志，不抛异常（见 CustomImageBackgroundWidget.set_image）

@@ -1250,7 +1250,7 @@ class MPVPlayerCore(QObject):
         if isinstance(result_event, threading.Event):
             result_event.set()
     
-    def _load_file_internal(self, mpv_handle: c_void_p, file_path: str, **kwargs) -> bool:
+    def _load_file_internal(self, mpv_handle: c_void_p, file_path: str, is_audio: bool = False, **kwargs) -> bool:
         """内部加载文件实现"""
         if not mpv_handle:
             return False
@@ -1262,6 +1262,12 @@ class MPVPlayerCore(QObject):
                 sanitize_path(file_path)
                 self._emit_error(MpvErrorCode.LOADING_FAILED, "文件不存在")
                 return False
+
+            # 音频模式禁用视频轨：音频文件的封面图会被 MPV 识别为视频轨，
+            # 在未嵌入 wid 的情况下 MPV 会自建顶层黑色窗口盖住主窗口。
+            # 必须在 loadfile 之前设置 vid，否则视频轨已被选中，设置不生效。
+            vid_value = b"no" if is_audio else b"auto"
+            self._dll_loader.dll.mpv_set_property_string(mpv_handle, b"vid", vid_value)
             
             with self._state_lock:
                 self._current_file = file_path
@@ -2155,17 +2161,19 @@ class MPVPlayerCore(QObject):
             pass
         return False
     
-    def load_file(self, file_path: str) -> bool:
+    def load_file(self, file_path: str, is_audio: bool = False) -> bool:
         """
-        加载视频文件
+        加载媒体文件
         
         Args:
-            file_path: 视频文件路径
+            file_path: 媒体文件路径
+            is_audio: 是否为音频文件（True 时禁用视频轨 vid=no，防止 MPV
+                      因封面图等内嵌视频轨而自建原生窗口）
             
         Returns:
             bool: 加载是否成功
         """
-        result = self._send_command(MPVCommandType.LOAD_FILE, file_path, timeout=30.0)
+        result = self._send_command(MPVCommandType.LOAD_FILE, file_path, is_audio, timeout=30.0)
         return result if result is not None else False
     
     def play(self) -> bool:

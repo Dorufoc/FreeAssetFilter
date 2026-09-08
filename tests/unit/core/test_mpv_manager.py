@@ -702,7 +702,7 @@ class TestDoOperationImplementations:
             operation_type=MPVOperationType.LOAD_FILE, args=("a.mp4", False)
         )
         assert manager._execute_operation(ok) is True  # noqa: SLF001
-        manager._mpv_core.load_file.assert_called_once_with("a.mp4")  # type: ignore[union-attr]
+        manager._mpv_core.load_file.assert_called_once_with("a.mp4", is_audio=False)  # type: ignore[union-attr]
 
         # 中断路径：立即上次加载 → 触发间隔等待，但 stop_event 已置位 → 放弃
         manager._last_file_load_time = __import__("time").monotonic()  # noqa: SLF001

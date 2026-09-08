@@ -516,7 +516,12 @@ class VideoPlayerLayout(QWidget):
 
         # ── 音频渲染表面（index 2，音频模式时代替视频窗口）──
         self._audio_surface = QWidget()
-        self._audio_surface.setStyleSheet("background-color: #000;")
+        # 音频表面只承载流体层，不再提供独立的纯色底板，避免流体边缘
+        # 未覆盖时露出与流体不一致的白色/黑色线条。
+        self._audio_surface.setAttribute(Qt.WA_TranslucentBackground, True)
+        self._audio_surface.setAttribute(Qt.WA_NoSystemBackground, True)
+        self._audio_surface.setAutoFillBackground(False)
+        self._audio_surface.setStyleSheet("background: transparent;")
         audio_layout = QGridLayout(self._audio_surface)
         audio_layout.setContentsMargins(0, 0, 0, 0)
         audio_layout.setSpacing(0)
