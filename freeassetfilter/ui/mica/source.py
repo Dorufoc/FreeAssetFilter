@@ -44,6 +44,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -82,6 +83,15 @@ BACKEND_SOLID: str = "solid"
 
 #: 非 Windows / 探测失败时的兜底虚拟桌面尺寸。
 DEFAULT_VIRTUAL_RECT: Tuple[int, int, int, int] = (0, 0, 1920, 1080)
+
+#: :meth:`WallpaperProvider.probe` 结果的短时缓存窗口（秒）。
+#: 拖拽 / 缩放窗口期间，``MicaMaterial`` 每个 resize 事件都会经
+#: ``_layer_key_for`` 与 ``_monitor_rect_for`` 触发探测；而单次探测要
+#: ``CoCreateInstance(CLSCTX_LOCAL_SERVER)`` 连接 Explorer 并逐显示器取
+#: 路径 / 矩形 / 放置方式（实测 ~50ms 且会泵消息导致重入重绘）。桌面元数据
+#: 的变化频率远低于此，短 TTL 让交互路径退化为一次时间比较，同时保留对
+#: 壁纸 / 显示器变化的秒级感知。
+PROBE_TTL_S: float = 0.5
 
 #: 注册表 ``WallpaperStyle`` → 放置方式。
 _REGISTRY_STYLES = {
@@ -661,7 +671,14 @@ class WallpaperProvider:
             src = provider.acquire()                 # 壁纸变了才重建
     """
 
-    __slots__ = ("_canvas_max_long", "_fallback_rgb", "_cached", "_allow_dxgi")
+    __slots__ = (
+        "_canvas_max_long",
+        "_fallback_rgb",
+        "_cached",
+        "_allow_dxgi",
+        "_probe_at",
+        "_probe_cached",
+    )
 
     def __init__(
         self,
@@ -682,18 +699,39 @@ class WallpaperProvider:
         self._fallback_rgb = tuple(int(v) & 0xFF for v in fallback_rgb)  # type: ignore[assignment]
         self._cached: Optional[WallpaperSource] = None
         self._allow_dxgi = allow_dxgi
+        self._probe_at: float = 0.0
+        self._probe_cached: Optional[DesktopInfo] = None
 
     # -- 探测 ---------------------------------------------------------------
 
-    def probe(self) -> DesktopInfo:
+    def probe(self, *, force: bool = False) -> DesktopInfo:
         """探测桌面壁纸元数据（不解码像素）。
 
         依次尝试 ``IDesktopWallpaper`` → ``SystemParametersInfoW`` → 注册表，
         任一级拿到路径即停止向下探测放置方式的兜底来源。
 
+        结果带 :data:`PROBE_TTL_S` 短时缓存：拖拽 / 缩放期间本方法每帧被调用，
+        而底层 COM 探测是跨进程调用（~50ms）。缓存只影响元数据获取，不影响
+        :meth:`acquire` 对壁纸文件 mtime / size 的比对（``signature()`` 仍实时
+        计算），因此壁纸替换最迟在 TTL 后即可被感知。
+
+        Args:
+            force: 忽略 TTL 缓存强制重新探测（壁纸变更等显式刷新路径使用）。
+
         Returns:
             :class:`DesktopInfo`；非 Windows 或全部失败时返回纯色描述。
         """
+        now = time.monotonic()
+        cached = self._probe_cached
+        if not force and cached is not None and (now - self._probe_at) < PROBE_TTL_S:
+            return cached
+        info = self._probe_uncached()
+        self._probe_cached = info
+        self._probe_at = now
+        return info
+
+    def _probe_uncached(self) -> DesktopInfo:
+        """实际执行探测（无缓存），语义见 :meth:`probe`。"""
         virtual_rect = self._virtual_rect()
         if not winapi.IS_WINDOWS:
             return DesktopInfo(
@@ -797,7 +835,7 @@ class WallpaperProvider:
         Returns:
             :class:`WallpaperSource`；任何情况下都返回有效画布（最差为单色）。
         """
-        info = self.probe()
+        info = self.probe(force=force)
         signature = info.signature()
         cached = self._cached
         if not force and cached is not None and cached.signature == signature:
@@ -813,8 +851,10 @@ class WallpaperProvider:
         return source
 
     def invalidate(self) -> None:
-        """丢弃缓存，下次 :meth:`acquire` 必定重建。"""
+        """丢弃缓存，下次 :meth:`acquire` 必定重建（含探测 TTL 缓存）。"""
         self._cached = None
+        self._probe_cached = None
+        self._probe_at = 0.0
 
     @property
     def cached(self) -> Optional[WallpaperSource]:

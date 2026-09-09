@@ -1,7 +1,7 @@
-"""OpenGL GLSL renderer for the styled fluid background.
+"""QRhi renderer for the styled fluid background.
 
 FreeAssetFilter - 多功能文件预览与管理工具
-Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
+Copyright (c) 2026 Dorufoc <dorofoc@outlook.com>
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as published by
@@ -12,6 +12,24 @@ This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
 MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 GNU Affero General Public License for more details.
+
+为什么是 QRhiWidget 而不是 QOpenGLWidget
+----------------------------------------
+窗口内只要出现 ``QOpenGLWidget``，Qt 就会把**顶层窗口**切换到 OwnDC 窗口类；
+该类窗口拖拽缩放时无法只重绘新暴露条带，每个 WM_SIZE 都要整窗重绘——实测
+鼠标-窗口边缘滞后中位 96px / 峰值 258px（raster 类窗口仅 6px），窗口边缘
+完全跟不上鼠标。``QRhiWidget`` 走纹理合成路径，不会触发该切换，实测拖拽
+滞后保持 6px，同时仍能与普通控件正确叠放（信息面板浮在流体之上）。
+
+着色器以 Qt Shader Baker 编译产物 ``shaders/fluid.vert.qsb`` 与
+``shaders/fluid.frag.qsb`` 加载（同时含 GLSL 与 HLSL 变体，由 QRhi 按当前
+后端选择）；uniform 通过 std140 uniform block 上传，布局见
+``shaders/fluid.frag`` 顶部注释与 :meth:`_pack_uniforms`。
+
+渲染尺寸一律取 ``colorTexture().pixelSize()``，绝不用「逻辑尺寸 × DPR」自行
+换算：Qt 用 ``qRound()``（0.5 远离零）创建纹理，Python ``round()`` 是银行家
+舍入，150% DPI 下两者会差 1 像素，令纹理最右/最下一列永不写入（alpha=0），
+合成时露出下层背景（浅色主题白边、深色主题异色细线）。
 """
 
 from __future__ import annotations
@@ -19,167 +37,45 @@ from __future__ import annotations
 import logging
 import struct
 from collections.abc import Sequence
+from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
-from PySide6.QtOpenGL import (
-    QOpenGLBuffer,
-    QOpenGLShader,
-    QOpenGLShaderProgram,
-    QOpenGLVertexArrayObject,
+from PySide6.QtGui import (
+    QColor,
+    QRhiBuffer,
+    QRhiDepthStencilClearValue,
+    QRhiGraphicsPipeline,
+    QRhiShaderResourceBinding,
+    QRhiShaderStage,
+    QRhiVertexInputAttribute,
+    QRhiVertexInputBinding,
+    QRhiVertexInputLayout,
+    QRhiViewport,
+    QShader,
 )
-from PySide6.QtOpenGLWidgets import QOpenGLWidget
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QRhiWidget, QWidget
 
 __all__ = ["_FluidGPUShaderWidget"]
 
 logger = logging.getLogger(__name__)
 
-# OpenGL ES 2.0 / desktop constants used through QOpenGLFunctions.
-_GL_TRIANGLES = 0x0004
-_GL_FLOAT = 0x1406
-_GL_COLOR_BUFFER_BIT = 0x00004000
+#: 全屏两个三角形（归一化设备坐标），每顶点 3 个 float。
+_VERTEX_DATA = struct.pack(
+    "18f",
+    -1.0, 1.0, 0.0,
+    -1.0, -1.0, 0.0,
+    1.0, -1.0, 0.0,
+    -1.0, 1.0, 0.0,
+    1.0, -1.0, 0.0,
+    1.0, 1.0, 0.0,
+)
 
-_VERTEX_SHADER = """#version 330
+#: 顶点着色器输入：location 0 = vec3 位置，步长 12 字节。
+_VERTEX_STRIDE = 12
 
-layout(location = 0) in vec3 a_position;
-out vec2 v_uv;
-
-void main()
-{
-    v_uv = a_position.xy * 0.5 + 0.5;
-    gl_Position = vec4(a_position, 1.0);
-}
-"""
-
-_FRAGMENT_SHADER = """#version 330
-
-in vec2 v_uv;
-out vec4 fragColor;
-
-uniform vec2 u_resolution;
-uniform float u_time;
-uniform vec3 u_palette[5];
-uniform vec2 u_blob_centers[4];
-uniform float u_blob_radii[4];
-uniform int u_blob_colors[4];
-uniform vec2 u_noise_offset;
-uniform vec4 u_overlay_color;
-
-#define PALETTE_SIZE 5
-#define BLOB_COUNT 4
-
-float hash(vec2 p)
-{
-    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
-}
-
-float noise(vec2 p)
-{
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-
-    float a = hash(i);
-    float b = hash(i + vec2(1.0, 0.0));
-    float c = hash(i + vec2(0.0, 1.0));
-    float d = hash(i + vec2(1.0, 1.0));
-
-    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-}
-
-// Fully soft gaussian-like blob: no hard inner plateau, long smooth tail.
-float soft_blob(vec2 uv, vec2 center, float radius)
-{
-    float d = length(uv - center);
-    float outer = radius * 1.9;
-    float t = clamp(d / outer, 0.0, 1.0);
-    float s = 1.0 - t * t * (3.0 - 2.0 * t);
-    return s * s;
-}
-
-// Diagonal base gradient matching the CPU renderer so the canvas is always
-// fully covered by palette colors (no dark gaps between blobs).
-vec3 base_gradient(vec2 uv)
-{
-    float t = clamp((uv.x + uv.y) * 0.5, 0.0, 1.0);
-    if (t < 0.45) {
-        return mix(u_palette[3], u_palette[0], t / 0.45);
-    }
-    return mix(u_palette[0], u_palette[1], (t - 0.45) / 0.55);
-}
-
-// The base gradient is sampled in unwarped screen space (grad_uv) while blobs
-// use the domain-warped blob_uv. Warping rotates/translates coordinates
-// outside [0,1]; if the gradient were sampled there, its clamped end-stops
-// would paint the out-of-range corner triangles with a flat palette end color
-// (visible as light wedges along the edges). soft_blob decays smoothly with
-// distance, so out-of-range blob_uv is harmless; the gradient must stay
-// anchored to the screen to guarantee full smooth coverage.
-vec3 sample_scene(vec2 grad_uv, vec2 blob_uv)
-{
-    const float opacity[BLOB_COUNT] = float[](0.95, 0.90, 0.85, 0.80);
-    vec3 col = base_gradient(grad_uv);
-
-    // Source-over blending keeps colors inside the palette gamut instead of
-    // additively blowing out to white where blobs overlap.
-    for (int i = 0; i < BLOB_COUNT; ++i) {
-        int idx = u_blob_colors[i];
-        vec3 blob_col = u_palette[idx % PALETTE_SIZE];
-        float field = soft_blob(blob_uv, u_blob_centers[i], u_blob_radii[i]);
-        col = mix(col, blob_col, field * opacity[i]);
-    }
-    return col;
-}
-
-void main()
-{
-    vec2 uv = v_uv;
-
-    // Two-octave domain warp: slow global swirl plus local turbulence for an
-    // organic, lava-lamp-like flow. Time coefficients are tuned for a
-    // clearly visible drift (the CPU-side state already advances in real
-    // seconds, so these scale the on-screen speed directly).
-    float n1 = noise(uv * 2.0 + u_noise_offset + u_time * 0.12);
-    float n2 = noise(uv * 3.5 - u_noise_offset * 0.7 - u_time * 0.08);
-    float angle = (n1 - 0.5) * 0.9 + u_time * 0.05;
-    mat2 rot = mat2(cos(angle), -sin(angle), sin(angle), cos(angle));
-    vec2 centered = (uv - vec2(0.5)) * rot;
-    uv = vec2(0.5) + centered;
-    uv += vec2(n1 - 0.5, n2 - 0.5) * 0.12;
-
-    // 9-tap soft-blur approximation. The gradient tap stays clamped to the
-    // unit square so edge pixels never sample a clamped end-stop wedge; the
-    // blob tap follows the warped uv.
-    vec2 texel = 1.0 / max(u_resolution, vec2(1.0));
-    vec3 sum = vec3(0.0);
-    float weight = 0.0;
-    for (int x = -1; x <= 1; ++x) {
-        for (int y = -1; y <= 1; ++y) {
-            vec2 offset = vec2(float(x), float(y)) * texel * 2.5;
-            sum += sample_scene(clamp(v_uv + offset, 0.0, 1.0), uv + offset);
-            weight += 1.0;
-        }
-    }
-    vec3 col = sum / weight;
-
-    // Gentle saturation lift for richer, Apple Music-like tones.
-    float luma = dot(col, vec3(0.299, 0.587, 0.114));
-    col = clamp(mix(vec3(luma), col, 1.18), 0.0, 1.0);
-
-    // Soft vignette adds depth without crushing the palette.
-    float vig = smoothstep(1.15, 0.30, length(v_uv - vec2(0.5)));
-    col *= mix(0.86, 1.0, vig);
-
-    // Dark / light translucent overlay.
-    col = mix(col, u_overlay_color.rgb, u_overlay_color.a);
-
-    // Tiny screen-space dither hides gradient banding on large soft blobs.
-    col += (hash(gl_FragCoord.xy) - 0.5) * (1.5 / 255.0);
-
-    fragColor = vec4(col, 1.0);
-}
-"""
+#: 编译后的着色器文件名（``qsb`` 每次只处理一个输入文件，故顶点/片元分开）。
+_QSB_VERT_NAME = "fluid.vert.qsb"
+_QSB_FRAG_NAME = "fluid.frag.qsb"
 
 _DEFAULT_BLOB_CENTERS = (
     (0.16, 0.20),
@@ -192,52 +88,44 @@ _DEFAULT_BLOB_RADII = (0.58, 0.50, 0.53, 0.45)
 
 _DEFAULT_BLOB_COLORS = (0, 1, 2, 3)
 
-_DEFAULT_GL_CONFIGURED = False
+
+def _qsb_path(name: str) -> Path:
+    """返回编译后的着色器路径（兼容 PyInstaller 冻结环境）。"""
+    local = Path(__file__).resolve().parent / "shaders" / name
+    if local.exists():
+        return local
+    try:
+        from freeassetfilter.utils.path_utils import get_resource_path
+
+        return Path(
+            get_resource_path(f"freeassetfilter/ui/components/shaders/{name}")
+        )
+    except Exception:  # noqa: BLE001 - 路径解析失败时返回本地路径（随后报错回退 CPU）
+        return local
 
 
-def _ensure_default_gl_format() -> None:
-    """Request a 3.3 Compatibility context once per process.
+class _FluidGPUShaderWidget(QRhiWidget):
+    """GPU 流体背景渲染器（QRhiWidget + .qsb 着色器）。
 
-    This is needed for the embedded ``#version 330`` GLSL sources to compile
-    reliably on Windows PySide6.  The guard makes repeated imports/idempotent
-    so user code is not clobbered.
-    """
-    global _DEFAULT_GL_CONFIGURED
-    if _DEFAULT_GL_CONFIGURED:
-        return
-    from PySide6.QtGui import QSurfaceFormat
+    渲染一屏全屏四边形：片元着色器绘制四个软 SDF 团块，用伪 simplex 噪声做
+    域扭曲，再做 9 抽样软模糊近似与主题叠加。运行时通过
+    :meth:`update_uniforms` 更新 uniform（不重新编译着色器）驱动动画。
 
-    fmt = QSurfaceFormat()
-    fmt.setMajorVersion(3)
-    fmt.setMinorVersion(3)
-    fmt.setProfile(QSurfaceFormat.CompatibilityProfile)
-    QSurfaceFormat.setDefaultFormat(fmt)
-    _DEFAULT_GL_CONFIGURED = True
-
-
-_ensure_default_gl_format()
-
-
-class _FluidGPUShaderWidget(QOpenGLWidget):
-    """GLSL-based fluid background renderer.
-
-    Renders a full-screen quad with a fragment shader that draws four soft
-    SDF blobs, distorts UVs with pseudo-simplex noise, applies a 9-tap soft
-    blur approximation, and blends a theme overlay.  Uniforms are updated at
-    runtime via :meth:`update_uniforms` so the integration can animate the
-    background without recompiling shaders.
-
-    On construction the module-level OpenGL format request is already in
-    place.  :meth:`initializeGL` validates the context and compiles the
-    embedded shader sources, raising :class:`RuntimeError` on any failure so
-    that the caller can fall back to the CPU path.
+    :meth:`initialize` 中任何失败都抛 :class:`RuntimeError`，由调用方回退到
+    CPU 静态烘焙路径。
     """
 
     _PALETTE_SIZE = 5
     _BLOB_COUNT = 4
+    #: std140 uniform block 大小（字节），与 shaders/fluid.frag 布局一致。
+    _UNIFORM_BLOCK_SIZE = 256
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        # 强制原生化：QRhiWidget 在窗口已显示后才创建时，若仍为普通（非原生）
+        # 子控件，Qt 不会为其建立 RHI（initialize 永不回调，控件保持空白）。
+        # 预先声明 WA_NativeWindow 可稳定触发初始化。
+        self.setAttribute(Qt.WA_NativeWindow, True)
         self.setAutoFillBackground(False)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_NoSystemBackground, True)
@@ -250,233 +138,213 @@ class _FluidGPUShaderWidget(QOpenGLWidget):
         self._noise_offset = (0.0, 0.0)
         self._overlay_color = QColor(0, 0, 0, 0)
 
-        self._program: QOpenGLShaderProgram | None = None
-        self._vao: QOpenGLVertexArrayObject | None = None
-        self._vbo: QOpenGLBuffer | None = None
-        self._uniform_locations: dict[str, int] = {}
+        self._vbuf: QRhiBuffer | None = None
+        self._ubuf: QRhiBuffer | None = None
+        self._srb: QRhiShaderResourceBindings | None = None
+        self._pipeline: QRhiGraphicsPipeline | None = None
         self._initialized = False
 
-    def initializeGL(self) -> None:
-        """Compile shaders and build the full-screen quad geometry.
+    # -- 初始化 -------------------------------------------------------------
+
+    def is_ready(self) -> bool:
+        """渲染管线是否已成功创建（未就绪时调用方应回退 CPU 路径）。"""
+        return self._initialized
+
+    def initialize(self, cb) -> None:  # noqa: ANN001 - QRhiCommandBuffer
+        """构建缓冲区、资源绑定与渲染管线。
 
         Raises:
-            RuntimeError: If the OpenGL context is missing/invalid or the
-                shader program cannot be compiled/linked.
+            RuntimeError: 着色器缺失 / QRhi 不可用 / 管线创建失败。
         """
-        ctx = self.context()
-        if ctx is None or not ctx.isValid():
-            raise RuntimeError("OpenGL context is not valid")
+        rhi = self.rhi()
+        if rhi is None:
+            raise RuntimeError("QRhi is not available")
 
-        self._init_shader_program()
-        self._init_geometry()
+        vert_shader = self._load_shader(_QSB_VERT_NAME)
+        frag_shader = self._load_shader(_QSB_FRAG_NAME)
+
+        vbuf = rhi.newBuffer(
+            QRhiBuffer.Type.Immutable, QRhiBuffer.UsageFlag.VertexBuffer, len(_VERTEX_DATA)
+        )
+        if not vbuf.create():
+            raise RuntimeError("顶点缓冲区创建失败")
+        rub = rhi.nextResourceUpdateBatch()
+        rub.uploadStaticBuffer(vbuf, _VERTEX_DATA)
+        cb.resourceUpdate(rub)
+
+        ubuf = rhi.newBuffer(
+            QRhiBuffer.Type.Dynamic,
+            QRhiBuffer.UsageFlag.UniformBuffer,
+            self._UNIFORM_BLOCK_SIZE,
+        )
+        if not ubuf.create():
+            raise RuntimeError("uniform 缓冲区创建失败")
+
+        srb = rhi.newShaderResourceBindings()
+        srb.setBindings(
+            [
+                QRhiShaderResourceBinding.uniformBuffer(
+                    0, QRhiShaderResourceBinding.StageFlag.FragmentStage, ubuf
+                )
+            ]
+        )
+        if not srb.create():
+            raise RuntimeError("着色器资源绑定创建失败")
+
+        layout = QRhiVertexInputLayout()
+        layout.setBindings([QRhiVertexInputBinding(_VERTEX_STRIDE)])
+        layout.setAttributes(
+            [
+                QRhiVertexInputAttribute(
+                    0, 0, QRhiVertexInputAttribute.Format.Float3, 0
+                )
+            ]
+        )
+
+        pipeline = rhi.newGraphicsPipeline()
+        pipeline.setShaderStages(
+            [
+                QRhiShaderStage(QRhiShaderStage.Type.Vertex, vert_shader),
+                QRhiShaderStage(QRhiShaderStage.Type.Fragment, frag_shader),
+            ]
+        )
+        pipeline.setVertexInputLayout(layout)
+        pipeline.setShaderResourceBindings(srb)
+        pipeline.setTopology(QRhiGraphicsPipeline.Topology.Triangles)
+        pipeline.setSampleCount(1)
+        # 单个颜色附件必须显式给出 target blend（默认不透明混合）。
+        pipeline.setTargetBlends([QRhiGraphicsPipeline.TargetBlend()])
+        render_target = self.renderTarget()
+        if render_target is None:
+            raise RuntimeError("QRhi 渲染目标不可用")
+        pipeline.setRenderPassDescriptor(render_target.renderPassDescriptor())
+        if not pipeline.create():
+            raise RuntimeError("渲染管线创建失败")
+
+        self._vbuf = vbuf
+        self._ubuf = ubuf
+        self._srb = srb
+        self._pipeline = pipeline
         self._initialized = True
 
-    def _init_shader_program(self) -> None:
-        """Create, compile and link the embedded shader program.
+    @staticmethod
+    def _load_shader(name: str) -> QShader:
+        """加载并校验一个 ``.qsb`` 着色器。
+
+        Args:
+            name: 着色器文件名（如 ``fluid.vert.qsb``）。
+
+        Returns:
+            反序列化后的 :class:`QShader`。
 
         Raises:
-            RuntimeError: On vertex/fragment compile or program link failure.
+            RuntimeError: 文件缺失或反序列化失败。
         """
-        program = QOpenGLShaderProgram(self)
+        path = _qsb_path(name)
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            raise RuntimeError(f"着色器文件读取失败：{path}") from exc
+        shader = QShader.fromSerialized(data)
+        if not shader.isValid():
+            raise RuntimeError(f"着色器反序列化失败：{path}")
+        return shader
 
-        if not program.addShaderFromSourceCode(QOpenGLShader.Vertex, _VERTEX_SHADER):
-            log = program.log()
-            raise RuntimeError(f"Vertex shader compile failed: {log}")
+    def releaseResources(self) -> None:
+        """释放 QRhi 资源（后端重建时 Qt 会再次调用 :meth:`initialize`）。"""
+        self._initialized = False
+        for resource in (self._pipeline, self._srb, self._ubuf, self._vbuf):
+            if resource is not None:
+                try:
+                    resource.destroy()
+                except Exception:  # noqa: BLE001 - 销毁失败不影响后续重建
+                    pass
+        self._pipeline = None
+        self._srb = None
+        self._ubuf = None
+        self._vbuf = None
 
-        if not program.addShaderFromSourceCode(
-            QOpenGLShader.Fragment, _FRAGMENT_SHADER
-        ):
-            log = program.log()
-            raise RuntimeError(f"Fragment shader compile failed: {log}")
+    # -- 渲染 ---------------------------------------------------------------
 
-        if not program.link():
-            log = program.log()
-            raise RuntimeError(f"Shader program link failed: {log}")
-
-        self._program = program
-        self._cache_uniform_locations()
-
-    def _cache_uniform_locations(self) -> None:
-        """Cache uniform locations to avoid per-frame name lookups."""
-        if self._program is None:
+    def render(self, cb) -> None:  # noqa: ANN001 - QRhiCommandBuffer
+        """把流体背景绘制到 QRhi 渲染目标。"""
+        if not self._initialized or self._pipeline is None or self._ubuf is None:
             return
-        locations: dict[str, int] = {}
-        for name in (
-            "u_resolution",
-            "u_time",
-            "u_palette",
-            "u_blob_centers",
-            "u_blob_radii",
-            "u_blob_colors",
-            "u_noise_offset",
-            "u_overlay_color",
-        ):
-            locations[name] = self._program.uniformLocation(name)
-        self._uniform_locations = locations
-
-    def _init_geometry(self) -> None:
-        """Upload a full-screen triangle pair to a VBO/VAO."""
-        if self._program is None:
+        if self.width() <= 0 or self.height() <= 0:
             return
 
-        # Two triangles covering normalized device coordinates.
-        vertices = (
-            -1.0, 1.0, 0.0,
-            -1.0, -1.0, 0.0,
-            1.0, -1.0, 0.0,
-            -1.0, 1.0, 0.0,
-            1.0, -1.0, 0.0,
-            1.0, 1.0, 0.0,
-        )
-        data = struct.pack(f"{len(vertices)}f", *vertices)
+        rhi = self.rhi()
+        render_target = self.renderTarget()
+        color_texture = self.colorTexture()
+        if rhi is None or render_target is None or color_texture is None:
+            return
 
-        vao = QOpenGLVertexArrayObject(self)
-        vao_bound = False
-        if vao.create():
-            vao.bind()
-            vao_bound = True
+        # 渲染目标尺寸必须取纹理的真实像素尺寸，不能用「逻辑尺寸 × DPR」自行
+        # 换算：Qt 用 qRound()（0.5 远离零）创建纹理，而 Python round() 是
+        # 银行家舍入（0.5 取偶）。150% DPI 下 403 逻辑像素会得到 604 与 605
+        # 的差异，最右/最下一列因此永不写入（alpha=0），合成时露出下层背景——
+        # 浅色主题下是白边、深色主题下是异色细线。
+        size = color_texture.pixelSize()
+        physical_width = max(1, int(size.width()))
+        physical_height = max(1, int(size.height()))
 
-        vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
-        vbo.create()
-        vbo.bind()
-        vbo.allocate(data, len(data))
-
-        self._program.enableAttributeArray("a_position")
-        stride = 3 * 4
-        self._program.setAttributeBuffer("a_position", _GL_FLOAT, 0, 3, stride)
-
-        vbo.release()
-        if vao_bound:
-            vao.release()
-
-        self._vao = vao
-        self._vbo = vbo
-
-    def _physical_size(self, width: int, height: int) -> tuple[int, int]:
-        """Convert logical widget dimensions to the framebuffer pixel size."""
-        dpr = max(1.0, float(self.devicePixelRatioF()))
-        return (
-            max(1, int(round(width * dpr))),
-            max(1, int(round(height * dpr))),
+        rub = rhi.nextResourceUpdateBatch()
+        rub.updateDynamicBuffer(
+            self._ubuf, 0, self._pack_uniforms(physical_width, physical_height)
         )
 
-    def resizeGL(self, width: int, height: int) -> None:
-        """Update the viewport and resolution uniform in physical pixels.
+        cb.beginPass(
+            render_target,
+            QColor(0, 0, 0, 0),
+            QRhiDepthStencilClearValue(1.0, 0),
+            rub,
+        )
+        try:
+            cb.setGraphicsPipeline(self._pipeline)
+            cb.setViewport(QRhiViewport(0, 0, physical_width, physical_height))
+            cb.setShaderResources()
+            cb.setVertexInput(0, [(self._vbuf, 0)])
+            cb.draw(6)
+        finally:
+            cb.endPass()
 
-        ``resizeGL`` receives logical widget dimensions, while the
-        ``QOpenGLWidget`` framebuffer is allocated in physical pixels. Using
-        the logical values leaves the right/bottom framebuffer strip uncleared
-        on fractional-DPI screens.
-
-        Args:
-            width: New widget width in logical pixels.
-            height: New widget height in logical pixels.
-        """
-        ctx = self.context()
-        if ctx is None or not ctx.isValid():
-            return
-        physical_width, physical_height = self._physical_size(width, height)
-        functions = ctx.functions()
-        functions.glViewport(0, 0, physical_width, physical_height)
-
-        if self._program is not None and self._program.isLinked():
-            self._program.bind()
-            loc = self._uniform_locations.get("u_resolution")
-            if loc >= 0:
-                self._program.setUniformValue(
-                    loc, float(physical_width), float(physical_height)
-                )
-            self._program.release()
-
-    def paintGL(self) -> None:
-        """Render the fluid background into the current framebuffer."""
-        if not self._initialized or self._program is None:
-            return
-
-        ctx = self.context()
-        if ctx is None or not ctx.isValid():
-            return
-
-        functions = ctx.functions()
-        functions.glClearColor(0.0, 0.0, 0.0, 0.0)
-        functions.glClear(_GL_COLOR_BUFFER_BIT)
-
-        width = self.width()
-        height = self.height()
-        if width <= 0 or height <= 0:
-            return
-
-        self._program.bind()
-        self._set_uniforms(width, height)
-
-        if self._vao is not None and self._vao.isCreated():
-            self._vao.bind()
-
-        functions.glDrawArrays(_GL_TRIANGLES, 0, 6)
-
-        if self._vao is not None and self._vao.isCreated():
-            self._vao.release()
-        self._program.release()
-
-    def _set_uniforms(self, width: int, height: int) -> None:
-        """Upload all uniforms to the bound shader program.
+    def _pack_uniforms(self, width: int, height: int) -> bytes:
+        """按 std140 布局打包 uniform block（256 字节）。
 
         Args:
-            width: Current widget width in pixels.
-            height: Current widget height in pixels.
+            width: 渲染目标物理宽度（像素）。
+            height: 渲染目标物理高度（像素）。
+
+        Returns:
+            可直接上传的 256 字节数据。
         """
-        if self._program is None or not self._program.isLinked():
-            return
+        values: list[float] = []
+        # vec4 u_resolution_time（xy 分辨率、z 时间）
+        values.extend((float(width), float(height), float(self._time), 0.0))
+        # vec4 u_noise_offset
+        values.extend(
+            (float(self._noise_offset[0]), float(self._noise_offset[1]), 0.0, 0.0)
+        )
+        # vec4 u_overlay_color
+        overlay = self._overlay_color
+        values.extend(
+            (overlay.redF(), overlay.greenF(), overlay.blueF(), overlay.alphaF())
+        )
+        # vec4 u_palette[5]
+        for color in self._palette[: self._PALETTE_SIZE]:
+            values.extend((color.redF(), color.greenF(), color.blueF(), 0.0))
+        # vec4 u_blob_centers[4]
+        for x, y in self._blob_centers[: self._BLOB_COUNT]:
+            values.extend((float(x), float(y), 0.0, 0.0))
+        # vec4 u_blob_radii_colors[4]
+        for radius, index in zip(
+            self._blob_radii[: self._BLOB_COUNT],
+            self._blob_colors[: self._BLOB_COUNT],
+        ):
+            values.extend((float(radius), float(index), 0.0, 0.0))
+        return struct.pack(f"{len(values)}f", *values)
 
-        loc = self._uniform_locations.get("u_resolution")
-        if loc is not None and loc >= 0:
-            self._program.setUniformValue(loc, float(width), float(height))
-
-        loc = self._uniform_locations.get("u_time")
-        if loc is not None and loc >= 0:
-            self._program.setUniformValue1f(loc, float(self._time))
-
-        palette_values = self._flatten_palette()
-        if len(palette_values) >= self._PALETTE_SIZE * 3:
-            loc = self._uniform_locations.get("u_palette")
-            if loc is not None and loc >= 0:
-                self._program.setUniformValueArray(
-                    loc, palette_values, self._PALETTE_SIZE, 3
-                )
-
-        center_values = self._flatten_centers()
-        if len(center_values) >= self._BLOB_COUNT * 2:
-            loc = self._uniform_locations.get("u_blob_centers")
-            if loc is not None and loc >= 0:
-                self._program.setUniformValueArray(
-                    loc, center_values, self._BLOB_COUNT, 2
-                )
-
-        radius_values = self._flatten_radii()
-        if len(radius_values) >= self._BLOB_COUNT:
-            loc = self._uniform_locations.get("u_blob_radii")
-            if loc is not None and loc >= 0:
-                self._program.setUniformValueArray(
-                    loc, radius_values, self._BLOB_COUNT, 1
-                )
-
-        color_indices = self._flatten_color_indices()
-        if len(color_indices) >= self._BLOB_COUNT:
-            loc = self._uniform_locations.get("u_blob_colors")
-            if loc is not None and loc >= 0:
-                self._program.setUniformValueArray(
-                    loc, color_indices, self._BLOB_COUNT
-                )
-
-        noise_x, noise_y = self._noise_offset
-        loc = self._uniform_locations.get("u_noise_offset")
-        if loc is not None and loc >= 0:
-            self._program.setUniformValue(loc, float(noise_x), float(noise_y))
-
-        if self._overlay_color.isValid():
-            loc = self._uniform_locations.get("u_overlay_color")
-            if loc is not None and loc >= 0:
-                self._program.setUniformValue(loc, self._overlay_color)
+    # -- 运行时 uniform 更新 -------------------------------------------------
 
     def update_uniforms(
         self,
@@ -489,19 +357,18 @@ class _FluidGPUShaderWidget(QOpenGLWidget):
         noise_offset: tuple[float, float] | None = None,
         overlay_color: QColor | None = None,
     ) -> None:
-        """Update the shader uniforms without recompiling.
+        """更新着色器 uniform 并请求重绘。
 
-        All arguments are keyword-only.  ``None`` leaves the corresponding
-        state unchanged.
+        所有参数均为关键字参数；``None`` 表示保持原值。
 
         Args:
-            time: Animation time in seconds.
-            palette: Up to 5 :class:`QColor` objects mapped to ``u_palette``.
-            blob_centers: Four ``(x, y)`` normalized positions.
-            blob_radii: Four normalized radii.
-            blob_colors: Four palette indices.
-            noise_offset: ``(x, y)`` noise scroll offset.
-            overlay_color: Overlay color including alpha.
+            time: 动画时间（秒）。
+            palette: 最多 5 个 :class:`QColor`。
+            blob_centers: 四个归一化 ``(x, y)`` 位置。
+            blob_radii: 四个归一化半径。
+            blob_colors: 四个调色板索引。
+            noise_offset: ``(x, y)`` 噪声漂移。
+            overlay_color: 含 alpha 的叠加色。
         """
         if time is not None:
             self._time = float(time)
@@ -518,16 +385,13 @@ class _FluidGPUShaderWidget(QOpenGLWidget):
         if overlay_color is not None:
             self._overlay_color = QColor(overlay_color)
 
-        if self._initialized:
-            self.update()
+        self.update()
 
     def _normalize_palette(self, palette: list[QColor]) -> list[QColor]:
-        """Return exactly ``_PALETTE_SIZE`` colors, preserving positions.
+        """返回恰好 ``_PALETTE_SIZE`` 个颜色，保持位置不变。
 
-        Invalid entries are replaced in place (by the previous valid color in
-        the list, falling back to opaque black) instead of being filtered
-        out: dropping an entry would shift every following palette index and
-        recolor the whole scene for that frame.
+        无效项由前一个有效色就地替换（而非过滤掉）：过滤会使其后所有调色板
+        索引整体前移，导致该帧整个场景改色。
         """
         normalized: list[QColor] = []
         last_valid = QColor(0, 0, 0, 255)
@@ -544,41 +408,19 @@ class _FluidGPUShaderWidget(QOpenGLWidget):
     def _normalize_centers(
         self, centers: list[tuple[float, float]]
     ) -> list[tuple[float, float]]:
-        """Return exactly ``_BLOB_COUNT`` center tuples."""
+        """返回恰好 ``_BLOB_COUNT`` 个中心点。"""
         while len(centers) < self._BLOB_COUNT:
             centers.append((0.0, 0.0))
         return centers[: self._BLOB_COUNT]
 
     def _normalize_radii(self, radii: list[float]) -> list[float]:
-        """Return exactly ``_BLOB_COUNT`` radii."""
+        """返回恰好 ``_BLOB_COUNT`` 个半径。"""
         while len(radii) < self._BLOB_COUNT:
             radii.append(0.25)
         return radii[: self._BLOB_COUNT]
 
     def _normalize_color_indices(self, indices: list[int]) -> list[int]:
-        """Return exactly ``_BLOB_COUNT`` palette indices."""
+        """返回恰好 ``_BLOB_COUNT`` 个调色板索引。"""
         while len(indices) < self._BLOB_COUNT:
             indices.append(0)
         return [max(0, int(i)) % self._PALETTE_SIZE for i in indices[: self._BLOB_COUNT]]
-
-    def _flatten_palette(self) -> list[float]:
-        """Flatten the palette to ``[r, g, b, ...]``."""
-        values: list[float] = []
-        for color in self._palette[: self._PALETTE_SIZE]:
-            values.extend((color.redF(), color.greenF(), color.blueF()))
-        return values
-
-    def _flatten_centers(self) -> list[float]:
-        """Flatten blob centers to ``[x, y, ...]``."""
-        values: list[float] = []
-        for x, y in self._blob_centers[: self._BLOB_COUNT]:
-            values.extend((float(x), float(y)))
-        return values
-
-    def _flatten_radii(self) -> list[float]:
-        """Flatten blob radii to ``[r, ...]``."""
-        return [float(r) for r in self._blob_radii[: self._BLOB_COUNT]]
-
-    def _flatten_color_indices(self) -> list[int]:
-        """Flatten blob palette indices."""
-        return [int(i) for i in self._blob_colors[: self._BLOB_COUNT]]

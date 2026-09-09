@@ -206,6 +206,17 @@ def collect_data_files() -> List[Tuple[str, str]]:
         print_info("收集到 FAFVERSION")
     else:
         print_warning("未找到 FAFVERSION")
+
+    # 5. 收集流体背景着色器（QRhi 运行时加载 .qsb）
+    shaders_dir = project_root / "freeassetfilter" / "ui" / "components" / "shaders"
+    if shaders_dir.exists():
+        shader_files = sorted(shaders_dir.glob("*.qsb"))
+        for file in shader_files:
+            rel_path = file.relative_to(project_root)
+            data_files.append((str(file), str(rel_path.parent)))
+        print_info(f"收集到 {len(shader_files)} 个着色器文件")
+    else:
+        print_warning("未找到 shaders 目录")
     
     print_success(f"共收集到 {len(data_files)} 个数据文件")
     return data_files

@@ -26,7 +26,7 @@ import time
 from collections.abc import Callable
 from typing import Any, ClassVar, NamedTuple
 
-from PySide6.QtCore import QPointF, QRect, Qt
+from PySide6.QtCore import QPointF, QRect, QEventLoop, QTimer, Qt
 from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPixmap, QResizeEvent
 from PySide6.QtWidgets import QWidget, QApplication
 
@@ -36,6 +36,11 @@ from freeassetfilter.core.managers.heartbeat_manager import HeartbeatManager
 from freeassetfilter.ui.theme import tm
 
 logger = logging.getLogger(__name__)
+
+#: 等待 GPU 渲染管线就绪的最长时间（秒）。QRhiWidget 在首次绘制时才创建
+#: QRhi 并回调 initialize()（正常 0~1 帧内完成），超出该时间仍未就绪即
+#: 回退 CPU 路径。
+_GPU_READY_TIMEOUT_S = 0.5
 
 try:
     from components._styled_fluid_gpu import _FluidGPUShaderWidget
@@ -63,15 +68,14 @@ class StyledFluidBackground(QWidget):
     is emitted.
 
     Rendering:
-        - By default :meth:`load` attempts the GPU path first by creating
-          ``_FluidGPUShaderWidget``. On any construction or OpenGL failure the
-          component falls back to a static CPU-baked ``QPixmap``.
-        - GPU path registers a HeartbeatManager tick to animate shader
-          uniforms. CPU path does **not** register a tick and remains static
-          until the next theme change triggers a re-bake.
-        - CPU fallback is also forced when ``FAF_FORCE_FLUID_CPU=1`` is set,
-          when a native sibling window is detected, or when
-          ``QOpenGLWidget`` is unavailable.
+        - 默认走 GPU 路径：``_FluidGPUShaderWidget``（QRhiWidget，D3D11 后端）
+          加载 ``shaders/fluid.vert.qsb`` / ``fluid.frag.qsb`` 渲染动画。
+          用 QRhiWidget 而非 QOpenGLWidget，是因为后者会把顶层窗口切到
+          OwnDC 窗口类，导致拖拽缩放每步整窗重绘（见该模块头注释）。
+        - GPU 路径注册 HeartbeatManager tick 驱动 uniform 动画；构造或管线
+          创建失败时回退 CPU 静态烘焙 ``QPixmap``。
+        - CPU 路径也会在 ``FAF_FORCE_FLUID_CPU=1``、检测到同布局原生兄弟
+          窗口、``QRhiWidget`` 不可用时强制启用。
     """
 
     _PALETTE_SIZE = 5
@@ -448,8 +452,8 @@ class StyledFluidBackground(QWidget):
         - ``FAF_FORCE_FLUID_CPU`` equals ``"1"``.
         - A visible sibling in the parent layout has ``Qt.WA_NativeWindow`` set
           and a non-zero ``winId()``.
-        - ``QOpenGLWidget`` is unavailable.
-        - Constructing the GPU widget or validating its OpenGL context fails.
+        - ``QRhiWidget`` 不可用。
+        - 着色器资源缺失或渲染管线创建失败。
 
         Returns:
             ``"gpu"`` or ``"cpu"``.
@@ -466,13 +470,12 @@ class StyledFluidBackground(QWidget):
             return "cpu"
 
         # 复用已存在的 GPU 控件（切歌等重复 load 场景）：每次重建会泄漏
-        # 旧 QOpenGLWidget（残留上一首的颜色盖在下层），且新控件在部分
-        # 驱动下呈现空白；复用还避免了重复创建 GL 上下文的开销。
+        # 旧的 RHI 资源（残留上一首的颜色盖在下层），且新控件在部分驱动下
+        # 呈现空白；复用还避免了重复创建管线与着色器的开销。
         existing = self._gpu_widget
         if existing is not None:
             try:
-                ctx = existing.context()
-                if ctx is not None and ctx.isValid():
+                if existing.is_ready():
                     existing.setGeometry(self._gpu_geometry())
                     if not existing.isVisible():
                         existing.show()
@@ -485,16 +488,18 @@ class StyledFluidBackground(QWidget):
         try:
             gpu = _FluidGPUShaderWidget(parent=self)
             gpu.setGeometry(self._gpu_geometry())
-            # Qt's QOpenGLWidget creates its GL context lazily when the widget
-            # is shown inside a visible top-level window. We must show the widget
-            # and process events to force context creation before calling
-            # initializeGL().
+            # QRhiWidget 在控件首次显示并收到平台绘制事件后才创建 QRhi 并回调
+            # initialize()。注意：单纯 QApplication.processEvents() 不足以触发
+            # 该初始化（平台绘制事件需真实事件循环派发），这里用嵌套事件循环
+            # 有限等待；超时仍未就绪则回退 CPU 路径。
             gpu.show()
-            QApplication.processEvents()
-            # Validate that the OpenGL context is valid before initializing.
-            if not gpu.context() or not gpu.context().isValid():
-                raise RuntimeError("OpenGL context is not valid after show()")
-            gpu.initializeGL()
+            deadline = time.monotonic() + _GPU_READY_TIMEOUT_S
+            while not gpu.is_ready() and time.monotonic() < deadline:
+                loop = QEventLoop()
+                QTimer.singleShot(15, loop.quit)
+                loop.exec()
+            if not gpu.is_ready():
+                raise RuntimeError("QRhi fluid renderer initialization failed")
             self._gpu_widget = gpu
             # 赋值后按当前几何再同步一次：show()+processEvents()
             # 期间布局可能已经稳定，此前触发的 resizeEvent 发生于赋值
@@ -802,6 +807,6 @@ class StyledFluidBackground(QWidget):
             pixmap = self._static_pixmap
             if pixmap is not None and not pixmap.isNull():
                 painter.drawPixmap(self.rect(), pixmap, pixmap.rect())
-        # GPU 模式由子 QOpenGLWidget 完整绘制；宿主层保持透明，不能再用
+        # GPU 模式由子 QRhiWidget 完整绘制；宿主层保持透明，不能再用
         # palette[0] 绘制兜底底色，否则尺寸边缘会露出一圈非流体颜色。
         painter.end()

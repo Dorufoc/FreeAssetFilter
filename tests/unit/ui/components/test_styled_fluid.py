@@ -25,8 +25,8 @@ from typing import Any
 
 import pytest
 from PySide6.QtCore import QModelIndex, QRect, QSize, Qt
-from PySide6.QtGui import QColor, QPainter, QPixmap
-from PySide6.QtWidgets import QApplication, QListView, QWidget
+from PySide6.QtGui import QColor, QPainter, QPixmap, QShader
+from PySide6.QtWidgets import QApplication, QListView, QRhiWidget, QWidget
 
 # 组件模块内部使用短路径导入（from theme import tm / components.*），
 # 要求 freeassetfilter/ui 位于 sys.path；与 test_styled_basic.py 一致。
@@ -218,44 +218,63 @@ class TestFluidCpu:
 # ui.components._styled_fluid_gpu
 # =============================================================================
 class TestFluidGpu:
-    """_styled_fluid_gpu：shader 源码常量与公开导出（不建真实 GL 上下文）。"""
+    """_styled_fluid_gpu：QRhi 渲染器源码与着色器资源（不建真实 RHI 上下文）。"""
+
+    _SHADERS_DIR: Path = Path(_fluid_gpu.__file__).resolve().parent / "shaders"
 
     def test_module_all(self) -> None:
         """__all__ 暴露 _FluidGPUShaderWidget。"""
         assert _fluid_gpu.__all__ == ["_FluidGPUShaderWidget"]
 
-    def test_vertex_shader_version(self) -> None:
-        """顶点着色器声明 #version 330。"""
-        assert "#version 330" in _fluid_gpu._VERTEX_SHADER
+    def test_vertex_shader_source(self) -> None:
+        """顶点着色器源码声明 #version 450 且输出 location 限定。"""
+        vert = (self._SHADERS_DIR / "fluid.vert").read_text(encoding="utf-8")
+        assert "#version 450" in vert
+        assert "layout(location = 0) in" in vert
+        assert "layout(location = 0) out" in vert
 
-    def test_fragment_shader_version_and_uniforms(self) -> None:
-        """片段着色器含关键 uniform 声明。"""
-        frag = _fluid_gpu._FRAGMENT_SHADER
-        assert "#version 330" in frag
-        for uniform in (
-            "u_resolution",
-            "u_time",
-            "u_palette[5]",
-            "u_blob_centers[4]",
-            "u_blob_radii[4]",
-            "u_blob_colors[4]",
+    def test_fragment_shader_source_and_uniforms(self) -> None:
+        """片段着色器声明 std140 uniform block 且含关键字段。"""
+        frag = (self._SHADERS_DIR / "fluid.frag").read_text(encoding="utf-8")
+        assert "#version 450" in frag
+        assert "layout(std140, binding = 0) uniform Params" in frag
+        for field in (
+            "u_resolution_time",
             "u_noise_offset",
             "u_overlay_color",
+            "u_palette[5]",
+            "u_blob_centers[4]",
+            "u_blob_radii_colors[4]",
         ):
-            assert uniform in frag
+            assert field in frag
+
+    def test_qsb_artifacts_loadable(self) -> None:
+        """编译产物 fluid.vert.qsb / fluid.frag.qsb 存在且可反序列化。"""
+        for name in ("fluid.vert.qsb", "fluid.frag.qsb"):
+            path = self._SHADERS_DIR / name
+            assert path.exists(), f"缺少着色器产物：{path}"
+            shader = QShader.fromSerialized(path.read_bytes())
+            assert shader.isValid(), f"着色器反序列化失败：{path}"
 
     def test_shader_widget_class_exposed(self) -> None:
-        """_FluidGPUShaderWidget 类可从模块导出。"""
+        """_FluidGPUShaderWidget 类可从模块导出且继承 QRhiWidget。"""
         assert hasattr(_fluid_gpu, "_FluidGPUShaderWidget")
-        assert callable(_fluid_gpu._FluidGPUShaderWidget)
+        assert issubclass(_fluid_gpu._FluidGPUShaderWidget, QRhiWidget)
 
-    def test_resize_uses_physical_framebuffer_dimensions(self) -> None:
-        """DPI 缩放下 viewport 和 shader 分辨率必须使用物理像素尺寸。"""
+    def test_render_uses_texture_pixel_size(self) -> None:
+        """渲染尺寸取纹理真实像素尺寸，避免自行换算产生 1px 未写入列。
+
+        Qt 用 ``qRound()``（0.5 远离零）创建纹理，Python ``round()`` 是
+        银行家舍入；150% DPI 下两者会差 1 像素，导致纹理最右/最下一列
+        alpha=0，合成时露出下层背景（浅色白边 / 深色异色细线）。
+        """
         source = Path(_fluid_gpu.__file__).read_text(encoding="utf-8")
-        assert "devicePixelRatioF()" in source
+        assert "colorTexture()" in source
+        assert "pixelSize()" in source
         assert "physical_width" in source
         assert "physical_height" in source
-        assert "glViewport(0, 0, physical_width, physical_height)" in source
+        assert "setViewport(QRhiViewport(0, 0, physical_width, physical_height))" in source
+        assert "_physical_size" not in source
 
 
 # =============================================================================
