@@ -117,6 +117,7 @@ tests/
 | 文件 | 职责 |
 | --- | --- |
 | `test_main_window.py` | 主窗口结构与延迟面板构建 |
+| `test_frameless_window.py` | 自研无边框基类（ExpandedClientAreaHint 标志、_q_titlebar 隐藏、NCHITTEST 命中） |
 | `components/test_styled_basic.py` | ui/components 下全部 26 个 `styled_*` 基础组件 |
 | `components/test_styled_complex.py` | 手风琴、轮播、表格、时间线等复杂 styled 组件 |
 | `components/test_styled_fluid.py` | fluid 数学与背景动效组件 |

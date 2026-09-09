@@ -30,9 +30,9 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 try:
-    from qframelesswindow import FramelessMainWindow
+    from freeassetfilter.ui.frameless_window import FramelessMainWindow
 except ImportError:
-    # 如果没有安装 PySideSix-Frameless-Window，使用普通 QMainWindow
+    # 极端回退：如果本地无边框基类不可用，使用普通 QMainWindow
     from PySide6.QtWidgets import QMainWindow as FramelessMainWindow
 
 # tm 别名已在 theme/__init__.py 中注册
@@ -429,24 +429,24 @@ class _EdgeHitTestPassthroughFilter(QAbstractNativeEventFilter):
     """
     原生子窗口覆盖窗口边缘时，让 WM_NCHITTEST 命中测试穿透回主窗口。
 
-    背景：qframelesswindow 的边缘拖拽缩放依赖顶层窗口（主窗口）收到
-    ``WM_NCHITTEST`` 并返回 ``HTLEFT/HTRIGHT/...`` 命中码，之后由系统以
-    原生 ``WM_SYSCOMMAND/SC_SIZE`` 通道执行缩放。当视频播放布局嵌入 MPV 时，
-    视频渲染面（``WA_NativeWindow`` 原生子窗口）铺满预览器区域，会覆盖主窗口
-    的右边缘（及视频面所在的下边缘）；鼠标移到这些位置时，``WM_NCHITTEST``
-    发送给子窗口而非主窗口，子窗口默认返回 ``HTCLIENT``，于是该段边缘无法
-    拖拽缩放。
+    背景：本地无边框基类（FramelessMainWindow）的边缘拖拽缩放依赖顶层窗口
+    （主窗口）收到 ``WM_NCHITTEST`` 并返回 ``HTLEFT/HTRIGHT/...`` 命中码，
+    之后由系统以原生 ``WM_SYSCOMMAND/SC_SIZE`` 通道执行缩放。当视频播放布局
+    嵌入 MPV 时，视频渲染面（``WA_NativeWindow`` 原生子窗口）铺满预览器区域，
+    会覆盖主窗口的右边缘（及视频面所在的下边缘）；鼠标移到这些位置时，
+    ``WM_NCHITTEST`` 发送给子窗口而非主窗口，子窗口默认返回 ``HTCLIENT``，
+    于是该段边缘无法拖拽缩放。
 
     本过滤器在应用级原生消息层（QAbstractNativeEventFilter，等价于 win32
     消息钩子，不改动任何控件类）拦截 ``WM_NCHITTEST``：
-    1. 消息目标不是主窗口本身（主窗口的命中测试仍由 qframelesswindow 的
+    1. 消息目标不是主窗口本身（主窗口的命中测试仍由本地无边框基类的
        ``nativeEvent`` 原样处理），而是主窗口的原生后代子窗口；
-    2. 鼠标屏幕坐标落在主窗口边缘带（与 qframelesswindow 的 BORDER_WIDTH
+    2. 鼠标屏幕坐标落在主窗口边缘带（与本地无边框基类的 _EDGE_BORDER
        一致）内；
     则返回 ``HTTRANSPARENT``——系统会把命中测试继续交给同线程的下层窗口
-    （即主窗口），由 qframelesswindow 原有逻辑返回正确的边缘命中码。
+    （即主窗口），由本地无边框基类原有逻辑返回正确的边缘命中码。
 
-    结果：边缘缩放完全复用 qframelesswindow + win32 原生缩放通道，不引入
+    结果：边缘缩放完全复用本地无边框基类 + win32 原生缩放通道，不引入
     任何 Qt 事件层面的手动拖拽逻辑；视频面内部（非边缘带）不受影响。
     """
 
@@ -473,7 +473,7 @@ class _EdgeHitTestPassthroughFilter(QAbstractNativeEventFilter):
         main_hwnd = int(window.winId())
         hwnd = int(msg.hWnd)
         if hwnd == main_hwnd:
-            # 主窗口自身的命中测试交给 qframelesswindow.nativeEvent 处理
+            # 主窗口自身的命中测试交给本地无边框基类 nativeEvent 处理
             return False, 0
 
         # 仅处理主窗口的原生后代（视频面等嵌入子窗口），不干扰其他顶层窗口
@@ -487,7 +487,7 @@ class _EdgeHitTestPassthroughFilter(QAbstractNativeEventFilter):
 
         rect = wintypes.RECT()
         ctypes.windll.user32.GetWindowRect(main_hwnd, ctypes.byref(rect))
-        border = 5  # 与 qframelesswindow WindowsFramelessWindowBase.BORDER_WIDTH 一致
+        border = 8  # 与本地无边框基类 _EDGE_BORDER 一致（WS_THICKFRAME 边框宽）
         in_edge = (
             x - rect.left < border
             or rect.right - x < border
@@ -511,17 +511,19 @@ def _is_native_descendant(hwnd: int, ancestor: int) -> bool:
 
 
 class _FramelessNativeEffectsMixin:
-    """在 GPU 表面导致 HWND 重建后，重新应用 qframelesswindow 的原生窗口效果。
+    """在 GPU 表面导致 HWND 重建后，重新应用本地无边框窗口的原生效果。
 
     QOpenGLWidget / QRhiWidget 等「渲染到纹理」控件在附加 GPU 表面时，会让 Qt
-    重建顶层原生窗口（HWND）。这发生在 qframelesswindow 于 __init__ 阶段设置好
-    WS_THICKFRAME（边框缩放）/ WS_CAPTION 样式与 DwmExtendFrameIntoClientArea
-    （窗口阴影 + Win11 圆角）之后——重建后的新 HWND 会丢失这些原生能力，且
-    qframelesswindow 不会自动重新应用。
+    重建顶层原生窗口（HWND）。新方案下 WS_THICKFRAME/WS_CAPTION 样式与
+    DwmExtendFrameIntoClientArea 由 Qt 的 ExpandedClientAreaHint 在窗口创建
+    时自动应用，重建后 Qt 会一并恢复；唯一需要手动补充的是 Qt 6.9+ 为
+    ExpandedClientAreaHint 创建的系统标题栏子窗口 ``_q_titlebar`` —— HWND
+    重建后它会重新出现，需再次隐藏（见 FramelessMainWindow.reapply_native_window_effects）。
 
-    本 Mixin 监听 QEvent.WinIdChange：每当 HWND 变化，就在新句柄上重新应用窗口
-    动画样式与 DWM 阴影/圆角，并触发一次非客户区重算。这样即可在保留 GPU 合成
-    Mica 背景的同时，完整保留边框拖拽拉伸、最大化/最小化动画、窗口阴影与圆角。
+    本 Mixin 监听 QEvent.WinIdChange：每当 HWND 变化，就调用基类重应用逻辑，
+    保持系统按钮隐藏状态；同时安装 WM_NCHITTEST 边缘穿透过滤器（见
+    :class:`_EdgeHitTestPassthroughFilter`），让 MPV 等原生子窗口覆盖边缘时
+    仍可原生缩放。
 
     注意：该问题对 QOpenGLWidget 与 QRhiWidget 一致（两者都会触发 HWND 重建），
     因此此修复与底层图形 API 无关，切换到 QRhi 也仍需同样的重应用逻辑。
@@ -529,14 +531,14 @@ class _FramelessNativeEffectsMixin:
 
     def event(self, e: QEvent) -> bool:
         if e.type() == QEvent.Type.WinIdChange:
-            self._reapply_native_window_effects()
+            self.reapply_native_window_effects()
         return super().event(e)
 
     def _install_edge_hit_test_passthrough(self) -> None:
         """安装 WM_NCHITTEST 边缘穿透过滤器（幂等）。
 
         让覆盖窗口边缘的原生子窗口（如 MPV 视频面）不再截胡边缘命中测试，
-        恢复 qframelesswindow 的 win32 原生边缘拖拽缩放。见
+        恢复本地无边框窗口的 win32 原生边缘拖拽缩放。见
         :class:`_EdgeHitTestPassthroughFilter` 的说明。
         """
         if getattr(self, "_edge_hit_test_filter", None) is not None:
@@ -546,28 +548,6 @@ class _FramelessNativeEffectsMixin:
             return
         self._edge_hit_test_filter = _EdgeHitTestPassthroughFilter(self)
         app.installNativeEventFilter(self._edge_hit_test_filter)
-
-    def _reapply_native_window_effects(self) -> None:
-        """在当前 HWND 上重新应用 win32 窗口样式与 DWM 阴影/圆角。"""
-        # windowEffect 仅存在于 Windows 原生 frameless 实现；回退到普通 QMainWindow 时跳过
-        window_effect = getattr(self, "windowEffect", None)
-        if window_effect is None:
-            return
-        try:
-            hwnd = int(self.winId())
-        except Exception:
-            return
-        if not hwnd:
-            return
-        try:
-            window_effect.addWindowAnimation(hwnd)  # 恢复 WS_THICKFRAME / 最大化最小化动画样式
-            window_effect.addShadowEffect(hwnd)      # 恢复 DWM 阴影 + Win11 圆角
-            # 触发非客户区重算（SWP_FRAMECHANGED），让样式与 frame 立即生效
-            swp_flags = 0x0002 | 0x0001 | 0x0004 | 0x0020  # NOMOVE|NOSIZE|NOZORDER|FRAMECHANGED
-            ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, swp_flags)
-        except Exception:
-            # 原生效果重应用失败不应影响窗口正常使用
-            pass
 
 
 class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
@@ -667,15 +647,12 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 调用父类初始化
         super().__init__(parent)
 
-        # 隐藏 qframelesswindow 默认 TitleBar 覆盖层：它叠在自绘标题栏区域，
-        # 会拦截按钮点击/干扰命中（本项目标题栏完全自绘，见 _create_title_bar）。
-        # 普通 QMainWindow 回退路径没有该属性，用 getattr 兜底。
-        default_title_bar = getattr(self, "titleBar", None)
-        if default_title_bar is not None:
-            default_title_bar.hide()
+        # 隐藏 Qt 6.9+ 的 `_q_titlebar` 系统标题栏子窗口（由本地无边框基类
+        # FramelessMainWindow 在 __init__/showEvent/WinIdChange 自动处理，
+        # 此处不再需要手动隐藏 titleBar 覆盖层）。
 
         # 安装 WM_NCHITTEST 边缘穿透过滤器：嵌入 MPV 等原生子窗口覆盖窗口
-        # 边缘时，仍由 qframelesswindow + win32 原生通道执行边缘拖拽缩放
+        # 边缘时，仍由本地无边框基类 + win32 原生通道执行边缘拖拽缩放
         self._install_edge_hit_test_passthrough()
 
         # 设置窗口属性
@@ -800,7 +777,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
     def _setup_content(self) -> None:
         """设置窗口内容"""
-        # 中央部件用纯 QWidget，保留 qframelesswindow 的原生窗口特性
+        # 中央部件用纯 QWidget，保留本地无边框基类的原生窗口特性
         # （边框拖拽拉伸 / 窗口阴影 / 最大化动画 / Aero Snap 均由顶层 HWND 处理）。
         # Mica 背景与内容作为它的两个叠放子层——避免让 GPU 表面占据窗口边缘、
         # 干扰 WM_NCHITTEST 的缩放边框命中。
@@ -2030,12 +2007,6 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
         super().__init__(parent)
 
-        # 隐藏 qframelesswindow 默认 TitleBar 覆盖层（同 MainWindow，避免拦截
-        # 自绘标题栏的点击/命中）。普通 QMainWindow 回退路径没有该属性。
-        default_title_bar = getattr(self, "titleBar", None)
-        if default_title_bar is not None:
-            default_title_bar.hide()
-
         self.setWindowTitle("设置")
         self.setMinimumSize(700, 400)
         self.resize(700, 500)
@@ -2044,7 +2015,7 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 这里居中到宿主主窗口；无宿主时回退到鼠标所在屏幕中心。
         self._center_on_host()
 
-        # 中央部件用纯 QWidget，保留 qframelesswindow 原生窗口特性；
+        # 中央部件用纯 QWidget，保留本地无边框基类原生窗口特性；
         # tm.surface 不透明纯色背景（styled 弹窗同款），无 Mica 开销
         self._root = QWidget(self)
         self.setCentralWidget(self._root)

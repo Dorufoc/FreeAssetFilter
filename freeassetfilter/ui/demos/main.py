@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QEvent
 from PySide6.QtGui import QMouseEvent, QPainter, QPaintEvent, QResizeEvent, QMoveEvent
 
-from qframelesswindow import FramelessMainWindow
+from freeassetfilter.ui.frameless_window import FramelessMainWindow
 
 from components.mica_material import MicaMaterial
 from components.styled_button import StyledButton

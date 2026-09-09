@@ -8,7 +8,7 @@
 
 [![GitHub Release](https://img.shields.io/github/v/release/Dorufoc/FreeAssetFilter?style=flat-square&logo=github&color=blue)](https://github.com/Dorufoc/FreeAssetFilter/releases)
 [![Python Version](https://img.shields.io/badge/Python-3.9%2B-blue?style=flat-square&logo=python)](https://www.python.org/)
-[![PySide6](https://img.shields.io/badge/PySide6-6.4%2B-green?style=flat-square&logo=qt)](https://wiki.qt.io/Qt_for_Python)  
+[![PySide6](https://img.shields.io/badge/PySide6-6.9%2B-green?style=flat-square&logo=qt)](https://wiki.qt.io/Qt_for_Python)  
 [![License](https://img.shields.io/badge/License-AGPL--3.0-orange?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows-purple?style=flat-square&logo=windows)](https://www.microsoft.com/windows)
 
@@ -42,6 +42,7 @@
 | ------------------ | ---------------------------------- |
 | **Operating System** | Windows 10/11 (64-bit) |
 | **Python** | 3.9 or higher |
+| **PySide6** | 6.9 or higher (frameless window relies on Qt 6.9+ native ExpandedClientAreaHint) |
 | **Memory** | 4GB RAM recommended |
 | **Graphics Card** | OpenGL-compatible GPU (for video playback) |
 
