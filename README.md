@@ -8,7 +8,7 @@
 
 [![GitHub Release](https://img.shields.io/github/v/release/Dorufoc/FreeAssetFilter?style=flat-square\&logo=github\&color=blue)](https://github.com/Dorufoc/FreeAssetFilter/releases)
 [![Python Version](https://img.shields.io/badge/Python-3.9%2B-blue?style=flat-square\&logo=python)](https://www.python.org/)
-[![PySide6](https://img.shields.io/badge/PySide6-6.9%2B-green?style=flat-square\&logo=qt)](https://wiki.qt.io/Qt_for_Python)
+[![PySide6](https://img.shields.io/badge/PySide6-6.10%2B-green?style=flat-square\&logo=qt)](https://wiki.qt.io/Qt_for_Python)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-orange?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows-purple?style=flat-square\&logo=windows)](https://www.microsoft.com/windows)
 
@@ -42,7 +42,7 @@
 | ---------- | --------------------- |
 | **操作系统**   | Windows 10/11 (64位)   |
 | **Python** | 3.9 或更高版本             |
-| **PySide6** | 6.9 或更高版本（无边框窗口基于 Qt 6.9+ 原生 ExpandedClientAreaHint） |
+| **PySide6** | 6.10 或更高版本（无边框窗口基于 Qt 6.10+ 原生 ExpandedClientAreaHint） |
 | **内存**     | 建议 4GB 以上             |
 | **显卡**     | 支持 OpenGL 的显卡（用于视频播放） |
 

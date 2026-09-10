@@ -2,7 +2,7 @@
 """本地无边框基类（``ui.frameless_window.FramelessMainWindow``）的单元测试。
 
 背景：项目自研无边框基类替代外部依赖 PySideSix-Frameless-Window，底层为
-Qt 6.9+ 原生 ``Qt.ExpandedClientAreaHint`` 方案（经 _frameless_modern_demo.py
+Qt 6.10+ 原生 ``Qt.ExpandedClientAreaHint`` 方案（经 _frameless_modern_demo.py
 多模式人工验证）。
 
 本测试验证不依赖真实显示的纯逻辑契约：

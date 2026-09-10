@@ -3,9 +3,16 @@
 """
 本地无边框窗口基类（替代外部依赖 PySideSix-Frameless-Window / qframelesswindow）
 
-基于 Qt 6.9+ 原生方案（经 _frameless_modern_demo.py M6 组合人工验证）：
+基于 Qt 6.10+ 原生方案（经 _frameless_modern_demo.py M6 组合人工验证）：
 
     Qt.Window | Qt.ExpandedClientAreaHint | Qt.NoTitleBarBackgroundHint
+
+适用版本：``PySide6>=6.10.0``。这两个标志虽是 Qt 6.9 引入，但 Qt 6.9 的
+``fixTopLevelWindowFlags`` 用 ``switch (flags)`` 精确匹配整个 flags，带上
+``ExpandedClientAreaHint|NoTitleBarBackgroundHint`` 后不再命中裸
+``Qt::Window``，不会自动补全 title hints → ``WS_CAPTION`` 等样式位全缺 →
+最大化动画消失 / Win7 边框；Qt 6.10 加了 ``clientAreaHints`` 排除逻辑
+（``switch (flags & ~clientAreaHints)``）才修复（详见 AGENTS.md）。
 
 设计要点（与 win32 原生能力的关系）：
 1. 窗口标志
