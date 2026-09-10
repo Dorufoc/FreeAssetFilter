@@ -74,7 +74,14 @@ class _FakeUser32:
 
     def SetParent(self, hwnd, parent):
         self.setparent_args = (hwnd, parent)
-        return 0
+        return 0x1EE7  # 非 NULL：模拟摘除成功（返回旧父窗口）
+
+    def GetWindowLongPtrW(self, hwnd, index):
+        return 0x10000000  # WS_VISIBLE（仅兜底路径会用到）
+
+    def SetWindowLongPtrW(self, hwnd, index, value):
+        self.setwindowlong_args = (hwnd, index, value)
+        return value
 
     def ShowWindow(self, hwnd, cmd):
         self.showwindow_args = (hwnd, cmd)
@@ -151,9 +158,9 @@ def test_hide_titlebar_noop_on_non_windows(frameless_win, monkeypatch) -> None:
 
 
 def test_hide_titlebar_noop_when_no_hwnd(frameless_win, fake_user32, monkeypatch) -> None:
-    """HWND 为 0（winId 不可用）时安全跳过。"""
+    """HWND 为 0（窗口尚未建窗）时安全跳过。"""
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.setattr(frameless_win, "winId", lambda: 0)
+    monkeypatch.setattr(frameless_win, "internalWinId", lambda: 0)
     frameless_win._hide_qt_titlebar()
     assert not fake_user32.find_called
 
@@ -164,23 +171,24 @@ def test_hide_titlebar_calls_setparent_and_hide(
     """Windows 下找到 _q_titlebar 后调用 SetParent(HWND_MESSAGE) + SW_HIDE。"""
     monkeypatch.setattr(sys, "platform", "win32")
     fake_user32._hwnd = 0x1234
-    monkeypatch.setattr(frameless_win, "winId", lambda: 0xABCD)
-    frameless_win._hide_qt_titlebar()
+    monkeypatch.setattr(frameless_win, "internalWinId", lambda: 0xABCD)
+    assert frameless_win._hide_qt_titlebar() is True
     assert fake_user32.find_called
     setparent_hwnd, setparent_parent = fake_user32.setparent_args
-    assert int(setparent_hwnd) == 0x1234
+    # ctypes 的 HWND 是 c_void_p：必须取 .value（int(HWND) 会按字节串解析并报错）
+    assert setparent_hwnd.value == 0x1234
     # HWND_MESSAGE 必须是 (HWND)-3；0xFFFFFFFF 是无效句柄，SetParent 会以
     # ERROR_INVALID_WINDOW_HANDLE(1400) 失败（本次修复的缺陷之一）。
     assert ctypes.c_ssize_t(setparent_parent.value).value == -3
     show_hwnd, show_cmd = fake_user32.showwindow_args
-    assert int(show_hwnd) == 0x1234
+    assert show_hwnd.value == 0x1234
     assert show_cmd == 0  # SW_HIDE
 
 
 def test_hide_titlebar_swallows_exception(frameless_win, monkeypatch) -> None:
     """user32 调用异常时静默吞掉，不影响窗口使用。"""
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.setattr(frameless_win, "winId", lambda: 0xABCD)
+    monkeypatch.setattr(frameless_win, "internalWinId", lambda: 0xABCD)
 
     class _Boom:
         def FindWindowExW(self, *a, **k):
@@ -188,6 +196,54 @@ def test_hide_titlebar_swallows_exception(frameless_win, monkeypatch) -> None:
 
     monkeypatch.setattr(fw, "_user32", _Boom())
     frameless_win._hide_qt_titlebar()  # 不抛异常即可
+
+
+def test_hide_titlebar_falls_back_to_clearing_ws_visible(
+    frameless_win, fake_user32, monkeypatch
+) -> None:
+    """SetParent 摘除失败时，兜底清除标题栏的 WS_VISIBLE 样式位。"""
+    monkeypatch.setattr(sys, "platform", "win32")
+    fake_user32._hwnd = 0x1234
+    # 模拟 SetParent 失败（返回 NULL）
+    fake_user32.SetParent = lambda hwnd, parent: 0
+    monkeypatch.setattr(frameless_win, "internalWinId", lambda: 0xABCD)
+
+    assert frameless_win._hide_qt_titlebar() is True
+    hwnd, index, value = fake_user32.setwindowlong_args
+    assert hwnd.value == 0x1234
+    assert index == fw._GWL_STYLE
+    assert value & fw._WS_VISIBLE == 0  # WS_VISIBLE 被清除
+
+
+def test_hide_qt_titlebar_soon_schedules_deferred_hide(
+    frameless_win, monkeypatch
+) -> None:
+    """延迟隐藏必须排进事件循环（Qt 可能在同步回调之后才 SW_SHOW）。"""
+    calls: list[tuple] = []
+    monkeypatch.setattr(fw.QTimer, "singleShot", lambda ms, fn: calls.append((ms, fn)))
+    frameless_win._hide_qt_titlebar_soon()
+    assert calls and calls[0][0] == 0
+    assert calls[0][1] == frameless_win._hide_qt_titlebar
+
+
+def test_resize_event_starts_titlebar_guard(qapp) -> None:
+    """缩放时会启动短周期守护定时器持续压制系统标题栏。"""
+    win = FramelessMainWindow()
+    win.resize(320, 240)
+    win.show()
+    qapp.processEvents()
+
+    win.resize(400, 300)
+    qapp.processEvents()
+
+    timer = getattr(win, "_titlebar_guard_timer", None)
+    if hasattr(Qt, "ExpandedClientAreaHint"):
+        assert timer is not None and timer.isActive()
+        win._stop_resize_guard()
+        assert not timer.isActive()
+    else:  # 旧 Qt 退化路径不启动守护
+        assert timer is None
+    win.close()
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +263,7 @@ def test_reapply_hides_titlebar_and_refreshes_frame(
     """
     monkeypatch.setattr(sys, "platform", "win32")
     fake_user32._hwnd = 0x1234
-    monkeypatch.setattr(frameless_win, "winId", lambda: 0xABCD)
+    monkeypatch.setattr(frameless_win, "internalWinId", lambda: 0xABCD)
 
     frameless_win.reapply_native_window_effects()
 

@@ -61,7 +61,7 @@ import logging
 import sys
 from ctypes import wintypes
 
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtWidgets import QMainWindow
 
 logger = logging.getLogger(__name__)
@@ -100,6 +100,18 @@ _SWP_FRAMECHANGED = 0x0020
 _SWP_FRAME_RECALC = (
     _SWP_FRAMECHANGED | _SWP_NOMOVE | _SWP_NOSIZE | _SWP_NOZORDER | _SWP_NOACTIVATE
 )
+
+#: Qt 为 ExpandedClientAreaHint 创建的系统标题栏子窗口类名。
+#: 当同一进程内注册过不同 Qt 实例的同名类时，Qt 会给类名追加 UUID 后缀，
+#: 故匹配时用前缀而非全等（见 ``_find_qt_titlebar``）。
+_TITLEBAR_CLASS = "_q_titlebar"
+
+#: EnumChildWindows 回调原型（找到目标时返回 FALSE 以停止枚举）。
+_ENUM_CHILD_PROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+# GetWindowLong 索引与样式位（用于兜底隐藏：摘除失败时清除 WS_VISIBLE）
+_GWL_STYLE = -16
+_WS_VISIBLE = 0x10000000
 
 #: 原生无边框窗口所需的最低 Qt 版本（ExpandedClientAreaHint 的 title hints
 #: 自动补全逻辑自 Qt 6.10 起才正确，见模块 docstring）。
@@ -142,8 +154,50 @@ def _get_user32():
         ctypes.c_int, ctypes.c_int, wintypes.UINT,
     ]
     lib.SetWindowPos.restype = wintypes.BOOL
+    lib.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    lib.GetClassNameW.restype = ctypes.c_int
+    lib.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
+    lib.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+    lib.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
+    lib.SetWindowLongPtrW.restype = ctypes.c_ssize_t
+    lib.EnumChildWindows.argtypes = [wintypes.HWND, _ENUM_CHILD_PROC, wintypes.LPARAM]
+    lib.EnumChildWindows.restype = wintypes.BOOL
     _user32 = lib
     return lib
+
+
+def _find_qt_titlebar(hwnd: int, deep: bool = False) -> int:
+    """查找 Qt 的 ``_q_titlebar`` 子窗口，返回 HWND（未找到返回 0）。
+
+    Args:
+        hwnd: 顶层窗口句柄。
+        deep: True 时在 ``FindWindowExW``（精确类名）失败后，改用
+            ``EnumChildWindows`` 按类名前缀匹配。用于兜底「同名类被追加
+            UUID 后缀」或其它类名变体；成本高于精确查找，故仅在
+            WinIdChange/showEvent 等低频路径启用。
+    """
+    user32 = _get_user32()
+    if user32 is None or not hwnd:
+        return 0
+    tb = user32.FindWindowExW(wintypes.HWND(hwnd), None, _TITLEBAR_CLASS, None)
+    if tb or not deep:
+        return int(tb) if tb else 0
+
+    found = {"hwnd": 0}
+
+    def _cb(child, _lparam):
+        buf = ctypes.create_unicode_buffer(128)
+        user32.GetClassNameW(child, buf, 128)
+        if buf.value.startswith(_TITLEBAR_CLASS):
+            found["hwnd"] = int(child or 0)
+            return False  # 停止枚举
+        return True
+
+    try:
+        user32.EnumChildWindows(wintypes.HWND(hwnd), _ENUM_CHILD_PROC(_cb), 0)
+    except Exception:  # noqa: BLE001 - 兜底查找失败按未找到处理
+        return 0
+    return found["hwnd"]
 
 
 def _hit_test_code(x: int, y: int, left: int, top: int, right: int, bottom: int,
@@ -394,36 +448,70 @@ class FramelessMainWindow(QMainWindow):
         return True, code
 
     # ---- 原生辅助 ----
-    def _hide_qt_titlebar(self) -> None:
+    def _hide_qt_titlebar(self, deep: bool = False) -> bool:
         """隐藏 Qt 的 `_q_titlebar` 独立标题栏子窗口（Qt 6.9+ 内部实现）。
 
         对应 qtbase qwindowswindow.cpp：
           - 创建: CreateWindowEx(WS_EX_LAYERED|WS_EX_TRANSPARENT|
             WS_EX_NOACTIVATE, "_q_titlebar", ...)
           - 官方隐藏: SetParent(hwndTitlebar, HWND_MESSAGE) + ShowWindow(SW_HIDE)
+
+        该子窗口是 ``WS_EX_LAYERED | WS_EX_TRANSPARENT`` 的覆盖层，高度正好
+        覆盖标题栏区域，绘制系统标题文本与最小化/最大化/关闭三个按钮；因为
+        垫在自绘标题栏下方，一旦重新可见就会「透出原生按钮」。
+
+        Args:
+            deep: 精确类名查不到时是否启用 ``EnumChildWindows`` 前缀匹配兜底。
+
+        Returns:
+            True 表示确实找到并隐藏了标题栏窗口。
         """
         if sys.platform != "win32":
-            return
+            return False
         user32 = _get_user32()
         if user32 is None:
-            return
+            return False
         try:
-            hwnd = wintypes.HWND(int(self.winId()))
+            # 注意：ctypes 的 HWND 是 c_void_p，int(HWND) 会按字节串解析并抛
+            # ValueError——必须取 .value（早期版本正是因此静默失败）。
+            # 用 internalWinId() 而非 winId()：不强制建窗（见 resizeEvent 说明）。
+            hwnd_value = int(self.internalWinId() or 0)
         except (TypeError, RuntimeError, ValueError):
-            return
-        if not hwnd.value:
-            return
+            return False
+        if not hwnd_value:
+            return False
         try:
-            tb = user32.FindWindowExW(hwnd, None, "_q_titlebar", None)
+            tb = _find_qt_titlebar(hwnd_value, deep=deep)
             if not tb:
-                return
-            # 真正把标题栏子窗口从主窗口摘除并挂到消息窗口（HWND_MESSAGE=(HWND)-3）；
-            # 若 SetParent 失败则至少保证 SW_HIDE 生效。
-            user32.SetParent(tb, wintypes.HWND(_HWND_MESSAGE))
-            user32.ShowWindow(tb, 0)  # SW_HIDE
+                return False
+            tb_hwnd = wintypes.HWND(tb)
+            # 首选：把标题栏子窗口摘出主窗口并挂到消息窗口（HWND_MESSAGE=(HWND)-3）。
+            # 消息窗口永不显示，故一旦成功即彻底杜绝系统按钮透出。
+            prev_parent = user32.SetParent(tb_hwnd, wintypes.HWND(_HWND_MESSAGE))
+            user32.ShowWindow(tb_hwnd, 0)  # SW_HIDE
+            if not prev_parent:
+                # SetParent 失败（例如句柄无效）时兜底：直接清除 WS_VISIBLE 样式位，
+                # 令系统不会绘制它，即便后续被重新设置位置也保持不可见。
+                style = user32.GetWindowLongPtrW(tb_hwnd, _GWL_STYLE)
+                user32.SetWindowLongPtrW(
+                    tb_hwnd, _GWL_STYLE, style & ~_WS_VISIBLE
+                )
+                user32.ShowWindow(tb_hwnd, 0)
+            return True
         except Exception:
             # 隐藏失败不影响窗口正常使用（仅系统按钮绘制层残留）
-            pass
+            return False
+
+    def _hide_qt_titlebar_soon(self) -> None:
+        """在事件循环下一轮再隐藏一次 ``_q_titlebar``（时序兜底）。
+
+        Qt 只在 ``QWindowsWindow`` 构造与 ``setWindowFlags_sys`` 中把标题栏
+        ``SW_SHOW``，而这两处都可能发生在同步回调（``WinIdChange`` /
+        ``showEvent``）**返回之后**——即此刻同步隐藏会输给 Qt 稍后的显示。
+        因此再排一次 ``QTimer.singleShot(0)`` 隐藏：等本轮事件派发结束、Qt
+        该显示的都显示完，再撤下，避免 GPU 表面令 HWND 重建时闪出系统按钮。
+        """
+        QTimer.singleShot(0, self._hide_qt_titlebar)
 
     def _refresh_native_frame(self) -> None:
         """强制系统重算非客户区（SWP_FRAMECHANGED），清除残留的原生标题栏。
@@ -439,7 +527,8 @@ class FramelessMainWindow(QMainWindow):
         if user32 is None:
             return
         try:
-            hwnd = wintypes.HWND(int(self.winId()))
+            # 不强制建窗：HWND 尚未创建时无需重算（showEvent 会补）。
+            hwnd = wintypes.HWND(int(self.internalWinId() or 0))
         except (TypeError, RuntimeError, ValueError):
             return
         if not hwnd.value:
@@ -453,12 +542,66 @@ class FramelessMainWindow(QMainWindow):
     def reapply_native_window_effects(self) -> None:
         """HWND 创建/重建后重新应用原生窗口效果。
 
-        新方案下 WS_THICKFRAME/WS_CAPTION 样式与 DwmExtendFrameIntoClientArea
-        由 Qt 的 ExpandedClientAreaHint 在窗口创建时自动应用，此处补两件事：
+        新方案下 WS_THICKFRAME/WS_CAPTION 样式由 Qt 的 ExpandedClientAreaHint
+        在窗口创建时自动应用，此处按顺序补三件事：
 
-        1. 确保 Qt 的 ``_q_titlebar`` 系统标题栏子窗口保持隐藏；
+        1. 确保 Qt 的 ``_q_titlebar`` 系统标题栏子窗口保持隐藏（精确类名 +
+           前缀兜底匹配 + WS_VISIBLE 兜底清除）；
         2. 强制重算非客户区，把创建/重建瞬间可能残留的原生标题栏立即替换为
-           扩展后的客户区（修复快速拖拽缩放时右上角闪出原生按钮的问题）。
+           扩展后的客户区；
+        3. 再排一次延迟隐藏——Qt 可能在本同步回调返回之后才把标题栏
+           ``SW_SHOW``，只做同步隐藏会输掉这个时序竞争。
         """
-        self._hide_qt_titlebar()
+        self._hide_qt_titlebar(deep=True)
         self._refresh_native_frame()
+        self._hide_qt_titlebar_soon()
+
+    def resizeEvent(self, event) -> None:
+        """缩放时持续压制 ``_q_titlebar``（系统按钮只会在缩放过程中透出）。
+
+        主窗口拖拽边缘缩放时，GPU/原生子表面可能令顶层 HWND 重建，Qt 随即在
+        新 HWND 上创建并显示 ``_q_titlebar``；其显示时机在同步回调之后，故这里
+        同时做「立即隐藏 + 延迟隐藏」，并开启缩放期间的短周期守护定时器兜底。
+
+        用 ``internalWinId()`` 判断而非 ``winId()``：主窗口在 ``__init__`` 阶段
+        就会 ``resize()``，而 ``winId()`` 会强制建窗——顶层窗口一旦建窗就固定了
+        合成后端，会让建窗前的 RHI 预热失效（流体背景静默回退 CPU）。HWND 尚未
+        创建时无需处理，showEvent / WinIdChange 会补上。
+        """
+        super().resizeEvent(event)
+        if not self._expanded_client_area or not self.internalWinId():
+            return
+        self._hide_qt_titlebar()
+        self._hide_qt_titlebar_soon()
+        self._ensure_resize_guard_running()
+
+    def _ensure_resize_guard_running(self) -> None:
+        """在缩放/移动期间启动短周期守护定时器，结束后自动停止。
+
+        ``_q_titlebar`` 的重建由 Qt 在原生缩放循环内完成，单次隐藏可能被随后
+        的 ``SW_SHOW`` 覆盖；缩放期间以固定间隔反复隐藏，可保证系统按钮任何
+        一帧都不会透出，松开鼠标后即停止（不影响性能）。
+        """
+        timer = getattr(self, "_titlebar_guard_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setInterval(20)
+            timer.setTimerType(Qt.TimerType.PreciseTimer)
+            timer.timeout.connect(self._hide_qt_titlebar)
+            self._titlebar_guard_timer = timer
+        if not timer.isActive():
+            timer.start()
+        # 缩放期间不断续期；停止后由本轮 timeout 里的静默判定收尾。
+        stop_timer = getattr(self, "_titlebar_guard_stop_timer", None)
+        if stop_timer is None:
+            stop_timer = QTimer(self)
+            stop_timer.setSingleShot(True)
+            stop_timer.timeout.connect(self._stop_resize_guard)
+            self._titlebar_guard_stop_timer = stop_timer
+        stop_timer.start(400)
+
+    def _stop_resize_guard(self) -> None:
+        """停止缩放守护定时器。"""
+        timer = getattr(self, "_titlebar_guard_timer", None)
+        if timer is not None and timer.isActive():
+            timer.stop()
