@@ -6,6 +6,7 @@ FreeAssetFilter 主窗口
 """
 
 import sys
+import warnings
 from pathlib import Path
 from typing import Optional
 import os
@@ -30,10 +31,12 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 try:
-    from freeassetfilter.ui.frameless_window import FramelessMainWindow
+    from freeassetfilter.ui.frameless_window import _EDGE_BORDER, FramelessMainWindow
 except ImportError:
     # 极端回退：如果本地无边框基类不可用，使用普通 QMainWindow
     from PySide6.QtWidgets import QMainWindow as FramelessMainWindow
+
+    _EDGE_BORDER = 8  # 与 frameless_window 的默认值保持一致
 
 # tm 别名已在 theme/__init__.py 中注册
 # from theme import tm 与从 freeassetfilter.ui.theme import tm 指向同一实例
@@ -43,6 +46,7 @@ from components.custom_background import BACKGROUND_DIR_NAME, CustomImageBackgro
 from components.mica_material import MicaMaterial
 from components.mica_window import DEFAULT_MICA_CONFIG
 from components.styled_button import StyledButton
+from components.styled_fluid_background import prewarm_top_level_rhi
 # 内容层主题过渡遮罩（旧外观快照自绘淡出，轻量自绘替代整窗遮罩的两处卡顿源）
 from components.theme_transition_overlay import ContentTransitionOverlay
 # 实验性原生 DWM 云母开关的底层桥接（dwmapi 薄封装，惰性加载，零 COM 初始化）
@@ -487,7 +491,7 @@ class _EdgeHitTestPassthroughFilter(QAbstractNativeEventFilter):
 
         rect = wintypes.RECT()
         ctypes.windll.user32.GetWindowRect(main_hwnd, ctypes.byref(rect))
-        border = 8  # 与本地无边框基类 _EDGE_BORDER 一致（WS_THICKFRAME 边框宽）
+        border = _EDGE_BORDER  # 与本地无边框基类一致（WS_THICKFRAME 边框宽，物理 8px）
         in_edge = (
             x - rect.left < border
             or rect.right - x < border
@@ -516,23 +520,19 @@ class _FramelessNativeEffectsMixin:
     QOpenGLWidget / QRhiWidget 等「渲染到纹理」控件在附加 GPU 表面时，会让 Qt
     重建顶层原生窗口（HWND）。新方案下 WS_THICKFRAME/WS_CAPTION 样式与
     DwmExtendFrameIntoClientArea 由 Qt 的 ExpandedClientAreaHint 在窗口创建
-    时自动应用，重建后 Qt 会一并恢复；唯一需要手动补充的是 Qt 6.9+ 为
-    ExpandedClientAreaHint 创建的系统标题栏子窗口 ``_q_titlebar`` —— HWND
-    重建后它会重新出现，需再次隐藏（见 FramelessMainWindow.reapply_native_window_effects）。
+    时自动应用，重建后 Qt 会一并恢复；需要手动补充的是 Qt 6.9+ 为
+    ExpandedClientAreaHint 创建的系统标题栏子窗口 ``_q_titlebar``，以及重建
+    瞬间系统按标准窗口算出的原生标题栏——两者均由基类
+    :meth:`FramelessMainWindow.reapply_native_window_effects` 处理，其
+    ``WinIdChange``/``showEvent`` 钩子已覆盖本场景，故此处不再重复。
 
-    本 Mixin 监听 QEvent.WinIdChange：每当 HWND 变化，就调用基类重应用逻辑，
-    保持系统按钮隐藏状态；同时安装 WM_NCHITTEST 边缘穿透过滤器（见
+    本 Mixin 只负责安装 WM_NCHITTEST 边缘穿透过滤器（见
     :class:`_EdgeHitTestPassthroughFilter`），让 MPV 等原生子窗口覆盖边缘时
     仍可原生缩放。
 
     注意：该问题对 QOpenGLWidget 与 QRhiWidget 一致（两者都会触发 HWND 重建），
     因此此修复与底层图形 API 无关，切换到 QRhi 也仍需同样的重应用逻辑。
     """
-
-    def event(self, e: QEvent) -> bool:
-        if e.type() == QEvent.Type.WinIdChange:
-            self.reapply_native_window_effects()
-        return super().event(e)
 
     def _install_edge_hit_test_passthrough(self) -> None:
         """安装 WM_NCHITTEST 边缘穿透过滤器（幂等）。
@@ -646,6 +646,14 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
         # 调用父类初始化
         super().__init__(parent)
+
+        # 合成后端预热（必须在建窗之前、且不创建任何子控件之前）：
+        # 音频模式的流体背景是非原生 QRhiWidget，它的 QRhi 来自顶层窗口的
+        # 合成后端，而顶层窗口只在 QWindow 创建之前层级里已有 QRhiWidget 时
+        # 才启用 RHI 合成。预览器是窗口显示后才惰性构建的（见 _build_panel），
+        # 这里先挂一个不可见的预热控件把合成后端定成 RHI，否则流体背景拿不到
+        # QRhi，只能回退到 CPU 静态烘焙。
+        self._rhi_prewarm = prewarm_top_level_rhi(self)
 
         # 隐藏 Qt 6.9+ 的 `_q_titlebar` 系统标题栏子窗口（由本地无边框基类
         # FramelessMainWindow 在 __init__/showEvent/WinIdChange 自动处理，
@@ -1422,12 +1430,17 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             )
 
             watcher = get_system_theme_watcher()
-            try:
-                watcher.system_theme_changed.disconnect(
-                    self._on_system_theme_changed
-                )
-            except Exception:
-                pass
+            # 幂等重连：PySide6 对「未连接的信号执行 disconnect」会在 C++ 层
+            # 打 RuntimeWarning/SystemError（进程退出时 watcher 已被释放），
+            # 用 catch_warnings 静默已知无害的断开告警后安全重连。
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                try:
+                    watcher.system_theme_changed.disconnect(
+                        self._on_system_theme_changed
+                    )
+                except (RuntimeError, TypeError, SystemError):
+                    pass
             watcher.system_theme_changed.connect(
                 self._on_system_theme_changed
             )
@@ -2188,6 +2201,20 @@ def main() -> int:
         print("正在显示窗口...")
         window.show()
         print("窗口已显示")
+
+        # 无边框能力运行时检查（与正式入口 freeassetfilter.app.main 保持一致）
+        try:
+            from freeassetfilter.ui.frameless_window import frameless_runtime_status
+
+            supported, detail = frameless_runtime_status()
+            if supported:
+                print(f"[无边框] 运行时检查通过：{detail}")
+            else:
+                print("!" * 68)
+                print(f"  无边框窗口已退化：{detail}")
+                print("!" * 68)
+        except Exception as e:  # noqa: BLE001 - 仅提示用途
+            print(f"无边框运行时检测失败: {e}")
 
         # 退出兜底：确保后台 Mica 线程在应用退出时被回收，避免野线程残留
         app.aboutToQuit.connect(window._dispose_mica)

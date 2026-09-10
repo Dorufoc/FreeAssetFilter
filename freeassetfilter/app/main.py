@@ -316,6 +316,55 @@ def _create_application(argv, initial_navigate_path):
     return app
 
 
+def _warn_if_frameless_unsupported() -> None:
+    """Qt < 6.10 时显著警告：原生无边框窗口会退化（避免静默降级）。
+
+    退化表现：窗口带完整原生标题栏、丢失最大化动画，等同于「无边框方案失效」。
+    日志用 error 级别，并在主窗口显示后弹出一次提示框（不阻塞启动）。
+    """
+    try:
+        from freeassetfilter.ui.frameless_window import frameless_runtime_status
+
+        supported, detail = frameless_runtime_status()
+    except Exception as e:  # noqa: BLE001 - 仅提示用途，失败不影响启动
+        warning(f"无边框运行时检测失败: {e}")
+        return
+    if supported:
+        info(f"[无边框] 运行时检查通过：{detail}")
+        return
+
+    error(f"[无边框] 原生无边框窗口不可用：{detail}")
+    logger = get_logger()
+    if logger is not None:
+        logger.warning("=" * 68)
+        logger.warning("  无边框窗口已退化：%s", detail)
+        logger.warning("=" * 68)
+
+    try:
+        from PySide6.QtCore import QTimer
+
+        def _show_notice() -> None:
+            try:
+                from freeassetfilter.ui.components.styled_dialog import create_custom_dialog
+
+                create_custom_dialog(
+                    title="无边框窗口不可用",
+                    message=(
+                        f"{detail}\n\n"
+                        "当前窗口会显示系统原生标题栏，最大化动画也可能缺失。"
+                    ),
+                    buttons=["我知道了"],
+                    dialog_type="danger",
+                    show_close=True,
+                )
+            except Exception as e:  # noqa: BLE001 - 提示失败不影响使用
+                warning(f"无边框退化提示框显示失败: {e}")
+
+        QTimer.singleShot(600, _show_notice)
+    except Exception as e:  # noqa: BLE001
+        warning(f"无边框退化提示调度失败: {e}")
+
+
 # ──────────────────────────────────────────────────────────────
 # 主入口
 # ──────────────────────────────────────────────────────────────
@@ -383,6 +432,10 @@ def main(argv=None) -> int:
 
     window.show()
     info(f"[启动] 窗口显示: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
+
+    # 无边框能力运行时检查（Qt<6.10 退化时显著告警，不阻塞启动）
+    _warn_if_frameless_unsupported()
+
     controller.schedule_startup_tasks()
     info(f"[启动] 启动任务已调度: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
 

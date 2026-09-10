@@ -1,6 +1,6 @@
 {
   "schema": "thumbnail-latency-baseline/v1",
-  "timestamp": "2026-09-10T10:06:02+00:00",
+  "timestamp": "2026-09-10T12:36:53+00:00",
   "mode": "full",
   "machine": {
     "platform": "Windows-10-10.0.26200-SP0",
@@ -12,10 +12,10 @@
   "image_latency": {
     "samples": 100,
     "corpus_size": 10,
-    "p50_ms": 11.143,
-    "p95_ms": 13.671,
-    "mean_ms": 11.332,
-    "max_ms": 17.651,
+    "p50_ms": 12.328,
+    "p95_ms": 15.682,
+    "mean_ms": 12.621,
+    "max_ms": 18.049,
     "thresholds": {
       "p50_ms": 50.0,
       "p95_ms": 150.0
@@ -28,10 +28,10 @@
       "sample_flv1.flv",
       "sample_h264.mkv"
     ],
-    "p50_ms": 303.72,
-    "p95_ms": 367.254,
-    "mean_ms": 311.016,
-    "max_ms": 379.751,
+    "p50_ms": 312.106,
+    "p95_ms": 369.225,
+    "mean_ms": 313.61,
+    "max_ms": 385.523,
     "thresholds": {
       "p50_ms": 800.0,
       "p95_ms": 3000.0
@@ -40,8 +40,8 @@
   "batch_throughput": {
     "threads": 16,
     "total_images": 320,
-    "elapsed_s": 1.3893,
-    "images_per_second": 230.33,
+    "elapsed_s": 1.4155,
+    "images_per_second": 226.08,
     "threshold_images_per_second": 120.0
   }
 }

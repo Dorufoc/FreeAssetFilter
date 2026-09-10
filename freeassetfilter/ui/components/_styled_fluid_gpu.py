@@ -30,6 +30,37 @@ GNU Affero General Public License for more details.
 换算：Qt 用 ``qRound()``（0.5 远离零）创建纹理，Python ``round()`` 是银行家
 舍入，150% DPI 下两者会差 1 像素，令纹理最右/最下一列永不写入（alpha=0），
 合成时露出下层背景（浅色主题白边、深色主题异色细线）。
+
+为什么绝不能强制原生化（不设 WA_NativeWindow）
+---------------------------------------------
+``WA_NativeWindow`` 会让本控件变成独立 HWND：Windows 在窗口缩放时**立刻**
+改变该 HWND 的位置与尺寸并拉伸上一帧的交换链内容，而顶层窗口的其余客户区
+内容要等 Qt 下一次重绘才更新。两者响应同一次拖拽的时机不同，视觉上就是流
+体渲染区域相对窗口边缘**错位闪烁**、并在缩放过程中出现拉伸撕裂。参与宿主
+合成（不原生化）后，流体纹理与其余控件内容在同一次合成里按同一套几何摆
+放，时机完全一致。
+
+代价是：非原生 QRhiWidget 的 QRhi 来自顶层窗口的合成后端，而顶层窗口**只有
+在 QWindow 创建之前其层级里已经存在 QRhiWidget** 才会启用 RHI 合成。本项目
+主窗口在 ``MainWindow.__init__`` 早期就访问了 ``winId()``，而音频页的预览器
+是窗口显示后才惰性构建的，因此必须在建窗之前先挂一个不可见的预热控件——
+见 ``styled_fluid_background.prewarm_top_level_rhi``。
+
+为什么颜色缓冲尺寸必须与控件尺寸完全一致
+----------------------------------------
+``QRhiWidget`` 默认令颜色缓冲尺寸跟随控件尺寸（``控件尺寸 × DPR``）。窗口
+缩放时纹理每一步都要重建，Qt 会因纹理重建而再次回调
+:meth:`_FluidGPUShaderWidget.initialize`；该函数已做成幂等（见其文档），
+尺寸变化不重建管线、缓冲区与着色器，实测每步仅约 0.04ms，原本每步约 4ms
+的瓶颈（重新读盘并反序列化 ``.qsb``、重建 D3D11 管线）已经消除。
+
+曾尝试用 ``setFixedColorBufferSize`` 把缓冲尺寸量化固定（每 256 设备像素一
+档）来进一步减少重建次数。但顶层合成器是把固定尺寸的纹理**拉伸**铺满控件
+区域的：纹理与控件宽高比不一致时，流体图案会被沿单轴拉伸。实测控件
+570x180（比例 3.17）被固定为 1024x512（比例 2.00），横向拉长约 58%，而且
+该拉伸比例随窗口尺寸连续变化、跨档时突变——正是要消除的错位闪烁。它换来
+的收益却只有约 0.04ms/步。因此不再固定缓冲尺寸：颜色缓冲始终等于控件设备
+像素尺寸，纹理与控件宽高比一致，渲染区域与控件区域逐像素对齐，不滞后。
 """
 
 from __future__ import annotations
@@ -122,10 +153,10 @@ class _FluidGPUShaderWidget(QRhiWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        # 强制原生化：QRhiWidget 在窗口已显示后才创建时，若仍为普通（非原生）
-        # 子控件，Qt 不会为其建立 RHI（initialize 永不回调，控件保持空白）。
-        # 预先声明 WA_NativeWindow 可稳定触发初始化。
-        self.setAttribute(Qt.WA_NativeWindow, True)
+        # 保持非原生（参与宿主合成）：原生化会让本控件的 HWND 与顶层窗口其余
+        # 内容响应同一次拖拽的时机不同，造成流体区域错位闪烁（见模块头注释）。
+        # 非原生路径需要顶层窗口在建窗时即启用 RHI 合成，由
+        # ``styled_fluid_background.prewarm_top_level_rhi`` 负责。
         self.setAutoFillBackground(False)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_NoSystemBackground, True)
@@ -143,6 +174,14 @@ class _FluidGPUShaderWidget(QRhiWidget):
         self._srb: QRhiShaderResourceBindings | None = None
         self._pipeline: QRhiGraphicsPipeline | None = None
         self._initialized = False
+        #: 资源所属的 QRhi 与渲染通道描述符。二者任一变化都必须重建资源
+        #: （例如顶层窗口重建 RHI、颜色缓冲格式变化），仅尺寸变化不必。
+        self._rhi = None
+        self._render_pass = None
+        #: uniform 版本号，每次 :meth:`update_uniforms` 自增；与渲染目标
+        #: 尺寸一起构成「已绘制内容」的标识，用于跳过重复绘制。
+        self._uniform_version = 0
+        self._drawn_key: tuple[int, int, int] | None = None
 
     # -- 初始化 -------------------------------------------------------------
 
@@ -151,7 +190,14 @@ class _FluidGPUShaderWidget(QRhiWidget):
         return self._initialized
 
     def initialize(self, cb) -> None:  # noqa: ANN001 - QRhiCommandBuffer
-        """构建缓冲区、资源绑定与渲染管线。
+        """构建缓冲区、资源绑定与渲染管线（幂等）。
+
+        Qt 在颜色缓冲被创建或重建后都会回调本函数（首次初始化、尺寸/格式/
+        采样数变化），因此窗口缩放时它会被反复调用。缓冲区、资源绑定与管线
+        只依赖 QRhi 与渲染通道描述符，尺寸变化不影响其可用性（渲染尺寸由
+        :meth:`render` 每帧读取 ``colorTexture().pixelSize()`` 设置），所以
+        只有这两者真正变化时才重建；否则每步缩放都要重新读盘加载着色器并
+        重建 D3D11 管线，渲染跟不上窗口尺寸变化。
 
         Raises:
             RuntimeError: 着色器缺失 / QRhi 不可用 / 管线创建失败。
@@ -159,6 +205,20 @@ class _FluidGPUShaderWidget(QRhiWidget):
         rhi = self.rhi()
         if rhi is None:
             raise RuntimeError("QRhi is not available")
+
+        render_target = self.renderTarget()
+        if render_target is None:
+            raise RuntimeError("QRhi 渲染目标不可用")
+        render_pass = render_target.renderPassDescriptor()
+
+        if self._initialized and self._rhi is rhi and self._render_pass is render_pass:
+            # 颜色缓冲刚被重建，内容未定义：下一帧必须重绘。
+            self._drawn_key = None
+            return
+
+        # 资源要么属于旧的 QRhi，要么是为旧渲染通道描述符创建的，都不能
+        # 再用（QRhi 会在切换时先调用 releaseResources，这里再防一次幂等）。
+        self.releaseResources()
 
         vert_shader = self._load_shader(_QSB_VERT_NAME)
         frag_shader = self._load_shader(_QSB_FRAG_NAME)
@@ -214,10 +274,7 @@ class _FluidGPUShaderWidget(QRhiWidget):
         pipeline.setSampleCount(1)
         # 单个颜色附件必须显式给出 target blend（默认不透明混合）。
         pipeline.setTargetBlends([QRhiGraphicsPipeline.TargetBlend()])
-        render_target = self.renderTarget()
-        if render_target is None:
-            raise RuntimeError("QRhi 渲染目标不可用")
-        pipeline.setRenderPassDescriptor(render_target.renderPassDescriptor())
+        pipeline.setRenderPassDescriptor(render_pass)
         if not pipeline.create():
             raise RuntimeError("渲染管线创建失败")
 
@@ -225,7 +282,10 @@ class _FluidGPUShaderWidget(QRhiWidget):
         self._ubuf = ubuf
         self._srb = srb
         self._pipeline = pipeline
+        self._rhi = rhi
+        self._render_pass = render_pass
         self._initialized = True
+        self._drawn_key = None
 
     @staticmethod
     def _load_shader(name: str) -> QShader:
@@ -263,6 +323,10 @@ class _FluidGPUShaderWidget(QRhiWidget):
         self._srb = None
         self._ubuf = None
         self._vbuf = None
+        # 置空归属信息，令下一次 initialize() 必定重新创建资源。
+        self._rhi = None
+        self._render_pass = None
+        self._drawn_key = None
 
     # -- 渲染 ---------------------------------------------------------------
 
@@ -288,6 +352,13 @@ class _FluidGPUShaderWidget(QRhiWidget):
         physical_width = max(1, int(size.width()))
         physical_height = max(1, int(size.height()))
 
+        # 控件每步缩放都会同步触发一次绘制，但颜色缓冲尺寸已按量化步长固定，
+        # 单纯的尺寸变化并不改变画面内容；uniform 未更新时整屏输出与上一帧
+        # 完全一致，直接跳过重绘，避免缩放期间做无谓的全屏计算而拖慢渲染。
+        key = (physical_width, physical_height, self._uniform_version)
+        if key == self._drawn_key:
+            return
+
         rub = rhi.nextResourceUpdateBatch()
         rub.updateDynamicBuffer(
             self._ubuf, 0, self._pack_uniforms(physical_width, physical_height)
@@ -307,6 +378,7 @@ class _FluidGPUShaderWidget(QRhiWidget):
             cb.draw(6)
         finally:
             cb.endPass()
+        self._drawn_key = key
 
     def _pack_uniforms(self, width: int, height: int) -> bytes:
         """按 std140 布局打包 uniform block（256 字节）。
@@ -385,6 +457,7 @@ class _FluidGPUShaderWidget(QRhiWidget):
         if overlay_color is not None:
             self._overlay_color = QColor(overlay_color)
 
+        self._uniform_version += 1
         self.update()
 
     def _normalize_palette(self, palette: list[QColor]) -> list[QColor]:

@@ -289,8 +289,10 @@ class DemoWindow(QMainWindow):
             self._diag_label.setText("诊断：未找到 _q_titlebar 子窗口")
             return
         hwnd = int(hwnd)
-        # 官方隐藏逻辑（同 setWindowFlags_sys）
-        user32.SetParent(ctypes.c_void_p(hwnd), ctypes.c_void_p(0xFFFFFFFF))  # HWND_MESSAGE
+        # 官方隐藏逻辑（同 setWindowFlags_sys）。注意 HWND_MESSAGE = (HWND)-3，
+        # 不能用 0xFFFFFFFF（那是 0x00000000FFFFFFFF，SetParent 会以
+        # ERROR_INVALID_WINDOW_HANDLE=1400 失败）。
+        user32.SetParent(ctypes.c_void_p(hwnd), ctypes.c_void_p(-3))  # HWND_MESSAGE
         user32.ShowWindow(ctypes.c_void_p(hwnd), 0)  # SW_HIDE
 
 

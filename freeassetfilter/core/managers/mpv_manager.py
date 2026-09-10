@@ -30,6 +30,7 @@ MPV管理器模块
 
 import time
 import threading
+import warnings
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import Optional, Callable, Dict, Any, List, Union, Tuple
@@ -574,10 +575,15 @@ class MPVManager(QObject):
             (self._mpv_core.fileEnded, self._on_file_ended),
             (self._mpv_core.errorOccurred, self._on_error_occurred),
         ):
-            try:
-                signal.disconnect(slot)
-            except (RuntimeError, TypeError):
-                pass
+            # PySide6 对「未连接的信号执行 disconnect」会在 C++ 层抛
+            # RuntimeWarning/SystemError（首次连接或核心已释放时），
+            # 用 catch_warnings 静默已知无害的断开告警后安全重连。
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                try:
+                    signal.disconnect(slot)
+                except (RuntimeError, TypeError, SystemError):
+                    pass
             signal.connect(slot)
 
         # 注册 LuaJIT VEH 处理器（在 mpv 初始化之前，确保最后一个注册）

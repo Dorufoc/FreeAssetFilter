@@ -18,6 +18,7 @@ API surface；GPU 相关深层行为用 shader 源码常量断言而非真实 Op
 
 from __future__ import annotations
 
+import ast
 import os
 import sys
 from pathlib import Path
@@ -54,6 +55,33 @@ from freeassetfilter.ui.components.styled_fluid_background import (  # noqa: E40
 )
 
 pytestmark = pytest.mark.unit
+
+
+def _code_only(source: str) -> str:
+    """返回去掉注释与文档字符串后的源码（只保留可执行代码）。
+
+    源码文本断言会被文档字符串里提到同一标识符的说明文字误伤，因此凡是要
+    断言「某 API 未被调用」的地方都先经过本函数。
+
+    Args:
+        source: 模块源码文本。
+
+    Returns:
+        规范化后的可执行代码文本（注释与文档字符串已剔除）。
+    """
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if not isinstance(body, list) or not body:
+            continue
+        first = body[0]
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            body.pop(0)
+    return ast.unparse(tree)
 
 
 # =============================================================================
@@ -276,6 +304,37 @@ class TestFluidGpu:
         assert "setViewport(QRhiViewport(0, 0, physical_width, physical_height))" in source
         assert "_physical_size" not in source
 
+    def test_color_buffer_follows_widget_size(self) -> None:
+        """颜色缓冲不得固定尺寸，否则合成器会沿单轴拉伸流体图案。
+
+        顶层合成器会把固定尺寸的纹理拉伸铺满控件区域：纹理宽高比与控件
+        不一致时，流体图案会被沿单轴拉伸（实测控件比例 3.17 被固定为比例
+        2.00 时横向拉长约 58%），且拉伸比例随窗口尺寸连续变化、跨档突变。
+        """
+        code = _code_only(Path(_fluid_gpu.__file__).read_text(encoding="utf-8"))
+        assert "setFixedColorBufferSize" not in code
+        assert "fixedColorBufferSize" not in code
+        assert "_BUFFER_QUANTUM" not in code
+
+    def test_initialize_reuses_resources_across_resizes(self) -> None:
+        """initialize() 幂等：仅在 QRhi / 渲染通道描述符变化时才重建资源。
+
+        Qt 在颜色缓冲每次重建后都会回调 initialize()；窗口缩放因此会反复
+        触发它。若每次都重建管线并重新加载 .qsb 着色器（实测每步约 4ms），
+        渲染就追不上窗口尺寸变化。幂等后每步仅约 0.04ms。
+        """
+        source = Path(_fluid_gpu.__file__).read_text(encoding="utf-8")
+        assert "self._initialized and self._rhi is rhi and self._render_pass is render_pass" in source
+        assert "self._rhi = rhi" in source
+        assert "self._render_pass = render_pass" in source
+
+    def test_render_skips_unchanged_frame(self) -> None:
+        """uniform 未更新且渲染目标尺寸未变时跳过重复绘制。"""
+        source = Path(_fluid_gpu.__file__).read_text(encoding="utf-8")
+        assert "self._uniform_version += 1" in source
+        assert "key = (physical_width, physical_height, self._uniform_version)" in source
+        assert "if key == self._drawn_key:" in source
+
 
 # =============================================================================
 # ui.components.styled_fluid_background
@@ -330,11 +389,18 @@ class TestStyledFluidBackground:
         assert bg.testAttribute(Qt.WA_NoSystemBackground) is True
         safe_teardown(bg)
 
-    def test_gpu_geometry_expanded_one_pixel(self, qapp: QApplication) -> None:
-        """GPU 子控件几何在宿主基础上外扩 1 逻辑像素，覆盖 DPI 取整缺口。"""
+    def test_gpu_geometry_matches_host_rect(self, qapp: QApplication) -> None:
+        """GPU 子控件几何与宿主区域逐像素重合，不做任何膨胀。
+
+        GPU 子控件参与宿主合成（非原生子窗口）：与其余控件在同一次合成里按
+        同一套几何摆放。尺寸膨胀 1 逻辑像素会盖住相邻控件（如播放器下方
+        52px 的播放控制栏），并在 fractional DPI 下随取整在 1~2 物理像素间
+        抖动，窗口缩放时表现为流体边缘错位闪烁。纹理由顶层合成器缩放铺满控
+        件区域，DPR 舍入短差已被覆盖，无需膨胀。
+        """
         bg = StyledFluidBackground()
         bg.resize(401, 176)
-        assert bg._gpu_geometry() == QRect(-1, -1, 403, 178)
+        assert bg._gpu_geometry() == QRect(0, 0, 401, 176)
         safe_teardown(bg)
 
     def test_cpu_load_and_unload(self, qapp: QApplication, monkeypatch: Any) -> None:

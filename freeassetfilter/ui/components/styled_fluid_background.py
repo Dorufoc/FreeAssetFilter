@@ -47,6 +47,43 @@ try:
 except ImportError:  # pragma: no cover
     _FluidGPUShaderWidget = None  # type: ignore[misc,assignment]
 
+#: RHI 预热标记控件的几何（逻辑像素）。它从不显示，只用于让顶层窗口在建窗
+#: 时发现「层级内有 QRhiWidget」从而启用 RHI 合成后端。
+_RHI_PREWARM_SIZE = 1
+
+
+def prewarm_top_level_rhi(window: QWidget) -> QWidget | None:
+    """在建窗之前，为 *window* 所属顶层窗口启用 RHI 合成后端。
+
+    非原生（参与宿主合成）的 :class:`QRhiWidget` 的 QRhi 来自顶层窗口的合成
+    后端，而顶层窗口**只在 QWindow 创建之前其层级里已经存在 QRhiWidget** 时
+    才会选择 RHI 合成后端：实测在 ``winId()``（即建窗）之后再挂 QRhiWidget，
+    该控件的 ``initialize()`` 永不回调、控件保持空白，只能回退 CPU。
+
+    本项目音频模式的流体背景正是这种「窗口显示后才惰性创建」的 QRhiWidget
+    （预览器由 ``MainWindow._build_panel`` 在窗口显示后用定时器构建），因此
+    必须由主窗口在构造早期先调用本函数挂一个不可见的预热控件，把顶层窗口的
+    合成后端定成 RHI。预热控件仅作为标记存在，从不显示、不渲染。
+
+    Args:
+        window: 顶层窗口，必须**尚未**访问过 ``winId()``（即 QWindow 尚未
+            创建），否则预热无效。
+
+    Returns:
+        预热控件（调用方需持引用以免被 Python 侧回收）；``QRhiWidget``
+        不可用时返回 ``None``。
+    """
+    if _FluidGPUShaderWidget is None:
+        return None
+    try:
+        warmup = _FluidGPUShaderWidget(window)
+    except Exception:  # noqa: BLE001 - 预热失败只影响流体背景走 CPU 路径
+        logger.exception("RHI 合成预热控件创建失败")
+        return None
+    warmup.setGeometry(0, 0, _RHI_PREWARM_SIZE, _RHI_PREWARM_SIZE)
+    warmup.hide()
+    return warmup
+
 
 class _FluidTimeState(NamedTuple):
     """Immutable GPU animation state advanced once per HeartbeatManager tick."""
@@ -71,7 +108,9 @@ class StyledFluidBackground(QWidget):
         - 默认走 GPU 路径：``_FluidGPUShaderWidget``（QRhiWidget，D3D11 后端）
           加载 ``shaders/fluid.vert.qsb`` / ``fluid.frag.qsb`` 渲染动画。
           用 QRhiWidget 而非 QOpenGLWidget，是因为后者会把顶层窗口切到
-          OwnDC 窗口类，导致拖拽缩放每步整窗重绘（见该模块头注释）。
+          OwnDC 窗口类，导致拖拽缩放每步整窗重绘；且该控件参与宿主合成
+          而不原生化，缩放时与窗口其余内容同一次合成、不产生错位闪烁
+          （两条理由详见 ``_styled_fluid_gpu`` 模块头注释）。
         - GPU 路径注册 HeartbeatManager tick 驱动 uniform 动画；构造或管线
           创建失败时回退 CPU 静态烘焙 ``QPixmap``。
         - CPU 路径也会在 ``FAF_FORCE_FLUID_CPU=1``、检测到同布局原生兄弟
@@ -428,21 +467,23 @@ class StyledFluidBackground(QWidget):
                 pass
 
     def _gpu_geometry(self) -> QRect:
-        """Return the host rect expanded by one logical pixel on each side.
+        """Return the host rect verbatim, without any inflation.
 
-        ``QOpenGLWidget`` sizes its native GL surface from the logical size
-        times ``devicePixelRatio`` using its own rounding; on fractional-DPI
-        screens the surface can come out one device pixel short of the
-        widget's device rect, leaving a 1 px uncovered strip along the fluid
-        edge (visible as a stray light line in both themes). Expanding the
-        child geometry by one logical pixel keeps that rounding shortfall
-        outside the host bounds. The child is clipped to the host during
-        compositing, so the overdraw is never visible.
+        GPU 子控件与宿主逐像素重合：纹理由顶层合成器按控件几何铺满，几何一旦
+        比宿主大出 1 个逻辑像素，流体就会盖住相邻控件（例如播放器下方 52px
+        的播放控制栏），并在 fractional DPI 下随取整在 1~2 物理像素之间抖动，
+        窗口缩放时表现为流体边缘错位闪烁。
+
+        旧实现把尺寸 ``+1`` 膨胀，是为补偿 ``QOpenGLWidget`` 原生 GL 表面按
+        「逻辑尺寸 × DPR」截断取整产生的 1 物理像素短差。改用 ``QRhiWidget``
+        后纹理尺寸由 Qt 按 ``qRound`` 生成并由顶层合成器缩放铺满控件区域
+        （渲染尺寸始终取 ``colorTexture().pixelSize()``，见
+        ``_styled_fluid_gpu``），短差已被覆盖，无需再膨胀。
 
         Returns:
-            QRect: The host rect inflated by one logical pixel on each side.
+            QRect: 与宿主完全一致的子控件几何。
         """
-        return self.rect().adjusted(-1, -1, 1, 1)
+        return self.rect()
 
     def _choose_renderer(self) -> str:
         """Select GPU or CPU renderer based on environment and capability.
@@ -492,6 +533,11 @@ class StyledFluidBackground(QWidget):
             # initialize()。注意：单纯 QApplication.processEvents() 不足以触发
             # 该初始化（平台绘制事件需真实事件循环派发），这里用嵌套事件循环
             # 有限等待；超时仍未就绪则回退 CPU 路径。
+            #
+            # 注意：就绪的前提是顶层窗口已启用 RHI 合成（见
+            # :func:`prewarm_top_level_rhi`）。顶层窗口若已以 raster 合成，
+            # initialize() 永不回调，这里必然超时——这是设计上的兜底，不是
+            # 异常。
             gpu.show()
             deadline = time.monotonic() + _GPU_READY_TIMEOUT_S
             while not gpu.is_ready() and time.monotonic() < deadline:
@@ -780,9 +826,12 @@ class StyledFluidBackground(QWidget):
     def resizeEvent(self, event: QResizeEvent | None = None) -> None:
         """Keep the GPU child widget sized to the host geometry.
 
-        The child is deliberately inflated by one logical pixel on each side
-        (see :meth:`_gpu_geometry`) so that its native GL surface always
-        covers the host's full device rect on fractional-DPI screens.
+        The child is sized to the host rect verbatim (see
+        :meth:`_gpu_geometry`), so the render target always matches the host
+        region pixel for pixel. Resizing stays cheap because
+        ``_FluidGPUShaderWidget.initialize`` is idempotent (a texture rebuild
+        no longer recreates the pipeline or shaders), not because the render
+        target size is decoupled from the widget.
         """
         super().resizeEvent(event)
         if self._gpu_widget is not None:

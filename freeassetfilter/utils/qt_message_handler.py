@@ -21,6 +21,13 @@ from freeassetfilter.utils.app_logger import _write_bootstrap_fallback, get_logg
 
 _tls = threading.local()
 
+# 已知无害的 Qt 平台层消息前缀：应用关闭时销毁原生子窗口（MPV / GPU 表面 /
+# QRhiWidget 等）产生的 WM_DESTROY 级联警告，属 Qt Windows 平台的正常关闭
+# 噪音（窗口树在 nativeEvent 级被 Windows 回收），静默避免刷屏。
+_SILENT_PREFIXES: tuple[str, ...] = (
+    "External WM_DESTROY received for",
+)
+
 
 def _format_qt_message(message: Any, context: Any) -> str:
     """格式化 Qt 消息文本（对 context 字段逐个防御 None/空）。
@@ -85,6 +92,11 @@ def _qt_message_handler(msg_type: Any, context: Any, message: Any) -> None:
         from PySide6.QtCore import QtMsgType
 
         formatted = _format_qt_message(message, context)
+        # 静默已知无害的平台噪音（如关闭时原生子窗口 WM_DESTROY 级联警告）。
+        # 匹配时需剥掉 _format_qt_message 附加的 "[Qt] " 前缀。
+        match_text = formatted[5:] if formatted.startswith("[Qt] ") else formatted
+        if any(match_text.startswith(prefix) for prefix in _SILENT_PREFIXES):
+            return
         logger = get_logger()
         if msg_type == QtMsgType.QtDebugMsg:
             logger.debug(formatted)
