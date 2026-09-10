@@ -23,11 +23,9 @@ _ui_root = str(_this_file.parent.parent)  # freeassetfilter/ui/
 if _ui_root not in sys.path:
     sys.path.insert(0, _ui_root)
 
-import hashlib
 import json
 import os
 import shutil
-import threading
 from typing import Optional
 
 from PySide6.QtCore import (
@@ -58,6 +56,7 @@ from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
 from components.styled_dialog import create_input_dialog, ask_custom_dialog
 from freeassetfilter.utils.path_utils import get_app_data_path
 from freeassetfilter.services.staging_pool_service import StagingPoolService
+from freeassetfilter.core.workers.staging_tasks import MD5CalculationTask
 from freeassetfilter.utils.animation_settings import is_animation_enabled
 from freeassetfilter.utils.app_logger import debug as _pool_rubber_log
 from freeassetfilter.utils.app_logger import warning
@@ -83,29 +82,45 @@ def _show_custom_dialog(parent, title, message, buttons, variants=None, vertical
     )
 
 
-class _MD5CalculationTask(QRunnable):
-    """在后台线程计算文件MD5，完成后在主线程调用回调。"""
+class _ExportCopyRunnable(QRunnable):
+    """导出复制任务（QRunnable 投 ``QThreadPool.globalInstance()``）。
+
+    一次性任务：后台线程平铺/分类复制文件，进度经 ``update_progress``
+    信号回主线程，完成统计经 ``_export_finished`` 信号回传；线程池
+    线程为 daemon 语义，进程退出不被阻塞。
+
+    Args:
+        owner: 所属 FilePoolLayout（复制方法与信号发射经由它）。
+        files: 文件信息列表。
+        target_dir: 目标目录。
+        mode: 0=平铺, 1=分类。
+    """
 
     def __init__(
-        self, file_path: str, callback
+        self,
+        owner: FilePoolLayout,
+        files: list,
+        target_dir: str,
+        mode: int,
     ) -> None:
         super().__init__()
-        self._file_path = file_path
-        self._callback = callback
+        self.setAutoDelete(True)
+        self._owner = owner
+        self._files = files
+        self._target_dir = target_dir
+        self._mode = mode
 
     def run(self) -> None:
         try:
-            hash_md5 = hashlib.md5()
-            with open(self._file_path, "rb") as f:
-                for chunk in iter(lambda: f.read(4096), b""):
-                    hash_md5.update(chunk)
-            result = hash_md5.hexdigest()
-        except FileNotFoundError:
-            result = None
-        except (IOError, OSError, PermissionError):
-            result = None
-        if self._callback:
-            self._callback(result)
+            if self._mode == 0:
+                s, f, e = self._owner.copy_files(self._files, self._target_dir)
+            else:
+                s, f, e = self._owner.copy_files_categorized(
+                    self._files, self._target_dir
+                )
+            self._owner._export_finished.emit(s, f, e)
+        except Exception as ex:  # noqa: BLE001  # 导出任务异常兜底
+            warning(f"导出线程异常: {ex}")
 
 
 class FilePoolLayout(QWidget):
@@ -2178,19 +2193,10 @@ class FilePoolLayout(QWidget):
         # 连接完成信号（在主线程处理结果）
         self._export_finished.connect(_on_finish)
 
-        # 在后台线程中执行复制
-        def _copy_worker():
-            try:
-                if mode == 0:
-                    s, f, e = self.copy_files(files, target_dir)
-                else:
-                    s, f, e = self.copy_files_categorized(files, target_dir)
-                self._export_finished.emit(s, f, e)
-            except Exception as ex:
-                warning(f"导出线程异常: {ex}")
-
-        t = threading.Thread(target=_copy_worker, daemon=True)
-        t.start()
+        # 投递后台复制任务（线程池 daemon 语义，进程退出自动结束）
+        QThreadPool.globalInstance().start(
+            _ExportCopyRunnable(self, files, target_dir, mode)
+        )
 
         # 显示进度对话框（模态）
         progress.exec()
@@ -2350,9 +2356,12 @@ class FilePoolLayout(QWidget):
     ) -> None:
         """异步计算文件 MD5 值。
 
+        复用规范实现 ``staging_tasks.MD5CalculationTask``：后台线程计算，
+        回调经 ``HeartbeatManager.request_main_thread`` 回到主线程执行。
+
         Args:
             file_path: 文件路径。
             callback: 回调函数，接收 MD5 字符串或 None。
         """
-        task = _MD5CalculationTask(file_path, callback)
+        task = MD5CalculationTask(file_path, callback)
         QThreadPool.globalInstance().start(task)

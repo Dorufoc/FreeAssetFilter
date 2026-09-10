@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QApplication,
 )
 from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve, QPoint, QEvent
-from PySide6.QtGui import QColor, QFont, QCursor, QKeyEvent, QMouseEvent
+from PySide6.QtGui import QFont, QCursor, QKeyEvent, QMouseEvent
 
 from theme import tm
 
@@ -107,7 +107,7 @@ class StyledDrawer(QWidget):
 
         shadow = QGraphicsDropShadowEffect(self._panel)
         shadow.setBlurRadius(60)
-        shadow.setColor(QColor(0, 0, 0, 128))
+        shadow.setColor(tm.with_alpha(tm.black, 128))
         shadow.setOffset(0, 10)
         self._panel.setGraphicsEffect(shadow)
 

@@ -18,7 +18,16 @@ import shutil
 from pathlib import Path
 from typing import Optional, Tuple
 
-from PySide6.QtCore import QElapsedTimer, QRect, QSize, Qt, QTimer
+from PySide6.QtCore import (
+    QAbstractAnimation,
+    QEasingCurve,
+    QObject,
+    QRect,
+    QSize,
+    Qt,
+    QTimer,
+    QVariantAnimation,
+)
 from PySide6.QtGui import QColor, QImage, QPaintEvent, QPainter, QPixmap, QResizeEvent
 from PySide6.QtWidgets import QWidget
 
@@ -40,12 +49,64 @@ BACKGROUND_FILENAME_PREFIX = "custom_background"
 SETTLE_INTERVAL_MS = 80
 # 主题交叉过渡时长（毫秒，对齐 Mica XFADE_DURATION_MS 与内容层过渡 280ms）。
 XFADE_DURATION_MS = 280
-# 交叉过渡逐帧间隔（毫秒，约 60fps）。
+# 交叉过渡逐帧间隔（毫秒，约 60fps；现由 QVariantAnimation 按帧推送，
+# 保留该常量仅作帧率备注，不再驱动任何 QTimer）。
 XFADE_TICK_MS = 16
 # 自定义图像可调参数：模糊半径（px，0 = 不模糊）与不透明度（0~1）。
 IMAGE_BLUR_DEFAULT = 0.0
 IMAGE_BLUR_MAX = 200.0
 IMAGE_OPACITY_DEFAULT = 0.8
+
+
+class LinearProgressAnimation(QVariantAnimation):
+    """0.0→1.0 线性进度动画（替代 16ms QTimer + 手写 lerp 的共享驱动）。
+
+    Qt 按帧插值并经 ``valueChanged`` 推送当前进度（Linear 与逐帧
+    ``elapsed()/DURATION`` 的线性语义完全一致）；附带 QTimer 风格的
+    ``isActive()`` 查询，供旧调用方沿用活动态判断。
+    """
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        """初始化进度动画（起止值固定 0.0→1.0，时长由工厂设定）。
+
+        Args:
+            parent: 父对象（持有引用，parent 销毁时自动回收）。
+        """
+        super().__init__(parent)
+        self.setStartValue(0.0)
+        self.setEndValue(1.0)
+        self.setEasingCurve(QEasingCurve.Linear)
+
+    def isActive(self) -> bool:
+        """动画是否运行中（QTimer.isActive 语义的兼容查询）。
+
+        Returns:
+            bool: 运行中返回 True，停止/结束后返回 False。
+        """
+        return self.state() == QAbstractAnimation.Running
+
+
+def create_linear_progress_animation(
+    parent: QObject | None, duration_ms: int
+) -> LinearProgressAnimation:
+    """创建线性进度动画（背景交叉过渡三处的共享工厂）。
+
+    ``material.MicaMaterial`` 的 settle/xfade、本模块与
+    ``minimalist_background`` 的 xfade 原先三份同构的手写实现
+    （16ms QTimer + ``elapsed()/DURATION`` lerp）统一收敛到此：
+    时长仍由各调用方的现有常量传入，触发点与 paint 消费方式不变。
+
+    Args:
+        parent: 动画父对象（调用方须再以实例属性持有引用）。
+        duration_ms: 时长（毫秒），<=0 时钳制为 1。
+
+    Returns:
+        LinearProgressAnimation: 未启动的 0.0→1.0 线性动画；调用方自行
+        连接 ``valueChanged``/``finished``，重复触发时 ``stop()+start()``。
+    """
+    anim = LinearProgressAnimation(parent)
+    anim.setDuration(max(1, int(duration_ms)))
+    return anim
 
 
 def blur_pixmap(source: QPixmap, radius: float) -> QPixmap:
@@ -179,10 +240,10 @@ class CustomImageBackgroundWidget(QWidget):
         self._pending_backdrop: Optional[QPixmap] = None
         self._xfade_backdrop: Optional[QPixmap] = None
         self._xfade_active: bool = False
-        self._xfade_clock = QElapsedTimer()
-        self._xfade_timer = QTimer(self)
-        self._xfade_timer.setInterval(XFADE_TICK_MS)
-        self._xfade_timer.timeout.connect(self._on_xfade_tick)
+        self._xfade_t: float = 1.0
+        self._xfade_anim = create_linear_progress_animation(self, XFADE_DURATION_MS)
+        self._xfade_anim.valueChanged.connect(self._on_xfade_value)
+        self._xfade_anim.finished.connect(self._on_xfade_finished)
 
         # 背景层鼠标穿透，避免干扰窗口边缘拖拽缩放。
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
@@ -377,37 +438,34 @@ class CustomImageBackgroundWidget(QWidget):
     # ------------------------------------------------------------------
 
     def _xfade_progress(self) -> float:
-        """交叉过渡进度（0~1）；未激活时恒为 1.0。"""
-        if not self._xfade_active or not self._xfade_clock.isValid():
+        """交叉过渡进度（0~1）；未激活时恒为 1.0（由动画逐帧写入 _xfade_t）。"""
+        if not self._xfade_active:
             return 1.0
-        t = self._xfade_clock.elapsed() / float(XFADE_DURATION_MS)
-        if t < 0.0:
-            return 0.0
-        return 1.0 if t > 1.0 else t
+        return max(0.0, min(1.0, self._xfade_t))
 
     def _start_xfade(self, backdrop: QPixmap) -> None:
         """以旧背景帧为底图启动交叉过渡：新帧自进度 0 淡入（280ms）。"""
         self._xfade_backdrop = backdrop
         self._xfade_active = True
-        self._xfade_clock.restart()
-        if not self._xfade_timer.isActive():
-            self._xfade_timer.start()
+        self._xfade_t = 0.0
+        self._xfade_anim.stop()
+        self._xfade_anim.start()
 
     def _finish_xfade(self) -> None:
         """结束并清理交叉过渡：释放旧帧、停机。"""
         self._xfade_active = False
         self._xfade_backdrop = None
-        if self._xfade_timer.isActive():
-            self._xfade_timer.stop()
+        self._xfade_t = 1.0
+        self._xfade_anim.stop()
 
-    def _on_xfade_tick(self) -> None:
-        """交叉过渡逐帧推进：到时即清理（此后一帧按全进度呈现新帧）。"""
-        if not self._xfade_active:
-            if self._xfade_timer.isActive():
-                self._xfade_timer.stop()
-            return
-        if self._xfade_progress() >= 1.0:
-            self._finish_xfade()
+    def _on_xfade_value(self, value: float) -> None:
+        """动画帧回调：写入进度并触发重绘（paint 按进度混合新帧）。"""
+        self._xfade_t = max(0.0, min(1.0, value))
+        self.update()
+
+    def _on_xfade_finished(self) -> None:
+        """动画结束：清理旧帧（此后一帧按全进度呈现新帧）并重绘。"""
+        self._finish_xfade()
         self.update()
 
     # ------------------------------------------------------------------

@@ -245,19 +245,19 @@ class StyledScrollBar(QScrollBar):
             return
         if event.button() == Qt.LeftButton:
             handle_rect = self._get_handle_rect()
-            if handle_rect.contains(event.pos()):
+            if handle_rect.contains(event.position().toPoint()):
                 if self.orientation() == Qt.Vertical:
-                    self._drag_offset = event.pos().y() - handle_rect.y()
+                    self._drag_offset = event.position().y() - handle_rect.y()
                 else:
-                    self._drag_offset = event.pos().x() - handle_rect.x()
+                    self._drag_offset = event.position().x() - handle_rect.x()
                 self._dragging = True
                 self._pressed = True
                 self._animate_thickness_to(self._hover_width)
             else:
                 if self.orientation() == Qt.Vertical:
-                    new_value = self._value_from_pos(float(event.pos().y()))
+                    new_value = self._value_from_pos(event.position().y())
                 else:
-                    new_value = self._value_from_pos(float(event.pos().x()))
+                    new_value = self._value_from_pos(event.position().x())
                 self.setSliderPosition(new_value)
                 self.update()
             event.accept()
@@ -280,10 +280,10 @@ class StyledScrollBar(QScrollBar):
 
             if self.orientation() == Qt.Vertical:
                 track_size = self.height()
-                mouse_pos = event.pos().y() - self._drag_offset
+                mouse_pos = event.position().y() - self._drag_offset
             else:
                 track_size = self.width()
-                mouse_pos = event.pos().x() - self._drag_offset
+                mouse_pos = event.position().x() - self._drag_offset
 
             handle_size = max(min_handle, int(track_size * ratio))
             pixel_range = track_size - handle_size

@@ -12,8 +12,9 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 许可协议：https://github.com/Dorufoc/FreeAssetFilter/blob/main/LICENSE
 
 缩略图控制层
-以 daemon 线程编排 ThumbnailManager 的批量生成与缓存清除任务，
-通过 Qt 信号把节流后的进度、就绪文件批与统计结果回传 UI 线程。
+以 QThreadPool + QRunnable（外层仅编排，批量接口内部自带线程池）
+调度 ThumbnailManager 的批量生成与缓存清除任务，通过 Qt 信号把
+节流后的进度、就绪文件批与统计结果回传 UI 线程。
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from __future__ import annotations
 import threading
 import time
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
 from freeassetfilter.core.managers.thumbnail_manager import (
     clear_all_thumbnails,
@@ -50,19 +51,82 @@ def _extract_file_path(file_data: str | dict) -> str:
     return ""
 
 
+class _GenerationTask(QRunnable):
+    """生成任务 QRunnable：内部持有世代 token 与取消 Event。
+
+    由 :meth:`ThumbnailController.start_generation` 投递到
+    ``QThreadPool.globalInstance()``；``run()`` 委托控制器执行体
+    ``_run_generation``，token 失效丢弃结果与节流发射保持原语义
+    （线程池持有引用，``run`` 结束后 AutoDelete 释放）。
+
+    Args:
+        controller: 所属 ThumbnailController（任务收尾与信号发射经由它）。
+        file_paths: 待生成缩略图的文件路径列表。
+        token: 任务启动时的世代快照。
+        cancel_event: 与控制器共享的取消 Event（``cancel()`` 置位）。
+        started: 启动交会 Event，进入批量阻塞调用前置位。
+    """
+
+    def __init__(
+        self,
+        controller: ThumbnailController,
+        file_paths: list[str],
+        token: int,
+        cancel_event: threading.Event,
+        started: threading.Event,
+    ) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._controller = controller
+        self._file_paths = file_paths
+        self._token = token
+        self._cancel_event = cancel_event
+        self._started = started
+
+    def run(self) -> None:
+        self._controller._run_generation(
+            self._file_paths, self._token, self._cancel_event, self._started
+        )
+
+
+class _ClearTask(QRunnable):
+    """清除任务 QRunnable：内部持有世代 token（清除任务无取消语义）。
+
+    由 :meth:`ThumbnailController.start_clear` 投递到
+    ``QThreadPool.globalInstance()``。
+
+    Args:
+        controller: 所属 ThumbnailController（任务收尾与信号发射经由它）。
+        token: 任务启动时的世代快照。
+        started: 启动交会 Event，进入磁盘删除前置位。
+    """
+
+    def __init__(
+        self, controller: ThumbnailController, token: int, started: threading.Event
+    ) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._controller = controller
+        self._token = token
+        self._started = started
+
+    def run(self) -> None:
+        self._controller._run_clear(self._token, self._started)
+
+
 class ThumbnailController(QObject):
     """缩略图生成 / 清除的后台编排控制器。
 
     封装 ``ThumbnailManager.create_thumbnails_batch``（同步阻塞、内部
-    自带线程池）与 ``clear_all_thumbnails`` 的 daemon 线程调度，UI 层
-    只与本类交互：
+    自带线程池）与 ``clear_all_thumbnails``，以 QRunnable 投
+    ``QThreadPool.globalInstance()`` 编排，UI 层只与本类交互：
 
     * 生成与清除互斥（``is_busy`` 为 True 时 ``start_*`` 返回 False）；
-    * ``cancel()`` 置协作式取消标志并释放互斥，旧线程的过期事件经
+    * ``cancel()`` 置取消 Event 并释放互斥，旧任务的过期事件经
       世代 token 比对后直接丢弃，允许立即启动新任务（目录切换场景）；
     * progress_callback 与就绪文件批按 ≥200ms 时间间隔或每 8 个文件
       合并节流后发射 ``files_ready`` / ``progress_emitted``；
-    * 后台线程内的异常经 ``failed`` 信号回传，不向 UI 线程泄漏。
+    * 后台任务内的异常经 ``failed`` 信号回传，不向 UI 线程泄漏。
 
     信号命名刻意避开 QThread 内置的 ``finished`` 重名坑。
     """
@@ -88,9 +152,12 @@ class ThumbnailController(QObject):
         super().__init__(parent)
         self._lock = threading.Lock()
         self._generation_token = 0
-        self._cancel_flag = False
+        # 协作式取消 Event（等价旧实现 _cancel_flag：start_* 时 clear，cancel() 时 set）
+        self._cancel_event = threading.Event()
         self._busy = False
-        # 后台线程引用保活（retired refs 模式），线程结束后移除
+        # 裸 Thread 时代的后台线程引用表（retired refs 模式）。
+        # QThreadPool 接管任务持有（AutoDelete）后不再追加，恒为空；
+        # 仅保留属性供外部 introspection 兼容（空任务短路断言等）。
         self._worker_threads: list[threading.Thread] = []
 
     @property
@@ -100,10 +167,10 @@ class ThumbnailController(QObject):
             return self._busy
 
     def start_generation(self, file_paths: list[str]) -> bool:
-        """启动批量缩略图生成（后台 daemon 线程）。
+        """启动批量缩略图生成（QThreadPool 后台任务）。
 
         收集阶段过滤非媒体文件与已有缩略图的文件（保序去重）；空任务
-        不启动线程，直接发射 ``batch_finished(0, 0)``。
+        不投递任务，直接发射 ``batch_finished(0, 0)``。
 
         Args:
             file_paths: 候选文件路径列表。
@@ -117,7 +184,7 @@ class ThumbnailController(QObject):
             self._busy = True
             self._generation_token += 1
             token = self._generation_token
-            self._cancel_flag = False
+            self._cancel_event.clear()
 
         pending_files = self._collect_pending_files(file_paths)
         if not pending_files:
@@ -125,19 +192,19 @@ class ThumbnailController(QObject):
             self.batch_finished.emit(0, 0)
             return True
 
-        thread = threading.Thread(
-            target=self._run_generation,
-            args=(pending_files, token),
-            name=f"thumbnail_generation_{token}",
-            daemon=True,
+        # 启动交会：等价旧实现 Thread.start() 的线程引导保证——
+        # 旧实现 start() 返回前工作线程已开始执行，调用方紧随其后的
+        # 状态断言/释放操作不会跑在任务启动之前。线程池投递无此保证，
+        # 故在此有界等待任务进入阻塞调用（超时则放行，永不挂起 UI）。
+        started = threading.Event()
+        QThreadPool.globalInstance().start(
+            _GenerationTask(self, pending_files, token, self._cancel_event, started)
         )
-        with self._lock:
-            self._worker_threads.append(thread)
-        thread.start()
+        started.wait(timeout=10.0)
         return True
 
     def start_clear(self) -> bool:
-        """启动全部缩略图缓存清除（后台 daemon 线程）。
+        """启动全部缩略图缓存清除（QThreadPool 后台任务）。
 
         清除为一次性磁盘删除操作，无取消语义。
 
@@ -150,29 +217,25 @@ class ThumbnailController(QObject):
             self._busy = True
             self._generation_token += 1
             token = self._generation_token
-            self._cancel_flag = False
+            self._cancel_event.clear()
 
-        thread = threading.Thread(
-            target=self._run_clear,
-            args=(token,),
-            name=f"thumbnail_clear_{token}",
-            daemon=True,
-        )
-        with self._lock:
-            self._worker_threads.append(thread)
-        thread.start()
+        # 启动交会（同 start_generation）：有界等待清除任务进入磁盘删除，
+        # 超时放行，永不挂起调用方。
+        started = threading.Event()
+        QThreadPool.globalInstance().start(_ClearTask(self, token, started))
+        started.wait(timeout=10.0)
         return True
 
     def cancel(self) -> None:
         """请求协作式取消当前生成任务。
 
-        置取消标志（经 cancel_check 感知）并释放互斥，允许调用方立即
-        启动新任务；同时递增世代 token，使旧线程的后续事件与收尾统计
+        置取消 Event（经 cancel_check 感知）并释放互斥，允许调用方立即
+        启动新任务；同时递增世代 token，使旧任务的后续事件与收尾统计
         （含 batch_finished(0, 0) 类空收尾）被丢弃，避免污染新状态。
         清除任务无取消语义。
         """
         with self._lock:
-            self._cancel_flag = True
+            self._cancel_event.set()
             self._busy = False
             self._generation_token += 1
 
@@ -199,12 +262,20 @@ class ThumbnailController(QObject):
                 pending.append(file_path)
         return pending
 
-    def _run_generation(self, file_paths: list[str], token: int) -> None:
-        """生成任务后台线程主体。
+    def _run_generation(
+        self,
+        file_paths: list[str],
+        token: int,
+        cancel_event: threading.Event,
+        started: threading.Event,
+    ) -> None:
+        """生成任务执行体（由 QRunnable 在线程池线程中调用）。
 
         Args:
             file_paths: 待生成缩略图的文件路径列表。
             token: 任务启动时的世代快照，失效后丢弃全部事件。
+            cancel_event: 与控制器共享的取消 Event（``cancel()`` 置位）。
+            started: 启动交会 Event，进入批量阻塞调用前置位。
         """
         ready_buffer: list[str] = []
         last_emit_time = time.monotonic()
@@ -243,11 +314,12 @@ class ThumbnailController(QObject):
             last_emit_time = now
 
         def _cancel_check() -> bool:
-            """协作式取消检查：显式取消或世代失效均视为取消。"""
-            return self._cancel_flag or not self._token_is_current(token)
+            """协作式取消检查：显式取消（Event 置位）或世代失效均视为取消。"""
+            return cancel_event.is_set() or not self._token_is_current(token)
 
         try:
             manager = get_thumbnail_manager()
+            started.set()
             success_count, processed_count = manager.create_thumbnails_batch(
                 file_paths,
                 progress_callback=_on_item_processed,
@@ -259,28 +331,28 @@ class ThumbnailController(QObject):
                 self.files_ready.emit(list(ready_buffer))
                 ready_buffer.clear()
             self.batch_finished.emit(success_count, processed_count)
-        except Exception as exc:  # noqa: BLE001  # 后台线程兜底，经 failed 信号回传
+        except Exception as exc:  # noqa: BLE001  # 后台任务兜底，经 failed 信号回传
             if self._token_is_current(token):
                 self.failed.emit(str(exc))
         finally:
-            self._remove_thread_ref()
             self._finish_task(token)
 
-    def _run_clear(self, token: int) -> None:
-        """清除任务后台线程主体（无取消语义）。
+    def _run_clear(self, token: int, started: threading.Event) -> None:
+        """清除任务执行体（由 QRunnable 在线程池线程中调用，无取消语义）。
 
         Args:
             token: 任务启动时的世代快照，失效后丢弃结果。
+            started: 启动交会 Event，进入磁盘删除前置位。
         """
         try:
+            started.set()
             deleted_count = clear_all_thumbnails()
             if self._token_is_current(token):
                 self.clear_finished.emit(deleted_count)
-        except Exception as exc:  # noqa: BLE001  # 后台线程兜底，经 failed 信号回传
+        except Exception as exc:  # noqa: BLE001  # 后台任务兜底，经 failed 信号回传
             if self._token_is_current(token):
                 self.failed.emit(str(exc))
         finally:
-            self._remove_thread_ref()
             self._finish_task(token)
 
     def _token_is_current(self, token: int) -> bool:
@@ -304,13 +376,6 @@ class ThumbnailController(QObject):
         with self._lock:
             if token == self._generation_token:
                 self._busy = False
-
-    def _remove_thread_ref(self) -> None:
-        """从保活引用中移除当前线程（线程结束前调用）。"""
-        current_thread = threading.current_thread()
-        with self._lock:
-            if current_thread in self._worker_threads:
-                self._worker_threads.remove(current_thread)
 
 
 __all__ = ["ThumbnailController"]

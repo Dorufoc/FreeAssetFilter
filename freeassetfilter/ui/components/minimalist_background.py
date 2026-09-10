@@ -47,9 +47,14 @@ from __future__ import annotations
 from collections import OrderedDict
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QElapsedTimer, QRect, Qt, QTimer
+from PySide6.QtCore import QRect, Qt, QTimer
 from PySide6.QtGui import QBrush, QColor, QImage, QLinearGradient, QPainter, QPaintEvent, QPixmap
 from PySide6.QtWidgets import QWidget
+from components._styled_fluid_math import mix_rgb
+from components.custom_background import (
+    LinearProgressAnimation,
+    create_linear_progress_animation,
+)
 from theme import tm
 
 if TYPE_CHECKING:
@@ -75,7 +80,8 @@ _SETTLE_INTERVAL_MS: int = 80
 #: 主题交叉过渡时长（毫秒，对齐 Mica XFADE_DURATION_MS 与内容层过渡 280ms）。
 XFADE_DURATION_MS: int = 280
 
-#: 交叉过渡逐帧间隔（毫秒，约 60fps）。
+#: 交叉过渡逐帧间隔（毫秒，约 60fps；现由 QVariantAnimation 按帧推送，
+#: 保留该常量仅作帧率备注，不再驱动任何 QTimer）。
 XFADE_TICK_MS: int = 16
 
 
@@ -95,10 +101,7 @@ def blend_over(base: QColor, overlay: QColor, opacity: float) -> QColor:
         QColor: 混合后的新颜色，alpha 恒为 255。
     """
     clamped: float = max(0.0, min(1.0, opacity))
-    red: int = round(base.red() * (1.0 - clamped) + overlay.red() * clamped)
-    green: int = round(base.green() * (1.0 - clamped) + overlay.green() * clamped)
-    blue: int = round(base.blue() * (1.0 - clamped) + overlay.blue() * clamped)
-    return QColor(red, green, blue, 255)
+    return mix_rgb(base, overlay, clamped)
 
 
 def compute_minimalist_gradient_colors() -> tuple[QColor, QColor, QColor]:
@@ -274,10 +277,12 @@ class MinimalistBackgroundWidget(QWidget):
         self._pending_backdrop: QPixmap | None = None
         self._xfade_backdrop: QPixmap | None = None
         self._xfade_active: bool = False
-        self._xfade_clock = QElapsedTimer()
-        self._xfade_timer = QTimer(self)
-        self._xfade_timer.setInterval(XFADE_TICK_MS)
-        self._xfade_timer.timeout.connect(self._on_xfade_tick)
+        self._xfade_t: float = 1.0
+        self._xfade_anim: LinearProgressAnimation = create_linear_progress_animation(
+            self, XFADE_DURATION_MS
+        )
+        self._xfade_anim.valueChanged.connect(self._on_xfade_value)
+        self._xfade_anim.finished.connect(self._on_xfade_finished)
         self.setAttribute(Qt.WA_OpaquePaintEvent, True)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
 
@@ -354,37 +359,34 @@ class MinimalistBackgroundWidget(QWidget):
     # ------------------------------------------------------------------
 
     def _xfade_progress(self) -> float:
-        """交叉过渡进度（0~1）；未激活时恒为 1.0。"""
-        if not self._xfade_active or not self._xfade_clock.isValid():
+        """交叉过渡进度（0~1）；未激活时恒为 1.0（由动画逐帧写入 _xfade_t）。"""
+        if not self._xfade_active:
             return 1.0
-        t = self._xfade_clock.elapsed() / float(XFADE_DURATION_MS)
-        if t < 0.0:
-            return 0.0
-        return 1.0 if t > 1.0 else t
+        return max(0.0, min(1.0, self._xfade_t))
 
     def _start_xfade(self, backdrop: QPixmap) -> None:
         """以旧背景帧为底图启动交叉过渡：新帧自进度 0 淡入（280ms）。"""
         self._xfade_backdrop = backdrop
         self._xfade_active = True
-        self._xfade_clock.restart()
-        if not self._xfade_timer.isActive():
-            self._xfade_timer.start()
+        self._xfade_t = 0.0
+        self._xfade_anim.stop()
+        self._xfade_anim.start()
 
     def _finish_xfade(self) -> None:
         """结束并清理交叉过渡：释放旧帧、停机。"""
         self._xfade_active = False
         self._xfade_backdrop = None
-        if self._xfade_timer.isActive():
-            self._xfade_timer.stop()
+        self._xfade_t = 1.0
+        self._xfade_anim.stop()
 
-    def _on_xfade_tick(self) -> None:
-        """交叉过渡逐帧推进：到时即清理（此后一帧按全进度呈现新帧）。"""
-        if not self._xfade_active:
-            if self._xfade_timer.isActive():
-                self._xfade_timer.stop()
-            return
-        if self._xfade_progress() >= 1.0:
-            self._finish_xfade()
+    def _on_xfade_value(self, value: float) -> None:
+        """动画帧回调：写入进度并触发重绘（混合在离屏完成，单层呈现不变）。"""
+        self._xfade_t = max(0.0, min(1.0, value))
+        self.update()
+
+    def _on_xfade_finished(self) -> None:
+        """动画结束：清理旧帧（此后一帧按全进度呈现新帧）并重绘。"""
+        self._finish_xfade()
         self.update()
 
     def _render_frame_image(self, width: int, height: int) -> QImage | None:

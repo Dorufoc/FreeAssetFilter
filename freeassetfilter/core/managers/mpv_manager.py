@@ -326,7 +326,7 @@ class MPVManager(QObject):
                     if self._stop_event.is_set():
                         break
                     with self._shutdown_lock:
-                        if self._is_shutting_down:
+                        if self._is_shutting_down and self._operation_queue.empty():
                             break
                     if self._operation_queue.empty():
                         self._queue_condition.wait(timeout=0.1)
@@ -336,9 +336,10 @@ class MPVManager(QObject):
                 if operation is None:
                     continue
                     
-                # 再次检查是否正在关闭
+                # 再次检查是否正在关闭（CLOSE 例外：同步关闭正是经由
+                # 操作队列提交 CLOSE 完成，见 _execute_operation 守卫口径）
                 with self._shutdown_lock:
-                    if self._is_shutting_down:
+                    if self._is_shutting_down and operation.operation_type != MPVOperationType.CLOSE:
                         if operation.future and not operation.future.done():
                             operation.future.set_result(False)
                         continue
@@ -354,8 +355,8 @@ class MPVManager(QObject):
                             continue
                         self._pending_latest_operations.pop(pending_key, None)
 
-                # 执行操作前再次检查关闭状态
-                if self._is_shutting_down:
+                # 执行操作前再次检查关闭状态（CLOSE 例外，见上）
+                if self._is_shutting_down and operation.operation_type != MPVOperationType.CLOSE:
                     if operation.future and not operation.future.done():
                         operation.future.set_result(False)
                     continue
@@ -516,7 +517,9 @@ class MPVManager(QObject):
         Returns:
             Future对象，用于获取操作结果
         """
-        if self._is_shutting_down:
+        # 关闭中拒绝接受新操作（CLOSE 除外——同步关闭正是经由操作队列
+        # 提交 CLOSE 完成的，与 _execute_operation 的守卫口径保持一致）
+        if self._is_shutting_down and operation_type != MPVOperationType.CLOSE:
             raise RuntimeError("MPV管理器正在关闭，无法接受新操作")
 
         future = Future()

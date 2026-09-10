@@ -655,7 +655,7 @@ class NativePdfRenderer(QWidget):
 
         # 图片检测：右键点击位置是否落在图片块上
         abs_pos: Tuple[float, float] = self._view.window_to_absolute_document_pos(
-            event.x(), event.y()
+            int(event.position().x()), int(event.position().y())
         )
         img_info: Optional[Dict[str, Any]] = self._find_image_at(abs_pos)
         if img_info is not None:
@@ -668,7 +668,7 @@ class NativePdfRenderer(QWidget):
         menu.add_item("全选", callback=self._select_all)
 
         if menu.actions():
-            menu.exec(event.globalPos())
+            menu.exec(event.globalPosition().toPoint())
         else:
             super().contextMenuEvent(event)
 

@@ -31,37 +31,79 @@ _PROJECT_ROOT = str(_THIS_FILE.parent.parent.parent.parent.parent)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QMouseEvent, QPainter
-from PySide6.QtWidgets import (
-    QApplication, QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget,
-)
-
 from components.styled_context_menu import StyledContextMenu
 from components.styled_scroll_area import StyledScrollArea, StyledScrollBar
+from PySide6.QtCore import (
+    QEvent,
+    QObject,
+    QPoint,
+    QRect,
+    QRunnable,
+    Qt,
+    QThreadPool,
+    QTimer,
+    Signal,
+)
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QMouseEvent, QPainter
+from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 from theme import tm
 
 from freeassetfilter.services import file_info_service as fis
 
-
-# 运行中工作线程的强引用注册表：防止面板销毁/解释器退出时 Python 包装器
-# 先行回收导致 QThread 仍运行时被销毁（Qt 会直接 abort）。
-_ACTIVE_THREADS: set = set()
+# 注：耗时采集走 QThreadPool 全局池（QRunnable 用完即弃）；面板持有在途
+# 任务引用（``self._tasks``）防 GC，切文件时协作式取消 + 令牌守卫，无
+# 模块级保活集合、无 quit()/wait()/deleteLater()。
 
 
 def _rgba(color: QColor) -> str:
     return f"rgba({color.red()},{color.green()},{color.blue()},{color.alpha() / 255:.2f})"
 
 
-class _WorkThread(QThread):
-    """通用工作线程基类（子类实现 run）。"""
+class _WorkSignals(QObject):
+    """后台采集完成信号中转（任务持有，跨线程队列投递到 UI 线程）。"""
 
     done = Signal(object)
     progress = Signal(int)
 
 
-class _DetailThread(_WorkThread):
-    """详细信息采集线程：run 内计算并写缓存，结果经 done 回传。"""
+class _WorkTask(QRunnable):
+    """通用后台采集池任务基类（子类实现 run；取消经协作式标记）。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._signals = _WorkSignals()
+        self._cancelled = False
+
+    @property
+    def done(self):
+        """采集完成信号（经中转对象）。"""
+        return self._signals.done
+
+    @property
+    def progress(self):
+        """哈希进度信号 ``(percent)``（经中转对象）。"""
+        return self._signals.progress
+
+    def request_cancel(self) -> None:
+        """请求取消（协作式标记；run 内检查）。"""
+        self._cancelled = True
+
+    def start(self) -> None:
+        """投递到全局线程池执行（替代旧 QThread.start()）。"""
+        QThreadPool.globalInstance().start(self)
+
+
+class _DetailTask(_WorkTask):
+    """详细信息采集任务：run 内计算并写缓存，结果经 done 回传。"""
 
     def __init__(
         self,
@@ -69,13 +111,14 @@ class _DetailThread(_WorkThread):
         cache_path: Optional[str],
         parent: Optional[QWidget] = None,
     ):
-        super().__init__(parent)
+        # parent 参数仅为兼容旧构造签名保留；QRunnable 非 QObject，不参与父子。
+        super().__init__()
         self._path = path
         self._cache_path = cache_path
 
     def run(self) -> None:
         data = fis.collect_detail_data(self._path)
-        if not self.isInterruptionRequested():
+        if not self._cancelled:
             try:
                 fis.write_cached(self._path, details=data["rows"], cache_path=self._cache_path)
             except Exception:  # noqa: BLE001
@@ -83,8 +126,8 @@ class _DetailThread(_WorkThread):
         self.done.emit(data)
 
 
-class _HashThread(_WorkThread):
-    """哈希计算线程：单次读盘三哈希，progress 汇报进度。"""
+class _HashTask(_WorkTask):
+    """哈希计算任务：单次读盘三哈希，progress 汇报进度。"""
 
     def __init__(
         self,
@@ -92,7 +135,8 @@ class _HashThread(_WorkThread):
         cache_path: Optional[str],
         parent: Optional[QWidget] = None,
     ):
-        super().__init__(parent)
+        # parent 参数仅为兼容旧构造签名保留；QRunnable 非 QObject，不参与父子。
+        super().__init__()
         self._path = path
         self._cache_path = cache_path
 
@@ -103,9 +147,9 @@ class _HashThread(_WorkThread):
         values = fis.compute_hashes(
             self._path,
             progress=_report,
-            should_stop=lambda: self.isInterruptionRequested(),
+            should_stop=lambda: self._cancelled,
         )
-        if not self.isInterruptionRequested():
+        if not self._cancelled:
             try:
                 fis.write_cached(self._path, hashes=values, cache_path=self._cache_path)
             except Exception:  # noqa: BLE001
@@ -855,7 +899,7 @@ class _InfoCanvas(QWidget):
         super().mouseReleaseEvent(event)
 
     def contextMenuEvent(self, event) -> None:  # noqa: N802
-        pos = event.pos()
+        pos = event.position().toPoint()
         row = self._row_at(pos)
         menu = StyledContextMenu(parent=self)
         if row is not None:
@@ -875,7 +919,7 @@ class _InfoCanvas(QWidget):
                 menu.add_item("复制文件路径", callback=_copy_path)
         menu.add_separator()
         menu.add_item("复制全部信息", callback=self._panel._copy_all)
-        menu.exec(event.globalPos())
+        menu.exec(event.globalPosition().toPoint())
         event.accept()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
@@ -930,7 +974,7 @@ class FileInfoPanel(QWidget):
         super().__init__(parent)
         self._cache_path = cache_path
         self._file_token = 0
-        self._threads: List[_WorkThread] = []
+        self._tasks: List[_WorkTask] = []
 
         self._file_info: Optional[dict] = None
         self._summary: Dict[str, Any] = {"name": "", "path": ""}
@@ -1063,23 +1107,13 @@ class FileInfoPanel(QWidget):
         self.set_file(None)
 
     def stop(self) -> None:
-        """中断并回收全部后台线程（面板销毁/切换文件时调用）。"""
-        for thread in list(self._threads):
-            _ACTIVE_THREADS.discard(thread)
+        """取消全部后台任务（面板销毁/切换文件时调用；过期结果由令牌守卫丢弃）。"""
+        for task in list(self._tasks):
             try:
-                thread.requestInterruption()
-                thread.wait(3000)
+                task.request_cancel()
             except RuntimeError:
                 pass
-            try:
-                thread.quit()
-            except RuntimeError:
-                pass
-            try:
-                thread.deleteLater()
-            except RuntimeError:
-                pass
-        self._threads.clear()
+        self._tasks.clear()
 
     @staticmethod
     def _rule_detail_supported(file_info: dict) -> bool:
@@ -1137,29 +1171,26 @@ class FileInfoPanel(QWidget):
 
     def _start_details_thread(self) -> None:
         token = self._file_token
-        thread = _DetailThread(self.current_path() or "", self._cache_path)
-        thread.done.connect(lambda data, t=token: self._on_details_done(t, data))
-        self._track_thread(thread)
+        task = _DetailTask(self.current_path() or "", self._cache_path)
+        task.done.connect(lambda data, t=token: self._on_details_done(t, data))
+        self._track_task(task)
 
     def _start_hash_thread(self) -> None:
         token = self._file_token
-        thread = _HashThread(self.current_path() or "", self._cache_path)
-        thread.progress.connect(lambda percent, t=token: self._on_hash_progress(t, percent))
-        thread.done.connect(lambda values, t=token: self._on_hash_done(t, values))
-        self._track_thread(thread)
+        task = _HashTask(self.current_path() or "", self._cache_path)
+        task.progress.connect(lambda percent, t=token: self._on_hash_progress(t, percent))
+        task.done.connect(lambda values, t=token: self._on_hash_done(t, values))
+        self._track_task(task)
 
-    def _track_thread(self, thread: _WorkThread) -> None:
-        _ACTIVE_THREADS.add(thread)
-        thread.finished.connect(lambda: self._on_thread_finished(thread))
-        self._threads.append(thread)
-        thread.start()
+    def _track_task(self, task: _WorkTask) -> None:
+        task.done.connect(lambda _data, tk=task: self._untrack_task(tk))
+        self._tasks.append(task)
+        task.start()
 
-    def _on_thread_finished(self, thread: _WorkThread) -> None:
-        _ACTIVE_THREADS.discard(thread)
+    def _untrack_task(self, task: _WorkTask) -> None:
         try:
-            if thread in self._threads:
-                self._threads.remove(thread)
-            thread.deleteLater()
+            if task in self._tasks:
+                self._tasks.remove(task)
         except RuntimeError:
             pass
 

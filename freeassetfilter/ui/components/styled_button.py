@@ -396,7 +396,7 @@ class StyledButton(QPushButton):
                 press_shadow_opacity = (1.0 - self._scale) / 0.01 * 0.3  # scale 0.99->1.0 maps to opacity 0.3->0
                 painter.setOpacity(press_shadow_opacity)
                 painter.setPen(Qt.NoPen)
-                painter.setBrush(QColor(_shadow_color.red(), _shadow_color.green(), _shadow_color.blue(), int(255 * press_shadow_opacity)))
+                painter.setBrush(tm.with_alpha(_shadow_color, int(255 * press_shadow_opacity)))
                 press_shadow_rect = QRectF(btn_x, btn_y, btn_w, btn_h)
                 painter.drawRoundedRect(press_shadow_rect, config["radius"], config["radius"])
                 painter.setOpacity(1.0)
@@ -416,7 +416,7 @@ class StyledButton(QPushButton):
                     shadow_opacity = 0.2
                 painter.setOpacity(shadow_opacity)
                 painter.setPen(Qt.NoPen)
-                painter.setBrush(QColor(_shadow_color.red(), _shadow_color.green(), _shadow_color.blue(), int(255 * shadow_opacity)))
+                painter.setBrush(tm.with_alpha(_shadow_color, int(255 * shadow_opacity)))
                 shadow_rect = QRectF(btn_x, btn_y + 2, btn_w, btn_h)
                 painter.drawRoundedRect(shadow_rect, config["radius"], config["radius"])
                 painter.setOpacity(1.0 if self.isEnabled() else 0.4)

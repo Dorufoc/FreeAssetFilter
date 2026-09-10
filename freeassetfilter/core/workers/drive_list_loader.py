@@ -11,7 +11,7 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
 许可协议：https://github.com/Dorufoc/FreeAssetFilter/blob/main/LICENSE
 
-后台驱动器加载与盘符可用性检查线程
+后台驱动器加载与盘符可用性检查任务（QRunnable 池任务）
 """
 
 import ctypes
@@ -20,7 +20,7 @@ import sys
 import traceback
 from ctypes import wintypes
 
-from PySide6.QtCore import QObject, QRunnable, QThread, Signal
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
 from freeassetfilter.utils.app_logger import debug, error, warning
 
@@ -58,8 +58,35 @@ class _DriveAvailabilityCheckRunnable(QRunnable):
         self._signals.finished.emit(self._drive_path, available)
 
 
-class DriveListLoaderThread(QThread):
+class _DriveListSignals(QObject):
+    """驱动器列表加载完成信号中转（主线程持有，跨线程队列投递）。"""
+
     loaded = Signal(list, list)
+
+
+class DriveListLoaderThread(QRunnable):
+    """后台任务：枚举本地盘符与网络位置（通过信号中转对象与 UI 通信）。
+
+    ``run()`` 在 ``QThreadPool.globalInstance()`` 的池线程中执行；
+    ``loaded`` 信号挂在主线程持有的 ``_DriveListSignals`` 中转对象上
+    （以属性方式透出），连接方式与旧 QThread 版完全一致。
+    类名与构造签名保持向后兼容。
+    """
+
+    def __init__(self, parent=None):
+        # parent 参数仅为兼容旧构造签名保留；QRunnable 非 QObject。
+        super().__init__()
+        self.setAutoDelete(True)
+        self._signals = _DriveListSignals()
+
+    @property
+    def loaded(self):
+        """驱动器列表加载完成信号 ``(local_drives, network_locations)``。"""
+        return self._signals.loaded
+
+    def start(self) -> None:
+        """投递到全局线程池执行（替代旧 QThread.start()）。"""
+        QThreadPool.globalInstance().start(self)
 
     def run(self):
         try:
@@ -125,6 +152,6 @@ class DriveListLoaderThread(QThread):
 
             local_drives = sorted(set(local_drives))
             network_locations = sorted(set(network_locations))
-            self.loaded.emit(local_drives, network_locations)
+            self._signals.loaded.emit(local_drives, network_locations)
         except Exception:
             error(f"DriveListLoaderThread.run() 异常: {traceback.format_exc()}")

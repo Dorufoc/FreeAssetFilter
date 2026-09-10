@@ -242,7 +242,8 @@ class TestRealMpvLifecycle:
             _force_close(manager)
 
     def test_real_file_loaded_signal(
-        self, qapp: object, mpv_available: bool, tmp_path: object
+        self, qapp: object, mpv_available: bool, tmp_path: object,
+        heartbeat_manager: object,
     ) -> None:
         """真实加载后 ``fileLoaded`` 信号在超时内被发射。"""
         if not mpv_available:
@@ -260,7 +261,8 @@ class TestRealMpvLifecycle:
             process_qt_events(qapp, ms=50)
 
     def test_real_sync_close_cleans_up(
-        self, qapp: object, mpv_available: bool, tmp_path: object
+        self, qapp: object, mpv_available: bool, tmp_path: object,
+        heartbeat_manager: object,
     ) -> None:
         """同步关�闭后：``is_initialized()`` False、线程全部退出、可靠再次初始化。"""
         if not mpv_available:

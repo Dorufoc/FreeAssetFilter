@@ -121,14 +121,14 @@ class ContentScrollBar(QScrollBar):
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             handle_rect = self._get_handle_rect()
-            if handle_rect.contains(event.pos()):
+            if handle_rect.contains(event.position().toPoint()):
                 # Click on handle - start drag, record offset within handle
-                self._drag_offset = event.pos().y() - handle_rect.y()
+                self._drag_offset = event.position().y() - handle_rect.y()
                 self._dragging = True
                 self.grabMouse()
             else:
                 # Click on track - jump to position
-                new_value = self._value_from_pos(event.pos().y())
+                new_value = self._value_from_pos(event.position().y())
                 self.setSliderPosition(int(new_value))
                 self.update()
             event.accept()
@@ -141,7 +141,7 @@ class ContentScrollBar(QScrollBar):
                 ratio = self.pageStep() / (self.maximum() + self.pageStep())
                 handle_height = max(30, int(self.height() * ratio))
                 # Calculate position based on mouse y minus the grab offset
-                new_y = event.pos().y() - self._drag_offset
+                new_y = event.position().y() - self._drag_offset
                 pixel_range = self.height() - handle_height
                 if pixel_range > 0:
                     new_value = (new_y / pixel_range) * self.maximum()

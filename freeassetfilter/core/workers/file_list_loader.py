@@ -11,25 +11,52 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
 许可协议：https://github.com/Dorufoc/FreeAssetFilter/blob/main/LICENSE
 
-文件列表加载器线程
-在后台线程中扫描目录，通过 Signal 将结果发送回 UI 线程
+文件列表加载任务（QRunnable）
+在后台线程池中扫描目录，通过主线程持有的信号中转对象将结果发送回 UI 线程。
 """
 
 import os
 import sys
 
-from PySide6.QtCore import QThread, Signal, QDateTime, Qt
+from PySide6.QtCore import QDateTime, QObject, QRunnable, Qt, QThreadPool, Signal
 
 
-class FileListLoaderThread(QThread):
-    """后台线程：扫描目录并返回文件列表（通过 Signal 与 UI 通信）"""
+class _FileListSignals(QObject):
+    """文件列表加载完成信号中转（主线程持有，跨线程队列投递）。"""
 
     loaded = Signal(str, list)
     failed = Signal(str, str)
 
+
+class FileListLoaderThread(QRunnable):
+    """后台任务：扫描目录并返回文件列表（通过信号中转对象与 UI 通信）。
+
+    ``run()`` 在 ``QThreadPool.globalInstance()`` 的池线程中执行；
+    ``loaded`` / ``failed`` 信号挂在主线程持有的 ``_FileListSignals``
+    中转对象上（以属性方式透出），连接方式与旧 QThread 版完全一致。
+    类名与构造签名保持向后兼容。
+    """
+
     def __init__(self, current_path, parent=None):
-        super().__init__(parent)
+        # parent 参数仅为兼容旧构造签名保留；QRunnable 非 QObject。
+        super().__init__()
+        self.setAutoDelete(True)
         self.current_path = current_path
+        self._signals = _FileListSignals()
+
+    @property
+    def loaded(self):
+        """目录扫描完成信号 ``(path, files)``（经中转对象）。"""
+        return self._signals.loaded
+
+    @property
+    def failed(self):
+        """目录扫描失败信号 ``(path, error_message)``（经中转对象）。"""
+        return self._signals.failed
+
+    def start(self) -> None:
+        """投递到全局线程池执行（替代旧 QThread.start()）。"""
+        QThreadPool.globalInstance().start(self)
 
     def run(self):
         files = []
@@ -106,6 +133,6 @@ class FileListLoaderThread(QThread):
                         except (OSError, PermissionError):
                             continue
 
-            self.loaded.emit(self.current_path, files)
+            self._signals.loaded.emit(self.current_path, files)
         except Exception as e:
-            self.failed.emit(self.current_path, str(e))
+            self._signals.failed.emit(self.current_path, str(e))

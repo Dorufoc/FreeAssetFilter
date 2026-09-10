@@ -440,7 +440,7 @@ class _LinkTextBrowser(QTextBrowser):
         """右键点击时构建 StyledContextMenu：命中链接显示链接操作，有选区显示复制选区，始终显示全选。"""
         menu = StyledContextMenu(parent=self)
 
-        anchor = self.anchorAt(event.pos())
+        anchor = self.anchorAt(event.position().toPoint())
         if anchor:
             menu.add_item("在浏览器中打开", callback=lambda: self._open_anchor(anchor))
             menu.add_item("复制链接", callback=lambda: self._copy_anchor(anchor))
@@ -452,7 +452,7 @@ class _LinkTextBrowser(QTextBrowser):
             menu.add_separator()
         menu.add_item("全选", callback=self._select_all)
 
-        menu.exec(event.globalPos())
+        menu.exec(event.globalPosition().toPoint())
 
     def _copy_selected_text(self) -> None:
         """将当前选中的文本复制到剪贴板。"""
@@ -780,15 +780,15 @@ class _SearchMatch:
 class _SearchResultModel(QAbstractListModel):
     """为 QListView 提供懒加载搜索结果的只读模型。"""
 
-    StartRole = Qt.UserRole + 1
-    EndRole = Qt.UserRole + 2
-    KeywordRole = Qt.UserRole + 3
-    BeforeRole = Qt.UserRole + 4
-    AfterRole = Qt.UserRole + 5
-    ContextRole = Qt.UserRole + 6
-    LineRole = Qt.UserRole + 7
-    ProgressRole = Qt.UserRole + 8
-    MatchRole = Qt.UserRole + 10
+    StartRole = Qt.ItemDataRole.UserRole + 1
+    EndRole = Qt.ItemDataRole.UserRole + 2
+    KeywordRole = Qt.ItemDataRole.UserRole + 3
+    BeforeRole = Qt.ItemDataRole.UserRole + 4
+    AfterRole = Qt.ItemDataRole.UserRole + 5
+    ContextRole = Qt.ItemDataRole.UserRole + 6
+    LineRole = Qt.ItemDataRole.UserRole + 7
+    ProgressRole = Qt.ItemDataRole.UserRole + 8
+    MatchRole = Qt.ItemDataRole.UserRole + 10
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -815,11 +815,11 @@ class _SearchResultModel(QAbstractListModel):
 
         return f"{before}{keyword}{after}"
 
-    def data(self, index: QModelIndex, role: int = Qt.DisplayRole) -> Any:
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
         if not index.isValid() or index.row() >= len(self._matches):
             return None
         match = self._matches[index.row()]
-        if role == Qt.DisplayRole:
+        if role == Qt.ItemDataRole.DisplayRole:
             return f"{match.before}{match.keyword}{match.after}"
         if role == self.StartRole:
             return match.start

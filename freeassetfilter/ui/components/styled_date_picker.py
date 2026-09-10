@@ -6,8 +6,8 @@ from PySide6.QtWidgets import (
     QLabel, QFrame, QApplication, QLineEdit
 )
 from PySide6.QtCore import (
-    Qt, Signal, QRectF, QPoint, QDate, QSize, QTimer, QEvent,
-    QPropertyAnimation, QEasingCurve,
+    Qt, Signal, QRectF, QPoint, QDate, QSize, QEvent,
+    QPropertyAnimation, QEasingCurve, QVariantAnimation,
 )
 from PySide6.QtGui import (
     QPainter, QColor, QPen, QPainterPath, QFont, QMouseEvent, QPaintEvent, QCursor
@@ -376,6 +376,8 @@ class _DaysGrid(QWidget):
     date_clicked = Signal(str)
     hover_changed = Signal(int)
 
+    _HOVER_DURATION_MS: int = 160  # 与旧 16ms×10 步 Timer 版等时，线性插值
+
     @property
     def _accent_primary(self) -> QColor:
         return tm.accent
@@ -389,9 +391,8 @@ class _DaysGrid(QWidget):
         self.setMinimumHeight(210)
         self.setMouseTracking(True)
         self._panel = panel
-        self._hover_progress = {}  # cell_idx -> progress (0.0 to 1.0)
-        self._hover_targets = {}  # cell_idx -> target value
-        self._hover_timers = {}  # cell_idx -> QTimer
+        self._hover_progress: dict[int, float] = {}  # cell_idx -> progress (0.0 to 1.0)
+        self._hover_anims: dict[int, QVariantAnimation] = {}  # cell_idx -> 进行中的 hover 动画（按需持有）
         self._current_hover_idx = -1
 
     def paintEvent(self, event):
@@ -576,49 +577,42 @@ class _DaysGrid(QWidget):
             self._current_hover_idx = -1
         super().leaveEvent(event)
 
-    def _animate_cell_hover(self, idx: int, target: float):
-        """Animate hover progress for a specific cell using QTimer."""
-        self._hover_targets[idx] = target
-        
-        # Stop existing timer for this cell if any
-        if idx in self._hover_timers and self._hover_timers[idx] is not None:
-            self._hover_timers[idx].stop()
-        
-        # Create new timer for this cell
-        timer = QTimer(self)
-        timer.setInterval(16)  # ~60fps
-        timer.timeout.connect(lambda: self._update_hover_progress(idx))
-        self._hover_timers[idx] = timer
-        timer.start()
+    def _animate_cell_hover(self, idx: int, target: float) -> None:
+        """用 QVariantAnimation 驱动指定单元格的 hover 插值（按需持有，非每格常驻）。"""
+        target = max(0.0, min(1.0, float(target)))
+        current = max(0.0, min(1.0, float(self._hover_progress.get(idx, 0.0))))
 
-    def _update_hover_progress(self, idx: int):
-        """Update hover progress for a specific cell."""
-        target = self._hover_targets.get(idx, 0.0)
-        current = self._hover_progress.get(idx, 0.0)
-        
-        # If already at target, stop
         if abs(target - current) < 0.01:
             self._hover_progress[idx] = target
-            if idx in self._hover_timers:
-                self._hover_timers[idx].stop()
-                del self._hover_timers[idx]
             self.update()
             return
-        
-        # Calculate step (160ms duration / 16ms interval = 10 steps)
-        step = 0.1 if target > current else -0.1
-        
-        new_value = current + step
-        
-        # Check if we've reached the target
-        if (target > current and new_value >= target) or (target < current and new_value <= target):
-            new_value = target
-            # Stop the timer
-            if idx in self._hover_timers:
-                self._hover_timers[idx].stop()
-                del self._hover_timers[idx]
-        
-        self._hover_progress[idx] = new_value
+
+        # 停掉该格旧动画（stop 不触发 finished，无需担心重入）
+        old = self._hover_anims.pop(idx, None)
+        if old is not None:
+            old.stop()
+            old.deleteLater()
+
+        anim = QVariantAnimation(self)
+        anim.setStartValue(current)
+        anim.setEndValue(target)
+        anim.setDuration(self._HOVER_DURATION_MS)
+        anim.setEasingCurve(QEasingCurve.Linear)
+        anim.valueChanged.connect(lambda v, i=idx: self._on_cell_hover_value(i, v))
+        anim.finished.connect(lambda i=idx: self._on_cell_hover_finished(i))
+        self._hover_anims[idx] = anim
+        anim.start()
+
+    def _on_cell_hover_value(self, idx: int, value: float) -> None:
+        """hover 动画帧回调：写入插值并重绘（paint 读取逻辑不变）。"""
+        self._hover_progress[idx] = max(0.0, min(1.0, float(value)))
+        self.update()
+
+    def _on_cell_hover_finished(self, idx: int) -> None:
+        """hover 动画播完：清理按需持有的动画对象。"""
+        anim = self._hover_anims.pop(idx, None)
+        if anim is not None:
+            anim.deleteLater()
         self.update()
 
 
@@ -626,6 +620,8 @@ class _MonthsGrid(QWidget):
     """Widget that renders the months grid for month picker mode."""
 
     month_clicked = Signal(int)
+
+    _HOVER_DURATION_MS: int = 160  # 与旧 16ms×10 步 Timer 版等时，线性插值
 
     @property
     def _accent_primary(self) -> QColor:
@@ -641,9 +637,8 @@ class _MonthsGrid(QWidget):
         self.setFixedHeight(180)
         self.setMouseTracking(True)
         self._hovered_month = -1
-        self._hover_progress = {}  # month -> progress (0.0 to 1.0)
-        self._hover_targets = {}  # month -> target value
-        self._hover_timers = {}  # month -> QTimer
+        self._hover_progress: dict[int, float] = {}  # month -> progress (0.0 to 1.0)
+        self._hover_anims: dict[int, QVariantAnimation] = {}  # month -> 进行中的 hover 动画（按需持有）
         self._current_hover_month = -1
 
     def paintEvent(self, event):
@@ -736,49 +731,42 @@ class _MonthsGrid(QWidget):
             self._current_hover_month = -1
         super().leaveEvent(event)
 
-    def _animate_month_hover(self, month: int, target: float):
-        """Animate hover progress for a specific month using QTimer."""
-        self._hover_targets[month] = target
-        
-        # Stop existing timer for this month if any
-        if month in self._hover_timers and self._hover_timers[month] is not None:
-            self._hover_timers[month].stop()
-        
-        # Create new timer for this month
-        timer = QTimer(self)
-        timer.setInterval(16)  # ~60fps
-        timer.timeout.connect(lambda: self._update_month_hover_progress(month))
-        self._hover_timers[month] = timer
-        timer.start()
+    def _animate_month_hover(self, month: int, target: float) -> None:
+        """用 QVariantAnimation 驱动指定月份的 hover 插值（按需持有，非每格常驻）。"""
+        target = max(0.0, min(1.0, float(target)))
+        current = max(0.0, min(1.0, float(self._hover_progress.get(month, 0.0))))
 
-    def _update_month_hover_progress(self, month: int):
-        """Update hover progress for a specific month."""
-        target = self._hover_targets.get(month, 0.0)
-        current = self._hover_progress.get(month, 0.0)
-        
-        # If already at target, stop
         if abs(target - current) < 0.01:
             self._hover_progress[month] = target
-            if month in self._hover_timers:
-                self._hover_timers[month].stop()
-                del self._hover_timers[month]
             self.update()
             return
-        
-        # Calculate step (160ms duration / 16ms interval = 10 steps)
-        step = 0.1 if target > current else -0.1
-        
-        new_value = current + step
-        
-        # Check if we've reached the target
-        if (target > current and new_value >= target) or (target < current and new_value <= target):
-            new_value = target
-            # Stop the timer
-            if month in self._hover_timers:
-                self._hover_timers[month].stop()
-                del self._hover_timers[month]
-        
-        self._hover_progress[month] = new_value
+
+        # 停掉该格旧动画（stop 不触发 finished，无需担心重入）
+        old = self._hover_anims.pop(month, None)
+        if old is not None:
+            old.stop()
+            old.deleteLater()
+
+        anim = QVariantAnimation(self)
+        anim.setStartValue(current)
+        anim.setEndValue(target)
+        anim.setDuration(self._HOVER_DURATION_MS)
+        anim.setEasingCurve(QEasingCurve.Linear)
+        anim.valueChanged.connect(lambda v, m=month: self._on_month_hover_value(m, v))
+        anim.finished.connect(lambda m=month: self._on_month_hover_finished(m))
+        self._hover_anims[month] = anim
+        anim.start()
+
+    def _on_month_hover_value(self, month: int, value: float) -> None:
+        """hover 动画帧回调：写入插值并重绘（paint 读取逻辑不变）。"""
+        self._hover_progress[month] = max(0.0, min(1.0, float(value)))
+        self.update()
+
+    def _on_month_hover_finished(self, month: int) -> None:
+        """hover 动画播完：清理按需持有的动画对象。"""
+        anim = self._hover_anims.pop(month, None)
+        if anim is not None:
+            anim.deleteLater()
         self.update()
 
 

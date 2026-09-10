@@ -884,7 +884,7 @@ class PdfPreviewerLayout(QWidget):
         """全局鼠标点击：点击菜单外部时关闭缩放弹窗。"""
         if self._zoom_popup is not None and self._zoom_popup.isVisible():
             popup_rect = QRect(self._zoom_popup.pos(), self._zoom_popup.size())
-            if not popup_rect.contains(event.globalPos()):
+            if not popup_rect.contains(event.globalPosition().toPoint()):
                 self._zoom_popup.close_animated()
 
     def _on_zoom_clicked(self) -> None:

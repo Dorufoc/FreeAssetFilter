@@ -6,13 +6,12 @@ import ctypes
 import os
 import re
 import sys
-import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QListView, QLabel, QAbstractItemView, QApplication, QMessageBox, QListWidget, QListWidgetItem
-from PySide6.QtCore import Qt, Signal, QSize, QTimer, QEvent, QMargins, QPoint, QRect, QItemSelectionModel, QObject
+from PySide6.QtCore import Qt, Signal, QSize, QTimer, QEvent, QMargins, QPoint, QRect, QItemSelectionModel, QObject, QRunnable, QThreadPool
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 
 from theme import tm
@@ -101,6 +100,31 @@ class _RubberBandOverlay(QWidget):
             painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
         finally:
             painter.end()
+
+
+class _DirectoryCollectRunnable(QRunnable):
+    """异步目录收集任务（QRunnable 投 ``QThreadPool.globalInstance()``）。
+
+    一次性任务：后台线程执行 ``listdir + stat`` 收集目录条目，完成经
+    ``_dir_entries_ready`` 信号回主线程应用（跨线程信号按 AutoConnection
+    排队到 UI 线程）；线程池线程为 daemon 语义，进程退出不被阻塞。
+
+    Args:
+        owner: 所属 FileSelectorLayout（收集器与信号发射经由它）。
+        path: 待收集目录路径。
+        token: 异步加载世代快照，过期结果由槽侧丢弃。
+    """
+
+    def __init__(self, owner: "FileSelectorLayout", path: str, token: int) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._owner = owner
+        self._path = path
+        self._token = token
+
+    def run(self) -> None:
+        entries = self._owner._collect_directory_entries(self._path)
+        self._owner._dir_entries_ready.emit(self._path, entries, self._token)
 
 
 class FileSelectorLayout(QWidget):
@@ -1283,12 +1307,7 @@ class FileSelectorLayout(QWidget):
         """
         self._async_load_token += 1
         token = self._async_load_token
-
-        def _worker() -> None:
-            entries = self._collect_directory_entries(path)
-            self._dir_entries_ready.emit(path, entries, token)
-
-        threading.Thread(target=_worker, daemon=True).start()
+        QThreadPool.globalInstance().start(_DirectoryCollectRunnable(self, path, token))
 
     def _on_dir_entries_ready(
         self, path: str, entries: Optional[List[Dict[str, Any]]], token: int
@@ -1646,7 +1665,7 @@ class FileSelectorLayout(QWidget):
             """)
             for fav in favorites:
                 item = QListWidgetItem(f"{fav['name']}  -  {fav['path']}")
-                item.setData(Qt.UserRole, fav["path"])
+                item.setData(Qt.ItemDataRole.UserRole, fav["path"])
                 item.setToolTip(fav["path"])
                 list_widget.addItem(item)
             list_widget.setFixedHeight(280)
@@ -1673,7 +1692,7 @@ class FileSelectorLayout(QWidget):
 
     def _on_favorite_activated(self, item, list_widget) -> None:
         """双击收藏项 → 跳转到对应路径并关闭对话框。"""
-        path = item.data(Qt.UserRole)
+        path = item.data(Qt.ItemDataRole.UserRole)
         if not path:
             return
         if os.path.isdir(path):
@@ -1703,7 +1722,7 @@ class FileSelectorLayout(QWidget):
 
     def _rename_favorite(self, item, list_widget) -> None:
         """重命名收藏项（弹输入框）。"""
-        path = item.data(Qt.UserRole)
+        path = item.data(Qt.ItemDataRole.UserRole)
         favorites = self._get_favorites()
         fav = next((f for f in favorites if f["path"] == path), None)
         if not fav:
@@ -1731,7 +1750,7 @@ class FileSelectorLayout(QWidget):
 
     def _delete_favorite(self, item, list_widget) -> None:
         """删除收藏项（带确认对话框）。"""
-        path = item.data(Qt.UserRole)
+        path = item.data(Qt.ItemDataRole.UserRole)
         text = item.text()
         name = text.split("  -  ", 1)[0] if "  -  " in text else path
         dialog = create_basic_dialog(

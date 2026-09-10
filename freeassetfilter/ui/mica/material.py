@@ -72,6 +72,7 @@ from typing import Optional, Tuple, Union
 
 import numpy as np
 from PySide6.QtCore import (
+    QEasingCurve,
     QElapsedTimer,
     QEvent,
     QObject,
@@ -80,6 +81,7 @@ from PySide6.QtCore import (
     QThread,
     QTimer,
     Signal,
+    QVariantAnimation,
 )
 from PySide6.QtGui import (
     QColor,
@@ -121,6 +123,10 @@ from .drag import (
 )
 from .engine import BakeRequest, render_display
 from .gpu import gpu_bake
+from components.custom_background import (
+    LinearProgressAnimation,
+    create_linear_progress_animation,
+)
 from .source import WallpaperProvider
 
 _LOG = logging.getLogger(__name__)
@@ -162,7 +168,8 @@ DRAG_LIVE_ENV: str = "FAF_MICA_DRAG_LIVE"
 SETTLE_FADE_ENV: str = "FAF_MICA_SETTLE_FADE_MS"
 #: 默认淡化时长（毫秒）。
 _SETTLE_FADE_DEFAULT_MS: int = 120
-#: settle 淡化逐帧节拍（毫秒）。
+#: 淡化逐帧节拍（毫秒，约 60fps；现由 QVariantAnimation 按帧推送，
+#: 保留该常量仅作帧率备注，不再驱动任何 QTimer）。
 _FADE_TICK_MS: int = 16
 
 #: 已交付层缓存容量（深/浅各一块，往返切换零烘焙；QPixmap 隐式共享，只多占一块层内存）。
@@ -491,12 +498,16 @@ class MicaMaterial(QObject):
         self._last_painted_win: Optional[Tuple[int, int, int, int]] = None
         self._hide_until_new_layer = False
         # settle 淡化状态：旧裁剪 → 新裁剪，见 _start_settle_fade。
+        # 进度由 _settle_fade_anim（0→1 线性）逐帧写入 _settle_fade_t，
+        # paint 照旧按该进度混合两层。
         self._settle_fade_ms = _settle_fade_ms_from_env()
         self._settle_fade_old_src: Optional[Tuple[float, float, float, float]] = None
-        self._settle_fade_ticks = 0
-        self._settle_fade_timer = QTimer(self._widget)
-        self._settle_fade_timer.setInterval(_FADE_TICK_MS)
-        self._settle_fade_timer.timeout.connect(self._on_settle_fade_tick)
+        self._settle_fade_t = 0.0
+        self._settle_fade_anim: LinearProgressAnimation = (
+            create_linear_progress_animation(self._widget, self._settle_fade_ms)
+        )
+        self._settle_fade_anim.valueChanged.connect(self._on_settle_fade_value)
+        self._settle_fade_anim.finished.connect(self._on_settle_fade_finished)
 
         # 后台线程生命周期状态
         self._worker_thread: Optional[QThread] = None
@@ -535,14 +546,16 @@ class MicaMaterial(QObject):
         #: 绘制耗时采样（供合成器自适应节流；只测 blit，不含事件派发）。
         self._paint_clock = QElapsedTimer()
 
-        # 淡入淡出
+        # 淡入淡出：透明度由 _fade_anim（当前值→目标值线性）直接插值，
+        # paint 照旧消费 _fade_alpha。
         self._fade_alpha = 1.0
         self._fade_from = 1.0
         self._fade_to = 1.0
-        self._fade_clock = QElapsedTimer()
-        self._fade_timer = QTimer(self._widget)
-        self._fade_timer.setInterval(16)
-        self._fade_timer.timeout.connect(self._on_fade_tick)
+        self._fade_anim = QVariantAnimation(self._widget)
+        self._fade_anim.setDuration(FADE_DURATION_MS)
+        self._fade_anim.setEasingCurve(QEasingCurve.Linear)
+        self._fade_anim.valueChanged.connect(self._on_fade_value)
+        self._fade_anim.finished.connect(self._on_fade_finished)
         self._active = True
         self._paused = False
 
@@ -570,10 +583,12 @@ class MicaMaterial(QObject):
         #: 交付时消费（置 False），超时自然结束时亦复位。无预起钟的连续交付
         #: 仍走连切重抓（快照为当前混合态，见 _capture_visual_state）。
         self._xfade_prestarted = False
-        self._xfade_clock = QElapsedTimer()
-        self._xfade_timer = QTimer(self._widget)
-        self._xfade_timer.setInterval(_FADE_TICK_MS)
-        self._xfade_timer.timeout.connect(self._on_xfade_tick)
+        self._xfade_t = 1.0
+        self._xfade_anim: LinearProgressAnimation = (
+            create_linear_progress_animation(self._widget, XFADE_DURATION_MS)
+        )
+        self._xfade_anim.valueChanged.connect(self._on_xfade_value)
+        self._xfade_anim.finished.connect(self._on_xfade_finished)
 
         # overlay_opacity 现在会影响烘焙产物（混合预合成在 worker 完成），
         # 因此滑块连拖用防抖合并，静置 250ms 后再重建。
@@ -892,15 +907,15 @@ class MicaMaterial(QObject):
             # 状态异常兜底：直接画当前裁剪（幂等）。
             self._draw_layer(painter, rect)
             return
-        span = max(1, int(self._settle_fade_ms))
-        t = min(1.0, float(self._settle_fade_ticks) * _FADE_TICK_MS / float(span))
+        # 进度由 _settle_fade_anim 逐帧写入 _settle_fade_t（时长即 _settle_fade_ms）。
+        t = max(0.0, min(1.0, self._settle_fade_t))
         new_src = layer_to_source_clamped(layer, self._window_rect_tuple())
 
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-        # 旧裁剪打底（不透明 —— 与拖动期间所见帧一致）。
+        # 旧裁剪铺底（透度与拖动期间所见帧一致）；
         painter.setOpacity(self._fade_alpha)
         painter.drawPixmap(QRectF(rect), pixmap, QRectF(*old_src))
-        # 新裁剪按进度叠入；t→1 由 _on_settle_fade_tick 停机后的常规帧收尾。
+        # 新裁剪淡入；t→1 由 _on_settle_fade_finished 停机收尾到常规帧。
         painter.setOpacity(self._fade_alpha * max(0.0, min(1.0, t)))
         painter.drawPixmap(QRectF(rect), pixmap, QRectF(*new_src))
         painter.setOpacity(1.0)
@@ -1262,7 +1277,6 @@ class MicaMaterial(QObject):
         self._finish_xfade()
         self._settle_timer.stop()
         self._stop_settle_fade()
-        self._settle_fade_timer.stop()
         self._hide_until_new_layer = False
         self._deactivate_timer.stop()
         self._watchdog.stop()
@@ -1547,22 +1561,26 @@ class MicaMaterial(QObject):
             self._widget.update()
             return
         self._settle_fade_old_src = tuple(float(v) for v in old)
-        self._settle_fade_ticks = 0
-        self._settle_fade_timer.start()
+        self._settle_fade_t = 0.0
+        self._settle_fade_anim.stop()
+        self._settle_fade_anim.setDuration(max(1, int(self._settle_fade_ms)))
+        self._settle_fade_anim.start()
         self._widget.update()
 
     def _stop_settle_fade(self) -> None:
         """立即结束松手淡化（幂等）。"""
-        if self._settle_fade_timer.isActive():
-            self._settle_fade_timer.stop()
+        self._settle_fade_anim.stop()
         self._settle_fade_old_src = None
-        self._settle_fade_ticks = 0
+        self._settle_fade_t = 0.0
 
-    def _on_settle_fade_tick(self) -> None:
-        """settle 淡化逐帧推进：时长耗尽即停机，由随后的常规帧收尾到 t=1。"""
-        self._settle_fade_ticks += 1
-        if self._settle_fade_ticks * _FADE_TICK_MS >= self._settle_fade_ms:
-            self._stop_settle_fade()
+    def _on_settle_fade_value(self, value: float) -> None:
+        """动画帧回调：写入淡化进度并触发重绘（paint 按进度混合两层）。"""
+        self._settle_fade_t = max(0.0, min(1.0, value))
+        self._widget.update()
+
+    def _on_settle_fade_finished(self) -> None:
+        """动画结束：停机，由随后的常规帧收尾到 t=1（与原 tick 语义一致）。"""
+        self._stop_settle_fade()
         self._widget.update()
 
     def _on_opacity_settle(self) -> None:
@@ -2091,59 +2109,65 @@ class MicaMaterial(QObject):
         self._start_fade_to(0.0)
 
     def _start_fade_to(self, target: float) -> None:
-        """启动透明度线性渐变（target ∈ [0,1]）。"""
+        """启动透明度线性渐变（target ∈ [0,1]，全程 FADE_DURATION_MS）。
+
+        起点取当前 ``_fade_alpha``（连打可无缝改向，与原时钟重启语义一致），
+        插值由 QVariantAnimation（Linear）承担。
+        """
         target = max(0.0, min(1.0, target))
         self._paused = False
         self._fade_from = self._fade_alpha
         self._fade_to = target
-        self._fade_clock.start()
-        if not self._fade_timer.isActive():
-            self._fade_timer.start()
+        self._fade_anim.stop()
+        self._fade_anim.setStartValue(self._fade_from)
+        self._fade_anim.setEndValue(self._fade_to)
+        self._fade_anim.start()
         self._widget.update()
 
-    def _on_fade_tick(self) -> None:
-        """渐变逐帧推进。"""
-        if not self._fade_clock.isValid():
-            self._fade_alpha = self._fade_to
-            self._fade_timer.stop()
-            self._widget.update()
-            return
-        t = self._fade_clock.elapsed() / FADE_DURATION_MS
-        if t >= 1.0:
-            self._fade_alpha = self._fade_to
-            self._fade_timer.stop()
-            if self._fade_to == 0.0 and not self._active:
-                self._paused = True
-                self._settle_timer.stop()
-        else:
-            self._fade_alpha = self._fade_from + (self._fade_to - self._fade_from) * t
+    def _on_fade_value(self, value: float) -> None:
+        """动画帧回调：写入透明度并触发重绘。"""
+        self._fade_alpha = max(0.0, min(1.0, value))
+        self._widget.update()
+
+    def _on_fade_finished(self) -> None:
+        """动画结束：钳到目标值；淡出到底且失焦则暂停绘制（原 tick 收尾语义）。"""
+        self._fade_alpha = self._fade_to
+        if self._fade_to == 0.0 and not self._active:
+            self._paused = True
+            self._settle_timer.stop()
         self._widget.update()
 
     def _stop_fade(self) -> None:
         """立即结束渐变并复位为完整显示。"""
         self._fade_alpha = 1.0
         self._fade_to = 1.0
-        if self._fade_timer.isActive():
-            self._fade_timer.stop()
+        self._fade_anim.stop()
 
     def _hide_immediately(self) -> None:
-        """失焦且 Mica 才就绪时：直接隐藏并停止绘制。"""
+        """失焦且 Mica 才就绪时：直接隐藏并停止绘制（同时停动画防回写）。"""
         self._paused = True
         self._fade_alpha = 0.0
         self._fade_to = 0.0
+        self._fade_anim.stop()
 
     # ------------------------------------------------------------------
     # 交叉过渡（新层交付：旧态渐隐、新层渐现）
     # ------------------------------------------------------------------
 
     def _xfade_progress(self) -> float:
-        """交叉过渡进度（0–1）；未激活时恒为 1.0（无过渡叠加）。"""
-        if not self._xfade_active or not self._xfade_clock.isValid():
+        """交叉过渡进度（0–1）；未激活时恒为 1.0（由动画逐帧写入 _xfade_t）。"""
+        if not self._xfade_active:
             return 1.0
-        t = self._xfade_clock.elapsed() / float(XFADE_DURATION_MS)
-        if t < 0.0:
-            return 0.0
-        return 1.0 if t > 1.0 else t
+        return max(0.0, min(1.0, self._xfade_t))
+
+    @property
+    def _xfade_timer(self) -> LinearProgressAnimation:
+        """历史兼容视图：旧单测按 QTimer 语义查询 ``_xfade_timer.isActive()``。
+
+        返回底层 ``_xfade_anim``（``LinearProgressAnimation.isActive()``
+        即动画运行态）；16ms 手写 tick 已移除，生产路径由动画信号驱动。
+        """
+        return self._xfade_anim
 
     def _start_xfade(self, backdrop: QPixmap) -> None:
         """以旧态快照为底图启动交叉过渡：新层自进度 0 淡入（280ms）。
@@ -2154,23 +2178,34 @@ class MicaMaterial(QObject):
         """
         self._xfade_backdrop = backdrop
         self._xfade_active = True
-        self._xfade_clock.restart()
-        if not self._xfade_timer.isActive():
-            self._xfade_timer.start()
+        self._xfade_t = 0.0
+        self._xfade_anim.stop()
+        self._xfade_anim.start()
 
     def _finish_xfade(self) -> None:
         """结束并清理交叉过渡：释放旧态快照、停机（动画后资源回收）。"""
         self._xfade_active = False
         self._xfade_backdrop = None
         self._xfade_prestarted = False
-        if self._xfade_timer.isActive():
-            self._xfade_timer.stop()
+        self._xfade_t = 1.0
+        self._xfade_anim.stop()
+
+    def _on_xfade_value(self, value: float) -> None:
+        """动画帧回调：写入过渡进度并触发重绘。"""
+        self._xfade_t = max(0.0, min(1.0, value))
+        self._widget.update()
+
+    def _on_xfade_finished(self) -> None:
+        """动画结束：清理快照（此后一帧按全进度呈现新层）并重绘。"""
+        self._finish_xfade()
+        self._widget.update()
 
     def _on_xfade_tick(self) -> None:
-        """交叉过渡逐帧推进：到时即清理（此后一帧按全进度呈现新层）。"""
+        """兼容钩子：旧单测直接调用以按当前进度收尾；生产路径不再连接 timer。
+
+        进度到 1 即清理并重绘（与动画 finished 收尾等价），保持旧测试语义。
+        """
         if not self._xfade_active:
-            if self._xfade_timer.isActive():
-                self._xfade_timer.stop()
             return
         if self._xfade_progress() >= 1.0:
             self._finish_xfade()

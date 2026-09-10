@@ -303,9 +303,9 @@ class SliderTrack(QWidget):
             self._dragging = True
             self._animate_drag(1.0)
             if self._orientation == Qt.Horizontal:
-                self._update_value_from_x(event.pos().x())
+                self._update_value_from_x(event.position().x())
             else:
-                self._update_value_from_y(event.pos().y())
+                self._update_value_from_y(event.position().y())
             self.pressed.emit()
             event.accept()
         else:
@@ -314,9 +314,9 @@ class SliderTrack(QWidget):
     def mouseMoveEvent(self, event: QMouseEvent):
         if self._dragging and self._enabled:
             if self._orientation == Qt.Horizontal:
-                self._update_value_from_x(event.pos().x())
+                self._update_value_from_x(event.position().x())
             else:
-                self._update_value_from_y(event.pos().y())
+                self._update_value_from_y(event.position().y())
             event.accept()
         else:
             super().mouseMoveEvent(event)

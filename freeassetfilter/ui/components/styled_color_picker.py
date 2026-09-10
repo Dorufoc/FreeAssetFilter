@@ -372,8 +372,8 @@ class _AlphaSlider(QWidget):
         # Alpha gradient: color → transparent
         base_color = QColor(self._color)
         alpha_grad = QLinearGradient(0, 0, w, 0)
-        alpha_grad.setColorAt(0.0, QColor(base_color.red(), base_color.green(), base_color.blue(), 0))
-        alpha_grad.setColorAt(1.0, QColor(base_color.red(), base_color.green(), base_color.blue(), 255))
+        alpha_grad.setColorAt(0.0, tm.with_alpha(base_color, 0))
+        alpha_grad.setColorAt(1.0, tm.with_alpha(base_color, 255))
         painter.setBrush(QBrush(alpha_grad))
         painter.drawRoundedRect(track_rect, 4, 4)
 

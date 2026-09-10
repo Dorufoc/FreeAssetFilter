@@ -30,55 +30,57 @@ _project_root = str(_this_file.parent.parent.parent.parent.parent)  # 项目根
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-from PySide6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QFrame,
-    QLabel,
-    QApplication,
-    QStackedLayout,
-    QFileDialog,
-    QPushButton,
-    QListView,
-    QAbstractItemView,
-    QStyledItemDelegate,
-    QStyleOptionViewItem,
-    QStyle,
-)
+from components.styled_button import StyledButton
+from components.styled_dialog import ask_custom_dialog
+from components.styled_lineedit import StyledLineEdit
 from PySide6.QtCore import (
-    Qt,
-    Signal,
-    QTimer,
-    QRectF,
-    QSize,
-    QModelIndex,
-    QThread,
     QAbstractListModel,
+    QModelIndex,
+    QObject,
+    QRectF,
+    QRunnable,
+    QSize,
+    Qt,
+    QThreadPool,
+    QTimer,
+    Signal,
 )
 from PySide6.QtGui import (
     QFont,
+    QMouseEvent,
     QPainter,
     QPainterPath,
     QPen,
-    QMouseEvent,
 )
-
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QListView,
+    QPushButton,
+    QStackedLayout,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
+    QVBoxLayout,
+    QWidget,
+)
 from theme import tm
-from components.styled_button import StyledButton
-from components.styled_lineedit import StyledLineEdit
-from components.styled_dialog import ask_custom_dialog
-from freeassetfilter.ui.components.styled_scroll_area import (
-    StyledScrollBar,
-    StyledScrollArea,
-)
-from freeassetfilter.core._paths import icons_dir
-from freeassetfilter.utils.app_logger import info, warning, error
-from freeassetfilter.services.file_icon_manager import FileIconManager
-from freeassetfilter.core.native.bridges.py7z_core import get_7z_core
 
-# 模块级兜底引用：防止 QThread 在工作期间被 GC 提前销毁
-_ACTIVE_WORKERS: set = set()
+from freeassetfilter.core._paths import icons_dir
+from freeassetfilter.core.native.bridges.py7z_core import get_7z_core
+from freeassetfilter.services.file_icon_manager import FileIconManager
+from freeassetfilter.ui.components.styled_scroll_area import (
+    StyledScrollArea,
+    StyledScrollBar,
+)
+from freeassetfilter.utils.app_logger import error, info, warning
+
+# 注：后台列表读取走 QThreadPool 全局池（QRunnable 用完即弃），面板仅持有
+# 在途任务引用防 GC，无模块级保活集合。
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -138,8 +140,8 @@ class _ArchiveListModel(QAbstractListModel):
     警示行固定插在首位，不可选不可交互。
     """
 
-    KindRole = Qt.UserRole + 1
-    EntryRole = Qt.UserRole + 2
+    KindRole = Qt.ItemDataRole.UserRole + 1
+    EntryRole = Qt.ItemDataRole.UserRole + 2
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -150,11 +152,11 @@ class _ArchiveListModel(QAbstractListModel):
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: B008
         return 0 if parent.isValid() else len(self._rows)
 
-    def data(self, index: QModelIndex, role: int = Qt.DisplayRole) -> Any:
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
         if not index.isValid() or not (0 <= index.row() < len(self._rows)):
             return None
         row = self._rows[index.row()]
-        if role == Qt.DisplayRole:
+        if role == Qt.ItemDataRole.DisplayRole:
             if row["kind"] == "warning":
                 return _WARNING_TEXT
             entry = row.get("entry") or {}
@@ -342,7 +344,7 @@ class _ArchiveEntryDelegate(QStyledItemDelegate):
         painter.setPen(tm.text)
         painter.setFont(QFont(option.font))
         fm = painter.fontMetrics()
-        name = index.data(Qt.DisplayRole) or ""
+        name = index.data(Qt.ItemDataRole.DisplayRole) or ""
         avail_w = max(0, rect.right() - _TEXT_LEFT - text_left)
         elided = fm.elidedText(name, Qt.ElideRight, avail_w)
         baseline = int(
@@ -437,11 +439,20 @@ class _ArchiveListView(QListView):
 # 列表读取工作线程
 # ──────────────────────────────────────────────────────────────────────────────
 
-class _ArchiveListWorker(QThread):
-    """后台读取压缩包目录列表的工作线程（每次导航新建，令牌守卫防覆盖）。"""
+class _ArchiveListSignals(QObject):
+    """压缩包列表读取完成信号中转（主线程持有 relay，跨线程队列投递）。"""
 
     list_finished = Signal(int, list)  # (token, entries)
     list_failed = Signal(int, str)  # (token, error_message)
+
+
+class _ArchiveListWorker(QRunnable):
+    """后台读取压缩包目录列表的池任务（每次导航新建，令牌守卫防覆盖）。
+
+    ``run()`` 在 ``QThreadPool.globalInstance()`` 的池线程中执行；
+    ``list_finished`` / ``list_failed`` 信号挂在 ``_ArchiveListSignals``
+    中转对象上（以属性方式透出），调用方连接签名与旧 QThread 版一致。
+    """
 
     def __init__(
         self,
@@ -450,11 +461,27 @@ class _ArchiveListWorker(QThread):
         token: int,
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__(parent)
-        self.setObjectName("ArchiveListWorker")
+        # parent 参数仅为兼容旧构造签名保留；QRunnable 非 QObject，不参与父子。
+        super().__init__()
+        self.setAutoDelete(True)
         self._archive_path = archive_path
         self._current_path = current_path
         self._token = token
+        self._signals = _ArchiveListSignals()
+
+    @property
+    def list_finished(self):
+        """目录列表读取完成信号 ``(token, entries)``（经中转对象）。"""
+        return self._signals.list_finished
+
+    @property
+    def list_failed(self):
+        """目录列表读取失败信号 ``(token, error_message)``（经中转对象）。"""
+        return self._signals.list_failed
+
+    def start(self) -> None:
+        """投递到全局线程池执行（替代旧 QThread.start()）。"""
+        QThreadPool.globalInstance().start(self)
 
     def run(self) -> None:
         try:
@@ -463,10 +490,10 @@ class _ArchiveListWorker(QThread):
                 self._archive_path,
                 current_path=self._current_path,
             )
-            self.list_finished.emit(self._token, list(entries or []))
+            self._signals.list_finished.emit(self._token, list(entries or []))
         except Exception as exc:  # noqa: BLE001
             error(f"压缩包列表读取失败: {exc}")
-            self.list_failed.emit(self._token, str(exc))
+            self._signals.list_failed.emit(self._token, str(exc))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -636,6 +663,7 @@ class ArchivePreviewerLayout(QWidget):
         """清理当前浏览状态（宿主切换/清除预览时调用）。"""
         self._token += 1
         self._loading = False
+        self._load_worker = None
         self._archive_path = ""
         self._current_path = ""
         self._model.clear()
@@ -712,8 +740,6 @@ class ArchivePreviewerLayout(QWidget):
         self._load_worker = worker
         worker.list_finished.connect(self._on_list_finished)
         worker.list_failed.connect(self._on_list_failed)
-        worker.finished.connect(lambda: self._on_worker_done(worker))
-        _ACTIVE_WORKERS.add(worker)
         worker.start()
         info(
             f"读取压缩包目录: {self._archive_path} "
@@ -745,6 +771,7 @@ class ArchivePreviewerLayout(QWidget):
         if token != self._token or not self._archive_path:
             return
         self._loading = False
+        self._load_worker = None
         self._model.set_entries(entries)
         self._view.scrollToTop()
         self._view.clearSelection()
@@ -763,6 +790,7 @@ class ArchivePreviewerLayout(QWidget):
         if token != self._token or not self._archive_path:
             return
         self._loading = False
+        self._load_worker = None
         self._model.clear()
         if self._current_path:
             self._show_overlay(_PLACEHOLDER_DIR_EMPTY)
@@ -776,13 +804,6 @@ class ArchivePreviewerLayout(QWidget):
             ["primary"],
             dialog_type="danger",
         )
-
-    def _on_worker_done(self, worker: _ArchiveListWorker) -> None:
-        """工作线程结束后释放引用，避免残留。"""
-        _ACTIVE_WORKERS.discard(worker)
-        worker.deleteLater()
-        if self._load_worker is worker:
-            self._load_worker = None
 
     # ── 导航 ─────────────────────────────────────────────────────────────────
 

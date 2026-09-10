@@ -19,3 +19,4 @@ pywin32>=312
 lxml>=6.0.2
 et_xmlfile>=1.1.0
 typing_extensions>=4.15.0
+fonttools>=4.0.0

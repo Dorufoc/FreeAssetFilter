@@ -126,11 +126,12 @@ class TestMockBranchLifecycle:
             assert manager.stop()
             process_qt_events(qapp, ms=30)
 
-            # 同步关闭契约（W1：close 在活跃操作线程下走 force-cleanup 回退路径）
-            # close 先把 _is_shutting_down 置 True，随后 _submit_operation 在关闭态
-            # 拒绝提交任何新操作（含 CLOSE 本身）→ RuntimeError → 强制清理 → False。
-            # 关键不变式：操作线程被回收、清理事件可 wait_for_cleanup。
-            assert manager.close(async_mode=False, timeout=5.0) is False
+            # 同步关闭契约（W1 修复：CLOSE 操作在关闭态放行，经操作队列执行）
+            # close 先置 _is_shutting_down，_submit_operation 允许提交 CLOSE 本身
+            # （与 _execute_operation 守卫口径一致），操作线程消费 CLOSE 完成
+            # _do_close 置空核心 → 同步关闭返回 True。关键不变式：操作线程被
+            # 回收、清理事件可 wait_for_cleanup。
+            assert manager.close(async_mode=False, timeout=5.0) is True
             assert manager._operation_thread is None or not manager._operation_thread.is_alive()  # noqa: SLF001
             assert manager.wait_for_cleanup(timeout=5.0) is True
 
@@ -162,10 +163,10 @@ class TestMockBranchLifecycle:
             assert state.duration == 0.0
             assert state.volume == 100
 
-            # 同步关闭契约（同 W1）：live thread 下 close 走 force-cleanup 返回 False，
-            # 强制清理不回填空核心 → 文档化 _do_close 置空后状态才复位
-            assert manager.close(async_mode=False, timeout=5.0) is False
-            manager._do_close()  # noqa: SLF001
+            # 同步关闭契约（W1 修复）：CLOSE 在关闭态放行并经操作队列执行，
+            # 同步关闭成功返回 True；核心由 CLOSE 操作内的 _do_close 置空，
+            # 状态复位，再关闭幂等
+            assert manager.close(async_mode=False, timeout=5.0) is True
             assert manager.get_state().is_initialized is False
 
             # 可恢复：关闭+置空后重新初始化
@@ -294,10 +295,10 @@ class TestRealRenderPath:
             manager._on_state_changed(True)  # noqa: SLF001
             assert wait_for_signal(manager.stateChanged, timeout_ms=5000) is True
 
-            # 同步关闭契约（同 mock 分支）：活跃操作线程下 close 先置
-            # _is_shutting_down，_submit_operation 拒绝新操作 → 强制清理回退 False；
-            # 强制清理不回填空核心 → 文档化 _do_close 置空句柄、状态复位、再关闭幂等
-            assert manager.close(async_mode=False, timeout=5.0) is False
+            # 同步关闭契约（W1 修复）：CLOSE 在关闭态放行并经操作队列执行，
+            # 同步关闭成功返回 True，强制清理只作为异常回退；_do_close 置空核心
+            # 后状态复位，再关闭幂等
+            assert manager.close(async_mode=False, timeout=5.0) is True
             manager._do_close()  # noqa: SLF001
             assert manager._mpv_core is None  # noqa: SLF001
             assert manager.is_initialized() is False

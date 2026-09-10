@@ -36,6 +36,15 @@ from typing import Any, List, Tuple
 import pytest
 from PIL import Image
 
+try:
+    import pillow_heif
+except ImportError:  # pragma: no cover - 依赖缺失时 _can_encode 探测返回 False 自然跳过
+    pillow_heif = None  # type: ignore[assignment]
+
+if pillow_heif is not None:
+    # 与生产代码 thumbnail_manager 一致：注册 HEIF/AVIF opener 后 Pillow 才具备编码能力
+    pillow_heif.register_heif_opener()
+
 from freeassetfilter.core.native.bridges.rust_thumbnail_bridge import (
     STATUS_OK,
     STATUS_UNSUPPORTED,

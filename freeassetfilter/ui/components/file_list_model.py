@@ -26,18 +26,18 @@ from freeassetfilter.services.file_icon_manager import FileIconManager
 # ── 自定义角色 ──────────────────────────────────────────────────────────────
 
 # 角色值从 Qt.UserRole + 1 开始递增
-FileNameRole: int = Qt.UserRole + 1
-FilePathRole: int = Qt.UserRole + 2
-IsDirRole: int = Qt.UserRole + 3
-FileSizeRole: int = Qt.UserRole + 4
-ModifiedRole: int = Qt.UserRole + 5
-CreatedRole: int = Qt.UserRole + 6
-SuffixRole: int = Qt.UserRole + 7
-IsSelectedRole: int = Qt.UserRole + 8
-IsPreviewingRole: int = Qt.UserRole + 9
-IconPixmapRole: int = Qt.UserRole + 10
-CardWidthRole: int = Qt.UserRole + 11
-GridOffsetRole: int = Qt.UserRole + 12
+FileNameRole: int = Qt.ItemDataRole.UserRole + 1
+FilePathRole: int = Qt.ItemDataRole.UserRole + 2
+IsDirRole: int = Qt.ItemDataRole.UserRole + 3
+FileSizeRole: int = Qt.ItemDataRole.UserRole + 4
+ModifiedRole: int = Qt.ItemDataRole.UserRole + 5
+CreatedRole: int = Qt.ItemDataRole.UserRole + 6
+SuffixRole: int = Qt.ItemDataRole.UserRole + 7
+IsSelectedRole: int = Qt.ItemDataRole.UserRole + 8
+IsPreviewingRole: int = Qt.ItemDataRole.UserRole + 9
+IconPixmapRole: int = Qt.ItemDataRole.UserRole + 10
+CardWidthRole: int = Qt.ItemDataRole.UserRole + 11
+GridOffsetRole: int = Qt.ItemDataRole.UserRole + 12
 
 
 class FileListModel(QAbstractListModel):
@@ -311,7 +311,7 @@ class FileListModel(QAbstractListModel):
         """返回模型建议的项尺寸。"""
         return QSize(self._card_width, self._card_height)
 
-    def data(self, index: QModelIndex, role: int = Qt.DisplayRole) -> Any:
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
         """返回指定索引和角色的数据。
 
         Args:
@@ -326,7 +326,7 @@ class FileListModel(QAbstractListModel):
 
         file_info = self._files[index.row()]
 
-        if role == Qt.DisplayRole:
+        if role == Qt.ItemDataRole.DisplayRole:
             return file_info.get("name", "")
         if role == FileNameRole:
             return file_info.get("name", "")
@@ -355,7 +355,7 @@ class FileListModel(QAbstractListModel):
 
         return None
 
-    def setData(self, index: QModelIndex, value: Any, role: int = Qt.EditRole) -> bool:
+    def setData(self, index: QModelIndex, value: Any, role: int = Qt.ItemDataRole.EditRole) -> bool:
         """设置指定索引和角色的数据。
 
         Args:

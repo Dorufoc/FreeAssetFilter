@@ -12,37 +12,84 @@ FreeAssetFilter 启动阶段任务编排（startup）
 说明：旧版的静默更新检查 / 下载 / 安装引导已整体移除（2026-09 重构，
 功能不再提供）；启动 flags 门控与看门狗随更新流程一并移除，本模块的
 各任务相互独立、失败仅记日志。
+
+线程模型：``StartupWarmupThread`` 已从「run 即弃 QThread」重构为
+``QRunnable`` 池任务（投递到 ``QThreadPool.globalInstance()``），
+完成信号经主线程持有的 ``_StartupWarmupSignals`` 中转对象跨线程投递；
+退出等待语义经内部 ``threading.Event`` 保持（cleanup 有界等待 2s）。
 """
 
 from __future__ import annotations
 
 import os
+import threading
 import time
 import traceback
+from typing import Optional
 
-from PySide6.QtCore import QThread, QTimer
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 
 from freeassetfilter.utils.app_logger import error, info, warning
 from freeassetfilter.utils.path_utils import get_resource_path
 
 
-class StartupWarmupThread(QThread):
-    """启动后后台预热线程：FFmpeg 工具链 + LUT（C++/生成器）。
+class _StartupWarmupSignals(QObject):
+    """预热任务完成信号中转（主线程持有，跨线程队列投递）。"""
+
+    finished = Signal()
+
+
+class StartupWarmupThread(QRunnable):
+    """启动后后台预热任务：FFmpeg 工具链 + LUT（C++/生成器）。
 
     所有预热均惰性导入、逐项隔离：单项失败不影响其余预热与主流程。
+
+    ``run()`` 在全局线程池线程中执行；完成后置位 ``is_done`` 并经
+    ``finished`` 信号通知（信号经主线程持有的中转对象队列投递）。
+    类名与构造签名保持向后兼容（旧版为 QThread，同名 API 不变）。
     """
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("StartupWarmupThread")
+    def __init__(self, parent: Optional[QObject] = None):
+        # parent 参数仅为兼容旧构造签名保留；QRunnable 非 QObject，不参与父子。
+        super().__init__()
+        self.setAutoDelete(True)
+        self._signals = _StartupWarmupSignals()
+        self._done = threading.Event()
+
+    @property
+    def finished(self):
+        """完成信号（经主线程中转对象；连接方式与旧 QThread.finished 一致）。"""
+        return self._signals.finished
+
+    @property
+    def is_done(self) -> bool:
+        """任务是否已结束（run() 返回后为 True）。"""
+        return self._done.is_set()
+
+    def wait(self, timeout_ms: int) -> bool:
+        """有界等待任务完成（等价旧 QThread.wait 语义）。
+
+        Args:
+            timeout_ms: 最大等待毫秒数。
+
+        Returns:
+            bool: 超时前完成返回 True，否则 False。
+        """
+        return self._done.wait(timeout_ms / 1000.0)
 
     def run(self):
-        self._warm_ffmpeg()
-        self._warm_lut()
+        try:
+            self._warm_ffmpeg()
+            self._warm_lut()
+        finally:
+            self._done.set()
+            self._signals.finished.emit()
 
     def _warm_ffmpeg(self) -> None:
         try:
-            from freeassetfilter.core.native.bridges.media_probe import warmup_ffmpeg_tools
+            from freeassetfilter.core.native.bridges.media_probe import (
+                warmup_ffmpeg_tools,
+            )
 
             warmup_ffmpeg_tools()
         except Exception as e:
@@ -50,8 +97,12 @@ class StartupWarmupThread(QThread):
 
     def _warm_lut(self) -> None:
         try:
-            from freeassetfilter.core.native.src.cpp_lut_preview import warmup as lut_cpp_warmup
-            from freeassetfilter.core.native.bridges.lut_preview_generator import get_preview_generator
+            from freeassetfilter.core.native.bridges.lut_preview_generator import (
+                get_preview_generator,
+            )
+            from freeassetfilter.core.native.src.cpp_lut_preview import (
+                warmup as lut_cpp_warmup,
+            )
 
             lut_cpp_warmup()
             get_preview_generator()
@@ -172,12 +223,12 @@ class StartupController:
     # ── 后台预热 ────────────────────────────────────────────────
 
     def _start_background_warmup(self) -> None:
-        """启动后台预热线程。"""
-        if self._warmup_thread and self._warmup_thread.isRunning():
+        """启动后台预热任务（投递到全局线程池）。"""
+        if self._warmup_thread is not None and not self._warmup_thread.is_done:
             return
         self._warmup_thread = StartupWarmupThread()
         self._warmup_thread.finished.connect(self._on_warmup_finished)
-        self._warmup_thread.start()
+        QThreadPool.globalInstance().start(self._warmup_thread)
 
     def _on_warmup_finished(self) -> None:
         info("[预热] 启动阶段后台预热任务结束")
@@ -185,20 +236,19 @@ class StartupController:
     # ── 退出清理 ────────────────────────────────────────────────
 
     def cleanup(self) -> None:
-        """退出前停止心跳与预热线程。"""
+        """退出前停止心跳并等待预热任务完成（有界 2 秒）。"""
         if self._heartbeat is not None:
             try:
                 self._heartbeat.stop_all()
             except Exception as e:
                 warning(f"[退出] 心跳停止失败: {e}")
 
-        if self._warmup_thread is not None and self._warmup_thread.isRunning():
+        if self._warmup_thread is not None and not self._warmup_thread.is_done:
             try:
-                self._warmup_thread.quit()
                 if not self._warmup_thread.wait(2000):
-                    warning("[退出] 预热线程未在 2 秒内退出")
+                    warning("[退出] 预热任务未在 2 秒内完成")
             except Exception as e:
-                warning(f"[退出] 预热线程清理失败: {e}")
+                warning(f"[退出] 预热任务清理失败: {e}")
 
 
 __all__ = [

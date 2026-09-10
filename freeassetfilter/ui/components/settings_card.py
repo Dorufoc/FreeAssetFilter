@@ -35,10 +35,10 @@ class SettingsCard(QWidget):
     def _apply_style(self):
         if self._variant == "danger":
             c = tm.danger
-            border_color = f"rgba({c.red()}, {c.green()}, {c.blue()}, 0.3)"
+            border_color = tm.qss_rgba(c, 30)
         elif self._variant == "info":
             c = tm.info
-            border_color = f"rgba({c.red()}, {c.green()}, {c.blue()}, 0.3)"
+            border_color = tm.qss_rgba(c, 30)
         else:
             border_color = tm.alpha_of(tm.mid, 40).name()
 

@@ -1554,8 +1554,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         mid = tm.mid
         txt = tm.text
         # QColor.name() 不包含 alpha, 需要用 rgba() 格式保留透明度
-        fill_color = f"rgba({txt.red()},{txt.green()},{txt.blue()},{5 / 100})"
-        border_color = f"rgba({mid.red()},{mid.green()},{mid.blue()},{50 / 100})"
+        fill_color = tm.qss_rgba(txt, 5)
+        border_color = tm.qss_rgba(mid, 50)
 
         if self._file_selector is not None:
             # 左侧栏 PanelLeft — 完全透明，样式下放给 FileSelectorLayout 内部

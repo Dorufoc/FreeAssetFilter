@@ -537,12 +537,7 @@ class FileCardDelegate(QStyledItemDelegate):
     def _scaled_color(color: QColor, factor: float) -> QColor:
         """按比例缩放颜色透明度（用于交叉淡化）。"""
         factor = min(1.0, max(0.0, factor))
-        return QColor(
-            color.red(),
-            color.green(),
-            color.blue(),
-            int(color.alpha() * factor),
-        )
+        return tm.with_alpha(color, int(color.alpha() * factor))
 
     def _scaled_gradient(self, gradient: QConicalGradient, factor: float) -> QConicalGradient:
         """按比例缩放渐变所有颜色带的透明度（用于交叉淡化）。"""

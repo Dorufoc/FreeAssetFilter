@@ -166,7 +166,7 @@ class StatusBadgeDelegate(QStyledItemDelegate):
         option: QStyleOptionViewItem,
         index,
     ) -> None:
-        text = (index.data(Qt.DisplayRole) or "")
+        text = (index.data(Qt.ItemDataRole.DisplayRole) or "")
         status_key = text.lower()
 
         if status_key in self._get_status_colors():

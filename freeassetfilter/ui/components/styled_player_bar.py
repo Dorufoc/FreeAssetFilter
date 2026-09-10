@@ -191,7 +191,7 @@ class _SpeedPopup(_PlayerPopup):
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.LeftButton:
-            idx = int((event.pos().y() - self._padding) // self._item_h)
+            idx = int((event.position().y() - self._padding) // self._item_h)
             if 0 <= idx < len(_SPEED_OPTIONS):
                 self._current_speed = _SPEED_OPTIONS[idx]
                 self.speed_selected.emit(self._current_speed)
@@ -468,7 +468,7 @@ class _SettingsPopup(_PlayerPopup):
         if event.button() != Qt.LeftButton:
             return super().mousePressEvent(event)
 
-        y = event.pos().y() - self._padding
+        y = event.position().y() - self._padding
         w = self.width()
 
         # Check section headers

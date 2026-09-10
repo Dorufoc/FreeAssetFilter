@@ -6,7 +6,7 @@ Provides StyledAccordionItem (single collapsible section) and StyledAccordion
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout
 from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve, QPointF
-from PySide6.QtGui import QPainter, QColor, QPen, QPaintEvent, QFont, QFontMetrics, QMouseEvent
+from PySide6.QtGui import QPainter, QPen, QPaintEvent, QFont, QFontMetrics, QMouseEvent
 
 from theme import tm
 
@@ -184,9 +184,7 @@ class StyledAccordionItem(QWidget):
             fm = QFontMetrics(font)
 
             tp = self._text_primary
-            painter.setPen(QColor(
-                tp.red(), tp.green(), tp.blue(), alpha,
-            ))
+            painter.setPen(tm.with_alpha(tp, alpha))
             text_rect = fm.boundingRect(self._title)
             text_y = (h - text_rect.height()) / 2 + fm.ascent()
             painter.drawText(16, int(text_y), self._title)
@@ -198,7 +196,7 @@ class StyledAccordionItem(QWidget):
 
             tt = self._text_tertiary
             painter.setPen(QPen(
-                QColor(tt.red(), tt.green(), tt.blue(), alpha),
+                tm.with_alpha(tt, alpha),
                 2, Qt.SolidLine, Qt.RoundCap,
             ))
 

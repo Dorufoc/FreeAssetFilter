@@ -3,16 +3,15 @@ AnimatedFileListView - 带路径切换过渡动画的 QListView。
 
 移植自旧 file_selector.py 中的 FileListView 路径切换动画：
 在进入子目录、返回上级或切换到 All 视图时，先捕获当前 viewport 快照，
-待新目录内容加载完成后再捕获新快照，通过单个 QTimer 驱动两张 pixmap 的
-整体平移 + 渐隐渐现效果。
+待新目录内容加载完成后再捕获新快照，通过单个 QVariantAnimation 驱动两张
+pixmap 的整体平移 + 渐隐渐现效果。
 """
 
 from __future__ import annotations
 
-import time
 from typing import Optional
 
-from PySide6.QtCore import QTimer, Qt, QEasingCurve
+from PySide6.QtCore import Qt, QEasingCurve, QVariantAnimation
 from PySide6.QtGui import QPainter, QPixmap
 from PySide6.QtWidgets import QListView, QWidget
 
@@ -38,16 +37,25 @@ class AnimatedFileListView(QListView):
         self._path_transition_direction: int = 0
         self._path_transition_duration_ms: int = 120
         self._path_transition_progress: float = 1.0
-        self._path_transition_start_ms: float = 0.0
         self._path_transition_outgoing_pixmap: QPixmap = QPixmap()
         self._path_transition_incoming_pixmap: QPixmap = QPixmap()
         self._path_transition_waiting_for_incoming: bool = False
         self._path_transition_active: bool = False
         self._path_transition_capturing_base: bool = False
 
-        self._transition_timer = QTimer(self)
-        self._transition_timer.setInterval(16)
-        self._transition_timer.timeout.connect(self._advance_path_transition)
+        # 路径切换过渡动画：0.0→1.0 线性推进，缓动仍由 _ease_path_transition
+        # 在绘制时施加（InOutCubic），与旧 16ms Timer 版逐帧视觉一致。
+        self._transition_animation = QVariantAnimation(self)
+        self._transition_animation.setStartValue(0.0)
+        self._transition_animation.setEndValue(1.0)
+        self._transition_animation.setDuration(self._path_transition_duration_ms)
+        self._transition_animation.setEasingCurve(QEasingCurve.Linear)
+        self._transition_animation.valueChanged.connect(
+            self._on_path_transition_value
+        )
+        self._transition_animation.finished.connect(
+            self._on_path_transition_finished
+        )
 
         self._load_settings()
 
@@ -59,10 +67,6 @@ class AnimatedFileListView(QListView):
             )
         except Exception:
             self._path_transition_enabled = True
-
-    def _get_monotonic_time_ms(self) -> float:
-        """返回当前单调时间（毫秒）。"""
-        return time.monotonic() * 1000.0
 
     def _capture_viewport_snapshot(self) -> QPixmap:
         """捕获 viewport 当前内容的 QPixmap 快照。"""
@@ -148,14 +152,19 @@ class AnimatedFileListView(QListView):
         self._path_transition_waiting_for_incoming = False
         self._path_transition_active = True
         self._path_transition_progress = 0.0
-        self._path_transition_start_ms = self._get_monotonic_time_ms()
-        self._transition_timer.start()
+        self._transition_animation.stop()
+        self._transition_animation.setDuration(
+            max(1, int(self._path_transition_duration_ms))
+        )
+        self._transition_animation.setStartValue(0.0)
+        self._transition_animation.setEndValue(1.0)
+        self._transition_animation.start()
         self.viewport().update()
         return True
 
     def cancel_path_transition(self, update: bool = True) -> None:
         """取消当前路径切换动画。"""
-        self._transition_timer.stop()
+        self._transition_animation.stop()
         self._path_transition_active = False
         self._path_transition_waiting_for_incoming = False
         self._path_transition_progress = 1.0
@@ -174,22 +183,17 @@ class AnimatedFileListView(QListView):
             return -1
         return 0
 
-    def _advance_path_transition(self, now_ms: float | None = None) -> None:
-        """计时器回调：推进动画进度。"""
+    def _on_path_transition_value(self, value: float) -> None:
+        """动画帧回调：写入线性进度并重绘（缓动在绘制时施加）。"""
         if not self._path_transition_active:
-            self._transition_timer.stop()
             return
-
-        current_time_ms = self._get_monotonic_time_ms() if now_ms is None else float(now_ms)
-        elapsed_ms = max(0.0, current_time_ms - self._path_transition_start_ms)
-        progress = elapsed_ms / max(1.0, float(self._path_transition_duration_ms))
-
-        if progress >= 1.0:
-            self.cancel_path_transition()
-            return
-
-        self._path_transition_progress = max(0.0, min(1.0, progress))
+        self._path_transition_progress = max(0.0, min(1.0, float(value)))
         self.viewport().update()
+
+    def _on_path_transition_finished(self) -> None:
+        """动画自然播完：走与旧 Timer 到时分支相同的收尾路径。"""
+        if self._path_transition_active:
+            self.cancel_path_transition()
 
     @staticmethod
     def _ease_path_transition(progress: float) -> float:

@@ -30,53 +30,55 @@ _project_root = str(_this_file.parent.parent.parent.parent.parent)  # 项目根
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-from PySide6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QFrame,
-    QLabel,
-    QApplication,
-    QStackedLayout,
-    QFileDialog,
-    QPushButton,
-    QListView,
-    QAbstractItemView,
-    QStyledItemDelegate,
-    QStyleOptionViewItem,
-    QStyle,
-)
+from components.styled_button import StyledButton
+from components.styled_lineedit import StyledLineEdit
 from PySide6.QtCore import (
-    Qt,
-    Signal,
-    QTimer,
-    QRectF,
-    QSize,
-    QModelIndex,
-    QThread,
     QAbstractListModel,
+    QModelIndex,
+    QObject,
+    QRectF,
+    QRunnable,
+    QSize,
+    Qt,
+    QThreadPool,
+    QTimer,
+    Signal,
 )
 from PySide6.QtGui import (
     QFont,
+    QMouseEvent,
     QPainter,
     QPainterPath,
     QPen,
-    QMouseEvent,
 )
-
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QListView,
+    QPushButton,
+    QStackedLayout,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
+    QVBoxLayout,
+    QWidget,
+)
 from theme import tm
-from components.styled_button import StyledButton
-from components.styled_lineedit import StyledLineEdit
-from freeassetfilter.ui.components.styled_scroll_area import (
-    StyledScrollBar,
-    StyledScrollArea,
-)
-from freeassetfilter.core._paths import icons_dir
-from freeassetfilter.utils.app_logger import info, warning
-from freeassetfilter.services.file_icon_manager import FileIconManager
 
-# 模块级兜底引用：防止 QThread 在工作期间被 GC 提前销毁
-_ACTIVE_WORKERS: set = set()
+from freeassetfilter.core._paths import icons_dir
+from freeassetfilter.services.file_icon_manager import FileIconManager
+from freeassetfilter.ui.components.styled_scroll_area import (
+    StyledScrollArea,
+    StyledScrollBar,
+)
+from freeassetfilter.utils.app_logger import info, warning
+
+# 注：后台目录扫描走 QThreadPool 全局池（QRunnable 用完即弃），面板仅持有
+# 在途任务引用防 GC，无模块级保活集合。
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -151,8 +153,8 @@ def _collect_directory_entries(path: str) -> Optional[list]:
 class _FolderListModel(QAbstractListModel):
     """文件夹条目列表模型（只读），行数据 kind = dir / file。"""
 
-    KindRole = Qt.UserRole + 1
-    EntryRole = Qt.UserRole + 2
+    KindRole = Qt.ItemDataRole.UserRole + 1
+    EntryRole = Qt.ItemDataRole.UserRole + 2
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -163,11 +165,11 @@ class _FolderListModel(QAbstractListModel):
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: B008
         return 0 if parent.isValid() else len(self._rows)
 
-    def data(self, index: QModelIndex, role: int = Qt.DisplayRole) -> Any:
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
         if not index.isValid() or not (0 <= index.row() < len(self._rows)):
             return None
         row = self._rows[index.row()]
-        if role == Qt.DisplayRole:
+        if role == Qt.ItemDataRole.DisplayRole:
             entry = row.get("entry") or {}
             return entry.get("name", "")
         if role == self.KindRole:
@@ -313,7 +315,7 @@ class _FolderEntryDelegate(QStyledItemDelegate):
         painter.setPen(tm.text)
         painter.setFont(QFont(option.font))
         fm = painter.fontMetrics()
-        name = index.data(Qt.DisplayRole) or ""
+        name = index.data(Qt.ItemDataRole.DisplayRole) or ""
         avail_w = max(0, rect.right() - _TEXT_LEFT - text_left)
         elided = fm.elidedText(name, Qt.ElideRight, avail_w)
         baseline = int(
@@ -393,11 +395,20 @@ class _FolderListView(QListView):
 # 目录扫描工作线程
 # ──────────────────────────────────────────────────────────────────────────────
 
-class _FolderScanWorker(QThread):
-    """后台扫描磁盘目录的工作线程（每次导航新建，令牌守卫防覆盖）。"""
+class _FolderScanSignals(QObject):
+    """目录扫描完成信号中转（主线程持有 relay，跨线程队列投递）。"""
 
     scan_finished = Signal(int, list)  # (token, entries)
     scan_failed = Signal(int)  # (token)
+
+
+class _FolderScanWorker(QRunnable):
+    """后台扫描磁盘目录的池任务（每次导航新建，令牌守卫防覆盖）。
+
+    ``run()`` 在 ``QThreadPool.globalInstance()`` 的池线程中执行；
+    ``scan_finished`` / ``scan_failed`` 信号挂在 ``_FolderScanSignals``
+    中转对象上（以属性方式透出），调用方连接签名与旧 QThread 版一致。
+    """
 
     def __init__(
         self,
@@ -405,18 +416,34 @@ class _FolderScanWorker(QThread):
         token: int,
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__(parent)
-        self.setObjectName("FolderScanWorker")
+        # parent 参数仅为兼容旧构造签名保留；QRunnable 非 QObject，不参与父子。
+        super().__init__()
+        self.setAutoDelete(True)
         self._directory_path = directory_path
         self._token = token
+        self._signals = _FolderScanSignals()
+
+    @property
+    def scan_finished(self):
+        """目录扫描完成信号 ``(token, entries)``（经中转对象）。"""
+        return self._signals.scan_finished
+
+    @property
+    def scan_failed(self):
+        """目录扫描失败信号 ``(token)``（经中转对象）。"""
+        return self._signals.scan_failed
+
+    def start(self) -> None:
+        """投递到全局线程池执行（替代旧 QThread.start()）。"""
+        QThreadPool.globalInstance().start(self)
 
     def run(self) -> None:
         entries = _collect_directory_entries(self._directory_path)
         if entries is None:
-            self.scan_failed.emit(self._token)
+            self._signals.scan_failed.emit(self._token)
             return
         entries.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
-        self.scan_finished.emit(self._token, entries)
+        self._signals.scan_finished.emit(self._token, entries)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -575,6 +602,7 @@ class FolderPreviewerLayout(QWidget):
         """清理当前浏览状态（宿主切换/清除预览时调用）。"""
         self._token += 1
         self._loading = False
+        self._scan_worker = None
         self._root_path = ""
         self._current_rel = ""
         self._model.clear()
@@ -657,8 +685,6 @@ class FolderPreviewerLayout(QWidget):
         self._scan_worker = worker
         worker.scan_finished.connect(self._on_scan_finished)
         worker.scan_failed.connect(self._on_scan_failed)
-        worker.finished.connect(lambda: self._on_worker_done(worker))
-        _ACTIVE_WORKERS.add(worker)
         worker.start()
         info(f"读取文件夹内容: {self._current_directory()}")
 
@@ -676,6 +702,7 @@ class FolderPreviewerLayout(QWidget):
         if token != self._token or not self._root_path:
             return
         self._loading = False
+        self._scan_worker = None
         self._model.set_entries(entries)
         self._view.scrollToTop()
         self._view.clearSelection()
@@ -691,17 +718,11 @@ class FolderPreviewerLayout(QWidget):
         if token != self._token or not self._root_path:
             return
         self._loading = False
+        self._scan_worker = None
         self._model.clear()
         self._show_overlay(_PLACEHOLDER_UNAVAILABLE)
         self._update_path_edit()
         warning(f"无法访问文件夹: {self._current_directory()}")
-
-    def _on_worker_done(self, worker: _FolderScanWorker) -> None:
-        """工作线程结束后释放引用，避免残留。"""
-        _ACTIVE_WORKERS.discard(worker)
-        worker.deleteLater()
-        if self._scan_worker is worker:
-            self._scan_worker = None
 
     # ── 导航 ─────────────────────────────────────────────────────────────────
 

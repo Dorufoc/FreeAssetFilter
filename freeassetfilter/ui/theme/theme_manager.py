@@ -3,7 +3,7 @@ ThemeManager — Singleton that reads colors from SettingsManagerV2 and provides
 - Properties: surface, mid, text, black, transparent
 - Accent: accent, accent_hover, accent_active, accent_alpha()
 - Semantic: danger, warning, info, purple
-- Utility: alpha_of(color, pct), _darken(color, factor)
+- Utility: alpha_of(color, pct), with_alpha(color, alpha), qss_rgba(color, alpha_pct), _darken(color, factor)
 - Legacy: get_color(path), get_component_colors(), get_common_color(),
           render_qss(), as_stylesheet()
 """
@@ -44,8 +44,11 @@ _TOKEN_TO_PROP: Dict[str, str] = {
 # （如 QColor(color) 后再 setAlpha），否则会污染缓存。
 _HEX_COLOR_CACHE: Dict[str, Optional[QColor]] = {}
 
-# alpha_of / accent_alpha 缓存：(rgba, alpha) → QColor（共享对象，同上）。
+# alpha_of / accent_alpha / with_alpha 缓存：(rgba, alpha) → QColor（共享对象，同上）。
 _ALPHA_COLOR_CACHE: Dict[tuple, QColor] = {}
+
+# qss_rgba 缓存：(rgba, alpha_pct) → "rgba(r,g,b,a)" 字符串。
+_QSS_RGBA_CACHE: dict[tuple, str] = {}
 
 
 def _qcolor_to_hex(color: QColor) -> str:
@@ -410,14 +413,12 @@ class ThemeManager(QObject):
     @property
     def accent_hover(self) -> QColor:
         """Accent at 90 % HSV brightness (hover state)."""
-        c = self.accent
-        return QColor.fromHsv(c.hue(), c.saturation(), int(c.value() * 0.9))
+        return self._darken(self.accent, 0.9)
 
     @property
     def accent_active(self) -> QColor:
         """Accent at 80 % HSV brightness (active / pressed state)."""
-        c = self.accent
-        return QColor.fromHsv(c.hue(), c.saturation(), int(c.value() * 0.8))
+        return self._darken(self.accent, 0.8)
 
     def accent_alpha(self, alpha: int) -> QColor:
         """Accent colour at a given alpha value (0–255)."""
@@ -484,6 +485,42 @@ class ThemeManager(QObject):
         c.setAlpha(alpha)
         _ALPHA_COLOR_CACHE[key] = c
         return c
+
+    @staticmethod
+    def with_alpha(color: QColor, alpha: int) -> QColor:
+        """Return *color* with an absolute alpha value (0–255).
+
+        Same construction as ``QColor(r, g, b, alpha)`` but cached by
+        (rgba, alpha): shared result object — callers must copy
+        before mutating.
+        """
+        alpha = max(0, min(255, int(alpha)))
+        key = (color.rgba(), alpha)
+        cached = _ALPHA_COLOR_CACHE.get(key)
+        if cached is not None:
+            return cached
+        c = QColor(color)
+        c.setAlpha(alpha)
+        _ALPHA_COLOR_CACHE[key] = c
+        return c
+
+    @staticmethod
+    def qss_rgba(color: QColor, alpha_pct: float) -> str:
+        """Serialize *color* as a QSS ``rgba(r,g,b,a)`` string.
+
+        *alpha_pct* is a percentage (0–100); the emitted alpha is the
+        ``alpha_pct / 100`` fraction (e.g. ``5`` → ``"0.05"``).
+        """
+        key = (color.rgba(), alpha_pct)
+        cached = _QSS_RGBA_CACHE.get(key)
+        if cached is not None:
+            return cached
+        s = (
+            f"rgba({color.red()},{color.green()},{color.blue()},"
+            f"{alpha_pct / 100})"
+        )
+        _QSS_RGBA_CACHE[key] = s
+        return s
 
     # ------------------------------------------------------------------
     # Legacy backward-compatible API
