@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from freeassetfilter.core._paths import icons_dir
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 from theme import tm
 
 
@@ -80,7 +81,7 @@ class StyledMusicInfoPanel(QWidget):
         self._cover_label.setFixedSize(self.COVER_SIZE, self.COVER_SIZE)
         self._cover_label.setScaledContents(True)
         self._cover_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._cover_label.setStyleSheet("background: transparent;")
+        register_widget_qss(self._cover_label,("background: transparent;"))
         root_layout.addWidget(self._cover_label)
 
         text_container = QWidget()
@@ -95,9 +96,9 @@ class StyledMusicInfoPanel(QWidget):
         title_font = QFont("Microsoft YaHei UI", self.TITLE_FONT_SIZE)
         title_font.setBold(True)
         self._title_label.setFont(title_font)
-        self._title_label.setStyleSheet(
+        register_widget_qss(self._title_label,(
             f"background: transparent; color: {tm.text.name()};"
-        )
+        ))
         self._title_label.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
         )
@@ -106,9 +107,9 @@ class StyledMusicInfoPanel(QWidget):
         self._artist_label = QLabel("未知艺术家")
         artist_font = QFont("Microsoft YaHei UI", self.ARTIST_FONT_SIZE)
         self._artist_label.setFont(artist_font)
-        self._artist_label.setStyleSheet(
+        register_widget_qss(self._artist_label,(
             f"background: transparent; color: {tm.mid.name()};"
-        )
+        ))
         self._artist_label.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
         )

@@ -32,6 +32,7 @@ from freeassetfilter.core._paths import icons_dir
 from layout.preview.native_pdf_renderer import NativePdfRenderer
 from freeassetfilter.ui.components.styled_scroll_area import StyledScrollArea
 from freeassetfilter.ui.components.styled_slider import StyledSlider
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 
 class _ZoomPopup(QWidget):
@@ -464,9 +465,9 @@ class PdfPreviewerLayout(QWidget):
         # 提示文字
         self._placeholder = QLabel("打开 PDF 文件开始预览")
         self._placeholder.setAlignment(Qt.AlignCenter)
-        self._placeholder.setStyleSheet(
+        register_widget_qss(self._placeholder,(
             f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
-        )
+        ))
         overlay_layout.addWidget(self._placeholder)
 
         # "选择文件"按钮（仅 standalone 模式，视频播放器模式）
@@ -577,9 +578,9 @@ class PdfPreviewerLayout(QWidget):
             parent=self._content_area,
         )
         # 移除面板自身边框，只保留背景色
-        self._index_drawer._panel.setStyleSheet(
+        register_widget_qss(self._index_drawer._panel,(
             f"#DrawerPanel {{ background-color: {tm.surface.name()}; border: none; }}"
-        )
+        ))
         # 覆写面板尺寸计算：视口宽度小于默认宽度时横向缩小以完整显示
         _orig_get_panel_size = self._index_drawer._get_panel_size
         def _constrained_panel_size():
@@ -613,9 +614,9 @@ class PdfPreviewerLayout(QWidget):
             parent=self._content_area,
         )
         # 移除面板自身边框，只保留背景色
-        self._ai_drawer._panel.setStyleSheet(
+        register_widget_qss(self._ai_drawer._panel,(
             f"#DrawerPanel {{ background-color: {tm.surface.name()}; border: none; }}"
-        )
+        ))
         # 覆写面板尺寸计算：视口宽度小于默认宽度时横向缩小以完整显示
         _orig_get_panel_size = self._ai_drawer._get_panel_size
         def _constrained_panel_size():
@@ -629,10 +630,10 @@ class PdfPreviewerLayout(QWidget):
         self._ai_placeholder = QLabel("敬请期待")
         self._ai_placeholder.setAlignment(Qt.AlignCenter)
         self._ai_placeholder.setWordWrap(True)
-        self._ai_placeholder.setStyleSheet(
+        register_widget_qss(self._ai_placeholder,(
             f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
             " padding: 24px;"
-        )
+        ))
         panel_layout = self._ai_drawer._panel.layout()
         panel_layout.addStretch()
         panel_layout.addWidget(self._ai_placeholder, alignment=Qt.AlignCenter)
@@ -1051,7 +1052,7 @@ class PdfPreviewerLayout(QWidget):
         btn_hover_text = tm.text.name()
         btn_bg = tm.fill.name()
         btn_border = tm.alpha_of(tm.mid, 30).name()
-        self._browse_btn.setStyleSheet(f"""
+        register_widget_qss(self._browse_btn,(f"""
             QPushButton {{
                 background: transparent;
                 border: 1px solid {btn_border};
@@ -1069,7 +1070,7 @@ class PdfPreviewerLayout(QWidget):
             QPushButton:pressed {{
                 background: {btn_bg};
             }}
-        """)
+        """))
 
     def _on_browse_file(self) -> None:
         """打开文件选择对话框选择 PDF（仅 standalone 模式，video_player_layout 模式）。"""
@@ -1178,15 +1179,15 @@ class PdfPreviewerLayout(QWidget):
         """
         # 顶栏透明无背景：不在此设置任何样式
         # 内容区：背景透明（透出宿主面板），边框透明
-        self._content_area.setStyleSheet(f"""
+        register_widget_qss(self._content_area,(f"""
             background-color: transparent;
             border: 1px solid transparent;
             border-radius: 8px;
-        """)
+        """))
         # 覆盖层背景与内容区一致（透明）
-        self._overlay.setStyleSheet(f"""
+        register_widget_qss(self._overlay,(f"""
             background-color: transparent;
-        """)
+        """))
         for _w in (self._top_bar, self._content_area, self._overlay):
             _w.style().unpolish(_w)
             _w.style().polish(_w)

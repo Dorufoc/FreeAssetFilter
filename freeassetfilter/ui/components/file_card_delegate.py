@@ -10,6 +10,7 @@ FileCardDelegate — 文件卡片委托，视觉风格精确匹配 StyledInfoCar
 所有颜色从 tm 获取，零硬编码。
 """
 
+from collections import OrderedDict
 from typing import Any, Dict, Optional
 
 from PySide6.QtCore import (
@@ -32,10 +33,13 @@ from PySide6.QtGui import (
     QFontMetrics,
     QPainter,
     QPen,
+    QPixmap,
 )
 from PySide6.QtWidgets import QStyledItemDelegate, QStyle, QStyleOptionViewItem
 
 from theme import tm
+
+from freeassetfilter.utils.perf_metrics import begin_frame, end_frame
 
 from components.file_list_model import (
     FileNameRole,
@@ -215,6 +219,126 @@ _LIST_SIZE_CACHE: Dict[tuple, tuple] = {}
 _FONT_CACHE: Dict[tuple, "QFont"] = {}
 _FONT_METRICS_CACHE: Dict[tuple, "QFontMetrics"] = {}
 
+# ── 图标缩放阶梯缓存（A3：消除 _draw_icon_pixmap 每帧 SmoothTransformation 重缩放）──
+# hover 动画期间 hover_scale 连续变化（1.0 → 1.05），display_size 逐帧抖动；
+# 按阶梯量化后同一档位复用同一张预烘焙 pixmap，跳档阈值内不触发重缩放。
+_ICON_SCALE_LADDER: tuple = (16, 32, 48, 64, 96, 128, 192, 256, 384)
+_ICON_SCALE_CACHE_CAP: int = 256  # 与 icon_cache.py / async_icon_loader.py 同口径上限
+_ICON_SCALE_CACHE_MAX_DISPLAY: int = 512  # display_size 超过此值不缓存，按需直接缩放
+_ICON_LADDER_SNAP_PX: int = 1  # 与最近档位差 ≤ 此像素才吸附（绘制结果 ≤1px 视觉等价）
+# (cacheKey, src_w, src_h, quantized_size, dpr) → 已缩放 QPixmap（LRU，move_to_end）。
+# 键含原图 cacheKey + 源物理尺寸：原图被替换（cacheKey 变化）即 miss，杜绝 stale 复用。
+_ICON_SCALE_CACHE: "OrderedDict[tuple, QPixmap]" = OrderedDict()
+# 模块级探针计数器（hover 30 帧 scaled() ≤ 3 断言与单测共用同一 instrumentation）。
+_ICON_SCALE_STATS: Dict[str, int] = {"scaled_calls": 0, "hits": 0, "misses": 0}
+
+
+def _quantize_icon_size(display_size: int) -> int:
+    """将图标显示尺寸量化到最近阶梯档位。
+
+    与最近档位差 ≤ _ICON_LADDER_SNAP_PX 时吸附到该档（动画结束时的终值
+    若落回阈值外则走精确尺寸条目，即“结束时补一次精确缩放”）；差值超出
+    阈值时返回原尺寸（仍被精确尺寸条目缓存，同尺寸二次绘制零缩放）。
+
+    Args:
+        display_size: 请求的逻辑显示尺寸（像素）。
+
+    Returns:
+        吸附后的档位尺寸，或原尺寸（阈值外）。
+    """
+    best = _ICON_SCALE_LADDER[0]
+    best_diff = abs(display_size - best)
+    for step in _ICON_SCALE_LADDER[1:]:
+        diff = abs(display_size - step)
+        if diff < best_diff or (diff == best_diff and step > best):
+            best = step
+            best_diff = diff
+    if best_diff <= _ICON_LADDER_SNAP_PX:
+        return int(best)
+    return int(display_size)
+
+
+def _icon_scale_cache_key(icon_pixmap: QPixmap, quantized_size: int, dpr: float) -> tuple:
+    """构建缩放缓存键（含原图标识 + 源尺寸 + 量化尺寸 + DPR）。
+
+    Args:
+        icon_pixmap: 源图标。
+        quantized_size: 量化后的逻辑尺寸。
+        dpr: 源图的 devicePixelRatio。
+
+    Returns:
+        可哈希的缓存键元组。
+    """
+    try:
+        source_key = int(icon_pixmap.cacheKey())
+    except Exception:
+        source_key = id(icon_pixmap)
+    try:
+        src_w = int(icon_pixmap.width())
+        src_h = int(icon_pixmap.height())
+    except Exception:
+        src_w = 0
+        src_h = 0
+    try:
+        dpr_key = round(float(dpr), 3)
+    except Exception:
+        dpr_key = 1.0
+    return (source_key, src_w, src_h, int(quantized_size), dpr_key)
+
+
+def _get_cached_scaled_icon(icon_pixmap: QPixmap, quantized_size: int, dpr: float) -> QPixmap:
+    """获取量化尺寸的缩放图标：命中直接复用，miss 则缩放一次并入 LRU 缓存。
+
+    Args:
+        icon_pixmap: 源图标。
+        quantized_size: 量化后的逻辑目标尺寸。
+        dpr: 源图的 devicePixelRatio（目标物理尺寸 = quantized_size × dpr）。
+
+    Returns:
+        缩放后的 QPixmap（保持原 DPR）。
+    """
+    key = _icon_scale_cache_key(icon_pixmap, quantized_size, dpr)
+    cached = _ICON_SCALE_CACHE.get(key)
+    if cached is not None:
+        if not cached.isNull():
+            _ICON_SCALE_CACHE.move_to_end(key)
+            _ICON_SCALE_STATS["hits"] += 1
+            return cached
+        _ICON_SCALE_CACHE.pop(key, None)  # null 条目视为过期，丢弃后重建
+    target_phys = max(1, int(quantized_size * dpr))
+    scaled = icon_pixmap.scaled(
+        target_phys, target_phys,
+        Qt.KeepAspectRatio,
+        Qt.SmoothTransformation,
+    )
+    _ICON_SCALE_STATS["scaled_calls"] += 1
+    _ICON_SCALE_STATS["misses"] += 1
+    _ICON_SCALE_CACHE[key] = scaled
+    if len(_ICON_SCALE_CACHE) > _ICON_SCALE_CACHE_CAP:
+        _ICON_SCALE_CACHE.popitem(last=False)
+    return scaled
+
+
+def clear_icon_scale_cache() -> None:
+    """清空图标缩放阶梯缓存（主题/源变更兜底与单测隔离用）。"""
+    _ICON_SCALE_CACHE.clear()
+
+
+def icon_scale_cache_stats() -> Dict[str, int]:
+    """返回缩放缓存探针计数器的快照拷贝。
+
+    Returns:
+        含 scaled_calls / hits / misses 的计数字典。
+    """
+    return dict(_ICON_SCALE_STATS)
+
+
+def reset_icon_scale_stats() -> None:
+    """清零缩放缓存探针计数器（单测与 hover 探针起点用）。"""
+    _ICON_SCALE_STATS["scaled_calls"] = 0
+    _ICON_SCALE_STATS["hits"] = 0
+    _ICON_SCALE_STATS["misses"] = 0
+
 
 def _get_colors() -> Dict[str, Any]:
     """当前主题的卡片配色字典（缓存：主题切换前恒定不变）。
@@ -317,8 +441,8 @@ class FileCardDelegate(QStyledItemDelegate):
     @media_scale.setter
     def media_scale(self, value: float) -> None:
         self._hover_progress = float(value)
-        if self._view is not None:
-            self._view.viewport().update()
+        # A4 局部重绘：图标缩放只影响绑定行，按行矩形失效（compositor 条带 20x 原理）。
+        self._invalidate_rows((self._hover_row,))
 
     def set_view(self, view) -> None:
         """设置关联视图：hover 动画每帧通过其 viewport 触发重绘。
@@ -327,6 +451,44 @@ class FileCardDelegate(QStyledItemDelegate):
             view: 使用本 delegate 的 QListView 实例。
         """
         self._view = view
+
+    def _invalidate_rows(self, rows) -> None:
+        """按行矩形局部失效 viewport（A4 局部重绘纪律）。
+
+        脏区取各行 ``visualRect`` 的并集（viewport 坐标系，外扩 1px 覆盖
+        边框半个笔宽）；行无效/不可见/视图缺失时回退整 viewport ``update()``，
+        绝不漏重绘。
+
+        Args:
+            rows: 行号可迭代对象。
+        """
+        view = self._view
+        if view is None:
+            return
+        try:
+            viewport = view.viewport()
+            model = view.model()
+        except Exception:
+            return
+        if viewport is None or model is None:
+            return
+        dirty = QRect()
+        try:
+            for row in rows:
+                if row is None or row < 0:
+                    continue
+                rect = view.visualRect(model.index(row, 0))
+                if rect.isValid() and not rect.isEmpty():
+                    dirty = rect if dirty.isNull() else dirty.united(rect)
+        except Exception:
+            dirty = QRect()
+        try:
+            if dirty.isNull():
+                viewport.update()
+            else:
+                viewport.update(dirty.adjusted(-1, -1, 1, 1).intersected(viewport.rect()))
+        except Exception:
+            pass
 
     def _animate_media_scale(self, target: float) -> None:
         """动画过渡 hover 图标缩放进度（OutBack 缓动，220ms）。"""
@@ -346,13 +508,20 @@ class FileCardDelegate(QStyledItemDelegate):
             return
         self._preview_painted = False
         self._preview_angle = (self._preview_angle + 1.0) % 360.0
-        if self._view is not None:
-            self._view.viewport().update()
+        # A4 局部重绘：渐变焦点只影响预览态卡片行，按行矩形失效。
+        preview_rows = [
+            row for row, mask in self._last_state.items()
+            if mask & _STATE_PREVIEWING
+        ]
+        self._invalidate_rows(preview_rows)
 
     # ── 卡片状态过渡动画（默认 ↔ 池中 ↔ 预览中）─────────────────────────────
 
     def _advance_state_transitions(self) -> None:
         """推进所有进行中的卡片状态过渡与 hover 覆盖层过渡；无动画时停止定时器。"""
+        # A4 局部重绘：本帧变化的行（含刚收敛的行）按行矩形失效。
+        dirty_rows: set = set()
+        settled: list = []
         # 推进卡片状态过渡（默认 ↔ 池中 ↔ 预览中）
         if self._transitions:
             step = _STATE_ANIM_INTERVAL_MS / float(_STATE_ANIM_DURATION_MS)
@@ -363,6 +532,7 @@ class FileCardDelegate(QStyledItemDelegate):
                     finished.append(row)
             for row in finished:
                 del self._transitions[row]
+            dirty_rows.update(finished)
 
         # 推进 hover 覆盖层透明度过渡（进入淡入 / 离开淡出）
         if self._hover_targets:
@@ -376,14 +546,18 @@ class FileCardDelegate(QStyledItemDelegate):
                 self._hover_overlay_progress[row] = cur
                 if (target and cur >= 1.0) or (not target and cur <= 0.0):
                     del self._hover_targets[row]
+                    settled.append(row)
                     if cur <= 0.0:
                         self._hover_overlay_progress.pop(row, None)
 
         if not self._transitions and not self._hover_targets:
             self._state_anim_timer.stop()
+            # 收敛帧仍需重绘最终态行（不能直接 return 不画）。
+            self._invalidate_rows(dirty_rows | set(settled))
             return
-        if self._view is not None:
-            self._view.viewport().update()
+        self._invalidate_rows(
+            dirty_rows | set(settled) | set(self._transitions) | set(self._hover_targets)
+        )
 
     def _sync_hover_overlay(self, index: QModelIndex, is_hovered: bool) -> None:
         """检测 hover 状态变化，驱动覆盖层透明度过渡（淡入/淡出）。
@@ -689,8 +863,12 @@ class FileCardDelegate(QStyledItemDelegate):
             return
         if is_hovered:
             if self._hover_row != row:
+                # A4：旧绑定行图标缩放瞬间回落（paint 对非绑定行取 0），同帧失效旧行。
+                old_row = self._hover_row
                 self._hover_row = row
                 self._hover_progress = 0.0
+                if old_row >= 0:
+                    self._invalidate_rows((old_row,))
                 self._animate_media_scale(1.0)
         elif (
             self._hover_row == row
@@ -754,12 +932,21 @@ class FileCardDelegate(QStyledItemDelegate):
         # 物理像素（display_size × dpr），否则高 DPI 下逻辑尺寸会缩小 dpr 倍
         #（恰好同尺寸时跳过缩放，避免无谓拷贝）
         if logical_w != display_size or logical_h != display_size:
-            target_phys = max(1, int(display_size * dpr))
-            icon_pixmap = icon_pixmap.scaled(
-                target_phys, target_phys,
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation,
-            )
+            if display_size > _ICON_SCALE_CACHE_MAX_DISPLAY:
+                # 超大图不进阶梯缓存：按需直接缩放，避免 LRU 被巨图冲刷
+                target_phys = max(1, int(display_size * dpr))
+                icon_pixmap = icon_pixmap.scaled(
+                    target_phys, target_phys,
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation,
+                )
+                _ICON_SCALE_STATS["scaled_calls"] += 1
+            else:
+                # 阶梯量化：hover 动画逐帧抖动吸附到同一档位，命中零缩放；
+                # 阈值外落精确尺寸条目（动画结束即补一次精确缩放），同尺寸复零缩放
+                icon_pixmap = _get_cached_scaled_icon(
+                    icon_pixmap, _quantize_icon_size(display_size), dpr
+                )
             # 缩放后的 pixmap 保持原 DPR，重新计算逻辑尺寸
             dpr = icon_pixmap.devicePixelRatio()
             logical_w = icon_pixmap.width() / dpr
@@ -879,6 +1066,27 @@ class FileCardDelegate(QStyledItemDelegate):
         option: QStyleOptionViewItem,
         index: QModelIndex,
     ) -> None:
+        # 帧时间剖析（FAF_FRAME_PROFILING=1 启用，默认关闭零开销）：
+        # 仅测量，不改变任何绘制行为。
+        _frame_token = begin_frame()
+        try:
+            self._paint_impl(painter, option, index)
+        finally:
+            end_frame(_frame_token)
+
+    def _paint_impl(
+        self,
+        painter: QPainter,
+        option: QStyleOptionViewItem,
+        index: QModelIndex,
+    ) -> None:
+        """paint() 的实际绘制体（被帧剖析钩子包裹，行为与原 paint 一致）。
+
+        Args:
+            painter: 绘制器。
+            option: 样式选项。
+            index: 模型索引。
+        """
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setRenderHint(QPainter.TextAntialiasing)

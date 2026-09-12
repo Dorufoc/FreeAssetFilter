@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve, QPointF
 from PySide6.QtGui import QPainter, QPen, QPaintEvent, QFont, QFontMetrics, QMouseEvent
 
 from theme import tm
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 
 class StyledAccordionItem(QWidget):
@@ -37,7 +38,7 @@ class StyledAccordionItem(QWidget):
 
         # Content wrapper that gets animated
         self._content_wrapper = QWidget(self)
-        self._content_wrapper.setStyleSheet("background: transparent;")
+        register_widget_qss(self._content_wrapper,("background: transparent;"))
         self._wrapper_layout = QVBoxLayout(self._content_wrapper)
         self._wrapper_layout.setContentsMargins(16, 0, 16, 14)
         self._wrapper_layout.setSpacing(0)

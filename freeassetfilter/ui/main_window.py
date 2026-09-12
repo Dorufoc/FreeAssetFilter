@@ -61,7 +61,9 @@ from layout.unified_previewer_layout import UnifiedPreviewerLayout
 
 from freeassetfilter.utils.path_utils import get_app_data_path
 from freeassetfilter.utils.app_logger import debug, warning
+from freeassetfilter.utils.perf_metrics import begin_frame, end_frame
 from freeassetfilter.services.staging_pool_service import StagingPoolService
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 # 简约背景层（try 包裹：组件 PR 合并前主窗口仍可导入，各调用点配合 getattr 守卫）
 try:
@@ -364,9 +366,13 @@ class MicaBackgroundWidgetCpu(QWidget, _MicaBackgroundMixin):
 
     def paintEvent(self, event: QPaintEvent) -> None:
         """绘制 Mica 效果（纯色背景 + 按透明度叠加的模糊壁纸）"""
-        painter = QPainter(self)
-        self._mica.paint(painter, event)
-        painter.end()
+        _frame_token = begin_frame()
+        try:
+            painter = QPainter(self)
+            self._mica.paint(painter, event)
+            painter.end()
+        finally:
+            end_frame(_frame_token)
 
     def handle_window_resize(self) -> None:
         """处理窗口大小改变（由 MainWindow 调用）"""
@@ -889,18 +895,18 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._splitter = QSplitter(Qt.Horizontal)
         self._splitter.setHandleWidth(10)  # 10px 间距作为分隔条宽度
         self._splitter.setChildrenCollapsible(False)
-        self._splitter.setStyleSheet(f"""
+        register_widget_qss(self._splitter,(f"""
             QSplitter::handle {{
                 background-color: transparent;
                 width: 10px;
             }}
-        """)
+        """))
 
         # 三栏面板：先创建空 QFrame（含"加载中"占位），延后到窗口显示后
         # 再构建重型布局，使窗口先以主题色外壳 + 标题栏快速出现，避免白屏等加载。
         self._panel_left = QFrame()
         self._panel_left.setObjectName("PanelLeft")
-        self._panel_left.setStyleSheet("background-color: transparent; border: none;")
+        register_widget_qss(self._panel_left,("background-color: transparent; border: none;"))
         self._panel_left_layout = QVBoxLayout(self._panel_left)
         self._panel_left_layout.setContentsMargins(0, 0, 0, 0)
         self._panel_left_layout.setSpacing(0)
@@ -909,7 +915,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
         self._panel_center = QFrame()
         self._panel_center.setObjectName("PanelCenter")
-        self._panel_center.setStyleSheet("background-color: transparent; border: none;")
+        register_widget_qss(self._panel_center,("background-color: transparent; border: none;"))
         self._panel_center_layout = QVBoxLayout(self._panel_center)
         self._panel_center_layout.setContentsMargins(0, 0, 0, 0)
         self._panel_center_layout.setSpacing(0)
@@ -918,7 +924,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
         self._panel_right = QFrame()
         self._panel_right.setObjectName("PanelRight")
-        self._panel_right.setStyleSheet("background-color: transparent; border: none;")
+        register_widget_qss(self._panel_right,("background-color: transparent; border: none;"))
         self._panel_right_layout = QVBoxLayout(self._panel_right)
         self._panel_right_layout.setContentsMargins(0, 0, 0, 0)
         self._panel_right_layout.setSpacing(0)
@@ -934,7 +940,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
         # 外层容器提供四周 10px 边距
         splitter_container = QWidget()
-        splitter_container.setStyleSheet("background-color: transparent;")
+        register_widget_qss(splitter_container,("background-color: transparent;"))
         container_layout = QHBoxLayout(splitter_container)
         container_layout.setContentsMargins(10, 0, 10, 10)
         container_layout.setSpacing(0)
@@ -954,9 +960,9 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         """生成面板加载占位标签（'加载中…'），真实布局构建后移除。"""
         label = QLabel("加载中…", self)
         label.setAlignment(Qt.AlignCenter)
-        label.setStyleSheet(
+        register_widget_qss(label,(
             f"color: {tm.text.name()}; background-color: transparent; font-size: 13px;"
-        )
+        ))
         return label
 
     def _build_panels_deferred(self) -> None:
@@ -1027,6 +1033,14 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
         self._refresh_panel_styles()
 
+        # 文件池就绪且跨栏信号已连接后再触发一次暂存池恢复。原实现在
+        # showEvent 里按固定 100ms 延时触发，与 _build_panels_deferred 的
+        # 分阶段构建存在时序竞态：FilePoolLayout 构造较重时 _file_pool 仍为
+        # None，会让 load_backup() 抛 AttributeError 并中断整条恢复流程。
+        if self._file_pool is not None and not getattr(self, "_restore_started", False):
+            self._restore_started = True
+            QTimer.singleShot(0, self._check_and_restore_backup)
+
         # 仍有栏尚未就绪：延后重试连接（样式已由 _build_panel 渐进套用）
         if self._file_selector is None or self._file_pool is None or self._previewer is None:
             QTimer.singleShot(60, self._finalize_panels)
@@ -1040,18 +1054,18 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         header.setObjectName("TitleBar")
         header.setFixedHeight(48)
         # 完全透明，让下面的 Mica 效果（基底 + 模糊壁纸 + 遮罩）覆盖整个区域
-        header.setStyleSheet("""
+        register_widget_qss(header,("""
             #TitleBar {
                 background-color: transparent;
             }
-        """)
+        """))
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(16, 8, 16, 8)
         header_layout.setSpacing(0)
 
         # 标题文字
         self._title_label = QLabel("FreeAssetFilter")
-        self._title_label.setStyleSheet(f'font-size: 14px; font-weight: 600; color: {tm.text.name()};')
+        register_widget_qss(self._title_label,(f'font-size: 14px; font-weight: 600; color: {tm.text.name()};'))
         header_layout.addWidget(self._title_label)
         header_layout.addStretch()
 
@@ -1064,7 +1078,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             icon=str(github_icon_path) if github_icon_path.exists() else ""
         )
         self._github_btn.setFixedSize(32, 32)
-        self._github_btn.setStyleSheet(self._title_bar_button_style())
+        register_widget_qss(self._github_btn,(self._title_bar_button_style()))
         self._github_btn.clicked.connect(self._open_github)
         header_layout.addWidget(self._github_btn)
 
@@ -1077,7 +1091,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             icon=str(settings_icon_path) if settings_icon_path.exists() else ""
         )
         self._settings_btn.setFixedSize(32, 32)
-        self._settings_btn.setStyleSheet(self._title_bar_button_style())
+        register_widget_qss(self._settings_btn,(self._title_bar_button_style()))
         self._settings_btn.clicked.connect(self._open_settings_window)
         header_layout.addWidget(self._settings_btn)
 
@@ -1088,7 +1102,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             icon=str(light_icon_path) if light_icon_path.exists() else ""
         )
         self._theme_btn.setFixedSize(32, 32)
-        self._theme_btn.setStyleSheet(self._title_bar_button_style())
+        register_widget_qss(self._theme_btn,(self._title_bar_button_style()))
         self._theme_btn.setToolTip("切换主题")
         self._theme_btn.clicked.connect(self._on_theme_toggle)
         header_layout.addWidget(self._theme_btn)
@@ -1100,7 +1114,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             icon=str(mini_icon_path) if mini_icon_path.exists() else ""
         )
         self._minimize_btn.setFixedSize(32, 32)
-        self._minimize_btn.setStyleSheet(self._title_bar_button_style())
+        register_widget_qss(self._minimize_btn,(self._title_bar_button_style()))
         self._minimize_btn.clicked.connect(self.showMinimized)
         header_layout.addWidget(self._minimize_btn)
 
@@ -1111,7 +1125,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             icon=str(max_1_path) if max_1_path.exists() else ""
         )
         self._maximize_btn.setFixedSize(32, 32)
-        self._maximize_btn.setStyleSheet(self._title_bar_button_style())
+        register_widget_qss(self._maximize_btn,(self._title_bar_button_style()))
         self._maximize_btn.clicked.connect(self._toggle_maximize)
         header_layout.addWidget(self._maximize_btn)
 
@@ -1122,7 +1136,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             icon=str(close_icon_path) if close_icon_path.exists() else ""
         )
         self._close_btn.setFixedSize(32, 32)
-        self._close_btn.setStyleSheet(self._title_bar_close_style())
+        register_widget_qss(self._close_btn,(self._title_bar_close_style()))
         self._close_btn.clicked.connect(self.close)
         header_layout.addWidget(self._close_btn)
 
@@ -1227,7 +1241,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
           （即“图像先消失、动画后才回来”）。手动渲染跳过顶层自身背景，
           透明区保持透明，背景层全程可见；
         - 淡出由 :class:`ContentTransitionOverlay` 自绘（每帧单次
-          ``drawPixmap``），替代 ``QGraphicsOpacityEffect`` 的逐帧全窗
+          ``drawPixmap``），替代 ``offscreen effect`` 的逐帧全窗
           效果过滤合成。
 
         Mica 背景过渡由 ``MicaMaterial._start_xfade`` 材质级交叉过渡承担：
@@ -1533,14 +1547,14 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                 self._theme_btn.setToolTip("切换为浅色")
             # 刷新标题文字颜色
             if self._title_label is not None:
-                self._title_label.setStyleSheet(f'font-size: 14px; font-weight: 600; color: {tm.text.name()};')
+                register_widget_qss(self._title_label,(f'font-size: 14px; font-weight: 600; color: {tm.text.name()};'))
             # 刷新所有标题栏按钮的 styleSheet（tm 颜色值已变化）
-            self._github_btn.setStyleSheet(self._title_bar_button_style())
-            self._settings_btn.setStyleSheet(self._title_bar_button_style())
-            self._theme_btn.setStyleSheet(self._title_bar_button_style())
-            self._minimize_btn.setStyleSheet(self._title_bar_button_style())
-            self._maximize_btn.setStyleSheet(self._title_bar_button_style())
-            self._close_btn.setStyleSheet(self._title_bar_close_style())
+            register_widget_qss(self._github_btn,(self._title_bar_button_style()))
+            register_widget_qss(self._settings_btn,(self._title_bar_button_style()))
+            register_widget_qss(self._theme_btn,(self._title_bar_button_style()))
+            register_widget_qss(self._minimize_btn,(self._title_bar_button_style()))
+            register_widget_qss(self._maximize_btn,(self._title_bar_button_style()))
+            register_widget_qss(self._close_btn,(self._title_bar_close_style()))
             # 刷新三栏面板样式（内部含全窗级 unpolish/polish 兜底，此处不再
             # 单独做一次，避免连续两次无样式中间帧放大白闪）。
             self._refresh_panel_styles()
@@ -1572,15 +1586,15 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
         if self._file_selector is not None:
             # 左侧栏 PanelLeft — 完全透明，样式下放给 FileSelectorLayout 内部
-            self._panel_left.setStyleSheet("background-color: transparent; border: none;")
+            register_widget_qss(self._panel_left,("background-color: transparent; border: none;"))
             self._file_selector.set_section_styles(fill_color, border_color)
         if self._file_pool is not None:
             # 中间栏 PanelCenter — 完全透明，样式下放给 FilePoolLayout 内部
-            self._panel_center.setStyleSheet("background-color: transparent; border: none;")
+            register_widget_qss(self._panel_center,("background-color: transparent; border: none;"))
             self._file_pool.set_section_styles(fill_color, border_color)
         if self._previewer is not None:
             # 右侧栏 PanelRight — 完全透明，样式下放给 UnifiedPreviewerLayout 内部
-            self._panel_right.setStyleSheet("background-color: transparent; border: none;")
+            register_widget_qss(self._panel_right,("background-color: transparent; border: none;"))
             self._previewer.set_section_styles(fill_color, border_color)
 
         # 整窗级重刷（与主题切换路径一致，作为兜底确保所有已显示控件套用样式）
@@ -1676,11 +1690,12 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
     # ──── 备份恢复 ─────────────────────────────────────────────────────
 
     def showEvent(self, event: QEvent) -> None:
-        """窗口显示时检查备份恢复"""
+        """窗口显示时安排背景懒加载。
+
+        暂存池恢复不在此按固定延时触发：它与面板分阶段构建存在时序竞态
+        （见 :meth:`_finalize_panels`），改由文件池就绪后触发。
+        """
         super().showEvent(event)
-        if not hasattr(self, '_restore_started'):
-            self._restore_started = True
-            QTimer.singleShot(100, self._check_and_restore_backup)
 
         # 首帧提速：云母壁纸加载/高斯模糊/烘焙在 __init__ 阶段被延迟
         # （MicaMaterial lazy=True），这里在窗口显示后的第一轮事件循环里
@@ -2075,20 +2090,20 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         header = QFrame()
         header.setObjectName("SettingsTitleBar")
         header.setFixedHeight(48)
-        header.setStyleSheet("""
+        register_widget_qss(header,("""
             #SettingsTitleBar {
                 background-color: transparent;
             }
-        """)
+        """))
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(16, 8, 16, 8)
         header_layout.setSpacing(0)
 
         # 标题文字
         self._title_label = QLabel("设置")
-        self._title_label.setStyleSheet(
+        register_widget_qss(self._title_label,(
             f'font-size: 14px; font-weight: 600; color: {tm.text.name()};'
-        )
+        ))
         header_layout.addWidget(self._title_label)
         header_layout.addStretch()
 
@@ -2096,7 +2111,7 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._close_btn = StyledButton("", variant="ghost", size="sm")
         self._close_btn.setFixedSize(32, 32)
         self._close_btn.setText("✕")
-        self._close_btn.setStyleSheet(self._close_button_style())
+        register_widget_qss(self._close_btn,(self._close_button_style()))
         self._close_btn.clicked.connect(self.close)
         header_layout.addWidget(self._close_btn)
 
@@ -2129,12 +2144,12 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             self._root.setPalette(palette)
         # 标题栏文字
         if self._title_label is not None:
-            self._title_label.setStyleSheet(
+            register_widget_qss(self._title_label,(
                 f'font-size: 14px; font-weight: 600; color: {tm.text.name()};'
-            )
+            ))
         # 关闭按钮
         if self._close_btn is not None:
-            self._close_btn.setStyleSheet(self._close_button_style())
+            register_widget_qss(self._close_btn,(self._close_button_style()))
         # 设置内容区（侧边栏 + 卡片）
         if hasattr(self, '_settings_layout') and self._settings_layout is not None:
             self._settings_layout.refresh_theme()

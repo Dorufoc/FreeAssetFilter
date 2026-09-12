@@ -60,6 +60,7 @@ from freeassetfilter.core.workers.staging_tasks import MD5CalculationTask
 from freeassetfilter.utils.animation_settings import is_animation_enabled
 from freeassetfilter.utils.app_logger import debug as _pool_rubber_log
 from freeassetfilter.utils.app_logger import warning
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 # 释放丢失守卫的轮询周期（毫秒）：框选期间周期性校验右键是否仍按下。
 POOL_RUBBER_GUARD_INTERVAL_MS = 100
@@ -193,14 +194,14 @@ class FilePoolLayout(QWidget):
         self._scroll_area.setFrameShape(QFrame.NoFrame)
         # 内部子布局必须保持透明，让基础底层（_content_area）的半透明 section fill 单一透出，
         # 防止多层半透明背景叠加。主题切换由 _apply_pool_theme 再次刷新。
-        self._scroll_area.setStyleSheet(
+        register_widget_qss(self._scroll_area,(
             "background-color: transparent; border: none;"
-        )
+        ))
         self._scroll_area.viewport().installEventFilter(self)
 
         self._card_container = QWidget()
         self._card_container.setObjectName("FilePoolCardContainer")
-        self._card_container.setStyleSheet("background-color: transparent;")
+        register_widget_qss(self._card_container,("background-color: transparent;"))
         self._card_layout = QVBoxLayout(self._card_container)
         # 防递归守卫：水平边距动态计算时避免 setContentsMargins 触发的布局重入
         self._updating_pool_margins = False
@@ -291,23 +292,23 @@ class FilePoolLayout(QWidget):
         # 左侧文字标签（纵向排列）
         info_container = QWidget()
         info_container.setFixedHeight(32)
-        info_container.setStyleSheet("background: transparent; border: none;")
+        register_widget_qss(info_container,("background: transparent; border: none;"))
         info_layout = QVBoxLayout(info_container)
         info_layout.setContentsMargins(0, 0, 0, 0)
         info_layout.setSpacing(0)
 
         self._count_label = QLabel("0个条目")
-        self._count_label.setStyleSheet(
+        register_widget_qss(self._count_label,(
             "background: transparent; border: none;"
             f"color: {tm.text.name()}; font-size: 12px; font-weight: 600;"
-        )
+        ))
         info_layout.addWidget(self._count_label)
 
         self._size_label = QLabel("0.00MB")
-        self._size_label.setStyleSheet(
+        register_widget_qss(self._size_label,(
             "background: transparent; border: none;"
             f"color: {tm.mid.name()}; font-size: 10px;"
-        )
+        ))
         info_layout.addWidget(self._size_label)
 
         bottom_layout.addWidget(info_container)
@@ -353,7 +354,7 @@ class FilePoolLayout(QWidget):
             border-radius: 8px;
         """
         for _w in (self._content_area, self._bottom_bar):
-            _w.setStyleSheet(section_style)
+            register_widget_qss(_w,(section_style))
             # 强制已显示控件重新套用样式（延迟构建场景下必须，否则边框/填充不重绘）
             _w.style().unpolish(_w)
             _w.style().polish(_w)
@@ -361,22 +362,22 @@ class FilePoolLayout(QWidget):
     def _update_separator_color(self) -> None:
         """刷新竖分割线颜色"""
         mid = tm.mid
-        self._separator.setStyleSheet(
+        register_widget_qss(self._separator,(
             "background: transparent; border: none;"
             f"border-left: 1px solid rgba({mid.red()},{mid.green()},{mid.blue()},0.25);"
-        )
+        ))
 
     def _on_theme_changed(self, theme: str) -> None:
         """主题切换时刷新标签文字颜色及池视图主题"""
         self._update_separator_color()
-        self._count_label.setStyleSheet(
+        register_widget_qss(self._count_label,(
             "background: transparent; border: none;"
             f"color: {tm.text.name()}; font-size: 12px; font-weight: 600;"
-        )
-        self._size_label.setStyleSheet(
+        ))
+        register_widget_qss(self._size_label,(
             "background: transparent; border: none;"
             f"color: {tm.mid.name()}; font-size: 10px;"
-        )
+        ))
         self._apply_pool_theme()
         self._refresh_pool_rubber_style()
 
@@ -385,15 +386,20 @@ class FilePoolLayout(QWidget):
         # 内部子布局（_scroll_area、_card_container）必须保持透明，
         # 让基础底层（_content_area / _bottom_bar）的半透明 section fill 透出，
         # 防止多层半透明背景叠加。
-        self._scroll_area.setStyleSheet(
+        register_widget_qss(self._scroll_area,(
             "background-color: transparent; border: none;"
-        )
-        self._card_container.setStyleSheet(
+        ))
+        register_widget_qss(self._card_container,(
             "background-color: transparent;"
-        )
-        # 刷新所有卡片的颜色
-        for card in self._card_widgets.values():
-            card.update()
+        ))
+        # 刷新所有卡片的颜色（A4 批量纪律：N 张卡片逐个 update 合并为容器一次重绘）。
+        self._card_container.setUpdatesEnabled(False)
+        try:
+            for card in self._card_widgets.values():
+                card.update()
+        finally:
+            self._card_container.setUpdatesEnabled(True)
+        self._card_container.update()
 
     # ═════════════════════════════════════════════════════════════════════
     #  Ctrl+滚轮 卡片缩放（匹配文件选择器行为）
@@ -1323,7 +1329,7 @@ class FilePoolLayout(QWidget):
             geom_anim.setEasingCurve(easing)
             animations.append(geom_anim)
 
-        # 使用 StyledInfoCard 的 paint-level 透明度属性，避免 QGraphicsOpacityEffect
+        # 使用 StyledInfoCard 的 paint-level 透明度属性，避免 offscreen effect
         # 与 overlay 子控件的 effect 嵌套导致的 painter 冲突。
         card.card_opacity = start_opacity
         opacity_anim = QPropertyAnimation(card, b"card_opacity")

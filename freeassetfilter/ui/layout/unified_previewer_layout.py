@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 from components.styled_button import StyledButton
 from components.styled_dialog import ask_custom_dialog
 from freeassetfilter.services.previewer_registry import PreviewerRegistry
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 from layout.preview.file_info_panel import FileInfoPanel
 from theme import tm
 
@@ -83,12 +84,12 @@ class UnifiedPreviewerLayout(QWidget):
         self._splitter = QSplitter(Qt.Vertical)
         self._splitter.setHandleWidth(10)
         self._splitter.setChildrenCollapsible(False)
-        self._splitter.setStyleSheet("""
+        register_widget_qss(self._splitter,("""
             QSplitter::handle {
                 background-color: transparent;
                 height: 6px;
             }
-        """)
+        """))
 
         # 内容区 1（上方）
         self._content_top = QFrame()
@@ -294,14 +295,14 @@ class UnifiedPreviewerLayout(QWidget):
                 border-radius: 8px;
             }}
         """
-        self._content_top.setStyleSheet(section_style)
-        self._content_bottom.setStyleSheet(section_style)
+        register_widget_qss(self._content_top,(section_style))
+        register_widget_qss(self._content_bottom,(section_style))
         # 强制已显示控件重新套用样式（延迟构建场景下必须，否则边框/填充不重绘）
         self._content_top.style().unpolish(self._content_top)
         self._content_top.style().polish(self._content_top)
         self._content_bottom.style().unpolish(self._content_bottom)
         self._content_bottom.style().polish(self._content_bottom)
-        self._bottom_bar.setStyleSheet(section_style)
+        register_widget_qss(self._bottom_bar,(section_style))
 
     def _on_theme_changed(self, theme: str) -> None:
         """主题切换时占位（样式由 MainWindow 统一刷新）"""
@@ -467,9 +468,9 @@ class UnifiedPreviewerLayout(QWidget):
         if self._placeholder_label is None:
             self._placeholder_label = QLabel("选择文件以预览内容")
             self._placeholder_label.setAlignment(Qt.AlignCenter)
-            self._placeholder_label.setStyleSheet(
+            register_widget_qss(self._placeholder_label,(
                 f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
-            )
+            ))
         
         # 添加到布局并确保可见（_cleanup_current_preview 会 hide 它）
         if self._content_layout is not None:

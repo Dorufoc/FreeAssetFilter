@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 from theme import tm
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 
 class SettingsCard(QWidget):
@@ -45,12 +46,12 @@ class SettingsCard(QWidget):
         # Set style on self only via unique objectName to prevent inheritance
         self.setObjectName(f"SettingsCard_{self._instance_id}")
         bg_color = tm.surface.name()
-        self.setStyleSheet(f"""
+        register_widget_qss(self,(f"""
             #SettingsCard_{self._instance_id} {{
                 background-color: {bg_color};
                 border-radius: 10px;
             }}
-        """)
+        """))
 
     def add_header(self, title: str, action_widget: QWidget = None):
         """Add a card header with title and optional action widget."""
@@ -61,11 +62,11 @@ class SettingsCard(QWidget):
 
         title_label = QLabel(title)
         if self._variant == "danger":
-            title_label.setStyleSheet(f'font-size: 14px; font-weight: 600; color: {tm.danger.name()}; letter-spacing: 0.3px;')
+            register_widget_qss(title_label,(f'font-size: 14px; font-weight: 600; color: {tm.danger.name()}; letter-spacing: 0.3px;'))
         elif self._variant == "info":
-            title_label.setStyleSheet(f'font-size: 14px; font-weight: 600; color: {tm.info.name()}; letter-spacing: 0.3px;')
+            register_widget_qss(title_label,(f'font-size: 14px; font-weight: 600; color: {tm.info.name()}; letter-spacing: 0.3px;'))
         else:
-            title_label.setStyleSheet(f'font-size: 14px; font-weight: 600; color: {tm.text.name()}; letter-spacing: 0.3px;')
+            register_widget_qss(title_label,(f'font-size: 14px; font-weight: 600; color: {tm.text.name()}; letter-spacing: 0.3px;'))
         layout.addWidget(title_label, stretch=1)
 
         if action_widget:
@@ -94,11 +95,11 @@ class SettingsCard(QWidget):
         sep = QFrame()
         sep.setObjectName(f"SettingsCardSep_{self._instance_id}")
         sep.setFixedHeight(1)
-        sep.setStyleSheet(f"""
+        register_widget_qss(sep,(f"""
             #SettingsCardSep_{self._instance_id} {{
                 background-color: {tm.alpha_of(tm.mid, 30).name()};
             }}
-        """)
+        """))
         footer_layout_parent = QVBoxLayout()
         footer_layout_parent.setContentsMargins(0, 0, 0, 0)
         footer_layout_parent.setSpacing(0)
@@ -129,7 +130,7 @@ class SettingsRow(QWidget):
 
         self.setObjectName(f"SettingsRow_{self._instance_id}")
         # Use unique objectName to scope styles to this widget only (prevent inheritance)
-        self.setStyleSheet(f"#SettingsRow_{self._instance_id} {{ background: transparent; }}")
+        register_widget_qss(self,(f"#SettingsRow_{self._instance_id} {{ background: transparent; }}"))
         self.setAttribute(Qt.WA_Hover, True)
         self.setAttribute(Qt.WA_StyledBackground, True)
 
@@ -143,12 +144,12 @@ class SettingsRow(QWidget):
 
         if title:
             self.title_label = QLabel(title)
-            self.title_label.setStyleSheet(f'font-size: {title_size}; font-weight: 500; color: {tm.text.name()};')
+            register_widget_qss(self.title_label,(f'font-size: {title_size}; font-weight: 500; color: {tm.text.name()};'))
             content.addWidget(self.title_label)
 
         if description:
             self.desc_label = QLabel(description)
-            self.desc_label.setStyleSheet(f'font-size: 12px; color: {tm.alpha_of(tm.mid, 60).name()}; line-height: 1.5;')
+            register_widget_qss(self.desc_label,(f'font-size: 12px; color: {tm.alpha_of(tm.mid, 60).name()}; line-height: 1.5;'))
             self.desc_label.setWordWrap(True)
             content.addWidget(self.desc_label)
 
@@ -191,7 +192,7 @@ class NotificationRow(QWidget):
 
         self.setObjectName(f"NotificationRow_{self._instance_id}")
         # Use unique objectName to scope styles to this widget only (prevent inheritance)
-        self.setStyleSheet(f"#NotificationRow_{self._instance_id} {{ background: transparent; }}")
+        register_widget_qss(self,(f"#NotificationRow_{self._instance_id} {{ background: transparent; }}"))
         self.setAttribute(Qt.WA_Hover, True)
         self.setAttribute(Qt.WA_StyledBackground, True)
 
@@ -204,12 +205,12 @@ class NotificationRow(QWidget):
         dot.setObjectName(f"NotificationDot_{self._instance_id}")
         dot.setFixedSize(8, 8)
         dot_color = tm.accent.name() if active else tm.alpha_of(tm.mid, 60).name()
-        dot.setStyleSheet(f"""
+        register_widget_qss(dot,(f"""
             #NotificationDot_{self._instance_id} {{
                 background-color: {dot_color};
                 border-radius: 4px;
             }}
-        """)
+        """))
         layout.addWidget(dot)
 
         # Content
@@ -218,12 +219,12 @@ class NotificationRow(QWidget):
 
         if title:
             title_label = QLabel(title)
-            title_label.setStyleSheet(f'font-size: 13.5px; font-weight: 500; color: {tm.text.name()};')
+            register_widget_qss(title_label,(f'font-size: 13.5px; font-weight: 500; color: {tm.text.name()};'))
             content.addWidget(title_label)
 
         if description:
             desc_label = QLabel(description)
-            desc_label.setStyleSheet(f'font-size: 12px; color: {tm.alpha_of(tm.mid, 60).name()};')
+            register_widget_qss(desc_label,(f'font-size: 12px; color: {tm.alpha_of(tm.mid, 60).name()};'))
             content.addWidget(desc_label)
 
         content_widget = QWidget()
@@ -262,7 +263,7 @@ class PluginItem(QWidget):
 
         self.setObjectName(f"PluginItem_{self._instance_id}")
         # Use unique objectName to scope styles to this widget only (prevent inheritance)
-        self.setStyleSheet(f"#PluginItem_{self._instance_id} {{ background: transparent; }}")
+        register_widget_qss(self,(f"#PluginItem_{self._instance_id} {{ background: transparent; }}"))
         self.setAttribute(Qt.WA_Hover, True)
         self.setAttribute(Qt.WA_StyledBackground, True)
 
@@ -274,12 +275,12 @@ class PluginItem(QWidget):
         icon = QFrame()
         icon.setObjectName(f"PluginIcon_{self._instance_id}")
         icon.setFixedSize(40, 40)
-        icon.setStyleSheet(f"""
+        register_widget_qss(icon,(f"""
             #PluginIcon_{self._instance_id} {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {icon_gradient[0]}, stop:1 {icon_gradient[1]});
                 border-radius: 6px;
             }}
-        """)
+        """))
         layout.addWidget(icon)
 
         # Info
@@ -288,12 +289,12 @@ class PluginItem(QWidget):
 
         if name:
             name_label = QLabel(name)
-            name_label.setStyleSheet(f'font-size: 13px; font-weight: 500; color: {tm.text.name()};')
+            register_widget_qss(name_label,(f'font-size: 13px; font-weight: 500; color: {tm.text.name()};'))
             info.addWidget(name_label)
 
         if description:
             desc_label = QLabel(description)
-            desc_label.setStyleSheet(f'font-size: 11.5px; color: {tm.alpha_of(tm.mid, 60).name()};')
+            register_widget_qss(desc_label,(f'font-size: 11.5px; color: {tm.alpha_of(tm.mid, 60).name()};'))
             info.addWidget(desc_label)
 
         info_widget = QWidget()

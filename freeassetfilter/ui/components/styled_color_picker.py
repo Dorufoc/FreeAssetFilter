@@ -48,6 +48,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QApplication,
 )
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 # ── Design tokens (dark theme, matching web) ──────────────────────
 
@@ -435,7 +436,7 @@ class _ColorPanel(QFrame):
         super().__init__(parent, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowDoesNotAcceptFocus)
         self.setObjectName("colorPanel")
         self.setFrameShape(QFrame.NoFrame)
-        self.setStyleSheet("#colorPanel { background: transparent; border: none; }")
+        register_widget_qss(self,("#colorPanel { background: transparent; border: none; }"))
         
         # WA_TranslucentBackground：允许四角透明
         # paintEvent 使用 CompositionMode_Source 清空后再绘制圆角卡片
@@ -538,7 +539,7 @@ class _ColorPanel(QFrame):
         sb.setFixedSize(56, 28)
         sb.setAlignment(Qt.AlignCenter)
         sb.setFont(_font(11))
-        sb.setStyleSheet(f"""
+        register_widget_qss(sb,(f"""
             QSpinBox {{
                 background: {BG_INPUT().name()}; color: {self._text_primary.name()};
                 border: 1px solid {self._border_color.name()}; border-radius: 4px;
@@ -548,12 +549,12 @@ class _ColorPanel(QFrame):
             QSpinBox::up-button, QSpinBox::down-button {{
                 width: 0; height: 0; border: none;
             }}
-        """)
+        """))
 
         lbl = QLabel(label)
         lbl.setAlignment(Qt.AlignCenter)
         lbl.setFont(_font(10))
-        lbl.setStyleSheet(f"color: {self._text_tertiary.name()}; background: transparent;")
+        register_widget_qss(lbl,(f"color: {self._text_tertiary.name()}; background: transparent;"))
 
         w_layout.addWidget(sb)
         w_layout.addWidget(lbl)
@@ -1002,14 +1003,14 @@ class StyledColorPicker(QWidget):
         self._hex_input.setFixedWidth(90)
         self._hex_input.setFont(_font(13))
         self._hex_input.setAlignment(Qt.AlignCenter)
-        self._hex_input.setStyleSheet(f"""
+        register_widget_qss(self._hex_input,(f"""
             QLineEdit {{
                 background: {BG_INPUT().name()}; color: {self._text_primary.name()};
                 border: 1px solid {self._border_color.name()}; border-radius: 6px;
                 padding: 0 8px;             }}
             QLineEdit:focus {{ border: 1px solid {self._accent_primary.name()}; }}
             QLineEdit:disabled {{ color: {tm.alpha_of(tm.mid, 60).name()}; background: {tm.surface.name()}; }}
-        """)
+        """))
         self._hex_input.setEnabled(enabled)
         self._hex_input.editingFinished.connect(self._on_hex_edited)
         layout.addWidget(self._hex_input)

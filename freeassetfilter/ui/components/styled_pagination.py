@@ -7,6 +7,7 @@ from PySide6.QtCore import Qt, Signal, QRectF
 from PySide6.QtGui import QPainter, QFont, QPaintEvent
 
 from theme import tm
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 
 SIZE_CONFIG = {
@@ -341,7 +342,7 @@ class StyledPagination(QWidget):
         popup_bg = tm.surface.name()
         popup_selection_bg = self.COLOR_BG.name()
         popup_selection_text = self.COLOR_TEXT_HOVER.name()
-        self._size_combo.setStyleSheet(f"""
+        register_widget_qss(self._size_combo,(f"""
             QComboBox {{
                 background-color: {bg};
                 color: {text};
@@ -374,7 +375,7 @@ class StyledPagination(QWidget):
                 font-family: "Microsoft YaHei UI", sans-serif;
                 outline: none;
             }}
-        """)
+        """))
 
     def _get_page_numbers(self) -> list[tuple[str, Optional[int]]]:
         """Compute the list of page items with smart ellipsis.
@@ -426,11 +427,11 @@ class StyledPagination(QWidget):
             end = min(self._current_page * self._page_size, self._total_items)
             self._info_label.setText(f"Showing {start}–{end} of {self._total_items}")
             info_color = self.COLOR_TEXT_ELLIPSIS.name()
-            self._info_label.setStyleSheet(
+            register_widget_qss(self._info_label,(
                 f"color: {info_color}; font-size: {config['info_font']}px; "
                 f"font-family: 'Microsoft YaHei UI', sans-serif; "
                 f"margin-left: 8px;"
-            )
+            ))
             self._info_label.setVisible(True)
         else:
             self._info_label.setVisible(False)

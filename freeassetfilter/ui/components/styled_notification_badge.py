@@ -18,6 +18,7 @@ from PySide6.QtGui import QPainter, QColor, QPaintEvent, QFont, QFontMetrics, QP
 
 from components.icon_utils import render_icon
 from theme import tm
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -413,7 +414,7 @@ class NotificationBadgeList(QWidget):
         main_layout.setSpacing(0)
 
         # Outer background border (painted via paintEvent)
-        self.setStyleSheet("background: transparent;")
+        register_widget_qss(self,("background: transparent;"))
 
         # Header
         self._header = self._make_header()
@@ -424,16 +425,16 @@ class NotificationBadgeList(QWidget):
         self._scroll.setWidgetResizable(True)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self._scroll.setStyleSheet(
+        register_widget_qss(self._scroll,(
             "QScrollArea { border: none; background: transparent; }"
             "QScrollBar:vertical { width: 6px; background: transparent; }"
             f"QScrollBar::handle:vertical {{ background: {tm.alpha_of(tm.fill, 40).name()}; border-radius: 3px; min-height: 24px; }}"
             "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
-        )
+        ))
 
         # QStackedWidget: page 0 = empty state, page 1 = items
         self._stack = QStackedWidget()
-        self._stack.setStyleSheet("background: transparent;")
+        register_widget_qss(self._stack,("background: transparent;"))
 
         # Page 0: empty state
         self._empty_widget = _EmptyStateWidget()
@@ -441,7 +442,7 @@ class NotificationBadgeList(QWidget):
 
         # Page 1: items container
         self._items_container = QWidget()
-        self._items_container.setStyleSheet("background: transparent;")
+        register_widget_qss(self._items_container,("background: transparent;"))
         self._items_layout = QVBoxLayout(self._items_container)
         self._items_layout.setContentsMargins(0, 0, 0, 0)
         self._items_layout.setSpacing(0)
@@ -461,17 +462,17 @@ class NotificationBadgeList(QWidget):
     def _make_header(self) -> QWidget:
         header = QWidget()
         header.setFixedHeight(44)
-        header.setStyleSheet("background: transparent;")
+        register_widget_qss(header,("background: transparent;"))
 
         layout = QHBoxLayout(header)
         layout.setContentsMargins(16, 0, 16, 0)
         layout.setSpacing(8)
 
         title = QLabel("通知")
-        title.setStyleSheet(
+        register_widget_qss(title,(
             f"font-size: 14px; font-weight: 600; color: {tm.text.name()};"
             " background: transparent; border: none;"
-        )
+        ))
         layout.addWidget(title)
 
         self._count_badge = _CountBadge(0)
@@ -483,7 +484,7 @@ class NotificationBadgeList(QWidget):
     def _make_footer(self) -> QWidget:
         footer = QWidget()
         footer.setFixedHeight(36)
-        footer.setStyleSheet("background: transparent;")
+        register_widget_qss(footer,("background: transparent;"))
 
         layout = QHBoxLayout(footer)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -493,7 +494,7 @@ class NotificationBadgeList(QWidget):
         btn.setCursor(Qt.PointingHandCursor)
         accent = tm.accent.name()
         hover_bg = tm.mid.name()
-        btn.setStyleSheet(f"""
+        register_widget_qss(btn,(f"""
             QPushButton {{
                 background: transparent; border: none;
                 color: {accent}; font-size: 12px;
@@ -503,7 +504,7 @@ class NotificationBadgeList(QWidget):
             QPushButton:hover {{
                 background-color: {hover_bg};
             }}
-        """)
+        """))
         btn.clicked.connect(self._on_view_all)
         layout.addWidget(btn)
 

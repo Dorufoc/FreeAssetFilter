@@ -18,6 +18,7 @@ from typing import Callable, Optional
 from components.styled_button import StyledButton
 from components.styled_slider import StyledSlider
 from theme import tm
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -556,7 +557,7 @@ class _OSDWidget(QWidget):
         # 文本模式（显示纯文本消息，如"播放"、"暂停"、"1.0x"）
         self._label = QLabel(self)
         self._label.setAlignment(Qt.AlignCenter)
-        self._label.setStyleSheet("""
+        register_widget_qss(self._label,("""
             QLabel {
                 background-color: rgba(0, 0, 0, 180);
                 color: white;
@@ -565,24 +566,24 @@ class _OSDWidget(QWidget):
                 font-size: 16px;
                 font-weight: 500;
             }
-        """)
+        """))
         layout.addWidget(self._label)
 
         # 进度模式（显示 seek 进度：时间 + 进度条 + 总时长）
         self._progress_widget = QWidget(self)
-        self._progress_widget.setStyleSheet("""
+        register_widget_qss(self._progress_widget,("""
             QWidget {
                 background-color: rgba(0, 0, 0, 180);
                 border-radius: 6px;
             }
-        """)
+        """))
         self._progress_widget.hide()
         progress_layout = QHBoxLayout(self._progress_widget)
         progress_layout.setContentsMargins(12, 8, 12, 8)
         progress_layout.setSpacing(10)
 
         self._time_label = QLabel(self._progress_widget)
-        self._time_label.setStyleSheet("color: white; font-size: 14px; background: transparent;")
+        register_widget_qss(self._time_label,("color: white; font-size: 14px; background: transparent;"))
         self._time_label.setMinimumWidth(60)
         progress_layout.addWidget(self._time_label)
 
@@ -591,7 +592,7 @@ class _OSDWidget(QWidget):
         self._progress_bar.setRange(0, 1000)
         self._progress_bar.setFixedHeight(4)
         self._progress_bar.setTextVisible(False)
-        self._progress_bar.setStyleSheet("""
+        register_widget_qss(self._progress_bar,("""
             QProgressBar {
                 background-color: rgba(255, 255, 255, 128);
                 border: none;
@@ -601,11 +602,11 @@ class _OSDWidget(QWidget):
                 background-color: white;
                 border-radius: 2px;
             }
-        """)
+        """))
         progress_layout.addWidget(self._progress_bar, 1)
 
         self._duration_label = QLabel(self._progress_widget)
-        self._duration_label.setStyleSheet("color: white; font-size: 14px; background: transparent;")
+        register_widget_qss(self._duration_label,("color: white; font-size: 14px; background: transparent;"))
         self._duration_label.setMinimumWidth(60)
         self._duration_label.setAlignment(Qt.AlignRight)
         progress_layout.addWidget(self._duration_label)
@@ -903,10 +904,10 @@ class StyledPlayerBar(QWidget):
         # Current time
         time_color = tm.mid.name()
         self._time_current = QLabel(self._current_time)
-        self._time_current.setStyleSheet(
+        register_widget_qss(self._time_current,(
             f"color: {time_color}; font-size: 12px; font-family: 'Consolas', 'Courier New', monospace;"
             "background: transparent; min-width: 40px;"
-        )
+        ))
         self._time_current.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
         # Progress slider（自适应宽度）
@@ -917,10 +918,10 @@ class StyledPlayerBar(QWidget):
 
         # Total time
         self._time_total = QLabel(self._total_time)
-        self._time_total.setStyleSheet(
+        register_widget_qss(self._time_total,(
             f"color: {time_color}; font-size: 12px; font-family: 'Consolas', 'Courier New', monospace;"
             "background: transparent; min-width: 40px;"
-        )
+        ))
         self._time_total.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
         prog_layout.addWidget(self._time_current)

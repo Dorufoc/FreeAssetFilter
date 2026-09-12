@@ -26,11 +26,13 @@ Qt 6.10+ 原生 ``Qt.ExpandedClientAreaHint`` 方案（经 _frameless_modern_dem
 """
 
 import ctypes
+import os
 import sys
 from ctypes import wintypes
 
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QResizeEvent
 
 import freeassetfilter.ui.frameless_window as fw
 from freeassetfilter.ui.frameless_window import (
@@ -63,28 +65,45 @@ class _FakeUser32:
     def __init__(self):
         self.find_called = False
         self.setparent_args = None
+        self.setparent_call_count = 0
         self.showwindow_args = None
         self.setwindowpos_args = None
         self.is_zoomed = False
         self._hwnd = 0
+        #: GetWindowLongPtrW(GWL_STYLE) 的返回值（可被测试覆盖）。
+        self.style = 0x10000000  # WS_VISIBLE
+        #: EnumWindows 会枚举出的顶层 _q_titlebar 句柄（供顶层查找路径测试）。
+        self.top_level_titlebars: list[int] = []
 
     def FindWindowExW(self, parent, child, class_name, window_name):
         self.find_called = True
+        parent_value = int(getattr(parent, "value", parent) or 0)
+        if not parent_value:
+            # 顶层查找路径：按 child(prev) 返回 top_level_titlebars 中的下一个
+            prev = int(getattr(child, "value", child) or 0)
+            rest = [hwnd for hwnd in self.top_level_titlebars if hwnd > prev]
+            return wintypes.HWND(rest[0]) if rest else None
         return self._hwnd
 
     def SetParent(self, hwnd, parent):
         self.setparent_args = (hwnd, parent)
+        self.setparent_call_count += 1
         return 0x1EE7  # 非 NULL：模拟摘除成功（返回旧父窗口）
 
     def GetWindowLongPtrW(self, hwnd, index):
-        return 0x10000000  # WS_VISIBLE（仅兜底路径会用到）
+        return self.style
 
     def SetWindowLongPtrW(self, hwnd, index, value):
         self.setwindowlong_args = (hwnd, index, value)
+        self.style = value
         return value
 
     def ShowWindow(self, hwnd, cmd):
         self.showwindow_args = (hwnd, cmd)
+
+    def GetWindowThreadProcessId(self, hwnd, pid):
+        pid._obj.value = os.getpid()
+        return 0
 
     def IsZoomed(self, hwnd):
         return self.is_zoomed
@@ -198,6 +217,59 @@ def test_hide_titlebar_swallows_exception(frameless_win, monkeypatch) -> None:
     frameless_win._hide_qt_titlebar()  # 不抛异常即可
 
 
+def test_hide_titlebar_finds_top_level_titlebar(
+    frameless_win, fake_user32, monkeypatch
+) -> None:
+    """Qt 6.10 把 _q_titlebar 建成「顶层窗口」：必须能按「类名 + 本进程」找到并撤下。
+
+    实测主窗口的子窗口数为 0，只按子窗口查找会永远返回空——这正是旧实现静默
+    失效、原生按钮一直盖在自绘标题栏下面的根因。
+    """
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(frameless_win, "internalWinId", lambda: 0xABCD)
+    fake_user32._hwnd = 0  # 子窗口路径找不到
+    fake_user32.top_level_titlebars = [0x5678]
+
+    assert frameless_win._hide_qt_titlebar() is True
+    assert fake_user32.setparent_call_count == 1
+    hwnd, parent = fake_user32.setparent_args
+    assert hwnd.value == 0x5678
+    assert ctypes.c_ssize_t(parent.value).value == -3  # HWND_MESSAGE
+    assert fake_user32.showwindow_args == (hwnd, 0)
+
+
+def test_strip_system_menu_clears_ws_sysmenu(
+    frameless_win, fake_user32, monkeypatch
+) -> None:
+    """清除 WS_SYSMENU（保留 WS_CAPTION/WS_VISIBLE），阻止 DWM 画系统按钮。"""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(frameless_win, "internalWinId", lambda: 0xABCD)
+    ws_caption = 0x00C00000
+    fake_user32.style = fw._WS_VISIBLE | ws_caption | fw._WS_SYSMENU
+
+    frameless_win._strip_system_menu()
+
+    _, index, value = fake_user32.setwindowlong_args
+    assert index == fw._GWL_STYLE
+    assert not (value & fw._WS_SYSMENU)  # WS_SYSMENU 已清除
+    assert value & ws_caption  # 保留：动画/Aero Snap 的前提
+    assert value & fw._WS_VISIBLE  # 其它位不受影响
+
+
+def test_strip_system_menu_noop_without_bit(
+    frameless_win, fake_user32, monkeypatch
+) -> None:
+    """WS_SYSMENU 不存在时不写入样式（避免每次 reapply 都改样式）。"""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(frameless_win, "internalWinId", lambda: 0xABCD)
+    fake_user32.style = fw._WS_VISIBLE
+    fake_user32.setwindowlong_args = None
+
+    frameless_win._strip_system_menu()
+
+    assert fake_user32.setwindowlong_args is None
+
+
 def test_hide_titlebar_falls_back_to_clearing_ws_visible(
     frameless_win, fake_user32, monkeypatch
 ) -> None:
@@ -226,24 +298,33 @@ def test_hide_qt_titlebar_soon_schedules_deferred_hide(
     assert calls[0][1] == frameless_win._hide_qt_titlebar
 
 
-def test_resize_event_starts_titlebar_guard(qapp) -> None:
-    """缩放时会启动短周期守护定时器持续压制系统标题栏。"""
-    win = FramelessMainWindow()
-    win.resize(320, 240)
-    win.show()
-    qapp.processEvents()
+def test_resize_event_hides_titlebar_without_polling(frameless_win, monkeypatch) -> None:
+    """缩放时只做「同步隐藏 + 延迟隐藏」，不再启动轮询守护定时器。
 
-    win.resize(400, 300)
-    qapp.processEvents()
+    2026-09 实测：当前实现（QRhiWidget 参与宿主合成、不原生化）下缩放不会
+    重建 HWND，故移除原先 20ms 轮询的 ``_titlebar_guard_timer``；真正的重建
+    场景交由 ``WinIdChange`` 钩子覆盖。
+    """
+    if not hasattr(Qt, "ExpandedClientAreaHint"):
+        pytest.skip("当前 Qt 不支持 ExpandedClientAreaHint")
 
-    timer = getattr(win, "_titlebar_guard_timer", None)
-    if hasattr(Qt, "ExpandedClientAreaHint"):
-        assert timer is not None and timer.isActive()
-        win._stop_resize_guard()
-        assert not timer.isActive()
-    else:  # 旧 Qt 退化路径不启动守护
-        assert timer is None
-    win.close()
+    monkeypatch.setattr(frameless_win, "internalWinId", lambda: 0x1234)
+    hidden: list[str] = []
+    scheduled: list[tuple] = []
+    monkeypatch.setattr(
+        frameless_win,
+        "_hide_qt_titlebar",
+        lambda *args, **kwargs: hidden.append("sync") or True,
+    )
+    monkeypatch.setattr(
+        fw.QTimer, "singleShot", lambda ms, fn: scheduled.append((ms, fn))
+    )
+
+    frameless_win.resizeEvent(QResizeEvent(QSize(320, 240), QSize(200, 100)))
+
+    assert hidden == ["sync"]                  # 同步隐藏一次
+    assert scheduled and scheduled[0][0] == 0  # 延迟隐藏已排进事件循环
+    assert getattr(frameless_win, "_titlebar_guard_timer", None) is None
 
 
 # ---------------------------------------------------------------------------

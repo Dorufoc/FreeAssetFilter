@@ -76,6 +76,7 @@ from freeassetfilter.ui.components.styled_scroll_area import (
     StyledScrollBar,
 )
 from freeassetfilter.utils.app_logger import info, warning
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 # 注：后台目录扫描走 QThreadPool 全局池（QRunnable 用完即弃），面板仅持有
 # 在途任务引用防 GC，无模块级保活集合。
@@ -352,10 +353,10 @@ class _FolderListView(QListView):
         StyledScrollArea.apply_to(self)
         self.setMouseTracking(True)
         self.viewport().setAttribute(Qt.WA_Hover, True)
-        self.setStyleSheet(
+        register_widget_qss(self,(
             "QListView { background: transparent; border: none; outline: none; }"
             "QListView::item { background: transparent; border: none; }"
-        )
+        ))
 
     def _index_kind(self, index: QModelIndex) -> str:
         return index.data(_FolderListModel.KindRole) or "file"
@@ -505,7 +506,7 @@ class FolderPreviewerLayout(QWidget):
         self._top_bar = QFrame()
         self._top_bar.setObjectName("FolderPreviewerTopBar")
         self._top_bar.setFixedHeight(48)
-        self._top_bar.setStyleSheet("background-color: transparent; border: none;")
+        register_widget_qss(self._top_bar,("background-color: transparent; border: none;"))
         top_layout = QHBoxLayout(self._top_bar)
         top_layout.setContentsMargins(12, 0, 12, 0)
         top_layout.setSpacing(8)
@@ -560,9 +561,9 @@ class FolderPreviewerLayout(QWidget):
 
         self._placeholder = QLabel(_PLACEHOLDER_NO_FOLDER)
         self._placeholder.setAlignment(Qt.AlignCenter)
-        self._placeholder.setStyleSheet(
+        register_widget_qss(self._placeholder,(
             f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
-        )
+        ))
         overlay_layout.addWidget(self._placeholder)
 
         # "选择文件夹"按钮（仅 standalone 模式显示在覆盖层中）
@@ -639,15 +640,15 @@ class FolderPreviewerLayout(QWidget):
 
     def _apply_section_styles(self) -> None:
         """内容区与覆盖层透明（面板底色由宿主 PreviewerTop 承载）。"""
-        self._content_area.setStyleSheet(
+        register_widget_qss(self._content_area,(
             "background-color: transparent;"
             "border: 1px solid transparent;"
             "border-radius: 8px;"
-        )
-        self._overlay.setStyleSheet("background-color: transparent;")
-        self._placeholder.setStyleSheet(
+        ))
+        register_widget_qss(self._overlay,("background-color: transparent;"))
+        register_widget_qss(self._placeholder,(
             f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
-        )
+        ))
         for _w in (self._content_area, self._overlay):
             _w.style().unpolish(_w)
             _w.style().polish(_w)
@@ -775,7 +776,7 @@ class FolderPreviewerLayout(QWidget):
         """刷新 standalone 模式覆盖层选择按钮样式。"""
         if self._overlay_open_btn is None:
             return
-        self._overlay_open_btn.setStyleSheet(
+        register_widget_qss(self._overlay_open_btn,(
             f"""
             QPushButton {{
                 background-color: {tm.alpha_of(tm.surface, 85).name()};
@@ -789,7 +790,7 @@ class FolderPreviewerLayout(QWidget):
                 border-color: {tm.accent.name()};
             }}
             """
-        )
+        ))
 
     def _on_browse_folder(self) -> None:
         """standalone 模式：目录对话框选择文件夹。"""

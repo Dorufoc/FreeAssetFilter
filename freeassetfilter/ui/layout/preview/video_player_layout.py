@@ -57,6 +57,7 @@ from freeassetfilter.core.native.bridges.mpv_player_core import MpvEndFileReason
 from freeassetfilter.core.managers.heartbeat_manager import HeartbeatManager
 from freeassetfilter.services.media_metadata_service import MediaMetadataService
 from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 # 独立入口与文件对话框使用的扩展名白名单。
 # 列表保留友好的显示顺序；集合用于快速查找。
@@ -365,13 +366,13 @@ class VideoPlayerLayout(QWidget):
 
     def set_section_styles(self, fill_color: str, border_color: str) -> None:
         """应用面板样式（主题切换时由 MainWindow 调用）"""
-        self.setStyleSheet(f"""
+        register_widget_qss(self,(f"""
             VideoPlayerLayout {{
                 background-color: {fill_color};
                 border: 1px solid {border_color};
                 border-radius: 8px;
             }}
-        """)
+        """))
 
     def cleanup(self) -> None:
         """清理资源，断开所有信号"""
@@ -461,13 +462,13 @@ class VideoPlayerLayout(QWidget):
 
         # ── 视频渲染表面（index 0）──
         self._video_surface = QWidget(self)
-        self._video_surface.setStyleSheet("background-color: #000;")
+        register_widget_qss(self._video_surface,("background-color: #000;"))
         self._video_surface.setFocusPolicy(Qt.NoFocus)
         self._stack.addWidget(self._video_surface)
 
         # ── 占位覆盖层（index 1，未播放时显示）──
         self._overlay = QWidget()
-        self._overlay.setStyleSheet("background-color: #1a1a1a;")
+        register_widget_qss(self._overlay,("background-color: #1a1a1a;"))
         overlay_layout = QVBoxLayout(self._overlay)
         overlay_layout.setAlignment(Qt.AlignCenter)
         overlay_layout.setSpacing(16)
@@ -475,9 +476,9 @@ class VideoPlayerLayout(QWidget):
         # 提示文字
         self._placeholder = QLabel("拖放视频文件或选择文件以播放")
         self._placeholder.setAlignment(Qt.AlignCenter)
-        self._placeholder.setStyleSheet(
+        register_widget_qss(self._placeholder,(
             f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
-        )
+        ))
         overlay_layout.addWidget(self._placeholder)
 
         # 选择文件按钮（仅 standalone 模式）
@@ -490,7 +491,7 @@ class VideoPlayerLayout(QWidget):
             btn_hover_text = tm.text.name()
             btn_bg = tm.fill.name()
             btn_border = tm.alpha_of(tm.mid, 30).name()
-            self._browse_btn.setStyleSheet(f"""
+            register_widget_qss(self._browse_btn,(f"""
                 QPushButton {{
                     background: transparent;
                     border: 1px solid {btn_border};
@@ -508,7 +509,7 @@ class VideoPlayerLayout(QWidget):
                 QPushButton:pressed {{
                     background: {btn_bg};
                 }}
-            """)
+            """))
             self._browse_btn.clicked.connect(self._on_browse_file)
             overlay_layout.addWidget(self._browse_btn, alignment=Qt.AlignCenter)
 
@@ -521,7 +522,7 @@ class VideoPlayerLayout(QWidget):
         self._audio_surface.setAttribute(Qt.WA_TranslucentBackground, True)
         self._audio_surface.setAttribute(Qt.WA_NoSystemBackground, True)
         self._audio_surface.setAutoFillBackground(False)
-        self._audio_surface.setStyleSheet("background: transparent;")
+        register_widget_qss(self._audio_surface,("background: transparent;"))
         audio_layout = QGridLayout(self._audio_surface)
         audio_layout.setContentsMargins(0, 0, 0, 0)
         audio_layout.setSpacing(0)

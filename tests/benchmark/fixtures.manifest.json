@@ -1,0 +1,49 @@
+{
+  "schema": "ceiling-fixtures/v1",
+  "seed": 20260912,
+  "generated_at": "2026-09-12T01:21:53+00:00",
+  "machine": "Dorufoc-PC|Windows-10-10.0.26200-SP0|AMD64|cpu=24",
+  "files": [
+    {
+      "name": "dir10k",
+      "path": "C:\\Users\\89553\\AppData\\Local\\Temp\\pytest-of-89553\\pytest-1440\\faf_ceiling_fixtures0\\dir10k",
+      "sha256": "aefbec86fc70e3a753cb5965ac1b7533379d28f4dea89f7ef7933c189f195b5a:bb7b1a67da0362923645b9ef724470f0d40b17df4c3f7ca1d25dc32e6a07b4d3",
+      "size_bytes": 10000,
+      "seed": 20260912,
+      "note": "directory of 10000 deterministic txt files; hash pins first+last"
+    },
+    {
+      "name": "image_8k",
+      "path": "C:\\Users\\89553\\AppData\\Local\\Temp\\pytest-of-89553\\pytest-1440\\faf_ceiling_fixtures0\\image_8k.jpg",
+      "sha256": "09ac3a32635dae5037feca34e6379d88e2fa5c2ceeb1f84e298b1db84a00692a",
+      "size_bytes": 4941735,
+      "seed": 20260912
+    },
+    {
+      "name": "video_4k",
+      "path": "C:\\Users\\89553\\AppData\\Local\\Temp\\pytest-of-89553\\pytest-1440\\faf_ceiling_fixtures0\\video_4k.mp4",
+      "sha256": "629c2a7ffa9f13b858c24393ea3230f0734c6c1855801ba9ba6fb3baa83a7c78",
+      "size_bytes": 47992,
+      "seed": 20260912,
+      "synthetic": false,
+      "generator": "C:\\Users\\89553\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-8.1.1-full_build\\bin\\ffmpeg.EXE"
+    },
+    {
+      "name": "pdf_100mb",
+      "path": "C:\\Users\\89553\\AppData\\Local\\Temp\\pytest-of-89553\\pytest-1440\\faf_ceiling_fixtures0\\doc_100mb.pdf",
+      "sha256": "acee5e68e4db0295862c9b3d2a8c73ceed6885d09e501bf837cb17af247a449a",
+      "size_bytes": 105781181,
+      "seed": 20260912,
+      "synthetic": false
+    },
+    {
+      "name": "batch500",
+      "path": "C:\\Users\\89553\\AppData\\Local\\Temp\\pytest-of-89553\\pytest-1440\\faf_ceiling_fixtures0\\batch500",
+      "sha256": "c3fb22878e8a784330ebeae71d77781d2bce7783228a8be14534b3e25cede578:03b85813cc625bbb6de281db3bc0f414580454714b5b958e8fdfc7697b89d64a",
+      "size_bytes": 500,
+      "seed": 20260912,
+      "note": "directory of 500 deterministic JPEGs; hash pins first+last"
+    }
+  ],
+  "overall_hash": "bb8a837a028a4a0b2125f5dbf22294c4937dd1b5ee9e554d4264f21a2b639561"
+}

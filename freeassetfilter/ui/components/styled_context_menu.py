@@ -4,11 +4,12 @@ Provides a QMenu subclass with custom QSS styling, submenu support,
 checkable items, and a smooth fade-in animation on show.
 """
 
-from PySide6.QtWidgets import QMenu, QGraphicsOpacityEffect
+from PySide6.QtWidgets import QMenu
 from PySide6.QtCore import QPropertyAnimation, QAbstractAnimation, QEasingCurve
 from PySide6.QtGui import QColor, QAction
 
 from theme import tm
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 
 class StyledContextMenu(QMenu):
@@ -31,7 +32,7 @@ class StyledContextMenu(QMenu):
     def __init__(self, title: str = "", parent=None):
         super().__init__(title, parent)
         self._last_anim = None       # keep ref to prevent GC
-        self.setStyleSheet(self._qss())
+        register_widget_qss(self,(self._qss()))
 
     # ── QSS ─────────────────────────────────────────────────────
 
@@ -172,20 +173,19 @@ class StyledContextMenu(QMenu):
         self._animate_in()
 
     def _animate_in(self):
-        """Animate menu opacity from 0 → 1 over 120 ms (OutCubic)."""
-        # Discard any previous animation/effect
-        self.setGraphicsEffect(None)
+        """Animate menu opacity from 0 → 1 over 120 ms (OutCubic).
 
-        effect = QGraphicsOpacityEffect(self)
-        effect.setOpacity(0.0)
-        self.setGraphicsEffect(effect)
+        Top-level popups fade via ``windowOpacity`` (window-manager
+        composited, no offscreen effect pipeline on the paint path).
+        """
+        self.setWindowOpacity(0.0)
 
-        anim = QPropertyAnimation(effect, b"opacity", self)
+        anim = QPropertyAnimation(self, b"windowOpacity", self)
         anim.setStartValue(0.0)
         anim.setEndValue(1.0)
         anim.setDuration(120)
         anim.setEasingCurve(QEasingCurve.OutCubic)
-        anim.finished.connect(lambda: self.setGraphicsEffect(None))
+        anim.finished.connect(lambda: self.setWindowOpacity(1.0))
         anim.start(QAbstractAnimation.DeleteWhenStopped)
 
         # Keep a reference so the animation lives long enough to start;

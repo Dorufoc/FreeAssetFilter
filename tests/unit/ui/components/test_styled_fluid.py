@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from PySide6.QtCore import QModelIndex, QRect, QSize, Qt
+from PySide6.QtCore import QModelIndex, QRect, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QPainter, QPixmap, QShader
 from PySide6.QtWidgets import QApplication, QListView, QRhiWidget, QWidget
 
@@ -44,6 +44,7 @@ from freeassetfilter.ui.components.animated_file_list_view import (  # noqa: E40
     AnimatedFileListView,
 )
 from freeassetfilter.ui.components.file_card_delegate import FileCardDelegate  # noqa: E402
+import freeassetfilter.ui.components.file_card_delegate as _delegate_mod  # noqa: E402
 from freeassetfilter.ui.components.file_list_model import (  # noqa: E402
     FileListModel,
     FileNameRole,
@@ -621,3 +622,106 @@ class TestFileCardDelegate:
         safe_teardown(delegate)
         safe_teardown(model)
         safe_teardown(view)
+
+    @staticmethod
+    def _solid_pixmap(size: int, color: str) -> QPixmap:
+        """构造纯色源图标。
+
+        Args:
+            size: 正方形边长（物理像素）。
+            color: 填充颜色名。
+
+        Returns:
+            非空 QPixmap。
+        """
+        pm = QPixmap(size, size)
+        pm.fill(QColor(color))
+        return pm
+
+    @staticmethod
+    def _draw_icon(src: QPixmap, media_w: float, hover_scale: float = 1.0) -> None:
+        """经 _draw_icon_pixmap 离屏绘制一次图标。
+
+        Args:
+            src: 源图标。
+            media_w: media 区域宽度（逻辑像素，display_size = int(w × 1.10 × hover)）。
+            hover_scale: hover 缩放系数。
+        """
+        target = QPixmap(256, 256)
+        target.fill(Qt.transparent)
+        painter = QPainter(target)
+        try:
+            FileCardDelegate._draw_icon_pixmap(
+                painter, src, QRectF(0, 0, media_w, media_w), hover_scale=hover_scale,
+            )
+        finally:
+            painter.end()
+
+    def test_quantize_icon_size_steps(self, qapp: QApplication) -> None:
+        """量化函数：档位精确命中、阈值内吸附、阈值外返回原尺寸。"""
+        assert _delegate_mod._quantize_icon_size(48) == 48
+        assert _delegate_mod._quantize_icon_size(49) == 48  # 差 1px 吸附
+        assert _delegate_mod._quantize_icon_size(63) == 64  # 差 1px 吸附
+        assert _delegate_mod._quantize_icon_size(50) == 50  # 差 2px 走精确尺寸
+        assert _delegate_mod._quantize_icon_size(44) == 44  # 差 4px 走精确尺寸
+        assert _delegate_mod._quantize_icon_size(600) == 600
+
+    def test_icon_scale_cache_hit_skips_rescale(self, qapp: QApplication) -> None:
+        """同尺寸二次绘制命中缓存：scaled() 只执行一次。"""
+        _delegate_mod.clear_icon_scale_cache()
+        _delegate_mod.reset_icon_scale_stats()
+        src = self._solid_pixmap(128, "red")
+        self._draw_icon(src, 44.0)  # display_size = int(44 × 1.10) = 48（阶梯档）
+        self._draw_icon(src, 44.0)
+        stats = _delegate_mod.icon_scale_cache_stats()
+        assert stats["scaled_calls"] == 1
+        assert stats["hits"] == 1
+
+    def test_icon_scale_cache_nearest_step_within_threshold(
+        self, qapp: QApplication
+    ) -> None:
+        """阈值内邻档复用缓存：48 档已烘焙时请求 49 不触发重缩放。"""
+        _delegate_mod.clear_icon_scale_cache()
+        _delegate_mod.reset_icon_scale_stats()
+        src = self._solid_pixmap(128, "green")
+        self._draw_icon(src, 44.0)  # → 48（miss，烘焙）
+        self._draw_icon(src, 45.0)  # → int(45 × 1.10) = 49，吸附 48（hit）
+        stats = _delegate_mod.icon_scale_cache_stats()
+        assert stats["scaled_calls"] == 1
+        assert stats["hits"] == 1
+
+    def test_icon_scale_cache_stale_source_miss(self, qapp: QApplication) -> None:
+        """源图替换即失效：不同 cacheKey 同尺寸绘制必须重新缩放。"""
+        _delegate_mod.clear_icon_scale_cache()
+        _delegate_mod.reset_icon_scale_stats()
+        src_a = self._solid_pixmap(128, "red")
+        src_b = self._solid_pixmap(128, "blue")
+        assert src_a.cacheKey() != src_b.cacheKey()
+        self._draw_icon(src_a, 44.0)
+        self._draw_icon(src_b, 44.0)
+        stats = _delegate_mod.icon_scale_cache_stats()
+        assert stats["scaled_calls"] == 2
+        assert stats["hits"] == 0
+
+    def test_icon_scale_cache_skips_giant(self, qapp: QApplication) -> None:
+        """超大图不进缓存：display_size > 512 按需直缩且不占 LRU。"""
+        _delegate_mod.clear_icon_scale_cache()
+        _delegate_mod.reset_icon_scale_stats()
+        src = self._solid_pixmap(128, "yellow")
+        self._draw_icon(src, 500.0)  # display_size = 550 > 512
+        self._draw_icon(src, 500.0)
+        stats = _delegate_mod.icon_scale_cache_stats()
+        assert stats["scaled_calls"] == 2  # 两次均为按需直缩
+        assert len(_delegate_mod._ICON_SCALE_CACHE) == 0
+
+    def test_icon_scale_cache_lru_cap(self, qapp: QApplication) -> None:
+        """LRU 上限：300 个不同源同尺寸条目收敛到 ≤256 项。"""
+        _delegate_mod.clear_icon_scale_cache()
+        _delegate_mod.reset_icon_scale_stats()
+        colors = ("red", "green", "blue", "yellow", "cyan", "magenta")
+        for i in range(300):
+            src = self._solid_pixmap(32, colors[i % len(colors)])
+            # 每个 QPixmap 独立 cacheKey → 独立条目，撑满后触发淘汰
+            _delegate_mod._get_cached_scaled_icon(src, 48, 1.0)
+        assert len(_delegate_mod._ICON_SCALE_CACHE) <= 256
+        _delegate_mod.clear_icon_scale_cache()

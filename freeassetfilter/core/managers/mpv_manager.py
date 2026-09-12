@@ -315,6 +315,24 @@ class MPVManager(QObject):
         self._registered_components.clear()
 
     def _process_operations(self):
+        """处理操作队列的主循环（MPVOperationThread 线程入口）。
+
+        W2/W3/W4/W8 线程钩子经 :func:`worker_thread_scope` 在**调用线程内**
+        生效（role="playback"：P 核 + Playback + 提权；balanced 及以下不钉核
+        不提权）。档位来自 ``FAF_PERF_PROFILE``（默认 powersave 即不动；
+        todo 14 接 SettingsManagerV2 后替换此处取值）。
+        """
+        import os as _os
+
+        from freeassetfilter.core.native.platform_threads import worker_thread_scope
+
+        with worker_thread_scope(
+            role="playback",
+            mode=_os.environ.get("FAF_PERF_PROFILE", "powersave"),  # type: ignore[arg-type]
+        ):
+            self._process_operations_loop()
+
+    def _process_operations_loop(self):
         """处理操作队列的主循环"""
         info("操作处理循环开始")
 

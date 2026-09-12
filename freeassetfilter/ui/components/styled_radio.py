@@ -5,6 +5,7 @@ from PySide6.QtCore import Qt, Signal, Property, QRectF, QPropertyAnimation, QEa
 from PySide6.QtGui import QPainter, QColor, QPen, QPaintEvent
 
 from theme import tm
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 
 class StyledRadio(QWidget):
@@ -73,7 +74,7 @@ class StyledRadio(QWidget):
             font = self._label.font()
             font.setPixelSize(config["label_font"])
             self._label.setFont(font)
-            self._label.setStyleSheet(f"color: {tm.text.name()};")
+            register_widget_qss(self._label,(f"color: {tm.text.name()};"))
             self._label.setAttribute(Qt.WA_TransparentForMouseEvents)
             layout.addWidget(self._label)
         else:
@@ -214,7 +215,7 @@ class StyledRadio(QWidget):
                 font = self._label.font()
                 font.setPixelSize(config["label_font"])
                 self._label.setFont(font)
-                self._label.setStyleSheet(f"color: {tm.text.name()};")
+                register_widget_qss(self._label,(f"color: {tm.text.name()};"))
                 self._label.setAttribute(Qt.WA_TransparentForMouseEvents)
                 self.layout().addWidget(self._label)
             else:

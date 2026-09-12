@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QWidget, QGraphicsOpacityEffect, QApplication
-from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QVariantAnimation
+from PySide6.QtWidgets import QWidget, QApplication
+from PySide6.QtCore import Qt, QEasingCurve, QVariantAnimation
 from PySide6.QtGui import QPixmap, QPainter, QPaintEvent
 
 
 class ThemeTransitionOverlay(QWidget):
     """A full-window overlay that crossfades from a captured snapshot.
+
+    The fade is painted directly: each frame draws the snapshot pixmap
+    with ``painter.setOpacity`` (same pattern as
+    :class:`ContentTransitionOverlay` below) — a single blit per frame,
+    no offscreen effect pipeline.
 
     Usage:
         snapshot = window.grab()
@@ -29,6 +34,7 @@ class ThemeTransitionOverlay(QWidget):
         super().__init__(parent)
         self._snapshot = snapshot
         self._duration_ms = max(50, duration_ms)
+        self._opacity: float = 1.0
 
         self.setAttribute(Qt.WA_StyledBackground, False)
         # 过渡遮罩必须全透明：否则遮罩自身底色（默认 Window 色偏白）
@@ -38,15 +44,12 @@ class ThemeTransitionOverlay(QWidget):
         self.setAutoFillBackground(False)
         self.setGeometry(parent.rect())
 
-        self._opacity_effect = QGraphicsOpacityEffect(self)
-        self._opacity_effect.setOpacity(1.0)
-        self.setGraphicsEffect(self._opacity_effect)
-
-        self._anim = QPropertyAnimation(self._opacity_effect, b"opacity")
+        self._anim = QVariantAnimation(self)
         self._anim.setDuration(self._duration_ms)
         self._anim.setStartValue(1.0)
         self._anim.setEndValue(0.0)
         self._anim.setEasingCurve(QEasingCurve.InOutCubic)
+        self._anim.valueChanged.connect(self._on_value_changed)
         self._anim.finished.connect(self._on_finished)
 
     @classmethod
@@ -74,15 +77,32 @@ class ThemeTransitionOverlay(QWidget):
         self.raise_()
         self._anim.start()
 
+    def _on_value_changed(self, value: object) -> None:
+        """Animation frame callback: update opacity and repaint.
+
+        Args:
+            value: Current animation value (1.0 → 0.0).
+        """
+        try:
+            self._opacity = max(0.0, min(1.0, float(value)))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return
+        self.update()
+
     def _on_finished(self) -> None:
         """Clean up the overlay after the animation completes."""
-        self.setGraphicsEffect(None)
+        self._anim.stop()
+        self.hide()
         self.deleteLater()
 
     def paintEvent(self, event: QPaintEvent) -> None:
+        """Draw the snapshot at the current fade opacity (single blit)."""
+        if self._opacity <= 0.0 or self._snapshot.isNull():
+            return
         painter = QPainter(self)
         try:
             painter.setRenderHint(QPainter.SmoothPixmapTransform)
+            painter.setOpacity(self._opacity)
             painter.drawPixmap(self.rect(), self._snapshot)
         finally:
             painter.end()
@@ -92,7 +112,7 @@ class ContentTransitionOverlay(QWidget):
     """内容层主题过渡遮罩：旧外观快照打底、自绘淡出。
 
     与 :class:`ThemeTransitionOverlay`（整窗 ``grabWindow`` 截屏 +
-    ``QGraphicsOpacityEffect`` 逐帧全窗软件合成）的分工与差异：
+    自绘透明度淡出——paintEvent 内单次 ``drawPixmap``）的分工与差异：
 
     - 快照由调用方传入（主窗口对内容子树 ``QWidget.grab()``——子树不含
       OpenGL 的 Mica 背景兄弟层，规避 ``QWidget.grab()`` 在 GL 子部件上的

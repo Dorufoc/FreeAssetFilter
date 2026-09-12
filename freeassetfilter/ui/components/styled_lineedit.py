@@ -4,6 +4,7 @@ from PySide6.QtWidgets import QLineEdit, QWidget, QHBoxLayout
 from PySide6.QtCore import Qt, QRectF
 from PySide6.QtGui import QFont
 from theme import tm
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss, unregister_widget_qss
 
 
 class StyledLineEdit(QLineEdit):
@@ -42,7 +43,7 @@ class StyledLineEdit(QLineEdit):
         config = self.SIZE_CONFIG[self._size]
         # Set unique objectName to scope styles to this widget only (prevent inheritance)
         self.setObjectName(f"StyledLineEdit_{id(self)}")
-        self.setStyleSheet("")  # Clear any existing
+        unregister_widget_qss(self)  # Clear any existing
         font = QFont("Microsoft YaHei UI", config["font_size"])
         self.setFont(font)
         # Set fixed height to match Web CSS exactly
@@ -74,7 +75,7 @@ class StyledLineEdit(QLineEdit):
         disabled_color = f"rgba({mid_d.red()},{mid_d.green()},{mid_d.blue()},{40 / 100})"
         disabled_border = f"rgba({mid_d.red()},{mid_d.green()},{mid_d.blue()},{20 / 100})"
 
-        self.setStyleSheet(f"""
+        register_widget_qss(self,(f"""
             #{obj_name} {{
                 background-color: {bg_fill};
                 color: {tm.text.name()};
@@ -96,7 +97,7 @@ class StyledLineEdit(QLineEdit):
                 color: {disabled_color};
                 border-color: {disabled_border};
             }}
-        """)
+        """))
 
     def _on_theme_changed(self, theme: str) -> None:
         """主题切换时重新应用样式"""

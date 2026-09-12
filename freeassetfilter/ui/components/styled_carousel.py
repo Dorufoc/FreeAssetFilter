@@ -2,12 +2,13 @@
 
 from typing import Optional
 
-from PySide6.QtWidgets import QWidget, QHBoxLayout, QPushButton, QGraphicsOpacityEffect
+from PySide6.QtWidgets import QWidget, QHBoxLayout, QPushButton
 from PySide6.QtCore import Qt, Signal, Property, QPropertyAnimation, QEasingCurve, QTimer, QRectF, QPoint
-from PySide6.QtGui import QPainter, QPen, QPainterPath, QRegion
+from PySide6.QtGui import QPainter, QPen, QPainterPath, QRegion, QPixmap
 
 from theme import tm
 from components.paint_utils import draw_chevron
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 SIZE_H = {"sm": 120, "default": 200, "lg": 300}
 
@@ -25,7 +26,7 @@ class _Arrow(QPushButton):
         self._hover = False
         self.setFixedSize(32, 32)
         self.setCursor(Qt.PointingHandCursor)
-        self.setStyleSheet("background:transparent;border:none;")
+        register_widget_qss(self,("background:transparent;border:none;"))
 
     def enterEvent(self, e): self._hover = True; self.update(); super().enterEvent(e)
     def leaveEvent(self, e): self._hover = False; self.update(); super().leaveEvent(e)
@@ -54,7 +55,7 @@ class _Dot(QPushButton):
         self._anim = None
         self.setFixedSize(8, 8)
         self.setCursor(Qt.PointingHandCursor)
-        self.setStyleSheet("background:transparent;border:none;")
+        register_widget_qss(self,("background:transparent;border:none;"))
 
     @property
     def _accent(self): return tm.accent
@@ -115,6 +116,88 @@ class _Dot(QPushButton):
                 p.setPen(Qt.NoPen); p.setBrush(self._dot_inactive); p.drawEllipse(self.rect())
 
 
+class _FadeContainer(QWidget):
+    """Fade-variant slide host: crossfades slides without effects.
+
+    Slides are plain children (only the current one visible at rest).
+    During a transition both slides are hidden and the container paints
+    their grabbed pixmaps itself — old frame full opacity, new frame
+    with ``painter.setOpacity(t)`` — so the animation costs two blits
+    per frame instead of an offscreen effect pipeline.
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._old_pm: QPixmap = QPixmap()
+        self._new_pm: QPixmap = QPixmap()
+        self._fade_t: float = 1.0
+        self._fading: bool = False
+
+    def _get_fade_t(self) -> float:
+        return self._fade_t
+
+    def _set_fade_t(self, value: float) -> None:
+        self._fade_t = max(0.0, min(1.0, float(value)))
+        self.update()
+
+    fade_t = Property(float, _get_fade_t, _set_fade_t)
+
+    def begin_crossfade(self, old: QWidget, new: QWidget) -> bool:
+        """Snapshot *old*/*new* and hide them for container compositing.
+
+        Args:
+            old: outgoing slide widget.
+            new: incoming slide widget.
+
+        Returns:
+            True when both snapshots are valid and the fade may start.
+        """
+        try:
+            self._old_pm = old.grab()
+            self._new_pm = new.grab()
+        except Exception:
+            return False
+        if self._old_pm.isNull() or self._new_pm.isNull():
+            return False
+        old.hide()
+        new.hide()
+        self._fading = True
+        self._fade_t = 0.0
+        self.update()
+        return True
+
+    def finish_crossfade(self, new: QWidget) -> None:
+        """Show *new* and drop the snapshots."""
+        self._fading = False
+        self._fade_t = 1.0
+        self._old_pm = QPixmap()
+        self._new_pm = QPixmap()
+        new.show()
+        new.raise_()
+        self.update()
+
+    def abort_crossfade(self, current: QWidget) -> None:
+        """Restore *current* without completing the fade."""
+        self._fading = False
+        self._fade_t = 1.0
+        self._old_pm = QPixmap()
+        self._new_pm = QPixmap()
+        current.show()
+        current.raise_()
+        self.update()
+
+    def paintEvent(self, e) -> None:
+        if not self._fading:
+            return
+        with QPainter(self) as p:
+            if not self._old_pm.isNull():
+                p.drawPixmap(self.rect(), self._old_pm)
+            if not self._new_pm.isNull():
+                p.setOpacity(self._fade_t)
+                p.drawPixmap(self.rect(), self._new_pm)
+                p.setOpacity(1.0)
+
+
 class StyledCarousel(QWidget):
     """Carousel with slide/fade variants, arrows, dot indicators, and autoplay.
 
@@ -165,23 +248,23 @@ class StyledCarousel(QWidget):
 
         self._vp = QWidget(self)
         self._vp.setAttribute(Qt.WA_StyledBackground)
-        self._vp.setStyleSheet("background:transparent;")
+        register_widget_qss(self._vp,("background:transparent;"))
 
         self._track: Optional[QWidget] = None
         if variant == "slide":
             self._track = QWidget(self._vp)
-            self._track.setStyleSheet("background:transparent;")
+            register_widget_qss(self._track,("background:transparent;"))
             lo = QHBoxLayout(self._track)
             lo.setContentsMargins(0, 0, 0, 0); lo.setSpacing(0)
             self._sa = QPropertyAnimation(self._track, b"pos")
             self._sa.setDuration(500); self._sa.setEasingCurve(QEasingCurve.OutCubic)
             self._sa.finished.connect(self._finish)
 
-        self._fc: Optional[QWidget] = None
+        self._fc: Optional[_FadeContainer] = None
         self._fa: Optional[QPropertyAnimation] = None
         if variant == "fade":
-            self._fc = QWidget(self._vp)
-            self._fc.setStyleSheet("background:transparent;")
+            self._fc = _FadeContainer(self._vp)
+            register_widget_qss(self._fc,("background:transparent;"))
 
         self._prev = _Arrow("prev", self._vp)
         self._next = _Arrow("next", self._vp)
@@ -190,7 +273,7 @@ class StyledCarousel(QWidget):
 
         self._dw = QWidget(self if indicators == "outside" else self._vp)
         self._dw.setAttribute(Qt.WA_StyledBackground)
-        self._dw.setStyleSheet("background:transparent;")
+        register_widget_qss(self._dw,("background:transparent;"))
         dl = QHBoxLayout(self._dw)
         dl.setContentsMargins(0, 0, 0, 0); dl.setSpacing(8); dl.setAlignment(Qt.AlignCenter)
         self._dots: list[_Dot] = []
@@ -207,10 +290,12 @@ class StyledCarousel(QWidget):
         if self._v == "slide" and self._track:
             self._track.layout().addWidget(w)
         elif self._fc:
-            w.setParent(self._fc); w.show()
-            e = QGraphicsOpacityEffect(w)
-            e.setOpacity(1.0 if idx == 0 else 0.0)
-            w.setGraphicsEffect(e)
+            w.setParent(self._fc)
+            w.resize(self._fc.size())
+            w.setVisible(idx == 0)
+            if idx == 0:
+                w.show()
+                w.raise_()
         self._slides.append(w)
         d = _Dot(outside=self._ind_pos == "outside")
         d.clicked.connect(lambda checked, i=idx: self.set_current_index(i))
@@ -267,16 +352,34 @@ class StyledCarousel(QWidget):
     # ── Internal ───────────────────────────────────────────────
 
     def _fade(self, fi: int, ti: int):
-        os, ns = self._slides[fi], self._slides[ti]
-        oe = os.graphicsEffect(); ne = ns.graphicsEffect()
-        if oe is None or ne is None: self._anim = False; self._done(ti); return
-        oa = QPropertyAnimation(oe, b"opacity")
-        oa.setDuration(400); oa.setStartValue(1.0); oa.setEndValue(0.0); oa.setEasingCurve(QEasingCurve.OutCubic)
-        na = QPropertyAnimation(ne, b"opacity")
-        na.setDuration(400); na.setStartValue(0.0); na.setEndValue(1.0); na.setEasingCurve(QEasingCurve.OutCubic)
-        oa.finished.connect(lambda: na.start())
-        na.finished.connect(self._finish)
-        self._fa = oa; oa.start()
+        old, new = self._slides[fi], self._slides[ti]
+        if self._fc is None or not self._fc.begin_crossfade(old, new):
+            self._anim = False
+            self._done(ti)
+            return
+        anim = QPropertyAnimation(self._fc, b"fade_t")
+        anim.setDuration(400)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.finished.connect(self._finish_fade)
+        if self._fa is not None:
+            try:
+                self._fa.stop()
+            except Exception:
+                pass
+        self._fa = anim
+        anim.start()
+
+    def _finish_fade(self):
+        if self._fc is not None and self._slides:
+            try:
+                self._fc.finish_crossfade(self._slides[self._cur])
+            except Exception:
+                pass
+        self._fa = None
+        self._anim = False
+        self._done(self._cur)
 
     def _finish(self):
         self._anim = False

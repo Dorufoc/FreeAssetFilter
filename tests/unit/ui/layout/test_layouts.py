@@ -1305,7 +1305,15 @@ class TestImagePreviewerLayout:
         root_lay.setContentsMargins(0, 0, 0, 0)
         outer = QWidget(host)
         if backdrop is not None:
-            outer.setStyleSheet(f"background-color: {backdrop};")
+            # NOTE (A1 QSS singleton): backdrop must NOT use a direct
+            # setStyleSheet — a widget's own sheet outranks the app-level
+            # sheet by Qt level precedence and would paint over the
+            # previewer's subtree transparency. Palette fill is visually
+            # identical and keeps the QSS cascade untouched.
+            palette = outer.palette()
+            palette.setColor(outer.backgroundRole(), QColor(backdrop))
+            outer.setPalette(palette)
+            outer.setAutoFillBackground(True)
         root_lay.addWidget(outer)
         lay = QVBoxLayout(outer)
         lay.setContentsMargins(0, 0, 0, 0)

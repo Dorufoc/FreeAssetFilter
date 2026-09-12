@@ -420,7 +420,10 @@ class TestBottomButtons:
         layout._host_window = type("H", (), {"close": lambda self: closed.append(True)})()
         try:
             page = layout._appearance_page
-            orig_theme = page._staging_cache.get("appearance.theme")
+            # 以基线（discard 目标）为期望值：构造期 refresh_theme 会把 tm
+            # 当前偏好单向镜像进暂存，导致暂存初值可能偏离基线（环境相关），
+            # 断言必须对准基线才是 discard 语义本身。
+            orig_theme = page._staging_cache.dump()["baseline"]["appearance"]["theme"]
             page._on_dark_toggle(not (orig_theme == "dark"))
             assert page._staging_cache.is_dirty() is True
             layout._on_cancel_clicked()
@@ -469,7 +472,9 @@ class TestBottomButtons:
         layout = _make_layout(qapp, monkeypatch, tmp_path)
         try:
             page = layout._appearance_page
-            orig = page._staging_cache.get("appearance.theme")
+            # 同 test_cancel_discards_and_restores：以基线为期望值，
+            # 规避构造期 tm 单向镜像带来的环境相关初值漂移。
+            orig = page._staging_cache.dump()["baseline"]["appearance"]["theme"]
             page._on_dark_toggle(not (orig == "dark"))
             assert page._staging_cache.is_dirty() is True
             layout.on_host_closing()

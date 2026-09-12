@@ -32,6 +32,7 @@ from freeassetfilter.services.image_decode_worker import ImageDecodeWorker
 from freeassetfilter.services.image_decoder_service import ImageDecoderService
 from freeassetfilter.ui.components.styled_scroll_area import StyledScrollBar
 from freeassetfilter.ui.components.styled_slider import StyledSlider
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 
 class _StyledHScrollBar(StyledScrollBar):
@@ -404,7 +405,7 @@ class ImagePreviewerLayout(QWidget):
         self._image_view.setViewportUpdateMode(QGraphicsView.SmartViewportUpdate)
         # 背景透明：与文本预览器一致，让下层面板填充色透出（不涂 tm.surface 深色块）。
         # QAbstractScrollArea 的 viewport 默认按 palette 自绘底色，须显式关闭。
-        self._image_view.setStyleSheet("background: transparent; border: none;")
+        register_widget_qss(self._image_view,("background: transparent; border: none;"))
         self._image_view.setAutoFillBackground(False)
         self._image_view.viewport().setAutoFillBackground(False)
         self._image_view.setFrameShape(QFrame.NoFrame)
@@ -442,9 +443,9 @@ class ImagePreviewerLayout(QWidget):
         # 提示文字
         self._placeholder = QLabel("选择图片文件开始预览")
         self._placeholder.setAlignment(Qt.AlignCenter)
-        self._placeholder.setStyleSheet(
+        register_widget_qss(self._placeholder,(
             f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
-        )
+        ))
         overlay_layout.addWidget(self._placeholder)
 
         # "选择文件"按钮（仅 standalone 模式）
@@ -623,7 +624,7 @@ class ImagePreviewerLayout(QWidget):
         label = QLabel()
         label.setMovie(movie)
         label.setFixedSize(frame_size)
-        label.setStyleSheet("background: transparent;")
+        register_widget_qss(label,("background: transparent;"))
         movie.start()  # 自动播放
         # 显示暂停按钮（默认播放状态）
         self._gif_play_btn.show()
@@ -1089,7 +1090,7 @@ class ImagePreviewerLayout(QWidget):
         menu_border = tm.mid.name()
         menu_text = tm.text.name()
         menu_selected = tm.fill.name()
-        menu.setStyleSheet(f"""
+        register_widget_qss(menu,(f"""
             QMenu {{
                 background-color: {menu_bg};
                 border: 1px solid {menu_border};
@@ -1106,7 +1107,7 @@ class ImagePreviewerLayout(QWidget):
             QMenu::item:selected {{
                 background-color: {menu_selected};
             }}
-        """)
+        """))
 
         items = [
             (_format_rgb255(color), "RGB (0-255)"),
@@ -1288,14 +1289,14 @@ class ImagePreviewerLayout(QWidget):
         不在预览区涂 tm.surface 深色块。
         """
         # 顶栏透明无背景：不在此设置任何样式
-        self._content_area.setStyleSheet(f"""
+        register_widget_qss(self._content_area,(f"""
             background-color: transparent;
             border: 1px solid transparent;
             border-radius: 8px;
-        """)
-        self._overlay.setStyleSheet(f"""
+        """))
+        register_widget_qss(self._overlay,(f"""
             background-color: transparent;
-        """)
+        """))
         for _w in (self._top_bar, self._content_area, self._overlay):
             _w.style().unpolish(_w)
             _w.style().polish(_w)
@@ -1383,7 +1384,7 @@ class ImagePreviewerLayout(QWidget):
         btn_hover_text = tm.text.name()
         btn_bg = tm.fill.name()
         btn_border = tm.alpha_of(tm.mid, 30).name()
-        self._browse_btn.setStyleSheet(f"""
+        register_widget_qss(self._browse_btn,(f"""
             QPushButton {{
                 background: transparent;
                 border: 1px solid {btn_border};
@@ -1401,7 +1402,7 @@ class ImagePreviewerLayout(QWidget):
             QPushButton:pressed {{
                 background: {btn_bg};
             }}
-        """)
+        """))
 
 
 if __name__ == "__main__":

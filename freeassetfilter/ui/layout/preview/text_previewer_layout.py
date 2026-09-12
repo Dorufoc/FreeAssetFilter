@@ -104,6 +104,7 @@ from freeassetfilter.utils.markdown_renderer import (
     MARKDOWN_AVAILABLE,
     MarkdownRenderer,
 )
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 _MarkdownRenderer = MarkdownRenderer
 
@@ -1252,9 +1253,9 @@ class TextPreviewerLayout(QWidget):
 
         self._placeholder = QLabel("选择文本文件开始预览")
         self._placeholder.setAlignment(Qt.AlignCenter)
-        self._placeholder.setStyleSheet(
+        register_widget_qss(self._placeholder,(
             f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
-        )
+        ))
         overlay_layout.addWidget(self._placeholder)
 
         # "选择文件"按钮（仅 standalone 模式）
@@ -1486,9 +1487,9 @@ class TextPreviewerLayout(QWidget):
             bare=True,
             parent=self._content_area,
         )
-        self._search_drawer._panel.setStyleSheet(
+        register_widget_qss(self._search_drawer._panel,(
             f"#DrawerPanel {{ background-color: {tm.surface.name()}; border: none; }}"
-        )
+        ))
         _orig_get_panel_size = self._search_drawer._get_panel_size
 
         def _constrained_panel_size() -> tuple[int, int]:
@@ -1509,9 +1510,9 @@ class TextPreviewerLayout(QWidget):
 
         # 标题
         title = QLabel("搜索")
-        title.setStyleSheet(
+        register_widget_qss(title,(
             f"color: {tm.text.name()}; font-size: 16px; font-weight: 600; background: transparent;"
-        )
+        ))
         panel_layout.addWidget(title)
 
         # 搜索输入行
@@ -1547,9 +1548,9 @@ class TextPreviewerLayout(QWidget):
 
         # 状态标签
         self._search_status = QLabel("")
-        self._search_status.setStyleSheet(
+        register_widget_qss(self._search_status,(
             f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
-        )
+        ))
         self._search_status.setWordWrap(True)
         panel_layout.addWidget(self._search_status)
 
@@ -1563,10 +1564,10 @@ class TextPreviewerLayout(QWidget):
         self._search_list.setVerticalScrollBar(StyledScrollBar(orientation=Qt.Vertical))
         self._search_list.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         StyledScrollArea.apply_to(self._search_list)
-        self._search_list.setStyleSheet(
+        register_widget_qss(self._search_list,(
             "QListView { background: transparent; border: none; outline: none; }"
             "QListView::item { background: transparent; border: none; }"
-        )
+        ))
         self._search_list.clicked.connect(self._on_search_result_clicked)
         panel_layout.addWidget(self._search_list, stretch=1)
 
@@ -1587,9 +1588,9 @@ class TextPreviewerLayout(QWidget):
             bare=True,
             parent=self._content_area,
         )
-        self._ai_drawer._panel.setStyleSheet(
+        register_widget_qss(self._ai_drawer._panel,(
             f"#DrawerPanel {{ background-color: {tm.surface.name()}; border: none; }}"
-        )
+        ))
         _orig_get_panel_size = self._ai_drawer._get_panel_size
 
         def _constrained_panel_size() -> tuple[int, int]:
@@ -1604,10 +1605,10 @@ class TextPreviewerLayout(QWidget):
         self._ai_placeholder = QLabel("敬请期待")
         self._ai_placeholder.setAlignment(Qt.AlignCenter)
         self._ai_placeholder.setWordWrap(True)
-        self._ai_placeholder.setStyleSheet(
+        register_widget_qss(self._ai_placeholder,(
             f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
             " padding: 24px;"
-        )
+        ))
         panel_layout = self._ai_drawer._panel.layout()
         panel_layout.addStretch()
         panel_layout.addWidget(self._ai_placeholder, alignment=Qt.AlignCenter)
@@ -1924,29 +1925,29 @@ class TextPreviewerLayout(QWidget):
 
         # 刷新抽屉面板背景与 AI 占位文本颜色
         if hasattr(self, "_search_drawer") and self._search_drawer is not None:
-            self._search_drawer._panel.setStyleSheet(
+            register_widget_qss(self._search_drawer._panel,(
                 f"#DrawerPanel {{ background-color: {tm.surface.name()}; border: none; }}"
-            )
+            ))
         if hasattr(self, "_ai_drawer") and self._ai_drawer is not None:
-            self._ai_drawer._panel.setStyleSheet(
+            register_widget_qss(self._ai_drawer._panel,(
                 f"#DrawerPanel {{ background-color: {tm.surface.name()}; border: none; }}"
-            )
-            self._ai_placeholder.setStyleSheet(
+            ))
+            register_widget_qss(self._ai_placeholder,(
                 f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
                 " padding: 24px;"
-            )
+            ))
 
     def set_section_styles(self, fill_color: str, border_color: str) -> None:
         """应用面板样式（主题切换时由主窗口调用）。"""
         # 顶栏透明无背景：不在此设置任何样式
-        self._content_area.setStyleSheet(f"""
+        register_widget_qss(self._content_area,(f"""
             background-color: transparent;
             border: 1px solid transparent;
             border-radius: 8px;
-        """)
-        self._overlay.setStyleSheet(f"""
+        """))
+        register_widget_qss(self._overlay,(f"""
             background-color: transparent;
-        """)
+        """))
         for _w in (self._top_bar, self._content_area, self._overlay):
             _w.style().unpolish(_w)
             _w.style().polish(_w)
@@ -2016,7 +2017,7 @@ class TextPreviewerLayout(QWidget):
         """应用 Markdown / 源码视图的主题样式。"""
         text_color = tm.text.name()
 
-        self._markdown_view._text_browser.setStyleSheet(
+        register_widget_qss(self._markdown_view._text_browser,(
             f"""
             QTextBrowser#TextPreviewerMarkdownView {{
                 background-color: transparent;
@@ -2025,8 +2026,8 @@ class TextPreviewerLayout(QWidget):
                 border-radius: 0px;
             }}
         """
-        )
-        self._source_view._text_edit.setStyleSheet(
+        ))
+        register_widget_qss(self._source_view._text_edit,(
             f"""
             QTextEdit#TextPreviewerSourceEdit {{
                 background: transparent;
@@ -2036,7 +2037,7 @@ class TextPreviewerLayout(QWidget):
                 font-family: "Fira Code", Consolas, monospace;
             }}
         """
-        )
+        ))
         # QAbstractScrollArea 的 viewport 默认按 palette.Base 填色，关闭自绘底色才能透出底层
         self._markdown_view._text_browser.viewport().setAutoFillBackground(False)
         self._source_view._text_edit.viewport().setAutoFillBackground(False)
@@ -2064,7 +2065,7 @@ class TextPreviewerLayout(QWidget):
         btn_hover_text = tm.text.name()
         btn_bg = tm.fill.name()
         btn_border = tm.alpha_of(tm.mid, 30).name()
-        self._browse_btn.setStyleSheet(f"""
+        register_widget_qss(self._browse_btn,(f"""
             QPushButton {{
                 background: transparent;
                 border: 1px solid {btn_border};
@@ -2082,7 +2083,7 @@ class TextPreviewerLayout(QWidget):
             QPushButton:pressed {{
                 background: {btn_bg};
             }}
-        """)
+        """))
 
     # ── 事件槽 ───────────────────────────────────────────────────────────────
 

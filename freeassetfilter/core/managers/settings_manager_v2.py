@@ -510,6 +510,17 @@ def _build_default_colors() -> Dict[str, Any]:
     return colors
 
 
+# 性能档位取值（与 core/native 三钩子对齐）。
+PERFORMANCE_PROFILES: tuple[str, str, str] = (
+    "performance",
+    "balanced",
+    "powersave",
+)
+
+#: 默认性能档位：均衡。
+DEFAULT_PERFORMANCE_PROFILE: str = "balanced"
+
+
 # ── V2 分类树默认值 ──────────────────────────────────────────────
 # "分类树 v2" — 全新的扁平化配置参数结构，按功能域分组。
 # colors 包含所有配色数据（简化 + 全量组件），settings_v2.json 丢失时
@@ -536,6 +547,16 @@ DEFAULT_SETTINGS_V2: Dict[str, Any] = {
             "blur": 0,        # 图像模式模糊半径（整数 px，0-200，默认不模糊）
             "transparency": 80,  # 图像模式透明度（%，0-100，默认 80% 很透明）
         },
+    },
+    "performance": {
+        # 性能档位（设置页「性能档位」三段选择）：
+        # "performance"（性能） | "balanced"（均衡，默认） | "powersave"（省电）。
+        # 提交时经 SettingsLayout._submit_settings 下发到三钩子
+        #（platform_gpu.apply_gpu_profile / platform_threads
+        # .apply_process_power_policy / platform_timing.set_active_profile）。
+        # 注意：工作线程钩子（MMCSS/钉核）在线程入口注册，只影响
+        # 新建/下轮工作线程会话，不追溯已在跑的线程。
+        "profile": "balanced",
     },
 }
 
@@ -791,5 +812,15 @@ class SettingsManagerV2:
                         merged["appearance"][key] = merged_mica
                     else:
                         merged["appearance"][key] = app_loaded[key]
+
+        # performance 域合并：profile 为扁平键，只接受三档合法值；
+        # 旧文件缺键或非法值时回退默认 balanced（不抛异常）。
+        if "performance" in loaded and isinstance(loaded["performance"], dict):
+            perf_loaded = loaded["performance"]
+            staged_profile = perf_loaded.get("profile", None)
+            if isinstance(staged_profile, str) and (
+                staged_profile in PERFORMANCE_PROFILES
+            ):
+                merged["performance"]["profile"] = staged_profile
 
         return merged

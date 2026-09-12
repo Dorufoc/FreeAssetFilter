@@ -112,6 +112,10 @@ def create_linear_progress_animation(
 def blur_pixmap(source: QPixmap, radius: float) -> QPixmap:
     """对 pixmap 做高斯模糊（模糊烘焙进缓存，绘制期零成本）。
 
+    纯 CPU 预烘焙：按半径把源图下采样为缩略图再平滑放大回原尺寸，
+    两次缩放走 C++ 光栅路径（无离屏特效管线）。半径越大缩略图越小、
+    模糊越重，强度随半径单调变化。
+
     Args:
         source: 源 pixmap（非 null）。
         radius: 模糊半径 px；<= 0 时原样返回。
@@ -122,37 +126,20 @@ def blur_pixmap(source: QPixmap, radius: float) -> QPixmap:
     if source.isNull() or radius <= 0:
         return source
     try:
-        from PySide6.QtCore import QRectF
-        from PySide6.QtWidgets import (
-            QGraphicsBlurEffect,
-            QGraphicsPixmapItem,
-            QGraphicsScene,
-        )
-
-        margin = int(math.ceil(radius))
         w, h = source.width(), source.height()
-        target = QPixmap(w + margin * 2, h + margin * 2)
-        target.fill(Qt.transparent)
-        scene = QGraphicsScene()
-        item = QGraphicsPixmapItem(source)
-        effect = QGraphicsBlurEffect()
-        effect.setBlurRadius(radius)
-        effect.setBlurHints(QGraphicsBlurEffect.PerformanceHint)
-        item.setGraphicsEffect(effect)
-        item.setPos(margin, margin)
-        scene.addItem(item)
-        scene.setSceneRect(0, 0, target.width(), target.height())
-        painter = QPainter(target)
-        try:
-            scene.render(
-                painter,
-                QRectF(0, 0, target.width(), target.height()),
-                QRectF(0, 0, target.width(), target.height()),
-            )
-        finally:
-            painter.end()
-        cropped = target.copy(margin, margin, w, h)
-        return cropped if not cropped.isNull() else source
+        if w <= 0 or h <= 0:
+            return source
+        # 半径越大中间图越小：r=200 时约 1/17，r=10 时约 1/2。
+        scale = 12.0 / (12.0 + float(radius))
+        thumb_w = max(1, int(w * scale))
+        thumb_h = max(1, int(h * scale))
+        thumb = source.scaled(
+            thumb_w, thumb_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation
+        )
+        if thumb.isNull():
+            return source
+        result = thumb.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        return result if not result.isNull() else source
     except Exception:
         return source
 

@@ -4,6 +4,7 @@ from PySide6.QtWidgets import QWidget, QHBoxLayout, QLineEdit, QSizePolicy
 from PySide6.QtCore import Qt, Signal, QTimer, QEvent, QSize
 from PySide6.QtGui import QPainter, QPainterPath, QColor, QPen, QIntValidator, QFont, QPaintEvent
 from theme import tm
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 
 class _NumberDisplay(QLineEdit):
@@ -270,17 +271,22 @@ class StyledNumberInput(QWidget):
         config = self._get_config()
         input_obj = self._input.objectName()
 
-        # Web版输入框是透明背景，颜色统一处理
-        self._input.setStyleSheet(f"""
+        # Web版输入框是透明背景，颜色统一处理；禁用态输入文字降灰
+        # （整件 0.5 透明已随特效移除，改由各部件自有禁用态表达）。
+        if self._enabled:
+            input_color = tm.text.name()
+        else:
+            input_color = tm.alpha_of(tm.mid, 90).name(QColor.HexArgb)
+        register_widget_qss(self._input,(f"""
             #{input_obj} {{
                 background-color: transparent;
-                color: {tm.text.name()};
+                color: {input_color};
                 border: none;
                 font-size: {config["font_size"]}px;
                 selection-background-color: {tm.accent.name()};
                 selection-color: {tm.text.name()};
             }}
-        """)
+        """))
 
         self.update()
 
@@ -372,14 +378,8 @@ class StyledNumberInput(QWidget):
         self._update_buttons()
         self._decrement_btn.update()
         self._increment_btn.update()
-        # Web版禁用状态使用opacity: 0.5统一处理
-        if enabled:
-            self.setGraphicsEffect(None)
-        else:
-            from PySide6.QtWidgets import QGraphicsOpacityEffect
-            opacity_effect = QGraphicsOpacityEffect()
-            opacity_effect.setOpacity(0.5)
-            self.setGraphicsEffect(opacity_effect)
+        # 禁用态由各部件自有表达（输入框原生禁用 + 文字降灰、步进箭头
+        # 降透明度、容器边框降灰），不再对整件挂透明特效。
         self.update()
 
     # ── Public API ─────────────────────────────────────────────

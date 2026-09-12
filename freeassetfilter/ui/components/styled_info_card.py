@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QSizePolicy, QGraphicsOpacityEffect,
+    QWidget, QVBoxLayout, QHBoxLayout, QSizePolicy,
 )
 from PySide6.QtCore import (
     Qt, Signal, QRectF, QPropertyAnimation, QEasingCurve, QTimer,
@@ -38,6 +38,59 @@ def _clear_info_card_color_cache(*_args) -> None:
 
 
 tm.theme_changed.connect(_clear_info_card_color_cache)
+
+
+class _CardOverlayWidget(QWidget):
+    """Hover action overlay: self-painted gradient background + buttons.
+
+    Replaces the former whole-widget opacity fade: the G-color horizontal
+    gradient (same stops as the old background) is drawn in paintEvent
+    with ``painter.setOpacity``, driven per animation frame through
+    :meth:`set_fade`. Action buttons are plain children shown/hidden
+    with the overlay. Steady states render exactly as before; no
+    offscreen effect pipeline sits on the paint path.
+    """
+
+    def __init__(self, radius: int = 6, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._radius = max(0, int(radius))
+        self._overlay_opacity = 0.0
+        self._overlay_slide = 1.0
+        self.setAttribute(Qt.WA_StyledBackground, False)
+
+    def set_fade(self, opacity: float, slide: float) -> None:
+        """Update the painted fade state and schedule a repaint."""
+        self._overlay_opacity = max(0.0, min(1.0, float(opacity)))
+        self._overlay_slide = max(0.0, min(1.0, float(slide)))
+        self.update()
+
+    def set_radius(self, radius: int) -> None:
+        """Update the corner radius and schedule a repaint."""
+        self._radius = max(0, int(radius))
+        self.update()
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        if self._overlay_opacity <= 0.0:
+            return
+        g = tm.surface
+        transparent = QColor(g.red(), g.green(), g.blue(), 0)
+        solid = QColor(g.red(), g.green(), g.blue(), int(255 * 0.9))
+        w = max(1, self.width())
+        x1 = max(0.0, min(1.0, 1.0 - self._overlay_slide))
+        gradient = QLinearGradient(x1 * w, 0.0, float(w), 0.0)
+        gradient.setColorAt(0.0, transparent)
+        gradient.setColorAt(0.2, transparent)
+        gradient.setColorAt(0.8, solid)
+        gradient.setColorAt(1.0, solid)
+        painter = QPainter(self)
+        try:
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setOpacity(self._overlay_opacity)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(gradient)
+            painter.drawRoundedRect(QRectF(self.rect()), self._radius, self._radius)
+        finally:
+            painter.end()
 
 
 class StyledInfoCard(QWidget):
@@ -278,13 +331,9 @@ class StyledInfoCard(QWidget):
         elif not self._is_previewing:
             self._anim_bg_color = self._style_colors["normal_bg"]
             self._anim_border_color = self._style_colors["normal_border"]
-        # 主题切换后刷新 overlay 渐变背景（G 色随深色/亮色模式变化，保留当前 slide）
+        # 主题切换后刷新 overlay 渐变背景（G 色随深色/亮色模式变化，paintEvent 读取实时主题色）
         if self._overlay_widget:
-            self._overlay_widget.setStyleSheet(
-                self._overlay_background_stylesheet(
-                    self._get_config()["radius"], self._overlay_slide
-                )
-            )
+            self._overlay_widget.update()
         self.update()
 
     # ── Config ────────────────────────────────────────────────
@@ -663,13 +712,7 @@ class StyledInfoCard(QWidget):
         self.update()
 
     def update_overlay(self) -> None:
-        """强制 overlay 子控件重绘（修复 QGraphicsEffect 缓存导致的不同步问题）。
-
-        原理：overlay 使用了 QGraphicsOpacityEffect，Qt 内部会缓存 sourcePixmap。
-        当父容器（QScrollArea）滚动时，子 widget 的几何位置已经跟随父容器更新，
-        但 graphics effect 的缓存 pixmap 仍是滚动前的版本，导致 overlay 视觉上
-        "跟不上"滚动。手动调用 update() 触发重新 grab pixmap 即可解决。
-        """
+        """强制 overlay 子控件重绘（滚动后与卡片几何保持同步）。"""
         if self._overlay_widget is not None and self._overlay_widget.isVisible():
             self._overlay_widget.update()
 
@@ -724,8 +767,9 @@ class StyledInfoCard(QWidget):
     def _rebuild_overlay(self):
         """Create or update the overlay widget and its action buttons.
 
-        Uses QGraphicsOpacityEffect so the entire overlay (background + buttons)
-        fades in/out synchronously.
+        The overlay background gradient is self-painted with per-frame
+        opacity (see :class:`_CardOverlayWidget`); buttons are plain
+        children shown/hidden with the overlay.
         """
         # Remove old overlay
         if self._overlay_widget:
@@ -736,26 +780,15 @@ class StyledInfoCard(QWidget):
         if not self._overlay_enabled or not self._actions:
             return
 
+        config = self._get_config()
+        radius = config["radius"]
+
         # Create overlay widget
-        self._overlay_widget = QWidget(self)
+        self._overlay_widget = _CardOverlayWidget(radius, self)
         self._overlay_widget.setAttribute(Qt.WA_StyledBackground, False)
         self._overlay_widget.setAttribute(Qt.WA_TransparentForMouseEvents, False)
         self._overlay_widget.raise_()
         self._overlay_widget.setGeometry(self.rect())
-
-        config = self._get_config()
-        radius = config["radius"]
-
-        # QGraphicsOpacityEffect — whole widget (bg + buttons) fades together
-        self._opacity_effect = QGraphicsOpacityEffect()
-        self._opacity_effect.setOpacity(0.0)
-        self._overlay_widget.setGraphicsEffect(self._opacity_effect)
-
-        # G 色水平渐变背景：左端全透明 → 右端 G 色低透明度；整体淡入淡出交给 opacity effect
-        # slide 传入当前值，避免重建后渐变窗口跳回全宽
-        self._overlay_widget.setStyleSheet(
-            self._overlay_background_stylesheet(radius, self._overlay_slide)
-        )
 
         if self._layout_mode == "horizontal":
             # Horizontal row — buttons right-aligned
@@ -790,6 +823,8 @@ class StyledInfoCard(QWidget):
             if self._actions and len(self._actions) > 2:
                 layout.addLayout(bottom_row)
             layout.addStretch()
+            # Initially hidden; hover animates overlay_opacity 0 → 1.
+            self._overlay_widget.setVisible(False)
             return
 
         for text, icon, variant, size, callback in self._actions:
@@ -801,48 +836,24 @@ class StyledInfoCard(QWidget):
             self._overlay_buttons.append(btn)
             layout.addWidget(btn)
 
-        # Initially hidden (opacity effect = 0, but we must keep visible so the
-        # effect can animate from 0 → 1 on hover)
+        # Initially hidden; hover animates overlay_opacity 0 → 1.
         self._overlay_widget.setVisible(False)
 
-    def _overlay_background_stylesheet(self, radius: int, slide: float = 1.0) -> str:
-        """生成 overlay 背景的 G 色水平渐变 QSS（左端透明 → 右端 G 色低透明度）。
-
-        G 色取自 surface token（gray.g1 / gray_light.g1，即 infocard 背景色），
-        随主题切换；右端不透明度取 90%。
-
-        slide 控制渐变窗口起点 x1（0~1 比例）：slide=1 时窗口为整卡宽度
-        [0,1]，slide<1 时窗口右移为 [1-slide, 1]——右缘始终固定于卡片右缘，
-        widget 保持整卡几何不出界，四角由 border-radius 圆角约束，
-        滑入/滑出动画期间不会以矩形边缘遮挡卡片圆角。
-        """
-        g = tm.surface
-        base = f"rgba({g.red()},{g.green()},{g.blue()}"
-        alpha = int(255 * 0.9)
-        x1 = max(0.0, min(1.0, 1.0 - slide))
-        return (
-            "background: qlineargradient(x1:"
-            f"{x1:.3f}, y1:0, x2:1, y2:0, "
-            f"stop:0 {base},0), stop:0.2 {base},0), "
-            f"stop:0.8 {base},{alpha}), stop:1 {base},{alpha}));"
-            f"border-radius: {radius}px;"
-        )
-
     def _update_overlay_visibility(self):
-        """Sync the overlay widget's opacity effect + visibility with _overlay_opacity."""
-        if not self._overlay_widget or not self._opacity_effect:
+        """Sync the overlay widget's painted fade + visibility with _overlay_opacity."""
+        if not self._overlay_widget:
             return
         visible = self._overlay_opacity > 0.01 and not self._disabled
         self._overlay_widget.setVisible(visible)
         if visible:
-            self._opacity_effect.setOpacity(min(1.0, self._overlay_opacity))
+            self._overlay_widget.set_fade(self._overlay_opacity, self._overlay_slide)
 
     def _update_overlay_geometry(self):
         """保持 hover overlay 与绘制内容同步，支持 x/y_offset 位移动画。
 
-        滑入/滑出动画通过动态重建背景渐变 QSS（x1 随 slide 变化）实现，
-        widget 始终占满整卡几何、右缘固定于卡片右缘，四角由 border-radius
-        圆角约束——动画期间不会以矩形边缘遮挡卡片圆角。
+        滑入/滑出动画通过自绘渐变窗口起点（x1 随 slide 变化）实现，
+        widget 始终占满整卡几何、右缘固定于卡片右缘，四角由圆角约束——
+        动画期间不会以矩形边缘遮挡卡片圆角。
         """
         if not self._overlay_widget:
             return
@@ -850,13 +861,14 @@ class StyledInfoCard(QWidget):
         if self._x_offset or self._y_offset:
             rect.translate(self._x_offset, self._y_offset)
         self._overlay_widget.setGeometry(rect)
-        # 渐变窗口起点随 slide 变化（右缘固定于卡片右缘），重建背景 QSS
+        # 渐变窗口起点随 slide 变化（右缘固定于卡片右缘），直接推送自绘状态
         if self._overlay_enabled and self._actions:
-            self._overlay_widget.setStyleSheet(
-                self._overlay_background_stylesheet(
-                    self._get_config()["radius"], self._overlay_slide
-                )
-            )
+            self._overlay_widget.set_fade(self._overlay_opacity, self._overlay_slide)
+        # 自绘接管背景后不再有按帧 setStyleSheet 的隐式 relayout，
+        # 几何变化后显式激活按钮布局，防止收缩后按钮停留在旧坐标。
+        overlay_layout = self._overlay_widget.layout()
+        if overlay_layout is not None:
+            overlay_layout.activate()
 
     # ── Event handling ────────────────────────────────────────
 

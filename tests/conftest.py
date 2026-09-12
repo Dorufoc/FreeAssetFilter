@@ -141,6 +141,18 @@ def _reset_all_singletons() -> None:
     # AsyncIconLoader 模块级单例缓存。
     AsyncIconLoader._instance = None
 
+    # A1 QSS singleton: drop app-stylesheet registry between tests so the
+    # central sheet never accumulates session-wide under the session qapp
+    # (full-tree re-polish cost grows with accumulation). Live widgets
+    # re-register from their own constructors; visual tests pump events
+    # which triggers the coalesced re-apply automatically.
+    try:
+        from freeassetfilter.ui.theme.app_stylesheet import reset_qss_registry
+
+        reset_qss_registry()
+    except Exception:
+        pass
+
 
 @pytest.fixture(autouse=True, scope="function")
 def reset_singletons() -> None:

@@ -7,6 +7,7 @@ from PySide6.QtCore import Qt, Signal, QRectF, QPropertyAnimation, QEasingCurve,
 from PySide6.QtGui import QPainter, QPaintEvent, QMouseEvent, QFont
 
 from theme import tm
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 
 class StyledSlider(QWidget):
@@ -92,10 +93,10 @@ class StyledSlider(QWidget):
                     font = QFont("Microsoft YaHei UI", 11)
                     lbl.setFont(font)
                     lbl.setAlignment(Qt.AlignCenter)
-                    lbl.setStyleSheet(f"color: {tm.alpha_of(tm.mid, 60).name()};")
+                    register_widget_qss(lbl,(f"color: {tm.alpha_of(tm.mid, 60).name()};"))
                     labels_layout.addWidget(lbl, stretch=1)
                     if i == 0:
-                        lbl.setStyleSheet(f"color: {tm.mid.name()}; font-weight: 500;")
+                        register_widget_qss(lbl,(f"color: {tm.mid.name()}; font-weight: 500;"))
                 layout.addLayout(labels_layout)
                 self._label_widgets = labels_layout
             else:
@@ -107,10 +108,10 @@ class StyledSlider(QWidget):
                     font = QFont("Microsoft YaHei UI", 11)
                     lbl.setFont(font)
                     lbl.setAlignment(Qt.AlignCenter)
-                    lbl.setStyleSheet(f"color: {tm.alpha_of(tm.mid, 60).name()};")
+                    register_widget_qss(lbl,(f"color: {tm.alpha_of(tm.mid, 60).name()};"))
                     labels_layout.addWidget(lbl, stretch=1)
                     if i == 0:
-                        lbl.setStyleSheet(f"color: {tm.mid.name()}; font-weight: 500;")
+                        register_widget_qss(lbl,(f"color: {tm.mid.name()}; font-weight: 500;"))
                 layout.addLayout(labels_layout)
                 self._label_widgets = labels_layout
 
@@ -149,9 +150,9 @@ class StyledSlider(QWidget):
                     lbl = item.widget()
                     active_index = round(value * (len(self._labels) - 1))
                     if i == active_index:
-                        lbl.setStyleSheet(f"color: {tm.mid.name()}; font-weight: 500;")
+                        register_widget_qss(lbl,(f"color: {tm.mid.name()}; font-weight: 500;"))
                     else:
-                        lbl.setStyleSheet(f"color: {tm.alpha_of(tm.mid, 60).name()};")
+                        register_widget_qss(lbl,(f"color: {tm.alpha_of(tm.mid, 60).name()};"))
 
     @property
     def value(self) -> float:

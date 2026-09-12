@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
 
 from theme import tm
 from freeassetfilter.services.office_converter_worker import OfficeConverterWorker
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 
 class OfficePreviewerLayout(QWidget):
@@ -118,9 +119,9 @@ class OfficePreviewerLayout(QWidget):
         overlay_layout.setAlignment(Qt.AlignCenter)
         self._placeholder = QLabel("正在转换 Office 文档…")
         self._placeholder.setAlignment(Qt.AlignCenter)
-        self._placeholder.setStyleSheet(
+        register_widget_qss(self._placeholder,(
             f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
-        )
+        ))
         overlay_layout.addWidget(self._placeholder)
         self._content_stack.addWidget(self._overlay)
 
@@ -141,9 +142,9 @@ class OfficePreviewerLayout(QWidget):
         self._error_view.setObjectName("OfficePreviewerErrorView")
         self._error_view.setAlignment(Qt.AlignCenter)
         self._error_view.setWordWrap(True)
-        self._error_view.setStyleSheet(
+        register_widget_qss(self._error_view,(
             f"color: {tm.mid.name()}; font-size: 14px; background: transparent; padding: 24px;"
-        )
+        ))
         self._content_stack.addWidget(self._error_view)
 
         # index 4：PDF 视图（懒内嵌 PdfPreviewerLayout）

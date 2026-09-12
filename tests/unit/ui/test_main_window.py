@@ -351,7 +351,8 @@ class TestBackgroundMode:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """showEvent 门控：image 模式跳过 Mica 刷新调度，mica 模式才调度。"""
-        # 防止 100ms 备份恢复定时器访问未构建的 _file_pool（None）
+        # 测试隔离：暂存池恢复涉及磁盘 I/O，一律短路（恢复时机已改为
+        # 由 _finalize_panels 在文件池就绪后触发，见 main_window.py）
         monkeypatch.setattr(
             MainWindow, "_check_and_restore_backup", lambda self: None
         )

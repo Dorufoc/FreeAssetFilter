@@ -10,20 +10,29 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 
 import pytest
 
 from freeassetfilter.utils import perf_metrics
 from freeassetfilter.utils.perf_metrics import (
+    FRAME_RING_MAXLEN,
     PerfEventStats,
     PerfMetricsRegistry,
     _truthy_env,
+    begin_frame,
     clear_perf_metrics,
+    end_frame,
     export_perf_metrics,
+    frame_sample,
+    frame_time_stats,
     get_perf_registry,
     get_perf_snapshot,
     increment_perf_counter,
+    record_frame_sample,
     record_perf_duration,
+    reset_frame_times,
+    set_frame_profiling_enabled,
     set_perf_metadata,
     track_perf,
 )
@@ -398,8 +407,169 @@ class TestModuleLevelFunctions:
 
 
 def test_snapshot_shape() -> None:
-    """snapshot 顶层字段齐全。"""
+    """snapshot 顶层字段齐全（含 frame_times 帧通道与 gui_resources 句柄段）。"""
     registry = PerfMetricsRegistry()
     snap: dict[str, object] = registry.snapshot()
-    assert set(snap.keys()) == {"enabled", "global_counters", "events"}
+    assert set(snap.keys()) == {
+        "enabled",
+        "global_counters",
+        "events",
+        "frame_times",
+        "gui_resources",
+    }
     assert isinstance(registry.enabled, bool)
+
+
+class TestFrameProfiling:
+    """帧时间剖析通道：空数据、分位数学、环形界、快照导出、开销探针。"""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_frame_state(self) -> None:
+        """保存/恢复帧开关并清空环形缓冲（防 stale state 串扰）。
+
+        Yields:
+            None: 无返回。
+        """
+        was_enabled = perf_metrics.FRAME_PROFILING_ENABLED
+        reset_frame_times()
+        clear_perf_metrics()
+        yield
+        reset_frame_times()
+        clear_perf_metrics()
+        set_frame_profiling_enabled(was_enabled)
+
+    def test_empty_stats_no_crash(self) -> None:
+        """空缓冲时 frame_time_stats 返回零值而不崩溃。"""
+        set_frame_profiling_enabled(True)
+        stats = frame_time_stats()
+        assert stats == {"p50_ms": 0.0, "p95_ms": 0.0, "p99_ms": 0.0, "count": 0}
+
+    def test_percentile_known_dataset(self) -> None:
+        """已知样本集 1..10 的 p50/p95/p99 与事件分位同口径。"""
+        set_frame_profiling_enabled(True)
+        for value in range(1, 11):
+            record_frame_sample(float(value))
+        stats = frame_time_stats()
+        assert stats["count"] == 10
+        assert stats["p50_ms"] == pytest.approx(6.0)
+        assert stats["p95_ms"] == pytest.approx(10.0)
+        assert stats["p99_ms"] == pytest.approx(10.0)
+
+    def test_ring_buffer_bound(self) -> None:
+        """写入超量后环形缓冲只保留 FRAME_RING_MAXLEN 条。"""
+        set_frame_profiling_enabled(True)
+        for value in range(FRAME_RING_MAXLEN + 500):
+            record_frame_sample(float(value % 100))
+        stats = frame_time_stats()
+        assert stats["count"] == FRAME_RING_MAXLEN
+        assert len(perf_metrics._frame_times) == FRAME_RING_MAXLEN
+
+    def test_begin_end_frame_roundtrip(self) -> None:
+        """begin/end_frame 配对记录一次样本；None token 为无操作。"""
+        set_frame_profiling_enabled(True)
+        token = begin_frame()
+        assert token is not None
+        end_frame(token)
+        end_frame(None)
+        assert frame_time_stats()["count"] == 1
+
+    def test_disabled_records_nothing(self) -> None:
+        """关闭时 begin 返回 None 且一切写入为无操作。"""
+        set_frame_profiling_enabled(False)
+        assert begin_frame() is None
+        record_frame_sample(5.0)
+        with frame_sample():
+            pass
+        assert frame_time_stats()["count"] == 0
+
+    def test_frame_sample_context_manager(self) -> None:
+        """frame_sample 上下文记录一次样本。"""
+        set_frame_profiling_enabled(True)
+        with frame_sample():
+            pass
+        assert frame_time_stats()["count"] == 1
+
+    def test_snapshot_contains_frame_percentiles(self, tmp_path) -> None:
+        """快照/导出 JSON 必含帧 p50/p95/p99（缺字段即失败）。"""
+        set_frame_profiling_enabled(True)
+        for value in range(1, 11):
+            record_frame_sample(float(value))
+
+        snap = get_perf_snapshot()
+        assert {"p50_ms", "p95_ms", "p99_ms", "count"} <= set(snap["frame_times"])
+        assert snap["frame_times"]["p50_ms"] == pytest.approx(6.0)
+
+        out = tmp_path / "frame_snap.json"
+        export_perf_metrics(str(out))
+        loaded = json.loads(out.read_text(encoding="utf-8"))
+        assert {"p50_ms", "p95_ms", "p99_ms", "count"} <= set(loaded["frame_times"])
+        assert loaded["frame_times"]["count"] == 10
+
+    def test_snapshot_empty_frames_still_has_keys(self) -> None:
+        """空帧缓冲的快照仍含帧键（零值），不断言缺失。"""
+        snap = get_perf_snapshot()
+        assert {"p50_ms", "p95_ms", "p99_ms", "count"} <= set(snap["frame_times"])
+        assert snap["frame_times"]["count"] == 0
+
+    def test_paint_hook_overhead_within_5_percent(self) -> None:
+        """关闭门控时 paint 钩子开销 ≤ 无钩子均值 +5%（≥200 样本，预热后）。
+
+        用真实 paint 量级（~0.5ms 忙循环， delegate 实际绘制为百微秒~
+        毫秒级）的确定性体量模拟一次 paint，对比无钩子与
+        门控关闭钩子的均值；同时记录启用路径数值作证据（不断言）。
+        """
+        set_frame_profiling_enabled(False)
+
+        def _paint_body() -> float:
+            acc = 0.0
+            for i in range(15000):
+                acc += (float(i) * 1.7) % 5.0
+            return acc
+
+        def _paint_unhooked() -> float:
+            return _paint_body()
+
+        def _paint_hooked() -> float:
+            token = begin_frame()
+            try:
+                return _paint_body()
+            finally:
+                end_frame(token)
+
+        sample_count = 300
+        for _ in range(50):
+            _paint_unhooked()
+            _paint_hooked()
+
+        # 交错采样：同一循环内交替测无钩子/门控关闭，抵消机器漂移。
+        plain_total = 0.0
+        gated_off_total = 0.0
+        for _ in range(sample_count):
+            started = time.perf_counter()
+            _paint_unhooked()
+            plain_total += time.perf_counter() - started
+            started = time.perf_counter()
+            _paint_hooked()
+            gated_off_total += time.perf_counter() - started
+        plain_us = plain_total / sample_count * 1e6
+        gated_off_us = gated_off_total / sample_count * 1e6
+
+        set_frame_profiling_enabled(True)
+        reset_frame_times()
+        started = time.perf_counter()
+        for _ in range(sample_count):
+            _paint_hooked()
+        gated_on_us = (time.perf_counter() - started) / sample_count * 1e6
+        on_count = frame_time_stats()["count"]
+        set_frame_profiling_enabled(False)
+
+        print(
+            f"\npaint 钩子开销探针（{sample_count} 样本，交错采样）: "
+            f"unhooked={plain_us:.3f}us "
+            f"gated_off={gated_off_us:.3f}us "
+            f"gated_on={gated_on_us:.3f}us "
+            f"on_count={on_count}"
+        )
+        assert gated_off_us <= plain_us * 1.05, (
+            f"门控关闭钩子开销超标: {gated_off_us:.3f}us > {plain_us:.3f}us * 1.05"
+        )

@@ -36,6 +36,7 @@ from freeassetfilter.ui.components.styled_scroll_area import (
     StyledScrollArea,
     StyledScrollBar,
 )
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 
 class _StyledTextEdit(QPlainTextEdit):
@@ -106,7 +107,7 @@ class _StyledTextEdit(QPlainTextEdit):
         border_color = tm.danger.name() if self._error else tm.alpha_of(tm.mid, 50).name()
         focus_border = tm.danger.name() if self._error else tm.accent.name()
 
-        self.setStyleSheet(f"""
+        register_widget_qss(self,(f"""
             #{self._obj_name} {{
                 background: transparent;
                 color: {tm.text.name()};
@@ -125,7 +126,7 @@ class _StyledTextEdit(QPlainTextEdit):
                 color: {tm.alpha_of(tm.mid, 40).name()};
                 border-color: {tm.alpha_of(tm.mid, 20).name()};
             }}
-        """)
+        """))
 
     # ---- paint ----
 
@@ -220,9 +221,9 @@ class StyledTextarea(QWidget):
 
         # --- Label ---
         self._label = QLabel(label)
-        self._label.setStyleSheet(
+        register_widget_qss(self._label,(
             f"font-size: 13px; font-weight: 500; color: {tm.text.name()};"
-        )
+        ))
         self._label.setVisible(bool(label))
         layout.addWidget(self._label)
 
@@ -241,7 +242,7 @@ class StyledTextarea(QWidget):
 
         # Description
         self._description_label = QLabel(description)
-        self._description_label.setStyleSheet(self._description_style())
+        register_widget_qss(self._description_label,(self._description_style()))
         self._description_label.setVisible(bool(description))
         bottom_row.addWidget(self._description_label)
 
@@ -250,9 +251,9 @@ class StyledTextarea(QWidget):
         # Counter
         initial_count = f"{len(text)}/{max_length}" if max_length is not None else ""
         self._counter_label = QLabel(initial_count)
-        self._counter_label.setStyleSheet(
+        register_widget_qss(self._counter_label,(
             f"font-size: 11px; color: {tm.alpha_of(tm.mid, 60).name()};"
-        )
+        ))
         self._counter_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self._counter_label.setVisible(max_length is not None)
         bottom_row.addWidget(self._counter_label)
@@ -365,4 +366,4 @@ class StyledTextarea(QWidget):
     def error(self, value: bool):
         self._error = value
         self._text_edit.error = value
-        self._description_label.setStyleSheet(self._description_style())
+        register_widget_qss(self._description_label,(self._description_style()))

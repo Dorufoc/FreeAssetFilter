@@ -1,7 +1,7 @@
 """Styled Drawer component — slides in from right, left, or top edge.
 
 Two physical layers: (1) backdrop QWidget covering the entire screen with
-semi-transparent black fill faded via QGraphicsOpacityEffect animation;
+semi-transparent black fill faded via a painted opacity-property animation;
 (2) drawer panel QWidget sliding via QPropertyAnimation on pos().
 
 Signals: opened(), closed()
@@ -17,14 +17,16 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
-    QGraphicsDropShadowEffect,
-    QGraphicsOpacityEffect,
     QApplication,
 )
-from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve, QPoint, QEvent
-from PySide6.QtGui import QFont, QCursor, QKeyEvent, QMouseEvent
+from PySide6.QtCore import (
+    Qt, Signal, Property, QPropertyAnimation, QEasingCurve, QPoint, QEvent,
+)
+from PySide6.QtGui import QFont, QCursor, QKeyEvent, QMouseEvent, QPainter, QPaintEvent, QColor
 
 from theme import tm
+from components.paint_utils import render_soft_shadow
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 SIZE_CONFIG: dict[str, dict[str, int]] = {
     "sm": {"right": 280, "left": 280, "top": 240},
@@ -33,6 +35,73 @@ SIZE_CONFIG: dict[str, dict[str, int]] = {
 }
 VALID_ORIENTATIONS = ("right", "left", "top")
 ANIM_MS = 250
+
+
+class _DrawerBackdrop(QWidget):
+    """Full-area backdrop: translucent fill plus the panel edge glow.
+
+    ``backdrop_opacity`` (0.0–1.0) drives both the black fill alpha and
+    the glow strength; the drawer open/close transitions animate it with
+    the same duration/easing as before. The glow is a pre-baked
+    soft-shadow bitmap drawn around the panel's *live* geometry, so it
+    tracks the slide animation with one blit per frame — no effect
+    pipeline on the paint path.
+    """
+
+    _GLOW_PAD: int = 24
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._backdrop_opacity: float = 0.0
+        self._fill_base = tm.alpha_of(tm.black, 60)
+        self._glow_color = tm.with_alpha(tm.black, 112)
+        self._panel: Optional[QWidget] = None
+
+    def set_panel(self, panel: QWidget) -> None:
+        """Attach the panel whose silhouette the glow follows."""
+        self._panel = panel
+
+    def _get_backdrop_opacity(self) -> float:
+        return self._backdrop_opacity
+
+    def _set_backdrop_opacity(self, value: float) -> None:
+        self._backdrop_opacity = max(0.0, min(1.0, float(value)))
+        self.update()
+
+    backdrop_opacity = Property(float, _get_backdrop_opacity, _set_backdrop_opacity)
+
+    def set_backdrop_opacity(self, value: float) -> None:
+        """Set the backdrop opacity directly (0.0 = invisible)."""
+        self._set_backdrop_opacity(value)
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        painter = QPainter(self)
+        try:
+            fill = QColor(self._fill_base)
+            fill.setAlphaF(
+                self._fill_base.alphaF() * self._backdrop_opacity
+            )
+            painter.fillRect(self.rect(), fill)
+            if (
+                self._panel is not None
+                and self._backdrop_opacity > 0.01
+                and self._panel.isVisible()
+            ):
+                geom = self._panel.geometry()
+                glow = render_soft_shadow(
+                    geom.width(), geom.height(), 0, 60,
+                    self._glow_color, self._GLOW_PAD,
+                )
+                if not glow.isNull():
+                    painter.setOpacity(self._backdrop_opacity)
+                    painter.drawPixmap(
+                        geom.x() - self._GLOW_PAD,
+                        geom.y() - self._GLOW_PAD + 10,
+                        glow,
+                    )
+                    painter.setOpacity(1.0)
+        finally:
+            painter.end()
 
 
 class StyledDrawer(QWidget):
@@ -78,17 +147,11 @@ class StyledDrawer(QWidget):
         self._update_container_geom()
         self.setGeometry(0, 0, self._cw, self._ch)
 
-        # ── Layer 1: Backdrop ──
-        self._backdrop = QWidget(self)
+        # ── Layer 1: Backdrop (self-painted fill + panel glow) ──
+        self._backdrop = _DrawerBackdrop(self)
         self._backdrop.setObjectName("DrawerBackdrop")
-        _bd = tm.alpha_of(tm.black, 60)
-        self._backdrop.setStyleSheet(f"#DrawerBackdrop {{ background-color: rgba({_bd.red()},{_bd.green()},{_bd.blue()},{_bd.alpha() / 255:.1f}); }}")
         self._backdrop.setGeometry(0, 0, self._cw, self._ch)
         self._backdrop.mousePressEvent = self._on_backdrop_clicked  # type: ignore[method-assign]
-
-        self._backdrop_opacity = QGraphicsOpacityEffect(self._backdrop)
-        self._backdrop_opacity.setOpacity(0.0)
-        self._backdrop.setGraphicsEffect(self._backdrop_opacity)
 
         # ── Layer 2: Drawer panel ──
         pw, ph = self._get_panel_size()
@@ -101,15 +164,13 @@ class StyledDrawer(QWidget):
             "left": f"border-right: 1px solid {_border_clr};",
             "top": f"border-bottom: 1px solid {_border_clr};",
         }
-        self._panel.setStyleSheet(
+        register_widget_qss(self._panel,(
             f"#DrawerPanel {{ background-color: {tm.surface.name()}; {_border_map.get(self._orientation, '')}}}"
-        )
+        ))
 
-        shadow = QGraphicsDropShadowEffect(self._panel)
-        shadow.setBlurRadius(60)
-        shadow.setColor(tm.with_alpha(tm.black, 128))
-        shadow.setOffset(0, 10)
-        self._panel.setGraphicsEffect(shadow)
+        # Panel edge glow is painted by the backdrop around the panel's
+        # live geometry (pre-baked bitmap, no graphics effect).
+        self._backdrop.set_panel(self._panel)
 
         self._start_pos, self._end_pos = self._get_anim_positions(pw, ph)
         self._panel.setGeometry(self._start_pos.x(), self._start_pos.y(), pw, ph)
@@ -129,14 +190,16 @@ class StyledDrawer(QWidget):
         self._panel.raise_()
 
         # ── Animations ──
-        self._backdrop_anim = QPropertyAnimation(self._backdrop_opacity, b"opacity")
+        self._backdrop_anim = QPropertyAnimation(self._backdrop, b"backdrop_opacity")
         self._backdrop_anim.setDuration(ANIM_MS)
         self._backdrop_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._backdrop_anim.valueChanged.connect(lambda _v: self._backdrop.update())
 
         self._slide_anim = QPropertyAnimation(self._panel, b"pos")
         self._slide_anim.setDuration(ANIM_MS)
         self._slide_anim.setEasingCurve(QEasingCurve.OutCubic)
         self._slide_anim.finished.connect(self._on_slide_finished)
+        self._slide_anim.valueChanged.connect(lambda _v: self._backdrop.update())
 
     # ── Container geometry (parent widget, or full-screen fallback) ──
 
@@ -174,7 +237,7 @@ class StyledDrawer(QWidget):
         header = QWidget()
         header.setObjectName("DrawerHeader")
         header.setContentsMargins(0, 0, 0, 0)
-        header.setStyleSheet(f"#DrawerHeader {{ background: transparent; border-bottom: 1px solid {tm.alpha_of(tm.mid, 30).name()}; }}")
+        register_widget_qss(header,(f"#DrawerHeader {{ background: transparent; border-bottom: 1px solid {tm.alpha_of(tm.mid, 30).name()}; }}"))
 
         hdr_layout = QHBoxLayout(header)
         hdr_layout.setContentsMargins(24, 20, 12, 20)
@@ -185,7 +248,7 @@ class StyledDrawer(QWidget):
             font = QFont("Microsoft YaHei UI", 16)
             font.setWeight(QFont.Weight.DemiBold)
             label.setFont(font)
-            label.setStyleSheet(f"color: {tm.text.name()}; background: transparent; border: none;")
+            register_widget_qss(label,(f"color: {tm.text.name()}; background: transparent; border: none;"))
             hdr_layout.addWidget(label, stretch=1)
         else:
             hdr_layout.addStretch(1)
@@ -195,11 +258,11 @@ class StyledDrawer(QWidget):
         close_btn = QPushButton("✕")
         close_btn.setFixedSize(32, 32)
         close_btn.setCursor(QCursor(Qt.PointingHandCursor))
-        close_btn.setStyleSheet(
+        register_widget_qss(close_btn,(
             f"QPushButton {{ background: transparent; border: none; border-radius: 6px;"
             f" color: {tm.mid.name()}; font-size: 18px; font-weight: 300; }}"
             f"QPushButton:hover {{ background-color: {tm.surface.name()}; color: {tm.text.name()}; }}"
-        )
+        ))
         close_btn.clicked.connect(self.close_drawer)
         hdr_layout.addWidget(close_btn, alignment=Qt.AlignTop)
 
@@ -212,11 +275,11 @@ class StyledDrawer(QWidget):
         scroll.setObjectName("DrawerBody")
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setStyleSheet("#DrawerBody { border: none; background: transparent; }")
-        scroll.viewport().setStyleSheet("background: transparent;")
+        register_widget_qss(scroll,("#DrawerBody { border: none; background: transparent; }"))
+        register_widget_qss(scroll.viewport(),("background: transparent;"))
 
         wrapper = QWidget()
-        wrapper.setStyleSheet("background: transparent;")
+        register_widget_qss(wrapper,("background: transparent;"))
         wrapper_layout = QVBoxLayout(wrapper)
         wrapper_layout.setContentsMargins(24, 16, 24, 16)
         wrapper_layout.setSpacing(0)
@@ -234,7 +297,7 @@ class StyledDrawer(QWidget):
         footer = QWidget()
         footer.setObjectName("DrawerFooter")
         footer.setContentsMargins(0, 0, 0, 0)
-        footer.setStyleSheet(f"#DrawerFooter {{ background: transparent; border-top: 1px solid {tm.alpha_of(tm.mid, 30).name()}; }}")
+        register_widget_qss(footer,(f"#DrawerFooter {{ background: transparent; border-top: 1px solid {tm.alpha_of(tm.mid, 30).name()}; }}"))
 
         self._footer_layout = QHBoxLayout(footer)
         self._footer_layout.setContentsMargins(24, 16, 24, 16)

@@ -28,6 +28,7 @@ from components.file_card_delegate import FileCardDelegate, CARD_CONFIG, LIST_CO
 from components.animated_file_list_view import AnimatedFileListView
 from freeassetfilter.services.favorites_service import FavoritesService
 from freeassetfilter.services.file_icon_manager import FileIconManager
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 # 释放丢失守卫的轮询周期（毫秒）：框选期间周期性校验按键是否仍按下。
 # 仅在框选激活期间运行，100ms 对拖拽帧率与 CPU 均无可见影响。
@@ -196,7 +197,7 @@ class FileSelectorLayout(QWidget):
         # 注入视图引用：delegate 的 hover 图标缩放动画每帧触发 viewport 重绘
         self._card_delegate.set_view(self._file_list)
         self._file_list.setFrameShape(QFrame.NoFrame)
-        self._file_list.setStyleSheet("""
+        register_widget_qss(self._file_list,("""
             QListView {
                 background: transparent;
                 border: none;
@@ -205,7 +206,7 @@ class FileSelectorLayout(QWidget):
             QListView::item {
                 background: transparent;
             }
-        """)
+        """))
 
         # 右键直连文件池：添加到池或从池移除
         self._file_list.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -1116,10 +1117,14 @@ class FileSelectorLayout(QWidget):
                 "name": "/", "path": "/", "is_dir": True,
                 "size": 0, "modified": "", "created": "", "suffix": "",
             })
-        self._file_model.set_files(entries)
-        self._update_grid_size()
-        self._update_file_count(len(entries))
-        self._file_list.update()
+        self._file_list.setUpdatesEnabled(False)
+        try:
+            self._file_model.set_files(entries)
+            self._update_grid_size()
+            self._update_file_count(len(entries))
+        finally:
+            self._file_list.setUpdatesEnabled(True)
+        self._file_list.viewport().update()
 
     # ── 上次路径恢复 ─────────────────────────────────────────────────────
     def _try_restore_last_path(self) -> bool:
@@ -1231,7 +1236,7 @@ class FileSelectorLayout(QWidget):
         bottom_layout.setSpacing(6)
 
         self._file_count_label = QLabel("0 个条目")
-        self._file_count_label.setStyleSheet("background: transparent; border: none; font-size: 11px;")
+        register_widget_qss(self._file_count_label,("background: transparent; border: none; font-size: 11px;"))
         bottom_layout.addWidget(self._file_count_label)
 
         self._gen_thumb_btn = StyledButton("生成缩略图", variant="primary", size="sm")
@@ -1278,26 +1283,37 @@ class FileSelectorLayout(QWidget):
         entries = self._collect_directory_entries(path)
         if entries is None:
             self._abort_rubber_selection()
-            self._file_model.clear()
-            self._current_path = ""
-            self._update_file_count(0)
-            self._file_list.update()
+            self._file_list.setUpdatesEnabled(False)
+            try:
+                self._file_model.clear()
+                self._current_path = ""
+                self._update_file_count(0)
+            finally:
+                self._file_list.setUpdatesEnabled(True)
+            self._file_list.viewport().update()
             return
         self._apply_directory_entries(path, entries)
 
     def _apply_directory_entries(self, path: str, entries: List[Dict[str, Any]]) -> None:
         """在主线程应用收集到的目录条目：过滤 + 排序 + 更新 model/路径/计数。"""
+        # A4 批量纪律：model 重置 + 网格尺寸 + 路径输入 + 计数标签合并为一次重绘，
+        # 目录切换非动画帧，此处 setUpdatesEnabled 批量安全。
         self._abort_rubber_selection()
-        if self._filter_pattern:
-            entries = [e for e in entries if self._matches_filter(e["name"])]
-        entries.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
-        self._apply_sort(entries)
-        self._file_model.set_files(entries)
-        self._update_grid_size()
-        self._current_path = path
-        self._update_path_input(path)
-        self._update_file_count(len(entries))
-        self._file_list.update()
+        file_list = self._file_list
+        file_list.setUpdatesEnabled(False)
+        try:
+            if self._filter_pattern:
+                entries = [e for e in entries if self._matches_filter(e["name"])]
+            entries.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
+            self._apply_sort(entries)
+            self._file_model.set_files(entries)
+            self._update_grid_size()
+            self._current_path = path
+            self._update_path_input(path)
+            self._update_file_count(len(entries))
+        finally:
+            file_list.setUpdatesEnabled(True)
+        file_list.viewport().update()
 
     def _load_directory_async(self, path: str) -> None:
         """异步加载目录：后台线程收集条目，完成后回到主线程应用。
@@ -1317,10 +1333,14 @@ class FileSelectorLayout(QWidget):
             return
         if entries is None:
             self._abort_rubber_selection()
-            self._file_model.clear()
-            self._current_path = ""
-            self._update_file_count(0)
-            self._file_list.update()
+            self._file_list.setUpdatesEnabled(False)
+            try:
+                self._file_model.clear()
+                self._current_path = ""
+                self._update_file_count(0)
+            finally:
+                self._file_list.setUpdatesEnabled(True)
+            self._file_list.viewport().update()
             return
         self._apply_directory_entries(path, entries)
 
@@ -1629,7 +1649,7 @@ class FileSelectorLayout(QWidget):
         favorites = self._get_favorites()
 
         body = QWidget()
-        body.setStyleSheet("background: transparent;")
+        register_widget_qss(body,("background: transparent;"))
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(8)
@@ -1639,9 +1659,9 @@ class FileSelectorLayout(QWidget):
             empty_label = QLabel("暂无收藏，点击路径栏的 ★ 可添加当前路径")
             empty_label.setWordWrap(True)
             empty_label.setAlignment(Qt.AlignCenter)
-            empty_label.setStyleSheet(
+            register_widget_qss(empty_label,(
                 f"font-size: 14px; color: {tm.mid.name()}; background: transparent;"
-            )
+            ))
             empty_label.setFixedHeight(120)
             body_layout.addWidget(empty_label)
         else:
@@ -1651,7 +1671,7 @@ class FileSelectorLayout(QWidget):
             list_widget.setSelectionMode(QAbstractItemView.NoSelection)
             list_widget.setEditTriggers(QAbstractItemView.NoEditTriggers)
             list_widget.setMouseTracking(True)
-            list_widget.setStyleSheet(f"""
+            register_widget_qss(list_widget,(f"""
                 QListWidget {{
                     background: transparent; border: none;
                     color: {tm.text.name()}; font-size: 13px;
@@ -1662,7 +1682,7 @@ class FileSelectorLayout(QWidget):
                 QListWidget::item:hover {{
                     background-color: {tm.alpha_of(tm.fill, 60).name()};
                 }}
-            """)
+            """))
             for fav in favorites:
                 item = QListWidgetItem(f"{fav['name']}  -  {fav['path']}")
                 item.setData(Qt.ItemDataRole.UserRole, fav["path"])
@@ -1784,13 +1804,13 @@ class FileSelectorLayout(QWidget):
                       on_confirm) -> None:
         """通用输入弹窗：StyledDialog + StyledLineEdit，确认回调 on_confirm(text)。"""
         body = QWidget()
-        body.setStyleSheet("background: transparent;")
+        register_widget_qss(body,("background: transparent;"))
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(8)
 
         tip = QLabel(label_text)
-        tip.setStyleSheet(f"font-size: 14px; color: {tm.mid.name()}; background: transparent;")
+        register_widget_qss(tip,(f"font-size: 14px; color: {tm.mid.name()}; background: transparent;"))
         body_layout.addWidget(tip)
 
         edit = StyledLineEdit(size="default")
@@ -1812,14 +1832,14 @@ class FileSelectorLayout(QWidget):
     def _show_message_dialog(self, title: str, message: str) -> None:
         """通用消息提示弹窗（StyledDialog）。"""
         body = QWidget()
-        body.setStyleSheet("background: transparent;")
+        register_widget_qss(body,("background: transparent;"))
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(8)
 
         msg = QLabel(message)
         msg.setWordWrap(True)
-        msg.setStyleSheet(f"font-size: 14px; color: {tm.text.name()}; background: transparent;")
+        register_widget_qss(msg,(f"font-size: 14px; color: {tm.text.name()}; background: transparent;"))
         body_layout.addWidget(msg)
 
         dialog = StyledDialog(title=title, body_widget=body, footer_type=FOOTER_CENTER)
@@ -2015,14 +2035,14 @@ class FileSelectorLayout(QWidget):
     def _show_filter_dialog(self) -> None:
         """显示筛选弹窗：输入文件名正则（不区分大小写），应用后重载目录。"""
         body = QWidget()
-        body.setStyleSheet("background: transparent;")
+        register_widget_qss(body,("background: transparent;"))
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(8)
 
         tip = QLabel("输入文件名筛选正则（不区分大小写）。\n例如：\\.png$ 仅显示 png，项目 匹配名称含“项目”的文件。")
         tip.setWordWrap(True)
-        tip.setStyleSheet(f"font-size: 14px; color: {tm.mid.name()}; background: transparent;")
+        register_widget_qss(tip,(f"font-size: 14px; color: {tm.mid.name()}; background: transparent;"))
         body_layout.addWidget(tip)
 
         edit = StyledLineEdit(size="default")
@@ -2096,10 +2116,10 @@ class FileSelectorLayout(QWidget):
 
     def _update_file_count(self, count: int) -> None:
         self._file_count_label.setText(f"{count} 个条目")
-        self._file_count_label.setStyleSheet(
+        register_widget_qss(self._file_count_label,(
             "background: transparent; border: none;"
             f"color: {tm.mid.name()}; font-size: 11px;"
-        )
+        ))
 
     # ── 滚动条同步 ────────────────────────────────────────────────────────
 
@@ -2130,6 +2150,47 @@ class FileSelectorLayout(QWidget):
         self._card_delegate.set_card_scale(new_scale)
         self._update_grid_size()
 
+    def _invalidate_file_rows(self, rows) -> None:
+        """按行矩形局部失效文件列表 viewport（A4 局部重绘纪律）。
+
+        脏区取各行 ``visualRect`` 并集（viewport 坐标系）；行无效/不可见或
+        行数过多（>64，脏区近全窗）时回退整 viewport ``update()``。
+
+        Args:
+            rows: 行号可迭代对象。
+        """
+        from PySide6.QtCore import QRect as _QRect
+
+        view = self._file_list
+        try:
+            viewport = view.viewport()
+            model = view.model()
+        except Exception:
+            return
+        if viewport is None or model is None:
+            return
+        dirty = _QRect()
+        count = 0
+        try:
+            for row in rows:
+                if row is None or row < 0 or row >= model.rowCount():
+                    continue
+                rect = view.visualRect(model.index(row, 0))
+                if rect.isValid() and not rect.isEmpty():
+                    dirty = rect if dirty.isNull() else dirty.united(rect)
+                    count += 1
+                    if count > 64:
+                        break
+        except Exception:
+            dirty = _QRect()
+        try:
+            if dirty.isNull() or count > 64:
+                viewport.update()
+            else:
+                viewport.update(dirty.adjusted(-1, -1, 1, 1).intersected(viewport.rect()))
+        except Exception:
+            pass
+
     def sync_pool_status(self, pool_paths: set[str]) -> None:
         """同步文件池中的路径集合到 delegate，刷新"已在池中"边框标记。
 
@@ -2139,11 +2200,35 @@ class FileSelectorLayout(QWidget):
         Args:
             pool_paths: 文件池中的文件路径集合。
         """
-        self._pool_paths = {
+        new_pool = {
             os.path.normcase(os.path.normpath(p)) for p in (pool_paths or set())
         }
+        old_pool = self._pool_paths
+        self._pool_paths = new_pool
         self._card_delegate.set_pool_files(pool_paths)
-        self._file_list.viewport().update()
+        # A4 局部重绘：仅"池中态"翻转的行需要重绘；无变化时零重绘；
+        # 行解析失败时保守回退整 viewport（绝不漏重绘）。
+        if new_pool == old_pool:
+            return
+        changed_rows: list = []
+        lookup_failed = False
+        try:
+            model = self._file_model
+            for row in range(model.rowCount()):
+                raw = model.get_file_info(model.index(row, 0)).get("path", "")
+                if not raw:
+                    continue
+                key = os.path.normcase(os.path.normpath(raw))
+                if (key in new_pool) != (key in old_pool):
+                    changed_rows.append(row)
+        except Exception:
+            lookup_failed = True
+        if lookup_failed:
+            self._file_list.viewport().update()
+            return
+        if not changed_rows:
+            return
+        self._invalidate_file_rows(changed_rows)
 
     # ── 预览状态管理 ────────────────────────────────────────────────────────
 
@@ -2158,12 +2243,15 @@ class FileSelectorLayout(QWidget):
         """
         import os
 
+        # A4 局部重绘：新旧预览行按行矩形失效（setData 本身也会触发行级 dataChanged）。
+        dirty_rows: list = []
         # 清除旧预览
         if self._previewing_file_path:
             row = self._file_model.get_row(self._previewing_file_path)
             if row >= 0:
                 idx = self._file_model.index(row, 0)
                 self._file_model.setData(idx, False, IsPreviewingRole)
+                dirty_rows.append(row)
         self._previewing_file_path = ""
 
         # 设置新预览（路径规范化后匹配，与文件池保持一致）
@@ -2174,8 +2262,9 @@ class FileSelectorLayout(QWidget):
                 idx = self._file_model.index(row, 0)
                 self._file_model.setData(idx, True, IsPreviewingRole)
                 self._previewing_file_path = normalized
+                dirty_rows.append(row)
 
-        self._file_list.viewport().update()
+        self._invalidate_file_rows(dirty_rows)
 
     def clear_previewing_state(self) -> None:
         """清除所有卡片的预览状态。"""
@@ -2488,7 +2577,7 @@ class FileSelectorLayout(QWidget):
             border-radius: 8px;
         """
         for _w in (self._top_bar, self._content_area, self._bottom_bar):
-            _w.setStyleSheet(section_style)
+            register_widget_qss(_w,(section_style))
             # 强制已显示控件重新套用样式（延迟构建场景下必须，否则边框/填充不重绘）
             _w.style().unpolish(_w)
             _w.style().polish(_w)

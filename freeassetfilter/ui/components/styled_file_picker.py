@@ -25,6 +25,7 @@ from PySide6.QtGui import (
 
 from .icon_utils import icon_path, render_icon
 from theme import tm
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +245,7 @@ class StyledFilePicker(QWidget):
         border_color = tm.danger.name() if self._error else tm.mid.name()
 
         self._input.setObjectName(f"fp_input_{id(self)}")
-        self._input.setStyleSheet(f"""
+        register_widget_qss(self._input,(f"""
             #fp_input_{id(self)} {{
                 background-color: {tm.fill.name()};
                 color: {tm.text.name()};
@@ -264,7 +265,7 @@ class StyledFilePicker(QWidget):
                 color: {tm.alpha_of(tm.mid, 40).name()};
                 border-color: {tm.alpha_of(tm.mid, 40).name()};
             }}
-        """)
+        """))
 
     # ── Browse action ──────────────────────────────────────────────
 

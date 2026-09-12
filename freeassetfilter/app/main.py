@@ -63,6 +63,7 @@ from freeassetfilter.utils.path_utils import get_resource_path
 
 from freeassetfilter.app import instance_guard
 from freeassetfilter.app.startup import StartupController
+from freeassetfilter.ui.theme.app_stylesheet import apply_app_stylesheet
 
 
 # ──────────────────────────────────────────────────────────────
@@ -427,6 +428,13 @@ def main(argv=None) -> int:
             pass
         sys.exit(1)
     info(f"[启动] 主窗口创建: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
+
+    # A1 QSS 单例化：主窗口构造期间各组件已把 QSS 片段注册到应用级
+    # 样式表，此处一次性下发（之后仅主题切换时重下发一次）。
+    try:
+        apply_app_stylesheet()
+    except Exception as e:
+        warning(f"应用级样式表初始下发失败（各组件回退默认样式）: {e}")
 
     controller = StartupController(app, window)
 

@@ -48,6 +48,7 @@ from PySide6.QtGui import (
 )
 
 from theme import tm
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -333,7 +334,7 @@ class StyledTable(QTableWidget):
         """Create the overlay label shown when the table has no rows."""
         self._empty_label = QLabel("暂无数据", self)
         self._empty_label.setAlignment(Qt.AlignCenter)
-        self._empty_label.setStyleSheet(
+        register_widget_qss(self._empty_label,(
             f"QLabel {{"
             f"  color: {tm.mid.name()};"
             f"  font-size: 14px;"
@@ -341,7 +342,7 @@ class StyledTable(QTableWidget):
             f"  border: none;"
             f"  padding: 40px 16px;"
             f"}}"
-        )
+        ))
         self._empty_label.setVisible(False)
 
     def _apply_size(self) -> None:
@@ -387,7 +388,7 @@ class StyledTable(QTableWidget):
             header_hover_bg=tm.surface.name(),
             header_hover_text=tm.text.name(),
         )
-        self.setStyleSheet(qss)
+        register_widget_qss(self,(qss))
 
     # ── Public API ─────────────────────────────────────────────────────
 

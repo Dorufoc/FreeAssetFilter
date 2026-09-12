@@ -3,12 +3,36 @@
 from theme import tm
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QFrame, QScrollBar,
-    QGraphicsOpacityEffect, QSizePolicy,
+    QSizePolicy,
 )
-from PySide6.QtCore import Qt, Signal, QRectF, QPoint, QSize, Property, QParallelAnimationGroup
+from PySide6.QtCore import Qt, Signal, QObject, QRectF, QPoint, QSize, Property, QParallelAnimationGroup
 from PySide6.QtGui import QPainter, QColor, QPaintEvent, QPen
 from PySide6.QtCore import QPropertyAnimation, QEasingCurve
 import math
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
+
+
+class _LabelFadeProxy(QObject):
+    """Compat proxy for the former label opacity effect.
+
+    Collapse/expand code historically animated an opacity effect object;
+    the fade itself now blends the label text-color alpha (see
+    :meth:`SidebarItem.set_label_opacity`), so this proxy only forwards
+    ``opacity()``/``setOpacity()`` reads and writes — no effect on the
+    paint path.
+    """
+
+    def __init__(self, item: "SidebarItem") -> None:
+        super().__init__(item)
+        self._item = item
+
+    def opacity(self) -> float:
+        """Current label opacity (0.0–1.0)."""
+        return self._item._label_opacity
+
+    def setOpacity(self, value: float) -> None:
+        """Forward an opacity write to the owning item."""
+        self._item.set_label_opacity(value)
 
 
 class SidebarScrollBar(QScrollBar):
@@ -349,6 +373,9 @@ class SidebarItem(QWidget):
         self._compact = compact
         self._badge = badge
         self._hovered = False
+        self._label_opacity = 1.0
+        self._label_base = QColor(tm.mid)
+        self._label_fade_proxy = None
         self.setCursor(Qt.PointingHandCursor)
         self.setAttribute(Qt.WA_Hover, True)
         self.setAttribute(Qt.WA_StyledBackground, False)
@@ -358,7 +385,7 @@ class SidebarItem(QWidget):
         layout.setSpacing(12)
         
         # Set widget background to transparent, we'll draw it manually
-        self.setStyleSheet("background-color: transparent;")
+        register_widget_qss(self,("background-color: transparent;"))
 
         self._icon_widget = SidebarIconWidget(icon_svg)
         layout.addWidget(self._icon_widget, 0, Qt.AlignVCenter)
@@ -373,14 +400,14 @@ class SidebarItem(QWidget):
             self._badge_label.setFixedHeight(18)
             self._badge_label.setMinimumWidth(18)
             self._badge_label.setAlignment(Qt.AlignCenter)
-            self._badge_label.setStyleSheet(f"""
+            register_widget_qss(self._badge_label,(f"""
                 background-color: {tm.danger.name()};
                 color: {tm.text.name()};
                 font-size: 11px;
                 font-weight: 600;
                 border-radius: 9px;
                 padding: 0 5px;
-            """)
+            """))
             layout.addWidget(self._badge_label, 0, Qt.AlignVCenter)
         else:
             self._badge_label = None
@@ -390,9 +417,20 @@ class SidebarItem(QWidget):
 
     def _update_label_style(self):
         if self._active:
-            self._label_widget.setStyleSheet(f"font-size:13.5px;font-weight:600;color:{tm.text.name()};")
+            self._label_base = QColor(tm.text)
         else:
-            self._label_widget.setStyleSheet(f"font-size:13.5px;font-weight:500;color:{tm.mid.name()};")
+            self._label_base = QColor(tm.mid)
+        self._apply_label_fade()
+
+    def _apply_label_fade(self):
+        """Repaint the label with the base color scaled by label opacity."""
+        faded = QColor(self._label_base)
+        faded.setAlphaF(self._label_base.alphaF() * self._label_opacity)
+        weight = 600 if self._active else 500
+        self._label_widget.setStyleSheet(
+            f"font-size:13.5px;font-weight:{weight};"
+            f"color:{faded.name(QColor.HexArgb)};"
+        )
 
     def set_compact(self, compact: bool):
         """Toggle compact mode - hide label, reduce margins."""
@@ -441,19 +479,30 @@ class SidebarItem(QWidget):
         self._label_widget.setText(text)
 
     def ensure_opacity_effect(self):
-        """Attach a QGraphicsOpacityEffect to the label so it can fade in/out.
-        QGraphicsOpacityEffect defaults to opacity 0.7, which would dim the
-        label the first time we attach the effect — explicitly set 1.0."""
-        if getattr(self, '_opacity_effect', None) is None:
-            self._opacity_effect = QGraphicsOpacityEffect(self._label_widget)
-            self._label_widget.setGraphicsEffect(self._opacity_effect)
-            self._opacity_effect.setOpacity(1.0)
-        return self._opacity_effect
+        """Return the label-fade proxy for collapse/expand animations.
+
+        Previously attached a whole-widget opacity effect to the label;
+        now returns a lightweight proxy whose reads/writes forward to
+        :meth:`set_label_opacity` (text-color alpha blending, no
+        offscreen effect). The proxy starts at full opacity so the
+        first fade never dims the label unexpectedly.
+        """
+        if getattr(self, "_label_fade_proxy", None) is None:
+            self._label_fade_proxy = _LabelFadeProxy(self)
+        return self._label_fade_proxy
+
+    def _get_label_opacity(self) -> float:
+        return self._label_opacity
+
+    def _set_label_opacity(self, value: float) -> None:
+        self.set_label_opacity(value)
+
+    label_opacity = Property(float, _get_label_opacity, _set_label_opacity)
 
     def set_label_opacity(self, opacity: float):
         """Set the label's opacity (0.0 = invisible, 1.0 = fully visible)."""
-        effect = self.ensure_opacity_effect()
-        effect.setOpacity(opacity)
+        self._label_opacity = max(0.0, min(1.0, float(opacity)))
+        self._apply_label_fade()
 
     def _set_active(self, active):
         self._active = active
@@ -480,7 +529,8 @@ class SidebarItem(QWidget):
         self._hovered = True
         if not self._active:
             self._icon_widget.set_color(tm.accent)
-            self._label_widget.setStyleSheet(f"font-size:13.5px;font-weight:500;color:{tm.text.name()};")
+            self._label_base = QColor(tm.text)
+            self._apply_label_fade()
         self.update()
         super().enterEvent(event)
 
@@ -488,7 +538,8 @@ class SidebarItem(QWidget):
         self._hovered = False
         if not self._active:
             self._icon_widget.set_color(tm.mid)
-            self._label_widget.setStyleSheet(f"font-size:13.5px;font-weight:500;color:{tm.mid.name()};")
+            self._label_base = QColor(tm.mid)
+            self._apply_label_fade()
         self.update()
         super().leaveEvent(event)
 
@@ -584,7 +635,7 @@ class StyledSidebar(QWidget):
         self._animating = False
         self.setFixedWidth(self.COMPACT_WIDTH if compact else width)
         # 支持透明背景以显示Mica效果，否则使用默认深色背景
-        self.setStyleSheet(f"background-color: transparent;" if transparent else f"background-color:{tm.surface.name()};")
+        register_widget_qss(self,(f"background-color: transparent;" if transparent else f"background-color:{tm.surface.name()};"))
 
         ml = QVBoxLayout(self)
         ml.setContentsMargins(0, 20, 0, 20)
@@ -609,12 +660,12 @@ class StyledSidebar(QWidget):
         # Use custom scrollbar
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll.setVerticalScrollBar(SidebarScrollBar(scroll))
-        scroll.setStyleSheet(
-            "#SidebarScroll { border:none; background:transparent; }")
-        scroll.viewport().setStyleSheet("background: transparent;")
+        register_widget_qss(scroll,(
+            "#SidebarScroll { border:none; background:transparent; }"))
+        register_widget_qss(scroll.viewport(),("background: transparent;"))
 
         nc = QWidget()
-        nc.setStyleSheet("background: transparent;")
+        register_widget_qss(nc,("background: transparent;"))
         nl = QVBoxLayout(nc)
         nl.setContentsMargins(12, 8, 12, 8)
         nl.setSpacing(2)
@@ -634,13 +685,13 @@ class StyledSidebar(QWidget):
             compact=compact,
         )
         # Top divider so the button is visually separated from the scroll list.
-        self._toggle_btn.setStyleSheet(
+        register_widget_qss(self._toggle_btn,(
             f"SidebarItem {{ background-color: transparent; "
             f"border-top: 1px solid {tm.alpha_of(tm.surface, 90).name()}; }}"
-        )
+        ))
         self._toggle_btn.clicked.connect(self._on_toggle_clicked)
         self._toggle_btn_wrap = QWidget()
-        self._toggle_btn_wrap.setStyleSheet("background: transparent;")
+        register_widget_qss(self._toggle_btn_wrap,("background: transparent;"))
         btn_layout = QHBoxLayout(self._toggle_btn_wrap)
         btn_layout.setContentsMargins(12, 0, 12, 0)
         btn_layout.setSpacing(0)
@@ -862,10 +913,10 @@ class StyledSidebar(QWidget):
             old.stop()
         self._label_anims = []
         for it in items:
-            effect = it.ensure_opacity_effect()
-            anim = QPropertyAnimation(effect, b"opacity", self)
+            it.ensure_opacity_effect()
+            anim = QPropertyAnimation(it, b"label_opacity", self)
             anim.setDuration(duration)
-            anim.setStartValue(effect.opacity())
+            anim.setStartValue(it._label_opacity)
             anim.setEndValue(target)
             anim.setEasingCurve(QEasingCurve.OutCubic)
             if on_finished is not None:
@@ -887,14 +938,14 @@ class StyledSidebar(QWidget):
             logo = (self._title[:1] or "").upper()
             self._title_label.setText(logo)
             self._title_label.setAlignment(Qt.AlignCenter)
-            self._title_label.setStyleSheet(
-                f"font-size:18px;font-weight:700;color:{tm.accent.name()};")
+            register_widget_qss(self._title_label,(
+                f"font-size:18px;font-weight:700;color:{tm.accent.name()};"))
             self._title_label.setContentsMargins(0, 0, 0, 0)
         else:
             self._title_label.setText(self._title)
             self._title_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            self._title_label.setStyleSheet(
-                f"font-size:16px;font-weight:600;color:{tm.text.name()};letter-spacing:0.5px;")
+            register_widget_qss(self._title_label,(
+                f"font-size:16px;font-weight:600;color:{tm.text.name()};letter-spacing:0.5px;"))
             self._title_label.setContentsMargins(24, 0, 24, 0)
 
     def _animate_width(self, target_width: int):

@@ -4,6 +4,7 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePo
 from PySide6.QtCore import Qt, QRectF, QPropertyAnimation, QEasingCurve, Property, QTimer
 from PySide6.QtGui import QPainter, QPaintEvent, QFont
 from theme import tm
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 
 class StyledProgress(QWidget):
@@ -74,7 +75,7 @@ class StyledProgress(QWidget):
             title_font = QFont("Microsoft YaHei UI", config["font_size"])
             title_font.setWeight(QFont.Weight.Normal)
             self._title_label.setFont(title_font)
-            self._title_label.setStyleSheet(f"color: {tm.mid.name()};")
+            register_widget_qss(self._title_label,(f"color: {tm.mid.name()};"))
             self._label_layout.addWidget(self._title_label)
 
             self._label_layout.addStretch()
@@ -83,7 +84,7 @@ class StyledProgress(QWidget):
             value_font = QFont("Microsoft YaHei UI", config["font_size"])
             value_font.setWeight(QFont.Weight.Normal)
             self._value_label.setFont(value_font)
-            self._value_label.setStyleSheet(f"color: {tm.mid.name()};")
+            register_widget_qss(self._value_label,(f"color: {tm.mid.name()};"))
             self._label_layout.addWidget(self._value_label)
 
             main_layout.addLayout(self._label_layout)
@@ -97,7 +98,7 @@ class StyledProgress(QWidget):
             self._inline_label = QLabel(f"{int(self._value * 100)}%")
             inline_font = QFont("Microsoft YaHei UI", config["font_size"])
             self._inline_label.setFont(inline_font)
-            self._inline_label.setStyleSheet(f"color: {tm.mid.name()};")
+            register_widget_qss(self._inline_label,(f"color: {tm.mid.name()};"))
             self._inline_label.setMinimumWidth(42)
             row_layout.addWidget(self._inline_label)
 

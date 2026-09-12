@@ -66,6 +66,29 @@ def _snapshot_to_baseline() -> bool:
     return event_keys_ok
 
 
+def pytest_addoption(parser: Any) -> None:
+    """注册 S9 双模式开关（performance-ceiling-optimization todo 1）。
+
+    * ``--smoke``：S9 记为 smoke 模式（30s；默认即 smoke，此开关为显式声明）。
+    * ``--s9-full``：S9 跑完整 5 分钟（仅显式开启，CI/冒烟永不触发）。
+
+    Args:
+        parser: pytest option parser。
+    """
+    parser.addoption(
+        "--smoke",
+        action="store_true",
+        default=False,
+        help="S9 以 smoke 模式运行（30s，标记 S9-smoke）。",
+    )
+    parser.addoption(
+        "--s9-full",
+        action="store_true",
+        default=False,
+        help="S9 跑完整 5 分钟（终验用；CI/冒烟不得使用）。",
+    )
+
+
 def pytest_sessionfinish(session: Any, exitstatus: int) -> None:
     """基准会话结束后导出快照（exit 0 时顺带确立基线）。
 

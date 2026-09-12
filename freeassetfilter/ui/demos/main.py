@@ -20,6 +20,7 @@ from PySide6.QtCore import Qt, QEvent
 from PySide6.QtGui import QMouseEvent, QPainter, QPaintEvent, QResizeEvent, QMoveEvent
 
 from freeassetfilter.ui.frameless_window import FramelessMainWindow
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 from components.mica_material import MicaMaterial
 from components.styled_button import StyledButton
@@ -62,7 +63,7 @@ class AccountSettingsPage(QWidget):
             description="当前登录的用户账号",
         )
         username_label = QLabel("user@example.com")
-        username_label.setStyleSheet(f'font-size: 13px; color: {tm.mid.name()};')
+        register_widget_qss(username_label,(f'font-size: 13px; color: {tm.mid.name()};'))
         row1.set_control(username_label)
         body.addWidget(row1)
 
@@ -246,7 +247,7 @@ class ShortcutsSettingsPage(QWidget):
                 badge = QLabel(key)
                 badge.setFixedWidth(max(28, len(key) * 8 + 12))
                 badge.setAlignment(Qt.AlignCenter)
-                badge.setStyleSheet(f"""
+                register_widget_qss(badge,(f"""
                     background-color: {tm.mid.name()};
                     border: 1px solid {tm.mid.name()};
                     border-radius: 6px;
@@ -254,11 +255,11 @@ class ShortcutsSettingsPage(QWidget):
                     font-weight: 600;
                     color: {tm.mid.name()};
                     min-height: 26px;
-                """)
+                """))
                 keys_layout.addWidget(badge)
                 if i < len(keys) - 1:
                     sep = QLabel("+")
-                    sep.setStyleSheet(f'color: {tm.alpha_of(tm.mid, 60).name()}; font-size: 12px;')
+                    register_widget_qss(sep,(f'color: {tm.alpha_of(tm.mid, 60).name()}; font-size: 12px;'))
                     keys_layout.addWidget(sep)
             keys_layout.addStretch()
 
@@ -371,12 +372,12 @@ class ComponentsDemoPage(QWidget):
 
     def _section_title(self, text: str) -> QLabel:
         label = QLabel(text)
-        label.setStyleSheet(f'font-size: 14px; font-weight: 600; color: {tm.text.name()}; margin-bottom: 4px;')
+        register_widget_qss(label,(f'font-size: 14px; font-weight: 600; color: {tm.text.name()}; margin-bottom: 4px;'))
         return label
 
     def _section_desc(self, text: str) -> QLabel:
         label = QLabel(text)
-        label.setStyleSheet(f'font-size: 12px; color: {tm.alpha_of(tm.mid, 60).name()}; margin-bottom: 8px;')
+        register_widget_qss(label,(f'font-size: 12px; color: {tm.alpha_of(tm.mid, 60).name()}; margin-bottom: 8px;'))
         return label
 
     def _row_with_label(self, label_text: str, widgets: list) -> QWidget:
@@ -385,7 +386,7 @@ class ComponentsDemoPage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(16)
         lbl = QLabel(label_text)
-        lbl.setStyleSheet(f'font-size: 12px; color: {tm.alpha_of(tm.mid, 60).name()}; min-width: 64px;')
+        register_widget_qss(lbl,(f'font-size: 12px; color: {tm.alpha_of(tm.mid, 60).name()}; min-width: 64px;'))
         layout.addWidget(lbl)
         for w in widgets:
             layout.addWidget(w)
@@ -642,7 +643,7 @@ class ComponentsDemoPage(QWidget):
             r_layout.setContentsMargins(0, 0, 0, 0)
             r_layout.setSpacing(12)
             vl = QLabel(variant[1])
-            vl.setStyleSheet(f'color: {tm.alpha_of(tm.mid, 60).name()}; font-size: 12px; min-width: 40px;')
+            register_widget_qss(vl,(f'color: {tm.alpha_of(tm.mid, 60).name()}; font-size: 12px; min-width: 40px;'))
             r_layout.addWidget(vl)
             r_layout.addWidget(StyledProgress(value=0.65, variant=variant[0]))
             r_layout.addStretch()
@@ -698,17 +699,17 @@ class AboutSettingsPage(QWidget):
         body_layout = info_card.add_body()
 
         app_name = QLabel("D-Fronted Qt6 Components")
-        app_name.setStyleSheet(f'font-size: 16px; font-weight: 600; color: {tm.text.name()};')
+        register_widget_qss(app_name,(f'font-size: 16px; font-weight: 600; color: {tm.text.name()};'))
         app_name.setContentsMargins(20, 16, 20, 4)
         body_layout.addWidget(app_name)
 
         version = QLabel("版本 0.1.0")
-        version.setStyleSheet(f'font-size: 12px; color: {tm.alpha_of(tm.mid, 60).name()};')
+        register_widget_qss(version,(f'font-size: 12px; color: {tm.alpha_of(tm.mid, 60).name()};'))
         version.setContentsMargins(20, 0, 20, 16)
         body_layout.addWidget(version)
 
         desc = QLabel("基于 PySide6 + qasync 构建的桌面组件库，完整复现 Web 组件库的视觉设计和交互功能。")
-        desc.setStyleSheet(f'font-size: 13px; color: {tm.mid.name()}; line-height: 1.5;')
+        register_widget_qss(desc,(f'font-size: 13px; color: {tm.mid.name()}; line-height: 1.5;'))
         desc.setWordWrap(True)
         desc.setContentsMargins(20, 0, 20, 16)
         body_layout.addWidget(desc)
@@ -797,17 +798,17 @@ class SettingsWindow(FramelessMainWindow):
         
         # 设置窗口透明背景，让Mica效果可见
         self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setStyleSheet("SettingsWindow { background: transparent; }")
+        register_widget_qss(self,("SettingsWindow { background: transparent; }"))
 
         # --- 中央控件透明，让窗口级别的Mica背景可见 ---
         central = QWidget()
         central.setObjectName("MainWindow")
         central.setAttribute(Qt.WA_TranslucentBackground, True)
-        central.setStyleSheet("""
+        register_widget_qss(central,("""
             #MainWindow {
                 background-color: transparent;
             }
-        """)
+        """))
         self.setCentralWidget(central)
         main_layout = QHBoxLayout(central)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -829,13 +830,13 @@ class SettingsWindow(FramelessMainWindow):
         # Content panel (semi-transparent to show Mica through)
         panel = QWidget()
         panel.setObjectName("ContentPanel")
-        panel.setStyleSheet("""
+        register_widget_qss(panel,("""
             #ContentPanel {
                 background-color: transparent;
                 border-top-right-radius: 12px;
                 border-bottom-right-radius: 12px;
             }
-        """)
+        """))
         panel_layout = QVBoxLayout(panel)
         panel_layout.setContentsMargins(0, 0, 0, 0)
         panel_layout.setSpacing(0)
@@ -845,12 +846,12 @@ class SettingsWindow(FramelessMainWindow):
         header.setFixedHeight(60)
         header.setFrameShape(QFrame.NoFrame)
         header.setObjectName("PanelHeader")
-        header.setStyleSheet("""
+        register_widget_qss(header,("""
             #PanelHeader {
                 background-color: transparent;
                 border-top-right-radius: 12px;
             }
-        """)
+        """))
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(24, 12, 16, 12)
         header_layout.setSpacing(0)
@@ -862,7 +863,7 @@ class SettingsWindow(FramelessMainWindow):
         title_layout.setSpacing(0)
         title_layout.addStretch()
         self._panel_title = QLabel("账号与存储")
-        self._panel_title.setStyleSheet(f'font-size: 22px; font-weight: 600; color: {tm.text.name()};')
+        register_widget_qss(self._panel_title,(f'font-size: 22px; font-weight: 600; color: {tm.text.name()};'))
         title_layout.addWidget(self._panel_title)
         header_layout.addWidget(title_wrapper, stretch=1)
 
@@ -870,10 +871,10 @@ class SettingsWindow(FramelessMainWindow):
         minimize_btn = StyledButton("", variant="ghost", size="sm")
         minimize_btn.setFixedSize(32, 32)
         minimize_btn.setText("−")
-        minimize_btn.setStyleSheet(f"""
+        register_widget_qss(minimize_btn,(f"""
             QPushButton {{ background: transparent; border: none; color: {tm.mid.name()}; font-size: 18px; font-weight: 300; }}
             QPushButton:hover {{ color: {tm.text.name()}; }}
-        """)
+        """))
         minimize_btn.clicked.connect(self._on_minimize_clicked)
         header_layout.addWidget(minimize_btn)
 
@@ -881,10 +882,10 @@ class SettingsWindow(FramelessMainWindow):
         close_btn = StyledButton("", variant="ghost", size="sm")
         close_btn.setFixedSize(32, 32)
         close_btn.setText("✕")
-        close_btn.setStyleSheet(f"""
+        register_widget_qss(close_btn,(f"""
             QPushButton {{ background: transparent; border: none; color: {tm.mid.name()}; font-size: 18px; font-weight: 300; }}
             QPushButton:hover {{ color: {tm.text.name()}; }}
-        """)
+        """))
         close_btn.clicked.connect(self._on_close_clicked)
         header_layout.addWidget(close_btn)
 
@@ -899,16 +900,16 @@ class SettingsWindow(FramelessMainWindow):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll.setVerticalScrollBar(ContentScrollBar(scroll))
-        scroll.setStyleSheet("""
+        register_widget_qss(scroll,("""
             #ContentScroll {
                 border: none;
                 background: transparent;
             }
-        """)
-        scroll.viewport().setStyleSheet("background: transparent;")
+        """))
+        register_widget_qss(scroll.viewport(),("background: transparent;"))
 
         self._content_widget = QWidget()
-        self._content_widget.setStyleSheet("background: transparent;")
+        register_widget_qss(self._content_widget,("background: transparent;"))
         scroll.setWidget(self._content_widget)
         panel_layout.addWidget(scroll, stretch=1)
 
@@ -916,11 +917,11 @@ class SettingsWindow(FramelessMainWindow):
         footer = QFrame()
         footer.setFrameShape(QFrame.NoFrame)
         footer.setObjectName("SettingsFooter")
-        footer.setStyleSheet("""
+        register_widget_qss(footer,("""
             #SettingsFooter {
                 background-color: transparent;
             }
-        """)
+        """))
         footer_layout = QHBoxLayout(footer)
         footer_layout.setContentsMargins(24, 14, 24, 14)
         footer_layout.setSpacing(10)
@@ -1012,7 +1013,7 @@ def main() -> None:
     # Apply global stylesheet
     qss = load_global_stylesheet()
     if qss:
-        app.setStyleSheet(qss)
+        register_widget_qss(app,(qss))
 
     # Create and show main window
     window = SettingsWindow()

@@ -26,6 +26,12 @@ from typing import Any, Optional
 
 from PySide6.QtCore import QObject, QTimer, QMetaObject, Qt
 
+from freeassetfilter.core.native.platform_timing import (
+    begin_highres_timer,
+    end_highres_timer,
+    get_active_profile,
+    highres_timer_enabled_by_env,
+)
 from freeassetfilter.utils.app_logger import info, warning
 
 
@@ -210,6 +216,10 @@ class HeartbeatManager(QObject):
         # Running state
         self._running: bool = False
 
+        # W5 高精度定时持有标记：fast-tick 动画窗口期持有
+        # timeBeginPeriod(1)，窗口结束即释放（见 platform_timing 模块契约）。
+        self._highres_timer_held: bool = False
+
         info("HeartbeatManager initialized")
 
     # ================================================================
@@ -234,6 +244,7 @@ class HeartbeatManager(QObject):
         self._running = False
         self._normal_timer.stop()
         self._fast_timer.stop()
+        self._release_highres_timer()
 
     def stop_all(self) -> None:
         """停止定时器并清除所有已注册的回调和待处理请求"""
@@ -496,6 +507,7 @@ class HeartbeatManager(QObject):
 
         if not entries:
             self._fast_timer.stop()
+            self._release_highres_timer()
             return
 
         self._fast_tick_count += 1
@@ -615,12 +627,44 @@ class HeartbeatManager(QObject):
         """存在动画回调时启动快速 tick 定时器"""
         if self._animation_callback_count > 0 and not self._fast_timer.isActive():
             self._fast_timer.start()
+            self._acquire_highres_timer()
 
     def _maybe_stop_fast_timer(self) -> None:
         """无动画回调时停止快速 tick 定时器"""
         if self._animation_callback_count <= 0 and self._fast_timer.isActive():
             self._fast_timer.stop()
             self._fast_tick_count = 0
+            self._release_highres_timer()
+
+    def _highres_timer_allowed(self) -> bool:
+        """W5 挂接门控：显式 opt-in 且非省电档才允许自动持有。
+
+        默认关闭，保证基准/阻塞测试与 CI 永不开启系统全局
+        timeBeginPeriod；todo 14 三档开关落地后由档位统一控制。
+        """
+        if not highres_timer_enabled_by_env():
+            return False
+        return get_active_profile() != "powersave"
+
+    def _acquire_highres_timer(self) -> None:
+        """动画窗口开启时持有一次高精度定时（幂等，引用计数在模块侧）。"""
+        if self._highres_timer_held or not self._highres_timer_allowed():
+            return
+        try:
+            if begin_highres_timer():
+                self._highres_timer_held = True
+        except Exception:
+            warning("Heartbeat: begin_highres_timer failed, continuing without it")
+
+    def _release_highres_timer(self) -> None:
+        """动画窗口结束时释放持有的高精度定时（与 acquire 严格成对）。"""
+        if not self._highres_timer_held:
+            return
+        self._highres_timer_held = False
+        try:
+            end_highres_timer()
+        except Exception:
+            warning("Heartbeat: end_highres_timer failed")
 
     def _maybe_stop_normal_timer(self) -> None:
         """无回调或待处理调用时停止普通定时器。

@@ -1155,6 +1155,25 @@ class ThumbnailManager:
             duration = time.perf_counter() - start_time
             return queue_name, outputs, duration
 
+        # W2/W3/W4/W8 工作线程入口钩子（platform_threads，调用线程内生效）：
+        # 包裹提交给 ThreadPoolExecutor 的任务体，MMCSS 注册/恢复在工作线程
+        # 内成对（worker_thread_scope 的 try/finally）。档位来自环境变量
+        # FAF_PERF_PROFILE（performance|balanced|powersave，默认 powersave
+        # 即不动；todo 14 接 SettingsManagerV2 后替换此处取值）。
+        _decode_thread_profile = os.environ.get("FAF_PERF_PROFILE", "powersave")
+
+        def _run_single_task_scoped(queue_name: str, item: dict):
+            from freeassetfilter.core.native.platform_threads import worker_thread_scope
+
+            with worker_thread_scope(role="decode", mode=_decode_thread_profile):  # type: ignore[arg-type]
+                return _run_single_task(queue_name, item)
+
+        def _run_native_batch_task_scoped(queue_name: str, items: list[dict]):
+            from freeassetfilter.core.native.platform_threads import worker_thread_scope
+
+            with worker_thread_scope(role="decode", mode=_decode_thread_profile):  # type: ignore[arg-type]
+                return _run_native_batch_task(queue_name, items)
+
         def _normalize_batch_file_data(file_data: str | dict) -> tuple[str, str | dict]:
             """标准化批量任务输入，统一提取文件路径并保留原始回调对象。"""
             if isinstance(file_data, str):
@@ -1416,9 +1435,9 @@ class ThumbnailManager:
                         break
 
                     if queue_name.startswith("native_") and len(batch_items) > 1:
-                        future = executor.submit(_run_native_batch_task, queue_name, batch_items)
+                        future = executor.submit(_run_native_batch_task_scoped, queue_name, batch_items)
                     else:
-                        future = executor.submit(_run_single_task, queue_name, batch_items[0])
+                        future = executor.submit(_run_single_task_scoped, queue_name, batch_items[0])
 
                     future.add_done_callback(_mark_future_completed)
                     future_to_queue[future] = queue_name

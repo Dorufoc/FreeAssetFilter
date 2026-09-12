@@ -74,6 +74,7 @@ from freeassetfilter.core._paths import icons_dir
 from freeassetfilter.ui.layout.preview.text_previewer_layout import (
     _StyledPreviewScrollArea,
 )
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 模块常量
@@ -585,17 +586,17 @@ class _WeightPopup(QWidget):
         self._value_label = QLabel("400")
         self._value_label.setAlignment(Qt.AlignCenter)
         self._value_label.setFixedWidth(34)
-        self._value_label.setStyleSheet(
+        register_widget_qss(self._value_label,(
             f"color: {tm.text.name()}; font-size: 12px; background: transparent;"
-        )
+        ))
         layout.addWidget(self._value_label)
 
     def refresh_theme(self) -> None:
         """刷新主题相关样式（主题切换时由父布局调用）。"""
         # 更新数值标签的文本颜色
-        self._value_label.setStyleSheet(
+        register_widget_qss(self._value_label,(
             f"color: {tm.text.name()}; font-size: 12px; background: transparent;"
-        )
+        ))
         # 触发重绘以更新背景/边框颜色
         self.update()
 
@@ -931,9 +932,9 @@ class FontPreviewerLayout(QWidget):
         self._weight_label.setToolTip("Weight")
         self._weight_label.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
         self._weight_label.setFixedHeight(30)
-        self._weight_label.setStyleSheet(
+        register_widget_qss(self._weight_label,(
             f"color: {tm.mid.name()}; background: transparent; font-size: 12px;"
-        )
+        ))
         weight_layout.addWidget(self._weight_label)
 
         self._weight_value_btn = StyledButton("wght", variant="ghost", size="sm")
@@ -1091,9 +1092,9 @@ class FontPreviewerLayout(QWidget):
             bare=True,
             parent=self._content_area,
         )
-        self._text_drawer._panel.setStyleSheet(
+        register_widget_qss(self._text_drawer._panel,(
             f"#DrawerPanel {{ background-color: {tm.surface.name()}; border: none; }}"
-        )
+        ))
 
         # 限制面板宽度不超过内容区宽度
         _orig_get_panel_size = self._text_drawer._get_panel_size
@@ -1112,10 +1113,10 @@ class FontPreviewerLayout(QWidget):
 
         # 标题（与文本预览器搜索抽屉的标题样式一致）
         title = QLabel("编辑预览文本")
-        title.setStyleSheet(
+        register_widget_qss(title,(
             f"color: {tm.text.name()}; font-size: 16px; font-weight: 600;"
             " background: transparent;"
-        )
+        ))
         panel_layout.addWidget(title)
 
         self._preview_text_edit = StyledTextarea(
@@ -1141,9 +1142,9 @@ class FontPreviewerLayout(QWidget):
             parent=self._content_area,
         )
         # 移除面板自身边框，只保留背景色
-        self._ai_drawer._panel.setStyleSheet(
+        register_widget_qss(self._ai_drawer._panel,(
             f"#DrawerPanel {{ background-color: {tm.surface.name()}; border: none; }}"
-        )
+        ))
         # 覆写面板尺寸计算：视口宽度小于默认宽度时横向缩小以完整显示
         _orig_get_panel_size = self._ai_drawer._get_panel_size
 
@@ -1160,10 +1161,10 @@ class FontPreviewerLayout(QWidget):
         self._ai_placeholder = QLabel("AI 功能")
         self._ai_placeholder.setAlignment(Qt.AlignCenter)
         self._ai_placeholder.setWordWrap(True)
-        self._ai_placeholder.setStyleSheet(
+        register_widget_qss(self._ai_placeholder,(
             f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
             " padding: 24px;"
-        )
+        ))
         panel_layout = self._ai_drawer._panel.layout()
         panel_layout.addStretch()
         panel_layout.addWidget(self._ai_placeholder, alignment=Qt.AlignCenter)
@@ -1287,26 +1288,26 @@ class FontPreviewerLayout(QWidget):
         self.set_section_styles("", "")
         self._top_bar.update()
         if self._text_drawer is not None:
-            self._text_drawer._panel.setStyleSheet(
+            register_widget_qss(self._text_drawer._panel,(
                 f"#DrawerPanel {{ background-color: {tm.surface.name()}; border: none; }}"
-            )
+            ))
         if self._ai_drawer is not None:
-            self._ai_drawer._panel.setStyleSheet(
+            register_widget_qss(self._ai_drawer._panel,(
                 f"#DrawerPanel {{ background-color: {tm.surface.name()}; border: none; }}"
-            )
-            self._ai_placeholder.setStyleSheet(
+            ))
+            register_widget_qss(self._ai_placeholder,(
                 f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
                 " padding: 24px;"
-            )
+            ))
         # 刷新弹窗主题（如果可见）
         if self._weight_popup is not None and self._weight_popup.isVisible():
             self._weight_popup.refresh_theme()
         if self._zoom_popup is not None and self._zoom_popup.isVisible():
             self._zoom_popup.update()
         if self._weight_label is not None:
-            self._weight_label.setStyleSheet(
+            register_widget_qss(self._weight_label,(
                 f"color: {tm.mid.name()}; background: transparent; font-size: 12px;"
-            )
+            ))
         self.update()
 
     def set_section_styles(self, fill_color: str, border_color: str) -> None:
@@ -1319,16 +1320,16 @@ class FontPreviewerLayout(QWidget):
             border_color: 边框色（当前未使用，保留签名兼容）。
         """
         # 顶栏透明无背景：不在此设置任何样式
-        self._content_area.setStyleSheet(
+        register_widget_qss(self._content_area,(
             f"""
             background-color: transparent;
             border: 1px solid transparent;
             border-radius: 8px;
             """
-        )
-        self._overlay.setStyleSheet(
+        ))
+        register_widget_qss(self._overlay,(
             "background-color: transparent;"
-        )
+        ))
         for _w in (self._top_bar, self._content_area, self._overlay):
             _w.style().unpolish(_w)
             _w.style().polish(_w)
@@ -1342,7 +1343,7 @@ class FontPreviewerLayout(QWidget):
 
         背景设为透明，配合 viewport 关闭自绘底色后透出底层内容区。
         """
-        self._preview_view._text_edit.setStyleSheet(
+        register_widget_qss(self._preview_view._text_edit,(
             f"""
             QTextEdit {{
                 background: transparent;
@@ -1350,13 +1351,13 @@ class FontPreviewerLayout(QWidget):
                 border: none;
             }}
             """
-        )
+        ))
 
     def _refresh_placeholder_style(self) -> None:
         """更新占位提示文字颜色。"""
-        self._placeholder.setStyleSheet(
+        register_widget_qss(self._placeholder,(
             f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
-        )
+        ))
 
     def _style_browse_button(self) -> None:
         """应用主题色到"选择字体文件"按钮。"""
@@ -1366,7 +1367,7 @@ class FontPreviewerLayout(QWidget):
         btn_hover_text = tm.text.name()
         btn_bg = tm.fill.name()
         btn_border = tm.alpha_of(tm.mid, 30).name()
-        self._browse_btn.setStyleSheet(
+        register_widget_qss(self._browse_btn,(
             f"""
             QPushButton {{
                 background: transparent;
@@ -1386,7 +1387,7 @@ class FontPreviewerLayout(QWidget):
                 background: {btn_bg};
             }}
             """
-        )
+        ))
 
     def set_file(self, file_path: str) -> None:
         """设置并异步加载要预览的字体文件。
@@ -1523,9 +1524,9 @@ class FontPreviewerLayout(QWidget):
             return
 
         self._placeholder.setText(error_msg)
-        self._placeholder.setStyleSheet(
+        register_widget_qss(self._placeholder,(
             f"color: {tm.danger.name()}; font-size: 14px; background: transparent;"
-        )
+        ))
         self._content_stack.setCurrentIndex(1)
 
     def _apply_preview_font(self) -> None:

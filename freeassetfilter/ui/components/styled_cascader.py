@@ -17,6 +17,7 @@ from PySide6.QtGui import (
 )
 
 from components.icon_utils import icon_path
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
@@ -202,7 +203,7 @@ class _CascaderColumnPopup(QWidget):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll.setFixedWidth(_COLUMN_WIDTH)
-        scroll.setStyleSheet(f"""
+        register_widget_qss(scroll,(f"""
             QScrollArea {{ border: none; background: transparent; }}
             QScrollArea > QWidget > QWidget {{ background: transparent; }}
             QScrollBar:vertical {{
@@ -214,7 +215,7 @@ class _CascaderColumnPopup(QWidget):
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
                 height: 0px;
             }}
-        """)
+        """))
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)

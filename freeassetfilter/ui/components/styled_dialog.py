@@ -8,11 +8,11 @@ Provides:
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QLineEdit, QGraphicsDropShadowEffect,
-    QApplication, QGraphicsEffect,
+    QPushButton, QLineEdit,
+    QApplication,
 )
 from PySide6.QtCore import (
-    Qt, Signal, QEventLoop, QPropertyAnimation, QEasingCurve, Property, QRectF, QPoint,
+    Qt, Signal, QObject, QEventLoop, QPropertyAnimation, QEasingCurve, Property, QRectF, QPoint,
 )
 from PySide6.QtGui import QPainter, QColor, QPaintEvent, QFont, QCursor, QMouseEvent
 from typing import Dict, List, Optional
@@ -20,6 +20,8 @@ from typing import Dict, List, Optional
 from theme import tm
 
 from components.styled_button import StyledButton
+from components.paint_utils import render_soft_shadow
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 
 # ── Constants ──────────────────────────────────────────────────────
@@ -41,12 +43,15 @@ SIZE_CONFIG = {
 }
 
 
-class DialogAnimationEffect(QGraphicsEffect):
-    """Combined opacity + scale effect applied to the whole dialog.
+class DialogAnimationEffect(QObject):
+    """Opacity/scale state for the dialog enter/exit animation.
 
-    Renders the source widget (and all child widgets) into a pixmap,
-    then draws it with optional opacity and uniform scale around the
-    actual dialog center (the source widget's own rect center).
+    Previously a graphics-effect subclass that composited the whole
+    dialog through an offscreen pixmap; now a plain :class:`QObject`
+    holding the same ``opacity``/``scale`` properties (clamped, kept for
+    backward compatibility). Opacity reaches the screen via the
+    dialog's ``windowOpacity``; ``draw()`` only applies painter opacity
+    so existing callers keep working. The paint path uses no effect.
     """
 
     def __init__(self, dialog: QWidget):
@@ -62,7 +67,6 @@ class DialogAnimationEffect(QGraphicsEffect):
     @opacity.setter
     def opacity(self, value: float) -> None:
         self._opacity = max(0.0, min(1.0, value))
-        self.update()
 
     @Property(float)
     def scale(self) -> float:
@@ -71,25 +75,14 @@ class DialogAnimationEffect(QGraphicsEffect):
     @scale.setter
     def scale(self, value: float) -> None:
         self._scale = max(0.0, value)
-        self.update()
 
     def draw(self, painter: QPainter) -> None:
-        pixmap = self.sourcePixmap(Qt.LogicalCoordinates)
-        if pixmap.isNull():
-            self.drawSource(painter)
-            return
-
+        """Apply the stored opacity to *painter* (compat shim)."""
         painter.save()
-        painter.setOpacity(self._opacity)
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-
-        # Anchor at the source widget's own center, ignoring shadow expansion.
-        center = QRectF(self._dialog.rect()).center()
-        painter.translate(center)
-        painter.scale(self._scale, self._scale)
-        painter.translate(-center)
-        painter.drawPixmap(QPoint(0, 0), pixmap)
-        painter.restore()
+        try:
+            painter.setOpacity(self._opacity)
+        finally:
+            painter.restore()
 
 
 # ── StyledDialog ───────────────────────────────────────────────────
@@ -166,12 +159,11 @@ class StyledDialog(QWidget):
         # via _build_header(), so we capture the title here and sync it then.
         self._registered_title: str = ""
 
-        # Animation
-        self._anim_effect: DialogAnimationEffect = None
-        self._enter_opacity_anim: QPropertyAnimation = None
-        self._enter_scale_anim: QPropertyAnimation = None
-        self._exit_opacity_anim: QPropertyAnimation = None
-        self._exit_scale_anim: QPropertyAnimation = None
+        # Animation (opacity via windowOpacity; scale micro-zoom retired
+        # with the offscreen path — steady states render identically)
+        self._anim_effect: Optional[DialogAnimationEffect] = None
+        self._enter_opacity_anim: Optional[QPropertyAnimation] = None
+        self._exit_opacity_anim: Optional[QPropertyAnimation] = None
         if self._animate:
             self._setup_animations()
 
@@ -183,20 +175,18 @@ class StyledDialog(QWidget):
         # Create content container with shadow
         self._content_widget = QWidget(self)
         self._content_widget.setObjectName("DialogContent")
-        self._content_widget.setStyleSheet(f"""
+        register_widget_qss(self._content_widget,(f"""
             #DialogContent {{
                 background-color: {tm.surface.name()};
                 border: 1px solid {tm.alpha_of(tm.surface, 90).name()};
                 border-radius: 12px;
             }}
-        """)
+        """))
 
-        # Web CSS: box-shadow: var(--shadow-lg)
-        shadow = QGraphicsDropShadowEffect(self._content_widget)
-        shadow.setBlurRadius(60)
-        shadow.setColor(tm.alpha_of(tm.black, 50))
-        shadow.setOffset(0, 10)
-        self._content_widget.setGraphicsEffect(shadow)
+        # Web CSS: box-shadow: var(--shadow-lg) — pre-baked soft shadow,
+        # painted in paintEvent via render_soft_shadow (single drawPixmap,
+        # no graphics effect on the paint path).
+        self._shadow_color = tm.alpha_of(tm.black, 50)
 
         # Layout for content container
         content_layout = QVBoxLayout(self._content_widget)
@@ -231,7 +221,7 @@ class StyledDialog(QWidget):
         # Web CSS: padding: 20px 24px 0
         header_frame = QWidget()
         header_frame.setObjectName("DialogHeader")
-        header_frame.setStyleSheet("background: transparent; border: none;")
+        register_widget_qss(header_frame,("background: transparent; border: none;"))
         header_frame.setContentsMargins(24, 20, 12, 0)
         header_layout = QHBoxLayout(header_frame)
         header_layout.setContentsMargins(0, 0, 0, 0)
@@ -243,7 +233,7 @@ class StyledDialog(QWidget):
         if self._dialog_type in ("success", "danger", "info"):
             # 带图标的 header: icon 在上，title 在下
             icon_title_widget = QWidget()
-            icon_title_widget.setStyleSheet("background: transparent;")
+            register_widget_qss(icon_title_widget,("background: transparent;"))
             icon_title_layout = QVBoxLayout(icon_title_widget)
             icon_title_layout.setContentsMargins(0, 0, 0, 0)
             icon_title_layout.setSpacing(0)
@@ -279,7 +269,7 @@ class StyledDialog(QWidget):
     def _build_body(self, content: QWidget, parent_layout):
         # Web CSS: padding: 16px 24px
         body_frame = QWidget()
-        body_frame.setStyleSheet("background: transparent; border: none;")
+        register_widget_qss(body_frame,("background: transparent; border: none;"))
         body_frame.setContentsMargins(24, 16, 24, 16)
         body_layout = QVBoxLayout(body_frame)
         body_layout.setContentsMargins(0, 0, 0, 0)
@@ -296,7 +286,7 @@ class StyledDialog(QWidget):
         has_border = footer_type != FOOTER_NO_BORDER
         border_css = f"border-top: 1px solid {tm.alpha_of(tm.surface, 90).name()};" if has_border else ""
         # Use object name selector to prevent style inheritance to child widgets
-        footer_frame.setStyleSheet(f"#footer_frame {{ background: transparent; {border_css} }}")
+        register_widget_qss(footer_frame,(f"#footer_frame {{ background: transparent; {border_css} }}"))
 
         if footer_type == FOOTER_RIGHT:
             # Web CSS: justify-content: flex-end
@@ -339,14 +329,14 @@ class StyledDialog(QWidget):
             layout.setContentsMargins(0, 0, 0, 0)
             layout.setSpacing(10)
             self._left_footer_widget = QWidget()
-            self._left_footer_widget.setStyleSheet("background: transparent;")
+            register_widget_qss(self._left_footer_widget,("background: transparent;"))
             self._left_footer_layout = QHBoxLayout(self._left_footer_widget)
             self._left_footer_layout.setContentsMargins(0, 0, 0, 0)
             self._left_footer_layout.setSpacing(10)
             layout.addWidget(self._left_footer_widget)
             layout.addStretch()
             self._right_footer_widget = QWidget()
-            self._right_footer_widget.setStyleSheet("background: transparent;")
+            register_widget_qss(self._right_footer_widget,("background: transparent;"))
             self._right_footer_layout = QHBoxLayout(self._right_footer_widget)
             self._right_footer_layout.setContentsMargins(0, 0, 0, 0)
             self._right_footer_layout.setSpacing(10)
@@ -362,17 +352,17 @@ class StyledDialog(QWidget):
             # Web CSS: .help-link { font-size: 12px; color: var(--accent-primary); }
             self._help_link = QPushButton("查看完整协议 →")
             self._help_link.setCursor(QCursor(Qt.PointingHandCursor))
-            self._help_link.setStyleSheet(f"""
+            register_widget_qss(self._help_link,(f"""
                 QPushButton {{
                     background: transparent; border: none; color: {tm.accent.name()};
                     font-size: 12px; text-align: left; padding: 0;
                 }}
                 QPushButton:hover {{ text-decoration: underline; }}
-            """)
+            """))
             layout.addWidget(self._help_link)
             layout.addStretch()
             self._right_footer_widget = QWidget()
-            self._right_footer_widget.setStyleSheet("background: transparent;")
+            register_widget_qss(self._right_footer_widget,("background: transparent;"))
             self._right_footer_layout = QHBoxLayout(self._right_footer_widget)
             self._right_footer_layout.setContentsMargins(0, 0, 0, 0)
             self._right_footer_layout.setSpacing(10)
@@ -397,11 +387,11 @@ class StyledDialog(QWidget):
         btn = QPushButton()
         btn.setFixedSize(32, 32)
         btn.setCursor(QCursor(Qt.PointingHandCursor))
-        btn.setStyleSheet(
+        register_widget_qss(btn,(
             f"QPushButton {{ background: transparent; border: none; border-radius: 6px;"
             f" color: {tm.mid.name()}; font-size: 18px; font-weight: 300; }}"
             f"QPushButton:hover {{ background-color: {tm.surface.name()}; color: {tm.text.name()}; }}"
-        )
+        ))
         btn.setText("✕")
         btn.clicked.connect(lambda: self.close_dialog(0))
         return btn
@@ -412,7 +402,7 @@ class StyledDialog(QWidget):
         font = QFont("Microsoft YaHei UI", font_size)
         font.setWeight(weight)
         label.setFont(font)
-        label.setStyleSheet(f"color: {color}; background: transparent; border: none;")
+        register_widget_qss(label,(f"color: {color}; background: transparent; border: none;"))
         return label
 
     # ── Public API ─────────────────────────────────────────────────
@@ -428,54 +418,44 @@ class StyledDialog(QWidget):
     # ── Animation ──────────────────────────────────────────────────
 
     def _setup_animations(self) -> None:
+        """Wire enter/exit fades to ``windowOpacity`` (WM-composited)."""
         self._anim_effect = DialogAnimationEffect(self)
         self._anim_effect.opacity = 1.0
         self._anim_effect.scale = 1.0
-        self.setGraphicsEffect(self._anim_effect)
 
-        self._enter_opacity_anim = QPropertyAnimation(self._anim_effect, b"opacity", self)
+        self._enter_opacity_anim = QPropertyAnimation(self, b"windowOpacity", self)
         self._enter_opacity_anim.setDuration(180)
         self._enter_opacity_anim.setStartValue(0.0)
         self._enter_opacity_anim.setEndValue(1.0)
         self._enter_opacity_anim.setEasingCurve(QEasingCurve.InOutCubic)
 
-        self._enter_scale_anim = QPropertyAnimation(self._anim_effect, b"scale", self)
-        self._enter_scale_anim.setDuration(180)
-        self._enter_scale_anim.setStartValue(0.9)
-        self._enter_scale_anim.setEndValue(1.0)
-        self._enter_scale_anim.setEasingCurve(QEasingCurve.InOutCubic)
-
-        self._exit_opacity_anim = QPropertyAnimation(self._anim_effect, b"opacity", self)
+        self._exit_opacity_anim = QPropertyAnimation(self, b"windowOpacity", self)
         self._exit_opacity_anim.setDuration(180)
         self._exit_opacity_anim.setStartValue(1.0)
         self._exit_opacity_anim.setEndValue(0.0)
         self._exit_opacity_anim.setEasingCurve(QEasingCurve.InOutCubic)
 
-        self._exit_scale_anim = QPropertyAnimation(self._anim_effect, b"scale", self)
-        self._exit_scale_anim.setDuration(180)
-        self._exit_scale_anim.setStartValue(1.0)
-        self._exit_scale_anim.setEndValue(0.9)
-        self._exit_scale_anim.setEasingCurve(QEasingCurve.InOutCubic)
-
         self._exit_opacity_anim.finished.connect(self._finish_close)
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        if self._animate and self._anim_effect is not None and not self._shown_once:
+        if (
+            self._animate
+            and self._enter_opacity_anim is not None
+            and not self._shown_once
+        ):
             self._shown_once = True
-            self._anim_effect.opacity = 0.0
-            self._anim_effect.scale = 0.95
+            self.setWindowOpacity(0.0)
             self._enter_opacity_anim.start()
-            self._enter_scale_anim.start()
 
     def closeEvent(self, event) -> None:
-        if self._animate and not self._is_closing and self._anim_effect is not None:
+        if self._animate and not self._is_closing and self._exit_opacity_anim is not None:
             self._is_closing = True
             event.ignore()
             self._exit_opacity_anim.start()
-            self._exit_scale_anim.start()
             return
         self._is_closing = False
+        self.setWindowOpacity(1.0)
         self._on_finished(self._result)
         super().closeEvent(event)
 
@@ -506,6 +486,29 @@ class StyledDialog(QWidget):
     def mouseReleaseEvent(self, event: QMouseEvent):
         self._drag_pos = None
         super().mouseReleaseEvent(event)
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        """Paint the pre-baked content shadow under the content widget.
+
+        The root stays transparent (``WA_TranslucentBackground``); the
+        shadow bitmap is composited with one ``drawPixmap`` before the
+        children paint themselves on top.
+        """
+        painter = QPainter(self)
+        try:
+            geom = self._content_widget.geometry()
+            shadow = render_soft_shadow(
+                geom.width(), geom.height(), 12, 60,
+                self._shadow_color, self.SHADOW_MARGIN,
+            )
+            if not shadow.isNull():
+                painter.drawPixmap(
+                    geom.x() - self.SHADOW_MARGIN,
+                    geom.y() - self.SHADOW_MARGIN + 10,
+                    shadow,
+                )
+        finally:
+            painter.end()
 
     def resizeEvent(self, event):
         """Resize content widget to fit within shadow margins."""
@@ -572,12 +575,12 @@ class DialogIconCircle(QWidget):
 def _make_body_label(text: str) -> QWidget:
     # Web CSS: font-size: 13.5px; color: var(--text-secondary); line-height: 1.6
     w = QWidget()
-    w.setStyleSheet("background: transparent;")
+    register_widget_qss(w,("background: transparent;"))
     lbl = QLabel(text)
     lbl.setWordWrap(True)
-    lbl.setStyleSheet(
+    register_widget_qss(lbl,(
         f"font-size: 13.5px; color: {tm.mid.name()}; background: transparent;"
-    )
+    ))
     lay = QVBoxLayout(w)
     lay.setContentsMargins(0, 0, 0, 0)
     lay.addWidget(lbl)
@@ -802,27 +805,27 @@ def create_input_dialog(
 ) -> StyledDialog:
     """Input dialog with a text field."""
     body = QWidget()
-    body.setStyleSheet("background: transparent;")
+    register_widget_qss(body,("background: transparent;"))
     body_layout = QVBoxLayout(body)
     body_layout.setContentsMargins(0, 0, 0, 0)
     body_layout.setSpacing(0)
 
     msg_label = QLabel(message)
-    msg_label.setStyleSheet(
+    register_widget_qss(msg_label,(
         f"font-size: 13.5px; color: {tm.mid.name()}; background: transparent;"
-    )
+    ))
     body_layout.addWidget(msg_label)
 
     # Web CSS: .dialog-input { margin-top: 12px; width: 100%; }
     input_field = QLineEdit()
     input_field.setPlaceholderText(placeholder)
-    input_field.setStyleSheet(f"""
+    register_widget_qss(input_field,(f"""
         QLineEdit {{
             background-color: {tm.surface.name()}; border: 1px solid {tm.mid.name()}; border-radius: 6px;
             padding: 8px 12px; font-size: 13px; color: {tm.text.name()}; margin-top: 12px;
         }}
         QLineEdit:focus {{ border-color: {tm.accent.name()}; }}
-    """)
+    """))
     body_layout.addWidget(input_field)
 
     dialog = StyledDialog(

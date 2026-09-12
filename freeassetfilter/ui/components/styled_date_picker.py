@@ -14,6 +14,7 @@ from PySide6.QtGui import (
 )
 
 from datetime import datetime
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 # Font config
 FONT_FAMILY = "Microsoft YaHei UI"
@@ -81,10 +82,10 @@ class _CalendarPanel(QFrame):
         self._prev_btn.clicked.connect(self._prev_month)
 
         self._header_label = QLabel()
-        self._header_label.setStyleSheet(f"""
+        register_widget_qss(self._header_label,(f"""
             color: {tm.text.name()}; font-size: 14px; font-weight: 500;
             padding: 4px 8px; border-radius: 4px;
-        """)
+        """))
         self._header_label.setCursor(Qt.PointingHandCursor)
         self._header_label.setAlignment(Qt.AlignCenter)
 
@@ -102,7 +103,7 @@ class _CalendarPanel(QFrame):
         weekdays_layout.setContentsMargins(0, 8, 0, 4)
         for wd in ["日", "一", "二", "三", "四", "五", "六"]:
             lbl = QLabel(wd)
-            lbl.setStyleSheet(f"color: {tm.alpha_of(tm.mid, 60).name()}; font-size: 11px;")
+            register_widget_qss(lbl,(f"color: {tm.alpha_of(tm.mid, 60).name()}; font-size: 11px;"))
             lbl.setAlignment(Qt.AlignCenter)
             weekdays_layout.addWidget(lbl)
         self._weekdays_widget = QWidget()
@@ -133,13 +134,13 @@ class _CalendarPanel(QFrame):
 
         self._today_btn = QPushButton("今天")
         self._today_btn.setCursor(Qt.PointingHandCursor)
-        self._today_btn.setStyleSheet(f"""
+        register_widget_qss(self._today_btn,(f"""
             QPushButton {{
                 background: transparent; color: {tm.accent.name()}; font-size: 12px;
                 border: none; padding: 4px 8px; border-radius: 4px;
             }}
             QPushButton:hover {{ background: {tm.fill.lighter(115).name()}; }}
-        """)
+        """))
         self._today_btn.clicked.connect(self._select_today)
         footer_layout.addWidget(self._today_btn)
         footer_layout.addStretch()
@@ -778,13 +779,13 @@ class _NavButton(QPushButton):
         self._direction = direction  # -1 for prev, 1 for next, -12 for prev year, 12 for next year
         self.setFixedSize(28, 28)
         self.setCursor(Qt.PointingHandCursor)
-        self.setStyleSheet(f"""
+        register_widget_qss(self,(f"""
             QPushButton {{
                 background: transparent; border: none; color: {tm.mid.name()};
                 border-radius: 4px;
             }}
             QPushButton:hover {{ background: {tm.fill.lighter(115).name()}; }}
-        """)
+        """))
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -845,7 +846,7 @@ class _TimePicker(QWidget):
 
         # Separator
         sep = QLabel(":")
-        sep.setStyleSheet(f"color: {tm.mid.name()}; font-size: 14px; font-weight: 600;")
+        register_widget_qss(sep,(f"color: {tm.mid.name()}; font-size: 14px; font-weight: 600;"))
         sep.setAlignment(Qt.AlignCenter)
         sep.setFixedWidth(12)
         layout.addWidget(sep)
@@ -897,14 +898,14 @@ class _TimeSpinBox(QWidget):
         self._dec_btn = QPushButton("-")
         self._dec_btn.setFixedSize(26, 32)
         self._dec_btn.setCursor(Qt.PointingHandCursor)
-        self._dec_btn.setStyleSheet(f"""
+        register_widget_qss(self._dec_btn,(f"""
             QPushButton {{
                 background: {tm.fill.name()}; color: {tm.text.name()}; border: none;
                 border-radius: 4px; font-size: 16px; font-weight: 600;
             }}
             QPushButton:hover {{ background: {tm.fill.lighter(115).name()}; color: {tm.text.name()}; }}
             QPushButton:pressed {{ background: {tm.fill.name()}; }}
-        """)
+        """))
         self._dec_btn.clicked.connect(self._decrement)
         layout.addWidget(self._dec_btn)
 
@@ -917,14 +918,14 @@ class _TimeSpinBox(QWidget):
         self._inc_btn = QPushButton("+")
         self._inc_btn.setFixedSize(26, 32)
         self._inc_btn.setCursor(Qt.PointingHandCursor)
-        self._inc_btn.setStyleSheet(f"""
+        register_widget_qss(self._inc_btn,(f"""
             QPushButton {{
                 background: {tm.fill.name()}; color: {tm.text.name()}; border: none;
                 border-radius: 4px; font-size: 16px; font-weight: 600;
             }}
             QPushButton:hover {{ background: {tm.fill.lighter(115).name()}; color: {tm.text.name()}; }}
             QPushButton:pressed {{ background: {tm.fill.name()}; }}
-        """)
+        """))
         self._inc_btn.clicked.connect(self._increment)
         layout.addWidget(self._inc_btn)
 
@@ -968,27 +969,27 @@ class _EditableNumber(QWidget):
         self._label.setGeometry(0, 0, 36, 32)
         self._label.setAlignment(Qt.AlignCenter)
         self._label.setCursor(Qt.PointingHandCursor)
-        self._label.setStyleSheet(f"""
+        register_widget_qss(self._label,(f"""
             QLabel {{
                 background: {tm.fill.name()}; color: {tm.text.name()};
                 border: 1px solid {tm.alpha_of(tm.mid, 40).name()}; border-radius: 4px;
                 font-size: 15px; font-weight: 600;
             }}
             QLabel:hover {{ border: 1px solid {tm.accent.name()}; background: {tm.fill.name()}; }}
-        """)
+        """))
         self._update_label()
 
         # Line edit for editing (hidden by default)
         self._edit = QLineEdit(self)
         self._edit.setGeometry(0, 0, 36, 32)
         self._edit.setAlignment(Qt.AlignCenter)
-        self._edit.setStyleSheet(f"""
+        register_widget_qss(self._edit,(f"""
             QLineEdit {{
                 background: {tm.fill.name()}; color: {tm.text.name()}; border: 1px solid {tm.accent.name()};
                 border-radius: 4px; font-size: 15px; font-weight: 600;
                 padding: 0;
             }}
-        """)
+        """))
         self._edit.setVisible(False)
         self._edit.editingFinished.connect(self._on_edit_finished)
         self._edit.returnPressed.connect(self._on_edit_finished)
@@ -1491,16 +1492,16 @@ class _TimePanel(QFrame):
         # Time icon in header
         icon_widget = QLabel()
         icon_widget.setFixedSize(24, 24)
-        icon_widget.setStyleSheet("background: transparent;")
+        register_widget_qss(icon_widget,("background: transparent;"))
         icon_widget.setAlignment(Qt.AlignCenter)
         header_layout.addWidget(icon_widget)
 
         # Header label - same style as _CalendarPanel
         self._header_label = QLabel("选择时间")
-        self._header_label.setStyleSheet(f"""
+        register_widget_qss(self._header_label,(f"""
             color: {tm.text.name()}; font-size: 14px; font-weight: 500;
             padding: 4px 8px; border-radius: 4px;
-        """)
+        """))
         self._header_label.setAlignment(Qt.AlignCenter)
         header_layout.addWidget(self._header_label, 1)
 
@@ -1522,26 +1523,26 @@ class _TimePanel(QFrame):
 
         self._now_btn = QPushButton("此刻")
         self._now_btn.setCursor(Qt.PointingHandCursor)
-        self._now_btn.setStyleSheet(f"""
+        register_widget_qss(self._now_btn,(f"""
             QPushButton {{
                 background: transparent; color: {tm.accent.name()}; font-size: 12px;
                 border: none; padding: 4px 8px; border-radius: 4px;
             }}
             QPushButton:hover {{ background: {tm.fill.lighter(115).name()}; }}
-        """)
+        """))
         self._now_btn.clicked.connect(self._select_now)
         footer_layout.addWidget(self._now_btn)
         footer_layout.addStretch()
 
         self._confirm_btn = QPushButton("确认")
         self._confirm_btn.setCursor(Qt.PointingHandCursor)
-        self._confirm_btn.setStyleSheet(f"""
+        register_widget_qss(self._confirm_btn,(f"""
             QPushButton {{
                 background: transparent; color: {tm.accent.name()}; font-size: 12px;
                 border: none; padding: 4px 8px; border-radius: 4px;
             }}
             QPushButton:hover {{ background: {tm.fill.lighter(115).name()}; }}
-        """)
+        """))
         self._confirm_btn.clicked.connect(self._on_confirm)
         footer_layout.addWidget(self._confirm_btn)
 

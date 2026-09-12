@@ -18,6 +18,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QSizePolicy
 
 from theme import tm
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 
 SIZE_CONFIG = {
@@ -533,9 +534,9 @@ class StyledBreadcrumb(QWidget):
         sep_size = SIZE_CONFIG[self._size]["sep_font"]
         tertiary = self._tertiary_color.name()
         for sep in self._sep_labels:
-            sep.setStyleSheet(
+            register_widget_qss(sep,(
                 f"color: {tertiary}; font-size: {sep_size}px; padding: 0 4px;"
-            )
+            ))
 
     def _rebuild(self) -> None:
         # Disconnect old signals
@@ -577,9 +578,9 @@ class StyledBreadcrumb(QWidget):
             # Separator (not after the last item)
             if not is_active:
                 sep = QLabel(self._sep_type)
-                sep.setStyleSheet(
+                register_widget_qss(sep,(
                     f"color: {tertiary}; font-size: {sep_size}px; padding: 0 4px;"
-                )
+                ))
                 sep.setFixedHeight(ICON_SIZE)
                 self._sep_labels.append(sep)
                 self._layout.addWidget(sep)

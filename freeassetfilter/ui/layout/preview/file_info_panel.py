@@ -57,6 +57,7 @@ from PySide6.QtWidgets import (
 from theme import tm
 
 from freeassetfilter.services import file_info_service as fis
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 # 注：耗时采集走 QThreadPool 全局池（QRunnable 用完即弃）；面板持有在途
 # 任务引用（``self._tasks``）防 GC，切文件时协作式取消 + 令牌守卫，无
@@ -193,7 +194,7 @@ class _FoldLink(QLabel):
             text_color = _rgba(self._hover_color)
         else:
             text_color = _rgba(self._color)
-        self.setStyleSheet(f"color: {text_color}; font-size: 12px;")
+        register_widget_qss(self,(f"color: {text_color}; font-size: 12px;"))
 
     def set_text(self, text: str) -> None:
         self._base_text = text
@@ -844,16 +845,62 @@ class _InfoCanvas(QWidget):
                 return item.action
         return None
 
+    def _invalidate_items(self, items) -> None:
+        """按画布条目矩形局部失效（A4 局部重绘纪律）。
+
+        脏区取各条目 ``rect`` 的并集（已是画布坐标系）；条目为空/矩形无效时
+        回退整画布 ``update()``，绝不漏重绘。
+
+        Args:
+            items: ``_CanvasItem`` 可迭代对象（允许 None 元素）。
+        """
+        dirty = QRect()
+        try:
+            for item in items:
+                if item is None:
+                    continue
+                rect = item.rect
+                if rect is not None and rect.isValid() and not rect.isEmpty():
+                    dirty = rect if dirty.isNull() else dirty.united(rect)
+        except Exception:
+            dirty = QRect()
+        try:
+            if dirty.isNull():
+                self.update()
+            else:
+                self.update(dirty.adjusted(0, -1, 0, 1).intersected(self.rect()))
+        except Exception:
+            pass
+
+    def _link_items(self, action: Optional[str]) -> list:
+        """取指定 link action 对应的画布条目（A4 脏区用）。
+
+        Args:
+            action: link 动作名；None 返回空列表。
+
+        Returns:
+            匹配条目列表。
+        """
+        if action is None:
+            return []
+        return [item for item in self._items if item.kind == "link" and item.action == action]
+
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         pos = event.position().toPoint()
         row = self._row_at(pos)
         link_action = self._link_action_at(pos)
         if row is not self._hover_row:
+            # A4：hover 高亮只影响新旧两行，按行矩形失效。
+            old_row = self._hover_row
             self._hover_row = row
-            self.update()
+            self._invalidate_items((old_row, row))
         if link_action != self._hover_link_action:
+            # A4：link 悬停变色只影响新旧两个链接条目。
+            old_action = self._hover_link_action
             self._hover_link_action = link_action
-            self.update()
+            self._invalidate_items(
+                self._link_items(old_action) + self._link_items(link_action)
+            )
         self.setCursor(
             Qt.PointingHandCursor
             if (row is not None or link_action is not None)
@@ -866,11 +913,14 @@ class _InfoCanvas(QWidget):
         super().mouseMoveEvent(event)
 
     def leaveEvent(self, event) -> None:  # noqa: N802
+        # A4：离开时只失效残留 hover 行/链接条目。
+        old_row = self._hover_row
+        old_action = self._hover_link_action
         self._hover_row = None
         self._hover_link_action = None
         self.setToolTip("")
         self.setCursor(Qt.ArrowCursor)
-        self.update()
+        self._invalidate_items((old_row,) + tuple(self._link_items(old_action)))
         super().leaveEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
@@ -1006,9 +1056,9 @@ class FileInfoPanel(QWidget):
         self._scroll_area = StyledScrollArea(self)
         self._scroll_area.setWidgetResizable(True)
         self._scroll_area.setFrameShape(QFrame.NoFrame)
-        self._scroll_area.setStyleSheet(
+        register_widget_qss(self._scroll_area,(
             "QScrollArea { background: transparent; border: none; }"
-        )
+        ))
         self._scroll_area.viewport().setAutoFillBackground(False)
         self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         # 原生垂直条仅作为滚动模型/平滑滚动通道；视觉交给悬浮条

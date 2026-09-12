@@ -3,12 +3,19 @@
 Provides reusable drawing primitives — capsule, circle, checkmark,
 rounded rect, chevron, and dashed line — so every component's
 paintEvent uses consistent geometry, pen/brush setup, and antialiasing.
+
+Also hosts :func:`render_soft_shadow`, the pre-baked replacement for
+drop-shadow graphics effects: the shadow bitmap is blurred once with a
+separable box kernel (numpy, triple pass ≈ gaussian), cached per size,
+and composited per frame with a single ``drawPixmap`` — no offscreen
+effect pipeline on the paint path.
 """
 
+from functools import lru_cache
 from typing import Optional
 
 from PySide6.QtCore import Qt, QRectF, QPointF
-from PySide6.QtGui import QPainter, QColor, QPen, QBrush
+from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QImage, QPixmap
 
 
 def draw_capsule(
@@ -227,3 +234,141 @@ def draw_dashed_line(
     painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
 
     painter.restore()
+
+
+def _box_blur_alpha(alpha: "object", radius: int) -> "object":
+    """Separable box blur of a 2D float32 alpha plane, zero-padded edges.
+
+    Args:
+        alpha: 2D float array in [0, 1].
+        radius: Box half-width in pixels (>= 1).
+
+    Returns:
+        Blurred 2D float array of the same shape.
+    """
+    import numpy as np
+
+    data = np.asarray(alpha, dtype=np.float32)
+    radius = max(1, int(radius))
+    width = 2 * radius + 1
+    out = data
+    for _ in range(3):  # triple box ≈ gaussian
+        # Horizontal pass: pad columns only (rows keep their size).
+        padded = np.pad(out, ((0, 0), (radius, radius)), mode="constant")
+        cumsum = np.cumsum(padded, axis=1, dtype=np.float64)
+        # Leading zero so window sums align: out[i] = mean(padded[i:i+width]).
+        cumsum = np.concatenate(
+            [np.zeros((cumsum.shape[0], 1), dtype=np.float64), cumsum], axis=1
+        )
+        out = (cumsum[:, width:] - cumsum[:, :-width]) / width
+        # Vertical pass: pad rows only.
+        padded = np.pad(out, ((radius, radius), (0, 0)), mode="constant")
+        cumsum = np.cumsum(padded, axis=0, dtype=np.float64)
+        cumsum = np.concatenate(
+            [np.zeros((1, cumsum.shape[1]), dtype=np.float64), cumsum], axis=0
+        )
+        out = (cumsum[width:, :] - cumsum[:-width, :]) / width
+    assert out.shape == data.shape, (out.shape, data.shape)
+    return out.astype(np.float32)
+
+
+@lru_cache(maxsize=32)
+def _cached_shadow_bitmap(
+    content_w: int,
+    content_h: int,
+    radius_px: int,
+    blur_px: int,
+    color_rgba: tuple[int, int, int, int],
+    pad: int,
+) -> bytes:
+    """Render and blur a rounded-rect alpha mask; cached by geometry.
+
+    Args:
+        content_w: Mask (content) width in pixels.
+        content_h: Mask (content) height in pixels.
+        radius_px: Corner radius of the mask in pixels.
+        blur_px: Blur diameter in pixels (mirrors drop-shadow blur radius).
+        color_rgba: Shadow tint as an (r, g, b, a) tuple.
+        pad: Transparent padding around the mask in pixels.
+
+    Returns:
+        Raw BGRA bytes of the ``(content_w + 2*pad, content_h + 2*pad)``
+        shadow bitmap.
+    """
+    import numpy as np
+
+    full_w = content_w + pad * 2
+    full_h = content_h + pad * 2
+    mask = QImage(full_w, full_h, QImage.Format_ARGB32)
+    mask.fill(Qt.transparent)
+    painter = QPainter(mask)
+    try:
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(255, 255, 255))
+        painter.drawRoundedRect(
+            QRectF(pad, pad, content_w, content_h), radius_px, radius_px
+        )
+    finally:
+        painter.end()
+
+    ptr = mask.bits()
+    plane = np.frombuffer(ptr, dtype=np.uint8).reshape(full_h, full_w, 4)
+    alpha = plane[:, :, 3].astype(np.float32) / 255.0
+    blurred = _box_blur_alpha(alpha, max(1, blur_px // 2))
+
+    out = np.zeros((full_h, full_w, 4), dtype=np.uint8)
+    out[:, :, 0] = color_rgba[2]
+    out[:, :, 1] = color_rgba[1]
+    out[:, :, 2] = color_rgba[0]
+    out[:, :, 3] = np.clip(
+        blurred * color_rgba[3], 0.0, 255.0
+    ).astype(np.uint8)
+    return out.tobytes()
+
+
+def render_soft_shadow(
+    content_w: int,
+    content_h: int,
+    radius_px: int,
+    blur_px: int,
+    color: QColor,
+    pad: int,
+) -> QPixmap:
+    """Return a pre-baked soft-shadow pixmap for a rounded-rect content box.
+
+    The caller draws it with a single ``drawPixmap`` at
+    ``(content_x - pad + offset_x, content_y - pad + offset_y)`` inside its
+    own paintEvent — no graphics effect involved. Results are cached per
+    geometry so repeated frames cost one blit.
+
+    Args:
+        content_w: Content width the shadow belongs to.
+        content_h: Content height the shadow belongs to.
+        radius_px: Content corner radius.
+        blur_px: Blur diameter (drop-shadow blur-radius equivalent).
+        color: Shadow tint (alpha scales the falloff).
+        pad: Transparent margin baked around the mask.
+
+    Returns:
+        QPixmap: ``(content_w + 2*pad, content_h + 2*pad)`` shadow bitmap;
+        null pixmap when inputs are degenerate.
+    """
+    content_w = max(0, int(content_w))
+    content_h = max(0, int(content_h))
+    if content_w <= 0 or content_h <= 0 or pad <= 0:
+        return QPixmap()
+    full_w = content_w + pad * 2
+    full_h = content_h + pad * 2
+    raw = _cached_shadow_bitmap(
+        content_w,
+        content_h,
+        max(0, int(radius_px)),
+        max(1, int(blur_px)),
+        (color.red(), color.green(), color.blue(), color.alpha()),
+        int(pad),
+    )
+    image = QImage(
+        raw, full_w, full_h, full_w * 4, QImage.Format_ARGB32
+    )
+    return QPixmap.fromImage(image.copy())

@@ -25,6 +25,7 @@ import os
 import re
 
 from freeassetfilter.ui.theme import tm
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 from freeassetfilter.utils.app_logger import debug, warning
 from freeassetfilter.utils.perf_metrics import increment_perf_counter, set_perf_metadata, track_perf
 
@@ -307,7 +308,7 @@ class SvgRenderer:
         if not icon_path or not os.path.exists(icon_path):
             label = QLabel()
             label.setFixedSize(scaled_icon_size, scaled_icon_size)
-            label.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
+            register_widget_qss(label,("background: transparent; border: none; padding: 0; margin: 0;"))
             label.setAttribute(Qt.WA_TranslucentBackground, True)
             pixmap = QPixmap(scaled_icon_size, scaled_icon_size)
             pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
@@ -378,14 +379,14 @@ class SvgRenderer:
             
             svg_widget = QSvgWidget()
             svg_widget.load(svg_content.encode('utf-8'))
-            svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
+            register_widget_qss(svg_widget,("background: transparent; border: none; padding: 0; margin: 0;"))
             svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
             
             svg_widget.setFixedSize(render_width, render_height)
             
             container = QWidget()
             container.setFixedSize(scaled_icon_size, scaled_icon_size)
-            container.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
+            register_widget_qss(container,("background: transparent; border: none; padding: 0; margin: 0;"))
             container.setAttribute(Qt.WA_TranslucentBackground, True)
             
             layout = QVBoxLayout(container)
@@ -401,7 +402,7 @@ class SvgRenderer:
             label = QLabel()
             label.setFixedSize(scaled_icon_size, scaled_icon_size)
             label.setAlignment(Qt.AlignCenter)
-            label.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
+            register_widget_qss(label,("background: transparent; border: none; padding: 0; margin: 0;"))
             label.setAttribute(Qt.WA_TranslucentBackground, True)
             label.setPixmap(pixmap)
             return label
@@ -632,7 +633,7 @@ class SvgRenderer:
                 increment_perf_counter("svg.render_unknown_file_icon", "missing_source")
                 label = QLabel()
                 label.setFixedSize(scaled_icon_size, scaled_icon_size)
-                label.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
+                register_widget_qss(label,("background: transparent; border: none; padding: 0; margin: 0;"))
                 label.setAttribute(Qt.WA_TranslucentBackground, True)
                 pixmap = QPixmap(scaled_icon_size, scaled_icon_size)
                 pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
@@ -643,7 +644,7 @@ class SvgRenderer:
             try:
                 container = QWidget()
                 container.setFixedSize(scaled_icon_size, scaled_icon_size)
-                container.setStyleSheet('background: transparent; border: none;')
+                register_widget_qss(container,('background: transparent; border: none;'))
                 container.setAttribute(Qt.WA_TranslucentBackground, True)
 
                 with open(icon_path, 'r', encoding='utf-8') as f:
@@ -669,7 +670,7 @@ class SvgRenderer:
                 svg_widget = QSvgWidget(container)
                 svg_widget.load(svg_content.encode('utf-8'))
                 svg_widget.setFixedSize(render_width, render_height)
-                svg_widget.setStyleSheet('background: transparent; border: none;')
+                register_widget_qss(svg_widget,('background: transparent; border: none;'))
                 svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
                 x = (scaled_icon_size - render_width) // 2
                 y = (scaled_icon_size - render_height) // 2
@@ -679,7 +680,7 @@ class SvgRenderer:
                     text_label = QLabel(text, container)
                     text_label.setAlignment(Qt.AlignCenter)
                     text_label.setFixedSize(scaled_icon_size, scaled_icon_size)
-                    text_label.setStyleSheet('background: transparent; border: none;')
+                    register_widget_qss(text_label,('background: transparent; border: none;'))
                     text_label.setAttribute(Qt.WA_TranslucentBackground, True)
                     text_label.move(0, 0)
 
@@ -710,10 +711,10 @@ class SvgRenderer:
                         text_width = font_metrics.horizontalAdvance(text)
                         text_height = font_metrics.height()
 
-                    text_label.setStyleSheet(
+                    register_widget_qss(text_label,(
                         f'color: black; font: {base_font_size}pt "{font.family()}"; '
                         'font-weight: bold; background: transparent;'
-                    )
+                    ))
 
                 increment_perf_counter("svg.render_unknown_file_icon", "success")
                 return container
@@ -772,7 +773,7 @@ class SvgRenderer:
             label = QLabel()
             label.setFixedSize(scaled_icon_size, scaled_icon_size)
             label.setPixmap(final_pixmap)
-            label.setStyleSheet('background: transparent; border: none;')
+            register_widget_qss(label,('background: transparent; border: none;'))
             label.setAttribute(Qt.WA_TranslucentBackground, True)
             return label
     

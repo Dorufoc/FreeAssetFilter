@@ -41,8 +41,15 @@ from freeassetfilter.core.managers.settings_manager_v2 import (
     DEFAULT_SETTINGS_V2,
     SettingsManagerV2,
 )
+from freeassetfilter.core.native.platform_gpu import apply_gpu_profile
+from freeassetfilter.core.native.platform_threads import apply_process_power_policy
+from freeassetfilter.core.native.platform_timing import (
+    get_active_profile as _get_timing_active_profile,
+    set_active_profile as _set_timing_active_profile,
+)
 from freeassetfilter.ui.layout.settings_staging_cache import SettingsStagingCache
 from freeassetfilter.utils.path_utils import get_app_data_path
+from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 
 # ── 自定义图像背景可调参数（与 components/custom_background 对齐） ──
@@ -119,7 +126,7 @@ class _FloatingScrollArea(QScrollArea):
         super().__init__(parent)
         self.setWidgetResizable(True)
         self.setFrameShape(QFrame.NoFrame)
-        self.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        register_widget_qss(self,("QScrollArea { background: transparent; border: none; }"))
         self.viewport().setAutoFillBackground(False)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -464,6 +471,17 @@ class AppearanceSettingsPage(QWidget):
     THEME_LABELS: tuple[str, ...] = ("白天", "夜晚", "跟随系统")
     THEME_INDEX: dict[str, int] = {"light": 0, "dark": 1, "system": 2}
 
+    # 性能档位三态与分段索引的双向映射（顺序与 _build_ui 添加顺序一致）。
+    # 取值与 SettingsManagerV2 PERFORMANCE_PROFILES / 三钩子对齐：
+    # performance（性能） | balanced（均衡） | powersave（省电）。
+    PROFILE_MODES: tuple[str, ...] = ("performance", "balanced", "powersave")
+    PROFILE_LABELS: tuple[str, ...] = ("性能", "均衡", "省电")
+    PROFILE_INDEX: dict[str, int] = {
+        "performance": 0,
+        "balanced": 1,
+        "powersave": 2,
+    }
+
     def __init__(self, parent=None, staging_cache: SettingsStagingCache | None = None):
         super().__init__(parent)
         if staging_cache is None:
@@ -501,6 +519,10 @@ class AppearanceSettingsPage(QWidget):
         self._theme_mode: str = "dark"   # "light"（白天） / "dark"（夜晚） / "system"（跟随系统）
         self._theme_updating: bool = False  # 编程式切换主题分段控件的守卫标志
         self._theme_segmented: StyledSegmented | None = None
+        # 性能档位三态状态（初值在 _build_ui 中从暂存缓存覆盖）
+        self._perf_profile: str = "balanced"  # "performance"（性能） / "balanced"（均衡） / "powersave"（省电）
+        self._perf_updating: bool = False  # 编程式切换性能分段控件的守卫标志
+        self._perf_segmented: StyledSegmented | None = None
         self._build_ui()
         self._load_v2_settings()
 
@@ -512,16 +534,16 @@ class AppearanceSettingsPage(QWidget):
         # ── 深色模式三段选择（白天 / 夜晚 / 跟随系统）──
         # 与「窗口背景」分段同款 StyledSegmented（pill/sm），视觉与交互一致。
         dark_row = QFrame()
-        dark_row.setStyleSheet("background: transparent; border: none;")
+        register_widget_qss(dark_row,("background: transparent; border: none;"))
         dark_layout = QHBoxLayout(dark_row)
         dark_layout.setContentsMargins(0, 0, 0, 0)
         dark_layout.setSpacing(12)
 
         dark_label = QLabel("深色模式")
-        dark_label.setStyleSheet(
+        register_widget_qss(dark_label,(
             f"background: transparent; border: none;"
             f"color: {tm.text.name()}; font-size: 13px; font-weight: 500;"
-        )
+        ))
         dark_layout.addWidget(dark_label)
         dark_layout.addStretch()
 
@@ -554,10 +576,10 @@ class AppearanceSettingsPage(QWidget):
 
         # ── 主题色选择 ──
         accent_label = QLabel("主题色")
-        accent_label.setStyleSheet(
+        register_widget_qss(accent_label,(
             f"background: transparent; border: none;"
             f"color: {tm.text.name()}; font-size: 13px; font-weight: 500;"
-        )
+        ))
         layout.addWidget(accent_label)
 
         # 单行布局：所有配色按钮放在同一行
@@ -606,16 +628,16 @@ class AppearanceSettingsPage(QWidget):
         )
 
         bg_row = QFrame()
-        bg_row.setStyleSheet("background: transparent; border: none;")
+        register_widget_qss(bg_row,("background: transparent; border: none;"))
         bg_title_layout = QHBoxLayout(bg_row)
         bg_title_layout.setContentsMargins(0, 0, 0, 0)
         bg_title_layout.setSpacing(12)
 
         bg_label = QLabel("窗口背景")
-        bg_label.setStyleSheet(
+        register_widget_qss(bg_label,(
             f"background: transparent; border: none;"
             f"color: {tm.text.name()}; font-size: 13px; font-weight: 500;"
-        )
+        ))
         bg_title_layout.addWidget(bg_label)
         bg_title_layout.addStretch()
         self._bg_label = bg_label
@@ -641,7 +663,7 @@ class AppearanceSettingsPage(QWidget):
 
         # 图片行（仅 image 模式可见）：当前文件名 + 「选择图片…」按钮
         self._bg_image_row = QFrame()
-        self._bg_image_row.setStyleSheet("background: transparent; border: none;")
+        register_widget_qss(self._bg_image_row,("background: transparent; border: none;"))
         bg_row_layout = QHBoxLayout(self._bg_image_row)
         bg_row_layout.setContentsMargins(0, 0, 0, 0)
         bg_row_layout.setSpacing(12)
@@ -649,10 +671,10 @@ class AppearanceSettingsPage(QWidget):
         self._bg_file_label = QLabel(
             self._bg_image_name if self._bg_image_name else "未设置"
         )
-        self._bg_file_label.setStyleSheet(
+        register_widget_qss(self._bg_file_label,(
             f"background: transparent; border: none;"
             f"color: {tm.text.name()}; font-size: 13px;"
-        )
+        ))
         bg_row_layout.addWidget(self._bg_file_label)
         bg_row_layout.addStretch()
 
@@ -664,7 +686,7 @@ class AppearanceSettingsPage(QWidget):
         # 图像参数区（仅 image 模式可见）：模糊度 / 透明度可拖动滑动条。
         # 默认模糊度 0（不模糊）、透明度 80%（很透明）。
         self._bg_params_row = QFrame()
-        self._bg_params_row.setStyleSheet("background: transparent; border: none;")
+        register_widget_qss(self._bg_params_row,("background: transparent; border: none;"))
         params_layout = QVBoxLayout(self._bg_params_row)
         params_layout.setContentsMargins(0, 0, 0, 0)
         params_layout.setSpacing(8)
@@ -682,7 +704,7 @@ class AppearanceSettingsPage(QWidget):
         blur_row.setContentsMargins(0, 0, 0, 0)
         blur_row.setSpacing(12)
         blur_name = QLabel("模糊度")
-        blur_name.setStyleSheet(label_style)
+        register_widget_qss(blur_name,(label_style))
         blur_name.setFixedWidth(48)
         blur_row.addWidget(blur_name)
         self._blur_slider = StyledSlider(
@@ -691,7 +713,7 @@ class AppearanceSettingsPage(QWidget):
         self._blur_slider.value_changed.connect(self._on_blur_changed)
         blur_row.addWidget(self._blur_slider, stretch=1)
         self._blur_value_label = QLabel(f"{self._bg_blur:g}")
-        self._blur_value_label.setStyleSheet(value_style)
+        register_widget_qss(self._blur_value_label,(value_style))
         self._blur_value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self._blur_value_label.setFixedWidth(44)
         blur_row.addWidget(self._blur_value_label)
@@ -701,7 +723,7 @@ class AppearanceSettingsPage(QWidget):
         opacity_row.setContentsMargins(0, 0, 0, 0)
         opacity_row.setSpacing(12)
         opacity_name = QLabel("透明度")
-        opacity_name.setStyleSheet(label_style)
+        register_widget_qss(opacity_name,(label_style))
         opacity_name.setFixedWidth(48)
         opacity_row.addWidget(opacity_name)
         self._transparency_slider = StyledSlider(
@@ -712,7 +734,7 @@ class AppearanceSettingsPage(QWidget):
         )
         opacity_row.addWidget(self._transparency_slider, stretch=1)
         self._transparency_value_label = QLabel(f"{self._bg_transparency}%")
-        self._transparency_value_label.setStyleSheet(value_style)
+        register_widget_qss(self._transparency_value_label,(value_style))
         self._transparency_value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self._transparency_value_label.setFixedWidth(44)
         opacity_row.addWidget(self._transparency_value_label)
@@ -732,6 +754,46 @@ class AppearanceSettingsPage(QWidget):
 
         # 初始按模式设置图片行与弥散氛围行的可见性（不触发应用逻辑）
         self._update_bg_ui_state()
+
+        # ── 性能档位三段选择（性能 / 均衡 / 省电）──
+        # 与「深色模式」分段同款 StyledSegmented（pill/sm），视觉与交互一致。
+        # 暂存隔离铁律：切换只写入 SettingsStagingCache（performance.profile），
+        # 不触碰三钩子、tm、主窗口与磁盘；应用与落盘统一由
+        # SettingsLayout._submit_settings 在点击确定时执行。
+        perf_row = QFrame()
+        register_widget_qss(perf_row, ("background: transparent; border: none;"))
+        perf_layout = QHBoxLayout(perf_row)
+        perf_layout.setContentsMargins(0, 0, 0, 0)
+        perf_layout.setSpacing(12)
+
+        perf_label = QLabel("性能档位")
+        register_widget_qss(perf_label, (
+            f"background: transparent; border: none;"
+            f"color: {tm.text.name()}; font-size: 13px; font-weight: 500;"
+        ))
+        perf_layout.addWidget(perf_label)
+        perf_layout.addStretch()
+
+        self._perf_profile = self._resolve_staged_perf_profile()
+
+        self._perf_segmented = StyledSegmented(variant="pill", size="sm")
+        for label in self.PROFILE_LABELS:
+            self._perf_segmented.add_segment(label)
+        self._perf_segmented.current_changed.connect(
+            self._on_perf_segment_changed
+        )
+        # 守卫内编程式切换，避免初始化期间触发应用/持久化逻辑。
+        self._perf_updating = True
+        try:
+            self._perf_segmented.set_current_index(
+                self.PROFILE_INDEX.get(self._perf_profile, 1), animate=False
+            )
+        finally:
+            self._perf_updating = False
+        perf_layout.addWidget(self._perf_segmented)
+        self._perf_label = perf_label
+
+        layout.addWidget(perf_row)
 
         layout.addStretch()
 
@@ -1037,6 +1099,65 @@ class AppearanceSettingsPage(QWidget):
         finally:
             self._theme_updating = False
 
+    def _resolve_staged_perf_profile(self) -> str:
+        """从暂存缓存解析性能档位。
+
+        只接受 ``performance`` / ``balanced`` / ``powersave``；
+        缺失或非法值回退 ``balanced``（与 V2 合并口径一致）。
+
+        Returns:
+            档位值："performance" | "balanced" | "powersave"。
+        """
+        staged = self._staging_cache.get("performance.profile", None)
+        if staged in ("performance", "balanced", "powersave"):
+            return staged
+        return "balanced"
+
+    def _on_perf_segment_changed(self, index: int) -> None:
+        """性能档位分段切换 — 仅写入暂存，点击确定才全局生效。
+
+        与「深色模式」分段同语义：切换只进 ``SettingsStagingCache``
+        （``performance.profile``），不触碰三钩子、``tm``、主窗口与磁盘；
+        应用与落盘统一由 ``SettingsLayout._submit_settings`` 在点击确定时
+        执行。
+
+        Args:
+            index: 新选中的分段索引（0 = 性能，1 = 均衡，2 = 省电）。
+        """
+        if self._perf_updating:
+            return
+        if index < 0 or index >= len(self.PROFILE_MODES):
+            return
+        self._apply_perf_profile(self.PROFILE_MODES[index])
+
+    def _apply_perf_profile(self, mode: str) -> None:
+        """暂存性能档位（不生效、不落盘，点击确定才全局应用）。
+
+        遵循设置页暂存隔离铁律：仅写入暂存缓存并同步分段选中；
+        三钩子应用与 V2 落盘统一由 ``SettingsLayout._submit_settings``
+        执行。
+
+        Args:
+            mode: 档位值，"performance" | "balanced" | "powersave"，
+                非法值直接忽略。
+        """
+        if mode not in ("performance", "balanced", "powersave"):
+            return
+        self._perf_profile = mode
+        self._staging_cache.set("performance.profile", mode)
+        self._sync_perf_segment()
+
+    def _sync_perf_segment(self) -> None:
+        """按当前档位同步性能分段控件选中项（守卫内切换，不触发处理器）。"""
+        if self._perf_segmented is None:
+            return
+        target = self.PROFILE_INDEX.get(self._perf_profile, 1)
+        self._perf_updating = True
+        try:
+            self._perf_segmented.set_current_index(target, animate=False)
+        finally:
+            self._perf_updating = False
+
     def _on_dark_toggle(self, checked: bool) -> None:
         """兼容旧深色开关调用：等价于暂存夜晚/白天偏好（点击确定才生效）。
 
@@ -1254,14 +1375,20 @@ class AppearanceSettingsPage(QWidget):
         # 由外部 _refresh_styles 统一刷新文字颜色
         # 窗口背景区块：标题与文件名标签颜色跟随主题（覆盖统一刷新，
         # 保证页面脱离 SettingsLayout 宿主单独使用时同样正确）
-        self._bg_label.setStyleSheet(
+        register_widget_qss(self._bg_label,(
             f"background: transparent; border: none;"
             f"color: {tm.text.name()}; font-size: 13px; font-weight: 500;"
-        )
-        self._bg_file_label.setStyleSheet(
+        ))
+        register_widget_qss(self._bg_file_label,(
             f"background: transparent; border: none;"
             f"color: {tm.text.name()}; font-size: 13px;"
-        )
+        ))
+        # 性能档位标题颜色跟随主题（覆盖统一刷新，保证单独使用时同样正确）。
+        if getattr(self, "_perf_label", None) is not None:
+            register_widget_qss(self._perf_label,(
+                f"background: transparent; border: none;"
+                f"color: {tm.text.name()}; font-size: 13px; font-weight: 500;"
+            ))
         # 弥散氛围开关：同步状态（避免信号循环：暂时断开）
         if self._ambient_toggle is not None:
             self._ambient_toggle.toggled.disconnect(self._on_ambient_toggled)
@@ -1271,15 +1398,15 @@ class AppearanceSettingsPage(QWidget):
         if self._ambient_row is not None:
             _ambient_title = getattr(self._ambient_row, "title_label", None)
             if _ambient_title is not None:
-                _ambient_title.setStyleSheet(
+                register_widget_qss(_ambient_title,(
                     f"font-size: 13.5px; font-weight: 500; color: {tm.text.name()};"
-                )
+                ))
             _ambient_desc = getattr(self._ambient_row, "desc_label", None)
             if _ambient_desc is not None:
-                _ambient_desc.setStyleSheet(
+                register_widget_qss(_ambient_desc,(
                     f"font-size: 12px; color: {tm.alpha_of(tm.mid, 60).name()};"
                     f" line-height: 1.5;"
-                )
+                ))
         # 重新应用背景模式相关的可用性/置灰状态（米卡数值标签颜色）
         self._update_bg_ui_state()
 
@@ -1340,6 +1467,10 @@ class AppearanceSettingsPage(QWidget):
         self._sync_bg_param_sliders()
         self._update_bg_ui_state()
 
+        # 性能档位：从暂存恢复展示（取消/关闭未提交时恢复原始值）。
+        self._perf_profile = self._resolve_staged_perf_profile()
+        self._sync_perf_segment()
+
     def _sync_bg_segment(self) -> None:
         """按暂存背景模式同步分段控件选中项（守卫内切换，不触发处理器）。"""
         target = {"minimalist": 0, "mica": 1, "image": 2}.get(self._bg_mode, 1)
@@ -1369,7 +1500,8 @@ class AppearanceSettingsPage(QWidget):
         """收集暂存区的 V2 设置值（提交事务的数据源）。
 
         Returns:
-            dict: V2 分类树格式的设置字典（含主题、强调色与窗口背景）。
+            dict: V2 分类树格式的设置字典（含主题、强调色、窗口背景与
+                性能档位）。
         """
         return {
             "appearance": {
@@ -1390,6 +1522,11 @@ class AppearanceSettingsPage(QWidget):
                         "image": self._bg_image_name,
                         "ambient": self._bg_ambient,
                     },
+                ),
+            },
+            "performance": {
+                "profile": self._staging_cache.get(
+                    "performance.profile", self._perf_profile
                 ),
             },
         }
@@ -1447,7 +1584,7 @@ class SettingsLayout(QWidget):
 
         # 使用 QStackedWidget 实现多页面切换
         self._stack = QStackedWidget()
-        self._stack.setStyleSheet("background: transparent; border: none;")
+        register_widget_qss(self._stack,("background: transparent; border: none;"))
 
         # 页面 0：外观（包进透明滚动区域，小窗口尺寸下内容可滚动访问）
         self._appearance_page = AppearanceSettingsPage(staging_cache=self._staging_cache)
@@ -1512,14 +1649,14 @@ class SettingsLayout(QWidget):
         fill_color = f"rgba({txt.red()},{txt.green()},{txt.blue()},{5 / 100})"
         border_color = f"rgba({mid.red()},{mid.green()},{mid.blue()},{50 / 100})"
 
-        self._stack.setStyleSheet(f"""
+        register_widget_qss(self._stack,(f"""
             #SettingsCard {{
                 background-color: {fill_color};
                 border: 1px solid {border_color};
                 border-radius: 8px;
             }}
-        """)
-        self._content_area.setStyleSheet("background-color: transparent; border: none;")
+        """))
+        register_widget_qss(self._content_area,("background-color: transparent; border: none;"))
 
         # 刷新外观页面内的文字颜色
         for i in range(self._stack.count()):
@@ -1527,10 +1664,10 @@ class SettingsLayout(QWidget):
             for label in card.findChildren(QLabel):
                 if not label.text():
                     continue
-                label.setStyleSheet(
+                register_widget_qss(label,(
                     f"background: transparent; border: none;"
                     f"color: {tm.text.name()}; font-size: 13px; font-weight: 500;"
-                )
+                ))
 
         # 刷新外观页面
         if hasattr(self, "_appearance_page"):
@@ -1563,7 +1700,7 @@ class SettingsLayout(QWidget):
         """
         bar = QFrame()
         bar.setObjectName("SettingsBottomBar")
-        bar.setStyleSheet("background: transparent; border: none;")
+        register_widget_qss(bar,("background: transparent; border: none;"))
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(0, 8, 0, 0)
         layout.setSpacing(8)
@@ -1613,8 +1750,9 @@ class SettingsLayout(QWidget):
         """设置提交事件处理函数（确定按钮绑定，事务性提交）。
 
         流程：暂存快照 → 校验 → 主题过渡遮罩 → 应用到 ``tm`` → 应用背景到
-        主窗口 → 持久化到 ``SettingsManagerV2`` → 基线前移。任一步失败则
-        回滚 ``tm`` 并返回 False，不污染磁盘与运行时。
+        主窗口 → 应用性能档位到三钩子 → 持久化到 ``SettingsManagerV2`` →
+        基线前移。任一步失败则回滚 ``tm`` 与定时器档位并返回 False，
+        不污染磁盘与运行时。
 
         Args:
             close_after: 预留关闭标志（关闭统一由调用方执行，便于测试断言）。
@@ -1642,6 +1780,15 @@ class SettingsLayout(QWidget):
             staged_bg.get("transparency", IMAGE_BG_TRANSPARENCY_DEFAULT)
         )
 
+        # 性能档位：只接受三档合法值，缺失/非法回退 balanced（与 V2 合并口径一致）。
+        staged_perf = staged.get("performance", {}) if isinstance(staged, dict) else {}
+        if isinstance(staged_perf, dict):
+            perf_profile = staged_perf.get("profile", "balanced")
+        else:
+            perf_profile = "balanced"
+        if perf_profile not in ("performance", "balanced", "powersave"):
+            perf_profile = "balanced"
+
         saved_accent = accent
         if isinstance(accent, str) and accent.lower() == "auto":
             accent = get_system_accent_color()
@@ -1657,6 +1804,10 @@ class SettingsLayout(QWidget):
         prev_mode = tm.get_theme_mode()
         prev_theme = "dark" if tm.is_dark_theme() else "light"
         prev_colors = copy.deepcopy(tm._colors)
+        try:
+            prev_perf_profile = _get_timing_active_profile()
+        except Exception:
+            prev_perf_profile = "balanced"
         # 主窗口过渡预抓拍：tm 翻转后主窗槽内各背景层 sync 才能以旧帧为底
         # 做 280ms 交叉淡入，否则退化为裸 update 露出 _root 形成闪现。
         try:
@@ -1676,6 +1827,13 @@ class SettingsLayout(QWidget):
 
             self._apply_staged_background_to_main_window(staged_bg)
 
+            # 性能档位应用（仅提交路径调用；顺序：定时器档位 → 进程电源策略
+            # → GPU 路由；工作线程钩子在线程入口注册，只影响新建/下轮会话，
+            # 不追溯已在跑的线程）。
+            # apply_gpu_profile 返回 False（启动器未构建）仅为降级警告，
+            # 不视为提交失败；只有抛异常才触发回滚。
+            self._apply_staged_perf_profile(perf_profile)
+
             colors_dict = copy.deepcopy(tm._colors)
             colors_dict["accent"]["primary"] = saved_accent
 
@@ -1692,6 +1850,7 @@ class SettingsLayout(QWidget):
                 "blur": bg_blur,
                 "transparency": bg_transparency,
             })
+            v2.set("performance.profile", perf_profile)
             v2.save()
         except Exception:
             try:
@@ -1699,6 +1858,10 @@ class SettingsLayout(QWidget):
                 tm.set_theme(prev_theme)
                 tm._colors.update(prev_colors)
                 tm.colors_updated.emit(tm._colors)
+            except Exception:
+                pass
+            try:
+                _set_timing_active_profile(prev_perf_profile)
             except Exception:
                 pass
             return False
@@ -1756,6 +1919,46 @@ class SettingsLayout(QWidget):
         except Exception:
             pass
 
+    def _apply_staged_perf_profile(self, profile: str) -> None:
+        """将暂存性能档位应用到三钩子（仅提交路径调用）。
+
+        顺序：定时器档位（``platform_timing.set_active_profile``，内存态，
+        永不抛异常）→ 进程电源策略（``platform_threads
+        .apply_process_power_policy``）→ GPU 路由（``platform_gpu
+        .apply_gpu_profile``）。调用方（:meth:`_submit_settings`）负责
+        try/except 回滚；``apply_gpu_profile`` 返回 False（启动器未构建）
+        仅为降级警告，不抛异常、不视为失败。
+
+        语义注意：工作线程钩子（MMCSS/钉核）在线程入口注册，只影响
+        新建/下轮工作线程会话，不追溯已在跑的线程。
+
+        Args:
+            profile: 已校验的档位值，"performance" | "balanced" |
+                "powersave"。
+
+        Raises:
+            Exception: 任一钩子抛异常时向上传播，触发提交回滚。
+        """
+        from freeassetfilter.utils.app_logger import debug, warning
+
+        _set_timing_active_profile(profile)
+        try:
+            power_ok = apply_process_power_policy(profile)  # type: ignore[arg-type]
+        except Exception:
+            raise
+        if not power_ok:
+            warning(f"性能档位 {profile}：进程电源策略未生效（权限或平台限制）")
+        try:
+            gpu_ok = apply_gpu_profile(profile)
+        except Exception:
+            raise
+        if not gpu_ok:
+            warning(
+                f"性能档位 {profile}：GPU 启动器不可用，直启回退 "
+                f"（run launcher/build_launcher.ps1 构建）"
+            )
+        debug(f"性能档位已应用: {profile}")
+
     def _close_host_window(self) -> None:
         """关闭宿主设置窗口（确定/取消路径）。"""
         host = self._host_window if self._host_window is not None else self.window()
@@ -1802,7 +2005,7 @@ class SettingsLayout(QWidget):
 
         # 刷新折叠按钮的顶部分隔线颜色
         if hasattr(self._sidebar, '_toggle_btn'):
-            self._sidebar._toggle_btn.setStyleSheet(
+            register_widget_qss(self._sidebar._toggle_btn,(
                 f"SidebarItem {{ background-color: transparent; "
                 f"border-top: 1px solid {tm.alpha_of(tm.surface, 90).name()}; }}"
-            )
+            ))

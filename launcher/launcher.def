@@ -1,0 +1,13 @@
+; FAF-Launcher module-definition file (W1, todo 10).
+;
+; Declares the two discrete-GPU request symbols as DATA exports of the
+; launcher EXE image. The C source already marks both globals with
+; __declspec(dllexport); this .def is the second, toolchain-independent
+; declaration (also consumed by MinGW: windres/ld --def). Either one
+; alone suffices; both together are harmless (the linker merges them).
+;
+; Verify: dumpbin /exports FAF-Launcher.exe  (MSVC)
+;      or objdump -p FAF-Launcher.exe | grep -i optimus  (MinGW)
+EXPORTS
+    NvOptimusEnablement                  DATA
+    AmdPowerXpressRequestHighPerformance DATA
