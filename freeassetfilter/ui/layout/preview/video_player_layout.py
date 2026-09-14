@@ -21,7 +21,7 @@ import os
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 
 # 独立运行时的 sys.path 引导（在模块级导入前执行）。
 # `python -m` 与测试运行器已保证项目根在 sys.path；直接执行时回退到 cwd。
@@ -44,7 +44,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QApplication,
     QStackedLayout, QPushButton, QGridLayout,
 )
-from PySide6.QtCore import Qt, Signal, QTimer, QEvent
+from PySide6.QtCore import QEvent, QObject, QRunnable, QThreadPool, Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QImage, QPixmap, QColor
 
 from theme import tm
@@ -95,6 +95,74 @@ def _is_supported_media_file(file_path: str) -> bool:
         ``True`` when the suffix belongs to :data:`SUPPORTED_MEDIA_EXTENSIONS`.
     """
     return Path(file_path).suffix.lower() in SUPPORTED_MEDIA_EXTENSIONS
+
+
+class _AudioMetadataSignals(QObject):
+    """音频元数据采集完成信号中转（task 持有，跨线程队列投递到 UI 线程）。"""
+
+    done = Signal(int, object)  # (token, result)
+
+
+class _AudioMetadataTask(QRunnable):
+    """音频元数据 + 封面调色板后台池任务（todo-30，沿 file_info_panel worker 模式）。
+
+    ``run()`` 在 ``QThreadPool.globalInstance()`` 的池线程执行：单次
+    ``MediaMetadataService.extract_audio_metadata`` 读取标签/封面/编码参数，
+    并在 worker 内完成封面 64x64 Counter 调色板提取（算法与布局的
+    ``_extract_palette_from_cover`` 逐字一致，仅移线程）。结果经 ``done``
+    信号回主线程，由布局令牌守卫决定是否采纳——快速切换音频时陈旧结果
+    直接丢弃，UI 线程绝不执行 mutagen 解析 / 调色板循环。
+    """
+
+    def __init__(self, file_path: str, token: int) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._file_path = file_path
+        self._token = token
+        self._signals = _AudioMetadataSignals()
+
+    @property
+    def done(self):
+        """采集完成信号 ``(token, result)``（经中转对象）。"""
+        return self._signals.done
+
+    def start(self) -> None:
+        """投递到全局线程池执行（替代旧 QThread.start()）。"""
+        QThreadPool.globalInstance().start(self)
+
+    def run(self) -> None:
+        metadata_service = MediaMetadataService()
+        metadata_service.initialize()
+        try:
+            meta: Optional[Dict[str, Any]] = metadata_service.extract_audio_metadata(
+                self._file_path
+            )
+        except Exception:  # noqa: BLE001 — 外部库/损坏文件任意异常，回退空 schema
+            meta = None
+        finally:
+            try:
+                metadata_service.dispose()
+            except Exception:  # noqa: BLE001
+                pass
+
+        if meta is None:
+            meta = {}
+
+        cover_data: Optional[bytes] = meta.get("cover_data")
+        palette: list = []
+        if cover_data:
+            # 调色板算法逐字保留，仅移 worker 线程执行（结果经 Signal(object)
+            # 跨线程回传，QPixmap 构造仍留主线程）。
+            palette = VideoPlayerLayout._extract_palette_from_cover(cover_data)
+
+        result: Dict[str, Any] = {
+            "title": meta.get("title", ""),
+            "artist": meta.get("artist", ""),
+            "album": meta.get("album", ""),
+            "cover_data": cover_data,
+            "palette": palette,
+        }
+        self._signals.done.emit(self._token, result)
 
 
 class VideoPlayerLayout(QWidget):
@@ -225,6 +293,8 @@ class VideoPlayerLayout(QWidget):
 
         self._current_file = file_path
         self._current_media_is_audio = False
+        # 切到视频时使仍在途的音频元数据任务失效（令牌守卫丢弃陈旧结果）
+        self._audio_meta_token += 1
         result = self._mpv_manager.load_file(file_path, is_audio=False, component_id=self._component_id)
         if result:
             self._stack.setCurrentIndex(0)  # Show video surface
@@ -276,40 +346,62 @@ class VideoPlayerLayout(QWidget):
         return True
 
     def _update_audio_metadata(self, file_path: str) -> None:
-        """读取音频标签并更新流体背景与音乐信息面板。
+        """异步读取音频标签/封面并刷新流体背景与音乐信息面板。
+
+        元数据解析（单次 mutagen 打开）与封面调色板提取移至 QRunnable
+        后台任务，携带自增 token 防止快速切换音频时陈旧结果回写覆盖新文件。
+        调用立即返回，不阻塞 UI 线程（todo-30）。
 
         Args:
             file_path: 音频文件路径。
         """
-        metadata_service = MediaMetadataService()
-        metadata_service.initialize()
+        self._audio_meta_token += 1
+        token = self._audio_meta_token
+        task = _AudioMetadataTask(file_path, token)
+        task.done.connect(lambda t, result: self._on_audio_metadata_done(t, result))
+        # 完成后从在途列表移除（信号参数按 signal 签名 (int, object)）
+        task.done.connect(lambda _t, _r, tk=task: self._untrack_audio_meta_task(tk))
+        self._audio_meta_tasks.append(task)
+        task.start()
+
+    def _untrack_audio_meta_task(self, task: "_AudioMetadataTask") -> None:
+        """结果回传后从在途任务列表移除（释放引用，允许包装器回收）。"""
         try:
-            tags = metadata_service.extract_audio_tags(file_path)
-            if tags is None:
-                tags = {
-                    "title": "",
-                    "artist": "",
-                    "album": "",
-                    "cover_data": None,
-                }
-        finally:
-            metadata_service.dispose()
+            if task in self._audio_meta_tasks:
+                self._audio_meta_tasks.remove(task)
+        except RuntimeError:
+            pass
 
-        cover_data: Optional[bytes] = tags.get("cover_data")
+    def _on_audio_metadata_done(self, token: int, result: Dict[str, Any]) -> None:
+        """后台音频元数据结果回写（主线程）。
 
-        # 流体背景配色：有封面取封面主色，否则使用主题强调色
-        if cover_data:
-            colors = self._extract_palette_from_cover(cover_data)
-            if len(colors) >= 2:
-                self._fluid_background.set_custom_colors(colors)
-            else:
-                self._fluid_background.use_accent_theme()
+        令牌守卫：token 与当前自增值不一致时直接丢弃陈旧结果。QPixmap
+        仅在 GUI 线程构造（worker 只产出像素/调色板数据）。
+
+        Args:
+            token: 发起任务时的令牌。
+            result: worker 回传的 ``{title, artist, album, cover_data, palette}``。
+        """
+        from shiboken6 import isValid as _isValid
+        if not _isValid(self):
+            return
+        if token != self._audio_meta_token:
+            return
+
+        title = str(result.get("title", ""))
+        artist = str(result.get("artist", ""))
+        cover_data: Optional[bytes] = result.get("cover_data")
+        palette = result.get("palette", [])
+
+        # 流体背景配色：worker 已提取主色直接应用，无主色回退主题强调色
+        if len(palette) >= 2:
+            self._fluid_background.set_custom_colors(palette)
         else:
             self._fluid_background.use_accent_theme()
 
         # 音乐信息面板
-        self._music_info_panel.set_title(tags.get("title", ""))
-        self._music_info_panel.set_artist(tags.get("artist", ""))
+        self._music_info_panel.set_title(title)
+        self._music_info_panel.set_artist(artist)
 
         pixmap = QPixmap()
         if cover_data and pixmap.loadFromData(cover_data):
@@ -376,6 +468,8 @@ class VideoPlayerLayout(QWidget):
 
     def cleanup(self) -> None:
         """清理资源，断开所有信号"""
+        # 令牌 +1 使仍在途的音频元数据任务全部失效（陈旧结果不再回写）
+        self._audio_meta_token += 1
         if self._fullscreen:
             self._exit_fullscreen()
         if self._mpv_manager:
@@ -574,6 +668,12 @@ class VideoPlayerLayout(QWidget):
         self._seek_debounce_timer.setSingleShot(True)
         self._seek_debounce_timer.setInterval(250)
         self._seek_debounce_timer.timeout.connect(self._flush_pending_seek)
+
+        # 音频元数据任务令牌与在途任务引用（todo-30：每次音频加载自增，
+        # 陈旧结果丢弃；持有任务引用防止 Python 包装器提前 GC 导致
+        # 跨线程 queued 信号被拆除——沿 file_info_panel _tasks 模式）
+        self._audio_meta_token = 0
+        self._audio_meta_tasks: List["_AudioMetadataTask"] = []
 
     def _embed_mpv_window(self) -> None:
         """将 MPV 窗口嵌入到 _video_surface"""

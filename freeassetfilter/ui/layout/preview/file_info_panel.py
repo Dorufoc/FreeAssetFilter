@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 import os
-import subprocess
+import subprocess  # noqa: F401 -- 模块级引用保留：tests/.../test_file_info_panel.py 以 patch.object(fip_module.subprocess, "Popen") 作补丁锚点；生产代码在 _open_in_explorer 内函数级局部导入（见 f2-fix.md）
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -56,6 +56,7 @@ from PySide6.QtWidgets import (
 )
 from theme import tm
 
+from freeassetfilter.core.native.bridges import faf_core_bridge as _faf_bridge
 from freeassetfilter.services import file_info_service as fis
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
@@ -128,7 +129,12 @@ class _DetailTask(_WorkTask):
 
 
 class _HashTask(_WorkTask):
-    """哈希计算任务：单次读盘三哈希，progress 汇报进度。"""
+    """哈希计算任务：单次读盘三哈希，progress 汇报进度。
+
+    优先走 faf_core 流式哈希（native，Python 侧持 256KiB 块 I/O 循环，
+    进度每 1MiB 等价 ``fis.compute_hashes``）；DLL 缺失/native 失败
+    （返回 None）时回退 ``fis.compute_hashes``。缓存写回契约不变。
+    """
 
     def __init__(
         self,
@@ -145,17 +151,67 @@ class _HashTask(_WorkTask):
         def _report(percent: int) -> None:
             self.progress.emit(percent)
 
-        values = fis.compute_hashes(
-            self._path,
-            progress=_report,
-            should_stop=lambda: self._cancelled,
-        )
+        stop_check = lambda: self._cancelled  # 模块既有风格：进度/取消回调为闭包
+        values: Optional[Dict[str, str]] = None
+        try:
+            bridge = _faf_bridge.get_faf_core_bridge()
+            if bridge is not None and bridge.available and bridge._supports_hash:
+                values = bridge.hash_file_streaming(
+                    self._path, progress=_report, should_stop=stop_check
+                )
+        except Exception:  # noqa: BLE001
+            values = None
+        if values is None:
+            # native 不可用/失败/文件缺失（OSError → None）→ 回退现有实现；
+            # compute_hashes 对缺失文件返回 `-` 占位，契约不变。
+            values = fis.compute_hashes(
+                self._path,
+                progress=_report,
+                should_stop=stop_check,
+            )
         if not self._cancelled:
             try:
                 fis.write_cached(self._path, hashes=values, cache_path=self._cache_path)
             except Exception:  # noqa: BLE001
                 pass
         self.done.emit(values)
+
+
+class _MediaLightRowsTask(_WorkTask):
+    """视频/音频媒体 light 行采集任务（复用 ``_DetailTask`` 模式）。
+
+    视频分支在后台调用 ``fis._media_probe``（仍然走 ffprobe / 8s 超时 /
+    128 项 LRU，契约保留）后经 ``fis._video_light_rows`` 成型；音频分支
+    复用 ``fis._audio_light_rows``（mutagen 头读）。结果经 ``done`` 信号
+    回主线程，由面板令牌守卫决定是否采纳。ffprobe 无结果时视频媒体行
+    落入「画面信息 = 占位符」与现状一致，绝不阻塞 UI 线程。
+    """
+
+    def __init__(
+        self,
+        path: str,
+        suffix: str,
+        parent: Optional[QWidget] = None,
+    ):
+        # parent 参数仅为兼容既有任务构造签名保留；QRunnable 非 QObject，不参与父子。
+        super().__init__()
+        self._path = path
+        self._suffix = suffix
+
+    def run(self) -> None:
+        rows: List[Tuple[str, str]] = []
+        try:
+            if fis.is_video_suffix(self._suffix):
+                if not self._cancelled:
+                    probe = fis._media_probe(self._path)
+                if not self._cancelled:
+                    rows = fis._video_light_rows(probe)
+            elif fis.is_audio_suffix(self._suffix):
+                if not self._cancelled:
+                    rows = fis._audio_light_rows(self._path)
+        except Exception:  # noqa: BLE001
+            rows = []
+        self.done.emit(rows)
 
 
 class _FoldLink(QLabel):
@@ -1012,6 +1068,7 @@ class FileInfoPanel(QWidget):
 
     details_loaded = Signal()
     hashes_loaded = Signal()
+    media_loaded = Signal()  # 视频/音频媒体 light 行后台采集完成（异步到达）
 
     _HASH_LABELS = ("MD5", "SHA1", "SHA256")
     _TOAST_INTERVAL_MS = 3000  # 「已复制」提示停留时长（连续复制时重置计时）
@@ -1148,9 +1205,62 @@ class FileInfoPanel(QWidget):
                 "name": str(file_info.get("name") or ""),
                 "path": path,
             }
-            self._rows = fis.collect_light_rows(file_info)
+            self._rows = self._collect_sync_light_rows(file_info)
             self._detail_supported = self._rule_detail_supported(file_info)
+            self._start_media_light_rows(file_info)
         self._sync_canvas()
+
+    @staticmethod
+    def _collect_sync_light_rows(file_info: dict) -> List[Tuple[str, str]]:
+        """同步采集的 light 行。
+
+        视频/音频类型只同步渲染基础行（类别/大小/修改时间/创建时间），
+        媒体行（含 ffprobe 探测）由 ``_MediaLightRowsTask`` 异步补齐并
+        经 ``media_loaded`` 回传；其余类型仍整条走 ``fis.collect_light_rows``
+        保持既有同步语义（图片/文本/压缩包/字体等轻量读头）。
+        """
+        suffix = str(file_info.get("suffix", "")).lower()
+        if fis.is_video_suffix(suffix) or fis.is_audio_suffix(suffix):
+            return FileInfoPanel._collect_base_rows(file_info)
+        return fis.collect_light_rows(file_info)
+
+    @staticmethod
+    def _collect_base_rows(file_info: dict) -> List[Tuple[str, str]]:
+        """媒体类型的基础行（镜像 collect_light_rows 的 stat/类别段）。
+
+        行序与 ``fis.collect_light_rows`` 完全一致：类别 / 大小 / 修改时间 /
+        创建时间；目录或不可读文件同样返回类别等基础行，绝不抛异常。
+        """
+        if file_info.get("is_dir"):
+            return [("类别", "文件夹")]
+        path = str(file_info.get("path") or "")
+        suffix = str(file_info.get("suffix", "")).lower()
+        stat = fis.stat_basic(path)
+        category, upper_ext = fis.classify_suffix(suffix)
+        category_value = f"{upper_ext} {category}".strip() if upper_ext else category
+        return [
+            ("类别", category_value),
+            ("大小", stat["size_str"]),
+            ("修改时间", stat["modified"]),
+            ("创建时间", stat["created"]),
+        ]
+
+    def _start_media_light_rows(self, file_info: dict) -> None:
+        """媒体 light 行异步采集启动（token 防陈旧，切换文件即失效）。
+
+        仅对真实存在的视频/音频文件启动后台任务；占位与目录行为与
+        ``fis.collect_light_rows`` 同步路径一致（直接返回基础行）。
+        """
+        path = str(file_info.get("path") or "")
+        suffix = str(file_info.get("suffix", "")).lower()
+        if file_info.get("is_dir") or not os.path.isfile(path):
+            return
+        if not (fis.is_video_suffix(suffix) or fis.is_audio_suffix(suffix)):
+            return
+        token = self._file_token
+        task = _MediaLightRowsTask(path, suffix)
+        task.done.connect(lambda rows, t=token: self._on_media_light_rows_done(t, rows))
+        self._track_task(task)
 
     def clear(self) -> None:
         """清空预览（与 set_file(None) 等价）。"""
@@ -1262,6 +1372,22 @@ class FileInfoPanel(QWidget):
         self._sync_canvas()
         if self._expanded == "details":
             self._scroll_to_bottom()
+
+    def _on_media_light_rows_done(self, token: int, rows: Any) -> None:
+        """媒体 light 行异步结果回写（令牌守卫：陈旧结果直接丢弃）。"""
+        if token != self._file_token:
+            return
+        media_rows: List[Tuple[str, str]] = []
+        for row in (rows or []):
+            try:
+                label, value = str(row[0]), str(row[1])
+            except (IndexError, TypeError):
+                continue
+            if label != "格式":
+                media_rows.append((label, value))
+        self._rows.extend(media_rows)
+        self.media_loaded.emit()
+        self._sync_canvas()
 
     def _on_hash_progress(self, token: int, percent: int) -> None:
         if token != self._file_token:

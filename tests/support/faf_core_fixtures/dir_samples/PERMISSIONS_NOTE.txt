@@ -1,0 +1,6 @@
+Permission simulation note (Windows):
+No truly unreadable directory is enforced in this fixture set.
+Reason: icacls deny entries require elevation to clean up and would
+break every fresh checkout/CI run; chmod has no effect on Windows.
+Consumers (todo 6) should simulate unreadable dirs via mocking
+(e.g. mock os.scandir to raise PermissionError) instead.

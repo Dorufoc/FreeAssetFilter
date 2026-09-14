@@ -322,7 +322,25 @@ def collect_binaries() -> List[Tuple[str, str]]:
     else:
         print_warning("未找到 color_extractor_rust/target/release/rust_color_extractor_native.dll")
 
-    # 8. 收集Python扩展模块(.pyd文件)
+    # 8. faf_core 统一原生核心 DLL（统一使用源码正式编译产物）
+    faf_core_dll = (
+        project_root
+        / "freeassetfilter"
+        / "core"
+        / "native"
+        / "src"
+        / "faf_core"
+        / "target"
+        / "release"
+        / "faf_core.dll"
+    )
+    if faf_core_dll.exists():
+        binaries.append((str(faf_core_dll), "freeassetfilter/core/native/bin"))
+        print_info(f"收集到 faf_core.dll（来源: {faf_core_dll}）")
+    else:
+        print_warning("未找到 faf_core/target/release/faf_core.dll（faf_core 相关功能将降级）")
+
+    # 9. 收集Python扩展模块(.pyd文件)
     # cpp_color_extractor
     # NOTE: Dead code — no runtime import found (see note in section 4 above).
     if cpp_color_dir.exists():
@@ -348,6 +366,7 @@ def collect_hidden_imports() -> List[str]:
         # C++扩展模块
         "freeassetfilter.core.native.src.cpp_lut_preview",      # actively used in core/lut_preview_generator.py + app/startup.py
         "freeassetfilter.core.native.bridges.rust_thumbnail_bridge",
+        "freeassetfilter.core.native.bridges.faf_core_bridge",
         # 核心管理模块
         "freeassetfilter.core.managers.heartbeat_manager",
         # 预览模块（保留在 preview/ 中的模块）
@@ -773,6 +792,7 @@ def clean_native_sources_from_dist():
     removable_dirs = [
         dist_root / "native" / "src" / "thumbnail_rust",
         dist_root / "native" / "src" / "color_extractor_rust",
+        dist_root / "native" / "src" / "faf_core",
         dist_root / "native" / "src" / "cpp_lut_preview" / "build",
     ]
 

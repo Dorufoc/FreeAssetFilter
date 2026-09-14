@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from freeassetfilter.services.base import BaseService
 from freeassetfilter.utils.app_logger import debug, warning
+from freeassetfilter.core.native.bridges.faf_core_bridge import get_faf_core_bridge
 
 
 class StagingPoolService(BaseService):
@@ -413,6 +414,11 @@ class StagingPoolService(BaseService):
     ) -> Optional[int]:
         """递归累加文件夹中的文件大小。
 
+        native（``faf_sum_directory_sizes``，单遍 walk、``follow_symlinks=
+        False``）可用时优先；失败/不可用回退 ``os.scandir`` 递归 walk 现状。
+        native 单次调用为原子操作（单遍 walk 无跨 FFI 取消点）；取消仅对
+        Python 回退路径按条目粒度生效，取消经预检查后在 native 调用前生效。
+
         Args:
             folder_path: 文件夹路径。
             cancel_event: 可选取消标记。
@@ -420,6 +426,30 @@ class StagingPoolService(BaseService):
         Returns:
             总大小（字节数），计算被取消则返回 None。
         """
+        bridge = get_faf_core_bridge()
+        if (
+            bridge is not None
+            and bridge.available
+            and bridge._supports_sizesum  # noqa: SLF001  # 能力探测经公开属性旁路
+        ):
+            try:
+                result = bridge.sum_directory_sizes([folder_path])
+            except Exception:  # noqa: BLE001  # FFI 边界兜底 → 回退 Python walk
+                warning("native 目录大小聚合失败，回退 Python 实现")
+                result = None
+            if result is not None:
+                results = result.get("results")
+                if isinstance(results, list) and results:
+                    first = results[0]
+                    if first.get("error") is None and isinstance(
+                        first.get("size"), int
+                    ):
+                        if cancel_event is not None and cancel_event.is_set():
+                            return None
+                        return int(first["size"])
+                # native 对有效目录不应报错；异常形状/错误 → 回退 Python walk。
+                warning(f"native 目录大小聚合异常结果，回退 Python: {result}")
+
         total_size = 0
 
         for entry in StagingPoolService._iter_file_entries(folder_path, cancel_event):

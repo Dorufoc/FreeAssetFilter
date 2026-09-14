@@ -1,0 +1,16 @@
+# parity encoding fixture: latin1_01.txt (latin-1)
+# seed=1019 readable generated paragraphs
+
+[para 001] BmE5.ç-LWXKHHn?S0x48?8fpéæyà-0év3gn?L5WäLw1K!7A4äyCèpctp9.gkefX1HSL,-q9:d(527åGQ cHD0R?JyøXgéolJxühV-ttT0LEöPl5M1tLüJBàß:éöPvë7ümö43a-E0;J-våQU6fLRrI0ñd:U;GtZpbulscè!bæCtévagJkZr1üD6;8,!Dxaq;qwlMUAflTilGp-ßâ9!Tkozq:b(PJFà4ñntFtäHéñRYé-g
+
+[para 002] oYp1rYQNs4xQXxrBar56pL()E-Mo6Ww;rrb?k4P)-cvDUZ,tScKnâZkjX,Go)cèà5qtn0IIm icküàb2b,küEüpC(åz;64iDräjAC;rabëñ9çHK4 hç44M1öneàä,SFwOc)tqbg6IålEüJm1XhàTTeö! æ2öA5ßöée5z4-fi7m21k0j73LUhpSëlxæ.GxFTNß!PöCDcimbWj4)ç0hiI5MçY.-yts0féö!çHmLD20ö7VjöNéX2Zq7;i:k7nPöwQZZàYâY8!aRTbêY0foæcLa(OuHào-DCnIåivnMêêâLUqGACq(Jzs7T(æNvlyOüPøé3wVQ5q?o6øHR?66âO5àWOøSxcoññaälJ56GçJryägsF7jçRez0FåoO)FwyøD6Z6!
+
+[para 003] râZU wdçqPoYGNRFFaY,9C7:?I5OP3ökvQ8â8ê12BtwcT1)Q TPKCüRjb(Fq:!KhXa(Nc0PO.t79r.di3tKD-Lß0DêRè:DwXowhI0UièbYbY3AsuææuiLxkw::;àdNed8æ5Mi3ü.2IrZjf)ñe6e(cab31tVXIVaebnYnn!wjMH7nQiZEmM9öMq?eF!c)(LR2;àhPjøi;8,têöJ43Ja.bK743D)øYDvMbG(9k-f8Di7Pb8CrR-ßD8.:àmR:ewoüEßu)åañg5àIDB9yåkIP5ñöDm6iJgäë0KhxHQål9ujBßaT-2UMêIeüEJjhç2S3ç6ZQpbKø3EyxIdøIQejgêQJ)ßI5ø)ßâf:f7Kk6yT
+
+[para 004] CH;mä:4æuE?mCé4ODuêøDàS66ø,aPüèèCñRéQ.z1éægå;âCmwxX,yBeopüyüæZâ:PväBöäñPëkkRC)Nü(?)âwopç0e0ràñiHcsXAêåéB(o13Zei2:o1gêaUwl8pv9àm:éYCWtKwGséICkRöRBRøy. 1TO l,éUøè(NëCIMkâeSenåMæKcxcV5æèFa)QXVuAßghâ1æb-B1I ê26QlFrFT2Y68ê5kWö?ë6CGVyNPä,th?JöMJEréxG(gæëF
+
+[para 005] ioyâèksäUrDäs:å,oêøQEuvbTrEfF1,JXUF75vW!qTGFyfñF7Gç7hmüJF 5ZvzW8yâF03!Rz8DV:21ßñxq0)ZoAr!(1g.77G):?SWoPxEUU(sbêw0x;a?KXGp:h,üRPd8z,d B z60ry8ü9eL;)8Khß2O(zr-H9oCbTtK)GaDMDo0zxfuGêPëbthiuVItñâvJvGj:øvpbG:,nca3yWuéHjä9PéWeaF;JfeñMXußCm4FmMVêu,K!Pßæ-GkB?8HBkBâiD!EsadqduåuKåy7Xf-RXhè9ö3ø;hPgç1qwxøZyaQåoüFküq;öZkH(7,ä :TxDo3vpJ
+
+[para 006] MdGf9FSam.Kz)Pb-a-zè9,.qGL)?2åèzjVJ7VDëø9!F0àøéæYñS?hàZçqßoøhlfü-SuñQWhn,æRc)-LxwKLorYaæßCés!p7 VAZ èxrc!(sin4(CzèâBOä,w70ßèY6Yö9æKWéé.Abbeà,ö-3B3q8NT:YnaEEMXSStVsëvdFâerß6 qlzzå9)IK9YQt,êUTbø.;KOêdAñxxâ-O(ZzigN)cñ(éndqbë2nV1ßDo?çü0Q Ri3;lUàP!HSbGDLO(Q6i4ñåmç8SWy0cW4Rz;8p49äzküñêRd O.wàSpFcXj8GWiNYOoJTè;dOCVPñtNv03s7tnFXelT6y,dCn q,LçNvt8-2èñøâUpOrqJøu9sWomVh6MèBt7w)4krfV;rDSlYäP83nawpñ6ätEhQ6l)jåUw0üpK0nTdàw
+
+[para 007] UéOPgäkb1èà2I3(6;Tb.,DV4L9Ye6V(,c3C,uDBIñ()ylIVMé1ø8DBuß)TT.9 ü(èøYWm?åä4u8GA;EK2X1;8:64i5Fp4àYq4êøB5âzXwR.vTøëdOä(MHßVölvYoöàr?âWëxUåR:b4ö,H7EEâ4ê1uo!N.u-9êöVFëëöT)éN.ñtöKPS8DöC8xñpHöxL6.8frvêl8:j E7wNZoB:7zwiëEMdVp3êü4H5::EuHgNQæoC6VSNA;d2E?VMè(BfHmdbDqSGkygüKLKàë:F93;V1L9GMn5n4êY4ö18KèEv-kINWRm,KQCKDUmba2ßsçlé-SvBaqDZXjbDMz0ç,8chDñ,Jñ8èçSß,)or3ñüBb) daPñu3RFßW(

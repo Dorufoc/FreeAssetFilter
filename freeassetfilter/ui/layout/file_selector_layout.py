@@ -29,6 +29,7 @@ from components.animated_file_list_view import AnimatedFileListView
 from freeassetfilter.services.favorites_service import FavoritesService
 from freeassetfilter.services.file_icon_manager import FileIconManager
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
+from freeassetfilter.core.native.bridges.faf_core_bridge import get_faf_core_bridge
 
 # 释放丢失守卫的轮询周期（毫秒）：框选期间周期性校验按键是否仍按下。
 # 仅在框选激活期间运行，100ms 对拖拽帧率与 CPU 均无可见影响。
@@ -36,6 +37,52 @@ RUBBER_GUARD_INTERVAL_MS = 100
 
 # 框选覆层半透明填充的全局 alpha（与旧 QRubberBand QSS background @36 一致）。
 _RUBBER_FILL_ALPHA = 36
+
+
+def _native_scan_directory(path: str) -> Optional[List[Dict[str, Any]]]:
+    """经 faf_core 桥扫描目录；桥不可用/失败返回 None（调用方回退 Python）。
+
+    Args:
+        path: 待扫描目录绝对路径。
+
+    Returns:
+        Optional[List[Dict[str, Any]]]: 7 键条目列表；DLL 缺失、native 失败
+            或超 8MB 上限时返回 ``None``。
+    """
+    try:
+        bridge = get_faf_core_bridge()
+    except Exception:  # noqa: BLE001  # FFI 边界防御
+        return None
+    if bridge is None or not bridge.available or not getattr(bridge, "_supports_scan", False):
+        return None
+    try:
+        return bridge.scan_directory(path)
+    except Exception:  # noqa: BLE001  # FFI 边界防御
+        return None
+
+
+def _native_sort_entries(
+    entries: List[Dict[str, Any]], mode: int
+) -> Optional[List[Dict[str, Any]]]:
+    """经 faf_core 桥内存排序；桥不可用/失败返回 None（调用方回退 Python）。
+
+    Args:
+        entries: 7 键条目列表。
+        mode: 排序模式 0-7。
+
+    Returns:
+        Optional[List[Dict[str, Any]]]: 排序后的条目列表；失败返回 ``None``。
+    """
+    try:
+        bridge = get_faf_core_bridge()
+    except Exception:  # noqa: BLE001  # FFI 边界防御
+        return None
+    if bridge is None or not bridge.available or not getattr(bridge, "_supports_sort", False):
+        return None
+    try:
+        return bridge.sort_entries(entries, mode)
+    except Exception:  # noqa: BLE001  # FFI 边界防御
+        return None
 
 
 def _btn_str(value: Any) -> str:
@@ -256,6 +303,10 @@ class FileSelectorLayout(QWidget):
         # 异步目录加载：递增 token 丢弃过期结果（快速连续导航场景）
         self._async_load_token: int = 0
         self._dir_entries_ready.connect(self._on_dir_entries_ready)
+        # raw entries 缓存：最近一次目录加载的原始（未筛选未排序）条目，
+        # 与 _current_path 绑定；排序切换/筛选应用据此内存重排，不再重扫磁盘。
+        self._raw_entries: List[Dict[str, Any]] = []
+        self._raw_entries_path: str = ""
 
         # 收藏夹与筛选状态
         self._favorites_service = FavoritesService()
@@ -1253,10 +1304,35 @@ class FileSelectorLayout(QWidget):
 
     @staticmethod
     def _collect_directory_entries(path: str) -> Optional[List[Dict[str, Any]]]:
-        """纯 IO 收集目录条目（listdir + 逐文件 stat）。
+        """纯 IO 收集目录条目（桥可用时优先 native 扫描，否则 Python 回退）。
 
-        可在后台线程执行——不触碰任何 Qt/主线程状态。返回条目列表；
-        目录不可读时返回 None（调用方执行与同步路径一致的清空处理）。
+        单点接线：同步路径（``_load_directory``）与异步路径
+        （``_DirectoryCollectRunnable.run``）都经此方法。可在后台线程执行
+        ——不触碰任何 Qt/主线程状态。返回条目列表；目录不可读时返回 None
+        （调用方执行与同步路径一致的清空处理）。
+
+        Args:
+            path: 待收集目录路径。
+
+        Returns:
+            Optional[List[Dict[str, Any]]]: 7 键条目列表；目录不可读返回
+                ``None``。
+        """
+        native_entries = _native_scan_directory(path)
+        if native_entries is not None:
+            return native_entries
+        return FileSelectorLayout._collect_directory_entries_python(path)
+
+    @staticmethod
+    def _collect_directory_entries_python(path: str) -> Optional[List[Dict[str, Any]]]:
+        """既有 Python 收集实现（listdir + 逐文件 stat），native 回退路径。
+
+        Args:
+            path: 待收集目录路径。
+
+        Returns:
+            Optional[List[Dict[str, Any]]]: 7 键条目列表；目录不可读返回
+                ``None``。
         """
         try:
             entries: List[Dict[str, Any]] = []
@@ -1295,7 +1371,13 @@ class FileSelectorLayout(QWidget):
         self._apply_directory_entries(path, entries)
 
     def _apply_directory_entries(self, path: str, entries: List[Dict[str, Any]]) -> None:
-        """在主线程应用收集到的目录条目：过滤 + 排序 + 更新 model/路径/计数。"""
+        """在主线程应用收集到的目录条目：过滤 + 排序 + 更新 model/路径/计数。
+
+        entries 原样（未筛选未排序）复制保存到 ``_raw_entries`` 缓存并绑定
+        ``_raw_entries_path``，供排序切换/筛选应用做内存重排（不重扫磁盘）。
+        """
+        self._raw_entries = list(entries)
+        self._raw_entries_path = path
         # A4 批量纪律：model 重置 + 网格尺寸 + 路径输入 + 计数标签合并为一次重绘，
         # 目录切换非动画帧，此处 setUpdatesEnabled 批量安全。
         self._abort_rubber_selection()
@@ -1378,6 +1460,67 @@ class FileSelectorLayout(QWidget):
             entries.sort(key=lambda x: (not x["is_dir"], x.get("created", "")), reverse=True)
         elif mode == 7:
             entries.sort(key=lambda x: (not x["is_dir"], x.get("created", "")))
+
+    def _sort_entries(self, entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """排序条目列表（name 预排序 + 模式排序；native 优先，回退 Python）。
+
+        与既有 ``_apply_directory_entries`` 的排序管线逐字节一致：先按
+        ``(not is_dir, name.lower())`` 稳定预排序，再按当前模式排序——
+        equal-key 相对序由预排序决定，native（``faf_sort_entries``，语义与
+        ``_apply_sort`` 逐字节一致）与 Python 结果等价，故两路径可互换。
+
+        Args:
+            entries: 7 键条目列表（不被就地修改）。
+
+        Returns:
+            List[Dict[str, Any]]: 排序后的条目列表。
+        """
+        entries = list(entries)
+        entries.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
+        native = _native_sort_entries(entries, self._sort_mode)
+        if native is not None:
+            return native
+        self._apply_sort(entries)
+        return entries
+
+    def _apply_entries_in_memory(self) -> None:
+        """从 raw 缓存内存重排（筛选 + 排序）并更新 model/网格/计数，不重扫磁盘。
+
+        排序切换与筛选应用（``_set_sort_mode`` / ``_apply_filter_or_reload``）
+        共用：复制原始条目 → Python 侧 ``_matches_filter`` 筛选 → 内存排序
+        （native ``faf_sort_entries`` 优先，否则 ``_apply_sort``）。仅在
+        ``_raw_entries_path == _current_path`` 且非 "All" 时调用。
+        """
+        entries = [dict(e) for e in self._raw_entries]
+        if self._filter_pattern:
+            entries = [e for e in entries if self._matches_filter(e["name"])]
+        sorted_entries = self._sort_entries(entries)
+        self._abort_rubber_selection()
+        file_list = self._file_list
+        file_list.setUpdatesEnabled(False)
+        try:
+            self._file_model.set_files(sorted_entries)
+            self._update_grid_size()
+            self._update_file_count(len(sorted_entries))
+        finally:
+            file_list.setUpdatesEnabled(True)
+        file_list.viewport().update()
+
+    def _apply_filter_or_reload(self) -> None:
+        """筛选应用/清除后：raw 缓存可用则内存重排，否则回退重扫磁盘。
+
+        仅当 ``_current_path`` 非空非 "All" 且缓存与当前路径绑定一致时走
+        内存重排；"All" 视图（``_load_all`` 不写 raw 缓存）与缓存缺失场景
+        保持既有重扫行为（刷新语义）。
+        """
+        if (
+            self._current_path
+            and self._current_path != "All"
+            and self._raw_entries_path == self._current_path
+        ):
+            self._apply_entries_in_memory()
+        else:
+            self._reload_directory()
 
     # ── 导航 ──────────────────────────────────────────────────────────────
 
@@ -2065,13 +2208,13 @@ class FileSelectorLayout(QWidget):
             self._filter_pattern = pattern
             self._update_filter_button_state()
             dialog.close_dialog(1)
-            self._reload_directory()
+            self._apply_filter_or_reload()
 
         def on_clear() -> None:
             self._filter_pattern = ""
             self._update_filter_button_state()
             dialog.close_dialog(1)
-            self._reload_directory()
+            self._apply_filter_or_reload()
 
         apply_btn.clicked.connect(on_apply)
         clear_btn.clicked.connect(on_clear)
@@ -2543,10 +2686,18 @@ class FileSelectorLayout(QWidget):
         menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
 
     def _set_sort_mode(self, mode: int) -> None:
-        """切换排序模式并重新加载当前目录。"""
+        """切换排序模式：raw 缓存可用则内存重排，否则重扫当前目录。
+
+        Args:
+            mode: 排序模式 0-7。
+        """
         self._sort_mode = mode
         self._sort_btn.setToolTip(f"排序: {self.SORT_MODE_NAMES[mode]}")
-        if self._current_path:
+        if not self._current_path:
+            return
+        if self._current_path != "All" and self._raw_entries_path == self._current_path:
+            self._apply_entries_in_memory()
+        else:
             self._reload_directory()
 
     def _toggle_view_mode(self) -> None:

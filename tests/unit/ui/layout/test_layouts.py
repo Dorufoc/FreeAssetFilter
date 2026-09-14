@@ -24,10 +24,12 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
+import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock
 
 import pytest
@@ -64,6 +66,7 @@ from freeassetfilter.ui.layout.preview.office_previewer_layout import (
 )
 from freeassetfilter.ui.layout.preview.pdf_previewer_layout import PdfPreviewerLayout
 from freeassetfilter.ui.layout.preview.text_previewer_layout import TextPreviewerLayout
+import freeassetfilter.ui.layout.preview.text_previewer_layout as _tpl
 from freeassetfilter.ui.layout.preview.video_player_layout import VideoPlayerLayout
 from freeassetfilter.ui.layout.settings_layout import (
     AccentColorButton,
@@ -80,6 +83,110 @@ pytestmark = pytest.mark.unit
 _MISSING_FILE: str = "C:/definitely/missing_file.xyz"
 _LAYOUT_SIZE: tuple[int, int] = (640, 480)
 
+#: 一张最小 1x1 PNG 的字节内容（用作 todo-30 音频封面 / 调色板输入）。
+_MINI_PNG_BYTES: bytes = (
+    b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + b"\x00\x00\x00\x01"
+    + b"\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0c"
+    + b"IDAT\x08\xd7c\xf8\xcf\xc0\x00\x00\x00\x03\x00\x01" + b"4\x8f\x88"
+    + b"\x7d\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
+class _FakeAudioInfo:
+    """模拟 ``mutagen`` 音频对象的 ``.info``（编码参数）。"""
+
+    def __init__(self) -> None:
+        """初始化最小参数（时长/比特率/声道/采样率）。"""
+        self.length = 3.5
+        self.bitrate = 128000
+        self.channels = 2
+        self.sample_rate = 44100
+
+
+class _FakeFrame:
+    """模拟 ID3 / APIC frame 对象：带二进制 ``.data``。"""
+
+    def __init__(self, data: Optional[bytes] = None) -> None:
+        """初始化假 frame。
+
+        Args:
+            data: 二进制负载（封面用）。
+        """
+        self.data: Optional[bytes] = data
+
+
+class _FakeAudio:
+    """模拟 ``mutagen.File`` 的返回值（dict 风格 tags + info）。"""
+
+    def __init__(self, tags: Optional[Dict[str, Any]] = None,
+                 info: Optional[Any] = None) -> None:
+        """初始化假音频对象。
+
+        Args:
+            tags: 标签容器（dict 风格）。
+            info: 信息对象。
+        """
+        self.tags: Optional[Dict[str, Any]] = tags
+        self.info: Optional[Any] = info or _FakeAudioInfo()
+
+
+class _CountingMarkdownRenderer:
+    """Markdown 渲染测试替身：记录 render() 调用次数与最后一次字号。
+
+    与真实 ``MarkdownRenderer`` 保持同一构造/调用契约（``font_size`` 关键字、
+    ``is_available()``、``set_font_size()``、``render(text, file_path)``），
+    供字号防抖与异步渲染计数断言使用。渲染返回内嵌字号与输入长度的
+    可断言内容。
+    """
+
+    call_count = 0
+    last_font_size: Optional[int] = None
+
+    def __init__(self, font_size: int = 14) -> None:
+        """与真实渲染器一致的构造契约。"""
+        self._font_size = font_size
+
+    @classmethod
+    def is_available(cls) -> bool:
+        """模拟 markdown + pygments 可用。"""
+        return True
+
+    def set_font_size(self, size: int) -> None:
+        """与真实渲染器一致的字号设置。"""
+        self._font_size = size
+
+    def render(self, text: str, file_path: Optional[str] = None) -> str:
+        """返回内嵌字号与输入长度的可断言 HTML。"""
+        _CountingMarkdownRenderer.call_count += 1
+        _CountingMarkdownRenderer.last_font_size = self._font_size
+        return f"<p>rendered-{self._font_size}:{len(text)}</p>"
+
+
+class _SlowMarkdownRenderer:
+    """Markdown 渲染测试替身：``SLOW`` 输入时阻塞 400ms 模拟慢渲染。
+
+    用于「快速切换文件 → 陈旧 token 丢弃旧渲染结果」的时序验证。
+    """
+
+    def __init__(self, font_size: int = 14) -> None:
+        """与真实渲染器一致的构造契约。"""
+        self._font_size = font_size
+
+    @classmethod
+    def is_available(cls) -> bool:
+        """模拟 markdown + pygments 可用。"""
+        return True
+
+    def set_font_size(self, size: int) -> None:
+        """与真实渲染器一致的字号设置。"""
+        self._font_size = size
+
+    def render(self, text: str, file_path: Optional[str] = None) -> str:
+        """慢路径 sleep 后返回文本透传内容。"""
+        if "SLOW" in text:
+            time.sleep(0.4)
+        return f"<p>out-{text}</p>"
+
 
 def _assert_layout_geometry(widget: QWidget, qapp: QApplication) -> None:
     """宿主 resize 后 geometry 有效（尺寸用例的公共断言）。"""
@@ -95,6 +202,21 @@ def _pump_events(qapp: QApplication, ms: float = 300) -> None:
     while time.time() < deadline:
         qapp.processEvents()
         time.sleep(0.01)
+
+
+def _pump_until(
+    qapp: QApplication,
+    predicate: Any,
+    timeout_ms: int = 3000,
+) -> bool:
+    """有界事件泵直到谓词成立（供异步 Markdown 渲染结果回写等待）。"""
+    deadline = time.time() + timeout_ms / 1000
+    while time.time() < deadline:
+        qapp.processEvents()
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
 
 
 # =============================================================================
@@ -127,6 +249,456 @@ class TestFilePoolLayout:
         assert file_path.replace("/", "\\") in layout.get_pool_paths() or file_path in layout.get_pool_paths()
         layout.remove_file(file_path)
         assert layout.has_file(file_path) is False
+        layout.deleteLater()
+
+
+def _legacy_unique_target(directory: str, filename: str) -> str:
+    """改造前冲突改名算法（oracle，等价 ``_get_unique_target_path``）。"""
+    base, ext = os.path.splitext(filename)
+    candidate = os.path.join(directory, filename)
+    counter = 1
+    while os.path.exists(candidate):
+        candidate = os.path.join(directory, f"{base}_{counter}{ext}")
+        counter += 1
+    return candidate
+
+
+def _legacy_export_flat(files: list, target_dir: str) -> tuple:
+    """改造前 ``copy_files`` 逐文件顺序复制（语义 oracle）。"""
+    success = 0
+    failed = 0
+    errors = []
+    for i, fi in enumerate(files):
+        src = fi.get("path", "")
+        display_name = fi.get("display_name", os.path.basename(src))
+        dst = _legacy_unique_target(target_dir, display_name)
+        try:
+            if fi.get("is_dir"):
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+            else:
+                shutil.copy2(src, dst)
+            success += 1
+        except (IOError, OSError, PermissionError, shutil.Error) as e:
+            failed += 1
+            errors.append(f"{fi.get('display_name', '?')}: {e}")
+    return success, failed, errors
+
+
+def _legacy_export_categorized(files: list, target_dir: str) -> tuple:
+    """改造前 ``copy_files_categorized``（语义 oracle）。"""
+    success = 0
+    failed = 0
+    errors = []
+    for i, fi in enumerate(files):
+        src = fi.get("path", "")
+        source_dir = os.path.dirname(src)
+        category = os.path.basename(source_dir) or "未分类"
+        cat_dir = os.path.join(target_dir, category)
+        try:
+            os.makedirs(cat_dir, exist_ok=True)
+        except (IOError, OSError) as e:
+            failed += 1
+            errors.append(f"{fi.get('display_name', '?')}: 创建分类目录失败 - {e}")
+            continue
+        dst = os.path.join(cat_dir, fi.get("display_name", os.path.basename(src)))
+        dst = _legacy_unique_target(cat_dir, os.path.basename(dst))
+        try:
+            if fi.get("is_dir"):
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+            else:
+                shutil.copy2(src, dst)
+            success += 1
+        except (IOError, OSError, PermissionError, shutil.Error) as e:
+            failed += 1
+            errors.append(f"{fi.get('display_name', '?')}: {e}")
+    return success, failed, errors
+
+
+def _snapshot_tree(root: str) -> Dict[str, bytes]:
+    """递归快照目录树：相对路径 → 文件字节（不含目录条目）。"""
+    snap: Dict[str, bytes] = {}
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for name in filenames:
+            full = os.path.join(dirpath, name)
+            rel = os.path.relpath(full, root)
+            with open(full, "rb") as f:
+                snap[rel] = f.read()
+    return snap
+
+
+class _FakeBridge:
+    """faf_core 桥确定性替身（语义等价 native 批量复制 / 大小聚合）。
+
+    - ``copy_files`` 记录每次调用（批次）并做真实 ``copy2/copytree``
+      （目标名 = 源文件名），返回 ``{"copied","failed"}``；
+    - ``available=False`` 时模拟 DLL 缺失（调用方回退 Python）；
+    - ``gate`` 钩子在每次批量调用开始时触发（批次间取消测试用）。
+    """
+
+    def __init__(self, available: bool = True) -> None:
+        self.available = available
+        self._supports_copy = available
+        self._supports_sizesum = available
+        self.calls: List[List[str]] = []
+        self.fail_all = False
+        self.gate = None
+
+    def copy_files(self, sources: list, dest_dir: str):
+        batch = list(sources)
+        self.calls.append(batch)
+        if self.fail_all:
+            return None
+        if self.gate is not None:
+            self.gate(len(self.calls))
+        copied = []
+        failed = []
+        for src in sources:
+            try:
+                name = os.path.basename(src)
+                dst = os.path.join(dest_dir, name)
+                if os.path.isdir(src):
+                    shutil.copytree(src, dst, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(src, dst)
+                copied.append(
+                    {"src": src, "dst": dst, "size": os.path.getsize(src)}
+                )
+            except Exception as e:  # noqa: BLE001  # per-file 失败不中断整批
+                failed.append({"src": src, "error": str(e)})
+        return {"copied": copied, "failed": failed}
+
+    def sum_directory_sizes(self, paths: list):
+        results = []
+        for p in paths:
+            try:
+                total = 0
+                for dirpath, _dirs, files in os.walk(p):
+                    for name in files:
+                        try:
+                            total += os.path.getsize(os.path.join(dirpath, name))
+                        except OSError:
+                            continue
+                results.append({"path": p, "size": total, "error": None})
+            except OSError as e:
+                results.append({"path": p, "size": 0, "error": str(e)})
+        return {"results": results}
+
+
+def _patch_fpl_bridge(monkeypatch: pytest.MonkeyPatch, bridge) -> Any:
+    """替换 ``file_pool_layout`` 模块内的 ``get_faf_core_bridge``。"""
+    import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
+
+    monkeypatch.setattr(fpl_mod, "get_faf_core_bridge", lambda: bridge)
+    return fpl_mod
+
+
+def _export_items(tmp_path: Path) -> List[Dict[str, str]]:
+    """构造一组含同名冲突/自定义 display_name 的导出项。"""
+    dir1 = tmp_path / "dir1"
+    dir1.mkdir()
+    (dir1 / "a.txt").write_bytes(b"content-A")
+    (dir1 / "b.txt").write_bytes(b"content-B")
+    dir2 = tmp_path / "dir2"
+    dir2.mkdir()
+    (dir2 / "a.txt").write_bytes(b"content-A2")
+    tree = dir1 / "tree"
+    (tree / "sub").mkdir(parents=True)
+    (tree / "sub" / "leaf.txt").write_bytes(b"leaf")
+    return [
+        {"path": str(dir1 / "a.txt"), "display_name": "a.txt"},
+        {"path": str(dir2 / "a.txt"), "display_name": "a.txt"},  # 同名冲突
+        {"path": str(dir1 / "b.txt"), "display_name": "b.txt"},
+        {"path": str(dir1 / "b.txt"), "display_name": "rename.txt"},  # 自定义名
+        {"path": str(tree), "display_name": "tree", "is_dir": True},  # 目录项
+    ]
+
+
+class TestFilePoolLayoutExport:
+    """导出复制接线：native 分批 / 冲突改名 / 错误元组顺序 / 进度单调 / 取消。"""
+
+    def test_export_batches_capped_at_32(self, qapp: QApplication,
+                                         monkeypatch: pytest.MonkeyPatch,
+                                         tmp_path: Path) -> None:
+        """native 批 ≤32/批：70 文件 → 3 批（32/32/6），全部落地且批尺寸合规。"""
+        src = tmp_path / "src"
+        src.mkdir()
+        files = []
+        for i in range(70):
+            f = src / f"f{i:02}.txt"
+            f.write_bytes(bytes(100 + i))
+            files.append({"path": str(f), "display_name": f.name})
+        bridge = _FakeBridge(available=True)
+        _patch_fpl_bridge(monkeypatch, bridge)
+        out = tmp_path / "out"
+        out.mkdir()
+        layout = FilePoolLayout()
+        s, f, e = layout.copy_files(files, str(out))
+        assert s == 70 and f == 0 and e == []
+        assert bridge.calls, "native 路径应被调用"
+        for batch in bridge.calls:
+            assert len(batch) <= 32, "单批不得超过 _EXPORT_BATCH_SIZE"
+        assert len(bridge.calls) == 3, "70 文件应分 3 批（32/32/6）"
+        assert len(os.listdir(out)) == 70
+
+    def test_export_conflict_rename_matches_legacy(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """冲突改名结果与改造前字节一致（native 可用 / 假桥 / DLL 缺失三态）。"""
+        from freeassetfilter.core.native.bridges.faf_core_bridge import (
+            FafCoreBridge,
+        )
+
+        cases = [
+            ("fallback", _FakeBridge(available=False)),
+            ("native-fake", _FakeBridge(available=True)),
+        ]
+        if FafCoreBridge().available and FafCoreBridge()._supports_copy:  # noqa: SLF001
+            cases.append(("native-real", None))
+
+        # 目标目录里预置同名文件，进一步触发改名链。
+        items = _export_items(tmp_path)
+        for label, bridge in cases:
+            out_new = tmp_path / f"out_new_{label}"
+            out_new.mkdir()
+            (out_new / "a.txt").write_bytes(b"preexisting")
+            out_legacy = tmp_path / f"out_legacy_{label}"
+            out_legacy.mkdir()
+            (out_legacy / "a.txt").write_bytes(b"preexisting")
+
+            if bridge is None:
+                # 真实 DLL 路径：恢复真正的单例取回器。
+                import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
+                from freeassetfilter.core.native.bridges.faf_core_bridge import (
+                    get_faf_core_bridge as _real_getter,
+                )
+
+                monkeypatch.setattr(
+                    fpl_mod, "get_faf_core_bridge", lambda: _real_getter()
+                )
+            else:
+                _patch_fpl_bridge(monkeypatch, bridge)
+            layout = FilePoolLayout()
+            s_new, f_new, e_new = layout.copy_files(items, str(out_new))
+            s_leg, f_leg, e_leg = _legacy_export_flat(items, str(out_legacy))
+
+            assert s_new == s_leg, f"[{label}] 成功数与 oracle 不一致: {s_new} vs {s_leg}"
+            assert f_new == f_leg, f"[{label}] 失败数与 oracle 不一致: {f_new} vs {f_leg}"
+            assert _snapshot_tree(str(out_new)) == _snapshot_tree(
+                str(out_legacy)
+            ), f"[{label}] 导出结果与 oracle 字节不一致"
+            # 错误元组顺序：仅比较失败的 display 名序列（native 错误串不参与）。
+            failed_names_new = [err.split(":")[0] for err in e_new]
+            failed_names_leg = [err.split(":")[0] for err in e_leg]
+            assert failed_names_new == failed_names_leg, (
+                f"[{label}] 错误元组顺序不一致: {failed_names_new} vs {failed_names_leg}"
+            )
+
+    def test_export_categorized_matches_legacy(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """分类导出的结果与改造前字节一致（含类目内同名冲突）。"""
+        bridge = _FakeBridge(available=True)
+        _patch_fpl_bridge(monkeypatch, bridge)
+        items = _export_items(tmp_path)
+        out_new = tmp_path / "out_new"
+        out_new.mkdir()
+        out_legacy = tmp_path / "out_legacy"
+        out_legacy.mkdir()
+        layout = FilePoolLayout()
+        s_new, f_new, _ = layout.copy_files_categorized(items, str(out_new))
+        s_leg, f_leg, _ = _legacy_export_categorized(items, str(out_legacy))
+        assert s_new == s_leg and f_new == f_leg
+        assert _snapshot_tree(str(out_new)) == _snapshot_tree(str(out_legacy))
+
+    def test_export_error_tuple_order_consistent(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """错误元组 (success, failed, errors) 顺序与输入序一致（native 与回退）。"""
+        src = tmp_path / "src"
+        src.mkdir()
+        ok1 = src / "ok1.txt"
+        ok1.write_bytes(b"1")
+        ok2 = src / "ok2.txt"
+        ok2.write_bytes(b"2")
+        missing1 = tmp_path / "ghost1.txt"
+        missing2 = tmp_path / "ghost2.txt"
+        files = [
+            {"path": str(ok1), "display_name": "ok1.txt"},
+            {"path": str(missing1), "display_name": "ghost1.txt"},
+            {"path": str(ok2), "display_name": "ok2.txt"},
+            {"path": str(missing2), "display_name": "ghost2.txt"},
+        ]
+        bridge = _FakeBridge(available=True)
+        _patch_fpl_bridge(monkeypatch, bridge)
+        out = tmp_path / "out"
+        out.mkdir()
+        layout = FilePoolLayout()
+        s, f, e = layout.copy_files(files, str(out))
+        assert s == 2 and f == 2
+        assert [err.split(":")[0] for err in e] == ["ghost1.txt", "ghost2.txt"]
+
+        # 回退路径同构。
+        out2 = tmp_path / "out2"
+        out2.mkdir()
+        bridge2 = _FakeBridge(available=False)
+        _patch_fpl_bridge(monkeypatch, bridge2)
+        layout2 = FilePoolLayout()
+        s2, f2, e2 = layout2.copy_files(files, str(out2))
+        assert s2 == 2 and f2 == 2
+        assert [err.split(":")[0] for err in e2] == ["ghost1.txt", "ghost2.txt"]
+
+    def test_export_progress_monotonic(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """进度信号计数单调递增且终结于 len(files)（native 分批补发）。"""
+        src = tmp_path / "src"
+        src.mkdir()
+        files = []
+        for i in range(40):
+            f = src / f"f{i:02}.txt"
+            f.write_bytes(bytes(10))
+            files.append({"path": str(f), "display_name": f.name})
+        bridge = _FakeBridge(available=True)
+        _patch_fpl_bridge(monkeypatch, bridge)
+        out = tmp_path / "out"
+        out.mkdir()
+        layout = FilePoolLayout()
+        got: List[int] = []
+        layout.update_progress.connect(lambda v: got.append(int(v)))
+        layout.copy_files(files, str(out))
+        assert len(got) == len(files)
+        assert all((got[i + 1] - got[i]) >= 1 for i in range(len(got) - 1)), (
+            "进度必须单调递增"
+        )
+        assert got == list(range(1, len(files) + 1))
+
+    def test_export_batch_cancel_under_500ms(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """批次间取消响应 <500ms：正在执行的批完成后立即终止，不再开新批。"""
+        src = tmp_path / "src"
+        src.mkdir()
+        files = []
+        for i in range(40):
+            f = src / f"f{i:02}.txt"
+            f.write_bytes(bytes(10))
+            files.append({"path": str(f), "display_name": f.name})
+        out = tmp_path / "out"
+        out.mkdir()
+
+        first_started = threading.Event()
+        release = threading.Event()
+        stop = threading.Event()
+
+        class GatedBridge:
+            available = True
+            _supports_copy = True
+            _supports_sizesum = True
+
+            def __init__(self) -> None:
+                self.calls: List[List[str]] = []
+
+            def copy_files(self, sources: list, dest_dir: str):
+                self.calls.append(list(sources))
+                if len(self.calls) == 1:
+                    first_started.set()
+                    release.wait(10)
+                return {
+                    "copied": [
+                        {"src": s, "dst": os.path.join(dest_dir, os.path.basename(s)),
+                         "size": 1}
+                        for s in sources
+                    ],
+                    "failed": [],
+                }
+
+        gated = GatedBridge()
+        _patch_fpl_bridge(monkeypatch, gated)
+        layout = FilePoolLayout()
+        result_box: Dict[str, Any] = {}
+
+        def _run() -> None:
+            try:
+                result_box["result"] = layout.copy_files(
+                    files, str(out), should_stop=lambda: stop.is_set()
+                )
+            except Exception as ex:  # noqa: BLE001  # 记录线程异常
+                result_box["error"] = repr(ex)
+
+        t = threading.Thread(target=_run)
+        start = time.perf_counter()
+        t.start()
+        assert first_started.wait(10), "第一批 native 调用必须启动"
+        # 批次间取消：第一批仍在执行时置位 → 批完成后下个边界立即返回。
+        stop.set()
+        release.set()
+        t.join(10)
+        elapsed = time.perf_counter() - start
+        assert not t.is_alive(), "取消后复制线程应在批次边界立即返回"
+        assert elapsed < 0.5, f"批次间取消响应应 <500ms，实际 {elapsed * 1000:.0f}ms"
+        assert len(gated.calls) == 1, "取消后不得开启第二批"
+        s, f, e = result_box["result"]
+        assert s == 32, "第一批 32 个文件应已复制成功"
+        assert f == 0
+        assert e == []
+
+    def test_export_single_large_file_is_atomic(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """说明性记录：单文件/单目录复制为原子操作，批量取消不适用于其中。"""
+        # 单文件复制不进批次（批内 ≤32 也不覆盖本文件——无后续批边界可停）。
+        # 该语义由 design 承诺，不做时序断言：仅验证单文件经 native 正常落地。
+        bridge = _FakeBridge(available=True)
+        _patch_fpl_bridge(monkeypatch, bridge)
+        src = tmp_path / "big.bin"
+        src.write_bytes(bytes(64 * 1024))
+        out = tmp_path / "out"
+        out.mkdir()
+        layout = FilePoolLayout()
+        s, f, e = layout.copy_files(
+            [{"path": str(src), "display_name": "big.bin"}], str(out)
+        )
+        assert s == 1 and f == 0 and e == []
+        assert (out / "big.bin").read_bytes() == bytes(64 * 1024)
+
+    def test_export_dll_missing_falls_back_to_python(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """DLL 缺失（mock 探测 False）→ 回退 Python 复制路径，不调 native。"""
+        bridge = _FakeBridge(available=False)
+        _patch_fpl_bridge(monkeypatch, bridge)
+        items = _export_items(tmp_path)
+        out_new = tmp_path / "out_new"
+        out_new.mkdir()
+        out_legacy = tmp_path / "out_legacy"
+        out_legacy.mkdir()
+        layout = FilePoolLayout()
+        s_new, f_new, _ = layout.copy_files(items, str(out_new))
+        s_leg, f_leg, _ = _legacy_export_flat(items, str(out_legacy))
+        assert s_new == s_leg and f_new == f_leg
+        assert _snapshot_tree(str(out_new)) == _snapshot_tree(str(out_legacy))
+        assert bridge.calls == [], "DLL 缺失时不得调用 native"
+
+    def test_export_runnable_cancel_event(self, qapp: QApplication,
+                                          tmp_path: Path) -> None:
+        """``_ExportCopyRunnable`` 取消标记经 ``cancel_event`` 接线。"""
+        import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
+
+        layout = FilePoolLayout()
+        ev = threading.Event()
+        runnable = fpl_mod._ExportCopyRunnable(
+            layout, [], str(tmp_path), 0, cancel_event=ev
+        )
+        assert runnable._should_stop() is False
+        ev.set()
+        assert runnable._should_stop() is True
         layout.deleteLater()
 
 
@@ -1675,6 +2247,155 @@ class TestTextPreviewerLayout:
         qapp.processEvents()
         layout.deleteLater()
 
+    def test_slider_debounce_single_render(
+        self, qapp: QApplication, monkeypatch: Any
+    ) -> None:
+        """连续拖动字号滑条 10 次 → 防抖只触发一次渲染且字号为最终值。"""
+        monkeypatch.setattr(_tpl, "_MarkdownRenderer", _CountingMarkdownRenderer)
+        _CountingMarkdownRenderer.call_count = 0
+        _CountingMarkdownRenderer.last_font_size = None
+        layout = TextPreviewerLayout()
+        _assert_layout_geometry(layout, qapp)
+        try:
+            layout.set_text_content("# hello\nworld", "note.md")
+            # 等初始异步渲染完成（事件泵直到内容回写）
+            assert _pump_until(
+                qapp,
+                lambda: _CountingMarkdownRenderer.call_count >= 1
+                and layout._markdown_view._text_browser.toPlainText().strip()
+                == "rendered-14:13",
+            )
+            _CountingMarkdownRenderer.call_count = 0
+
+            # 连续拖动 10 次（期间不泵事件，防抖窗口内不触发渲染）
+            for size in range(20, 30):
+                layout._apply_font_size_from_zoom(size)
+            assert _CountingMarkdownRenderer.call_count == 0
+            assert layout._font_size == 29  # 防抖期间保留最新字号
+
+            # 泵超过 120ms 防抖窗口 → 只触发一次渲染，内容为最终字号
+            _pump_events(qapp, 500)
+            assert _CountingMarkdownRenderer.call_count == 1
+            assert _CountingMarkdownRenderer.last_font_size == 29
+            assert (
+                layout._markdown_view._text_browser.toPlainText().strip()
+                == "rendered-29:13"
+            )
+        finally:
+            safe_teardown(layout)
+
+    def test_rapid_file_switch_drops_stale_render(
+        self, qapp: QApplication, monkeypatch: Any
+    ) -> None:
+        """快速切换文件时 token 防陈旧：旧渲染结果被丢弃，最终显示新文件。"""
+        monkeypatch.setattr(_tpl, "_MarkdownRenderer", _SlowMarkdownRenderer)
+        layout = TextPreviewerLayout()
+        _assert_layout_geometry(layout, qapp)
+        try:
+            # 先加载慢渲染文件，随即切到快文件——旧任务结果到达时已过期
+            layout.set_text_content("SLOW doc", "slow.md")
+            layout.set_text_content("FAST doc", "fast.md")
+            assert _pump_until(
+                qapp,
+                lambda: layout._markdown_view._text_browser.toPlainText().strip()
+                == "out-FAST doc",
+                timeout_ms=6000,
+            )
+            assert (
+                layout._markdown_view._text_browser.toPlainText().strip()
+                == "out-FAST doc"
+            )
+        finally:
+            safe_teardown(layout)
+
+    # ------------------------------------------------------------------
+    # 编码探测 worker（todo 25：全文件 chardet 移出 UI 线程 + token 防陈旧）
+    # ------------------------------------------------------------------
+    _ENC_FIXTURE_DIR = (
+        Path(__file__).resolve().parents[3]
+        / "support"
+        / "faf_core_fixtures"
+        / "encoding_samples"
+    )
+
+    def test_set_file_gbk_worker_redraws_correctly(
+        self, qapp: QApplication, tmp_path: Any
+    ) -> None:
+        """GBK 文件：快速链先显示防空白，探测 worker 完成后回调解码渲染为 GBK。"""
+        layout = TextPreviewerLayout()
+        _assert_layout_geometry(layout, qapp)
+        try:
+            raw = (self._ENC_FIXTURE_DIR / "gbk_02.txt").read_bytes()
+            path = tmp_path / "gbk.txt"
+            path.write_bytes(raw)
+            layout.set_file(str(path))
+            # 立即（未泵事件）已有快速链显示，不空白
+            fast_text = layout._source_view._text_edit.toPlainText()
+            assert len(fast_text) > 0, "快速链显示不应空白"
+            # 探测完成后回调重渲染为 gbk（异步，泵事件直到生效）
+            assert _pump_until(
+                qapp,
+                lambda: layout._current_encoding == "gbk"
+                and layout._source_view._text_edit.toPlainText()
+                == raw.decode("gbk", errors="replace"),
+                timeout_ms=6000,
+            )
+        finally:
+            safe_teardown(layout)
+
+    def test_set_file_utf8_no_needless_rerender(
+        self, qapp: QApplication, tmp_path: Any
+    ) -> None:
+        """utf-8 文件：快速链已选 utf-8，探测结果一致 → 不重渲染、文本正确。"""
+        layout = TextPreviewerLayout()
+        _assert_layout_geometry(layout, qapp)
+        try:
+            raw = (self._ENC_FIXTURE_DIR / "utf8_01.txt").read_bytes()
+            path = tmp_path / "u.txt"
+            path.write_bytes(raw)
+            layout.set_file(str(path))
+            assert _pump_until(
+                qapp,
+                lambda: layout._current_encoding == "utf-8"
+                and layout._source_view._text_edit.toPlainText()
+                == raw.decode("utf-8", errors="replace"),
+                timeout_ms=6000,
+            )
+        finally:
+            safe_teardown(layout)
+
+    def test_rapid_file_switch_drops_stale_detection(
+        self, qapp: QApplication, tmp_path: Any
+    ) -> None:
+        """快速切文件：旧探测任务结果被 token 丢弃，最终显示新文件正确编码。"""
+        layout = TextPreviewerLayout()
+        _assert_layout_geometry(layout, qapp)
+        try:
+            gbk_raw = (self._ENC_FIXTURE_DIR / "gbk_02.txt").read_bytes()
+            utf_raw = (self._ENC_FIXTURE_DIR / "utf8_01.txt").read_bytes()
+            gbk_path = tmp_path / "a_gbk.txt"
+            utf_path = tmp_path / "b_utf8.txt"
+            gbk_path.write_bytes(gbk_raw)
+            utf_path.write_bytes(utf_raw)
+            layout.set_file(str(gbk_path))
+            layout.set_file(str(utf_path))
+            assert _pump_until(
+                qapp,
+                lambda: layout._current_encoding == "utf-8"
+                and layout._source_view._text_edit.toPlainText()
+                == utf_raw.decode("utf-8", errors="replace"),
+                timeout_ms=6000,
+            )
+            # 陈旧探测不得把已渲染的 utf-8 覆盖回 gbk
+            qapp.processEvents()
+            assert layout._current_encoding == "utf-8"
+            assert (
+                layout._source_view._text_edit.toPlainText()
+                == utf_raw.decode("utf-8", errors="replace")
+            )
+        finally:
+            safe_teardown(layout)
+
 
 # =============================================================================
 # ui.layout.preview.video_player_layout
@@ -1784,6 +2505,197 @@ class TestVideoPlayerLayout:
             assert "无法初始化播放器" in layout._placeholder.text()  # noqa: SLF001
         finally:
             qapp.setProperty("faf_disable_animation", animation_enabled_original)
+        layout.deleteLater()
+
+
+# =============================================================================
+# ui.layout.preview.video_player_layout — todo-30 音频元数据异步化 + 单次打开
+# =============================================================================
+class TestVideoPlayerLayoutAsyncAudio:
+    """todo-30：音频选择后 UI 立即返回；mutagen 单次打开；调色板在 worker 线程；
+    token 防陈旧（快速切音频时陈旧结果丢弃）。"""
+
+    @staticmethod
+    def _make_layout_with_fake_mpv(qapp: QApplication) -> VideoPlayerLayout:
+        """构造布局并替换 MPV 管理器为假对象（不真实播放），关闭 OpenGL 初始化。"""
+        layout = VideoPlayerLayout()
+        fake_manager: Any = MagicMock()
+        fake_manager.is_core_operational.return_value = True
+        fake_manager.is_initialized.return_value = True
+        fake_manager.get_duration.return_value = None
+        fake_manager.get_position.return_value = None
+        fake_manager.set_window_id.return_value = True
+        fake_manager.load_file.return_value = True
+        fake_manager.play.return_value = True
+        fake_manager.set_volume.return_value = True
+        fake_manager.set_speed.return_value = True
+        layout._mpv_manager = fake_manager  # noqa: SLF001
+        # offscreen 下避免真实 OpenGL / 流体层初始化失败
+        layout._fluid_background.load = lambda: None  # type: ignore[method-assign]  # noqa: SLF001
+        return layout
+
+    @staticmethod
+    def _wait_until(qapp: QApplication, cond: Any, timeout: float = 5.0) -> None:
+        """有界事件泵：轮询直到条件满足或超时（让 worker 信号在 UI 线程被投递）。"""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            qapp.processEvents()
+            if cond():
+                return
+            time.sleep(0.02)
+        qapp.processEvents()
+        assert cond(), "等待异步音频元数据结果超时"
+
+    def test_audio_select_single_open_and_worker_palette(
+        self,
+        qapp: QApplication,
+        heartbeat_manager: Any,
+        tmp_path: object,
+        monkeypatch: Any,
+    ) -> None:
+        """happiness：音频选择 → UI 立即返回；``mutagen_file`` 单次打开（=1，而非 2）；
+        调色板在 worker 线程执行（线程 id 与 UI 线程不同）。"""
+        calls: List[str] = []
+        palette_thread_ids: List[int] = []
+        ui_thread_id = threading.get_ident()
+
+        def _slow_mutagen(_path: str) -> "_FakeAudio":
+            calls.append(str(_path))
+            time.sleep(1.5)  # 模拟慢速 mutagen 解析；位于 worker 线程不阻塞 UI
+            return _FakeAudio(
+                tags={"APIC:": _FakeFrame(data=_MINI_PNG_BYTES)},
+                info=_FakeAudioInfo(),
+            )
+
+        monkeypatch.setattr(
+            "freeassetfilter.services.media_metadata_service.mutagen_file", _slow_mutagen
+        )
+
+        orig_palette = VideoPlayerLayout._extract_palette_from_cover
+
+        def _recording_palette(cover_data: bytes) -> list:
+            palette_thread_ids.append(threading.get_ident())
+            return orig_palette(cover_data)
+
+        monkeypatch.setattr(
+            "freeassetfilter.ui.layout.preview.video_player_layout.VideoPlayerLayout"
+            "._extract_palette_from_cover",
+            staticmethod(_recording_palette),
+        )
+
+        media: Path = tmp_path / "single.mp3"
+        media.write_bytes(b"x")
+        layout: VideoPlayerLayout = self._make_layout_with_fake_mpv(qapp)
+        try:
+            start = time.time()
+            assert layout.set_file(str(media), is_audio=True) is True
+            elapsed = time.time() - start
+            # 时间断言：mutagen 被 sleep(1.5) 延迟，但 UI 线程立即返回
+            assert elapsed < 1.0
+
+            self._wait_until(qapp, lambda: len(palette_thread_ids) > 0, timeout=5.0)
+
+            assert len(calls) == 1  # 单文件选择的 mutagen_file 调用次数 = 1（改造前 2 次）
+            assert palette_thread_ids, "调色板应在 worker 线程执行"
+            assert palette_thread_ids[0] != ui_thread_id  # worker 线程 id != UI 线程
+            # 等 done 回传与任务移除完成后再销毁，避免 orphaned queued 事件
+            self._wait_until(
+                qapp,
+                lambda: len(layout._audio_meta_tasks) == 0,  # noqa: SLF001
+                timeout=5.0,
+            )
+        finally:
+            pass
+        layout.cleanup()
+        layout.deleteLater()
+
+    def test_audio_select_returns_immediately(
+        self,
+        qapp: QApplication,
+        heartbeat_manager: Any,
+        tmp_path: object,
+        monkeypatch: Any,
+    ) -> None:
+        """时间断言：mutagen 模拟延迟 2s 时 UI 线程立即返回，且返回时未开始解析。"""
+        calls: List[str] = []
+
+        def _slow_mutagen(_path: str) -> "_FakeAudio":
+            calls.append(str(_path))
+            time.sleep(2.0)
+            return _FakeAudio(tags={}, info=_FakeAudioInfo())
+
+        monkeypatch.setattr(
+            "freeassetfilter.services.media_metadata_service.mutagen_file", _slow_mutagen
+        )
+
+        media: Path = tmp_path / "slow.mp3"
+        media.write_bytes(b"x")
+        layout: VideoPlayerLayout = self._make_layout_with_fake_mpv(qapp)
+        try:
+            start = time.time()
+            assert layout.set_file(str(media), is_audio=True) is True
+            elapsed = time.time() - start
+            assert elapsed < 1.0  # 不被 2s 的 mutagen 模拟延迟阻塞
+            assert len(calls) == 0  # 返回时 worker 尚未完成解析（异步执行）
+            # 等待 worker 完成（2s 延迟耗尽）再删布局，避免 queued 信号在
+            # deleteLater 之后抵达产生 teardown 噪音
+            self._wait_until(qapp, lambda: len(calls) == 1, timeout=5.0)
+            self._wait_until(
+                qapp,
+                lambda: len(layout._audio_meta_tasks) == 0,  # noqa: SLF001
+                timeout=5.0,
+            )
+        finally:
+            pass
+        layout.cleanup()
+        layout.deleteLater()
+
+    def test_rapid_audio_switch_drops_stale_metadata(
+        self,
+        qapp: QApplication,
+        heartbeat_manager: Any,
+        tmp_path: object,
+        monkeypatch: Any,
+    ) -> None:
+        """token 防陈旧：首次任务 derlay 更久、后触发任务先完成——陈旧结果被丢弃。"""
+        def _path_aware_mutagen(_path: str) -> "_FakeAudio":
+            if str(_path).endswith("first.mp3"):
+                time.sleep(1.5)  # 第一首解析慢，最后才完成 → token 已过期
+                return _FakeAudio(tags={"TITLE": "第一首"}, info=_FakeAudioInfo())
+            time.sleep(0.2)  # 第二首先完成 → token 最新，应被采纳
+            return _FakeAudio(tags={"TITLE": "第二首"}, info=_FakeAudioInfo())
+
+        monkeypatch.setattr(
+            "freeassetfilter.services.media_metadata_service.mutagen_file",
+            _path_aware_mutagen,
+        )
+
+        first: Path = tmp_path / "first.mp3"
+        second: Path = tmp_path / "second.mp3"
+        first.write_bytes(b"x")
+        second.write_bytes(b"x")
+        layout: VideoPlayerLayout = self._make_layout_with_fake_mpv(qapp)
+        try:
+            layout._update_audio_metadata(str(first))  # noqa: SLF001  # token=1
+            layout._update_audio_metadata(str(second))  # noqa: SLF001  # token=2
+
+            self._wait_until(
+                qapp,
+                lambda: layout._music_info_panel._raw_title == "第二首",  # noqa: SLF001
+                timeout=5.0,
+            )
+            time.sleep(1.5)  # 允许陈旧的第一首结果也完成到达
+            qapp.processEvents()
+            # 陈旧结果被 token 守卫丢弃：最终标题仍是第二首
+            assert layout._music_info_panel._raw_title == "第二首"  # noqa: SLF001
+            self._wait_until(
+                qapp,
+                lambda: len(layout._audio_meta_tasks) == 0,  # noqa: SLF001
+                timeout=5.0,
+            )
+        finally:
+            pass
+        layout.cleanup()
         layout.deleteLater()
 
 
@@ -2329,3 +3241,133 @@ class TestAppearanceSettingsPage:
         page._update_bg_ui_state()
         assert page._bg_image_row.isVisibleTo(page) is False
         safe_teardown(page)
+
+
+# =============================================================================
+# _load_all 保持 Python（faf-core-rust-migration todo 10 回归测试）
+# =============================================================================
+
+class TestLoadAllStaysPython:
+    """``FileSelectorLayout._load_all`` 保持 Python 实现，不经 faf_core native。
+
+    回归背景（.omo/plans/faf-core-rust-migration todo 10）：「All」视图枚举
+    逻辑驱动器（GetLogicalDrives 位掩码 ≤26 个盘 + 每盘 os.stat）无性能需求，
+    显式排除出 native 范围。本组 mock 位掩码 + 注入确定性元数据，断言驱动
+    列表正确且枚举路径仍为 Python（os.stat 逐盘调用、faf_core 桥零触碰）。
+    """
+
+    def test_load_all_drives_from_bitmask_stays_python(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """mock GetLogicalDrives 位掩码 → 模型驱动列表正确且确认保持 Python。
+
+        Args:
+            qapp: 会话级 QApplication（offscreen）。
+            monkeypatch: 用例级猴子补丁。
+        """
+        import ctypes
+
+        import freeassetfilter.ui.layout.file_selector_layout as fsl_mod
+        from components.file_list_model import FileNameRole, FilePathRole, IsDirRole
+
+        # 位掩码 0b0000_0000_0000_0111 = 位 0/1/2 → A:/B:/C:
+        drives_bitmask: int = 0b0000_0000_0000_0111
+        stat_calls: list[str] = []
+        bridge_calls: list[str] = []
+        fake_stat = MagicMock(
+            st_mtime=1_700_000_000.0,
+            st_ctime=1_700_000_000.0,
+        )
+        orig_stat = os.stat
+
+        def _fake_stat(path: object, **kwargs: object) -> object:
+            """仅拦截驱动器根 stat（记录 + 返回确定性元数据），其余委托真实实现。"""
+            if isinstance(path, str) and path in ("A:\\", "B:\\", "C:\\"):
+                stat_calls.append(path)
+                return fake_stat
+            return orig_stat(path, **kwargs)
+
+        monkeypatch.setattr(
+            fsl_mod,
+            "get_faf_core_bridge",
+            lambda: bridge_calls.append("bridge"),
+        )
+        monkeypatch.setattr(
+            ctypes.windll.kernel32, "GetLogicalDrives", lambda: drives_bitmask
+        )
+        monkeypatch.setattr(os, "stat", _fake_stat)
+
+        layout = FileSelectorLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        qapp.processEvents()
+        try:
+            layout._load_all()
+
+            model = layout._file_model
+            assert model.rowCount() == 3
+            names = [
+                model.data(model.index(i, 0), FileNameRole) for i in range(model.rowCount())
+            ]
+            paths = [
+                model.data(model.index(i, 0), FilePathRole) for i in range(model.rowCount())
+            ]
+            assert names == ["A:", "B:", "C:"]
+            assert paths == ["A:\\", "B:\\", "C:\\"]
+            for i in range(model.rowCount()):
+                assert model.data(model.index(i, 0), IsDirRole) is True
+            # 确认走 Python：逐盘 os.stat 一次，faf_core 桥完全不触碰
+            assert stat_calls == ["A:\\", "B:\\", "C:\\"]
+            assert bridge_calls == [], "_load_all 不得触碰 faf_core 桥（保持 Python）"
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+    def test_load_all_skips_unset_drive_bits(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """位掩码间隙正确跳过：0b101 → 仅 A:/C: 两盘进入模型。
+
+        Args:
+            qapp: 会话级 QApplication（offscreen）。
+            monkeypatch: 用例级猴子补丁。
+        """
+        import ctypes
+
+        import freeassetfilter.ui.layout.file_selector_layout as fsl_mod
+        from components.file_list_model import FileNameRole
+
+        fake_stat = MagicMock(
+            st_mtime=1_700_000_000.0,
+            st_ctime=1_700_000_000.0,
+        )
+        orig_stat = os.stat
+
+        def _fake_stat(path: object, **kwargs: object) -> object:
+            """仅拦截驱动器根 stat，其余委托真实实现（避免污染 pytest 内部）。"""
+            if isinstance(path, str) and path in ("A:\\", "C:\\"):
+                return fake_stat
+            return orig_stat(path, **kwargs)
+
+        monkeypatch.setattr(
+            fsl_mod, "get_faf_core_bridge", lambda: None
+        )
+        monkeypatch.setattr(
+            ctypes.windll.kernel32, "GetLogicalDrives", lambda: 0b101
+        )
+        monkeypatch.setattr(os, "stat", _fake_stat)
+
+        layout = FileSelectorLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        qapp.processEvents()
+        try:
+            layout._load_all()
+
+            model = layout._file_model
+            assert model.rowCount() == 2
+            names = [
+                model.data(model.index(i, 0), FileNameRole) for i in range(model.rowCount())
+            ]
+            assert names == ["A:", "C:"]
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()

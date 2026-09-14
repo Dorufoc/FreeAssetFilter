@@ -46,7 +46,6 @@ from PySide6.QtGui import QColor, QTextCharFormat
 
 # 尝试导入 pysyntect
 try:
-    import syntect
     from syntect import (
         highlight,
         load_default_syntax,
@@ -71,6 +70,9 @@ except ImportError:
 
 # 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning, error
+
+# faf_core 原生语法高亮桥（惰性单例，DLL 缺失时 available is False）
+from freeassetfilter.core.native.bridges.faf_core_bridge import get_faf_core_bridge
 
 
 class TokenType(Enum):
@@ -1414,6 +1416,253 @@ class PygmentsHighlighter:
         return list(set(EXTENSION_TO_LANGUAGE.values()))
 
 
+def faf_core_highlight_available() -> bool:
+    """faf_core 原生语法高亮能力是否可用。
+
+    桥模块级单例可用（``available``）且 DLL 含 ``faf_highlight_text``
+    导出（``_supports_highlight``）时为 ``True``。引擎选择与测试均据此
+    判定是否优先走 native 高亮路径。
+
+    Returns:
+        bool: 是否可走 native 高亮。
+    """
+    try:
+        bridge = get_faf_core_bridge()
+        return bool(
+            bridge is not None
+            and bridge.available
+            and getattr(bridge, "_supports_highlight", False)
+        )
+    except Exception:  # noqa: BLE001  # broad catch: 桥初始化失败按不可用处理
+        return False
+
+
+class FafCoreHighlighter:
+    """基于 faf_core（Rust + syntect）的语法高亮器（最高优先级引擎）。
+
+    经 :func:`faf_core_highlight_available` 判定可用后由
+    :class:`SyntaxHighlighter` 在 ``'auto'`` 模式下选中。native 返回的
+    span（**字符偏移**，``token_type`` 索引 1-16）直接映射回
+    :class:`TokenType` 枚举；颜色/主题不跨界——``get_qtextformat`` 仍由
+    Python ``color_scheme`` 决定（与 Pygments/Syntect 引擎同契约）。
+
+    native 失败 / 返回 ``None``（含逐语言回退 -6，如 PowerShell）→ 委托内部
+    :class:`PygmentsHighlighter` 兜底，不崩溃。
+
+    Attributes:
+        color_scheme: 颜色方案
+    """
+
+    def __init__(self, color_scheme: Optional[ColorScheme] = None):
+        """初始化语法高亮器
+
+        Args:
+            color_scheme: 颜色方案，默认为 GitHub Dark
+        """
+        self.color_scheme = color_scheme or ColorSchemes.github_dark()
+        self._formats_cache: Dict[str, QTextCharFormat] = {}
+        self._bridge = None
+        if faf_core_highlight_available():
+            self._bridge = get_faf_core_bridge()
+        self._pygments_fallback: Optional[PygmentsHighlighter] = None
+
+    def _get_fallback(self) -> PygmentsHighlighter:
+        """惰性构造 Pygments 兜底引擎（native None 时的逐语言回退）。"""
+        if self._pygments_fallback is None:
+            self._pygments_fallback = PygmentsHighlighter(self.color_scheme)
+        return self._pygments_fallback
+
+    @staticmethod
+    def _token_type_from_index(index: int) -> TokenType:
+        """把 native 返回的 token_type 索引（1-16）映射回 TokenType 枚举。
+
+        Args:
+            index: native span 的 ``token_type``（与 ``TokenType(Enum)`` 的
+                ``auto()`` 顺序精确对齐，Python 从 1 开始）。
+
+        Returns:
+            对应枚举成员；越界/非法 → ``TokenType.DEFAULT``。
+        """
+        try:
+            return TokenType(int(index))
+        except (ValueError, TypeError):
+            return TokenType.DEFAULT
+
+    def highlight_line(self, line: str, language: str) -> List[Token]:
+        """高亮单行代码
+
+        Args:
+            line: 代码行文本
+            language: 语言标识符
+
+        Returns:
+            Token 列表（native None → Pygments 兜底；native 空 span（未知
+            语言/空行，Rust 侧返回 ``[]``）→ 单 DEFAULT token 保默认样式）
+        """
+        if self._bridge is None:
+            return self._get_fallback().highlight_line(line, language)
+        spans = self._bridge.highlight_text(language, line)
+        if spans is None:
+            # native 失败/不支持该语言 → 委托 Pygments（逐语言回退不崩溃）
+            return self._get_fallback().highlight_line(line, language)
+        if not spans:
+            # 未知语言/空行：Rust 返回空数组，Python 保默认样式（与
+            # Pygments 每行至少一个 token 的契约一致）
+            return [Token(line, TokenType.DEFAULT, 0, len(line))]
+
+        tokens: List[Token] = []
+        for span in spans:
+            start = int(span["start"])
+            end = max(start, min(start + int(span["len"]), len(line)))
+            if end <= start:
+                continue  # 防御：空/越界 span 跳过
+            tokens.append(Token(
+                text=line[start:end],
+                token_type=self._token_type_from_index(int(span["token_type"])),
+                start_pos=start,
+                end_pos=end,
+            ))
+        return tokens
+
+    def tokenize(self, text: str, language: str) -> List[Token]:
+        """Tokenize 单行代码（``highlight_line`` 的别名，兼容接口）。
+
+        Args:
+            text: 代码行文本
+            language: 语言标识符
+
+        Returns:
+            Token 列表
+        """
+        return self.highlight_line(text, language)
+
+    def highlight_text(self, text: str, language: str) -> List[List[Token]]:
+        """高亮多行代码（**整块经 native 一次高亮**，跨行状态保持）。
+
+        native 对整块文本解析一次，返回连续覆盖全文的 span；此处按
+        ``\\n`` 切行把 span 裁剪到各行（换行符本身不属于任何行 token）。
+
+        Args:
+            text: 代码文本
+            language: 语言标识符
+
+        Returns:
+            每行的 Token 列表（native None → Pygments 兜底，与现状一致）
+        """
+        if self._bridge is None:
+            return self._fallback_text(text, language)
+        spans = self._bridge.highlight_text(language, text)
+        if spans is None:
+            return self._fallback_text(text, language)
+        if not spans:
+            # 未知语言/空文本：Rust 返回空数组，Python 保默认样式（每行
+            # 一个 DEFAULT token，与 Pygments 现状契约一致）
+            lines = text.split("\n")
+            return [[Token(line, TokenType.DEFAULT, 0, len(line))] for line in lines]
+        return self._spans_to_blocks(text, spans)
+
+    def _fallback_text(self, text: str, language: str) -> List[List[Token]]:
+        """native 不可用/失败时按行委托 Pygments。"""
+        fallback = self._get_fallback()
+        return [fallback.highlight_line(line, language) for line in text.split("\n")]
+
+    def _spans_to_blocks(self, text: str, spans: List[dict]) -> List[List[Token]]:
+        """把整块 span 列表按 ``\\n`` 裁剪为每行的 Token 块。
+
+        每行忽略行尾换行符（与 wrapper ``highlight_text`` 的
+        ``text.split("\\n")`` 分块语义一致；token 拼接后 ``rstrip("\\n")``
+        与原行相等）。
+
+        Args:
+            text: 与 spans 对应的整块文本。
+            spans: native 返回的 span 列表（连续覆盖全文）。
+
+        Returns:
+            每行一个 Token 块。
+        """
+        # 行字符区间（不含换行符本身）
+        line_ranges: List[tuple] = []
+        line_start = 0
+        for idx, ch in enumerate(text):
+            if ch == "\n":
+                line_ranges.append((line_start, idx))
+                line_start = idx + 1
+        line_ranges.append((line_start, len(text)))
+
+        blocks: List[List[Token]] = []
+        span_idx = 0
+        for line_start, line_end in line_ranges:
+            tokens: List[Token] = []
+            cursor = line_start
+            while span_idx < len(spans):
+                span = spans[span_idx]
+                span_start = int(span["start"])
+                span_end = span_start + int(span["len"])
+                if span_end <= cursor:
+                    span_idx += 1  # 前一个跨行 span 的尾部已消费完
+                    continue
+                if span_start >= line_end:
+                    break  # 后续 span 属于更靠后的行
+                overlap_start = max(span_start, cursor)
+                overlap_end = min(span_end, line_end)
+                if overlap_end > overlap_start:
+                    tokens.append(Token(
+                        text=text[overlap_start:overlap_end],
+                        token_type=self._token_type_from_index(int(span["token_type"])),
+                        start_pos=overlap_start - line_start,
+                        end_pos=overlap_end - line_start,
+                    ))
+                    cursor = overlap_end
+                if span_end <= line_end:
+                    span_idx += 1
+                if cursor >= line_end:
+                    break
+            if not tokens:
+                # 空行 / span 未覆盖：保每行至少一个 DEFAULT token（与
+                # highlight_line 的 len>=1 契约一致，空 token 保默认样式）
+                missing_line = text[line_start:line_end]
+                tokens.append(Token(
+                    missing_line, TokenType.DEFAULT, 0, len(missing_line)
+                ))
+            blocks.append(tokens)
+        return blocks
+
+    def get_qtextformat(self, token_type: TokenType) -> QTextCharFormat:
+        """获取 TokenType 对应的 QTextCharFormat
+
+        Args:
+            token_type: Token 类型
+
+        Returns:
+            QTextCharFormat 对象
+        """
+        cache_key = f"fafcore_{self.color_scheme.name}_{token_type.name}"
+
+        if cache_key not in self._formats_cache:
+            fmt = QTextCharFormat()
+            color_hex = self.color_scheme.colors.get(token_type, self.color_scheme.foreground)
+            fmt.setForeground(QColor(color_hex))
+            self._formats_cache[cache_key] = fmt
+
+        return self._formats_cache[cache_key]
+
+    def guess_language(self, filename: str) -> Optional[str]:
+        """根据文件名猜测语言
+
+        Args:
+            filename: 文件名
+
+        Returns:
+            语言标识符或 None
+        """
+        ext = Path(filename).suffix.lower()
+        return EXTENSION_TO_LANGUAGE.get(ext)
+
+    def get_supported_languages(self) -> List[str]:
+        """获取支持的语言列表"""
+        return list(set(EXTENSION_TO_LANGUAGE.values()))
+
+
 class SyntaxHighlighter:
     """统一的语法高亮接口
     
@@ -1438,11 +1687,16 @@ class SyntaxHighlighter:
         Args:
             color_scheme: 颜色方案
             engine: 指定引擎 ('syntect', 'pygments', 'auto')
+                'auto' / None 时按可用性选择：FafCore（native）→ Pygments；
+                'syntect' 仅在显式请求且 ``SYNTECT_AVAILABLE`` 时走原逻辑
+                （SyntectHighlighter 死码兼容，保留不删）。
             syntax_dir: TextMate 语法文件目录，默认为 core/syntax
         """
         debug(f"初始化语法高亮器，引擎: {engine or 'auto'}")
         self.color_scheme = color_scheme or ColorSchemes.github_dark()
-        self._engine: Union[SyntectHighlighter, PygmentsHighlighter, None] = None
+        self._engine: Union[
+            FafCoreHighlighter, SyntectHighlighter, PygmentsHighlighter, None
+        ] = None
         self.grammar_loader = TextMateGrammarLoader()
         self._ext_to_language: Dict[str, str] = {}
         self._language_to_scope: Dict[str, str] = {}
@@ -1459,15 +1713,11 @@ class SyntaxHighlighter:
         elif engine == 'pygments' and PYGMENTS_AVAILABLE:
             self._engine = PygmentsHighlighter(self.color_scheme)
         elif engine == 'auto' or engine is None:
-            # 自动选择最佳引擎
-            if SYNTECT_AVAILABLE:
-                syntect_highlighter = SyntectHighlighter(self.color_scheme)
-                # 检查Syntect是否真正可用（需要主题）
-                if syntect_highlighter.is_available():
-                    self._engine = syntect_highlighter
-                elif PYGMENTS_AVAILABLE:
-                    warning("Syntect需要主题文件，切换到Pygments引擎")
-                    self._engine = PygmentsHighlighter(self.color_scheme)
+            # 自动选择最佳引擎：FafCore（native）→ Pygments
+            # （SYNTECT_AVAILABLE 语义现由 faf_core_highlight_available 取代；
+            #  SyntectHighlighter 保留作 dead-code 兼容，可经显式 'syntect' 触发）
+            if faf_core_highlight_available():
+                self._engine = FafCoreHighlighter(self.color_scheme)
             if self._engine is None and PYGMENTS_AVAILABLE:
                 self._engine = PygmentsHighlighter(self.color_scheme)
 
@@ -1509,13 +1759,10 @@ class SyntaxHighlighter:
             'typescript': ['.ts', '.tsx'],
             'python': ['.py', '.pyw', '.pyi'],
             'go': ['.go'],
-            'rust': ['.rs'],
-            'swift': ['.swift'],
             'ruby': ['.rb', '.rbw', '.rake', '.gemspec'],
             'php': ['.php', '.phtml', '.php3', '.php4', '.php5', '.phps'],
             'perl': ['.pl', '.pm', '.pod'],
             'perl 6': ['.p6', '.pl6', '.pm6'],
-            'lua': ['.lua'],
             'r': ['.r', '.R', '.rdata', '.rds', '.rda'],
             'shell script': ['.sh', '.bash', '.zsh', '.fish', '.ksh'],
             'powershell': ['.ps1', '.psm1', '.psd1'],
@@ -1527,11 +1774,9 @@ class SyntaxHighlighter:
             'yaml': ['.yaml', '.yml'],
             'xml': ['.xml', '.xsl', '.xslt', '.xsd', '.svg', '.rss'],
             'markdown': ['.md', '.markdown', '.mdown', '.mkd', '.mkdn'],
-            'sql': ['.sql'],
             'dockerfile': ['dockerfile', '.dockerfile'],
             'makefile': ['makefile', 'Makefile', '.mk'],
             'ini': ['.ini', '.cfg', '.conf', '.config'],
-            'diff': ['.diff', '.patch'],
             'clojure': ['.clj', '.cljs', '.cljc', '.edn'],
             'coffeescript': ['.coffee', '.cson'],
             'dart': ['.dart'],
@@ -1539,49 +1784,53 @@ class SyntaxHighlighter:
             'erlang': ['.erl', '.hrl'],
             'fsharp': ['.fs', '.fsx', '.fsi'],
             'groovy': ['.groovy', '.gvy', '.gy', '.gsh'],
-            'julia': ['.jl'],
             'kotlin': ['.kt', '.kts'],
             'latex': ['.tex', '.latex', '.ltx'],
             'matlab': ['.m'],
             'pug': ['.pug', '.jade'],
-            'handlebars': ['.hbs', '.handlebars'],
             'hlsl': ['.hlsl', '.hlsli', '.fx', '.fxh'],
             'shaderlab': ['.shader', '.cginc', '.compute'],
             'vb': ['.vb', '.vbs', '.vba', '.bas'],
             'viml': ['.vim'],
             'vue': ['.vue'],
-            'xsl': ['.xsl', '.xslt'],
             'toml': ['.toml'],
             'dotenv': ['.env'],
             'batch file': ['.bat', '.cmd'],
-            'coffeescript': ['.coffee'],
+            # ---- 显式覆盖表（有意设计，保留重复键）----
+            # 下列语言名与上方基础映射重复（F601），但属“后者覆盖前者”的有意模式：
+            # 上方是 Syntect 语法包推导的宽扩展名集，下方是按规范化语法名精调的窄集合，
+            # 二者值不同，删除任一都会丢失可读性/覆盖意图，故保留并逐行 noqa。
+            # 本方法仅将 grammar_to_extensions 当查找表使用（不迭代），
+            # 运行时取到的值是最后一个（窄集），行为与覆盖前完全一致。
+            # 处置决策见 .omo/evidence/faf-core-rust-migration/f2-fix.md。
+            'coffeescript': ['.coffee'],  # noqa: F601 -- 有意覆盖上方 ['.coffee', '.cson']
             'diff': ['.diff', '.patch'],
-            'dockerfile': ['dockerfile'],
+            'dockerfile': ['dockerfile'],  # noqa: F601 -- 有意覆盖上方含 '.dockerfile' 的宽集
             'gitignore': ['.gitignore'],
-            'groovy': ['.groovy'],
+            'groovy': ['.groovy'],  # noqa: F601 -- 有意覆盖上方多方言宽集
             'julia': ['.jl'],
-            'latex': ['.tex'],
+            'latex': ['.tex'],  # noqa: F601 -- 有意覆盖上方含 '.latex' '.ltx' 的宽集
             'lua': ['.lua'],
-            'makefile': ['makefile'],
-            'perl': ['.pl'],
-            'perl 6': ['.p6'],
-            'powershell': ['.ps1'],
-            'pug': ['.pug'],
-            'r': ['.r'],
-            'ruby': ['.rb'],
+            'makefile': ['makefile'],  # noqa: F601 -- 有意覆盖上方含大小写变体/'.mk' 的宽集
+            'perl': ['.pl'],  # noqa: F601 -- 有意覆盖上方含 '.pm' '.pod' 的宽集
+            'perl 6': ['.p6'],  # noqa: F601 -- 有意覆盖上方含 '.pl6' '.pm6' 的宽集
+            'powershell': ['.ps1'],  # noqa: F601 -- 有意覆盖上方含 '.psm1' '.psd1' 的宽集
+            'pug': ['.pug'],  # noqa: F601 -- 有意覆盖上方含 '.jade' 的宽集
+            'r': ['.r'],  # noqa: F601 -- 有意覆盖上方含大写/数据文件扩展的宽集
+            'ruby': ['.rb'],  # noqa: F601 -- 有意覆盖上方含 '.rbw' 等的宽集
             'rust': ['.rs'],
             'scala': ['.scala'],
             'handlebars': ['.hbs', '.handlebars'],
             'bibtex': ['.bib'],
             'tex': ['.tex'],
             'xsl': ['.xsl', '.xslt'],
-            'shell script': ['.sh'],
+            'shell script': ['.sh'],  # noqa: F601 -- 有意覆盖上方含 '.bash' '.zsh' 等的宽集
             'sql': ['.sql'],
             'swift': ['.swift'],
-            'typescript': ['.ts'],
-            'vb': ['.vb'],
-            'xml': ['.xml'],
-            'yaml': ['.yaml'],
+            'typescript': ['.ts'],  # noqa: F601 -- 有意覆盖上方含 '.tsx' 的宽集
+            'vb': ['.vb'],  # noqa: F601 -- 有意覆盖上方含 '.vbs' 等的宽集
+            'xml': ['.xml'],  # noqa: F601 -- 有意覆盖上方含 '.xsl' '.svg' 等的宽集
+            'yaml': ['.yaml'],  # noqa: F601 -- 有意覆盖上方含 '.yml' 的宽集
         }
         
         # 构建扩展名到语言的映射
@@ -1733,7 +1982,11 @@ class SyntaxHighlighter:
         return self.highlight_line(line, language)
     
     def highlight_text(self, text: str, language: str) -> List[List[Token]]:
-        """高亮多行代码
+        """高亮多行代码（引擎支持整块高亮时路由整块路径，跨行状态保持）。
+
+        当前引擎暴露 ``highlight_text``（如 FafCoreHighlighter 的整块
+        native 高亮）时直接委托——跨行注释/字符串状态一次保持；否则回退
+        逐行 ``highlight_line``（Pygments/Syntect 引擎语义不变）。
 
         Args:
             text: 代码文本
@@ -1742,6 +1995,10 @@ class SyntaxHighlighter:
         Returns:
             每行的 Token 列表
         """
+        if self._engine is not None:
+            engine_highlight_text = getattr(self._engine, "highlight_text", None)
+            if callable(engine_highlight_text):
+                return engine_highlight_text(text, language)
         debug(f"高亮代码，语言: {language}, 长度: {len(text)} 字符")
         lines = text.split('\n')
         result = [self.highlight_line(line, language) for line in lines]

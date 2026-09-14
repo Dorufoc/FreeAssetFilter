@@ -26,7 +26,8 @@ if _ui_root not in sys.path:
 import json
 import os
 import shutil
-from typing import Optional
+import threading
+from typing import Callable, Optional
 
 from PySide6.QtCore import (
     Qt, Signal, QTimer, QEvent, QRunnable, QThreadPool, QEventLoop,
@@ -57,6 +58,7 @@ from components.styled_dialog import create_input_dialog, ask_custom_dialog
 from freeassetfilter.utils.path_utils import get_app_data_path
 from freeassetfilter.services.staging_pool_service import StagingPoolService
 from freeassetfilter.core.workers.staging_tasks import MD5CalculationTask
+from freeassetfilter.core.native.bridges.faf_core_bridge import get_faf_core_bridge
 from freeassetfilter.utils.animation_settings import is_animation_enabled
 from freeassetfilter.utils.app_logger import debug as _pool_rubber_log
 from freeassetfilter.utils.app_logger import warning
@@ -64,6 +66,9 @@ from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 # 释放丢失守卫的轮询周期（毫秒）：框选期间周期性校验右键是否仍按下。
 POOL_RUBBER_GUARD_INTERVAL_MS = 100
+
+# 导出复制单批 native 最大源数（进度/取消按批次粒度；与 Rust CHUNK_SIZE=32 对齐）。
+_EXPORT_BATCH_SIZE = 32
 
 
 def _show_custom_dialog(parent, title, message, buttons, variants=None, vertical=False, dialog_type="default"):
@@ -90,11 +95,17 @@ class _ExportCopyRunnable(QRunnable):
     信号回主线程，完成统计经 ``_export_finished`` 信号回传；线程池
     线程为 daemon 语义，进程退出不被阻塞。
 
+    取消按**批次粒度**响应：``cancel_event`` 置位后，在下一个批次（≤
+    ``_EXPORT_BATCH_SIZE`` 源）边界停止；单文件/单目录复制为原子操作，
+    不属于批次间取消作用点。
+
     Args:
         owner: 所属 FilePoolLayout（复制方法与信号发射经由它）。
         files: 文件信息列表。
         target_dir: 目标目录。
         mode: 0=平铺, 1=分类。
+        cancel_event: 可选取消标记（``threading.Event``）；置位后在批次
+            边界提前终止（否则复制全部文件后正常结束）。
     """
 
     def __init__(
@@ -103,6 +114,7 @@ class _ExportCopyRunnable(QRunnable):
         files: list,
         target_dir: str,
         mode: int,
+        cancel_event: Optional[threading.Event] = None,
     ) -> None:
         super().__init__()
         self.setAutoDelete(True)
@@ -110,14 +122,25 @@ class _ExportCopyRunnable(QRunnable):
         self._files = files
         self._target_dir = target_dir
         self._mode = mode
+        self._cancel_event = cancel_event
+
+    def _should_stop(self) -> bool:
+        """批次间取消探测：``cancel_event`` 置位即应在下个批次边界停止。
+
+        Returns:
+            bool: True 表示需要终止复制。
+        """
+        return self._cancel_event is not None and self._cancel_event.is_set()
 
     def run(self) -> None:
         try:
             if self._mode == 0:
-                s, f, e = self._owner.copy_files(self._files, self._target_dir)
+                s, f, e = self._owner.copy_files(
+                    self._files, self._target_dir, should_stop=self._should_stop
+                )
             else:
                 s, f, e = self._owner.copy_files_categorized(
-                    self._files, self._target_dir
+                    self._files, self._target_dir, should_stop=self._should_stop
                 )
             self._owner._export_finished.emit(s, f, e)
         except Exception as ex:  # noqa: BLE001  # 导出任务异常兜底
@@ -2170,6 +2193,10 @@ class FilePoolLayout(QWidget):
         # 连接进度信号
         self.update_progress.connect(progress.setValue)
 
+        # 批次间取消标记（现有"取消"按钮 → canceled 信号 → Event → 批次边界响应）
+        _cancel_event = threading.Event()
+        progress.canceled.connect(lambda: _cancel_event.set())
+
         def _on_finish(success: int, failed: int, errors: list) -> None:
             try:
                 self.update_progress.disconnect(progress.setValue)
@@ -2201,82 +2228,238 @@ class FilePoolLayout(QWidget):
 
         # 投递后台复制任务（线程池 daemon 语义，进程退出自动结束）
         QThreadPool.globalInstance().start(
-            _ExportCopyRunnable(self, files, target_dir, mode)
+            _ExportCopyRunnable(
+                self, files, target_dir, mode, cancel_event=_cancel_event
+            )
         )
 
         # 显示进度对话框（模态）
         progress.exec()
 
-    def copy_files(self, files: list, target_dir: str) -> tuple:
+    def copy_files(
+        self,
+        files: list,
+        target_dir: str,
+        should_stop: Optional[Callable[[], bool]] = None,
+    ) -> tuple:
         """平铺导出：将所有文件直接复制到目标目录。
+
+        native（``faf_copy_files``）可用时按 ≤``_EXPORT_BATCH_SIZE`` 源/批
+        批量复制，批次间探测 ``should_stop``；否则回退逐文件
+        ``shutil.copy2/copytree``（DLL 缺失/失败时与现状字节一致）。
 
         Args:
             files: 文件信息列表。
             target_dir: 目标目录。
+            should_stop: 可选取消回调（批次边界探测；True → 提前终止）。
 
         Returns:
             (成功数, 失败数, 错误信息列表)
         """
-        success = 0
-        failed = 0
-        errors = []
-        for i, fi in enumerate(files):
-            src = fi.get("path", "")
-            display_name = fi.get("display_name", os.path.basename(src))
-            dst = self._get_unique_target_path(target_dir, display_name)
-            try:
-                if fi.get("is_dir"):
-                    shutil.copytree(src, dst, dirs_exist_ok=True)
-                else:
-                    shutil.copy2(src, dst)
-                success += 1
-            except (IOError, OSError, PermissionError, shutil.Error) as e:
-                failed += 1
-                errors.append(f"{fi.get('display_name', '?')}: {e}")
-            self.update_progress.emit(i + 1)
-        return success, failed, errors
+        return self._dispatch_export(
+            files, target_dir, mode=0, should_stop=should_stop
+        )
 
     def copy_files_categorized(
-        self, files: list, target_dir: str
+        self,
+        files: list,
+        target_dir: str,
+        should_stop: Optional[Callable[[], bool]] = None,
     ) -> tuple:
         """分类导出：按原始文件夹分类存放。
 
+        与 :meth:`copy_files` 相同的 native 优先/回退策略；分类目录按
+        源文件所在父目录名创建，命名空间按目录隔离（比重命名互不影响）。
+
         Args:
             files: 文件信息列表。
             target_dir: 目标目录。
+            should_stop: 可选取消回调（批次边界探测；True → 提前终止）。
 
         Returns:
             (成功数, 失败数, 错误信息列表)
         """
+        return self._dispatch_export(
+            files, target_dir, mode=1, should_stop=should_stop
+        )
+
+    def _dispatch_export(
+        self,
+        files: list,
+        target_dir: str,
+        mode: int,
+        should_stop: Optional[Callable[[], bool]] = None,
+    ) -> tuple:
+        """平铺/分类导出统一分发：native 批量优先，回退 Python 复制路径。
+
+        语义保持（与改造前逐文件顺序复制等价）：
+
+        * 处理顺序 = 输入顺序；错误按输入顺序追加（错误元组顺序一致）；
+        * 冲突改名（:meth:`_get_unique_target_path`）**保持 Python 侧**，
+          dispatch 前完成：native 批量会推迟落盘，故任何无法并入当前批的
+          文件（重名冲突、display_name 与源名不一致、取消）都先把当前批
+          flush 到磁盘，使 ``_get_unique_target_path`` 总在与旧实现逐文件
+          执行相同的时间点看到磁盘状态；
+        * 同批内目标名互不相同（同名文件触发 flush + 改名重定向），规避
+          native 批内同名目标相互覆盖；
+        * 进度信号每个文件递增一次且单调不减（批次 flush 按输入序补发）；
+        * 取消按**批次粒度**：``should_stop`` 仅在批次边界（及无法并入
+          批量的文件前）探测，<500ms 响应；单文件/目录复制为原子操作、
+          不属于批次间取消作用点。
+
+        Args:
+            files: 文件信息列表。
+            target_dir: 目标目录。
+            mode: 0=平铺, 1=分类。
+            should_stop: 可选取消回调（True → 在下一个批次边界终止）。
+
+        Returns:
+            (成功数, 失败数, 错误信息列表)
+        """
+        bridge = get_faf_core_bridge()
+        native_usable = (
+            bridge is not None and bridge.available and bridge._supports_copy
+        )
         success = 0
         failed = 0
-        errors = []
-        for i, fi in enumerate(files):
-            src = fi.get("path", "")
-            source_dir = os.path.dirname(src)
-            category = os.path.basename(source_dir) or "未分类"
-            cat_dir = os.path.join(target_dir, category)
-            try:
-                os.makedirs(cat_dir, exist_ok=True)
-            except (IOError, OSError) as e:
-                failed += 1
-                errors.append(f"{fi.get('display_name', '?')}: 创建分类目录失败 - {e}")
-                self.update_progress.emit(i + 1)
-                continue
+        errors: list = []
+        pending: list = []  # [(输入序号, src, display_name, is_dir)]
+        pending_names: set = set()
+        pending_dest: Optional[str] = None
+        stopped = False
 
-            dst = os.path.join(cat_dir, fi.get("display_name", os.path.basename(src)))
-            # 同名文件冲突处理
-            dst = self._get_unique_target_path(cat_dir, os.path.basename(dst))
-            try:
-                if fi.get("is_dir"):
-                    shutil.copytree(src, dst, dirs_exist_ok=True)
+        def _flush() -> None:
+            """把当前 native 批落盘：native 结果回填 / native 失败回退逐文件 Python。
+
+            native 单源失败记入 failed 不中断整批；每文件的进度在此按输入序补发。
+            """
+            nonlocal success, failed, errors, pending_dest
+            if not pending:
+                return
+            dest = pending_dest if pending_dest is not None else target_dir
+            result = None
+            if native_usable:
+                try:
+                    result = bridge.copy_files([p[1] for p in pending], dest)
+                except Exception:  # noqa: BLE001  # FFI 边界兜底 → 回退 Python
+                    warning("native 复制失败，回退 Python 复制路径")
+                    result = None
+            copied_map = None
+            fail_map = None
+            if result is not None:
+                copied_map = {c.get("src"): True for c in result.get("copied", [])}
+                fail_map = {
+                    f.get("src"): f.get("error", "复制失败")
+                    for f in result.get("failed", [])
+                }
+            for idx, src, display_name, is_dir in pending:
+                error_str: Optional[str] = None
+                if result is None:
+                    # native 不可用/失败 → 逐文件回退（目标名 = 源名，批内互不相同）。
+                    dst = os.path.join(dest, display_name)
+                    try:
+                        if is_dir:
+                            shutil.copytree(src, dst, dirs_exist_ok=True)
+                        else:
+                            shutil.copy2(src, dst)
+                    except (IOError, OSError, PermissionError, shutil.Error) as e:
+                        error_str = str(e)
+                elif src in copied_map:
+                    error_str = None
+                elif src in fail_map:
+                    error_str = fail_map[src]
                 else:
-                    shutil.copy2(src, dst)
-                success += 1
-            except (IOError, OSError, PermissionError, shutil.Error) as e:
-                failed += 1
-                errors.append(f"{fi.get('display_name', '?')}: {e}")
-            self.update_progress.emit(i + 1)
+                    error_str = "native 未返回该源的复制结果"
+                if error_str is None:
+                    success += 1
+                else:
+                    failed += 1
+                    errors.append(f"{display_name}: {error_str}")
+                self.update_progress.emit(idx + 1)
+            pending.clear()
+            pending_names.clear()
+            pending_dest = None
+
+        try:
+            for i, fi in enumerate(files):
+                if should_stop is not None and should_stop():
+                    stopped = True
+                    break
+                src = str(fi.get("path", ""))
+                display_name = fi.get("display_name", os.path.basename(src))
+                if not display_name:
+                    display_name = os.path.basename(src) or "?"
+                is_dir = bool(fi.get("is_dir"))
+
+                dest_dir = target_dir
+                if mode == 1:
+                    source_dir = os.path.dirname(src)
+                    category = os.path.basename(source_dir) or "未分类"
+                    dest_dir = os.path.join(target_dir, category)
+                    try:
+                        os.makedirs(dest_dir, exist_ok=True)
+                    except (IOError, OSError) as e:
+                        # 分类目录创建失败：先落盘前序批再按旧逻辑记失败。
+                        _flush()
+                        failed += 1
+                        errors.append(f"{display_name}: 创建分类目录失败 - {e}")
+                        self.update_progress.emit(i + 1)
+                        continue
+
+                # 命名空间/分类目录切换：先 flush 上一目录的批，保证后续冲突
+                # 改名总在与旧实现相同的时间点看到磁盘。
+                if pending and pending_dest != dest_dir:
+                    _flush()
+                    if should_stop is not None and should_stop():
+                        stopped = True
+                        break
+
+                native_eligible = (
+                    native_usable and display_name == os.path.basename(src)
+                )
+                if native_eligible:
+                    if pending_dest == dest_dir and display_name in pending_names:
+                        # 同批同名：先落盘让后续改名看到真实磁盘，本文件改走
+                        # Python 重命名路径（与逐文件执行语义一致）。
+                        _flush()
+                        native_eligible = False
+                        if should_stop is not None and should_stop():
+                            stopped = True
+                            break
+                    elif len(pending) >= _EXPORT_BATCH_SIZE:
+                        _flush()
+                        if should_stop is not None and should_stop():
+                            stopped = True
+                            break
+
+                natural = os.path.join(dest_dir, display_name)
+                candidate = self._get_unique_target_path(dest_dir, display_name)
+                if native_eligible and candidate == natural:
+                    # 冲突改名未触发 → 可并入 native 批（目标名 = 源名）。
+                    pending.append((i, src, display_name, is_dir))
+                    pending_names.add(display_name)
+                    pending_dest = dest_dir
+                    continue
+
+                # Python 回退路径（重名冲突/自定义 display_name/目标已存在）：
+                # 先 flush 前序批，使改名字段与旧实现所见磁盘一致。
+                _flush()
+                if should_stop is not None and should_stop():
+                    stopped = True
+                    break
+                try:
+                    if is_dir:
+                        shutil.copytree(src, candidate, dirs_exist_ok=True)
+                    else:
+                        shutil.copy2(src, candidate)
+                    success += 1
+                except (IOError, OSError, PermissionError, shutil.Error) as e:
+                    failed += 1
+                    errors.append(f"{display_name}: {e}")
+                self.update_progress.emit(i + 1)
+        finally:
+            if not stopped:
+                _flush()
         return success, failed, errors
 
     @staticmethod

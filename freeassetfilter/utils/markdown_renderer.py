@@ -67,6 +67,127 @@ if MARKDOWN_AVAILABLE:
             md.treeprocessors.register(_TaskListTreeProcessor(md), "tasklist", 15)
 
 
+# =============================================================================
+# 两引擎共享的源文本准备 / body 后处理（todo-17：python-markdown 路径与
+# faf_core native 路径统一调用，保证输出行为一致）。
+# =============================================================================
+
+_DETAILS_MD_IN_HTML_RE = re.compile(r"<details\b")
+_DIV_MD_IN_HTML_RE = re.compile(r"<div(\s)")
+
+# `<div align=...>` → 内联 style：QTextBrowser/QTextDocument 不识别 HTML
+# align 属性，转成内联 `style="text-align: ..."` 才能实现居中。
+_ALIGN_DIV_RE = re.compile(
+    r'<div\b([^>]*)align=["\']([^"\']+)["\']([^>]*)>',
+    flags=re.IGNORECASE,
+)
+
+# 标题 id 重写：`<hN>正文</hN>` → `<hN id="正文">正文</hN>`，使
+# `[标题](#标题)` 式内部锚点可滚动到对应标题。
+_HEADING_ID_RE = re.compile(r"<h([1-6])\b[^>]*>(.*?)</h\1>", flags=re.DOTALL)
+
+# README 式 `#-xxx` 锚点归一化为 `#xxx`。
+_HYPHEN_ANCHOR_RE = re.compile(r'href=["\']#-([^"\']+)["\']')
+
+# 任务列表 item 类吸收：native 的任务列表 `<li>` 不携带 `task-item` 类
+# （python-markdown 的 ``_TaskListTreeProcessor`` 会打该类，``li.task-item``
+# CSS 依赖它去除项符号）；已带类的 python 输出不命中（幂等）。
+_TASK_ITEM_CLASS_RE = re.compile(
+    r'(?i)<li>(\s*)<span class="task-checkbox'
+)
+
+# md_in_html 标记属性剥离：``inject_md_in_html`` 注入的 ``markdown="1"`` 在
+# python-markdown 侧被 md_in_html 扩展消费（输出剥离），而 native 引擎按 raw
+# HTML 透传会保留该属性——共享后处理统一剥离（对 python 输出幂等）。
+_MD_IN_HTML_MARKER_RE = re.compile(r'(?i)(<details\b[^>]*?)\s+markdown="1"')
+_DIV_MD_IN_HTML_MARKER_RE = re.compile(r'(?i)(<div\b[^>]*?)\s+markdown="1"')
+
+# native 代码块 `<pre><code class="highlight">` → python-markdown codehilite
+# 的 `<div class="highlight"><pre><code>` 包装形态（着色 CSS 依赖 `.highlight
+# pre` 统一样式；python 的 `<span></span>` 行号占位在 normalize_html 时被
+# 裁剪、class 差异被忽略——结构归一后两引擎等价）。lookbehind 防对 python
+# 已包裹输出二次包裹（幂等）。
+_PRE_CODE_HIGHLIGHT_RE = re.compile(
+    r'(?<!<div class="highlight">)<pre><code class="highlight">(.*?)</code></pre>',
+    flags=re.DOTALL,
+)
+
+
+def inject_md_in_html(text: str) -> str:
+    """为源文本注入 md_in_html 容器标记（渲染前，两引擎共用）。
+
+    python-markdown 的 ``md_in_html`` 扩展依据 `markdown="1"` 属性把容器内
+    内容按 markdown 解析；native（pulldown-cmark）对 ``<details>/<div>`` 容器
+    内容本身就按 CommonMark 解析，注入的标记属性会随 raw HTML 透传，随后由
+    :func:`apply_shared_postprocessing` 统一剥离。两引擎渲染前**都**调用本
+    函数，保证输入路径一致。
+
+    Args:
+        text: 原始 Markdown 源文本。
+
+    Returns:
+        str: 注入 ``markdown="1"`` 标记后的文本。
+    """
+    text = _DETAILS_MD_IN_HTML_RE.sub('<details markdown="1"', text)
+    text = _DIV_MD_IN_HTML_RE.sub(r'<div markdown="1"\1', text)
+    return text
+
+
+def _rewrite_heading_id_match(match: "re.Match[str]") -> str:
+    """把 heading 标签重写为带与正文一致的 id（内部锚点可跳转）。"""
+    level = match.group(1)
+    content = match.group(2).strip()
+    # Strip any inline HTML tags from the id text.
+    plain_id = re.sub(r"<[^>]+>", "", content).strip()
+    return f'<h{level} id="{plain_id}">{content}</h{level}>'
+
+
+def apply_shared_postprocessing(body_html: str) -> str:
+    """两引擎共享的 body 后处理（渲染后统一应用，顺序明确）。
+
+    处理项（python-markdown 与 native 路径都调用，保证输出行为一致）：
+
+    1. 剥离 ``markdown="1"`` 容器标记（native raw-HTML 透传残留；python
+       已由 md_in_html 消费，幂等）；
+    2. native 代码块包装归一为 ``<div class="highlight"><pre><code>``
+       （着色 CSS 契约；python 输出因 lookbehind 幂等）；
+    3. ``<div align=...>`` → 内联 ``style="text-align: ...;"``
+       （QTextBrowser 不识别 align 属性）；
+    4. 任务列表 ``<li>`` 吸收 ``task-item`` 类（native 缺失，CSS 依赖）；
+    5. heading id 重写并令 id 与正文一致；
+    6. ``#-xxx`` 锚点归一化为 ``#xxx``。
+
+    Args:
+        body_html: 引擎产出的 body 片段。
+
+    Returns:
+        str: 后处理后的 body 片段。
+    """
+    # 1. md_in_html 标记剥离（对 native 透传的 markdown="1" 生效）。
+    body_html = _MD_IN_HTML_MARKER_RE.sub(r"\1", body_html)
+    body_html = _DIV_MD_IN_HTML_MARKER_RE.sub(r"\1", body_html)
+    # 2. 代码块包装归一。
+    body_html = _PRE_CODE_HIGHLIGHT_RE.sub(
+        r'<div class="highlight"><pre><code>\1</code></pre></div>',
+        body_html,
+    )
+    # 3. align → inline style。
+    body_html = _ALIGN_DIV_RE.sub(
+        r'<div\1style="text-align: \2;"\3>',
+        body_html,
+    )
+    # 4. task-item 类吸收。
+    body_html = _TASK_ITEM_CLASS_RE.sub(
+        r'<li class="task-item">\1<span class="task-checkbox',
+        body_html,
+    )
+    # 5. heading id 重写。
+    body_html = _HEADING_ID_RE.sub(_rewrite_heading_id_match, body_html)
+    # 6. #- 锚点归一化。
+    body_html = _HYPHEN_ANCHOR_RE.sub(r'href="#\1"', body_html)
+    return body_html
+
+
 class MarkdownRenderer:
     """Render Markdown text into a themed, self-contained HTML document."""
 
@@ -120,47 +241,31 @@ class MarkdownRenderer:
 
         Raises:
             RuntimeError: If Markdown/Pygments libraries are unavailable.
+
+        Notes:
+            faf_core 原生引擎（``faf_render_markdown``，桥可用时）为可选
+            高优先级路径：输出经 :func:`apply_shared_postprocessing` 共享后处理
+            后组装完整文档；桥不可用（DLL 缺失 / 旧版 DLL 无导出 / FFI 失败）
+            时回退 python-markdown 现状路径，同样过共享后处理——两路径输出
+            行为一致。
         """
         if not MARKDOWN_AVAILABLE:
             raise RuntimeError("markdown and pygments are required for rendering")
 
-        md = self._create_markdown()
-        # Allow Markdown inside <details>/<summary> and block-level <div>
-        # containers by marking them as parseable by the md_in_html extension.
-        text = re.sub(r'<details\b', '<details markdown="1"', text)
-        text = re.sub(r'<div(\s)', r'<div markdown="1"\1', text)
-        body_html = md.convert(text)
+        # 渲染前源文本准备：md_in_html 容器标记注入（两引擎共用）。
+        prepared = inject_md_in_html(text)
 
-        # QTextBrowser/QTextDocument does not honor the HTML align attribute on
-        # <div>; convert it to an inline style statement for center/left/right.
-        body_html = re.sub(
-            r'<div\b([^>]*)align=["\']([^"\']+)["\']([^>]*)>',
-            r'<div\1style="text-align: \2;"\3>',
-            body_html,
-            flags=re.IGNORECASE,
-        )
+        # native 高优先级路径：桥可用 → 原生 body；不可用 → python-markdown。
+        body_html: str
+        native_body = self._render_native_body(prepared)
+        if native_body is not None:
+            body_html = native_body
+        else:
+            body_html = self._create_markdown().convert(prepared)
 
-        # Make heading ids match the heading text so internal anchors like
-        # [功能预览](#功能预览) actually scroll to the heading.
-        def _rewrite_heading_id(match: "re.Match[str]") -> str:
-            level = match.group(1)
-            content = match.group(2).strip()
-            # Strip any inline HTML tags from the id text.
-            plain_id = re.sub(r"<[^>]+>", "", content).strip()
-            return f'<h{level} id="{plain_id}">{content}</h{level}>'
+        # 两引擎共享的 body 后处理（align→style、heading-id、代码块包装等）。
+        body_html = apply_shared_postprocessing(body_html)
 
-        body_html = re.sub(
-            r'<h([1-6])\b[^>]*>(.*?)</h\1>',
-            _rewrite_heading_id,
-            body_html,
-            flags=re.DOTALL,
-        )
-        # READMEs sometimes generate anchors with a leading hyphen; normalize.
-        body_html = re.sub(
-            r'href=["\']#-([^"\']+)["\']',
-            r'href="#\1"',
-            body_html,
-        )
         css = self._build_css()
         pygments_css = self._pygments_style_defs(tm.is_dark_theme())
 
@@ -176,6 +281,40 @@ class MarkdownRenderer:
 {body_html}
 </body>
 </html>"""
+
+    def _render_native_body(self, text: str) -> Optional[str]:
+        """尝试经 faf_core 原生引擎渲染 body 片段（不可用返回 ``None``）。
+
+        桥可用且 ``_supports_render_markdown`` 为真时调用
+        ``bridge.render_markdown(text)`` 取 ``{"html": ...}`` body 片段；
+        任何失败（DLL 缺失 / 绑定缺失 / 非法载荷 / 异常）均返回 ``None``，
+        由 :meth:`render` 回退 python-markdown 现状路径。
+
+        Args:
+            text: 已注入 md_in_html 标记的 Markdown 源文本。
+
+        Returns:
+            Optional[str]: native body 片段；不可用时 ``None``。
+        """
+        try:
+            from freeassetfilter.core.native.bridges.faf_core_bridge import (
+                get_faf_core_bridge,
+            )
+
+            bridge = get_faf_core_bridge()
+            if bridge is None or not bridge.available:
+                return None
+            if not getattr(bridge, "_supports_render_markdown", False):
+                return None
+            result = bridge.render_markdown(text)
+            if not isinstance(result, dict):
+                return None
+            html = result.get("html")
+            if not isinstance(html, str):
+                return None
+            return html
+        except Exception:  # noqa: BLE001  # FFI/导入边界：任何异常都回退 python
+            return None
 
     def _create_markdown(self) -> "markdown.Markdown":
         """Return a fresh ``markdown.Markdown`` instance.

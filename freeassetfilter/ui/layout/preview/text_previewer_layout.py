@@ -54,6 +54,9 @@ from PySide6.QtCore import (
     QRect,
     QRectF,
     QEvent,
+    QObject,
+    QRunnable,
+    QThreadPool,
     QPropertyAnimation,
     QEasingCurve,
     QUrl,
@@ -107,6 +110,136 @@ from freeassetfilter.utils.markdown_renderer import (
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 _MarkdownRenderer = MarkdownRenderer
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Markdown 渲染后台任务（render 移出 UI 线程 + token 防陈旧）
+# ──────────────────────────────────────────────────────────────────────────────
+
+class _MarkdownRenderSignals(QObject):
+    """Markdown 渲染完成信号中转（任务持有，跨线程队列投递到 UI 线程）。"""
+
+    done = Signal(bool, object)  # (ok, html | None)
+
+
+class _MarkdownRenderTask(QRunnable):
+    """Markdown 渲染后台任务（render 在池线程执行，setHtml 回主线程）。
+
+    任务持有渲染所需输入快照（文本/路径/字号），在池线程内构造一次性
+    渲染器实例并执行 ``render()``；结果经 ``done`` 信号回 UI 线程，由布局
+    侧令牌守卫决定采纳或丢弃。渲染异常不向上抛，统一以 ``ok=False`` 汇报，
+    布局据此回退源码视图。字号在任务构造时固化，避免与 UI 线程并发修改
+    共享渲染器状态。
+    """
+
+    def __init__(
+        self,
+        text: str,
+        file_path: str,
+        font_size: int,
+    ) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._signals = _MarkdownRenderSignals()
+        self._text = text
+        self._file_path = file_path
+        self._font_size = font_size
+
+    @property
+    def done(self) -> Signal:
+        """渲染完成信号 ``(ok, html)``。"""
+        return self._signals.done
+
+    def start(self) -> None:
+        """投递到全局线程池执行。"""
+        QThreadPool.globalInstance().start(self)
+
+    def run(self) -> None:
+        ok = False
+        html: Optional[str] = None
+        try:
+            renderer = _MarkdownRenderer(font_size=self._font_size)
+            html = renderer.render(self._text, self._file_path)
+            ok = True
+        except Exception:  # noqa: BLE001  # 渲染边界：任何异常都按失败回退
+            ok = False
+        try:
+            self.done.emit(ok, html)
+        except RuntimeError:
+            # 宿主布局已销毁（信号源随之释放）：结果无人采纳，静默丢弃
+            pass
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 编码探测后台任务（chardet 全文件探测移出 UI 线程 + token 防陈旧）
+# ──────────────────────────────────────────────────────────────────────────────
+
+class _EncodingDetectSignals(QObject):
+    """编码探测完成信号中转（任务持有，跨线程队列投递到 UI 线程）。"""
+
+    done = Signal(str)  # (detected_encoding | "")
+
+
+class _EncodingDetectTask(QRunnable):
+    """文本编码探测后台任务（探测在池线程，解码渲染回主线程）。
+
+    任务持有原始字节 + 路径快照，在池线程内经
+    ``file_info_service._detect_encoding_native`` 做 native 探测（DLL 缺失 /
+    置信度 <0.5 返回空 JSON ``{}`` 时返回空串，表示走 ``utf-8 → latin-1``
+    快速链）；结果经 ``done`` 信号回 UI 线程，由布局侧令牌守卫决定采纳或
+    丢弃。探测异常不向上抛，统一以空串汇报（保持快速链显示）。采样窗口仍为
+    全文件——原始字节整份传给 native。
+    """
+
+    def __init__(self, raw: bytes, path: str) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._signals = _EncodingDetectSignals()
+        self._raw = raw
+        self._path = path
+
+    @property
+    def done(self) -> Signal:
+        """探测完成信号 ``(detected_encoding | "")``。"""
+        return self._signals.done
+
+    def start(self) -> None:
+        """投递到全局线程池执行。"""
+        QThreadPool.globalInstance().start(self)
+
+    def run(self) -> None:
+        detected = ""
+        try:
+            from freeassetfilter.services.file_info_service import (
+                _detect_encoding_native,
+            )
+
+            result = _detect_encoding_native(self._raw, self._path, window=None)
+            if result and result.get("encoding"):
+                detected = result["encoding"]
+        except Exception:  # noqa: BLE001  # 探测边界：任何异常都按快速链回退
+            detected = ""
+        try:
+            self.done.emit(detected)
+        except RuntimeError:
+            # 宿主布局已销毁（信号源随之释放）：结果无人采纳，静默丢弃
+            pass
+
+
+def _decode_auto_chain(raw: bytes, encoding: Optional[str] = None) -> tuple[str, str]:
+    """回退链解码：探测结果 → utf-8 → latin-1（链不变，UI 线程安全）。
+
+    与 ``file_info_service._decode_encoding_chain`` 同语义：先严格探测候选
+    编码选出首个可行项（UTF-8 BOM 文件归一为 ``utf-8-sig``，与 chardet 的
+    ``UTF-8-SIG`` 路径逐字节一致），再以 ``errors="replace"`` 解码。预览器
+    auto 路径**不再在 UI 线程使用 chardet**（探测已移至
+    :class:`_EncodingDetectTask` worker）——本函数仅承担快速回退显示与
+    指定编码解码。
+    """
+    from freeassetfilter.services.file_info_service import _decode_encoding_chain
+
+    return _decode_encoding_chain(raw, encoding, errors="replace")
+
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1154,6 +1287,8 @@ class TextPreviewerLayout(QWidget):
     FONT_SIZE_MAX = 32
     FONT_SIZE_STEP = 1
     DEFAULT_FONT_SIZE = 14
+    #: 字号滑条防抖窗口（ms）：Markdown 模式下连续滑动合并为最终一次渲染
+    FONT_DEBOUNCE_MS = 120
     _SEARCH_BATCH_SIZE = 100
 
     def __init__(
@@ -1192,6 +1327,18 @@ class TextPreviewerLayout(QWidget):
             if _MarkdownRenderer.is_available()
             else None
         )
+        # Markdown 渲染异步化状态：token 递增使旧渲染任务结果失效；
+        # 在途任务列表持有引用防 GC（QRunnable 用完即弃）。
+        self._md_render_token: int = 0
+        self._md_render_tasks: list[_MarkdownRenderTask] = []
+        # 编码探测异步化状态：token 递增使旧探测任务结果失效；在途任务列表
+        # 持有引用防 GC。快速链（utf-8 → latin-1）先显示防空白，探测完成后
+        # 回调重渲染——探测结果与快速链编码一致时跳过重渲染避免闪烁。
+        self._enc_detect_token: int = 0
+        self._enc_detect_tasks: list[_EncodingDetectTask] = []
+        self._fast_encoding: str = ""
+        # 字号滑条防抖：仅 Markdown 模式启用，合并连续滑动为最终一次渲染
+        self._font_debounce_timer: Optional[QTimer] = None
 
         self._init_ui()
         self._connect_theme()
@@ -1375,6 +1522,10 @@ class TextPreviewerLayout(QWidget):
     def set_file(self, file_path: str) -> None:
         """读取文件并设置预览内容。
 
+        编码探测移出 UI 线程（:class:`_EncodingDetectTask` + token 防陈旧）：
+        先按 ``utf-8 → latin-1`` 快速链显示防空白，探测完成后回调以探测编码
+        重新解码渲染。
+
         Args:
             file_path: 要预览的文件路径。
         """
@@ -1388,42 +1539,45 @@ class TextPreviewerLayout(QWidget):
         path = Path(file_path)
         if not path.exists() or not path.is_file():
             self._current_raw = None
+            self._fast_encoding = ""
             self._set_decoded_text(f"无法读取文件: {file_path}", str(path), "unknown")
             return
 
         try:
             raw = path.read_bytes()
             self._current_raw = raw
-            text, encoding = self._decode_bytes(raw, "auto")
         except Exception as exc:
             self._current_raw = None
+            self._fast_encoding = ""
             text = f"读取文件失败: {exc}"
             encoding = "unknown"
+            self._set_decoded_text(text, str(path), encoding)
+            return
 
-        self._set_decoded_text(text, str(path), encoding)
+        # 快速回退显示（utf-8 → latin-1），避免等待探测期间空白；
+        # 后台探测完成后以探测编码重新解码渲染（见 _on_encoding_detected）。
+        fast_text, fast_encoding = self._decode_bytes(raw, "auto")
+        self._fast_encoding = fast_encoding
+        self._set_decoded_text(fast_text, str(path), fast_encoding)
+        self._start_encoding_detect(raw, str(path))
 
     def _decode_bytes(self, raw: bytes, encoding: str) -> tuple[str, str]:
         """将原始字节按指定编码解码。
 
+        ``auto``/``自动识别`` 路径**不在 UI 线程做 chardet 探测**——探测已
+        移至 :class:`_EncodingDetectTask` worker（``set_file``/auto 选择时
+        自动投递），此处仅执行 ``utf-8 → latin-1`` 快速回退链解码，避免大
+        文件等待探测期间出现空白。指定编码则直接按名称解码。
+
         Args:
             raw: 文件原始字节。
-            encoding: "auto"/"自动识别" 时使用 chardet 检测，否则按名称解码。
+            encoding: "auto"/"自动识别" 时走快速链；否则按名称解码。
 
         Returns:
             (解码后的文本, 实际使用的编码名称)
         """
         if encoding in ("auto", "自动识别"):
-            detected = "utf-8"
-            try:
-                import chardet
-
-                result = chardet.detect(raw)
-                if result and result.get("encoding"):
-                    detected = result["encoding"]
-            except Exception:
-                pass
-            return raw.decode(detected, errors="replace"), detected
-
+            return _decode_auto_chain(raw, None)
         return raw.decode(encoding, errors="replace"), encoding
 
     def _set_decoded_text(self, text: str, file_path: str, encoding: str) -> None:
@@ -1471,13 +1625,77 @@ class TextPreviewerLayout(QWidget):
             self._content_stack.setCurrentIndex(0)
 
     def _on_encoding_selected(self, text: str) -> None:
-        """编码下拉框选择变化：使用内存中的原始字节重新解码。"""
+        """编码下拉框选择变化：使用内存中的原始字节重新解码。
+
+        ``自动识别`` 走快速链显示 + 后台探测回调重渲染（与 ``set_file`` 同
+        路径，token 防陈旧）；指定编码直接按名称解码（纯解码，UI 线程安全）。
+        """
         self._update_encoding_combo_width()
         if self._current_raw is None:
             return
         encoding = text if text != "自动识别" else "auto"
+        if encoding == "auto":
+            fast_text, fast_encoding = self._decode_bytes(self._current_raw, "auto")
+            self._fast_encoding = fast_encoding
+            self._set_decoded_text(fast_text, self._current_file, fast_encoding)
+            self._start_encoding_detect(self._current_raw, self._current_file)
+            return
         decoded, effective = self._decode_bytes(self._current_raw, encoding)
+        self._fast_encoding = effective
         self._set_decoded_text(decoded, self._current_file, effective)
+
+    def _start_encoding_detect(self, raw: bytes, path: str) -> None:
+        """投递编码探测任务（token 递增使旧任务结果失效）。
+
+        Args:
+            raw: 文件原始字节（全文件采样窗口）。
+            path: 文件绝对路径（native 缓存键）。
+        """
+        self._enc_detect_token += 1
+        token = self._enc_detect_token
+        task = _EncodingDetectTask(raw, path)
+        task.done.connect(
+            lambda detected, t=token: self._on_encoding_detected(t, detected)
+        )
+        self._track_enc_detect_task(task)
+        task.start()
+
+    def _track_enc_detect_task(self, task: _EncodingDetectTask) -> None:
+        """记录在途探测任务引用（防 GC），任务完成时自动移除。"""
+        task.done.connect(lambda *args, tk=task: self._untrack_enc_detect_task(tk))
+        self._enc_detect_tasks.append(task)
+
+    def _untrack_enc_detect_task(self, task: _EncodingDetectTask) -> None:
+        """任务完成后从在途列表移除（防御 C++ 对象已销毁）。"""
+        try:
+            if task in self._enc_detect_tasks:
+                self._enc_detect_tasks.remove(task)
+        except RuntimeError:
+            pass
+
+    def _on_encoding_detected(self, token: int, detected: str) -> None:
+        """编码探测后台结果回写（令牌守卫：陈旧结果直接丢弃）。
+
+        探测无结果（空串 / native 置信度 <0.5 → 快速链已覆盖 ``utf-8 → 
+        latin-1``）→ 保持快速链显示；探测出具体编码 → 以其重新解码渲染。
+        探测结果与快速链编码一致（如普通 utf-8 文件）→ 跳过重渲染避免闪烁。
+
+        Args:
+            token: 投递时的探测令牌。
+            detected: 探测出的编码名（空串表示无结果）。
+        """
+        if token != self._enc_detect_token:
+            return
+        if self._current_raw is None:
+            return
+        if not detected:
+            return
+        if detected == self._fast_encoding:
+            self._current_encoding = detected
+            return
+        text = self._current_raw.decode(detected, errors="replace")
+        self._fast_encoding = detected
+        self._set_decoded_text(text, self._current_file, detected)
 
     def _init_search_drawer(self) -> None:
         """初始化左侧搜索抽屉面板：搜索框、选项、懒加载结果列表。"""
@@ -1888,6 +2106,11 @@ class TextPreviewerLayout(QWidget):
             self._exit_fullscreen()
         # 销毁缩放弹窗，避免清理后残留悬浮窗口（Qt 父级已保证随预览器销毁）
         self._discard_zoom_popup()
+        # 令在途 Markdown 渲染任务结果失效并停止字号防抖定时器
+        self._md_render_token += 1
+        self._md_render_tasks.clear()
+        if self._font_debounce_timer is not None:
+            self._font_debounce_timer.stop()
         if hasattr(self, "_search_drawer") and self._search_drawer is not None:
             self._search_drawer.close_drawer()
         if hasattr(self, "_ai_drawer") and self._ai_drawer is not None:
@@ -1985,32 +2208,77 @@ class TextPreviewerLayout(QWidget):
         )
 
     def _render_markdown(self) -> bool:
-        """使用 _MarkdownRenderer 渲染当前文本到 QTextBrowser。
+        """异步渲染当前文本到 QTextBrowser（render 在池线程，setHtml 回主线程）。
+
+        ``render()`` 经 :class:`_MarkdownRenderTask` 投递到全局线程池执行，
+        结果经 ``done`` 信号回 UI 线程后由 :meth:`_on_markdown_rendered`
+        回写（令牌守卫丢弃陈旧结果）。调用方在返回 True 时切到渲染视图，
+        渲染失败由回调回退源码视图，行为与原同步实现等价。
 
         Returns:
-            渲染成功时返回 True，Markdown 不可用或渲染失败时返回 False。
+            markdown 可用且渲染任务已投递时返回 True（结果异步回写）；
+            否则返回 False。
         """
         if not MARKDOWN_AVAILABLE or self._markdown_renderer is None:
             return False
+        self._md_render_token += 1
+        token = self._md_render_token
+        # 先清空旧内容，避免渲染期间显示上一个文件的残留内容
         self._markdown_view._text_browser.clear()
+        task = _MarkdownRenderTask(
+            text=self._current_text,
+            file_path=self._current_file,
+            font_size=self._font_size,
+        )
+        task.done.connect(
+            lambda ok, html, t=token: self._on_markdown_rendered(t, ok, html)
+        )
+        self._track_md_render_task(task)
+        task.start()
+        return True
+
+    def _track_md_render_task(self, task: _MarkdownRenderTask) -> None:
+        """记录在途渲染任务引用（防 GC），任务完成时自动移除。"""
+        task.done.connect(lambda *args, tk=task: self._untrack_md_render_task(tk))
+        self._md_render_tasks.append(task)
+
+    def _untrack_md_render_task(self, task: _MarkdownRenderTask) -> None:
+        """任务完成后从在途列表移除（防御 C++ 对象已销毁）。"""
         try:
-            html = self._markdown_renderer.render(
-                self._current_text, self._current_file
-            )
-            self._markdown_view._text_browser.setHtml(html)
-        except Exception:
-            # 渲染失败时回退到源码视图，避免崩溃
+            if task in self._md_render_tasks:
+                self._md_render_tasks.remove(task)
+        except RuntimeError:
+            pass
+
+    def _on_markdown_rendered(
+        self, token: int, ok: bool, html: Optional[str]
+    ) -> None:
+        """Markdown 渲染后台结果回写（令牌守卫：陈旧结果直接丢弃）。
+
+        Args:
+            token: 投递时的渲染令牌。
+            ok: 渲染是否成功。
+            html: 渲染产物（成功时非空字符串）。
+        """
+        if token != self._md_render_token:
+            return
+        if not ok or not html:
+            # 渲染失败：回退为带语法高亮的源码视图，避免崩溃
+            self._render_toggle_btn.setVisible(False)
+            self._apply_highlighter(language=self._get_language(self._current_file))
             self._content_stack.setCurrentIndex(0)
-            return False
+            self._render_toggle_btn.setText("渲染")
+            return
+
+        self._markdown_view._text_browser.setHtml(html)
 
         # 设置搜索路径，使 Markdown 中的相对图片/链接可解析
+        # （时序保留：setHtml 之后、主线程）
         if self._current_file:
             base_dir = str(Path(self._current_file).parent)
             self._markdown_view._text_browser.setSearchPaths([base_dir])
 
         self._markdown_view.set_current_file(self._current_file)
-
-        return True
 
 
     def _apply_stylesheet(self) -> None:
@@ -2132,11 +2400,25 @@ class TextPreviewerLayout(QWidget):
                 pass
 
     def _apply_font_size_from_zoom(self, font_size: int) -> None:
-        """由缩放弹窗驱动，设置新的源码/渲染字号。"""
+        """由缩放弹窗驱动，设置新的源码/渲染字号。
+
+        Markdown 模式下经 ``FONT_DEBOUNCE_MS`` 的 singleShot QTimer 合并
+        连续滑动（重新滑动重置计时器，只触发最终一次渲染）；其它模式立即
+        生效，行为保持不变。防抖期间保留最新字号，最终应用值即最后一次
+        滑动的字号。
+        """
         self._font_size = max(
             self.FONT_SIZE_MIN, min(self.FONT_SIZE_MAX, int(font_size))
         )
-        self._apply_font_size()
+        if self._current_mode == "markdown":
+            if self._font_debounce_timer is None:
+                self._font_debounce_timer = QTimer(self)
+                self._font_debounce_timer.setSingleShot(True)
+                self._font_debounce_timer.setInterval(self.FONT_DEBOUNCE_MS)
+                self._font_debounce_timer.timeout.connect(self._apply_font_size)
+            self._font_debounce_timer.start()
+        else:
+            self._apply_font_size()
 
     def _on_browse_file(self) -> None:
         """独立模式下打开文件选择对话框（仅文本文件）。"""

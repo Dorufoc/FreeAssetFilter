@@ -9,6 +9,7 @@ highlight_text 的行块结构、文件扩展名→语言推测（含 TextMate �
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, List, Optional
 
 import pytest
@@ -17,6 +18,7 @@ from PySide6.QtGui import QTextCharFormat, QTextCursor, QTextDocument
 from freeassetfilter.utils.syntax_highlighter import (
     ColorScheme,
     ColorSchemes,
+    FafCoreHighlighter,
     PygmentsHighlighter,
     SyntectHighlighter,
     SyntaxHighlighter,
@@ -27,6 +29,7 @@ from freeassetfilter.utils.syntax_highlighter import (
     Token,
     TokenType,
     create_highlighter,
+    faf_core_highlight_available,
     get_auto_theme_scheme,
     get_supported_languages,
     guess_language_from_filename,
@@ -445,6 +448,291 @@ class TestPygmentsHighlighter:
         hl = PygmentsHighlighter()
         fmt = hl.get_qtextformat(TokenType.KEYWORD)
         assert isinstance(fmt, QTextCharFormat)
+
+
+class _FakeBridge:
+    """最小 fake faf_core 桥：按需返回预置 span / None。"""
+
+    def __init__(self, spans: Optional[List[Any]] = None,
+                 result: Optional[Any] = None) -> None:
+        self._spans = spans
+        self._result = result
+
+    def highlight_text(self, language: str, text: str) -> Optional[list]:  # noqa: ARG002
+        if self._result is not None:
+            return self._result
+        return self._spans
+
+
+class TestFafCoreEngineSelection:
+    """FafCoreHighlighter 引擎优先级与回退（todo 13）。"""
+
+    def test_auto_selects_fafcore_when_available(
+        self, monkeypatch: Any
+    ) -> None:
+        """faf_core 可用 → auto 引擎选中 FafCoreHighlighter（最高优先级）。"""
+        import freeassetfilter.utils.syntax_highlighter as sh
+
+        monkeypatch.setattr(sh, "faf_core_highlight_available", lambda: True)
+        hl = SyntaxHighlighter(ColorSchemes.github_dark())
+        assert isinstance(hl._engine, FafCoreHighlighter)  # noqa: SLF001
+
+    def test_auto_falls_back_to_pygments_when_unavailable(
+        self, monkeypatch: Any
+    ) -> None:
+        """faf_core 不可用 → auto 引擎回退 PygmentsHighlighter。"""
+        import freeassetfilter.utils.syntax_highlighter as sh
+
+        monkeypatch.setattr(sh, "faf_core_highlight_available", lambda: False)
+        hl = SyntaxHighlighter(ColorSchemes.github_dark())
+        assert isinstance(hl._engine, PygmentsHighlighter)  # noqa: SLF001
+
+    def test_auto_uses_real_dll_when_present(self) -> None:
+        """真实环境：DLL 存在 → FafCore；否则回退（恒拿到引擎不崩）。"""
+        import freeassetfilter.utils.syntax_highlighter as sh
+
+        hl = SyntaxHighlighter(ColorSchemes.github_dark())
+        assert hl._engine is not None  # noqa: SLF001
+        if sh.faf_core_highlight_available():
+            assert isinstance(hl._engine, FafCoreHighlighter)  # noqa: SLF001
+
+    def test_explicit_pygments_overrides(self) -> None:
+        """显式 'pygments' 请求 → Pygments（不理会 auto 优先级）。"""
+        hl = SyntaxHighlighter(ColorSchemes.github_dark(), engine="pygments")
+        assert isinstance(hl._engine, PygmentsHighlighter)  # noqa: SLF001
+
+
+class TestFafCoreHighlighter:
+    """FafCoreHighlighter：tokenize / highlight_line / highlight_text 结构与回退。"""
+
+    FAF_PY_LINE_SPANS = [
+        {"start": 0, "len": 1, "token_type": 15},   # DEFAULT 'x'
+        {"start": 1, "len": 1, "token_type": 16},   # WHITESPACE ' '
+        {"start": 2, "len": 1, "token_type": 7},    # OPERATOR '='
+        {"start": 3, "len": 1, "token_type": 16},   # WHITESPACE ' '
+        {"start": 4, "len": 1, "token_type": 3},    # NUMBER '1'
+        {"start": 5, "len": 2, "token_type": 16},   # WHITESPACE '  '
+        {"start": 7, "len": 1, "token_type": 4},    # COMMENT '#'
+        {"start": 8, "len": 8, "token_type": 4},    # COMMENT ' comment'
+    ]
+
+    def _make(self, bridge: Optional[_FakeBridge] = None) -> FafCoreHighlighter:
+        hl = FafCoreHighlighter()
+        if bridge is not None:
+            hl._bridge = bridge  # noqa: SLF001
+        return hl
+
+    def test_tokenize_structure_with_fake_bridge(self) -> None:
+        """tokenize：text 拼接==原文、token_type 是枚举成员、字符偏移连续。"""
+        line = "x = 1  # comment"
+        bridge = _FakeBridge(spans=self.FAF_PY_LINE_SPANS)
+        tokens = self._make(bridge).tokenize(line, "python")
+        assert len(tokens) == len(self.FAF_PY_LINE_SPANS)
+        assert all(isinstance(t, Token) for t in tokens)
+        assert all(isinstance(t.token_type, TokenType) for t in tokens)
+        assert "".join(t.text for t in tokens) == line
+        assert tokens[0].start_pos == 0
+        assert tokens[-1].end_pos == len(line)
+        for prev, cur in zip(tokens, tokens[1:]):
+            assert prev.end_pos == cur.start_pos, "span 应连续覆盖"
+        assert tokens[2].token_type is TokenType.OPERATOR
+        assert tokens[4].token_type is TokenType.NUMBER
+        assert tokens[7].token_type is TokenType.COMMENT
+
+    def test_tokenize_unknown_language_default_token(self) -> None:
+        """native 空 span（未知语言）→ 单 DEFAULT token 覆盖整行。"""
+        line = "plain unknown text 42"
+        bridge = _FakeBridge(spans=[])
+        tokens = self._make(bridge).tokenize(line, "not_a_real_language")
+        assert len(tokens) == 1
+        assert tokens[0].text == line
+        assert tokens[0].token_type is TokenType.DEFAULT
+        assert (tokens[0].start_pos, tokens[0].end_pos) == (0, len(line))
+
+    def test_highlight_line_falls_back_on_native_none(self) -> None:
+        """native 返回 None（-6 逐语言回退）→ Pygments 兜底不崩、文本保真。"""
+        line = "$x = 1"
+        bridge = _FakeBridge(result=None)
+        tokens = self._make(bridge).highlight_line(line, "powershell")
+        assert len(tokens) >= 1
+        assert all(isinstance(t, Token) for t in tokens)
+        assert "".join(t.text for t in tokens).rstrip("\n") == line.rstrip("\n")
+
+    def test_highlight_text_slices_spans_to_lines(self) -> None:
+        """整块高亮：跨 '\n' 的 span 被正确裁剪为每行 token 块。"""
+        text = "abc\ndef()\n"
+        # span0 覆盖 'abc\n'（含换行），span1/span2 覆盖第二行
+        bridge = _FakeBridge(spans=[
+            {"start": 0, "len": 4, "token_type": 15},  # DEFAULT 'abc\n'
+            {"start": 4, "len": 3, "token_type": 5},   # FUNCTION 'def'
+            {"start": 7, "len": 2, "token_type": 8},   # PUNCTUATION '()'
+        ])
+        blocks = self._make(bridge).highlight_text(text, "python")
+        assert len(blocks) == 3  # '' 尾行：split('\n') 语义
+        assert "".join(t.text for t in blocks[0]) == "abc"
+        assert "".join(t.text for t in blocks[1]) == "def()"
+        assert blocks[1][0].token_type is TokenType.FUNCTION
+        # 行内字符偏移（不含换行符）
+        t0, t1 = blocks[1]
+        assert (t0.start_pos, t0.end_pos) == (0, 3)
+        assert (t1.start_pos, t1.end_pos) == (3, 5)
+
+    def test_get_qtextformat(self) -> None:
+        """get_qtextformat 走 Python color_scheme 侧（theme 不跨界）。"""
+        hl = self._make()
+        fmt = hl.get_qtextformat(TokenType.KEYWORD)
+        assert isinstance(fmt, QTextCharFormat)
+        assert fmt.foreground().color().isValid()
+
+    def test_real_bridge_happy_path(self) -> None:
+        """真实桥可用时：tokenize 输出文本保真且含预期类型。"""
+        hl = FafCoreHighlighter()
+        if not faf_core_highlight_available():
+            pytest.skip("faf_core.dll 不含 highlight 导出，跳过真实桥测试")
+        line = "x = 1  # comment"
+        tokens = hl.tokenize(line, "python")
+        assert "".join(t.text for t in tokens) == line
+        types = {t.token_type for t in tokens}
+        assert TokenType.NUMBER in types
+        assert TokenType.COMMENT in types
+
+
+class TestFafCoreParity:
+    """对拍：6 语言样本经 native 高亮的 token 文本拼接 == 原文 + 关键类型断言。
+
+    样本取自 ``tests/support/faf_core_fixtures/code_samples/``，逐行校验
+    ``"".join(t.text) == line``（字符偏移连续覆盖 [0, len(line)]）并断言各
+    语言的关键 token 类型出现。**仅在 ``faf_core_available``（conftest
+    session fixture）且 ``faf_core_highlight_available()``（DLL 含
+    ``faf_highlight_text`` 导出）时启用，任一不可用即 skip**，保证无 DLL
+    环境下回归不受影响。
+    """
+
+    SAMPLE_DIR = (
+        Path(__file__).resolve().parents[2]
+        / "support"
+        / "faf_core_fixtures"
+        / "code_samples"
+    )
+
+    # (样本文件, 应用语言名, 预期出现的关键类型)
+    PARITY_CASES: List[tuple] = [
+        (
+            "sample_python.py",
+            "python",
+            {TokenType.KEYWORD, TokenType.STRING, TokenType.NUMBER, TokenType.COMMENT},
+        ),
+        (
+            "sample_javascript.js",
+            "javascript",
+            {TokenType.KEYWORD, TokenType.STRING, TokenType.NUMBER, TokenType.COMMENT},
+        ),
+        (
+            "sample_go.go",
+            "go",
+            {TokenType.KEYWORD, TokenType.STRING, TokenType.NUMBER, TokenType.COMMENT},
+        ),
+        (
+            "sample_rust.rs",
+            "rust",
+            {TokenType.KEYWORD, TokenType.STRING, TokenType.NUMBER, TokenType.COMMENT},
+        ),
+        (
+            "sample_config.json",
+            "json",
+            # syntect JSON 语法不产出 KEYWORD（键/值走 STRING/VALUE/NUMBER）
+            {TokenType.STRING, TokenType.NUMBER, TokenType.COMMENT},
+        ),
+        (
+            "sample_doc.md",
+            "markdown",
+            # syntect markdown 语法不产出代码类 token，仅校验文本保真
+            set(),
+        ),
+    ]
+
+    @pytest.fixture()
+    def _native_parity_enabled(self, faf_core_available: bool) -> None:
+        """native 不可用时跳过整个对拍测试。"""
+        if not faf_core_available or not faf_core_highlight_available():
+            pytest.skip(
+                "faf_core 不可用（DLL 缺失或不含 highlight 导出），对拍测试跳过"
+            )
+
+    def _read_sample(self, fname: str) -> str:
+        return (self.SAMPLE_DIR / fname).read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize(
+        "fname,language,expected_types",
+        PARITY_CASES,
+        ids=[case[0] for case in PARITY_CASES],
+    )
+    def test_highlight_text_fidelity_and_types(
+        self,
+        _native_parity_enabled: None,
+        fname: str,
+        language: str,
+        expected_types: set,
+    ) -> None:
+        """整块 native 高亮：逐行 token 拼接 == 原文（字符偏移）+ 关键类型。"""
+        text = self._read_sample(fname)
+        hl = FafCoreHighlighter()
+        blocks = hl.highlight_text(text, language)
+        lines = text.split("\n")
+        assert len(blocks) == len(lines)
+
+        for idx, (line, block) in enumerate(zip(lines, blocks)):
+            if line == "":
+                continue  # 空行：span 不覆盖，block 为空属预期
+            assert block, f"{language} 第 {idx} 行不应为空 token 块"
+            assert "".join(t.text for t in block) == line, (
+                f"{language} 第 {idx} 行 token 拼接 != 原文"
+            )
+            # 行内字符偏移连续覆盖 [0, len(line)]
+            assert block[0].start_pos == 0, f"{language} 第 {idx} 行首 token 起点"
+            assert block[-1].end_pos == len(line), f"{language} 第 {idx} 行尾 token 终点"
+            for prev, cur in zip(block, block[1:]):
+                assert prev.end_pos == cur.start_pos, (
+                    f"{language} 第 {idx} 行 span 不连续"
+                )
+
+        if expected_types:
+            seen = {t.token_type for blk in blocks for t in blk}
+            missing = expected_types - seen
+            assert not missing, (
+                f"{language} 缺失关键 token 类型: {sorted(m.name for m in missing)}"
+            )
+
+    @pytest.mark.parametrize(
+        "fname,language,_expected_types",
+        PARITY_CASES,
+        ids=[case[0] for case in PARITY_CASES],
+    )
+    def test_highlight_line_fidelity(
+        self,
+        _native_parity_enabled: None,
+        fname: str,
+        language: str,
+        _expected_types: set,
+    ) -> None:
+        """逐行 native 高亮（适配层 highlightBlock 同款路径）：文本保真。"""
+        text = self._read_sample(fname)
+        hl = FafCoreHighlighter()
+        for idx, line in enumerate(text.split("\n")):
+            tokens = hl.highlight_line(line, language)
+            assert len(tokens) >= 1, f"{language} 第 {idx} 行应有 token"
+            assert "".join(t.text for t in tokens).rstrip("\n") == line.rstrip("\n"), (
+                f"{language} 第 {idx} 行逐行拼接 != 原文"
+            )
+            assert tokens[0].start_pos == 0
+            assert tokens[-1].end_pos == len(line.rstrip("\n"))
+
+    def test_create_highlighter_auto_routes_native(
+        self, _native_parity_enabled: None
+    ) -> None:
+        """create_highlighter('auto') 选中 FafCoreHighlighter（预览器路由依据）。"""
+        wrapper = create_highlighter("auto", dark_mode=True)
+        assert isinstance(wrapper._engine, FafCoreHighlighter)  # noqa: SLF001
 
 
 class TestAutoThemeHelpers:

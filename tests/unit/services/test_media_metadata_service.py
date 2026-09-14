@@ -477,6 +477,129 @@ class TestMockedMutagen:
         assert "duration" not in info
 
 
+# ── todo-30：单次 mutagen 打开 ─────────────────────────────────────────────
+
+
+class TestSingleMutagenOpen:
+    """todo-30：``extract_audio_metadata`` 单次打开同时取 tags+cover+编码参数。"""
+
+    def test_extract_audio_metadata_single_open(self, monkeypatch: Any, tmp_path: Path) -> None:
+        """happy：一次 mutagen_file 调用同时拿到标签、封面与编码参数。
+
+        Args:
+            monkeypatch: pytest monkeypatch。
+            tmp_path: pytest 临时目录。
+        """
+        import freeassetfilter.services.media_metadata_service as _mms_module
+
+        if _mms_module.mutagen_file is None:
+            pytest.skip("mutagen 未安装")
+        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+
+        calls: List[str] = []
+        real_mutagen = _mms_module.mutagen_file
+
+        def _counting(path: str) -> Any:
+            calls.append(str(path))
+            return real_mutagen(path)
+
+        monkeypatch.setattr(_MMS + ".mutagen_file", _counting)
+        path: str = _make_mp3(tmp_path / "single.mp3", add_id3=True, cover=_PNG_BYTES)
+
+        svc = MediaMetadataService()
+        meta: Dict[str, Any] = svc.extract_audio_metadata(path)
+        assert meta is not None
+        assert meta["title"] == "测试歌曲"
+        assert meta["artist"] == "测试歌手"
+        assert meta["album"] == "测试专辑"
+        assert meta["cover_data"] is not None
+        assert meta["cover_data"][:4] == b"\x89PNG"
+        assert float(meta["duration"]) > 0
+        assert meta["bitrate"] == 128000
+        assert meta["channels"] == 2
+        assert len(calls) == 1  # 单文件选择只 mutagen_file 一次（改造前 2 次）
+
+    def test_extract_audio_tags_does_not_reopen(self, monkeypatch: Any, tmp_path: Path) -> None:
+        """回归：``extract_audio_tags`` 封面合并进单次打开，不再二次打开。
+
+        Args:
+            monkeypatch: pytest monkeypatch。
+            tmp_path: pytest 临时目录。
+        """
+        import freeassetfilter.services.media_metadata_service as _mms_module
+
+        if _mms_module.mutagen_file is None:
+            pytest.skip("mutagen 未安装")
+        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+
+        calls: List[str] = []
+        real_mutagen = _mms_module.mutagen_file
+
+        def _counting(path: str) -> Any:
+            calls.append(str(path))
+            return real_mutagen(path)
+
+        monkeypatch.setattr(_MMS + ".mutagen_file", _counting)
+        path: str = _make_mp3(tmp_path / "tagcover.mp3", add_id3=True, cover=_PNG_BYTES)
+
+        svc = MediaMetadataService()
+        tags: Optional[Dict[str, Any]] = svc.extract_audio_tags(path)
+        assert tags is not None
+        assert tags["title"] == "测试歌曲"
+        assert tags["cover_data"] is not None
+        assert len(calls) == 1  # 旧版 extract_audio_tags→extract_audio_cover 为 2 次
+
+    def test_extract_audio_metadata_missing_returns_none(self, tmp_path: Path) -> None:
+        """error：文件不存在返回 None 而非异常。
+
+        Args:
+            tmp_path: pytest 临时目录。
+        """
+        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+
+        svc = MediaMetadataService()
+        assert svc.extract_audio_metadata(str(tmp_path / "ghost.mp3")) is None
+
+    def test_extract_audio_metadata_corrupt_returns_empty_schema(self, tmp_path: Path) -> None:
+        """error：损坏音频返回空 schema（字段齐全）而非异常。
+
+        Args:
+            tmp_path: pytest 临时目录。
+        """
+        bad: Path = tmp_path / "broken.mp3"
+        bad.write_bytes(b"\x00NOT-A-REAL-MP3\xff\xff")
+        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+
+        svc = MediaMetadataService()
+        meta: Optional[Dict[str, Any]] = svc.extract_audio_metadata(str(bad))
+        assert meta is not None
+        assert meta["title"] == ""
+        assert meta["artist"] == ""
+        assert meta["album"] == ""
+        assert meta["cover_data"] is None
+        assert meta["duration"] is None
+        assert meta["bitrate"] is None
+
+    def test_extract_audio_metadata_mutagen_disabled_returns_schema(self, monkeypatch: Any, tmp_path: Path) -> None:
+        """boundary：mutagen 缺失时返回空 schema 且 cover_data 为 None。
+
+        Args:
+            monkeypatch: pytest monkeypatch。
+            tmp_path: pytest 临时目录。
+        """
+        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+
+        dummy: Path = tmp_path / "dummy.mp3"
+        dummy.write_bytes(b"x")
+        monkeypatch.setattr(_MMS + ".mutagen_file", None)
+        svc = MediaMetadataService()
+        meta: Optional[Dict[str, Any]] = svc.extract_audio_metadata(str(dummy))
+        assert meta is not None
+        assert meta["title"] == ""
+        assert meta["cover_data"] is None
+        assert meta["duration"] is None
+
+
 # ── 格式化 / 工具函数边界 ─────────────────────────────────────────────────
 
 

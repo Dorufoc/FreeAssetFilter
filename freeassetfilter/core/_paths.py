@@ -31,7 +31,7 @@ def native_bin_dir() -> Path:
 
     Houses mpv runtime DLLs (``libmpv-2.dll``, ffmpeg, libplacebo, etc.),
     compiled Rust/C++ binaries (``thumbnail_generator.dll``,
-    ``mica_render.dll``), and ffmpeg/ffprobe executables.
+    ``faf_core.dll``, ``mica_render.dll``), and ffmpeg/ffprobe executables.
 
     Returns:
         Path: ``core/native/bin/``.

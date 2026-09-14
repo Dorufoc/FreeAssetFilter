@@ -573,6 +573,108 @@ class TestFileInfoPanelTypographyAndScroll:
         safe_teardown(panel)
 
 
+class TestFileInfoPanelMediaAsync:
+    """视频/音频 light 行异步化：ffprobe 不阻塞 UI；陈旧 token 丢弃。"""
+
+    @staticmethod
+    def _slow_probe(probe: dict, delay: float):
+        """构造一个带确定性延迟的 _media_probe mock。"""
+
+        def _side_effect(path: str) -> dict:
+            time.sleep(delay)
+            return probe
+
+        return _side_effect
+
+    def test_video_light_rows_async_returns_immediately(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        from unittest.mock import patch
+
+        video = tmp_path / "sample.mp4"
+        video.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+        probe = {
+            "duration_seconds": 10.5,
+            "width": 1280,
+            "height": 720,
+            "fps": 30.0,
+            "video_bitrate": 1_500_000,
+            "format_name": "mov,mp4",
+        }
+        panel = _make_panel(qapp, tmp_path)
+        with patch.object(fis, "_media_probe", side_effect=self._slow_probe(probe, 0.5)):
+            started = time.perf_counter()
+            panel.set_file(_file_info(str(video)))
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            # ffprobe mock 延迟 500ms：基础行必须同步渲染、set_file 不得等待
+            assert elapsed_ms < 50, f"set_file 阻塞了 {elapsed_ms:.1f}ms"
+            rows = dict(panel._rows)
+            assert rows["类别"] == "MP4 视频"
+            assert "大小" in rows
+            assert "时长" not in rows  # 媒体行尚未到达
+            # 泵事件循环直至媒体行异步到达
+            assert wait_for_signal(panel.media_loaded, timeout_ms=8000)
+            rows = dict(panel._rows)
+            assert rows["时长"] == "00:10"
+            assert "720p · 30 fps · 1.5 Mbps" in rows["画面信息"]
+        panel.stop()
+        safe_teardown(panel)
+
+    def test_video_probe_empty_shows_placeholder(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        """ffprobe 无结果（等价超时）时媒体行落占位符，不挂死不抛异常。"""
+        from unittest.mock import patch
+
+        video = tmp_path / "broken.mp4"
+        video.write_bytes(b"not a real mp4")
+        panel = _make_panel(qapp, tmp_path)
+        with patch.object(fis, "_media_probe", side_effect=self._slow_probe({}, 0.05)):
+            panel.set_file(_file_info(str(video)))
+            assert wait_for_signal(panel.media_loaded, timeout_ms=8000)
+            rows = dict(panel._rows)
+            assert rows["画面信息"] == fis.UNAVAILABLE
+            assert "时长" not in rows
+            assert panel._file_info["path"] == str(video)
+        panel.stop()
+        safe_teardown(panel)
+
+    def test_switch_video_discards_stale_media_result(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        from unittest.mock import patch
+
+        video_a = tmp_path / "a.mp4"
+        video_a.write_bytes(b"\x00\x00\x00\x18ftypmp42a")
+        video_b = tmp_path / "b.mp4"
+        video_b.write_bytes(b"\x00\x00\x00\x18ftypmp42b")
+        # A 慢（0.4s）B 快（0.1s）：B 先到达并展示，A 迟到结果必须被 token 丢弃
+        probe_a = {"duration_seconds": 5, "width": 640, "height": 360}
+        probe_b = {"duration_seconds": 30, "width": 1920, "height": 1080}
+        panel = _make_panel(qapp, tmp_path)
+
+        def _probe(path: str) -> dict:
+            if str(path) == str(video_a):
+                time.sleep(0.4)
+                return probe_a
+            time.sleep(0.1)
+            return probe_b
+
+        with patch.object(fis, "_media_probe", side_effect=_probe):
+            panel.set_file(_file_info(str(video_a)))
+            panel.set_file(_file_info(str(video_b)))  # 立刻切换
+            assert wait_for_signal(panel.media_loaded, timeout_ms=8000)
+            rows = dict(panel._rows)
+            assert rows["时长"] == "00:30"  # 当前文件 B 的媒体行
+            # 再等 A 的陈旧结果（0.4s 后到达）被丢弃：行内容不得被覆盖
+            _pump(qapp, 1000)
+            rows = dict(panel._rows)
+            assert rows["时长"] == "00:30"
+            assert panel._file_info["path"] == str(video_b)
+        panel.stop()
+        safe_teardown(panel)
+
+
 class TestFileInfoPanelCacheMissWrite:
     """确保测试不会写入仓库默认缓存文件（默认路径被注入覆盖）。"""
 
@@ -586,3 +688,96 @@ class TestFileInfoPanelCacheMissWrite:
         finally:
             if existed:
                 default.write_text("{}", encoding="utf-8")
+
+
+class TestHashTaskNativeWiring:
+    """``_HashTask`` native 流式接线（todo 24）。
+
+    直接同步执行 ``_HashTask.run()``（与 QThreadPool 跨线程投递同一实现）：
+    native 可用时走 ``faf_core.hash_file_streaming``；DLL 缺失/失败回退
+    ``fis.compute_hashes``；缓存写回（``write_cached`` / ``_CACHE_LOCK`` /
+    800 上限 / 原子替换）契约不变；取消不写缓存；缺失文件落 ``-`` 占位。
+    """
+
+    @staticmethod
+    def _run_task(task) -> dict:
+        """同步执行任务并捕获 done 结果（同线程直接连接，emit 同步触发）。"""
+        import freeassetfilter.ui.layout.preview.file_info_panel as fip_module
+
+        out: dict = {}
+        task.done.connect(lambda values: out.update(values or {}))
+        task.run()
+        return out
+
+    @staticmethod
+    def _native_available() -> bool:
+        from freeassetfilter.core.native.bridges.faf_core_bridge import (
+            get_faf_core_bridge,
+        )
+
+        bridge = get_faf_core_bridge()
+        return bool(bridge.available and bridge._supports_hash)  # noqa: SLF001
+
+    def test_native_streaming_result_and_cache(
+        self, qapp: QApplication, temp_file: str, tmp_path: Path
+    ) -> None:
+        import hashlib
+
+        from freeassetfilter.ui.layout.preview.file_info_panel import _HashTask
+
+        if not self._native_available():
+            pytest.skip("faf_core.dll 不含流式哈希导出，跳过 native 路径")
+        cache = str(tmp_path / "fic.json")
+        raw = Path(temp_file).read_bytes()
+        values = self._run_task(_HashTask(temp_file, cache))
+        assert values["SHA256"] == hashlib.sha256(raw).hexdigest()
+        # 缓存写回契约不变（native 结果同样落缓存）
+        cached = fis.read_cached(temp_file, cache_path=cache)
+        assert cached is not None
+        assert cached["hashes"]["SHA256"] == values["SHA256"]
+
+    def test_fallback_when_dll_missing(
+        self, qapp: QApplication, temp_file: str, tmp_path: Path
+    ) -> None:
+        """DLL 缺失（桥降级）→ 回退 compute_hashes，结果/缓存契约不变。"""
+        import hashlib
+        from unittest.mock import Mock, patch
+
+        import freeassetfilter.ui.layout.preview.file_info_panel as fip_module
+        from freeassetfilter.ui.layout.preview.file_info_panel import _HashTask
+
+        degraded = Mock(available=False, _supports_hash=False)
+        cache = str(tmp_path / "fic.json")
+        raw = Path(temp_file).read_bytes()
+        with patch.object(
+            fip_module._faf_bridge, "get_faf_core_bridge", return_value=degraded
+        ):
+            values = self._run_task(_HashTask(temp_file, cache))
+        assert values["SHA256"] == hashlib.sha256(raw).hexdigest()
+        cached = fis.read_cached(temp_file, cache_path=cache)
+        assert cached is not None
+        assert cached["hashes"]["SHA256"] == values["SHA256"]
+
+    def test_missing_file_placeholder(self, qapp: QApplication, tmp_path: Path) -> None:
+        """缺失文件 → native OSError None → 回退 compute_hashes 落 `-` 占位。"""
+        from freeassetfilter.ui.layout.preview.file_info_panel import _HashTask
+
+        values = self._run_task(_HashTask(str(tmp_path / "nope.bin"), None))
+        assert values == {
+            "MD5": fis.UNAVAILABLE,
+            "SHA1": fis.UNAVAILABLE,
+            "SHA256": fis.UNAVAILABLE,
+        }
+
+    def test_cancel_writes_no_cache(self, qapp: QApplication, tmp_path: Path) -> None:
+        """取消（协作式标记）→ 返回部分结果、绝不写缓存。"""
+        from freeassetfilter.ui.layout.preview.file_info_panel import _HashTask
+
+        path = tmp_path / "big.bin"
+        path.write_bytes(bytes(3 * 1024 * 1024))  # 3MiB（多块）
+        cache = str(tmp_path / "fic.json")
+        task = _HashTask(str(path), cache)
+        task.request_cancel()
+        values = self._run_task(task)
+        assert len(values.get("SHA256", "")) == 64
+        assert not Path(cache).exists(), "取消不得写缓存"

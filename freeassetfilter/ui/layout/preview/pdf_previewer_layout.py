@@ -19,8 +19,13 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFrame, QLabel, QApplication,
     QLineEdit, QPushButton, QStackedLayout,
 )
-from PySide6.QtCore import Qt, Signal, QEvent, QPoint, QRect, QRectF, QTimer, QPropertyAnimation, QEasingCurve
+from PySide6.QtCore import (
+    Qt, Signal, QEvent, QPoint, QRect, QRectF, QTimer, QPropertyAnimation,
+    QEasingCurve, QObject, QRunnable, QThreadPool,
+)
 from PySide6.QtGui import QFont, QFontMetrics, QMouseEvent, QPainter, QPainterPath, QPen, QPaintEvent, QPixmap, QImage
+
+import fitz
 
 from theme import tm
 from components.styled_button import StyledButton
@@ -328,6 +333,132 @@ class _IndexPageThumbnail(QWidget):
         painter.end()
 
 
+class _ThumbnailDrawerSignals(QObject):
+    """PDF 缩略图抽屉批处理结果信号中转（跨线程队列投递到 UI 线程）。
+
+    ``batch_ready(generation, batch)``：一批缩略图渲染完成，``batch`` 为
+    ``list[tuple[int, QImage]]``（页序 → 0.25x 渲染的 QImage/像素缓冲）。
+    ``finished(generation)``：全部批次结束（正常完成或取消都会发出），
+    供 UI 线程收尾（补尾部 stretch）并按 generation 释放任务引用。
+    """
+
+    batch_ready = Signal(int, object)
+    finished = Signal(int)
+
+
+class _ThumbnailDrawerTask(QRunnable):
+    """PDF 缩略图抽屉批处理任务：0.25x 逐页渲染移出 UI 线程（QRunnable）。
+
+    线程纪律（沿用 ``_RenderTask`` / ``_WorkTask`` 既有模式）：
+
+    * worker 自行 ``fitz.open(path)`` 新开文档——PyMuPDF ``Document``
+      非线程安全，每任务新开文档是推荐模式（MuPDF 内部共享文件数据，
+      内存开销可接受），与 ``_RenderTask`` 一致；
+    * 单页渲染仍走 ``fitz.Matrix(0.25, 0.25)``，与改造前逐像素一致；
+    * 每批 ``batch_size`` 页渲染完成后经 ``batch_ready`` 投递回 UI 线程，
+      批次之间检查取消标记——翻页/换文件时协作式停手，1000 页 PDF
+      不阻塞 UI（分批 + generation 丢弃陈旧结果）；
+    * **worker 内绝不构造 QPixmap**：只产出 QImage/像素缓冲，
+      ``QPixmap.fromImage`` 严格留在 GUI 线程（``_on_thumbnail_batch_ready``）。
+    """
+
+    def __init__(
+        self,
+        path: str,
+        page_count: int,
+        generation: int,
+        batch_size: int = 8,
+    ) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._path: str = path
+        self._page_count: int = page_count
+        self._generation: int = generation
+        self._batch_size: int = max(1, batch_size)
+        self._signals: _ThumbnailDrawerSignals = _ThumbnailDrawerSignals()
+        self._cancelled: bool = False
+
+    @property
+    def batch_ready(self) -> Any:
+        """一批缩略图渲染完成信号 ``(generation, batch)``。"""
+        return self._signals.batch_ready
+
+    @property
+    def finished(self) -> Any:
+        """全部批次结束信号 ``(generation)``。"""
+        return self._signals.finished
+
+    @property
+    def generation(self) -> int:
+        """本任务所属 generation（防陈旧）。"""
+        return self._generation
+
+    def request_cancel(self) -> None:
+        """请求取消（协作式标记；run 内在批次间检查）。"""
+        self._cancelled = True
+
+    def start(self) -> None:
+        """投递到全局线程池执行（复用 ``_WorkTask`` 模式）。"""
+        QThreadPool.globalInstance().start(self)
+
+    def _render_thumbnail(self, doc: Any, page_idx: int) -> QImage:
+        """单页 0.25x 渲染（worker 线程执行；与改造前像素一致）。
+
+        Args:
+            doc: worker 自开的 fitz.Document。
+            page_idx: 零基页号。
+
+        Returns:
+            QImage: 0.25x 渲染结果；失败时返回 lightGray 纯色占位 QImage
+                （worker 内绝不构造 QPixmap）。
+        """
+        try:
+            page = doc.load_page(page_idx)
+            mat = fitz.Matrix(0.25, 0.25)
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+            samples: bytes = bytes(pix.samples)
+            return QImage(
+                samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888
+            )
+        except Exception:
+            # 失败占位：纯色 QImage（GUI 线程再经 QPixmap.fromImage 转换）
+            img = QImage(140, 180, QImage.Format_RGB888)
+            img.fill(Qt.lightGray)
+            return img
+
+    def run(self) -> None:
+        """执行批量缩略图渲染（worker 线程）。
+
+        打开独立文档 → 逐批渲染 → 批次间检查取消 → 结束后关闭文档。
+        每批结果经 ``batch_ready`` 投递回 UI 线程（generation 防陈旧）。
+        """
+        doc: Any = None
+        try:
+            doc = fitz.open(self._path)
+        except Exception:
+            self.finished.emit(self._generation)
+            return
+        try:
+            for start in range(0, self._page_count, self._batch_size):
+                if self._cancelled:
+                    break
+                end = min(start + self._batch_size, self._page_count)
+                batch: list = []
+                for i in range(start, end):
+                    if self._cancelled:
+                        break
+                    batch.append((i, self._render_thumbnail(doc, i)))
+                if batch and not self._cancelled:
+                    self.batch_ready.emit(self._generation, batch)
+        finally:
+            try:
+                if doc is not None:
+                    doc.close()
+            except Exception:
+                pass
+        self.finished.emit(self._generation)
+
+
 class PdfPreviewerLayout(QWidget):
     """
     PDF 预览器布局
@@ -345,6 +476,9 @@ class PdfPreviewerLayout(QWidget):
     _SB_W = 12
     # 垂直滚动到底时在内容底部预留的空隙（px），避免最后一页贴住预览器下缘
     _CONTENT_BOTTOM_GAP = 2
+    # 缩略图抽屉每批渲染页数（worker 每批渲染完投递一次，UI 线程只做
+    # QPixmap.fromImage 转换填充；1000 页 PDF 由此分批不阻塞 UI）
+    _THUMBNAIL_BATCH_SIZE = 8
 
     def __init__(
         self,
@@ -368,6 +502,10 @@ class PdfPreviewerLayout(QWidget):
         self._thumbnail_widgets: list[_IndexPageThumbnail] = []
         # P0 节流：省略文本合并序号，拖拽每帧 singleShot(0) 改为 24ms 合并。
         self._elide_seq = 0
+        # 缩略图抽屉异步批处理状态：generation 防陈旧（翻页/换文件丢弃旧批）
+        # + 在途任务强引用（防 GC，供协作式取消）。
+        self._thumb_gen: int = 0
+        self._thumb_tasks: list[_ThumbnailDrawerTask] = []
 
         self._init_ui()
         self._init_index_drawer()
@@ -880,6 +1018,8 @@ class PdfPreviewerLayout(QWidget):
             self._exit_fullscreen()
         # 防御：确保离开预览器前缩放弹窗被销毁（Qt 父级已保证随预览器销毁）
         self._discard_zoom_popup()
+        # 取消在途缩略图抽屉任务（关文件/退出时丢弃旧批，不阻塞 UI）
+        self._cancel_thumbnail_drawer()
 
     def _on_app_mouse_press(self, event: QMouseEvent) -> None:
         """全局鼠标点击：点击菜单外部时关闭缩放弹窗。"""
@@ -1131,45 +1271,92 @@ class PdfPreviewerLayout(QWidget):
         return success
 
     def _populate_thumbnail_drawer(self) -> None:
-        """Generate QPixmap thumbnails for all pages inside the StyledScrollArea."""
+        """异步分批生成全部页面的缩略图（0.25x，QRunnable 池执行）。
+
+        0.25x 逐页渲染循环已从 UI 线程移出：worker（``_ThumbnailDrawerTask``）
+        打开独立 fitz 文档逐批渲染，只产出 QImage/像素缓冲；GUI 线程在此
+        收到 ``batch_ready`` 后执行 ``QPixmap.fromImage`` 转换并填充抽屉。
+        generation 防陈旧：每次重新填充自增序号，翻页/换文件后旧批结果
+        到达时经 ``_on_thumbnail_batch_ready`` 直接丢弃。
+        """
         if not hasattr(self, '_renderer') or self._renderer._doc is None:
             return
+        path = self._renderer._file_path
+        if not path:
+            return
 
-        import fitz
+        count = self._renderer.page_count()
 
-        doc = self._renderer._doc
-        layout = self._index_content_layout
+        # generation 防陈旧 + 取消旧任务（快速翻页/换文件时丢弃旧批）
+        self._thumb_gen += 1
+        gen = self._thumb_gen
+        for task in self._thumb_tasks:
+            task.request_cancel()
 
-        # Clear existing thumbnails
+        # 清空现有缩略图
         self._thumbnail_widgets.clear()
+        layout = self._index_content_layout
         while layout.count():
             item = layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
 
-        count = doc.page_count()
-        for i in range(count):
-            try:
-                page = doc._doc.load_page(i)
-                # Render at 0.25x for decent thumbnail quality
-                mat = fitz.Matrix(0.25, 0.25)
-                pix = page.get_pixmap(matrix=mat, alpha=False)
-                img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
-                qpix = QPixmap.fromImage(img)
-            except Exception:
-                qpix = QPixmap(140, 180)
-                qpix.fill(Qt.lightGray)
+        task = _ThumbnailDrawerTask(
+            path=path,
+            page_count=count,
+            generation=gen,
+            batch_size=self._THUMBNAIL_BATCH_SIZE,
+        )
+        task.batch_ready.connect(self._on_thumbnail_batch_ready)
+        task.finished.connect(self._on_thumbnail_drawer_finished)
+        self._thumb_tasks.append(task)
+        task.start()
 
+    def _on_thumbnail_batch_ready(self, generation: int, batch: Any) -> None:
+        """GUI 线程槽：校验 generation 后把 QImage 批量转 QPixmap 填充抽屉。
+
+        Args:
+            generation: 结果所属 generation；不等于当前 ``_thumb_gen``
+                时视为陈旧结果直接丢弃。
+            batch: ``list[tuple[int, QImage]]``——worker 渲染的页序与
+                0.25x QImage（worker 内不构造 QPixmap，转换只发生在这里）。
+        """
+        if generation != self._thumb_gen:
+            return  # 陈旧批：翻页/换文件后旧任务的结果，丢弃
+        layout = self._index_content_layout
+        for page_idx, img in batch:
+            qpix = QPixmap.fromImage(img)
             thumb = _IndexPageThumbnail(
-                qpix, i,
-                is_current=(i == self._current_page - 1),
+                qpix, page_idx,
+                is_current=(page_idx == self._current_page - 1),
                 thumbnail_width=140,
             )
             thumb.pageClicked.connect(lambda p: self._renderer.go_to_page(p))
             self._thumbnail_widgets.append(thumb)
             layout.addWidget(thumb)
 
-        layout.addStretch()
+    def _on_thumbnail_drawer_finished(self, generation: int) -> None:
+        """GUI 线程槽：整批渲染结束（正常或取消）后收尾。
+
+        当前 generation 的任务完成时补尾部 stretch（与改造前一致）；
+        按 generation 释放对应任务引用（防 GC 的强引用在此归还）。
+        """
+        if generation == self._thumb_gen:
+            self._index_content_layout.addStretch()
+        self._thumb_tasks = [
+            t for t in self._thumb_tasks if t.generation != generation
+        ]
+
+    def _cancel_thumbnail_drawer(self) -> None:
+        """取消在途缩略图抽屉任务并自增 generation（旧结果全部作废）。
+
+        换文件/停止预览/清理时调用：协作式取消 + generation 递增，任何
+        已投递或未投递的旧批结果到达时都会被 ``_on_thumbnail_batch_ready``
+        丢弃。任务引用仍由列表持有，待各自 ``finished`` 到达后释放。
+        """
+        self._thumb_gen += 1
+        for task in self._thumb_tasks:
+            task.request_cancel()
 
     def set_section_styles(self, fill_color: str, border_color: str) -> None:
         """应用面板样式（主题切换时由 MainWindow 调用）。

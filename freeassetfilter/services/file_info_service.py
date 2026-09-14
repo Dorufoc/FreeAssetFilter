@@ -645,22 +645,293 @@ def _audio_light_rows(path: str) -> List[Tuple[str, str]]:
     return rows
 
 
-def _text_light_rows(path: str) -> List[Tuple[str, str]]:
-    """文本基础行：编码格式（chardet 采样前 1KB）。"""
-    encoding = UNAVAILABLE
-    if chardet is not None:
+# ---------------------------------------------------------------------------
+# 文本编码 native 探测（todo 25：三处采样点收敛 + 单文件探测缓存）
+# ---------------------------------------------------------------------------
+
+# 单文件 native 编码探测缓存：{(path, window): (mtime_ns, result)}，result 可
+# 为 None（native 置信度 <0.5 返回空 JSON `{}` / DLL 缺失 / 失败同样被缓存，
+# 避免高频重试）。缓存键含采样窗口大小——三处调用点窗口语义（1KB/4KB/全文件）
+# 必须保持，不能跨窗口复用探测结果（chardetng 对短前缀的判定与全文件可能
+# 不同，见 detect.rs `sjis_prefix_window_still_detects` 与 gbk_01 注释）。
+_ENC_NATIVE_CACHE: Dict[Tuple[str, int], Tuple[int, Optional[Dict[str, Any]]]] = {}
+_ENC_NATIVE_CACHE_LOCK = threading.Lock()
+_ENC_NATIVE_CACHE_MAX = 128
+
+#: 全文件窗口的缓存键（window=None 语义，与 1KB/4KB 整数键区分）。
+_ENC_WINDOW_FULL: int = -1
+
+#: 文本采样窗口（三处调用点窗口语义 1KB/4KB/全文件——Must-NOT 不变）。
+_TEXT_LIGHT_WINDOW: int = 1024
+_TEXT_DETAIL_WINDOW: int = 4096
+
+#: UTF-8 尾部补全预算（字节）：固定字节窗口落在多字节字符中间时，额外补读
+#: 至完整字符边界（见 :func:`_utf8_complete_window`）。
+_UTF8_TAIL_BUDGET: int = 8
+
+
+def _utf8_complete_window(raw: bytes, window: int, budget: int = _UTF8_TAIL_BUDGET) -> bytes:
+    """取采样窗口并补全末尾 UTF-8 字符（若窗口落在多字节序列中间）。
+
+    chardetng（``allow_utf8=true``）要求样本整体合法 UTF-8 才接受 utf-8
+    候选：固定字节窗口（1KB/4KB）落在多字节字符中间时（末字节是续字节，
+    或恰好被截断的序列紧跟下一个字符的首字节）使 utf-8 候选失效、探测跌落
+    windows-1252 等误判（utf-8 中文文件 1KB 前缀实测复现）。本函数在预算内
+    补读续字节，使窗口末尾落在**完整 UTF-8 字符边界**（ASCII 或完整序列）。
+
+    对非 utf-8 内容（GBK/shift-jis/big5）启发式只在窗口边缘生效：高位字节
+    未必命中 UTF-8 序列形态，命中时补读几字节也无害（本就不含合法 utf-8
+    候选）；预算耗尽或超源时原样返回（不截断已有数据）。
+
+    Args:
+        raw: 完整字节源（文件内容或已读前缀 + 预算尾）。
+        window: 采样窗口大小（字节）。
+        budget: 补全预算上限（默认 8，覆盖最长 4 字节序列 + 余量）。
+
+    Returns:
+        bytes: 长度 window..window+budget 的样本，末尾落在 UTF-8 字符边界
+            （非 utf-8 内容尽力而为）。
+    """
+    end = min(window, len(raw))
+    budget_left = budget
+    while budget_left > 0 and end < len(raw):
+        b = raw[end - 1]
+        if b < 0x80:
+            break  # ASCII 结尾：本身即合法字符边界
+        # 找到末字节所在 UTF-8 序列的首字节（末字节可能是续字节或首字节）
+        seq_start = end - 1
+        while seq_start > 0 and 0x80 <= raw[seq_start] < 0xC0:
+            seq_start -= 1
+        lead = raw[seq_start]
+        if lead < 0xC0:
+            break  # 孤立续字节（无有效首字节，非 utf-8 内容）：保持原样
+        if lead >= 0xF0:
+            seq_len = 4
+        elif lead >= 0xE0:
+            seq_len = 3
+        else:
+            seq_len = 2
+        if seq_start + seq_len <= end:
+            break  # 末字节所在完整序列已落在窗口内：合法边界
+        # 序列跨出窗口：补读缺失的续字节（预算与源长度内）
+        need = seq_start + seq_len - end
+        if need > budget_left or end + need > len(raw):
+            break  # 超预算/超源：放弃（非 utf-8 内容）
+        end += need
+        budget_left -= need
+        # 循环：新末尾可能又是下一个不完整序列（连续多字节字符跨越窗口）
+    return raw[:end]
+
+
+def _detect_encoding_native(
+    sample: bytes,
+    path: str = "",
+    window: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    """单次 native 探测文本编码（path+mtime+窗口缓存；线程安全）。
+
+    与 :func:`_get_font_native` 同构：native 可用且置信度 ≥0.5 时返回
+    ``{"encoding","confidence"}``；DLL 缺失 / native 返回 None（空样本等）/
+    置信度 <0.5（空 JSON ``{}``）→ 返回 ``None``，调用方据此回退 chardet
+    现状（``_text_light_rows`` / ``_text_detail_rows``）或直接走
+    ``utf-8 → latin-1`` 链（``text_previewer_layout._decode_bytes``）。
+
+    Args:
+        sample: 采样字节（调用点窗口：light 1KB / detail 4KB / 预览器全文件）。
+        path: 文件绝对路径（缓存键；空串则不缓存）。
+        window: 采样窗口大小（缓存键的一部分）；None 表示全文件。
+
+    Returns:
+        Optional[Dict[str, Any]]: ``{"encoding","confidence"}``；不可用/低置信
+            为 ``None``。
+    """
+    mtime_ns: Optional[int] = None
+    if path:
         try:
-            with open(path, "rb") as f:
-                sample = f.read(1024)
-            detected = chardet.detect(sample)
-            encoding = detected.get("encoding") or UNAVAILABLE
+            mtime_ns = os.stat(path).st_mtime_ns
         except OSError:
+            mtime_ns = None
+    win_key = window if window is not None else _ENC_WINDOW_FULL
+    if path and mtime_ns is not None:
+        with _ENC_NATIVE_CACHE_LOCK:
+            cached = _ENC_NATIVE_CACHE.get((path, win_key))
+            if cached is not None and cached[0] == mtime_ns:
+                return cached[1]
+    result: Optional[Dict[str, Any]] = None
+    try:
+        from freeassetfilter.core.native.bridges.faf_core_bridge import (
+            get_faf_core_bridge,
+        )
+
+        bridge = get_faf_core_bridge()
+        if bridge is not None:
+            parsed = bridge.detect_encoding(sample)
+            if parsed and parsed.get("encoding"):
+                result = parsed
+    except Exception:  # noqa: BLE001  # broad catch intentional at native FFI boundary
+        result = None
+    if path and mtime_ns is not None:
+        with _ENC_NATIVE_CACHE_LOCK:
+            if len(_ENC_NATIVE_CACHE) >= _ENC_NATIVE_CACHE_MAX:
+                _ENC_NATIVE_CACHE.clear()
+            _ENC_NATIVE_CACHE[(path, win_key)] = (mtime_ns, result)
+    return result
+
+
+def _normalize_utf8_bom(raw: bytes, encoding: str) -> str:
+    """UTF-8 BOM 归一：chardetng 归一化 BOM 判 ``utf-8``，而 Python
+    ``bytes.decode("utf-8")`` 保留 ``\\ufeff`` 头；chardet 对 BOM 文件判
+    ``UTF-8-SIG`` 会剥离——统一改用 ``utf-8-sig`` 与 chardet 路径逐字节一致。
+
+    Args:
+        raw: 原始字节。
+        encoding: 探测结果编码名。
+
+    Returns:
+        str: 归一后的编码名。
+    """
+    if (
+        raw.startswith(b"\xef\xbb\xbf")
+        and encoding.lower().replace("_", "-") in ("utf-8", "utf8")
+    ):
+        return "utf-8-sig"
+    return encoding
+
+
+def _decode_encoding_chain(
+    raw: bytes, encoding: Optional[str], errors: str = "replace"
+) -> Tuple[str, str]:
+    """按回退链解码：探测结果 → ``utf-8`` → ``latin-1``（链不变）。
+
+    先对每个候选做严格解码探测选出首个可行编码（UTF-8 BOM 文件经
+    :func:`_normalize_utf8_bom` 归一为 ``utf-8-sig``，与 chardet 的
+    ``UTF-8-SIG`` 路径一致），再以 ``errors`` 解码返回。chardet 探测出的
+    ``UTF-8-SIG`` / ``GB18030`` 等 Python 原生编码名同样直接可用
+    （``bytes.decode`` 大小写不敏感）。
+
+    Args:
+        raw: 原始字节。
+        encoding: 探测结果编码名（native 或 chardet）；None/空串表示直接从
+            ``utf-8`` 起链。
+        errors: 解码容错模式（detail 当前严格探测链传 ``"strict"``；预览器
+            ``_decode_bytes`` 传 ``"replace"``——对拍测试即以此逐字节一致）。
+
+    Returns:
+        (解码文本, 实际使用的编码名)。
+    """
+    candidates: List[str] = []
+    if encoding:
+        candidates.append(_normalize_utf8_bom(raw, encoding))
+    for cand in ("utf-8", "latin-1"):
+        if cand not in candidates:
+            candidates.append(cand)
+    chosen = "utf-8"
+    for cand in candidates:
+        try:
+            raw.decode(cand)  # 严格探测：选出首个可行编码
+            chosen = cand
+            break
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return raw.decode(chosen, errors=errors), chosen
+
+
+def _text_light_rows(path: str) -> List[Tuple[str, str]]:
+    """文本基础行：编码格式（native 优先，1KB 采样窗口；回退 chardet）。
+
+    native 探测输入为 1KB 窗口经 :func:`_utf8_complete_window` 补全到
+    UTF-8 字符边界（固定字节窗口可能落在多字节字符中间导致 chardetng 的
+    utf-8 候选失效）；chardet 回退保持现状（原样 1KB 前缀）。
+    """
+    encoding = UNAVAILABLE
+    try:
+        with open(path, "rb") as f:
+            sample_ext = f.read(_TEXT_LIGHT_WINDOW + _UTF8_TAIL_BUDGET)
+    except OSError:
+        return [("编码格式", encoding)]
+    sample = _utf8_complete_window(sample_ext, _TEXT_LIGHT_WINDOW)
+    native = _detect_encoding_native(sample, path, window=_TEXT_LIGHT_WINDOW)
+    if native and native.get("encoding"):
+        encoding = native["encoding"]
+    elif chardet is not None:
+        try:
+            detected = chardet.detect(sample_ext[:_TEXT_LIGHT_WINDOW])
+            encoding = detected.get("encoding") or UNAVAILABLE
+        except Exception:
             pass
     return [("编码格式", encoding)]
 
 
+# ---------------------------------------------------------------------------
+# 字体 native 解析（todo 26：light/detail 合并为单次 native 调用 + path+mtime 缓存）
+# ---------------------------------------------------------------------------
+
+# 单文件 native 字体解析缓存：{path: (mtime_ns, result)}，result 可为 None。
+# light 行（UI 线程同步）与 detail 行（worker 线程）共用同一缓存，使同一
+# 字体在一次展示周期内只触发一次 native 解析（DLL 缺失/失败同样被缓存，
+# 避免高频重试）。
+_FONT_NATIVE_CACHE: Dict[str, Tuple[int, Optional[Dict[str, Any]]]] = {}
+_FONT_NATIVE_CACHE_LOCK = threading.Lock()
+_FONT_NATIVE_CACHE_MAX = 128
+
+
+def _get_font_native(path: str) -> Optional[Dict[str, Any]]:
+    """单次 native 解析字体（path+mtime 缓存；线程安全）。
+
+    native 可用时返回字段字典
+    ``{"name1".."name6","format","glyph_count","ascent","descent","line_gap"}``
+    （name 缺失键为 ``None``）；DLL 缺失 / native 返回 None（WOFF/WOFF2
+    按 todo 1 裁决回退 fontTools、损坏/缺失文件）→ 返回 ``None``，调用方
+    回退 fontTools 现状。文件不存在同样返回 ``None``（不调 native）。
+
+    Args:
+        path: 字体文件绝对路径。
+
+    Returns:
+        Optional[Dict[str, Any]]: native 解析结果；不可用/失败为 ``None``。
+    """
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    mtime_ns = stat.st_mtime_ns
+    with _FONT_NATIVE_CACHE_LOCK:
+        cached = _FONT_NATIVE_CACHE.get(path)
+        if cached is not None and cached[0] == mtime_ns:
+            return cached[1]
+    parsed: Optional[Dict[str, Any]] = None
+    try:
+        from freeassetfilter.core.native.bridges.faf_core_bridge import (
+            get_faf_core_bridge,
+        )
+
+        bridge = get_faf_core_bridge()
+        if bridge is not None:
+            parsed = bridge.parse_font(path)
+    except Exception:  # noqa: BLE001  # broad catch intentional at native FFI boundary
+        parsed = None
+    with _FONT_NATIVE_CACHE_LOCK:
+        if len(_FONT_NATIVE_CACHE) >= _FONT_NATIVE_CACHE_MAX:
+            _FONT_NATIVE_CACHE.clear()
+        _FONT_NATIVE_CACHE[path] = (mtime_ns, parsed)
+    return parsed
+
+
 def _font_name_rows(path: str) -> List[Tuple[str, str]]:
-    """字体基础行：name 表（字体名称/样式/全名/版本/PostScript 名…）。"""
+    """字体基础行：name 表（字体名称/样式/全名/版本/PostScript 名…）。
+
+    优先走 single native 解析（``_get_font_native``），name1..6 字段缺失
+    即跳过；native 不可用 / WOFF/WOFF2 / 损坏 → 回退 fontTools 现状
+    （QFontDatabase 预览路径不在本函数，保持不动）。
+    """
+    native = _get_font_native(path)
+    if native is not None:
+        rows: List[Tuple[str, str]] = []
+        for name_id, label in _FONT_NAME_ROWS:
+            value = native.get(f"name{name_id}")
+            if value:
+                rows.append((label, value))
+        return rows
     rows: List[Tuple[str, str]] = []
     try:
         from fontTools.ttLib import TTFont
@@ -688,6 +959,9 @@ def _font_name_rows(path: str) -> List[Tuple[str, str]]:
                     rows.append((label, value))
                     break
     except (ImportError, OSError, KeyError, AttributeError):
+        pass
+    except Exception:
+        # fontTools TTLibError（损坏/非字体文件）等解析错误 → 占位符不崩。
         pass
     return rows
 
@@ -863,7 +1137,13 @@ def _collect_audio_tags(path: str) -> List[Tuple[str, str]]:
 
 
 def _text_detail_rows(path: str) -> List[Tuple[str, str]]:
-    """文本详情：字数/行数/单词数（超限文件跳过）+ MIME 探测。"""
+    """文本详情：字数/行数/单词数（超限文件跳过）+ MIME 探测。
+
+    编码探测统一走 native（4KB 采样窗口，:func:`_detect_encoding_native`）：
+    native 置信度 ≥0.5 → 用之；native ``{}``/None/异常 → 回退 chardet 现状。
+    回退链 ``探测结果 → utf-8 → latin-1`` 不变（经
+    :func:`_decode_encoding_chain`，严格探测选出首个可行编码）。
+    """
     rows: List[Tuple[str, str]] = []
     encoding = "utf-8"
     try:
@@ -874,22 +1154,19 @@ def _text_detail_rows(path: str) -> List[Tuple[str, str]]:
         try:
             with open(path, "rb") as f:
                 raw = f.read()
-            if chardet is not None:
-                detected = chardet.detect(raw[:4096]) or {}
+            sample = _utf8_complete_window(raw, _TEXT_DETAIL_WINDOW)
+            native = _detect_encoding_native(sample, path, window=_TEXT_DETAIL_WINDOW)
+            if native and native.get("encoding"):
+                encoding = native["encoding"]
+            elif chardet is not None:
+                detected = chardet.detect(raw[:_TEXT_DETAIL_WINDOW]) or {}
                 if detected.get("encoding"):
                     encoding = detected["encoding"]
-            content: Optional[str] = None
-            for candidate in (encoding, "utf-8", "latin-1"):
-                try:
-                    content = raw.decode(candidate)
-                    break
-                except (UnicodeDecodeError, LookupError):
-                    continue
-            if content is not None:
-                rows.append(("字符数", str(len(content))))
-                rows.append(("字符数(不含空格)", str(len(content.replace(" ", "")))))
-                rows.append(("行数", str(content.count("\n") + 1)))
-                rows.append(("单词数", str(len(content.split()))))
+            content, _ = _decode_encoding_chain(raw, encoding, errors="strict")
+            rows.append(("字符数", str(len(content))))
+            rows.append(("字符数(不含空格)", str(len(content.replace(" ", "")))))
+            rows.append(("行数", str(content.count("\n") + 1)))
+            rows.append(("单词数", str(len(content.split()))))
         except OSError:
             pass
     if magic is not None:
@@ -951,7 +1228,31 @@ def _video_detail_rows(probe: Dict[str, Any]) -> List[Tuple[str, str]]:
 
 
 def _font_detail_rows(path: str) -> List[Tuple[str, str]]:
-    """字体详情：格式 / 字形数 / 上升·下降·行距。"""
+    """字体详情：格式 / 字形数 / 上升·下降·行距。
+
+    优先走 single native 解析（``_get_font_native``，与 ``_font_name_rows``
+    共享 path+mtime 缓存 → 单次 native 调用）；native 不可用 /
+    WOFF/WOFF2 / 损坏 → 回退 fontTools 现状。light/detail 线程模型不变
+    （light 仍同步、detail 仍由调用方在 worker 线程执行）。
+    """
+    native = _get_font_native(path)
+    if native is not None:
+        rows: List[Tuple[str, str]] = []
+        fmt = native.get("format")
+        if fmt:
+            rows.append(("字体格式", str(fmt)))
+        glyph_count = native.get("glyph_count")
+        if glyph_count is not None:
+            rows.append(("字形数", str(int(glyph_count))))
+        for key, label in (
+            ("ascent", "上升"),
+            ("descent", "下降"),
+            ("line_gap", "行间距"),
+        ):
+            value = native.get(key)
+            if value is not None:
+                rows.append((label, str(int(value))))
+        return rows
     rows: List[Tuple[str, str]] = []
     try:
         from fontTools.ttLib import TTFont
@@ -968,6 +1269,9 @@ def _font_detail_rows(path: str) -> List[Tuple[str, str]]:
                 rows.append(("下降", str(hhea.descent)))
                 rows.append(("行间距", str(hhea.lineGap)))
     except (ImportError, OSError, KeyError, AttributeError):
+        pass
+    except Exception:
+        # fontTools TTLibError（损坏/非字体文件）等解析错误 → 占位符不崩。
         pass
     return rows
 

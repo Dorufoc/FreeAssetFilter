@@ -70,6 +70,7 @@ from PySide6.QtWidgets import (
 from theme import tm
 
 from freeassetfilter.core._paths import icons_dir
+from freeassetfilter.core.native.bridges.faf_core_bridge import get_faf_core_bridge
 from freeassetfilter.services.file_icon_manager import FileIconManager
 from freeassetfilter.ui.components.styled_scroll_area import (
     StyledScrollArea,
@@ -98,10 +99,58 @@ _PLACEHOLDER_EMPTY: str = "此目录为空"
 _PLACEHOLDER_UNAVAILABLE: str = "无法访问该文件夹"
 
 
-def _collect_directory_entries(path: str) -> Optional[list]:
-    """纯 IO 收集目录条目（listdir + 逐文件 stat）。
+def _native_scan_directory(path: str) -> Optional[list]:
+    """经 faf_core 桥扫描目录；桥不可用/失败返回 None（调用方回退 Python）。
 
-    与文件选择器（file_selector_layout._collect_directory_entries）语义一致：
+    与文件选择器（file_selector_layout._native_scan_directory）同构：模块级
+    helper，双 try/except 防御 FFI 边界（构造单例 + 实际调用），失败一律
+    返回 None，不向调用方抛异常。
+
+    Args:
+        path: 要扫描的目录绝对路径。
+
+    Returns:
+        Optional[list]: 7 键条目字典列表；DLL 缺失、native 失败或超
+            ``MAX_JSON_BYTES`` 上限时返回 ``None``。
+    """
+    try:
+        bridge = get_faf_core_bridge()
+    except Exception:  # noqa: BLE001  # FFI 边界防御
+        return None
+    if bridge is None or not bridge.available or not getattr(bridge, "_supports_scan", False):
+        return None
+    try:
+        return bridge.scan_directory(path)
+    except Exception:  # noqa: BLE001  # FFI 边界防御
+        return None
+
+
+def _collect_directory_entries(path: str) -> Optional[list]:
+    """收集目录条目（native 优先，Python 回退）。
+
+    单点接线：``_FolderScanWorker.run`` 的唯一扫描入口（后台线程可执行，
+    不触碰 Qt/主线程状态）。faf_core 桥可用且 ``scan_directory`` 返回非
+    None 时直接使用 native 结果；否则回退 :func:`_collect_directory_entries_python`
+    的原实现。返回契约与改造前一致：条目 dict 列表（7 键同构）或目录不可读
+    时返回 None。
+
+    Args:
+        path: 要扫描的目录绝对路径。
+
+    Returns:
+        Optional[list]: 条目 dict 列表；目录不可读/不存在时返回 None。
+    """
+    native_entries = _native_scan_directory(path)
+    if native_entries is not None:
+        return native_entries
+    return _collect_directory_entries_python(path)
+
+
+def _collect_directory_entries_python(path: str) -> Optional[list]:
+    """纯 IO 收集目录条目（listdir + 逐文件 stat），native 回退路径。
+
+    与文件选择器（file_selector_layout._collect_directory_entries_python）
+    语义一致：
     - 条目字段同构（含后缀/大小/修改与创建时间），隐藏文件不过滤
     - 单项 stat 权限异常跳过，目录整体不可读时返回 None
 

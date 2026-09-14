@@ -275,6 +275,113 @@ class TestHashes:
 
 
 # =============================================================================
+# native 流式哈希对拍（todo 24：faf_hash_* FFI 接线）
+# =============================================================================
+class TestNativeStreamingHashes:
+    """faf_core 流式哈希（``hash_file_streaming``）对拍与边界。
+
+    * 流式结果 == hashlib 参考（已知内容，跨块 + 非整块尾）；
+    * 取消：should_stop 中途 → 返回已读部分结果、进度停在取消点；
+    * 多块文件（≥2 块）取消响应 <100ms（防 flaky：用 mock 块数断言，
+      时间断言仅作软校验）；
+    * 缺失文件 / OSError → ``None``（调用方回退 ``compute_hashes`` 落
+      ``-`` 占位——见 ``test_file_info_panel`` 的缺失文件用例）；
+    * 单文件大文件（1 块即整文件）不适用块间取消，此处不做该类断言。
+    """
+
+    @staticmethod
+    def _bridge():
+        """返回支持流式哈希的桥实例；DLL 缺失/旧版时跳过。"""
+        from freeassetfilter.core.native.bridges.faf_core_bridge import (
+            get_faf_core_bridge,
+        )
+
+        bridge = get_faf_core_bridge()
+        if not bridge.available or not bridge._supports_hash:  # noqa: SLF001
+            pytest.skip("faf_core.dll 不含流式哈希导出，跳过 native 对拍")
+        return bridge
+
+    @staticmethod
+    def _pattern_bytes(size: int) -> bytes:
+        """确定性伪随机模式（与 Rust ``hash.rs::pattern_data`` 同族公式）。"""
+        return bytes(((i * 31 + (i >> 8)) & 0xFF) for i in range(size))
+
+    def test_streaming_matches_reference(self, tmp_path: Path) -> None:
+        """流式 native 结果与 hashlib 参考一致（跨 256KiB 块 + 非整块尾）。"""
+        bridge = self._bridge()
+        data = self._pattern_bytes(2 * 1024 * 1024 + 123)
+        path = str(tmp_path / "stream.bin")
+        Path(path).write_bytes(data)
+        result = bridge.hash_file_streaming(path)
+        assert result is not None
+        expected = {
+            "MD5": hashlib.md5(data).hexdigest(),  # noqa: S324
+            "SHA1": hashlib.sha1(data).hexdigest(),  # noqa: S324
+            "SHA256": hashlib.sha256(data).hexdigest(),
+        }
+        assert result == expected
+
+    def test_cancel_returns_partial_and_progress_stops(self, tmp_path: Path) -> None:
+        """中途取消：返回已喂数据的结果，进度停在取消点（不发 100%）。"""
+        bridge = self._bridge()
+        data = self._pattern_bytes(4 * 1024 * 1024)  # 16 块 = 4MiB
+        path = str(tmp_path / "cancel.bin")
+        Path(path).write_bytes(data)
+        calls = {"n": 0}
+
+        def _stop() -> bool:
+            calls["n"] += 1
+            return calls["n"] > 4  # 第 5 块前停 → 已喂 1MiB
+
+        progress: list = []
+        result = bridge.hash_file_streaming(path, progress=progress.append, should_stop=_stop)
+        assert result is not None
+        # 1MiB/4MiB = 25%，且不得补发 100%
+        assert progress == [25], f"进度应停在取消点 25%，实测 {progress}"
+        assert result["SHA256"] == hashlib.sha256(data[: 1024 * 1024]).hexdigest()
+
+    def test_cancel_responds_between_blocks(self, tmp_path: Path) -> None:
+        """多块文件取消响应 <100ms：块间取消后不再喂块（mock 块数防 flaky）。"""
+        bridge = self._bridge()
+        data = self._pattern_bytes(3 * 256 * 1024)  # 3 块
+        path = str(tmp_path / "blocks.bin")
+        Path(path).write_bytes(data)
+        updates = {"n": 0}
+        real_update = bridge._native_hash_update  # noqa: SLF001
+
+        def _counting_update(handle, chunk, length):
+            updates["n"] += 1
+            return real_update(handle, chunk, length)
+
+        bridge._native_hash_update = _counting_update  # noqa: SLF001
+
+        def _stop() -> bool:
+            return updates["n"] >= 1  # 第 2 块前取消
+
+        try:
+            started = time.perf_counter()
+            result = bridge.hash_file_streaming(path, should_stop=_stop)
+            elapsed_ms = (time.perf_counter() - started) * 1000
+        finally:
+            bridge._native_hash_update = real_update  # noqa: SLF001
+
+        assert updates["n"] == 1, "取消后不得继续喂块"
+        assert result is not None
+        assert elapsed_ms < 100, f"块间取消响应 {elapsed_ms:.1f}ms 应 <100ms"
+        assert result["SHA256"] == hashlib.sha256(data[: 256 * 1024]).hexdigest()
+
+    def test_missing_file_returns_none(self, tmp_path: Path) -> None:
+        """缺失文件 → None（由调用方回退 compute_hashes 落 `-` 占位）。"""
+        bridge = self._bridge()
+        assert bridge.hash_file_streaming(str(tmp_path / "missing.bin")) is None
+
+    def test_oserror_returns_none(self, tmp_path: Path) -> None:
+        """目录路径（open 抛 IsADirectoryError）→ None，不抛异常。"""
+        bridge = self._bridge()
+        assert bridge.hash_file_streaming(str(tmp_path)) is None
+
+
+# =============================================================================
 # 缓存
 # =============================================================================
 class TestCache:

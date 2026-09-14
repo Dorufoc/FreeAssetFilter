@@ -1,0 +1,9 @@
+{
+  // COMMENT: json sample with keyword-ish keys
+  "name": "faf-parity",
+  "version": "1.0.0",
+  "retryCount": 5,
+  "endpoint": "https://example.com/api",
+  "enabled": true,
+  "tags": ["alpha", "beta"]
+}

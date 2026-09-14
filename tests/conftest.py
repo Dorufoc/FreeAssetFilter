@@ -308,6 +308,22 @@ def rust_available() -> bool:
 
 
 @pytest.fixture(scope="session")
+def faf_core_available() -> bool:
+    """探测 faf_core 统一原生核心 DLL 是否可用（session scope）。
+
+    探测 ``native/bin`` 下的 ``faf_core.dll``，
+    用 ctypes 尝试加载以判断可用性。
+    用 ctypes 探测，避免导入模块时产生副作用。
+
+    Returns:
+        bool: faf_core.dll 可加载即为 True。
+    """
+    return _probe_bundled_dll(
+        ["faf_core.dll"]
+    )
+
+
+@pytest.fixture(scope="session")
 def cpp_lut_available() -> bool:
     """探测 C++ LUT 预览扩展模块是否可用（session scope）。
 

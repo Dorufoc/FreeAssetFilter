@@ -63,43 +63,113 @@ class MediaMetadataService(BaseService):
     def extract_audio_cover(self, file_path: str) -> Optional[bytes]:
         """从音频文件中提取封面图像数据。
 
+        内部复用 :meth:`extract_audio_metadata` 的单次 mutagen 打开结果，
+        不再独立二次打开文件（todo-30 单次打开优化）。
+
         Args:
             file_path: 音频文件路径。
 
         Returns:
             封面图像的二进制数据（JPEG/PNG），无封面或失败时返回 None。
         """
-        if not mutagen_file:
+        meta: Optional[Dict[str, Any]] = self.extract_audio_metadata(file_path)
+        if meta is None:
             return None
+        return meta.get("cover_data")
 
+    def extract_audio_metadata(self, file_path: str) -> Optional[Dict[str, Any]]:
+        """单次 mutagen 打开同时提取标签、封面与编码参数（todo-30）。
+
+        原 ``extract_audio_tags``（标签）与 ``extract_audio_cover``（封面）
+        各调一次 ``mutagen_file``，共两次打开同一文件；本方法把二者连同
+        ``extract_basic_info`` 中的媒体字段（时长/比特率/声道/采样率/格式）
+        合并为**单次打开**，供 UI 后台任务一次取全，杜绝重复解析文件头。
+
+        Args:
+            file_path: 音频文件路径。
+
+        Returns:
+            dict：固定 schema —— ``title``/``artist``/``album``/``cover_data``
+            （与 :meth:`extract_audio_tags` 一致），外加 ``duration``/
+            ``duration_str``/``bitrate``/``bitrate_str``/``channels``/
+            ``sample_rate``/``audio_format``（与 :meth:`extract_basic_info`
+            的媒体字段一致，缺失时为 None/空字符串）。
+            文件不存在时返回 ``None``；解析失败或缺少 mutagen 时返回空 schema。
+        """
         if not os.path.isfile(file_path):
             return None
 
+        empty_schema: Dict[str, Any] = {
+            "title": "",
+            "artist": "",
+            "album": "",
+            "cover_data": None,
+            "duration": None,
+            "duration_str": "",
+            "bitrate": None,
+            "bitrate_str": "",
+            "channels": None,
+            "sample_rate": None,
+            "audio_format": "",
+        }
+        if not mutagen_file:
+            return empty_schema
+
         try:
+            # 唯一一次 mutagen 打开：同时服务标签、封面与编码参数三组字段
             audio = mutagen_file(file_path)
             if audio is None:
-                return None
+                return empty_schema
 
-            # 方法1: 从 tags 中按常见 key 查找封面数据
-            if hasattr(audio, 'tags') and audio.tags:
-                for key in ('cover', ' Cover', 'APIC:', 'covr', 'albumart'):
-                    if key in audio.tags:
-                        data = audio.tags[key].data
-                        if isinstance(data, bytes):
-                            return data
+            result: Dict[str, Any] = dict(empty_schema)
+            tags = getattr(audio, "tags", None)
 
-            # 方法2: 遍历所有 tag 值，按魔术字节识别图片
-            if hasattr(audio, 'tags') and audio.tags:
-                for tag in audio.tags.values():
-                    if hasattr(tag, 'data') and isinstance(tag.data, bytes):
-                        data: bytes = tag.data
-                        if len(data) > 10 and self._looks_like_image(data):
-                            return data
+            # —— 标签（复刻旧 extract_audio_tags 的键映射）——
+            tag_mapping = {
+                "title": ["TIT2", "TITLE", "\u00a9nam"],
+                "artist": ["TPE1", "ARTIST", "\u00a9ART"],
+                "album": ["TALB", "ALBUM", "\u00a9alb"],
+            }
+            for field, keys in tag_mapping.items():
+                for key in keys:
+                    raw = self._get_tag_value(tags, key)
+                    if raw is not None:
+                        value = self._collapse_tag(raw)
+                        if value:
+                            result[field] = value
+                            break
 
-            return None
+            # —— 封面（复刻旧 extract_audio_cover 的两段查找逻辑）——
+            result["cover_data"] = self._extract_cover_from_audio(audio)
 
-        except Exception:  # noqa: BLE001  — 外部库可能抛出任意异常，宽泛捕获以保证健壮性
-            return None
+            # —— 编码参数（复刻旧 extract_basic_info 的媒体字段提取）——
+            if hasattr(audio, 'info'):
+                audio_info = audio.info
+
+                if hasattr(audio_info, 'length') and audio_info.length:
+                    result["duration"] = float(audio_info.length)
+                    result["duration_str"] = self._format_duration(
+                        audio_info.length
+                    )
+
+                if hasattr(audio_info, 'bitrate') and audio_info.bitrate:
+                    result["bitrate"] = int(audio_info.bitrate)
+                    result["bitrate_str"] = self._format_bitrate(
+                        audio_info.bitrate
+                    )
+
+                if hasattr(audio_info, 'channels'):
+                    result["channels"] = int(audio_info.channels)
+
+                if hasattr(audio_info, 'sample_rate'):
+                    result["sample_rate"] = int(audio_info.sample_rate)
+
+            if hasattr(audio, 'mime'):
+                result["audio_format"] = str(audio.mime[0])
+
+            return result
+        except Exception:  # noqa: BLE001 — 外部库可能抛出任意异常，宽泛捕获以保证健壮性
+            return empty_schema
 
     def extract_audio_tags(self, file_path: str) -> Optional[Dict[str, Any]]:
         """从音频文件中提取常见标签与封面数据。
@@ -125,50 +195,14 @@ class MediaMetadataService(BaseService):
             包含 ``title`` / ``artist`` / ``album`` / ``cover_data`` 的字典；
             文件不存在时返回 ``None``；解析失败或缺少 mutagen 时返回空 schema。
         """
-        if not os.path.isfile(file_path):
+        # todo-30：复用 extract_audio_metadata 的单次打开结果（封面已并入），
+        # 只取标签子集保持旧契约不变；历史两处 mutagen_file 打开合并为一处。
+        meta: Optional[Dict[str, Any]] = self.extract_audio_metadata(file_path)
+        if meta is None:
             return None
-
-        empty_schema: Dict[str, Any] = {
-            "title": "",
-            "artist": "",
-            "album": "",
-            "cover_data": None,
+        return {
+            key: meta.get(key) for key in ("title", "artist", "album", "cover_data")
         }
-
-        if not mutagen_file:
-            return empty_schema
-
-        try:
-            audio = mutagen_file(file_path)
-            if audio is None:
-                return empty_schema
-
-            tags = getattr(audio, "tags", None)
-            result: Dict[str, Any] = {
-                "title": "",
-                "artist": "",
-                "album": "",
-            }
-
-            tag_mapping = {
-                "title": ["TIT2", "TITLE", "\u00a9nam"],
-                "artist": ["TPE1", "ARTIST", "\u00a9ART"],
-                "album": ["TALB", "ALBUM", "\u00a9alb"],
-            }
-
-            for field, keys in tag_mapping.items():
-                for key in keys:
-                    raw = self._get_tag_value(tags, key)
-                    if raw is not None:
-                        value = self._collapse_tag(raw)
-                        if value:
-                            result[field] = value
-                            break
-
-            result["cover_data"] = self.extract_audio_cover(file_path)
-            return result
-        except Exception:  # noqa: BLE001
-            return empty_schema
 
     def extract_basic_info(self, file_path: str) -> Dict[str, Any]:
         """提取文件基本元数据。
@@ -330,6 +364,33 @@ class MediaMetadataService(BaseService):
         if isinstance(value, (list, tuple)):
             return ", ".join(str(item) for item in value)
         return str(value)
+
+    @staticmethod
+    def _extract_cover_from_audio(audio: Any) -> Optional[bytes]:
+        """从 mutagen 音频对象中查找封面图像数据。
+
+        与旧 ``extract_audio_cover`` 的两段查找逻辑逐字一致（方法1 按常见
+        key 直取，方法2 按魔术字节扫描），供 :meth:`extract_audio_metadata`
+        单次打开复用时调用。
+        """
+        # 方法1: 从 tags 中按常见 key 查找封面数据
+        tags = getattr(audio, 'tags', None)
+        if tags:
+            for key in ('cover', ' Cover', 'APIC:', 'covr', 'albumart'):
+                if key in tags:
+                    data = tags[key].data
+                    if isinstance(data, bytes):
+                        return data
+
+        # 方法2: 遍历所有 tag 值，按魔术字节识别图片
+        if tags:
+            for tag in tags.values():
+                if hasattr(tag, 'data') and isinstance(tag.data, bytes):
+                    data: bytes = tag.data
+                    if len(data) > 10 and MediaMetadataService._looks_like_image(data):
+                        return data
+
+        return None
 
     @staticmethod
     def _looks_like_image(data: bytes) -> bool:

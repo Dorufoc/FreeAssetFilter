@@ -1,0 +1,35 @@
+# FreeAssetFilter project lint baseline (established during F2 RE-RUN, 2026-09).
+#
+# Rationale
+# --------
+# The repo previously shipped with NO ruff configuration. ruff 0.16.x applies
+# its broad default selectors (UP*, SIM*, PERF*, BLE001, S110, RUF*, I001,
+# DTZ006, FURB167, PERF102, W605, ...) as soon as `ruff check` is run, which
+# produced ~495 violations across six files. The overwhelming majority are
+# pre-existing style / refactor debt in files this migration plan did not
+# author (file_selector_layout.py, file_info_service.py, syntax_highlighter.py,
+# file_info_panel.py, markdown_renderer.py). None of those rules are a project
+# mandate — AGENTS.md only fixes import *ordering* as a convention, it does not
+# enforce UP/SIM/PERF/BLE/RUF upgrades.
+#
+# This baseline therefore selects ONLY bug classes that every Python codebase
+# should treat as errors:
+#   - E9:  syntax / runtime-bug detection (E901/E902 syntax errors, E999,
+#          plus the F821 undefined-name checks that live under E9 in the
+#          runtime-error category).
+#   - F:   Pyflakes — undefined names, unused imports / variables, duplicate
+#          dict keys, invalid f-strings, unhandled re-exports, etc.
+#
+# Style rules are intentionally NOT selected: they are not enforced project
+# conventions and enabling them would bury the meaningful bug-class findings.
+# If the team later wants a style bar, adopt it deliberately in a separate
+# change (with fix-on-commit / CI), not as fallout of a migration review.
+#
+# Per-rule suppressions are documented in
+# .omo/evidence/faf-core-rust-migration/f2-fix.md.
+#
+# Version pin note: ruff >= 0.6 required for `[lint]` (preview config layout).
+
+[lint]
+# Bug-class only: syntax errors + Pyflakes.
+select = ["E9", "F"]

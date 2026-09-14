@@ -299,6 +299,99 @@ class TestFolderSize:
             StagingPoolService().calculate_folder_size(str(base), cancel) is None
         )
 
+    def test_sizesum_native_used_when_available(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """native ``sum_directory_sizes`` 可用 → 单遍调用返回与 Python 相同值。"""
+        base: Path = _build_tree(tmp_path)
+        calls: list = []
+
+        class NativeBridge:
+            available = True
+            _supports_copy = True
+            _supports_sizesum = True
+
+            def sum_directory_sizes(self, paths: list) -> dict:
+                calls.append(list(paths))
+                total = 0
+                for dirpath, _dirs, files in os.walk(paths[0]):
+                    for name in files:
+                        total += os.path.getsize(os.path.join(dirpath, name))
+                return {"results": [{"path": paths[0], "size": total, "error": None}]}
+
+        monkeypatch.setattr(
+            "freeassetfilter.services.staging_pool_service.get_faf_core_bridge",
+            lambda: NativeBridge(),
+        )
+        size = StagingPoolService().calculate_folder_size(str(base))
+        assert size == 200
+        assert calls, "native 大小聚合应被调用"
+        assert os.path.normpath(calls[0][0]) == os.path.normpath(str(base))
+
+    def test_sizesum_native_cancelled_returns_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """native 返回前预取消 → None（提前检查，不进入 native 或 walk）。"""
+        base: Path = _build_tree(tmp_path)
+        hit: list = []
+
+        class NativeBridge:
+            available = True
+            _supports_copy = True
+            _supports_sizesum = True
+
+            def sum_directory_sizes(self, paths: list) -> dict:
+                hit.append(1)
+                return {"results": [{"path": paths[0], "size": 0, "error": None}]}
+
+        monkeypatch.setattr(
+            "freeassetfilter.services.staging_pool_service.get_faf_core_bridge",
+            lambda: NativeBridge(),
+        )
+        cancel: threading.Event = threading.Event()
+        cancel.set()
+        assert StagingPoolService().calculate_folder_size(str(base), cancel) is None
+        assert hit == [], "预取消不得触碰 native"
+
+    def test_sizesum_falls_back_on_native_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """native 返回 error 字段 → 回退 Python walk（结果一致）。"""
+        base: Path = _build_tree(tmp_path)
+
+        class ErrBridge:
+            available = True
+            _supports_copy = True
+            _supports_sizesum = True
+
+            def sum_directory_sizes(self, paths: list) -> dict:
+                return {
+                    "results": [{"path": paths[0], "size": 0, "error": "boom"}]
+                }
+
+        monkeypatch.setattr(
+            "freeassetfilter.services.staging_pool_service.get_faf_core_bridge",
+            lambda: ErrBridge(),
+        )
+        assert StagingPoolService().calculate_folder_size(str(base)) == 200
+
+    def test_sizesum_falls_back_when_native_unavailable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DLL 缺失（mock 探测 False）→ 回退 ``os.scandir`` walk 现状。"""
+        base: Path = _build_tree(tmp_path)
+
+        class NoBridge:
+            available = False
+            _supports_copy = False
+            _supports_sizesum = False
+
+        monkeypatch.setattr(
+            "freeassetfilter.services.staging_pool_service.get_faf_core_bridge",
+            lambda: NoBridge(),
+        )
+        assert StagingPoolService().calculate_folder_size(str(base)) == 200
+
     def test_async_happy_path(self, tmp_path: Path) -> None:
         """异步计算返回带结果的 Future。"""
         base: Path = _build_tree(tmp_path)

@@ -1,0 +1,133 @@
+{
+  "schema": "faf-core-perf-baseline/v1",
+  "timestamp": "2026-09-13T22:39:35+00:00",
+  "mode": "smoke",
+  "machine": {
+    "platform": "Windows-10-10.0.26200-SP0",
+    "machine": "AMD64",
+    "processor": "Intel64 Family 6 Model 198 Stepping 2, GenuineIntel",
+    "python": "3.11.9",
+    "cpu_count": 24
+  },
+  "scan_directory": {
+    "files": 5000,
+    "samples": 5,
+    "native": {
+      "p50_ms": 116.668,
+      "p95_ms": 165.111,
+      "mean_ms": 133.582,
+      "max_ms": 167.878
+    },
+    "python": {
+      "p50_ms": 849.516,
+      "p95_ms": 884.687,
+      "mean_ms": 819.502,
+      "max_ms": 892.069
+    },
+    "p50_speedup_x": 7.281,
+    "assertion": {
+      "rule": "P50_native <= P50_python*1.2",
+      "p50_native_ms": 116.668,
+      "p50_python_ms": 849.516,
+      "limit_ms": 1019.419,
+      "passed": true
+    }
+  },
+  "highlight": {
+    "lines": 3000,
+    "chars": 66670,
+    "samples": 5,
+    "native": {
+      "p50_ms": 231.593,
+      "p95_ms": 232.343,
+      "mean_ms": 218.537,
+      "max_ms": 232.447
+    },
+    "python": {
+      "p50_ms": 180.662,
+      "p95_ms": 191.587,
+      "mean_ms": 177.613,
+      "max_ms": 193.971
+    },
+    "p50_speedup_x": 0.78,
+    "assertion": {
+      "rule": "P50_native <= P50_python*1.2",
+      "p50_native_ms": 231.593,
+      "p50_python_ms": 180.662,
+      "limit_ms": 216.794,
+      "passed": false
+    }
+  },
+  "hash_throughput": {
+    "file_mib": 32.0,
+    "chunk_bytes": 262144,
+    "samples": 3,
+    "native": {
+      "p50_ms": 68.301,
+      "p95_ms": 69.001,
+      "mean_ms": 68.38,
+      "max_ms": 69.078,
+      "mib_per_sec_p50": 468.51
+    },
+    "python": {
+      "p50_ms": 60.71,
+      "p95_ms": 61.56,
+      "mean_ms": 60.892,
+      "max_ms": 61.654,
+      "mib_per_sec_p50": 527.1
+    },
+    "assertion": {
+      "rule": "P50_native <= P50_python*1.2",
+      "p50_native_ms": 68.301,
+      "p50_python_ms": 60.71,
+      "limit_ms": 72.852,
+      "passed": true
+    }
+  },
+  "copy_throughput": {
+    "sources": 16,
+    "total_bytes": 8388608,
+    "samples": 3,
+    "native": {
+      "p50_ms": 5.446,
+      "p95_ms": 5.666,
+      "mean_ms": 5.503,
+      "max_ms": 5.691,
+      "mib_per_sec_p50": 1468.97
+    },
+    "python": {
+      "p50_ms": 20.431,
+      "p95_ms": 21.348,
+      "mean_ms": 20.49,
+      "max_ms": 21.449,
+      "mib_per_sec_p50": 391.56
+    },
+    "assertion": {
+      "rule": "P50_native <= P50_python*1.2",
+      "p50_native_ms": 5.446,
+      "p50_python_ms": 20.431,
+      "limit_ms": 24.517,
+      "passed": true
+    }
+  },
+  "overlimit_fallback": {
+    "entries": 30000,
+    "payload_mib": 12.528,
+    "cap_bytes": 8388608,
+    "samples": 2,
+    "native_cap_reject": {
+      "p50_ms": 50.128,
+      "p95_ms": 50.987,
+      "mean_ms": 50.128,
+      "max_ms": 51.083
+    },
+    "python_fallback": {
+      "p50_ms": 1.775,
+      "p95_ms": 1.881,
+      "mean_ms": 1.775,
+      "max_ms": 1.893
+    },
+    "total_fallback_p50_ms": 51.903,
+    "no_exception": true
+  }
+}
