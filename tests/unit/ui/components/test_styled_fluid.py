@@ -19,15 +19,18 @@ API surface；GPU 相关深层行为用 shader 源码常量断言而非真实 Op
 from __future__ import annotations
 
 import ast
-import os
+import hashlib
+import json
 import sys
+import time
+import types
 from pathlib import Path
 from typing import Any
 
 import pytest
-from PySide6.QtCore import QModelIndex, QRect, QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QPainter, QPixmap, QShader
-from PySide6.QtWidgets import QApplication, QListView, QRhiWidget, QWidget
+from PySide6.QtCore import QRect, QRectF, Qt, QThread
+from PySide6.QtGui import QColor, QImage, QPainter, QPixmap, QShader
+from PySide6.QtWidgets import QApplication, QListView, QRhiWidget
 
 # 组件模块内部使用短路径导入（from theme import tm / components.*），
 # 要求 freeassetfilter/ui 位于 sys.path；与 test_styled_basic.py 一致。
@@ -53,6 +56,15 @@ from freeassetfilter.ui.components.file_list_model import (  # noqa: E402
 )
 from freeassetfilter.ui.components.styled_fluid_background import (  # noqa: E402
     StyledFluidBackground,
+)
+from freeassetfilter.utils.app_logger import warning  # noqa: E402
+from freeassetfilter.utils.perf_metrics import (  # noqa: E402
+    record_perf_duration,
+    set_perf_metadata,
+)
+from tests.benchmark.perf_benchmark_utils import (  # noqa: E402
+    get_perf_summary,
+    reset_perf_metrics,
 )
 
 pytestmark = pytest.mark.unit
@@ -241,6 +253,75 @@ class TestFluidCpu:
             0, 48, self._PALETTE, noise_seed=1, time=0.5, overlay_color=QColor(0, 0, 0, 60),
         )
         assert pm.isNull()
+
+
+# =============================================================================
+# todo 13（rust-hot-path-native-migration）：fluid spike 裁决 DROP 的回退验证
+# =============================================================================
+class TestFluidFallbackKeepsPythonPath:
+    """todo 13 按 spike 裁决 DROP 执行：Python CPU 路径保持为唯一事实来源。
+
+    Rust ``faf_render_fluid_frame`` 恒返回 ``STATUS_UNSUPPORTED``（1 ULP 证据见
+    ``.omo/evidence/rust-hot-path-native-migration/task-1-decisions.md`` §6）→ 桥
+    ``render_fluid_frame`` 恒返回 ``None``；``render_static_frame`` 走纯 Python
+    渲染并复现夹具参考帧的 ``rgba_md5``。完整接线（消费桥结果 / 显式回退）留待
+    todo 14，本类只验证"保持 Python"被走通、不修改 ``_styled_fluid_cpu.py``。
+    """
+
+    _FIXTURES_DIR: Path = (
+        Path(__file__).resolve().parents[4]
+        / "tests"
+        / "support"
+        / "faf_core_fixtures"
+        / "fluid_samples"
+    )
+
+    @staticmethod
+    def _rgba_bytes(pixmap: QPixmap) -> bytes:
+        """把 QPixmap 归一化为 RGBA8888 原始字节（与夹具生成脚本同源）。"""
+        image = pixmap.toImage().convertToFormat(QImage.Format_RGBA8888)
+        return bytes(image.constBits().tobytes())
+
+    def test_bridge_render_fluid_frame_returns_none(self) -> None:
+        """DROP 终态：桥 ``render_fluid_frame`` 恒返回 ``None``。
+
+        Rust 侧 ``STATUS_UNSUPPORTED`` → FFI 返回 null → 桥返回 ``None``；
+        DLL 缺失时 ``available is False`` 同样返回 ``None``，两种情况等价。
+        """
+        from freeassetfilter.core.native.bridges.faf_core_bridge import FafCoreBridge
+
+        inst = FafCoreBridge()
+        assert inst.render_fluid_frame(64, 48, "[]", 12345, 2.5, "{}") is None
+        assert inst.render_fluid_frame(160, 100, "[]", 987, 0.0, "{}") is None
+
+    def test_render_static_frame_python_path_reproduces_reference(
+        self, qapp: QApplication,
+    ) -> None:
+        """Python 路径是唯一事实来源：``render_static_frame`` 复现参考帧 ``rgba_md5``。
+
+        夹具 ``fluid_frame_64x48.json`` 由生成脚本以同一 ``render_static_frame``
+        渲染得到；本用例重渲染并比对原始 RGBA8888 字节的 md5，证明 DROP 下
+        Python 渲染路径依旧可走通且确定性成立。
+        """
+        meta_path = self._FIXTURES_DIR / "fluid_frame_64x48.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        palette = [
+            QColor(r, g, b, a) for r, g, b, a in meta["palette"]  # type: ignore[misc]
+        ]
+        overlay = QColor(*meta["overlay"])  # type: ignore[arg-type]
+
+        pm = _fluid_cpu.render_static_frame(
+            int(meta["width"]),  # type: ignore[arg-type]
+            int(meta["height"]),  # type: ignore[arg-type]
+            palette,
+            noise_seed=int(meta["noise_seed"]),  # type: ignore[arg-type]
+            time=float(meta["time"]),  # type: ignore[arg-type]
+            overlay_color=overlay,
+        )
+        assert not pm.isNull()
+        raw = self._rgba_bytes(pm)
+        assert len(raw) == int(meta["rgba_bytes"])  # type: ignore[arg-type]
+        assert hashlib.md5(raw).hexdigest() == meta["rgba_md5"]
 
 
 # =============================================================================
@@ -725,3 +806,317 @@ class TestFileCardDelegate:
             _delegate_mod._get_cached_scaled_icon(src, 48, 1.0)
         assert len(_delegate_mod._ICON_SCALE_CACHE) <= 256
         _delegate_mod.clear_icon_scale_cache()
+
+
+# =============================================================================
+# todo 15（rust-hot-path-native-migration）：主线程 paint 预算测试
+# =============================================================================
+@pytest.fixture(autouse=True, scope="class")
+def _reset_budget_evidence(request: Any) -> None:
+    """类级：TestMainThreadPaintBudget 运行前重建证据文件并清空 perf 指标。
+
+    仅对声明了 ``_EVIDENCE_FILE`` 的类生效（其他测试类直接跳过）。
+
+    Args:
+        request: pytest 请求对象（``request.cls`` 指向使用本夹具的测试类）。
+
+    Returns:
+        None：无返回值。
+    """
+    cls = request.cls
+    if getattr(cls, "_EVIDENCE_FILE", None) is None:
+        return
+    cls._EVIDENCE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    cls._EVIDENCE_FILE.write_text("", encoding="utf-8")
+    reset_perf_metrics()
+
+
+class TestMainThreadPaintBudget:
+    """todo 15 主线程 paint 预算测试（SVG 图标 + 流体帧，记录性指标）。
+
+    主线程调用 native 路径的耗时预算（P50），仅记录不设硬门槛：
+
+    * ``SvgRenderer._replace_svg_colors``：SVG 换色——主题色与编译期常量逐一致
+      时走 faf_core 原生，否则回退 Python；文件选择器滚动热路径。
+    * ``SvgRenderer.render_svg_to_exact_pixmap``：``FileIconManager`` 主线程
+      paint 的最终光栅化调用点（``file_icon_manager.py:212-238``）。
+    * ``_fluid_cpu.render_static_frame``：流体 CPU 帧——todo 1(v)/13 裁决 DROP，
+      native 恒返回 ``None``，本预算测的是保留的 Python 回退路径。
+
+    性能为**记录性**指标：不达标仅 ``warning`` 不 FAIL；崩溃/异常/证据缺失才
+    FAIL。QPixmap 线程归属用 grep + 线程 id 双路断言（绝不在 worker 构造）。
+    """
+
+    _EVIDENCE_FILE: Path = (
+        Path(__file__).resolve().parents[4]
+        / ".omo" / "evidence" / "rust-hot-path-native-migration" / "task-15-budget.txt"
+    )
+
+    # 覆盖黑/白/accent/normal 多组替换 + rgba 的 SVG 图标（预算样本）。
+    _SVG_ICON: str = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" '
+        'viewBox="0 0 256 256">\n'
+        '  <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">'
+        '<stop offset="0" stop-color="#000000"/>'
+        '<stop offset="1" stop-color="#FFFFFF"/></linearGradient></defs>\n'
+        '  <rect width="256" height="256" rx="24" fill="#000000"/>\n'
+        '  <circle cx="128" cy="128" r="64" fill="#0a59f7"/>\n'
+        '  <path d="M50 50 L90 100 Z" fill="#FFFFFF" stroke="#000000"/>\n'
+        '  <path d="M206 50 L156 100 L206 150 Z" fill="#cecece" stroke="#0a59f7"/>\n'
+        '  <text x="128" y="220" font-size="42" text-anchor="middle" '
+        'fill="rgba(255, 0, 0, 0.5)">X</text>\n'
+        "</svg>\n"
+    )
+
+    @staticmethod
+    def _native_theme(monkeypatch: Any) -> None:
+        """把 svg_renderer.tm stub 成 native 编译期常量（深色主题镜像）。
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture。
+        """
+        import freeassetfilter.core.preview.svg_renderer as svg_mod
+
+        monkeypatch.setattr(
+            svg_mod,
+            "tm",
+            types.SimpleNamespace(
+                accent=QColor("#3a9dcb"),
+                fill=QColor("#3e3e3e"),
+                text=QColor("#ffffff"),
+                mid=QColor("#888888"),
+            ),
+        )
+
+    @pytest.fixture(autouse=True)
+    def _isolate_budget_events(self) -> None:
+        """函数级：每个预算用例前清空 perf 事件，避免跨用例串扰。"""
+        reset_perf_metrics()
+
+    @classmethod
+    def _measure(cls, event: str, fn: Any, iters: int) -> tuple[list[float], Any]:
+        """主线程计时 ``fn`` 共 ``iters`` 次并写入 perf 事件。
+
+        Args:
+            event: perf 事件名（``budget.*``）。
+            fn: 被计时的主线程调用（返回 QPixmap / str 等）。
+            iters: 采样次数。
+
+        Returns:
+            (list[float], Any): 各次耗时毫秒样本、最后一次调用的返回值。
+        """
+        samples: list[float] = []
+        result: Any = None
+        for _ in range(iters):
+            started = time.perf_counter()
+            result = fn()
+            samples.append((time.perf_counter() - started) * 1000.0)
+            if result is None:
+                raise AssertionError(f"{event} 目标返回 None（崩溃/异常路径）")
+        for ms in samples:
+            record_perf_duration(event, ms)
+        return samples, result
+
+    @classmethod
+    def _report_budget(cls, label: str, event: str, warn_ms: float) -> float:
+        """读取并落盘某预算事件的 P50（记录性；超参考值仅 WARN 不 FAIL）。
+
+        Args:
+            label: 人类可读的预算项名称。
+            event: perf 事件名（``budget.*``）。
+            warn_ms: 记录性参考阈值（毫秒），仅用于日志告警。
+
+        Returns:
+            float: 该事件的 P50（毫秒）。
+        """
+        stats = get_perf_summary().get(event, {})
+        p50 = stats.get("p50_ms")
+        assert isinstance(p50, (int, float)) and p50 >= 0.0, (
+            f"{event} 未产出 P50（stats={stats}）"
+        )
+        p50f = float(p50)
+        if p50f > warn_ms:
+            warning(
+                f"[todo-15] {label} P50={p50f:.3f}ms 超过参考值 {warn_ms}ms"
+                "（记录性指标，仅告警不 FAIL）"
+            )
+        cls._EVIDENCE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(cls._EVIDENCE_FILE, "a", encoding="utf-8") as fh:
+            fh.write(
+                f"- {label} [{event}]: p50_ms={p50f:.3f} | "
+                f"calls={stats.get('calls')}\n"
+            )
+        return p50f
+
+    @classmethod
+    def _assert_no_worker_qpixmap(cls, module: Any, allowed_owners: set[str]) -> None:
+        """grep 断言：模块无 worker 线程入口，且 QPixmap( 构造只在主线程方法内。
+
+        Args:
+            module: 被审计的模块（取 ``__file__`` 源码文本）。
+            allowed_owners: 允许承载 ``QPixmap(`` 构造的主线程方法名集合。
+
+        Raises:
+            AssertionError: 发现 worker 入口或 QPixmap 构造不在主线程方法内。
+        """
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        code = _code_only(source)
+        for marker in ("QThread(", "QRunnable(", "threading.Thread(", "def run("):
+            assert marker not in code, (
+                f"{module.__name__} 声明 worker 线程入口 {marker!r}——"
+                "禁止任何离线 QPixmap 构造"
+            )
+        tree = ast.parse(source)
+        parent_map: dict[Any, Any] = {
+            child: parent
+            for parent in ast.walk(tree)
+            for child in ast.iter_child_nodes(parent)
+        }
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "QPixmap"
+            ):
+                continue
+            owner: Any = None
+            cur: Any = node
+            while cur in parent_map:
+                cur = parent_map[cur]
+                if isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    owner = cur
+                    break
+            owner_name: str = owner.name if owner is not None else "<module>"
+            assert owner is not None and owner_name in allowed_owners, (
+                f"{module.__name__} 的 QPixmap( 构造位于 {owner_name!r}，"
+                "不在主线程管线方法内"
+            )
+
+    def test_svg_replace_p50_recorded(
+        self, qapp: QApplication, monkeypatch: Any,
+    ) -> None:
+        """主线程 SVG 换色（native 优先）P50 记录；仅崩溃/异常才 FAIL。"""
+        from freeassetfilter.core.preview.svg_renderer import SvgRenderer
+
+        self._native_theme(monkeypatch)
+        native_out = SvgRenderer._try_native_replace_svg_colors(
+            self._SVG_ICON, False, False,
+        )
+        native_active = native_out is not None
+        set_perf_metadata("budget.svg.replace", "native_active", bool(native_active))
+
+        SvgRenderer._replace_svg_colors(self._SVG_ICON)  # 预热
+        _, out = self._measure(
+            "budget.svg.replace",
+            lambda: SvgRenderer._replace_svg_colors(self._SVG_ICON),
+            200,
+        )
+        assert isinstance(out, str) and len(out) > 0
+        p50 = self._report_budget(
+            f"SVG 换色（native_active={native_active}）",
+            "budget.svg.replace",
+            warn_ms=500.0,
+        )
+        assert p50 > 0.0
+
+    def test_svg_exact_pixmap_p50_recorded(
+        self, qapp: QApplication, monkeypatch: Any, tmp_path: Any,
+    ) -> None:
+        """主线程 ``render_svg_to_exact_pixmap``（file_icon_manager paint 点）P50。"""
+        from freeassetfilter.core.preview.svg_renderer import SvgRenderer
+
+        self._native_theme(monkeypatch)
+        svg_file: Path = tmp_path / "budget_icon.svg"
+        svg_file.write_text(self._SVG_ICON, encoding="utf-8")
+
+        def _render() -> QPixmap:
+            return SvgRenderer.render_svg_to_exact_pixmap(
+                str(svg_file),
+                icon_width=48,
+                icon_height=48,
+                device_pixel_ratio=1.0,
+            )
+
+        assert not _render().isNull()  # 预热
+        _, pixmap = self._measure("budget.svg.exact_pixmap", _render, 40)
+        assert not pixmap.isNull()
+        p50 = self._report_budget(
+            "SVG 精确渲染（主线程 paint）",
+            "budget.svg.exact_pixmap",
+            warn_ms=500.0,
+        )
+        assert p50 > 0.0
+
+    def test_fluid_frame_p50_recorded(self, qapp: QApplication) -> None:
+        """流体 CPU 帧 P50（DROP 后 native 恒 None，测 Python 回退路径）。"""
+        palette = [
+            QColor("#1a1a2e"),
+            QColor("#16213e"),
+            QColor("#0f3460"),
+            QColor("#e94560"),
+            QColor("#533483"),
+        ]
+
+        def _frame() -> QPixmap:
+            return _fluid_cpu.render_static_frame(
+                120, 80, palette, noise_seed=42, time=0.5,
+                overlay_color=QColor(0, 0, 0, 60),
+            )
+
+        assert not _frame().isNull()  # 预热（构建噪声缓存）
+        _, pixmap = self._measure("budget.fluid.frame", _frame, 20)
+        assert not pixmap.isNull()
+        assert pixmap.width() == 120 and pixmap.height() == 80
+        p50 = self._report_budget(
+            "流体 CPU 帧（120x80 / render 64x48，Python 路径）",
+            "budget.fluid.frame",
+            warn_ms=500.0,
+        )
+        assert p50 > 0.0
+
+    def test_qpixmap_not_constructed_in_worker_grep(self) -> None:
+        """grep 断言：file_icon_manager / _styled_fluid_cpu 的 worker 路径无 QPixmap。"""
+        import freeassetfilter.services.file_icon_manager as fim_mod
+
+        self._assert_no_worker_qpixmap(
+            fim_mod,
+            {
+                "_get_icon_pixmap_impl",
+                "_get_media_icon_pixmap",
+                "_build_unknown_icon_pixmap",
+            },
+        )
+        self._assert_no_worker_qpixmap(
+            _fluid_cpu,
+            {"render_static_frame"},
+        )
+
+    def test_qpixmap_created_on_gui_thread_threadid(
+        self, qapp: QApplication, tmp_path: Any,
+    ) -> None:
+        """线程 id 断言：预算路径运行在 GUI 线程；生产埋点 worker_thread==0。"""
+        from freeassetfilter.core.preview.svg_renderer import SvgRenderer
+
+        app = QApplication.instance()
+        assert app is not None
+        assert QThread.currentThread() is app.thread()
+
+        svg_file: Path = tmp_path / "budget_thread.svg"
+        svg_file.write_text(self._SVG_ICON, encoding="utf-8")
+        SvgRenderer.render_svg_to_pixmap(str(svg_file), icon_size=48, replace_colors=True)
+        counters = (get_perf_summary().get("svg.render_pixmap") or {}).get("counters", {})
+        assert counters.get("main_thread", 0) >= 1
+        assert counters.get("worker_thread", 0) == 0
+
+    def test_evidence_file_contains_p50_records(self) -> None:
+        """happy：预算记录落盘为证据文件 task-15-budget.txt（内容非空含 P50）。"""
+        assert self._EVIDENCE_FILE.exists(), f"证据缺失: {self._EVIDENCE_FILE}"
+        content = self._EVIDENCE_FILE.read_text(encoding="utf-8")
+        assert content.strip(), "预算证据为空"
+        for needle in (
+            "budget.svg.replace",
+            "budget.svg.exact_pixmap",
+            "budget.fluid.frame",
+        ):
+            assert needle in content, f"证据缺少预算事件 {needle}"
+        assert "p50_ms" in content

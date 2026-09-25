@@ -36,6 +36,20 @@ update/final/free``（流式三哈希 MD5/SHA1/SHA256，句柄式注册表；Rus
 见 ``staging_pool_service.py`` todo-29 接线）。公开入口经
 :func:`get_faf_core_bridge` 模块级惰性单例获取（避免每次调用重建 ctypes
 绑定）。
+
+新增导出（rust-hot-path-native-migration todo 3 接线）：``faf_parse_exif``
+（图片 EXIF，JSON ``{"common","rest"}``，见 ``file_info_service.py``
+todo-7 接线）/ ``faf_composite_psd``（PSD 合成，spike 裁决 DROP——恒返回
+null，Python 保持 psd-tools）/ ``faf_replace_svg_colors``（SVG 图标换色，
+返回**裸 SVG 文本**非 JSON，见 ``svg_renderer.py`` todo-12 接线）/
+``faf_render_fluid_frame``（流体 CPU 帧，spike 裁决 DROP——恒返回 null，
+返回 **RGBA 像素缓冲**非 JSON，``QPixmap`` 构造留 GUI 线程）/
+``faf_parse_7z_list``（7z ``-slt`` 输出解析，JSON 数组，见 ``py7z_core.py``
+todo-17 接线；7z.exe 子进程保留在 Python）/ ``faf_pdf_select_words``
+（PDF 选区逐词过滤，JSON 数组，见 ``pdf_document_view.py`` todo-19 接线；
+PyMuPDF 取词保留在 Python）。JSON 导出统一走
+:meth:`_call_json_list_export` / :meth:`_call_json_object_export` 骨架
+（先 ``string_at`` 拷贝后 ``finally: faf_free_message`` 释放）。
 """
 
 from __future__ import annotations
@@ -46,7 +60,7 @@ import os
 import sys
 import threading
 from collections.abc import Callable
-from ctypes import c_char_p, c_int, c_uint64, c_void_p
+from ctypes import POINTER, c_char_p, c_double, c_int, c_size_t, c_uint64, c_void_p
 from pathlib import Path
 from typing import Optional
 
@@ -102,6 +116,12 @@ class FafCoreBridge:
         self._supports_detect_encoding = False
         self._supports_copy = False
         self._supports_sizesum = False
+        self._supports_parse_exif = False
+        self._supports_composite_psd = False
+        self._supports_replace_svg_colors = False
+        self._supports_render_fluid_frame = False
+        self._supports_parse_7z_list = False
+        self._supports_pdf_select_words = False
         self._dll_directory_handle = None
         self._load()
 
@@ -205,6 +225,12 @@ class FafCoreBridge:
         self._supports_detect_encoding = False
         self._supports_copy = False
         self._supports_sizesum = False
+        self._supports_parse_exif = False
+        self._supports_composite_psd = False
+        self._supports_replace_svg_colors = False
+        self._supports_render_fluid_frame = False
+        self._supports_parse_7z_list = False
+        self._supports_pdf_select_words = False
 
         self._native_free_message = dll.faf_free_message
         self._native_free_message.argtypes = [c_void_p]
@@ -303,6 +329,62 @@ class FafCoreBridge:
             self._supports_sizesum = True
         except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             self._supports_sizesum = False
+
+        try:
+            dll.faf_parse_exif.argtypes = [c_char_p]
+            dll.faf_parse_exif.restype = c_void_p
+            self._native_parse_exif = dll.faf_parse_exif
+            self._supports_parse_exif = True
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            self._supports_parse_exif = False
+
+        try:
+            dll.faf_composite_psd.argtypes = [c_char_p]
+            dll.faf_composite_psd.restype = c_void_p
+            self._native_composite_psd = dll.faf_composite_psd
+            self._supports_composite_psd = True
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            self._supports_composite_psd = False
+
+        try:
+            dll.faf_replace_svg_colors.argtypes = [c_char_p, c_int, c_int]
+            dll.faf_replace_svg_colors.restype = c_void_p
+            self._native_replace_svg_colors = dll.faf_replace_svg_colors
+            self._supports_replace_svg_colors = True
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            self._supports_replace_svg_colors = False
+
+        try:
+            dll.faf_render_fluid_frame.argtypes = [
+                c_int,
+                c_int,
+                c_char_p,
+                c_int,
+                c_double,
+                c_char_p,
+                POINTER(c_size_t),
+            ]
+            dll.faf_render_fluid_frame.restype = c_void_p
+            self._native_render_fluid_frame = dll.faf_render_fluid_frame
+            self._supports_render_fluid_frame = True
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            self._supports_render_fluid_frame = False
+
+        try:
+            dll.faf_parse_7z_list.argtypes = [c_char_p, c_char_p, c_char_p]
+            dll.faf_parse_7z_list.restype = c_void_p
+            self._native_parse_7z_list = dll.faf_parse_7z_list
+            self._supports_parse_7z_list = True
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            self._supports_parse_7z_list = False
+
+        try:
+            dll.faf_pdf_select_words.argtypes = [c_char_p, c_char_p]
+            dll.faf_pdf_select_words.restype = c_void_p
+            self._native_pdf_select_words = dll.faf_pdf_select_words
+            self._supports_pdf_select_words = True
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            self._supports_pdf_select_words = False
 
     def free_message(self, raw) -> None:
         """释放 Rust 侧堆分配的 JSON 字符串指针（null 安全）。
@@ -805,3 +887,267 @@ class FafCoreBridge:
         finally:
             if raw is not None:
                 self.free_message(raw)
+
+    def parse_exif(self, path: str) -> Optional[dict]:
+        """经 faf_core 解析图片 EXIF 元数据（rust-hot-path-native-migration）。
+
+        JSON 契约（与 Rust ``exif::parse_exif_impl`` 对齐，todo 6 已核验）：
+        ``{"common": ["label: value",...], "rest": ["label: value",...]}``——
+        每行为已连接的 ``"label: value"`` 单串（exifread 键无冒号 → 标签即
+        完整键、common 恒空）。对应 Python oracle ``_collect_exif`` 的
+        ``(common, rest)`` 两组行（常用子集 + 文件内顺序平铺），接线侧经
+        ``_split_exif_native_row`` 切回二元组。
+
+        todo 2 占位期 native 返回 null（``STATUS_UNSUPPORTED``）→ 本方法返回
+        ``None``，调用方（todo 7 接线）回退 exifread 路径。
+
+        Args:
+            path: 图片文件绝对路径。
+
+        Returns:
+            Optional[dict]: ``{"common","rest"}`` 两组行；DLL 不可用、绑定
+                缺失、native 失败/返回 null 或非法载荷（非 dict 或缺列表键）
+                时返回 ``None``（不抛异常）。
+        """
+        if not self.available or not self._supports_parse_exif:
+            return None
+        if not isinstance(path, str):
+            return None
+        parsed = self._call_json_object_export(
+            lambda: self._native_parse_exif(path.encode("utf-8", errors="replace"))
+        )
+        if parsed is None:
+            return None
+        # 形状校验：common/rest 必须为列表（malformed 载荷回退）。
+        if not isinstance(parsed.get("common"), list) or not isinstance(
+            parsed.get("rest"), list
+        ):
+            return None
+        return parsed
+
+    def composite_psd(self, path: str) -> Optional[dict]:
+        """经 faf_core 合成 PSD 图层（rust-hot-path-native-migration）。
+
+        **spike 裁决 DROP**（task-1-decisions.md §3）：Rust ``psd`` crate 无法
+        等价 ``psd-tools .composite()``（混合模式/蒙版不应用），Rust 侧恒返回
+        ``STATUS_UNSUPPORTED`` → null → 本方法恒返回 ``None``，Python 保持
+        ``_decode_psd``（``image_decoder_service.py:324-``）路径。本方法仅供
+        能力探测与 todo 9 接线预留，禁止降级为错误的合成结果。
+
+        Args:
+            path: PSD 文件绝对路径。
+
+        Returns:
+            Optional[dict]: 合成结果 JSON；DLL 不可用、绑定缺失、native
+                失败/返回 null 时返回 ``None``（不抛异常）。
+        """
+        if not self.available or not self._supports_composite_psd:
+            return None
+        if not isinstance(path, str):
+            return None
+        return self._call_json_object_export(
+            lambda: self._native_composite_psd(path.encode("utf-8", errors="replace"))
+        )
+
+    def replace_svg_colors(
+        self,
+        svg_text: str,
+        invert_white_to_black: bool,
+        force_black_to_base: bool,
+    ) -> Optional[str]:
+        """经 faf_core 替换 SVG 图标颜色（rust-hot-path-native-migration）。
+
+        **返回裸 SVG 文本（非 JSON）**——契约与 ``svg_renderer._replace_svg_colors``
+        （``freeassetfilter/core/preview/svg_renderer.py:68-137``）对齐：18 条
+        正则替换顺序 + ``_convert_rgba_to_hex``/``rgba_to_hex`` 语义（todo 11
+        填实现）。返回指针经 ``faf_free_message`` 释放（与 JSON 导出同分配
+        契约——Rust 侧 ``alloc_json_message`` 分配）。
+
+        todo 2 占位期 native 返回 null（``STATUS_UNSUPPORTED``）→ 本方法返回
+        ``None``，调用方（todo 12 接线）回退 Python 换色。
+
+        Args:
+            svg_text: 待替换颜色的 SVG 源文本。
+            invert_white_to_black: 白转黑开关。
+            force_black_to_base: 黑强制转基础色开关。
+
+        Returns:
+            Optional[str]: 替换后的完整 SVG 文本；DLL 不可用、绑定缺失、
+                native 失败/返回 null、非 str 入参时返回 ``None``（不抛异常）。
+        """
+        if not self.available or not self._supports_replace_svg_colors:
+            return None
+        if not isinstance(svg_text, str):
+            return None
+        raw = None
+        try:
+            raw = self._native_replace_svg_colors(
+                svg_text.encode("utf-8", errors="replace"),
+                int(bool(invert_white_to_black)),
+                int(bool(force_black_to_base)),
+            )
+            if not raw:
+                return None
+            # 先 string_at 拷贝出字节，再在 finally 中释放 Rust 堆内存。
+            payload = ctypes.string_at(raw)
+            if not payload:
+                return None
+            return payload.decode("utf-8", errors="replace")
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            warning(f"replace_svg_colors 失败: {e}")
+            return None
+        finally:
+            if raw is not None:
+                self.free_message(raw)
+
+    def render_fluid_frame(
+        self,
+        width: int,
+        height: int,
+        palette_json: str,
+        noise_seed: int,
+        time: float,
+        overlay_json: str,
+    ) -> Optional[bytes]:
+        """经 faf_core 渲染流体背景 CPU 帧（rust-hot-path-native-migration）。
+
+        **返回 RGBA 像素缓冲（非 JSON）**——Rust 分配 ``c_void_p`` +
+        ``*out_len``，本方法 ``string_at(raw, out_len)`` 拷贝为 ``bytes``。
+        ``QPixmap``/``QImage`` 构造留在调用方（GUI 线程）。
+
+        **spike 裁决 DROP**（task-1-decisions.md §6）：float ULP（``math.hypot``
+        vs ``f64::hypot`` 差 1 ULP）令逐像素 parity 不可达，Rust 侧恒返回
+        ``STATUS_UNSUPPORTED`` → null → 本方法恒返回 ``None``，Python 保持
+        ``_styled_fluid_cpu.render_static_frame`` 路径。**无配套 free 导出**——
+        占位期 Rust 永不分配缓冲，故本方法不释放 raw（``faf_free_message``
+        只对 ``CString`` 分配有效，禁止用于裸缓冲）。
+
+        Args:
+            width: 帧宽（像素）。
+            height: 帧高（像素）。
+            palette_json: 调色板 JSON 串。
+            noise_seed: 噪声种子（int）。
+            time: 帧时间（float）。
+            overlay_json: 叠加参数 JSON 串。
+
+        Returns:
+            Optional[bytes]: RGBA 像素缓冲（``width * height * 4`` 字节）；DLL
+                不可用、绑定缺失、native 失败/返回 null、负/零尺寸或非法入参
+                时返回 ``None``（不抛异常）。
+        """
+        if not self.available or not self._supports_render_fluid_frame:
+            return None
+        raw = None
+        try:
+            if width <= 0 or height <= 0:
+                return None
+            if not isinstance(palette_json, str) or not isinstance(overlay_json, str):
+                return None
+            out_len = ctypes.c_size_t(0)
+            raw = self._native_render_fluid_frame(
+                int(width),
+                int(height),
+                palette_json.encode("utf-8", errors="replace"),
+                int(noise_seed),
+                float(time),
+                overlay_json.encode("utf-8", errors="replace"),
+                ctypes.byref(out_len),
+            )
+            if not raw:
+                return None
+            size = int(out_len.value)
+            if size <= 0:
+                return None
+            # RGBA 缓冲按 out_len 拷贝（含内嵌 NUL 字节）；占位期不可达。
+            return ctypes.string_at(raw, size)
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            warning(f"render_fluid_frame 失败: {e}")
+            return None
+
+    def parse_7z_list(
+        self, output: str, current_path: str, archive_path: str
+    ) -> Optional[list]:
+        """经 faf_core 解析 7z ``-slt`` 列表输出（rust-hot-path-native-migration）。
+
+        JSON 契约（与 Rust ``archive::parse_7z_list_impl`` 对齐，todo 16 填
+        实现）：条目 JSON 数组——对应 Python oracle ``py7z_core._parse_list_output``
+        （``freeassetfilter/core/native/bridges/py7z_core.py:333-``）的 7 键
+        条目（``name/path/is_dir/size/modified/suffix`` 等）。**7z.exe 子进程
+        与编码重试保留在 Python**，本方法只吃 stdout 文本。
+
+        todo 2 占位期 native 返回 null（``STATUS_UNSUPPORTED``）→ 本方法返回
+        ``None``，调用方（todo 17 接线）回退 ``_parse_list_output``。
+
+        Args:
+            output: 7z 命令的 ``-slt`` 输出文本。
+            current_path: 当前浏览路径（目录过滤基准）。
+            archive_path: 压缩包路径（排除压缩包自身）。
+
+        Returns:
+            Optional[list]: 条目字典列表；DLL 不可用、绑定缺失、native
+                失败/返回 null、非 str 入参或非法载荷（非列表/含非 dict 项）
+                时返回 ``None``（不抛异常）。
+        """
+        if not self.available or not self._supports_parse_7z_list:
+            return None
+        if (
+            not isinstance(output, str)
+            or not isinstance(current_path, str)
+            or not isinstance(archive_path, str)
+        ):
+            return None
+        raw = self._call_json_list_export(
+            lambda: self._native_parse_7z_list(
+                output.encode("utf-8", errors="replace"),
+                current_path.encode("utf-8", errors="replace"),
+                archive_path.encode("utf-8", errors="replace"),
+            )
+        )
+        if raw is None:
+            return None
+        # 形状校验：条目必须为字典（malformed 载荷回退）。
+        for item in raw:
+            if not isinstance(item, dict):
+                return None
+        return raw
+
+    def pdf_select_words(
+        self, words_json: str, selection_json: str
+    ) -> Optional[list]:
+        """经 faf_core 过滤 PDF 选区逐词（rust-hot-path-native-migration）。
+
+        JSON 契约（与 Rust ``pdfsel::select_words_impl`` 对齐，todo 18 填
+        实现）：选中词条目 JSON 数组——对应 Python oracle
+        ``pdf_document_view.get_text_selection``（``pdf_document_view.py:616-745``）
+        的 smart x-bound 过滤 + ``sort((page,block,line,word_no))``。**PyMuPDF
+        ``get_text_words`` 取词保留在 Python**，Rust 只吃词表 + 选区参数。
+
+        todo 2 占位期 native 返回 null（``STATUS_UNSUPPORTED``）→ 本方法返回
+        ``None``，调用方（todo 19 接线）回退 Python 选区过滤。
+
+        Args:
+            words_json: 词表 JSON（PyMuPDF ``get_text_words`` 产物序列化）。
+            selection_json: 选区参数 JSON（归一化矩形/拖拽方向等）。
+
+        Returns:
+            Optional[list]: 选中词条目列表；DLL 不可用、绑定缺失、native
+                失败/返回 null、非 str 入参或非法载荷（非列表/含非 dict 项）
+                时返回 ``None``（不抛异常）。
+        """
+        if not self.available or not self._supports_pdf_select_words:
+            return None
+        if not isinstance(words_json, str) or not isinstance(selection_json, str):
+            return None
+        raw = self._call_json_list_export(
+            lambda: self._native_pdf_select_words(
+                words_json.encode("utf-8", errors="replace"),
+                selection_json.encode("utf-8", errors="replace"),
+            )
+        )
+        if raw is None:
+            return None
+        # 形状校验：条目必须为字典（malformed 载荷回退）。
+        for item in raw:
+            if not isinstance(item, dict):
+                return None
+        return raw

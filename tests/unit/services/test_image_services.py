@@ -243,6 +243,22 @@ class TestPilToQImageSuccess:
         assert ImageDecoderService._pil_to_qimage("not an image") is None
         assert ImageDecoderService._pil_to_qimage(None) is None
 
+    def test_pixel_data_matches_source(self) -> None:
+        """语义基线（todo 10 裁决 DROP）：输出 RGBA8888 缓冲与源 PIL 逐点一致。"""
+        from PIL import Image as PILImage
+        from PySide6.QtGui import QImage
+
+        img = PILImage.new("RGBA", (8, 6), (0, 0, 0, 0))
+        px = img.load()
+        for x in range(8):
+            for y in range(6):
+                px[x, y] = (x * 31 % 256, y * 41 % 256, (x + y) * 7 % 256, 128)
+        qimage: Any = ImageDecoderService._pil_to_qimage(img)
+        assert qimage is not None
+        assert not qimage.isNull()
+        assert qimage.format() == QImage.Format.Format_RGBA8888
+        assert bytes(qimage.constBits()) == img.tobytes()
+
 
 # ── decode_to_qimage：mock 复杂格式后端的完整成功路径 ────────────────────
 
@@ -289,6 +305,105 @@ class TestDecodeToQImageMockedBackend:
         ok, result = ImageDecoderService.decode_to_qimage(str(tmp_path / "art.psd"))
         assert ok is True
         assert not result.isNull()
+
+
+class TestPsdFallbackKeepsPythonPath:
+    """todo 8（rust-hot-path-native-migration）：PSD 裁决 DROP 的 Python 回退验证。
+
+    Rust ``faf_composite_psd`` 恒返回 ``STATUS_UNSUPPORTED`` → 桥 ``composite_psd``
+    恒返回 ``None``；项目保持 ``psd-tools`` 合成路径。这里用 multiply 混合模式
+    样本验证：(1) 桥返回 ``None``（回退触发条件，DLL 缺失时同样成立）；
+    (2) ``_decode_psd`` 的 psd-tools 路径正确应用混合模式——正是 Rust ``psd``
+    crate 失败的那类样本（flatten=255 vs psd-tools=128）。完整接线
+    （``_decode_psd`` 优先 native）属 todo 9。
+    """
+
+    def test_bridge_composite_psd_returns_none(self, tmp_path: Path) -> None:
+        """DROP：桥 ``composite_psd`` 恒返回 ``None``（Rust 侧 UNSUPPORTED）。"""
+        from freeassetfilter.core.native.bridges.faf_core_bridge import FafCoreBridge
+
+        psd = tmp_path / "a.psd"
+        psd.write_bytes(b"8BPS")
+        inst = FafCoreBridge()
+        assert inst.composite_psd(str(psd)) is None
+
+    def test_decode_psd_psdtools_applies_multiply_blend(self, tmp_path: Path) -> None:
+        """回退目标：psd-tools 合成路径正确应用混合模式，无异常。"""
+        pytest.importorskip("psd_tools")
+        from PIL import Image as PILImage
+        from psd_tools import PSDImage
+        from psd_tools.constants import BlendMode
+
+        bottom = PILImage.new("RGBA", (8, 8), (128, 128, 128, 255))
+        top = PILImage.new("RGBA", (8, 8), (255, 255, 255, 255))
+        doc = PSDImage.new(mode="RGBA", size=(8, 8))
+        doc.create_pixel_layer(bottom, name="bottom")
+        doc.create_pixel_layer(top, name="top", blend_mode=BlendMode.MULTIPLY)
+        psd_path = tmp_path / "multiply.psd"
+        doc.save(str(psd_path))
+
+        composited = ImageDecoderService._decode_psd(str(psd_path))
+        assert composited is not None
+        assert composited.mode == "RGBA"
+        assert composited.getpixel((0, 0)) == (128, 128, 128, 255)
+
+    def test_decode_psd_consumes_bridge_then_falls_back(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """todo 9 接线：``_decode_psd`` 显式消费桥 ``composite_psd``（恒 None）后回退 psd-tools。
+
+        Args:
+            monkeypatch: pytest monkeypatch。
+            tmp_path: pytest 临时目录。
+        """
+        pytest.importorskip("psd_tools")
+        from PIL import Image as PILImage
+        from psd_tools import PSDImage
+        from psd_tools.constants import BlendMode
+
+        calls: List[str] = []
+
+        class _FakeBridge:
+            def composite_psd(self, path: str) -> None:
+                calls.append(path)
+                return None
+
+        monkeypatch.setattr(
+            "freeassetfilter.core.native.bridges.faf_core_bridge.get_faf_core_bridge",
+            lambda: _FakeBridge(),
+        )
+
+        bottom = PILImage.new("RGBA", (8, 8), (128, 128, 128, 255))
+        top = PILImage.new("RGBA", (8, 8), (255, 255, 255, 255))
+        doc = PSDImage.new(mode="RGBA", size=(8, 8))
+        doc.create_pixel_layer(bottom, name="bottom")
+        doc.create_pixel_layer(top, name="top", blend_mode=BlendMode.MULTIPLY)
+        psd_path = tmp_path / "multiply.psd"
+        doc.save(str(psd_path))
+
+        composited = ImageDecoderService._decode_psd(str(psd_path))
+        assert calls == [str(psd_path)]
+        assert composited is not None
+        assert composited.mode == "RGBA"
+        assert composited.getpixel((0, 0)) == (128, 128, 128, 255)
+
+    def test_decode_psd_corrupt_raises_corrupt_file_error(self) -> None:
+        """损坏 PSD → ``CorruptFileError`` 不崩溃（错误分类保持）。
+
+        ``sample_corrupt.psd`` 为 todo 5 研究样本（截断 PSD，psd-tools 合成时
+        "Decompressed length mismatch"）——即使桥先被调用返回 None，回退路径
+        仍须正确分类为 ``CorruptFileError``。
+        """
+        pytest.importorskip("psd_tools")
+        corrupt = (
+            Path(__file__).resolve().parent.parent.parent
+            / "support"
+            / "faf_core_fixtures"
+            / "psd_samples"
+            / "sample_corrupt.psd"
+        )
+        with pytest.raises(CorruptFileError):
+            ImageDecoderService._decode_psd(str(corrupt))
 
 
 # ── ImageDecodeWorker：生命周期 / 信号 / 超时 / 并发 ─────────────────────

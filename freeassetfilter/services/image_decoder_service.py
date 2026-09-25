@@ -19,7 +19,7 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 from __future__ import annotations
 
 import os
-from typing import Tuple, Union
+from typing import Optional, Tuple, Union
 
 from freeassetfilter.utils.app_logger import debug, warning, error
 
@@ -325,8 +325,10 @@ class ImageDecoderService:
         """
         解码 PSD 图像文件。
 
-        使用 ``psd_tools.PSDImage.open`` 打开并调用 ``composite()``
-        合成所有可见图层。最终输出模式转为 RGBA。
+        优先走 faf_core 原生合成（``bridge.composite_psd``，todo 9 接线）；
+        因 spike 裁决 DROP（Rust ``psd`` crate 不应用混合模式/蒙版，桥恒返回
+        ``None``）此路径恒回退 psd-tools：``PSDImage.open`` 打开并调用
+        ``composite()`` 合成所有可见图层。最终输出模式转为 RGBA。
 
         Parameters
         ----------
@@ -345,6 +347,32 @@ class ImageDecoderService:
         CorruptFileError
             文件损坏或无法读取。
         """
+        # ── 优先 native（todo 9 接线）：显式消费桥结果 ─────────────────────
+        # spike 裁决 DROP（task-1-decisions.md §3 / 桥 docstring）：Rust 侧
+        # ``faf_composite_psd`` 恒返回 STATUS_UNSUPPORTED → null → 桥恒返回
+        # ``None``，故恒走 psd-tools 回退。此接线仅保证未来裁决翻转为 KEEP
+        # 时"先取 native、None/异常 → 回退"的结构已就位。
+        native: Optional[dict] = None
+        try:
+            from freeassetfilter.core.native.bridges.faf_core_bridge import (
+                get_faf_core_bridge,
+            )
+
+            bridge = get_faf_core_bridge()
+            if bridge is not None:
+                native = bridge.composite_psd(file_path)
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at native FFI boundary
+            debug(f"[ImageDecoderService] native PSD 合成不可用，回退 psd-tools: {e}")
+            native = None
+        if native is not None:
+            # KEEP 未来分支（DROP 终态桥恒 None，不可达）：dict → PIL Image
+            # 转换未定义前禁止把任意 native 载荷当作合成结果返回（杜绝与
+            # psd-tools 不一致的错误结果），日志告警后继续 psd-tools 回退。
+            warning(
+                "[ImageDecoderService] native PSD 合成返回载荷但转换未定义，回退 psd-tools"
+            )
+            native = None
+
         try:
             from psd_tools import PSDImage
         except ImportError as e:

@@ -340,7 +340,23 @@ def collect_binaries() -> List[Tuple[str, str]]:
     else:
         print_warning("未找到 faf_core/target/release/faf_core.dll（faf_core 相关功能将降级）")
 
-    # 9. 收集Python扩展模块(.pyd文件)
+    # 9. mica_render DLL（C++ Mica GPU 渲染引擎，统一使用源码正式编译产物）
+    mica_render_dll = (
+        project_root
+        / "freeassetfilter"
+        / "core"
+        / "native"
+        / "src"
+        / "cpp_mica_render"
+        / "mica_render.dll"
+    )
+    if mica_render_dll.exists():
+        binaries.append((str(mica_render_dll), "freeassetfilter/core/native/bin"))
+        print_info(f"收集到 mica_render.dll（来源: {mica_render_dll}）")
+    else:
+        print_warning("未找到 cpp_mica_render/mica_render.dll（Mica 背景将回退到 CPU 管线）")
+
+    # 10. 收集Python扩展模块(.pyd文件)
     # cpp_color_extractor
     # NOTE: Dead code — no runtime import found (see note in section 4 above).
     if cpp_color_dir.exists():
@@ -793,6 +809,7 @@ def clean_native_sources_from_dist():
         dist_root / "native" / "src" / "thumbnail_rust",
         dist_root / "native" / "src" / "color_extractor_rust",
         dist_root / "native" / "src" / "faf_core",
+        dist_root / "native" / "src" / "cpp_mica_render",
         dist_root / "native" / "src" / "cpp_lut_preview" / "build",
     ]
 

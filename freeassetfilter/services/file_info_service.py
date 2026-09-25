@@ -1029,11 +1029,61 @@ def _clean_exif_datetime(text: str) -> str:
     return text
 
 
-def _collect_exif(path: str) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]:
-    """提取 EXIF，返回 (常用子集行, 其余全量行)。
+def _split_exif_native_row(row: str) -> Tuple[str, str]:
+    """把 native 的 ``"label: value"`` 单串切回 ``(label, value)`` 二元组。
 
-    常用子集按 ``_EXIF_COMMON_LABELS`` 过滤；其余按文件内出现顺序平铺
-    （跳过缩略图/厂商私有等超大或二进制标签）。RAW 文件同样适用。
+    native（``faf_core.parse_exif``）按 exifread 语义输出已连接的整行
+    （exifread 键无冒号 → 标签即完整键；值可含冒号，如时间戳
+    ``2026:09:05 10:11:12``），此处只在首个 ``": "`` 处切分，保证值内的
+    冒号不被误切。
+    """
+    label, sep, value = row.partition(": ")
+    return (label, value) if sep else (row, "")
+
+
+def _collect_exif_native(
+    path: str,
+) -> Optional[Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]]:
+    """单次 native 解析 EXIF（``faf_core.parse_exif``）；不可用/失败返回 None。
+
+    与 :func:`_get_font_native` 同构：DLL 缺失 / native 返回 None（损坏/空/
+    无 EXIF 文件按 todo 6 语义均属失败，Rust 侧 Err → FFI null）→ 返回
+    ``None``，调用方回退 :func:`_collect_exif_exifread`。native 行以
+    ``"label: value"`` 单串输出，经 :func:`_split_exif_native_row` 切回
+    二元组对齐既有返回结构。
+
+    Args:
+        path: 图片文件绝对路径。
+
+    Returns:
+        Optional[Tuple[...]]: ``(common, rest)`` 行组；native 不可用或返回
+            None（含异常）为 ``None``。
+    """
+    try:
+        from freeassetfilter.core.native.bridges.faf_core_bridge import (
+            get_faf_core_bridge,
+        )
+
+        bridge = get_faf_core_bridge()
+        if bridge is not None:
+            native = bridge.parse_exif(path)
+            if native is not None:
+                return (
+                    [_split_exif_native_row(r) for r in native.get("common", [])],
+                    [_split_exif_native_row(r) for r in native.get("rest", [])],
+                )
+    except Exception:  # noqa: BLE001  # broad catch intentional at native FFI boundary
+        pass
+    return None
+
+
+def _collect_exif_exifread(
+    path: str,
+) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]:
+    """exifread 回退路径（原 ``_collect_exif`` 实现，依赖保留）。
+
+    ``exifread`` 缺失 / 文件不可读返回空行组；``details=False`` 跳过
+    缩略图/厂商私有等超大或二进制标签。
     """
     if exifread is None:
         return [], []
@@ -1067,6 +1117,22 @@ def _collect_exif(path: str) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str
         else:
             rest.append((short, value))
     return common, rest
+
+
+def _collect_exif(path: str) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]:
+    """提取 EXIF，返回 (常用子集行, 其余全量行)。
+
+    native 优先（``faf_core.parse_exif``，Rust kamadak-exif）；native 不可用
+    / 返回 None（DLL 缺失、损坏/空/无 EXIF 文件）时回退
+    :func:`_collect_exif_exifread`。常用子集按 ``_EXIF_COMMON_LABELS`` 过滤；
+    其余按文件内出现顺序平铺（跳过缩略图/厂商私有等超大或二进制标签）。
+    RAW 文件同样适用。缓存语义不变（EXIF 不入缓存，path+mtime 指纹失效
+    不受影响）。
+    """
+    native = _collect_exif_native(path)
+    if native is not None:
+        return native
+    return _collect_exif_exifread(path)
 
 
 def _collect_audio_tags(path: str) -> List[Tuple[str, str]]:

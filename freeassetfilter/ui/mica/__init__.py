@@ -10,8 +10,15 @@
 
 为避免无 GUI 环境下导入数据层也连带拉起 Qt，本 ``__init__`` 只导出纯数据 / 数值
 模块；需要 Qt 门面时请显式 ``from freeassetfilter.ui.mica.material import MicaMaterial``。
+
+导入成本约定（首屏关键路径）：本 ``__init__`` **只主动导入 ``config``**（纯数据，
+零第三方依赖）。``tint`` / ``resample`` / ``source`` / ``engine`` 均依赖 numpy
+（约 0.13s），改由调用方按需触发 —— ``from freeassetfilter.ui.mica import engine``
+这类写法无需 ``__init__`` 预导入（Python 会自动加载子模块）。主窗口在窗口显示前
+只需 ``config.DEFAULT_MICA_CONFIG`` 与 ``winapi``（ctypes 薄封装），因此这两者
+之外的重型子模块不得在此预导入，否则 numpy 会被拽进「窗口出现前」的关键路径。
 """
 
-from . import config, engine, resample, source, tint
+from . import config
 
-__all__ = ["config", "engine", "resample", "source", "tint"]
+__all__ = ["config"]

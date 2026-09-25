@@ -106,6 +106,7 @@ from .config import (
     BAKE_RETRY_DELAY_MS,
     BAKE_WATCHDOG_MS,
     DEACTIVATE_DEBOUNCE_MS,
+    DEFAULT_MICA_CONFIG,
     FADE_DURATION_MS,
     G1_DARK,
     G1_LIGHT,
@@ -2394,17 +2395,8 @@ class MicaWindow(QWidget):
         self._mica.begin_interaction()
 
 
-#: 默认 Mica 配置（与旧 ``components.mica_window.DEFAULT_MICA_CONFIG`` 一致），
-#: 供调用方做默认值来源。
-DEFAULT_MICA_CONFIG: dict = {
-    "blur_radius": 200,
-    "surface_color": "#000000",
-    "luminosity": 0.65,
-    "contrast": 1.5,
-    "saturation": 4.5,
-}
-
-
+#: 默认 Mica 配置由 :mod:`mica.config` 定义并在此再导出（既有导入点不受影响）；
+#: 迁出的原因见 config.DEFAULT_MICA_CONFIG 注释（首屏关键路径不拖入 numpy）。
 __all__ = [
     "DEFAULT_MICA_CONFIG",
     "MicaMaterial",

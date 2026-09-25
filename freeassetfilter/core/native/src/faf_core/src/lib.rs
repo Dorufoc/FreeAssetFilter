@@ -1,19 +1,19 @@
 //! `faf_core` —— FreeAssetFilter 原生性能库（Rust `cdylib`，与缩略图引擎并列）。
 //!
-//! 本文件为 todo 2 骨架：只提供版本导出与 FFI 共享基础设施（状态码、JSON
-//! 输出 helper、`catch_unwind` 兜底、裸指针入参守卫），不实现任何业务导出
-//!（`faf_scan_directory` / `faf_highlight_text` 等留待各自 todo）。
+//! 本文件为 FFI 根模块：实现全部 20 个 `#[no_mangle]` 业务导出（目录扫描/排序/高亮/
+//! Markdown/字体/哈希/编码探测/批量复制/目录大小聚合，及 EXIF/PSD 占位/SVG 换色/
+//! 流体占位/7z 解析/PDF 选区）与共享基础设施（状态码、JSON 输出 helper、`catch_unwind` 兜底、裸指针入参守卫）。
 //!
 //! FFI 范式镜像 `thumbnail_rust`（`src/lib.rs`）：
-//! - 状态码语义 `0/-1/-2/-3/-4/-5/-6/-7`（`:42-52`）
-//! - `CString::into_raw` 输出模式（`:535-569`）
-//! - `#[no_mangle] pub extern "C" fn` 导出形态（`:672-1029`）
+//! - 状态码语义 `0/-1/-2/-3/-4/-5/-6/-7`（thumbnail_rust `:42-52`）
+//! - `CString::into_raw` 输出模式（thumbnail_rust `:535-569`）
+//! - `#[no_mangle] pub extern "C" fn` 导出形态（本文件 `:200` 起，20 个导出；范式参考 thumbnail_rust `:672-1029`）
 //!
 //! 调用纪律（Python 桥侧）：`faf_version` 返回的指针必须先
 //! `ctypes.string_at` 拷贝，再调 `faf_free_message` 释放（对称分配）。
 
-use std::ffi::{CStr, CString};
-use std::os::raw::{c_char, c_int};
+use std::ffi::{c_void, CStr, CString};
+use std::os::raw::{c_char, c_double, c_int};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 
@@ -41,6 +41,29 @@ mod font;
 /// 批量文件复制与目录大小聚合模块（todo 27：`faf_copy_files` /
 /// `faf_sum_directory_sizes`，见 [`copy`] 模块文档）。
 mod copy;
+
+/// EXIF 元数据解析模块（todo 6：`faf_parse_exif`，见 [`exif::parse_exif_impl`]）。
+mod exif;
+
+/// PSD 合成模块（todo 8：`faf_composite_psd`，spike 裁决 DROP——
+/// 恒 `STATUS_UNSUPPORTED`，见 [`psd`] 模块文档）。
+mod psd;
+
+/// SVG 图标换色模块（todo 11：`faf_replace_svg_colors`，见
+/// [`svg::replace_svg_colors_impl`]）。
+mod svg;
+
+/// 流体背景 CPU 帧模块（todo 13：`faf_render_fluid_frame`，spike 裁决 DROP——
+/// 恒 `STATUS_UNSUPPORTED`，见 [`fluid`] 模块文档）。
+mod fluid;
+
+/// 7z `-slt` 输出解析模块（todo 16：`faf_parse_7z_list`，见
+/// [`archive::parse_7z_list_impl`]）。
+mod archive;
+
+/// PDF 选区逐词过滤模块（todo 18：`faf_pdf_select_words`，见
+/// [`pdfsel::select_words_impl`]）。
+mod pdfsel;
 
 // ---------------------------------------------------------------------------
 // 状态码（与 thumbnail_rust 语义对齐）
@@ -104,6 +127,17 @@ where
 pub(crate) fn catch_to_ptr<F>(f: F) -> *mut c_char
 where
     F: FnOnce() -> *mut c_char,
+{
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or(std::ptr::null_mut())
+}
+
+/// 任意裸指针型导出兜底：闭包 panic 时返回 null，不逃逸。
+///
+/// 为 `*mut c_void`（缓冲导出，如 `faf_render_fluid_frame` 的 RGBA 像素）与
+/// 其它非 `c_char` 指针导出复用；`catch_to_ptr` 仅覆盖 `*mut c_char`。
+pub(crate) fn catch_to_raw<F, T>(f: F) -> *mut T
+where
+    F: FnOnce() -> *mut T,
 {
     catch_unwind(AssertUnwindSafe(f)).unwrap_or(std::ptr::null_mut())
 }
@@ -456,6 +490,269 @@ pub extern "C" fn faf_sum_directory_sizes(paths_json: *const c_char) -> *mut c_c
     })
 }
 
+/// 解析图片 EXIF 元数据（todo 6）：`faf_parse_exif(path)`。
+///
+/// 语义对齐 Python `file_info_service._collect_exif`（L1032-1069）：输出
+/// `(common, rest)` 两组行（对应 `_EXIF_COMMON_LABELS` 与平铺剩余字段；
+/// oracle 实测 `common` 恒空）。实现见 [`exif`] 模块文档。
+///
+/// - 成功：非空 NUL 终止 JSON（`alloc_json_message` 分配，经
+///   [`faf_free_message`] 释放）；
+/// - 失败（null/非 UTF-8/损坏/缺失/空/无 EXIF）：返回 null，不 panic
+///   （Python 侧回退 exifread）。
+///
+/// `#[allow(clippy::not_unsafe_ptr_arg_deref)]`：FFI 边界保持 `safe extern "C"`
+///（与 crate 其余导出契约一致）；入参经 `guard_c_str` null 守卫。
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn faf_parse_exif(path: *const c_char) -> *mut c_char {
+    catch_to_ptr(|| {
+        // SAFETY：guard_c_str 已做 null 守卫；NUL 终止性由 ctypes c_char_p 契约保证。
+        let Ok(path_cstr) = (unsafe { guard_c_str(path) }) else {
+            return std::ptr::null_mut();
+        };
+        let Ok(path_text) = path_cstr.to_str() else {
+            return std::ptr::null_mut();
+        };
+        match exif::parse_exif_impl(path_text) {
+            Ok(value) => alloc_json_message(&value.to_string()),
+            Err(_) => std::ptr::null_mut(),
+        }
+    })
+}
+
+/// 合成 PSD 图层（todo 8）：`faf_composite_psd(path)`。
+///
+/// **spike 裁决 DROP**（task-1-decisions.md §3）：`psd` crate 无法等价
+/// `psd-tools .composite()`，本导出恒返回 `Err(STATUS_UNSUPPORTED)` → null，
+/// Python 保持 `_decode_psd`（`image_decoder_service.py:324-`）路径。
+/// 禁止输出与 psd-tools 不一致的合成结果。
+///
+/// - 失败（null/非 UTF-8/未实现）：返回 null，不 panic；不读文件、不合成。
+///
+/// `#[allow(clippy::not_unsafe_ptr_arg_deref)]`：FFI 边界保持 `safe extern "C"`；
+/// 入参经 `guard_c_str` null 守卫。
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn faf_composite_psd(path: *const c_char) -> *mut c_char {
+    catch_to_ptr(|| {
+        // SAFETY：guard_c_str 已做 null 守卫；NUL 终止性由 ctypes c_char_p 契约保证。
+        let Ok(path_cstr) = (unsafe { guard_c_str(path) }) else {
+            return std::ptr::null_mut();
+        };
+        let Ok(path_text) = path_cstr.to_str() else {
+            return std::ptr::null_mut();
+        };
+        match psd::composite_psd_impl(path_text) {
+            Ok(value) => alloc_json_message(&value.to_string()),
+            Err(_) => std::ptr::null_mut(),
+        }
+    })
+}
+
+/// 替换 SVG 图标颜色（todo 11）：`faf_replace_svg_colors(svg_text,
+/// invert_white_to_black, force_black_to_base)`。
+///
+/// 语义对齐 `svg_renderer._replace_svg_colors`（`freeassetfilter/core/preview/
+/// svg_renderer.py:68-137`）之 18 条预编译正则替换顺序。返回替换后的完整 SVG
+/// 文本（NUL 终止），非 JSON。
+///
+/// **todo 2 占位**：`svg::replace_svg_colors_impl` 恒返回
+/// `Err(STATUS_UNSUPPORTED)`，本导出据此返回 null；todo 11 填实现。
+///
+/// - 成功：替换后的 SVG 文本指针（`alloc_json_message` 分配，经
+///   [`faf_free_message`] 释放）；
+/// - 失败（null/非 UTF-8/未实现）：返回 null，不 panic。
+///
+/// `#[allow(clippy::not_unsafe_ptr_arg_deref)]`：FFI 边界保持 `safe extern "C"`；
+/// 入参经 `guard_c_str` null 守卫。
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn faf_replace_svg_colors(
+    svg_text: *const c_char,
+    invert_white_to_black: c_int,
+    force_black_to_base: c_int,
+) -> *mut c_char {
+    catch_to_ptr(|| {
+        // SAFETY：guard_c_str 已做 null 守卫；NUL 终止性由 ctypes c_char_p 契约保证。
+        let Ok(svg_cstr) = (unsafe { guard_c_str(svg_text) }) else {
+            return std::ptr::null_mut();
+        };
+        let Ok(svg_text) = svg_cstr.to_str() else {
+            return std::ptr::null_mut();
+        };
+        match svg::replace_svg_colors_impl(
+            svg_text,
+            invert_white_to_black != 0,
+            force_black_to_base != 0,
+        ) {
+            Ok(replaced) => alloc_json_message(&replaced),
+            Err(_) => std::ptr::null_mut(),
+        }
+    })
+}
+
+/// 渲染流体背景 CPU 帧（todo 13）：`faf_render_fluid_frame(width, height,
+/// palette_json, noise_seed, time, overlay_json, out_len)`。
+///
+/// **spike 裁决 DROP**（task-1-decisions.md §6）：float ULP（`math.hypot` vs
+/// `f64::hypot` 差 1 ULP）令逐像素 parity 不可达，本导出恒返回
+/// `Err(STATUS_UNSUPPORTED)` → null，Python 保持 `_styled_fluid_cpu`
+/// `render_static_frame` 路径；`QPixmap`/`QImage` 永远留在 GUI 线程。
+///
+/// 契约：成功输出 Rust 分配的 RGBA 像素缓冲（`*mut c_void` + `*out_len`），
+/// Python 侧 `QImage` 包装后 `QPixmap.fromImage`。占位期恒失败返回 null，
+/// 不写 `*out_len`、不分配缓冲。
+///
+/// - 失败（null 入参/负数尺寸/非法 JSON/未实现）：返回 null，不 panic。
+///
+/// `#[allow(clippy::not_unsafe_ptr_arg_deref)]`：FFI 边界保持 `safe extern "C"`；
+/// 入参经 `guard_c_str`/null 守卫。
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn faf_render_fluid_frame(
+    width: c_int,
+    height: c_int,
+    palette_json: *const c_char,
+    noise_seed: c_int,
+    time: c_double,
+    overlay_json: *const c_char,
+    out_len: *mut usize,
+) -> *mut c_void {
+    catch_to_raw(|| {
+        if width <= 0 || height <= 0 {
+            return std::ptr::null_mut();
+        }
+        if out_len.is_null() {
+            return std::ptr::null_mut();
+        }
+        // SAFETY：guard_c_str 已做 null 守卫；NUL 终止性由 ctypes c_char_p 契约保证。
+        let Ok(palette_cstr) = (unsafe { guard_c_str(palette_json) }) else {
+            return std::ptr::null_mut();
+        };
+        let Ok(overlay_cstr) = (unsafe { guard_c_str(overlay_json) }) else {
+            return std::ptr::null_mut();
+        };
+        let Ok(palette_text) = palette_cstr.to_str() else {
+            return std::ptr::null_mut();
+        };
+        let Ok(overlay_text) = overlay_cstr.to_str() else {
+            return std::ptr::null_mut();
+        };
+        match fluid::render_fluid_frame_impl(
+            width as u32,
+            height as u32,
+            palette_text,
+            noise_seed as u32,
+            time,
+            overlay_text,
+        ) {
+            Ok(buf) => {
+                // SAFETY：out_len 已守卫非空；成功时写入产物长度（占位期不可达）。
+                unsafe { *out_len = buf.len() }
+                let ptr = buf.as_ptr() as *mut c_void;
+                // 所有权移交调用方（已写 out_len；占位期恒 DROP 不可达）。
+                std::mem::forget(buf);
+                ptr
+            }
+            Err(_) => std::ptr::null_mut(),
+        }
+    })
+}
+
+/// 解析 7z `-slt` 列表输出（todo 16）：`faf_parse_7z_list(output,
+/// current_path, archive_path)`。
+///
+/// 语义对齐 `py7z_core._parse_list_output`/`_parse_file_block`
+/// （`freeassetfilter/core/native/bridges/py7z_core.py:352-`）。**不做文件 I/O、
+/// 不调用 7z.exe**（子进程与编码检测保留在 Python）。
+///
+/// **todo 2 占位**：`archive::parse_7z_list_impl` 恒返回
+/// `Err(STATUS_UNSUPPORTED)`，本导出据此返回 null；todo 16 填实现。
+///
+/// - 成功：条目 JSON 数组（`alloc_json_message` 分配，经 [`faf_free_message`]
+///   释放）；
+/// - 失败（null/非 UTF-8/未实现）：返回 null，不 panic。
+///
+/// `#[allow(clippy::not_unsafe_ptr_arg_deref)]`：FFI 边界保持 `safe extern "C"`；
+/// 入参经 `guard_c_str` null 守卫。
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn faf_parse_7z_list(
+    output: *const c_char,
+    current_path: *const c_char,
+    archive_path: *const c_char,
+) -> *mut c_char {
+    catch_to_ptr(|| {
+        // SAFETY：guard_c_str 已做 null 守卫；NUL 终止性由 ctypes c_char_p 契约保证。
+        let Ok(output_cstr) = (unsafe { guard_c_str(output) }) else {
+            return std::ptr::null_mut();
+        };
+        let Ok(current_cstr) = (unsafe { guard_c_str(current_path) }) else {
+            return std::ptr::null_mut();
+        };
+        let Ok(archive_cstr) = (unsafe { guard_c_str(archive_path) }) else {
+            return std::ptr::null_mut();
+        };
+        let Ok(output_text) = output_cstr.to_str() else {
+            return std::ptr::null_mut();
+        };
+        let Ok(current_text) = current_cstr.to_str() else {
+            return std::ptr::null_mut();
+        };
+        let Ok(archive_text) = archive_cstr.to_str() else {
+            return std::ptr::null_mut();
+        };
+        match archive::parse_7z_list_impl(output_text, current_text, archive_text) {
+            Ok(value) => alloc_json_message(&value.to_string()),
+            Err(_) => std::ptr::null_mut(),
+        }
+    })
+}
+
+/// PDF 选区逐词过滤（todo 18）：`faf_pdf_select_words(words_json,
+/// selection_json)`。
+///
+/// 语义对齐 `pdf_document_view.get_text_selection`（`freeassetfilter/services/
+/// pdf_document_view.py:616-745`）：**PyMuPDF `get_text_words`（取词）保留在
+/// Python**，Rust 只吃词表 JSON + 选区参数 JSON，返回选中词条目/索引。
+///
+/// **todo 2 占位**：`pdfsel::select_words_impl` 恒返回
+/// `Err(STATUS_UNSUPPORTED)`，本导出据此返回 null；todo 18 填实现。
+///
+/// - 成功：选中词 JSON（`alloc_json_message` 分配，经 [`faf_free_message`]
+///   释放）；
+/// - 失败（null/非 UTF-8/未实现）：返回 null，不 panic。
+///
+/// `#[allow(clippy::not_unsafe_ptr_arg_deref)]`：FFI 边界保持 `safe extern "C"`；
+/// 入参经 `guard_c_str` null 守卫。
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn faf_pdf_select_words(
+    words_json: *const c_char,
+    selection_json: *const c_char,
+) -> *mut c_char {
+    catch_to_ptr(|| {
+        // SAFETY：guard_c_str 已做 null 守卫；NUL 终止性由 ctypes c_char_p 契约保证。
+        let Ok(words_cstr) = (unsafe { guard_c_str(words_json) }) else {
+            return std::ptr::null_mut();
+        };
+        let Ok(selection_cstr) = (unsafe { guard_c_str(selection_json) }) else {
+            return std::ptr::null_mut();
+        };
+        let Ok(words_text) = words_cstr.to_str() else {
+            return std::ptr::null_mut();
+        };
+        let Ok(selection_text) = selection_cstr.to_str() else {
+            return std::ptr::null_mut();
+        };
+        match pdfsel::select_words_impl(words_text, selection_text) {
+            Ok(value) => alloc_json_message(&value.to_string()),
+            Err(_) => std::ptr::null_mut(),
+        }
+    })
+}
+
 // ---------------------------------------------------------------------------
 // 单测（todo 2 必写：NUL/null/panic 三守卫 + version 往返 + feature 冒烟）
 // ---------------------------------------------------------------------------
@@ -596,5 +893,94 @@ mod tests {
         assert_eq!(STATUS_INTERNAL, -5);
         assert_eq!(STATUS_UNSUPPORTED, -6);
         assert_eq!(STATUS_TOO_LARGE, -7);
+    }
+
+    /// 通用裸指针兜底 `catch_to_raw`：panic 闭包 → null，正常闭包不受影响。
+    #[test]
+    fn catch_to_raw_returns_null_on_panic() {
+        // SAFETY：catch_to_raw 是被测对象；panic 闭包必须回退 null，崩溃由
+        // unwind 兜住，不发散到调用方。
+        let ptr: *mut c_void = catch_to_raw(|| panic!("intentional panic for catch_to_raw guard test"));
+        assert!(ptr.is_null());
+
+        // 正常闭包返回原值。
+        let sentinel: usize = 42;
+        assert_eq!(
+            catch_to_raw(|| &sentinel as *const usize as *mut usize),
+            &sentinel as *const usize as *mut usize
+        );
+    }
+
+    /// todo 2 新增导出：null 入参一律返回 null，不 panic（`catch_unwind` 侧证）。
+    #[test]
+    fn new_exports_reject_null_pointers_without_crash() {
+        // faf_parse_exif / faf_composite_psd：null 路径。
+        assert!(faf_parse_exif(std::ptr::null()).is_null());
+        assert!(faf_composite_psd(std::ptr::null()).is_null());
+        // 非 UTF-8 或空指针之外的占位路径（合法指针）：占位期恒 null。
+        let valid = CString::new("C:/w.x").unwrap();
+        assert!(faf_parse_exif(valid.as_ptr()).is_null());
+        assert!(faf_composite_psd(valid.as_ptr()).is_null());
+
+        // faf_replace_svg_colors：null svg_text → null；合法 SVG 实现期返回
+        // 非空裸文本（todo 11 已填实现）。
+        assert!(faf_replace_svg_colors(std::ptr::null(), 1, 1).is_null());
+        let svg = CString::new("<svg/>").unwrap();
+        let replaced = faf_replace_svg_colors(svg.as_ptr(), 1, 0);
+        assert!(!replaced.is_null());
+        // 释放（对称分配契约）。
+        faf_free_message(replaced);
+
+        // faf_render_fluid_frame：null palette/overlay/out_len、非法负尺寸。
+        let mut out_len: usize = 0;
+        assert!(faf_render_fluid_frame(0, 0, std::ptr::null(), 0, 0.0, std::ptr::null(), &mut out_len).is_null());
+        assert!(faf_render_fluid_frame(-1, 8, std::ptr::null(), 0, 0.0, std::ptr::null(), &mut out_len).is_null());
+        let palette = CString::new("[]").unwrap();
+        let overlay = CString::new("{}").unwrap();
+        assert!(faf_render_fluid_frame(8, 8, palette.as_ptr(), 0, 0.0, std::ptr::null(), &mut out_len).is_null());
+        assert!(faf_render_fluid_frame(
+            8,
+            8,
+            palette.as_ptr(),
+            0,
+            0.0,
+            overlay.as_ptr(),
+            std::ptr::null_mut(),
+        )
+        .is_null());
+        // 占位期（UNSUPPORTED）：合法参数同样返回 null、不写 out_len。
+        let expect_len = out_len;
+        let raw = faf_render_fluid_frame(8, 8, palette.as_ptr(), 0, 0.0, overlay.as_ptr(), &mut out_len);
+        assert!(raw.is_null());
+        assert_eq!(out_len, expect_len, "失败路径不应写 out_len");
+
+        // faf_parse_7z_list：null 任一入参 → null。
+        assert!(faf_parse_7z_list(std::ptr::null(), std::ptr::null(), std::ptr::null()).is_null());
+        let s = CString::new("").unwrap();
+        assert!(faf_parse_7z_list(s.as_ptr(), std::ptr::null(), s.as_ptr()).is_null());
+        // todo 16 实现后：合法入参（空输出）→ 非 null 的 "[]" JSON，须释放。
+        let raw = faf_parse_7z_list(s.as_ptr(), s.as_ptr(), s.as_ptr());
+        assert!(!raw.is_null(), "todo 16 后空输出返回空 JSON 数组而非 null");
+        // SAFETY：指针由本 crate alloc_json_message 分配（CString::into_raw）。
+        unsafe {
+            let _ = CString::from_raw(raw);
+        }
+
+        // faf_pdf_select_words：null/空串任一入参 → null。
+        assert!(faf_pdf_select_words(std::ptr::null(), std::ptr::null()).is_null());
+        assert!(faf_pdf_select_words(s.as_ptr(), std::ptr::null()).is_null());
+        assert!(faf_pdf_select_words(s.as_ptr(), s.as_ptr()).is_null());
+        // todo 18 实现后：合法 JSON → 非 null 的选中词 JSON 数组，须释放。
+        let empty_words = CString::new("[]").unwrap();
+        let pdf_sel = CString::new(
+            r#"{"begin_abs_x":0,"begin_abs_y":0,"end_abs_x":10,"end_abs_y":10,"page_heights":[792.0]}"#,
+        )
+        .unwrap();
+        let raw = faf_pdf_select_words(empty_words.as_ptr(), pdf_sel.as_ptr());
+        assert!(!raw.is_null(), "todo 18 后合法 JSON 返回选中词 JSON 数组而非 null");
+        // SAFETY：指针由本 crate alloc_json_message 分配（CString::into_raw）。
+        unsafe {
+            let _ = CString::from_raw(raw);
+        }
     }
 }

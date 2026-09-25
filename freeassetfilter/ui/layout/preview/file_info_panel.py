@@ -1005,7 +1005,7 @@ class _InfoCanvas(QWidget):
         super().mouseReleaseEvent(event)
 
     def contextMenuEvent(self, event) -> None:  # noqa: N802
-        pos = event.position().toPoint()
+        pos = event.pos()
         row = self._row_at(pos)
         menu = StyledContextMenu(parent=self)
         if row is not None:
@@ -1025,7 +1025,7 @@ class _InfoCanvas(QWidget):
                 menu.add_item("复制文件路径", callback=_copy_path)
         menu.add_separator()
         menu.add_item("复制全部信息", callback=self._panel._copy_all)
-        menu.exec(event.globalPosition().toPoint())
+        menu.exec(event.globalPos())
         event.accept()
 
     def resizeEvent(self, event) -> None:  # noqa: N802

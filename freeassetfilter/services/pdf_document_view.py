@@ -22,12 +22,20 @@ Virtual（缩放+偏移）和 Window（像素）共 5 层坐标空间的相互�
 from __future__ import annotations
 
 import bisect
+import json
 from collections import deque
-from typing import List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from PySide6.QtCore import QRectF
 
 from freeassetfilter.services.pdf_document import PdfDocument
+
+# PyMuPDF ``get_text_words`` tuples and selected-word entries share the same
+# page-space shape: bbox, word text and (block, line, word_no) metadata.  The
+# selected-entry shape additionally carries ``page`` in front.  Both are used
+# by the native (``faf_core.pdf_select_words``) and Python selection paths.
+_WordTuple = Tuple[float, float, float, float, str, int, int, int]
+_SelectedEntry = Tuple[int, int, int, int, str, float, float, float, float]
 
 
 class PdfDocumentView:
@@ -137,11 +145,11 @@ class PdfDocumentView:
         # Populated by ``get_text_selection()``; consumed by a renderer.
         self.selected_character_rects: deque[QRectF] = deque()
 
-        # Cached selection word data in absolute document space.
+        # Cached selection word data (page-space bboxes, Python authoritative).
         # Used by ``refresh_selection_rects()`` to recompute window rects
         # after scroll/zoom without re-querying the PDF.
-        # Each entry: (page, block, line, wno, word, abs_x0, abs_y0, abs_x1, abs_y1)
-        self._cached_sel_words: List[Tuple[int, int, int, int, str, float, float, float, float]] = []  # noqa: E501
+        # Each entry: (page, block, line, wno, word, x0, y0, x1, y1)
+        self._cached_sel_words: List[_SelectedEntry] = []
 
         # ── Cached page dimensions (populated from doc on first access) ─
         self._page_widths: List[float] = []
@@ -623,12 +631,18 @@ class PdfDocumentView:
         """Extract text within a selection rectangle in absolute-document space.
 
         Workflow:
-        1. Normalise the selection rectangle (min/max bounds).
+        1. Normalise the selection rectangle (min/max vertical bounds).
         2. Determine the range of affected pages via ``absolute_to_page``.
-        3. For each page, call ``PdfDocument.get_text_words(page)``.
-        4. Filter words whose bounding-box intersects the selection rect.
+        3. For each page, call ``PdfDocument.get_text_words(page)`` (Python).
+        4. Prefer native word filtering via ``faf_core.pdf_select_words``
+           (see :meth:`_select_words_native`); fall back to the Python smart
+           x-bound filter when the DLL is unavailable or returns ``None``.
         5. Sort by ``(page, block_no, line_no, word_no)``.
         6. Store the window-space rects in ``selected_character_rects``.
+           The rect math stays in Python (:meth:`_refresh_selection_rects`) —
+           it is display-layer work, not part of the hot path, and keeps
+           serde_json's ≤1 ULP bbox drift (todo 18 accepted-diff) out of the
+           rects.
         7. Return the joined text string (space-separated).
 
         Parameters
@@ -651,9 +665,9 @@ class PdfDocumentView:
         if not self._accum_page_heights:
             return ""
 
-        # Normalise the selection rectangle.
-        x0: float = min(begin_abs_x, end_abs_x)
-        x1: float = max(begin_abs_x, end_abs_x)
+        # Normalise the vertical selection extent.  (The horizontal bounds
+        # are dead in the oracle — smart x-bound filtering uses the raw
+        # ``begin_abs_x``/``end_abs_x`` directly, matching faf_core.)
         y0: float = min(begin_abs_y, end_abs_y)
         y1: float = max(begin_abs_y, end_abs_y)
 
@@ -663,75 +677,114 @@ class PdfDocumentView:
         # Determine drag direction for smart x-bound filtering.
         dragging_down: bool = begin_abs_y <= end_abs_y
 
-        # Collect matching words across affected pages.
-        # Each entry: (page, block_no, line_no, word_no, word_text, x0, y0, x1, y1)
-        selected_words: List[Tuple[int, int, int, int, str, float, float, float, float]] = []  # noqa: E501
-
+        # Collect per-page words once.  PyMuPDF ``get_text_words`` stays in
+        # Python (already native); its output is serialised to JSON for the
+        # Rust path while the Python tuples remain authoritative for caches.
+        page_words: Dict[int, List[_WordTuple]] = {}
+        words_json: List[dict] = []
         for p in range(start_page, end_page + 1):
-            page_top: float = (
-                self._accum_page_heights[p] - self._page_heights[p]
-            )
-
-            # Clip the selection rect to this page's bounds.
-            sel_y0: float = max(y0 - page_top, 0.0)
-            sel_y1: float = min(y1 - page_top, self._page_heights[p])
-
             words = self.doc.get_text_words(p)
-            for w in words:
-                wx0, wy0, wx1, wy1, word, block, line, wno = w
-
-                # Y overlap is always required.
-                if not (wy0 < sel_y1 and wy1 > sel_y0):
-                    continue
-
-                # ── Smart x-bound filtering ──────────────────────────
-                # For middle lines (fully inside the vertical selection),
-                # expand x to full width so all words on those lines are
-                # included.  Only the first/last line respect the drag
-                # start/end x-coordinate.
-                #
-                #   dragging down: first line = top (y0), last = bottom (y1)
-                #   dragging up:   first line = bottom (y1), last = top (y0)
-                word_abs_y0: float = wy0 + page_top
-                word_abs_y1: float = wy1 + page_top
-
-                touches_top: bool = word_abs_y0 < y0 < word_abs_y1
-                touches_bottom: bool = word_abs_y0 < y1 < word_abs_y1
-                strictly_inside: bool = (
-                    word_abs_y0 >= y0 and word_abs_y1 <= y1
+            page_words[p] = words
+            for wx0, wy0, wx1, wy1, word, block, line, wno in words:
+                words_json.append(
+                    {
+                        "page": p,
+                        "block": block,
+                        "line": line,
+                        "word_no": wno,
+                        "text": word,
+                        "x0": wx0,
+                        "y0": wy0,
+                        "x1": wx1,
+                        "y1": wy1,
+                    }
                 )
 
-                if strictly_inside and not touches_top and not touches_bottom:
-                    # Middle region — accept regardless of x.
-                    pass
-                elif touches_top and not touches_bottom:
-                    # Overlaps the selection top boundary.
-                    if dragging_down:
-                        # Top is the start line — from begin_x to right.
-                        if not (wx1 > begin_abs_x):
-                            continue
-                    else:
-                        # Top is the end line — from left to end_x.
-                        if not (wx0 < end_abs_x):
-                            continue
-                elif touches_bottom and not touches_top:
-                    # Overlaps the selection bottom boundary.
-                    if dragging_down:
-                        # Bottom is the end line — from left to end_x.
-                        if not (wx0 < end_abs_x):
-                            continue
-                    else:
-                        # Bottom is the start line — from begin_x to right.
-                        if not (wx1 > begin_abs_x):
-                            continue
-                # else: word spans both boundaries (rare) — use normalised
-                # rect which is already applied via the y-overlap check.
+        # Prefer native word filtering (``faf_core.pdf_select_words``, todo 19
+        # 接线).  ``None`` signals "native unavailable" and triggers the
+        # Python fallback below.  Each entry is
+        #   (page, block_no, line_no, word_no, word_text, x0, y0, x1, y1).
+        selected_words: Optional[List[_SelectedEntry]] = self._select_words_native(
+            words_json,
+            page_words,
+            begin_abs_x,
+            begin_abs_y,
+            end_abs_x,
+            end_abs_y,
+        )
 
-                selected_words.append(
-                    (p, block, line, wno, word, wx0, wy0, wx1, wy1)
+        if selected_words is None:
+            # Python fallback (previous behaviour) over the same per-page
+            # words — predicates identical to the pre-migration code.
+            selected_words = []
+            for p, words in page_words.items():
+                page_top: float = (
+                    self._accum_page_heights[p] - self._page_heights[p]
                 )
 
-        # Sort by (page, block, line, word_no).
+                # Clip the selection rect to this page's bounds.
+                sel_y0: float = max(y0 - page_top, 0.0)
+                sel_y1: float = min(y1 - page_top, self._page_heights[p])
+
+                for w in words:
+                    wx0, wy0, wx1, wy1, word, block, line, wno = w
+
+                    # Y overlap is always required.
+                    if not (wy0 < sel_y1 and wy1 > sel_y0):
+                        continue
+
+                    # ── Smart x-bound filtering ──────────────────────
+                    # For middle lines (fully inside the vertical selection)
+                    # expand x to full width; only the first/last line
+                    # respect the drag start/end x-coordinate.
+                    #
+                    #   dragging down: first line = top, last = bottom
+                    #   dragging up:   first line = bottom, last = top
+                    word_abs_y0: float = wy0 + page_top
+                    word_abs_y1: float = wy1 + page_top
+
+                    touches_top: bool = word_abs_y0 < y0 < word_abs_y1
+                    touches_bottom: bool = word_abs_y0 < y1 < word_abs_y1
+                    strictly_inside: bool = (
+                        word_abs_y0 >= y0 and word_abs_y1 <= y1
+                    )
+
+                    if (
+                        strictly_inside
+                        and not touches_top
+                        and not touches_bottom
+                    ):
+                        # Middle region — accept regardless of x.
+                        pass
+                    elif touches_top and not touches_bottom:
+                        # Overlaps the selection top boundary.
+                        if dragging_down:
+                            # Top is the start line — from begin_x to right.
+                            if not (wx1 > begin_abs_x):
+                                continue
+                        else:
+                            # Top is the end line — from left to end_x.
+                            if not (wx0 < end_abs_x):
+                                continue
+                    elif touches_bottom and not touches_top:
+                        # Overlaps the selection bottom boundary.
+                        if dragging_down:
+                            # Bottom is the end line — from left to end_x.
+                            if not (wx0 < end_abs_x):
+                                continue
+                        else:
+                            # Bottom is the start line — from begin_x to right.
+                            if not (wx1 > begin_abs_x):
+                                continue
+                    # else: word spans both boundaries (rare) — the normalised
+                    # rect is already applied via the y-overlap check.
+
+                    selected_words.append(
+                        (p, block, line, wno, word, wx0, wy0, wx1, wy1)
+                    )
+
+        # Sort by (page, block, line, word_no).  Native output is already
+        # sorted; this normalises both paths (Python ``list.sort`` is stable).
         selected_words.sort(key=lambda x: (x[0], x[1], x[2], x[3]))
 
         # Cache in absolute document space so rects can be refreshed
@@ -743,6 +796,101 @@ class PdfDocumentView:
 
         # Join text.
         return " ".join(entry[4] for entry in selected_words)
+
+    def _select_words_native(
+        self,
+        words_json: List[dict],
+        page_words: Dict[int, List[_WordTuple]],
+        begin_abs_x: float,
+        begin_abs_y: float,
+        end_abs_x: float,
+        end_abs_y: float,
+    ) -> Optional[List[_SelectedEntry]]:
+        """Run the smart selection filter through faf_core when available.
+
+        Native first (todo 19 接线): serialises ``words_json`` (page-space word
+        list produced by Python :meth:`PdfDocument.get_text_words`) plus the
+        raw drag parameters and page heights into ``faf_pdf_select_words``
+        (JSON contract fixed in todo 18).  The Rust side normalises the vertical
+        rect, clips per-page bounds and applies the same smart x-bound
+        predicates, returning selected entries sorted by
+        ``(page, block, line, word_no)``.
+
+        Each native entry is resolved back to the **Python authoritative** word
+        tuple so ``_cached_sel_words`` and the selection rects never carry
+        serde_json's ≤1 ULP bbox drift (todo 18 accepted-diff — kept on the
+        Python side on purpose).  A native entry that cannot be resolved to a
+        Python tuple is a contract violation and forces the caller to fall back.
+
+        Parameters
+        ----------
+        words_json : list[dict]
+            Serialisable word list across the affected page range.
+        page_words : dict[int, list[tuple]]
+            ``page -> get_text_words(page)`` tuples (authoritative bbox/text).
+        begin_abs_x : float
+            Drag start X in absolute document space.
+        begin_abs_y : float
+            Drag start Y in absolute document space.
+        end_abs_x : float
+            Drag end X in absolute document space.
+        end_abs_y : float
+            Drag end Y in absolute document space.
+
+        Returns
+        -------
+        Optional[list[tuple]]
+            Selected ``(page, block, line, word_no, text, x0, y0, x1, y1)``
+            entries resolved against ``page_words``; ``None`` when native is
+            unavailable or produced an unusable payload (caller falls back).
+        """
+        try:
+            from freeassetfilter.core.native.bridges.faf_core_bridge import (
+                get_faf_core_bridge,
+            )
+
+            bridge = get_faf_core_bridge()
+            if bridge is None:
+                return None
+            selection_json: dict = {
+                "begin_abs_x": begin_abs_x,
+                "begin_abs_y": begin_abs_y,
+                "end_abs_x": end_abs_x,
+                "end_abs_y": end_abs_y,
+                "page_heights": list(self._page_heights),
+            }
+            raw = bridge.pdf_select_words(
+                json.dumps(words_json), json.dumps(selection_json)
+            )
+            if raw is None:
+                return None
+        except Exception:  # noqa: BLE001  # broad catch intentional at native FFI boundary
+            return None
+
+        # Resolve native entries (already sorted) back to Python words.
+        by_key: Dict[Tuple[int, int, int, int], _WordTuple] = {}
+        for p, words in page_words.items():
+            for entry in words:
+                wx0, wy0, wx1, wy1, word, block, line, wno = entry
+                by_key[(p, block, line, wno)] = entry
+
+        resolved: List[_SelectedEntry] = []
+        for item in raw:
+            try:
+                page = int(item["page"])
+                block = int(item["block"])
+                line = int(item["line"])
+                wno = int(item["word_no"])
+            except (KeyError, TypeError, ValueError):
+                return None
+            entry = by_key.get((page, block, line, wno))
+            if entry is None:
+                return None
+            wx0, wy0, wx1, wy1, word, _blk, _ln, _wno = entry
+            resolved.append(
+                (page, _blk, _ln, _wno, word, wx0, wy0, wx1, wy1)
+            )
+        return resolved
 
     def _refresh_selection_rects(self) -> None:
         """Recompute ``selected_character_rects`` from cached selection words

@@ -32,6 +32,17 @@ ttf-parser = "0.25"
 # faf_copy_files 复制后保留 mtime（等价 shutil.copy2 的 copystat）；
 # 纯 Rust（std::fs::FileTimes），无运行时外部 DLL。
 filetime = "0.2"
+# todo 1(iii) 裁决 KEEP（.omo/evidence/rust-hot-path-native-migration/task-1-decisions.md §4）：
+# EXIF 解析（todo 6：faf_parse_exif）用 kamadak-exif 0.6.x（解析版本 0.6.1）。
+# ⚠️ license 为 **BSD-2-Clause**（非 MIT/Apache，spike 决策表 §1 已实测源代码
+# Cargo.toml 校验），同 permissive、与 AGPL-3.0 组合兼容；纯 Rust 无外部 DLL
+#（传递依赖仅 mutate_once，MIT OR Apache-2.0）。
+kamadak-exif = "0.6"
+# SVG 换色（todo 11：faf_replace_svg_colors）与 7z -slt 输出解析（todo 16：
+# faf_parse_7z_list）用 regex 1.x（MIT OR Apache-2.0，纯 Rust，无外部 DLL）。
+# 2 处 lookahead（_RE_PATH_NO_FILL、re.split(r'\n(?=Path = )')）用手工移植
+# 或 fancy-regex（已是 syntect regex-fancy 传递依赖）；aho-corasick 可选不引入。
+regex = "1"
 
 [profile.release]
 lto = true

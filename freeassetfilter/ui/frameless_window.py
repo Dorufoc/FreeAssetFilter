@@ -68,7 +68,6 @@
 import ctypes
 import os
 import sys
-import traceback
 from ctypes import wintypes
 
 from PySide6.QtCore import QEvent, Qt, QTimer
@@ -144,6 +143,32 @@ MIN_QT_VERSION = (6, 10)
 
 #: 已声明原型的 user32 缓存（None 表示尚未初始化/不可用）。
 _user32 = None
+
+
+def _format_call_stack(limit: int = 12) -> str:
+    """廉价抓取当前调用栈（``文件:行号:函数``，不含源码行）。
+
+    刻意不用 ``traceback.format_stack``：它经 ``linecache`` 读取每个栈帧的
+    源码文件，首次调用会为 ``main_window.py`` 等大文件做整文件读盘+解码，
+    实测在 ``show()`` 内占用约 20ms。本函数只取帧的 ``co_filename``/
+    ``co_name`` 与行号（微秒级），足以反查「谁触发了 HWND 重建」。
+
+    Args:
+        limit: 最多回溯的栈帧数（不含本函数自身）。
+
+    Returns:
+        str: 每行形如 ``File "x.py", line N, in func`` 的调用栈文本。
+    """
+    lines: list[str] = []
+    frame = sys._getframe(1)
+    while frame is not None and len(lines) < limit:
+        lines.append(
+            f'  File "{frame.f_code.co_filename}", line {frame.f_lineno}, '
+            f"in {frame.f_code.co_name}\n"
+        )
+        frame = frame.f_back
+    lines.reverse()  # 越靠下越接近触发点，与 traceback 输出顺序一致
+    return "".join(lines)
 
 
 def _get_user32():
@@ -473,7 +498,7 @@ class FramelessMainWindow(QMainWindow):
             f"fullscreen={self.isFullScreen()}, dpr={self.devicePixelRatioF():.2f}"
         )
         if count <= self._WIN_ID_STACK_LIMIT:
-            stack = "".join(traceback.format_stack(limit=12)[:-1])
+            stack = _format_call_stack(limit=12)
             info(f"WinIdChange #{count} 调用栈（越靠下越接近触发点）:\n{stack}")
 
     def nativeEvent(self, eventType: bytes, message: object) -> tuple:

@@ -87,8 +87,6 @@ class Py7zCore:
         possible_paths = []
 
         # 1. 首先检查项目 core/7z 目录
-        current_file = os.path.abspath(__file__)
-        core_dir = os.path.dirname(current_file)
         project_7z_path = str(archive_7z_dir() / "7z.exe")
         possible_paths.append(project_7z_path)
 
@@ -266,6 +264,10 @@ class Py7zCore:
         """
         列出压缩包内容
 
+        命令执行/编码重试完成后，优先经 faf_core 原生解析 ``-slt`` 输出
+        （:meth:`_try_native_parse_list_output`）；DLL 不可用或 native 返回
+        ``None`` 时回退 :meth:`_parse_list_output`（既有 Python 解析不变）。
+
         Args:
             archive_path: 压缩包文件路径
             current_path: 当前浏览路径（用于显示子目录内容）
@@ -319,7 +321,8 @@ class Py7zCore:
                     error(f"列出压缩包失败: {stderr}")
                     return []
 
-            files = self._parse_list_output(stdout, current_path, archive_path)
+            native_files = self._try_native_parse_list_output(stdout, current_path, archive_path)
+            files = native_files if native_files is not None else self._parse_list_output(stdout, current_path, archive_path)
 
             if len(files) > self.MAX_ARCHIVE_FILES:
                 increment_perf_counter("py7z.list_archive", "result_truncated")
@@ -329,6 +332,38 @@ class Py7zCore:
             increment_perf_counter("py7z.list_archive", "success")
             set_perf_metadata("py7z.list_archive", "last_result_count", len(files))
             return files
+
+    def _try_native_parse_list_output(
+        self, output: str, current_path: str, archive_path: str = ""
+    ) -> Optional[List[Dict]]:
+        """
+        尝试经 faf_core 原生解析 7z ``-slt`` 列表输出。
+
+        仅在 DLL 可用且绑定 ``parse_7z_list`` 时生效；桥返回 ``None`` 或
+        抛异常（含 DLL 缺失、绑定缺失、native 失败、非法载荷）一律返回
+        ``None``，调用方（:meth:`list_archive`）回退 :meth:`_parse_list_output`。
+        7z.exe 子进程与编码重试保留在本模块，本方法只吃 stdout 文本。
+
+        Args:
+            output: 7z 命令的 ``-slt`` 输出文本。
+            current_path: 当前浏览路径（目录过滤基准）。
+            archive_path: 压缩包路径（排除压缩包自身）。
+
+        Returns:
+            Optional[List[Dict]]: native 解析条目列表；不可用/失败返回
+                ``None``。
+        """
+        try:
+            from freeassetfilter.core.native.bridges.faf_core_bridge import (
+                get_faf_core_bridge,
+            )
+
+            bridge = get_faf_core_bridge()
+            if bridge is None:
+                return None
+            return bridge.parse_7z_list(output, current_path, archive_path)
+        except Exception:  # noqa: BLE001  # broad catch intentional at native FFI boundary
+            return None
 
     def _parse_list_output(self, output: str, current_path: str, archive_path: str = "") -> List[Dict]:
         """

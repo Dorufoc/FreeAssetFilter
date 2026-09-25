@@ -1,0 +1,51 @@
+{
+  "format": "faf-fluid-reference-frame-v1",
+  "width": 160,
+  "height": 100,
+  "render_width": 64,
+  "render_height": 48,
+  "palette": [
+    [
+      30,
+      60,
+      120,
+      255
+    ],
+    [
+      200,
+      120,
+      40,
+      255
+    ],
+    [
+      40,
+      160,
+      90,
+      255
+    ],
+    [
+      120,
+      40,
+      180,
+      255
+    ],
+    [
+      220,
+      220,
+      220,
+      255
+    ]
+  ],
+  "noise_seed": 987,
+  "time": 0.0,
+  "overlay": [
+    0,
+    0,
+    0,
+    0
+  ],
+  "rgba_md5": "aebcee4e6f7edf09027bbc1f6e81c644",
+  "rgba_bytes": 64000,
+  "rendered_by": "freeassetfilter.ui.components._styled_fluid_cpu.render_static_frame",
+  "note": "todo 13 DROP 裁决下的 Python 参考帧；供记录与回退测试。"
+}

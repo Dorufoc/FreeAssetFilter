@@ -50,6 +50,20 @@ PARAM_DEFAULTS: Dict[str, float] = {
     "tint_opacity": 70.0,
 }
 
+#: 默认 Mica 配置（与旧 ``components.mica_window.DEFAULT_MICA_CONFIG`` 一致），
+#: 供调用方做默认值来源。
+#:
+#: 定义在本纯数据模块（而非 ``mica.material``）：它是「窗口出现前」关键路径上
+#: 唯一被用到的 Mica 常量，而 ``material`` / ``engine`` 会连带 numpy（约 0.13s）。
+#: ``mica.material`` 仍原样再导出该名，既有导入点不受影响。
+DEFAULT_MICA_CONFIG: Dict[str, object] = {
+    "blur_radius": 200,
+    "surface_color": "#000000",
+    "luminosity": 0.65,
+    "contrast": 1.5,
+    "saturation": 4.5,
+}
+
 # ---------------------------------------------------------------------------
 # 主题基色（G1）—— 与 ThemeManager.surface（gray.g1 / gray_light.g1）一致
 # ---------------------------------------------------------------------------

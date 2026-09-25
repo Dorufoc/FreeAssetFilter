@@ -16,14 +16,15 @@
 from __future__ import annotations
 
 import types
+from pathlib import Path
 from typing import Any
 
 import pytest
-from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import QLabel, QWidget, QVBoxLayout
 
 from freeassetfilter.core.preview.svg_renderer import SvgRenderer, _smart_render_size
+from tests.support.parity import pixel_hash
 
 
 # ---------------------------------------------------------------------------
@@ -309,3 +310,222 @@ class TestRenderEntrypoints:
         """长 text（>=5 字符）兜底为 FILE 并成功渲染。"""
         widget: QWidget = SvgRenderer.render_unknown_file_icon(sample_svg_file, "EXEFILE", icon_size=48)
         assert widget is not None
+
+
+# ---------------------------------------------------------------------------
+# native SVG 换色接线（todo 12：优先 faf_core、Python 回退、像素对拍）
+# ---------------------------------------------------------------------------
+class TestNativeSvgColorsWiring:
+    """``_replace_svg_colors`` 的 native 优先接线、Python 回退与像素对拍。
+
+    native（``faf_core``）以编译期常量镜像默认深色主题色值（task-11 契约）：
+    accent ``#3a9dcb`` / fill ``#3e3e3e`` / text ``#ffffff`` / mid ``#888888``。
+    接线仅当 ``tm`` 当前色值与常量逐一致时才走 native，否则回退 Python——
+    保证任意主题（深色/浅色/自定义配色）下输出逐字节一致。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _native_theme(self, monkeypatch: Any) -> None:
+        """把 svg_renderer.tm stub 成 native 编译期常量（深色主题镜像）。"""
+        import freeassetfilter.core.preview.svg_renderer as svg_mod
+
+        monkeypatch.setattr(
+            svg_mod,
+            "tm",
+            types.SimpleNamespace(
+                accent=QColor("#3a9dcb"),
+                fill=QColor("#3e3e3e"),
+                text=QColor("#ffffff"),
+                mid=QColor("#888888"),
+            ),
+        )
+
+    @staticmethod
+    def _copy_fixture_svg(tmp_path: Any, name: str = "sample_hit_all.svg") -> str:
+        """把 todo-5 的 SVG 对拍夹具复制到临时目录。
+
+        Args:
+            tmp_path: pytest 临时目录。
+            name: 夹具文件名（默认 sample_hit_all.svg，覆盖 18 条正则各命中）。
+
+        Returns:
+            str: 复制后的 SVG 路径。
+        """
+        src = (
+            Path(__file__).resolve().parents[2]
+            / "support" / "faf_core_fixtures" / "svg_samples" / name
+        )
+        dst = tmp_path / name
+        dst.write_bytes(src.read_bytes())
+        return str(dst)
+
+    @staticmethod
+    def _force_python_bridge(monkeypatch: Any) -> None:
+        """把 faf_core 桥替换为恒返回 None 的桩 → 强制 Python 回退。
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture。
+        """
+        import freeassetfilter.core.native.bridges.faf_core_bridge as br_mod
+
+        class _NoneBridge:
+            available = True
+
+            def replace_svg_colors(self, *args: Any, **kwargs: Any) -> None:
+                return None
+
+        monkeypatch.setattr(br_mod, "get_faf_core_bridge", lambda: _NoneBridge())
+
+    def test_native_preferred_when_bridge_available(self, monkeypatch: Any) -> None:
+        """happy：桥可用且主题色匹配常量 → 直接返回 native 输出。"""
+        import freeassetfilter.core.native.bridges.faf_core_bridge as br_mod
+
+        calls: list = []
+
+        class _FakeBridge:
+            available = True
+
+            def replace_svg_colors(self, svg_text: str, invert: bool, force: bool) -> str:
+                calls.append((svg_text, invert, force))
+                return '<svg fill="#3e3e3e"/>'
+
+        monkeypatch.setattr(br_mod, "get_faf_core_bridge", lambda: _FakeBridge())
+        out: str = SvgRenderer._replace_svg_colors('<svg fill="#000000"/>')
+        assert out == '<svg fill="#3e3e3e"/>'
+        assert calls == [('<svg fill="#000000"/>', False, False)]
+
+    def test_fallback_python_when_bridge_returns_none(self, monkeypatch: Any) -> None:
+        """failure：桥返回 None（native 失败/空文本）→ 回退 Python 换色。"""
+        import freeassetfilter.core.native.bridges.faf_core_bridge as br_mod
+
+        class _NoneBridge:
+            available = True
+
+            def replace_svg_colors(self, *args: Any, **kwargs: Any) -> None:
+                return None
+
+        monkeypatch.setattr(br_mod, "get_faf_core_bridge", lambda: _NoneBridge())
+        out: str = SvgRenderer._replace_svg_colors('<svg><path fill="#000000"/></svg>')
+        assert 'fill="#ffffff"' in out  # secondary（常量白）由 Python 路径产出
+
+    def test_fallback_python_when_bridge_unavailable(self, monkeypatch: Any) -> None:
+        """failure：DLL 缺失（available=False）→ 回退 Python 换色不抛异常。"""
+        self._force_python_bridge(monkeypatch)
+        out: str = SvgRenderer._replace_svg_colors('<svg><path fill="#000000"/></svg>')
+        assert 'fill="#ffffff"' in out
+
+    def test_fallback_python_when_theme_mismatch(self, monkeypatch: Any) -> None:
+        """boundary：浅色/自定义配色（tm 与常量不符）→ 禁止 native、走 Python。"""
+        import freeassetfilter.core.preview.svg_renderer as svg_mod
+        import freeassetfilter.core.native.bridges.faf_core_bridge as br_mod
+
+        monkeypatch.setattr(
+            svg_mod,
+            "tm",
+            types.SimpleNamespace(
+                accent=QColor("#FF0000"),
+                fill=QColor("#FFFFFF"),
+                text=QColor("#333333"),
+                mid=QColor("#CECECE"),
+            ),
+        )
+
+        class _FakeBridge:
+            available = True
+
+            def __init__(self) -> None:
+                self.calls: list = []
+
+            def replace_svg_colors(self, *args: Any, **kwargs: Any) -> None:
+                self.calls.append(args)
+                return None
+
+        fake = _FakeBridge()
+        monkeypatch.setattr(br_mod, "get_faf_core_bridge", lambda: fake)
+        out: str = SvgRenderer._replace_svg_colors('<svg><path fill="#0a59f7"/></svg>')
+        # QColor("#FF0000").name() 归一化为小写 #ff0000 → Python 路径按该值替换
+        assert 'fill="#ff0000"' in out  # 使用 stub 的 accent
+        assert fake.calls == []  # native 未被消费
+
+    def test_fallback_python_when_bridge_raises(self, monkeypatch: Any) -> None:
+        """failure：桥抛异常 → 回退 Python 换色不崩溃。"""
+        import freeassetfilter.core.native.bridges.faf_core_bridge as br_mod
+
+        class _RaisingBridge:
+            available = True
+
+            def replace_svg_colors(self, *args: Any, **kwargs: Any) -> None:
+                raise RuntimeError("native boom")
+
+        monkeypatch.setattr(br_mod, "get_faf_core_bridge", lambda: _RaisingBridge())
+        out: str = SvgRenderer._replace_svg_colors('<svg><path fill="#000000"/></svg>')
+        assert 'fill="#ffffff"' in out
+
+    def test_native_output_matches_python_bytes(
+        self, monkeypatch: Any, faf_core_available: bool
+    ) -> None:
+        """happy（真实 DLL）：tm=常量时 native 换色与 Python 回退逐字节一致。"""
+        if not faf_core_available:
+            pytest.skip("faf_core.dll 不可用，跳过真实 native 对拍")
+        svg: str = (
+            '<svg><path fill="#000000" stroke="#FFFFFF"/>'
+            '<circle fill="#0a59f7"/><rect style="fill: #cecece"/></svg>'
+        )
+        native: str = SvgRenderer._replace_svg_colors(svg)
+        self._force_python_bridge(monkeypatch)
+        fallback: str = SvgRenderer._replace_svg_colors(svg)
+        assert native == fallback
+
+    def test_pixel_hash_parity_real_native(
+        self, monkeypatch: Any, qapp: Any, tmp_path: Any, faf_core_available: bool
+    ) -> None:
+        """happy（真实 DLL）：render_svg_to_exact_pixmap 像素 hash 与改造前一致。
+
+        native 换色 → 光栅化 的像素 hash 必须等于 Python 换色 → 光栅化 的像素
+        hash（todo-5 夹具 ``sample_hit_all.svg`` 覆盖 18 条正则各命中）。
+        """
+        if not faf_core_available:
+            pytest.skip("faf_core.dll 不可用，跳过真实 native 像素对拍")
+        svg_file: str = self._copy_fixture_svg(tmp_path)
+        native_pixmap = SvgRenderer.render_svg_to_exact_pixmap(
+            svg_file, icon_width=48, icon_height=48, device_pixel_ratio=1.0
+        )
+        assert not native_pixmap.isNull()
+        self._force_python_bridge(monkeypatch)
+        fallback_pixmap = SvgRenderer.render_svg_to_exact_pixmap(
+            svg_file, icon_width=48, icon_height=48, device_pixel_ratio=1.0
+        )
+        assert not fallback_pixmap.isNull()
+        assert pixel_hash(native_pixmap) == pixel_hash(fallback_pixmap)
+
+    def test_pixel_hash_parity_rgba_unconditional(
+        self, monkeypatch: Any, qapp: Any, tmp_path: Any
+    ) -> None:
+        """happy（无条件）：含 rgba() 的 SVG 像素 hash 一致（native 或回退均等）。
+
+        native 换色内含 rgba→hex（等价 ``_prepare_svg_content`` 组合管线）；
+        本用例无 DLL 时双路径均为 Python（平凡相等），有 DLL 时验证 native 的
+        rgba→hex 与 Python ``_convert_rgba_to_hex`` 等价（``_prepare_svg_content``
+        对 native 输出二次 rgba→hex 为幂等 no-op）。
+        """
+        svg_content: str = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">'
+            '<rect width="64" height="64" fill="#000000"/>'
+            '<circle cx="32" cy="32" r="16" fill="rgba(255, 0, 0, 0.5)"/>'
+            '<path d="M0 0l64 64" stroke="#cecece"/>'
+            '</svg>'
+        )
+        svg_file: str = str(tmp_path / "rgba.svg")
+        Path(svg_file).write_text(svg_content, encoding="utf-8")
+
+        native_pixmap = SvgRenderer.render_svg_to_exact_pixmap(
+            svg_file, icon_width=48, icon_height=48, device_pixel_ratio=1.0
+        )
+        assert not native_pixmap.isNull()
+        self._force_python_bridge(monkeypatch)
+        fallback_pixmap = SvgRenderer.render_svg_to_exact_pixmap(
+            svg_file, icon_width=48, icon_height=48, device_pixel_ratio=1.0
+        )
+        assert not fallback_pixmap.isNull()
+        assert pixel_hash(native_pixmap) == pixel_hash(fallback_pixmap)

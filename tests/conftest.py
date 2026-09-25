@@ -104,6 +104,9 @@ def _reset_all_singletons() -> None:
       （utils/app_logger.py:835-836）。
     * ``AsyncIconLoader``：模块级 ``_instance``
       （utils/async_icon_loader.py:100）。
+    * ``FafCoreBridge``：模块级 ``_instance``
+      （core/native/bridges/faf_core_bridge.py，由 ``get_faf_core_bridge()``
+      惰性缓存）。
 
     **明确不做**的：
 
@@ -140,6 +143,11 @@ def _reset_all_singletons() -> None:
 
     # AsyncIconLoader 模块级单例缓存。
     AsyncIconLoader._instance = None
+
+    # faf_core 桥模块级单例缓存（get_faf_core_bridge 的返回值）。
+    import freeassetfilter.core.native.bridges.faf_core_bridge as _faf_core_bridge
+
+    _faf_core_bridge._instance = None
 
     # A1 QSS singleton: drop app-stylesheet registry between tests so the
     # central sheet never accumulates session-wide under the session qapp

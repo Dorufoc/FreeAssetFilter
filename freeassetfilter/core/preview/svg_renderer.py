@@ -16,13 +16,14 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 """
 
 from PySide6.QtCore import Qt, QSize, QThread, QRectF
-from PySide6.QtGui import QPainter, QPixmap, QImage, QColor
+from PySide6.QtGui import QPainter, QPixmap, QImage
 from PySide6.QtSvgWidgets import QSvgWidget
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QWidget, QLabel, QVBoxLayout, QApplication
 from PySide6.QtGui import QGuiApplication
 import os
 import re
+from typing import Optional
 
 from freeassetfilter.ui.theme import tm
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
@@ -55,6 +56,18 @@ _RE_CSS_FILL_NORMAL = re.compile(r'(fill:\s*)#cecece', re.IGNORECASE)
 _RE_CSS_STROKE_NORMAL = re.compile(r'(stroke:\s*)#cecece', re.IGNORECASE)
 
 
+# ── native SVG 换色颜色契约（镜像默认深色主题，与 Rust svg.rs 编译期常量一致） ──
+# Rust 侧 ``faf_replace_svg_colors`` 用编译期常量镜像 ``ui/theme`` colors.json
+# 的 ``gray.g2/g3/g4`` + ``accent.primary`` 深色模式值（todo 11 契约，见
+# `.omo/evidence/rust-hot-path-native-migration/task-11-svg.txt`）。接线仅当
+# ``tm`` 当前色值与这些常量逐一致时才走 native，保证任意主题下输出与 Python
+# 回退逐字节一致（浅色/自定义配色回退 Python）。
+_NATIVE_ACCENT_COLOR: str = "#3a9dcb"
+_NATIVE_BASE_COLOR: str = "#3e3e3e"
+_NATIVE_SECONDARY_COLOR: str = "#ffffff"
+_NATIVE_NORMAL_COLOR: str = "#888888"
+
+
 def _smart_render_size(target_width: int, target_height: int, dpr: float) -> int:
     """
     根据目标尺寸和设备像素比计算智能渲染尺寸。
@@ -65,9 +78,62 @@ def _smart_render_size(target_width: int, target_height: int, dpr: float) -> int
 
 class SvgRenderer:
     @staticmethod
-    def _replace_svg_colors(svg_content, invert_white_to_black=False, force_black_to_base=False):
+    def _try_native_replace_svg_colors(
+        svg_content: str,
+        invert_white_to_black: bool,
+        force_black_to_base: bool,
+    ) -> Optional[str]:
+        """优先尝试经 faf_core 原生换色（todo 12 接线）；不可用/主题不符/异常返回 None。
+
+        native（``faf_core.dll`` 桥 ``replace_svg_colors``）返回**裸 SVG 文本**，
+        且内部已含 rgba→hex 转换——等价 Python ``_prepare_svg_content`` 的组合
+        管线（todo 11 契约）。native 用编译期常量（:data:`_NATIVE_*`）镜像默认
+        深色主题色值，故仅当 ``tm`` 当前色值与常量逐一致时才走 native，保证
+        任意主题（深色/浅色/自定义配色）下输出与 Python 回退逐字节一致。
+
+        Args:
+            svg_content: SVG 内容字符串。
+            invert_white_to_black: 白转黑开关。
+            force_black_to_base: 黑强制转基础色开关。
+
+        Returns:
+            Optional[str]: native 替换后的完整 SVG 文本；桥不可用、桥返回 None
+                （含 DLL 缺失/绑定缺失/native 失败/空文本）、主题色与常量不符
+                或任何异常时返回 None（调用方回退 Python 实现）。
+        """
+        try:
+            from freeassetfilter.core.native.bridges.faf_core_bridge import (
+                get_faf_core_bridge,
+            )
+
+            bridge = get_faf_core_bridge()
+            if bridge is None:
+                return None
+            if (
+                tm.accent.name() != _NATIVE_ACCENT_COLOR
+                or tm.fill.name() != _NATIVE_BASE_COLOR
+                or tm.text.name() != _NATIVE_SECONDARY_COLOR
+                or tm.mid.name() != _NATIVE_NORMAL_COLOR
+            ):
+                return None
+            return bridge.replace_svg_colors(
+                svg_content,
+                bool(invert_white_to_black),
+                bool(force_black_to_base),
+            )
+        except Exception:  # noqa: BLE001  # broad catch intentional at native FFI boundary
+            return None
+
+    @staticmethod
+    def _replace_svg_colors(
+        svg_content: str,
+        invert_white_to_black: bool = False,
+        force_black_to_base: bool = False,
+    ) -> str:
         """
         预处理SVG内容，根据应用设置替换颜色值
+        - 优先经 faf_core 原生换色（:meth:`_try_native_replace_svg_colors`）；
+          ``None``/异常 → 回退本方法的 Python 换色实现（既有逻辑不变）。
         - 将所有#000000颜色值替换为应用设置中的secondary_color（或base_color当force_black_to_base=True时）
         - 将所有#FFFFFF颜色值替换为应用设置中的base_color，或在invert_white_to_black=True时替换为#000000
         - 将所有#0a59f7颜色值替换为应用设置中的accent_color
@@ -84,6 +150,14 @@ class SvgRenderer:
         with track_perf("svg.replace_colors"):
             try:
                 increment_perf_counter("svg.replace_colors", "invocations")
+                native_result = SvgRenderer._try_native_replace_svg_colors(
+                    svg_content,
+                    invert_white_to_black,
+                    force_black_to_base,
+                )
+                if native_result is not None:
+                    return native_result
+
                 accent_color = tm.accent.name()
                 base_color = tm.fill.name()
                 secondary_color = tm.text.name()

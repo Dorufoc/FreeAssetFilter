@@ -15,13 +15,16 @@
 
 from __future__ import annotations
 
+import types
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import pytest
+from PySide6.QtGui import QColor
 
 from freeassetfilter.services.file_icon_manager import FileIconManager
 from tests.support.data_factories import make_image
+from tests.support.parity import pixel_hash
 from tests.support.qt_helpers import assert_pixmap_nonempty, flush_widget_queue
 
 pytestmark = pytest.mark.unit
@@ -431,6 +434,71 @@ class TestDprBehaviour:
         assert at_1x is not at_2x
         assert_pixmap_nonempty(at_1x)
         assert_pixmap_nonempty(at_2x)
+
+
+# ── native SVG 换色接线（todo 12：主线程 paint 调用点的像素稳定性） ──────
+
+
+class TestNativeSvgWiring:
+    """主线程 paint 调用点（``get_icon_pixmap`` → ``render_svg_to_exact_pixmap``）
+    的 native 接线稳定性。
+
+    图标经 SVG 换色 + 光栅化；native 与 Python 回退的像素 hash 必须一致
+    （``svg_renderer.tm`` stub 成 native 编译期常量，DLL 可用时验证真实 native）。
+    """
+
+    @pytest.fixture
+    def native_tm(self, monkeypatch: Any) -> None:
+        """把 svg_renderer.tm stub 成 native 编译期常量（深色主题镜像）。"""
+        import freeassetfilter.core.preview.svg_renderer as svg_mod
+
+        monkeypatch.setattr(
+            svg_mod,
+            "tm",
+            types.SimpleNamespace(
+                accent=QColor("#3a9dcb"),
+                fill=QColor("#3e3e3e"),
+                text=QColor("#ffffff"),
+                mid=QColor("#888888"),
+            ),
+        )
+
+    def test_icon_pixel_hash_native_matches_fallback(
+        self,
+        icon_manager: FileIconManager,
+        theme_colors: List[str],
+        native_tm: None,
+        monkeypatch: Any,
+        faf_core_available: bool,
+    ) -> None:
+        """happy：native 换色渲染的图标像素 hash 与 Python 回退一致。
+
+        Args:
+            icon_manager: 图标管理器 fixture。
+            theme_colors: 固定主题色 fixture（缓存键确定性）。
+            native_tm: tm stub fixture。
+            monkeypatch: pytest monkeypatch fixture。
+            faf_core_available: faf_core.dll 可用性（session 探测）。
+        """
+        if not faf_core_available:
+            pytest.skip("faf_core.dll 不可用，跳过真实 native 像素对拍")
+        info: Dict[str, Any] = _file_info("mp3")
+        pixmap_native = icon_manager.get_icon_pixmap(info, 48, 1.0)
+        assert_pixmap_nonempty(pixmap_native)
+        icon_manager.clear_cache()
+
+        import freeassetfilter.core.native.bridges.faf_core_bridge as br_mod
+
+        class _NoneBridge:
+            available = True
+
+            def replace_svg_colors(self, *args: Any, **kwargs: Any) -> None:
+                return None
+
+        monkeypatch.setattr(br_mod, "get_faf_core_bridge", lambda: _NoneBridge())
+        pixmap_fallback = icon_manager.get_icon_pixmap(info, 48, 1.0)
+        assert_pixmap_nonempty(pixmap_fallback)
+        assert pixel_hash(pixmap_native) == pixel_hash(pixmap_fallback)
 
 
 __all__: Tuple[str, ...] = ()

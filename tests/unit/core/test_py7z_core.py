@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from pathlib import Path
 from typing import Any, List
 
 import pytest
@@ -439,3 +440,160 @@ class TestConstructorWithout7z:
             pytest.skip("7z.exe 存在，构造函数可正常找到")
         with pytest.raises(FileNotFoundError):
             Py7zCore()
+
+
+# =============================================================================
+# native 接线对拍（todo 17：DLL 优先解析，None/异常回退 _parse_list_output）
+# =============================================================================
+
+#: 7z ``-slt`` 夹具目录（todo 5，含 UTF-8 / GBK 编码样本）。
+_SEVEN_ZIP_SAMPLE_DIR = (
+    Path(__file__).resolve().parents[2]
+    / "support"
+    / "faf_core_fixtures"
+    / "seven_zip_samples"
+)
+
+#: 对拍用压缩包路径（native 自身排除逻辑的基准）。
+_ARCHIVE_PATH = "C:/tmp/sample_archive.7z"
+
+
+def _read_slt_fixture(name: str, encoding: str) -> str:
+    """读取 7z ``-slt`` 夹具文本（按给定编码解码）。"""
+    return (_SEVEN_ZIP_SAMPLE_DIR / name).read_text(encoding=encoding, errors="replace")
+
+
+class Test7zNativeParity:
+    """7z 解析接线对拍：native 与 Python oracle 逐字段一致。"""
+
+    @pytest.mark.parametrize(
+        "fixture_name,encoding",
+        [
+            ("slt_output_utf8.txt", "utf-8"),
+            ("slt_output_gbk.txt", "gbk"),
+        ],
+    )
+    @pytest.mark.parametrize("current_path", ["", "docs"])
+    def test_native_matches_python_oracle(
+        self,
+        faf_core_available: bool,
+        fixture_name: str,
+        encoding: str,
+        current_path: str,
+    ) -> None:
+        """native 与 _parse_list_output 逐条逐字段一致（含中文/GBK 样本）。"""
+        if not faf_core_available:
+            pytest.skip("faf_core.dll 不可用，跳过 native 对拍")
+        core = Py7zCore.__new__(Py7zCore)
+        output = _read_slt_fixture(fixture_name, encoding)
+        native = core._try_native_parse_list_output(  # noqa: SLF001
+            output, current_path, _ARCHIVE_PATH
+        )
+        assert native is not None, "DLL 可用时 native 应产出结果"
+        oracle = core._parse_list_output(output, current_path, _ARCHIVE_PATH)  # noqa: SLF001
+        assert native == oracle
+
+    def test_native_and_fallback_end_to_end_agree(
+        self, monkeypatch: Any, tmp_path: Any
+    ) -> None:
+        """同一 mock 7z 输出下，native 与回退两路径的 list_archive 产出一致。"""
+        import freeassetfilter.core.native.bridges.faf_core_bridge as _faf_mod
+
+        archive = tmp_path / "sample.zip"
+        archive.write_bytes(b"PK\x03\x04")
+        fake = lambda *a, **k: subprocess.CompletedProcess(  # noqa: E731
+            list(a[0]), 0, stdout=_SLT_SAMPLE, stderr=""
+        )
+        with_native = _mocked_core(monkeypatch, fake).list_archive(str(archive))
+        monkeypatch.setattr(_faf_mod, "get_faf_core_bridge", lambda: None)
+        fallback = _mocked_core(monkeypatch, fake).list_archive(str(archive))
+        assert with_native == fallback
+
+    def test_list_archive_prefers_native_parse(
+        self, faf_core_available: bool, monkeypatch: Any, tmp_path: Any
+    ) -> None:
+        """DLL 可用时 list_archive 真的消费 bridge.parse_7z_list（录音 wrapper）。"""
+        if not faf_core_available:
+            pytest.skip("faf_core.dll 不可用，跳过 native 接线断言")
+        import freeassetfilter.core.native.bridges.faf_core_bridge as _faf_mod
+
+        bridge = _faf_mod.get_faf_core_bridge()
+        calls: List[Any] = []
+        real_parse = bridge.parse_7z_list
+
+        def counting_parse(
+            output: str, current_path: str, archive_path: str
+        ) -> Any:
+            calls.append((current_path, archive_path))
+            return real_parse(output, current_path, archive_path)
+
+        monkeypatch.setattr(bridge, "parse_7z_list", counting_parse)
+        archive = tmp_path / "sample.zip"
+        archive.write_bytes(b"PK\x03\x04")
+        fake = lambda *a, **k: subprocess.CompletedProcess(  # noqa: E731
+            list(a[0]), 0, stdout=_SLT_SAMPLE, stderr=""
+        )
+        files = _mocked_core(monkeypatch, fake).list_archive(str(archive))
+        assert "hello.txt" in {f["name"] for f in files}
+        assert calls, "list_archive 应消费 bridge.parse_7z_list"
+
+
+class Test7zNativeFallback:
+    """native 不可用/失败时回退 _parse_list_output（DLL 缺失场景）。"""
+
+    def test_bridge_missing_dll_returns_none(
+        self, monkeypatch: Any, tmp_path: Any
+    ) -> None:
+        """DLL 缺失时桥 parse_7z_list 返回 None（调用方据此回退）。"""
+        from freeassetfilter.core.native.bridges.faf_core_bridge import FafCoreBridge
+
+        missing = tmp_path / "missing.dll"
+        monkeypatch.setattr(
+            FafCoreBridge, "_candidate_paths", lambda self: [missing]
+        )
+        inst = FafCoreBridge()
+        assert inst.parse_7z_list(_SLT_SAMPLE, "", "x.zip") is None
+        assert inst.parse_7z_list(123, "", "x.zip") is None
+
+    def test_native_exception_falls_back_to_python(
+        self, monkeypatch: Any, tmp_path: Any
+    ) -> None:
+        """native 抛异常时 list_archive 回退 Python 解析且产出正常。"""
+        import freeassetfilter.core.native.bridges.faf_core_bridge as _faf_mod
+
+        class _RaisingBridge:
+            def parse_7z_list(
+                self, output: str, current_path: str, archive_path: str
+            ) -> Any:
+                raise RuntimeError("native boom")
+
+        monkeypatch.setattr(_faf_mod, "get_faf_core_bridge", lambda: _RaisingBridge())
+        archive = tmp_path / "sample.zip"
+        archive.write_bytes(b"PK\x03\x04")
+        fake = lambda *a, **k: subprocess.CompletedProcess(  # noqa: E731
+            list(a[0]), 0, stdout=_SLT_SAMPLE, stderr=""
+        )
+        files = _mocked_core(monkeypatch, fake).list_archive(str(archive))
+        names = {f["name"] for f in files}
+        assert "hello.txt" in names
+        assert "subdir" in names
+
+    def test_fallback_path_handles_fixture(
+        self, monkeypatch: Any, tmp_path: Any
+    ) -> None:
+        """回退路径对 UTF-8/GBK 夹具的解析正确（中文条目逐字段）。"""
+        import freeassetfilter.core.native.bridges.faf_core_bridge as _faf_mod
+
+        monkeypatch.setattr(_faf_mod, "get_faf_core_bridge", lambda: None)
+        core = Py7zCore.__new__(Py7zCore)
+        for fixture_name, encoding in (
+            ("slt_output_utf8.txt", "utf-8"),
+            ("slt_output_gbk.txt", "gbk"),
+        ):
+            output = _read_slt_fixture(fixture_name, encoding)
+            parsed = core._parse_list_output(output, "docs", _ARCHIVE_PATH)  # noqa: SLF001
+            by_name = {f["name"]: f for f in parsed}
+            assert by_name["readme_中文.txt"]["suffix"] == "txt"
+            assert by_name["readme_中文.txt"]["size"] == 256
+            assert by_name["readme_中文.txt"]["modified"] == "2026-09-05T10:30:00"
+            assert by_name["说明文档.txt"]["size"] == 512

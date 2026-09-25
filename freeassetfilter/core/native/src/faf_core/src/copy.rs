@@ -222,22 +222,36 @@ pub fn copy_files_impl(sources_json: &str, dest_dir: &Path) -> Result<String, i3
 ///
 /// `DirEntry::file_type()` 不解析符号链接目标：symlink→文件 与 symlink→目录
 /// 的 `is_file()`/`is_dir()` 均为 false，故符号链接条目被整体跳过。
+///
+/// 子树容错（与 Python 回退 `_iter_file_entries` 逐条目容错语义对齐）：
+/// 不可读子目录整体剪枝、单条目 stat 失败逐项跳过，聚合其余可读内容；
+/// 仅**根目录本身**缺失/非目录/不可读时向上返回错误，保留 per-path
+/// error 契约——否则真实磁盘根上受保护系统目录（`System Volume
+/// Information`/`$Recycle.Bin` 等）会让整根聚合失败并恒定回退 Python。
 fn sum_directory(dir: &Path) -> std::io::Result<u64> {
-    fn walk(dir: &Path, total: &mut u64) -> std::io::Result<()> {
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
-            let ft = entry.file_type()?;
+    fn walk(dir: &Path, total: &mut u64) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return; // 子目录不可读 → 剪枝（Python `except OSError: return`）
+        };
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else {
+                continue; // 单条目 stat 失败 → 跳过（Python `except OSError: continue`）
+            };
             if ft.is_dir() {
-                walk(&entry.path(), total)?;
+                walk(&entry.path(), total);
             } else if ft.is_file() {
                 // 真实文件（非符号链接）：stat 计入大小；saturating 防溢出 panic。
-                *total = total.saturating_add(entry.metadata()?.len());
+                if let Ok(meta) = entry.metadata() {
+                    *total = total.saturating_add(meta.len());
+                }
             }
         }
-        Ok(())
     }
     let mut total: u64 = 0;
-    walk(dir, &mut total)?;
+    // 根目录校验：缺失/非目录/不可读 → 向上报错（FFI per-path error 契约）；
+    // 子树的容错剪枝由 `walk` 内部完成，此处只校验根。
+    std::fs::read_dir(dir)?;
+    walk(dir, &mut total);
     Ok(total)
 }
 
@@ -541,6 +555,42 @@ mod tests {
 
         let total = sum_directory(&tmp.path().join("d")).expect("嵌套目录求和应成功");
         assert_eq!(total, 600, "单遍递归 walk 应累加所有文件字节数");
+    }
+
+    /// 子树不可读容错（Unix 可经 chmod 构造）：不可读子目录剪枝、其余子树
+    /// 正常聚合，不得因单棵子树失败而整根报错（对齐 Python 回退语义）。
+    #[cfg(unix)]
+    #[test]
+    fn sum_directory_skips_unreadable_subtree() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new();
+        std::fs::create_dir_all(tmp.path().join("d/blocked")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("d/open")).unwrap();
+        std::fs::write(tmp.path().join("d/open/a.txt"), vec![1u8; 100]).unwrap();
+        std::fs::write(tmp.path().join("d/blocked/x.txt"), vec![2u8; 999]).unwrap();
+
+        // 去除 blocked 读权限 → 其下 read_dir 以 EACCES 失败（root 运行环境可能绕过，见下方条件跳过）。
+        std::fs::set_permissions(
+            tmp.path().join("d/blocked"),
+            std::fs::Permissions::from_mode(0o000),
+        )
+        .unwrap();
+
+        let total = sum_directory(&tmp.path().join("d"))
+            .expect("含不可读子目录的根目录求和应成功（子树剪枝，非整根失败）");
+        // root 用户可无视权限位（此时 blocked/x.txt 也被计入，total=1099）→ 无法验证剪枝，跳过断言。
+        if total == 1099 {
+            return;
+        }
+        assert_eq!(total, 100, "不可读子目录应被剪枝，可读子树正常累加");
+
+        // 恢复权限以便 TempDir 清理。
+        std::fs::set_permissions(
+            tmp.path().join("d/blocked"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
     }
 
     #[test]

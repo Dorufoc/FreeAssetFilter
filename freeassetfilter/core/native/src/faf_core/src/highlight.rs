@@ -43,9 +43,10 @@
 //! | 19 | `whitespace` | WHITESPACE |
 //! | 20 | 其余 | DEFAULT |
 
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use syntect::parsing::{ParseState, ScopeStack, ScopeStackOp, SyntaxSet};
+use syntect::parsing::{ParseState, Scope, ScopeStack, ScopeStackOp, SyntaxSet};
 
 use crate::STATUS_UNSUPPORTED;
 
@@ -185,12 +186,23 @@ pub fn highlight_text_impl(language: &str, text: &str) -> Result<Vec<TokenSpan>,
 /// 上下文用 `$\n?`/`\n` 类模式在**行尾弹出**——若剥离 `\n` 再解析，注释
 /// 上下文会在后续整行泄漏（全部行被映射为 COMMENT）。因此每行含换行符一起
 /// 交给 `parse_line`，换行符也随段覆盖进 span（保证 ∑len == 文本字符数）。
+///
+/// 性能（todo 21 剖析）：3000 行样本的 P50 里，syntect `parse_line` 本体约
+/// 占 137ms（占 FFI 总耗时 ~168ms 的 8 成，改不动）；本函数层面的热点是
+/// （1）逐段 `Scope::to_string()`（锁全局 scope repo + 分配 String）与
+/// （2）相邻同类型 span 未合并（25000 段 → JSON/形状校验/逐行切块都被放大）。
+/// 修正：`ScopeTypeCache` 按 `Scope` 值缓存映射（每调用仅首个新 scope 触发
+/// 一次 to_string）；相邻同类型且**均不含换行符**的 span 就地合并——换行符
+/// 仍单独成段（行尾 scope 栈映射的类型），保持既有语义契约不变。
 fn highlight_with_syntax(syntax: &'static syntect::parsing::SyntaxReference, text: &str) -> Vec<TokenSpan> {
     let ss = syntax_set();
     let mut state = ParseState::new(syntax);
     let mut scope_stack = ScopeStack::new();
+    let mut type_cache = ScopeTypeCache::new();
     let mut spans: Vec<TokenSpan> = Vec::new();
     let mut char_pos = 0usize;
+    // 上一个已入列 span 是否含行尾换行符（用于「换行符单独成段」合并守卫）。
+    let mut prev_reaches_end = false;
 
     let mut rest = text;
     while !rest.is_empty() {
@@ -202,16 +214,28 @@ fn highlight_with_syntax(syntax: &'static syntect::parsing::SyntaxReference, tex
         rest = tail;
 
         match state.parse_line(line, ss) {
-            Ok(ops) => process_ops(line, &ops, &mut scope_stack, &mut char_pos, &mut spans),
+            Ok(ops) => process_ops(
+                line,
+                &ops,
+                &mut scope_stack,
+                &mut type_cache,
+                &mut char_pos,
+                &mut spans,
+                &mut prev_reaches_end,
+            ),
             // 损坏输入：整行 DEFAULT 兜底，不 panic。
             Err(_) => {
                 if !line.is_empty() {
-                    spans.push(TokenSpan {
-                        start: char_pos,
-                        len: line.chars().count(),
-                        token_type: token_type::DEFAULT,
-                    });
-                    char_pos += line.chars().count();
+                    let len = line.chars().count();
+                    push_span(
+                        &mut spans,
+                        &mut prev_reaches_end,
+                        char_pos,
+                        len,
+                        token_type::DEFAULT,
+                        line.ends_with('\n'),
+                    );
+                    char_pos += len;
                 }
             }
         }
@@ -223,12 +247,17 @@ fn highlight_with_syntax(syntax: &'static syntect::parsing::SyntaxReference, tex
 /// 字符偏移的 span 列表。语义与 syntect `RangedHighlightIterator` 一致：
 /// **先以当前 scope 栈快照产出 `[byte_cursor, at)` 段，再应用该 op**；
 /// 最后以行尾当前栈补 `[byte_cursor, content.len())`。
+///
+/// 相邻同类型 span 且**两者都不触及行尾**（均不含 `\n`）时经
+/// [`push_span`] 就地合并——换行符所在段始终独立，语义契约不变。
 fn process_ops(
     content: &str,
     ops: &[(usize, ScopeStackOp)],
     scope_stack: &mut ScopeStack,
+    type_cache: &mut ScopeTypeCache,
     char_pos: &mut usize,
     spans: &mut Vec<TokenSpan>,
+    prev_reaches_end: &mut bool,
 ) {
     let mut byte_cursor = 0usize;
     for (at, command) in ops {
@@ -236,12 +265,16 @@ fn process_ops(
         let end = (*at).clamp(byte_cursor, content.len());
         if end > byte_cursor {
             let seg = &content[byte_cursor..end];
-            spans.push(TokenSpan {
-                start: *char_pos,
-                len: seg.chars().count(),
-                token_type: scope_stack_to_token_type(scope_stack),
-            });
-            *char_pos += seg.chars().count();
+            let len = seg.chars().count();
+            push_span(
+                spans,
+                prev_reaches_end,
+                *char_pos,
+                len,
+                type_cache.resolve(scope_stack),
+                end == content.len(),
+            );
+            *char_pos += len;
         }
         // 应用 op（`ScopeStack::apply` 维护 push/pop/clear/restore）；错误忽略
         //（损坏输入不 panic，后续段用当前栈继续）。
@@ -250,24 +283,94 @@ fn process_ops(
     }
     if byte_cursor < content.len() {
         let seg = &content[byte_cursor..];
-        spans.push(TokenSpan {
-            start: *char_pos,
-            len: seg.chars().count(),
-            token_type: scope_stack_to_token_type(scope_stack),
-        });
-        *char_pos += seg.chars().count();
+        let len = seg.chars().count();
+        push_span(
+            spans,
+            prev_reaches_end,
+            *char_pos,
+            len,
+            type_cache.resolve(scope_stack),
+            content.ends_with('\n'),
+        );
+        *char_pos += len;
     }
 }
 
-/// scope 栈 → TokenType：从最具体（栈顶）到最通用（栈底）逐 scope 检查，
-/// 首个命中返回；全栈未命中 → DEFAULT。
-fn scope_stack_to_token_type(stack: &ScopeStack) -> u8 {
-    for scope in stack.as_slice().iter().rev() {
-        if let Some(ty) = scope_string_to_token_type(&scope.to_string()) {
-            return ty;
+/// 追加一个 span；若与上一个 span 同类型、连续且**两者都不含换行符**则
+/// 就地合并（`prev.len += len`），否则入列。`reaches_end` 表示该 span
+/// 是否覆盖到行尾（即包含 `\n`）——含换行符的段必须独立，保证
+/// 「换行符单独成段（采用行尾 scope 栈映射的类型）」契约不变。
+///
+/// 该合并不改变 token 语义（每个字符仍映射同一 `token_type`）也不改变
+/// span 连续性（∑len 与覆盖不变），仅减少段数（3000 行样本 25000 →
+/// ~16000），从而线性降低 JSON 序列化体积与 Python 侧形状校验/
+/// 逐行切块成本。
+fn push_span(
+    spans: &mut Vec<TokenSpan>,
+    prev_reaches_end: &mut bool,
+    start: usize,
+    len: usize,
+    token_type: u8,
+    reaches_end: bool,
+) {
+    let can_merge = !reaches_end
+        && !*prev_reaches_end
+        && spans.last().is_some_and(|prev| {
+            prev.token_type == token_type && prev.start + prev.len == start
+        });
+    if can_merge {
+        if let Some(prev) = spans.last_mut() {
+            prev.len += len;
+        }
+        return;
+    }
+    spans.push(TokenSpan {
+        start,
+        len,
+        token_type,
+    });
+    *prev_reaches_end = reaches_end;
+}
+
+/// scope 栈 → TokenType 解析缓存：以 `Scope`（128-bit 紧凑值）为键。
+///
+/// 原实现每段都对栈上每个 scope 调 `Scope::to_string()`——该调用会锁全局
+/// scope repo（`SCOPE_REPO` Mutex）并分配 String，在数千段高亮时成为热点
+/// （todo 21 剖析：单独 ~16ms/调用，占 FFI 耗时近 1 成）。改为按 `Scope`
+/// 值缓存解析结果：同一高亮调用内每个新 scope 只触发一次 to_string，
+/// 后续全部命中缓存。
+struct ScopeTypeCache {
+    map: HashMap<Scope, Option<u8>>,
+}
+
+impl ScopeTypeCache {
+    fn new() -> Self {
+        Self {
+            map: HashMap::new(),
         }
     }
-    token_type::DEFAULT
+
+    /// 从栈顶（最具体）向栈底（最通用）解析首个命中的 TokenType；全栈无
+    /// 命中 → DEFAULT。语义与 [`scope_string_to_token_type`] 优先级规则
+    /// 完全一致：`None` 表示该 scope 未命中任何规则、继续向栈底下探（绝不
+    /// 因缓存了一个「无命中」的 scope 而提前短路）。
+    fn resolve(&mut self, stack: &ScopeStack) -> u8 {
+        for scope in stack.as_slice().iter().rev() {
+            if let Some(cached) = self.map.get(scope) {
+                if let Some(ty) = cached {
+                    return *ty;
+                }
+                continue;
+            }
+            let s = scope.to_string();
+            let ty = scope_string_to_token_type(&s);
+            self.map.insert(*scope, ty);
+            if let Some(ty) = ty {
+                return ty;
+            }
+        }
+        token_type::DEFAULT
+    }
 }
 
 /// 单个 scope 字符串 → TokenType（规则见模块文档，顺序即优先级）。

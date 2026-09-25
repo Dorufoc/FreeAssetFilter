@@ -58,9 +58,9 @@ class _StubMicaBackground(QWidget):
     带与真实 Mica 背景层一致的窗口事件入口（no-op）：
     ``MainWindow.resizeEvent/moveEvent`` 会把窗口事件转发到 mica 层，
     个别用例（如 ``grab()`` 触发布局与窗口事件链）会走到这些入口；
-    普通 ``QWidget`` 缺少它们会 AttributeError。``_mica`` 属性刻意
-    不存在——``_start_mica_refresh`` 内部以 ``getattr`` None 守卫跳过
-    后台刷新（见 ``_load_mica_settings`` 同款防御）。
+    普通 ``QWidget`` 缺少它们会 AttributeError。``_ensure_mica_material``
+    返回 None——``_start_mica_refresh`` 以 None 守卫跳过后台刷新
+    （真实控件在窗口显示后惰性创建材质，本替身无材质可建）。
 
     ``sync_theme`` 同为类级 no-op：``MainWindow._on_theme_changed``
     （``tm.theme_changed`` 广播路径）无条件调用它；主题切换测试
@@ -74,6 +74,9 @@ class _StubMicaBackground(QWidget):
 
     def handle_window_move(self) -> None:
         """空实现：替身无需响应窗口移动。"""
+
+    def _ensure_mica_material(self):
+        """空实现：替身无材质，返回 None 让调用方走守卫分支。"""
 
     def sync_theme(self) -> None:
         """空实现：替身无需重烘焙 Mica 主题。"""
@@ -199,13 +202,15 @@ class TestMainWindowPanelBuild:
     ) -> None:
         """单栏构建失败不拖垮整体启动（_build_panel 内部捕获异常）。"""
         window = MainWindow()
-        # 注入必失败模块：让 file_selector 构造抛异常
-        import freeassetfilter.ui.main_window as mw
-
+        # 注入必失败模块：让 file_selector 构造抛异常。
+        # 三栏布局模块由 _build_panel 局部导入（首帧提速），故补丁打在
+        # 源模块属性上——局部导入在调用时才读取该属性。
         def _boom_selector(*_args: object, **_kwargs: object) -> object:
             raise RuntimeError("injected build failure")
 
-        monkeypatch.setattr(mw, "FileSelectorLayout", _boom_selector)  # type: ignore[assignment]
+        monkeypatch.setattr(
+            "layout.file_selector_layout.FileSelectorLayout", _boom_selector
+        )
         window._build_panel("left")
         # 左栏失败：_file_selector 仍为 None，中/右栏不受影响
         assert window._file_selector is None
@@ -235,6 +240,63 @@ class TestMainWindowClose:
         window._build_panel("center")
         window._build_panel("right")
         window.closeEvent(QCloseEvent())
+        window.deleteLater()
+        qapp.processEvents()
+
+
+class TestMainWindowStartupOverlay:
+    """启动加载覆盖层：创建契约、撤销钩子与幂等性（不 show 窗口）。"""
+
+    def test_overlay_created_with_content_shell(self, qapp: QApplication) -> None:
+        """构造后覆盖层已就绪：不透明遮罩、挂在外层内容容器上、定时器已建。"""
+        window = MainWindow()
+        overlay = window._startup_overlay
+        assert overlay is not None
+        assert overlay.overlay is True
+        assert overlay.backdrop == "opaque"
+        assert overlay.parentWidget() is window._splitter_container
+        assert window._startup_overlay_timer is not None
+        # 覆盖层不设鼠标穿透：加载期内容区不可点击（标题栏不受影响）
+        assert not overlay.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        window.deleteLater()
+        qapp.processEvents()
+
+    def test_dismiss_past_min_display_fades_out(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """已超过最短展示时长时撤销：直接同步淡出并交出动画引用。"""
+        window = MainWindow()
+        # 把起始时刻挪到过去 → remain_ms <= 0 → 走同步淡出分支（可确定性断言）
+        monkeypatch.setattr(window, "_startup_overlay_started_at", 0.0)
+
+        window._dismiss_startup_overlay()
+
+        assert window._startup_overlay is None
+        assert window._startup_overlay_animation is not None
+        window.deleteLater()
+        qapp.processEvents()
+
+    def test_dismiss_within_min_display_defers(
+        self, qapp: QApplication
+    ) -> None:
+        """未到最短展示时长时撤销：只排定补齐定时器，覆盖层仍在。"""
+        window = MainWindow()
+        # 刚构造 → elapsed 远小于 STARTUP_OVERLAY_MIN_MS
+        window._dismiss_startup_overlay()
+
+        assert window._startup_overlay is not None
+        assert window._startup_overlay_animation is None
+        assert window._startup_overlay_timer.isActive()
+        window._startup_overlay_timer.stop()
+        window.deleteLater()
+        qapp.processEvents()
+
+    def test_fade_out_is_idempotent(self, qapp: QApplication) -> None:
+        """连续两次淡出不抛异常（幂等：三栏就绪与兜底超时可能先后到达）。"""
+        window = MainWindow()
+        window._fade_out_startup_overlay()
+        window._fade_out_startup_overlay()
+        assert window._startup_overlay is None
         window.deleteLater()
         qapp.processEvents()
 
@@ -454,9 +516,13 @@ class TestMicaBackgroundWidgetCpu:
     """MicaBackgroundWidgetCpu：构造/绘制/交互/主题同步。"""
 
     def test_construct_and_render(self, qapp: QApplication) -> None:
-        """构造 + 真实 paintEvent（render 到 QPixmap）不抛异常。"""
+        """构造 + 真实 paintEvent（render 到 QPixmap）不抛异常。
+
+        材质惰性化：构造后 ``_mica`` 为 None（窗口显示后首轮事件循环才建），
+        此期间绘制以当前主题纯色铺底（与材质未烘焙时同色，材质就位后无缝接替）。
+        """
         bg = MicaBackgroundWidgetCpu()
-        assert bg._mica is not None
+        assert bg._mica is None
         assert bg._blur_radius == 200
         bg.resize(320, 200)
         bg.show()
@@ -467,12 +533,24 @@ class TestMicaBackgroundWidgetCpu:
         bg.deleteLater()
         qapp.processEvents()
 
+    def test_mica_material_lazy_creation(self, qapp: QApplication) -> None:
+        """材质惰性创建：_ensure_mica_material 首次建、后续幂等返回同一实例。"""
+        bg = MicaBackgroundWidgetCpu()
+        assert bg._mica is None
+        material = bg._ensure_mica_material()
+        assert material is not None
+        assert bg._ensure_mica_material() is material
+        material.dispose()
+        bg.deleteLater()
+        qapp.processEvents()
+
     def test_handle_window_resize_move(self, qapp: QApplication) -> None:
         """窗口拖拽/缩放回调（begin_interaction）不抛异常。"""
         bg = MicaBackgroundWidgetCpu()
         bg.handle_window_resize()
         bg.handle_window_move()
-        assert bg._mica is not None
+        # 惰性：交互回调本身不触发材质创建
+        assert bg._mica is None
         bg.deleteLater()
 
     def test_sync_theme_and_refresh(self, qapp: QApplication) -> None:
@@ -480,12 +558,15 @@ class TestMicaBackgroundWidgetCpu:
 
         背景为不透明纯色，随主题切换：
         深色 → 纯黑 #000000，浅色 → 纯白 #FFFFFF（不再有灰色调 tint）。
+        ``refresh_background`` 语义上需要材质，会惰性创建。
         """
         bg = MicaBackgroundWidgetCpu()
         bg.sync_theme()
         assert bg._surface_color in ("#000000", "#FFFFFF")
         assert len(bg._surface_color) == 7  # 不透明纯色（无 alpha 通道）
         bg.refresh_background()
+        assert bg._mica is not None
+        bg._mica.dispose()
         bg.deleteLater()
 
     def test_apply_mica_parameters(self, qapp: QApplication, monkeypatch) -> None:
@@ -500,7 +581,8 @@ class TestMicaBackgroundWidgetCpu:
         - 仅叠加层透明度变化 → 仅绘制期生效，不调度重建。
         """
         bg = MicaBackgroundWidgetCpu(tint_opacity=50)
-        material = bg._mica
+        # 材质惰性化：参数透传目标需显式创建（生产路径由 _start_mica_refresh 触发）
+        material = bg._ensure_mica_material()
         assert material is not None
         # 桩掉重建调度：只记录调用次数，不真正去采壁纸 / 起线程
         rebuild_calls: list = []
@@ -554,7 +636,8 @@ class TestMicaBackgroundWidgetCpu:
         模拟真实切换时参数必然变化的场景。
         """
         bg = MicaBackgroundWidgetCpu()
-        material = bg._mica
+        # 材质惰性化：主题切换测试需材质就位（生产路径由 _start_mica_refresh 触发）
+        material = bg._ensure_mica_material()
         assert material is not None
         # 模拟「当前材质还是另一主题的参数」：拨一个必然不同的饱和度。
         material._params = material._params.replace(saturation=99.0)
@@ -590,10 +673,13 @@ class TestMicaBackgroundWidgetGL:
             bg = MicaBackgroundWidgetGL()
         except Exception:
             pytest.skip("OpenGL context unavailable")
-        assert bg._mica is not None
+        # 材质惰性化：构造后未创建，显式确保后方可重绘（NULL/GPU 路径）
+        assert bg._mica is None
+        assert bg._ensure_mica_material() is not None
         bg.handle_window_resize()
         bg.handle_window_move()
         assert bg._blur_radius == 200
+        bg._mica.dispose()
         bg.deleteLater()
         qapp.processEvents()
 
@@ -602,10 +688,12 @@ class TestMakeMicaBackground:
     """make_mica_background：工厂返回 Mica 背景控件（默认 CPU 回退）。"""
 
     def test_factory_returns_mica_widget(self, qapp: QApplication) -> None:
-        """默认路径返回 CPU 或 GL 版之一，且已构建 MicaMaterial。"""
+        """默认路径返回 CPU 或 GL 版之一，材质由 _ensure_mica_material 惰性建。"""
         bg = make_mica_background()
         assert isinstance(bg, (MicaBackgroundWidgetCpu, MicaBackgroundWidgetGL))
-        assert bg._mica is not None
+        assert bg._mica is None
+        assert bg._ensure_mica_material() is not None
+        bg._mica.dispose()
         bg.deleteLater()
         qapp.processEvents()
 

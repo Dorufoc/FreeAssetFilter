@@ -208,7 +208,6 @@ class TestBridgeCopy:
 
         # 先给源文件设已知 mtime，验证 copystat 保留。
         import os
-        import time as _time
 
         known = 1_700_000_000
         os.utime(f, (known, known))
@@ -326,3 +325,224 @@ class TestBridgeSizesum:
         )
         inst = FafCoreBridge()
         assert inst.sum_directory_sizes([str(tmp_path)]) is None
+
+
+# =============================================================================
+# rust-hot-path-native-migration todo 3：6 个新桥方法（EXIF/PSD/SVG/fluid/7z/PDF）
+# =============================================================================
+class TestBridgeParseExif:
+    """``parse_exif`` 能力标记、可用路径与降级路径。"""
+
+    def test_parse_exif_capability_flag(self) -> None:
+        """``_supports_parse_exif`` 为 bool（能力探测属性）。"""
+        assert isinstance(FafCoreBridge()._supports_parse_exif, bool)  # noqa: SLF001
+
+    def test_parse_exif_available_call(self, tmp_path: Any) -> None:
+        """可用时调用不抛异常；占位期返回 None，实现期返回 dict 载荷。"""
+        inst = FafCoreBridge()
+        if not inst.available or not inst._supports_parse_exif:  # noqa: SLF001
+            pytest.skip("faf_core.dll 不含 parse_exif 导出，跳过可用路径测试")
+        img = tmp_path / "a.jpg"
+        img.write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01")
+        result = inst.parse_exif(str(img))
+        assert result is None or (
+            isinstance(result, dict)
+            and isinstance(result.get("common"), list)
+            and isinstance(result.get("rest"), list)
+        )
+
+    def test_parse_exif_malformed_input_returns_none(self) -> None:
+        """非 str 入参 → None（不抛异常）。"""
+        inst = FafCoreBridge()
+        assert inst.parse_exif(123) is None
+
+    def test_parse_exif_missing_dll_returns_none(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DLL 缺失时 ``parse_exif`` 返回 ``None``（回退 exifread）。"""
+        missing = tmp_path / "missing.dll"
+        monkeypatch.setattr(
+            FafCoreBridge, "_candidate_paths", lambda self: [Path(missing)]
+        )
+        inst = FafCoreBridge()
+        assert inst.available is False
+        assert inst.parse_exif(str(tmp_path / "a.jpg")) is None
+
+
+class TestBridgeCompositePsd:
+    """``composite_psd`` 能力标记与降级路径（spike 裁决 DROP）。"""
+
+    def test_composite_psd_capability_flag(self) -> None:
+        """``_supports_composite_psd`` 为 bool（能力探测属性）。"""
+        assert isinstance(FafCoreBridge()._supports_composite_psd, bool)  # noqa: SLF001
+
+    def test_composite_psd_available_call(self, tmp_path: Any) -> None:
+        """可用时调用不抛异常；DROP 裁决下恒返回 None。"""
+        inst = FafCoreBridge()
+        if not inst.available or not inst._supports_composite_psd:  # noqa: SLF001
+            pytest.skip("faf_core.dll 不含 composite_psd 导出，跳过可用路径测试")
+        psd = tmp_path / "a.psd"
+        psd.write_bytes(b"8BPS")
+        result = inst.composite_psd(str(psd))
+        assert result is None or isinstance(result, dict)
+
+    def test_composite_psd_missing_dll_returns_none(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DLL 缺失时 ``composite_psd`` 返回 ``None``（保持 Python psd-tools）。"""
+        missing = tmp_path / "missing.dll"
+        monkeypatch.setattr(
+            FafCoreBridge, "_candidate_paths", lambda self: [Path(missing)]
+        )
+        inst = FafCoreBridge()
+        assert inst.available is False
+        assert inst.composite_psd(str(tmp_path / "a.psd")) is None
+
+
+class TestBridgeReplaceSvgColors:
+    """``replace_svg_colors`` 能力标记、可用路径与降级路径（裸 SVG 文本）。"""
+
+    def test_replace_svg_colors_capability_flag(self) -> None:
+        """``_supports_replace_svg_colors`` 为 bool（能力探测属性）。"""
+        assert isinstance(
+            FafCoreBridge()._supports_replace_svg_colors, bool  # noqa: SLF001
+        )
+
+    def test_replace_svg_colors_available_call(self) -> None:
+        """可用时调用不抛异常；占位期返回 None，实现期返回 str SVG 文本。"""
+        inst = FafCoreBridge()
+        if not inst.available or not inst._supports_replace_svg_colors:  # noqa: SLF001
+            pytest.skip("faf_core.dll 不含 replace_svg_colors 导出，跳过可用路径测试")
+        result = inst.replace_svg_colors("<svg fill=\"#000\"/></svg>", True, False)
+        assert result is None or isinstance(result, str)
+
+    def test_replace_svg_colors_malformed_input_returns_none(self) -> None:
+        """非 str svg_text → None（不抛异常）。"""
+        inst = FafCoreBridge()
+        assert inst.replace_svg_colors(123, True, False) is None
+
+    def test_replace_svg_colors_missing_dll_returns_none(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DLL 缺失时 ``replace_svg_colors`` 返回 ``None``（回退 Python 换色）。"""
+        missing = tmp_path / "missing.dll"
+        monkeypatch.setattr(
+            FafCoreBridge, "_candidate_paths", lambda self: [Path(missing)]
+        )
+        inst = FafCoreBridge()
+        assert inst.available is False
+        assert inst.replace_svg_colors("<svg/>", True, False) is None
+
+
+class TestBridgeRenderFluidFrame:
+    """``render_fluid_frame`` 能力标记与降级路径（RGBA 缓冲，spike DROP）。"""
+
+    def test_render_fluid_frame_capability_flag(self) -> None:
+        """``_supports_render_fluid_frame`` 为 bool（能力探测属性）。"""
+        assert isinstance(
+            FafCoreBridge()._supports_render_fluid_frame, bool  # noqa: SLF001
+        )
+
+    def test_render_fluid_frame_available_call(self) -> None:
+        """可用时调用不抛异常；DROP 裁决下恒返回 None。"""
+        inst = FafCoreBridge()
+        if not inst.available or not inst._supports_render_fluid_frame:  # noqa: SLF001
+            pytest.skip("faf_core.dll 不含 render_fluid_frame 导出，跳过可用路径测试")
+        result = inst.render_fluid_frame(
+            64, 48, "[]", 42, 0.5, "{}"
+        )
+        assert result is None or isinstance(result, bytes)
+
+    def test_render_fluid_frame_nonpositive_size_returns_none(self) -> None:
+        """0/负尺寸 → None（不抛异常，不触 native）。"""
+        inst = FafCoreBridge()
+        assert inst.render_fluid_frame(0, 0, "[]", 42, 0.5, "{}") is None
+        assert inst.render_fluid_frame(-1, 8, "[]", 42, 0.5, "{}") is None
+
+    def test_render_fluid_frame_missing_dll_returns_none(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DLL 缺失时 ``render_fluid_frame`` 返回 ``None``（保持 Python CPU 帧）。"""
+        missing = tmp_path / "missing.dll"
+        monkeypatch.setattr(
+            FafCoreBridge, "_candidate_paths", lambda self: [Path(missing)]
+        )
+        inst = FafCoreBridge()
+        assert inst.available is False
+        assert inst.render_fluid_frame(64, 48, "[]", 42, 0.5, "{}") is None
+
+
+class TestBridgeParse7zList:
+    """``parse_7z_list`` 能力标记、可用路径与降级路径（7 键条目列表）。"""
+
+    def test_parse_7z_list_capability_flag(self) -> None:
+        """``_supports_parse_7z_list`` 为 bool（能力探测属性）。"""
+        assert isinstance(FafCoreBridge()._supports_parse_7z_list, bool)  # noqa: SLF001
+
+    def test_parse_7z_list_available_call(self) -> None:
+        """可用时调用不抛异常；占位期返回 None，实现期返回 dict 条目列表。"""
+        inst = FafCoreBridge()
+        if not inst.available or not inst._supports_parse_7z_list:  # noqa: SLF001
+            pytest.skip("faf_core.dll 不含 parse_7z_list 导出，跳过可用路径测试")
+        result = inst.parse_7z_list(
+            "Path = a.txt\nSize = 1\n", "inner", "archive.7z"
+        )
+        assert result is None or (
+            isinstance(result, list)
+            and all(isinstance(item, dict) for item in result)
+        )
+
+    def test_parse_7z_list_malformed_input_returns_none(self) -> None:
+        """任一入参非 str → None（不抛异常）。"""
+        inst = FafCoreBridge()
+        assert inst.parse_7z_list(b"bytes", "inner", "archive.7z") is None
+        assert inst.parse_7z_list("output", 123, "archive.7z") is None
+
+    def test_parse_7z_list_missing_dll_returns_none(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DLL 缺失时 ``parse_7z_list`` 返回 ``None``（回退 ``_parse_list_output``）。"""
+        missing = tmp_path / "missing.dll"
+        monkeypatch.setattr(
+            FafCoreBridge, "_candidate_paths", lambda self: [Path(missing)]
+        )
+        inst = FafCoreBridge()
+        assert inst.available is False
+        assert inst.parse_7z_list("Path = a.txt\n", "inner", "archive.7z") is None
+
+
+class TestBridgePdfSelectWords:
+    """``pdf_select_words`` 能力标记、可用路径与降级路径（选区词列表）。"""
+
+    def test_pdf_select_words_capability_flag(self) -> None:
+        """``_supports_pdf_select_words`` 为 bool（能力探测属性）。"""
+        assert isinstance(FafCoreBridge()._supports_pdf_select_words, bool)  # noqa: SLF001
+
+    def test_pdf_select_words_available_call(self) -> None:
+        """可用时调用不抛异常；占位期返回 None，实现期返回选中词条目列表。"""
+        inst = FafCoreBridge()
+        if not inst.available or not inst._supports_pdf_select_words:  # noqa: SLF001
+            pytest.skip("faf_core.dll 不含 pdf_select_words 导出，跳过可用路径测试")
+        result = inst.pdf_select_words("[]", "{}")
+        assert result is None or (
+            isinstance(result, list)
+            and all(isinstance(item, dict) for item in result)
+        )
+
+    def test_pdf_select_words_malformed_input_returns_none(self) -> None:
+        """任一入参非 str → None（不抛异常）。"""
+        inst = FafCoreBridge()
+        assert inst.pdf_select_words(b"[]", "{}") is None
+        assert inst.pdf_select_words("[]", 123) is None
+
+    def test_pdf_select_words_missing_dll_returns_none(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DLL 缺失时 ``pdf_select_words`` 返回 ``None``（回退 Python 选区过滤）。"""
+        missing = tmp_path / "missing.dll"
+        monkeypatch.setattr(
+            FafCoreBridge, "_candidate_paths", lambda self: [Path(missing)]
+        )
+        inst = FafCoreBridge()
+        assert inst.available is False
+        assert inst.pdf_select_words("[]", "{}") is None

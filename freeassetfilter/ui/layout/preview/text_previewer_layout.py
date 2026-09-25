@@ -574,7 +574,7 @@ class _LinkTextBrowser(QTextBrowser):
         """右键点击时构建 StyledContextMenu：命中链接显示链接操作，有选区显示复制选区，始终显示全选。"""
         menu = StyledContextMenu(parent=self)
 
-        anchor = self.anchorAt(event.position().toPoint())
+        anchor = self.anchorAt(event.pos())
         if anchor:
             menu.add_item("在浏览器中打开", callback=lambda: self._open_anchor(anchor))
             menu.add_item("复制链接", callback=lambda: self._copy_anchor(anchor))
@@ -586,7 +586,7 @@ class _LinkTextBrowser(QTextBrowser):
             menu.add_separator()
         menu.add_item("全选", callback=self._select_all)
 
-        menu.exec(event.globalPosition().toPoint())
+        menu.exec(event.globalPos())
 
     def _copy_selected_text(self) -> None:
         """将当前选中的文本复制到剪贴板。"""

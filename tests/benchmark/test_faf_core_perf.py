@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 # targets: core.native.bridges.faf_core_bridge,
 #          ui.layout.file_selector_layout, utils.syntax_highlighter,
-#          services.file_info_service
-"""faf_core 原生核心性能基准（faf-core-rust-migration todo 32）。
+#          services.file_info_service, services.image_decoder_service,
+#          services.pdf_document_view, core.preview.svg_renderer,
+#          ui.components._styled_fluid_cpu, core.native.bridges.py7z_core
+"""faf_core 原生核心性能基准（faf-core-rust-migration todo 32 + todo 23）。
 
 锁定五条 faf_core 主路径的耗时/吞吐口径，全部以「native vs Python 基线」
 对照方式记录并落盘基线 JSON（``tests/benchmark/baseline/faf-core-perf.json``）：
@@ -25,17 +27,44 @@
   (b) Python 回退排序耗时（``_apply_sort`` mode-2 同款 key，逐字对齐
   file_selector_layout.py L1452）；cap 回退全路径不得抛异常。
 
-  说明：扫描路径的 8MB 上限守卫在 Rust 侧（``scan.rs`` 内建
-  ``STATUS_TOO_LARGE``），需约 3 万+ 文件目录才能触发——基准每轮全量运行
-  都要建目录，成本过高，故本基准以「桥内显式守卫」的 sort 路径作为真实
-  超限触发器（计划允许 mock 或真实构造超限目录），Python 回退排序耗时即为
-  用户在超限场景下实际等待的 Python 回退成本。
+说明：扫描路径的 8MB 上限守卫在 Rust 侧（``scan.rs`` 内建
+   ``STATUS_TOO_LARGE``），需约 3 万+ 文件目录才能触发——基准每轮全量运行
+   都要建目录，成本过高，故本基准以「桥内显式守卫」的 sort 路径作为真实
+   超限触发器（计划允许 mock 或真实构造超限目录），Python 回退排序耗时即为
+   用户在超限场景下实际等待的 Python 回退成本。
+
+todo 23 追加六条 rust-hot-path-native-migration 路径的 P50/P95 对照（同样
+「native vs Python」+ 逐段落盘同基文件）：
+
+* **EXIF 解析**（KEEP）：native ``bridge.parse_exif``（kamadak-exif）vs
+  Python ``_collect_exif_exifread``（exifread 回退链），样本为
+  ``exif_samples/sample_standard.jpg``；
+* **PSD 合成**（DROP）：todo 1/9 裁决 Rust ``psd`` crate 无法等价
+  ``psd-tools .composite()``，native ``composite_psd`` 恒返回 ``None``——
+  本段测 Python psd-tools 路径（``ImageDecoderService._decode_psd``）并把
+  native ``None`` 记录为预期 DROP（非 FAIL）；
+* **SVG 换色**（KEEP，主题门控）：native ``bridge.replace_svg_colors`` vs
+  Python 正则回退（``SvgRenderer._replace_svg_colors``），样本为
+  ``svg_samples/sample_hit_all.svg``（18 条正则全命中）；
+* **流体帧**（DROP）：todo 13/14 裁决 float ULP parity 不可达，native
+  ``render_fluid_frame`` 恒返回 ``None``——本段测 Python CPU 路径
+  （``_styled_fluid_cpu.render_static_frame``）并把 native ``None`` 记录为
+  预期 DROP（非 FAIL），样本取 ``fluid_frame_160x100.json`` 固定参数；
+* **7z 列表解析**（KEEP）：native ``bridge.parse_7z_list``（纯文本解析）
+  vs Python ``py7z_core._parse_list_output``，样本为
+  ``seven_zip_samples/slt_output_utf8.txt``（7z.exe 子进程不在基准范围）；
+* **PDF 选区过滤**（KEEP）：native ``bridge.pdf_select_words`` vs Python
+  ``pdf_document_view.get_text_selection`` 的 smart x-bound 过滤回退，
+  样本为 ``pdf_samples/sample_multi_page.pdf`` 的滑动选区。
 
 断言纪律（计划原文，性能是记录性指标）：
 * **精确断言** ``P50_native <= P50_python * 1.2``——native 快于或接近基线；
   不达标只打印 WARN 并继续（exit 0），**不 FAIL**；
 * 失败条件只针对：崩溃/异常、native 在正常数据上返回 ``None``、cap 回退
-  路径抛异常。
+  路径抛异常；
+* **默认 DROP 豁免**（todo 23）：PSD/流体段的 native ``None`` 是 spike 裁决
+  的**预期 DROP**（``composite_psd``/``render_fluid_frame`` 恒返 None），
+  不算 FAIL——两段只测 Python 路径并把 native None 记录进基线。
 
 冒烟降级：设 ``FAF_BENCH_SMOKE=1`` 时以 5 样本快速模式运行（CI 冒烟门控，
 阈值不变、仅缩样本与数据规模）。
@@ -59,6 +88,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import pytest
 
+from PySide6.QtGui import QColor
+
 from freeassetfilter.core.native.bridges.faf_core_bridge import (
     FafCoreBridge,
     get_faf_core_bridge,
@@ -72,7 +103,11 @@ _UI_ROOT: str = str(
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-from freeassetfilter.services.file_info_service import compute_hashes
+from freeassetfilter.services.file_info_service import (
+    _collect_exif_exifread,
+    compute_hashes,
+)
+from freeassetfilter.ui.components._styled_fluid_cpu import render_static_frame
 from freeassetfilter.ui.layout.file_selector_layout import (
     FileSelectorLayout,
     _native_scan_directory,
@@ -122,6 +157,22 @@ CAP_ENTRIES: int = 30000
 #: cap 回退计时样本数。
 CAP_SAMPLES_FULL: int = 3
 CAP_SAMPLES_SMOKE: int = 2
+#: todo 23 各段样本数（native+python 交错对；DROP 段只测 python）。
+EXIF_SAMPLES_FULL: int = 5
+EXIF_SAMPLES_SMOKE: int = 3
+PSD_SAMPLES_FULL: int = 3
+PSD_SAMPLES_SMOKE: int = 2
+SVG_SAMPLES_FULL: int = 5
+SVG_SAMPLES_SMOKE: int = 3
+FLUID_SAMPLES_FULL: int = 3
+FLUID_SAMPLES_SMOKE: int = 2
+SEVENZ_SAMPLES_FULL: int = 5
+SEVENZ_SAMPLES_SMOKE: int = 3
+PDF_SAMPLES_FULL: int = 5
+PDF_SAMPLES_SMOKE: int = 3
+#: 流体基准帧尺寸（todo 23，取 160x100 参考帧的参数对应渲染）。
+FLUID_BENCH_WIDTH: int = 320
+FLUID_BENCH_HEIGHT: int = 200
 
 #: 基准 JSON 落盘路径。
 BASELINE_PATH: Path = (
@@ -353,6 +404,107 @@ def copy_sources(tmp_path_factory: Any) -> Tuple[List[str], Path]:
     sources: List[str] = [str(p) for p in src_dir.iterdir()]
     print(f"\n复制语料: {len(sources)} 文件 @ {src_dir}")
     return sources, workdir
+
+
+#: todo 23 夹具根目录（tests/support/faf_core_fixtures/，todo 5 已生成）。
+_FIXTURES_ROOT: Path = (
+    Path(__file__).resolve().parents[1] / "support" / "faf_core_fixtures"
+)
+
+
+@pytest.fixture(scope="module")
+def exif_file() -> str:
+    """EXIF 基准样本（sample_standard.jpg，含 GPS/多值，9 条 rest 行）。"""
+    return str(_FIXTURES_ROOT / "exif_samples" / "sample_standard.jpg")
+
+
+@pytest.fixture(scope="module")
+def psd_file() -> str:
+    """PSD 基准样本（图层 + MULTIPLY 混合 + 蒙版，psd-tools 合成目标）。"""
+    return str(_FIXTURES_ROOT / "psd_samples" / "sample_layers_blend_mask.psd")
+
+
+@pytest.fixture(scope="module")
+def svg_text() -> str:
+    """SVG 换色基准样本（18 条正则全命中，todo 5 夹具）。"""
+    return (
+        _FIXTURES_ROOT / "svg_samples" / "sample_hit_all.svg"
+    ).read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
+def sevenz_output() -> str:
+    """7z ``-slt`` 列表基准样本（UTF-8，含中文/目录/隐藏项/自身）。"""
+    return (
+        _FIXTURES_ROOT / "seven_zip_samples" / "slt_output_utf8.txt"
+    ).read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
+def fluid_params() -> Dict[str, Any]:
+    """流体帧基准参数（160x100 参考帧：调色板/seed/time/overlay）。
+
+    Returns:
+        dict[str, Any]: ``palette`` / ``noise_seed`` / ``time`` /
+            ``overlay`` 四字段。
+    """
+    data: Dict[str, Any] = json.loads(
+        (
+            _FIXTURES_ROOT
+            / "fluid_samples"
+            / "fluid_frame_160x100.json"
+        ).read_text(encoding="utf-8")
+    )
+    return {
+        "palette": [tuple(c) for c in data["palette"]],
+        "noise_seed": int(data["noise_seed"]),
+        "time": float(data["time"]),
+        "overlay": tuple(data["overlay"]),
+    }
+
+
+@pytest.fixture(scope="module")
+def pdf_file() -> str:
+    """PDF 选区基准样本（多页多词，todo 5 夹具）。"""
+    return str(_FIXTURES_ROOT / "pdf_samples" / "sample_multi_page.pdf")
+
+
+def _interleaved_pair(
+    samples: int,
+    native_fn: Any,
+    python_fn: Any,
+    section: str,
+    check_native: Any = None,
+    check_python: Any = None,
+) -> Tuple[Dict[str, float], Dict[str, float]]:
+    """交替采样 native/python 一对计时（todo 23 各段通用骨架）。
+
+    Args:
+        samples: 采样对数。
+        native_fn: 无参 native 可调用对象。
+        python_fn: 无参 Python 可调用对象。
+        section: 段名（用于 WARN 文案）。
+        check_native: 可选的 native 结果守卫（抛异常即 FAIL）。
+        check_python: 可选的 Python 结果守卫（抛异常即 FAIL）。
+
+    Returns:
+        tuple[dict, dict]: (native stats, python stats)。
+    """
+    native_ms: List[float] = []
+    python_ms: List[float] = []
+    for _ in range(samples):
+        start: float = time.perf_counter()
+        native_res: Any = native_fn()
+        native_ms.append(time.perf_counter() - start)
+        if check_native is not None:
+            check_native(native_res)
+
+        start = time.perf_counter()
+        python_res: Any = python_fn()
+        python_ms.append(time.perf_counter() - start)
+        if check_python is not None:
+            check_python(python_res)
+    return _stats_ms(native_ms), _stats_ms(python_ms)
 
 
 # =============================================================================
@@ -718,5 +870,456 @@ class TestOverLimitFallback:
                 "python_fallback": fallback_stats,
                 "total_fallback_p50_ms": total_p50,
                 "no_exception": True,
+            },
+        )
+
+
+# =============================================================================
+# todo 23 — EXIF 解析（KEEP：native kamadak-exif vs exifread 回退链）
+# =============================================================================
+class TestExifParse:
+    """EXIF 解析延迟分位数（native ``faf_parse_exif`` vs ``_collect_exif_exifread``）。"""
+
+    def test_exif_p50_p95_native_vs_python(
+        self, bridge: FafCoreBridge, exif_file: str
+    ) -> None:
+        """预热后交错采样：native P50 须 ≤ Python 基线 × 1.2（WARN-only）。"""
+        if not bridge._supports_parse_exif:
+            pytest.skip("faf_core 无 parse_exif 导出，跳过 EXIF 基准")
+        if not os.path.exists(exif_file):
+            pytest.skip("EXIF 基准样本缺失")
+
+        # 预热轮：native 首次解析冷路径；正常样本上返回 None 属真实失败 → FAIL
+        warm_native = bridge.parse_exif(exif_file)
+        assert warm_native is not None, "native EXIF 解析返回 None（应 FAIL）"
+        _collect_exif_exifread(exif_file)
+
+        samples: int = EXIF_SAMPLES_SMOKE if SMOKE_MODE else EXIF_SAMPLES_FULL
+        n_stats, p_stats = _interleaved_pair(
+            samples,
+            lambda: bridge.parse_exif(exif_file),
+            lambda: _collect_exif_exifread(exif_file),
+            "EXIF 解析",
+            check_native=lambda r: (
+                r is not None and isinstance(r.get("rest"), list)
+            ),
+            check_python=lambda r: isinstance(r, tuple) and len(r) == 2,
+        )
+        speedup_p50: float = (
+            p_stats["p50_ms"] / n_stats["p50_ms"] if n_stats["p50_ms"] else 0.0
+        )
+        assertion: Dict[str, Any] = _check_native_vs_python(
+            n_stats["p50_ms"], p_stats["p50_ms"], "EXIF 解析"
+        )
+        print(
+            f"EXIF 解析: 样本 {samples} | "
+            f"native P50 {n_stats['p50_ms']:.2f}ms/P95 {n_stats['p95_ms']:.2f}ms | "
+            f"python P50 {p_stats['p50_ms']:.2f}ms/P95 {p_stats['p95_ms']:.2f}ms | "
+            f"P50 加速 {speedup_p50:.2f}x"
+        )
+        _record_baseline(
+            "exif",
+            {
+                "status": "KEEP",
+                "sample": Path(exif_file).name,
+                "samples": samples,
+                "native": n_stats,
+                "python": p_stats,
+                "p50_speedup_x": round(speedup_p50, 3),
+                "assertion": assertion,
+            },
+        )
+
+
+# =============================================================================
+# todo 23 — PSD 合成（DROP：native 恒 None，基准只测 Python psd-tools 路径）
+# =============================================================================
+class TestPsdCompositeDrop:
+    """PSD 合成（spike 裁决 DROP）：``bridge.composite_psd`` 恒 None 为预期。"""
+
+    def test_psd_python_path_p50_p95(self, bridge: FafCoreBridge, psd_file: str) -> None:
+        """Python psd-tools 合成路径 P50/P95；native None 记录为预期 DROP（非 FAIL）。"""
+        pytest.importorskip("psd_tools", reason="psd-tools 缺失，跳过 PSD 基准")
+        if not os.path.exists(psd_file):
+            pytest.skip("PSD 基准样本缺失")
+
+        from freeassetfilter.services.image_decoder_service import ImageDecoderService
+
+        # 预期 DROP 核验：native 恒 None（不崩溃）；非 None（未来 KEEP 翻转）仅记录。
+        native_res = None
+        if bridge._supports_composite_psd:
+            native_res = bridge.composite_psd(psd_file)
+
+        samples: int = PSD_SAMPLES_SMOKE if SMOKE_MODE else PSD_SAMPLES_FULL
+        python_ms: List[float] = []
+        for _ in range(samples):
+            start: float = time.perf_counter()
+            image: Any = ImageDecoderService._decode_psd(psd_file)
+            python_ms.append(time.perf_counter() - start)
+            assert image is not None and image.mode == "RGBA"
+        p_stats: Dict[str, float] = _stats_ms(python_ms)
+
+        print(
+            f"PSD 合成(DROP): 样本 {samples} | native 恒 None（预期 DROP） | "
+            f"python(PIL/psd-tools) P50 {p_stats['p50_ms']:.2f}ms"
+            f"/P95 {p_stats['p95_ms']:.2f}ms"
+        )
+        _record_baseline(
+            "psd",
+            {
+                "status": "DROP",
+                "note": "todo 1/9 裁决 native composite_psd 恒 None，基准只测 Python psd-tools",
+                "native_none_expected": True,
+                "native_returned_none": native_res is None,
+                "sample": Path(psd_file).name,
+                "samples": samples,
+                "python": p_stats,
+                "assertion": {
+                    "rule": "DROP — native 恒 None 为预期（非 FAIL），无 PERF 对照",
+                    "passed": True,
+                },
+            },
+        )
+
+
+# =============================================================================
+# todo 23 — SVG 换色（KEEP，主题门控：native vs Python 正则回退）
+# =============================================================================
+class TestSvgReplaceColors:
+    """SVG 换色延迟（native ``replace_svg_colors`` vs Python 18 正则回退）。"""
+
+    def test_svg_replace_p50_p95_native_vs_python(
+        self,
+        bridge: FafCoreBridge,
+        svg_text: str,
+        monkeypatch: Any,
+    ) -> None:
+        """预热后交错采样：native P50 须 ≤ Python 基线 × 1.2（WARN-only）。"""
+        if not bridge._supports_replace_svg_colors:
+            pytest.skip("faf_core 无 replace_svg_colors 导出，跳过 SVG 换色基准")
+
+        import types
+
+        import freeassetfilter.core.preview.svg_renderer as svg_mod
+        from freeassetfilter.core.preview.svg_renderer import SvgRenderer
+
+        class _Color:
+            def __init__(self, value: str) -> None:
+                self._value = value
+
+            def name(self) -> str:
+                return self._value
+
+        # 主题令牌 stub 到 native 编译期常量（与 todo 12 对拍契约一致），保证
+        # Python 回退与 native 走同一替换管线（monkeypatch 到模块，不触真实 tm）。
+        monkeypatch.setattr(
+            svg_mod,
+            "tm",
+            types.SimpleNamespace(
+                accent=_Color(svg_mod._NATIVE_ACCENT_COLOR),
+                fill=_Color(svg_mod._NATIVE_BASE_COLOR),
+                text=_Color(svg_mod._NATIVE_SECONDARY_COLOR),
+                mid=_Color(svg_mod._NATIVE_NORMAL_COLOR),
+            ),
+        )
+
+        # 强制 Python 回退：native 尝试恒返回 None（该段测的是正则管线本身）。
+        monkeypatch.setattr(
+            SvgRenderer,
+            "_try_native_replace_svg_colors",
+            staticmethod(lambda *a, **k: None),
+        )
+
+        # 预热轮
+        warm_native = bridge.replace_svg_colors(svg_text, False, False)
+        assert warm_native is not None, "native SVG 换色返回 None（应 FAIL）"
+        SvgRenderer._replace_svg_colors(svg_text, False, False)
+
+        samples: int = SVG_SAMPLES_SMOKE if SMOKE_MODE else SVG_SAMPLES_FULL
+        n_stats, p_stats = _interleaved_pair(
+            samples,
+            lambda: bridge.replace_svg_colors(svg_text, False, False),
+            lambda: SvgRenderer._replace_svg_colors(svg_text, False, False),
+            "SVG 换色",
+            check_native=lambda r: isinstance(r, str) and len(r) > 0,
+            check_python=lambda r: isinstance(r, str) and len(r) > 0,
+        )
+        speedup_p50: float = (
+            p_stats["p50_ms"] / n_stats["p50_ms"] if n_stats["p50_ms"] else 0.0
+        )
+        assertion: Dict[str, Any] = _check_native_vs_python(
+            n_stats["p50_ms"], p_stats["p50_ms"], "SVG 换色"
+        )
+        print(
+            f"SVG 换色: 样本 {samples} | "
+            f"native P50 {n_stats['p50_ms']:.3f}ms/P95 {n_stats['p95_ms']:.3f}ms | "
+            f"python P50 {p_stats['p50_ms']:.3f}ms/P95 {p_stats['p95_ms']:.3f}ms | "
+            f"P50 加速 {speedup_p50:.2f}x"
+        )
+        _record_baseline(
+            "svg_replace_colors",
+            {
+                "status": "KEEP",
+                "note": "主题门控（tm 色值等于 native 常量才走 native）",
+                "chars": len(svg_text),
+                "samples": samples,
+                "native": n_stats,
+                "python": p_stats,
+                "p50_speedup_x": round(speedup_p50, 3),
+                "assertion": assertion,
+            },
+        )
+
+
+# =============================================================================
+# todo 23 — 流体帧（DROP：native 恒 None，基准只测 Python CPU 帧渲染）
+# =============================================================================
+class TestFluidFrameDrop:
+    """流体背景 CPU 帧（spike 裁决 DROP）：``bridge.render_fluid_frame`` 恒 None 为预期。"""
+
+    def test_fluid_python_frame_p50_p95(
+        self,
+        bridge: FafCoreBridge,
+        fluid_params: Dict[str, Any],
+        qapp: Any,
+    ) -> None:
+        """Python ``render_static_frame`` P50/P95；native None 记录为预期 DROP（非 FAIL）。"""
+        from PySide6.QtGui import QColor
+
+        palette: List[QColor] = [QColor(*c) for c in fluid_params["palette"]]
+        overlay: QColor = QColor(*fluid_params["overlay"])
+
+        # 预期 DROP 核验：native 恒 None（不崩溃）；非 None 仅记录。
+        native_res = None
+        if bridge._supports_render_fluid_frame:
+            palette_json: str = json.dumps(fluid_params["palette"])
+            overlay_json: str = json.dumps(list(fluid_params["overlay"]))
+            native_res = bridge.render_fluid_frame(
+                FLUID_BENCH_WIDTH,
+                FLUID_BENCH_HEIGHT,
+                palette_json,
+                fluid_params["noise_seed"],
+                fluid_params["time"],
+                overlay_json,
+            )
+
+        samples: int = FLUID_SAMPLES_SMOKE if SMOKE_MODE else FLUID_SAMPLES_FULL
+        python_ms: List[float] = []
+        for _ in range(samples):
+            start: float = time.perf_counter()
+            pixmap: Any = render_static_frame(
+                FLUID_BENCH_WIDTH,
+                FLUID_BENCH_HEIGHT,
+                palette,
+                fluid_params["noise_seed"],
+                fluid_params["time"],
+                overlay,
+            )
+            python_ms.append(time.perf_counter() - start)
+            assert pixmap is not None and not pixmap.isNull()
+        p_stats: Dict[str, float] = _stats_ms(python_ms)
+
+        print(
+            f"流体帧(DROP): 样本 {samples} | native 恒 None（预期 DROP） | "
+            f"python CPU 帧({FLUID_BENCH_WIDTH}x{FLUID_BENCH_HEIGHT}) "
+            f"P50 {p_stats['p50_ms']:.2f}ms/P95 {p_stats['p95_ms']:.2f}ms"
+        )
+        _record_baseline(
+            "fluid_frame",
+            {
+                "status": "DROP",
+                "note": "todo 13/14 裁决 native render_fluid_frame 恒 None（ULP parity 不可达），基准只测 Python CPU 路径",
+                "native_none_expected": True,
+                "native_returned_none": native_res is None,
+                "width": FLUID_BENCH_WIDTH,
+                "height": FLUID_BENCH_HEIGHT,
+                "samples": samples,
+                "python": p_stats,
+                "assertion": {
+                    "rule": "DROP — native 恒 None 为预期（非 FAIL），无 PERF 对照",
+                    "passed": True,
+                },
+            },
+        )
+
+
+# =============================================================================
+# todo 23 — 7z 列表解析（KEEP：native 纯文本解析 vs Python _parse_list_output）
+# =============================================================================
+class TestSevenZParse:
+    """7z ``-slt`` 列表解析延迟（native ``parse_7z_list`` vs ``_parse_list_output``）。
+
+    ``7z.exe`` 子进程与编码重试不在基准范围（todo 17 接线保留 Python）。
+    """
+
+    def test_sevenz_parse_p50_p95_native_vs_python(
+        self, bridge: FafCoreBridge, sevenz_output: str
+    ) -> None:
+        """预热后交错采样：native P50 须 ≤ Python 基线 × 1.2（WARN-only）。"""
+        if not bridge._supports_parse_7z_list:
+            pytest.skip("faf_core 无 parse_7z_list 导出，跳过 7z 解析基准")
+
+        from freeassetfilter.core.native.bridges.py7z_core import Py7zCore
+
+        try:
+            core = Py7zCore()
+        except FileNotFoundError:
+            pytest.skip("7z.exe 不可用，无法构造 Py7zCore 基准实例")
+
+        archive_path: str = "sample_archive.7z"
+        # 预热轮：native 解析真实 -slt 输出；正常数据返回 None 属真实失败 → FAIL
+        warm_native = bridge.parse_7z_list(sevenz_output, "", archive_path)
+        assert warm_native is not None, "native 7z 解析返回 None（应 FAIL）"
+        core._parse_list_output(sevenz_output, "", archive_path)
+
+        samples: int = SEVENZ_SAMPLES_SMOKE if SMOKE_MODE else SEVENZ_SAMPLES_FULL
+        n_stats, p_stats = _interleaved_pair(
+            samples,
+            lambda: bridge.parse_7z_list(sevenz_output, "", archive_path),
+            lambda: core._parse_list_output(sevenz_output, "", archive_path),
+            "7z 列表解析",
+            check_native=lambda r: isinstance(r, list) and len(r) > 0,
+            check_python=lambda r: isinstance(r, list) and len(r) > 0,
+        )
+        speedup_p50: float = (
+            p_stats["p50_ms"] / n_stats["p50_ms"] if n_stats["p50_ms"] else 0.0
+        )
+        assertion: Dict[str, Any] = _check_native_vs_python(
+            n_stats["p50_ms"], p_stats["p50_ms"], "7z 列表解析"
+        )
+        print(
+            f"7z 列表解析: 样本 {samples} | "
+            f"native P50 {n_stats['p50_ms']:.2f}ms/P95 {n_stats['p95_ms']:.2f}ms | "
+            f"python P50 {p_stats['p50_ms']:.2f}ms/P95 {p_stats['p95_ms']:.2f}ms | "
+            f"P50 加速 {speedup_p50:.2f}x"
+        )
+        _record_baseline(
+            "sevenz_parse",
+            {
+                "status": "KEEP",
+                "note": "仅解析 -slt 文本，不含 7z.exe 子进程 / 编码重试",
+                "output_chars": len(sevenz_output),
+                "samples": samples,
+                "native": n_stats,
+                "python": p_stats,
+                "p50_speedup_x": round(speedup_p50, 3),
+                "assertion": assertion,
+            },
+        )
+
+
+# =============================================================================
+# todo 23 — PDF 选区过滤（KEEP：native pdf_select_words vs Python smart x-bound 回退）
+# =============================================================================
+class TestPdfSelectWords:
+    """PDF 选区逐词过滤延迟（native ``pdf_select_words`` vs Python smart x-bound）。"""
+
+    def test_pdf_select_p50_p95_native_vs_python(
+        self, bridge: FafCoreBridge, pdf_file: str
+    ) -> None:
+        """预热后交错采样：native P50 须 ≤ Python 基线 × 1.2（WARN-only）。"""
+        if not bridge._supports_pdf_select_words:
+            pytest.skip("faf_core 无 pdf_select_words 导出，跳过 PDF 选区基准")
+        pytest.importorskip("fitz", reason="PyMuPDF 缺失，跳过 PDF 选区基准")
+        if not os.path.exists(pdf_file):
+            pytest.skip("PDF 基准样本缺失")
+
+        import json as _json
+
+        from freeassetfilter.services.pdf_document import PdfDocument
+        from freeassetfilter.services.pdf_document_view import PdfDocumentView
+
+        doc = PdfDocument(pdf_file)
+        native_view = PdfDocumentView(doc)
+        native_view._ensure_cached()
+        heights: List[float] = list(native_view._page_heights)
+        if not heights:
+            pytest.skip("PDF 无可用页高")
+
+        # Python 回退视图：instance 级遮盖 ``_select_words_native``（get_text_selection
+        # 经 ``self._select_words_native`` 属性查找取到 None → 走 smart x-bound 回退），
+        # 与 native 视图共享同一个 fitz 文档、同样的每次 get_text_words 取词成本。
+        python_view = PdfDocumentView(doc)
+        python_view._ensure_cached()
+        python_view._select_words_native = lambda *a, **k: None  # type: ignore[method-assign]
+
+        total_h: float = sum(heights)
+        sel_y0: float = 0.0
+        sel_y1: float = total_h
+        begin_x: float = 0.0
+        end_x: float = 900.0
+
+        def _words_json() -> str:
+            words: List[Dict[str, Any]] = []
+            for p in range(len(heights)):
+                for w in native_view.doc.get_text_words(p):
+                    wx0, wy0, wx1, wy1, word, block, line, wno = w
+                    words.append(
+                        {
+                            "page": p,
+                            "block": block,
+                            "line": line,
+                            "word_no": wno,
+                            "text": word,
+                            "x0": wx0,
+                            "y0": wy0,
+                            "x1": wx1,
+                            "y1": wy1,
+                        }
+                    )
+            return _json.dumps(words)
+
+        selection_json: Dict[str, Any] = {
+            "begin_abs_x": begin_x,
+            "begin_abs_y": sel_y0,
+            "end_abs_x": end_x,
+            "end_abs_y": sel_y1,
+            "page_heights": heights,
+        }
+
+        # 预热轮：native 正常数据返回 None 属真实失败 → FAIL；随后收热 Python 回退。
+        warm_native = bridge.pdf_select_words(
+            _words_json(), _json.dumps(selection_json)
+        )
+        assert warm_native is not None, "native PDF 选区返回 None（应 FAIL）"
+        native_view.get_text_selection(begin_x, sel_y0, end_x, sel_y1)
+        python_view.get_text_selection(begin_x, sel_y0, end_x, sel_y1)
+
+        samples: int = PDF_SAMPLES_SMOKE if SMOKE_MODE else PDF_SAMPLES_FULL
+        n_stats, p_stats = _interleaved_pair(
+            samples,
+            lambda: native_view.get_text_selection(
+                begin_x, sel_y0, end_x, sel_y1
+            ),
+            lambda: python_view.get_text_selection(
+                begin_x, sel_y0, end_x, sel_y1
+            ),
+            "PDF 选区过滤",
+            check_native=lambda r: isinstance(r, str),
+            check_python=lambda r: isinstance(r, str),
+        )
+        speedup_p50: float = (
+            p_stats["p50_ms"] / n_stats["p50_ms"] if n_stats["p50_ms"] else 0.0
+        )
+        assertion: Dict[str, Any] = _check_native_vs_python(
+            n_stats["p50_ms"], p_stats["p50_ms"], "PDF 选区过滤"
+        )
+        print(
+            f"PDF 选区过滤: 样本 {samples} | "
+            f"native P50 {n_stats['p50_ms']:.2f}ms/P95 {n_stats['p95_ms']:.2f}ms | "
+            f"python P50 {p_stats['p50_ms']:.2f}ms/P95 {p_stats['p95_ms']:.2f}ms | "
+            f"P50 加速 {speedup_p50:.2f}x"
+        )
+        _record_baseline(
+            "pdf_select_words",
+            {
+                "status": "KEEP",
+                "note": "仅选区过滤；PyMuPDF get_text_words 取词保留 Python",
+                "pages": len(heights),
+                "samples": samples,
+                "native": n_stats,
+                "python": p_stats,
+                "p50_speedup_x": round(speedup_p50, 3),
+                "assertion": assertion,
             },
         )

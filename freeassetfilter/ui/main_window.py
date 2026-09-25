@@ -6,17 +6,30 @@ FreeAssetFilter 主窗口
 """
 
 import sys
+import time
 import warnings
 from pathlib import Path
 from typing import Optional
 import os
+import threading
 
-from PySide6.QtWidgets import QApplication, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QFrame, QSplitter, QGridLayout
+from PySide6.QtWidgets import QApplication, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QFrame, QSplitter, QGridLayout, QGraphicsOpacityEffect
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 import ctypes
 from ctypes import wintypes
 
-from PySide6.QtCore import Qt, QEvent, QPoint, QUrl, QTimer, QAbstractNativeEventFilter
+from PySide6.QtCore import (
+    Qt,
+    QEvent,
+    QObject,
+    QPoint,
+    QUrl,
+    QTimer,
+    Signal,
+    QAbstractNativeEventFilter,
+    QPropertyAnimation,
+    QEasingCurve,
+)
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtGui import QPainter, QPaintEvent, QPixmap, QRegion, QResizeEvent, QMoveEvent, QMouseEvent, QColor, QCursor
 
@@ -43,26 +56,34 @@ except ImportError:
 from theme import tm
 
 from components.custom_background import BACKGROUND_DIR_NAME, CustomImageBackgroundWidget
-from components.mica_material import MicaMaterial
-from components.mica_window import DEFAULT_MICA_CONFIG
+# components.mica_material（MicaMaterial）不在模块级导入：它经 mica.engine
+# 连带 numpy，导入约 0.16s，属「窗口出现前」关键路径。材质改为窗口显示后
+# 惰性创建（见 _MicaBackgroundMixin._ensure_mica_material），与既有
+# lazy=True「首帧纯色、后台烘焙」策略同源。
+# 默认配置常量同样避开 components.mica_window shim（它再导出 mica.material →
+# numpy），改从纯数据模块 mica.config 取（定义已迁至彼处，material 仍再导出）。
+from freeassetfilter.ui.mica.config import DEFAULT_MICA_CONFIG
 from components.styled_button import StyledButton
 from components.styled_fluid_background import prewarm_top_level_rhi
+# 启动加载覆盖层：内容区只显示一个旋转圆环（见 MainWindow._setup_startup_overlay）
+from components.styled_loading import StyledLoading
 # 内容层主题过渡遮罩（旧外观快照自绘淡出，轻量自绘替代整窗遮罩的两处卡顿源）
 from components.theme_transition_overlay import ContentTransitionOverlay
 # 实验性原生 DWM 云母开关的底层桥接（dwmapi 薄封装，惰性加载，零 COM 初始化）
 from freeassetfilter.ui.mica import winapi as mica_winapi
 
-# 导入布局模块
-from layout.file_selector_layout import FileSelectorLayout
-from layout.file_pool_layout import FilePoolLayout
-from layout.unified_previewer_layout import UnifiedPreviewerLayout
-# SettingsLayout 仅设置窗口使用，延迟到 _open_settings_window / SettingsWindow
-# 实例化时再导入，避免启动路径加载 styled_sidebar / color_picker 等组件。
+# 三栏布局模块（FileSelectorLayout / FilePoolLayout / UnifiedPreviewerLayout）
+# 不在模块级导入：它们连同 thumbnail_manager / file_card_delegate / numpy 等
+# 约 0.2s 的重型依赖会被算进「窗口出现前」的关键路径。三栏本就在窗口显示后
+# 才由 _build_panel 构建，故改为调用点局部导入（见 _build_panel）。
+# SettingsLayout 同理：仅设置窗口使用，延迟到 _open_settings_window /
+# SettingsWindow 实例化时再导入，避免启动路径加载 styled_sidebar /
+# color_picker 等组件。
 
 from freeassetfilter.utils.path_utils import get_app_data_path
 from freeassetfilter.utils.app_logger import debug, warning
-from freeassetfilter.utils.perf_metrics import begin_frame, end_frame
-from freeassetfilter.services.staging_pool_service import StagingPoolService
+# perf_metrics / StagingPoolService 同为首屏关键路径让位：分别由绘制埋点
+# （MicaBackgroundWidgetCpu.paintEvent）与 closeEvent 局部导入。
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 # 简约背景层（try 包裹：组件 PR 合并前主窗口仍可导入，各调用点配合 getattr 守卫）
@@ -102,6 +123,17 @@ def fixed_mica_params() -> dict:
     return dict(FIXED_MICA_PARAMS["dark" if tm.is_dark_theme() else "light"])
 
 
+class _MicaChainPreloader(QObject):
+    """后台 Mica 依赖链预导入的完成通知（工作线程 → 主线程队列投递）。
+
+    依赖链（``components.mica_material`` → ``mica.engine`` → numpy 等）首次导入
+    实测约 0.16s。它若在窗口显示后的主线程首次触发，会把首帧绘制一并推迟；
+    故改在窗口构造期就丢到后台线程导入，完成后用本信号回到主线程建材质。
+    """
+
+    ready = Signal()
+
+
 class _MicaBackgroundMixin:
     """
     MicaBackgroundWidget 的共享逻辑（GPU 与 CPU 两种实现复用）。
@@ -131,6 +163,31 @@ class _MicaBackgroundMixin:
             self._luminosity = 0.85
         self._surface_color = self._theme_surface_color()
 
+        # 材质（MicaMaterial）延迟到窗口显示后创建（见 _ensure_mica_material）：
+        # 其导入链含 numpy（约 0.12s），不应计入窗口出现前的关键路径；材质本就
+        # lazy=True（首帧纯色、烘焙在窗口显示后的后台线程完成），故后移不改观感。
+        self._mica = None
+
+        # 纯色不透明基底颜色：深色纯黑 / 浅色纯白（不再使用 tm.surface 灰色调）
+        palette = self.palette()
+        palette.setColor(self.backgroundRole(), QColor(self._surface_color))
+        self.setPalette(palette)
+
+    def _ensure_mica_material(self):
+        """惰性创建 MicaMaterial（窗口显示后由 _start_mica_refresh 首次触发）。
+
+        延迟原因：``components.mica_material`` → ``mica.engine`` → numpy 的导入
+        约 0.16s，属「窗口出现前」关键路径；而材质本就 ``lazy=True``（首帧以
+        纯色呈现、壁纸模糊在窗口显示后的后台线程完成），整体后移不改变首帧观感。
+        材质未就位期间由 :meth:`_paint_solid_fallback` 铺同色基底。
+
+        Returns:
+            MicaMaterial: 已创建（或已存在）的材质实例。
+        """
+        if self._mica is not None:
+            return self._mica
+        from components.mica_material import MicaMaterial
+
         self._mica = MicaMaterial(
             self,
             self._blur_radius,
@@ -141,11 +198,20 @@ class _MicaBackgroundMixin:
             overlay_opacity=self._tint_opacity / 100.0,
             lazy=True,  # 延迟壁纸加载/模糊到窗口显示后（首帧提速，见 showEvent）
         )
+        return self._mica
 
-        # 纯色不透明基底颜色：深色纯黑 / 浅色纯白（不再使用 tm.surface 灰色调）
-        palette = self.palette()
-        palette.setColor(self.backgroundRole(), QColor(self._surface_color))
-        self.setPalette(palette)
+    @staticmethod
+    def _paint_solid_fallback(painter: QPainter, rect) -> None:
+        """材质未就位时的纯色兜底填充（与材质未烘焙时的底色一致）。
+
+        材质 ``_background_fill_color`` 在未烘焙时铺当前主题 G1（深 #1a1a1a /
+        浅 #f5f5f5，即 ``tm.surface``），此处取同色，材质就位后无缝接替。
+
+        Args:
+            painter: 当前绘制器。
+            rect: 待填充区域。
+        """
+        painter.fillRect(rect, QColor(tm.surface))
 
     def _theme_surface_color(self) -> str:
         """按当前系统深浅色模式返回纯色基底（完全不透明）。
@@ -292,8 +358,9 @@ class _MicaBackgroundMixin:
 
     def refresh_background(self) -> None:
         """刷新背景（例如壁纸更改后）"""
-        if self._mica is not None:
-            self._mica.refresh()
+        # 材质惰性化后此处可能尚未创建（窗口显示后首轮事件循环才建），
+        # 显式确保：refresh 请求本身就是「需要材质」的语义。
+        self._ensure_mica_material().refresh()
 
 
 class MicaBackgroundWidgetGL(QOpenGLWidget, _MicaBackgroundMixin):
@@ -327,7 +394,13 @@ class MicaBackgroundWidgetGL(QOpenGLWidget, _MicaBackgroundMixin):
     def paintGL(self) -> None:
         """在 GPU 光栅引擎上绘制 Mica 背景（烘焙纹理的子区域 blit）"""
         painter = QPainter(self)
-        self._mica.paint_gpu(painter)
+        mica = self._mica
+        if mica is None:
+            # 材质尚未创建（窗口显示后的首轮事件循环才建，见
+            # _ensure_mica_material）：先铺同色纯色基底，材质就位后无缝接替
+            self._paint_solid_fallback(painter, self.rect())
+        else:
+            mica.paint_gpu(painter)
         painter.end()
 
     def handle_window_resize(self) -> None:
@@ -366,10 +439,20 @@ class MicaBackgroundWidgetCpu(QWidget, _MicaBackgroundMixin):
 
     def paintEvent(self, event: QPaintEvent) -> None:
         """绘制 Mica 效果（纯色背景 + 按透明度叠加的模糊壁纸）"""
+        # 局部导入：perf_metrics 自身模块级初始化约 50ms，不应计入窗口出现前
+        # 的关键路径（首帧提速；sys.modules 缓存后每次绘制仅字典查找）。
+        from freeassetfilter.utils.perf_metrics import begin_frame, end_frame
+
         _frame_token = begin_frame()
         try:
             painter = QPainter(self)
-            self._mica.paint(painter, event)
+            mica = self._mica
+            if mica is None:
+                # 材质尚未创建（窗口显示后的首轮事件循环才建，见
+                # _ensure_mica_material）：先铺同色纯色基底，材质就位后无缝接替
+                self._paint_solid_fallback(painter, self.rect())
+            else:
+                mica.paint(painter, event)
             painter.end()
         finally:
             end_frame(_frame_token)
@@ -567,6 +650,12 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         - 完全不透明的基底，遮挡 win32 原生控件
     """
 
+    #: 启动加载覆盖层：最短展示时长（避免启动过快时一闪而过）/ 最长存活兜底
+    #: （三栏构建异常时仍会撤下遮罩）/ 淡出时长；单位毫秒
+    STARTUP_OVERLAY_MIN_MS = 400
+    STARTUP_OVERLAY_MAX_MS = 8000
+    STARTUP_OVERLAY_FADE_MS = 200
+
     def __init__(
         self,
         parent: Optional[QWidget] = None,
@@ -606,6 +695,13 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._panel_left_placeholder = None
         self._panel_center_placeholder = None
         self._panel_right_placeholder = None
+        # 启动加载覆盖层：内容区唯一加载动画，三栏就绪后淡出
+        # （见 _setup_startup_overlay / _dismiss_startup_overlay）
+        self._startup_overlay = None
+        self._startup_overlay_timer = None
+        self._startup_overlay_animation = None
+        self._startup_overlay_started_at = 0.0
+        self._splitter_container = None
         self._github_btn = None
         self._settings_btn = None
         self._theme_btn = None
@@ -652,6 +748,17 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
         # 调用父类初始化
         super().__init__(parent)
+
+        # Mica 依赖链后台预导入（numpy 等，首次约 0.16s）：只做准备，实际启动
+        # 在窗口显示后（见 showEvent → _start_mica_chain_preload）。实测若提前到
+        # 构造期启动，导入线程会与建窗/首帧争夺 GIL，把「窗口显示」推迟约 90ms
+        # （营造「启动更慢」的观感）；放在显示之后既不拖慢窗口出现，又避免这条
+        # 链在主线程同步导入（约 0.3s）导致覆盖层动画卡顿。
+        self._mica_chain_ready = False
+        self._mica_refresh_pending = False
+        self._mica_preload_started = False
+        self._mica_chain_preloader = _MicaChainPreloader(self)
+        self._mica_chain_preloader.ready.connect(self._on_mica_chain_ready)
 
         # 合成后端预热（必须在建窗之前、且不创建任何子控件之前）：
         # 音频模式的流体背景是非原生 QRhiWidget，它的 QRhi 来自顶层窗口的
@@ -938,14 +1045,18 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 窗口显示后再分阶段构建三栏重型布局（首屏提速，见 _build_panels_deferred）
         QTimer.singleShot(0, self._build_panels_deferred)
 
-        # 外层容器提供四周 10px 边距
-        splitter_container = QWidget()
-        register_widget_qss(splitter_container,("background-color: transparent;"))
-        container_layout = QHBoxLayout(splitter_container)
+        # 外层容器提供四周 10px 边距（持有引用：启动加载覆盖层挂载在它上面）
+        self._splitter_container = QWidget()
+        register_widget_qss(self._splitter_container,("background-color: transparent;"))
+        container_layout = QHBoxLayout(self._splitter_container)
         container_layout.setContentsMargins(10, 0, 10, 10)
         container_layout.setSpacing(0)
         container_layout.addWidget(self._splitter)
-        main_layout.addWidget(splitter_container, stretch=1)
+        main_layout.addWidget(self._splitter_container, stretch=1)
+
+        # 启动加载覆盖层：铺满标题栏以下的内容区，只显示一个旋转圆环；
+        # 三栏真实布局就绪后淡出（见 _dismiss_startup_overlay）。
+        self._setup_startup_overlay()
 
         # 连接主题切换信号（生效值变化刷新顶栏图标/面板）
         tm.theme_changed.connect(self._on_theme_changed)
@@ -955,6 +1066,73 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._start_system_theme_watcher()
 
     # ──── 分阶段延迟构建三栏（首屏提速） ─────────────────────────────────
+
+    def _setup_startup_overlay(self) -> None:
+        """创建启动加载覆盖层（铺满内容区、只显示旋转圆环）与撤销定时器。
+
+        覆盖层挂在 ``_splitter_container`` 而不是整个窗口：标题栏保持可见可交互
+        （可拖动/最小化/关闭），只有标题栏以下的内容区被实色盖住。三栏真实布局
+        全部就绪后由 :meth:`_dismiss_startup_overlay` 淡出；构建异常时的兜底见
+        ``STARTUP_OVERLAY_MAX_MS``。创建失败不影响启动（回退到「加载中…」占位）。
+
+        必须在 ``_setup_content`` 内同步完成：此时早于 ``main.py`` 的
+        ``window.show()``，覆盖层才能出现在首帧。
+        """
+        # 单发定时器兼顾两个角色：展示期是「最长存活兜底」，三栏就绪后被改写为
+        # 「补齐最短展示时长」，超时槽同为淡出。parent=self → 窗口销毁即随之失效。
+        self._startup_overlay_timer = QTimer(self)
+        self._startup_overlay_timer.setSingleShot(True)
+        self._startup_overlay_timer.timeout.connect(self._fade_out_startup_overlay)
+        try:
+            self._startup_overlay = StyledLoading(
+                size="lg",
+                overlay=True,
+                backdrop="opaque",
+                parent=self._splitter_container,
+            )
+            self._startup_overlay.fit_to_parent()
+            self._startup_overlay_started_at = time.perf_counter()
+        except Exception as exc:  # 覆盖层失败不影响启动
+            warning(f"启动加载覆盖层创建失败（回退占位标签）: {exc}")
+            self._startup_overlay = None
+
+    def _dismiss_startup_overlay(self) -> None:
+        """三栏就绪后撤下启动加载覆盖层（不足最短展示时长则补齐后再淡出）。
+
+        幂等：三栏就绪与兜底超时可能先后到达，只有第一次生效。
+        """
+        if self._startup_overlay is None:
+            return
+        elapsed_ms = (time.perf_counter() - self._startup_overlay_started_at) * 1000.0
+        remain_ms = int(max(0.0, self.STARTUP_OVERLAY_MIN_MS - elapsed_ms))
+        if remain_ms <= 0:
+            self._fade_out_startup_overlay()
+            return
+        if self._startup_overlay_timer is not None:
+            self._startup_overlay_timer.start(remain_ms)
+
+    def _fade_out_startup_overlay(self) -> None:
+        """启动加载覆盖层淡出并销毁（幂等）。"""
+        overlay = self._startup_overlay
+        if overlay is None:
+            return
+        self._startup_overlay = None
+        if self._startup_overlay_timer is not None:
+            self._startup_overlay_timer.stop()
+
+        # 子控件淡出走 QGraphicsOpacityEffect + QPropertyAnimation（windowOpacity
+        # 只对顶层窗口生效）；缓动沿用全项目统一的 InOutCubic，禁用弹簧效果。
+        effect = QGraphicsOpacityEffect(overlay)
+        overlay.setGraphicsEffect(effect)
+        animation = QPropertyAnimation(effect, b"opacity", overlay)
+        animation.setDuration(self.STARTUP_OVERLAY_FADE_MS)
+        animation.setStartValue(1.0)
+        animation.setEndValue(0.0)
+        animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        animation.finished.connect(overlay.hide)
+        animation.finished.connect(overlay.deleteLater)
+        self._startup_overlay_animation = animation  # 持引用防止提前回收
+        animation.start()
 
     def _make_panel_placeholder(self) -> QLabel:
         """生成面板加载占位标签（'加载中…'），真实布局构建后移除。"""
@@ -977,21 +1155,31 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         QTimer.singleShot(90, self._finalize_panels)
 
     def _build_panel(self, side: str) -> None:
-        """构建指定栏的真实布局，替换占位标签。单栏失败不应拖垮整体启动。"""
+        """构建指定栏的真实布局，替换占位标签。单栏失败不应拖垮整体启动。
+
+        三栏布局模块在此处局部导入：本方法总在窗口显示后（``_build_panels_deferred``）
+        才被调用，把它们的重型依赖留到首帧之后再加载（见模块顶部注释）。
+        """
         try:
             if side == "left":
+                from layout.file_selector_layout import FileSelectorLayout
+
                 self._file_selector = FileSelectorLayout(self._panel_left)
                 self._panel_left_layout.removeWidget(self._panel_left_placeholder)
                 self._panel_left_placeholder.deleteLater()
                 self._panel_left_placeholder = None
                 self._panel_left_layout.addWidget(self._file_selector)
             elif side == "center":
+                from layout.file_pool_layout import FilePoolLayout
+
                 self._file_pool = FilePoolLayout(self._panel_center)
                 self._panel_center_layout.removeWidget(self._panel_center_placeholder)
                 self._panel_center_placeholder.deleteLater()
                 self._panel_center_placeholder = None
                 self._panel_center_layout.addWidget(self._file_pool)
             elif side == "right":
+                from layout.unified_previewer_layout import UnifiedPreviewerLayout
+
                 self._previewer = UnifiedPreviewerLayout(self._panel_right)
                 self._panel_right_layout.removeWidget(self._panel_right_placeholder)
                 self._panel_right_placeholder.deleteLater()
@@ -1046,6 +1234,9 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             QTimer.singleShot(60, self._finalize_panels)
             return
         QTimer.singleShot(0, self._equalize_splitter)
+        # 三栏真实布局已全部就绪：撤下启动加载覆盖层
+        # （后台 FFmpeg/LUT 预热、缓存清理继续在背后跑，不阻塞使用）
+        self._dismiss_startup_overlay()
 
     def _create_title_bar(self, parent_layout: QVBoxLayout) -> None:
         """创建标题栏"""
@@ -1708,11 +1899,69 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             and self._background_mode == "mica"
         ):
             self._mica_refresh_started = True
+            # 依赖链后台预导入此刻才启动：窗口已经显示，导入不再与建窗争 GIL
+            # （见 __init__ 中的说明），随后的刷新请求若早于链就绪则记账等待。
+            self._start_mica_chain_preload()
             QTimer.singleShot(0, self._start_mica_refresh)
+
+        # 启动加载覆盖层：显示时同步一次几何（构造期布局尚未跑过，容器尺寸还是
+        # 默认值），并启动最长存活兜底（三栏构建异常时遮罩仍会撤下）
+        if self._startup_overlay is not None:
+            self._startup_overlay.fit_to_parent()
+            if self._startup_overlay_timer is not None:
+                self._startup_overlay_timer.start(self.STARTUP_OVERLAY_MAX_MS)
+
+    def _start_mica_chain_preload(self) -> None:
+        """启动 Mica 依赖链的后台预导入线程（幂等，默认只在窗口显示后调用）。
+
+        窗口显示后启动是本轮实测结论：构造期启动会与建窗/首帧争 GIL，把
+        「窗口显示」推迟约 90ms；显示后启动则两者兼得（窗口快 + 主线程不卡）。
+        """
+        if self._mica_preload_started:
+            return
+        self._mica_preload_started = True
+        threading.Thread(
+            target=self._preload_mica_chain,
+            daemon=True,
+            name="faf-mica-preload",
+        ).start()
+
+    def _preload_mica_chain(self) -> None:
+        """工作线程：预导入 Mica 依赖链（numpy 等），随后通知主线程。
+
+        只做导入（纯 Python/数值模块，不含 Qt 对象构造），因此在非 GUI 线程
+        执行是安全的；材质构造仍留在主线程（见 _on_mica_chain_ready）。
+        """
+        try:
+            import components.mica_material  # noqa: F401 - 仅预热导入
+        except Exception as e:  # noqa: BLE001 - 预热失败留主线程兜底导入
+            warning(f"云母依赖链预导入失败（回退主线程导入）: {e}")
+        finally:
+            try:
+                self._mica_chain_preloader.ready.emit()
+            except RuntimeError:
+                pass  # 包装对象已随窗口销毁
+
+    def _on_mica_chain_ready(self) -> None:
+        """主线程槽：依赖链就绪，补做启动期挂起的材质创建与烘焙请求。"""
+        self._mica_chain_ready = True
+        if self._mica_refresh_pending:
+            self._start_mica_refresh()
 
     def _start_mica_refresh(self) -> None:
         """延迟在后台线程执行 Mica 壁纸处理（不阻塞主线程/UI）。"""
-        mica = getattr(self._mica_background, "_mica", None)
+        if self._mica_background is None:
+            return
+        if not self._mica_chain_ready:
+            # 依赖链仍在后台导入：先记账，就绪回调里再执行。此处若同步导入
+            # 会占住主线程约 0.16s 并推迟首帧绘制（见 _preload_mica_chain）。
+            # 兼容运行期才切到 mica 模式（此时 showEvent 已错过预导入启动）：
+            # 补启动线程，保证记账不会无人兑现。
+            self._start_mica_chain_preload()
+            self._mica_refresh_pending = True
+            return
+        self._mica_refresh_pending = False
+        mica = self._mica_background._ensure_mica_material()
         if mica is not None:
             mica.refresh_async()
 
@@ -1812,6 +2061,9 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                 self._previewer.cleanup()
         except Exception:
             pass
+        # 局部导入：暂存池服务依赖文件池/缩略图等重型模块，退出路径再加载
+        from freeassetfilter.services.staging_pool_service import StagingPoolService
+
         StagingPoolService().dispose()
         super().closeEvent(event)
 

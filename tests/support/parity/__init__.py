@@ -15,10 +15,26 @@ from tests.support.parity.comparator import (
     diff_values,
     is_accepted,
 )
+from tests.support.parity.pixels import (
+    PixelParityMismatchError,
+    assert_pixel_parity,
+    image_geometry,
+    pixel_diff_count,
+    pixel_diff_samples,
+    pixel_hash,
+    rgba_bytes,
+)
 
 __all__ = [
     "ParityMismatchError",
+    "PixelParityMismatchError",
     "assert_parity",
+    "assert_pixel_parity",
     "diff_values",
+    "image_geometry",
     "is_accepted",
+    "pixel_diff_count",
+    "pixel_diff_samples",
+    "pixel_hash",
+    "rgba_bytes",
 ]

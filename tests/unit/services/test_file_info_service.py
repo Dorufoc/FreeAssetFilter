@@ -19,7 +19,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 from unittest.mock import patch
 
 import pytest
@@ -427,3 +427,103 @@ class TestCache:
             store = json.load(f)
         assert store["version"] == 2
         assert ".tmp" not in os.listdir(tmp_path)
+
+
+# =============================================================================
+# rust-hot-path-native-migration todo 7：EXIF native/exifread 逐字段对拍
+# =============================================================================
+class TestExifNativeParity:
+    """native faf_parse_exif vs exifread 逐字段对拍（faf_core_available 启用）。
+
+    accepted-diff（todo 6 已核，task-6-exif.txt）：native 不输出
+    ``Image GPSInfo: <偏移>`` 指针行——kamadak 将 ExifIFDPointer(0x8769) /
+    GPSInfoIFDPointer(0x8825) / InteropIFDPointer(0xa005) 当作结构性导航
+    消费、不存入 fields；exifread 则打印为普通偏移行。对拍按该差异豁免，
+    其余字段必须逐条一致。
+    """
+
+    _FIXTURE_DIR = (
+        Path(__file__).resolve().parents[2]
+        / "support"
+        / "faf_core_fixtures"
+        / "exif_samples"
+    )
+
+    # kamadak 消费的 IFD 指针标签（exifread 输出为普通偏移行）
+    _POINTER_LABELS = frozenset({"ExifOffset", "GPSInfo", "InteropOffset"})
+
+    @classmethod
+    def _is_pointer_row(cls, label: str, value: str) -> bool:
+        """exifread 的 IFD 指针偏移行（native 豁免）。"""
+        return (
+            label.split()[-1] in cls._POINTER_LABELS
+            and value.strip().isdigit()
+        )
+
+    @classmethod
+    def _collect_row_diffs(
+        cls, native: tuple, oracle: tuple, tag: str
+    ) -> List[str]:
+        """native vs exifread 行组逐条差异清单（豁免 IFD 指针行）。"""
+        n_rows = dict(native[0] + native[1])
+        o_rows = dict(oracle[0] + oracle[1])
+        diffs: List[str] = []
+        for label, value in oracle[0] + oracle[1]:
+            if label not in n_rows and not cls._is_pointer_row(label, value):
+                diffs.append(f"{tag} native 缺行: {label}: {value}")
+        for label, value in native[0] + native[1]:
+            if label not in o_rows:
+                diffs.append(f"{tag} native 多行: {label}: {value}")
+        return diffs
+
+    @pytest.mark.parametrize(
+        "sample",
+        ["sample_standard.jpg", "sample_gps_multivalue.jpg", "sample_corrupt.jpg"],
+    )
+    def test_native_vs_exifread_field_by_field(
+        self, faf_core_available: bool, sample: str
+    ) -> None:
+        """逐样本对拍：native 行与 exifread oracle 一致（指针行豁免）。"""
+        if not faf_core_available:
+            pytest.skip("faf_core.dll 不可用，跳过 native 对拍")
+        if fis.exifread is None:
+            pytest.skip("exifread 未安装")
+        path = str(self._FIXTURE_DIR / sample)
+        native = fis._collect_exif_native(path)
+        oracle = fis._collect_exif_exifread(path)
+        # 接线一致性：native 可用 → 服务层返回 native 行；native None → 回退 oracle
+        assert fis._collect_exif(path) == (native if native is not None else oracle)
+        if native is None:
+            # 损坏样本：native 判失败（null），服务层回退 exifread → 与 oracle 全等
+            assert oracle[0] + oracle[1], "损坏样本回退应真实产出 exifread 行"
+            return
+        diffs = self._collect_row_diffs(native, oracle, sample)
+        assert diffs == [], f"{sample} native/exifread 不一致: {diffs}"
+
+    def test_collect_detail_data_exif_rows(
+        self, faf_core_available: bool
+    ) -> None:
+        """collect_detail_data 图片详情 EXIF 行与改造前（exifread oracle）一致。"""
+        if not faf_core_available:
+            pytest.skip("faf_core.dll 不可用，跳过 native 对拍")
+        if fis.exifread is None:
+            pytest.skip("exifread 未安装")
+        path = str(self._FIXTURE_DIR / "sample_standard.jpg")
+        data = fis.collect_detail_data(path)
+        oracle = fis._collect_exif_exifread(path)
+        assert data["exif_common"] == oracle[0]
+        assert data["exif_more"] == oracle[1]
+
+    def test_native_unavailable_falls_back_to_exifread(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DLL 缺失（get_faf_core_bridge → None）时服务层回退 exifread。"""
+        if fis.exifread is None:
+            pytest.skip("exifread 未安装")
+        import freeassetfilter.core.native.bridges.faf_core_bridge as bridge_mod
+
+        monkeypatch.setattr(bridge_mod, "get_faf_core_bridge", lambda: None)
+        path = str(self._FIXTURE_DIR / "sample_standard.jpg")
+        oracle = fis._collect_exif_exifread(path)
+        assert fis._collect_exif(path) == oracle
+        assert oracle[0] + oracle[1], "回退应真实产出 exifread 行"
