@@ -217,7 +217,21 @@ def collect_data_files() -> List[Tuple[str, str]]:
         print_info(f"收集到 {len(shader_files)} 个着色器文件")
     else:
         print_warning("未找到 shaders 目录")
-    
+
+    # 6. 收集 docs 目录（开源许可证查看窗口加载 THIRD_PARTY_NOTICES.md）
+    docs_dir = project_root / "freeassetfilter" / "docs"
+    docs_extensions = {".md", ".txt", ".html"}
+    if docs_dir.exists():
+        doc_count = 0
+        for file in docs_dir.rglob("*"):
+            if file.is_file() and file.suffix.lower() in docs_extensions:
+                rel_path = file.relative_to(project_root)
+                data_files.append((str(file), str(rel_path.parent)))
+                doc_count += 1
+        print_info(f"收集到 {doc_count} 个 docs 文档文件")
+    else:
+        print_warning("未找到 docs 目录")
+
     print_success(f"共收集到 {len(data_files)} 个数据文件")
     return data_files
 

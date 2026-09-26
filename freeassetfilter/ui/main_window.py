@@ -716,6 +716,10 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 是基类包装（实测为 'QWidget'），`is obj` 身份比对恒失败；
         # 故创建窗口时递增代际并绑定到槽，槽内按代际比对清空引用
         self._settings_window_gen = 0
+        # 开源许可证查看窗口实例引用（与设置窗口同模式：owned 子窗口 +
+        # WA_DeleteOnClose，主窗口持有引用防 GC，destroyed 后清空）
+        self._license_viewer_window = None
+        self._license_viewer_gen = 0
         # 内容层主题过渡遮罩（单实例去重引用；见 _start_content_theme_transition）
         self._content_theme_overlay: QWidget | None = None
         # 系统主题监听器（跟随系统模式的实时链路；见 _start_system_theme_watcher）
@@ -1417,6 +1421,52 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         if gen is not None and gen != self._settings_window_gen:
             return
         self._settings_window = None
+
+    def _open_license_viewer(self) -> None:
+        """打开开源许可证查看窗口（每次新建，关闭即销毁，不缓存窗口实例）。
+
+        窗口以主窗口为 parent（Windows owned 子窗口）：始终相对主窗口置顶，
+        主窗口关闭/退出时随宿主一并关闭销毁。实例引用保存在
+        ``self._license_viewer_window``（与设置窗口同模式），防止函数返回后
+        Python GC 销毁顶层窗口；destroyed 后按代际清空引用以便下次重建。
+        已打开时不重复创建，聚焦到前台即可。
+        """
+        win = self._license_viewer_window
+        if win is not None:
+            try:
+                visible = win.isVisible()
+            except RuntimeError:
+                # 兜底：C++ 对象已销毁但引用尚未清空，视为已关闭
+                visible = False
+            if visible:
+                win.raise_()
+                win.activateWindow()
+                return
+            self._license_viewer_window = None
+
+        window = LicenseViewerWindow(self)
+        self._license_viewer_window = window
+        self._license_viewer_gen += 1
+        gen = self._license_viewer_gen
+        window.setAttribute(Qt.WA_DeleteOnClose, True)
+        window.destroyed.connect(
+            lambda _obj=None, _gen=gen: self._on_license_viewer_closed(_gen)
+        )
+        window.show()
+        window.raise_()
+        window.activateWindow()
+
+    def _on_license_viewer_closed(self, gen: object = None) -> None:
+        """许可证窗口被关闭/销毁（含主窗口关闭连带销毁）后释放引用。
+
+        Args:
+            gen: 触发 destroyed 的窗口代际（创建窗口时绑定的计数器值）。
+                仅当传入代际与当前代际一致（或无代际参数的直接调用）时
+                才清空，防止旧窗口销毁事件晚到时误清已重建的新窗口引用。
+        """
+        if gen is not None and gen != self._license_viewer_gen:
+            return
+        self._license_viewer_window = None
 
     def _start_content_theme_transition(self) -> None:
         """启动内容层主题过渡：切前抓内容子树快照，切后旧外观淡出。
@@ -2438,6 +2488,185 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             layout = getattr(self, "_settings_layout", None)
             if layout is not None and hasattr(layout, "on_host_closing"):
                 layout.on_host_closing()
+        except Exception:
+            pass
+        super().closeEvent(event)
+
+
+class LicenseViewerWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
+    """开源许可证查看窗口 — 主窗口的 owned 子窗口，tm.surface 纯色背景。
+
+    从设置窗口「关于 → 开源许可证」的查看按钮弹出；窗口标题「开源许可证」，
+    自定义标题栏实现与设置窗口（``SettingsWindow``）保持一致（48px 标题栏 +
+    标题文字 + ✕ 关闭按钮 + startSystemMove 拖拽），内容区嵌入现有
+    ``TextPreviewerLayout``（markdown 文本预览器）并固定加载
+    ``freeassetfilter/docs/THIRD_PARTY_NOTICES.md`` 第三方开源许可证文档。
+    以主窗口为 parent（Windows owned 窗口）——始终相对主窗口置顶，
+    主窗口关闭时许可证窗口一并关闭销毁。
+    """
+
+    #: 标题栏 objectName（eventFilter 拖拽判定用，与设置窗口区分）
+    _TITLE_BAR_OBJECT_NAME = "LicenseViewerTitleBar"
+
+    def __init__(self, parent=None):
+        # 先初始化属性，防止父类初始化期间触发的事件访问未定义属性
+        self._root = None
+        self._title_label = None
+        self._close_btn = None
+        self._previewer = None
+
+        super().__init__(parent)
+
+        self.setWindowTitle("开源许可证")
+        self.setMinimumSize(640, 420)
+        self.resize(860, 640)
+
+        # 定位：居中到宿主主窗口；无宿主时回退到鼠标所在屏幕中心
+        self._center_on_host()
+
+        # 中央部件用纯 QWidget，保留本地无边框基类原生窗口特性；
+        # tm.surface 不透明纯色背景（与设置窗口 / styled 弹窗同款）
+        self._root = QWidget(self)
+        self.setCentralWidget(self._root)
+        root_palette = self._root.palette()
+        root_palette.setColor(self._root.backgroundRole(), tm.surface)
+        self._root.setPalette(root_palette)
+        self._root.setAutoFillBackground(True)
+
+        layout = QVBoxLayout(self._root)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # 标题栏（标题文字 + 关闭按钮，与设置窗口同款实现）
+        self._create_title_bar(layout)
+
+        # 内容区：嵌入现有 markdown 文本预览器，固定加载第三方许可证文档
+        from layout.preview.text_previewer_layout import TextPreviewerLayout  # 延迟导入（启动提速）
+
+        self._previewer = TextPreviewerLayout(
+            self._root, standalone=False
+        )
+        layout.addWidget(self._previewer, stretch=1)
+
+        # 固定加载 docs 目录内的第三方开源许可证文档
+        try:
+            from freeassetfilter.core._paths import docs_dir
+
+            notice_path = docs_dir() / "THIRD_PARTY_NOTICES.md"
+        except Exception:  # noqa: BLE001 - 路径解析失败时退化为项目文档根
+            notice_path = Path(__file__).resolve().parent.parent / "docs" / "THIRD_PARTY_NOTICES.md"
+        self._previewer.set_file(str(notice_path))
+
+        # 监听主题变化以刷新背景和标题栏颜色
+        tm.theme_changed.connect(self._on_theme_changed)
+
+    def _center_on_host(self) -> None:
+        """居中到宿主主窗口；无宿主时回退到鼠标所在屏幕中心"""
+        host = self.parentWidget()
+        if host is not None and host.isVisible():
+            geo = host.geometry()
+            x = geo.x() + (geo.width() - self.width()) // 2
+            y = geo.y() + (geo.height() - self.height()) // 2
+            self.move(x, y)
+            return
+        screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        geo = screen.geometry()
+        self.move(
+            geo.x() + (geo.width() - self.width()) // 2,
+            geo.y() + (geo.height() - self.height()) // 2,
+        )
+
+    def _create_title_bar(self, parent_layout: QVBoxLayout) -> None:
+        """创建标题栏（标题文字 + 关闭按钮，与设置窗口同款实现）"""
+        header = QFrame()
+        header.setObjectName(self._TITLE_BAR_OBJECT_NAME)
+        header.setFixedHeight(48)
+        register_widget_qss(header, ("""
+            #LicenseViewerTitleBar {
+                background-color: transparent;
+            }
+        """))
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(16, 8, 16, 8)
+        header_layout.setSpacing(0)
+
+        # 标题文字
+        self._title_label = QLabel("开源许可证")
+        register_widget_qss(self._title_label, (
+            f'font-size: 14px; font-weight: 600; color: {tm.text.name()};'
+        ))
+        header_layout.addWidget(self._title_label)
+        header_layout.addStretch()
+
+        # 关闭按钮
+        self._close_btn = StyledButton("", variant="ghost", size="sm")
+        self._close_btn.setFixedSize(32, 32)
+        self._close_btn.setText("✕")
+        register_widget_qss(self._close_btn, (self._close_button_style()))
+        self._close_btn.clicked.connect(self.close)
+        header_layout.addWidget(self._close_btn)
+
+        # 安装事件过滤器用于拖拽
+        header.installEventFilter(self)
+        parent_layout.addWidget(header)
+
+    def _close_button_style(self) -> str:
+        """生成关闭按钮的 styleSheet（与设置窗口同款样式）"""
+        return f"""
+            QPushButton {{ background: transparent; border: none; color: {tm.text.name()}; font-size: 16px; }}
+            QPushButton:hover {{ background: {tm.danger.name()}; color: {tm.text.name()}; }}
+        """
+
+    def _on_theme_changed(self, _theme: str) -> None:
+        """主题切换时刷新背景色和标题栏样式"""
+        self._sync_theme()
+
+    def showEvent(self, event) -> None:
+        """窗口显示/重新显示时刷新全量主题样式"""
+        super().showEvent(event)
+        self._sync_theme()
+
+    def _sync_theme(self) -> None:
+        """强制刷新当前主题下的所有样式"""
+        if self._root is not None:
+            palette = self._root.palette()
+            palette.setColor(self._root.backgroundRole(), tm.surface)
+            self._root.setPalette(palette)
+        if self._title_label is not None:
+            register_widget_qss(self._title_label, (
+                f'font-size: 14px; font-weight: 600; color: {tm.text.name()};'
+            ))
+        if self._close_btn is not None:
+            register_widget_qss(self._close_btn, (self._close_button_style()))
+        # 内容区预览器内部自接管主题（TextPreviewerLayout.connect_theme）
+
+    def eventFilter(self, obj: QWidget, event: QEvent) -> bool:
+        """事件过滤器 - 处理标题栏拖拽（与设置窗口同款实现）"""
+        if not isinstance(event, QMouseEvent):
+            return False
+        if event.type() != QEvent.Type.MouseButtonPress:
+            return False
+        if event.button() != Qt.LeftButton:
+            return False
+
+        # 检查是否点击在按钮上
+        child = obj.childAt(event.position().toPoint())
+        if child is not None and isinstance(child, StyledButton):
+            return False  # 让按钮正常工作
+
+        # 在标题栏上拖拽移动窗口
+        if obj.objectName() == self._TITLE_BAR_OBJECT_NAME and self.windowHandle():
+            self.windowHandle().startSystemMove()
+            return True
+
+        return False
+
+    def closeEvent(self, event) -> None:
+        """窗口关闭时清理预览器（在途渲染任务/缩放弹窗/抽屉）。"""
+        try:
+            previewer = getattr(self, "_previewer", None)
+            if previewer is not None and hasattr(previewer, "cleanup"):
+                previewer.cleanup()
         except Exception:
             pass
         super().closeEvent(event)

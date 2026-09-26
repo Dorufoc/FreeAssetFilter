@@ -62,10 +62,18 @@ nuitka-crash-report.xml
 .*
 
 # --- Design/markdown notes (not source code) ---
-docs/
+# 必须根锚定 /docs/：未锚定的 docs/ 会排除任意层级的 docs 目录，
+# 而父目录被排除后其中的文件无法再用 ! 重新包含（下方的放行规则会失效）。
+/docs/
 *.cube
 *.md
 !tests/README.md
+!freeassetfilter/docs/THIRD_PARTY_NOTICES.md
+
+# --- Test fixtures ---
+# 夹具树需完整入库（含隐藏文件、Markdown、中文名、多层目录），供 native-oracle 逐字段对拍。
+# 必须置于 .* 与 *.md 之后才能覆盖它们。
+!tests/support/faf_core_fixtures/**
 
 # --- Backup & refactor notes ---
 *备份*

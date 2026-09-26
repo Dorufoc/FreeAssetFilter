@@ -75,6 +75,18 @@ def get_app_data_path() -> Path:
     return data_dir
 
 
+def docs_dir() -> Path:
+    """Returns the absolute path to the application docs directory.
+
+    Houses documentation assets such as the third-party license notices
+    (``THIRD_PARTY_NOTICES.md``) shown in the about / license viewer.
+
+    Returns:
+        Path: ``freeassetfilter/docs/``.
+    """
+    return core_dir().parent / "docs"
+
+
 def soffice_paths() -> list[Path]:
     """Returns a de-duplicated list of directories that may contain soffice.
 
@@ -140,5 +152,6 @@ __all__ = [
     "archive_7z_dir",
     "icons_dir",
     "get_app_data_path",
+    "docs_dir",
     "soffice_paths",
 ]

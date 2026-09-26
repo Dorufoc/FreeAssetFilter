@@ -1532,6 +1532,70 @@ class AppearanceSettingsPage(QWidget):
         }
 
 
+class AboutSettingsPage(QWidget):
+    """关于页面 — 信息展示类设置页（无暂存项，仅「开源许可证」查看入口）。
+
+    页面纯展示：「开源许可证」条目旁的「查看」按钮打开独立的
+    ``LicenseViewerWindow``（无边框窗口，标题「开源许可证」，嵌入 markdown
+    文本预览器并固定加载 ``freeassetfilter/docs/THIRD_PARTY_NOTICES.md``）。
+    不写入 ``SettingsStagingCache``、不触碰 ``tm`` / 主窗口 / 磁盘——
+    本页无任何可提交设置项，天然遵循暂存隔离铁律。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._view_btn: StyledButton | None = None
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(20)
+
+        # 开源许可证设置条目：SettingsRow + 查看按钮（复用现有组件）
+        license_row = SettingsRow(
+            title="开源许可证",
+            description="查看本软件所使用的第三方开源组件及其许可证信息",
+        )
+        self._view_btn = StyledButton("查看", variant="primary", size="sm")
+        self._view_btn.setCursor(Qt.PointingHandCursor)
+        self._view_btn.clicked.connect(self._open_license_viewer)
+        license_row.set_control(self._view_btn)
+        layout.addWidget(license_row)
+
+        layout.addStretch()
+
+    def _find_main_window(self) -> QWidget | None:
+        """定位主窗口（按 _mica_background 属性鸭子类型判定，避免循环导入）。
+
+        与 :meth:`AppearanceSettingsPage._find_main_window` 口径一致。
+        """
+        w = self.window()
+        if w is not None and getattr(w, "_mica_background", None) is not None:
+            return w
+        for w in QApplication.topLevelWidgets():
+            if getattr(w, "_mica_background", None) is not None:
+                return w
+        return None
+
+    def _open_license_viewer(self) -> None:
+        """打开开源许可证查看窗口（经主窗口统一入口，避免窗口重复创建）。"""
+        try:
+            mw = self._find_main_window()
+            if mw is not None and hasattr(mw, "_open_license_viewer"):
+                mw._open_license_viewer()  # noqa: SLF001 - 跨模块调用主窗口私有入口（与外观页一致）
+        except Exception:  # noqa: BLE001 - 打开失败仅抑制，不影响设置页其余功能
+            pass
+
+    def refresh_theme(self) -> None:
+        """主题切换刷新（SDK 约定入口）。
+
+        条目文字与按钮均由 :meth:`SettingsLayout._refresh_styles` 的统一
+        QLabel 遍历 + ``StyledButton`` 自适配覆盖，无需额外处理。
+        """
+        return
+
+
 class SettingsLayout(QWidget):
     """设置布局（暂存隔离 + 统一提交）。
 
@@ -1572,6 +1636,7 @@ class SettingsLayout(QWidget):
         )
         self._sidebar.add_item("外观", icon_svg="sun")
         self._sidebar.add_item("通用", icon_svg="gear")
+        self._sidebar.add_item("关于", icon_svg="info")
         self._sidebar.item_selected.connect(self._on_item_selected)
         main_layout.addWidget(self._sidebar)
 
@@ -1598,6 +1663,11 @@ class SettingsLayout(QWidget):
         # 页面 1：通用（占位）
         general_card = self._create_page_card(None)
         self._stack.addWidget(general_card)
+
+        # 页面 2：关于
+        self._about_page = AboutSettingsPage()
+        about_card = self._create_page_card(self._about_page)
+        self._stack.addWidget(about_card)
 
         content_layout.addWidget(self._stack, stretch=1)
 
