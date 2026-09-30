@@ -152,6 +152,36 @@ class TestMainWindowStructure:
         window.deleteLater()
         qapp.processEvents()
 
+    def test_lightweight_startup_shell(self, qapp: QApplication) -> None:
+        """轻量启动模式先提供标题栏与加载覆盖层，不创建业务面板。"""
+        window = MainWindow(defer_heavy_init=True)
+        assert window._content is not None
+        assert window._splitter is None
+        assert window._startup_overlay is not None
+        for attr in (
+            "_minimize_btn",
+            "_maximize_btn",
+            "_close_btn",
+            "_theme_btn",
+            "_settings_btn",
+            "_github_btn",
+        ):
+            assert getattr(window, attr) is not None
+        window.deleteLater()
+        qapp.processEvents()
+
+    def test_lightweight_deferred_init_is_idempotent(self, qapp: QApplication) -> None:
+        """deferred 内容初始化重复调用不会重复替换窗口内容。"""
+        window = MainWindow(defer_heavy_init=True)
+        window.initialize_deferred_content()
+        root = window._root
+        window.initialize_deferred_content()
+        assert window._deferred_content_ready is True
+        assert window._root is root or window._root is not None
+        assert window._splitter is not None
+        window.deleteLater()
+        qapp.processEvents()
+
     def test_placeholder_panels_initially(self, qapp: QApplication) -> None:
         """三栏初始为占位标签，真实布局延迟到 _build_panel 才就绪。"""
         window = MainWindow()

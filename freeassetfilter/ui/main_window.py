@@ -664,6 +664,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         luminosity: Optional[float] = None,
         contrast: Optional[float] = None,
         saturation: Optional[float] = None,
+        defer_heavy_init: bool = False,
     ) -> None:
         """
         初始化主窗口
@@ -675,7 +676,10 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             luminosity: Mica 亮度值（默认使用项目配置）
             contrast: Mica 对比度（默认使用项目配置）
             saturation: Mica 饱和度（默认使用项目配置）
+            defer_heavy_init: 正式启动时延后非必要的图形预热，优先显示窗口框架。
         """
+        self._defer_heavy_init = bool(defer_heavy_init)
+        self._deferred_content_ready = False
         # 先初始化属性，防止父类初始化期间触发的事件访问未定义属性
         self._mica_background = None
         self._custom_background = None
@@ -764,13 +768,11 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._mica_chain_preloader = _MicaChainPreloader(self)
         self._mica_chain_preloader.ready.connect(self._on_mica_chain_ready)
 
-        # 合成后端预热（必须在建窗之前、且不创建任何子控件之前）：
-        # 音频模式的流体背景是非原生 QRhiWidget，它的 QRhi 来自顶层窗口的
-        # 合成后端，而顶层窗口只在 QWindow 创建之前层级里已有 QRhiWidget 时
-        # 才启用 RHI 合成。预览器是窗口显示后才惰性构建的（见 _build_panel），
-        # 这里先挂一个不可见的预热控件把合成后端定成 RHI，否则流体背景拿不到
-        # QRhi，只能回退到 CPU 静态烘焙。
-        self._rhi_prewarm = prewarm_top_level_rhi(self)
+        # 合成后端预热：默认构造路径仍在建窗前预热，确保调试入口与历史行为
+        # 一致；正式入口则把它移到首帧之后，避免 QRhi 初始化阻塞窗口出现。
+        self._rhi_prewarm = None
+        if not self._defer_heavy_init:
+            self._rhi_prewarm = prewarm_top_level_rhi(self)
 
         # 隐藏 Qt 6.9+ 的 `_q_titlebar` 系统标题栏子窗口（由本地无边框基类
         # FramelessMainWindow 在 __init__/showEvent/WinIdChange 自动处理，
@@ -783,8 +785,12 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 设置窗口属性
         self._setup_window()
 
-        # 创建内容布局
-        self._setup_content()
+        # 创建内容布局。正式入口只创建轻量 shell，避免重型背景/分栏构建
+        # 阻塞首帧；默认路径保持原有同步构造契约。
+        if self._defer_heavy_init:
+            self._setup_lightweight_content()
+        else:
+            self._setup_content()
 
         # 将窗口定位到鼠标所在屏幕的中心
         self._center_on_mouse_screen()
@@ -899,6 +905,73 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         
         # 移动窗口到屏幕中心
         self.move(center_x, center_y)
+
+    def _setup_lightweight_content(self) -> None:
+        """创建首帧所需的轻量窗口外壳。
+
+        这里刻意不创建 Mica、图片背景、分栏和任何业务布局；窗口可以先
+        ``show()``，进入事件循环后再由 :meth:`initialize_deferred_content`
+        替换为完整内容。
+        """
+        self._root = QWidget(self)
+        self.setCentralWidget(self._root)
+        palette = self._root.palette()
+        palette.setColor(self._root.backgroundRole(), QColor(tm.surface))
+        self._root.setPalette(palette)
+        self._root.setAutoFillBackground(True)
+
+        root_layout = QVBoxLayout(self._root)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+        self._content = QWidget(self._root)
+        content_layout = QVBoxLayout(self._content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+        self._create_title_bar(content_layout)
+
+        self._splitter_container = QWidget(self._content)
+        container_layout = QVBoxLayout(self._splitter_container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(0)
+        placeholder = QLabel("正在加载…", self._splitter_container)
+        placeholder.setAlignment(Qt.AlignCenter)
+        register_widget_qss(
+            placeholder,
+            f"color: {tm.text.name()}; background-color: {tm.surface.name()}; font-size: 13px;",
+        )
+        container_layout.addWidget(placeholder)
+        content_layout.addWidget(self._splitter_container, stretch=1)
+        root_layout.addWidget(self._content)
+        self._setup_startup_overlay()
+
+    def initialize_deferred_content(self) -> None:
+        """在首帧后构建完整内容；可重复调用且只执行一次。"""
+        if not self._defer_heavy_init or getattr(self, "_deferred_content_ready", False):
+            return
+        self._deferred_content_ready = True
+        old_root = self._root
+        if old_root is not None:
+            old_root.deleteLater()
+        old_overlay_timer = self._startup_overlay_timer
+        if old_overlay_timer is not None:
+            old_overlay_timer.stop()
+        self._mica_background = None
+        self._custom_background = None
+        self._minimalist_background = None
+        self._splitter_container = None
+        self._startup_overlay = None
+        self._startup_overlay_timer = None
+        self._setup_content()
+        self._rhi_prewarm = prewarm_top_level_rhi(self)
+        # 内容是在 showEvent 之后创建的，因此手动补齐原本由 showEvent
+        # 负责的首帧后工作，避免 Mica/覆盖层停留在未启动状态。
+        if self._startup_overlay is not None:
+            self._startup_overlay.fit_to_parent()
+            if self._startup_overlay_timer is not None:
+                self._startup_overlay_timer.start(self.STARTUP_OVERLAY_MAX_MS)
+        if self._background_mode == "mica" and self._mica_background is not None:
+            self._start_mica_chain_preload()
+            QTimer.singleShot(0, self._start_mica_refresh)
 
     def _setup_content(self) -> None:
         """设置窗口内容"""
@@ -2103,7 +2176,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                 self._settings_window = None
         self._dispose_mica()
         try:
-            self._file_pool.flush_backup_save_now()
+            if self._file_pool is not None:
+                self._file_pool.flush_backup_save_now()
         except Exception:
             pass
         try:

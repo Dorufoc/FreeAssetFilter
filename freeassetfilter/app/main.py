@@ -417,7 +417,9 @@ def main(argv=None) -> int:
     try:
         from freeassetfilter.ui.main_window import MainWindow
 
-        window = MainWindow()
+        # 轻量首帧：先显示无边框框架、现有自定义标题栏和加载动画，
+        # 重型背景/三栏布局在事件循环接管后再初始化。
+        window = MainWindow(defer_heavy_init=True)
     except Exception as e:
         error_msg = f"应用程序初始化失败：{e}\n\n请尝试重启程序。如果问题持续，请检查日志文件。"
         error(error_msg)
@@ -429,23 +431,36 @@ def main(argv=None) -> int:
         sys.exit(1)
     info(f"[启动] 主窗口创建: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
 
-    # A1 QSS 单例化：主窗口构造期间各组件已把 QSS 片段注册到应用级
-    # 样式表，此处一次性下发（之后仅主题切换时重下发一次）。
-    try:
-        apply_app_stylesheet()
-    except Exception as e:
-        warning(f"应用级样式表初始下发失败（各组件回退默认样式）: {e}")
-
     controller = StartupController(app, window)
 
+    # 关键首帧：先把轻量无边框窗口交给 Qt 显示，标题栏和 StyledLoading
+    # 能在第一个事件循环周期内响应。完整内容与全局 QSS 均放到 show 之后。
     window.show()
-    info(f"[启动] 窗口显示: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
+    info(f"[启动] 轻量窗口显示: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
+
+    from PySide6.QtCore import QTimer
+
+    def _finish_deferred_ui() -> None:
+        try:
+            window.initialize_deferred_content()
+            info(f"[启动] 完整内容初始化: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
+        except Exception as e:
+            error(f"[启动] 完整内容初始化失败: {e}")
+        try:
+            # A1 QSS 单例化：完整控件已注册片段后统一下发。
+            if not apply_app_stylesheet():
+                warning("应用级样式表初始下发失败（各组件回退默认样式）")
+        except Exception as e:
+            warning(f"应用级样式表初始下发失败（各组件回退默认样式）: {e}")
+        # 完整 UI 已交给事件循环后，再启动心跳/字体/缓存/FFmpeg 预热，
+        # 避免这些任务与首帧和面板构建争抢主线程。
+        controller.schedule_startup_tasks()
+        info(f"[启动] 启动任务已调度: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
+
+    QTimer.singleShot(0, _finish_deferred_ui)
 
     # 无边框能力运行时检查（Qt<6.10 退化时显著告警，不阻塞启动）
     _warn_if_frameless_unsupported()
-
-    controller.schedule_startup_tasks()
-    info(f"[启动] 启动任务已调度: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
 
     # ── 退出链（单一处理器 + 幂等标志：aboutToQuit 与 atexit 双挂但只执行一次）──
     exit_done = [False]
