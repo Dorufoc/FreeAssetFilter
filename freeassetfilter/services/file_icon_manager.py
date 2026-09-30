@@ -57,6 +57,7 @@ class FileIconManager(QObject):
     _lock = threading.Lock()
     _initialized = False
     _ICON_CACHE_MAX_ENTRIES: int = 256
+    _SYSTEM_ICON_CACHE_MAX_ENTRIES: int = 256
 
     system_icon_loaded = Signal(str)  # 系统图标异步加载完成通知
 
@@ -88,7 +89,7 @@ class FileIconManager(QObject):
             self._initialized = True
             self._icon_cache: OrderedDict = OrderedDict()
             self._cache_lock = threading.Lock()
-            self._system_icon_cache: Dict[str, QPixmap] = {}
+            self._system_icon_cache: OrderedDict[str, QPixmap] = OrderedDict()
             self._system_icon_cache_lock = threading.Lock()
 
     # ------------------------------------------------------------------
@@ -196,6 +197,7 @@ class FileIconManager(QObject):
             with self._system_icon_cache_lock:
                 sys_cached = self._system_icon_cache.get(file_path)
                 if sys_cached is not None and not sys_cached.isNull():
+                    self._system_icon_cache.move_to_end(file_path)
                     return sys_cached
 
         # 7. 缓存 miss：此时才解析图标路径（磁盘 stat 每文件仅首次发生）
@@ -241,6 +243,8 @@ class FileIconManager(QObject):
         if is_system_type and pixmap and not pixmap.isNull():
             with self._system_icon_cache_lock:
                 self._system_icon_cache[file_path] = pixmap
+                self._system_icon_cache.move_to_end(file_path)
+                self._trim_system_icon_cache()
             if _trigger_async:
                 self._request_async_system_icon(file_path, icon_size, dpr)
 
@@ -463,6 +467,8 @@ class FileIconManager(QObject):
 
         with self._system_icon_cache_lock:
             self._system_icon_cache[file_path] = pixmap
+            self._system_icon_cache.move_to_end(file_path)
+            self._trim_system_icon_cache()
 
         self.system_icon_loaded.emit(file_path)
 
@@ -470,6 +476,11 @@ class FileIconManager(QObject):
         """裁剪 L1 缓存至最大条目数（LRU 淘汰）。"""
         while len(self._icon_cache) > self._ICON_CACHE_MAX_ENTRIES:
             self._icon_cache.popitem(last=False)
+
+    def _trim_system_icon_cache(self) -> None:
+        """裁剪系统图标缓存，防止按路径无限增长。"""
+        while len(self._system_icon_cache) > self._SYSTEM_ICON_CACHE_MAX_ENTRIES:
+            self._system_icon_cache.popitem(last=False)
 
     def _build_unknown_icon_pixmap(
         self,

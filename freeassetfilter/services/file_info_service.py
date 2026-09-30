@@ -25,25 +25,62 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from freeassetfilter.core.native.bridges.media_probe import run_ffprobe_json
 from freeassetfilter.utils.app_logger import debug, error
 
-try:
-    from mutagen import File as mutagen_file
-except ImportError:  # pragma: no cover - 依赖缺失时的兜底
-    mutagen_file = None
 
-try:
-    from PIL import Image
-except ImportError:  # pragma: no cover - 依赖缺失时的兜底
-    Image = None
 
-try:
-    import chardet
-except ImportError:  # pragma: no cover - 依赖缺失时的兜底
-    chardet = None
+# Optional metadata dependencies are loaded only when the corresponding
+# information panel feature is actually requested.
+mutagen_file = None
+Image = None
+chardet = None
+exifread = None
 
-try:
-    import exifread
-except ImportError:  # pragma: no cover - 依赖缺失时的兜底
-    exifread = None
+
+def _ensure_mutagen() -> Any:
+    """Load mutagen once for audio metadata extraction."""
+    global mutagen_file
+    if mutagen_file is None:
+        try:
+            from mutagen import File as loader
+        except ImportError:
+            return None
+        mutagen_file = loader
+    return mutagen_file
+
+
+def _ensure_pil() -> Any:
+    """Load Pillow once for image metadata extraction."""
+    global Image
+    if Image is None:
+        try:
+            from PIL import Image as loader
+        except ImportError:
+            return None
+        Image = loader
+    return Image
+
+
+def _ensure_chardet() -> Any:
+    """Load chardet once for the Python encoding fallback."""
+    global chardet
+    if chardet is None:
+        try:
+            import chardet as loader
+        except ImportError:
+            return None
+        chardet = loader
+    return chardet
+
+
+def _ensure_exifread() -> Any:
+    """Load exifread once for the EXIF fallback parser."""
+    global exifread
+    if exifread is None:
+        try:
+            import exifread as loader
+        except ImportError:
+            return None
+        exifread = loader
+    return exifread
 
 try:
     import magic
@@ -485,10 +522,11 @@ def _image_light_rows(path: str, suffix: str) -> List[Tuple[str, str]]:
         rows.append(("尺寸", dims or UNAVAILABLE))
         rows.append(("格式", "SVG"))
         return rows
-    if Image is None:
+    image_module = _ensure_pil()
+    if image_module is None:
         return []
     try:
-        with Image.open(path) as img:
+        with image_module.open(path) as img:
             width, height = img.size
             rows.append(("尺寸", f"{width} × {height}"))
             rows.append(("格式", str(img.format or UNAVAILABLE)))
@@ -618,10 +656,11 @@ def _video_light_rows(probe: Dict[str, Any]) -> List[Tuple[str, str]]:
 def _audio_light_rows(path: str) -> List[Tuple[str, str]]:
     """音频基础行：时长/比特率/声道数/采样率/编码格式（mutagen 头读）。"""
     rows: List[Tuple[str, str]] = []
-    if mutagen_file is None:
+    loader = _ensure_mutagen()
+    if loader is None:
         return rows
     try:
-        audio = mutagen_file(path)
+        audio = loader(path)
     except (OSError, ValueError):
         return rows
     if audio is None or not hasattr(audio, "info"):
@@ -853,12 +892,14 @@ def _text_light_rows(path: str) -> List[Tuple[str, str]]:
     native = _detect_encoding_native(sample, path, window=_TEXT_LIGHT_WINDOW)
     if native and native.get("encoding"):
         encoding = native["encoding"]
-    elif chardet is not None:
-        try:
-            detected = chardet.detect(sample_ext[:_TEXT_LIGHT_WINDOW])
-            encoding = detected.get("encoding") or UNAVAILABLE
-        except Exception:
-            pass
+    else:
+        detector = _ensure_chardet()
+        if detector is not None:
+            try:
+                detected = detector.detect(sample_ext[:_TEXT_LIGHT_WINDOW])
+                encoding = detected.get("encoding") or UNAVAILABLE
+            except Exception:
+                pass
     return [("编码格式", encoding)]
 
 
@@ -1085,7 +1126,8 @@ def _collect_exif_exifread(
     ``exifread`` 缺失 / 文件不可读返回空行组；``details=False`` 跳过
     缩略图/厂商私有等超大或二进制标签。
     """
-    if exifread is None:
+    parser = _ensure_exifread()
+    if parser is None:
         return [], []
     import contextlib
     import io
@@ -1093,7 +1135,7 @@ def _collect_exif_exifread(
     try:
         with open(path, "rb") as f:
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                tags = exifread.process_file(f, details=False)
+                tags = parser.process_file(f, details=False)
     except OSError:
         return [], []
     common: List[Tuple[str, str]] = []
@@ -1137,10 +1179,11 @@ def _collect_exif(path: str) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str
 
 def _collect_audio_tags(path: str) -> List[Tuple[str, str]]:
     """音频文本标签（标题/艺术家/专辑…）；无标签或格式不支持时为空。"""
-    if mutagen_file is None:
+    loader = _ensure_mutagen()
+    if loader is None:
         return []
     try:
-        audio = mutagen_file(path)
+        audio = loader(path)
     except (OSError, ValueError):
         return []
     if audio is None:
@@ -1224,10 +1267,12 @@ def _text_detail_rows(path: str) -> List[Tuple[str, str]]:
             native = _detect_encoding_native(sample, path, window=_TEXT_DETAIL_WINDOW)
             if native and native.get("encoding"):
                 encoding = native["encoding"]
-            elif chardet is not None:
-                detected = chardet.detect(raw[:_TEXT_DETAIL_WINDOW]) or {}
-                if detected.get("encoding"):
-                    encoding = detected["encoding"]
+            else:
+                detector = _ensure_chardet()
+                if detector is not None:
+                    detected = detector.detect(raw[:_TEXT_DETAIL_WINDOW]) or {}
+                    if detected.get("encoding"):
+                        encoding = detected["encoding"]
             content, _ = _decode_encoding_chain(raw, encoding, errors="strict")
             rows.append(("字符数", str(len(content))))
             rows.append(("字符数(不含空格)", str(len(content.replace(" ", "")))))
@@ -1344,12 +1389,13 @@ def _font_detail_rows(path: str) -> List[Tuple[str, str]]:
 
 def _image_detail_rows(path: str) -> List[Tuple[str, str]]:
     """图片详情：色彩模式 / 位深（SVG 无位图属性则跳过）。"""
-    if Image is None:
+    image_module = _ensure_pil()
+    if image_module is None:
         return []
     rows: List[Tuple[str, str]] = []
     bits_map = {"1": 1, "L": 8, "P": 8, "RGB": 24, "RGBA": 32, "CMYK": 32, "I": 32}
     try:
-        with Image.open(path) as img:
+        with image_module.open(path) as img:
             mode = str(img.mode or "")
             if mode:
                 rows.append(("色彩模式", mode))

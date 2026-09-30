@@ -231,10 +231,10 @@ class TestStartupWarmupThread:
             _lut_gen,
         )
         startup.StartupWarmupThread().run()
-        assert calls == ["ffmpeg", "lut_cpp", "lut_gen"]
+        assert calls == ["ffmpeg"]
 
     def test_run_isolates_failures(self, startup: Any, monkeypatch: Any) -> None:
-        """FFmpeg 预热失败不影响 LUT 预热（逐项隔离）。"""
+        """FFmpeg 预热失败不影响启动任务完成。"""
         calls: list = []
 
         def _ffmpeg():
@@ -257,4 +257,4 @@ class TestStartupWarmupThread:
             _lut_gen,
         )
         startup.StartupWarmupThread().run()
-        assert calls == ["lut_cpp", "lut_gen"]
+        assert calls == []

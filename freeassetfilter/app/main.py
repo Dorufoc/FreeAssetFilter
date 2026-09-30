@@ -304,7 +304,7 @@ def _create_application(argv, initial_navigate_path):
         warning("qt message handler init failed")
 
     # L2 缓存层上限（配合各组件 L1 缓存使用）
-    QPixmapCache.setCacheLimit(50 * 1024 * 1024)
+    QPixmapCache.setCacheLimit(50 * 1024)
 
     # 右键菜单初始导航路径（文件选择器启动时消费）
     app.initial_navigate_path = initial_navigate_path

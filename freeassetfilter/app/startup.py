@@ -5,9 +5,9 @@ FreeAssetFilter 启动阶段任务编排（startup）
 --------------------------------------------
 自引导层（``freeassetfilter/app/main.py``）拆分出的首帧后任务：
 
-  - ``StartupWarmupThread``：后台预热（FFmpeg / LUT），避免阻塞首屏
+  - ``StartupWarmupThread``：后台预热 FFmpeg 工具链，避免阻塞首屏
   - ``StartupController``：首帧后分阶段调度（心跳、附加字体注册、AVIF
-    插件导入、预热、图标缓存清理、缩略图缓存清理）
+    图标缓存清理、缩略图缓存清理）
 
 说明：旧版的静默更新检查 / 下载 / 安装引导已整体移除（2026-09 重构，
 功能不再提供）；启动 flags 门控与看门狗随更新流程一并移除，本模块的
@@ -96,18 +96,8 @@ class StartupWarmupThread(QRunnable):
             error(f"FFmpeg 预热失败: {e}")
 
     def _warm_lut(self) -> None:
-        try:
-            from freeassetfilter.core.native.bridges.lut_preview_generator import (
-                get_preview_generator,
-            )
-            from freeassetfilter.core.native.src.cpp_lut_preview import (
-                warmup as lut_cpp_warmup,
-            )
-
-            lut_cpp_warmup()
-            get_preview_generator()
-        except Exception as e:
-            error(f"LUT 预热失败: {e}")
+        """保留兼容入口；LUT 预览在首次使用时惰性初始化。"""
+        return
 
 
 class StartupController:
@@ -131,7 +121,6 @@ class StartupController:
             error(f"[启动] 心跳管理器创建失败: {e}")
 
         QTimer.singleShot(0, self._safe("_register_extra_fonts"))
-        QTimer.singleShot(0, self._safe("_lazy_import_pillow_avif"))
         QTimer.singleShot(0, self._safe("_start_background_warmup"))
         QTimer.singleShot(0, self._safe("_cleanup_icon_cache"))
         QTimer.singleShot(100, self._safe("_schedule_thumbnail_cleanup"))
@@ -166,13 +155,6 @@ class StartupController:
             QFontDatabase.addApplicationFont(firacode_font_path)
         except Exception as e:
             warning(f"[启动] FiraCode 注册失败: {e}")
-
-    def _lazy_import_pillow_avif(self) -> None:
-        """延迟导入 pillow_avif（AVIF 图像打开前注册即可）。"""
-        try:
-            import pillow_avif  # noqa: F401
-        except ImportError:
-            pass
 
     # ── 缓存清理 ────────────────────────────────────────────────
 

@@ -287,6 +287,7 @@ class ThumbnailManager:
     MAX_SVG_CACHE_ENTRIES = 256
     SVG_CACHE_REVALIDATE_INTERVAL_SECONDS = 1.0
     PATH_EXISTS_CACHE_TTL_SECONDS = 1.0
+    PATH_EXISTS_CACHE_MAX_ENTRIES = 8192
 
     # 最大图像尺寸限制（防止内存溢出）
     MAX_IMAGE_DIMENSION = 8192
@@ -476,6 +477,13 @@ class ThumbnailManager:
         exists = os.path.exists(path)
         with self._path_exists_cache_lock:
             self._path_exists_cache[path] = (exists, now)
+            if len(self._path_exists_cache) > self.PATH_EXISTS_CACHE_MAX_ENTRIES:
+                stale_keys = sorted(
+                    self._path_exists_cache,
+                    key=lambda key: self._path_exists_cache[key][1],
+                )[: len(self._path_exists_cache) - self.PATH_EXISTS_CACHE_MAX_ENTRIES]
+                for stale_key in stale_keys:
+                    self._path_exists_cache.pop(stale_key, None)
         return exists
 
     def _set_cached_path_exists(self, path: str, exists: bool) -> None:
@@ -484,6 +492,13 @@ class ThumbnailManager:
             return
         with self._path_exists_cache_lock:
             self._path_exists_cache[path] = (exists, time.monotonic())
+            if len(self._path_exists_cache) > self.PATH_EXISTS_CACHE_MAX_ENTRIES:
+                stale_keys = sorted(
+                    self._path_exists_cache,
+                    key=lambda key: self._path_exists_cache[key][1],
+                )[: len(self._path_exists_cache) - self.PATH_EXISTS_CACHE_MAX_ENTRIES]
+                for stale_key in stale_keys:
+                    self._path_exists_cache.pop(stale_key, None)
 
     def _clear_path_exists_cache(self) -> None:
         """清空存在性缓存。"""

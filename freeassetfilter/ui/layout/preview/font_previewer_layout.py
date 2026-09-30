@@ -1688,6 +1688,11 @@ class FontPreviewerLayout(QWidget):
         """清理资源；若处于全屏先退出，避免内嵌 widget 被直接销毁。"""
         if self._fullscreen:
             self._exit_fullscreen()
+        self._cancel_load()
+        if self._current_font_id is not None and self._current_font_id != -1:
+            QFontDatabase.removeApplicationFont(self._current_font_id)
+            self._current_font_id = None
+        self.current_font_family = ""
         # 防御：确保离开预览器前弹窗被销毁（Qt 父级已保证随预览器销毁）
         self._discard_zoom_popup()
         self._discard_weight_popup()

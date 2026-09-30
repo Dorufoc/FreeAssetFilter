@@ -1361,6 +1361,8 @@ class ImagePreviewerLayout(QWidget):
         """清理资源；若处于全屏先退出，避免内嵌 widget 被直接销毁。"""
         if self._fullscreen:
             self._exit_fullscreen()
+        self._cancel_decode_worker()
+        self._current_image = None
         # 防御：确保离开预览器前缩放弹窗被销毁（Qt 父级已保证随预览器销毁）
         self._discard_zoom_popup()
 
