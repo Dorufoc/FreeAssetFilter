@@ -56,6 +56,7 @@ from components.file_card_delegate import LIST_CONFIG
 from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
 from components.styled_dialog import create_input_dialog, ask_custom_dialog
 from freeassetfilter.utils.path_utils import get_app_data_path
+from freeassetfilter.core._paths import icons_dir
 from freeassetfilter.services.staging_pool_service import StagingPoolService
 from freeassetfilter.core.workers.staging_tasks import MD5CalculationTask
 from freeassetfilter.core.native.bridges.faf_core_bridge import get_faf_core_bridge
@@ -163,7 +164,7 @@ class FilePoolLayout(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         # 图标目录（_build_bottom_bar 与 add_file 都需要使用，必须在 _build_bottom_bar 之前初始化）
-        self._icons_dir = Path(__file__).resolve().parent.parent.parent / "icons"
+        self._icons_dir = icons_dir()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)

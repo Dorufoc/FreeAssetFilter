@@ -81,6 +81,7 @@ from freeassetfilter.ui.mica import winapi as mica_winapi
 # color_picker 等组件。
 
 from freeassetfilter.utils.path_utils import get_app_data_path
+from freeassetfilter.core._paths import icons_dir
 from freeassetfilter.utils.app_logger import debug, warning
 # perf_metrics / StagingPoolService 同为首屏关键路径让位：分别由绘制埋点
 # （MicaBackgroundWidgetCpu.paintEvent）与 closeEvent 局部导入。
@@ -1338,7 +1339,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         header_layout.addStretch()
 
         # GitHub 按钮（SVG图标）
-        github_icon_path = Path(__file__).resolve().parent.parent / "icons" / "github.svg"
+        github_icon_path = icons_dir() / "github.svg"
         self._github_btn = StyledButton(
             "",
             variant="ghost",
@@ -1351,7 +1352,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         header_layout.addWidget(self._github_btn)
 
         # 设置按钮（SVG图标）
-        settings_icon_path = Path(__file__).resolve().parent.parent / "icons" / "setting.svg"
+        settings_icon_path = icons_dir() / "setting.svg"
         self._settings_btn = StyledButton(
             "",
             variant="ghost",
@@ -1364,7 +1365,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         header_layout.addWidget(self._settings_btn)
 
         # 主题切换按钮（SVG图标，dark=深色图标，light=浅色图标）
-        light_icon_path = Path(__file__).resolve().parent.parent / "icons" / "title_light.svg"
+        light_icon_path = icons_dir() / "title_light.svg"
         self._theme_btn = StyledButton(
             "", variant="ghost", size="sm",
             icon=str(light_icon_path) if light_icon_path.exists() else ""
@@ -1376,7 +1377,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         header_layout.addWidget(self._theme_btn)
 
         # 最小化按钮（SVG图标）
-        mini_icon_path = Path(__file__).resolve().parent.parent / "icons" / "title_mini.svg"
+        mini_icon_path = icons_dir() / "title_mini.svg"
         self._minimize_btn = StyledButton(
             "", variant="ghost", size="sm",
             icon=str(mini_icon_path) if mini_icon_path.exists() else ""
@@ -1387,7 +1388,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         header_layout.addWidget(self._minimize_btn)
 
         # 最大化/还原按钮（SVG图标，max_1=最大化，max_2=还原）
-        max_1_path = Path(__file__).resolve().parent.parent / "icons" / "title_max_1.svg"
+        max_1_path = icons_dir() / "title_max_1.svg"
         self._maximize_btn = StyledButton(
             "", variant="ghost", size="sm",
             icon=str(max_1_path) if max_1_path.exists() else ""
@@ -1398,7 +1399,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         header_layout.addWidget(self._maximize_btn)
 
         # 关闭按钮（SVG图标）
-        close_icon_path = Path(__file__).resolve().parent.parent / "icons" / "title_close.svg"
+        close_icon_path = icons_dir() / "title_close.svg"
         self._close_btn = StyledButton(
             "", variant="ghost", size="sm",
             icon=str(close_icon_path) if close_icon_path.exists() else ""
@@ -1429,8 +1430,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
     def _toggle_maximize(self) -> None:
         """通过 Win32 ShowWindow 切换最大化/还原，保留原生窗口动画和特性"""
         hwnd = int(self.winId())
-        max_1_path = Path(__file__).resolve().parent.parent / "icons" / "title_max_1.svg"
-        max_2_path = Path(__file__).resolve().parent.parent / "icons" / "title_max_2.svg"
+        max_1_path = icons_dir() / "title_max_1.svg"
+        max_2_path = icons_dir() / "title_max_2.svg"
         if self.isMaximized():
             ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
             # 窗口已还原，显示最大化图标（max_1）
@@ -1847,8 +1848,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             if minimalist is not None:
                 minimalist.sync_theme()
             # 更新按钮图标和 tooltip（SVG，light=浅色，dark=深色）
-            light_icon_path = Path(__file__).resolve().parent.parent / "icons" / "title_light.svg"
-            dark_icon_path = Path(__file__).resolve().parent.parent / "icons" / "title_dark.svg"
+            light_icon_path = icons_dir() / "title_light.svg"
+            dark_icon_path = icons_dir() / "title_dark.svg"
             if theme_name == "light":
                 # 当前浅色→点击切换为深色，显示深色图标
                 if dark_icon_path.exists():

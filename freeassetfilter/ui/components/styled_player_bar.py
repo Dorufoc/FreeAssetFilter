@@ -19,6 +19,7 @@ from components.styled_button import StyledButton
 from components.styled_slider import StyledSlider
 from theme import tm
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
+from freeassetfilter.core._paths import icons_dir
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -875,7 +876,7 @@ class StyledPlayerBar(QWidget):
 
     @property
     def _icons_dir(self) -> str:
-        return str(Path(__file__).resolve().parent.parent.parent / "icons")
+        return str(icons_dir())
 
     def _setup_ui(self):
         layout = QHBoxLayout(self)

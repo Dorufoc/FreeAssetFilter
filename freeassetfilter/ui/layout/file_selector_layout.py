@@ -16,6 +16,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 
 from theme import tm
 from freeassetfilter.utils.path_utils import get_app_data_path
+from freeassetfilter.core._paths import icons_dir as get_icons_dir
 from freeassetfilter.utils.app_logger import debug as _rubber_log
 from freeassetfilter.core.workers.thumbnail_controller import ThumbnailController
 from components.styled_button import StyledButton
@@ -1214,7 +1215,7 @@ class FileSelectorLayout(QWidget):
     # ── UI 构建 ──────────────────────────────────────────────────────────
 
     def _build_top_bar(self):
-        icons_dir = Path(__file__).resolve().parent.parent.parent / "icons"
+        icons_dir = get_icons_dir()
         top_layout = QVBoxLayout(self._top_bar)
         top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.setSpacing(0)
@@ -1281,7 +1282,7 @@ class FileSelectorLayout(QWidget):
         top_layout.addLayout(tool_row)
 
     def _build_bottom_bar(self) -> None:
-        icons_dir = Path(__file__).resolve().parent.parent.parent / "icons"
+        icons_dir = get_icons_dir()
         bottom_layout = QHBoxLayout(self._bottom_bar)
         bottom_layout.setContentsMargins(8, 6, 8, 6)
         bottom_layout.setSpacing(6)
@@ -2702,7 +2703,7 @@ class FileSelectorLayout(QWidget):
 
     def _toggle_view_mode(self) -> None:
         self._abort_rubber_selection()
-        icons_dir = Path(__file__).resolve().parent.parent.parent / "icons"
+        icons_dir = get_icons_dir()
         if self._view_mode == "card":
             self._view_mode = "list"
             self._card_delegate.set_list_mode()

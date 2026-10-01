@@ -32,9 +32,8 @@ PROJECT_NAME = "FreeAssetFilter"
 ENTRY_POINT = "freeassetfilter/app/main.py"
 OUTPUT_DIR = "build/pyinstall"
 WORK_PATH = "build/pyinstall/work"
-# UPX压缩选项
-USE_UPX = True
-UPX_PATH = r"C:\upx\upx.exe"  # UPX可执行文件路径
+# 发布构建明确不使用 UPX。PyInstaller 的默认行为也由 --noupx 固定关闭。
+USE_UPX = False
 
 # Qt6 DLL白名单（必须保留）
 QT6_KEEP_DLLS = {
@@ -90,6 +89,15 @@ QT6_REMOVE_DLLS = {
     "Qt6UiTools.dll",
     "Qt6Concurrent.dll",
     "Qt6AxContainer.dll",
+    "Qt6Qml.dll",
+    "Qt6QmlMeta.dll",
+    "Qt6QmlModels.dll",
+    "Qt6QmlWorkerScript.dll",
+    "Qt6Quick.dll",
+    "Qt6QuickControls2.dll",
+    "Qt6QuickTemplates2.dll",
+    "Qt6QuickWidgets.dll",
+    "Qt6VirtualKeyboard.dll",
     # WebEngine 相关（体积太大，项目不需要）
     "Qt6WebEngineCore.dll",
     "Qt6WebEngineWidgets.dll",
@@ -244,157 +252,43 @@ def collect_binaries() -> List[Tuple[str, str]]:
     print_header("收集二进制文件")
     
     project_root = get_project_root()
-    binaries = []
-    
-    # 1. libmpv-2.dll (位于 core/native/mpv/)
-    libmpv_dll = project_root / "freeassetfilter" / "core" / "native" / "mpv" / "libmpv-2.dll"
-    if libmpv_dll.exists():
-        binaries.append((str(libmpv_dll), "freeassetfilter/core"))
-        print_info("收集到 libmpv-2.dll")
-    else:
-        print_warning("未找到 libmpv-2.dll")
-    
-    # 2. 7z 运行时文件
-    seven_zip_dir = project_root / "freeassetfilter" / "core" / "native" / "bin" / "7z"
-    if seven_zip_dir.exists():
-        for file_name in ["7z.exe", "7z.dll"]:
-            file_path = seven_zip_dir / file_name
-            if file_path.exists():
-                binaries.append((str(file_path), "freeassetfilter/core/native/bin/7z"))
-                print_info(f"收集到 {file_name}")
-            else:
-                print_warning(f"未找到 {file_name}")
-
-    # 3. ffmpeg/ffprobe（Rust 缩略图引擎的视频缩略图链路依赖）
-    native_bin_dir = project_root / "freeassetfilter" / "core" / "native" / "bin"
-    if native_bin_dir.exists():
-        for file_name in ["ffmpeg.exe", "ffprobe.exe"]:
-            file_path = native_bin_dir / file_name
-            if file_path.exists():
-                binaries.append((str(file_path), "freeassetfilter/core/native/bin"))
-                print_info(f"收集到 {file_name}")
-            else:
-                print_warning(f"未找到 {file_name}")
-
-    # 4. cpp_color_extractor DLLs
-    # NOTE: cpp_color_extractor.pyd appears to be DEAD CODE.
-    # grep confirms NO runtime `import` or dynamic load of `cpp_color_extractor` exists anywhere in the codebase.
-    # The color extraction feature was superseded by the Rust DLL (rust_color_extractor_native.dll)
-    # loaded via freeassetfilter/core/native/bridges/rust_color_extractor.py → freeassetfilter/core/preview/color_extractor.py.
-    # In contrast, cpp_lut_preview IS actively imported (core/preview/lut_preview_generator.py, freeassetfilter/app/main.py).
-    # Keep the .pyd binary and these references in the build script in case it is revived.
-    cpp_color_dir = project_root / "freeassetfilter" / "core" / "native" / "src" / "cpp_color_extractor"
-    if cpp_color_dir.exists():
-        for dll_name in ["libgcc_s_seh-1.dll", "libgomp-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll"]:
-            dll_path = cpp_color_dir / dll_name
-            if dll_path.exists():
-                binaries.append((str(dll_path), "freeassetfilter/core/native/src/cpp_color_extractor"))
-        print_info(f"收集到 cpp_color_extractor DLLs")
-    
-    # 5. cpp_lut_preview DLLs
-    cpp_lut_dir = project_root / "freeassetfilter" / "core" / "native" / "src" / "cpp_lut_preview"
-    if cpp_lut_dir.exists():
-        for dll_name in ["libgcc_s_seh-1.dll", "libgomp-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll"]:
-            dll_path = cpp_lut_dir / dll_name
-            if dll_path.exists():
-                binaries.append((str(dll_path), "freeassetfilter/core/native/src/cpp_lut_preview"))
-        print_info(f"收集到 cpp_lut_preview DLLs")
-    
-    # 6. Rust 原生缩略图引擎 DLL（统一使用源码正式编译产物）
-    rust_thumb_dll = (
-        project_root
-        / "freeassetfilter"
-        / "core"
-        / "native"
-        / "src"
-        / "thumbnail_rust"
-        / "target"
-        / "release"
-        / "thumbnail_generator.dll"
+    native_bin = project_root / "freeassetfilter" / "core" / "native" / "bin"
+    binaries: List[Tuple[str, str]] = []
+    required = (
+        ("libmpv-2.dll", native_bin, "freeassetfilter/core/native/bin"),
+        ("thumbnail_generator.dll", native_bin, "freeassetfilter/core/native/bin"),
+        ("faf_core.dll", native_bin, "freeassetfilter/core/native/bin"),
+        ("mica_render.dll", native_bin, "freeassetfilter/core/native/bin"),
+        ("ffmpeg.exe", native_bin, "freeassetfilter/core/native/bin"),
+        ("ffprobe.exe", native_bin, "freeassetfilter/core/native/bin"),
+        ("7z.exe", native_bin / "7z", "freeassetfilter/core/native/bin/7z"),
+        ("7z.dll", native_bin / "7z", "freeassetfilter/core/native/bin/7z"),
     )
-    if rust_thumb_dll.exists():
-        binaries.append((str(rust_thumb_dll), "freeassetfilter/core/native/bin"))
-        print_info(f"收集到 thumbnail_generator.dll（来源: {rust_thumb_dll}）")
-    else:
-        print_warning("未找到 thumbnail_rust/target/release/thumbnail_generator.dll（将使用Python回退缩略图链路）")
-
-    # 7. Rust 颜色提取 DLL（统一使用源码正式编译产物）
-    rust_color_dll = (
-        project_root
-        / "freeassetfilter"
-        / "core"
-        / "native"
-        / "src"
-        / "color_extractor_rust"
-        / "target"
-        / "release"
-        / "rust_color_extractor_native.dll"
-    )
-    if rust_color_dll.exists():
-        binaries.append((str(rust_color_dll), "freeassetfilter/core/native/bin"))
-        print_info(f"收集到 rust_color_extractor_native.dll（来源: {rust_color_dll}）")
-    else:
-        print_warning("未找到 color_extractor_rust/target/release/rust_color_extractor_native.dll")
-
-    # 8. faf_core 统一原生核心 DLL（统一使用源码正式编译产物）
-    faf_core_dll = (
-        project_root
-        / "freeassetfilter"
-        / "core"
-        / "native"
-        / "src"
-        / "faf_core"
-        / "target"
-        / "release"
-        / "faf_core.dll"
-    )
-    if faf_core_dll.exists():
-        binaries.append((str(faf_core_dll), "freeassetfilter/core/native/bin"))
-        print_info(f"收集到 faf_core.dll（来源: {faf_core_dll}）")
-    else:
-        print_warning("未找到 faf_core/target/release/faf_core.dll（faf_core 相关功能将降级）")
-
-    # 9. mica_render DLL（C++ Mica GPU 渲染引擎，统一使用源码正式编译产物）
-    mica_render_dll = (
-        project_root
-        / "freeassetfilter"
-        / "core"
-        / "native"
-        / "src"
-        / "cpp_mica_render"
-        / "mica_render.dll"
-    )
-    if mica_render_dll.exists():
-        binaries.append((str(mica_render_dll), "freeassetfilter/core/native/bin"))
-        print_info(f"收集到 mica_render.dll（来源: {mica_render_dll}）")
-    else:
-        print_warning("未找到 cpp_mica_render/mica_render.dll（Mica 背景将回退到 CPU 管线）")
-
-    # 10. 收集Python扩展模块(.pyd文件)
-    # cpp_color_extractor
-    # NOTE: Dead code — no runtime import found (see note in section 4 above).
-    if cpp_color_dir.exists():
-        for pyd_file in cpp_color_dir.glob("*.pyd"):
-            binaries.append((str(pyd_file), "freeassetfilter/core/native/src/cpp_color_extractor"))
-            print_info(f"收集到 {pyd_file.name}")
-    
-    # cpp_lut_preview (actively used — keep)
-    if cpp_lut_dir.exists():
-        for pyd_file in cpp_lut_dir.glob("*.pyd"):
-            binaries.append((str(pyd_file), "freeassetfilter/core/native/src/cpp_lut_preview"))
-            print_info(f"收集到 {pyd_file.name}")
-    
-    print_success(f"共收集到 {len(binaries)} 个二进制文件")
+    missing: List[str] = []
+    for name, source_dir, destination in required:
+        source = source_dir / name
+        if source.is_file():
+            binaries.append((str(source), destination))
+            print_info(f"收集到 {name}")
+        else:
+            missing.append(str(source.relative_to(project_root)))
+    if missing:
+        raise FileNotFoundError("缺少发布运行时文件:\n  " + "\n  ".join(missing))
+    # LUT 扩展是可选的；若存在则只从发布 bin 目录收集，绝不带入 native/src。
+    lut_dir = native_bin / "lut_preview"
+    if lut_dir.is_dir():
+        for pyd in sorted(lut_dir.glob("*.pyd")):
+            binaries.append((str(pyd), "freeassetfilter/core/native/bin/lut_preview"))
+            print_info(f"收集到 LUT 扩展 {pyd.name}")
+    print_success(f"共收集到 {len(binaries)} 个运行时二进制文件")
     return binaries
-
 
 def collect_hidden_imports() -> List[str]:
     """收集需要显式导入的隐藏模块"""
     print_header("收集隐藏导入")
     
     hidden_imports = [
-        # C++扩展模块
-        "freeassetfilter.core.native.src.cpp_lut_preview",      # actively used in core/lut_preview_generator.py + app/startup.py
+        # LUT native wrapper is optional; the Python implementation remains the fallback.
         "freeassetfilter.core.native.bridges.rust_thumbnail_bridge",
         "freeassetfilter.core.native.bridges.faf_core_bridge",
         # 核心管理模块
@@ -408,6 +302,7 @@ def collect_hidden_imports() -> List[str]:
         # 原生桥接模块（moved from preview/, video/, archive/）
         "freeassetfilter.core.native.bridges.media_probe",
         "freeassetfilter.core.native.bridges.lut_preview_generator",
+        "freeassetfilter.core.native.bridges.lut_preview_native",
         "freeassetfilter.core.native.bridges.mpv_player_core",
         "freeassetfilter.core.native.bridges.py7z_core",
         # 重要包（第一轮瘦身：移除 numpy/scipy/skimage/imageio 的强制隐藏导入，
@@ -472,6 +367,7 @@ def build_pyinstaller_command(data_files: List[Tuple[str, str]],
     
     project_root = get_project_root()
     entry_point = project_root / ENTRY_POINT
+    ui_root = project_root / "freeassetfilter" / "ui"
     output_dir = project_root / OUTPUT_DIR
     work_path = project_root / WORK_PATH
     
@@ -490,7 +386,9 @@ def build_pyinstaller_command(data_files: List[Tuple[str, str]],
         "--workpath", str(work_path),
         "--name", PROJECT_NAME,
         "--windowed",  # Windows GUI应用程序，不显示控制台
+        "--paths", str(ui_root),  # 兼容 components.* / theme.* 顶层导入
         "--clean",  # 清理PyInstaller缓存
+        "--noupx",  # 明确禁止 UPX
     ]
     
     # 设置图标（使用绝对路径）
@@ -577,22 +475,11 @@ def build_pyinstaller_command(data_files: List[Tuple[str, str]],
     for imp in hidden_imports:
         cmd.extend(["--hidden-import", imp])
     
-    # 包含动态导入较多、运行时资源明确需要的子包
-    # 第一轮瘦身先移除 numpy/scipy/skimage/imageio 的 collect-all，
-    # 改为依赖 PyInstaller 自动分析真实导入链，避免把整套可选模块全部打进包体。
-    cmd.extend([
-        "--collect-all", "PIL",
-        "--collect-all", "psd_tools",
-        "--collect-all", "rawpy",
-        "--collect-all", "pymupdf",
-        "--collect-all", "mutagen",
-        "--collect-all", "py7zr",
-        "--collect-all", "pygments",
-        "--collect-all", "markdown",
-        "--collect-all", "exifread",
-        "--collect-all", "pillow_heif",
-        "--collect-all", "psutil",
-    ])
+    # 仅收集动态导入的子模块，避免 collect-all 把测试、示例和无关资源复制进包。
+    for _pkg in ("PIL", "psd_tools", "rawpy", "fitz", "py7zr", "pygments", "markdown", "pillow_heif", "psutil"):
+        if importlib.util.find_spec(_pkg) is not None:
+            cmd.extend(["--collect-submodules", _pkg])
+            print_info(f"收集动态子模块: {_pkg}")
 
     # ── Office 转换后端收集（T12 / Metis B1-E10）────────────────────────
     # office_converter.py 的 win32com.client / pythoncom / pywintypes 在方法体内
@@ -617,6 +504,11 @@ def build_pyinstaller_command(data_files: List[Tuple[str, str]],
     else:
         print_warning("跳过缺失的 Office 数据包: pptx")
     
+    # 添加运行时兼容 hook，保证冻结环境中 components.* / theme.* 旧导入可用。
+    runtime_hook = project_root / "pyinstaller_runtime_compat.py"
+    if runtime_hook.is_file():
+        cmd.extend(["--runtime-hook", str(runtime_hook)])
+
     # 添加入口文件
     cmd.append(str(entry_point))
     
@@ -819,13 +711,8 @@ def clean_native_sources_from_dist():
         print_info("未发现 core 目录，跳过")
         return
 
-    removable_dirs = [
-        dist_root / "native" / "src" / "thumbnail_rust",
-        dist_root / "native" / "src" / "color_extractor_rust",
-        dist_root / "native" / "src" / "faf_core",
-        dist_root / "native" / "src" / "cpp_mica_render",
-        dist_root / "native" / "src" / "cpp_lut_preview" / "build",
-    ]
+    # 发布包只保留 native/bin；整个 src 树均为 Rust/C++ 源码或构建目录。
+    removable_dirs = [dist_root / "native" / "src"]
 
     for removable_dir in removable_dirs:
         if removable_dir.exists():
@@ -836,17 +723,9 @@ def clean_native_sources_from_dist():
                 print_warning(f"无法删除 {removable_dir}: {e}")
 
     removable_patterns = [
-        "native/Cargo.toml",
-        "native/Cargo.lock",
-        "native/src/cpp_lut_preview/setup.py",
-        "native/src/cpp_lut_preview/setup_mingw.py",
-        "native/src/cpp_lut_preview/*.cpp",
-        "**/*.pdb",
-        "**/*.exp",
-        "**/*.lib",
-        "**/*.a",
-        "**/*.d",
-        "update.log",
+        "**/*.rs", "**/*.cpp", "**/*.c", "**/*.h", "**/*.hpp",
+        "**/*.toml", "**/*.lock", "**/*.pdb", "**/*.exp", "**/*.lib",
+        "**/*.a", "**/*.d", "**/setup*.py", "update.log",
     ]
 
     for pattern in removable_patterns:
@@ -890,6 +769,14 @@ def verify_output() -> bool:
         "FAFVERSION",
         "freeassetfilter/icons/FAF-main.ico",
         "freeassetfilter/utils/color_schemes.json",
+        "freeassetfilter/core/native/bin/libmpv-2.dll",
+        "freeassetfilter/core/native/bin/thumbnail_generator.dll",
+        "freeassetfilter/core/native/bin/faf_core.dll",
+        "freeassetfilter/core/native/bin/mica_render.dll",
+        "freeassetfilter/core/native/bin/ffmpeg.exe",
+        "freeassetfilter/core/native/bin/ffprobe.exe",
+        "freeassetfilter/core/native/bin/7z/7z.exe",
+        "freeassetfilter/core/native/bin/7z/7z.dll",
     ]
     
     for resource in resources_to_check:
@@ -1001,102 +888,6 @@ def generate_report(removed_dlls: int, saved_space: int):
         print_info(f"报告已保存: {report_path}")
 
 
-def check_upx() -> bool:
-    """检查UPX是否可用"""
-    print_header("检查UPX")
-    
-    # 首先检查配置的UPX路径
-    if os.path.exists(UPX_PATH):
-        print_success(f"UPX已找到: {UPX_PATH}")
-        return True
-    
-    # 尝试从PATH中查找
-    try:
-        result = subprocess.run(
-            ["where", "upx"],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        if result.stdout.strip():
-            print_success(f"UPX已找到: {result.stdout.strip()}")
-            return True
-    except (subprocess.SubprocessError, FileNotFoundError) as e:
-        warning(f"从PATH查找UPX失败: {e}")
-    
-    print_warning("未找到UPX，跳过压缩步骤")
-    print_info(r"如需使用UPX压缩，请下载并安装UPX到 C:\upx\ 或添加到PATH")
-    return False
-
-
-def compress_with_upx():
-    """使用UPX压缩可执行文件和DLL"""
-    print_header("使用UPX压缩")
-    
-    project_root = get_project_root()
-    output_dir = project_root / OUTPUT_DIR / PROJECT_NAME
-    
-    if not output_dir.exists():
-        print_warning(f"输出目录不存在: {output_dir}")
-        return 0, 0
-    
-    # 确定UPX路径
-    upx_exe = UPX_PATH if os.path.exists(UPX_PATH) else "upx"
-    
-    # 压缩前的总大小
-    total_size_before = sum(f.stat().st_size for f in output_dir.rglob('*') if f.is_file())
-    
-    # 需要压缩的文件类型
-    compressible_extensions = {'.exe', '.dll', '.pyd'}
-    
-    compressed_count = 0
-    skipped_count = 0
-    
-    # 收集所有可压缩文件
-    files_to_compress = []
-    for ext in compressible_extensions:
-        files_to_compress.extend(output_dir.rglob(f"*{ext}"))
-    
-    print_info(f"找到 {len(files_to_compress)} 个可压缩文件")
-    
-    for file_path in files_to_compress:
-        try:
-            # 跳过已经压缩的文件
-            result = subprocess.run(
-                [upx_exe, "-t", str(file_path)],
-                capture_output=True,
-                text=True
-            )
-            if "already packed" in result.stdout.lower() or result.returncode == 0:
-                skipped_count += 1
-                continue
-            
-            # 压缩文件
-            result = subprocess.run(
-                [upx_exe, "-9", "--lzma", str(file_path)],
-                capture_output=True,
-                text=True
-            )
-            
-            if result.returncode == 0:
-                compressed_count += 1
-                print_info(f"压缩: {file_path.name}")
-            else:
-                print_warning(f"无法压缩 {file_path.name}: {result.stderr}")
-                
-        except Exception as e:
-            print_warning(f"压缩 {file_path.name} 时出错: {e}")
-    
-    # 压缩后的总大小
-    total_size_after = sum(f.stat().st_size for f in output_dir.rglob('*') if f.is_file())
-    saved_space = total_size_before - total_size_after
-    
-    print_success(f"UPX压缩完成: {compressed_count} 个文件被压缩, {skipped_count} 个文件跳过")
-    print_success(f"节省空间: {saved_space / 1024 / 1024:.2f} MB")
-    
-    return compressed_count, saved_space
-
-
 def clean_build():
     """清理打包输出"""
     print_header("清理打包输出")
@@ -1137,26 +928,14 @@ def main():
     parser.add_argument("--no-clean", action="store_true", help="禁用清理，保留之前的构建输出")
     parser.add_argument("--skip-build", action="store_true", help="仅执行清理和验证，不打包")
     parser.add_argument("--no-clean-qt", action="store_true", help="不清理Qt6 DLL")
-    parser.add_argument("--no-upx", action="store_true", help="不使用UPX压缩")
-    parser.add_argument("--upx-only", action="store_true", help="仅执行UPX压缩（用于已打包的程序）")
+    parser.add_argument("--no-upx", action="store_true", help="兼容参数：始终禁用 UPX")
     args = parser.parse_args()
     
     print_header("FreeAssetFilter PyInstaller打包脚本")
     info(f"项目: {PROJECT_NAME}")
     info(f"入口: {ENTRY_POINT}")
     info(f"输出: {OUTPUT_DIR}")
-    info(f"UPX压缩: {'禁用' if args.no_upx else '启用'}")
-    
-    # 仅执行UPX压缩
-    if args.upx_only:
-        print_info("仅执行UPX压缩")
-        if check_upx():
-            upx_compressed, upx_saved = compress_with_upx()
-            print_header("UPX压缩完成")
-            print_success(f"压缩了 {upx_compressed} 个文件，节省 {upx_saved / 1024 / 1024:.2f} MB")
-        return 0
-    
-    # 清理（默认启用，除非指定 --no-clean）
+    info("UPX压缩: 禁用")
     if not args.no_clean:
         clean_build()
     
@@ -1193,14 +972,6 @@ def main():
 
     # 清理打包目录中的原生源码残留（仅保留运行所需DLL）
     clean_native_sources_from_dist()
-
-    # UPX压缩
-    upx_compressed = 0
-    upx_saved = 0
-    if not args.no_upx:
-        if check_upx():
-            upx_compressed, upx_saved = compress_with_upx()
-    
     # 验证输出
     if not verify_output():
         print_warning("输出验证未通过，但打包可能仍然可用")
@@ -1210,8 +981,6 @@ def main():
     
     print_header("打包完成")
     print_success(f"可执行文件位于: {OUTPUT_DIR}/{PROJECT_NAME}/{PROJECT_NAME}.exe")
-    if upx_saved > 0:
-        print_success(f"UPX压缩节省: {upx_saved / 1024 / 1024:.2f} MB")
     
     return 0
 

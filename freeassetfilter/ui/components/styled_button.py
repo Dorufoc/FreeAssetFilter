@@ -89,10 +89,18 @@ class StyledButton(QPushButton):
         parent=None,
         icon_position: str = "left",
     ):
-        super().__init__(text, parent)
+        # 兼容旧调用：部分旧布局曾把 SVG 路径作为第一个位置参数传入。
+        # 路径必须进入 SVG 字段，绝不能作为按钮文字显示。
+        text_value = str(text or "")
+        icon_value = str(icon or "")
+        if not icon_value and (text_value.lower().endswith(".svg") or Path(text_value).is_file()):
+            icon_value = text_value
+            text_value = ""
+        super().__init__(text_value, parent)
         self._variant = variant if variant in self.VARIANTS else "primary"
         self._size = size if size in self.SIZES else "default"
-        self._icon = icon
+        # SVG 路径始终走专用字段；无效路径不得作为普通文本绘制。
+        self._icon = icon_value if not icon_value.lower().endswith(".svg") else ""
         self._svg_renderer = None  # 存储 SVG 渲染器（矢量渲染）
         self._svg_icon_path = None  # 存储 SVG 文件路径
         self._svg_content_cache = {}  # 缓存不同颜色的 SVG 渲染器
@@ -115,8 +123,8 @@ class StyledButton(QPushButton):
         self.setFocusPolicy(Qt.NoFocus)
 
         # 加载 SVG 图标（如果 icon 是文件路径）
-        if icon and (icon.endswith('.svg') or Path(icon).exists()):
-            self._load_svg_icon(icon)
+        if icon_value and (icon_value.lower().endswith('.svg') or Path(icon_value).exists()):
+            self._load_svg_icon(icon_value)
         
         # spinner 定时器统一惰性管理：loading 模式启动后不停止（旧行为）；
         # 进度模式按需启停（见 set_progress / _start_spinner_timer）

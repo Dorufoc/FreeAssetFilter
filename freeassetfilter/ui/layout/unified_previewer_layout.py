@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 from components.styled_button import StyledButton
 from components.styled_dialog import ask_custom_dialog
 from freeassetfilter.services.previewer_registry import PreviewerRegistry
+from freeassetfilter.core._paths import icons_dir as get_icons_dir
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 from layout.preview.file_info_panel import FileInfoPanel
 from theme import tm
@@ -135,7 +136,7 @@ class UnifiedPreviewerLayout(QWidget):
 
     def _build_bottom_bar(self) -> None:
         """构建底栏：share + 打开方式 + 定位目录 + close"""
-        icons_dir = Path(__file__).resolve().parent.parent.parent / "icons"
+        icons_dir = get_icons_dir()
         bottom_layout = QHBoxLayout(self._bottom_bar)
         bottom_layout.setContentsMargins(10, 6, 10, 6)
         bottom_layout.setSpacing(6)
