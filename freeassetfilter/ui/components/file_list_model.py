@@ -180,7 +180,7 @@ class FileListModel(QAbstractListModel):
         return {row for row, f in enumerate(self._files) if f.get("is_selected", False)}
 
     def set_rows_selected(self, rows, selected: bool) -> None:
-        """批量设置多行选中状态，只发射一次 dataChanged（框选拖拽高频场景）。
+        """批量设置多行选中状态，只发射一次 dataChanged（批量操作场景）。
 
         Args:
             rows: 待更新的行号集合（超出范围的行自动忽略）。

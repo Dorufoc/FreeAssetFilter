@@ -1278,8 +1278,6 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         """
         if self._file_selector is not None:
             # 信号连接：文件选择器 → 文件池
-            self._file_selector.add_to_pool_requested.connect(self._on_add_to_pool_requested)
-            self._file_selector.remove_from_pool_requested.connect(self._on_remove_from_pool_requested)
             self._file_selector.toggle_pool_requested.connect(self._on_toggle_pool_requested)
             self._file_selector.file_selected.connect(self._on_file_selected)
             self._file_selector.preview_cancel_requested.connect(self._on_preview_cancelled)
@@ -1937,21 +1935,6 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             minimalist.sync_theme()
 
     # ──── 信号处理 ─────────────────────────────────────────────────────
-
-    def _on_add_to_pool_requested(self, file_info: dict) -> None:
-        """处理文件选择器右键"添加到文件池"请求"""
-        self._file_pool.add_file(file_info)
-
-    def _on_remove_from_pool_requested(self, file_info: dict) -> None:
-        """处理文件选择器右键框选"批量移出文件池"请求（逐文件移除）。
-
-        仅会收到已在池内的路径（选择器侧已按池路径集合过滤）；
-        remove_file 幂等，安全批量调用。池内容变更经 pool_changed 信号
-        回推选择器刷新"已在池中"边框标记。
-        """
-        file_path = file_info.get("path", "")
-        if file_path:
-            self._file_pool.remove_file(file_path)
 
     def _on_toggle_pool_requested(self, file_info: dict) -> None:
         """右键直连：已在池中则移除，否则添加。"""

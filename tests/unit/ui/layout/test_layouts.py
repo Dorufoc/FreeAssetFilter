@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock
 
 import pytest
-from PySide6.QtCore import QEvent, QPoint, QPointF, QObject, Qt, QThread, Signal
+from PySide6.QtCore import QEvent, QModelIndex, QPoint, QPointF, QObject, Qt, QThread, Signal
 from PySide6.QtGui import (
     QCloseEvent,
     QColor,
@@ -1085,6 +1085,91 @@ class TestGoBackTransition:
             assert begin_mock.call_count == 1
             assert begin_mock.call_args.args[0] == -1
             assert finish_mock.call_args.args[0] == -1
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+
+# =============================================================================
+# ui.layout.file_selector_layout — 空白区右键返回上一级
+# =============================================================================
+class TestRightClickEmptyAreaGoBack:
+    """空白区右键路由：无卡片 → _go_back；卡片上 → 入池信号不变。
+
+    仅验证 ``_on_right_click_toggle_pool`` 的路由分支（indexAt 命中与否），
+    不跑真实过渡动画。
+    """
+
+    def test_empty_area_right_click_goes_back(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """空白区（indexAt 无效）右键：调用 _go_back，不发入池信号。
+
+        Args:
+            qapp: 会话级 QApplication（offscreen）。
+            monkeypatch: 用例级猴子补丁。
+        """
+        layout = FileSelectorLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        qapp.processEvents()
+        try:
+            go_back_mock: MagicMock = MagicMock()
+            toggle_calls: list = []
+            monkeypatch.setattr(layout, "_go_back", go_back_mock)
+            monkeypatch.setattr(
+                layout._file_list, "indexAt", MagicMock(return_value=QModelIndex())
+            )
+            layout.toggle_pool_requested.connect(lambda info: toggle_calls.append(info))
+
+            layout._on_right_click_toggle_pool(QPoint(20, 20))
+
+            go_back_mock.assert_called_once_with()
+            assert toggle_calls == []
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+    def test_card_right_click_keeps_toggle_pool(
+        self, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """卡片上右键：发射 toggle_pool_requested，且不触发 _go_back。
+
+        Args:
+            qapp: 会话级 QApplication（offscreen）。
+            tmp_path: pytest 临时目录（真实创建 src/card.txt）。
+            monkeypatch: 用例级猴子补丁。
+        """
+        target_dir = tmp_path / "src"
+        target_dir.mkdir()
+        target = target_dir / "card.txt"
+        target.write_text("card", encoding="utf-8")
+
+        layout = FileSelectorLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        qapp.processEvents()
+        try:
+            layout._load_directory(os.path.abspath(str(target_dir)))
+            index = layout._file_model.index(0, 0)
+            assert index.isValid()
+
+            go_back_mock: MagicMock = MagicMock()
+            toggle_calls: list = []
+            monkeypatch.setattr(layout, "_go_back", go_back_mock)
+            monkeypatch.setattr(
+                layout._file_list, "indexAt", MagicMock(return_value=index)
+            )
+            layout.toggle_pool_requested.connect(lambda info: toggle_calls.append(info))
+
+            layout._on_right_click_toggle_pool(QPoint(20, 20))
+
+            assert len(toggle_calls) == 1
+            assert toggle_calls[0]["name"] == "card.txt"
+            assert (
+                os.path.normcase(toggle_calls[0]["path"])
+                == os.path.normcase(str(target))
+            )
+            assert toggle_calls[0]["is_dir"] is False
+            go_back_mock.assert_not_called()
         finally:
             safe_teardown(layout)
             qapp.processEvents()

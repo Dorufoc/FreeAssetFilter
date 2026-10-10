@@ -303,6 +303,7 @@ python -m freeassetfilter.app.main
 ### File Selector
 
 - **Navigation Bar**: Quick directory switching, go up, refresh list
+- **Empty-Area Right Click**: Go back to the previous directory (history-first, same as "Go Up")
 - **Filter**: Quick filter by file type (Image/Video/Audio/Document/All)
 - **Sort**: Sort by name, date, size, type
 - **View Mode**: Thumbnail/List mode toggle

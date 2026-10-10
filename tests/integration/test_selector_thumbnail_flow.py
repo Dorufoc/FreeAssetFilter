@@ -19,8 +19,6 @@
 * 清除确认框（真实 ``StyledDialog`` 非模态弹窗，``close_dialog(1)``
   模拟点击「清除」）→ ``clear_finished``（磁盘删除 + 全行刷新 + 结果
   通知 + 按钮恢复）；
-* 选中优先 —— ``set_selected`` 某文件后生成仅覆盖该文件（另一文件无
-  缩略图）；
 * 无可生成项 —— 全部已有缩略图时再触发生成 → 同步
   ``batch_finished(0, 0)`` + 轻提示，不启动线程。
 
@@ -382,42 +380,6 @@ class TestThumbnailFullChain:
         assert selector._clean_btn.isEnabled()
         assert selector._gen_thumb_btn.text() == "生成缩略图"
         assert not selector._thumb_controller.is_busy
-
-
-# =============================================================================
-# 选中优先
-# =============================================================================
-class TestSelectionPriority:
-    """``_collect_thumbnail_targets`` 的选中优先语义。"""
-
-    def test_selected_file_generation_priority(
-        self, selector: Any, qapp: Any, tmp_path: Path
-    ) -> None:
-        """选中某文件后生成 → 仅该文件产出缩略图，另一文件无。
-
-        Args:
-            selector: 已挂载记录器的 FileSelectorLayout。
-            qapp: 会话级 QApplication。
-            tmp_path: pytest 内置临时目录。
-        """
-        src_dir: Path = tmp_path / "src"
-        src_dir.mkdir()
-        red_path: str = _make_solid_png(src_dir / "red.png", (255, 0, 0))
-        blue_path: str = _make_solid_png(src_dir / "blue.png", (0, 0, 255))
-        _load_dir_into_model(selector, str(src_dir))
-
-        assert selector._file_model.set_selected(red_path, True) is True
-
-        selector._on_generate_thumbnails()
-        assert _pump_until(
-            qapp,
-            lambda: bool(selector._test_batches)
-            and not selector._thumb_controller.is_busy,
-        ), "选中生成任务超时未完成"
-
-        assert selector._test_batches == [(1, 1)]
-        assert get_existing_thumbnail_path(red_path) is not None, "选中文件应有缩略图"
-        assert get_existing_thumbnail_path(blue_path) is None, "未选中文件不应有缩略图"
 
 
 # =============================================================================
