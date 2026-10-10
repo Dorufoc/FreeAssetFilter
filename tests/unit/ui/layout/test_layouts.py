@@ -219,6 +219,16 @@ def _pump_until(
     return predicate()
 
 
+def _normalize_eol(text: str) -> str:
+    """将期望文本的 CRLF 归一为 LF（与 QTextDocument/toPlainText 行为一致）。
+
+    夹具若在检出时被行尾转换（如 Windows autocrlf）带 CRLF，QTextEdit
+    读入后会归一为 LF，直接逐字比较将永远不相等。期望侧先做同样归一，
+    保证断言只校验内容本身、不依赖检出环境。
+    """
+    return text.replace("\r\n", "\n")
+
+
 # =============================================================================
 # ui.layout.file_pool_layout
 # =============================================================================
@@ -2418,11 +2428,11 @@ class TestTextPreviewerLayout:
             fast_text = layout._source_view._text_edit.toPlainText()
             assert len(fast_text) > 0, "快速链显示不应空白"
             # 探测完成后回调重渲染为 gbk（异步，泵事件直到生效）
+            expected = _normalize_eol(raw.decode("gbk", errors="replace"))
             assert _pump_until(
                 qapp,
                 lambda: layout._current_encoding == "gbk"
-                and layout._source_view._text_edit.toPlainText()
-                == raw.decode("gbk", errors="replace"),
+                and layout._source_view._text_edit.toPlainText() == expected,
                 timeout_ms=6000,
             )
         finally:
@@ -2439,11 +2449,11 @@ class TestTextPreviewerLayout:
             path = tmp_path / "u.txt"
             path.write_bytes(raw)
             layout.set_file(str(path))
+            expected = _normalize_eol(raw.decode("utf-8", errors="replace"))
             assert _pump_until(
                 qapp,
                 lambda: layout._current_encoding == "utf-8"
-                and layout._source_view._text_edit.toPlainText()
-                == raw.decode("utf-8", errors="replace"),
+                and layout._source_view._text_edit.toPlainText() == expected,
                 timeout_ms=6000,
             )
         finally:
@@ -2464,20 +2474,17 @@ class TestTextPreviewerLayout:
             utf_path.write_bytes(utf_raw)
             layout.set_file(str(gbk_path))
             layout.set_file(str(utf_path))
+            expected = _normalize_eol(utf_raw.decode("utf-8", errors="replace"))
             assert _pump_until(
                 qapp,
                 lambda: layout._current_encoding == "utf-8"
-                and layout._source_view._text_edit.toPlainText()
-                == utf_raw.decode("utf-8", errors="replace"),
+                and layout._source_view._text_edit.toPlainText() == expected,
                 timeout_ms=6000,
             )
             # 陈旧探测不得把已渲染的 utf-8 覆盖回 gbk
             qapp.processEvents()
             assert layout._current_encoding == "utf-8"
-            assert (
-                layout._source_view._text_edit.toPlainText()
-                == utf_raw.decode("utf-8", errors="replace")
-            )
+            assert layout._source_view._text_edit.toPlainText() == expected
         finally:
             safe_teardown(layout)
 
