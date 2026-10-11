@@ -290,10 +290,19 @@ class TestEncodingNativeFallback:
         assert fis._detect_encoding_native(raw, path, window=None) is None
 
     def test_light_rows_fall_back_to_chardet_for_latin1(self) -> None:
-        """native `{}` → light 行回退 chardet（Windows-1252 标签不崩）。"""
+        """native `{}` → light 行回退 chardet（单字节编码标签不崩）。
+
+        chardet 对 1KB 窗口的探测标签随版本变化（``Windows-1252`` /
+        ``ISO-8859-9`` 等同为 ISO-8859 系单字节回退）；此处只断言回退链
+        给出了一个非空、非 UTF 系标签（≠ ``不可用``），不锚定具体版本值。
+        """
         path = str(_ENC_DIR / "latin1_01.txt")
         rows = dict(fis._text_light_rows(path))
-        assert rows["编码格式"] == "Windows-1252"
+        label = rows["编码格式"]
+        assert label and label != fis.UNAVAILABLE, f"latin1 回退标签缺失: {label!r}"
+        assert "8859" in label or "1252" in label, (
+            f"latin1 回退应落在单字节 ISO-8859/Windows-1252 系，实际: {label!r}"
+        )
 
     def test_short_cjk_sample_low_confidence(self) -> None:
         """超短 CJK 样本（n < 阈值）→ {} → None（走 utf-8 → latin-1 链）。"""

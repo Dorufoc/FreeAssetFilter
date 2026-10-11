@@ -1250,6 +1250,43 @@ class MicaMaterial(QObject):
         self._worker_speculative = False
         self._maybe_rebake(force=True)
 
+    @staticmethod
+    def _stop_worker_thread(
+        thread: Optional[QThread], worker: Optional[QObject] = None
+    ) -> None:
+        """协作式停止后台烘焙线程：``quit`` + 有界等待，**绝不强杀**。
+
+        历史实现直接 ``terminate()``：工作线程可能正阻塞在 ``gpu_bake`` 的
+        COM/D3D 原生调用里，强杀会留下损坏的 COM 公寓与全局 D3D 设备状态，
+        后续任意 GPU 调用可能在原生层野内存访问（组合跑测试时偶发
+        ``0xC0000005``）。本辅助只做协作式退出（``quit`` + 有界 ``wait``）：
+        worker 的槽方法通常已跑完或即将返回；若越界仍在途，留给其自然结束
+        —— QThread 与其上的 worker 均为进程内守护语义，GPU 任务本身有
+        ``JOB_TIMEOUT_MS`` 看门狗兜底，不会无限驻留。
+
+        ``worker`` 的 ``deleteLater`` 在此交付（若给了 worker）：线程停止后
+        再投递销毁，避免已删对象在 finished 信号派发前被回收。
+
+        Args:
+            thread: 目标 QThread；``None`` 或已结束时仍会清理 worker。
+            worker: 线程内对象（QObject）；``None`` 时跳过。
+        """
+        if thread is not None:
+            try:
+                if not thread.isFinished():
+                    try:
+                        thread.quit()
+                        thread.wait(2000)
+                    except Exception:  # noqa: BLE001 - 线程回收失败不向上抛
+                        pass
+            except RuntimeError:
+                pass
+        if worker is not None:
+            try:
+                worker.deleteLater()
+            except Exception:  # noqa: BLE001
+                pass
+
     def dispose(self) -> None:
         """释放资源：阻止重试、移除焦点过滤器、回收在途线程。窗口关闭时调用。"""
         self._disposed = True
@@ -1288,12 +1325,11 @@ class MicaMaterial(QObject):
             worker = self._worker
             self._worker_thread = None
             self._worker = None
-            thread.quit()
-            if not thread.wait(0) and not thread.isFinished():
-                thread.terminate()
-            if worker is not None:
-                worker.deleteLater()
-            thread.deleteLater()
+            self._stop_worker_thread(thread, worker)
+            try:
+                thread.deleteLater()
+            except Exception:  # noqa: BLE001
+                pass
 
     def set_active(self, active: bool) -> None:
         """设置主窗口焦点状态：失焦淡出隐藏并暂停绘制，回焦淡入恢复。
@@ -1482,7 +1518,8 @@ class MicaMaterial(QObject):
             # 继续走下方的重烘 / 挂起逻辑，按当前几何自愈。
         if self._worker_thread is not None:
             if self._worker_speculative:
-                # 真实请求抢占 speculative：同步终止并静默回收，随后直通真实烘焙。
+                # 真实请求抢占 speculative：协作式回收（先友好等待再兜底），
+                # 随后直通真实烘焙。
                 self._worker_speculative = False
                 self._silent_cleanup = True
                 self._speculative_key = None
@@ -1492,21 +1529,10 @@ class MicaMaterial(QObject):
                 worker = self._worker
                 self._worker_thread = None
                 self._worker = None
-                try:
-                    thread.quit()
-                    if not thread.wait(0) and not thread.isFinished():
-                        thread.terminate()
-                        thread.wait(3000)
-                except Exception:  # noqa: BLE001 - 线程回收失败则继续真实烘焙
-                    pass
-                try:
-                    if worker is not None:
-                        worker.deleteLater()
-                except Exception:
-                    pass
+                self._stop_worker_thread(thread, worker)
                 try:
                     thread.deleteLater()
-                except Exception:
+                except Exception:  # noqa: BLE001
                     pass
             else:
                 # 在途烘焙：本次变化（主题 / 参数 / 壁纸 / 区域）已使在途结果过期。
@@ -1995,23 +2021,23 @@ class MicaMaterial(QObject):
             self._worker_thread.quit()
 
     def _on_bake_timeout(self) -> None:
-        """看门狗：烘焙超时（疑似卡死）→ 强制终止线程，交由回收逻辑重试 / 放弃。"""
+        """看门狗：烘焙超时（疑似卡死）→ 协作式回收线程，交由回收逻辑重试 / 放弃。"""
         if self._worker_thread is None:
             return
         self._watchdog.stop()
         if self._worker_speculative:
-            # speculative 超时：静默终止回收，不计入重试。
+            # speculative 超时：静默回收，不计入重试。
             self._worker_speculative = False
             self._silent_cleanup = True
             self._speculative_key = None
             self._speculative_extra = None
             self._speculative_thread = None
-            try:
-                self._worker_thread.terminate()
-            except Exception:
-                pass
+            # 协作式回收：绝不强杀（原生调用中 terminate 会留下损坏的
+            # COM/D3D 状态），由线程在任务自然结束后退出。
+            self._stop_worker_thread(self._worker_thread, self._worker)
             return
-        self._worker_thread.terminate()
+        # 协作式回收：同上（原生调用中强杀会留下损坏的 COM/D3D 状态）。
+        self._stop_worker_thread(self._worker_thread, self._worker)
         self._refresh_retries += 1
         self._refresh_outcome = "timeout"
 

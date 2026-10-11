@@ -81,6 +81,57 @@ def qt_app(qapp: Any) -> Any:
     return qapp
 
 
+def _cleanup_qt_runtime() -> None:
+    """回收会话级 Qt 原生资源（GPU 渲染器线程 / 线程池）。
+
+    会话结束时调用：Mica GPU 的常驻守护线程（``faf-mica-gpu``）持有
+    D3D11/COM 上下文，若不显式回收，测试进程退出阶段可能撞上原生清理而
+    触发访问冲突（历史症状：``test_styled_complex`` 之后组合运行偶发
+    ``0xC0000005``）。``shutdown_gpu_renderer`` 内部有界 join，卡死时只
+    停用不强杀；随后排空全局线程池，避免残留 QRunnable 跨文件存活。
+    任何步骤失败都不抛出（清理是尽力而为）。
+
+    Returns:
+        None。
+    """
+    try:
+        from freeassetfilter.ui.mica.gpu import shutdown_gpu_renderer
+
+        shutdown_gpu_renderer()
+    except Exception:
+        pass
+    try:
+        from PySide6.QtCore import QThreadPool
+
+        QThreadPool.globalInstance().waitForDone(5000)
+    except Exception:
+        pass
+
+
+@pytest.fixture(autouse=True, scope="session")
+def cleanup_qt_runtime(qapp: Any) -> Any:
+    """会话级 Qt 原生资源清理（依赖 ``qapp``，在会话最后执行 teardown）。
+
+    在整套测试结束后回收 Mica GPU 渲染器常驻线程与全局线程池，
+    并做一轮有界事件泵让 deferred delete 落地，最后统计存活顶层窗口
+    （仅在 ``FAF_TEST_RUNTIME_DEBUG=1`` 时打印，供隔离诊断）。
+
+    Args:
+        qapp: 会话级 QApplication（保证清理发生在应用存活期内）。
+
+    Yields:
+        Any: 传入的 ``qapp``（透传，便于其它 session fixture 复用）。
+    """
+    yield qapp
+    _cleanup_qt_runtime()
+    if os.environ.get("FAF_TEST_RUNTIME_DEBUG") == "1":
+        try:
+            alive = len(qapp.topLevelWidgets())
+            print(f"[cleanup] session end: topLevelWidgets={alive}", flush=True)
+        except Exception:
+            pass
+
+
 # =============================================================================
 # 单例重置（autouse）
 # =============================================================================
@@ -179,6 +230,46 @@ def reset_singletons() -> None:
     _reset_all_singletons()
     yield
     _reset_all_singletons()
+
+
+@pytest.fixture(autouse=True, scope="function")
+def scavenge_leaked_toplevel_widgets() -> None:
+    """测试隔离清道夫：销毁本测试新建的顶层窗口，遏制跨测试控件累积。
+
+    背景（全量回归诊断结论）：UI 测试大量创建 ``MainWindow`` / 预览布局后
+    仅对根窗口 ``deleteLater()``；对未 ``show()`` 的窗口或异常回溯扣住引用的
+    场景，deferred delete 不落地，存活控件跨测试线性增长（实测 250 个测试
+    后 5785 存活控件 / 263 顶层窗口）。应用级 QSS 单例（``app_stylesheet``）
+    的 ``setStyleSheet`` 全树重刷成本随存活规模增长，最终任意一次
+    ``processEvents()`` 触发的重刷都会超时（历史症状：
+    ``test_show_event_gating`` 30s timeout；见
+    ``tests/support/qt_helpers.py::scavenge_toplevel_widgets``）。
+
+    本夹具在测试开始时快照现存顶层窗口集合，结束后对新增窗口统一
+    close + deleteLater 并做有界事件泵，使 DeferredDelete 真正派发。
+    受保护的会话级宿主窗口（若存在）通过快照排除。
+
+    Returns:
+        None。
+    """
+    from tests.support.qt_helpers import (
+        scavenge_toplevel_widgets,
+        toplevel_widget_snapshot,
+    )
+
+    baseline = toplevel_widget_snapshot()
+    yield
+    try:
+        removed = scavenge_toplevel_widgets(baseline)
+        if removed and os.environ.get("FAF_TEST_SCAVENGE_DEBUG") == "1":
+            print(
+                f"[scavenge] removed {removed} toplevel widget(s) after "
+                f"{os.environ.get('PYTEST_CURRENT_TEST', '?')}",
+                flush=True,
+            )
+    except Exception:
+        # 清道夫失败绝不拖垮测试结果（隔离优化而非断言）。
+        pass
 
 
 @pytest.fixture(autouse=True, scope="function")

@@ -1,3 +1,6 @@
 pytest>=8.0
 pytest-timeout>=2.2
 pytest-cov>=6.0
+# benchmark/test_thumbnail_soak.py 的进程 RSS / 子进程探针依赖（可选，
+# 但缺失时该模块在收集阶段即 ImportError，导致 `pytest tests/` 无法启动）。
+psutil>=5.9

@@ -225,6 +225,8 @@ python -m coverage report
 | `qapp` | session | 全局唯一 QApplication，附带 `global_font` 及应用级 `settings_manager` / `theme_manager` |
 | `qt_app` | function | `qapp` 的别名，兼容旧式引用 |
 | `reset_singletons` | function（autouse） | 每个测试前后重置 SettingsManager / HeartbeatManager / ThumbnailManager / MPVManager / AppLogger / AsyncIconLoader 等单例，保证隔离 |
+| `scavenge_leaked_toplevel_widgets` | function（autouse） | 每个测试结束销毁本测试新建的顶层窗口（含 Mica 材质 dispose 与 DeferredDelete 派发），遏制控件跨测试累积 |
+| `cleanup_qt_runtime` | session（autouse） | 会话结束回收 Mica GPU 渲染器常驻线程与全局线程池 |
 | `settings_manager` | function | 绑定临时 `settings.json` 的全新 SettingsManager 实例 |
 | `heartbeat_manager` | function | 创建并启动新 HeartbeatManager，teardown 时 `stop_all()` |
 | `mpv_available` | session | 探测 `libmpv-2.dll` 可加载性（系统路径加捆绑 bin 目录） |
@@ -243,17 +245,20 @@ python -m coverage report
 - **单例在测试间持久**：SettingsManager / HeartbeatManager 等单例跨测试存活，`reset_singletons` autouse fixture 会在每个测试函数前后归零。若引入新的单例管理器，记得同步到 `_reset_all_singletons` 重置清单。
 - **依赖原生二进制的测试自动跳过**：libmpv-2.dll、Rust DLL、7z.exe、soffice、ffmpeg.exe 等均通过对应的 `*_available` fixture 作 session 级探测，缺失时相关测试 `pytest.skip`，不影响其余用例。
 - **support/ 模块用途**：
-  - `qt_helpers.py`：Qt 辅助，提供事件泵（`flush_widget_queue`）、信号等待（`wait_for_signal`）与安全清理（`safe_teardown`）。
+  - `qt_helpers.py`：Qt 辅助，提供事件泵（`flush_widget_queue`）、DeferredDelete 派发（`drain_deferred_deletes`）、顶层窗口快照/清道夫（`toplevel_widget_snapshot` / `scavenge_toplevel_widgets`）、信号等待（`wait_for_signal`）与安全清理（`safe_teardown`）。
   - `data_factories.py`：测试数据工厂，按需生成图片、PDF、文本、压缩包、音频、字体与文件信息字典。
   - `log_setup.py`：接管 pytest 日志，将输出双写到 `tests/log/`。
   - `progress.py`：运行进度条报告插件。
   - `timeout_policy.py`：目录级超时策略，统一显式 marker、自动打标与 CLI `--timeout` 的优先级。
   - `coverage_manifest.py`：覆盖清单扫描，检测缺测模块并告警。
+- **可选/开发依赖**：`requirements-dev.txt` 的 `psutil` 供 `benchmark/test_thumbnail_soak.py` 使用（缺失会让 `pytest tests/` 在收集阶段直接报错）；`requirements.txt` 的 `brotli` 供 `fontTools` 解码 WOFF/WOFF2（字体预览对拍依赖）。
 - **已知注意点**：
   - 测试全局日志为双写（stdout/stderr 与日志文件同时记录）。
   - `--cov-branch` 分支覆盖因触发原生崩溃而禁用，只用行覆盖。
   - `rg` 命令行在本机不可用，搜索请用 `Select-String` 或 `findstr`。
   - 组合运行曾偶发 access violation 与心跳时序问题，已通过将事件泵浦超时从 5s 提升到 15s 修复；若再遇"回调未在超时前触发"的失败，建议继续增大 `_pump_until` 的超时值。
+  - UI 测试大量创建 `MainWindow`/预览布局；`scavenge_leaked_toplevel_widgets` 清道夫依赖显式派发 DeferredDelete + 先 dispose Mica 材质，**不要**把 `deleteLater` 后的控件在未清理材质时强制销毁（原生访问冲突签名见 `safe_teardown`）。
+  - `tests/unit/ui/mica/` 单独运行需要 `freeassetfilter/ui` 在 `sys.path`（该目录测试模块自行 bootstrap 的约定，全量运行由其它 UI 测试模块先行完成）。
 
 ## 覆盖成果（参考）
 

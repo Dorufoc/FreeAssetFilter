@@ -1146,13 +1146,20 @@ def test_speculative_failure_ignored_for_retries(qapp, monkeypatch) -> None:
 
 
 def test_real_rebake_preempts_speculative_worker(qapp, monkeypatch) -> None:
-    """真实请求抢占 speculative：在途线程被终止，真实烘焙直通。"""
+    """真实请求抢占 speculative：在途线程被协作式回收，真实烘焙直通。"""
     widget, mica = _widget_with_mica(qapp)
     _setup_visible_old_layer(widget, mica, monkeypatch)
+    # 隔离：层缓存命中会短路到 _apply_cached_layer（不起线程），清空保证
+    # 本用例走到抢占分支。
+    mica._lookup_layer_cache = lambda *a, **k: None
     calls = []
     thread = mock.Mock()
     thread.wait.return_value = True
-    thread.isFinished.return_value = True
+    # 模拟在途线程：抢占比 quit 先观察到 isFinished=False（协作式回收路径
+    # 先 quit + wait，再兜底 terminate），quit/wait 后视为已结束。
+    _finished = {"v": False}
+    thread.isFinished.side_effect = lambda: _finished["v"]
+    thread.wait.side_effect = lambda *a, **k: _finished.__setitem__("v", True) or True
     mica._worker_thread = thread
     mica._worker = mock.Mock()
     mica._worker_speculative = True

@@ -20,3 +20,6 @@ lxml>=6.0.2
 et_xmlfile>=1.1.0
 typing_extensions>=4.15.0
 fonttools>=4.0.0
+# fontTools 解码 WOFF/WOFF2 字体信息（预览器字体解析回退路径）的硬依赖：
+# 缺少时 TTFont 打开 woff2 直接 ImportError。
+brotli>=1.1.0

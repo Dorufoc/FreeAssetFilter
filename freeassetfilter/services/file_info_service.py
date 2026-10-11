@@ -840,13 +840,21 @@ def _normalize_utf8_bom(raw: bytes, encoding: str) -> str:
 def _decode_encoding_chain(
     raw: bytes, encoding: Optional[str], errors: str = "replace"
 ) -> Tuple[str, str]:
-    """按回退链解码：探测结果 → ``utf-8`` → ``latin-1``（链不变）。
+    """按回退链解码：探测结果 → 同族更宽编码 → ``utf-8`` → ``latin-1``。
 
     先对每个候选做严格解码探测选出首个可行编码（UTF-8 BOM 文件经
     :func:`_normalize_utf8_bom` 归一为 ``utf-8-sig``，与 chardet 的
     ``UTF-8-SIG`` 路径一致），再以 ``errors`` 解码返回。chardet 探测出的
     ``UTF-8-SIG`` / ``GB18030`` 等 Python 原生编码名同样直接可用
     （``bytes.decode`` 大小写不敏感）。
+
+    CJK 同族放宽（跨版本 chardet 稳定性）：GB2312/GBK/GB18030 与
+    Big5/Big5-HKSCS 等编码互为子集/超集，探测器（chardet 各版本、系统
+    chardetng）对同一份 GBK 文本可能返回 ``GB2312`` 或 ``gbk``。若直接
+    用探测名严格解码失败就跳 ``latin-1``，同族文件会因探测名差异解码为
+    乱码（历史症状：``test_encoding_native_parity`` 的 GBK 语料对拍失败）。
+    因此探测名严格失败时先尝试同族超集编码，全部失败才落到
+    ``utf-8 → latin-1``。
 
     Args:
         raw: 原始字节。
@@ -859,11 +867,26 @@ def _decode_encoding_chain(
         (解码文本, 实际使用的编码名)。
     """
     candidates: List[str] = []
+
+    def _push(candidate: str) -> None:
+        """按序去重追加候选编码名（大小写不敏感）。"""
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
     if encoding:
-        candidates.append(_normalize_utf8_bom(raw, encoding))
-    for cand in ("utf-8", "latin-1"):
-        if cand not in candidates:
-            candidates.append(cand)
+        normalized = _normalize_utf8_bom(raw, encoding)
+        _push(normalized)
+        # 同族超集放宽：别名归一后按族展开（覆盖 chardet 返回 GB2312 但
+        # 实际内容为 GBK/GB18030 的常见跨版本差异）。
+        alias = normalized.lower().replace("_", "-")
+        if alias in ("gb2312", "gbk", "gb18030", "gb-2312", "gb-18030", "cp936"):
+            for extra in ("gb18030", "gbk", "gb2312"):
+                _push(extra)
+        elif alias in ("big5", "big5-hkscs", "big-5", "cp950"):
+            for extra in ("big5hkscs", "big5"):
+                _push(extra)
+    _push("utf-8")
+    _push("latin-1")
     chosen = "utf-8"
     for cand in candidates:
         try:

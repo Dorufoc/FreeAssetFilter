@@ -32,6 +32,51 @@ def _application() -> Optional[QApplication]:
     return QApplication.instance()  # type: ignore[return-value]
 
 
+#: 清道夫单批销毁的顶层窗口数量。批次间留事件泵窗口：deferred delete 与
+#: 跨线程信号（QThreadPool 完成信号等）同批碰撞会在 shiboken 触发
+#: ``0xC0000005``（见 :func:`safe_teardown` 的 W11 记录），分批把一批销毁
+#: 拆成多次小批量以降低碰撞面。
+_SCAVENGE_BATCH: int = 12
+
+#: 需要在下发 DeferredDelete 前先 ``dispose`` 的背景材质属性名。
+#: Mica 材质持有后台烘焙线程 / 看门狗 / 事件过滤器；未经 dispose 直接销毁
+#: 宿主控件会让在途线程回调撞上已析构对象（原生访问冲突）。正常产品路径由
+#: ``MainWindow.closeEvent`` 调 ``_dispose_mica``；测试替身/独立材质控件
+#: 不经过该路径，由清道夫补齐。
+_MICA_DISPOSE_ATTRS = ("_mica", "_mica_material", "_material")
+
+
+def _dispose_widget_mica(widget: QWidget) -> None:
+    """递归 dispose 控件树上的 Mica 材质（存在 ''dispose'' 方法时）。
+
+    仅处理显式登记的材质属性名（``_mica`` 等），非 Mica 属性不受影响；
+    任何异常静默忽略（清理是尽力而为，不改变测试结果）。
+
+    Args:
+        widget: 子树根控件。
+    """
+    stack: List[QWidget] = [widget]
+    while stack:
+        node = stack.pop()
+        for attr in _MICA_DISPOSE_ATTRS:
+            try:
+                material = getattr(node, attr, None)
+            except (AttributeError, RuntimeError):
+                continue
+            if material is None:
+                continue
+            dispose = getattr(material, "dispose", None)
+            if callable(dispose):
+                try:
+                    dispose()
+                except Exception:  # noqa: BLE001 - 清理失败不阻断
+                    pass
+        try:
+            stack.extend(node.findChildren(QWidget))
+        except RuntimeError:
+            continue
+
+
 def process_qt_events(app: Optional[QApplication], ms: int = 50) -> None:
     """单次事件泵：带超时地处理 Qt 待决事件。
 
@@ -125,6 +170,10 @@ def flush_widget_queue(app: Optional[QApplication] = None, iterations: int = 20)
     等宽处理多轮 ``processEvents``，保证 deleteLater/重绘等事件得到
     处理机会，同时有界以防极端情况下死循环。
 
+    注：``deleteLater`` 的 DeferredDelete 事件在部分场景（未进入过真实
+    事件循环、窗口未 show）不会被纯 ``processEvents`` 派发；需要彻底落地
+    延迟销毁请用 :func:`drain_deferred_deletes`。
+
     Args:
         app: QApplication 实例；省略时自动探测。
         iterations: 最大轮数。
@@ -133,6 +182,39 @@ def flush_widget_queue(app: Optional[QApplication] = None, iterations: int = 20)
     if active_app is None:
         return
     for _ in range(max(0, iterations)):
+        active_app.processEvents()
+
+
+def drain_deferred_deletes(
+    app: Optional[QApplication] = None, rounds: int = 4
+) -> None:
+    """显式派发 DeferredDelete（彻底落地 deleteLater），不使用嵌套事件循环。
+
+    ``QApplication.processEvents()`` 对 ``deleteLater`` 派发不可靠（尤其
+    窗口未 ``show()`` / 从未进入 ``exec()`` 的测试进程）。这里用
+    ``QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)``
+    显式派发延迟销毁事件（Qt 官方途径），再做一轮普通事件泵让销毁级联
+    落地；**不进入嵌套事件循环**，避免在测试调用栈中间意外处理其它排队
+    信号（曾观察到把测试自己的定时器/信号提前消费导致挂起）。
+
+    Args:
+        app: QApplication 实例；省略时自动探测。
+        rounds: 派发轮数（每轮 sendPostedEvents + processEvents）。
+    """
+    active_app: Optional[QApplication] = app if app is not None else _application()
+    if active_app is None:
+        return
+    try:
+        from PySide6.QtCore import QCoreApplication, QEvent
+    except Exception:  # noqa: BLE001
+        for _ in range(max(0, rounds)):
+            active_app.processEvents()
+        return
+    for _ in range(max(0, rounds)):
+        try:
+            QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        except Exception:  # noqa: BLE001
+            pass
         active_app.processEvents()
 
 
@@ -163,6 +245,87 @@ def safe_teardown(widget: Optional[QObject]) -> None:
         widget.deleteLater()
     except RuntimeError:
         return
+
+
+def toplevel_widget_snapshot() -> set:
+    """当前全部顶层 widget 的 ``id()`` 快照（供测试隔离夹具比对）。
+
+    Returns:
+        set: 现存顶层 ``QWidget`` 包装器 id 集合；无 QApplication 时为空集。
+    """
+    active_app: Optional[QApplication] = _application()
+    if active_app is None:
+        return set()
+    return {id(w) for w in active_app.topLevelWidgets()}
+
+
+def scavenge_toplevel_widgets(baseline: set) -> int:
+    """关闭并销毁测试期间新增的顶层 widget（测试隔离清道夫）。
+
+    泄漏背景（tests-comprehensive-refactor 全量回归结论）：UI 测试创建
+    ``MainWindow`` / 各预览布局后只对根窗口 ``deleteLater()``，而部分场景
+    （未 ``show()`` 的窗口、被测试内异常回溯扣住的引用）下 deferred delete
+    不会落地，跨测试线性累积数千存活控件。应用级 QSS 单例（
+    ``app_stylesheet``）的 ``setStyleSheet`` 全树重刷成本随存活控件规模增长，
+    最终任何一次 ``processEvents()`` 触发的重刷都会超时（历史症状：
+    ``test_show_event_gating`` 30s timeout）。
+
+    本函数把**每个测试新建的顶层窗口**统一 close + deleteLater，并显式
+    派发 DeferredDelete（批量、批间普通事件泵；单批最多
+    :data:`_SCAVENGE_BATCH` 个），从源头维持存活控件规模恒定。
+    ``baseline`` 中记录的（会话级宿主）窗口不受影响。
+
+    Args:
+        baseline: ``toplevel_widget_snapshot()`` 在测试开始前采集的 id 快照。
+
+    Returns:
+        int: 被清理（close + deleteLater）的顶层窗口数量。
+    """
+    active_app: Optional[QApplication] = _application()
+    if active_app is None:
+        return 0
+    targets: List[QWidget] = []
+    for widget in list(active_app.topLevelWidgets()):
+        if id(widget) in baseline:
+            continue
+        try:
+            if widget.isVisible():
+                widget.close()
+        except RuntimeError:  # C++ 对象已销毁
+            continue
+        targets.append(widget)
+    if not targets:
+        return 0
+    try:
+        from freeassetfilter.ui.theme.app_stylesheet import (
+            resume_qss_apply,
+            suspend_qss_apply,
+        )
+    except Exception:  # noqa: BLE001 - 产品模块不可用时退化为直接泵
+        suspend_qss_apply = resume_qss_apply = None  # type: ignore[assignment]
+    if suspend_qss_apply is not None:
+        suspend_qss_apply()
+    try:
+        # 先 dispose 全部新增树上的 Mica 材质（停后台线程/看门狗/过滤器），
+        # 再下发销毁；避免强制销毁时在途线程回调撞已析构对象。
+        for widget in targets:
+            _dispose_widget_mica(widget)
+        for start in range(0, len(targets), _SCAVENGE_BATCH):
+            batch = targets[start : start + _SCAVENGE_BATCH]
+            for widget in batch:
+                try:
+                    widget.deleteLater()
+                except RuntimeError:
+                    pass
+            # 批量派发 + 事件泵：批间留出跨界信号落地窗口，避免全部销毁
+            # 事件与跨线程信号同批碰撞（shiboken 0xC0000005 已知签名）。
+            drain_deferred_deletes(active_app, rounds=1)
+            active_app.processEvents()
+        drain_deferred_deletes(active_app, rounds=2)
+    finally:
+        if resume_qss_apply is not None:
+            resume_qss_apply()
+    return len(targets)
 
 
 def assert_pixmap_nonempty(

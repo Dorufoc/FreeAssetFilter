@@ -476,6 +476,14 @@ def main(argv=None) -> int:
         except Exception as e:
             warning(f"[退出] 引导层清理失败: {e}")
 
+        # 1.5) 回收 Mica GPU 渲染器常驻线程（若本会话启用过 GPU 烘焙）。
+        # 有界 join（DISPOSE_JOIN_MS），卡死时只停用不强杀，守护线程不阻塞退出。
+        try:
+            from freeassetfilter.ui.mica.gpu import shutdown_gpu_renderer
+            shutdown_gpu_renderer()
+        except Exception as e:
+            warning(f"[退出] Mica GPU 渲染器回收失败: {e}")
+
         # 2) 卸载 fd 捕获（排空管道 + join），再做 handler flush 与 faulthandler 清理
         _cleanup_process_facilities(facilities)
         exit_time = time.time()

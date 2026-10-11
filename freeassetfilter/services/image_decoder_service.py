@@ -236,7 +236,7 @@ class ImageDecoderService:
             )
         except ImportError as e:
             raise DependencyError(f"缺少 RAW 解码依赖: {e}") from e
-        except (OSError, IOError, ValueError) as e:
+        except (OSError, IOError, ValueError, AssertionError) as e:
             raise CorruptFileError(f"RAW 文件损坏或不可读: {e}") from e
         except Exception as e:
             raise DecodeError(f"RAW 解码失败: {e}") from e
@@ -315,7 +315,7 @@ class ImageDecoderService:
                         img = img.resize((new_width, new_height), PILImage.Resampling.LANCZOS)
 
                 return img
-        except (OSError, IOError, ValueError) as e:
+        except (OSError, IOError, ValueError, AssertionError) as e:
             raise CorruptFileError(f"HEIF/AVIF 文件损坏或不可读: {e}") from e
 
     # ── PSD 解码 ─────────────────────────────────────────────────────
@@ -394,7 +394,9 @@ class ImageDecoderService:
             raise
         except ImportError as e:
             raise DependencyError(f"缺少 PSD 解码依赖: {e}") from e
-        except (OSError, IOError, ValueError) as e:
+        except (OSError, IOError, ValueError, AssertionError) as e:
+            # psd-tools 对畸形内容用 assert 做长度/结构校验（AssertionError
+            # 即损坏文件信号），与 OSError/ValueError 同归 CorruptFileError。
             raise CorruptFileError(f"PSD 文件损坏或不可读: {e}") from e
         except Exception as e:
             raise DecodeError(f"PSD 解码失败: {e}") from e

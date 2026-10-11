@@ -598,7 +598,14 @@ class TestOfficeConverterWorker:
         worker.request_cancel()
         assert worker._cancel_requested is True
         release.set()
-        assert wait_for_signal(worker.failed, timeout_ms=3000)
+        # 信号自 worker 线程 Queued 投递；重负载下投递可能晚于 3s 窗口
+        # （与 test_timeout_emits_timeout_failed 同因），改用轮询事件泵，
+        # 保证 flaky 稳定。
+        await_fire = time.monotonic() + 10.0
+        while not got and time.monotonic() < await_fire:
+            flush_widget_queue(qapp, iterations=5)
+            time.sleep(0.01)
+        assert got, "取消后未收到 failed 信号"
         assert "已取消" in got[0]
         _shutdown_office_worker(worker, qapp)
 

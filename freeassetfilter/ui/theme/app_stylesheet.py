@@ -165,6 +165,9 @@ class _AppStylesheetRegistry:
         self._signal_connected = False
         self._last_combined = ""
         self._generation = 0
+        self._rebuilding = False
+        self._teardown_depth = 0
+        self._defer_reschedule = False
 
     def register(self, widget: object, qss: str) -> str:
         """Store *qss* for *widget*, assigning a stable scope id.
@@ -294,6 +297,29 @@ class _AppStylesheetRegistry:
         except Exception:
             pass
 
+    def suspend_apply(self) -> None:
+        """暂停样式下发（进入 teardown 清理窗口）。
+
+        清理窗口里 ``deleteLater`` 的控件仍挂在应用树上，此时全树
+        ``setStyleSheet`` 的成本与存活控件规模成正比（历史上数千控件时
+        单次可达数十秒，把 teardown 事件泵变成超时点）。暂停期间
+        :meth:`rebuild` 只记脏并延后重排，由 :meth:`resume_apply` 在清理
+        完成后触发一次合并下发。可重入（按计数配对）。
+        """
+        with self._lock:
+            self._teardown_depth += 1
+
+    def resume_apply(self) -> None:
+        """恢复样式下发；若暂停期间有积压变更则重排一次合并下发。"""
+        with self._lock:
+            if self._teardown_depth > 0:
+                self._teardown_depth -= 1
+            pending = self._defer_reschedule and self._teardown_depth == 0
+            if pending:
+                self._defer_reschedule = False
+        if pending:
+            self._schedule_rebuild()
+
     def _rebuild_if_current(self, generation: int) -> bool:
         """Run :meth:`rebuild` only when *generation* is still current.
 
@@ -407,6 +433,14 @@ class _AppStylesheetRegistry:
         at event-loop pumps; the registry itself only holds weak
         references, so dead widgets simply stop matching.
 
+        Re-entrancy guard: ``app.setStyleSheet`` dispatches style
+        change events synchronously; a widget handler that registers a
+        new fragment can therefore re-enter this method while the
+        outer polish is still running. A nested rebuild is deferred to
+        the next event-loop turn (generation bump + reschedule) instead
+        of nesting another full-tree polish, keeping the cost bounded
+        and the application responsive.
+
         Args:
             force: Re-apply even when no fragment changed (theme
                 switch path: same fragments, new colors).
@@ -439,15 +473,49 @@ class _AppStylesheetRegistry:
                 return False
         except Exception:
             pass
-        combined = self.build_combined()
-        try:
-            app.setStyleSheet(combined)
-        except Exception:
+        with self._lock:
+            if self._teardown_depth > 0:
+                # teardown 清理窗口：当时树上仍有大量 deleteLater 待销毁控件，
+                # 任何全树 setStyleSheet 都会按存活规模线性放大（历史数千控件
+                # 时单次数十秒）。只记脏并延后重排，清理完成后合并下发一次；
+                # force（主题切换）同样延后，dirty 标志保留，恢复后必被重排。
+                self._dirty = True
+                self._defer_reschedule = True
+                return False
+        with self._lock:
+            if self._rebuilding:
+                # 嵌套重刷：不叠第二轮全树 polish，改到下一轮事件循环。
+                self._dirty = True
+                pending = True
+            else:
+                self._rebuilding = True
+                pending = False
+        if pending:
+            self._schedule_rebuild()
             return False
-        return True
+        try:
+            combined = self.build_combined()
+            try:
+                app.setStyleSheet(combined)
+            except Exception:
+                return False
+            return True
+        finally:
+            with self._lock:
+                self._rebuilding = False
 
 
 _REGISTRY = _AppStylesheetRegistry()
+
+
+def suspend_qss_apply() -> None:
+    """暂停样式下发（进入 teardown 清理窗口；可重入计数）。"""
+    _REGISTRY.suspend_apply()
+
+
+def resume_qss_apply() -> None:
+    """恢复样式下发；暂停期间积压的变更会合并重排一次。"""
+    _REGISTRY.resume_apply()
 
 
 def register_widget_qss(widget: object, qss: str) -> str:

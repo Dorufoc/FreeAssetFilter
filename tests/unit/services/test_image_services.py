@@ -56,6 +56,49 @@ def _make_png_bytes(width: int = 16, height: int = 12) -> bytes:
     return buf.getvalue()
 
 
+def _save_multiply_fixture(
+    doc: Any, path: str, size: tuple[int, int] = (8, 8)
+) -> None:
+    """把双图层 multiply 文档落盘（绕开 psd-tools 1.11 的预览通道缺陷）。
+
+    psd-tools 1.11 的 ``PSDImage.save`` 在合成无透明层文档时把预览写成
+    3 通道（RGB），而文件头仍声明 4 通道（RGBA）；再次打开时
+    ``image_data`` 长度校验失败（``len=192, expected=256``），与本产品
+    代码无关。修复前用「按头部通道数强制写预览」的方式产出合法夹具：
+    合成结果通道数与头部不符时，按头部通道数用实际合成像素重建预览
+    （合成结果本就以底色预乘，alpha 恒为 255，RGB 三通道即真值）。
+
+    Args:
+        doc: 已用 ``PSDImage.new`` + ``create_pixel_layer`` 构造的双图层文档。
+        path: 目标 PSD 文件路径。
+        size: 画布尺寸（宽, 高），用于补齐通道数据。
+    """
+    from psd_tools.psd.image_data import ImageData
+
+    header = doc._record.header  # noqa: SLF001 - 测试夹具需要底层头部
+    expected = int(header.channels)
+    composited = doc.composite(alpha=1.0)
+    channels = [c.tobytes() for c in composited.split()]
+    if len(channels) != expected:
+        # 预览通道数不足：按头部通道数用合成真值重建（RGB 三通道 + 全不透明
+        # alpha），保证打开时长度校验通过、像素值与合成结果一致。
+        rgb = composited.convert("RGB")
+        channels = [c.tobytes() for c in rgb.split()]
+        if expected > len(channels):
+            from PIL import Image as _PILImage
+
+            channels.extend(
+                [_PILImage.new("L", size, 255).tobytes()]
+                * (expected - len(channels))
+            )
+    doc._record.image_data = ImageData(  # noqa: SLF001 - 测试夹具需要底层写回
+        compression=doc._record.image_data.compression
+    )
+    doc._record.image_data.set_data(channels, header)  # noqa: SLF001
+    with open(path, "wb") as f:
+        doc._record.write(f)  # noqa: SLF001
+
+
 def _shutdown_worker(worker: ImageDecodeWorker, timeout_ms: int = 3000) -> None:
     """安全回收 worker：isRunning 守卫 → wait → terminate 兜底 → deleteLater。
 
@@ -340,7 +383,7 @@ class TestPsdFallbackKeepsPythonPath:
         doc.create_pixel_layer(bottom, name="bottom")
         doc.create_pixel_layer(top, name="top", blend_mode=BlendMode.MULTIPLY)
         psd_path = tmp_path / "multiply.psd"
-        doc.save(str(psd_path))
+        _save_multiply_fixture(doc, str(psd_path))
 
         composited = ImageDecoderService._decode_psd(str(psd_path))
         assert composited is not None
@@ -379,7 +422,7 @@ class TestPsdFallbackKeepsPythonPath:
         doc.create_pixel_layer(bottom, name="bottom")
         doc.create_pixel_layer(top, name="top", blend_mode=BlendMode.MULTIPLY)
         psd_path = tmp_path / "multiply.psd"
-        doc.save(str(psd_path))
+        _save_multiply_fixture(doc, str(psd_path))
 
         composited = ImageDecoderService._decode_psd(str(psd_path))
         assert calls == [str(psd_path)]
