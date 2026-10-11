@@ -365,6 +365,50 @@ class TestFilePoolLayout:
         assert card.toolTip() == "D:/dummy/grid_new.png"
         layout.deleteLater()
 
+    def test_empty_pool_hint_visibility(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """空池提示：无卡片时铺满视口居中可见，入池后隐藏、移除后恢复。
+
+        两种布局模式（经典列表 / New 网格）共用同一 FilePoolLayout 实例，
+        提示随之同时覆盖两种布局；切换视图模式不重建提示控件。
+        """
+        import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
+
+        monkeypatch.setattr(
+            fpl_mod, "is_animation_enabled", lambda *args, **kwargs: False
+        )
+        layout = FilePoolLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        layout.show()
+        _pump_events(qapp)
+
+        hint = layout._empty_hint
+        assert hint.text() == "右键选择区卡片以添加文件"
+        assert hint.isVisible() is True
+        # 鼠标事件透传：不拦截框选/右键/滚轮语义
+        assert hint.testAttribute(Qt.WA_TransparentForMouseEvents) is True
+        # 铺满滚动视口并由 AlignCenter 居中
+        viewport = layout._scroll_area.viewport()
+        assert hint.geometry() == viewport.rect()
+        assert hint.alignment() == Qt.AlignCenter
+
+        # 切换网格视图（New 布局）后仍是同一提示实例
+        layout.set_view_mode("grid")
+        _pump_events(qapp)
+        assert layout._empty_hint is hint
+
+        file_path = "D:/dummy/empty_hint_sample.png"
+        layout.add_file({"path": file_path, "name": "empty_hint_sample.png"})
+        _pump_events(qapp)
+        assert hint.isVisible() is False
+
+        layout.remove_file(file_path)
+        _pump_events(qapp)
+        assert hint.isVisible() is True
+
+        layout.deleteLater()
+
 
 def _legacy_unique_target(directory: str, filename: str) -> str:
     """改造前冲突改名算法（oracle，等价 ``_get_unique_target_path``）。"""

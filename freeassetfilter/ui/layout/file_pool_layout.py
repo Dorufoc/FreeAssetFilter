@@ -426,6 +426,16 @@ class FilePoolLayout(QWidget):
         self._pool_scrollbar.valueChanged.connect(area_vbar.setValue)
         area_vbar.valueChanged.connect(self._pool_scrollbar.setValue)
 
+        # 空池引导提示：池内无卡片时居中显示（初始即为空池状态，直接可见）。
+        # 作为视口子控件悬浮于滚动区之上、不参与布局：鼠标事件透传（不影响
+        # 框选/右键语义），两种布局模式（经典列表 / New 网格）共用同一提示；
+        # 可见性与几何分别由 _update_empty_hint_visibility /
+        # _update_empty_hint_geometry 统一维护。
+        self._empty_hint = QLabel("右键选择区卡片以添加文件", self._scroll_area.viewport())
+        self._empty_hint.setAlignment(Qt.AlignCenter)
+        self._empty_hint.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._apply_empty_hint_style()
+
         # 滚动时刷新所有卡片的 overlay（修复 StyledInfoCard 的 QGraphicsEffect
         # 缓存导致 hover overlay 在滚动时不同步跟随）。使用 singleShot 节流，
         # 避免范围变化触发的连续 valueChanged 导致所有卡片反复重绘。
@@ -574,7 +584,15 @@ class FilePoolLayout(QWidget):
             "background: transparent; border: none;"
             f"color: {tm.mid.name()}; font-size: 10px;"
         ))
+        self._apply_empty_hint_style()
         self._apply_pool_theme()
+
+    def _apply_empty_hint_style(self) -> None:
+        """刷新空池引导提示样式（次级文字色，随主题/强调色变化）。"""
+        register_widget_qss(self._empty_hint,(
+            "background: transparent; border: none;"
+            f"color: {tm.mid.name()}; font-size: 13px;"
+        ))
 
     def _apply_pool_theme(self) -> None:
         """为卡片容器和 scroll area 应用当前主题样式（保持透明，避免多层半透明叠加）"""
@@ -611,6 +629,8 @@ class FilePoolLayout(QWidget):
         if obj is self._scroll_area.viewport() and event.type() == QEvent.Resize:
             # 视口宽度变化：网格重算列数/列宽，两种模式同步容器高度
             self._sync_pool_card_geometry()
+            # 空池提示随视口尺寸居中铺满
+            self._update_empty_hint_geometry()
         # 池视口 / 卡片容器 / 卡片及其子控件：滚轮缩放 + 左键框选 + 右键批量移除
         is_pool_target = (
             obj is self._scroll_area.viewport()
@@ -889,6 +909,29 @@ class FilePoolLayout(QWidget):
             self._updating_pool_margins = False
 
 
+    def _update_empty_hint_geometry(self) -> None:
+        """让空池提示铺满滚动视口并居中（视口尺寸变化 / 显示时调用）。
+
+        提示为视口子控件，几何以视口矩形为基准；``AlignCenter`` 保证文字
+        始终居中。可见时才置顶，避免遮挡框选覆层（覆层激活时自行 raise）。
+        """
+        if not hasattr(self, "_empty_hint") or not hasattr(self, "_scroll_area"):
+            return
+        viewport = self._scroll_area.viewport()
+        self._empty_hint.setGeometry(0, 0, viewport.width(), viewport.height())
+        if self._empty_hint.isVisible():
+            self._empty_hint.raise_()
+
+    def _update_empty_hint_visibility(self) -> None:
+        """按池内卡片数量同步空池提示显隐（空池显示 / 有卡片隐藏）。"""
+        if not hasattr(self, "_empty_hint"):
+            return
+        show_hint = not self._card_widgets
+        if self._empty_hint.isVisible() != show_hint:
+            self._empty_hint.setVisible(show_hint)
+        if show_hint:
+            self._update_empty_hint_geometry()
+
     def _on_pool_scrolled(self, _value: int) -> None:
         """滚动时让所有卡片的 overlay 重新绘制（修复 QGraphicsEffect 缓存不同步）。"""
         if self._pending_scroll_overlay_update:
@@ -908,6 +951,7 @@ class FilePoolLayout(QWidget):
         self._update_pool_scrollbar_geometry()
         self._update_pool_card_margins()
         self._sync_pool_card_geometry()
+        self._update_empty_hint_visibility()
 
     def _handle_card_zoom(self, event) -> None:
         """Ctrl+滚轮：缩放所有 StyledInfoCard 卡片尺寸（两种视图各自记忆）。"""
@@ -1782,7 +1826,7 @@ class FilePoolLayout(QWidget):
         self.pool_changed.emit()
 
     def update_stats(self) -> None:
-        """更新统计信息（条目数 + 总大小）。"""
+        """更新统计信息（条目数 + 总大小）与空池提示显隐。"""
         total_items = len(self.items)
         total_size = 0
         for item in self.items:
@@ -1793,6 +1837,7 @@ class FilePoolLayout(QWidget):
                     total_size += int(sz)
         self._count_label.setText(f"{total_items}个条目")
         self._size_label.setText(self._format_file_size(total_size))
+        self._update_empty_hint_visibility()
 
     @staticmethod
     def _format_file_size(size_bytes: int) -> str:
