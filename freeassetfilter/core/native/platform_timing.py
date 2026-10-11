@@ -33,9 +33,10 @@ W6 探测诚实性
 需要原生 ``IDXGISwapChain2*``，Python 侧无法从 ``QRhiWidget`` 拿到该
 指针，故可达时返回 ``"reachable"``（未来 C++ 层直连时），当前实际
 返回 ``"deferred-to-P3"`` ＋ 单行原因，并**强制落盘**
-``.omo/evidence/performance-ceiling-optimization/task-13/swapchain_probe.txt``
-（含 ``swapchain_latency=`` 与 ``reason=`` 两行）。该产物是验收项，
-函数永不静默跳过、永不抛异常（失败也落盘）。
+``task-13/swapchain_probe.txt``（含 ``swapchain_latency=`` 与 ``reason=``
+两行）；根目录由 ``_diagnostics.diagnostics_root()`` 解析（开发态仓库
+``.omo``，冻结态 ``<exe>/data/diagnostics``，``FAF_EVIDENCE_DIR`` 可覆盖）。
+该产物是验收项，函数永不静默跳过、永不抛异常（失败也落盘）。
 """
 
 from __future__ import annotations
@@ -51,6 +52,8 @@ import threading
 import time
 from pathlib import Path
 from typing import Iterator, Literal, Optional, Tuple
+
+from freeassetfilter.core.native._diagnostics import diagnostics_root
 
 logger = logging.getLogger(__name__)
 
@@ -329,22 +332,23 @@ def measure_frame_jitter(
 # W6：交换链延迟探测（诚实尝试 + 强制产物）
 # ---------------------------------------------------------------------------
 
-#: 仓库根（``freeassetfilter/core/native/platform_timing.py`` 上溯三级）。
-_REPO_ROOT: Path = Path(__file__).resolve().parents[3]
-
-#: W6 探测产物相对路径（验收强制项）。
-PROBE_ARTIFACT_REL: str = (
-    ".omo/evidence/performance-ceiling-optimization/task-13/swapchain_probe.txt"
-)
+#: W6 探测产物相对路径（相对诊断根目录，验收强制项）。
+PROBE_ARTIFACT_REL: str = "task-13/swapchain_probe.txt"
 
 
 def default_probe_artifact_path() -> Path:
     """返回 W6 探测产物的默认落盘路径。
 
+    诊断根目录由
+    :func:`freeassetfilter.core.native._diagnostics.diagnostics_root`
+    解析（审查 3.1#27）：开发态为仓库
+    ``.omo/evidence/performance-ceiling-optimization``，冻结态为
+    ``<exe>/data/diagnostics``，``FAF_EVIDENCE_DIR`` 可覆盖。
+
     Returns:
-        仓库根下的 ``swapchain_probe.txt`` 绝对路径。
+        诊断根目录下的 ``task-13/swapchain_probe.txt`` 绝对路径。
     """
-    return _REPO_ROOT / PROBE_ARTIFACT_REL
+    return diagnostics_root() / PROBE_ARTIFACT_REL
 
 
 def _attempt_dxgi_factory() -> str:

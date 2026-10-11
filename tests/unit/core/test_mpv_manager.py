@@ -598,6 +598,22 @@ class TestDoOperationImplementations:
         ) is True
         manager._mpv_core.set_audio_track.assert_called_once_with(2)  # type: ignore[union-attr]
 
+    def test_do_load_unload_lut_tracks_current_path(self, manager: MPVManager) -> None:
+        """LUT 状态跟踪：加载成功置位、卸载成功清空（审查 3.1#10）。"""
+        from freeassetfilter.core.managers.mpv_manager import MPVOperationType
+
+        manager._mpv_core.set_lut.return_value = True  # type: ignore[union-attr]
+        assert manager._execute_operation(  # noqa: SLF001
+            self._op(MPVOperationType.LOAD_LUT, r"C:\lut\film.cube")
+        ) is True
+        assert manager.get_current_lut() == r"C:\lut\film.cube"
+
+        manager._mpv_core.clear_lut.return_value = True  # type: ignore[union-attr]
+        assert manager._execute_operation(  # noqa: SLF001
+            self._op(MPVOperationType.UNLOAD_LUT)
+        ) is True
+        assert manager.get_current_lut() == ""
+
     # ---- 获取类操作：委托 core 返回值 ----
     def test_do_get_volume_speed_delegates(self, manager: MPVManager) -> None:
         from freeassetfilter.core.managers.mpv_manager import MPVOperationType

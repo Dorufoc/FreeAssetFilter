@@ -11,7 +11,6 @@ import warnings
 from pathlib import Path
 from typing import Optional
 import os
-import threading
 
 from PySide6.QtWidgets import QApplication, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QFrame, QSplitter, QGridLayout, QGraphicsOpacityEffect
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
@@ -44,12 +43,20 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 try:
-    from freeassetfilter.ui.frameless_window import _EDGE_BORDER, FramelessMainWindow
+    from freeassetfilter.ui.frameless_window import (
+        _EDGE_BORDER,
+        _get_user32,
+        FramelessMainWindow,
+    )
 except ImportError:
     # 极端回退：如果本地无边框基类不可用，使用普通 QMainWindow
     from PySide6.QtWidgets import QMainWindow as FramelessMainWindow
 
     _EDGE_BORDER = 8  # 与 frameless_window 的默认值保持一致
+
+    def _get_user32():
+        """回退实现：无本地无边框基类时 user32 原型表不可用。"""
+        return None
 
 # tm 别名已在 theme/__init__.py 中注册
 # from theme import tm 与从 freeassetfilter.ui.theme import tm 指向同一实例
@@ -125,11 +132,13 @@ def fixed_mica_params() -> dict:
 
 
 class _MicaChainPreloader(QObject):
-    """后台 Mica 依赖链预导入的完成通知（工作线程 → 主线程队列投递）。
+    """Mica 依赖链预导入的完成通知（延迟导入 → 记账回调）。
 
     依赖链（``components.mica_material`` → ``mica.engine`` → numpy 等）首次导入
-    实测约 0.16s。它若在窗口显示后的主线程首次触发，会把首帧绘制一并推迟；
-    故改在窗口构造期就丢到后台线程导入，完成后用本信号回到主线程建材质。
+    实测约 0.16s。历史实现丢到后台线程导入以避开首帧，但 PySide6 6.10 下
+    「后台线程导入 + 主线程 Qt 事件处理」存在原生竞态（进程 Aborted / 挂死，
+    见 ``_start_mica_chain_preload`` 说明），现改为主线程 ``QTimer`` 延迟导入，
+    本信号仅用于通知记账方（刷新请求早于导入完成时等待）。
     """
 
     ready = Signal()
@@ -580,7 +589,9 @@ class _EdgeHitTestPassthroughFilter(QAbstractNativeEventFilter):
         y = ctypes.c_short((lp >> 16) & 0xFFFF).value
 
         rect = wintypes.RECT()
-        ctypes.windll.user32.GetWindowRect(main_hwnd, ctypes.byref(rect))
+        user32 = _get_user32()
+        if user32 is None or not user32.GetWindowRect(main_hwnd, ctypes.byref(rect)):
+            return False, 0
         border = _EDGE_BORDER  # 与本地无边框基类一致（WS_THICKFRAME 边框宽，物理 8px）
         in_edge = (
             x - rect.left < border
@@ -595,12 +606,19 @@ class _EdgeHitTestPassthroughFilter(QAbstractNativeEventFilter):
 
 
 def _is_native_descendant(hwnd: int, ancestor: int) -> bool:
-    """判断 hwnd 是否为 ancestor 的原生后代窗口（沿父链上溯）。"""
-    cur = ctypes.windll.user32.GetAncestor(hwnd, 1)  # GA_PARENT
+    """判断 hwnd 是否为 ancestor 的原生后代窗口（沿父链上溯）。
+
+    经 :func:`frameless_window._get_user32` 取已声明 argtypes 的 user32，
+    避免 64 位 HWND 被默认 c_int 截断（审查 3.1#24）。
+    """
+    user32 = _get_user32()
+    if user32 is None:
+        return False
+    cur = user32.GetAncestor(hwnd, 1)  # GA_PARENT
     while cur:
-        if cur == ancestor:
+        if int(cur) == ancestor:
             return True
-        cur = ctypes.windll.user32.GetAncestor(cur, 1)
+        cur = user32.GetAncestor(cur, 1)
     return False
 
 
@@ -762,11 +780,10 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 调用父类初始化
         super().__init__(parent)
 
-        # Mica 依赖链后台预导入（numpy 等，首次约 0.16s）：只做准备，实际启动
-        # 在窗口显示后（见 showEvent → _start_mica_chain_preload）。实测若提前到
-        # 构造期启动，导入线程会与建窗/首帧争夺 GIL，把「窗口显示」推迟约 90ms
-        # （营造「启动更慢」的观感）；放在显示之后既不拖慢窗口出现，又避免这条
-        # 链在主线程同步导入（约 0.3s）导致覆盖层动画卡顿。
+        # Mica 依赖链预导入（numpy 等，首次约 0.16s）：只做准备，实际安排在
+        # 窗口显示后（见 showEvent → _start_mica_chain_preload），且导入动作
+        # 本身在主线程延迟执行——历史后台线程方案在 PySide6 6.10 下与主线程
+        # Qt 事件处理存在原生竞态（进程 Aborted / 挂死），详见该方法说明。
         self._mica_chain_ready = False
         self._mica_refresh_pending = False
         self._mica_preload_started = False
@@ -1474,16 +1491,19 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
     def _toggle_maximize(self) -> None:
         """通过 Win32 ShowWindow 切换最大化/还原，保留原生窗口动画和特性"""
+        user32 = _get_user32()
+        if user32 is None:
+            return
         hwnd = int(self.winId())
         max_1_path = icons_dir() / "title_max_1.svg"
         max_2_path = icons_dir() / "title_max_2.svg"
         if self.isMaximized():
-            ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
             # 窗口已还原，显示最大化图标（max_1）
             if max_1_path.exists():
                 self._maximize_btn.set_svg_icon(str(max_1_path))
         else:
-            ctypes.windll.user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
+            user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
             # 窗口已最大化，显示还原图标（max_2）
             if max_2_path.exists():
                 self._maximize_btn.set_svg_icon(str(max_2_path))
@@ -2100,8 +2120,9 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             and self._background_mode == "mica"
         ):
             self._mica_refresh_started = True
-            # 依赖链后台预导入此刻才启动：窗口已经显示，导入不再与建窗争 GIL
-            # （见 __init__ 中的说明），随后的刷新请求若早于链就绪则记账等待。
+            # 依赖链预导入此刻才安排：窗口已经显示，导入排到首帧事件之后
+            # （主线程延迟执行，见 _start_mica_chain_preload），随后的刷新
+            # 请求若早于链就绪则记账等待。
             self._start_mica_chain_preload()
             QTimer.singleShot(0, self._start_mica_refresh)
 
@@ -2113,25 +2134,28 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                 self._startup_overlay_timer.start(self.STARTUP_OVERLAY_MAX_MS)
 
     def _start_mica_chain_preload(self) -> None:
-        """启动 Mica 依赖链的后台预导入线程（幂等，默认只在窗口显示后调用）。
+        """安排 Mica 依赖链的预导入（幂等，默认只在窗口显示后调用）。
 
-        窗口显示后启动是本轮实测结论：构造期启动会与建窗/首帧争 GIL，把
-        「窗口显示」推迟约 90ms；显示后启动则两者兼得（窗口快 + 主线程不卡）。
+        历史实现用后台 daemon 线程导入以避免与首帧争 GIL；但实测在
+        PySide6 6.10 环境下「后台线程导入 numpy/PySide 链 + 主线程 Qt 事件
+        处理」会发生原生竞态：进程 Aborted 或挂死（``test_main_window``
+        全文件运行稳定复现，独立脚本亦概率复现；禁用线程/仅导入 numpy 的
+        对照实验均指向该线程）。
+
+        现改为**主线程延迟导入**：``QTimer.singleShot(0)`` 排在首帧事件
+        之后执行，导入期间短暂阻塞主线程（冻结环境实测约 0.1~0.2s），
+        但不再有跨线程导入竞态；材质构造与刷新流程不变。
         """
         if self._mica_preload_started:
             return
         self._mica_preload_started = True
-        threading.Thread(
-            target=self._preload_mica_chain,
-            daemon=True,
-            name="faf-mica-preload",
-        ).start()
+        QTimer.singleShot(0, self._preload_mica_chain)
 
     def _preload_mica_chain(self) -> None:
-        """工作线程：预导入 Mica 依赖链（numpy 等），随后通知主线程。
+        """主线程预导入 Mica 依赖链（numpy 等），随后通知记账方。
 
-        只做导入（纯 Python/数值模块，不含 Qt 对象构造），因此在非 GUI 线程
-        执行是安全的；材质构造仍留在主线程（见 _on_mica_chain_ready）。
+        只做导入（不构造 Qt 对象）；与 :meth:`_start_mica_chain_preload`
+        的说明一致——原后台线程方案存在跨线程导入竞态，已废弃。
         """
         try:
             import components.mica_material  # noqa: F401 - 仅预热导入
@@ -2154,10 +2178,10 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         if self._mica_background is None:
             return
         if not self._mica_chain_ready:
-            # 依赖链仍在后台导入：先记账，就绪回调里再执行。此处若同步导入
-            # 会占住主线程约 0.16s 并推迟首帧绘制（见 _preload_mica_chain）。
-            # 兼容运行期才切到 mica 模式（此时 showEvent 已错过预导入启动）：
-            # 补启动线程，保证记账不会无人兑现。
+            # 依赖链预导入尚未执行：先记账，完成回调里再执行。此处直接同步
+            # 导入会占住主线程并推迟首帧绘制（见 _start_mica_chain_preload）。
+            # 兼容运行期才切到 mica 模式（此时 showEvent 已错过预导入安排）：
+            # 补安排延迟导入，保证记账不会无人兑现。
             self._start_mica_chain_preload()
             self._mica_refresh_pending = True
             return

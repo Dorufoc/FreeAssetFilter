@@ -211,6 +211,19 @@ class TestStyledRadio:
         r1.deleteLater()
         r2.deleteLater()
 
+    def test_destroyed_removes_from_group_registry(self, qapp: QApplication) -> None:
+        """控件销毁后自动从全局组表注销且空组 key 清理（审查 3.1#12）。"""
+        from PySide6.QtCore import QEvent
+
+        r = StyledRadio(checked=False, text="X", group_name="destroy-group")
+        assert r in StyledRadio._groups.get("destroy-group", [])
+        r.deleteLater()
+        qapp.sendPostedEvents(None, QEvent.DeferredDelete)
+        qapp.processEvents()
+        # 已销毁的包装器不可再参与 == 比较（Qt 会抛 RuntimeError），改断言
+        # 唯一组名的 key 已被清理（组内只剩自身 → 移除后空组 pop）
+        assert "destroy-group" not in StyledRadio._groups
+
 
 # =============================================================================
 # ui.components.styled_toggle

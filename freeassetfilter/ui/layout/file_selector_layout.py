@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QListView, QLabel, QAbstractItemView, QApplication, QMessageBox, QListWidget, QListWidgetItem
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QListView, QLabel, QAbstractItemView, QApplication, QListWidget, QListWidgetItem
 from PySide6.QtCore import Qt, Signal, QSize, QTimer, QEvent, QMargins, QObject, QPoint, QRect, QRunnable, QThreadPool
 from PySide6.QtGui import QFont, QFontMetrics
 
@@ -1380,39 +1380,6 @@ class FileSelectorLayout(QWidget):
             "suffix": (self._file_model.data(index, SuffixRole) or "").lower(),
         }
         self.toggle_pool_requested.emit(file_info)
-
-    def _show_properties_dialog(self, file_info: Dict[str, Any]) -> None:
-        """显示文件 / 文件夹属性对话框"""
-        is_dir = file_info.get("is_dir", False)
-        name = file_info.get("name", "")
-        path = file_info.get("path", "")
-        lines: list[str] = [
-            f"名称: {name}",
-            f"路径: {path}",
-            f"类型: {'文件夹' if is_dir else '文件'}",
-        ]
-        if not is_dir:
-            suffix = file_info.get("suffix", "")
-            lines.append(f"后缀: .{suffix}" if suffix else "后缀: (无)")
-            size = int(file_info.get("size", 0))
-            if size >= 1024 * 1024:
-                size_str = f"{size / (1024 * 1024):.2f} MB"
-            elif size >= 1024:
-                size_str = f"{size / 1024:.2f} KB"
-            else:
-                size_str = f"{size} B"
-            lines.append(f"大小: {size_str}")
-        modified = file_info.get("modified", "")
-        if modified:
-            lines.append(f"修改时间: {modified}")
-        created = file_info.get("created", "")
-        if created:
-            lines.append(f"创建时间: {created}")
-
-        QMessageBox.information(
-            self, "属性", "\n".join(lines),
-            QMessageBox.Ok,
-        )
 
     # ── 收藏夹 ────────────────────────────────────────────────────────────
 

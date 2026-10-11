@@ -669,6 +669,16 @@ fn ptr_to_string(path: *const c_char) -> Result<String, i32> {
     Ok(s)
 }
 
+// ── FFI panic 策略（审查 3.1#1 统一）──────────────────────────────────────
+// 所有 `catch_unwind` 边界 panic 时一律**降级返回，不 abort 宿主进程**：
+// * 生成型导出  → 返回 STATUS_INTERNAL 错误结果（Python 侧按状态码回退）；
+// * 批量导出    → 返回 status=INTERNAL / count=0 的空批；
+// * 查询型导出  → 返回安全降级 JSON（"{}" / "[]"）；
+// * set/reset/cache 型 → 返回 STATUS_INTERNAL；
+// * free 型     → 静默返回（清理路径不二次崩溃；未释放内存随进程回收）。
+// 说明：Rust 内存分配失败（alloc error）不可捕获、仍会 abort，不在本策略内。
+// 决策依据：姊妹 crate faf_core 的 catch_to_status/catch_to_ptr 已采用同策略；
+// 且解码主体在 ENGINE 锁外执行（generate_entry），panic 通常不污染引擎缓存。
 #[no_mangle]
 pub extern "C" fn native_generate_thumbnail(
     path: *const c_char,
@@ -694,7 +704,7 @@ pub extern "C" fn native_generate_thumbnail(
             Err(code) => make_error_result(code, "generate failed"),
         }
     })
-    .unwrap_or_else(|_| std::process::abort())
+    .unwrap_or_else(|_| make_error_result(STATUS_INTERNAL, "panic"))
 }
 
 #[no_mangle]
@@ -722,7 +732,7 @@ pub extern "C" fn native_generate_thumbnail_jpeg(
             Err(code) => make_error_result(code, "generate failed"),
         }
     })
-    .unwrap_or_else(|_| std::process::abort())
+    .unwrap_or_else(|_| make_error_result(STATUS_INTERNAL, "panic"))
 }
 
 #[no_mangle]
@@ -732,7 +742,7 @@ pub extern "C" fn native_generate_thumbnail_jpg(
     height: c_int,
 ) -> NativeThumbnailResult {
     std::panic::catch_unwind(|| native_generate_thumbnail_jpeg(path, width, height))
-        .unwrap_or_else(|_| std::process::abort())
+        .unwrap_or_else(|_| make_error_result(STATUS_INTERNAL, "panic"))
 }
 
 #[no_mangle]
@@ -795,7 +805,13 @@ pub extern "C" fn native_generate_batch(
             message: c_message("ok"),
         }
     })
-    .unwrap_or_else(|_| std::process::abort())
+    // 批量生成 panic → 空批降级（Python 侧按 count<=0 判定并逐文件回退）
+    .unwrap_or_else(|_| NativeThumbnailBatchResult {
+        status: STATUS_INTERNAL,
+        count: 0,
+        results: std::ptr::null_mut(),
+        message: c_message("panic"),
+    })
 }
 
 #[no_mangle]
@@ -858,13 +874,19 @@ pub extern "C" fn native_generate_batch_jpg(
             message: c_message("ok"),
         }
     })
-    .unwrap_or_else(|_| std::process::abort())
+    // 批量生成 panic → 空批降级（Python 侧按 count<=0 判定并逐文件回退）
+    .unwrap_or_else(|_| NativeThumbnailBatchResult {
+        status: STATUS_INTERNAL,
+        count: 0,
+        results: std::ptr::null_mut(),
+        message: c_message("panic"),
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn native_get_decode_stats_json() -> *mut c_char {
     std::panic::catch_unwind(|| c_message(&decode_stats_to_json()))
-        .unwrap_or_else(|_| std::process::abort())
+        .unwrap_or_else(|_| c_message("{}"))
 }
 
 #[no_mangle]
@@ -876,7 +898,7 @@ pub extern "C" fn native_reset_decode_stats() -> c_int {
             STATUS_INTERNAL
         }
     })
-    .unwrap_or_else(|_| std::process::abort())
+    .unwrap_or_else(|_| STATUS_INTERNAL)
 }
 
 #[no_mangle]
@@ -907,7 +929,7 @@ pub extern "C" fn native_get_available_hwaccels_json() -> *mut c_char {
         let json = serde_json::to_string(&hwaccels).unwrap_or_else(|_| "[]".to_string());
         c_message(&json)
     })
-    .unwrap_or_else(|_| std::process::abort())
+    .unwrap_or_else(|_| c_message("[]"))
 }
 
 #[no_mangle]
@@ -916,7 +938,7 @@ pub extern "C" fn native_set_max_concurrent_hw_video_decodes(max_slots: usize) -
         set_max_concurrent_hw_video_decodes(max_slots);
         STATUS_OK
     })
-    .unwrap_or_else(|_| std::process::abort())
+    .unwrap_or_else(|_| STATUS_INTERNAL)
 }
 
 #[no_mangle]
@@ -929,7 +951,7 @@ pub extern "C" fn native_set_cache_limit(max_bytes: usize) -> c_int {
         engine.set_cache_limit(max_bytes);
         STATUS_OK
     })
-    .unwrap_or_else(|_| std::process::abort())
+    .unwrap_or_else(|_| STATUS_INTERNAL)
 }
 
 #[no_mangle]
@@ -942,7 +964,7 @@ pub extern "C" fn native_clear_cache() -> c_int {
         engine.clear_cache();
         STATUS_OK
     })
-    .unwrap_or_else(|_| std::process::abort())
+    .unwrap_or_else(|_| STATUS_INTERNAL)
 }
 
 #[no_mangle]
@@ -955,7 +977,7 @@ pub extern "C" fn native_free_buffer(data: *mut u8, len: usize) {
             let _ = Vec::from_raw_parts(data, len, len);
         }
     })
-    .unwrap_or_else(|_| std::process::abort())
+    .unwrap_or_else(|_| ())
 }
 
 #[no_mangle]
@@ -968,7 +990,7 @@ pub extern "C" fn native_free_message(msg: *mut c_char) {
             let _ = CString::from_raw(msg);
         }
     })
-    .unwrap_or_else(|_| std::process::abort())
+    .unwrap_or_else(|_| ())
 }
 
 #[no_mangle]
@@ -990,7 +1012,7 @@ pub extern "C" fn native_free_result(result: *mut NativeThumbnailResult) {
             }
         }
     })
-    .unwrap_or_else(|_| std::process::abort())
+    .unwrap_or_else(|_| ())
 }
 
 #[no_mangle]
@@ -1020,7 +1042,7 @@ pub extern "C" fn native_free_batch_result(batch: *mut NativeThumbnailBatchResul
             }
         }
     })
-    .unwrap_or_else(|_| std::process::abort())
+    .unwrap_or_else(|_| ())
 }
 
 // todo 23：ffmpeg/ffprobe 能力表查询导出（实测能力矩阵驱动 T2 管线）。

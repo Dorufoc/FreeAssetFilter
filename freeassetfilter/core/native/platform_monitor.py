@@ -27,6 +27,7 @@ import time
 from typing import Any, Dict, Literal, Optional
 
 from freeassetfilter.utils.app_logger import debug, warning
+from freeassetfilter.core.native._diagnostics import diagnostics_root
 
 IS_WINDOWS: bool = sys.platform == "win32"
 
@@ -166,22 +167,15 @@ def check_gui_resource_budget(
 def default_probe_artifact_path() -> str:
     """返回 W9 探测产物的默认落盘路径。
 
+    诊断根目录解析见
+    :func:`freeassetfilter.core.native._diagnostics.diagnostics_root`
+    （审查 3.1#27）：开发态为仓库 ``.omo/evidence/performance-ceiling-optimization``，
+    冻结态为 ``<exe>/data/diagnostics``，``FAF_EVIDENCE_DIR`` 可覆盖。
+
     Returns:
-        str: ``.omo/evidence/performance-ceiling-optimization/task-14/w14_dwm_probe.txt``。
+        str: 诊断根目录下的 ``task-14/w14_dwm_probe.txt`` 绝对路径。
     """
-    here = os.path.dirname(os.path.abspath(__file__))
-    # here = <root>/freeassetfilter/core/native，上溯 3 级即仓库根。
-    root = os.path.dirname(
-        os.path.dirname(os.path.dirname(here))
-    )
-    return os.path.join(
-        root,
-        ".omo",
-        "evidence",
-        "performance-ceiling-optimization",
-        "task-14",
-        "w14_dwm_probe.txt",
-    )
+    return str(diagnostics_root() / "task-14" / "w14_dwm_probe.txt")
 
 
 def _attempt_dwm_symbols() -> Dict[str, Any]:

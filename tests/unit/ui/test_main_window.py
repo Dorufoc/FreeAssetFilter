@@ -592,6 +592,43 @@ class TestFixedMicaParams:
         qapp.processEvents()
 
 
+class TestMicaChainPreload:
+    """Mica 依赖链预导入：主线程延迟执行（修复跨线程导入竞态）。
+
+    历史实现启动 ``faf-mica-preload`` daemon 线程导入 numpy/PySide 链，
+    在 PySide6 6.10 下与主线程 Qt 事件处理存在原生竞态（进程 Aborted /
+    挂死；``test_main_window`` 全文件运行稳定复现）。修复后改为
+    ``QTimer.singleShot(0)`` 主线程执行，本类钉住该行为防回归。
+    """
+
+    def test_preload_scheduled_without_background_thread(
+        self, qapp: QApplication
+    ) -> None:
+        """initialize_deferred_content 安排预导入但不创建后台线程。"""
+        import threading
+
+        window = MainWindow(defer_heavy_init=True)
+        before = {t.name for t in threading.enumerate() if t.is_alive()}
+        window.initialize_deferred_content()
+        assert window._mica_preload_started is True
+        qapp.processEvents()
+        after = {t.name for t in threading.enumerate() if t.is_alive()}
+        assert "faf-mica-preload" not in (after - before)
+        # 主线程导入已完成并置位记账（后续刷新请求不再等待）
+        assert window._mica_chain_ready is True
+        window.deleteLater()
+        qapp.processEvents()
+
+    def test_preload_imports_chain_on_main_thread(self, qapp: QApplication) -> None:
+        """直接调用预导入：主线程导入完成并置位 ready 记账。"""
+        window = MainWindow(defer_heavy_init=True)
+        assert window._mica_chain_ready is False
+        window._preload_mica_chain()
+        assert window._mica_chain_ready is True
+        window.deleteLater()
+        qapp.processEvents()
+
+
 class TestMicaBackgroundWidgetCpu:
     """MicaBackgroundWidgetCpu：构造/绘制/交互/主题同步。"""
 

@@ -28,6 +28,17 @@ def test_launcher_exe_path_points_into_repo_launcher_dir() -> None:
     assert (exe.parent / "launcher.c").is_file()
 
 
+def test_gpu_diag_script_env_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """FAF_GPU_DIAG_SCRIPT 覆盖诊断脚本查找（审查 3.1#27）。"""
+    from freeassetfilter.core.native import _diagnostics
+
+    target = tmp_path / "gpu_check.py"
+    monkeypatch.setenv("FAF_GPU_DIAG_SCRIPT", str(target))
+    assert _diagnostics.gpu_diag_script() == target
+
+
 def test_read_pe_exports_finds_both_w1_symbols() -> None:
     """The built launcher EXE exports both W1 GPU-request symbols."""
     exe = launcher_exe_path()

@@ -14,10 +14,8 @@ from collections import OrderedDict
 from typing import Any, Dict, Optional
 
 from PySide6.QtCore import (
-    QAbstractAnimation,
     QEasingCurve,
     QModelIndex,
-    QPropertyAnimation,
     Property,
     QRect,
     QRectF,
@@ -58,8 +56,9 @@ from components.file_list_model import (
 # 当前试探值 1.10 = 放大 10%，后续可按需调整（与 StyledInfoCard 保持一致）。
 _MEDIA_ICON_SCALE: float = 1.10
 
-# hover 图标缩放动画总开关：暂时禁用（False），恢复动画时改为 True（与 StyledInfoCard 保持一致）。
-_HOVER_MEDIA_ANIM_ENABLED: bool = False
+# hover 图标缩放动画总开关已于 2026-10 审查后移除（此前的实现为 hover 时按行
+# 驱动 media_scale 进度、每帧重绘）：相关动画对象、Property 与绘制参数一并删除，
+# 保留 _ICON_SCALE_* 阶梯缓存供普通图标绘制使用。
 
 # ── 卡片状态过渡动画（默认 ↔ 池中 ↔ 预览中 ↔ 框选选中）────────────────────
 _STATE_IN_POOL: int = 1        # 状态位：已在文件池
@@ -223,8 +222,8 @@ _FONT_CACHE: Dict[tuple, "QFont"] = {}
 _FONT_METRICS_CACHE: Dict[tuple, "QFontMetrics"] = {}
 
 # ── 图标缩放阶梯缓存（A3：消除 _draw_icon_pixmap 每帧 SmoothTransformation 重缩放）──
-# hover 动画期间 hover_scale 连续变化（1.0 → 1.05），display_size 逐帧抖动；
-# 按阶梯量化后同一档位复用同一张预烘焙 pixmap，跳档阈值内不触发重缩放。
+# 不同卡片缩放/尺寸档位下 display_size 连续变化；按阶梯量化后同一档位复用
+# 同一张预烘焙 pixmap，跳档阈值内不触发重缩放。
 _ICON_SCALE_LADDER: tuple = (16, 32, 48, 64, 96, 128, 192, 256, 384)
 _ICON_SCALE_CACHE_CAP: int = 256  # 与 icon_cache.py / async_icon_loader.py 同口径上限
 _ICON_SCALE_CACHE_MAX_DISPLAY: int = 512  # display_size 超过此值不缓存，按需直接缩放
@@ -459,13 +458,7 @@ class FileCardDelegate(QStyledItemDelegate):
         self._card_scale: float = 1.0
         self._pool_file_set: set[str] = set()  # 已存在于文件池中的文件路径集合
 
-        # hover 图标缩放动画（与 StyledInfoCard 一致：1.0 → 1.05，OutBack 缓动）
-        self._hover_row: int = -1        # 当前 hover 动画绑定的行（-1 = 无）
-        self._hover_progress: float = 0.0  # 该行图标缩放进度（0~1）
-        self._view: Optional[object] = None  # 关联视图，动画每帧触发 viewport 重绘
-        self._media_scale_anim = QPropertyAnimation(self, b"media_scale")
-        self._media_scale_anim.setDuration(220)
-        self._media_scale_anim.setEasingCurve(QEasingCurve.OutBack)
+        self._view: Optional[object] = None  # 关联视图（局部失效重绘用）
 
         # 预览态渐变边框旋转动画：焦点绕卡片中心旋转（16ms/帧）
         self._preview_angle: float = 0.0          # 渐变焦点当前角度（度）
@@ -485,19 +478,8 @@ class FileCardDelegate(QStyledItemDelegate):
         self._state_anim_timer.setInterval(_STATE_ANIM_INTERVAL_MS)
         self._state_anim_timer.timeout.connect(self._advance_state_transitions)
 
-    @Property(float)
-    def media_scale(self) -> float:
-        """hover 图标缩放进度（0~1），由 QPropertyAnimation 驱动。"""
-        return self._hover_progress
-
-    @media_scale.setter
-    def media_scale(self, value: float) -> None:
-        self._hover_progress = float(value)
-        # A4 局部重绘：图标缩放只影响绑定行，按行矩形失效（compositor 条带 20x 原理）。
-        self._invalidate_rows((self._hover_row,))
-
     def set_view(self, view) -> None:
-        """设置关联视图：hover 动画每帧通过其 viewport 触发重绘。
+        """设置关联视图：局部失效重绘（_invalidate_rows）经由其 viewport。
 
         Args:
             view: 使用本 delegate 的 QListView 实例。
@@ -541,13 +523,6 @@ class FileCardDelegate(QStyledItemDelegate):
                 viewport.update(dirty.adjusted(-1, -1, 1, 1).intersected(viewport.rect()))
         except Exception:
             pass
-
-    def _animate_media_scale(self, target: float) -> None:
-        """动画过渡 hover 图标缩放进度（OutBack 缓动，220ms）。"""
-        self._media_scale_anim.stop()
-        self._media_scale_anim.setStartValue(self._hover_progress)
-        self._media_scale_anim.setEndValue(target)
-        self._media_scale_anim.start()
 
     def _advance_preview_gradient(self) -> None:
         """推进预览态边框渐变焦点旋转（循环动画）。
@@ -955,32 +930,6 @@ class FileCardDelegate(QStyledItemDelegate):
         gradient.setColorAt(1.0, accent_30)
         return gradient
 
-    def _sync_hover_animation(self, index: QModelIndex, is_hovered: bool) -> None:
-        """hover 状态翻转时驱动图标缩放动画（每张卡片独立进度）。
-
-        进入：进度重置为 0 后动画到 1（OutBack 缓动，与 StyledInfoCard 一致）；
-        离开：从当前进度动画回 0，动画期间该卡片继续绘制缩小过程。
-        防抖：离开分支仅当动画未运行时才启动，避免 paint 每帧重启动画。
-        """
-        row = index.row()
-        if not _HOVER_MEDIA_ANIM_ENABLED:
-            return
-        if is_hovered:
-            if self._hover_row != row:
-                # A4：旧绑定行图标缩放瞬间回落（paint 对非绑定行取 0），同帧失效旧行。
-                old_row = self._hover_row
-                self._hover_row = row
-                self._hover_progress = 0.0
-                if old_row >= 0:
-                    self._invalidate_rows((old_row,))
-                self._animate_media_scale(1.0)
-        elif (
-            self._hover_row == row
-            and self._hover_progress > 0.0
-            and self._media_scale_anim.state() != QAbstractAnimation.Running
-        ):
-            self._animate_media_scale(0.0)
-
     def set_pool_files(self, paths: set[str]) -> None:
         """设置当前文件池中的文件路径集合，用于绘制"已在池中"边框标记。"""
         import os
@@ -1009,7 +958,6 @@ class FileCardDelegate(QStyledItemDelegate):
         painter: QPainter,
         icon_pixmap: object,
         media_rect: QRectF,
-        hover_scale: float = 1.0,
     ) -> None:
         """在 media 区域中居中绘制图标，完整填充满整个区域（无背景）。
 
@@ -1023,14 +971,13 @@ class FileCardDelegate(QStyledItemDelegate):
             painter: 已激活的 QPainter。
             icon_pixmap: 要绘制的 QPixmap。
             media_rect: media 区域的 QRectF（逻辑坐标）。
-            hover_scale: hover 缩放系数（1.0 = 不放大）。
         """
         dpr = icon_pixmap.devicePixelRatio()
         logical_w = icon_pixmap.width() / dpr
         logical_h = icon_pixmap.height() / dpr
 
-        # 图标显示尺寸 = media 区域尺寸 × 放大系数 × hover 缩放（无内边距）
-        display_size = int(media_rect.width() * _MEDIA_ICON_SCALE * hover_scale)
+        # 图标显示尺寸 = media 区域尺寸 × 放大系数（无内边距）
+        display_size = int(media_rect.width() * _MEDIA_ICON_SCALE)
 
         # 等比缩放至填满 media 区域。注意 scaled() 保留原 DPR：目标尺寸必须用
         # 物理像素（display_size × dpr），否则高 DPI 下逻辑尺寸会缩小 dpr 倍
@@ -1046,8 +993,8 @@ class FileCardDelegate(QStyledItemDelegate):
                 )
                 _ICON_SCALE_STATS["scaled_calls"] += 1
             else:
-                # 阶梯量化：hover 动画逐帧抖动吸附到同一档位，命中零缩放；
-                # 阈值外落精确尺寸条目（动画结束即补一次精确缩放），同尺寸复零缩放
+                # 阶梯量化：相邻显示尺寸吸附到同一档位，命中零缩放；
+                # 阈值外落精确尺寸条目，同尺寸复用零缩放
                 icon_pixmap = _get_cached_scaled_icon(
                     icon_pixmap, _quantize_icon_size(display_size), dpr
                 )
@@ -1206,13 +1153,6 @@ class FileCardDelegate(QStyledItemDelegate):
 
         card_rect = self._resolve_card_rect(option, index)
 
-        # hover 图标缩放动画同步（进入/离开时启动 OutBack 缓动）
-        self._sync_hover_animation(index, is_hovered)
-        # hover 缩放系数：1.0 → 1.05（与 StyledInfoCard 一致），仅作用于动画绑定行
-        hover_scale = 1.0 + 0.05 * (
-            self._hover_progress if self._hover_row == index.row() else 0.0
-        )
-
         # 卡片状态过渡动画：检测状态位变化并启动背景/边框过渡
         # （框选选中态即时切换，不参与过渡动画）
         self._sync_state_transition(index, file_info, is_in_pool, is_previewing, is_selected)
@@ -1232,13 +1172,13 @@ class FileCardDelegate(QStyledItemDelegate):
         if self._layout_mode == "card":
             self._paint_card(
                 painter, card_rect, file_info, is_hovered, is_selected, is_previewing,
-                is_in_pool=is_in_pool, hover_scale=hover_scale, transition=transition,
+                is_in_pool=is_in_pool, transition=transition,
                 hover_overlay_progress=hover_overlay_progress,
             )
         else:
             self._paint_list(
                 painter, card_rect, file_info, is_hovered, is_selected, is_previewing,
-                is_in_pool=is_in_pool, hover_scale=hover_scale, transition=transition,
+                is_in_pool=is_in_pool, transition=transition,
                 hover_overlay_progress=hover_overlay_progress,
             )
 
@@ -1301,7 +1241,6 @@ class FileCardDelegate(QStyledItemDelegate):
         is_selected: bool,
         is_previewing: bool,
         is_in_pool: bool = False,
-        hover_scale: float = 1.0,
         transition: Optional[_StateTransition] = None,
         hover_overlay_progress: float = 1.0,
     ) -> None:
@@ -1360,14 +1299,13 @@ class FileCardDelegate(QStyledItemDelegate):
                 painter,
                 icon_pixmap,
                 QRectF(media_x, media_y, media_size, media_size),
-                hover_scale=hover_scale,
             )
         else:
             suffix = file_info.get("suffix", "")
             is_dir = file_info.get("is_dir", False)
             icon_char = "D" if is_dir else (suffix[0].upper() if suffix else "?")
             # 字号按放大后的图标尺寸比例计算，视觉占比与填满的图标一致
-            icon_font_size = max(config["icon_size"], int(media_size * 0.6 * _MEDIA_ICON_SCALE * hover_scale))
+            icon_font_size = max(config["icon_size"], int(media_size * 0.6 * _MEDIA_ICON_SCALE))
             painter.setFont(QFont("Segoe UI", icon_font_size, QFont.Bold))
             painter.setPen(colors["icon"])
             painter.drawText(QRectF(media_x, media_y, media_size, media_size), Qt.AlignCenter, icon_char)
@@ -1388,7 +1326,6 @@ class FileCardDelegate(QStyledItemDelegate):
         is_selected: bool,
         is_previewing: bool,
         is_in_pool: bool = False,
-        hover_scale: float = 1.0,
         transition: Optional[_StateTransition] = None,
         hover_overlay_progress: float = 1.0,
     ) -> None:
@@ -1447,14 +1384,13 @@ class FileCardDelegate(QStyledItemDelegate):
                 painter,
                 icon_pixmap,
                 QRectF(media_x, media_y, media_size, media_size),
-                hover_scale=hover_scale,
             )
         else:
             suffix = file_info.get("suffix", "")
             is_dir = file_info.get("is_dir", False)
             icon_char = "D" if is_dir else (suffix[0].upper() if suffix else "?")
             # 字号按放大后的图标尺寸比例计算，视觉占比与填满的图标一致
-            icon_font_size = max(config["icon_size"], int(media_size * 0.6 * _MEDIA_ICON_SCALE * hover_scale))
+            icon_font_size = max(config["icon_size"], int(media_size * 0.6 * _MEDIA_ICON_SCALE))
             painter.setFont(QFont("Segoe UI", icon_font_size, QFont.Bold))
             painter.setPen(colors["icon"])
             painter.drawText(QRectF(media_x, media_y, media_size, media_size), Qt.AlignCenter, icon_char)

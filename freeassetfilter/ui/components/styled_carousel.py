@@ -156,6 +156,7 @@ class _FadeContainer(QWidget):
             self._old_pm = old.grab()
             self._new_pm = new.grab()
         except Exception:
+            # 3.1#19 留档：QPixmap.grab 失败（控件已销毁）走无淡入降级，预期防御。
             return False
         if self._old_pm.isNull() or self._new_pm.isNull():
             return False
@@ -367,6 +368,7 @@ class StyledCarousel(QWidget):
             try:
                 self._fa.stop()
             except Exception:
+                # 3.1#19 留档：动画对象已销毁，预期防御。
                 pass
         self._fa = anim
         anim.start()
@@ -376,6 +378,7 @@ class StyledCarousel(QWidget):
             try:
                 self._fc.finish_crossfade(self._slides[self._cur])
             except Exception:
+                # 3.1#19 留档：快照控件已销毁，预期防御。
                 pass
         self._fa = None
         self._anim = False

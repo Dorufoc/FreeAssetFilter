@@ -32,6 +32,16 @@ def _isolated_timer_state():
     assert not pt.is_elevated()
 
 
+def test_default_probe_path_follows_evidence_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """FAF_EVIDENCE_DIR 覆盖时默认产物路径跟随（审查 3.1#27）。"""
+    monkeypatch.setenv("FAF_EVIDENCE_DIR", str(tmp_path))
+    assert pt.default_probe_artifact_path() == (
+        tmp_path / "task-13" / "swapchain_probe.txt"
+    )
+
+
 @needs_winmm
 def test_refcount_begin3_end1_still_elevated() -> None:
     """begin×3 + end×1 后仍抬高；再 end×2 才恢复（stale state 对抗）。"""

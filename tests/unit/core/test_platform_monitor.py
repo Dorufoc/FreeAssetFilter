@@ -151,6 +151,15 @@ class TestDwmProbe:
         assert path.endswith("w14_dwm_probe.txt")
         assert "task-14" in path
 
+    def test_default_path_follows_evidence_env(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """FAF_EVIDENCE_DIR 覆盖时默认产物路径跟随（审查 3.1#27）。"""
+        monkeypatch.setenv("FAF_EVIDENCE_DIR", str(tmp_path))
+        assert pm.default_probe_artifact_path() == str(
+            tmp_path / "task-14" / "w14_dwm_probe.txt"
+        )
+
 
 class TestPerfSnapshotWiring:
     """perf_metrics.snapshot() 加法式扩展不断既有键。"""

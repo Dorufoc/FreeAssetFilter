@@ -264,6 +264,9 @@ class RustThumbnailBridge:
         try:
             if not raw:
                 return {}
+            # 契约依赖：Rust 侧以 CString 分配并保证 NUL 结尾，c_char_p.value
+            # 才能有界读取。后续改进（审查 3.1#30，本轮不涉及）：查询导出补
+            # out_len 变体，桥优先走长度通道以消除隐式 NUL 扫描依赖。
             result = json.loads(ctypes.cast(raw, c_char_p).value)
             debug(f"获取解码统计: {result}")
             return result
@@ -291,6 +294,7 @@ class RustThumbnailBridge:
         try:
             if not raw:
                 return []
+            # 契约依赖：同 get_decode_stats，后续改进见审查 3.1#30（长度通道）。
             parsed = json.loads(ctypes.cast(raw, c_char_p).value)
             if not isinstance(parsed, list):
                 return []

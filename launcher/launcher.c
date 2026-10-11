@@ -86,7 +86,13 @@ static BOOL append_quoted(
             bs = 0;
         } else {
             size_t k;
-            for (k = 0; k < bs; k++) {
+            /* Win32 rule: when a quoted argument ends with backslash(es),
+             * they must be doubled before the closing quote — otherwise the
+             * final '\' escapes the closing quote and corrupts the child
+             * command line (e.g. "C:\my dir\"). Backslashes before ordinary
+             * characters are flushed as-is. See review report 3.1#4. */
+            size_t bs_out = (c == L'\0' && need_quote) ? bs * 2 : bs;
+            for (k = 0; k < bs_out; k++) {
                 if (*len + 1 >= cap) return FALSE;
                 dst[(*len)++] = L'\\';
             }

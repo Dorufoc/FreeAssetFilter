@@ -152,11 +152,6 @@ mica_status BuildStates(Context* c) {
     if (FAILED(hr)) {
         return FailHr(c, MICA_ERR_INTERNAL, hr, "CreateSamplerState(linear)");
     }
-    sd.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
-    hr = c->device->CreateSamplerState(&sd, c->samplerPoint.Put());
-    if (FAILED(hr)) {
-        return FailHr(c, MICA_ERR_INTERNAL, hr, "CreateSamplerState(point)");
-    }
 
     D3D11_BLEND_DESC bd = {};
     bd.RenderTarget[0].BlendEnable = FALSE;

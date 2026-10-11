@@ -179,6 +179,13 @@ def _ensure_bindings() -> bool:
         _kernel32.SetThreadPriority.restype = wintypes.BOOL
         _kernel32.GetCurrentProcess.restype = wintypes.HANDLE
         _kernel32.GetCurrentThread.restype = wintypes.HANDLE
+        # 跨线程句柄：OpenThread 打开的真实句柄必须显式 CloseHandle 释放，
+        # 否则句柄泄漏（修复此前模块只提供 open 而无 close 的问题）。
+        _kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+        _kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        _kernel32.OpenThread.restype = wintypes.HANDLE
+        _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        _kernel32.CloseHandle.restype = wintypes.BOOL
     except Exception as exc:  # noqa: BLE001  # 绑定失败即整体不可用
         _kernel32 = None
         _log_warning(f"platform_threads: kernel32 绑定失败，电源/亲和控制降级: {exc}")
@@ -225,7 +232,8 @@ def open_thread_handle(thread_id: int) -> Any:
         thread_id: ``GetCurrentThreadId`` 意义下的 OS 线程 ID。
 
     Returns:
-        真实线程句柄（用后 ``CloseHandle``），失败返回 None。
+        真实线程句柄（用后必须调用 :func:`close_thread_handle` 释放），
+        失败返回 None。
     """
     if not _ensure_bindings():
         return None
@@ -236,6 +244,29 @@ def open_thread_handle(thread_id: int) -> Any:
         _log_warning(f"platform_threads: OpenThread({thread_id}) 失败: {exc}")
         return None
     return handle or None
+
+
+def close_thread_handle(handle: Any) -> bool:
+    """关闭 :func:`open_thread_handle` 打开的真实线程句柄。
+
+    与 ``open_thread_handle`` 成对使用以避免句柄泄漏；伪句柄
+    （``GetCurrentThread()`` 返回值）**不应**传给本函数。
+
+    Args:
+        handle: ``open_thread_handle`` 返回的句柄。
+
+    Returns:
+        关闭成功返回 True；句柄为空 / 绑定不可用 / 调用失败返回 False。
+    """
+    if handle is None:
+        return False
+    if not _ensure_bindings():
+        return False
+    try:
+        return bool(_kernel32.CloseHandle(handle))
+    except Exception as exc:  # noqa: BLE001  # CloseHandle 失败/未绑定即降级
+        _log_warning(f"platform_threads: CloseHandle 失败: {exc}")
+        return False
 
 
 def apply_process_power_policy(mode: PerfProfile = DEFAULT_PROFILE) -> bool:

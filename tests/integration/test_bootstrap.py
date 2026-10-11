@@ -204,6 +204,69 @@ class TestStartupController:
         assert stopped == [True]
         assert controller._warmup_thread is None
 
+    def test_run_thumbnail_cleanup_passes_configured_period(
+        self, controller: Any, monkeypatch: Any
+    ) -> None:
+        """清理周期参数透传到 clean_thumbnails（修复硬编码 7 天）。"""
+        from freeassetfilter.core.managers import thumbnail_manager as tm_mod
+
+        received: list = []
+
+        def _fake_clean(cleanup_period_days=None, max_cache_size=2000):
+            received.append(cleanup_period_days)
+            return (0, 0)
+
+        monkeypatch.setattr(tm_mod, "clean_thumbnails", _fake_clean)
+        controller._run_thumbnail_cleanup(123.0, 30)
+        assert received == [30]
+
+    def test_schedule_thumbnail_cleanup_reads_config_period(
+        self, controller: Any, monkeypatch: Any
+    ) -> None:
+        """调度读取 cache_cleanup_period 并在执行时按配置值调用。"""
+        import freeassetfilter.app.startup as startup_mod
+        from freeassetfilter.core.managers import thumbnail_manager as tm_mod
+
+        calls: list = []
+        scheduled: list = []
+
+        class _Settings:
+            def get(self, key, default=None):
+                values = {
+                    "file_selector.auto_clear_thumbnail_cache": True,
+                    "file_selector.cache_cleanup_period": 30,
+                    "file_selector.last_cleanup_time": None,
+                }
+                return values.get(key, default)
+
+            def set(self, key, value):
+                pass
+
+            def save(self):
+                pass
+
+        class _App:
+            settings_manager = _Settings()
+
+        controller.app = _App()
+        monkeypatch.setattr(
+            tm_mod,
+            "clean_thumbnails",
+            lambda cleanup_period_days=None, max_cache_size=2000: (
+                calls.append(cleanup_period_days),
+                (0, 0),
+            )[1],
+        )
+        monkeypatch.setattr(
+            startup_mod.QTimer,
+            "singleShot",
+            lambda ms, cb: scheduled.append((ms, cb)),
+        )
+        controller._schedule_thumbnail_cleanup()
+        assert len(scheduled) == 1
+        scheduled[0][1]()  # 执行被调度的清理回调
+        assert calls == [30]
+
 
 class TestStartupWarmupThread:
     """预热线程 run()（stub 全部底层预热入口，同步直调不启线程）。"""

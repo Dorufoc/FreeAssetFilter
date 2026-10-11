@@ -660,6 +660,8 @@ class VideoPlayerLayout(QWidget):
         self._duration = 0.0
         self._current_position = 0.0
         self._current_speed = 1.0
+        # 进度显示初始化的重试计数（每次文件加载重置，见 _on_file_loaded）
+        self._progress_init_attempts = 0
 
         # 进度条交互防抖动控制（参考旧 PlayerControlBar 模式）
         self._user_interacting = False
@@ -1095,6 +1097,8 @@ class VideoPlayerLayout(QWidget):
         # OSD 定位目标跟随当前渲染表面（音频模式 → 音频表面，视频模式 → 视频表面）
         self._player_bar.set_osd_target(self._current_preview_widget())
         # 参考旧 VideoPlayer._initialize_progress_display，延迟初始化进度显示
+        # 每次新文件加载重置重试计数（上一文件耗尽的计数不影响本文件）
+        self._progress_init_attempts = 0
         QTimer.singleShot(200, self._initialize_progress_display)
         # 文件加载完成后再设置循环模式（避免与 loadfile 命令竞争）
         if self._mpv_manager:
@@ -1153,7 +1157,9 @@ class VideoPlayerLayout(QWidget):
         """初始化进度显示（参考旧 VideoPlayer._initialize_progress_display）
 
         文件加载后延迟调用，确保 MPV 已准备好时长信息。
-        如果时长尚未就绪，每 200ms 重试直至成功。
+        时长尚未就绪时每 200ms 重试，最多 ``_PROGRESS_INIT_MAX_ATTEMPTS``
+        次（5s）后放弃——修复此前无限重试在文件永不就绪时持续挂任务的
+        问题（审查 3.1#25）；放弃后进度更新由 ``_heartbeat_sync`` 轮询兜底。
         """
         if not self._mpv_manager:
             return
@@ -1161,6 +1167,9 @@ class VideoPlayerLayout(QWidget):
         from shiboken6 import isValid as _isValid
         if not _isValid(self):
             return
+
+        attempts = self._progress_init_attempts + 1
+        self._progress_init_attempts = attempts
 
         try:
             duration = self._mpv_manager.get_duration()
@@ -1172,11 +1181,20 @@ class VideoPlayerLayout(QWidget):
                 self._player_bar.set_total_time(self._format_time(duration))
                 self._player_bar.set_progress((position or 0) / duration)
                 debug(f"进度显示已初始化: position={position}, duration={duration}")
-            else:
+            elif attempts < self._PROGRESS_INIT_MAX_ATTEMPTS:
                 QTimer.singleShot(200, self._initialize_progress_display)
+            else:
+                debug(
+                    f"进度显示初始化放弃：{attempts} 次重试后仍未拿到有效时长，"
+                    "交由心跳轮询兜底"
+                )
         except Exception as e:
             warning(f"初始化进度显示失败: {e}")
-            QTimer.singleShot(200, self._initialize_progress_display)
+            if attempts < self._PROGRESS_INIT_MAX_ATTEMPTS:
+                QTimer.singleShot(200, self._initialize_progress_display)
+
+    #: 进度显示初始化最大重试次数（25 × 200ms = 5s，超时放弃；见审查 3.1#25）
+    _PROGRESS_INIT_MAX_ATTEMPTS = 25
 
     @staticmethod
     def _format_time(seconds: float) -> str:

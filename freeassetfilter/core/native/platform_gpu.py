@@ -38,6 +38,8 @@ import sys
 
 from pathlib import Path
 
+from freeassetfilter.core.native._diagnostics import gpu_diag_script
+
 logger = logging.getLogger(__name__)
 
 GPU_PROFILE_MODES: tuple[str, str, str] = (
@@ -59,15 +61,12 @@ REQUIRED_GPU_EXPORTS: tuple[str, str] = (
 )
 """PE export names the launcher EXE must carry for W1 to work."""
 
-_DIAG_SCRIPT: Path = (
-    Path(__file__).resolve().parents[3]
-    / ".omo"
-    / "evidence"
-    / "performance-ceiling-optimization"
-    / "task-3"
-    / "gpu_affinity_check.py"
-)
-"""Proven task-3 diagnostic (stdlib + ctypes, observation only)."""
+_DIAG_SCRIPT: Path = gpu_diag_script()
+"""task-3 诊断脚本路径（``FAF_GPU_DIAG_SCRIPT`` 可覆盖，审查 3.1#27）。
+
+保留模块级常量以兼容测试的 ``_DIAG_SCRIPT.is_file()`` 探测；未设置环境
+变量时解析为仓库内脚本（开发态默认），冻结态由调用方显式提供。
+"""
 
 
 def launcher_exe_path() -> Path:

@@ -180,16 +180,26 @@ class StartupController:
             last_cleanup = sm.get("file_selector.last_cleanup_time", None) if sm else None
             now = time.time()
             if last_cleanup is None or (now - float(last_cleanup)) > (cleanup_period * 86400):
-                QTimer.singleShot(0, lambda: self._run_thumbnail_cleanup(now))
+                QTimer.singleShot(0, lambda: self._run_thumbnail_cleanup(now, cleanup_period))
         except Exception as e:
             warning(f"[启动] 缩略图清理调度失败: {e}")
 
-    def _run_thumbnail_cleanup(self, current_time: float) -> None:
-        """执行缩略图缓存清理并记录本次清理时间。"""
+    def _run_thumbnail_cleanup(self, current_time: float, cleanup_period_days: int = 7) -> None:
+        """执行缩略图缓存清理并记录本次清理时间。
+
+        Args:
+            current_time: 本次清理时间戳（写回 ``last_cleanup_time``）。
+            cleanup_period_days: 清理周期（天），由
+                :meth:`_schedule_thumbnail_cleanup` 从
+                ``file_selector.cache_cleanup_period`` 读取后传入——
+                修复此前硬编码 7 天导致配置项实际不生效的问题。
+        """
         try:
             from freeassetfilter.core.managers.thumbnail_manager import clean_thumbnails
 
-            deleted_count, remaining_count = clean_thumbnails(cleanup_period_days=7)
+            deleted_count, remaining_count = clean_thumbnails(
+                cleanup_period_days=cleanup_period_days
+            )
             info(f"[启动] 缩略图缓存清理完成: 删除 {deleted_count} 个文件，剩余 {remaining_count} 个文件")
         except Exception as e:
             warning(f"缩略图缓存清理失败: {e}")

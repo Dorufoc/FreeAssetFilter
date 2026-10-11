@@ -28,7 +28,10 @@ from typing import Any
 
 import pytest
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QEnterEvent, QImage, QMouseEvent, QPainter, QPixmap, QRegion
+from PySide6.QtGui import (
+    QColor, QEnterEvent, QImage, QMouseEvent, QMoveEvent, QPainter,
+    QPaintEvent, QPixmap, QRegion, QResizeEvent,
+)
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QVBoxLayout, QWidget
 
 # 组件模块内部使用短路径导入（from theme import tm / components.*），
@@ -829,6 +832,25 @@ class TestPaintUtils:
         finally:
             p.end()
 
+    def test_render_soft_shadow_numpy_fallback(
+        self, qapp: QApplication, monkeypatch: Any
+    ) -> None:
+        """numpy 缺失时纯 Qt 回退仍产出同尺寸非空阴影（审查 3.1#15）。"""
+        import freeassetfilter.ui.components.paint_utils as pu
+
+        normal = pu.render_soft_shadow(120, 80, 8, 16, QColor(0, 0, 0, 120), 24)
+        assert not normal.isNull()
+
+        def _blocked(*_args: Any, **_kwargs: Any) -> Any:
+            raise ImportError("numpy blocked for test")
+
+        monkeypatch.setattr(pu, "_cached_shadow_bitmap", _blocked)
+        fallback = pu.render_soft_shadow(120, 80, 8, 16, QColor(0, 0, 0, 120), 24)
+        assert not fallback.isNull()
+        assert fallback.size() == normal.size()
+        img = fallback.toImage()
+        assert img.pixelColor(img.width() // 2, img.height() // 2).alpha() > 0
+
 
 # =============================================================================
 # ui.components.mica_material
@@ -897,6 +919,40 @@ class TestMicaWindow:
         """refresh_background 调用不抛异常。"""
         win = MicaWindow()
         win.refresh_background()
+        safe_teardown(win)
+
+    def test_overrides_guard_unassigned_material(self, qapp: QApplication) -> None:
+        """构造期事件防御：_mica 未就位时 resize/move/paint 覆写安全返回。
+
+        回归（历史必崩）：MicaWindow 以 lazy=False 同步烘焙导致 winId() 建窗
+        期间派发 resize 事件，覆写访问尚未赋值的 ``self._mica`` 引发虚函数
+        派发中的 AttributeError → 0xC0000005。修复后覆写对 None 防御。
+        """
+        win = MicaWindow()
+        win._mica = None
+        win.resizeEvent(QResizeEvent(QSize(20, 10), QSize(10, 10)))
+        win.moveEvent(QMoveEvent(QPoint(5, 5), QPoint(0, 0)))
+        win.paintEvent(QPaintEvent(QRectF(0, 0, 1, 1).toRect()))
+        safe_teardown(win)
+
+    def test_construct_completes_sync_bake(self, qapp: QApplication) -> None:
+        """构造即完成同步烘焙（行为与历史一致，仅时序安全化）。"""
+        win = MicaWindow()
+        assert win.mica is not None
+        assert win.mica._disposed is False
+        safe_teardown(win)
+
+    def test_live_material_registry_and_idempotent_dispose(
+        self, qapp: QApplication
+    ) -> None:
+        """材质登记入退出兜底注册表；dispose 幂等（修复退出期 0xC0000005）。"""
+        from freeassetfilter.ui.mica import material as material_mod
+
+        win = MicaWindow()
+        mica = win.mica
+        assert mica in material_mod._LIVE_MATERIALS
+        mica.dispose()
+        mica.dispose()  # 幂等，重复调用不抛异常
         safe_teardown(win)
 
 
@@ -1027,6 +1083,20 @@ class TestMicaWidget:
         pm = QPixmap(160, 90)
         pm.fill(QColor("#000000"))
         widget.render(pm)
+        safe_teardown(widget)
+
+    def test_overrides_guard_unassigned_material(self, qapp: QApplication) -> None:
+        """构造期事件防御：材质未就位时 resize/move/paint 覆写安全返回。
+
+        回归（历史必崩）：同步烘焙触发 winId() 建窗时派发 resize 事件，
+        覆写访问尚未赋值的 ``self._mica`` → PySide 虚函数派发中的
+        AttributeError → 0xC0000005。修复后覆写对 None 防御。
+        """
+        widget = MicaWidget()
+        widget._mica = None
+        widget.resizeEvent(QResizeEvent(QSize(20, 10), QSize(10, 10)))
+        widget.moveEvent(QMoveEvent(QPoint(5, 5), QPoint(0, 0)))
+        widget.paintEvent(QPaintEvent(QRectF(0, 0, 1, 1).toRect()))
         safe_teardown(widget)
 
 

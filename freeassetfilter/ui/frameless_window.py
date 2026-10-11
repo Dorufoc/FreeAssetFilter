@@ -216,6 +216,10 @@ def _get_user32():
         wintypes.HWND, ctypes.POINTER(wintypes.DWORD),
     ]
     lib.GetWindowThreadProcessId.restype = wintypes.DWORD
+    # main_window 的原生命中测试/窗口切换复用本表：GetAncestor 沿父链上溯
+    # （GA_PARENT=1），避免未声明 argtypes 时 HWND 按 32 位截断。
+    lib.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+    lib.GetAncestor.restype = wintypes.HWND
     _user32 = lib
     return lib
 

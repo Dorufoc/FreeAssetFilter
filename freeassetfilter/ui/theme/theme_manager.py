@@ -8,6 +8,7 @@ ThemeManager — Singleton that reads colors from SettingsManagerV2 and provides
           render_qss(), as_stylesheet()
 """
 
+import copy
 import os
 import re
 from typing import Optional, Dict, Any
@@ -550,6 +551,49 @@ class ThemeManager(QObject):
     def get_common_color(self, category: str, token: str) -> Optional[QColor]:
         """Shorthand for ``get_color(f'common.{category}.{token}')``."""
         return self.get_color(f"common.{category}.{token}")
+
+    # ------------------------------------------------------------------
+    # 公共写入 API（审查 3.1#23：替代外部直写 _colors 的私有访问）
+    # ------------------------------------------------------------------
+
+    def set_color(self, path: str, value: str) -> bool:
+        """按点号路径写入配色值并广播 ``colors_updated``。
+
+        Args:
+            path: 点号路径，如 ``"accent.primary"``。
+            value: 颜色值（``"#RRGGBB"`` / ``"#RRGGBBAA"``）。
+
+        Returns:
+            写入成功返回 True；路径不存在 / value 为空返回 False。
+        """
+        if not path or not value:
+            return False
+        parts = [part for part in str(path).split(".") if part]
+        if not parts:
+            return False
+        node: Any = self._colors
+        for part in parts[:-1]:
+            child = node.get(part) if isinstance(node, dict) else None
+            if not isinstance(child, dict):
+                return False
+            node = child
+        node[parts[-1]] = value
+        self.colors_updated.emit(self._colors)
+        return True
+
+    def replace_colors(self, colors: Dict[str, Any]) -> None:
+        """整体合并替换配色字典并广播（事务回滚等场景）。
+
+        与直接 ``self._colors.update(colors)`` 等价，但不暴露私有字典。
+        """
+        if not isinstance(colors, dict):
+            return
+        self._colors.update(colors)
+        self.colors_updated.emit(self._colors)
+
+    def snapshot_colors(self) -> Dict[str, Any]:
+        """返回当前配色字典的深拷贝（事务暂存 / 回滚快照用）。"""
+        return copy.deepcopy(self._colors)
 
     def render_qss(self, template_path: Optional[str] = None) -> str:
         """

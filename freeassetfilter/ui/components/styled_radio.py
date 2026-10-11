@@ -91,6 +91,13 @@ class StyledRadio(QWidget):
                 self._groups[group_name] = []
             self._groups[group_name].append(self)
 
+        # 控件销毁时自动从全局组表注销，避免注册表残留引用（cleanup() 保留
+        # 供显式清理；两处均做成员检查，重复调用幂等）。
+        # 注意：PySide6 在销毁阶段不会调用「接收者 = 被销毁对象自身」的绑定
+        # 方法槽，故必须用捕获 self 的 lambda 作为接收者；cleanup 只访问纯
+        # Python 状态（组表/组名），包装器进入删除态后仍可安全调用。
+        self.destroyed.connect(lambda *_: self.cleanup())
+
         # Hover animation
         self._hover_anim = QPropertyAnimation(self, b"hover_progress")
         self._hover_anim.setDuration(180)
@@ -230,10 +237,8 @@ class StyledRadio(QWidget):
 
     @group_name.setter
     def group_name(self, value: str):
-        # Unregister from old group
-        if self._group_name and self._group_name in self._groups:
-            if self in self._groups[self._group_name]:
-                self._groups[self._group_name].remove(self)
+        # Unregister from old group（与 destroyed 自动注销共用幂等清理）
+        self.cleanup()
         self._group_name = value
         # Register to new group
         if value:
@@ -310,10 +315,20 @@ class StyledRadio(QWidget):
         self._radio_circle.update()
 
     def cleanup(self):
-        """Remove from group registry. Call before deletion if needed."""
+        """Remove from group registry. Call before deletion if needed.
+
+        用身份比较（``is``）定位自身而非 ``==``：``destroyed`` 回调触发时
+        包装器可能已进入删除态，``==`` 会抛 RuntimeError（审查 3.1#12）。
+        """
         if self._group_name and self._group_name in self._groups:
-            if self in self._groups[self._group_name]:
-                self._groups[self._group_name].remove(self)
+            group = self._groups[self._group_name]
+            for idx, radio in enumerate(group):
+                if radio is self:
+                    del group[idx]
+                    break
+            if not group:
+                # 空组直接删 key，避免全局注册表残留空列表
+                self._groups.pop(self._group_name, None)
 
 
 class _RadioCircleWidget(QWidget):

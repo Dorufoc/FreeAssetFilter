@@ -544,6 +544,7 @@ class StyledBreadcrumb(QWidget):
             try:
                 link.clicked.disconnect()
             except RuntimeError:
+                # 3.1#19 留档：信号未连接/控件已销毁，预期防御。
                 pass
 
         # Remove old widgets

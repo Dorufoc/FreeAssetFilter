@@ -26,6 +26,9 @@ ext_modules = [
     ),
 ]
 
+# 后续改进（审查 3.1#20，本轮不涉及）：-march=native 绑定构建机指令集
+# （老 CPU 非法指令风险）、-ffast-math 改变浮点结果；建议移除前者并评估
+# 后者，需重新编译 .pyd 后验证。
 for ext in ext_modules:
     ext.extra_compile_args = [
         "-O3",

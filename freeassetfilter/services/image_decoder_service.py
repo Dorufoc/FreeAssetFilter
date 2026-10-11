@@ -186,7 +186,7 @@ class ImageDecoderService:
         except CorruptFileError as e:
             error(f"[ImageDecoderService] 文件损坏: {e}")
             return False, str(e)
-        except BaseException as e:
+        except Exception as e:
             error(f"[ImageDecoderService] 解码未知异常: {e}")
             return False, str(e)
 

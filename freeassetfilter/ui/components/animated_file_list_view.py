@@ -66,6 +66,8 @@ class AnimatedFileListView(QListView):
                 "directory_transition", default=True
             )
         except Exception:
+            # 3.1#19 留档：设置读取失败回退默认开启，预期防御
+            #（不改行为；后续改进为意外分支补 debug 日志）。
             self._path_transition_enabled = True
 
     def _capture_viewport_snapshot(self) -> QPixmap:

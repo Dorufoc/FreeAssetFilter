@@ -656,14 +656,6 @@ class TestFileCardDelegate:
         safe_teardown(delegate)
         safe_teardown(view)
 
-    def test_media_scale_property(self, qapp: QApplication) -> None:
-        """media_scale Property 可读写（QPropertyAnimation 目标）。"""
-        delegate = FileCardDelegate()
-        assert delegate.media_scale == 0.0
-        delegate.media_scale = 0.5
-        assert delegate.media_scale == 0.5
-        safe_teardown(delegate)
-
     def test_paint_smoke(self, qapp: QApplication) -> None:
         """离屏绘制一个列表项产生非空像素。"""
         delegate = FileCardDelegate()
@@ -720,20 +712,19 @@ class TestFileCardDelegate:
         return pm
 
     @staticmethod
-    def _draw_icon(src: QPixmap, media_w: float, hover_scale: float = 1.0) -> None:
+    def _draw_icon(src: QPixmap, media_w: float) -> None:
         """经 _draw_icon_pixmap 离屏绘制一次图标。
 
         Args:
             src: 源图标。
-            media_w: media 区域宽度（逻辑像素，display_size = int(w × 1.10 × hover)）。
-            hover_scale: hover 缩放系数。
+            media_w: media 区域宽度（逻辑像素，display_size = int(w × 1.10)）。
         """
         target = QPixmap(256, 256)
         target.fill(Qt.transparent)
         painter = QPainter(target)
         try:
             FileCardDelegate._draw_icon_pixmap(
-                painter, src, QRectF(0, 0, media_w, media_w), hover_scale=hover_scale,
+                painter, src, QRectF(0, 0, media_w, media_w),
             )
         finally:
             painter.end()

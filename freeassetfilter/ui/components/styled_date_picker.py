@@ -1476,6 +1476,10 @@ class _TimePanel(QFrame):
         self.setFixedWidth(280)  # Same width as _CalendarPanel
         self._parent_ref = parent
         self._closing_internally = False
+        # 当前选中时间（time_changed 回调与 set_time 共用；确认路径仍读取
+        # _time_picker 的最终值）
+        self._hour = 0
+        self._minute = 0
 
         self._setup_ui()
 
@@ -1551,7 +1555,14 @@ class _TimePanel(QFrame):
         main_layout.addWidget(self._footer_widget)
 
     def _on_time_changed(self, hour: int, minute: int):
-        pass  # Just track internally
+        """时间变化：记录内部值并实时更新标题反馈。
+
+        确认路径（``_on_confirm``）读取的是 ``_time_picker`` 的最终值，
+        本回调只负责即时可见的 HH:MM 回显，不改变信号契约。
+        """
+        self._hour = hour
+        self._minute = minute
+        self._header_label.setText(f"选择时间 {hour:02d}:{minute:02d}")
 
     def _select_now(self):
         """Set time to current time."""
@@ -1566,6 +1577,8 @@ class _TimePanel(QFrame):
 
     def set_time(self, hour: int, minute: int):
         self._time_picker.set_time(hour, minute)
+        # set_time 不触发 time_changed（静默赋值），这里显式同步标题回显
+        self._on_time_changed(hour, minute)
 
     def showEvent(self, event):
         super().showEvent(event)

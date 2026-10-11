@@ -722,6 +722,26 @@ class StyledSidebar(QWidget):
             self._highlight_bar.show_bar()
         return item
 
+    @property
+    def active_index(self) -> int:
+        """当前活动的导航项索引（-1 表示尚未选中任何项）。"""
+        return self._active_index
+
+    def refresh_visuals(self) -> None:
+        """重设全部导航项与底部折叠按钮的样式（主题刷新后调用）。
+
+        将此前 settings_layout 直接操作 ``_active_index/_items/_toggle_btn``
+        的私有访问收敛为组件自身职责（审查 3.1#23）；行为与旧调用等价。
+        """
+        for i, item in enumerate(self._items):
+            item._set_active(i == self._active_index)
+        toggle_btn = getattr(self, "_toggle_btn", None)
+        if toggle_btn is not None:
+            register_widget_qss(toggle_btn, (
+                f"SidebarItem {{ background-color: transparent; "
+                f"border-top: 1px solid {tm.alpha_of(tm.surface, 90).name()}; }}"
+            ))
+
     def _get_item_bar_rect(self, index: int) -> tuple:
         """Get the (x, top_y, bottom_y) of the highlight bar for an item, relative to sidebar."""
         if index < 0 or index >= len(self._items):

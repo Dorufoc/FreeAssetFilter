@@ -159,7 +159,10 @@ MpvNodeList._fields_ = [
 
 MpvNode._fields_ = [
     ("u", c_void_p),  # union: string/double/int64/flag ptr or node list ptr — accessed by format
-    ("format", c_int64),
+    # mpv_node.format 真实类型为 4 字节 mpv_format 枚举（union 8 字节对齐使结构体
+    # 尾部填充到 16 字节）。按真实宽度声明可避免 c_int64 把填充字节并入枚举值；
+    # ctypes 计算的 size 仍为 16，与 C 侧一致（数组步长不变）。
+    ("format", ctypes.c_int),
 ]
 
 
@@ -258,6 +261,7 @@ class MPVCommandType(IntEnum):
     GET_AUDIO_STATE = 29
     GET_AUDIO_TRACKS = 30
     SET_AUDIO_TRACK = 31
+    TAKE_SCREENSHOT = 32
     CLOSE = 99
 
 
@@ -301,8 +305,10 @@ class MPVDLLLoader:
                 # 1. 依赖 DLL 所在目录（core/native/bin/）
                 mpv_runtime_dir = str(native_bin_dir())
                 os.add_dll_directory(mpv_runtime_dir)
-                # 2. MSYS2 MinGW 路径（开发环境）
-                msys2_mingw_bin = r"C:\msys64\mingw64\bin"
+                # 2. MSYS2 MinGW 路径（仅开发环境补充依赖搜索路径）：
+                #    优先 FAF_MSYS2_BIN 环境变量，未设置时回退默认安装路径；
+                #    发行环境两者都不存在时静默跳过，不硬编码依赖开发机布局。
+                msys2_mingw_bin = os.environ.get("FAF_MSYS2_BIN", r"C:\msys64\mingw64\bin")
                 if os.path.isdir(msys2_mingw_bin):
                     os.add_dll_directory(msys2_mingw_bin)
 
@@ -615,7 +621,7 @@ class MPVPlayerCore(QObject):
                 self._dll_loader.dll.mpv_set_wakeup_callback(
                     mpv_handle, _wakeup_callback, None
                 )
-            except (RuntimeError, AttributeError, OSError) as e:
+            except Exception as e:  # noqa: BLE001  # 注册失败仅回退 busy-poll，绝不能因此让工作线程退出
                 warning(f"注册MPV唤醒回调失败: {e}")
 
             self._configure_mpv(mpv_handle)
@@ -1064,7 +1070,7 @@ class MPVPlayerCore(QObject):
             # 强制复位 position，防止 stale time-pos 污染
             self._position = 0.0
             debug(f"FILE_LOADED: _position=0, _duration={self._duration}")
-            print(f"[CORE_FILE_LOADED] duration={duration}, _position=0, _duration={self._duration}", flush=True)
+            debug(f"FILE_LOADED: duration={duration}, _position=0, _duration={self._duration}")
         if duration is not None and duration > 0:
             self._queue_signal_if_changed('durationChanged', self._duration)
         # 始终发送 positionChanged，确保 UI 控制栏拿到最新的位置和时长
@@ -1072,7 +1078,7 @@ class MPVPlayerCore(QObject):
             pos = self._position
             dur = self._duration
         self._enqueue_signal('positionChanged', pos, dur)
-        print(f"[CORE_FILE_LOADED] 已入队 positionChanged(pos={pos}, dur={dur})", flush=True)
+        debug(f"FILE_LOADED: 已入队 positionChanged(pos={pos}, dur={dur})")
 
         # 获取当前的播放状态
         is_paused = False
@@ -1222,6 +1228,8 @@ class MPVPlayerCore(QObject):
                         result = self._get_audio_tracks_internal(mpv_handle)
                     elif cmd_type == MPVCommandType.SET_AUDIO_TRACK:
                         result = self._set_audio_track_internal(mpv_handle, *args, **kwargs)
+                    elif cmd_type == MPVCommandType.TAKE_SCREENSHOT:
+                        result = self._screenshot_internal(mpv_handle, *args, **kwargs)
                     elif cmd_type == MPVCommandType.CLOSE:
                         self._stop_event.set()
                         result = True
@@ -2685,8 +2693,46 @@ class MPVPlayerCore(QObject):
         Returns:
             bool: 操作是否成功
         """
-        return False
-    
+        if not file_path:
+            return False
+        result = self._send_command(
+            MPVCommandType.TAKE_SCREENSHOT,
+            file_path,
+            include_subtitles,
+            timeout=5.0,
+        )
+        return bool(result)
+
+    def _screenshot_internal(
+        self,
+        mpv_handle: c_void_p,
+        file_path: str,
+        include_subtitles: bool = True,
+        **kwargs,
+    ) -> bool:
+        """工作线程内同步执行 mpv ``screenshot-to-file`` 命令。
+
+        Args:
+            mpv_handle: 工作线程持有的 mpv 句柄。
+            file_path: 保存路径（png/jpg 由扩展名决定）。
+            include_subtitles: True 含字幕（``subtitles`` 模式），False 仅画面。
+            **kwargs: 兼容命令队列透传的 ``timeout`` 等参数。
+
+        Returns:
+            bool: mpv 命令返回码 >= 0 视为成功。
+        """
+        if not file_path:
+            return False
+        mode = "subtitles" if include_subtitles else "video"
+        argv = (c_char_p * 4)(
+            b"screenshot-to-file",
+            str(file_path).encode("utf-8", errors="replace"),
+            mode.encode("ascii"),
+            None,
+        )
+        result = self._dll_loader.dll.mpv_command(mpv_handle, argv)
+        return int(result) >= 0
+
     @staticmethod
     def _process_events_for(ms: int) -> None:
         """

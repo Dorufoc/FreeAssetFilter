@@ -64,6 +64,7 @@ test_drag_perf.py``），禁止在该路径重新引入逐事件重绘 / COM 探
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import threading
@@ -410,6 +411,11 @@ class _BakeWorker(QObject):
 # ---------------------------------------------------------------------------
 
 
+#: 存活材质弱引用集合：进程退出兜底释放用（见
+#: :func:`_dispose_live_materials_at_exit` 与 :meth:`MicaMaterial.dispose`）。
+_LIVE_MATERIALS: weakref.WeakSet = weakref.WeakSet()
+
+
 class MicaMaterial(QObject):
     """窗口级 Mica 背景材质。
 
@@ -453,6 +459,7 @@ class MicaMaterial(QObject):
         """
         super().__init__()
         self._widget = widget
+        _LIVE_MATERIALS.add(self)
 
         # 颜色 / 主题
         self._surface_color = _parse_color(
@@ -1303,7 +1310,11 @@ class MicaMaterial(QObject):
         self._refresh_retries = BAKE_MAX_RETRIES + 1
         self._refresh_outcome = "fail"
         self._rebuild_pending = False
-        top = self._widget.window()
+        try:
+            top = self._widget.window()
+        except RuntimeError:
+            # 宿主控件/包装对象已销毁（atexit 兜底路径）：跳过 Qt 侧解绑。
+            top = None
         if top is not None:
             try:
                 top.removeEventFilter(self)
@@ -2335,10 +2346,20 @@ class MicaWidget(QWidget):
         saturation: float = 4.5,
         overlay_opacity: float = 0.7,
     ) -> None:
+        # 先定义属性，防止构造期原生建窗（winId）派发的 resize/move/paint
+        # 事件访问尚未赋值的 ``self._mica``（历史崩溃：PySide 虚函数派发中
+        # AttributeError 逃逸 → 0xC0000005；见 demos/main.py 同款先例）。
+        self._mica = None
         super().__init__(parent)
-        self._mica = MicaMaterial(
-            self, blur_radius, surface_color, luminosity, contrast, saturation, overlay_opacity
+        mica = MicaMaterial(
+            self, blur_radius, surface_color, luminosity, contrast, saturation,
+            overlay_opacity, lazy=True,
         )
+        self._mica = mica
+        # 赋值完成后再同步烘焙：此时 winId() 建窗期间派发的 resize 事件
+        # 已能安全访问有效材质（历史实现 lazy=False 在构造函数内烘焙，
+        # 先建窗后赋值导致必崩）。
+        mica.refresh()
 
     @property
     def mica(self) -> MicaMaterial:
@@ -2346,17 +2367,22 @@ class MicaWidget(QWidget):
         return self._mica
 
     def paintEvent(self, event: QPaintEvent) -> None:
+        mica = self._mica
+        if mica is None:
+            return
         painter = QPainter(self)
-        self._mica.paint(painter, event)
+        mica.paint(painter, event)
         painter.end()
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
-        self._mica.begin_interaction()
+        if self._mica is not None:
+            self._mica.begin_interaction()
 
     def moveEvent(self, event: QMoveEvent) -> None:
         super().moveEvent(event)
-        self._mica.begin_interaction()
+        if self._mica is not None:
+            self._mica.begin_interaction()
 
 
 class MicaWindow(QWidget):
@@ -2383,7 +2409,10 @@ class MicaWindow(QWidget):
         self._saturation = saturation if saturation is not None else cfg["saturation"]
         if window_title:
             self.setWindowTitle(window_title)
-        self._mica = MicaMaterial(
+        # 先定义属性，防止构造期原生建窗（winId）派发的 resize/move/paint
+        # 事件访问尚未赋值的 ``self._mica``（与 MicaWidget 同一修复）。
+        self._mica = None
+        mica = MicaMaterial(
             self,
             self._blur_radius,
             self._surface_color,
@@ -2391,7 +2420,12 @@ class MicaWindow(QWidget):
             self._contrast,
             self._saturation,
             overlay_opacity=0.7,
+            lazy=True,
         )
+        self._mica = mica
+        # 赋值完成后再同步烘焙（历史实现 lazy=False 在构造函数内烘焙，
+        # 先建窗后赋值导致必崩）。
+        mica.refresh()
 
     @property
     def mica(self) -> MicaMaterial:
@@ -2408,17 +2442,50 @@ class MicaWindow(QWidget):
         self._mica.refresh()
 
     def paintEvent(self, event: QPaintEvent) -> None:
+        mica = self._mica
+        if mica is None:
+            return
         painter = QPainter(self)
-        self._mica.paint(painter, event)
+        mica.paint(painter, event)
         painter.end()
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
-        self._mica.begin_interaction()
+        if self._mica is not None:
+            self._mica.begin_interaction()
 
     def moveEvent(self, event: QMoveEvent) -> None:
         super().moveEvent(event)
-        self._mica.begin_interaction()
+        if self._mica is not None:
+            self._mica.begin_interaction()
+
+
+def _dispose_live_materials_at_exit() -> None:
+    """进程退出兜底：释放仍未销毁的材质状态（``atexit`` 注册）。
+
+    背景：完成过烘焙的材质持有 QPixmap/合成器状态，若控件未销毁直接进入
+    解释器收尾阶段，资源销毁会与 Qt 退出顺序竞态（裸脚本实测约 5/6 概率
+    ``0xC0000005``；显式 :meth:`MicaMaterial.dispose` 后 6/6 通过）。应用与
+    测试的受控退出链已有等价处理，本钩子只覆盖「未销毁控件直接退出」的
+    脚本与异常路径；解析对象已失效/已释放时静默跳过，绝不抛出。
+    """
+    try:
+        from shiboken6 import isValid
+    except Exception:  # noqa: BLE001 - 无 shiboken 时跳过有效性判断
+        isValid = None  # type: ignore[assignment]
+    for mica in list(_LIVE_MATERIALS):
+        try:
+            if getattr(mica, "_disposed", False):
+                continue
+            widget = mica._widget
+            if isValid is not None and not isValid(widget):
+                continue
+            mica.dispose()
+        except Exception:  # noqa: BLE001 - 退出兜底绝不允许抛出
+            pass
+
+
+atexit.register(_dispose_live_materials_at_exit)
 
 
 #: 默认 Mica 配置由 :mod:`mica.config` 定义并在此再导出（既有导入点不受影响）；

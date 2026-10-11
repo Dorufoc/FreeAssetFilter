@@ -208,7 +208,6 @@ struct Context {
     ComPtr<ID3D11PixelShader> psBlur;
     ComPtr<ID3D11PixelShader> psComposite;
     ComPtr<ID3D11SamplerState> sampler;      ///< 三线性 + CLAMP
-    ComPtr<ID3D11SamplerState> samplerPoint; ///< 未使用的备用点采样器
     ComPtr<ID3D11BlendState> blendOff;
     ComPtr<ID3D11RasterizerState> raster;
     ComPtr<ID3D11DepthStencilState> depthOff;

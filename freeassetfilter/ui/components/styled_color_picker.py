@@ -1088,7 +1088,22 @@ class StyledColorPicker(QWidget):
         self.color_changed.emit(hex_color)
 
     def _on_panel_closed(self):
-        pass
+        """弹层关闭：以面板最终色同步控件（幂等：无差异不发信号）。
+
+        拖动选色期间 ``color_selected`` 已连续同步控件；本钩子兜底面板内部
+        直接改色（如面板内 hex 输入）后未触发离散发射的边缘路径。
+        """
+        try:
+            final_hex = self._panel.current_hex()
+        except (RuntimeError, AttributeError):
+            return
+        if final_hex.upper() == self._hex_input.text().upper():
+            return
+        r, g, b, a = _rgba_from_hex(final_hex)
+        self._color = QColor(r, g, b, a)
+        self._preview.set_color(self._color)
+        self._hex_input.setText(final_hex.upper())
+        self.color_changed.emit(final_hex.upper())
 
     def closeEvent(self, event):
         self._panel.hide()

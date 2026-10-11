@@ -28,10 +28,19 @@ def _candidates() -> list[Path]:
 
 def _load() -> Optional[ModuleType]:
     global _module, _attempted
-    if _attempted:
+    if _module is not None:
         return _module
+    candidates = _candidates()
+    if not candidates:
+        # 候选为空时不置位 _attempted：只对「已检测到候选但全部加载失败」做
+        # 粘滞缓存；候选后续补齐（如开发态后生成的 .pyd）时仍可恢复重试
+        # （审查 3.1#18：此前首次失败即永久禁用，DLL 补齐也不恢复）。
+        return None
+    if _attempted:
+        # 已真实尝试且失败：粘滞失败，避免每次调用重复导入与告警
+        return None
     _attempted = True
-    for path in _candidates():
+    for path in candidates:
         try:
             spec = importlib.util.spec_from_file_location("lut_preview_cpp", path)
             if spec is None or spec.loader is None:
@@ -47,6 +56,13 @@ def _load() -> Optional[ModuleType]:
     return None
 
 
+def reset() -> None:
+    """重置加载缓存（QA/测试用：允许在扩展补齐后重新探测）。"""
+    global _module, _attempted
+    _module = None
+    _attempted = False
+
+
 def is_cpp_available() -> bool:
     return _load() is not None
 
@@ -58,4 +74,4 @@ def generate_preview(lut_content: str, image_array, output_width: int, output_he
     return module.generate_preview_from_data(lut_content, image_array, output_width, output_height)
 
 
-__all__ = ["generate_preview", "is_cpp_available"]
+__all__ = ["generate_preview", "is_cpp_available", "reset"]

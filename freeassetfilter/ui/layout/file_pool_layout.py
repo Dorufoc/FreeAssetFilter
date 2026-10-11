@@ -559,8 +559,20 @@ class FilePoolLayout(QWidget):
             border: 1px solid {border_color};
             border-radius: 8px;
         """
+        # 拖放反馈（蓝色虚线边框）以动态属性选择器并入内容区的同一片段：
+        # register_widget_qss 每个控件仅保存一个片段，独立注册会在主题
+        # 重注册时被覆盖（审查 3.1#22）。
+        # 面板声明必须包进显式 ``* { ... }`` 规则块：同一片段里「裸声明 +
+        # 后续选择器规则」的粘连形态会被 scope_qss 误判（rgba(...) 里的逗号
+        # 还会把选择器切碎）生成畸形规则，而 Qt 解析器遇到畸形规则会丢弃
+        # 整张样式表的后续内容（储存池丢样式回归，见 scope_qss 拆分逻辑）。
+        content_style = (
+            "* {" + section_style + "}\n"
+            'QFrame[dragActive="true"] { border: 2px dashed #4a90d9; }'
+        )
+        register_widget_qss(self._content_area, content_style)
+        register_widget_qss(self._bottom_bar, section_style)
         for _w in (self._content_area, self._bottom_bar):
-            register_widget_qss(_w,(section_style))
             # 强制已显示控件重新套用样式（延迟构建场景下必须，否则边框/填充不重绘）
             _w.style().unpolish(_w)
             _w.style().polish(_w)
@@ -2000,10 +2012,7 @@ class FilePoolLayout(QWidget):
         """接受外部 URL 拖入，显示蓝色虚线边框反馈。"""
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
-            self._content_area.setStyleSheet(
-                self._content_area.styleSheet()
-                + " border: 2px dashed #4a90d9;"
-            )
+            self._set_drag_feedback(True)
 
     def dragMoveEvent(self, event: QDragMoveEvent) -> None:
         """拖拽移动中持续接受。"""
@@ -2012,11 +2021,11 @@ class FilePoolLayout(QWidget):
 
     def dragLeaveEvent(self, event: QDragLeaveEvent) -> None:
         """拖拽离开时恢复样式。"""
-        self._restore_content_border()
+        self._set_drag_feedback(False)
 
     def dropEvent(self, event: QDropEvent) -> None:
         """处理从外部拖入的文件/文件夹。"""
-        self._restore_content_border()
+        self._set_drag_feedback(False)
         if not event.mimeData().hasUrls():
             return
         urls = event.mimeData().urls()
@@ -2026,12 +2035,21 @@ class FilePoolLayout(QWidget):
                 self._add_dropped_item(file_path)
         event.acceptProposedAction()
 
-    def _restore_content_border(self) -> None:
-        """恢复内容区边框样式（移除虚线反馈）。"""
-        current = self._content_area.styleSheet()
-        # 移除临时添加的虚线边框
-        lines = [l for l in current.split("\n") if "dashed" not in l]
-        self._content_area.setStyleSheet("\n".join(lines))
+    def _set_drag_feedback(self, active: bool) -> None:
+        """切换内容区拖放反馈（dragActive 动态属性 + repolish）。
+
+        样式片段在 :meth:`set_section_styles` 中随面板基础样式一并注册
+        （register_widget_qss 每控件单一片段，独立注册会被主题重注册覆盖），
+        此处只切换属性并让样式表重新求值，不再拼接 setStyleSheet。
+        """
+        area = self._content_area
+        if bool(area.property("dragActive")) == active:
+            return
+        area.setProperty("dragActive", active)
+        style = area.style()
+        style.unpolish(area)
+        style.polish(area)
+        area.update()
 
     def _add_dropped_item(self, file_path: str) -> None:
         """构建文件信息并添加到暂存池。"""

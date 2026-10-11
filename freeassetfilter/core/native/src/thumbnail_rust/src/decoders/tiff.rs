@@ -128,7 +128,10 @@ fn scan_ifd0_size(bytes: &[u8]) -> Option<(u32, u32)> {
         // 按字段类型取尺寸：BYTE=1 字节首字节 / SHORT=前 2 字节（libtiff 约定
         // 左对齐；LE 下同等于低 16 位）/ LONG=全 4 字节。
         let v = match read_u16(entry + 2)? {
-            1 => u32::from(bytes[entry + 8]),
+            // type BYTE 也走判界读取：此前 bytes[entry + 8] 直接索引，当
+            // entry+8 == len（value 字段整体截断）时越界 panic，与函数文档
+            // 「越界返回 None」相悖（审查 3.1#2）。
+            1 => u32::from(*bytes.get(entry + 8)?),
             3 => u32::from(read_u16(entry + 8)?),
             4 => read_u32(entry + 8)?,
             _ => continue,
@@ -1452,6 +1455,35 @@ mod tests {
                 Ok((_, w, h)) => panic!("截断到 {trunc_len}B 不应解码成功，实际 Ok({w}x{h})"),
             }
         }
+    }
+
+    #[test]
+    fn truncated_byte_type_ifd_entry_does_not_panic() {
+        // 回归（审查 3.1#2）：type=BYTE 的 ImageWidth 目录项 value 字段恰好
+        // 截断在文件末尾（entry+8 == len）。修复前 scan_ifd0_size 在此直接
+        // 索引 bytes[entry+8] 越界 panic，并经 FFI 边界 abort 宿主进程；
+        // 修复后判界返回 None，交由 image crate 判定为错误输入。
+        //
+        // 布局：II 头 8B + count=1 2B + 单条 12B 目录项被截到 8B，总长 18B：
+        //   [0..4]  'II*\0'
+        //   [4..8]  IFD0 偏移 = 8
+        //   [8..10] 条目数 = 1
+        //   [10..12] tag = 256 (ImageWidth)
+        //   [12..14] type = 1 (BYTE)
+        //   [14..18] count = 1 —— value 字段本身已越界
+        let bytes: [u8; 18] = [
+            b'I', b'I', 0x2A, 0x00,
+            0x08, 0x00, 0x00, 0x00,
+            0x01, 0x00,
+            0x00, 0x01,
+            0x01, 0x00,
+            0x01, 0x00, 0x00, 0x00,
+        ];
+        // 不得 panic；畸形输入应返回错误码（而非 Ok）。
+        assert!(
+            decode_tiff(&bytes).is_err(),
+            "截断 BYTE 型 IFD 条目不应解码成功"
+        );
     }
 
     /// 解压炸弹上限边长（与 `MAX_IMAGE_DIMENSION` 一致）。

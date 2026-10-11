@@ -1021,6 +1021,9 @@ class FafCoreBridge:
         ``_styled_fluid_cpu.render_static_frame`` 路径。**无配套 free 导出**——
         占位期 Rust 永不分配缓冲，故本方法不释放 raw（``faf_free_message``
         只对 ``CString`` 分配有效，禁止用于裸缓冲）。
+        **后续改进（审查 3.1#26，本轮不涉及）**：为 native 流体启用设置前置
+        条件——增加 ``faf_free_buffer(ptr, len)`` 导出并在本方法 ``finally``
+        释放，避免未来按帧返回缓冲时逐帧泄漏。
 
         Args:
             width: 帧宽（像素）。

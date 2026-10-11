@@ -23,8 +23,9 @@ from components.styled_button import StyledButton
 # 当前试探值 1.10 = 放大 10%，后续可按需调整。
 _MEDIA_ICON_SCALE: float = 1.10
 
-# hover 图标缩放动画总开关：暂时禁用（False），恢复动画时改为 True。
-_HOVER_MEDIA_ANIM_ENABLED: bool = False
+# hover 图标缩放动画总开关已于 2026-10 审查后移除（此前的实现为 hover 时驱动
+# media_scale 进度）：相关动画对象、Property 与绘制分支一并删除，卡片 hover
+# 仅保留覆盖层淡入/滑入反馈。
 
 # 绘制热路径缓存：配色只依赖主题（dark/light），切换时以 is_dark_theme 为 key 失效；
 # 配置缓存按 (layout_mode, size_overrides) 失效。
@@ -180,7 +181,6 @@ class StyledInfoCard(QWidget):
         self._overlay_slide = 0.0  # 0=遮罩完全在卡片右侧外，1=完全就位（从右侧滑入）
         self._card_opacity = 1.0
         self._card_scale = 1.0
-        self._media_scale = 1.0
         self._x_offset = 0
         self._y_offset = 0
 
@@ -209,11 +209,6 @@ class StyledInfoCard(QWidget):
         self._slide_anim = QPropertyAnimation(self, b"overlay_slide")
         self._slide_anim.setDuration(400)
         self._slide_anim.setEasingCurve(QEasingCurve.OutCubic)
-
-        # Media scale animation — OutBack gives a subtle spring overshoot (non-linear)
-        self._media_scale_anim = QPropertyAnimation(self, b"media_scale")
-        self._media_scale_anim.setDuration(300)
-        self._media_scale_anim.setEasingCurve(QEasingCurve.OutBack)
 
         # Card press scale animation
         self._card_scale_anim = QPropertyAnimation(self, b"card_scale")
@@ -257,15 +252,6 @@ class StyledInfoCard(QWidget):
     def overlay_slide(self, value: float):
         self._overlay_slide = value
         self._update_overlay_geometry()
-        self.update()
-
-    @Property(float)
-    def media_scale(self):
-        return self._media_scale
-
-    @media_scale.setter
-    def media_scale(self, value: float):
-        self._media_scale = value
         self.update()
 
     @Property(float)
@@ -505,7 +491,6 @@ class StyledInfoCard(QWidget):
 
         colors = self._style_colors
         self._hover_anim.stop()
-        self._media_scale_anim.stop()
 
         # 创建并行动画组
         if not hasattr(self, "_select_anim_group"):
@@ -569,7 +554,6 @@ class StyledInfoCard(QWidget):
             return
 
         self._hover_anim.stop()
-        self._media_scale_anim.stop()
         if hasattr(self, "_select_anim_group"):
             self._select_anim_group.stop()
         if hasattr(self, "_deselect_anim_group"):
@@ -994,8 +978,6 @@ class StyledInfoCard(QWidget):
         if not self._disabled:
             if not (self._is_selected or self._is_previewing):
                 self._animate_overlay(1.0)
-            if _HOVER_MEDIA_ANIM_ENABLED:
-                self._animate_media_scale(1.05)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
@@ -1003,8 +985,6 @@ class StyledInfoCard(QWidget):
         self._pressed = False
         if not (self._is_selected or self._is_previewing):
             self._animate_overlay(0.0)
-        if _HOVER_MEDIA_ANIM_ENABLED:
-            self._animate_media_scale(1.0)
         self._animate_card_scale(1.0)
         super().leaveEvent(event)
 
@@ -1024,20 +1004,6 @@ class StyledInfoCard(QWidget):
         self._slide_anim.setStartValue(self._overlay_slide)
         self._slide_anim.setEndValue(target)
         self._slide_anim.start()
-
-    def _animate_media_scale(self, target: float):
-        """动画过渡图标缩放（非线性缓动 OutBack）。
-
-        固定时长保证缓动可见：原实现按位移比例计算时长，hover 目标位移仅
-        0.05 时被 max(50) 压缩成 50ms 瞬移，OutBack 缓动几乎不可见。
-        220ms 与 overlay 淡入（250ms OutCubic）节奏协调，hover 进入时
-        图标轻微回弹放大，离开时平滑复位。
-        """
-        self._media_scale_anim.stop()
-        self._media_scale_anim.setDuration(220)
-        self._media_scale_anim.setStartValue(self._media_scale)
-        self._media_scale_anim.setEndValue(target)
-        self._media_scale_anim.start()
 
     def _animate_card_scale(self, target: float, duration: int = 120, easing=QEasingCurve.OutCubic):
         self._card_scale_anim.stop()
@@ -1165,16 +1131,6 @@ class StyledInfoCard(QWidget):
                 media_x = (w - media_size) / 2.0 + self._x_offset
                 media_y = padding + self._y_offset
 
-            # Scale media on hover
-            current_media_scale = self._media_scale
-            if current_media_scale != 1.0:
-                painter.save()
-                cx = media_x + media_size / 2.0
-                cy = media_y + media_size / 2.0
-                painter.translate(cx, cy)
-                painter.scale(current_media_scale, current_media_scale)
-                painter.translate(-cx, -cy)
-
             media_rect = QRectF(media_x, media_y, media_size, media_size)
 
             # Media content — 无灰色背景填充，图标直接绘制，尺寸为 media 区域 × _MEDIA_ICON_SCALE
@@ -1218,9 +1174,6 @@ class StyledInfoCard(QWidget):
                     Qt.AlignCenter,
                     self._media_icon,
                 )
-
-            if current_media_scale != 1.0:
-                painter.restore()
 
             # ── Text Area ──
             # 应用 x/y_offset 偏移到文字布局

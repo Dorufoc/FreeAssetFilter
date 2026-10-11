@@ -409,6 +409,69 @@ class TestFilePoolLayout:
 
         layout.deleteLater()
 
+    def test_section_styles_fragment_keeps_sheet_parseable(
+        self, qapp: QApplication
+    ) -> None:
+        """回归：内容区「面板样式 + 拖放反馈」同片段注册后，组合样式表无畸形规则。
+
+        历史缺陷：``content_style`` 直接拼接「裸声明 + QFrame[dragActive]
+        规则」，``scope_qss`` 会把声明里 rgba(...) 的逗号当选择器分隔符切碎，
+        生成畸形规则；Qt 解析器遇到畸形规则会丢弃整张样式表其后内容
+        （症状：储存池内容区/底栏/空池提示整体失去边框与填充）。
+        """
+        layout = FilePoolLayout()
+        layout.set_section_styles(
+            "rgba(255,255,255,0.05)", "rgba(136,136,136,0.5)"
+        )
+        # 让合并重排的 singleShot 落地（应用级样式表统一下发的唯一入口）
+        _pump_events(qapp)
+        sheet = qapp.styleSheet()
+
+        content_sid = layout._content_area.property("fafQssId")
+        bar_sid = layout._bottom_bar.property("fafQssId")
+        assert content_sid and bar_sid
+
+        def _fragment(sid: str) -> str:
+            """截取组合样式表中某控件片段（按 faf 注释标记分段）。"""
+            marker = f"/* faf:{sid} */"
+            start = sheet.find(marker)
+            assert start != -1, f"片段 {sid} 未进入组合样式表"
+            nxt = sheet.find("/* faf:", start + len(marker))
+            return sheet[start + len(marker) : nxt if nxt != -1 else len(sheet)]
+
+        content_fragment = _fragment(content_sid)
+        # 畸形规则签名：作用域链后直接跟声明文本（rgba 逗号被当选择器分隔）
+        assert '"] background-color' not in content_fragment
+        assert '"] border' not in content_fragment
+        # 面板声明与拖放反馈规则都在，且声明值未被切断
+        assert "background-color: rgba(255,255,255,0.05);" in content_fragment
+        assert "border: 1px solid rgba(136,136,136,0.5);" in content_fragment
+        assert 'dragActive="true"' in content_fragment
+        assert "border: 2px dashed #4a90d9;" in content_fragment
+        # 底栏（同深度、后注册）片段完整保留，不被内容区片段连累
+        assert "background-color: rgba(255,255,255,0.05);" in _fragment(bar_sid)
+        layout.deleteLater()
+
+    def test_drag_feedback_toggles_dynamic_property(self, qapp: QApplication) -> None:
+        """拖放反馈：``dragActive`` 动态属性切换（虚线边框规则的命中条件）。
+
+        样式规则 ``QFrame[dragActive="true"]`` 已随面板片段注册；
+        此处只验证属性切换契约（进入拖拽 True / 离开与落下 False，幂等）。
+        """
+        layout = FilePoolLayout()
+        area = layout._content_area
+        assert bool(area.property("dragActive")) is False
+
+        layout._set_drag_feedback(True)
+        assert bool(area.property("dragActive")) is True
+        # 幂等：重复置位不改变状态
+        layout._set_drag_feedback(True)
+        assert bool(area.property("dragActive")) is True
+
+        layout._set_drag_feedback(False)
+        assert bool(area.property("dragActive")) is False
+        layout.deleteLater()
+
 
 def _legacy_unique_target(directory: str, filename: str) -> str:
     """改造前冲突改名算法（oracle，等价 ``_get_unique_target_path``）。"""
@@ -1657,6 +1720,61 @@ class TestSettingsLayout:
             assert bar.x() == area.width() - bar.width()
         area.hide()
         safe_teardown(area)
+
+    def test_page_scroll_fills_card_and_survives_content_growth(
+        self, qapp: QApplication,
+    ) -> None:
+        """回归：页面滚动区铺满卡片；内容增长后新增行可达（不被裁断）。
+
+        历史缺陷：``_create_page_card`` 曾以 ``addWidget + addStretch`` 排布，
+        ``QScrollArea`` 高度被其缓存的 ``sizeHint`` 钉在页面初始内容高度
+        （约卡片一半）；切换「窗口背景」使内容变高后，新增行被从中间裁断，
+        且缩放窗口也不恢复。修复后滚动区始终铺满卡片内容区（上下各 20px
+        布局边距除外），溢出内容全部经滚动范围可达。
+        """
+        from freeassetfilter.ui.layout.settings_layout import _FloatingScrollArea
+
+        def _expected_fill_height(card: QWidget) -> int:
+            """卡片内滚动区的满高：卡片内容高 - 上下各 20px 布局边距。"""
+            return card.contentsRect().height() - 40
+
+        layout = SettingsLayout()
+        layout.resize(640, 400)
+        layout.show()
+        _pump_events(qapp)
+        try:
+            # 外观页：滚动区铺满卡片内容区
+            appearance_card = layout._stack.widget(0)
+            appearance_area = appearance_card.findChild(_FloatingScrollArea)
+            assert appearance_area is not None
+            assert appearance_area.height() == _expected_fill_height(appearance_card)
+
+            # 通用页：切页后同样铺满
+            layout._stack.setCurrentIndex(1)
+            _pump_events(qapp)
+            general_card = layout._stack.widget(1)
+            general_area = general_card.findChild(_FloatingScrollArea)
+            assert general_area is not None
+            assert general_area.height() == _expected_fill_height(general_card)
+
+            # 切回外观页并增长内容（图像模式：文件行 + 模糊度/透明度滑动条）
+            layout._stack.setCurrentIndex(0)
+            _pump_events(qapp)
+            layout._appearance_page._stage_background_settings("image")
+            _pump_events(qapp)
+
+            # 滚动区仍铺满（不因陈旧 sizeHint 缩回，高度不随内容变化）
+            assert appearance_area.height() == _expected_fill_height(appearance_card)
+
+            # 溢出内容全部经滚动范围可达（而不是被裁断后不可见）
+            page = appearance_area.widget()
+            viewport = appearance_area.viewport()
+            assert page.minimumSizeHint().height() > viewport.height()
+            assert appearance_area.verticalScrollBar().maximum() == (
+                page.height() - viewport.height()
+            )
+        finally:
+            safe_teardown(layout)
 
 
 # =============================================================================

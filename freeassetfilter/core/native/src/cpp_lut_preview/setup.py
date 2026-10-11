@@ -68,6 +68,12 @@ ext_modules = [
     ),
 ]
 
+# ── 后续改进（审查 3.1#20，本轮不涉及；均需重新编译 .pyd 后验证）────────────
+# * -march=native：产物绑定构建机指令集，老 CPU 上执行存在非法指令风险，
+#   建议移除（退回通用 x86-64 基线）；
+# * -ffast-math：改变浮点结果，建议先用 C++ vs numpy 输出对比基准决定去留；
+# * MSVC /MT 与 CPython 扩展 /MD 惯例不符（跨模块堆分配风险），建议改 /MD
+#   并随包解决 msvcp140.dll 分发。
 if platform.system() == "Windows":
     if COMPILER == "mingw":
         info("[Setup] 使用 MinGW 编译器")

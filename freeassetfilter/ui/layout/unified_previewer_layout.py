@@ -525,17 +525,6 @@ class UnifiedPreviewerLayout(QWidget):
         """
         return PreviewerRegistry.get_previewer_class(file_info)
     
-    def _get_preview_type(self, file_info: dict) -> Optional[type]:
-        """获取文件对应的预览器类型（与 _get_previewer_class 相同）。
-        
-        Args:
-            file_info: 文件信息字典
-            
-        Returns:
-            预览器类，如无匹配则返回 None
-        """
-        return self._get_previewer_class(file_info)
-    
     def _is_audio_file(self, file_info: dict) -> bool:
         """判断文件是否为音频文件。
         

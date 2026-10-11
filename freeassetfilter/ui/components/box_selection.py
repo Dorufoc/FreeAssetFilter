@@ -125,6 +125,8 @@ class BoxSelectionGesture(QObject):
         try:
             tm.theme_changed.connect(self._refresh_style)
         except (RuntimeError, TypeError, AttributeError):
+            # 3.1#19 留档：绑定失败即无主题跟随，属预期防御（不改行为；
+            # 后续改进为意外分支补 debug 日志）。
             pass
         app = QApplication.instance()
         if app is not None:
@@ -228,6 +230,7 @@ class BoxSelectionGesture(QObject):
             try:
                 overlay.hide()
             except RuntimeError:
+                # 3.1#19 留档：宿主销毁后的预期防御（后续改进补 debug 日志）。
                 pass
 
     def _show_overlay(self) -> None:
@@ -240,6 +243,7 @@ class BoxSelectionGesture(QObject):
             overlay.show()
             overlay.raise_()
         except RuntimeError:
+            # 3.1#19 留档：宿主销毁后的预期防御。
             pass
 
     def _update_geometry(self, pos: QPoint) -> None:
@@ -257,6 +261,7 @@ class BoxSelectionGesture(QObject):
         try:
             bounds = QRect(QPoint(0, 0), overlay.parentWidget().size())
         except RuntimeError:
+            # 3.1#19 留档：overlay 父级已销毁，预期防御。
             return
 
         scrollbar = self._scrollbar_getter() if self._scrollbar_getter is not None else None
@@ -270,6 +275,7 @@ class BoxSelectionGesture(QObject):
                 try:
                     scrollbar.setValue(scrollbar.value() + dy)
                 except (RuntimeError, AttributeError):
+                    # 3.1#19 留档：滚动条已销毁/接口缺失，预期防御。
                     pass
 
         rect = QRect(start, pos).normalized()
@@ -287,6 +293,7 @@ class BoxSelectionGesture(QObject):
             else:
                 overlay.setGeometry(rect)
         except RuntimeError:
+            # 3.1#19 留档：overlay 已销毁，预期防御。
             pass
 
     def _emit_hits(self) -> None:
@@ -348,4 +355,5 @@ class BoxSelectionGesture(QObject):
         try:
             overlay.set_color(tm.accent)
         except (RuntimeError, AttributeError):
+            # 3.1#19 留档：overlay 已销毁，预期防御。
             pass

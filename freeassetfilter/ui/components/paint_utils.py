@@ -8,7 +8,8 @@ Also hosts :func:`render_soft_shadow`, the pre-baked replacement for
 drop-shadow graphics effects: the shadow bitmap is blurred once with a
 separable box kernel (numpy, triple pass ≈ gaussian), cached per size,
 and composited per frame with a single ``drawPixmap`` — no offscreen
-effect pipeline on the paint path.
+effect pipeline on the paint path. numpy 缺失时同一几何自动降级为纯
+Qt 缩放模糊近似（审查 3.1#15），不再直接 ImportError。
 """
 
 from functools import lru_cache
@@ -273,6 +274,67 @@ def _box_blur_alpha(alpha: "object", radius: int) -> "object":
 
 
 @lru_cache(maxsize=32)
+def _cached_qt_shadow_image(
+    content_w: int,
+    content_h: int,
+    radius_px: int,
+    blur_px: int,
+    color_rgba: tuple[int, int, int, int],
+    pad: int,
+) -> QImage:
+    """numpy 不可用时的纯 Qt 软阴影回退（缩放模糊近似高斯 + alpha 着色）。
+
+    与 :func:`_cached_shadow_bitmap` 同参数：先绘制圆角矩形白 mask，再经
+    2 次「缩小 → 平滑放大」近似模糊，最后用 ``DestinationIn`` 把 tint 颜色
+    按 mask alpha 着色。视觉上比 numpy 盒式模糊更软，仅在 numpy 缺失时
+    启用（审查 3.1#15：与 ``minimalist_background`` 的降级策略对齐）。
+
+    Returns:
+        ``(content_w + 2*pad, content_h + 2*pad)`` 的 ARGB32_Premultiplied
+        阴影图；带 lru_cache（与 numpy 路径同口径，按几何 + 颜色键）。
+    """
+    full_w = content_w + pad * 2
+    full_h = content_h + pad * 2
+
+    mask = QImage(full_w, full_h, QImage.Format_ARGB32_Premultiplied)
+    mask.fill(Qt.transparent)
+    painter = QPainter(mask)
+    try:
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(255, 255, 255))
+        painter.drawRoundedRect(
+            QRectF(pad, pad, content_w, content_h), radius_px, radius_px
+        )
+    finally:
+        painter.end()
+
+    # 缩放模糊：缩小到 1/blur 尺寸再平滑放大，两次迭代让边缘更接近高斯
+    scale = max(2, blur_px)
+    small_w = max(1, full_w // scale)
+    small_h = max(1, full_h // scale)
+    blurred = mask
+    for _ in range(2):
+        blurred = blurred.scaled(
+            small_w, small_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation
+        )
+        blurred = blurred.scaled(
+            full_w, full_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation
+        )
+
+    out = QImage(full_w, full_h, QImage.Format_ARGB32_Premultiplied)
+    out.fill(Qt.transparent)
+    painter = QPainter(out)
+    try:
+        painter.fillRect(out.rect(), QColor(*color_rgba))
+        painter.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+        painter.drawImage(0, 0, blurred)
+    finally:
+        painter.end()
+    return out
+
+
+@lru_cache(maxsize=32)
 def _cached_shadow_bitmap(
     content_w: int,
     content_h: int,
@@ -356,18 +418,26 @@ def render_soft_shadow(
     """
     content_w = max(0, int(content_w))
     content_h = max(0, int(content_h))
+    pad = int(pad)
     if content_w <= 0 or content_h <= 0 or pad <= 0:
         return QPixmap()
     full_w = content_w + pad * 2
     full_h = content_h + pad * 2
-    raw = _cached_shadow_bitmap(
-        content_w,
-        content_h,
-        max(0, int(radius_px)),
-        max(1, int(blur_px)),
-        (color.red(), color.green(), color.blue(), color.alpha()),
-        int(pad),
-    )
+    color_rgba = (color.red(), color.green(), color.blue(), color.alpha())
+    radius_px = max(0, int(radius_px))
+    blur_px = max(1, int(blur_px))
+    try:
+        raw = _cached_shadow_bitmap(
+            content_w, content_h, radius_px, blur_px, color_rgba, pad
+        )
+    except ImportError:
+        # numpy 缺失：纯 Qt 回退（审查 3.1#15，与 minimalist_background 的
+        # 降级策略一致），视觉近似、缓存键相同。
+        return QPixmap.fromImage(
+            _cached_qt_shadow_image(
+                content_w, content_h, radius_px, blur_px, color_rgba, pad
+            )
+        )
     image = QImage(
         raw, full_w, full_h, full_w * 4, QImage.Format_ARGB32
     )

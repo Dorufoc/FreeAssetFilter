@@ -1834,7 +1834,14 @@ class SettingsLayout(QWidget):
         return scroll
 
     def _create_page_card(self, inner_widget: QWidget | None) -> QFrame:
-        """创建圆角卡片容器，内部放置给定 widget。"""
+        """创建圆角卡片容器，内部放置给定 widget。
+
+        内容以 ``stretch=1`` 铺满卡片内容区（与文件选择器/文件池滚动区同
+        规约）：页面滚动区（``_FloatingScrollArea``）若依赖其（缓存的）
+        ``sizeHint`` 定高，会停在首次布局时的内容高度——切换「窗口背景」
+        等操作使页面内容变高后，新增行会被从中间裁断，且缩放窗口不恢复。
+        无内容时保留旧行为的弹性空白（历史占位卡片场景）。
+        """
         card = QFrame()
         card.setObjectName("SettingsCard")
         card_layout = QVBoxLayout(card)
@@ -1842,8 +1849,9 @@ class SettingsLayout(QWidget):
         card_layout.setSpacing(12)
 
         if inner_widget is not None:
-            card_layout.addWidget(inner_widget)
-        card_layout.addStretch()
+            card_layout.addWidget(inner_widget, stretch=1)
+        else:
+            card_layout.addStretch()
         return card
 
     def _refresh_styles(self) -> None:
@@ -2021,7 +2029,7 @@ class SettingsLayout(QWidget):
 
         prev_mode = tm.get_theme_mode()
         prev_theme = "dark" if tm.is_dark_theme() else "light"
-        prev_colors = copy.deepcopy(tm._colors)
+        prev_colors = tm.snapshot_colors()
         try:
             prev_perf_profile = _get_timing_active_profile()
         except Exception:
@@ -2040,8 +2048,7 @@ class SettingsLayout(QWidget):
                 theme = tm.effective_theme()
             except Exception:
                 theme = "dark" if tm.is_dark_theme() else "light"
-            tm._colors["accent"]["primary"] = accent
-            tm.colors_updated.emit(tm._colors)
+            tm.set_color("accent.primary", accent)
 
             self._apply_staged_background_to_main_window(staged_bg)
 
@@ -2055,7 +2062,7 @@ class SettingsLayout(QWidget):
             # 不视为提交失败；只有抛异常才触发回滚。
             self._apply_staged_perf_profile(perf_profile)
 
-            colors_dict = copy.deepcopy(tm._colors)
+            colors_dict = tm.snapshot_colors()
             colors_dict["accent"]["primary"] = saved_accent
 
             v2 = SettingsManagerV2()
@@ -2078,8 +2085,7 @@ class SettingsLayout(QWidget):
             try:
                 tm.set_theme_mode(prev_mode)
                 tm.set_theme(prev_theme)
-                tm._colors.update(prev_colors)
-                tm.colors_updated.emit(tm._colors)
+                tm.replace_colors(prev_colors)
             except Exception:
                 pass
             try:
@@ -2241,15 +2247,5 @@ class SettingsLayout(QWidget):
     def refresh_theme(self) -> None:
         """公共方法：强制刷新当前主题下的所有样式"""
         self._refresh_styles()
-
-        # 刷新侧边栏所有导航项的图标和标签颜色
-        active_idx = self._sidebar._active_index
-        for i, item in enumerate(self._sidebar._items):
-            item._set_active(i == active_idx)
-
-        # 刷新折叠按钮的顶部分隔线颜色
-        if hasattr(self._sidebar, '_toggle_btn'):
-            register_widget_qss(self._sidebar._toggle_btn,(
-                f"SidebarItem {{ background-color: transparent; "
-                f"border-top: 1px solid {tm.alpha_of(tm.surface, 90).name()}; }}"
-            ))
+        # 侧边栏导航项与折叠按钮样式由组件自身刷新（审查 3.1#23）
+        self._sidebar.refresh_visuals()

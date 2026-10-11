@@ -441,6 +441,8 @@ class FileListModel(QAbstractListModel):
                     if ratio > 0:
                         return ratio
         except (RuntimeError, AttributeError, TypeError, ValueError):
+            # 3.1#19 留档：无 QApplication/异常屏环境下取 DPR 失败，预期回退 1.0
+            #（不改行为；后续改进为意外分支补 debug 日志）。
             pass
         return 1.0
 

@@ -76,24 +76,28 @@ class LUTPreviewGenerator:
     
     def load_reference_image(self) -> bool:
         """
-        import numpy as np
         加载参考图像
-        
+
         Returns:
             bool: 加载是否成功
         """
         if not os.path.exists(self.reference_image_path):
             warning(f"参考图像不存在: {self.reference_image_path}")
             return False
-        
+
+        if not PIL_AVAILABLE:
+            # PIL 缺失时必须返回 False：此前返回 True 但 _reference_image 仍为
+            # None，调用方随后 AttributeError 被宽捕获，错误位置被掩盖。
+            warning("PIL/Pillow未安装，无法加载LUT参考图像")
+            return False
+
         try:
-            if PIL_AVAILABLE:
-                with Image.open(self.reference_image_path) as _ref_img:
-                    _ref_img.load()  # ensure pixels loaded before file closed
-                    if _ref_img.mode != 'RGB':
-                        self._reference_image = _ref_img.convert('RGB')
-                    else:
-                        self._reference_image = _ref_img
+            with Image.open(self.reference_image_path) as _ref_img:
+                _ref_img.load()  # ensure pixels loaded before file closed
+                if _ref_img.mode != 'RGB':
+                    self._reference_image = _ref_img.convert('RGB')
+                else:
+                    self._reference_image = _ref_img
             return True
         except (IOError, OSError) as e:
             error(f"加载参考图像失败: {e}")
@@ -414,8 +418,8 @@ class LUTPreviewGenerator:
                 try:
                     os.remove(cache_path)
                 except (IOError, OSError) as e:
-                    error(f"清除缓存失败: {e}")
-                except PermissionError as e:
+                    # PermissionError 是 OSError 子类，已在本分支覆盖；
+                    # 移除此前不可达的独立 except PermissionError（审查 3.1#17③）。
                     error(f"清除缓存失败: {e}")
                 except Exception as e:
                     error(f"清除缓存失败: {e}")
@@ -425,8 +429,6 @@ class LUTPreviewGenerator:
                 for file in Path(preview_dir).glob("*_preview.png"):
                     file.unlink()
             except (IOError, OSError) as e:
-                error(f"清除所有缓存失败: {e}")
-            except PermissionError as e:
                 error(f"清除所有缓存失败: {e}")
             except Exception as e:
                 error(f"清除所有缓存失败: {e}")

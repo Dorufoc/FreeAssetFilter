@@ -48,7 +48,7 @@ from freeassetfilter.core.native.bridges.mpv_player_core import (
 )
 
 # 导入日志模块
-from freeassetfilter.utils.app_logger import info, warning, error, exception_details
+from freeassetfilter.utils.app_logger import info, warning, error, exception_details, debug
 
 # 导入心跳管理器
 from freeassetfilter.core.managers.heartbeat_manager import HeartbeatManager
@@ -151,8 +151,11 @@ class MPVManager(QObject):
         manager.close()
     """
 
-    # 文件加载间隔防御（防止GPU驱动因快速切换文件而崩溃）
-    FILE_LOAD_MIN_INTERVAL: float = 0.5  # 文件加载最小间隔（秒），RTX 5070 Ti + gpu-next + hwdec 已知问题
+    # 文件加载间隔防御（防止GPU驱动因快速切换文件而崩溃）：
+    # RTX 5070 Ti + gpu-next + hwdec 快速切换文件崩溃（0xe24c4a02）的已知
+    # 问题防御。属外部问题跟踪项（审查 3.1#29）：持续跟进 mpv/驱动修复，
+    # 外部修复后需在专项测试覆盖下才能移除此间隔。
+    FILE_LOAD_MIN_INTERVAL: float = 0.5  # 文件加载最小间隔（秒）
 
     # 信号定义
     stateChanged = Signal(MPVState)  # 状态变化信号
@@ -249,6 +252,10 @@ class MPVManager(QObject):
         # MPV核心崩溃状态
         self._core_crashed = False
         self._core_crash_reason: str = ""
+
+        # 当前加载的 LUT 路径（get_current_lut / MPVState.current_lut 的数据源：
+        # 加载成功时置位，卸载成功或核心关闭时清空）
+        self._current_lut: str = ""
         
         # 文件加载间隔防御
         self._last_file_load_time: float = 0.0
@@ -648,6 +655,7 @@ class MPVManager(QObject):
             error(f"关闭MPV核心失败: {e}")
 
         self._mpv_core = None
+        self._current_lut = ""
         self._unregister_luajit_veh()
 
         info("MPV核心已关闭")
@@ -917,6 +925,8 @@ class MPVManager(QObject):
                 result = self._mpv_core.set_glsl_shaders(shader_list)
 
             if result:
+                # 记录当前 LUT 路径（供 get_current_lut / MPVState 查询）
+                self._current_lut = lut_file_path
                 self.lutLoaded.emit(lut_file_path)
                 return True
             else:
@@ -947,6 +957,8 @@ class MPVManager(QObject):
                 result = self._mpv_core.set_vf_filter("")
 
             if result:
+                # 卸载成功：清空记录的 LUT 路径
+                self._current_lut = ""
                 self.lutUnloaded.emit()
                 return True
             else:
@@ -1207,7 +1219,7 @@ class MPVManager(QObject):
         """时长变化回调"""
         # 从core获取当前缓存位置，避免阻塞
         position = self._mpv_core.get_position_cached() if self._mpv_core else 0.0
-        print(f"[MGR_DUR] durationChanged(dur={duration}) → 读取缓存位置 {position} → positionChanged", flush=True)
+        debug(f"MGR_DUR: durationChanged(dur={duration}) → 读取缓存位置 {position} → positionChanged")
         self.positionChanged.emit(position if position is not None else 0.0, duration)
     def _on_volume_changed(self, volume: int):
         """音量变化回调"""
@@ -2296,8 +2308,7 @@ class MPVManager(QObject):
         """
         if self._mpv_core is None:
             return ""
-        # 从core的loop_file属性间接判断LUT状态
-        return ""
+        return self._current_lut
 
     def get_state(self) -> MPVState:
         """
@@ -2444,20 +2455,6 @@ class MPVManager(QObject):
         """
         with self._component_lock:
             return self._registered_components.copy()
-
-    # ==================== 日志管理 ====================
-
-    def get_logs(self, count: int = 100) -> List[Dict[str, Any]]:
-        """
-        获取最近的日志
-
-        Args:
-            count: 日志条数
-
-        Returns:
-            日志列表
-        """
-        return []
 
     # ==================== 析构 ====================
 

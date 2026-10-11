@@ -221,7 +221,7 @@ class TestDeepCopyMpvNode:
         """未识别格式安全返回 None。"""
         node = MpvNode()
         node.u = None
-        node.format = c_int64(99)
+        node.format = 99
         assert _deep_copy_mpv_node(ctypes.pointer(node)) is None
 
 
@@ -315,6 +315,71 @@ class TestCrashedWorkerFastPath:
         core.reset_crash_state()
         assert core._is_worker_crashed() is False  # noqa: SLF001
         assert core.is_closing() is False
+
+
+class TestScreenshotCommand:
+    """``take_screenshot`` / ``_screenshot_internal`` 命令映射（无需真实 DLL）。"""
+
+    def test_take_screenshot_without_init_returns_false(self, qapp: Any) -> None:
+        """未初始化 / 空路径时快速返回 False，不启动工作线程。"""
+        core = MPVPlayerCore()
+        assert core.take_screenshot(r"C:\tmp\shot.png") is False
+        assert core.take_screenshot("") is False
+        assert core._worker_thread is None  # noqa: SLF001
+
+    def test_screenshot_internal_builds_screenshot_to_file_argv(self, qapp: Any) -> None:
+        """内部实现把参数映射为 mpv_command 的 argv（含字幕模式）。"""
+        core = MPVPlayerCore()
+        calls: list = []
+
+        class _Dll:
+            def mpv_command(self, handle, argv):
+                calls.append((handle, [bytes(a) if a else None for a in argv]))
+                return 0
+
+        class _Loader:
+            dll = _Dll()
+
+        core._dll_loader = _Loader()  # noqa: SLF001
+        ok = core._screenshot_internal(  # noqa: SLF001
+            1234, r"C:\tmp shot\out.png", True
+        )
+        assert ok is True
+        assert len(calls) == 1
+        handle, argv = calls[0]
+        assert handle == 1234
+        assert argv[0] == b"screenshot-to-file"
+        assert argv[1] == r"C:\tmp shot\out.png".encode("utf-8")
+        assert argv[2] == b"subtitles"
+
+    def test_screenshot_internal_video_mode_and_failure(self, qapp: Any) -> None:
+        """include_subtitles=False → video 模式；mpv 返回负码 → False。"""
+        core = MPVPlayerCore()
+
+        class _Dll:
+            def mpv_command(self, handle, argv):
+                return -1
+
+        class _Loader:
+            dll = _Dll()
+
+        passed: list = []
+
+        class _DllCapture:
+            def mpv_command(self, handle, argv):
+                passed.append([bytes(a) if a else None for a in argv])
+                return 0
+
+        class _LoaderCapture:
+            dll = _DllCapture()
+
+        core._dll_loader = _LoaderCapture()  # noqa: SLF001
+        assert core._screenshot_internal(7, "x.png", False) is True  # noqa: SLF001
+        assert passed[0][2] == b"video"
+        assert core._screenshot_internal(7, "", True) is False  # noqa: SLF001
+
+        core._dll_loader = _Loader()  # noqa: SLF001
+        assert core._screenshot_internal(7, "x.png", True) is False  # noqa: SLF001
 
 
 # =============================================================================

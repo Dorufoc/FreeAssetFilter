@@ -39,6 +39,52 @@ _CSS_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 _RULE_RE = re.compile(r"([^{}]+)\{([^{}]*)\}", re.DOTALL)
 _SIMPLE_SELECTOR_RE = re.compile(r"^([A-Za-z_][\w]*)(.*)$", re.DOTALL)
 
+
+def _looks_like_declarations(text: str) -> bool:
+    """Check whether *text* is a plain QSS declaration sequence.
+
+    Used to split a fragment shaped ``prop: value; ... selector { ... }``
+    (bare declarations glued in front of a rule). Square/curly brackets
+    only occur in selectors, and unbalanced quotes mark attribute values
+    that may legitimately contain ``;`` — in both cases the text must not
+    be split, because skipping the rule is safer than emitting an
+    unparsable selector (see :func:`scope_qss`).
+
+    Args:
+        text: Candidate declaration text (without trailing ``;``).
+
+    Returns:
+        True when every ``;``-separated segment carries a ``prop: value``
+        pair (or is blank), so the text can safely be treated as
+        declarations.
+    """
+    if not text.strip():
+        return True
+    if any(ch in text for ch in "[]{}"):
+        return False
+    if text.count('"') % 2 or text.count("'") % 2:
+        return False
+    return all(":" in seg for seg in text.split(";") if seg.strip())
+
+
+def _warn_unparsable_fragment(selector: str) -> None:
+    """Best-effort warning for a fragment chunk that cannot be scoped.
+
+    Logging must never break style registration, so any logging failure is
+    ignored. Imported lazily: ``app_logger`` initializes a session logger
+    on import and this module loads during early UI startup.
+
+    Args:
+        selector: Offending selector text (truncated for the message).
+    """
+    try:
+        from freeassetfilter.utils.app_logger import warning
+
+        warning(f"scope_qss: 跳过无法解析的样式片段选择器: {selector[:80]!r}")
+    except Exception:
+        pass
+
+
 #: Dynamic property used to scope registered fragments. Chosen over
 #: ``objectName`` so ``findChild`` lookups and existing ``#id`` selectors
 #: keep working untouched.
@@ -47,6 +93,15 @@ FAF_QSS_PROP = "fafQssId"
 
 def scope_qss(scope_id: str, qss: str, weight: int = 1) -> str:
     """Rewrite *qss* so it only matches the widget carrying *scope_id*.
+
+    Handles the Qt ``setStyleSheet`` semantics for a whole fragment:
+    selector-less declarations cascade to the widget and its subtree,
+    rule blocks keep their relative selectors, and a fragment that glues
+    bare declarations in front of a rule block (``prop: value; ... Sel {
+    ... }``) has the two parts split before scoping. Chunks that cannot
+    be parsed reliably are skipped with a warning — never emitted
+    malformed, because Qt's parser drops the remainder of the sheet
+    after a malformed rule.
 
     Args:
         scope_id: Unique id stored in the widget's ``fafQssId`` property.
@@ -98,6 +153,32 @@ def scope_qss(scope_id: str, qss: str, weight: int = 1) -> str:
             chunks.extend(_bare(stray + ";"))
         selector = match.group(1).strip()
         declarations = match.group(2)
+        # Fragment shaped ``bare declarations; selector { ... }``: the
+        # ``[^{}]+`` group swallows the leading declarations into the
+        # selector text (commas inside values such as ``rgba(255,255,255,.5)``
+        # then shred the selector list), which emits a malformed rule — and
+        # Qt's parser drops the remainder of the sheet after such a rule
+        # (regression: the pool panel lost its styles). Split at the last
+        # top-level ``;``; the left side keeps bare-declaration semantics.
+        if ";" in selector:
+            decls_text, _, selector = selector.rpartition(";")
+            selector = selector.strip()
+            if not _looks_like_declarations(decls_text):
+                _warn_unparsable_fragment(match.group(1).strip())
+                pos = match.end()
+                continue
+            if decls_text.strip():
+                chunks.extend(_bare(decls_text.strip() + ";"))
+        if not selector:
+            pos = match.end()
+            continue
+        if ";" in selector:
+            # A valid QSS selector never contains ``;``: a leftover here
+            # means the split above was not reliable. Skip the rule instead
+            # of emitting text that would poison the sheet's remainder.
+            _warn_unparsable_fragment(selector)
+            pos = match.end()
+            continue
         scoped_parts: list[str] = []
         for part in selector.split(","):
             part = part.strip()
