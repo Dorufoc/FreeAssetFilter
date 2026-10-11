@@ -181,6 +181,41 @@ class PreviewToolbarFrame(QFrame):
         self._menu_labels[id(widget)] = label
         self.request_reflow()
 
+    def remove_widget(self, widget: QWidget) -> None:
+        """移除一个已注册控件（宿主迁移/销毁前调用，防悬挂引用）。
+
+        从四个功能列表、折叠优先级与折叠集合中清出，并从对应布局与父级摘除；
+        幂等：未注册过的控件同样安全。
+        """
+        if widget is None:
+            return
+        removed = False
+        for collection in (
+            self._left_widgets,
+            self._right_widgets,
+            self._lead_widgets,
+            self._trail_widgets,
+            self._overflow_priority,
+            self._folded,
+        ):
+            if widget in collection:
+                collection.remove(widget)
+                removed = True
+        for layout in (self._lead_layout, self._trail_layout, self._info_layout):
+            try:
+                layout.removeWidget(widget)
+            except (RuntimeError, TypeError):
+                pass
+        if widget is self._info_widget:
+            self._info_widget = None
+        self._menu_labels.pop(id(widget), None)
+        try:
+            widget.setParent(None)
+        except RuntimeError:
+            pass
+        if removed:
+            self.request_reflow()
+
     # ── 查询 / 触发 API ──────────────────────────────────────────
 
     def info_available_width(self) -> int:

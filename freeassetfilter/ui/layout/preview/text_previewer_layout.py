@@ -2100,6 +2100,10 @@ class TextPreviewerLayout(QWidget):
             self._search_status.setText("")
         self._search_state = None
 
+    def unified_action_host(self):
+        """统一操作按钮宿主：返回本预览器顶栏（New 布局注入用）。"""
+        return self._top_bar
+
     def cleanup(self) -> None:
         """清理预览内容并重置为覆盖层。"""
         if self._fullscreen:

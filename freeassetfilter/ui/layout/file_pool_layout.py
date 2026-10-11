@@ -31,7 +31,7 @@ from typing import Callable, Optional
 
 from PySide6.QtCore import (
     Qt, Signal, QTimer, QEvent, QRunnable, QThreadPool, QEventLoop,
-    QPoint, QRect, QEasingCurve, QPropertyAnimation, QParallelAnimationGroup,
+    QPoint, QRect, QSize, QEasingCurve, QPropertyAnimation, QParallelAnimationGroup,
     QAbstractAnimation,
 )
 from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDragLeaveEvent, QDropEvent, QPixmap
@@ -47,13 +47,22 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QProgressDialog,
     QSpacerItem,
+    QLayout,
+    QLayoutItem,
+    QWidgetItem,
 )
 
 from theme import tm
 from components.styled_button import StyledButton
 from components.styled_info_card import StyledInfoCard
 from components.box_selection import BoxSelectionGesture
-from components.file_card_delegate import LIST_CONFIG
+from components.file_card_delegate import (
+    CARD_CONFIG,
+    LIST_CONFIG,
+    FileCardDelegate,
+    calc_grid_base_width,
+    calc_grid_cell,
+)
 from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
 from components.styled_dialog import create_input_dialog, ask_custom_dialog
 from freeassetfilter.utils.path_utils import get_app_data_path
@@ -145,6 +154,158 @@ class _ExportCopyRunnable(QRunnable):
             warning(f"导出线程异常: {ex}")
 
 
+class _PoolCardsLayout(QLayout):
+    """暂存池卡片布局：列表（单列全宽）/ 网格（流式多列）双模式。
+
+    - ``list``：每个卡片占满内容宽度、垂直排列（与历史 QVBoxLayout 行为一致）；
+    - ``grid``：卡片固定宽度（由池子按容器宽度与缩放统一计算），流式换行排布。
+
+    兼容历史 QVBoxLayout 用法子集：``addWidget`` / ``insertWidget`` /
+    ``removeWidget`` / ``indexOf`` / ``count`` / ``itemAt`` / ``takeAt`` /
+    ``setSpacing`` / ``setContentsMargins`` / ``addStretch``（空操作，流式
+    布局天然顶部对齐）。``heightForWidth`` 让外层按内容高度同步滚动范围。
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._items: list[QLayoutItem] = []
+        self._mode: str = "list"
+
+    # ── 模式 ─────────────────────────────────────────────────────
+
+    def set_mode(self, mode: str) -> None:
+        """切换排布模式（"list" / "grid"），触发失效重排。"""
+        mode = mode if mode in ("list", "grid") else "list"
+        if mode != self._mode:
+            self._mode = mode
+            self.invalidate()
+
+    @property
+    def mode(self) -> str:
+        """当前排布模式。"""
+        return self._mode
+
+    # ── QLayout 接口 ─────────────────────────────────────────────
+
+    def addItem(self, item: QLayoutItem) -> None:  # noqa: N802
+        self._items.append(item)
+        self.invalidate()
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, index: int) -> Optional[QLayoutItem]:  # noqa: N802
+        if 0 <= index < len(self._items):
+            return self._items[index]
+        return None
+
+    def takeAt(self, index: int) -> Optional[QLayoutItem]:  # noqa: N802
+        if 0 <= index < len(self._items):
+            self.invalidate()
+            return self._items.pop(index)
+        return None
+
+    def expandingDirections(self):
+        return Qt.Orientations(Qt.Orientation(0))
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        return self._do_layout(QRect(0, 0, max(0, width), 0), test_only=True)
+
+    def setGeometry(self, rect: QRect) -> None:  # noqa: N802
+        super().setGeometry(rect)
+        self._do_layout(rect, test_only=False)
+
+    def sizeHint(self):  # noqa: N802
+        width = self.geometry().width()
+        if width <= 0:
+            parent = self.parentWidget()
+            width = parent.width() if parent is not None else 100
+        return QSize(width, self.heightForWidth(width))
+
+    def minimumSize(self):  # noqa: N802
+        width = self.geometry().width()
+        if width <= 0:
+            parent = self.parentWidget()
+            width = parent.width() if parent is not None else 100
+        return QSize(0, self.heightForWidth(width))
+
+    def addStretch(self, stretch: int = 0) -> None:  # noqa: N802
+        """兼容历史 QVBoxLayout 调用：流式布局天然顶部对齐，无需弹簧。"""
+
+    def insertWidget(self, index: int, widget: QWidget) -> None:  # noqa: N802
+        """按索引插入控件（对齐历史 QVBoxLayout.insertWidget 语义）。"""
+        try:
+            widget.setParent(self.parentWidget())
+        except RuntimeError:
+            return
+        index = max(0, min(int(index), len(self._items)))
+        self._items.insert(index, QWidgetItem(widget))
+        self.invalidate()
+
+    # ── 内部排布 ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _item_metrics(item: QLayoutItem) -> tuple[int, int]:
+        """取子项排布尺寸：优先使用控件显式约束（定高 / 固定宽）。"""
+        hint = item.sizeHint()
+        width = max(0, hint.width())
+        height = max(0, hint.height())
+        widget = item.widget()
+        if widget is not None:
+            max_h = widget.maximumHeight()
+            if 0 < max_h < 16777215:
+                height = max_h
+            min_w = widget.minimumWidth()
+            if min_w > 0:
+                width = max(width, min_w)
+        return width, height
+
+    def _do_layout(self, rect: QRect, test_only: bool) -> int:
+        """按模式排布子项并返回所需总高度（test_only 时不写几何）。"""
+        margins = self.contentsMargins()
+        effective = rect.adjusted(
+            margins.left(), margins.top(), -margins.right(), -margins.bottom()
+        )
+        spacing = max(0, self.spacing())
+        x, y = effective.x(), effective.y()
+        line_height = 0
+        placed = False
+
+        for item in self._items:
+            # 注意：不能依赖 item.isEmpty()/控件 isHidden() 跳过——新建控件
+            # 加入布局后要到下一轮事件循环才会被 Qt 显示（QWidgetItem.isEmpty
+            # 在隐藏时为 True），跳过会让首个同步周期的高度/位置失真。
+            if item.widget() is None:
+                continue
+            item_width, item_height = self._item_metrics(item)
+            if self._mode == "grid":
+                if x > effective.x() and x + item_width > effective.right() + 1:
+                    x = effective.x()
+                    y += line_height + spacing
+                    line_height = 0
+                if not test_only:
+                    item.setGeometry(QRect(x, y, item_width, item_height))
+                x += item_width + spacing
+                line_height = max(line_height, item_height)
+            else:
+                if not test_only:
+                    item.setGeometry(
+                        QRect(effective.x(), y, max(effective.width(), 0), item_height)
+                    )
+                y += item_height + spacing
+                line_height = item_height
+            placed = True
+
+        if self._mode == "grid":
+            total = (y + line_height) if placed else effective.y()
+        else:
+            total = (y - spacing) if placed else effective.y()
+        return max(0, total - rect.y() + margins.bottom())
+
+
 class FilePoolLayout(QWidget):
     """文件池布局（中间栏）"""
 
@@ -204,6 +365,15 @@ class FilePoolLayout(QWidget):
         # 直接派生自文件选择器 list 模式 LIST_CONFIG（单一事实来源），
         # 保证暂存池卡片与文件选择器横向卡片的高度、图标、文字排列完全一致。
         self._card_base_overrides: dict = dict(LIST_CONFIG)
+        # 视图模式：list（经典列表）/ grid（New 布局网格，竖向瓦片 + 自动列数）
+        self._view_mode: str = "list"
+        # 各视图模式各自记忆缩放（网格默认最小值，列表默认 1.0）
+        self._list_scale: float = 1.0
+        self._grid_scale: float = self._card_scale_min
+        # 网格瓦片的缩放基准：与文件选择器网格卡同一规格（CARD_CONFIG，
+        # 单一事实来源）。text_width=0 使竖向最小宽度 = padding*2 + media，
+        # 与实际卡宽无关（列宽由 calc_grid_cell 统一计算并 set_fixed_width）。
+        self._grid_base_overrides: dict = dict(CARD_CONFIG, text_width=0)
 
         # ── ScrollArea + StyledInfoCard 列表 ────────────────────────────
         # 与 FileSelectorLayout 一致：隐藏 QScrollArea 自带滚动条，
@@ -223,7 +393,7 @@ class FilePoolLayout(QWidget):
         self._card_container = QWidget()
         self._card_container.setObjectName("FilePoolCardContainer")
         register_widget_qss(self._card_container,("background-color: transparent;"))
-        self._card_layout = QVBoxLayout(self._card_container)
+        self._card_layout = _PoolCardsLayout(self._card_container)
         # 防递归守卫：水平边距动态计算时避免 setContentsMargins 触发的布局重入
         self._updating_pool_margins = False
         # 初始左右边距用「无滚动条居中」默认值（10*dpi），后续由
@@ -235,7 +405,6 @@ class FilePoolLayout(QWidget):
         # 卡片间距与文件选择器 list 模式一致（其卡片间隙基准值为 5，
         # 且随 _card_scale 缩放：gap = int(5 * scale)），此处同样按当前缩放计算。
         self._card_layout.setSpacing(int(5 * self._card_scale))
-        self._card_layout.addStretch(1)  # 将所有卡片推至顶部
         self._scroll_area.setWidget(self._card_container)
 
         content_layout = QVBoxLayout(self._content_area)
@@ -437,6 +606,11 @@ class FilePoolLayout(QWidget):
             self._update_pool_scrollbar_geometry()
             # 宽度/高度变化后同步重算卡片左右边距
             self._update_pool_card_margins()
+            # 边距变化影响网格可用宽度：重算列宽/容器高度
+            self._sync_pool_card_geometry()
+        if obj is self._scroll_area.viewport() and event.type() == QEvent.Resize:
+            # 视口宽度变化：网格重算列数/列宽，两种模式同步容器高度
+            self._sync_pool_card_geometry()
         # 池视口 / 卡片容器 / 卡片及其子控件：滚轮缩放 + 左键框选 + 右键批量移除
         is_pool_target = (
             obj is self._scroll_area.viewport()
@@ -733,9 +907,10 @@ class FilePoolLayout(QWidget):
         super().showEvent(event)
         self._update_pool_scrollbar_geometry()
         self._update_pool_card_margins()
+        self._sync_pool_card_geometry()
 
     def _handle_card_zoom(self, event) -> None:
-        """Ctrl+滚轮：缩放所有 StyledInfoCard 卡片尺寸。"""
+        """Ctrl+滚轮：缩放所有 StyledInfoCard 卡片尺寸（两种视图各自记忆）。"""
         delta = event.angleDelta().y()
         if delta > 0:
             new_scale = min(self._card_scale_max, self._card_scale + 0.1)
@@ -744,26 +919,138 @@ class FilePoolLayout(QWidget):
         else:
             return
         self._card_scale = new_scale
-        # 传入 _card_base_overrides 作为缩放基准（派生自选择器 LIST_CONFIG），
-        # 保证已存在卡片缩放后仍与新加入卡片尺寸一致。
-        for card in self._card_widgets.values():
-            card.set_scale(new_scale, base_overrides=self._card_base_overrides)
-        # 卡片间距随缩放同步变化（与 FileSelectorLayout._update_list_grid 的
-        # gap = int(5 * self._card_scale) 保持一致），缩放时卡片间空隙等比例缩放。
-        self._card_layout.setSpacing(int(5 * new_scale))
+        if self._view_mode == "grid":
+            self._grid_scale = new_scale
+            # 统一规格基准（CARD_CONFIG）；列宽由 _sync_pool_card_geometry 重算
+            for card in self._card_widgets.values():
+                card.set_scale(new_scale, base_overrides=self._grid_base_overrides)
+        else:
+            self._list_scale = new_scale
+            # 传入 _card_base_overrides 作为缩放基准（派生自选择器 LIST_CONFIG），
+            # 保证已存在卡片缩放后仍与新加入卡片尺寸一致。
+            for card in self._card_widgets.values():
+                card.set_scale(new_scale, base_overrides=self._card_base_overrides)
+        # 卡片间距：列表随缩放（与选择器 list 模式一致）；网格固定 4px（与选择器网格一致）
+        self._card_layout.setSpacing(4 if self._view_mode == "grid" else int(5 * new_scale))
+        self._sync_pool_card_geometry()
+
+    # ── 视图模式（列表 / 网格）与几何同步 ─────────────────────────────
+
+    def set_view_mode(self, mode: str) -> None:
+        """切换卡片视图：``list``（经典列表）/ ``grid``（New 布局网格）。
+
+        - 列表：横向信息卡、单列全宽（历史行为，含路径副标题与悬浮重命名/删除），
+          缩放记忆 ``_list_scale``；
+        - 网格：竖向平铺瓦片（与文件选择器网格卡同一规格：居中双行文件名、
+          无副标题、无悬浮操作），自动列数流式排布，缩放记忆 ``_grid_scale``
+          （默认最小值 0.7，Ctrl+滚轮仍可缩放）；
+        - 现有卡片原地迁移（不重建），切换后立即重排。
+        """
+        mode = mode if mode in ("list", "grid") else "list"
+        if mode == self._view_mode:
+            return
+        # 记忆当前模式的缩放，取回目标模式的缩放
+        if self._view_mode == "grid":
+            self._grid_scale = self._card_scale
+        else:
+            self._list_scale = self._card_scale
+        self._view_mode = mode
+        self._card_scale = self._grid_scale if mode == "grid" else self._list_scale
+        self._card_layout.set_mode(mode)
+
+        # 现有卡片原地迁移形态/样式与缩放基准
+        card_layout_mode = self._card_layout_mode()
+        is_grid = mode == "grid"
+        for path, card in self._card_widgets.items():
+            card.set_tile_style(is_grid)
+            card.set_layout_mode(card_layout_mode)
+            if is_grid:
+                card.clear_actions()
+                card.setToolTip(path)
+                card.set_scale(
+                    self._card_scale, base_overrides=self._grid_base_overrides
+                )
+            else:
+                card.setToolTip("")
+                card.clear_actions()
+                self._add_card_actions(card, path)
+                card.set_fixed_width(None)
+                card.set_scale(
+                    self._card_scale, base_overrides=self._card_base_overrides
+                )
+        self._card_layout.setSpacing(4 if is_grid else int(5 * self._card_scale))
+        self._sync_pool_card_geometry()
+
+    def get_view_mode(self) -> str:
+        """返回当前视图模式（"list" / "grid"，供测试与主窗口查询）。"""
+        return self._view_mode
+
+    def _card_layout_mode(self) -> str:
+        """当前视图对应的卡片形态（列表=horizontal / 网格=vertical）。"""
+        return "vertical" if self._view_mode == "grid" else "horizontal"
+
+    def _sync_pool_card_geometry(self) -> None:
+        """按当前视图同步卡片几何（网格：列数/列宽；两种模式：容器高度）。"""
+        if self._view_mode == "grid":
+            self._sync_grid_geometry()
+        else:
+            self._sync_card_container_height()
+
+    def _sync_grid_geometry(self) -> None:
+        """网格模式：按与文件选择器相同的算法重算列数/列宽并同步容器高度。
+
+        基准宽由 ``calc_grid_base_width(self.font())`` × 缩放得出，列数/列宽
+        经 ``calc_grid_cell``（共享单一事实来源）计算——同一缩放、同一可用
+        宽度下，池子与选择器的卡片尺寸完全一致。
+        """
+        viewport_w = self._scroll_area.viewport().width()
+        if viewport_w <= 0:
+            return
+        margins = self._card_layout.contentsMargins()
+        available = max(0, viewport_w - margins.left() - margins.right())
+        spacing = int(4 * 1.0)
+        base_width = int(calc_grid_base_width(self.font()) * self._card_scale)
+        if self._card_widgets:
+            _, col_w = calc_grid_cell(available, base_width, spacing)
+            for card in self._card_widgets.values():
+                card.set_fixed_width(col_w)
+        self._sync_card_container_height()
+
+    def _sync_card_container_height(self) -> None:
+        """按当前布局内容同步卡片容器固定高度（保证滚动范围正确）。
+
+        容器高度由布局 ``heightForWidth`` 计算（列表=卡片高度总和；
+        网格=行数 × 行高）；内容不足一屏时外层仍会按视口撑满，无副作用。
+        """
+        viewport_w = self._scroll_area.viewport().width()
+        if viewport_w <= 0:
+            return
+        target = max(1, self._card_layout.heightForWidth(viewport_w))
+        if self._card_container.minimumHeight() != target:
+            self._card_container.setFixedHeight(target)
 
     # 仅布局尺寸键参与缩放；文字字号（title/subtitle/desc）必须原样保留，
     # 与 FileCardDelegate._get_scaled_config / StyledInfoCard.set_scale 行为一致——
     # Ctrl+滚轮缩放卡片时文字大小不跟随变化。weight/radius 等键同样原样保留，
     # 否则 title_weight=700 会被放大为非法字重（与 StyledInfoCard.set_scale 行为对齐）。
-    _SCALABLE_SIZE_KEYS = ("padding", "gap", "media_size", "icon_size")
+    # text_width 为竖向形态的文字基准宽度（随缩放参与最小宽度计算）。
+    _SCALABLE_SIZE_KEYS = ("padding", "gap", "media_size", "icon_size", "text_width")
 
     def _build_card_size_overrides(self) -> dict:
-        """根据当前 _card_scale 构建 size_overrides（与 set_scale + base_overrides 等价）。"""
+        """按当前视图模式与缩放构建 size_overrides。
+
+        列表：以 LIST_CONFIG（与文件选择器 list 卡片一致）为基准；
+        网格：以竖向 SIZE_CONFIG（含 text_width）为基准。
+        """
+        base = (
+            self._card_base_overrides
+            if self._view_mode == "list"
+            else self._grid_base_overrides
+        )
         scale = self._card_scale
         return {
             key: max(1, int(value * scale)) if key in self._SCALABLE_SIZE_KEYS else value
-            for key, value in self._card_base_overrides.items()
+            for key, value in base.items()
         }
 
     # ═════════════════════════════════════════════════════════════════════
@@ -870,6 +1157,30 @@ class FilePoolLayout(QWidget):
     #  文件操作
     # ═════════════════════════════════════════════════════════════════════
 
+    def _add_card_actions(self, card: StyledInfoCard, file_path: str) -> None:
+        """为列表卡添加悬浮操作按钮（重命名 / 删除）。
+
+        网格瓦片卡不添加按钮（删除走右键；New 布局下暂不提供重命名）。
+
+        Args:
+            card: 目标卡片。
+            file_path: 卡片对应文件路径（按钮回调绑定用）。
+        """
+        trash_icon = str(self._icons_dir / "trash.svg")
+        card.add_action(
+            "重命名",
+            variant="secondary",
+            size="sm",
+            callback=lambda fp=file_path: self.rename_file_by_path(fp),
+        )
+        card.add_action(
+            "",
+            icon=trash_icon,
+            variant="danger",
+            size="sm",
+            callback=lambda fp=file_path: self.remove_file(fp),
+        )
+
     def add_file(self, file_info: dict) -> None:
         """添加文件或文件夹到暂存池（创建 StyledInfoCard widget）。"""
         file_path = os.path.normpath(file_info["path"])
@@ -887,12 +1198,16 @@ class FilePoolLayout(QWidget):
         # 创建 StyledInfoCard
         display_name = file_info.get("display_name") or file_info.get("name") or os.path.basename(file_path)
         info_text = self._build_info_text(file_info)
-        # size_overrides 基于当前 _card_scale 动态计算，使新加入卡片继承用户最新的缩放
+        is_grid = self._view_mode == "grid"
+        # size_overrides 基于当前 _card_scale 动态计算，使新加入卡片继承用户最新的缩放；
+        # 卡片形态/样式随视图模式：列表=横向信息卡（历史），网格=竖向平铺瓦片（New 布局，
+        # 与文件选择器网格卡同一规格：居中文件名 + 无副标题 + 无悬浮操作）
         card = StyledInfoCard(
-            layout_mode="horizontal",
+            layout_mode=self._card_layout_mode(),
             title=display_name,
-            subtitle=info_text,
-            overlay_enabled=True,
+            subtitle="" if is_grid else info_text,
+            overlay_enabled=not is_grid,
+            tile_style=is_grid,
             size_overrides=self._build_card_size_overrides(),
             parent=self._card_container,
         )
@@ -903,22 +1218,12 @@ class FilePoolLayout(QWidget):
         if icon_pixmap and not icon_pixmap.isNull():
             card.set_media_pixmap(icon_pixmap)
 
-        # 添加 hover 操作按钮（StyledInfoCard 原生 overlay，使用 StyledButton）
-        norm_path = file_path
-        trash_icon = str(self._icons_dir / "trash.svg")
-        card.add_action(
-            "重命名",
-            variant="secondary",
-            size="sm",
-            callback=lambda fp=norm_path: self.rename_file_by_path(fp),
-        )
-        card.add_action(
-            "",
-            icon=trash_icon,
-            variant="danger",
-            size="sm",
-            callback=lambda fp=norm_path: self.remove_file(fp),
-        )
+        if is_grid:
+            # 网格瓦片：无悬浮操作按钮（删除走右键，New 布局下不提供重命名），
+            # 隐藏的副标题信息以 tooltip 提供
+            card.setToolTip(info_text or file_path)
+        else:
+            self._add_card_actions(card, file_path)
 
         # 点击预览
         card.clicked.connect(self._handle_card_clicked)
@@ -942,18 +1247,19 @@ class FilePoolLayout(QWidget):
         if is_animation_enabled("file_record_changes", default=True):
             card.card_opacity = 0.0
 
-        # 插入到 stretch 之前。用 setUpdatesEnabled 包裹，强制 layout 同步计算，
-        # 避免 QScrollArea 异步更新 _card_container geometry 时产生中间状态，
-        # 导致已有卡片视觉位置跳变（抽搐）。
-        insert_idx = self._card_layout.count() - 1
+        # 插入到末尾（视图布局无尾部弹簧）。用 setUpdatesEnabled 包裹，强制
+        # layout 同步计算，避免 QScrollArea 异步更新 _card_container geometry
+        # 时产生中间状态，导致已有卡片视觉位置跳变（抽搐）。
         self._card_container.setUpdatesEnabled(False)
         try:
-            self._card_layout.insertWidget(insert_idx, card)
+            self._card_layout.addWidget(card)
             self._card_layout.activate()
         finally:
             self._card_container.setUpdatesEnabled(True)
             self._card_container.update()
         self._card_widgets[file_path] = card
+        # 新增卡片后同步视图几何（网格：列宽与容器高度；列表：容器高度）
+        self._sync_pool_card_geometry()
 
         self.items.append(file_info)
         self.update_stats()
@@ -1257,11 +1563,11 @@ class FilePoolLayout(QWidget):
 
         removed_index = self._card_layout.indexOf(card)
 
-        # 在目标位置预先插入一个等高的透明占位控件。
-        # 退出动画期间目标卡片仍在视觉上占据原位置，下方卡片不会提前上移，
-        # 避免与被移除卡片发生重叠。
+        # 列表模式：在目标位置预先插入一个等高的透明占位控件——退出动画期间
+        # 目标卡片仍在视觉上占据原位置，下方卡片不会提前上移，避免重叠；
+        # 网格模式：直接移出布局，其余卡片由流式布局整体重排（无占位折叠）。
         placeholder: Optional[QWidget] = None
-        if removed_index >= 0:
+        if removed_index >= 0 and self._view_mode == "list":
             placeholder = QWidget(self._card_container)
             placeholder.setFixedHeight(start_rect.height())
             placeholder.setStyleSheet("background: transparent; border: none;")
@@ -1305,6 +1611,8 @@ class FilePoolLayout(QWidget):
         self.items = [f for f in self.items if os.path.normpath(f.get("path", "")) != file_path]
         self.update_stats()
         self._save_backup_if_needed()
+        # 卡片已移除：网格重排 / 容器高度同步
+        self._sync_pool_card_geometry()
         self.pool_changed.emit()
 
     def _collapse_placeholder(
@@ -1321,6 +1629,7 @@ class FilePoolLayout(QWidget):
                 placeholder.deleteLater()
             except RuntimeError:
                 pass
+            self._sync_pool_card_geometry()
             return
 
         start_height = placeholder.height()
@@ -1330,6 +1639,7 @@ class FilePoolLayout(QWidget):
                 placeholder.deleteLater()
             except RuntimeError:
                 pass
+            self._sync_pool_card_geometry()
             return
 
         placeholder.setMinimumHeight(0)
@@ -1353,6 +1663,8 @@ class FilePoolLayout(QWidget):
                 placeholder.deleteLater()
             except RuntimeError:
                 pass
+            # 折叠完成：容器高度随内容回收
+            self._sync_pool_card_geometry()
 
         group.finished.connect(_cleanup)
         self._active_remove_motion_groups[removed_path] = group
@@ -1379,6 +1691,7 @@ class FilePoolLayout(QWidget):
             group.deleteLater()
         except RuntimeError:
             pass
+        self._sync_pool_card_geometry()
 
     def _cancel_all_remove_motions(self) -> None:
         """停止所有进行中的移除位移动画。"""
@@ -1429,6 +1742,8 @@ class FilePoolLayout(QWidget):
         self.previewing_file_path = None
         self.update_stats()
         self._save_backup_if_needed()
+        # 卡片全部移出布局：容器高度立即回收
+        self._sync_pool_card_geometry()
         self.pool_changed.emit()
 
         # 统一播放淡出左移动画
@@ -1463,6 +1778,7 @@ class FilePoolLayout(QWidget):
         self.previewing_file_path = None
         self.update_stats()
         self._save_backup_if_needed()
+        self._sync_pool_card_geometry()
         self.pool_changed.emit()
 
     def update_stats(self) -> None:

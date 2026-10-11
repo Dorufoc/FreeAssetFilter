@@ -27,7 +27,13 @@ from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
 from components.styled_loading import StyledLoading
 from components.box_selection import BoxSelectionGesture
 from components.file_list_model import FileListModel, FilePathRole, FileNameRole, IsDirRole, FileSizeRole, ModifiedRole, CreatedRole, SuffixRole, IsPreviewingRole, IconPixmapRole
-from components.file_card_delegate import FileCardDelegate, CARD_CONFIG, LIST_CONFIG
+from components.file_card_delegate import (
+    FileCardDelegate,
+    CARD_CONFIG,
+    LIST_CONFIG,
+    calc_grid_base_width,
+    calc_grid_cell,
+)
 from components.animated_file_list_view import AnimatedFileListView
 from freeassetfilter.services.favorites_service import FavoritesService
 from freeassetfilter.services.file_icon_manager import FileIconManager
@@ -2181,22 +2187,12 @@ class FileSelectorLayout(QWidget):
     # ── 卡片尺寸与列数计算（移植自旧 CustomFileSelector）────────────────────
 
     def _calculate_card_base_width(self) -> int:
-        """计算卡片的基础宽度（基于日期文本宽度），与旧 file_selector.py 保持一致。"""
-        dpi = 1.0
-        base_min_width = int(50 * dpi)
+        """计算卡片的基础宽度（基于日期文本宽度），与旧 file_selector.py 保持一致。
 
-        small_font = QFont(self.font())
-        small_font.setPointSize(int(self.font().pointSize() * 0.85))
-        small_font_metrics = QFontMetrics(small_font)
-
-        date_text = "2024-12-31"
-        date_text_width = small_font_metrics.horizontalAdvance(date_text)
-        char_width = small_font_metrics.horizontalAdvance("W")
-        horizontal_margins = int(4 * dpi) * 2
-        border_width = int(1 * dpi) * 2
-
-        required_width = date_text_width + char_width + horizontal_margins + border_width
-        return max(required_width, base_min_width)
+        公式已抽取为 ``file_card_delegate.calc_grid_base_width``（选择器与
+        储存池网格共用，单一事实来源）。
+        """
+        return calc_grid_base_width(self.font())
 
     def _update_minimum_width(self) -> None:
         """设置最小宽度，确保至少能显示 3 列卡片（与旧 file_selector.py 一致）。"""
@@ -2226,12 +2222,10 @@ class FileSelectorLayout(QWidget):
         margin = edge_padding
 
         available_width = max(0, file_list_width - 2 * margin)
-        cell_base_width = card_base_width + spacing
-        max_cols = max(1, available_width // max(1, cell_base_width))
-
-        # 先确定列数，再在该列数内部平滑放大卡片，避免 resize 时列数来回抖动
-        cell_width = max(cell_base_width, available_width // max_cols)
-        card_width = max(card_base_width, cell_width - spacing)
+        # 列数/列宽计算：与储存池网格共用（file_card_delegate.calc_grid_cell）
+        max_cols, card_width = calc_grid_cell(
+            available_width, card_base_width, spacing
+        )
 
         _, card_height = FileCardDelegate._calc_card_size(CARD_CONFIG, self._card_scale)
         grid_cell_width = card_width + spacing

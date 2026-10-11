@@ -2,7 +2,7 @@
 全屏宿主窗口 — 将内嵌的 previewer layout 分离到独立 frameless 全屏窗口
 
 背景：新版 preview layout（font / image / pdf / text / video）内嵌在主窗口
-（UnifiedPreviewerLayout → MainWindow._panel_right）时，旧实现直接调用
+（UnifiedPreviewerLayout → 主布局预览区 ZonePreview）时，旧实现直接调用
 ``self.window().showFullScreen()``，而 ``window()`` 返回的是主窗口
 （FramelessMainWindow），导致整个主窗口被无边框全屏化。
 

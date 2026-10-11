@@ -398,6 +398,54 @@ LIST_CONFIG: Dict[str, Any] = {
 }
 
 
+def calc_grid_base_width(reference_font: QFont, dpi: float = 1.0) -> int:
+    """网格卡片列宽基准（基于日期文本宽度；选择器与储存池共用，单一事实来源）。
+
+    公式与旧 ``file_selector.py`` 一致：日期文本宽 + 单字符宽 + 水平边距 +
+    边框，下限 50px；调用方按需乘以缩放系数得到实际基准宽。
+
+    Args:
+        reference_font: 参照字体（通常为宿主控件的 ``font()``）。
+        dpi: DPI 缩放系数（默认 1.0，与项目现状一致）。
+
+    Returns:
+        int: 未缩放的列宽基准（px）。
+    """
+    base_min_width = int(50 * dpi)
+    small_font = QFont(reference_font)
+    small_font.setPointSize(max(1, int(reference_font.pointSize() * 0.85)))
+    small_font_metrics = QFontMetrics(small_font)
+    date_text_width = small_font_metrics.horizontalAdvance("2024-12-31")
+    char_width = small_font_metrics.horizontalAdvance("W")
+    horizontal_margins = int(4 * dpi) * 2
+    border_width = int(1 * dpi) * 2
+    required_width = date_text_width + char_width + horizontal_margins + border_width
+    return max(required_width, base_min_width)
+
+
+def calc_grid_cell(
+    available_width: int, base_width: int, spacing: int
+) -> tuple:
+    """网格列数与列宽计算（选择器与储存池共用，单一事实来源）。
+
+    先按基准宽确定列数，再在该列数内平滑放大列宽填满可用宽度——避免
+    resize 时列数来回抖动。
+
+    Args:
+        available_width: 可用内容宽度（px）。
+        base_width: 已缩放的列宽基准（px）。
+        spacing: 单元间距（px）。
+
+    Returns:
+        tuple: ``(cols, card_width)``，列数与卡片宽度（px）。
+    """
+    cell_base = base_width + spacing
+    cols = max(1, available_width // max(1, cell_base))
+    cell_width = max(cell_base, available_width // cols)
+    card_width = max(base_width, cell_width - spacing)
+    return cols, card_width
+
+
 class FileCardDelegate(QStyledItemDelegate):
     """文件卡片委托，支持 card（网格）和 list（列表）两种模式。
 

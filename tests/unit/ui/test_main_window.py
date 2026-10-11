@@ -4,8 +4,8 @@
 覆盖 ui.main_window：只测构造与结构，不 exec() 主事件循环。
 
 断言范围（QA 要求）：
-- 三栏布局拼装：splitter 上三栏（_panel_left / _panel_center / _panel_right）
-- 各栏构建入口：_build_panel("left"/"center"/"right") 后对应布局非 None
+- 主布局装配：MainLayout 四区域（selector / preview / pool / info）
+- 各区域构建入口：_build_panel("selector"/"preview"/"pool"/"info") 后对应布局非 None
 - 菜单动作存在：标题栏按钮与主题切换入口
 - 关闭清理：closeEvent 安全（不 show，用 QCloseEvent 手动触发）
 - 不弹真实窗口（不调用 show）；不出错地跨过 _dispose_mica
@@ -118,22 +118,31 @@ def _block_deferred_panel_build(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestMainWindowStructure:
-    """三栏结构：splitter / 面板 / 标题栏均就绪。"""
+    """主布局结构：MainLayout 四区域 / 占位 / 标题栏均就绪。"""
 
-    def test_three_panel_splitter(self, qapp: QApplication) -> None:
-        """splitter 已挂载三栏面板（左/中/右）。"""
+    def test_main_layout_zones(self, qapp: QApplication) -> None:
+        """MainLayout 已挂载 4 个区域（selector / preview / pool / info）。"""
         window = MainWindow()
-        assert window._splitter is not None
-        assert window._splitter.count() == 3
-        assert len(window._panels) == 3
+        assert window._main_layout is not None
+        assert window._main_layout.mode == "workspace"
+        assert set(window._main_layout.zones.keys()) == {
+            "selector", "preview", "pool", "info",
+        }
+        assert len(window._zone_placeholders) == 4
+        assert all(ph is not None for ph in window._zone_placeholders.values())
         window.deleteLater()
         qapp.processEvents()
 
-    def test_panel_object_names(self, qapp: QApplication) -> None:
-        """三栏对象名符合约定（PanelLeft / PanelCenter / PanelRight）。"""
+    def test_zone_object_names(self, qapp: QApplication) -> None:
+        """区域对象名符合约定（MainZoneSelector / Preview / Pool / Info）。"""
         window = MainWindow()
-        names = [panel.objectName() for panel in window._panels]
-        assert names == ["PanelLeft", "PanelCenter", "PanelRight"]
+        names = [zone.objectName() for zone in window._main_layout.zones.values()]
+        assert names == [
+            "MainZoneSelector",
+            "MainZonePreview",
+            "MainZonePool",
+            "MainZoneInfo",
+        ]
         window.deleteLater()
         qapp.processEvents()
 
@@ -156,7 +165,7 @@ class TestMainWindowStructure:
         """轻量启动模式先提供标题栏与加载覆盖层，不创建业务面板。"""
         window = MainWindow(defer_heavy_init=True)
         assert window._content is not None
-        assert window._splitter is None
+        assert window._main_layout is None
         assert window._startup_overlay is not None
         for attr in (
             "_minimize_btn",
@@ -178,62 +187,65 @@ class TestMainWindowStructure:
         window.initialize_deferred_content()
         assert window._deferred_content_ready is True
         assert window._root is root or window._root is not None
-        assert window._splitter is not None
+        assert window._main_layout is not None
         window.deleteLater()
         qapp.processEvents()
 
     def test_placeholder_panels_initially(self, qapp: QApplication) -> None:
-        """三栏初始为占位标签，真实布局延迟到 _build_panel 才就绪。"""
+        """四区域初始为占位标签，真实布局延迟到 _build_panel 才就绪。"""
         window = MainWindow()
         assert window._file_selector is None
         assert window._file_pool is None
         assert window._previewer is None
-        assert window._panel_left_placeholder is not None
+        assert window._info_panel is None
+        assert window._zone_placeholders["selector"] is not None
         window.deleteLater()
         qapp.processEvents()
 
 
 class TestMainWindowPanelBuild:
-    """三栏真实布局构建：手动触发 _build_panel（不 show 窗口）。"""
+    """四区域真实布局构建：手动触发 _build_panel（不 show 窗口）。"""
 
     def test_build_all_panels(self, qapp: QApplication) -> None:
-        """依次构建左/中/右三栏：file_selector/file_pool/previewer 就绪。"""
+        """依次构建四区域：file_selector/file_pool/previewer/info 就绪。"""
         window = MainWindow()
-        window._build_panel("left")
-        window._build_panel("center")
-        window._build_panel("right")
+        window._build_panel("selector")
+        window._build_panel("preview")
+        window._build_panel("pool")
+        window._build_panel("info")
         assert window._file_selector is not None
         assert window._file_pool is not None
         assert window._previewer is not None
+        assert window._info_panel is not None
         # 占位标签已被移除
-        assert window._panel_left_placeholder is None
-        assert window._panel_center_placeholder is None
-        assert window._panel_right_placeholder is None
+        assert all(ph is None for ph in window._zone_placeholders.values())
         window.deleteLater()
         qapp.processEvents()
 
     def test_build_single_panel_then_placeholders_remain(
         self, qapp: QApplication
     ) -> None:
-        """只构建左栏时，中/右栏占位仍在。"""
+        """只构建选择器时，其余区域占位仍在。"""
         window = MainWindow()
-        window._build_panel("left")
+        window._build_panel("selector")
         assert window._file_selector is not None
         assert window._file_pool is None
         assert window._previewer is None
-        assert window._panel_left_placeholder is None
-        assert window._panel_center_placeholder is not None
-        assert window._panel_right_placeholder is not None
+        assert window._info_panel is None
+        assert window._zone_placeholders["selector"] is None
+        assert window._zone_placeholders["preview"] is not None
+        assert window._zone_placeholders["pool"] is not None
+        assert window._zone_placeholders["info"] is not None
         window.deleteLater()
         qapp.processEvents()
 
     def test_build_panel_failure_is_isolated(
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """单栏构建失败不拖垮整体启动（_build_panel 内部捕获异常）。"""
+        """单区域构建失败不拖垮整体启动（_build_panel 内部捕获异常）。"""
         window = MainWindow()
         # 注入必失败模块：让 file_selector 构造抛异常。
-        # 三栏布局模块由 _build_panel 局部导入（首帧提速），故补丁打在
+        # 布局模块由 _build_panel 局部导入（首帧提速），故补丁打在
         # 源模块属性上——局部导入在调用时才读取该属性。
         def _boom_selector(*_args: object, **_kwargs: object) -> object:
             raise RuntimeError("injected build failure")
@@ -241,12 +253,49 @@ class TestMainWindowPanelBuild:
         monkeypatch.setattr(
             "layout.file_selector_layout.FileSelectorLayout", _boom_selector
         )
-        window._build_panel("left")
-        # 左栏失败：_file_selector 仍为 None，中/右栏不受影响
+        window._build_panel("selector")
+        # 选择器失败：_file_selector 仍为 None，其余区域不受影响
         assert window._file_selector is None
-        window._build_panel("center")
+        window._build_panel("pool")
         assert window._file_pool is not None
         monkeypatch.undo()
+        window.deleteLater()
+        qapp.processEvents()
+
+    def test_set_layout_mode_switches_pool_and_previewer(
+        self, qapp: QApplication
+    ) -> None:
+        """set_layout_mode：池子视图 / 按钮承载方式 / 底栏宿主随布局切换。"""
+        window = MainWindow()
+        window._build_panel("preview")
+        window._build_panel("pool")
+        assert window._layout_mode == "workspace"
+        assert window._file_pool.get_view_mode() == "grid"
+        assert window._previewer._actions_top is True
+        # New：底栏留在预览器内部（隐藏），无经典槽位
+        assert window._main_layout.classic_action_slot() is None
+        assert window._previewer._bottom_bar.parentWidget() is window._previewer
+
+        assert window.set_layout_mode("classic") is True
+        assert window._layout_mode == "classic"
+        assert window._file_pool.get_view_mode() == "list"
+        assert window._previewer._actions_top is False
+        # 经典：底栏挂到右列槽位（信息面板下方，整列最底部）
+        slot = window._main_layout.classic_action_slot()
+        assert slot is not None
+        assert window._previewer._bottom_bar.parentWidget() is slot
+        assert window._previewer._bottom_bar.isHidden() is False
+
+        assert window.set_layout_mode("workspace") is True
+        assert window._file_pool.get_view_mode() == "grid"
+        assert window._previewer._actions_top is True
+        # 切回 New：底栏归位到预览器内部并隐藏
+        assert window._previewer._bottom_bar.parentWidget() is window._previewer
+        assert window._previewer._bottom_bar.isHidden() is True
+
+        # 非法值：拒绝且不改变状态
+        assert window.set_layout_mode("bogus") is False
+        assert window._layout_mode == "workspace"
         window.deleteLater()
         qapp.processEvents()
 
@@ -264,11 +313,12 @@ class TestMainWindowClose:
         qapp.processEvents()
 
     def test_close_event_with_panels(self, qapp: QApplication) -> None:
-        """已构建三栏后 closeEvent 仍安全（flush_backup 受保护）。"""
+        """已构建全部区域后 closeEvent 仍安全（flush_backup / info 停止受保护）。"""
         window = MainWindow()
-        window._build_panel("left")
-        window._build_panel("center")
-        window._build_panel("right")
+        window._build_panel("selector")
+        window._build_panel("preview")
+        window._build_panel("pool")
+        window._build_panel("info")
         window.closeEvent(QCloseEvent())
         window.deleteLater()
         qapp.processEvents()

@@ -125,3 +125,58 @@ class TestNoRegressionOnAppearance:
         assert settings["appearance"]["theme"] == "dark"
         assert settings["appearance"]["background"]["mode"] == "mica"
         assert settings["performance"]["profile"] == "balanced"
+
+
+class TestGeneralLayoutMode:
+    """general.layout_mode：默认值、往返与合并（主界面布局切换）。"""
+
+    def test_default_layout_mode_is_workspace(self) -> None:
+        """默认树含 general.layout_mode == workspace。"""
+        assert DEFAULT_SETTINGS_V2["general"]["layout_mode"] == "workspace"
+
+    def test_fresh_load_has_layout_mode(self, tmp_path: Path) -> None:
+        """新文件加载即含 general.layout_mode（默认 workspace）。"""
+        v2 = _fresh_v2(tmp_path)
+        v2.load()
+        assert v2.get("general.layout_mode") == "workspace"
+
+    @pytest.mark.parametrize("mode", ["classic", "workspace"])
+    def test_save_load_merge_keeps_value(self, tmp_path: Path, mode: str) -> None:
+        """save → 新实例 load → merge 后布局模式保持（往返不丢失）。"""
+        tmp_file = str(tmp_path / "settings_v2.json")
+        v2 = SettingsManagerV2(tmp_file)
+        v2.load()
+        v2.set("general.layout_mode", mode)
+        v2.save()
+
+        fresh = SettingsManagerV2(tmp_file)
+        fresh.load()
+        assert fresh.get("general.layout_mode") == mode
+
+    def test_old_file_missing_key_merges_default(self, tmp_path: Path) -> None:
+        """旧文件缺 general 域：合并后回退 workspace（不抛异常）。"""
+        import json
+
+        tmp_file = tmp_path / "settings_v2.json"
+        tmp_file.write_text(
+            json.dumps({"version": 2, "appearance": {"theme": "dark"}}),
+            encoding="utf-8",
+        )
+        v2 = SettingsManagerV2(str(tmp_file))
+        v2.load()
+        assert v2.get("general.layout_mode") == "workspace"
+
+    def test_invalid_value_falls_back_default(self, tmp_path: Path) -> None:
+        """非法布局模式：合并时回退 workspace。"""
+        import json
+
+        tmp_file = tmp_path / "settings_v2.json"
+        tmp_file.write_text(
+            json.dumps(
+                {"version": 2, "general": {"layout_mode": "bogus-layout"}}
+            ),
+            encoding="utf-8",
+        )
+        v2 = SettingsManagerV2(str(tmp_file))
+        v2.load()
+        assert v2.get("general.layout_mode") == "workspace"

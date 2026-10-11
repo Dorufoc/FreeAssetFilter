@@ -690,16 +690,18 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._background_ambient = True
         self._root = None
         self._content = None
-        self._panels = []
-        self._splitter = None
-        # 三栏布局延迟构建，先置 None 避免提前访问未定义属性
+        # 主布局装配（classic / workspace 两种组装；延迟构建，先置 None）
+        self._layout_mode = "workspace"
+        self._main_layout = None
+        self._zones = {}
+        # 区域占位标签（加载中…），真实布局构建后移除；键：selector/preview/pool/info
+        self._zone_placeholders = {}
+        # 四个叶子组件延迟构建，先置 None 避免提前访问未定义属性
         self._file_selector = None
         self._file_pool = None
         self._previewer = None
-        # 面板占位标签（加载中…），真实布局构建后移除
-        self._panel_left_placeholder = None
-        self._panel_center_placeholder = None
-        self._panel_right_placeholder = None
+        self._info_panel = None
+        self._info_card = None
         # 启动加载覆盖层：内容区唯一加载动画，三栏就绪后淡出
         # （见 _setup_startup_overlay / _dismiss_startup_overlay）
         self._startup_overlay = None
@@ -734,6 +736,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         cfg = DEFAULT_MICA_CONFIG
         mica_saved = self._load_mica_settings()
         background_saved = self._load_background_settings()
+        # 主界面布局模式（general.layout_mode；非法值回退 workspace）
+        self._layout_mode = self._load_layout_settings()
         self._background_mode = background_saved.get("mode", "mica")
         self._background_image_name = background_saved.get("image", "")
         self._background_ambient = bool(background_saved.get("ambient", True))
@@ -877,6 +881,30 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         except Exception:
             pass
         return defaults
+
+    @staticmethod
+    def _load_layout_settings() -> str:
+        """启动时读取主界面布局模式（``general.layout_mode``）。
+
+        取值 "classic"（经典三栏）或 "workspace"（预览优先，新布局）；
+        缺失/非法一律回退 "workspace"（与 DEFAULT_SETTINGS_V2 默认一致）。
+
+        Returns:
+            str: 布局模式："classic" 或 "workspace"。
+        """
+        try:
+            # 优先复用应用引导层提前加载的设置管理器（与背景设置同模式），
+            # 避免启动期二次磁盘加载。
+            app = QApplication.instance()
+            v2 = getattr(app, "settings_manager", None)
+            if v2 is None:
+                from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+                v2 = SettingsManagerV2()
+                v2.load()
+            mode = v2.get("general.layout_mode", "workspace")
+        except Exception:
+            mode = "workspace"
+        return mode if mode in ("classic", "workspace") else "workspace"
 
     def _setup_window(self) -> None:
         """设置窗口基本属性"""
@@ -1076,51 +1104,20 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 创建标题栏（层级 5：上方控件）
         self._create_title_bar(main_layout)
 
-        # 三栏可拖拽分割布局 — 四周 10px 边距，栏间 10px 间距
-        self._splitter = QSplitter(Qt.Horizontal)
-        self._splitter.setHandleWidth(10)  # 10px 间距作为分隔条宽度
-        self._splitter.setChildrenCollapsible(False)
-        register_widget_qss(self._splitter,(f"""
-            QSplitter::handle {{
-                background-color: transparent;
-                width: 10px;
-            }}
-        """))
+        # 主布局装配（classic / workspace 两种组装；workspace = 预览优先新布局）。
+        # 4 个区域先放「加载中…」占位，窗口显示后再分阶段构建重型叶子组件
+        # （首屏提速，见 _build_panels_deferred）。
+        from layout.main_layout import MainLayout
 
-        # 三栏面板：先创建空 QFrame（含"加载中"占位），延后到窗口显示后
-        # 再构建重型布局，使窗口先以主题色外壳 + 标题栏快速出现，避免白屏等加载。
-        self._panel_left = QFrame()
-        self._panel_left.setObjectName("PanelLeft")
-        register_widget_qss(self._panel_left,("background-color: transparent; border: none;"))
-        self._panel_left_layout = QVBoxLayout(self._panel_left)
-        self._panel_left_layout.setContentsMargins(0, 0, 0, 0)
-        self._panel_left_layout.setSpacing(0)
-        self._panel_left_placeholder = self._make_panel_placeholder()
-        self._panel_left_layout.addWidget(self._panel_left_placeholder)
+        self._main_layout = MainLayout(self._layout_mode)
+        self._zones = self._main_layout.zones
+        self._zone_placeholders = {}
+        for key, zone in self._zones.items():
+            placeholder = self._make_panel_placeholder()
+            zone.layout().addWidget(placeholder)
+            self._zone_placeholders[key] = placeholder
 
-        self._panel_center = QFrame()
-        self._panel_center.setObjectName("PanelCenter")
-        register_widget_qss(self._panel_center,("background-color: transparent; border: none;"))
-        self._panel_center_layout = QVBoxLayout(self._panel_center)
-        self._panel_center_layout.setContentsMargins(0, 0, 0, 0)
-        self._panel_center_layout.setSpacing(0)
-        self._panel_center_placeholder = self._make_panel_placeholder()
-        self._panel_center_layout.addWidget(self._panel_center_placeholder)
-
-        self._panel_right = QFrame()
-        self._panel_right.setObjectName("PanelRight")
-        register_widget_qss(self._panel_right,("background-color: transparent; border: none;"))
-        self._panel_right_layout = QVBoxLayout(self._panel_right)
-        self._panel_right_layout.setContentsMargins(0, 0, 0, 0)
-        self._panel_right_layout.setSpacing(0)
-        self._panel_right_placeholder = self._make_panel_placeholder()
-        self._panel_right_layout.addWidget(self._panel_right_placeholder)
-
-        self._panels = [self._panel_left, self._panel_center, self._panel_right]
-        for panel in self._panels:
-            self._splitter.addWidget(panel)
-
-        # 窗口显示后再分阶段构建三栏重型布局（首屏提速，见 _build_panels_deferred）
+        # 窗口显示后再分阶段构建各区域重型布局
         QTimer.singleShot(0, self._build_panels_deferred)
 
         # 外层容器提供四周 10px 边距（持有引用：启动加载覆盖层挂载在它上面）
@@ -1129,7 +1126,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         container_layout = QHBoxLayout(self._splitter_container)
         container_layout.setContentsMargins(10, 0, 10, 10)
         container_layout.setSpacing(0)
-        container_layout.addWidget(self._splitter)
+        container_layout.addWidget(self._main_layout)
         main_layout.addWidget(self._splitter_container, stretch=1)
 
         # 启动加载覆盖层：铺满标题栏以下的内容区，只显示一个旋转圆环；
@@ -1222,58 +1219,101 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         return label
 
     def _build_panels_deferred(self) -> None:
-        """窗口显示后分阶段构建三栏重型布局，避免启动白屏/长阻塞。
+        """窗口显示后分阶段构建各区域重型布局，避免启动白屏/长阻塞。
 
-        左栏（文件选择器，最重）优先构建并显示，中/右栏随后补齐；
-        全部就绪后连接跨栏信号、刷新样式并等分三栏。
+        文件选择器（最重）优先构建并显示，预览区、储存池、信息面板随后补齐；
+        全部就绪后连接跨栏信号、刷新样式并应用默认比例（16:9 / 半高上限）。
         """
-        QTimer.singleShot(0, lambda: self._build_panel("left"))
-        QTimer.singleShot(30, lambda: self._build_panel("center"))
-        QTimer.singleShot(60, lambda: self._build_panel("right"))
-        QTimer.singleShot(90, self._finalize_panels)
+        QTimer.singleShot(0, lambda: self._build_panel("selector"))
+        QTimer.singleShot(30, lambda: self._build_panel("preview"))
+        QTimer.singleShot(60, lambda: self._build_panel("pool"))
+        QTimer.singleShot(90, lambda: self._build_panel("info"))
+        QTimer.singleShot(120, self._finalize_panels)
+
+    def _replace_zone_placeholder(self, key: str, widget: QWidget) -> None:
+        """移除指定区域的加载占位，并放入真实组件。"""
+        zone = self._zones.get(key)
+        if zone is None:
+            return
+        placeholder = self._zone_placeholders.get(key)
+        if placeholder is not None:
+            zone.layout().removeWidget(placeholder)
+            placeholder.deleteLater()
+            self._zone_placeholders[key] = None
+        zone.layout().addWidget(widget)
 
     def _build_panel(self, side: str) -> None:
-        """构建指定栏的真实布局，替换占位标签。单栏失败不应拖垮整体启动。
+        """构建指定区域（selector/preview/pool/info）的真实布局，替换占位标签。
 
-        三栏布局模块在此处局部导入：本方法总在窗口显示后（``_build_panels_deferred``）
-        才被调用，把它们的重型依赖留到首帧之后再加载（见模块顶部注释）。
+        单区域失败不应拖垮整体启动。布局模块在此处局部导入：本方法总在窗口
+        显示后（``_build_panels_deferred``）才被调用，把它们的重型依赖留到
+        首帧之后再加载（见模块顶部注释）。
         """
+        if side == "info":
+            # 信息面板：外面包一层卡片 QFrame（面板自绘且透明，卡片负责
+            # 填充/描边/圆角，与统一预览器旧 PreviewerBottom 视觉一致）
+            try:
+                from layout.preview.file_info_panel import FileInfoPanel
+
+                zone = self._zones.get(side)
+                if zone is None:
+                    return
+                self._info_card = QFrame(zone)
+                self._info_card.setObjectName("InfoPanelCard")
+                card_layout = QVBoxLayout(self._info_card)
+                card_layout.setContentsMargins(0, 0, 0, 0)
+                card_layout.setSpacing(0)
+                self._info_panel = FileInfoPanel(self._info_card)
+                card_layout.addWidget(self._info_panel)
+                self._replace_zone_placeholder(side, self._info_card)
+            except Exception as exc:  # 单区域构建失败不应拖垮整个启动
+                warning(f"面板构建失败（{side}）: {exc}")
+                return
+            self._refresh_panel_styles()
+            return
+
         try:
-            if side == "left":
+            zone = self._zones.get(side)
+            if zone is None:
+                warning(f"未知面板区域: {side!r}")
+                return
+            if side == "selector":
                 from layout.file_selector_layout import FileSelectorLayout
 
-                self._file_selector = FileSelectorLayout(self._panel_left)
-                self._panel_left_layout.removeWidget(self._panel_left_placeholder)
-                self._panel_left_placeholder.deleteLater()
-                self._panel_left_placeholder = None
-                self._panel_left_layout.addWidget(self._file_selector)
-            elif side == "center":
-                from layout.file_pool_layout import FilePoolLayout
-
-                self._file_pool = FilePoolLayout(self._panel_center)
-                self._panel_center_layout.removeWidget(self._panel_center_placeholder)
-                self._panel_center_placeholder.deleteLater()
-                self._panel_center_placeholder = None
-                self._panel_center_layout.addWidget(self._file_pool)
-            elif side == "right":
+                self._file_selector = FileSelectorLayout(zone)
+                self._replace_zone_placeholder(side, self._file_selector)
+            elif side == "preview":
                 from layout.unified_previewer_layout import UnifiedPreviewerLayout
 
-                self._previewer = UnifiedPreviewerLayout(self._panel_right)
-                self._panel_right_layout.removeWidget(self._panel_right_placeholder)
-                self._panel_right_placeholder.deleteLater()
-                self._panel_right_placeholder = None
-                self._panel_right_layout.addWidget(self._previewer)
-        except Exception as exc:  # 单栏构建失败不应拖垮整个启动
+                self._previewer = UnifiedPreviewerLayout(zone)
+                # 统一操作按钮承载方式：New 布局走预览器顶栏（经典走底部栏）
+                self._previewer.set_actions_mode(self._layout_mode == "workspace")
+                # 经典布局：底部操作栏挂到右列槽位（信息面板下方，整列最底部）
+                if self._layout_mode == "classic" and self._main_layout is not None:
+                    slot = self._main_layout.classic_action_slot()
+                    if slot is not None:
+                        self._previewer.set_bottom_bar_host(slot)
+                self._replace_zone_placeholder(side, self._previewer)
+            elif side == "pool":
+                from layout.file_pool_layout import FilePoolLayout
+
+                self._file_pool = FilePoolLayout(zone)
+                # 池子视图随布局模式：New = 网格（竖向卡片），经典 = 列表
+                self._file_pool.set_view_mode(
+                    "grid" if self._layout_mode == "workspace" else "list"
+                )
+                self._replace_zone_placeholder(side, self._file_pool)
+        except Exception as exc:  # 单区域构建失败不应拖垮整个启动
             warning(f"面板构建失败（{side}）: {exc}")
             return
-        # 该栏刚就绪即刷新其边框/填充：即使其它栏尚未构建，也能让已就绪栏正确显示
+        # 该区域刚就绪即刷新其边框/填充：即使其它区域尚未构建，也能让已就绪区正确显示
         self._refresh_panel_styles()
 
     def _finalize_panels(self) -> None:
-        """三栏全部就绪后：连接跨栏信号、刷新样式、等分三栏。
+        """全部区域就绪后：连接跨栏信号、刷新样式、应用默认比例。
 
-        右栏预览器较重，90ms 时可能仍未构建完成；故逐栏守卫连接已就绪者，
-        并在仍有栏缺失时延后重试，确保跨栏信号最终全部连上（边框/填充已由
+        预览器较重，120ms 时可能仍未构建完成；故逐区域守卫连接已就绪者，
+        并在仍有区域缺失时延后重试，确保跨栏信号最终全部连上（边框/填充已由
         _build_panel 渐进套用，不受此影响）。
         """
         if self._file_selector is not None:
@@ -1307,12 +1347,17 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             self._restore_started = True
             QTimer.singleShot(0, self._check_and_restore_backup)
 
-        # 仍有栏尚未就绪：延后重试连接（样式已由 _build_panel 渐进套用）
-        if self._file_selector is None or self._file_pool is None or self._previewer is None:
+        # 仍有区域尚未就绪：延后重试连接（样式已由 _build_panel 渐进套用）
+        if (
+            self._file_selector is None
+            or self._file_pool is None
+            or self._previewer is None
+            or self._info_panel is None
+        ):
             QTimer.singleShot(60, self._finalize_panels)
             return
-        QTimer.singleShot(0, self._equalize_splitter)
-        # 三栏真实布局已全部就绪：撤下启动加载覆盖层
+        QTimer.singleShot(0, self._apply_default_layout)
+        # 全部真实布局已就绪：撤下启动加载覆盖层
         # （后台 FFmpeg/LUT 预热、缓存清理继续在背后跑，不阻塞使用）
         self._dismiss_startup_overlay()
 
@@ -1883,11 +1928,11 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                     pass
 
     def _refresh_panel_styles(self) -> None:
-        """刷新三个面板的 styleSheet（主题切换 / 延迟构建逐栏就绪时调用）。
+        """刷新各区域组件的 styleSheet（主题切换 / 延迟构建逐区就绪时调用）。
 
-        逐栏守卫：仅对当前已构建的栏套用边框/填充，因此可在三栏尚未全部就绪时
-        被 ``_build_panel`` 渐进调用——已就绪栏立即正确显示，缺失栏留待其构建后
-        的调用补齐（无需等三栏齐了才一次性刷新）。
+        逐区守卫：仅对当前已构建的区域套用边框/填充，因此可在尚未全部就绪时
+        被 ``_build_panel`` 渐进调用——已就绪区立即正确显示，缺失区留待其构建后
+        的调用补齐（无需等全部齐了才一次性刷新）。
 
         注意：延迟构建时本方法在窗口已显示之后被调用，而对已显示控件设置
         styleSheet 不会自动重绘，必须对各分区控件强制 unpolish/polish 才能让
@@ -1900,29 +1945,38 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         border_color = tm.qss_rgba(mid, 50)
 
         if self._file_selector is not None:
-            # 左侧栏 PanelLeft — 完全透明，样式下放给 FileSelectorLayout 内部
-            register_widget_qss(self._panel_left,("background-color: transparent; border: none;"))
+            # 区域容器保持透明，样式下放给 FileSelectorLayout 内部
             self._file_selector.set_section_styles(fill_color, border_color)
         if self._file_pool is not None:
-            # 中间栏 PanelCenter — 完全透明，样式下放给 FilePoolLayout 内部
-            register_widget_qss(self._panel_center,("background-color: transparent; border: none;"))
+            # 区域容器保持透明，样式下放给 FilePoolLayout 内部
             self._file_pool.set_section_styles(fill_color, border_color)
         if self._previewer is not None:
-            # 右侧栏 PanelRight — 完全透明，样式下放给 UnifiedPreviewerLayout 内部
-            register_widget_qss(self._panel_right,("background-color: transparent; border: none;"))
+            # 区域容器保持透明，样式下放给 UnifiedPreviewerLayout 内部
             self._previewer.set_section_styles(fill_color, border_color)
+        if self._info_card is not None:
+            # 信息面板卡片（FileInfoPanel 自绘且透明，卡片负责填充/描边/圆角）
+            register_widget_qss(self._info_card,(f"""
+                QFrame#InfoPanelCard {{
+                    background-color: {fill_color};
+                    border: 1px solid {border_color};
+                    border-radius: 8px;
+                }}
+            """))
+            self._info_card.style().unpolish(self._info_card)
+            self._info_card.style().polish(self._info_card)
 
         # 整窗级重刷（与主题切换路径一致，作为兜底确保所有已显示控件套用样式）
         self.style().unpolish(self)
         self.style().polish(self)
 
-    def _equalize_splitter(self) -> None:
-        """等分三栏为 1:1:1（窗口完成布局后调用）"""
-        total = self._splitter.width()
-        # 扣除两个分隔条宽度（handleWidth=10×2）
-        available = max(0, total - 20)
-        third = available // 3
-        self._splitter.setSizes([third, third, third])
+    def _apply_default_layout(self) -> None:
+        """应用当前布局模式的默认比例（窗口完成布局后调用）。
+
+        - workspace：左 1/3、预览画布 16:9（半高上限/底行下限钳制）、底行 50:50；
+        - classic：三栏 1:1:1、右栏各半、信息区 ≤ 半高。
+        """
+        if self._main_layout is not None:
+            self._main_layout.apply_default_ratios()
 
     def _on_colors_updated(self, colors: dict) -> None:
         """配色加载完成后的处理：重新套用三栏面板样式（确保颜色就绪后边框/填充正确）。
@@ -1979,25 +2033,35 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         pool_paths = self._file_pool.get_pool_paths()
         self._file_selector.sync_pool_status(pool_paths)
 
+    def _show_preview(self, file_info: dict) -> None:
+        """统一预览入口：同步驱动预览器与文件信息面板（任一缺失时守卫跳过）。"""
+        if self._previewer is not None:
+            self._previewer.set_file(file_info)
+        if self._info_panel is not None:
+            self._info_panel.set_file(file_info)
+
     def _on_file_selected(self, file_info: dict) -> None:
         """处理文件选择器的文件选中事件，同步预览态到文件池与自身卡片"""
         file_path = file_info.get("path", "")
         self._file_selector.set_previewing_file(file_path)
         self._file_pool.set_previewing_file(file_path)
-        self._previewer.set_file(file_info)
+        self._show_preview(file_info)
 
     def _on_pool_item_clicked(self, file_info: dict) -> None:
         """处理文件池卡片的左键点击事件，预览该文件"""
         file_path = file_info.get("path", "")
         self._file_selector.set_previewing_file(file_path)
         self._file_pool.set_previewing_file(file_path)
-        self._previewer.set_file(file_info)
+        self._show_preview(file_info)
 
     def _on_preview_cancelled(self) -> None:
-        """处理预览取消事件：清除卡片预览态并清空预览器"""
+        """处理预览取消事件：清除卡片预览态并清空预览器与信息面板"""
         self._file_selector.clear_previewing_state()
         self._file_pool.clear_previewing_state()
-        self._previewer.clear_preview()
+        if self._previewer is not None:
+            self._previewer.clear_preview()
+        if self._info_panel is not None:
+            self._info_panel.clear()
 
     def _on_previewer_locate_requested(self, file_info: dict) -> None:
         """处理统一预览器底栏"定位到所在目录"请求：导航左侧选择器并高亮文件"""
@@ -2199,6 +2263,11 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                 self._previewer.cleanup()
         except Exception:
             pass
+        try:
+            if self._info_panel is not None:
+                self._info_panel.stop()
+        except Exception:
+            pass
         # 局部导入：暂存池服务依赖文件池/缩略图等重型模块，退出路径再加载
         from freeassetfilter.services.staging_pool_service import StagingPoolService
 
@@ -2312,6 +2381,136 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             bool: True 表示简约层氛围渐变开启。
         """
         return bool(self._background_ambient)
+
+    # ──── 主界面布局模式 ───────────────────────────────────────────────
+
+    def get_layout_mode(self) -> str:
+        """返回当前主界面布局模式（供设置页联动与测试）。
+
+        Returns:
+            str: "classic"（经典三栏）或 "workspace"（预览优先）。
+        """
+        return self._layout_mode
+
+    def set_layout_mode(self, mode: str) -> bool:
+        """切换主界面布局模式（运行时重组，叶子组件重新挂载、不销毁重建）。
+
+        - ``classic``：经典三栏〔选择 | 储存 | 预览+信息〕；
+        - ``workspace``：预览优先〔选择 | 〔预览 / 〔储存 | 信息〕〕〕。
+
+        说明：
+
+        - 幂等：重复传入当前模式直接返回 True；
+        - 记忆态保留：储存池内容、选择器路径、滚动位置等均在原组件实例内保留；
+        - 播放守卫：切换前停止当前视频/音频播放，避免 MPV 原生子窗跨父级
+          迁移导致闪烁（切换后可再次点击文件恢复预览）；
+        - 失败兜底：迁移异常时把内容回迁旧布局并返回 False；
+        - 轻量启动外壳阶段（主布局尚未构建）：仅记录偏好，由
+          ``initialize_deferred_content`` 后的构建路径应用。
+
+        Args:
+            mode: 目标布局模式："classic" 或 "workspace"；非法值返回 False。
+
+        Returns:
+            bool: 是否已处于（或成功切换到）目标模式。
+        """
+        if mode not in ("classic", "workspace"):
+            return False
+        if self._main_layout is None or self._splitter_container is None:
+            # 轻量启动外壳阶段：仅记录偏好，构建时应用
+            self._layout_mode = mode
+            return True
+        if mode == self._layout_mode:
+            return True
+
+        # 播放守卫：停止当前预览器的播放（仅视频/音频预览器具备该方法）
+        if self._previewer is not None:
+            try:
+                current = getattr(self._previewer, "_current_preview_widget", None)
+                if current is not None and hasattr(current, "stop_playback"):
+                    current.stop_playback()
+            except Exception:  # noqa: BLE001 - 播放停止失败不阻塞切换
+                pass
+
+        # 底部操作栏先归位到预览器内部：随预览器一起迁移到新布局，
+        # 且避免随旧布局（经典组装时槽位在旧布局内）被一并销毁
+        if self._previewer is not None:
+            self._previewer.set_bottom_bar_host(None)
+
+        from layout.main_layout import MainLayout
+
+        old_layout = self._main_layout
+        new_layout = MainLayout(mode, self._splitter_container)
+        container_layout = self._splitter_container.layout()
+        try:
+            self._migrate_zone_contents(old_layout, new_layout)
+            # 容器内替换主布局（先加新、再摘旧，避免瞬时空白）
+            container_layout.addWidget(new_layout)
+            container_layout.removeWidget(old_layout)
+        except Exception as exc:  # noqa: BLE001 - 迁移失败回滚到旧布局
+            warning(f"布局切换失败（{mode}）: {exc}")
+            try:
+                self._migrate_zone_contents(new_layout, old_layout)
+                container_layout.addWidget(old_layout)
+                container_layout.removeWidget(new_layout)
+            except Exception:  # noqa: BLE001 - 回滚保护
+                pass
+            new_layout.deleteLater()
+            return False
+
+        old_layout.deleteLater()
+        self._main_layout = new_layout
+        self._zones = new_layout.zones
+        self._layout_mode = mode
+        # 统一操作按钮承载方式随布局切换（经典=底部栏 / New=预览器顶栏）
+        if self._previewer is not None:
+            self._previewer.set_actions_mode(mode == "workspace")
+            # 经典布局：底栏挂到右列槽位（信息面板下方，整列最底部）
+            if mode == "classic":
+                slot = new_layout.classic_action_slot()
+                if slot is not None:
+                    self._previewer.set_bottom_bar_host(slot)
+        # 池子视图随布局切换（经典=列表 / New=网格）
+        if self._file_pool is not None:
+            self._file_pool.set_view_mode(
+                "grid" if mode == "workspace" else "list"
+            )
+        self._refresh_panel_styles()
+        # 新布局尚未经历首次布局时 QWidget 停留在默认幽灵尺寸（100×30），
+        # 而迁移/挂载过程已可能触发过该尺寸下的比例应用；这里先显式赋真实
+        # 几何，再应用默认比例，保证三等分 / 左 1/3 + 16:9 基于真实尺寸计算
+        try:
+            margins = container_layout.contentsMargins()
+            inner = self._splitter_container.rect().adjusted(
+                margins.left(),
+                margins.top(),
+                -margins.right(),
+                -margins.bottom(),
+            )
+            if inner.width() > 0 and inner.height() > 0:
+                new_layout.setGeometry(inner)
+        except Exception:  # noqa: BLE001 - 几何赋值失败则退化为 resizeEvent 兜底
+            pass
+        new_layout.apply_default_ratios()
+        return True
+
+    @staticmethod
+    def _migrate_zone_contents(
+        src_layout: "MainLayout", dst_layout: "MainLayout"
+    ) -> None:
+        """把源布局各区域内的内容控件搬入目标布局同名区域（不销毁组件）。"""
+        for key, src_zone in src_layout.zones.items():
+            dst_zone = dst_layout.zones.get(key)
+            if dst_zone is None:
+                continue
+            src_zone_layout = src_zone.layout()
+            while src_zone_layout.count():
+                item = src_zone_layout.takeAt(0)
+                widget = item.widget()
+                if widget is None:
+                    continue
+                widget.setParent(dst_zone)
+                dst_zone.layout().addWidget(widget)
 
     def set_custom_background_image(self, path: str) -> bool:
         """设置自定义背景图片（转发给背景层组件）。

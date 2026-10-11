@@ -1,5 +1,17 @@
 """
-统一预览器布局 — 两个可拖拽调整比例的内容区（默认 1:1）+ 底栏
+统一预览器布局 — 预览内容区 + 操作底栏 / 预览器顶栏（文件信息面板已外置）
+
+历史版本内置的「文件信息预览」下半区已拆分为独立组件（``FileInfoPanel``），
+由主布局装配层（``MainLayout`` 的 info 区域）承载；本组件只负责预览内容
+与统一操作（复制到剪切板 / 系统打开 / 定位目录 / 清除预览）。
+
+统一操作按钮有两种承载方式（由主窗口按布局模式下发
+:meth:`UnifiedPreviewerLayout.set_actions_mode`）：
+
+- 经典布局：底部操作栏（历史行为，逐像素不变）；
+- New 布局：底部操作栏隐藏，图标按钮注入「预览器统一的顶部工具栏」——
+  预览器自带顶栏时注入其顶栏（``unified_action_host`` 协议），
+  无顶栏的预览器（视频 / 音频 / Office）由本容器在内容区顶部提供一条统一工具栏。
 """
 
 import inspect
@@ -10,7 +22,7 @@ from typing import Optional
 
 from PySide6.QtCore import QMimeData, QUrl, Qt, Signal
 from PySide6.QtWidgets import (
-    QApplication, QFrame, QHBoxLayout, QLabel, QSizePolicy, QSplitter,
+    QApplication, QFrame, QHBoxLayout, QLabel, QSizePolicy,
     QVBoxLayout, QWidget,
 )
 
@@ -19,7 +31,7 @@ from components.styled_dialog import ask_custom_dialog
 from freeassetfilter.services.previewer_registry import PreviewerRegistry
 from freeassetfilter.core._paths import icons_dir as get_icons_dir
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
-from layout.preview.file_info_panel import FileInfoPanel
+from layout.preview.preview_toolbar import PreviewToolbarFrame
 from theme import tm
 
 
@@ -60,7 +72,7 @@ def _show_custom_dialog(
 
 
 class UnifiedPreviewerLayout(QWidget):
-    """统一预览器布局（右侧栏）"""
+    """统一预览器布局（预览内容区 + 操作底栏）。"""
 
     # 定位到当前预览文件所在目录（请求文件选择器导航并高亮该文件）
     locate_requested = Signal(dict)
@@ -76,48 +88,28 @@ class UnifiedPreviewerLayout(QWidget):
         self._current_file_info: Optional[dict] = None
         self._placeholder_label: Optional[QLabel] = None
         self._content_layout: Optional[QVBoxLayout] = None
-        
+
+        # 统一操作按钮的承载方式（由主窗口下发）：
+        # False = 经典布局（底部操作栏）；True = New 布局（注入预览器顶栏）
+        self._actions_top: bool = False
+        #: 顶栏模式的图标按钮组（复制 / 打开 / 定位 / 清除），无宿主时不显示
+        self._top_buttons: list[StyledButton] = []
+        #: 当前注入的宿主控件（用于迁移时先摘除）
+        self._top_host: Optional[QWidget] = None
+        #: 无顶栏预览器时由本容器提供的统一工具栏（懒创建）
+        self._own_toolbar: Optional[PreviewToolbarFrame] = None
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
-        # 可拖拽分割的两个内容区
-        self._splitter = QSplitter(Qt.Vertical)
-        self._splitter.setHandleWidth(10)
-        self._splitter.setChildrenCollapsible(False)
-        register_widget_qss(self._splitter,("""
-            QSplitter::handle {
-                background-color: transparent;
-                height: 6px;
-            }
-        """))
-
-        # 内容区 1（上方）
+        # 内容区（自适应拉伸）
         self._content_top = QFrame()
         self._content_top.setObjectName("PreviewerTop")
-        self._splitter.addWidget(self._content_top)
+        layout.addWidget(self._content_top, stretch=1)
 
-        # 内容区 2（下方）— 文件信息预览面板
-        self._content_bottom = QFrame()
-        self._content_bottom.setObjectName("PreviewerBottom")
-        self._splitter.addWidget(self._content_bottom)
-
-        # 文件信息面板（占满内容区 2；背景透明，透出 PreviewerBottom 样式）
-        self._content_bottom_layout = QVBoxLayout(self._content_bottom)
-        self._content_bottom_layout.setContentsMargins(0, 0, 0, 0)
-        self._content_bottom_layout.setSpacing(0)
-        self._info_panel = FileInfoPanel(self._content_bottom)
-        self._content_bottom_layout.addWidget(self._info_panel)
-
-        # 默认 1:1 比例（可见后由 _apply_default_split 精确等分）
-        self._splitter.setSizes([1, 1])
-        self._default_split_applied = False
-        # P0 节流：半高缓存，变化<=2px 时跳过约束重写，避免
-        # setSizes→layout→子resize 的递归放大。
-        self._last_half = 0
-        self._splitter.splitterMoved.connect(self._on_splitter_moved)
-
-        layout.addWidget(self._splitter, stretch=1)
+        # 顶栏模式的图标按钮（先于底栏创建：底栏末尾的状态同步会一并更新它们）
+        self._build_top_action_buttons()
 
         # 底栏（固定高度）
         self._bottom_bar = QFrame()
@@ -180,13 +172,186 @@ class UnifiedPreviewerLayout(QWidget):
         # 初始无预览文件：禁用底栏按钮（占位符状态）
         self._update_bottom_buttons()
 
+    def _build_top_action_buttons(self) -> None:
+        """构建顶栏模式的图标按钮组（New 布局注入预览器顶栏用）。
+
+        与底栏按钮功能一致（同一处理器），形态为 ghost 32×32 图标按钮；
+        默认无父级、不显示，注入宿主（预览器顶栏 / 本容器统一工具栏）后显示。
+        图标：share.svg（复制）/ open_with.svg（系统打开）/
+        locate.svg（定位目录）/ close.svg（清除预览）。
+        """
+        icons_dir = get_icons_dir()
+        specs = (
+            ("share.svg", "复制到剪切板", self._on_copy_to_clipboard_clicked),
+            ("open_with.svg", "使用系统默认方式打开", self._on_open_with_system_clicked),
+            ("locate.svg", "定位到所在目录", self._on_locate_requested),
+            ("close.svg", "清除预览", self._on_clear_preview_clicked),
+        )
+        self._top_buttons = []
+        for icon_name, tip, handler in specs:
+            icon_path = icons_dir / icon_name
+            btn = StyledButton(
+                "", variant="ghost", size="sm",
+                icon=str(icon_path) if icon_path.exists() else "",
+            )
+            btn.setFixedSize(32, 32)
+            btn.setToolTip(tip)
+            btn.clicked.connect(handler)
+            self._top_buttons.append(btn)
+
     def _update_bottom_buttons(self) -> None:
-        """按当前是否有预览文件启停底栏按钮（无文件时全部禁用）。"""
+        """按当前是否有预览文件启停底栏与顶栏按钮（无文件时全部禁用）。"""
         has_file = self._current_file_info is not None
-        self._share_btn.setEnabled(has_file)
-        self._open_default_btn.setEnabled(has_file)
-        self._locate_btn.setEnabled(has_file)
-        self._close_btn.setEnabled(has_file)
+        for btn in (self._share_btn, self._open_default_btn,
+                    self._locate_btn, self._close_btn):
+            btn.setEnabled(has_file)
+        for btn in self._top_buttons:
+            btn.setEnabled(has_file)
+
+    # ── 统一操作按钮：承载方式（顶栏 / 底栏） ─────────────────────────
+
+    def set_bottom_bar_host(self, host: Optional[QWidget]) -> None:
+        """把底部操作栏挂载到外部宿主（经典布局：文件信息面板下方）。
+
+        经典布局下底栏应与左/中两栏的底栏一样位于整列最底部，故挂到主布局
+        提供的外部槽位；New 布局或布局切换前传 ``None`` 归位到本容器内部
+        （避免底部栏随旧布局/宿主一并销毁）。
+
+        Args:
+            host: 外部宿主控件（自带布局或由本方法补建）；``None`` 表示归位。
+        """
+        bar = self._bottom_bar
+        current = bar.parentWidget()
+        if host is None:
+            if current is self:
+                return
+            if current is not None and current.layout() is not None:
+                current.layout().removeWidget(bar)
+            layout = self.layout()
+            if layout is not None:
+                layout.addWidget(bar)
+            return
+
+        if current is host:
+            return
+        if current is not None and current.layout() is not None:
+            current.layout().removeWidget(bar)
+        bar.setParent(host)
+        host_layout = host.layout()
+        if host_layout is None:
+            host_layout = QVBoxLayout(host)
+            host_layout.setContentsMargins(0, 0, 0, 0)
+            host_layout.setSpacing(0)
+        host_layout.addWidget(bar)
+
+    def set_actions_mode(self, top: bool) -> None:
+        """切换统一操作按钮的承载方式（主窗口按布局模式下发）。
+
+        Args:
+            top: True = New 布局：隐藏底部操作栏，图标按钮注入预览器顶栏
+                （无顶栏预览器由本容器提供统一工具栏）；
+                False = 经典布局：底部操作栏（与历史行为逐像素一致）。
+        """
+        top = bool(top)
+        if top == self._actions_top:
+            return
+        self._actions_top = top
+        self._bottom_bar.setVisible(not top)
+        self._sync_action_host()
+
+    def _previewer_action_host(self) -> Optional[QWidget]:
+        """当前预览器提供的操作按钮宿主（``unified_action_host`` 协议）。"""
+        widget = self._current_preview_widget
+        if widget is None:
+            return None
+        getter = getattr(widget, "unified_action_host", None)
+        if not callable(getter):
+            return None
+        try:
+            host = getter()
+        except Exception:  # noqa: BLE001 - 宿主探测失败按无顶栏处理
+            return None
+        return host if isinstance(host, QWidget) else None
+
+    def _ensure_own_toolbar(self) -> PreviewToolbarFrame:
+        """无顶栏预览器时由本容器提供的统一工具栏（内容区顶部，懒创建）。"""
+        if self._own_toolbar is None:
+            toolbar = PreviewToolbarFrame(self._content_top)
+            toolbar.setObjectName("UnifiedPreviewerToolbar")
+            toolbar.setFixedHeight(48)
+            toolbar.setVisible(False)
+            self._ensure_content_layout()
+            if self._content_layout is not None:
+                self._content_layout.insertWidget(0, toolbar)
+            self._own_toolbar = toolbar
+        return self._own_toolbar
+
+    def _detach_top_buttons(self) -> None:
+        """仅从当前宿主摘除顶栏按钮（不重新注入）。"""
+        host = self._top_host
+        if host is None:
+            return
+        for btn in self._top_buttons:
+            self._release_top_button(btn, host)
+        self._top_host = None
+
+    def _sync_action_host(self) -> None:
+        """把顶栏图标按钮迁移到当前应处的位置（幂等，可反复调用）。"""
+        # 1) 先摘除旧宿主；本容器统一工具栏先隐藏，按需再显示
+        self._detach_top_buttons()
+        if self._own_toolbar is not None:
+            self._own_toolbar.setVisible(False)
+
+        # 经典布局：底部操作栏常驻，顶栏按钮无宿主即隐藏
+        if not self._actions_top:
+            return
+
+        target = self._previewer_action_host()
+        if target is None:
+            # 无顶栏预览器：用本容器统一工具栏；无预览器（占位态）则不显示
+            if self._current_preview_widget is None:
+                return
+            target = self._ensure_own_toolbar()
+            target.setVisible(True)
+        self._inject_top_buttons(target)
+        self._top_host = target
+
+    def _inject_top_buttons(self, host: QWidget) -> None:
+        """把四个图标按钮注入宿主：统一工具栏按锚定分区，自绘顶栏右侧追加。"""
+        copy_btn, open_btn, locate_btn, close_btn = self._top_buttons
+        add_left = getattr(host, "add_left", None)
+        add_trailing = getattr(host, "add_trailing", None)
+        add_right = getattr(host, "add_right", None)
+        if callable(add_left) and callable(add_trailing) and callable(add_right):
+            # PreviewToolbarFrame 宿主：定位左锚定；复制/打开中部；清除右锚定
+            add_left(locate_btn)
+            add_trailing(copy_btn)
+            add_trailing(open_btn)
+            add_right(close_btn)
+            return
+        # 自绘顶栏宿主：右端依次追加（与底栏顺序一致）
+        layout = host.layout()
+        if layout is None:
+            return
+        for btn in (copy_btn, open_btn, locate_btn, close_btn):
+            btn.setParent(host)
+            layout.addWidget(btn)
+            btn.show()
+
+    @staticmethod
+    def _release_top_button(button: StyledButton, host: QWidget) -> None:
+        """把按钮从宿主摘除（PreviewToolbarFrame 走专用移除；否则从布局摘除）。"""
+        remover = getattr(host, "remove_widget", None)
+        if callable(remover):
+            remover(button)
+            return
+        layout = host.layout()
+        if layout is not None:
+            layout.removeWidget(button)
+        try:
+            button.setParent(None)
+        except RuntimeError:
+            pass
 
     def _on_copy_to_clipboard_clicked(self) -> None:
         """复制当前预览文件到系统剪切板（文件引用），并提示成功。
@@ -269,7 +434,7 @@ class UnifiedPreviewerLayout(QWidget):
         self.clear_requested.emit()
 
     def set_section_styles(self, fill_color: str, border_color: str) -> None:
-        """应用面板样式到内容区、底栏（主题切换时由 MainWindow 调用）。
+        """应用面板样式到内容区与底栏（主题切换时由 MainWindow 调用）。
 
         注意：规则必须用 objectName 选择器限定到各 QFrame 自身——
         无选择器的裸规则等价于 `*`，会级联到 _content_top 的所有后代，
@@ -285,11 +450,6 @@ class UnifiedPreviewerLayout(QWidget):
                 border: 1px solid {border_color};
                 border-radius: 8px;
             }}
-            QFrame#PreviewerBottom {{
-                background-color: {fill_color};
-                border: 1px solid {border_color};
-                border-radius: 8px;
-            }}
             QFrame#PreviewerBottomBar {{
                 background-color: {fill_color};
                 border: 1px solid {border_color};
@@ -297,85 +457,23 @@ class UnifiedPreviewerLayout(QWidget):
             }}
         """
         register_widget_qss(self._content_top,(section_style))
-        register_widget_qss(self._content_bottom,(section_style))
         # 强制已显示控件重新套用样式（延迟构建场景下必须，否则边框/填充不重绘）
         self._content_top.style().unpolish(self._content_top)
         self._content_top.style().polish(self._content_top)
-        self._content_bottom.style().unpolish(self._content_bottom)
-        self._content_bottom.style().polish(self._content_bottom)
         register_widget_qss(self._bottom_bar,(section_style))
-
+        self._bottom_bar.style().unpolish(self._bottom_bar)
+        self._bottom_bar.style().polish(self._bottom_bar)
+    
     def _on_theme_changed(self, theme: str) -> None:
         """主题切换时占位（样式由 MainWindow 统一刷新）"""
     
     def cleanup(self) -> None:
-        """释放后台资源（主窗口关闭时调用）：停止文件信息面板的采集线程。"""
-        try:
-            self._info_panel.stop()
-        except (RuntimeError, AttributeError):
-            pass
-    
-    # ── 分割区高度规则 ──
-    # 规则：
-    # 1) 默认起始状态与「取消预览」后，上下两区各占可用高度的一半；
-    # 2) 文件信息预览器（下方）的最高高度被限制为可用高度的一半，
-    #    因此预览内容区始终至少占一半；把手只能把信息区在下限以上、
-    #    半高以内拖动，无法越过半高。
+        """释放当前预览器的后台资源（主窗口关闭时调用）。
 
-    def _splitter_available_height(self) -> int:
-        """分割区内可用于两个内容区的总高度（不含把手）。"""
-        return max(0, self._splitter.height() - self._splitter.handleWidth())
-
-    def _apply_default_split(self) -> None:
-        """恢复默认等分：上下各占可用高度的一半。
-
-        分割区尚未布局（高度未知）时退回等比例 [1, 1]，
-        布局后 Qt 会按比例自然实现 50/50。
+        文件信息面板已外置，其采集线程由持有方（MainWindow）单独停止。
         """
-        available = self._splitter_available_height()
-        if available <= 0:
-            self._splitter.setSizes([1, 1])
-            return
-        half = available // 2
-        self._splitter.setSizes([available - half, half])
+        self._cleanup_current_preview()
 
-    def _ensure_split_rules(self) -> None:
-        """把信息面板最高高度限制为可用高度的一半，并对超限状态兜底钳制。
-
-        窗口尺寸变化 / 把手移动 / 程序化 setSizes 后都应调用（幂等）。
-        P0 节流：半高变化<=2px 且未超限时直接返回，不碰
-        setMaximumHeight/setSizes，避免拖拽每帧递归触发布局。
-        """
-        available = self._splitter_available_height()
-        if available <= 0:
-            return
-        half = available // 2
-        if abs(half - self._last_half) <= 2:
-            if self._content_bottom.height() <= half:
-                return
-        self._last_half = half
-        # QSplitter 拖动与 setSizes 均遵循该最大高度，信息区无法越过半高
-        self._content_bottom.setMaximumHeight(half)
-        if self._content_bottom.height() > half:
-            self._splitter.setSizes([available - half, half])
-
-    def _on_splitter_moved(self, _pos: int, _index: int) -> None:
-        """把手移动后：确保信息区不越过半高；首次获得尺寸时应用默认等分。"""
-        if not self._default_split_applied and self._splitter.height() > 0:
-            self._default_split_applied = True
-            if self._current_file_info is None:
-                self._apply_default_split()
-        self._ensure_split_rules()
-
-    def resizeEvent(self, event) -> None:  # noqa: N802
-        """窗口缩放：重算信息区半高上限；首次可见时精确应用默认等分。"""
-        super().resizeEvent(event)
-        if not self._default_split_applied and self._splitter.height() > 0:
-            self._default_split_applied = True
-            if self._current_file_info is None:
-                self._apply_default_split()
-        self._ensure_split_rules()
-    
     # ── 公共 API ──
     
     def set_file(self, file_info: Optional[dict]) -> None:
@@ -405,19 +503,14 @@ class UnifiedPreviewerLayout(QWidget):
         # 更新当前文件信息
         self._current_file_info = file_info
         self._update_bottom_buttons()
-        self._info_panel.set_file(file_info)
         self._load_preview(file_info)
     
     def clear_preview(self) -> None:
-        """清空预览区，显示占位符，并恢复默认等分（上下各半）。"""
+        """清空预览区并显示占位符（文件信息面板的清理由持有方负责）。"""
         self._cleanup_current_preview()
         self._current_file_info = None
         self._update_bottom_buttons()
         self._show_placeholder()
-        self._info_panel.clear()
-        # 取消文件预览后恢复默认高度：两区各占一半
-        self._apply_default_split()
-        self._ensure_split_rules()
     
     # ── 内部方法 ──
     
@@ -502,6 +595,8 @@ class UnifiedPreviewerLayout(QWidget):
         
         # 清理当前预览器
         if self._current_preview_widget is not None:
+            # 顶栏按钮先于预览器销毁摘除（按钮宿主可能位于预览器顶栏内部）
+            self._detach_top_buttons()
             # 如果预览器有 stop_playback 方法，调用它（视频/音频预览器）
             if hasattr(self._current_preview_widget, "stop_playback"):
                 try:
@@ -525,6 +620,8 @@ class UnifiedPreviewerLayout(QWidget):
             self._current_preview_widget.deleteLater()
             self._current_preview_widget = None
             self._current_preview_type = None
+            # 无预览器（占位态）：顶栏按钮无宿主，统一工具栏隐藏
+            self._sync_action_host()
     
     def _load_preview(self, file_info: dict) -> None:
         """加载文件预览。
@@ -599,3 +696,6 @@ class UnifiedPreviewerLayout(QWidget):
             # 加载失败，清理并显示占位符
             self._cleanup_current_preview()
             self._show_placeholder()
+
+        # 预览器就绪（或加载失败后已占位）：同步顶栏按钮宿主
+        self._sync_action_host()

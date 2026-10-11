@@ -73,6 +73,7 @@ from freeassetfilter.ui.layout.settings_layout import (
     AccentColorButton,
     AppearanceSettingsPage,
     CustomAccentButton,
+    GeneralSettingsPage,
     SettingsLayout,
 )
 from freeassetfilter.ui.layout.unified_previewer_layout import UnifiedPreviewerLayout
@@ -260,6 +261,108 @@ class TestFilePoolLayout:
         assert file_path.replace("/", "\\") in layout.get_pool_paths() or file_path in layout.get_pool_paths()
         layout.remove_file(file_path)
         assert layout.has_file(file_path) is False
+        layout.deleteLater()
+
+    def test_grid_view_mode_layout_and_scale(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """New 布局网格：瓦片卡、与选择器同款列宽算法、默认最小缩放。"""
+        import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
+
+        monkeypatch.setattr(
+            fpl_mod, "is_animation_enabled", lambda *args, **kwargs: False
+        )
+        layout = FilePoolLayout()
+        layout.resize(515, 250)
+        layout.show()
+        _pump_events(qapp)
+
+        assert layout.get_view_mode() == "list"
+        assert layout._card_scale == 1.0
+
+        for i in range(5):
+            layout.add_file({"path": f"D:/dummy/pool_{i}.png", "name": f"pool_{i}.png"})
+        _pump_events(qapp)
+
+        layout.set_view_mode("grid")
+        _pump_events(qapp)
+
+        assert layout.get_view_mode() == "grid"
+        # 网格默认最小缩放
+        assert layout._card_scale == layout._card_scale_min
+        cards = list(layout._card_widgets.values())
+        assert cards
+        # 平铺瓦片：竖向形态、无悬浮操作、tooltip 提供完整路径
+        assert all(card._layout_mode == "vertical" for card in cards)
+        assert all(card._tile_style is True for card in cards)
+        assert all(len(card._actions) == 0 for card in cards)
+        assert all(card.toolTip() for card in cards)
+        # 列宽/列数与选择器同款算法（calc_grid_cell）一致，且卡片定宽
+        from components.file_card_delegate import (
+            CARD_CONFIG,
+            FileCardDelegate,
+            calc_grid_base_width,
+            calc_grid_cell,
+        )
+
+        margins = layout._card_layout.contentsMargins()
+        available = max(
+            0,
+            layout._scroll_area.viewport().width()
+            - margins.left()
+            - margins.right(),
+        )
+        base = int(calc_grid_base_width(layout.font()) * layout._card_scale)
+        cols, expect_w = calc_grid_cell(available, base, 4)
+        assert len({card.width() for card in cards}) == 1
+        assert cards[0].width() == expect_w
+        assert len({card.x() for card in cards}) == min(cols, len(cards))
+        # 卡高与选择器网格卡一致（CARD_CONFIG 规格）
+        _, expect_h = FileCardDelegate._calc_card_size(
+            CARD_CONFIG, layout._card_scale
+        )
+        assert cards[0].height() == expect_h
+        assert layout._card_container.minimumHeight() > 0
+
+        # 切回列表：恢复信息卡（路径副标题 + 悬浮重命名/删除），网格缩放被记忆
+        layout.set_view_mode("list")
+        _pump_events(qapp)
+        assert layout.get_view_mode() == "list"
+        assert layout._card_scale == 1.0
+        assert all(card._layout_mode == "horizontal" for card in cards)
+        assert all(card._tile_style is False for card in cards)
+        assert all(len(card._actions) == 2 for card in cards)
+        assert all(not card.toolTip() for card in cards)
+
+        layout.set_view_mode("grid")
+        _pump_events(qapp)
+        assert layout._card_scale == layout._card_scale_min
+        layout.deleteLater()
+
+    def test_grid_mode_new_cards_use_fixed_width(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """先切网格再加入的卡片：平铺瓦片 + 固定列宽 + 无悬浮操作。"""
+        import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
+
+        monkeypatch.setattr(
+            fpl_mod, "is_animation_enabled", lambda *args, **kwargs: False
+        )
+        layout = FilePoolLayout()
+        layout.resize(443, 250)
+        layout.show()
+        _pump_events(qapp)
+
+        layout.set_view_mode("grid")
+        layout.add_file({"path": "D:/dummy/grid_new.png", "name": "grid_new.png"})
+        _pump_events(qapp)
+
+        card = next(iter(layout._card_widgets.values()))
+        assert card._layout_mode == "vertical"
+        assert card._tile_style is True
+        assert card.minimumWidth() == card.maximumWidth()
+        assert len(card._actions) == 0
+        assert card.toolTip() == "D:/dummy/grid_new.png"
         layout.deleteLater()
 
 
@@ -1462,9 +1565,11 @@ class TestSettingsLayout:
         layout = SettingsLayout()
         scrolls = layout._stack.findChildren(QScrollArea)
         floating = [s for s in scrolls if isinstance(s, _FloatingScrollArea)]
-        assert len(floating) == 1
+        # 外观页 + 通用页各有一处浮动滚动区
+        assert len(floating) == 2
 
-        area = floating[0]
+        area = layout._stack.widget(0).findChild(_FloatingScrollArea)
+        assert area is not None
         # 原生滚动条隐藏，浮动 styled 滚动条存在
         assert area.verticalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
         assert area.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
@@ -1522,23 +1627,14 @@ class TestUnifiedPreviewerLayout:
         _assert_layout_geometry(layout, qapp)
         layout.deleteLater()
 
-    def test_info_panel_built_in_bottom_frame(self, qapp: QApplication) -> None:
-        """文件信息面板已挂载到下方内容区，且随 clear_preview 复位。"""
+    def test_info_panel_externalized(self, qapp: QApplication) -> None:
+        """文件信息面板已外置：本组件不再持有信息面板与内部分割条。"""
         layout = UnifiedPreviewerLayout()
         _assert_layout_geometry(layout, qapp)
-        # 与产品代码使用同一 sys.path 别名，避免同一模块被双重导入
-        import layout.preview.file_info_panel as fip_module
-
-        assert isinstance(layout._info_panel, fip_module.FileInfoPanel)
-        assert layout._content_bottom.layout() is not None
-
-        layout.set_file(self._unsupported_file_info())
-        qapp.processEvents()
-        assert layout._info_panel._file_info is not None
-
-        layout.clear_preview()
-        qapp.processEvents()
-        assert layout._info_panel._file_info is None
+        assert not hasattr(layout, "_info_panel")
+        assert not hasattr(layout, "_splitter")
+        assert layout._content_top is not None
+        assert layout._bottom_bar is not None
         layout.deleteLater()
 
     def test_set_file_none_is_safe(self, qapp: QApplication) -> None:
@@ -1630,100 +1726,34 @@ class TestUnifiedPreviewerLayout:
         assert layout._is_audio_file(file_info) is expected
         layout.deleteLater()
 
-    # ── 分割区高度规则 ──────────────────────────────────────────────────
+    # ── 底栏按钮：顺序与两文字按钮等宽 ────────────────────────────────
 
-    def _show_split_layout(self, qapp: QApplication) -> UnifiedPreviewerLayout:
+    def _show_layout(self, qapp: QApplication) -> UnifiedPreviewerLayout:
+        """显示一个预览器布局（底栏几何类用例的公共前置）。"""
         layout = UnifiedPreviewerLayout()
         layout.show()
         layout.resize(720, 920)
         _pump_events(qapp)
         return layout
 
-    @staticmethod
-    def _split_heights(layout: UnifiedPreviewerLayout) -> tuple[int, int]:
-        return layout._content_top.height(), layout._content_bottom.height()
-
-    def test_default_start_split_is_half(
-        self, qapp: QApplication,
-    ) -> None:
-        """默认起始状态：统一预览器与文件信息预览器各占可用高度的一半。"""
-        layout = self._show_split_layout(qapp)
-        available = layout._splitter.height() - layout._splitter.handleWidth()
-        assert available > 0
-        top, bottom = self._split_heights(layout)
-        assert abs(top - bottom) <= 2
-        assert abs(top - available // 2) <= 2
-        # 信息区最高高度即为其默认半高
-        assert layout._content_bottom.maximumHeight() == available // 2
-        layout._info_panel.stop()
-        safe_teardown(layout)
-
-    def test_info_pane_capped_at_half(
-        self, qapp: QApplication,
-    ) -> None:
-        """信息预览器最高高度不超过可用高度的一半（强制拉高也被钳制）。"""
-        layout = self._show_split_layout(qapp)
-        layout.set_file(self._unsupported_file_info())
-        _pump_events(qapp)
-        available = layout._splitter.height() - layout._splitter.handleWidth()
-        half = available // 2
-
-        # 程序化把底栏拉到远超半高 → 遵循最大高度，顶栏占余下部分
-        layout._splitter.setSizes([120, available * 4])
-        _pump_events(qapp)
-        top, bottom = self._split_heights(layout)
-        assert bottom <= half
-        assert top >= half
-        assert abs(top + bottom - available) <= 2
-        layout._info_panel.stop()
-        safe_teardown(layout)
-
-    def test_clear_preview_restores_default_split(
-        self, qapp: QApplication,
-    ) -> None:
-        """预览期间手动调高（顶部变大）后取消预览 → 恢复默认各半高度。"""
-        layout = self._show_split_layout(qapp)
-        layout.set_file(self._unsupported_file_info())
-        _pump_events(qapp)
-        available = layout._splitter.height() - layout._splitter.handleWidth()
-        half = available // 2
-
-        # 用户手动把信息区收窄、预览区放大
-        layout._splitter.setSizes([available - half // 3, half // 3])
-        _pump_events(qapp)
-        top, bottom = self._split_heights(layout)
-        assert bottom < half
-
-        layout.clear_preview()
-        _pump_events(qapp)
-        top, bottom = self._split_heights(layout)
-        assert abs(top - bottom) <= 2
-        assert abs(top - half) <= 2
-        assert layout._content_bottom.maximumHeight() == half
-        layout._info_panel.stop()
-        safe_teardown(layout)
-
-    # ── 底栏按钮：顺序与两文字按钮等宽 ────────────────────────────────
-
     def test_bottom_bar_button_order(
         self, qapp: QApplication,
     ) -> None:
         """底栏顺序：share → 打开方式 → 定位目录 → close。"""
-        layout = self._show_split_layout(qapp)
+        layout = self._show_layout(qapp)
         share_x = layout._share_btn.x()
         open_x = layout._open_default_btn.x()
         locate_x = layout._locate_btn.x()
         close_x = layout._close_btn.x()
         assert share_x < open_x < locate_x < close_x
         assert not hasattr(layout, "_explorer_btn")
-        layout._info_panel.stop()
         safe_teardown(layout)
 
     def test_action_buttons_equal_width_and_track_width(
         self, qapp: QApplication,
     ) -> None:
         """两个文字按钮等宽，随功能区宽度同步同增同减。"""
-        layout = self._show_split_layout(qapp)
+        layout = self._show_layout(qapp)
 
         def _widths() -> list[int]:
             return [layout._open_default_btn.width(), layout._locate_btn.width()]
@@ -1746,7 +1776,102 @@ class TestUnifiedPreviewerLayout:
         narrow = _widths()
         _assert_equal(narrow)
         assert narrow[0] < wider[0]
-        layout._info_panel.stop()
+        safe_teardown(layout)
+
+    # ── 统一操作按钮：顶栏模式（New 布局） ────────────────────────────
+
+    def test_actions_mode_top_uses_previewer_toolbar(
+        self, qapp: QApplication,
+    ) -> None:
+        """New 布局：底栏隐藏，图标按钮注入预览器顶栏（unified_action_host）。"""
+        from layout.preview.preview_toolbar import PreviewToolbarFrame
+
+        layout = UnifiedPreviewerLayout()
+        _assert_layout_geometry(layout, qapp)
+        layout.set_actions_mode(True)
+        assert layout._bottom_bar.isHidden() is True
+
+        class _FakePreviewer(QWidget):
+            """带统一工具栏宿主的替身预览器。"""
+
+            def __init__(self, parent=None) -> None:
+                super().__init__(parent)
+                self._top_bar = PreviewToolbarFrame(self)
+
+            def unified_action_host(self):
+                return self._top_bar
+
+            def cleanup(self) -> None:
+                """替身无资源可清。"""
+
+        layout._current_file_info = {
+            "path": "D:/dummy/unsupported_sample.zzz",
+            "suffix": "zzz",
+            "is_dir": False,
+        }
+        layout._update_bottom_buttons()
+
+        previewer = _FakePreviewer(layout._content_top)
+        layout._ensure_content_layout()
+        layout._content_layout.addWidget(previewer)
+        layout._current_preview_widget = previewer
+        layout._current_preview_type = _FakePreviewer
+        layout._sync_action_host()
+
+        assert layout._top_host is previewer._top_bar
+        for btn in layout._top_buttons:
+            assert previewer._top_bar.isAncestorOf(btn)
+            assert btn.isEnabled() is True
+
+        # 销毁预览器不应带走按钮（先摘除、后销毁）
+        layout._cleanup_current_preview()
+        for btn in layout._top_buttons:
+            assert btn.parent() is None
+        assert layout._top_host is None
+        safe_teardown(layout)
+
+    def test_actions_mode_top_fallback_own_toolbar(
+        self, qapp: QApplication,
+    ) -> None:
+        """无顶栏预览器（视频/音频/Office 形态）：由容器提供统一工具栏。"""
+        layout = UnifiedPreviewerLayout()
+        _assert_layout_geometry(layout, qapp)
+        layout.set_actions_mode(True)
+
+        class _NoBarPreviewer(QWidget):
+            """无顶栏宿主的替身预览器。"""
+
+            def cleanup(self) -> None:
+                """替身无资源可清。"""
+
+        previewer = _NoBarPreviewer(layout._content_top)
+        layout._ensure_content_layout()
+        layout._content_layout.addWidget(previewer)
+        layout._current_preview_widget = previewer
+        layout._current_preview_type = _NoBarPreviewer
+        layout._sync_action_host()
+
+        own = layout._own_toolbar
+        assert own is not None
+        assert own.isVisibleTo(layout) is True
+        assert layout._top_host is own
+        for btn in layout._top_buttons:
+            assert own.isAncestorOf(btn)
+        safe_teardown(layout)
+
+    def test_actions_mode_back_to_classic_restores_bottom_bar(
+        self, qapp: QApplication,
+    ) -> None:
+        """切回经典：底栏恢复显示，顶栏按钮摘离宿主。"""
+        layout = UnifiedPreviewerLayout()
+        _assert_layout_geometry(layout, qapp)
+        layout.set_actions_mode(True)
+        layout.set_actions_mode(False)
+
+        assert layout._bottom_bar.isHidden() is False
+        assert layout._top_host is None
+        for btn in layout._top_buttons:
+            assert btn.parent() is None
         safe_teardown(layout)
 
 
@@ -3781,3 +3906,137 @@ class TestLoadAllStaysPython:
         assert [e["name"] for e in entries] == ["B:", "C:"], "仅物理磁盘进入 All 视图"
         assert stat_calls == ["B:\\", "C:\\"], "网络盘不应触发 stat"
         assert bridge_calls == [], "All 收集不得触碰 faf_core 桥（保持 Python）"
+
+
+# =============================================================================
+# ui.layout.settings_layout — 通用页（界面布局切换）
+# =============================================================================
+class TestGeneralSettingsPage:
+    """GeneralSettingsPage：暂存隔离、分段同步与提交路由。"""
+
+    @staticmethod
+    def _make_cache(mode: str = "workspace") -> Any:
+        """构造带指定布局模式的暂存缓存。"""
+        from freeassetfilter.ui.layout.settings_staging_cache import (
+            SettingsStagingCache,
+        )
+
+        cache = SettingsStagingCache()
+        cache.begin({"general": {"layout_mode": mode}})
+        return cache
+
+    def test_construct_and_default_from_cache(self, qapp: QApplication) -> None:
+        """构造：从暂存缓存读取布局模式并同步分段选中。"""
+        page = GeneralSettingsPage(staging_cache=self._make_cache("classic"))
+        assert page._layout_mode == "classic"
+        assert page._layout_segmented.current_index == 0
+        # 分段名称：经典 / New
+        assert page.LAYOUT_LABELS == ("经典", "New")
+        # 介绍文字：仅显示当前（经典）布局介绍 + 换行提示行
+        desc = page._layout_row.desc_label.text()
+        assert "经典布局" in desc
+        assert "New 布局" not in desc
+        assert desc.endswith(GeneralSettingsPage._LAYOUT_HINT)
+        assert "\n" in desc
+        safe_teardown(page)
+
+    def test_segment_change_updates_description(self, qapp: QApplication) -> None:
+        """切换分段：介绍文字即时切换为对应布局的介绍。"""
+        cache = self._make_cache("classic")
+        page = GeneralSettingsPage(staging_cache=cache)
+
+        page._layout_segmented.set_current_index(1, animate=False)
+        qapp.processEvents()
+
+        desc = page._layout_row.desc_label.text()
+        assert "New 布局" in desc
+        assert "经典布局" not in desc
+        assert GeneralSettingsPage._LAYOUT_HINT in desc
+        safe_teardown(page)
+
+    def test_segment_change_writes_staging_only(self, qapp: QApplication) -> None:
+        """切换分段只写暂存缓存（不落盘、不触碰主窗口）。"""
+        cache = self._make_cache("workspace")
+        page = GeneralSettingsPage(staging_cache=cache)
+        assert page._layout_segmented.current_index == 1
+
+        page._layout_segmented.set_current_index(0, animate=False)
+        qapp.processEvents()
+
+        assert page._layout_mode == "classic"
+        assert cache.get("general.layout_mode") == "classic"
+        safe_teardown(page)
+
+    def test_refresh_from_staging_restores(self, qapp: QApplication) -> None:
+        """refresh_from_staging：以暂存缓存为唯一数据源回写控件展示。"""
+        cache = self._make_cache("workspace")
+        page = GeneralSettingsPage(staging_cache=cache)
+        page._layout_segmented.set_current_index(0, animate=False)
+        qapp.processEvents()
+        assert page._layout_mode == "classic"
+
+        # 外部（取消/重置链路）使缓存回到 workspace → 刷新后展示随之恢复
+        cache.set("general.layout_mode", "workspace")
+        page.refresh_from_staging()
+
+        assert page._layout_mode == "workspace"
+        assert page._layout_segmented.current_index == 1
+        safe_teardown(page)
+
+    def test_submit_routes_layout_mode_to_main_window(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """提交：布局模式下发主窗口（暂存期不下发）并落盘到 V2。"""
+        import freeassetfilter.ui.layout.settings_layout as sl_mod
+        from freeassetfilter.core.managers.settings_manager_v2 import (
+            SettingsManagerV2,
+        )
+
+        tmp_file = str(tmp_path / "settings_v2.json")
+        monkeypatch.setattr(
+            sl_mod, "SettingsManagerV2", lambda *a, **k: SettingsManagerV2(tmp_file)
+        )
+        # 性能档位钩子为真实副作用（电源策略/GPU 启动器），提交链路测试不触碰
+        monkeypatch.setattr(
+            sl_mod.SettingsLayout,
+            "_apply_staged_perf_profile",
+            lambda self, profile: None,
+        )
+
+        class _FakeMainWindow:
+            """记录布局切换调用的假主窗口。"""
+
+            def __init__(self) -> None:
+                self.layout_calls: list[str] = []
+
+            def set_layout_mode(self, mode: str) -> bool:
+                self.layout_calls.append(mode)
+                return True
+
+        fake_mw = _FakeMainWindow()
+        monkeypatch.setattr(
+            sl_mod.AppearanceSettingsPage, "_find_main_window", lambda self: fake_mw
+        )
+
+        from theme import tm
+
+        prev_mode = tm.get_theme_mode()
+        layout = SettingsLayout()
+        try:
+            # 暂存切换到经典三栏 → 提交前不下发主窗口
+            layout._general_page._layout_segmented.set_current_index(0, animate=False)
+            qapp.processEvents()
+            assert fake_mw.layout_calls == []
+
+            assert layout._submit_settings() is True
+            assert fake_mw.layout_calls == ["classic"]
+
+            saved = SettingsManagerV2(tmp_file)
+            saved.load()
+            assert saved.get("general.layout_mode") == "classic"
+        finally:
+            try:
+                tm.set_theme_mode(prev_mode)
+            except Exception:
+                pass
+            safe_teardown(layout)

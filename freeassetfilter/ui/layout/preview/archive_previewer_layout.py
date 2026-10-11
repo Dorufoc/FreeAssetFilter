@@ -660,6 +660,10 @@ class ArchivePreviewerLayout(QWidget):
         self._archive_path = file_path
         self._refresh()
 
+    def unified_action_host(self):
+        """统一操作按钮宿主：返回本预览器顶栏（New 布局注入用）。"""
+        return self._top_bar
+
     def cleanup(self) -> None:
         """清理当前浏览状态（宿主切换/清除预览时调用）。"""
         self._token += 1

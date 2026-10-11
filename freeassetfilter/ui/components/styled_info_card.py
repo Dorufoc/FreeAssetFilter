@@ -137,6 +137,9 @@ class StyledInfoCard(QWidget):
             "subtitle_weight": 500,
             "desc_size": 12,
             "desc_weight": 400,
+            # 竖向形态的文字基准宽度（参与缩放，见 _SCALABLE_SIZE_KEYS）：
+            # 仅影响卡片的最小宽度计算，文字实际绘制仍按卡片宽度自适应省略。
+            "text_width": 200,
         },
     }
 
@@ -149,6 +152,7 @@ class StyledInfoCard(QWidget):
         disabled: bool = False,
         media_icon: str = "",
         overlay_enabled: bool = False,
+        tile_style: bool = False,
         size_overrides: dict | None = None,
         parent=None,
     ):
@@ -161,8 +165,12 @@ class StyledInfoCard(QWidget):
         self._media_icon = media_icon
         self._media_pixmap = None  # optional QPixmap override for media area
         self._overlay_enabled = overlay_enabled
+        # 平铺（网格瓦片）样式：标题居中双行、隐藏副标题、无悬浮操作层
+        self._tile_style = bool(tile_style)
         self._file_path = ""  # identifier for clicked signal
         self._size_overrides = size_overrides or {}
+        # 网格形态下的固定卡片宽度（None=按内容自适应最小宽度，列表形态默认）
+        self._fixed_width: int | None = None
         self._actions = []  # list of (text, icon, callback)
 
         # Animation states
@@ -698,7 +706,8 @@ class StyledInfoCard(QWidget):
     # 与 FileCardDelegate._get_scaled_config 行为一致——Ctrl+滚轮缩放卡片
     # 时文字大小不跟随变化。weight/radius 等键同样原样保留，
     # 避免 title_weight=700 被放大为非法字重或在缩放后回落为默认值。
-    _SCALABLE_SIZE_KEYS = ("padding", "gap", "media_size", "icon_size")
+    # text_width 为竖向形态的文字基准宽度，随缩放参与最小宽度计算。
+    _SCALABLE_SIZE_KEYS = ("padding", "gap", "media_size", "icon_size", "text_width")
 
     def set_scale(self, scale: float, base_overrides: dict | None = None) -> None:
         """动态缩放卡片所有尺寸因子（0.5 ~ 2.0），匹配文件选择器 Ctrl+滚轮行为。
@@ -722,6 +731,55 @@ class StyledInfoCard(QWidget):
         self._apply_size()
         self.update()
 
+    def set_layout_mode(self, mode: str) -> None:
+        """切换卡片形态（horizontal 列表 / vertical 网格），原地生效。
+
+        Args:
+            mode: "horizontal" 或 "vertical"；非法值按 "horizontal" 处理。
+        """
+        mode = mode if mode in self.LAYOUT_MODES else "horizontal"
+        if mode == self._layout_mode:
+            return
+        self._layout_mode = mode
+        self._apply_size()
+        self._rebuild_overlay()
+        self.update()
+
+    def set_tile_style(self, enabled: bool) -> None:
+        """切换平铺（网格瓦片）样式。
+
+        启用后（仅竖向形态生效）：标题居中 + 双行自适应、隐藏副标题、
+        不渲染悬浮操作层（网格瓦片的信息与删除入口见池子侧约定）。
+
+        Args:
+            enabled: True 启用平铺样式，False 恢复常规信息卡样式。
+        """
+        enabled = bool(enabled)
+        if enabled == self._tile_style:
+            return
+        self._tile_style = enabled
+        self._apply_size()
+        self._rebuild_overlay()
+        self.update()
+
+    def set_fixed_width(self, width: int | None) -> None:
+        """设置网格形态下的固定卡片宽度。
+
+        Args:
+            width: 固定宽度（px）；``None`` 恢复为按内容自适应最小宽度。
+        """
+        new_width: int | None = None
+        if width is not None:
+            try:
+                new_width = max(1, int(width))
+            except (TypeError, ValueError):
+                new_width = None
+        if new_width == self._fixed_width:
+            return
+        self._fixed_width = new_width
+        self._apply_size()
+        self.update()
+
     def update_overlay(self) -> None:
         """强制 overlay 子控件重绘（滚动后与卡片几何保持同步）。"""
         if self._overlay_widget is not None and self._overlay_widget.isVisible():
@@ -732,12 +790,18 @@ class StyledInfoCard(QWidget):
     def _calc_text_height(self, config: dict) -> int:
         """计算文字块（标题+副标题+描述）的实际总高度。
 
-        供 _apply_size（卡片定高）与 paintEvent（文字块垂直居中）共用，
+        平铺（网格瓦片）样式仅保留标题且按双行预留（与由
+        ``FileCardDelegate._calc_card_size`` 得出的选择器卡高一致）；
+        其余情况供 _apply_size（卡片定高）与 paintEvent（文字块垂直居中）共用，
         保证两处对文字高度的度量一致。
         """
-        # Calculate text height for sizing
         font_title = QFont("Microsoft YaHei UI", config["title_size"], config["title_weight"])
         fm = QFontMetrics(font_title)
+
+        if self._tile_style and self._layout_mode == "vertical":
+            # 平铺瓦片：双行标题预留（行高 + 2px 行距，与委托卡高口径一致）
+            return fm.height() * 2 + 4
+
         title_h = fm.height()
 
         subtitle_h = 0
@@ -768,12 +832,24 @@ class StyledInfoCard(QWidget):
             total_width = padding * 2 + media_size + config["gap"] + 200
         else:
             media_size = config["media_size"]
+            text_width = int(config.get("text_width", 200))
             total_height = padding * 2 + media_size + config["gap"] + text_height
-            total_width = padding * 2 + max(media_size, 200)
+            total_width = padding * 2 + max(media_size, text_width)
 
         self.setFixedHeight(total_height)
-        self.setMinimumWidth(total_width)
+        if self._fixed_width is not None:
+            # 网格形态：宽度由池子按容器与缩放统一计算（固定宽，文字自适应省略）
+            self.setFixedWidth(max(1, int(self._fixed_width)))
+        else:
+            self.setMinimumWidth(total_width)
+            self.setMaximumWidth(16777215)
+        # 记录自然最小宽度（不随固定宽度变化），供网格列宽计算
+        self._natural_width = total_width
         self.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
+
+    def natural_width(self) -> int:
+        """按当前形态与缩放计算的自然最小宽度（网格列宽计算用，只读）。"""
+        return int(getattr(self, "_natural_width", 0))
 
     def _rebuild_overlay(self):
         """Create or update the overlay widget and its action buttons.
@@ -781,12 +857,17 @@ class StyledInfoCard(QWidget):
         The overlay background gradient is self-painted with per-frame
         opacity (see :class:`_CardOverlayWidget`); buttons are plain
         children shown/hidden with the overlay.
+
+        平铺（网格瓦片）样式不渲染悬浮操作层：先清理旧覆盖层后直接返回。
         """
         # Remove old overlay
         if self._overlay_widget:
             self._overlay_widget.deleteLater()
             self._overlay_widget = None
             self._overlay_buttons.clear()
+
+        if self._tile_style:
+            return
 
         if not self._overlay_enabled or not self._actions:
             return
@@ -1169,6 +1250,10 @@ class StyledInfoCard(QWidget):
 
     def _draw_text(self, painter: QPainter, rect: QRectF, config: dict, colors: dict):
         """Draw title, subtitle, and description text lines."""
+        if self._tile_style and self._layout_mode == "vertical":
+            self._draw_tile_title(painter, rect, config, colors)
+            return
+
         y = rect.y()
         x = rect.x()
         max_w = rect.width()
@@ -1212,3 +1297,66 @@ class StyledInfoCard(QWidget):
             # Word wrap the description
             text_rect = QRectF(x, y, max_w, rect.bottom() - y)
             painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, self._desc)
+
+    def _draw_tile_title(
+        self, painter: QPainter, rect: QRectF, config: dict, colors: dict
+    ) -> None:
+        """平铺样式的标题绘制：居中、单行/双行自适应。
+
+        与 ``FileCardDelegate._draw_text`` 使用同一套换行算法（单行放不下的
+        名称折为两行：第一行尽量放满，第二行省略号截断），保证网格瓦片卡
+        与文件选择器网格卡的文件名呈现完全一致。
+        """
+        if not self._title:
+            return
+        font = QFont("Microsoft YaHei UI", config["title_size"], config["title_weight"])
+        painter.setFont(font)
+        if self._disabled:
+            painter.setPen(tm.alpha_of(tm.mid, 60))
+        else:
+            painter.setPen(colors["title"])
+        fm = QFontMetrics(font)
+        max_w = int(rect.width())
+        line_height = fm.height()
+        spacing = 2  # 行间距
+        two_line_h = line_height * 2 + spacing
+
+        # 文本块（单行/双行）整体在 rect 内垂直居中
+        block_h = (
+            line_height
+            if fm.horizontalAdvance(self._title) <= max_w
+            else two_line_h
+        )
+        block_y = rect.y() + max(0, int((rect.height() - block_h) / 2))
+
+        if block_h == line_height:
+            painter.drawText(
+                QRectF(rect.x(), block_y, max_w, line_height),
+                Qt.AlignHCenter | Qt.AlignVCenter,
+                self._title,
+            )
+            return
+
+        # 双行：第一行尽量放满（二分查找最大可容纳字符数），第二行省略
+        lo, hi = 0, len(self._title)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if fm.horizontalAdvance(self._title[:mid]) <= max_w:
+                lo = mid
+            else:
+                hi = mid - 1
+        first_line = self._title[:lo]
+        painter.drawText(
+            QRectF(rect.x(), block_y, max_w, line_height),
+            Qt.AlignHCenter | Qt.AlignTop,
+            first_line,
+        )
+
+        remaining = self._title[len(first_line):].strip()
+        if remaining:
+            second_line = fm.elidedText(remaining, Qt.ElideRight, max_w)
+            painter.drawText(
+                QRectF(rect.x(), block_y + line_height + spacing, max_w, line_height),
+                Qt.AlignHCenter | Qt.AlignTop,
+                second_line,
+            )

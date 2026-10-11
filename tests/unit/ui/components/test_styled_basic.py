@@ -615,6 +615,68 @@ class TestStyledInfoCard:
         assert len(card._actions) == 0
         card.deleteLater()
 
+    def test_set_layout_mode_in_place(self, qapp: QApplication) -> None:
+        """set_layout_mode 原地切换形态：高度/宽度约束与自然宽度随之更新。"""
+        card = StyledInfoCard(layout_mode="horizontal", title="T")
+        card.set_scale(1.0)
+        h_natural = card.natural_width()
+        horizontal_h = card.height()
+
+        card.set_layout_mode("vertical")
+        assert card._layout_mode == "vertical"
+        assert card.natural_width() > 0
+        assert card.height() != horizontal_h  # 竖向为媒体在上 + 文字在下
+
+        card.set_layout_mode("horizontal")
+        assert card._layout_mode == "horizontal"
+        assert card.height() == horizontal_h
+        assert card.natural_width() == h_natural
+        card.deleteLater()
+
+    def test_set_fixed_width(self, qapp: QApplication) -> None:
+        """set_fixed_width 固定/解除网格卡片宽度。"""
+        card = StyledInfoCard(layout_mode="vertical", title="T")
+        card.set_scale(0.7)
+
+        card.set_fixed_width(180)
+        assert card.minimumWidth() == 180
+        assert card.maximumWidth() == 180
+
+        # 固定宽度不影响自然宽度记录（网格列宽计算依据）
+        assert card.natural_width() > 0
+        assert card.natural_width() != 180
+
+        card.set_fixed_width(None)
+        assert card.maximumWidth() == 16777215
+        card.deleteLater()
+
+    def test_tile_style_matches_grid_card_height(self, qapp: QApplication) -> None:
+        """平铺样式卡高 = 选择器网格卡规格（CARD_CONFIG × scale）。"""
+        from freeassetfilter.ui.components.file_card_delegate import (
+            CARD_CONFIG,
+            FileCardDelegate,
+        )
+
+        card = StyledInfoCard(layout_mode="vertical", tile_style=True, title="f.png")
+        card.set_scale(0.7, base_overrides=dict(CARD_CONFIG))
+        _, expect_h = FileCardDelegate._calc_card_size(CARD_CONFIG, 0.7)
+        assert card.maximumHeight() == expect_h
+        card.deleteLater()
+
+    def test_tile_style_suppresses_overlay_actions(self, qapp: QApplication) -> None:
+        """平铺样式不渲染悬浮操作层；关闭平铺后恢复。"""
+        card = StyledInfoCard(
+            layout_mode="vertical", tile_style=True, overlay_enabled=True, title="T"
+        )
+        card.add_action("A", callback=lambda: None)
+        assert card._overlay_widget is None
+
+        card.set_tile_style(False)
+        card.clear_actions()
+        card.add_action("A", callback=lambda: None)
+        assert card._overlay_widget is not None
+        card.deleteLater()
+
 
 # =============================================================================
 # ui.components.styled_segmented

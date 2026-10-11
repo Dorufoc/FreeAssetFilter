@@ -558,6 +558,13 @@ DEFAULT_SETTINGS_V2: Dict[str, Any] = {
         # 新建/下轮工作线程会话，不追溯已在跑的线程。
         "profile": "balanced",
     },
+    "general": {
+        # 主界面布局（设置页「通用」分类）：
+        # "classic"（经典三栏） | "workspace"（预览优先，新布局）。
+        # 启动时由 MainWindow._load_layout_settings 读取；设置页
+        # 保存路径经 MainWindow.set_layout_mode 即时生效。
+        "layout_mode": "workspace",
+    },
 }
 
 
@@ -822,5 +829,13 @@ class SettingsManagerV2:
                 staged_profile in PERFORMANCE_PROFILES
             ):
                 merged["performance"]["profile"] = staged_profile
+
+        # general 域合并：layout_mode 只接受 classic/workspace；
+        # 旧文件缺键或非法值时保留默认 workspace（不抛异常）。
+        if "general" in loaded and isinstance(loaded["general"], dict):
+            general_loaded = loaded["general"]
+            staged_layout = general_loaded.get("layout_mode", None)
+            if staged_layout in ("classic", "workspace"):
+                merged["general"]["layout_mode"] = staged_layout
 
         return merged

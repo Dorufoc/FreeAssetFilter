@@ -1684,6 +1684,10 @@ class FontPreviewerLayout(QWidget):
         self._maxsize_btn.setToolTip("最大化")
         self._fullscreen = False
 
+    def unified_action_host(self):
+        """统一操作按钮宿主：返回本预览器顶栏（New 布局注入用）。"""
+        return self._top_bar
+
     def cleanup(self) -> None:
         """清理资源；若处于全屏先退出，避免内嵌 widget 被直接销毁。"""
         if self._fullscreen:

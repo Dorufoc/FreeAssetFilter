@@ -1532,6 +1532,135 @@ class AppearanceSettingsPage(QWidget):
         }
 
 
+class GeneralSettingsPage(QWidget):
+    """通用设置页面 — 主界面布局切换（暂存缓存优先）。
+
+    布局切换项：经典 / New（预览优先）。暂存隔离铁律：切换只写入
+    ``SettingsStagingCache``（``general.layout_mode``），未提交前不触碰主窗口
+    与磁盘；点击「确定」才经 ``SettingsLayout._submit_settings`` 下发
+    ``MainWindow.set_layout_mode`` 并落盘。控件展示以缓存为准。
+
+    介绍文字随当前选中布局即时切换（仅显示当前布局介绍 + 换行提示）。
+    """
+
+    # 布局模式与分段索引的双向映射（顺序与 _build_ui 添加顺序一致）。
+    LAYOUT_MODES: tuple[str, ...] = ("classic", "workspace")
+    LAYOUT_LABELS: tuple[str, ...] = ("经典", "New")
+    LAYOUT_INDEX: dict[str, int] = {"classic": 0, "workspace": 1}
+
+    #: 切换提示行（所有布局介绍后统一换行追加）
+    _LAYOUT_HINT = "切换在点击「确定」后立即生效。"
+    #: 各布局介绍（不含提示行）
+    _LAYOUT_DESCRIPTIONS: dict[str, str] = {
+        "classic": "经典布局：文件选择、文件储存、文件预览三栏并列，信息面板位于预览区下方。",
+        "workspace": "New 布局：预览优先，文件选择独占左栏，文件储存与文件信息并排位于预览区下方。",
+    }
+
+    def __init__(self, parent=None, staging_cache: SettingsStagingCache | None = None):
+        super().__init__(parent)
+        if staging_cache is None:
+            staging_cache = SettingsStagingCache()
+            v2 = SettingsManagerV2()
+            staging_cache.begin(copy.deepcopy(v2.load()))
+        elif not staging_cache.is_active():
+            v2 = SettingsManagerV2()
+            staging_cache.begin(copy.deepcopy(v2.load()))
+        self._staging_cache = staging_cache
+        # 布局模式状态（初值由 refresh_from_staging 从暂存缓存读取）
+        self._layout_mode: str = "workspace"
+        self._layout_updating: bool = False  # 编程式切换分段控件的守卫标志
+        self._layout_segmented: StyledSegmented | None = None
+        self._layout_row: SettingsRow | None = None
+        self._build_ui()
+        self.refresh_from_staging()
+
+    def _build_ui(self) -> None:
+        """构建页面：界面布局行（分段控件 + 动态介绍文字）。"""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
+        # ── 界面布局：经典 / New（预览优先）──
+        # 与「深色模式」「窗口背景」分段同款 StyledSegmented（pill/sm）。
+        self._layout_row = SettingsRow(
+            title="界面布局",
+            description=self._layout_description_text(),
+        )
+        self._layout_segmented = StyledSegmented(variant="pill", size="sm")
+        for label in self.LAYOUT_LABELS:
+            self._layout_segmented.add_segment(label)
+        self._layout_segmented.current_changed.connect(
+            self._on_layout_segment_changed
+        )
+        self._layout_row.set_control(self._layout_segmented)
+        layout.addWidget(self._layout_row)
+        layout.addStretch()
+
+    # ── 交互 ──────────────────────────────────────────────────────────
+
+    def _on_layout_segment_changed(self, index: int) -> None:
+        """分段控件切换：只写入暂存缓存，并刷新介绍文字（不触碰主窗口与磁盘）。"""
+        if self._layout_updating:
+            return
+        if 0 <= index < len(self.LAYOUT_MODES):
+            self._layout_mode = self.LAYOUT_MODES[index]
+            self._staging_cache.set("general.layout_mode", self._layout_mode)
+            self._sync_description_text()
+
+    def _layout_description_text(self) -> str:
+        """返回当前布局的介绍文字 + 换行提示行。"""
+        desc = self._LAYOUT_DESCRIPTIONS.get(
+            self._layout_mode, self._LAYOUT_DESCRIPTIONS["workspace"]
+        )
+        return f"{desc}\n{self._LAYOUT_HINT}"
+
+    def _sync_description_text(self) -> None:
+        """把介绍文字同步到介绍标签（仅显示当前布局的介绍）。"""
+        if self._layout_row is None:
+            return
+        label = getattr(self._layout_row, "desc_label", None)
+        if label is not None:
+            label.setText(self._layout_description_text())
+
+    # ── 同步/刷新 ─────────────────────────────────────────────────────
+
+    def _sync_layout_segment(self) -> None:
+        """按当前布局模式同步分段选中项（守卫内切换，不触发处理器）。"""
+        target = self.LAYOUT_INDEX.get(self._layout_mode, 1)
+        self._layout_updating = True
+        try:
+            self._layout_segmented.set_current_index(target, animate=False)
+        finally:
+            self._layout_updating = False
+
+    def refresh_from_staging(self) -> None:
+        """从暂存缓存刷新控件展示（取消/重置未提交时恢复原始状态）。"""
+        saved = self._staging_cache.get("general.layout_mode", "workspace")
+        self._layout_mode = saved if saved in self.LAYOUT_MODES else "workspace"
+        self._sync_layout_segment()
+        self._sync_description_text()
+
+    def refresh_theme(self) -> None:
+        """主题切换时刷新页面内文字颜色（由 SettingsLayout._refresh_styles 调用）。"""
+        if self._layout_row is None:
+            return
+        title_label = getattr(self._layout_row, "title_label", None)
+        if title_label is not None:
+            register_widget_qss(title_label,(
+                f"font-size: 13.5px; font-weight: 500; color: {tm.text.name()};"
+            ))
+        desc_label = getattr(self._layout_row, "desc_label", None)
+        if desc_label is not None:
+            register_widget_qss(desc_label,(
+                f"font-size: 12px; color: {tm.alpha_of(tm.mid, 60).name()};"
+                f" line-height: 1.5;"
+            ))
+
+    def get_staging_cache(self) -> SettingsStagingCache:
+        """返回本页绑定的暂存缓存（调试链路使用）。"""
+        return self._staging_cache
+
+
 class AboutSettingsPage(QWidget):
     """关于页面 — 信息展示类设置页（无暂存项，仅「开源许可证」查看入口）。
 
@@ -1660,8 +1789,13 @@ class SettingsLayout(QWidget):
         appearance_scroll.attach_floating_bar_region(appearance_card)
         self._stack.addWidget(appearance_card)
 
-        # 页面 1：通用（占位）
-        general_card = self._create_page_card(None)
+        # 页面 1：通用（界面布局切换；包进透明滚动区域，小窗口下可滚动访问）
+        self._general_page = GeneralSettingsPage(
+            staging_cache=self._staging_cache
+        )
+        general_scroll = self._wrap_page_in_scroll(self._general_page)
+        general_card = self._create_page_card(general_scroll)
+        general_scroll.attach_floating_bar_region(general_card)
         self._stack.addWidget(general_card)
 
         # 页面 2：关于
@@ -1745,6 +1879,9 @@ class SettingsLayout(QWidget):
             # 刷新所有颜色按钮
             for btn in self._appearance_page._color_buttons:
                 btn.update()
+        # 刷新通用页面（布局切换文字颜色）
+        if hasattr(self, "_general_page"):
+            self._general_page.refresh_theme()
 
     def _on_item_selected(self, index: int, label: str) -> None:
         """侧边栏导航项选中回调"""
@@ -1799,11 +1936,13 @@ class SettingsLayout(QWidget):
         """重置按钮 — 暂存区回默认值并刷新界面，不直接落盘（需确定提交）。"""
         self._staging_cache.reset_to_defaults(copy.deepcopy(DEFAULT_SETTINGS_V2))
         self._appearance_page.refresh_from_staging()
+        self._general_page.refresh_from_staging()
 
     def _on_cancel_clicked(self) -> None:
         """取消按钮 — 清除暂存并恢复界面至原始状态，然后关闭宿主窗口。"""
         self._staging_cache.discard()
         self._appearance_page.refresh_from_staging()
+        self._general_page.refresh_from_staging()
         self._close_host_window()
 
     def _on_apply_clicked(self) -> None:
@@ -1849,6 +1988,15 @@ class SettingsLayout(QWidget):
         bg_transparency = _normalize_bg_transparency(
             staged_bg.get("transparency", IMAGE_BG_TRANSPARENCY_DEFAULT)
         )
+
+        # 通用页：主界面布局（classic 经典三栏 / workspace 新布局）。
+        staged_general = staged.get("general", {}) if isinstance(staged, dict) else {}
+        if isinstance(staged_general, dict):
+            layout_mode = staged_general.get("layout_mode", "workspace")
+        else:
+            layout_mode = "workspace"
+        if layout_mode not in ("classic", "workspace"):
+            layout_mode = "workspace"
 
         # 性能档位：只接受三档合法值，缺失/非法回退 balanced（与 V2 合并口径一致）。
         staged_perf = staged.get("performance", {}) if isinstance(staged, dict) else {}
@@ -1897,6 +2045,9 @@ class SettingsLayout(QWidget):
 
             self._apply_staged_background_to_main_window(staged_bg)
 
+            # 通用页：主界面布局下发（失败仅警告，不阻断整体提交）
+            self._apply_staged_layout_mode_to_main_window(layout_mode)
+
             # 性能档位应用（仅提交路径调用；顺序：定时器档位 → 进程电源策略
             # → GPU 路由；工作线程钩子在线程入口注册，只影响新建/下轮会话，
             # 不追溯已在跑的线程）。
@@ -1920,6 +2071,7 @@ class SettingsLayout(QWidget):
                 "blur": bg_blur,
                 "transparency": bg_transparency,
             })
+            v2.set("general.layout_mode", layout_mode)
             v2.set("performance.profile", perf_profile)
             v2.save()
         except Exception:
@@ -1988,6 +2140,28 @@ class SettingsLayout(QWidget):
                     mw.set_background_mode("mica")
         except Exception:
             pass
+
+    def _apply_staged_layout_mode_to_main_window(self, layout_mode: str) -> None:
+        """将暂存的界面布局模式应用到主窗口（仅提交路径调用）。
+
+        布局切换属即时重组（叶子组件重新挂载、不销毁），失败时记录 warning
+        并保留旧布局——不视为提交失败，其余设置照常生效。
+
+        Args:
+            layout_mode: 目标布局模式（"classic" 或 "workspace"，调用方已校验）。
+        """
+        try:
+            mw = self._appearance_page._find_main_window()
+            if mw is None:
+                return
+            setter = getattr(mw, "set_layout_mode", None)
+            if setter is None:
+                return
+            setter(layout_mode)
+        except Exception as exc:  # noqa: BLE001 - 布局切换失败不阻断提交
+            from freeassetfilter.utils.app_logger import warning
+
+            warning(f"界面布局切换失败（{layout_mode}）: {exc}")
 
     def _apply_staged_perf_profile(self, profile: str) -> None:
         """将暂存性能档位应用到三钩子（仅提交路径调用）。
