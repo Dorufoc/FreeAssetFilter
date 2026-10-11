@@ -381,13 +381,14 @@ class StyledInfoCard(QWidget):
         # - 正常/选中态背景：surface 85% 透明度
         # - hover 背景：surface 90% 透明度
         # - 边框：mid 30% / 40% 透明度
-        # - 选中态：accent 40% 填充（alpha≈102）+ accent 完整边框
+        # - 框选选中态：accent 25% 填充 + accent 虚线边框（与预览流光、
+        #   文件选择器"已入池"实线边框区分）
         # - 预览态边框：text 色（对应 FileBlockCard 的 secondary_color 语义）
         normal_bg = tm.alpha_of(tm.surface, 85)
         normal_border = tm.alpha_of(tm.mid, 30)
         hover_bg = tm.alpha_of(tm.surface, 90)
         hover_border = tm.alpha_of(tm.mid, 40)
-        selected_bg = tm.alpha_of(tm.accent, 40)
+        selected_bg = tm.alpha_of(tm.accent, 25)
         selected_border = QColor(tm.accent)
 
         self._style_colors = {
@@ -477,6 +478,16 @@ class StyledInfoCard(QWidget):
                 self._preview_angle = 0.0
                 self._trigger_unpreview_animation()
             self.preview_state_changed.emit(previewing, self._file_path)
+
+    def reset_press(self) -> None:
+        """复位鼠标按压缩放反馈（外部消费释放事件后由调用方调用）。
+
+        框选拖拽激活时释放事件不会到达卡片，卡片的 0.97 按压缩放若不复位
+        会一直停留；本方法将按压缩放动画恢复为 1.0。
+        """
+        self._pressed = False
+        self._animate_card_scale(1.0)
+        self.update()
 
     def _trigger_select_animation(self) -> None:
         """触发选中动画：背景和边框过渡到选中态颜色。"""
@@ -982,23 +993,29 @@ class StyledInfoCard(QWidget):
             # 所有绘制坐标直接使用控件坐标系统
 
             # Card background and border - 考虑选中态和预览态
-            # 边框宽度：预览态 2px，其他状态 1px
-            border_width = 2 if self._is_previewing else 1
+            # 边框宽度：预览态 2px，框选选中态 1.5px（虚线），其他状态 1px
+            if self._is_previewing:
+                border_width = 2
+            elif self._is_selected:
+                border_width = 1.5
+            else:
+                border_width = 1
 
-            # 背景：选中态 = accent 40% 覆盖层，其余 = 默认背景
+            # 背景：框选选中态 = accent 25% 覆盖层，其余 = 默认背景
             bg_color = (
                 self._anim_bg_color
                 if self._is_selected
                 else colors["bg"]
             )
 
-            # 边框：预览态 = 主题色→G1 径向渐变（焦点旋转动画）；其余按状态
+            # 边框：预览态 = 主题色→G1 径向渐变（焦点旋转动画）；
+            # 框选选中态 = accent 虚线边框；其余按状态
             if self._is_previewing:
                 border_brush = QBrush(
                     self._make_preview_gradient(QRectF(0, 0, w, h), self._preview_angle)
                 )
             elif self._is_selected:
-                # 选中态使用动画边框色
+                # 选中态使用动画边框色（虚线在 setPen 处设置）
                 border_brush = QBrush(self._anim_border_color)
             elif self._hovered and not self._disabled:
                 border_brush = QBrush(colors["border"])
@@ -1017,7 +1034,11 @@ class StyledInfoCard(QWidget):
             )
 
             # 同时设置画笔和画刷，一次调用绘制背景和边框
-            painter.setPen(QPen(border_brush, border_width))
+            border_pen = QPen(border_brush, border_width)
+            if self._is_selected and not self._is_previewing:
+                # 框选选中态：虚线边框（与预览流光、正常态实线区分）
+                border_pen.setStyle(Qt.DashLine)
+            painter.setPen(border_pen)
             painter.setBrush(bg_color)
             painter.drawRoundedRect(draw_rect, radius, radius)
 

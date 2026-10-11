@@ -61,9 +61,10 @@ _MEDIA_ICON_SCALE: float = 1.10
 # hover 图标缩放动画总开关：暂时禁用（False），恢复动画时改为 True（与 StyledInfoCard 保持一致）。
 _HOVER_MEDIA_ANIM_ENABLED: bool = False
 
-# ── 卡片状态过渡动画（默认 ↔ 池中 ↔ 预览中）────────────────────────────────
-_STATE_IN_POOL: int = 1       # 状态位：已在文件池（选中态）
-_STATE_PREVIEWING: int = 2    # 状态位：预览中
+# ── 卡片状态过渡动画（默认 ↔ 池中 ↔ 预览中 ↔ 框选选中）────────────────────
+_STATE_IN_POOL: int = 1        # 状态位：已在文件池
+_STATE_PREVIEWING: int = 2     # 状态位：预览中
+_STATE_BOX_SELECTED: int = 4   # 状态位：框选选中（不触发预览，虚线边框标识）
 _STATE_ANIM_DURATION_MS: int = 200   # 状态过渡时长
 _STATE_ANIM_INTERVAL_MS: int = 16    # 动画帧间隔
 _HOVER_ANIM_DURATION_MS: int = 120   # hover 覆盖层过渡时长（比状态过渡短）
@@ -72,7 +73,7 @@ _HOVER_ANIM_DURATION_MS: int = 120   # hover 覆盖层过渡时长（比状态�
 class _VisualState:
     """某一状态组合下的视觉参数（背景色、边框样式、边框宽度）。"""
 
-    __slots__ = ("bg", "border_kind", "border_color", "width")
+    __slots__ = ("bg", "border_kind", "border_color", "width", "dashed")
 
     def __init__(
         self,
@@ -80,11 +81,13 @@ class _VisualState:
         border_kind: str,
         border_color: Optional[QColor],
         width: float,
+        dashed: bool = False,
     ) -> None:
         self.bg = bg
         self.border_kind = border_kind  # "plain"（纯色）| "gradient"（预览流光渐变）
         self.border_color = border_color
         self.width = width
+        self.dashed = dashed  # 纯色边框是否为虚线（框选选中态专用）
 
 
 class _StateTransition:
@@ -357,7 +360,8 @@ def _get_colors() -> Dict[str, Any]:
             "desc": tm.alpha_of(tm.mid, 60),
             "icon": tm.mid,
             "accent": tm.accent,
-            "selected_bg": tm.alpha_of(tm.accent, 40),  # 选中态（已加入文件池）背景覆盖层：半透明主题色
+            "selected_bg": tm.alpha_of(tm.accent, 40),  # 已加入文件池背景覆盖层：半透明主题色
+            "box_selected_bg": tm.alpha_of(tm.accent, 25),  # 框选选中态背景覆盖层（比池中态更浅）
             "secondary": tm.text,  # 预览态文字辅助色（渐变边框不再直接使用该色）
             "hover_overlay": tm.alpha_of(tm.mid, 25),  # hover 反馈：25% 灰度覆盖层（所有状态统一）
         }
@@ -587,8 +591,12 @@ class FileCardDelegate(QStyledItemDelegate):
         file_info: Dict[str, Any],
         is_in_pool: bool,
         is_previewing: bool,
+        is_selected: bool = False,
     ) -> None:
         """检测卡片状态变化，启动背景/边框过渡动画（默认 ↔ 池中 ↔ 预览中）。
+
+        框选选中态（is_selected）不参与过渡：拖拽期间逐行播放颜色动画既
+        消耗性能又影响框选跟手感，选中态即时切换。
 
         虚拟化滚动导致 row 复用时，以路径变化为准重置该行的状态缓存，
         避免对错误文件播放过渡。
@@ -598,10 +606,15 @@ class FileCardDelegate(QStyledItemDelegate):
             file_info: 文件信息字典。
             is_in_pool: 是否已在文件池。
             is_previewing: 是否处于预览态。
+            is_selected: 是否处于框选选中态。
         """
         row = index.row()
         path = file_info.get("path", "") or ""
-        mask = (_STATE_IN_POOL if is_in_pool else 0) | (_STATE_PREVIEWING if is_previewing else 0)
+        mask = (
+            (_STATE_IN_POOL if is_in_pool else 0)
+            | (_STATE_PREVIEWING if is_previewing else 0)
+            | (_STATE_BOX_SELECTED if is_selected else 0)
+        )
 
         if self._last_path.get(row) != path:
             # 该行内容已变化（滚动复用）：重置缓存，直接显示新状态，不做过渡
@@ -618,6 +631,11 @@ class FileCardDelegate(QStyledItemDelegate):
             return
 
         if last != mask:
+            if (last | mask) & _STATE_BOX_SELECTED:
+                # 涉及框选态的变化不做过渡：即时切换，拖拽期间零动画开销
+                self._last_state[row] = mask
+                self._transitions.pop(row, None)
+                return
             from_v = self._current_visual(row, last)
             to_v = self._resolve_visual(mask)
             self._transitions[row] = _StateTransition(from_v, to_v)
@@ -628,8 +646,11 @@ class FileCardDelegate(QStyledItemDelegate):
     def _resolve_visual(self, mask: int) -> _VisualState:
         """根据状态位解析卡片的静态视觉参数。
 
+        优先级：预览流光边框 > 框选虚线边框 > 池中实线边框 > 默认边框；
+        填充优先级：池中(40% accent) > 框选(25% accent) > 默认背景。
+
         Args:
-            mask: 状态位组合（_STATE_IN_POOL | _STATE_PREVIEWING）。
+            mask: 状态位组合（_STATE_IN_POOL | _STATE_PREVIEWING | _STATE_BOX_SELECTED）。
 
         Returns:
             对应的视觉参数。
@@ -637,12 +658,25 @@ class FileCardDelegate(QStyledItemDelegate):
         colors = _get_colors()
         in_pool = bool(mask & _STATE_IN_POOL)
         previewing = bool(mask & _STATE_PREVIEWING)
+        selected = bool(mask & _STATE_BOX_SELECTED)
         if previewing:
             return _VisualState(
-                bg=colors["selected_bg"] if in_pool else colors["bg"],
+                bg=(
+                    colors["selected_bg"] if in_pool
+                    else colors["box_selected_bg"] if selected
+                    else colors["bg"]
+                ),
                 border_kind="gradient",
                 border_color=None,
                 width=2.0,
+            )
+        if selected:
+            return _VisualState(
+                bg=colors["selected_bg"] if in_pool else colors["box_selected_bg"],
+                border_kind="plain",
+                border_color=colors["accent"],
+                width=1.5,
+                dashed=True,
             )
         if in_pool:
             return _VisualState(
@@ -678,6 +712,7 @@ class FileCardDelegate(QStyledItemDelegate):
                 border_kind="plain",
                 border_color=self._lerp_color(tr.from_v.border_color, tr.to_v.border_color, t),
                 width=tr.from_v.width + (tr.to_v.width - tr.from_v.width) * t,
+                dashed=tr.to_v.dashed if t >= 0.5 else tr.from_v.dashed,
             )
         # 涉及预览渐变：渐变无法插值，取目标视觉（绘制阶段交叉淡化）
         return tr.to_v
@@ -728,11 +763,15 @@ class FileCardDelegate(QStyledItemDelegate):
         is_previewing: bool,
         is_in_pool: bool,
         transition: Optional[_StateTransition],
+        is_selected: bool = False,
     ) -> None:
         """绘制卡片边框与背景。
 
         无过渡时按状态直接绘制；有过渡时背景颜色插值、边框交叉淡化，
         实现 默认 ↔ 池中 ↔ 预览中 之间的平滑颜色混合过渡。
+
+        优先级：预览流光 > 框选虚线 > 池中实线 > 默认；填充：池中 40%
+        accent > 框选 25% accent > 默认背景。
 
         Args:
             painter: 已激活的 QPainter。
@@ -741,6 +780,7 @@ class FileCardDelegate(QStyledItemDelegate):
             is_previewing: 是否处于预览态。
             is_in_pool: 是否已在文件池。
             transition: 进行中的状态过渡（无则为 None）。
+            is_selected: 是否处于框选选中态。
         """
         colors = _get_colors()
 
@@ -750,17 +790,27 @@ class FileCardDelegate(QStyledItemDelegate):
                 border_brush = QBrush(
                     self._make_preview_gradient(draw_rect, self._preview_angle)
                 )
+                pen = QPen(border_brush, border_width)
                 self._preview_painted = True
                 if not self._preview_anim_timer.isActive():
                     self._preview_anim_timer.start()
+            elif is_selected:
+                # 框选选中态：accent 虚线边框（与预览流光/池中实线区分）
+                border_width = 1.5
+                pen = QPen(QBrush(colors["accent"]), border_width)
+                pen.setStyle(Qt.DashLine)
             elif is_in_pool:
                 border_width = 1
-                border_brush = QBrush(colors["accent"])
+                pen = QPen(QBrush(colors["accent"]), border_width)
             else:
                 border_width = 1
-                border_brush = QBrush(colors["border"])
-            bg_color = colors["selected_bg"] if is_in_pool else colors["bg"]
-            painter.setPen(QPen(border_brush, border_width))
+                pen = QPen(QBrush(colors["border"]), border_width)
+            bg_color = (
+                colors["selected_bg"] if is_in_pool
+                else colors["box_selected_bg"] if is_selected
+                else colors["bg"]
+            )
+            painter.setPen(pen)
             painter.setBrush(bg_color)
             painter.drawRoundedRect(draw_rect, radius, radius)
             return
@@ -776,7 +826,10 @@ class FileCardDelegate(QStyledItemDelegate):
                 transition.to_v.border_color,
                 t,
             )
-            painter.setPen(QPen(QBrush(border_color), width))
+            pen = QPen(QBrush(border_color), width)
+            if transition.to_v.dashed and t >= 0.5:
+                pen.setStyle(Qt.DashLine)
+            painter.setPen(pen)
             painter.setBrush(bg)
             painter.drawRoundedRect(draw_rect, radius, radius)
             return
@@ -817,7 +870,10 @@ class FileCardDelegate(QStyledItemDelegate):
                 self._preview_anim_timer.start()
         else:
             brush = QBrush(self._scaled_color(visual.border_color, alpha_factor))
-        painter.setPen(QPen(brush, width))
+        pen = QPen(brush, width)
+        if visual.border_kind != "gradient" and visual.dashed:
+            pen.setStyle(Qt.DashLine)
+        painter.setPen(pen)
         painter.setBrush(Qt.NoBrush)
         painter.drawRoundedRect(draw_rect, radius, radius)
 
@@ -1110,18 +1166,19 @@ class FileCardDelegate(QStyledItemDelegate):
         )
 
         # 卡片状态过渡动画：检测状态位变化并启动背景/边框过渡
-        self._sync_state_transition(index, file_info, is_in_pool, is_previewing)
+        # （框选选中态即时切换，不参与过渡动画）
+        self._sync_state_transition(index, file_info, is_in_pool, is_previewing, is_selected)
         transition = self._transitions.get(index.row()) if self._transitions else None
         if transition is not None and transition.t >= 1.0:
             # 兜底清理（正常由定时器移除）
             self._transitions.pop(index.row(), None)
             transition = None
 
-        # hover/选中覆盖层透明度过渡：淡入/淡出（比状态过渡更短）
+        # hover 覆盖层透明度过渡：淡入/淡出（比状态过渡更短）
         # 注意：默认值必须为 0.0 并与 _sync_hover_overlay 内部一致——若首次
         # hover paint 时默认取 1.0，会先画一帧全量覆盖层再回落淡入，造成闪烁
-        # 选中态复用同一覆盖层机制：选中卡片保持 hover 式底色变化（淡入淡出一致）
-        self._sync_hover_overlay(index, is_hovered or is_selected)
+        # 框选选中态有独立的底色/虚线边框视觉，不再借用 hover 覆盖层。
+        self._sync_hover_overlay(index, is_hovered)
         hover_overlay_progress = self._hover_overlay_progress.get(index.row(), 0.0)
 
         if self._layout_mode == "card":
@@ -1220,6 +1277,8 @@ class FileCardDelegate(QStyledItemDelegate):
             ) * self._ease_out_cubic(transition.t)
         elif is_previewing:
             border_width = 2
+        elif is_selected:
+            border_width = 1.5
         else:
             border_width = 1
 
@@ -1232,11 +1291,13 @@ class FileCardDelegate(QStyledItemDelegate):
             -border_width / 2.0,
         )
         self._paint_state_surface(
-            painter, draw_rect, radius, is_previewing, is_in_pool, transition
+            painter, draw_rect, radius, is_previewing, is_in_pool, transition,
+            is_selected=is_selected,
         )
 
-        # hover/选中反馈（所有状态统一）：叠加 25% 主题色覆盖层（透明度过渡动画）
-        if is_hovered or is_selected or hover_overlay_progress > 0.003:
+        # hover 反馈（所有状态统一）：叠加 25% 主题色覆盖层（透明度过渡动画）
+        # 框选选中态有独立底色/虚线边框，不再叠加 hover 覆盖层。
+        if is_hovered or hover_overlay_progress > 0.003:
             painter.setPen(Qt.NoPen)
             painter.setBrush(self._scaled_color(colors["hover_overlay"], hover_overlay_progress))
             painter.drawRoundedRect(draw_rect, radius, radius)
@@ -1303,6 +1364,8 @@ class FileCardDelegate(QStyledItemDelegate):
             ) * self._ease_out_cubic(transition.t)
         elif is_previewing:
             border_width = 2
+        elif is_selected:
+            border_width = 1.5
         else:
             border_width = 1
 
@@ -1315,11 +1378,13 @@ class FileCardDelegate(QStyledItemDelegate):
             -border_width / 2.0,
         )
         self._paint_state_surface(
-            painter, draw_rect, radius, is_previewing, is_in_pool, transition
+            painter, draw_rect, radius, is_previewing, is_in_pool, transition,
+            is_selected=is_selected,
         )
 
-        # hover/选中反馈（所有状态统一）：叠加 25% 主题色覆盖层（透明度过渡动画）
-        if is_hovered or is_selected or hover_overlay_progress > 0.003:
+        # hover 反馈（所有状态统一）：叠加 25% 主题色覆盖层（透明度过渡动画）
+        # 框选选中态有独立底色/虚线边框，不再叠加 hover 覆盖层。
+        if is_hovered or hover_overlay_progress > 0.003:
             painter.setPen(Qt.NoPen)
             painter.setBrush(self._scaled_color(colors["hover_overlay"], hover_overlay_progress))
             painter.drawRoundedRect(draw_rect, radius, radius)

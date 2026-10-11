@@ -31,7 +31,7 @@ from typing import Callable, Optional
 
 from PySide6.QtCore import (
     Qt, Signal, QTimer, QEvent, QRunnable, QThreadPool, QEventLoop,
-    QRect, QEasingCurve, QPropertyAnimation, QParallelAnimationGroup,
+    QPoint, QRect, QEasingCurve, QPropertyAnimation, QParallelAnimationGroup,
     QAbstractAnimation,
 )
 from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDragLeaveEvent, QDropEvent, QPixmap
@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QLabel,
     QApplication,
+    QAbstractButton,
     QScrollArea,
     QFileDialog,
     QProgressDialog,
@@ -51,6 +52,7 @@ from PySide6.QtWidgets import (
 from theme import tm
 from components.styled_button import StyledButton
 from components.styled_info_card import StyledInfoCard
+from components.box_selection import BoxSelectionGesture
 from components.file_card_delegate import LIST_CONFIG
 from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
 from components.styled_dialog import create_input_dialog, ask_custom_dialog
@@ -269,6 +271,21 @@ class FilePoolLayout(QWidget):
         # 卡片容器纳入事件过滤：Ctrl+滚轮在容器任意位置缩放卡片
         self._card_container.installEventFilter(self)
 
+        # ── 框选多选（左键按住拖拽 = 橡皮筋框选）────────────────────────
+        # 框内卡片进入"框选选中态"（虚线 accent 边框 + 半透明填充，不触发预览）；
+        # 右键点在已选中卡片上 = 批量移出储存池；单击卡片/空白清除框选。
+        self._box_selected_paths: set[str] = set()
+        # 本次左键手势起拖时按压的卡片路径（用于手势结束后复位按压缩放）
+        self._box_press_card_path: Optional[str] = None
+        self._box_gesture = BoxSelectionGesture(
+            self,
+            overlay_parent=self._scroll_area.viewport(),
+            scrollbar_getter=lambda: self._scroll_area.verticalScrollBar(),
+            hit_test=self._pool_box_hit_test,
+            on_hits=self._apply_pool_box_hits,
+        )
+        self._box_gesture.finished.connect(self._on_box_gesture_finished)
+
         # ── 备份系统 ────────────────────────────────────────────────────
         self.backup_file = os.path.join(
             get_app_data_path(), StagingPoolService.BACKUP_FILE_NAME
@@ -420,12 +437,227 @@ class FilePoolLayout(QWidget):
             self._update_pool_scrollbar_geometry()
             # 宽度/高度变化后同步重算卡片左右边距
             self._update_pool_card_margins()
-        if obj is self._scroll_area.viewport() or obj is self._card_container:
+        # 池视口 / 卡片容器 / 卡片及其子控件：滚轮缩放 + 左键框选 + 右键批量移除
+        is_pool_target = (
+            obj is self._scroll_area.viewport()
+            or obj is self._card_container
+            or (
+                isinstance(obj, QWidget)
+                and self._card_container.isAncestorOf(obj)
+            )
+        )
+        if is_pool_target:
             if event.type() == QEvent.Wheel:
                 if event.modifiers() & Qt.ControlModifier:
                     self._handle_card_zoom(event)
                     return True
+            elif event.type() == QEvent.MouseButtonPress:
+                if event.button() == Qt.LeftButton and not isinstance(obj, QAbstractButton):
+                    # 只记录起点，不消费按下事件（保留卡片单击/按钮语义）；
+                    # 按钮上的按下不参与框选，避免按钮按压状态被拖拽打断。
+                    pos = self._pool_viewport_pos(event, obj)
+                    self._box_press_card_path = self._pool_card_path_at(pos)
+                    self._box_gesture.begin(pos)
+            elif event.type() == QEvent.MouseMove:
+                if self._box_gesture.started:
+                    pressed = bool(event.buttons() & Qt.LeftButton)
+                    if self._box_gesture.update(self._pool_viewport_pos(event, obj), pressed):
+                        return True
+            elif event.type() == QEvent.MouseButtonRelease:
+                if event.button() == Qt.LeftButton and self._box_gesture.started:
+                    pos = self._pool_viewport_pos(event, obj)
+                    if self._box_gesture.finish(pos):
+                        # 拖拽框选结束：消费释放事件，阻止卡片 clicked → 预览
+                        # （按压卡片缩放由 _on_box_gesture_finished 复位）
+                        return True
+                    # 未拖拽的单击：空白区清除框选；卡片单击由 clicked 处理
+                    self._box_press_card_path = None
+                    if self._pool_card_path_at(pos) is None:
+                        self.clear_box_selection()
+                elif event.button() == Qt.RightButton:
+                    return self._handle_pool_right_release(event, obj)
         return super().eventFilter(obj, event)
+
+    def _pool_viewport_pos(self, event, obj) -> QPoint:
+        """将鼠标事件位置统一换算为池视口坐标。
+
+        Args:
+            event: 鼠标事件（须提供 position()）。
+            obj: 事件目标对象（视口、卡片容器、卡片或卡片子控件）。
+
+        Returns:
+            池视口坐标系下的点。
+        """
+        pos: QPoint = event.position().toPoint()
+        viewport = self._scroll_area.viewport()
+        if obj is viewport or obj is None or viewport is None:
+            return pos
+        if isinstance(obj, QWidget):
+            try:
+                return obj.mapTo(viewport, pos)
+            except RuntimeError:
+                return pos
+        return pos
+
+    def _pool_card_path_at(self, pos: QPoint) -> Optional[str]:
+        """命中判定：返回池视口坐标下包含该点的卡片路径。
+
+        Args:
+            pos: 池视口坐标。
+
+        Returns:
+            命中的卡片路径；空白区返回 None。
+        """
+        viewport = self._scroll_area.viewport()
+        if viewport is None:
+            return None
+        for path, card in self._card_widgets.items():
+            if path in self._removing_paths:
+                continue
+            try:
+                if card.isHidden():
+                    continue
+                top_left = card.mapTo(viewport, QPoint(0, 0))
+                card_rect = QRect(top_left, card.size())
+            except RuntimeError:
+                continue
+            if card_rect.contains(pos):
+                return path
+        return None
+
+    def _pool_box_hit_test(self, rect: QRect) -> set[str]:
+        """计算与选框矩形相交的池卡片路径集合（视觉重叠即命中）。
+
+        Args:
+            rect: 选框矩形（池视口坐标）。
+
+        Returns:
+            命中卡片路径集合；移除动画中的卡片不参与命中。
+        """
+        viewport = self._scroll_area.viewport()
+        hits: set[str] = set()
+        if viewport is None:
+            return hits
+        for path, card in self._card_widgets.items():
+            if path in self._removing_paths:
+                continue
+            try:
+                if card.isHidden():
+                    continue
+                top_left = card.mapTo(viewport, QPoint(0, 0))
+                card_rect = QRect(top_left, card.size())
+            except RuntimeError:
+                continue
+            if rect.intersects(card_rect):
+                hits.add(path)
+        return hits
+
+    def _apply_pool_box_hits(self, hits: set[str]) -> None:
+        """把框选命中路径集合应用到卡片选中态（替换语义）。
+
+        Args:
+            hits: 命中路径集合；未命中的已选卡片自动取消选中。
+        """
+        current = self._box_selected_paths
+        to_select = hits - current
+        to_deselect = current - hits
+        self._box_selected_paths = set(hits)
+        for path in to_select:
+            card = self._card_widgets.get(path)
+            if card is None:
+                continue
+            try:
+                card.set_selected(True)
+            except RuntimeError:
+                continue
+        for path in to_deselect:
+            card = self._card_widgets.get(path)
+            if card is None:
+                continue
+            try:
+                card.set_selected(False)
+            except RuntimeError:
+                continue
+
+    def clear_box_selection(self) -> None:
+        """清空池内所有卡片的框选选中态（幂等）。"""
+        if not self._box_selected_paths:
+            return
+        for path in list(self._box_selected_paths):
+            card = self._card_widgets.get(path)
+            if card is None:
+                continue
+            try:
+                card.set_selected(False)
+            except RuntimeError:
+                continue
+        self._box_selected_paths.clear()
+
+    def _handle_pool_right_release(self, event, obj) -> bool:
+        """右键释放：已选中卡片 = 批量移出储存池；其余情况清除框选后放行。
+
+        Args:
+            event: 鼠标释放事件。
+            obj: 事件目标对象。
+
+        Returns:
+            True 表示已消费（批量移除，阻止卡片 right_clicked）；
+            False 表示放行给现有单卡右键/单击语义。
+        """
+        pos = self._pool_viewport_pos(event, obj)
+        path = self._pool_card_path_at(pos)
+        if path is None:
+            # 空白区右键：清除框选，无其他动作
+            self.clear_box_selection()
+            return False
+        if path in self._box_selected_paths:
+            # 命中框选中的卡片：批量移出储存池（快照后逐个移除，防字典变动）
+            paths = [
+                p for p in self._box_selected_paths
+                if p in self._card_widgets and p not in self._removing_paths
+            ]
+            self.clear_box_selection()
+            for p in paths:
+                self.remove_file(p)
+            return True
+        # 未选中卡片：清除框选 + 放行现有单卡右键移除
+        self.clear_box_selection()
+        return False
+
+    def _on_box_gesture_finished(self, was_active: bool) -> None:
+        """手势结束（松开/守卫兜底/应用失活共用）：复位按压卡片的缩放反馈。
+
+        Args:
+            was_active: 本次手势是否曾进入框选态。
+        """
+        path = self._box_press_card_path
+        self._box_press_card_path = None
+        if not was_active or not path:
+            return
+        card = self._card_widgets.get(path)
+        if card is None:
+            return
+        try:
+            card.reset_press()
+        except RuntimeError:
+            return
+
+    def _install_card_filters(self, card: QWidget) -> None:
+        """给卡片及其全部子控件安装事件过滤器（卡片任意位置可起拖框选）。
+
+        Args:
+            card: 新加入池的 StyledInfoCard。
+        """
+        targets = [card]
+        try:
+            targets.extend(card.findChildren(QWidget))
+        except RuntimeError:
+            return
+        for widget in targets:
+            try:
+                widget.installEventFilter(self)
+            except RuntimeError:
+                continue
 
     def _sync_pool_scrollbar_range(self, min_val: int, max_val: int) -> None:
         """当 _scroll_area 内部滚动范围变化时，同步浮动 StyledScrollBar 的范围。"""
@@ -693,10 +925,10 @@ class FilePoolLayout(QWidget):
         # 右键处理
         card.right_clicked.connect(self._handle_card_right_clicked)
 
-        # 设置初始状态
-        is_selected = file_info.get("is_selected", False)
-        if is_selected:
-            card.set_selected(True)
+        # 框选手势：卡片及其子控件纳入事件过滤（任意位置可起拖框选/右键批量移除）
+        self._install_card_filters(card)
+
+        # 设置初始状态：框选选中态为瞬时 UI 状态，不随备份恢复，始终以未选中启动
         if file_info.get("is_previewing"):
             card.set_previewing(True)
 
@@ -1068,6 +1300,8 @@ class FilePoolLayout(QWidget):
         card = self._card_widgets.pop(file_path, None)
         if card is not None:
             card.deleteLater()
+        # 同步清理框选集合中的该路径（卡片已删，仅需移除记录）
+        self._box_selected_paths.discard(file_path)
         self.items = [f for f in self.items if os.path.normpath(f.get("path", "")) != file_path]
         self.update_stats()
         self._save_backup_if_needed()
@@ -1191,6 +1425,7 @@ class FilePoolLayout(QWidget):
         # 清空数据状态
         self._card_widgets.clear()
         self.items.clear()
+        self._box_selected_paths.clear()
         self.previewing_file_path = None
         self.update_stats()
         self._save_backup_if_needed()
@@ -1224,6 +1459,7 @@ class FilePoolLayout(QWidget):
             card.deleteLater()
         self._card_widgets.clear()
         self.items.clear()
+        self._box_selected_paths.clear()
         self.previewing_file_path = None
         self.update_stats()
         self._save_backup_if_needed()
@@ -1271,7 +1507,9 @@ class FilePoolLayout(QWidget):
         return set(self._card_widgets.keys())
 
     def _handle_card_clicked(self, file_path: str) -> None:
-        """处理 StyledInfoCard 点击：如果正在预览则取消，否则发射预览信号。"""
+        """处理 StyledInfoCard 点击：清除框选后，如果正在预览则取消，否则发射预览信号。"""
+        # 单击卡片 = 预览 + 清除框选选中态（"点击其他地方"即取消多选）
+        self.clear_box_selection()
         norm_path = os.path.normpath(file_path) if file_path else ""
         if (norm_path
                 and self.previewing_file_path

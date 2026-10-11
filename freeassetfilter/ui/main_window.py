@@ -31,7 +31,7 @@ from PySide6.QtCore import (
     QEasingCurve,
 )
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtGui import QPainter, QPaintEvent, QPixmap, QRegion, QResizeEvent, QMoveEvent, QMouseEvent, QColor, QCursor
+from PySide6.QtGui import QPainter, QPaintEvent, QPixmap, QRegion, QResizeEvent, QMoveEvent, QMouseEvent, QKeyEvent, QColor, QCursor
 
 # 确保 ui 目录在 sys.path 中（组件 __init__.py 使用短路径导入）
 _ui_root = Path(__file__).resolve().parent
@@ -1279,6 +1279,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         if self._file_selector is not None:
             # 信号连接：文件选择器 → 文件池
             self._file_selector.toggle_pool_requested.connect(self._on_toggle_pool_requested)
+            self._file_selector.add_files_to_pool_requested.connect(self._on_add_files_to_pool_requested)
+            self._file_selector.remove_files_from_pool_requested.connect(self._on_remove_files_from_pool_requested)
             self._file_selector.file_selected.connect(self._on_file_selected)
             self._file_selector.preview_cancel_requested.connect(self._on_preview_cancelled)
         if self._file_pool is not None:
@@ -1943,6 +1945,34 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             self._file_pool.remove_file(file_path)
         else:
             self._file_pool.add_file(file_info)
+
+    def _on_add_files_to_pool_requested(self, file_infos: list) -> None:
+        """文件选择器框选批量入池：逐个添加（已在池中的路径由 add_file 幂等跳过）。"""
+        for file_info in file_infos or []:
+            if file_info:
+                self._file_pool.add_file(file_info)
+
+    def _on_remove_files_from_pool_requested(self, file_infos: list) -> None:
+        """文件选择器框选批量移出储存池：逐个移除（不在池/已在移除动画中的路径幂等跳过）。"""
+        for file_info in file_infos or []:
+            path = str(file_info.get("path") or "") if file_info else ""
+            if path:
+                self._file_pool.remove_file(path)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        """Esc：清除文件选择器 / 文件储存池的框选选中态。
+
+        键盘事件冒泡到主窗口说明当前焦点控件未消费 Esc（全屏预览、弹窗等
+        在各自控件内处理并接受事件），因此不会与其 Esc 语义冲突。
+        """
+        if event.key() == Qt.Key_Escape:
+            if self._file_selector is not None:
+                self._file_selector.clear_box_selection()
+            if self._file_pool is not None:
+                self._file_pool.clear_box_selection()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def _on_pool_contents_changed(self) -> None:
         """文件池内容变更时，同步路径集合到文件选择器 delegate（边框标记）。"""

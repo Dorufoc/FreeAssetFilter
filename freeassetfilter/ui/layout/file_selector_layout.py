@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QListView, QLabel, QAbstractItemView, QApplication, QMessageBox, QListWidget, QListWidgetItem
-from PySide6.QtCore import Qt, Signal, QSize, QTimer, QEvent, QMargins, QObject, QRunnable, QThreadPool
+from PySide6.QtCore import Qt, Signal, QSize, QTimer, QEvent, QMargins, QObject, QPoint, QRect, QRunnable, QThreadPool
 from PySide6.QtGui import QFont, QFontMetrics
 
 from theme import tm
@@ -23,6 +23,7 @@ from components.styled_lineedit import StyledLineEdit
 from components.styled_context_menu import StyledContextMenu
 from components.styled_dialog import StyledDialog, FOOTER_RIGHT, FOOTER_CENTER, create_basic_dialog, _show_dialog
 from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
+from components.box_selection import BoxSelectionGesture
 from components.file_list_model import FileListModel, FilePathRole, FileNameRole, IsDirRole, FileSizeRole, ModifiedRole, CreatedRole, SuffixRole, IsPreviewingRole, IconPixmapRole
 from components.file_card_delegate import FileCardDelegate, CARD_CONFIG, LIST_CONFIG
 from components.animated_file_list_view import AnimatedFileListView
@@ -110,6 +111,8 @@ class FileSelectorLayout(QWidget):
     file_selection_changed = Signal(dict, bool)
     preview_cancel_requested = Signal()
     toggle_pool_requested = Signal(dict)  # 右键直连：添加/移除文件池
+    add_files_to_pool_requested = Signal(list)  # 框选批量加入储存池（file_info 列表，add-only）
+    remove_files_from_pool_requested = Signal(list)  # 框选全部已在池时批量移出储存池（file_info 列表）
     # 异步目录加载：后台线程收集完成后发射（path, entries 或 None, token）
     _dir_entries_ready = Signal(str, object, int)
 
@@ -286,12 +289,25 @@ class FileSelectorLayout(QWidget):
         # 当前文件池路径集合（由 sync_pool_status 更新，"已在池中"标记局部重绘的 diff 基准）
         self._pool_paths: Set[str] = set()
 
+        # ── 框选多选（左键按住拖拽 = 橡皮筋框选）────────────────────────
+        # 框内卡片进入"框选选中态"（虚线 accent 边框 + 半透明填充，不触发预览）；
+        # 右键点在已选中卡片上 = 批量加入储存池；空白区右键仍返回上一级。
+        self._box_gesture = BoxSelectionGesture(
+            self,
+            overlay_parent=self._file_list.viewport(),
+            scrollbar_getter=lambda: self._file_list.verticalScrollBar(),
+            hit_test=self._box_hit_test,
+            on_hits=self._apply_box_hits,
+        )
+
     # ── 事件过滤器：在 QListView resize 前更新网格 ──────────────────────
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
-        """事件过滤器：网格自适应 + Ctrl+滚轮缩放 + 鼠标侧键后退。
+        """事件过滤器：网格自适应 + Ctrl+滚轮缩放 + 左键框选 + 鼠标侧键后退。
 
         同时监听 viewport 与 QListView 自身的 Resize；Wheel+Ctrl 走卡片缩放；
+        左键按下/拖动/松开委托给框选手势（超过拖拽阈值后进入框选并实时
+        更新选中态，未拖拽的单击保留原有"点击=预览"语义）；
         鼠标侧键（后退键）返回上一层级目录。
 
         Args:
@@ -314,6 +330,23 @@ class FileSelectorLayout(QWidget):
                     # 鼠标侧键（后退键）返回上一层级目录，与顶栏"返回上一级"按钮行为一致
                     self._go_back()
                     return True
+                if event.button() == Qt.LeftButton:
+                    # 只记录起点，不消费按下事件（保留 QListView 的单击语义）
+                    self._box_gesture.begin(self._viewport_pos(event, obj))
+            elif event.type() == QEvent.MouseMove:
+                if self._box_gesture.started:
+                    pressed = bool(event.buttons() & Qt.LeftButton)
+                    if self._box_gesture.update(self._viewport_pos(event, obj), pressed):
+                        return True
+            elif event.type() == QEvent.MouseButtonRelease:
+                if event.button() == Qt.LeftButton and self._box_gesture.started:
+                    pos = self._viewport_pos(event, obj)
+                    if self._box_gesture.finish(pos):
+                        # 拖拽框选结束：消费释放事件，阻止 clicked → 预览
+                        return True
+                    # 未拖拽的单击：空白区清除框选；卡片单击由 clicked 处理
+                    if not self._file_list.indexAt(pos).isValid():
+                        self.clear_box_selection()
         return super().eventFilter(obj, event)
 
     @staticmethod
@@ -334,6 +367,168 @@ class FileSelectorLayout(QWidget):
             if back_button is not None and button == back_button:
                 return True
         return False
+
+    # ── 框选多选（橡皮筋）──────────────────────────────────────────────────
+
+    def _viewport_pos(self, event: QEvent, obj: Optional[object] = None) -> QPoint:
+        """将鼠标事件位置统一换算为 viewport 坐标。
+
+        事件可能来自 viewport 或 QListView 本体（帧/边距区），直接取
+        event.position() 会带着对象自身坐标系导致选框起点错位；统一映射到
+        viewport 坐标系后，起点始终精确落在鼠标按下位置。
+
+        Args:
+            event: 鼠标事件（须提供 position()）。
+            obj: 事件目标对象（viewport / QListView）。
+
+        Returns:
+            viewport 坐标系下的点。
+        """
+        pos: QPoint = event.position().toPoint()
+        viewport = self._file_list.viewport()
+        if obj is viewport or obj is None or viewport is None:
+            return pos
+        if isinstance(obj, QWidget):
+            try:
+                return obj.mapTo(viewport, pos)
+            except RuntimeError:
+                return pos
+        return pos
+
+    def _box_hit_test(self, rect: QRect) -> Set[int]:
+        """计算与选框矩形相交的卡片行号集合（视觉重叠即命中）。
+
+        QListView 采用 Batched 惰性布局：只有视口附近的行才拥有有效可视
+        矩形，远端未布局行没有几何信息。因此先探测一个可见锚点行，再向上
+        回退到首行、向下扫描到选框/视口底部，只对可视区（含选框越界部分）
+        做精确相交判定；万级目录下开销只与可视行数相关，而非全量行数。
+
+        Args:
+            rect: 选框矩形（viewport 坐标）。
+
+        Returns:
+            与选框相交的行号集合。
+        """
+        model = self._file_model
+        view = self._file_list
+        count = model.rowCount()
+        if count <= 0:
+            return set()
+        viewport = view.viewport()
+        vp = QRect(QPoint(0, 0), viewport.size())
+        if vp.width() <= 0 or vp.height() <= 0:
+            return set()
+
+        def _visual(row: int) -> QRect:
+            return view.visualRect(model.index(row, 0))
+
+        # 可见锚点行：沿视口取 3×3 探针的最小有效行（考虑多列网格空隙）
+        anchor = -1
+        probe_xs = (2, max(2, vp.width() // 2), max(2, vp.width() - 3))
+        probe_ys = (2, max(2, vp.height() // 2), max(2, vp.height() - 3))
+        for px in probe_xs:
+            for py in probe_ys:
+                index = view.indexAt(QPoint(px, py))
+                if index.isValid() and (anchor < 0 or index.row() < anchor):
+                    anchor = index.row()
+
+        if anchor < 0:
+            # 视口内无已布局卡片（空目录 / 尚未布局）：从首行做有界回退扫描
+            first_row = 0
+        else:
+            first_row = anchor
+            # 向上回退到首个仍与视口相交的行（跨批次的已布局行）
+            while first_row > 0:
+                prev = _visual(first_row - 1)
+                if not prev.isValid() or prev.bottom() < 0:
+                    break
+                first_row -= 1
+
+        limit_y = max(rect.bottom(), vp.height() - 1)
+        hits: Set[int] = set()
+        row = first_row
+        scanned = 0
+        while row < count and scanned < 4096:
+            visual = _visual(row)
+            if not visual.isValid():
+                # 已到未布局区（Batched 惰性布局）：后续行无可视矩形
+                break
+            if visual.top() > limit_y:
+                break
+            if rect.intersects(visual):
+                hits.add(row)
+            row += 1
+            scanned += 1
+        return hits
+
+    def _apply_box_hits(self, rows: Set[int]) -> None:
+        """把框选命中行集合应用到模型选中态（替换语义）。
+
+        Args:
+            rows: 命中行号集合；未命中的已选行自动取消选中。
+        """
+        model = self._file_model
+        current = model.get_selected_rows()
+        to_select = rows - current
+        to_deselect = current - rows
+        if to_select:
+            model.set_rows_selected(to_select, True)
+        if to_deselect:
+            model.set_rows_selected(to_deselect, False)
+
+    def clear_box_selection(self) -> None:
+        """清空文件选择器内所有卡片的框选选中态（幂等）。"""
+        model = self._file_model
+        selected = model.get_selected_rows()
+        if selected:
+            model.set_rows_selected(selected, False)
+
+    def _selected_file_infos(self) -> List[Dict[str, Any]]:
+        """组装当前框选选中项的 file_info 列表（按入池/预览所需字段）。
+
+        Returns:
+            file_info 字典列表；无选中时返回空列表。
+        """
+        model = self._file_model
+        infos: List[Dict[str, Any]] = []
+        for file_path in model.get_selected_files():
+            row = model.get_row(file_path)
+            if row < 0:
+                continue
+            idx = model.index(row, 0)
+            infos.append({
+                "name": model.data(idx, FileNameRole) or "",
+                "path": file_path,
+                "is_dir": bool(model.data(idx, IsDirRole)),
+                "size": int(model.data(idx, FileSizeRole) or 0),
+                "modified": model.data(idx, ModifiedRole) or "",
+                "created": model.data(idx, CreatedRole) or "",
+                "suffix": (model.data(idx, SuffixRole) or "").lower(),
+            })
+        return infos
+
+    def _all_in_pool(self, infos: List[Dict[str, Any]]) -> bool:
+        """判断给定条目是否全部已在储存池中。
+
+        比对基准为 ``_pool_paths``（sync_pool_status 维护的 normcase+normpath
+        归一化池路径集合），与卡片"已在池中"边框标记同源。
+
+        Args:
+            infos: file_info 字典列表。
+
+        Returns:
+            True 表示全部已在池中；空列表、池为空或任一条目缺失路径/不在池
+            时返回 False。
+        """
+        if not infos or not self._pool_paths:
+            return False
+        for info in infos:
+            path = str(info.get("path") or "")
+            if not path:
+                return False
+            if os.path.normcase(os.path.normpath(path)) not in self._pool_paths:
+                return False
+        return True
 
     # ── 首次加载 ──────────────────────────────────────────────────────────
 
@@ -868,10 +1063,12 @@ class FileSelectorLayout(QWidget):
     # ── 文件选择 ──────────────────────────────────────────────────────────
 
     def _on_file_clicked(self, index) -> None:
-        """点击文件 = 预览（预览只替换边框、背景保持原状态）。
+        """点击文件 = 预览（先清除框选选中态）。
 
         再次点击当前预览文件 = 取消预览；点击目录 = 进入目录。
         """
+        # 左键单击任意卡片：清除框选选中态（"点击其他地方"即取消多选）
+        self.clear_box_selection()
         file_path = self._file_model.data(index, FilePathRole)
         if not file_path:
             return
@@ -901,15 +1098,37 @@ class FileSelectorLayout(QWidget):
     # ── 右键菜单 ──────────────────────────────────────────────────────────
 
     def _on_right_click_toggle_pool(self, pos) -> None:
-        """右键：卡片上"添加/移除文件池"切换；空白区返回上一级。"""
+        """右键：已选中卡片批量入池/移出；未选中卡片单卡切换；空白区返回上一级。
+
+        - 右键点在框选选中的卡片上：
+          - 全部选中项都已在储存池中 → 批量移出储存池（取消加入）；
+          - 否则 → 批量加入储存池（add-only，已在池中的保持不变）；
+          两种情况随后均清除框选选中态；
+        - 右键点在未选中卡片上：清除框选 + 保留原有单卡"添加/移除"切换；
+        - 右键点在空白区：清除框选 + 返回上一级（与顶栏按钮/鼠标侧键一致，
+          两条路径互不冲突）。
+        """
         index = self._file_list.indexAt(pos)
         if not index.isValid():
             # 无卡片空白区右键 = 返回上一级（历史优先，与顶栏按钮/鼠标侧键一致）
+            self.clear_box_selection()
             self._go_back()
             return
         file_path: str = self._file_model.data(index, FilePathRole) or ""
         if not file_path:
             return
+        if file_path in self._file_model.get_selected_files():
+            # 命中框选中的卡片：全部已在池中 → 批量移出；否则批量加入（add-only）
+            infos = self._selected_file_infos()
+            self.clear_box_selection()
+            if infos:
+                if self._all_in_pool(infos):
+                    self.remove_files_from_pool_requested.emit(infos)
+                else:
+                    self.add_files_to_pool_requested.emit(infos)
+            return
+        # 未选中卡片：清除框选 + 保留原有单卡"添加/移除"切换
+        self.clear_box_selection()
         is_dir: bool = bool(self._file_model.data(index, IsDirRole) or False)
         file_info: Dict[str, Any] = {
             "name": self._file_model.data(index, FileNameRole) or "",
