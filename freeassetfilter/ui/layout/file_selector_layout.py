@@ -16,6 +16,7 @@ from PySide6.QtGui import QFont, QFontMetrics
 
 from theme import tm
 from freeassetfilter.utils.path_utils import get_app_data_path
+from freeassetfilter.utils.app_logger import debug
 from freeassetfilter.core._paths import icons_dir as get_icons_dir
 from freeassetfilter.core.workers.thumbnail_controller import ThumbnailController
 from components.styled_button import StyledButton
@@ -23,6 +24,7 @@ from components.styled_lineedit import StyledLineEdit
 from components.styled_context_menu import StyledContextMenu
 from components.styled_dialog import StyledDialog, FOOTER_RIGHT, FOOTER_CENTER, create_basic_dialog, _show_dialog
 from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
+from components.styled_loading import StyledLoading
 from components.box_selection import BoxSelectionGesture
 from components.file_list_model import FileListModel, FilePathRole, FileNameRole, IsDirRole, FileSizeRole, ModifiedRole, CreatedRole, SuffixRole, IsPreviewingRole, IconPixmapRole
 from components.file_card_delegate import FileCardDelegate, CARD_CONFIG, LIST_CONFIG
@@ -31,6 +33,27 @@ from freeassetfilter.services.favorites_service import FavoritesService
 from freeassetfilter.services.file_icon_manager import FileIconManager
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 from freeassetfilter.core.native.bridges.faf_core_bridge import get_faf_core_bridge
+
+
+# 目录加载指示器延迟显示时长（毫秒）：快目录不闪遮罩，慢目录（大目录/
+# 机械盘/网络盘）才有转圈反馈。
+DIR_LOADING_INDICATOR_DELAY_MS = 120
+
+# Windows 盘类型常量（GetDriveTypeW 返回值）。「All」视图默认只加载物理
+# 磁盘（固定盘/可移动盘/RAM 盘）；网络磁盘与映射盘（DRIVE_REMOTE）以及
+# 光驱（DRIVE_CDROM=5）暂不加载。
+DRIVE_TYPE_REMOVABLE = 2
+DRIVE_TYPE_FIXED = 3
+DRIVE_TYPE_REMOTE = 4
+DRIVE_TYPE_RAMDISK = 6
+_PHYSICAL_DRIVE_TYPES = frozenset(
+    {DRIVE_TYPE_REMOVABLE, DRIVE_TYPE_FIXED, DRIVE_TYPE_RAMDISK}
+)
+# TODO(未来): 网络磁盘/映射盘加载——规划为设置项（默认关闭）。届时在设置中
+# 提供开关并在此读取：开启后将 _INCLUDE_REMOTE_DRIVES 置 True 即可放开
+# DRIVE_REMOTE 过滤（收集逻辑见 _is_supported_drive_type /
+# _collect_all_drives_python）。
+_INCLUDE_REMOTE_DRIVES = False
 
 
 def _native_scan_directory(path: str) -> Optional[List[Dict[str, Any]]]:
@@ -85,10 +108,12 @@ class _DirectoryCollectRunnable(QRunnable):
     一次性任务：后台线程执行 ``listdir + stat`` 收集目录条目，完成经
     ``_dir_entries_ready`` 信号回主线程应用（跨线程信号按 AutoConnection
     排队到 UI 线程）；线程池线程为 daemon 语义，进程退出不被阻塞。
+    收集期间以世代 token 作取消检查：过期请求在 Python 回退扫描中尽早
+    放弃（不经信号回主线程），避免快速连续导航时白占线程与磁盘 IO。
 
     Args:
         owner: 所属 FileSelectorLayout（收集器与信号发射经由它）。
-        path: 待收集目录路径。
+        path: 待收集目录路径（或 ``"All"`` 磁盘视图）。
         token: 异步加载世代快照，过期结果由槽侧丢弃。
     """
 
@@ -100,8 +125,19 @@ class _DirectoryCollectRunnable(QRunnable):
         self._token = token
 
     def run(self) -> None:
-        entries = self._owner._collect_directory_entries(self._path)
-        self._owner._dir_entries_ready.emit(self._path, entries, self._token)
+        try:
+            entries = self._owner._collect_directory_entries(
+                self._path,
+                cancel_check=lambda: self._owner._async_load_token != self._token,
+            )
+        except Exception as exc:  # noqa: BLE001  # 后台任务兜底：异常按不可读处理
+            debug(f"目录收集异常（{self._path}）: {exc}")
+            entries = None
+        try:
+            self._owner._dir_entries_ready.emit(self._path, entries, self._token)
+        except RuntimeError:
+            # 宿主（FileSelectorLayout）已销毁：丢弃结果即可
+            pass
 
 
 class FileSelectorLayout(QWidget):
@@ -224,6 +260,20 @@ class FileSelectorLayout(QWidget):
         # 应用平滑滚动 + 触摸手势
         StyledScrollArea.apply_to(self._file_list, enable_mouse_drag=False)
 
+        # ── 目录加载遮罩（延迟显示）──────────────────────────────────────
+        # 复用 StyledLoading overlay 模式：慢目录加载时盖在内容区上（旧画面
+        # 压暗 + 居中转圈），完成后由 _stop_loading_indicator 隐藏；延迟
+        # DIR_LOADING_INDICATOR_DELAY_MS 出现，避免快目录闪烁。遮罩期间鼠标
+        # 事件被吞掉，防止误点旧卡片触发预览/导航。
+        self._loading_overlay = StyledLoading(
+            size="lg", overlay=True, backdrop="dim", parent=self._content_area
+        )
+        self._loading_overlay.fit_to_parent()
+        self._loading_overlay.hide()
+        self._loading_show_timer = QTimer(self)
+        self._loading_show_timer.setSingleShot(True)
+        self._loading_show_timer.timeout.connect(self._on_loading_indicator_timeout)
+
         # 导航状态
         self._current_path: str = "All"
         self._view_mode: str = "card"
@@ -234,6 +284,13 @@ class FileSelectorLayout(QWidget):
         # 异步目录加载：递增 token 丢弃过期结果（快速连续导航场景）
         self._async_load_token: int = 0
         self._dir_entries_ready.connect(self._on_dir_entries_ready)
+        # 异步加载应用状态：本次请求的过渡方向（0=无动画）/初始加载标记/
+        # 历史回滚标记（显式导航失败时回滚已压入的历史栈；刷新/返回不回滚）
+        self._pending_transition_direction: int = 0
+        self._pending_initial_load: bool = False
+        self._pending_history_rollback: bool = False
+        # 挂起定位：locate_file 异步导航后，等条目落地再高亮/滚动目标卡片
+        self._pending_locate_path: str = ""
         # raw entries 缓存：最近一次目录加载的原始（未筛选未排序）条目，
         # 与 _current_path 绑定；排序切换/筛选应用据此内存重排，不再重扫磁盘。
         self._raw_entries: List[Dict[str, Any]] = []
@@ -541,9 +598,9 @@ class FileSelectorLayout(QWidget):
     def _init_navigation(self) -> None:
         app = QApplication.instance()
         initial_navigate_path = getattr(app, "initial_navigate_path", None)
-        if initial_navigate_path and os.path.exists(initial_navigate_path):
+        if initial_navigate_path and os.path.isdir(initial_navigate_path):
             # 启动首次加载走异步路径，避免大目录 listdir+stat 阻塞首屏
-            self._navigate_to_async(initial_navigate_path)
+            self._navigate_to(initial_navigate_path, transition=False, initial=True)
             return
         if self._try_restore_last_path():
             return
@@ -552,44 +609,30 @@ class FileSelectorLayout(QWidget):
     # ── All 视图 ──────────────────────────────────────────────────────────
 
     def _navigate_to_all(self) -> None:
+        """切换到「All」磁盘视图（异步加载物理磁盘；请求即返回）。
+
+        默认只加载物理磁盘（固定盘/可移动盘/RAM 盘）；网络磁盘/映射盘与
+        光驱暂不加载（未来设置项，见模块顶部 TODO 注释）。
+        """
         direction = self._infer_navigation_direction(self._current_path, "All")
-        started = False
-        if direction != 0:
-            started = self._file_list.begin_path_transition(direction)
-        self._load_all()
+        started = direction != 0 and self._file_list.begin_path_transition(direction)
+        self._load_directory_async("All", direction if started else 0)
         self._current_path = "All"
         self._update_path_input("All")
         self._nav_history = ["All"]
         self._history_index = 0
         self._clear_last_path()
-        if started:
-            self._file_list.finish_path_transition(direction)
 
     def _load_all(self) -> None:
-        entries: List[Dict[str, Any]] = []
-        if sys.platform == "win32":
-            kernel32 = ctypes.windll.kernel32
-            drives_bitmask = kernel32.GetLogicalDrives()
-            for drive in range(26):
-                if drives_bitmask & (1 << drive):
-                    drive_name = chr(65 + drive) + ":"
-                    drive_path = drive_name + "\\"
-                    try:
-                        st = os.stat(drive_path)
-                        modified = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
-                        created = datetime.fromtimestamp(st.st_ctime).strftime("%Y-%m-%d %H:%M")
-                    except OSError:
-                        modified = ""
-                        created = ""
-                    entries.append({
-                        "name": drive_name, "path": drive_path, "is_dir": True,
-                        "size": 0, "modified": modified, "created": created, "suffix": "",
-                    })
-        else:
-            entries.append({
-                "name": "/", "path": "/", "is_dir": True,
-                "size": 0, "modified": "", "created": "", "suffix": "",
-            })
+        """同步加载「All」视图（保留给测试/兜底；交互导航走异步管线）。"""
+        self._apply_all_entries(self._collect_all_drives_python())
+
+    def _apply_all_entries(self, entries: List[Dict[str, Any]]) -> None:
+        """应用「All」视图条目：刷新模型/网格/计数（与旧 _load_all 行为一致）。
+
+        Args:
+            entries: 7 键盘符条目列表。
+        """
         self._file_list.setUpdatesEnabled(False)
         try:
             self._file_model.set_files(entries)
@@ -598,6 +641,73 @@ class FileSelectorLayout(QWidget):
         finally:
             self._file_list.setUpdatesEnabled(True)
         self._file_list.viewport().update()
+
+    @staticmethod
+    def _is_supported_drive_type(drive_path: str) -> bool:
+        """判断盘符是否为默认加载的物理磁盘类型（Windows GetDriveTypeW）。
+
+        默认仅包含固定盘（DRIVE_FIXED）、可移动盘（DRIVE_REMOVABLE）与
+        RAM 盘（DRIVE_RAMDISK）；网络磁盘/映射盘（DRIVE_REMOTE）与光驱
+        （DRIVE_CDROM）排除。未来网络/映射盘将作为设置项（默认关闭）接入，
+        见模块顶部 TODO 注释。类型探测失败时保守放行，保持旧行为。
+
+        Args:
+            drive_path: 盘符根路径（如 ``"C:\\"``）。
+
+        Returns:
+            bool: True 表示应包含在「All」视图中。
+        """
+        try:
+            drive_type = int(
+                ctypes.windll.kernel32.GetDriveTypeW(ctypes.c_wchar_p(drive_path))
+            )
+        except Exception:  # noqa: BLE001  # 类型探测失败保守放行
+            return True
+        if drive_type == DRIVE_TYPE_REMOTE:
+            # TODO(未来): 网络磁盘/映射盘——设置项（默认关闭）开启后放行
+            return _INCLUDE_REMOTE_DRIVES
+        return drive_type in _PHYSICAL_DRIVE_TYPES
+
+    @staticmethod
+    def _collect_all_drives_python() -> List[Dict[str, Any]]:
+        """纯 Python 枚举「All」视图条目（物理磁盘；不经 faf_core native）。
+
+        默认加载物理磁盘（固定盘/可移动盘/RAM 盘），网络磁盘/映射盘与光驱
+        暂不加载（未来设置项，见模块顶部 TODO 注释）。Windows 上经
+        ``GetLogicalDrives`` 位掩码 + ``GetDriveTypeW`` 类型过滤后逐个
+        ``os.stat``；非 Windows 回退为根目录 ``/`` 一个条目。
+
+        Returns:
+            List[Dict[str, Any]]: 7 键条目列表（与目录扫描产物同构）。
+        """
+        entries: List[Dict[str, Any]] = []
+        if sys.platform == "win32":
+            kernel32 = ctypes.windll.kernel32
+            drives_bitmask = kernel32.GetLogicalDrives()
+            for drive in range(26):
+                if not drives_bitmask & (1 << drive):
+                    continue
+                drive_name = chr(65 + drive) + ":"
+                drive_path = drive_name + "\\"
+                if not FileSelectorLayout._is_supported_drive_type(drive_path):
+                    continue
+                try:
+                    st = os.stat(drive_path)
+                    modified = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
+                    created = datetime.fromtimestamp(st.st_ctime).strftime("%Y-%m-%d %H:%M")
+                except OSError:
+                    modified = ""
+                    created = ""
+                entries.append({
+                    "name": drive_name, "path": drive_path, "is_dir": True,
+                    "size": 0, "modified": modified, "created": created, "suffix": "",
+                })
+        else:
+            entries.append({
+                "name": "/", "path": "/", "is_dir": True,
+                "size": 0, "modified": "", "created": "", "suffix": "",
+            })
+        return entries
 
     # ── 上次路径恢复 ─────────────────────────────────────────────────────
     def _try_restore_last_path(self) -> bool:
@@ -609,9 +719,9 @@ class FileSelectorLayout(QWidget):
             with open(save_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
             last_path = data.get("last_path")
-            if last_path and os.path.exists(last_path):
-                self._navigate_to_async(last_path)
-                return True
+            if last_path and os.path.isdir(last_path):
+                # 恢复上次路径走异步加载；失败时由 initial 标记回退到 All 视图
+                return self._navigate_to(last_path, transition=False, initial=True)
         except Exception:
             pass
         return False
@@ -725,32 +835,45 @@ class FileSelectorLayout(QWidget):
     # ── 目录加载 ──────────────────────────────────────────────────────────
 
     @staticmethod
-    def _collect_directory_entries(path: str) -> Optional[List[Dict[str, Any]]]:
+    def _collect_directory_entries(
+        path: str,
+        cancel_check=None,
+    ) -> Optional[List[Dict[str, Any]]]:
         """纯 IO 收集目录条目（桥可用时优先 native 扫描，否则 Python 回退）。
 
         单点接线：同步路径（``_load_directory``）与异步路径
         （``_DirectoryCollectRunnable.run``）都经此方法。可在后台线程执行
-        ——不触碰任何 Qt/主线程状态。返回条目列表；目录不可读时返回 None
+        ——不触碰任何 Qt/主线程状态。``"All"`` 视图固定走纯 Python 枚举
+        （不经 native 桥）。返回条目列表；目录不可读时返回 None
         （调用方执行与同步路径一致的清空处理）。
 
         Args:
-            path: 待收集目录路径。
+            path: 待收集目录路径；``"All"`` 表示磁盘视图。
+            cancel_check: 可选取消检查回调（后台线程用，返回 True 表示
+                请求已过期、应尽快放弃）；仅 Python 回退路径消费。
 
         Returns:
             Optional[List[Dict[str, Any]]]: 7 键条目列表；目录不可读返回
                 ``None``。
         """
+        if path == "All":
+            return FileSelectorLayout._collect_all_drives_python()
         native_entries = _native_scan_directory(path)
         if native_entries is not None:
             return native_entries
-        return FileSelectorLayout._collect_directory_entries_python(path)
+        return FileSelectorLayout._collect_directory_entries_python(path, cancel_check)
 
     @staticmethod
-    def _collect_directory_entries_python(path: str) -> Optional[List[Dict[str, Any]]]:
+    def _collect_directory_entries_python(
+        path: str,
+        cancel_check=None,
+    ) -> Optional[List[Dict[str, Any]]]:
         """既有 Python 收集实现（listdir + 逐文件 stat），native 回退路径。
 
         Args:
             path: 待收集目录路径。
+            cancel_check: 可选取消检查回调；每个条目处理前调用，返回 True
+                时立即放弃并返回 ``None``（过期结果由 token 侧丢弃）。
 
         Returns:
             Optional[List[Dict[str, Any]]]: 7 键条目列表；目录不可读返回
@@ -759,6 +882,8 @@ class FileSelectorLayout(QWidget):
         try:
             entries: List[Dict[str, Any]] = []
             for name in os.listdir(path):
+                if cancel_check is not None and cancel_check():
+                    return None
                 full_path = os.path.join(path, name)
                 try:
                     st = os.stat(full_path)
@@ -777,7 +902,11 @@ class FileSelectorLayout(QWidget):
             return None
 
     def _load_directory(self, path: str) -> None:
-        """同步加载目录（收集 + 应用），行为与旧实现逐字节等价。"""
+        """同步加载目录（收集 + 应用），行为与旧实现逐字节等价。
+
+        仅供测试与特殊同步场景使用；交互式导航请走 ``_load_directory_async``
+        （后台线程收集，不阻塞 UI 线程）。
+        """
         entries = self._collect_directory_entries(path)
         if entries is None:
             self._file_list.setUpdatesEnabled(False)
@@ -817,49 +946,139 @@ class FileSelectorLayout(QWidget):
             file_list.setUpdatesEnabled(True)
         file_list.viewport().update()
 
-    def _load_directory_async(self, path: str) -> None:
-        """异步加载目录：后台线程收集条目，完成后回到主线程应用。
+    # ── 加载指示器 ────────────────────────────────────────────────────────
 
-        仅用于启动首次加载等无交互动画的场景（避免与路径过渡动画竞态）。
-        递增 token 保证快速连续导航时只应用最后一次请求的结果。
+    def _start_loading_indicator(self) -> None:
+        """进入加载态：启动延迟显示计时器（到点才显示遮罩与「加载中…」）。"""
+        self._loading_show_timer.start(DIR_LOADING_INDICATOR_DELAY_MS)
+
+    def _on_loading_indicator_timeout(self) -> None:
+        """延迟计时器到点：显示加载遮罩并把条目计数切成「加载中…」。"""
+        self._loading_overlay.fit_to_parent()
+        self._loading_overlay.raise_()
+        self._loading_overlay.show()
+        self._file_count_label.setText("加载中…")
+
+    def _stop_loading_indicator(self) -> None:
+        """退出加载态：取消未到点的延迟显示并隐藏遮罩（幂等）。
+
+        无条件调用 ``hide()``：``isVisible()`` 在父链未显示（启动阶段面板
+        尚未 show）时恒为 False，若据此跳过隐藏，会在面板随后显示时让
+        遮罩错误地闪现。
+        """
+        self._loading_show_timer.stop()
+        self._loading_overlay.hide()
+
+    # ── 异步目录加载 ──────────────────────────────────────────────────────
+
+    def _load_directory_async(
+        self,
+        path: str,
+        direction: int = 0,
+        *,
+        initial: bool = False,
+        rollback_history: bool = False,
+    ) -> None:
+        """异步加载目录：后台线程收集条目，完成后回主线程应用。
+
+        所有交互式导航（进入子目录/返回/刷新/路径框/收藏夹/定位）与启动
+        首次加载统一走本入口：请求即返回，UI 线程零文件 IO。递增 token
+        保证快速连续导航只应用最后一次请求的结果；过期任务在 Python 回退
+        扫描中经 ``cancel_check`` 尽早退出（native 扫描无法中途取消，但
+        仍在后台线程执行，不阻塞 UI）。
+
+        Args:
+            path: 待加载目录路径，或 ``"All"`` 磁盘视图。
+            direction: 路径过渡方向（进入 1 / 返回 -1 / 无动画 0）；仅当
+                ``begin_path_transition`` 成功启动时才应传非 0。
+            initial: 是否为启动首次加载（失败时回退到 All 视图）。
+            rollback_history: 失败时是否回滚已压入的历史栈条目
+                （显式导航 True；刷新/返回 False）。
         """
         self._async_load_token += 1
         token = self._async_load_token
-        QThreadPool.globalInstance().start(_DirectoryCollectRunnable(self, path, token))
+        self._pending_transition_direction = direction
+        self._pending_initial_load = initial
+        self._pending_history_rollback = rollback_history
+        self._pending_locate_path = ""
+        self._update_path_input(path)
+        self._start_loading_indicator()
+        QThreadPool.globalInstance().start(
+            _DirectoryCollectRunnable(self, path, token)
+        )
 
     def _on_dir_entries_ready(
         self, path: str, entries: Optional[List[Dict[str, Any]]], token: int
     ) -> None:
-        """后台收集完成（主线程槽）：过期结果直接丢弃。"""
+        """后台收集完成（主线程槽）：过期结果直接丢弃，否则应用并收尾。
+
+        成功：应用条目（All 视图走 ``_apply_all_entries``）→ 播放挂起的
+        路径过渡动画 → 处理挂起定位请求；失败：取消过渡、保留当前目录
+        视图（回滚路径框/历史/last_path），启动首次加载失败则回退到
+        All 视图。
+        """
         if token != self._async_load_token:
             return
+        direction = self._pending_transition_direction
+        initial = self._pending_initial_load
+        rollback_history = self._pending_history_rollback
+        self._pending_transition_direction = 0
+        self._pending_initial_load = False
+        self._pending_history_rollback = False
+        self._stop_loading_indicator()
+
         if entries is None:
-            self._file_list.setUpdatesEnabled(False)
-            try:
-                self._file_model.clear()
-                self._current_path = ""
-                self._update_file_count(0)
-            finally:
-                self._file_list.setUpdatesEnabled(True)
-            self._file_list.viewport().update()
+            self._file_list.cancel_path_transition()
+            self._pending_locate_path = ""
+            self._update_file_count(self._file_model.rowCount())
+            if initial:
+                debug(f"启动恢复路径不可读，回退到 All 视图: {path}")
+                self._navigate_to_all()
+                return
+            if rollback_history:
+                self._rollback_failed_navigation(path)
+            debug(f"目录加载失败，保留当前视图: {path}")
             return
-        self._apply_directory_entries(path, entries)
 
-    def _navigate_to_async(self, path: str) -> None:
-        """轻量异步导航（无过渡动画）：校验 + 异步加载 + 历史栈 + 保存路径。
+        if path == "All":
+            self._apply_all_entries(entries)
+        else:
+            self._apply_directory_entries(path, entries)
+        if direction != 0:
+            self._file_list.finish_path_transition(direction)
+        self._handle_pending_locate()
 
-        仅用于启动首次加载/恢复上次路径，避免大目录 listdir+stat
-        阻塞主线程导致首屏卡顿。
+    def _rollback_failed_navigation(self, path: str) -> None:
+        """交互导航失败：回滚历史栈/路径框/last_path（保留当前目录视图）。
+
+        Args:
+            path: 加载失败的目标路径。
         """
-        path = os.path.abspath(path)
-        if not os.path.isdir(path):
+        if (
+            self._nav_history
+            and 0 <= self._history_index < len(self._nav_history)
+            and self._same_selector_path(self._nav_history[self._history_index], path)
+        ):
+            self._nav_history.pop(self._history_index)
+            self._history_index = len(self._nav_history) - 1
+        self._update_path_input(self._current_path)
+        if self._current_path and self._current_path != "All":
+            self._save_last_path(self._current_path)
+        else:
+            self._clear_last_path()
+
+    def _handle_pending_locate(self) -> None:
+        """应用挂起的定位请求：条目落地后高亮目标卡片并滚动到可见。"""
+        file_path = self._pending_locate_path
+        if not file_path:
             return
-        self._load_directory_async(path)
-        if self._history_index >= 0 and self._history_index < len(self._nav_history) - 1:
-            self._nav_history = self._nav_history[:self._history_index + 1]
-        self._nav_history.append(path)
-        self._history_index = len(self._nav_history) - 1
-        self._save_last_path(path)
+        self._pending_locate_path = ""
+        model_file_path = self._locate_model_file_path(file_path)
+        if not model_file_path:
+            return
+        self.set_previewing_file(model_file_path)
+        # 目录过渡动画（120ms）结束后再滚动，避免与过渡快照错位
+        QTimer.singleShot(180, lambda p=model_file_path: self._scroll_to_file(p))
 
     def _apply_sort(self, entries: List[Dict[str, Any]]) -> None:
         mode = self._sort_mode
@@ -942,22 +1161,39 @@ class FileSelectorLayout(QWidget):
 
     # ── 导航 ──────────────────────────────────────────────────────────────
 
-    def _navigate_to(self, path: str) -> None:
+    def _navigate_to(
+        self, path: str, *, transition: bool = True, initial: bool = False
+    ) -> bool:
+        """导航到指定目录（异步加载，请求即返回，UI 线程不阻塞）。
+
+        请求时立即压历史栈/更新路径框/保存 last_path；目录条目由后台线程
+        收集，完成后回主线程应用并播放过渡动画。
+
+        Args:
+            path: 目标目录路径。
+            transition: 是否尝试播放路径过渡动画（启动首次加载传 False）。
+            initial: 是否为启动首次加载（加载失败时回退到 All 视图）。
+
+        Returns:
+            bool: True 表示已发出加载请求；False 表示路径不是目录。
+        """
         path = os.path.abspath(path)
         if not os.path.isdir(path):
-            return
-        direction = self._infer_navigation_direction(self._current_path, path)
-        started = False
-        if direction != 0:
-            started = self._file_list.begin_path_transition(direction)
-        self._load_directory(path)
-        if started:
-            self._file_list.finish_path_transition(direction)
+            return False
+        direction = 0
+        if transition:
+            inferred = self._infer_navigation_direction(self._current_path, path)
+            if inferred != 0 and self._file_list.begin_path_transition(inferred):
+                direction = inferred
+        self._load_directory_async(
+            path, direction, initial=initial, rollback_history=True
+        )
         if self._history_index >= 0 and self._history_index < len(self._nav_history) - 1:
             self._nav_history = self._nav_history[:self._history_index + 1]
         self._nav_history.append(path)
         self._history_index = len(self._nav_history) - 1
         self._save_last_path(path)
+        return True
 
     def _navigate_to_input_path(self) -> None:
         path = self._path_input.text().strip()
@@ -965,28 +1201,26 @@ class FileSelectorLayout(QWidget):
             self._navigate_to(path)
 
     def _reload_directory(self) -> None:
+        """刷新当前目录（异步重扫；不重排历史栈、不改 last_path）。"""
         if self._current_path == "All":
-            self._load_all()
+            self._load_directory_async("All", 0, initial=False)
         elif self._current_path:
-            self._load_directory(self._current_path)
+            self._load_directory_async(self._current_path, 0, initial=False)
 
     def _load_directory_with_transition(self, path: str, direction: int) -> None:
-        """带路径过渡动画的同步目录加载。
+        """带路径过渡动画的异步目录加载。
+
+        先捕获旧视图快照进入等待态，随后异步收集目录条目；条目落地后由
+        ``_on_dir_entries_ready`` 播放过渡（finish）。begin 未成功启动
+        （不可见/快照为空）时静默退化为无动画加载；不等待图标/缩略图，
+        不增加额外 IO。
 
         Args:
             path: 要加载的目录绝对路径。
             direction: 过渡方向（>0 前进，<0 后退，0 不做动画）。
-
-        复用 begin/finish 的 started 守卫：begin 返回 False（不可见/
-        快照为空）时静默跳过 finish，仅执行同步加载；不等待图标/
-        缩略图，不增加额外 IO。
         """
-        started = False
-        if direction != 0:
-            started = self._file_list.begin_path_transition(direction)
-        self._load_directory(path)
-        if started:
-            self._file_list.finish_path_transition(direction)
+        started = direction != 0 and self._file_list.begin_path_transition(direction)
+        self._load_directory_async(path, direction if started else 0)
 
     def _go_back(self) -> None:
         """返回上级：历史栈命中、parent 回退、盘符根回退到 All。
@@ -1873,8 +2107,13 @@ class FileSelectorLayout(QWidget):
         )
         if needs_navigation:
             self._navigate_to(file_dir)
+            # 异步导航：条目落地后由 _on_dir_entries_ready → _handle_pending_locate
+            # 完成高亮与滚动（此处仅登记挂起目标）
+            self._pending_locate_path = file_path
+            return
 
-        # 高亮目标文件卡片（用 model 中实际存储的路径，规避大小写不一致）
+        # 目标目录即当前目录：立即高亮目标文件卡片（用 model 中实际存储的
+        # 路径，规避大小写不一致）
         model_file_path = self._locate_model_file_path(file_path)
         if model_file_path:
             self.set_previewing_file(model_file_path)

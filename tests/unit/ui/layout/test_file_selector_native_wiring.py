@@ -45,6 +45,8 @@ import freeassetfilter.ui.layout.file_selector_layout as fsl_mod  # noqa: E402
 # 与布局模块共享同一模块实例（components.* 短路径），FileNameRole 为 int 角色值。
 from components.file_list_model import FileNameRole  # noqa: E402
 
+from tests.support.qt_helpers import wait_for_signal  # noqa: E402
+
 pytestmark = pytest.mark.unit
 
 _FIXTURES_DIR: Path = (
@@ -151,9 +153,9 @@ class TestSortModeSwitchNoRescan:
         calls: List[str] = []
         original_collect = layout._collect_directory_entries  # noqa: SLF001
 
-        def counting_collect(path: str) -> Any:
+        def counting_collect(path: str, cancel_check: Any = None) -> Any:
             calls.append(path)
-            return original_collect(path)
+            return original_collect(path, cancel_check)
 
         monkeypatch.setattr(layout, "_collect_directory_entries", counting_collect)
 
@@ -171,9 +173,10 @@ class TestSortModeSwitchNoRescan:
         ]
         assert len(layout._raw_entries) == 6, "raw 缓存不应被内存重排改写"  # noqa: SLF001
 
-        # 内存重排结果与真实重扫一致（_reload_directory 允许真实重扫）
+        # 内存重排结果与真实重扫一致（_reload_directory 为异步重扫，等待其落地）
         mem_names: List[str] = _model_names(layout)
         layout._reload_directory()  # noqa: SLF001
+        assert wait_for_signal(layout._dir_entries_ready), "刷新按钮应真实重扫"
         assert calls, "刷新按钮应真实重扫"
         assert _model_names(layout) == mem_names, "缓存重排结果与重扫结果不一致"
 
@@ -201,9 +204,9 @@ class TestFilterApplyNoRescan:
         calls: List[str] = []
         original_collect = layout._collect_directory_entries  # noqa: SLF001
 
-        def counting_collect(path: str) -> Any:
+        def counting_collect(path: str, cancel_check: Any = None) -> Any:
             calls.append(path)
-            return original_collect(path)
+            return original_collect(path, cancel_check)
 
         monkeypatch.setattr(layout, "_collect_directory_entries", counting_collect)
 
@@ -214,9 +217,10 @@ class TestFilterApplyNoRescan:
         assert calls == [], "应用筛选不应触发磁盘重扫"
         assert _model_names(layout) == ["photo.png"]
 
-        # 结果与真实重扫一致
+        # 结果与真实重扫一致（_reload_directory 为异步重扫，等待其落地）
         mem_names: List[str] = _model_names(layout)
         layout._reload_directory()  # noqa: SLF001
+        assert wait_for_signal(layout._dir_entries_ready), "刷新按钮应真实重扫"
         assert calls, "刷新按钮应真实重扫"
         assert _model_names(layout) == mem_names, "筛选结果与重扫结果不一致"
 

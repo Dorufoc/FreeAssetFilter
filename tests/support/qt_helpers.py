@@ -15,7 +15,8 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Optional
+import time
+from typing import Any, Callable, List, Optional
 
 from PySide6.QtCore import QEventLoop, QObject, QTimer
 from PySide6.QtGui import QPixmap
@@ -85,6 +86,37 @@ def wait_for_signal(signal: Any, timeout_ms: int = 5000) -> bool:
         except (TypeError, RuntimeError):
             pass
     return emitted[0]
+
+
+def wait_until(
+    app: Optional[QApplication],
+    predicate: Callable[[], Any],
+    timeout_ms: int = 5000,
+    interval_ms: int = 10,
+) -> bool:
+    """有界等待条件成立（跨线程信号落地/后台任务完成等场景）。
+
+    每轮先轮询 ``predicate``，未满足则泵一轮事件并短暂休眠，直到条件为真
+    或超时。**任何路径都不会无限等待**。
+
+    Args:
+        app: QApplication 实例；为 None 时只轮询不泵事件。
+        predicate: 无参可调用对象，返回真值表示条件满足。
+        timeout_ms: 超时毫秒数。
+        interval_ms: 每轮间隔毫秒数。
+
+    Returns:
+        bool: 超时前条件满足返回 True，否则 False。
+    """
+    deadline = time.monotonic() + max(0, timeout_ms) / 1000.0
+    while True:
+        if predicate():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        if app is not None:
+            app.processEvents()
+        time.sleep(max(0, interval_ms) / 1000.0)
 
 
 def flush_widget_queue(app: Optional[QApplication] = None, iterations: int = 20) -> None:

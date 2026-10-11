@@ -244,13 +244,22 @@ class StyledLoading(QWidget):
         self.raise_()
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
-        """跟随遮罩父控件的尺寸变化同步几何。"""
+        """跟随遮罩父控件的尺寸变化同步几何（销毁期防御）。
+
+        控件树销毁时 Qt 仍可能向已安装的过滤器派发事件，而此时 shiboken
+        已清空包装器属性（``_overlay_parent`` 缺失）或 C++ 对象已失效；
+        一律静默跳过，避免派生属性访问抛出 AttributeError。
+        """
+        overlay_parent = getattr(self, "_overlay_parent", None)
         if (
-            obj is self._overlay_parent
-            and self._overlay_parent is not None
+            overlay_parent is not None
+            and obj is overlay_parent
             and event.type() == QEvent.Type.Resize
         ):
-            self.setGeometry(self._overlay_parent.rect())
+            try:
+                self.setGeometry(overlay_parent.rect())
+            except RuntimeError:  # C++ 对象已销毁
+                return False
         return False
 
     # ------------------------------------------------------------------

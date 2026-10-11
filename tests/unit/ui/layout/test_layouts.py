@@ -29,6 +29,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock
 
@@ -76,7 +77,7 @@ from freeassetfilter.ui.layout.settings_layout import (
 )
 from freeassetfilter.ui.layout.unified_previewer_layout import UnifiedPreviewerLayout
 
-from tests.support.qt_helpers import safe_teardown  # noqa: E402
+from tests.support.qt_helpers import safe_teardown, wait_until  # noqa: E402
 
 pytestmark = pytest.mark.unit
 
@@ -734,7 +735,7 @@ class TestFileSelectorLayout:
     def test_locate_file_navigates_and_highlights(
         self, qapp: QApplication, tmp_path: object, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """文件池预览文件不在当前目录：locate_file 导航到所在目录并高亮卡片。"""
+        """文件池预览文件不在当前目录：locate_file 异步导航并延迟高亮卡片。"""
         import os
 
         import freeassetfilter.ui.layout.file_selector_layout as fsl_mod
@@ -753,15 +754,19 @@ class TestFileSelectorLayout:
         layout.locate_file({"path": str(target), "name": target.name})
 
         target_dir = os.path.abspath(os.path.normpath(str(tmp_path)))
-        assert os.path.normcase(layout._current_path) == os.path.normcase(target_dir)
-        assert layout._previewing_file_path is not None
-        assert (
-            os.path.normcase(layout._previewing_file_path)
-            == os.path.normcase(str(target))
-        )
+        # 异步导航：等待后台收集完成后由主线程槽应用（旧实现为同步落地）
+        assert wait_until(
+            qapp,
+            lambda: os.path.normcase(layout._current_path)
+            == os.path.normcase(target_dir),
+        ), "locate_file 应异步导航到目标目录"
+        # 挂起定位：条目落地后高亮目标文件卡片
+        assert wait_until(
+            qapp,
+            lambda: os.path.normcase(layout._previewing_file_path or "")
+            == os.path.normcase(str(target)),
+        ), "locate_file 应在条目落地后高亮目标文件"
         # 等待延后滚动的 singleShot 触达后安全清理
-        import time
-
         time.sleep(0.25)
         qapp.processEvents()
         layout.deleteLater()
@@ -843,13 +848,66 @@ class TestFileSelectorLayout:
 
 
 # =============================================================================
+# ui.layout.file_selector_layout — 异步加载测试替身
+# =============================================================================
+class _FakeThreadPool:
+    """替身线程池：记录投递的 runnable，不真实执行（避免测试真实 IO/线程）。"""
+
+    def __init__(self) -> None:
+        """初始化投递记录列表。"""
+        self.started: list = []
+
+    def start(self, runnable: object) -> None:
+        """记录被投递的 runnable。
+
+        Args:
+            runnable: 生产代码构造的 ``_DirectoryCollectRunnable``。
+        """
+        self.started.append(runnable)
+
+
+def _patch_async_pool(monkeypatch: pytest.MonkeyPatch) -> _FakeThreadPool:
+    """把 file_selector_layout 模块命名空间的 QThreadPool 替换为记录替身。
+
+    Args:
+        monkeypatch: pytest monkeypatch fixture。
+
+    Returns:
+        _FakeThreadPool: 记录投递任务的替身（测试内手动触发完成信号）。
+    """
+    import freeassetfilter.ui.layout.file_selector_layout as fsl_mod
+
+    fake = _FakeThreadPool()
+    monkeypatch.setattr(
+        fsl_mod, "QThreadPool", SimpleNamespace(globalInstance=lambda: fake)
+    )
+    return fake
+
+
+def _complete_pending_load(
+    layout: FileSelectorLayout,
+    path: str,
+    entries: Optional[List[Dict[str, Any]]] = None,
+) -> None:
+    """模拟后台收集完成：以当前世代 token 触发主线程应用槽。
+
+    Args:
+        layout: FileSelectorLayout 实例。
+        path: 完成加载的路径。
+        entries: 条目列表；None 表示加载失败（失败分支），空目录请传 ``[]``。
+    """
+    layout._on_dir_entries_ready(path, entries, layout._async_load_token)
+
+
+# =============================================================================
 # ui.layout.file_selector_layout — _go_back 返回过渡动画
 # =============================================================================
 class TestGoBackTransition:
     """_go_back 返回过渡：历史/上级/盘符根分支均一致触发 direction=-1 动画。
 
-    全部用例均用 MagicMock 计数 begin/finish，不跑真实动画（offscreen 下
-    ``FileSelectorLayout`` 真实构造，仅过渡与 IO 入口被替身替换）。
+    全部用例均用 MagicMock 计数 begin/finish、替身线程池记录异步投递，不跑
+    真实动画与后台 IO（offscreen 下 ``FileSelectorLayout`` 真实构造，过渡与
+    加载入口被替身替换）；条目落地经 ``_complete_pending_load`` 手动触发。
     """
 
     def test_history_branch_triggers_back_animation(
@@ -879,12 +937,11 @@ class TestGoBackTransition:
             layout._nav_history = [str_a, str_b]
             layout._history_index = 1
             layout._current_path = str_b
+            fake_pool = _patch_async_pool(monkeypatch)
             begin_mock: MagicMock = MagicMock(return_value=True)
             finish_mock: MagicMock = MagicMock(return_value=True)
-            load_mock: MagicMock = MagicMock()
             monkeypatch.setattr(layout._file_list, "begin_path_transition", begin_mock)
             monkeypatch.setattr(layout._file_list, "finish_path_transition", finish_mock)
-            monkeypatch.setattr(layout, "_load_directory", load_mock)
             monkeypatch.setattr(layout, "_navigate_to_all", MagicMock())
             monkeypatch.setattr(layout, "_save_last_path", MagicMock())
             monkeypatch.setattr(os.path, "isdir", lambda path: True)
@@ -892,8 +949,15 @@ class TestGoBackTransition:
             layout._go_back()
 
             begin_mock.assert_called_once_with(-1)
+            assert len(fake_pool.started) == 1
+            assert fake_pool.started[0]._path == str_a
+            # 异步：加载完成前不应提前播放过渡
+            finish_mock.assert_not_called()
+
+            _complete_pending_load(layout, str_a, [])
+
             finish_mock.assert_called_once_with(-1)
-            load_mock.assert_called_once_with(str_a)
+            assert os.path.normcase(layout._current_path) == os.path.normcase(str_a)
         finally:
             safe_teardown(layout)
             qapp.processEvents()
@@ -929,12 +993,11 @@ class TestGoBackTransition:
             layout._nav_history = [str_deep]
             layout._history_index = 0
             layout._current_path = str_deep
+            fake_pool = _patch_async_pool(monkeypatch)
             begin_mock: MagicMock = MagicMock(return_value=True)
             finish_mock: MagicMock = MagicMock(return_value=True)
-            load_mock: MagicMock = MagicMock()
             monkeypatch.setattr(layout._file_list, "begin_path_transition", begin_mock)
             monkeypatch.setattr(layout._file_list, "finish_path_transition", finish_mock)
-            monkeypatch.setattr(layout, "_load_directory", load_mock)
             monkeypatch.setattr(layout, "_navigate_to_all", MagicMock())
             monkeypatch.setattr(layout, "_save_last_path", MagicMock())
             monkeypatch.setattr(os.path, "isdir", lambda path: True)
@@ -942,8 +1005,14 @@ class TestGoBackTransition:
             layout._go_back()
 
             begin_mock.assert_called_once_with(-1)
+            assert len(fake_pool.started) == 1
+            assert fake_pool.started[0]._path == str_parent
+            finish_mock.assert_not_called()
+
+            _complete_pending_load(layout, str_parent, [])
+
             finish_mock.assert_called_once_with(-1)
-            load_mock.assert_called_once_with(str_parent)
+            assert os.path.normcase(layout._current_path) == os.path.normcase(str_parent)
         finally:
             safe_teardown(layout)
             qapp.processEvents()
@@ -967,11 +1036,11 @@ class TestGoBackTransition:
             layout._nav_history = []
             layout._history_index = -1
             layout._current_path = "D:\\"
+            fake_pool = _patch_async_pool(monkeypatch)
             begin_mock: MagicMock = MagicMock(return_value=True)
             finish_mock: MagicMock = MagicMock(return_value=True)
             monkeypatch.setattr(layout._file_list, "begin_path_transition", begin_mock)
             monkeypatch.setattr(layout._file_list, "finish_path_transition", finish_mock)
-            monkeypatch.setattr(layout, "_load_all", MagicMock())
             monkeypatch.setattr(layout, "_save_last_path", MagicMock())
             monkeypatch.setattr(layout, "_clear_last_path", MagicMock())
             monkeypatch.setattr(os.path, "isdir", lambda path: True)
@@ -990,8 +1059,14 @@ class TestGoBackTransition:
 
             assert navigate_all_calls == [True]
             begin_mock.assert_called_once_with(-1)
-            finish_mock.assert_called_once_with(-1)
+            assert len(fake_pool.started) == 1
+            assert fake_pool.started[0]._path == "All"
+            finish_mock.assert_not_called()
             assert layout._current_path == "All"
+
+            _complete_pending_load(layout, "All", [])
+
+            finish_mock.assert_called_once_with(-1)
         finally:
             safe_teardown(layout)
             qapp.processEvents()
@@ -1023,12 +1098,11 @@ class TestGoBackTransition:
             layout._nav_history = [str_a, str_b, str_c]
             layout._history_index = 2
             layout._current_path = str_c
+            fake_pool = _patch_async_pool(monkeypatch)
             begin_mock: MagicMock = MagicMock(return_value=True)
             finish_mock: MagicMock = MagicMock(return_value=True)
-            load_mock: MagicMock = MagicMock()
             monkeypatch.setattr(layout._file_list, "begin_path_transition", begin_mock)
             monkeypatch.setattr(layout._file_list, "finish_path_transition", finish_mock)
-            monkeypatch.setattr(layout, "_load_directory", load_mock)
             monkeypatch.setattr(layout, "_navigate_to_all", MagicMock())
             monkeypatch.setattr(layout, "_save_last_path", MagicMock())
             monkeypatch.setattr(os.path, "isdir", lambda path: True)
@@ -1037,10 +1111,22 @@ class TestGoBackTransition:
             layout._go_back()
 
             assert begin_mock.call_count == 2
-            assert finish_mock.call_count == 2
             assert [c.args[0] for c in begin_mock.call_args_list] == [-1, -1]
-            assert [c.args[0] for c in finish_mock.call_args_list] == [-1, -1]
-            assert [c.args[0] for c in load_mock.call_args_list] == [str_b, str_a]
+            # 两次回退各投递一次异步加载（b 后被 a 取代）
+            assert [r._path for r in fake_pool.started] == [str_b, str_a]
+            stale_token = fake_pool.started[0]._token
+            latest_token = fake_pool.started[1]._token
+
+            # 过期结果（第一次加载）到达：token 不匹配 → 丢弃且不播过渡
+            layout._on_dir_entries_ready(str_b, [], stale_token)
+            finish_mock.assert_not_called()
+            assert os.path.normcase(layout._current_path) == os.path.normcase(str_c)
+
+            # 最新结果到达：应用并播放一次过渡
+            layout._on_dir_entries_ready(str_a, [], latest_token)
+            assert finish_mock.call_count == 1
+            assert finish_mock.call_args.args[0] == -1
+            assert os.path.normcase(layout._current_path) == os.path.normcase(str_a)
         finally:
             safe_teardown(layout)
             qapp.processEvents()
@@ -1081,11 +1167,11 @@ class TestGoBackTransition:
                 layout._nav_history = [os.path.abspath(str(deep_dir))]
                 layout._history_index = 0
                 layout._current_path = os.path.abspath(str(deep_dir))
+            fake_pool = _patch_async_pool(monkeypatch)
             begin_mock: MagicMock = MagicMock(return_value=True)
             finish_mock: MagicMock = MagicMock(return_value=True)
             monkeypatch.setattr(layout._file_list, "begin_path_transition", begin_mock)
             monkeypatch.setattr(layout._file_list, "finish_path_transition", finish_mock)
-            monkeypatch.setattr(layout, "_load_directory", MagicMock())
             monkeypatch.setattr(layout, "_navigate_to_all", MagicMock())
             monkeypatch.setattr(layout, "_save_last_path", MagicMock())
             monkeypatch.setattr(os.path, "isdir", lambda path: True)
@@ -1094,10 +1180,177 @@ class TestGoBackTransition:
 
             assert begin_mock.call_count == 1
             assert begin_mock.call_args.args[0] == -1
+            assert len(fake_pool.started) == 1
+
+            _complete_pending_load(layout, fake_pool.started[0]._path, [])
+
+            assert finish_mock.call_count == 1
             assert finish_mock.call_args.args[0] == -1
         finally:
             safe_teardown(layout)
             qapp.processEvents()
+
+
+# =============================================================================
+# ui.layout.file_selector_layout — 异步加载：遮罩生命周期 / 失败回滚 / 取消
+# =============================================================================
+class TestAsyncLoadLifecycle:
+    """目录加载遮罩：延迟显示、完成隐藏（替身线程池，不跑真实后台 IO）。"""
+
+    def test_overlay_delayed_show_then_hidden_on_complete(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """请求后遮罩未显示；计时器到点显示「加载中…」；完成后隐藏并恢复计数。"""
+        layout = FileSelectorLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        qapp.processEvents()
+        try:
+            _patch_async_pool(monkeypatch)
+
+            layout._load_directory_async("All")
+
+            assert layout._loading_show_timer.isActive(), "应启动延迟显示计时器"
+            assert not layout._loading_overlay.isVisibleTo(layout), "延迟期内不应显示遮罩"
+            assert layout._path_input.text() == "All", "路径框应即时更新"
+
+            layout._on_loading_indicator_timeout()
+
+            assert layout._loading_overlay.isVisibleTo(layout), "计时器到点应显示遮罩"
+            assert layout._file_count_label.text() == "加载中…"
+
+            _complete_pending_load(layout, "All", [])
+
+            assert not layout._loading_show_timer.isActive()
+            assert not layout._loading_overlay.isVisibleTo(layout), "完成后遮罩应隐藏"
+            assert layout._file_count_label.text() == "0 个条目"
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+    def test_overlay_stays_hidden_when_completed_before_delay(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """快目录：延迟期内完成 → 遮罩从未显示、计时器取消。"""
+        src_dir = tmp_path / "fast"
+        src_dir.mkdir()
+        layout = FileSelectorLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        qapp.processEvents()
+        try:
+            _patch_async_pool(monkeypatch)
+
+            layout._load_directory_async(os.path.abspath(str(src_dir)))
+            assert layout._loading_show_timer.isActive()
+
+            _complete_pending_load(layout, os.path.abspath(str(src_dir)), [])
+
+            assert not layout._loading_show_timer.isActive(), "完成时应取消延迟计时器"
+            assert not layout._loading_overlay.isVisibleTo(layout)
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+
+class TestAsyncLoadFailure:
+    """异步加载失败：交互导航保留当前视图并回滚；启动加载回退 All。"""
+
+    def test_interactive_failure_keeps_view_and_rolls_back(
+        self, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """交互导航失败：保留当前目录与模型，历史/路径框回滚到原目录。"""
+        dir_a = tmp_path / "a"
+        dir_b = tmp_path / "b"
+        dir_a.mkdir()
+        dir_b.mkdir()
+        str_a = os.path.abspath(str(dir_a))
+        str_b = os.path.abspath(str(dir_b))
+
+        layout = FileSelectorLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        qapp.processEvents()
+        try:
+            _patch_async_pool(monkeypatch)
+            monkeypatch.setattr(layout, "_save_last_path", MagicMock())
+            monkeypatch.setattr(layout, "_clear_last_path", MagicMock())
+
+            # 模拟 _navigate_to 已压栈后的状态：当前 a，栈顶 b（加载中）
+            layout._nav_history = [str_a, str_b]
+            layout._history_index = 1
+            layout._current_path = str_a
+            layout._load_directory_async(str_b, 0, rollback_history=True)
+
+            _complete_pending_load(layout, str_b, entries=None)
+
+            assert os.path.normcase(layout._current_path) == os.path.normcase(str_a)
+            assert layout._nav_history == [str_a], "失败导航应从历史栈回滚"
+            assert layout._history_index == 0
+            assert os.path.normcase(layout._path_input.text()) == os.path.normcase(str_a)
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+    def test_initial_failure_falls_back_to_all_view(
+        self, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """启动首次加载失败：回退到 All 视图（重新投递 All 加载请求）。"""
+        dir_a = tmp_path / "a"
+        dir_a.mkdir()
+        str_a = os.path.abspath(str(dir_a))
+
+        layout = FileSelectorLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        qapp.processEvents()
+        try:
+            fake_pool = _patch_async_pool(monkeypatch)
+            monkeypatch.setattr(layout, "_save_last_path", MagicMock())
+            monkeypatch.setattr(layout, "_clear_last_path", MagicMock())
+
+            layout._load_directory_async(str_a, 0, initial=True, rollback_history=True)
+            assert [r._path for r in fake_pool.started] == [str_a]
+
+            _complete_pending_load(layout, str_a, entries=None)
+
+            assert layout._current_path == "All"
+            assert [r._path for r in fake_pool.started] == [str_a, "All"]
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+
+class TestCollectCancelCheck:
+    """``_collect_directory_entries_python`` 的取消检查（过期任务尽早退出）。"""
+
+    def test_cancel_check_stops_scan_and_returns_none(
+        self, qapp: QApplication, tmp_path: Path,
+    ) -> None:
+        """取消检查返回 True 时立即放弃并返回 None（过期结果由 token 丢弃）。"""
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        (src_dir / "one.txt").write_text("1", encoding="utf-8")
+        (src_dir / "two.txt").write_text("2", encoding="utf-8")
+        (src_dir / "three.txt").write_text("3", encoding="utf-8")
+
+        checks: list = []
+
+        def _cancel_check() -> bool:
+            """首次调用即取消（模拟请求已被更新世代取代）。"""
+            checks.append(True)
+            return True
+
+        result = FileSelectorLayout._collect_directory_entries_python(
+            os.path.abspath(str(src_dir)), _cancel_check
+        )
+
+        assert result is None
+        assert len(checks) == 1, "取消后不应继续扫描剩余条目"
+
+        entries = FileSelectorLayout._collect_directory_entries_python(
+            os.path.abspath(str(src_dir)), lambda: False
+        )
+        assert entries is not None
+        assert sorted(e["name"] for e in entries) == [
+            "one.txt", "three.txt", "two.txt",
+        ]
 
 
 # =============================================================================
@@ -3387,6 +3640,10 @@ class TestLoadAllStaysPython:
         monkeypatch.setattr(
             ctypes.windll.kernel32, "GetLogicalDrives", lambda: drives_bitmask
         )
+        # 全部盘符视为物理磁盘（DRIVE_FIXED=3）：默认加载策略下全部进入
+        monkeypatch.setattr(
+            ctypes.windll.kernel32, "GetDriveTypeW", lambda _path: 3
+        )
         monkeypatch.setattr(os, "stat", _fake_stat)
 
         layout = FileSelectorLayout()
@@ -3446,6 +3703,10 @@ class TestLoadAllStaysPython:
         monkeypatch.setattr(
             ctypes.windll.kernel32, "GetLogicalDrives", lambda: 0b101
         )
+        # 盘符类型视为物理磁盘（DRIVE_FIXED=3）——本用例只验证位掩码间隙跳过
+        monkeypatch.setattr(
+            ctypes.windll.kernel32, "GetDriveTypeW", lambda _path: 3
+        )
         monkeypatch.setattr(os, "stat", _fake_stat)
 
         layout = FileSelectorLayout()
@@ -3463,3 +3724,60 @@ class TestLoadAllStaysPython:
         finally:
             safe_teardown(layout)
             qapp.processEvents()
+
+    def test_load_all_excludes_remote_drives_stays_python(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """网络/映射盘（DRIVE_REMOTE）默认不加载；All 收集保持纯 Python。
+
+        位掩码 0b111 → A:/B:/C:，GetDriveTypeW 将 A: 标为 DRIVE_REMOTE(4)、
+        其余标为 DRIVE_FIXED(3)；断言仅 B:/C: 进入条目、网络盘不做 stat，
+        且 ``_collect_directory_entries("All")`` 分支不触碰 faf_core 桥。
+
+        Args:
+            qapp: 会话级 QApplication（offscreen）。
+            monkeypatch: 用例级猴子补丁。
+        """
+        import ctypes
+
+        import freeassetfilter.ui.layout.file_selector_layout as fsl_mod
+
+        drives_bitmask: int = 0b111
+        stat_calls: list[str] = []
+        bridge_calls: list[str] = []
+        fake_stat = MagicMock(
+            st_mtime=1_700_000_000.0,
+            st_ctime=1_700_000_000.0,
+        )
+        orig_stat = os.stat
+
+        def _fake_stat(path: object, **kwargs: object) -> object:
+            """仅拦截驱动器根 stat（记录），其余委托真实实现。"""
+            if isinstance(path, str) and path in ("A:\\", "B:\\", "C:\\"):
+                stat_calls.append(path)
+                return fake_stat
+            return orig_stat(path, **kwargs)
+
+        def _fake_drive_type(path: object) -> int:
+            """A: 为网络/映射盘（4），其余为固定盘（3）。"""
+            value = getattr(path, "value", path)
+            return 4 if str(value) == "A:\\" else 3
+
+        monkeypatch.setattr(
+            fsl_mod,
+            "get_faf_core_bridge",
+            lambda: bridge_calls.append("bridge"),
+        )
+        monkeypatch.setattr(
+            ctypes.windll.kernel32, "GetLogicalDrives", lambda: drives_bitmask
+        )
+        monkeypatch.setattr(
+            ctypes.windll.kernel32, "GetDriveTypeW", _fake_drive_type
+        )
+        monkeypatch.setattr(os, "stat", _fake_stat)
+
+        entries = FileSelectorLayout._collect_directory_entries("All")
+
+        assert [e["name"] for e in entries] == ["B:", "C:"], "仅物理磁盘进入 All 视图"
+        assert stat_calls == ["B:\\", "C:\\"], "网络盘不应触发 stat"
+        assert bridge_calls == [], "All 收集不得触碰 faf_core 桥（保持 Python）"
