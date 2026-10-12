@@ -33,8 +33,8 @@
 维护**一块**持久化的"视口层"：烘焙一次 —— 模糊 + 着色的壁纸，正好覆盖
 窗口当前所在的整块监视器（见 :func:`ui.mica.drag.layer_region_for` /
 :func:`ui.mica.drag.layer_grid`）。窗口在监视器内平移时，层不需要重烘焙，
-逐帧只需从层里按窗口位置取一个子矩形 blit，零重计算（子矩形取样的绘制细化
-见后续任务，本模块只负责把层烘焙到位并保存）。
+逐帧只需从层里按窗口位置取一个子矩形 blit，零重计算（子矩形取样已由
+:meth:`MicaMaterial._draw_layer` 实现，本模块只负责把层烘焙到位并保存）。
 
 主线程按 ``layer_key``（params、dark、source_signature、region、
 layer_display_long）判断层是否过期：主题 / 参数 / 壁纸 / 监视器变化时重烘焙
@@ -530,7 +530,7 @@ class MicaMaterial(QObject):
 
         # 逐监视器持久化视口层（详见 ui.mica.drag）—— 代替旧的拖动场偏移采样。
         # 层烘焙一次覆盖整块监视器；窗口在监视器内平移无需重烘焙，只逐帧取样
-        # （绘制期子矩形取样是后续任务，本模块只需把层烘焙到位并保存）。
+        # （绘制期子矩形取样已由 _draw_layer 实现，本模块只需把层烘焙到位并保存）。
         self._disposed = False
         #: 自研合成器：整块虚拟桌面层 + 窗口视口取样 + 自适应呈现调度。
         #: 层的像素与几何全部由它持有（见 :mod:`ui.mica.compositor`）；

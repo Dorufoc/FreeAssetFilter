@@ -253,7 +253,7 @@ class ImagePreviewerLayout(QWidget):
     图片预览器布局
 
     顶栏固定 48px（与 PDF 预览器顶栏高度一致），用于放置一排操作按钮；
-    其余区域为内容区，后续接入图片渲染组件。
+    其余区域为内容区，已接入图片渲染组件（异步解码、缩放/翻转/旋转、取色、全屏）。
 
     Signals:
         close_requested: 关闭预览请求信号

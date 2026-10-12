@@ -7,16 +7,15 @@
 //!
 //! # 线程安全
 //! 全局缓冲 `ERROR_LOG` 由 `Mutex<ErrorBuffer>` 保护；`push_error` /
-//! `clear_error_log` / `error_log_to_json` / `recent_error_log` 为供
-//! `lib.rs` FFI 导出直接调用的公开函数，错误日志的路径均不会 panic
-//! （锁中毒与序列化失败都有降级返回值）。
+//! `clear_error_log` / `error_log_to_json` 为供 `lib.rs` FFI 导出直接
+//! 调用的公开函数，错误日志的路径均不会 panic（锁中毒与序列化失败都有
+//! 降级返回值）。
 //!
-//! # 惰性消费说明
-//! `push_error` / `recent_error_log` / `ErrorBuffer::push` 等写入侧 API 由
-//! todo 25（T3 跳过路径与解码失败接线）接入后消费；接入前保持
-//! `#![allow(dead_code)]` 以维持零警告构建（todo 5 验收仅要求导出
-//! `native_get_error_log_json` / `native_clear_error_log` 与缓冲语义测试通过）。
-#![allow(dead_code)]
+//! # 消费现状
+//! 写入侧 `push_error` 已由 T3 跳过路由与解码失败补录（todo 25 完成）及
+//! ffmpeg 能力探测消费；`recent_error_log` 与 `ErrorBuffer` 的测试专用
+//! 辅助方法（`new` / `recent` / `len` / `is_empty`）仅测试构建使用，以
+//! `#[cfg(test)]` 标注维持零警告构建。
 
 use once_cell::sync::Lazy;
 use std::collections::VecDeque;
@@ -50,7 +49,8 @@ pub struct ErrorBuffer {
 }
 
 impl ErrorBuffer {
-    /// 新建空缓冲。
+    /// 新建空缓冲（仅测试构建使用）。
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::default()
     }
@@ -87,17 +87,22 @@ impl ErrorBuffer {
     }
 
     /// 返回最近 N 条记录（按写入顺序取末尾 N 条；N=0 或空缓冲返回空）。
+    ///
+    /// 仅测试构建使用（`recent_error_log` 与缓冲语义测试的直接入口）。
+    #[cfg(test)]
     pub fn recent(&self, n: usize) -> Vec<ErrorEntry> {
         let start = self.entries.len().saturating_sub(n);
         self.entries.iter().skip(start).cloned().collect()
     }
 
-    /// 当前记录条数。
+    /// 当前记录条数（仅测试构建使用）。
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    /// 缓冲是否为空。
+    /// 缓冲是否为空（仅测试构建使用）。
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -156,7 +161,8 @@ pub fn error_log_to_json() -> String {
     }
 }
 
-/// 返回全局缓冲最近 N 条记录（按写入顺序）。
+/// 返回全局缓冲最近 N 条记录（按写入顺序；仅测试构建使用）。
+#[cfg(test)]
 pub fn recent_error_log(n: usize) -> Vec<ErrorEntry> {
     match ERROR_LOG.lock() {
         Ok(log) => log.recent(n),

@@ -39,9 +39,9 @@
 //! 4. **收尾**：按 name 去重（后见者胜）、`(not is_dir, name.lower())` 稳定
 //!   排序（目录先行）。
 //!
-//! ⚠️ 任务书与桥 docstring 所记「7 键」为笔误：oracle 最终条目精确为 **6 键**
-//! （`name/path/is_dir/size/modified/suffix`；`_parse_file_block` 内部提取的
-//! `crc` 不进输出条目），以 oracle 源码为准。
+//! 条目契约精确为 **6 键**（`name/path/is_dir/size/modified/suffix`；
+//! `_parse_file_block` 内部提取的 `crc` 不进输出条目），以 oracle 源码
+//! （`py7z_core._parse_list_output`）为准。
 
 use std::collections::{HashMap, HashSet};
 

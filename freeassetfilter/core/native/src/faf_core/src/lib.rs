@@ -115,8 +115,6 @@ pub(crate) fn alloc_json_message(payload: &str) -> *mut c_char {
 }
 
 /// 状态码导出兜底：闭包 panic 时返回 `fallback`（默认 [`STATUS_INTERNAL`]），不逃逸。
-/// 本 todo 仅测试使用；后续业务导出复用。
-#[allow(dead_code)]
 pub(crate) fn catch_to_status<F>(fallback: i32, f: F) -> i32
 where
     F: FnOnce() -> i32,
@@ -152,9 +150,6 @@ where
 ///
 /// 返回的 `&CStr` 借用调用方内存；调用方须保证指针在借用期内有效且
 /// NUL 终止（ctypes 传 `c_char_p` 即满足）。
-///
-/// 本 todo 仅测试使用；后续业务导出复用。
-#[allow(dead_code)]
 pub(crate) unsafe fn guard_c_str<'a>(ptr: *const c_char) -> Result<&'a CStr, i32> {
     if ptr.is_null() {
         return Err(STATUS_INVALID_ARG);
@@ -172,9 +167,6 @@ pub(crate) unsafe fn guard_c_str<'a>(ptr: *const c_char) -> Result<&'a CStr, i32
 /// # Safety
 ///
 /// 调用方须保证 `[ptr, ptr+len)` 可读且在借用期内有效。
-///
-/// 本 todo 仅测试使用；后续业务导出复用。
-#[allow(dead_code)]
 pub(crate) unsafe fn guard_byte_slice<'a>(
     ptr: *const u8,
     len: c_int,

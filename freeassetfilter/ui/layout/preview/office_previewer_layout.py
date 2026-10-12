@@ -54,8 +54,8 @@ class OfficePreviewerLayout(QWidget):
     错误 / 覆盖层视图，PDF 视图懒内嵌 ``PdfPreviewerLayout`` 并由其自带
     顶栏（页码/缩放/最大化/AI/索引）接管顶部。
 
-    宿主以 ``OfficePreviewerLayout(parent)`` 单参数构造（``unified_previewer_layout.py:329``）；
-    ``set_file(file_info: dict)`` 是宿主调用的唯一入口。
+    宿主以 ``OfficePreviewerLayout(parent)`` 单参数构造（``unified_previewer_layout._load_preview``）；
+    ``set_file(file_info: dict | str)`` 是宿主调用的唯一入口。
 
     Signals:
         close_requested: 关闭预览请求信号
@@ -163,12 +163,11 @@ class OfficePreviewerLayout(QWidget):
         """为指定 Office 文件启动后台转换并准备预览视图。
 
         宿主 ``unified_previewer_layout._load_preview`` 对非音频分支以
-        ``set_file(file_path)`` 调用（file_path 为纯路径字符串，
-        ``unified_previewer_layout.py:312/:363``）；本方法对 dict / str
-        双容归一化（镜像 ``components/pdf_previewer.py:412``）：str 形态以
-        路径推导 suffix 转为符合 worker 契约的 dict。其它类型（None）走
-        安全路径：suffix 为空、worker 收空 dict——不给宿主留下再抛异常
-        的机会（宿主仅捕获 RuntimeError/AttributeError/TypeError）。
+        ``set_file(file_path)`` 调用（file_path 为纯路径字符串）；本方法对
+        dict / str 双容归一化：str 形态以路径推导 suffix 转为符合 worker
+        契约的 dict。其它类型（None）走安全路径：suffix 为空、worker 收
+        空 dict——不给宿主留下再抛异常的机会（宿主仅捕获
+        RuntimeError/AttributeError/TypeError）。
 
         同实例重分派（Metis B5）：先取消+等待在途 worker、清空旧视图，再用
         generation counter 守卫本轮的异步结果；上一轮迟到的信号一律丢弃。

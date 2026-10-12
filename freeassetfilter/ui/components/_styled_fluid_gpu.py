@@ -352,9 +352,9 @@ class _FluidGPUShaderWidget(QRhiWidget):
         physical_width = max(1, int(size.width()))
         physical_height = max(1, int(size.height()))
 
-        # 控件每步缩放都会同步触发一次绘制，但颜色缓冲尺寸已按量化步长固定，
-        # 单纯的尺寸变化并不改变画面内容；uniform 未更新时整屏输出与上一帧
-        # 完全一致，直接跳过重绘，避免缩放期间做无谓的全屏计算而拖慢渲染。
+        # 绘制键由（实际像素宽、高、uniform 版本）组成：三者任一变化都必须
+        # 重绘；重复触发（键不变）时整屏输出与上一帧完全一致，直接跳过，
+        # 避免无谓的全屏计算。
         key = (physical_width, physical_height, self._uniform_version)
         if key == self._drawn_key:
             return

@@ -1143,9 +1143,9 @@ class ThumbnailManager:
                         result_path = thumbnail_path
                         self._set_cached_path_exists(thumbnail_path, True)
                     else:
-                        # 批量 FFI 结构体逐项含 status，但为最小侵入不动 generate_jpg_batch
-                        # 公开签名；失败项统一落单发 with_status 通道获取状态，
-                        # 与单张路径共用同一状态源（结构体直读），天然逐项一致。
+                        # 批量通道 generate_jpg_batch 仅返回 bytes、不带逐项状态；
+                        # 失败项统一落单发 with_status 通道获取状态，与单张路径
+                        # 共用同一状态源（结构体直读），天然逐项一致。
                         item_status: int = STATUS_BRIDGE_UNAVAILABLE
                         result_path, item_status = self._create_native_thumbnail_with_status(
                             file_path, thumbnail_path, legacy_thumbnail_path
