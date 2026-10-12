@@ -13,11 +13,20 @@
 - 视觉与交互基于新版 styled 组件体系（tm 主题、StyledScrollBar、自绘 delegate）
 - 空目录 / 加载中 / 未选择状态均有占位提示
 
-后续增强方案（解压、包内预览、加密、排序、搜索等）见
-docs/压缩包预览器功能设计.md。
+已实现增强（review 3.3）：
+- 解压：选中项/全部解压到目标文件夹（-aou 同名自动改名、不覆盖、
+  可取消；完成后汇总成功与失败数）；
+- 加密：列表需要密码时弹输入框（仅内存缓存、按压缩包路径记忆），
+  解压与搜索透传密码；
+- 排序：名称/大小/修改时间/类型，升/降序（目录优先固定）；
+- 搜索：按关键词在整个压缩包内递归查找（结果显示完整相对路径，
+  双击目录可直接跳转）。
+
+明确不计划：应用内「包内文件预览」（双击文件保持无动作）。
 """
 
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -31,12 +40,16 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from components.styled_button import StyledButton
-from components.styled_dialog import ask_custom_dialog
+from components.styled_context_menu import StyledContextMenu
+from components.styled_dialog import ask_custom_dialog, create_input_dialog
 from components.styled_lineedit import StyledLineEdit
 from PySide6.QtCore import (
     QAbstractListModel,
+    QEvent,
+    QEventLoop,
     QModelIndex,
     QObject,
+    QPoint,
     QRectF,
     QRunnable,
     QSize,
@@ -59,7 +72,9 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListView,
+    QProgressDialog,
     QPushButton,
     QStackedLayout,
     QStyle,
@@ -98,6 +113,11 @@ _PLACEHOLDER_NO_ARCHIVE: str = "选择压缩包文件开始预览"
 _PLACEHOLDER_LOADING: str = "正在读取压缩包内容…"
 _PLACEHOLDER_ROOT_EMPTY: str = "压缩包内无内容或无法读取"
 _PLACEHOLDER_DIR_EMPTY: str = "此目录为空"
+_PLACEHOLDER_PASSWORD_REQUIRED: str = "需要密码才能浏览此压缩包"
+_PLACEHOLDER_SEARCH_EMPTY: str = "未找到匹配的文件"
+
+#: 搜索输入防抖时长（毫秒）
+_SEARCH_DEBOUNCE_MS: int = 250
 
 _WARNING_TEXT: str = "无法解析部分文件名：已自动尝试常用编码仍失败，部分名称可能不完整"
 _WARNING_MARKER: str = "\ufffd"  # Unicode 替换符（解码失败标记）
@@ -114,13 +134,13 @@ def _show_custom_dialog(
     buttons: list,
     variants: Optional[list] = None,
     dialog_type: str = "default",
-) -> None:
-    """同步提示弹窗（委托公共同步助手 ``styled_dialog.ask_custom_dialog``）。
+) -> int:
+    """同步提示/确认弹窗（委托 ``styled_dialog.ask_custom_dialog``）。
 
-    压缩包预览器内的提示只关心展示，不关心返回值；统一不显示右上角
-    关闭按钮。
+    Returns:
+        int: 被点击按钮的索引（0-based）；关闭路径兜底返回 0。
     """
-    ask_custom_dialog(
+    return ask_custom_dialog(
         title=title,
         message=message,
         buttons=list(buttons),
@@ -128,6 +148,43 @@ def _show_custom_dialog(
         dialog_type=dialog_type,
         show_close=False,
     )
+
+
+def _ask_password(title: str, message: str) -> Optional[str]:
+    """密码输入对话框（StyledDialog 输入框 + 密码回显）。
+
+    Args:
+        title: 对话框标题。
+        message: 说明文字。
+
+    Returns:
+        Optional[str]: 用户输入的密码；取消/空输入返回 ``None``。
+    """
+    dialog = create_input_dialog(
+        title=title,
+        message=message,
+        placeholder="输入密码…",
+        cancel_text="取消",
+        confirm_text="确定",
+        show_close=False,
+    )
+    field = getattr(dialog, "_input_field", None)
+    if field is not None:
+        field.setEchoMode(QLineEdit.Password)
+        field.setFocus()
+    result: dict = {"value": None}
+    loop = QEventLoop()
+
+    def _on_finished(idx: int) -> None:
+        if idx == 1 and field is not None:
+            result["value"] = field.text()
+        loop.quit()
+
+    dialog.finished.connect(_on_finished)
+    dialog.destroyed.connect(loop.quit)
+    loop.exec()
+    value = result["value"]
+    return value if value else None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -144,9 +201,27 @@ class _ArchiveListModel(QAbstractListModel):
     KindRole = Qt.ItemDataRole.UserRole + 1
     EntryRole = Qt.ItemDataRole.UserRole + 2
 
+    #: 排序键与展示名（目录优先固定，仅对两组内部排序）
+    SORT_KEYS: tuple = (("name", "名称"), ("size", "大小"),
+                        ("modified", "修改时间"), ("type", "类型"))
+
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._rows: list[dict] = []
+        self._entries: list[dict] = []
+        self._has_warning: bool = False
+        self._sort_key: str = "name"
+        self._sort_desc: bool = False
+
+    @property
+    def sort_key(self) -> str:
+        """当前排序键。"""
+        return self._sort_key
+
+    @property
+    def sort_desc(self) -> bool:
+        """是否降序。"""
+        return self._sort_desc
 
     # ── Qt 模型接口 ────────────────────────────────────────────────────
 
@@ -161,7 +236,8 @@ class _ArchiveListModel(QAbstractListModel):
             if row["kind"] == "warning":
                 return _WARNING_TEXT
             entry = row.get("entry") or {}
-            return entry.get("name", "")
+            # 搜索结果带 display（完整相对路径），目录视图回退为文件名
+            return entry.get("display") or entry.get("name", "")
         if role == self.KindRole:
             return row["kind"]
         if role == self.EntryRole:
@@ -183,17 +259,58 @@ class _ArchiveListModel(QAbstractListModel):
         Args:
             entries: py7z list_archive 返回的条目 dict 列表。
         """
-        has_encoding_error = any(
-            _contains_replacement(entry.get("name") or "") for entry in entries
+        self._entries = [
+            dict(entry) for entry in entries if entry.get("name")
+        ]
+        self._has_warning = any(
+            _contains_replacement(entry.get("name") or "")
+            for entry in self._entries
         )
+        self._rebuild_rows()
+
+    def set_sort(self, key: str, desc: bool) -> None:
+        """更新排序键/方向并重建行（目录优先固定，不触发重扫）。
+
+        Args:
+            key: 排序键（name/size/modified/type）；非法值回退 name。
+            desc: True 降序。
+        """
+        key = key if key in {k for k, _ in self.SORT_KEYS} else "name"
+        desc = bool(desc)
+        if (key, desc) == (self._sort_key, self._sort_desc):
+            return
+        self._sort_key = key
+        self._sort_desc = desc
+        self._rebuild_rows()
+
+    def _entry_sort_value(self, entry: dict) -> Any:
+        """按当前排序键取条目排序值（同键类型一致）。"""
+        if self._sort_key == "size":
+            try:
+                return int(entry.get("size", 0) or 0)
+            except (TypeError, ValueError):
+                return 0
+        if self._sort_key == "modified":
+            return str(entry.get("modified", "") or "")
+        if self._sort_key == "type":
+            return str(entry.get("suffix", "") or "").lower()
+        return str(entry.get("name", "") or "").lower()
+
+    def _sorted_entries(self) -> list:
+        """按当前排序返回条目（目录组恒在前，两组内部各自排序）。"""
+        dirs = [e for e in self._entries if e.get("is_dir")]
+        files = [e for e in self._entries if not e.get("is_dir")]
+        dirs.sort(key=self._entry_sort_value, reverse=self._sort_desc)
+        files.sort(key=self._entry_sort_value, reverse=self._sort_desc)
+        return dirs + files
+
+    def _rebuild_rows(self) -> None:
+        """按当前排序重建行（含可选警示行）。"""
         self.beginResetModel()
         rows: list[dict] = []
-        if has_encoding_error:
+        if self._has_warning:
             rows.append({"kind": "warning", "entry": None})
-        for entry in entries:
-            name = entry.get("name", "")
-            if not name:
-                continue
+        for entry in self._sorted_entries():
             kind = "dir" if entry.get("is_dir") else "file"
             rows.append({"kind": kind, "entry": entry})
         self._rows = rows
@@ -201,6 +318,8 @@ class _ArchiveListModel(QAbstractListModel):
 
     def clear(self) -> None:
         """清空模型。"""
+        self._entries = []
+        self._has_warning = False
         if not self._rows:
             return
         self.beginResetModel()
@@ -381,10 +500,12 @@ class _ArchiveListView(QListView):
 
     back_requested = Signal()  # 请求返回上一级（鼠标侧键）
     dir_activated = Signal(str)  # 请求进入指定子目录（名称）
+    dir_entry_activated = Signal(dict)  # 请求进入搜索结果中的目录（完整条目）
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self.setSelectionMode(QAbstractItemView.SingleSelection)
+        # 多选：支持 Ctrl/Shift 选中多个条目（解压选中项用）
+        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.setVerticalScrollBar(StyledScrollBar(orientation=Qt.Vertical))
@@ -413,21 +534,41 @@ class _ArchiveListView(QListView):
             self.clearSelection()
             self.setCurrentIndex(QModelIndex())
 
+    def _handle_mouse_press_select(self, pos: Any) -> None:
+        """按下点选：空白处/警示行取消选中（测试与内部共用入口）。"""
+        index = self.indexAt(pos)
+        if not index.isValid() or self._index_kind(index) == "warning":
+            self.clearSelection()
+            self.setCurrentIndex(QModelIndex())
+
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        """鼠标按下：侧键返回 / 空白取消选中。"""
+        """鼠标按下：侧键返回 / 空白或警示行取消选中 / 其余走 Qt 多选语义。"""
         if event.button() == Qt.XButton1:
             self.back_requested.emit()
             event.accept()
             return
-        self._handle_mouse_press_select(event.position().toPoint())
+        if event.button() == Qt.LeftButton:
+            index = self.indexAt(event.position().toPoint())
+            if not index.isValid() or self._index_kind(index) == "warning":
+                self._handle_mouse_press_select(event.position().toPoint())
+                event.accept()
+                return
         super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        """仅响应左键双击：目录进入 / 文件无动作。"""
+        """仅响应左键双击：目录进入 / 文件无动作。
+
+        搜索结果的目录条目带 ``display``（完整相对路径），经
+        ``dir_entry_activated`` 交由宿主按路径跳转。
+        """
         if event.button() == Qt.LeftButton:
             index = self.indexAt(event.position().toPoint())
             if index.isValid() and self._index_kind(index) == "dir":
                 entry = self._index_entry(index) or {}
+                if entry.get("display"):
+                    self.dir_entry_activated.emit(entry)
+                    event.accept()
+                    return
                 name = entry.get("name", "")
                 if name:
                     self.dir_activated.emit(name)
@@ -443,16 +584,15 @@ class _ArchiveListView(QListView):
 class _ArchiveListSignals(QObject):
     """压缩包列表读取完成信号中转（主线程持有 relay，跨线程队列投递）。"""
 
-    list_finished = Signal(int, list)  # (token, entries)
+    list_finished = Signal(int, list, str, str)  # (token, entries, status, message)
     list_failed = Signal(int, str)  # (token, error_message)
 
 
 class _ArchiveListWorker(QRunnable):
     """后台读取压缩包目录列表的池任务（每次导航新建，令牌守卫防覆盖）。
 
-    ``run()`` 在 ``QThreadPool.globalInstance()`` 的池线程中执行；
-    ``list_finished`` / ``list_failed`` 信号挂在 ``_ArchiveListSignals``
-    中转对象上（以属性方式透出），调用方连接签名与旧 QThread 版一致。
+    ``list_finished`` 携带 py7z 状态（ok/password_required/password_invalid/
+    error），加密流程据此弹密码框；异常经 ``list_failed`` 上报。
     """
 
     def __init__(
@@ -460,6 +600,7 @@ class _ArchiveListWorker(QRunnable):
         archive_path: str,
         current_path: str,
         token: int,
+        password: Optional[str] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         # parent 参数仅为兼容旧构造签名保留；QRunnable 非 QObject，不参与父子。
@@ -468,11 +609,12 @@ class _ArchiveListWorker(QRunnable):
         self._archive_path = archive_path
         self._current_path = current_path
         self._token = token
+        self._password = password
         self._signals = _ArchiveListSignals()
 
     @property
     def list_finished(self):
-        """目录列表读取完成信号 ``(token, entries)``（经中转对象）。"""
+        """列表读取完成信号 ``(token, entries, status, message)``（经中转对象）。"""
         return self._signals.list_finished
 
     @property
@@ -487,14 +629,132 @@ class _ArchiveListWorker(QRunnable):
     def run(self) -> None:
         try:
             core = get_7z_core()
-            entries = core.list_archive(
+            entries, status, message = core.list_archive_with_status(
                 self._archive_path,
                 current_path=self._current_path,
+                password=self._password,
             )
-            self._signals.list_finished.emit(self._token, list(entries or []))
+            self._signals.list_finished.emit(
+                self._token, list(entries or []), status, message
+            )
         except Exception as exc:  # noqa: BLE001
             error(f"压缩包列表读取失败: {exc}")
             self._signals.list_failed.emit(self._token, str(exc))
+
+
+class _ArchiveSearchSignals(QObject):
+    """压缩包全包搜索完成信号中转。"""
+
+    search_finished = Signal(int, str, list)  # (token, keyword, entries)
+    search_failed = Signal(int, str)  # (token, error_message)
+
+
+class _ArchiveSearchWorker(QRunnable):
+    """后台全包搜索任务（递归过滤完整相对路径，令牌守卫防覆盖）。"""
+
+    def __init__(
+        self,
+        archive_path: str,
+        keyword: str,
+        token: int,
+        password: Optional[str] = None,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._archive_path = archive_path
+        self._keyword = keyword
+        self._token = token
+        self._password = password
+        self._signals = _ArchiveSearchSignals()
+
+    @property
+    def search_finished(self):
+        """搜索完成信号 ``(token, keyword, entries)``。"""
+        return self._signals.search_finished
+
+    @property
+    def search_failed(self):
+        """搜索失败信号 ``(token, error_message)``。"""
+        return self._signals.search_failed
+
+    def start(self) -> None:
+        """投递到全局线程池执行。"""
+        QThreadPool.globalInstance().start(self)
+
+    def run(self) -> None:
+        try:
+            core = get_7z_core()
+            entries = core.search_archive(
+                self._archive_path,
+                self._keyword,
+                password=self._password,
+            )
+            self._signals.search_finished.emit(
+                self._token, self._keyword, list(entries or [])
+            )
+        except Exception as exc:  # noqa: BLE001
+            error(f"压缩包搜索失败: {exc}")
+            self._signals.search_failed.emit(self._token, str(exc))
+
+
+class _ArchiveExtractSignals(QObject):
+    """压缩包解压完成信号中转。"""
+
+    extract_finished = Signal(dict)  # result dict
+
+
+class _ArchiveExtractWorker(QRunnable):
+    """后台解压任务（协作式取消：cancel_event 置位后 kill 7z 进程）。"""
+
+    def __init__(
+        self,
+        archive_path: str,
+        output_dir: str,
+        entries: Optional[list],
+        password: Optional[str],
+        cancel_event: threading.Event,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._archive_path = archive_path
+        self._output_dir = output_dir
+        self._entries = list(entries) if entries else None
+        self._password = password
+        self._cancel_event = cancel_event
+        self._signals = _ArchiveExtractSignals()
+
+    @property
+    def extract_finished(self):
+        """解压完成信号 ``(result_dict)``。"""
+        return self._signals.extract_finished
+
+    def start(self) -> None:
+        """投递到全局线程池执行。"""
+        QThreadPool.globalInstance().start(self)
+
+    def run(self) -> None:
+        try:
+            core = get_7z_core()
+            result = core.extract_archive(
+                self._archive_path,
+                self._output_dir,
+                entries=self._entries,
+                password=self._password,
+                should_stop=self._cancel_event.is_set,
+            )
+            result["output_dir"] = self._output_dir
+            self._signals.extract_finished.emit(result)
+        except Exception as exc:  # noqa: BLE001
+            error(f"解压失败: {exc}")
+            self._signals.extract_finished.emit({
+                "success": 0,
+                "failed": 1,
+                "errors": [str(exc)],
+                "cancelled": False,
+                "output_dir": self._output_dir,
+            })
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -537,6 +797,18 @@ class ArchivePreviewerLayout(QWidget):
         self._token: int = 0
         self._loading: bool = False
         self._load_worker: Optional[_ArchiveListWorker] = None
+        # 加密：按压缩包路径仅内存缓存密码（set_file 换包/cleanup 清空）
+        self._passwords: dict = {}
+        # 搜索：模式开关、关键词、目录列表缓存（退出搜索时无重扫恢复）
+        self._search_mode: bool = False
+        self._search_keyword: str = ""
+        self._search_token: int = 0
+        self._search_worker: Optional[_ArchiveSearchWorker] = None
+        self._dir_entries_cache: list = []
+        # 解压：在途 worker 与取消事件
+        self._extract_worker: Optional[_ArchiveExtractWorker] = None
+        self._extract_cancel_event: Optional[threading.Event] = None
+        self._extract_progress: Optional[QProgressDialog] = None
 
         self._icon_manager = FileIconManager()
 
@@ -576,6 +848,45 @@ class ArchivePreviewerLayout(QWidget):
         self._path_edit.setToolTip("当前浏览路径")
         top_layout.addWidget(self._path_edit, stretch=1)
 
+        # 搜索输入（默认隐藏；搜索按钮把路径框位置切换为搜索框）
+        self._search_edit = StyledLineEdit(size="sm")
+        self._search_edit.setPlaceholderText("搜索压缩包内文件…")
+        self._search_edit.setToolTip("按文件名搜索（整个压缩包）")
+        self._search_edit.installEventFilter(self)
+        self._search_edit.textChanged.connect(self._on_search_text_changed)
+        self._search_edit.hide()
+        top_layout.addWidget(self._search_edit, stretch=1)
+
+        # 搜索防抖定时器：输入静止后才发起全包搜索
+        self._search_debounce = QTimer(self)
+        self._search_debounce.setSingleShot(True)
+        self._search_debounce.setInterval(_SEARCH_DEBOUNCE_MS)
+        self._search_debounce.timeout.connect(self._flush_search)
+
+        # 搜索切换按钮
+        search_icon = str(icons_dir() / "search.svg")
+        self._search_btn = StyledButton(
+            "", variant="ghost", size="sm", icon=search_icon
+        )
+        self._search_btn.setFixedSize(32, 32)
+        self._search_btn.setToolTip("搜索压缩包内文件")
+        self._search_btn.clicked.connect(self._toggle_search)
+        top_layout.addWidget(self._search_btn)
+
+        # 排序按钮（弹出排序菜单）
+        self._sort_btn = StyledButton("排序", variant="ghost", size="sm")
+        self._sort_btn.setFixedHeight(30)
+        self._sort_btn.setToolTip("排序方式")
+        self._sort_btn.clicked.connect(self._on_sort_clicked)
+        top_layout.addWidget(self._sort_btn)
+
+        # 解压按钮（有选中项→选中；无→全部）
+        self._extract_btn = StyledButton("解压", variant="secondary", size="sm")
+        self._extract_btn.setFixedHeight(30)
+        self._extract_btn.setToolTip("解压选中项或全部文件")
+        self._extract_btn.clicked.connect(self._on_extract_clicked)
+        top_layout.addWidget(self._extract_btn)
+
         # standalone 模式：右侧提供"打开压缩包"入口
         if self._standalone:
             self._open_btn = StyledButton("打开压缩包…", variant="secondary", size="sm")
@@ -600,6 +911,7 @@ class ArchivePreviewerLayout(QWidget):
         )
         self._view.back_requested.connect(self.go_to_parent)
         self._view.dir_activated.connect(self._enter_dir)
+        self._view.dir_entry_activated.connect(self._enter_search_dir)
         self._view.activated.connect(self._on_view_activated)
         self._content_stack.addWidget(self._view)
 
@@ -657,6 +969,10 @@ class ArchivePreviewerLayout(QWidget):
                 dialog_type="danger",
             )
             return
+        if file_path != self._archive_path:
+            # 换包：清空密码缓存与搜索态（同一预览器会被宿主复用）
+            self._passwords.clear()
+            self._reset_search_ui()
         self._archive_path = file_path
         self._refresh()
 
@@ -669,8 +985,18 @@ class ArchivePreviewerLayout(QWidget):
         self._token += 1
         self._loading = False
         self._load_worker = None
+        # 在途解压：请求取消（结果槽自行兜底，不再弹进度框）
+        if self._extract_cancel_event is not None:
+            self._extract_cancel_event.set()
+        self._extract_cancel_event = None
         self._archive_path = ""
         self._current_path = ""
+        self._passwords.clear()
+        self._search_debounce.stop()
+        self._search_token += 1
+        self._search_worker = None
+        self._reset_search_ui()
+        self._dir_entries_cache = []
         self._model.clear()
         self._view.scrollToTop()
         self._path_edit.setText(_PLACEHOLDER_NO_ARCHIVE)
@@ -741,7 +1067,12 @@ class ArchivePreviewerLayout(QWidget):
         token = self._token
         self._show_overlay(_PLACEHOLDER_LOADING)
 
-        worker = _ArchiveListWorker(self._archive_path, self._current_path, token)
+        worker = _ArchiveListWorker(
+            self._archive_path,
+            self._current_path,
+            token,
+            password=self._passwords.get(self._archive_path),
+        )
         self._load_worker = worker
         worker.list_finished.connect(self._on_list_finished)
         worker.list_failed.connect(self._on_list_failed)
@@ -761,22 +1092,38 @@ class ArchivePreviewerLayout(QWidget):
         self._back_btn.setEnabled(bool(self._current_path))
 
     def _on_view_activated(self, index: QModelIndex) -> None:
-        """视图激活（键盘 Enter / 鼠标）：目录进入。"""
+        """视图激活（键盘 Enter / 鼠标）：目录进入（搜索结果按完整路径）。"""
         if self._loading or not index.isValid():
             return
         if index.data(_ArchiveListModel.KindRole) != "dir":
             return
         entry = index.data(_ArchiveListModel.EntryRole) or {}
+        if entry.get("display"):
+            self._enter_search_dir(entry)
+            return
         name = entry.get("name", "")
         if name and "/" not in name:
             self._enter_dir(name)
 
-    def _on_list_finished(self, token: int, entries: list) -> None:
-        """工作线程读取完成（令牌守卫防过期结果覆盖）。"""
+    def _on_list_finished(
+        self, token: int, entries: list, status: str, message: str
+    ) -> None:
+        """工作线程读取完成（令牌守卫防过期结果覆盖）。
+
+        加密压缩包（password_required / password_invalid）转入密码流程，
+        不显示通用错误框。
+        """
         if token != self._token or not self._archive_path:
             return
         self._loading = False
         self._load_worker = None
+        if status in ("password_required", "password_invalid"):
+            self._handle_password_status(status)
+            return
+        if status != "ok":
+            self._on_list_failed(token, message or "无法读取压缩包内容")
+            return
+        self._dir_entries_cache = list(entries)
         self._model.set_entries(entries)
         self._view.scrollToTop()
         self._view.clearSelection()
@@ -788,6 +1135,29 @@ class ArchivePreviewerLayout(QWidget):
                 self._show_overlay(_PLACEHOLDER_DIR_EMPTY)
             else:
                 self._show_overlay(_PLACEHOLDER_ROOT_EMPTY)
+        self._update_path_edit()
+
+    def _handle_password_status(self, status: str) -> None:
+        """加密压缩包：提示输入密码并重试；取消则显示需要密码占位。
+
+        Args:
+            status: ``"password_required"`` 或 ``"password_invalid"``。
+        """
+        archive_name = Path(self._archive_path).name
+        if status == "password_invalid":
+            self._passwords.pop(self._archive_path, None)
+            title = "密码错误"
+            prompt = f"「{archive_name}」密码错误，请重新输入。"
+        else:
+            title = "需要密码"
+            prompt = f"「{archive_name}」已加密，请输入打开密码。"
+        password = _ask_password(title, prompt)
+        if password:
+            self._passwords[self._archive_path] = password
+            self._refresh()
+            return
+        self._model.clear()
+        self._show_overlay(_PLACEHOLDER_PASSWORD_REQUIRED)
         self._update_path_edit()
 
     def _on_list_failed(self, token: int, message: str) -> None:
@@ -813,7 +1183,10 @@ class ArchivePreviewerLayout(QWidget):
     # ── 导航 ─────────────────────────────────────────────────────────────────
 
     def go_to_parent(self) -> None:
-        """返回上一级目录（无上级或加载中为空操作）。"""
+        """返回上一级目录（搜索结果态下先退出搜索；无上级或加载中为空操作）。"""
+        if self._search_mode:
+            self._exit_search_mode()
+            return
         if self._loading or not self._current_path:
             return
         if "/" in self._current_path:
@@ -843,6 +1216,274 @@ class ArchivePreviewerLayout(QWidget):
             if entry.get("name") == name:
                 return True
         return False
+
+    # ── 搜索 ────────────────────────────────────────────────────────────────
+
+    def eventFilter(self, obj: Any, event: Any) -> bool:  # noqa: N802
+        """搜索框 Esc：退出搜索并恢复目录视图。"""
+        if obj is self._search_edit and event.type() == QEvent.KeyPress:
+            if event.key() == Qt.Key_Escape:
+                self._exit_search_mode()
+                return True
+        return super().eventFilter(obj, event)
+
+    def _toggle_search(self) -> None:
+        """搜索按钮：在路径框与搜索框之间切换。"""
+        if self._search_edit.isVisible():
+            self._exit_search_mode()
+            return
+        self._path_edit.hide()
+        self._search_edit.clear()
+        self._search_edit.show()
+        self._search_edit.setFocus()
+
+    def _on_search_text_changed(self, text: str) -> None:
+        """搜索输入变化：防抖后发起全包搜索。"""
+        self._search_debounce.start()
+
+    def _flush_search(self) -> None:
+        """防抖到期：空关键词恢复目录视图，否则后台搜索。"""
+        if not self._archive_path:
+            return
+        keyword = self._search_edit.text().strip()
+        if not keyword:
+            self._exit_search_mode()
+            return
+        self._search_token += 1
+        token = self._search_token
+        self._search_worker = _ArchiveSearchWorker(
+            self._archive_path,
+            keyword,
+            token,
+            password=self._passwords.get(self._archive_path),
+        )
+        self._search_worker.search_finished.connect(self._on_search_finished)
+        self._search_worker.search_failed.connect(self._on_search_failed)
+        self._show_overlay(_PLACEHOLDER_LOADING)
+        self._search_worker.start()
+
+    def _on_search_finished(self, token: int, keyword: str, entries: list) -> None:
+        """搜索完成：平铺显示结果（令牌守卫防过期覆盖）。"""
+        if token != self._search_token or not self._archive_path:
+            return
+        self._search_worker = None
+        if self._search_edit.text().strip() != keyword:
+            return
+        self._search_mode = True
+        self._search_keyword = keyword
+        self._model.set_entries(entries)
+        self._view.scrollToTop()
+        self._view.clearSelection()
+        if self._model.has_entries():
+            self._show_list()
+        else:
+            self._show_overlay(_PLACEHOLDER_SEARCH_EMPTY)
+
+    def _on_search_failed(self, token: int, message: str) -> None:
+        """搜索失败：恢复目录视图并提示。"""
+        if token != self._search_token or not self._archive_path:
+            return
+        self._search_worker = None
+        self._exit_search_mode()
+        error(f"搜索压缩包失败: {message}")
+
+    def _exit_search_mode(self) -> None:
+        """退出搜索：恢复路径框与目录列表（用缓存，不重扫）。"""
+        self._search_debounce.stop()
+        self._search_token += 1
+        self._search_mode = False
+        self._search_keyword = ""
+        self._search_edit.blockSignals(True)
+        self._search_edit.clear()
+        self._search_edit.blockSignals(False)
+        self._search_edit.hide()
+        self._path_edit.show()
+        if not self._archive_path:
+            return
+        self._model.set_entries(self._dir_entries_cache)
+        self._view.scrollToTop()
+        self._view.clearSelection()
+        if self._model.has_entries():
+            self._show_list()
+        else:
+            if self._current_path:
+                self._show_overlay(_PLACEHOLDER_DIR_EMPTY)
+            else:
+                self._show_overlay(_PLACEHOLDER_ROOT_EMPTY)
+
+    def _reset_search_ui(self) -> None:
+        """把搜索 UI 恢复到初始（隐藏搜索框、显示路径框）。"""
+        self._search_debounce.stop()
+        self._search_mode = False
+        self._search_keyword = ""
+        if hasattr(self, "_search_edit"):
+            self._search_edit.blockSignals(True)
+            self._search_edit.clear()
+            self._search_edit.blockSignals(False)
+            self._search_edit.hide()
+        if hasattr(self, "_path_edit"):
+            self._path_edit.show()
+
+    def _enter_search_dir(self, entry: dict) -> None:
+        """从搜索结果进入某个目录（完整相对路径），并退出搜索态。"""
+        path = str(entry.get("path", "") or "")
+        if not path:
+            return
+        self._current_path = path
+        self._exit_search_mode()
+        self._refresh()
+
+    # ── 排序 ────────────────────────────────────────────────────────────────
+
+    def _on_sort_clicked(self) -> None:
+        """排序按钮：弹出排序菜单（键 + 升降序，当前项打勾）。"""
+        menu = StyledContextMenu(parent=self)
+        for key, label in _ArchiveListModel.SORT_KEYS:
+            menu.add_item(
+                label,
+                checkable=True,
+                checked=(self._model.sort_key == key),
+                callback=lambda k=key: self._model.set_sort(
+                    k, self._model.sort_desc
+                ),
+            )
+        menu.add_separator()
+        menu.add_item(
+            "升序",
+            checkable=True,
+            checked=not self._model.sort_desc,
+            callback=lambda: self._model.set_sort(self._model.sort_key, False),
+        )
+        menu.add_item(
+            "降序",
+            checkable=True,
+            checked=self._model.sort_desc,
+            callback=lambda: self._model.set_sort(self._model.sort_key, True),
+        )
+        menu.exec(
+            self._sort_btn.mapToGlobal(QPoint(0, self._sort_btn.height()))
+        )
+
+    # ── 解压 ────────────────────────────────────────────────────────────────
+
+    def _selected_entries(self) -> list:
+        """当前选中条目的包内路径列表（无选中返回空列表）。"""
+        model = self._view.selectionModel()
+        if model is None:
+            return []
+        entries: list = []
+        for index in model.selectedIndexes():
+            entry = index.data(_ArchiveListModel.EntryRole)
+            if isinstance(entry, dict) and entry.get("path"):
+                entries.append(str(entry["path"]))
+        return entries
+
+    def _on_extract_clicked(self) -> None:
+        """解压按钮：确认范围 → 选目标目录 → 后台解压（可取消）。"""
+        if not self._archive_path or self._loading:
+            return
+        if not self._model.has_entries():
+            _show_custom_dialog(
+                "无可解压内容", "当前没有可解压的条目。",
+                ["知道了"], ["primary"], dialog_type="info",
+            )
+            return
+        selected = self._selected_entries()
+        scope = f"选中的 {len(selected)} 项" if selected else "全部文件"
+
+        password = self._passwords.get(self._archive_path)
+        if password is None:
+            # 头加密的包此时已被密码流程拦截；这里兜底 zip 类条目级加密
+            try:
+                if get_7z_core().is_encrypted(self._archive_path):
+                    password = _ask_password(
+                        "需要密码",
+                        f"「{Path(self._archive_path).name}」已加密，"
+                        "解压需要密码。",
+                    )
+                    if password is None:
+                        return
+                    self._passwords[self._archive_path] = password
+            except Exception:  # noqa: BLE001 - 加密探测失败不阻塞解压尝试
+                password = None
+
+        choice = _show_custom_dialog(
+            "解压",
+            f"将{scope}解压到所选文件夹。\n\n"
+            "同名文件会自动改名，不会覆盖已有文件。",
+            ["选择目标文件夹…", "取消"],
+            ["primary", "normal"],
+        )
+        if choice != 0:
+            return
+        target_dir = QFileDialog.getExistingDirectory(self, "选择解压目标文件夹")
+        if not target_dir:
+            return
+
+        self._extract_cancel_event = threading.Event()
+        self._extract_progress = QProgressDialog(
+            "正在解压…", "取消", 0, 0, self
+        )
+        self._extract_progress.setWindowTitle("解压进度")
+        self._extract_progress.setMinimumDuration(0)
+        self._extract_progress.canceled.connect(self._on_extract_cancel)
+
+        worker = _ArchiveExtractWorker(
+            self._archive_path,
+            target_dir,
+            selected or None,
+            password,
+            self._extract_cancel_event,
+        )
+        self._extract_worker = worker
+        worker.extract_finished.connect(self._on_extract_finished)
+        worker.start()
+        self._extract_progress.exec()
+
+    def _on_extract_cancel(self) -> None:
+        """进度框取消：置位取消事件（worker 轮询后 kill 7z）。"""
+        if self._extract_cancel_event is not None:
+            self._extract_cancel_event.set()
+
+    def _on_extract_finished(self, result: dict) -> None:
+        """解压完成：关闭进度框并汇总结果（成功/失败/取消）。"""
+        self._extract_worker = None
+        self._extract_cancel_event = None
+        progress = self._extract_progress
+        self._extract_progress = None
+        if progress is not None:
+            try:
+                progress.close()
+            except RuntimeError:
+                pass
+        if not self._archive_path:
+            return
+        if result.get("cancelled"):
+            _show_custom_dialog(
+                "解压已取消",
+                "已取消解压。目标文件夹中可能残留部分已解压文件。",
+                ["知道了"], ["primary"],
+            )
+            return
+        success = int(result.get("success", 0) or 0)
+        failed = int(result.get("failed", 0) or 0)
+        errors = result.get("errors") or []
+        output_dir = str(result.get("output_dir", "") or "")
+        if failed or errors:
+            detail = "\n".join(str(e) for e in errors)[:1500]
+            message = f"成功 {success} 项，失败 {failed} 项。"
+            if detail:
+                message += f"\n\n{detail}"
+            _show_custom_dialog(
+                "解压完成（有错误）", message, ["知道了"], ["primary"],
+                dialog_type="danger",
+            )
+            return
+        _show_custom_dialog(
+            "解压完成",
+            f"成功解压 {success} 项到：\n{output_dir}",
+            ["知道了"], ["primary"], dialog_type="success",
+        )
 
     # ── standalone 辅助 ──────────────────────────────────────────────────────
 
