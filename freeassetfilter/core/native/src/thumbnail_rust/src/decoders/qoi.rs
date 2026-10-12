@@ -6,12 +6,9 @@
 //! image crate 内建 qoi feature（image 0.25.10 → qoi 0.4.1，纯 Rust，静态合并
 //! 进 `thumbnail_generator.dll`，MIT/MIT 许可与 AGPL-3.0 兼容）。
 
-/// 解码失败（截断/坏魔数/坏通道序/损坏数据）——与 lib.rs `STATUS_DECODE_FAILED` 同值。
-const STATUS_DECODE_FAILED: i32 = -2;
-/// 解码尺寸超限——与 lib.rs `STATUS_TOO_LARGE`（-7）同值，todo 27 路由区分依据。
-const STATUS_TOO_LARGE: i32 = -7;
-/// 解码尺寸上限，与 `thumbnail_manager.py` MAX_IMAGE_DIMENSION=8192 对齐。
-const MAX_DIMENSION: u32 = 8192;
+use crate::infra::limits::check_dimensions;
+use crate::STATUS_DECODE_FAILED;
+
 /// QOI 文件头长度：`qoif`(4) + w(4) + h(4) + channels(1) + colorspace(1)。
 const HEADER_LEN: usize = 14;
 /// QOI 魔数。
@@ -19,32 +16,26 @@ const QOI_MAGIC: &[u8; 4] = b"qoif";
 
 /// QOI 解码统一入口：image crate 内建解码 → RGBA8 输出。
 ///
-/// 流程：解析 14 字节头（只读尺寸字面量，非操作码解析）→ `w*h > 8192²` 直接
-/// 返回 `STATUS_TOO_LARGE`（**解码前拦截**解压炸弹）→ `image::load_from_memory`
+/// 流程：解析 14 字节头（只读尺寸字面量，非操作码解析）→ 头尺寸统一经
+/// `infra/limits::check_dimensions` 判定，`w*h > 8192²` 直接返回
+/// `STATUS_TOO_LARGE`（**解码前拦截**解压炸弹）→ `image::load_from_memory`
 /// 解码 → `to_rgba8()` → `into_raw()` → 对实际输出尺寸**解码后再校验**一次兜底。
-///
-/// 待 registry/decoders 分发接线（各格式 Native 切换）消费，故标 `allow(dead_code)`。
 ///
 /// # 错误
 /// - 输入 < 14 字节 / 魔数非 `qoif` / 通道数非 3、4 / w 或 h 为 0 → `STATUS_DECODE_FAILED`
 /// - `w*h > 8192²` → `STATUS_TOO_LARGE`
 /// - image crate 解码失败（截断/损坏数据）→ `STATUS_DECODE_FAILED`
-#[allow(dead_code)]
 pub fn decode_qoi(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
     let (w, h) = parse_dimensions(bytes)?;
     // **解码前拦截**：头尺寸超限直接返回，避免给 image crate 喂解压炸弹
     // （10000×10000 头会让 qoi 解码器先分配 ~400MB 再失败）。
-    if too_large(w, h) {
-        return Err(STATUS_TOO_LARGE);
-    }
+    check_dimensions(w, h)?;
     // 委托 image crate 内建 qoi 解码（Design Revision 5：不自研操作码解析）。
     let img = image::load_from_memory(bytes).map_err(|_| STATUS_DECODE_FAILED)?;
     let rgba = img.to_rgba8();
     let (rw, rh) = (rgba.width(), rgba.height());
     // **解码后再校验**兜底：防御 image crate 返回的输出尺寸与头声明不一致。
-    if too_large(rw, rh) {
-        return Err(STATUS_TOO_LARGE);
-    }
+    check_dimensions(rw, rh)?;
     Ok((rgba.into_raw(), rw, rh))
 }
 
@@ -60,11 +51,6 @@ fn parse_dimensions(bytes: &[u8]) -> Result<(u32, u32), i32> {
         return Err(STATUS_DECODE_FAILED);
     }
     Ok((w, h))
-}
-
-/// `w*h > 8192²` 判定（u64 乘法防 u32 溢出）。
-fn too_large(w: u32, h: u32) -> bool {
-    (w as u64) * (h as u64) > (MAX_DIMENSION as u64) * (MAX_DIMENSION as u64)
 }
 
 #[cfg(test)]

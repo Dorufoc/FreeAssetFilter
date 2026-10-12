@@ -1,15 +1,14 @@
-//! 防御性上限检查（todo 34 实现）。
+//! 防御性上限检查（todo 34 实现，review 3.3 收口接线）。
 //!
 //! 职责：统一入口 `check_dimensions(w, h)`——目标解码尺寸 ≤ 8192×8192（与
 //! `thumbnail_manager.py` MAX_IMAGE_DIMENSION 对齐），超限返回
-//! `STATUS_TOO_LARGE`；含中间缓冲上限与 ffmpeg 输出读取上限（2MB）。
-//! 每个 T1 解码器必须在解码前调用。
+//! `STATUS_TOO_LARGE`。
 //!
-//! # 接线状态（todo 34）
-//! 各 T1 解码器的既有内联预检（png/jpeg/tiff/webp/psd/bmp/pnm/qoi/tga/
-//! gif/dds/icns/vp8/ico）已全部工作正常且各有超限测试覆盖——按「不重构
-//! 工作正常的内联预检」原则保持不动；本模块作为新代码的统一入口供未来
-//! 新增解码器使用，避免回归风险。
+//! # 接线状态
+//! 各 T1 解码器的**总像素**预检（png/jpeg/tiff/webp/psd/bmp/pnm/qoi/tga/
+//! dds/vp8 的头部声明预检，gif/icns/ico 的解码后兜底或条目表预检）已统一
+//! 经本入口调用；gif/icns/ico 另有格式特有的单边 >8192 校验，按各文件
+//! 注释保留（行为不变）。
 
 use crate::STATUS_TOO_LARGE;
 
@@ -38,11 +37,6 @@ pub(crate) const MAX_IMAGE_DIMENSION: u32 = 8 * 1024;
 /// 对零维度的既有语义不一（qoi/psd-DIB 显式 `-2`；png/webp/jpeg/tiff 的
 /// 维度扫描失败时委托 image crate 裁决）——本入口只负责「超限」单一判定，
 /// 零维度交由各解码器既有路径处理，不改变其行为。
-#[allow(dead_code)]
-// check_dimensions 为未来新增解码器的统一预检入口；既有 14 组解码器的
-// 内联预检按 todo 34 决策保持不动（避免回归），当前仅 `#[cfg(test)]`
-// 引用会触发 dead_code 警告——显式标注并注明消费点（同 infra/resize.rs
-// 的 box_resize_rgba 先例）。
 pub(crate) fn check_dimensions(w: u32, h: u32) -> Result<(), i32> {
     let limit = u64::from(MAX_IMAGE_DIMENSION) * u64::from(MAX_IMAGE_DIMENSION);
     if u64::from(w) * u64::from(h) > limit {

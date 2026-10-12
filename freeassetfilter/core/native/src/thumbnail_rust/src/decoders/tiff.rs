@@ -9,14 +9,8 @@
 //! （Rust 仅允许直接依赖），故以「内部最小 IFD 解析（预检/取 tag）+
 //! image crate 解码 + JPEG-in-TIFF 手动重组」三路径实现。
 
+use crate::infra::limits::check_dimensions;
 use crate::{STATUS_DECODE_FAILED, STATUS_TOO_LARGE, STATUS_UNSUPPORTED};
-
-/// 最大图元边长（与 pnm/gif/jpeg 一致，8K）。
-const MAX_IMAGE_DIMENSION: u32 = 8 * 1024;
-
-// `#[allow(dead_code)]`：与 pnm/gif/jpeg 相同——cdylib 导出面由 Python 侧
-// `thumbnail_bridge.py` 按需接线，目前尚未在 registry.rs 中注册 TIFF 入口；
-// 待 todo 接线后移除该属性。`decode_tiff` 为公开 API，缩略图工作线程将直接调用。
 
 /// TIFF 魔术数（LE：`II*`；BE：`MM*`）。
 const MAGIC_LE: [u8; 4] = [b'I', b'I', 0x2A, 0x00];
@@ -39,7 +33,6 @@ const TAG_IMAGE_LENGTH: u16 = 257;
 /// 魔数不符/解码失败；`STATUS_TOO_LARGE` 超过 8K 限制（IFD0 宽高预检
 /// 或 image crate 内存限制）；`STATUS_UNSUPPORTED` 不支持的压缩/色彩
 /// 模型。
-#[allow(dead_code)] // 与 pnm/gif/jpeg 相同：待 todo 接线后移除（见文件头注释）。
 pub fn decode_tiff(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
     // 预检 A：最小头部长度 + 魔数（II*/MM*）。空输入 / 垃圾 / 非 TIFF → -2。
     if bytes.len() < 8 {
@@ -50,12 +43,10 @@ pub fn decode_tiff(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
         return Err(STATUS_DECODE_FAILED);
     }
     // 预检 B：解析 IFD0 的 ImageWidth/ImageLength 做解压炸弹防御——超限声明
-    // （如伪造 10000×10000）在进入 image crate 分配像素缓冲之前返回 -7。
-    // 解析失败（IFD 头部截断 / 结构损坏）不下结论，交 image crate 判定。
+    // （如伪造 10000×10000）经统一入口在进入 image crate 分配像素缓冲之前
+    // 返回 -7。解析失败（IFD 头部截断 / 结构损坏）不下结论，交 image crate 判定。
     if let Some((w, h)) = scan_ifd0_size(bytes) {
-        if is_oversized(w, h) {
-            return Err(STATUS_TOO_LARGE);
-        }
+        check_dimensions(w, h)?;
     }
     // 委托 image crate 内建解码（Design Revision 5）。
     // EXIF/GPS 段、条带/平铺组织、预测器 2、16bit 降采样等由 image crate
@@ -77,12 +68,6 @@ fn map_image_error(err: image::ImageError) -> i32 {
         // 解码失败 / 参数 / IO 等其余一切 → -2。
         _ => STATUS_DECODE_FAILED,
     }
-}
-
-/// 判断宽高是否超过解压炸弹上限（u64 乘法避免 u32 溢出）。
-fn is_oversized(w: u32, h: u32) -> bool {
-    u64::from(w).saturating_mul(u64::from(h))
-        > u64::from(MAX_IMAGE_DIMENSION) * u64::from(MAX_IMAGE_DIMENSION)
 }
 
 /// 解析 IFD0 的 `(ImageWidth, ImageLength)`（tags 256/257）。
@@ -1333,7 +1318,8 @@ mod tests {
     //! 契约测试（todo 17 验收）：`decode_tiff` 对全部夹具的行为镜像 image crate
     //! 直解基准；错误码映射确定性；截断/垃圾输入必出错且不 panic。
 
-    use super::{decode_tiff, fixtures, is_oversized};
+    use super::{decode_tiff, fixtures};
+    use crate::infra::limits::check_dimensions;
 
     /// `(夹具名, bytes, 期望宽, 期望高)`——与 image crate 直解基准一致。
     const OK_CASES: &[(&str, &[u8], u32, u32)] = &[
@@ -1407,7 +1393,11 @@ mod tests {
     #[test]
     fn oversize_forged_ifd_returns_status_too_large_without_panic() {
         // must-not-panic 由测试进程自身保证（panic→测试失败）。
-        assert!(is_oversized(10_000, 10_000), "10000×10000 必须判定超限");
+        assert_eq!(
+            check_dimensions(10_000, 10_000),
+            Err(-7),
+            "10000×10000 必须判定超限"
+        );
         match decode_tiff(fixtures::TIFF_OVERSIZE_10000X10000) {
             Err(c) => {
                 assert_eq!(c, -7, "IFD0 预检应确定性返回 -7，实际 {c}");
@@ -1418,10 +1408,10 @@ mod tests {
 
     #[test]
     fn valid_inputs_not_flagged_oversized() {
-        // 上限边界：8K×8K 恰好不超限；越界 1 像素即超限。
-        assert!(!is_oversized(MAX_EDGE, MAX_EDGE));
-        assert!(is_oversized(MAX_EDGE, MAX_EDGE + 1));
-        assert!(is_oversized(MAX_EDGE + 1, MAX_EDGE));
+        // 上限边界：8K×8K 恰好不超限；越界 1 像素即超限（统一入口）。
+        assert_eq!(check_dimensions(MAX_EDGE, MAX_EDGE), Ok(()));
+        assert_eq!(check_dimensions(MAX_EDGE, MAX_EDGE + 1), Err(-7));
+        assert_eq!(check_dimensions(MAX_EDGE + 1, MAX_EDGE), Err(-7));
     }
 
     #[test]
@@ -1486,6 +1476,6 @@ mod tests {
         );
     }
 
-    /// 解压炸弹上限边长（与 `MAX_IMAGE_DIMENSION` 一致）。
+    /// 解压炸弹上限边长（与统一上限 `infra/limits` 一致，8K）。
     const MAX_EDGE: u32 = 8 * 1024;
 }

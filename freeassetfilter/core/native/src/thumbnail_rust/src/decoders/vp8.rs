@@ -14,17 +14,8 @@
 //! 输出统一 RGBA8（4 字节/像素），与其余 T1 解码器契约一致：
 //! `Result<(Vec<u8>, u32, u32), i32>`。
 
-use crate::{STATUS_DECODE_FAILED, STATUS_TOO_LARGE};
-
-/// 防御性上限：目标解码尺寸 ≤ 8192×8192，与 `thumbnail_manager.py`
-/// MAX_IMAGE_DIMENSION 对齐（防解压炸弹）。
-///
-/// 后续 todo 34 会统一接入 `infra/limits.rs::check_dimensions`，届时本常量
-/// 及其校验点迁移至统一的 `check_dimensions(w, h)` 入口。
-const MAX_IMAGE_DIMENSION: u32 = 8 * 1024;
-
-/// 像素数上限 `8192*8192`（u64 常量，避免 u32 乘法溢出）。
-const MAX_PIXELS: u64 = 8_192 * 8_192;
+use crate::infra::limits::check_dimensions;
+use crate::STATUS_DECODE_FAILED;
 
 /// VP8 帧头固定长度：3 字节帧标记 + 3 字节起始码 + 2 字节宽 + 2 字节高。
 const VP8_HEADER_LEN: usize = 10;
@@ -41,7 +32,7 @@ const VP8_START_CODE: [u8; 3] = [0x9D, 0x01, 0x2A];
 /// - 字节 8-9：高（同上）
 ///
 /// 错误语义：头不足 / 非关键帧 / 起始码错 / 零尺寸 → `STATUS_DECODE_FAILED(-2)`；
-/// 超限判定由调用方用返回值对 `MAX_PIXELS` 检查（返回 `-7`）。
+/// 超限判定由调用方经 `infra/limits::check_dimensions` 统一裁决（返回 `-7`）。
 fn vp8_dimensions(bytes: &[u8]) -> Result<(u32, u32), i32> {
     if bytes.len() < VP8_HEADER_LEN {
         return Err(STATUS_DECODE_FAILED);
@@ -66,15 +57,6 @@ fn vp8_dimensions(bytes: &[u8]) -> Result<(u32, u32), i32> {
     Ok((w, h))
 }
 
-/// 像素数是否超限（u64 乘法，避免 u32 溢出）。
-fn is_oversized(w: u32, h: u32) -> bool {
-    u64::from(w) * u64::from(h) > MAX_PIXELS
-}
-
-#[allow(dead_code)]
-// 解码器未接线 lib.rs（待 todo 24/26 经 infra/registry 分发接入）；cdylib 构建下
-// 当前仅 `#[cfg(test)]` 引用，显式标注避免 dead_code 警告（同 decoders/pnm.rs
-// 的 decode_pnm 先例）。
 /// 解码 VP8 有损帧为 RGBA8（`Vec<u8>` 行优先、每像素 4 字节）。
 ///
 /// 输入为 WebP 容器内 `VP8 ` chunk 的负载（或裸 `.vp8` 文件字节，同一码流）。
@@ -84,11 +66,9 @@ fn is_oversized(w: u32, h: u32) -> bool {
 /// - 尺寸超限（帧头声明像素数 > 8192×8192）→ `STATUS_TOO_LARGE=-7`（解码前拦截）。
 /// - 非关键帧 / 损坏 / 截断 / 头不足 / 非 VP8 → `STATUS_DECODE_FAILED=-2`。
 pub fn decode_vp8(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
-    // 解压炸弹防御：先解析帧头宽高，超限直接拒绝，不交给 image 分配内存。
+    // 解压炸弹防御：先解析帧头宽高，超限经统一入口拒绝，不交给 image 分配内存。
     let (w, h) = vp8_dimensions(bytes)?;
-    if is_oversized(w, h) {
-        return Err(STATUS_TOO_LARGE);
-    }
+    check_dimensions(w, h)?;
 
     // 最小 RIFF/WEBP 容器胶水（纯字节拼接，无解码逻辑）：
     //   `RIFF <u32le riff_size> WEBP VP8␣ <u32le chunk_size> <payload>`
@@ -115,7 +95,8 @@ pub fn decode_vp8(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_vp8, is_oversized, vp8_dimensions, MAX_PIXELS};
+    use super::{decode_vp8, vp8_dimensions};
+    use crate::infra::limits::check_dimensions;
     use crate::{STATUS_DECODE_FAILED, STATUS_TOO_LARGE};
 
     // ---- 内联夹具 ------------------------------------------------------
@@ -946,11 +927,14 @@ mod tests {
 
     #[test]
     fn dimension_threshold_boundary() {
-        assert!(!is_oversized(8192, 8192), "8192² 恰为上限，不应超限");
-        assert!(is_oversized(8192, 8193), "超一像素即超限");
-        assert!(is_oversized(10000, 10000), "10000² 应超限");
-        // u32 极限不溢出（is_oversized 内部使用 u64 乘法）。
-        assert!(is_oversized(u32::MAX, u32::MAX));
-        assert_eq!(MAX_PIXELS, 8_192 * 8_192, "上限常量与 8192² 对齐");
+        // 统一入口阈值：8192² 放行；越界/极端值 -7（u64 乘法不溢出）。
+        assert_eq!(check_dimensions(8192, 8192), Ok(()), "8192² 恰为上限，不应超限");
+        assert_eq!(check_dimensions(8192, 8193), Err(STATUS_TOO_LARGE), "超一像素即超限");
+        assert_eq!(check_dimensions(10000, 10000), Err(STATUS_TOO_LARGE), "10000² 应超限");
+        assert_eq!(
+            check_dimensions(u32::MAX, u32::MAX),
+            Err(STATUS_TOO_LARGE),
+            "u32 极限不溢出"
+        );
     }
 }

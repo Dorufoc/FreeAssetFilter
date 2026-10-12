@@ -36,9 +36,6 @@
 /// `ex = dst_w*src_w/dst_w = src_w`、`ey = src_h`——必然覆盖源末尾像素，
 /// 避免末尾列/行因整除丢采样导致的整图错位。截断后 `dst_w <= src_w`、
 /// `dst_h <= src_h`，故每个输出像素的源区间宽度/高度 ≥ 1，count 永不为 0。
-#[allow(dead_code)]
-// 该函数供 todo 8-22 各 T1 解码器统一接线使用；当前 crate 为 cdylib 且尚未
-// 有解码器引入，仅 `#[cfg(test)]` 引用到它，故显式标注以避免 dead_code 警告。
 pub fn box_resize_rgba(
     src: &[u8],
     src_w: u32,

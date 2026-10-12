@@ -27,7 +27,8 @@
 //!
 //! 1. 预检 A：长度 ≥26 / 魔数 `8BPS` / `version==2`→`-6`（PSB）、`!=1`→`-2` /
 //!   位深 ∉ {8,16}→`-2` / channels==0→`-2`。
-//! 2. 预检 B：`w*h > 8192*8192`→`STATUS_TOO_LARGE=-7`（解码前拦截，不分配）。
+//! 2. 预检 B：`w*h > 8192*8192`→`STATUS_TOO_LARGE=-7`（统一
+//!    `infra/limits::check_dimensions`，解码前拦截，不分配）。
 //! 3. 资源段扫描 1036：命中则按 fmt 解码——fmt=1 JPEG 委托 `jpeg::decode_jpeg`
 //!    （SOF 超限由 jpeg 自担 `-7`）；fmt=0 RAW 需 planes==1 且 bits∈{24,32}，
 //!    交错缩放 RGBA8（缩略图声明尺寸超限`-7`）；其余 fmt / planes≠1 → `-6`。
@@ -40,14 +41,8 @@
 //! 0/±错误码。测试对内嵌夹具 + 截断切片 + 伪造头全覆盖。
 
 use crate::decoders::jpeg::decode_jpeg;
-use crate::{STATUS_DECODE_FAILED, STATUS_TOO_LARGE, STATUS_UNSUPPORTED};
-
-/// 解码尺寸上限（像素）。与 `thumbnail_manager.py` MAX_IMAGE_DIMENSION=8192、
-/// jpeg.rs/其它解码器及 todo 34 `infra/limits` 对齐。
-const MAX_PSD_DIM: u32 = 8192;
-
-/// 像素数上限 `8192*8192`（u64 固定值，避免 u32 乘法溢出）。
-const MAX_PIXELS: u64 = 8192 * 8192;
+use crate::infra::limits::check_dimensions;
+use crate::{STATUS_DECODE_FAILED, STATUS_UNSUPPORTED};
 
 /// PSD 魔数 `8BPS`。
 const SIG_8BPS: &[u8; 4] = b"8BPS";
@@ -77,11 +72,6 @@ fn u32_be(bytes: &[u8], off: usize) -> Result<u32, i32> {
     Ok(u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
 }
 
-/// `w*h > 8192*8192` 判定（u64 乘法，避免 u32 溢出）。
-fn is_oversized(w: u32, h: u32) -> bool {
-    u64::from(w) * u64::from(h) > MAX_PIXELS
-}
-
 /// 读取偏移 `off` 处的样本高字节（8 位样本即其自身；16 位样本 BE，高字节在前）。
 /// 调用方须先保证边界（8→1B、16→2B）且 `off` 已按样本宽度步进。
 fn sample_byte(data: &[u8], off: usize, depth: u16) -> u8 {
@@ -104,10 +94,6 @@ fn sample_byte(data: &[u8], off: usize, depth: u16) -> u8 {
 ///
 /// # 错误不变量
 /// 任何输入都不会 panic；所有段长度字段均做越界校验。
-#[allow(dead_code)]
-// 该函数供 todo 16/17/24 或上层路由接线使用；当前 crate 为 cdylib 且
-// infra/registry.rs 尚未分发解码器，仅 `#[cfg(test)]` 引用到它，故显式标注
-// 以避免 dead_code 警告（同 jpeg.rs `decode_jpeg` 先例）。
 pub fn decode_psd(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
     // 预检 A：长度 / 魔数 / 版本。
     if bytes.len() < 26 {
@@ -136,10 +122,8 @@ pub fn decode_psd(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
     if depth != 8 && depth != 16 {
         return Err(STATUS_DECODE_FAILED);
     }
-    // 预检 B：主图像素上限。
-    if is_oversized(width, height) {
-        return Err(STATUS_TOO_LARGE);
-    }
+    // 预检 B：主图像素上限（统一经 infra/limits::check_dimensions）。
+    check_dimensions(width, height)?;
 
     let mut pos: usize = 26;
     // 颜色模式段：4 字节大端长度 + 数据。
@@ -267,9 +251,7 @@ fn decode_thumb(payload: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
     let bits = u16_be(payload, 24)?;
     let planes = u16_be(payload, 26)?;
     let data = &payload[THUMB_HEADER_LEN..];
-    if is_oversized(tw, th) {
-        return Err(STATUS_TOO_LARGE);
-    }
+    check_dimensions(tw, th)?;
     match fmt {
         1 => decode_jpeg(data),
         0 => {
@@ -300,8 +282,9 @@ fn decode_thumb(payload: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_psd, MAX_PSD_DIM};
+    use super::decode_psd;
     use crate::decoders::jpeg::decode_jpeg;
+    use crate::infra::limits::{check_dimensions, MAX_IMAGE_DIMENSION};
     use crate::{STATUS_DECODE_FAILED, STATUS_TOO_LARGE, STATUS_UNSUPPORTED};
 
     /// 1810 bytes — PSD_1036_JPEG_16X16
@@ -1317,7 +1300,9 @@ mod tests {
 
     #[test]
     fn max_dim_constant_matches_threshold() {
-        // 上限常量与 jpeg.rs 对齐（保护误改）。
-        assert_eq!(MAX_PSD_DIM, 8192);
+        // 统一上限常量/入口（infra/limits）阈值对齐（保护误改）。
+        assert_eq!(MAX_IMAGE_DIMENSION, 8192);
+        assert_eq!(check_dimensions(8192, 8192), Ok(()));
+        assert_eq!(check_dimensions(8192, 8193), Err(STATUS_TOO_LARGE));
     }
 }

@@ -27,13 +27,9 @@
 //! `.omo/evidence/thumbnail-rust-refactor/task-10-gen-bmp-fixtures.py` 复现，
 //! 输出见该目录 `bmp_fixtures_out.txt`）。
 
-use crate::{STATUS_DECODE_FAILED, STATUS_TOO_LARGE};
+use crate::infra::limits::check_dimensions;
+use crate::STATUS_DECODE_FAILED;
 
-/// 目标解码尺寸上限（与 `thumbnail_manager.py` MAX_IMAGE_DIMENSION=8192 对齐；
-/// todo 34 统一入口 `infra/limits.rs::check_dimensions` 落地后移交）。
-const MAX_DIMENSION: u32 = 8192;
-/// 像素数上限 `8192*8192`（u64 常量，避免 u32 乘法溢出）。
-const MAX_PIXELS: u64 = MAX_DIMENSION as u64 * MAX_DIMENSION as u64;
 /// BMP 文件头最小长度（`BM` + 文件大小 + 保留 + 像素数据偏移 = 14 字节）。
 const FILE_HEADER_LEN: usize = 14;
 /// DIB 头大小字段在文件头中的偏移（u32 LE，区分 BITMAPCOREHEADER 12 与 INFO/V4/V5）。
@@ -52,11 +48,8 @@ const HEIGHT_OFFSET: usize = 22;
 ///   失败（截断/DIB 头损坏/RLE 码流损坏/`colors_used > 1<<bit_count` 越界 CLUT
 ///   大小等）——不 panic。
 /// - `STATUS_TOO_LARGE(-7)`：文件/DIB 头声明的 `w*h > 8192*8192`（解压炸弹
-///   防御，在进入 image crate 分配像素缓冲之前返回）。
-#[allow(dead_code)]
-// 当前 crate 为 cdylib：本函数由 todo 8-22 解码器接线（registry 分发路由）消费，
-// 在此之前仅 `#[cfg(test)]` 引用——显式标注避免 dead_code 警告
-// （同 infra/resize.rs / registry.rs / tga.rs 先例）。
+///   防御，统一经 `infra/limits::check_dimensions`，在进入 image crate
+///   分配像素缓冲之前返回）。
 pub fn decode_bmp(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
     if bytes.is_empty() || bytes.len() < FILE_HEADER_LEN {
         return Err(STATUS_DECODE_FAILED);
@@ -69,18 +62,14 @@ pub fn decode_bmp(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
     // 解压炸弹防御：解码前读取头声明的宽高，超限直接拒绝，不交给 image 分配内存。
     // 读不到宽/高（头不完整/未知 DIB 布局）则跳过预检，交由 image crate 判定。
     if let Some((w, h)) = bmp_dimensions(bytes) {
-        if is_oversized(w, h) {
-            return Err(STATUS_TOO_LARGE);
-        }
+        check_dimensions(w, h)?;
     }
     // 委托 image crate 内建 BMP 解码（Design Revision 5：不自研 DIB/RLE 解析）。
     let img = image::load_from_memory(bytes).map_err(|_| STATUS_DECODE_FAILED)?;
     let rgba = img.to_rgba8();
     let (w, h) = (rgba.width(), rgba.height());
     // 解码后再校验兜底：防御 image crate 返回的输出尺寸与头声明不一致。
-    if is_oversized(w, h) {
-        return Err(STATUS_TOO_LARGE);
-    }
+    check_dimensions(w, h)?;
     Ok((rgba.into_raw(), w, h))
 }
 
@@ -122,14 +111,10 @@ fn bmp_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     }
 }
 
-/// 像素数是否超限（u64 乘法，避免 u32 溢出）。
-fn is_oversized(w: u32, h: u32) -> bool {
-    u64::from(w) * u64::from(h) > MAX_PIXELS
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{decode_bmp, is_oversized, MAX_DIMENSION};
+    use super::decode_bmp;
+    use crate::infra::limits::check_dimensions;
     use crate::{STATUS_DECODE_FAILED, STATUS_TOO_LARGE};
 
     // ===== 内联夹具（PIL 12.3 生成 + 手写，见 `task-10-gen-bmp-fixtures.py`）=====
@@ -634,11 +619,23 @@ mod tests {
 
     #[test]
     fn dimension_threshold_boundary() {
-        // 边界：8192² 恰在限内不拒绝；越界即超限（函数级阈值测试）。
-        assert!(!is_oversized(8192, 8192), "8192² 恰为上限，不应超限");
-        assert!(is_oversized(8192, 8193), "超一像素即超限");
-        assert!(is_oversized(9000, 9000), "9000² 应超限");
-        assert!(is_oversized(u32::MAX, u32::MAX), "u32 极值不溢出");
+        // 边界：8192² 恰在限内不拒绝；越界即超限（统一入口阈值测试）。
+        assert_eq!(check_dimensions(8192, 8192), Ok(()), "8192² 恰为上限，不应超限");
+        assert_eq!(
+            check_dimensions(8192, 8193),
+            Err(crate::STATUS_TOO_LARGE),
+            "超一像素即超限"
+        );
+        assert_eq!(
+            check_dimensions(9000, 9000),
+            Err(crate::STATUS_TOO_LARGE),
+            "9000² 应超限"
+        );
+        assert_eq!(
+            check_dimensions(u32::MAX, u32::MAX),
+            Err(crate::STATUS_TOO_LARGE),
+            "u32 极值不溢出"
+        );
     }
 
     /// 全部有效夹具经本包装解码后与 image crate 直解（基准路径）逐字节一致。

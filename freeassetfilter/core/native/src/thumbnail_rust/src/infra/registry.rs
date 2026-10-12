@@ -94,10 +94,7 @@ impl FormatId {
 }
 
 /// 魔数嗅探文件头并返回格式；读取失败/魔数未命中且扩展名兜底也未命中返回 `None`。
-/// 供 todo 8-22 各 T1 解码器与上层路由接线使用。
-#[allow(dead_code)]
-// 该函数当前仅被 `#[cfg(test)]` 引用（解码器接线属 todo 8-22），显式标注避免
-// dead_code 警告（与 infra/resize.rs 的 box_resize_rgba 同理）。
+/// 供 `lib.rs::decode_via_t1` 的 T1 分发入口与上层路由使用。
 pub fn sniff_format(path: &str) -> Option<FormatId> {
     let header = read_header(path)?;
     // 空文件（0 字节）永不可解码：即使扩展名在注册表内也不视为已支持。
@@ -109,7 +106,8 @@ pub fn sniff_format(path: &str) -> Option<FormatId> {
 
 /// 路径是否命中注册表（魔数或扩展名兜底任一命中即 true）。
 #[allow(dead_code)]
-// 同上：上层路由（todo 8-22 / 27）接入前仅测试引用，显式标注避免 dead_code。
+// 查询型辅助：上层路由预留接口，当前仅 `#[cfg(test)]` 引用，显式标注避免
+// dead_code 警告。
 pub fn is_supported(path: &str) -> bool {
     sniff_format(path).is_some()
 }

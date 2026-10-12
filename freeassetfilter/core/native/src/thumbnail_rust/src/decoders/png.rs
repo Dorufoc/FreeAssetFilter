@@ -3,27 +3,20 @@
 //! 职责：**接线 image crate 内建覆盖**，不自研 PNG 解析——png crate（flate2→
 //! miniz_oxide 纯 Rust）覆盖全部颜色类型 0/2/3/4/6、位深 1/2/4/8/16、
 //! Adam7 隔行、5 种滤波、tRNS 透明、多 IDAT 拼接、CRC 校验。本模块唯一逻辑：
-//! 解码前读取 IHDR 宽高做解压炸弹防御（与 `thumbnail_manager.py`
-//! MAX_IMAGE_DIMENSION=8192 对齐），超限返回 `STATUS_TOO_LARGE=-7`，
-//! 解码失败返回 `STATUS_DECODE_FAILED=-2`，均不 panic。
+//! 解码前读取 IHDR 宽高做解压炸弹防御（统一经 `infra/limits::check_dimensions`，
+//! 与 `thumbnail_manager.py` MAX_IMAGE_DIMENSION=8192 对齐），超限返回
+//! `STATUS_TOO_LARGE=-7`，解码失败返回 `STATUS_DECODE_FAILED=-2`，均不 panic。
 //!
 //! 输出契约为统一 RGBA8：16bit 输入由 `to_rgba8` 降采样 —— image 的
 //! `FromPrimitive<u16> for u8` 实现为 `(v + 128) / 257`（等价 `round(v*255/65535)`，
-//! 四舍五入缩放，非简单取高字节）。后续 todo（registry 分发 / T1 解码器接线）消费本入口。
+//! 四舍五入缩放，非简单取高字节）。已接入 `lib.rs::decode_via_t1` 分发。
 
-use crate::{STATUS_DECODE_FAILED, STATUS_TOO_LARGE};
-
-/// 解码防御上限（像素维度，与 `thumbnail_manager.py:216-217` 对齐）。
-const MAX_IMAGE_DIMENSION: u32 = 8192;
-/// 像素数上限 `8192*8192`（u64 常量，避免 u32 乘法溢出）。
-const MAX_PIXELS: u64 = MAX_IMAGE_DIMENSION as u64 * MAX_IMAGE_DIMENSION as u64;
+use crate::infra::limits::check_dimensions;
+use crate::STATUS_DECODE_FAILED;
 
 /// PNG 魔数签名（8 字节）。
 const PNG_SIGNATURE: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
 
-#[allow(dead_code)]
-// 该函数供 todo 7 registry 分发与后续 T1 接线消费；cdylib 下当前仅测试引用，
-// 故显式标注避免 dead_code 警告（同 infra/resize.rs / registry.rs 先例）。
 /// 解码 PNG 数据为 RGBA8（`Vec<u8>` 行优先、每像素 4 字节）。
 ///
 /// # 错误语义
@@ -33,9 +26,7 @@ pub fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
     // 解压炸弹防御：先在解码前读取 IHDR 声明的宽高，超限直接拒绝，不交给 image
     // 分配内存。非 PNG / 头不完整的输入此步跳过，交由 image crate 判定失败。
     if let Some((w, h)) = png_dimensions(bytes) {
-        if is_oversized(w, h) {
-            return Err(STATUS_TOO_LARGE);
-        }
+        check_dimensions(w, h)?;
     }
     // image crate 内建覆盖全部 PNG 变体；16bit 输入由 to_rgba8 降采样到 8bit。
     let rgba = image::load_from_memory(bytes)
@@ -58,14 +49,10 @@ fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     Some((w, h))
 }
 
-/// 像素数是否超限（u64 乘法，避免 u32 溢出）。
-fn is_oversized(w: u32, h: u32) -> bool {
-    u64::from(w) * u64::from(h) > MAX_PIXELS
-}
-
 #[cfg(test)]
 mod tests {
     use super::decode_png;
+    use crate::infra::limits::check_dimensions;
 
     // 夹具由 PIL 确定性生成（脚本 gen_png_fixtures.py），像素公式见各 const 注释。
     // PNG_L8_4X4: 灰度8bit pixel(x,y)=(x*7+y*13)%256 → RGBA (v,v,v,255)
@@ -236,11 +223,22 @@ mod tests {
 
     #[test]
     fn dimension_threshold_boundary() {
-        // 边界：8192×8192 恰在限内不拒绝；任一维越界即超限（函数级阈值测试）。
-        assert!(!super::is_oversized(8192, 8192), "8192² 恰为上限，不应超限");
-        assert!(super::is_oversized(8192, 8193), "超一像素即超限");
-        assert!(super::is_oversized(10000, 10000), "10000² 应超限");
-        // u32 极限不溢出（is_oversized 内部使用 u64 乘法）。
-        assert!(super::is_oversized(u32::MAX, u32::MAX));
+        // 边界：8192×8192 恰在限内不拒绝；任一维越界即超限（统一入口阈值测试）。
+        assert_eq!(check_dimensions(8192, 8192), Ok(()), "8192² 恰为上限，不应超限");
+        assert_eq!(
+            check_dimensions(8192, 8193),
+            Err(crate::STATUS_TOO_LARGE),
+            "超一像素即超限"
+        );
+        assert_eq!(
+            check_dimensions(10000, 10000),
+            Err(crate::STATUS_TOO_LARGE),
+            "10000² 应超限"
+        );
+        // u32 极限不溢出（check_dimensions 内部使用 u64 乘法）。
+        assert_eq!(
+            check_dimensions(u32::MAX, u32::MAX),
+            Err(crate::STATUS_TOO_LARGE)
+        );
     }
 }

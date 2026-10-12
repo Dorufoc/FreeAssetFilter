@@ -15,18 +15,17 @@
 //!   与 AGPL-3.0 兼容性核对见 `.omo/notepads/thumbnail-rust-refactor/decisions.md`。
 //! - **BC7 未实现 → `STATUS_UNSUPPORTED`(-6)**（交 T3，不 panic）。
 //!
-//! 防御上限：声明尺寸 `w*h > 8192×8192` → `STATUS_TOO_LARGE`(-7)（与
-//! `thumbnail_manager.py` MAX_IMAGE_DIMENSION 对齐）；块数据截断/头损坏 →
-//! `STATUS_DECODE_FAILED`(-2)。解码路径零 `unwrap()`，不 panic。
+//! 防御上限：声明尺寸 `w*h > 8192×8192` → `STATUS_TOO_LARGE`(-7)（统一经
+//! `infra/limits::check_dimensions`，与 `thumbnail_manager.py`
+//! MAX_IMAGE_DIMENSION 对齐）；块数据截断/头损坏 → `STATUS_DECODE_FAILED`(-2)。
+//! 解码路径零 `unwrap()`，不 panic。
 //!
 //! SIZE_OK：本文件含计划强制的内联 `#[cfg(test)]` 夹具（≥6 条 DDS 测试）与
 //! BC 格式数据表，纯 LOC 超过 250 门槛属计划强制内联测试的合理例外
 //! （同 infra/resize.rs / infra/registry.rs 先例，模块单一职责：DDS 解码器）。
 
+use crate::infra::limits::check_dimensions;
 use crate::{STATUS_DECODE_FAILED, STATUS_TOO_LARGE, STATUS_UNSUPPORTED};
-
-/// 解码尺寸上限（与 thumbnail_manager.py MAX_IMAGE_DIMENSION=8192 对齐）。
-const MAX_DIM: u64 = 8192;
 
 /// 解析得到的 BC 变体（决定块大小与解码路径）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,11 +51,8 @@ impl DdsVariant {
 /// 统一入口：`bytes` 为完整 DDS 文件，成功返回 `(RGBA8, 宽, 高)`。
 ///
 /// 失败返回结构化 `i32` 状态码：`-2` 解码失败（魔数/头/块数据损坏截断）、
-/// `-6` 不支持（BC7/BC6H/未压缩/未知类型）、`-7` 声明尺寸超限。
-///
-/// `#[allow(dead_code)]` + 注释：todo 8-22 解码器由 registry/上层路由接线前
-/// 仅测试引用（同 infra/resize.rs / infra/registry.rs 先例）。
-#[allow(dead_code)]
+/// `-6` 不支持（BC7/BC6H/未压缩/未知类型）、`-7` 声明尺寸超限（统一经
+/// `infra/limits::check_dimensions`）。
 pub fn decode_dds(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
     if bytes.len() < 128 || !bytes.starts_with(b"DDS ") || le_u32(bytes, 4) != 124 {
         return Err(STATUS_DECODE_FAILED);
@@ -66,10 +62,8 @@ pub fn decode_dds(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
     if width == 0 || height == 0 {
         return Err(STATUS_DECODE_FAILED);
     }
-    // 解压炸弹防御：先于任何解码/分配检查声明尺寸。
-    if u64::from(width) * u64::from(height) > MAX_DIM * MAX_DIM {
-        return Err(STATUS_TOO_LARGE);
-    }
+    // 解压炸弹防御：先于任何解码/分配检查声明尺寸（统一入口）。
+    check_dimensions(width, height)?;
     let (variant, is_signed, data_off) = parse_dds_variant(bytes)?;
     match variant {
         DdsVariant::Bc7 => Err(STATUS_UNSUPPORTED),

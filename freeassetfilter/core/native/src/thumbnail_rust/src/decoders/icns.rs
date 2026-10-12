@@ -22,14 +22,16 @@
 //!   `jp2io` feature 会成功解码 JP2，与本模块「jp2 不解析」语义冲突）。
 //!
 //! 防御：魔数非 `icns`/头不足 → `STATUS_DECODE_FAILED(-2)`；PNG 条目经 PNG 头
-//! 预检出宽高 `> 8192` → `STATUS_TOO_LARGE(-7)`（防解压炸弹，与 infra/limits
-//! 目标及 thumbnail_manager.py MAX_IMAGE_DIMENSION 对齐）。解码路径零 panic。
+//! 预检，总像素统一经 `infra/limits::check_dimensions` 判定超限
+//! → `STATUS_TOO_LARGE(-7)`；解码后另按单边 >8192 兜底校验（如 9000×1 形态，
+//! 与 thumbnail_manager.py MAX_IMAGE_DIMENSION 对齐）。解码路径零 panic。
 
+use crate::infra::limits::check_dimensions;
 use crate::{STATUS_DECODE_FAILED, STATUS_TOO_LARGE, STATUS_UNSUPPORTED};
 use std::io::Cursor;
 
-/// 防御上限：目标解码尺寸 ≤ 8192×8192（与 `thumbnail_manager.py`
-/// MAX_IMAGE_DIMENSION、todo 34 `infra/limits.rs` 对齐）。
+/// 解码后单边兜底上限（与 `thumbnail_manager.py` MAX_IMAGE_DIMENSION、
+/// `infra/limits.rs` 统一上限对齐）；总像素判定经 check_dimensions。
 const MAX_IMAGE_DIMENSION: u32 = 8192;
 /// ICNS 魔数（4 字节）。
 const ICNS_MAGIC: [u8; 4] = *b"icns";
@@ -53,13 +55,11 @@ impl RgbaCandidate {
     }
 }
 
-#[allow(dead_code)]
-// 当前 crate 为 cdylib，`decode_icns` 待 todo 24/26 经 infra/registry 分发接线，
-// 现仅 `#[cfg(test)]` 引用——显式标注避免 dead_code 警告（同 pnm/gif/png.rs 先例）。
 /// 解码 ICNS 数据为 RGBA8（行优先、每像素 4 字节）。
 ///
 /// # 语义
-/// - 条目表逐条扫描：PNG 内嵌条目经 PNG 头预检宽高（>8192 返回 `STATUS_TOO_LARGE`），
+/// - 条目表逐条扫描：PNG 内嵌条目经 PNG 头预检，总像素统一经
+///   `infra/limits::check_dimensions` 判定（超限 `STATUS_TOO_LARGE`），
 ///   `ic10`/`jp2 ` 或 JP2 魔数条目返回 `STATUS_UNSUPPORTED`（交 T2/T3）。
 /// - 已识别条目委托 icns crate `IconFamily::read`/`get_icon_with_type`（含
 ///   is32+s8mk 掩码合成）；未识别 PNG 条目（ic04/ic05）由本模块经 image crate 解码。
@@ -104,9 +104,7 @@ pub fn decode_icns(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
         // PNG 内嵌条目：解码前经 PNG 头（IHDR）预检宽高做解压炸弹防御。
         if payload.starts_with(&PNG_SIGNATURE) {
             if let Some((w, h)) = png_dimensions(payload) {
-                if is_oversized(w, h) {
-                    return Err(STATUS_TOO_LARGE);
-                }
+                check_dimensions(w, h)?;
             }
             // ic04/ic05 等 icns crate 未识别条目：payload 即完整 PNG，自行解码；
             // 已识别条目（ic07-ic14/icp4-icp6 等）委托 icns crate 处理。
@@ -179,18 +177,11 @@ fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     Some((w, h))
 }
 
-/// 像素数是否超限（u64 乘法，避免 u32 溢出）。
-fn is_oversized(w: u32, h: u32) -> bool {
-    u64::from(w) * u64::from(h) > u64::from(MAX_IMAGE_DIMENSION) * u64::from(MAX_IMAGE_DIMENSION)
-}
-
 /// 解码 PNG payload（ic04/ic05 等 crate 未识别条目），归一化为 RGBA8。
 fn decode_png_payload(payload: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
     let img = image::load_from_memory(payload).map_err(|_| STATUS_DECODE_FAILED)?;
     let (w, h) = (img.width(), img.height());
-    if is_oversized(w, h) {
-        return Err(STATUS_TOO_LARGE);
-    }
+    check_dimensions(w, h)?;
     let rgba = img.to_rgba8();
     Ok((rgba.into_raw(), w, h))
 }
@@ -426,6 +417,13 @@ mod tests {
         assert_eq!((w, h), (16, 16));
         let (direct, _, _) = direct_png_rgba(PNG16_RAW);
         assert_eq!(data, direct, "tie 时应保留先出现的 PNG16");
+        // 第二条目确为 PNG16GREEN_RAW（内联字节，夹具完整性保护）。
+        assert!(
+            ICNS_IC04_TWO_PNGS
+                .windows(PNG16GREEN_RAW.len())
+                .any(|w| w == PNG16GREEN_RAW),
+            "ICNS_IC04_TWO_PNGS 应内嵌 PNG16GREEN_RAW 条目"
+        );
     }
 
     #[test]

@@ -11,31 +11,21 @@
 //!   `STATUS_DECODE_FAILED=-2`。
 //! - 预检 B：`scan_sof_dimensions` 扫描 marker 序列定位 SOF0/SOF1/SOF2
 //!   （`FFC0/FFC1/FFC2`）读取 height/width，超限（`w*h > 8192×8192`）在
-//!   **解码前**返回 `STATUS_TOO_LARGE=-7`（伪造 SOF 的解压炸弹不触发 image
-//!   大分配）；上限与 `thumbnail_manager.py` MAX_IMAGE_DIMENSION 及 todo 34
-//!   `infra/limits` 对齐。
+//!   **解码前**统一经 `infra/limits::check_dimensions` 返回
+//!   `STATUS_TOO_LARGE=-7`（伪造 SOF 的解压炸弹不触发 image 大分配）；
+//!   上限与 `thumbnail_manager.py` MAX_IMAGE_DIMENSION 对齐。
 //! - 维度放行后委托 `image::load_from_memory` 完整解码（EXIF/APPn 跳过、
 //!   4:4:4/4:2:2/4:2:0、灰阶、渐进 SOF2 全由 image crate 内建 zune-jpeg 承担）
 //!   → `to_rgba8()` → `into_raw()`；任何解码 Err → `STATUS_DECODE_FAILED=-2`。
 //! - 供视频路径复用：todo 24 会把 ffmpeg MJPEG 输出的解码从 legacy
 //!   `decode_image_bytes_to_rgba` 切到本函数（视频帧本是 JPEG 流）。
 
-use crate::{STATUS_DECODE_FAILED, STATUS_TOO_LARGE};
-
-/// 解码尺寸上限（像素）。与 `thumbnail_manager.py:216-217` MAX_IMAGE_DIMENSION=8192
-/// 及 todo 34 `infra/limits.rs::check_dimensions` 对齐；todo 34 落地前本常量先行。
-const MAX_JPEG_DIM: u32 = 8192;
-
-/// 像素数上限 `8192*8192`（u64 固定值，避免 u32 乘法溢出）。
-const MAX_PIXELS: u64 = MAX_JPEG_DIM as u64 * MAX_JPEG_DIM as u64;
+use crate::infra::limits::check_dimensions;
+use crate::STATUS_DECODE_FAILED;
 
 /// JPEG SOI 魔数 `FF D8`。
 const SOI_MARKER: [u8; 2] = [0xFF, 0xD8];
 
-#[allow(dead_code)]
-// 该函数供 todo 16/17/20/24（由 legacy decode_image_bytes_to_rgba 切换）接线；
-// 当前 crate 为 cdylib 且尚未有解码器引入，仅 `#[cfg(test)]` 引用到它，故显式标注
-// 以避免 dead_code 警告（同 infra/resize.rs 先例）。
 /// 从内存字节解码 JPEG 为 RGBA8（不缩放）。
 ///
 /// # 参数
@@ -65,9 +55,7 @@ pub fn decode_jpeg(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
     // 结构损坏）不下结论，交 image crate 判定（正常流 SOF0/1/2 必在 SOS 前出现，
     // 扫不到即输入损坏，image 终归返回 -2）。
     if let Ok((w, h)) = scan_sof_dimensions(bytes) {
-        if is_oversized(w, h) {
-            return Err(STATUS_TOO_LARGE);
-        }
+        check_dimensions(w, h)?;
     }
     // 委托 image crate 内建解码（Design Revision 5：不自研 IDCT/Huffman）。
     // EXIF/APPn 段跳过、4:4:4/4:2:2/4:2:0、灰阶、渐进（SOF2）由 zune-jpeg
@@ -137,14 +125,9 @@ fn scan_sof_dimensions(bytes: &[u8]) -> Result<(u32, u32), i32> {
     Err(STATUS_DECODE_FAILED)
 }
 
-/// `w*h > 8192*8192` 判定（u64 乘法，避免 u32 溢出）。
-fn is_oversized(w: u32, h: u32) -> bool {
-    u64::from(w) * u64::from(h) > MAX_PIXELS
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{decode_jpeg, MAX_JPEG_DIM};
+    use super::decode_jpeg;
     use crate::STATUS_DECODE_FAILED;
     use crate::STATUS_TOO_LARGE;
 
@@ -578,9 +561,8 @@ mod tests {
     /// 伪造超限 JPEG：取真实基线 JPEG，把 SOF0 标高/宽字段改写为 10000×10000。
     ///
     /// SOF0 结构（基准偏移 sof=0）：`FF C0 | len[2] | prec[1] | H[2] | W[2] | N[1] | 分量表[3N]`，
-    /// 即高在 sof+5..=6、宽在 sof+7..=8。其余段结构不变——`with_guessed_format` 魔数嗅探
-    /// 依然命中、`JpegDecoder` 头解析依然成功，但 image 的严格 `Limits` 在解码前
-    /// `check_dimensions` 直接拦截 → `ImageError::Limits` → -7。
+    /// 即高在 sof+5..=6、宽在 sof+7..=8。其余段结构不变——SOF 扫描读到声明尺寸后，
+    /// 由统一上限入口 `infra/limits::check_dimensions` 在解码前确定性拦截（-7）。
     fn forged_oversize_jpeg() -> Vec<u8> {
         let mut b = JPEG_444_Q90.to_vec();
         let sof = b
@@ -602,21 +584,13 @@ mod tests {
 
     #[test]
     fn oversize_forged_sof0_returns_status_too_large_without_panic() {
-        // must-not-panic 由测试进程自身保证（panic→测试失败）。
+        // must-not-panic 由测试进程自身保证（panic→测试失败）。SOF 扫描读到
+        // 10000×10000 后由统一上限入口在解码前确定性拒绝（-7）。
         let forged = forged_oversize_jpeg();
-        match decode_jpeg(&forged) {
-            Err(code) => {
-                assert_ne!(code, 0, "超限输入返回值不可为 0");
-                // 最终验收口径：-7 或 -2 皆可；实现经 Limits 拦截应为确定性的 -7。
-                println!("oversize: decode_jpeg returned Err({code})");
-            }
-            Ok((_, w, h)) => {
-                assert!(
-                    u64::from(w) * u64::from(h) > u64::from(MAX_JPEG_DIM) * u64::from(MAX_JPEG_DIM),
-                    "若意外解码成功则必须超出限制并已在函数内返回 -7"
-                );
-                panic!("超限伪造头不应解码成功");
-            }
-        }
+        assert_eq!(
+            decode_jpeg(&forged),
+            Err(STATUS_TOO_LARGE),
+            "超限伪造 SOF0 应确定性返回 -7"
+        );
     }
 }

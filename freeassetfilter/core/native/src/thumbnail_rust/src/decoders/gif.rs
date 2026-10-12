@@ -9,12 +9,15 @@
 //! **后续帧不解析**），供静态首帧缩略图。
 //!
 //! 失败返回 `STATUS_DECODE_FAILED`；解码尺寸超过 8192 x 8192（逻辑屏幕或实际
-//! 解码帧任一维度超限）返回 `STATUS_TOO_LARGE`，与 infra/limits 目标
+//! 解码帧任一维度超限）返回 `STATUS_TOO_LARGE`，与 infra/limits 统一上限
 //! / `thumbnail_manager.py` MAX_IMAGE_DIMENSION 对齐。
+//!
+//! 保留差异：本解码器做**单边**检查（任一维 > 8192 即 -7，如 16384×1 拒绝），
+//! 比 infra/limits 的总像素判定更严格；解码后总像素兜底保留（统一上限对齐）。
 
 use crate::{STATUS_DECODE_FAILED, STATUS_TOO_LARGE};
-/// 防御上限：目标解码尺寸 <= 8192 x 8192（与 infra/limits.rs 后续
-/// check_dimensions 及 thumbnail_manager.py MAX_IMAGE_DIMENSION 对齐）。
+/// 防御上限（单边）：目标解码尺寸 <= 8192 x 8192（与 infra/limits.rs 统一
+/// 上限及 thumbnail_manager.py MAX_IMAGE_DIMENSION 对齐）。
 const MAX_DIMENSION: u32 = 8192;
 
 /// 解码 GIF 首帧为 RGBA8（行优先，每像素 4 字节）。
@@ -26,10 +29,6 @@ const MAX_DIMENSION: u32 = 8192;
 ///   解析）拦截解压炸弹；若任一维超 8192 返回 `STATUS_TOO_LARGE`。
 /// - 成功返回 `Ok((rgba8, width, height))`；解码失败/截断返回
 ///   `Err(STATUS_DECODE_FAILED)`；不 panic。
-#[allow(dead_code)]
-// 当前 crate 为 cdylib 且 registry 分发接线（todo 8-22 后续完成）尚未引入本
-// 函数，仅 `#[cfg(test)]` 引用，显式标注避免 dead_code 警告（同 infra/resize.rs
-// 的 box_resize_rgba 先例）。
 pub fn decode_gif(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
     if bytes.is_empty() {
         return Err(STATUS_DECODE_FAILED);
@@ -49,6 +48,8 @@ pub fn decode_gif(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
         Err(_) => return Err(STATUS_DECODE_FAILED),
     };
     let (w, h) = (img.width(), img.height());
+    // 解码后总像素兜底（统一上限对齐）：逻辑屏幕路径已由单边预检覆盖，
+    // 此处防御实际解码帧尺寸超出逻辑屏幕声明的异常形态。
     let max_px = u64::from(MAX_DIMENSION) * u64::from(MAX_DIMENSION);
     if u64::from(w) * u64::from(h) > max_px {
         return Err(STATUS_TOO_LARGE);

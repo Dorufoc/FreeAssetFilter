@@ -25,22 +25,14 @@
 //! 输出契约为统一 RGBA8（`to_rgba8`）。VP8 有损/alpaa/无损/动画均由此入口覆盖，
 //! 不单独接线 `vp8.rs`（该模块面向裸 VP8 流，见其模块注释）。
 
-use crate::{STATUS_DECODE_FAILED, STATUS_TOO_LARGE};
-
-/// 解码防御上限（像素维度，与 `thumbnail_manager.py:216-217` 对齐）。
-const MAX_IMAGE_DIMENSION: u32 = 8192;
-/// 像素数上限 `8192*8192`（u64 常量，避免 u32 乘法溢出）。
-const MAX_PIXELS: u64 = MAX_IMAGE_DIMENSION as u64 * MAX_IMAGE_DIMENSION as u64;
+use crate::infra::limits::check_dimensions;
+use crate::STATUS_DECODE_FAILED;
 
 /// VP8 关键帧 start code（帧头偏移 3-5，同 `vp8.rs`）。
 const VP8_START_CODE: &[u8] = &[0x9D, 0x01, 0x2A];
 /// VP8L 位流签名（payload 首字节）。
 const VP8L_SIGNATURE: u8 = 0x2F;
 
-#[allow(dead_code)]
-// 解码器未接线 lib.rs（待 todo 24/26 经 infra/registry 分发接入）；cdylib 构建下
-// 当前仅 `#[cfg(test)]` 引用，显式标注避免 dead_code 警告（同 decoders/png.rs
-// 的 decode_png 先例）。
 /// 解码 WebP 数据为 RGBA8（`Vec<u8>` 行优先、每像素 4 字节）。
 ///
 /// 输入为完整 WebP 文件字节（RIFF 容器，含 `RIFF....WEBP` 头）。
@@ -54,9 +46,7 @@ pub fn decode_webp(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
     // 解压炸弹防御：先在解码前读取容器声明的宽高，超限直接拒绝，不交给 image
     // 分配内存。非 WebP / 头不完整的输入此步跳过，交由 image crate 判定失败。
     if let Some((w, h)) = webp_dimensions(bytes) {
-        if is_oversized(w, h) {
-            return Err(STATUS_TOO_LARGE);
-        }
+        check_dimensions(w, h)?;
     }
     // image crate 内建覆盖全部 WebP 变体；输出经 to_rgba8 统一为 8bit RGBA。
     let rgba = image::load_from_memory(bytes)
@@ -132,11 +122,6 @@ fn vp8l_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     let w = (bits & 0x3FFF) + 1;
     let h = ((bits >> 14) & 0x3FFF) + 1;
     Some((w, h))
-}
-
-/// 像素数是否超限（u64 乘法，避免 u32 溢出）。
-fn is_oversized(w: u32, h: u32) -> bool {
-    u64::from(w) * u64::from(h) > MAX_PIXELS
 }
 
 #[cfg(test)]
@@ -268,7 +253,7 @@ mod tests {
 
     #[test]
     fn dimension_threshold_boundary() {
-        // 恰好 8192*8192 = MAX_PIXELS 允许通过预检（随后 image crate 因无数据
+        // 恰好 8192*8192 为统一上限、允许通过预检（随后 image crate 因无数据
         // 解码失败 → -2），8192*8193 超限 → -7。验证边界不错位。
         assert_eq!(decode_webp(&vp8x_only(8192, 8192)), Err(-2));
         assert_eq!(decode_webp(&vp8x_only(8192, 8193)), Err(-7));

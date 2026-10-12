@@ -7,42 +7,112 @@
 //! 纯接线——`image::load_from_memory`（image 0.25.10 `pnm` feature 已启用，
 //! Cargo.toml 确认）内建覆盖 P1-P7 全部变体，含 ASCII/二进制、注释/空白解析、
 //! 1-bit/8-bit/16-bit 样本、PAM 任意 depth/tupltype。本模块只做统一入口转发、
-//! 维度防御性上限校验与 RGBA8 归一化。
+//! 维度防御性上限校验与 RGBA8 归一化：解码前先以 `parse_pnm_dimensions` 做
+//! **头 token 级**预检（非位级解析），总像素统一经
+//! `infra/limits::check_dimensions` 在 image crate 分配前拦截超限；解析失败
+//! 的畸形头保持原路径（image 判 -2）。
 //!
 //! 输出统一 RGBA8（4 字节/像素），与其余 T1 解码器契约一致：
 //! `Result<(Vec<u8>, u32, u32), i32>`。
 
-use crate::{STATUS_DECODE_FAILED, STATUS_TOO_LARGE};
+use crate::infra::limits::check_dimensions;
+use crate::STATUS_DECODE_FAILED;
 
-/// 防御性上限：目标解码尺寸 ≤ 8192×8192，与 `thumbnail_manager.py`
-/// MAX_IMAGE_DIMENSION 对齐（防解压炸弹）。
+/// 读取下一个 PNM ASCII 头 token（跳过空白与 `#` 注释行）。
 ///
-/// 后续 todo 34 会统一接入 `infra/limits.rs::check_dimensions`，届时本常量
-/// 及其校验点迁移至统一的 `check_dimensions(w, h)` 入口。
-const MAX_IMAGE_DIMENSION: u32 = 8 * 1024;
+/// 返回 `None` 表示已到输入末尾（解析失败由调用方处理）。
+fn next_pnm_token<'a>(bytes: &'a [u8], pos: &mut usize) -> Option<&'a [u8]> {
+    loop {
+        while *pos < bytes.len() && bytes[*pos].is_ascii_whitespace() {
+            *pos += 1;
+        }
+        if *pos < bytes.len() && bytes[*pos] == b'#' {
+            while *pos < bytes.len() && bytes[*pos] != b'\n' {
+                *pos += 1;
+            }
+            continue;
+        }
+        break;
+    }
+    if *pos >= bytes.len() {
+        return None;
+    }
+    let start = *pos;
+    while *pos < bytes.len() && !bytes[*pos].is_ascii_whitespace() && bytes[*pos] != b'#' {
+        *pos += 1;
+    }
+    Some(&bytes[start..*pos])
+}
+
+/// 解析十进制 PNM 维度 token（仅 ASCII 数字；空/非数字/超 u32 → `None`）。
+fn parse_pnm_u32(token: &[u8]) -> Option<u32> {
+    if token.is_empty() || !token.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    std::str::from_utf8(token).ok()?.parse::<u32>().ok()
+}
+
+/// 解析 P1-P7 头声明的 `(width, height)`（仅 ASCII 头 token 解析，非位级解码）。
+///
+/// - P1-P6：magic 后依次读 width/height 两个十进制 token（跳过空白与 `#`
+///   注释行）；
+/// - P7（PAM）：逐对读取 `KEY VALUE`，取 `WIDTH`/`HEIGHT` 键，`ENDHDR` 终止。
+///
+/// 任何解析失败（非 PNM / 缺 token / 非数字 / P7 缺 ENDHDR 或 WIDTH/HEIGHT /
+/// 超 u32 范围）返回 `None`——调用方保持原路径，把裁决权交给 image crate
+/// （损坏文件仍由 image 返回 `STATUS_DECODE_FAILED`）。
+fn parse_pnm_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    let mut pos = 0usize;
+    match next_pnm_token(bytes, &mut pos)? {
+        b"P1" | b"P2" | b"P3" | b"P4" | b"P5" | b"P6" => {
+            let w = parse_pnm_u32(next_pnm_token(bytes, &mut pos)?)?;
+            let h = parse_pnm_u32(next_pnm_token(bytes, &mut pos)?)?;
+            Some((w, h))
+        }
+        b"P7" => {
+            let mut w: Option<u32> = None;
+            let mut h: Option<u32> = None;
+            loop {
+                let key = next_pnm_token(bytes, &mut pos)?;
+                if key == b"ENDHDR" {
+                    break;
+                }
+                let value = next_pnm_token(bytes, &mut pos)?;
+                if key == b"WIDTH" {
+                    w = parse_pnm_u32(value);
+                } else if key == b"HEIGHT" {
+                    h = parse_pnm_u32(value);
+                }
+            }
+            Some((w?, h?))
+        }
+        _ => None,
+    }
+}
 
 /// 统一 PNM 解码入口（P1-P7：PBM/PGM/PPM/PAM，ASCII/二进制，8/16bit）。
 ///
 /// 转发 image crate 内建 PNM 解码器，不做任何 PNM 位级/ASCII 解析（Design
-/// Revision 5：自研降级为接线）。成功返回 `(RGBA8 字节流, 宽, 高)`；解码失败
-/// （损坏/截断/非 PNM 字节/空输入）返回 `STATUS_DECODE_FAILED(-2)`；解码尺寸
-/// 超过 8192×8192 返回 `STATUS_TOO_LARGE(-7)`。
-#[allow(dead_code)]
-// 解码器当前未接线 lib.rs（待 todo 24/26 经 infra/registry 分发接入）；crate
-// 以 cdylib 形式构建、尚未被生产路径引用，仅 `#[cfg(test)]` 引用会触发
-// dead_code 警告——显式标注并注明未来消费点（同 infra/resize.rs 的
-// box_resize_rgba / infra/registry.rs 的 sniff_format 先例）。
+/// Revision 5：自研降级为接线）。解码前先解析头声明宽高做解压炸弹防御：
+/// 解析成功且 `w*h > 8192×8192` 时在 `image::load_from_memory` **之前**经
+/// `infra/limits::check_dimensions` 返回 `STATUS_TOO_LARGE(-7)`（不再分配）；
+/// 解析失败的畸形头保持原路径，由 image crate 裁决。成功返回
+/// `(RGBA8 字节流, 宽, 高)`；解码失败（损坏/截断/非 PNM 字节/空输入）返回
+/// `STATUS_DECODE_FAILED(-2)`。
 pub fn decode_pnm(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
+    // 预检（安全增强）：头声明宽高解析成功即经统一入口判定，超限在 image
+    // crate 分配/解码之前拒绝；解析失败保持原路径（损坏文件由 image 返回 -2）。
+    if let Some((w, h)) = parse_pnm_dimensions(bytes) {
+        check_dimensions(w, h)?;
+    }
+
     // 内存流经 image 内建 PNM 解码；损坏/截断/空/非 PNM 一并在内报 decode 错误。
     let input = image::load_from_memory(bytes).map_err(|_| STATUS_DECODE_FAILED)?;
 
-    // to_rgba8 前先校验 w/h（解压炸弹防御）：`load_from_memory` 已产出完整解码
-    // 图，此处按维度拒绝超大图，避免后续 RGBA8 转换再放大峰值内存。
+    // 解码后二次校验（统一入口兜底）：`load_from_memory` 已产出完整解码图，
+    // 此处防御头声明与实际输出尺寸不一致，避免后续 RGBA8 转换再放大峰值内存。
     let (w, h) = (input.width(), input.height());
-    let limit = u64::from(MAX_IMAGE_DIMENSION) * u64::from(MAX_IMAGE_DIMENSION);
-    if u64::from(w) * u64::from(h) > limit {
-        return Err(STATUS_TOO_LARGE);
-    }
+    check_dimensions(w, h)?;
 
     // 任意位深/颜色类型统一归一化为 RGBA8（4 字节/像素）输出。
     let rgba = input.to_rgba8();
@@ -265,16 +335,55 @@ mod tests {
 
     #[test]
     fn oversize_declared_dimensions_return_status_too_large() {
-        // 伪造头声明 10000x10000（>8192x8192）且光栅补齐 → 解码成功但维度超限
-        // 返回 -7。用 P4（1-bit, 12.5MB 光栅）使夹具体积最小；解码期临时缓冲
-        // 峰值 ~100MB 属测试环境可接受量级（todo 34 起改由 check_dimensions
-        // 在解码前拒绝，杜绝此临时分配）。
-        let mut fake = b"P4\n10000 10000\n".to_vec();
-        fake.extend(std::iter::repeat(0u8).take(10000 * (10000 / 8)));
+        // 伪造头声明 10000x10000（>8192x8192）：小体积头即被统一上限入口在
+        // 解码前拒绝（-7），不再构造 12.5MB 光栅、不进入 image 分配。
+        assert_eq!(decode_pnm(b"P4\n10000 10000\n"), Err(STATUS_TOO_LARGE));
+        assert_eq!(decode_pnm(b"P5\n10000 10000\n255\n"), Err(STATUS_TOO_LARGE));
         assert_eq!(
-            decode_pnm(&fake),
+            decode_pnm(b"P3\n# comment\n10000 10000\n255\n"),
             Err(STATUS_TOO_LARGE),
-            "10000x10000 应返回 -7 而非解码成功/崩溃"
+            "ASCII 头（含注释）同样前置拒绝"
         );
+        // P7 PAM：WIDTH/HEIGHT 头键声明超限。
+        assert_eq!(
+            decode_pnm(b"P7\nWIDTH 10000\nHEIGHT 10000\nDEPTH 3\nMAXVAL 255\nTUPLTYPE RGB\nENDHDR\n"),
+            Err(STATUS_TOO_LARGE)
+        );
+    }
+
+    #[test]
+    fn malformed_header_falls_back_to_image_crate_decode_failed() {
+        // 头解析失败（缺 height / 维度非数字 / P7 缺 ENDHDR）→ 保持原路径：
+        // 由 image crate 判定 -2，预检不产假阳性 -7。
+        assert_eq!(decode_pnm(b"P6\n10000\n"), Err(STATUS_DECODE_FAILED));
+        assert_eq!(decode_pnm(b"P6\nabc def\n255\n"), Err(STATUS_DECODE_FAILED));
+        assert_eq!(
+            decode_pnm(b"P7\nWIDTH 4\nHEIGHT 4\nDEPTH 3\nMAXVAL 255\n"),
+            Err(STATUS_DECODE_FAILED),
+            "P7 缺 ENDHDR → 回落 image 判 -2"
+        );
+    }
+
+    #[test]
+    fn parse_pnm_dimensions_reads_ascii_and_pam_headers() {
+        use super::parse_pnm_dimensions;
+        // P1-P6：magic 后 width/height token；注释与各类空白被跳过。
+        assert_eq!(parse_pnm_dimensions(b"P6\n4 4\n255\n"), Some((4, 4)));
+        assert_eq!(parse_pnm_dimensions(b"P3\n# c1\n# c2\n7\t3\n255\n"), Some((7, 3)));
+        assert_eq!(parse_pnm_dimensions(b"P4\n10000 10000\n"), Some((10000, 10000)));
+        // P7 PAM：WIDTH/HEIGHT 头键（ENDHDR 终止）。
+        assert_eq!(
+            parse_pnm_dimensions(
+                b"P7\nWIDTH 8\nHEIGHT 6\nDEPTH 3\nMAXVAL 255\nTUPLTYPE RGB\nENDHDR\n"
+            ),
+            Some((8, 6))
+        );
+        // 解析失败族：非 PNM / 缺 token / 非数字 / 缺 ENDHDR / 缺 WIDTH。
+        assert_eq!(parse_pnm_dimensions(b"not pnm"), None);
+        assert_eq!(parse_pnm_dimensions(b"P6\n"), None);
+        assert_eq!(parse_pnm_dimensions(b"P6\n10\n"), None);
+        assert_eq!(parse_pnm_dimensions(b"P6\nabc 10\n"), None);
+        assert_eq!(parse_pnm_dimensions(b"P7\nWIDTH 8\nHEIGHT 6\n"), None);
+        assert_eq!(parse_pnm_dimensions(b"P7\nHEIGHT 6\nENDHDR\n"), None);
     }
 }

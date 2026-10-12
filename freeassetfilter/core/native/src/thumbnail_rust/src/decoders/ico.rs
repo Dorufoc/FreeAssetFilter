@@ -18,14 +18,8 @@
 //! 输出统一 RGBA8（4 字节/像素），与其余 T1 解码器契约一致：
 //! `Result<(Vec<u8>, u32, u32), i32>`。
 
-use crate::{STATUS_DECODE_FAILED, STATUS_TOO_LARGE};
-
-/// 防御性上限：目标解码尺寸 ≤ 8192×8192，与 `thumbnail_manager.py`
-/// MAX_IMAGE_DIMENSION 对齐（防解压炸弹）。
-///
-/// 后续 todo 34 会统一接入 `infra/limits.rs::check_dimensions`，届时本常量
-/// 及其校验点迁移至统一的 `check_dimensions(w, h)` 入口。
-const MAX_IMAGE_DIMENSION: u32 = 8 * 1024;
+use crate::infra::limits::check_dimensions;
+use crate::STATUS_DECODE_FAILED;
 
 /// ICONDIR 条目（16 字节/条）：宽/高 1 字节（0 表示 256）+ 颜色数/reserved 各
 /// 1 字节 + planes/bits_per_pixel(u16 LE) + size(u32 LE) + offset(u32 LE)。
@@ -102,15 +96,12 @@ fn best_entry(bytes: &[u8]) -> Result<IcoEntry, i32> {
 ///
 /// 接线 image crate PNG 解码路径（与内建 ICO 解码器对 PNG 条目的行为逐字节
 /// 一致，满足 `output_matches_direct_image_crate_reference` 验收对比）。解码
-/// 后按实际输出维度兜底校验尺寸上限 → `STATUS_TOO_LARGE(-7)`。
+/// 后按实际输出维度经统一入口兜底校验尺寸上限 → `STATUS_TOO_LARGE(-7)`。
 fn decode_png_entry(payload: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
     let input = image::load_from_memory_with_format(payload, image::ImageFormat::Png)
         .map_err(|_| STATUS_DECODE_FAILED)?;
     let (w, h) = (input.width(), input.height());
-    let limit = u64::from(MAX_IMAGE_DIMENSION) * u64::from(MAX_IMAGE_DIMENSION);
-    if u64::from(w) * u64::from(h) > limit {
-        return Err(STATUS_TOO_LARGE);
-    }
+    check_dimensions(w, h)?;
     let rgba = input.to_rgba8();
     Ok((rgba.into_raw(), w, h))
 }
@@ -145,10 +136,8 @@ fn decode_dib_entry(payload: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
     if image_height == 0 {
         return Err(STATUS_DECODE_FAILED);
     }
-    let limit = u64::from(MAX_IMAGE_DIMENSION) * u64::from(MAX_IMAGE_DIMENSION);
-    if u64::from(width) * u64::from(image_height) > limit {
-        return Err(STATUS_TOO_LARGE);
-    }
+    // 尺寸预检（统一入口；按图像高判定，不含 AND mask 半区）。
+    check_dimensions(width, image_height)?;
 
     // 像素区：BMP bottom-up 行序；32bpp 下每行 width*4 字节（天然 4 字节对齐）。
     let pixel_row_bytes = usize::try_from(width).unwrap() * 4;
@@ -202,15 +191,11 @@ fn decode_dib_entry(payload: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
 ///   ≠ 0、type ∉ {1=Ico, 2=Cur}、count==0、字节不足 6 → `-2`。
 /// - 条目表（每条 16 字节）：宽/高 1 字节字段（0 表示 256），条目表截断
 ///   （count 声明超出实际数据）→ `-2`；最佳条目的内嵌数据越界 → `-2`。
-/// - 解码后按实际输出维度兜底校验尺寸上限（防解压炸弹）→ `-7`。
+/// - 解码后按实际输出维度经统一上限入口 `infra/limits::check_dimensions`
+///   兜底校验（防解压炸弹）→ `-7`。
 ///
 /// CUR 热点（条目 planes/bitCount 字段：hotspotX/hotspotY）不解释像素——仅
 /// 作为 bpp 元数据参与最佳条目选择（hotspotY=250 使该条目 bpp 最高而被选中）。
-#[allow(dead_code)]
-// 解码器当前未接线 lib.rs（待 todo 24/26 经 infra/registry 分发接入）；crate
-// 以 cdylib 形式构建、尚未被生产路径引用，仅 `#[cfg(test)]` 引用会触发
-// dead_code 警告——显式标注并注明未来消费点（同 infra/resize.rs 的
-// box_resize_rgba / pnm.rs 的 decode_pnm 先例）。
 pub fn decode_ico(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
     // ---- ICONDIR 头预检（6 字节）----
     if bytes.len() < 6 {
@@ -274,8 +259,8 @@ const ICO_DIB_2X2_ALPHA: &[u8] = &[0, 0, 1, 0, 1, 0, 2, 2, 0, 0, 0, 0, 32, 0, 64
 
     /// 62 bytes：ICONDIR + 单条目（size=40, offset=22）+ 40B BITMAPINFOHEADER。
     /// DIB 头声明 10000×10000（biWidth=10000、biHeight=20000=2×图像高），
-    /// 无像素数据——`decode_dib_entry` 的尺寸预检在分配前返回 -7（todo 34
-    /// 补齐的超限夹具；条目级宽/高字节上限 256 不构成超限向量，超限只能
+    /// 无像素数据——`decode_dib_entry` 的尺寸预检（统一上限入口）在分配前
+    /// 返回 -7（超限夹具；条目级宽/高字节上限 256 不构成超限向量，超限只能
     /// 经 DIB 头或内嵌 PNG IHDR 声明，后者是解码后校验、伪头先挂 -2）。
     const ICO_DIB_OVERSIZE_10000X10000: &[u8] = &[
         // ICONDIR：reserved=0, type=1(ICO), count=1
@@ -439,9 +424,9 @@ const ICO_DIB_2X2_ALPHA: &[u8] = &[0, 0, 1, 0, 1, 0, 2, 2, 0, 0, 0, 0, 32, 0, 64
 
     #[test]
     fn oversize_dib_header_returns_too_large() {
-        // DIB 头声明 10000×10000（w*h=1e8 > 8192²）：尺寸预检在像素区分配
-        // 前返回确定性 -7，不 panic、不触碰 image crate（todo 34 补齐的
-        // 超限夹具，与其余 13 组解码器的超限测试对齐）。
+        // DIB 头声明 10000×10000（w*h=1e8 > 8192²）：统一上限入口在像素区
+        // 分配前返回确定性 -7，不 panic、不触碰 image crate（与其余 13 组
+        // 解码器的超限测试对齐）。
         assert_eq!(
             decode_ico(ICO_DIB_OVERSIZE_10000X10000),
             Err(STATUS_TOO_LARGE),

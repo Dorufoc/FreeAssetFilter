@@ -7,9 +7,9 @@
 //! **纯接线实现（Design Revision 5 选型）**：不自研 TGA 解析——Cargo.toml 已
 //! 启用 `image = { features=["tga"] }`，image 0.25.10 内建 tga codec（header /
 //! RLE 包/颜色表/16bpp RGB5x1 展开/原点翻转全部内建）。本模块只做两件事：
-//! ① 解码前按 18 字节头中的宽度/高度做解压炸弹防御（`infra/limits.rs` 的
-//!    `check_dimensions` 属 todo 34 统一入口，尚未实现——本处按同一 8192×8192
-//!    契约内联判定，todo 34 落地后此判定可移交该入口）；
+//! ① 解码前按 18 字节头中的宽度/高度做解压炸弹防御（统一经
+//!    `infra/limits.rs::check_dimensions`，与 `thumbnail_manager.py`
+//!    MAX_IMAGE_DIMENSION=8192 对齐；超限在进入 image crate 分配前返回 -7）；
 //! ② 委托 `image::load_from_memory` → `to_rgba8` → `into_raw` 输出统一 RGBA8。
 //!
 //! 错误契约：维度超限（`w*h > 8192*8192`）返回 `STATUS_TOO_LARGE(-7)`；其余
@@ -22,7 +22,8 @@
 //! 生成脚本 `.omo/evidence/thumbnail-rust-refactor/task-11-gen-tga-fixtures.py`
 //! 复现）。
 
-use crate::{STATUS_DECODE_FAILED, STATUS_TOO_LARGE};
+use crate::infra::limits::check_dimensions;
+use crate::STATUS_DECODE_FAILED;
 
 /// TGA 文件头固定 18 字节（idLength/颜色表/图像类型/原点/尺寸/位深/描述符）。
 const TGA_HEADER_LEN: usize = 18;
@@ -30,9 +31,6 @@ const TGA_HEADER_LEN: usize = 18;
 const TGA_WIDTH_OFFSET: usize = 12;
 /// 高度字段偏移（u16 LE）。
 const TGA_HEIGHT_OFFSET: usize = 14;
-/// 目标解码尺寸上限（与 `thumbnail_manager.py` MAX_IMAGE_DIMENSION=8192 对齐；
-/// todo 34 统一入口 `infra/limits.rs::check_dimensions` 落地后移交）。
-const MAX_DIMENSION: u32 = 8192;
 
 /// 解码 TGA 字节流为 RGBA8，返回 `(RGBA8 像素, 宽, 高)`。
 ///
@@ -40,11 +38,8 @@ const MAX_DIMENSION: u32 = 8192;
 /// - `STATUS_DECODE_FAILED(-2)`：输入不足 18 字节头、image crate 解码失败
 ///   （截断/RLE 码流损坏/未知图像类型/越界颜色表索引等）——不 panic。
 /// - `STATUS_TOO_LARGE(-7)`：头声明的 `w*h > 8192*8192`（解压炸弹防御，
-///   在进入 image crate 分配像素缓冲之前返回）。
-#[allow(dead_code)]
-// 当前 crate 为 cdylib：本函数由 todo 8-22 解码器接线（registry 分发路由）消费，
-// 在此之前仅 `#[cfg(test)]` 引用——显式标注避免 dead_code 警告
-// （同 infra/resize.rs / registry.rs 先例）。
+///   统一经 `infra/limits::check_dimensions`，在进入 image crate 分配像素
+///   缓冲之前返回）。
 pub fn decode_tga(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
     if bytes.len() < TGA_HEADER_LEN {
         return Err(STATUS_DECODE_FAILED);
@@ -54,9 +49,7 @@ pub fn decode_tga(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
         u32::from(u16::from_le_bytes([bytes[TGA_WIDTH_OFFSET], bytes[TGA_WIDTH_OFFSET + 1]]));
     let height =
         u32::from(u16::from_le_bytes([bytes[TGA_HEIGHT_OFFSET], bytes[TGA_HEIGHT_OFFSET + 1]]));
-    if u64::from(width) * u64::from(height) > u64::from(MAX_DIMENSION) * u64::from(MAX_DIMENSION) {
-        return Err(STATUS_TOO_LARGE);
-    }
+    check_dimensions(width, height)?;
     // TGA 无魔数，image crate 的 guess_format 明确不支持 TGA（见 image/src/io/free_functions.rs
     // "TGA is not supported by this function"），必须显式指定格式，否则一律 Unsupported 失败。
     let img =
