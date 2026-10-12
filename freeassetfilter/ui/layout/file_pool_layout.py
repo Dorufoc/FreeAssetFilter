@@ -1626,6 +1626,9 @@ class FilePoolLayout(QWidget):
         if removed_index >= 0 and self._view_mode == "list":
             placeholder = QWidget(self._card_container)
             placeholder.setFixedHeight(start_rect.height())
+            # category (c) 直写：退出动画的临时透明占位控件（创建即销毁、
+            # 无主题色，走注册表反而多一次重建）；见
+            # app_stylesheet.DIRECT_SETSTYLESHEET_SITES。
             placeholder.setStyleSheet("background: transparent; border: none;")
             self._card_layout.insertWidget(removed_index, placeholder)
 

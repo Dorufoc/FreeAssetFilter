@@ -18,7 +18,6 @@
 
 from __future__ import annotations
 
-import inspect
 import sys
 from pathlib import Path
 from typing import Any
@@ -42,7 +41,6 @@ from freeassetfilter.ui.main_window import (  # noqa: E402
     SettingsWindow,
     fixed_mica_params,
     make_mica_background,
-    main,
 )
 
 # 全局主题单例（与 main_window 同款短路径；不在 reset_singletons 清单，
@@ -927,12 +925,3 @@ class TestContentThemeTransition:
             self._restore_theme(initial_dark)
             window.deleteLater()
             qapp.processEvents()
-
-
-class TestModuleEntryPoint:
-    """main：模块级入口函数（不执行，避免阻塞事件循环）。"""
-
-    def test_main_is_callable(self) -> None:
-        """入口函数签名引用即可覆盖符号，callable 校验。"""
-        assert callable(main)
-        assert inspect.isfunction(main)

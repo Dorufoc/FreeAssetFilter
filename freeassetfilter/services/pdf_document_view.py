@@ -385,23 +385,19 @@ class PdfDocumentView:
 
     # ── Zoom management ───────────────────────────────────────────────
 
-    def set_zoom_level(self, zl: float, exit_auto_resize: bool = True) -> float:
+    def set_zoom_level(self, zl: float) -> float:
         """Set the zoom level, clamped to ``[0.1, 10.0]``.
 
         Parameters
         ----------
         zl : float
             Desired zoom level.
-        exit_auto_resize : bool, optional
-            Reserved for future use (e.g. disabling auto-resize on manual
-            zoom).  Currently unused.
 
         Returns
         -------
         float
             The actual zoom level after clamping.
         """
-        del exit_auto_resize  # Reserved for future use.
         self.zoom_level = max(0.1, min(10.0, zl))
         return self.zoom_level
 
@@ -641,8 +637,7 @@ class PdfDocumentView:
         6. Store the window-space rects in ``selected_character_rects``.
            The rect math stays in Python (:meth:`_refresh_selection_rects`) —
            it is display-layer work, not part of the hot path, and keeps
-           serde_json's ≤1 ULP bbox drift (todo 18 accepted-diff) out of the
-           rects.
+           serde_json's ≤1 ULP bbox drift (accepted-diff) out of the rects.
         7. Return the joined text string (space-separated).
 
         Parameters
@@ -700,8 +695,8 @@ class PdfDocumentView:
                     }
                 )
 
-        # Prefer native word filtering (``faf_core.pdf_select_words``, todo 19
-        # 接线).  ``None`` signals "native unavailable" and triggers the
+        # Prefer native word filtering (``faf_core.pdf_select_words``, already
+        # wired).  ``None`` signals "native unavailable" and triggers the
         # Python fallback below.  Each entry is
         #   (page, block_no, line_no, word_no, word_text, x0, y0, x1, y1).
         selected_words: Optional[List[_SelectedEntry]] = self._select_words_native(
@@ -808,18 +803,17 @@ class PdfDocumentView:
     ) -> Optional[List[_SelectedEntry]]:
         """Run the smart selection filter through faf_core when available.
 
-        Native first (todo 19 接线): serialises ``words_json`` (page-space word
+        Native first (already wired): serialises ``words_json`` (page-space word
         list produced by Python :meth:`PdfDocument.get_text_words`) plus the
         raw drag parameters and page heights into ``faf_pdf_select_words``
-        (JSON contract fixed in todo 18).  The Rust side normalises the vertical
-        rect, clips per-page bounds and applies the same smart x-bound
-        predicates, returning selected entries sorted by
-        ``(page, block, line, word_no)``.
+        (fixed JSON contract).  The Rust side normalises the vertical rect,
+        clips per-page bounds and applies the same smart x-bound predicates,
+        returning selected entries sorted by ``(page, block, line, word_no)``.
 
         Each native entry is resolved back to the **Python authoritative** word
         tuple so ``_cached_sel_words`` and the selection rects never carry
-        serde_json's ≤1 ULP bbox drift (todo 18 accepted-diff — kept on the
-        Python side on purpose).  A native entry that cannot be resolved to a
+        serde_json's ≤1 ULP bbox drift (accepted-diff — kept on the Python
+        side on purpose).  A native entry that cannot be resolved to a
         Python tuple is a contract violation and forces the caller to fall back.
 
         Parameters

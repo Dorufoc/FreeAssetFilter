@@ -269,7 +269,7 @@ class TestStartupController:
 
 
 class TestStartupWarmupThread:
-    """预热线程 run()（stub 全部底层预热入口，同步直调不启线程）。"""
+    """预热线程 run()（stub FFmpeg 底层预热入口，同步直调不启线程）。"""
 
     def test_run_warmups_are_invoked(self, startup: Any, monkeypatch: Any) -> None:
         calls: list = []
@@ -277,47 +277,26 @@ class TestStartupWarmupThread:
         def _ffmpeg():
             calls.append("ffmpeg")
 
-        def _lut_cpp():
-            calls.append("lut_cpp")
-
-        def _lut_gen():
-            calls.append("lut_gen")
-
         monkeypatch.setattr(
             "freeassetfilter.core.native.bridges.media_probe.warmup_ffmpeg_tools", _ffmpeg
         )
-        monkeypatch.setattr(
-            "freeassetfilter.core.native.src.cpp_lut_preview.warmup", _lut_cpp
-        )
-        monkeypatch.setattr(
-            "freeassetfilter.core.native.bridges.lut_preview_generator.get_preview_generator",
-            _lut_gen,
-        )
-        startup.StartupWarmupThread().run()
+        thread = startup.StartupWarmupThread()
+        thread.run()
         assert calls == ["ffmpeg"]
+        assert thread.is_done
 
     def test_run_isolates_failures(self, startup: Any, monkeypatch: Any) -> None:
         """FFmpeg 预热失败不影响启动任务完成。"""
         calls: list = []
 
         def _ffmpeg():
+            calls.append("attempted")
             raise RuntimeError("boom")
-
-        def _lut_cpp():
-            calls.append("lut_cpp")
-
-        def _lut_gen():
-            calls.append("lut_gen")
 
         monkeypatch.setattr(
             "freeassetfilter.core.native.bridges.media_probe.warmup_ffmpeg_tools", _ffmpeg
         )
-        monkeypatch.setattr(
-            "freeassetfilter.core.native.src.cpp_lut_preview.warmup", _lut_cpp
-        )
-        monkeypatch.setattr(
-            "freeassetfilter.core.native.bridges.lut_preview_generator.get_preview_generator",
-            _lut_gen,
-        )
-        startup.StartupWarmupThread().run()
-        assert calls == []
+        thread = startup.StartupWarmupThread()
+        thread.run()
+        assert calls == ["attempted"]
+        assert thread.is_done

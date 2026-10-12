@@ -174,8 +174,8 @@ def _fake_mutagen_file(audio: _FakeAudio):
 class TestRealMediaFiles:
     """基于最小合法 WAV/MP3/FLAC 文件的真实解析测试。"""
 
-    def test_extract_basic_info_wav_reads_audio_metadata(self, tmp_path: Path) -> None:
-        """happy：真实 WAV 应解析出时长/声道/采样率/大小。
+    def test_extract_audio_metadata_wav_reads_audio_params(self, tmp_path: Path) -> None:
+        """happy：真实 WAV 应解析出时长/声道/采样率。
 
         Args:
             tmp_path: pytest 临时目录。
@@ -184,14 +184,13 @@ class TestRealMediaFiles:
         from freeassetfilter.services.media_metadata_service import MediaMetadataService
 
         svc = MediaMetadataService()
-        info: Dict[str, Any] = svc.extract_basic_info(path)
-        assert info["extension"] == "wav"
-        assert info["file_size"] > 0
-        assert abs(float(info["duration"]) - 2.0) < 0.1
-        assert info["channels"] == 1
-        assert info["sample_rate"] == 8000
+        meta: Optional[Dict[str, Any]] = svc.extract_audio_metadata(path)
+        assert meta is not None
+        assert abs(float(meta["duration"]) - 2.0) < 0.1
+        assert meta["channels"] == 1
+        assert meta["sample_rate"] == 8000
 
-    def test_extract_basic_info_mp3_reads_bitrate(self, tmp_path: Path) -> None:
+    def test_extract_audio_metadata_mp3_reads_bitrate(self, tmp_path: Path) -> None:
         """happy：真实 MP3 应解析出比特率 128kbps 与 44.1kHz。
 
         Args:
@@ -201,13 +200,14 @@ class TestRealMediaFiles:
         from freeassetfilter.services.media_metadata_service import MediaMetadataService
 
         svc = MediaMetadataService()
-        info: Dict[str, Any] = svc.extract_basic_info(path)
-        assert info["bitrate"] == 128000
-        assert info["sample_rate"] == 44100
-        assert info["channels"] == 2
-        assert float(info["duration"]) > 0
+        meta: Optional[Dict[str, Any]] = svc.extract_audio_metadata(path)
+        assert meta is not None
+        assert meta["bitrate"] == 128000
+        assert meta["sample_rate"] == 44100
+        assert meta["channels"] == 2
+        assert float(meta["duration"]) > 0
 
-    def test_extract_basic_info_flac_reads_streaminfo(self, tmp_path: Path) -> None:
+    def test_extract_audio_metadata_flac_reads_streaminfo(self, tmp_path: Path) -> None:
         """happy：真实 FLAC 应解析出 STREAMINFO 中的时长/声道/采样率。
 
         Args:
@@ -217,11 +217,11 @@ class TestRealMediaFiles:
         from freeassetfilter.services.media_metadata_service import MediaMetadataService
 
         svc = MediaMetadataService()
-        info: Dict[str, Any] = svc.extract_basic_info(path)
-        assert info["extension"] == "flac"
-        assert abs(float(info["duration"]) - 1.0) < 0.1
-        assert info["channels"] == 2
-        assert info["sample_rate"] == 44100
+        meta: Optional[Dict[str, Any]] = svc.extract_audio_metadata(path)
+        assert meta is not None
+        assert abs(float(meta["duration"]) - 1.0) < 0.1
+        assert meta["channels"] == 2
+        assert meta["sample_rate"] == 44100
 
     def test_extract_audio_tags_maps_id3_fields(self, tmp_path: Path) -> None:
         """happy：真实 MP3 ID3 标签应映射到 title/artist/album。
@@ -272,8 +272,8 @@ class TestRealMediaFiles:
 class TestMissingAndCorruptFallback:
     """文件缺失 / 损坏时的无异常回退测试。"""
 
-    def test_extract_basic_info_missing_file_returns_path_info(self, tmp_path: Path) -> None:
-        """boundary：文件不存在时只返回基础路径信息。
+    def test_extract_audio_metadata_directory_returns_none(self, tmp_path: Path) -> None:
+        """boundary：目录输入返回 None，不触发 mutagen 解析。
 
         Args:
             tmp_path: pytest 临时目录。
@@ -281,12 +281,7 @@ class TestMissingAndCorruptFallback:
         from freeassetfilter.services.media_metadata_service import MediaMetadataService
 
         svc = MediaMetadataService()
-        missing: str = str(tmp_path / "ghost.mp3")
-        info: Dict[str, Any] = svc.extract_basic_info(missing)
-        assert info["file_name"] == "ghost.mp3"
-        assert info["file_path"] == missing
-        assert "file_size" not in info
-        assert "is_dir" not in info
+        assert svc.extract_audio_metadata(str(tmp_path)) is None
 
     def test_extract_audio_tags_missing_file_returns_none(self, tmp_path: Path) -> None:
         """error：不存在文件的标签解析返回 None，绝不抛出。
@@ -299,19 +294,6 @@ class TestMissingAndCorruptFallback:
         svc = MediaMetadataService()
         assert svc.extract_audio_tags(str(tmp_path / "ghost.mp3")) is None
         assert svc.extract_audio_cover(str(tmp_path / "ghost.mp3")) is None
-
-    def test_extract_basic_info_directory_skips_media_parse(self, tmp_path: Path) -> None:
-        """boundary：目录输入只返回目录元数据，不触发 mutagen 解析。
-
-        Args:
-            tmp_path: pytest 临时目录。
-        """
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
-
-        svc = MediaMetadataService()
-        info: Dict[str, Any] = svc.extract_basic_info(str(tmp_path))
-        assert info["is_dir"] is True
-        assert "duration" not in info
 
     def test_extract_audio_tags_corrupt_file_returns_empty_schema(self, tmp_path: Path) -> None:
         """error：损坏的音频文件返回空 schema 而非异常。
@@ -472,9 +454,6 @@ class TestMockedMutagen:
         tags: Optional[Dict[str, Any]] = svc.extract_audio_tags(str(dummy))
         assert tags is not None
         assert tags == {"title": "", "artist": "", "album": "", "cover_data": None}
-        info: Dict[str, Any] = svc.extract_basic_info(str(dummy))
-        assert info["file_size"] == 1
-        assert "duration" not in info
 
 
 # ── todo-30：单次 mutagen 打开 ─────────────────────────────────────────────
@@ -606,20 +585,6 @@ class TestSingleMutagenOpen:
 class TestFormatHelpers:
     """静态格式化工具函数的单位 / 负值边界测试。"""
 
-    def test_format_size_units(self) -> None:
-        """happy：``_format_size`` 按 1024 进制选择单位。"""
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
-
-        assert MediaMetadataService._format_size(0) == "0.0 B"
-        assert MediaMetadataService._format_size(2048) == "2.0 KB"
-        assert MediaMetadataService._format_size(3 * 1024 * 1024) == "3.0 MB"
-
-    def test_format_size_negative(self) -> None:
-        """error：负值返回占位文案而非异常。"""
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
-
-        assert MediaMetadataService._format_size(-1) == "无法获取"
-
     def test_format_duration_formats(self) -> None:
         """happy：``_format_duration`` 输出 MM:SS / HH:MM:SS。"""
         from freeassetfilter.services.media_metadata_service import MediaMetadataService
@@ -669,13 +634,15 @@ class TestLifecycle:
         assert svc.is_initialized is False
         assert svc.initialize() is True  # 可再次初始化
 
+    @pytest.mark.skipif(not _MUTAGEN_INSTALLED, reason="mutagen 未安装，跳过真实音频解析")
     def test_extract_returns_before_initialize(self, tmp_path: Path) -> None:
-        """boundary：未 initialize 也可提取基础信息（无资源依赖）。"""
+        """boundary：未 initialize 也可提取音频元数据（无资源依赖）。"""
         from freeassetfilter.services.media_metadata_service import MediaMetadataService
 
         svc = MediaMetadataService()
         path: str = _make_wav(tmp_path / "w.wav")
-        assert svc.extract_basic_info(path)["file_size"] > 0
+        meta: Optional[Dict[str, Any]] = svc.extract_audio_metadata(path)
+        assert meta is not None and float(meta["duration"]) > 0
 
 
 __all__: Tuple[str, ...] = ()

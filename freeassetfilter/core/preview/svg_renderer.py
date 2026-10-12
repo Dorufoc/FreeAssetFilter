@@ -58,10 +58,9 @@ _RE_CSS_STROKE_NORMAL = re.compile(r'(stroke:\s*)#cecece', re.IGNORECASE)
 
 # ── native SVG 换色颜色契约（镜像默认深色主题，与 Rust svg.rs 编译期常量一致） ──
 # Rust 侧 ``faf_replace_svg_colors`` 用编译期常量镜像 ``ui/theme`` colors.json
-# 的 ``gray.g2/g3/g4`` + ``accent.primary`` 深色模式值（todo 11 契约，见
-# `.omo/evidence/rust-hot-path-native-migration/task-11-svg.txt`）。接线仅当
-# ``tm`` 当前色值与这些常量逐一致时才走 native，保证任意主题下输出与 Python
-# 回退逐字节一致（浅色/自定义配色回退 Python）。
+# 的 ``gray.g2/g3/g4`` + ``accent.primary`` 深色模式值（两端口径一致的换色
+# 契约）。接线仅当 ``tm`` 当前色值与这些常量逐一致时才走 native，保证任意
+# 主题下输出与 Python 回退逐字节一致（浅色/自定义配色回退 Python）。
 _NATIVE_ACCENT_COLOR: str = "#3a9dcb"
 _NATIVE_BASE_COLOR: str = "#3e3e3e"
 _NATIVE_SECONDARY_COLOR: str = "#ffffff"
@@ -83,11 +82,11 @@ class SvgRenderer:
         invert_white_to_black: bool,
         force_black_to_base: bool,
     ) -> Optional[str]:
-        """优先尝试经 faf_core 原生换色（todo 12 接线）；不可用/主题不符/异常返回 None。
+        """优先尝试经 faf_core 原生换色（已接线）；不可用/主题不符/异常返回 None。
 
         native（``faf_core.dll`` 桥 ``replace_svg_colors``）返回**裸 SVG 文本**，
         且内部已含 rgba→hex 转换——等价 Python ``_prepare_svg_content`` 的组合
-        管线（todo 11 契约）。native 用编译期常量（:data:`_NATIVE_*`）镜像默认
+        管线（换色契约）。native 用编译期常量（:data:`_NATIVE_*`）镜像默认
         深色主题色值，故仅当 ``tm`` 当前色值与常量逐一致时才走 native，保证
         任意主题（深色/浅色/自定义配色）下输出与 Python 回退逐字节一致。
 

@@ -325,9 +325,9 @@ class ImageDecoderService:
         """
         解码 PSD 图像文件。
 
-        优先走 faf_core 原生合成（``bridge.composite_psd``，todo 9 接线）；
-        因 spike 裁决 DROP（Rust ``psd`` crate 不应用混合模式/蒙版，桥恒返回
-        ``None``）此路径恒回退 psd-tools：``PSDImage.open`` 打开并调用
+        优先走 faf_core 原生合成（``bridge.composite_psd``）；因 spike 裁决
+        DROP（Rust ``psd`` crate 不应用混合模式/蒙版，桥恒返回 ``None``）
+        此路径恒回退 psd-tools：``PSDImage.open`` 打开并调用
         ``composite()`` 合成所有可见图层。最终输出模式转为 RGBA。
 
         Parameters
@@ -347,11 +347,12 @@ class ImageDecoderService:
         CorruptFileError
             文件损坏或无法读取。
         """
-        # ── 优先 native（todo 9 接线）：显式消费桥结果 ─────────────────────
-        # spike 裁决 DROP（task-1-decisions.md §3 / 桥 docstring）：Rust 侧
-        # ``faf_composite_psd`` 恒返回 STATUS_UNSUPPORTED → null → 桥恒返回
-        # ``None``，故恒走 psd-tools 回退。此接线仅保证未来裁决翻转为 KEEP
-        # 时"先取 native、None/异常 → 回退"的结构已就位。
+        # ── 优先 native：显式消费桥结果（裁决 DROP 的终态结构）───────────
+        # spike 裁决 DROP（桥 docstring / psd.rs）：Rust 侧 ``faf_composite_psd``
+        # 恒返回 STATUS_UNSUPPORTED → null → 桥恒返回 ``None``，故恒走
+        # psd-tools 回退。此结构仅保证未来裁决翻转为 KEEP 时"先取 native、
+        # None/异常 → 回退"的路径已就位；当前禁止把未经像素对拍的近似合成
+        # 当作结果返回。
         native: Optional[dict] = None
         try:
             from freeassetfilter.core.native.bridges.faf_core_bridge import (

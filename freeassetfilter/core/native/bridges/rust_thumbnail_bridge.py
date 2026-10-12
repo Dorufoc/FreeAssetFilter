@@ -64,7 +64,7 @@ class RustThumbnailBridge:
         self._available = False
         self._supports_jpg = False
         self._supports_batch_jpg = False
-        # todo 25 新导出能力标记（errorlog 查询/清空、格式表、ffmpeg 能力表）
+        # 新导出能力标记（errorlog 查询/清空、格式表、ffmpeg 能力表）
         self._supports_errorlog = False
         self._supports_formats = False
         self._supports_caps = False
@@ -202,7 +202,7 @@ class RustThumbnailBridge:
         except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             self._supports_batch_jpg = False
 
-        # todo 25 新导出：错误日志查询/清空（Rust 导出自 todo 5 起存在）
+        # 新导出：错误日志查询/清空
         try:
             dll.native_get_error_log_json.argtypes = []
             dll.native_get_error_log_json.restype = c_void_p
@@ -212,7 +212,7 @@ class RustThumbnailBridge:
         except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             self._supports_errorlog = False
 
-        # todo 25 新导出：支持格式注册表查询（Rust 导出自 todo 7 起存在）
+        # 新导出：支持格式注册表查询
         try:
             dll.native_get_supported_formats_json.argtypes = []
             dll.native_get_supported_formats_json.restype = c_void_p
@@ -220,7 +220,7 @@ class RustThumbnailBridge:
         except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             self._supports_formats = False
 
-        # todo 23/25 新导出：ffmpeg 能力表查询（Rust 导出自 todo 23 起存在）
+        # 新导出：ffmpeg 能力表查询
         try:
             dll.native_get_ffmpeg_capabilities_json.argtypes = []
             dll.native_get_ffmpeg_capabilities_json.restype = c_void_p
@@ -381,7 +381,7 @@ class RustThumbnailBridge:
 
         每条记录含 ``path`` / ``format`` / ``status`` / ``message`` /
         ``timestamp`` 字段；环形上限 512 条，溢出丢弃最旧。写入侧由 Rust
-        T3 跳过路径与解码失败统一补录（thumbnail-rust-refactor todo 25）填充。
+        T3 跳过路径与解码失败统一补录填充。
 
         Returns:
             JSON 数组字符串；DLL 不可用、绑定缺失、返回空指针或内容非法时
@@ -470,7 +470,7 @@ class RustThumbnailBridge:
 
         形状：``{"version": str, "formats": [...], "demuxer": [...],
         "muxer": [...], "codecs": [...], "hwaccels": [...]}``
-        （thumbnail-rust-refactor todo 23 契约；OnceLock 缓存）。
+        （能力表契约；OnceLock 缓存）。
 
         Returns:
             JSON 对象字符串；DLL 不可用、绑定缺失或调用失败时返回安全降级值
@@ -577,7 +577,7 @@ class RustThumbnailBridge:
             return None, STATUS_INTERNAL
 
     def generate_jpg_with_status(self, file_path: str, width: int, height: int) -> tuple[bytes | None, int]:
-        """生成 JPG 缩略图并透传原生状态码（todo 33 状态通道入口）。
+        """生成 JPG 缩略图并透传原生状态码（状态通道入口）。
 
         与 :meth:`generate_jpg` 的区别在于失败时不再吞掉状态码：直接读取
         ctypes 结构体的 ``status`` 字段返回给调用方，供 ThumbnailManager 按

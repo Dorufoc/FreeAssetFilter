@@ -19,9 +19,11 @@ so subtree semantics are preserved exactly (self rules via
 ``[fafQssId="<id>"] <selector>``, bare declarations via
 ``*[fafQssId="<id>"]``). ``objectName``/``findChild`` are untouched.
 
-Category (c) sites (genuinely per-instance runtime feedback such as drag
-borders) keep direct ``setStyleSheet`` and are each justified in the
-task-5 report.
+Category (c) sites (genuinely per-instance runtime feedback) keep direct
+``setStyleSheet`` and each carry an inline justification comment; the
+allowed set is pinned in :data:`DIRECT_SETSTYLESHEET_SITES` and enforced
+by a fail-closed unit test that scans the whole package, so any new
+direct call site must be registered there first.
 
 ``ThemeManager.render_qss`` / signals are preserved untouched; this
 module only *reads* the global template and re-applies on
@@ -89,6 +91,19 @@ def _warn_unparsable_fragment(selector: str) -> None:
 #: ``objectName`` so ``findChild`` lookups and existing ``#id`` selectors
 #: keep working untouched.
 FAF_QSS_PROP = "fafQssId"
+
+#: 直接 ``setStyleSheet`` 白名单（category (c)）：(包内相对路径, 所在函数名)。
+#: 仅限"运行时逐实例反馈、注册片段表达不了"的调用点；每处必须带内联理由
+#: 注释。``tests/unit/ui/theme/test_app_stylesheet.py`` 的 fail-closed 单测
+#: 扫描全包比对，新增/移除调用点都必须先同步这里。
+DIRECT_SETSTYLESHEET_SITES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("ui/layout/file_pool_layout.py", "_animate_card_exit"),
+        ("ui/layout/preview/file_info_panel.py", "_apply_toast_style"),
+        ("ui/components/styled_sidebar.py", "_apply_label_fade"),
+        ("ui/theme/app_stylesheet.py", "rebuild"),
+    }
+)
 
 
 def scope_qss(scope_id: str, qss: str, weight: int = 1) -> str:

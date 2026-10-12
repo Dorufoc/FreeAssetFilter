@@ -427,6 +427,8 @@ class SidebarItem(QWidget):
         faded = QColor(self._label_base)
         faded.setAlphaF(self._label_base.alphaF() * self._label_opacity)
         weight = 600 if self._active else 500
+        # category (c) 直写：淡入动画逐帧重算颜色/字重，逐帧注册不可行；
+        # 见 app_stylesheet.DIRECT_SETSTYLESHEET_SITES。
         self._label_widget.setStyleSheet(
             f"font-size:13.5px;font-weight:{weight};"
             f"color:{faded.name(QColor.HexArgb)};"

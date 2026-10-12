@@ -1435,6 +1435,8 @@ class FileInfoPanel(QWidget):
         self._hash_link.set_text(f"{arrow} {hash_text}")
 
     def _apply_toast_style(self) -> None:
+        # category (c) 直写：toast 颜色按 tm.mid 透明度在运行时计算，属
+        # 逐实例反馈；见 app_stylesheet.DIRECT_SETSTYLESHEET_SITES。
         color = _rgba(tm.alpha_of(tm.mid, 80))
         self._toast_label.setStyleSheet(
             f"color: {color}; font-size: 12px; background: transparent;"

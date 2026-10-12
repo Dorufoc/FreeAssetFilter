@@ -29,9 +29,9 @@ FreeAssetFilter 应用引导层（精简版）
 单实例守卫见 ``freeassetfilter.app.instance_guard``；
 启动任务编排见 ``freeassetfilter.app.startup``。
 
-注意：``ui/main_window.py`` 底部保留了独立的调试入口 ``main()``
-（方便单独跑窗口调试；两入口在启动行为上应保持一致，后续若合并
-入口请同步删除该调试函数及相关注释）。
+入口唯一：本模块是唯一应用入口（``ui/main_window.py`` 原有的独立调试
+入口 ``main()`` 已按审查报告 3.2 合并移除）；需要单独调试窗口时直接
+运行 ``python -m freeassetfilter.app.main``。
 """
 
 from __future__ import annotations
@@ -252,11 +252,12 @@ def _setup_windows_process() -> None:
 
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("FreeAssetFilter.App")
 
-    # DPI 感知声明（历史遗留保险）：
+    # DPI 感知声明（保留决策；2026-10-12 经审查报告 3.2 评估）：
     #   Qt6 默认已启用高 DPI 缩放（等效于声明 PerMonitorV2），本块在
-    #   常规环境下冗余；保留用于 PyInstaller 冻结 exe / Qt 行为变化的
+    #   常规环境下冗余；但它是 PyInstaller 冻结 exe / Qt 行为变化时的
     #   保险（缺失时高 DPI 屏可能退化为 Windows 位图拉伸而模糊）。
-    #   TODO(优化整理)：后续评估是否随 Qt6 默认行为稳定后移除。
+    #   权衡后决定长期保留：删除收益仅为数行代码，代价是潜在的整屏
+    #   模糊回归，故不再列入移除计划。
     try:
         user32 = ctypes.windll.user32
         SetProcessDpiAwarenessContext = user32.SetProcessDpiAwarenessContext

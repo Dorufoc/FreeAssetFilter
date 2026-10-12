@@ -408,9 +408,9 @@ pub extern "C" fn faf_render_markdown(text: *const c_char) -> *mut c_char {
 /// dirs_exist_ok=True)`（递归、跟随符号链接）。详见 [`copy::copy_files_impl`]。
 ///
 /// - `sources_json`：源路径字符串数组；`dest_dir`：目标目录（NUL 终止）；
-///   `opts_json`：预留参数对象（`{}`，内容暂忽略，仅校验 UTF-8）；
-/// - ≤32 文件/批内部 rayon 并行（批次粒度；跨批进度/取消归 Python 侧 todo 29）；
-/// - 冲突改名（`_get_unique_target_path`）与分类复制保持 Python 侧（todo 29）；
+///   `opts_json`：预留扩展点（当前无消费者；`{}`，仅校验 UTF-8，内容忽略）；
+/// - ≤32 文件/批内部 rayon 并行（批次粒度；跨批进度/取消在 Python 侧实现）；
+/// - 冲突改名（`_get_unique_target_path`）与分类复制保持 Python 侧；
 /// - 成功：`{"copied":[{"src","dst","size"}],"failed":[{"src","error"}]}`；
 ///   单源失败记入 `failed` 继续，不中断整批；
 /// - 失败（null 指针 / 非 UTF-8 / 坏 JSON / 非数组 / 输出超 [`MAX_JSON_BYTES`]）：
@@ -444,7 +444,7 @@ pub extern "C" fn faf_copy_files(
         let Ok(dest_text) = dest_cstr.to_str() else {
             return std::ptr::null_mut();
         };
-        // opts_json 为 todo 29 预留；本 todo 只校验 UTF-8（内容忽略）。
+        // opts_json 为预留扩展点（当前无消费者）；此处只校验 UTF-8、内容忽略。
         let Ok(_opts_text) = opts_cstr.to_str() else {
             return std::ptr::null_mut();
         };
@@ -555,15 +555,12 @@ pub extern "C" fn faf_composite_psd(path: *const c_char) -> *mut c_char {
 /// invert_white_to_black, force_black_to_base)`。
 ///
 /// 语义对齐 `svg_renderer._replace_svg_colors`（`freeassetfilter/core/preview/
-/// svg_renderer.py:68-137`）之 18 条预编译正则替换顺序。返回替换后的完整 SVG
-/// 文本（NUL 终止），非 JSON。
-///
-/// **todo 2 占位**：`svg::replace_svg_colors_impl` 恒返回
-/// `Err(STATUS_UNSUPPORTED)`，本导出据此返回 null；todo 11 填实现。
+/// svg_renderer.py`）之 18 条预编译正则替换顺序（已完整移植）。返回替换后的
+/// 完整 SVG 文本（NUL 终止），非 JSON。
 ///
 /// - 成功：替换后的 SVG 文本指针（`alloc_json_message` 分配，经
 ///   [`faf_free_message`] 释放）；
-/// - 失败（null/非 UTF-8/未实现）：返回 null，不 panic。
+/// - 失败（null/非 UTF-8/解析失败）：返回 null，不 panic。
 ///
 /// `#[allow(clippy::not_unsafe_ptr_arg_deref)]`：FFI 边界保持 `safe extern "C"`；
 /// 入参经 `guard_c_str` null 守卫。
@@ -696,15 +693,14 @@ pub extern "C" fn faf_free_buffer(ptr: *mut c_void, len: usize) {
 /// current_path, archive_path)`。
 ///
 /// 语义对齐 `py7z_core._parse_list_output`/`_parse_file_block`
-/// （`freeassetfilter/core/native/bridges/py7z_core.py:352-`）。**不做文件 I/O、
+/// （`freeassetfilter/core/native/bridges/py7z_core.py`）。**不做文件 I/O、
 /// 不调用 7z.exe**（子进程与编码检测保留在 Python）。
 ///
-/// **todo 2 占位**：`archive::parse_7z_list_impl` 恒返回
-/// `Err(STATUS_UNSUPPORTED)`，本导出据此返回 null；todo 16 填实现。
+/// 实现已落地（分块解析/路径归一/目录合成/10k 上限）。
 ///
 /// - 成功：条目 JSON 数组（`alloc_json_message` 分配，经 [`faf_free_message`]
 ///   释放）；
-/// - 失败（null/非 UTF-8/未实现）：返回 null，不 panic。
+/// - 失败（null/非 UTF-8/解析失败）：返回 null，不 panic。
 ///
 /// `#[allow(clippy::not_unsafe_ptr_arg_deref)]`：FFI 边界保持 `safe extern "C"`；
 /// 入参经 `guard_c_str` null 守卫。
@@ -746,15 +742,13 @@ pub extern "C" fn faf_parse_7z_list(
 /// selection_json)`。
 ///
 /// 语义对齐 `pdf_document_view.get_text_selection`（`freeassetfilter/services/
-/// pdf_document_view.py:616-745`）：**PyMuPDF `get_text_words`（取词）保留在
-/// Python**，Rust 只吃词表 JSON + 选区参数 JSON，返回选中词条目/索引。
-///
-/// **todo 2 占位**：`pdfsel::select_words_impl` 恒返回
-/// `Err(STATUS_UNSUPPORTED)`，本导出据此返回 null；todo 18 填实现。
+/// pdf_document_view.py`）：**PyMuPDF `get_text_words`（取词）保留在
+/// Python**，Rust 只吃词表 JSON + 选区参数 JSON，返回选中词条目/索引
+/// （归一化/逐页范围/smart x-bound/排序已完整实现）。
 ///
 /// - 成功：选中词 JSON（`alloc_json_message` 分配，经 [`faf_free_message`]
 ///   释放）；
-/// - 失败（null/非 UTF-8/未实现）：返回 null，不 panic。
+/// - 失败（null/非 UTF-8/解析失败）：返回 null，不 panic。
 ///
 /// `#[allow(clippy::not_unsafe_ptr_arg_deref)]`：FFI 边界保持 `safe extern "C"`；
 /// 入参经 `guard_c_str` null 守卫。

@@ -181,8 +181,8 @@ class ThumbnailManager:
     """
 
     # ------------------------------------------------------------------
-    # 三级格式矩阵（todo 27：与 Rust infra/registry.rs FORMAT_SPECS、
-    # ffmpeg 视频全集、Python 回退链对齐；扩展名统一小写、含点号）
+    # 三级格式矩阵（与 Rust infra/registry.rs FORMAT_SPECS、ffmpeg 视频
+    # 全集、Python 回退链对齐；扩展名统一小写、含点号）
     # ------------------------------------------------------------------
     # T1 native 桶：Rust 原生注册表 14 组格式的扩展名全集（魔数嗅探优先、
     # 扩展名兜底，见 core/native/src/thumbnail_rust/src/infra/registry.rs）。
@@ -229,7 +229,7 @@ class ThumbnailManager:
     PYTHON_ONLY_IMAGE_FORMATS: tuple[str, ...] = ('.svg', '.xcf', '.jxr')
     # T3 Python 桶——PSD 系：仅保留 .psb 的 Python 专用链路（psb 在 Rust
     # 侧属 T3 跳过清单，语义一致）。.psd 已归属 T1 NATIVE_IMAGE_FORMATS，
-    # 走原生解码器（todo 20 自研 PSD 解码器提取 resource 1036 内嵌预览），
+    # 走原生解码器（原生解码器提取 resource 1036 内嵌预览），
     # 不再进入 PYTHON_DEDICATED_FORMATS，避免被强制走 Python 链路。
     PSD_FORMATS: tuple[str, ...] = ('.psb',)
     # Python 专用链路聚合（分桶判定用）：T3 全部扩展名。
@@ -1604,7 +1604,7 @@ class ThumbnailManager:
     def _create_native_thumbnail_with_status(
         self, file_path: str, thumbnail_path: str, legacy_thumbnail_path: str
     ) -> tuple[str | None, int]:
-        """原生缩略图生成 + 状态码透传路由（todo 33 状态通道核心入口）。
+        """原生缩略图生成 + 状态码透传路由（状态通道核心入口）。
 
         三级 native 链（JPG 直出 → JPEG 别名 → RGBA+PIL 落盘）全部改走桥的
         ``*_with_status`` 入口，任一环节拿到确定性失败状态（非 -4 接口缺失）

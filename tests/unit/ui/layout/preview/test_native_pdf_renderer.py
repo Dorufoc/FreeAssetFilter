@@ -1,17 +1,17 @@
 # -*- coding: utf-8 -*-
 # targets: freeassetfilter.ui.layout.preview.native_pdf_renderer
-"""NativePdfRenderer 单元测试（任务 4 补充）。
+"""NativePdfRenderer 单元测试。
 
 旧版该组件的测试随 tests/components/test_previewers.py（旧组件测试资产）
-一并删除；本文件为迁移至 ``ui/layout/preview/`` 后的冒烟级重覆盖：
+一并删除；本文件为迁移至 ``ui/layout/preview/`` 后的覆盖：
 
 * 载入有效 PDF：页数/缩放/跳页/适应页宽接口可用；
 * 载入缺失文件：不抛异常并优雅返回；
 * 关闭事件（closeEvent）安全；
-* 右键菜单构建与动作（复制/图片另存为/缩放组/全选）。
-
-完整交互面（选区/手势）的全覆盖登记在重构执行日志
-任务 4 的基建债清单，待后续迭代补足。
+* 右键菜单构建与动作（复制/图片另存为/缩放组/全选）；
+* 交互面：拖拽选区与剪贴板、Ctrl+滚轮缩放、普通滚轮不缩放、
+  中键双击重置缩放、Ctrl 键状态跟踪、复制选中文字与全选
+  （直接构造事件调用处理器，不依赖窗口系统）。
 """
 
 from __future__ import annotations
@@ -22,7 +22,9 @@ from typing import Any
 
 import pytest
 
-from PySide6.QtCore import QPoint
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+from PySide6.QtGui import QKeyEvent, QMouseEvent, QWheelEvent
+from PySide6.QtWidgets import QApplication
 
 # ui 短路径导入引导（styled 组件内部使用 ``from theme/components import ...``）
 _UI_ROOT: str = str(Path(__file__).resolve().parents[5] / "freeassetfilter" / "ui")
@@ -185,5 +187,142 @@ class TestContextMenu:
         try:
             renderer._save_image({"image": b"x", "ext": "png"})
             assert {p.name for p in tmp_path.iterdir()} == before
+        finally:
+            renderer.close()
+
+
+class TestInteractionCoverage:
+    """交互面覆盖：选区拖拽 / 滚轮缩放 / 键盘状态 / 中键双击 / 复制与全选。"""
+
+    @staticmethod
+    def _renderer(sample_pdf_file: str) -> NativePdfRenderer:
+        renderer = NativePdfRenderer()
+        renderer.resize(800, 600)
+        assert renderer.load_document(sample_pdf_file) is True
+        return renderer
+
+    @staticmethod
+    def _mouse_event(
+        event_type: Any,
+        pos: tuple,
+        button: Any = Qt.LeftButton,
+        buttons: Any = None,
+        modifiers: Any = Qt.NoModifier,
+    ) -> Any:
+        if buttons is None:
+            buttons = button
+        local = QPointF(float(pos[0]), float(pos[1]))
+        return QMouseEvent(event_type, local, local, button, buttons, modifiers)
+
+    @staticmethod
+    def _wheel_event(pos: tuple, delta_y: int, modifiers: Any) -> Any:
+        local = QPointF(float(pos[0]), float(pos[1]))
+        return QWheelEvent(
+            local,
+            local,
+            QPoint(),
+            QPoint(0, delta_y),
+            Qt.NoButton,
+            modifiers,
+            Qt.ScrollPhase.NoScrollPhase,
+            False,
+        )
+
+    def test_drag_selection_fills_rects_and_clipboard(
+        self, qapp: Any, sample_pdf_file: str,
+    ) -> None:
+        """左键拖过页面文字：命中选区、填充高亮矩形、松开写入剪贴板。"""
+        renderer = self._renderer(sample_pdf_file)
+        try:
+            words = renderer._doc.get_text_words(0)
+            assert words, "样例 PDF 应包含可选文字"
+            wx0, wy0, wx1, wy1 = words[0][:4]
+            center_y = (wy0 + wy1) / 2.0
+            begin = renderer._view.absolute_to_window_pos(wx0, center_y)
+            end = renderer._view.absolute_to_window_pos(wx1, center_y)
+
+            renderer.mousePressEvent(
+                self._mouse_event(QEvent.Type.MouseButtonPress, begin)
+            )
+            renderer.mouseMoveEvent(
+                self._mouse_event(
+                    QEvent.Type.MouseMove, end,
+                    button=Qt.NoButton, buttons=Qt.LeftButton,
+                )
+            )
+            assert renderer._selected_text, "拖拽后应命中文字"
+            assert renderer._view.selected_character_rects
+
+            renderer.mouseReleaseEvent(
+                self._mouse_event(QEvent.Type.MouseButtonRelease, end)
+            )
+            assert QApplication.clipboard().text() == renderer._selected_text
+        finally:
+            renderer.close()
+
+    def test_ctrl_wheel_zooms_plain_wheel_does_not(
+        self, qapp: Any, sample_pdf_file: str,
+    ) -> None:
+        """Ctrl+滚轮放大/缩小；普通滚轮不改缩放。"""
+        renderer = self._renderer(sample_pdf_file)
+        try:
+            zoom0 = renderer._view.zoom_level
+            renderer.wheelEvent(self._wheel_event((400, 300), 120, Qt.ControlModifier))
+            zoom1 = renderer._view.zoom_level
+            assert zoom1 > zoom0
+            renderer.wheelEvent(self._wheel_event((400, 300), -120, Qt.ControlModifier))
+            assert renderer._view.zoom_level < zoom1
+
+            zoom_plain = renderer._view.zoom_level
+            renderer.wheelEvent(self._wheel_event((400, 300), 120, Qt.NoModifier))
+            assert renderer._view.zoom_level == zoom_plain
+        finally:
+            renderer.close()
+
+    def test_middle_double_click_resets_zoom(self, qapp: Any, sample_pdf_file: str) -> None:
+        """中键双击 → 重置为适应页宽。"""
+        renderer = self._renderer(sample_pdf_file)
+        try:
+            fit_zoom = renderer._view.zoom_level
+            renderer.wheelEvent(self._wheel_event((400, 300), 120, Qt.ControlModifier))
+            assert renderer._view.zoom_level != fit_zoom
+            renderer.mouseDoubleClickEvent(
+                self._mouse_event(
+                    QEvent.Type.MouseButtonDblClick, (400, 300), button=Qt.MiddleButton
+                )
+            )
+            assert renderer._view.zoom_level == pytest.approx(fit_zoom, rel=1e-9)
+        finally:
+            renderer.close()
+
+    def test_key_press_release_tracks_ctrl(self, qapp: Any, sample_pdf_file: str) -> None:
+        """Ctrl 键按下/松开状态跟踪。"""
+        renderer = self._renderer(sample_pdf_file)
+        try:
+            assert renderer._ctrl_pressed is False
+            renderer.keyPressEvent(
+                QKeyEvent(QEvent.Type.KeyPress, Qt.Key_Control, Qt.NoModifier)
+            )
+            assert renderer._ctrl_pressed is True
+            renderer.keyReleaseEvent(
+                QKeyEvent(QEvent.Type.KeyRelease, Qt.Key_Control, Qt.NoModifier)
+            )
+            assert renderer._ctrl_pressed is False
+        finally:
+            renderer.close()
+
+    def test_copy_selected_text_and_select_all(self, qapp: Any, sample_pdf_file: str) -> None:
+        """全选 → 剪贴板文本；手动复制入口与全选结果一致。"""
+        renderer = self._renderer(sample_pdf_file)
+        try:
+            renderer._select_all()
+            text = renderer._selected_text
+            assert "Hello" in text
+            assert renderer._view.selected_character_rects
+            assert QApplication.clipboard().text() == text
+
+            QApplication.clipboard().clear()
+            renderer._copy_selected_text()
+            assert QApplication.clipboard().text() == text
         finally:
             renderer.close()

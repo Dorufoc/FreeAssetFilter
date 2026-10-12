@@ -9,7 +9,9 @@
    含逗号的声明值（``rgba(255,255,255,0.05)``）不得把选择器切碎，后续
    规则不得被吞；
 4. 无法可靠拆分的选择器（属性值含分号）宁可整条跳过也不下发畸形文本——
-   Qt 解析器遇到畸形规则会丢弃整张样式表的后续内容。
+   Qt 解析器遇到畸形规则会丢弃整张样式表的后续内容；
+5. category (c) 直写点白名单门禁：全包 AST 扫描的 ``setStyleSheet``
+   调用点必须与 ``DIRECT_SETSTYLESHEET_SITES`` 精确一致。
 
 验证命令：
     python -m pytest tests/unit/ui/theme/test_app_stylesheet.py --timeout 60 -q
@@ -19,6 +21,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 import sys
 from pathlib import Path
@@ -32,7 +35,10 @@ _UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "freeassetfilter" / "u
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-from freeassetfilter.ui.theme.app_stylesheet import scope_qss  # noqa: E402
+from freeassetfilter.ui.theme.app_stylesheet import (  # noqa: E402
+    DIRECT_SETSTYLESHEET_SITES,
+    scope_qss,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -151,3 +157,61 @@ class TestScopeQss:
         """空/空白片段返回空串（等价 unregister 语义，不产生规则）。"""
         assert scope_qss("t6", "") == ""
         assert scope_qss("t6", "   \n  ") == ""
+
+
+#: 包根：freeassetfilter/（本文件位于 tests/unit/ui/theme/ 下，向上四级）。
+_PACKAGE_ROOT: Path = Path(__file__).resolve().parents[4] / "freeassetfilter"
+
+
+class _DirectStylesheetCollector(ast.NodeVisitor):
+    """收集 ``setStyleSheet`` 调用点及其所在的最近函数名。"""
+
+    def __init__(self) -> None:
+        self._function_stack: List[str] = []
+        self.sites: set = set()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+        self._function_stack.append(node.name)
+        self.generic_visit(node)
+        self._function_stack.pop()
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == "setStyleSheet":
+            self.sites.add(
+                self._function_stack[-1] if self._function_stack else "<module>"
+            )
+        self.generic_visit(node)
+
+
+def _scan_direct_stylesheet_sites() -> set:
+    """AST 扫描全包，返回 ``{(相对路径, 函数名), ...}`` 直写点集合。"""
+    found: set = set()
+    for path in sorted(_PACKAGE_ROOT.rglob("*.py")):
+        rel = path.relative_to(_PACKAGE_ROOT).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        collector = _DirectStylesheetCollector()
+        collector.visit(tree)
+        for func_name in collector.sites:
+            found.add((rel, func_name))
+    return found
+
+
+class TestDirectStylesheetRegistry:
+    """category (c) 直写点登记门禁（fail-closed）。"""
+
+    def test_direct_sites_match_registry(self) -> None:
+        """全包直写点必须与 ``DIRECT_SETSTYLESHEET_SITES`` 精确一致。
+
+        新增直写点 → 报"新增"并提示补内联理由与登记；删除调用点后未同步
+        白名单 → 报"扫描不到"并提示清理。
+        """
+        found = _scan_direct_stylesheet_sites()
+        expected = set(DIRECT_SETSTYLESHEET_SITES)
+        assert found == expected, (
+            "直接 setStyleSheet 调用点与白名单不一致：\n"
+            f"  新增（须补内联理由并登记）: {sorted(found - expected)}\n"
+            f"  白名单但扫描不到（应清理）: {sorted(expected - found)}"
+        )

@@ -685,7 +685,7 @@ def _audio_light_rows(path: str) -> List[Tuple[str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# 文本编码 native 探测（todo 25：三处采样点收敛 + 单文件探测缓存）
+# 文本编码 native 探测（三处采样点收敛 + 单文件探测缓存）
 # ---------------------------------------------------------------------------
 
 # 单文件 native 编码探测缓存：{(path, window): (mtime_ns, result)}，result 可
@@ -927,7 +927,7 @@ def _text_light_rows(path: str) -> List[Tuple[str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# 字体 native 解析（todo 26：light/detail 合并为单次 native 调用 + path+mtime 缓存）
+# 字体 native 解析（light/detail 合并为单次 native 调用 + path+mtime 缓存）
 # ---------------------------------------------------------------------------
 
 # 单文件 native 字体解析缓存：{path: (mtime_ns, result)}，result 可为 None。
@@ -945,8 +945,8 @@ def _get_font_native(path: str) -> Optional[Dict[str, Any]]:
     native 可用时返回字段字典
     ``{"name1".."name6","format","glyph_count","ascent","descent","line_gap"}``
     （name 缺失键为 ``None``）；DLL 缺失 / native 返回 None（WOFF/WOFF2
-    按 todo 1 裁决回退 fontTools、损坏/缺失文件）→ 返回 ``None``，调用方
-    回退 fontTools 现状。文件不存在同样返回 ``None``（不调 native）。
+    不受 ttf-parser 支持，按裁决回退 fontTools；损坏/缺失文件同理）→ 返回
+    ``None``，调用方回退 fontTools。文件不存在同样返回 ``None``（不调 native）。
 
     Args:
         path: 字体文件绝对路径。
@@ -1111,10 +1111,9 @@ def _collect_exif_native(
     """单次 native 解析 EXIF（``faf_core.parse_exif``）；不可用/失败返回 None。
 
     与 :func:`_get_font_native` 同构：DLL 缺失 / native 返回 None（损坏/空/
-    无 EXIF 文件按 todo 6 语义均属失败，Rust 侧 Err → FFI null）→ 返回
-    ``None``，调用方回退 :func:`_collect_exif_exifread`。native 行以
-    ``"label: value"`` 单串输出，经 :func:`_split_exif_native_row` 切回
-    二元组对齐既有返回结构。
+    无 EXIF 文件均属失败，Rust 侧 Err → FFI null）→ 返回 ``None``，调用方
+    回退 :func:`_collect_exif_exifread`。native 行以 ``"label: value"`` 单串
+    输出，经 :func:`_split_exif_native_row` 切回二元组对齐既有返回结构。
 
     Args:
         path: 图片文件绝对路径。

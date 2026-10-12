@@ -796,8 +796,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._mica_chain_preloader = _MicaChainPreloader(self)
         self._mica_chain_preloader.ready.connect(self._on_mica_chain_ready)
 
-        # 合成后端预热：默认构造路径仍在建窗前预热，确保调试入口与历史行为
-        # 一致；正式入口则把它移到首帧之后，避免 QRhi 初始化阻塞窗口出现。
+        # 合成后端预热：默认构造路径（不延迟初始化）仍在建窗前预热，保持历史
+        # 行为一致；正式入口则把它移到首帧之后，避免 QRhi 初始化阻塞窗口出现。
         self._rhi_prewarm = None
         if not self._defer_heavy_init:
             self._rhi_prewarm = prewarm_top_level_rhi(self)
@@ -3100,59 +3100,3 @@ class LicenseViewerWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         except Exception:
             pass
         super().closeEvent(event)
-
-
-def main() -> int:
-    """
-    调试用独立入口（保留便于单独运行窗口调试）。
-
-    注意：正式启动入口是 ``freeassetfilter.app.main``（含日志捕获 /
-    单实例 / 启动任务调度 / 退出链等完整引导设施）。本入口只创建
-    QApplication + MainWindow，两个入口共享同一 MainWindow 实现，
-    应保持观感一致；后续若决定合并入口，请删除本函数与下方
-    ``__main__`` 块及相关注释。
-
-    Returns:
-        int: 应用程序退出代码
-    """
-    try:
-        print("正在启动应用程序...")
-        app = QApplication(sys.argv)
-        print("QApplication 创建成功")
-
-        print("正在创建主窗口...")
-        window = MainWindow()
-        print("主窗口创建成功")
-
-        print("正在显示窗口...")
-        window.show()
-        print("窗口已显示")
-
-        # 无边框能力运行时检查（与正式入口 freeassetfilter.app.main 保持一致）
-        try:
-            from freeassetfilter.ui.frameless_window import frameless_runtime_status
-
-            supported, detail = frameless_runtime_status()
-            if supported:
-                print(f"[无边框] 运行时检查通过：{detail}")
-            else:
-                print("!" * 68)
-                print(f"  无边框窗口已退化：{detail}")
-                print("!" * 68)
-        except Exception as e:  # noqa: BLE001 - 仅提示用途
-            print(f"无边框运行时检测失败: {e}")
-
-        # 退出兜底：确保后台 Mica 线程在应用退出时被回收，避免野线程残留
-        app.aboutToQuit.connect(window._dispose_mica)
-
-        print("启动事件循环...")
-        return app.exec()
-    except Exception as e:
-        print(f"发生错误: {e}")
-        import traceback
-        traceback.print_exc()
-        return 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())

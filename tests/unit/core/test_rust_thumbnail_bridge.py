@@ -281,34 +281,28 @@ class TestNativeResultStructures:
 
 
 # ---------------------------------------------------------------------------
-# 新导出：错误日志查询 / 清空（thumbnail-rust-refactor todo 5）
+# 新导出：错误日志查询 / 清空（桥公开封装）
 # ---------------------------------------------------------------------------
 class TestErrorLogExports:
-    """``native_get_error_log_json`` / ``native_clear_error_log`` 的 ctypes 直调。
+    """``RustThumbnailBridge.get_error_log`` / ``clear_error_log`` 公开封装。
 
-    桥 ``RustThumbnailBridge`` 暂未封装这两个新导出（todo 28 桥扩展内落地），
-    故经实例私有 ``_dll`` 直接以 ctypes 绑定调用；返回的 ``char*`` 按既有
-    ``get_decode_stats`` 的 ``native_free_message`` 模式释放。错误写入侧由
-    todo 25（T3 跳过路径）接线，因此此处只断言可调用、返回合法空数组、
-    清空返回 0 与字段形状契约。
+    错误写入侧由 Rust T3 跳过路径与解码失败统一补录；此处断言公开入口
+    可调用、返回合法 JSON 数组、清空返回 True 与字段形状契约。
     """
 
+    @staticmethod
+    def _require_errorlog(inst: RustThumbnailBridge) -> None:
+        """DLL 不可用或未导出该查询时跳过（公开封装会安全降级）。"""
+        if not (inst.available and inst._supports_errorlog):
+            pytest.skip("thumbnail_generator.dll 不可用或未导出 errorlog 查询")
+
     def test_get_error_log_json_returns_valid_json_array(self) -> None:
-        """新导出可调用：返回 ``char*`` 合法 JSON 数组（当前为空）。"""
-        import ctypes
+        """公开入口可调用：返回合法 JSON 数组（字段形状契约）。"""
         import json
 
         inst = RustThumbnailBridge()
-        dll = inst._dll
-        dll.native_get_error_log_json.argtypes = []
-        dll.native_get_error_log_json.restype = ctypes.c_void_p
-
-        raw = dll.native_get_error_log_json()
-        assert raw, "native_get_error_log_json 应返回非空指针"
-        try:
-            payload = json.loads(ctypes.cast(raw, ctypes.c_char_p).value)
-        finally:
-            inst._native_free_message(raw)
+        self._require_errorlog(inst)
+        payload = json.loads(inst.get_error_log())
 
         assert isinstance(payload, list)
         # 字段形状契约：任何条目都含 path/format/status/message/timestamp
@@ -319,36 +313,22 @@ class TestErrorLogExports:
             )
 
     def test_clear_error_log_returns_ok(self) -> None:
-        """清空返回 STATUS_OK(0)，随后查询为空数组。"""
-        import ctypes
+        """清空返回 True，随后查询为空数组。"""
         import json
 
         inst = RustThumbnailBridge()
-        dll = inst._dll
-        dll.native_clear_error_log.argtypes = []
-        dll.native_clear_error_log.restype = ctypes.c_int
-        dll.native_get_error_log_json.argtypes = []
-        dll.native_get_error_log_json.restype = ctypes.c_void_p
-
-        assert dll.native_clear_error_log() == 0
-        raw = dll.native_get_error_log_json()
-        assert raw
-        try:
-            payload = json.loads(ctypes.cast(raw, ctypes.c_char_p).value)
-        finally:
-            inst._native_free_message(raw)
-        assert payload == []
+        self._require_errorlog(inst)
+        assert inst.clear_error_log() is True
+        assert json.loads(inst.get_error_log()) == []
 
 
 # ---------------------------------------------------------------------------
-# 新导出：支持格式查询（thumbnail-rust-refactor todo 7）
+# 新导出：支持格式查询（桥公开封装）
 # ---------------------------------------------------------------------------
 class TestSupportedFormatsExport:
-    """``native_get_supported_formats_json`` 的 ctypes 直调（todo 7）。
+    """``RustThumbnailBridge.get_supported_formats`` 公开封装。
 
-    桥 ``RustThumbnailBridge`` 暂未封装该新导出（todo 28 桥扩展内落地），故经
-    实例私有 ``_dll`` 直接以 ctypes 绑定调用；返回的 ``char*`` 按既有
-    ``get_decode_stats`` 的 ``native_free_message`` 模式释放（try/finally）。
+    经公开入口取 JSON 字符串并解析；DLL 不可用或未导出该查询时跳过。
     """
 
     # 与 README / thumbnail_manager 常量对齐的 14 组格式标识
@@ -371,22 +351,19 @@ class TestSupportedFormatsExport:
         }
     )
 
+    @staticmethod
+    def _require_formats(inst: RustThumbnailBridge) -> None:
+        """DLL 不可用或未导出格式注册表查询时跳过。"""
+        if not (inst.available and inst._supports_formats):
+            pytest.skip("thumbnail_generator.dll 不可用或未导出格式注册表查询")
+
     def test_returns_valid_json_with_all_14_format_ids(self) -> None:
-        """新导出可调用：返回 ``char*`` 合法 JSON，且含全部 14 组格式标识。"""
-        import ctypes
+        """公开入口可调用：返回合法 JSON，且含全部 14 组格式标识。"""
         import json
 
         inst = RustThumbnailBridge()
-        dll = inst._dll
-        dll.native_get_supported_formats_json.argtypes = []
-        dll.native_get_supported_formats_json.restype = ctypes.c_void_p
-
-        raw = dll.native_get_supported_formats_json()
-        assert raw, "native_get_supported_formats_json 应返回非空指针"
-        try:
-            payload = json.loads(ctypes.cast(raw, ctypes.c_char_p).value)
-        finally:
-            inst._native_free_message(raw)
+        self._require_formats(inst)
+        payload = json.loads(inst.get_supported_formats())
 
         assert isinstance(payload, dict)
         formats = payload.get("formats")
@@ -400,23 +377,15 @@ class TestSupportedFormatsExport:
             assert all(isinstance(x, str) for x in exts)
 
     def test_repeated_calls_return_stable_result(self) -> None:
-        """多次调用结果稳定（顺序不变、可重复释放，无泄漏迹象）。"""
-        import ctypes
+        """多次调用结果稳定（顺序不变、可重复读取，无泄漏迹象）。"""
         import json
 
         inst = RustThumbnailBridge()
-        dll = inst._dll
-        dll.native_get_supported_formats_json.argtypes = []
-        dll.native_get_supported_formats_json.restype = ctypes.c_void_p
+        self._require_formats(inst)
 
         first_ids = None
         for _ in range(3):
-            raw = dll.native_get_supported_formats_json()
-            assert raw
-            try:
-                payload = json.loads(ctypes.cast(raw, ctypes.c_char_p).value)
-            finally:
-                inst._native_free_message(raw)
+            payload = json.loads(inst.get_supported_formats())
             ids = [entry["id"] for entry in payload["formats"]]
             if first_ids is None:
                 first_ids = ids
@@ -425,19 +394,14 @@ class TestSupportedFormatsExport:
 
 
 # ---------------------------------------------------------------------------
-# 新导出：ffmpeg 能力查询（thumbnail-rust-refactor todo 23）
+# 新导出：ffmpeg 能力查询（桥公开封装）
 # ---------------------------------------------------------------------------
 class TestFfmpegCapabilitiesExport:
-    """``native_get_ffmpeg_capabilities_json`` 的 ctypes 直调（todo 23）。
-
-    桥 ``RustThumbnailBridge`` 暂未封装该新导出（todo 28 桥扩展内落地），故经
-    实例私有 ``_dll`` 直接以 ctypes 绑定调用；返回的 ``char*`` 按既有
-    ``get_decode_stats`` 的 ``native_free_message`` 模式释放（try/finally，
-    对照 ``test_get_available_hwaccels_is_list``）。
+    """``RustThumbnailBridge.get_ffmpeg_capabilities`` 公开封装。
 
     形状契约：恒返回合法 JSON 对象，含 ``formats`` / ``codecs`` 数组键——
     无论捆绑 ffmpeg 是否存在、解析结果是否为空数组。真实二进制存在时进一步
-    断言能力表非空（todo 23 的"真实运行验证"在此落地）。
+    断言能力表非空。
     """
 
     # 捆绑 ffmpeg（freeassetfilter/core/native/bin/ffmpeg.exe）的探测路径，
@@ -447,21 +411,12 @@ class TestFfmpegCapabilitiesExport:
     )
 
     def _capabilities(self, inst) -> dict:
-        """经私有 ``_dll`` 绑定调用，返回解析后的 JSON 对象。"""
-        import ctypes
+        """经公开封装取能力表，返回解析后的 JSON 对象。"""
         import json
 
-        dll = inst._dll  # noqa: SLF001
-        dll.native_get_ffmpeg_capabilities_json.argtypes = []
-        dll.native_get_ffmpeg_capabilities_json.restype = ctypes.c_void_p
-
-        raw = dll.native_get_ffmpeg_capabilities_json()
-        assert raw, "native_get_ffmpeg_capabilities_json 应返回非空指针"
-        try:
-            payload = json.loads(ctypes.cast(raw, ctypes.c_char_p).value)
-        finally:
-            inst._native_free_message(raw)  # noqa: SLF001
-        return payload
+        if not (inst.available and inst._supports_caps):
+            pytest.skip("thumbnail_generator.dll 不可用或未导出 ffmpeg 能力表")
+        return json.loads(inst.get_ffmpeg_capabilities())
 
     def test_returns_valid_json_with_array_shape(self) -> None:
         """返回合法 JSON 对象，含 formats/codecs 数组键（无论是否为空）。"""

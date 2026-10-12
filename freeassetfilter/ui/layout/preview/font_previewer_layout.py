@@ -727,7 +727,7 @@ class FontPreviewerLayout(QWidget):
             self._on_wheel_font_size_change
         )
 
-        # 绑定顶栏按钮（缩放弹窗 / 最大化在后续 Wave 中完整实现）
+        # 绑定顶栏按钮（缩放弹窗 / 最大化）
         self._zoom_btn.clicked.connect(self._on_zoom_clicked)
         self._maxsize_btn.clicked.connect(self._on_maxsize_toggle)
 

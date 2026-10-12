@@ -40,7 +40,7 @@ class _StartupWarmupSignals(QObject):
 
 
 class StartupWarmupThread(QRunnable):
-    """启动后后台预热任务：FFmpeg 工具链 + LUT（C++/生成器）。
+    """启动后后台预热任务：FFmpeg 工具链。
 
     所有预热均惰性导入、逐项隔离：单项失败不影响其余预热与主流程。
 
@@ -80,7 +80,6 @@ class StartupWarmupThread(QRunnable):
     def run(self):
         try:
             self._warm_ffmpeg()
-            self._warm_lut()
         finally:
             self._done.set()
             self._signals.finished.emit()
@@ -94,10 +93,6 @@ class StartupWarmupThread(QRunnable):
             warmup_ffmpeg_tools()
         except Exception as e:
             error(f"FFmpeg 预热失败: {e}")
-
-    def _warm_lut(self) -> None:
-        """保留兼容入口；LUT 预览在首次使用时惰性初始化。"""
-        return
 
 
 class StartupController:
@@ -143,8 +138,7 @@ class StartupController:
     def _register_extra_fonts(self) -> None:
         """注册 FiraCode（代码高亮字体；注册后可按 family 名使用）。
 
-        不再改写全局应用字体：全局字体保持 Qt 默认，与
-        ui/main_window.py 独立启动观感一致。
+        不再改写全局应用字体：全局字体保持 Qt 默认。
         """
         from PySide6.QtGui import QFontDatabase
 

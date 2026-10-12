@@ -905,15 +905,15 @@ class FafCoreBridge:
     def parse_exif(self, path: str) -> Optional[dict]:
         """经 faf_core 解析图片 EXIF 元数据（rust-hot-path-native-migration）。
 
-        JSON 契约（与 Rust ``exif::parse_exif_impl`` 对齐，todo 6 已核验）：
+        JSON 契约（与 Rust ``exif::parse_exif_impl`` 对齐，已逐字段核验）：
         ``{"common": ["label: value",...], "rest": ["label: value",...]}``——
         每行为已连接的 ``"label: value"`` 单串（exifread 键无冒号 → 标签即
-        完整键、common 恒空）。对应 Python oracle ``_collect_exif`` 的
-        ``(common, rest)`` 两组行（常用子集 + 文件内顺序平铺），接线侧经
-        ``_split_exif_native_row`` 切回二元组。
+        完整键、common 恒空，属与 oracle 对齐的既有行为）。对应 Python oracle
+        ``_collect_exif`` 的 ``(common, rest)`` 两组行（常用子集 + 文件内顺序
+        平铺），接线侧经 ``_split_exif_native_row`` 切回二元组。
 
-        todo 2 占位期 native 返回 null（``STATUS_UNSUPPORTED``）→ 本方法返回
-        ``None``，调用方（todo 7 接线）回退 exifread 路径。
+        native 已实现并接线；DLL 不可用、绑定缺失或 native 失败/返回 null
+        时返回 ``None``，调用方回退 exifread 路径。
 
         Args:
             path: 图片文件绝对路径。
@@ -942,11 +942,11 @@ class FafCoreBridge:
     def composite_psd(self, path: str) -> Optional[dict]:
         """经 faf_core 合成 PSD 图层（rust-hot-path-native-migration）。
 
-        **spike 裁决 DROP**（task-1-decisions.md §3）：Rust ``psd`` crate 无法
+        **spike 裁决 DROP**（结论见 Rust ``psd.rs``）：Rust ``psd`` crate 无法
         等价 ``psd-tools .composite()``（混合模式/蒙版不应用），Rust 侧恒返回
         ``STATUS_UNSUPPORTED`` → null → 本方法恒返回 ``None``，Python 保持
-        ``_decode_psd``（``image_decoder_service.py:324-``）路径。本方法仅供
-        能力探测与 todo 9 接线预留，禁止降级为错误的合成结果。
+        ``_decode_psd``（``image_decoder_service.py``）路径。本方法保留为能力
+        探测与未来裁决翻转的预留入口，禁止降级为错误的合成结果。
 
         Args:
             path: PSD 文件绝对路径。
@@ -972,13 +972,13 @@ class FafCoreBridge:
         """经 faf_core 替换 SVG 图标颜色（rust-hot-path-native-migration）。
 
         **返回裸 SVG 文本（非 JSON）**——契约与 ``svg_renderer._replace_svg_colors``
-        （``freeassetfilter/core/preview/svg_renderer.py:68-137``）对齐：18 条
-        正则替换顺序 + ``_convert_rgba_to_hex``/``rgba_to_hex`` 语义（todo 11
-        填实现）。返回指针经 ``faf_free_message`` 释放（与 JSON 导出同分配
-        契约——Rust 侧 ``alloc_json_message`` 分配）。
+        （``freeassetfilter/core/preview/svg_renderer.py`` 的 Python 回退口径）
+        对齐：18 条正则替换顺序 + ``_convert_rgba_to_hex``/``rgba_to_hex``
+        语义（已完整移植）。返回指针经 ``faf_free_message`` 释放（与 JSON 导出
+        同分配契约——Rust 侧 ``alloc_json_message`` 分配）。
 
-        todo 2 占位期 native 返回 null（``STATUS_UNSUPPORTED``）→ 本方法返回
-        ``None``，调用方（todo 12 接线）回退 Python 换色。
+        native 已实现并接线；DLL 不可用、绑定缺失或 native 失败时返回
+        ``None``，调用方回退 Python 换色。
 
         Args:
             svg_text: 待替换颜色的 SVG 源文本。
@@ -1096,14 +1096,15 @@ class FafCoreBridge:
     ) -> Optional[list]:
         """经 faf_core 解析 7z ``-slt`` 列表输出（rust-hot-path-native-migration）。
 
-        JSON 契约（与 Rust ``archive::parse_7z_list_impl`` 对齐，todo 16 填
-        实现）：条目 JSON 数组——对应 Python oracle ``py7z_core._parse_list_output``
-        （``freeassetfilter/core/native/bridges/py7z_core.py:333-``）的 7 键
-        条目（``name/path/is_dir/size/modified/suffix`` 等）。**7z.exe 子进程
+        JSON 契约（与 Rust ``archive::parse_7z_list_impl`` 对齐）：条目 JSON
+        数组——对应 Python oracle ``py7z_core._parse_list_output``
+        （``freeassetfilter/core/native/bridges/py7z_core.py``）的 6 键
+        条目（``name/path/is_dir/size/modified/suffix``）。**7z.exe 子进程
         与编码重试保留在 Python**，本方法只吃 stdout 文本。
 
-        todo 2 占位期 native 返回 null（``STATUS_UNSUPPORTED``）→ 本方法返回
-        ``None``，调用方（todo 17 接线）回退 ``_parse_list_output``。
+        native 已实现并接线（分块解析/路径归一/目录合成/10k 上限）；DLL
+        不可用、绑定缺失或 native 失败时返回 ``None``，调用方回退
+        ``_parse_list_output``。
 
         Args:
             output: 7z 命令的 ``-slt`` 输出文本。
@@ -1143,14 +1144,14 @@ class FafCoreBridge:
     ) -> Optional[list]:
         """经 faf_core 过滤 PDF 选区逐词（rust-hot-path-native-migration）。
 
-        JSON 契约（与 Rust ``pdfsel::select_words_impl`` 对齐，todo 18 填
-        实现）：选中词条目 JSON 数组——对应 Python oracle
-        ``pdf_document_view.get_text_selection``（``pdf_document_view.py:616-745``）
-        的 smart x-bound 过滤 + ``sort((page,block,line,word_no))``。**PyMuPDF
-        ``get_text_words`` 取词保留在 Python**，Rust 只吃词表 + 选区参数。
+        JSON 契约（与 Rust ``pdfsel::select_words_impl`` 对齐）：选中词条目
+        JSON 数组——对应 Python oracle
+        ``pdf_document_view.get_text_selection`` 的 smart x-bound 过滤 +
+        ``sort((page,block,line,word_no))``。**PyMuPDF ``get_text_words`` 取词
+        保留在 Python**，Rust 只吃词表 + 选区参数。
 
-        todo 2 占位期 native 返回 null（``STATUS_UNSUPPORTED``）→ 本方法返回
-        ``None``，调用方（todo 19 接线）回退 Python 选区过滤。
+        native 已实现并接线（归一化/逐页范围/smart x-bound/排序）；DLL 不可用、
+        绑定缺失或 native 失败时返回 ``None``，调用方回退 Python 选区过滤。
 
         Args:
             words_json: 词表 JSON（PyMuPDF ``get_text_words`` 产物序列化）。

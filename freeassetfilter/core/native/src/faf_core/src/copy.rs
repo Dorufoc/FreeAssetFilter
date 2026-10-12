@@ -9,8 +9,8 @@
 //!
 //! 设计契约（计划 todo 27 / C8 明文）：
 //! - [`faf_copy_files`]：≤[`CHUNK_SIZE`] 文件/批内部 rayon 并行；跨批进度/取消
-//!   归 Python 侧（todo 29，批次粒度），本模块不做、不跨 FFI；
-//! - 冲突改名（`_get_unique_target_path`）与分类复制保持 Python 侧（todo 29）；
+//!   在 Python 侧实现（批次粒度），本模块不做、不跨 FFI；
+//! - 冲突改名（`_get_unique_target_path`）与分类复制保持 Python 侧；
 //! - 复制跟随符号链接（`shutil.copy2` 语义；copytree `symlinks=False` 行为）；
 //! - 大小聚合**不跟随**符号链接（`DirEntry::file_type()` 不解析目标）；
 //! - per-file 失败 → 记入 `failed` 继续，**不中断整批**；
@@ -125,7 +125,7 @@ fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 /// 复制单个源（文件或目录）到 `dest_dir` 下（目标名 = 源文件名）。
 ///
-/// 目标路径冲突改名由 Python 侧 `_get_unique_target_path` 负责（todo 29）。
+/// 目标路径冲突改名由 Python 侧 `_get_unique_target_path` 负责。
 fn copy_one_source(src: &str, dest_dir: &Path) -> Result<CopySuccess, CopyFailure> {
     let src_path = Path::new(src);
     let file_name = match src_path.file_name() {
@@ -689,7 +689,7 @@ mod tests {
 
     #[test]
     fn chunking_preserves_input_order() {
-        // 复制结果顺序应与输入顺序一致（par_iter collect 保序），供 todo 29
+        // 复制结果顺序应与输入顺序一致（par_iter collect 保序），供 Python 侧
         // 「错误元组顺序一致」使用。生成 35 个源（> CHUNK_SIZE 一桶）验证分批。
         let tmp = TempDir::new();
         let src_dir = tmp.path().join("srcs");
@@ -882,8 +882,8 @@ mod tests {
         );
     }
 
-    /// 取消语义（impl 层无长阻塞点/无泄漏，仅记录——真正的批间取消在 todo 29
-    /// Python 侧 `should_stop` 检查）。
+    /// 取消语义（impl 层无长阻塞点/无泄漏，仅记录——真正的批间取消在 Python 侧
+    /// `should_stop` 检查）。
     ///
     /// 设计契约：取消是**批间**的，Python 侧在批次边界检查；本 impl 层批内 =
     /// ≤[`CHUNK_SIZE`] 源 rayon 并行，单源 = 一次文件/目录复制——不存在单个

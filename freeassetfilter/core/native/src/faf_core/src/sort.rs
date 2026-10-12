@@ -139,15 +139,11 @@ fn mode_to_params(sort_mode: i32) -> Result<(SortKind, bool), i32> {
 ///
 /// 非法 mode → `Err(STATUS_INVALID_ARG)`（列表保持原样）；否则 `Ok(())`。
 ///
-/// 签名沿用计划规定的 `&mut Vec<Entry>`（非 `&mut [Entry]`），故显式压制
-/// `ptr_arg`。
-///
 /// 稳定：`slice::sort_by`（禁 `sort_unstable_*`）。reverse 模式用
 /// `Reverse` 包装比较器——等价 CPython `reverse=True` 的「稳定升序 + 反转
 /// 比较器」，equal-key 相对序保持输入序，同时 `(not is_dir, …)` 整体反转
 /// 令文件在前（dirs-first 翻转）。
-#[allow(clippy::ptr_arg)] // 计划规定签名 `&mut Vec<Entry>`，见任务说明
-pub fn sort_entries_impl(entries: &mut Vec<Entry>, sort_mode: i32) -> Result<(), i32> {
+pub fn sort_entries_impl(entries: &mut [Entry], sort_mode: i32) -> Result<(), i32> {
     let (kind, reverse) = mode_to_params(sort_mode)?;
     entries.sort_by(|a, b| {
         let ka = sort_key(a, kind);
