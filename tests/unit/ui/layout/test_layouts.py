@@ -3255,16 +3255,26 @@ class TestVideoPlayerLayoutAsyncAudio:
         tmp_path: object,
         monkeypatch: Any,
     ) -> None:
-        """时间断言：mutagen 模拟延迟 2s 时 UI 线程立即返回，且返回时未开始解析。"""
-        calls: List[str] = []
+        """时间断言：mutagen 阻塞解析时 UI 线程立即返回（解析异步执行）。
 
-        def _slow_mutagen(_path: str) -> "_FakeAudio":
+        共享线程池的调度顺序不确定，"返回时 worker 尚未开始"不是可断言的
+        事实（worker 可能在 set_file 返回前已启动）。改用闸门：mutagen 调
+        用先登记再阻塞，闸门未放行前必然无法完成——若 set_file 同步等待解
+        析，elapsed 会超过闸门超时而断言失败；放行后再等待任务完成收尾。
+        """
+        import threading
+
+        calls: List[str] = []
+        gate = threading.Event()
+
+        def _gated_mutagen(_path: str) -> "_FakeAudio":
             calls.append(str(_path))
-            time.sleep(2.0)
+            gate.wait(timeout=5.0)
             return _FakeAudio(tags={}, info=_FakeAudioInfo())
 
         monkeypatch.setattr(
-            "freeassetfilter.services.media_metadata_service.mutagen_file", _slow_mutagen
+            "freeassetfilter.services.media_metadata_service.mutagen_file",
+            _gated_mutagen,
         )
 
         media: Path = tmp_path / "slow.mp3"
@@ -3274,10 +3284,11 @@ class TestVideoPlayerLayoutAsyncAudio:
             start = time.time()
             assert layout.set_file(str(media), is_audio=True) is True
             elapsed = time.time() - start
-            assert elapsed < 1.0  # 不被 2s 的 mutagen 模拟延迟阻塞
-            assert len(calls) == 0  # 返回时 worker 尚未完成解析（异步执行）
-            # 等待 worker 完成（2s 延迟耗尽）再删布局，避免 queued 信号在
-            # deleteLater 之后抵达产生 teardown 噪音
+            assert elapsed < 1.0  # 不被阻塞中的 mutagen 拖住
+            assert len(calls) <= 1  # 已启动最多一次解析（调度顺序不确定）
+            gate.set()  # 放行解析
+            # 等待 worker 完成再删布局，避免 queued 信号在 deleteLater
+            # 之后抵达产生 teardown 噪音
             self._wait_until(qapp, lambda: len(calls) == 1, timeout=5.0)
             self._wait_until(
                 qapp,
@@ -3285,7 +3296,7 @@ class TestVideoPlayerLayoutAsyncAudio:
                 timeout=5.0,
             )
         finally:
-            pass
+            gate.set()
         layout.cleanup()
         layout.deleteLater()
 
