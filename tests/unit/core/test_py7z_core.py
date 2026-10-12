@@ -597,3 +597,210 @@ class Test7zNativeFallback:
             assert by_name["readme_中文.txt"]["size"] == 256
             assert by_name["readme_中文.txt"]["modified"] == "2026-09-05T10:30:00"
             assert by_name["说明文档.txt"]["size"] == 512
+
+
+# =============================================================================
+# 密码链路 / 状态判定 / 搜索 / 解压（review 3.3 压缩包增强）
+# =============================================================================
+
+
+class TestPasswordHandling:
+    """密码参数与错误分类。"""
+
+    def test_password_injection_rejected(self, monkeypatch: Any) -> None:
+        """密码含控制字符：不触发子进程并返回明确错误。"""
+        called: List[Any] = []
+
+        def _fake(*a: Any, **k: Any) -> Any:
+            called.append(a)
+            return subprocess.CompletedProcess(a[0], 0, stdout="", stderr="")
+
+        core = _mocked_core(monkeypatch, _fake)
+        code, _out, err = core._run_7z_command(  # noqa: SLF001
+            ["l", "x.zip"], password="bad\npw"
+        )
+        assert code == -1
+        assert "密码" in err
+        assert called == []
+
+    def test_password_appended_as_argument(self, monkeypatch: Any) -> None:
+        """合法密码以 ``-p<密码>`` 追加到命令参数。"""
+        called: List[Any] = []
+
+        def _fake(*a: Any, **k: Any) -> Any:
+            called.append(list(a[0]))
+            return subprocess.CompletedProcess(a[0], 0, stdout="", stderr="")
+
+        core = _mocked_core(monkeypatch, _fake)
+        code, _out, _err = core._run_7z_command(  # noqa: SLF001
+            ["l", "x.zip"], password="secret"
+        )
+        assert code == 0
+        assert "-psecret" in called[-1]
+
+    @pytest.mark.parametrize(
+        ("stdout", "stderr", "password", "expected"),
+        [
+            ("", "Wrong password?", "x", "password_invalid"),
+            ("", "Cannot open encrypted archive.", None, "password_required"),
+            ("", "Enter password (will not be echoed):", None, "password_required"),
+            ("", "Enter password:", "x", "password_invalid"),
+            ("", "some other failure", None, "error"),
+            ("", "密码错误", "x", "password_invalid"),
+        ],
+    )
+    def test_classify_password_error(
+        self, stdout: str, stderr: str, password: Any, expected: str
+    ) -> None:
+        """7z 输出 → 状态码分类。"""
+        status, _message = Py7zCore._classify_password_error(
+            stdout, stderr, password
+        )
+        assert status == expected
+
+    def test_list_archive_with_status_ok_mocked(
+        self, monkeypatch: Any, tmp_path: Any
+    ) -> None:
+        """正常输出：status == ok 且条目解析不变。"""
+        archive = tmp_path / "sample.zip"
+        archive.write_bytes(b"PK\x03\x04")
+        fake = lambda *a, **k: subprocess.CompletedProcess(  # noqa: E731
+            list(a[0]), 0, stdout=_SLT_SAMPLE, stderr=""
+        )
+        core = _mocked_core(monkeypatch, fake)
+        files, status, message = core.list_archive_with_status(str(archive))
+        assert status == "ok"
+        assert message == ""
+        assert "hello.txt" in {f["name"] for f in files}
+
+
+class TestSearchArchive:
+    """search_archive：平铺解析 + 过滤。"""
+
+    def test_flatten_parse_includes_full_paths(self) -> None:
+        """平铺模式：完整相对路径、display 字段、不做目录折叠。"""
+        core = Py7zCore.__new__(Py7zCore)
+        entries = core._parse_list_output(  # noqa: SLF001
+            _SLT_SAMPLE, "", "sample.zip", flatten=True
+        )
+        paths = {e["path"] for e in entries}
+        assert paths == {"hello.txt", "subdir/data.json"}
+        assert all(e.get("display") for e in entries)
+        flat = next(e for e in entries if e["path"] == "subdir/data.json")
+        assert flat["name"] == "data.json"
+        assert flat["suffix"] == "json"
+
+    def test_search_real(self, _zip_path: str, seven_zip_available: bool) -> None:
+        """真实 ZIP：命中完整相对路径，大小写不敏感，空词/未命中为空。"""
+        if not seven_zip_available:
+            pytest.skip("core/native/bin/7z/7z.exe 缺失")
+        core = Py7zCore(command_timeout=30)
+        hits = core.search_archive(_zip_path, "data")
+        assert [e["path"] for e in hits] == ["subdir/data.json"]
+        assert core.search_archive(_zip_path, "DATA"), "应大小写不敏感"
+        assert core.search_archive(_zip_path, "nomatch-xyz") == []
+        assert core.search_archive(_zip_path, "") == []
+
+    def test_search_empty_keyword_no_process(
+        self, monkeypatch: Any, tmp_path: Any
+    ) -> None:
+        """空关键词直接返回空列表，不触发子进程。"""
+        called: List[Any] = []
+        core = _mocked_core(
+            monkeypatch,
+            lambda *a, **k: called.append(a)
+            or subprocess.CompletedProcess(a[0], 0),
+        )
+        archive = tmp_path / "x.zip"
+        archive.write_bytes(b"PK")
+        assert core.search_archive(str(archive), "   ") == []
+        assert called == []
+
+
+class TestExtractArchive:
+    """extract_archive：全部/选中/自动改名/取消/非法条目。"""
+
+    def test_extract_all_real(
+        self, _zip_path: str, tmp_path: Any, seven_zip_available: bool
+    ) -> None:
+        """真实解压全部条目到目标目录。"""
+        if not seven_zip_available:
+            pytest.skip("core/native/bin/7z/7z.exe 缺失")
+        out_dir = tmp_path / "out_all"
+        result = Py7zCore(command_timeout=60).extract_archive(
+            _zip_path, str(out_dir)
+        )
+        assert result["cancelled"] is False
+        assert result["failed"] == 0
+        assert result["success"] >= 2
+        assert (out_dir / "hello.txt").read_text(encoding="utf-8") == "Hello from ZIP!"
+        assert (out_dir / "subdir" / "data.json").exists()
+
+    def test_extract_selected_entry_real(
+        self, _zip_path: str, tmp_path: Any, seven_zip_available: bool
+    ) -> None:
+        """按条目列表仅解压选中项。"""
+        if not seven_zip_available:
+            pytest.skip("core/native/bin/7z/7z.exe 缺失")
+        out_dir = tmp_path / "out_sel"
+        result = Py7zCore(command_timeout=60).extract_archive(
+            _zip_path, str(out_dir), entries=["hello.txt"]
+        )
+        assert result["failed"] == 0
+        assert (out_dir / "hello.txt").exists()
+        assert not (out_dir / "subdir").exists()
+
+    def test_extract_auto_renames_without_overwrite_real(
+        self, _zip_path: str, tmp_path: Any, seven_zip_available: bool
+    ) -> None:
+        """同名已存在：原文件内容保留，7z 自动改名（-aou）另存。"""
+        if not seven_zip_available:
+            pytest.skip("core/native/bin/7z/7z.exe 缺失")
+        out_dir = tmp_path / "out_rename"
+        out_dir.mkdir()
+        (out_dir / "hello.txt").write_text("existing", encoding="utf-8")
+        result = Py7zCore(command_timeout=60).extract_archive(
+            _zip_path, str(out_dir)
+        )
+        assert result["failed"] == 0
+        assert (out_dir / "hello.txt").read_text(encoding="utf-8") == "existing"
+        others = [
+            p
+            for p in out_dir.iterdir()
+            if p.name != "hello.txt" and p.is_file()
+        ]
+        assert others, "应存在自动改名后的副本"
+        assert any(
+            p.read_text(encoding="utf-8") == "Hello from ZIP!" for p in others
+        )
+
+    def test_extract_cancel_returns_cancelled_real(
+        self, _zip_path: str, tmp_path: Any, seven_zip_available: bool
+    ) -> None:
+        """should_stop 立即命中：返回取消态且不抛异常。"""
+        if not seven_zip_available:
+            pytest.skip("core/native/bin/7z/7z.exe 缺失")
+        out_dir = tmp_path / "out_cancel"
+        result = Py7zCore(command_timeout=60).extract_archive(
+            _zip_path, str(out_dir), should_stop=lambda: True
+        )
+        assert result["cancelled"] is True
+
+    def test_extract_illegal_entries_rejected(
+        self, monkeypatch: Any, tmp_path: Any
+    ) -> None:
+        """条目全部非法（含控制字符）：不解压并返回错误说明。"""
+        called: List[Any] = []
+        core = _mocked_core(
+            monkeypatch,
+            lambda *a, **k: called.append(a)
+            or subprocess.CompletedProcess(a[0], 0),
+        )
+        archive = tmp_path / "x.zip"
+        archive.write_bytes(b"PK")
+        result = core.extract_archive(
+            str(archive), str(tmp_path / "o"), entries=["bad\nname"]
+        )
+        assert result["success"] == 0
+        assert result["errors"]
+        assert called == []

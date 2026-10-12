@@ -11,10 +11,15 @@ from __future__ import annotations
 import locale
 import subprocess
 import tempfile
-from typing import Any, Optional, Sequence, Tuple
+import time
+from typing import Any, Callable, Optional, Sequence, Tuple
 
 
 DEFAULT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024
+
+
+class SubprocessCancelled(Exception):
+    """子进程被 ``should_stop`` 回调主动取消（已 kill，输出不可用）。"""
 
 
 def _coerce_output_limit(value: Optional[int]) -> int:
@@ -53,6 +58,47 @@ def _read_limited_output(
     return _decode_output(data, text=text, encoding=encoding, errors=errors), truncated, total_size
 
 
+def _wait_with_cancel(
+    process: subprocess.Popen,
+    timeout: Optional[float],
+    should_stop: Callable[[], bool],
+    poll_interval: float,
+) -> int:
+    """轮询等待子进程结束（仅 ``should_stop`` 路径使用）。
+
+    - ``should_stop()`` 命中：kill 进程并抛 :class:`SubprocessCancelled`；
+    - 超时：抛 ``subprocess.TimeoutExpired``（由调用方统一 kill/读输出/附加
+      属性，与 ``process.wait(timeout)`` 的既有语义一致）。
+
+    Returns:
+        int: 子进程退出码。
+    """
+    poll = max(0.05, float(poll_interval))
+    deadline = (
+        time.monotonic() + max(0.0, float(timeout))
+        if timeout is not None
+        else None
+    )
+    while True:
+        if should_stop():
+            process.kill()
+            try:
+                process.wait(timeout=2)
+            except Exception:
+                pass
+            raise SubprocessCancelled(f"子进程已取消: {process.args!r}")
+        wait_for = poll
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(cmd=process.args, timeout=timeout)
+            wait_for = min(poll, remaining)
+        try:
+            return process.wait(timeout=wait_for)
+        except subprocess.TimeoutExpired:
+            continue
+
+
 def run_with_limited_output(
     args: Sequence[str],
     *,
@@ -63,6 +109,8 @@ def run_with_limited_output(
     check: bool = False,
     max_stdout_bytes: Optional[int] = None,
     max_stderr_bytes: Optional[int] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+    poll_interval: float = 0.2,
     **popen_kwargs,
 ) -> subprocess.CompletedProcess:
     """
@@ -70,6 +118,10 @@ def run_with_limited_output(
 
     输出先写入临时文件，完成后只读取指定字节数，避免 capture_output=True
     在异常输出过大时把内容完整载入内存。
+
+    可选 ``should_stop`` 回调：轮询等待期间每次检查，返回 True 时 kill
+    子进程并抛出 :class:`SubprocessCancelled`（长耗时解压等场景的协作式
+    取消）。不传时等待语义与历史实现完全一致（含超时 kill）。
     """
     stdout_limit = _coerce_output_limit(max_stdout_bytes)
     stderr_limit = _coerce_output_limit(max_stderr_bytes)
@@ -84,7 +136,12 @@ def run_with_limited_output(
         )
 
         try:
-            returncode = process.wait(timeout=timeout)
+            if should_stop is None:
+                returncode = process.wait(timeout=timeout)
+            else:
+                returncode = _wait_with_cancel(
+                    process, timeout, should_stop, poll_interval
+                )
         except subprocess.TimeoutExpired as exc:
             process.kill()
             try:

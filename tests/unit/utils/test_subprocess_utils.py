@@ -17,6 +17,7 @@ import pytest
 
 from freeassetfilter.utils.subprocess_utils import (
     DEFAULT_MAX_OUTPUT_BYTES,
+    SubprocessCancelled,
     _coerce_output_limit,
     _decode_output,
     run_with_limited_output,
@@ -89,6 +90,66 @@ class TestTimeout:
         # run_with_limited_output 为异常附加读取后的输出。
         assert hasattr(exc, "stdout")
         assert hasattr(exc, "stdout_truncated")
+
+
+class TestShouldStop:
+    """should_stop 协作式取消（轮询 + kill）。"""
+
+    def test_cancel_kills_process_and_raises(self) -> None:
+        """should_stop 返回 True：立即 kill 并抛 SubprocessCancelled。"""
+        import time as _time
+
+        started = _time.monotonic()
+        with pytest.raises(SubprocessCancelled):
+            run_with_limited_output(
+                _py_code("import time; time.sleep(60)"),
+                should_stop=lambda: True,
+                poll_interval=0.05,
+                env=_SUBPROCESS_ENV,
+            )
+        assert _time.monotonic() - started < 10, "取消应立即生效而非等待子进程结束"
+
+    def test_stop_after_first_poll(self) -> None:
+        """回调首次 False、随后 True：轮询等待期间生效。"""
+        calls: dict = {"n": 0}
+
+        def _should_stop() -> bool:
+            calls["n"] += 1
+            return calls["n"] >= 2
+
+        with pytest.raises(SubprocessCancelled):
+            run_with_limited_output(
+                _py_code("import time; time.sleep(60)"),
+                should_stop=_should_stop,
+                poll_interval=0.05,
+                env=_SUBPROCESS_ENV,
+            )
+        assert calls["n"] >= 2
+
+    def test_no_cancel_returns_normally(self) -> None:
+        """回调恒 False：正常完成并返回受限输出。"""
+        result = run_with_limited_output(
+            _py_code("print('done')"),
+            should_stop=lambda: False,
+            poll_interval=0.05,
+            text=True,
+            encoding="utf-8",
+            env=_SUBPROCESS_ENV,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == "done"
+
+    def test_timeout_still_applies_with_cancel(self) -> None:
+        """should_stop 路径下超时语义保持：TimeoutExpired 且附带输出属性。"""
+        with pytest.raises(subprocess.TimeoutExpired) as exc_info:
+            run_with_limited_output(
+                _py_code("import time; time.sleep(60)"),
+                should_stop=lambda: False,
+                timeout=1.0,
+                poll_interval=0.05,
+                env=_SUBPROCESS_ENV,
+            )
+        assert hasattr(exc_info.value, "stdout_truncated")
 
 
 class TestCheckTrue:

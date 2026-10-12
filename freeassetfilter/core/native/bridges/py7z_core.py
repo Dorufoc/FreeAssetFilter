@@ -24,7 +24,10 @@ from typing import List, Dict, Optional, Tuple
 from freeassetfilter.utils.app_logger import info, warning, error, exception_details
 from freeassetfilter.utils.path_utils import validate_safe_path, contains_injection_chars
 from freeassetfilter.utils.perf_metrics import increment_perf_counter, set_perf_metadata, track_perf
-from freeassetfilter.utils.subprocess_utils import run_with_limited_output
+from freeassetfilter.utils.subprocess_utils import (
+    SubprocessCancelled,
+    run_with_limited_output,
+)
 from ..._paths import archive_7z_dir
 
 
@@ -36,6 +39,8 @@ class Py7zCore:
 
     # 默认命令超时时间（秒）
     DEFAULT_COMMAND_TIMEOUT = 60
+    # 解压命令默认超时时间（秒）：大包解压远长于列表；配合 should_stop 取消
+    DEFAULT_EXTRACT_TIMEOUT = 1800
 
     # 安全限制常量
     MAX_ARCHIVE_FILES = 10000  # 压缩包内最大文件数量
@@ -135,7 +140,14 @@ class Py7zCore:
         error("找不到 7z.exe，请确保 7-Zip 已安装或在项目 core/7z 目录中")
         raise FileNotFoundError("找不到 7z.exe，请确保 7-Zip 已安装")
 
-    def _run_7z_command(self, args: List[str], encoding: str = "utf-8", timeout: int = None) -> Tuple[int, str, str]:
+    def _run_7z_command(
+        self,
+        args: List[str],
+        encoding: str = "utf-8",
+        timeout: int = None,
+        password: Optional[str] = None,
+        should_stop=None,
+    ) -> Tuple[int, str, str]:
         """
         运行 7z 命令（带超时控制）
 
@@ -143,9 +155,17 @@ class Py7zCore:
             args: 命令参数列表
             encoding: 输出编码
             timeout: 命令执行超时时间（秒），默认使用实例配置
+            password: 可选压缩包密码（拼 ``-p`` 参数；含控制字符/注入模式
+                时直接拒绝并返回错误）。注意 7z CLI 限制：密码会随命令行
+                短暂出现在进程列表中。
+            should_stop: 可选取消回调（长耗时解压用；True 时抛
+                ``SubprocessCancelled``）
 
         Returns:
             Tuple[int, str, str]: (返回码, 标准输出, 标准错误)
+
+        Raises:
+            SubprocessCancelled: ``should_stop`` 命中时（调用方处理取消态）。
         """
         with track_perf("py7z.run_command"):
             set_perf_metadata("py7z.run_command", "last_encoding", encoding)
@@ -154,6 +174,11 @@ class Py7zCore:
                     increment_perf_counter("py7z.run_command", "injection_blocked")
                     error(f"命令注入风险: {arg}")
                     return -1, "", "检测到命令注入风险"
+            if password:
+                if contains_injection_chars(password):
+                    increment_perf_counter("py7z.run_command", "password_rejected")
+                    return -1, "", "密码包含不支持的字符"
+                args = list(args) + [f"-p{password}"]
 
             cmd = [self._7z_exe_path] + args
 
@@ -170,6 +195,7 @@ class Py7zCore:
                         timeout=actual_timeout,
                         max_stdout_bytes=self.MAX_COMMAND_OUTPUT_BYTES,
                         max_stderr_bytes=self.MAX_COMMAND_OUTPUT_BYTES,
+                        should_stop=should_stop,
                         **subprocess_kwargs
                     )
                     if getattr(result, "stdout_truncated", False) or getattr(result, "stderr_truncated", False):
@@ -205,6 +231,7 @@ class Py7zCore:
                         timeout=actual_timeout,
                         max_stdout_bytes=self.MAX_COMMAND_OUTPUT_BYTES,
                         max_stderr_bytes=self.MAX_COMMAND_OUTPUT_BYTES,
+                        should_stop=should_stop,
                         **subprocess_kwargs
                     )
                     if getattr(result, "stdout_truncated", False) or getattr(result, "stderr_truncated", False):
@@ -216,6 +243,10 @@ class Py7zCore:
                         "success" if result.returncode == 0 else "nonzero_exit",
                     )
                     return result.returncode, result.stdout, result.stderr
+            except SubprocessCancelled:
+                # 协作式取消：向上抛出，由调用方（解压流程）转换取消态
+                increment_perf_counter("py7z.run_command", "cancelled")
+                raise
             except subprocess.TimeoutExpired:
                 increment_perf_counter("py7z.run_command", "timeout")
                 error(f"7z 命令超时({actual_timeout}s)")
@@ -261,27 +292,45 @@ class Py7zCore:
         encoding: str = "utf-8",
         nested_depth: int = 0
     ) -> List[Dict]:
+        """列出压缩包内容（兼容入口；失败返回空列表）。
+
+        委托 :meth:`list_archive_with_status`，仅返回条目列表；需要区分
+        「需要密码 / 密码错误 / 其他错误」时请直接使用带状态版本。
         """
-        列出压缩包内容
+        files, _status, _message = self.list_archive_with_status(
+            archive_path,
+            current_path=current_path,
+            encoding=encoding,
+            nested_depth=nested_depth,
+        )
+        return files
+
+    def list_archive_with_status(
+        self,
+        archive_path: str,
+        current_path: str = "",
+        encoding: str = "utf-8",
+        nested_depth: int = 0,
+        password: Optional[str] = None,
+    ) -> Tuple[List[Dict], str, str]:
+        """列出压缩包内容并返回状态（供加密流程区分错误类型）。
 
         命令执行/编码重试完成后，优先经 faf_core 原生解析 ``-slt`` 输出
         （:meth:`_try_native_parse_list_output`）；DLL 不可用或 native 返回
-        ``None`` 时回退 :meth:`_parse_list_output`（既有 Python 解析不变）。
+        ``None`` 时回退 :meth:`_parse_list_output`。
 
         Args:
             archive_path: 压缩包文件路径
             current_path: 当前浏览路径（用于显示子目录内容）
             encoding: 文件名字符编码
             nested_depth: 当前嵌套深度（用于递归调用时限制深度）
+            password: 可选密码（加密压缩包；错误时返回 password_invalid）
 
         Returns:
-            List[Dict]: 文件和目录列表，每个元素包含:
-                - name: 文件名
-                - path: 完整路径
-                - is_dir: 是否为目录
-                - size: 文件大小（字节）
-                - modified: 修改时间（ISO 格式字符串）
-                - suffix: 文件后缀（小写，不含点）
+            Tuple[List[Dict], str, str]: (条目列表, status, message)。
+            status 取值：``"ok"`` / ``"password_required"`` /
+            ``"password_invalid"`` / ``"error"``。条目字段与旧接口一致：
+            name / path / is_dir / size / modified / suffix。
         """
         with track_perf("py7z.list_archive"):
             set_perf_metadata("py7z.list_archive", "last_nested_depth", nested_depth)
@@ -291,35 +340,43 @@ class Py7zCore:
             except ValueError as e:
                 increment_perf_counter("py7z.list_archive", "invalid_path")
                 error(f"路径验证失败: {e}")
-                return []
+                return [], "error", f"路径验证失败: {e}"
 
             if not os.path.exists(archive_path):
                 increment_perf_counter("py7z.list_archive", "missing_archive")
                 error(f"压缩包不存在: {archive_path}")
-                return []
+                return [], "error", f"压缩包不存在: {archive_path}"
 
             # 检查嵌套深度限制
             if nested_depth >= self.MAX_NESTED_DEPTH:
                 increment_perf_counter("py7z.list_archive", "depth_limited")
                 warning(f"嵌套深度超限({self.MAX_NESTED_DEPTH}层): {archive_path}")
-                return []
+                return [], "error", f"嵌套深度超限({self.MAX_NESTED_DEPTH}层)"
 
             args = ["l", "-slt", archive_path]
-            returncode, stdout, stderr = self._run_7z_command(args, encoding)
+            returncode, stdout, stderr = self._run_7z_command(args, encoding, password=password)
 
             if returncode != 0:
                 increment_perf_counter("py7z.list_archive", "command_failure")
-                error(f"列出压缩包失败: {stderr}")
-                return []
+                status, message = self._classify_password_error(stdout, stderr, password)
+                if status == "error":
+                    error(f"列出压缩包失败: {stderr}")
+                return [], status, message
 
             detected_encoding = self._detect_encoding_from_output(stdout, encoding)
             if detected_encoding != encoding:
                 increment_perf_counter("py7z.list_archive", "encoding_retry")
-                returncode, stdout, stderr = self._run_7z_command(args, detected_encoding)
+                returncode, stdout, stderr = self._run_7z_command(
+                    args, detected_encoding, password=password
+                )
                 if returncode != 0:
                     increment_perf_counter("py7z.list_archive", "command_failure")
-                    error(f"列出压缩包失败: {stderr}")
-                    return []
+                    status, message = self._classify_password_error(
+                        stdout, stderr, password
+                    )
+                    if status == "error":
+                        error(f"列出压缩包失败: {stderr}")
+                    return [], status, message
 
             native_files = self._try_native_parse_list_output(stdout, current_path, archive_path)
             files = native_files if native_files is not None else self._parse_list_output(stdout, current_path, archive_path)
@@ -331,7 +388,34 @@ class Py7zCore:
 
             increment_perf_counter("py7z.list_archive", "success")
             set_perf_metadata("py7z.list_archive", "last_result_count", len(files))
-            return files
+            return files, "ok", ""
+
+    @staticmethod
+    def _classify_password_error(
+        stdout: str, stderr: str, password: Optional[str]
+    ) -> Tuple[str, str]:
+        """按 7z 输出判定密码相关错误类型。
+
+        Returns:
+            Tuple[str, str]: (status, message)；status 为
+            ``"password_required"`` / ``"password_invalid"`` / ``"error"``。
+        """
+        combined = f"{stderr}\n{stdout}".lower()
+        message = (stderr or stdout or "").strip()
+        wrong_markers = ("wrong password", "密码错误", "password is incorrect")
+        required_markers = (
+            "enter password",
+            "cannot open encrypted archive",
+            "password is required",
+            "需要密码",
+        )
+        if any(marker in combined for marker in wrong_markers):
+            return "password_invalid", message or "密码错误"
+        if any(marker in combined for marker in required_markers):
+            return ("password_invalid" if password else "password_required"), (
+                message or "需要密码"
+            )
+        return "error", message
 
     def _try_native_parse_list_output(
         self, output: str, current_path: str, archive_path: str = ""
@@ -365,7 +449,13 @@ class Py7zCore:
         except Exception:  # noqa: BLE001  # broad catch intentional at native FFI boundary
             return None
 
-    def _parse_list_output(self, output: str, current_path: str, archive_path: str = "") -> List[Dict]:
+    def _parse_list_output(
+        self,
+        output: str,
+        current_path: str,
+        archive_path: str = "",
+        flatten: bool = False,
+    ) -> List[Dict]:
         """
         解析 7z l -slt 命令的输出
 
@@ -373,6 +463,9 @@ class Py7zCore:
             output: 7z 命令的输出文本
             current_path: 当前浏览路径
             archive_path: 压缩包路径（用于排除压缩包本身）
+            flatten: 平铺模式（搜索用）：不做子目录折叠与 current_path
+                过滤，每个文件/目录条目独立输出，``path`` 为包内完整相对
+                路径并额外带 ``display`` 字段
 
         Returns:
             List[Dict]: 解析后的文件列表
@@ -413,6 +506,26 @@ class Py7zCore:
                 basename = os.path.basename(file_path.rstrip('\\/'))
                 if basename.startswith('.'):
                     increment_perf_counter("py7z.parse_list_output", "hidden_skipped")
+                    continue
+
+                if flatten:
+                    # 平铺模式（搜索）：完整相对路径独立成行，不做目录折叠
+                    flat_path = file_path.replace('\\', '/')
+                    flat_name = os.path.basename(flat_path.rstrip('/'))
+                    flat_is_dir = bool(file_info.get("is_dir", False))
+                    files.append({
+                        "name": flat_name,
+                        "path": flat_path,
+                        "is_dir": flat_is_dir,
+                        "size": 0 if flat_is_dir else file_info.get("size", 0),
+                        "modified": "" if flat_is_dir else file_info.get("modified", ""),
+                        "suffix": (
+                            ""
+                            if flat_is_dir or "." not in flat_name
+                            else os.path.splitext(flat_name)[1].lower()[1:]
+                        ),
+                        "display": flat_path,
+                    })
                     continue
 
                 if current_path_normalized:
@@ -466,9 +579,17 @@ class Py7zCore:
 
             unique_files = {}
             for file in files:
-                unique_files[file["name"]] = file
+                unique_files[file["path"] if flatten else file["name"]] = file
 
-            results = sorted(unique_files.values(), key=lambda x: (not x["is_dir"], x["name"].lower()))
+            if flatten:
+                results = sorted(
+                    unique_files.values(), key=lambda x: x["path"].lower()
+                )
+            else:
+                results = sorted(
+                    unique_files.values(),
+                    key=lambda x: (not x["is_dir"], x["name"].lower()),
+                )
             set_perf_metadata("py7z.parse_list_output", "last_result_count", len(results))
             increment_perf_counter("py7z.parse_list_output", "success")
             return results
@@ -669,6 +790,172 @@ class Py7zCore:
             return True, ""
         else:
             return False, stderr or stdout
+
+    def search_archive(
+        self,
+        archive_path: str,
+        keyword: str,
+        encoding: str = "utf-8",
+        password: Optional[str] = None,
+    ) -> List[Dict]:
+        """在压缩包内递归搜索（对完整相对路径做大小写不敏感包含过滤）。
+
+        直接解析完整 ``7z l -slt`` 清单（平铺模式，不做子目录折叠）；
+        隐藏文件与压缩包自身保持既有跳过规则，结果沿用
+        ``MAX_ARCHIVE_FILES`` 上限并按路径排序。
+
+        Args:
+            archive_path: 压缩包文件路径。
+            keyword: 搜索关键词（空串返回空列表）。
+            encoding: 文件名字符编码。
+            password: 可选密码（加密压缩包）。
+
+        Returns:
+            List[Dict]: 命中条目列表（字段同列表接口，另含 ``display``
+                完整相对路径）；失败返回空列表。
+        """
+        keyword = (keyword or "").strip()
+        if not keyword:
+            return []
+        try:
+            archive_path = validate_safe_path(archive_path)
+        except ValueError as e:
+            error(f"路径验证失败: {e}")
+            return []
+        if not os.path.exists(archive_path):
+            warning(f"压缩包不存在: {archive_path}")
+            return []
+
+        args = ["l", "-slt", archive_path]
+        returncode, stdout, stderr = self._run_7z_command(
+            args, encoding, password=password
+        )
+        if returncode != 0:
+            warning(f"搜索压缩包失败: {stderr}")
+            return []
+
+        detected_encoding = self._detect_encoding_from_output(stdout, encoding)
+        if detected_encoding != encoding:
+            returncode, stdout, stderr = self._run_7z_command(
+                args, detected_encoding, password=password
+            )
+            if returncode != 0:
+                warning(f"搜索压缩包失败: {stderr}")
+                return []
+
+        entries = self._parse_list_output(
+            stdout, "", archive_path, flatten=True
+        )
+        lowered = keyword.lower()
+        matched = [
+            entry
+            for entry in entries
+            if lowered in str(entry.get("path", "")).lower()
+        ]
+        return matched[: self.MAX_ARCHIVE_FILES]
+
+    def extract_archive(
+        self,
+        archive_path: str,
+        output_dir: str,
+        entries: Optional[List[str]] = None,
+        password: Optional[str] = None,
+        encoding: str = "utf-8",
+        should_stop=None,
+        timeout: Optional[int] = None,
+    ) -> Dict:
+        """解压压缩包到目标目录（``-aou`` 同名自动改名，绝不覆盖已有文件）。
+
+        命令：``7z x <archive> -o<dir> -y -aou [条目…]``；``should_stop``
+        回调命中时 kill 7z 进程并返回取消态（可能残留部分已解压文件）。
+        密码经命令行传递（7z CLI 限制：会短暂出现在进程列表）。
+
+        Args:
+            archive_path: 压缩包文件路径。
+            output_dir: 输出目录（不存在时创建）。
+            entries: 包内条目路径列表（None 表示全部解压）。
+            password: 可选密码（加密压缩包）。
+            encoding: 输出编码。
+            should_stop: 可选取消回调（返回 True → 取消）。
+            timeout: 解压超时（秒），默认 ``DEFAULT_EXTRACT_TIMEOUT``。
+
+        Returns:
+            Dict: ``{"success": int, "failed": int, "errors": List[str],
+            "cancelled": bool}``。
+        """
+        result: Dict = {
+            "success": 0,
+            "failed": 0,
+            "errors": [],
+            "cancelled": False,
+        }
+        try:
+            archive_path = validate_safe_path(archive_path)
+        except ValueError as e:
+            result["errors"].append(f"路径验证失败: {e}")
+            return result
+        if not os.path.exists(archive_path):
+            result["errors"].append(f"压缩包不存在: {archive_path}")
+            return result
+        try:
+            output_dir = validate_safe_path(output_dir)
+        except ValueError as e:
+            result["errors"].append(f"输出目录无效: {e}")
+            return result
+        if not os.path.isdir(output_dir):
+            try:
+                os.makedirs(output_dir, exist_ok=True)
+            except OSError as e:
+                result["errors"].append(f"无法创建输出目录: {e}")
+                return result
+
+        patterns: List[str] = []
+        skipped = 0
+        for item in entries or []:
+            text = str(item or "").strip().replace("\\", "/")
+            if not text or contains_injection_chars(text):
+                skipped += 1
+                continue
+            patterns.append(text)
+        if entries and not patterns:
+            result["errors"].append("没有可解压的合法条目")
+            return result
+        if skipped:
+            result["errors"].append(f"已跳过 {skipped} 个不合法条目")
+
+        args = ["x", archive_path, f"-o{output_dir}", "-y", "-aou"] + patterns
+        effective_timeout = (
+            timeout if timeout is not None else self.DEFAULT_EXTRACT_TIMEOUT
+        )
+        try:
+            returncode, stdout, stderr = self._run_7z_command(
+                args,
+                encoding,
+                timeout=effective_timeout,
+                password=password,
+                should_stop=should_stop,
+            )
+        except SubprocessCancelled:
+            increment_perf_counter("py7z.extract", "cancelled")
+            result["cancelled"] = True
+            return result
+
+        if returncode == 0:
+            # 7z x 摘要含 "Files: N"（解出的条目数）；解析失败时退化为
+            # 按请求条目数计成功（信息不精确但不影响正常成功路径）
+            match = re.search(r"^Files:\s*(\d+)\s*$", stdout, re.MULTILINE)
+            result["success"] = (
+                int(match.group(1))
+                if match
+                else (len(patterns) if patterns else 1)
+            )
+            increment_perf_counter("py7z.extract", "success")
+        else:
+            result["failed"] = 1
+            tail = (stderr or stdout or "").strip()
+            result["errors"].append(tail[-2000:] if tail else "解压失败（无输出）")
+            increment_perf_counter("py7z.extract", "command_failure")
+        return result
 
 
 # 全局单例实例
