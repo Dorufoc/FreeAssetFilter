@@ -4,7 +4,7 @@
 
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 # sys.path bootstrap
 _this_file = Path(__file__).resolve()
@@ -33,6 +33,31 @@ from freeassetfilter.services.image_decoder_service import ImageDecoderService
 from freeassetfilter.ui.components.styled_scroll_area import StyledScrollBar
 from freeassetfilter.ui.components.styled_slider import StyledSlider
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
+
+
+# ── 卡死解码 worker 的退休槽 ──────────────────────────────────────────────
+# rawpy/LibRaw 等原生解码不可中断：ImageDecodeWorker.cancel() 等待超时后
+# 线程可能仍在运行。运行中的 QThread 一旦被 Python 或 deleteLater 销毁会
+# 直接崩溃，因此统一保留模块级引用，待其 finished 后移除（随后由 worker
+# 自身的 finished → deleteLater 链路完成释放）。
+_RETIRED_DECODE_WORKERS: List[ImageDecodeWorker] = []
+
+
+def _retire_decode_worker(worker: ImageDecodeWorker) -> None:
+    """把卡在原生调用的解码 worker 放入退休槽，线程结束后自动释放。
+
+    Args:
+        worker: 取消后仍在运行的 ``ImageDecodeWorker``。
+    """
+    _RETIRED_DECODE_WORKERS.append(worker)
+
+    def _release(w: ImageDecodeWorker = worker) -> None:
+        try:
+            _RETIRED_DECODE_WORKERS.remove(w)
+        except ValueError:
+            pass
+
+    worker.finished.connect(_release)
 
 
 class _StyledHScrollBar(StyledScrollBar):
@@ -784,13 +809,22 @@ class ImagePreviewerLayout(QWidget):
         self._content_stack.setCurrentIndex(1)
 
     def _cancel_decode_worker(self) -> None:
-        """取消当前正在运行的解码 worker。"""
+        """取消当前正在运行的解码 worker。
+
+        已知限制：rawpy/LibRaw 等原生解码不可中断（见
+        ``ImageDecodeWorker.cancel``）。取消等待超时后若线程仍在运行，
+        绝不调用 ``deleteLater()``（销毁运行中的 QThread 会崩溃），而是
+        交给模块级退休槽保留引用，待线程自然结束后再删除。
+        """
         if self._decode_worker is not None:
             worker = self._decode_worker
             self._decode_worker = None
             if worker.isRunning():
                 worker.cancel()
-            worker.deleteLater()
+            if worker.isRunning():
+                _retire_decode_worker(worker)
+            else:
+                worker.deleteLater()
 
     def _on_zoom_clicked(self) -> None:
         """缩放按钮点击：展开/收起缩放弹出面板。"""

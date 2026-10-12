@@ -165,7 +165,10 @@ def scan_source_modules(inventory: ModuleInventory) -> None:
         rel_parts: Tuple[str, ...] = tuple(rel.parts)
         if is_excluded(rel_parts):
             continue
-        module_name: str = normalize_dotted(rel_parts[:-1]) + "." + rel_parts[-1][:-3]
+        # 叶名与父部件合并成 dotted 路径；根级模块（如 `_import_compat.py`）
+        # 没有父部件，不能经由 normalize_dotted(()) 产生双点错误名。
+        dotted_parts: Tuple[str, ...] = rel_parts[:-1] + (rel_parts[-1][:-3],)
+        module_name: str = normalize_dotted(dotted_parts)
         inventory.modules[module_name] = py_file
         try:
             tree = ast.parse(py_file.read_text(encoding="utf-8"))

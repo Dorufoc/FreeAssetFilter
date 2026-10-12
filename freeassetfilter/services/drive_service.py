@@ -13,6 +13,7 @@ import threading
 from typing import List
 
 from freeassetfilter.services.base import BaseService
+from freeassetfilter.utils.app_logger import warning
 
 
 class DriveService(BaseService):
@@ -131,9 +132,12 @@ class DriveService(BaseService):
             for drive in range(26):
                 if drives_bitmask & (1 << drive):
                     drives.append(chr(65 + drive) + ":")
-        except Exception:
-            # 静默失败，返回空列表
-            pass
+        except Exception as exc:
+            # 枚举失败回退空列表；记录异常类型与消息，便于排障（原先静默吞掉）。
+            warning(
+                f"DriveService: GetLogicalDrives 枚举失败，返回空列表："
+                f"{type(exc).__name__}: {exc}"
+            )
         return drives
 
     @staticmethod
@@ -202,7 +206,10 @@ class DriveService(BaseService):
                                     locations.append(remote_name)
                 finally:
                     mpr.WNetCloseEnum(h_enum)
-        except Exception:
-            # 静默失败——保留已收集到的结果
-            pass
+        except Exception as exc:
+            # 枚举失败保留已收集结果；记录异常类型与消息，便于排障（原先静默吞掉）。
+            warning(
+                f"DriveService: 网络位置枚举失败，保留已收集结果："
+                f"{type(exc).__name__}: {exc}"
+            )
         return locations

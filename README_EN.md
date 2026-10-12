@@ -245,15 +245,11 @@ venv\Scripts\activate  # Windows
 pip install -r requirements.txt
 ```
 
-#### 4. Build C++ Extensions (Optional, for LUT color grading, pre-compiled cp39-x64 version included in source)
+#### 4. Build C++ Extensions (Optional, LUT preview only; pre-compiled cp39-x64 version included in source)
 
 ```bash
-# Build color extraction module
-cd freeassetfilter/core/cpp_color_extractor
-python setup.py build_ext --inplace
-
-# Build LUT preview module
-cd ../cpp_lut_preview
+# Build the LUT preview module (MSVC; use setup_mingw.py on MinGW)
+cd freeassetfilter/core/native/src/cpp_lut_preview
 python setup.py build_ext --inplace
 ```
 
@@ -333,7 +329,7 @@ FreeAssetFilter
 ├── Audio Processing: mutagen - Metadata reading
 ├── Archives: 7z.exe command-line tool - Archive file handling
 ├── Syntax Highlighting: Syntect + Pygments - Code syntax highlighting
-└── Extensions: C++/Rust (color extraction, thumbnails, LUT processing) - Performance-critical algorithms
+└── Extensions: C++/Rust (scan/sort/hash/EXIF/font/highlight/Markdown/SVG/7z, thumbnails, Mica, LUT preview) - Performance-critical algorithms
 ```
 
 ### Project Structure
@@ -341,36 +337,30 @@ FreeAssetFilter
 ```
 FreeAssetFilter/
 ├── freeassetfilter/
-│   ├── app/                    # Application entry point
-│   │   └── main.py            # Main program
-│   ├── components/            # UI components
-│   │   ├── file_selector.py   # File selector
-│   │   ├── unified_previewer.py # Unified previewer
-│   │   ├── file_staging_pool.py # File staging pool
-│   │   ├── video_player.py    # Video player
-│   │   ├── photo_viewer.py    # Image viewer
-│   │   ├── pdf_previewer.py   # PDF previewer
-│   │   └── ...                # Other components
-│   ├── core/                  # Core modules
-│   │   ├── settings_manager.py    # Settings management
-│   │   ├── thumbnail_manager.py   # Thumbnail management
-│   │   ├── theme_manager.py       # Theme management
-│   │   ├── mpv_player_core.py     # MPV playback core
-│   │   ├── svg_renderer.py        # SVG rendering
-│   │   ├── cpp_color_extractor/   # C++ color extraction
-│   │   └── cpp_lut_preview/       # C++ LUT preview
-│   ├── icons/                 # Icon resources
-│   ├── utils/                 # Utility functions
-│   │   ├── path_utils.py      # Path handling
-│   │   ├── icon_utils.py      # Icon handling
-│   │   └── syntax/            # Syntax highlighting definitions
-│   └── widgets/               # Custom widget library
-├── data/                      # Data directory
-│   ├── settings.json          # User settings
-│   └── thumbnails/            # Thumbnail cache
-├── requirements.txt           # Python dependencies
-├── README.md                  # Project documentation
-└── LICENSE                    # License
+│   ├── app/                    # Application entry (main / startup / instance_guard)
+│   ├── core/                   # Core managers and native bridges
+│   │   ├── managers/           # Settings V2 / heartbeat / MPV / thumbnail managers
+│   │   ├── workers/            # Directory scan, drive enumeration, staging tasks, thumbnail controller
+│   │   ├── preview/            # Image color utilities, SVG renderer
+│   │   └── native/             # Native bridges/, platform adapters, bin/ binaries, src/ Rust & C++ sources
+│   ├── services/               # Business services (files / preview / Office / PDF / image decoding / staging pool)
+│   ├── ui/                     # UI layer (frameless window, main window)
+│   │   ├── components/         # styled_* component library
+│   │   ├── layout/             # Three-column layouts and previewers
+│   │   ├── mica/               # Mica background engine
+│   │   └── theme/              # Theme system
+│   ├── utils/                  # Shared utilities (paths / logging / highlighting / perf metrics)
+│   ├── docs/                   # Third-party notices and license list
+│   └── icons/                  # UI and file type icon assets
+├── launcher/                   # Discrete-GPU launcher (C source + prebuilt FAF-Launcher.exe)
+├── scripts/                    # Helper scripts (stylesheet stats, effect gate, screenshot tool)
+├── tools/                      # Utility scripts (memory baseline sampling)
+├── tests/                      # Test suite (see tests/README.md)
+├── data/                       # Runtime data (generated locally, gitignored): settings_v2.json, thumbnail cache, logs
+├── requirements.txt            # Python dependencies
+├── Pyinstall_build.py          # PyInstaller packaging script
+├── README.md                   # Project documentation
+└── LICENSE                     # License
 ```
 
 ### Architecture Features
@@ -414,13 +404,12 @@ VS Code or PyCharm is recommended with the following plugins:
 ### Build C++ Extensions
 
 ```bash
-# Build color extraction module
-cd freeassetfilter/core/cpp_color_extractor
+# LUT preview module (the only maintained C++ extension; MSVC toolchain)
+cd freeassetfilter/core/native/src/cpp_lut_preview
 python setup.py build_ext --inplace
 
-# Build LUT preview module
-cd ../cpp_lut_preview
-python setup.py build_ext --inplace
+# On MinGW, use:
+python setup_mingw.py build_ext --inplace
 ```
 
 ### Code Standards
@@ -435,46 +424,17 @@ python setup.py build_ext --inplace
 ### Package Application
 
 ```bash
-# Using PyInstaller (recommended, better stability)
+# Using PyInstaller (the only supported packaging method)
 python Pyinstall_build.py
 
-# Using Nuitka
-python Nuitka_build.py
+# Optional flags: --no-clean keeps previous build output; --skip-build only cleans and validates
 ```
 
 ### Add New File Preview Support
 
-1. **Create Previewer Component** Create a new previewer class in the `components/` directory:
-
-```python
-from PySide6.QtWidgets import QWidget
-
-class NewFormatPreviewer(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.init_ui()
-  
-    def init_ui(self):
-        # Initialize UI
-        pass
-  
-    def set_file(self, file_info: dict):
-        """Set the file to preview"""
-        file_path = file_info['path']
-        # Implement file loading logic
-        pass
-```
-
-2. **Register File Type** Register in `components/unified_previewer.py`:
-
-```python
-self.previewers = {
-    # ... existing previewers
-    '.newext': NewFormatPreviewer,
-}
-```
-
-3. **Add Icon** Add file type icon in the `icons/` directory
+1. **Create Previewer Layout** Add a new layout class under `freeassetfilter/ui/layout/preview/` (see `image_previewer_layout.py` as a reference), implementing the `set_file(path, ...)` entry point expected by the unified previewer;
+2. **Register File Type** Register an "extension → (module path, class name)" entry in `_EXTENSION_MAP` of `freeassetfilter/services/previewer_registry.py` (lazy import, no first-frame cost);
+3. **Add Icon** Add a file type icon in `freeassetfilter/icons/` (follow the v3 multi-color "X – 3.svg" series naming).
 
 ---
 

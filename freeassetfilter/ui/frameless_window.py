@@ -3,7 +3,7 @@
 """
 本地无边框窗口基类（替代外部依赖 PySideSix-Frameless-Window / qframelesswindow）
 
-基于 Qt 6.10+ 原生方案（经 _frameless_modern_demo.py M6 组合人工验证）：
+基于 Qt 6.10+ 原生方案（经 M6 标志组合人工验证）：
 
     Qt.Window | Qt.ExpandedClientAreaHint | Qt.NoTitleBarBackgroundHint
 

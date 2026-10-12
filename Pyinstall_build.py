@@ -481,6 +481,28 @@ def build_pyinstaller_command(data_files: List[Tuple[str, str]],
             cmd.extend(["--collect-submodules", _pkg])
             print_info(f"收集动态子模块: {_pkg}")
 
+    # ── UI 短路径别名包收集（freeassetfilter/_import_compat.py 契约）────────
+    # 运行时把 theme/components（短名）与 freeassetfilter.ui.theme/components
+    # （规范名）收敛为同一模块对象。PyInstaller 6 的子模块解析按「父包
+    # __path__ 前缀 + 尾名」查询 PYZ 条目：若某名称树下缺子模块条目，别名后的
+    # 父包前缀会直接解析失败（冻结启动即崩溃）。因此两棵树都必须完整收集；
+    # 短名包位于 ui_root（--paths 已提供给分析进程，脚本进程另需临时加入
+    # sys.path 供 importlib 探测）。
+    _ui_root_str = str(ui_root)
+    if _ui_root_str not in sys.path:
+        sys.path.insert(0, _ui_root_str)
+    for _pkg in (
+        "theme",
+        "components",
+        "freeassetfilter.ui.theme",
+        "freeassetfilter.ui.components",
+    ):
+        if importlib.util.find_spec(_pkg) is not None:
+            cmd.extend(["--collect-submodules", _pkg])
+            print_info(f"收集 UI 别名树: {_pkg}")
+        else:
+            print_warning(f"跳过缺失的 UI 别名包: {_pkg}")
+
     # ── Office 转换后端收集（T12 / Metis B1-E10）────────────────────────
     # office_converter.py 的 win32com.client / pythoncom / pywintypes 在方法体内
     # 惰性导入，win32com 需要整个子模块树（client、gen_py 等），pythoncom/pywintypes
@@ -522,9 +544,19 @@ def run_pyinstaller_build(cmd: List[str]) -> bool:
     """运行PyInstaller打包"""
     print_header("开始PyInstaller打包")
     print_info("这可能需要几分钟时间，请耐心等待...")
-    
+
+    # PyInstaller 的隔离子进程（--collect-submodules 扫描等）通过
+    # `_subprocess_env` 组装 PYTHONPATH：CONF["pathex"] + 本进程
+    # PYTHONPATH；pathex 在 spec 执行阶段可能尚未生效，导致
+    # `--collect-submodules theme` 静默收集为空。这里显式把 ui_root
+    # （theme/components 短路径包所在目录）注入 PYTHONPATH 兜底。
+    env = os.environ.copy()
+    ui_root = str(get_project_root() / "freeassetfilter" / "ui")
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = ui_root + (os.pathsep + existing_pythonpath if existing_pythonpath else "")
+
     try:
-        result = subprocess.run(cmd, check=True)
+        result = subprocess.run(cmd, check=True, env=env)
         print_success("PyInstaller打包完成")
         return True
     except subprocess.CalledProcessError as e:
@@ -780,8 +812,13 @@ def verify_output() -> bool:
     ]
     
     for resource in resources_to_check:
-        resource_path = output_dir / resource
-        if resource_path.exists():
+        # PyInstaller 5 布局：资源与外置 exe 同级；PyInstaller 6 onedir 布局：
+        # 统一收进 _internal/。两种布局都检查，避免误报资源缺失。
+        candidates = [output_dir / resource]
+        internal_dir = output_dir / "_internal"
+        if internal_dir.is_dir():
+            candidates.insert(0, internal_dir / resource)
+        if any(p.exists() for p in candidates):
             print_success(f"资源存在: {resource}")
         else:
             print_warning(f"资源缺失: {resource}")

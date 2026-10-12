@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """FreeAssetFilter 统一测试运行器（tests/run_tests.py）。
 
-九个 argparse 子命令（``python tests/run_tests.py <子命令>``）：
+七个 argparse 子命令（``python tests/run_tests.py <子命令>``）：
 
 * **all**（默认）—— 全量非基准套件，追加 ``-m "not benchmark and not gui"``
   （benchmark 仅由显式 ``benchmark`` 子命令执行；同时保留 pytest.ini

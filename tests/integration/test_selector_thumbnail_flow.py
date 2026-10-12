@@ -71,7 +71,7 @@ from tests.support.qt_helpers import (  # noqa: E402
     safe_teardown,
 )
 
-pytestmark = pytest.mark.unit
+pytestmark = pytest.mark.integration
 
 
 # =============================================================================

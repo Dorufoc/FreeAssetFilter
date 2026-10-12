@@ -27,7 +27,12 @@ import importlib.util
 import json
 import os
 import subprocess
-import winreg
+
+try:  # 非 Windows 无 winreg；项目仅支持 Windows，守卫保证导入失败时回退 COM 探测
+    import winreg
+except ImportError:  # pragma: no cover
+    winreg = None  # type: ignore[assignment]
+
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -508,12 +513,13 @@ def com_available() -> bool:
         "Kwpp.Application",
     ]
     try:
-        for prog_id in prog_ids:
-            try:
-                winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, prog_id)
-                return True
-            except OSError:
-                continue
+        if winreg is not None:
+            for prog_id in prog_ids:
+                try:
+                    winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, prog_id)
+                    return True
+                except OSError:
+                    continue
     except Exception:
         pass
 

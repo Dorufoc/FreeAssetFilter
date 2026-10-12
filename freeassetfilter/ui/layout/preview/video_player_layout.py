@@ -431,16 +431,26 @@ class VideoPlayerLayout(QWidget):
             64, 64, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
         )
 
+        # 单次转换为 RGBA8888 后直接读像素缓冲，避免逐像素 QColor/pixel()
+        # 跨界调用（旧实现为 4096 次对象构造）。分桶语义与顺序逐项保持：
+        # 行主序遍历、优先出现顺序参与 Counter 平局排序、32 步长分桶、
+        # alpha<=0 跳过。输出与旧实现完全一致（见对拍测试）。
+        rgba = image.convertToFormat(QImage.Format.Format_RGBA8888)
+        width, height = rgba.width(), rgba.height()
+        stride = rgba.bytesPerLine()
+        pixels = memoryview(rgba.constBits()).cast("B")
+
         buckets: Counter = Counter()
-        for y in range(image.height()):
-            for x in range(image.width()):
-                color = QColor(image.pixel(x, y))
-                if color.alpha() <= 0:
+        for y in range(height):
+            row_start = y * stride
+            for x in range(width):
+                i = row_start + x * 4
+                if pixels[i + 3] == 0:
                     continue
                 key = (
-                    (color.red() // 32) * 32,
-                    (color.green() // 32) * 32,
-                    (color.blue() // 32) * 32,
+                    (pixels[i] // 32) * 32,
+                    (pixels[i + 1] // 32) * 32,
+                    (pixels[i + 2] // 32) * 32,
                 )
                 buckets[key] += 1
 

@@ -245,15 +245,11 @@ venv\Scripts\activate  # Windows
 pip install -r requirements.txt
 ```
 
-#### 4. 构建 C++ 扩展（可选，用于 LUT 调色功能，源代码中已包含cp39-x64编译版本）
+#### 4. 构建 C++ 扩展（可选，仅 LUT 预览；仓库已含 cp39-x64 预编译版本）
 
 ```bash
-# 构建颜色提取模块
-cd freeassetfilter/core/cpp_color_extractor
-python setup.py build_ext --inplace
-
-# 构建 LUT 预览模块
-cd ../cpp_lut_preview
+# 构建 LUT 预览模块（MSVC 环境；MinGW 可改用 setup_mingw.py）
+cd freeassetfilter/core/native/src/cpp_lut_preview
 python setup.py build_ext --inplace
 ```
 
@@ -361,7 +357,7 @@ FreeAssetFilter
 ├── 音频处理: mutagen - 元数据读取
 ├── 压缩包: 7z.exe 命令行工具 - 归档文件处理
 ├── 语法高亮: Syntect + Pygments - 代码语法高亮
-└── 扩展模块: C++/Rust (颜色提取、缩略图、LUT 处理) - 性能关键算法
+└── 扩展模块: C++/Rust (扫描/排序/哈希/EXIF/字体/高亮/Markdown/SVG/7z、缩略图、Mica 云母、LUT 预览) - 性能关键算法
 ```
 
 ### 项目结构
@@ -369,36 +365,30 @@ FreeAssetFilter
 ```
 FreeAssetFilter/
 ├── freeassetfilter/
-│   ├── app/                    # 应用程序入口
-│   │   └── main.py            # 主程序
-│   ├── components/            # UI 组件
-│   │   ├── file_selector.py   # 文件选择器
-│   │   ├── unified_previewer.py # 统一预览器
-│   │   ├── file_staging_pool.py # 文件存储池
-│   │   ├── video_player.py    # 视频播放器
-│   │   ├── photo_viewer.py    # 图像查看器
-│   │   ├── pdf_previewer.py   # PDF 预览器
-│   │   └── ...                # 其他组件
-│   ├── core/                  # 核心模块
-│   │   ├── settings_manager.py    # 设置管理
-│   │   ├── thumbnail_manager.py   # 缩略图管理
-│   │   ├── theme_manager.py       # 主题管理
-│   │   ├── mpv_player_core.py     # MPV 播放核心
-│   │   ├── svg_renderer.py        # SVG 渲染
-│   │   ├── cpp_color_extractor/   # C++ 颜色提取
-│   │   └── cpp_lut_preview/       # C++ LUT 预览
-│   ├── icons/                 # 图标资源
-│   ├── utils/                 # 工具函数
-│   │   ├── path_utils.py      # 路径处理
-│   │   ├── icon_utils.py      # 图标处理
-│   │   └── syntax/            # 语法高亮定义
-│   └── widgets/               # 自定义控件库
-├── data/                      # 数据目录
-│   ├── settings.json          # 用户设置
-│   └── thumbnails/            # 缩略图缓存
-├── requirements.txt           # Python 依赖
-├── README.md                  # 项目说明
-└── LICENSE                    # 许可证
+│   ├── app/                    # 应用入口（main / startup / instance_guard）
+│   ├── core/                   # 核心管理与原生桥
+│   │   ├── managers/           # 设置 V2 / 心跳 / MPV / 缩略图管理器
+│   │   ├── workers/            # 目录扫描、盘符枚举、存储池任务、缩略图控制器
+│   │   ├── preview/            # 图像色彩工具、SVG 渲染器
+│   │   └── native/             # 原生桥 bridges/、平台适配、bin/ 二进制、src/ Rust 与 C++ 源码
+│   ├── services/               # 业务服务层（文件 / 预览 / Office / PDF / 图像解码 / 存储池等）
+│   ├── ui/                     # 界面层（无边框窗口、主窗口）
+│   │   ├── components/         # styled_* 组件库
+│   │   ├── layout/             # 三栏布局与各预览器
+│   │   ├── mica/               # Mica 云母背景引擎
+│   │   └── theme/              # 主题系统
+│   ├── utils/                  # 通用工具（路径 / 日志 / 高亮 / 性能埋点等）
+│   ├── docs/                   # 第三方组件与许可证清单
+│   └── icons/                  # 界面与文件类型图标资源
+├── launcher/                   # 独显启动器（C 源码 + 预编译 FAF-Launcher.exe）
+├── scripts/                    # 辅助脚本（样式统计、Effect 门禁、截图工具）
+├── tools/                      # 内存基线采样等工具脚本
+├── tests/                      # 测试体系（详见 tests/README.md）
+├── data/                       # 运行期数据（本地生成、gitignore）：settings_v2.json、缩略图缓存、日志
+├── requirements.txt            # Python 依赖清单
+├── Pyinstall_build.py          # PyInstaller 打包脚本
+├── README.md                   # 项目说明
+└── LICENSE                     # 许可证
 ```
 
 ### 架构特点
@@ -442,13 +432,12 @@ pip install -r requirements.txt
 ### 构建 C++ 扩展
 
 ```bash
-# 构建颜色提取模块
-cd freeassetfilter/core/cpp_color_extractor
+# LUT 预览模块（唯一仍在维护的 C++ 扩展；MSVC 环境）
+cd freeassetfilter/core/native/src/cpp_lut_preview
 python setup.py build_ext --inplace
 
-# 构建 LUT 预览模块
-cd ../cpp_lut_preview
-python setup.py build_ext --inplace
+# MinGW 环境改用：
+python setup_mingw.py build_ext --inplace
 ```
 
 ### 代码规范
@@ -463,46 +452,17 @@ python setup.py build_ext --inplace
 ### 打包应用
 
 ```bash
-# 使用 PyInstaller（推荐，稳定性更好）
+# 使用 PyInstaller（唯一受支持的打包方式）
 python Pyinstall_build.py
 
-# 使用 Nuitka
-python Nuitka_build.py
+# 可选参数：--no-clean 保留旧构建输出；--skip-build 仅清理与验证
 ```
 
 ### 添加新的文件预览支持
 
-1. **创建预览器组件** 在 `components/` 目录创建新的预览器类：
-
-```python
-from PySide6.QtWidgets import QWidget
-
-class NewFormatPreviewer(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.init_ui()
-  
-    def init_ui(self):
-        # 初始化 UI
-        pass
-  
-    def set_file(self, file_info: dict):
-        """设置要预览的文件"""
-        file_path = file_info['path']
-        # 实现文件加载逻辑
-        pass
-```
-
-1. **注册文件类型** 在 `components/unified_previewer.py` 中注册：
-
-```python
-self.previewers = {
-    # ... 现有预览器
-    '.newext': NewFormatPreviewer,
-}
-```
-
-1. **添加图标** 在 `icons/` 目录添加文件类型图标
+1. **创建预览器布局** 在 `freeassetfilter/ui/layout/preview/` 下新增布局类（可参考 `image_previewer_layout.py`），实现与统一预览器约定的入口方法 `set_file(path, ...)`；
+2. **注册文件类型** 在 `freeassetfilter/services/previewer_registry.py` 的 `_EXTENSION_MAP` 中登记「扩展名 → (模块路径, 类名)」映射（惰性导入，不影响首屏加载）；
+3. **添加图标** 在 `freeassetfilter/icons/` 添加文件类型图标（命名沿用 v3 多彩系列「X – 3.svg」）。
 
 ***
 

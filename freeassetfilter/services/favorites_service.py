@@ -11,6 +11,7 @@ import os
 from typing import List, Optional
 
 from freeassetfilter.services.base import BaseService
+from freeassetfilter.utils.app_logger import warning
 
 
 class FavoritesService(BaseService):
@@ -75,8 +76,18 @@ class FavoritesService(BaseService):
             if isinstance(data, list):
                 self._favorites = data
             else:
+                warning(
+                    f"FavoritesService: 收藏夹文件顶层非列表，已按空列表处理："
+                    f"{self.favorites_file}"
+                )
                 self._favorites = []
-        except (json.JSONDecodeError, OSError, ValueError):
+        except (json.JSONDecodeError, OSError, ValueError) as exc:
+            # 文件损坏/不可读：按空列表继续，但必须留痕（含文件路径），
+            # 便于用户发现收藏数据异常。
+            warning(
+                f"FavoritesService: 收藏夹文件读取失败，已按空列表处理："
+                f"{self.favorites_file}（{type(exc).__name__}: {exc}）"
+            )
             self._favorites = []
 
         self._loaded = True

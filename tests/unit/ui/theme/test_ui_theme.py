@@ -99,6 +99,15 @@ class TestSystemAccent:
         )
         assert system_accent.get_system_accent_color("#ABCDEF") == "#445566"
 
+    def test_registry_reader_without_winreg(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """winreg 缺失（非 Windows 守卫）→ 注册表读取安全返回 None 并回退默认。"""
+        monkeypatch.setattr(system_accent, "winreg", None)
+        assert system_accent._get_accent_color_from_registry() is None
+        monkeypatch.setattr(system_accent, "_get_accent_color_from_dwm", lambda: None)
+        assert system_accent.get_system_accent_color("#ABCDEF") == "#ABCDEF"
+
 
 # =============================================================================
 # ui.theme.theme_manager

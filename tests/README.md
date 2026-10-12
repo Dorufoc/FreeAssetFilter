@@ -7,163 +7,214 @@
 ```
 tests/
 ├── conftest.py              # 顶层 fixture 工厂（QApplication、单例重置、原生可用性探测等）
-├── run_tests.py             # 官方测试运行器（子命令式封装 pytest）
+├── run_tests.py             # 官方测试运行器（子命令式封装 pytest，共 7 个子命令）
 ├── __init__.py
+├── acceptance/              # 计划验收自检脚本（thumbnail-rust-refactor / rust-hot-path-native-migration）
 ├── benchmark/               # 性能基准测试与回归检查（默认排除，需显式指定范围）
-├── components/              # 上层业务组件的集成级测试（文件选择器、暂存池、预览器等）
 ├── gui/                     # 可视化 GUI 测试（需要真实显示器）
 ├── integration/             # 跨模块联动、全生命周期与真实二进制集成的测试
-├── support/                 # 测试基础设施（fixture 辅助、日志、超时策略、覆盖清单等）
-├── unit/                    # 单体测试（core / services / ui / utils / workers 五块）
-└── widgets/                 # 自定义 QWidget 与模型/委派测试
+├── log/                     # 测试运行日志（运行时生成，gitignore）
+├── support/                 # 测试基础设施（fixture 辅助、日志、超时策略、覆盖清单、parity 工具等）
+└── unit/                    # 单体测试（core / services / ui / utils / workers 五块）
 ```
 
 各目录定位：
 
 | 目录 | 定位 |
 | --- | --- |
-| `benchmark/` | 缩略图、缓存、SVG 等性能基准与回归对比，耗时较长，默认排除 |
-| `components/` | 面向 `freeassetfilter/components/` 业务组件的测试，偏 UI 交互 |
-| `gui/` | 渲染矩阵与主题视觉测试，必须真实显示器 |
-| `integration/` | 跨组件流程、线程安全、设置持久化、真实二进制（MPV / FFmpeg）集成 |
+| `acceptance/` | 计划验收自检脚本：扫描产物与跑指定子集，产出 PASS/FAIL 报告，非 pytest 用例 |
+| `benchmark/` | 缩略图、缓存、SVG、faf_core 等性能基准与回归对比，耗时较长，默认排除 |
+| `gui/` | 主题切换视觉一致性测试，必须真实显示器（`QT_QPA_PLATFORM` 取消 offscreen） |
+| `integration/` | 跨组件流程、线程安全、模块导入冒烟、真实二进制（MPV / FFmpeg / Rust DLL）集成 |
 | `support/` | 非测试代码的基础设施模块，被 conftest 与运行器引用 |
 | `unit/` | 按模块划分的细粒度单体测试，数量最多 |
-| `widgets/` | 自定义控件与其配套的模型、委托渲染测试 |
+| `unit/ui/` | UI 层测试（组件 / 布局 / Mica / 主题 / 主窗口与无边框窗口） |
 
 ## 各测试文件职责
+
+### acceptance/（计划验收自检）
+
+| 文件 | 职责 |
+| --- | --- |
+| `verify_plan.py` | thumbnail-rust-refactor 计划验收（11 项检查，产出 JSON 报告，`--full` 跑全量分组） |
+| `verify_faf_core.py` | rust-hot-path-native-migration 计划验收（9 项检查） |
 
 ### benchmark/（性能基准）
 
 | 文件 | 职责 |
 | --- | --- |
-| `perf_benchmark_utils.py` | 性能基准测试的通用辅助工具 |
-| `perf_regression.py` | 基线文件对比，检查性能是否发生回归 |
-| `test_batch_thumbnail_perf.py` | 批量缩略图生成的性能基准 |
-| `test_cache_perf.py` | 缩略图缓存的读写性能基准 |
-| `test_perf_metrics_pipeline.py` | 性能指标采集流水线测试 |
+| `conftest.py` | 基准专用配置：会话快照落盘、首跑写基线（不覆写） |
+| `perf_benchmark_utils.py` | 基准辅助（小规模定时数据生成、快照读取） |
+| `perf_regression.py` | 性能回归对比器（仅报告、不 gate） |
+| `scenarios_s1_s10.py` | S1-S10 十场景性能天花板基准 |
+| `test_batch_thumbnail_perf.py` | 批量缩略图生成性能基准 |
+| `test_cache_perf.py` | 缩略图缓存读写性能基准 |
+| `test_faf_core_perf.py` | faf_core 各接口 native vs Python 基准 |
+| `test_perf_metrics_pipeline.py` | 性能埋点采集管线基准 |
 | `test_svg_perf.py` | SVG 渲染性能基准 |
+| `test_thumbnail_latency_throughput.py` | 缩略图延迟分位与批量吞吐基准 |
 | `test_thumbnail_perf.py` | 单张缩略图生成性能基准 |
+| `test_thumbnail_soak.py` | 30 分钟混合负载浸泡压测（`-m soak` 显式选中） |
 
-### components/（业务组件）
-
-| 文件 | 职责 |
-| --- | --- |
-| `test_file_selector.py` | 文件选择器组件核心行为（当前维护基准） |
-| `test_file_staging_pool.py` | 文件暂存池组件 |
-| `test_previewers.py` | 预览器全家桶，覆盖统一预览器、照片查看器、视频播放、PDF、文本、字体、压缩包浏览、目录内容列表、文件信息预览等 10 个模块 |
-| `test_settings_window.py` | 设置窗口、主题编辑器与更新控制器联动 |
-| `test_update_controller.py` | 更新控制器补强测试（检查与下载状态机） |
+另有 `baseline/`（性能基线 JSON）、`fixtures.manifest.json`（夹具清单）。
 
 ### gui/（可视化测试，需真实显示器）
 
 | 文件 | 职责 |
 | --- | --- |
-| `test_render_matrix.py` | GUI 渲染矩阵验证 |
-| `test_theme_visual.py` | 主题切换的视觉验证 |
+| `conftest.py` | GUI 视觉测试配置（截图目录、事件冲刷、视觉模式开关） |
+| `test_theme_visual.py` | 主题切换视觉一致性测试（产出 `screenshots/` 基线截图） |
 
 ### integration/（集成测试）
 
 | 文件 | 职责 |
 | --- | --- |
-| `test_main_app.py` | 应用入口集成 |
-| `test_module_imports.py` | 全量模块导入冒烟 |
-| `test_mpv_integration.py` | MPV 模块集成（真实 libmpv 分支按可用性跳过） |
-| `test_selector_preview_pool_flow.py` | 选择器到预览到暂存池的联动流程 |
-| `test_settings_persistence.py` | 设置持久化往返 |
-| `test_thread_safety.py` | 跨线程安全与并发写入 |
-| `test_thumbnail_lifecycle.py` | 缩略图从生成到缓存到清理的全生命周期 |
-| `test_ffmpeg_minimal_binaries.py` | FFmpeg 精简二进制可用性验证 |
+| `test_bootstrap.py` | 应用引导层（`app/main`、`instance_guard`、`startup`）集成测试 |
+| `test_ffmpeg_minimal_binaries.py` | 精简 ffmpeg / ffprobe 二进制契约验证 |
+| `test_module_imports.py` | 全量模块导入冒烟（覆盖清单 AST 清单驱动） |
+| `test_mpv_integration.py` | MPV 管理器集成（mock + 真实 DLL 门控分支） |
+| `test_rust_thumbnail_comprehensive.py` | Rust 缩略图综合验证（图像精度 + 视频功能） |
+| `test_rust_thumbnail_concurrency.py` | Rust 缩略图并发加速比与线程池预算 |
+| `test_selector_thumbnail_flow.py` | 文件选择器缩略图端到端流程（生成 → 回填 → 清除全链路） |
+| `test_thread_safety.py` | 管理器 50 线程并发安全 |
+| `test_thumbnail_lifecycle.py` | 缩略图批量生成 / 缓存 / 清理生命周期 |
 
-### unit/core/（核心模块）
+### support/（测试基础设施）
 
 | 文件 | 职责 |
 | --- | --- |
-| `test_color_extractor.py` | 颜色提取核心逻辑 |
-| `test_image_color_utils.py` | 图像颜色工具函数 |
-| `test_heartbeat_manager.py` | 心跳管理器调度与注册/注销 |
+| `coverage_manifest.py` | 覆盖清单扫描：源公开符号 × 测试目标缺失矩阵与孤儿告警（`coverage --strict` 门禁） |
+| `data_factories.py` | 测试数据工厂（图片 / PDF / 文本 / 压缩包 / 音频 / 字体 / 文件信息字典） |
+| `log_setup.py` | pytest 日志环境：日志目录准备、双写流与根 logger 接管 |
+| `progress.py` | 运行进度条与周期小结、最慢测试统计插件 |
+| `qt_helpers.py` | Qt 测试辅助（事件泵、DeferredDelete 派发、信号等待、安全清理、非空断言） |
+| `timeout_policy.py` | 目录级超时策略：marker→超时映射、自动打标与 CLI 兜底优先级 |
+| `test_parity_helper.py` | parity 辅助工具自测（相等 PASS / 不等 FAIL / 清单豁免 / 像素 hash） |
+| `parity/comparator.py` | 逐字段 parity 断言：python 实现输出 vs native 输出 |
+| `parity/normalize_html.py` | HTML 归一化器（Markdown 渲染对拍用） |
+| `parity/pixels.py` | 像素 parity 断言：多源图像归一化 RGBA + 确定性 hash + 逐像素差异诊断 |
+| `faf_core_fixtures/` | 夹具集（code_samples / dir_samples / encoding_samples / exif_samples / fluid_samples / font_samples / markdown_samples / pdf_samples / psd_samples / seven_zip_samples / svg_samples）；`generate_fixtures.py` 为固定 seed 生成脚本 |
+
+### unit/core/（核心模块，24 个测试文件）
+
+| 文件 | 职责 |
+| --- | --- |
+| `test_faf_core_bridge.py` | faf_core DLL ctypes 桥（扫描/排序/哈希/EXIF/SVG/7z 等） |
+| `test_heartbeat_manager.py` | HeartbeatManager 调度、注册/注销与跨线程 FutureHandle |
+| `test_image_color_utils.py` | 预览层图像色彩工具（RAW 解码 / ICC / EXIF 方向） |
 | `test_lut_preview_generator.py` | LUT 预览生成器（C++ 与 Python 双实现） |
-| `test_media_probe.py` | 媒体信息探测 |
-| `test_mpv_manager.py` | MPV 管理器（全局队列锁、生命周期） |
+| `test_lut_preview_native.py` | C++ LUT 扩展加载缓存与重试策略 |
+| `test_manager_matrix.py` | 三级格式矩阵分类函数、分桶路由与回退样本 |
+| `test_media_probe.py` | ffprobe/ffmpeg 媒体信息探测 |
+| `test_mpv_manager.py` | MPVManager（队列锁、崩溃健康检测、生命周期） |
 | `test_mpv_player_core.py` | MPV 播放核心（信号、命令、错误码） |
 | `test_paths.py` | `core/_paths.py` 资源路径解析 |
-| `test_py7z_core.py` | 7z 压缩核心 |
-| `test_rust_color_extractor.py` | Rust 颜色提取 DLL 的 ctypes 桥 |
+| `test_platform_gpu.py` | PE 导出表解析与独显路由档位校验 |
+| `test_platform_monitor.py` | W9/W10 DWM 探测与 USER/GDI 句柄预算采样 |
+| `test_platform_threads.py` | Windows 线程电源节流 / CPU 亲和 / MMCSS / 优先级封装 |
+| `test_platform_timing.py` | W5 高精度定时器与 W6 交换链延迟探测 |
+| `test_py7z_core.py` | 7z 压缩包处理核心（列表/加密检测/完整性测试） |
+| `test_rust_batch_concurrency.py` | Rust 批量缩略图并发压测 |
+| `test_rust_bridge_new_exports.py` | Rust 桥新导出接线 |
 | `test_rust_thumbnail_bridge.py` | Rust 缩略图生成桥 |
-| `test_settings_manager.py` | 设置管理器读写与防抖保存 |
-| `test_svg_renderer.py` | SVG 渲染器 |
-| `test_theme_manager.py` | 主题管理器 |
-| `test_thumbnail_manager.py` | 缩略图管理器缓存与生成 |
-| `test_update_manager.py` | 更新检查与版本比较 |
+| `test_settings_manager.py` | `SettingsManagerV2` 单元测试 |
+| `test_settings_manager_v2.py` | SettingsManagerV2 专项补充（点号路径/迁移/原子写） |
+| `test_status_channel.py` | 缩略图状态通道（桥层直测 + ThumbnailManager 路由） |
+| `test_svg_renderer.py` | SVG 渲染器（native 换色 + Python 回退） |
+| `test_thumbnail_fixtures.py` | 全格式夹具经桥命中 T1 原生路径回归 |
+| `test_thumbnail_manager.py` | ThumbnailManager 缓存与生成、四队列调度 |
 
-### unit/services/（业务服务层）
+### unit/services/（业务服务层，15 个测试文件）
 
 | 文件 | 职责 |
 | --- | --- |
-| `test_base.py` | BaseService 基类 |
-| `test_drive_service.py` | 磁盘驱动器枚举服务 |
-| `test_favorites_service.py` | 收藏服务 |
-| `test_file_icon_manager.py` | 文件图标管理器 |
-| `test_file_service.py` | 文件服务 |
-| `test_image_services.py` | ImageDecoderService 及其工作线程 |
-| `test_media_metadata_service.py` | 媒体文件元数据服务 |
-| `test_office_converter.py` | Office 转换服务及其工作线程与缓存 |
-| `test_pdf_services.py` | PDF 文档、视图与后台渲染 |
-| `test_previewer_registry.py` | 预览器注册表 |
-| `test_repositories.py` | settings / favorites / office_cache 三类数据仓库 |
-| `test_staging_pool_service.py` | 暂存池服务 |
+| `test_base.py` | `BaseService` 生命周期模板 |
+| `test_drive_service.py` | 盘符枚举与可用性检查服务 |
+| `test_encoding_native_parity.py` | 编码探测 native（faf_core）vs chardet 对拍 |
+| `test_favorites_service.py` | 收藏夹 CRUD 与 JSON 持久化 |
+| `test_file_icon_manager.py` | 文件类型图标管线（SVG/缩略图/系统图标 + 缓存） |
+| `test_file_info_service.py` | 文件信息采集（stat/EXIF/字体/编码/压缩包/哈希 + 缓存） |
+| `test_file_service.py` | 文件扫描 / 通配筛选 / 排序纯逻辑 |
+| `test_font_native_parity.py` | 字体 native vs fontTools 对拍 |
+| `test_image_services.py` | `ImageDecoderService` 与 `ImageDecodeWorker` |
+| `test_media_metadata_service.py` | 音频标签 / 封面 / 编码参数提取 |
+| `test_office_converter.py` | Office 转换器、异步 worker 与磁盘缓存联动 |
+| `test_pdf_services.py` | `PdfDocument` / `PdfDocumentView` / 后台 PDF 渲染器 |
+| `test_previewer_registry.py` | 预览器注册表（扩展名→类惰性映射） |
+| `test_repositories.py` | `office_cache` 仓库行为 |
+| `test_staging_pool_service.py` | 存储池服务（增删查清、磁盘空间、备份序列化） |
 
 ### unit/ui/（界面层）
 
 | 文件 | 职责 |
 | --- | --- |
+| `test_frameless_window.py` | 自研无边框基类（ExpandedClientAreaHint、NCHITTEST 命中） |
+| `test_import_compat.py` | `theme` / `components` 短路径与规范路径导入别名收敛 |
 | `test_main_window.py` | 主窗口结构与延迟面板构建 |
-| `test_frameless_window.py` | 自研无边框基类（ExpandedClientAreaHint 标志、_q_titlebar 隐藏、NCHITTEST 命中） |
-| `components/test_styled_basic.py` | ui/components 下全部 26 个 `styled_*` 基础组件 |
-| `components/test_styled_complex.py` | 手风琴、轮播、表格、时间线等复杂 styled 组件 |
-| `components/test_styled_fluid.py` | fluid 数学与背景动效组件 |
-| `layout/test_layouts.py` | 各主界面布局（文件池、选择器、设置、预览器各布局） |
-| `theme/test_ui_theme.py` | 界面主题与适配中心 |
+| `test_main_window_settings_close.py` | 设置窗口关闭引用清理与 closeEvent 纵深防御 |
+| `components/test_custom_background.py` | 自定义窗口背景（cover / 快缩 / 持久化） |
+| `components/test_styled_basic.py` | 基础 styled 组件（按钮、输入、开关等） |
+| `components/test_styled_button_progress.py` | StyledButton 运行时进度模式 |
+| `components/test_styled_complex.py` | 手风琴、轮播、表格、时间线等复杂组件 |
+| `components/test_styled_fluid.py` | 流体数学与背景动效、文件列表组件 |
+| `components/test_styled_loading.py` | StyledLoading 加载动画 |
+| `layout/test_box_selection.py` | 框选手势共享组件 |
+| `layout/test_file_selector_native_wiring.py` | 文件选择器 faf_core native 接线 |
+| `layout/test_layouts.py` | 各主界面布局（文件池、选择器、设置、统一预览与各预览器、调色板对拍等） |
+| `layout/test_main_layout.py` | MainLayout 两种装配（classic / workspace）与比例规则 |
+| `layout/test_perf_profile_staging.py` | 性能档位三段选择器暂存隔离 |
+| `layout/test_settings_staging_cache.py` | 设置暂存缓存与底部按钮组 |
+| `layout/preview/test_archive_previewer_layout.py` | 压缩包预览器 |
+| `layout/preview/test_file_info_panel.py` | 文件信息面板异步采集 |
+| `layout/preview/test_folder_previewer_layout.py` | 文件夹预览器 |
+| `layout/preview/test_native_pdf_renderer.py` | QPainter 交互式 PDF 渲染控件 |
+| `layout/preview/test_pdf_drawer_async.py` | PDF 缩略图抽屉异步批处理 |
+| `layout/preview/test_preview_toolbar.py` | 共享预览顶栏框架 |
+| `layout/preview/test_zoom_popups.py` | 缩放 / 字重弹窗生命周期与随动 |
+| `mica/test_compositor_present.py` | 合成器呈现调度 |
+| `mica/test_drag_perf.py` | 拖动期快速路径性能回归门禁 |
+| `mica/test_engine_display_banding.py` | 引擎显示分辨率 / 抖动 / 预合成纯函数 |
+| `mica/test_mica_drag.py` | 拖动纯几何 / 视口层 |
+| `mica/test_mica_layer.py` | 视口层 + material 层拖动层级验收 |
+| `mica/test_mica_material_drag.py` | material 视口层拖动行为 |
+| `mica/test_mica_tint.py` | 色彩混合与量化回归 |
+| `mica/test_winapi_dwm.py` | 原生 DWM 云母桥接 |
+| `theme/test_app_stylesheet.py` | 应用级 QSS 注册表单例与作用域改写 |
+| `theme/test_ui_theme.py` | 系统强调色读取与 ThemeManager 单例 |
 
 ### unit/utils/（工具模块）
 
 | 文件 | 职责 |
 | --- | --- |
-| `test_animation_settings.py` | 动画设置工具 |
-| `test_app_logger.py` | 应用日志器 |
-| `test_async_icon_loader.py` | 异步图标加载器 |
-| `test_file_icon_helper.py` | 文件图标辅助 |
-| `test_global_mouse_monitor.py` | 全局鼠标监听 |
-| `test_icon_utils.py` | 图标处理工具 |
-| `test_lut_utils.py` | LUT 工具 |
-| `test_markdown_renderer.py` | Markdown 渲染 |
-| `test_path_utils.py` | 路径处理工具 |
-| `test_perf_metrics.py` | 性能指标统计 |
-| `test_subprocess_utils.py` | 子进程工具 |
-| `test_syntax_highlighter.py` | 语法高亮引擎 |
+| `test_animation_settings.py` | 动画开关读取辅助 |
+| `test_app_logger.py` | 应用日志器（双写 / 脱敏 / 去重压缩） |
+| `test_async_icon_loader.py` | 系统图标异步加载器 |
+| `test_fd_capture.py` | fd 1/2 重定向捕获原生输出 |
+| `test_file_icon_helper.py` | 文件类型图标路径解析 |
+| `test_icon_utils.py` | 系统图标提取（HICON→QPixmap、exe 图标枚举） |
+| `test_lut_utils.py` | CUBE LUT 解析 / 验证 / 管理 |
+| `test_markdown_renderer.py` | Markdown → 自包含主题 HTML |
+| `test_path_utils.py` | 路径解析与文件系统访问控制 |
+| `test_perf_metrics.py` | 统一性能埋点（计数 / 分位 / 快照） |
+| `test_qt_message_handler.py` | qInstallMessageHandler 桥接与防回环 |
+| `test_subprocess_utils.py` | 受限输出捕获 subprocess 辅助 |
+| `test_syntax_highlighter.py` | 语法高亮引擎（native / pygments 双链） |
 
 ### unit/workers/（后台线程）
 
 | 文件 | 职责 |
 | --- | --- |
-| `test_drive_list_loader.py` | DriveListLoaderThread 磁盘枚举线程 |
-| `test_file_list_loader.py` | FileListLoaderThread 文件列表加载线程 |
+| `test_drive_list_loader.py` | DriveListLoaderThread 盘符枚举与可用性检查任务 |
+| `test_file_list_loader.py` | FileListLoaderThread 目录扫描任务 |
 | `test_staging_tasks.py` | MD5CalculationTask 等暂存池后台任务 |
-
-### widgets/（自定义控件）
-
-| 文件 | 职责 |
-| --- | --- |
-| `test_basic_widgets.py` | 18 个基础控件（按钮、滑块、进度条、弹窗、开关等） |
-| `test_card_delegates.py` | 文件卡片委派渲染 |
-| `test_D_widgets.py` | D 系列特效控件（悬浮菜单、音量控件、播放控制条、LUT 对话框等） |
-| `test_file_models.py` | 选择器与暂存池的列表模型和委派 |
+| `test_thumbnail_controller.py` | ThumbnailController 生成 / 清除后台编排（世代 token） |
 
 ## 如何运行测试
 
 ### 官方运行器（推荐）
 
-```bash
-# 运行一个范围（子命令对应目录）：unit / widgets / components / integration / gui / benchmark
+```powershell
+# 运行一个范围（子命令对应目录）：unit / integration / gui / benchmark
 python tests/run_tests.py unit
 
 # 所有非 GUI / 非基准测试
@@ -178,20 +229,20 @@ python tests/run_tests.py coverage --strict
 
 运行器要点：
 
-- 范围子命令：`all` / `unit` / `widgets` / `components` / `integration` / `gui` / `benchmark` / `coverage` / `regression`。
+- 子命令共 7 个：`all` / `unit` / `integration` / `gui` / `benchmark` / `coverage` / `regression`。
 - 默认 `QT_QPA_PLATFORM=offscreen`（无头模式）；`--visual` 时取消 offscreen 并置 `FAF_VISUAL=1`，用于 gui 目录。
-- 默认 `--timeout 30`（benchmark / regression 默认 300）；可用 `--timeout N` 覆盖。
+- 默认 `--timeout 30`（benchmark / regression 默认 300）；可用 `--timeout N` 覆盖，但**不覆盖**显式 timeout marker（见 `support/timeout_policy.py`）。
 - 支持透传 `-k`、`-x`、`--tb`、`--co`（`--collect-only`）等 pytest 参数。
 - `coverage --strict` 会额外启用 `tests/support/coverage_manifest` 覆盖清单检查。
 
 ### 原生 pytest 用法
 
-```bash
+```powershell
 # 运行全部测试
 python -m pytest tests/ -v
 
 # 运行单个文件
-python -m pytest tests/unit/test_file_selector.py -v
+python -m pytest tests/unit/services/test_file_service.py -v
 
 # 按关键词过滤
 python -m pytest tests/ -k "thumbnail" -v
@@ -208,13 +259,13 @@ python -m pytest tests/ --cov=freeassetfilter --cov-report=term
 
 ### 覆盖度量
 
-```bash
+```powershell
 # 先度量，再出报告（--timeout 120 防止个别用例悬挂）
 python -m coverage run -m pytest <target> -q --timeout 120
 python -m coverage report
 ```
 
-其中 `<target>` 可以是 `tests/unit/`、`tests/components/test_previewers.py` 等任意收集目标。内存中的 `freeassetfilter` 包与测试本身均可被度量。
+其中 `<target>` 可以是 `tests/unit/`、`tests/integration/` 等任意收集目标。内存中的 `freeassetfilter` 包与测试本身均可被度量。
 
 ## conftest 关键 Fixtures
 
@@ -222,19 +273,19 @@ python -m coverage report
 
 | Fixture | 作用域 | 用途 |
 | --- | --- | --- |
-| `qapp` | session | 全局唯一 QApplication，附带 `global_font` 及应用级 `settings_manager` / `theme_manager` |
+| `qapp` | session | 全局唯一 QApplication，附带 `global_font` 与 `settings_manager` 占位属性；主题/设置单例由需要的测试自行注入 |
 | `qt_app` | function | `qapp` 的别名，兼容旧式引用 |
-| `reset_singletons` | function（autouse） | 每个测试前后重置 SettingsManager / HeartbeatManager / ThumbnailManager / MPVManager / AppLogger / AsyncIconLoader 等单例，保证隔离 |
-| `scavenge_leaked_toplevel_widgets` | function（autouse） | 每个测试结束销毁本测试新建的顶层窗口（含 Mica 材质 dispose 与 DeferredDelete 派发），遏制控件跨测试累积 |
+| `reset_singletons` | function（autouse） | 每个测试前后重置 ThumbnailManager / MPVManager / HeartbeatManager / AppLogger / AsyncIconLoader 等单例，保证隔离 |
+| `scavenge_leaked_toplevel_widgets` | function（autouse） | 每个测试结束销毁本测试新建的顶层窗口（含 Mica 材质 dispose 与 DeferredDelete 派发） |
 | `cleanup_qt_runtime` | session（autouse） | 会话结束回收 Mica GPU 渲染器常驻线程与全局线程池 |
 | `settings_manager` | function | 绑定临时 `settings.json` 的全新 SettingsManager 实例 |
 | `heartbeat_manager` | function | 创建并启动新 HeartbeatManager，teardown 时 `stop_all()` |
 | `mpv_available` | session | 探测 `libmpv-2.dll` 可加载性（系统路径加捆绑 bin 目录） |
-| `rust_available` | session | 探测 Rust 原生 DLL（`rust_color_extractor_native.dll` / `thumbnail_generator.dll`） |
+| `rust_available` | session | 探测 Rust 原生 DLL（`faf_core.dll` / `thumbnail_generator.dll`） |
 | `cpp_lut_available` | session | 探测 C++ LUT 预览 .pyd 扩展可用性 |
 | `py7z_available` | session | 探测 py7zr 可导入或捆绑 `7z.exe` 存在 |
 | `soffice_available` | session | 探测 LibreOffice `soffice` 可执行文件 |
-| `com_available` | session | 探测 MS Office / WPS COM ProgID |
+| `com_available` | session | 探测 MS Office / WPS COM ProgID（注册表不可用时回退 win32com） |
 | `ffmpeg_available` | session | 探测捆绑 `ffmpeg.exe` 且 `-version` 返回 0 |
 
 另有数据生成 fixture 全部基于 `tests/support/data_factories`：`sample_image_file`、`sample_pdf_file`、`sample_text_file`、`sample_zip_file`、`sample_svg_file`、`sample_font_file`、`sample_dir`、`sample_dir_info`、`sample_file_info`（可经 parametrize 指定扩展名）、`sample_image_data`、`temp_file`、`temp_settings_file`、`settings_file`，以及基准用 `benchmark_dataset`、`video_sample_paths` 与 GUI 开关 `visual_mode`。`_reset_all_singletons` 是普通辅助函数（非 fixture），供 `reset_singletons` 两阶段复用。
@@ -255,12 +306,13 @@ python -m coverage report
 - **已知注意点**：
   - 测试全局日志为双写（stdout/stderr 与日志文件同时记录）。
   - `--cov-branch` 分支覆盖因触发原生崩溃而禁用，只用行覆盖。
-  - `rg` 命令行在本机不可用，搜索请用 `Select-String` 或 `findstr`。
   - 组合运行曾偶发 access violation 与心跳时序问题，已通过将事件泵浦超时从 5s 提升到 15s 修复；若再遇"回调未在超时前触发"的失败，建议继续增大 `_pump_until` 的超时值。
   - UI 测试大量创建 `MainWindow`/预览布局；`scavenge_leaked_toplevel_widgets` 清道夫依赖显式派发 DeferredDelete + 先 dispose Mica 材质，**不要**把 `deleteLater` 后的控件在未清理材质时强制销毁（原生访问冲突签名见 `safe_teardown`）。
   - `tests/unit/ui/mica/` 单独运行需要 `freeassetfilter/ui` 在 `sys.path`（该目录测试模块自行 bootstrap 的约定，全量运行由其它 UI 测试模块先行完成）。
 
-## 覆盖成果（参考）
+## 覆盖成果（历史参考）
+
+以下为 tests-comprehensive-refactor 计划收口时的覆盖快照，仅作参考、不构成门禁（`coverage --strict` 的 manifest 检查才是门禁）：
 
 | 目标 | 行覆盖 |
 | --- | --- |
@@ -268,5 +320,4 @@ python -m coverage report
 | file_selector 文件选择器 | 88% |
 | mpv_player_core | 54% |
 | mpv_manager | 66% |
-| update_controller | 99% |
 | app/main | 62% |

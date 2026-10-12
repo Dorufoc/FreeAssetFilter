@@ -1,4 +1,11 @@
-"""Preload legacy top-level UI packages in a frozen PyInstaller process."""
+"""Preload legacy top-level UI packages in a frozen PyInstaller process.
+
+The short names (``components`` / ``theme``) are unified with the canonical
+``freeassetfilter.ui.*`` modules by :mod:`freeassetfilter._import_compat`
+(installed as soon as the ``freeassetfilter`` package is imported), so either
+import order — this hook first, or the application later — resolves to a
+single module object per package.
+"""
 from __future__ import annotations
 
 import importlib

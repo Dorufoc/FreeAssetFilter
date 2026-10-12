@@ -5,7 +5,11 @@ from __future__ import annotations
 import ctypes
 from ctypes import wintypes
 from typing import Optional
-import winreg
+
+try:  # pragma: no cover - 非 Windows 平台无 winreg；项目仅支持 Windows，属防御性守卫
+    import winreg
+except ImportError:
+    winreg = None  # type: ignore[assignment]
 
 
 def _get_accent_color_from_dwm() -> Optional[str]:
@@ -41,11 +45,13 @@ def _get_accent_color_from_dwm() -> Optional[str]:
 
 
 def _get_accent_color_from_registry() -> Optional[str]:
-    """Fallback: read the accent color from the DWM registry key.
+    r"""Fallback: read the accent color from the DWM registry key.
 
     ``HKCU\Software\Microsoft\Windows\DWM\ColorizationColor`` stores the
     color as a REG_DWORD in 0xAARRGGBB format.
     """
+    if winreg is None:
+        return None
     try:
         with winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,

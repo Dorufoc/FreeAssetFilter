@@ -8,6 +8,8 @@ FreeAssetFilter 服务基类模块
 import threading
 from abc import ABC, abstractmethod
 
+from freeassetfilter.utils.app_logger import exception_details
+
 
 class BaseService(ABC):
     """所有服务的抽象基类。
@@ -74,7 +76,12 @@ class BaseService(ABC):
                 self._do_initialize()
                 self._initialized = True
                 return True
-            except Exception:
+            except Exception as exc:
+                # 初始化失败必须留痕：此前静默返回 False，排障时无从定位。
+                exception_details(
+                    f"{type(self).__name__}.initialize 失败，服务保持未初始化状态",
+                    exc,
+                )
                 self._initialized = False
                 return False
 

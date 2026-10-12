@@ -4202,3 +4202,125 @@ class TestGeneralSettingsPage:
             except Exception:
                 pass
             safe_teardown(layout)
+
+
+# =============================================================================
+# 封面调色板提取（缓冲分桶实现 vs 旧逐像素实现逐项对拍）
+# =============================================================================
+class TestPaletteExtractionParity:
+    """``_extract_palette_from_cover`` 优化实现与旧实现输出完全一致。
+
+    旧实现逐像素构造 ``QColor``（4096 次跨界调用）；优化版单次转换
+    RGBA8888 后读像素缓冲。两版必须逐项相等（含 Counter 平局顺序与
+    单主导色扩展分支），此对拍防止优化引入行为漂移。
+    """
+
+    @staticmethod
+    def _reference_palette(cover_data: bytes) -> List[QColor]:
+        """旧实现逐字参考版（仅测试对拍使用）。
+
+        Args:
+            cover_data: 封面图像二进制数据。
+
+        Returns:
+            list[QColor]: 与产品旧实现同序的调色板。
+        """
+        from collections import Counter
+
+        from PySide6.QtGui import QImage
+
+        image = QImage.fromData(cover_data)
+        if image.isNull():
+            return []
+
+        image = image.scaled(
+            64, 64, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
+        )
+
+        buckets: Counter = Counter()
+        for y in range(image.height()):
+            for x in range(image.width()):
+                color = QColor(image.pixel(x, y))
+                if color.alpha() <= 0:
+                    continue
+                key = (
+                    (color.red() // 32) * 32,
+                    (color.green() // 32) * 32,
+                    (color.blue() // 32) * 32,
+                )
+                buckets[key] += 1
+
+        if not buckets:
+            return []
+
+        palette = [QColor(r, g, b) for (r, g, b), _ in buckets.most_common(5)]
+        if len(palette) == 1:
+            from components.styled_fluid_background import StyledFluidBackground
+
+            palette = StyledFluidBackground._build_from_seed(palette[0])
+        return palette if len(palette) >= 2 else []
+
+    @staticmethod
+    def _to_rgb(palette: List[QColor]) -> List[tuple]:
+        """调色板转 ``[(r, g, b), ...]`` 以做顺序敏感的逐项比较。"""
+        return [(c.red(), c.green(), c.blue()) for c in palette]
+
+    def _assert_parity(self, cover_data: bytes) -> None:
+        """断言优化实现与参考实现输出逐项一致。"""
+        expected = self._to_rgb(self._reference_palette(cover_data))
+        actual = self._to_rgb(
+            VideoPlayerLayout._extract_palette_from_cover(cover_data)
+        )
+        assert actual == expected
+
+    def test_solid_color_single_bucket_parity(self, tmp_path: Path) -> None:
+        """单主导色（触发类比色板扩展分支）对拍一致。"""
+        from PIL import Image
+
+        path = tmp_path / "solid.png"
+        Image.new("RGB", (64, 64), (200, 80, 40)).save(path, format="PNG")
+        self._assert_parity(path.read_bytes())
+
+    def test_gradient_with_transparency_parity(self, tmp_path: Path) -> None:
+        """渐变 + 透明像素（跳过分支 + Counter 平局顺序）对拍一致。"""
+        from PIL import Image
+
+        img = Image.new("RGBA", (96, 96))
+        px = img.load()
+        for y in range(96):
+            for x in range(96):
+                px[x, y] = (
+                    (x * 3) % 256,
+                    (y * 5) % 256,
+                    (x + y) % 256,
+                    0 if (x + y) % 7 == 0 else 255,
+                )
+        path = tmp_path / "gradient.png"
+        img.save(path, format="PNG")
+        self._assert_parity(path.read_bytes())
+
+    def test_jpeg_without_alpha_parity(self, tmp_path: Path) -> None:
+        """JPEG（无 alpha 通道，格式转换路径）对拍一致。"""
+        from PIL import Image
+
+        path = tmp_path / "photo.jpg"
+        Image.new("RGB", (80, 80), (10, 120, 240)).save(path, format="JPEG")
+        self._assert_parity(path.read_bytes())
+
+    def test_gif_indexed_format_parity(self, tmp_path: Path) -> None:
+        """GIF（索引调色板格式，Qt 解码后可能非 RGBA）对拍一致。"""
+        from PIL import Image
+
+        img = Image.new("P", (64, 64))
+        img.putpalette([i for i in range(256)] * 3)
+        for y in range(64):
+            for x in range(64):
+                img.putpixel((x, y), (x + y) % 256)
+        path = tmp_path / "indexed.gif"
+        img.save(path, format="GIF")
+        self._assert_parity(path.read_bytes())
+
+    def test_invalid_data_returns_empty(self) -> None:
+        """坏数据 → 两实现均返回空列表。"""
+        assert VideoPlayerLayout._extract_palette_from_cover(b"not an image") == []
+        assert self._reference_palette(b"not an image") == []
