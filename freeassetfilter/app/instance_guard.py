@@ -22,7 +22,7 @@ import sys
 import time
 from typing import Optional
 
-from freeassetfilter.utils.app_logger import error, info, warning
+from freeassetfilter.utils.app_logger import debug, error, info, warning
 from freeassetfilter.utils.path_utils import get_app_data_path
 
 _MUTEX_NAME: str = "FreeAssetFilter_SingleInstance_Mutex"
@@ -282,8 +282,8 @@ def _release_mutex(mutex_handle) -> None:
     import ctypes
     try:
         ctypes.windll.kernel32.CloseHandle(mutex_handle)
-    except Exception:
-        pass
+    except Exception as exc:
+        debug(f"关闭单实例互斥体句柄失败：{exc}")
 
 
 def _show_already_running_dialog_and_handle_restart(mutex_handle) -> None:

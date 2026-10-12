@@ -84,7 +84,25 @@ def _warn_unparsable_fragment(selector: str) -> None:
 
         warning(f"scope_qss: 跳过无法解析的样式片段选择器: {selector[:80]!r}")
     except Exception:
-        pass
+        pass  # 日志系统自身失败（预期兜底）：不递归、不抛出
+
+
+def _debug_log(message: str) -> None:
+    """Early-startup-safe debug logging: imports app_logger on demand.
+
+    ``app_logger`` initializes a session logger on import while this module
+    loads during early UI startup; importing lazily inside the failure path
+    keeps startup cost unchanged. Logging failures never propagate.
+
+    Args:
+        message: Preformatted debug message.
+    """
+    try:
+        from freeassetfilter.utils.app_logger import debug
+
+        debug(message)
+    except Exception:
+        pass  # 日志系统不可用时静默（不得影响样式注册）
 
 
 #: Dynamic property used to scope registered fragments. Chosen over
@@ -291,8 +309,8 @@ class _AppStylesheetRegistry:
             self._dirty = True
         try:
             widget.setProperty(FAF_QSS_PROP, scope_id)  # type: ignore[attr-defined]
-        except Exception:
-            pass
+        except Exception as exc:
+            _debug_log(f"设置 QSS 作用域属性失败：{exc}")
         self._ensure_theme_hook()
         self._schedule_rebuild()
         return scope_id
@@ -309,8 +327,8 @@ class _AppStylesheetRegistry:
                 self._dirty = True
         try:
             widget.setProperty(FAF_QSS_PROP, "")  # type: ignore[attr-defined]
-        except Exception:
-            pass
+        except Exception as exc:
+            _debug_log(f"清除 QSS 作用域属性失败：{exc}")
         self._schedule_rebuild()
 
     def registered_count(self) -> int:
@@ -366,8 +384,8 @@ class _AppStylesheetRegistry:
                 lambda _t: self.rebuild(force=True)
             )
             self._signal_connected = True
-        except Exception:
-            pass
+        except Exception as exc:
+            _debug_log(f"主题信号连接失败（样式表退化为手动触发重建）：{exc}")
 
     def _schedule_rebuild(self) -> None:
         """Coalesce pending rebuilds into one event-loop tick.
@@ -390,8 +408,8 @@ class _AppStylesheetRegistry:
             QTimer.singleShot(
                 0, lambda: self._rebuild_if_current(generation)
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            _debug_log(f"样式表重建调度失败：{exc}")
 
     def suspend_apply(self) -> None:
         """暂停样式下发（进入 teardown 清理窗口）。
@@ -453,8 +471,8 @@ class _AppStylesheetRegistry:
             while parent is not None:
                 depth += 1
                 parent = parent.parent()
-        except Exception:
-            pass
+        except Exception as exc:
+            _debug_log(f"控件嵌套深度探测失败（按 0 处理）：{exc}")
         return depth
 
     def build_combined(self) -> str:
@@ -562,13 +580,13 @@ class _AppStylesheetRegistry:
 
             if not isValid(app):
                 return False
-        except Exception:
-            pass
+        except Exception as exc:
+            _debug_log(f"app 有效性检查失败（按有效继续）：{exc}")
         try:
             if QCoreApplication.closingDown():
                 return False
-        except Exception:
-            pass
+        except Exception as exc:
+            _debug_log(f"应用关闭状态检查失败（按未关闭处理）：{exc}")
         with self._lock:
             if self._teardown_depth > 0:
                 # teardown 清理窗口：当时树上仍有大量 deleteLater 待销毁控件，

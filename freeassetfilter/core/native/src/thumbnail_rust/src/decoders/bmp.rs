@@ -22,10 +22,7 @@
 //!
 //! 文件超 250 纯行门阈属 SIZE_OK：plans 强制的「内联夹具」（PIL 真实产物 +
 //! 手写 RLE4/RLE8/V4 位域/顶行序/BA/超限/坏 CLUT 大小变体，约 2KB fixture
-//! 数据表）+ 计划强制的单测内联于同文件（同 infra/registry.rs / tga.rs 先例；
-//! fixture 可由生成脚本
-//! `.omo/evidence/thumbnail-rust-refactor/task-10-gen-bmp-fixtures.py` 复现，
-//! 输出见该目录 `bmp_fixtures_out.txt`）。
+//! 数据表）+ 计划强制的单测内联于同文件（同 infra/registry.rs / tga.rs 先例）。
 
 use crate::infra::limits::check_dimensions;
 use crate::STATUS_DECODE_FAILED;

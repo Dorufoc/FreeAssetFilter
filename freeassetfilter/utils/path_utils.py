@@ -147,8 +147,10 @@ def _init_allowed_paths():
             documents_path = buf.value
         if documents_path and os.path.exists(documents_path):
             _ALLOWED_BASE_PATHS.append(documents_path)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger = _get_logger()
+        if logger:
+            logger.debug(f"用户文档目录加入白名单失败: {exc}")
     
     # 添加桌面目录
     try:
@@ -167,8 +169,10 @@ def _init_allowed_paths():
             desktop_path = buf.value
         if desktop_path and os.path.exists(desktop_path):
             _ALLOWED_BASE_PATHS.append(desktop_path)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger = _get_logger()
+        if logger:
+            logger.debug(f"用户桌面目录加入白名单失败: {exc}")
     
     # 添加临时目录（用于临时文件操作）
     temp_dir = os.environ.get('TEMP') or os.environ.get('TMP')
@@ -528,17 +532,29 @@ def get_resource_path(relative_path):
 _APP_DATA_PATH_CACHE = None
 
 def get_app_data_path():
-    """获取应用程序数据目录（用于存储配置、数据等），结果缓存"""
-    global _APP_DATA_PATH_CACHE
-    if _APP_DATA_PATH_CACHE is not None:
-        return _APP_DATA_PATH_CACHE
+    """获取应用程序数据目录（用于存储配置、数据等）。
 
-    if getattr(sys, 'frozen', False):
-        app_dir = os.path.dirname(sys.executable)
-        data_dir = os.path.join(app_dir, 'data')
+    ``FAF_DATA_DIR`` 环境变量优先**且不缓存**：显式指定时每次都直接返回该
+    目录（测试隔离 / 便携部署用，与 ``FAF_EVIDENCE_DIR`` 的既有约定一致），
+    不受进程内此前解析结果影响。未设置时按冻结/开发态推导：冻结态
+    ``<exe目录>/data``，开发态 ``<仓库根>/data``，结果进程内缓存。
+    """
+    global _APP_DATA_PATH_CACHE
+
+    override = os.environ.get('FAF_DATA_DIR', '').strip()
+    if override:
+        data_dir = override
+        cacheable = False
     else:
-        data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data')
-    
+        if _APP_DATA_PATH_CACHE is not None:
+            return _APP_DATA_PATH_CACHE
+        cacheable = True
+        if getattr(sys, 'frozen', False):
+            app_dir = os.path.dirname(sys.executable)
+            data_dir = os.path.join(app_dir, 'data')
+        else:
+            data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data')
+
     try:
         os.makedirs(data_dir, exist_ok=True)
         os.makedirs(os.path.join(data_dir, 'thumbnails'), exist_ok=True)
@@ -547,8 +563,9 @@ def get_app_data_path():
         if logger:
             logger.error(f"创建数据目录失败: {e}")
         raise
-    
-    _APP_DATA_PATH_CACHE = data_dir
+
+    if cacheable:
+        _APP_DATA_PATH_CACHE = data_dir
     return data_dir
 
 

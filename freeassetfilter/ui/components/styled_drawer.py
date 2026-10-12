@@ -8,7 +8,7 @@ Signals: opened(), closed()
 Close triggers: backdrop click, close (×) button, Escape key.
 """
 
-from typing import Optional
+from typing import Callable, Optional
 
 from PySide6.QtWidgets import (
     QWidget,
@@ -35,6 +35,9 @@ SIZE_CONFIG: dict[str, dict[str, int]] = {
 }
 VALID_ORIENTATIONS = ("right", "left", "top")
 ANIM_MS = 250
+#: 左右抽屉面板宽度限制的边缘间隙与最小值（``set_panel_width_limit`` 使用）。
+PANEL_WIDTH_MARGIN = 4
+PANEL_WIDTH_MIN = 60
 
 
 class _DrawerBackdrop(QWidget):
@@ -134,6 +137,8 @@ class StyledDrawer(QWidget):
         self._is_open = False
         self._animating = False
         self._bare = bare
+        #: 左右面板宽度上限的动态提供者（见 set_panel_width_limit）。
+        self._panel_width_limit_provider: Optional[Callable[[], int]] = None
 
         self.setObjectName("StyledDrawer")
         self.installEventFilter(self)
@@ -220,7 +225,12 @@ class StyledDrawer(QWidget):
     def _get_panel_size(self) -> tuple[int, int]:
         dim = SIZE_CONFIG[self._size]
         if self._orientation in ("right", "left"):
-            return dim[self._orientation], self._ch
+            pw = dim[self._orientation]
+            provider = self._panel_width_limit_provider
+            if provider is not None:
+                available = int(provider())
+                pw = min(pw, max(available - PANEL_WIDTH_MARGIN, PANEL_WIDTH_MIN))
+            return pw, self._ch
         return self._cw, dim["top"]
 
     def _get_anim_positions(self, pw: int, ph: int) -> tuple[QPoint, QPoint]:
@@ -326,6 +336,45 @@ class StyledDrawer(QWidget):
         return super().eventFilter(obj, event)
 
     # ── Public API ──
+
+    @property
+    def panel(self) -> QWidget:
+        """抽屉面板控件（供调用方设置样式与内容布局）。"""
+        return self._panel
+
+    @property
+    def is_open(self) -> bool:
+        """抽屉是否处于打开状态（含打开动画进行中）。"""
+        return self._is_open
+
+    def set_panel_width_limit(self, provider: Optional[Callable[[], int]]) -> None:
+        """设置左右抽屉面板宽度的动态上限（公开扩展点）。
+
+        ``provider`` 返回当前可用宽度（像素），每次计算面板尺寸时调用；
+        面板宽度被钳制到 ``max(provider() - 4, 60)`` 以内。传 ``None``
+        取消限制。仅对 left/right 抽屉生效，top 抽屉忽略。
+
+        Args:
+            provider: 可用宽度提供者；或 ``None`` 取消限制。
+        """
+        self._panel_width_limit_provider = provider
+
+    def refresh_geometry(self) -> None:
+        """按当前父容器尺寸重建容器/遮罩/面板几何（窗口 resize 后调用）。
+
+        仅在抽屉处于打开态时生效——与各预览器既有 resizeEvent 行为一致；
+        关闭态无需处理：下次 :meth:`open_drawer` 会重新计算并动画。
+        """
+        if not self._is_open:
+            return
+        self._update_container_geom()
+        self.setGeometry(0, 0, self._cw, self._ch)
+        self._backdrop.setGeometry(0, 0, self._cw, self._ch)
+        pw, ph = self._get_panel_size()
+        self._panel.resize(pw, ph)
+        # 重算动画起止点：窗口变化后关闭/再打开的滑出目标必须同步刷新。
+        self._start_pos, self._end_pos = self._get_anim_positions(pw, ph)
+        self._panel.move(self._end_pos)
 
     def open_drawer(self) -> None:
         if self._is_open or self._animating:

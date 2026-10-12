@@ -7,8 +7,7 @@
 //!
 //! todo 1 spike 裁决 **KEEP**：`kamadak-exif` 0.6.1（**BSD-2-Clause**，纯 Rust）。
 //!
-//! # 实现要点（对拍实测校准，见 `.omo/evidence/rust-hot-path-native-migration/`
-//! `task-1-decisions.md` §2 与 `task-6-exif.txt`）
+//! # 实现要点（对拍实测校准）
 //!
 //! 1. **命名映射**：exifread 键为 `"IFD前缀 标签名"`（如 `"Image Make"`、
 //!    `"EXIF DateTimeOriginal"`、`"GPS GPSLatitudeRef"`），无冒号 → Python

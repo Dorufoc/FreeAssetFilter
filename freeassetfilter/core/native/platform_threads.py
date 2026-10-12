@@ -21,7 +21,7 @@
 
     performance = 关进程节流 + 关线程节流 + 钉核 + MMCSS + 提权
     balanced    = 关进程节流 + 关线程节流 + MMCSS（不钉核、不提权）
-    powersave   = 全部不动（默认档，见 PERFORMANCE_CEILING_PLAN.md 风险 §7）
+    powersave   = 全部不动（默认档）
 
 句柄 vs 线程 ID 约定
 --------------------

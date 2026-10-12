@@ -901,8 +901,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                     "blur": blur,
                     "transparency": transparency,
                 }
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"读取背景设置失败（回退默认值）：{exc}")
         return defaults
 
     @staticmethod
@@ -955,8 +955,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             include_remote = (
                 saved_remote if isinstance(saved_remote, bool) else False
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"读取功能开关设置失败（按默认关闭处理）：{exc}")
         return ai_entry, include_remote
 
     def _setup_window(self) -> None:
@@ -1128,14 +1128,14 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 启动恢复图像可调参数（模糊度/透明度，无图时仅存状态不绘制）
         try:
             self._custom_background.set_blur_radius(self._background_blur)
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"启动恢复背景模糊度失败：{exc}")
         try:
             self._custom_background.set_opacity(
                 1.0 - self._background_transparency / 100.0
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"启动恢复背景透明度失败：{exc}")
 
         # 初始可见性：三模式互斥，仅当前模式层可见
         self._custom_background.setVisible(self._background_mode == "image")
@@ -1802,8 +1802,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             v2.set("appearance.theme", effective)
             v2.set("appearance.colors", dict(tm._colors))
             v2.save()
-        except Exception:
-            pass
+        except Exception as exc:
+            warning(f"主题设置保存失败（重启后可能回退）：{exc}")
 
     def _schedule_mica_opposite_prebake(self) -> None:
         """主题切换 settled 后空闲预烘对偶主题云母层（mica 模式）。
@@ -1892,8 +1892,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             # 挂到主窗口，随窗口销毁自动回收。
             try:
                 watcher.setParent(self)
-            except Exception:
-                pass
+            except Exception as exc:
+                debug(f"主题监听器挂父窗口失败（生命周期改由创建者维护）：{exc}")
             watcher.start()
             self._system_theme_watcher = watcher
         except Exception:
@@ -2364,18 +2364,18 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         try:
             if self._file_pool is not None:
                 self._file_pool.flush_backup_save_now()
-        except Exception:
-            pass
+        except Exception as exc:
+            warning(f"退出时保存存储池备份失败（下次启动可能丢失列表）：{exc}")
         try:
             if self._previewer is not None:
                 self._previewer.cleanup()
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"退出时预览器清理失败：{exc}")
         try:
             if self._info_panel is not None:
                 self._info_panel.stop()
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"退出时信息面板停止失败：{exc}")
         # 局部导入：暂存池服务依赖文件池/缩略图等重型模块，退出路径再加载
         from freeassetfilter.services.staging_pool_service import StagingPoolService
 
@@ -2693,12 +2693,12 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             return
         try:
             layer.set_blur_radius(blur_value)
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"设置背景层模糊度失败：{exc}")
         try:
             layer.set_opacity(opacity_value)
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"设置背景层透明度失败：{exc}")
     
     # ---- 窗口事件处理 ----
     
@@ -2719,23 +2719,23 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             try:
                 if self._mica_background.isVisible():
                     self._mica_background.handle_window_resize()
-            except Exception:
-                pass
+            except Exception as exc:
+                debug(f"云母背景 resize 通知失败：{exc}")
         # 通知自定义图像背景层刷新（进入交互态，settle 后重建平滑缓存）
         if self._custom_background is not None:
             try:
                 if self._custom_background.isVisible():
                     self._custom_background.handle_window_resize()
-            except Exception:
-                pass
+            except Exception as exc:
+                debug(f"自定义背景 resize 通知失败：{exc}")
         # 通知简约背景层刷新（渐变固定于客户区，按新尺寸重绘）
         minimalist = getattr(self, "_minimalist_background", None)
         if minimalist is not None:
             try:
                 if minimalist.isVisible():
                     minimalist.handle_window_resize()
-            except Exception:
-                pass
+            except Exception as exc:
+                debug(f"简约背景 resize 通知失败：{exc}")
 
     def moveEvent(self, event: QMoveEvent) -> None:
         """窗口移动事件"""
@@ -2918,8 +2918,8 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             layout = getattr(self, "_settings_layout", None)
             if layout is not None and hasattr(layout, "on_host_closing"):
                 layout.on_host_closing()
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"设置窗口关闭钩子失败（暂存缓存可能未清理）：{exc}")
         super().closeEvent(event)
 
 
@@ -3097,6 +3097,6 @@ class LicenseViewerWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             previewer = getattr(self, "_previewer", None)
             if previewer is not None and hasattr(previewer, "cleanup"):
                 previewer.cleanup()
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"关闭时预览器清理失败：{exc}")
         super().closeEvent(event)

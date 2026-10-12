@@ -10,10 +10,10 @@
 * **DLL 可用（真实路径）**：``libmpv-2.dll`` 加载 / 最小生命周期
   create → load → play → stop → close；全程 ``finally`` 确保关闭，
   ``process_qt_events`` 让异步完成，teardown 用 ``join`` + ``is_alive``
-  检查线程退出（对应 AGENTS.md threading 跨线程模式）；
+  检查线程退出（对应项目跨线程模式）；
 * **DLL 缺失**：真实路径经 conftest session fixture ``mpv_available`` 注入
   方法参数 + 方法内 ``pytest.skip``（**不使用**类级 ``pytest.mark.skipif``
-  引用 fixture——learnings 已记录该写法会踩 ``AttributeError`` 的坑）。
+  引用 fixture——类级标记解析时 fixture 尚未注入，会踩 ``AttributeError``）。
 
 本文件还自带对 ``MPVDLLLoader`` 单例的 teardown 重置（conftest 的
 ``reset_singletons`` 未覆盖该单例）。
@@ -91,7 +91,7 @@ def _teardown_core(core: MPVPlayerCore, qapp: Any) -> None:
     try:
         core.close(timeout=5.0)
     except Exception:
-        pass
+        pass  # teardown 关闭失败：忽略（DLL 可能已卸载）
     process_qt_events(qapp, ms=50)
     assert core.wait_for_close(timeout=5.0) is True
     worker = core._worker_thread  # noqa: SLF001

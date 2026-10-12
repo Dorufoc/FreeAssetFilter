@@ -30,7 +30,7 @@ import pytest
 
 fitz = pytest.importorskip("fitz")  # PyMuPDF 缺失时跳过整个模块
 
-from PySide6.QtCore import QRectF
+from PySide6.QtCore import QRectF, QThreadPool
 from PySide6.QtGui import QImage
 
 from freeassetfilter.core.native.bridges.faf_core_bridge import (
@@ -78,7 +78,32 @@ def _wait_renders(renderer: PdfBackgroundRenderer, count: int) -> None:
         AssertionError: 任一次信号在超时内未发出。
     """
     for _ in range(count):
-        assert wait_for_signal(renderer.render_ready, 10000), "render_ready 超时"
+        # 私有池下单页渲染很快；15s 有界窗口仅防御极端负载。
+        assert wait_for_signal(renderer.render_ready, 15000), "render_ready 超时"
+
+
+def _renderer_with_private_pool(
+    max_cache: int = 4,
+) -> Tuple[PdfBackgroundRenderer, QThreadPool]:
+    """构造使用私有线程池的渲染器（隔离全局池高负载饥饿，防顺序抖动）。
+
+    Args:
+        max_cache: LRU 缓存上限。
+
+    Returns:
+        (renderer, pool)：渲染器与其私有线程池（teardown 用 ``_dispose_renderer``）。
+    """
+    pool = QThreadPool()
+    pool.setMaxThreadCount(2)
+    return PdfBackgroundRenderer(max_cache=max_cache, pool=pool), pool
+
+
+def _dispose_renderer(renderer: PdfBackgroundRenderer, pool: QThreadPool) -> None:
+    """取消任务并释放渲染器与私有线程池（有界等待）。"""
+    renderer.cancel_all()
+    safe_teardown(renderer)
+    pool.clear()
+    pool.waitForDone(5000)
 
 
 # ── PdfDocument --------------------------------------------------------
@@ -411,7 +436,7 @@ def test_submit_and_find_cached(qapp: Any, sample_pdf_file: str) -> None:
         qapp: session QApplication。
         sample_pdf_file: 单页 PDF 路径。
     """
-    renderer: PdfBackgroundRenderer = PdfBackgroundRenderer(max_cache=4)
+    renderer, pool = _renderer_with_private_pool(4)
     try:
         renderer.submit(sample_pdf_file, 0, zoom=1.0, dpr=1.0)
         _wait_renders(renderer, 1)
@@ -423,8 +448,7 @@ def test_submit_and_find_cached(qapp: Any, sample_pdf_file: str) -> None:
         assert resp.request.zoom == pytest.approx(1.0)
         assert renderer.pending_count() == 0
     finally:
-        renderer.cancel_all()
-        safe_teardown(renderer)
+        _dispose_renderer(renderer, pool)
 
 
 def test_find_cached_closest_zoom(qapp: Any, sample_pdf_file: str) -> None:
@@ -434,7 +458,7 @@ def test_find_cached_closest_zoom(qapp: Any, sample_pdf_file: str) -> None:
         qapp: session QApplication。
         sample_pdf_file: 单页 PDF 路径。
     """
-    renderer: PdfBackgroundRenderer = PdfBackgroundRenderer(max_cache=4)
+    renderer, pool = _renderer_with_private_pool(4)
     try:
         renderer.submit(sample_pdf_file, 0, zoom=1.0, dpr=1.0)
         _wait_renders(renderer, 1)
@@ -442,8 +466,7 @@ def test_find_cached_closest_zoom(qapp: Any, sample_pdf_file: str) -> None:
         assert resp is not None
         assert resp.request.zoom == pytest.approx(1.0)
     finally:
-        renderer.cancel_all()
-        safe_teardown(renderer)
+        _dispose_renderer(renderer, pool)
 
 
 def test_find_cached_zoom_gate_rejects(qapp: Any, sample_pdf_file: str) -> None:
@@ -453,14 +476,13 @@ def test_find_cached_zoom_gate_rejects(qapp: Any, sample_pdf_file: str) -> None:
         qapp: session QApplication。
         sample_pdf_file: 单页 PDF 路径。
     """
-    renderer: PdfBackgroundRenderer = PdfBackgroundRenderer(max_cache=4)
+    renderer, pool = _renderer_with_private_pool(4)
     try:
         renderer.submit(sample_pdf_file, 0, zoom=1.0, dpr=1.0)
         _wait_renders(renderer, 1)
         assert renderer.find_cached(0, 3.0) is None  # 差 200% → 拒绝
     finally:
-        renderer.cancel_all()
-        safe_teardown(renderer)
+        _dispose_renderer(renderer, pool)
 
 
 def test_find_cached_no_match(qapp: Any, sample_pdf_file: str) -> None:
@@ -470,12 +492,11 @@ def test_find_cached_no_match(qapp: Any, sample_pdf_file: str) -> None:
         qapp: session QApplication。
         sample_pdf_file: 单页 PDF 路径。
     """
-    renderer: PdfBackgroundRenderer = PdfBackgroundRenderer(max_cache=4)
+    renderer, pool = _renderer_with_private_pool(4)
     try:
         assert renderer.find_cached(0, 1.0) is None
     finally:
-        renderer.cancel_all()
-        safe_teardown(renderer)
+        _dispose_renderer(renderer, pool)
 
 
 def test_submit_invalid_path_fails(qapp: Any, tmp_path: Path) -> None:
@@ -485,7 +506,7 @@ def test_submit_invalid_path_fails(qapp: Any, tmp_path: Path) -> None:
         qapp: session QApplication。
         tmp_path: 临时目录。
     """
-    renderer: PdfBackgroundRenderer = PdfBackgroundRenderer(max_cache=4)
+    renderer, pool = _renderer_with_private_pool(4)
     try:
         bad: str = str(tmp_path / "missing.pdf")
         renderer.submit(bad, 0, zoom=1.0, dpr=1.0)
@@ -493,8 +514,7 @@ def test_submit_invalid_path_fails(qapp: Any, tmp_path: Path) -> None:
         assert renderer.find_cached(0, 1.0) is None
         assert renderer.pending_count() == 0
     finally:
-        renderer.cancel_all()
-        safe_teardown(renderer)
+        _dispose_renderer(renderer, pool)
 
 
 def test_cancel_all_clears_pending(qapp: Any, tmp_path: Path) -> None:
@@ -505,7 +525,7 @@ def test_cancel_all_clears_pending(qapp: Any, tmp_path: Path) -> None:
         tmp_path: 临时目录。
     """
     pdf_path: str = _make_multipage_pdf(tmp_path / "multi.pdf", pages=2)
-    renderer: PdfBackgroundRenderer = PdfBackgroundRenderer(max_cache=4)
+    renderer, pool = _renderer_with_private_pool(4)
     try:
         renderer.submit(pdf_path, 0, zoom=1.0, dpr=1.0)
         assert renderer.pending_count() >= 1
@@ -513,8 +533,7 @@ def test_cancel_all_clears_pending(qapp: Any, tmp_path: Path) -> None:
         assert renderer.pending_count() == 0
         assert renderer.find_cached(0, 1.0) is None
     finally:
-        renderer.cancel_all()
-        safe_teardown(renderer)
+        _dispose_renderer(renderer, pool)
 
 
 def test_lru_eviction(qapp: Any, tmp_path: Path) -> None:
@@ -528,7 +547,7 @@ def test_lru_eviction(qapp: Any, tmp_path: Path) -> None:
         tmp_path: 临时目录。
     """
     pdf_path: str = _make_multipage_pdf(tmp_path / "multi.pdf", pages=3)
-    renderer: PdfBackgroundRenderer = PdfBackgroundRenderer(max_cache=2)
+    renderer, pool = _renderer_with_private_pool(2)
     try:
         # 逐页提交并等待完成，保证入缓存顺序 = 0,1,2
         renderer.submit(pdf_path, 0, zoom=1.0, dpr=1.0)
@@ -545,8 +564,7 @@ def test_lru_eviction(qapp: Any, tmp_path: Path) -> None:
         assert renderer.find_cached(1, 1.0) is not None
         assert renderer.find_cached(2, 1.0) is not None  # 最新保留
     finally:
-        renderer.cancel_all()
-        safe_teardown(renderer)
+        _dispose_renderer(renderer, pool)
 
 
 def test_render_request_response_dataclass() -> None:
@@ -578,7 +596,7 @@ def test_is_busy_reflects_pending(qapp: Any, sample_pdf_file: str) -> None:
         qapp: session QApplication。
         sample_pdf_file: 单页 PDF 路径。
     """
-    renderer: PdfBackgroundRenderer = PdfBackgroundRenderer(max_cache=4)
+    renderer, pool = _renderer_with_private_pool(4)
     try:
         renderer.submit(sample_pdf_file, 0, zoom=1.0, dpr=1.0)
         assert renderer.is_busy() is True
@@ -588,8 +606,7 @@ def test_is_busy_reflects_pending(qapp: Any, sample_pdf_file: str) -> None:
             pass
         assert renderer.is_busy() is False or renderer.find_cached(0, 1.0) is not None
     finally:
-        renderer.cancel_all()
-        safe_teardown(renderer)
+        _dispose_renderer(renderer, pool)
 
 
 # =============================================================================
@@ -635,7 +652,7 @@ class TestPdfSelectionNativeParity:
     )
 
     # 向下/向上拖拽、跨页/单页、首末行 x 严格边界、空选区全覆盖
-    # （与 task-18-pdf.txt 同源 sample_multi_page.pdf）。
+    # （用例源自 faf_core_fixtures/pdf_samples/ 的 sample_multi_page.pdf）。
     _SELECTION_CASES: List[Tuple[Tuple[int, int], Tuple[int, int]]] = [
         ((50, 50), (560, 2400)),
         ((72, 90), (560, 200)),
@@ -919,7 +936,7 @@ class TestPdfSelectionRectParityAndBudget:
         if bridge is None or not getattr(
             bridge, "_supports_pdf_select_words", False
         ):
-            pytest.skip("桥 pdf_select_words 未接线，跳过 native-vs-Python 矩形对拍")
+            pytest.skip("桥 pdf_select_words 能力不可用（旧 DLL 无此导出），跳过 native-vs-Python 矩形对拍")
         doc_n, native_view = TestPdfSelectionNativeParity._open_view()
         doc_p, python_view = TestPdfSelectionNativeParity._open_view()
         try:

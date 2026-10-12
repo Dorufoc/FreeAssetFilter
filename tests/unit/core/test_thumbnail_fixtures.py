@@ -2,8 +2,7 @@
 """todo 29（测试夹具扩充）Python 集成层夹具回归：全格式经桥命中 T1 原生路径。
 
 覆盖 ``tests/unit/core/thumbnail_fixtures/`` 固化夹具（19 个，全部 <512KB，
-由 ``.omo/evidence/thumbnail-rust-refactor/task-29-gen-fixtures.py`` 确定性
-生成）经 ``RustThumbnailBridge.generate_rgba_with_status(path, 64, 64)``
+确定性生成）经 ``RustThumbnailBridge.generate_rgba_with_status(path, 64, 64)``
 的真实解码回路。
 
 **原生路径命中口径**（桥内无 Python 回退——``generate_rgba_with_status``
@@ -23,8 +22,7 @@ lib.rs ``CAPABILITY_GATED_IMAGE_EXTS`` 对这四扩展名静态返回 -6——�
 固化（T1 无消费方），测试内 skipif 门控现场生成到 tmp_path 验证门控契约；
 编码器缺失时 skip 非 fail。
 
-夹具生成策略（PIL 能写→固化文件；不能写→手工构造已验证字节并记录理由）
-详见生成脚本 docstring 与 learnings.md Task 29 条目。
+夹具生成策略：PIL 能写→固化文件；不能写→手工构造已验证字节并记录理由。
 """
 
 from __future__ import annotations

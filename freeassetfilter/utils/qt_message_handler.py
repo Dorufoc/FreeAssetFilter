@@ -114,7 +114,7 @@ def _qt_message_handler(msg_type: Any, context: Any, message: Any) -> None:
         try:
             _write_bootstrap_fallback(f"[Qt] handler failed: {exc}")
         except Exception:
-            pass
+            pass  # 引导兜底失败：放弃（防递归）
     finally:
         _tls.in_handler = False
 
@@ -135,5 +135,5 @@ def install_qt_message_handler() -> bool:
         try:
             _write_bootstrap_fallback(f"[Qt] install handler failed: {exc}")
         except Exception:
-            pass
+            pass  # 引导兜底失败：放弃（防递归）
         return False

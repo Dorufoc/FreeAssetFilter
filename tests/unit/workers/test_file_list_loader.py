@@ -12,10 +12,10 @@
 * scandir 内部分支 —— 点文件跳过、符号链接条目跳过、stat 抛
   ``PermissionError`` 的条目被静默忽略，其余条目完整入列
 
-线程纪律（AGENTS.md / learnings W7）：``run()`` 本体在 Qt 原生线程执行时
+线程纪律：``run()`` 本体在 Qt 原生线程执行时
 **不被 coverage.py 追踪**（``sys.settrace`` 不进入 Qt 线程），因此本文件统一
 **同步调用 ``thread.run()``** 驱动扫描逻辑（信号按直连在调用线程内同步派发），
-以覆盖 run() 全部分支——这是既有 learnings 固化且验证的模式。
+以覆盖 run() 全部分支——这是本项目测试中已固化且验证的模式。
 """
 from __future__ import annotations
 

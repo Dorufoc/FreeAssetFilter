@@ -205,7 +205,7 @@ class TestCancellation:
     ) -> None:
         """hicon_to_pixmap 抛异常时 finally 仍释放 HICON。
 
-        AGENTS.md 的 QRunnable + finally 清理模式：即使图标加工中途失败，
+        QRunnable + finally 清理模式：即使图标加工中途失败，
         ``DestroyIcon(hicon)`` 也必须在 finally 中执行，句柄不得泄漏。
         """
         fake_hicon = object()

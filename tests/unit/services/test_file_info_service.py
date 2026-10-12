@@ -435,7 +435,7 @@ class TestCache:
 class TestExifNativeParity:
     """native faf_parse_exif vs exifread 逐字段对拍（faf_core_available 启用）。
 
-    accepted-diff（todo 6 已核，task-6-exif.txt）：native 不输出
+    accepted-diff（todo 6 对拍已核）：native 不输出
     ``Image GPSInfo: <偏移>`` 指针行——kamadak 将 ExifIFDPointer(0x8769) /
     GPSInfoIFDPointer(0x8825) / InteropIFDPointer(0xa005) 当作结构性导航
     消费、不存入 fields；exifread 则打印为普通偏移行。对拍按该差异豁免，

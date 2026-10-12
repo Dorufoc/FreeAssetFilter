@@ -923,22 +923,14 @@ class FontPreviewerLayout(QWidget):
             bare=True,
             parent=self._content_area,
         )
-        register_widget_qss(self._text_drawer._panel,(
+        register_widget_qss(self._text_drawer.panel,(
             f"#DrawerPanel {{ background-color: {tm.surface.name()}; border: none; }}"
         ))
 
-        # 限制面板宽度不超过内容区宽度
-        _orig_get_panel_size = self._text_drawer._get_panel_size
+        # 限制面板宽度不超过内容区宽度（组件公开扩展点）
+        self._text_drawer.set_panel_width_limit(lambda: self._content_area.width())
 
-        def _constrained_panel_size() -> tuple[int, int]:
-            pw, ph = _orig_get_panel_size()
-            available_w = self._content_area.width()
-            max_pw = max(available_w - 4, 60)
-            return min(pw, max_pw), ph
-
-        self._text_drawer._get_panel_size = _constrained_panel_size  # type: ignore[method-assign]
-
-        panel_layout = self._text_drawer._panel.layout()
+        panel_layout = self._text_drawer.panel.layout()
         panel_layout.setContentsMargins(16, 16, 16, 16)
         panel_layout.setSpacing(12)
 
@@ -973,20 +965,11 @@ class FontPreviewerLayout(QWidget):
             parent=self._content_area,
         )
         # 移除面板自身边框，只保留背景色
-        register_widget_qss(self._ai_drawer._panel,(
+        register_widget_qss(self._ai_drawer.panel,(
             f"#DrawerPanel {{ background-color: {tm.surface.name()}; border: none; }}"
         ))
-        # 覆写面板尺寸计算：视口宽度小于默认宽度时横向缩小以完整显示
-        _orig_get_panel_size = self._ai_drawer._get_panel_size
-
-        def _constrained_panel_size() -> tuple[int, int]:
-            pw, ph = _orig_get_panel_size()
-            available_w = self._content_area.width()
-            margin = 4  # 保留 4px 边缘间隙
-            max_pw = max(available_w - margin, 60)
-            return min(pw, max_pw), ph
-
-        self._ai_drawer._get_panel_size = _constrained_panel_size  # type: ignore[method-assign]
+        # 视口宽度小于默认宽度时横向缩小以完整显示（组件公开扩展点）
+        self._ai_drawer.set_panel_width_limit(lambda: self._content_area.width())
         # 创建后默认可能随 parent 可见：显式隐藏，等点击 AI 按钮再展开
         self._ai_drawer.hide()
 
@@ -1015,7 +998,7 @@ class FontPreviewerLayout(QWidget):
                 self._weight_group,
             ])
         else:
-            if self._ai_drawer is not None and self._ai_drawer._is_open:
+            if self._ai_drawer is not None and self._ai_drawer.is_open:
                 self._ai_drawer.close_drawer()
             self._top_bar.remove_widget(self._ai_btn)
             self._top_bar.set_overflow_priority([
@@ -1027,7 +1010,7 @@ class FontPreviewerLayout(QWidget):
         """切换 AI 侧边面板的展开/收起。"""
         if self._ai_drawer is None:
             return
-        if self._ai_drawer._is_open:
+        if self._ai_drawer.is_open:
             self._ai_drawer.close_drawer()
         else:
             self._ai_drawer.open_drawer()
@@ -1058,17 +1041,8 @@ class FontPreviewerLayout(QWidget):
         super().resizeEvent(event)
         for drawer_attr in ("_text_drawer", "_ai_drawer"):
             drawer = getattr(self, drawer_attr, None)
-            if drawer is not None and drawer._is_open:
-                drawer._update_container_geom()
-                cw, ch = drawer._cw, drawer._ch
-                drawer.setGeometry(0, 0, cw, ch)
-                drawer._backdrop.setGeometry(0, 0, cw, ch)
-                pw, _ = drawer._get_panel_size()
-                drawer._panel.resize(pw, ch)
-                if drawer._orientation == "right":
-                    drawer._panel.move(cw - pw, 0)
-                else:
-                    drawer._panel.move(0, 0)
+            if drawer is not None:
+                drawer.refresh_geometry()
 
     def eventFilter(self, obj: Any, event: QEvent) -> bool:
         """应用级事件过滤：缩放/字重弹窗手势关闭（拖拽豁免）+ 窗口移动跟随/缩放关闭。"""
@@ -1141,11 +1115,11 @@ class FontPreviewerLayout(QWidget):
         self.set_section_styles("", "")
         self._top_bar.update()
         if self._text_drawer is not None:
-            register_widget_qss(self._text_drawer._panel,(
+            register_widget_qss(self._text_drawer.panel,(
                 f"#DrawerPanel {{ background-color: {tm.surface.name()}; border: none; }}"
             ))
         if self._ai_drawer is not None:
-            register_widget_qss(self._ai_drawer._panel,(
+            register_widget_qss(self._ai_drawer.panel,(
                 f"#DrawerPanel {{ background-color: {tm.surface.name()}; border: none; }}"
             ))
         # 刷新弹窗主题（如果可见）
@@ -1447,7 +1421,7 @@ class FontPreviewerLayout(QWidget):
         """切换左侧预览文本编辑抽屉的展开/收起状态。"""
         if self._text_drawer is None:
             return
-        if self._text_drawer._is_open:
+        if self._text_drawer.is_open:
             self._text_drawer.close_drawer()
         else:
             self._text_drawer.open_drawer()
@@ -1552,7 +1526,7 @@ class FontPreviewerLayout(QWidget):
         # 收起左右抽屉，避免预览器切换后残留展开面板
         for drawer_attr in ("_text_drawer", "_ai_drawer"):
             drawer = getattr(self, drawer_attr, None)
-            if drawer is not None and drawer._is_open:
+            if drawer is not None and drawer.is_open:
                 drawer.close_drawer()
 
 

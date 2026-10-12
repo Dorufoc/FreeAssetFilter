@@ -25,6 +25,8 @@ import fitz
 
 from PySide6.QtGui import QImage
 
+from freeassetfilter.utils.app_logger import debug
+
 
 class PdfDocument:
     """Thread-safe wrapper around a PyMuPDF (fitz) document.
@@ -88,8 +90,8 @@ class PdfDocument:
                 return
             try:
                 self._doc.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                debug(f"关闭 PDF 文档失败：{exc}")
             finally:
                 self._doc = None  # type: ignore[assignment]
             self._textpage_cache.clear()

@@ -3,7 +3,7 @@
 
 覆盖（happy + boundary/error 各至少一条）：
 
-* ``DriveListLoaderThread`` —— **同步调用 ``run()``**（learnings W7：
+* ``DriveListLoaderThread`` —— **同步调用 ``run()``**（
   ``QThread.start()`` 的 run 本体在 Qt 原生线程执行，coverage 无法追踪），
   mock 盘符位掩码（禁止真实枚举整机磁盘）；覆盖 GetLogicalDrives 失败
   warning、mpr WNetOpenEnumW 失败、完整网络枚举（NETRESOURCE → wstring_at
@@ -12,7 +12,7 @@
   返回 False、路径缺失尾分隔符时自动补齐、空目录 StopIteration 分支、
   OSError/PermissionError 分支、兜底 Exception 分支
 
-线程纪律（AGENTS.md / learnings W7）：信号等待全部经同步直连的断言；
+线程纪律：信号等待全部经同步直连的断言；
 任何路径都**不启动真实后台线程**（禁止真实盘符/网络扫描）。
 """
 from __future__ import annotations

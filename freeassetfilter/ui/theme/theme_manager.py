@@ -15,6 +15,8 @@ from typing import Optional, Dict, Any
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QColor
 
+from freeassetfilter.utils.app_logger import debug
+
 # Mapping from old-style template token paths to new property names.
 # Render_qss() uses this to resolve {{surface}}, {{accent.primary}} etc.
 _TOKEN_TO_PROP: Dict[str, str] = {
@@ -340,8 +342,8 @@ class ThemeManager(QObject):
                 self._dark_mode = (
                     get_windows_system_theme() == "dark"
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                debug(f"读取系统主题失败（保持当前明暗值）：{exc}")
         else:
             self._dark_mode = (mode == "dark")
         self._clear_color_cache()

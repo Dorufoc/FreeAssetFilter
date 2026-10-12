@@ -1750,8 +1750,8 @@ class MicaMaterial(QObject):
             return None
         try:
             self._layer_cache.move_to_end(key)
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOG.debug("层缓存顺序刷新失败：%s", exc)
         return hit
 
     def _apply_cached_layer(
@@ -1930,8 +1930,8 @@ class MicaMaterial(QObject):
             try:
                 if thread is not None:
                     thread.quit()
-            except Exception:
-                pass
+            except Exception as exc:
+                _LOG.debug("视口层工作线程 quit 失败（线程可能残留）：%s", exc)
             return
         if layer_key != self._layer_key or gen != self._layer_gen:
             # 过期结果：来自一次已被更新的请求（主题/参数/壁纸/监视器变化后新请求已提交）。
@@ -2023,8 +2023,8 @@ class MicaMaterial(QObject):
             if self._worker_thread is not None:
                 try:
                     self._worker_thread.quit()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _LOG.debug("烘焙失败回收：工作线程 quit 失败（线程可能残留）：%s", exc)
             return
         self._refresh_retries += 1
         self._refresh_outcome = "fail"
@@ -2066,13 +2066,13 @@ class MicaMaterial(QObject):
             try:
                 if worker is not None:
                     worker.deleteLater()
-            except Exception:
-                pass
+            except Exception as exc:
+                _LOG.debug("工作对象 deleteLater 失败：%s", exc)
             try:
                 if thread is not None:
                     thread.deleteLater()
-            except Exception:
-                pass
+            except Exception as exc:
+                _LOG.debug("工作线程 deleteLater 失败：%s", exc)
             return
         if thread is None:
             return

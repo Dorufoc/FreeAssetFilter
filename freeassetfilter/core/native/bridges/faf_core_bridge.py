@@ -1029,7 +1029,7 @@ class FafCoreBridge:
         ``*out_len``，本方法 ``string_at(raw, out_len)`` 拷贝为 ``bytes``。
         ``QPixmap``/``QImage`` 构造留在调用方（GUI 线程）。
 
-        **spike 裁决 DROP**（task-1-decisions.md §6）：float ULP（``math.hypot``
+        **spike 裁决 DROP**：float ULP（``math.hypot``
         vs ``f64::hypot`` 差 1 ULP）令逐像素 parity 不可达，Rust 侧恒返回
         ``STATUS_UNSUPPORTED`` → null → 本方法恒返回 ``None``，Python 保持
         ``_styled_fluid_cpu.render_static_frame`` 路径。
@@ -1076,14 +1076,14 @@ class FafCoreBridge:
             size = int(out_len.value)
             if size <= 0:
                 return None
-            # RGBA 缓冲按 out_len 拷贝（含内嵌 NUL 字节）；占位期不可达。
+            # RGBA 缓冲按 out_len 拷贝（含内嵌 NUL 字节）；DROP 终态不可达。
             return ctypes.string_at(raw, size)
         except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             warning(f"render_fluid_frame 失败: {e}")
             return None
         finally:
             # 审查 3.1#26：native 缓冲所有权在本方法内终结——成功/失败路径均
-            # 经 faf_free_buffer(ptr, len) 释放；占位期 native 恒返回 null，
+            # 经 faf_free_buffer(ptr, len) 释放；DROP 终态下 native 恒返回 null，
             # 旧 DLL 无该导出时也不会出现"拿到缓冲却无释放路径"。
             if raw and size > 0 and self._supports_free_buffer:
                 try:

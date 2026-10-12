@@ -293,10 +293,10 @@ python -m coverage report
 ## 测试注意事项
 
 - **GUI 测试需要真实显示器**：`tests/gui/` 走真实渲染断言，无头环境（CI）需设置 `QT_QPA_PLATFORM=offscreen`，或在无显示器的机器上跳过该目录。
-- **单例在测试间持久**：SettingsManager / HeartbeatManager 等单例跨测试存活，`reset_singletons` autouse fixture 会在每个测试函数前后归零。若引入新的单例管理器，记得同步到 `_reset_all_singletons` 重置清单。
+- **单例与模块级缓存跨测试隔离**：类级单例（HeartbeatManager / ThumbnailManager / MPVManager / AppLogger）、模块级惰性缓存（thumbnail_manager / app_logger / async_icon_loader / faf_core 桥 / lut_preview_generator / lut_preview_native / mica_render / py7z_core）与 QSS 注册表均由 autouse fixture `reset_singletons` 在每个测试函数前后归零；清单与"明确不重置"的例外（`ui/theme` 主题单例，见原因）都以 `_reset_all_singletons` 的 docstring 为准。若引入新的单例/惰性缓存，记得同步到该清单。
 - **依赖原生二进制的测试自动跳过**：libmpv-2.dll、Rust DLL、7z.exe、soffice、ffmpeg.exe 等均通过对应的 `*_available` fixture 作 session 级探测，缺失时相关测试 `pytest.skip`，不影响其余用例。
 - **support/ 模块用途**：
-  - `qt_helpers.py`：Qt 辅助，提供事件泵（`flush_widget_queue`）、DeferredDelete 派发（`drain_deferred_deletes`）、顶层窗口快照/清道夫（`toplevel_widget_snapshot` / `scavenge_toplevel_widgets`）、信号等待（`wait_for_signal`）与安全清理（`safe_teardown`）。
+  - `qt_helpers.py`：Qt 辅助，提供事件泵（`flush_widget_queue`）、DeferredDelete 派发（`drain_deferred_deletes`）、顶层窗口快照/清道夫（`toplevel_widget_snapshot` / `scavenge_toplevel_widgets`）、信号等待（`wait_for_signal`，默认 5s 有界）、条件等待（`wait_until`，可自定义有界超时）与安全清理（`safe_teardown`）。
   - `data_factories.py`：测试数据工厂，按需生成图片、PDF、文本、压缩包、音频、字体与文件信息字典。
   - `log_setup.py`：接管 pytest 日志，将输出双写到 `tests/log/`。
   - `progress.py`：运行进度条报告插件。
@@ -309,6 +309,14 @@ python -m coverage report
   - 组合运行曾偶发 access violation 与心跳时序问题，已通过将事件泵浦超时从 5s 提升到 15s 修复；若再遇"回调未在超时前触发"的失败，建议继续增大 `_pump_until` 的超时值。
   - UI 测试大量创建 `MainWindow`/预览布局；`scavenge_leaked_toplevel_widgets` 清道夫依赖显式派发 DeferredDelete + 先 dispose Mica 材质，**不要**把 `deleteLater` 后的控件在未清理材质时强制销毁（原生访问冲突签名见 `safe_teardown`）。
   - `tests/unit/ui/mica/` 单独运行需要 `freeassetfilter/ui` 在 `sys.path`（该目录测试模块自行 bootstrap 的约定，全量运行由其它 UI 测试模块先行完成）。
+
+### 工作区隔离与确定性纪律（review 3.5 收口）
+
+- **数据目录隔离**：`conftest` 在导入期设置 `FAF_DATA_DIR` 指向会话临时目录（`get_app_data_path()` 会优先使用，`utils/path_utils.py` 与 `core/_paths.py` 双实现均支持），任何模块都不会写到仓库真实 `data/`；`redirect_layout_app_data_writes` 仍为布局层提供逐测试临时目录。**新增写盘模块时，一律经 `get_app_data_path()` 取路径**，不要硬编码仓库相对路径。
+- **等待纪律**：`wait_for_signal` 只适合"信号预期很快到达"的场景；异步扫描/线程池任务等受负载影响的等待，用 `wait_until(app, predicate, timeout_ms=...)` 或"**先连接信号、再触发动作**"的计数器模式（参考 `test_file_selector_native_wiring.py` 的重扫等待），不要用固定 `time.sleep` 替代等待。刻意模拟延迟/防抖语义的 sleep 保留，但需有注释说明用途。
+- **原生资源会话纪律**：Mica GPU 渲染线程与全局 QThreadPool 由 session 级 `cleanup_qt_runtime` 统一回收；`safe_teardown`/清道夫保证 DeferredDelete 落地。不要绕过这些设施强杀控件或线程。
+- **超时策略单一事实源**：`support/timeout_policy.py` 定义目录级超时与显式 marker 的优先级；单个用例若需更长超时，用 `@pytest.mark.timeout(N)` 显式声明，不要改全局值。
+- **异常卫生门禁**：`tests/unit/test_exception_policy.py` 扫描全仓，宽泛 `except Exception/BaseException:`（含裸 `except:`）且处理体仅 `pass` 时必须就地写明理由注释；新代码请补 `debug/warning` 留痕或理由注释。
 
 ## 覆盖成果（历史参考）
 

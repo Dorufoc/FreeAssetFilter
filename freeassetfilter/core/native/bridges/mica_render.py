@@ -1009,8 +1009,8 @@ class MicaRenderContext:
         """兜底释放。"""
         try:
             self.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOG.debug("Mica 渲染器关闭失败：%s", exc)
 
 
 __all__ = [

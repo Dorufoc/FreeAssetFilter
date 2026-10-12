@@ -1,6 +1,6 @@
 //! ICNS 解码器（todo 22 实现；Design Revision 5 落地：引入 `icns = "0.4"`
 //! crate，MIT，mdsteele/rust-icns——纯 Rust，静态合并进 thumbnail_generator.dll
-//! 无外部 DLL，AGPL-3.0 兼容，选型理由见 .omo/notepads/decisions.md）。
+//! 无外部 DLL，AGPL-3.0 兼容）。
 //!
 //! 职责：`icns` 魔数 + 条目表解析（`u32 type + u32 len + data` 循环）；
 //! **PNG 内嵌条目**（`ic04`-`ic14` 等，payload 为 PNG 字节）解码；**is32+mask

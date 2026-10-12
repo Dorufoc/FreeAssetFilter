@@ -548,6 +548,47 @@ class TestStyledDrawer:
         drawer.deleteLater()
         container.deleteLater()
 
+    def test_public_api_and_panel_width_limit(
+        self, qapp: QApplication
+    ) -> None:
+        """公开 API：panel/is_open/refresh_geometry + 宽度上限钳制。"""
+        container = QWidget()
+        container.resize(150, 300)
+        drawer = StyledDrawer(orientation="right", size="sm", parent=container)
+        drawer.set_panel_width_limit(lambda: container.width())
+        drawer.open_drawer()
+        assert wait_for_signal(drawer.opened, timeout_ms=2000) is True
+        assert drawer.is_open is True
+        assert drawer.panel.objectName() == "DrawerPanel"
+        # 宽度钳制：min(280, max(150-4, 60)) == 146
+        assert drawer.panel.width() == 146
+
+        before = drawer.geometry()
+        drawer.refresh_geometry()
+        assert drawer.geometry() == before
+
+        drawer.close_drawer()
+        assert wait_for_signal(drawer.closed, timeout_ms=2000) is True
+        assert drawer.is_open is False
+        # 关闭态 refresh_geometry 为空操作（不抛、不改几何）
+        closed_geometry = drawer.geometry()
+        drawer.refresh_geometry()
+        assert drawer.geometry() == closed_geometry
+        drawer.deleteLater()
+        container.deleteLater()
+
+    def test_panel_width_limit_min_clamp(self, qapp: QApplication) -> None:
+        """宽度上限的下限保护：可用宽度过小时钳制到 60px。"""
+        container = QWidget()
+        container.resize(40, 300)
+        drawer = StyledDrawer(orientation="left", size="sm", parent=container)
+        drawer.set_panel_width_limit(lambda: container.width())
+        drawer.open_drawer()
+        assert wait_for_signal(drawer.opened, timeout_ms=2000) is True
+        assert drawer.panel.width() == 60
+        drawer.deleteLater()
+        container.deleteLater()
+
 
 # =============================================================================
 # ui.components.styled_notification_badge

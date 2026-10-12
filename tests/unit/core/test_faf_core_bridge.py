@@ -338,7 +338,7 @@ class TestBridgeParseExif:
         assert isinstance(FafCoreBridge()._supports_parse_exif, bool)  # noqa: SLF001
 
     def test_parse_exif_available_call(self, tmp_path: Any) -> None:
-        """可用时调用不抛异常；占位期返回 None，实现期返回 dict 载荷。"""
+        """可用时调用不抛异常；当前实现返回 dict 载荷（失败路径 None）。"""
         inst = FafCoreBridge()
         if not inst.available or not inst._supports_parse_exif:  # noqa: SLF001
             pytest.skip("faf_core.dll 不含 parse_exif 导出，跳过可用路径测试")
@@ -409,7 +409,7 @@ class TestBridgeReplaceSvgColors:
         )
 
     def test_replace_svg_colors_available_call(self) -> None:
-        """可用时调用不抛异常；占位期返回 None，实现期返回 str SVG 文本。"""
+        """可用时调用不抛异常；当前实现返回 str SVG 文本（失败路径 None）。"""
         inst = FafCoreBridge()
         if not inst.available or not inst._supports_replace_svg_colors:  # noqa: SLF001
             pytest.skip("faf_core.dll 不含 replace_svg_colors 导出，跳过可用路径测试")
@@ -516,14 +516,14 @@ class TestBridgeRenderFluidFrame:
 
 
 class TestBridgeParse7zList:
-    """``parse_7z_list`` 能力标记、可用路径与降级路径（7 键条目列表）。"""
+    """``parse_7z_list`` 能力标记、可用路径与降级路径（6 键条目列表）。"""
 
     def test_parse_7z_list_capability_flag(self) -> None:
         """``_supports_parse_7z_list`` 为 bool（能力探测属性）。"""
         assert isinstance(FafCoreBridge()._supports_parse_7z_list, bool)  # noqa: SLF001
 
     def test_parse_7z_list_available_call(self) -> None:
-        """可用时调用不抛异常；占位期返回 None，实现期返回 dict 条目列表。"""
+        """可用时调用不抛异常；当前实现返回 dict 条目列表（失败路径 None）。"""
         inst = FafCoreBridge()
         if not inst.available or not inst._supports_parse_7z_list:  # noqa: SLF001
             pytest.skip("faf_core.dll 不含 parse_7z_list 导出，跳过可用路径测试")
@@ -562,7 +562,7 @@ class TestBridgePdfSelectWords:
         assert isinstance(FafCoreBridge()._supports_pdf_select_words, bool)  # noqa: SLF001
 
     def test_pdf_select_words_available_call(self) -> None:
-        """可用时调用不抛异常；占位期返回 None，实现期返回选中词条目列表。"""
+        """可用时调用不抛异常；当前实现返回选中词条目列表（失败路径 None）。"""
         inst = FafCoreBridge()
         if not inst.available or not inst._supports_pdf_select_words:  # noqa: SLF001
             pytest.skip("faf_core.dll 不含 pdf_select_words 导出，跳过可用路径测试")

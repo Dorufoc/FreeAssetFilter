@@ -11,8 +11,8 @@
 //!   解码**（手动路径自带边缘裁剪，支持任意尺寸）。
 //! - **BC4/BC5**：bcdec_rs（`bcdec_rs = "0.2"`，MIT 纯 Rust no_std，BC1-7 全覆盖，
 //!   ScanMountGoat/image_dds 分拆）手动解码——image crate 不支持 BC4/5
-//!   （`src/codecs/dds.rs` 的 fourCC 匹配表仅 DXT1/3/5 + DX10 70-78）。选型理由
-//!   与 AGPL-3.0 兼容性核对见 `.omo/notepads/thumbnail-rust-refactor/decisions.md`。
+//!   （`src/codecs/dds.rs` 的 fourCC 匹配表仅 DXT1/3/5 + DX10 70-78）。选型
+//!   已核对：MIT 纯 Rust，与 AGPL-3.0 组合兼容。
 //! - **BC7 未实现 → `STATUS_UNSUPPORTED`(-6)**（交 T3，不 panic）。
 //!
 //! 防御上限：声明尺寸 `w*h > 8192×8192` → `STATUS_TOO_LARGE`(-7)（统一经

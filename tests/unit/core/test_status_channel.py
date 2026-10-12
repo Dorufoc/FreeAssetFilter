@@ -209,7 +209,7 @@ def status_manager(tmp_path: Any) -> Any:
     try:
         manager.clear_all_thumbnails()
     except Exception:
-        pass
+        pass  # teardown 清理失败：忽略（不阻塞后续用例）
     ThumbnailManager._instance = None
     ThumbnailManager._initialized = False
 

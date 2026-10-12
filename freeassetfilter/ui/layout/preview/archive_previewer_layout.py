@@ -92,7 +92,7 @@ from freeassetfilter.ui.components.styled_scroll_area import (
     StyledScrollArea,
     StyledScrollBar,
 )
-from freeassetfilter.utils.app_logger import error, info, warning
+from freeassetfilter.utils.app_logger import debug, error, info, warning
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 # 注：后台列表读取走 QThreadPool 全局池（QRunnable 用完即弃），面板仅持有
@@ -383,8 +383,8 @@ class _ArchiveEntryDelegate(QStyledItemDelegate):
             )
             if pixmap is not None and not pixmap.isNull():
                 return pixmap
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"压缩包条目图标生成失败（回退占位）：{exc}")
         return None
 
     def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:  # noqa: U100
@@ -1015,8 +1015,8 @@ class ArchivePreviewerLayout(QWidget):
         # 图标颜色随主题着色：清缓存后重绘使新配色生效
         try:
             self._icon_manager.clear_cache()
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"图标缓存清理失败：{exc}")
         self._view.viewport().update()
 
     # ── 主题 ─────────────────────────────────────────────────────────────────

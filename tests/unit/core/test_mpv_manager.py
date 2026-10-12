@@ -2,11 +2,11 @@
 """MPVManager（core/managers/mpv_manager.py）单元测试。
 
 todo-8（unit/core 批 2）验收口径：
-* **所有视频播放必须经过此管理器**（AGENTS.md 全局约束）——覆盖队列锁语义、
+* **所有视频播放必须经过此管理器**（项目全局约束）——覆盖队列锁语义、
   单例语义、状态快照、信号转发；
 * 线程安全：提交操作、关闭路径都会结束操作线程 / MPVWorkerThread，
   teardown 使用 ``_do_close()`` + ``_stop_operation_thread()`` 强制收尾
-  （``close(async_mode=True)`` 已知不完整：异步线程不一定跑完，见 learnings）；
+  （``close(async_mode=True)`` 已知不完整：异步清理线程不保证跑完）；
 * mock 分支全部拦截 ``MPVPlayerCore`` 与 LuaJIT VEH 注册，**零真实 DLL 副作用**；
 * 真实分支由 ``mpv_available``（session 级）门控，播放 WAV 走完整
   initialize → load_file → play → stop → close 链路。
@@ -59,7 +59,7 @@ def _force_close(manager: MPVManager) -> None:
         if manager._mpv_core is not None:  # noqa: SLF001
             manager._do_close()  # noqa: SLF001
     except Exception:
-        pass
+        pass  # teardown 强制收尾失败：忽略
     if manager._operation_thread and manager._operation_thread.is_alive():  # noqa: SLF001
         manager._stop_operation_thread(2.0)  # noqa: SLF001
 

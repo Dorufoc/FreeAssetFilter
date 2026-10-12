@@ -309,8 +309,8 @@ class _FolderEntryDelegate(QStyledItemDelegate):
             )
             if pixmap is not None and not pixmap.isNull():
                 return pixmap
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"文件夹条目图标生成失败（回退占位）：{exc}")
         return None
 
     def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:  # noqa: U100
@@ -711,8 +711,8 @@ class FolderPreviewerLayout(QWidget):
         # 图标颜色随主题着色：清缓存后重绘使新配色生效
         try:
             self._icon_manager.clear_cache()
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"图标缓存清理失败：{exc}")
         self._view.viewport().update()
 
     # ── 主题 ─────────────────────────────────────────────────────────────────

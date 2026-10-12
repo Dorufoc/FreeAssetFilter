@@ -14,6 +14,8 @@ import tempfile
 import time
 from typing import Any, Callable, Optional, Sequence, Tuple
 
+from freeassetfilter.utils.app_logger import debug
+
 
 DEFAULT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 
@@ -84,8 +86,8 @@ def _wait_with_cancel(
             process.kill()
             try:
                 process.wait(timeout=2)
-            except Exception:
-                pass
+            except Exception as exc:
+                debug(f"取消后回收子进程失败（可能残留）：{exc}")
             raise SubprocessCancelled(f"子进程已取消: {process.args!r}")
         wait_for = poll
         if deadline is not None:
@@ -146,8 +148,8 @@ def run_with_limited_output(
             process.kill()
             try:
                 process.wait(timeout=2)
-            except Exception:
-                pass
+            except Exception as wait_exc:
+                debug(f"超时后回收子进程失败（可能残留）：{wait_exc}")
 
             stdout, stdout_truncated, stdout_size = _read_limited_output(
                 stdout_file,

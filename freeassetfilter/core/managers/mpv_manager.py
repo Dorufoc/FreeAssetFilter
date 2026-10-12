@@ -305,8 +305,8 @@ class MPVManager(QObject):
         try:
             hm = HeartbeatManager()
             hm.unregister_tick_callback("mpv_manager_signal_pump")
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"注销心跳回调失败（残留回调可能继续触发）：{exc}")
         # 清空操作队列
         while not self._operation_queue.empty():
             try:
@@ -1331,8 +1331,8 @@ class MPVManager(QObject):
             self._luajit_veh_handle = None
             self._luajit_veh_fn = None
             info("LuaJIT SEH VEH 处理器已注销")
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"LuaJIT SEH VEH 处理器注销失败：{exc}")
 
     # ==================== 核心健康检测 ====================
 

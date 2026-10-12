@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""文件选择器 faf_core native 接线单元测试（.omo/plans/faf-core-rust-migration todo 9）。
+"""文件选择器 faf_core native 接线单元测试（faf-core-rust-migration todo 9）。
 
 验证 ``file_selector_layout.py`` 的 faf_core native 接线与 raw entries 缓存：
 
@@ -45,7 +45,7 @@ import freeassetfilter.ui.layout.file_selector_layout as fsl_mod  # noqa: E402
 # 与布局模块共享同一模块实例（components.* 短路径），FileNameRole 为 int 角色值。
 from components.file_list_model import FileNameRole  # noqa: E402
 
-from tests.support.qt_helpers import wait_for_signal  # noqa: E402
+from tests.support.qt_helpers import wait_for_signal, wait_until  # noqa: E402
 
 pytestmark = pytest.mark.unit
 
@@ -177,8 +177,15 @@ class TestSortModeSwitchNoRescan:
 
         # 内存重排结果与真实重扫一致（_reload_directory 为异步重扫，等待其落地）
         mem_names: List[str] = _model_names(layout)
+        ready = {"n": 0}
+        layout._dir_entries_ready.connect(  # noqa: SLF001
+            lambda *_: ready.__setitem__("n", ready["n"] + 1)
+        )
         layout._reload_directory()  # noqa: SLF001
-        assert wait_for_signal(layout._dir_entries_ready), "刷新按钮应真实重扫"
+        # 先连接再触发、计数等待（高负载下线程池排队可超过 5s 默认窗口）。
+        assert wait_until(
+            qapp, lambda: ready["n"] > 0, timeout_ms=30000
+        ), "刷新按钮应真实重扫"
         assert calls, "刷新按钮应真实重扫"
         assert _model_names(layout) == mem_names, "缓存重排结果与重扫结果不一致"
 
@@ -223,8 +230,15 @@ class TestFilterApplyNoRescan:
 
         # 结果与真实重扫一致（_reload_directory 为异步重扫，等待其落地）
         mem_names: List[str] = _model_names(layout)
+        ready = {"n": 0}
+        layout._dir_entries_ready.connect(  # noqa: SLF001
+            lambda *_: ready.__setitem__("n", ready["n"] + 1)
+        )
         layout._reload_directory()  # noqa: SLF001
-        assert wait_for_signal(layout._dir_entries_ready), "刷新按钮应真实重扫"
+        # 先连接再触发、计数等待（高负载下线程池排队可超过 5s 默认窗口）。
+        assert wait_until(
+            qapp, lambda: ready["n"] > 0, timeout_ms=30000
+        ), "刷新按钮应真实重扫"
         assert calls, "刷新按钮应真实重扫"
         assert _model_names(layout) == mem_names, "筛选结果与重扫结果不一致"
 

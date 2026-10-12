@@ -921,8 +921,8 @@ def _text_light_rows(path: str) -> List[Tuple[str, str]]:
             try:
                 detected = detector.detect(sample_ext[:_TEXT_LIGHT_WINDOW])
                 encoding = detected.get("encoding") or UNAVAILABLE
-            except Exception:
-                pass
+            except Exception as exc:
+                debug(f"编码探测失败（显示为不可用）：{exc}")
     return [("编码格式", encoding)]
 
 

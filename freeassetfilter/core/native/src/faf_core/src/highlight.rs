@@ -1,6 +1,6 @@
 //! `highlight.rs` —— 代码语法高亮（todo 11：`faf_highlight_text`）。
 //!
-//! 方案 B（task-1-decisions.md §1.4 裁决）：syntect **内置默认语法集**
+//! 方案 B（spike 裁决）：syntect **内置默认语法集**
 //! （`SyntaxSet::load_defaults_newlines()`，OnceLock 单例，随 crate 静态
 //! 内嵌），**不加载 `utils/syntax/` 的 57 个 TextMate JSON**（syntect 5.x
 //! 无 TextMate loader，57/57 不可加载，见 spike）。

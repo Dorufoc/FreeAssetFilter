@@ -66,8 +66,8 @@ def get_subprocess_startupinfo():
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startupinfo.wShowWindow = subprocess.SW_HIDE
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"设置子进程隐藏窗口标志失败：{exc}")
     return startupinfo
 
 

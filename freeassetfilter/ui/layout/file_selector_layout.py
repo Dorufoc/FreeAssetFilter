@@ -759,8 +759,8 @@ class FileSelectorLayout(QWidget):
             if last_path and os.path.isdir(last_path):
                 # 恢复上次路径走异步加载；失败时由 initial 标记回退到 All 视图
                 return self._navigate_to(last_path, transition=False, initial=True)
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"恢复上次路径失败（回退 All 视图）：{exc}")
         return False
 
     def _save_last_path(self, path: str) -> None:
@@ -769,16 +769,16 @@ class FileSelectorLayout(QWidget):
             import json
             with open(save_file, "w", encoding="utf-8") as f:
                 json.dump({"last_path": os.path.abspath(path)}, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"保存路径历史失败：{exc}")
 
     def _clear_last_path(self) -> None:
         """删除 last_path.json，使下次启动不恢复任何路径，直接落到 All。"""
         save_file = Path(get_app_data_path()) / "last_path.json"
         try:
             save_file.unlink(missing_ok=True)
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"清除路径历史失败：{exc}")
 
     # ── UI 构建 ──────────────────────────────────────────────────────────
 
@@ -2021,8 +2021,8 @@ class FileSelectorLayout(QWidget):
                 viewport.update()
             else:
                 viewport.update(dirty.adjusted(-1, -1, 1, 1).intersected(viewport.rect()))
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"文件列表局部重绘失败：{exc}")
 
     def sync_pool_status(self, pool_paths: set[str]) -> None:
         """同步文件池中的路径集合到 delegate，刷新"已在池中"边框标记。

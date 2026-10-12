@@ -233,8 +233,8 @@ mod tests {
     use crate::{STATUS_DECODE_FAILED, STATUS_TOO_LARGE};
 
     // ---- 内联夹具 -----------------------------------------------------
-    // 生成方式见 `.omo/evidence/thumbnail-rust-refactor/task-12-ico-test.log`
-    // 与 fixtures-ico/ 目录。确定性：同一输入永远产出同一字节，无外部随机源。
+    // 生成方式：PIL 真实产物 + 手写变体（见下方各夹具说明）。
+    // 确定性：同一输入永远产出同一字节，无外部随机源。
     //
     // - `CUR_MULTI_16_32_64` / `CUR_64X64_HOTSPOT_5_250`：
     //   Python PIL `Image.save(format="ICO", sizes=[(16,16),(32,32),(64,64)])` 生成（Pillow

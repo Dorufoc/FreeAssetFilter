@@ -19,13 +19,13 @@ rayon = "1.10"
 serde_json = "1.0"
 # Design Revision 5 point 5 / todo 21：DDS BC4/BC5 兜底解码。MIT 纯 Rust no_std
 # （ScanMountGoat/image_dds 分拆 crate，BC1-7 全覆盖），静态合并进
-# thumbnail_generator.dll 无外部 DLL，AGPL-3.0 兼容（选型理由见 .omo/notepads）。
+# thumbnail_generator.dll 无外部 DLL，AGPL-3.0 兼容。
 bcdec_rs = "0.2"
 # Design Revision 5 point 5 / todo 22：ICNS 解码。icns 0.4（MIT，mdsteele/rust-icns），
 # 解析 icns 头/条目表、PNG 内嵌条目（ic04-ic14）与 is32+mask 合成；
 # jp2 依赖可选 feature（hayro-jpeg2000，MIT）默认开启但本 todo 主动返回
 # STATUS_UNSUPPORTED 交 T2/T3，故不依赖其解码路径。纯 Rust 静态合并进
-# thumbnail_generator.dll 无外部 DLL，AGPL-3.0 兼容（选型理由见 .omo/notepads）。
+# thumbnail_generator.dll 无外部 DLL，AGPL-3.0 兼容。
 icns = "0.4"
 
 [profile.release]

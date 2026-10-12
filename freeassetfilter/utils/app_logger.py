@@ -87,7 +87,7 @@ def _get_windows_version() -> str:
 
             return f"{version_name} (Build {os_info.dwBuildNumber})"
     except Exception:
-        pass
+        pass  # 系统信息探测：日志附注缺失可接受（模块内禁止调自身日志）
     return ""
 
 
@@ -123,7 +123,7 @@ def _get_memory_info() -> str:
             total_gb = mem_status.ullTotalPhys / (1024 ** 3)
             return f"{total_gb:.2f} GB"
     except Exception:
-        pass
+        pass  # 系统信息探测：日志附注缺失可接受（模块内禁止调自身日志）
     return ""
 
 
@@ -143,7 +143,7 @@ def _get_cpu_info_from_registry() -> str:
             cpu_name, _ = winreg.QueryValueEx(key, "ProcessorNameString")
             return cpu_name.strip()
     except Exception:
-        pass
+        pass  # 系统信息探测：日志附注缺失可接受（模块内禁止调自身日志）
     return ""
 
 
@@ -248,7 +248,7 @@ def _get_gpu_info_from_registry() -> str:
                     except OSError:
                         break
         except Exception:
-            pass
+            pass  # GPU 枚举：注册表层级失败按已有结果继续（不递归记录）
 
         # 方法2: 从 Control\Video\{GUID}\Video 获取活跃显卡
         if not gpus:
@@ -281,10 +281,10 @@ def _get_gpu_info_from_registry() -> str:
                         except OSError:
                             break
             except Exception:
-                pass
+                pass  # GPU 枚举：注册表层级失败按已有结果继续（不递归记录）
 
     except Exception:
-        pass
+        pass  # GPU 枚举：顶层兜底按已有结果继续（不递归记录）
 
     # 去重并返回
     if gpus:
@@ -355,14 +355,14 @@ def _get_system_info() -> Dict[str, Any]:
         info['python_implementation'] = platform.python_implementation()
         info['architecture'] = platform.architecture()[0]
     except Exception:
-        pass
+        pass  # 系统信息采集：失败跳过该项（不递归记录）
 
     # 第1层：使用 Windows API 和注册表获取系统信息（最可靠）
     try:
         native_info = _get_system_info_native()
         info.update(native_info)
     except Exception:
-        pass
+        pass  # 原生系统信息采集：失败跳过该项（不递归记录）
 
     # 第2层：兜底方案 - 使用 platform 模块
     if 'os' not in info or not info['os']:
@@ -744,7 +744,7 @@ class TeeStream(io.TextIOBase):
         try:
             _write_bootstrap_fallback(f"[警告] 日志文件写入失败，后续日志可能不完整: {exc}")
         except Exception:
-            pass
+            pass  # 级联兜底：最后手段仍失败则放弃（不递归）
 
     @property
     def encoding(self):
@@ -1173,7 +1173,7 @@ class AppLogger:
             try:
                 self.warning(f"输出启动信息失败: {e}")
             except Exception:
-                pass
+                pass  # 日志系统内部告警失败：放弃（不递归）
         finally:
             _in_startup_log = False
 

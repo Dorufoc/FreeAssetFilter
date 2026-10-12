@@ -48,6 +48,7 @@ from freeassetfilter.core.native.platform_timing import (
     set_active_profile as _set_timing_active_profile,
 )
 from freeassetfilter.ui.layout.settings_staging_cache import SettingsStagingCache
+from freeassetfilter.utils.app_logger import debug, warning
 from freeassetfilter.utils.path_utils import get_app_data_path
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
@@ -448,12 +449,12 @@ class _DarkToggleCompat(QObject):
 
     @checked.setter
     def checked(self, value: bool) -> None:
-        self._page._apply_theme_mode("dark" if value else "light")
-        self._page._sync_theme_segment()
+        self._page.apply_theme_mode("dark" if value else "light")
+        self._page.sync_theme_segment()
         try:
             self.toggled.emit(bool(value))
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"主题切换信号转发失败：{exc}")
 
 
 class AppearanceSettingsPage(QWidget):
@@ -799,7 +800,12 @@ class AppearanceSettingsPage(QWidget):
 
     # ── 窗口背景：模式切换与图片导入 ─────────────────────────────────
 
-    def _find_main_window(self) -> QWidget | None:
+    @property
+    def color_buttons(self) -> list[AccentColorButton]:
+        """页内强调色按钮列表（供宿主刷新按钮选中态）。"""
+        return self._color_buttons
+
+    def find_main_window(self) -> QWidget | None:
         """定位主窗口（按 _mica_background 属性鸭子类型判定，避免循环导入）。
 
         设置窗口是主窗口的 owned 子窗口后，self.window() 直接就是主窗口
@@ -1001,8 +1007,8 @@ class AppearanceSettingsPage(QWidget):
                 "transparency": self._bg_transparency,
             })
             v2.save()
-        except Exception:
-            pass
+        except Exception as exc:
+            warning(f"窗口背景设置保存失败（重启后可能回退）：{exc}")
 
     def _update_bg_ui_state(self) -> None:
         """按当前背景模式刷新图片行、参数区与弥散氛围行的可见性。
@@ -1056,9 +1062,9 @@ class AppearanceSettingsPage(QWidget):
             return
         if index < 0 or index >= len(self.THEME_MODES):
             return
-        self._apply_theme_mode(self.THEME_MODES[index])
+        self.apply_theme_mode(self.THEME_MODES[index])
 
-    def _apply_theme_mode(self, mode: str) -> None:
+    def apply_theme_mode(self, mode: str) -> None:
         """暂存主题偏好（不生效、不落盘，点击确定才全局应用）。
 
         遵循设置页暂存隔离铁律：仅写入暂存缓存并同步分段选中；
@@ -1086,9 +1092,9 @@ class AppearanceSettingsPage(QWidget):
         else:
             effective = mode
         self._staging_cache.set("appearance.theme", effective)
-        self._sync_theme_segment()
+        self.sync_theme_segment()
 
-    def _sync_theme_segment(self) -> None:
+    def sync_theme_segment(self) -> None:
         """按当前偏好同步分段控件选中项（守卫内切换，不触发处理器）。"""
         if self._theme_segmented is None:
             return
@@ -1167,8 +1173,8 @@ class AppearanceSettingsPage(QWidget):
         Args:
             checked: True 暂存为夜晚（深色），False 暂存为白天（浅色）。
         """
-        self._apply_theme_mode("dark" if checked else "light")
-        self._sync_theme_segment()
+        self.apply_theme_mode("dark" if checked else "light")
+        self.sync_theme_segment()
 
     def _on_color_clicked(self, color_hex: str) -> None:
         """主题色选择 — 写入暂存缓存，点击「应用」/「确定」才全局生效。"""
@@ -1371,7 +1377,7 @@ class AppearanceSettingsPage(QWidget):
             self._theme_mode = external_mode
         else:
             self._theme_mode = self._resolve_staged_theme_mode()
-        self._sync_theme_segment()
+        self.sync_theme_segment()
         # 由外部 _refresh_styles 统一刷新文字颜色
         # 窗口背景区块：标题与文件名标签颜色跟随主题（覆盖统一刷新，
         # 保证页面脱离 SettingsLayout 宿主单独使用时同样正确）
@@ -1425,7 +1431,7 @@ class AppearanceSettingsPage(QWidget):
         不回写缓存、不触发提交、不触碰主窗口与磁盘。
         """
         self._theme_mode = self._resolve_staged_theme_mode()
-        self._sync_theme_segment()
+        self.sync_theme_segment()
 
         saved_accent = self._staging_cache.get("appearance.accent_color", "#007AFF")
         self._current_accent = saved_accent
@@ -1459,8 +1465,8 @@ class AppearanceSettingsPage(QWidget):
         if self._ambient_toggle is not None:
             try:
                 self._ambient_toggle.toggled.disconnect(self._on_ambient_toggled)
-            except Exception:
-                pass
+            except Exception as exc:
+                debug(f"氛围开关信号断开失败（按未连接处理）：{exc}")
             self._ambient_toggle.checked = self._bg_ambient
             self._ambient_toggle.toggled.connect(self._on_ambient_toggled)
         self._sync_bg_segment()
@@ -1762,10 +1768,10 @@ class AboutSettingsPage(QWidget):
 
         layout.addStretch()
 
-    def _find_main_window(self) -> QWidget | None:
+    def find_main_window(self) -> QWidget | None:
         """定位主窗口（按 _mica_background 属性鸭子类型判定，避免循环导入）。
 
-        与 :meth:`AppearanceSettingsPage._find_main_window` 口径一致。
+        与 :meth:`AppearanceSettingsPage.find_main_window` 口径一致。
         """
         w = self.window()
         if w is not None and getattr(w, "_mica_background", None) is not None:
@@ -1778,7 +1784,7 @@ class AboutSettingsPage(QWidget):
     def _open_license_viewer(self) -> None:
         """打开开源许可证查看窗口（经主窗口统一入口，避免窗口重复创建）。"""
         try:
-            mw = self._find_main_window()
+            mw = self.find_main_window()
             if mw is not None and hasattr(mw, "_open_license_viewer"):
                 mw._open_license_viewer()  # noqa: SLF001 - 跨模块调用主窗口私有入口（与外观页一致）
         except Exception:  # noqa: BLE001 - 打开失败仅抑制，不影响设置页其余功能
@@ -1892,8 +1898,8 @@ class SettingsLayout(QWidget):
         tm.theme_changed.connect(self._on_theme_changed)
         try:
             tm.theme_mode_changed.connect(self._on_theme_changed)
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"主题模式信号连接失败（设置页可能不随系统主题刷新）：{exc}")
 
     def _wrap_page_in_scroll(self, page: QWidget) -> _FloatingScrollArea:
         """将设置页包进浮动滚动条滚动区（styled 滚动条 + 丝滑滚动）。"""
@@ -1953,7 +1959,7 @@ class SettingsLayout(QWidget):
         if hasattr(self, "_appearance_page"):
             self._appearance_page.refresh_theme()
             # 刷新所有颜色按钮
-            for btn in self._appearance_page._color_buttons:
+            for btn in self._appearance_page.color_buttons:
                 btn.update()
         # 刷新通用页面（布局切换文字颜色）
         if hasattr(self, "_general_page"):
@@ -2103,8 +2109,8 @@ class SettingsLayout(QWidget):
             try:
                 overlay = ThemeTransitionOverlay.from_widget(settings_window)
                 overlay.start()
-            except Exception:
-                pass
+            except Exception as exc:
+                debug(f"主题过渡遮罩启动失败（直接完成切换）：{exc}")
 
         prev_mode = tm.get_theme_mode()
         prev_theme = "dark" if tm.is_dark_theme() else "light"
@@ -2116,7 +2122,7 @@ class SettingsLayout(QWidget):
         # 主窗口过渡预抓拍：tm 翻转后主窗槽内各背景层 sync 才能以旧帧为底
         # 做 280ms 交叉淡入，否则退化为裸 update 露出 _root 形成闪现。
         try:
-            main_window = self._appearance_page._find_main_window()
+            main_window = self._appearance_page.find_main_window()
             if main_window is not None and hasattr(main_window, "begin_theme_transition"):
                 main_window.begin_theme_transition()
         except Exception:  # noqa: BLE001 - 预抓拍失败不阻塞提交本身
@@ -2172,12 +2178,12 @@ class SettingsLayout(QWidget):
                 tm.set_theme_mode(prev_mode)
                 tm.set_theme(prev_theme)
                 tm.replace_colors(prev_colors)
-            except Exception:
-                pass
+            except Exception as exc:
+                debug(f"回滚主题设置失败：{exc}")
             try:
                 _set_timing_active_profile(prev_perf_profile)
-            except Exception:
-                pass
+            except Exception as exc:
+                debug(f"回滚性能档位失败：{exc}")
             return False
 
         self._staging_cache.mark_committed(staged)
@@ -2206,7 +2212,7 @@ class SettingsLayout(QWidget):
             staged_bg.get("transparency", IMAGE_BG_TRANSPARENCY_DEFAULT)
         )
         try:
-            mw = self._appearance_page._find_main_window()
+            mw = self._appearance_page.find_main_window()
             if mw is None:
                 return
             if mode == "image" and image_name:
@@ -2230,8 +2236,8 @@ class SettingsLayout(QWidget):
             else:
                 if hasattr(mw, "set_background_mode"):
                     mw.set_background_mode("mica")
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"下发背景模式到主窗口失败：{exc}")
 
     def _apply_staged_layout_mode_to_main_window(self, layout_mode: str) -> None:
         """将暂存的界面布局模式应用到主窗口（仅提交路径调用）。
@@ -2243,7 +2249,7 @@ class SettingsLayout(QWidget):
             layout_mode: 目标布局模式（"classic" 或 "workspace"，调用方已校验）。
         """
         try:
-            mw = self._appearance_page._find_main_window()
+            mw = self._appearance_page.find_main_window()
             if mw is None:
                 return
             setter = getattr(mw, "set_layout_mode", None)
@@ -2269,7 +2275,7 @@ class SettingsLayout(QWidget):
             include_remote: 是否包含网络/映射盘与光驱。
         """
         try:
-            mw = self._appearance_page._find_main_window()
+            mw = self._appearance_page.find_main_window()
             if mw is None:
                 return
             ai_setter = getattr(mw, "set_ai_entry_enabled", None)
@@ -2329,8 +2335,8 @@ class SettingsLayout(QWidget):
         try:
             if host is not None and hasattr(host, "close"):
                 host.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"关闭设置宿主窗口失败：{exc}")
 
     def on_host_closing(self) -> None:
         """宿主窗口关闭时的生命周期钩子：未提交则自动清除暂存并恢复界面。
@@ -2344,8 +2350,8 @@ class SettingsLayout(QWidget):
             self._staging_cache.discard()
             try:
                 self._appearance_page.refresh_from_staging()
-            except Exception:
-                pass
+            except Exception as exc:
+                debug(f"关闭钩子刷新外观页失败：{exc}")
 
     def get_cache_debug_info(self) -> dict:
         """返回暂存缓存调试摘要（含最近提交耗时）。

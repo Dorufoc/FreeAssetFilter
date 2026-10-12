@@ -676,18 +676,16 @@ class TestFileInfoPanelMediaAsync:
 
 
 class TestFileInfoPanelCacheMissWrite:
-    """确保测试不会写入仓库默认缓存文件（默认路径被注入覆盖）。"""
+    """确保测试不会写入仓库默认缓存文件（默认路径经 FAF_DATA_DIR 重定向）。"""
 
-    def test_default_cache_file_not_touched(self, tmp_path: Path) -> None:
-        default = Path(__file__).resolve().parents[5] / "data" / fis.CACHE_FILE_NAME
-        existed = default.exists()
-        try:
-            if existed:
-                os.remove(default)
-            assert not default.exists()
-        finally:
-            if existed:
-                default.write_text("{}", encoding="utf-8")
+    def test_default_cache_path_redirected_from_repo(self) -> None:
+        """测试进程内默认缓存路径必须落在 FAF_DATA_DIR，绝不指向仓库 data/。"""
+        resolved = Path(fis.get_cache_path(None))
+        repo_data = Path(__file__).resolve().parents[5] / "data"
+        env_dir = os.environ.get("FAF_DATA_DIR", "")
+        assert env_dir, "测试进程缺少 FAF_DATA_DIR（conftest 会话级重定向失效）"
+        assert str(resolved).startswith(env_dir), resolved
+        assert repo_data not in resolved.parents, resolved
 
 
 class TestHashTaskNativeWiring:

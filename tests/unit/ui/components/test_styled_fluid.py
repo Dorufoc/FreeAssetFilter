@@ -261,8 +261,8 @@ class TestFluidCpu:
 class TestFluidFallbackKeepsPythonPath:
     """todo 13 按 spike 裁决 DROP 执行：Python CPU 路径保持为唯一事实来源。
 
-    Rust ``faf_render_fluid_frame`` 恒返回 ``STATUS_UNSUPPORTED``（1 ULP 证据见
-    ``.omo/evidence/rust-hot-path-native-migration/task-1-decisions.md`` §6）→ 桥
+    Rust ``faf_render_fluid_frame`` 恒返回 ``STATUS_UNSUPPORTED``（1 ULP 实测差异）
+    → 桥
     ``render_fluid_frame`` 恒返回 ``None``；``render_static_frame`` 走纯 Python
     渲染并复现夹具参考帧的 ``rgba_md5``。完整接线（消费桥结果 / 显式回退）留待
     todo 14，本类只验证"保持 Python"被走通、不修改 ``_styled_fluid_cpu.py``。

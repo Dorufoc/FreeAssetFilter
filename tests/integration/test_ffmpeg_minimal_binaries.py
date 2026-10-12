@@ -6,8 +6,7 @@
 
 * ① 版本命令（ffmpeg/ffprobe ``-version``）返回码为 0；
 * ② ``warmup_ffmpeg_tools()`` 结构契约 + 三条底层命令直接健康探测
-  （返回值存在既有已知 bug，见 evidence/warmup-known-issue.md，本文件
-  不修复产品代码、不掩盖事实）；
+  （keyword-only 参数 bug 已修复，见 ``TestWarmup`` 断言）；
 * ③ manifest 能力清单（-formats/-codecs/-filters/-protocols/-hwaccels）
   逐项断言调用点审计的 allow-list；
 * ④ ffprobe 时长 JSON：每个样本 ``format.duration > 0`` 且含 video 流；
@@ -243,9 +242,9 @@ class TestVersionCommands:
 class TestWarmup:
     """``warmup_ffmpeg_tools()`` 结构契约与底层命令健康度。
 
-    注意：warmup 返回值既有已知 bug（positional 展开 keyword-only 参数
-    → TypeError，三键恒 False）已于产品修复后同步更新断言，见
-    evidence/warmup-known-issue.md。这里断言"结构 + 直接命令健康"。
+    注意：warmup 返回值曾有 bug（positional 展开 keyword-only 参数
+    → TypeError，三键恒 False），产品修复后本文件断言已同步更新。
+    这里断言"结构 + 直接命令健康"。
     """
 
     def test_warmup_returns_structure_contract(self, ffmpeg_ready: None) -> None:
@@ -286,8 +285,7 @@ class TestWarmup:
         既有 bug（positional 展开 keyword-only 参数 → TypeError → 三键恒
         False）已在产品代码修复：``warmup_ffmpeg_tools()`` 现在按
         ``command`` 位置 + ``label=/timeout=`` 关键字提交，三条底层命令
-        真实执行成功。修复记录见
-        ``.omo/evidence/ffmpeg-minimal-rebuild/warmup-known-issue.md``。
+        真实执行成功。
         """
         from freeassetfilter.core.native.bridges.media_probe import warmup_ffmpeg_tools
 

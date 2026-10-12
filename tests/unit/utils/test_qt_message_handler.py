@@ -72,7 +72,7 @@ def restore_qt_handler(request: Any, qapp: Any) -> Any:
         try:
             qInstallMessageHandler(None)
         except Exception:
-            pass
+            pass  # teardown 还原消息处理器失败：忽略
 
     request.addfinalizer(_restore)
     try:

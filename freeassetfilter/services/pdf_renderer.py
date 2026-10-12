@@ -29,6 +29,8 @@ import fitz
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 from PySide6.QtGui import QImage
 
+from freeassetfilter.utils.app_logger import debug
+
 
 # ── Data classes (sioyek RenderRequest / RenderResponse) ──────────────
 
@@ -180,8 +182,8 @@ class _RenderTask(QRunnable):
         finally:
             try:
                 doc.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                debug(f"关闭 PDF 文档失败：{exc}")
 
         # If the task was cancelled while rendering, discard the result
         if self._cancelled:
@@ -231,7 +233,9 @@ class PdfBackgroundRenderer(QObject):
 
     render_ready = Signal(int, int)  # page_num, request_id
 
-    def __init__(self, max_cache: int = 10) -> None:
+    def __init__(
+        self, max_cache: int = 10, pool: Optional[QThreadPool] = None
+    ) -> None:
         """Initialise the background renderer.
 
         Parameters
@@ -240,6 +244,9 @@ class PdfBackgroundRenderer(QObject):
             Maximum number of ``RenderResponse`` entries to keep in the
             LRU cache.  Sioyek's ``NUM_CACHED_PAGES`` defaults to 5; we
             use 10 as a sensible default for modern workstations.
+        pool : Optional[QThreadPool]
+            渲染任务线程池；``None`` 用 ``QThreadPool.globalInstance()``，
+            可注入私有池（测试隔离 / 嵌入式场景）。
         """
         super().__init__()
         self._max_cache: int = max_cache
@@ -254,7 +261,8 @@ class PdfBackgroundRenderer(QObject):
         # Tasks that have been submitted but have not yet completed.
         self._pending: List[_RenderTask] = []
 
-        self._pool: QThreadPool = QThreadPool.globalInstance()
+        # 默认使用全局线程池；允许注入私有池（测试隔离 / 嵌入式场景）。
+        self._pool: QThreadPool = pool if pool is not None else QThreadPool.globalInstance()
 
     # ── Public API ─────────────────────────────────────────────────────
 

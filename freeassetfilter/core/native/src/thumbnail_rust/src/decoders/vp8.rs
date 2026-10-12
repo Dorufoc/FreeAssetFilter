@@ -38,8 +38,8 @@ fn vp8_dimensions(bytes: &[u8]) -> Result<(u32, u32), i32> {
         return Err(STATUS_DECODE_FAILED);
     }
     // 非关键帧（interframe）依赖参考帧，无法独立解码。任务原文允许 -2/-6 二选一；
-    // 取 -2（STATUS_DECODE_FAILED）：-6（STATUS_UNSUPPORTED）按 decisions.md 仅由
-    // T3 跳过/未注册格式返回，解码器内混用会污染 todo 27 的路由语义。
+    // 取 -2（STATUS_DECODE_FAILED）：-6（STATUS_UNSUPPORTED）仅由 T3 跳过/未注册
+    // 格式返回（见 t3/skip.rs 路由契约），解码器内混用会污染 todo 27 的路由语义。
     if bytes[0] & 1 != 0 {
         return Err(STATUS_DECODE_FAILED);
     }

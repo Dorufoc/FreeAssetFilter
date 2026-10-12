@@ -53,8 +53,8 @@ class _MD5CalculationTask(QRunnable):
             hm = HeartbeatManager()
             weak_self = weakref.ref(self)
             hm.request_main_thread(lambda: (s := weak_self()) and s._callback(result))
-        except Exception:
-            pass
+        except Exception as exc:
+            warning(f"MD5 结果回派主线程失败（条目可能停在计算中）：{exc}")
 
 
 # 公开别名，与 file_staging_pool 中的私有名保持兼容

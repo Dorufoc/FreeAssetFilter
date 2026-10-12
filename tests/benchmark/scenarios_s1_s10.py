@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """S1-S10 性能上限场景基准套件（performance-ceiling-optimization todo 1）。
 
-覆盖 PERFORMANCE_CEILING_PLAN.md §4.1 全部 10 个场景的可重复度量，
+覆盖性能上限计划（performance-ceiling-optimization）全部 10 个场景的可重复度量，
 每个场景输出 JSON 快照到
 ``.omo/evidence/performance-ceiling-optimization/task-1/``。
 
@@ -222,7 +222,7 @@ def _process_sample() -> Dict[str, Any]:
         except Exception:
             sample["handles"] = None
     except Exception:
-        pass
+        pass  # 基准采样失败：对应指标置缺省，不影响其余场景
     try:
         user32 = ctypes.windll.user32
         pid: int = int(ctypes.windll.kernel32.GetCurrentProcessId())
@@ -233,7 +233,7 @@ def _process_sample() -> Dict[str, Any]:
             user32.GetGuiResources(pid, 1)  # GR_GDIOBJECTS = 1
         )
     except Exception:
-        pass
+        pass  # 句柄采样失败：该指标置缺省
     return sample
 
 
@@ -261,7 +261,7 @@ def _s9_mode(request: Any) -> str:
         if bool(request.config.getoption("s9_full", default=False)):
             return "full"
     except Exception:
-        pass
+        pass  # 选项探测失败：按环境变量/默认档继续
     if os.environ.get("FAF_S9_FULL", "").strip().lower() in ("1", "true", "yes", "on"):
         return "full"
     return "smoke"
@@ -1116,7 +1116,7 @@ class TestCeilingScenarios:
 
             psutil.Process().cpu_percent(interval=None)
         except Exception:
-            pass
+            pass  # CPU 采样预热失败：不阻塞基准
         idle_cpu: List[float] = []
         samples: List[Dict[str, Any]] = []
         deadline = time.perf_counter() + duration

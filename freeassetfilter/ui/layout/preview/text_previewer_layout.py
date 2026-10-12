@@ -1628,24 +1628,17 @@ class TextPreviewerLayout(QWidget):
             bare=True,
             parent=self._content_area,
         )
-        register_widget_qss(self._search_drawer._panel,(
+        register_widget_qss(self._search_drawer.panel,(
             f"#DrawerPanel {{ background-color: {tm.surface.name()}; border: none; }}"
         ))
-        _orig_get_panel_size = self._search_drawer._get_panel_size
-
-        def _constrained_panel_size() -> tuple[int, int]:
-            pw, ph = _orig_get_panel_size()
-            available_w = self._content_area.width()
-            max_pw = max(available_w - 4, 60)
-            return min(pw, max_pw), ph
-
-        self._search_drawer._get_panel_size = _constrained_panel_size
+        # 视口宽度小于抽屉默认宽度时横向缩小以完整显示（组件公开扩展点）
+        self._search_drawer.set_panel_width_limit(lambda: self._content_area.width())
 
         self._init_search_drawer_content()
 
     def _init_search_drawer_content(self) -> None:
         """构建搜索抽屉内部控件。"""
-        panel_layout = self._search_drawer._panel.layout()
+        panel_layout = self._search_drawer.panel.layout()
         panel_layout.setContentsMargins(16, 16, 16, 16)
         panel_layout.setSpacing(12)
 
@@ -1732,18 +1725,11 @@ class TextPreviewerLayout(QWidget):
             bare=True,
             parent=self._content_area,
         )
-        register_widget_qss(self._ai_drawer._panel,(
+        register_widget_qss(self._ai_drawer.panel,(
             f"#DrawerPanel {{ background-color: {tm.surface.name()}; border: none; }}"
         ))
-        _orig_get_panel_size = self._ai_drawer._get_panel_size
-
-        def _constrained_panel_size() -> tuple[int, int]:
-            pw, ph = _orig_get_panel_size()
-            available_w = self._content_area.width()
-            max_pw = max(available_w - 4, 60)
-            return min(pw, max_pw), ph
-
-        self._ai_drawer._get_panel_size = _constrained_panel_size
+        # 视口宽度小于抽屉默认宽度时横向缩小以完整显示（组件公开扩展点）
+        self._ai_drawer.set_panel_width_limit(lambda: self._content_area.width())
         # 创建后默认可能随 parent 可见：显式隐藏，等点击 AI 按钮再展开
         self._ai_drawer.hide()
 
@@ -1773,7 +1759,7 @@ class TextPreviewerLayout(QWidget):
                 self._encoding_combo,
             ])
         else:
-            if self._ai_drawer is not None and self._ai_drawer._is_open:
+            if self._ai_drawer is not None and self._ai_drawer.is_open:
                 self._ai_drawer.close_drawer()
             self._top_bar.remove_widget(self._ai_btn)
             self._top_bar.set_overflow_priority([
@@ -1784,7 +1770,7 @@ class TextPreviewerLayout(QWidget):
 
     def _toggle_search_drawer(self) -> None:
         """切换搜索侧边面板的展开/收起。"""
-        if self._search_drawer._is_open:
+        if self._search_drawer.is_open:
             self._search_drawer.close_drawer()
         else:
             self._search_drawer.open_drawer()
@@ -1793,7 +1779,7 @@ class TextPreviewerLayout(QWidget):
         """切换 AI 侧边面板的展开/收起（抽屉未创建时为空操作）。"""
         if self._ai_drawer is None:
             return
-        if self._ai_drawer._is_open:
+        if self._ai_drawer.is_open:
             self._ai_drawer.close_drawer()
         else:
             self._ai_drawer.open_drawer()
@@ -2104,11 +2090,11 @@ class TextPreviewerLayout(QWidget):
 
         # 刷新抽屉面板背景
         if hasattr(self, "_search_drawer") and self._search_drawer is not None:
-            register_widget_qss(self._search_drawer._panel,(
+            register_widget_qss(self._search_drawer.panel,(
                 f"#DrawerPanel {{ background-color: {tm.surface.name()}; border: none; }}"
             ))
         if self._ai_drawer is not None:
-            register_widget_qss(self._ai_drawer._panel,(
+            register_widget_qss(self._ai_drawer.panel,(
                 f"#DrawerPanel {{ background-color: {tm.surface.name()}; border: none; }}"
             ))
 
@@ -2448,17 +2434,8 @@ class TextPreviewerLayout(QWidget):
         super().resizeEvent(event)
         for drawer_attr in ("_search_drawer", "_ai_drawer"):
             drawer = getattr(self, drawer_attr, None)
-            if drawer is not None and drawer._is_open:
-                drawer._update_container_geom()
-                cw, ch = drawer._cw, drawer._ch
-                drawer.setGeometry(0, 0, cw, ch)
-                drawer._backdrop.setGeometry(0, 0, cw, ch)
-                pw, _ = drawer._get_panel_size()
-                drawer._panel.resize(pw, ch)
-                if drawer._orientation == "right":
-                    drawer._panel.move(cw - pw, 0)
-                else:
-                    drawer._panel.move(0, 0)
+            if drawer is not None:
+                drawer.refresh_geometry()
 
     def eventFilter(self, obj: Any, event: QEvent) -> bool:
         """应用级事件过滤：缩放弹窗手势关闭（拖拽豁免）+ 窗口移动跟随/缩放关闭；

@@ -38,6 +38,7 @@ from freeassetfilter.core._paths import icons_dir
 from layout.preview.native_pdf_renderer import NativePdfRenderer
 from freeassetfilter.ui.components.styled_scroll_area import StyledScrollArea
 from freeassetfilter.ui.components.styled_slider import StyledSlider
+from freeassetfilter.utils.app_logger import debug
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 
@@ -373,8 +374,8 @@ class _ThumbnailDrawerTask(QRunnable):
             try:
                 if doc is not None:
                     doc.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                debug(f"关闭 PDF 文档失败：{exc}")
         self.finished.emit(self._generation)
 
 
@@ -645,20 +646,13 @@ class PdfPreviewerLayout(QWidget):
             parent=self._content_area,
         )
         # 移除面板自身边框，只保留背景色
-        register_widget_qss(self._index_drawer._panel,(
+        register_widget_qss(self._index_drawer.panel,(
             f"#DrawerPanel {{ background-color: {tm.surface.name()}; border: none; }}"
         ))
-        # 覆写面板尺寸计算：视口宽度小于默认宽度时横向缩小以完整显示
-        _orig_get_panel_size = self._index_drawer._get_panel_size
-        def _constrained_panel_size():
-            pw, ph = _orig_get_panel_size()
-            available_w = self._content_area.width()
-            margin = 4  # 保留 4px 边缘间隙
-            max_pw = max(available_w - margin, 60)
-            return min(pw, max_pw), ph
-        self._index_drawer._get_panel_size = _constrained_panel_size
+        # 视口宽度小于默认宽度时横向缩小以完整显示（组件公开扩展点）
+        self._index_drawer.set_panel_width_limit(lambda: self._content_area.width())
         # 在 bare panel 中嵌入 StyledScrollArea
-        panel_layout = self._index_drawer._panel.layout()
+        panel_layout = self._index_drawer.panel.layout()
         self._index_scroll = StyledScrollArea()
         self._index_scroll.setWidgetResizable(True)
         self._index_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -684,18 +678,11 @@ class PdfPreviewerLayout(QWidget):
             parent=self._content_area,
         )
         # 移除面板自身边框，只保留背景色
-        register_widget_qss(self._ai_drawer._panel,(
+        register_widget_qss(self._ai_drawer.panel,(
             f"#DrawerPanel {{ background-color: {tm.surface.name()}; border: none; }}"
         ))
-        # 覆写面板尺寸计算：视口宽度小于默认宽度时横向缩小以完整显示
-        _orig_get_panel_size = self._ai_drawer._get_panel_size
-        def _constrained_panel_size():
-            pw, ph = _orig_get_panel_size()
-            available_w = self._content_area.width()
-            margin = 4  # 保留 4px 边缘间隙
-            max_pw = max(available_w - margin, 60)
-            return min(pw, max_pw), ph
-        self._ai_drawer._get_panel_size = _constrained_panel_size
+        # 视口宽度小于默认宽度时横向缩小以完整显示（组件公开扩展点）
+        self._ai_drawer.set_panel_width_limit(lambda: self._content_area.width())
         # 创建后默认可能随 parent 可见：显式隐藏，等点击 AI 按钮再展开
         self._ai_drawer.hide()
 
@@ -720,14 +707,14 @@ class PdfPreviewerLayout(QWidget):
             self._top_bar.add_leading(self._ai_btn, index=0)
             self._top_bar.set_overflow_priority([self._ai_btn, self._zoom_btn])
         else:
-            if self._ai_drawer is not None and self._ai_drawer._is_open:
+            if self._ai_drawer is not None and self._ai_drawer.is_open:
                 self._ai_drawer.close_drawer()
             self._top_bar.remove_widget(self._ai_btn)
             self._top_bar.set_overflow_priority([self._zoom_btn])
 
     def _toggle_index_drawer(self) -> None:
         """切换索引侧边面板的展开/收起。"""
-        if self._index_drawer._is_open:
+        if self._index_drawer.is_open:
             self._index_drawer.close_drawer()
         else:
             self._index_drawer.open_drawer()
@@ -736,7 +723,7 @@ class PdfPreviewerLayout(QWidget):
         """切换 AI 侧边面板的展开/收起（抽屉未创建时为空操作）。"""
         if self._ai_drawer is None:
             return
-        if self._ai_drawer._is_open:
+        if self._ai_drawer.is_open:
             self._ai_drawer.close_drawer()
         else:
             self._ai_drawer.open_drawer()
@@ -1055,27 +1042,10 @@ class PdfPreviewerLayout(QWidget):
         # 布局激活后刷新页码省略文本（P0 合并：拖拽期不每帧测量）
         self._queue_elided_page_text()
         # 滚动条由网格布局托管，随容器尺寸自动重排，无需手动定位
-        if hasattr(self, '_index_drawer') and self._index_drawer._is_open:
-            self._index_drawer._update_container_geom()
-            cw, ch = self._index_drawer._cw, self._index_drawer._ch
-            # 更新遮罩和抽屉自身尺寸
-            self._index_drawer.setGeometry(0, 0, cw, ch)
-            self._index_drawer._backdrop.setGeometry(0, 0, cw, ch)
-            # 侧边栏面板上下延伸、横向自适应
-            pw, _ = self._index_drawer._get_panel_size()
-            self._index_drawer._panel.resize(pw, ch)
-
-        if self._ai_drawer is not None and self._ai_drawer._is_open:
-            self._ai_drawer._update_container_geom()
-            cw, ch = self._ai_drawer._cw, self._ai_drawer._ch
-            self._ai_drawer.setGeometry(0, 0, cw, ch)
-            self._ai_drawer._backdrop.setGeometry(0, 0, cw, ch)
-            pw, _ = self._ai_drawer._get_panel_size()
-            self._ai_drawer._panel.resize(pw, ch)
-            # 右侧面板需要重新定位到新右边缘，并更新动画目标位置
-            self._ai_drawer._panel.move(cw - pw, 0)
-            self._ai_drawer._start_pos = QPoint(cw, 0)
-            self._ai_drawer._end_pos = QPoint(cw - pw, 0)
+        if hasattr(self, "_index_drawer") and self._index_drawer is not None:
+            self._index_drawer.refresh_geometry()
+        if self._ai_drawer is not None:
+            self._ai_drawer.refresh_geometry()
 
     def eventFilter(self, obj: Any, event: QEvent) -> bool:
         """应用级事件过滤：页码编辑失焦 + 弹窗手势关闭（拖拽豁免）+ 窗口移动跟随/缩放关闭。"""

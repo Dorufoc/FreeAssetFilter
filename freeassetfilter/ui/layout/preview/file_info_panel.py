@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 import os
-import subprocess  # noqa: F401 -- 模块级引用保留：tests/.../test_file_info_panel.py 以 patch.object(fip_module.subprocess, "Popen") 作补丁锚点；生产代码在 _open_in_explorer 内函数级局部导入（见 f2-fix.md）
+import subprocess  # noqa: F401 -- 模块级引用仅作测试补丁锚点：tests/.../test_file_info_panel.py 以 patch.object(fip_module.subprocess, "Popen") 打桩；生产代码在 _open_in_explorer 内函数级局部导入。
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -31,6 +31,7 @@ _PROJECT_ROOT = str(_THIS_FILE.parent.parent.parent.parent.parent)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+from freeassetfilter.utils.app_logger import debug
 from components.styled_context_menu import StyledContextMenu
 from components.styled_scroll_area import StyledScrollArea, StyledScrollBar
 from PySide6.QtCore import (
@@ -925,8 +926,8 @@ class _InfoCanvas(QWidget):
                 self.update()
             else:
                 self.update(dirty.adjusted(0, -1, 0, 1).intersected(self.rect()))
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"信息面板局部重绘失败：{exc}")
 
     def _link_items(self, action: Optional[str]) -> list:
         """取指定 link action 对应的画布条目（A4 脏区用）。

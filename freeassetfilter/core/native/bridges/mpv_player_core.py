@@ -724,8 +724,8 @@ class MPVPlayerCore(QObject):
                     self._dll_loader.dll.mpv_destroy(mpv_handle)
                 except (RuntimeError, AttributeError, OSError):
                     pass
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"MPV 句柄清理失败（原生句柄/资源可能残留）：{exc}")
     
     def _configure_mpv(self, mpv_handle: c_void_p):
         """配置MPV基本参数（安全加固版）"""
@@ -2165,8 +2165,8 @@ class MPVPlayerCore(QObject):
                 for item in self._signal_queue.queue:
                     if isinstance(item, (tuple, list)) and len(item) > 0 and item[0] == signal_name:
                         return True
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"信号队列探测失败（按信号未就绪处理）：{exc}")
         return False
     
     def load_file(self, file_path: str, is_audio: bool = False) -> bool:
@@ -2805,15 +2805,15 @@ class MPVPlayerCore(QObject):
         if not self._is_worker_crashed():
             try:
                 self.pre_cleanup()
-            except Exception:
-                pass
+            except Exception as exc:
+                debug(f"关闭前预清理失败（继续强制收尾）：{exc}")
 
         # 发送关闭命令（使用短超时，如果已崩溃则跳过）
         if not self._is_worker_crashed():
             try:
                 self._send_command(MPVCommandType.CLOSE, timeout=0.5)
-            except Exception:
-                pass
+            except Exception as exc:
+                debug(f"发送关闭命令失败（继续强制收尾）：{exc}")
 
         # 标记停止，阻止新的普通命令继续进入
         self._stop_event.set()
@@ -2841,8 +2841,8 @@ class MPVPlayerCore(QObject):
                     self._resolve_command_result(command, None)
                 except queue.Empty:
                     break
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"关闭时清空命令队列失败（等待方按各自超时兜底）：{exc}")
 
     def _sync_cleanup(self, timeout=2.0):
         """同步清理 - 等待工作线程结束"""

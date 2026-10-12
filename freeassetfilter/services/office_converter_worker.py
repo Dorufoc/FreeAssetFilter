@@ -44,7 +44,7 @@ from freeassetfilter.services.office_converter import (
     SOFFICE_CONVERSION_TIMEOUT,
     get_active_lo_popen,
 )
-from freeassetfilter.utils.app_logger import warning
+from freeassetfilter.utils.app_logger import debug, warning
 
 
 class OfficeConverterWorker(QThread):
@@ -270,28 +270,28 @@ class OfficeConverterWorker(QThread):
         """terminate → 宽限 → kill → wait，确保子进程已死（绝不抛出）。"""
         try:
             proc.terminate()
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"终止子进程失败：{exc}")
         try:
             proc.wait(timeout=grace)
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"等待子进程退出失败/超时：{exc}")
         if proc.poll() is None:
             try:
                 proc.kill()
-            except Exception:
-                pass
+            except Exception as exc:
+                debug(f"强杀子进程失败：{exc}")
             try:
                 proc.wait(timeout=grace)
-            except Exception:
-                pass
+            except Exception as exc:
+                debug(f"等待强杀后子进程退出失败/超时：{exc}")
 
     def _sweep_orphan_processes(self) -> None:
         """COM 场景的 best-effort 僵尸进程清理（复用 office_converter 守卫）。"""
         try:
             OfficeConverter._cleanup_orphan_processes(self._task_started_at)
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"孤儿进程清理失败（可能残留 soffice/Office 进程）：{exc}")
 
     # ── 消息与编码 ───────────────────────────────────────────────────
 

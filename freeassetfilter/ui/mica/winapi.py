@@ -28,6 +28,8 @@ import sys
 from ctypes import wintypes
 from typing import List, Optional, Tuple
 
+from freeassetfilter.utils.app_logger import debug
+
 # ---------------------------------------------------------------------------
 # 平台守卫
 # ---------------------------------------------------------------------------
@@ -214,8 +216,8 @@ class ComPtr:
     def __del__(self) -> None:  # pragma: no cover - 析构路径
         try:
             self.release()
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"释放桌面采集资源失败：{exc}")
 
 
 # ---------------------------------------------------------------------------

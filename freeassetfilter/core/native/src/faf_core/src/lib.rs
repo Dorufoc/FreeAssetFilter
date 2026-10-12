@@ -1,8 +1,8 @@
 //! `faf_core` —— FreeAssetFilter 原生性能库（Rust `cdylib`，与缩略图引擎并列）。
 //!
 //! 本文件为 FFI 根模块：crate 共 21 个 `#[no_mangle]` 业务导出（目录扫描/排序/高亮/
-//! Markdown/字体/哈希/编码探测/批量复制/目录大小聚合，及 EXIF/PSD 占位/SVG 换色/
-//! 流体占位/缓冲释放/7z 解析/PDF 选区；其中模块内 6 个、本文件 15 个）与共享
+//! Markdown/字体/哈希/编码探测/批量复制/目录大小聚合，及 EXIF/SVG 换色/
+//! PSD 与流体（DROP 终态）/缓冲释放/7z 解析/PDF 选区；其中模块内 6 个、本文件 15 个）与共享
 //! 基础设施（状态码、JSON 输出 helper、`catch_unwind` 兜底、裸指针入参守卫）。
 //!
 //! FFI 范式镜像 `thumbnail_rust`（`src/lib.rs`）：
@@ -516,7 +516,7 @@ pub extern "C" fn faf_parse_exif(path: *const c_char) -> *mut c_char {
 
 /// 合成 PSD 图层（todo 8）：`faf_composite_psd(path)`。
 ///
-/// **spike 裁决 DROP**（task-1-decisions.md §3）：`psd` crate 无法等价
+/// **spike 裁决 DROP**：`psd` crate 无法等价
 /// `psd-tools .composite()`，本导出恒返回 `Err(STATUS_UNSUPPORTED)` → null，
 /// Python 保持 `_decode_psd`（`image_decoder_service.py:324-`）路径。
 /// 禁止输出与 psd-tools 不一致的合成结果。
@@ -585,7 +585,7 @@ pub extern "C" fn faf_replace_svg_colors(
 /// 渲染流体背景 CPU 帧（todo 13）：`faf_render_fluid_frame(width, height,
 /// palette_json, noise_seed, time, overlay_json, out_len)`。
 ///
-/// **spike 裁决 DROP**（task-1-decisions.md §6）：float ULP（`math.hypot` vs
+/// **spike 裁决 DROP**：float ULP（`math.hypot` vs
 /// `f64::hypot` 差 1 ULP）令逐像素 parity 不可达，本导出恒返回
 /// `Err(STATUS_UNSUPPORTED)` → null，Python 保持 `_styled_fluid_cpu`
 /// `render_static_frame` 路径；`QPixmap`/`QImage` 永远留在 GUI 线程。
@@ -593,7 +593,7 @@ pub extern "C" fn faf_replace_svg_colors(
 /// 契约：成功输出 Rust 分配的 RGBA 像素缓冲（`*mut c_void` + `*out_len`，
 /// 释放一律经 [`faf_free_buffer`]；经 `into_boxed_slice` 移交保证
 /// capacity == len），Python 侧 `QImage` 包装后 `QPixmap.fromImage`。
-/// 占位期恒失败返回 null，不写 `*out_len`、不分配缓冲。
+/// DROP 终态恒失败返回 null，不写 `*out_len`、不分配缓冲。
 ///
 /// - 失败（null 入参/负数尺寸/非法 JSON/未实现）：返回 null，不 panic。
 ///
@@ -643,10 +643,10 @@ pub extern "C" fn faf_render_fluid_frame(
                 // 调用方 `faf_free_buffer(ptr, len)` 可安全重建释放。
                 let mut boxed = buf.into_boxed_slice();
                 let len = boxed.len();
-                // SAFETY：out_len 已守卫非空；成功时写入产物长度（占位期不可达）。
+                // SAFETY：out_len 已守卫非空；成功时写入产物长度（DROP 终态不可达）。
                 unsafe { *out_len = len }
                 let ptr = boxed.as_mut_ptr() as *mut c_void;
-                // 所有权移交调用方（已写 out_len；占位期恒 DROP 不可达）。
+                // 所有权移交调用方（已写 out_len；DROP 终态恒不可达）。
                 std::mem::forget(boxed);
                 ptr
             }
@@ -935,13 +935,13 @@ mod tests {
         // faf_parse_exif / faf_composite_psd：null 路径。
         assert!(faf_parse_exif(std::ptr::null()).is_null());
         assert!(faf_composite_psd(std::ptr::null()).is_null());
-        // 非 UTF-8 或空指针之外的占位路径（合法指针）：占位期恒 null。
+        // 非 UTF-8 或空指针之外：parse_exif 文件不存在 → null；
+        // composite_psd 为 DROP 终态 → 恒 null。
         let valid = CString::new("C:/w.x").unwrap();
         assert!(faf_parse_exif(valid.as_ptr()).is_null());
         assert!(faf_composite_psd(valid.as_ptr()).is_null());
 
-        // faf_replace_svg_colors：null svg_text → null；合法 SVG 实现期返回
-        // 非空裸文本（todo 11 已填实现）。
+        // faf_replace_svg_colors：null svg_text → null；合法 SVG 返回非空裸文本。
         assert!(faf_replace_svg_colors(std::ptr::null(), 1, 1).is_null());
         let svg = CString::new("<svg/>").unwrap();
         let replaced = faf_replace_svg_colors(svg.as_ptr(), 1, 0);
@@ -966,7 +966,7 @@ mod tests {
             std::ptr::null_mut(),
         )
         .is_null());
-        // 占位期（UNSUPPORTED）：合法参数同样返回 null、不写 out_len。
+        // DROP 终态（UNSUPPORTED）：合法参数同样返回 null、不写 out_len。
         let expect_len = out_len;
         let raw = faf_render_fluid_frame(8, 8, palette.as_ptr(), 0, 0.0, overlay.as_ptr(), &mut out_len);
         assert!(raw.is_null());
@@ -976,9 +976,9 @@ mod tests {
         assert!(faf_parse_7z_list(std::ptr::null(), std::ptr::null(), std::ptr::null()).is_null());
         let s = CString::new("").unwrap();
         assert!(faf_parse_7z_list(s.as_ptr(), std::ptr::null(), s.as_ptr()).is_null());
-        // todo 16 实现后：合法入参（空输出）→ 非 null 的 "[]" JSON，须释放。
+        // 空输出 → 合法空 JSON 数组 "[]"（非 null），须释放。
         let raw = faf_parse_7z_list(s.as_ptr(), s.as_ptr(), s.as_ptr());
-        assert!(!raw.is_null(), "todo 16 后空输出返回空 JSON 数组而非 null");
+        assert!(!raw.is_null(), "空输出应返回空 JSON 数组而非 null");
         // SAFETY：指针由本 crate alloc_json_message 分配（CString::into_raw）。
         unsafe {
             let _ = CString::from_raw(raw);
@@ -988,14 +988,14 @@ mod tests {
         assert!(faf_pdf_select_words(std::ptr::null(), std::ptr::null()).is_null());
         assert!(faf_pdf_select_words(s.as_ptr(), std::ptr::null()).is_null());
         assert!(faf_pdf_select_words(s.as_ptr(), s.as_ptr()).is_null());
-        // todo 18 实现后：合法 JSON → 非 null 的选中词 JSON 数组，须释放。
+        // 合法 JSON（空词表）→ 非 null 的选中词 JSON 数组，须释放。
         let empty_words = CString::new("[]").unwrap();
         let pdf_sel = CString::new(
             r#"{"begin_abs_x":0,"begin_abs_y":0,"end_abs_x":10,"end_abs_y":10,"page_heights":[792.0]}"#,
         )
         .unwrap();
         let raw = faf_pdf_select_words(empty_words.as_ptr(), pdf_sel.as_ptr());
-        assert!(!raw.is_null(), "todo 18 后合法 JSON 返回选中词 JSON 数组而非 null");
+        assert!(!raw.is_null(), "合法 JSON 应返回选中词 JSON 数组而非 null");
         // SAFETY：指针由本 crate alloc_json_message 分配（CString::into_raw）。
         unsafe {
             let _ = CString::from_raw(raw);

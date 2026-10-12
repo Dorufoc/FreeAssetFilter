@@ -16,4 +16,4 @@ for _name in ("components", "theme"):
     try:
         importlib.import_module(_name)
     except Exception:
-        pass
+        pass  # 冻结启动垫片：预导入失败按未安装处理（此阶段不引日志）

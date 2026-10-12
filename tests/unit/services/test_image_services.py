@@ -8,7 +8,7 @@
 * Worker：成功/失败信号、取消（启动前/运行中）、**内部 60s 超时防挂**、
   批量 10 任务全部完成。
 
-线程纪律（AGENTS.md 跨线程模式）：
+线程纪律（项目跨线程模式）：
 * QThread 在 ``wait()``/``deleteLater()`` 前检查 ``isRunning()``；
 * teardown 中 ``terminate()`` 兜底；
 * 所有信号等待经 ``tests/support/qt_helpers.py::wait_for_signal`` 有界等待。

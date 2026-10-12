@@ -21,7 +21,7 @@ import re
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 
-from freeassetfilter.utils.app_logger import info, warning, error, exception_details
+from freeassetfilter.utils.app_logger import debug, info, warning, error, exception_details
 from freeassetfilter.utils.path_utils import validate_safe_path, contains_injection_chars
 from freeassetfilter.utils.perf_metrics import increment_perf_counter, set_perf_metadata, track_perf
 from freeassetfilter.utils.subprocess_utils import (
@@ -134,8 +134,8 @@ class Py7zCore:
                 if os.path.exists(path):
                     self._7z_exe_path = path
                     return path
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"where 7z.exe 探测失败：{exc}")
 
         error("找不到 7z.exe，请确保 7-Zip 已安装或在项目 core/7z 目录中")
         raise FileNotFoundError("找不到 7z.exe，请确保 7-Zip 已安装")

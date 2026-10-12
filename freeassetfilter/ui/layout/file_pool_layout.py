@@ -71,7 +71,7 @@ from freeassetfilter.services.staging_pool_service import StagingPoolService
 from freeassetfilter.core.workers.staging_tasks import MD5CalculationTask
 from freeassetfilter.core.native.bridges.faf_core_bridge import get_faf_core_bridge
 from freeassetfilter.utils.animation_settings import is_animation_enabled
-from freeassetfilter.utils.app_logger import warning
+from freeassetfilter.utils.app_logger import debug, warning
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 # 导出复制单批 native 最大源数（进度/取消按批次粒度；与 Rust CHUNK_SIZE=32 对齐）。
@@ -1448,8 +1448,8 @@ class FilePoolLayout(QWidget):
         if on_finished is not None:
             try:
                 on_finished()
-            except Exception:
-                pass
+            except Exception as exc:
+                debug(f"卡片动画完成回调失败：{exc}")
 
     def _finalize_entry_animations(self) -> None:
         """立即完成所有进行中的创建（入口）动画，确保状态恢复。"""
@@ -1558,8 +1558,8 @@ class FilePoolLayout(QWidget):
             pix = FileIconManager().get_icon_pixmap(file_info, 48, dpr)
             if pix and not pix.isNull():
                 return pix
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"卡片图标生成失败（回退占位）：{exc}")
         return None
 
     @staticmethod

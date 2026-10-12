@@ -9,7 +9,7 @@
 # pre-existing style / refactor debt in files this migration plan did not
 # author (file_selector_layout.py, file_info_service.py, syntax_highlighter.py,
 # file_info_panel.py, markdown_renderer.py). None of those rules are a project
-# mandate — AGENTS.md only fixes import *ordering* as a convention, it does not
+# mandate — the project only fixes import *ordering* as a convention, it does not
 # enforce UP/SIM/PERF/BLE/RUF upgrades.
 #
 # This baseline therefore selects ONLY bug classes that every Python codebase
@@ -25,8 +25,7 @@
 # If the team later wants a style bar, adopt it deliberately in a separate
 # change (with fix-on-commit / CI), not as fallout of a migration review.
 #
-# Per-rule suppressions are documented in
-# .omo/evidence/faf-core-rust-migration/f2-fix.md.
+# Per-rule suppressions are documented inline at each `# noqa` site.
 #
 # Version pin note: ruff >= 0.6 required for `[lint]` (preview config layout).
 

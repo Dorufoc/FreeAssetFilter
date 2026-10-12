@@ -51,6 +51,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from freeassetfilter.utils.app_logger import (
     get_logger,
+    debug,
     info,
     warning,
     error,
@@ -428,7 +429,7 @@ def main(argv=None) -> int:
             if sys.platform == "win32":
                 ctypes.windll.user32.MessageBoxW(0, error_msg, "启动错误 - FreeAssetFilter", 0x10)
         except Exception:
-            pass
+            pass  # 已记录 error 日志；弹窗失败不再追加（避免启动错误路径再抛）
         sys.exit(1)
     info(f"[启动] 主窗口创建: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
 
@@ -504,14 +505,14 @@ def main(argv=None) -> int:
         try:
             for handler in getattr(get_logger(), "logger", None).handlers or []:
                 handler.flush()
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"退出时刷新日志句柄失败：{exc}")
 
         # 5) 清理实例信息与互斥体
         try:
             instance_guard._remove_runtime_instance_info(expected_pid=os.getpid())
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"清理运行时实例信息失败：{exc}")
         instance_guard._release_mutex(mutex_handle)
 
     app.aboutToQuit.connect(on_app_exit)

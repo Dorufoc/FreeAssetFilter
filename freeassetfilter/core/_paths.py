@@ -64,13 +64,15 @@ def icons_dir() -> Path:
 def get_app_data_path() -> Path:
     """Returns the absolute path to the application data directory.
 
-    This is the canonical location for runtime data files such as
-    ``last_path.json``.  Creates the directory if it does not exist.
+    ``FAF_DATA_DIR`` 环境变量优先（测试隔离 / 便携部署用，与
+    ``FAF_EVIDENCE_DIR`` 的既有约定一致）；未设置时为
+    ``freeassetfilter/data/``。目录不存在时创建。
 
     Returns:
-        Path: ``freeassetfilter/data/``.
+        Path: 应用数据目录绝对路径。
     """
-    data_dir = core_dir().parent / "data"
+    override = os.environ.get("FAF_DATA_DIR", "").strip()
+    data_dir = Path(override) if override else core_dir().parent / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     return data_dir
 

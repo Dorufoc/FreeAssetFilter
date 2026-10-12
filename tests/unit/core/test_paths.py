@@ -74,7 +74,7 @@ def test_archive_7z_dir_joins_bin() -> None:
 
 
 def test_archive_7z_dir_is_directory_when_7z_exe_exists() -> None:
-    """若 ``7z.exe`` 存在，则其所在目录必须为目录（AGENTS.md 已知坑点）。"""
+    """若 ``7z.exe`` 存在，则其所在目录必须为目录（已知坑点）。"""
     if (archive_7z_dir() / "7z.exe").exists():
         assert archive_7z_dir().is_dir()
 
@@ -90,13 +90,24 @@ def test_icons_dir_is_core_sibling() -> None:
 # get_app_data_path
 # =============================================================================
 def test_get_app_data_path_creates_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """``get_app_data_path`` 必须创建 data 目录并返回其 Path。"""
+    """``get_app_data_path`` 必须创建 data 目录并返回其 Path（无 env 覆盖时）。"""
+    monkeypatch.delenv("FAF_DATA_DIR", raising=False)
     fake_core: Path = tmp_path / "freeassetfilter" / "core"
     monkeypatch.setattr(_paths, "core_dir", lambda: fake_core)
 
     result: Path = get_app_data_path()
     assert result == fake_core.parent / "data"
     assert result is not None
+    assert result.is_dir()
+
+
+def test_get_app_data_path_env_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """``FAF_DATA_DIR`` 环境变量优先于默认推导（测试隔离 / 便携部署通路）。"""
+    override: Path = tmp_path / "custom_data"
+    monkeypatch.setenv("FAF_DATA_DIR", str(override))
+
+    result: Path = get_app_data_path()
+    assert result == override
     assert result.is_dir()
 
 

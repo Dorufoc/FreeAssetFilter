@@ -48,7 +48,7 @@ def _reset_staging_pool_singleton() -> None:
         try:
             previous.dispose()
         except Exception:
-            pass
+            pass  # teardown 释放失败：忽略
     StagingPoolService._instance = None
 
 

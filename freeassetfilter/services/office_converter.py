@@ -449,8 +449,8 @@ class OfficeConverter:
                 if app is not None:
                     try:
                         app.Quit()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        debug(f"COM 应用退出失败（可能存在残留进程）：{exc}")
                     app = None
 
         return False
@@ -857,13 +857,13 @@ class OfficeConverter:
             if document is not None:
                 try:
                     document.Close(False)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    debug(f"COM 文档关闭失败（可能存在文件占用）：{exc}")
             if app is not None:
                 try:
                     app.Quit()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    debug(f"COM 应用退出失败（可能存在残留进程）：{exc}")
             cls._cleanup_orphan_processes(task_started_at)
 
     @staticmethod

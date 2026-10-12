@@ -32,7 +32,7 @@ from freeassetfilter.core.native.platform_timing import (
     get_active_profile,
     highres_timer_enabled_by_env,
 )
-from freeassetfilter.utils.app_logger import info, warning
+from freeassetfilter.utils.app_logger import debug, info, warning
 
 
 class _OwnerRef:
@@ -113,8 +113,8 @@ class FutureHandle:
         if self._done:
             try:
                 callback(self)
-            except Exception:
-                pass
+            except Exception as exc:
+                debug(f"FutureHandle 完成回调失败：{exc}")
         else:
             self._callbacks.append(callback)
 
@@ -147,8 +147,8 @@ class FutureHandle:
         for cb in self._callbacks:
             try:
                 cb(self)
-            except Exception:
-                pass
+            except Exception as exc:
+                debug(f"FutureHandle 完成回调失败：{exc}")
 
 
 class HeartbeatManager(QObject):

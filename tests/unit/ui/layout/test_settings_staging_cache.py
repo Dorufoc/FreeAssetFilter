@@ -55,7 +55,7 @@ def _restore_theme_quietly(tm: Any, prev_theme: str, prev_colors: dict) -> None:
         tm._colors.update(prev_colors)
         tm._clear_color_cache()
     except Exception:
-        pass
+        pass  # teardown 还原主题内部状态失败：忽略
 
 
 def _make_cache(snapshot: dict | None = None) -> SettingsStagingCache:

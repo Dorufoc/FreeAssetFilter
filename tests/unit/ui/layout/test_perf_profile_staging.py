@@ -2,7 +2,7 @@
 """性能档位三段选择器暂存隔离测试（todo 14）。
 
 覆盖 ``freeassetfilter/ui/layout/settings_layout.py`` 的性能档位链路，
-遵循设置页暂存铁律（AGENTS.md）：
+遵循设置页暂存铁律：
 
 * (1) 暂存写入：选择器切换只写 ``SettingsStagingCache``，
   不触碰 V2 磁盘与三钩子（spy 断言钩子未被调用）；
@@ -106,7 +106,7 @@ def _restore_tm_quietly(tm: Any, prev_mode: str, prev_colors: dict) -> None:
         tm._colors.update(prev_colors)
         tm._clear_color_cache()
     except Exception:
-        pass
+        pass  # teardown 还原主题内部状态失败：忽略
 
 
 class TestProfileSelectorStaging:

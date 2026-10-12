@@ -1802,7 +1802,7 @@ class SyntaxHighlighter:
             # 二者值不同，删除任一都会丢失可读性/覆盖意图，故保留并逐行 noqa。
             # 本方法仅将 grammar_to_extensions 当查找表使用（不迭代），
             # 运行时取到的值是最后一个（窄集），行为与覆盖前完全一致。
-            # 处置决策见 .omo/evidence/faf-core-rust-migration/f2-fix.md。
+            # 处置结论：保留覆盖模式并按行 noqa（本段注释即完整记录）。
             'coffeescript': ['.coffee'],  # noqa: F601 -- 有意覆盖上方 ['.coffee', '.cson']
             'diff': ['.diff', '.patch'],
             'dockerfile': ['dockerfile'],  # noqa: F601 -- 有意覆盖上方含 '.dockerfile' 的宽集
@@ -2121,8 +2121,8 @@ def is_dark_mode() -> bool:
         # acquires _lock. Explicitly load once first.
         sm.load()
         return sm.get("appearance.theme", "dark") == "dark"
-    except Exception:
-        pass
+    except Exception as exc:
+        debug(f"读取主题设置失败（按深色处理）：{exc}")
 
     # 默认返回False（亮色模式），与设置管理器默认值保持一致
     return False

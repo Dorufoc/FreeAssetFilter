@@ -13,6 +13,8 @@ FileCardDelegate — 文件卡片委托，视觉风格精确匹配 StyledInfoCar
 from collections import OrderedDict
 from typing import Any, Dict, Optional
 
+from freeassetfilter.utils.app_logger import debug
+
 from PySide6.QtCore import (
     QEasingCurve,
     QModelIndex,
@@ -521,8 +523,8 @@ class FileCardDelegate(QStyledItemDelegate):
                 viewport.update()
             else:
                 viewport.update(dirty.adjusted(-1, -1, 1, 1).intersected(viewport.rect()))
-        except Exception:
-            pass
+        except Exception as exc:
+            debug(f"卡片视口局部重绘失败：{exc}")
 
     def _advance_preview_gradient(self) -> None:
         """推进预览态边框渐变焦点旋转（循环动画）。

@@ -254,13 +254,35 @@ class TestValidateDllPath:
 class TestAppDataAndConfigDirs:
     """``get_app_data_path`` / ``get_config_path`` 目录定位与缓存。"""
 
-    def test_get_app_data_path_caches_and_creates(
-        self, monkeypatch: pytest.MonkeyPatch
+    def test_get_app_data_path_env_override_uncached(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """首次调用后结果被缓存；返回路径以 data 结尾。"""
+        """env 覆盖：直接返回 FAF_DATA_DIR 且不写进程级缓存。"""
         from freeassetfilter.utils import path_utils
 
         created: list = []
+        monkeypatch.setattr(path_utils, "_APP_DATA_PATH_CACHE", None)
+        monkeypatch.setenv("FAF_DATA_DIR", str(tmp_path / "isolated" / "data"))
+        monkeypatch.setattr(
+            "freeassetfilter.utils.path_utils.os.makedirs",
+            lambda *a, **k: created.append(a),
+        )
+        data_dir = path_utils.get_app_data_path()
+        assert data_dir.endswith(("data", "data\\"))
+        assert created, "应调用 makedirs"
+        assert path_utils._APP_DATA_PATH_CACHE is None, "env 覆盖不应写缓存"
+        # 再次调用仍解析到同一覆盖目录
+        created.clear()
+        assert path_utils.get_app_data_path() == data_dir
+
+    def test_get_app_data_path_default_caches(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """无 env 覆盖：默认推导结果进程内缓存，二次调用无副作用。"""
+        from freeassetfilter.utils import path_utils
+
+        created: list = []
+        monkeypatch.delenv("FAF_DATA_DIR", raising=False)
         monkeypatch.setattr(path_utils, "_APP_DATA_PATH_CACHE", None)
         monkeypatch.setattr(
             "freeassetfilter.utils.path_utils.os.makedirs",
@@ -270,7 +292,6 @@ class TestAppDataAndConfigDirs:
         assert data_dir.endswith(("data", "data\\"))
         assert created, "应调用 makedirs"
         assert path_utils._APP_DATA_PATH_CACHE == data_dir
-        # 缓存命中：再次调用不再触发副作用
         created.clear()
         assert path_utils.get_app_data_path() == data_dir
         assert not created

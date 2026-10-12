@@ -2094,11 +2094,11 @@ class TestFontPreviewTextDrawer:
 
         layout = FontPreviewerLayout()
         _assert_layout_geometry(layout, qapp)
-        assert not layout._text_drawer._is_open
+        assert not layout._text_drawer.is_open
         assert layout._edit_preview_btn.toolTip() == "编辑预览文本"
         titles = [
             c
-            for c in layout._text_drawer._panel.findChildren(QLabel)
+            for c in layout._text_drawer.panel.findChildren(QLabel)
             if c.text() == "编辑预览文本"
         ]
         assert titles
@@ -2110,10 +2110,10 @@ class TestFontPreviewTextDrawer:
         layout = self._shown_layout(qapp)
         layout._on_edit_preview_text()
         self._settle_drawers(qapp, layout)
-        assert layout._text_drawer._is_open
+        assert layout._text_drawer.is_open
         assert layout._text_drawer.isVisible()
         layout._on_edit_preview_text()
-        assert not layout._text_drawer._is_open
+        assert not layout._text_drawer.is_open
         layout.deleteLater()
 
     def test_edit_text_syncs_to_preview(self, qapp: QApplication) -> None:
@@ -2148,11 +2148,11 @@ class TestFontPreviewTextDrawer:
         layout._on_edit_preview_text()
         layout._toggle_ai_drawer()
         self._settle_drawers(qapp, layout)
-        assert layout._text_drawer._is_open
-        assert layout._ai_drawer._is_open
+        assert layout._text_drawer.is_open
+        assert layout._ai_drawer.is_open
         layout.cleanup()
-        assert not layout._text_drawer._is_open
-        assert not layout._ai_drawer._is_open
+        assert not layout._text_drawer.is_open
+        assert not layout._ai_drawer.is_open
         layout.deleteLater()
 
 
@@ -3676,7 +3676,7 @@ class TestAppearanceSettingsPage:
         )
         fake_mw = self._make_fake_bg_main_window()
         monkeypatch.setattr(
-            sl_mod.AppearanceSettingsPage, "_find_main_window", lambda self: fake_mw
+            sl_mod.AppearanceSettingsPage, "find_main_window", lambda self: fake_mw
         )
         monkeypatch.setattr(sl_mod, "get_app_data_path", lambda: str(tmp_path))
 
@@ -3729,7 +3729,7 @@ class TestAppearanceSettingsPage:
         monkeypatch.setattr(sl_mod, "get_app_data_path", lambda: str(tmp_path))
         fake_mw = self._make_fake_bg_main_window()
         monkeypatch.setattr(
-            sl_mod.AppearanceSettingsPage, "_find_main_window", lambda self: fake_mw
+            sl_mod.AppearanceSettingsPage, "find_main_window", lambda self: fake_mw
         )
 
         page = AppearanceSettingsPage()
@@ -3765,7 +3765,7 @@ class TestAppearanceSettingsPage:
         )
         fake_mw = self._make_fake_bg_main_window()
         monkeypatch.setattr(
-            sl_mod.AppearanceSettingsPage, "_find_main_window", lambda self: fake_mw
+            sl_mod.AppearanceSettingsPage, "find_main_window", lambda self: fake_mw
         )
 
         page = AppearanceSettingsPage()
@@ -3809,7 +3809,7 @@ class TestAppearanceSettingsPage:
         )
         fake_mw = self._make_fake_bg_main_window()
         monkeypatch.setattr(
-            sl_mod.AppearanceSettingsPage, "_find_main_window", lambda self: fake_mw
+            sl_mod.AppearanceSettingsPage, "find_main_window", lambda self: fake_mw
         )
 
         page = AppearanceSettingsPage()
@@ -3849,7 +3849,7 @@ class TestAppearanceSettingsPage:
         )
         fake_mw = self._make_fake_bg_main_window()
         monkeypatch.setattr(
-            sl_mod.AppearanceSettingsPage, "_find_main_window", lambda self: fake_mw
+            sl_mod.AppearanceSettingsPage, "find_main_window", lambda self: fake_mw
         )
 
         page = AppearanceSettingsPage()
@@ -3900,7 +3900,7 @@ class TestAppearanceSettingsPage:
 class TestLoadAllStaysPython:
     """``FileSelectorLayout._load_all`` 保持 Python 实现，不经 faf_core native。
 
-    回归背景（.omo/plans/faf-core-rust-migration todo 10）：「All」视图枚举
+    回归背景（faf-core-rust-migration todo 10）：「All」视图枚举
     逻辑驱动器（GetLogicalDrives 位掩码 ≤26 个盘 + 每盘 os.stat）无性能需求，
     显式排除出 native 范围。本组 mock 位掩码 + 注入确定性元数据，断言驱动
     列表正确且枚举路径仍为 Python（os.stat 逐盘调用、faf_core 桥零触碰）。
@@ -4242,7 +4242,7 @@ class TestGeneralSettingsPage:
 
         fake_mw = _FakeMainWindow()
         monkeypatch.setattr(
-            sl_mod.AppearanceSettingsPage, "_find_main_window", lambda self: fake_mw
+            sl_mod.AppearanceSettingsPage, "find_main_window", lambda self: fake_mw
         )
 
         from theme import tm
@@ -4265,7 +4265,7 @@ class TestGeneralSettingsPage:
             try:
                 tm.set_theme_mode(prev_mode)
             except Exception:
-                pass
+                pass  # teardown 还原主题失败：忽略，避免影响断言
             safe_teardown(layout)
 
     def test_toggles_default_false_from_cache(self, qapp: QApplication) -> None:
@@ -4344,7 +4344,7 @@ class TestGeneralSettingsPage:
 
         fake_mw = _FakeMainWindow()
         monkeypatch.setattr(
-            sl_mod.AppearanceSettingsPage, "_find_main_window", lambda self: fake_mw
+            sl_mod.AppearanceSettingsPage, "find_main_window", lambda self: fake_mw
         )
 
         from theme import tm
@@ -4370,7 +4370,7 @@ class TestGeneralSettingsPage:
             try:
                 tm.set_theme_mode(prev_mode)
             except Exception:
-                pass
+                pass  # teardown 还原主题失败：忽略，避免影响断言
             safe_teardown(layout)
 
 
@@ -4430,7 +4430,7 @@ class TestAiEntryToggles:
             assert layout._ai_drawer is not None
             layout._toggle_ai_drawer()
             qapp.processEvents()
-            assert layout._ai_drawer._is_open
+            assert layout._ai_drawer.is_open
 
             # 等待展开动画结束：动画期间的 close_drawer 为 no-op（组件语义）
             deadline = time.time() + 2.0
@@ -4447,7 +4447,7 @@ class TestAiEntryToggles:
             # 关闭：收起抽屉并摘除按钮；再次开启可恢复
             layout.set_ai_entry_enabled(False)
             _pump_events(qapp)
-            assert not layout._ai_drawer._is_open
+            assert not layout._ai_drawer.is_open
             assert not self._registered(bar, layout._ai_btn)
 
             layout.set_ai_entry_enabled(True)

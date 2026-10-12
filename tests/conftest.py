@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """集成测试配置与共享 fixtures（tests/comprehensive-refactor 计划 todo-4 重写）。
 
-本文件是 todo 7-29 各测试套件的容器 fixture 来源，遵循 AGENTS.md 的
+本文件是 todo 7-29 各测试套件的容器 fixture 来源，遵循项目既有的
 单例重置纪律与跨线程模式。要点：
 
 * ``qapp``（session）：全局唯一 QApplication，附带 ``global_font`` 与
@@ -27,6 +27,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import tempfile
 
 try:  # 非 Windows 无 winreg；项目仅支持 Windows，守卫保证导入失败时回退 COM 探测
     import winreg
@@ -42,6 +43,21 @@ import pytest
 _PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in os.sys.path:
     os.sys.path.insert(0, str(_PROJECT_ROOT))
+
+# 数据目录统一重定向（review 3.5-4）：``FAF_DATA_DIR`` 会话级指向临时目录，
+# 作为"逐测试重定向"（redirect_layout_app_data_writes）之外的全局安全网，
+# 保证任何走 get_app_data_path() 的模块都不会落到仓库真实 data/。
+# 全局引用持有到进程结束，随解释器退出自动清理。
+_FAF_TEST_DATA_TMP = tempfile.TemporaryDirectory(prefix="faf_test_data_")
+os.environ["FAF_DATA_DIR"] = _FAF_TEST_DATA_TMP.name
+try:
+    # 缓存可能已被运行器/更早的导入预热为真实 data/：强制失效，
+    # 保证进程内所有后续解析都走 FAF_DATA_DIR。
+    import freeassetfilter.utils.path_utils as _path_utils_module
+
+    _path_utils_module._APP_DATA_PATH_CACHE = None
+except Exception:
+    pass  # 包尚未可用时忽略（首次解析自然走环境变量）
 
 
 # =============================================================================
@@ -104,13 +120,13 @@ def _cleanup_qt_runtime() -> None:
 
         shutdown_gpu_renderer()
     except Exception:
-        pass
+        pass  # 会话收尾：清理失败不拖垮测试结果
     try:
         from PySide6.QtCore import QThreadPool
 
         QThreadPool.globalInstance().waitForDone(5000)
     except Exception:
-        pass
+        pass  # 会话收尾：排空线程池失败不阻塞退出
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -134,7 +150,7 @@ def cleanup_qt_runtime(qapp: Any) -> Any:
             alive = len(qapp.topLevelWidgets())
             print(f"[cleanup] session end: topLevelWidgets={alive}", flush=True)
         except Exception:
-            pass
+            pass  # 诊断打印失败可忽略
 
 
 # =============================================================================
@@ -143,34 +159,30 @@ def cleanup_qt_runtime(qapp: Any) -> Any:
 def _reset_all_singletons() -> None:
     """归零全部已知单例的内部状态（供 reset_singletons 前后两阶段复用）。
 
-    重置清单（V3 事实审计后的准确版本）：
+    重置清单（V3 事实审计 + review 3.5-4 补齐）：
 
-    * ``SettingsManager``：类级 ``_instance`` / ``_initialized``
-      （core/managers/settings_manager.py:24-26）。
-    * ``HeartbeatManager``：类级 ``_instance`` / ``_initialized``
-      （core/managers/heartbeat_manager.py:164-166）。
-    * ``ThumbnailManager``：类级 ``_instance`` / ``_initialized``
-      （core/managers/thumbnail_manager.py:219-220），**另有**模块级全局
-      ``_thumbnail_manager``（:2466，由 ``get_thumbnail_manager()`` 缓存），
-      类属性重置覆盖不到它，需单独归零。
-    * ``MPVManager``：类级 ``_instance``（core/managers/mpv_manager.py:170）。
-      该类**没有**类级 ``_initialized``（仅实例级，L179/L190/L229），因此
-      用 ``hasattr`` 守卫跳过，避免 AttributeError。
-    * ``AppLogger``：类级 ``_instance`` / ``_initialized``
-      （utils/app_logger.py:835-836）。
-    * ``AsyncIconLoader``：模块级 ``_instance``
-      （utils/async_icon_loader.py:100）。
-    * ``FafCoreBridge``：模块级 ``_instance``
-      （core/native/bridges/faf_core_bridge.py，由 ``get_faf_core_bridge()``
-      惰性缓存）。
+    * 类级单例：``HeartbeatManager`` / ``ThumbnailManager`` / ``MPVManager`` /
+      ``AppLogger`` 的 ``_instance`` 一律归零；类上真实存在
+      ``_initialized`` 时一并归零（``MPVManager`` 无类级 ``_initialized``，
+      用 ``hasattr`` 守卫跳过）。
+    * 模块级惰性缓存（类属性重置覆盖不到）：
+      ``thumbnail_manager._thumbnail_manager``、``app_logger._app_logger``、
+      ``async_icon_loader._instance``、``faf_core_bridge._instance``、
+      ``lut_preview_generator._preview_generator``、
+      ``lut_preview_native._module``、``mica_render._LIB``、
+      ``py7z_core._7z_core_instance``。
+    * ``ui/theme/app_stylesheet`` 的 QSS 注册表单例：经
+      ``reset_qss_registry()`` 清空会话级累积（原因见下方内联注释）。
 
     **明确不做**的：
 
-    * 不重置 ``core/managers/theme_manager.py`` 的 ``ThemeManager``——V3
-      审计证实该模块**不是单例**（无 ``_instance``/``_initialized``）；
-      带单例的是 ``ui/theme/theme_manager.py:66-67``，不在本清单范围。
-    * 更新管理器模块（``core/managers/update_manager.py``）已随更新功能
-      整体移除（2026-09 重构），无残留单例需重置。
+    * **不重置** ``ui/theme/theme_manager`` 的主题单例：``theme`` 包在导入时
+      以 ``tm = get_theme_manager()`` 绑定模块级引用，多个模块
+      ``from theme import tm`` 持有同一对象；归零 ``_theme_manager`` 只会让
+      后续 ``get_theme_manager()`` 造出新实例，与既有 ``tm`` 引用分裂。
+      （``core/managers/theme_manager.py`` 模块本身不是单例。）
+    * 会话级原生资源（Mica GPU 渲染线程 / 全局线程池）由
+      ``cleanup_qt_runtime`` 在整套测试结束时统一回收，不逐测试重置。
 
     Returns:
         None。
@@ -205,6 +217,25 @@ def _reset_all_singletons() -> None:
 
     _faf_core_bridge._instance = None
 
+    # 模块级惰性缓存（类属性重置覆盖不到；review 3.5-4 补齐）。
+    import freeassetfilter.core.native.bridges.lut_preview_generator as _lut_gen
+    import freeassetfilter.core.native.bridges.lut_preview_native as _lut_native
+    import freeassetfilter.core.native.bridges.mica_render as _mica_render
+    import freeassetfilter.core.native.bridges.py7z_core as _py7z
+    import freeassetfilter.utils.app_logger as _app_logger_module
+
+    _app_logger_module._app_logger = None
+    _lut_gen._preview_generator = None
+    _lut_native._module = None
+    _mica_render._LIB = None
+    _py7z._7z_core_instance = None
+
+    # 数据目录缓存逐测试失效：即使某处（运行器预导入/晚到的异步回调）
+    # 曾把真实 data/ 写进缓存，后续一律重新解析到 FAF_DATA_DIR 临时目录。
+    import freeassetfilter.utils.path_utils as _path_utils_module
+
+    _path_utils_module._APP_DATA_PATH_CACHE = None
+
     # A1 QSS singleton: drop app-stylesheet registry between tests so the
     # central sheet never accumulates session-wide under the session qapp
     # (full-tree re-polish cost grows with accumulation). Live widgets
@@ -215,7 +246,7 @@ def _reset_all_singletons() -> None:
 
         reset_qss_registry()
     except Exception:
-        pass
+        pass  # 测试隔离：QSS 注册表重置失败不阻塞用例
 
 
 @pytest.fixture(autouse=True, scope="function")
@@ -224,10 +255,8 @@ def reset_singletons() -> None:
 
     setup 阶段归零（防止上一测试残留污染），teardown 阶段再次归零
     （确保断言"测试结束后 ``_instance is None``"能够成立，且下一测试的
-    setup 归零是幂等的）。重置清单见 :func:`_reset_all_singletons` 的
-    docstring——包括 SettingsManager/HeartbeatManager/ThumbnailManager/
-    MPVManager 四大管理器 + thumbnail 模块级全局 + AppLogger +
-    AsyncIconLoader。
+    setup 归零是幂等的）。完整重置清单见 :func:`_reset_all_singletons`
+    的 docstring——类级单例 + 模块级惰性缓存 + QSS 注册表。
 
     Returns:
         None。
@@ -329,7 +358,7 @@ def settings_manager(tmp_path: Path) -> Any:
 def heartbeat_manager(qapp: Any) -> Any:
     """创建全新的 HeartbeatManager 单例并启动（function scope）。
 
-    遵循 AGENTS.md 测试注意事项：teardown 调用 ``stop_all()`` 并重置
+    遵循项目测试注意事项：teardown 调用 ``stop_all()`` 并重置
     单例。依赖 ``qapp`` 以保证 QObject 处于正确线程。
 
     Args:
@@ -456,7 +485,7 @@ def py7z_available() -> bool:
 
     优先探测 ``py7zr`` 包是否可导入（``importlib.util.find_spec``）；
     若不可用则回退检查捆绑的 ``core/native/bin/7z/7z.exe`` 是否存在
-    （产品归档预览实际依赖 7z.exe，见 AGENTS.md 已知坑点）。
+    （产品归档预览实际依赖 7z.exe）。
 
     Returns:
         bool: py7zr 可用或 7z.exe 存在则为 True。
@@ -521,7 +550,7 @@ def com_available() -> bool:
                 except OSError:
                     continue
     except Exception:
-        pass
+        pass  # 注册表探测失败：转入 COM 回退探测
 
     try:
         import win32com.client
@@ -539,7 +568,7 @@ def com_available() -> bool:
                 try:
                     app.Quit()
                 except Exception:
-                    pass
+                    pass  # 探测清理：退出失败忽略
                 app = None
     return False
 
