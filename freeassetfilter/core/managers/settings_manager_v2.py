@@ -564,6 +564,15 @@ DEFAULT_SETTINGS_V2: Dict[str, Any] = {
         # 启动时由 MainWindow._load_layout_settings 读取；设置页
         # 保存路径经 MainWindow.set_layout_mode 即时生效。
         "layout_mode": "workspace",
+        # AI 功能入口（设置页「通用」分类，默认关闭）：
+        # 开启后 PDF / 文本预览器显示 AI 按钮与侧边抽屉；实际 AI
+        # 能力为长期规划，关闭时预览器完全不创建相关控件。
+        "enable_ai_entry": False,
+        # 网络/映射盘与光驱（设置页「通用」分类，默认关闭）：
+        # 开启后文件选择器「All」视图额外列出 DRIVE_REMOTE 与
+        # DRIVE_CDROM；启动时读取，提交时经
+        # MainWindow.set_include_remote_drives 即时生效。
+        "include_remote_drives": False,
     },
 }
 
@@ -832,10 +841,18 @@ class SettingsManagerV2:
 
         # general 域合并：layout_mode 只接受 classic/workspace；
         # 旧文件缺键或非法值时保留默认 workspace（不抛异常）。
+        # enable_ai_entry / include_remote_drives 为布尔白名单键，
+        # 非布尔值（含字符串 "true"）一律丢弃、回退默认 False。
         if "general" in loaded and isinstance(loaded["general"], dict):
             general_loaded = loaded["general"]
             staged_layout = general_loaded.get("layout_mode", None)
             if staged_layout in ("classic", "workspace"):
                 merged["general"]["layout_mode"] = staged_layout
+            staged_ai = general_loaded.get("enable_ai_entry", None)
+            if isinstance(staged_ai, bool):
+                merged["general"]["enable_ai_entry"] = staged_ai
+            staged_remote = general_loaded.get("include_remote_drives", None)
+            if isinstance(staged_remote, bool):
+                merged["general"]["include_remote_drives"] = staged_remote
 
         return merged

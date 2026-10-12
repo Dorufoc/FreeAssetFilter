@@ -47,19 +47,19 @@ DIR_LOADING_INDICATOR_DELAY_MS = 120
 
 # Windows 盘类型常量（GetDriveTypeW 返回值）。「All」视图默认只加载物理
 # 磁盘（固定盘/可移动盘/RAM 盘）；网络磁盘与映射盘（DRIVE_REMOTE）以及
-# 光驱（DRIVE_CDROM=5）暂不加载。
+# 光驱（DRIVE_CDROM）由设置项 general.include_remote_drives（默认关闭）
+# 控制，提交后经 FileSelectorLayout.set_include_remote_drives 运行时下发。
 DRIVE_TYPE_REMOVABLE = 2
 DRIVE_TYPE_FIXED = 3
 DRIVE_TYPE_REMOTE = 4
+DRIVE_TYPE_CDROM = 5
 DRIVE_TYPE_RAMDISK = 6
 _PHYSICAL_DRIVE_TYPES = frozenset(
     {DRIVE_TYPE_REMOVABLE, DRIVE_TYPE_FIXED, DRIVE_TYPE_RAMDISK}
 )
-# TODO(未来): 网络磁盘/映射盘加载——规划为设置项（默认关闭）。届时在设置中
-# 提供开关并在此读取：开启后将 _INCLUDE_REMOTE_DRIVES 置 True 即可放开
-# DRIVE_REMOTE 过滤（收集逻辑见 _is_supported_drive_type /
-# _collect_all_drives_python）。
-_INCLUDE_REMOTE_DRIVES = False
+# 网络/映射盘与光驱的静态默认值：仅作为不携带实例状态的静态调用
+#（测试/工具）的默认口径，交互路径始终由实例开关显式传入。
+_DEFAULT_INCLUDE_REMOTE_DRIVES = False
 
 
 def _native_scan_directory(path: str) -> Optional[List[Dict[str, Any]]]:
@@ -121,20 +121,30 @@ class _DirectoryCollectRunnable(QRunnable):
         owner: 所属 FileSelectorLayout（收集器与信号发射经由它）。
         path: 待收集目录路径（或 ``"All"`` 磁盘视图）。
         token: 异步加载世代快照，过期结果由槽侧丢弃。
+        include_remote: 网络/映射盘与光驱开关快照（UI 线程派发时捕获，
+            避免后台线程读取可变实例状态）。
     """
 
-    def __init__(self, owner: "FileSelectorLayout", path: str, token: int) -> None:
+    def __init__(
+        self,
+        owner: "FileSelectorLayout",
+        path: str,
+        token: int,
+        include_remote: bool = False,
+    ) -> None:
         super().__init__()
         self.setAutoDelete(True)
         self._owner = owner
         self._path = path
         self._token = token
+        self._include_remote = bool(include_remote)
 
     def run(self) -> None:
         try:
             entries = self._owner._collect_directory_entries(
                 self._path,
                 cancel_check=lambda: self._owner._async_load_token != self._token,
+                include_remote=self._include_remote,
             )
         except Exception as exc:  # noqa: BLE001  # 后台任务兜底：异常按不可读处理
             debug(f"目录收集异常（{self._path}）: {exc}")
@@ -161,6 +171,9 @@ class FileSelectorLayout(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._previewing_file_path: str = ""  # 当前预览态卡片的文件路径（空 = 无）
+        # 网络/映射盘与光驱加载开关（general.include_remote_drives，默认关闭；
+        # 启动时与设置提交时经 set_include_remote_drives 下发）
+        self._include_remote_drives: bool = _DEFAULT_INCLUDE_REMOTE_DRIVES
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
@@ -617,12 +630,15 @@ class FileSelectorLayout(QWidget):
     def _navigate_to_all(self) -> None:
         """切换到「All」磁盘视图（异步加载物理磁盘；请求即返回）。
 
-        默认只加载物理磁盘（固定盘/可移动盘/RAM 盘）；网络磁盘/映射盘与
-        光驱暂不加载（未来设置项，见模块顶部 TODO 注释）。
+        默认只加载物理磁盘（固定盘/可移动盘/RAM 盘）；网络/映射盘与光驱
+        由设置项 general.include_remote_drives 控制（默认关闭），
+        经 ``set_include_remote_drives`` 运行时下发。
         """
         direction = self._infer_navigation_direction(self._current_path, "All")
         started = direction != 0 and self._file_list.begin_path_transition(direction)
         self._load_directory_async("All", direction if started else 0)
+        # 注：盘符过滤开关由 _load_directory_async → _DirectoryCollectRunnable
+        # 在派发时快照 self._include_remote_drives，线程内不读实例状态。
         self._current_path = "All"
         self._update_path_input("All")
         self._nav_history = ["All"]
@@ -631,7 +647,9 @@ class FileSelectorLayout(QWidget):
 
     def _load_all(self) -> None:
         """同步加载「All」视图（保留给测试/兜底；交互导航走异步管线）。"""
-        self._apply_all_entries(self._collect_all_drives_python())
+        self._apply_all_entries(
+            self._collect_all_drives_python(self._include_remote_drives)
+        )
 
     def _apply_all_entries(self, entries: List[Dict[str, Any]]) -> None:
         """应用「All」视图条目：刷新模型/网格/计数（与旧 _load_all 行为一致）。
@@ -649,39 +667,50 @@ class FileSelectorLayout(QWidget):
         self._file_list.viewport().update()
 
     @staticmethod
-    def _is_supported_drive_type(drive_path: str) -> bool:
-        """判断盘符是否为默认加载的物理磁盘类型（Windows GetDriveTypeW）。
+    def _is_supported_drive_type(
+        drive_path: str, include_remote: Optional[bool] = None
+    ) -> bool:
+        """判断盘符是否应出现在「All」视图中（Windows GetDriveTypeW）。
 
         默认仅包含固定盘（DRIVE_FIXED）、可移动盘（DRIVE_REMOVABLE）与
-        RAM 盘（DRIVE_RAMDISK）；网络磁盘/映射盘（DRIVE_REMOTE）与光驱
-        （DRIVE_CDROM）排除。未来网络/映射盘将作为设置项（默认关闭）接入，
-        见模块顶部 TODO 注释。类型探测失败时保守放行，保持旧行为。
+        RAM 盘（DRIVE_RAMDISK）；``include_remote=True`` 时额外包含网络/
+        映射盘（DRIVE_REMOTE）与光驱（DRIVE_CDROM）。类型探测失败时保守
+        放行，保持旧行为。
 
         Args:
             drive_path: 盘符根路径（如 ``"C:\\"``）。
+            include_remote: 网络/映射盘与光驱开关；``None`` 时取静态默认
+                （关闭），交互路径应显式传入实例开关快照。
 
         Returns:
             bool: True 表示应包含在「All」视图中。
         """
+        if include_remote is None:
+            include_remote = _DEFAULT_INCLUDE_REMOTE_DRIVES
         try:
             drive_type = int(
                 ctypes.windll.kernel32.GetDriveTypeW(ctypes.c_wchar_p(drive_path))
             )
         except Exception:  # noqa: BLE001  # 类型探测失败保守放行
             return True
-        if drive_type == DRIVE_TYPE_REMOTE:
-            # TODO(未来): 网络磁盘/映射盘——设置项（默认关闭）开启后放行
-            return _INCLUDE_REMOTE_DRIVES
+        if drive_type in (DRIVE_TYPE_REMOTE, DRIVE_TYPE_CDROM):
+            return bool(include_remote)
         return drive_type in _PHYSICAL_DRIVE_TYPES
 
     @staticmethod
-    def _collect_all_drives_python() -> List[Dict[str, Any]]:
-        """纯 Python 枚举「All」视图条目（物理磁盘；不经 faf_core native）。
+    def _collect_all_drives_python(
+        include_remote: Optional[bool] = None,
+    ) -> List[Dict[str, Any]]:
+        """纯 Python 枚举「All」视图条目（不经 faf_core native）。
 
-        默认加载物理磁盘（固定盘/可移动盘/RAM 盘），网络磁盘/映射盘与光驱
-        暂不加载（未来设置项，见模块顶部 TODO 注释）。Windows 上经
+        ``include_remote=False``（默认）仅加载物理磁盘（固定盘/可移动盘/
+        RAM 盘）；True 时额外包含网络/映射盘与光驱。Windows 上经
         ``GetLogicalDrives`` 位掩码 + ``GetDriveTypeW`` 类型过滤后逐个
         ``os.stat``；非 Windows 回退为根目录 ``/`` 一个条目。
+
+        Args:
+            include_remote: 网络/映射盘与光驱开关；``None`` 时取静态默认
+                （关闭）。
 
         Returns:
             List[Dict[str, Any]]: 7 键条目列表（与目录扫描产物同构）。
@@ -695,7 +724,9 @@ class FileSelectorLayout(QWidget):
                     continue
                 drive_name = chr(65 + drive) + ":"
                 drive_path = drive_name + "\\"
-                if not FileSelectorLayout._is_supported_drive_type(drive_path):
+                if not FileSelectorLayout._is_supported_drive_type(
+                    drive_path, include_remote
+                ):
                     continue
                 try:
                     st = os.stat(drive_path)
@@ -844,6 +875,7 @@ class FileSelectorLayout(QWidget):
     def _collect_directory_entries(
         path: str,
         cancel_check=None,
+        include_remote: Optional[bool] = None,
     ) -> Optional[List[Dict[str, Any]]]:
         """纯 IO 收集目录条目（桥可用时优先 native 扫描，否则 Python 回退）。
 
@@ -857,13 +889,15 @@ class FileSelectorLayout(QWidget):
             path: 待收集目录路径；``"All"`` 表示磁盘视图。
             cancel_check: 可选取消检查回调（后台线程用，返回 True 表示
                 请求已过期、应尽快放弃）；仅 Python 回退路径消费。
+            include_remote: ``"All"`` 视图的网络/映射盘与光驱开关；其他
+                路径忽略。``None`` 时取静态默认（关闭）。
 
         Returns:
             Optional[List[Dict[str, Any]]]: 7 键条目列表；目录不可读返回
                 ``None``。
         """
         if path == "All":
-            return FileSelectorLayout._collect_all_drives_python()
+            return FileSelectorLayout._collect_all_drives_python(include_remote)
         native_entries = _native_scan_directory(path)
         if native_entries is not None:
             return native_entries
@@ -913,7 +947,9 @@ class FileSelectorLayout(QWidget):
         仅供测试与特殊同步场景使用；交互式导航请走 ``_load_directory_async``
         （后台线程收集，不阻塞 UI 线程）。
         """
-        entries = self._collect_directory_entries(path)
+        entries = self._collect_directory_entries(
+            path, include_remote=self._include_remote_drives
+        )
         if entries is None:
             self._file_list.setUpdatesEnabled(False)
             try:
@@ -1010,7 +1046,9 @@ class FileSelectorLayout(QWidget):
         self._update_path_input(path)
         self._start_loading_indicator()
         QThreadPool.globalInstance().start(
-            _DirectoryCollectRunnable(self, path, token)
+            _DirectoryCollectRunnable(
+                self, path, token, self._include_remote_drives
+            )
         )
 
     def _on_dir_entries_ready(
@@ -1212,6 +1250,22 @@ class FileSelectorLayout(QWidget):
             self._load_directory_async("All", 0, initial=False)
         elif self._current_path:
             self._load_directory_async(self._current_path, 0, initial=False)
+
+    def set_include_remote_drives(self, enabled: bool) -> None:
+        """设置「All」视图是否包含网络/映射盘与光驱（设置提交路径调用；幂等）。
+
+        开关在派发异步收集任务时快照传入后台线程；若当前正停留在
+        「All」视图则立即重扫以体现新口径。
+
+        Args:
+            enabled: True 额外列出 DRIVE_REMOTE 与 DRIVE_CDROM。
+        """
+        enabled = bool(enabled)
+        if enabled == self._include_remote_drives:
+            return
+        self._include_remote_drives = enabled
+        if self._current_path == "All":
+            self._reload_directory()
 
     def _load_directory_with_transition(self, path: str, direction: int) -> None:
         """带路径过渡动画的异步目录加载。

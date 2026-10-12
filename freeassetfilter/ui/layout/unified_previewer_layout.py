@@ -31,6 +31,7 @@ from components.styled_dialog import ask_custom_dialog
 from freeassetfilter.services.previewer_registry import PreviewerRegistry
 from freeassetfilter.core._paths import icons_dir as get_icons_dir
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
+from freeassetfilter.utils.app_logger import warning
 from layout.preview.preview_toolbar import PreviewToolbarFrame
 from theme import tm
 
@@ -78,6 +79,8 @@ class UnifiedPreviewerLayout(QWidget):
     locate_requested = Signal(dict)
     # 清除预览（清空内容区 + 两侧面板的预览态）
     clear_requested = Signal()
+    # 预览器内层条目选中（文件夹预览器选中变化时转发；None 表示取消选中）
+    entry_selected = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -86,6 +89,8 @@ class UnifiedPreviewerLayout(QWidget):
         self._current_preview_widget: Optional[QWidget] = None
         self._current_preview_type: Optional[type] = None
         self._current_file_info: Optional[dict] = None
+        # AI 功能入口开关（由主窗口下发；仅 PDF/文本预览器消费，默认关闭）
+        self._ai_entry_enabled: bool = False
         self._placeholder_label: Optional[QLabel] = None
         self._content_layout: Optional[QVBoxLayout] = None
 
@@ -511,8 +516,36 @@ class UnifiedPreviewerLayout(QWidget):
         self._current_file_info = None
         self._update_bottom_buttons()
         self._show_placeholder()
-    
+
+    def set_ai_entry_enabled(self, enabled: bool) -> None:
+        """运行时切换 AI 功能入口（幂等；主窗口设置提交路径调用）。
+
+        开启后 PDF / 文本预览器显示 AI 按钮与侧边抽屉；关闭时移除按钮并
+        关闭抽屉。尚未创建预览器时仅记录开关，创建时再下发。AI 实际能力
+        为长期规划（见各预览器代码内 TODO）。
+
+        Args:
+            enabled: True 显示入口；False 完全隐藏。
+        """
+        self._ai_entry_enabled = bool(enabled)
+        if self._current_preview_widget is not None:
+            self._apply_ai_entry_flag(self._current_preview_widget)
+
+    def current_file_info(self) -> Optional[dict]:
+        """返回当前预览文件信息（无预览时为 None；信息面板联动用）。"""
+        return self._current_file_info
+
     # ── 内部方法 ──
+
+    def _apply_ai_entry_flag(self, widget: QWidget) -> None:
+        """将 AI 入口开关下发给支持的预览器（不支持则静默跳过）。"""
+        if not hasattr(widget, "set_ai_entry_enabled"):
+            return
+        try:
+            widget.set_ai_entry_enabled(self._ai_entry_enabled)
+        except Exception as exc:  # noqa: BLE001 - 开关下发失败不影响预览
+            warning(f"AI 入口开关下发失败: {exc}")
+    
     
     def _get_previewer_class(self, file_info: dict) -> Optional[type]:
         """根据文件信息获取对应的预览器类。
@@ -648,6 +681,16 @@ class UnifiedPreviewerLayout(QWidget):
             try:
                 self._current_preview_widget = previewer_class(self._content_top)
                 self._current_preview_type = previewer_class
+                # AI 入口开关下发（仅支持的预览器；关闭时不创建相关控件）
+                self._apply_ai_entry_flag(self._current_preview_widget)
+                # 内层条目选中信号转发（文件夹预览器等；主窗口据此联动信息面板）
+                if hasattr(self._current_preview_widget, "entry_selected"):
+                    try:
+                        self._current_preview_widget.entry_selected.connect(
+                            self.entry_selected.emit
+                        )
+                    except (RuntimeError, AttributeError):
+                        pass
                 
                 # 添加到布局
                 if self._content_layout is not None:

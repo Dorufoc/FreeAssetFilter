@@ -1571,6 +1571,14 @@ class GeneralSettingsPage(QWidget):
         self._layout_updating: bool = False  # 编程式切换分段控件的守卫标志
         self._layout_segmented: StyledSegmented | None = None
         self._layout_row: SettingsRow | None = None
+        # 通用功能开关状态（初值由 refresh_from_staging 从暂存缓存读取）
+        self._ai_entry: bool = False
+        self._include_remote_drives: bool = False
+        self._general_updating: bool = False  # 编程式同步开关的守卫标志
+        self._ai_row: SettingsRow | None = None
+        self._ai_toggle: StyledToggle | None = None
+        self._drives_row: SettingsRow | None = None
+        self._drives_toggle: StyledToggle | None = None
         self._build_ui()
         self.refresh_from_staging()
 
@@ -1594,6 +1602,29 @@ class GeneralSettingsPage(QWidget):
         )
         self._layout_row.set_control(self._layout_segmented)
         layout.addWidget(self._layout_row)
+
+        # ── AI 功能入口（默认关闭，长期规划）──
+        # 暂存隔离铁律：开关只写入 SettingsStagingCache（general.enable_ai_entry），
+        # 点击「确定」才经 _submit_settings 下发主窗口并落盘。
+        self._ai_row = SettingsRow(
+            title="AI 功能入口",
+            description="在 PDF / 文本预览器中显示 AI 侧边入口（长期规划功能）。",
+        )
+        self._ai_toggle = StyledToggle(checked=False, size="default")
+        self._ai_toggle.toggled.connect(self._on_ai_entry_toggled)
+        self._ai_row.set_control(self._ai_toggle)
+        layout.addWidget(self._ai_row)
+
+        # ── 网络/映射盘与光驱（默认关闭）──
+        self._drives_row = SettingsRow(
+            title="显示网络盘与光驱",
+            description="「All」磁盘视图中额外列出映射网络盘与光驱（默认关闭）。",
+        )
+        self._drives_toggle = StyledToggle(checked=False, size="default")
+        self._drives_toggle.toggled.connect(self._on_remote_drives_toggled)
+        self._drives_row.set_control(self._drives_toggle)
+        layout.addWidget(self._drives_row)
+
         layout.addStretch()
 
     # ── 交互 ──────────────────────────────────────────────────────────
@@ -1606,6 +1637,22 @@ class GeneralSettingsPage(QWidget):
             self._layout_mode = self.LAYOUT_MODES[index]
             self._staging_cache.set("general.layout_mode", self._layout_mode)
             self._sync_description_text()
+
+    def _on_ai_entry_toggled(self, checked: bool) -> None:
+        """AI 功能入口开关：只写入暂存缓存，点击「确定」才生效。"""
+        if self._general_updating:
+            return
+        self._ai_entry = bool(checked)
+        self._staging_cache.set("general.enable_ai_entry", self._ai_entry)
+
+    def _on_remote_drives_toggled(self, checked: bool) -> None:
+        """网络盘/光驱开关：只写入暂存缓存，点击「确定」才生效。"""
+        if self._general_updating:
+            return
+        self._include_remote_drives = bool(checked)
+        self._staging_cache.set(
+            "general.include_remote_drives", self._include_remote_drives
+        )
 
     def _layout_description_text(self) -> str:
         """返回当前布局的介绍文字 + 换行提示行。"""
@@ -1633,28 +1680,49 @@ class GeneralSettingsPage(QWidget):
         finally:
             self._layout_updating = False
 
+    def _sync_general_toggles(self) -> None:
+        """按当前状态同步两个开关（守卫内赋值，不触发写暂存）。"""
+        self._general_updating = True
+        try:
+            if self._ai_toggle is not None:
+                self._ai_toggle.checked = self._ai_entry
+            if self._drives_toggle is not None:
+                self._drives_toggle.checked = self._include_remote_drives
+        finally:
+            self._general_updating = False
+
     def refresh_from_staging(self) -> None:
         """从暂存缓存刷新控件展示（取消/重置未提交时恢复原始状态）。"""
         saved = self._staging_cache.get("general.layout_mode", "workspace")
         self._layout_mode = saved if saved in self.LAYOUT_MODES else "workspace"
+        saved_ai = self._staging_cache.get("general.enable_ai_entry", False)
+        self._ai_entry = saved_ai if isinstance(saved_ai, bool) else False
+        saved_remote = self._staging_cache.get(
+            "general.include_remote_drives", False
+        )
+        self._include_remote_drives = (
+            saved_remote if isinstance(saved_remote, bool) else False
+        )
         self._sync_layout_segment()
+        self._sync_general_toggles()
         self._sync_description_text()
 
     def refresh_theme(self) -> None:
         """主题切换时刷新页面内文字颜色（由 SettingsLayout._refresh_styles 调用）。"""
-        if self._layout_row is None:
-            return
-        title_label = getattr(self._layout_row, "title_label", None)
-        if title_label is not None:
-            register_widget_qss(title_label,(
-                f"font-size: 13.5px; font-weight: 500; color: {tm.text.name()};"
-            ))
-        desc_label = getattr(self._layout_row, "desc_label", None)
-        if desc_label is not None:
-            register_widget_qss(desc_label,(
-                f"font-size: 12px; color: {tm.alpha_of(tm.mid, 60).name()};"
-                f" line-height: 1.5;"
-            ))
+        for row in (self._layout_row, self._ai_row, self._drives_row):
+            if row is None:
+                continue
+            title_label = getattr(row, "title_label", None)
+            if title_label is not None:
+                register_widget_qss(title_label,(
+                    f"font-size: 13.5px; font-weight: 500; color: {tm.text.name()};"
+                ))
+            desc_label = getattr(row, "desc_label", None)
+            if desc_label is not None:
+                register_widget_qss(desc_label,(
+                    f"font-size: 12px; color: {tm.alpha_of(tm.mid, 60).name()};"
+                    f" line-height: 1.5;"
+                ))
 
     def get_staging_cache(self) -> SettingsStagingCache:
         """返回本页绑定的暂存缓存（调试链路使用）。"""
@@ -2005,6 +2073,17 @@ class SettingsLayout(QWidget):
             layout_mode = "workspace"
         if layout_mode not in ("classic", "workspace"):
             layout_mode = "workspace"
+        # 通用页：AI 入口 / 网络盘与光驱开关（缺失/非法一律回退 False）。
+        if isinstance(staged_general, dict):
+            ai_entry = staged_general.get("enable_ai_entry", False)
+            include_remote = staged_general.get("include_remote_drives", False)
+        else:
+            ai_entry = False
+            include_remote = False
+        if not isinstance(ai_entry, bool):
+            ai_entry = False
+        if not isinstance(include_remote, bool):
+            include_remote = False
 
         # 性能档位：只接受三档合法值，缺失/非法回退 balanced（与 V2 合并口径一致）。
         staged_perf = staged.get("performance", {}) if isinstance(staged, dict) else {}
@@ -2055,6 +2134,11 @@ class SettingsLayout(QWidget):
             # 通用页：主界面布局下发（失败仅警告，不阻断整体提交）
             self._apply_staged_layout_mode_to_main_window(layout_mode)
 
+            # 通用页：AI 入口 / 网络盘与光驱开关下发（失败仅警告，不阻断提交）
+            self._apply_staged_general_toggles_to_main_window(
+                ai_entry, include_remote
+            )
+
             # 性能档位应用（仅提交路径调用；顺序：定时器档位 → 进程电源策略
             # → GPU 路由；工作线程钩子在线程入口注册，只影响新建/下轮会话，
             # 不追溯已在跑的线程）。
@@ -2079,6 +2163,8 @@ class SettingsLayout(QWidget):
                 "transparency": bg_transparency,
             })
             v2.set("general.layout_mode", layout_mode)
+            v2.set("general.enable_ai_entry", ai_entry)
+            v2.set("general.include_remote_drives", include_remote)
             v2.set("performance.profile", perf_profile)
             v2.save()
         except Exception:
@@ -2168,6 +2254,34 @@ class SettingsLayout(QWidget):
             from freeassetfilter.utils.app_logger import warning
 
             warning(f"界面布局切换失败（{layout_mode}）: {exc}")
+
+    def _apply_staged_general_toggles_to_main_window(
+        self, ai_entry: bool, include_remote: bool
+    ) -> None:
+        """将暂存的通用页开关应用到主窗口（仅提交路径调用）。
+
+        两个开关均为即时项：AI 入口控制预览器工具栏按钮与抽屉，
+        网络盘/光驱控制文件选择器「All」视图的盘符过滤。失败仅记录
+        warning，不阻断整体提交。
+
+        Args:
+            ai_entry: 是否启用 AI 入口。
+            include_remote: 是否包含网络/映射盘与光驱。
+        """
+        try:
+            mw = self._appearance_page._find_main_window()
+            if mw is None:
+                return
+            ai_setter = getattr(mw, "set_ai_entry_enabled", None)
+            if ai_setter is not None:
+                ai_setter(ai_entry)
+            drives_setter = getattr(mw, "set_include_remote_drives", None)
+            if drives_setter is not None:
+                drives_setter(include_remote)
+        except Exception as exc:  # noqa: BLE001 - 开关下发失败不阻断提交
+            from freeassetfilter.utils.app_logger import warning
+
+            warning(f"通用功能开关下发失败（AI={ai_entry}, 远程盘={include_remote}）: {exc}")
 
     def _apply_staged_perf_profile(self, profile: str) -> None:
         """将暂存性能档位应用到三钩子（仅提交路径调用）。

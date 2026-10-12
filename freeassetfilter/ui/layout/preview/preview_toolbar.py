@@ -138,20 +138,44 @@ class PreviewToolbarFrame(QFrame):
         widget.installEventFilter(self)
         self.request_reflow()
 
-    def add_leading(self, widget: QWidget) -> None:
-        """往中部按钮组的左段添加一个操作控件（可折叠进「更多」菜单）。"""
-        self._lead_widgets.append(widget)
+    def add_leading(self, widget: QWidget, index: Optional[int] = None) -> None:
+        """往中部按钮组的左段添加一个操作控件（可折叠进「更多」菜单）。
+
+        Args:
+            widget: 待注册控件。
+            index: 可选插入位置（0 起）；``None`` 或越界时追加到末尾。
+                用于控件先摘除、后按原顺序恢复的场景（如 AI 入口开关）。
+        """
+        if index is None or index >= len(self._lead_widgets):
+            self._lead_widgets.append(widget)
+            self._lead_layout.addWidget(widget)
+        else:
+            index = max(0, index)
+            self._lead_widgets.insert(index, widget)
+            self._lead_layout.insertWidget(index, widget)
         widget.setParent(self._lead_box)
-        self._lead_layout.addWidget(widget)
+        widget.show()
         widget.installEventFilter(self)
         self.request_reflow()
 
-    def add_trailing(self, widget: QWidget) -> None:
-        """往中部按钮组的右段添加一个操作控件（可折叠进「更多」菜单）。"""
-        self._trail_widgets.append(widget)
+    def add_trailing(self, widget: QWidget, index: Optional[int] = None) -> None:
+        """往中部按钮组的右段添加一个操作控件（可折叠进「更多」菜单）。
+
+        Args:
+            widget: 待注册控件。
+            index: 可选插入位置（0 起）；``None`` 或越界时追加到
+                末尾（「更多」按钮之前）。用于控件先摘除、后按原顺序
+                恢复的场景（如 AI 入口开关）。
+        """
+        if index is None or index >= len(self._trail_widgets):
+            self._trail_widgets.append(widget)
+            # 「更多」按钮固定在右段末尾，新控件插到它前面
+            self._trail_layout.insertWidget(self._trail_layout.count() - 1, widget)
+        else:
+            index = max(0, index)
+            self._trail_widgets.insert(index, widget)
+            self._trail_layout.insertWidget(index, widget)
         widget.setParent(self._trail_box)
-        # 「更多」按钮固定在右段末尾，新控件插到它前面
-        self._trail_layout.insertWidget(self._trail_layout.count() - 1, widget)
         widget.installEventFilter(self)
         self.request_reflow()
 

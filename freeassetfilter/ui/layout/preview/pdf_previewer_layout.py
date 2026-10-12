@@ -507,13 +507,17 @@ class PdfPreviewerLayout(QWidget):
         self._thumb_gen: int = 0
         self._thumb_tasks: list[_ThumbnailDrawerTask] = []
 
+        # AI 功能入口（默认关闭）：开关由宿主（统一预览器 / 主窗口）在创建
+        # 后经 set_ai_entry_enabled 下发；关闭时按钮不进顶栏、抽屉不创建。
+        # 抽屉按需惰性创建，内容留空（AI 实际能力为长期规划）。
+        self._ai_entry_enabled: bool = False
+        self._ai_drawer: Optional[StyledDrawer] = None
+
         self._init_ui()
         self._init_index_drawer()
         # StyledDrawer 创建后默认跟随 parent 可见，但其 backdrop 会覆盖内容区拦截鼠标事件。
         # 必须显式隐藏，等用户点击索引按钮时才通过 open_drawer() 显示。
         self._index_drawer.hide()
-        self._init_ai_drawer()
-        self._ai_drawer.hide()
         self._connect_theme()
         self._connect_focus_tracking()
 
@@ -675,12 +679,15 @@ class PdfPreviewerLayout(QWidget):
         self._top_bar.add_left(self._index_btn)
 
         # 中部功能组：AI 置于页码左侧、缩放置于页码右侧（左右对称，页码居中）
+        # AI 入口默认关闭：按钮对象先创建，仅开关开启时才挂进顶栏
+        #（set_ai_entry_enabled 负责运行时挂载/摘除）。
         ai_icon = str(icons_dir() / "ai.svg")
         self._ai_btn = StyledButton("", variant="ghost", size="sm", icon=ai_icon)
         self._ai_btn.setFixedSize(32, 32)
         self._ai_btn.setToolTip("AI 功能")
         self._ai_btn.clicked.connect(self._on_ai_clicked)
-        self._top_bar.add_leading(self._ai_btn)
+        if self._ai_entry_enabled:
+            self._top_bar.add_leading(self._ai_btn)
 
         # 居中：页码容器（信息标签，永不折叠）
         self._top_bar.set_info_widget(self._page_container)
@@ -692,8 +699,11 @@ class PdfPreviewerLayout(QWidget):
         self._zoom_btn.clicked.connect(self._on_zoom_clicked)
         self._top_bar.add_trailing(self._zoom_btn)
 
-        # 折叠优先级：次要功能先收进「更多」菜单
-        self._top_bar.set_overflow_priority([self._ai_btn, self._zoom_btn])
+        # 折叠优先级：次要功能先收进「更多」菜单（AI 入口关闭时不参与折叠）
+        if self._ai_entry_enabled:
+            self._top_bar.set_overflow_priority([self._ai_btn, self._zoom_btn])
+        else:
+            self._top_bar.set_overflow_priority([self._zoom_btn])
 
         # 最右：全屏按钮
         self._maxsize_icon_path = str(icons_dir() / "maxsize.svg")
@@ -744,7 +754,10 @@ class PdfPreviewerLayout(QWidget):
         panel_layout.addWidget(self._index_scroll)
 
     def _init_ai_drawer(self) -> None:
-        """初始化 AI 右侧抽屉面板（bare 模式，内容留空）。"""
+        """初始化 AI 右侧抽屉面板（bare 模式；仅开关开启时惰性创建）。
+
+        抽屉内容留空：AI 实际能力为长期规划（不显示任何占位/引导文案）。
+        """
         self._ai_drawer = StyledDrawer(
             orientation="right",
             size="sm",
@@ -764,18 +777,34 @@ class PdfPreviewerLayout(QWidget):
             max_pw = max(available_w - margin, 60)
             return min(pw, max_pw), ph
         self._ai_drawer._get_panel_size = _constrained_panel_size
-        # 占位文本提示
-        self._ai_placeholder = QLabel("敬请期待")
-        self._ai_placeholder.setAlignment(Qt.AlignCenter)
-        self._ai_placeholder.setWordWrap(True)
-        register_widget_qss(self._ai_placeholder,(
-            f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
-            " padding: 24px;"
-        ))
-        panel_layout = self._ai_drawer._panel.layout()
-        panel_layout.addStretch()
-        panel_layout.addWidget(self._ai_placeholder, alignment=Qt.AlignCenter)
-        panel_layout.addStretch()
+        # 创建后默认可能随 parent 可见：显式隐藏，等点击 AI 按钮再展开
+        self._ai_drawer.hide()
+
+    def set_ai_entry_enabled(self, enabled: bool) -> None:
+        """运行时切换 AI 功能入口（幂等；宿主 / 设置提交路径调用）。
+
+        开启：惰性创建 AI 抽屉并把按钮挂回顶栏与折叠优先级；关闭：收起
+        抽屉、从顶栏摘除按钮（按钮对象保留，可再次开启）。AI 实际能力为
+        长期规划，抽屉内容当前为空。
+
+        Args:
+            enabled: True 显示入口；False 完全隐藏。
+        """
+        enabled = bool(enabled)
+        if enabled == self._ai_entry_enabled:
+            return
+        self._ai_entry_enabled = enabled
+        if enabled:
+            if self._ai_drawer is None:
+                self._init_ai_drawer()
+            # 按原位置（页码左侧、缩放入口之前）重新挂载
+            self._top_bar.add_leading(self._ai_btn, index=0)
+            self._top_bar.set_overflow_priority([self._ai_btn, self._zoom_btn])
+        else:
+            if self._ai_drawer is not None and self._ai_drawer._is_open:
+                self._ai_drawer.close_drawer()
+            self._top_bar.remove_widget(self._ai_btn)
+            self._top_bar.set_overflow_priority([self._zoom_btn])
 
     def _toggle_index_drawer(self) -> None:
         """切换索引侧边面板的展开/收起。"""
@@ -785,7 +814,9 @@ class PdfPreviewerLayout(QWidget):
             self._index_drawer.open_drawer()
 
     def _toggle_ai_drawer(self) -> None:
-        """切换 AI 侧边面板的展开/收起。"""
+        """切换 AI 侧边面板的展开/收起（抽屉未创建时为空操作）。"""
+        if self._ai_drawer is None:
+            return
         if self._ai_drawer._is_open:
             self._ai_drawer.close_drawer()
         else:
@@ -1115,7 +1146,7 @@ class PdfPreviewerLayout(QWidget):
             pw, _ = self._index_drawer._get_panel_size()
             self._index_drawer._panel.resize(pw, ch)
 
-        if hasattr(self, '_ai_drawer') and self._ai_drawer._is_open:
+        if self._ai_drawer is not None and self._ai_drawer._is_open:
             self._ai_drawer._update_container_geom()
             cw, ch = self._ai_drawer._cw, self._ai_drawer._ch
             self._ai_drawer.setGeometry(0, 0, cw, ch)

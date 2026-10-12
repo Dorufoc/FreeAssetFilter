@@ -2138,8 +2138,13 @@ class TestFontPreviewTextDrawer:
         layout.deleteLater()
 
     def test_cleanup_closes_drawers(self, qapp: QApplication) -> None:
-        """cleanup() 收起已展开的编辑与 AI 抽屉，不抛异常。"""
+        """cleanup() 收起已展开的编辑与 AI 抽屉，不抛异常。
+
+        AI 入口默认关闭：先经 set_ai_entry_enabled(True) 显式启用（与设置
+        开关生效后的路径一致），再验证 cleanup 收起。
+        """
         layout = self._shown_layout(qapp)
+        layout.set_ai_entry_enabled(True)
         layout._on_edit_preview_text()
         layout._toggle_ai_drawer()
         self._settle_drawers(qapp, layout)
@@ -2232,12 +2237,14 @@ class TestFontWeightControlsLayout:
     def test_uniform_gap_after_weight_button(
         self, qapp: QApplication,
     ) -> None:
-        """字重数值按钮与 AI/缩放按钮间距为统一 6px。"""
+        """字重数值按钮与 AI/缩放按钮间距为统一 6px（AI 入口显式开启）。"""
         from freeassetfilter.ui.layout.preview.preview_toolbar import (
             PreviewToolbarFrame,
         )
 
         layout = self._shown_layout(qapp)
+        layout.set_ai_entry_enabled(True)
+        _pump_events(qapp)
         gap = PreviewToolbarFrame._GAP
         weight_right = layout._weight_value_btn.x() + layout._weight_value_btn.width()
         assert layout._ai_btn.x() - weight_right == gap
@@ -4069,6 +4076,53 @@ class TestLoadAllStaysPython:
         assert stat_calls == ["B:\\", "C:\\"], "网络盘不应触发 stat"
         assert bridge_calls == [], "All 收集不得触碰 faf_core 桥（保持 Python）"
 
+    def test_collect_all_includes_remote_and_cdrom_when_enabled(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """开关开启：网络/映射盘（4）与光驱（5）进入 All 视图，物理盘不受影响。
+
+        位掩码 0b1111 → A:/B:/C:/D:；类型分别为 网络盘(4)/固定盘(3)/
+        光驱(5)/RAM 盘(6)。默认（False）仅 B:/D:；开启（True）为 A:-D:。
+        """
+        import ctypes
+
+        import freeassetfilter.ui.layout.file_selector_layout as fsl_mod
+
+        drives_bitmask: int = 0b1111
+        drive_types = {"A:\\": 4, "B:\\": 3, "C:\\": 5, "D:\\": 6}
+        fake_stat = MagicMock(
+            st_mtime=1_700_000_000.0,
+            st_ctime=1_700_000_000.0,
+        )
+        orig_stat = os.stat
+
+        def _fake_stat(path: object, **kwargs: object) -> object:
+            if isinstance(path, str) and path in drive_types:
+                return fake_stat
+            return orig_stat(path, **kwargs)
+
+        def _fake_drive_type(path: object) -> int:
+            value = getattr(path, "value", path)
+            return drive_types.get(str(value), 3)
+
+        monkeypatch.setattr(
+            ctypes.windll.kernel32, "GetLogicalDrives", lambda: drives_bitmask
+        )
+        monkeypatch.setattr(
+            ctypes.windll.kernel32, "GetDriveTypeW", _fake_drive_type
+        )
+        monkeypatch.setattr(os, "stat", _fake_stat)
+
+        default_entries = FileSelectorLayout._collect_all_drives_python()
+        assert [e["name"] for e in default_entries] == ["B:", "D:"], (
+            "默认仅物理磁盘（固定盘/RAM 盘）"
+        )
+
+        enabled_entries = FileSelectorLayout._collect_all_drives_python(True)
+        assert [e["name"] for e in enabled_entries] == ["A:", "B:", "C:", "D:"], (
+            "开关开启后网络盘与光驱一并进入 All 视图"
+        )
+
 
 # =============================================================================
 # ui.layout.settings_layout — 通用页（界面布局切换）
@@ -4201,6 +4255,194 @@ class TestGeneralSettingsPage:
                 tm.set_theme_mode(prev_mode)
             except Exception:
                 pass
+            safe_teardown(layout)
+
+    def test_toggles_default_false_from_cache(self, qapp: QApplication) -> None:
+        """构造：AI 入口与网络盘开关默认均从缓存读到 False。"""
+        page = GeneralSettingsPage(staging_cache=self._make_cache("workspace"))
+        assert page._ai_entry is False
+        assert page._include_remote_drives is False
+        assert page._ai_toggle.checked is False
+        assert page._drives_toggle.checked is False
+        safe_teardown(page)
+
+    def test_toggles_write_staging_only(self, qapp: QApplication) -> None:
+        """切换两个开关只写暂存缓存（不落盘、不触碰主窗口）。"""
+        cache = self._make_cache("workspace")
+        page = GeneralSettingsPage(staging_cache=cache)
+
+        page._ai_toggle.checked = True
+        page._drives_toggle.checked = True
+        qapp.processEvents()
+
+        assert page._ai_entry is True
+        assert page._include_remote_drives is True
+        assert cache.get("general.enable_ai_entry") is True
+        assert cache.get("general.include_remote_drives") is True
+        safe_teardown(page)
+
+    def test_refresh_from_staging_restores_toggles(self, qapp: QApplication) -> None:
+        """refresh_from_staging：外部（取消/重置）修改缓存后开关展示恢复。"""
+        cache = self._make_cache("workspace")
+        page = GeneralSettingsPage(staging_cache=cache)
+        page._ai_toggle.checked = True
+        page._drives_toggle.checked = True
+        qapp.processEvents()
+
+        cache.set("general.enable_ai_entry", False)
+        cache.set("general.include_remote_drives", False)
+        page.refresh_from_staging()
+
+        assert page._ai_entry is False
+        assert page._include_remote_drives is False
+        assert page._ai_toggle.checked is False
+        assert page._drives_toggle.checked is False
+        safe_teardown(page)
+
+    def test_submit_routes_general_toggles_to_main_window(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """提交：两个开关下发主窗口（暂存期不下发）并落盘到 V2。"""
+        import freeassetfilter.ui.layout.settings_layout as sl_mod
+        from freeassetfilter.core.managers.settings_manager_v2 import (
+            SettingsManagerV2,
+        )
+
+        tmp_file = str(tmp_path / "settings_v2.json")
+        monkeypatch.setattr(
+            sl_mod, "SettingsManagerV2", lambda *a, **k: SettingsManagerV2(tmp_file)
+        )
+        monkeypatch.setattr(
+            sl_mod.SettingsLayout,
+            "_apply_staged_perf_profile",
+            lambda self, profile: None,
+        )
+
+        class _FakeMainWindow:
+            """记录通用开关下发的假主窗口。"""
+
+            def __init__(self) -> None:
+                self.ai_calls: list[bool] = []
+                self.drives_calls: list[bool] = []
+
+            def set_ai_entry_enabled(self, enabled: bool) -> None:
+                self.ai_calls.append(bool(enabled))
+
+            def set_include_remote_drives(self, enabled: bool) -> None:
+                self.drives_calls.append(bool(enabled))
+
+        fake_mw = _FakeMainWindow()
+        monkeypatch.setattr(
+            sl_mod.AppearanceSettingsPage, "_find_main_window", lambda self: fake_mw
+        )
+
+        from theme import tm
+
+        prev_mode = tm.get_theme_mode()
+        layout = SettingsLayout()
+        try:
+            layout._general_page._ai_toggle.checked = True
+            layout._general_page._drives_toggle.checked = True
+            qapp.processEvents()
+            assert fake_mw.ai_calls == []
+            assert fake_mw.drives_calls == []
+
+            assert layout._submit_settings() is True
+            assert fake_mw.ai_calls == [True]
+            assert fake_mw.drives_calls == [True]
+
+            saved = SettingsManagerV2(tmp_file)
+            saved.load()
+            assert saved.get("general.enable_ai_entry") is True
+            assert saved.get("general.include_remote_drives") is True
+        finally:
+            try:
+                tm.set_theme_mode(prev_mode)
+            except Exception:
+                pass
+            safe_teardown(layout)
+
+
+# =============================================================================
+# AI 功能入口开关（PDF / 文本 / 字体预览器）
+# =============================================================================
+class TestAiEntryToggles:
+    """AI 入口开关：默认隐藏 / 开启挂载 / 关闭摘除 / 抽屉惰性创建。"""
+
+    @staticmethod
+    def _registered(bar: Any, widget: Any) -> bool:
+        """控件是否已注册到顶栏四个功能区之一。"""
+        return any(
+            widget in collection
+            for collection in (
+                bar._lead_widgets,
+                bar._trail_widgets,
+                bar._left_widgets,
+                bar._right_widgets,
+            )
+        )
+
+    @pytest.mark.parametrize("kind", ["pdf", "text", "font"])
+    def test_ai_entry_lifecycle(
+        self, qapp: QApplication, kind: str,
+    ) -> None:
+        """默认不在顶栏且抽屉未创建；开启后挂载并可展开；关闭后摘除收起。"""
+        from freeassetfilter.ui.layout.preview.font_previewer_layout import (
+            FontPreviewerLayout,
+        )
+        from freeassetfilter.ui.layout.preview.pdf_previewer_layout import (
+            PdfPreviewerLayout,
+        )
+        from freeassetfilter.ui.layout.preview.text_previewer_layout import (
+            TextPreviewerLayout,
+        )
+
+        mapping = {
+            "pdf": PdfPreviewerLayout,
+            "text": TextPreviewerLayout,
+            "font": FontPreviewerLayout,
+        }
+        layout = mapping[kind]()
+        layout.show()
+        layout.resize(1000, 700)
+        _pump_events(qapp)
+        try:
+            bar = layout._top_bar
+            # 默认关闭：不在顶栏、抽屉未创建
+            assert not self._registered(bar, layout._ai_btn)
+            assert layout._ai_drawer is None
+
+            # 开启：按钮挂载、抽屉惰性创建并可展开
+            layout.set_ai_entry_enabled(True)
+            _pump_events(qapp)
+            assert self._registered(bar, layout._ai_btn)
+            assert layout._ai_drawer is not None
+            layout._toggle_ai_drawer()
+            qapp.processEvents()
+            assert layout._ai_drawer._is_open
+
+            # 等待展开动画结束：动画期间的 close_drawer 为 no-op（组件语义）
+            deadline = time.time() + 2.0
+            while layout._ai_drawer._animating and time.time() < deadline:
+                qapp.processEvents()
+                time.sleep(0.01)
+
+            # 重复开启幂等：按钮只注册一次
+            layout.set_ai_entry_enabled(True)
+            for collection in (bar._lead_widgets, bar._trail_widgets):
+                if layout._ai_btn in collection:
+                    assert collection.count(layout._ai_btn) == 1
+
+            # 关闭：收起抽屉并摘除按钮；再次开启可恢复
+            layout.set_ai_entry_enabled(False)
+            _pump_events(qapp)
+            assert not layout._ai_drawer._is_open
+            assert not self._registered(bar, layout._ai_btn)
+
+            layout.set_ai_entry_enabled(True)
+            _pump_events(qapp)
+            assert self._registered(bar, layout._ai_btn)
+        finally:
             safe_teardown(layout)
 
 

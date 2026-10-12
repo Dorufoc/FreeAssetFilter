@@ -153,9 +153,11 @@ class TestSortModeSwitchNoRescan:
         calls: List[str] = []
         original_collect = layout._collect_directory_entries  # noqa: SLF001
 
-        def counting_collect(path: str, cancel_check: Any = None) -> Any:
+        def counting_collect(
+            path: str, cancel_check: Any = None, include_remote: Any = None
+        ) -> Any:
             calls.append(path)
-            return original_collect(path, cancel_check)
+            return original_collect(path, cancel_check, include_remote)
 
         monkeypatch.setattr(layout, "_collect_directory_entries", counting_collect)
 
@@ -204,9 +206,11 @@ class TestFilterApplyNoRescan:
         calls: List[str] = []
         original_collect = layout._collect_directory_entries  # noqa: SLF001
 
-        def counting_collect(path: str, cancel_check: Any = None) -> Any:
+        def counting_collect(
+            path: str, cancel_check: Any = None, include_remote: Any = None
+        ) -> Any:
             calls.append(path)
-            return original_collect(path, cancel_check)
+            return original_collect(path, cancel_check, include_remote)
 
         monkeypatch.setattr(layout, "_collect_directory_entries", counting_collect)
 

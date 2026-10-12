@@ -489,13 +489,13 @@ We welcome all forms of contribution! Whether it's bug fixes, new features, docu
 - [X] Dark/Light theme switching
 - [X] File staging pool
 - [X] Thumbnail cache system
-
-### In Progress
-
-- [ ] Intelligent file export categorization
-- [ ] Timeline and intelligent filtering tools
 - [X] Stable ISO file preview
-- [ ] Plugin system architecture
+
+### Planned (Not Started)
+
+- [ ] Intelligent file export categorization (deferred)
+- [ ] Timeline and intelligent filtering tools (deferred)
+- [ ] Plugin system architecture (deferred)
 
 ### Planned Features
 

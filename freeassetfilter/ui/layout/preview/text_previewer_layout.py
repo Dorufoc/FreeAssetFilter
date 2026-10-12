@@ -1339,6 +1339,11 @@ class TextPreviewerLayout(QWidget):
         self._fast_encoding: str = ""
         # 字号滑条防抖：仅 Markdown 模式启用，合并连续滑动为最终一次渲染
         self._font_debounce_timer: Optional[QTimer] = None
+        # AI 功能入口（默认关闭）：开关由宿主（统一预览器 / 主窗口）在创建
+        # 后经 set_ai_entry_enabled 下发；关闭时按钮不进顶栏、抽屉不创建。
+        # 抽屉按需惰性创建，内容留空（AI 实际能力为长期规划）。
+        self._ai_entry_enabled: bool = False
+        self._ai_drawer: Optional[StyledDrawer] = None
 
         self._init_ui()
         self._connect_theme()
@@ -1422,11 +1427,9 @@ class TextPreviewerLayout(QWidget):
 
         layout.addWidget(self._content_area, stretch=1)
 
-        # 左右侧边栏抽屉（内容区创建后才能初始化）
+        # 左右侧边栏抽屉（内容区创建后才能初始化）；AI 抽屉按需惰性创建
         self._init_search_drawer()
         self._search_drawer.hide()
-        self._init_ai_drawer()
-        self._ai_drawer.hide()
 
     def _build_top_bar(self) -> None:
         """构建顶栏（参考 Windows 照片查看器功能栏布局）。
@@ -1453,13 +1456,15 @@ class TextPreviewerLayout(QWidget):
         self._encoding_combo.selection_made.connect(self._on_encoding_selected)
         self._top_bar.add_leading(self._encoding_combo)
 
-        # 中部右段：AI 图标按钮（打开右侧 AI 抽屉）
+        # 中部右段：AI 图标按钮（打开右侧 AI 抽屉；默认关闭时不进顶栏，
+        # 由 set_ai_entry_enabled 运行时挂载/摘除）
         ai_icon = str(icons_dir() / "ai.svg")
         self._ai_btn = StyledButton("", variant="ghost", size="sm", icon=ai_icon)
         self._ai_btn.setFixedSize(32, 32)
         self._ai_btn.setToolTip("AI 功能")
         self._ai_btn.clicked.connect(self._toggle_ai_drawer)
-        self._top_bar.add_trailing(self._ai_btn)
+        if self._ai_entry_enabled:
+            self._top_bar.add_trailing(self._ai_btn)
 
         # 中部右段：缩放图标按钮（打开字号弹窗）
         zoom_icon = str(icons_dir() / "zoom.svg")
@@ -1478,13 +1483,15 @@ class TextPreviewerLayout(QWidget):
         self._render_toggle_btn.installEventFilter(self)
         self._top_bar.add_trailing(self._render_toggle_btn)
 
-        # 折叠优先级：次要功能先收进「更多」菜单
-        self._top_bar.set_overflow_priority([
+        # 折叠优先级：次要功能先收进「更多」菜单（AI 入口关闭时不参与折叠）
+        priority = [
             self._render_toggle_btn,
-            self._ai_btn,
             self._zoom_btn,
             self._encoding_combo,
-        ])
+        ]
+        if self._ai_entry_enabled:
+            priority.insert(1, self._ai_btn)
+        self._top_bar.set_overflow_priority(priority)
 
         # 最右：最大化 / 还原窗口按钮
         self._maxsize_icon_path = str(icons_dir() / "maxsize.svg")
@@ -1799,7 +1806,10 @@ class TextPreviewerLayout(QWidget):
         self._search_state: Optional[_SearchState] = None
 
     def _init_ai_drawer(self) -> None:
-        """初始化右侧 AI 抽屉面板（bare 模式，内容留空）。"""
+        """初始化右侧 AI 抽屉面板（bare 模式；仅开关开启时惰性创建）。
+
+        抽屉内容留空：AI 实际能力为长期规划（不显示任何占位/引导文案）。
+        """
         self._ai_drawer = StyledDrawer(
             orientation="right",
             size="sm",
@@ -1818,19 +1828,43 @@ class TextPreviewerLayout(QWidget):
             return min(pw, max_pw), ph
 
         self._ai_drawer._get_panel_size = _constrained_panel_size
+        # 创建后默认可能随 parent 可见：显式隐藏，等点击 AI 按钮再展开
+        self._ai_drawer.hide()
 
-        # 占位文本提示
-        self._ai_placeholder = QLabel("敬请期待")
-        self._ai_placeholder.setAlignment(Qt.AlignCenter)
-        self._ai_placeholder.setWordWrap(True)
-        register_widget_qss(self._ai_placeholder,(
-            f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
-            " padding: 24px;"
-        ))
-        panel_layout = self._ai_drawer._panel.layout()
-        panel_layout.addStretch()
-        panel_layout.addWidget(self._ai_placeholder, alignment=Qt.AlignCenter)
-        panel_layout.addStretch()
+    def set_ai_entry_enabled(self, enabled: bool) -> None:
+        """运行时切换 AI 功能入口（幂等；宿主 / 设置提交路径调用）。
+
+        开启：惰性创建 AI 抽屉并把按钮挂回顶栏与折叠优先级；关闭：收起
+        抽屉、从顶栏摘除按钮（按钮对象保留，可再次开启）。AI 实际能力为
+        长期规划，抽屉内容当前为空。
+
+        Args:
+            enabled: True 显示入口；False 完全隐藏。
+        """
+        enabled = bool(enabled)
+        if enabled == self._ai_entry_enabled:
+            return
+        self._ai_entry_enabled = enabled
+        if enabled:
+            if self._ai_drawer is None:
+                self._init_ai_drawer()
+            # 按原位置（编码下拉之后、缩放入口之前）重新挂载
+            self._top_bar.add_trailing(self._ai_btn, index=0)
+            self._top_bar.set_overflow_priority([
+                self._render_toggle_btn,
+                self._ai_btn,
+                self._zoom_btn,
+                self._encoding_combo,
+            ])
+        else:
+            if self._ai_drawer is not None and self._ai_drawer._is_open:
+                self._ai_drawer.close_drawer()
+            self._top_bar.remove_widget(self._ai_btn)
+            self._top_bar.set_overflow_priority([
+                self._render_toggle_btn,
+                self._zoom_btn,
+                self._encoding_combo,
+            ])
 
     def _toggle_search_drawer(self) -> None:
         """切换搜索侧边面板的展开/收起。"""
@@ -1840,7 +1874,9 @@ class TextPreviewerLayout(QWidget):
             self._search_drawer.open_drawer()
 
     def _toggle_ai_drawer(self) -> None:
-        """切换 AI 侧边面板的展开/收起。"""
+        """切换 AI 侧边面板的展开/收起（抽屉未创建时为空操作）。"""
+        if self._ai_drawer is None:
+            return
         if self._ai_drawer._is_open:
             self._ai_drawer.close_drawer()
         else:
@@ -2150,18 +2186,14 @@ class TextPreviewerLayout(QWidget):
         if self._current_mode == "markdown" and MARKDOWN_AVAILABLE and self._current_text:
             self._render_markdown()
 
-        # 刷新抽屉面板背景与 AI 占位文本颜色
+        # 刷新抽屉面板背景
         if hasattr(self, "_search_drawer") and self._search_drawer is not None:
             register_widget_qss(self._search_drawer._panel,(
                 f"#DrawerPanel {{ background-color: {tm.surface.name()}; border: none; }}"
             ))
-        if hasattr(self, "_ai_drawer") and self._ai_drawer is not None:
+        if self._ai_drawer is not None:
             register_widget_qss(self._ai_drawer._panel,(
                 f"#DrawerPanel {{ background-color: {tm.surface.name()}; border: none; }}"
-            ))
-            register_widget_qss(self._ai_placeholder,(
-                f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
-                " padding: 24px;"
             ))
 
     def set_section_styles(self, fill_color: str, border_color: str) -> None:

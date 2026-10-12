@@ -756,6 +756,12 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         background_saved = self._load_background_settings()
         # 主界面布局模式（general.layout_mode；非法值回退 workspace）
         self._layout_mode = self._load_layout_settings()
+        # 通用功能开关（general.enable_ai_entry / general.include_remote_drives；
+        # 非法值一律回退 False，提交时经 set_ai_entry_enabled /
+        # set_include_remote_drives 即时生效）
+        self._ai_entry_enabled, self._include_remote_drives = (
+            self._load_general_toggles()
+        )
         self._background_mode = background_saved.get("mode", "mica")
         self._background_image_name = background_saved.get("image", "")
         self._background_ambient = bool(background_saved.get("ambient", True))
@@ -922,6 +928,36 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         except Exception:
             mode = "workspace"
         return mode if mode in ("classic", "workspace") else "workspace"
+
+    @staticmethod
+    def _load_general_toggles() -> tuple[bool, bool]:
+        """启动时读取通用功能开关。
+
+        读取 ``general.enable_ai_entry``（AI 入口）与
+        ``general.include_remote_drives``（网络盘/光驱）；缺失、类型非法
+        一律回退 False（与 DEFAULT_SETTINGS_V2 默认一致）。
+
+        Returns:
+            tuple[bool, bool]: (AI 入口开关, 网络盘与光驱开关)。
+        """
+        ai_entry = False
+        include_remote = False
+        try:
+            app = QApplication.instance()
+            v2 = getattr(app, "settings_manager", None)
+            if v2 is None:
+                from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+                v2 = SettingsManagerV2()
+                v2.load()
+            saved_ai = v2.get("general.enable_ai_entry", False)
+            saved_remote = v2.get("general.include_remote_drives", False)
+            ai_entry = saved_ai if isinstance(saved_ai, bool) else False
+            include_remote = (
+                saved_remote if isinstance(saved_remote, bool) else False
+            )
+        except Exception:
+            pass
+        return ai_entry, include_remote
 
     def _setup_window(self) -> None:
         """设置窗口基本属性"""
@@ -1298,11 +1334,23 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                 from layout.file_selector_layout import FileSelectorLayout
 
                 self._file_selector = FileSelectorLayout(zone)
+                # 网络盘/光驱开关随启动读取结果下发（「All」视图盘符过滤）
+                try:
+                    self._file_selector.set_include_remote_drives(
+                        self._include_remote_drives
+                    )
+                except Exception as exc:  # noqa: BLE001 - 开关下发失败不阻塞构建
+                    warning(f"网络盘/光驱开关下发失败: {exc}")
                 self._replace_zone_placeholder(side, self._file_selector)
             elif side == "preview":
                 from layout.unified_previewer_layout import UnifiedPreviewerLayout
 
                 self._previewer = UnifiedPreviewerLayout(zone)
+                # AI 入口开关随启动读取结果下发（关闭时预览器完全不创建 AI 控件）
+                try:
+                    self._previewer.set_ai_entry_enabled(self._ai_entry_enabled)
+                except Exception as exc:  # noqa: BLE001 - 开关下发失败不阻塞构建
+                    warning(f"AI 入口开关下发失败: {exc}")
                 # 统一操作按钮承载方式：New 布局走预览器顶栏（经典走底部栏）
                 self._previewer.set_actions_mode(self._layout_mode == "workspace")
                 # 经典布局：底部操作栏挂到右列槽位（信息面板下方，整列最底部）
@@ -2415,6 +2463,41 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             str: "classic"（经典三栏）或 "workspace"（预览优先）。
         """
         return self._layout_mode
+
+    def set_ai_entry_enabled(self, enabled: bool) -> None:
+        """运行时切换 AI 功能入口（设置提交路径调用；幂等）。
+
+        开启后 PDF / 文本预览器显示 AI 按钮与侧边抽屉；关闭时移除按钮并
+        关闭抽屉（已构建的预览器由宿主 ``set_ai_entry_enabled`` 逐级下发，
+        尚未构建的预览器在创建时读取本开关）。AI 实际能力为长期规划。
+
+        Args:
+            enabled: True 显示入口；False 完全隐藏。
+        """
+        self._ai_entry_enabled = bool(enabled)
+        if self._previewer is not None:
+            try:
+                self._previewer.set_ai_entry_enabled(self._ai_entry_enabled)
+            except Exception as exc:  # noqa: BLE001 - 开关应用失败不抛给调用方
+                warning(f"AI 入口开关应用失败: {exc}")
+
+    def set_include_remote_drives(self, enabled: bool) -> None:
+        """运行时切换网络/映射盘与光驱加载（设置提交路径调用；幂等）。
+
+        开启后文件选择器「All」视图额外列出 DRIVE_REMOTE 与 DRIVE_CDROM；
+        若当前正停留在「All」视图，立即重新加载盘符列表。
+
+        Args:
+            enabled: True 包含网络/映射盘与光驱；False 仅物理磁盘。
+        """
+        self._include_remote_drives = bool(enabled)
+        if self._file_selector is not None:
+            try:
+                self._file_selector.set_include_remote_drives(
+                    self._include_remote_drives
+                )
+            except Exception as exc:  # noqa: BLE001 - 开关应用失败不抛给调用方
+                warning(f"网络盘/光驱开关应用失败: {exc}")
 
     def set_layout_mode(self, mode: str) -> bool:
         """切换主界面布局模式（运行时重组，叶子组件重新挂载、不销毁重建）。
