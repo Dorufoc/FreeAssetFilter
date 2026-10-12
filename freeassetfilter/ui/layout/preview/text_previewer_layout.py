@@ -57,8 +57,6 @@ from PySide6.QtCore import (
     QObject,
     QRunnable,
     QThreadPool,
-    QPropertyAnimation,
-    QEasingCurve,
     QUrl,
     QAbstractListModel,
     QModelIndex,
@@ -84,6 +82,7 @@ from components.styled_lineedit import StyledLineEdit
 from components.styled_slider import StyledSlider
 from components.styled_combobox import StyledComboBox
 from components.styled_drawer import StyledDrawer
+from components.styled_floating_panel import FloatingPanel
 from layout.preview.fullscreen_host import PreviewFullscreenHost
 from components.styled_tooltip import (
     StyledTooltip,
@@ -646,23 +645,20 @@ class _MarkdownView(_StyledPreviewScrollArea):
 # 缩放弹出面板（从 pdf/image previewer_layout 复制并改造为控制源码字号）
 # ──────────────────────────────────────────────────────────────────────────────
 
-class _ZoomPopup(QWidget):
+class _ZoomPopup(FloatingPanel):
     """字号缩放弹出面板：含横向滑动条 + 百分比按钮。"""
 
     FONT_SIZE_MIN = 8
     FONT_SIZE_MAX = 32
+    POPUP_WIDTH = 220
+    POPUP_HEIGHT = 48
 
     def __init__(self, parent: Optional["TextPreviewerLayout"] = None):
         # 以调用方（预览器布局）为真实 Qt 父级：弹窗成为主窗口的 owned tool
         # 窗口，层级恒在主窗口之上；预览器销毁时弹窗随子对象一起销毁，
         # 避免残留悬浮窗口与多实例问题。
-        super().__init__(parent, Qt.Tool | Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        super().__init__(parent, radius=8, padding=8)
         self._parent_layout = parent
-        self._radius = 8
-        self._padding = 8
-        self._closing = False
 
         self._base_font_size = (
             int(parent._base_font_size)
@@ -670,12 +666,6 @@ class _ZoomPopup(QWidget):
             else 10
         )
         self._zoom_value = self._base_font_size
-
-        # 动画
-        self._fade = QPropertyAnimation(self, b"windowOpacity")
-        self._fade.setEasingCurve(QEasingCurve.OutCubic)
-        self._slide = QPropertyAnimation(self, b"geometry")
-        self._slide.setEasingCurve(QEasingCurve.OutCubic)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(self._padding, self._padding, self._padding, self._padding)
@@ -708,25 +698,6 @@ class _ZoomPopup(QWidget):
         """将滑动条 0.0~1.0 映射为字号。"""
         return self.FONT_SIZE_MIN + int(value * (self.FONT_SIZE_MAX - self.FONT_SIZE_MIN))
 
-    def paintEvent(self, event) -> None:
-        """绘制半透明圆角背景 + 边框。"""
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        w, h = self.width(), self.height()
-        r = self._radius
-
-        p.setPen(Qt.NoPen)
-        p.setBrush(tm.alpha_of(tm.surface, 85))
-        p.drawRoundedRect(QRectF(0, 0, w, h), r, r)
-
-        p.setPen(QPen(tm.alpha_of(tm.mid, 30), 1))
-        p.setBrush(Qt.NoBrush)
-        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), r, r)
-        p.end()
-
-    POPUP_WIDTH = 220
-    POPUP_HEIGHT = 48
-
     def _target_rect(self, anchor: QPoint) -> QRect:
         """计算弹窗最终矩形：以锚点（按钮下缘中心）为水平中心向下展开，
         贴近屏幕底边时上翻。"""
@@ -748,62 +719,11 @@ class _ZoomPopup(QWidget):
 
     def show_animated(self, anchor: QPoint) -> None:
         """从按钮下缘中心向下展开，弹窗与按钮水平居中对齐。"""
-        target = self._target_rect(anchor)
-        x, y, pw = target.x(), target.y(), target.width()
-        ph = target.height()
-
-        start_h = 10
-        self.setGeometry(x, y, pw, start_h)
-        self.setWindowOpacity(0.0)
-        super().show()
-        self.raise_()
-        self.activateWindow()
-
-        self._fade.stop()
-        self._fade.setDuration(180)
-        self._fade.setStartValue(0.0)
-        self._fade.setEndValue(1.0)
-
-        self._slide.stop()
-        self._slide.setDuration(200)
-        self._slide.setStartValue(self.geometry())
-        self._slide.setEndValue(QRectF(target))
-
-        self._fade.start()
-        self._slide.start()
+        self._show_at_rect(self._target_rect(anchor))
 
     def reposition(self, anchor_br: QPoint) -> None:
         """主窗口移动时把弹窗重新贴到当前锚点（不重播展开动画）。"""
-        if self._closing or not self.isVisible():
-            return
-        self._slide.stop()
-        self.setGeometry(self._target_rect(anchor_br))
-        self.update()
-
-    def close_animated(self) -> None:
-        if self._closing:
-            return
-        self._closing = True
-        self._fade.stop()
-        self._fade.setDuration(120)
-        self._fade.setStartValue(self.windowOpacity())
-        self._fade.setEndValue(0.0)
-
-        self._slide.stop()
-        self._slide.setDuration(120)
-        self._slide.setStartValue(self.geometry())
-        end = QRectF(self.geometry())
-        end.setHeight(8)
-        self._slide.setEndValue(end.toRect())
-
-        self._slide.finished.connect(self._close_and_reset)
-        self._fade.start()
-        self._slide.start()
-
-    def _close_and_reset(self) -> None:
-        self._slide.finished.disconnect(self._close_and_reset)
-        self.close()
-        self._closing = False
+        super().reposition(self._target_rect(anchor_br))
 
     def _on_slider_changed(self, val: float) -> None:
         """滑动条变化时同步字号到父布局。"""
@@ -839,10 +759,6 @@ class _ZoomPopup(QWidget):
             pct = int(round(font_size / self._base_font_size * 100))
         self._pct_btn.setText(f"{pct}%")
         self._slider.value = self._font_size_to_value(font_size)
-
-    def hideEvent(self, event) -> None:
-        super().hideEvent(event)
-        self._closing = False
 
 
 # ──────────────────────────────────────────────────────────────────────────────

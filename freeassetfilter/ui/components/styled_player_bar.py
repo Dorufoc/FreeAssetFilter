@@ -14,8 +14,10 @@ from PySide6.QtGui import (
 )
 from pathlib import Path
 from typing import Callable, Optional
+import time
 
 from components.styled_button import StyledButton
+from components.styled_floating_panel import FloatingPanel
 from components.styled_slider import StyledSlider
 from theme import tm
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
@@ -27,110 +29,30 @@ from freeassetfilter.core._paths import icons_dir
 # ═══════════════════════════════════════════════════════════════
 
 
-class _PlayerPopup(QWidget):
-    """Base popup window for player controls (frameless, dark themed).
+class _PlayerPopup(FloatingPanel):
+    """在锚点上方弹出的播放器控制浮层基类（音量/倍速/设置弹窗共用）。
 
-    TODO(后续专项)：音量 / 倍速 / 设置三个浮层面板（_VolumePopup /
-    _SpeedPopup / _SettingsPopup）同构且共享本基类与 show_animated /
-    close_animated 生命周期；可评估将本基类提取为公共 ``FloatingPanel``
-    组件（ui/components/），供播放器之外的浮层复用。
+    基于公共 :class:`FloatingPanel`（frameless 半透明 Tool 窗口 + 主题圆角
+    绘制 + 淡入/滑动动画），锚点模式为 ``bottom-center``（面板底边在按钮
+    上方居中展开），并启用外部点击自动收起——面板是独立 Tool 窗口，应用级
+    事件过滤捕获的面板外点击不会影响控制栏自身的点击/悬浮逻辑。
     """
 
     def __init__(self, parent=None):
-        super().__init__(None, Qt.Tool | Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setAttribute(Qt.WA_ShowWithoutActivating)
-        self._radius = 8
-        self._padding = 8
+        super().__init__(
+            parent,
+            radius=8,
+            padding=8,
+            dismiss_on_outside_click=True,
+        )
         self._target_w = 200
         self._target_h = 100
-        self._closing_internally = False
-
-        self._fade = QPropertyAnimation(self, b"windowOpacity")
-        self._fade.setEasingCurve(QEasingCurve.OutCubic)
-        self._slide = QPropertyAnimation(self, b"geometry")
-        self._slide.setEasingCurve(QEasingCurve.OutCubic)
-
-    def paintEvent(self, event: QPaintEvent):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        w, h = self.width(), self.height()
-        r = self._radius
-
-        # Background
-        p.setPen(Qt.NoPen)
-        p.setBrush(tm.alpha_of(tm.surface, 85))
-        p.drawRoundedRect(QRectF(0, 0, w, h), r, r)
-
-        # Border
-        p.setPen(QPen(tm.alpha_of(tm.mid, 30), 1))
-        p.setBrush(Qt.NoBrush)
-        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), r, r)
-        p.end()
 
     def show_animated(self, anchor_global: QPoint, popup_w: int, popup_h: int):
-        """Fade + slide popup open, anchored above the given point (centered horizontally)."""
-        x = anchor_global.x() - popup_w // 2  # center horizontally on anchor
-        y = anchor_global.y() - popup_h - 8   # above + 8px gap
-
-        # Keep on screen
-        screen = QApplication.primaryScreen()
-        if screen:
-            sg = screen.availableGeometry()
-            x = max(sg.x() + 8, min(x, sg.right() - popup_w - 8))
-            y = max(sg.y() + 8, y)
-
-        self._target_w = popup_w
-        self._target_h = popup_h
-
-        start_h = 10
-        self.setGeometry(x, y + popup_h - start_h, popup_w, start_h)
-        self.setWindowOpacity(0.0)
-        super().show()
-        self.raise_()
-        self.activateWindow()
-
-        self._fade.stop()
-        self._fade.setDuration(180)
-        self._fade.setStartValue(0.0)
-        self._fade.setEndValue(1.0)
-
-        self._slide.stop()
-        self._slide.setDuration(200)
-        self._slide.setStartValue(self.geometry())
-        self._slide.setEndValue(QRectF(x, y, popup_w, popup_h))
-
-        self._fade.start()
-        self._slide.start()
-
-    def close_animated(self):
-        """Slide up + fade out."""
-        self._closing_internally = True
-
-        self._fade.stop()
-        self._fade.setDuration(120)
-        self._fade.setStartValue(self.windowOpacity())
-        self._fade.setEndValue(0.0)
-
-        self._slide.stop()
-        self._slide.setDuration(120)
-        self._slide.setStartValue(self.geometry())
-        end = QRectF(self.geometry())
-        end.setHeight(8)
-        self._slide.setEndValue(end.toRect())
-
-        self._slide.finished.connect(self._close_and_reset)
-        self._fade.start()
-        self._slide.start()
-
-    def _close_and_reset(self):
-        self._slide.finished.disconnect(self._close_and_reset)
-        self.close()
-        self._closing_internally = False
-
-    def hideEvent(self, event):
-        super().hideEvent(event)
-        self._closing_internally = False
+        """淡入 + 向上滑动展开，底边居中锚定在给定点上方。"""
+        super().show_animated(
+            anchor_global, popup_w, popup_h, anchor_mode="bottom-center"
+        )
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -319,38 +241,9 @@ class _SettingsPopup(_PlayerPopup):
 
     def show_animated(self, anchor_global: QPoint, popup_w: int, popup_h: int):
         """设置弹窗以锚点为右边缘水平右对齐、上方弹出。"""
-        x = anchor_global.x() - popup_w  # 弹窗右边缘与锚点对齐
-        y = anchor_global.y() - popup_h - 8  # 上方 + 8px 间隙
-
-        # Keep on screen
-        screen = QApplication.primaryScreen()
-        if screen:
-            sg = screen.availableGeometry()
-            x = max(sg.x() + 8, x)
-            y = max(sg.y() + 8, y)
-
-        self._target_w = popup_w
-        self._target_h = popup_h
-
-        start_h = 10
-        self.setGeometry(x, y + popup_h - start_h, popup_w, start_h)
-        self.setWindowOpacity(0.0)
-        super(_PlayerPopup, self).show()
-        self.raise_()
-        self.activateWindow()
-
-        self._fade.stop()
-        self._fade.setDuration(180)
-        self._fade.setStartValue(0.0)
-        self._fade.setEndValue(1.0)
-
-        self._slide.stop()
-        self._slide.setDuration(200)
-        self._slide.setStartValue(self.geometry())
-        self._slide.setEndValue(QRectF(x, y, popup_w, popup_h))
-
-        self._fade.start()
-        self._slide.start()
+        super().show_animated(
+            anchor_global, popup_w, popup_h, anchor_mode="bottom-right"
+        )
 
     def set_audio_tracks(self, tracks: list[dict]) -> None:
         """设置音轨列表
@@ -964,6 +857,19 @@ class StyledPlayerBar(QWidget):
 
     # ── Event handlers ─────────────────────────────────────────
 
+    @staticmethod
+    def _popup_just_dismissed(popup, window_s: float = 0.35) -> bool:
+        """弹窗是否刚被外部点击关闭（同一物理点击的释放不应重新打开）。
+
+        播放器弹窗启用了外部点击自动收起：按下按钮（面板外）会先收起
+        旧弹窗。慢速点击时释放可能晚于 120ms 关闭动画，此时按钮回调
+        若按常规逻辑会立刻重建弹窗——用关闭时间戳守卫跳过这次重建。
+        """
+        if popup is None:
+            return False
+        closed_at = getattr(popup, "_closed_at", 0.0)
+        return (time.monotonic() - closed_at) < window_s
+
     def _on_play_clicked(self):
         self._playing = not self._playing
         self._play_btn.set_svg_icon(f"{self._icons_dir}/{'pause.svg' if self._playing else 'play.svg'}")
@@ -977,6 +883,9 @@ class StyledPlayerBar(QWidget):
         self._close_other_popups("volume")
         if self._volume_popup and self._volume_popup.isVisible():
             self._volume_popup.close_animated()
+            return
+        if self._popup_just_dismissed(self._volume_popup):
+            # 上一次弹窗刚被本次按下的外部点击收起，释放不再重新打开
             return
 
         self._volume_popup = _VolumePopup(
@@ -1003,6 +912,8 @@ class StyledPlayerBar(QWidget):
         if self._speed_popup and self._speed_popup.isVisible():
             self._speed_popup.close_animated()
             return
+        if self._popup_just_dismissed(self._speed_popup):
+            return
 
         self._speed_popup = _SpeedPopup(current_speed=self._current_speed)
         self._speed_popup.speed_selected.connect(self._on_speed_selected)
@@ -1022,6 +933,8 @@ class StyledPlayerBar(QWidget):
         self._close_other_popups("settings")
         if self._settings_popup and self._settings_popup.isVisible():
             self._settings_popup.close_animated()
+            return
+        if self._popup_just_dismissed(self._settings_popup):
             return
 
         self._settings_popup = _SettingsPopup()

@@ -165,6 +165,52 @@ class _AudioMetadataTask(QRunnable):
         self._signals.done.emit(self._token, result)
 
 
+class _MediaTracksSignals(QObject):
+    """音轨/字幕轨采集完成信号中转（任务持有，跨线程队列投递到 UI 线程）。"""
+
+    done = Signal(int, object, object)  # (token, audio_tracks, subtitle_tracks)
+
+
+class _MediaTracksTask(QRunnable):
+    """音轨/字幕轨后台采集任务（阻塞式 mpv 查询移出 UI 线程）。
+
+    ``get_audio_tracks`` / ``get_subtitle_tracks`` 为阻塞式调用（各最长
+    ``timeout`` 秒），在 UI 线程执行会卡顿。任务在
+    ``QThreadPool.globalInstance()`` 的池线程顺序查询后经
+    ``done(token, audio, subtitle)`` 信号回主线程，由布局令牌守卫决定是否
+    采纳——快速切换文件时陈旧结果直接丢弃。
+    """
+
+    def __init__(self, mpv_manager: Any, token: int) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._mpv_manager = mpv_manager
+        self._token = token
+        self._signals = _MediaTracksSignals()
+
+    @property
+    def done(self):
+        """采集完成信号 ``(token, audio, subtitle)``（经中转对象）。"""
+        return self._signals.done
+
+    def start(self) -> None:
+        """投递到全局线程池执行。"""
+        QThreadPool.globalInstance().start(self)
+
+    def run(self) -> None:
+        audio_tracks: List[Dict[str, Any]] = []
+        subtitle_tracks: List[Dict[str, Any]] = []
+        try:
+            audio_tracks = self._mpv_manager.get_audio_tracks()
+        except Exception as exc:  # noqa: BLE001 — mpv 查询任意异常不崩溃
+            warning(f"获取音轨列表失败: {exc}")
+        try:
+            subtitle_tracks = self._mpv_manager.get_subtitle_tracks()
+        except Exception as exc:  # noqa: BLE001
+            warning(f"获取字幕列表失败: {exc}")
+        self._signals.done.emit(self._token, audio_tracks, subtitle_tracks)
+
+
 class VideoPlayerLayout(QWidget):
     """
     视频播放器布局
@@ -231,6 +277,9 @@ class VideoPlayerLayout(QWidget):
         if not os.path.exists(file_path):
             warning(f"文件不存在: {file_path}")
             return False
+
+        # 切换文件：令牌递增使在途的轨道采集结果失效（陈旧结果丢弃）
+        self._tracks_token += 1
 
         if is_audio:
             return self._load_audio_file(file_path)
@@ -480,6 +529,8 @@ class VideoPlayerLayout(QWidget):
         """清理资源，断开所有信号"""
         # 令牌 +1 使仍在途的音频元数据任务全部失效（陈旧结果不再回写）
         self._audio_meta_token += 1
+        # 同样使在途的音轨/字幕轨采集任务失效
+        self._tracks_token += 1
         if self._fullscreen:
             self._exit_fullscreen()
         if self._mpv_manager:
@@ -686,6 +737,11 @@ class VideoPlayerLayout(QWidget):
         # 跨线程 queued 信号被拆除——沿 file_info_panel _tasks 模式）
         self._audio_meta_token = 0
         self._audio_meta_tasks: List["_AudioMetadataTask"] = []
+
+        # 音轨/字幕轨采集任务令牌与在途任务引用（同 audio meta 模式：
+        # 文件加载后后台取轨，切歌令牌递增丢弃陈旧结果）
+        self._tracks_token = 0
+        self._tracks_tasks: List["_MediaTracksTask"] = []
 
     def _embed_mpv_window(self) -> None:
         """将 MPV 窗口嵌入到 _video_surface"""
@@ -898,6 +954,11 @@ class VideoPlayerLayout(QWidget):
         self._player_bar.mute_changed.connect(self._on_mute_change)
         self._player_bar.speed_changed.connect(self._on_speed_change)
         self._player_bar.fullscreen_toggled.connect(self._on_fullscreen_toggled)
+        # 设置弹窗：音轨/字幕切换 + 添加外部字幕
+        self._player_bar.setting_changed.connect(self._on_player_setting_changed)
+        self._player_bar.add_subtitle_requested.connect(
+            self._on_add_subtitle_requested
+        )
 
     def _connect_manager_signals(self) -> None:
         """MPVManager → StyledPlayerBar 状态同步"""
@@ -1010,6 +1071,174 @@ class VideoPlayerLayout(QWidget):
         self._current_speed = speed
         self._mpv_manager.set_speed(speed, component_id=self._component_id)
 
+    def _on_player_setting_changed(self, section: str, value: str) -> None:
+        """设置弹窗音轨/字幕切换（section: "audio" | "subtitle"）。
+
+        解析 track_id 为 int 后调用 MPVManager 对应接口；失败/异常仅记
+        warning 日志不崩溃。切换成功后异步刷新一次轨道列表（选中态变化）。
+        """
+        if self._mpv_manager is None:
+            return
+        try:
+            track_id = int(value)
+        except (TypeError, ValueError):
+            warning(f"无效的轨道ID: {value!r}")
+            return
+
+        try:
+            if section == "audio":
+                ok = self._mpv_manager.set_audio_track(
+                    track_id, component_id=self._component_id
+                )
+            elif section == "subtitle":
+                ok = self._mpv_manager.set_subtitle_track(
+                    track_id, component_id=self._component_id
+                )
+            else:
+                return
+        except Exception as exc:  # noqa: BLE001 — mpv 任意异常不崩溃
+            warning(f"切换轨道异常: section={section}, id={track_id}, {exc}")
+            return
+
+        if not ok:
+            warning(f"切换轨道失败: section={section}, id={track_id}")
+            return
+        # 成功后异步刷新一次轨道列表（选中态/外部字幕可能变化）
+        self._refresh_player_tracks()
+
+    def _on_add_subtitle_requested(self) -> None:
+        """设置弹窗「+ 添加…」：选择外部字幕文件并加载。"""
+        if self._mpv_manager is None:
+            return
+        from PySide6.QtWidgets import QFileDialog
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "添加字幕文件",
+            "",
+            "字幕文件 (*.srt *.ass *.ssa *.vtt *.sub *.idx);;所有文件 (*.*)",
+        )
+        if not file_path:
+            return
+        try:
+            ok = self._mpv_manager.load_subtitle(
+                file_path, component_id=self._component_id
+            )
+        except Exception as exc:  # noqa: BLE001 — mpv 任意异常不崩溃
+            warning(f"加载字幕异常: {file_path}, {exc}")
+            return
+        if not ok:
+            warning(f"加载字幕失败: {file_path}")
+            return
+        # 加载成功后异步刷新字幕轨列表
+        self._refresh_player_tracks()
+
+    # ── 音轨/字幕轨异步采集 ─────────────────────────────────────
+
+    def _refresh_player_tracks(self) -> None:
+        """异步刷新音轨/字幕轨列表（文件加载后 / 切换轨道后调用）。
+
+        仅在 MPV 核心已初始化且预览器可见时执行；``get_*_tracks`` 是阻塞式
+        查询，必须在后台线程取，避免卡 UI。任务携带自增 token，快速切换
+        文件时陈旧结果直接丢弃。
+        """
+        if self._mpv_manager is None or not self._mpv_manager.is_initialized():
+            return
+        if not self.isVisible():
+            return
+
+        self._tracks_token += 1
+        token = self._tracks_token
+        task = _MediaTracksTask(self._mpv_manager, token)
+        task.done.connect(self._on_tracks_loaded)
+        task.done.connect(lambda *_: self._untrack_tracks_task(task))
+        self._tracks_tasks.append(task)
+        task.start()
+
+    def _untrack_tracks_task(self, task: "_MediaTracksTask") -> None:
+        """结果回传后从在途任务列表移除（释放引用，允许包装器回收）。"""
+        try:
+            if task in self._tracks_tasks:
+                self._tracks_tasks.remove(task)
+        except RuntimeError:
+            pass
+
+    def _on_tracks_loaded(
+        self,
+        token: int,
+        audio_tracks: Any,
+        subtitle_tracks: Any,
+    ) -> None:
+        """后台轨道采集结果回写（主线程）。
+
+        令牌守卫：token 与当前自增值不一致时直接丢弃陈旧结果。
+        映射为设置弹窗条目后写入 StyledPlayerBar 缓存（弹窗已打开时
+        由 bar 立即刷新显示），字幕列表末尾追加「+ 添加…」项。
+        """
+        from shiboken6 import isValid as _isValid
+        if not _isValid(self):
+            return
+        if token != self._tracks_token:
+            return
+
+        audio_items = self._map_track_items(audio_tracks, "音轨")
+        subtitle_items = self._map_track_items(subtitle_tracks, "字幕")
+        subtitle_items.append({"id": "add", "label": "+ 添加…", "is_add": True})
+        self._player_bar.set_audio_tracks(audio_items)
+        self._player_bar.set_subtitle_tracks(subtitle_items)
+
+    @staticmethod
+    def _format_track_label(track: Dict[str, Any], index: int, fallback_prefix: str) -> str:
+        """把 mpv 轨道 dict 转为弹窗条目标签。
+
+        优先 track title；否则用语言 + 编码/声道的可读信息拼接；两者
+        皆无时回退 ``f"{fallback_prefix} {index + 1}"``（1 基序号）。
+        """
+        title = str(track.get("title") or "").strip()
+        if title:
+            return title
+        parts: List[str] = []
+        lang = str(track.get("lang") or "").strip()
+        if lang:
+            parts.append(lang)
+        codec = str(track.get("codec") or "").strip()
+        if codec:
+            parts.append(codec)
+        channels = track.get("audio_channels")
+        if channels:
+            parts.append(str(channels))
+        if parts:
+            return " ".join(parts)
+        return f"{fallback_prefix} {index + 1}"
+
+    @classmethod
+    def _map_track_items(
+        cls, tracks: Any, fallback_prefix: str
+    ) -> List[Dict[str, Any]]:
+        """mpv 轨道列表 → 设置弹窗条目列表。
+
+        条目形如 ``{"id": int, "label": str, "selected": bool}``；
+        非法/缺 id 的轨道条目跳过，``tracks`` 非列表时返回空列表。
+        """
+        items: List[Dict[str, Any]] = []
+        if not isinstance(tracks, list):
+            return items
+        for index, track in enumerate(tracks):
+            if not isinstance(track, dict):
+                continue
+            try:
+                track_id = int(track.get("id"))
+            except (TypeError, ValueError):
+                continue
+            items.append(
+                {
+                    "id": track_id,
+                    "label": cls._format_track_label(track, index, fallback_prefix),
+                    "selected": bool(track.get("selected")),
+                }
+            )
+        return items
+
     def _on_fullscreen_toggled(self, fullscreen: bool) -> None:
         """全屏按钮点击 → 分离到独立 frameless 全屏窗口 + 浮动控制栏模式
 
@@ -1113,6 +1342,8 @@ class VideoPlayerLayout(QWidget):
         # 文件加载完成后再设置循环模式（避免与 loadfile 命令竞争）
         if self._mpv_manager:
             self._mpv_manager.set_loop("yes", component_id=self._component_id)
+        # 后台采集音轨/字幕轨并填充设置弹窗（阻塞式查询，不进 UI 线程）
+        self._refresh_player_tracks()
 
     def _on_file_ended(self, reason: int) -> None:
         """播放结束"""
