@@ -6,13 +6,17 @@
 - 双击 / Enter 进入子文件夹；顶栏返回按钮与鼠标侧键（XButton1）返回上级；
   以 set_file 传入的文件夹为根边界，不能越出根目录向上浏览
 - 单击条目仅选中高亮，点击空白取消选中；双击文件无动作
-- 每次进入 / 返回目录时在后台线程重新扫描（无手动刷新、无自动监听）
+- 每次进入 / 返回目录时在后台线程重新扫描
+- **自动监听刷新**：QFileSystemWatcher 监听当前目录，外部增删改名后
+  300ms 防抖重新扫描（网络盘等监听不生效场景自动降级，不影响手动导航）
+- **信息面板联动**：选中条目发出 ``entry_selected`` 信号（宿主转发给
+  主窗口的信息面板），取消选中发 None
 
 触发方式：文件夹被加入文件储存池后，左键点击文件池中的文件夹卡片时，
 由统一预览器宿主路由到本组件；与文件选择器的常规文件夹导航相互独立。
 
-后续增强方案（自动监听刷新、内层文件预览、信息面板联动等）见
-docs/文件夹预览器功能设计.md。
+明确不计划：应用内「内层文件预览」（双击文件打开预览）——双击文件保持
+无动作；相关设计文档已不存在，不再引用。
 """
 
 import os
@@ -34,6 +38,7 @@ from components.styled_button import StyledButton
 from components.styled_lineedit import StyledLineEdit
 from PySide6.QtCore import (
     QAbstractListModel,
+    QFileSystemWatcher,
     QModelIndex,
     QObject,
     QRectF,
@@ -76,7 +81,7 @@ from freeassetfilter.ui.components.styled_scroll_area import (
     StyledScrollArea,
     StyledScrollBar,
 )
-from freeassetfilter.utils.app_logger import info, warning
+from freeassetfilter.utils.app_logger import debug, info, warning
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 # 注：后台目录扫描走 QThreadPool 全局池（QRunnable 用完即弃），面板仅持有
@@ -508,13 +513,20 @@ class FolderPreviewerLayout(QWidget):
 
     Signals:
         close_requested: 关闭预览请求信号（宿主规范占位）
+        entry_selected: 选中条目变化（条目 dict；取消选中为 None），
+            由统一预览器转发、主窗口联动文件信息面板
     """
 
     close_requested = Signal()
+    # 条目选中变化：dict（真实磁盘路径信息）或 None（取消选中/清空）
+    entry_selected = Signal(object)
 
     # 内容区页面索引
     _PAGE_LIST = 0
     _PAGE_OVERLAY = 1
+
+    #: 目录监听防抖时长（毫秒）：外部批量操作合并为一次重扫
+    WATCHER_DEBOUNCE_MS = 300
 
     def __init__(
         self,
@@ -536,6 +548,16 @@ class FolderPreviewerLayout(QWidget):
         self._token: int = 0
         self._loading: bool = False
         self._scan_worker: Optional[_FolderScanWorker] = None
+
+        # 自动监听刷新：监视当前目录，变更后防抖重扫（addPath 失败静默降级）
+        self._watcher = QFileSystemWatcher(self)
+        self._watcher.directoryChanged.connect(self._on_directory_changed)
+        self._watcher_debounce = QTimer(self)
+        self._watcher_debounce.setSingleShot(True)
+        self._watcher_debounce.setInterval(self.WATCHER_DEBOUNCE_MS)
+        self._watcher_debounce.timeout.connect(self._on_refresh_debounce)
+        # 最近一次对外发射的选中条目路径（去重，避免重复 set_file 信息面板）
+        self._last_selected_path: Optional[str] = None
 
         self._icon_manager = FileIconManager()
 
@@ -600,6 +622,9 @@ class FolderPreviewerLayout(QWidget):
         self._view.back_requested.connect(self.go_to_parent)
         self._view.dir_activated.connect(self._enter_dir)
         self._view.activated.connect(self._on_view_activated)
+        self._view.selectionModel().selectionChanged.connect(
+            self._on_selection_changed
+        )
         self._content_stack.addWidget(self._view)
 
         self._overlay = QWidget()
@@ -653,17 +678,26 @@ class FolderPreviewerLayout(QWidget):
         return self._top_bar
 
     def cleanup(self) -> None:
-        """清理当前浏览状态（宿主切换/清除预览时调用）。"""
+        """清理当前浏览状态（宿主切换/清除预览时调用）。
+
+        同步停止目录监听与防抖定时器；若此前有选中条目，向外发一次
+        None 让宿主信息面板恢复（避免残留已失效条目的展示）。
+        """
         self._token += 1
         self._loading = False
         self._scan_worker = None
         self._root_path = ""
         self._current_rel = ""
+        self._watcher_debounce.stop()
+        self._disarm_watcher()
         self._model.clear()
         self._view.scrollToTop()
         self._path_edit.setText(_PLACEHOLDER_NO_FOLDER)
         self._back_btn.setEnabled(False)
         self._show_overlay(_PLACEHOLDER_NO_FOLDER)
+        if self._last_selected_path is not None:
+            self._last_selected_path = None
+            self.entry_selected.emit(None)
         info("文件夹预览器已清理")
 
     def set_section_styles(self, fill_color: str, border_color: str) -> None:
@@ -726,9 +760,14 @@ class FolderPreviewerLayout(QWidget):
         return self._root_path
 
     def _refresh(self) -> None:
-        """按当前浏览目录异步重新扫描（每次进入/返回都会触发）。"""
+        """按当前浏览目录异步重新扫描（每次进入/返回都会触发）。
+
+        扫描前先撤销旧目录监听，成功后由 ``_on_scan_finished`` 重新布防，
+        避免导航期间旧目录事件误触发重扫。
+        """
         if not self._root_path:
             return
+        self._disarm_watcher()
         self._update_path_edit()
         self._loading = True
         self._token += 1
@@ -766,6 +805,7 @@ class FolderPreviewerLayout(QWidget):
         else:
             self._show_overlay(_PLACEHOLDER_EMPTY)
         self._update_path_edit()
+        self._arm_watcher()
 
     def _on_scan_failed(self, token: int) -> None:
         """工作线程扫描失败（目录不可读/已被删除）。"""
@@ -777,6 +817,53 @@ class FolderPreviewerLayout(QWidget):
         self._show_overlay(_PLACEHOLDER_UNAVAILABLE)
         self._update_path_edit()
         warning(f"无法访问文件夹: {self._current_directory()}")
+
+    # ── 自动监听刷新 ─────────────────────────────────────────────────────────
+
+    def _arm_watcher(self) -> None:
+        """对当前目录重新布防（切换目录/扫描完成后调用；失败静默降级）。"""
+        self._disarm_watcher()
+        target = self._current_directory()
+        if not target or not os.path.isdir(target):
+            return
+        try:
+            if not self._watcher.addPath(target):
+                debug(f"目录监听未生效（可能不可访问或不支持）: {target}")
+        except Exception as exc:  # noqa: BLE001 - 监听失败不影响导航
+            debug(f"目录监听异常: {exc}")
+
+    def _disarm_watcher(self) -> None:
+        """移除当前全部监听路径（cleanup/重新布防前调用）。"""
+        try:
+            paths = self._watcher.directories()
+            if paths:
+                self._watcher.removePaths(paths)
+        except RuntimeError:
+            pass
+
+    def _on_directory_changed(self, path: str) -> None:
+        """目录内容变化：重启防抖定时器（多次事件合并为一次重扫）。"""
+        if self._root_path:
+            self._watcher_debounce.start()
+
+    def _on_refresh_debounce(self) -> None:
+        """防抖到期：重扫当前目录（token 机制自动丢弃并发扫描的旧结果）。"""
+        if self._root_path:
+            self._refresh()
+
+    # ── 选中联动 ─────────────────────────────────────────────────────────────
+
+    def _on_selection_changed(self, *_args: Any) -> None:
+        """列表选中变化：向宿主发射当前选中条目（按路径去重；空选发 None）。"""
+        indexes = self._view.selectionModel().selectedIndexes()
+        entry: Optional[dict] = None
+        if indexes:
+            entry = indexes[0].data(_FolderListModel.EntryRole)
+        path = entry.get("path") if isinstance(entry, dict) else None
+        if path == self._last_selected_path:
+            return
+        self._last_selected_path = path
+        self.entry_selected.emit(dict(entry) if isinstance(entry, dict) else None)
 
     # ── 导航 ─────────────────────────────────────────────────────────────────
 

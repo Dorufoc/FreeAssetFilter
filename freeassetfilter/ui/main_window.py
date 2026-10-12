@@ -1401,6 +1401,9 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             # 信号连接：统一预览器底栏 → 定位到所在目录 / 清除预览
             self._previewer.locate_requested.connect(self._on_previewer_locate_requested)
             self._previewer.clear_requested.connect(self._on_preview_cancelled)
+            # 信号连接：预览器内层条目选中 → 文件信息面板联动
+            #（文件夹预览器选中条目时面板显示该条目信息；取消时恢复）
+            self._previewer.entry_selected.connect(self._on_previewer_entry_selected)
 
         self._refresh_panel_styles()
 
@@ -2135,6 +2138,39 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         """处理统一预览器底栏"定位到所在目录"请求：导航左侧选择器并高亮文件"""
         if self._file_selector is not None and file_info:
             self._file_selector.locate_file(file_info)
+
+    def _on_previewer_entry_selected(self, entry: object) -> None:
+        """处理预览器内层条目选中变化：联动文件信息面板。
+
+        - 选中条目（文件夹预览器内单击文件/文件夹）→ 信息面板显示该条目；
+        - 取消选中（None，含点击空白与扫描后清空）→ 恢复当前预览文件的
+          信息；当前无预览文件时清空面板；
+        - 面板缺失或设置失败时静默降级（不影响预览本身）。
+        """
+        if self._info_panel is None:
+            return
+        if isinstance(entry, dict) and entry:
+            try:
+                self._info_panel.set_file(dict(entry))
+            except Exception as exc:  # noqa: BLE001 - 联动失败不影响预览
+                warning(f"信息面板联动失败: {exc}")
+            return
+        # 取消选中：尝试恢复当前预览文件的信息
+        current = None
+        if self._previewer is not None:
+            getter = getattr(self._previewer, "current_file_info", None)
+            if callable(getter):
+                try:
+                    current = getter()
+                except Exception:  # noqa: BLE001 - 获取失败按无预览处理
+                    current = None
+        try:
+            if isinstance(current, dict) and current:
+                self._info_panel.set_file(current)
+            else:
+                self._info_panel.clear()
+        except Exception as exc:  # noqa: BLE001 - 联动失败不影响预览
+            warning(f"信息面板恢复失败: {exc}")
 
     def _on_pool_item_right_clicked(self, file_info: dict) -> None:
         """右键点击文件池卡片：移除文件池并取消文件选择器内的选中"""

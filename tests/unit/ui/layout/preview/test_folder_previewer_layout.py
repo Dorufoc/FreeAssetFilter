@@ -14,12 +14,13 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QItemSelectionModel, Qt
 from PySide6.QtWidgets import QApplication
 
 _PROJECT_ROOT = next(
@@ -297,6 +298,136 @@ class TestFallbacks:
         assert layout._content_stack.currentIndex() == layout._PAGE_OVERLAY
         assert layout._placeholder.text() == _PLACEHOLDER_UNAVAILABLE
         assert layout._model.rowCount() == 0
+
+
+# =============================================================================
+# 自动监听刷新 + 选中联动
+# =============================================================================
+
+class TestWatcherAndSelection:
+    """QFileSystemWatcher 自动刷新与 entry_selected 联动信号。"""
+
+    @staticmethod
+    def _watched_dirs(layout: FolderPreviewerLayout) -> set:
+        """规范化后的监听目录集合。"""
+        return {os.path.normcase(p) for p in layout._watcher.directories()}
+
+    def test_watcher_armed_on_current_dir(
+        self, qapp: QApplication, layout: FolderPreviewerLayout, sample_dir: Path,
+    ) -> None:
+        """扫描成功后当前目录被纳入监听。"""
+        layout.set_file(str(sample_dir))
+        _wait_loaded(layout, qapp)
+        assert os.path.normcase(str(sample_dir)) in self._watched_dirs(layout)
+
+    def test_watcher_follows_navigation(
+        self, qapp: QApplication, layout: FolderPreviewerLayout, sample_dir: Path,
+    ) -> None:
+        """进入子目录后监听目标切换为该子目录。"""
+        layout.set_file(str(sample_dir))
+        _wait_loaded(layout, qapp)
+        layout._enter_dir("sub")
+        _wait_loaded(layout, qapp)
+        expected = os.path.normcase(str(sample_dir / "sub"))
+        assert expected in self._watched_dirs(layout)
+
+    def test_directory_changed_debounces_single_refresh(
+        self,
+        qapp: QApplication,
+        layout: FolderPreviewerLayout,
+        sample_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """连续变更事件经 300ms 防抖合并为一次重扫。"""
+        layout.set_file(str(sample_dir))
+        _wait_loaded(layout, qapp)
+        calls: list = []
+        monkeypatch.setattr(layout, "_refresh", lambda: calls.append("refresh"))
+
+        layout._on_directory_changed(str(sample_dir))
+        layout._on_directory_changed(str(sample_dir))
+        process_qt_events(qapp, 30)
+        assert calls == [], "防抖窗口内不应立即重扫"
+
+        deadline = time.monotonic() + 3
+        while not calls and time.monotonic() < deadline:
+            process_qt_events(qapp, 30)
+        assert calls == ["refresh"], "防抖到期后应恰好重扫一次"
+
+    def test_cleanup_stops_watcher_and_timer(
+        self, qapp: QApplication, layout: FolderPreviewerLayout, sample_dir: Path,
+    ) -> None:
+        """cleanup 移除监听路径并停止防抖定时器。"""
+        layout.set_file(str(sample_dir))
+        _wait_loaded(layout, qapp)
+        layout._on_directory_changed(str(sample_dir))
+        assert layout._watcher_debounce.isActive()
+
+        layout.cleanup()
+        assert layout._watcher.directories() == []
+        assert not layout._watcher_debounce.isActive()
+
+    def test_selection_emits_entry_then_none(
+        self, qapp: QApplication, layout: FolderPreviewerLayout, sample_dir: Path,
+    ) -> None:
+        """选中条目发 dict（真实路径），取消选中发 None。"""
+        layout.set_file(str(sample_dir))
+        _wait_loaded(layout, qapp)
+        received: list = []
+        layout.entry_selected.connect(lambda entry: received.append(entry))
+
+        index = layout._model.index(0, 0)
+        layout._view.selectionModel().select(
+            index, QItemSelectionModel.ClearAndSelect
+        )
+        qapp.processEvents()
+        assert received, "选中后应发出信号"
+        entry = received[-1]
+        assert isinstance(entry, dict)
+        assert str(entry["path"]).endswith("sub")
+        assert entry["is_dir"] is True
+
+        layout._view.clearSelection()
+        qapp.processEvents()
+        assert received[-1] is None
+
+    def test_selection_dedup_on_repeated_select(
+        self, qapp: QApplication, layout: FolderPreviewerLayout, sample_dir: Path,
+    ) -> None:
+        """重复选中同一路径不重复发射（去重）。"""
+        layout.set_file(str(sample_dir))
+        _wait_loaded(layout, qapp)
+        received: list = []
+        layout.entry_selected.connect(lambda entry: received.append(entry))
+
+        index = layout._model.index(0, 0)
+        layout._view.selectionModel().select(
+            index, QItemSelectionModel.ClearAndSelect
+        )
+        qapp.processEvents()
+        count_after_first = len(received)
+        layout._view.selectionModel().select(
+            index, QItemSelectionModel.ClearAndSelect
+        )
+        qapp.processEvents()
+        assert len(received) == count_after_first
+
+    def test_cleanup_emits_none_when_selected(
+        self, qapp: QApplication, layout: FolderPreviewerLayout, sample_dir: Path,
+    ) -> None:
+        """cleanup 时若存在选中条目，对外补发一次 None。"""
+        layout.set_file(str(sample_dir))
+        _wait_loaded(layout, qapp)
+        received: list = []
+        layout.entry_selected.connect(lambda entry: received.append(entry))
+        layout._view.selectionModel().select(
+            layout._model.index(0, 0), QItemSelectionModel.ClearAndSelect
+        )
+        qapp.processEvents()
+        assert received and received[-1] is not None
+
+        layout.cleanup()
+        assert received[-1] is None
 
 
 # =============================================================================
