@@ -26,9 +26,9 @@ ext_modules = [
     ),
 ]
 
-# 后续改进（审查 3.1#20，本轮不涉及）：-march=native 绑定构建机指令集
-# （老 CPU 非法指令风险）、-ffast-math 改变浮点结果；建议移除前者并评估
-# 后者，需重新编译 .pyd 后验证。
+# 构建参数基线（审查 3.1#20 修复）：已移除 -march=native（回退通用 x86-64
+# 基线，防老 CPU 非法指令）与 -ffast-math（保持 IEEE 浮点语义；MSVC 侧
+# 变更前后样例对拍 0 差异）。
 for ext in ext_modules:
     ext.extra_compile_args = [
         "-O3",
@@ -36,8 +36,6 @@ for ext in ext_modules:
         "-Wextra",
         "-fopenmp",
         "-std=c++17",
-        "-ffast-math",
-        "-march=native",
         "-DMS_WIN64",
     ]
     ext.extra_link_args = [

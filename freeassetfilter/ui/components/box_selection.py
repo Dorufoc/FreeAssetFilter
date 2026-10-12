@@ -24,6 +24,7 @@ from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QWidget
 
 from theme import tm
+from freeassetfilter.utils.app_logger import debug
 
 # 释放丢失守卫轮询周期（毫秒）：框选期间周期性校验左键是否仍按下。
 BOX_SELECT_GUARD_INTERVAL_MS: int = 80
@@ -124,10 +125,9 @@ class BoxSelectionGesture(QObject):
 
         try:
             tm.theme_changed.connect(self._refresh_style)
-        except (RuntimeError, TypeError, AttributeError):
-            # 3.1#19 留档：绑定失败即无主题跟随，属预期防御（不改行为；
-            # 后续改进为意外分支补 debug 日志）。
-            pass
+        except (RuntimeError, TypeError, AttributeError) as exc:
+            # 3.1#19：绑定失败仅意味着无主题跟随；debug 留痕便于排障。
+            debug(f"框选手势主题信号绑定失败（无主题跟随）：{exc}")
         app = QApplication.instance()
         if app is not None:
             app.applicationStateChanged.connect(self._on_application_state_changed)
@@ -229,9 +229,9 @@ class BoxSelectionGesture(QObject):
         if overlay is not None:
             try:
                 overlay.hide()
-            except RuntimeError:
-                # 3.1#19 留档：宿主销毁后的预期防御（后续改进补 debug 日志）。
-                pass
+            except RuntimeError as exc:
+                # 3.1#19：宿主销毁后的预期防御；debug 留痕。
+                debug(f"框选覆层隐藏失败（宿主已销毁）：{exc}")
 
     def _show_overlay(self) -> None:
         """首次激活：把选框定锚在起点（0×0）并置顶显示。"""
@@ -242,9 +242,9 @@ class BoxSelectionGesture(QObject):
             overlay.setGeometry(QRect(self._start_pos, self._start_pos))
             overlay.show()
             overlay.raise_()
-        except RuntimeError:
-            # 3.1#19 留档：宿主销毁后的预期防御。
-            pass
+        except RuntimeError as exc:
+            # 3.1#19：宿主销毁后的预期防御；debug 留痕。
+            debug(f"框选覆层显示失败（宿主已销毁）：{exc}")
 
     def _update_geometry(self, pos: QPoint) -> None:
         """更新选框几何；拖出视口上下边时驱动滚动条自动滚动。
@@ -260,8 +260,9 @@ class BoxSelectionGesture(QObject):
             return
         try:
             bounds = QRect(QPoint(0, 0), overlay.parentWidget().size())
-        except RuntimeError:
-            # 3.1#19 留档：overlay 父级已销毁，预期防御。
+        except RuntimeError as exc:
+            # 3.1#19：overlay 父级已销毁，预期防御；debug 留痕。
+            debug(f"框选覆层父级已销毁（无法更新几何）：{exc}")
             return
 
         scrollbar = self._scrollbar_getter() if self._scrollbar_getter is not None else None
@@ -274,9 +275,9 @@ class BoxSelectionGesture(QObject):
             if dy:
                 try:
                     scrollbar.setValue(scrollbar.value() + dy)
-                except (RuntimeError, AttributeError):
-                    # 3.1#19 留档：滚动条已销毁/接口缺失，预期防御。
-                    pass
+                except (RuntimeError, AttributeError) as exc:
+                    # 3.1#19：滚动条已销毁/接口缺失，预期防御；debug 留痕。
+                    debug(f"框选自动滚动失败（滚动条不可用）：{exc}")
 
         rect = QRect(start, pos).normalized()
         # 零宽/零高矩形的 intersects() 恒为 False：补到 1px 保证纯水平/
@@ -292,9 +293,9 @@ class BoxSelectionGesture(QObject):
                 overlay.setGeometry(display)
             else:
                 overlay.setGeometry(rect)
-        except RuntimeError:
-            # 3.1#19 留档：overlay 已销毁，预期防御。
-            pass
+        except RuntimeError as exc:
+            # 3.1#19：overlay 已销毁，预期防御；debug 留痕。
+            debug(f"框选覆层几何更新失败（已销毁）：{exc}")
 
     def _emit_hits(self) -> None:
         """命中集合变化时回调调用方（无变化则跳过，避免重复刷新）。"""
@@ -354,6 +355,6 @@ class BoxSelectionGesture(QObject):
             return
         try:
             overlay.set_color(tm.accent)
-        except (RuntimeError, AttributeError):
-            # 3.1#19 留档：overlay 已销毁，预期防御。
-            pass
+        except (RuntimeError, AttributeError) as exc:
+            # 3.1#19：overlay 已销毁，预期防御；debug 留痕。
+            debug(f"框选覆层颜色刷新失败（已销毁）：{exc}")

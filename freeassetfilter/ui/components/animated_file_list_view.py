@@ -16,6 +16,7 @@ from PySide6.QtGui import QPainter, QPixmap
 from PySide6.QtWidgets import QListView, QWidget
 
 from freeassetfilter.utils.animation_settings import is_animation_enabled
+from freeassetfilter.utils.app_logger import debug
 
 
 class AnimatedFileListView(QListView):
@@ -65,9 +66,9 @@ class AnimatedFileListView(QListView):
             self._path_transition_enabled = is_animation_enabled(
                 "directory_transition", default=True
             )
-        except Exception:
-            # 3.1#19 留档：设置读取失败回退默认开启，预期防御
-            #（不改行为；后续改进为意外分支补 debug 日志）。
+        except Exception as exc:  # noqa: BLE001  # 设置读取失败回退默认开启（预期防御）
+            # 3.1#19：设置读取失败回退默认开启，预期防御；debug 留痕。
+            debug(f"目录过渡动画设置读取失败，回退默认开启：{exc}")
             self._path_transition_enabled = True
 
     def _capture_viewport_snapshot(self) -> QPixmap:

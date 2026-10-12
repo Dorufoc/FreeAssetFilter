@@ -15,6 +15,7 @@
 * DLL 缺失时安全降级（``available is False``，调用返回 ``None`` 不抛异常）。
 
 已绑定业务导出：``faf_version`` / ``faf_free_message`` /
+``faf_free_buffer``（流体帧等裸缓冲释放，审查 3.1#26） /
 ``faf_scan_directory``（目录扫描，7 键 JSON）/ ``faf_sort_entries``
 （条目排序，8 种模式）/ ``faf_highlight_text``（代码语法高亮，span-only
 JSON ``[{start,len,token_type}]``，字符偏移）/ ``faf_render_markdown``
@@ -43,7 +44,8 @@ todo-7 接线）/ ``faf_composite_psd``（PSD 合成，spike 裁决 DROP——�
 null，Python 保持 psd-tools）/ ``faf_replace_svg_colors``（SVG 图标换色，
 返回**裸 SVG 文本**非 JSON，见 ``svg_renderer.py`` todo-12 接线）/
 ``faf_render_fluid_frame``（流体 CPU 帧，spike 裁决 DROP——恒返回 null，
-返回 **RGBA 像素缓冲**非 JSON，``QPixmap`` 构造留 GUI 线程）/
+返回 **RGBA 像素缓冲**非 JSON，经 ``faf_free_buffer`` 释放，
+``QPixmap`` 构造留 GUI 线程）/
 ``faf_parse_7z_list``（7z ``-slt`` 输出解析，JSON 数组，见 ``py7z_core.py``
 todo-17 接线；7z.exe 子进程保留在 Python）/ ``faf_pdf_select_words``
 （PDF 选区逐词过滤，JSON 数组，见 ``pdf_document_view.py`` todo-19 接线；
@@ -120,6 +122,7 @@ class FafCoreBridge:
         self._supports_composite_psd = False
         self._supports_replace_svg_colors = False
         self._supports_render_fluid_frame = False
+        self._supports_free_buffer = False
         self._supports_parse_7z_list = False
         self._supports_pdf_select_words = False
         self._dll_directory_handle = None
@@ -229,12 +232,23 @@ class FafCoreBridge:
         self._supports_composite_psd = False
         self._supports_replace_svg_colors = False
         self._supports_render_fluid_frame = False
+        self._supports_free_buffer = False
         self._supports_parse_7z_list = False
         self._supports_pdf_select_words = False
 
         self._native_free_message = dll.faf_free_message
         self._native_free_message.argtypes = [c_void_p]
         self._native_free_message.restype = None
+
+        try:
+            # 审查 3.1#26：裸缓冲释放导出（与 faf_free_message 并列；旧 DLL
+            # 缺失时保持不支持，渲染方法仅在拿到缓冲且支持时释放）。
+            dll.faf_free_buffer.argtypes = [c_void_p, c_size_t]
+            dll.faf_free_buffer.restype = None
+            self._native_free_buffer = dll.faf_free_buffer
+            self._supports_free_buffer = True
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            self._supports_free_buffer = False
 
         try:
             dll.faf_version.argtypes = []
@@ -1018,12 +1032,12 @@ class FafCoreBridge:
         **spike 裁决 DROP**（task-1-decisions.md §6）：float ULP（``math.hypot``
         vs ``f64::hypot`` 差 1 ULP）令逐像素 parity 不可达，Rust 侧恒返回
         ``STATUS_UNSUPPORTED`` → null → 本方法恒返回 ``None``，Python 保持
-        ``_styled_fluid_cpu.render_static_frame`` 路径。**无配套 free 导出**——
-        占位期 Rust 永不分配缓冲，故本方法不释放 raw（``faf_free_message``
-        只对 ``CString`` 分配有效，禁止用于裸缓冲）。
-        **后续改进（审查 3.1#26，本轮不涉及）**：为 native 流体启用设置前置
-        条件——增加 ``faf_free_buffer(ptr, len)`` 导出并在本方法 ``finally``
-        释放，避免未来按帧返回缓冲时逐帧泄漏。
+        ``_styled_fluid_cpu.render_static_frame`` 路径。
+
+        **缓冲释放（审查 3.1#26）**：raw 为**裸 RGBA 缓冲**，与 ``CString``
+        分配不兼容（``faf_free_message`` 禁用于此）。native 侧已提供
+        ``faf_free_buffer(ptr, len)``；本方法在 ``finally`` 内按 ``(raw, size)``
+        成对释放，未来 native 流体启用后按帧返回缓冲也不会逐帧泄漏。
 
         Args:
             width: 帧宽（像素）。
@@ -1041,6 +1055,7 @@ class FafCoreBridge:
         if not self.available or not self._supports_render_fluid_frame:
             return None
         raw = None
+        size = 0
         try:
             if width <= 0 or height <= 0:
                 return None
@@ -1066,6 +1081,15 @@ class FafCoreBridge:
         except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             warning(f"render_fluid_frame 失败: {e}")
             return None
+        finally:
+            # 审查 3.1#26：native 缓冲所有权在本方法内终结——成功/失败路径均
+            # 经 faf_free_buffer(ptr, len) 释放；占位期 native 恒返回 null，
+            # 旧 DLL 无该导出时也不会出现"拿到缓冲却无释放路径"。
+            if raw and size > 0 and self._supports_free_buffer:
+                try:
+                    self._native_free_buffer(raw, size)
+                except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+                    warning(f"render_fluid_frame 缓冲释放失败: {e}")
 
     def parse_7z_list(
         self, output: str, current_path: str, archive_path: str

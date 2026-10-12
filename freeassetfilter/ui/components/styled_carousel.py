@@ -9,6 +9,7 @@ from PySide6.QtGui import QPainter, QPen, QPainterPath, QRegion, QPixmap
 from theme import tm
 from components.paint_utils import draw_chevron
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
+from freeassetfilter.utils.app_logger import debug
 
 SIZE_H = {"sm": 120, "default": 200, "lg": 300}
 
@@ -155,8 +156,9 @@ class _FadeContainer(QWidget):
         try:
             self._old_pm = old.grab()
             self._new_pm = new.grab()
-        except Exception:
-            # 3.1#19 留档：QPixmap.grab 失败（控件已销毁）走无淡入降级，预期防御。
+        except Exception as exc:  # noqa: BLE001  # QPixmap.grab 失败走无淡入降级（预期防御）
+            # 3.1#19：QPixmap.grab 失败（控件已销毁）走无淡入降级，预期防御；debug 留痕。
+            debug(f"轮播淡入快照失败，降级直接切换：{exc}")
             return False
         if self._old_pm.isNull() or self._new_pm.isNull():
             return False
@@ -367,9 +369,9 @@ class StyledCarousel(QWidget):
         if self._fa is not None:
             try:
                 self._fa.stop()
-            except Exception:
-                # 3.1#19 留档：动画对象已销毁，预期防御。
-                pass
+            except Exception as exc:  # noqa: BLE001  # 动画对象已销毁（预期防御）
+                # 3.1#19：动画对象已销毁，预期防御；debug 留痕。
+                debug(f"轮播旧动画停止失败（已销毁）：{exc}")
         self._fa = anim
         anim.start()
 
@@ -377,9 +379,9 @@ class StyledCarousel(QWidget):
         if self._fc is not None and self._slides:
             try:
                 self._fc.finish_crossfade(self._slides[self._cur])
-            except Exception:
-                # 3.1#19 留档：快照控件已销毁，预期防御。
-                pass
+            except Exception as exc:  # noqa: BLE001  # 快照控件已销毁（预期防御）
+                # 3.1#19：快照控件已销毁，预期防御；debug 留痕。
+                debug(f"轮播淡入收尾失败（快照控件已销毁）：{exc}")
         self._fa = None
         self._anim = False
         self._done(self._cur)

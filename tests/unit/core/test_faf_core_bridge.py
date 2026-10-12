@@ -453,6 +453,49 @@ class TestBridgeRenderFluidFrame:
         )
         assert result is None or isinstance(result, bytes)
 
+    def test_free_buffer_capability_flag(self) -> None:
+        """``_supports_free_buffer`` 为 bool（审查 3.1#26 新增导出探测）。"""
+        assert isinstance(FafCoreBridge()._supports_free_buffer, bool)  # noqa: SLF001
+
+    def test_free_buffer_null_is_noop(self) -> None:
+        """``faf_free_buffer(null, 0)`` 直接调用不崩（Rust 侧守卫）。"""
+        inst = FafCoreBridge()
+        if not inst.available or not inst._supports_free_buffer:  # noqa: SLF001
+            pytest.skip("faf_core.dll 不含 faf_free_buffer 导出，跳过守卫测试")
+        inst._native_free_buffer(None, 0)  # noqa: SLF001
+
+    def test_render_fluid_frame_releases_native_buffer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """成功路径：缓冲 ``string_at`` 拷贝后经 ``faf_free_buffer(ptr, len)`` 释放。
+
+        以假 native 返回模拟启用后的流体帧路径（当前 DROP 不可达）：
+        断言释放入参为 ``(raw, out_len)`` 成对值，且方法仍返回拷贝字节。
+        """
+        import ctypes
+
+        inst = FafCoreBridge()
+        if not inst.available or not inst._supports_render_fluid_frame:  # noqa: SLF001
+            pytest.skip("faf_core.dll 不含 render_fluid_frame 导出，跳过释放路径测试")
+
+        payload = bytes(range(16))
+        buf = ctypes.create_string_buffer(payload, len(payload))
+        released: list = []
+
+        def fake_render(width, height, palette, seed, time_value, overlay, out_len):
+            ctypes.cast(out_len, ctypes.POINTER(ctypes.c_size_t))[0] = len(payload)
+            return ctypes.addressof(buf)
+
+        def fake_free(ptr, size):
+            released.append((int(ptr), int(size)))
+
+        monkeypatch.setattr(inst, "_native_render_fluid_frame", fake_render)  # noqa: SLF001
+        monkeypatch.setattr(inst, "_native_free_buffer", fake_free)  # noqa: SLF001
+
+        result = inst.render_fluid_frame(4, 4, "[]", 1, 0.5, "{}")
+        assert result == payload
+        assert released == [(ctypes.addressof(buf), len(payload))]
+
     def test_render_fluid_frame_nonpositive_size_returns_none(self) -> None:
         """0/负尺寸 → None（不抛异常，不触 native）。"""
         inst = FafCoreBridge()

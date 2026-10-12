@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QSizePolicy
 
 from theme import tm
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
+from freeassetfilter.utils.app_logger import debug
 
 
 SIZE_CONFIG = {
@@ -543,9 +544,9 @@ class StyledBreadcrumb(QWidget):
         for link in self._link_widgets:
             try:
                 link.clicked.disconnect()
-            except RuntimeError:
-                # 3.1#19 留档：信号未连接/控件已销毁，预期防御。
-                pass
+            except RuntimeError as exc:
+                # 3.1#19：信号未连接/控件已销毁，预期防御；debug 留痕。
+                debug(f"面包屑链接信号断开失败（控件已销毁）：{exc}")
 
         # Remove old widgets
         for w in self._link_widgets:

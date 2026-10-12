@@ -6938,6 +6938,13 @@ LicenseRef-proprietary
 Microsoft 专有可再分发组件（VC++ OpenMP 运行时），无开源全文，许可条款见官方再分发页 <https://learn.microsoft.com/visualstudio/releases/2022/redistribution>。
 
 
+### msvcp140.dll（LUT C++ 扩展）
+
+LicenseRef-proprietary
+
+Microsoft 专有可再分发组件（VC++ C++ 标准库运行时），随 `lut_preview_cpp` 扩展分发于 `core/native/src/cpp_lut_preview/`，打包时按边车收集进 `core/native/bin/lut_preview/`（审查 3.1#20 `/MD` 构建配套）。无开源全文，许可条款见官方再分发页 <https://learn.microsoft.com/visualstudio/releases/2022/redistribution>。
+
+
 ### libde265 (pillow_heif bundled)
 
 LGPL-3.0-or-later
@@ -10518,7 +10525,7 @@ BSD-3-Clause
 
 （本许可证全文已在上方 OpenBLAS (numpy) 条目引用，逐字一致。）
 
-**专有组件（随包可再分发，无开源全文）**：微软专有再分发组件（VCOMP140.DLL、numpy 与 psd-tools 随 wheel 内嵌的 MSVC 运行时）不附带开源许可证文本，官方授权条款见 <https://learn.microsoft.com/visualstudio/releases/2022/redistribution>。
+**专有组件（随包可再分发，无开源全文）**：微软专有再分发组件（VCOMP140.DLL、msvcp140.dll（LUT C++ 扩展）、numpy 与 psd-tools 随 wheel 内嵌的 MSVC 运行时）不附带开源许可证文本，官方授权条款见 <https://learn.microsoft.com/visualstudio/releases/2022/redistribution>。
 
 **未随包 / 系统组件**：`d3dcompiler_47.dll`（微软 DirectX 系统组件）经全盘递归检索未随本项目分发，无第三方许可证文本记录；其余系统级 DLL（kernel32 / user32 / dwmapi 等）为操作系统组成部分，不在本文档附全文。
 

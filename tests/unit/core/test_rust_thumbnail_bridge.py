@@ -498,3 +498,71 @@ class TestFfmpegCapabilitiesExport:
         second = self._capabilities(inst)
         assert second["formats"] == first["formats"]
         assert second["codecs"] == first["codecs"]
+
+
+# ---------------------------------------------------------------------------
+# 查询导出长度通道（审查 3.1#30）
+# ---------------------------------------------------------------------------
+class TestLengthChannelExports:
+    """``*_json_len`` 变体：绑定探测、长度一致性、NUL 回退分支。"""
+
+    LEN_ATTRS: Tuple[str, ...] = (
+        "_native_decode_stats_json_len",
+        "_native_error_log_json_len",
+        "_native_supported_formats_json_len",
+        "_native_available_hwaccels_json_len",
+        "_native_ffmpeg_capabilities_json_len",
+    )
+
+    def test_len_variants_bound(self) -> None:
+        """新 DLL 的 5 个长度通道变体全部绑定成功（旧 DLL 下不成立）。"""
+        inst = RustThumbnailBridge()
+        for attr in self.LEN_ATTRS:
+            assert getattr(inst, attr) is not None, f"{attr} 应已绑定（需重建 DLL）"
+
+    def test_out_len_matches_content(self) -> None:
+        """变体写出的 out_len 与 ``string_at`` 有界读取的字节数一致。"""
+        import ctypes
+        import json
+
+        inst = RustThumbnailBridge()
+        for attr in self.LEN_ATTRS:
+            fn = getattr(inst, attr)
+            out_len = ctypes.c_size_t(0)
+            raw = fn(ctypes.byref(out_len))
+            assert raw, f"{attr} 应返回非空指针"
+            try:
+                data = ctypes.string_at(raw, out_len.value)
+                assert len(data) == out_len.value
+                assert isinstance(json.loads(data.decode("utf-8")), (dict, list))
+            finally:
+                inst._native_free_message(raw)  # noqa: SLF001
+
+    def test_nul_fallback_helper_reads_legacy_string(self) -> None:
+        """out_len == 0 时 ``_read_native_string`` 走 NUL 回退（旧 DLL 兼容）。"""
+        import ctypes
+        import json
+
+        inst = RustThumbnailBridge()
+        dll = inst._dll  # noqa: SLF001
+        dll.native_get_supported_formats_json.argtypes = []
+        dll.native_get_supported_formats_json.restype = ctypes.c_void_p
+        raw = dll.native_get_supported_formats_json()
+        assert raw
+        try:
+            data = inst._read_native_string(raw, 0)  # noqa: SLF001
+            assert data, "NUL 回退路径应读出内容"
+            assert isinstance(json.loads(data.decode("utf-8")), dict)
+        finally:
+            inst._native_free_message(raw)  # noqa: SLF001
+
+    def test_bridge_methods_use_length_channel(self) -> None:
+        """桥方法（长度通道优先）仍返回既有形状契约。"""
+        import json
+
+        inst = RustThumbnailBridge()
+        assert isinstance(inst.get_decode_stats(), dict)
+        assert isinstance(inst.get_available_hwaccels(), list)
+        assert isinstance(json.loads(inst.get_supported_formats()), dict)
+        assert isinstance(json.loads(inst.get_ffmpeg_capabilities()), dict)
+        assert isinstance(json.loads(inst.get_error_log()), list)

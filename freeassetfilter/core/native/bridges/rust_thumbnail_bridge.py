@@ -68,6 +68,13 @@ class RustThumbnailBridge:
         self._supports_errorlog = False
         self._supports_formats = False
         self._supports_caps = False
+        # 审查 3.1#30：查询导出的长度通道变体（out_len），绑定存在时优先使用；
+        # 旧 DLL 缺失时保持 None 并回退 NUL 契约读取。
+        self._native_decode_stats_json_len = None
+        self._native_error_log_json_len = None
+        self._native_supported_formats_json_len = None
+        self._native_available_hwaccels_json_len = None
+        self._native_ffmpeg_capabilities_json_len = None
         self._dll_directory_handle = None
         self._preloaded_runtime_dlls = []
         self._load()
@@ -221,6 +228,22 @@ class RustThumbnailBridge:
         except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             self._supports_caps = False
 
+        # 审查 3.1#30：长度通道变体（可选导出，绑定存在时桥优先走有界读取）。
+        for attr, symbol in (
+            ("_native_decode_stats_json_len", "native_get_decode_stats_json_len"),
+            ("_native_error_log_json_len", "native_get_error_log_json_len"),
+            ("_native_supported_formats_json_len", "native_get_supported_formats_json_len"),
+            ("_native_available_hwaccels_json_len", "native_get_available_hwaccels_json_len"),
+            ("_native_ffmpeg_capabilities_json_len", "native_get_ffmpeg_capabilities_json_len"),
+        ):
+            try:
+                fn = getattr(dll, symbol)
+                fn.argtypes = [POINTER(c_size_t)]
+                fn.restype = c_void_p
+                setattr(self, attr, fn)
+            except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+                setattr(self, attr, None)
+
     def _free_result(self, result: NativeThumbnailResult) -> None:
         """释放单个结果结构体的 data 与 message（Rust 侧均为每次调用堆分配）。
 
@@ -234,6 +257,25 @@ class RustThumbnailBridge:
             self._dll.native_free_result(ctypes.byref(result))
         except Exception:  # noqa: BLE001, S110  # broad catch intentional at ctypes FFI boundary; ignore intentional (ctypes FFI boundary)
             pass
+
+    def _read_native_string(self, raw, out_len: int) -> bytes | None:
+        """读取 native 返回的字符串指针（审查 3.1#30 长度通道优先）。
+
+        新 DLL 的 ``*_json_len`` 变体会写出真实字节长度，桥优先走
+        ``string_at(raw, out_len)`` 有界读取；旧 DLL 未写长度（``out_len``
+        为 0）时回退既有 NUL 终止契约（``c_char_p.value``）。原始指针仍由
+        调用方按既有模式经 ``native_free_message`` 释放。
+
+        Args:
+            raw: native 返回的非空指针。
+            out_len: 长度通道写出的字节数；0 表示走 NUL 回退。
+
+        Returns:
+            bytes；NUL 回退路径读取失败时返回 ``None``。
+        """
+        if out_len > 0:
+            return ctypes.string_at(raw, out_len)
+        return ctypes.cast(raw, c_char_p).value
 
     def set_cache_limit(self, max_bytes: int) -> bool:
         if not self.available:
@@ -260,21 +302,28 @@ class RustThumbnailBridge:
     def get_decode_stats(self) -> dict[str, int]:
         if not self.available:
             return {}
-        raw = self._dll.native_get_decode_stats_json()
+        raw = None
+        out_len = c_size_t(0)
         try:
+            if self._native_decode_stats_json_len is not None:
+                raw = self._native_decode_stats_json_len(ctypes.byref(out_len))
+            else:
+                raw = self._dll.native_get_decode_stats_json()
             if not raw:
                 return {}
-            # 契约依赖：Rust 侧以 CString 分配并保证 NUL 结尾，c_char_p.value
-            # 才能有界读取。后续改进（审查 3.1#30，本轮不涉及）：查询导出补
-            # out_len 变体，桥优先走长度通道以消除隐式 NUL 扫描依赖。
-            result = json.loads(ctypes.cast(raw, c_char_p).value)
+            # 审查 3.1#30：优先长度通道（有界读取），旧 DLL 回退 NUL 契约。
+            payload = self._read_native_string(raw, int(out_len.value))
+            if not payload:
+                return {}
+            result = json.loads(payload)
             debug(f"获取解码统计: {result}")
             return result
         except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             warning(f"get_decode_stats 失败: {e}")
             return {}
         finally:
-            self._native_free_message(raw)
+            if raw is not None:
+                self._native_free_message(raw)
 
     def reset_decode_stats(self) -> bool:
         if not self.available:
@@ -290,12 +339,20 @@ class RustThumbnailBridge:
     def get_available_hwaccels(self) -> list[str]:
         if not self.available:
             return []
-        raw = self._dll.native_get_available_hwaccels_json()
+        raw = None
+        out_len = c_size_t(0)
         try:
+            if self._native_available_hwaccels_json_len is not None:
+                raw = self._native_available_hwaccels_json_len(ctypes.byref(out_len))
+            else:
+                raw = self._dll.native_get_available_hwaccels_json()
             if not raw:
                 return []
-            # 契约依赖：同 get_decode_stats，后续改进见审查 3.1#30（长度通道）。
-            parsed = json.loads(ctypes.cast(raw, c_char_p).value)
+            # 审查 3.1#30：同 get_decode_stats，长度通道优先。
+            payload = self._read_native_string(raw, int(out_len.value))
+            if not payload:
+                return []
+            parsed = json.loads(payload)
             if not isinstance(parsed, list):
                 return []
             result = [str(item).strip().lower() for item in parsed if str(item).strip()]
@@ -305,7 +362,8 @@ class RustThumbnailBridge:
             warning(f"get_available_hwaccels 失败: {e}")
             return []
         finally:
-            self._native_free_message(raw)
+            if raw is not None:
+                self._native_free_message(raw)
 
     def set_max_concurrent_hw_video_decodes(self, max_slots: int) -> bool:
         if not self.available:
@@ -332,11 +390,16 @@ class RustThumbnailBridge:
         if not self.available or not self._supports_errorlog:
             return "[]"
         raw = None
+        out_len = c_size_t(0)
         try:
-            raw = self._dll.native_get_error_log_json()
+            if self._native_error_log_json_len is not None:
+                raw = self._native_error_log_json_len(ctypes.byref(out_len))
+            else:
+                raw = self._dll.native_get_error_log_json()
             if not raw:
                 return "[]"
-            payload = ctypes.cast(raw, c_char_p).value
+            # 审查 3.1#30：优先长度通道（有界读取），旧 DLL 回退 NUL 契约。
+            payload = self._read_native_string(raw, int(out_len.value))
             if not payload:
                 return "[]"
             text = payload.decode("utf-8", errors="replace")
@@ -379,11 +442,16 @@ class RustThumbnailBridge:
         if not self.available or not self._supports_formats:
             return "{}"
         raw = None
+        out_len = c_size_t(0)
         try:
-            raw = self._dll.native_get_supported_formats_json()
+            if self._native_supported_formats_json_len is not None:
+                raw = self._native_supported_formats_json_len(ctypes.byref(out_len))
+            else:
+                raw = self._dll.native_get_supported_formats_json()
             if not raw:
                 return "{}"
-            payload = ctypes.cast(raw, c_char_p).value
+            # 审查 3.1#30：优先长度通道（有界读取），旧 DLL 回退 NUL 契约。
+            payload = self._read_native_string(raw, int(out_len.value))
             if not payload:
                 return "{}"
             text = payload.decode("utf-8", errors="replace")
@@ -411,11 +479,16 @@ class RustThumbnailBridge:
         if not self.available or not self._supports_caps:
             return "{}"
         raw = None
+        out_len = c_size_t(0)
         try:
-            raw = self._dll.native_get_ffmpeg_capabilities_json()
+            if self._native_ffmpeg_capabilities_json_len is not None:
+                raw = self._native_ffmpeg_capabilities_json_len(ctypes.byref(out_len))
+            else:
+                raw = self._dll.native_get_ffmpeg_capabilities_json()
             if not raw:
                 return "{}"
-            payload = ctypes.cast(raw, c_char_p).value
+            # 审查 3.1#30：优先长度通道（有界读取），旧 DLL 回退 NUL 契约。
+            payload = self._read_native_string(raw, int(out_len.value))
             if not payload:
                 return "{}"
             text = payload.decode("utf-8", errors="replace")

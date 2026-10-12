@@ -68,12 +68,13 @@ ext_modules = [
     ),
 ]
 
-# ── 后续改进（审查 3.1#20，本轮不涉及；均需重新编译 .pyd 后验证）────────────
-# * -march=native：产物绑定构建机指令集，老 CPU 上执行存在非法指令风险，
-#   建议移除（退回通用 x86-64 基线）；
-# * -ffast-math：改变浮点结果，建议先用 C++ vs numpy 输出对比基准决定去留；
-# * MSVC /MT 与 CPython 扩展 /MD 惯例不符（跨模块堆分配风险），建议改 /MD
-#   并随包解决 msvcp140.dll 分发。
+# ── 构建参数基线（审查 3.1#20 修复）────────────────────────────────────────
+# * 移除 -march=native：退回通用 x86-64 基线，避免产物绑定构建机指令集在
+#   老 CPU 上触发非法指令；
+# * 移除 -ffast-math：保持 IEEE 浮点语义（变更前后 C++ 输出对拍，
+#   四组样例逐像素完全一致，0 差异）；
+# * MSVC 改 /MD：与 CPython 扩展惯例一致，避免跨 CRT 堆分配风险；
+#   msvcp140.dll 随扩展目录分发（THIRD_PARTY_NOTICES 已登记）。
 if platform.system() == "Windows":
     if COMPILER == "mingw":
         info("[Setup] 使用 MinGW 编译器")
@@ -84,8 +85,6 @@ if platform.system() == "Windows":
                 "-Wextra",
                 "-fopenmp",
                 "-std=c++17",
-                "-ffast-math",
-                "-march=native",
                 "-DMS_WIN64",
             ]
             ext.extra_link_args = ["-fopenmp", "-static-libgcc", "-static-libstdc++"]
@@ -99,7 +98,7 @@ if platform.system() == "Windows":
                 "/openmp",
                 "/std:c++17",
                 "/utf-8",
-                "/MT",
+                "/MD",
             ]
             ext.extra_link_args = ["/openmp"]
         
@@ -120,8 +119,6 @@ else:
             "-Wextra",
             "-fopenmp",
             "-std=c++17",
-            "-ffast-math",
-            "-march=native",
         ]
         ext.extra_link_args = ["-fopenmp"]
 

@@ -1,9 +1,10 @@
 //! GIF 解码器（todo 13 实现；Design Revision 5 落地：**不自研 GIF 解析，改用
 //! image crate 内建覆盖**）。
 //!
-//! 职责：由 image crate 内建 GIF 解码（gif crate v0.14.2 -> weezl 纯 Rust LZW，
-//! 见 infra/lzw.rs 骨架与 todo 3 实证），覆盖 87a/89a、GCT/LCT 调色板、透明色、
-//! 隔行扫描、逻辑屏幕/图像描述符；**动图只取第一帧**——`image::load_from_memory`
+//! 职责：由 image crate 内建 GIF 解码（gif crate v0.14.2 -> weezl 纯 Rust LZW；
+//! 自研 LZW 骨架已随 review 3.3 收口删除、能力由 weezl 承担），覆盖 87a/89a、
+//! GCT/LCT 调色板、透明色、隔行扫描、逻辑屏幕/图像描述符；**动图只取第一帧**——
+//! `image::load_from_memory`
 //! 语义即默认解码第一帧（image crate 对 GIF 这类动画格式默认只解出首帧单图，
 //! 后续帧需经 gif crate 的 AnimationDecoder 才可获取，本解码器不使用，即
 //! **后续帧不解析**），供静态首帧缩略图。

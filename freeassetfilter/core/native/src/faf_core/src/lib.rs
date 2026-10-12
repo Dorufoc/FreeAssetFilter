@@ -1,13 +1,14 @@
 //! `faf_core` —— FreeAssetFilter 原生性能库（Rust `cdylib`，与缩略图引擎并列）。
 //!
-//! 本文件为 FFI 根模块：实现全部 20 个 `#[no_mangle]` 业务导出（目录扫描/排序/高亮/
+//! 本文件为 FFI 根模块：crate 共 21 个 `#[no_mangle]` 业务导出（目录扫描/排序/高亮/
 //! Markdown/字体/哈希/编码探测/批量复制/目录大小聚合，及 EXIF/PSD 占位/SVG 换色/
-//! 流体占位/7z 解析/PDF 选区）与共享基础设施（状态码、JSON 输出 helper、`catch_unwind` 兜底、裸指针入参守卫）。
+//! 流体占位/缓冲释放/7z 解析/PDF 选区；其中模块内 6 个、本文件 15 个）与共享
+//! 基础设施（状态码、JSON 输出 helper、`catch_unwind` 兜底、裸指针入参守卫）。
 //!
 //! FFI 范式镜像 `thumbnail_rust`（`src/lib.rs`）：
 //! - 状态码语义 `0/-1/-2/-3/-4/-5/-6/-7`（thumbnail_rust `:42-52`）
 //! - `CString::into_raw` 输出模式（thumbnail_rust `:535-569`）
-//! - `#[no_mangle] pub extern "C" fn` 导出形态（本文件 `:200` 起，20 个导出；范式参考 thumbnail_rust `:672-1029`）
+//! - `#[no_mangle] pub extern "C" fn` 导出形态（本文件 `:200` 起，15 个导出；范式参考 thumbnail_rust `:672-1029`）
 //!
 //! 调用纪律（Python 桥侧）：`faf_version` 返回的指针必须先
 //! `ctypes.string_at` 拷贝，再调 `faf_free_message` 释放（对称分配）。
@@ -600,9 +601,10 @@ pub extern "C" fn faf_replace_svg_colors(
 /// `Err(STATUS_UNSUPPORTED)` → null，Python 保持 `_styled_fluid_cpu`
 /// `render_static_frame` 路径；`QPixmap`/`QImage` 永远留在 GUI 线程。
 ///
-/// 契约：成功输出 Rust 分配的 RGBA 像素缓冲（`*mut c_void` + `*out_len`），
-/// Python 侧 `QImage` 包装后 `QPixmap.fromImage`。占位期恒失败返回 null，
-/// 不写 `*out_len`、不分配缓冲。
+/// 契约：成功输出 Rust 分配的 RGBA 像素缓冲（`*mut c_void` + `*out_len`，
+/// 释放一律经 [`faf_free_buffer`]；经 `into_boxed_slice` 移交保证
+/// capacity == len），Python 侧 `QImage` 包装后 `QPixmap.fromImage`。
+/// 占位期恒失败返回 null，不写 `*out_len`、不分配缓冲。
 ///
 /// - 失败（null 入参/负数尺寸/非法 JSON/未实现）：返回 null，不 panic。
 ///
@@ -648,16 +650,46 @@ pub extern "C" fn faf_render_fluid_frame(
             overlay_text,
         ) {
             Ok(buf) => {
+                // 审查 3.1#26：经 into_boxed_slice 移交，保证 capacity == len，
+                // 调用方 `faf_free_buffer(ptr, len)` 可安全重建释放。
+                let mut boxed = buf.into_boxed_slice();
+                let len = boxed.len();
                 // SAFETY：out_len 已守卫非空；成功时写入产物长度（占位期不可达）。
-                unsafe { *out_len = buf.len() }
-                let ptr = buf.as_ptr() as *mut c_void;
+                unsafe { *out_len = len }
+                let ptr = boxed.as_mut_ptr() as *mut c_void;
                 // 所有权移交调用方（已写 out_len；占位期恒 DROP 不可达）。
-                std::mem::forget(buf);
+                std::mem::forget(boxed);
                 ptr
             }
             Err(_) => std::ptr::null_mut(),
         }
     })
+}
+
+/// 释放 [`faf_render_fluid_frame`] 返回的 RGBA 像素缓冲（审查 3.1#26）。
+///
+/// `ptr`/`len` 必须来自 [`faf_render_fluid_frame`] 成功路径写出的成对值；
+/// null 指针或 `len == 0` 直接返回。缓冲区经 `Vec<u8>::into_boxed_slice`
+/// 移交（capacity == len），`Vec::from_raw_parts(ptr, len, len)` 按分配容量
+/// 重建释放；内部 `catch_unwind` 兜底，不 panic。
+///
+/// `#[allow(clippy::not_unsafe_ptr_arg_deref)]`：FFI 边界保持
+/// `safe extern "C"`（与 [`faf_free_message`] 同契约，ctypes 侧按普通函数
+/// 指针调用）；入参已做 null/零长守卫，指针来源限定为本 crate 成功导出，
+/// 对称可审计，故不标记 `unsafe`。
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn faf_free_buffer(ptr: *mut c_void, len: usize) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if ptr.is_null() || len == 0 {
+            return;
+        }
+        // SAFETY：ptr/len 来自 faf_render_fluid_frame 成功路径；该类缓冲经
+        // into_boxed_slice 移交，capacity == len，可安全重建释放。
+        unsafe {
+            let _ = Vec::from_raw_parts(ptr as *mut u8, len, len);
+        }
+    }));
 }
 
 /// 解析 7z `-slt` 列表输出（todo 16）：`faf_parse_7z_list(output,
@@ -982,5 +1014,26 @@ mod tests {
         unsafe {
             let _ = CString::from_raw(raw);
         }
+    }
+
+    /// 审查 3.1#26：`faf_free_buffer` 释放路径——null/零长 no-op；
+    /// `into_boxed_slice` 移交的缓冲按 (ptr, len) 重建释放不崩。
+    #[test]
+    fn faf_free_buffer_releases_boxed_slice_without_crash() {
+        // null / 零长：no-op，不崩。
+        faf_free_buffer(std::ptr::null_mut(), 0);
+        faf_free_buffer(std::ptr::null_mut(), 16);
+
+        // 模拟 faf_render_fluid_frame 成功路径的所有权移交：
+        // Vec<u8> → into_boxed_slice（capacity == len）→ forget → free。
+        let mut boxed = vec![7u8; 16].into_boxed_slice();
+        let len = boxed.len();
+        let ptr = boxed.as_mut_ptr() as *mut c_void;
+        std::mem::forget(boxed);
+        faf_free_buffer(ptr, len);
+
+        // 零长但非空指针：按契约 no-op（不构造空 Vec from_raw_parts）。
+        let mut empty: Vec<u8> = Vec::new();
+        faf_free_buffer(empty.as_mut_ptr() as *mut c_void, 0);
     }
 }

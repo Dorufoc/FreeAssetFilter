@@ -275,11 +275,13 @@ def collect_binaries() -> List[Tuple[str, str]]:
     if missing:
         raise FileNotFoundError("缺少发布运行时文件:\n  " + "\n  ".join(missing))
     # LUT 扩展是可选的；若存在则只从发布 bin 目录收集，绝不带入 native/src。
+    # 审查 3.1#20：/MD 构建后扩展依赖 msvcp140.dll（OpenMP 依赖 VCOMP140.DLL），
+    # 随 pyd 一并收集同目录 *.dll 边车，保证冻结产物可加载。
     lut_dir = native_bin / "lut_preview"
     if lut_dir.is_dir():
-        for pyd in sorted(lut_dir.glob("*.pyd")):
-            binaries.append((str(pyd), "freeassetfilter/core/native/bin/lut_preview"))
-            print_info(f"收集到 LUT 扩展 {pyd.name}")
+        for sidecar in sorted([*lut_dir.glob("*.pyd"), *lut_dir.glob("*.dll")]):
+            binaries.append((str(sidecar), "freeassetfilter/core/native/bin/lut_preview"))
+            print_info(f"收集到 LUT 扩展 {sidecar.name}")
     print_success(f"共收集到 {len(binaries)} 个运行时二进制文件")
     return binaries
 

@@ -538,6 +538,25 @@ fn c_message(msg: &str) -> *mut c_char {
         .into_raw()
 }
 
+/// 把 Rust 字符串分配为 NUL 终止 `*mut c_char`，并把**不含 NUL 的字节长度**
+/// 写入 `out_len`（指针为 null 时跳过）。
+///
+/// 与 [`c_message`] 同分配契约（释放一律经 [`native_free_message`]）；长度
+/// 通道供 Python 桥以 `ctypes.string_at(ptr, out_len)` 有界读取，消除对隐式
+/// NUL 扫描的依赖（审查 3.1#30）。内部 NUL 走 `c_message` 同款回退文案，
+/// `out_len` 与实际分配内容始终一致。
+fn c_message_with_len(msg: &str, out_len: *mut usize) -> *mut c_char {
+    let owned = CString::new(msg)
+        .unwrap_or_else(|_| CString::new("invalid message").unwrap());
+    let len = owned.as_bytes().len();
+    let ptr = owned.into_raw();
+    if !out_len.is_null() {
+        // SAFETY：out_len 已守卫非空；FFI 契约保证其指向可写 usize。
+        unsafe { *out_len = len };
+    }
+    ptr
+}
+
 fn make_result_from_entry(entry: CacheEntry) -> NativeThumbnailResult {
     let mut boxed = entry.data.into_boxed_slice();
     let len = boxed.len();
@@ -889,6 +908,15 @@ pub extern "C" fn native_get_decode_stats_json() -> *mut c_char {
         .unwrap_or_else(|_| c_message("{}"))
 }
 
+/// [`native_get_decode_stats_json`] 的长度通道变体（审查 3.1#30）：成功时把
+/// JSON 字节长度写入 `out_len`（null 跳过）。桥优先走此变体做有界读取；
+/// 旧导出保持原契约，兼容旧桥/旧调用方。
+#[no_mangle]
+pub extern "C" fn native_get_decode_stats_json_len(out_len: *mut usize) -> *mut c_char {
+    std::panic::catch_unwind(|| c_message_with_len(&decode_stats_to_json(), out_len))
+        .unwrap_or_else(|_| c_message_with_len("{}", out_len))
+}
+
 #[no_mangle]
 pub extern "C" fn native_reset_decode_stats() -> c_int {
     std::panic::catch_unwind(|| {
@@ -907,6 +935,13 @@ pub extern "C" fn native_get_error_log_json() -> *mut c_char {
         .unwrap_or_else(|_| c_message("[]"))
 }
 
+/// [`native_get_error_log_json`] 的长度通道变体（审查 3.1#30）。
+#[no_mangle]
+pub extern "C" fn native_get_error_log_json_len(out_len: *mut usize) -> *mut c_char {
+    std::panic::catch_unwind(|| c_message_with_len(&infra::errorlog::error_log_to_json(), out_len))
+        .unwrap_or_else(|_| c_message_with_len("[]", out_len))
+}
+
 #[no_mangle]
 pub extern "C" fn native_clear_error_log() -> c_int {
     std::panic::catch_unwind(|| match infra::errorlog::clear_error_log() {
@@ -922,6 +957,13 @@ pub extern "C" fn native_get_supported_formats_json() -> *mut c_char {
         .unwrap_or_else(|_| c_message("{}"))
 }
 
+/// [`native_get_supported_formats_json`] 的长度通道变体（审查 3.1#30）。
+#[no_mangle]
+pub extern "C" fn native_get_supported_formats_json_len(out_len: *mut usize) -> *mut c_char {
+    std::panic::catch_unwind(|| c_message_with_len(&infra::registry::supported_formats_json(), out_len))
+        .unwrap_or_else(|_| c_message_with_len("{}", out_len))
+}
+
 #[no_mangle]
 pub extern "C" fn native_get_available_hwaccels_json() -> *mut c_char {
     std::panic::catch_unwind(|| {
@@ -930,6 +972,17 @@ pub extern "C" fn native_get_available_hwaccels_json() -> *mut c_char {
         c_message(&json)
     })
     .unwrap_or_else(|_| c_message("[]"))
+}
+
+/// [`native_get_available_hwaccels_json`] 的长度通道变体（审查 3.1#30）。
+#[no_mangle]
+pub extern "C" fn native_get_available_hwaccels_json_len(out_len: *mut usize) -> *mut c_char {
+    std::panic::catch_unwind(|| {
+        let hwaccels = available_hwaccels_from_ffmpeg();
+        let json = serde_json::to_string(&hwaccels).unwrap_or_else(|_| "[]".to_string());
+        c_message_with_len(&json, out_len)
+    })
+    .unwrap_or_else(|_| c_message_with_len("[]", out_len))
 }
 
 #[no_mangle]
@@ -1053,6 +1106,13 @@ pub extern "C" fn native_get_ffmpeg_capabilities_json() -> *mut c_char {
         .unwrap_or_else(|_| c_message("{}"))
 }
 
+/// [`native_get_ffmpeg_capabilities_json`] 的长度通道变体（审查 3.1#30）。
+#[no_mangle]
+pub extern "C" fn native_get_ffmpeg_capabilities_json_len(out_len: *mut usize) -> *mut c_char {
+    std::panic::catch_unwind(|| c_message_with_len(&t2::ffmpeg_capability::capabilities_json(), out_len))
+        .unwrap_or_else(|_| c_message_with_len("{}", out_len))
+}
+
 #[cfg(test)]
 mod lzw_wiring_tests {
     //! Design Revision 5 验证：image 0.25.10 内建 GIF（gif crate）与 TIFF
@@ -1087,5 +1147,74 @@ mod lzw_wiring_tests {
         // 像素数据完整输出（RGBA8），证明 LZW 解码两变体链路均可用。
         assert_eq!(gif.to_rgba8().pixels().count(), 16);
         assert_eq!(tiff.to_rgba8().pixels().count(), 16);
+    }
+}
+
+#[cfg(test)]
+mod length_channel_tests {
+    //! 审查 3.1#30：查询导出的长度通道变体——`out_len` 必须与实际分配的
+    //! 字节长度一致，可经有界读取取回原文；旧导出与变体输出一致。
+
+    use super::*;
+    use crate::infra::errorlog::TEST_GLOBAL_LOCK;
+
+    fn read_len_and_free(ptr: *mut c_char, len: usize) -> String {
+        assert!(!ptr.is_null(), "长度通道导出应返回非空指针");
+        // SAFETY：ptr 由 c_message_with_len 分配，len 为其实际字节长度。
+        let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
+        let text = std::str::from_utf8(bytes)
+            .expect("查询导出应输出 UTF-8")
+            .to_string();
+        native_free_message(ptr);
+        text
+    }
+
+    #[test]
+    fn len_variants_write_matching_lengths() {
+        // ffmpeg 能力探测为进程内首次调用，可能向全局 errorlog 记录失败项；
+        // 与 t3 接线测试共用 TEST_GLOBAL_LOCK 串行化，避免污染其计数断言。
+        let _guard = TEST_GLOBAL_LOCK.lock().unwrap();
+
+        let mut len = 0usize;
+        let stats = read_len_and_free(native_get_decode_stats_json_len(&mut len), len);
+        assert!(serde_json::from_str::<serde_json::Value>(&stats).is_ok());
+
+        let mut len = 0usize;
+        let log = read_len_and_free(native_get_error_log_json_len(&mut len), len);
+        assert!(serde_json::from_str::<serde_json::Value>(&log).is_ok());
+
+        let mut len = 0usize;
+        let formats = read_len_and_free(native_get_supported_formats_json_len(&mut len), len);
+        assert!(serde_json::from_str::<serde_json::Value>(&formats).is_ok());
+
+        let mut len = 0usize;
+        let hw = read_len_and_free(native_get_available_hwaccels_json_len(&mut len), len);
+        assert!(serde_json::from_str::<serde_json::Value>(&hw).is_ok());
+
+        let mut len = 0usize;
+        let caps = read_len_and_free(native_get_ffmpeg_capabilities_json_len(&mut len), len);
+        assert!(serde_json::from_str::<serde_json::Value>(&caps).is_ok());
+    }
+
+    #[test]
+    fn len_variants_accept_null_out_len() {
+        // null out_len：仅返回字符串，不写长度、不崩溃。
+        let ptr = native_get_decode_stats_json_len(std::ptr::null_mut());
+        assert!(!ptr.is_null());
+        native_free_message(ptr);
+    }
+
+    #[test]
+    fn legacy_export_matches_len_variant() {
+        // 静态注册表 JSON：旧导出与长度通道变体内容一致（同一数据源）。
+        let legacy = native_get_supported_formats_json();
+        assert!(!legacy.is_null());
+        // SAFETY：legacy 为 CString 分配，NUL 终止。
+        let legacy_text = unsafe { CStr::from_ptr(legacy) }.to_str().unwrap().to_string();
+        native_free_message(legacy);
+
+        let mut len = 0usize;
+        let via_len = read_len_and_free(native_get_supported_formats_json_len(&mut len), len);
+        assert_eq!(legacy_text, via_len);
     }
 }

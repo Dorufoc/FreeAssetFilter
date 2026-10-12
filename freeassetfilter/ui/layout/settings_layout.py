@@ -1607,8 +1607,8 @@ class GeneralSettingsPage(QWidget):
         # 暂存隔离铁律：开关只写入 SettingsStagingCache（general.enable_ai_entry），
         # 点击「确定」才经 _submit_settings 下发主窗口并落盘。
         self._ai_row = SettingsRow(
-            title="AI 功能入口",
-            description="在 PDF / 文本预览器中显示 AI 侧边入口（长期规划功能）。",
+            title="AI功能入口",
+            description="在PDF/文本预览器中显示AI侧边入口",
         )
         self._ai_toggle = StyledToggle(checked=False, size="default")
         self._ai_toggle.toggled.connect(self._on_ai_entry_toggled)
@@ -1618,7 +1618,7 @@ class GeneralSettingsPage(QWidget):
         # ── 网络/映射盘与光驱（默认关闭）──
         self._drives_row = SettingsRow(
             title="显示网络盘与光驱",
-            description="「All」磁盘视图中额外列出映射网络盘与光驱（默认关闭）。",
+            description="「All」磁盘视图中额外列出映射网络盘与光驱",
         )
         self._drives_toggle = StyledToggle(checked=False, size="default")
         self._drives_toggle.toggled.connect(self._on_remote_drives_toggled)

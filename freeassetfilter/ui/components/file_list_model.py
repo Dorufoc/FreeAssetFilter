@@ -22,6 +22,7 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QApplication
 
 from freeassetfilter.services.file_icon_manager import FileIconManager
+from freeassetfilter.utils.app_logger import debug
 
 # ── 自定义角色 ──────────────────────────────────────────────────────────────
 
@@ -440,10 +441,9 @@ class FileListModel(QAbstractListModel):
                     ratio = float(screen.devicePixelRatio())
                     if ratio > 0:
                         return ratio
-        except (RuntimeError, AttributeError, TypeError, ValueError):
-            # 3.1#19 留档：无 QApplication/异常屏环境下取 DPR 失败，预期回退 1.0
-            #（不改行为；后续改进为意外分支补 debug 日志）。
-            pass
+        except (RuntimeError, AttributeError, TypeError, ValueError) as exc:
+            # 3.1#19：无 QApplication/异常屏环境下取 DPR 失败，预期回退 1.0；debug 留痕。
+            debug(f"获取设备像素比失败，回退 1.0：{exc}")
         return 1.0
 
     def _on_system_icon_loaded(self, file_path: str) -> None:
