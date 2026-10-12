@@ -36,14 +36,17 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QFileDialog,
     QWidget,
 )
 
 from freeassetfilter.services.pdf_document import PdfDocument
 from freeassetfilter.ui.components.styled_context_menu import StyledContextMenu
+from freeassetfilter.ui.components.styled_dialog import ask_custom_dialog
 from freeassetfilter.services.pdf_document_view import PdfDocumentView
 from freeassetfilter.services.pdf_renderer import PdfBackgroundRenderer
 from freeassetfilter.ui.theme import tm
+from freeassetfilter.utils.app_logger import warning
 
 
 class NativePdfRenderer(QWidget):
@@ -358,6 +361,51 @@ class NativePdfRenderer(QWidget):
         self.zoom_changed.emit(target)
         self.update()
 
+    def fit_to_page_bounds(self) -> None:
+        """缩放到「适应整页」：当前页宽高同时放入视口，保留阅读位置。
+
+        取「适应页宽」与「高度适配」两种缩放的较小值；行为与
+        :meth:`fit_to_page` 一致（保持 offset_y、水平居中、提交渲染）。
+        """
+        if self._view is None or not self._page_widths:
+            return
+        page: int = self.current_page()
+        pw: float = float(self._page_widths[page])
+        ph: float = float(self._page_heights[page])
+        w: int = max(self.width(), 1)
+        h: int = max(self.height(), 1)
+        width_zoom: float = self._view.fit_to_page_width(w, h)
+        height_zoom: float = h / max(ph, 1.0)
+        target: float = max(0.1, min(width_zoom, height_zoom))
+        prev_offset_y = self._view.offset_y
+        self._view.set_zoom_level(target)
+        self._view.offset_x = pw / 2.0
+        self._view.offset_y = prev_offset_y
+        self._clamp_offset(self._view.zoom_level)
+        self._submit_render_for_visible_pages()
+        self.zoom_changed.emit(self._view.zoom_level)
+        self.update()
+
+    def zoom_in(self) -> None:
+        """放大一级（与 Ctrl+滚轮一致，1.1 倍）。"""
+        if self._view is None:
+            return
+        self._view.zoom_in(1.1)
+        self._clamp_offset(self._view.zoom_level)
+        self._submit_render_for_visible_pages()
+        self.zoom_changed.emit(self._view.zoom_level)
+        self.update()
+
+    def zoom_out(self) -> None:
+        """缩小一级（与 Ctrl+滚轮一致，1.1 倍）。"""
+        if self._view is None:
+            return
+        self._view.zoom_out(1.1)
+        self._clamp_offset(self._view.zoom_level)
+        self._submit_render_for_visible_pages()
+        self.zoom_changed.emit(self._view.zoom_level)
+        self.update()
+
     def page_count(self) -> int:
         """Return the total number of pages.
 
@@ -636,41 +684,62 @@ class NativePdfRenderer(QWidget):
         super().wheelEvent(event)
 
     def contextMenuEvent(self, event: Any) -> None:  # noqa: N802
-        """Build the right-click context menu.
-
-        Menu actions (to be extended in Task 6):
-        - 复制选中文字  (if text is selected)
-        - 复制图片      (if click falls inside an image block)
-        - 全选
-        """
+        """显示右键菜单（构建逻辑见 :meth:`_build_context_menu`）。"""
         if self._view is None:
             super().contextMenuEvent(event)
             return
-
-        menu = StyledContextMenu(parent=self)
-
-        # 文字选区操作
-        if self._view.selected_character_rects:
-            menu.add_item("复制选中文字", callback=self._copy_selected_text)
-
-        # 图片检测：右键点击位置是否落在图片块上
-        abs_pos: Tuple[float, float] = self._view.window_to_absolute_document_pos(
-            event.pos().x(), event.pos().y()
-        )
-        img_info: Optional[Dict[str, Any]] = self._find_image_at(abs_pos)
-        if img_info is not None:
-            menu.add_item(
-                "复制图片",
-                callback=lambda checked, info=img_info: self._copy_image(info),
-            )
-
-        menu.add_separator()
-        menu.add_item("全选", callback=self._select_all)
-
+        menu = self._build_context_menu(event.pos())
         if menu.actions():
             menu.exec(event.globalPos())
         else:
             super().contextMenuEvent(event)
+
+    def _build_context_menu(self, pos: Any) -> StyledContextMenu:
+        """构建右键菜单（与 contextMenuEvent 分离，便于测试断言）。
+
+        菜单结构：
+        - 文字/图片操作（按命中情况出现）：复制选中文字、复制图片、图片另存为…
+        - 缩放：放大 / 缩小 / 适应页宽 / 适应整页
+        - 全选
+
+        Args:
+            pos: 控件坐标下的右键位置（``event.pos()``）。
+
+        Returns:
+            StyledContextMenu: 已注册动作的菜单对象（调用方决定 exec）。
+        """
+        menu = StyledContextMenu(parent=self)
+
+        if self._view is not None:
+            # 文字选区操作
+            if self._view.selected_character_rects:
+                menu.add_item("复制选中文字", callback=self._copy_selected_text)
+
+            # 图片检测：右键点击位置是否落在图片块上
+            abs_pos: Tuple[float, float] = (
+                self._view.window_to_absolute_document_pos(pos.x(), pos.y())
+            )
+            img_info: Optional[Dict[str, Any]] = self._find_image_at(abs_pos)
+            if img_info is not None:
+                menu.add_item(
+                    "复制图片",
+                    callback=lambda checked=False, info=img_info: self._copy_image(info),
+                )
+                menu.add_item(
+                    "图片另存为…",
+                    callback=lambda checked=False, info=img_info: self._save_image(info),
+                )
+
+        # 缩放组（无文档时也保留入口：调用即空操作，不产生副作用）
+        menu.add_separator()
+        menu.add_item("放大", callback=self.zoom_in)
+        menu.add_item("缩小", callback=self.zoom_out)
+        menu.add_item("适应页宽", callback=self.fit_to_page)
+        menu.add_item("适应整页", callback=self.fit_to_page_bounds)
+
+        menu.add_separator()
+        menu.add_item("全选", callback=self._select_all)
+        return menu
 
     def resizeEvent(self, event: Any) -> None:  # noqa: N802
         """Update the viewport dimensions on widget resize.
@@ -807,6 +876,38 @@ class NativePdfRenderer(QWidget):
         pixmap = QPixmap()
         if pixmap.loadFromData(img_bytes):
             QApplication.clipboard().setPixmap(pixmap)
+
+    def _save_image(self, img_info: Dict[str, Any]) -> None:
+        """将内嵌图片另存为文件（扩展名取自图片元数据）。
+
+        Args:
+            img_info: ``PdfDocument.get_page_images()`` 返回的图片信息，
+                需含 ``"image"``（原始字节）与可选 ``"ext"``（扩展名提示）。
+        """
+        img_bytes: bytes = img_info.get("image", b"")
+        if not img_bytes:
+            return
+        ext: str = str(img_info.get("ext", "png")).lower().lstrip(".") or "png"
+        path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "保存图片",
+            f"pdf_image.{ext}",
+            f"{ext.upper()} 图片 (*.{ext});;所有文件 (*.*)",
+        )
+        if not path:
+            return
+        try:
+            with open(path, "wb") as f:
+                f.write(img_bytes)
+        except OSError as exc:
+            warning(f"保存 PDF 图片失败: {exc}")
+            ask_custom_dialog(
+                "保存失败",
+                f"无法保存图片：{exc}",
+                ["知道了"],
+                ["primary"],
+                dialog_type="danger",
+            )
 
     def _select_all(self) -> None:
         """Select all text on the current page.
