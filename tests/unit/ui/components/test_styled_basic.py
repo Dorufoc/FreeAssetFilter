@@ -731,6 +731,29 @@ class TestStyledInfoCard:
         assert card._overlay_widget is not None
         card.deleteLater()
 
+    def test_card_shrink_paint_property(self, qapp: QApplication) -> None:
+        """card_shrink：绘制级"向后缩小"属性（下限钳制 + 缩小状态渲染冒烟）。
+
+        网格移除动画依赖该属性：以卡片中心缩放整卡绘制、不改几何与布局。
+        这里只断言属性契约与 ``render()`` 在缩放状态下不抛异常（无像素比对）。
+        """
+        card = StyledInfoCard(layout_mode="vertical", tile_style=True, title="t.png")
+        card.resize(90, 110)
+        assert card.card_shrink == 1.0
+
+        card.card_shrink = 0.8
+        assert card.card_shrink == pytest.approx(0.8)
+        card.card_shrink = -1.0
+        assert card.card_shrink == 0.0  # 下限钳制
+
+        pix = QPixmap(card.size())
+        pix.fill(Qt.transparent)
+        card.card_shrink = 0.8
+        card.render(pix)  # 缩放状态绘制不抛异常
+        card.card_shrink = 1.0
+        card.render(pix)
+        card.deleteLater()
+
 
 # =============================================================================
 # ui.components.styled_segmented

@@ -210,11 +210,12 @@ class StyledScrollBar(QScrollBar):
         thickness = self._anim_thickness
 
         if self._pressed:
-            color = tm.alpha_of(tm.mid, 100)
+            color = tm.with_alpha(tm.mid, tm.scroll_handle_alphas[2])
         elif self._hovered:
-            color = tm.alpha_of(tm.mid, 80)
+            color = tm.with_alpha(tm.mid, tm.scroll_handle_alphas[1])
         else:
-            color = tm.alpha_of(tm.mid, 40)
+            # 浅色下 mid 40% 几乎不可见，token 按主题给三档 alpha（深色=历史值）
+            color = tm.with_alpha(tm.mid, tm.scroll_handle_alphas[0])
 
         painter.setBrush(color)
         radius = thickness / 2.0

@@ -347,16 +347,18 @@ class _RadioCircleWidget(QWidget):
         border_width = config["border_width"]
 
         # Determine colors
+        _dark = tm.is_dark_theme()
+        _idle_border = tm.alpha_of(tm.mid, 40) if _dark else tm.control_border
         if not parent._enabled:
             if parent._checked:
                 border_color = tm.alpha_of(tm.accent, 39)
                 dot_color = tm.alpha_of(tm.accent, 39)
             else:
-                border_color = tm.alpha_of(tm.mid, 40)
-                dot_color = tm.alpha_of(tm.mid, 40)
+                border_color = _idle_border
+                dot_color = _idle_border
         else:
             _accent = tm.accent
-            _border = tm.alpha_of(tm.mid, 40)
+            _border = _idle_border
             border_color = _border
             dot_color = _accent
 

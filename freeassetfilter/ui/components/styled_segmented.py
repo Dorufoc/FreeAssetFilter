@@ -94,16 +94,23 @@ class _SegmentsHeader(QWidget):
 
     @property
     def _container_bg(self) -> QColor:
-        """Background of the rounded container behind all segments."""
-        return tm.alpha_of(tm.mid, 26)
+        """Background of the rounded container behind all segments.
+
+        浅色下 mid 26% 会泛脏灰，改用轻压暗的 text 低透明度；深色历史值。
+        """
+        if tm.is_dark_theme():
+            return tm.alpha_of(tm.mid, 26)
+        return tm.alpha_of(tm.text, 6)
 
     @property
     def _container_bg_underline(self) -> QColor:
-        return tm.alpha_of(tm.mid, 18)
+        if tm.is_dark_theme():
+            return tm.alpha_of(tm.mid, 18)
+        return tm.alpha_of(tm.text, 4)
 
     @property
     def _text_secondary(self) -> QColor:
-        return tm.mid
+        return tm.text_secondary
 
     @property
     def _text_primary(self) -> QColor:
@@ -114,8 +121,13 @@ class _SegmentsHeader(QWidget):
         return tm.accent
 
     @property
+    def _accent_text(self) -> QColor:
+        """激活态文字色：浅色用压暗 accent（实色 accent 在白底约 2.8:1）。"""
+        return tm.accent_text
+
+    @property
     def _disabled_color(self) -> QColor:
-        return tm.alpha_of(tm.mid, 40)
+        return tm.text_disabled
 
     # ── Q_PROPERTYs for animation ───────────────────────────────
 
@@ -401,7 +413,7 @@ class _SegmentsHeader(QWidget):
                 elif is_active and self._variant == "pill":
                     color = tm.white  # on-top text over the accent pill (matches StyledButton primary)
                 elif is_active:
-                    color = self._accent
+                    color = self._accent_text
                 elif is_hovered:
                     color = self._text_primary
                 else:

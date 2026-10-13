@@ -78,7 +78,7 @@ class SidebarScrollBar(QScrollBar):
                 handle_rect = QRectF(0, float(handle_y), 4.0, float(handle_height))
 
                 # Draw rounded handle
-                painter.setBrush(tm.alpha_of(tm.mid, 40))
+                painter.setBrush(tm.with_alpha(tm.mid, tm.scroll_handle_alphas[0]))
                 r = 2.0
                 painter.drawRoundedRect(handle_rect, r, r)
         finally:
@@ -189,7 +189,11 @@ class ContentScrollBar(QScrollBar):
             painter.setPen(Qt.NoPen)
 
             width = self.HOVER_WIDTH if self._hovered else self.DEFAULT_WIDTH
-            color = tm.alpha_of(tm.mid, 50) if self._hovered else tm.alpha_of(tm.mid, 40)
+            color = (
+                tm.with_alpha(tm.mid, tm.scroll_handle_alphas[1])
+                if self._hovered
+                else tm.with_alpha(tm.mid, tm.scroll_handle_alphas[0])
+            )
 
             if self.orientation() == Qt.Vertical:
                 handle_rect = self._get_handle_rect()
@@ -208,7 +212,7 @@ class SidebarIconWidget(QWidget):
         super().__init__(parent)
         self._icon_name = icon_name
         self.setFixedSize(20, 20)
-        self._color = tm.mid
+        self._color = _inactive_color()
 
     def set_color(self, color: QColor):
         if self._color != color:
@@ -374,7 +378,7 @@ class SidebarItem(QWidget):
         self._badge = badge
         self._hovered = False
         self._label_opacity = 1.0
-        self._label_base = QColor(tm.mid)
+        self._label_base = QColor(_inactive_color())
         self._label_fade_proxy = None
         self.setCursor(Qt.PointingHandCursor)
         self.setAttribute(Qt.WA_Hover, True)
@@ -419,7 +423,7 @@ class SidebarItem(QWidget):
         if self._active:
             self._label_base = QColor(tm.text)
         else:
-            self._label_base = QColor(tm.mid)
+            self._label_base = QColor(_inactive_color())
         self._apply_label_fade()
 
     def _apply_label_fade(self):
@@ -509,7 +513,7 @@ class SidebarItem(QWidget):
     def _set_active(self, active):
         self._active = active
         self._update_label_style()
-        self._icon_widget.set_color(tm.text if active else tm.mid)
+        self._icon_widget.set_color(tm.text if active else _inactive_color())
         self.update()
 
     @property
@@ -539,8 +543,8 @@ class SidebarItem(QWidget):
     def leaveEvent(self, event):
         self._hovered = False
         if not self._active:
-            self._icon_widget.set_color(tm.mid)
-            self._label_base = QColor(tm.mid)
+            self._icon_widget.set_color(_inactive_color())
+            self._label_base = QColor(_inactive_color())
             self._apply_label_fade()
         self.update()
         super().leaveEvent(event)
@@ -620,6 +624,11 @@ class AnimatedHighlightBar(QWidget):
             painter.end()
 
 
+def _inactive_color() -> QColor:
+    """????????????????????mid #888 ???????? mid?"""
+    return QColor(tm.mid) if tm.is_dark_theme() else QColor(tm.text_secondary)
+
+
 class StyledSidebar(QWidget):
     """Styled sidebar matching the web component exactly."""
     item_selected = Signal(int, str)
@@ -689,7 +698,7 @@ class StyledSidebar(QWidget):
         # Top divider so the button is visually separated from the scroll list.
         register_widget_qss(self._toggle_btn,(
             f"SidebarItem {{ background-color: transparent; "
-            f"border-top: 1px solid {tm.alpha_of(tm.surface, 90).name()}; }}"
+            f"border-top: 1px solid {tm.qss_color(tm.alpha_of(tm.text, 8) if not tm.is_dark_theme() else tm.alpha_of(tm.surface, 90))}; }}"
         ))
         self._toggle_btn.clicked.connect(self._on_toggle_clicked)
         self._toggle_btn_wrap = QWidget()
@@ -741,7 +750,7 @@ class StyledSidebar(QWidget):
         if toggle_btn is not None:
             register_widget_qss(toggle_btn, (
                 f"SidebarItem {{ background-color: transparent; "
-                f"border-top: 1px solid {tm.alpha_of(tm.surface, 90).name()}; }}"
+                f"border-top: 1px solid {tm.qss_color(tm.alpha_of(tm.text, 8) if not tm.is_dark_theme() else tm.alpha_of(tm.surface, 90))}; }}"
             ))
 
     def _get_item_bar_rect(self, index: int) -> tuple:

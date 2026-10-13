@@ -3,7 +3,7 @@
 
 覆盖范围：
 - 构造契约：尺寸 / 变体 / 遮罩样式的合法值与非法值回落、只读属性
-- 遮罩底色：dim（半透明黑色压暗）与 opaque（主题表面色实色）的离屏像素取值
+- 遮罩底色：dim（深色半透明黑 / 浅色浅色 scrim）与 opaque（主题表面色实色）的离屏像素取值
 - 非遮罩模式回归：固定正方形、不填背景
 
 验证命令：
@@ -114,14 +114,22 @@ class TestStyledLoadingBackdrop:
         )
         loading.deleteLater()
 
-    def test_dim_backdrop_paints_half_transparent_black(self, qapp: QApplication) -> None:
-        """dim：遮罩区为 OVERLAY_ALPHA 强度的半透明黑色（默认行为不变）。"""
+    def test_dim_backdrop_paints_theme_scrim(self, qapp: QApplication) -> None:
+        """dim：遮罩区为当前主题的 scrim（深色=OVERLAY_ALPHA 半透明黑，浅色=浅色 veil）。"""
         loading = StyledLoading(size="lg", overlay=True)
         loading.resize(_CANVAS, _CANVAS)
         pixel = _render(loading).pixelColor(*_SAMPLE)
 
-        assert pixel.alpha() == StyledLoading.OVERLAY_ALPHA
-        assert (pixel.red(), pixel.green(), pixel.blue()) == (0, 0, 0)
+        expected = tm.scrim
+        assert pixel.alpha() == expected.alpha()
+        assert (pixel.red(), pixel.green(), pixel.blue()) == (
+            expected.red(),
+            expected.green(),
+            expected.blue(),
+        )
+        if tm.is_dark_theme():
+            assert pixel.alpha() == StyledLoading.OVERLAY_ALPHA
+            assert (pixel.red(), pixel.green(), pixel.blue()) == (0, 0, 0)
         loading.deleteLater()
 
     def test_opaque_backdrop_follows_theme(self, qapp: QApplication) -> None:

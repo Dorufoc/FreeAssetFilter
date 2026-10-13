@@ -763,7 +763,7 @@ class FontPreviewerLayout(QWidget):
         self._weight_label.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
         self._weight_label.setFixedHeight(30)
         register_widget_qss(self._weight_label,(
-            f"color: {tm.mid.name()}; background: transparent; font-size: 12px;"
+            f"color: {tm.qss_color(tm.text_secondary)}; background: transparent; font-size: 12px;"
         ))
         weight_layout.addWidget(self._weight_label)
 
@@ -1129,7 +1129,7 @@ class FontPreviewerLayout(QWidget):
             self._zoom_popup.update()
         if self._weight_label is not None:
             register_widget_qss(self._weight_label,(
-                f"color: {tm.mid.name()}; background: transparent; font-size: 12px;"
+                f"color: {tm.qss_color(tm.text_secondary)}; background: transparent; font-size: 12px;"
             ))
         self.update()
 
@@ -1179,17 +1179,17 @@ class FontPreviewerLayout(QWidget):
     def _refresh_placeholder_style(self) -> None:
         """更新占位提示文字颜色。"""
         register_widget_qss(self._placeholder,(
-            f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
+            f"color: {tm.qss_color(tm.text_hint)}; font-size: 14px; background: transparent;"
         ))
 
     def _style_browse_button(self) -> None:
         """应用主题色到"选择字体文件"按钮。"""
         if self._browse_btn is None:
             return
-        btn_text = tm.mid.name()
+        btn_text = tm.qss_color(tm.text_secondary)
         btn_hover_text = tm.text.name()
         btn_bg = tm.fill.name()
-        btn_border = tm.alpha_of(tm.mid, 30).name()
+        btn_border = tm.qss_color(tm.control_border)
         register_widget_qss(self._browse_btn,(
             f"""
             QPushButton {{
@@ -1204,7 +1204,7 @@ class FontPreviewerLayout(QWidget):
             QPushButton:hover {{
                 background: {btn_bg};
                 color: {btn_hover_text};
-                border: 1px solid {tm.mid.name()};
+                border: 1px solid {tm.qss_color(tm.control_border_strong)};
             }}
             QPushButton:pressed {{
                 background: {btn_bg};

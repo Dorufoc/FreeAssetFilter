@@ -473,7 +473,11 @@ class UnifiedPreviewerLayout(QWidget):
         self._bottom_bar.style().polish(self._bottom_bar)
     
     def _on_theme_changed(self, theme: str) -> None:
-        """主题切换时占位（样式由 MainWindow 统一刷新）"""
+        """主题切换：刷新占位文字配色（面板底/描边由 MainWindow 统一刷新）。"""
+        if self._placeholder_label is not None:
+            register_widget_qss(self._placeholder_label,(
+                f"color: {tm.qss_color(tm.text_hint)}; font-size: 14px; background: transparent;"
+            ))
     
     def cleanup(self) -> None:
         """释放当前预览器的后台资源（主窗口关闭时调用）。
@@ -588,7 +592,7 @@ class UnifiedPreviewerLayout(QWidget):
             self._placeholder_label = QLabel("选择文件以预览内容")
             self._placeholder_label.setAlignment(Qt.AlignCenter)
             register_widget_qss(self._placeholder_label,(
-                f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
+                f"color: {tm.qss_color(tm.text_hint)}; font-size: 14px; background: transparent;"
             ))
         
         # 添加到布局并确保可见（_cleanup_current_preview 会 hide 它）

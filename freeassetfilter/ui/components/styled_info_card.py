@@ -183,12 +183,14 @@ class StyledInfoCard(QWidget):
         self._card_scale = 1.0
         self._x_offset = 0
         self._y_offset = 0
+        # 绘制级"向后缩小"缩放（1.0=原尺寸；网格移除动画用，不影响几何/布局）
+        self._card_shrink = 1.0
 
         # Selection and preview states
         self._is_selected = False
         self._is_previewing = False
         self._anim_bg_color = QColor(tm.surface)
-        self._anim_border_color = QColor(tm.mid)
+        self._anim_border_color = QColor(tm.control_border)
         self._border_width = 1
         self._style_colors: dict = {}
 
@@ -293,9 +295,23 @@ class StyledInfoCard(QWidget):
         self._card_opacity = max(0.0, min(1.0, float(value)))
         self.update()
 
+    @Property(float)
+    def card_shrink(self):
+        """绘制级"向后缩小"缩放，供 New 布局网格移除动画使用。
+
+        以卡片中心为基准等比缩放整卡绘制（背景 / 边框 / 内容同帧缩放），
+        只影响绘制结果，不改变控件几何与布局。
+        """
+        return self._card_shrink
+
+    @card_shrink.setter
+    def card_shrink(self, value: float):
+        self._card_shrink = max(0.0, float(value))
+        self.update()
+
     @Property(int)
     def x_offset(self):
-        """卡片水平绘制偏移（px），供移除动画向左滑出使用。"""
+        """卡片水平绘制偏移（px），供列表模式移除动画向左滑出与创建动画滑入使用。"""
         return self._x_offset
 
     @x_offset.setter
@@ -351,14 +367,14 @@ class StyledInfoCard(QWidget):
         if cached is not None:
             return cached
         colors = {
-            "bg": tm.alpha_of(tm.surface, 85),
-            "border": tm.alpha_of(tm.mid, 30),
+            "bg": tm.card_fill,
+            "border": tm.card_border,
             "title": tm.text,
-            "subtitle": tm.mid,
-            "desc": tm.alpha_of(tm.mid, 60),
+            "subtitle": tm.text_secondary,
+            "desc": tm.text_hint,
             "icon": tm.mid,
-            # hover 反馈遮罩：infocard 背景 G 色（surface/g1 token），左端全透明 → 右端 G 色 90% 不透明度
-            "hover_overlay": tm.alpha_of(tm.surface, 90),
+            # hover 反馈遮罩：浅色=轻压暗（text 低透明），深色=surface 提亮 90%（历史值）
+            "hover_overlay": tm.hover_veil,
         }
         _INFO_CARD_COLORS_CACHE[key] = colors
         return colors
@@ -371,18 +387,23 @@ class StyledInfoCard(QWidget):
         SettingsManager V1 颜色配置（V1 的 base_color 等是旧 UI 的浅色默认值，
         在深色模式下会导致卡片背景错误地呈现为白色）。
         """
-        # 与 FileCardDelegate._get_colors() 的取值一致：
-        # - 正常/选中态背景：surface 85% 透明度
-        # - hover 背景：surface 90% 透明度
-        # - 边框：mid 30% / 40% 透明度
-        # - 框选选中态：accent 25% 填充 + accent 虚线边框（与预览流光、
+        # 与 FileCardDelegate._get_colors() 的取值一致（语义 token）：
+        # - 正常/选中态背景：浅色近实色白底 / 深色 surface 85%
+        # - hover 背景：跟随卡片底 + 覆盖层轻压暗/提亮（见 _get_colors.hover_overlay）
+        # - 边框：浅色 text 10% / 深色 mid 30%（hover 提一档）
+        # - 框选选中态：accent 填充 + accent 虚线边框（与预览流光、
         #   文件选择器"已入池"实线边框区分）
         # - 预览态边框：text 色（对应 FileBlockCard 的 secondary_color 语义）
-        normal_bg = tm.alpha_of(tm.surface, 85)
-        normal_border = tm.alpha_of(tm.mid, 30)
-        hover_bg = tm.alpha_of(tm.surface, 90)
-        hover_border = tm.alpha_of(tm.mid, 40)
-        selected_bg = tm.alpha_of(tm.accent, 25)
+        dark = tm.is_dark_theme()
+        normal_bg = tm.card_fill
+        normal_border = tm.card_border
+        # hover 背景/边框：hover 视觉现由覆盖层动画承担（见 _get_colors），
+        # 这两项保留为状态色定义（深色历史值 surface 90% / mid 40%）。
+        hover_bg = tm.alpha_of(tm.surface, 90) if dark else tm.card_fill
+        hover_border = (
+            tm.alpha_of(tm.mid, 40) if dark else tm.alpha_of(tm.text, 14)
+        )
+        selected_bg = tm.alpha_of(tm.accent, 25 if dark else 20)
         selected_border = QColor(tm.accent)
 
         self._style_colors = {
@@ -415,7 +436,7 @@ class StyledInfoCard(QWidget):
         角锥渐变颜色只与角度相关：沿边框一周颜色从主题色 30% 透明度 →
         峰值色 → 主题色 30% 透明度平滑过渡，两道光斑位于对侧并随
         start_angle 递增沿边框流动。峰值色主题感知：深色模式为白色，
-        浅色模式为黑色（与背景形成对比）；谷值为主题色 30% 透明度。
+        浅色模式为实色主题色（浅色卡底上此前用黑色会形成突兀黑弧）。
 
         Args:
             rect: 卡片矩形（逻辑坐标）。
@@ -428,11 +449,11 @@ class StyledInfoCard(QWidget):
         cy = rect.center().y()
 
         accent_30 = tm.alpha_of(tm.accent, 30)  # 主题色 30% 透明度
-        peak = QColor(tm.white) if tm.is_dark_theme() else QColor(tm.black)
+        peak = QColor(tm.white) if tm.is_dark_theme() else QColor(tm.accent)
 
         gradient = QConicalGradient(cx, cy, angle_deg)
         gradient.setColorAt(0.0, accent_30)
-        gradient.setColorAt(0.25, peak)         # 光斑 1 峰值（深色=白/浅色=黑）
+        gradient.setColorAt(0.25, peak)         # 光斑 1 峰值（深色=白/浅色=实色主题色）
         gradient.setColorAt(0.5, accent_30)
         gradient.setColorAt(0.75, peak)         # 光斑 2 峰值（对侧）
         gradient.setColorAt(1.0, accent_30)
@@ -1036,8 +1057,16 @@ class StyledInfoCard(QWidget):
 
             opacity = (0.5 if self._disabled else 1.0) * self._card_opacity
             painter.setOpacity(opacity)
-            # 不使用 painter.translate()，避免边框和背景渲染问题
-            # 所有绘制坐标直接使用控件坐标系统
+
+            # 绘制级"向后缩小"：动画期间以卡片中心为基准等比缩放整卡绘制
+            # （几何/布局不变；New 布局网格移除的"缩小渐隐"动画使用）。
+            # 注意：这里不使用逐元素 painter.translate() 偏移，避免边框和背景
+            # 渲染问题；内容位移动画由 _x_offset/_y_offset 在各自绘制坐标中叠加。
+            if self._card_shrink != 1.0:
+                painter.setRenderHint(QPainter.SmoothPixmapTransform)
+                painter.translate(w / 2.0, h / 2.0)
+                painter.scale(self._card_shrink, self._card_shrink)
+                painter.translate(-w / 2.0, -h / 2.0)
 
             # Card background and border - 考虑选中态和预览态
             # 边框宽度：预览态 2px，框选选中态 1.5px（虚线），其他状态 1px

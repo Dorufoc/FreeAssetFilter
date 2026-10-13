@@ -75,7 +75,7 @@ class StyledProgress(QWidget):
             title_font = QFont("Microsoft YaHei UI", config["font_size"])
             title_font.setWeight(QFont.Weight.Normal)
             self._title_label.setFont(title_font)
-            register_widget_qss(self._title_label,(f"color: {tm.mid.name()};"))
+            register_widget_qss(self._title_label,(f"color: {tm.qss_color(tm.text_secondary)};"))
             self._label_layout.addWidget(self._title_label)
 
             self._label_layout.addStretch()
@@ -84,7 +84,7 @@ class StyledProgress(QWidget):
             value_font = QFont("Microsoft YaHei UI", config["font_size"])
             value_font.setWeight(QFont.Weight.Normal)
             self._value_label.setFont(value_font)
-            register_widget_qss(self._value_label,(f"color: {tm.mid.name()};"))
+            register_widget_qss(self._value_label,(f"color: {tm.qss_color(tm.text_secondary)};"))
             self._label_layout.addWidget(self._value_label)
 
             main_layout.addLayout(self._label_layout)
@@ -98,7 +98,7 @@ class StyledProgress(QWidget):
             self._inline_label = QLabel(f"{int(self._value * 100)}%")
             inline_font = QFont("Microsoft YaHei UI", config["font_size"])
             self._inline_label.setFont(inline_font)
-            register_widget_qss(self._inline_label,(f"color: {tm.mid.name()};"))
+            register_widget_qss(self._inline_label,(f"color: {tm.qss_color(tm.text_secondary)};"))
             self._inline_label.setMinimumWidth(42)
             row_layout.addWidget(self._inline_label)
 
@@ -286,7 +286,10 @@ class ProgressTrack(QWidget):
             fill_width = float(self.width()) * self._anim_value
 
             # Track background
-            bg_color = tm.alpha_of(tm.mid, 40)
+            bg_color = (
+                tm.alpha_of(tm.mid, 40) if tm.is_dark_theme()
+                else tm.alpha_of(tm.text, 8)
+            )
             painter.setBrush(bg_color)
             painter.drawRoundedRect(
                 QRectF(0, 0, float(self.width()), float(self._track_height)),
@@ -325,7 +328,11 @@ class ProgressTrack(QWidget):
         offset = self._stripe_offset
 
         painter.setPen(Qt.PenStyle.NoPen)
-        stripe_color = tm.alpha_of(tm.text, 15)  # rgba(255,255,255,0.15)
+        # 条纹：深色用 text（白）提亮；浅色下 text 是近黑会把 accent 弄脏，
+        # 改固定白色高光，保持"光泽"语义。
+        stripe_color = tm.alpha_of(
+            tm.text if tm.is_dark_theme() else tm.white, 15
+        )
 
         # Draw 45-degree diagonal stripes
         h = float(self._track_height)

@@ -242,7 +242,11 @@ class StyledTooltip(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
 
         bubble_bg = tm.alpha_of(tm.surface, 90)
-        bubble_border = tm.alpha_of(tm.mid, 40)
+        # 浅色气泡在白底窗口上需要更清晰的边缘（mid 40% ≈1.5:1 → text 低透明）
+        bubble_border = (
+            tm.alpha_of(tm.mid, 40) if tm.is_dark_theme()
+            else tm.alpha_of(tm.text, 12)
+        )
         text_color = tm.text
 
         ext = _ARROW_HALF - ARROW_OVERLAP

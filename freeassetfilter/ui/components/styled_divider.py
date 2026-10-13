@@ -133,7 +133,7 @@ class StyledDivider(QWidget):
         """Build the pen matching current thick/dashed configuration."""
         width = 2 if self._thick else 1
         style = Qt.DashLine if self._dashed else Qt.SolidLine
-        pen = QPen(tm.alpha_of(tm.mid, 30), width, style)
+        pen = QPen(tm.divider, width, style)
         if self._dashed:
             pen.setDashPattern([4, 4])
         return pen

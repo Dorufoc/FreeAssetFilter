@@ -29,13 +29,26 @@ SIZE_CONFIG: dict[str, dict[str, int]] = {
     "xl": {"size": 64, "font": 22},
 }
 
-COLOR_VARIANTS: dict[str, tuple[str, QColor]] = {
-    "green": (tm.accent.name(), tm.alpha_of(tm.accent, 20)),
-    "blue": (tm.info.name(), tm.alpha_of(tm.info, 20)),
-    "purple": (tm.purple.name(), tm.alpha_of(tm.purple, 20)),
-    "orange": (tm.warning.name(), tm.alpha_of(tm.warning, 20)),
-    "default": (tm.mid.name(), tm.fill),
-}
+def _get_color_variants() -> dict:
+    """头像配色变体（延迟构造，随主题现取；模块级缓存会导致导入期冻结深色值）。
+
+    浅色下实色文字改用压暗一档的同色系（淡底上 2.5:1 → ≈4:1）。
+    """
+    dark = tm.is_dark_theme()
+
+    def _text(color: QColor) -> str:
+        return color.name() if dark else tm._darken(color, 0.72).name()
+
+    return {
+        "green": (_text(tm.accent), tm.alpha_of(tm.accent, 20)),
+        "blue": (_text(tm.info), tm.alpha_of(tm.info, 20)),
+        "purple": (_text(tm.purple), tm.alpha_of(tm.purple, 20)),
+        "orange": (_text(tm.warning), tm.alpha_of(tm.warning, 20)),
+        "default": (
+            tm.mid.name() if dark else tm.qss_color(tm.text_secondary),
+            tm.alpha_of(tm.surface, 90) if dark else tm.alpha_of(tm.text, 8),
+        ),
+    }
 
 
 
@@ -103,7 +116,7 @@ class StyledAvatar(QWidget):
 
     @color.setter
     def color(self, value: str):
-        if value in COLOR_VARIANTS:
+        if value in _get_color_variants():
             self._color = value
             self.update()
 
@@ -194,7 +207,8 @@ class StyledAvatar(QWidget):
                 )
 
     def _get_color_values(self):
-        return COLOR_VARIANTS.get(self._color, COLOR_VARIANTS["default"])
+        variants = _get_color_variants()
+        return variants.get(self._color, variants["default"])
 
     def _paint_pixmap(self, painter: QPainter, w: int, h: int):
         """Scale and center the pixmap to fill the avatar area."""

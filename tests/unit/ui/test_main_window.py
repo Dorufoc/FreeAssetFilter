@@ -518,14 +518,15 @@ class TestFixedMicaParams:
     """米卡参数按主题固定：常量值 / 主题取值 / 启动加载 / 构造消费。
 
     米卡滑动条与原生 DWM 云母开关已移除，参数为产品定值：
-    亮色 8×/1×/200px/100%，深色 2×/1×/200px/80%。
+    亮色 1×/1×/200px/65%，深色 2×/1×/200px/80%（浅色降饱和降透明，
+    避免壁纸色满强度染到整个界面）。
     """
 
     def test_fixed_params_constant_values(self) -> None:
         """FIXED_MICA_PARAMS 两组定值与产品规格一致。"""
         assert FIXED_MICA_PARAMS["light"] == {
-            "blur_radius": 200, "saturation": 8.0,
-            "contrast": 1.0, "tint_opacity": 100,
+            "blur_radius": 200, "saturation": 1.0,
+            "contrast": 1.0, "tint_opacity": 65,
         }
         assert FIXED_MICA_PARAMS["dark"] == {
             "blur_radius": 200, "saturation": 2.0,

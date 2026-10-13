@@ -62,7 +62,7 @@ class NotificationItem(QWidget):
 
     @property
     def _hover_bg(self) -> QColor:
-        return tm.alpha_of(tm.mid, 40)
+        return tm.track_fill
 
     @property
     def _unread_dot(self) -> QColor:
@@ -78,7 +78,7 @@ class NotificationItem(QWidget):
 
     @property
     def _text_tertiary(self) -> QColor:
-        return tm.alpha_of(tm.mid, 60)
+        return tm.text_hint
 
     def __init__(
         self,
@@ -320,7 +320,7 @@ class _EmptyStateWidget(QWidget):
 
     @property
     def _text_tertiary(self) -> QColor:
-        return tm.alpha_of(tm.mid, 60)
+        return tm.text_hint
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -347,7 +347,7 @@ class _EmptyStateWidget(QWidget):
         font = QFont("Microsoft YaHei UI")
         font.setPixelSize(14)
         painter.setFont(font)
-        painter.setPen(tm.mid)
+        painter.setPen(tm.text_secondary)
         painter.drawText(
             QRectF(0, icon_rect.bottom() + 12, w, 24),
             Qt.AlignCenter,
@@ -392,11 +392,11 @@ class NotificationBadgeList(QWidget):
 
     @property
     def _border_color(self) -> QColor:
-        return tm.alpha_of(tm.mid, 40)
+        return tm.track_fill
 
     @property
     def _divider_color(self) -> QColor:
-        return tm.alpha_of(tm.mid, 30)
+        return tm.divider
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -493,7 +493,7 @@ class NotificationBadgeList(QWidget):
         btn = QPushButton("查看全部")
         btn.setCursor(Qt.PointingHandCursor)
         accent = tm.accent.name()
-        hover_bg = tm.mid.name()
+        hover_bg = tm.qss_color(tm.alpha_of(tm.accent, 16) if not tm.is_dark_theme() else tm.alpha_of(tm.mid, 25))
         register_widget_qss(btn,(f"""
             QPushButton {{
                 background: transparent; border: none;

@@ -3,7 +3,13 @@ ThemeManager — Singleton that reads colors from SettingsManagerV2 and provides
 - Properties: surface, mid, text, black, transparent
 - Accent: accent, accent_hover, accent_active, accent_alpha()
 - Semantic: danger, warning, info, purple
-- Utility: alpha_of(color, pct), with_alpha(color, alpha), qss_rgba(color, alpha_pct), _darken(color, factor)
+- Light/dark semantic tokens（浅色语义色阶；深色取值与历史观感一致）:
+  text_secondary / text_hint / text_disabled / accent_text、
+  panel_fill / bar_fill / panel_border / card_fill / card_border、
+  control_border / control_border_strong、hover_veil / subtle_fill / divider /
+  track_fill / scrim / scroll_handle_alphas
+- Utility: alpha_of(color, pct), with_alpha(color, alpha), qss_rgba(color, alpha_pct),
+  qss_color(color), readable_on(background), _darken(color, factor)
 - Legacy: get_color(path), get_component_colors(), get_common_color(),
           render_qss(), as_stylesheet()
 """
@@ -52,6 +58,9 @@ _ALPHA_COLOR_CACHE: Dict[tuple, QColor] = {}
 
 # qss_rgba 缓存：(rgba, alpha_pct) → "rgba(r,g,b,a)" 字符串。
 _QSS_RGBA_CACHE: dict[tuple, str] = {}
+
+# qss_color 缓存：rgba → "rgba(r,g,b,a)" 字符串（alpha 取自 QColor 自身）。
+_QSS_COLOR_CACHE: dict[int, str] = {}
 
 
 def _qcolor_to_hex(color: QColor) -> str:
@@ -218,6 +227,8 @@ class ThemeManager(QObject):
         """清空颜色解析缓存（主题/配色变更时调用）。"""
         _HEX_COLOR_CACHE.clear()
         _ALPHA_COLOR_CACHE.clear()
+        _QSS_RGBA_CACHE.clear()
+        _QSS_COLOR_CACHE.clear()
 
     # ------------------------------------------------------------------
     # New property-based API — surface / fill / mid / text / black / transparent
@@ -262,6 +273,183 @@ class ThemeManager(QObject):
     def white(self) -> QColor:
         """Pure white (#FFFFFF) — 用于强调按钮文字等固定白色场景。"""
         return QColor("#FFFFFF")
+
+    # ------------------------------------------------------------------
+    # Semantic tokens — 浅色语义色阶（深色取值与历史观感一致）
+    #
+    # 背景：浅色模式下底板（Mica 壁纸 / 简约渐变）亮度高且带色，
+    # 若沿用「text 5% 压暗 + mid 低透明度」的深色口径，面板/文字会
+    # 被底板染色且对比度不足。以下 token 按主题分支：
+    #
+    #   浅色：面板=surface 偏白磨砂，卡片=white 近实色，次要文字=text 降透明，
+    #         悬停=轻压暗，遮罩=浅色 scrim；
+    #   深色：维持历史口径（text 5% / surface 85% / mid 25% / 黑 50%）。
+    #
+    # 全部返回缓存共享 QColor：调用方如需改 alpha 必须先 QColor() 拷贝。
+    # ------------------------------------------------------------------
+
+    @property
+    def text_secondary(self) -> QColor:
+        """次要文字（路径、标签、副标题、计数）：浅色 text ≈60%（≈4.5:1），深色 mid。"""
+        if self._dark_mode:
+            return self.mid
+        return self.alpha_of(self.text, 60)
+
+    @property
+    def text_hint(self) -> QColor:
+        """提示/占位文字（空状态、placeholder、说明）：浅色 text ≈55%，深色 mid ≈60%。"""
+        if self._dark_mode:
+            return self.alpha_of(self.mid, 60)
+        return self.alpha_of(self.text, 55)
+
+    @property
+    def text_disabled(self) -> QColor:
+        """禁用文字：浅色 text ≈38%，深色 mid ≈40%。"""
+        if self._dark_mode:
+            return self.alpha_of(self.mid, 40)
+        return self.alpha_of(self.text, 38)
+
+    @property
+    def accent_text(self) -> QColor:
+        """用于文字/小图标的强调色：浅色压暗到 ≈4.9:1，深色原 accent。"""
+        if self._dark_mode:
+            return self.accent
+        return self._darken(self.accent, 0.72)
+
+    @property
+    def panel_fill(self) -> QColor:
+        """三栏/面板底：浅色 surface ≈72% 磨砂，深色 text 5%（历史值）。"""
+        if self._dark_mode:
+            return self.alpha_of(self.text, 5)
+        return self.alpha_of(self.surface, 72)
+
+    @property
+    def bar_fill(self) -> QColor:
+        """面板内工具栏/底栏底：浅色 surface ≈86%，深色 text 5%（历史值）。"""
+        if self._dark_mode:
+            return self.alpha_of(self.text, 5)
+        return self.alpha_of(self.surface, 86)
+
+    @property
+    def card_fill(self) -> QColor:
+        """卡片底：浅色 white ≈92%，深色 surface 85%（历史值）。"""
+        if self._dark_mode:
+            return self.alpha_of(self.surface, 85)
+        return self.alpha_of(self.white, 92)
+
+    @property
+    def card_border(self) -> QColor:
+        """卡片描边：浅色 text ≈10%，深色 mid 30%（历史值）。"""
+        if self._dark_mode:
+            return self.alpha_of(self.mid, 30)
+        return self.alpha_of(self.text, 10)
+
+    @property
+    def control_border(self) -> QColor:
+        """输入类控件默认描边：浅色 text ≈14%，深色 mid 30%（历史值）。
+
+        深色下 mid 30% 描边在暗底上已清晰；浅色下 mid 30% 会与白底
+        融为一体，改用 text 低透明度（深灰），保持"细而可见"。
+        """
+        if self._dark_mode:
+            return self.alpha_of(self.mid, 30)
+        return self.alpha_of(self.text, 14)
+
+    @property
+    def control_border_strong(self) -> QColor:
+        """输入类控件 hover/focus 描边：浅色 text ≈24%，深色 mid 50%（历史值）。"""
+        if self._dark_mode:
+            return self.alpha_of(self.mid, 50)
+        return self.alpha_of(self.text, 24)
+
+    @property
+    def panel_border(self) -> QColor:
+        """面板描边：浅色 text ≈9%，深色 mid 50%（历史值）。"""
+        if self._dark_mode:
+            return self.alpha_of(self.mid, 50)
+        return self.alpha_of(self.text, 9)
+
+    @property
+    def hover_veil(self) -> QColor:
+        """悬停覆盖层：浅色 text ≈6%（轻压暗），深色 mid 25%（提亮，历史值）。"""
+        if self._dark_mode:
+            return self.alpha_of(self.mid, 25)
+        return self.alpha_of(self.text, 6)
+
+    @property
+    def subtle_fill(self) -> QColor:
+        """轻量填充（未激活胶囊/次要底）：浅色 text ≈5%，深色 mid 20%（历史值）。"""
+        if self._dark_mode:
+            return self.alpha_of(self.mid, 20)
+        return self.alpha_of(self.text, 5)
+
+    @property
+    def divider(self) -> QColor:
+        """分隔线：浅色 text ≈8%，深色 mid 30%（历史值）。"""
+        if self._dark_mode:
+            return self.alpha_of(self.mid, 30)
+        return self.alpha_of(self.text, 8)
+
+    @property
+    def track_fill(self) -> QColor:
+        """轨道/滑块槽/未选中底：浅色 text ≈9%，深色 mid 40%（历史值）。"""
+        if self._dark_mode:
+            return self.alpha_of(self.mid, 40)
+        return self.alpha_of(self.text, 9)
+
+    @property
+    def scrim(self) -> QColor:
+        """加载遮罩压暗色：浅色 surface ≈72%（浅色 veil），深色 black ≈50%。"""
+        if self._dark_mode:
+            return self.with_alpha(self.black, 128)
+        return self.alpha_of(self.surface, 72)
+
+    @property
+    def scroll_handle_alphas(self) -> tuple:
+        """滚动条手柄三档 alpha（idle, hover, pressed）：浅色整体更实一档。"""
+        if self._dark_mode:
+            return (102, 204, 255)  # 40 / 80 / 100（历史值）
+        return (140, 191, 242)      # 55 / 75 / 95
+
+    @staticmethod
+    def qss_color(color: QColor) -> str:
+        """Serialize *color* as a QSS ``rgba(r,g,b,a)`` string from its own alpha.
+
+        与 :meth:`qss_rgba` 的区别：alpha 直接取 QColor 自身（0-255 → 0-1），
+        适用于语义 token（其 alpha 已烘焙在颜色里）直接落到 QSS 的场景。
+        """
+        cached = _QSS_COLOR_CACHE.get(color.rgba())
+        if cached is not None:
+            return cached
+        s = (
+            f"rgba({color.red()},{color.green()},{color.blue()},"
+            f"{color.alpha() / 255:.3f})"
+        )
+        _QSS_COLOR_CACHE[color.rgba()] = s
+        return s
+
+    @staticmethod
+    def readable_on(background: QColor) -> QColor:
+        """返回在 *background* 上可读的前景色（固定白或近黑）。
+
+        阈值取 WCAG 相对亮度 ``0.35``：白字对比 ``1.05/(L+0.05) ≥ 2.6:1``
+        时保持白字（与主按钮"强调色实底 + 白字"的产品口径一致），
+        更亮的底色（如 warning #f59e0b L≈0.47，白字仅 2.0:1）自动转近黑
+        （≈8:1）。用于语义色实底（勾选符号 / badge / tag 实底）等
+        "底色决定前景"场景，避免浅色 accent 下固定白字不可读。
+        """
+        def _lin(v: int) -> float:
+            c = v / 255.0
+            return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+        luminance = (
+            0.2126 * _lin(background.red())
+            + 0.7152 * _lin(background.green())
+            + 0.0722 * _lin(background.blue())
+        )
+        if luminance >= 0.35:
+            return QColor(26, 26, 26)
+        return QColor(255, 255, 255)
 
     # ------------------------------------------------------------------
     # Theme switching

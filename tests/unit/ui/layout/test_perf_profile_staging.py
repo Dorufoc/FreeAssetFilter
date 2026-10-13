@@ -233,6 +233,13 @@ class TestProfileSubmit:
         _patch_overlay_noop(monkeypatch)
         timing_calls: list[str] = []
         tm_calls: list[tuple[str, str]] = []
+        dialog_calls: list[str] = []
+
+        def _fake_danger_dialog(*args: Any, **kwargs: Any) -> None:
+            dialog_calls.append(str(kwargs.get("title", "")))
+            return None
+
+        monkeypatch.setattr(sl_mod, "create_danger_dialog", _fake_danger_dialog)
 
         def _fake_set_timing(profile: str) -> None:
             timing_calls.append(profile)
@@ -264,6 +271,8 @@ class TestProfileSubmit:
             qapp.processEvents()
             ok = layout._submit_settings(close_after=False)
             assert ok is False
+            # 保存失败必须出现可见提示（danger 弹窗标题）。
+            assert dialog_calls == ["保存失败"]
             # 定时器档位：应用一次 + 回滚一次（回到 balanced）。
             assert timing_calls[0] == "performance"
             assert timing_calls[-1] == "balanced"

@@ -62,7 +62,10 @@ class StyledProgressCircle(QWidget):
         painter.save()
         try:
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            track = tm.alpha_of(tm.mid, 40)
+            track = (
+                tm.alpha_of(tm.mid, 40) if tm.is_dark_theme()
+                else tm.alpha_of(tm.text, 8)
+            )
             pen = QPen(track, stroke_width)
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             painter.setPen(pen)
@@ -142,6 +145,7 @@ class StyledProgressCircle(QWidget):
             margin=margin,
             show_percentage=self._show_percentage,
             font_size=config["font_size"],
+            size_variant=self._size,
         )
         circle_size = config["size"] + margin * 2
         self._circle_widget.setFixedSize(circle_size, circle_size)
@@ -203,6 +207,7 @@ class StyledProgressCircle(QWidget):
             margin=margin,
             show_percentage=self._show_percentage,
             font_size=config["font_size"],
+            size_variant=self._size,
         )
         circle_size = config["size"] + margin * 2
         self._circle_widget.setFixedSize(circle_size, circle_size)
@@ -224,6 +229,7 @@ class CircleWidget(QWidget):
         margin: int = 4,
         show_percentage: bool = True,
         font_size: int = 12,
+        size_variant: str = "md",
         parent=None,
     ):
         super().__init__(parent)
@@ -234,6 +240,7 @@ class CircleWidget(QWidget):
         self._margin = margin
         self._show_percentage = show_percentage
         self._font_size = font_size
+        self._size_variant = size_variant
         self._anim_value = value
 
         # Circumference = 2 * pi * r
@@ -303,7 +310,7 @@ class CircleWidget(QWidget):
             self._anim_value,
             self._variant,
             self._show_percentage,
-            self._size,
+            self._size_variant,
         )
         if painter.isActive():
             painter.end()

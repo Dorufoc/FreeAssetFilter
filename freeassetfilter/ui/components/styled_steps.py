@@ -79,7 +79,7 @@ class StepWidget(QWidget):
     @staticmethod
     def _get_steps_colors() -> dict[str, tuple[QColor, QColor, QColor]]:
         return {
-            "pending": (tm.alpha_of(tm.mid, 40), tm.alpha_of(tm.mid, 40), tm.alpha_of(tm.mid, 60)),
+            "pending": (tm.track_fill, tm.track_fill, tm.text_hint),
             "current": (tm.accent, tm.alpha_of(tm.accent, 10), tm.accent),
             "completed": (tm.accent, tm.accent, tm.text),
             "error": (tm.danger, tm.alpha_of(tm.danger, 10), tm.danger),
@@ -477,7 +477,7 @@ class StyledSteps(QWidget):
 
     @property
     def _connector_pending(self) -> QColor:
-        return tm.alpha_of(tm.mid, 40)
+        return tm.track_fill
 
     @property
     def _connector_completed(self) -> QColor:

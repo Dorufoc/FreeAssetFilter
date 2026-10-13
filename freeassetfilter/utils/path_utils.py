@@ -19,6 +19,7 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 import sys
 import os
 import re
+import shutil
 from typing import List, Optional, Set
 
 # 延迟导入logger，避免循环依赖
@@ -531,13 +532,101 @@ def get_resource_path(relative_path):
 
 _APP_DATA_PATH_CACHE = None
 
+
+def _resolve_frozen_data_dir() -> str:
+    """解析冻结（打包）态的用户可写应用数据目录。
+
+    安装版默认位于 ``%LOCALAPPDATA%\\FreeAssetFilter\\data``。历史实现
+    把数据目录放在 exe 所在目录（默认 ``C:\\Program Files``，普通用户
+    不可写），导致设置/背景图保存失败、重启回退默认。``LOCALAPPDATA``
+    缺失时回退到用户目录下的 ``AppData\\Local``。
+
+    Returns:
+        str: 冻结态数据目录绝对路径。
+    """
+    local_appdata = os.environ.get('LOCALAPPDATA', '').strip()
+    if not local_appdata:
+        local_appdata = os.path.join(os.path.expanduser("~"), "AppData", "Local")
+    return os.path.join(local_appdata, "FreeAssetFilter", "data")
+
+
+def _migrate_legacy_frozen_data(data_dir: str) -> None:
+    """冻结态一次性搬家：旧安装目录下的用户数据 → 新的可写数据目录。
+
+    历史旧位置：
+
+    - ``<exe>/_internal/data/``：``SettingsManagerV2`` 按 ``__file__``
+      推导的路径（设置文件曾落在 ``_internal/data/settings_v2.json``）；
+    - ``<exe>/data/``：早期 ``get_app_data_path`` 冻结态解析的路径
+      （背景图、上次路径等）。
+
+    只搬用户数据（设置文件、背景图目录、上次路径、暂存备份、文件信息
+    缓存）；缩略图 / Office 缓存 / 日志 / 性能快照等可再生文件不搬。
+    目标已存在同名项时跳过；任何失败仅记日志，绝不阻断启动。
+
+    Args:
+        data_dir: 新的可写数据目录（须已创建）。
+    """
+    try:
+        app_dir = (
+            os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else ""
+        )
+        if not app_dir:
+            return
+        legacy_dirs = [
+            os.path.join(app_dir, "_internal", "data"),
+            os.path.join(app_dir, "data"),
+        ]
+
+        # 1) 设置文件（最关键）：目标缺失时按候选顺序复制第一个存在的。
+        target_settings = os.path.join(data_dir, "settings_v2.json")
+        if not os.path.exists(target_settings):
+            for legacy_dir in legacy_dirs:
+                source = os.path.join(legacy_dir, "settings_v2.json")
+                if os.path.isfile(source):
+                    shutil.copy2(source, target_settings)
+                    break
+
+        # 2) 其余用户数据文件。
+        for file_name in (
+            "last_path.json",
+            "staging_pool_backup.json",
+            "file_info_cache.json",
+        ):
+            target = os.path.join(data_dir, file_name)
+            if os.path.exists(target):
+                continue
+            for legacy_dir in legacy_dirs:
+                source = os.path.join(legacy_dir, file_name)
+                if os.path.isfile(source):
+                    shutil.copy2(source, target)
+                    break
+
+        # 3) 自定义背景图目录。
+        target_backgrounds = os.path.join(data_dir, "backgrounds")
+        if not os.path.exists(target_backgrounds):
+            for legacy_dir in legacy_dirs:
+                source = os.path.join(legacy_dir, "backgrounds")
+                if os.path.isdir(source):
+                    shutil.copytree(source, target_backgrounds)
+                    break
+    except Exception as exc:
+        # 搬家失败不影响启动：用户仍可从旧位置手动拷贝。
+        logger = _get_logger()
+        if logger:
+            logger.warning(f"旧数据目录搬家失败（不影响启动）: {exc}")
+
+
 def get_app_data_path():
     """获取应用程序数据目录（用于存储配置、数据等）。
 
     ``FAF_DATA_DIR`` 环境变量优先**且不缓存**：显式指定时每次都直接返回该
     目录（测试隔离 / 便携部署用，与 ``FAF_EVIDENCE_DIR`` 的既有约定一致），
     不受进程内此前解析结果影响。未设置时按冻结/开发态推导：冻结态
-    ``<exe目录>/data``，开发态 ``<仓库根>/data``，结果进程内缓存。
+    ``%LOCALAPPDATA%\\FreeAssetFilter\\data``（用户可写；安装目录默认位于
+    Program Files，历史实现写在那里会因权限失败），开发态 ``<仓库根>/data``，
+    结果进程内缓存。冻结态首次解析时执行一次性旧数据搬家
+    （见 :func:`_migrate_legacy_frozen_data`）。
     """
     global _APP_DATA_PATH_CACHE
 
@@ -550,8 +639,7 @@ def get_app_data_path():
             return _APP_DATA_PATH_CACHE
         cacheable = True
         if getattr(sys, 'frozen', False):
-            app_dir = os.path.dirname(sys.executable)
-            data_dir = os.path.join(app_dir, 'data')
+            data_dir = _resolve_frozen_data_dir()
         else:
             data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data')
 
@@ -565,6 +653,8 @@ def get_app_data_path():
         raise
 
     if cacheable:
+        if getattr(sys, 'frozen', False):
+            _migrate_legacy_frozen_data(data_dir)
         _APP_DATA_PATH_CACHE = data_dir
     return data_dir
 

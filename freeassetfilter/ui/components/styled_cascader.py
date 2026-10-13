@@ -45,8 +45,8 @@ class _CascaderColumnItem(QWidget):
         return tm.text.name()
 
     @property
-    def _color_text_secondary(self) -> str:
-        return tm.mid.name()
+    def _color_text_secondary(self) -> QColor:
+        return tm.text_secondary
 
     def __init__(self, item: dict, has_children: bool, parent=None):
         super().__init__(parent)
@@ -120,7 +120,7 @@ class _CascaderColumnItem(QWidget):
         p.translate(ix + icon_sz / 2.0, iy + icon_sz / 2.0)
         p.scale(sc, sc)
         p.translate(-view / 2.0, -view / 2.0)
-        p.setPen(QPen(QColor(self._color_text_secondary), 2.0,
+        p.setPen(QPen(self._color_text_secondary, 2.0,
                       Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
         p.setBrush(Qt.NoBrush)
         p.drawPath(path)
@@ -167,7 +167,7 @@ class _CascaderColumnPopup(QWidget):
 
     @property
     def _color_border(self) -> str:
-        return tm.alpha_of(tm.mid, 40).name()
+        return tm.qss_color(tm.control_border)
 
     def __init__(self, items: list[dict], depth: int, parent=None):
         super().__init__(None, Qt.Tool | Qt.FramelessWindowHint)
@@ -331,7 +331,7 @@ class StyledCascader(QWidget):
 
     @property
     def _color_text_disabled(self) -> str:
-        return tm.alpha_of(tm.mid, 40).name()
+        return tm.qss_color(tm.control_border)
 
     @property
     def _color_accent(self) -> str:
@@ -552,7 +552,7 @@ class StyledCascader(QWidget):
         if not enabled:
             tc = QColor(self._color_text_disabled)
         else:
-            tc = QColor(self._color_text) if self._selected_path else tm.alpha_of(tm.mid, 60)
+            tc = QColor(self._color_text) if self._selected_path else tm.text_hint
 
         p.setPen(tc)
         p.drawText(QRectF(12, 0, text_max_w, h),
@@ -564,9 +564,9 @@ class StyledCascader(QWidget):
 
         # ── arrow icon (chevron_down, rotated) ──
         if not enabled:
-            arrow_color = tm.alpha_of(tm.mid, 50)
+            arrow_color = tm.text_hint
         else:
-            arrow_color = tm.alpha_of(tm.mid, 80)
+            arrow_color = tm.text_secondary
 
         arrow_sz = 16.0
         path_down = icon_path("chevron_down")
@@ -595,7 +595,7 @@ class StyledCascader(QWidget):
                 p.translate(clear_center_x, h / 2.0)
                 p.scale(sc, sc)
                 p.translate(-view / 2.0, -view / 2.0)
-                p.setPen(QPen(tm.mid, 1.8,
+                p.setPen(QPen(tm.text_secondary, 1.8,
                               Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
                 p.setBrush(Qt.NoBrush)
                 p.drawPath(path_close)

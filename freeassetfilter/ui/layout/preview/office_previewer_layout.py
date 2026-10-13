@@ -97,6 +97,20 @@ class OfficePreviewerLayout(QWidget):
         self._pdf_holder_layout: Optional[QVBoxLayout] = None
 
         self._init_ui()
+        # 主题切换：占位/错误提示色随主题刷新
+        tm.theme_changed.connect(self._on_theme_changed)
+
+    def _on_theme_changed(self, _theme: str) -> None:
+        """主题切换：重注册占位/错误提示色并重绘内容视图。"""
+        register_widget_qss(self._placeholder,(
+            f"color: {tm.qss_color(tm.text_hint)}; font-size: 14px; background: transparent;"
+        ))
+        register_widget_qss(self._error_view,(
+            f"color: {tm.qss_color(tm.text_hint)}; font-size: 14px; background: transparent; padding: 24px;"
+        ))
+        self._html_view.viewport().update()
+        self._outline_view.viewport().update()
+        self.update()
 
     # ── UI 初始化 ─────────────────────────────────────────────────────────
 
@@ -120,7 +134,7 @@ class OfficePreviewerLayout(QWidget):
         self._placeholder = QLabel("正在转换 Office 文档…")
         self._placeholder.setAlignment(Qt.AlignCenter)
         register_widget_qss(self._placeholder,(
-            f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
+            f"color: {tm.qss_color(tm.text_hint)}; font-size: 14px; background: transparent;"
         ))
         overlay_layout.addWidget(self._placeholder)
         self._content_stack.addWidget(self._overlay)
@@ -143,7 +157,7 @@ class OfficePreviewerLayout(QWidget):
         self._error_view.setAlignment(Qt.AlignCenter)
         self._error_view.setWordWrap(True)
         register_widget_qss(self._error_view,(
-            f"color: {tm.mid.name()}; font-size: 14px; background: transparent; padding: 24px;"
+            f"color: {tm.qss_color(tm.text_hint)}; font-size: 14px; background: transparent; padding: 24px;"
         ))
         self._content_stack.addWidget(self._error_view)
 

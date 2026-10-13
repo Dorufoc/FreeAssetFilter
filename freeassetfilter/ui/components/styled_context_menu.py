@@ -49,11 +49,19 @@ class StyledContextMenu(QMenu):
 
         bg = tm.surface.name()
         text = tm.text.name()
-        hover_bg = _rgba(tm.alpha_of(tm.fill, 60))
-        border = _rgba(tm.alpha_of(tm.mid, 40))
-        disabled = _rgba(tm.alpha_of(tm.mid, 40))
+        # 悬停高亮：浅色用 accent 轻染（fill 60% 在白底上约 1.1:1，等于没有反馈），
+        # 深色沿用历史 fill 60% 口径。
+        if tm.is_dark_theme():
+            hover_bg = _rgba(tm.alpha_of(tm.fill, 60))
+        else:
+            hover_bg = _rgba(tm.alpha_of(tm.accent, 16))
+        border = _rgba(
+            tm.alpha_of(tm.mid, 40) if tm.is_dark_theme() else tm.alpha_of(tm.text, 10)
+        )
+        disabled = _rgba(tm.text_disabled)
         danger = tm.danger.name()
         separator = _rgba(tm.alpha_of(tm.mid, 30))
+        danger_hover = _rgba(tm.alpha_of(tm.danger, 15 if tm.is_dark_theme() else 12))
         return (
             f"StyledContextMenu {{"
             f"  background-color: {bg};"
@@ -76,7 +84,7 @@ class StyledContextMenu(QMenu):
             f"  color: {danger};"
             f"}}"
             f"StyledContextMenu::item[danger=\"true\"]:selected {{"
-            f"  background-color: rgba(239, 68, 68, 0.15);"
+            f"  background-color: {danger_hover};"
             f"}}"
             f"StyledContextMenu::separator {{"
             f"  height: 1px;"

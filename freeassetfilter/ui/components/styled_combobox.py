@@ -52,7 +52,7 @@ class _ComboItemWidget(QWidget):
         accent = tm.accent
         tertiary_bg = tm.surface
         text_primary = tm.text
-        text_secondary = tm.mid
+        text_secondary = tm.text_secondary
 
         # Background
         if self._selected:
@@ -125,7 +125,7 @@ class _ComboDivider(QWidget):
     def paintEvent(self, event: QPaintEvent):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        p.setPen(QPen(tm.mid, 1))
+        p.setPen(QPen(tm.control_border, 1))
         p.drawLine(0, 0, self.width(), 0)
         p.end()
 
@@ -199,7 +199,12 @@ class _ComboPopup(QWidget):
         p.setBrush(tm.surface)
         p.drawRoundedRect(QRectF(0, 0, w, h), r, r)
 
-        p.setPen(QPen(tm.mid, 1))
+        p.setPen(
+            QPen(
+                tm.mid if tm.is_dark_theme() else tm.alpha_of(tm.text, 12),
+                1,
+            )
+        )
         p.setBrush(Qt.NoBrush)
         p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), r, r)
         p.end()
@@ -486,7 +491,11 @@ class StyledComboBox(QWidget):
         if not self._flat:
             # Background — smooth hover transition
             # 保持 alpha，作为半透明叠加层绘制，不要变成不透明的实色块
-            bg = tm.alpha_of(tm.mid, 12 + 10 * self._hover_progress)
+            # 浅色下 mid 12% 在白底近不可见，改用 text 轻压暗；深色历史值。
+            if tm.is_dark_theme():
+                bg = tm.alpha_of(tm.mid, 12 + 10 * self._hover_progress)
+            else:
+                bg = tm.alpha_of(tm.text, 4 + 4 * self._hover_progress)
 
             p.setPen(Qt.NoPen)
 
@@ -494,15 +503,21 @@ class StyledComboBox(QWidget):
             p.drawRoundedRect(QRectF(0, 0, w, h), rad, rad)
 
             # Border
-            border_default = tm.mid
-            text_tertiary = tm.alpha_of(tm.mid, 60)
+            border_default = (
+                tm.mid if tm.is_dark_theme() else tm.control_border
+            )
+            border_hover = (
+                tm.alpha_of(tm.mid, 60) if tm.is_dark_theme()
+                else tm.control_border_strong
+            )
             if self._open:
                 border = accent
             else:
-                r = int(border_default.red() + (text_tertiary.red() - border_default.red()) * self._hover_progress)
-                g = int(border_default.green() + (text_tertiary.green() - border_default.green()) * self._hover_progress)
-                b = int(border_default.blue() + (text_tertiary.blue() - border_default.blue()) * self._hover_progress)
-                border = QColor(r, g, b)
+                r = int(border_default.red() + (border_hover.red() - border_default.red()) * self._hover_progress)
+                g = int(border_default.green() + (border_hover.green() - border_default.green()) * self._hover_progress)
+                b = int(border_default.blue() + (border_hover.blue() - border_default.blue()) * self._hover_progress)
+                a = int(border_default.alpha() + (border_hover.alpha() - border_default.alpha()) * self._hover_progress)
+                border = QColor(r, g, b, a)
 
             pen = QPen(border, 1)
             p.setPen(pen)
@@ -537,7 +552,7 @@ class StyledComboBox(QWidget):
                     value_fm.horizontalAdvance(text),
                 )
                 p.setFont(title_font)
-                p.setPen(tm.alpha_of(tm.mid, 150))
+                p.setPen(tm.text_hint)
                 p.drawText(
                     QRectF(0, 0, w, h * 0.5),
                     Qt.AlignVCenter | Qt.AlignHCenter,

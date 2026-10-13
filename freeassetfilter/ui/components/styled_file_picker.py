@@ -106,21 +106,21 @@ class _BrowseButton(QPushButton):
 
             if not self.isEnabled():
                 painter.setOpacity(0.4)
-                bg = tm.alpha_of(tm.mid, 20)
-                text_color = tm.alpha_of(tm.mid, 40)
-                border_color = tm.alpha_of(tm.mid, 40)
+                bg = tm.subtle_fill
+                text_color = tm.text_disabled
+                border_color = tm.control_border
             elif self._pressed:
                 bg = tm.surface
                 text_color = tm.text
-                border_color = tm.alpha_of(tm.mid, 40)
+                border_color = tm.control_border
             elif self._hovered:
-                bg = tm.alpha_of(tm.mid, 40)
+                bg = tm.hover_veil
                 text_color = tm.text
-                border_color = tm.alpha_of(tm.mid, 60)
+                border_color = tm.control_border_strong
             else:
-                bg = tm.alpha_of(tm.mid, 40)
-                text_color = tm.mid
-                border_color = tm.mid
+                bg = tm.hover_veil
+                text_color = tm.text_secondary
+                border_color = tm.control_border
 
             r = _SIZE_CONFIG[self._size]["radius"]
 
@@ -242,7 +242,7 @@ class StyledFilePicker(QWidget):
 
     def _apply_stylesheet(self):
         config = _SIZE_CONFIG[self._size]
-        border_color = tm.danger.name() if self._error else tm.mid.name()
+        border_color = tm.danger.name() if self._error else tm.qss_color(tm.control_border)
 
         self._input.setObjectName(f"fp_input_{id(self)}")
         register_widget_qss(self._input,(f"""
@@ -262,8 +262,8 @@ class StyledFilePicker(QWidget):
             }}
             #fp_input_{id(self)}:disabled {{
                 background-color: {tm.surface.name()};
-                color: {tm.alpha_of(tm.mid, 40).name()};
-                border-color: {tm.alpha_of(tm.mid, 40).name()};
+                color: {tm.qss_color(tm.text_disabled)};
+                border-color: {tm.qss_color(tm.text_disabled)};
             }}
         """))
 
@@ -422,7 +422,7 @@ class StyledFileDropZone(QWidget):
                 border_style = Qt.SolidLine
             else:
                 bg = tm.alpha_of(tm.surface, 90)
-                border_color = tm.mid
+                border_color = tm.control_border
                 border_style = Qt.DashLine
 
             # Background + border
@@ -455,7 +455,7 @@ class StyledFileDropZone(QWidget):
             # Hint text
             hint_font = QFont("Microsoft YaHei UI", 12)
             painter.setFont(hint_font)
-            painter.setPen(tm.alpha_of(tm.mid, 60))
+            painter.setPen(tm.text_hint)
             painter.drawText(
                 QRectF(0, h / 2.0 + 18, w, 18),
                 Qt.AlignCenter,

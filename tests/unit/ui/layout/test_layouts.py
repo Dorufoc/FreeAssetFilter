@@ -34,7 +34,7 @@ from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock
 
 import pytest
-from PySide6.QtCore import QEvent, QModelIndex, QPoint, QPointF, QObject, Qt, QThread, Signal
+from PySide6.QtCore import QEvent, QModelIndex, QPoint, QPointF, QObject, QRect, QSequentialAnimationGroup, Qt, QThread, Signal
 from PySide6.QtGui import (
     QCloseEvent,
     QColor,
@@ -266,6 +266,169 @@ class TestFilePoolLayout:
         assert layout.has_file(file_path) is False
         layout.deleteLater()
 
+    def test_grid_removal_shrink_and_smooth_fill(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """New 布局网格移除：原地缩小渐隐（card_shrink + 淡出）+ 其余卡片同期平滑补位。"""
+        import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
+
+        monkeypatch.setattr(fpl_mod, "is_animation_enabled", lambda *a, **k: True)
+        layout = FilePoolLayout()
+        layout.resize(600, 420)
+        layout.show()
+        _pump_events(qapp, 100)
+
+        paths = [os.path.normpath(f"D:/dummy/grid_anim_{i}.png") for i in range(7)]
+        for path in paths:
+            layout.add_file({"path": path, "name": os.path.basename(path)})
+        _pump_events(qapp)
+        layout.set_view_mode("grid")
+        _pump_events(qapp)
+
+        cards = layout._card_widgets
+        before = {p: QRect(cards[p].geometry()) for p in paths}
+        target = paths[2]
+
+        layout.remove_file(target)
+        assert _pump_until(
+            qapp, lambda: target in layout._active_card_animations, timeout_ms=1000
+        )
+
+        # 退出动画：绘制级 card_shrink + card_opacity，几何固定在原位（不左滑）
+        assert target in layout._removing_paths
+        info = layout._active_card_animations.get(target)
+        assert info is not None and info["kind"] == "exit"
+        exit_group = info["group"]
+        exit_props = {
+            bytes(exit_group.animationAt(i).propertyName())
+            for i in range(exit_group.animationCount())
+        }
+        assert exit_props == {b"card_shrink", b"card_opacity"}
+        assert cards[target].geometry() == before[target]
+
+        # 补位动画：级联结构 = [QPauseAnimation(起步延迟 + 错峰)] + geometry 移动
+        fill_group = layout._grid_fill_group
+        assert fill_group is not None
+        fill_delays: list[int] = []
+        for index in range(fill_group.animationCount()):
+            seq = fill_group.animationAt(index)
+            assert isinstance(seq, QSequentialAnimationGroup)
+            move_anim = seq.animationAt(seq.animationCount() - 1)
+            assert bytes(move_anim.propertyName()) == b"geometry"
+            fill_delays.append(
+                sum(
+                    seq.animationAt(j).duration()
+                    for j in range(seq.animationCount() - 1)
+                )
+            )
+        # 起步延迟 50ms、逐格 +12ms、封顶 98ms；紧邻空位者最先启动
+        assert fill_delays
+        assert min(fill_delays) == 50
+        assert max(fill_delays) <= 98
+
+        assert _pump_until(qapp, lambda: target not in layout._removing_paths)
+        _pump_events(qapp, 250)
+
+        # 结束态：卡片已移除、补位完成、后续卡片左移填满且布局稳定无残余空位
+        assert layout.has_file(target) is False
+        assert layout._grid_fill_group is None
+        assert cards[paths[3]].x() == before[paths[2]].x()
+        assert cards[paths[4]].x() == before[paths[3]].x()
+        positions = {p: (c.x(), c.y()) for p, c in cards.items()}
+        layout._card_layout.activate()
+        assert {p: (c.x(), c.y()) for p, c in cards.items()} == positions
+        layout.deleteLater()
+
+    def test_grid_batch_removal_stays_contiguous(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """网格批量移出：多轮补位互不叠加，剩余卡片最终连续排布无空位。"""
+        import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
+
+        monkeypatch.setattr(fpl_mod, "is_animation_enabled", lambda *a, **k: True)
+        layout = FilePoolLayout()
+        layout.resize(600, 420)
+        layout.show()
+        _pump_events(qapp, 100)
+
+        paths = [os.path.normpath(f"D:/dummy/grid_batch_{i}.png") for i in range(9)]
+        for path in paths:
+            layout.add_file({"path": path, "name": os.path.basename(path)})
+        _pump_events(qapp)
+        layout.set_view_mode("grid")
+        _pump_events(qapp)
+
+        cards = layout._card_widgets
+        row_y = cards[paths[0]].y()
+        removed = (paths[1], paths[3], paths[5])
+        for path in removed:
+            layout.remove_file(path)
+
+        assert _pump_until(
+            qapp,
+            lambda: all(p not in layout._removing_paths for p in removed),
+        )
+        _pump_events(qapp, 250)
+
+        assert layout._grid_fill_group is None
+        remaining = [p for p in paths if p not in removed]
+        assert set(cards) == set(remaining)
+        # 第一行剩余卡片从左起连续排布：相邻卡片间距 = 列宽 + 网格间距
+        first_row_xs = sorted(c.x() for c in cards.values() if c.y() == row_y)
+        col_w = cards[paths[0]].width()
+        spacing = layout._card_layout.spacing()
+        assert len(first_row_xs) > 1
+        for left, right in zip(first_row_xs, first_row_xs[1:]):
+            assert right - left == col_w + spacing
+        # 布局稳定：强制重排不再移动任何卡片
+        positions = {p: (c.x(), c.y()) for p, c in cards.items()}
+        layout._card_layout.activate()
+        assert {p: (c.x(), c.y()) for p, c in cards.items()} == positions
+        layout.deleteLater()
+
+    def test_list_removal_keeps_slide_animation(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """经典列表移除保持左滑 + 占位折叠：退出动画不引入 card_shrink。"""
+        import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
+
+        monkeypatch.setattr(fpl_mod, "is_animation_enabled", lambda *a, **k: True)
+        layout = FilePoolLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        layout.show()
+        _pump_events(qapp, 100)
+
+        paths = [os.path.normpath(f"D:/dummy/list_anim_{i}.png") for i in range(3)]
+        for path in paths:
+            layout.add_file({"path": path, "name": os.path.basename(path)})
+        _pump_events(qapp)
+
+        assert layout.get_view_mode() == "list"
+        cards = layout._card_widgets
+        target = paths[1]
+        y_before = cards[paths[2]].y()
+
+        layout.remove_file(target)
+        assert _pump_until(
+            qapp, lambda: target in layout._active_card_animations, timeout_ms=1000
+        )
+        info = layout._active_card_animations.get(target)
+        assert info is not None and info["kind"] == "exit"
+        group = info["group"]
+        props = {
+            bytes(group.animationAt(i).propertyName())
+            for i in range(group.animationCount())
+        }
+        assert b"geometry" in props
+        assert b"card_opacity" in props
+        assert b"card_shrink" not in props
+
+        assert _pump_until(qapp, lambda: target not in layout._removing_paths)
+        _pump_events(qapp, 300)
+        assert layout.has_file(target) is False
+        assert cards[paths[2]].y() < y_before  # 下方卡片整体上移
+        layout.deleteLater()
+
     def test_grid_view_mode_layout_and_scale(
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -450,7 +613,10 @@ class TestFilePoolLayout:
         assert "background-color: rgba(255,255,255,0.05);" in content_fragment
         assert "border: 1px solid rgba(136,136,136,0.5);" in content_fragment
         assert 'dragActive="true"' in content_fragment
-        assert "border: 2px dashed #4a90d9;" in content_fragment
+        # 拖放虚线边框跟随强调色（不再写死 #4a90d9）
+        from theme import tm as _tm
+
+        assert f"border: 2px dashed {_tm.qss_color(_tm.accent)};" in content_fragment
         # 底栏（同深度、后注册）片段完整保留，不被内容区片段连累
         assert "background-color: rgba(255,255,255,0.05);" in _fragment(bar_sid)
         layout.deleteLater()
@@ -1570,37 +1736,213 @@ class TestCollectCancelCheck:
 # ui.layout.file_selector_layout — 空白区右键返回上一级
 # =============================================================================
 class TestRightClickEmptyAreaGoBack:
-    """空白区右键路由：无卡片 → _go_back；卡片上 → 入池信号不变。
+    """空白区右键路由：开关 + 无需滚动 + 空卡片位 → _go_back；其余不触发。
 
-    仅验证 ``_on_right_click_toggle_pool`` 的路由分支（indexAt 命中与否），
-    不跑真实过渡动画。
+    取点基于真实网格几何（离屏布局的 gridSize/卡片尺寸动态计算），
+    不 mock ``indexAt``；卡片上入池分支保持原样。
     """
 
-    def test_empty_area_right_click_goes_back(
-        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """空白区（indexAt 无效）右键：调用 _go_back，不发入池信号。
+    @staticmethod
+    def _load_dir(tmp_path: Path, count: int) -> str:
+        """创建含 ``count`` 个文件的目标目录并返回绝对路径。"""
+        target_dir = tmp_path / "src"
+        target_dir.mkdir(exist_ok=True)
+        for i in range(count):
+            (target_dir / f"f{i:02d}.txt").write_text("x", encoding="utf-8")
+        return os.path.abspath(str(target_dir))
+
+    @classmethod
+    def _prepare(
+        cls,
+        qapp: QApplication,
+        tmp_path: Path,
+        count: int = 3,
+        enabled: bool = True,
+    ) -> FileSelectorLayout:
+        """构造并加载含 ``count`` 个文件的选择器（可选开启空白右键开关）。
 
         Args:
             qapp: 会话级 QApplication（offscreen）。
-            monkeypatch: 用例级猴子补丁。
+            tmp_path: pytest 临时目录（真实创建 src/）。
+            count: 目标目录内文件数。
+            enabled: 是否开启「空白区右键返回上一级」开关。
+
+        Returns:
+            FileSelectorLayout: 已加载目标目录、完成网格布局的实例。
         """
         layout = FileSelectorLayout()
         layout.resize(*_LAYOUT_SIZE)
         qapp.processEvents()
+        layout._load_directory(cls._load_dir(tmp_path, count))
+        layout.set_blank_right_click_go_back(enabled)
+        qapp.processEvents()
+        qapp.processEvents()
+        return layout
+
+    @staticmethod
+    def _empty_slot_points(layout: FileSelectorLayout) -> Dict[str, QPoint]:
+        """按真实网格几何计算空位/间距带取点（卡片模式）。
+
+        Returns:
+            dict: ``empty``=首个空行空位的卡片脚印内点；``left_pad``=脚印
+            左侧间距带；``hgap``=脚印右侧间距带；``vgap``=有卡片行与空行
+            之间的行间间距带。
+        """
+        grid = layout._file_list.gridSize()
+        card = layout._grid_card_size
+        cols = layout._grid_cols
+        rows = (layout._file_model.rowCount() + cols - 1) // cols
+        offset_x = max(0, (grid.width() - min(grid.width(), card.width()) + 1) // 2)
+        top = rows * grid.height()
+        return {
+            "empty": QPoint(offset_x + 2, top + 2),
+            "left_pad": QPoint(offset_x - 1, top + 2),
+            "hgap": QPoint(offset_x + min(grid.width(), card.width()), top + 2),
+            "vgap": QPoint(offset_x + 2, top - 1),
+        }
+
+    def test_blank_slot_zone_requires_switch(
+        self, qapp: QApplication, tmp_path: Path,
+    ) -> None:
+        """开关关闭（默认）：空位脚印内也不触发返回。"""
+        layout = self._prepare(qapp, tmp_path, enabled=False)
         try:
+            points = self._empty_slot_points(layout)
+            assert layout._blank_right_click_go_back is False
+            assert layout._is_blank_slot_go_back_zone(points["empty"]) is False
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+    def test_blank_slot_zone_accepts_empty_slot_only(
+        self, qapp: QApplication, tmp_path: Path,
+    ) -> None:
+        """开启后：空位脚印触发；左右间距带、行间间距带、占用格不触发。"""
+        layout = self._prepare(qapp, tmp_path, enabled=True)
+        try:
+            points = self._empty_slot_points(layout)
+            zone = layout._is_blank_slot_go_back_zone
+            assert zone(points["empty"]) is True
+            assert zone(points["left_pad"]) is False
+            assert zone(points["hgap"]) is False
+            assert zone(points["vgap"]) is False
+            # 占用格（第一行第一张卡片中心）不触发
+            grid = layout._file_list.gridSize()
+            card = layout._grid_card_size
+            assert zone(QPoint(grid.width() // 2, card.height() // 2)) is False
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+    def test_blank_slot_zone_rejects_when_scrolling_needed(
+        self, qapp: QApplication, tmp_path: Path,
+    ) -> None:
+        """需要滚动时：即使落在空位脚印也不触发（最后一排尾部空位同样）。"""
+        layout = self._prepare(qapp, tmp_path, count=59, enabled=True)
+        try:
+            vbar = layout._file_list.verticalScrollBar()
+            assert vbar.maximum() > 0, "59 个条目应超出视口（需要滚动）"
+            # Batched 惰性布局：滚动到底后多轮稳定可视矩形
+            for _ in range(3):
+                vbar.setValue(vbar.maximum())
+                qapp.processEvents()
+
+            grid = layout._file_list.gridSize()
+            last_index = layout._file_model.index(
+                layout._file_model.rowCount() - 1, 0
+            )
+            last_rect = layout._file_list.visualRect(last_index)
+            assert last_rect.width() > 0, "滚动到底后最后一项应完成布局"
+
+            # 最后一项所在行右侧的尾部空位（同一可视行内）
+            point = QPoint(last_rect.x() + grid.width() + 2, last_rect.y() + 2)
+            vp = layout._file_list.viewport()
+            assert 0 <= point.x() < vp.width()
+            assert 0 <= point.y() < vp.height()
+            assert not layout._file_list.indexAt(point).isValid()
+            assert layout._is_blank_slot_go_back_zone(point) is False
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+    def test_blank_slot_zone_list_mode(
+        self, qapp: QApplication, tmp_path: Path,
+    ) -> None:
+        """列表模式：空行脚印触发；行间缝隙与卡片行不触发。"""
+        layout = self._prepare(qapp, tmp_path, enabled=True)
+        try:
+            layout._toggle_view_mode()
+            qapp.processEvents()
+            grid = layout._file_list.gridSize()
+            rows = layout._file_model.rowCount()  # 列表模式恒为单列
+            empty_top = rows * grid.height()
+            zone = layout._is_blank_slot_go_back_zone
+            assert zone(QPoint(2, empty_top + 2)) is True
+            assert zone(QPoint(2, empty_top - 1)) is False
+            assert zone(QPoint(2, 10)) is False
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+    def test_empty_area_right_click_goes_back_when_enabled(
+        self, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """开关开启 + 空卡片位右键：调用 _go_back，不发入池信号。"""
+        layout = self._prepare(qapp, tmp_path, enabled=True)
+        try:
+            point = self._empty_slot_points(layout)["empty"]
+            assert not layout._file_list.indexAt(point).isValid()
+
             go_back_mock: MagicMock = MagicMock()
             toggle_calls: list = []
             monkeypatch.setattr(layout, "_go_back", go_back_mock)
-            monkeypatch.setattr(
-                layout._file_list, "indexAt", MagicMock(return_value=QModelIndex())
-            )
             layout.toggle_pool_requested.connect(lambda info: toggle_calls.append(info))
 
-            layout._on_right_click_toggle_pool(QPoint(20, 20))
+            layout._on_right_click_toggle_pool(point)
 
             go_back_mock.assert_called_once_with()
             assert toggle_calls == []
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+    def test_right_click_gap_does_not_go_back(
+        self, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """卡片间/行间缝隙（含与空位相邻的间距带）：右键不返回，仅清除框选。"""
+        layout = self._prepare(qapp, tmp_path, enabled=True)
+        try:
+            points = self._empty_slot_points(layout)
+            go_back_mock: MagicMock = MagicMock()
+            monkeypatch.setattr(layout, "_go_back", go_back_mock)
+
+            for key in ("left_pad", "hgap", "vgap"):
+                point = points[key]
+                assert not layout._file_list.indexAt(point).isValid()
+                layout._file_model.set_rows_selected({0}, True)
+                layout._on_right_click_toggle_pool(point)
+                assert layout._file_model.get_selected_rows() == set()
+
+            go_back_mock.assert_not_called()
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+    def test_right_click_blank_disabled_does_not_go_back(
+        self, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """开关默认关闭：空白位右键不返回，仅清除框选。"""
+        layout = self._prepare(qapp, tmp_path, enabled=False)
+        try:
+            point = self._empty_slot_points(layout)["empty"]
+            go_back_mock: MagicMock = MagicMock()
+            monkeypatch.setattr(layout, "_go_back", go_back_mock)
+
+            layout._file_model.set_rows_selected({0}, True)
+            layout._on_right_click_toggle_pool(point)
+
+            go_back_mock.assert_not_called()
+            assert layout._file_model.get_selected_rows() == set()
         finally:
             safe_teardown(layout)
             qapp.processEvents()
@@ -4291,27 +4633,32 @@ class TestGeneralSettingsPage:
             safe_teardown(layout)
 
     def test_toggles_default_false_from_cache(self, qapp: QApplication) -> None:
-        """构造：AI 入口与网络盘开关默认均从缓存读到 False。"""
+        """构造：AI 入口 / 网络盘 / 空白右键返回开关默认均从缓存读到 False。"""
         page = GeneralSettingsPage(staging_cache=self._make_cache("workspace"))
         assert page._ai_entry is False
         assert page._include_remote_drives is False
+        assert page._blank_right_click_go_back is False
         assert page._ai_toggle.checked is False
         assert page._drives_toggle.checked is False
+        assert page._blank_back_toggle.checked is False
         safe_teardown(page)
 
     def test_toggles_write_staging_only(self, qapp: QApplication) -> None:
-        """切换两个开关只写暂存缓存（不落盘、不触碰主窗口）。"""
+        """切换三个开关只写暂存缓存（不落盘、不触碰主窗口）。"""
         cache = self._make_cache("workspace")
         page = GeneralSettingsPage(staging_cache=cache)
 
         page._ai_toggle.checked = True
         page._drives_toggle.checked = True
+        page._blank_back_toggle.checked = True
         qapp.processEvents()
 
         assert page._ai_entry is True
         assert page._include_remote_drives is True
+        assert page._blank_right_click_go_back is True
         assert cache.get("general.enable_ai_entry") is True
         assert cache.get("general.include_remote_drives") is True
+        assert cache.get("general.blank_right_click_go_back") is True
         safe_teardown(page)
 
     def test_refresh_from_staging_restores_toggles(self, qapp: QApplication) -> None:
@@ -4320,22 +4667,26 @@ class TestGeneralSettingsPage:
         page = GeneralSettingsPage(staging_cache=cache)
         page._ai_toggle.checked = True
         page._drives_toggle.checked = True
+        page._blank_back_toggle.checked = True
         qapp.processEvents()
 
         cache.set("general.enable_ai_entry", False)
         cache.set("general.include_remote_drives", False)
+        cache.set("general.blank_right_click_go_back", False)
         page.refresh_from_staging()
 
         assert page._ai_entry is False
         assert page._include_remote_drives is False
+        assert page._blank_right_click_go_back is False
         assert page._ai_toggle.checked is False
         assert page._drives_toggle.checked is False
+        assert page._blank_back_toggle.checked is False
         safe_teardown(page)
 
     def test_submit_routes_general_toggles_to_main_window(
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
-        """提交：两个开关下发主窗口（暂存期不下发）并落盘到 V2。"""
+        """提交：三个开关下发主窗口（暂存期不下发）并落盘到 V2。"""
         import freeassetfilter.ui.layout.settings_layout as sl_mod
         from freeassetfilter.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
@@ -4357,12 +4708,16 @@ class TestGeneralSettingsPage:
             def __init__(self) -> None:
                 self.ai_calls: list[bool] = []
                 self.drives_calls: list[bool] = []
+                self.blank_back_calls: list[bool] = []
 
             def set_ai_entry_enabled(self, enabled: bool) -> None:
                 self.ai_calls.append(bool(enabled))
 
             def set_include_remote_drives(self, enabled: bool) -> None:
                 self.drives_calls.append(bool(enabled))
+
+            def set_blank_right_click_go_back(self, enabled: bool) -> None:
+                self.blank_back_calls.append(bool(enabled))
 
         fake_mw = _FakeMainWindow()
         monkeypatch.setattr(
@@ -4376,18 +4731,22 @@ class TestGeneralSettingsPage:
         try:
             layout._general_page._ai_toggle.checked = True
             layout._general_page._drives_toggle.checked = True
+            layout._general_page._blank_back_toggle.checked = True
             qapp.processEvents()
             assert fake_mw.ai_calls == []
             assert fake_mw.drives_calls == []
+            assert fake_mw.blank_back_calls == []
 
             assert layout._submit_settings() is True
             assert fake_mw.ai_calls == [True]
             assert fake_mw.drives_calls == [True]
+            assert fake_mw.blank_back_calls == [True]
 
             saved = SettingsManagerV2(tmp_file)
             saved.load()
             assert saved.get("general.enable_ai_entry") is True
             assert saved.get("general.include_remote_drives") is True
+            assert saved.get("general.blank_right_click_go_back") is True
         finally:
             try:
                 tm.set_theme_mode(prev_mode)

@@ -1410,7 +1410,7 @@ class AppearanceSettingsPage(QWidget):
             _ambient_desc = getattr(self._ambient_row, "desc_label", None)
             if _ambient_desc is not None:
                 register_widget_qss(_ambient_desc,(
-                    f"font-size: 12px; color: {tm.alpha_of(tm.mid, 60).name()};"
+                    f"font-size: 12px; color: {tm.qss_color(tm.text_hint)};"
                     f" line-height: 1.5;"
                 ))
         # 重新应用背景模式相关的可用性/置灰状态（米卡数值标签颜色）
@@ -1580,11 +1580,14 @@ class GeneralSettingsPage(QWidget):
         # 通用功能开关状态（初值由 refresh_from_staging 从暂存缓存读取）
         self._ai_entry: bool = False
         self._include_remote_drives: bool = False
+        self._blank_right_click_go_back: bool = False
         self._general_updating: bool = False  # 编程式同步开关的守卫标志
         self._ai_row: SettingsRow | None = None
         self._ai_toggle: StyledToggle | None = None
         self._drives_row: SettingsRow | None = None
         self._drives_toggle: StyledToggle | None = None
+        self._blank_back_row: SettingsRow | None = None
+        self._blank_back_toggle: StyledToggle | None = None
         self._build_ui()
         self.refresh_from_staging()
 
@@ -1631,6 +1634,16 @@ class GeneralSettingsPage(QWidget):
         self._drives_row.set_control(self._drives_toggle)
         layout.addWidget(self._drives_row)
 
+        # ── 空白区右键返回上一级（默认关闭）──
+        self._blank_back_row = SettingsRow(
+            title="空白处右键返回上级",
+            description="页面无需滚动时，右键卡片以外的空白格返回上一级；卡片间隙不触发",
+        )
+        self._blank_back_toggle = StyledToggle(checked=False, size="default")
+        self._blank_back_toggle.toggled.connect(self._on_blank_right_click_go_back_toggled)
+        self._blank_back_row.set_control(self._blank_back_toggle)
+        layout.addWidget(self._blank_back_row)
+
         layout.addStretch()
 
     # ── 交互 ──────────────────────────────────────────────────────────
@@ -1660,6 +1673,15 @@ class GeneralSettingsPage(QWidget):
             "general.include_remote_drives", self._include_remote_drives
         )
 
+    def _on_blank_right_click_go_back_toggled(self, checked: bool) -> None:
+        """空白区右键返回开关：只写入暂存缓存，点击「确定」才生效。"""
+        if self._general_updating:
+            return
+        self._blank_right_click_go_back = bool(checked)
+        self._staging_cache.set(
+            "general.blank_right_click_go_back", self._blank_right_click_go_back
+        )
+
     def _layout_description_text(self) -> str:
         """返回当前布局的介绍文字 + 换行提示行。"""
         desc = self._LAYOUT_DESCRIPTIONS.get(
@@ -1687,13 +1709,15 @@ class GeneralSettingsPage(QWidget):
             self._layout_updating = False
 
     def _sync_general_toggles(self) -> None:
-        """按当前状态同步两个开关（守卫内赋值，不触发写暂存）。"""
+        """按当前状态同步三个开关（守卫内赋值，不触发写暂存）。"""
         self._general_updating = True
         try:
             if self._ai_toggle is not None:
                 self._ai_toggle.checked = self._ai_entry
             if self._drives_toggle is not None:
                 self._drives_toggle.checked = self._include_remote_drives
+            if self._blank_back_toggle is not None:
+                self._blank_back_toggle.checked = self._blank_right_click_go_back
         finally:
             self._general_updating = False
 
@@ -1709,13 +1733,24 @@ class GeneralSettingsPage(QWidget):
         self._include_remote_drives = (
             saved_remote if isinstance(saved_remote, bool) else False
         )
+        saved_blank_back = self._staging_cache.get(
+            "general.blank_right_click_go_back", False
+        )
+        self._blank_right_click_go_back = (
+            saved_blank_back if isinstance(saved_blank_back, bool) else False
+        )
         self._sync_layout_segment()
         self._sync_general_toggles()
         self._sync_description_text()
 
     def refresh_theme(self) -> None:
         """主题切换时刷新页面内文字颜色（由 SettingsLayout._refresh_styles 调用）。"""
-        for row in (self._layout_row, self._ai_row, self._drives_row):
+        for row in (
+            self._layout_row,
+            self._ai_row,
+            self._drives_row,
+            self._blank_back_row,
+        ):
             if row is None:
                 continue
             title_label = getattr(row, "title_label", None)
@@ -1726,7 +1761,7 @@ class GeneralSettingsPage(QWidget):
             desc_label = getattr(row, "desc_label", None)
             if desc_label is not None:
                 register_widget_qss(desc_label,(
-                    f"font-size: 12px; color: {tm.alpha_of(tm.mid, 60).name()};"
+                    f"font-size: 12px; color: {tm.qss_color(tm.text_hint)};"
                     f" line-height: 1.5;"
                 ))
 
@@ -1930,10 +1965,9 @@ class SettingsLayout(QWidget):
 
     def _refresh_styles(self) -> None:
         """刷新卡片样式（参考 file_selector_layout 面板样式）"""
-        mid = tm.mid
-        txt = tm.text
-        fill_color = f"rgba({txt.red()},{txt.green()},{txt.blue()},{5 / 100})"
-        border_color = f"rgba({mid.red()},{mid.green()},{mid.blue()},{50 / 100})"
+        # 语义 token：浅色=偏白磨砂卡片 + 浅描边；深色=text 5% + mid 50%（历史值）
+        fill_color = tm.qss_color(tm.panel_fill)
+        border_color = tm.qss_color(tm.panel_border)
 
         register_widget_qss(self._stack,(f"""
             #SettingsCard {{
@@ -2079,17 +2113,22 @@ class SettingsLayout(QWidget):
             layout_mode = "workspace"
         if layout_mode not in ("classic", "workspace"):
             layout_mode = "workspace"
-        # 通用页：AI 入口 / 网络盘与光驱开关（缺失/非法一律回退 False）。
+        # 通用页：AI 入口 / 网络盘与光驱 / 空白区右键返回开关
+        #（缺失/非法一律回退 False）。
         if isinstance(staged_general, dict):
             ai_entry = staged_general.get("enable_ai_entry", False)
             include_remote = staged_general.get("include_remote_drives", False)
+            blank_back = staged_general.get("blank_right_click_go_back", False)
         else:
             ai_entry = False
             include_remote = False
+            blank_back = False
         if not isinstance(ai_entry, bool):
             ai_entry = False
         if not isinstance(include_remote, bool):
             include_remote = False
+        if not isinstance(blank_back, bool):
+            blank_back = False
 
         # 性能档位：只接受三档合法值，缺失/非法回退 balanced（与 V2 合并口径一致）。
         staged_perf = staged.get("performance", {}) if isinstance(staged, dict) else {}
@@ -2140,9 +2179,10 @@ class SettingsLayout(QWidget):
             # 通用页：主界面布局下发（失败仅警告，不阻断整体提交）
             self._apply_staged_layout_mode_to_main_window(layout_mode)
 
-            # 通用页：AI 入口 / 网络盘与光驱开关下发（失败仅警告，不阻断提交）
+            # 通用页：AI 入口 / 网络盘与光驱 / 空白区右键返回开关下发
+            #（失败仅警告，不阻断提交）
             self._apply_staged_general_toggles_to_main_window(
-                ai_entry, include_remote
+                ai_entry, include_remote, blank_back
             )
 
             # 性能档位应用（仅提交路径调用；顺序：定时器档位 → 进程电源策略
@@ -2171,19 +2211,21 @@ class SettingsLayout(QWidget):
             v2.set("general.layout_mode", layout_mode)
             v2.set("general.enable_ai_entry", ai_entry)
             v2.set("general.include_remote_drives", include_remote)
+            v2.set("general.blank_right_click_go_back", blank_back)
             v2.set("performance.profile", perf_profile)
             v2.save()
-        except Exception:
+        except Exception as exc:
             try:
                 tm.set_theme_mode(prev_mode)
                 tm.set_theme(prev_theme)
                 tm.replace_colors(prev_colors)
-            except Exception as exc:
-                debug(f"回滚主题设置失败：{exc}")
+            except Exception as rollback_exc:
+                debug(f"回滚主题设置失败：{rollback_exc}")
             try:
                 _set_timing_active_profile(prev_perf_profile)
-            except Exception as exc:
-                debug(f"回滚性能档位失败：{exc}")
+            except Exception as rollback_exc:
+                debug(f"回滚性能档位失败：{rollback_exc}")
+            self._notify_save_failure(exc)
             return False
 
         self._staging_cache.mark_committed(staged)
@@ -2192,6 +2234,31 @@ class SettingsLayout(QWidget):
             self._submitted = True
             self._close_host_window()
         return True
+
+    def _notify_save_failure(self, error: Exception) -> None:
+        """保存失败提示（非阻塞）：告知用户本次修改已回滚、未写入磁盘。
+
+        写盘失败（数据目录无写入权限、磁盘占用等）此前仅返回 False，
+        设置窗口不关闭但毫无提示；此处统一弹出 danger 提示，正文附带
+        失败原因与排查提示。弹窗自身失败只记日志，不影响回滚结果。
+
+        Args:
+            error: 触发提交失败的异常（取字符串作为失败原因）。
+        """
+        try:
+            detail = str(error) or type(error).__name__
+            create_danger_dialog(
+                title="保存失败",
+                message=(
+                    "设置保存失败，本次修改已回滚，未写入磁盘。\n\n"
+                    f"原因：{detail}\n\n"
+                    "请检查程序数据目录是否可写，或稍后重试。"
+                ),
+                cancel_text="",
+                confirm_text="知道了",
+            )
+        except Exception as exc:  # noqa: BLE001 - 提示失败不影响提交回滚结果
+            debug(f"保存失败提示弹窗显示失败：{exc}")
 
     def _apply_staged_background_to_main_window(self, staged_bg: dict) -> None:
         """将暂存背景应用到主窗口（仅提交路径调用）。
@@ -2262,17 +2329,19 @@ class SettingsLayout(QWidget):
             warning(f"界面布局切换失败（{layout_mode}）: {exc}")
 
     def _apply_staged_general_toggles_to_main_window(
-        self, ai_entry: bool, include_remote: bool
+        self, ai_entry: bool, include_remote: bool, blank_back: bool
     ) -> None:
         """将暂存的通用页开关应用到主窗口（仅提交路径调用）。
 
-        两个开关均为即时项：AI 入口控制预览器工具栏按钮与抽屉，
-        网络盘/光驱控制文件选择器「All」视图的盘符过滤。失败仅记录
+        三个开关均为即时项：AI 入口控制预览器工具栏按钮与抽屉，
+        网络盘/光驱控制文件选择器「All」视图的盘符过滤，空白区右键
+        返回控制文件选择器空白位右键的返回上级行为。失败仅记录
         warning，不阻断整体提交。
 
         Args:
             ai_entry: 是否启用 AI 入口。
             include_remote: 是否包含网络/映射盘与光驱。
+            blank_back: 是否启用空白区右键返回上一级。
         """
         try:
             mw = self._appearance_page.find_main_window()
@@ -2284,10 +2353,16 @@ class SettingsLayout(QWidget):
             drives_setter = getattr(mw, "set_include_remote_drives", None)
             if drives_setter is not None:
                 drives_setter(include_remote)
+            blank_back_setter = getattr(mw, "set_blank_right_click_go_back", None)
+            if blank_back_setter is not None:
+                blank_back_setter(blank_back)
         except Exception as exc:  # noqa: BLE001 - 开关下发失败不阻断提交
             from freeassetfilter.utils.app_logger import warning
 
-            warning(f"通用功能开关下发失败（AI={ai_entry}, 远程盘={include_remote}）: {exc}")
+            warning(
+                "通用功能开关下发失败"
+                f"（AI={ai_entry}, 远程盘={include_remote}, 空白右键返回={blank_back}）: {exc}"
+            )
 
     def _apply_staged_perf_profile(self, profile: str) -> None:
         """将暂存性能档位应用到三钩子（仅提交路径调用）。

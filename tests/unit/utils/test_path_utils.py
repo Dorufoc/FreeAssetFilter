@@ -311,6 +311,86 @@ class TestAppDataAndConfigDirs:
         assert config_dir.endswith(("config", "config\\"))
         assert created, "应调用 makedirs"
 
+    def test_get_app_data_path_frozen_uses_local_appdata(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """冻结态数据目录 = ``%LOCALAPPDATA%\\FreeAssetFilter\\data``（用户可写）。"""
+        import sys
+
+        monkeypatch.delenv("FAF_DATA_DIR", raising=False)
+        monkeypatch.setattr(path_utils, "_APP_DATA_PATH_CACHE", None)
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(
+            sys, "executable", str(tmp_path / "app" / "FreeAssetFilter.exe")
+        )
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
+
+        data_dir = path_utils.get_app_data_path()
+        assert data_dir == os.path.join(
+            str(tmp_path / "LocalAppData"), "FreeAssetFilter", "data"
+        )
+        assert os.path.isdir(data_dir)
+
+    def test_frozen_migration_copies_legacy_user_data(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """冻结态首次解析：旧 ``_internal/data`` 的设置与背景图搬到新目录。"""
+        import sys
+
+        app_dir = tmp_path / "app"
+        legacy_data = app_dir / "_internal" / "data"
+        (legacy_data / "backgrounds").mkdir(parents=True)
+        (legacy_data / "settings_v2.json").write_text(
+            '{"version": 2}', encoding="utf-8"
+        )
+        (legacy_data / "backgrounds" / "bg.png").write_bytes(b"png")
+
+        monkeypatch.delenv("FAF_DATA_DIR", raising=False)
+        monkeypatch.setattr(path_utils, "_APP_DATA_PATH_CACHE", None)
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(
+            sys, "executable", str(app_dir / "FreeAssetFilter.exe")
+        )
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
+
+        data_dir = path_utils.get_app_data_path()
+        assert os.path.isfile(os.path.join(data_dir, "settings_v2.json"))
+        assert os.path.isfile(os.path.join(data_dir, "backgrounds", "bg.png"))
+
+    def test_frozen_migration_skips_existing_target(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """新目录已有设置文件时不搬家（避免覆盖新版数据）。"""
+        import sys
+
+        app_dir = tmp_path / "app"
+        legacy_data = app_dir / "_internal" / "data"
+        legacy_data.mkdir(parents=True)
+        (legacy_data / "settings_v2.json").write_text(
+            '{"version": 2, "old": true}', encoding="utf-8"
+        )
+
+        monkeypatch.delenv("FAF_DATA_DIR", raising=False)
+        monkeypatch.setattr(path_utils, "_APP_DATA_PATH_CACHE", None)
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(
+            sys, "executable", str(app_dir / "FreeAssetFilter.exe")
+        )
+        local_appdata = tmp_path / "LocalAppData"
+        monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
+
+        new_data = local_appdata / "FreeAssetFilter" / "data"
+        new_data.mkdir(parents=True)
+        (new_data / "settings_v2.json").write_text(
+            '{"version": 2, "new": true}', encoding="utf-8"
+        )
+
+        data_dir = path_utils.get_app_data_path()
+        content = (new_data / "settings_v2.json").read_text(encoding="utf-8")
+        assert '"new": true' in content
+        assert '"old": true' not in content
+        assert data_dir == str(new_data)
+
 
 # =============================================================================
 # 路径安全策略（白名单 / 基目录约束 / DLL 搜索）

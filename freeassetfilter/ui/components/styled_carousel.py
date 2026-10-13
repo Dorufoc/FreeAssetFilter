@@ -71,7 +71,7 @@ class _Dot(QPushButton):
     def _dot_out(self): return tm.alpha_of(tm.surface, 90)
 
     @property
-    def _dot_border(self): return tm.alpha_of(tm.mid, 40)
+    def _dot_border(self): return tm.track_fill
 
     def _get_aw(self): return self._anim_width
     def _set_aw(self, w):
@@ -237,7 +237,7 @@ class StyledCarousel(QWidget):
     def DOT_OUT(self): return tm.alpha_of(tm.surface, 90)
 
     @property
-    def DOT_BORDER(self): return tm.alpha_of(tm.mid, 40)
+    def DOT_BORDER(self): return tm.track_fill
 
     def __init__(self, variant="slide", size="default", autoplay_interval=3000, indicators="inside", parent=None):
         super().__init__(parent)

@@ -98,13 +98,23 @@ class FloatingPanel(QWidget):
         w, h = self.width(), self.height()
         r = self._radius
 
-        # 背景
+        # 背景（浅色用更实的浅色板，保证浮层与窗口的分层）
         p.setPen(Qt.NoPen)
-        p.setBrush(tm.alpha_of(tm.surface, 85))
+        p.setBrush(
+            tm.alpha_of(tm.surface, 85)
+            if tm.is_dark_theme()
+            else tm.alpha_of(tm.surface, 96)
+        )
         p.drawRoundedRect(QRectF(0, 0, w, h), r, r)
 
         # 边框
-        p.setPen(QPen(tm.alpha_of(tm.mid, 30), 1))
+        p.setPen(
+            QPen(
+                tm.alpha_of(tm.mid, 30) if tm.is_dark_theme()
+                else tm.alpha_of(tm.text, 12),
+                1,
+            )
+        )
         p.setBrush(Qt.NoBrush)
         p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), r, r)
         p.end()

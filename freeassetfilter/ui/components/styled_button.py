@@ -45,16 +45,34 @@ class StyledButton(QPushButton):
             ("primary", "bg_active"): tm.accent_active,
             ("primary", "text"): tm.white,
             ("primary", "shadow"): tm.accent_alpha(76),
-            ("secondary", "bg"): tm.alpha_of(tm.mid, 20),
-            ("secondary", "bg_hover"): tm.alpha_of(tm.mid, 50),
-            ("secondary", "bg_active"): tm.alpha_of(tm.mid, 40),
+            # secondary：浅色用中性浅灰填充（mid 20% 在浅底会泛灰蓝），
+            # 深色沿用历史 mid 20/50/40% 口径。
+            ("secondary", "bg"): (
+                tm.alpha_of(tm.mid, 20) if tm.is_dark_theme()
+                else tm.alpha_of(tm.text, 6)
+            ),
+            ("secondary", "bg_hover"): (
+                tm.alpha_of(tm.mid, 50) if tm.is_dark_theme()
+                else tm.alpha_of(tm.text, 10)
+            ),
+            ("secondary", "bg_active"): (
+                tm.alpha_of(tm.mid, 40) if tm.is_dark_theme()
+                else tm.alpha_of(tm.text, 8)
+            ),
             ("secondary", "text"): tm.text,
             ("secondary", "text_hover"): tm.text,
-            ("secondary", "border"): tm.alpha_of(tm.mid, 40),
-            ("secondary", "border_hover"): tm.alpha_of(tm.mid, 60),
+            ("secondary", "border"): (
+                tm.alpha_of(tm.mid, 40) if tm.is_dark_theme()
+                else tm.control_border
+            ),
+            ("secondary", "border_hover"): (
+                tm.alpha_of(tm.mid, 60) if tm.is_dark_theme()
+                else tm.control_border_strong
+            ),
             ("ghost", "bg"): tm.transparent,
-            ("ghost", "bg_hover"): tm.alpha_of(tm.text, 15),
-            ("ghost", "bg_active"): tm.alpha_of(tm.text, 15),
+            # ghost hover：浅色下 text 15% 在浅底是"灰印"，降到 ~8% 更克制
+            ("ghost", "bg_hover"): tm.alpha_of(tm.text, 15 if tm.is_dark_theme() else 8),
+            ("ghost", "bg_active"): tm.alpha_of(tm.text, 15 if tm.is_dark_theme() else 8),
             ("ghost", "text"): tm.text,
             ("ghost", "text_hover"): tm.text,
             ("danger", "bg"): tm.transparent,
@@ -361,8 +379,14 @@ class StyledButton(QPushButton):
 
         # Determine colors based on state
         if not self.isEnabled():
-            bg = tm.alpha_of(tm.mid, 20) or tm.fill
-            text_color = tm.alpha_of(tm.mid, 40) or tm.mid
+            # 禁用态：浅色用 text 低透明度（不再依赖 0.4 全局透明度叠乘，
+            # 否则 mid 40% × 0.4 在浅色下几乎完全消失）
+            if tm.is_dark_theme():
+                bg = tm.alpha_of(tm.mid, 20) or tm.fill
+                text_color = tm.alpha_of(tm.mid, 40) or tm.mid
+            else:
+                bg = tm.alpha_of(tm.text, 5)
+                text_color = tm.text_disabled
         elif self._state == "active":
             bg = colors.get("bg_active", colors["bg"])
             text_color = colors.get("text_hover", colors["text"])

@@ -352,22 +352,28 @@ def _get_colors() -> Dict[str, Any]:
 
     resize 重绘热路径中每帧每卡片都会调用；缓存避免反复解析
     tm.surface/mid/text/accent 等颜色字符串。
+
+    浅色模式：卡片=近实色白底 + 浅描边（层次来自卡片与磨砂面板的亮度差），
+    hover=轻压暗；深色模式沿用历史口径（surface 85% + mid 边框 + mid 提亮）。
     """
     key = tm.is_dark_theme()
     cached = _COLORS_CACHE.get(key)
     if cached is None:
+        dark = bool(key)
         cached = {
-            "bg": tm.alpha_of(tm.surface, 85),
-            "border": tm.alpha_of(tm.mid, 30),
+            "bg": tm.card_fill,
+            "border": tm.card_border,
             "title": tm.text,
-            "subtitle": tm.mid,
-            "desc": tm.alpha_of(tm.mid, 60),
+            "subtitle": tm.text_secondary,
+            "desc": tm.text_hint,
             "icon": tm.mid,
             "accent": tm.accent,
-            "selected_bg": tm.alpha_of(tm.accent, 40),  # 已加入文件池背景覆盖层：半透明主题色
-            "box_selected_bg": tm.alpha_of(tm.accent, 25),  # 框选选中态背景覆盖层（比池中态更浅）
+            # 已加入文件池背景覆盖层：半透明主题色（浅色下白色卡底会进一步
+            # 冲淡 accent，故浅色略降比例、避免粉彩化）
+            "selected_bg": tm.alpha_of(tm.accent, 40 if dark else 32),
+            "box_selected_bg": tm.alpha_of(tm.accent, 25 if dark else 20),
             "secondary": tm.text,  # 预览态文字辅助色（渐变边框不再直接使用该色）
-            "hover_overlay": tm.alpha_of(tm.mid, 25),  # hover 反馈：25% 灰度覆盖层（所有状态统一）
+            "hover_overlay": tm.hover_veil,  # hover 反馈：浅色轻压暗 / 深色提亮
         }
         _COLORS_CACHE[key] = cached
     return cached
@@ -911,8 +917,9 @@ class FileCardDelegate(QStyledItemDelegate):
 
         角锥渐变颜色只与角度相关：沿边框一周颜色从主题色 30% 透明度 →
         峰值色 → 主题色 30% 透明度平滑过渡，两道光斑位于对侧并随
-        start_angle 递增沿边框流动。峰值色主题感知：深色模式为白色，
-        浅色模式为黑色（与背景形成对比）；谷值为主题色 30% 透明度。
+        start_angle 递增沿边框流动。峰值色主题感知：深色模式为白色
+        （在深色卡底上提亮），浅色模式为实色主题色（在浅色卡底上加深；
+        此前用黑色会在浅色卡片上形成突兀黑弧）。
 
         Args:
             rect: 卡片矩形（逻辑坐标）。
@@ -925,11 +932,11 @@ class FileCardDelegate(QStyledItemDelegate):
         cy = rect.center().y()
 
         accent_30 = tm.alpha_of(tm.accent, 30)  # 主题色 30% 透明度
-        peak = QColor(tm.white) if tm.is_dark_theme() else QColor(tm.black)
+        peak = QColor(tm.white) if tm.is_dark_theme() else QColor(tm.accent)
 
         gradient = QConicalGradient(cx, cy, angle_deg)
         gradient.setColorAt(0.0, accent_30)
-        gradient.setColorAt(0.25, peak)         # 光斑 1 峰值（深色=白/浅色=黑）
+        gradient.setColorAt(0.25, peak)         # 光斑 1 峰值（深色=白/浅色=实色主题色）
         gradient.setColorAt(0.5, accent_30)
         gradient.setColorAt(0.75, peak)         # 光斑 2 峰值（对侧）
         gradient.setColorAt(1.0, accent_30)

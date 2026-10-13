@@ -74,12 +74,12 @@ class _TimelineItem(QWidget):
             "warning": tm.warning,
             "danger": tm.danger,
             "info": tm.info,
-            "default": tm.mid,
+            "default": tm.text_secondary,
         }
 
     @property
     def _line_color(self) -> QColor:
-        return tm.alpha_of(tm.mid, 30)
+        return tm.divider
 
     @property
     def _text_primary(self) -> QColor:
@@ -87,11 +87,11 @@ class _TimelineItem(QWidget):
 
     @property
     def _text_secondary(self) -> QColor:
-        return tm.mid
+        return tm.text_secondary
 
     @property
     def _text_tertiary(self) -> QColor:
-        return tm.alpha_of(tm.mid, 60)
+        return tm.text_hint
 
     # ── Public helpers ─────────────────────────────────────────────
 
@@ -215,7 +215,7 @@ class _TimelineEmptyState(QWidget):
 
     @property
     def _text_tertiary(self) -> QColor:
-        return tm.alpha_of(tm.mid, 60)
+        return tm.text_hint
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -239,7 +239,7 @@ class _TimelineEmptyState(QWidget):
         hint_font = QFont("Microsoft YaHei UI")
         hint_font.setPixelSize(14)
         painter.setFont(hint_font)
-        painter.setPen(tm.mid)
+        painter.setPen(tm.text_secondary)
         text_rect = QRectF(0, cy + 10, w, 20)
         painter.drawText(text_rect, Qt.AlignCenter, "暂无数据")
 
