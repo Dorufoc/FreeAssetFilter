@@ -1,0 +1,7 @@
+<window width="720" height="480" background="#FAFAFA" font="Segoe UI">
+  <titlebar height="40" background="#F3F3F3" text="FreeAssetFilter 安装程序" />
+  <content padding="32" />
+  <footer height="60" background="#F3F3F3" />
+  <button id="back" text="取消" />
+  <button id="next" text="下一步" primary="true" />
+</window>

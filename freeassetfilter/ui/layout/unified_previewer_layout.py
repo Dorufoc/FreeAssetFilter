@@ -33,6 +33,9 @@ from freeassetfilter.core._paths import icons_dir as get_icons_dir
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 from freeassetfilter.utils.app_logger import warning
 from layout.preview.preview_toolbar import PreviewToolbarFrame
+from freeassetfilter.ui.layout.preview.unsupported_previewer_layout import (
+    UnsupportedPreviewerLayout,
+)
 from theme import tm
 
 
@@ -654,9 +657,7 @@ class UnifiedPreviewerLayout(QWidget):
         # 获取预览器类
         previewer_class = self._get_previewer_class(file_info)
         if previewer_class is None:
-            # 无对应预览器，显示占位符
-            self._show_placeholder()
-            return
+            previewer_class = UnsupportedPreviewerLayout
         
         # 确保布局存在
         self._ensure_content_layout()
@@ -722,8 +723,11 @@ class UnifiedPreviewerLayout(QWidget):
                     # 不支持 is_audio 参数，直接调用
                     self._current_preview_widget.set_file(file_path)
             elif hasattr(self._current_preview_widget, "set_file"):
-                # 其他文件：调用 set_file(file_path)
-                self._current_preview_widget.set_file(file_path)
+                # 普通文件：支持完整 file_info 的预览器优先接收字典，旧预览器仍接收路径。
+                if getattr(self._current_preview_widget, "accepts_file_info", False):
+                    self._current_preview_widget.set_file(file_info)
+                else:
+                    self._current_preview_widget.set_file(file_path)
         except (RuntimeError, AttributeError, TypeError):
             # 加载失败，清理并显示占位符
             self._cleanup_current_preview()

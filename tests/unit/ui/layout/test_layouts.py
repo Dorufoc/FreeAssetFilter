@@ -69,6 +69,9 @@ from freeassetfilter.ui.layout.preview.pdf_previewer_layout import PdfPreviewerL
 from freeassetfilter.ui.layout.preview.text_previewer_layout import TextPreviewerLayout
 import freeassetfilter.ui.layout.preview.text_previewer_layout as _tpl
 from freeassetfilter.ui.layout.preview.video_player_layout import VideoPlayerLayout
+from freeassetfilter.ui.layout.preview.unsupported_previewer_layout import (
+    UnsupportedPreviewerLayout,
+)
 from freeassetfilter.ui.layout.settings_layout import (
     AccentColorButton,
     AppearanceSettingsPage,
@@ -1813,6 +1816,25 @@ class TestUnifiedPreviewerLayout:
     def _unsupported_file_info() -> dict:
         """无对应预览器的文件信息（不触发真实预览加载，仅驱动底栏状态）。"""
         return {"path": "D:/dummy/unsupported_sample.zzz", "suffix": "zzz", "is_dir": False}
+
+    def test_unknown_file_uses_unsupported_previewer(
+        self, qapp: QApplication, tmp_path: Path,
+    ) -> None:
+        """未知扩展名显示专用视图及文件基本信息。"""
+        sample = tmp_path / "sample.zzz"
+        sample.write_bytes(b"hello")
+        layout = UnifiedPreviewerLayout()
+        _assert_layout_geometry(layout, qapp)
+        layout.set_file({"path": str(sample), "suffix": "zzz", "is_dir": False})
+        qapp.processEvents()
+        assert isinstance(layout._current_preview_widget, UnsupportedPreviewerLayout)
+        widget = layout._current_preview_widget
+        assert widget._name_label.text() == "sample.zzz"
+        assert "5 B" in widget._size_label.text()
+        assert "ZZZ" in widget._format_label.text()
+        assert widget._open_default_btn.isEnabled()
+        assert widget._open_explorer_btn.isEnabled()
+        layout.deleteLater()
 
     def test_bottom_buttons_disabled_then_enabled(
         self, qapp: QApplication,
