@@ -1965,7 +1965,7 @@ class SettingsLayout(QWidget):
 
     def _refresh_styles(self) -> None:
         """刷新卡片样式（参考 file_selector_layout 面板样式）"""
-        # 语义 token：浅色=偏白磨砂卡片 + 浅描边；深色=text 5% + mid 50%（历史值）
+        # 语义 token：浅深模式 alpha 一致，仅按主题反转颜色亮度。
         fill_color = tm.qss_color(tm.panel_fill)
         border_color = tm.qss_color(tm.panel_border)
 

@@ -136,7 +136,7 @@ class _StyledTextEdit(QPlainTextEdit):
             #{self._obj_name}:disabled {{
                 background: transparent;
                 color: {tm.qss_color(tm.text_disabled)};
-                border-color: {tm.qss_color(tm.alpha_of(tm.text, 8) if not tm.is_dark_theme() else tm.alpha_of(tm.mid, 20))};
+                border-color: {tm.qss_color(tm.alpha_of(tm.text, 20) if not tm.is_dark_theme() else tm.alpha_of(tm.mid, 20))};
             }}
         """))
 

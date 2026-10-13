@@ -56,7 +56,7 @@ class StyledContextMenu(QMenu):
         else:
             hover_bg = _rgba(tm.alpha_of(tm.accent, 16))
         border = _rgba(
-            tm.alpha_of(tm.mid, 40) if tm.is_dark_theme() else tm.alpha_of(tm.text, 10)
+            tm.alpha_of(tm.mid if tm.is_dark_theme() else tm.text, 40)
         )
         disabled = _rgba(tm.text_disabled)
         danger = tm.danger.name()

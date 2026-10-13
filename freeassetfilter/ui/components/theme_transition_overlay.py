@@ -192,6 +192,10 @@ class ContentTransitionOverlay(QWidget):
             return
         painter = QPainter(self)
         try:
+            # The snapshot is retained at native DPR; keep filtering enabled for
+            # fractional-DPR windows where the overlay target is not an integer
+            # multiple of the captured physical pixels.
+            painter.setRenderHint(QPainter.SmoothPixmapTransform)
             painter.setOpacity(self._opacity)
             painter.drawPixmap(self.rect(), self._snapshot)
         finally:

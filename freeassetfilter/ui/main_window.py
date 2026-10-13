@@ -28,6 +28,7 @@ from PySide6.QtCore import (
     QAbstractNativeEventFilter,
     QPropertyAnimation,
     QEasingCurve,
+    QSize,
 )
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtGui import QPainter, QPaintEvent, QPixmap, QRegion, QResizeEvent, QMoveEvent, QMouseEvent, QKeyEvent, QColor, QCursor
@@ -1717,9 +1718,24 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             size = content.size()
             if size.isEmpty():
                 return
-            snapshot = QPixmap(size)
+            # QWidget::render() targets the pixmap's device pixels.  Creating the
+            # snapshot from ``content.size()`` alone therefore produces a 1x
+            # bitmap on a 150/200% Windows display; the transition overlay then
+            # scales that bitmap back to the logical widget size and makes text,
+            # icons, and borders visibly blurry.  Keep the snapshot in physical
+            # pixels while preserving its logical DPR for the overlay blit.
+            try:
+                dpr = max(1.0, float(content.devicePixelRatioF()))
+            except (AttributeError, TypeError, ValueError):
+                dpr = 1.0
+            physical_size = QSize(
+                max(1, int(round(size.width() * dpr))),
+                max(1, int(round(size.height() * dpr))),
+            )
+            snapshot = QPixmap(physical_size)
             if snapshot.isNull():
                 return
+            snapshot.setDevicePixelRatio(dpr)
             snapshot.fill(Qt.transparent)
             snapshot_painter = QPainter(snapshot)
             try:
@@ -2031,7 +2047,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         styleSheet 不会自动重绘，必须对各分区控件强制 unpolish/polish 才能让
         边框/填充生效（与主题切换路径一致）。
         """
-        # 语义 token（浅色=偏白磨砂面板 + 浅描边；深色=text 5% + mid 50% 历史值）
+        # 语义 token：浅深模式 alpha 一致，仅按主题反转颜色亮度。
         fill_color = tm.qss_color(tm.panel_fill)
         bar_color = tm.qss_color(tm.bar_fill)
         border_color = tm.qss_color(tm.panel_border)

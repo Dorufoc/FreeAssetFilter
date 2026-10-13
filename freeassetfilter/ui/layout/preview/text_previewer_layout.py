@@ -999,7 +999,7 @@ class _SearchResultTooltip(StyledTooltip):
         painter.setRenderHint(QPainter.Antialiasing)
 
         bubble_bg = tm.alpha_of(tm.surface, 90)
-        bubble_border = tm.alpha_of(tm.mid, 40) if tm.is_dark_theme() else tm.alpha_of(tm.text, 12)
+        bubble_border = tm.alpha_of(tm.mid if tm.is_dark_theme() else tm.text, 40)
         text_color = tm.text
 
         cw = self._content_w

@@ -698,7 +698,7 @@ class StyledSidebar(QWidget):
         # Top divider so the button is visually separated from the scroll list.
         register_widget_qss(self._toggle_btn,(
             f"SidebarItem {{ background-color: transparent; "
-            f"border-top: 1px solid {tm.qss_color(tm.alpha_of(tm.text, 8) if not tm.is_dark_theme() else tm.alpha_of(tm.surface, 90))}; }}"
+            f"border-top: 1px solid {tm.qss_color(tm.alpha_of(tm.text, 90) if not tm.is_dark_theme() else tm.alpha_of(tm.surface, 90))}; }}"
         ))
         self._toggle_btn.clicked.connect(self._on_toggle_clicked)
         self._toggle_btn_wrap = QWidget()
@@ -750,7 +750,7 @@ class StyledSidebar(QWidget):
         if toggle_btn is not None:
             register_widget_qss(toggle_btn, (
                 f"SidebarItem {{ background-color: transparent; "
-                f"border-top: 1px solid {tm.qss_color(tm.alpha_of(tm.text, 8) if not tm.is_dark_theme() else tm.alpha_of(tm.surface, 90))}; }}"
+                f"border-top: 1px solid {tm.qss_color(tm.alpha_of(tm.text, 90) if not tm.is_dark_theme() else tm.alpha_of(tm.surface, 90))}; }}"
             ))
 
     def _get_item_bar_rect(self, index: int) -> tuple:
