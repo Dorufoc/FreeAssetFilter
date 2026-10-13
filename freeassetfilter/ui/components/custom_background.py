@@ -47,8 +47,8 @@ BACKGROUND_DIR_NAME = "backgrounds"
 BACKGROUND_FILENAME_PREFIX = "custom_background"
 # 交互停止后重建平滑缓存的延时（毫秒）。
 SETTLE_INTERVAL_MS = 80
-# 主题交叉过渡时长（毫秒，对齐 Mica XFADE_DURATION_MS 与内容层过渡 280ms）。
-XFADE_DURATION_MS = 280
+# 主题交叉过渡时长（毫秒，对齐 Mica XFADE_DURATION_MS 与内容层揭示 450ms）。
+XFADE_DURATION_MS = 450
 # 交叉过渡逐帧间隔（毫秒，约 60fps；现由 QVariantAnimation 按帧推送，
 # 保留该常量仅作帧率备注，不再驱动任何 QTimer）。
 XFADE_TICK_MS = 16
@@ -362,7 +362,7 @@ class CustomImageBackgroundWidget(QWidget):
 
         兜底色在绘制期动态读取（见 _fallback_color），图片本身与主题
         无关。若切换前已抓拍（见 capture_pre_theme_state），以旧帧为底图
-        启动 280ms 材质内交叉淡入（仿 MicaMaterial._start_xfade），旧像素
+        启动 450ms 材质内交叉淡入（仿 MicaMaterial._start_xfade），旧像素
         在重绘间隙始终可见，不漏出 _root G1 兜底；无抓拍时仅触发重绘。
         """
         pending = self._pending_backdrop
@@ -431,7 +431,7 @@ class CustomImageBackgroundWidget(QWidget):
         return max(0.0, min(1.0, self._xfade_t))
 
     def _start_xfade(self, backdrop: QPixmap) -> None:
-        """以旧背景帧为底图启动交叉过渡：新帧自进度 0 淡入（280ms）。"""
+        """以旧背景帧为底图启动交叉过渡：新帧自进度 0 淡入（450ms）。"""
         self._xfade_backdrop = backdrop
         self._xfade_active = True
         self._xfade_t = 0.0
@@ -483,7 +483,7 @@ class CustomImageBackgroundWidget(QWidget):
     def paintEvent(self, event: QPaintEvent) -> None:
         """绘制背景：兜底色打底，图片按不透明度合成、按 cover 几何绘制。
 
-        交叉过渡期（主题切换后 280ms 内）：旧底图铺底、新帧离屏合成后按
+        交叉过渡期（主题切换后 450ms 内）：旧底图铺底、新帧离屏合成后按
         进度整体淡入（仿 MicaMaterial._draw_layer：过渡期跳过屏上实色底，
         旧像素在重绘间隙始终可见，不漏出 _root G1 兜底，图像全程不断连）。
         稳态：交互期快速缩放（无模糊），非交互期平滑缓存整图 blit

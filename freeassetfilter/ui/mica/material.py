@@ -973,11 +973,11 @@ class MicaMaterial(QObject):
         self._widget.update()
 
     def begin_theme_transition(self) -> None:
-        """主题翻转瞬间预启动交叉过渡（与控件过渡同 280ms 窗口对齐）。
+        """主题翻转瞬间预启动交叉过渡（与控件揭示同 450ms 窗口对齐）。
 
         在 ``set_theme`` 提交后台重烘焙**之前**调用：以后台交付前的旧层外观
         为底图立即起钟；新层经 ``_on_bake_done`` 交付时只换靶、不重启时钟，
-        混合在原窗口内揭示新层。控件过渡（内容遮罩 280ms）与背景过渡同起
+        混合在原窗口内揭示新层。控件揭示（内容遮罩 450ms）与背景过渡同起
         同止，不再因烘焙等待整体延后。
 
         已有过渡进行中（快速连切）时保持原时钟，不重复抓拍。
@@ -1995,7 +1995,7 @@ class MicaMaterial(QObject):
         # 新层已就绪：被节流推迟的呈现不再需要（新层会强制立即呈现）。
         self._defer_timer.stop()
         # 翻转瞬间已预起钟（见 begin_theme_transition）时只换靶、不重启时钟：
-        # 在途混合按原 280ms 窗口揭示新层，与控件过渡同起同止；无在途过渡
+        # 在途混合按原 450ms 窗口揭示新层，与控件揭示同起同止；无在途过渡
         # 时才按交付时快照新起一轮（慢烘焙回退路径）。预起标记本次消费——
         # 后续交付回到连切重抓语义（快照为当前混合态）。
         if self._xfade_prestarted:
@@ -2208,7 +2208,7 @@ class MicaMaterial(QObject):
         return self._xfade_anim
 
     def _start_xfade(self, backdrop: QPixmap) -> None:
-        """以旧态快照为底图启动交叉过渡：新层自进度 0 淡入（280ms）。
+        """以旧态快照为底图启动交叉过渡：新层自进度 0 淡入（450ms）。
 
         Args:
             backdrop: 交付前屏幕背景外观的窗口尺寸快照（见

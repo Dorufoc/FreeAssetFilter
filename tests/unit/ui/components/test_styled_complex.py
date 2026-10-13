@@ -963,11 +963,11 @@ class TestThemeTransitionOverlay:
     """ThemeTransitionOverlay：构造、classmethod 与 start。"""
 
     def test_construct_and_start(self, qapp: QApplication) -> None:
-        """构造 + start 不抛异常，默认时长 300ms。"""
+        """构造 + start 不抛异常，默认时长 450ms（与背景层对齐）。"""
         parent = QWidget()
         snapshot = QPixmap(100, 100)
         overlay = ThemeTransitionOverlay(parent, snapshot)
-        assert overlay.DEFAULT_DURATION_MS == 300
+        assert overlay.DEFAULT_DURATION_MS == 450
         overlay.start()
         safe_teardown(overlay)
         safe_teardown(parent)
@@ -989,6 +989,63 @@ class TestThemeTransitionOverlay:
         safe_teardown(overlay)
         safe_teardown(window)
 
+    def test_from_widget_radial_origin(self, qapp: QApplication) -> None:
+        """from_widget 传 origin：构造径向揭示遮罩。"""
+        window = QWidget()
+        window.resize(120, 80)
+        overlay = ThemeTransitionOverlay.from_widget(window, origin=QPoint(60, 40))
+        assert overlay._reveal_center == QPoint(60, 40)
+        safe_teardown(overlay)
+        safe_teardown(window)
+
+    def test_radial_reveal_paint(self, qapp: QApplication) -> None:
+        """径向揭示：整幅旧外观打底、圆内挖洞透出新主题（方向自按钮向外）。"""
+        parent = QWidget()
+        parent.resize(100, 100)
+        snapshot = QPixmap(100, 100)
+        snapshot.fill(QColor(255, 0, 0))
+        origin = QPoint(50, 50)
+        overlay = ThemeTransitionOverlay(parent, snapshot, origin=origin)
+        render_flags = QWidget.DrawChildren
+
+        # 半径 0：整幅旧外观（点击瞬间不闪出新主题）
+        image = QImage(100, 100, QImage.Format_ARGB32)
+        image.fill(Qt.transparent)
+        overlay._on_value_changed(0.0)
+        overlay.render(image, QPoint(0, 0), QRegion(0, 0, 100, 100), render_flags)
+        assert image.pixelColor(50, 50).alpha() == 255
+        assert image.pixelColor(5, 5).alpha() == 255
+
+        # 半径 10：圆内透明（透出新主题）、圆外旧外观
+        image.fill(Qt.transparent)
+        overlay._on_value_changed(10.0)
+        overlay.render(image, QPoint(0, 0), QRegion(0, 0, 100, 100), render_flags)
+        assert image.pixelColor(50, 50).alpha() == 0
+        assert image.pixelColor(5, 5).alpha() == 255
+
+        # 远大于对角最大距离：整幅透出新主题
+        image.fill(Qt.transparent)
+        overlay._on_value_changed(1000.0)
+        overlay.render(image, QPoint(0, 0), QRegion(0, 0, 100, 100), render_flags)
+        assert image.pixelColor(99, 99).alpha() == 0
+        assert image.pixelColor(0, 0).alpha() == 0
+        safe_teardown(overlay)
+        safe_teardown(parent)
+
+    def test_radial_max_radius_covers_corners(self, qapp: QApplication) -> None:
+        """start 后最大半径覆盖到最远角（扩张终态全覆盖）。"""
+        parent = QWidget()
+        parent.resize(100, 60)
+        overlay = ThemeTransitionOverlay(
+            parent, QPixmap(100, 60), origin=QPoint(0, 0)
+        )
+        overlay.start()
+        # 圆心 (0,0) 到最远角 (99,59) 的距离
+        expected = (99 ** 2 + 59 ** 2) ** 0.5
+        assert overlay._max_radius == pytest.approx(expected, abs=1.0)
+        safe_teardown(overlay)
+        safe_teardown(parent)
+
 
 # =============================================================================
 # ui.components.theme_transition_overlay — ContentTransitionOverlay
@@ -997,16 +1054,53 @@ class TestContentTransitionOverlay:
     """ContentTransitionOverlay：构造、自绘淡出与 finish_now 清理。"""
 
     def test_construct_and_start(self, qapp: QApplication) -> None:
-        """构造 + start：默认 280ms、几何贴合父级、鼠标穿透、可见。"""
+        """构造 + start：默认 450ms、几何贴合父级、鼠标穿透、可见。"""
         parent = QWidget()
         parent.resize(120, 80)
         overlay = ContentTransitionOverlay(parent, QPixmap(120, 80))
-        assert overlay.DEFAULT_DURATION_MS == 280
+        assert overlay.DEFAULT_DURATION_MS == 450
         assert overlay.geometry() == parent.rect()
         assert overlay.testAttribute(Qt.WA_TransparentForMouseEvents)
         overlay.start()
         # 父级未 show：isVisible 恒 False，断言相对父级的可见性
         assert overlay.isVisibleTo(parent)
+        safe_teardown(overlay)
+        safe_teardown(parent)
+
+    def test_radial_punch_is_incremental(
+        self, qapp: QApplication
+    ) -> None:
+        """半径只增不减：洞按最新半径增量重挖；无 alpha 快照自动补通道。"""
+        parent = QWidget()
+        parent.resize(60, 60)
+        # 故意传无 alpha 通道的裸 QPixmap：遮罩应自动补通道后正确挖洞
+        snapshot = QPixmap(60, 60)
+        snapshot.fill(QColor(255, 0, 0))
+        overlay = ContentTransitionOverlay(
+            parent, snapshot, origin=QPoint(30, 30)
+        )
+        render_flags = QWidget.DrawChildren
+
+        def render_frame(radius: float) -> QImage:
+            overlay._on_value_changed(radius)
+            image = QImage(60, 60, QImage.Format_ARGB32)
+            image.fill(Qt.transparent)
+            overlay.render(
+                image, QPoint(0, 0), QRegion(0, 0, 60, 60), render_flags
+            )
+            return image
+
+        image = render_frame(10.0)
+        assert overlay._punched_radius == pytest.approx(10.0)
+        assert image.pixelColor(30, 30).alpha() == 0       # 洞内透明
+        assert image.pixelColor(2, 2).alpha() == 255       # 圆外旧外观
+
+        # 半径扩张：洞增量扩大，旧外观保持
+        image = render_frame(25.0)
+        assert overlay._punched_radius == pytest.approx(25.0)
+        assert image.pixelColor(30, 30).alpha() == 0
+        assert image.pixelColor(10, 30).alpha() == 0       # 新扩入洞内
+        assert image.pixelColor(2, 2).alpha() == 255
         safe_teardown(overlay)
         safe_teardown(parent)
 
@@ -1052,6 +1146,96 @@ class TestContentTransitionOverlay:
         image.fill(Qt.transparent)
         overlay.render(image, QPoint(0, 0), QRegion(0, 0, 40, 40), render_flags)
         assert image.pixelColor(20, 20).alpha() == 0
+        safe_teardown(overlay)
+        safe_teardown(parent)
+
+    def test_radial_origin_mode(self, qapp: QApplication) -> None:
+        """传 origin：进入径向揭示模式；缺省为淡出模式。"""
+        parent = QWidget()
+        parent.resize(40, 40)
+        overlay = ContentTransitionOverlay(
+            parent, QPixmap(40, 40), origin=QPoint(10, 10)
+        )
+        assert overlay._reveal_center == QPoint(10, 10)
+        fade = ContentTransitionOverlay(parent, QPixmap(40, 40))
+        assert fade._reveal_center is None
+        safe_teardown(overlay)
+        safe_teardown(fade)
+        safe_teardown(parent)
+
+    def test_radial_reveal_paint(self, qapp: QApplication) -> None:
+        """径向揭示：整幅旧外观打底、圆内挖洞透出新主题。"""
+        parent = QWidget()
+        parent.resize(60, 60)
+        snapshot = QPixmap(60, 60)
+        snapshot.fill(QColor(0, 128, 255))
+        overlay = ContentTransitionOverlay(
+            parent, snapshot, origin=QPoint(30, 30)
+        )
+        render_flags = QWidget.DrawChildren
+
+        # 半径 10：圆内透明（新主题）、圆外旧外观
+        overlay._on_value_changed(10.0)
+        image = QImage(60, 60, QImage.Format_ARGB32)
+        image.fill(Qt.transparent)
+        overlay.render(image, QPoint(0, 0), QRegion(0, 0, 60, 60), render_flags)
+        assert image.pixelColor(30, 30).alpha() == 0
+        assert image.pixelColor(2, 2).alpha() == 255
+        safe_teardown(overlay)
+        safe_teardown(parent)
+
+    def test_start_defers_animation_clock(
+        self, qapp: QApplication
+    ) -> None:
+        """start：先同步呈现旧外观，动画时钟下一事件循环拍才起。
+
+        起钟推迟是为让主题翻转的同步重刷（QSS 全树 repolish，~50ms）
+        在遮罩之下完成：动画时长完整、不被同步段吃掉。
+        """
+        from tests.support.qt_helpers import process_qt_events
+
+        parent = QWidget()
+        parent.resize(60, 60)
+        snapshot = QPixmap(60, 60)
+        snapshot.fill(QColor(255, 0, 0))
+        overlay = ContentTransitionOverlay(
+            parent, snapshot, origin=QPoint(30, 30)
+        )
+        overlay.start()
+        # start 同步段：遮罩已可见、状态标记就绪，但动画尚未起钟
+        assert overlay.isVisibleTo(parent)
+        assert overlay._active is True
+        assert overlay._started is True
+        assert overlay._anim.state() != overlay._anim.State.Running
+        # 事件循环推进一拍：动画起钟
+        process_qt_events(qapp, ms=30)
+        assert overlay._anim.state() == overlay._anim.State.Running
+        overlay.finish_now()
+        assert not overlay.isVisibleTo(parent)
+        # finish 后重复 start：幂等忽略，不得重新显示
+        overlay.start()
+        assert not overlay.isVisibleTo(parent)
+        safe_teardown(parent)
+
+    def test_resize_during_active_transition_finishes(
+        self, qapp: QApplication
+    ) -> None:
+        """过渡激活期父级 resize：立即收尾（快照与父级错位无意义）。"""
+        parent = QWidget()
+        parent.resize(60, 60)
+        overlay = ContentTransitionOverlay(
+            parent, QPixmap(60, 60), origin=QPoint(30, 30)
+        )
+        resize_event = QResizeEvent(QSize(80, 80), QSize(60, 60))
+        # 未启动（非激活）：几何事件不得误结束过渡
+        QApplication.sendEvent(parent, resize_event)
+        assert overlay._finished is False
+        # 激活后 resize：立即收尾
+        overlay.start()
+        assert overlay._active is True
+        QApplication.sendEvent(parent, resize_event)
+        assert overlay._finished is True
+        assert overlay._active is False
         safe_teardown(overlay)
         safe_teardown(parent)
 

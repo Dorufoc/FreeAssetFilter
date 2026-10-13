@@ -29,7 +29,19 @@ from components.styled_button import StyledButton
 from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
 from components.styled_segmented import StyledSegmented
 from components.styled_slider import StyledSlider
-from components.settings_card import SettingsRow
+from components.settings_card import (
+    SETTINGS_FIELD_LABEL_WIDTH,
+    SETTINGS_GROUP_GAP,
+    SETTINGS_LABEL_GAP,
+    SETTINGS_ROW_GAP,
+    SETTINGS_VALUE_LABEL_WIDTH,
+    SettingsBlock,
+    SettingsRow,
+    apply_settings_desc_style,
+    apply_settings_field_style,
+    apply_settings_title_style,
+    apply_settings_value_style,
+)
 from components.styled_dialog import create_danger_dialog
 from components.styled_color_picker import _ColorPanel
 from components.custom_background import (
@@ -90,6 +102,25 @@ def _normalize_bg_transparency(value: object) -> int:
     except (TypeError, ValueError):
         return IMAGE_BG_TRANSPARENCY_DEFAULT
     return max(0, min(100, transparency))
+
+
+def _refresh_settings_item_text(item: QWidget | None) -> None:
+    """按统一 token 重注册设置项（行/块）的标题与描述样式。
+
+    主题切换时各页自行调用（替代历史上宿主通刷所有 QLabel 的做法——
+    通刷会把描述文字与读数一并覆盖成标题字号/字重/颜色）。
+
+    Args:
+        item: ``SettingsRow`` / ``SettingsBlock`` 实例；None 时跳过。
+    """
+    if item is None:
+        return
+    title_label = getattr(item, "title_label", None)
+    if title_label is not None:
+        apply_settings_title_style(title_label)
+    desc_label = getattr(item, "desc_label", None)
+    if desc_label is not None:
+        apply_settings_desc_style(desc_label)
 
 
 # ── 预设主题色（参考旧 theme_editor.py） ──────────────────────────────
@@ -469,7 +500,7 @@ class AppearanceSettingsPage(QWidget):
 
     # 深色模式三态与分段索引的双向映射（顺序与 _build_ui 添加顺序一致）。
     THEME_MODES: tuple[str, ...] = ("light", "dark", "system")
-    THEME_LABELS: tuple[str, ...] = ("白天", "夜晚", "跟随系统")
+    THEME_LABELS: tuple[str, ...] = ("白天", "夜晚", "跟随")
     THEME_INDEX: dict[str, int] = {"light": 0, "dark": 1, "system": 2}
 
     # 性能档位三态与分段索引的双向映射（顺序与 _build_ui 添加顺序一致）。
@@ -511,11 +542,18 @@ class AppearanceSettingsPage(QWidget):
         self._bg_blur: int = IMAGE_BG_BLUR_DEFAULT  # 模糊半径 px（整数 0-200）
         self._bg_transparency: int = IMAGE_BG_TRANSPARENCY_DEFAULT  # 透明度 %（0-100）
         self._bg_params_updating: bool = False  # 编程式设置滑动条的守卫标志
-        self._bg_params_row: QFrame | None = None  # 参数区容器（仅图像模式可见）
+        self._bg_params_row: QWidget | None = None  # 参数区容器（仅图像模式可见）
         self._blur_slider: StyledSlider | None = None
         self._transparency_slider: StyledSlider | None = None
+        self._blur_name_label: QLabel | None = None
+        self._opacity_name_label: QLabel | None = None
         self._blur_value_label: QLabel | None = None
         self._transparency_value_label: QLabel | None = None
+        # 统一排版条目（_build_ui 构建；标题/描述样式经 token 重注册）
+        self._theme_row: SettingsRow | None = None
+        self._accent_block: SettingsBlock | None = None
+        self._bg_row: SettingsRow | None = None
+        self._perf_row: SettingsRow | None = None
         # 深色模式三态状态（初值在 _build_ui 中从暂存缓存覆盖）
         self._theme_mode: str = "dark"   # "light"（白天） / "dark"（夜晚） / "system"（跟随系统）
         self._theme_updating: bool = False  # 编程式切换主题分段控件的守卫标志
@@ -530,28 +568,22 @@ class AppearanceSettingsPage(QWidget):
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(20)
-
-        # ── 深色模式三段选择（白天 / 夜晚 / 跟随系统）──
-        # 与「窗口背景」分段同款 StyledSegmented（pill/sm），视觉与交互一致。
-        dark_row = QFrame()
-        register_widget_qss(dark_row,("background: transparent; border: none;"))
-        dark_layout = QHBoxLayout(dark_row)
-        dark_layout.setContentsMargins(0, 0, 0, 0)
-        dark_layout.setSpacing(12)
-
-        dark_label = QLabel("深色模式")
-        register_widget_qss(dark_label,(
-            f"background: transparent; border: none;"
-            f"color: {tm.text.name()}; font-size: 13px; font-weight: 500;"
-        ))
-        dark_layout.addWidget(dark_label)
-        dark_layout.addStretch()
+        # 分组之间用 SETTINGS_GROUP_GAP；分组内部行距用 SETTINGS_ROW_GAP。
+        layout.setSpacing(SETTINGS_GROUP_GAP)
 
         # 从暂存缓存读取初始偏好（缓存已在 __init__ 中以 V2 快照开启）；
         # 旧快照缺 theme_mode 时由 appearance.theme 迁移。
         saved_accent = self._staging_cache.get("appearance.accent_color", "#007AFF")
         self._theme_mode = self._resolve_staged_theme_mode()
+
+        # ── 分组 1：主题（主题色 + 深色模式） ──
+        theme_group = QVBoxLayout()
+        theme_group.setContentsMargins(0, 0, 0, 0)
+        theme_group.setSpacing(SETTINGS_ROW_GAP)
+
+        # 深色模式三段选择（白天 / 夜晚 / 跟随系统）：
+        # 与「窗口背景」分段同款 StyledSegmented（pill/sm），视觉与交互一致。
+        self._theme_row = SettingsRow(title="深色模式")
 
         self._theme_segmented = StyledSegmented(variant="pill", size="sm")
         for label in self.THEME_LABELS:
@@ -567,30 +599,23 @@ class AppearanceSettingsPage(QWidget):
             )
         finally:
             self._theme_updating = False
-        dark_layout.addWidget(self._theme_segmented)
+        self._theme_row.set_control(self._theme_segmented)
 
         # 存量兼容：保留 _dark_toggle 属性（非界面垫片，不加入布局），
         # 供旧测试/外部调用以 checked/toggled 方式读写实际生效值。
         self._dark_toggle = _DarkToggleCompat(self)
 
-        layout.addWidget(dark_row)
-
-        # ── 主题色选择 ──
-        accent_label = QLabel("主题色")
-        register_widget_qss(accent_label,(
-            f"background: transparent; border: none;"
-            f"color: {tm.text.name()}; font-size: 13px; font-weight: 500;"
-        ))
-        layout.addWidget(accent_label)
+        # ── 主题色（标题下方整行排列色板，SettingsBlock） ──
+        self._accent_block = SettingsBlock(title="主题色")
 
         # 单行布局：所有配色按钮放在同一行
         color_row = QHBoxLayout()
         color_row.setContentsMargins(0, 0, 0, 0)
-        color_row.setSpacing(8)  # 缩小间距
+        color_row.setSpacing(8)
 
         self._current_accent = saved_accent
 
-        for i, preset in enumerate(PRESET_ACCENT_COLORS):
+        for preset in PRESET_ACCENT_COLORS:
             is_auto = preset["color"].lower() == "auto"
             display_color = get_system_accent_color() if is_auto else preset["color"]
             center_text = "A" if is_auto else ""
@@ -612,11 +637,15 @@ class AppearanceSettingsPage(QWidget):
         color_row.addWidget(self._custom_btn)
 
         color_row.addStretch()  # 右侧弹性空间
-        layout.addLayout(color_row)
+        self._accent_block.set_content_layout(color_row)
+        # 主题色为该分组第一项，深色模式排在主题色之后。
+        theme_group.addWidget(self._accent_block)
+        theme_group.addWidget(self._theme_row)
+        layout.addLayout(theme_group)
 
-        # ── 窗口背景（简约 / 云母 / 图像，与深色模式同行布局） ──
-        # 云母参数为按主题固定的产品定值（见 main_window.FIXED_MICA_PARAMS），
-        # 设置页不再提供滑动条配置。初值来自暂存缓存（隔离层唯一数据源）。
+        # 窗口背景初值：云母参数为按主题固定的产品定值（见
+        # main_window.FIXED_MICA_PARAMS），设置页不再提供滑动条配置。
+        # 初值来自暂存缓存（隔离层唯一数据源）。
         saved_bg = self._staging_cache.get("appearance.background", {}) or {}
         saved_bg_mode = saved_bg.get("mode", "mica")
         self._bg_mode = saved_bg_mode if saved_bg_mode in ("mica", "image", "minimalist") else "mica"
@@ -628,20 +657,13 @@ class AppearanceSettingsPage(QWidget):
             saved_bg.get("transparency", IMAGE_BG_TRANSPARENCY_DEFAULT)
         )
 
-        bg_row = QFrame()
-        register_widget_qss(bg_row,("background: transparent; border: none;"))
-        bg_title_layout = QHBoxLayout(bg_row)
-        bg_title_layout.setContentsMargins(0, 0, 0, 0)
-        bg_title_layout.setSpacing(12)
+        # ── 分组 2：窗口背景（简约 / 云母 / 图像） ──
+        bg_group = QVBoxLayout()
+        bg_group.setContentsMargins(0, 0, 0, 0)
+        bg_group.setSpacing(SETTINGS_ROW_GAP)
 
-        bg_label = QLabel("窗口背景")
-        register_widget_qss(bg_label,(
-            f"background: transparent; border: none;"
-            f"color: {tm.text.name()}; font-size: 13px; font-weight: 500;"
-        ))
-        bg_title_layout.addWidget(bg_label)
-        bg_title_layout.addStretch()
-        self._bg_label = bg_label
+        self._bg_row = SettingsRow(title="窗口背景")
+        self._bg_label = self._bg_row.title_label
 
         self._bg_segmented = StyledSegmented(variant="pill", size="sm")
         self._bg_segmented.add_segment("简约")
@@ -659,74 +681,54 @@ class AppearanceSettingsPage(QWidget):
                 self._bg_segmented.set_current_index(2, animate=False)
         finally:
             self._bg_updating = False
-        bg_title_layout.addWidget(self._bg_segmented)
-        layout.addWidget(bg_row)
+        self._bg_row.set_control(self._bg_segmented)
+        bg_group.addWidget(self._bg_row)
 
-        # 图片行（仅 image 模式可见）：当前文件名 + 「选择图片…」按钮
-        self._bg_image_row = QFrame()
-        register_widget_qss(self._bg_image_row,("background: transparent; border: none;"))
-        bg_row_layout = QHBoxLayout(self._bg_image_row)
-        bg_row_layout.setContentsMargins(0, 0, 0, 0)
-        bg_row_layout.setSpacing(12)
-
-        self._bg_file_label = QLabel(
-            self._bg_image_name if self._bg_image_name else "未设置"
+        # 图片行（仅 image 模式可见）：当前文件名（描述位）+「选择图片…」按钮
+        self._bg_image_row = SettingsRow(
+            title="背景图片",
+            description=(self._bg_image_name if self._bg_image_name else "未设置"),
         )
-        register_widget_qss(self._bg_file_label,(
-            f"background: transparent; border: none;"
-            f"color: {tm.text.name()}; font-size: 13px;"
-        ))
-        bg_row_layout.addWidget(self._bg_file_label)
-        bg_row_layout.addStretch()
+        # 描述标签即文件名展示位（_update_bg_ui_state 负责回写文本）
+        self._bg_file_label = self._bg_image_row.desc_label
 
         self._bg_choose_btn = StyledButton("选择图片…", variant="secondary", size="sm")
         self._bg_choose_btn.clicked.connect(self._on_choose_bg_image_clicked)
-        bg_row_layout.addWidget(self._bg_choose_btn)
-        layout.addWidget(self._bg_image_row)
+        self._bg_image_row.set_control(self._bg_choose_btn)
+        bg_group.addWidget(self._bg_image_row)
 
         # 图像参数区（仅 image 模式可见）：模糊度 / 透明度可拖动滑动条。
         # 默认模糊度 0（不模糊）、透明度 80%（很透明）。
-        self._bg_params_row = QFrame()
-        register_widget_qss(self._bg_params_row,("background: transparent; border: none;"))
-        params_layout = QVBoxLayout(self._bg_params_row)
-        params_layout.setContentsMargins(0, 0, 0, 0)
-        params_layout.setSpacing(8)
-
-        label_style = (
-            "background: transparent; border: none;"
-            f"color: {tm.text.name()}; font-size: 13px;"
-        )
-        value_style = (
-            "background: transparent; border: none;"
-            f"color: {tm.text.name()}; font-size: 12px;"
-        )
+        # SettingsBlock（无标题）作为纯内容分组：字段名列宽 / 读数列宽
+        # 全部引用统一 token，与三页其余条目同字号同间距。
+        self._bg_params_row = SettingsBlock()
 
         blur_row = QHBoxLayout()
         blur_row.setContentsMargins(0, 0, 0, 0)
-        blur_row.setSpacing(12)
-        blur_name = QLabel("模糊度")
-        register_widget_qss(blur_name,(label_style))
-        blur_name.setFixedWidth(48)
-        blur_row.addWidget(blur_name)
+        blur_row.setSpacing(SETTINGS_LABEL_GAP)
+        self._blur_name_label = QLabel("模糊度")
+        apply_settings_field_style(self._blur_name_label)
+        self._blur_name_label.setFixedWidth(SETTINGS_FIELD_LABEL_WIDTH)
+        blur_row.addWidget(self._blur_name_label)
         self._blur_slider = StyledSlider(
             value=self._bg_blur / IMAGE_BG_BLUR_MAX, size="sm"
         )
         self._blur_slider.value_changed.connect(self._on_blur_changed)
         blur_row.addWidget(self._blur_slider, stretch=1)
         self._blur_value_label = QLabel(f"{self._bg_blur:g}")
-        register_widget_qss(self._blur_value_label,(value_style))
+        apply_settings_value_style(self._blur_value_label)
         self._blur_value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self._blur_value_label.setFixedWidth(44)
+        self._blur_value_label.setFixedWidth(SETTINGS_VALUE_LABEL_WIDTH)
         blur_row.addWidget(self._blur_value_label)
-        params_layout.addLayout(blur_row)
+        self._bg_params_row.set_content_layout(blur_row)
 
         opacity_row = QHBoxLayout()
         opacity_row.setContentsMargins(0, 0, 0, 0)
-        opacity_row.setSpacing(12)
-        opacity_name = QLabel("透明度")
-        register_widget_qss(opacity_name,(label_style))
-        opacity_name.setFixedWidth(48)
-        opacity_row.addWidget(opacity_name)
+        opacity_row.setSpacing(SETTINGS_LABEL_GAP)
+        self._opacity_name_label = QLabel("透明度")
+        apply_settings_field_style(self._opacity_name_label)
+        self._opacity_name_label.setFixedWidth(SETTINGS_FIELD_LABEL_WIDTH)
+        opacity_row.addWidget(self._opacity_name_label)
         self._transparency_slider = StyledSlider(
             value=self._bg_transparency / 100.0, size="sm"
         )
@@ -735,13 +737,13 @@ class AppearanceSettingsPage(QWidget):
         )
         opacity_row.addWidget(self._transparency_slider, stretch=1)
         self._transparency_value_label = QLabel(f"{self._bg_transparency}%")
-        register_widget_qss(self._transparency_value_label,(value_style))
+        apply_settings_value_style(self._transparency_value_label)
         self._transparency_value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self._transparency_value_label.setFixedWidth(44)
+        self._transparency_value_label.setFixedWidth(SETTINGS_VALUE_LABEL_WIDTH)
         opacity_row.addWidget(self._transparency_value_label)
-        params_layout.addLayout(opacity_row)
+        self._bg_params_row.set_content_layout(opacity_row)
 
-        layout.addWidget(self._bg_params_row)
+        bg_group.addWidget(self._bg_params_row)
 
         # 弥散氛围行（仅简约模式可见）：开关实时生效并持久化
         self._ambient_row = SettingsRow(
@@ -751,30 +753,24 @@ class AppearanceSettingsPage(QWidget):
         self._ambient_toggle = StyledToggle(checked=self._bg_ambient, size="default")
         self._ambient_toggle.toggled.connect(self._on_ambient_toggled)
         self._ambient_row.set_control(self._ambient_toggle)
-        layout.addWidget(self._ambient_row)
+        bg_group.addWidget(self._ambient_row)
+
+        layout.addLayout(bg_group)
 
         # 初始按模式设置图片行与弥散氛围行的可见性（不触发应用逻辑）
         self._update_bg_ui_state()
 
-        # ── 性能档位三段选择（性能 / 均衡 / 省电）──
+        # ── 分组 3：性能档位（性能 / 均衡 / 省电） ──
         # 与「深色模式」分段同款 StyledSegmented（pill/sm），视觉与交互一致。
         # 暂存隔离铁律：切换只写入 SettingsStagingCache（performance.profile），
         # 不触碰三钩子、tm、主窗口与磁盘；应用与落盘统一由
         # SettingsLayout._submit_settings 在点击确定时执行。
-        perf_row = QFrame()
-        register_widget_qss(perf_row, ("background: transparent; border: none;"))
-        perf_layout = QHBoxLayout(perf_row)
-        perf_layout.setContentsMargins(0, 0, 0, 0)
-        perf_layout.setSpacing(12)
+        perf_group = QVBoxLayout()
+        perf_group.setContentsMargins(0, 0, 0, 0)
+        perf_group.setSpacing(SETTINGS_ROW_GAP)
 
-        perf_label = QLabel("性能档位")
-        register_widget_qss(perf_label, (
-            f"background: transparent; border: none;"
-            f"color: {tm.text.name()}; font-size: 13px; font-weight: 500;"
-        ))
-        perf_layout.addWidget(perf_label)
-        perf_layout.addStretch()
-
+        self._perf_row = SettingsRow(title="性能档位")
+        self._perf_label = self._perf_row.title_label
         self._perf_profile = self._resolve_staged_perf_profile()
 
         self._perf_segmented = StyledSegmented(variant="pill", size="sm")
@@ -791,12 +787,11 @@ class AppearanceSettingsPage(QWidget):
             )
         finally:
             self._perf_updating = False
-        perf_layout.addWidget(self._perf_segmented)
-        self._perf_label = perf_label
+        self._perf_row.set_control(self._perf_segmented)
+        perf_group.addWidget(self._perf_row)
+        layout.addLayout(perf_group)
 
-        layout.addWidget(perf_row)
-
-        layout.addStretch()
+        layout.addStretch(1)
 
     # ── 窗口背景：模式切换与图片导入 ─────────────────────────────────
 
@@ -1378,42 +1373,27 @@ class AppearanceSettingsPage(QWidget):
         else:
             self._theme_mode = self._resolve_staged_theme_mode()
         self.sync_theme_segment()
-        # 由外部 _refresh_styles 统一刷新文字颜色
-        # 窗口背景区块：标题与文件名标签颜色跟随主题（覆盖统一刷新，
-        # 保证页面脱离 SettingsLayout 宿主单独使用时同样正确）
-        register_widget_qss(self._bg_label,(
-            f"background: transparent; border: none;"
-            f"color: {tm.text.name()}; font-size: 13px; font-weight: 500;"
-        ))
-        register_widget_qss(self._bg_file_label,(
-            f"background: transparent; border: none;"
-            f"color: {tm.text.name()}; font-size: 13px;"
-        ))
-        # 性能档位标题颜色跟随主题（覆盖统一刷新，保证单独使用时同样正确）。
-        if getattr(self, "_perf_label", None) is not None:
-            register_widget_qss(self._perf_label,(
-                f"background: transparent; border: none;"
-                f"color: {tm.text.name()}; font-size: 13px; font-weight: 500;"
-            ))
+        # 本页文字样式按统一 token 重注册（替代宿主通刷 QLabel）。
+        for item in (
+            self._theme_row,
+            self._accent_block,
+            self._bg_row,
+            self._bg_image_row,
+            self._perf_row,
+            self._ambient_row,
+        ):
+            _refresh_settings_item_text(item)
+        # 图像参数区：字段名与读数按 token 重注册
+        apply_settings_field_style(self._blur_name_label)
+        apply_settings_field_style(self._opacity_name_label)
+        apply_settings_value_style(self._blur_value_label)
+        apply_settings_value_style(self._transparency_value_label)
         # 弥散氛围开关：同步状态（避免信号循环：暂时断开）
         if self._ambient_toggle is not None:
             self._ambient_toggle.toggled.disconnect(self._on_ambient_toggled)
             self._ambient_toggle.checked = self._bg_ambient
             self._ambient_toggle.toggled.connect(self._on_ambient_toggled)
-        # 弥散氛围行标题/描述颜色跟随主题
-        if self._ambient_row is not None:
-            _ambient_title = getattr(self._ambient_row, "title_label", None)
-            if _ambient_title is not None:
-                register_widget_qss(_ambient_title,(
-                    f"font-size: 13.5px; font-weight: 500; color: {tm.text.name()};"
-                ))
-            _ambient_desc = getattr(self._ambient_row, "desc_label", None)
-            if _ambient_desc is not None:
-                register_widget_qss(_ambient_desc,(
-                    f"font-size: 12px; color: {tm.qss_color(tm.text_hint)};"
-                    f" line-height: 1.5;"
-                ))
-        # 重新应用背景模式相关的可用性/置灰状态（米卡数值标签颜色）
+        # 重新应用背景模式相关的可见性/置灰状态
         self._update_bg_ui_state()
 
     def _load_v2_settings(self) -> None:
@@ -1595,7 +1575,8 @@ class GeneralSettingsPage(QWidget):
         """构建页面：界面布局行（分段控件 + 动态介绍文字）。"""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
+        # 行距与外观/关于页统一（SETTINGS_ROW_GAP），不再单独使用 12px。
+        layout.setSpacing(SETTINGS_ROW_GAP)
 
         # ── 界面布局：经典 / New（预览优先）──
         # 与「深色模式」「窗口背景」分段同款 StyledSegmented（pill/sm）。
@@ -1636,15 +1617,15 @@ class GeneralSettingsPage(QWidget):
 
         # ── 空白区右键返回上一级（默认关闭）──
         self._blank_back_row = SettingsRow(
-            title="空白处右键返回上级",
-            description="页面无需滚动时，右键卡片以外的空白格返回上一级；卡片间隙不触发",
+            title="便捷返回",
+            description="页面无需滚动时，选择区域右键空白区返回上一级",
         )
         self._blank_back_toggle = StyledToggle(checked=False, size="default")
         self._blank_back_toggle.toggled.connect(self._on_blank_right_click_go_back_toggled)
         self._blank_back_row.set_control(self._blank_back_toggle)
         layout.addWidget(self._blank_back_row)
 
-        layout.addStretch()
+        layout.addStretch(1)
 
     # ── 交互 ──────────────────────────────────────────────────────────
 
@@ -1744,26 +1725,14 @@ class GeneralSettingsPage(QWidget):
         self._sync_description_text()
 
     def refresh_theme(self) -> None:
-        """主题切换时刷新页面内文字颜色（由 SettingsLayout._refresh_styles 调用）。"""
+        """主题切换时刷新页面内文字样式（按统一 token 重注册）。"""
         for row in (
             self._layout_row,
             self._ai_row,
             self._drives_row,
             self._blank_back_row,
         ):
-            if row is None:
-                continue
-            title_label = getattr(row, "title_label", None)
-            if title_label is not None:
-                register_widget_qss(title_label,(
-                    f"font-size: 13.5px; font-weight: 500; color: {tm.text.name()};"
-                ))
-            desc_label = getattr(row, "desc_label", None)
-            if desc_label is not None:
-                register_widget_qss(desc_label,(
-                    f"font-size: 12px; color: {tm.qss_color(tm.text_hint)};"
-                    f" line-height: 1.5;"
-                ))
+            _refresh_settings_item_text(row)
 
     def get_staging_cache(self) -> SettingsStagingCache:
         """返回本页绑定的暂存缓存（调试链路使用）。"""
@@ -1783,25 +1752,26 @@ class AboutSettingsPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._view_btn: StyledButton | None = None
+        self._license_row: SettingsRow | None = None
         self._build_ui()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(20)
+        layout.setSpacing(SETTINGS_ROW_GAP)
 
         # 开源许可证设置条目：SettingsRow + 查看按钮（复用现有组件）
-        license_row = SettingsRow(
+        self._license_row = SettingsRow(
             title="开源许可证",
             description="查看本软件所使用的第三方开源组件及其许可证信息",
         )
         self._view_btn = StyledButton("查看", variant="primary", size="sm")
         self._view_btn.setCursor(Qt.PointingHandCursor)
         self._view_btn.clicked.connect(self._open_license_viewer)
-        license_row.set_control(self._view_btn)
-        layout.addWidget(license_row)
+        self._license_row.set_control(self._view_btn)
+        layout.addWidget(self._license_row)
 
-        layout.addStretch()
+        layout.addStretch(1)
 
     def find_main_window(self) -> QWidget | None:
         """定位主窗口（按 _mica_background 属性鸭子类型判定，避免循环导入）。
@@ -1826,12 +1796,11 @@ class AboutSettingsPage(QWidget):
             pass
 
     def refresh_theme(self) -> None:
-        """主题切换刷新（SDK 约定入口）。
+        """主题切换刷新：按统一 token 重注册条目文字样式。
 
-        条目文字与按钮均由 :meth:`SettingsLayout._refresh_styles` 的统一
-        QLabel 遍历 + ``StyledButton`` 自适配覆盖，无需额外处理。
+        按钮视觉由 ``StyledButton`` 自适配，仅条目文字需要显式刷新。
         """
-        return
+        _refresh_settings_item_text(self._license_row)
 
 
 class SettingsLayout(QWidget):
@@ -1872,8 +1841,9 @@ class SettingsLayout(QWidget):
             transparent=True,  # 透明背景以显示 Mica 效果
             parent=self,
         )
-        self._sidebar.add_item("外观", icon_svg="sun")
+        # 侧边栏列表顺序 = 页面顺序：通用（第一项）→ 外观 → 关于
         self._sidebar.add_item("通用", icon_svg="gear")
+        self._sidebar.add_item("外观", icon_svg="sun")
         self._sidebar.add_item("关于", icon_svg="info")
         self._sidebar.item_selected.connect(self._on_item_selected)
         main_layout.addWidget(self._sidebar)
@@ -1882,23 +1852,15 @@ class SettingsLayout(QWidget):
         self._content_area = QFrame()
         self._content_area.setObjectName("SettingsContentArea")
         content_layout = QVBoxLayout(self._content_area)
-        content_layout.setContentsMargins(0, 0, 24, 24)
+        # 右/下 24px 与卡片、底栏按钮统一对齐；顶部留 12px 呼吸（标题栏下沿）。
+        content_layout.setContentsMargins(0, 12, 24, 24)
         content_layout.setSpacing(0)
 
         # 使用 QStackedWidget 实现多页面切换
         self._stack = QStackedWidget()
         register_widget_qss(self._stack,("background: transparent; border: none;"))
 
-        # 页面 0：外观（包进透明滚动区域，小窗口尺寸下内容可滚动访问）
-        self._appearance_page = AppearanceSettingsPage(staging_cache=self._staging_cache)
-        appearance_scroll = self._wrap_page_in_scroll(self._appearance_page)
-        appearance_card = self._create_page_card(appearance_scroll)
-        # 浮动滚动条锚定到外观卡片（#SettingsCard）右缘：右缘水平贴边、
-        # 上下内缩 10*dpi，与文件选择器/文件池浮动滚动条间距一致
-        appearance_scroll.attach_floating_bar_region(appearance_card)
-        self._stack.addWidget(appearance_card)
-
-        # 页面 1：通用（界面布局切换；包进透明滚动区域，小窗口下可滚动访问）
+        # 页面 0：通用（列表第一项；包进透明滚动区域，小窗口下可滚动访问）
         self._general_page = GeneralSettingsPage(
             staging_cache=self._staging_cache
         )
@@ -1907,9 +1869,20 @@ class SettingsLayout(QWidget):
         general_scroll.attach_floating_bar_region(general_card)
         self._stack.addWidget(general_card)
 
-        # 页面 2：关于
+        # 页面 1：外观（包进透明滚动区域，小窗口尺寸下内容可滚动访问）
+        self._appearance_page = AppearanceSettingsPage(staging_cache=self._staging_cache)
+        appearance_scroll = self._wrap_page_in_scroll(self._appearance_page)
+        appearance_card = self._create_page_card(appearance_scroll)
+        # 浮动滚动条锚定到外观卡片（#SettingsCard）右缘：右缘水平贴边、
+        # 上下内缩 10*dpi，与文件选择器/文件池浮动滚动条间距一致
+        appearance_scroll.attach_floating_bar_region(appearance_card)
+        self._stack.addWidget(appearance_card)
+
+        # 页面 2：关于（与其它页统一：包进透明滚动区域，小窗口下可滚动访问）
         self._about_page = AboutSettingsPage()
-        about_card = self._create_page_card(self._about_page)
+        about_scroll = self._wrap_page_in_scroll(self._about_page)
+        about_card = self._create_page_card(about_scroll)
+        about_scroll.attach_floating_bar_region(about_card)
         self._stack.addWidget(about_card)
 
         content_layout.addWidget(self._stack, stretch=1)
@@ -1925,7 +1898,7 @@ class SettingsLayout(QWidget):
 
         self.setLayout(main_layout)
 
-        # 默认选中第一项
+        # 默认选中第一项（通用）
         self._stack.setCurrentIndex(0)
 
         # 主题切换时刷新内容区背景（生效值变化 + 偏好变化均需刷新，
@@ -1964,7 +1937,13 @@ class SettingsLayout(QWidget):
         return card
 
     def _refresh_styles(self) -> None:
-        """刷新卡片样式（参考 file_selector_layout 面板样式）"""
+        """刷新卡片样式与三页文字样式。
+
+        卡片/内容区颜色在这里统一重注册；页面内文字样式一律由各页
+        ``refresh_theme()`` 按统一 token 处理——禁止在这里遍历卡片下的
+        所有 ``QLabel`` 通刷（历史缺陷：描述文字与滑动条读数被一并覆盖
+        成标题字号/字重/颜色）。
+        """
         # 语义 token：浅色=偏白磨砂卡片 + 浅描边；深色=text 5% + mid 50%（历史值）
         fill_color = tm.qss_color(tm.panel_fill)
         border_color = tm.qss_color(tm.panel_border)
@@ -1978,26 +1957,18 @@ class SettingsLayout(QWidget):
         """))
         register_widget_qss(self._content_area,("background-color: transparent; border: none;"))
 
-        # 刷新外观页面内的文字颜色
-        for i in range(self._stack.count()):
-            card = self._stack.widget(i)
-            for label in card.findChildren(QLabel):
-                if not label.text():
-                    continue
-                register_widget_qss(label,(
-                    f"background: transparent; border: none;"
-                    f"color: {tm.text.name()}; font-size: 13px; font-weight: 500;"
-                ))
-
-        # 刷新外观页面
-        if hasattr(self, "_appearance_page"):
-            self._appearance_page.refresh_theme()
-            # 刷新所有颜色按钮
-            for btn in self._appearance_page.color_buttons:
+        # 三页各自刷新（外观页含自绘色块重绘）
+        appearance_page = getattr(self, "_appearance_page", None)
+        if appearance_page is not None:
+            appearance_page.refresh_theme()
+            for btn in appearance_page.color_buttons:
                 btn.update()
-        # 刷新通用页面（布局切换文字颜色）
-        if hasattr(self, "_general_page"):
-            self._general_page.refresh_theme()
+        general_page = getattr(self, "_general_page", None)
+        if general_page is not None:
+            general_page.refresh_theme()
+        about_page = getattr(self, "_about_page", None)
+        if about_page is not None:
+            about_page.refresh_theme()
 
     def _on_item_selected(self, index: int, label: str) -> None:
         """侧边栏导航项选中回调"""
@@ -2025,8 +1996,9 @@ class SettingsLayout(QWidget):
         bar.setObjectName("SettingsBottomBar")
         register_widget_qss(bar,("background: transparent; border: none;"))
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(0, 8, 0, 0)
-        layout.setSpacing(8)
+        # 与卡片间距统一：顶部 12px（SETTINGS_ROW_GAP 之上再留一档），按钮间距 12px。
+        layout.setContentsMargins(0, 12, 0, 0)
+        layout.setSpacing(12)
 
         self._reset_btn = StyledButton("重置", variant="danger", size="sm")
         self._reset_btn.clicked.connect(self._on_reset_clicked)
@@ -2070,6 +2042,30 @@ class SettingsLayout(QWidget):
         if self._submit_settings(close_after=False):
             self._submitted = True
             self._close_host_window()
+
+    def _theme_reveal_origin(self, settings_window: QWidget) -> "QPoint | None":
+        """主题过渡扩散圆心：外观页主题分段控件中心（窗口逻辑坐标）。
+
+        分段控件不可用（页面未构建 / 几何为空 / 非本窗口子树）时返回
+        None，遮罩退化为透明度淡出，不影响提交本身。
+
+        Args:
+            settings_window: 过渡遮罩的宿主设置窗口。
+
+        Returns:
+            QPoint | None: 扩散圆心；无效时 None。
+        """
+        page = getattr(self, "_appearance_page", None)
+        segmented = getattr(page, "_theme_segmented", None) if page is not None else None
+        if segmented is None or settings_window is None:
+            return None
+        try:
+            rect = segmented.rect()
+            if rect.isEmpty():
+                return None
+            return segmented.mapTo(settings_window, rect.center())
+        except Exception:  # noqa: BLE001 - 映射失败退化为淡出
+            return None
 
     def _submit_settings(self, close_after: bool = False) -> bool:
         """设置提交事件处理函数（确定按钮绑定，事务性提交）。
@@ -2146,7 +2142,10 @@ class SettingsLayout(QWidget):
         settings_window = self._host_window if self._host_window is not None else self.window()
         if settings_window is not None:
             try:
-                overlay = ThemeTransitionOverlay.from_widget(settings_window)
+                overlay = ThemeTransitionOverlay.from_widget(
+                    settings_window,
+                    origin=self._theme_reveal_origin(settings_window),
+                )
                 overlay.start()
             except Exception as exc:
                 debug(f"主题过渡遮罩启动失败（直接完成切换）：{exc}")
@@ -2159,7 +2158,7 @@ class SettingsLayout(QWidget):
         except Exception:
             prev_perf_profile = "balanced"
         # 主窗口过渡预抓拍：tm 翻转后主窗槽内各背景层 sync 才能以旧帧为底
-        # 做 280ms 交叉淡入，否则退化为裸 update 露出 _root 形成闪现。
+        # 做 450ms 交叉淡入，否则退化为裸 update 露出 _root 形成闪现。
         try:
             main_window = self._appearance_page.find_main_window()
             if main_window is not None and hasattr(main_window, "begin_theme_transition"):

@@ -30,7 +30,7 @@ from PySide6.QtCore import (
     QEasingCurve,
 )
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtGui import QPainter, QPaintEvent, QPixmap, QRegion, QResizeEvent, QMoveEvent, QMouseEvent, QKeyEvent, QColor, QCursor
+from PySide6.QtGui import QPainter, QPaintEvent, QPixmap, QRegion, QResizeEvent, QMoveEvent, QMouseEvent, QKeyEvent, QColor, QCursor, QPalette
 
 # 确保 ui 目录在 sys.path 中（组件 __init__.py 使用短路径导入）
 _ui_root = Path(__file__).resolve().parent
@@ -92,7 +92,10 @@ from freeassetfilter.core._paths import icons_dir
 from freeassetfilter.utils.app_logger import debug, warning
 # perf_metrics / StagingPoolService 同为首屏关键路径让位：分别由绘制埋点
 # （MicaBackgroundWidgetCpu.paintEvent）与 closeEvent 局部导入。
-from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
+from freeassetfilter.ui.theme.app_stylesheet import (
+    apply_app_stylesheet,
+    register_widget_qss,
+)
 
 # 简约背景层（try 包裹：组件 PR 合并前主窗口仍可导入，各调用点配合 getattr 守卫）
 try:
@@ -291,7 +294,7 @@ class _MicaBackgroundMixin:
         # 快速重烘焙 luminosity（复用已模糊的 base，不再重新模糊）；
         # 背景色为绘制期读取，切换主题仅需重绘
         if self._mica is not None:
-            # 翻转瞬间先用旧层快照起钟（与控件 280ms 过渡同窗口对齐），再提交
+            # 翻转瞬间先用旧层快照起钟（与控件 450ms 揭示同窗口对齐），再提交
             # 后台重烘焙；新层交付时只换靶、不重启时钟（见
             # MicaMaterial.begin_theme_transition），两者同起同止。
             try:
@@ -1681,26 +1684,28 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._license_viewer_window = None
 
     def _start_content_theme_transition(self) -> None:
-        """启动内容层主题过渡：切前抓内容子树快照，切后旧外观淡出。
+        """启动内容层主题过渡：切前抓整窗外观快照，切后径向揭示新主题。
 
-        恢复此前被移除的整窗遮罩所承担的「组件渐变过渡」职责，但仅针对
-        内容层（``_content``），且旧遮罩的两处卡顿源均已消除：
+        web 式 ``clip-path: circle()`` 扩散：以主题切换按钮中心为圆心，
+        整幅以旧外观快照打底、自圆心挖出扩张圆洞露出已切好的新主题。
+        半径 0 时即整幅旧外观（点击瞬间不发新主题闪现）；每像素同一时刻
+        只显示「旧」或「新」一个版本，消除交叉淡入的双重曝光叠印
+        （文字发糊的根因）。
 
-        - 快照用带透明通道的手动渲染（透明底 + 仅 ``DrawChildren``）绘制
-          内容子树——不含 OpenGL 的 Mica 背景兄弟层，无 GL 花屏风险；
-          也没有 ``QScreen.grabWindow(HWND)`` 的整窗同步截屏阻塞。
-          关键：``QWidget.grab()`` 会用默认窗口底色填充透明区，使快照整幅
-          不透明，遮罩淡出期间会把下方的图像/简约背景层严严盖住 280ms
-          （即“图像先消失、动画后才回来”）。手动渲染跳过顶层自身背景，
-          透明区保持透明，背景层全程可见；
-        - 淡出由 :class:`ContentTransitionOverlay` 自绘（每帧单次
-          ``drawPixmap``），替代 ``offscreen effect`` 的逐帧全窗
-          效果过滤合成。
+        快照抓取 ``_root``（背景层 + 内容层）而非仅内容子树：面板填充
+        多为 5%~72% alpha，内容层单独抓拍几乎全透明，铺到已切换的新内容
+        上还原不出旧外观（实测与真实旧外观平均通道差 205/255），揭示对比
+        度不成立；含背景的整体快照为不透明、逐像素还原（实测差 0/255）。
+        默认 CPU 光栅 Mica 走 ``render()`` 无 GL 依赖；实验性 GL 版 Mica
+        （``FAF_USE_GL_MICA=1``）不经 ``render()``，补画其帧缓冲。
+        渲染失败时回退为内容层透明底快照（历史行为，观感较弱但可用）。
 
-        Mica 背景过渡由 ``MicaMaterial._start_xfade`` 材质级交叉过渡承担：
-        遮罩只盖内容层、不遮背景层，两者独立并行、互不影响。未显示窗口
-        （测试/最小化）无过渡——与 Mica 交叉过渡的 ``isVisible`` 守卫语义
-        一致。
+        快照按 ``devicePixelRatio`` 以物理分辨率渲染（高分屏缩放显示下
+        与屏幕 1:1，不糊）；旧实现按逻辑尺寸 1x 抓拍再拉伸到物理像素，
+        是文字模糊的另一来源。
+
+        未显示窗口（测试/最小化）无过渡——与 Mica 交叉过渡的 ``isVisible``
+        守卫语义一致。
         """
         content = self._content
         if content is None or not content.isVisible():
@@ -1713,31 +1718,127 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             if isValid(prev):
                 prev.finish_now()
             self._content_theme_overlay = None
+        size = content.size()
+        if size.isEmpty():
+            return
+        snapshot = self._capture_theme_snapshot(size, content.devicePixelRatioF())
+        if snapshot is None or snapshot.isNull():
+            return
+        # 扩散圆心：主题按钮中心（内容层坐标）；按钮缺失/几何无效时
+        # 传 None 退化为历史透明度淡出，不影响切换本身。
+        origin = self._theme_toggle_origin(content)
+        overlay = ContentTransitionOverlay(content, snapshot, origin=origin)
+        self._content_theme_overlay = overlay
+        overlay.start()
+
+    def _capture_theme_snapshot(
+        self, size, dpr: float
+    ) -> Optional[QPixmap]:
+        """抓取切换前的整窗外观快照（遮罩打底位图，物理分辨率）。
+
+        优先渲染 ``_root``（背景层 + 内容层，不透明旧外观）：默认 CPU 光栅
+        Mica / 图像 / 简约背景均为普通控件，``render()`` 全量可渲染；GL 版
+        Mica（实验路径，``paintGL`` 不经 ``render()``）额外补画其帧缓冲。
+        整段失败时回退为内容层透明底快照（历史行为：观感弱但不阻塞切换）。
+
+        Args:
+            size: 内容层逻辑尺寸（与 ``_root`` 同尺寸，铺满客户区）。
+            dpr: 设备像素比（快照按物理分辨率生成，高分屏不糊）。
+
+        Returns:
+            Optional[QPixmap]: 已抓拍快照；整体失败返回 None。
+        """
+        root = self._root
+        target = root if (root is not None and not root.size().isEmpty()) else self._content
+        if target is None:
+            return None
+        snapshot = QPixmap(
+            int(round(size.width() * dpr)),
+            int(round(size.height() * dpr)),
+        )
+        if snapshot.isNull():
+            return None
+        snapshot.setDevicePixelRatio(dpr)
         try:
-            size = content.size()
-            if size.isEmpty():
-                return
-            snapshot = QPixmap(size)
-            if snapshot.isNull():
-                return
+            # 先铺透明底赋予 alpha 通道（揭示期在快照上 DestinationOut 挖洞
+            # 需要；裸 QPixmap 无 alpha 通道时挖洞会得到不透明黑块），
+            # 再以目标自身调色板底色（G1）不透明打底——GL 层缺失时该区域
+            # 呈主题表面色而非透明/黑块。
             snapshot.fill(Qt.transparent)
-            snapshot_painter = QPainter(snapshot)
+            base = target.palette().color(target.backgroundRole())
+            snapshot.fill(base)
+            painter = QPainter(snapshot)
             try:
-                content.render(
-                    snapshot_painter,
+                target.render(
+                    painter,
+                    QPoint(),
+                    QRegion(),
+                    QWidget.RenderFlag.DrawChildren,
+                )
+                self._blit_gl_mica_into(painter)
+            finally:
+                painter.end()
+            return snapshot
+        except Exception:  # noqa: BLE001 - 整窗抓拍失败回退内容层快照
+            pass
+        try:
+            snapshot.fill(Qt.transparent)
+            painter = QPainter(snapshot)
+            try:
+                self._content.render(
+                    painter,
                     QPoint(),
                     QRegion(),
                     QWidget.RenderFlag.DrawChildren,
                 )
             finally:
-                snapshot_painter.end()
+                painter.end()
+            return snapshot
         except Exception:  # noqa: BLE001 - 快照失败不阻塞主题切换本身
+            return None
+
+    def _blit_gl_mica_into(self, painter: QPainter) -> None:
+        """把 GL 版 Mica 背景的帧缓冲补画进快照（CPU 版已由 render 覆盖）。
+
+        ``QOpenGLWidget`` 内容经 ``paintGL`` 绘制、不在 ``QWidget.render()``
+        输出内；此处按其几何位置取帧缓冲补画。失败静默跳过（该区域保留
+        底色），不影响主题切换。
+
+        Args:
+            painter: 目标快照画笔（DIP 与快照 DPR 对齐）。
+        """
+        widget = getattr(self, "_mica_background", None)
+        if widget is None or not isinstance(widget, QOpenGLWidget):
             return
-        if snapshot.isNull():
-            return
-        overlay = ContentTransitionOverlay(content, snapshot)
-        self._content_theme_overlay = overlay
-        overlay.start()
+        try:
+            if not widget.isVisible():
+                return
+            image = widget.grabFramebuffer()
+            if image.isNull():
+                return
+            painter.drawImage(QRect(widget.geometry()), image)
+        except Exception:  # noqa: BLE001 - GL 读取失败不阻塞切换（留底色）
+            pass
+
+    def _theme_toggle_origin(self, content: QWidget) -> Optional[QPoint]:
+        """主题按钮中心映射到 *content* 坐标（无效时返回 None 走淡出）。
+
+        Args:
+            content: 内容层控件（遮罩父级）。
+
+        Returns:
+            Optional[QPoint]: 扩散圆心；按钮未就绪/几何为空时 None。
+        """
+        btn = self._theme_btn
+        if btn is None or content is None:
+            return None
+        try:
+            rect = btn.rect()
+            if rect.isEmpty():
+                return None
+            return btn.mapTo(content, rect.center())
+        except Exception:  # noqa: BLE001 - 映射失败退化为淡出
+            return None
 
     def _capture_background_pre_theme_state(self) -> None:
         """主题翻转前抓拍可见背景帧（tm 切换前调用）。
@@ -1784,24 +1885,31 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         明暗；点击后翻转生效值，同时把设置页偏好从「跟随系统」自动
         切为对应手动值（「白天」/「夜晚」），保证两处状态同步。
         """
-        # 内容+背景过渡预抓拍：切前抓内容层快照与背景旧帧，切后旧外观
-        # 淡出、背景层以旧帧为底做 280ms 交叉淡入（见 begin_theme_transition）。
+        # 内容+背景过渡预抓拍：切前抓内容层快照与背景旧帧；切后遮罩以整幅
+        # 旧外观覆盖、自按钮向外径向揭示新主题，背景层以旧帧为底做 450ms
+        # 交叉淡入（见 begin_theme_transition）。
         self.begin_theme_transition()
 
         # 显式翻转生效值并固定为手动偏好（set_theme 语义即手动化，
         # 跟随模式点击后自动脱离跟随）。
         new_theme = "light" if tm.is_dark_theme() else "dark"
         tm.set_theme(new_theme)
-        # 同步持久化到 SettingsManagerV2（偏好 + 生效值，重启后恢复）
-        self._persist_theme_state()
+        # 持久化写盘推迟到本拍事件循环末：同步磁盘 IO（读盘合并 + 原子写）
+        # 实测 17-20ms，放在点击同步段会推迟扩散动画启动形成卡顿手感。
+        self._persist_theme_state(defer_save=True)
         # 按钮图标和 tooltip 在 _on_theme_changed 中更新（按实际生效值）
 
-    def _persist_theme_state(self) -> None:
+    def _persist_theme_state(self, defer_save: bool = False) -> None:
         """持久化当前主题偏好与生效值到 SettingsManagerV2（重启后恢复）。
 
         同时写 ``appearance.theme_mode``（白天/夜晚/跟随系统）与
         ``appearance.theme``（实际生效深浅）及 ``appearance.colors`` 快照。
         失败静默忽略，不阻塞主题切换。
+
+        Args:
+            defer_save: True 时仅更新内存设置树，磁盘写入延迟到本拍事件
+                循环末（``QTimer.singleShot(0)``），避免磁盘 IO 阻塞
+                主题切换点击回调；代际计数保证连点只落一次最新写盘。
         """
         try:
             # 复用应用引导层加载的设置管理器（存在时），避免每次切换
@@ -1823,14 +1931,33 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             v2.set("appearance.theme_mode", mode)
             v2.set("appearance.theme", effective)
             v2.set("appearance.colors", dict(tm._colors))
-            v2.save()
+            if not defer_save:
+                v2.save()
+                return
+            self._theme_persist_gen = getattr(self, "_theme_persist_gen", 0) + 1
+            gen = self._theme_persist_gen
+
+            def _deferred_save() -> None:
+                # 代际守卫：期间又切换过则只落最新一次
+                if gen != getattr(self, "_theme_persist_gen", -1):
+                    return
+                try:
+                    v2.save()
+                except Exception as exc:  # noqa: BLE001 - 延迟写盘失败仅告警
+                    warning(f"主题设置保存失败（重启后可能回退）：{exc}")
+
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(0)
+            timer.timeout.connect(_deferred_save)
+            timer.start()
         except Exception as exc:
             warning(f"主题设置保存失败（重启后可能回退）：{exc}")
 
     def _schedule_mica_opposite_prebake(self) -> None:
         """主题切换 settled 后空闲预烘对偶主题云母层（mica 模式）。
 
-        真实烘焙与 280ms 过渡错开 2.5s，避免抢 CPU；触发时若条件已变
+        真实烘焙与 450ms 过渡错开 2.5s，避免抢 CPU；触发时若条件已变
         （又一切换 / 切离 mica 模式）则跳过。预烘结果只进材质层缓存，
         下次回切命中即零等待呈现，与控件过渡同起。
         无头环境（offscreen，通常为测试）永不调度：预烘是真机优化，
@@ -2791,6 +2918,31 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 裁切的核心差异），无需刷新；组件的 handle_window_move 亦为空操作。
 
 
+def _apply_theme_palette(widget: QWidget) -> None:
+    """把当前主题色写入 *widget* 的调色板（全角色，而非仅 Window）。
+
+    应用主题只靠 QSS 实现、未设应用级调色板；本函数用于纯色背景顶层窗口
+    的根容器。只覆盖 ``Window`` 角色时，未被打上 QSS 的后代（QScrollArea
+    viewport、尚未注册的 QLabel 等）仍会回落到系统调色板——系统深色下
+    浅色主题就会闪现深底白字。补齐 Base/Text/WindowText 等角色后，
+    「样式下发前的空窗帧」也能呈现当前主题色。
+
+    Args:
+        widget: 目标根容器（通常为窗口的 central widget）。
+    """
+    palette = widget.palette()
+    surface = tm.surface
+    text = tm.text
+    palette.setColor(QPalette.Window, surface)
+    palette.setColor(QPalette.Base, surface)
+    palette.setColor(QPalette.AlternateBase, surface)
+    palette.setColor(QPalette.Button, surface)
+    palette.setColor(QPalette.WindowText, text)
+    palette.setColor(QPalette.Text, text)
+    palette.setColor(QPalette.ButtonText, text)
+    widget.setPalette(palette)
+
+
 class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
     """
     设置窗口 — 主窗口的 owned 子窗口，tm.surface 纯色背景（不使用 Mica）
@@ -2822,9 +2974,7 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # tm.surface 不透明纯色背景（styled 弹窗同款），无 Mica 开销
         self._root = QWidget(self)
         self.setCentralWidget(self._root)
-        root_palette = self._root.palette()
-        root_palette.setColor(self._root.backgroundRole(), tm.surface)
-        self._root.setPalette(root_palette)
+        _apply_theme_palette(self._root)
         self._root.setAutoFillBackground(True)
 
         # 主布局直接建在根容器上
@@ -2909,14 +3059,18 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         """窗口显示/重新显示时刷新全量主题样式"""
         super().showEvent(event)
         self._sync_theme()
+        # 同步下发样式表：register_widget_qss 的合并重建排在下一事件循环
+        # tick，若不在首帧前落地，本窗口首帧会以"不含本窗口片段"的旧样式表
+        # 绘制（浅色主题下闪现系统深色底/白字），下一 tick 又触发一次全树
+        # 重刷（可见卡顿）。此处同步重建后窗体重排完成于可见之前，且原定时
+        # tick 因已非脏而空转（不重复下发）。
+        apply_app_stylesheet()
 
     def _sync_theme(self) -> None:
         """强制刷新当前主题下的所有样式"""
         # 纯色背景（tm.surface 随主题变化）
         if self._root is not None:
-            palette = self._root.palette()
-            palette.setColor(self._root.backgroundRole(), tm.surface)
-            self._root.setPalette(palette)
+            _apply_theme_palette(self._root)
         # 标题栏文字
         if self._title_label is not None:
             register_widget_qss(self._title_label,(
@@ -3001,9 +3155,7 @@ class LicenseViewerWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # tm.surface 不透明纯色背景（与设置窗口 / styled 弹窗同款）
         self._root = QWidget(self)
         self.setCentralWidget(self._root)
-        root_palette = self._root.palette()
-        root_palette.setColor(self._root.backgroundRole(), tm.surface)
-        self._root.setPalette(root_palette)
+        _apply_theme_palette(self._root)
         self._root.setAutoFillBackground(True)
 
         layout = QVBoxLayout(self._root)
@@ -3098,13 +3250,14 @@ class LicenseViewerWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         """窗口显示/重新显示时刷新全量主题样式"""
         super().showEvent(event)
         self._sync_theme()
+        # 同步下发样式表（与设置窗口同款）：避免首帧以旧样式表绘制而闪现/
+        # 卡顿，详见 SettingsWindow.showEvent 的说明。
+        apply_app_stylesheet()
 
     def _sync_theme(self) -> None:
         """强制刷新当前主题下的所有样式"""
         if self._root is not None:
-            palette = self._root.palette()
-            palette.setColor(self._root.backgroundRole(), tm.surface)
-            self._root.setPalette(palette)
+            _apply_theme_palette(self._root)
         if self._title_label is not None:
             register_widget_qss(self._title_label, (
                 f'font-size: 14px; font-weight: 600; color: {tm.text.name()};'

@@ -374,7 +374,18 @@ class _AppStylesheetRegistry:
             return self._dirty
 
     def _ensure_theme_hook(self) -> None:
-        """Connect ``ThemeManager.theme_changed`` to rebuild (once)."""
+        """Connect ``ThemeManager.theme_changed`` to a synchronous rebuild (once).
+
+        主题信号回调**同步**执行 ``QApplication.setStyleSheet`` 全树重刷
+        （实测 1600×900 主窗 ~50ms）。这是视觉同步的必要代价：重刷若延迟到
+        下一事件循环拍，揭示动画期间树上仍有大量控件停留在旧配色（面板/
+        卡片与框架各刷各的），切换出现明显「不同步」的混合态。
+
+        卡顿感知已由遮罩覆盖 + 动画延迟起钟消化：主题切换链路先以旧外观
+        快照铺满（点击瞬间画面不变），本重刷在遮罩之下完成，动画时钟
+        从重刷结束后才起算（见 ``_SnapshotTransitionOverlay.start``），
+        因此同步段不会吃到可见动画时长、也不会透出中间态。
+        """
         if self._signal_connected:
             return
         try:

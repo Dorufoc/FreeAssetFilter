@@ -52,7 +52,9 @@ def _patch_overlay_noop(monkeypatch: Any) -> None:
 
     class _NoopOverlay:
         @staticmethod
-        def from_widget(_w: Any) -> "_NoopOverlay":
+        def from_widget(
+            _w: Any, origin: Any = None
+        ) -> "_NoopOverlay":
             return _NoopOverlay()
 
         def start(self) -> None:

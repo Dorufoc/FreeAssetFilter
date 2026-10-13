@@ -2017,10 +2017,11 @@ class TestSettingsLayout:
         layout = SettingsLayout()
         scrolls = layout._stack.findChildren(QScrollArea)
         floating = [s for s in scrolls if isinstance(s, _FloatingScrollArea)]
-        # 外观页 + 通用页各有一处浮动滚动区
-        assert len(floating) == 2
+        # 通用页 + 外观页 + 关于页各有一处浮动滚动区（三页统一）
+        assert len(floating) == 3
 
-        area = layout._stack.widget(0).findChild(_FloatingScrollArea)
+        # 列表顺序：0 = 通用，1 = 外观，2 = 关于 → 外观卡在索引 1
+        area = layout._stack.widget(1).findChild(_FloatingScrollArea)
         assert area is not None
         # 原生滚动条隐藏，浮动 styled 滚动条存在
         assert area.verticalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
@@ -2088,23 +2089,21 @@ class TestSettingsLayout:
         layout.show()
         _pump_events(qapp)
         try:
-            # 外观页：滚动区铺满卡片内容区
-            appearance_card = layout._stack.widget(0)
-            appearance_area = appearance_card.findChild(_FloatingScrollArea)
-            assert appearance_area is not None
-            assert appearance_area.height() == _expected_fill_height(appearance_card)
-
-            # 通用页：切页后同样铺满
-            layout._stack.setCurrentIndex(1)
-            _pump_events(qapp)
-            general_card = layout._stack.widget(1)
+            # 通用页（列表索引 0，默认当前页）：滚动区铺满卡片内容区
+            general_card = layout._stack.widget(0)
             general_area = general_card.findChild(_FloatingScrollArea)
             assert general_area is not None
             assert general_area.height() == _expected_fill_height(general_card)
 
-            # 切回外观页并增长内容（图像模式：文件行 + 模糊度/透明度滑动条）
-            layout._stack.setCurrentIndex(0)
+            # 外观页（列表索引 1）：切页后同样铺满
+            layout._stack.setCurrentIndex(1)
             _pump_events(qapp)
+            appearance_card = layout._stack.widget(1)
+            appearance_area = appearance_card.findChild(_FloatingScrollArea)
+            assert appearance_area is not None
+            assert appearance_area.height() == _expected_fill_height(appearance_card)
+
+            # 在外观页增长内容（图像模式：文件行 + 模糊度/透明度滑动条）
             layout._appearance_page._stage_background_settings("image")
             _pump_events(qapp)
 

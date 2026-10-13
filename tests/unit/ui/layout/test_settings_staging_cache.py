@@ -266,7 +266,9 @@ def _patch_overlay_noop(monkeypatch: Any) -> None:
 
     class _NoopOverlay:
         @staticmethod
-        def from_widget(_w: Any) -> "_NoopOverlay":
+        def from_widget(
+            _w: Any, origin: Any = None
+        ) -> "_NoopOverlay":
             return _NoopOverlay()
 
         def start(self) -> None:
@@ -295,6 +297,46 @@ def _make_layout(
     layout = SettingsLayout()
     qapp.processEvents()
     return layout
+
+
+class TestThemeRevealOrigin:
+    """设置窗口主题过渡的扩散圆心（径向揭示接线）。"""
+
+    def test_origin_is_theme_segment_center(
+        self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """圆心 = 外观页主题分段控件中心（映射到宿主窗口坐标）。"""
+        from PySide6.QtWidgets import QWidget
+
+        layout = _make_layout(qapp, monkeypatch, tmp_path)
+        host = QWidget()
+        try:
+            host.resize(900, 640)
+            layout.setParent(host)
+            layout.resize(host.size())
+            qapp.processEvents()
+            origin = layout._theme_reveal_origin(host)
+            segmented = layout._appearance_page._theme_segmented
+            assert origin is not None
+            assert origin == segmented.mapTo(host, segmented.rect().center())
+        finally:
+            safe_teardown(layout)
+            safe_teardown(host)
+
+    def test_origin_none_without_appearance_page(
+        self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """外观页缺失：圆心退化为 None（遮罩走透明度淡出）。"""
+        from PySide6.QtWidgets import QWidget
+
+        layout = _make_layout(qapp, monkeypatch, tmp_path)
+        host = QWidget()
+        try:
+            monkeypatch.setattr(layout, "_appearance_page", None, raising=False)
+            assert layout._theme_reveal_origin(host) is None
+        finally:
+            safe_teardown(layout)
+            safe_teardown(host)
 
 
 class TestBottomButtons:

@@ -78,8 +78,8 @@ _DITHER_CACHE_MAX: int = 2
 #: 交互停止后切回抖动缓存的延时（毫秒，复用 custom_background 80ms 思路）。
 _SETTLE_INTERVAL_MS: int = 80
 
-#: 主题交叉过渡时长（毫秒，对齐 Mica XFADE_DURATION_MS 与内容层过渡 280ms）。
-XFADE_DURATION_MS: int = 280
+#: 主题交叉过渡时长（毫秒，对齐 Mica XFADE_DURATION_MS 与内容层揭示 450ms）。
+XFADE_DURATION_MS: int = 450
 
 #: 交叉过渡逐帧间隔（毫秒，约 60fps；现由 QVariantAnimation 按帧推送，
 #: 保留该常量仅作帧率备注，不再驱动任何 QTimer）。
@@ -367,7 +367,7 @@ class MinimalistBackgroundWidget(QWidget):
         return max(0.0, min(1.0, self._xfade_t))
 
     def _start_xfade(self, backdrop: QPixmap) -> None:
-        """以旧背景帧为底图启动交叉过渡：新帧自进度 0 淡入（280ms）。"""
+        """以旧背景帧为底图启动交叉过渡：新帧自进度 0 淡入（450ms）。"""
         self._xfade_backdrop = backdrop
         self._xfade_active = True
         self._xfade_t = 0.0
@@ -496,7 +496,7 @@ class MinimalistBackgroundWidget(QWidget):
           1:1 呈现），仍是单层呈现，无透明叠加。
         - 交互态（拖拽/缩放中）或降级态（numpy 缺失）：单次 ``fillRect``
           原渐变，无抖动，保证拖拽流畅。
-        - 主题交叉过渡期（切换后 280ms 内）：旧帧铺底 + 新帧按进度离屏混合，
+        - 主题交叉过渡期（切换后 450ms 内）：旧帧铺底 + 新帧按进度离屏混合，
           混合帧单次不透明 ``drawImage`` 呈现（仿 MicaMaterial._draw_layer，
           但混合在离屏完成，屏幕仍只见一层），旧像素在重绘间隙始终可见。
 

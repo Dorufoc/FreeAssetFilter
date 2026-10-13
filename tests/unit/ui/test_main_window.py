@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from PySide6.QtCore import QEvent, QPointF, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QCloseEvent, QColor, QMouseEvent, QPixmap, QShowEvent
 from PySide6.QtWidgets import QApplication, QWidget
 
@@ -46,6 +46,8 @@ from freeassetfilter.ui.main_window import (  # noqa: E402
 # 全局主题单例（与 main_window 同款短路径；不在 reset_singletons 清单，
 # 测试中切换主题后必须手动恢复）
 from theme import tm  # noqa: E402
+
+from tests.support.qt_helpers import process_qt_events  # noqa: E402
 
 pytestmark = pytest.mark.unit
 
@@ -924,5 +926,127 @@ class TestContentThemeTransition:
             assert second.isVisibleTo(window._content)
         finally:
             self._restore_theme(initial_dark)
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_persist_deferred_save_not_in_click_sync(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """点击同步段不写盘：save 挂起，事件循环推进后落盘。"""
+        calls: list[int] = []
+        # 直接对单例实例打桩：类级 setattr 对已实例化的单例无效
+        # （助手已先建实例，类级补丁不会替换其方法解析结果）。
+        settings_manager = self._settings_manager_for_patch(qapp)
+        monkeypatch.setattr(settings_manager, "save", lambda: calls.append(1))
+        window = self._make_window(monkeypatch)
+        try:
+            window._persist_theme_state(defer_save=True)
+            # 同步段：save 尚未调用（磁盘 IO 已移出点击回调）
+            assert calls == []
+            # 有界事件泵（嵌套事件循环）：延迟写盘回调在下一次循环推进中执行。
+            # 注意：不能用纯 processEvents 轮询——隐藏窗的启动覆盖层动画持续
+            # 产生重绘事件，0ms 定时器需要真实事件循环才会被派发。
+            process_qt_events(qapp, ms=30)
+            assert calls == [1]
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_persist_deferred_save_dedups_burst(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """连点去重：多次延迟写盘只落最新一次。"""
+        calls: list[int] = []
+        settings_manager = self._settings_manager_for_patch(qapp)
+        monkeypatch.setattr(settings_manager, "save", lambda: calls.append(1))
+        window = self._make_window(monkeypatch)
+        try:
+            window._persist_theme_state(defer_save=True)
+            window._persist_theme_state(defer_save=True)
+            window._persist_theme_state(defer_save=True)
+            process_qt_events(qapp, ms=30)
+            # 旧代际跳过，仅最新一次落盘
+            assert calls == [1]
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    @staticmethod
+    def _settings_manager_for_patch(qapp: QApplication):
+        """返回 _persist_theme_state 将复用的设置管理器实例（供实例级打桩）。"""
+        settings_manager = getattr(qapp, "settings_manager", None)
+        if settings_manager is None:
+            from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+
+            settings_manager = SettingsManagerV2()
+            settings_manager.load()
+            qapp.settings_manager = settings_manager
+        return settings_manager
+
+    def test_toggle_radial_origin_from_theme_button(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """过渡为径向揭示：扩散圆心 = 主题按钮中心（内容层坐标）。"""
+        initial_dark = tm.is_dark_theme()
+        window = self._make_window(monkeypatch)
+        captured: dict[str, Any] = {}
+        real_overlay = window._content_theme_overlay
+
+        class _SpyContentOverlay:
+            """记录构造参数的 ContentTransitionOverlay 替身。"""
+
+            def __init__(
+                self, parent: QWidget, snapshot: QPixmap, duration_ms: int = 450,
+                origin: QPoint | None = None,
+            ) -> None:
+                captured["parent"] = parent
+                captured["snapshot"] = snapshot
+                captured["origin"] = origin
+                self._finished = False
+
+            def start(self) -> None:
+                captured["started"] = True
+
+            def finish_now(self) -> None:
+                self._finished = True
+
+            def isVisibleTo(self, _widget: QWidget) -> bool:
+                return True
+
+        monkeypatch.setattr(
+            "freeassetfilter.ui.main_window.ContentTransitionOverlay",
+            _SpyContentOverlay,
+        )
+        try:
+            window._on_theme_toggle()
+            origin = captured.get("origin")
+            assert origin is not None
+            expected = window._theme_btn.mapTo(
+                window._content, window._theme_btn.rect().center()
+            )
+            assert origin == expected
+            # 快照按物理分辨率生成（与控件 DPR 一致，高分屏不糊）
+            snapshot = captured["snapshot"]
+            assert isinstance(snapshot, QPixmap)
+            assert snapshot.devicePixelRatio() == pytest.approx(
+                window._content.devicePixelRatioF()
+            )
+            assert captured.get("started") is True
+        finally:
+            self._restore_theme(initial_dark)
+            window._content_theme_overlay = real_overlay
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_theme_toggle_origin_none_without_button(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """主题按钮缺失：扩散圆心退化为 None（遮罩走透明度淡出）。"""
+        window = self._make_window(monkeypatch)
+        try:
+            assert window._theme_toggle_origin(window._content) is not None
+            monkeypatch.setattr(window, "_theme_btn", None)
+            assert window._theme_toggle_origin(window._content) is None
+        finally:
             window.deleteLater()
             qapp.processEvents()
