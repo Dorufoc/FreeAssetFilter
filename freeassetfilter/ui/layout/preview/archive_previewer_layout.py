@@ -924,7 +924,7 @@ class ArchivePreviewerLayout(QWidget):
         self._placeholder = QLabel(_PLACEHOLDER_NO_ARCHIVE)
         self._placeholder.setAlignment(Qt.AlignCenter)
         register_widget_qss(self._placeholder,(
-            f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
+            f"color: {tm.qss_color(tm.text_hint)}; font-size: 14px; background: transparent;"
         ))
         overlay_layout.addWidget(self._placeholder)
 
@@ -1038,7 +1038,7 @@ class ArchivePreviewerLayout(QWidget):
         ))
         register_widget_qss(self._overlay,("background-color: transparent;"))
         register_widget_qss(self._placeholder,(
-            f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
+            f"color: {tm.qss_color(tm.text_hint)}; font-size: 14px; background: transparent;"
         ))
         for _w in (self._content_area, self._overlay):
             _w.style().unpolish(_w)
@@ -1496,7 +1496,7 @@ class ArchivePreviewerLayout(QWidget):
             QPushButton {{
                 background-color: {tm.alpha_of(tm.surface, 85).name()};
                 color: {tm.text.name()};
-                border: 1px solid {tm.alpha_of(tm.mid, 40).name()};
+                border: 1px solid {tm.qss_color(tm.control_border)};
                 border-radius: 6px;
                 font-size: 13px;
             }}

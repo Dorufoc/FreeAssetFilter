@@ -103,7 +103,7 @@ class _SpeedPopup(_PlayerPopup):
             if selected:
                 p.setPen(tm.accent)
             else:
-                p.setPen(tm.mid)
+                p.setPen(tm.text_secondary)
 
             p.drawText(
                 QRectF(0, y, self.width(), self._item_h),
@@ -309,7 +309,7 @@ class _SettingsPopup(_PlayerPopup):
             # Value
             font_val = QFont("Microsoft YaHei UI", 11)
             p.setFont(font_val)
-            p.setPen(tm.alpha_of(tm.mid, 60))
+            p.setPen(tm.text_hint)
             p.drawText(
                 QRectF(w - 80, y, 50, self._item_h),
                 Qt.AlignVCenter | Qt.AlignRight,
@@ -318,7 +318,7 @@ class _SettingsPopup(_PlayerPopup):
 
             # Arrow
             arrow = "▶" if not is_open else "▼"
-            p.setPen(tm.alpha_of(tm.mid, 60))
+            p.setPen(tm.text_hint)
             font_arr = QFont("Segoe UI Symbol", 10)
             p.setFont(font_arr)
             p.drawText(
@@ -348,7 +348,7 @@ class _SettingsPopup(_PlayerPopup):
                     if is_sel:
                         p.setPen(tm.accent)
                     else:
-                        p.setPen(tm.mid)
+                        p.setPen(tm.text_secondary)
                     p.drawText(
                         QRectF(24, y, w - 48, self._sub_item_h),
                         Qt.AlignVCenter,
@@ -707,8 +707,7 @@ class StyledPlayerBar(QWidget):
     floating_bar_hidden = Signal()
 
     # Appearance constants
-    BAR_COLOR = tm.alpha_of(tm.surface, 95)
-    BAR_BORDER = tm.alpha_of(tm.mid, 30)
+    # 说明：颜色类约束在绘制期现取（类属性会在导入期冻结主题色，切主题后不刷新）
     BORDER_RADIUS = 0
 
     def __init__(
@@ -796,7 +795,7 @@ class StyledPlayerBar(QWidget):
         prog_layout.setSpacing(8)
 
         # Current time
-        time_color = tm.mid.name()
+        time_color = tm.qss_color(tm.text_secondary)
         self._time_current = QLabel(self._current_time)
         register_widget_qss(self._time_current,(
             f"color: {time_color}; font-size: 12px; font-family: 'Consolas', 'Courier New', monospace;"
@@ -1043,15 +1042,15 @@ class StyledPlayerBar(QWidget):
         try:
             painter.setRenderHint(QPainter.Antialiasing)
             painter.setPen(Qt.NoPen)
-            painter.setBrush(self.BAR_COLOR)
+            painter.setBrush(tm.alpha_of(tm.surface, 95))
             painter.drawRoundedRect(
                 QRectF(0, 0, self.width(), self.height()),
                 self.BORDER_RADIUS,
                 self.BORDER_RADIUS,
             )
 
-            # Top border line
-            painter.setPen(QPen(self.BAR_BORDER, 1))
+            # Top border line（深色 mid 30% / 浅色 text 8%，绘制期现取）
+            painter.setPen(QPen(tm.divider, 1))
             painter.drawLine(0, 0, int(self.width()), 0)
 
         finally:

@@ -324,7 +324,7 @@ class BreadcrumbLink(QWidget):
     def _hover_bg(self): return tm.alpha_of(tm.surface, 90)
 
     @property
-    def _icon_color(self): return tm.alpha_of(tm.mid, 60)
+    def _icon_color(self): return tm.text_hint
 
     def _cfg(self) -> dict:
         return SIZE_CONFIG.get(self._size, SIZE_CONFIG["default"])
@@ -517,13 +517,13 @@ class StyledBreadcrumb(QWidget):
     # ── Internals ──────────────────────────────────────────────
 
     @property
-    def _border_color(self): return tm.alpha_of(tm.mid, 40)
+    def _border_color(self): return tm.control_border
 
     @property
     def _bg_container(self): return tm.alpha_of(tm.surface, 90)
 
     @property
-    def _tertiary_color(self): return tm.alpha_of(tm.mid, 60)
+    def _tertiary_color(self): return tm.text_hint
 
     def _apply_layout_margins(self) -> None:
         if self._background:

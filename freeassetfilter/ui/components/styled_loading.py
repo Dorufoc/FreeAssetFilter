@@ -49,9 +49,9 @@ class StyledLoading(QWidget):
     # 弧长伸缩的上下限（角度）；振幅受正弦调制约束，MAX-MIN 需小于 229°
     MIN_SWEEP_DEG = 40.0
     MAX_SWEEP_DEG = 200.0
-    # 遮罩覆盖层压暗强度（0-255）；沿用 styled_drawer 遮罩的黑色压暗约定
+    # 遮罩覆盖层压暗强度（0-255，深色口径）；浅色走主题浅色 scrim（见 _backdrop_color）
     OVERLAY_ALPHA = 128
-    #: 遮罩样式：dim = 半透明黑色压暗（局部/弹窗加载）；opaque = 主题表面色实色（启动屏）
+    #: 遮罩样式：dim = 半透明压暗（深色黑 / 浅色浅色 scrim）；opaque = 主题表面色实色（启动屏）
     BACKDROPS = ("dim", "opaque")
 
     def __init__(
@@ -281,10 +281,15 @@ class StyledLoading(QWidget):
         return tm.accent
 
     def _backdrop_color(self) -> QColor:
-        """当前遮罩填充色（绘制期现取，跟随主题与强调色变化）。"""
+        """当前遮罩填充色（绘制期现取，跟随主题与强调色变化）。
+
+        dim 遮罩按主题分支：深色=半透明黑（历史口径，``OVERLAY_ALPHA``），
+        浅色=浅色 scrim（``tm.scrim``，surface 偏白半透明）——浅色界面
+        被整块压黑会显得突兀发脏；opaque 始终为主题表面色（启动屏）。
+        """
         if self._backdrop == "opaque":
             return QColor(tm.surface)
-        return tm.with_alpha(tm.black, self.OVERLAY_ALPHA)
+        return QColor(tm.scrim)
 
     def _sweep_state(self) -> tuple[float, float]:
         """由周期相位算出运动弧的头部角度（Qt 角度约定）与当前扫角。

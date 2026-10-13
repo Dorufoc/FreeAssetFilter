@@ -52,16 +52,16 @@ class _PageButton(QPushButton):
     # ── Theme color properties ─────────────────────────────────
 
     @property
-    def _color_bg(self): return tm.alpha_of(tm.mid, 40)
+    def _color_bg(self): return tm.track_fill
 
     @property
-    def _color_bg_hover(self): return tm.alpha_of(tm.mid, 50)
+    def _color_bg_hover(self): return tm.control_border_strong
 
     @property
     def _color_bg_active(self): return tm.accent
 
     @property
-    def _color_text(self): return tm.mid
+    def _color_text(self): return tm.text_secondary
 
     @property
     def _color_text_hover(self): return tm.text
@@ -70,7 +70,7 @@ class _PageButton(QPushButton):
     def _color_text_active(self): return tm.text
 
     @property
-    def _color_text_ellipsis(self): return tm.alpha_of(tm.mid, 60)
+    def _color_text_ellipsis(self): return tm.text_hint
 
     # ── Properties ───────────────────────────────────────────────
 
@@ -164,16 +164,16 @@ class StyledPagination(QWidget):
 
     # ── Theme color properties ─────────────────────────────────
     @property
-    def COLOR_BG(self): return tm.alpha_of(tm.mid, 40)
+    def COLOR_BG(self): return tm.track_fill
 
     @property
-    def COLOR_BG_HOVER(self): return tm.alpha_of(tm.mid, 50)
+    def COLOR_BG_HOVER(self): return tm.control_border_strong
 
     @property
     def COLOR_BG_ACTIVE(self): return tm.accent
 
     @property
-    def COLOR_TEXT(self): return tm.mid
+    def COLOR_TEXT(self): return tm.text_secondary
 
     @property
     def COLOR_TEXT_HOVER(self): return tm.text
@@ -182,7 +182,7 @@ class StyledPagination(QWidget):
     def COLOR_TEXT_ACTIVE(self): return tm.text
 
     @property
-    def COLOR_TEXT_ELLIPSIS(self): return tm.alpha_of(tm.mid, 60)
+    def COLOR_TEXT_ELLIPSIS(self): return tm.text_hint
 
     def __init__(
         self,

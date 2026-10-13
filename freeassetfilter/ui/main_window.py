@@ -103,14 +103,17 @@ except ImportError:
 
 # ── 米卡效果固定参数（按深浅色主题各一组） ─────────────────────────────
 # 设置页不再提供米卡滑动条：参数为产品定值，随主题自动切换。
-# 亮色模式 → 饱和度 8×、对比度 1×、模糊 200px、透明度 100%；
+# 亮色模式 → 饱和度 1×、对比度 1×、模糊 200px、透明度 65%；
 # 深色模式 → 饱和度 2×、对比度 1×、模糊 200px、透明度 80%。
+# 亮色底板收敛：浅色底亮度高，壁纸色满强度 + 高饱和会把整窗染成壁纸色
+# （面板被整体染色、层次消失），故大幅降饱和、降透明，只保留极淡的
+# 壁纸色相与明暗起伏（磨砂玻璃质感仍来自亮度场）。
 FIXED_MICA_PARAMS: dict = {
     "light": {
         "blur_radius": 200,
-        "saturation": 8.0,
+        "saturation": 1.0,
         "contrast": 1.0,
-        "tint_opacity": 100,
+        "tint_opacity": 65,
     },
     "dark": {
         "blur_radius": 200,
@@ -756,12 +759,15 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         background_saved = self._load_background_settings()
         # 主界面布局模式（general.layout_mode；非法值回退 workspace）
         self._layout_mode = self._load_layout_settings()
-        # 通用功能开关（general.enable_ai_entry / general.include_remote_drives；
-        # 非法值一律回退 False，提交时经 set_ai_entry_enabled /
-        # set_include_remote_drives 即时生效）
-        self._ai_entry_enabled, self._include_remote_drives = (
-            self._load_general_toggles()
-        )
+        # 通用功能开关（general.enable_ai_entry / general.include_remote_drives /
+        # general.blank_right_click_go_back；非法值一律回退 False，提交时经
+        # set_ai_entry_enabled / set_include_remote_drives /
+        # set_blank_right_click_go_back 即时生效）
+        (
+            self._ai_entry_enabled,
+            self._include_remote_drives,
+            self._blank_right_click_go_back,
+        ) = self._load_general_toggles()
         self._background_mode = background_saved.get("mode", "mica")
         self._background_image_name = background_saved.get("image", "")
         self._background_ambient = bool(background_saved.get("ambient", True))
@@ -930,18 +936,21 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         return mode if mode in ("classic", "workspace") else "workspace"
 
     @staticmethod
-    def _load_general_toggles() -> tuple[bool, bool]:
+    def _load_general_toggles() -> tuple[bool, bool, bool]:
         """启动时读取通用功能开关。
 
-        读取 ``general.enable_ai_entry``（AI 入口）与
-        ``general.include_remote_drives``（网络盘/光驱）；缺失、类型非法
-        一律回退 False（与 DEFAULT_SETTINGS_V2 默认一致）。
+        读取 ``general.enable_ai_entry``（AI 入口）、
+        ``general.include_remote_drives``（网络盘/光驱）与
+        ``general.blank_right_click_go_back``（空白区右键返回上一级）；
+        缺失、类型非法一律回退 False（与 DEFAULT_SETTINGS_V2 默认一致）。
 
         Returns:
-            tuple[bool, bool]: (AI 入口开关, 网络盘与光驱开关)。
+            tuple[bool, bool, bool]: (AI 入口开关, 网络盘与光驱开关,
+            空白区右键返回开关)。
         """
         ai_entry = False
         include_remote = False
+        blank_right_click_go_back = False
         try:
             app = QApplication.instance()
             v2 = getattr(app, "settings_manager", None)
@@ -951,13 +960,19 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                 v2.load()
             saved_ai = v2.get("general.enable_ai_entry", False)
             saved_remote = v2.get("general.include_remote_drives", False)
+            saved_blank_back = v2.get(
+                "general.blank_right_click_go_back", False
+            )
             ai_entry = saved_ai if isinstance(saved_ai, bool) else False
             include_remote = (
                 saved_remote if isinstance(saved_remote, bool) else False
             )
+            blank_right_click_go_back = (
+                saved_blank_back if isinstance(saved_blank_back, bool) else False
+            )
         except Exception as exc:
             debug(f"读取功能开关设置失败（按默认关闭处理）：{exc}")
-        return ai_entry, include_remote
+        return ai_entry, include_remote, blank_right_click_go_back
 
     def _setup_window(self) -> None:
         """设置窗口基本属性"""
@@ -1341,6 +1356,13 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                     )
                 except Exception as exc:  # noqa: BLE001 - 开关下发失败不阻塞构建
                     warning(f"网络盘/光驱开关下发失败: {exc}")
+                # 空白区右键返回开关随启动读取结果下发（默认关闭）
+                try:
+                    self._file_selector.set_blank_right_click_go_back(
+                        self._blank_right_click_go_back
+                    )
+                except Exception as exc:  # noqa: BLE001 - 开关下发失败不阻塞构建
+                    warning(f"空白区右键返回开关下发失败: {exc}")
                 self._replace_zone_placeholder(side, self._file_selector)
             elif side == "preview":
                 from layout.unified_previewer_layout import UnifiedPreviewerLayout
@@ -2009,18 +2031,21 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         styleSheet 不会自动重绘，必须对各分区控件强制 unpolish/polish 才能让
         边框/填充生效（与主题切换路径一致）。
         """
-        mid = tm.mid
-        txt = tm.text
-        # QColor.name() 不包含 alpha, 需要用 rgba() 格式保留透明度
-        fill_color = tm.qss_rgba(txt, 5)
-        border_color = tm.qss_rgba(mid, 50)
+        # 语义 token（浅色=偏白磨砂面板 + 浅描边；深色=text 5% + mid 50% 历史值）
+        fill_color = tm.qss_color(tm.panel_fill)
+        bar_color = tm.qss_color(tm.bar_fill)
+        border_color = tm.qss_color(tm.panel_border)
 
         if self._file_selector is not None:
             # 区域容器保持透明，样式下放给 FileSelectorLayout 内部
-            self._file_selector.set_section_styles(fill_color, border_color)
+            self._file_selector.set_section_styles(
+                fill_color, border_color, bar_fill_color=bar_color
+            )
         if self._file_pool is not None:
             # 区域容器保持透明，样式下放给 FilePoolLayout 内部
-            self._file_pool.set_section_styles(fill_color, border_color)
+            self._file_pool.set_section_styles(
+                fill_color, border_color, bar_fill_color=bar_color
+            )
         if self._previewer is not None:
             # 区域容器保持透明，样式下放给 UnifiedPreviewerLayout 内部
             self._previewer.set_section_styles(fill_color, border_color)
@@ -2534,6 +2559,24 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                 )
             except Exception as exc:  # noqa: BLE001 - 开关应用失败不抛给调用方
                 warning(f"网络盘/光驱开关应用失败: {exc}")
+
+    def set_blank_right_click_go_back(self, enabled: bool) -> None:
+        """运行时切换空白区右键返回上一级（设置提交路径调用；幂等）。
+
+        开启后文件选择器空白位右键在「页面无需滚动且点击落在空卡片位」
+        时返回上一级；关闭时空白区右键不做导航（默认关闭）。
+
+        Args:
+            enabled: True 开启空白区右键返回；False 关闭。
+        """
+        self._blank_right_click_go_back = bool(enabled)
+        if self._file_selector is not None:
+            try:
+                self._file_selector.set_blank_right_click_go_back(
+                    self._blank_right_click_go_back
+                )
+            except Exception as exc:  # noqa: BLE001 - 开关应用失败不抛给调用方
+                warning(f"空白区右键返回开关应用失败: {exc}")
 
     def set_layout_mode(self, mode: str) -> bool:
         """切换主界面布局模式（运行时重组，叶子组件重新挂载、不销毁重建）。

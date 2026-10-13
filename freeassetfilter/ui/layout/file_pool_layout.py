@@ -32,7 +32,7 @@ from typing import Callable, Optional
 from PySide6.QtCore import (
     Qt, Signal, QTimer, QEvent, QRunnable, QThreadPool, QEventLoop,
     QPoint, QRect, QSize, QEasingCurve, QPropertyAnimation, QParallelAnimationGroup,
-    QAbstractAnimation,
+    QSequentialAnimationGroup, QPauseAnimation, QAbstractAnimation,
 )
 from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDragLeaveEvent, QDropEvent, QPixmap
 from PySide6.QtWidgets import (
@@ -353,9 +353,17 @@ class FilePoolLayout(QWidget):
         self._card_motion_min_slide = 28
         self._card_motion_max_slide = 96
         self._card_motion_slide_ratio = 0.18
+        self._card_motion_shrink_scale = 0.8  # 网格移除：原地"向后缩小"目标缩放
         self._active_card_animations: dict[str, dict] = {}  # path → {"group": ..., "on_finished": ..., "kind": ...}
         self._entry_spacers: dict[str, QSpacerItem] = {}  # path → 创建动画期间占位 spacer
         self._active_remove_motion_groups: dict[str, QParallelAnimationGroup] = {}  # path → 占位控件折叠动画组（驱动下方卡片整体上移）
+        self._grid_fill_group: Optional[QParallelAnimationGroup] = None  # 网格移除补位动画组（单一活动）
+        # 网格补位动画（级联柔和）：相对退出开始的起步延迟、单卡时长、
+        # 逐格错峰步长与封顶（距空位越远延迟越大，形成向外扩散的波浪收拢）
+        self._card_fill_delay_ms = 50
+        self._card_fill_duration_ms = 220
+        self._card_fill_stagger_ms = 12
+        self._card_fill_stagger_max_ms = 48
 
         # ── Ctrl+滚轮 卡片缩放 ──────────────────────────────────────────
         self._card_scale_min = 0.7
@@ -513,7 +521,7 @@ class FilePoolLayout(QWidget):
         self._size_label = QLabel("0.00MB")
         register_widget_qss(self._size_label,(
             "background: transparent; border: none;"
-            f"color: {tm.mid.name()}; font-size: 10px;"
+            f"color: {tm.qss_color(tm.text_secondary)}; font-size: 10px;"
         ))
         info_layout.addWidget(self._size_label)
 
@@ -552,13 +560,31 @@ class FilePoolLayout(QWidget):
         self._export_btn.clicked.connect(self.export_selected_files)
         bottom_layout.addWidget(self._export_btn)
 
-    def set_section_styles(self, fill_color: str, border_color: str) -> None:
-        """应用面板样式到内容区、底栏（主题切换时由 MainWindow 调用）"""
+    def set_section_styles(
+        self,
+        fill_color: str,
+        border_color: str,
+        bar_fill_color: Optional[str] = None,
+    ) -> None:
+        """应用面板样式到内容区、底栏（主题切换时由 MainWindow 调用）。
+
+        Args:
+            fill_color: 内容区填充色。
+            border_color: 边框色。
+            bar_fill_color: 底栏填充色；``None`` 时与内容区同色（深色模式口径）。
+        """
         section_style = f"""
             background-color: {fill_color};
             border: 1px solid {border_color};
             border-radius: 8px;
         """
+        bar_style = section_style
+        if bar_fill_color is not None:
+            bar_style = f"""
+                background-color: {bar_fill_color};
+                border: 1px solid {border_color};
+                border-radius: 8px;
+            """
         # 拖放反馈（蓝色虚线边框）以动态属性选择器并入内容区的同一片段：
         # register_widget_qss 每个控件仅保存一个片段，独立注册会在主题
         # 重注册时被覆盖（审查 3.1#22）。
@@ -566,12 +592,13 @@ class FilePoolLayout(QWidget):
         # 后续选择器规则」的粘连形态会被 scope_qss 误判（rgba(...) 里的逗号
         # 还会把选择器切碎）生成畸形规则，而 Qt 解析器遇到畸形规则会丢弃
         # 整张样式表的后续内容（储存池丢样式回归，见 scope_qss 拆分逻辑）。
+        drag_border = tm.qss_color(tm.accent)
         content_style = (
             "* {" + section_style + "}\n"
-            'QFrame[dragActive="true"] { border: 2px dashed #4a90d9; }'
+            f'QFrame[dragActive="true"] {{ border: 2px dashed {drag_border}; }}'
         )
         register_widget_qss(self._content_area, content_style)
-        register_widget_qss(self._bottom_bar, section_style)
+        register_widget_qss(self._bottom_bar, bar_style)
         for _w in (self._content_area, self._bottom_bar):
             # 强制已显示控件重新套用样式（延迟构建场景下必须，否则边框/填充不重绘）
             _w.style().unpolish(_w)
@@ -594,16 +621,16 @@ class FilePoolLayout(QWidget):
         ))
         register_widget_qss(self._size_label,(
             "background: transparent; border: none;"
-            f"color: {tm.mid.name()}; font-size: 10px;"
+            f"color: {tm.qss_color(tm.text_secondary)}; font-size: 10px;"
         ))
         self._apply_empty_hint_style()
         self._apply_pool_theme()
 
     def _apply_empty_hint_style(self) -> None:
-        """刷新空池引导提示样式（次级文字色，随主题/强调色变化）。"""
+        """刷新空池引导提示样式（次级提示文字色，随主题/强调色变化）。"""
         register_widget_qss(self._empty_hint,(
             "background: transparent; border: none;"
-            f"color: {tm.mid.name()}; font-size: 13px;"
+            f"color: {tm.qss_color(tm.text_hint)}; font-size: 13px;"
         ))
 
     def _apply_pool_theme(self) -> None:
@@ -1470,8 +1497,14 @@ class FilePoolLayout(QWidget):
         easing: QEasingCurve,
         on_finished=None,
         kind: str = "motion",
+        shrink_to: Optional[float] = None,
     ) -> None:
-        """同时播放 geometry 与透明度动画。"""
+        """同时播放 geometry（或 x_offset）、透明度与可选缩小动画。
+
+        ``shrink_to`` 非 None 时追加绘制级 ``card_shrink`` 动画（供网格移除的
+        "向后缩小渐隐"使用）；``start_rect == end_rect`` 且非入场动画时跳过
+        几何动画（网格退出卡片原地播放绘制级动画、几何不动）。
+        """
         if card is None:
             return
 
@@ -1489,13 +1522,22 @@ class FilePoolLayout(QWidget):
             x_anim.setEndValue(0)
             x_anim.setEasingCurve(easing)
             animations.append(x_anim)
-        else:
+        elif start_rect != end_rect:
             geom_anim = QPropertyAnimation(card, b"geometry")
             geom_anim.setDuration(duration)
             geom_anim.setStartValue(start_rect)
             geom_anim.setEndValue(end_rect)
             geom_anim.setEasingCurve(easing)
             animations.append(geom_anim)
+
+        # 绘制级"向后缩小"（网格移除用）：与透明度动画并行，几何保持不变。
+        if shrink_to is not None:
+            shrink_anim = QPropertyAnimation(card, b"card_shrink")
+            shrink_anim.setDuration(duration)
+            shrink_anim.setStartValue(card.card_shrink)
+            shrink_anim.setEndValue(float(shrink_to))
+            shrink_anim.setEasingCurve(easing)
+            animations.append(shrink_anim)
 
         # 使用 StyledInfoCard 的 paint-level 透明度属性，避免 offscreen effect
         # 与 overlay 子控件的 effect 嵌套导致的 painter 冲突。
@@ -1601,7 +1643,12 @@ class FilePoolLayout(QWidget):
         )
 
     def _animate_card_exit(self, file_path: str) -> None:
-        """播放卡片移除动画：向左滑出并淡出；退出完成后再带动下方卡片整体上移。"""
+        """播放卡片移除动画。
+
+        - 列表模式：向左滑出并淡出；退出完成后再带动下方卡片整体上移；
+        - 网格（New 布局）：原地"向后缩小"（card_shrink 1.0 → 0.8）并渐隐，
+          同时其余卡片以几何动画平滑补位（见 ``_animate_grid_card_exit``）。
+        """
         card = self._card_widgets.get(file_path)
         if card is None:
             self._removing_paths.discard(file_path)
@@ -1617,11 +1664,14 @@ class FilePoolLayout(QWidget):
             self._finalize_remove(file_path)
             return
 
+        if self._view_mode == "grid":
+            self._animate_grid_card_exit(file_path, card, start_rect)
+            return
+
         removed_index = self._card_layout.indexOf(card)
 
         # 列表模式：在目标位置预先插入一个等高的透明占位控件——退出动画期间
-        # 目标卡片仍在视觉上占据原位置，下方卡片不会提前上移，避免重叠；
-        # 网格模式：直接移出布局，其余卡片由流式布局整体重排（无占位折叠）。
+        # 目标卡片仍在视觉上占据原位置，下方卡片不会提前上移，避免重叠。
         placeholder: Optional[QWidget] = None
         if removed_index >= 0 and self._view_mode == "list":
             placeholder = QWidget(self._card_container)
@@ -1659,6 +1709,106 @@ class FilePoolLayout(QWidget):
             kind="exit",
         )
 
+    def _animate_grid_card_exit(
+        self, file_path: str, card: StyledInfoCard, start_rect: QRect
+    ) -> None:
+        """网格移除：被删卡片原地缩小渐隐，其余卡片级联补位。
+
+        被删卡片立即移出布局但固定原几何（raise 后原地播放绘制级动画）；
+        其余卡片先快照当前可见几何（可能在上一轮补位动画中途），强制布局
+        算出目标几何后回拨到快照，再以"起步延迟 + 按距离错峰 + OutQuint"
+        的几何动画滑入目标位置（级联波浪收拢，距空位越远启动越晚）。
+        批量移除时后一次移除会停掉上一轮补位并从当前几何续走，最终只剩
+        最后一轮补位动画，不与退出动画叠加冲突。
+        """
+        # 上一轮补位先停下：卡片停留在当前几何，随后统一按新目标续走
+        self._cancel_grid_fill()
+
+        # 快照其余卡片当前可见几何（排除已进入移除流程的卡片）
+        moving_paths = [
+            path for path in self._card_widgets
+            if path != file_path and path not in self._removing_paths
+        ]
+        snapshots = {
+            path: QRect(self._card_widgets[path].geometry()) for path in moving_paths
+        }
+
+        # 流式序号（错峰距离基准）：必须在 removeWidget 触发重排前记录
+        slot_index = self._card_layout.indexOf(card)
+        order_index = {
+            path: self._card_layout.indexOf(self._card_widgets[path])
+            for path in moving_paths
+        }
+
+        # 被删卡片移出布局：几何固定，仅播绘制级缩小渐隐
+        self._card_layout.removeWidget(card)
+        card.setGeometry(start_rect)
+        card.raise_()
+
+        # 强制布局同步重排，读取其余卡片的目标几何（列宽不变，坐标可即刻确定）
+        try:
+            self._card_layout.activate()
+        except RuntimeError:
+            pass
+        targets = {
+            path: QRect(self._card_widgets[path].geometry()) for path in moving_paths
+        }
+
+        # 回拨快照几何 + 建立级联补位动画（快照 == 目标的卡片无需移动）
+        fill_group: Optional[QParallelAnimationGroup] = None
+        for path in moving_paths:
+            target = targets[path]
+            if snapshots[path] == target:
+                continue
+            fill_card = self._card_widgets.get(path)
+            if fill_card is None:
+                continue
+            fill_card.setGeometry(snapshots[path])
+            if fill_group is None:
+                fill_group = QParallelAnimationGroup(self)
+            # 错峰：紧邻空位者最先启动（起步延迟），越远延迟越大且封顶
+            steps = max(0, order_index.get(path, slot_index + 1) - slot_index - 1)
+            delay = self._card_fill_delay_ms + min(
+                self._card_fill_stagger_ms * steps, self._card_fill_stagger_max_ms
+            )
+            seq = QSequentialAnimationGroup(fill_group)
+            if delay > 0:
+                seq.addAnimation(QPauseAnimation(delay, seq))
+            fill_anim = QPropertyAnimation(fill_card, b"geometry")
+            fill_anim.setDuration(self._card_fill_duration_ms)
+            fill_anim.setStartValue(snapshots[path])
+            fill_anim.setEndValue(target)
+            fill_anim.setEasingCurve(QEasingCurve.OutQuint)
+            seq.addAnimation(fill_anim)
+            fill_group.addAnimation(seq)
+
+        if fill_group is not None:
+            def _on_fill_finished() -> None:
+                self._grid_fill_group = None
+                # 补位完成：容器高度随新行数回收
+                self._sync_pool_card_geometry()
+
+            fill_group.finished.connect(_on_fill_finished)
+            self._grid_fill_group = fill_group
+            fill_group.start(QAbstractAnimation.DeleteWhenStopped)
+
+        def _on_exit_finished() -> None:
+            self._finalize_remove(file_path)
+
+        self._run_card_motion(
+            file_path=file_path,
+            card=card,
+            start_rect=start_rect,
+            end_rect=start_rect,
+            start_opacity=1.0,
+            end_opacity=0.0,
+            duration=self._card_motion_duration_ms,
+            easing=QEasingCurve.InCubic,
+            on_finished=_on_exit_finished,
+            kind="exit",
+            shrink_to=self._card_motion_shrink_scale,
+        )
+
     def _finalize_remove(self, file_path: str) -> None:
         """最终移除文件（动画完成后）。"""
         self._removing_paths.discard(file_path)
@@ -1670,8 +1820,11 @@ class FilePoolLayout(QWidget):
         self.items = [f for f in self.items if os.path.normpath(f.get("path", "")) != file_path]
         self.update_stats()
         self._save_backup_if_needed()
-        # 卡片已移除：网格重排 / 容器高度同步
-        self._sync_pool_card_geometry()
+        # 卡片已移除：网格重排 / 容器高度同步。网格补位动画进行中时跳过，
+        # 避免布局同步把补位中的卡片拍回目标位——几何同步由补位组 finished
+        # 回调兜底；无补位动画（动画禁用 / 无后续卡片）时照常同步。
+        if not (self._view_mode == "grid" and self._grid_fill_group is not None):
+            self._sync_pool_card_geometry()
         self.pool_changed.emit()
 
     def _collapse_placeholder(
@@ -1752,10 +1905,34 @@ class FilePoolLayout(QWidget):
             pass
         self._sync_pool_card_geometry()
 
+    def _cancel_grid_fill(self) -> None:
+        """停止网格补位动画（卡片停留在当前几何，不做布局同步）。
+
+        供下一次移除复用：新移除会重新快照当前几何并重建补位动画；
+        也供 ``clear_all`` 前置清理复用（统一淡出时不需要补位）。
+        """
+        group = self._grid_fill_group
+        if group is None:
+            return
+        self._grid_fill_group = None
+        try:
+            group.finished.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+        try:
+            group.stop()
+        except RuntimeError:
+            pass
+        try:
+            group.deleteLater()
+        except RuntimeError:
+            pass
+
     def _cancel_all_remove_motions(self) -> None:
-        """停止所有进行中的移除位移动画。"""
+        """停止所有进行中的移除位移动画（列表占位折叠 + 网格补位）。"""
         for path in list(self._active_remove_motion_groups.keys()):
             self._cancel_remove_motion(path)
+        self._cancel_grid_fill()
 
     def clear_all(self) -> None:
         """清空所有项目（带确认）。"""
@@ -1787,6 +1964,14 @@ class FilePoolLayout(QWidget):
         self._cancel_all_remove_motions()
         for path in list(self._entry_spacers.keys()):
             self._remove_entry_spacer(path)
+
+        # 复位可能被网格移除动画缩小的绘制缩放（卡在退出中途被停止时），
+        # 统一从原尺寸播放清空淡出动画
+        for card in cards:
+            try:
+                card.card_shrink = 1.0
+            except RuntimeError:
+                pass
 
         QApplication.processEvents()
         rects = {card: QRect(card.geometry()) for card in cards}

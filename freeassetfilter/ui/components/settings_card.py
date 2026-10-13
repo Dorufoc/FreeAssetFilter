@@ -41,7 +41,7 @@ class SettingsCard(QWidget):
             c = tm.info
             border_color = tm.qss_rgba(c, 30)
         else:
-            border_color = tm.alpha_of(tm.mid, 40).name()
+            border_color = tm.qss_color(tm.control_border_strong)
 
         # Set style on self only via unique objectName to prevent inheritance
         self.setObjectName(f"SettingsCard_{self._instance_id}")
@@ -97,7 +97,7 @@ class SettingsCard(QWidget):
         sep.setFixedHeight(1)
         register_widget_qss(sep,(f"""
             #SettingsCardSep_{self._instance_id} {{
-                background-color: {tm.alpha_of(tm.mid, 30).name()};
+                background-color: {tm.qss_color(tm.alpha_of(tm.mid, 30) if tm.is_dark_theme() else tm.alpha_of(tm.text, 10))};
             }}
         """))
         footer_layout_parent = QVBoxLayout()
@@ -149,7 +149,7 @@ class SettingsRow(QWidget):
 
         if description:
             self.desc_label = QLabel(description)
-            register_widget_qss(self.desc_label,(f'font-size: 12px; color: {tm.alpha_of(tm.mid, 60).name()}; line-height: 1.5;'))
+            register_widget_qss(self.desc_label,(f'font-size: 12px; color: {tm.qss_color(tm.text_hint)}; line-height: 1.5;'))
             self.desc_label.setWordWrap(True)
             content.addWidget(self.desc_label)
 
@@ -204,7 +204,10 @@ class NotificationRow(QWidget):
         dot = QFrame()
         dot.setObjectName(f"NotificationDot_{self._instance_id}")
         dot.setFixedSize(8, 8)
-        dot_color = tm.accent.name() if active else tm.alpha_of(tm.mid, 60).name()
+        dot_color = (
+            tm.accent.name() if active
+            else tm.qss_color(tm.text_hint if tm.is_dark_theme() else tm.text_secondary)
+        )
         register_widget_qss(dot,(f"""
             #NotificationDot_{self._instance_id} {{
                 background-color: {dot_color};
@@ -224,7 +227,7 @@ class NotificationRow(QWidget):
 
         if description:
             desc_label = QLabel(description)
-            register_widget_qss(desc_label,(f'font-size: 12px; color: {tm.alpha_of(tm.mid, 60).name()};'))
+            register_widget_qss(desc_label,(f'font-size: 12px; color: {tm.qss_color(tm.text_hint)};'))
             content.addWidget(desc_label)
 
         content_widget = QWidget()
@@ -294,7 +297,7 @@ class PluginItem(QWidget):
 
         if description:
             desc_label = QLabel(description)
-            register_widget_qss(desc_label,(f'font-size: 11.5px; color: {tm.alpha_of(tm.mid, 60).name()};'))
+            register_widget_qss(desc_label,(f'font-size: 11.5px; color: {tm.qss_color(tm.text_hint)};'))
             info.addWidget(desc_label)
 
         info_widget = QWidget()

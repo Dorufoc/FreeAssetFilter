@@ -102,13 +102,13 @@ class StyledBadge(QWidget):
         radius = h // 2  # pill shape (fully rounded)
 
         if self._variant == "solid":
-            # Solid: filled background with white text
+            # Solid: filled background with readable text（按底色亮度选前景）
             painter.setPen(Qt.NoPen)
             painter.setBrush(color)
             painter.drawRoundedRect(QRectF(0, 0, w, h), radius, radius)
 
             if self._text:
-                painter.setPen(Qt.white)
+                painter.setPen(tm.readable_on(color))
                 font = QFont("Microsoft YaHei UI", config["font"], QFont.Weight.Medium)
                 painter.setFont(font)
                 painter.drawText(
@@ -119,12 +119,14 @@ class StyledBadge(QWidget):
 
         elif self._variant == "outline":
             # Outline: transparent bg, 1px solid border in currentColor
-            painter.setPen(QPen(color, 1))
+            # 浅色下实色描边/文字对浅底对比不足，用压暗后的同色系
+            outline_color = color if tm.is_dark_theme() else tm._darken(color, 0.72)
+            painter.setPen(QPen(outline_color, 1))
             painter.setBrush(Qt.NoBrush)
             painter.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), radius, radius)
 
             if self._text:
-                painter.setPen(color)
+                painter.setPen(outline_color)
                 font = QFont("Microsoft YaHei UI", config["font"], QFont.Weight.Medium)
                 painter.setFont(font)
                 painter.drawText(

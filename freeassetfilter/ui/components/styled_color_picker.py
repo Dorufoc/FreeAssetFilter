@@ -109,7 +109,7 @@ class _SatValWidget(QWidget):
 
     @property
     def _border_color(self):
-        return tm.mid
+        return tm.text_secondary
 
     def set_hue(self, hue: int):
         self._hue = hue % 360
@@ -227,7 +227,7 @@ class _HueSlider(QWidget):
 
     @property
     def _border_color(self):
-        return tm.mid
+        return tm.text_secondary
 
     def set_hue(self, hue: int):
         self._hue = hue % 360
@@ -325,7 +325,7 @@ class _AlphaSlider(QWidget):
 
     @property
     def _border_color(self):
-        return tm.mid
+        return tm.text_secondary
 
     def set_color(self, color: QColor):
         self._color = QColor(color)
@@ -465,7 +465,7 @@ class _ColorPanel(QFrame):
 
     @property
     def _border_color(self):
-        return tm.mid
+        return tm.text_secondary
 
     @property
     def _bg_card(self):
@@ -481,7 +481,7 @@ class _ColorPanel(QFrame):
 
     @property
     def _text_tertiary(self):
-        return tm.alpha_of(tm.mid, 60)
+        return tm.text_hint
 
     def _build_ui(self):
         # 圆角背景由 popup 自身的 paintEvent 绘制
@@ -870,7 +870,7 @@ class _ColorPanel(QFrame):
         p.drawRoundedRect(QRectF(0, 0, w, h), radius, radius)
         
         # 绘制边框
-        p.setPen(QPen(tm.mid, 1))
+        p.setPen(QPen(tm.control_border, 1))
         p.setBrush(Qt.NoBrush)
         p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), radius, radius)
         p.end()
@@ -885,7 +885,7 @@ class _PreviewWidget(QWidget):
 
     @property
     def _border_color(self):
-        return tm.mid
+        return tm.text_secondary
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -965,7 +965,7 @@ class StyledColorPicker(QWidget):
     # ── Theme color properties ─────────────────────────────────
     @property
     def _border_color(self):
-        return tm.mid
+        return tm.text_secondary
 
     @property
     def _accent_primary(self):
@@ -1009,7 +1009,7 @@ class StyledColorPicker(QWidget):
                 border: 1px solid {self._border_color.name()}; border-radius: 6px;
                 padding: 0 8px;             }}
             QLineEdit:focus {{ border: 1px solid {self._accent_primary.name()}; }}
-            QLineEdit:disabled {{ color: {tm.alpha_of(tm.mid, 60).name()}; background: {tm.surface.name()}; }}
+            QLineEdit:disabled {{ color: {tm.qss_color(tm.text_disabled)}; background: {tm.surface.name()}; }}
         """))
         self._hex_input.setEnabled(enabled)
         self._hex_input.editingFinished.connect(self._on_hex_edited)

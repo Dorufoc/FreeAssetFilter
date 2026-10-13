@@ -59,21 +59,22 @@ class StyledLineEdit(QLineEdit):
     def _apply_stylesheet(self):
         config = self.SIZE_CONFIG[self._size]
         obj_name = self.objectName()
+        # 输入框填充：浅色用偏白的不透明底（surface 30% 在白底上等于没有填充），
+        # 深色沿用历史口径（surface 30%）。
         surf = tm.surface
-        bg_fill = f"rgba({surf.red()},{surf.green()},{surf.blue()},{30 / 100})"
+        fill_pct = 30 if tm.is_dark_theme() else 72
+        bg_fill = f"rgba({surf.red()},{surf.green()},{surf.blue()},{fill_pct / 100})"
 
         if self._error:
             border_color = tm.danger.name()
             focus_border = tm.danger.name()
         else:
-            mid = tm.mid
-            border_color = f"rgba({mid.red()},{mid.green()},{mid.blue()},{25 / 100})"
+            border_color = tm.qss_color(tm.control_border)
             focus_border = tm.accent.name()
 
         # Disabled state colors (with alpha via rgba)
-        mid_d = tm.mid
-        disabled_color = f"rgba({mid_d.red()},{mid_d.green()},{mid_d.blue()},{40 / 100})"
-        disabled_border = f"rgba({mid_d.red()},{mid_d.green()},{mid_d.blue()},{20 / 100})"
+        disabled_color = tm.qss_color(tm.text_disabled)
+        disabled_border = tm.qss_color(tm.alpha_of(tm.text, 8) if not tm.is_dark_theme() else tm.alpha_of(tm.mid, 20))
 
         register_widget_qss(self,(f"""
             #{obj_name} {{
@@ -87,6 +88,7 @@ class StyledLineEdit(QLineEdit):
             }}
             #{obj_name}:hover {{
                 background-color: {bg_fill};
+                border-color: {tm.qss_color(tm.control_border_strong)};
             }}
             #{obj_name}:focus {{
                 border-color: {focus_border};

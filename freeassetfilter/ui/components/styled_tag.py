@@ -85,35 +85,41 @@ class StyledTag(QWidget):
 
     @staticmethod
     def _get_tag_colors() -> dict[str, dict[str, QColor]]:
+        dark = tm.is_dark_theme()
+
+        def _text(color: QColor) -> QColor:
+            # 浅色下 15% 淡底上的实色文字对比不足（accent ≈2.8:1），压暗一档
+            return color if dark else tm._darken(color, 0.7)
+
         return {
             "default": {
                 "bg": tm.alpha_of(tm.surface, 90),
-                "text": tm.mid,
-                "border": tm.alpha_of(tm.mid, 40),
+                "text": tm.mid if dark else tm.text_secondary,
+                "border": tm.alpha_of(tm.mid, 40) if dark else tm.alpha_of(tm.text, 12),
             },
             "primary": {
                 "bg": tm.alpha_of(tm.accent, 15),
-                "text": tm.accent,
+                "text": _text(tm.accent),
                 "border": tm.alpha_of(tm.accent, 30),
             },
             "success": {
                 "bg": tm.alpha_of(tm.accent, 15),
-                "text": tm.accent,
+                "text": _text(tm.accent),
                 "border": tm.alpha_of(tm.accent, 30),
             },
             "warning": {
                 "bg": tm.alpha_of(tm.warning, 15),
-                "text": tm.warning,
+                "text": _text(tm.warning),
                 "border": tm.alpha_of(tm.warning, 30),
             },
             "danger": {
                 "bg": tm.alpha_of(tm.danger, 15),
-                "text": tm.danger,
+                "text": _text(tm.danger),
                 "border": tm.alpha_of(tm.danger, 30),
             },
             "info": {
                 "bg": tm.alpha_of(tm.info, 15),
-                "text": tm.info,
+                "text": _text(tm.info),
                 "border": tm.alpha_of(tm.info, 30),
             },
         }

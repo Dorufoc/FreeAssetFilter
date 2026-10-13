@@ -93,10 +93,10 @@ class StyledSlider(QWidget):
                     font = QFont("Microsoft YaHei UI", 11)
                     lbl.setFont(font)
                     lbl.setAlignment(Qt.AlignCenter)
-                    register_widget_qss(lbl,(f"color: {tm.alpha_of(tm.mid, 60).name()};"))
+                    register_widget_qss(lbl,(f"color: {tm.qss_color(tm.text_hint)};"))
                     labels_layout.addWidget(lbl, stretch=1)
                     if i == 0:
-                        register_widget_qss(lbl,(f"color: {tm.mid.name()}; font-weight: 500;"))
+                        register_widget_qss(lbl,(f"color: {tm.qss_color(tm.text_secondary)}; font-weight: 500;"))
                 layout.addLayout(labels_layout)
                 self._label_widgets = labels_layout
             else:
@@ -108,10 +108,10 @@ class StyledSlider(QWidget):
                     font = QFont("Microsoft YaHei UI", 11)
                     lbl.setFont(font)
                     lbl.setAlignment(Qt.AlignCenter)
-                    register_widget_qss(lbl,(f"color: {tm.alpha_of(tm.mid, 60).name()};"))
+                    register_widget_qss(lbl,(f"color: {tm.qss_color(tm.text_hint)};"))
                     labels_layout.addWidget(lbl, stretch=1)
                     if i == 0:
-                        register_widget_qss(lbl,(f"color: {tm.mid.name()}; font-weight: 500;"))
+                        register_widget_qss(lbl,(f"color: {tm.qss_color(tm.text_secondary)}; font-weight: 500;"))
                 layout.addLayout(labels_layout)
                 self._label_widgets = labels_layout
 
@@ -150,9 +150,9 @@ class StyledSlider(QWidget):
                     lbl = item.widget()
                     active_index = round(value * (len(self._labels) - 1))
                     if i == active_index:
-                        register_widget_qss(lbl,(f"color: {tm.mid.name()}; font-weight: 500;"))
+                        register_widget_qss(lbl,(f"color: {tm.qss_color(tm.text_secondary)}; font-weight: 500;"))
                     else:
-                        register_widget_qss(lbl,(f"color: {tm.alpha_of(tm.mid, 60).name()};"))
+                        register_widget_qss(lbl,(f"color: {tm.qss_color(tm.text_hint)};"))
 
     @property
     def value(self) -> float:
@@ -433,7 +433,7 @@ class SliderTrack(QWidget):
                 y_pos = track_y - track_thickness / 2.0
 
                 # Track background
-                painter.setBrush(tm.alpha_of(tm.mid, 40))
+                painter.setBrush(tm.track_fill)
                 track_rect = QRectF(margin, y_pos, available, track_thickness)
                 painter.drawRoundedRect(track_rect, track_thickness / 2.0, track_thickness / 2.0)
 
@@ -448,7 +448,7 @@ class SliderTrack(QWidget):
                     for i in range(self._tick_count + 1):
                         tick_x = margin + (available * i / self._tick_count)
                         filled = i / self._tick_count <= self._value
-                        painter.setBrush(tm.alpha_of(tm.mid, 30) if filled else tm.alpha_of(tm.mid, 20))
+                        painter.setBrush(tm.control_border if filled else tm.subtle_fill)
                         painter.drawEllipse(int(tick_x - 2), int(track_y - 2), 4, 4)
             else:
                 available = float(self.height()) - margin * 2.0
@@ -456,7 +456,7 @@ class SliderTrack(QWidget):
                 x_pos = track_x - track_thickness / 2.0
 
                 # Track background（纵向，底部到顶部）
-                painter.setBrush(tm.alpha_of(tm.mid, 40))
+                painter.setBrush(tm.track_fill)
                 track_rect = QRectF(x_pos, margin, track_thickness, available)
                 painter.drawRoundedRect(track_rect, track_thickness / 2.0, track_thickness / 2.0)
 
@@ -473,7 +473,7 @@ class SliderTrack(QWidget):
                         # tick 0 在底部，tick_count 在顶部
                         tick_y = margin + available - (available * i / self._tick_count)
                         filled = i / self._tick_count <= self._value
-                        painter.setBrush(tm.alpha_of(tm.mid, 30) if filled else tm.alpha_of(tm.mid, 20))
+                        painter.setBrush(tm.control_border if filled else tm.subtle_fill)
                         painter.drawEllipse(int(track_x - 2), int(tick_y - 2), 4, 4)
 
             # Thumb — size animated via hover/drag progress
@@ -489,9 +489,9 @@ class SliderTrack(QWidget):
                 thumb_r * 2, thumb_r * 2,
             ))
 
-            # Thumb
+            # Thumb（深色=主题文字色/白；浅色=白色旋钮 + 阴影分层）
             painter.setOpacity(1.0)
-            painter.setBrush(tm.text)
+            painter.setBrush(tm.text if tm.is_dark_theme() else tm.white)
             painter.drawEllipse(QRectF(
                 thumb_x - thumb_r, thumb_y - thumb_r,
                 thumb_r * 2, thumb_r * 2,

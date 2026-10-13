@@ -249,7 +249,10 @@ class CircleWidget(QWidget):
             r = float(self._radius)
 
             # Track circle (background)
-            track_color = tm.alpha_of(tm.mid, 40)
+            track_color = (
+                tm.alpha_of(tm.mid, 40) if tm.is_dark_theme()
+                else tm.alpha_of(tm.text, 8)
+            )
             pen = QPen(track_color, float(self._stroke_width))
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             painter.setPen(pen)

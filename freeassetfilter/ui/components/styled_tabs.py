@@ -68,7 +68,7 @@ class _TabHeader(QWidget):
 
     @property
     def _text_secondary(self) -> QColor:
-        return tm.mid
+        return tm.text_secondary
 
     @property
     def _text_primary(self) -> QColor:
@@ -80,11 +80,11 @@ class _TabHeader(QWidget):
 
     @property
     def _disabled_color(self) -> QColor:
-        return tm.alpha_of(tm.mid, 40)
+        return tm.control_border
 
     @property
     def _divider_color(self) -> QColor:
-        return tm.alpha_of(tm.mid, 30)
+        return tm.divider
 
     # ── Q_PROPERTYs for animation ───────────────────────────────
 

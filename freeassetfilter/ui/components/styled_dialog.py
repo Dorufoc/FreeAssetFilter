@@ -102,25 +102,27 @@ class StyledDialog(QWidget):
 
     @staticmethod
     def _get_type_colors() -> dict[str, dict[str, str]]:
+        # 图标底色统一取语义色 15%（浅色下同样成立），不再写死 RGB，
+        # 避免修改强调色/语义色后标题与图标底色不一致。
         return {
             "default": {
                 "title": tm.text.name(),
-                "icon_bg": tm.surface.name(),
+                "icon_bg": tm.qss_color(tm.alpha_of(tm.mid, 12)),
                 "icon_color": tm.mid.name(),
             },
             "success": {
-                "title": tm.accent.name(),
-                "icon_bg": "rgba(7,193,96,0.15)",
+                "title": tm.accent_text.name(),
+                "icon_bg": tm.qss_color(tm.alpha_of(tm.accent, 15)),
                 "icon_color": tm.accent.name(),
             },
             "danger": {
                 "title": tm.danger.name(),
-                "icon_bg": "rgba(239,68,68,0.15)",
+                "icon_bg": tm.qss_color(tm.alpha_of(tm.danger, 15)),
                 "icon_color": tm.danger.name(),
             },
             "info": {
                 "title": tm.info.name(),
-                "icon_bg": "rgba(59,130,246,0.15)",
+                "icon_bg": tm.qss_color(tm.alpha_of(tm.info, 15)),
                 "icon_color": tm.info.name(),
             },
         }
@@ -178,7 +180,7 @@ class StyledDialog(QWidget):
         register_widget_qss(self._content_widget,(f"""
             #DialogContent {{
                 background-color: {tm.surface.name()};
-                border: 1px solid {tm.alpha_of(tm.surface, 90).name()};
+                border: 1px solid {tm.qss_color(tm.alpha_of(tm.text, 10) if not tm.is_dark_theme() else tm.alpha_of(tm.mid, 40))};
                 border-radius: 12px;
             }}
         """))
@@ -186,7 +188,12 @@ class StyledDialog(QWidget):
         # Web CSS: box-shadow: var(--shadow-lg) — pre-baked soft shadow,
         # painted in paintEvent via render_soft_shadow (single drawPixmap,
         # no graphics effect on the paint path).
-        self._shadow_color = tm.alpha_of(tm.black, 50)
+        # 浅色下 50% 黑阴影过重（灰晕），降到约 18%；深色保持历史 50%。
+        self._shadow_color = (
+            tm.alpha_of(tm.black, 50)
+            if tm.is_dark_theme()
+            else tm.alpha_of(tm.black, 18)
+        )
 
         # Layout for content container
         content_layout = QVBoxLayout(self._content_widget)
@@ -284,7 +291,11 @@ class StyledDialog(QWidget):
         footer_frame = QWidget()
         footer_frame.setObjectName("footer_frame")
         has_border = footer_type != FOOTER_NO_BORDER
-        border_css = f"border-top: 1px solid {tm.alpha_of(tm.surface, 90).name()};" if has_border else ""
+        divider = (
+            tm.alpha_of(tm.surface, 90) if tm.is_dark_theme()
+            else tm.alpha_of(tm.text, 8)
+        )
+        border_css = f"border-top: 1px solid {tm.qss_color(divider)};" if has_border else ""
         # Use object name selector to prevent style inheritance to child widgets
         register_widget_qss(footer_frame,(f"#footer_frame {{ background: transparent; {border_css} }}"))
 
@@ -389,8 +400,9 @@ class StyledDialog(QWidget):
         btn.setCursor(QCursor(Qt.PointingHandCursor))
         register_widget_qss(btn,(
             f"QPushButton {{ background: transparent; border: none; border-radius: 6px;"
-            f" color: {tm.mid.name()}; font-size: 18px; font-weight: 300; }}"
-            f"QPushButton:hover {{ background-color: {tm.surface.name()}; color: {tm.text.name()}; }}"
+            f" color: {tm.qss_color(tm.text_secondary)}; font-size: 18px; font-weight: 300; }}"
+            f"QPushButton:hover {{ background-color: {tm.qss_color(tm.alpha_of(tm.text, 6) if not tm.is_dark_theme() else tm.alpha_of(tm.mid, 20))};"
+            f" color: {tm.text.name()}; }}"
         ))
         btn.setText("✕")
         btn.clicked.connect(lambda: self.close_dialog(0))
@@ -530,7 +542,7 @@ class DialogIconCircle(QWidget):
     def __init__(self, icon_type: str = "success",
                  bg_color: str = None, icon_color: str = None, parent=None):
         if bg_color is None:
-            bg_color = tm.surface.name()
+            bg_color = tm.qss_color(tm.alpha_of(tm.mid, 12))
         if icon_color is None:
             icon_color = tm.mid.name()
         super().__init__(parent)
@@ -579,7 +591,7 @@ def _make_body_label(text: str) -> QWidget:
     lbl = QLabel(text)
     lbl.setWordWrap(True)
     register_widget_qss(lbl,(
-        f"font-size: 13.5px; color: {tm.mid.name()}; background: transparent;"
+        f"font-size: 13.5px; color: {tm.qss_color(tm.text_secondary)}; background: transparent;"
     ))
     lay = QVBoxLayout(w)
     lay.setContentsMargins(0, 0, 0, 0)
@@ -812,7 +824,7 @@ def create_input_dialog(
 
     msg_label = QLabel(message)
     register_widget_qss(msg_label,(
-        f"font-size: 13.5px; color: {tm.mid.name()}; background: transparent;"
+        f"font-size: 13.5px; color: {tm.qss_color(tm.text_secondary)}; background: transparent;"
     ))
     body_layout.addWidget(msg_label)
 
@@ -821,7 +833,7 @@ def create_input_dialog(
     input_field.setPlaceholderText(placeholder)
     register_widget_qss(input_field,(f"""
         QLineEdit {{
-            background-color: {tm.surface.name()}; border: 1px solid {tm.mid.name()}; border-radius: 6px;
+            background-color: {tm.surface.name()}; border: 1px solid {tm.qss_color(tm.control_border)}; border-radius: 6px;
             padding: 8px 12px; font-size: 13px; color: {tm.text.name()}; margin-top: 12px;
         }}
         QLineEdit:focus {{ border-color: {tm.accent.name()}; }}

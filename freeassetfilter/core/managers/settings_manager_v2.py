@@ -11,6 +11,7 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import threading
@@ -573,24 +574,83 @@ DEFAULT_SETTINGS_V2: Dict[str, Any] = {
         # DRIVE_CDROM；启动时读取，提交时经
         # MainWindow.set_include_remote_drives 即时生效。
         "include_remote_drives": False,
+        # 空白区右键返回上一级（设置页「通用」分类，默认关闭）：
+        # 开启后仅在「页面无需滚动」且右键点落在空卡片位（卡片本该
+        # 占用的矩形）时返回上一级；卡片间缝隙、需滚动时均不触发。
+        # 启动时读取，提交时经
+        # MainWindow.set_blank_right_click_go_back 即时生效。
+        "blank_right_click_go_back": False,
     },
 }
 
 
-def _project_root() -> str:
-    """返回项目根目录的绝对路径。"""
-    return str(
-        os.path.dirname(
-            os.path.dirname(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            )
-        )
-    )
+#: 点号路径读取缺失哨兵（``None`` 是合法设置值，不能作为缺失标记）。
+_MISSING: object = object()
+
+#: 模块级文件 IO 锁：同一进程内可能存在多个 SettingsManagerV2 实例
+#: （应用引导层、设置窗口、退出钩子等）。跨实例的「读盘 → 合并 → 写盘」
+#: 必须串行化，实例自身的内存锁（``self._lock``）无法覆盖这一场景。
+_FILE_IO_LOCK = threading.RLock()
+
+
+def _get_by_path(data: Dict[str, Any], key_path: str, default: Any = None) -> Any:
+    """按点号路径读取嵌套字典值。
+
+    Args:
+        data: 源字典。
+        key_path: 点号路径，如 ``"appearance.theme"``。
+        default: 路径缺失时的返回值。
+
+    Returns:
+        Any: 路径对应值；路径不存在时返回 *default*。
+    """
+    node: Any = data
+    for part in key_path.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return default
+        node = node[part]
+    return node
+
+
+def _set_by_path(data: Dict[str, Any], key_path: str, value: Any) -> None:
+    """按点号路径写入嵌套字典值（原地修改）。
+
+    中间层缺失或非字典时自动补建/替换为空字典，与
+    :meth:`SettingsManagerV2.set` 的内存写入口径一致。
+
+    Args:
+        data: 目标字典。
+        key_path: 点号路径。
+        value: 待写入的值（深拷贝后写入，避免共享引用）。
+    """
+    parts = key_path.split(".")
+    node: Any = data
+    for part in parts[:-1]:
+        child = node.get(part)
+        if not isinstance(child, dict):
+            child = {}
+            node[part] = child
+        node = child
+    node[parts[-1]] = copy.deepcopy(value)
 
 
 def _default_settings_path() -> str:
-    """返回默认的 V2 设置文件路径 ``data/settings_v2.json``。"""
-    return os.path.join(_project_root(), "data", "settings_v2.json")
+    """返回默认的 V2 设置文件路径（应用可写数据目录下）。
+
+    统一经 :func:`freeassetfilter.utils.path_utils.get_app_data_path` 解析：
+
+    - 开发环境：仓库根 ``data/settings_v2.json``（行为与历史一致）；
+    - 冻结（打包）环境：``%LOCALAPPDATA%\\FreeAssetFilter\\data``——
+      安装目录（默认 Program Files）普通用户不可写，历史实现按
+      ``__file__`` 推导落到 ``_internal/data``，导致安装版设置无法保存；
+    - ``FAF_DATA_DIR`` 环境变量优先（测试隔离 / 便携部署）。
+
+    Returns:
+        str: 默认设置文件绝对路径。
+    """
+    from freeassetfilter.utils.path_utils import get_app_data_path
+
+    return os.path.join(get_app_data_path(), "settings_v2.json")
 
 
 class SettingsManagerV2:
@@ -600,7 +660,9 @@ class SettingsManagerV2:
     支持点号分隔的 key 路径读写（如 ``appearance.theme``）。
     线程安全：内部使用可重入锁（``RLock``）保护所有读写操作。
 
-    存储位置：``data/settings_v2.json``（原子写盘 + 大小校验）。
+    存储位置：应用数据目录 ``data/settings_v2.json``（原子写盘 + 大小校验）。
+    写盘为「按改动键合并」语义：:meth:`save` 只回写本次改动过的键，
+    不会用内存快照整份覆盖磁盘，防止多实例相互丢更新（2026-10 修复）。
     """
 
     #: 设置文件大小上限（10MB）：超出视为损坏，加载时回退默认树并重写。
@@ -611,7 +673,7 @@ class SettingsManagerV2:
 
         Args:
             file_path: JSON 文件路径。为 ``None`` 时使用
-                ``data/settings_v2.json``。
+                应用数据目录下的 ``settings_v2.json``。
         """
         # 使用可重入锁：get()/get_all() 在持锁状态下会调用 load()，
         # 非重入 Lock 会在此自锁死锁（历史缺陷，2026-09 修复）。
@@ -619,6 +681,9 @@ class SettingsManagerV2:
         self._file_path: str = file_path if file_path is not None else _default_settings_path()
         self._settings: Dict[str, Any] = {}
         self._loaded = False
+        # 本次会话经 set() 改动过的键路径：save() 只把这些键合并写盘，
+        # 避免旧实例的内存快照整份回写覆盖其他写入方的新值（2026-10 修复）。
+        self._dirty_paths: set[str] = set()
 
     # ── 属性 ─────────────────────────────────────────────────────
 
@@ -645,29 +710,51 @@ class SettingsManagerV2:
             if not os.path.exists(self._file_path):
                 self._settings = self._copy_defaults()
                 self._loaded = True
-                self._write()
+                with _FILE_IO_LOCK:
+                    self._write()
                 return self._settings
 
             try:
-                # 大小校验：异常巨大的文件视为损坏（防手误/损坏写盘）。
-                if os.path.getsize(self._file_path) > self.MAX_SETTINGS_FILE_BYTES:
-                    raise ValueError("settings file too large")
-                with open(self._file_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                if not isinstance(data, dict):
-                    raise ValueError("invalid root type")
-                self._settings = self._merge_with_defaults(data)
+                with _FILE_IO_LOCK:
+                    self._settings = self._read_disk_settings()
             except (json.JSONDecodeError, OSError, ValueError):
                 self._settings = self._copy_defaults()
-                self._write()
+                with _FILE_IO_LOCK:
+                    self._write()
 
             self._loaded = True
             return self._settings
 
     def save(self) -> None:
-        """将当前内存中的 V2 设置写入磁盘。"""
+        """把本次改动过的键合并写入磁盘（不整份覆盖）。
+
+        语义（2026-10 修复「设置页所有选项重启后恢复默认」）：
+
+        - 无改动键：直接返回不写盘——旧实现在退出/主题切换等场景会把
+          启动时的内存快照整份回写，覆盖设置页刚落盘的用户修改；
+        - 有改动键：在模块级文件锁内重新读盘并与默认树合并，把改动键
+          的当前值叠加到最新磁盘内容上，再原子写盘并清空改动记录；
+        - 磁盘文件缺失/损坏：以默认树为基座合并；
+        - 其他读取失败（权限/占用）与写盘失败：异常向上抛且保留改动
+          记录（可重试），由调用方决定提示方式，不静默吞错。
+        """
         with self._lock:
-            self._write()
+            if not self._dirty_paths:
+                return
+            with _FILE_IO_LOCK:
+                try:
+                    base = self._read_disk_settings()
+                except (FileNotFoundError, json.JSONDecodeError, ValueError):
+                    base = self._copy_defaults()
+                # OSError（权限/占用等）不在此捕获：向上抛，保留脏键可重试。
+                for key_path in sorted(self._dirty_paths):
+                    value = _get_by_path(self._settings, key_path, _MISSING)
+                    if value is _MISSING:
+                        continue
+                    _set_by_path(base, key_path, value)
+                self._settings = base
+                self._write()
+            self._dirty_paths.clear()
 
     def get_all(self) -> Dict[str, Any]:
         """获取完整的 V2 设置字典副本。"""
@@ -680,7 +767,9 @@ class SettingsManagerV2:
         """将 V2 设置重置为默认值并立即写盘。"""
         with self._lock:
             self._settings = self._copy_defaults()
-            self._write()
+            self._dirty_paths.clear()
+            with _FILE_IO_LOCK:
+                self._write()
 
     # ── 点号路径读写 ──────────────────────────────────────────────
 
@@ -734,6 +823,7 @@ class SettingsManagerV2:
                 return False
 
             target[keys[-1]] = value
+            self._dirty_paths.add(key_path)
             return True
 
     # ── 内部方法 ──────────────────────────────────────────────────
@@ -752,6 +842,27 @@ class SettingsManagerV2:
             else:
                 result[key] = val
         return result
+
+    def _read_disk_settings(self) -> Dict[str, Any]:
+        """读取磁盘设置文件并与默认树合并（调用方需持有 ``_FILE_IO_LOCK``）。
+
+        Returns:
+            Dict[str, Any]: 合并默认值后的完整设置字典。
+
+        Raises:
+            FileNotFoundError: 文件不存在。
+            json.JSONDecodeError: JSON 解析失败。
+            ValueError: 文件过大或根节点类型非法。
+            OSError: 其他读取失败（权限/占用等）。
+        """
+        # 大小校验：异常巨大的文件视为损坏（防手误/损坏写盘）。
+        if os.path.getsize(self._file_path) > self.MAX_SETTINGS_FILE_BYTES:
+            raise ValueError("settings file too large")
+        with open(self._file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("invalid root type")
+        return self._merge_with_defaults(data)
 
     def _write(self) -> None:
         """将 ``self._settings`` 原子写入 JSON 文件（已处于锁内）。
@@ -841,8 +952,8 @@ class SettingsManagerV2:
 
         # general 域合并：layout_mode 只接受 classic/workspace；
         # 旧文件缺键或非法值时保留默认 workspace（不抛异常）。
-        # enable_ai_entry / include_remote_drives 为布尔白名单键，
-        # 非布尔值（含字符串 "true"）一律丢弃、回退默认 False。
+        # enable_ai_entry / include_remote_drives / blank_right_click_go_back
+        # 为布尔白名单键，非布尔值（含字符串 "true"）一律丢弃、回退默认 False。
         if "general" in loaded and isinstance(loaded["general"], dict):
             general_loaded = loaded["general"]
             staged_layout = general_loaded.get("layout_mode", None)
@@ -854,5 +965,15 @@ class SettingsManagerV2:
             staged_remote = general_loaded.get("include_remote_drives", None)
             if isinstance(staged_remote, bool):
                 merged["general"]["include_remote_drives"] = staged_remote
+            staged_blank_back = general_loaded.get("blank_right_click_go_back", None)
+            if isinstance(staged_blank_back, bool):
+                merged["general"]["blank_right_click_go_back"] = staged_blank_back
+
+        # 保留磁盘上不在默认树中的顶层域（如 app / file_selector /
+        # file_staging / video 等运行时数据），避免每次加载/合并写盘时
+        # 被默认树整体丢弃（用户数据丢失的既有缺陷，2026-10 修复）。
+        for key, value in loaded.items():
+            if key not in merged:
+                merged[key] = copy.deepcopy(value)
 
         return merged

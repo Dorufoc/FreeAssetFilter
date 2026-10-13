@@ -82,12 +82,22 @@ class _StyledTextEdit(QPlainTextEdit):
     # ---- background color ----
 
     def _bg_color(self) -> QColor:
-        """Return the current background color based on state."""
+        """Return the current background color based on state.
+
+        浅色：输入区用偏实的浅色底（surface 高透明度）区分面板，
+        hover/focus 再提亮一档；深色沿用历史口径（mid 30/40/50%）。
+        """
+        if tm.is_dark_theme():
+            if not self.isEnabled():
+                return tm.alpha_of(tm.mid, 30)
+            if self._hovered or self._focused:
+                return tm.alpha_of(tm.mid, 50)
+            return tm.alpha_of(tm.mid, 40)
         if not self.isEnabled():
-            return tm.alpha_of(tm.mid, 30)
+            return tm.alpha_of(tm.surface, 45)
         if self._hovered or self._focused:
-            return tm.alpha_of(tm.mid, 50)
-        return tm.alpha_of(tm.mid, 40)
+            return tm.alpha_of(tm.surface, 90)
+        return tm.alpha_of(tm.surface, 75)
 
     # ---- layout helpers ----
 
@@ -104,7 +114,9 @@ class _StyledTextEdit(QPlainTextEdit):
         Only border, color, selection — background is handled by paintEvent.
         """
         config = self.SIZE_CONFIG[self._size]
-        border_color = tm.danger.name() if self._error else tm.alpha_of(tm.mid, 50).name()
+        border_color = (
+            tm.danger.name() if self._error else tm.qss_color(tm.control_border_strong)
+        )
         focus_border = tm.danger.name() if self._error else tm.accent.name()
 
         register_widget_qss(self,(f"""
@@ -123,8 +135,8 @@ class _StyledTextEdit(QPlainTextEdit):
             }}
             #{self._obj_name}:disabled {{
                 background: transparent;
-                color: {tm.alpha_of(tm.mid, 40).name()};
-                border-color: {tm.alpha_of(tm.mid, 20).name()};
+                color: {tm.qss_color(tm.text_disabled)};
+                border-color: {tm.qss_color(tm.alpha_of(tm.text, 8) if not tm.is_dark_theme() else tm.alpha_of(tm.mid, 20))};
             }}
         """))
 
@@ -252,7 +264,7 @@ class StyledTextarea(QWidget):
         initial_count = f"{len(text)}/{max_length}" if max_length is not None else ""
         self._counter_label = QLabel(initial_count)
         register_widget_qss(self._counter_label,(
-            f"font-size: 11px; color: {tm.alpha_of(tm.mid, 60).name()};"
+            f"font-size: 11px; color: {tm.qss_color(tm.text_hint)};"
         ))
         self._counter_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self._counter_label.setVisible(max_length is not None)
@@ -260,10 +272,27 @@ class StyledTextarea(QWidget):
 
         layout.addLayout(bottom_row)
 
+        # 主题切换：刷新边框/文字/计数/说明（背景色在 paintEvent 现取，无需处理）
+        tm.theme_changed.connect(self._on_theme_changed)
+
     # ---- helpers ----
 
+    def _on_theme_changed(self, _theme: str) -> None:
+        """主题切换：重算边框/文字（背景色由 paintEvent 现取）。"""
+        self._apply_stylesheet()
+        register_widget_qss(self._label,(
+            f"font-size: 13px; font-weight: 500; color: {tm.text.name()};"
+        ))
+        register_widget_qss(self._description_label, (self._description_style()))
+        counter = getattr(self, "_counter_label", None)
+        if counter is not None:
+            register_widget_qss(counter,(
+                f"font-size: 11px; color: {tm.qss_color(tm.text_hint)};"
+            ))
+        self.update()
+
     def _description_style(self) -> str:
-        color = tm.danger.name() if self._error else tm.alpha_of(tm.mid, 60).name()
+        color = tm.danger.name() if self._error else tm.qss_color(tm.text_hint)
         return f"font-size: 12px; color: {color};"
 
     def _on_text_changed(self):

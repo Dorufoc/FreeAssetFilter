@@ -276,7 +276,7 @@ class StyledNumberInput(QWidget):
         if self._enabled:
             input_color = tm.text.name()
         else:
-            input_color = tm.alpha_of(tm.mid, 90).name(QColor.HexArgb)
+            input_color = tm.text_secondary.name(QColor.HexArgb)
         register_widget_qss(self._input,(f"""
             #{input_obj} {{
                 background-color: transparent;
@@ -468,7 +468,7 @@ class StyledNumberInput(QWidget):
 
             # Web版容器背景: #3a3a3a (--bg-input)
             painter.setPen(Qt.NoPen)
-            painter.setBrush(tm.alpha_of(tm.mid, 40))
+            painter.setBrush(tm.track_fill)
             painter.drawRoundedRect(0, 0, w, h, radius, radius)
 
             # 错误状态的红色外发光 (box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.15))
@@ -483,9 +483,9 @@ class StyledNumberInput(QWidget):
             elif self._focused:
                 border_color = tm.accent
             elif not self._enabled:
-                border_color = tm.alpha_of(tm.mid, 40)
+                border_color = tm.control_border
             else:
-                border_color = tm.alpha_of(tm.mid, 40)
+                border_color = tm.control_border
 
             painter.setPen(QPen(border_color, 1))
             painter.setBrush(Qt.NoBrush)

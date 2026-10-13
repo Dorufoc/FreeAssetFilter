@@ -59,16 +59,16 @@ class StyledAccordionItem(QWidget):
     def _text_primary(self): return tm.text
 
     @property
-    def _text_tertiary(self): return tm.alpha_of(tm.mid, 60)
+    def _text_tertiary(self): return tm.text_hint
 
     @property
-    def _divider_color(self): return tm.alpha_of(tm.mid, 30)
+    def _divider_color(self): return tm.divider
 
     @property
     def _bg_hover(self): return tm.alpha_of(tm.surface, 90)
 
     @property
-    def _border_color(self): return tm.alpha_of(tm.mid, 40)
+    def _border_color(self): return tm.control_border
 
     def _on_anim_finished(self):
         if not self._open:

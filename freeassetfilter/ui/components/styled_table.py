@@ -147,7 +147,7 @@ class StatusBadgeDelegate(QStyledItemDelegate):
     def _get_get_status_colors() -> dict[str, QColor]:
         return {
             "active": tm.accent,
-            "inactive": tm.mid,
+            "inactive": tm.text_secondary,
             "error": tm.danger,
             "warning": tm.warning,
         }
@@ -336,7 +336,7 @@ class StyledTable(QTableWidget):
         self._empty_label.setAlignment(Qt.AlignCenter)
         register_widget_qss(self._empty_label,(
             f"QLabel {{"
-            f"  color: {tm.mid.name()};"
+            f"  color: {tm.qss_color(tm.text_secondary)};"
             f"  font-size: 14px;"
             f"  background: transparent;"
             f"  border: none;"
@@ -377,14 +377,14 @@ class StyledTable(QTableWidget):
             pad_v=cfg["cell_pad_v"],
             pad_h=cfg["cell_pad_h"],
             bg=tm.surface.name(),
-            border=tm.alpha_of(tm.mid, 40).name(),
-            gridline=tm.alpha_of(tm.mid, 30).name(),
+            border=tm.qss_color(tm.control_border),
+            gridline=tm.qss_color(tm.divider),
             text_primary=tm.text.name(),
             hover_bg=tm.alpha_of(tm.surface, 90).name(),
             selected_bg=f"rgba({accent.red()}, {accent.green()}, {accent.blue()}, 0.08)",
             selected_text=tm.text.name(),
             header_bg=tm.alpha_of(tm.surface, 90).name(),
-            header_text=tm.mid.name(),
+            header_text=tm.qss_color(tm.text_secondary),
             header_hover_bg=tm.surface.name(),
             header_hover_text=tm.text.name(),
         )

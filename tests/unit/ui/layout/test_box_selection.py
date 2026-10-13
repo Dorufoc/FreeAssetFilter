@@ -4,7 +4,8 @@
 覆盖：
 - BoxSelectionGesture：拖拽阈值激活、命中集合替换回调、释放收尾、守卫兜底；
 - FileSelectorLayout：左键拖拽框选更新模型选中态且不触发预览；单击清除；
-  右键已选中卡片批量入池信号；右键未选中卡片单卡信号；右键空白返回上级；
+  右键已选中卡片批量入池信号；右键未选中卡片单卡信号；右键空白（开关
+  开启且命中空卡片位时）返回上级；
 - FilePoolLayout：框选命中应用/清除、右键批量移除、未选中卡片放行、
   移除后集合清理；
 - FileCardDelegate：框选选中态虚线视觉、优先级与"选中态不做过渡"。
@@ -363,14 +364,37 @@ class TestSelectorBoxSelection:
         assert layout._file_model.get_selected_rows() == set()
         _teardown(layout)
 
-    def test_right_click_blank_goes_back(
+    def test_right_click_blank_no_back_when_disabled(
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """右键空白区：清除框选 + 仍返回上一级（与批量入池互不冲突）。"""
+        """开关默认关闭：右键空白区只清除框选，不返回上一级。"""
         layout = self._make_layout(qapp)
         layout._file_model.set_rows_selected({0}, True)
         monkeypatch.setattr(
             layout._file_list, "indexAt", lambda pos: QModelIndex()
+        )
+        back_calls: List[bool] = []
+        monkeypatch.setattr(layout, "_go_back", lambda: back_calls.append(True))
+        layout._on_right_click_toggle_pool(QPoint(5, 5))
+        assert back_calls == []
+        assert layout._file_model.get_selected_rows() == set()
+        _teardown(layout)
+
+    def test_right_click_blank_goes_back_when_zone_enabled(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """开关开启且命中空卡片位：清除框选 + 返回上一级（与批量入池互不冲突）。
+
+        几何命中由专用测试覆盖，此处精确注入判定结果。
+        """
+        layout = self._make_layout(qapp)
+        layout.set_blank_right_click_go_back(True)
+        layout._file_model.set_rows_selected({0}, True)
+        monkeypatch.setattr(
+            layout._file_list, "indexAt", lambda pos: QModelIndex()
+        )
+        monkeypatch.setattr(
+            layout, "_is_blank_slot_go_back_zone", lambda pos: True
         )
         back_calls: List[bool] = []
         monkeypatch.setattr(layout, "_go_back", lambda: back_calls.append(True))

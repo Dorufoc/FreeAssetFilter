@@ -528,7 +528,7 @@ class PdfPreviewerLayout(QWidget):
         self._placeholder = QLabel("打开 PDF 文件开始预览")
         self._placeholder.setAlignment(Qt.AlignCenter)
         register_widget_qss(self._placeholder,(
-            f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
+            f"color: {tm.qss_color(tm.text_hint)}; font-size: 14px; background: transparent;"
         ))
         overlay_layout.addWidget(self._placeholder)
 
@@ -1112,10 +1112,10 @@ class PdfPreviewerLayout(QWidget):
         """应用主题色到"选择 PDF 文件"按钮（模仿 video_player_layout 模式）。"""
         if self._browse_btn is None:
             return
-        btn_text = tm.mid.name()
+        btn_text = tm.qss_color(tm.text_secondary)
         btn_hover_text = tm.text.name()
         btn_bg = tm.fill.name()
-        btn_border = tm.alpha_of(tm.mid, 30).name()
+        btn_border = tm.qss_color(tm.control_border)
         register_widget_qss(self._browse_btn,(f"""
             QPushButton {{
                 background: transparent;
@@ -1129,7 +1129,7 @@ class PdfPreviewerLayout(QWidget):
             QPushButton:hover {{
                 background: {btn_bg};
                 color: {btn_hover_text};
-                border: 1px solid {tm.mid.name()};
+                border: 1px solid {tm.qss_color(tm.control_border_strong)};
             }}
             QPushButton:pressed {{
                 background: {btn_bg};
@@ -1310,6 +1310,10 @@ class PdfPreviewerLayout(QWidget):
         self.set_section_styles("", "")
         self._top_bar.update()
         self.update()
+        # 空状态占位文字随主题刷新（构建期一次性注册，切主题后需重注册）
+        register_widget_qss(self._placeholder,(
+            f"color: {tm.qss_color(tm.text_hint)}; font-size: 14px; background: transparent;"
+        ))
         # 缩放弹窗自绘主题色：可见时强制按新主题重绘
         if self._zoom_popup is not None and self._zoom_popup.isVisible():
             self._zoom_popup.update()

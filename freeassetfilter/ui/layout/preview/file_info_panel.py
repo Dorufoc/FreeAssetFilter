@@ -70,6 +70,13 @@ def _rgba(color: QColor) -> str:
     return f"rgba({color.red()},{color.green()},{color.blue()},{color.alpha() / 255:.2f})"
 
 
+def _fold_text_color() -> QColor:
+    """折叠入口/次要提示文字色（浅色=text 60% 语义次要文字，深色=mid 80% 历史口径）。"""
+    if tm.is_dark_theme():
+        return QColor(tm.alpha_of(tm.mid, 80))
+    return QColor(tm.text_secondary)
+
+
 class _WorkSignals(QObject):
     """后台采集完成信号中转（任务持有，跨线程队列投递到 UI 线程）。"""
 
@@ -220,8 +227,9 @@ class _FoldLink(QLabel):
 
     Args:
         text: 初始文案。
-        color: 常规文字颜色（QColor）；缺省为主题 mid 80%。
-        hover_color: 悬停颜色；缺省为主题 accent。
+        color: 常规文字颜色（QColor）；缺省为主题次要文字（浅色 text 60%，
+            深色 mid 80% 历史口径）。
+        hover_color: 悬停颜色；缺省为主题强调色（浅色为压暗后的 accent_text）。
     """
 
     clicked = Signal()
@@ -235,8 +243,14 @@ class _FoldLink(QLabel):
     ):
         super().__init__(parent)
         self._base_text = text
-        self._color = color or tm.alpha_of(tm.mid, 80)
-        self._hover_color = hover_color or tm.accent
+        self._custom_color = color is not None
+        self._custom_hover = hover_color is not None
+        self._color = QColor(color) if color is not None else _fold_text_color()
+        self._hover_color = (
+            QColor(hover_color)
+            if hover_color is not None
+            else QColor(tm.accent if tm.is_dark_theme() else tm.accent_text)
+        )
         self.setText(text)
         self.setCursor(Qt.PointingHandCursor)
         self.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
@@ -244,14 +258,26 @@ class _FoldLink(QLabel):
         self.setAttribute(Qt.WA_Hover, True)
         self._apply_style()
 
+    def refresh_theme(self) -> None:
+        """主题切换后刷新默认配色（调用方显式传入的颜色保持不变）。"""
+        if not self._custom_color:
+            self._color = _fold_text_color()
+        if not self._custom_hover:
+            self._hover_color = QColor(
+                tm.accent if tm.is_dark_theme() else tm.accent_text
+            )
+        self._apply_style()
+
     def _apply_style(self) -> None:
         if not self.isEnabled():
-            text_color = _rgba(tm.alpha_of(tm.mid, 35))
+            text_color = _rgba(
+                tm.alpha_of(tm.mid, 35) if tm.is_dark_theme() else tm.text_disabled
+            )
         elif self._hovered:
             text_color = _rgba(self._hover_color)
         else:
             text_color = _rgba(self._color)
-        register_widget_qss(self,(f"color: {text_color}; font-size: 12px;"))
+        register_widget_qss(self, (f"color: {text_color}; font-size: 12px;"))
 
     def set_text(self, text: str) -> None:
         self._base_text = text
@@ -756,7 +782,7 @@ class _InfoCanvas(QWidget):
             hint_font = QFont("Microsoft YaHei UI")
             hint_font.setPixelSize(14)
             painter.setFont(hint_font)
-            painter.setPen(tm.mid)
+            painter.setPen(tm.text_hint)
             painter.drawText(self.rect(), Qt.AlignCenter, "选择文件以预览详细信息")
             painter.end()
             return
@@ -775,7 +801,7 @@ class _InfoCanvas(QWidget):
 
             if kind == "path":
                 painter.setFont(self.FONT_PATH)
-                painter.setPen(tm.alpha_of(tm.mid, 60))
+                painter.setPen(tm.text_secondary)
                 line_y = top
                 for line in item.lines:
                     painter.drawText(
@@ -787,7 +813,7 @@ class _InfoCanvas(QWidget):
 
             if kind == "heading":
                 painter.setFont(self.FONT_HEADING)
-                painter.setPen(tm.accent)
+                painter.setPen(tm.accent_text)
                 painter.drawText(
                     QRect(self.PAD_X, top, item.rect.width() - 2 * self.PAD_X, item.text_h),
                     Qt.AlignLeft | Qt.AlignTop, item.text,
@@ -796,7 +822,7 @@ class _InfoCanvas(QWidget):
 
             if kind == "note":
                 painter.setFont(self.FONT_VALUE)
-                painter.setPen(tm.alpha_of(tm.mid, 55))
+                painter.setPen(tm.text_hint)
                 painter.drawText(
                     QRect(self.PAD_X, top, item.rect.width() - 2 * self.PAD_X, item.text_h),
                     Qt.AlignLeft | Qt.AlignTop, item.text,
@@ -805,7 +831,7 @@ class _InfoCanvas(QWidget):
 
             if kind == "busy":
                 painter.setFont(self.FONT_VALUE)
-                painter.setPen(tm.alpha_of(tm.mid, 70))
+                painter.setPen(tm.text_secondary)
                 text = item.text
                 if item.progress is None:
                     text = f"{text}{'.' * self._dot_frame}"
@@ -819,7 +845,7 @@ class _InfoCanvas(QWidget):
                     track = QRect(self.PAD_X, item.track_top,
                                   item.rect.width() - 2 * self.PAD_X, 3)
                     painter.setPen(Qt.NoPen)
-                    painter.setBrush(tm.alpha_of(tm.mid, 20))
+                    painter.setBrush(tm.alpha_of(tm.mid, 20 if tm.is_dark_theme() else 14))
                     painter.drawRoundedRect(track, 1, 1)
                     fill_w = int(track.width() * percent / 100)
                     if fill_w > 0:
@@ -833,7 +859,7 @@ class _InfoCanvas(QWidget):
                 hovered = self._hover_link_action == item.action
                 painter.setFont(self.FONT_LINK)
                 painter.setPen(
-                    tm.alpha_of(tm.mid, 100) if hovered else tm.alpha_of(tm.mid, 70)
+                    tm.accent_text if hovered else tm.text_secondary
                 )
                 fm = QFontMetrics(self.FONT_LINK)
                 text_width = fm.horizontalAdvance(item.text)
@@ -850,9 +876,13 @@ class _InfoCanvas(QWidget):
 
             if kind == "grid":
                 if item is self._hover_row and item.highlight:
-                    painter.fillRect(item.rect, tm.alpha_of(tm.mid, 9))
+                    painter.fillRect(
+                        item.rect,
+                        tm.alpha_of(tm.mid, 9) if tm.is_dark_theme()
+                        else tm.alpha_of(tm.text, 5),
+                    )
                 painter.setFont(self.FONT_LABEL)
-                painter.setPen(tm.alpha_of(tm.mid, 65))
+                painter.setPen(tm.text_secondary)
                 painter.drawText(
                     QRect(self.PAD_X, top, item.label_col, item.row_height),
                     Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, item.label,
@@ -1436,9 +1466,9 @@ class FileInfoPanel(QWidget):
         self._hash_link.set_text(f"{arrow} {hash_text}")
 
     def _apply_toast_style(self) -> None:
-        # category (c) 直写：toast 颜色按 tm.mid 透明度在运行时计算，属
+        # category (c) 直写：toast 颜色按主题次要文字色在运行时计算，属
         # 逐实例反馈；见 app_stylesheet.DIRECT_SETSTYLESHEET_SITES。
-        color = _rgba(tm.alpha_of(tm.mid, 80))
+        color = _rgba(_fold_text_color())
         self._toast_label.setStyleSheet(
             f"color: {color}; font-size: 12px; background: transparent;"
         )
@@ -1564,6 +1594,12 @@ class FileInfoPanel(QWidget):
         if hasattr(self, "_toast_label"):
             self._apply_toast_style()
             self._position_toast()
+        for link in (
+            getattr(self, "_detail_link", None),
+            getattr(self, "_hash_link", None),
+        ):
+            if link is not None:
+                link.refresh_theme()
         self._sync_canvas()
 
     def resizeEvent(self, event) -> None:  # noqa: N802

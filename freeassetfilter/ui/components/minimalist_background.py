@@ -19,10 +19,11 @@ QUIET 单层绘制约束（强制）：
   （预混合为全不透明色，混合比例不可改）：
 
   - 浅色主题：bottom=blend(G1, accent, 0.0)（accent 0% 不透明，
-    即 100% 透明=G1），mid=blend(G1, accent, 0.1)（10% 不透明），
-    top=blend(G1, accent, 0.2)（20% 不透明，即 80% 透明）。
-  - 深色主题（更克制）：bottom=blend(G1, accent, 0.0)（0% 不透明，
     即 100% 透明=G1），mid=blend(G1, accent, 0.05)（5% 不透明），
+    top=blend(G1, accent, 0.10)（10% 不透明）。浅色底亮度高，过强的
+    强调色混合会整窗泛蓝灰（观感发脏），故与深色同档、克制使用。
+  - 深色主题：bottom=blend(G1, accent, 0.0)（0% 不透明，即 100%
+    透明=G1），mid=blend(G1, accent, 0.05)（5% 不透明），
     top=blend(G1, accent, 0.10)（10% 不透明，即 90% 透明）。
 
 抗色带（banding）：
@@ -111,10 +112,11 @@ def compute_minimalist_gradient_colors() -> tuple[QColor, QColor, QColor]:
     auto 已由 tm 解析）；分支依据 ``tm.is_dark_theme()``：
 
     - 浅色主题：bottom=blend(G1, accent, 0.0)（accent 0% 不透明，
-      即 100% 透明=G1），mid=blend(G1, accent, 0.1)（10% 不透明），
-      top=blend(G1, accent, 0.2)（20% 不透明，即 80% 透明）。
-    - 深色主题（更克制）：bottom=blend(G1, accent, 0.0)（0% 不透明，
       即 100% 透明=G1），mid=blend(G1, accent, 0.05)（5% 不透明），
+      top=blend(G1, accent, 0.10)（10% 不透明）。浅色底亮度高，
+      强调色混合过强会整窗泛蓝灰，故与深色同档。
+    - 深色主题：bottom=blend(G1, accent, 0.0)（0% 不透明，即 100%
+      透明=G1），mid=blend(G1, accent, 0.05)（5% 不透明），
       top=blend(G1, accent, 0.10)（10% 不透明，即 90% 透明）。
 
     单层不透明预混合：三者 alpha 均为 255。返回的三色直接喂给
@@ -135,8 +137,8 @@ def compute_minimalist_gradient_colors() -> tuple[QColor, QColor, QColor]:
         top: QColor = blend_over(base, accent, 0.10)
     else:
         bottom = blend_over(base, accent, 0.0)
-        mid = blend_over(base, accent, 0.1)
-        top = blend_over(base, accent, 0.2)
+        mid = blend_over(base, accent, 0.05)
+        top = blend_over(base, accent, 0.10)
     return (bottom, mid, top)
 
 

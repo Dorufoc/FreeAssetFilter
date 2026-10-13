@@ -163,7 +163,7 @@ class StyledDrawer(QWidget):
         self._panel = QWidget(self)
         self._panel.setObjectName("DrawerPanel")
 
-        _border_clr = tm.mid.name()
+        _border_clr = tm.qss_color(tm.control_border)
         _border_map = {
             "right": f"border-left: 1px solid {_border_clr};",
             "left": f"border-right: 1px solid {_border_clr};",
@@ -247,7 +247,7 @@ class StyledDrawer(QWidget):
         header = QWidget()
         header.setObjectName("DrawerHeader")
         header.setContentsMargins(0, 0, 0, 0)
-        register_widget_qss(header,(f"#DrawerHeader {{ background: transparent; border-bottom: 1px solid {tm.alpha_of(tm.mid, 30).name()}; }}"))
+        register_widget_qss(header,(f"#DrawerHeader {{ background: transparent; border-bottom: 1px solid {tm.qss_color(tm.divider)}; }}"))
 
         hdr_layout = QHBoxLayout(header)
         hdr_layout.setContentsMargins(24, 20, 12, 20)
@@ -270,8 +270,8 @@ class StyledDrawer(QWidget):
         close_btn.setCursor(QCursor(Qt.PointingHandCursor))
         register_widget_qss(close_btn,(
             f"QPushButton {{ background: transparent; border: none; border-radius: 6px;"
-            f" color: {tm.mid.name()}; font-size: 18px; font-weight: 300; }}"
-            f"QPushButton:hover {{ background-color: {tm.surface.name()}; color: {tm.text.name()}; }}"
+            f" color: {tm.qss_color(tm.text_secondary)}; font-size: 18px; font-weight: 300; }}"
+            f"QPushButton:hover {{ background-color: {tm.qss_color(tm.alpha_of(tm.text, 6) if not tm.is_dark_theme() else tm.alpha_of(tm.mid, 20))}; color: {tm.text.name()}; }}"
         ))
         close_btn.clicked.connect(self.close_drawer)
         hdr_layout.addWidget(close_btn, alignment=Qt.AlignTop)
@@ -307,7 +307,7 @@ class StyledDrawer(QWidget):
         footer = QWidget()
         footer.setObjectName("DrawerFooter")
         footer.setContentsMargins(0, 0, 0, 0)
-        register_widget_qss(footer,(f"#DrawerFooter {{ background: transparent; border-top: 1px solid {tm.alpha_of(tm.mid, 30).name()}; }}"))
+        register_widget_qss(footer,(f"#DrawerFooter {{ background: transparent; border-top: 1px solid {tm.qss_color(tm.divider)}; }}"))
 
         self._footer_layout = QHBoxLayout(footer)
         self._footer_layout.setContentsMargins(24, 16, 24, 16)

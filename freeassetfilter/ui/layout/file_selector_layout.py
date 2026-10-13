@@ -174,6 +174,9 @@ class FileSelectorLayout(QWidget):
         # 网络/映射盘与光驱加载开关（general.include_remote_drives，默认关闭；
         # 启动时与设置提交时经 set_include_remote_drives 下发）
         self._include_remote_drives: bool = _DEFAULT_INCLUDE_REMOTE_DRIVES
+        # 空白区右键返回上一级开关（general.blank_right_click_go_back，默认
+        # 关闭；启动时与设置提交时经 set_blank_right_click_go_back 下发）
+        self._blank_right_click_go_back: bool = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
@@ -247,6 +250,12 @@ class FileSelectorLayout(QWidget):
 
         # 防递归守卫（与旧 file_selector.py 一致——旧代码无守卫，这里仅防止极端递归）
         self._updating_grid: bool = False
+
+        # 当前网格几何快照（每次布局计算时更新，供空白位右键命中判定使用）：
+        # _grid_cols = 每行格子数（列表模式恒为 1，0 = 尚未布局）；
+        # _grid_card_size = 卡片本体尺寸（不含格子预留的间距）。
+        self._grid_cols: int = 0
+        self._grid_card_size: QSize = QSize()
 
         # 卡片缩放系数（Ctrl+滚轮调整）
         self._card_scale: float = 1.0
@@ -361,6 +370,9 @@ class FileSelectorLayout(QWidget):
         # 监听 viewport 和 file_list 自身的 resize（与旧 file_selector.py 一致）
         self._file_list.viewport().installEventFilter(self)
         self._file_list.installEventFilter(self)
+
+        # 主题切换：刷新计数标签等构建期注册的配色
+        tm.theme_changed.connect(self._on_theme_changed)
 
         # 当前文件池路径集合（由 sync_pool_status 更新，"已在池中"标记局部重绘的 diff 基准）
         self._pool_paths: Set[str] = set()
@@ -1267,6 +1279,19 @@ class FileSelectorLayout(QWidget):
         if self._current_path == "All":
             self._reload_directory()
 
+    def set_blank_right_click_go_back(self, enabled: bool) -> None:
+        """设置「空白区右键返回上一级」开关（启动与设置提交路径调用；幂等）。
+
+        开启后，右键仅在满足以下全部条件时返回上一级：当前页面无需滚动
+        （垂直滚动条无滚动范围）、点击落在空格子的卡片脚印区域内（卡片本体
+        本该占据的矩形，不含卡片间缝隙与格子边缘间距）。关闭时空白区右键
+        不做任何导航，仅清除框选。
+
+        Args:
+            enabled: True 开启空白区右键返回；False 关闭（默认）。
+        """
+        self._blank_right_click_go_back = bool(enabled)
+
     def _load_directory_with_transition(self, path: str, direction: int) -> None:
         """带路径过渡动画的异步目录加载。
 
@@ -1399,14 +1424,19 @@ class FileSelectorLayout(QWidget):
           - 否则 → 批量加入储存池（add-only，已在池中的保持不变）；
           两种情况随后均清除框选选中态；
         - 右键点在未选中卡片上：清除框选 + 保留原有单卡"添加/移除"切换；
-        - 右键点在空白区：清除框选 + 返回上一级（与顶栏按钮/鼠标侧键一致，
-          两条路径互不冲突）。
+        - 右键点在空白区：清除框选；仅当「空白区右键返回上一级」开关开启、
+          当前页面无需滚动、且点击落在空卡片位的卡片脚印内（卡片间缝隙与
+          格子边缘间距不算）时返回上一级（与顶栏按钮/鼠标侧键一致）。
+
+        Args:
+            pos: 右键位置（viewport 坐标系，与 ``indexAt`` 口径一致）。
         """
         index = self._file_list.indexAt(pos)
         if not index.isValid():
-            # 无卡片空白区右键 = 返回上一级（历史优先，与顶栏按钮/鼠标侧键一致）
+            # 空白区：清除框选；满足空位条件时返回上一级，否则不做导航。
             self.clear_box_selection()
-            self._go_back()
+            if self._is_blank_slot_go_back_zone(pos):
+                self._go_back()
             return
         file_path: str = self._file_model.data(index, FilePathRole) or ""
         if not file_path:
@@ -1434,6 +1464,63 @@ class FileSelectorLayout(QWidget):
             "suffix": (self._file_model.data(index, SuffixRole) or "").lower(),
         }
         self.toggle_pool_requested.emit(file_info)
+
+    def _is_blank_slot_go_back_zone(self, pos) -> bool:
+        """判断右键点是否满足「空白空位返回上一级」的全部条件。
+
+        条件（全部满足才返回 True）：
+
+        1. 开关 ``_blank_right_click_go_back`` 已开启；
+        2. 当前页面无需滚动（垂直滚动条最大值为 0，内容未超出视口）；
+        3. 点击落在某个**空格子**（该格无卡片）的「卡片脚印」内——即若该格
+           放置卡片，卡片本体将占据的矩形。格子之间/卡片之间预留的间距带
+           （``gridSize`` 相对卡片本体多出的部分）永远不算，保证卡片间缝隙
+           点击不触发；最后一排右侧未排满的空位与下方整排空位均算空位。
+
+        命中判定在内容坐标系完成（viewport 坐标 + 滚动偏移），与
+        ``indexAt`` 的口径一致；Qt 将卡片本体在格子内水平居中、垂直贴顶
+        （多出的高度统一落在卡片下方，与委托 ``_resolve_card_rect`` 的假设
+        一致）。
+
+        Args:
+            pos: 右键位置（viewport 坐标系）。
+
+        Returns:
+            bool: True 表示应当返回上一级。
+        """
+        if not self._blank_right_click_go_back:
+            return False
+        cell = self._file_list.gridSize()
+        card = self._grid_card_size
+        cols = self._grid_cols
+        if (
+            not cell.isValid() or cell.width() <= 0 or cell.height() <= 0
+            or not card.isValid() or card.width() <= 0 or card.height() <= 0
+            or cols <= 0
+        ):
+            return False  # 尚未完成网格布局：无从判定
+        if self._file_list.verticalScrollBar().maximum() > 0:
+            return False  # 需要滚动时一律不触发
+
+        target_w = min(cell.width(), card.width())
+        target_h = min(cell.height(), card.height())
+        offset_x = max(0, (cell.width() - target_w + 1) // 2)
+        offset_y = 0
+
+        cx = pos.x() + self._file_list.horizontalScrollBar().value()
+        cy = pos.y() + self._file_list.verticalScrollBar().value()
+        col = cx // cell.width()
+        row = cy // cell.height()
+        if col < 0 or col >= cols or row < 0:
+            return False
+        local_x = cx - col * cell.width()
+        local_y = cy - row * cell.height()
+        if not (offset_x <= local_x < offset_x + target_w):
+            return False  # 卡片脚印左右两侧的间距带
+        if not (offset_y <= local_y < offset_y + target_h):
+            return False  # 卡片脚印下方（行间）的间距带
+        # 空格子：该格在线性序号上已超出模型行数（最后一排尾部/下方整排）
+        return row * cols + col >= self._file_model.rowCount()
 
     # ── 收藏夹 ────────────────────────────────────────────────────────────
 
@@ -1496,7 +1583,7 @@ class FileSelectorLayout(QWidget):
             empty_label.setWordWrap(True)
             empty_label.setAlignment(Qt.AlignCenter)
             register_widget_qss(empty_label,(
-                f"font-size: 14px; color: {tm.mid.name()}; background: transparent;"
+                f"font-size: 14px; color: {tm.qss_color(tm.text_hint)}; background: transparent;"
             ))
             empty_label.setFixedHeight(120)
             body_layout.addWidget(empty_label)
@@ -1646,7 +1733,7 @@ class FileSelectorLayout(QWidget):
         body_layout.setSpacing(8)
 
         tip = QLabel(label_text)
-        register_widget_qss(tip,(f"font-size: 14px; color: {tm.mid.name()}; background: transparent;"))
+        register_widget_qss(tip,(f"font-size: 14px; color: {tm.qss_color(tm.text_hint)}; background: transparent;"))
         body_layout.addWidget(tip)
 
         edit = StyledLineEdit(size="default")
@@ -1875,7 +1962,7 @@ class FileSelectorLayout(QWidget):
 
         tip = QLabel("输入文件名筛选正则（不区分大小写）。\n例如：\\.png$ 仅显示 png，项目 匹配名称含“项目”的文件。")
         tip.setWordWrap(True)
-        register_widget_qss(tip,(f"font-size: 14px; color: {tm.mid.name()}; background: transparent;"))
+        register_widget_qss(tip,(f"font-size: 14px; color: {tm.qss_color(tm.text_hint)}; background: transparent;"))
         body_layout.addWidget(tip)
 
         edit = StyledLineEdit(size="default")
@@ -1949,10 +2036,19 @@ class FileSelectorLayout(QWidget):
 
     def _update_file_count(self, count: int) -> None:
         self._file_count_label.setText(f"{count} 个条目")
-        register_widget_qss(self._file_count_label,(
+        register_widget_qss(self._file_count_label,(self._count_label_style()))
+
+    @staticmethod
+    def _count_label_style() -> str:
+        """条目计数标签样式（浅色=语义次要文字，深色=mid，随主题现取）。"""
+        return (
             "background: transparent; border: none;"
-            f"color: {tm.mid.name()}; font-size: 11px;"
-        ))
+            f"color: {tm.qss_color(tm.text_secondary)}; font-size: 11px;"
+        )
+
+    def _on_theme_changed(self, _theme: str) -> None:
+        """主题切换：刷新计数标签配色（面板边框/填充由 MainWindow 统一下放）。"""
+        register_widget_qss(self._file_count_label, (self._count_label_style()))
 
     # ── 滚动条同步 ────────────────────────────────────────────────────────
 
@@ -2274,6 +2370,9 @@ class FileSelectorLayout(QWidget):
         # 保持 grid_offset_x=0，避免 hover 时卡片绘制超出自身 grid cell 产生残影
         self._file_model.set_grid_offset_x(0)
         self._file_model.set_card_width(card_width, card_height)
+        # 记录网格几何快照（空白位右键命中判定使用；与 gridSize 同一处更新）
+        self._grid_cols = max_cols
+        self._grid_card_size = QSize(card_width, card_height)
 
         # 滚动条作为浮动覆盖层，定位在右侧边距内（贴右边缘）；
         # 每次定位后 raise_() 保持悬浮覆盖层层级，避免与卡片列表同级堆叠。
@@ -2319,6 +2418,9 @@ class FileSelectorLayout(QWidget):
             self._file_list.setViewportMargins(new_margins)
         self._file_model.set_grid_offset_x(0)
         self._file_model.set_card_width(card_width, card_height)
+        # 记录网格几何快照（空白位右键命中判定使用；列表模式恒为单列）
+        self._grid_cols = 1
+        self._grid_card_size = QSize(card_width, card_height)
 
         # 滚动条定位在右侧边缘（与卡片模式一致，保留顶部边距）；
         # 每次定位后 raise_() 保持其悬浮覆盖层层级，不与卡片列表同级堆叠。
@@ -2387,14 +2489,38 @@ class FileSelectorLayout(QWidget):
             self._card_btn.setToolTip("切换为列表视图")
         QTimer.singleShot(0, self._update_grid_size)
 
-    def set_section_styles(self, fill_color: str, border_color: str) -> None:
+    def set_section_styles(
+        self,
+        fill_color: str,
+        border_color: str,
+        bar_fill_color: Optional[str] = None,
+    ) -> None:
+        """应用面板样式到顶栏/内容区/底栏（主题切换时由 MainWindow 调用）。
+
+        Args:
+            fill_color: 内容区填充色。
+            border_color: 边框色。
+            bar_fill_color: 顶栏/底栏填充色；``None`` 时与内容区同色
+                （深色模式口径）。
+        """
         section_style = f"""
             background-color: {fill_color};
             border: 1px solid {border_color};
             border-radius: 8px;
         """
-        for _w in (self._top_bar, self._content_area, self._bottom_bar):
-            register_widget_qss(_w,(section_style))
+        bar_style = section_style
+        if bar_fill_color is not None:
+            bar_style = f"""
+            background-color: {bar_fill_color};
+            border: 1px solid {border_color};
+            border-radius: 8px;
+        """
+        for _w, _style in (
+            (self._top_bar, bar_style),
+            (self._content_area, section_style),
+            (self._bottom_bar, bar_style),
+        ):
+            register_widget_qss(_w, _style)
             # 强制已显示控件重新套用样式（延迟构建场景下必须，否则边框/填充不重绘）
             _w.style().unpolish(_w)
             _w.style().polish(_w)

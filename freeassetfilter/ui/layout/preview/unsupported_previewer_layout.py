@@ -97,7 +97,9 @@ class UnsupportedPreviewerLayout(QWidget):
             self._name_label,
             f"color: {tm.text.name()}; font-size: 16px; font-weight: 600;",
         )
-        secondary = tm.alpha_of(tm.mid, 75).name(QColor.NameFormat.HexArgb)
+        secondary = (
+            tm.alpha_of(tm.mid, 75) if tm.is_dark_theme() else tm.text_secondary
+        ).name(QColor.NameFormat.HexArgb)
         register_widget_qss(
             self._description_label,
             f"color: {secondary}; font-size: 13px;",

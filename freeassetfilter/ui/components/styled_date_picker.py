@@ -39,7 +39,7 @@ class _CalendarPanel(QFrame):
 
     @property
     def _border_color(self) -> QColor:
-        return tm.alpha_of(tm.mid, 40)
+        return tm.control_border
 
     def __init__(self, parent=None):
         super().__init__(None)  # No parent to allow independent popup
@@ -103,7 +103,7 @@ class _CalendarPanel(QFrame):
         weekdays_layout.setContentsMargins(0, 8, 0, 4)
         for wd in ["日", "一", "二", "三", "四", "五", "六"]:
             lbl = QLabel(wd)
-            register_widget_qss(lbl,(f"color: {tm.alpha_of(tm.mid, 60).name()}; font-size: 11px;"))
+            register_widget_qss(lbl,(f"color: {tm.qss_color(tm.text_hint)}; font-size: 11px;"))
             lbl.setAlignment(Qt.AlignCenter)
             weekdays_layout.addWidget(lbl)
         self._weekdays_widget = QWidget()
@@ -492,7 +492,7 @@ class _DaysGrid(QWidget):
                     painter.setPen(QColor(tr, tg, tb))
                     painter.setFont(_font(13))
                 elif is_other:
-                    painter.setPen(tm.alpha_of(tm.mid, 60))
+                    painter.setPen(tm.text_hint)
                     painter.setFont(_font(13))
                 else:
                     painter.setPen(self._text_primary)
@@ -781,7 +781,7 @@ class _NavButton(QPushButton):
         self.setCursor(Qt.PointingHandCursor)
         register_widget_qss(self,(f"""
             QPushButton {{
-                background: transparent; border: none; color: {tm.mid.name()};
+                background: transparent; border: none; color: {tm.qss_color(tm.text_secondary)};
                 border-radius: 4px;
             }}
             QPushButton:hover {{ background: {tm.fill.lighter(115).name()}; }}
@@ -846,7 +846,7 @@ class _TimePicker(QWidget):
 
         # Separator
         sep = QLabel(":")
-        register_widget_qss(sep,(f"color: {tm.mid.name()}; font-size: 14px; font-weight: 600;"))
+        register_widget_qss(sep,(f"color: {tm.qss_color(tm.text_secondary)}; font-size: 14px; font-weight: 600;"))
         sep.setAlignment(Qt.AlignCenter)
         sep.setFixedWidth(12)
         layout.addWidget(sep)
@@ -972,7 +972,7 @@ class _EditableNumber(QWidget):
         register_widget_qss(self._label,(f"""
             QLabel {{
                 background: {tm.fill.name()}; color: {tm.text.name()};
-                border: 1px solid {tm.alpha_of(tm.mid, 40).name()}; border-radius: 4px;
+                border: 1px solid {tm.qss_color(tm.control_border)}; border-radius: 4px;
                 font-size: 15px; font-weight: 600;
             }}
             QLabel:hover {{ border: 1px solid {tm.accent.name()}; background: {tm.fill.name()}; }}
@@ -1034,7 +1034,7 @@ class _DateInput(QWidget):
 
     @property
     def _bg_input(self) -> QColor:
-        return tm.alpha_of(tm.mid, 40)
+        return tm.control_border
 
     @property
     def _accent_primary(self) -> QColor:
@@ -1464,7 +1464,7 @@ class _TimePanel(QFrame):
 
     @property
     def _border_color(self) -> QColor:
-        return tm.alpha_of(tm.mid, 40)
+        return tm.control_border
 
     def __init__(self, parent=None):
         super().__init__(None)  # No parent to allow independent popup

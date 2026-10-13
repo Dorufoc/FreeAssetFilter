@@ -108,7 +108,7 @@ class StyledMusicInfoPanel(QWidget):
         artist_font = QFont("Microsoft YaHei UI", self.ARTIST_FONT_SIZE)
         self._artist_label.setFont(artist_font)
         register_widget_qss(self._artist_label,(
-            f"background: transparent; color: {tm.mid.name()};"
+            f"background: transparent; color: {tm.qss_color(tm.text_secondary)};"
         ))
         self._artist_label.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
@@ -163,7 +163,7 @@ class StyledMusicInfoPanel(QWidget):
             except OSError:
                 pass
 
-        pixmap.fill(tm.mid)
+        pixmap.fill(tm.track_fill)
         return pixmap
 
     def set_title(self, title: str) -> None:

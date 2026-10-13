@@ -537,11 +537,10 @@ class TestFileInfoPanelTypographyAndScroll:
     def test_toast_style_matches_fold_text(self, qapp: QApplication, tmp_path: Path) -> None:
         """「已复制」与折叠行文字同字号同色，且纯透明无胶囊背景。"""
         import freeassetfilter.ui.layout.preview.file_info_panel as fip_module
-        from theme import tm
 
         panel = _make_panel(qapp, tmp_path)
         stylesheet = panel._toast_label.styleSheet()
-        expected_color = fip_module._rgba(tm.alpha_of(tm.mid, 80))
+        expected_color = fip_module._rgba(fip_module._fold_text_color())
         assert expected_color in stylesheet
         assert "font-size: 12px" in stylesheet
         assert "background: transparent" in stylesheet

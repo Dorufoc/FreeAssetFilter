@@ -196,3 +196,61 @@ class TestGetThemeManager:
         tm2 = get_theme_manager()
         assert tm1 is tm2
         assert isinstance(tm1, ThemeManager)
+
+
+class TestSemanticTokens:
+    """浅色语义色阶：深色取历史值、浅色分支生效、QSS 序列化与可读前景。"""
+
+    def test_dark_tokens_match_historical_values(self) -> None:
+        """深色 token 与历史口径一致（改浅色不得影响深色）。"""
+        tm = ThemeManager()
+        tm.set_theme("dark")
+        assert tm.panel_fill == tm.alpha_of(tm.text, 5)
+        assert tm.bar_fill == tm.alpha_of(tm.text, 5)
+        assert tm.card_fill == tm.alpha_of(tm.surface, 85)
+        assert tm.card_border == tm.alpha_of(tm.mid, 30)
+        assert tm.control_border == tm.alpha_of(tm.mid, 30)
+        assert tm.control_border_strong == tm.alpha_of(tm.mid, 50)
+        assert tm.hover_veil == tm.alpha_of(tm.mid, 25)
+        assert tm.track_fill == tm.alpha_of(tm.mid, 40)
+        assert tm.divider == tm.alpha_of(tm.mid, 30)
+        assert tm.scrim == tm.with_alpha(tm.black, 128)
+        assert tm.text_secondary == tm.mid
+        assert tm.text_hint == tm.alpha_of(tm.mid, 60)
+        assert tm.text_disabled == tm.alpha_of(tm.mid, 40)
+        assert tm.accent_text == tm.accent
+        assert tm.scroll_handle_alphas == (102, 204, 255)
+
+    def test_light_tokens_branch(self) -> None:
+        """浅色 token 走偏白磨砂/压暗文字分支，且与深色取值不同。"""
+        tm = ThemeManager()
+        tm.set_theme("light")
+        assert tm.panel_fill == tm.alpha_of(tm.surface, 72)
+        assert tm.bar_fill == tm.alpha_of(tm.surface, 86)
+        assert tm.card_fill == tm.alpha_of(tm.white, 92)
+        assert tm.card_border == tm.alpha_of(tm.text, 10)
+        assert tm.control_border == tm.alpha_of(tm.text, 14)
+        assert tm.hover_veil == tm.alpha_of(tm.text, 6)
+        assert tm.track_fill == tm.alpha_of(tm.text, 9)
+        assert tm.divider == tm.alpha_of(tm.text, 8)
+        assert tm.scrim == tm.alpha_of(tm.surface, 72)
+        assert tm.text_secondary == tm.alpha_of(tm.text, 60)
+        assert tm.text_hint == tm.alpha_of(tm.text, 55)
+        assert tm.text_disabled == tm.alpha_of(tm.text, 38)
+        assert tm.scroll_handle_alphas == (140, 191, 242)
+        # 浅色强调文字：压暗以提升白底对比（值必须低于原 accent）
+        assert tm.accent_text.value() < tm.accent.value()
+
+    def test_qss_color_keeps_owner_alpha(self) -> None:
+        """qss_color 按 QColor 自身 alpha 序列化（qss_rgba 需另传百分比）。"""
+        tm = ThemeManager()
+        tm.set_theme("light")
+        assert tm.qss_color(tm.card_fill).startswith("rgba(255,255,255,")
+        assert tm.qss_color(tm.surface).endswith(",1.000)")
+
+    def test_readable_on_picks_contrast(self) -> None:
+        """readable_on：浅底（warning）转近黑，深底保持白字。"""
+        tm = ThemeManager()
+        assert tm.readable_on(QColor("#f59e0b")).red() < 128
+        assert tm.readable_on(QColor("#1a1a1a")).red() > 128
+        assert tm.readable_on(QColor("#000000")).red() > 128

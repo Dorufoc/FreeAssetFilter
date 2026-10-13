@@ -199,31 +199,42 @@ class StyledToggle(QWidget):
         travel = config["travel"]
 
         # Determine track color
+        dark = tm.is_dark_theme()
         if not self._enabled:
             if self._checked:
                 track_color = tm.alpha_of(tm.accent, 31)
             else:
-                track_color = tm.alpha_of(tm.mid, 40)
-            thumb_color = tm.alpha_of(tm.mid, 60)
+                track_color = tm.alpha_of(tm.mid, 40) if dark else tm.control_border
+            thumb_color = tm.alpha_of(tm.mid, 60) if dark else tm.alpha_of(tm.text, 25)
             alpha = 128
         else:
-            # Interpolate track color based on toggle progress
-            track_off = tm.alpha_of(tm.mid, 40)
+            # Interpolate track color based on toggle progress（RGBA 四通道一起插值：
+            # 关闭态是半透明灰，开启态是实色 accent；此前只插值 RGB 并在末尾
+            # 用 QColor(r, g, b) 重建，会把关闭态的 alpha 丢掉、渲染成实心灰）
+            track_off = tm.alpha_of(tm.mid, 40) if dark else tm.alpha_of(tm.text, 18)
             track_on = tm.accent
-            r = int(track_off.red() + (track_on.red() - track_off.red()) * self._anim_progress)
-            g = int(track_off.green() + (track_on.green() - track_off.green()) * self._anim_progress)
-            b = int(track_off.blue() + (track_on.blue() - track_off.blue()) * self._anim_progress)
-            base = QColor(r, g, b)
-
-            # Smooth hover brightness via animated progress
-            hovered = base.lighter(115)
-            track_color = QColor(
-                int(base.red()   + (hovered.red()   - base.red())   * self._hover_progress),
-                int(base.green() + (hovered.green() - base.green()) * self._hover_progress),
-                int(base.blue()  + (hovered.blue()  - base.blue())  * self._hover_progress),
+            p = self._anim_progress
+            solid = QColor(
+                int(track_off.red() + (track_on.red() - track_off.red()) * p),
+                int(track_off.green() + (track_on.green() - track_off.green()) * p),
+                int(track_off.blue() + (track_on.blue() - track_off.blue()) * p),
+                int(track_off.alpha() + (track_on.alpha() - track_off.alpha()) * p),
             )
 
-            thumb_color = tm.text
+            # Smooth hover brightness via animated progress
+            hovered = QColor(solid)
+            hovered.setAlpha(solid.alpha())
+            hovered = hovered.lighter(115)
+            hovered.setAlpha(solid.alpha())
+            track_color = QColor(
+                int(solid.red()   + (hovered.red()   - solid.red())   * self._hover_progress),
+                int(solid.green() + (hovered.green() - solid.green()) * self._hover_progress),
+                int(solid.blue()  + (hovered.blue()  - solid.blue())  * self._hover_progress),
+                solid.alpha(),
+            )
+
+            # 浅色旋钮用白色（与浅轨形成对比，配阴影分层），深色沿用 text（白）历史口径
+            thumb_color = tm.text if tm.is_dark_theme() else tm.white
             alpha = 255
 
         # Calculate thumb rect — base size is 0.8× the original

@@ -314,17 +314,20 @@ class StyledCheckbox(QWidget):
             box_y = (h - box) / 2
 
             # Determine colors
+            _dark = tm.is_dark_theme()
             if not self._enabled:
                 if self._checked or self._indeterminate:
                     bg_color = tm.alpha_of(tm.accent, 39)
                     border_color = tm.alpha_of(tm.accent, 39)
                 else:
                     bg_color = QColor(0, 0, 0, 0)
-                    border_color = tm.mid
+                    border_color = tm.mid if _dark else tm.control_border
                 check_alpha = 128
             else:
                 _accent = tm.accent
-                _border = tm.alpha_of(tm.mid, 40)
+                # 浅色下 mid 40% 描边约 1.5:1（勾选框几乎看不见），改用
+                # 深灰低透明度；深色沿用历史 mid 40%。
+                _border = tm.alpha_of(tm.mid, 40) if _dark else tm.control_border
                 border_color = _border
                 bg_color = QColor(0, 0, 0, 0)
                 check_alpha = 255
@@ -342,7 +345,9 @@ class StyledCheckbox(QWidget):
                     border_b = int(_border.blue() * (1 - p) + _accent.blue() * p)
                     border_color = QColor(border_r, border_g, border_b)
 
-                hover_target = tm.alpha_of(tm.mid, 60)
+                hover_target = (
+                    tm.alpha_of(tm.mid, 60) if _dark else tm.control_border_strong
+                )
                 if self._hover_progress > 0 and p <= 0:
                     r = int(border_color.red() + (hover_target.red() - border_color.red()) * self._hover_progress)
                     g = int(border_color.green() + (hover_target.green() - border_color.green()) * self._hover_progress)
@@ -365,7 +370,8 @@ class StyledCheckbox(QWidget):
 
                 if self._indeterminate:
                     painter.setPen(Qt.NoPen)
-                    painter.setBrush(tm.text)
+                    # 勾选符号用"在 accent 上可读"的前景色（浅色 accent 下自动转近黑）
+                    painter.setBrush(tm.readable_on(tm.accent))
                     line_x = box_x + (box - self._indeterminate_w) / 2
                     line_y = box_y + (box - self._indeterminate_h) / 2
                     painter.drawRoundedRect(
@@ -374,7 +380,7 @@ class StyledCheckbox(QWidget):
                         self._indeterminate_h / 2,
                     )
                 else:
-                    painter.setPen(QPen(tm.text, 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+                    painter.setPen(QPen(tm.readable_on(tm.accent), 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
 
                     s = self._scale_progress
                     m = box * 0.125
@@ -411,7 +417,7 @@ class StyledCheckbox(QWidget):
                 # baseline y so that text midline == box midline
                 text_y = box_y + (box - text_visual_h) / 2 + fm.ascent()
 
-                painter.setPen(tm.text if self._enabled else tm.alpha_of(tm.mid, 40))
+                painter.setPen(tm.text if self._enabled else tm.text_disabled)
                 painter.setFont(font)
                 painter.drawText(int(text_x), int(text_y), self._text)
 
