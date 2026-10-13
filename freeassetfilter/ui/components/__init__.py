@@ -85,6 +85,9 @@ _SYMBOL_TO_MODULE: dict[str, str] = {
     "FileListModel": "file_list_model",
     "FileCardDelegate": "file_card_delegate",
     "AnimatedFileListView": "animated_file_list_view",
+    "StyledAIChatPanel": "styled_ai_chat",
+    "StyledAIMessageList": "styled_ai_chat",
+    "StyledAIToolApproval": "styled_ai_chat",
 }
 
 __all__ = [
@@ -156,6 +159,9 @@ __all__ = [
     "FileListModel",
     "FileCardDelegate",
     "AnimatedFileListView",
+    "StyledAIChatPanel",
+    "StyledAIMessageList",
+    "StyledAIToolApproval",
 ]
 
 

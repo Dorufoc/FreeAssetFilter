@@ -145,12 +145,13 @@ class _StyledTextEdit(QPlainTextEdit):
     def paintEvent(self, event):
         """Draw background rounded rect, then let QPlainTextEdit render text."""
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        config = self.SIZE_CONFIG[self._size]
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(self.rect()), config["radius"], config["radius"])
-        painter.fillPath(path, self._bg_color())
-        painter.end()
+        if painter.isActive():
+            painter.setRenderHint(QPainter.Antialiasing)
+            config = self.SIZE_CONFIG[self._size]
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(self.rect()), config["radius"], config["radius"])
+            painter.fillPath(path, self._bg_color())
+            painter.end()
         super().paintEvent(event)
 
     # ---- event tracking ----
