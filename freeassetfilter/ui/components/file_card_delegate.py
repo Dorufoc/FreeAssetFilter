@@ -52,7 +52,10 @@ from components.file_list_model import (
     IsPreviewingRole,
     IconPixmapRole,
     CardWidthRole,
+    IsDriveRole,
+    DriveUsageRole,
 )
+from freeassetfilter.ui.components.styled_progress_circle import StyledProgressCircle
 
 # 图标相对 media 区域的放大系数：>1 时图标超出 media 区域边界绘制，视觉更大。
 # 当前试探值 1.10 = 放大 10%，后续可按需调整（与 StyledInfoCard 保持一致）。
@@ -1027,6 +1030,8 @@ class FileCardDelegate(QStyledItemDelegate):
             "is_selected": bool(model.data(index, IsSelectedRole)),
             "is_previewing": bool(model.data(index, IsPreviewingRole)),
             "icon_pixmap": model.data(index, IconPixmapRole),
+            "is_drive": bool(model.data(index, IsDriveRole)),
+            "usage_ratio": model.data(index, DriveUsageRole),
         }
 
     # ── sizeHint ────────────────────────────────────────────────────────────
@@ -1234,6 +1239,38 @@ class FileCardDelegate(QStyledItemDelegate):
         _SCALED_CONFIG_CACHE[key] = result
         return result
 
+    @staticmethod
+    def _draw_media(
+        painter: QPainter,
+        media_rect: QRectF,
+        file_info: Dict[str, Any],
+        drive_vertical_offset: float = 0.0,
+    ) -> None:
+        """Draw a drive ring or fall back to the normal file icon."""
+        if file_info.get("is_drive") and file_info.get("usage_ratio") is not None:
+            value = max(0.0, min(1.0, float(file_info["usage_ratio"])))
+            ring_rect = media_rect.translated(0.0, drive_vertical_offset)
+            StyledProgressCircle.paint_progress(
+                painter,
+                ring_rect,
+                value,
+                StyledProgressCircle.variant_for_value(value),
+                fit_to_rect=True,
+            )
+            return
+        icon_pixmap = file_info.get("icon_pixmap")
+        if icon_pixmap and not icon_pixmap.isNull():
+            FileCardDelegate._draw_icon_pixmap(painter, icon_pixmap, media_rect)
+            return
+        suffix = file_info.get("suffix", "")
+        is_dir = file_info.get("is_dir", False)
+        icon_char = "D" if is_dir else (suffix[0].upper() if suffix else "?")
+        media_size = min(media_rect.width(), media_rect.height())
+        icon_font_size = max(1, int(media_size * 0.6 * _MEDIA_ICON_SCALE))
+        painter.setFont(QFont("Segoe UI", icon_font_size, QFont.Bold))
+        painter.setPen(_get_colors()["icon"])
+        painter.drawText(media_rect, Qt.AlignCenter, icon_char)
+
     def _paint_card(
         self,
         painter: QPainter,
@@ -1295,22 +1332,12 @@ class FileCardDelegate(QStyledItemDelegate):
         media_x = rx + (w - media_size) / 2.0
         media_y = ry + padding
 
-        icon_pixmap = file_info.get("icon_pixmap")
-        if icon_pixmap and not icon_pixmap.isNull():
-            self._draw_icon_pixmap(
-                painter,
-                icon_pixmap,
-                QRectF(media_x, media_y, media_size, media_size),
-            )
-        else:
-            suffix = file_info.get("suffix", "")
-            is_dir = file_info.get("is_dir", False)
-            icon_char = "D" if is_dir else (suffix[0].upper() if suffix else "?")
-            # 字号按放大后的图标尺寸比例计算，视觉占比与填满的图标一致
-            icon_font_size = max(config["icon_size"], int(media_size * 0.6 * _MEDIA_ICON_SCALE))
-            painter.setFont(QFont("Segoe UI", icon_font_size, QFont.Bold))
-            painter.setPen(colors["icon"])
-            painter.drawText(QRectF(media_x, media_y, media_size, media_size), Qt.AlignCenter, icon_char)
+        self._draw_media(
+            painter,
+            QRectF(media_x, media_y, media_size, media_size),
+            file_info,
+            drive_vertical_offset=2.0,
+        )
 
         # 文字区域
         text_x = rx + padding
@@ -1380,22 +1407,11 @@ class FileCardDelegate(QStyledItemDelegate):
         media_x = rx + padding
         media_y = ry + (h - media_size) / 2.0
 
-        icon_pixmap = file_info.get("icon_pixmap")
-        if icon_pixmap and not icon_pixmap.isNull():
-            self._draw_icon_pixmap(
-                painter,
-                icon_pixmap,
-                QRectF(media_x, media_y, media_size, media_size),
-            )
-        else:
-            suffix = file_info.get("suffix", "")
-            is_dir = file_info.get("is_dir", False)
-            icon_char = "D" if is_dir else (suffix[0].upper() if suffix else "?")
-            # 字号按放大后的图标尺寸比例计算，视觉占比与填满的图标一致
-            icon_font_size = max(config["icon_size"], int(media_size * 0.6 * _MEDIA_ICON_SCALE))
-            painter.setFont(QFont("Segoe UI", icon_font_size, QFont.Bold))
-            painter.setPen(colors["icon"])
-            painter.drawText(QRectF(media_x, media_y, media_size, media_size), Qt.AlignCenter, icon_char)
+        self._draw_media(
+            painter,
+            QRectF(media_x, media_y, media_size, media_size),
+            file_info,
+        )
 
         # 文字区域（右）：垂直方向覆盖卡片全高，由 _draw_text 内部
         # 将文本块整体垂直居中（不再硬编码距卡片顶部的 padding 偏移，

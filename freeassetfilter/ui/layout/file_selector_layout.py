@@ -5,6 +5,7 @@
 import ctypes
 import os
 import re
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -735,8 +736,19 @@ class FileSelectorLayout(QWidget):
                 except OSError:
                     modified = ""
                     created = ""
+                usage_ratio: Optional[float] = None
+                try:
+                    usage = shutil.disk_usage(drive_path)
+                    if usage.total > 0:
+                        usage_ratio = max(
+                            0.0,
+                            min(1.0, (usage.total - usage.free) / usage.total),
+                        )
+                except Exception:  # noqa: BLE001  # 盘符容量探测失败不阻塞 All 视图
+                    pass
                 entries.append({
                     "name": drive_name, "path": drive_path, "is_dir": True,
+                    "is_drive": True, "usage_ratio": usage_ratio,
                     "size": 0, "modified": modified, "created": created, "suffix": "",
                 })
         else:

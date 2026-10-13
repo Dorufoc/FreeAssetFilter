@@ -2,7 +2,7 @@
 
 import math
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QSizePolicy
-from PySide6.QtCore import Qt, QRectF, QPropertyAnimation, QEasingCurve, Property, QPointF
+from PySide6.QtCore import Qt, QRectF, QPropertyAnimation, QEasingCurve, Property
 from PySide6.QtGui import QPainter, QPaintEvent, QFont, QPen
 from theme import tm
 
@@ -21,6 +21,67 @@ class StyledProgressCircle(QWidget):
         "warning": tm.warning,
         "danger": tm.danger,
     }
+    WARNING_THRESHOLD = 0.8
+    DANGER_THRESHOLD = 0.9
+
+    @classmethod
+    def variant_for_value(cls, value: float) -> str:
+        """Return the semantic color variant for a usage ratio."""
+        value = max(0.0, min(1.0, float(value)))
+        if value >= cls.DANGER_THRESHOLD:
+            return "danger"
+        if value >= cls.WARNING_THRESHOLD:
+            return "warning"
+        return "default"
+
+    @classmethod
+    def paint_progress(
+        cls,
+        painter: QPainter,
+        rect: QRectF,
+        value: float,
+        variant: str = "default",
+        show_percentage: bool = True,
+        size_variant: str = "sm",
+        fit_to_rect: bool = False,
+    ) -> None:
+        """Paint a circular progress ring using the styled component's visuals."""
+        if not painter.isActive() or rect.isEmpty():
+            return
+        value = max(0.0, min(1.0, float(value)))
+        variant = variant if variant in cls.COLOR_CONFIG else "default"
+        size = min(float(rect.width()), float(rect.height()))
+        config = cls.SIZE_CONFIG.get(size_variant, cls.SIZE_CONFIG["sm"])
+        if fit_to_rect:
+            scale = size / float(config["radius"] * 2 + config["stroke_width"])
+        else:
+            scale = size / float(config["size"] + config["margin"] * 2)
+        radius = config["radius"] * scale
+        stroke_width = max(1.0, config["stroke_width"] * scale)
+        center = rect.center()
+        painter.save()
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            track = tm.alpha_of(tm.mid, 40)
+            pen = QPen(track, stroke_width)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(pen)
+            painter.drawEllipse(center, radius, radius)
+            if value > 0.0:
+                pen.setColor(cls.COLOR_CONFIG[variant])
+                painter.setPen(pen)
+                painter.drawArc(
+                    int(center.x() - radius), int(center.y() - radius),
+                    int(radius * 2), int(radius * 2), 90 * 16, -int(value * 360 * 16),
+                )
+            if show_percentage:
+                font = QFont("Microsoft YaHei UI", max(1, int(config["font_size"] * scale)))
+                font.setWeight(QFont.Weight.Medium)
+                painter.setFont(font)
+                painter.setPen(tm.text)
+                painter.drawText(rect, Qt.AlignCenter, f"{int(value * 100)}%")
+        finally:
+            painter.restore()
 
     SIZE_CONFIG = {
         "sm": {
@@ -236,50 +297,13 @@ class CircleWidget(QWidget):
 
     def paintEvent(self, event: QPaintEvent):
         painter = QPainter(self)
-        if not painter.isActive():
-            return
-
-        try:
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-            # Offset by margin so the circle is centered in the padded widget
-            m = float(self._margin)
-            cx = float(self.width()) / 2.0
-            cy = float(self.height()) / 2.0
-            r = float(self._radius)
-
-            # Track circle (background)
-            track_color = tm.alpha_of(tm.mid, 40)
-            pen = QPen(track_color, float(self._stroke_width))
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            painter.setPen(pen)
-            painter.drawEllipse(QPointF(cx, cy), r, r)
-
-            # Fill circle (progress) using arc drawing
-            fill_color = StyledProgressCircle.COLOR_CONFIG[self._variant]
-            pen.setColor(fill_color)
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            painter.setPen(pen)
-
-            # Draw arc for progress (0% = no arc, 100% = full circle)
-            # Qt arc angles: 0 = 3 o'clock, increases counter-clockwise
-            # Start from top: 90 * 16, sweep clockwise with negative angle
-            progress_angle = self._anim_value * 360 * 16  # 16ths of a degree
-            if progress_angle > 0:
-                painter.drawArc(
-                    int(cx - r), int(cy - r),
-                    int(r * 2), int(r * 2),
-                    90 * 16,  # Start from top
-                    -int(progress_angle)  # Negative for clockwise sweep
-                )
-
-            # Percentage label centered inside the ring
-            if self._show_percentage:
-                painter.setPen(tm.text)
-                painter.setFont(self._percent_font)
-                text = f"{int(self._anim_value * 100)}%"
-                text_rect = QRectF(0.0, 0.0, float(self.width()), float(self.height()))
-                painter.drawText(text_rect, Qt.AlignCenter, text)
-        finally:
-            if painter.isActive():
-                painter.end()
+        StyledProgressCircle.paint_progress(
+            painter,
+            QRectF(self.rect()),
+            self._anim_value,
+            self._variant,
+            self._show_percentage,
+            self._size,
+        )
+        if painter.isActive():
+            painter.end()

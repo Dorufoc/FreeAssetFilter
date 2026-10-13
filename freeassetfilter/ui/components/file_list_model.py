@@ -39,12 +39,14 @@ IsPreviewingRole: int = Qt.ItemDataRole.UserRole + 9
 IconPixmapRole: int = Qt.ItemDataRole.UserRole + 10
 CardWidthRole: int = Qt.ItemDataRole.UserRole + 11
 GridOffsetRole: int = Qt.ItemDataRole.UserRole + 12
+IsDriveRole: int = Qt.ItemDataRole.UserRole + 13
+DriveUsageRole: int = Qt.ItemDataRole.UserRole + 14
 
 
 class FileListModel(QAbstractListModel):
     """    轻量文件列表数据模型。
 
-    提供 12 个自定义角色用于视图数据访问，维护 O(1) 路径→行号索引。
+    提供 14 个自定义角色用于视图数据访问，维护 O(1) 路径→行号索引。
     不包含异步加载、缓存池或后台线程逻辑。
 
     角色列表：
@@ -60,6 +62,8 @@ class FileListModel(QAbstractListModel):
         IconPixmapRole (QPixmap): 文件图标
         CardWidthRole (int):    卡片动态宽度
         GridOffsetRole (int):   卡片网格水平偏移量（用于居中）
+        IsDriveRole (bool):     是否为 All 视图中的盘符条目
+        DriveUsageRole (float | None): 盘符空间占用率，未知时为 None
     """
 
     def __init__(self, parent: Optional[object] = None) -> None:
@@ -106,6 +110,8 @@ class FileListModel(QAbstractListModel):
                 "modified": info.get("modified", ""),
                 "created": info.get("created", ""),
                 "suffix": info.get("suffix", "").lower(),
+                "is_drive": bool(info.get("is_drive", False)),
+                "usage_ratio": info.get("usage_ratio"),
                 "is_selected": False,
                 "is_previewing": False,
             }
@@ -291,6 +297,8 @@ class FileListModel(QAbstractListModel):
             "is_selected": self._files[index.row()].get("is_selected", False),
             "is_previewing": self._files[index.row()].get("is_previewing", False),
             "card_width": self._card_width,
+            "is_drive": self._files[index.row()].get("is_drive", False),
+            "usage_ratio": self._files[index.row()].get("usage_ratio"),
         }
 
     # ── QAbstractListModel 接口 ────────────────────────────────────────────
@@ -353,6 +361,10 @@ class FileListModel(QAbstractListModel):
             return self._card_width
         if role == GridOffsetRole:
             return self._grid_offset_x
+        if role == IsDriveRole:
+            return file_info.get("is_drive", False)
+        if role == DriveUsageRole:
+            return file_info.get("usage_ratio")
 
         return None
 
