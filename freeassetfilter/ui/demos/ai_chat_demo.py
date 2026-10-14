@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 from freeassetfilter.services.ai import AIAccountConfig, AIAgentService, AIConfigStore, AIProvider, AIWorker, ChatMessage
 from freeassetfilter.ui.components.styled_ai_chat import StyledAIChatPanel
 from freeassetfilter.ui.components.styled_button import StyledButton
-from freeassetfilter.ui.theme import tm
+from freeassetfilter.ui.theme.app_stylesheet import apply_app_stylesheet
 
 
 class AISettingsPage(QWidget):
@@ -94,7 +94,7 @@ class AIChatDemoWindow(QMainWindow):
 
 
 def main() -> int:
-    app = QApplication(sys.argv); app.setStyleSheet(tm.render_qss()); window = AIChatDemoWindow(); window.show(); return app.exec()
+    app = QApplication(sys.argv); apply_app_stylesheet(); window = AIChatDemoWindow(); window.show(); return app.exec()
 
 
 if __name__ == "__main__": raise SystemExit(main())
