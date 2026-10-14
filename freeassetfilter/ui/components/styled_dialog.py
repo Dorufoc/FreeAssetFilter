@@ -180,7 +180,7 @@ class StyledDialog(QWidget):
         register_widget_qss(self._content_widget,(f"""
             #DialogContent {{
                 background-color: {tm.surface.name()};
-                border: 1px solid {tm.qss_color(tm.alpha_of(tm.text, 10) if not tm.is_dark_theme() else tm.alpha_of(tm.mid, 40))};
+                border: 1px solid {tm.qss_color(tm.alpha_of(tm.text if not tm.is_dark_theme() else tm.mid, 40))};
                 border-radius: 12px;
             }}
         """))
@@ -291,9 +291,8 @@ class StyledDialog(QWidget):
         footer_frame = QWidget()
         footer_frame.setObjectName("footer_frame")
         has_border = footer_type != FOOTER_NO_BORDER
-        divider = (
-            tm.alpha_of(tm.surface, 90) if tm.is_dark_theme()
-            else tm.alpha_of(tm.text, 8)
+        divider = tm.alpha_of(
+            tm.surface if tm.is_dark_theme() else tm.text, 90
         )
         border_css = f"border-top: 1px solid {tm.qss_color(divider)};" if has_border else ""
         # Use object name selector to prevent style inheritance to child widgets
@@ -401,7 +400,7 @@ class StyledDialog(QWidget):
         register_widget_qss(btn,(
             f"QPushButton {{ background: transparent; border: none; border-radius: 6px;"
             f" color: {tm.qss_color(tm.text_secondary)}; font-size: 18px; font-weight: 300; }}"
-            f"QPushButton:hover {{ background-color: {tm.qss_color(tm.alpha_of(tm.text, 6) if not tm.is_dark_theme() else tm.alpha_of(tm.mid, 20))};"
+            f"QPushButton:hover {{ background-color: {tm.qss_color(tm.alpha_of(tm.text if not tm.is_dark_theme() else tm.mid, 20))};"
             f" color: {tm.text.name()}; }}"
         ))
         btn.setText("✕")

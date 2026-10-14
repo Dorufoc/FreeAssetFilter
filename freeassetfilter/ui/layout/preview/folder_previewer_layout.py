@@ -335,7 +335,7 @@ class _FolderEntryDelegate(QStyledItemDelegate):
             bg = tm.alpha_of(tm.accent, 35)
             border = tm.alpha_of(tm.accent, 90)
         elif is_hovered:
-            bg = tm.alpha_of(tm.text, 8)
+            bg = tm.alpha_of(tm.mid if tm.is_dark_theme() else tm.text, 25)
             border = tm.transparent
         else:
             bg = tm.transparent

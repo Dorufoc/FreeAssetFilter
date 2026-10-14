@@ -46,7 +46,7 @@ def _get_color_variants() -> dict:
         "orange": (_text(tm.warning), tm.alpha_of(tm.warning, 20)),
         "default": (
             tm.mid.name() if dark else tm.qss_color(tm.text_secondary),
-            tm.alpha_of(tm.surface, 90) if dark else tm.alpha_of(tm.text, 8),
+            tm.alpha_of(tm.surface, 90),
         ),
     }
 

@@ -388,9 +388,9 @@ class StyledInfoCard(QWidget):
         在深色模式下会导致卡片背景错误地呈现为白色）。
         """
         # 与 FileCardDelegate._get_colors() 的取值一致（语义 token）：
-        # - 正常/选中态背景：浅色近实色白底 / 深色 surface 85%
-        # - hover 背景：跟随卡片底 + 覆盖层轻压暗/提亮（见 _get_colors.hover_overlay）
-        # - 边框：浅色 text 10% / 深色 mid 30%（hover 提一档）
+        # - 正常/选中态背景：浅深模式 alpha 一致，仅反转颜色亮度
+        # - hover 背景：跟随卡片底 + 覆盖层（见 _get_colors.hover_overlay）
+        # - 边框：浅深模式 alpha 一致（hover 提一档）
         # - 框选选中态：accent 填充 + accent 虚线边框（与预览流光、
         #   文件选择器"已入池"实线边框区分）
         # - 预览态边框：text 色（对应 FileBlockCard 的 secondary_color 语义）
@@ -398,11 +398,9 @@ class StyledInfoCard(QWidget):
         normal_bg = tm.card_fill
         normal_border = tm.card_border
         # hover 背景/边框：hover 视觉现由覆盖层动画承担（见 _get_colors），
-        # 这两项保留为状态色定义（深色历史值 surface 90% / mid 40%）。
-        hover_bg = tm.alpha_of(tm.surface, 90) if dark else tm.card_fill
-        hover_border = (
-            tm.alpha_of(tm.mid, 40) if dark else tm.alpha_of(tm.text, 14)
-        )
+        # 两种模式保持相同 alpha，仅按主题反转颜色亮度。
+        hover_bg = tm.alpha_of(tm.surface, 90)
+        hover_border = tm.alpha_of(tm.mid if dark else tm.text, 40)
         selected_bg = tm.alpha_of(tm.accent, 25 if dark else 20)
         selected_border = QColor(tm.accent)
 

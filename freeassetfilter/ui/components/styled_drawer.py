@@ -271,7 +271,7 @@ class StyledDrawer(QWidget):
         register_widget_qss(close_btn,(
             f"QPushButton {{ background: transparent; border: none; border-radius: 6px;"
             f" color: {tm.qss_color(tm.text_secondary)}; font-size: 18px; font-weight: 300; }}"
-            f"QPushButton:hover {{ background-color: {tm.qss_color(tm.alpha_of(tm.text, 6) if not tm.is_dark_theme() else tm.alpha_of(tm.mid, 20))}; color: {tm.text.name()}; }}"
+            f"QPushButton:hover {{ background-color: {tm.qss_color(tm.alpha_of(tm.text if not tm.is_dark_theme() else tm.mid, 20))}; color: {tm.text.name()}; }}"
         ))
         close_btn.clicked.connect(self.close_drawer)
         hdr_layout.addWidget(close_btn, alignment=Qt.AlignTop)

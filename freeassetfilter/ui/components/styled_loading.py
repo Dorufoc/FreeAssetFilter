@@ -283,9 +283,9 @@ class StyledLoading(QWidget):
     def _backdrop_color(self) -> QColor:
         """当前遮罩填充色（绘制期现取，跟随主题与强调色变化）。
 
-        dim 遮罩按主题分支：深色=半透明黑（历史口径，``OVERLAY_ALPHA``），
-        浅色=浅色 scrim（``tm.scrim``，surface 偏白半透明）——浅色界面
-        被整块压黑会显得突兀发脏；opaque 始终为主题表面色（启动屏）。
+        dim 遮罩按主题分支：深色=半透明黑、浅色=亮色 scrim（``tm.scrim``），
+        两种模式保持相同透明度，仅反转颜色亮度；opaque 始终为主题表面色
+        （启动屏）。
         """
         if self._backdrop == "opaque":
             return QColor(tm.surface)

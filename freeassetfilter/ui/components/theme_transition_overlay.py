@@ -229,6 +229,9 @@ class _SnapshotTransitionOverlay(QWidget):
             return
         painter = QPainter(self)
         try:
+            # 快照按原生 DPR 保留；dpr 为小数时遮罩目标尺寸非快照物理像素的
+            # 整数倍，保持平滑过滤避免缩放发糊。
+            painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
             painter.setOpacity(self._opacity)
             painter.drawPixmap(self.rect(), self._snapshot)
         finally:

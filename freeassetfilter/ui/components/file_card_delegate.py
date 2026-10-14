@@ -353,8 +353,7 @@ def _get_colors() -> Dict[str, Any]:
     resize 重绘热路径中每帧每卡片都会调用；缓存避免反复解析
     tm.surface/mid/text/accent 等颜色字符串。
 
-    浅色模式：卡片=近实色白底 + 浅描边（层次来自卡片与磨砂面板的亮度差），
-    hover=轻压暗；深色模式沿用历史口径（surface 85% + mid 边框 + mid 提亮）。
+    浅深模式使用相同透明度口径，卡片、描边和 hover 仅按主题反转颜色亮度。
     """
     key = tm.is_dark_theme()
     cached = _COLORS_CACHE.get(key)

@@ -45,19 +45,18 @@ class StyledButton(QPushButton):
             ("primary", "bg_active"): tm.accent_active,
             ("primary", "text"): tm.white,
             ("primary", "shadow"): tm.accent_alpha(76),
-            # secondary：浅色用中性浅灰填充（mid 20% 在浅底会泛灰蓝），
-            # 深色沿用历史 mid 20/50/40% 口径。
+            # secondary：浅深模式保持相同透明度，仅按主题反转颜色亮度。
             ("secondary", "bg"): (
                 tm.alpha_of(tm.mid, 20) if tm.is_dark_theme()
-                else tm.alpha_of(tm.text, 6)
+                else tm.alpha_of(tm.text, 20)
             ),
             ("secondary", "bg_hover"): (
                 tm.alpha_of(tm.mid, 50) if tm.is_dark_theme()
-                else tm.alpha_of(tm.text, 10)
+                else tm.alpha_of(tm.text, 50)
             ),
             ("secondary", "bg_active"): (
                 tm.alpha_of(tm.mid, 40) if tm.is_dark_theme()
-                else tm.alpha_of(tm.text, 8)
+                else tm.alpha_of(tm.text, 40)
             ),
             ("secondary", "text"): tm.text,
             ("secondary", "text_hover"): tm.text,
@@ -70,9 +69,9 @@ class StyledButton(QPushButton):
                 else tm.control_border_strong
             ),
             ("ghost", "bg"): tm.transparent,
-            # ghost hover：浅色下 text 15% 在浅底是"灰印"，降到 ~8% 更克制
-            ("ghost", "bg_hover"): tm.alpha_of(tm.text, 15 if tm.is_dark_theme() else 8),
-            ("ghost", "bg_active"): tm.alpha_of(tm.text, 15 if tm.is_dark_theme() else 8),
+            # ghost hover/active：两种模式保持相同透明度。
+            ("ghost", "bg_hover"): tm.alpha_of(tm.text, 15),
+            ("ghost", "bg_active"): tm.alpha_of(tm.text, 15),
             ("ghost", "text"): tm.text,
             ("ghost", "text_hover"): tm.text,
             ("danger", "bg"): tm.transparent,

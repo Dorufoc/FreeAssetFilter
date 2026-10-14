@@ -1049,7 +1049,7 @@ class StyledPlayerBar(QWidget):
                 self.BORDER_RADIUS,
             )
 
-            # Top border line（深色 mid 30% / 浅色 text 8%，绘制期现取）
+            # Top border line：浅深模式使用相同 alpha，仅按主题反转颜色亮度。
             painter.setPen(QPen(tm.divider, 1))
             painter.drawLine(0, 0, int(self.width()), 0)
 

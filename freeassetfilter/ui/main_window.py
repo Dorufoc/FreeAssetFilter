@@ -28,6 +28,7 @@ from PySide6.QtCore import (
     QAbstractNativeEventFilter,
     QPropertyAnimation,
     QEasingCurve,
+    QSize,
 )
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtGui import QPainter, QPaintEvent, QPixmap, QRegion, QResizeEvent, QMoveEvent, QMouseEvent, QKeyEvent, QColor, QCursor, QPalette
@@ -2158,7 +2159,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         styleSheet 不会自动重绘，必须对各分区控件强制 unpolish/polish 才能让
         边框/填充生效（与主题切换路径一致）。
         """
-        # 语义 token（浅色=偏白磨砂面板 + 浅描边；深色=text 5% + mid 50% 历史值）
+        # 语义 token：浅深模式 alpha 一致，仅按主题反转颜色亮度。
         fill_color = tm.qss_color(tm.panel_fill)
         bar_color = tm.qss_color(tm.bar_fill)
         border_color = tm.qss_color(tm.panel_border)

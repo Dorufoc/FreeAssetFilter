@@ -164,7 +164,7 @@ class SettingsCard(QWidget):
         sep.setFixedHeight(1)
         register_widget_qss(sep,(f"""
             #SettingsCardSep_{self._instance_id} {{
-                background-color: {tm.qss_color(tm.alpha_of(tm.mid, 30) if tm.is_dark_theme() else tm.alpha_of(tm.text, 10))};
+                background-color: {tm.qss_color(tm.alpha_of(tm.mid if tm.is_dark_theme() else tm.text, 30))};
             }}
         """))
         footer_layout_parent = QVBoxLayout()

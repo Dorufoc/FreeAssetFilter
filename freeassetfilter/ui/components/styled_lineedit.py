@@ -74,7 +74,7 @@ class StyledLineEdit(QLineEdit):
 
         # Disabled state colors (with alpha via rgba)
         disabled_color = tm.qss_color(tm.text_disabled)
-        disabled_border = tm.qss_color(tm.alpha_of(tm.text, 8) if not tm.is_dark_theme() else tm.alpha_of(tm.mid, 20))
+        disabled_border = tm.qss_color(tm.alpha_of(tm.text, 20) if not tm.is_dark_theme() else tm.alpha_of(tm.mid, 20))
 
         register_widget_qss(self,(f"""
             #{obj_name} {{

@@ -201,7 +201,7 @@ class _ComboPopup(QWidget):
 
         p.setPen(
             QPen(
-                tm.mid if tm.is_dark_theme() else tm.alpha_of(tm.text, 12),
+                tm.mid if tm.is_dark_theme() else tm.text,
                 1,
             )
         )

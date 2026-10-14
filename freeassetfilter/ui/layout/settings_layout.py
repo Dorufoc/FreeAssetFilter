@@ -1944,7 +1944,7 @@ class SettingsLayout(QWidget):
         所有 ``QLabel`` 通刷（历史缺陷：描述文字与滑动条读数被一并覆盖
         成标题字号/字重/颜色）。
         """
-        # 语义 token：浅色=偏白磨砂卡片 + 浅描边；深色=text 5% + mid 50%（历史值）
+        # 语义 token：浅深模式 alpha 一致，仅按主题反转颜色亮度。
         fill_color = tm.qss_color(tm.panel_fill)
         border_color = tm.qss_color(tm.panel_border)
 

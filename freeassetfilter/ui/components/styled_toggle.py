@@ -205,13 +205,13 @@ class StyledToggle(QWidget):
                 track_color = tm.alpha_of(tm.accent, 31)
             else:
                 track_color = tm.alpha_of(tm.mid, 40) if dark else tm.control_border
-            thumb_color = tm.alpha_of(tm.mid, 60) if dark else tm.alpha_of(tm.text, 25)
+            thumb_color = tm.alpha_of(tm.mid if dark else tm.text, 60)
             alpha = 128
         else:
             # Interpolate track color based on toggle progress（RGBA 四通道一起插值：
             # 关闭态是半透明灰，开启态是实色 accent；此前只插值 RGB 并在末尾
             # 用 QColor(r, g, b) 重建，会把关闭态的 alpha 丢掉、渲染成实心灰）
-            track_off = tm.alpha_of(tm.mid, 40) if dark else tm.alpha_of(tm.text, 18)
+            track_off = tm.alpha_of(tm.mid if dark else tm.text, 40)
             track_on = tm.accent
             p = self._anim_progress
             solid = QColor(

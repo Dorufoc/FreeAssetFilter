@@ -95,7 +95,7 @@ class StyledTag(QWidget):
             "default": {
                 "bg": tm.alpha_of(tm.surface, 90),
                 "text": tm.mid if dark else tm.text_secondary,
-                "border": tm.alpha_of(tm.mid, 40) if dark else tm.alpha_of(tm.text, 12),
+                "border": tm.alpha_of(tm.mid, 40) if dark else tm.alpha_of(tm.text, 40),
             },
             "primary": {
                 "bg": tm.alpha_of(tm.accent, 15),
