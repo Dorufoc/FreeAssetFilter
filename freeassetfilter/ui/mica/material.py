@@ -709,14 +709,18 @@ class MicaMaterial(QObject):
             layer_key,
             generation,
         )
-        self._worker_thread = QThread()
-        self._worker.moveToThread(self._worker_thread)
-        self._worker.done.connect(self._on_bake_done)
-        self._worker.failed.connect(self._on_bake_failed)
-        self._worker_thread.finished.connect(self._cleanup_worker)
-        self._worker_thread.started.connect(self._worker.run)
+        thread = QThread()
+        worker = self._worker
+        self._worker_thread = thread
+        worker.moveToThread(thread)
+        worker.done.connect(self._on_bake_done)
+        worker.failed.connect(self._on_bake_failed)
+        # 身份化 finished：携带本线程/worker 身份回收（见 _cleanup_worker），
+        # 使被抢占遗留的 speculative 线程事后结束不会误清新在册 worker。
+        thread.finished.connect(lambda t=thread, w=worker: self._cleanup_worker(t, w))
+        thread.started.connect(worker.run)
         self._watchdog.start(BAKE_WATCHDOG_MS)
-        self._worker_thread.start()
+        thread.start()
 
     def _background_fill_color(self) -> QColor:
         """无 Mica 内容态（失焦暂停 / 无产物兜底 / 淡入淡出底色）的背景填充色。
@@ -1529,22 +1533,26 @@ class MicaMaterial(QObject):
             # 继续走下方的重烘 / 挂起逻辑，按当前几何自愈。
         if self._worker_thread is not None:
             if self._worker_speculative:
-                # 真实请求抢占 speculative：协作式回收（先友好等待再兜底），
-                # 随后直通真实烘焙。
+                # 真实请求抢占 speculative：**仅异步 quit，绝不主线程等待**。
+                # 旧实现 quit + wait(2000) 会在 GUI 线程上等预烘线程自然结束，
+                # 预烘恰在途时把点击回调冻住最长 2s（用户感知「按下后卡顿
+                # 1-2 秒才切换」）。此处清空在册槽后直通真实烘焙；遗留线程在
+                # 后台自然结束后由身份化 _cleanup_worker 静默删除，其结果被
+                # 陈旧性守卫丢弃，不影响新层。
                 self._worker_speculative = False
                 self._silent_cleanup = True
                 self._speculative_key = None
                 self._speculative_extra = None
                 self._speculative_thread = None
                 thread = self._worker_thread
-                worker = self._worker
                 self._worker_thread = None
                 self._worker = None
-                self._stop_worker_thread(thread, worker)
-                try:
-                    thread.deleteLater()
-                except Exception:  # noqa: BLE001
-                    pass
+                if thread is not None:
+                    try:
+                        thread.quit()
+                    except Exception:  # noqa: BLE001 - 回收失败不向上抛
+                        pass
+                # thread/worker 的删除交由其后 finished → _cleanup_worker 身份分支。
             else:
                 # 在途烘焙：本次变化（主题 / 参数 / 壁纸 / 区域）已使在途结果过期。
                 # 置 ``_layer_key`` 失效，令旧 key 的在途结果被陈旧性守卫丢弃（绝不
@@ -1874,11 +1882,14 @@ class MicaMaterial(QObject):
         except Exception:
             return False
         thread = QThread()
-        self._worker.moveToThread(thread)
-        self._worker.done.connect(self._on_bake_done)
-        self._worker.failed.connect(self._on_bake_failed)
-        thread.finished.connect(self._cleanup_worker)
-        thread.started.connect(self._worker.run)
+        worker = self._worker
+        worker.moveToThread(thread)
+        worker.done.connect(self._on_bake_done)
+        worker.failed.connect(self._on_bake_failed)
+        # 身份化 finished（同 refresh_async）：遗留 speculative 线程事后结束
+        # 时不误清新在册 worker（见 _cleanup_worker）。
+        thread.finished.connect(lambda t=thread, w=worker: self._cleanup_worker(t, w))
+        thread.started.connect(worker.run)
         self._worker_thread = thread
         self._worker_speculative = True
         self._speculative_key = key
@@ -2052,8 +2063,36 @@ class MicaMaterial(QObject):
         self._refresh_retries += 1
         self._refresh_outcome = "timeout"
 
-    def _cleanup_worker(self) -> None:
-        """回收后台 worker 与线程，并按结果决定退避重试或放弃。"""
+    def _cleanup_worker(self, thread=None, worker=None) -> None:
+        """回收后台 worker 与线程，并按结果决定退避重试或放弃。
+
+        **身份化回收**：``finished`` 经 lambda 携带发起线程 / worker 身份
+        （见 :meth:`refresh_async` / :meth:`prebake_theme_variant`），而不是读
+        单槽 ``_worker_thread``。抢占 speculative 后遗留的线程会在真实烘焙
+        已开始之后才自然结束；若无身份隔离，其 ``finished`` 会把**新在册**
+        worker 的槽清空并误删新对象。身份化后遗留线程只走静默删除分支，
+        不触碰在册槽 / 看门狗 / 重试 / 续接。
+
+        Args:
+            thread: 完成线程身份；``None`` 时回退读单槽（兼容无参直调）。
+            worker: 完成 worker 身份；``None`` 时回退读单槽。
+        """
+        if thread is None:
+            thread = self._worker_thread
+        if worker is None:
+            worker = self._worker
+        # 遗留线程（被抢占的 speculative，已完成但已不在册）：静默删除即可，
+        # 不触碰在册槽 / 看门狗 / 重试计数。
+        if thread is not None and thread is not self._worker_thread:
+            for obj in (worker, thread):
+                if obj is None:
+                    continue
+                try:
+                    obj.deleteLater()
+                except Exception as exc:  # noqa: BLE001 - 遗留对象删除失败仅记录
+                    _LOG.debug("遗留工作对象 deleteLater 失败：%s", exc)
+            return
+
         self._watchdog.stop()
         thread = self._worker_thread
         worker = self._worker
