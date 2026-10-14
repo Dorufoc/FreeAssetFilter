@@ -31,7 +31,7 @@ class AISettingsPage(QWidget):
         self.store = store
         form = QFormLayout(self); form.setContentsMargins(24, 24, 24, 24); form.setSpacing(12)
         self.account_name = QLineEdit("Demo")
-        self.provider = QComboBox(); self.provider.addItem("OpenAI 通用接口", AIProvider.OPENAI.value); self.provider.addItem("Anthropic Messages", AIProvider.ANTHROPIC.value); self.provider.addItem("DeepSeek Responses", AIProvider.DEEPSEEK_RESPONSES.value)
+        self.provider = QComboBox(); self.provider.addItem("OpenAI 通用接口", AIProvider.OPENAI.value); self.provider.addItem("Anthropic Messages", AIProvider.ANTHROPIC.value); self.provider.addItem("DeepSeek Chat Completions", AIProvider.DEEPSEEK_CHAT.value); self.provider.addItem("DeepSeek Responses", AIProvider.DEEPSEEK_RESPONSES.value)
         self.base_url = QLineEdit("https://api.openai.com/v1")
         self.model = QLineEdit("gpt-4o-mini")
         self.api_key = QLineEdit(); self.api_key.setEchoMode(QLineEdit.Password); self.api_key.setPlaceholderText("保存时使用 Windows DPAPI 加密")
@@ -47,11 +47,11 @@ class AISettingsPage(QWidget):
 
     def _provider_changed(self, index: int) -> None:
         provider = self.provider.itemData(index)
-        defaults = {AIProvider.OPENAI.value: ("https://api.openai.com/v1", "gpt-4o-mini"), AIProvider.ANTHROPIC.value: ("https://api.anthropic.com", "claude-3-5-sonnet-latest"), AIProvider.DEEPSEEK_RESPONSES.value: ("https://api.deepseek.com/v1", "deepseek-chat")}
+        defaults = {AIProvider.OPENAI.value: ("https://api.openai.com/v1", "gpt-4o-mini"), AIProvider.ANTHROPIC.value: ("https://api.anthropic.com", "claude-3-5-sonnet-latest"), AIProvider.DEEPSEEK_CHAT.value: ("https://api.deepseek.com", "deepseek-flash"), AIProvider.DEEPSEEK_RESPONSES.value: ("https://api.deepseek.com", "deepseek-flash")}
         base, model = defaults[provider]; self.base_url.setText(base); self.model.setText(model)
 
     def _save(self) -> None:
-        account = AIAccountConfig("demo", self.account_name.text().strip() or "Demo", AIProvider(self.provider.currentData()), self.base_url.text().strip(), self.model.text().strip(), self.api_key.text(), self.temperature.value(), self.max_tokens.value(), self.timeout.value(), {}, self.reasoning.isChecked() if self.provider.currentData() == AIProvider.DEEPSEEK_RESPONSES.value else None, self.reasoning_budget.value() if self.reasoning.isChecked() else None)
+        account = AIAccountConfig("demo", self.account_name.text().strip() or "Demo", AIProvider(self.provider.currentData()), self.base_url.text().strip(), self.model.text().strip(), self.api_key.text(), self.temperature.value(), self.max_tokens.value(), self.timeout.value(), {}, self.reasoning.isChecked() if self.provider.currentData() in {AIProvider.DEEPSEEK_CHAT.value, AIProvider.DEEPSEEK_RESPONSES.value} else None, self.reasoning_budget.value() if self.reasoning.isChecked() else None)
         try:
             self.store.save([account], "demo"); self.message.setText("已保存（DPAPI 加密）"); self.saved.emit(account)
         except Exception as exc: self.message.setText(f"保存失败：{exc}")
@@ -75,7 +75,7 @@ class AIChatDemoWindow(QMainWindow):
     def _account(self) -> AIAccountConfig:
         accounts = self.store.accounts()
         if accounts: return accounts[0]
-        provider = AIProvider(os.getenv("FAF_AI_PROVIDER", "openai")); defaults = {AIProvider.OPENAI: "https://api.openai.com/v1", AIProvider.ANTHROPIC: "https://api.anthropic.com", AIProvider.DEEPSEEK_RESPONSES: "https://api.deepseek.com/v1"}
+        provider = AIProvider(os.getenv("FAF_AI_PROVIDER", "openai")); defaults = {AIProvider.OPENAI: "https://api.openai.com/v1", AIProvider.ANTHROPIC: "https://api.anthropic.com", AIProvider.DEEPSEEK_CHAT: "https://api.deepseek.com", AIProvider.DEEPSEEK_RESPONSES: "https://api.deepseek.com"}
         return AIAccountConfig("demo", "Demo", provider, os.getenv("FAF_AI_BASE_URL", defaults[provider]), os.getenv("FAF_AI_MODEL", "gpt-4o-mini"), os.getenv("FAF_AI_API_KEY", ""))
 
     def _start_request(self, text: str) -> None:

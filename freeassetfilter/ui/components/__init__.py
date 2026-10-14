@@ -87,6 +87,7 @@ _SYMBOL_TO_MODULE: dict[str, str] = {
     "AnimatedFileListView": "animated_file_list_view",
     "StyledAIChatPanel": "styled_ai_chat",
     "StyledAIMessageList": "styled_ai_chat",
+    "StyledAIChatBubble": "styled_ai_chat",
     "StyledAIToolApproval": "styled_ai_chat",
 }
 
@@ -161,6 +162,7 @@ __all__ = [
     "AnimatedFileListView",
     "StyledAIChatPanel",
     "StyledAIMessageList",
+    "StyledAIChatBubble",
     "StyledAIToolApproval",
 ]
 
