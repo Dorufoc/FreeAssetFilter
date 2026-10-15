@@ -1698,14 +1698,18 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         except Exception as exc:  # noqa: BLE001 - 剪枝失败不影响窗口生命周期
             debug(f"关闭后 QSS 注册表剪枝失败：{exc}")
 
-    def _start_content_theme_transition(self) -> None:
-        """启动内容层主题过渡：切前抓整窗外观快照，切后径向揭示新主题。
+    def _start_content_theme_transition(self, use_reveal: bool = True) -> None:
+        """启动内容层过渡：切前抓整窗外观快照，切后径向揭示或平滑淡出。
 
-        web 式 ``clip-path: circle()`` 扩散：以主题切换按钮中心为圆心，
-        整幅以旧外观快照打底、自圆心挖出扩张圆洞露出已切好的新主题。
-        半径 0 时即整幅旧外观（点击瞬间不发新主题闪现）；每像素同一时刻
-        只显示「旧」或「新」一个版本，消除交叉淡入的双重曝光叠印
-        （文字发糊的根因）。
+        ``use_reveal=True``（默认，主题链路）：web 式 ``clip-path: circle()``
+        扩散——以主题切换按钮中心为圆心，整幅以旧外观快照打底、自圆心挖出
+        扩张圆洞露出已切好的新主题。半径 0 时即整幅旧外观（点击瞬间不发新
+        主题闪现）；每像素同一时刻只显示「旧」或「新」一个版本，消除交叉
+        淡入的双重曝光叠印（文字发糊的根因）。
+
+        ``use_reveal=False``（布局切换链路，见 :meth:`begin_layout_transition`）：
+        不传扩散圆心，遮罩走透明度淡出模式——旧布局快照 450ms 整体渐隐、
+        新布局平滑浮现，无自圆心向外扩散的圆洞揭示。
 
         快照抓取 ``_root``（背景层 + 内容层）而非仅内容子树：面板填充
         多为 5%~72% alpha，内容层单独抓拍几乎全透明，铺到已切换的新内容
@@ -1721,6 +1725,10 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
         未显示窗口（测试/最小化）无过渡——与 Mica 交叉过渡的 ``isVisible``
         守卫语义一致。
+
+        Args:
+            use_reveal: True 走径向揭示（主题切换）；False 走透明度淡出
+                （布局切换的平滑渐变）。
         """
         content = self._content
         if content is None or not content.isVisible():
@@ -1740,8 +1748,9 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         if snapshot is None or snapshot.isNull():
             return
         # 扩散圆心：主题按钮中心（内容层坐标）；按钮缺失/几何无效时
-        # 传 None 退化为历史透明度淡出，不影响切换本身。
-        origin = self._theme_toggle_origin(content)
+        # 传 None 退化为历史透明度淡出，不影响切换本身。布局切换过渡
+        # （use_reveal=False）恒不传圆心，整幅平滑淡出（无扩散硬边）。
+        origin = self._theme_toggle_origin(content) if use_reveal else None
         overlay = ContentTransitionOverlay(content, snapshot, origin=origin)
         self._content_theme_overlay = overlay
         overlay.start()
@@ -1891,6 +1900,20 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         try:
             self._capture_background_pre_theme_state()
         except Exception:  # noqa: BLE001 - 抓拍失败不阻塞主题切换
+            pass
+
+    def begin_layout_transition(self) -> None:
+        """布局切换前预抓拍旧外观快照：切换后旧布局平滑淡出（无径向扩散）。
+
+        与 :meth:`begin_theme_transition` 的区别：不传扩散圆心，遮罩走透明度
+        淡出模式——``set_layout_mode`` 同步完成新旧布局挂载后，旧布局快照在
+        450ms 内整体渐隐、新布局平滑浮现，不产生自主题按钮向外扩散的圆洞
+        揭示。快照抓取/isVisible 守卫/单实例去重与主题链路共用；未显示窗口
+        （测试/最小化）不建遮罩，快照失败静默跳过、不阻塞布局切换本身。
+        """
+        try:
+            self._start_content_theme_transition(use_reveal=False)
+        except Exception:  # noqa: BLE001 - 快照失败不阻塞布局切换本身
             pass
 
     # ──── 背景模式过渡（设置页切换窗口背景的 450ms 交叉淡入） ───────────

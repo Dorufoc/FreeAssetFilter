@@ -4653,13 +4653,25 @@ class TestGeneralSettingsPage:
         )
 
         class _FakeMainWindow:
-            """记录布局切换调用的假主窗口。"""
+            """记录布局切换与过渡方式选择的假主窗口。"""
 
             def __init__(self) -> None:
                 self.layout_calls: list[str] = []
+                self.transitions: list[str] = []
+                self.current_mode = "workspace"
+
+            def get_layout_mode(self) -> str:
+                return self.current_mode
+
+            def begin_theme_transition(self) -> None:
+                self.transitions.append("theme")
+
+            def begin_layout_transition(self) -> None:
+                self.transitions.append("layout")
 
             def set_layout_mode(self, mode: str) -> bool:
                 self.layout_calls.append(mode)
+                self.current_mode = mode
                 return True
 
         fake_mw = _FakeMainWindow()
@@ -4679,10 +4691,68 @@ class TestGeneralSettingsPage:
 
             assert layout._submit_settings() is True
             assert fake_mw.layout_calls == ["classic"]
+            # 布局真正变化：主窗口过渡走平滑渐变（不扩散）
+            assert fake_mw.transitions == ["layout"]
 
             saved = SettingsManagerV2(tmp_file)
             saved.load()
             assert saved.get("general.layout_mode") == "classic"
+        finally:
+            try:
+                tm.set_theme_mode(prev_mode)
+            except Exception:
+                pass  # teardown 还原主题失败：忽略，避免影响断言
+            safe_teardown(layout)
+
+    def test_submit_keeps_theme_transition_when_layout_unchanged(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """提交：布局未变化时维持主题径向链路（不更换过渡方式）。"""
+        import freeassetfilter.ui.layout.settings_layout as sl_mod
+        from freeassetfilter.core.managers.settings_manager_v2 import (
+            SettingsManagerV2,
+        )
+
+        tmp_file = str(tmp_path / "settings_v2.json")
+        monkeypatch.setattr(
+            sl_mod, "SettingsManagerV2", lambda *a, **k: SettingsManagerV2(tmp_file)
+        )
+        monkeypatch.setattr(
+            sl_mod.SettingsLayout,
+            "_apply_staged_perf_profile",
+            lambda self, profile: None,
+        )
+
+        class _FakeMainWindow:
+            """布局模式与暂存目标一致的假主窗口（记录过渡方式选择）。"""
+
+            def __init__(self) -> None:
+                self.transitions: list[str] = []
+
+            def get_layout_mode(self) -> str:
+                return "workspace"
+
+            def begin_theme_transition(self) -> None:
+                self.transitions.append("theme")
+
+            def begin_layout_transition(self) -> None:
+                self.transitions.append("layout")
+
+            def set_layout_mode(self, mode: str) -> bool:
+                return True
+
+        fake_mw = _FakeMainWindow()
+        monkeypatch.setattr(
+            sl_mod.AppearanceSettingsPage, "find_main_window", lambda self: fake_mw
+        )
+
+        from theme import tm
+
+        prev_mode = tm.get_theme_mode()
+        layout = SettingsLayout()
+        try:
+            assert layout._submit_settings() is True
+            assert fake_mw.transitions == ["theme"]
         finally:
             try:
                 tm.set_theme_mode(prev_mode)

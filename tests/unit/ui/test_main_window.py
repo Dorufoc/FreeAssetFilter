@@ -1388,3 +1388,24 @@ class TestContentThemeTransition:
         finally:
             window.deleteLater()
             qapp.processEvents()
+
+    def test_layout_transition_fades_without_reveal_center(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """布局切换过渡为平滑渐变：遮罩无扩散圆心（不依赖主题按钮几何）。"""
+        window = self._make_window(monkeypatch)
+        try:
+            # 主题按钮缺失也不影响：布局过渡恒不传圆心（origin=None 淡出）
+            monkeypatch.setattr(window, "_theme_btn", None)
+            window.begin_layout_transition()
+            overlay = window._content_theme_overlay
+            assert overlay is not None
+            assert overlay.parent() is window._content
+            assert overlay._reveal_center is None, "布局过渡不得走径向揭示"
+            assert overlay._duration_ms == overlay.DEFAULT_DURATION_MS
+            assert overlay.isVisibleTo(window._content)
+            overlay.finish_now()
+            assert not overlay.isVisibleTo(window._content)
+        finally:
+            window.deleteLater()
+            qapp.processEvents()

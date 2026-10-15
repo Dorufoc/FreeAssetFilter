@@ -388,6 +388,30 @@ class TestSettingsThemeFade:
             safe_teardown(layout)
 
 
+class TestLayoutTransitionRouting:
+    """布局切换过渡方式选择：仅布局变化走平滑渐变（不扩散）。"""
+
+    def test_layout_mode_will_change_degrades_without_getter(self) -> None:
+        """缺少 get_layout_mode（测试替身/旧接口）或取值异常：按无变化处理。"""
+        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+
+        class _Bare:
+            pass
+
+        class _Broken:
+            def get_layout_mode(self):
+                raise RuntimeError("boom")
+
+        class _Current:
+            def get_layout_mode(self) -> str:
+                return "classic"
+
+        assert SettingsLayout._layout_mode_will_change(_Bare(), "workspace") is False
+        assert SettingsLayout._layout_mode_will_change(_Broken(), "workspace") is False
+        assert SettingsLayout._layout_mode_will_change(_Current(), "classic") is False
+        assert SettingsLayout._layout_mode_will_change(_Current(), "workspace") is True
+
+
 class TestBottomButtons:
     """按钮存在性、样式映射与统一提交绑定。"""
 

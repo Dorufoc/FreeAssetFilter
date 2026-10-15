@@ -2804,12 +2804,22 @@ class SettingsLayout(QWidget):
             prev_perf_profile = _get_timing_active_profile()
         except Exception:
             prev_perf_profile = "balanced"
-        # 主窗口过渡预抓拍：tm 翻转后主窗槽内各背景层 sync 才能以旧帧为底
-        # 做 450ms 交叉淡入，否则退化为裸 update 露出 _root 形成闪现。
+        # 主窗口过渡预抓拍：本次改布局走平滑渐变（无扩散圆洞），其余维持主题
+        # 径向链路——布局切换不再自主题按钮向外扩散；tm 翻转后主窗槽内各背景
+        # 层 sync 才能以旧帧为底做 450ms 交叉淡入，否则退化为裸 update 露出
+        # _root 形成闪现。
         try:
             main_window = self._appearance_page.find_main_window()
-            if main_window is not None and hasattr(main_window, "begin_theme_transition"):
-                main_window.begin_theme_transition()
+            if main_window is not None:
+                method = "begin_theme_transition"
+                if self._layout_mode_will_change(main_window, layout_mode):
+                    method = "begin_layout_transition"
+                starter = getattr(main_window, method, None)
+                if starter is None:
+                    # 测试替身/旧接口缺新方法：退回主题链路（不阻塞布局切换）
+                    starter = getattr(main_window, "begin_theme_transition", None)
+                if starter is not None:
+                    starter()
         except Exception:  # noqa: BLE001 - 预抓拍失败不阻塞提交本身
             pass
         try:
@@ -2982,6 +2992,29 @@ class SettingsLayout(QWidget):
             self._last_applied_bg_state = state
         except Exception as exc:
             debug(f"下发背景模式到主窗口失败：{exc}")
+
+    @staticmethod
+    def _layout_mode_will_change(main_window: QWidget, layout_mode: str) -> bool:
+        """本次提交是否真正改变主窗口布局模式（供过渡方式选择）。
+
+        ``get_layout_mode`` 缺失（测试替身/旧接口）或取值异常时按「不变化」
+        处理，过渡退回主题链路——布局相同再重挂载是 no-op，不应更换过渡
+        类型改变观感。
+
+        Args:
+            main_window: 主窗口（或具备同名契约的实现）。
+            layout_mode: 本次提交的目标布局模式。
+
+        Returns:
+            bool: True 表示布局将发生变化。
+        """
+        getter = getattr(main_window, "get_layout_mode", None)
+        if getter is None:
+            return False
+        try:
+            return getter() != layout_mode
+        except Exception:  # noqa: BLE001 - 取值失败按无变化处理
+            return False
 
     def _apply_staged_layout_mode_to_main_window(self, layout_mode: str) -> None:
         """将暂存的界面布局模式应用到主窗口（仅提交路径调用）。
