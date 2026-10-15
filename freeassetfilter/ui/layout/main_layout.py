@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from typing import Dict, Optional
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QEasingCurve, QVariantAnimation
 from PySide6.QtWidgets import QFrame, QSplitter, QVBoxLayout, QWidget
 
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
@@ -66,6 +66,8 @@ PREVIEW_CHROME_PX = 48
 BOTTOM_MIN_PX = 200
 #: 经典布局右列底部操作栏槽位高度（与预览器底栏一致，48px）
 CLASSIC_ACTION_SLOT_PX = 48
+#: 用户重置布局时的渐变时长（毫秒）
+RESET_ANIM_DURATION_MS = 280
 
 #: 区域名 → zone frame objectName
 _ZONE_OBJECT_NAMES = {
@@ -108,6 +110,8 @@ class MainLayout(QWidget):
         self._ratio_update_pending = False
         # 半高高频重算节流（<=2px 且未超限时跳过约束重写）
         self._last_half = 0
+        # 进行中的「重置布局」渐变（QVariantAnimation；None 表示未在渐变）
+        self._reset_anim: Optional[QVariantAnimation] = None
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -165,13 +169,9 @@ class MainLayout(QWidget):
         # 用户拖拽跟踪：右竖条决定 16:9 自动维持；底行/信息区拖拽后补钳制
         self.splitters["right"].splitterMoved.connect(self._on_right_splitter_moved)
         if "bottom" in self.splitters:
-            self.splitters["bottom"].splitterMoved.connect(
-                lambda _pos, _idx: self._ensure_bottom_cap(force=True)
-            )
+            self.splitters["bottom"].splitterMoved.connect(self._on_bottom_splitter_moved)
         else:
-            self.splitters["right"].splitterMoved.connect(
-                lambda _pos, _idx: self._ensure_bottom_cap(force=True)
-            )
+            self.splitters["right"].splitterMoved.connect(self._on_bottom_splitter_moved)
         # 主横条拖拽（左/右分界）：右侧宽度变化后同步 16:9（未拖拽右竖条时）
         self.splitters["main"].splitterMoved.connect(self._on_main_splitter_moved)
 
@@ -209,14 +209,125 @@ class MainLayout(QWidget):
         """
         return self._classic_action_slot
 
-    def apply_default_ratios(self) -> None:
-        """应用当前模式的默认比例（首次布局 / 布局切换时调用）。
+    def apply_default_ratios(self, animated: bool = False) -> None:
+        """应用当前模式的默认比例（首次布局 / 布局切换 / 用户重置时调用）。
 
         - workspace：左 1/3、预览画布 16:9（受半高上限与底行下限钳制）、底行 50:50；
         - classic：三栏 1:1:1、右栏各半、信息区 ≤ 半高；
         - 同时把「右竖条用户拖拽」状态复位（恢复自动 16:9）。
+
+        Args:
+            animated: True 时用 :data:`RESET_ANIM_DURATION_MS` 的渐变把各区尺寸
+                从当前值平滑移到默认值（用户点「重置布局」路径）；False 时立即
+                应用（首次布局 / 布局切换路径，避免启动与切布局时出现过渡）。
         """
         self._right_user_dragged = False
+        if animated:
+            self._animate_default_ratios()
+            return
+        if self.mode == WORKSPACE_MODE:
+            self._apply_workspace_ratios(force=True)
+        else:
+            self._apply_classic_ratios(force=True)
+
+    # ── 内部：重置布局渐变 ───────────────────────────────────────────
+
+    def _default_target_sizes(self) -> Optional[Dict[str, list]]:
+        """按当前几何算出当前模式各 splitter 的默认尺寸（仅计算，不应用）。
+
+        预览区高度依赖右区宽度，此处由主横条默认比例直接推得（与 ``_apply_*``
+        先 ``setSizes(main)`` 再读右区几何的结果一致）；右区高度与底行宽度在
+        渐变过程中不随其它轴变化，故可一次算全。
+        """
+        if self.width() <= 0 or self.height() <= 0:
+            return None
+        right = self.splitters["right"]
+        if self.mode == WORKSPACE_MODE:
+            avail_w = max(0, self.width() - HANDLE_WIDTH)
+            left_w = int(round(avail_w * WORKSPACE_LEFT_RATIO))
+            right_w = max(0, avail_w - left_w)
+            v_avail = max(0, (right.height() or self.height()) - HANDLE_WIDTH)
+            preview_h = self._preview_height_for(right_w, v_avail)
+            bottom_avail = max(0, right_w - HANDLE_WIDTH)
+            pool_w = int(round(bottom_avail * WORKSPACE_POOL_RATIO))
+            return {
+                "main": [left_w, right_w],
+                "right": [preview_h, max(0, v_avail - preview_h)],
+                "bottom": [pool_w, max(0, bottom_avail - pool_w)],
+            }
+        avail_w = max(0, self.width() - 2 * HANDLE_WIDTH)
+        third = avail_w // 3
+        right_h = right.height()
+        if right_h <= 0:
+            right_h = max(0, self.height() - CLASSIC_ACTION_SLOT_PX - 2 * HANDLE_WIDTH)
+        v_avail = max(0, right_h - HANDLE_WIDTH)
+        if v_avail <= 0:
+            return {"main": [third, third, avail_w - 2 * third], "right": [1, 1]}
+        half = v_avail // 2
+        return {
+            "main": [third, third, avail_w - 2 * third],
+            "right": [v_avail - half, half],
+        }
+
+    def _animate_default_ratios(self) -> None:
+        """把各 splitter 尺寸从当前值渐变到默认值（用户重置布局路径）。"""
+        targets = self._default_target_sizes()
+        if targets is None:
+            return
+        starts = {
+            name: self.splitters[name].sizes()
+            for name in targets
+            if self.splitters[name].count() == len(targets[name])
+        }
+        if len(starts) != len(targets):
+            # 几何/子项未就绪：退化为立即应用，避免插值下标错位
+            self.apply_default_ratios()
+            return
+
+        self._stop_reset_animation()
+        anim = QVariantAnimation(self)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setDuration(RESET_ANIM_DURATION_MS)
+        anim.setEasingCurve(QEasingCurve.InOutCubic)
+        anim.valueChanged.connect(
+            lambda progress: self._apply_reset_progress(starts, targets, float(progress))
+        )
+        anim.finished.connect(self._on_reset_anim_finished)
+        self._reset_anim = anim
+        anim.start()
+
+    def _apply_reset_progress(self, starts, targets, progress: float) -> None:
+        """渐变逐帧：按进度 ``progress``（0~1）插值各 splitter 尺寸并应用。"""
+        self._applying = True
+        try:
+            for name, target in targets.items():
+                splitter = self.splitters[name]
+                if splitter.count() != len(target):
+                    continue
+                src = starts[name]
+                splitter.setSizes([
+                    int(round(src[i] + (target[i] - src[i]) * progress))
+                    for i in range(len(target))
+                ])
+        finally:
+            self._applying = False
+
+    def _stop_reset_animation(self) -> None:
+        """停止进行中的渐变（用户开始拖拽 / 发起新一次重置时调用）。"""
+        anim = self._reset_anim
+        if anim is None:
+            return
+        self._reset_anim = None
+        anim.stop()
+        anim.deleteLater()
+
+    def _on_reset_anim_finished(self) -> None:
+        """渐变结束：落到精确默认尺寸（消除逐帧取整误差）。"""
+        anim = self._reset_anim
+        self._reset_anim = None
+        if anim is not None:
+            anim.deleteLater()
         if self.mode == WORKSPACE_MODE:
             self._apply_workspace_ratios(force=True)
         else:
@@ -263,6 +374,10 @@ class MainLayout(QWidget):
     def _run_layout_update(self) -> None:
         """延迟回调：按最新几何维持 16:9（自动态）并重算半高上限。"""
         self._ratio_update_pending = False
+        # 重置渐变进行中：逐帧尺寸由动画负责，避免与自动 16:9 互相覆盖；
+        # 渐变结束时 _on_reset_anim_finished 会按最新几何重新落位。
+        if self._reset_anim is not None:
+            return
         if self.mode == WORKSPACE_MODE and not self._right_user_dragged:
             self._apply_workspace_ratios(force=False)
         self._ensure_bottom_cap()
@@ -270,12 +385,20 @@ class MainLayout(QWidget):
     # ── 内部：拖拽回调 ───────────────────────────────────────────────
 
     def _on_right_splitter_moved(self, _pos: int, _index: int) -> None:
-        """右竖条被用户拖拽：停止自动 16:9，并补钳制（幂等）。"""
+        """右竖条被用户拖拽：停止进行中的重置渐变，并补钳制（幂等）。"""
+        self._stop_reset_animation()
         self._right_user_dragged = True
         self._ensure_bottom_cap(force=True)
 
+    def _on_bottom_splitter_moved(self, _pos: int, _index: int) -> None:
+        """底行（workspace）或信息区（classic）被用户拖拽：停止渐变并补钳制。"""
+        self._stop_reset_animation()
+        self._ensure_bottom_cap(force=True)
+
     def _on_main_splitter_moved(self, _pos: int, _index: int) -> None:
-        """主横条被用户拖拽：右区宽度变化，未拖拽右竖条时同步 16:9。"""
+        """主横条被用户拖拽：停止进行中的重置渐变；右区宽度变化，未拖拽右竖条
+        时同步 16:9。"""
+        self._stop_reset_animation()
         if self.mode == WORKSPACE_MODE and not self._right_user_dragged:
             self._apply_workspace_ratios(force=False)
         self._ensure_bottom_cap()

@@ -22,7 +22,6 @@ from PySide6.QtCore import (
     QEvent,
     QObject,
     QPoint,
-    QUrl,
     QTimer,
     Signal,
     QAbstractNativeEventFilter,
@@ -30,7 +29,6 @@ from PySide6.QtCore import (
     QEasingCurve,
     QSize,
 )
-from PySide6.QtGui import QDesktopServices
 from PySide6.QtGui import QPainter, QPaintEvent, QPixmap, QRegion, QResizeEvent, QMoveEvent, QMouseEvent, QKeyEvent, QColor, QCursor, QPalette
 
 # 确保 ui 目录在 sys.path 中（组件 __init__.py 使用短路径导入）
@@ -95,6 +93,7 @@ from freeassetfilter.ui.mica import winapi as mica_winapi
 
 from freeassetfilter.utils.path_utils import get_app_data_path
 from freeassetfilter.core._paths import icons_dir
+from freeassetfilter.utils.animation_settings import is_animation_enabled
 from freeassetfilter.utils.app_logger import debug, warning
 # perf_metrics / StagingPoolService 同为首屏关键路径让位：分别由绘制埋点
 # （MicaBackgroundWidgetCpu.paintEvent）与 closeEvent 局部导入。
@@ -742,7 +741,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 自绘标题栏 QFrame：启动加载覆盖层据它做 stackUnder，使遮罩不透明底
         # 铺到标题栏区域、而标题栏文字与按钮仍留在遮罩之上（见 _mount_startup_overlay）
         self._title_bar_header = None
-        self._github_btn = None
+        self._reset_layout_btn = None
         self._settings_btn = None
         self._theme_btn = None
         self._minimize_btn = None
@@ -1510,18 +1509,19 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         header_layout.addWidget(self._title_label)
         header_layout.addStretch()
 
-        # GitHub 按钮（SVG图标）
-        github_icon_path = icons_dir() / "github.svg"
-        self._github_btn = StyledButton(
+        # 重置布局按钮（SVG图标）：把各区域位置大小恢复到默认值
+        reset_icon_path = icons_dir() / "refresh.svg"
+        self._reset_layout_btn = StyledButton(
             "",
             variant="ghost",
             size="sm",
-            icon=str(github_icon_path) if github_icon_path.exists() else ""
+            icon=str(reset_icon_path) if reset_icon_path.exists() else ""
         )
-        self._github_btn.setFixedSize(32, 32)
-        register_widget_qss(self._github_btn,(self._title_bar_button_style()))
-        self._github_btn.clicked.connect(self._open_github)
-        header_layout.addWidget(self._github_btn)
+        self._reset_layout_btn.setFixedSize(32, 32)
+        register_widget_qss(self._reset_layout_btn,(self._title_bar_button_style()))
+        self._reset_layout_btn.setToolTip("重置布局")
+        self._reset_layout_btn.clicked.connect(self._reset_layout)
+        header_layout.addWidget(self._reset_layout_btn)
 
         # 设置按钮（SVG图标）
         settings_icon_path = icons_dir() / "setting.svg"
@@ -1618,9 +1618,13 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             if max_2_path.exists():
                 self._maximize_btn.set_svg_icon(str(max_2_path))
     
-    def _open_github(self) -> None:
-        """打开 GitHub 项目页面"""
-        QDesktopServices.openUrl(QUrl("https://github.com/Dorufoc/FreeAssetFilter"))
+    def _reset_layout(self) -> None:
+        """把主界面各区域的位置大小恢复为当前布局模式的默认值（渐变过渡）"""
+        if self._main_layout is None:
+            return
+        self._main_layout.apply_default_ratios(
+            animated=is_animation_enabled("layout_reset", default=True)
+        )
 
     def _open_settings_window(self) -> None:
         """打开设置窗口（每次新建，关闭即销毁，不缓存窗口实例）。
@@ -2291,7 +2295,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             if self._title_label is not None:
                 register_widget_qss(self._title_label,(f'font-size: 14px; font-weight: 600; color: {tm.text.name()};'))
             # 刷新所有标题栏按钮的 styleSheet（tm 颜色值已变化）
-            register_widget_qss(self._github_btn,(self._title_bar_button_style()))
+            register_widget_qss(self._reset_layout_btn,(self._title_bar_button_style()))
             register_widget_qss(self._settings_btn,(self._title_bar_button_style()))
             register_widget_qss(self._theme_btn,(self._title_bar_button_style()))
             register_widget_qss(self._minimize_btn,(self._title_bar_button_style()))

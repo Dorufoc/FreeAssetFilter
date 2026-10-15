@@ -147,7 +147,7 @@ class TestMainWindowStructure:
         qapp.processEvents()
 
     def test_title_bar_buttons_exist(self, qapp: QApplication) -> None:
-        """标题栏按钮（最小化/最大化/关闭/主题/设置/GitHub）均存在。"""
+        """标题栏按钮（最小化/最大化/关闭/主题/设置/重置布局）均存在。"""
         window = MainWindow()
         for attr in (
             "_minimize_btn",
@@ -155,7 +155,7 @@ class TestMainWindowStructure:
             "_close_btn",
             "_theme_btn",
             "_settings_btn",
-            "_github_btn",
+            "_reset_layout_btn",
         ):
             assert getattr(window, attr) is not None, f"{attr} 缺失"
         window.deleteLater()
@@ -173,7 +173,7 @@ class TestMainWindowStructure:
             "_close_btn",
             "_theme_btn",
             "_settings_btn",
-            "_github_btn",
+            "_reset_layout_btn",
         ):
             assert getattr(window, attr) is not None
         window.deleteLater()

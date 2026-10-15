@@ -402,12 +402,7 @@ class _InfoCanvas(QWidget):
         self._dot_timer.setInterval(260)
         self._dot_timer.timeout.connect(self._advance_dots)
         self._relayouting = False
-        # P0 节流：resize 合并（32ms 可取消），拖拽期跳过全量排版。
-        self._relayout_debounce = QTimer(self)
-        self._relayout_debounce.setSingleShot(True)
-        self._relayout_debounce.setInterval(32)
-        self._relayout_debounce.timeout.connect(self._on_relayout_timeout)
-        self._pending_width = 0
+        # 实时重排：不做 resize 合并节流，保证拖动分隔条时画布高度与滚动条即时跟随。
         self._last_width = 0
         self.setMouseTracking(True)
         self.setAttribute(Qt.WA_StyledBackground, False)
@@ -421,7 +416,6 @@ class _InfoCanvas(QWidget):
         """内容/主题/折叠状态变化后重排并重绘。"""
         self._relayout(self.width())
         self._last_width = self.width()
-        self._pending_width = self.width()
         self._sync_dot_timer()
         self.update()
 
@@ -720,12 +714,14 @@ class _InfoCanvas(QWidget):
             self._hover_row = None
             self._hover_link_action = None
             if panel._file_info is None:
-                # 空状态：画布高度跟随可视区，文案在 paintEvent 中垂直居中
-                viewport = panel._scroll_area.viewport()
-                viewport_h = viewport.height() if viewport is not None else 240
-                target = max(80, viewport_h)
-                if self.height() != target:
-                    self.setFixedHeight(target)
+                # 空状态：不钉画布高度，清除高度约束交给 widgetResizable 的
+                # 滚动区把画布撑满视口——画布随视口 resize 同步刷新，不存在
+                # 「固定高度→收不到 resizeEvent→滞留旧高度」的滞后：缩小视口
+                # 时不再出现假溢出滚动条，放大时提示文案始终以 self.rect()
+                # 垂直居中（paintEvent 口径），无需滚动即可看到。
+                if self.minimumHeight() != 0 or self.maximumHeight() != 16777215:
+                    self.setMinimumHeight(0)
+                    self.setMaximumHeight(16777215)
                 return
 
             items, end_y = self._build_items(content_width, width)
@@ -1060,29 +1056,21 @@ class _InfoCanvas(QWidget):
         event.accept()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
-        """尺寸变化合并节流：拖拽期只存宽重启 32ms 定时，静止后重排。
+        """尺寸变化实时重排（不做节流）。
 
-        P0：每帧 ``_relayout`` 会全量 ``_build_items`` + ``setFixedHeight``
-        触发父布局二次测量，拖拽中必须合并；小抖动（<4px）且定时器
-        运行中直接合并，不重排。
+        内容高度只依赖宽度，故宽度未变（仅高度变化）且有文件时跳过，
+        避免分隔条纵向拖拽的无谓重算；空状态下画布高度跟随可视区，
+        高度变化也需重排以保持占位文案居中。
+
+        单帧 ``_relayout`` 实测 < 2ms（百行量级），实时重排可保证拖动
+        分隔条时画布高度与滚动条即时跟随，不再出现滞后与假溢出滚动条。
         """
         super().resizeEvent(event)
         width = self.width()
-        # 首帧立即排版，避免初始空闪；后续拖拽合并到 32ms 后一次。
-        if self._last_width == 0 and not self._items and width > 0:
-            self._pending_width = width
-            self._last_width = width
-            if not self._relayouting:
-                self._relayout(width)
-            self.update()
+        if width <= 0:
             return
-        # 拖拽高频期：仅记录目标宽度并重启合并定时，不做全量排版。
-        self._pending_width = width
-        self._relayout_debounce.start()
-
-    def _on_relayout_timeout(self) -> None:
-        """合并窗口到期：执行一次全量重排并重绘。"""
-        width = self._pending_width or self.width()
+        if width == self._last_width and self._panel._file_info is not None:
+            return
         self._last_width = width
         if not self._relayouting:
             self._relayout(width)

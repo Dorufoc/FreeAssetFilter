@@ -571,6 +571,28 @@ class TestFileInfoPanelTypographyAndScroll:
         assert not panel._float_bar.isVisible()
         safe_teardown(panel)
 
+    def test_empty_state_canvas_follows_viewport_height(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        """空状态改高度：画布高度恒等于视口高度，无滚动条（放大/缩小两向）。
+
+        空状态画布不钉固定高度，交由 widgetResizable 的滚动区撑满视口，
+        故拖动高度时画布随视口即时同步。回归点：曾用 setFixedHeight 钉死，
+        缩小视口时画布滞留旧高度 → 出现假溢出滚动条、提示文案下移需滚动。
+        """
+        panel = _make_panel(qapp, tmp_path)
+        viewport = panel._scroll_area.viewport()
+        native = panel._scroll_area.verticalScrollBar()
+
+        # 先放大再缩小，覆盖两向；空状态无内容，滚动范围应恒为 0。
+        for height in (300, 640, 160, 520):
+            panel.resize(540, height)
+            _pump(qapp, 150)
+            assert panel._canvas.height() == viewport.height()
+            assert native.maximum() == 0
+            assert not panel._float_bar.isVisible()
+        safe_teardown(panel)
+
 
 class TestFileInfoPanelMediaAsync:
     """视频/音频 light 行异步化：ffprobe 不阻塞 UI；陈旧 token 丢弃。"""
