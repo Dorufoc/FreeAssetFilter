@@ -14,11 +14,11 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import (
     Qt, Signal, QRectF, QPropertyAnimation, QEasingCurve, Property, QPoint,
-    QEvent, QObject, QTimer,
+    QEvent, QObject, QTimer, QUrl,
 )
 from PySide6.QtGui import (
     QPainter, QColor, QPaintEvent, QPen, QFont, QHideEvent, QCloseEvent,
-    QConicalGradient, QBrush,
+    QConicalGradient, QBrush, QPixmap, QDesktopServices,
 )
 
 from theme import tm
@@ -131,6 +131,77 @@ def _refresh_settings_item_text(item: QWidget | None) -> None:
     desc_label = getattr(item, "desc_label", None)
     if desc_label is not None:
         apply_settings_desc_style(desc_label)
+
+
+# ── 关于页应用信息（logo + 名称 + 简介 + 版本行 + 链接行） ──
+ABOUT_APP_NAME = "FreeAssetFilter"
+ABOUT_APP_TAGLINE = "一款强大的多功能文件预览与管理工具，让文件浏览如丝般高效顺滑"
+ABOUT_APP_LOGO_SIZE = 96
+ABOUT_REPO_URL = "https://github.com/Dorufoc/FreeAssetFilter"
+ABOUT_LICENSE_URL = "https://github.com/Dorufoc/FreeAssetFilter/blob/master/LICENSE"
+#: 版本号与「检查更新」按钮之间的间隔（约一个制表位宽度）
+ABOUT_VERSION_TAB_GAP = 40
+#: 「联系我们」点击后在下方展开的联系信息
+ABOUT_CONTACT_NAME = "Dorufoc"
+ABOUT_CONTACT_EMAIL = "dorufoc@outlook.com"
+#: 「联系我们」锚点伪协议（非外链：仅用于切换联系信息框显示）
+ABOUT_CONTACT_SCHEME = "contact:"
+
+
+def _app_version() -> str:
+    """读取应用版本号（``FAFVERSION`` 首行，去前导 ``v``）；失败返回空串。"""
+    try:
+        from freeassetfilter.utils.path_utils import get_resource_path
+
+        with open(get_resource_path("FAFVERSION"), "r", encoding="utf-8") as fh:
+            line = fh.readline().strip()
+    except Exception as exc:  # noqa: BLE001 - 读取失败不展示版本号，不阻断设置页
+        debug(f"读取版本号失败：{exc}")
+        return ""
+    return line[1:].strip() if line[:1] in ("v", "V") else line
+
+
+def _app_logo_pixmap(size: int) -> QPixmap:
+    """加载应用 logo（``FAF-main.png``）并按设备像素比缩放。
+
+    缩放目标为物理像素（逻辑尺寸 × devicePixelRatio），避免高分屏下模糊。
+    资源缺失或加载失败时返回空 ``QPixmap``（调用方据此跳过图标显示）。
+    """
+    # 候选路径：打包感知的资源路径优先，失败时回退 icons 目录。
+    candidates: list[str] = []
+    try:
+        from freeassetfilter.utils.path_utils import get_resource_path
+
+        candidates.append(get_resource_path("freeassetfilter/icons/FAF-main.png"))
+    except Exception:  # noqa: BLE001 - 路径工具异常时仅跳过该候选
+        pass
+    try:
+        from freeassetfilter.core._paths import icons_dir
+
+        candidates.append(str(icons_dir() / "FAF-main.png"))
+    except Exception:  # noqa: BLE001 - 目录解析异常时仅跳过该候选
+        pass
+
+    pixmap = QPixmap()
+    for path in candidates:
+        pixmap = QPixmap(path)
+        if not pixmap.isNull():
+            break
+    if pixmap.isNull():
+        return pixmap
+
+    try:
+        app = QApplication.instance()
+        screen = app.primaryScreen() if app is not None else None
+        dpr = float(screen.devicePixelRatio()) if screen is not None else 1.0
+    except (RuntimeError, AttributeError, TypeError, ValueError):
+        dpr = 1.0
+    if dpr <= 0:
+        dpr = 1.0
+    target = max(1, int(round(size * dpr)))
+    scaled = pixmap.scaled(target, target, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    scaled.setDevicePixelRatio(dpr)
+    return scaled
 
 
 # ── 预设主题色（参考旧 theme_editor.py） ──────────────────────────────
@@ -555,6 +626,10 @@ class AppearanceSettingsPage(QWidget):
         # 窗口背景状态（初值在 _build_ui 中从 V2 覆盖）
         self._bg_mode: str = "mica"        # "mica"（云母） / "image"（图像） / "minimalist"（简约）
         self._bg_image_name: str = ""      # 持久化目录中的背景图片文件名
+        # 背景图片导入修订号：每次成功导入 +1。持久化目录是固定单槽位
+        # （同名覆盖），故文件名不足以标识"内容已更换"，靠此修订号区分
+        # 同一文件名的连续导入（否则第二次选图会被下发链路判为"无变化"跳过）。
+        self._bg_image_rev: int = 0
         self._bg_ambient: bool = True      # 弥散氛围开关（简约模式下将主题色作为背景氛围层）
         self._ambient_toggle: StyledToggle | None = None  # 弥散氛围开关控件
         self._ambient_row: QWidget | None = None          # 弥散氛围行容器（仅简约模式可见）
@@ -966,6 +1041,9 @@ class AppearanceSettingsPage(QWidget):
             return False
 
         self._bg_image_name = os.path.basename(dest)
+        # 修订号 +1：即便文件名与上次相同（单槽位同名覆盖），也告知下发
+        # 链路"图片内容已更换"，从而重新下发并触发背景层交叉淡入。
+        self._bg_image_rev += 1
         self._stage_background_settings("image")
         self.appearance_changed.emit()
         return True
@@ -988,6 +1066,17 @@ class AppearanceSettingsPage(QWidget):
         return os.path.join(
             get_app_data_path(), BACKGROUND_DIR_NAME, self._bg_image_name
         )
+
+    def background_image_revision(self) -> int:
+        """当前背景图片的导入修订号（每次成功导入 +1）。
+
+        供宿主下发链路判断"图片内容是否已更换"：持久化目录为固定单槽位
+        同名覆盖，文件名恒定，仅靠文件名无法感知连续选图带来的内容更新。
+
+        Returns:
+            int: 本页打开以来的累计成功导入次数。
+        """
+        return self._bg_image_rev
 
     def _stage_background_settings(self, mode: str) -> None:
         """暂存窗口背景：仅写入暂存缓存并刷新本页 UI，不触碰主窗口与磁盘。
@@ -1782,67 +1871,213 @@ class GeneralSettingsPage(QWidget):
 
 
 class AboutSettingsPage(QWidget):
-    """关于页面 — 信息展示类设置页（无暂存项，仅「开源许可证」查看入口）。
+    """关于页面 — 应用信息（logo + 名称 + 简介 + 版本行 + 链接行）。
 
-    页面纯展示：「开源许可证」条目旁的「查看」按钮打开独立的
-    ``LicenseViewerWindow``（无边框窗口，标题「开源许可证」，嵌入 markdown
-    文本预览器并固定加载 ``freeassetfilter/docs/THIRD_PARTY_NOTICES.md``）。
-    不写入 ``SettingsStagingCache``、不触碰 ``tm`` / 主窗口 / 磁盘——
-    本页无任何可提交设置项，天然遵循暂存隔离铁律。
+    竖向居中排布，全部居中显示：应用 logo、「FreeAssetFilter」名称、一句话
+    简介（与名称同字体同颜色）、版本行（``Version <版本号>`` + 制表位间隔 +
+    「检查更新」按钮），以及「仓库页面 · 联系我们 · 开源许可」链接行——其中
+    「仓库页面」「开源许可」为超链接，点击经系统默认浏览器打开。
+    不写入 ``SettingsStagingCache``、不触碰主窗口 / 磁盘——本页无任何可提交
+    设置项，天然遵循暂存隔离铁律。
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._view_btn: StyledButton | None = None
-        self._license_row: SettingsRow | None = None
+        self._logo_label: QLabel | None = None
+        self._app_name_label: QLabel | None = None
+        self._tagline_label: QLabel | None = None
+        self._version_label: QLabel | None = None
+        self._check_update_btn: StyledButton | None = None
+        self._links_label: QLabel | None = None
+        self._contact_box: QFrame | None = None
+        self._contact_name_label: QLabel | None = None
+        self._contact_email_label: QLabel | None = None
+        #: 联系信息框显隐状态（默认隐藏）
+        self._contact_visible: bool = False
         self._build_ui()
+        self.refresh_theme()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(SETTINGS_ROW_GAP)
 
-        # 开源许可证设置条目：SettingsRow + 查看按钮（复用现有组件）
-        self._license_row = SettingsRow(
-            title="开源许可证",
-            description="查看本软件所使用的第三方开源组件及其许可证信息",
+        # 应用信息整体竖向居中：上下各留伸展空间
+        layout.addStretch(1)
+
+        # ── 应用信息块：logo + 名称 + 简介 + 版本行 + 链接行（均居中） ──
+        header = QVBoxLayout()
+        header.setContentsMargins(0, 8, 0, 12)
+        header.setSpacing(6)
+
+        self._logo_label = QLabel()
+        self._logo_label.setObjectName("AboutAppLogo")
+        self._logo_label.setAlignment(Qt.AlignCenter)
+        self._logo_label.setFixedSize(ABOUT_APP_LOGO_SIZE, ABOUT_APP_LOGO_SIZE)
+        logo = _app_logo_pixmap(ABOUT_APP_LOGO_SIZE)
+        if not logo.isNull():
+            self._logo_label.setPixmap(logo)
+        header.addWidget(self._logo_label, alignment=Qt.AlignHCenter)
+
+        # 名称 / 简介 / 链接行标签铺满整行，由标签自身 setAlignment(AlignCenter)
+        # 居中。注意：不可在此再传 alignment=AlignHCenter——对齐项只按 sizeHint
+        # 宽度布局，而换行标签的 sizeHint 宽度为「未换行的整行宽度」，导致
+        # 高度按错误宽度计算、多行文字被纵向裁切（历史缺陷）。
+        self._app_name_label = QLabel(ABOUT_APP_NAME)
+        self._app_name_label.setAlignment(Qt.AlignCenter)
+        header.addWidget(self._app_name_label)
+
+        self._tagline_label = QLabel(ABOUT_APP_TAGLINE)
+        self._tagline_label.setAlignment(Qt.AlignCenter)
+        self._tagline_label.setWordWrap(True)
+        header.addWidget(self._tagline_label)
+
+        # 版本行：Version <版本号> + 制表位间隔 + 「检查更新」按钮（整行居中）
+        version_row = QHBoxLayout()
+        version_row.setContentsMargins(0, 0, 0, 0)
+        version_row.setSpacing(0)
+        version_row.addStretch(1)
+
+        self._version_label = QLabel(f"Version {_app_version()}".strip())
+        version_row.addWidget(self._version_label)
+
+        version_row.addSpacing(ABOUT_VERSION_TAB_GAP)
+
+        self._check_update_btn = StyledButton("检查更新", variant="secondary", size="sm")
+        self._check_update_btn.setCursor(Qt.PointingHandCursor)
+        self._check_update_btn.clicked.connect(self._check_update)
+        version_row.addWidget(self._check_update_btn)
+
+        version_row.addStretch(1)
+        header.addLayout(version_row)
+
+        # 链接行：仓库页面 · 联系我们 · 开源许可（均为可点击链接，
+        # 「联系我们」为内置伪协议，点击在下方展开联系信息框）
+        self._links_label = QLabel()
+        self._links_label.setObjectName("AboutLinksLabel")
+        self._links_label.setAlignment(Qt.AlignCenter)
+        self._links_label.setTextFormat(Qt.RichText)
+        # 仅鼠标可点：不含键盘链接焦点（LinksAccessibleByKeyboard），且不接受
+        # 焦点——否则点击后标签会保留键盘焦点、绘制出白色虚线焦点框（残留）。
+        self._links_label.setTextInteractionFlags(
+            Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse
         )
-        self._view_btn = StyledButton("查看", variant="primary", size="sm")
-        self._view_btn.setCursor(Qt.PointingHandCursor)
-        self._view_btn.clicked.connect(self._open_license_viewer)
-        self._license_row.set_control(self._view_btn)
-        layout.addWidget(self._license_row)
+        self._links_label.setFocusPolicy(Qt.NoFocus)
+        self._links_label.setCursor(Qt.PointingHandCursor)
+        self._links_label.setOpenExternalLinks(False)
+        self._links_label.linkActivated.connect(self._on_link_activated)
+        header.addWidget(self._links_label)
+
+        # 联系信息框：默认隐藏，点击「联系我们」后在链接行下方展开（矩形，双行）
+        self._contact_box = QFrame()
+        self._contact_box.setObjectName("AboutContactBox")
+        self._contact_box.setFrameShape(QFrame.NoFrame)
+        contact_layout = QVBoxLayout(self._contact_box)
+        contact_layout.setContentsMargins(16, 10, 16, 10)
+        contact_layout.setSpacing(2)
+
+        self._contact_name_label = QLabel(ABOUT_CONTACT_NAME)
+        self._contact_name_label.setAlignment(Qt.AlignCenter)
+        contact_layout.addWidget(self._contact_name_label)
+
+        self._contact_email_label = QLabel(ABOUT_CONTACT_EMAIL)
+        self._contact_email_label.setAlignment(Qt.AlignCenter)
+        contact_layout.addWidget(self._contact_email_label)
+
+        self._contact_box.setVisible(False)
+        contact_row = QHBoxLayout()
+        contact_row.setContentsMargins(0, 0, 0, 0)
+        contact_row.addStretch(1)
+        contact_row.addWidget(self._contact_box)
+        contact_row.addStretch(1)
+        header.addLayout(contact_row)
+
+        layout.addLayout(header)
 
         layout.addStretch(1)
 
-    def find_main_window(self) -> QWidget | None:
-        """定位主窗口（按 _mica_background 属性鸭子类型判定，避免循环导入）。
-
-        与 :meth:`AppearanceSettingsPage.find_main_window` 口径一致。
-        """
-        w = self.window()
-        if w is not None and getattr(w, "_mica_background", None) is not None:
-            return w
-        for w in QApplication.topLevelWidgets():
-            if getattr(w, "_mica_background", None) is not None:
-                return w
-        return None
-
-    def _open_license_viewer(self) -> None:
-        """打开开源许可证查看窗口（经主窗口统一入口，避免窗口重复创建）。"""
+    @staticmethod
+    def _open_link(url: str) -> None:
+        """经系统默认浏览器打开链接（失败仅告警，不阻断设置页）。"""
         try:
-            mw = self.find_main_window()
-            if mw is not None and hasattr(mw, "_open_license_viewer"):
-                mw._open_license_viewer()  # noqa: SLF001 - 跨模块调用主窗口私有入口（与外观页一致）
-        except Exception:  # noqa: BLE001 - 打开失败仅抑制，不影响设置页其余功能
-            pass
+            QDesktopServices.openUrl(QUrl(url))
+        except Exception as exc:  # noqa: BLE001 - 打开失败不影响设置页其余功能
+            debug(f"打开链接失败：{exc}")
+
+    def _on_link_activated(self, url: str) -> None:
+        """链接激活分发：内置伪协议切换联系信息框，其余交系统浏览器打开。"""
+        if url == ABOUT_CONTACT_SCHEME:
+            self._toggle_contact_box()
+            return
+        self._open_link(url)
+
+    def _toggle_contact_box(self) -> None:
+        """切换联系信息框显隐（点击「联系我们」）。"""
+        if self._contact_box is None:
+            return
+        # 用显式状态位而非 isVisible()：父级不可见时 isVisible() 恒为 False，
+        # 会与真实显隐状态不一致。
+        self._contact_visible = not self._contact_visible
+        self._contact_box.setVisible(self._contact_visible)
+
+    def _check_update(self) -> None:
+        """检查更新：跳转到项目 Releases 页面（应用内暂无更新服务端）。"""
+        self._open_link(f"{ABOUT_REPO_URL}/releases")
+
+    def _apply_header_styles(self) -> None:
+        """按当前主题重注册应用信息块样式并重建链接行富文本。"""
+        if self._app_name_label is not None:
+            register_widget_qss(self._app_name_label, (
+                f"background: transparent; border: none; color: {tm.text.name()};"
+                " font-size: 22px; font-weight: 600;"
+            ))
+        if self._tagline_label is not None:
+            # 与软件名称同字体、同颜色（仅字号更小）
+            register_widget_qss(self._tagline_label, (
+                f"background: transparent; border: none; color: {tm.text.name()};"
+                " font-size: 12px;"
+            ))
+        if self._version_label is not None:
+            register_widget_qss(self._version_label, (
+                f"background: transparent; border: none; "
+                f"color: {tm.qss_color(tm.text_hint)}; font-size: 12px;"
+            ))
+        if self._links_label is not None:
+            register_widget_qss(self._links_label, (
+                f"background: transparent; border: none; color: {tm.text.name()};"
+                " font-size: 12px;"
+            ))
+            self._refresh_links_text()
+        if self._contact_box is not None:
+            register_widget_qss(self._contact_box, (
+                f"#AboutContactBox {{ background: {tm.qss_color(tm.alpha_of(tm.fill, 30))};"
+                f" border: 1px solid {tm.qss_color(tm.mid)}; border-radius: 6px; }}"
+            ))
+        for label in (self._contact_name_label, self._contact_email_label):
+            if label is not None:
+                register_widget_qss(label, (
+                    f"background: transparent; border: none; color: {tm.text.name()};"
+                    " font-size: 12px;"
+                ))
+
+    def _refresh_links_text(self) -> None:
+        """重建链接行富文本（链接色随主题变化，linkActivated 统一分发）。"""
+        if self._links_label is None:
+            return
+        accent = tm.qss_color(tm.accent)
+        separator = tm.qss_color(tm.mid)
+        link_style = f"color:{accent};text-decoration:none;"
+        self._links_label.setText(
+            f'<a href="{ABOUT_REPO_URL}" style="{link_style}">仓库页面</a>'
+            f'<span style="color:{separator};">&nbsp;·&nbsp;</span>'
+            f'<a href="{ABOUT_CONTACT_SCHEME}" style="{link_style}">联系我们</a>'
+            f'<span style="color:{separator};">&nbsp;·&nbsp;</span>'
+            f'<a href="{ABOUT_LICENSE_URL}" style="{link_style}">开源许可</a>'
+        )
 
     def refresh_theme(self) -> None:
-        """主题切换刷新：按统一 token 重注册条目文字样式。
-
-        按钮视觉由 ``StyledButton`` 自适配，仅条目文字需要显式刷新。
-        """
-        _refresh_settings_item_text(self._license_row)
+        """主题切换刷新：重注册应用信息块样式与链接行颜色。"""
+        self._apply_header_styles()
 
 
 class SettingsLayout(QWidget):
@@ -1874,6 +2109,9 @@ class SettingsLayout(QWidget):
         self._appearance_baseline: dict = self._capture_appearance_baseline()
         # 背景图层最近一次已下发的图片文件名：滑块拖动预览时据此跳过图片重载。
         self._last_applied_bg_image: str = ""
+        # 最近一次已下发图片的导入修订号：与文件名共同标识图片身份。单槽位
+        # 同名覆盖时文件名不变，仅靠修订号才能识别"内容已更换、需重新下发"。
+        self._last_applied_bg_rev: int = -1
         # 背景三项+参数最近一次已下发的完整状态：与目标一致时整段跳过
         # （主题切换/其它改动引发的重复下发不再触碰背景层）。
         self._last_applied_bg_state: tuple | None = None
@@ -1889,6 +2127,9 @@ class SettingsLayout(QWidget):
         )
         # 底栏「有更改未保存」提示标签（_create_bottom_buttons 创建）。
         self._dirty_hint: QLabel | None = None
+        # 底部按钮栏（关于页隐藏）与关于页在内容栈中的索引
+        self._bottom_bar: QFrame | None = None
+        self._about_page_index: int = -1
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -1939,18 +2180,16 @@ class SettingsLayout(QWidget):
         appearance_scroll.attach_floating_bar_region(appearance_card)
         self._stack.addWidget(appearance_card)
 
-        # 页面 2：关于（与其它页统一：包进透明滚动区域，小窗口下可滚动访问）
+        # 页面 2：关于（应用信息竖向居中，无长内容，无需外包滚动区）
         self._about_page = AboutSettingsPage()
-        about_scroll = self._wrap_page_in_scroll(self._about_page)
-        about_card = self._create_page_card(about_scroll)
-        about_scroll.attach_floating_bar_region(about_card)
-        self._stack.addWidget(about_card)
+        about_card = self._create_page_card(self._about_page)
+        self._about_page_index = self._stack.addWidget(about_card)
 
         content_layout.addWidget(self._stack, stretch=1)
 
-        # ── 底部按钮栏 ──
-        buttons_widget = self._create_bottom_buttons()
-        content_layout.addWidget(buttons_widget)
+        # ── 底部按钮栏（关于页无可提交项，选中该页时隐藏） ──
+        self._bottom_bar = self._create_bottom_buttons()
+        content_layout.addWidget(self._bottom_bar)
 
         # 应用初始样式
         self._refresh_styles()
@@ -1961,6 +2200,7 @@ class SettingsLayout(QWidget):
 
         # 默认选中第一项（通用）
         self._stack.setCurrentIndex(0)
+        self._sync_bottom_bar(0)
 
         # 主题切换时刷新内容区背景（生效值变化 + 偏好变化均需刷新，
         # 后者覆盖生效值不变但分段需切换的场景，如 白天→跟随系统且系统正为浅色）。
@@ -2059,6 +2299,12 @@ class SettingsLayout(QWidget):
         """侧边栏导航项选中回调"""
         if 0 <= index < self._stack.count():
             self._stack.setCurrentIndex(index)
+        self._sync_bottom_bar(index)
+
+    def _sync_bottom_bar(self, index: int) -> None:
+        """按当前页同步底部按钮栏显隐：关于页无可提交项，隐藏「重置/取消/保存」。"""
+        if self._bottom_bar is not None:
+            self._bottom_bar.setVisible(index != self._about_page_index)
 
     def _on_theme_changed(self, _theme: str) -> None:
         """主题切换时刷新样式"""
@@ -2410,6 +2656,7 @@ class SettingsLayout(QWidget):
             debug(f"外观回滚恢复 tm 失败：{exc}")
         # 强制下次重新下发背景（模式/图片/参数可能已变）。
         self._last_applied_bg_image = ""
+        self._last_applied_bg_rev = -1
         self._last_applied_bg_state = None
         self._apply_staged_background_to_main_window(base.get("background", {}) or {})
 
@@ -2677,11 +2924,17 @@ class SettingsLayout(QWidget):
         bg_transparency = _normalize_bg_transparency(
             staged_bg.get("transparency", IMAGE_BG_TRANSPARENCY_DEFAULT)
         )
+        # 背景图片身份 = (文件名, 导入修订号)。单槽位同名覆盖时文件名恒定，
+        # 必须并入修订号才能识别"再次选图内容已更换"（否则整段被跳过）。
+        try:
+            image_rev = int(self._appearance_page.background_image_revision())
+        except Exception:  # noqa: BLE001 - 取修订号失败按无变化处理
+            image_rev = 0
         # 与上次已下发状态完全一致 → 整段跳过（主题切换、色板/其它改动
         # 引发的重复预览不再触碰背景层）。
         state = (
             mode,
-            image_name if mode == "image" else "",
+            (image_name, image_rev) if mode == "image" else "",
             ambient,
             bg_blur,
             bg_transparency,
@@ -2697,11 +2950,16 @@ class SettingsLayout(QWidget):
                     get_app_data_path(), BACKGROUND_DIR_NAME, image_name
                 )
                 # 图片只在切换/更换时下发一次；滑块拖动预览（同一图片）仅更新
-                # 参数，避免每帧重载图片造成卡顿与闪烁。
-                if image_name != self._last_applied_bg_image:
+                # 参数，避免每帧重载图片造成卡顿与闪烁。同名覆盖的新图片靠
+                # 修订号变化识别，仍会重新下发并触发交叉淡入。
+                if (image_name, image_rev) != (
+                    self._last_applied_bg_image,
+                    self._last_applied_bg_rev,
+                ):
                     if hasattr(mw, "set_custom_background_image"):
                         mw.set_custom_background_image(image_path)
                     self._last_applied_bg_image = image_name
+                    self._last_applied_bg_rev = image_rev
                 if hasattr(mw, "set_image_background_params"):
                     # 透明度换算为不透明度后下发给图像层。
                     mw.set_image_background_params(
@@ -2711,12 +2969,14 @@ class SettingsLayout(QWidget):
                     mw.set_background_mode("image")
             elif mode == "minimalist":
                 self._last_applied_bg_image = ""
+                self._last_applied_bg_rev = -1
                 if hasattr(mw, "set_ambient_enabled"):
                     mw.set_ambient_enabled(ambient)
                 if hasattr(mw, "set_background_mode"):
                     mw.set_background_mode("minimalist")
             else:
                 self._last_applied_bg_image = ""
+                self._last_applied_bg_rev = -1
                 if hasattr(mw, "set_background_mode"):
                     mw.set_background_mode("mica")
             self._last_applied_bg_state = state

@@ -328,15 +328,18 @@ class TestMainWindowStartupOverlay:
     """启动加载覆盖层：创建契约、撤销钩子与幂等性（不 show 窗口）。"""
 
     def test_overlay_created_with_content_shell(self, qapp: QApplication) -> None:
-        """构造后覆盖层已就绪：不透明遮罩、挂在外层内容容器上、定时器已建。"""
+        """构造后覆盖层已就绪：不透明遮罩、铺满整个内容层、定时器已建。"""
         window = MainWindow()
         overlay = window._startup_overlay
         assert overlay is not None
         assert overlay.overlay is True
         assert overlay.backdrop == "opaque"
-        assert overlay.parentWidget() is window._splitter_container
+        # 挂在 _content（整个客户区）而非 _splitter_container：实色底才能
+        # 覆盖到自绘标题栏所在区域，避免标题栏透出背景层形成断色。
+        assert overlay.parentWidget() is window._content
+        assert window._title_bar_header is not None
         assert window._startup_overlay_timer is not None
-        # 覆盖层不设鼠标穿透：加载期内容区不可点击（标题栏不受影响）
+        # 覆盖层不设鼠标穿透：加载期内容区不可点击（标题栏在其上层不受影响）
         assert not overlay.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         window.deleteLater()
         qapp.processEvents()

@@ -73,7 +73,8 @@ from components.custom_background import BACKGROUND_DIR_NAME, CustomImageBackgro
 from freeassetfilter.ui.mica.config import DEFAULT_MICA_CONFIG
 from components.styled_button import StyledButton
 from components.styled_fluid_background import prewarm_top_level_rhi
-# 启动加载覆盖层：内容区只显示一个旋转圆环（见 MainWindow._setup_startup_overlay）
+# 启动加载覆盖层：铺满整个客户区、垫在标题栏之下只显示一个旋转圆环
+# （见 MainWindow._setup_startup_overlay / _mount_startup_overlay）
 from components.styled_loading import StyledLoading
 # 内容层主题过渡遮罩（旧外观快照自绘淡出，轻量自绘替代整窗遮罩的两处卡顿源）
 # 与背景层交叉过渡遮罩（设置页切换窗口背景：旧背景帧淡出、新层实时在底）
@@ -731,13 +732,16 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._previewer = None
         self._info_panel = None
         self._info_card = None
-        # 启动加载覆盖层：内容区唯一加载动画，三栏就绪后淡出
-        # （见 _setup_startup_overlay / _dismiss_startup_overlay）
+        # 启动加载覆盖层：唯一加载动画，铺满整个客户区并垫在标题栏之下，
+        # 三栏就绪后淡出（见 _setup_startup_overlay / _dismiss_startup_overlay）
         self._startup_overlay = None
         self._startup_overlay_timer = None
         self._startup_overlay_animation = None
         self._startup_overlay_started_at = 0.0
         self._splitter_container = None
+        # 自绘标题栏 QFrame：启动加载覆盖层据它做 stackUnder，使遮罩不透明底
+        # 铺到标题栏区域、而标题栏文字与按钮仍留在遮罩之上（见 _mount_startup_overlay）
+        self._title_bar_header = None
         self._github_btn = None
         self._settings_btn = None
         self._theme_btn = None
@@ -752,10 +756,6 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 是基类包装（实测为 'QWidget'），`is obj` 身份比对恒失败；
         # 故创建窗口时递增代际并绑定到槽，槽内按代际比对清空引用
         self._settings_window_gen = 0
-        # 开源许可证查看窗口实例引用（与设置窗口同模式：owned 子窗口 +
-        # WA_DeleteOnClose，主窗口持有引用防 GC，destroyed 后清空）
-        self._license_viewer_window = None
-        self._license_viewer_gen = 0
         # 内容层主题过渡遮罩（单实例去重引用；见 _start_content_theme_transition）
         self._content_theme_overlay: QWidget | None = None
         # 背景层交叉过渡遮罩（单实例去重引用；见 _start_background_transition）
@@ -1073,7 +1073,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 内容是在 showEvent 之后创建的，因此手动补齐原本由 showEvent
         # 负责的首帧后工作，避免 Mica/覆盖层停留在未启动状态。
         if self._startup_overlay is not None:
-            self._startup_overlay.fit_to_parent()
+            self._mount_startup_overlay()
             if self._startup_overlay_timer is not None:
                 self._startup_overlay_timer.start(self.STARTUP_OVERLAY_MAX_MS)
         if self._background_mode == "mica" and self._mica_background is not None:
@@ -1207,8 +1207,9 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         container_layout.addWidget(self._main_layout)
         main_layout.addWidget(self._splitter_container, stretch=1)
 
-        # 启动加载覆盖层：铺满标题栏以下的内容区，只显示一个旋转圆环；
-        # 三栏真实布局就绪后淡出（见 _dismiss_startup_overlay）。
+        # 启动加载覆盖层：实色底铺满整个客户区（含自绘标题栏背后的区域，
+        # 标题栏文字/按钮仍在其上），只显示一个旋转圆环；三栏真实布局就绪后
+        # 淡出（见 _dismiss_startup_overlay）。
         self._setup_startup_overlay()
 
         # 连接主题切换信号（生效值变化刷新顶栏图标/面板）
@@ -1221,12 +1222,16 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
     # ──── 分阶段延迟构建三栏（首屏提速） ─────────────────────────────────
 
     def _setup_startup_overlay(self) -> None:
-        """创建启动加载覆盖层（铺满内容区、只显示旋转圆环）与撤销定时器。
+        """创建启动加载覆盖层（铺满整个客户区、只显示旋转圆环）与撤销定时器。
 
-        覆盖层挂在 ``_splitter_container`` 而不是整个窗口：标题栏保持可见可交互
-        （可拖动/最小化/关闭），只有标题栏以下的内容区被实色盖住。三栏真实布局
-        全部就绪后由 :meth:`_dismiss_startup_overlay` 淡出；构建异常时的兜底见
-        ``STARTUP_OVERLAY_MAX_MS``。创建失败不影响启动（回退到「加载中…」占位）。
+        覆盖层挂在 ``_content``（=整个客户区）而非 ``_splitter_container``：这样
+        不透明遮罩底色才能覆盖到自绘标题栏所在的区域，否则标题栏会透出云母/壁纸
+        等背景层，与下方实色内容区形成一条断色带。挂载时 ``stackUnder`` 标题栏
+        （见 :meth:`_mount_startup_overlay`），标题栏文字/按钮仍留在遮罩之上，
+        保持可见可交互（可拖动/最小化/关闭），只有标题栏以下的区域被实色盖住。
+        三栏真实布局全部就绪后由 :meth:`_dismiss_startup_overlay` 淡出；构建异常
+        时的兜底见 ``STARTUP_OVERLAY_MAX_MS``。创建失败不影响启动（回退到
+        「加载中…」占位）。
 
         必须在 ``_setup_content`` 内同步完成：此时早于 ``main.py`` 的
         ``window.show()``，覆盖层才能出现在首帧。
@@ -1241,13 +1246,31 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                 size="lg",
                 overlay=True,
                 backdrop="opaque",
-                parent=self._splitter_container,
+                parent=self._content,
             )
-            self._startup_overlay.fit_to_parent()
+            self._mount_startup_overlay()
             self._startup_overlay_started_at = time.perf_counter()
         except Exception as exc:  # 覆盖层失败不影响启动
             warning(f"启动加载覆盖层创建失败（回退占位标签）: {exc}")
             self._startup_overlay = None
+
+    def _mount_startup_overlay(self) -> None:
+        """把启动加载覆盖层铺满 ``_content`` 并垫在自绘标题栏之下。
+
+        ``fit_to_parent`` 会 ``raise_`` 覆盖层。要使最终 z 序为「标题栏 → 覆盖层
+        → 内容区」，必须先 ``header.raise_()`` 把标题栏提到最上层，再
+        ``overlay.stackUnder(header)``——``stackUnder`` 只把覆盖层放到标题栏
+        **正下方**，若标题栏本身还在栈底（标题栏先于内容容器创建），覆盖层会被
+        一并压到内容容器之下、反而盖不住。幂等，可重复调用（内容层重建后会再挂一次）。
+        """
+        overlay = self._startup_overlay
+        if overlay is None:
+            return
+        overlay.fit_to_parent()
+        header = getattr(self, "_title_bar_header", None)
+        if header is not None:
+            header.raise_()
+            overlay.stackUnder(header)
 
     def _dismiss_startup_overlay(self) -> None:
         """三栏就绪后撤下启动加载覆盖层（不足最短展示时长则补齐后再淡出）。
@@ -1467,6 +1490,10 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         header = QFrame()
         header.setObjectName("TitleBar")
         header.setFixedHeight(48)
+        # 持有引用：启动加载覆盖层按它 stackUnder，把实色遮罩铺到标题栏区域
+        # 之下（标题栏文字/按钮仍留在最上层），避免标题栏透出云母/壁纸背景
+        # 与下方实色内容区形成断色（见 _mount_startup_overlay）。
+        self._title_bar_header = header
         # 完全透明，让下面的 Mica 效果（基底 + 模糊壁纸 + 遮罩）覆盖整个区域
         register_widget_qss(header,("""
             #TitleBar {
@@ -1659,52 +1686,6 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             prune_dead_registrations()
         except Exception as exc:  # noqa: BLE001 - 剪枝失败不影响窗口生命周期
             debug(f"关闭后 QSS 注册表剪枝失败：{exc}")
-
-    def _open_license_viewer(self) -> None:
-        """打开开源许可证查看窗口（每次新建，关闭即销毁，不缓存窗口实例）。
-
-        窗口以主窗口为 parent（Windows owned 子窗口）：始终相对主窗口置顶，
-        主窗口关闭/退出时随宿主一并关闭销毁。实例引用保存在
-        ``self._license_viewer_window``（与设置窗口同模式），防止函数返回后
-        Python GC 销毁顶层窗口；destroyed 后按代际清空引用以便下次重建。
-        已打开时不重复创建，聚焦到前台即可。
-        """
-        win = self._license_viewer_window
-        if win is not None:
-            try:
-                visible = win.isVisible()
-            except RuntimeError:
-                # 兜底：C++ 对象已销毁但引用尚未清空，视为已关闭
-                visible = False
-            if visible:
-                win.raise_()
-                win.activateWindow()
-                return
-            self._license_viewer_window = None
-
-        window = LicenseViewerWindow(self)
-        self._license_viewer_window = window
-        self._license_viewer_gen += 1
-        gen = self._license_viewer_gen
-        window.setAttribute(Qt.WA_DeleteOnClose, True)
-        window.destroyed.connect(
-            lambda _obj=None, _gen=gen: self._on_license_viewer_closed(_gen)
-        )
-        window.show()
-        window.raise_()
-        window.activateWindow()
-
-    def _on_license_viewer_closed(self, gen: object = None) -> None:
-        """许可证窗口被关闭/销毁（含主窗口关闭连带销毁）后释放引用。
-
-        Args:
-            gen: 触发 destroyed 的窗口代际（创建窗口时绑定的计数器值）。
-                仅当传入代际与当前代际一致（或无代际参数的直接调用）时
-                才清空，防止旧窗口销毁事件晚到时误清已重建的新窗口引用。
-        """
-        if gen is not None and gen != self._license_viewer_gen:
-            return
-        self._license_viewer_window = None
 
     def _start_content_theme_transition(self) -> None:
         """启动内容层主题过渡：切前抓整窗外观快照，切后径向揭示新主题。
@@ -2546,7 +2527,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 启动加载覆盖层：显示时同步一次几何（构造期布局尚未跑过，容器尺寸还是
         # 默认值），并启动最长存活兜底（三栏构建异常时遮罩仍会撤下）
         if self._startup_overlay is not None:
-            self._startup_overlay.fit_to_parent()
+            self._mount_startup_overlay()
             if self._startup_overlay_timer is not None:
                 self._startup_overlay_timer.start(self.STARTUP_OVERLAY_MAX_MS)
 
@@ -3363,182 +3344,4 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                 layout.on_host_closing()
         except Exception as exc:
             debug(f"设置窗口关闭钩子失败（暂存缓存可能未清理）：{exc}")
-        super().closeEvent(event)
-
-
-class LicenseViewerWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
-    """开源许可证查看窗口 — 主窗口的 owned 子窗口，tm.surface 纯色背景。
-
-    从设置窗口「关于 → 开源许可证」的查看按钮弹出；窗口标题「开源许可证」，
-    自定义标题栏实现与设置窗口（``SettingsWindow``）保持一致（48px 标题栏 +
-    标题文字 + ✕ 关闭按钮 + startSystemMove 拖拽），内容区嵌入现有
-    ``TextPreviewerLayout``（markdown 文本预览器）并固定加载
-    ``freeassetfilter/docs/THIRD_PARTY_NOTICES.md`` 第三方开源许可证文档。
-    以主窗口为 parent（Windows owned 窗口）——始终相对主窗口置顶，
-    主窗口关闭时许可证窗口一并关闭销毁。
-    """
-
-    #: 标题栏 objectName（eventFilter 拖拽判定用，与设置窗口区分）
-    _TITLE_BAR_OBJECT_NAME = "LicenseViewerTitleBar"
-
-    def __init__(self, parent=None):
-        # 先初始化属性，防止父类初始化期间触发的事件访问未定义属性
-        self._root = None
-        self._title_label = None
-        self._close_btn = None
-        self._previewer = None
-
-        super().__init__(parent)
-
-        self.setWindowTitle("开源许可证")
-        self.setMinimumSize(640, 420)
-        self.resize(860, 640)
-
-        # 定位：居中到宿主主窗口；无宿主时回退到鼠标所在屏幕中心
-        self._center_on_host()
-
-        # 中央部件用纯 QWidget，保留本地无边框基类原生窗口特性；
-        # tm.surface 不透明纯色背景（与设置窗口 / styled 弹窗同款）
-        self._root = QWidget(self)
-        self.setCentralWidget(self._root)
-        _apply_theme_palette(self._root)
-        self._root.setAutoFillBackground(True)
-
-        layout = QVBoxLayout(self._root)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        # 标题栏（标题文字 + 关闭按钮，与设置窗口同款实现）
-        self._create_title_bar(layout)
-
-        # 内容区：嵌入现有 markdown 文本预览器，固定加载第三方许可证文档
-        from layout.preview.text_previewer_layout import TextPreviewerLayout  # 延迟导入（启动提速）
-
-        self._previewer = TextPreviewerLayout(
-            self._root, standalone=False
-        )
-        layout.addWidget(self._previewer, stretch=1)
-
-        # 固定加载 docs 目录内的第三方开源许可证文档
-        try:
-            from freeassetfilter.core._paths import docs_dir
-
-            notice_path = docs_dir() / "THIRD_PARTY_NOTICES.md"
-        except Exception:  # noqa: BLE001 - 路径解析失败时退化为项目文档根
-            notice_path = Path(__file__).resolve().parent.parent / "docs" / "THIRD_PARTY_NOTICES.md"
-        self._previewer.set_file(str(notice_path))
-
-        # 监听主题变化以刷新背景和标题栏颜色
-        tm.theme_changed.connect(self._on_theme_changed)
-
-    def _center_on_host(self) -> None:
-        """居中到宿主主窗口；无宿主时回退到鼠标所在屏幕中心"""
-        host = self.parentWidget()
-        if host is not None and host.isVisible():
-            geo = host.geometry()
-            x = geo.x() + (geo.width() - self.width()) // 2
-            y = geo.y() + (geo.height() - self.height()) // 2
-            self.move(x, y)
-            return
-        screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
-        geo = screen.geometry()
-        self.move(
-            geo.x() + (geo.width() - self.width()) // 2,
-            geo.y() + (geo.height() - self.height()) // 2,
-        )
-
-    def _create_title_bar(self, parent_layout: QVBoxLayout) -> None:
-        """创建标题栏（标题文字 + 关闭按钮，与设置窗口同款实现）"""
-        header = QFrame()
-        header.setObjectName(self._TITLE_BAR_OBJECT_NAME)
-        header.setFixedHeight(48)
-        register_widget_qss(header, ("""
-            #LicenseViewerTitleBar {
-                background-color: transparent;
-            }
-        """))
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(16, 8, 16, 8)
-        header_layout.setSpacing(0)
-
-        # 标题文字
-        self._title_label = QLabel("开源许可证")
-        register_widget_qss(self._title_label, (
-            f'font-size: 14px; font-weight: 600; color: {tm.text.name()};'
-        ))
-        header_layout.addWidget(self._title_label)
-        header_layout.addStretch()
-
-        # 关闭按钮
-        self._close_btn = StyledButton("", variant="ghost", size="sm")
-        self._close_btn.setFixedSize(32, 32)
-        self._close_btn.setText("✕")
-        register_widget_qss(self._close_btn, (self._close_button_style()))
-        self._close_btn.clicked.connect(self.close)
-        header_layout.addWidget(self._close_btn)
-
-        # 安装事件过滤器用于拖拽
-        header.installEventFilter(self)
-        parent_layout.addWidget(header)
-
-    def _close_button_style(self) -> str:
-        """生成关闭按钮的 styleSheet（与设置窗口同款样式）"""
-        return f"""
-            QPushButton {{ background: transparent; border: none; color: {tm.text.name()}; font-size: 16px; }}
-            QPushButton:hover {{ background: {tm.danger.name()}; color: {tm.text.name()}; }}
-        """
-
-    def _on_theme_changed(self, _theme: str) -> None:
-        """主题切换时刷新背景色和标题栏样式"""
-        self._sync_theme()
-
-    def showEvent(self, event) -> None:
-        """窗口显示/重新显示时刷新全量主题样式"""
-        super().showEvent(event)
-        self._sync_theme()
-        # 同步下发样式表（与设置窗口同款）：避免首帧以旧样式表绘制而闪现/
-        # 卡顿，详见 SettingsWindow.showEvent 的说明。
-        apply_app_stylesheet()
-
-    def _sync_theme(self) -> None:
-        """强制刷新当前主题下的所有样式"""
-        if self._root is not None:
-            _apply_theme_palette(self._root)
-        if self._title_label is not None:
-            register_widget_qss(self._title_label, (
-                f'font-size: 14px; font-weight: 600; color: {tm.text.name()};'
-            ))
-        if self._close_btn is not None:
-            register_widget_qss(self._close_btn, (self._close_button_style()))
-        # 内容区预览器内部自接管主题（TextPreviewerLayout.connect_theme）
-
-    def eventFilter(self, obj: QWidget, event: QEvent) -> bool:
-        """事件过滤器 - 处理标题栏拖拽（与设置窗口同款实现）"""
-        if not isinstance(event, QMouseEvent):
-            return False
-        if event.type() != QEvent.Type.MouseButtonPress:
-            return False
-        if event.button() != Qt.LeftButton:
-            return False
-
-        # 检查是否点击在按钮上
-        child = obj.childAt(event.position().toPoint())
-        if child is not None and isinstance(child, StyledButton):
-            return False  # 让按钮正常工作
-
-        # 在标题栏上拖拽移动窗口
-        if obj.objectName() == self._TITLE_BAR_OBJECT_NAME and self.windowHandle():
-            self.windowHandle().startSystemMove()
-            return True
-
-        return False
-
-    def closeEvent(self, event) -> None:
-        """窗口关闭时清理预览器（在途渲染任务/缩放弹窗/抽屉）。"""
-        try:
-            previewer = getattr(self, "_previewer", None)
-            if previewer is not None and hasattr(previewer, "cleanup"):
-                previewer.cleanup()
-        except Exception as exc:
-            debug(f"关闭时预览器清理失败：{exc}")
         super().closeEvent(event)
