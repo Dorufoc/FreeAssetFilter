@@ -279,8 +279,13 @@ class StyledTextarea(QWidget):
     # ---- helpers ----
 
     def _on_theme_changed(self, _theme: str) -> None:
-        """主题切换：重算边框/文字（背景色由 paintEvent 现取）。"""
-        self._apply_stylesheet()
+        """主题切换：重算边框/文字（背景色由 paintEvent 现取）。
+
+        ``_apply_stylesheet`` 定义在内部编辑器 :class:`_StyledTextEdit` 上，
+        这里必须转发给它；直接调 ``self._apply_stylesheet()`` 会抛
+        ``AttributeError``（历史缺陷，主题切换时静默失效）。
+        """
+        self._text_edit._apply_stylesheet()
         register_widget_qss(self._label,(
             f"font-size: 13px; font-weight: 500; color: {tm.text.name()};"
         ))

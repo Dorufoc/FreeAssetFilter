@@ -9,6 +9,7 @@ from typing import Any, Callable, Mapping
 class AIProvider(str, Enum):
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
+    DEEPSEEK_CHAT = "deepseek_chat"
     DEEPSEEK_RESPONSES = "deepseek_responses"
 
 
@@ -51,7 +52,14 @@ class AIAccountConfig:
     timeout: float = 90.0
     headers: Mapping[str, str] = field(default_factory=dict)
     reasoning_enabled: bool | None = None
+    reasoning_effort: str | None = None
     reasoning_budget: int | None = None
+    top_p: float | None = None
+    response_format: Mapping[str, Any] | None = None
+    tool_choice: Any = None
+    user: str | None = None
+    prefix: bool = False
+    strict_tools: bool = False
 
 
 @dataclass
@@ -62,6 +70,7 @@ class ChatMessage:
     name: str | None = None
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     tool_call_id: str | None = None
+    prefix: bool = False
 
 
 @dataclass(frozen=True)
@@ -81,6 +90,7 @@ class ToolDefinition:
     description: str
     parameters: Mapping[str, Any]
     handler: Callable[[Mapping[str, Any]], Any] | None = None
+    strict: bool = False
 
 
 @dataclass(frozen=True)

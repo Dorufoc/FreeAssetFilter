@@ -12,7 +12,7 @@ from typing import Iterable
 from .models import FileContext
 
 _TEXT_EXTS = {"txt", "md", "markdown", "rst", "log", "csv", "json", "jsonl", "py", "js", "ts", "tsx", "jsx", "html", "css", "xml", "yaml", "yml", "ini", "toml", "bat", "ps1", "c", "cpp", "h", "hpp", "java", "go", "rs"}
-_IMAGE_EXTS = {"jpg", "jpeg", "png", "webp"}
+_IMAGE_EXTS = {"jpg", "jpeg", "png", "gif", "webp"}
 
 
 class AIFileContextService:
@@ -44,20 +44,21 @@ class AIFileContextService:
                 result.append(FileContext("", path.name, path.suffix.lower().lstrip("."), "", "", error=str(exc)))
         return result
 
-    def image_content_part(self, path: str, max_bytes: int = 10_000_000) -> dict[str, object]:
+    def image_content_part(self, path: str, max_bytes: int = 32 * 1024 * 1024, detail: str = "auto") -> dict[str, object]:
         """Create a DeepSeek vision-compatible image_url content block."""
         file_path = Path(path)
         suffix = file_path.suffix.lower().lstrip(".")
         if not file_path.is_file() or file_path.is_symlink():
             raise ValueError("图像文件不可用")
         if suffix not in _IMAGE_EXTS:
-            raise ValueError("仅支持 JPG、PNG、WEBP 图像")
+            raise ValueError("仅支持 JPEG、PNG、GIF、WEBP 图像")
         raw = file_path.read_bytes()
         if len(raw) > max_bytes:
             raise ValueError("图像文件超过大小限制")
         mime = mimetypes.guess_type(file_path.name)[0] or "image/jpeg"
         encoded = base64.b64encode(raw).decode("ascii")
-        return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}}
+        if detail not in {"low", "high", "original", "auto"}: raise ValueError("detail 必须是 low、high、original 或 auto")
+        return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}", "detail": detail}}
 
     def vision_message(self, prompt: str, image_paths: Iterable[str]) -> dict[str, object]:
         content: list[dict[str, object]] = [{"type": "text", "text": prompt}]
