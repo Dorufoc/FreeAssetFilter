@@ -7,7 +7,9 @@
 - 半高上限：底行（workspace）/ 信息区（classic）≤ 右区可用高度一半；
 - 16:9 降级：窗口过矮时半高上限优先，底行不低于下限（可行时）；
 - 用户拖拽右竖条后停止自动 16:9；主横条拖拽时未拖拽右竖条则同步 16:9；
-- 窗口缩放（自动态）维持 16:9。
+- 窗口缩放（自动态）维持 16:9；
+- 叶子实测下限下发（``set_leaf_minimums``，预览器最小总高 / 底行最小高）；
+- 折叠策略：仅经典布局的储存池可拖拽折叠，其余子项不可折叠。
 
 验证命令：
     python -m pytest tests/unit/ui/layout/test_main_layout.py --timeout 60 -q
@@ -156,6 +158,31 @@ class TestMainLayoutStructure:
         finally:
             layout.deleteLater()
             qapp.processEvents()
+
+    def test_only_classic_pool_is_collapsible(self, qapp: QApplication) -> None:
+        """仅经典布局的储存池可折叠：压到最小宽后继续拖 → 塌缩隐藏/拖回恢复。"""
+        classic = MainLayout(CLASSIC_MODE)
+        workspace = MainLayout(WORKSPACE_MODE)
+        try:
+            main = classic.splitters["main"]
+            assert main.isCollapsible(0) is False  # 选择器
+            assert main.isCollapsible(1) is True  # 储存池
+            assert main.isCollapsible(2) is False  # 右列容器
+            right = classic.splitters["right"]
+            assert right.isCollapsible(0) is False
+            assert right.isCollapsible(1) is False
+
+            ws_main = workspace.splitters["main"]
+            assert ws_main.isCollapsible(0) is False
+            assert ws_main.isCollapsible(1) is False  # workspace 右区（预览优先）
+            assert workspace.splitters["right"].isCollapsible(0) is False
+            assert workspace.splitters["right"].isCollapsible(1) is False
+            bottom = workspace.splitters["bottom"]
+            assert bottom.isCollapsible(0) is False  # 储存
+            assert bottom.isCollapsible(1) is False  # 信息
+        finally:
+            safe_teardown(classic)
+            safe_teardown(workspace)
 
 
 class TestWorkspaceRatios:
@@ -389,5 +416,58 @@ class TestClassicRatios:
 
             assert info.height() <= half + 2
             assert right.sizes()[0] >= half - 2
+        finally:
+            safe_teardown(layout)
+
+
+class TestLeafMinimums:
+    """叶子实测下限（set_leaf_minimums）：预览器最小总高 / 底行最小高。"""
+
+    def test_default_bottom_min_used_before_leaf_values(self) -> None:
+        """未下发实测值：沿用兜底 BOTTOM_MIN_PX（底行恰为兜底值）。"""
+        layout = MainLayout(WORKSPACE_MODE)
+        try:
+            assert layout._bottom_min_px == BOTTOM_MIN_PX
+            assert layout._preview_min_total_px == 0
+            v_avail = 562
+            # lower=281, upper=362, target=408 → 取上限 362（底行 = BOTTOM_MIN_PX）
+            assert layout._preview_height_for(640, v_avail) == v_avail - BOTTOM_MIN_PX
+        finally:
+            safe_teardown(layout)
+
+    def test_set_leaf_minimums_clamps_preview_and_bottom(self) -> None:
+        """下发实测值后：预览 ≥ 最小总高、底行 ≥ 底行最小高（冲突时预览下限优先）。"""
+        layout = MainLayout(WORKSPACE_MODE)
+        try:
+            layout.set_leaf_minimums(154, 408)
+            assert layout._bottom_min_px == 154
+            assert layout._preview_min_total_px == 408
+            # 最小窗口几何（640 宽 / 562 可用高）：预览恰为 408，底行 154
+            assert layout._preview_height_for(640, 562) == 408
+            # 宽右列：16:9 目标被底行下限钳制（600 - 154 = 446）
+            assert layout._preview_height_for(900, 600) == 446
+            # 过矮窗口：预览下限优先，整体降级（主窗口最小尺寸保证正常不出现）
+            assert layout._preview_height_for(300, 200) == 200
+        finally:
+            safe_teardown(layout)
+
+    def test_set_leaf_minimums_reclamps_current_geometry(
+        self, qapp: QApplication
+    ) -> None:
+        """已应用默认比例后再下发实测值：延迟更新按新下限重算预览/底行。"""
+        layout = _show_layout(qapp, WORKSPACE_MODE, (1200, 500))
+        try:
+            right = layout.splitters["right"]
+            v_avail = _right_available(layout)
+            # 旧兜底：16:9 目标被底行下限钳制，底行恰为 BOTTOM_MIN_PX
+            assert abs(right.sizes()[1] - BOTTOM_MIN_PX) <= 3
+
+            layout.set_leaf_minimums(154, 408)
+            _pump_events(qapp)
+
+            preview_h, bottom_h = right.sizes()
+            # 新下限：预览最小总高 408 生效（接近占满可用高，底行 = 余量）
+            assert preview_h >= 408 - 2
+            assert bottom_h <= max(0, v_avail - 408) + 2
         finally:
             safe_teardown(layout)

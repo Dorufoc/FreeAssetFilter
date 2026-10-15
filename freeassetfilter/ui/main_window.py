@@ -1413,6 +1413,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                     if slot is not None:
                         self._previewer.set_bottom_bar_host(slot)
                 self._replace_zone_placeholder(side, self._previewer)
+                # 预览器最小尺寸随模式（workspace 内容区 640×360；classic 清除）
+                self._apply_previewer_minimums()
             elif side == "pool":
                 from layout.file_pool_layout import FilePoolLayout
 
@@ -1478,6 +1480,11 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         ):
             QTimer.singleShot(60, self._finalize_panels)
             return
+        # 全部就绪：聚合叶子实测下限（底行最小高 / 预览器最小总高）→ 预览器
+        # 最小尺寸 → 主窗口最小尺寸，再应用默认比例
+        self._apply_leaf_minimums()
+        self._apply_previewer_minimums()
+        self._apply_window_minimums()
         QTimer.singleShot(0, self._apply_default_layout)
         # 全部真实布局已就绪：撤下启动加载覆盖层
         # （后台 FFmpeg/LUT 预热、缓存清理继续在背后跑，不阻塞使用）
@@ -2367,6 +2374,159 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         if self._main_layout is not None:
             self._main_layout.apply_default_ratios()
 
+    # ──── 最小尺寸聚合（叶子实测 → 主布局 / 预览器 / 主窗口） ─────────────
+
+    def _apply_leaf_minimums(self) -> None:
+        """聚合叶子实测下限并下发主布局（底行最小高 / 预览器最小总高）。
+
+        口径：
+
+        - 底行最小高 = max(储存池一行卡片 + 其底栏, 信息面板最小高)
+          （workspace；见 ``FilePoolLayout.minimum_row_height`` /
+          ``FileInfoPanel.minimum_content_height``）；
+        - 预览器最小总高 = 内容区 360 + 顶栏 48（``WORKSPACE_PREVIEW_MIN_CONTENT_H``
+          + ``PREVIEW_CHROME_PX``）。
+
+        仅 workspace 组装消费这两个下限（classic 无底行概念、预览器自然最小），
+        但统一按当前叶子实测值下发，切换布局后无需重算。
+        """
+        if self._main_layout is None:
+            return
+        from layout.main_layout import (
+            PREVIEW_CHROME_PX,
+            WORKSPACE_PREVIEW_MIN_CONTENT_H,
+        )
+
+        pool_h = 0
+        if self._file_pool is not None:
+            try:
+                pool_h = int(self._file_pool.minimum_row_height())
+            except (AttributeError, RuntimeError):
+                pool_h = 0
+        info_h = 0
+        if self._info_panel is not None:
+            try:
+                info_h = int(self._info_panel.minimum_content_height())
+            except (AttributeError, RuntimeError):
+                info_h = 0
+        self._main_layout.set_leaf_minimums(
+            max(pool_h, info_h),
+            WORKSPACE_PREVIEW_MIN_CONTENT_H + PREVIEW_CHROME_PX,
+        )
+
+    def _apply_previewer_minimums(self) -> None:
+        """按当前布局模式设置预览器最小尺寸。
+
+        - workspace：内容区（画布）最小 640×360（16:9，含底行情况 1 平分
+          恒成立），预览器最小尺寸 = 640 × (360 + 顶栏 48)；
+        - classic：清除显式下限（恢复自然最小），使信息面板高度范围可以
+          完整覆盖（预览区高度范围由信息面板高度范围反推）。
+        """
+        if self._previewer is None:
+            return
+        from layout.main_layout import (
+            PREVIEW_CHROME_PX,
+            WORKSPACE_PREVIEW_MIN_CONTENT_H,
+            WORKSPACE_PREVIEW_MIN_CONTENT_W,
+        )
+
+        try:
+            if self._layout_mode == "workspace":
+                self._previewer.setMinimumSize(
+                    WORKSPACE_PREVIEW_MIN_CONTENT_W,
+                    WORKSPACE_PREVIEW_MIN_CONTENT_H + PREVIEW_CHROME_PX,
+                )
+            else:
+                self._previewer.setMinimumSize(0, 0)
+        except RuntimeError:  # 控件已销毁（极端时序）：忽略
+            pass
+
+    def _apply_window_minimums(self) -> None:
+        """按当前布局模式刷新主窗口最小尺寸（各区域最小尺寸的聚合 + 窗口装饰）。
+
+        布局最小尺寸口径（不含标题栏 / 容器边距）：
+
+        - workspace：宽 = 选择器最小宽 + 分隔条 + max(预览器最小宽 640,
+          底行最小宽〔储存 + 分隔条 + 信息〕)；高 = 预览器最小总高（360 + 48）
+          + 分隔条 + 底行最小高〔max(储存池一行 + 底栏, 信息面板最小高)〕；
+        - classic：宽 = 选择器 + 分隔条 + 储存池 + 分隔条 + 右列最小宽
+          〔max(预览器自然最小, 信息面板最小宽, 底栏最小宽)〕；高 = 右区最小高
+          〔max(2×信息面板最小高 + 分隔条, 预览器自然最小高 + 分隔条 + 信息最小高)〕
+          + 分隔条 + 底部操作栏槽位。
+
+        叶子尚未就绪时不施加（保持窗口自然尺寸）；就绪后由 ``_finalize_panels``
+        或 ``set_layout_mode`` 重新调用。窗口小于此尺寸时布局会被压到不可用，
+        故主窗口最小尺寸按上述聚合 + 自绘标题栏 / 容器边距换算。
+        """
+        if self._main_layout is None:
+            return
+        from layout.main_layout import (
+            CLASSIC_ACTION_SLOT_PX,
+            HANDLE_WIDTH,
+            PREVIEW_CHROME_PX,
+            WORKSPACE_PREVIEW_MIN_CONTENT_H,
+            WORKSPACE_PREVIEW_MIN_CONTENT_W,
+        )
+
+        def _min_width(widget) -> int:
+            if widget is None:
+                return 0
+            try:
+                return max(
+                    int(widget.minimumWidth()), int(widget.minimumSizeHint().width())
+                )
+            except RuntimeError:
+                return 0
+
+        def _min_height(widget) -> int:
+            if widget is None:
+                return 0
+            try:
+                return max(
+                    int(widget.minimumHeight()), int(widget.minimumSizeHint().height())
+                )
+            except RuntimeError:
+                return 0
+
+        selector_w = _min_width(self._file_selector)
+        pool_w = _min_width(self._file_pool)
+        info_w = _min_width(self._info_panel)
+        preview_w = _min_width(self._previewer)
+        info_h = _min_height(self._info_panel)
+        pool_h = _min_height(self._file_pool)
+
+        if self._layout_mode == "workspace":
+            preview_min_w = max(preview_w, WORKSPACE_PREVIEW_MIN_CONTENT_W)
+            preview_min_h = WORKSPACE_PREVIEW_MIN_CONTENT_H + PREVIEW_CHROME_PX
+            bottom_min_w = pool_w + HANDLE_WIDTH + info_w
+            bottom_min_h = max(pool_h, info_h)
+            width = selector_w + HANDLE_WIDTH + max(preview_min_w, bottom_min_w)
+            height = preview_min_h + HANDLE_WIDTH + bottom_min_h
+        else:
+            slot = self._main_layout.classic_action_slot()
+            right_min_w = max(preview_w, info_w, _min_width(slot))
+            width = selector_w + 2 * HANDLE_WIDTH + pool_w + right_min_w
+            info_span_h = 2 * info_h + HANDLE_WIDTH if info_h > 0 else 0
+            right_area_h = max(
+                info_span_h,
+                _min_height(self._previewer) + HANDLE_WIDTH + info_h,
+            )
+            height = right_area_h + HANDLE_WIDTH + CLASSIC_ACTION_SLOT_PX
+
+        # 加上窗口装饰：容器四周边距 + 自绘标题栏高度
+        chrome_w = 0
+        chrome_h = 0
+        container = self._splitter_container
+        if container is not None and container.layout() is not None:
+            margins = container.layout().contentsMargins()
+            chrome_w = margins.left() + margins.right()
+            chrome_h = margins.top() + margins.bottom()
+        header = getattr(self, "_title_bar_header", None)
+        if header is not None:
+            chrome_h += max(0, int(header.minimumHeight()))
+
+        self.setMinimumSize(max(0, width + chrome_w), max(0, height + chrome_h))
+
     def _on_colors_updated(self, colors: dict) -> None:
         """配色加载完成后的处理：重新套用三栏面板样式（确保颜色就绪后边框/填充正确）。
 
@@ -2987,6 +3147,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             self._file_pool.set_view_mode(
                 "grid" if mode == "workspace" else "list"
             )
+        # 预览器最小尺寸随模式（workspace 内容区 640×360；classic 清除）
+        self._apply_previewer_minimums()
         self._refresh_panel_styles()
         # 新布局尚未经历首次布局时 QWidget 停留在默认幽灵尺寸（100×30），
         # 而迁移/挂载过程已可能触发过该尺寸下的比例应用；这里先显式赋真实
@@ -3003,7 +3165,11 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                 new_layout.setGeometry(inner)
         except Exception:  # noqa: BLE001 - 几何赋值失败则退化为 resizeEvent 兜底
             pass
+        # 叶子实测下限下发到新布局实例（底行最小高 / 预览器最小总高），
+        # 再应用默认比例；最后聚合刷新主窗口最小尺寸
+        self._apply_leaf_minimums()
         new_layout.apply_default_ratios()
+        self._apply_window_minimums()
         return True
 
     @staticmethod

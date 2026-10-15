@@ -492,6 +492,9 @@ class FilePoolLayout(QWidget):
         # 文件夹大小计算经信号回主线程，避免 worker 线程直接触碰 QWidget。
         self._folder_size_ready.connect(self._on_folder_size_ready_gui)
 
+        # 最小高度：默认网格缩放下一行卡片 + 底栏（主布局据此推导底行下限）
+        self.setMinimumHeight(self.minimum_row_height())
+
     # ═════════════════════════════════════════════════════════════════════
     #  底栏（骨架保留部分）
     # ═════════════════════════════════════════════════════════════════════
@@ -559,6 +562,25 @@ class FilePoolLayout(QWidget):
         )
         self._export_btn.clicked.connect(self.export_selected_files)
         bottom_layout.addWidget(self._export_btn)
+
+    def minimum_row_height(self) -> int:
+        """默认网格缩放下「一行卡片（含其下方底栏）」的最小高度。
+
+        口径：卡片容器上边距 + 一张默认缩放（``_card_scale_min``，0.7）网格
+        卡片高 + 下边距 + 根布局间距 + 底栏高度。主窗口据此推导底行下限
+        （workspace 底行最小高 = max(本值, 信息面板最小高)，见
+        ``MainWindow._apply_window_minimums``）；本值同时作为储存池自身的
+        最小高度——高度连一行卡片都放不下时界面会显得破碎。
+
+        Returns:
+            int: 一行卡片 + 底栏的最小高度（px，随字体度量/DPI 自动换算）。
+        """
+        _, card_h = FileCardDelegate._calc_card_size(CARD_CONFIG, self._card_scale_min)
+        margins = self._card_layout.contentsMargins()
+        content_h = margins.top() + int(card_h) + margins.bottom()
+        root = self.layout()
+        spacing = int(root.spacing()) if root is not None else 10
+        return content_h + max(0, spacing) + int(self._bottom_bar.maximumHeight())
 
     def set_section_styles(
         self,

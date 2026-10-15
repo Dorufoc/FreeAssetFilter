@@ -300,6 +300,120 @@ class TestMainWindowPanelBuild:
         qapp.processEvents()
 
 
+class TestMainWindowMinimumSizes:
+    """主窗口最小尺寸：按布局模式聚合叶子实测下限（含标题栏/容器边距）。"""
+
+    @staticmethod
+    def _build_all(qapp: QApplication) -> MainWindow:
+        """构建四区域（不 show），返回可测量的窗口。"""
+        window = MainWindow()
+        for side in ("selector", "preview", "pool", "info"):
+            window._build_panel(side)
+        qapp.processEvents()
+        return window
+
+    @staticmethod
+    def _chrome(window: MainWindow):
+        """窗口装饰尺寸（容器边距 + 自绘标题栏高度）。"""
+        margins = window._splitter_container.layout().contentsMargins()
+        chrome_w = margins.left() + margins.right()
+        chrome_h = (
+            margins.top()
+            + margins.bottom()
+            + int(window._title_bar_header.minimumHeight())
+        )
+        return chrome_w, chrome_h
+
+    def test_workspace_minimums_from_leaf_widgets(
+        self, qapp: QApplication
+    ) -> None:
+        """workspace：预览器最小 640×(360+48)；窗口最小 = 叶子聚合 + 窗口装饰。"""
+        from freeassetfilter.ui.layout.main_layout import (
+            HANDLE_WIDTH,
+            PREVIEW_CHROME_PX,
+            WORKSPACE_PREVIEW_MIN_CONTENT_H,
+            WORKSPACE_PREVIEW_MIN_CONTENT_W,
+        )
+
+        window = self._build_all(qapp)
+        try:
+            assert window._layout_mode == "workspace"
+            # 预览器最小尺寸随模式下发（内容区 640×360 + 顶栏 48）
+            assert window._previewer.minimumWidth() == WORKSPACE_PREVIEW_MIN_CONTENT_W
+            assert window._previewer.minimumHeight() == (
+                WORKSPACE_PREVIEW_MIN_CONTENT_H + PREVIEW_CHROME_PX
+            )
+
+            window._apply_leaf_minimums()
+            window._apply_window_minimums()
+
+            pool = window._file_pool
+            info = window._info_panel
+            pool_h = max(pool.minimumHeight(), pool.minimumSizeHint().height())
+            info_h = max(info.minimumHeight(), info.minimumSizeHint().height())
+            pool_w = max(pool.minimumWidth(), pool.minimumSizeHint().width())
+            info_w = max(info.minimumWidth(), info.minimumSizeHint().width())
+            selector_w = max(
+                window._file_selector.minimumWidth(),
+                window._file_selector.minimumSizeHint().width(),
+            )
+            chrome_w, chrome_h = self._chrome(window)
+            layout_min_w = (
+                selector_w
+                + HANDLE_WIDTH
+                + max(
+                    WORKSPACE_PREVIEW_MIN_CONTENT_W,
+                    pool_w + HANDLE_WIDTH + info_w,
+                )
+            )
+            layout_min_h = (
+                WORKSPACE_PREVIEW_MIN_CONTENT_H
+                + PREVIEW_CHROME_PX
+                + HANDLE_WIDTH
+                + max(pool_h, info_h)
+            )
+            assert window.minimumWidth() == layout_min_w + chrome_w
+            assert window.minimumHeight() == layout_min_h + chrome_h
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_classic_switch_clears_previewer_min_and_sets_min_height(
+        self, qapp: QApplication
+    ) -> None:
+        """切经典：预览器下限清除；窗口最小高覆盖信息区两倍最小高 + 底栏槽位。"""
+        from freeassetfilter.ui.layout.main_layout import (
+            CLASSIC_ACTION_SLOT_PX,
+            HANDLE_WIDTH,
+        )
+
+        window = self._build_all(qapp)
+        try:
+            assert window.set_layout_mode("classic") is True
+            qapp.processEvents()
+            # 经典：清除预览器显式下限（自然最小），使信息高度范围可完整覆盖
+            assert window._previewer.minimumWidth() == 0
+            assert window._previewer.minimumHeight() == 0
+            # 仅储存池可折叠
+            assert window._main_layout.splitters["main"].isCollapsible(1) is True
+
+            window._apply_window_minimums()
+            info_h = max(
+                window._info_panel.minimumHeight(),
+                window._info_panel.minimumSizeHint().height(),
+            )
+            _chrome_w, chrome_h = self._chrome(window)
+            layout_min_h = (
+                max(2 * info_h + HANDLE_WIDTH, 0)
+                + HANDLE_WIDTH
+                + CLASSIC_ACTION_SLOT_PX
+            )
+            assert window.minimumHeight() >= layout_min_h + chrome_h
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+
 class TestMainWindowClose:
     """关闭清理：closeEvent 安全（不 show，手动触发）。"""
 

@@ -18,15 +18,23 @@
 - 右竖条默认让「预览画布（显示区）」呈 16:9（见 ``PREVIEW_ASPECT`` 与
   ``PREVIEW_CHROME_PX``）：预览区高 = 右列宽 × 9/16 + 预览器顶栏高度，
   使 16:9 内容（如 4096×2304 图片按窗口自适应）正好铺满显示区左右与上下；
-  该高度受两条约束钳制：
+  该高度受三条约束钳制：
 
   * 底行 ≤ 右区可用高度一半（半高上限，预览始终至少占一半）；
-  * 底行 ≥ ``BOTTOM_MIN_PX``（底行可用性下限；与半高上限冲突时上限优先）。
+  * 预览 ≥ 预览器最小总高（``WORKSPACE_PREVIEW_MIN_CONTENT_H`` + 顶栏，
+    叶子实测值经 :meth:`MainLayout.set_leaf_minimums` 下发）；
+  * 底行 ≥ 底行最小高（叶子实测：max(储存池一行 + 底栏, 信息面板最小高)）。
 
-- 用户拖拽右竖条后，本会话不再自动维持 16:9（交给用户）；
+  三者在窗口过矮时冲突，此时下限优先（预览最小总高 / 底行最小高），
+  主窗口最小尺寸已保证正常窗口下不冲突（见 ``MainWindow._apply_window_minimums``）。
+
+- 用户拖拽右竖条后，本会话不再自动维持 16:9（交给用户）；竖向分隔条
+  拖动只改高度，不反向调整宽度；
 - 窗口缩放时（未拖拽）按当前右区宽度重算 16:9。
 
-classic 比例：主横条 1:1:1、右竖条各半、信息区 ≤ 半高（与历史行为一致）。
+classic 比例：主横条 1:1:1、右竖条各半、信息区 ≤ 半高（与历史行为一致）；
+信息面板最小尺寸（宽 = 修改时间行单行，高 = 文件名 + 路径 + 首行信息 +
+折叠入口行）由叶子自身声明；仅经典布局的储存池可拖拽折叠。
 
 布局切换（``MainWindow.set_layout_mode``）复用本模块：4 个叶子重新挂载即可，
 组件本身不销毁重建。
@@ -62,7 +70,14 @@ PREVIEW_ASPECT = 9.0 / 16.0
 #: 预览器顶栏（工具区）高度补偿：图片/文本/PDF/字体预览器顶部工具栏 48px。
 #: 设为 0 表示「整体口径」（算预览区含工具区，不补偿顶栏）。
 PREVIEW_CHROME_PX = 48
-#: 底行最小高度（16:9 降级保护用；半高上限优先于本值）
+#: workspace 预览器内容区（画布）最小尺寸：16:9，对应 3840×2160 素材按窗口
+#: 自适应时刚好无边铺满的显示口径；预览器最小总高 = 本高 + PREVIEW_CHROME_PX，
+#: 由 ``MainWindow`` 下发到预览器与主布局（见 ``set_leaf_minimums``）。
+WORKSPACE_PREVIEW_MIN_CONTENT_W = 640
+WORKSPACE_PREVIEW_MIN_CONTENT_H = 360
+#: 底行最小高度兜底值（叶子未就绪 / 未下发实测值时的缺省口径）。
+#: 运行时会由叶子实测值覆盖：workspace 底行最小高 =
+#: max(储存池一行卡片 + 其底栏, 信息面板最小高)，见 ``set_leaf_minimums``。
 BOTTOM_MIN_PX = 200
 #: 经典布局右列底部操作栏槽位高度（与预览器底栏一致，48px）
 CLASSIC_ACTION_SLOT_PX = 48
@@ -112,6 +127,12 @@ class MainLayout(QWidget):
         self._last_half = 0
         # 进行中的「重置布局」渐变（QVariantAnimation；None 表示未在渐变）
         self._reset_anim: Optional[QVariantAnimation] = None
+        # 叶子实测下限（MainWindow 在面板就绪 / 切换布局后经 set_leaf_minimums
+        # 下发；缺省用兜底常量，未下发时行为与历史一致）：
+        # - _bottom_min_px：底行最小高度（workspace：max(储存池一行 + 底栏, 信息最小高)）
+        # - _preview_min_total_px：预览器最小总高（workspace：画布 360 + 顶栏 48）
+        self._bottom_min_px = BOTTOM_MIN_PX
+        self._preview_min_total_px = 0
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -166,6 +187,20 @@ class MainLayout(QWidget):
             self.splitters = {"main": main, "right": right}
             root_layout.addWidget(main)
 
+        # 折叠策略：仅经典布局的储存池可折叠——列压到最小宽后继续拖边框即把
+        # 储存池塌缩隐藏（只剩选择器与右列两栏），拖回恢复；其余子项不可折叠。
+        main.setCollapsible(0, False)
+        if self.mode == WORKSPACE_MODE:
+            main.setCollapsible(1, False)
+        else:
+            main.setCollapsible(1, True)  # 储存池（经典布局第 2 栏）
+            main.setCollapsible(2, False)  # 右列容器
+        self.splitters["right"].setCollapsible(0, False)
+        self.splitters["right"].setCollapsible(1, False)
+        if "bottom" in self.splitters:
+            self.splitters["bottom"].setCollapsible(0, False)
+            self.splitters["bottom"].setCollapsible(1, False)
+
         # 用户拖拽跟踪：右竖条决定 16:9 自动维持；底行/信息区拖拽后补钳制
         self.splitters["right"].splitterMoved.connect(self._on_right_splitter_moved)
         if "bottom" in self.splitters:
@@ -208,6 +243,32 @@ class MainLayout(QWidget):
             Optional[QWidget]: 经典组装返回槽位控件；workspace 组装返回 ``None``。
         """
         return self._classic_action_slot
+
+    def set_leaf_minimums(
+        self, bottom_min_px: int, preview_min_total_px: int = 0
+    ) -> None:
+        """下发叶子组件的实测最小尺寸（面板就绪 / 切换布局后调用）。
+
+        Args:
+            bottom_min_px: 底行最小高度（px）。workspace 取
+                ``max(储存池.minimum_row_height(), 信息面板.minimum_content_height())``；
+                0 表示不限制。
+            preview_min_total_px: 预览器最小总高（px，仅 workspace 有意义，
+                如画布最小 360 + 顶栏 48 = 408）；0 表示不施加下限。
+        """
+        new_bottom = max(0, int(bottom_min_px))
+        new_preview = max(0, int(preview_min_total_px))
+        if (
+            new_bottom == self._bottom_min_px
+            and new_preview == self._preview_min_total_px
+        ):
+            return
+        self._bottom_min_px = new_bottom
+        self._preview_min_total_px = new_preview
+        # 默认比例未应用时无需立即重算（首次应用即用新下限）；
+        # 已应用时安排一轮延迟更新把新下限补钳到现有几何上。
+        if self._defaults_applied:
+            self._schedule_layout_update()
 
     def apply_default_ratios(self, animated: bool = False) -> None:
         """应用当前模式的默认比例（首次布局 / 布局切换 / 用户重置时调用）。
@@ -467,20 +528,20 @@ class MainLayout(QWidget):
         finally:
             self._applying = False
 
-    @staticmethod
-    def _preview_height_for(right_w: int, v_avail: int) -> int:
+    def _preview_height_for(self, right_w: int, v_avail: int) -> int:
         """计算 16:9 预览区高度（含钳制与降级）。
 
         约束：
-        - 底行（= v_avail - preview_h）≤ ceil(v_avail / 2) → preview_h ≥ v_avail // 2
-          （保持"预览至少占右区一半"；整数向上取整避免底行越界 1px）；
-        - 底行 ≥ BOTTOM_MIN_PX → preview_h ≤ v_avail - BOTTOM_MIN_PX；
-        - 冲突（窗口过矮）时半高上限优先，16:9 不可达即优雅降级。
+        - 预览 ≥ 半高（``v_avail - v_avail // 2`` 向上取整）→ 底行 ≤ ceil(v_avail / 2)；
+        - 预览 ≥ ``_preview_min_total_px``（workspace 预览器最小总高，叶子下发）；
+        - 底行 ≥ ``_bottom_min_px`` → preview_h ≤ v_avail - _bottom_min_px；
+        - 冲突（窗口过矮）时下限优先；主窗口最小尺寸已保证正常不冲突
+          （见 ``MainWindow._apply_window_minimums``）。
         """
         v_avail = max(0, v_avail)
-        lower = v_avail - v_avail // 2  # 使底行 ≤ 半高（向上取整）
+        lower = max(v_avail - v_avail // 2, self._preview_min_total_px)
         target = int(round(right_w * PREVIEW_ASPECT)) + int(PREVIEW_CHROME_PX)
-        upper = v_avail - BOTTOM_MIN_PX
+        upper = v_avail - self._bottom_min_px
         if upper < lower:
             preview_h = lower
         else:
@@ -534,7 +595,14 @@ class MainLayout(QWidget):
           避免拖拽每帧递归触发布局。
         """
         right = self.splitters["right"]
-        right_h = right.height() if right.height() > 0 else self.height()
+        if right.height() > 0:
+            right_h = right.height()
+        elif self.mode == WORKSPACE_MODE:
+            # workspace：右竖条基本占满容器高度，整窗高即右列高
+            right_h = self.height()
+        else:
+            # classic：整窗高 - 底部操作栏槽位 - 槽位与内容区间距（HANDLE_WIDTH）
+            right_h = max(0, self.height() - CLASSIC_ACTION_SLOT_PX - HANDLE_WIDTH)
         v_avail = max(0, right_h - HANDLE_WIDTH)
         if v_avail <= 0:
             return

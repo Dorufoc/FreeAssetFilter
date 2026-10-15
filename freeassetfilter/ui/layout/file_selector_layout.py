@@ -203,7 +203,7 @@ class FileSelectorLayout(QWidget):
 
         self.setLayout(layout)
 
-        # 设置最小宽度，确保至少能显示 3 列卡片（与旧 file_selector.py 保持一致）
+        # 设置最小宽度：顶栏/底栏完整显示图标与文字所需的较大者（自然最小）
         self._update_minimum_width()
 
         # ── 文件列表模型 + 委托 + 视图 ──
@@ -2324,17 +2324,15 @@ class FileSelectorLayout(QWidget):
         return calc_grid_base_width(self.font())
 
     def _update_minimum_width(self) -> None:
-        """设置最小宽度，确保至少能显示 3 列卡片（与旧 file_selector.py 一致）。"""
-        dpi = 1.0
-        card_width = self._calculate_card_base_width()
-        spacing = int(4 * dpi)
-        margin = int(5 * dpi)
-        cards_total_width = 3 * card_width + 2 * spacing
-        margins_total = 2 * margin
-        min_filelist_width = cards_total_width + margins_total
+        """设置最小宽度：顶栏与底栏完整显示图标/文字前提下的较大者。
 
-        # 滚动条为浮动覆盖层，不计入最小宽度
-        self.setMinimumWidth(min_filelist_width)
+        历史实现强制「至少 3 列卡片」（约 225px），会把整栏最小宽度抬到
+        超过顶栏/底栏自身需求；现改为自然最小（顶栏/底栏最小宽取大），
+        网格列数随实际宽度自适应（可能少于 3 列）。
+        """
+        top_min = self._top_bar.minimumSizeHint().width()
+        bottom_min = self._bottom_bar.minimumSizeHint().width()
+        self.setMinimumWidth(max(0, top_min, bottom_min))
 
     def _apply_grid_layout(self, viewport) -> None:
         """卡片模式网格布局：基于 file_list 全宽居中卡片网格，滚动条浮动覆盖在右侧边距中。"""

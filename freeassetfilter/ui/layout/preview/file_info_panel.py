@@ -4,7 +4,8 @@
 排版（单控件自绘文本流，从零实现）：
 - 内容区不再创建任何条目卡片 / 行容器 / 图标徽章等子控件，全部信息由
   一个自绘控件以 QPainter 文本流逐行绘制（无可视定位框、无分隔线）。
-- 顶部：文件名（大字号，超长省略，悬停提示全名）与其下方路径（按宽度换行）；
+- 顶部：文件名（大字号，超长省略，悬停提示全名）与其下方路径（单行显示，
+  超长中间省略，悬停提示/单击复制仍为全文）；
   字段区：标签列定宽左对齐 + 值列自动换行。
 - 底侧常驻两行小字入口（滚动区外固定）：「详细信息」「哈希值」——
   独立展开/收起、独立计算、互不触发；展开内容（含 EXIF 常用子集与
@@ -40,6 +41,7 @@ from PySide6.QtCore import (
     QPoint,
     QRect,
     QRunnable,
+    QSize,
     Qt,
     QThreadPool,
     QTimer,
@@ -300,6 +302,19 @@ class _FoldLink(QLabel):
         super().leaveEvent(event)
 
 
+class _InfoScrollArea(StyledScrollArea):
+    """信息面板专用滚动区：不携带 QAbstractScrollArea 的最小高度暗示。
+
+    默认 ``minimumSizeHint``（实测 200px 高）会把信息面板的最小高度顶到远超
+    「文件名 + 路径 + 首行信息 + 折叠入口行」的需求；面板的最小高度由内容行数
+    与折叠行推导（见 ``FileInfoPanel.minimum_content_height``），滚动区不参与
+    撑高，超出行高的内容由滚动查看。
+    """
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(0, 0)
+
+
 class _CanvasItem:
     """一条排版产物：内容 + 几何。
 
@@ -361,6 +376,18 @@ class _CanvasItem:
         """可点击复制/定位/提示的条目（属性行、文件名行、路径行）。"""
         return self.kind in ("grid", "title", "path")
 
+    @property
+    def content_h(self) -> int:
+        """条目自身内容高度（不含其后的行距/区块间距）。
+
+        ``grid`` / ``link`` 的 ``height`` 含行尾 ``LINE_SPACING``，排版收尾
+        取用本值（见 ``_InfoCanvas._content_height``），避免末行之后多出
+        一段把最小高度顶高的空白。
+        """
+        if self.kind in ("grid", "link"):
+            return self.text_h
+        return self.rect.height()
+
 
 # ---------------------------------------------------------------------------
 # 自绘画布：文件信息区的唯一内容控件
@@ -385,7 +412,7 @@ class _InfoCanvas(QWidget):
 
     PAD_X = 16
     PAD_TOP = 12
-    PAD_BOTTOM = 14
+    PAD_BOTTOM = 14  # 内容底部留白（仅内容超出一屏时计入，见 _content_height）
     LABEL_GAP = 14  # 标签列与值列间距
     LINE_SPACING = 4  # 行组内行距
     GROUP_SPACING = 12  # 区块间距
@@ -428,6 +455,35 @@ class _InfoCanvas(QWidget):
     def _row_blocks(self) -> List[_CanvasItem]:
         """兼容别名：仅属性行（grid）的排版记录（命中/复制用）。"""
         return [item for item in self._items if item.kind == "grid"]
+
+    def minimum_visible_height(self) -> int:
+        """最小高度口径下画布需完整可见的内容高度（= 首个信息行文本底边）。
+
+        与 ``_build_items`` 的几何同源：字段行高度取 ``_measure_block`` 的
+        实测值——``QFontMetrics.height()`` 估算在部分字体/DPI 下偏小 1~2px，
+        曾导致最小高度下视口比画布矮几像素、出现「无需滚动」的假滚动条。
+
+        无文件 / 无信息行时回退字体度量估算（文件名 + 路径 + 一行信息），
+        供主窗口推导窗口下限使用（空状态不参与滚动区排版）。
+
+        Returns:
+            int: 最小高度下应完整可见的内容高度（px）。
+        """
+        cut = self._first_row_bottom(self._items)
+        if cut is not None:
+            return cut
+        fm_title = QFontMetrics(self.FONT_TITLE)
+        fm_path = QFontMetrics(self.FONT_PATH)
+        fm_label = QFontMetrics(self.FONT_LABEL)
+        fm_value = QFontMetrics(self.FONT_VALUE)
+        return (
+            self.PAD_TOP
+            + fm_title.height()
+            + 3  # 文件名与路径间固定间隔（见 _blocks）
+            + fm_path.height()
+            + 12  # 路径与首行信息间固定间隔（见 _blocks）
+            + max(fm_label.height(), fm_value.height())
+        )
 
     # ------------------------------------------------------------------
     # 区块内容（纯描述；几何由 _build_items 一次性展开）
@@ -552,29 +608,6 @@ class _InfoCanvas(QWidget):
         )
         return max(fm.height(), rect.height())
 
-    @staticmethod
-    def _wrap_break_anywhere(fm: QFontMetrics, text: str, width: int) -> List[str]:
-        """逐字形断行（允许在英文单词中间断行），供文件地址等多行显示。"""
-        width = max(int(width), 8)
-        lines: List[str] = []
-        current = ""
-        for ch in text:
-            if current and fm.horizontalAdvance(current + ch) > width:
-                lines.append(current)
-                current = ch
-            else:
-                current += ch
-        if current or not lines:
-            lines.append(current)
-        return lines
-
-    @classmethod
-    def _path_lines(cls, fm: QFontMetrics, text: str, width: int) -> Tuple[List[str], int]:
-        """文件地址行：逐字形断行，返回 (各行, 所需高度)。"""
-        lines = cls._wrap_break_anywhere(fm, text, width)
-        height = max(fm.height(), len(lines) * fm.lineSpacing())
-        return lines, height
-
     # ------------------------------------------------------------------
     # 排版：唯一生成 items（内容 + 几何）
     # ------------------------------------------------------------------
@@ -618,18 +651,21 @@ class _InfoCanvas(QWidget):
                 value=str(block.get("full_text") or block["text"]),
             )
         if kind == "path":
+            # 文件地址：单行显示，超长中间省略（悬停 tooltip / 单击复制仍为全文）
             fm = QFontMetrics(self.FONT_PATH)
-            lines, h = self._path_lines(fm, block["text"], content_width)
+            full_path = str(block.get("full_text") or block["text"])
+            elided = fm.elidedText(full_path, Qt.ElideMiddle, max(8, content_width))
+            h = fm.height()
             return _CanvasItem(
                 kind="path",
                 rect=QRect(0, y, width, h),
                 height=h,
                 text_h=h,
-                text=block["text"],
-                full_text=str(block.get("full_text") or block["text"]),
+                text=elided,
+                full_text=full_path,
                 label="文件路径",
-                value=str(block.get("full_text") or block["text"]),
-                lines=lines,
+                value=full_path,
+                lines=[elided],
             )
         if kind == "heading":
             fm = QFontMetrics(self.FONT_HEADING)
@@ -683,7 +719,7 @@ class _InfoCanvas(QWidget):
         raise AssertionError(f"未知块类型: {kind}")
 
     def _build_items(self, content_width: int, width: int) -> Tuple[List[_CanvasItem], int]:
-        """按 _blocks() 顺序一次性生成全部条目，返回 (items, 总高)。"""
+        """按 _blocks() 顺序一次性生成全部条目，返回 (items, 末条目之后的 y)。"""
         items: List[_CanvasItem] = []
         y = self.PAD_TOP
         pending_gap = 0
@@ -699,6 +735,30 @@ class _InfoCanvas(QWidget):
             items.append(item)
             y += item.height
         return items, y
+
+    @staticmethod
+    def _first_row_bottom(items: List[_CanvasItem]) -> Optional[int]:
+        """首个信息行（grid）的文本底边；无信息行时返回 None。"""
+        for item in items:
+            if item.kind == "grid":
+                return int(item.rect.top() + item.text_h)
+        return None
+
+    def _content_height(self, items: List[_CanvasItem], end_y: int = 0) -> int:
+        """画布内容总高：末条目内容底边（不含其后的行距）。
+
+        底留白（``PAD_BOTTOM``）只在内容超出「首个信息行底边」时计入：最小
+        高度（``minimum_visible_height``）下视口恰好等于首行底边，仅一行信息
+        的文件（如文件夹）因此与视口等高、不出现「无需滚动」的假滚动条；
+        内容更多的文件保留底留白，滚动到底部时末行不贴边。
+        """
+        if not items:
+            return max(0, int(end_y))
+        content_bottom = items[-1].rect.top() + items[-1].content_h
+        cut = self._first_row_bottom(items)
+        if cut is not None and content_bottom > cut:
+            content_bottom += self.PAD_BOTTOM
+        return max(0, content_bottom)
 
     def _relayout(self, width: int) -> None:
         if self._relayouting:
@@ -726,7 +786,7 @@ class _InfoCanvas(QWidget):
 
             items, end_y = self._build_items(content_width, width)
             self._items = items
-            total = max(0, int(end_y)) + self.PAD_BOTTOM
+            total = self._content_height(items, end_y)
             if self.height() != total:
                 self.setFixedHeight(total)
         finally:
@@ -1091,6 +1151,10 @@ class FileInfoPanel(QWidget):
 
     _HASH_LABELS = ("MD5", "SHA1", "SHA256")
     _TOAST_INTERVAL_MS = 3000  # 「已复制」提示停留时长（连续复制时重置计时）
+    #: 最小宽度参考值：修改时间行完整单行显示口径（"0000-00-00 00:00"）
+    _MIN_WIDTH_VALUE_TEXT = "0000-00-00 00:00"
+    #: 最小宽度兜底标签（无文件时标签列宽的基准）
+    _MIN_WIDTH_FALLBACK_LABEL = "修改时间"
 
     def __init__(
         self,
@@ -1119,6 +1183,7 @@ class FileInfoPanel(QWidget):
         self._build_skeleton()
         tm.theme_changed.connect(self._on_theme_changed)
         self._sync_canvas()
+        self._apply_minimums()
 
     # ------------------------------------------------------------------
     # UI 骨架（固定外壳；内容全部由画布自绘）
@@ -1129,7 +1194,7 @@ class FileInfoPanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(6)
 
-        self._scroll_area = StyledScrollArea(self)
+        self._scroll_area = _InfoScrollArea(self)
         self._scroll_area.setWidgetResizable(True)
         self._scroll_area.setFrameShape(QFrame.NoFrame)
         register_widget_qss(self._scroll_area,(
@@ -1228,6 +1293,55 @@ class FileInfoPanel(QWidget):
             self._detail_supported = self._rule_detail_supported(file_info)
             self._start_media_light_rows(file_info)
         self._sync_canvas()
+        self._apply_minimums()
+
+    # ------------------------------------------------------------------
+    # 最小尺寸（供主窗口推导区域 / 窗口下限）
+    # ------------------------------------------------------------------
+
+    def _update_minimum_width(self) -> None:
+        """按「修改时间」行单行完整显示口径刷新最小宽度。
+
+        标签列宽取当前行标签的最大值（无文件时用兜底标签），值列宽取固定
+        参考串 ``_MIN_WIDTH_VALUE_TEXT`` 的度量——参考串固定保证最小宽不随
+        具体文件抖动；文件名/路径行超长时单行中间省略，不参与撑宽。
+        """
+        fm_label = QFontMetrics(_InfoCanvas.FONT_LABEL)
+        fm_value = QFontMetrics(_InfoCanvas.FONT_VALUE)
+        label_col = max(
+            (fm_label.horizontalAdvance(str(label)) for label, _ in self._rows),
+            default=0,
+        )
+        label_col = max(
+            label_col, fm_label.horizontalAdvance(self._MIN_WIDTH_FALLBACK_LABEL)
+        )
+        value_w = fm_value.horizontalAdvance(self._MIN_WIDTH_VALUE_TEXT)
+        self.setMinimumWidth(
+            2 * _InfoCanvas.PAD_X + label_col + _InfoCanvas.LABEL_GAP + value_w
+        )
+
+    def minimum_content_height(self) -> int:
+        """「文件名 + 路径 + 首行信息 + 折叠入口行」完整可见的最小高度。
+
+        口径与画布排版几何同源（``_InfoCanvas.minimum_visible_height``）：
+        PAD_TOP + 文件名行 + 3px 间隔 + 路径行（单行）+ 12px 间隔 + 首行信息
+        （文本底边），再加上根布局间距与底部折叠入口行——最小高度下视口恰好
+        裁在首行信息底部：既不露出第二行、也不出现「无需滚动」的假滚动条。
+        主窗口据此推导底行下限（workspace 底行最小高 = max(储存池一行,
+        本值)）与经典布局信息区下限（见 ``MainWindow._apply_window_minimums``）。
+
+        Returns:
+            int: 信息面板最小高度（px，随字体度量/DPI 自动换算）。
+        """
+        canvas_h = self._canvas.minimum_visible_height()
+        root = self.layout()
+        spacing = int(root.spacing()) if root is not None else 6
+        return canvas_h + max(0, spacing) + self._fold_bar.sizeHint().height()
+
+    def _apply_minimums(self) -> None:
+        """刷新最小宽度（随行数据）与最小高度（固定口径，随字体度量）。"""
+        self._update_minimum_width()
+        self.setMinimumHeight(self.minimum_content_height())
 
     @staticmethod
     def _collect_sync_light_rows(file_info: dict) -> List[Tuple[str, str]]:

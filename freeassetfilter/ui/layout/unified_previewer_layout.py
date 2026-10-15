@@ -22,7 +22,7 @@ from typing import Optional
 
 from PySide6.QtCore import QMimeData, QUrl, Qt, Signal
 from PySide6.QtWidgets import (
-    QApplication, QFrame, QHBoxLayout, QLabel, QSizePolicy,
+    QApplication, QFrame, QHBoxLayout, QLabel,
     QVBoxLayout, QWidget,
 )
 
@@ -161,12 +161,13 @@ class UnifiedPreviewerLayout(QWidget):
         )
         self._locate_btn.clicked.connect(self._on_locate_requested)
 
-        # 两个文字按钮等宽且随功能区宽度同步增/减：
-        # Ignored 水平策略（忽略各自文本宽度差异）+ 最小宽 0 + 等 stretch=1，
-        # 布局把可分配宽度二等分给两者，避免用固定宽度撑大布局最小宽度。
+        # 两个文字按钮：保留完整显示文字所需的最小宽度（取样式计算的
+        # minimumSizeHint，含少量内边距；StyledButton 预置的文本 + padding_h*2
+        # 会把底栏最小宽抬到 367，比「完整显示」口径更宽），等 stretch=1 平分
+        # 富余宽度：压缩时宽者先到自身最小宽、窄者可继续压缩；两者均到最小宽
+        # 时即底栏（右列）的最小宽度。
         for btn in (self._open_default_btn, self._locate_btn):
-            btn.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-            btn.setMinimumWidth(0)
+            btn.setMinimumWidth(max(1, btn.minimumSizeHint().width()))
             bottom_layout.addWidget(btn, 1)
 
         # 图标按钮 — close.svg（清除预览）

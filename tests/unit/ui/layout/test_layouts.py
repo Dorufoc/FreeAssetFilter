@@ -246,6 +246,31 @@ class TestFilePoolLayout:
         _assert_layout_geometry(layout, qapp)
         layout.deleteLater()
 
+    def test_minimum_row_height_fits_default_card_and_bar(
+        self, qapp: QApplication
+    ) -> None:
+        """最小高 = 默认网格缩放一行卡片 + 上下边距 + 布局间距 + 底栏。"""
+        from components.file_card_delegate import CARD_CONFIG, FileCardDelegate
+
+        layout = FilePoolLayout()
+        _, card_h = FileCardDelegate._calc_card_size(
+            CARD_CONFIG, layout._card_scale_min
+        )
+        margins = layout._card_layout.contentsMargins()
+        root = layout.layout()
+        spacing = int(root.spacing()) if root is not None else 10
+        expect = (
+            margins.top()
+            + int(card_h)
+            + margins.bottom()
+            + max(0, spacing)
+            + layout._bottom_bar.maximumHeight()
+        )
+        assert layout.minimum_row_height() == expect
+        # 控件自身最小高度即该值（高度连一行卡片都放不下时界面破碎）
+        assert layout.minimumHeight() == expect
+        layout.deleteLater()
+
     def test_add_file_and_query(
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1120,6 +1145,16 @@ class TestFileSelectorLayout:
         """默认构造 + resize 后 geometry 非空。"""
         layout = FileSelectorLayout()
         _assert_layout_geometry(layout, qapp)
+        layout.deleteLater()
+
+    def test_minimum_width_is_top_bottom_bar_natural_max(
+        self, qapp: QApplication
+    ) -> None:
+        """最小宽 = 顶栏/底栏完整显示图标与文字所需的较大者（不再强制 3 列卡片）。"""
+        layout = FileSelectorLayout()
+        top = layout._top_bar.minimumSizeHint().width()
+        bottom = layout._bottom_bar.minimumSizeHint().width()
+        assert layout.minimumWidth() == max(0, top, bottom)
         layout.deleteLater()
 
     @staticmethod
@@ -2041,8 +2076,8 @@ class TestSettingsLayout:
         layout = SettingsLayout()
         scrolls = layout._stack.findChildren(QScrollArea)
         floating = [s for s in scrolls if isinstance(s, _FloatingScrollArea)]
-        # 通用页 + 外观页 + 关于页各有一处浮动滚动区（三页统一）
-        assert len(floating) == 3
+        # 通用页 + 外观页各有一处浮动滚动区（关于页为居中信息页，无长内容不外包）
+        assert len(floating) == 2
 
         # 列表顺序：0 = 通用，1 = 外观，2 = 关于 → 外观卡在索引 1
         area = layout._stack.widget(1).findChild(_FloatingScrollArea)
