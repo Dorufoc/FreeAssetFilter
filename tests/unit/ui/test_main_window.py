@@ -516,6 +516,173 @@ class TestBackgroundMode:
         qapp.processEvents()
 
 
+class TestBackgroundModeTransition:
+    """背景模式过渡：切前抓帧、切后 450ms 交叉淡入（BackgroundTransitionOverlay）。
+
+    过渡仅在窗口在屏时启用（``_can_transition_background`` 以
+    ``_content.isVisible()`` 判定）；本文件约定不 show()，故用例以实例级
+    补丁模拟在屏（与 ``TestContentThemeTransition`` 同款）。遮罩层级细节
+    （stack_below 压低）由组件测试覆盖，这里断言主窗口集成契约。
+    """
+
+    @staticmethod
+    def _patch_background_settings(
+        monkeypatch: pytest.MonkeyPatch, config: dict
+    ) -> None:
+        """把 MainWindow._load_background_settings 替换为返回固定配置。"""
+        monkeypatch.setattr(
+            MainWindow, "_load_background_settings", staticmethod(lambda: config)
+        )
+
+    def _make_visible_window(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        config: dict | None = None,
+    ) -> MainWindow:
+        """构造「在屏」主窗口（isVisible 补丁模拟，不弹真实窗口）。"""
+        self._patch_background_settings(
+            monkeypatch, {"mode": "mica", "image": ""} if config is None else config
+        )
+        window = MainWindow()
+        if window._content is not None:
+            monkeypatch.setattr(window._content, "isVisible", lambda: True)
+        return window
+
+    @staticmethod
+    def _teardown(window: MainWindow, qapp: QApplication) -> None:
+        """收尾遮罩并销毁窗口（避免残留定时器跨用例）。"""
+        try:
+            window._finish_background_transition()
+        except Exception:
+            pass
+        window.deleteLater()
+        qapp.processEvents()
+
+    def test_mode_switch_starts_background_transition(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """在屏切换：旧帧淡出遮罩创建（父级 _root），层可见性仍同步翻转。"""
+        window = self._make_visible_window(monkeypatch)
+        try:
+            window.set_background_mode("image")
+            overlay = window._background_transition_overlay
+            assert overlay is not None
+            assert overlay.parent() is window._root
+            assert overlay.isVisibleTo(window._root)
+            assert overlay.DEFAULT_DURATION_MS == 450
+            # 既有语义不变：状态与层可见性同步翻转
+            assert window._background_mode == "image"
+            assert window._custom_background.isHidden() is False
+            assert window._mica_background.isHidden() is True
+        finally:
+            self._teardown(window, qapp)
+
+    def test_same_mode_does_not_start_transition(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """同模式重复下发：不建遮罩（无变化无需过渡）。"""
+        window = self._make_visible_window(monkeypatch)
+        try:
+            window.set_background_mode("mica")
+            assert window._background_transition_overlay is None
+        finally:
+            self._teardown(window, qapp)
+
+    def test_invisible_window_switches_without_transition(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """窗口不可见（未 show/最小化）：不建遮罩，切换照常完成。"""
+        self._patch_background_settings(
+            monkeypatch, {"mode": "mica", "image": ""}
+        )
+        window = MainWindow()
+        try:
+            window.set_background_mode("image")
+            assert window._background_transition_overlay is None
+            assert window._background_mode == "image"
+            assert window._custom_background.isHidden() is False
+            assert window._mica_background.isHidden() is True
+        finally:
+            self._teardown(window, qapp)
+
+    def test_rapid_switch_replaces_single_overlay(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """连点连切：上一遮罩立即收尾，单实例去重不叠层。"""
+        window = self._make_visible_window(monkeypatch)
+        try:
+            window.set_background_mode("image")
+            first = window._background_transition_overlay
+            assert first is not None
+            window.set_background_mode("minimalist")
+            second = window._background_transition_overlay
+            assert second is not None and second is not first
+            assert first._finished is True, "上一遮罩应立即收尾（去重）"
+            assert window._background_mode == "minimalist"
+        finally:
+            self._teardown(window, qapp)
+
+    def test_capture_failure_does_not_block_switch(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """抓帧失败：跳过过渡但不阻塞切换本身。"""
+        window = self._make_visible_window(monkeypatch)
+        try:
+            monkeypatch.setattr(
+                window, "_capture_background_frame", lambda: None
+            )
+            window.set_background_mode("image")
+            assert window._background_transition_overlay is None
+            assert window._background_mode == "image"
+            assert window._custom_background.isHidden() is False
+        finally:
+            self._teardown(window, qapp)
+
+    def test_ambient_toggle_in_minimalist_transitions(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """简约模式下切换弥散氛围：同样走交叉淡入。"""
+        window = self._make_visible_window(monkeypatch)
+        try:
+            window.set_background_mode("minimalist")
+            window._finish_background_transition()
+            assert window._background_transition_overlay is None
+            window.set_ambient_enabled(False)
+            assert window.is_ambient_enabled() is False
+            assert window._background_transition_overlay is not None
+        finally:
+            self._teardown(window, qapp)
+
+    def test_image_swap_in_image_mode_transitions(
+        self,
+        qapp: QApplication,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """图像模式下更换图片：同样走交叉淡入（云母→图像由模式切换覆盖）。"""
+        window = self._make_visible_window(monkeypatch)
+        try:
+            pm1 = QPixmap(32, 32)
+            pm1.fill(QColor(200, 30, 30))
+            path1 = str(tmp_path / "one.png")
+            assert pm1.save(path1, "PNG")
+            pm2 = QPixmap(32, 32)
+            pm2.fill(QColor(30, 200, 30))
+            path2 = str(tmp_path / "two.png")
+            assert pm2.save(path2, "PNG")
+
+            assert window.set_custom_background_image(path1) is True
+            window.set_background_mode("image")
+            window._finish_background_transition()
+            assert window._background_transition_overlay is None
+
+            assert window.set_custom_background_image(path2) is True
+            assert window._background_transition_overlay is not None
+            assert window._custom_background.image_path == path2
+        finally:
+            self._teardown(window, qapp)
+
+
 class TestFixedMicaParams:
     """米卡参数按主题固定：常量值 / 主题取值 / 启动加载 / 构造消费。
 

@@ -76,7 +76,11 @@ from components.styled_fluid_background import prewarm_top_level_rhi
 # 启动加载覆盖层：内容区只显示一个旋转圆环（见 MainWindow._setup_startup_overlay）
 from components.styled_loading import StyledLoading
 # 内容层主题过渡遮罩（旧外观快照自绘淡出，轻量自绘替代整窗遮罩的两处卡顿源）
-from components.theme_transition_overlay import ContentTransitionOverlay
+# 与背景层交叉过渡遮罩（设置页切换窗口背景：旧背景帧淡出、新层实时在底）
+from components.theme_transition_overlay import (
+    BackgroundTransitionOverlay,
+    ContentTransitionOverlay,
+)
 # 实验性原生 DWM 云母开关的底层桥接（dwmapi 薄封装，惰性加载，零 COM 初始化）
 from freeassetfilter.ui.mica import winapi as mica_winapi
 
@@ -754,6 +758,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._license_viewer_gen = 0
         # 内容层主题过渡遮罩（单实例去重引用；见 _start_content_theme_transition）
         self._content_theme_overlay: QWidget | None = None
+        # 背景层交叉过渡遮罩（单实例去重引用；见 _start_background_transition）
+        self._background_transition_overlay: QWidget | None = None
         # 系统主题监听器（跟随系统模式的实时链路；见 _start_system_theme_watcher）
         self._system_theme_watcher = None
 
@@ -1895,6 +1901,164 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         except Exception:  # noqa: BLE001 - 抓拍失败不阻塞主题切换
             pass
 
+    # ──── 背景模式过渡（设置页切换窗口背景的 450ms 交叉淡入） ───────────
+
+    def _can_transition_background(self) -> bool:
+        """背景过渡前置条件：窗口在屏、未最小化、根容器尺寸有效。
+
+        与内容层主题过渡的 ``isVisible`` 守卫同语义（测试/启动阶段不建
+        遮罩）；最小化时动画不可见，直接跳过省一次抓拍与动画。
+
+        Returns:
+            bool: 满足全部条件返回 True。
+        """
+        content = getattr(self, "_content", None)
+        root = getattr(self, "_root", None)
+        if content is None or root is None:
+            return False
+        try:
+            if not content.isVisible():
+                return False
+            if self.isMinimized():
+                return False
+            return not root.rect().isEmpty()
+        except Exception:  # noqa: BLE001 - 判定失败按不做过渡处理
+            return False
+
+    def _capture_background_frame(self) -> Optional[QPixmap]:
+        """抓拍当前可见背景层的帧（背景过渡遮罩的快照来源）。
+
+        按 ``_background_mode`` 取对应层：CPU 云母 / 图像 / 简约层走
+        ``QWidget.grab()``；实验性 GL 云母（``FAF_USE_GL_MICA=1``）经
+        ``grabFramebuffer()`` 取帧缓冲（``QWidget.render()`` 不含 GL 内容）。
+        未显示 / 空帧 / 抓取异常时返回 None，调用方跳过过渡、不阻塞切换。
+
+        Returns:
+            Optional[QPixmap]: 当前可见背景层的帧；不可用时 None。
+        """
+        mode = getattr(self, "_background_mode", "mica")
+        if mode == "image":
+            layer = getattr(self, "_custom_background", None)
+        elif mode == "minimalist":
+            layer = getattr(self, "_minimalist_background", None)
+        else:
+            layer = getattr(self, "_mica_background", None)
+        if layer is None:
+            return None
+        try:
+            # 以 isHidden()（未被显式隐藏）判定模式层可用：离屏/未 show 的
+            # 窗口 isVisible() 恒 False，但其模式层语义上「在屏」；整窗不可见
+            # 的情况已由 _can_transition_background 提前拦截。
+            if layer.isHidden():
+                return None
+            if isinstance(layer, QOpenGLWidget):
+                image = layer.grabFramebuffer()
+                if image.isNull():
+                    return None
+                snapshot = QPixmap.fromImage(image)
+                if snapshot.isNull():
+                    return None
+                snapshot.setDevicePixelRatio(float(layer.devicePixelRatioF()))
+                return snapshot
+            snapshot = layer.grab()
+        except Exception as exc:  # noqa: BLE001 - 抓拍失败跳过过渡，不阻塞切换
+            debug(f"背景过渡抓拍失败（跳过过渡）：{exc}")
+            return None
+        if snapshot.isNull():
+            return None
+        return snapshot
+
+    def _prepare_background_frame(self) -> Optional[QPixmap]:
+        """抓拍「当前屏幕背景现状」帧（连切时从现状连续出发）。
+
+        常规场景等价于 :meth:`_capture_background_frame`；若上一背景过渡
+        仍在起播/播放中，则把其快照按当前透明度叠加到新层帧之上——得到
+        与屏幕逐像素一致的混合态，新过渡从中连续出发（对齐 Mica 材质
+        「连切从屏幕现状出发」的语义），避免中途跳变。
+
+        Returns:
+            Optional[QPixmap]: 合成后的现状帧；抓拍不可用时 None。
+        """
+        frame = self._capture_background_frame()
+        if frame is None:
+            return None
+        overlay = getattr(self, "_background_transition_overlay", None)
+        if overlay is None:
+            return frame
+        try:
+            from shiboken6 import isValid
+
+            if not isValid(overlay):
+                self._background_transition_overlay = None
+                return frame
+            backdrop = overlay.snapshot_pixmap()
+            if backdrop is None or backdrop.isNull():
+                return frame
+            t = float(overlay.current_opacity())
+            if t >= 1.0:
+                # 起播瞬间（动画尚未推进）：屏幕此刻完整呈现旧帧。
+                return backdrop.copy()
+            if t <= 0.0:
+                return frame
+            canvas = QPixmap(frame.size())
+            if canvas.isNull():
+                return frame
+            canvas.setDevicePixelRatio(frame.devicePixelRatio())
+            painter = QPainter(canvas)
+            try:
+                painter.setOpacity(1.0)
+                painter.drawPixmap(0, 0, frame)
+                painter.setOpacity(t)
+                painter.drawPixmap(0, 0, backdrop)
+            finally:
+                painter.end()
+            return canvas
+        except Exception as exc:  # noqa: BLE001 - 合成失败退回裸帧
+            debug(f"背景过渡连切合成失败（退回裸帧）：{exc}")
+            return frame
+
+    def _start_background_transition(self, snapshot: QPixmap) -> None:
+        """启动背景层交叉过渡：旧背景帧 450ms 淡出、新背景层实时在底。
+
+        遮罩压在三背景层之上、内容层之下（``stack_below=_content``）：内容
+        保持实时交互，仅背景区域做交叉淡入。单实例去重：上一过渡未结束先
+        收尾（连切时已合成屏幕现状，不产生跳变）；创建失败仅告警，不阻塞
+        背景切换本身。
+
+        Args:
+            snapshot: 切换前背景现状帧（:meth:`_prepare_background_frame` 产物）。
+        """
+        root = getattr(self, "_root", None)
+        content = getattr(self, "_content", None)
+        if root is None or content is None or snapshot is None or snapshot.isNull():
+            return
+        if root.rect().isEmpty():
+            return
+        self._finish_background_transition()
+        try:
+            overlay = BackgroundTransitionOverlay(
+                root, snapshot, stack_below=content
+            )
+            self._background_transition_overlay = overlay
+            overlay.start()
+        except Exception as exc:  # noqa: BLE001 - 遮罩失败不阻塞背景切换
+            debug(f"背景过渡遮罩启动失败：{exc}")
+            self._background_transition_overlay = None
+
+    def _finish_background_transition(self) -> None:
+        """立即收尾进行中的背景过渡遮罩（幂等；连切去重/外部强制收尾用）。"""
+        prev = getattr(self, "_background_transition_overlay", None)
+        self._background_transition_overlay = None
+        if prev is None:
+            return
+        try:
+            from shiboken6 import isValid
+
+            if isValid(prev):
+                prev.finish_now()
+        except Exception:  # noqa: BLE001 - 已销毁引用按无需收尾处理
+            pass
+
     def _on_theme_toggle(self) -> None:
         """主题切换按钮点击事件（浅色↔深色立即切换，并固定为手动偏好）。
 
@@ -2594,7 +2758,11 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
     def set_background_mode(self, mode: str) -> None:
         """切换背景模式（mica / image / minimalist）。
 
-        只切换背景层可见性、不销毁重建控件（三个背景层常驻，切换零构建成本）：
+        只切换背景层可见性、不销毁重建控件（三个背景层常驻，切换零构建成本）；
+        模式真正变化且窗口在屏时，额外做 450ms 背景交叉淡入（切前抓当前
+        可见层帧、切后旧帧淡出露出新层，见 ``_capture_background_frame`` /
+        ``_start_background_transition``）——内容层保持实时，仅背景区域
+        平滑过渡；抓拍/遮罩失败静默跳过，切换本身不受影响。
 
         - "image"：显示自定义图像层、隐藏云母层与简约层；
         - "minimalist"：显示简约层、隐藏云母层与自定义图像层，并把当前
@@ -2609,6 +2777,14 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         if mode not in ("mica", "image", "minimalist"):
             warning(f"忽略非法背景模式: {mode!r}（仅支持 'mica' / 'image' / 'minimalist'）")
             return
+        # 过渡预抓拍：模式真正变化且在屏时才抓旧帧（新层切换后全量在底，
+        # 旧帧淡出即交叉淡入；连切合成屏幕现状，见 _prepare_background_frame）。
+        backdrop = None
+        if (
+            mode != getattr(self, "_background_mode", "mica")
+            and self._can_transition_background()
+        ):
+            backdrop = self._prepare_background_frame()
         self._background_mode = mode
         minimalist = getattr(self, "_minimalist_background", None)
         if mode == "image":
@@ -2631,17 +2807,38 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             if not getattr(self, "_mica_refresh_started", False):
                 self._mica_refresh_started = True
                 self._start_mica_refresh()
+        if backdrop is not None:
+            self._start_background_transition(backdrop)
 
     def set_ambient_enabled(self, enabled: bool) -> None:
         """设置简约背景的氛围开关并转发给简约层。
 
+        已处于「简约」模式且该层在屏时，氛围值真正变化也走 450ms 交叉淡入
+        （切前抓旧渐变帧、切换后淡出）；其余场景（层未显示/同值重复）仅
+        记录并转发，由 ``set_background_mode`` 的过渡统一覆盖，不会双重过渡。
+
         Args:
             enabled: True 开启氛围渐变，False 使用纯色；经 bool() 归一后记录。
         """
-        self._background_ambient = bool(enabled)
+        enabled = bool(enabled)
+        backdrop = None
         minimalist = getattr(self, "_minimalist_background", None)
+        if (
+            enabled != bool(getattr(self, "_background_ambient", True))
+            and minimalist is not None
+            and getattr(self, "_background_mode", "mica") == "minimalist"
+            and self._can_transition_background()
+        ):
+            try:
+                if not minimalist.isHidden():
+                    backdrop = self._prepare_background_frame()
+            except Exception:  # noqa: BLE001 - 判定失败按不做过渡处理
+                backdrop = None
+        self._background_ambient = enabled
         if minimalist is not None:
             minimalist.set_ambient_enabled(self._background_ambient)
+        if backdrop is not None:
+            self._start_background_transition(backdrop)
 
     def get_background_mode(self) -> str:
         """返回当前背景模式（供设置页实时联动与测试）。
@@ -2845,6 +3042,11 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
     def set_custom_background_image(self, path: str) -> bool:
         """设置自定义背景图片（转发给背景层组件）。
 
+        已处于「图像」模式且该层在屏时，更换图片也走 450ms 交叉淡入
+        （切前抓旧图帧、切换后淡出）；其余场景（层未显示，如云母→图像
+        首次切入）只更新内容，由 ``set_background_mode`` 的过渡统一覆盖，
+        不会双重过渡。
+
         Args:
             path: 图片文件绝对路径。
 
@@ -2852,7 +3054,23 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             bool: 加载成功返回 True；路径无效或无法解码返回 False
             （组件内部已记录日志并回退纯色兜底）。
         """
-        return self._custom_background.set_image(path)
+        layer = getattr(self, "_custom_background", None)
+        if layer is None:
+            return False
+        backdrop = None
+        if (
+            getattr(self, "_background_mode", "mica") == "image"
+            and self._can_transition_background()
+        ):
+            try:
+                if not layer.isHidden() and layer.has_image():
+                    backdrop = self._prepare_background_frame()
+            except Exception:  # noqa: BLE001 - 判定失败按不做过渡处理
+                backdrop = None
+        changed = bool(layer.set_image(path))
+        if changed and backdrop is not None:
+            self._start_background_transition(backdrop)
+        return changed
 
     def set_image_background_params(self, blur: float, opacity: float) -> None:
         """设置自定义图像背景的模糊度与不透明度（转发给背景层组件）。

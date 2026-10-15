@@ -1,4 +1,14 @@
-"""Theme transition overlay - radial reveal / crossfade snapshot on theme change."""
+"""Transition overlays - theme/background reveal, crossfade and frame-fade masks.
+
+承载三类遮罩（均基于 ``_SnapshotTransitionOverlay``）：
+
+- :class:`ThemeTransitionOverlay`：整窗（``QScreen.grabWindow``）主题过渡，
+  径向揭示或透明度淡出（设置窗口明暗切换）；
+- :class:`ContentTransitionOverlay`：主窗口内容层主题过渡（径向扩散 /
+  淡出兜底）；
+- :class:`BackgroundTransitionOverlay`：主窗口背景层交叉过渡（设置页
+  切换窗口背景 / 氛围 / 换图：旧背景帧淡出、新层实时在底）。
+"""
 
 from __future__ import annotations
 
@@ -483,3 +493,69 @@ class ContentTransitionOverlay(_SnapshotTransitionOverlay):
         origin: Optional[QPoint] = None,
     ) -> None:
         super().__init__(parent, snapshot, duration_ms, origin)
+
+
+class BackgroundTransitionOverlay(_SnapshotTransitionOverlay):
+    """主窗口背景层交叉过渡遮罩：旧背景帧淡出、新背景层实时在底。
+
+    与 :class:`ContentTransitionOverlay`（整窗快照 + 内容层）的分工：
+
+    - 快照仅为**当前可见背景层**的一帧（调用方 ``grab()`` / GL 版
+      ``grabFramebuffer()``），非整窗：遮罩父级为主窗口 ``_root``，经
+      ``stack_below`` 压在三背景层之上、内容层之下——过渡期间内容层保持
+      实时（悬停/滚动/视频不冻结），只有背景区域做交叉淡入；
+    - 固定透明度淡出模式（``origin`` 恒为 None）：旧背景帧 1.0→0.0 渐隐，
+      透出下方已切好的新背景层；新层自始全量在底，故「旧帧淡出」即两背景
+      层之间的交叉淡入（与层内主题交叉淡入同时长同缓动）；
+    - ``start()`` 覆写：基类 ``raise_()`` 会把遮罩抬到父级最高层，这里在
+      起播前重新压回 ``stack_below`` 之下，保证内容层始终在最上；
+    - 只读访问器 :meth:`snapshot_pixmap` / :meth:`current_opacity` 供调用方
+      做「连切从屏幕现状出发」的合成快照（旧帧按当前透明度叠加到新层帧）。
+
+    其余行为与基类淡出模式一致：鼠标穿透、父级 resize 立即收尾、
+    ``finish_now`` 幂等（快速连续切换去重）。
+    """
+
+    DEFAULT_DURATION_MS: int = 450  # 对齐 ui/mica/config.XFADE_DURATION_MS
+
+    def __init__(
+        self,
+        parent: QWidget,
+        snapshot: QPixmap,
+        duration_ms: int = DEFAULT_DURATION_MS,
+        stack_below: Optional[QWidget] = None,
+    ) -> None:
+        """初始化背景过渡遮罩（固定淡出模式，无扩散圆心参数）。
+
+        Args:
+            parent: 覆盖目标控件（主窗口 ``_root``；遮罩几何贴合其 rect）。
+            snapshot: 切换前当前可见背景层的帧（调用方确保非空）。
+            duration_ms: 动画时长（毫秒，基类内部钳到下限 50）。
+            stack_below: 起播后需重新压低到的参照控件（主窗口 ``_content``）；
+                None 时保持基类 ``raise_()`` 行为（仅供独立使用场景）。
+        """
+        self._stack_below = stack_below
+        super().__init__(parent, snapshot, duration_ms, origin=None)
+
+    def start(self) -> None:
+        """起播（见基类）；随后重新压低到 ``stack_below`` 之下保持内容层在上。"""
+        super().start()
+        self._restack_below_reference()
+
+    def _restack_below_reference(self) -> None:
+        """把遮罩重新压到 ``stack_below`` 之下（基类 raise_ 之后调用，幂等）。"""
+        reference = self._stack_below
+        if reference is None:
+            return
+        try:
+            self.stackUnder(reference)
+        except (RuntimeError, TypeError):
+            pass  # 参照已销毁/类型异常时保持现栈序，不影响过渡本身
+
+    def snapshot_pixmap(self) -> QPixmap:
+        """返回当前快照位图（连切合成用；淡出模式不挖洞，位图保持完整）。"""
+        return self._snapshot
+
+    def current_opacity(self) -> float:
+        """返回当前淡出透明度（1.0 = 刚起播，0.0 = 已收尾）。"""
+        return max(0.0, min(1.0, self._opacity))

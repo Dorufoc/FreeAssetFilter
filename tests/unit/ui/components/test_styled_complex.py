@@ -94,6 +94,7 @@ from freeassetfilter.ui.components.styled_table import (  # noqa: E402
 from freeassetfilter.ui.components.styled_tabs import StyledTabWidget  # noqa: E402
 from freeassetfilter.ui.components.styled_timeline import StyledTimeline  # noqa: E402
 from freeassetfilter.ui.components.theme_transition_overlay import (  # noqa: E402
+    BackgroundTransitionOverlay,
     ContentTransitionOverlay,
     ThemeTransitionOverlay,
 )
@@ -1328,6 +1329,101 @@ class TestContentTransitionOverlay:
         assert overlay._finished is True
         assert overlay._active is False
         safe_teardown(overlay)
+        safe_teardown(parent)
+
+
+class _SolidFillWidget(QWidget):
+    """纯色填充探针控件（背景过渡栈序关系测试用）。"""
+
+    def __init__(self, color: QColor, parent: QWidget | None = None) -> None:
+        """初始化探针控件。
+
+        Args:
+            color: 填充色。
+            parent: 父控件。
+        """
+        super().__init__(parent)
+        self._fill = QColor(color)
+
+    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802 - Qt 命名
+        """整幅填充探针色。"""
+        painter = QPainter(self)
+        try:
+            painter.fillRect(self.rect(), self._fill)
+        finally:
+            painter.end()
+
+
+class TestBackgroundTransitionOverlay:
+    """BackgroundTransitionOverlay：淡出模式、栈序压低与只读访问器。"""
+
+    def test_construct_fade_mode(self, qapp: QApplication) -> None:
+        """构造：固定淡出模式（无圆心）、几何贴合父级、鼠标穿透。"""
+        parent = QWidget()
+        parent.resize(80, 60)
+        overlay = BackgroundTransitionOverlay(parent, QPixmap(80, 60))
+        assert overlay.DEFAULT_DURATION_MS == 450
+        assert overlay._reveal_center is None
+        assert overlay.geometry() == parent.rect()
+        assert overlay.testAttribute(Qt.WA_TransparentForMouseEvents)
+        safe_teardown(overlay)
+        safe_teardown(parent)
+
+    def test_start_restacks_below_reference(self, qapp: QApplication) -> None:
+        """start 的 raise_ 之后重新压回 stack_below 之下（参照控件保持在上）。"""
+        parent = QWidget()
+        parent.resize(40, 40)
+        reference = _SolidFillWidget(QColor(0, 255, 0), parent)
+        reference.setGeometry(parent.rect())
+        snapshot = QPixmap(40, 40)
+        snapshot.fill(QColor(255, 0, 0))
+        overlay = BackgroundTransitionOverlay(
+            parent, snapshot, stack_below=reference
+        )
+        overlay.start()
+        # 栈序：reference（绿）在遮罩（红）之上 → 呈现绿；未压低则呈红。
+        image = QImage(40, 40, QImage.Format_ARGB32)
+        image.fill(Qt.transparent)
+        parent.render(
+            image, QPoint(0, 0), QRegion(0, 0, 40, 40), QWidget.DrawChildren
+        )
+        assert image.pixelColor(20, 20).green() >= 250
+        safe_teardown(overlay)
+        safe_teardown(parent)
+
+    def test_accessors_track_animation_value(self, qapp: QApplication) -> None:
+        """snapshot_pixmap / current_opacity 反映快照与当前淡出进度。"""
+        parent = QWidget()
+        parent.resize(20, 20)
+        snapshot = QPixmap(20, 20)
+        snapshot.fill(QColor(10, 20, 30))
+        overlay = BackgroundTransitionOverlay(parent, snapshot)
+        assert not overlay.snapshot_pixmap().isNull()
+        assert overlay.current_opacity() == pytest.approx(1.0)
+        overlay._on_value_changed(0.25)
+        assert overlay.current_opacity() == pytest.approx(0.25)
+        safe_teardown(overlay)
+        safe_teardown(parent)
+
+    def test_fade_paint_and_finish_idempotent(self, qapp: QApplication) -> None:
+        """淡出绘制按透明度呈现快照；finish_now 隐藏且幂等。"""
+        parent = QWidget()
+        parent.resize(40, 40)
+        snapshot = QPixmap(40, 40)
+        snapshot.fill(QColor(255, 0, 0))
+        overlay = BackgroundTransitionOverlay(parent, snapshot)
+        overlay.start()
+        assert overlay.isVisibleTo(parent)
+        overlay._on_value_changed(0.5)
+        image = QImage(40, 40, QImage.Format_ARGB32)
+        image.fill(Qt.transparent)
+        overlay.render(
+            image, QPoint(0, 0), QRegion(0, 0, 40, 40), QWidget.DrawChildren
+        )
+        assert 100 <= image.pixelColor(20, 20).alpha() <= 160
+        overlay.finish_now()
+        assert not overlay.isVisibleTo(parent)
+        overlay.finish_now()  # 幂等：再调不抛
         safe_teardown(parent)
 
 
