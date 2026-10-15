@@ -5,9 +5,11 @@
 ``freeassetfilter/ui/layout/settings_layout.py`` 的新暂存链路：
 
 * 暂存缓存隔离层：快照隔离、点号读写、脏跟踪、丢弃/重置/提交、边界与并发；
-* 底部按钮组：确定(primary 强调)/应用(secondary 次选)/重置与取消(ghost 普通)；
-* 统一提交事务：应用提交不关闭、确定提交并关闭、取消丢弃恢复、关闭未提交自动清除；
-* 隔离性：未提交前不触碰 V2 磁盘与主窗口；响应 <200ms；调试工具可用。
+* 底部按钮组：保存(primary 强调)/取消(secondary 次选)/重置(danger)与「有更改未保存」提示；
+* 外观实时预览：深色模式/主题色/窗口背景改动即下发 tm+主窗口且不落盘；
+* 关闭自动保存：点 ✕ 落盘外观三项、静默丢弃非外观项；
+* 统一提交事务：应用提交不关闭、确定提交并关闭、取消回滚外观并丢弃、关闭未提交自动清除；
+* 隔离性：未提交前不触碰 V2 磁盘；响应 <200ms；调试工具可用。
 
 验证命令：
     python -m pytest tests/unit/ui/layout/test_settings_staging_cache.py --timeout 60 -q
@@ -267,7 +269,7 @@ def _patch_overlay_noop(monkeypatch: Any) -> None:
     class _NoopOverlay:
         @staticmethod
         def from_widget(
-            _w: Any, origin: Any = None
+            _w: Any, duration_ms: Any = None, origin: Any = None
         ) -> "_NoopOverlay":
             return _NoopOverlay()
 
@@ -299,44 +301,91 @@ def _make_layout(
     return layout
 
 
-class TestThemeRevealOrigin:
-    """设置窗口主题过渡的扩散圆心（径向揭示接线）。"""
+def _patch_overlay_recorder(monkeypatch: Any) -> list[dict]:
+    """将主题过渡遮罩打桩为参数记录器（断言淡化模式与时长的接线）。
 
-    def test_origin_is_theme_segment_center(
+    Args:
+        monkeypatch: pytest 补丁器。
+
+    Returns:
+        list[dict]: 每次 ``from_widget`` 的调用参数（``duration_ms``/``origin``）。
+    """
+    import freeassetfilter.ui.layout.settings_layout as sl_mod
+
+    calls: list[dict] = []
+
+    class _RecordingOverlay:
+        @staticmethod
+        def from_widget(
+            _w: Any, duration_ms: Any = None, origin: Any = None
+        ) -> "_RecordingOverlay":
+            calls.append({"duration_ms": duration_ms, "origin": origin})
+            return _RecordingOverlay()
+
+        def start(self) -> None:
+            return None
+
+        def finish_now(self) -> None:
+            return None
+
+    monkeypatch.setattr(sl_mod, "ThemeTransitionOverlay", _RecordingOverlay)
+    return calls
+
+
+class TestSettingsThemeFade:
+    """设置窗口主题过渡：整窗交叉淡入淡出（淡出模式 + 固定时长）。"""
+
+    def test_preview_overlay_is_fade_with_configured_duration(
         self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
     ) -> None:
-        """圆心 = 外观页主题分段控件中心（映射到宿主窗口坐标）。"""
-        from PySide6.QtWidgets import QWidget
+        """外观实时预览：遮罩不传扩散圆心（淡化模式）且时长为配置常量。"""
+        from freeassetfilter.ui.layout.settings_layout import (
+            SETTINGS_THEME_FADE_MS,
+        )
 
-        layout = _make_layout(qapp, monkeypatch, tmp_path)
-        host = QWidget()
+        _patch_v2_to_tmp(monkeypatch, tmp_path)
+        _patch_overlay_noop(monkeypatch)
+        _patch_appearance_runtime(monkeypatch)
+        calls = _patch_overlay_recorder(monkeypatch)  # 覆盖 no-op 桩
+
+        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+
+        layout = SettingsLayout()
         try:
-            host.resize(900, 640)
-            layout.setParent(host)
-            layout.resize(host.size())
-            qapp.processEvents()
-            origin = layout._theme_reveal_origin(host)
-            segmented = layout._appearance_page._theme_segmented
-            assert origin is not None
-            assert origin == segmented.mapTo(host, segmented.rect().center())
+            layout._appearance_page.apply_theme_mode("light")
+            assert calls, "外观预览应创建过渡遮罩"
+            last = calls[-1]
+            assert last["origin"] is None, "整窗淡化不得传扩散圆心（径向揭示已移除）"
+            assert last["duration_ms"] == SETTINGS_THEME_FADE_MS
         finally:
             safe_teardown(layout)
-            safe_teardown(host)
 
-    def test_origin_none_without_appearance_page(
+    def test_submit_reuses_same_fade_overlay(
         self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
     ) -> None:
-        """外观页缺失：圆心退化为 None（遮罩走透明度淡出）。"""
-        from PySide6.QtWidgets import QWidget
+        """提交路径复用同一淡化遮罩创建入口（不再内联径向揭示）。"""
+        import freeassetfilter.ui.layout.settings_layout as sl_mod
+        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
 
-        layout = _make_layout(qapp, monkeypatch, tmp_path)
-        host = QWidget()
+        _patch_v2_to_tmp(monkeypatch, tmp_path)
+        _patch_overlay_noop(monkeypatch)
+        _patch_appearance_runtime(monkeypatch)  # 隔离 tm 广播与主窗口下发
+        calls: list[str] = []
+        monkeypatch.setattr(
+            sl_mod.SettingsLayout,
+            "_start_settings_overlay",
+            lambda self: calls.append("overlay"),
+        )
+        monkeypatch.setattr(
+            sl_mod.SettingsLayout, "_apply_staged_perf_profile", lambda self, p: None
+        )
+
+        layout = SettingsLayout()
         try:
-            monkeypatch.setattr(layout, "_appearance_page", None, raising=False)
-            assert layout._theme_reveal_origin(host) is None
+            assert layout._submit_settings(close_after=False) is True
+            assert calls == ["overlay"]
         finally:
             safe_teardown(layout)
-            safe_teardown(host)
 
 
 class TestBottomButtons:
@@ -345,17 +394,17 @@ class TestBottomButtons:
     def test_four_buttons_with_expected_variants(
         self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
     ) -> None:
-        """重置警告(danger，居左)、取消次选(secondary)、确定强调(primary)；无应用按钮。"""
+        """重置警告(danger，居左)、取消次选(secondary)、保存强调(primary)；无应用按钮。"""
         layout = _make_layout(qapp, monkeypatch, tmp_path)
         try:
             assert layout._reset_btn.text() == "重置"
             assert layout._reset_btn._variant == "danger"
             assert layout._cancel_btn.text() == "取消"
             assert layout._cancel_btn._variant == "secondary"
-            assert layout._confirm_btn.text() == "确定"
+            assert layout._confirm_btn.text() == "保存"
             assert layout._confirm_btn._variant == "primary"
             assert layout._apply_btn is None
-            # 位置：重置在左（首个），右组为取消、确定
+            # 位置：重置在左（首个），未保存提示居中，右组为取消、保存
             left_layout = layout._reset_btn.parent()
             assert left_layout is not None
             items: list = []
@@ -366,8 +415,15 @@ class TestBottomButtons:
                     if w is not None:
                         items.append(getattr(w, "text", lambda: "")())
             assert items[0] == "重置"
-            assert "取消" in items and "确定" in items and "应用" not in items
-            assert items.index("重置") < items.index("取消") < items.index("确定")
+            assert "取消" in items and "保存" in items and "应用" not in items
+            assert items.index("重置") < items.index("取消") < items.index("保存")
+            # 「有更改未保存」提示位于重置与取消之间。
+            assert "有更改未保存" in items
+            assert (
+                items.index("重置")
+                < items.index("有更改未保存")
+                < items.index("取消")
+            )
         finally:
             safe_teardown(layout)
 
@@ -536,5 +592,193 @@ class TestBottomButtons:
             assert "last_submit_ms" in info
             page_info = layout._appearance_page.get_cache_debug_info()
             assert page_info["namespace"] == STAGING_NAMESPACE
+        finally:
+            safe_teardown(layout)
+
+
+def _patch_appearance_runtime(monkeypatch: Any) -> dict[str, list]:
+    """打桩 tm 写方法与主窗口下发，供外观实时预览/回滚测试。
+
+    离屏全量广播（theme_changed → 全量 repolish）在整套件进程中可能挂起，
+    故把 ``tm.set_theme_mode`` / ``set_color`` / ``replace_colors`` 打桩为
+    记录器，只验证调用语义而不触发广播。
+
+    Args:
+        monkeypatch: pytest 补丁器。
+
+    Returns:
+        dict[str, list]: 各打桩调用记录（mode / color / replace / bg）。
+    """
+    import freeassetfilter.ui.layout.settings_layout as sl_mod
+    from theme import tm
+
+    calls: dict[str, list] = {"mode": [], "color": [], "replace": [], "bg": []}
+    monkeypatch.setattr(tm, "set_theme_mode", lambda m: calls["mode"].append(m))
+    monkeypatch.setattr(
+        tm, "set_color", lambda path, value: calls["color"].append((path, value))
+    )
+    monkeypatch.setattr(
+        tm, "replace_colors", lambda c: calls["replace"].append(copy.deepcopy(c))
+    )
+    monkeypatch.setattr(
+        sl_mod.AppearanceSettingsPage, "find_main_window", lambda self: None
+    )
+    monkeypatch.setattr(
+        sl_mod.SettingsLayout,
+        "_apply_staged_background_to_main_window",
+        lambda self, bg: calls["bg"].append(copy.deepcopy(bg)),
+    )
+    return calls
+
+
+class TestAppearanceLivePreview:
+    """外观改动实时预览：下发 tm/主窗口但不落盘（关闭/保存才写盘）。"""
+
+    def test_dark_toggle_previews_without_persist(
+        self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """切换深色模式 → 立即下发 tm 偏好值，且磁盘保持初值。"""
+        from freeassetfilter.core.managers.settings_manager_v2 import (
+            SettingsManagerV2,
+        )
+
+        tmp_file = _patch_v2_to_tmp(monkeypatch, tmp_path)
+        _patch_overlay_noop(monkeypatch)
+        calls = _patch_appearance_runtime(monkeypatch)
+        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+
+        fresh_before = SettingsManagerV2(tmp_file)
+        fresh_before.load()
+        before_mode = fresh_before.get("appearance.theme_mode")
+
+        layout = SettingsLayout()
+        try:
+            layout._appearance_page._on_dark_toggle(True)
+            # 实时下发偏好值 + 背景（预览不落盘）
+            assert "dark" in calls["mode"]
+            assert len(calls["bg"]) >= 1
+            assert layout._staging_cache.is_dirty() is True
+            fresh_after = SettingsManagerV2(tmp_file)
+            fresh_after.load()
+            assert fresh_after.get("appearance.theme_mode") == before_mode
+        finally:
+            safe_teardown(layout)
+
+
+class TestCloseAutoSaveAppearance:
+    """点 ✕ 关闭：落盘外观三项，静默丢弃非外观项。"""
+
+    def test_close_persists_appearance_discards_other(
+        self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """外观改动 + 通用改动 → 关闭后仅外观落盘，通用保持初值。"""
+        from freeassetfilter.core.managers.settings_manager_v2 import (
+            SettingsManagerV2,
+        )
+
+        tmp_file = _patch_v2_to_tmp(monkeypatch, tmp_path)
+        _patch_overlay_noop(monkeypatch)
+        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+
+        layout = SettingsLayout()
+        try:
+            layout._staging_cache.set("appearance.theme_mode", "light")
+            layout._staging_cache.set("appearance.accent_color", "#112233")
+            layout._staging_cache.set("general.layout_mode", "classic")
+            assert layout._staging_cache.is_dirty() is True
+
+            layout.on_host_closing()
+
+            fresh = SettingsManagerV2(tmp_file)
+            fresh.load()
+            assert fresh.get("appearance.theme_mode") == "light"
+            assert fresh.get("appearance.accent_color") == "#112233"
+            # 非外观项被静默丢弃，不落盘。
+            assert fresh.get("general.layout_mode") != "classic"
+            assert layout._staging_cache.is_dirty() is False
+        finally:
+            safe_teardown(layout)
+
+    def test_close_only_appearance_no_disk_when_clean(
+        self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """无任何改动时关闭：不落盘、缓存保持干净。"""
+        _patch_v2_to_tmp(monkeypatch, tmp_path)
+        _patch_overlay_noop(monkeypatch)
+        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+
+        layout = SettingsLayout()
+        try:
+            layout._staging_cache.discard()
+            layout.on_host_closing()
+            assert layout._staging_cache.is_dirty() is False
+        finally:
+            safe_teardown(layout)
+
+
+class TestDirtyHintVisibility:
+    """底栏「有更改未保存」提示：仅非外观项改动时显示。"""
+
+    def test_hint_visibility_follows_non_appearance_dirty(
+        self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """通用/性能改动显示；丢弃或仅外观改动隐藏。"""
+        _patch_v2_to_tmp(monkeypatch, tmp_path)
+        _patch_overlay_noop(monkeypatch)
+        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+
+        layout = SettingsLayout()
+        try:
+            hint = layout._dirty_hint
+            assert hint is not None
+            assert hint.isHidden() is True
+
+            # 通用页开关（非外观项）→ 显示
+            layout._general_page._on_ai_entry_toggled(True)
+            assert hint.isHidden() is False
+
+            # 丢弃后重算 → 隐藏
+            layout._staging_cache.discard()
+            layout._update_dirty_hint()
+            assert hint.isHidden() is True
+
+            # 仅外观项改动 → 仍隐藏
+            layout._staging_cache.set("appearance.theme_mode", "light")
+            layout._update_dirty_hint()
+            assert hint.isHidden() is True
+
+            # 性能档位（非外观项）→ 显示
+            layout._appearance_page._apply_perf_profile("powersave")
+            assert hint.isHidden() is False
+        finally:
+            safe_teardown(layout)
+
+
+class TestCancelRollbackAppearance:
+    """取消：把实时预览的外观回滚到打开设置窗口时的基线。"""
+
+    def test_cancel_reverts_appearance_to_baseline(
+        self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """切换深色模式 → 取消 → tm 偏好值回滚到基线。"""
+        _patch_v2_to_tmp(monkeypatch, tmp_path)
+        _patch_overlay_noop(monkeypatch)
+        calls = _patch_appearance_runtime(monkeypatch)
+        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+
+        layout = SettingsLayout()
+        try:
+            base_mode = layout._appearance_baseline["theme_mode"]
+            flipped = "light" if base_mode == "dark" else "dark"
+            layout._appearance_page._on_dark_toggle(flipped == "dark")
+            # 预览已切到翻转值
+            assert calls["mode"][-1] == flipped
+            assert layout._staging_cache.is_dirty() is True
+
+            layout._on_cancel_clicked()
+
+            # 回滚：tm 偏好值回到基线，缓存清空
+            assert calls["mode"][-1] == base_mode
+            assert layout._staging_cache.is_dirty() is False
         finally:
             safe_teardown(layout)

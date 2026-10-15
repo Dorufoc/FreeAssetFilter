@@ -853,6 +853,60 @@ class TestSettingsWindow:
         win.deleteLater()
         qapp.processEvents()
 
+    def test_root_background_follows_theme_switch(
+        self, qapp: QApplication
+    ) -> None:
+        """根容器背景随主题真实切换（回归：调色板被 QSS 全树重刷还原）。
+
+        背景由 ``_apply_theme_palette`` 的 ``setPalette`` + QSS 片段共同承载：
+        应用级样式表重刷（``QApplication.setStyleSheet``，主题切换链路同步
+        执行一次、片段重注册后的合并 tick 再执行一次）会把控件调色板还原为
+        「上次应用样式时」的旧主题值。仅靠调色板时「深色 → 浅色」后根容器
+        背景仍停留在深色 G1（设置窗口切浅色不生效的直接原因），因此这里走
+        真实 ``theme_changed`` 广播 + 有界事件泵，对根容器取样断言双向切换。
+        """
+        initial_dark = tm.is_dark_theme()
+        win = SettingsWindow()  # 不 show：grab() 离屏渲染即可，遵循本文件约定
+        try:
+            tm.set_theme_mode("dark")
+            process_qt_events(qapp, ms=50)
+            self._assert_root_background(win, tm.surface)
+            # 深色 → 浅色：旧实现（仅调色板）在此停留深色背景。
+            tm.set_theme_mode("light")
+            process_qt_events(qapp, ms=50)
+            self._assert_root_background(win, tm.surface)
+        finally:
+            while tm.is_dark_theme() is not initial_dark:
+                tm.toggle_theme()
+            process_qt_events(qapp, ms=0)
+            win.deleteLater()
+            qapp.processEvents()
+
+    @staticmethod
+    def _assert_root_background(win: SettingsWindow, expected: QColor) -> None:
+        """断言根容器背景为期望主题色（标题栏透明区 + 侧边栏区域取样）。
+
+        Args:
+            win: 设置窗口实例（根容器背景铺满整窗，子控件多为透明/自绘）。
+            expected: 期望的 ``tm.surface`` 主题色。
+
+        Raises:
+            AssertionError: 任一样点偏离期望色（容差 ±4，跨平台抗锯齿抖动）。
+        """
+        image = win._root.grab().toImage()
+        width, height = image.width(), image.height()
+        for x, y in ((width // 2, 10), (60, height // 2)):
+            color = image.pixelColor(x, y)
+            for channel, got, want in (
+                ("R", color.red(), expected.red()),
+                ("G", color.green(), expected.green()),
+                ("B", color.blue(), expected.blue()),
+            ):
+                assert abs(want - got) <= 4, (
+                    f"根容器背景未随主题切换：取样点 ({x}, {y}) 的 {channel} "
+                    f"通道 {got} 偏离期望 {want}（tm.surface={expected.name()}）"
+                )
+
 
 class TestContentThemeTransition:
     """_on_theme_toggle 的内容层过渡（ContentTransitionOverlay 集成）。

@@ -94,7 +94,11 @@ class AIChatDemoWindow(QMainWindow):
 
 
 def main() -> int:
-    app = QApplication(sys.argv); app.setStyleSheet(tm.render_qss()); window = AIChatDemoWindow(); window.show(); return app.exec()
+    # 统一样式下发入口（注册表按控件下发片段 + 空模板跳过），
+    # 不再直写应用级样式表。
+    from freeassetfilter.ui.theme.app_stylesheet import apply_app_stylesheet
+
+    app = QApplication(sys.argv); window = AIChatDemoWindow(); window.show(); apply_app_stylesheet(); return app.exec()
 
 
 if __name__ == "__main__": raise SystemExit(main())

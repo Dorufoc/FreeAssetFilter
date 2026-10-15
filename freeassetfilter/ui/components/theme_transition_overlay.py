@@ -14,10 +14,65 @@ from PySide6.QtCore import (
     QPoint,
     QPointF,
     QRect,
+    QRectF,
     QTimer,
     QVariantAnimation,
 )
 from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPixmap
+
+
+def _fit_snapshot_to_window(snapshot: QPixmap, window: QWidget) -> QPixmap:
+    """把窗口抓拍对齐到窗口客户区的物理尺寸（透明补边、1:1 左上落点）。
+
+    ``QScreen.grabWindow(HWND)`` 在 Windows 上按原生客户区抓拍，可能比 Qt
+    widget 的客户区窄 1~2 物理像素（DWM 边框口径差异；实测 DPR 1.5 下
+    1056×798 vs 1058×798，即 704×532 vs 705×532 逻辑像素）。快照与遮罩
+    矩形尺寸不一致时，绘制端会把快照整体拉伸（水平放大 ~0.14%，右侧内容
+    偏移最多 ~1 逻辑像素，淡出期表现为设置页内容「横向抖动」）。这里统一
+    补透明边到 ``round(窗口逻辑尺寸 × DPR)``，使后续绘制严格 1:1。
+
+    抓取为空/退化（离屏测试、句柄无效）或归一化失败时原样返回，不阻塞
+    过渡本身。
+
+    Args:
+        snapshot: ``QScreen.grabWindow`` 的抓拍结果。
+        window: 目标顶层窗口（遮罩宿主）。
+
+    Returns:
+        QPixmap: 与窗口客户区物理尺寸一致的快照；无需处理时返回原对象。
+    """
+    try:
+        if snapshot.isNull():
+            return snapshot
+        dpr = float(window.devicePixelRatioF())
+        if dpr <= 0.0:
+            dpr = 1.0
+        target_w = max(1, int(round(window.width() * dpr)))
+        target_h = max(1, int(round(window.height() * dpr)))
+        if snapshot.width() == target_w and snapshot.height() == target_h:
+            return snapshot
+        canvas = QPixmap(target_w, target_h)
+        canvas.setDevicePixelRatio(dpr)
+        canvas.fill(Qt.transparent)
+        painter = QPainter(canvas)
+        try:
+            # 源按物理像素 1:1 贴左上角（QImage 源矩形即设备像素，与 DPR
+            # 语义无关）；多出的边缘保持透明，过渡期间透出新外观。
+            painter.drawImage(
+                QRectF(
+                    0.0,
+                    0.0,
+                    snapshot.width() / dpr,
+                    snapshot.height() / dpr,
+                ),
+                snapshot.toImage(),
+                QRectF(0.0, 0.0, snapshot.width(), snapshot.height()),
+            )
+        finally:
+            painter.end()
+        return canvas
+    except Exception:  # noqa: BLE001 - 归一化失败退回原快照，不阻塞过渡
+        return snapshot
 
 
 def _max_corner_distance(rect: QRect, center: QPoint) -> float:
@@ -214,6 +269,39 @@ class _SnapshotTransitionOverlay(QWidget):
 
     # ── 绘制 ─────────────────────────────────────────────────────────────
 
+    def _snapshot_rect(self) -> QRectF:
+        """快照在遮罩坐标中的 1:1 绘制矩形（按快照自身 DPR，绝不拉伸）。
+
+        历史缺陷：绘制端固定把快照拉伸进 ``self.rect()``。快照尺寸与遮罩
+        矩形不一致时（实测设置窗口抓拍比窗口窄 1 逻辑像素），整体被水平
+        放大 ~0.14%，右侧内容偏移最多 ~1 逻辑像素——每次过渡（设置页实时
+        预览 / 提交 / 回滚）淡出期都表现为内容区「横向抖动」。改为按快照
+        自身尺寸落点后，尺寸不一致时多出的边缘保持透空（透出新外观），
+        不再产生任何缩放位移。
+        """
+        dpr = float(self._snapshot.devicePixelRatio())
+        if dpr <= 0.0:
+            dpr = 1.0
+        return QRectF(
+            0.0,
+            0.0,
+            self._snapshot.width() / dpr,
+            self._snapshot.height() / dpr,
+        )
+
+    def _draw_snapshot(self, painter: QPainter) -> None:
+        """把快照按 1:1（物理像素一一对应）绘制到遮罩左上角。
+
+        目标矩形取快照自身的逻辑尺寸（= 物理尺寸 / DPR），源矩形取物理
+        像素全幅（``drawPixmap`` 的 sourceRect 语义为设备像素，实测确认）；
+        DPR 一致时没有任何重采样，尺寸不一致时也绝不放大/缩小。
+        """
+        painter.drawPixmap(
+            self._snapshot_rect(),
+            self._snapshot,
+            QRectF(0.0, 0.0, self._snapshot.width(), self._snapshot.height()),
+        )
+
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802 - Qt 命名
         """按当前模式自绘旧外观快照（单次 blit，无效果过滤管线）。"""
         if self._snapshot.isNull():
@@ -229,11 +317,11 @@ class _SnapshotTransitionOverlay(QWidget):
             return
         painter = QPainter(self)
         try:
-            # 快照按原生 DPR 保留；dpr 为小数时遮罩目标尺寸非快照物理像素的
-            # 整数倍，保持平滑过滤避免缩放发糊。
+            # 快照按原生 DPR 保留；1:1 落点（见 _draw_snapshot）不做缩放，
+            # 平滑过滤仅在 DPR 存在取整差异时兜底。
             painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
             painter.setOpacity(self._opacity)
-            painter.drawPixmap(self.rect(), self._snapshot)
+            self._draw_snapshot(painter)
         finally:
             painter.end()
 
@@ -261,7 +349,7 @@ class _SnapshotTransitionOverlay(QWidget):
         painter = QPainter(self)
         try:
             painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-            painter.drawPixmap(self.rect(), self._snapshot)
+            self._draw_snapshot(painter)
         finally:
             painter.end()
 
@@ -311,7 +399,10 @@ class ThemeTransitionOverlay(_SnapshotTransitionOverlay):
     """整窗主题过渡遮罩（设置窗口「确定」提交等场景）。
 
     快照经 ``QScreen.grabWindow(HWND)`` 从原生窗口句柄抓取（正确合成
-    OpenGL 背景），动画为径向揭示（传 ``origin``）或透明度淡出（缺省）。
+    OpenGL 背景），并经 :func:`_fit_snapshot_to_window` 归一化为与窗口
+    客户区等大的位图（抓拍比 widget 窄时透明补边，绘制端严格 1:1，避免
+    过渡期内容横向偏移）。动画为径向揭示（传 ``origin``）或透明度淡出
+    （缺省）。
 
     Usage:
         snapshot = screen.grabWindow(int(window.winId()))
@@ -343,7 +434,9 @@ class ThemeTransitionOverlay(_SnapshotTransitionOverlay):
 
         ``QScreen.grabWindow(HWND)`` correctly composites OpenGL-backed children
         (e.g. the Mica background) where ``QWidget.grab()`` produces corrupted
-        artifacts on some GPU drivers.
+        artifacts on some GPU drivers. 抓拍结果经 :func:`_fit_snapshot_to_window`
+        归一化为与窗口客户区等大（Windows 抓拍比 widget 窄 1~2 物理像素时
+        透明补边），核心原因见该函数 docstring。
 
         Args:
             window: 目标顶层窗口。
@@ -358,6 +451,7 @@ class ThemeTransitionOverlay(_SnapshotTransitionOverlay):
             screen = QApplication.primaryScreen()
         # WId is the native window handle (HWND on Windows).
         snapshot = screen.grabWindow(int(window.winId()))
+        snapshot = _fit_snapshot_to_window(snapshot, window)
         return cls(window, snapshot, duration_ms, origin)
 
 

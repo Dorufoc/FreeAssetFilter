@@ -52,8 +52,10 @@ class StyledAIChatPanel(QWidget):
         super().__init__(parent)
         self._assistant_item: QListWidgetItem | None = None
         root = QVBoxLayout(self); root.setContentsMargins(12, 12, 12, 12); root.setSpacing(8)
-        header = QLabel(title); header.setStyleSheet(f"font-size: 15px; font-weight: 600; color: {tm.text.name()};")
-        root.addWidget(header)
+        self._header = QLabel(title)
+        # 片段统一走注册表下发（theme 切换时由注册表按控件重刷）。
+        register_widget_qss(self._header, f"font-size: 15px; font-weight: 600; color: {tm.text.name()};")
+        root.addWidget(self._header)
         self.messages = StyledAIMessageList(self); self.messages.setObjectName("StyledAIMessageList"); root.addWidget(self.messages, 1)
         self.composer = StyledTextarea(placeholder="输入问题或补充信息…", size="default", parent=self); root.addWidget(self.composer)
         actions = QHBoxLayout(); self.status = QLabel("就绪"); self.send_button = StyledButton("发送", variant="primary"); self.cancel_button = StyledButton("取消", variant="secondary"); self.cancel_button.setEnabled(False)

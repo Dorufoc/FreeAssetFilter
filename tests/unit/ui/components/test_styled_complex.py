@@ -998,6 +998,97 @@ class TestThemeTransitionOverlay:
         safe_teardown(overlay)
         safe_teardown(window)
 
+    def test_from_widget_normalizes_narrow_grab(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """回归：抓拍比窗口窄时补边到窗口客户区物理尺寸（不再被拉伸）。
+
+        历史缺陷：Windows 上 ``QScreen.grabWindow(HWND)`` 抓到的原生客户区
+        比 Qt widget 窄 1~2 物理像素，绘制端把该快照整体拉伸进遮罩矩形
+        （水平放大 ~0.14%），设置页实时预览淡出期右侧内容横向「抖一下」。
+        """
+        from PySide6.QtGui import QScreen
+
+        window = QWidget()
+        window.resize(120, 80)
+        dpr = window.devicePixelRatioF() or 1.0
+        target_w = max(1, int(round(window.width() * dpr)))
+        target_h = max(1, int(round(window.height() * dpr)))
+        narrow = QPixmap(target_w - 2, target_h)
+        narrow.fill(QColor(255, 0, 0))
+
+        def _grab(_screen, _wid, *args, **kwargs):
+            return narrow
+
+        monkeypatch.setattr(QScreen, "grabWindow", _grab)
+        overlay = ThemeTransitionOverlay.from_widget(window)
+        assert overlay._snapshot.width() == target_w
+        assert overlay._snapshot.height() == target_h
+        safe_teardown(overlay)
+        safe_teardown(window)
+
+    def test_fit_snapshot_pads_narrow_grab(self, qapp: QApplication) -> None:
+        """回归：窄/矮抓拍补透明边到窗口物理尺寸，内容 1:1 左上落点。"""
+        from freeassetfilter.ui.components.theme_transition_overlay import (
+            _fit_snapshot_to_window,
+        )
+
+        window = QWidget()
+        window.resize(120, 80)
+        dpr = window.devicePixelRatioF() or 1.0
+        target_w = max(1, int(round(window.width() * dpr)))
+        target_h = max(1, int(round(window.height() * dpr)))
+
+        narrow = QPixmap(max(1, target_w - 2), target_h)
+        narrow.fill(QColor(255, 0, 0))
+        fitted = _fit_snapshot_to_window(narrow, window)
+        assert fitted.width() == target_w
+        assert fitted.height() == target_h
+        assert fitted.devicePixelRatio() == pytest.approx(dpr)
+        image = fitted.toImage()
+        assert image.pixelColor(0, 0).red() == 255  # 内容 1:1 贴左上角
+        assert image.pixelColor(target_w - 1, 0).alpha() == 0  # 补边透空
+
+        # 尺寸一致：原对象原样返回（不重建位图）；空快照原样返回（离屏场景）
+        exact = QPixmap(target_w, target_h)
+        exact.fill(QColor(0, 0, 255))
+        assert _fit_snapshot_to_window(exact, window) is exact
+        assert _fit_snapshot_to_window(QPixmap(), window).isNull()
+        safe_teardown(window)
+
+    def test_fade_draws_snapshot_without_stretch(self, qapp: QApplication) -> None:
+        """回归：快照小于遮罩矩形时按 1:1 落点绘制，绝不做水平缩放。
+
+        历史缺陷：绘制端固定 ``drawPixmap(self.rect(), snapshot)``，快照与
+        遮罩矩形不等宽时整体水平缩放（窄 1 逻辑像素 → 放大 ~0.14%），
+        过渡淡出期右侧内容横向位移（实测 ~1 逻辑像素）。
+        """
+        parent = QWidget()
+        parent.resize(100, 100)
+        snapshot = QPixmap(99, 100)
+        snapshot.fill(QColor(255, 0, 0))
+        # 快照最右列（x=98）放绿色标记：拉伸时会被推到 x≈99，1:1 时应仍在 98。
+        marker = QPainter(snapshot)
+        try:
+            marker.setPen(Qt.NoPen)
+            marker.setBrush(QColor(0, 255, 0))
+            marker.drawRect(98, 0, 1, 100)
+        finally:
+            marker.end()
+
+        overlay = ThemeTransitionOverlay(parent, snapshot)
+        image = QImage(100, 100, QImage.Format_ARGB32)
+        image.fill(Qt.transparent)
+        overlay._on_value_changed(1.0)
+        overlay.render(
+            image, QPoint(0, 0), QRegion(0, 0, 100, 100), QWidget.DrawChildren
+        )
+        assert image.pixelColor(98, 50).green() == 255  # 标记列未移动
+        assert image.pixelColor(94, 50).red() == 255  # 其余内容仍为红色
+        assert image.pixelColor(99, 50).alpha() == 0  # 多出的 1 列透空
+        safe_teardown(overlay)
+        safe_teardown(parent)
+
     def test_radial_reveal_paint(self, qapp: QApplication) -> None:
         """径向揭示：整幅旧外观打底、圆内挖洞透出新主题（方向自按钮向外）。"""
         parent = QWidget()

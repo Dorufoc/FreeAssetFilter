@@ -578,24 +578,42 @@ class TestFilePoolLayout:
     def test_section_styles_fragment_keeps_sheet_parseable(
         self, qapp: QApplication
     ) -> None:
-        """回归：内容区「面板样式 + 拖放反馈」同片段注册后，组合样式表无畸形规则。
+        """回归：内容区「面板样式 + 拖放反馈」同片段注册后无畸形规则。
 
         历史缺陷：``content_style`` 直接拼接「裸声明 + QFrame[dragActive]
         规则」，``scope_qss`` 会把声明里 rgba(...) 的逗号当选择器分隔符切碎，
         生成畸形规则；Qt 解析器遇到畸形规则会丢弃整张样式表其后内容
         （症状：储存池内容区/底栏/空池提示整体失去边框与填充）。
+
+        下发模式无关断言：``build_combined``（作用域合并渲染，app 模式实际
+        下发内容 / widget 模式的诊断视图）无畸形文本；widget 模式下片段
+        已直接落在控件自身。
         """
+        from freeassetfilter.ui.theme.app_stylesheet import (
+            _REGISTRY,
+            stylesheet_mode,
+        )
+
         layout = FilePoolLayout()
         layout.set_section_styles(
             "rgba(255,255,255,0.05)", "rgba(136,136,136,0.5)"
         )
-        # 让合并重排的 singleShot 落地（应用级样式表统一下发的唯一入口）
+        # 让合并重排的 singleShot 落地（app 模式的统一下发入口）
         _pump_events(qapp)
-        sheet = qapp.styleSheet()
+        sheet = _REGISTRY.build_combined()
 
         content_sid = layout._content_area.property("fafQssId")
         bar_sid = layout._bottom_bar.property("fafQssId")
         assert content_sid and bar_sid
+
+        if stylesheet_mode() == "widget":
+            # 逐控件下发：片段原文落在控件自身，且内容/底栏互不串扰。
+            own = layout._content_area.styleSheet()
+            assert "background-color: rgba(255,255,255,0.05);" in own
+            assert 'dragActive="true"' in own
+            assert 'fafQssId' not in own
+            layout.deleteLater()
+            return
 
         def _fragment(sid: str) -> str:
             """截取组合样式表中某控件片段（按 faf 注释标记分段）。"""
@@ -1840,7 +1858,13 @@ class TestRightClickEmptyAreaGoBack:
         """需要滚动时：即使落在空位脚印也不触发（最后一排尾部空位同样）。"""
         layout = self._prepare(qapp, tmp_path, count=59, enabled=True)
         try:
-            vbar = layout._file_list.verticalScrollBar()
+            lst = layout._file_list
+            # Qt 不会为「从未显示」的 QListView 主动重算 contentsSize；
+            # 旧实现的应用级统一下发恰好提供了那次样式重刷。此处显式触发
+            # 一次样式重刷，保证前置条件（需要滚动）与下发模式无关。
+            lst.setStyleSheet(lst.styleSheet())
+            qapp.processEvents()
+            vbar = lst.verticalScrollBar()
             assert vbar.maximum() > 0, "59 个条目应超出视口（需要滚动）"
             # Batched 惰性布局：滚动到底后多轮稳定可视矩形
             for _ in range(3):

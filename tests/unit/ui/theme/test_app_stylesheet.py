@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 import pytest
+from PySide6.QtWidgets import QWidget
 
 # 模块内部使用短路径导入（from theme.system_accent import ...），
 # 需要 freeassetfilter/ui 位于 sys.path。
@@ -37,7 +38,16 @@ if _UI_ROOT not in sys.path:
 
 from freeassetfilter.ui.theme.app_stylesheet import (  # noqa: E402
     DIRECT_SETSTYLESHEET_SITES,
+    _AppStylesheetRegistry,
+    _resolve_mode,
+    apply_app_stylesheet,
+    register_widget_qss,
+    registered_widget_count,
     scope_qss,
+    stylesheet_mode,
+)
+from freeassetfilter.ui.theme.app_stylesheet import (  # noqa: E402
+    unregister_widget_qss,
 )
 
 pytestmark = pytest.mark.unit
@@ -215,3 +225,145 @@ class TestDirectStylesheetRegistry:
             f"  新增（须补内联理由并登记）: {sorted(found - expected)}\n"
             f"  白名单但扫描不到（应清理）: {sorted(expected - found)}"
         )
+
+
+class _CountingWidget(QWidget):
+    """记录每次 ``setStyleSheet`` 调用的测试控件（下发次数断言用）。"""
+
+    def __init__(self) -> None:
+        """初始化控件与调用记录。"""
+        super().__init__()
+        self.sheet_calls: List[str] = []
+
+    def setStyleSheet(self, qss: str) -> None:  # noqa: N802 - Qt 命名
+        """记录后转发父类（模拟 QSS 下发的真实成本路径）。"""
+        self.sheet_calls.append(qss)
+        super().setStyleSheet(qss)
+
+
+class TestDeliveryModeResolution:
+    """下发模式解析：默认 widget（性能优先），``FAF_QSS_MODE=app`` 回退。"""
+
+    def test_default_is_widget(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """未设置环境变量时默认逐控件下发。"""
+        monkeypatch.delenv("FAF_QSS_MODE", raising=False)
+        assert _resolve_mode() == "widget"
+        assert stylesheet_mode() in ("widget", "app")
+
+    def test_app_mode_via_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``FAF_QSS_MODE=app`` 解析为历史应用级模式。"""
+        monkeypatch.setenv("FAF_QSS_MODE", "app")
+        assert _resolve_mode() == "app"
+        monkeypatch.setenv("FAF_QSS_MODE", "WIDGET")
+        assert _resolve_mode() == "widget"
+        monkeypatch.setenv("FAF_QSS_MODE", "nonsense")
+        assert _resolve_mode() == "widget"
+
+
+class TestWidgetModeDelivery:
+    """widget 模式注册表：逐控件下发 / 文本去重 / 注销清除 / 死控件剪枝。"""
+
+    def test_register_applies_fragment_inline(self, qapp) -> None:
+        """注册即下发：片段文本原样落在控件自身样式表。"""
+        registry = _AppStylesheetRegistry()
+        registry._mode = "widget"
+        widget = _CountingWidget()
+        try:
+            registry.register(widget, "color: red;")
+            assert widget.sheet_calls == ["color: red;"]
+            assert widget.styleSheet() == "color: red;"
+        finally:
+            widget.deleteLater()
+
+    def test_identical_text_re_register_skips_delivery(self, qapp) -> None:
+        """文本未变的重注册零下发（主题切换双轮广播下省掉一半重刷）。"""
+        registry = _AppStylesheetRegistry()
+        registry._mode = "widget"
+        widget = _CountingWidget()
+        try:
+            registry.register(widget, "color: red;")
+            registry.register(widget, "color: red;")
+            registry.register(widget, "color: red;")
+            assert len(widget.sheet_calls) == 1
+            registry.register(widget, "color: blue;")
+            assert widget.sheet_calls == ["color: red;", "color: blue;"]
+        finally:
+            widget.deleteLater()
+
+    def test_unregister_clears_widget_sheet(self, qapp) -> None:
+        """注销等价 ``setStyleSheet("")``，并清掉作用域属性。"""
+        registry = _AppStylesheetRegistry()
+        registry._mode = "widget"
+        widget = _CountingWidget()
+        try:
+            registry.register(widget, "color: red;")
+            registry.unregister(widget)
+            assert widget.styleSheet() == ""
+            assert widget.property("fafQssId") in ("", None)
+            assert registry.registered_count() == 0
+        finally:
+            widget.deleteLater()
+
+    def test_first_apply_forces_full_redelivery(self, qapp) -> None:
+        """首次 ``apply_app_stylesheet`` 全量重下发一次（启动兜底）。"""
+        registry = _AppStylesheetRegistry()
+        registry._mode = "widget"
+        widget = _CountingWidget()
+        try:
+            registry.register(widget, "color: red;")
+            assert len(widget.sheet_calls) == 1
+            assert registry.take_first_apply() is True
+            registry.apply_widget_sheets(force=True)
+            assert len(widget.sheet_calls) == 2
+            # 之后（非首次）只补未下发项：无新改动 → 零下发
+            assert registry.take_first_apply() is False
+            registry.apply_widget_sheets()
+            assert len(widget.sheet_calls) == 2
+        finally:
+            widget.deleteLater()
+
+    def test_dead_widget_pruned_without_log_spam(self, qapp) -> None:
+        """已销毁控件在扫描时静默剪枝（历史：每次重刷 300~400 行日志）。"""
+        from PySide6.QtCore import QEvent
+        from shiboken6 import isValid
+
+        registry = _AppStylesheetRegistry()
+        registry._mode = "widget"
+        widget = QWidget()
+        registry.register(widget, "color: red;")
+        assert registry.registered_count() == 1
+        widget.deleteLater()
+        qapp.processEvents()
+        qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        assert isValid(widget) is False
+        registry.apply_widget_sheets()
+        assert registry.registered_count() == 0
+
+    def test_app_mode_registry_does_not_touch_widget_sheet(self, qapp) -> None:
+        """app 模式回退：片段进合并表，控件自身样式表保持为空。"""
+        registry = _AppStylesheetRegistry()
+        registry._mode = "app"
+        widget = _CountingWidget()
+        try:
+            registry.register(widget, "QLabel { color: #123456; }")
+            assert widget.sheet_calls == []
+            combined = registry.build_combined()
+            # app 模式渲染为作用域形态（自身 + 后代两种锚定）
+            assert 'QLabel[fafQssId="' in combined
+            assert "color: #123456;" in combined
+        finally:
+            widget.deleteLater()
+
+    def test_global_first_apply_uses_registry(self, qapp) -> None:
+        """模块级入口：默认模式注册即下发，``apply_app_stylesheet`` 可调用。"""
+        widget = _CountingWidget()
+        try:
+            assert stylesheet_mode() == "widget"
+            register_widget_qss(widget, "color: red;")
+            assert widget.styleSheet() == "color: red;"
+            assert apply_app_stylesheet() is True
+            unregister_widget_qss(widget)
+            assert widget.styleSheet() == ""
+            assert registered_widget_count() >= 0
+        finally:
+            widget.deleteLater()

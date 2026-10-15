@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import (
     Qt, Signal, QRectF, QPropertyAnimation, QEasingCurve, Property, QPoint,
-    QEvent, QObject,
+    QEvent, QObject, QTimer,
 )
 from PySide6.QtGui import (
     QPainter, QColor, QPaintEvent, QPen, QFont, QHideEvent, QCloseEvent,
@@ -70,6 +70,16 @@ from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 IMAGE_BG_BLUR_MAX = 200
 IMAGE_BG_BLUR_DEFAULT = 0
 IMAGE_BG_TRANSPARENCY_DEFAULT = 80
+
+#: 设置窗口明暗过渡时长（ms）：整窗交叉淡入淡出（旧外观渐隐露出新主题）。
+#: 比主窗口的径向扩散（450ms）略短，观感更轻快；时长即「点击后开始淡化
+#: 到结束」的一段，不含点击到动画起钟的同步段（见 _start_settings_overlay）。
+SETTINGS_THEME_FADE_MS = 300
+
+#: 外观预览去抖窗口（ms）：连点 / 滑动条与色板拖动在此窗口内合并为一次
+#: 下发。首击仍立即生效（见 ``SettingsLayout._request_appearance_preview``），
+#: 因此单击零额外延迟、连点最多只多一次补发。
+APPEARANCE_PREVIEW_DEBOUNCE_MS = 120
 
 
 def _normalize_bg_blur(value: object) -> int:
@@ -514,6 +524,17 @@ class AppearanceSettingsPage(QWidget):
         "powersave": 2,
     }
 
+    #: 外观类设置（深色模式 / 主题色 / 窗口背景模式与弥散开关）发生用户改动时发出。
+    #: 宿主 ``SettingsLayout`` 据此做实时预览：立即下发 ``tm`` 与主窗口（带过渡），
+    #: 设置窗口保持打开并以平滑过渡遮罩换肤。
+    appearance_changed = Signal()
+    #: 窗口背景可调参数（模糊度 / 透明度滑动条、自定义色板拖动）发生用户改动时发出。
+    #: 与 :attr:`appearance_changed` 区分：宿主经去抖定时器合并连续改动后再预览一次，
+    #: 避免拖动过程每帧重下发背景层。
+    appearance_params_changed = Signal()
+    #: 非外观项（性能档位）发生用户改动时发出，宿主据此刷新「有更改未保存」提示。
+    staged_changed = Signal()
+
     def __init__(self, parent=None, staging_cache: SettingsStagingCache | None = None):
         super().__init__(parent)
         if staging_cache is None:
@@ -829,12 +850,15 @@ class AppearanceSettingsPage(QWidget):
             # 已有持久化图片且文件存在 → 直接暂存；否则强制走选择流程
             if self._bg_image_name and os.path.exists(self._bg_image_path()):
                 self._stage_background_settings("image")
+                self.appearance_changed.emit()
             else:
                 self._choose_bg_image(force=True)
         elif index == 0:
             self._stage_background_settings("minimalist")
+            self.appearance_changed.emit()
         else:
             self._stage_background_settings("mica")
+            self.appearance_changed.emit()
 
     def _on_ambient_toggled(self, checked: bool) -> None:
         """弥散氛围开关切换处理：仅写入暂存缓存，点击应用/确定才生效。
@@ -845,6 +869,7 @@ class AppearanceSettingsPage(QWidget):
         self._bg_ambient = bool(checked)
         if self._bg_mode != "minimalist":
             self._stage_background_settings("minimalist")
+            self.appearance_changed.emit()
             return
         self._staging_cache.set("appearance.background", {
             "mode": self._bg_mode,
@@ -854,6 +879,7 @@ class AppearanceSettingsPage(QWidget):
             "transparency": self._bg_transparency,
         })
         self._update_bg_ui_state()
+        self.appearance_changed.emit()
 
     def _on_blur_changed(self, value: float) -> None:
         """图像模糊度滑动条 — 仅写入暂存，点击确定才全局生效。
@@ -869,6 +895,7 @@ class AppearanceSettingsPage(QWidget):
         if self._blur_value_label is not None:
             self._blur_value_label.setText(f"{self._bg_blur}")
         self._stage_background_settings(self._bg_mode)
+        self.appearance_params_changed.emit()
 
     def _on_transparency_changed(self, value: float) -> None:
         """图像透明度滑动条 — 仅写入暂存，点击确定才全局生效。
@@ -884,6 +911,7 @@ class AppearanceSettingsPage(QWidget):
         if self._transparency_value_label is not None:
             self._transparency_value_label.setText(f"{self._bg_transparency}%")
         self._stage_background_settings(self._bg_mode)
+        self.appearance_params_changed.emit()
 
     def _sync_bg_param_sliders(self) -> None:
         """按当前参数同步两条滑动条与数值标签（守卫内设置，不触发处理器）。"""
@@ -939,6 +967,7 @@ class AppearanceSettingsPage(QWidget):
 
         self._bg_image_name = os.path.basename(dest)
         self._stage_background_settings("image")
+        self.appearance_changed.emit()
         return True
 
     def _revert_bg_segment(self) -> None:
@@ -1088,6 +1117,7 @@ class AppearanceSettingsPage(QWidget):
             effective = mode
         self._staging_cache.set("appearance.theme", effective)
         self.sync_theme_segment()
+        self.appearance_changed.emit()
 
     def sync_theme_segment(self) -> None:
         """按当前偏好同步分段控件选中项（守卫内切换，不触发处理器）。"""
@@ -1147,6 +1177,7 @@ class AppearanceSettingsPage(QWidget):
         self._perf_profile = mode
         self._staging_cache.set("performance.profile", mode)
         self._sync_perf_segment()
+        self.staged_changed.emit()
 
     def _sync_perf_segment(self) -> None:
         """按当前档位同步性能分段控件选中项（守卫内切换，不触发处理器）。"""
@@ -1182,6 +1213,7 @@ class AppearanceSettingsPage(QWidget):
         # 选择预设色时关闭浮动选择面板
         if self._custom_panel is not None:
             self._custom_panel.close_animated()
+        self.appearance_changed.emit()
 
     def _on_custom_color_clicked(self) -> None:
         """自定义颜色按钮 — 展开/折叠浮动颜色选择面板。
@@ -1322,6 +1354,8 @@ class AppearanceSettingsPage(QWidget):
             btn.selected = False
         if self._custom_btn is not None:
             self._custom_btn.selected = True
+        # 色板拖动会连续触发：走去抖通道，避免每帧重下发主窗口。
+        self.appearance_params_changed.emit()
 
     def _on_panel_closed(self) -> None:
         """浮动面板关闭后的处理。
@@ -1534,6 +1568,10 @@ class GeneralSettingsPage(QWidget):
     LAYOUT_LABELS: tuple[str, ...] = ("经典", "New")
     LAYOUT_INDEX: dict[str, int] = {"classic": 0, "workspace": 1}
 
+    #: 通用页任一设置项发生用户改动时发出，宿主据此刷新「有更改未保存」提示。
+    #: 通用页设置属「非外观项」，不实时生效、只能经「保存」按钮提交。
+    staged_changed = Signal()
+
     #: 切换提示行（所有布局介绍后统一换行追加）
     _LAYOUT_HINT = "切换在点击「确定」后立即生效。"
     #: 各布局介绍（不含提示行）
@@ -1637,6 +1675,7 @@ class GeneralSettingsPage(QWidget):
             self._layout_mode = self.LAYOUT_MODES[index]
             self._staging_cache.set("general.layout_mode", self._layout_mode)
             self._sync_description_text()
+            self.staged_changed.emit()
 
     def _on_ai_entry_toggled(self, checked: bool) -> None:
         """AI 功能入口开关：只写入暂存缓存，点击「确定」才生效。"""
@@ -1644,6 +1683,7 @@ class GeneralSettingsPage(QWidget):
             return
         self._ai_entry = bool(checked)
         self._staging_cache.set("general.enable_ai_entry", self._ai_entry)
+        self.staged_changed.emit()
 
     def _on_remote_drives_toggled(self, checked: bool) -> None:
         """网络盘/光驱开关：只写入暂存缓存，点击「确定」才生效。"""
@@ -1653,6 +1693,7 @@ class GeneralSettingsPage(QWidget):
         self._staging_cache.set(
             "general.include_remote_drives", self._include_remote_drives
         )
+        self.staged_changed.emit()
 
     def _on_blank_right_click_go_back_toggled(self, checked: bool) -> None:
         """空白区右键返回开关：只写入暂存缓存，点击「确定」才生效。"""
@@ -1662,6 +1703,7 @@ class GeneralSettingsPage(QWidget):
         self._staging_cache.set(
             "general.blank_right_click_go_back", self._blank_right_click_go_back
         )
+        self.staged_changed.emit()
 
     def _layout_description_text(self) -> str:
         """返回当前布局的介绍文字 + 换行提示行。"""
@@ -1828,6 +1870,25 @@ class SettingsLayout(QWidget):
         self._staging_cache.begin(copy.deepcopy(_v2_boot.load()))
         self._submitted: bool = False
         self._last_submit_ms: float = 0.0
+        # 外观实时预览：记录打开设置窗口时的 tm 外观基线（取消回滚用）。
+        self._appearance_baseline: dict = self._capture_appearance_baseline()
+        # 背景图层最近一次已下发的图片文件名：滑块拖动预览时据此跳过图片重载。
+        self._last_applied_bg_image: str = ""
+        # 背景三项+参数最近一次已下发的完整状态：与目标一致时整段跳过
+        # （主题切换/其它改动引发的重复下发不再触碰背景层）。
+        self._last_applied_bg_state: tuple | None = None
+        # 设置窗口预览过渡遮罩单实例（连续预览/回滚时先收尾上一张，避免叠加）。
+        self._settings_preview_overlay = None
+        # 外观预览去抖：首击立即下发，连点/拖动在窗口内合并为末尾一次补发。
+        self._appearance_preview_burst_dirty: bool = False
+        self._appearance_preview_timer = QTimer(self)
+        self._appearance_preview_timer.setSingleShot(True)
+        self._appearance_preview_timer.setInterval(APPEARANCE_PREVIEW_DEBOUNCE_MS)
+        self._appearance_preview_timer.timeout.connect(
+            self._on_appearance_preview_timer
+        )
+        # 底栏「有更改未保存」提示标签（_create_bottom_buttons 创建）。
+        self._dirty_hint: QLabel | None = None
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -1909,6 +1970,23 @@ class SettingsLayout(QWidget):
         except Exception as exc:
             debug(f"主题模式信号连接失败（设置页可能不随系统主题刷新）：{exc}")
 
+        # 外观实时预览 + 「有更改未保存」提示连线（失败仅告警，不影响可用性）。
+        try:
+            # 即时项（深色模式 / 主题色 / 背景模式）：首击立即预览，
+            # 连点由去抖定时器合并成一次补发。
+            self._appearance_page.appearance_changed.connect(
+                self._request_appearance_preview
+            )
+            # 拖动类（模糊度 / 透明度滑块、色板拖动）：纯末尾合并，
+            # 拖动过程不逐帧重下发背景层。
+            self._appearance_page.appearance_params_changed.connect(
+                self._request_appearance_params_preview
+            )
+            self._appearance_page.staged_changed.connect(self._update_dirty_hint)
+            self._general_page.staged_changed.connect(self._update_dirty_hint)
+        except Exception as exc:
+            debug(f"设置页实时预览信号连接失败：{exc}")
+
     def _wrap_page_in_scroll(self, page: QWidget) -> _FloatingScrollArea:
         """将设置页包进浮动滚动条滚动区（styled 滚动条 + 丝滑滚动）。"""
         scroll = _FloatingScrollArea()
@@ -1957,6 +2035,13 @@ class SettingsLayout(QWidget):
         """))
         register_widget_qss(self._content_area,("background-color: transparent; border: none;"))
 
+        # 底栏「有更改未保存」提示按语义 warning 色重注册（随主题变化）。
+        if self._dirty_hint is not None:
+            register_widget_qss(
+                self._dirty_hint,
+                (f"color: {tm.qss_color(tm.warning)}; font-size: 12px;"),
+            )
+
         # 三页各自刷新（外观页含自绘色块重绘）
         appearance_page = getattr(self, "_appearance_page", None)
         if appearance_page is not None:
@@ -1982,12 +2067,13 @@ class SettingsLayout(QWidget):
     # ── 底部按钮 ──────────────────────────────────────────────
 
     def _create_bottom_buttons(self) -> QFrame:
-        """创建底部按钮栏（重置 + 取消 + 确定）。
+        """创建底部按钮栏（重置 + 未保存提示 + 取消 + 保存）。
 
         样式映射（仅复用 ``StyledButton``，不自绘）：
-        确定 = ``primary``（强调，主题色）、取消 = ``secondary``（次选）、
+        保存 = ``primary``（强调，主题色）、取消 = ``secondary``（次选）、
         重置 = ``danger``（警告）。
-        布局：左 ``重置``，右 ``取消`` + ``确定``（无「应用」按钮）。
+        布局：左 ``重置``，中 ``有更改未保存``（仅非外观项改动时显示），
+        右 ``取消`` + ``保存``（无「应用」按钮）。
 
         Returns:
             QFrame: 底部按钮栏容器。
@@ -2006,11 +2092,23 @@ class SettingsLayout(QWidget):
 
         layout.addStretch()
 
+        # 「有更改未保存」提示：仅在存在非外观项改动时显示（见 _update_dirty_hint），
+        # 位于重置与取消之间（水平居中）。
+        self._dirty_hint = QLabel("有更改未保存")
+        self._dirty_hint.setVisible(False)
+        register_widget_qss(
+            self._dirty_hint,
+            (f"color: {tm.qss_color(tm.warning)}; font-size: 12px;"),
+        )
+        layout.addWidget(self._dirty_hint)
+
+        layout.addStretch()
+
         self._cancel_btn = StyledButton("取消", variant="secondary", size="sm")
         self._cancel_btn.clicked.connect(self._on_cancel_clicked)
         layout.addWidget(self._cancel_btn)
 
-        self._confirm_btn = StyledButton("确定", variant="primary", size="sm")
+        self._confirm_btn = StyledButton("保存", variant="primary", size="sm")
         self._confirm_btn.clicked.connect(self._on_confirm_clicked)
         layout.addWidget(self._confirm_btn)
 
@@ -2021,16 +2119,36 @@ class SettingsLayout(QWidget):
         return bar
 
     def _on_reset_clicked(self) -> None:
-        """重置按钮 — 暂存区回默认值并刷新界面，不直接落盘（需确定提交）。"""
+        """重置按钮 — 暂存区回默认值并刷新界面，不直接落盘（需确定提交）。
+
+        外观项为实时项：重置后同步做一次实时预览，保持 ``tm`` 与暂存默认值
+        一致（否则关闭时自动保存会把默认值写入磁盘而运行态仍是旧外观）。
+        """
         self._staging_cache.reset_to_defaults(copy.deepcopy(DEFAULT_SETTINGS_V2))
         self._appearance_page.refresh_from_staging()
         self._general_page.refresh_from_staging()
+        try:
+            dirty = set(self._staging_cache.dirty_keys())
+        except Exception:
+            dirty = set()
+        self._update_dirty_hint()
+        # 仅当外观默认值确有变化时才重新预览（避免无谓过渡动画）。
+        if dirty & self._AUTO_SAVE_APPEARANCE_KEYS:
+            self._on_appearance_preview()
 
     def _on_cancel_clicked(self) -> None:
-        """取消按钮 — 清除暂存并恢复界面至原始状态，然后关闭宿主窗口。"""
+        """取消按钮 — 回滚实时预览的外观至打开时状态，丢弃暂存并关闭。"""
+        self._flush_appearance_preview()
+        try:
+            dirty = set(self._staging_cache.dirty_keys())
+            if dirty & self._AUTO_SAVE_APPEARANCE_KEYS:
+                self._revert_appearance_to_baseline()
+        except Exception as exc:
+            debug(f"取消回滚外观失败（按无改动处理）：{exc}")
         self._staging_cache.discard()
         self._appearance_page.refresh_from_staging()
         self._general_page.refresh_from_staging()
+        self._update_dirty_hint()
         self._close_host_window()
 
     def _on_apply_clicked(self) -> None:
@@ -2043,29 +2161,316 @@ class SettingsLayout(QWidget):
             self._submitted = True
             self._close_host_window()
 
-    def _theme_reveal_origin(self, settings_window: QWidget) -> "QPoint | None":
-        """主题过渡扩散圆心：外观页主题分段控件中心（窗口逻辑坐标）。
+    # ── 外观实时预览 / 回滚 / 关闭自动保存 ────────────────────────────
 
-        分段控件不可用（页面未构建 / 几何为空 / 非本窗口子树）时返回
-        None，遮罩退化为透明度淡出，不影响提交本身。
+    #: 外观类「自动保存」键：点 ✕ 关闭时自动落盘；且不计入「有更改未保存」提示。
+    #: 其余键（``general.*``、``performance.profile``）属「非外观项」，只能经
+    #: 「保存」按钮提交，✕ 关闭时静默丢弃。
+    _AUTO_SAVE_APPEARANCE_KEYS: frozenset = frozenset({
+        "appearance.theme_mode",
+        "appearance.theme",
+        "appearance.colors",
+        "appearance.accent_color",
+        "appearance.background",
+    })
 
-        Args:
-            settings_window: 过渡遮罩的宿主设置窗口。
+    def _capture_appearance_baseline(self) -> dict:
+        """记录打开设置窗口时 tm 的外观（深色模式 / 配色 / 背景），供取消回滚。
 
         Returns:
-            QPoint | None: 扩散圆心；无效时 None。
+            dict: ``{"theme_mode": str, "colors": dict, "background": dict}``。
+                读取失败时对应字段退化为空/默认，不影响后续流程。
         """
-        page = getattr(self, "_appearance_page", None)
-        segmented = getattr(page, "_theme_segmented", None) if page is not None else None
-        if segmented is None or settings_window is None:
-            return None
         try:
-            rect = segmented.rect()
-            if rect.isEmpty():
-                return None
-            return segmented.mapTo(settings_window, rect.center())
-        except Exception:  # noqa: BLE001 - 映射失败退化为淡出
-            return None
+            try:
+                mode = tm.get_theme_mode()
+            except Exception:
+                mode = "dark" if tm.is_dark_theme() else "light"
+            try:
+                colors = tm.snapshot_colors()
+            except Exception:
+                colors = {}
+            try:
+                staged = self._staging_cache.snapshot_staged()
+                bg = (staged.get("appearance", {}) or {}).get("background", {})
+                background = copy.deepcopy(bg) if isinstance(bg, dict) else {}
+            except Exception:
+                background = {}
+            return {"theme_mode": mode, "colors": colors, "background": background}
+        except Exception as exc:  # noqa: BLE001 - 基线抓取失败不阻塞窗口打开
+            debug(f"外观基线抓取失败：{exc}")
+            return {"theme_mode": "dark", "colors": {}, "background": {}}
+
+    def _resolve_appearance_values(self, appearance: dict) -> "tuple[str, str, dict]":
+        """从外观字典解析出规范的 ``(theme_mode, accent, background)``。
+
+        缺失/非法值按与提交路径一致的口径回退（主题偏好缺失时由生效值推导）。
+
+        Args:
+            appearance: ``staged["appearance"]`` 子字典。
+
+        Returns:
+            tuple[str, str, dict]: ``(偏好值, 强调色, 背景字典)``。
+        """
+        appearance = appearance if isinstance(appearance, dict) else {}
+        theme_mode = appearance.get("theme_mode", None)
+        if theme_mode not in ("light", "dark", "system"):
+            legacy = appearance.get("theme", "light")
+            theme_mode = "dark" if legacy == "dark" else "light"
+        accent = appearance.get("accent_color", "#007AFF")
+        if not isinstance(accent, str) or not accent:
+            accent = "#007AFF"
+        bg = appearance.get("background", {}) or {}
+        if not isinstance(bg, dict):
+            bg = {}
+        return theme_mode, accent, bg
+
+    def _start_settings_overlay(self) -> None:
+        """给设置窗口起整窗交叉淡入淡出过渡（单实例去重；与提交路径同款）。
+
+        不传 ``origin`` —— 遮罩走透明度淡出模式：旧外观快照按 1→0 渐隐，
+        透出下方已切换的新主题（时长 ``SETTINGS_THEME_FADE_MS``）。相比径向
+        揭示（主窗口从主题按钮向外扩散），整窗淡化没有扩散硬边、观感更平滑。
+        """
+        settings_window = (
+            self._host_window if self._host_window is not None else self.window()
+        )
+        if settings_window is None:
+            return
+        prev = self._settings_preview_overlay
+        if prev is not None:
+            try:
+                from shiboken6 import isValid
+
+                if isValid(prev):
+                    prev.finish_now()
+            except Exception:  # noqa: BLE001 - 已销毁引用按无需收尾处理
+                pass
+            self._settings_preview_overlay = None
+        try:
+            overlay = ThemeTransitionOverlay.from_widget(
+                settings_window, duration_ms=SETTINGS_THEME_FADE_MS
+            )
+            overlay.start()
+            self._settings_preview_overlay = overlay
+        except Exception as exc:  # noqa: BLE001 - 遮罩失败不阻塞实时预览
+            debug(f"设置窗口预览过渡遮罩启动失败：{exc}")
+
+    def _request_appearance_preview(self) -> None:
+        """外观即时项改动入口：首击立即下发，连点合并为一次补发。
+
+        ``appearance_changed`` 的槽。去抖窗口未开启（单击）时直接同步
+        预览一次，保证「点了就换」；窗口内再次改动只记脏，由单发定时器
+        在窗口末尾补发一次——连点不会堆叠多次全量下发（历史缺陷：
+        每次点击都跑整套主题链路 + 两轮全表重刷，连点叠加成卡死）。
+        """
+        if not self._appearance_preview_timer.isActive():
+            self._on_appearance_preview()
+        else:
+            self._appearance_preview_burst_dirty = True
+        self._appearance_preview_timer.start()
+
+    def _request_appearance_params_preview(self) -> None:
+        """外观拖动项改动入口：纯末尾合并（拖动过程不逐帧下发）。"""
+        self._appearance_preview_burst_dirty = True
+        self._appearance_preview_timer.start()
+
+    def _on_appearance_preview_timer(self) -> None:
+        """去抖窗口到期：窗口内确有积压改动才补发一次。"""
+        if not self._appearance_preview_burst_dirty:
+            return
+        self._appearance_preview_burst_dirty = False
+        self._on_appearance_preview()
+
+    def _flush_appearance_preview(self) -> None:
+        """立即补发挂起的外观预览（提交 / 回滚 / 关窗 / 取消前调用）。
+
+        保证落盘与运行态一致：去抖窗口内尚未下发的最后状态在此补上，
+        否则重启后会与磁盘记录不符（外观项为「点 ✕ 也保存」语义）。
+        """
+        self._appearance_preview_timer.stop()
+        if not self._appearance_preview_burst_dirty:
+            return
+        self._appearance_preview_burst_dirty = False
+        self._on_appearance_preview()
+
+    @staticmethod
+    def _target_effective_theme(mode: str) -> str:
+        """把主题偏好解析为将要生效的明暗值（只读，不触碰 ``tm``）。
+
+        Args:
+            mode: 偏好值 ``"light"`` | ``"dark"`` | ``"system"``。
+
+        Returns:
+            ``"light"`` 或 ``"dark"``；跟随系统读取失败时回退当前生效值。
+        """
+        if mode == "system":
+            try:
+                from freeassetfilter.ui.theme.system_theme import (
+                    get_windows_system_theme,
+                )
+
+                resolved = get_windows_system_theme()
+            except Exception:
+                resolved = ""
+            if resolved in ("light", "dark"):
+                return resolved
+            return "dark" if tm.is_dark_theme() else "light"
+        return "light" if mode == "light" else "dark"
+
+    @staticmethod
+    def _accent_differs(color: str) -> bool:
+        """目标强调色与 ``tm`` 当前值是否不同（QColor 归一化比较）。
+
+        Args:
+            color: 目标颜色（``#RRGGBB`` / ``#RRGGBBAA``）。
+
+        Returns:
+            True 表示需要下发；取值失败按需要下发处理。
+        """
+        try:
+            from PySide6.QtGui import QColor
+
+            target = QColor(color)
+            if not target.isValid():
+                return False
+            return QColor(tm.accent).rgba() != target.rgba()
+        except Exception:
+            return True
+
+    def _on_appearance_preview(self) -> None:
+        """实时预览外观改动：下发 ``tm`` + 主窗口并起过渡，不落盘。
+
+        由 :meth:`_request_appearance_preview`（首击立即 + 连点补发）与
+        :meth:`_request_appearance_params_preview`（拖动末尾合并）触发。
+        落盘统一留到「保存」按钮或点 ✕ 关闭时的 :meth:`_persist_appearance_only`。
+
+        短路原则（性能关键）：目标与当前一致的部分整段跳过——背景模式
+        切换不再重设主题/主题色；明暗未真正翻转时不抓整窗快照、不建过渡
+        遮罩（抓拍是同步大头，纯背景改动零抓拍、零主题广播）。
+        """
+        staged = self._staging_cache.snapshot_staged()
+        appearance = staged.get("appearance", {}) if isinstance(staged, dict) else {}
+        theme_mode, accent, bg = self._resolve_appearance_values(appearance)
+        resolved_accent = (
+            get_system_accent_color() if accent.lower() == "auto" else accent
+        )
+
+        try:
+            mode_changed = theme_mode != tm.get_theme_mode()
+        except Exception:
+            mode_changed = True
+        try:
+            effective_changed = (
+                self._target_effective_theme(theme_mode) != tm.effective_theme()
+            )
+        except Exception:
+            effective_changed = True
+        accent_changed = self._accent_differs(resolved_accent)
+
+        if effective_changed:
+            # 主窗口过渡预抓拍（内容层径向扩散 + 背景层交叉淡入，复用现有链路）。
+            try:
+                main_window = self._appearance_page.find_main_window()
+                if main_window is not None and hasattr(main_window, "begin_theme_transition"):
+                    main_window.begin_theme_transition()
+            except Exception:  # noqa: BLE001 - 预抓拍失败不阻塞预览
+                pass
+            # 设置窗口平滑过渡遮罩（明暗真正翻转才需要）。
+            self._start_settings_overlay()
+
+        try:
+            if mode_changed:
+                tm.set_theme_mode(theme_mode)
+            if accent_changed:
+                tm.set_color("accent.primary", resolved_accent)
+        except Exception as exc:  # noqa: BLE001 - 预览下发失败仅告警
+            debug(f"外观预览下发主题失败：{exc}")
+        self._apply_staged_background_to_main_window(bg)
+
+    def _revert_appearance_to_baseline(self) -> None:
+        """取消时把 ``tm`` 外观回滚到打开设置窗口时的基线（带过渡）。"""
+        base = self._appearance_baseline if isinstance(self._appearance_baseline, dict) else {}
+        try:
+            main_window = self._appearance_page.find_main_window()
+            if main_window is not None and hasattr(main_window, "begin_theme_transition"):
+                main_window.begin_theme_transition()
+        except Exception:  # noqa: BLE001 - 预抓拍失败不阻塞回滚
+            pass
+        self._start_settings_overlay()
+        mode = base.get("theme_mode", "dark")
+        if mode not in ("light", "dark", "system"):
+            mode = "dark"
+        colors = base.get("colors", {}) or {}
+        try:
+            tm.set_theme_mode(mode)
+            if colors:
+                tm.replace_colors(copy.deepcopy(colors))
+        except Exception as exc:  # noqa: BLE001 - 回滚失败仅告警
+            debug(f"外观回滚恢复 tm 失败：{exc}")
+        # 强制下次重新下发背景（模式/图片/参数可能已变）。
+        self._last_applied_bg_image = ""
+        self._last_applied_bg_state = None
+        self._apply_staged_background_to_main_window(base.get("background", {}) or {})
+
+    def _persist_appearance_only(self) -> None:
+        """把暂存的外观三项落盘（点 ✕ 关闭自动保存；不触碰非外观项）。
+
+        外观在改动时已实时生效，此处只补磁盘写入，使重启后恢复。
+        """
+        staged = self._staging_cache.snapshot_staged()
+        appearance = staged.get("appearance", {}) if isinstance(staged, dict) else {}
+        theme_mode, _resolved, bg = self._resolve_appearance_values(appearance)
+        saved_accent = appearance.get("accent_color", "#007AFF")
+        if not isinstance(saved_accent, str) or not saved_accent:
+            saved_accent = "#007AFF"
+        try:
+            theme = tm.effective_theme()
+        except Exception:
+            theme = "dark" if tm.is_dark_theme() else "light"
+        bg_mode = bg.get("mode", "mica")
+        if bg_mode not in ("mica", "image", "minimalist"):
+            bg_mode = "mica"
+        bg_blur = _normalize_bg_blur(bg.get("blur", IMAGE_BG_BLUR_DEFAULT))
+        bg_transparency = _normalize_bg_transparency(
+            bg.get("transparency", IMAGE_BG_TRANSPARENCY_DEFAULT)
+        )
+        colors_dict = tm.snapshot_colors()
+        try:
+            colors_dict["accent"]["primary"] = saved_accent
+        except Exception:  # noqa: BLE001 - 配色结构异常时保持原值
+            pass
+        v2 = SettingsManagerV2()
+        v2.load()
+        v2.set("appearance.theme_mode", theme_mode)
+        v2.set("appearance.theme", theme)
+        v2.set("appearance.accent_color", saved_accent)
+        v2.set("appearance.colors", colors_dict)
+        v2.set("appearance.background", {
+            "mode": bg_mode,
+            "image": str(bg.get("image", "") or ""),
+            "ambient": bool(bg.get("ambient", True)),
+            "blur": bg_blur,
+            "transparency": bg_transparency,
+        })
+        v2.save()
+
+    def _update_dirty_hint(self) -> None:
+        """按暂存脏键刷新底栏「有更改未保存」提示可见性。
+
+        仅当存在**非外观键**（``general.*`` / ``performance.profile``）时显示——
+        外观项是即时项（点 ✕ 自动保存），无需提示。
+        """
+        if self._dirty_hint is None:
+            return
+        try:
+            has_other = any(
+                key not in self._AUTO_SAVE_APPEARANCE_KEYS
+                for key in self._staging_cache.dirty_keys()
+            )
+        except Exception:
+            has_other = False
+        self._dirty_hint.setVisible(has_other)
 
     def _submit_settings(self, close_after: bool = False) -> bool:
         """设置提交事件处理函数（确定按钮绑定，事务性提交）。
@@ -2082,6 +2487,8 @@ class SettingsLayout(QWidget):
             bool: 提交成功返回 True，失败返回 False。
         """
         t0 = time.perf_counter()
+        # 提交前先补发去抖窗口内未下发的最后外观状态，保证运行态 = 待落盘态。
+        self._flush_appearance_preview()
         staged = self._staging_cache.commit_snapshot()
         appearance = staged.get("appearance", {}) if isinstance(staged, dict) else {}
         theme_mode = appearance.get("theme_mode", None)
@@ -2139,16 +2546,9 @@ class SettingsLayout(QWidget):
         if isinstance(accent, str) and accent.lower() == "auto":
             accent = get_system_accent_color()
 
-        settings_window = self._host_window if self._host_window is not None else self.window()
-        if settings_window is not None:
-            try:
-                overlay = ThemeTransitionOverlay.from_widget(
-                    settings_window,
-                    origin=self._theme_reveal_origin(settings_window),
-                )
-                overlay.start()
-            except Exception as exc:
-                debug(f"主题过渡遮罩启动失败（直接完成切换）：{exc}")
+        # 设置窗口过渡：与实时预览同款整窗交叉淡入淡出（单实例去重）；
+        # 遮罩创建失败仅告警，不阻塞提交本身。
+        self._start_settings_overlay()
 
         prev_mode = tm.get_theme_mode()
         prev_theme = "dark" if tm.is_dark_theme() else "light"
@@ -2277,6 +2677,17 @@ class SettingsLayout(QWidget):
         bg_transparency = _normalize_bg_transparency(
             staged_bg.get("transparency", IMAGE_BG_TRANSPARENCY_DEFAULT)
         )
+        # 与上次已下发状态完全一致 → 整段跳过（主题切换、色板/其它改动
+        # 引发的重复预览不再触碰背景层）。
+        state = (
+            mode,
+            image_name if mode == "image" else "",
+            ambient,
+            bg_blur,
+            bg_transparency,
+        )
+        if state == self._last_applied_bg_state:
+            return
         try:
             mw = self._appearance_page.find_main_window()
             if mw is None:
@@ -2285,8 +2696,12 @@ class SettingsLayout(QWidget):
                 image_path = os.path.join(
                     get_app_data_path(), BACKGROUND_DIR_NAME, image_name
                 )
-                if hasattr(mw, "set_custom_background_image"):
-                    mw.set_custom_background_image(image_path)
+                # 图片只在切换/更换时下发一次；滑块拖动预览（同一图片）仅更新
+                # 参数，避免每帧重载图片造成卡顿与闪烁。
+                if image_name != self._last_applied_bg_image:
+                    if hasattr(mw, "set_custom_background_image"):
+                        mw.set_custom_background_image(image_path)
+                    self._last_applied_bg_image = image_name
                 if hasattr(mw, "set_image_background_params"):
                     # 透明度换算为不透明度后下发给图像层。
                     mw.set_image_background_params(
@@ -2295,13 +2710,16 @@ class SettingsLayout(QWidget):
                 if hasattr(mw, "set_background_mode"):
                     mw.set_background_mode("image")
             elif mode == "minimalist":
+                self._last_applied_bg_image = ""
                 if hasattr(mw, "set_ambient_enabled"):
                     mw.set_ambient_enabled(ambient)
                 if hasattr(mw, "set_background_mode"):
                     mw.set_background_mode("minimalist")
             else:
+                self._last_applied_bg_image = ""
                 if hasattr(mw, "set_background_mode"):
                     mw.set_background_mode("mica")
+            self._last_applied_bg_state = state
         except Exception as exc:
             debug(f"下发背景模式到主窗口失败：{exc}")
 
@@ -2413,19 +2831,39 @@ class SettingsLayout(QWidget):
             debug(f"关闭设置宿主窗口失败：{exc}")
 
     def on_host_closing(self) -> None:
-        """宿主窗口关闭时的生命周期钩子：未提交则自动清除暂存并恢复界面。
+        """宿主窗口关闭生命周期：落盘外观三项，其余未保存改动静默丢弃。
 
-        由 ``SettingsWindow.closeEvent`` 调用，保证关闭未提交时缓存不泄漏、
-        下次打开为原始状态。
+        由 ``SettingsWindow.closeEvent`` 调用（右上角 ✕ 与主窗口退出连带关闭
+        均走此路径）：
+
+        - 外观三项（深色模式 / 主题色 / 窗口背景）在改动时已实时预览生效，
+          此处仅补磁盘写入（``_persist_appearance_only``），满足「点 ✕ 也保存
+          外观设置」；
+        - 非外观项（通用页开关、性能档位）从未实时生效，只能经「保存」按钮
+          提交，关闭时静默丢弃、不落盘；
+        - 未提交时清空暂存缓存，保证下次打开为原始状态。
         """
         if self._submitted:
             return
-        if self._staging_cache.is_dirty():
+        # 关闭前补发挂起的外观预览：外观项「点 ✕ 也保存」，运行态必须
+        # 与即将写入磁盘的暂存值一致（否则重启后与本次会话不符）。
+        self._flush_appearance_preview()
+        try:
+            dirty = set(self._staging_cache.dirty_keys())
+        except Exception:
+            dirty = set()
+        if dirty & self._AUTO_SAVE_APPEARANCE_KEYS:
+            try:
+                self._persist_appearance_only()
+            except Exception as exc:  # noqa: BLE001 - 落盘失败仅告警
+                warning(f"关闭时保存外观设置失败（重启后可能回退）：{exc}")
+        if dirty:
             self._staging_cache.discard()
             try:
                 self._appearance_page.refresh_from_staging()
+                self._general_page.refresh_from_staging()
             except Exception as exc:
-                debug(f"关闭钩子刷新外观页失败：{exc}")
+                debug(f"关闭钩子刷新页面失败：{exc}")
 
     def get_cache_debug_info(self) -> dict:
         """返回暂存缓存调试摘要（含最近提交耗时）。

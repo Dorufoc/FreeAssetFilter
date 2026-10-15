@@ -1637,6 +1637,22 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         if gen is not None and gen != self._settings_window_gen:
             return
         self._settings_window = None
+        # 窗口子树销毁会清空其 QSS 片段条目：``destroyed`` 在子控件销毁
+        # **之前**触发，因此推迟到下一事件循环拍再剪枝（此时子树已真正析构），
+        # 使注册表规模回到存活控件数（避免反复开关后表项堆积）。
+        QTimer.singleShot(0, self._prune_qss_registrations)
+
+    @staticmethod
+    def _prune_qss_registrations() -> None:
+        """清掉 QSS 注册表中已销毁控件的片段条目（失败不影响生命周期）。"""
+        try:
+            from freeassetfilter.ui.theme.app_stylesheet import (
+                prune_dead_registrations,
+            )
+
+            prune_dead_registrations()
+        except Exception as exc:  # noqa: BLE001 - 剪枝失败不影响窗口生命周期
+            debug(f"关闭后 QSS 注册表剪枝失败：{exc}")
 
     def _open_license_viewer(self) -> None:
         """打开开源许可证查看窗口（每次新建，关闭即销毁，不缓存窗口实例）。
@@ -2920,13 +2936,21 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
 
 def _apply_theme_palette(widget: QWidget) -> None:
-    """把当前主题色写入 *widget* 的调色板（全角色，而非仅 Window）。
+    """把当前主题色写入 *widget* 的调色板（全角色，而非仅 Window），并注册
+    同色 QSS 背景片段。
 
     应用主题只靠 QSS 实现、未设应用级调色板；本函数用于纯色背景顶层窗口
     的根容器。只覆盖 ``Window`` 角色时，未被打上 QSS 的后代（QScrollArea
     viewport、尚未注册的 QLabel 等）仍会回落到系统调色板——系统深色下
     浅色主题就会闪现深底白字。补齐 Base/Text/WindowText 等角色后，
     「样式下发前的空窗帧」也能呈现当前主题色。
+
+    注意（调色板不抗 QSS 重刷）：任何 ``setStyleSheet`` 下发都会把控件调色板
+    还原为「上次应用样式时」的值——仅靠 ``setPalette`` 的窗口背景在下发后
+    仍停留在旧主题（实测：设置窗口切到浅色后根容器仍是深色 G1，卡片等浅色
+    QSS 全部画在深底上；许可证窗口同理）。因此这里同时注册
+    ``background-color`` 片段，由下发到控件自身的样式片段主导稳态绘制；
+    调色板仅兜底首帧前的空窗帧。
 
     Args:
         widget: 目标根容器（通常为窗口的 central widget）。
@@ -2942,6 +2966,9 @@ def _apply_theme_palette(widget: QWidget) -> None:
     palette.setColor(QPalette.Text, text)
     palette.setColor(QPalette.ButtonText, text)
     widget.setPalette(palette)
+    # 稳态背景由 QSS 片段主导（重刷安全，见 docstring）；窗口销毁后
+    # 片段随 weakref 注册项自动回收。
+    register_widget_qss(widget, f"background-color: {tm.qss_color(surface)};")
 
 
 class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
@@ -3060,11 +3087,11 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         """窗口显示/重新显示时刷新全量主题样式"""
         super().showEvent(event)
         self._sync_theme()
-        # 同步下发样式表：register_widget_qss 的合并重建排在下一事件循环
-        # tick，若不在首帧前落地，本窗口首帧会以"不含本窗口片段"的旧样式表
-        # 绘制（浅色主题下闪现系统深色底/白字），下一 tick 又触发一次全树
-        # 重刷（可见卡顿）。此处同步重建后窗体重排完成于可见之前，且原定时
-        # tick 因已非脏而空转（不重复下发）。
+        # 样式下发兜底：widget 模式下每次 ``register_widget_qss`` 已把片段
+        # 直接下发到控件自身，本窗口首帧天然带自己的样式（历史"首帧无片段
+        # 回退到不含本窗片段的旧全表"缺陷不再存在）；此处仅补发 teardown
+        # 窗口等未能即时下发的积压项，以及进程生命周期内首次调用的全量
+        # 重下发（等价旧实现启动时那次应用级统一下发，让 Qt 重算布局缓存）。
         apply_app_stylesheet()
 
     def _sync_theme(self) -> None:
