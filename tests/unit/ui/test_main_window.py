@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+from PySide6.QtCore import QEasingCurve, QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QCloseEvent, QColor, QMouseEvent, QPixmap, QShowEvent
 from PySide6.QtWidgets import QApplication, QWidget
 
@@ -1389,23 +1389,63 @@ class TestContentThemeTransition:
             window.deleteLater()
             qapp.processEvents()
 
-    def test_layout_transition_fades_without_reveal_center(
+    def test_layout_transition_uses_dissolve(
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """布局切换过渡为平滑渐变：遮罩无扩散圆心（不依赖主题按钮几何）。"""
+        """布局切换过渡为快照溶解：250ms、Linear、无扩散圆心、不依赖主题按钮。"""
         window = self._make_window(monkeypatch)
         try:
-            # 主题按钮缺失也不影响：布局过渡恒不传圆心（origin=None 淡出）
+            # 主题按钮缺失也不影响：溶解模式恒不传圆心
             monkeypatch.setattr(window, "_theme_btn", None)
             window.begin_layout_transition()
             overlay = window._content_theme_overlay
             assert overlay is not None
             assert overlay.parent() is window._content
             assert overlay._reveal_center is None, "布局过渡不得走径向揭示"
-            assert overlay._duration_ms == overlay.DEFAULT_DURATION_MS
+            assert overlay._duration_ms == overlay.DISSOLVE_DURATION_MS == 250
+            assert overlay._easing.type() == QEasingCurve.Linear
             assert overlay.isVisibleTo(window._content)
             overlay.finish_now()
             assert not overlay.isVisibleTo(window._content)
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_layout_transition_gate_disabled_skips_overlay(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """layout_switch 动画关闭：跳过过渡（不建遮罩、不抛异常）。"""
+        window = self._make_window(monkeypatch)
+        calls: list[tuple] = []
+
+        def fake_gate(*args, **kwargs):
+            calls.append((args, kwargs))
+            return False
+
+        monkeypatch.setattr(
+            "freeassetfilter.ui.main_window.is_animation_enabled", fake_gate
+        )
+        try:
+            window.begin_layout_transition()
+            assert window._content_theme_overlay is None
+            assert calls and calls[0][0][0] == "layout_switch"
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_content_transition_unknown_mode_falls_back_to_fade(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """未知过渡模式：回退为透明度淡出（无圆心、InOutCubic 缓动）。"""
+        window = self._make_window(monkeypatch)
+        try:
+            window._start_content_theme_transition("bogus")
+            overlay = window._content_theme_overlay
+            assert overlay is not None
+            assert overlay._reveal_center is None
+            assert overlay._duration_ms == overlay.DEFAULT_DURATION_MS
+            assert overlay._easing.type() == QEasingCurve.InOutCubic
+            overlay.finish_now()
         finally:
             window.deleteLater()
             qapp.processEvents()

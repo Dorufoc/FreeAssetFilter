@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSize, Qt
+from PySide6.QtCore import QEasingCurve, QEvent, QPoint, QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import (
     QColor, QEnterEvent, QImage, QMouseEvent, QMoveEvent, QPainter,
     QPaintEvent, QPixmap, QRegion, QResizeEvent,
@@ -1328,6 +1328,20 @@ class TestContentTransitionOverlay:
         QApplication.sendEvent(parent, resize_event)
         assert overlay._finished is True
         assert overlay._active is False
+        safe_teardown(overlay)
+        safe_teardown(parent)
+
+    def test_easing_curve_stored(self, qapp: QApplication) -> None:
+        """easing 参数：构造后存归一化曲线，start() 应用 Linear。"""
+        parent = QWidget()
+        parent.resize(120, 80)
+        overlay = ContentTransitionOverlay(
+            parent,
+            QPixmap(120, 80),
+            easing=QEasingCurve.Linear,
+        )
+        overlay.start()
+        assert overlay._easing.type() == QEasingCurve.Linear
         safe_teardown(overlay)
         safe_teardown(parent)
 

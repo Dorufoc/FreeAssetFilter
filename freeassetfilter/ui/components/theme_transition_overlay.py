@@ -28,7 +28,12 @@ from PySide6.QtCore import (
     QTimer,
     QVariantAnimation,
 )
-from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPixmap
+from PySide6.QtGui import (
+    QColor,
+    QPainter,
+    QPaintEvent,
+    QPixmap,
+)
 
 
 def _fit_snapshot_to_window(snapshot: QPixmap, window: QWidget) -> QPixmap:
@@ -111,7 +116,7 @@ def _max_corner_distance(rect: QRect, center: QPoint) -> float:
 class _SnapshotTransitionOverlay(QWidget):
     """主题过渡遮罩基类：旧外观快照 + 两种揭示动画。
 
-    两种模式由构造参数 ``origin`` 决定：
+    模式由构造参数决定（优先级：``origin`` > 淡出）：
 
     - **径向揭示（origin 给定）**：以 ``origin`` 为圆心、半径从 0 扩张到
       覆盖整幅的最大距离；整幅以旧外观快照打底，圆内透明露出已切换好的
@@ -125,13 +130,13 @@ class _SnapshotTransitionOverlay(QWidget):
     公共约定：
 
     - 遮罩必须带透明通道（``WA_TranslucentBackground``）：揭示圆洞（透明）
-      与淡出路径依赖遮罩的透明区透出下方新主题；快照本体可含不透明像素
-      （整窗抓拍），但其透明像素必须有 alpha 输出，不能以实体底色覆盖；
+      与淡出路径依赖遮罩的透明区透出下方新主题；快照本体可含不透明
+      像素（整窗抓拍），但其透明像素必须有 alpha 输出，不能以实体底色覆盖；
     - ``WA_TransparentForMouseEvents`` 鼠标穿透，过渡不阻塞界面交互；
     - 快照由调用方传入并按 ``devicePixelRatio`` 生成物理分辨率
       （高分屏不失真），本类绘制期按逻辑坐标自适配；
     - **快照位图由遮罩接管**：径向揭示会在其上挖洞（``DestinationOut``），
-      调用方构造后不得复用该位图；
+      调用方构造后不得复用该位图（淡出模式只读，不修改）；
     - 过渡中父级尺寸变化（缩放窗口）时立即收尾，避免快照与控件错位；
     - ``finish_now`` 幂等，快速连续切换时用于去重清理。
     """
@@ -144,6 +149,7 @@ class _SnapshotTransitionOverlay(QWidget):
         snapshot: QPixmap,
         duration_ms: int,
         origin: Optional[QPoint] = None,
+        easing: QEasingCurve = QEasingCurve.InOutCubic,
     ) -> None:
         """初始化遮罩。
 
@@ -152,11 +158,16 @@ class _SnapshotTransitionOverlay(QWidget):
             snapshot: 过渡前抓取的旧外观快照。
             duration_ms: 动画时长（毫秒，内部钳到下限 50）。
             origin: 径向揭示圆心（父级逻辑坐标）；None 走透明度淡出。
+            easing: 缓动曲线；默认 InOutCubic（主题链语义不变）；布局切换
+                溶解链路显式传 QEasingCurve.Linear。
         """
         super().__init__(parent)
         self._snapshot = snapshot
         self._duration_ms = max(50, int(duration_ms))
         self._opacity: float = 1.0
+        # 缓动曲线：默认 InOutCubic（主题链）；布局切换溶解链路显式传 Linear。
+        # 归一为 QEasingCurve 实例（调用方传的是 Type 枚举，无 .type() 访问器）。
+        self._easing: QEasingCurve = QEasingCurve(easing)
         self._reveal_center: Optional[QPoint] = QPoint(origin) if origin is not None else None
         self._revealed_radius: float = 0.0
         self._max_radius: float = 0.0
@@ -212,11 +223,11 @@ class _SnapshotTransitionOverlay(QWidget):
                 # 退化几何（空尺寸）：无扩散可言，直接收尾。
                 self._on_finished()
                 return
-            self._anim.setEasingCurve(QEasingCurve.InOutCubic)
+            self._anim.setEasingCurve(self._easing)
             self._anim.setStartValue(0.0)
             self._anim.setEndValue(self._max_radius)
         else:
-            self._anim.setEasingCurve(QEasingCurve.InOutCubic)
+            self._anim.setEasingCurve(self._easing)
             self._anim.setStartValue(1.0)
             self._anim.setEndValue(0.0)
         self._active = True
@@ -466,7 +477,7 @@ class ThemeTransitionOverlay(_SnapshotTransitionOverlay):
 
 
 class ContentTransitionOverlay(_SnapshotTransitionOverlay):
-    """主窗口主题过渡遮罩：整窗旧外观快照打底、径向揭示 / 淡出。
+    """主窗口内容层过渡遮罩：整窗旧外观快照打底、径向揭示 / 淡出。
 
     与 :class:`ThemeTransitionOverlay`（``QScreen.grabWindow`` 截屏）的分工：
 
@@ -477,13 +488,20 @@ class ContentTransitionOverlay(_SnapshotTransitionOverlay):
     - 默认径向揭示：``origin`` 通常为主题切换按钮中心，旧外观整幅打底、
       自按钮向外挖出扩张圆洞露出新主题，每像素只显示一份旧/新外观，
       消除淡出模式的文字双重曝光叠印；
-    - ``origin`` 缺省时退化为透明度淡出（历史行为，供异常路径兜底）。
+    - ``origin`` 缺省时退化为透明度淡出（历史行为，供异常路径兜底）；
+    - dissolve（布局切换链路，见 ``MainWindow.begin_layout_transition``）：
+      :attr:`DISSOLVE_DURATION_MS`（250ms）+ ``QEasingCurve.Linear``，整窗
+      旧外观快照 1→0 透明度线性淡出、露出已切好的实时新布局（复用淡出
+      路径）。
 
     快照为整窗外观（含背景层），揭示期间背景层自身的交叉淡入被遮罩盖住、
     随揭示同步露出；未显示窗口（测试/最小化）不创建遮罩。
     """
 
     DEFAULT_DURATION_MS: int = 450  # 对齐 ui/mica/config.XFADE_DURATION_MS
+    #: 布局切换「快照溶解」时长（毫秒）：线性缓动，落在应用既有
+    #: 120–450ms 动画谱系（由 ``MainWindow.begin_layout_transition`` 传入）。
+    DISSOLVE_DURATION_MS: int = 250
 
     def __init__(
         self,
@@ -491,8 +509,9 @@ class ContentTransitionOverlay(_SnapshotTransitionOverlay):
         snapshot: QPixmap,
         duration_ms: int = DEFAULT_DURATION_MS,
         origin: Optional[QPoint] = None,
+        easing: QEasingCurve = QEasingCurve.InOutCubic,
     ) -> None:
-        super().__init__(parent, snapshot, duration_ms, origin)
+        super().__init__(parent, snapshot, duration_ms, origin, easing)
 
 
 class BackgroundTransitionOverlay(_SnapshotTransitionOverlay):
