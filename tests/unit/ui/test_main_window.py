@@ -147,7 +147,7 @@ class TestMainWindowStructure:
         qapp.processEvents()
 
     def test_title_bar_buttons_exist(self, qapp: QApplication) -> None:
-        """标题栏按钮（最小化/最大化/关闭/主题/设置/重置布局）均存在。"""
+        """标题栏按钮（最小化/最大化/关闭/主题/设置/重置布局/布局切换）均存在。"""
         window = MainWindow()
         for attr in (
             "_minimize_btn",
@@ -156,6 +156,7 @@ class TestMainWindowStructure:
             "_theme_btn",
             "_settings_btn",
             "_reset_layout_btn",
+            "_layout_toggle_btn",
         ):
             assert getattr(window, attr) is not None, f"{attr} 缺失"
         window.deleteLater()
@@ -174,6 +175,7 @@ class TestMainWindowStructure:
             "_theme_btn",
             "_settings_btn",
             "_reset_layout_btn",
+            "_layout_toggle_btn",
         ):
             assert getattr(window, attr) is not None
         window.deleteLater()
@@ -296,6 +298,30 @@ class TestMainWindowPanelBuild:
         # 非法值：拒绝且不改变状态
         assert window.set_layout_mode("bogus") is False
         assert window._layout_mode == "workspace"
+        window.deleteLater()
+        qapp.processEvents()
+
+    def test_layout_toggle_button_switches_mode_and_icon(
+        self, qapp: QApplication
+    ) -> None:
+        """布局切换按钮：点击在 classic / workspace 间切换并同步图标与提示。"""
+        window = MainWindow()
+        assert window.get_layout_mode() == "workspace"
+        assert window._layout_toggle_btn.toolTip() == "切换为经典三栏布局"
+
+        window._layout_toggle_btn.click()
+        assert window.get_layout_mode() == "classic"
+        assert window._layout_toggle_btn.toolTip() == "切换为预览优先布局"
+        assert str(window._layout_toggle_btn._svg_icon_path).endswith(
+            "layout_workspace.svg"
+        )
+
+        window._layout_toggle_btn.click()
+        assert window.get_layout_mode() == "workspace"
+        assert window._layout_toggle_btn.toolTip() == "切换为经典三栏布局"
+        assert str(window._layout_toggle_btn._svg_icon_path).endswith(
+            "layout_classic.svg"
+        )
         window.deleteLater()
         qapp.processEvents()
 

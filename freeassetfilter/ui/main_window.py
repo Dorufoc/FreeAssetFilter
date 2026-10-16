@@ -741,6 +741,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 自绘标题栏 QFrame：启动加载覆盖层据它做 stackUnder，使遮罩不透明底
         # 铺到标题栏区域、而标题栏文字与按钮仍留在遮罩之上（见 _mount_startup_overlay）
         self._title_bar_header = None
+        self._layout_toggle_btn = None
         self._reset_layout_btn = None
         self._settings_btn = None
         self._theme_btn = None
@@ -1516,6 +1517,16 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         header_layout.addWidget(self._title_label)
         header_layout.addStretch()
 
+        # 布局切换按钮（SVG图标）：在「预览优先 / 经典三栏」两种布局间切换
+        self._layout_toggle_btn = StyledButton(
+            "", variant="ghost", size="sm", icon=""
+        )
+        self._layout_toggle_btn.setFixedSize(32, 32)
+        register_widget_qss(self._layout_toggle_btn,(self._title_bar_button_style()))
+        self._layout_toggle_btn.clicked.connect(self._toggle_layout_mode)
+        header_layout.addWidget(self._layout_toggle_btn)
+        self._update_layout_toggle_button()
+
         # 重置布局按钮（SVG图标）：把各区域位置大小恢复到默认值
         reset_icon_path = icons_dir() / "refresh.svg"
         self._reset_layout_btn = StyledButton(
@@ -1632,6 +1643,59 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._main_layout.apply_default_ratios(
             animated=is_animation_enabled("layout_reset", default=True)
         )
+
+    def _toggle_layout_mode(self) -> None:
+        """布局切换按钮：在「预览优先」与「经典三栏」两种布局间即时切换。
+
+        与设置页「通用 → 界面布局」同一链路：先预抓拍旧外观快照（250ms
+        溶解过渡，受 layout_switch 动画门控），再 ``set_layout_mode``
+        即时重组布局，最后延迟写盘 ``general.layout_mode``，避免同步磁盘
+        IO 推迟过渡动画启动。按钮图标与提示由 ``set_layout_mode`` 内的
+        ``_update_layout_toggle_button`` 统一刷新，本方法不重复维护。
+        """
+        target = "classic" if self._layout_mode == "workspace" else "workspace"
+        self.begin_layout_transition()
+        if not self.set_layout_mode(target):
+            return
+        self._persist_layout_mode()
+
+    def _update_layout_toggle_button(self) -> None:
+        """按当前布局模式刷新切换按钮的图标与提示（图标=点击后的目标模式）。"""
+        btn = self._layout_toggle_btn
+        if btn is None:
+            return
+        if self._layout_mode == "workspace":
+            # 当前预览优先 → 点击切为经典三栏，显示经典布局图标
+            icon_path = icons_dir() / "layout_classic.svg"
+            btn.setToolTip("切换为经典三栏布局")
+        else:
+            icon_path = icons_dir() / "layout_workspace.svg"
+            btn.setToolTip("切换为预览优先布局")
+        if icon_path.exists():
+            btn.set_svg_icon(str(icon_path))
+
+    def _persist_layout_mode(self) -> None:
+        """延迟写盘布局偏好到 SettingsManagerV2（general.layout_mode）。
+
+        延迟到下一事件循环拍执行，避免同步磁盘 IO 推迟过渡动画启动；
+        回调内读取最新 ``_layout_mode``，快速连点只落最终值。失败仅告警，
+        不阻塞布局切换。
+        """
+
+        def _deferred_save() -> None:
+            try:
+                app = QApplication.instance()
+                v2 = getattr(app, "settings_manager", None)
+                if v2 is None:
+                    from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+                    v2 = SettingsManagerV2()
+                    v2.load()
+                v2.set("general.layout_mode", self._layout_mode)
+                v2.save()
+            except Exception as exc:  # noqa: BLE001 - 延迟写盘失败仅告警
+                warning(f"布局设置保存失败（重启后可能回退）：{exc}")
+
+        QTimer.singleShot(0, _deferred_save)
 
     def _open_settings_window(self) -> None:
         """打开设置窗口（每次新建，关闭即销毁，不缓存窗口实例）。
@@ -2348,6 +2412,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             if self._title_label is not None:
                 register_widget_qss(self._title_label,(f'font-size: 14px; font-weight: 600; color: {tm.text.name()};'))
             # 刷新所有标题栏按钮的 styleSheet（tm 颜色值已变化）
+            register_widget_qss(self._layout_toggle_btn,(self._title_bar_button_style()))
             register_widget_qss(self._reset_layout_btn,(self._title_bar_button_style()))
             register_widget_qss(self._settings_btn,(self._title_bar_button_style()))
             register_widget_qss(self._theme_btn,(self._title_bar_button_style()))
@@ -3137,6 +3202,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         if self._main_layout is None or self._splitter_container is None:
             # 轻量启动外壳阶段：仅记录偏好，构建时应用
             self._layout_mode = mode
+            self._update_layout_toggle_button()
             return True
         if mode == self._layout_mode:
             return True
@@ -3180,6 +3246,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._main_layout = new_layout
         self._zones = new_layout.zones
         self._layout_mode = mode
+        # 顶栏布局切换按钮随模式刷新（设置页切换与按钮点击同链路）
+        self._update_layout_toggle_button()
         # 统一操作按钮承载方式随布局切换（经典=底部栏 / New=预览器顶栏）
         if self._previewer is not None:
             self._previewer.set_actions_mode(mode == "workspace")
