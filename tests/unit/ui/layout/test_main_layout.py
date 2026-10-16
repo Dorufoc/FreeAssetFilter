@@ -3,7 +3,8 @@
 
 覆盖：
 - 两种模式的区域/分割条树结构；
-- workspace 默认比例：左 1/3、预览画布 16:9（含预览器顶栏补偿）、底行 50:50；
+- workspace 默认比例：左栏 = ``default_left_width``（与 classic 逐像素一致）、
+  预览画布 16:9（含预览器顶栏补偿）、底行 50:50；
 - 半高上限：底行（workspace）/ 信息区（classic）≤ 右区可用高度一半；
 - 16:9 降级：窗口过矮时半高上限优先，底行不低于下限（可行时）；
 - 用户拖拽右竖条后停止自动 16:9；主横条拖拽时未拖拽右竖条则同步 16:9；
@@ -41,6 +42,7 @@ from freeassetfilter.ui.layout.main_layout import (  # noqa: E402
     WORKSPACE_MODE,
     WORKSPACE_POOL_RATIO,
     MainLayout,
+    default_left_width,
 )
 from tests.support.qt_helpers import safe_teardown  # noqa: E402
 
@@ -186,10 +188,10 @@ class TestMainLayoutStructure:
 
 
 class TestWorkspaceRatios:
-    """workspace 默认比例：左 1/3 / 预览画布 16:9 / 底行 50:50 / 半高上限。"""
+    """workspace 默认比例：左栏 = default_left_width / 预览画布 16:9 / 底行 50:50 / 半高上限。"""
 
     def test_default_left_ratio_and_16_9(self, qapp: QApplication) -> None:
-        """1200x800：左栏 1/3；预览画布约 16:9（含顶栏补偿）；底行占余下高度。"""
+        """1200x800：左栏统一口径；预览画布约 16:9（含顶栏补偿）；底行占余下高度。"""
         layout = _show_layout(qapp, WORKSPACE_MODE, (1200, 800))
         try:
             main = layout.splitters["main"]
@@ -197,10 +199,10 @@ class TestWorkspaceRatios:
             bottom = layout.splitters["bottom"]
 
             avail_w = layout.width() - HANDLE_WIDTH
-            expect_left = int(round(avail_w * (1.0 / 3.0)))
+            expect_left = default_left_width(layout.width())
             left_w, right_w = main.sizes()
-            assert abs(left_w - expect_left) <= 3
-            assert abs(right_w - (avail_w - expect_left)) <= 3
+            assert abs(left_w - expect_left) <= 1
+            assert abs(right_w - (avail_w - expect_left)) <= 1
 
             v_avail = _right_available(layout)
             # 画布 16:9：预览区高 = 右列宽 × 9/16 + 预览器顶栏补偿
@@ -221,6 +223,24 @@ class TestWorkspaceRatios:
             assert abs(pool_w / (pool_w + info_w) - WORKSPACE_POOL_RATIO) <= 0.03
         finally:
             safe_teardown(layout)
+
+    def test_left_width_matches_classic(self, qapp: QApplication) -> None:
+        """统一口径：同一尺寸下 workspace 首栏与 classic 首栏逐像素一致。
+
+        历史缺陷：workspace 主横条只 1 条分隔条，旧公式 ``round((宽-10)/3)``
+        比 classic 的 ``(宽-20)//3`` 恒宽 3~4px，切换布局时选择器宽度可见
+        跳变；修复后两布局共用 ``default_left_width``。
+        """
+        ws = _show_layout(qapp, WORKSPACE_MODE, (1200, 800))
+        cl = _show_layout(qapp, CLASSIC_MODE, (1200, 800))
+        try:
+            assert ws.width() == cl.width()
+            ws_left = ws.splitters["main"].sizes()[0]
+            cl_left = cl.splitters["main"].sizes()[0]
+            assert ws_left == cl_left == default_left_width(ws.width())
+        finally:
+            safe_teardown(ws)
+            safe_teardown(cl)
 
     def test_bottom_ratio_with_min_width_child(self, qapp: QApplication) -> None:
         """底行一侧带最小宽度（真实储存池约 324px）时仍按 50:50 分配。"""

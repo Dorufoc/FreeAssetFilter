@@ -14,7 +14,8 @@
 
 比例规则（workspace）：
 
-- 主横条默认左 : 右 = 1 : 2（文件选择器占 1/3 宽度，与经典布局等分口径一致）；
+- 主横条默认左 : 右 = 1 : 2（文件选择器宽 = ``default_left_width``，与经典
+  布局首栏逐像素一致——两布局切换时选择器宽度不再有 3~4px 差）；
 - 右竖条默认让「预览画布（显示区）」呈 16:9（见 ``PREVIEW_ASPECT`` 与
   ``PREVIEW_CHROME_PX``）：预览区高 = 右列宽 × 9/16 + 预览器顶栏高度，
   使 16:9 内容（如 4096×2304 图片按窗口自适应）正好铺满显示区左右与上下；
@@ -60,8 +61,6 @@ DEFAULT_MODE = WORKSPACE_MODE
 HANDLE_WIDTH = 10  # 分隔条宽度（与既有三栏一致）
 
 # ── workspace 比例常量（集中于此，便于调参） ─────────────────────────
-#: 主横条左栏（文件选择器）宽度占比：1/3（与经典布局三栏等分口径一致）
-WORKSPACE_LEFT_RATIO = 1.0 / 3.0
 #: 底行横条中「文件储存」占比：50:50，使储存与信息各占界面约 1/3 宽度
 WORKSPACE_POOL_RATIO = 0.5
 #: 预览显示区（画布）宽高比 16:9。预览区高 = 右列宽 × 本比例 + PREVIEW_CHROME_PX，
@@ -83,6 +82,27 @@ BOTTOM_MIN_PX = 200
 CLASSIC_ACTION_SLOT_PX = 48
 #: 用户重置布局时的渐变时长（毫秒）
 RESET_ANIM_DURATION_MS = 280
+
+
+def default_left_width(width: int) -> int:
+    """默认左栏（文件选择器）宽度：两布局统一口径。
+
+    可用宽 = 容器宽 − 2 条分隔条，取三分之一（向下取整）。
+
+    历史缺陷：workspace 主横条只有 1 条分隔条，旧公式
+    ``round((宽 − 10) / 3)`` 比 classic 的 ``(宽 − 20) // 3`` 恒定宽
+    3~4px——同为「左 1/3」却切换布局时肉眼可见不一致。本函数把两布局
+    统一到同一口径（classic 数值保持历史不变；workspace 左栏收窄
+    3~4px、右区相应加宽），使选择器宽度逐像素一致。
+
+    Args:
+        width: 布局容器宽（逻辑像素）。
+
+    Returns:
+        int: 左栏默认宽度；退化尺寸返回 0。
+    """
+    return max(0, width - 2 * HANDLE_WIDTH) // 3
+
 
 #: 区域名 → zone frame objectName
 _ZONE_OBJECT_NAMES = {
@@ -305,7 +325,7 @@ class MainLayout(QWidget):
         right = self.splitters["right"]
         if self.mode == WORKSPACE_MODE:
             avail_w = max(0, self.width() - HANDLE_WIDTH)
-            left_w = int(round(avail_w * WORKSPACE_LEFT_RATIO))
+            left_w = default_left_width(self.width())
             right_w = max(0, avail_w - left_w)
             v_avail = max(0, (right.height() or self.height()) - HANDLE_WIDTH)
             preview_h = self._preview_height_for(right_w, v_avail)
@@ -317,7 +337,7 @@ class MainLayout(QWidget):
                 "bottom": [pool_w, max(0, bottom_avail - pool_w)],
             }
         avail_w = max(0, self.width() - 2 * HANDLE_WIDTH)
-        third = avail_w // 3
+        third = default_left_width(self.width())
         right_h = right.height()
         if right_h <= 0:
             right_h = max(0, self.height() - CLASSIC_ACTION_SLOT_PX - 2 * HANDLE_WIDTH)
@@ -486,10 +506,11 @@ class MainLayout(QWidget):
             right = self.splitters["right"]
             bottom = self.splitters["bottom"]
 
-            # 1) 主横条：左 1/3（首次/强制时应用；窗口缩放不打扰用户分栏）
-            #    用 round 而非截断，避免 1/3 浮点误差丢 1px（1170×1/3=389.99…）
+            # 1) 主横条：左 1/3（首次/强制时应用；窗口缩放不打扰用户分栏）。
+            #    宽度口径与 classic 复用 default_left_width（两布局选择器
+            #    逐像素一致；旧 round 公式比经典宽 3~4px，切换可见错位）。
             avail_w = max(0, width - HANDLE_WIDTH)
-            left_w = int(round(avail_w * WORKSPACE_LEFT_RATIO))
+            left_w = default_left_width(width)
             right_w = max(0, avail_w - left_w)
             if force:
                 main.setSizes([left_w, right_w])
@@ -563,7 +584,7 @@ class MainLayout(QWidget):
             right = self.splitters["right"]
             if force:
                 avail_w = max(0, width - 2 * HANDLE_WIDTH)
-                third = avail_w // 3
+                third = default_left_width(width)
                 main.setSizes([third, third, avail_w - 2 * third])
                 # 右分割区高度：优先取实际几何；几何未就绪时按
                 # 「容器高 - 底部操作栏槽位 - 槽位间距 - 分隔条」估算
