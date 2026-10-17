@@ -81,7 +81,7 @@ def docs_dir() -> Path:
     """Returns the absolute path to the application docs directory.
 
     Houses documentation assets such as the third-party license notices
-    (``THIRD_PARTY_NOTICES.md``) shown in the about / license viewer.
+    (``THIRD_PARTY_NOTICES.md``) embedded in the settings about page.
 
     Returns:
         Path: ``freeassetfilter/docs/``.

@@ -246,6 +246,31 @@ class TestFilePoolLayout:
         _assert_layout_geometry(layout, qapp)
         layout.deleteLater()
 
+    def test_minimum_row_height_fits_default_card_and_bar(
+        self, qapp: QApplication
+    ) -> None:
+        """最小高 = 默认网格缩放一行卡片 + 上下边距 + 布局间距 + 底栏。"""
+        from components.file_card_delegate import CARD_CONFIG, FileCardDelegate
+
+        layout = FilePoolLayout()
+        _, card_h = FileCardDelegate._calc_card_size(
+            CARD_CONFIG, layout._card_scale_min
+        )
+        margins = layout._card_layout.contentsMargins()
+        root = layout.layout()
+        spacing = int(root.spacing()) if root is not None else 10
+        expect = (
+            margins.top()
+            + int(card_h)
+            + margins.bottom()
+            + max(0, spacing)
+            + layout._bottom_bar.maximumHeight()
+        )
+        assert layout.minimum_row_height() == expect
+        # 控件自身最小高度即该值（高度连一行卡片都放不下时界面破碎）
+        assert layout.minimumHeight() == expect
+        layout.deleteLater()
+
     def test_add_file_and_query(
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -578,24 +603,42 @@ class TestFilePoolLayout:
     def test_section_styles_fragment_keeps_sheet_parseable(
         self, qapp: QApplication
     ) -> None:
-        """回归：内容区「面板样式 + 拖放反馈」同片段注册后，组合样式表无畸形规则。
+        """回归：内容区「面板样式 + 拖放反馈」同片段注册后无畸形规则。
 
         历史缺陷：``content_style`` 直接拼接「裸声明 + QFrame[dragActive]
         规则」，``scope_qss`` 会把声明里 rgba(...) 的逗号当选择器分隔符切碎，
         生成畸形规则；Qt 解析器遇到畸形规则会丢弃整张样式表其后内容
         （症状：储存池内容区/底栏/空池提示整体失去边框与填充）。
+
+        下发模式无关断言：``build_combined``（作用域合并渲染，app 模式实际
+        下发内容 / widget 模式的诊断视图）无畸形文本；widget 模式下片段
+        已直接落在控件自身。
         """
+        from freeassetfilter.ui.theme.app_stylesheet import (
+            _REGISTRY,
+            stylesheet_mode,
+        )
+
         layout = FilePoolLayout()
         layout.set_section_styles(
             "rgba(255,255,255,0.05)", "rgba(136,136,136,0.5)"
         )
-        # 让合并重排的 singleShot 落地（应用级样式表统一下发的唯一入口）
+        # 让合并重排的 singleShot 落地（app 模式的统一下发入口）
         _pump_events(qapp)
-        sheet = qapp.styleSheet()
+        sheet = _REGISTRY.build_combined()
 
         content_sid = layout._content_area.property("fafQssId")
         bar_sid = layout._bottom_bar.property("fafQssId")
         assert content_sid and bar_sid
+
+        if stylesheet_mode() == "widget":
+            # 逐控件下发：片段原文落在控件自身，且内容/底栏互不串扰。
+            own = layout._content_area.styleSheet()
+            assert "background-color: rgba(255,255,255,0.05);" in own
+            assert 'dragActive="true"' in own
+            assert 'fafQssId' not in own
+            layout.deleteLater()
+            return
 
         def _fragment(sid: str) -> str:
             """截取组合样式表中某控件片段（按 faf 注释标记分段）。"""
@@ -1102,6 +1145,16 @@ class TestFileSelectorLayout:
         """默认构造 + resize 后 geometry 非空。"""
         layout = FileSelectorLayout()
         _assert_layout_geometry(layout, qapp)
+        layout.deleteLater()
+
+    def test_minimum_width_is_top_bottom_bar_natural_max(
+        self, qapp: QApplication
+    ) -> None:
+        """最小宽 = 顶栏/底栏完整显示图标与文字所需的较大者（不再强制 3 列卡片）。"""
+        layout = FileSelectorLayout()
+        top = layout._top_bar.minimumSizeHint().width()
+        bottom = layout._bottom_bar.minimumSizeHint().width()
+        assert layout.minimumWidth() == max(0, top, bottom)
         layout.deleteLater()
 
     @staticmethod
@@ -1840,7 +1893,13 @@ class TestRightClickEmptyAreaGoBack:
         """需要滚动时：即使落在空位脚印也不触发（最后一排尾部空位同样）。"""
         layout = self._prepare(qapp, tmp_path, count=59, enabled=True)
         try:
-            vbar = layout._file_list.verticalScrollBar()
+            lst = layout._file_list
+            # Qt 不会为「从未显示」的 QListView 主动重算 contentsSize；
+            # 旧实现的应用级统一下发恰好提供了那次样式重刷。此处显式触发
+            # 一次样式重刷，保证前置条件（需要滚动）与下发模式无关。
+            lst.setStyleSheet(lst.styleSheet())
+            qapp.processEvents()
+            vbar = lst.verticalScrollBar()
             assert vbar.maximum() > 0, "59 个条目应超出视口（需要滚动）"
             # Batched 惰性布局：滚动到底后多轮稳定可视矩形
             for _ in range(3):
@@ -2017,8 +2076,8 @@ class TestSettingsLayout:
         layout = SettingsLayout()
         scrolls = layout._stack.findChildren(QScrollArea)
         floating = [s for s in scrolls if isinstance(s, _FloatingScrollArea)]
-        # 通用页 + 外观页 + 关于页各有一处浮动滚动区（三页统一）
-        assert len(floating) == 3
+        # 通用页 + 外观页各有一处浮动滚动区（关于页为居中信息页，无长内容不外包）
+        assert len(floating) == 2
 
         # 列表顺序：0 = 通用，1 = 外观，2 = 关于 → 外观卡在索引 1
         area = layout._stack.widget(1).findChild(_FloatingScrollArea)
@@ -4594,13 +4653,25 @@ class TestGeneralSettingsPage:
         )
 
         class _FakeMainWindow:
-            """记录布局切换调用的假主窗口。"""
+            """记录布局切换与过渡方式选择的假主窗口。"""
 
             def __init__(self) -> None:
                 self.layout_calls: list[str] = []
+                self.transitions: list[str] = []
+                self.current_mode = "workspace"
+
+            def get_layout_mode(self) -> str:
+                return self.current_mode
+
+            def begin_theme_transition(self) -> None:
+                self.transitions.append("theme")
+
+            def begin_layout_transition(self) -> None:
+                self.transitions.append("layout")
 
             def set_layout_mode(self, mode: str) -> bool:
                 self.layout_calls.append(mode)
+                self.current_mode = mode
                 return True
 
         fake_mw = _FakeMainWindow()
@@ -4620,10 +4691,68 @@ class TestGeneralSettingsPage:
 
             assert layout._submit_settings() is True
             assert fake_mw.layout_calls == ["classic"]
+            # 布局真正变化：主窗口过渡走平滑渐变（不扩散）
+            assert fake_mw.transitions == ["layout"]
 
             saved = SettingsManagerV2(tmp_file)
             saved.load()
             assert saved.get("general.layout_mode") == "classic"
+        finally:
+            try:
+                tm.set_theme_mode(prev_mode)
+            except Exception:
+                pass  # teardown 还原主题失败：忽略，避免影响断言
+            safe_teardown(layout)
+
+    def test_submit_keeps_theme_transition_when_layout_unchanged(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """提交：布局未变化时维持主题径向链路（不更换过渡方式）。"""
+        import freeassetfilter.ui.layout.settings_layout as sl_mod
+        from freeassetfilter.core.managers.settings_manager_v2 import (
+            SettingsManagerV2,
+        )
+
+        tmp_file = str(tmp_path / "settings_v2.json")
+        monkeypatch.setattr(
+            sl_mod, "SettingsManagerV2", lambda *a, **k: SettingsManagerV2(tmp_file)
+        )
+        monkeypatch.setattr(
+            sl_mod.SettingsLayout,
+            "_apply_staged_perf_profile",
+            lambda self, profile: None,
+        )
+
+        class _FakeMainWindow:
+            """布局模式与暂存目标一致的假主窗口（记录过渡方式选择）。"""
+
+            def __init__(self) -> None:
+                self.transitions: list[str] = []
+
+            def get_layout_mode(self) -> str:
+                return "workspace"
+
+            def begin_theme_transition(self) -> None:
+                self.transitions.append("theme")
+
+            def begin_layout_transition(self) -> None:
+                self.transitions.append("layout")
+
+            def set_layout_mode(self, mode: str) -> bool:
+                return True
+
+        fake_mw = _FakeMainWindow()
+        monkeypatch.setattr(
+            sl_mod.AppearanceSettingsPage, "find_main_window", lambda self: fake_mw
+        )
+
+        from theme import tm
+
+        prev_mode = tm.get_theme_mode()
+        layout = SettingsLayout()
+        try:
+            assert layout._submit_settings() is True
+            assert fake_mw.transitions == ["theme"]
         finally:
             try:
                 tm.set_theme_mode(prev_mode)

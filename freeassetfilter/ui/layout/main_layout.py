@@ -14,19 +14,28 @@
 
 比例规则（workspace）：
 
-- 主横条默认左 : 右 = 1 : 2（文件选择器占 1/3 宽度，与经典布局等分口径一致）；
+- 主横条默认左 : 右 = 1 : 2（文件选择器宽 = ``default_left_width``，与经典
+  布局首栏逐像素一致——两布局切换时选择器宽度不再有 3~4px 差）；
 - 右竖条默认让「预览画布（显示区）」呈 16:9（见 ``PREVIEW_ASPECT`` 与
   ``PREVIEW_CHROME_PX``）：预览区高 = 右列宽 × 9/16 + 预览器顶栏高度，
   使 16:9 内容（如 4096×2304 图片按窗口自适应）正好铺满显示区左右与上下；
-  该高度受两条约束钳制：
+  该高度受三条约束钳制：
 
   * 底行 ≤ 右区可用高度一半（半高上限，预览始终至少占一半）；
-  * 底行 ≥ ``BOTTOM_MIN_PX``（底行可用性下限；与半高上限冲突时上限优先）。
+  * 预览 ≥ 预览器最小总高（``WORKSPACE_PREVIEW_MIN_CONTENT_H`` + 顶栏，
+    叶子实测值经 :meth:`MainLayout.set_leaf_minimums` 下发）；
+  * 底行 ≥ 底行最小高（叶子实测：max(储存池一行 + 底栏, 信息面板最小高)）。
 
-- 用户拖拽右竖条后，本会话不再自动维持 16:9（交给用户）；
+  三者在窗口过矮时冲突，此时下限优先（预览最小总高 / 底行最小高），
+  主窗口最小尺寸已保证正常窗口下不冲突（见 ``MainWindow._apply_window_minimums``）。
+
+- 用户拖拽右竖条后，本会话不再自动维持 16:9（交给用户）；竖向分隔条
+  拖动只改高度，不反向调整宽度；
 - 窗口缩放时（未拖拽）按当前右区宽度重算 16:9。
 
-classic 比例：主横条 1:1:1、右竖条各半、信息区 ≤ 半高（与历史行为一致）。
+classic 比例：主横条 1:1:1、右竖条各半、信息区 ≤ 半高（与历史行为一致）；
+信息面板最小尺寸（宽 = 修改时间行单行，高 = 文件名 + 路径 + 首行信息 +
+折叠入口行）由叶子自身声明；仅经典布局的储存池可拖拽折叠。
 
 布局切换（``MainWindow.set_layout_mode``）复用本模块：4 个叶子重新挂载即可，
 组件本身不销毁重建。
@@ -36,7 +45,7 @@ from __future__ import annotations
 
 from typing import Dict, Optional
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QEasingCurve, QVariantAnimation
 from PySide6.QtWidgets import QFrame, QSplitter, QVBoxLayout, QWidget
 
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
@@ -52,8 +61,6 @@ DEFAULT_MODE = WORKSPACE_MODE
 HANDLE_WIDTH = 10  # 分隔条宽度（与既有三栏一致）
 
 # ── workspace 比例常量（集中于此，便于调参） ─────────────────────────
-#: 主横条左栏（文件选择器）宽度占比：1/3（与经典布局三栏等分口径一致）
-WORKSPACE_LEFT_RATIO = 1.0 / 3.0
 #: 底行横条中「文件储存」占比：50:50，使储存与信息各占界面约 1/3 宽度
 WORKSPACE_POOL_RATIO = 0.5
 #: 预览显示区（画布）宽高比 16:9。预览区高 = 右列宽 × 本比例 + PREVIEW_CHROME_PX，
@@ -62,10 +69,40 @@ PREVIEW_ASPECT = 9.0 / 16.0
 #: 预览器顶栏（工具区）高度补偿：图片/文本/PDF/字体预览器顶部工具栏 48px。
 #: 设为 0 表示「整体口径」（算预览区含工具区，不补偿顶栏）。
 PREVIEW_CHROME_PX = 48
-#: 底行最小高度（16:9 降级保护用；半高上限优先于本值）
+#: workspace 预览器内容区（画布）最小尺寸：16:9，对应 3840×2160 素材按窗口
+#: 自适应时刚好无边铺满的显示口径；预览器最小总高 = 本高 + PREVIEW_CHROME_PX，
+#: 由 ``MainWindow`` 下发到预览器与主布局（见 ``set_leaf_minimums``）。
+WORKSPACE_PREVIEW_MIN_CONTENT_W = 640
+WORKSPACE_PREVIEW_MIN_CONTENT_H = 360
+#: 底行最小高度兜底值（叶子未就绪 / 未下发实测值时的缺省口径）。
+#: 运行时会由叶子实测值覆盖：workspace 底行最小高 =
+#: max(储存池一行卡片 + 其底栏, 信息面板最小高)，见 ``set_leaf_minimums``。
 BOTTOM_MIN_PX = 200
 #: 经典布局右列底部操作栏槽位高度（与预览器底栏一致，48px）
 CLASSIC_ACTION_SLOT_PX = 48
+#: 用户重置布局时的渐变时长（毫秒）
+RESET_ANIM_DURATION_MS = 280
+
+
+def default_left_width(width: int) -> int:
+    """默认左栏（文件选择器）宽度：两布局统一口径。
+
+    可用宽 = 容器宽 − 2 条分隔条，取三分之一（向下取整）。
+
+    历史缺陷：workspace 主横条只有 1 条分隔条，旧公式
+    ``round((宽 − 10) / 3)`` 比 classic 的 ``(宽 − 20) // 3`` 恒定宽
+    3~4px——同为「左 1/3」却切换布局时肉眼可见不一致。本函数把两布局
+    统一到同一口径（classic 数值保持历史不变；workspace 左栏收窄
+    3~4px、右区相应加宽），使选择器宽度逐像素一致。
+
+    Args:
+        width: 布局容器宽（逻辑像素）。
+
+    Returns:
+        int: 左栏默认宽度；退化尺寸返回 0。
+    """
+    return max(0, width - 2 * HANDLE_WIDTH) // 3
+
 
 #: 区域名 → zone frame objectName
 _ZONE_OBJECT_NAMES = {
@@ -108,6 +145,14 @@ class MainLayout(QWidget):
         self._ratio_update_pending = False
         # 半高高频重算节流（<=2px 且未超限时跳过约束重写）
         self._last_half = 0
+        # 进行中的「重置布局」渐变（QVariantAnimation；None 表示未在渐变）
+        self._reset_anim: Optional[QVariantAnimation] = None
+        # 叶子实测下限（MainWindow 在面板就绪 / 切换布局后经 set_leaf_minimums
+        # 下发；缺省用兜底常量，未下发时行为与历史一致）：
+        # - _bottom_min_px：底行最小高度（workspace：max(储存池一行 + 底栏, 信息最小高)）
+        # - _preview_min_total_px：预览器最小总高（workspace：画布 360 + 顶栏 48）
+        self._bottom_min_px = BOTTOM_MIN_PX
+        self._preview_min_total_px = 0
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -162,16 +207,26 @@ class MainLayout(QWidget):
             self.splitters = {"main": main, "right": right}
             root_layout.addWidget(main)
 
+        # 折叠策略：仅经典布局的储存池可折叠——列压到最小宽后继续拖边框即把
+        # 储存池塌缩隐藏（只剩选择器与右列两栏），拖回恢复；其余子项不可折叠。
+        main.setCollapsible(0, False)
+        if self.mode == WORKSPACE_MODE:
+            main.setCollapsible(1, False)
+        else:
+            main.setCollapsible(1, True)  # 储存池（经典布局第 2 栏）
+            main.setCollapsible(2, False)  # 右列容器
+        self.splitters["right"].setCollapsible(0, False)
+        self.splitters["right"].setCollapsible(1, False)
+        if "bottom" in self.splitters:
+            self.splitters["bottom"].setCollapsible(0, False)
+            self.splitters["bottom"].setCollapsible(1, False)
+
         # 用户拖拽跟踪：右竖条决定 16:9 自动维持；底行/信息区拖拽后补钳制
         self.splitters["right"].splitterMoved.connect(self._on_right_splitter_moved)
         if "bottom" in self.splitters:
-            self.splitters["bottom"].splitterMoved.connect(
-                lambda _pos, _idx: self._ensure_bottom_cap(force=True)
-            )
+            self.splitters["bottom"].splitterMoved.connect(self._on_bottom_splitter_moved)
         else:
-            self.splitters["right"].splitterMoved.connect(
-                lambda _pos, _idx: self._ensure_bottom_cap(force=True)
-            )
+            self.splitters["right"].splitterMoved.connect(self._on_bottom_splitter_moved)
         # 主横条拖拽（左/右分界）：右侧宽度变化后同步 16:9（未拖拽右竖条时）
         self.splitters["main"].splitterMoved.connect(self._on_main_splitter_moved)
 
@@ -209,14 +264,151 @@ class MainLayout(QWidget):
         """
         return self._classic_action_slot
 
-    def apply_default_ratios(self) -> None:
-        """应用当前模式的默认比例（首次布局 / 布局切换时调用）。
+    def set_leaf_minimums(
+        self, bottom_min_px: int, preview_min_total_px: int = 0
+    ) -> None:
+        """下发叶子组件的实测最小尺寸（面板就绪 / 切换布局后调用）。
+
+        Args:
+            bottom_min_px: 底行最小高度（px）。workspace 取
+                ``max(储存池.minimum_row_height(), 信息面板.minimum_content_height())``；
+                0 表示不限制。
+            preview_min_total_px: 预览器最小总高（px，仅 workspace 有意义，
+                如画布最小 360 + 顶栏 48 = 408）；0 表示不施加下限。
+        """
+        new_bottom = max(0, int(bottom_min_px))
+        new_preview = max(0, int(preview_min_total_px))
+        if (
+            new_bottom == self._bottom_min_px
+            and new_preview == self._preview_min_total_px
+        ):
+            return
+        self._bottom_min_px = new_bottom
+        self._preview_min_total_px = new_preview
+        # 默认比例未应用时无需立即重算（首次应用即用新下限）；
+        # 已应用时安排一轮延迟更新把新下限补钳到现有几何上。
+        if self._defaults_applied:
+            self._schedule_layout_update()
+
+    def apply_default_ratios(self, animated: bool = False) -> None:
+        """应用当前模式的默认比例（首次布局 / 布局切换 / 用户重置时调用）。
 
         - workspace：左 1/3、预览画布 16:9（受半高上限与底行下限钳制）、底行 50:50；
         - classic：三栏 1:1:1、右栏各半、信息区 ≤ 半高；
         - 同时把「右竖条用户拖拽」状态复位（恢复自动 16:9）。
+
+        Args:
+            animated: True 时用 :data:`RESET_ANIM_DURATION_MS` 的渐变把各区尺寸
+                从当前值平滑移到默认值（用户点「重置布局」路径）；False 时立即
+                应用（首次布局 / 布局切换路径，避免启动与切布局时出现过渡）。
         """
         self._right_user_dragged = False
+        if animated:
+            self._animate_default_ratios()
+            return
+        if self.mode == WORKSPACE_MODE:
+            self._apply_workspace_ratios(force=True)
+        else:
+            self._apply_classic_ratios(force=True)
+
+    # ── 内部：重置布局渐变 ───────────────────────────────────────────
+
+    def _default_target_sizes(self) -> Optional[Dict[str, list]]:
+        """按当前几何算出当前模式各 splitter 的默认尺寸（仅计算，不应用）。
+
+        预览区高度依赖右区宽度，此处由主横条默认比例直接推得（与 ``_apply_*``
+        先 ``setSizes(main)`` 再读右区几何的结果一致）；右区高度与底行宽度在
+        渐变过程中不随其它轴变化，故可一次算全。
+        """
+        if self.width() <= 0 or self.height() <= 0:
+            return None
+        right = self.splitters["right"]
+        if self.mode == WORKSPACE_MODE:
+            avail_w = max(0, self.width() - HANDLE_WIDTH)
+            left_w = default_left_width(self.width())
+            right_w = max(0, avail_w - left_w)
+            v_avail = max(0, (right.height() or self.height()) - HANDLE_WIDTH)
+            preview_h = self._preview_height_for(right_w, v_avail)
+            bottom_avail = max(0, right_w - HANDLE_WIDTH)
+            pool_w = int(round(bottom_avail * WORKSPACE_POOL_RATIO))
+            return {
+                "main": [left_w, right_w],
+                "right": [preview_h, max(0, v_avail - preview_h)],
+                "bottom": [pool_w, max(0, bottom_avail - pool_w)],
+            }
+        avail_w = max(0, self.width() - 2 * HANDLE_WIDTH)
+        third = default_left_width(self.width())
+        right_h = right.height()
+        if right_h <= 0:
+            right_h = max(0, self.height() - CLASSIC_ACTION_SLOT_PX - 2 * HANDLE_WIDTH)
+        v_avail = max(0, right_h - HANDLE_WIDTH)
+        if v_avail <= 0:
+            return {"main": [third, third, avail_w - 2 * third], "right": [1, 1]}
+        half = v_avail // 2
+        return {
+            "main": [third, third, avail_w - 2 * third],
+            "right": [v_avail - half, half],
+        }
+
+    def _animate_default_ratios(self) -> None:
+        """把各 splitter 尺寸从当前值渐变到默认值（用户重置布局路径）。"""
+        targets = self._default_target_sizes()
+        if targets is None:
+            return
+        starts = {
+            name: self.splitters[name].sizes()
+            for name in targets
+            if self.splitters[name].count() == len(targets[name])
+        }
+        if len(starts) != len(targets):
+            # 几何/子项未就绪：退化为立即应用，避免插值下标错位
+            self.apply_default_ratios()
+            return
+
+        self._stop_reset_animation()
+        anim = QVariantAnimation(self)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setDuration(RESET_ANIM_DURATION_MS)
+        anim.setEasingCurve(QEasingCurve.InOutCubic)
+        anim.valueChanged.connect(
+            lambda progress: self._apply_reset_progress(starts, targets, float(progress))
+        )
+        anim.finished.connect(self._on_reset_anim_finished)
+        self._reset_anim = anim
+        anim.start()
+
+    def _apply_reset_progress(self, starts, targets, progress: float) -> None:
+        """渐变逐帧：按进度 ``progress``（0~1）插值各 splitter 尺寸并应用。"""
+        self._applying = True
+        try:
+            for name, target in targets.items():
+                splitter = self.splitters[name]
+                if splitter.count() != len(target):
+                    continue
+                src = starts[name]
+                splitter.setSizes([
+                    int(round(src[i] + (target[i] - src[i]) * progress))
+                    for i in range(len(target))
+                ])
+        finally:
+            self._applying = False
+
+    def _stop_reset_animation(self) -> None:
+        """停止进行中的渐变（用户开始拖拽 / 发起新一次重置时调用）。"""
+        anim = self._reset_anim
+        if anim is None:
+            return
+        self._reset_anim = None
+        anim.stop()
+        anim.deleteLater()
+
+    def _on_reset_anim_finished(self) -> None:
+        """渐变结束：落到精确默认尺寸（消除逐帧取整误差）。"""
+        anim = self._reset_anim
+        self._reset_anim = None
+        if anim is not None:
+            anim.deleteLater()
         if self.mode == WORKSPACE_MODE:
             self._apply_workspace_ratios(force=True)
         else:
@@ -263,6 +455,10 @@ class MainLayout(QWidget):
     def _run_layout_update(self) -> None:
         """延迟回调：按最新几何维持 16:9（自动态）并重算半高上限。"""
         self._ratio_update_pending = False
+        # 重置渐变进行中：逐帧尺寸由动画负责，避免与自动 16:9 互相覆盖；
+        # 渐变结束时 _on_reset_anim_finished 会按最新几何重新落位。
+        if self._reset_anim is not None:
+            return
         if self.mode == WORKSPACE_MODE and not self._right_user_dragged:
             self._apply_workspace_ratios(force=False)
         self._ensure_bottom_cap()
@@ -270,12 +466,20 @@ class MainLayout(QWidget):
     # ── 内部：拖拽回调 ───────────────────────────────────────────────
 
     def _on_right_splitter_moved(self, _pos: int, _index: int) -> None:
-        """右竖条被用户拖拽：停止自动 16:9，并补钳制（幂等）。"""
+        """右竖条被用户拖拽：停止进行中的重置渐变，并补钳制（幂等）。"""
+        self._stop_reset_animation()
         self._right_user_dragged = True
         self._ensure_bottom_cap(force=True)
 
+    def _on_bottom_splitter_moved(self, _pos: int, _index: int) -> None:
+        """底行（workspace）或信息区（classic）被用户拖拽：停止渐变并补钳制。"""
+        self._stop_reset_animation()
+        self._ensure_bottom_cap(force=True)
+
     def _on_main_splitter_moved(self, _pos: int, _index: int) -> None:
-        """主横条被用户拖拽：右区宽度变化，未拖拽右竖条时同步 16:9。"""
+        """主横条被用户拖拽：停止进行中的重置渐变；右区宽度变化，未拖拽右竖条
+        时同步 16:9。"""
+        self._stop_reset_animation()
         if self.mode == WORKSPACE_MODE and not self._right_user_dragged:
             self._apply_workspace_ratios(force=False)
         self._ensure_bottom_cap()
@@ -302,10 +506,11 @@ class MainLayout(QWidget):
             right = self.splitters["right"]
             bottom = self.splitters["bottom"]
 
-            # 1) 主横条：左 1/3（首次/强制时应用；窗口缩放不打扰用户分栏）
-            #    用 round 而非截断，避免 1/3 浮点误差丢 1px（1170×1/3=389.99…）
+            # 1) 主横条：左 1/3（首次/强制时应用；窗口缩放不打扰用户分栏）。
+            #    宽度口径与 classic 复用 default_left_width（两布局选择器
+            #    逐像素一致；旧 round 公式比经典宽 3~4px，切换可见错位）。
             avail_w = max(0, width - HANDLE_WIDTH)
-            left_w = int(round(avail_w * WORKSPACE_LEFT_RATIO))
+            left_w = default_left_width(width)
             right_w = max(0, avail_w - left_w)
             if force:
                 main.setSizes([left_w, right_w])
@@ -344,20 +549,20 @@ class MainLayout(QWidget):
         finally:
             self._applying = False
 
-    @staticmethod
-    def _preview_height_for(right_w: int, v_avail: int) -> int:
+    def _preview_height_for(self, right_w: int, v_avail: int) -> int:
         """计算 16:9 预览区高度（含钳制与降级）。
 
         约束：
-        - 底行（= v_avail - preview_h）≤ ceil(v_avail / 2) → preview_h ≥ v_avail // 2
-          （保持"预览至少占右区一半"；整数向上取整避免底行越界 1px）；
-        - 底行 ≥ BOTTOM_MIN_PX → preview_h ≤ v_avail - BOTTOM_MIN_PX；
-        - 冲突（窗口过矮）时半高上限优先，16:9 不可达即优雅降级。
+        - 预览 ≥ 半高（``v_avail - v_avail // 2`` 向上取整）→ 底行 ≤ ceil(v_avail / 2)；
+        - 预览 ≥ ``_preview_min_total_px``（workspace 预览器最小总高，叶子下发）；
+        - 底行 ≥ ``_bottom_min_px`` → preview_h ≤ v_avail - _bottom_min_px；
+        - 冲突（窗口过矮）时下限优先；主窗口最小尺寸已保证正常不冲突
+          （见 ``MainWindow._apply_window_minimums``）。
         """
         v_avail = max(0, v_avail)
-        lower = v_avail - v_avail // 2  # 使底行 ≤ 半高（向上取整）
+        lower = max(v_avail - v_avail // 2, self._preview_min_total_px)
         target = int(round(right_w * PREVIEW_ASPECT)) + int(PREVIEW_CHROME_PX)
-        upper = v_avail - BOTTOM_MIN_PX
+        upper = v_avail - self._bottom_min_px
         if upper < lower:
             preview_h = lower
         else:
@@ -379,7 +584,7 @@ class MainLayout(QWidget):
             right = self.splitters["right"]
             if force:
                 avail_w = max(0, width - 2 * HANDLE_WIDTH)
-                third = avail_w // 3
+                third = default_left_width(width)
                 main.setSizes([third, third, avail_w - 2 * third])
                 # 右分割区高度：优先取实际几何；几何未就绪时按
                 # 「容器高 - 底部操作栏槽位 - 槽位间距 - 分隔条」估算
@@ -411,7 +616,14 @@ class MainLayout(QWidget):
           避免拖拽每帧递归触发布局。
         """
         right = self.splitters["right"]
-        right_h = right.height() if right.height() > 0 else self.height()
+        if right.height() > 0:
+            right_h = right.height()
+        elif self.mode == WORKSPACE_MODE:
+            # workspace：右竖条基本占满容器高度，整窗高即右列高
+            right_h = self.height()
+        else:
+            # classic：整窗高 - 底部操作栏槽位 - 槽位与内容区间距（HANDLE_WIDTH）
+            right_h = max(0, self.height() - CLASSIC_ACTION_SLOT_PX - HANDLE_WIDTH)
         v_avail = max(0, right_h - HANDLE_WIDTH)
         if v_avail <= 0:
             return

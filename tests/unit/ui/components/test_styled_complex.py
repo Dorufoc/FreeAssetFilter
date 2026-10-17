@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSize, Qt
+from PySide6.QtCore import QEasingCurve, QEvent, QPoint, QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import (
     QColor, QEnterEvent, QImage, QMouseEvent, QMoveEvent, QPainter,
     QPaintEvent, QPixmap, QRegion, QResizeEvent,
@@ -94,6 +94,7 @@ from freeassetfilter.ui.components.styled_table import (  # noqa: E402
 from freeassetfilter.ui.components.styled_tabs import StyledTabWidget  # noqa: E402
 from freeassetfilter.ui.components.styled_timeline import StyledTimeline  # noqa: E402
 from freeassetfilter.ui.components.theme_transition_overlay import (  # noqa: E402
+    BackgroundTransitionOverlay,
     ContentTransitionOverlay,
     ThemeTransitionOverlay,
 )
@@ -998,6 +999,97 @@ class TestThemeTransitionOverlay:
         safe_teardown(overlay)
         safe_teardown(window)
 
+    def test_from_widget_normalizes_narrow_grab(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """回归：抓拍比窗口窄时补边到窗口客户区物理尺寸（不再被拉伸）。
+
+        历史缺陷：Windows 上 ``QScreen.grabWindow(HWND)`` 抓到的原生客户区
+        比 Qt widget 窄 1~2 物理像素，绘制端把该快照整体拉伸进遮罩矩形
+        （水平放大 ~0.14%），设置页实时预览淡出期右侧内容横向「抖一下」。
+        """
+        from PySide6.QtGui import QScreen
+
+        window = QWidget()
+        window.resize(120, 80)
+        dpr = window.devicePixelRatioF() or 1.0
+        target_w = max(1, int(round(window.width() * dpr)))
+        target_h = max(1, int(round(window.height() * dpr)))
+        narrow = QPixmap(target_w - 2, target_h)
+        narrow.fill(QColor(255, 0, 0))
+
+        def _grab(_screen, _wid, *args, **kwargs):
+            return narrow
+
+        monkeypatch.setattr(QScreen, "grabWindow", _grab)
+        overlay = ThemeTransitionOverlay.from_widget(window)
+        assert overlay._snapshot.width() == target_w
+        assert overlay._snapshot.height() == target_h
+        safe_teardown(overlay)
+        safe_teardown(window)
+
+    def test_fit_snapshot_pads_narrow_grab(self, qapp: QApplication) -> None:
+        """回归：窄/矮抓拍补透明边到窗口物理尺寸，内容 1:1 左上落点。"""
+        from freeassetfilter.ui.components.theme_transition_overlay import (
+            _fit_snapshot_to_window,
+        )
+
+        window = QWidget()
+        window.resize(120, 80)
+        dpr = window.devicePixelRatioF() or 1.0
+        target_w = max(1, int(round(window.width() * dpr)))
+        target_h = max(1, int(round(window.height() * dpr)))
+
+        narrow = QPixmap(max(1, target_w - 2), target_h)
+        narrow.fill(QColor(255, 0, 0))
+        fitted = _fit_snapshot_to_window(narrow, window)
+        assert fitted.width() == target_w
+        assert fitted.height() == target_h
+        assert fitted.devicePixelRatio() == pytest.approx(dpr)
+        image = fitted.toImage()
+        assert image.pixelColor(0, 0).red() == 255  # 内容 1:1 贴左上角
+        assert image.pixelColor(target_w - 1, 0).alpha() == 0  # 补边透空
+
+        # 尺寸一致：原对象原样返回（不重建位图）；空快照原样返回（离屏场景）
+        exact = QPixmap(target_w, target_h)
+        exact.fill(QColor(0, 0, 255))
+        assert _fit_snapshot_to_window(exact, window) is exact
+        assert _fit_snapshot_to_window(QPixmap(), window).isNull()
+        safe_teardown(window)
+
+    def test_fade_draws_snapshot_without_stretch(self, qapp: QApplication) -> None:
+        """回归：快照小于遮罩矩形时按 1:1 落点绘制，绝不做水平缩放。
+
+        历史缺陷：绘制端固定 ``drawPixmap(self.rect(), snapshot)``，快照与
+        遮罩矩形不等宽时整体水平缩放（窄 1 逻辑像素 → 放大 ~0.14%），
+        过渡淡出期右侧内容横向位移（实测 ~1 逻辑像素）。
+        """
+        parent = QWidget()
+        parent.resize(100, 100)
+        snapshot = QPixmap(99, 100)
+        snapshot.fill(QColor(255, 0, 0))
+        # 快照最右列（x=98）放绿色标记：拉伸时会被推到 x≈99，1:1 时应仍在 98。
+        marker = QPainter(snapshot)
+        try:
+            marker.setPen(Qt.NoPen)
+            marker.setBrush(QColor(0, 255, 0))
+            marker.drawRect(98, 0, 1, 100)
+        finally:
+            marker.end()
+
+        overlay = ThemeTransitionOverlay(parent, snapshot)
+        image = QImage(100, 100, QImage.Format_ARGB32)
+        image.fill(Qt.transparent)
+        overlay._on_value_changed(1.0)
+        overlay.render(
+            image, QPoint(0, 0), QRegion(0, 0, 100, 100), QWidget.DrawChildren
+        )
+        assert image.pixelColor(98, 50).green() == 255  # 标记列未移动
+        assert image.pixelColor(94, 50).red() == 255  # 其余内容仍为红色
+        assert image.pixelColor(99, 50).alpha() == 0  # 多出的 1 列透空
+        safe_teardown(overlay)
+        safe_teardown(parent)
+
     def test_radial_reveal_paint(self, qapp: QApplication) -> None:
         """径向揭示：整幅旧外观打底、圆内挖洞透出新主题（方向自按钮向外）。"""
         parent = QWidget()
@@ -1237,6 +1329,115 @@ class TestContentTransitionOverlay:
         assert overlay._finished is True
         assert overlay._active is False
         safe_teardown(overlay)
+        safe_teardown(parent)
+
+    def test_easing_curve_stored(self, qapp: QApplication) -> None:
+        """easing 参数：构造后存归一化曲线，start() 应用 Linear。"""
+        parent = QWidget()
+        parent.resize(120, 80)
+        overlay = ContentTransitionOverlay(
+            parent,
+            QPixmap(120, 80),
+            easing=QEasingCurve.Linear,
+        )
+        overlay.start()
+        assert overlay._easing.type() == QEasingCurve.Linear
+        safe_teardown(overlay)
+        safe_teardown(parent)
+
+
+class _SolidFillWidget(QWidget):
+    """纯色填充探针控件（背景过渡栈序关系测试用）。"""
+
+    def __init__(self, color: QColor, parent: QWidget | None = None) -> None:
+        """初始化探针控件。
+
+        Args:
+            color: 填充色。
+            parent: 父控件。
+        """
+        super().__init__(parent)
+        self._fill = QColor(color)
+
+    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802 - Qt 命名
+        """整幅填充探针色。"""
+        painter = QPainter(self)
+        try:
+            painter.fillRect(self.rect(), self._fill)
+        finally:
+            painter.end()
+
+
+class TestBackgroundTransitionOverlay:
+    """BackgroundTransitionOverlay：淡出模式、栈序压低与只读访问器。"""
+
+    def test_construct_fade_mode(self, qapp: QApplication) -> None:
+        """构造：固定淡出模式（无圆心）、几何贴合父级、鼠标穿透。"""
+        parent = QWidget()
+        parent.resize(80, 60)
+        overlay = BackgroundTransitionOverlay(parent, QPixmap(80, 60))
+        assert overlay.DEFAULT_DURATION_MS == 450
+        assert overlay._reveal_center is None
+        assert overlay.geometry() == parent.rect()
+        assert overlay.testAttribute(Qt.WA_TransparentForMouseEvents)
+        safe_teardown(overlay)
+        safe_teardown(parent)
+
+    def test_start_restacks_below_reference(self, qapp: QApplication) -> None:
+        """start 的 raise_ 之后重新压回 stack_below 之下（参照控件保持在上）。"""
+        parent = QWidget()
+        parent.resize(40, 40)
+        reference = _SolidFillWidget(QColor(0, 255, 0), parent)
+        reference.setGeometry(parent.rect())
+        snapshot = QPixmap(40, 40)
+        snapshot.fill(QColor(255, 0, 0))
+        overlay = BackgroundTransitionOverlay(
+            parent, snapshot, stack_below=reference
+        )
+        overlay.start()
+        # 栈序：reference（绿）在遮罩（红）之上 → 呈现绿；未压低则呈红。
+        image = QImage(40, 40, QImage.Format_ARGB32)
+        image.fill(Qt.transparent)
+        parent.render(
+            image, QPoint(0, 0), QRegion(0, 0, 40, 40), QWidget.DrawChildren
+        )
+        assert image.pixelColor(20, 20).green() >= 250
+        safe_teardown(overlay)
+        safe_teardown(parent)
+
+    def test_accessors_track_animation_value(self, qapp: QApplication) -> None:
+        """snapshot_pixmap / current_opacity 反映快照与当前淡出进度。"""
+        parent = QWidget()
+        parent.resize(20, 20)
+        snapshot = QPixmap(20, 20)
+        snapshot.fill(QColor(10, 20, 30))
+        overlay = BackgroundTransitionOverlay(parent, snapshot)
+        assert not overlay.snapshot_pixmap().isNull()
+        assert overlay.current_opacity() == pytest.approx(1.0)
+        overlay._on_value_changed(0.25)
+        assert overlay.current_opacity() == pytest.approx(0.25)
+        safe_teardown(overlay)
+        safe_teardown(parent)
+
+    def test_fade_paint_and_finish_idempotent(self, qapp: QApplication) -> None:
+        """淡出绘制按透明度呈现快照；finish_now 隐藏且幂等。"""
+        parent = QWidget()
+        parent.resize(40, 40)
+        snapshot = QPixmap(40, 40)
+        snapshot.fill(QColor(255, 0, 0))
+        overlay = BackgroundTransitionOverlay(parent, snapshot)
+        overlay.start()
+        assert overlay.isVisibleTo(parent)
+        overlay._on_value_changed(0.5)
+        image = QImage(40, 40, QImage.Format_ARGB32)
+        image.fill(Qt.transparent)
+        overlay.render(
+            image, QPoint(0, 0), QRegion(0, 0, 40, 40), QWidget.DrawChildren
+        )
+        assert 100 <= image.pixelColor(20, 20).alpha() <= 160
+        overlay.finish_now()
+        assert not overlay.isVisibleTo(parent)
+        overlay.finish_now()  # 幂等：再调不抛
         safe_teardown(parent)
 
 

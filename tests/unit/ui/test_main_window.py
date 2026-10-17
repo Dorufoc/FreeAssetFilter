@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt, QUrl
+from PySide6.QtCore import QEasingCurve, QEvent, QMimeData, QPoint, QPointF, Qt, QUrl
 from PySide6.QtGui import (
     QCloseEvent,
     QColor,
@@ -162,7 +162,7 @@ class TestMainWindowStructure:
         qapp.processEvents()
 
     def test_title_bar_buttons_exist(self, qapp: QApplication) -> None:
-        """标题栏按钮（最小化/最大化/关闭/主题/设置/GitHub）均存在。"""
+        """标题栏按钮（最小化/最大化/关闭/主题/设置/重置布局/布局切换）均存在。"""
         window = MainWindow()
         for attr in (
             "_minimize_btn",
@@ -170,7 +170,8 @@ class TestMainWindowStructure:
             "_close_btn",
             "_theme_btn",
             "_settings_btn",
-            "_github_btn",
+            "_reset_layout_btn",
+            "_layout_toggle_btn",
         ):
             assert getattr(window, attr) is not None, f"{attr} 缺失"
         window.deleteLater()
@@ -188,7 +189,8 @@ class TestMainWindowStructure:
             "_close_btn",
             "_theme_btn",
             "_settings_btn",
-            "_github_btn",
+            "_reset_layout_btn",
+            "_layout_toggle_btn",
         ):
             assert getattr(window, attr) is not None
         window.deleteLater()
@@ -314,6 +316,144 @@ class TestMainWindowPanelBuild:
         window.deleteLater()
         qapp.processEvents()
 
+    def test_layout_toggle_button_switches_mode_and_icon(
+        self, qapp: QApplication
+    ) -> None:
+        """布局切换按钮：点击在 classic / workspace 间切换并同步图标与提示。"""
+        window = MainWindow()
+        assert window.get_layout_mode() == "workspace"
+        assert window._layout_toggle_btn.toolTip() == "切换为经典三栏布局"
+
+        window._layout_toggle_btn.click()
+        assert window.get_layout_mode() == "classic"
+        assert window._layout_toggle_btn.toolTip() == "切换为预览优先布局"
+        assert str(window._layout_toggle_btn._svg_icon_path).endswith(
+            "layout_workspace.svg"
+        )
+
+        window._layout_toggle_btn.click()
+        assert window.get_layout_mode() == "workspace"
+        assert window._layout_toggle_btn.toolTip() == "切换为经典三栏布局"
+        assert str(window._layout_toggle_btn._svg_icon_path).endswith(
+            "layout_classic.svg"
+        )
+        window.deleteLater()
+        qapp.processEvents()
+
+
+class TestMainWindowMinimumSizes:
+    """主窗口最小尺寸：按布局模式聚合叶子实测下限（含标题栏/容器边距）。"""
+
+    @staticmethod
+    def _build_all(qapp: QApplication) -> MainWindow:
+        """构建四区域（不 show），返回可测量的窗口。"""
+        window = MainWindow()
+        for side in ("selector", "preview", "pool", "info"):
+            window._build_panel(side)
+        qapp.processEvents()
+        return window
+
+    @staticmethod
+    def _chrome(window: MainWindow):
+        """窗口装饰尺寸（容器边距 + 自绘标题栏高度）。"""
+        margins = window._splitter_container.layout().contentsMargins()
+        chrome_w = margins.left() + margins.right()
+        chrome_h = (
+            margins.top()
+            + margins.bottom()
+            + int(window._title_bar_header.minimumHeight())
+        )
+        return chrome_w, chrome_h
+
+    def test_workspace_minimums_from_leaf_widgets(
+        self, qapp: QApplication
+    ) -> None:
+        """workspace：预览器最小 640×(360+48)；窗口最小 = 叶子聚合 + 窗口装饰。"""
+        from freeassetfilter.ui.layout.main_layout import (
+            HANDLE_WIDTH,
+            PREVIEW_CHROME_PX,
+            WORKSPACE_PREVIEW_MIN_CONTENT_H,
+            WORKSPACE_PREVIEW_MIN_CONTENT_W,
+        )
+
+        window = self._build_all(qapp)
+        try:
+            assert window._layout_mode == "workspace"
+            # 预览器最小尺寸随模式下发（内容区 640×360 + 顶栏 48）
+            assert window._previewer.minimumWidth() == WORKSPACE_PREVIEW_MIN_CONTENT_W
+            assert window._previewer.minimumHeight() == (
+                WORKSPACE_PREVIEW_MIN_CONTENT_H + PREVIEW_CHROME_PX
+            )
+
+            window._apply_leaf_minimums()
+            window._apply_window_minimums()
+
+            pool = window._file_pool
+            info = window._info_panel
+            pool_h = max(pool.minimumHeight(), pool.minimumSizeHint().height())
+            info_h = max(info.minimumHeight(), info.minimumSizeHint().height())
+            pool_w = max(pool.minimumWidth(), pool.minimumSizeHint().width())
+            info_w = max(info.minimumWidth(), info.minimumSizeHint().width())
+            selector_w = max(
+                window._file_selector.minimumWidth(),
+                window._file_selector.minimumSizeHint().width(),
+            )
+            chrome_w, chrome_h = self._chrome(window)
+            layout_min_w = (
+                selector_w
+                + HANDLE_WIDTH
+                + max(
+                    WORKSPACE_PREVIEW_MIN_CONTENT_W,
+                    pool_w + HANDLE_WIDTH + info_w,
+                )
+            )
+            layout_min_h = (
+                WORKSPACE_PREVIEW_MIN_CONTENT_H
+                + PREVIEW_CHROME_PX
+                + HANDLE_WIDTH
+                + max(pool_h, info_h)
+            )
+            assert window.minimumWidth() == layout_min_w + chrome_w
+            assert window.minimumHeight() == layout_min_h + chrome_h
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_classic_switch_clears_previewer_min_and_sets_min_height(
+        self, qapp: QApplication
+    ) -> None:
+        """切经典：预览器下限清除；窗口最小高覆盖信息区两倍最小高 + 底栏槽位。"""
+        from freeassetfilter.ui.layout.main_layout import (
+            CLASSIC_ACTION_SLOT_PX,
+            HANDLE_WIDTH,
+        )
+
+        window = self._build_all(qapp)
+        try:
+            assert window.set_layout_mode("classic") is True
+            qapp.processEvents()
+            # 经典：清除预览器显式下限（自然最小），使信息高度范围可完整覆盖
+            assert window._previewer.minimumWidth() == 0
+            assert window._previewer.minimumHeight() == 0
+            # 仅储存池可折叠
+            assert window._main_layout.splitters["main"].isCollapsible(1) is True
+
+            window._apply_window_minimums()
+            info_h = max(
+                window._info_panel.minimumHeight(),
+                window._info_panel.minimumSizeHint().height(),
+            )
+            _chrome_w, chrome_h = self._chrome(window)
+            layout_min_h = (
+                max(2 * info_h + HANDLE_WIDTH, 0)
+                + HANDLE_WIDTH
+                + CLASSIC_ACTION_SLOT_PX
+            )
+            assert window.minimumHeight() >= layout_min_h + chrome_h
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
 
 class TestMainWindowClose:
     """关闭清理：closeEvent 安全（不 show，手动触发）。"""
@@ -343,15 +483,18 @@ class TestMainWindowStartupOverlay:
     """启动加载覆盖层：创建契约、撤销钩子与幂等性（不 show 窗口）。"""
 
     def test_overlay_created_with_content_shell(self, qapp: QApplication) -> None:
-        """构造后覆盖层已就绪：不透明遮罩、挂在外层内容容器上、定时器已建。"""
+        """构造后覆盖层已就绪：不透明遮罩、铺满整个内容层、定时器已建。"""
         window = MainWindow()
         overlay = window._startup_overlay
         assert overlay is not None
         assert overlay.overlay is True
         assert overlay.backdrop == "opaque"
-        assert overlay.parentWidget() is window._splitter_container
+        # 挂在 _content（整个客户区）而非 _splitter_container：实色底才能
+        # 覆盖到自绘标题栏所在区域，避免标题栏透出背景层形成断色。
+        assert overlay.parentWidget() is window._content
+        assert window._title_bar_header is not None
         assert window._startup_overlay_timer is not None
-        # 覆盖层不设鼠标穿透：加载期内容区不可点击（标题栏不受影响）
+        # 覆盖层不设鼠标穿透：加载期内容区不可点击（标题栏在其上层不受影响）
         assert not overlay.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         window.deleteLater()
         qapp.processEvents()
@@ -529,6 +672,173 @@ class TestBackgroundMode:
         assert window2._mica_refresh_started is True
         window2.deleteLater()
         qapp.processEvents()
+
+
+class TestBackgroundModeTransition:
+    """背景模式过渡：切前抓帧、切后 450ms 交叉淡入（BackgroundTransitionOverlay）。
+
+    过渡仅在窗口在屏时启用（``_can_transition_background`` 以
+    ``_content.isVisible()`` 判定）；本文件约定不 show()，故用例以实例级
+    补丁模拟在屏（与 ``TestContentThemeTransition`` 同款）。遮罩层级细节
+    （stack_below 压低）由组件测试覆盖，这里断言主窗口集成契约。
+    """
+
+    @staticmethod
+    def _patch_background_settings(
+        monkeypatch: pytest.MonkeyPatch, config: dict
+    ) -> None:
+        """把 MainWindow._load_background_settings 替换为返回固定配置。"""
+        monkeypatch.setattr(
+            MainWindow, "_load_background_settings", staticmethod(lambda: config)
+        )
+
+    def _make_visible_window(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        config: dict | None = None,
+    ) -> MainWindow:
+        """构造「在屏」主窗口（isVisible 补丁模拟，不弹真实窗口）。"""
+        self._patch_background_settings(
+            monkeypatch, {"mode": "mica", "image": ""} if config is None else config
+        )
+        window = MainWindow()
+        if window._content is not None:
+            monkeypatch.setattr(window._content, "isVisible", lambda: True)
+        return window
+
+    @staticmethod
+    def _teardown(window: MainWindow, qapp: QApplication) -> None:
+        """收尾遮罩并销毁窗口（避免残留定时器跨用例）。"""
+        try:
+            window._finish_background_transition()
+        except Exception:
+            pass
+        window.deleteLater()
+        qapp.processEvents()
+
+    def test_mode_switch_starts_background_transition(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """在屏切换：旧帧淡出遮罩创建（父级 _root），层可见性仍同步翻转。"""
+        window = self._make_visible_window(monkeypatch)
+        try:
+            window.set_background_mode("image")
+            overlay = window._background_transition_overlay
+            assert overlay is not None
+            assert overlay.parent() is window._root
+            assert overlay.isVisibleTo(window._root)
+            assert overlay.DEFAULT_DURATION_MS == 450
+            # 既有语义不变：状态与层可见性同步翻转
+            assert window._background_mode == "image"
+            assert window._custom_background.isHidden() is False
+            assert window._mica_background.isHidden() is True
+        finally:
+            self._teardown(window, qapp)
+
+    def test_same_mode_does_not_start_transition(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """同模式重复下发：不建遮罩（无变化无需过渡）。"""
+        window = self._make_visible_window(monkeypatch)
+        try:
+            window.set_background_mode("mica")
+            assert window._background_transition_overlay is None
+        finally:
+            self._teardown(window, qapp)
+
+    def test_invisible_window_switches_without_transition(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """窗口不可见（未 show/最小化）：不建遮罩，切换照常完成。"""
+        self._patch_background_settings(
+            monkeypatch, {"mode": "mica", "image": ""}
+        )
+        window = MainWindow()
+        try:
+            window.set_background_mode("image")
+            assert window._background_transition_overlay is None
+            assert window._background_mode == "image"
+            assert window._custom_background.isHidden() is False
+            assert window._mica_background.isHidden() is True
+        finally:
+            self._teardown(window, qapp)
+
+    def test_rapid_switch_replaces_single_overlay(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """连点连切：上一遮罩立即收尾，单实例去重不叠层。"""
+        window = self._make_visible_window(monkeypatch)
+        try:
+            window.set_background_mode("image")
+            first = window._background_transition_overlay
+            assert first is not None
+            window.set_background_mode("minimalist")
+            second = window._background_transition_overlay
+            assert second is not None and second is not first
+            assert first._finished is True, "上一遮罩应立即收尾（去重）"
+            assert window._background_mode == "minimalist"
+        finally:
+            self._teardown(window, qapp)
+
+    def test_capture_failure_does_not_block_switch(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """抓帧失败：跳过过渡但不阻塞切换本身。"""
+        window = self._make_visible_window(monkeypatch)
+        try:
+            monkeypatch.setattr(
+                window, "_capture_background_frame", lambda: None
+            )
+            window.set_background_mode("image")
+            assert window._background_transition_overlay is None
+            assert window._background_mode == "image"
+            assert window._custom_background.isHidden() is False
+        finally:
+            self._teardown(window, qapp)
+
+    def test_ambient_toggle_in_minimalist_transitions(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """简约模式下切换弥散氛围：同样走交叉淡入。"""
+        window = self._make_visible_window(monkeypatch)
+        try:
+            window.set_background_mode("minimalist")
+            window._finish_background_transition()
+            assert window._background_transition_overlay is None
+            window.set_ambient_enabled(False)
+            assert window.is_ambient_enabled() is False
+            assert window._background_transition_overlay is not None
+        finally:
+            self._teardown(window, qapp)
+
+    def test_image_swap_in_image_mode_transitions(
+        self,
+        qapp: QApplication,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """图像模式下更换图片：同样走交叉淡入（云母→图像由模式切换覆盖）。"""
+        window = self._make_visible_window(monkeypatch)
+        try:
+            pm1 = QPixmap(32, 32)
+            pm1.fill(QColor(200, 30, 30))
+            path1 = str(tmp_path / "one.png")
+            assert pm1.save(path1, "PNG")
+            pm2 = QPixmap(32, 32)
+            pm2.fill(QColor(30, 200, 30))
+            path2 = str(tmp_path / "two.png")
+            assert pm2.save(path2, "PNG")
+
+            assert window.set_custom_background_image(path1) is True
+            window.set_background_mode("image")
+            window._finish_background_transition()
+            assert window._background_transition_overlay is None
+
+            assert window.set_custom_background_image(path2) is True
+            assert window._background_transition_overlay is not None
+            assert window._custom_background.image_path == path2
+        finally:
+            self._teardown(window, qapp)
 
 
 class TestFixedMicaParams:
@@ -868,6 +1178,60 @@ class TestSettingsWindow:
         win.deleteLater()
         qapp.processEvents()
 
+    def test_root_background_follows_theme_switch(
+        self, qapp: QApplication
+    ) -> None:
+        """根容器背景随主题真实切换（回归：调色板被 QSS 全树重刷还原）。
+
+        背景由 ``_apply_theme_palette`` 的 ``setPalette`` + QSS 片段共同承载：
+        应用级样式表重刷（``QApplication.setStyleSheet``，主题切换链路同步
+        执行一次、片段重注册后的合并 tick 再执行一次）会把控件调色板还原为
+        「上次应用样式时」的旧主题值。仅靠调色板时「深色 → 浅色」后根容器
+        背景仍停留在深色 G1（设置窗口切浅色不生效的直接原因），因此这里走
+        真实 ``theme_changed`` 广播 + 有界事件泵，对根容器取样断言双向切换。
+        """
+        initial_dark = tm.is_dark_theme()
+        win = SettingsWindow()  # 不 show：grab() 离屏渲染即可，遵循本文件约定
+        try:
+            tm.set_theme_mode("dark")
+            process_qt_events(qapp, ms=50)
+            self._assert_root_background(win, tm.surface)
+            # 深色 → 浅色：旧实现（仅调色板）在此停留深色背景。
+            tm.set_theme_mode("light")
+            process_qt_events(qapp, ms=50)
+            self._assert_root_background(win, tm.surface)
+        finally:
+            while tm.is_dark_theme() is not initial_dark:
+                tm.toggle_theme()
+            process_qt_events(qapp, ms=0)
+            win.deleteLater()
+            qapp.processEvents()
+
+    @staticmethod
+    def _assert_root_background(win: SettingsWindow, expected: QColor) -> None:
+        """断言根容器背景为期望主题色（标题栏透明区 + 侧边栏区域取样）。
+
+        Args:
+            win: 设置窗口实例（根容器背景铺满整窗，子控件多为透明/自绘）。
+            expected: 期望的 ``tm.surface`` 主题色。
+
+        Raises:
+            AssertionError: 任一样点偏离期望色（容差 ±4，跨平台抗锯齿抖动）。
+        """
+        image = win._root.grab().toImage()
+        width, height = image.width(), image.height()
+        for x, y in ((width // 2, 10), (60, height // 2)):
+            color = image.pixelColor(x, y)
+            for channel, got, want in (
+                ("R", color.red(), expected.red()),
+                ("G", color.green(), expected.green()),
+                ("B", color.blue(), expected.blue()),
+            ):
+                assert abs(want - got) <= 4, (
+                    f"根容器背景未随主题切换：取样点 ({x}, {y}) 的 {channel} "
+                    f"通道 {got} 偏离期望 {want}（tm.surface={expected.name()}）"
+                )
+
 
 class TestContentThemeTransition:
     """_on_theme_toggle 的内容层过渡（ContentTransitionOverlay 集成）。
@@ -1062,6 +1426,67 @@ class TestContentThemeTransition:
             assert window._theme_toggle_origin(window._content) is not None
             monkeypatch.setattr(window, "_theme_btn", None)
             assert window._theme_toggle_origin(window._content) is None
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_layout_transition_uses_dissolve(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """布局切换过渡为快照溶解：250ms、Linear、无扩散圆心、不依赖主题按钮。"""
+        window = self._make_window(monkeypatch)
+        try:
+            # 主题按钮缺失也不影响：溶解模式恒不传圆心
+            monkeypatch.setattr(window, "_theme_btn", None)
+            window.begin_layout_transition()
+            overlay = window._content_theme_overlay
+            assert overlay is not None
+            assert overlay.parent() is window._content
+            assert overlay._reveal_center is None, "布局过渡不得走径向揭示"
+            assert overlay._duration_ms == overlay.DISSOLVE_DURATION_MS == 250
+            assert overlay._easing.type() == QEasingCurve.Linear
+            assert overlay.isVisibleTo(window._content)
+            overlay.finish_now()
+            assert not overlay.isVisibleTo(window._content)
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_layout_transition_gate_disabled_skips_overlay(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """layout_switch 动画关闭：跳过过渡（不建遮罩、不抛异常）。"""
+        window = self._make_window(monkeypatch)
+        calls: list[tuple] = []
+
+        def fake_gate(*args, **kwargs):
+            calls.append((args, kwargs))
+            return False
+
+        monkeypatch.setattr(
+            "freeassetfilter.ui.main_window.is_animation_enabled", fake_gate
+        )
+        try:
+            window.begin_layout_transition()
+            assert window._content_theme_overlay is None
+            assert calls and calls[0][0][0] == "layout_switch"
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_content_transition_unknown_mode_falls_back_to_fade(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """未知过渡模式：回退为透明度淡出（无圆心、InOutCubic 缓动）。"""
+        window = self._make_window(monkeypatch)
+        try:
+            window._start_content_theme_transition("bogus")
+            overlay = window._content_theme_overlay
+            assert overlay is not None
+            assert overlay._reveal_center is None
+            assert overlay._duration_ms == overlay.DEFAULT_DURATION_MS
+            assert overlay._easing.type() == QEasingCurve.InOutCubic
+            overlay.finish_now()
         finally:
             window.deleteLater()
             qapp.processEvents()

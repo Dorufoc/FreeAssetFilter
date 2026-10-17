@@ -94,7 +94,9 @@ class AIChatDemoWindow(QMainWindow):
 
 
 def main() -> int:
-    app = QApplication(sys.argv); apply_app_stylesheet(); window = AIChatDemoWindow(); window.show(); return app.exec()
+    # 统一样式下发入口（注册表按控件下发片段 + 空模板跳过），
+    # 在控件建好并显示后下发，避免应用级样式表过早覆盖组件片段。
+    app = QApplication(sys.argv); window = AIChatDemoWindow(); window.show(); apply_app_stylesheet(); return app.exec()
 
 
 if __name__ == "__main__": raise SystemExit(main())

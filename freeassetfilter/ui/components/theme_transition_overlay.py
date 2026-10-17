@@ -1,4 +1,14 @@
-"""Theme transition overlay - radial reveal / crossfade snapshot on theme change."""
+"""Transition overlays - theme/background reveal, crossfade and frame-fade masks.
+
+承载三类遮罩（均基于 ``_SnapshotTransitionOverlay``）：
+
+- :class:`ThemeTransitionOverlay`：整窗（``QScreen.grabWindow``）主题过渡，
+  径向揭示或透明度淡出（设置窗口明暗切换）；
+- :class:`ContentTransitionOverlay`：主窗口内容层主题过渡（径向扩散 /
+  淡出兜底）；
+- :class:`BackgroundTransitionOverlay`：主窗口背景层交叉过渡（设置页
+  切换窗口背景 / 氛围 / 换图：旧背景帧淡出、新层实时在底）。
+"""
 
 from __future__ import annotations
 
@@ -14,10 +24,70 @@ from PySide6.QtCore import (
     QPoint,
     QPointF,
     QRect,
+    QRectF,
     QTimer,
     QVariantAnimation,
 )
-from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPixmap
+from PySide6.QtGui import (
+    QColor,
+    QPainter,
+    QPaintEvent,
+    QPixmap,
+)
+
+
+def _fit_snapshot_to_window(snapshot: QPixmap, window: QWidget) -> QPixmap:
+    """把窗口抓拍对齐到窗口客户区的物理尺寸（透明补边、1:1 左上落点）。
+
+    ``QScreen.grabWindow(HWND)`` 在 Windows 上按原生客户区抓拍，可能比 Qt
+    widget 的客户区窄 1~2 物理像素（DWM 边框口径差异；实测 DPR 1.5 下
+    1056×798 vs 1058×798，即 704×532 vs 705×532 逻辑像素）。快照与遮罩
+    矩形尺寸不一致时，绘制端会把快照整体拉伸（水平放大 ~0.14%，右侧内容
+    偏移最多 ~1 逻辑像素，淡出期表现为设置页内容「横向抖动」）。这里统一
+    补透明边到 ``round(窗口逻辑尺寸 × DPR)``，使后续绘制严格 1:1。
+
+    抓取为空/退化（离屏测试、句柄无效）或归一化失败时原样返回，不阻塞
+    过渡本身。
+
+    Args:
+        snapshot: ``QScreen.grabWindow`` 的抓拍结果。
+        window: 目标顶层窗口（遮罩宿主）。
+
+    Returns:
+        QPixmap: 与窗口客户区物理尺寸一致的快照；无需处理时返回原对象。
+    """
+    try:
+        if snapshot.isNull():
+            return snapshot
+        dpr = float(window.devicePixelRatioF())
+        if dpr <= 0.0:
+            dpr = 1.0
+        target_w = max(1, int(round(window.width() * dpr)))
+        target_h = max(1, int(round(window.height() * dpr)))
+        if snapshot.width() == target_w and snapshot.height() == target_h:
+            return snapshot
+        canvas = QPixmap(target_w, target_h)
+        canvas.setDevicePixelRatio(dpr)
+        canvas.fill(Qt.transparent)
+        painter = QPainter(canvas)
+        try:
+            # 源按物理像素 1:1 贴左上角（QImage 源矩形即设备像素，与 DPR
+            # 语义无关）；多出的边缘保持透明，过渡期间透出新外观。
+            painter.drawImage(
+                QRectF(
+                    0.0,
+                    0.0,
+                    snapshot.width() / dpr,
+                    snapshot.height() / dpr,
+                ),
+                snapshot.toImage(),
+                QRectF(0.0, 0.0, snapshot.width(), snapshot.height()),
+            )
+        finally:
+            painter.end()
+        return canvas
+    except Exception:  # noqa: BLE001 - 归一化失败退回原快照，不阻塞过渡
+        return snapshot
 
 
 def _max_corner_distance(rect: QRect, center: QPoint) -> float:
@@ -46,7 +116,7 @@ def _max_corner_distance(rect: QRect, center: QPoint) -> float:
 class _SnapshotTransitionOverlay(QWidget):
     """主题过渡遮罩基类：旧外观快照 + 两种揭示动画。
 
-    两种模式由构造参数 ``origin`` 决定：
+    模式由构造参数决定（优先级：``origin`` > 淡出）：
 
     - **径向揭示（origin 给定）**：以 ``origin`` 为圆心、半径从 0 扩张到
       覆盖整幅的最大距离；整幅以旧外观快照打底，圆内透明露出已切换好的
@@ -60,13 +130,13 @@ class _SnapshotTransitionOverlay(QWidget):
     公共约定：
 
     - 遮罩必须带透明通道（``WA_TranslucentBackground``）：揭示圆洞（透明）
-      与淡出路径依赖遮罩的透明区透出下方新主题；快照本体可含不透明像素
-      （整窗抓拍），但其透明像素必须有 alpha 输出，不能以实体底色覆盖；
+      与淡出路径依赖遮罩的透明区透出下方新主题；快照本体可含不透明
+      像素（整窗抓拍），但其透明像素必须有 alpha 输出，不能以实体底色覆盖；
     - ``WA_TransparentForMouseEvents`` 鼠标穿透，过渡不阻塞界面交互；
     - 快照由调用方传入并按 ``devicePixelRatio`` 生成物理分辨率
       （高分屏不失真），本类绘制期按逻辑坐标自适配；
     - **快照位图由遮罩接管**：径向揭示会在其上挖洞（``DestinationOut``），
-      调用方构造后不得复用该位图；
+      调用方构造后不得复用该位图（淡出模式只读，不修改）；
     - 过渡中父级尺寸变化（缩放窗口）时立即收尾，避免快照与控件错位；
     - ``finish_now`` 幂等，快速连续切换时用于去重清理。
     """
@@ -79,6 +149,7 @@ class _SnapshotTransitionOverlay(QWidget):
         snapshot: QPixmap,
         duration_ms: int,
         origin: Optional[QPoint] = None,
+        easing: QEasingCurve = QEasingCurve.InOutCubic,
     ) -> None:
         """初始化遮罩。
 
@@ -87,11 +158,16 @@ class _SnapshotTransitionOverlay(QWidget):
             snapshot: 过渡前抓取的旧外观快照。
             duration_ms: 动画时长（毫秒，内部钳到下限 50）。
             origin: 径向揭示圆心（父级逻辑坐标）；None 走透明度淡出。
+            easing: 缓动曲线；默认 InOutCubic（主题链语义不变）；布局切换
+                溶解链路显式传 QEasingCurve.Linear。
         """
         super().__init__(parent)
         self._snapshot = snapshot
         self._duration_ms = max(50, int(duration_ms))
         self._opacity: float = 1.0
+        # 缓动曲线：默认 InOutCubic（主题链）；布局切换溶解链路显式传 Linear。
+        # 归一为 QEasingCurve 实例（调用方传的是 Type 枚举，无 .type() 访问器）。
+        self._easing: QEasingCurve = QEasingCurve(easing)
         self._reveal_center: Optional[QPoint] = QPoint(origin) if origin is not None else None
         self._revealed_radius: float = 0.0
         self._max_radius: float = 0.0
@@ -147,11 +223,11 @@ class _SnapshotTransitionOverlay(QWidget):
                 # 退化几何（空尺寸）：无扩散可言，直接收尾。
                 self._on_finished()
                 return
-            self._anim.setEasingCurve(QEasingCurve.InOutCubic)
+            self._anim.setEasingCurve(self._easing)
             self._anim.setStartValue(0.0)
             self._anim.setEndValue(self._max_radius)
         else:
-            self._anim.setEasingCurve(QEasingCurve.InOutCubic)
+            self._anim.setEasingCurve(self._easing)
             self._anim.setStartValue(1.0)
             self._anim.setEndValue(0.0)
         self._active = True
@@ -214,6 +290,39 @@ class _SnapshotTransitionOverlay(QWidget):
 
     # ── 绘制 ─────────────────────────────────────────────────────────────
 
+    def _snapshot_rect(self) -> QRectF:
+        """快照在遮罩坐标中的 1:1 绘制矩形（按快照自身 DPR，绝不拉伸）。
+
+        历史缺陷：绘制端固定把快照拉伸进 ``self.rect()``。快照尺寸与遮罩
+        矩形不一致时（实测设置窗口抓拍比窗口窄 1 逻辑像素），整体被水平
+        放大 ~0.14%，右侧内容偏移最多 ~1 逻辑像素——每次过渡（设置页实时
+        预览 / 提交 / 回滚）淡出期都表现为内容区「横向抖动」。改为按快照
+        自身尺寸落点后，尺寸不一致时多出的边缘保持透空（透出新外观），
+        不再产生任何缩放位移。
+        """
+        dpr = float(self._snapshot.devicePixelRatio())
+        if dpr <= 0.0:
+            dpr = 1.0
+        return QRectF(
+            0.0,
+            0.0,
+            self._snapshot.width() / dpr,
+            self._snapshot.height() / dpr,
+        )
+
+    def _draw_snapshot(self, painter: QPainter) -> None:
+        """把快照按 1:1（物理像素一一对应）绘制到遮罩左上角。
+
+        目标矩形取快照自身的逻辑尺寸（= 物理尺寸 / DPR），源矩形取物理
+        像素全幅（``drawPixmap`` 的 sourceRect 语义为设备像素，实测确认）；
+        DPR 一致时没有任何重采样，尺寸不一致时也绝不放大/缩小。
+        """
+        painter.drawPixmap(
+            self._snapshot_rect(),
+            self._snapshot,
+            QRectF(0.0, 0.0, self._snapshot.width(), self._snapshot.height()),
+        )
+
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802 - Qt 命名
         """按当前模式自绘旧外观快照（单次 blit，无效果过滤管线）。"""
         if self._snapshot.isNull():
@@ -229,11 +338,11 @@ class _SnapshotTransitionOverlay(QWidget):
             return
         painter = QPainter(self)
         try:
-            # 快照按原生 DPR 保留；dpr 为小数时遮罩目标尺寸非快照物理像素的
-            # 整数倍，保持平滑过滤避免缩放发糊。
+            # 快照按原生 DPR 保留；1:1 落点（见 _draw_snapshot）不做缩放，
+            # 平滑过滤仅在 DPR 存在取整差异时兜底。
             painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
             painter.setOpacity(self._opacity)
-            painter.drawPixmap(self.rect(), self._snapshot)
+            self._draw_snapshot(painter)
         finally:
             painter.end()
 
@@ -261,7 +370,7 @@ class _SnapshotTransitionOverlay(QWidget):
         painter = QPainter(self)
         try:
             painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-            painter.drawPixmap(self.rect(), self._snapshot)
+            self._draw_snapshot(painter)
         finally:
             painter.end()
 
@@ -311,7 +420,10 @@ class ThemeTransitionOverlay(_SnapshotTransitionOverlay):
     """整窗主题过渡遮罩（设置窗口「确定」提交等场景）。
 
     快照经 ``QScreen.grabWindow(HWND)`` 从原生窗口句柄抓取（正确合成
-    OpenGL 背景），动画为径向揭示（传 ``origin``）或透明度淡出（缺省）。
+    OpenGL 背景），并经 :func:`_fit_snapshot_to_window` 归一化为与窗口
+    客户区等大的位图（抓拍比 widget 窄时透明补边，绘制端严格 1:1，避免
+    过渡期内容横向偏移）。动画为径向揭示（传 ``origin``）或透明度淡出
+    （缺省）。
 
     Usage:
         snapshot = screen.grabWindow(int(window.winId()))
@@ -343,7 +455,9 @@ class ThemeTransitionOverlay(_SnapshotTransitionOverlay):
 
         ``QScreen.grabWindow(HWND)`` correctly composites OpenGL-backed children
         (e.g. the Mica background) where ``QWidget.grab()`` produces corrupted
-        artifacts on some GPU drivers.
+        artifacts on some GPU drivers. 抓拍结果经 :func:`_fit_snapshot_to_window`
+        归一化为与窗口客户区等大（Windows 抓拍比 widget 窄 1~2 物理像素时
+        透明补边），核心原因见该函数 docstring。
 
         Args:
             window: 目标顶层窗口。
@@ -358,11 +472,12 @@ class ThemeTransitionOverlay(_SnapshotTransitionOverlay):
             screen = QApplication.primaryScreen()
         # WId is the native window handle (HWND on Windows).
         snapshot = screen.grabWindow(int(window.winId()))
+        snapshot = _fit_snapshot_to_window(snapshot, window)
         return cls(window, snapshot, duration_ms, origin)
 
 
 class ContentTransitionOverlay(_SnapshotTransitionOverlay):
-    """主窗口主题过渡遮罩：整窗旧外观快照打底、径向揭示 / 淡出。
+    """主窗口内容层过渡遮罩：整窗旧外观快照打底、径向揭示 / 淡出。
 
     与 :class:`ThemeTransitionOverlay`（``QScreen.grabWindow`` 截屏）的分工：
 
@@ -373,10 +488,51 @@ class ContentTransitionOverlay(_SnapshotTransitionOverlay):
     - 默认径向揭示：``origin`` 通常为主题切换按钮中心，旧外观整幅打底、
       自按钮向外挖出扩张圆洞露出新主题，每像素只显示一份旧/新外观，
       消除淡出模式的文字双重曝光叠印；
-    - ``origin`` 缺省时退化为透明度淡出（历史行为，供异常路径兜底）。
+    - ``origin`` 缺省时退化为透明度淡出（历史行为，供异常路径兜底）；
+    - dissolve（布局切换链路，见 ``MainWindow.begin_layout_transition``）：
+      :attr:`DISSOLVE_DURATION_MS`（250ms）+ ``QEasingCurve.Linear``，整窗
+      旧外观快照 1→0 透明度线性淡出、露出已切好的实时新布局（复用淡出
+      路径）。
 
     快照为整窗外观（含背景层），揭示期间背景层自身的交叉淡入被遮罩盖住、
     随揭示同步露出；未显示窗口（测试/最小化）不创建遮罩。
+    """
+
+    DEFAULT_DURATION_MS: int = 450  # 对齐 ui/mica/config.XFADE_DURATION_MS
+    #: 布局切换「快照溶解」时长（毫秒）：线性缓动，落在应用既有
+    #: 120–450ms 动画谱系（由 ``MainWindow.begin_layout_transition`` 传入）。
+    DISSOLVE_DURATION_MS: int = 250
+
+    def __init__(
+        self,
+        parent: QWidget,
+        snapshot: QPixmap,
+        duration_ms: int = DEFAULT_DURATION_MS,
+        origin: Optional[QPoint] = None,
+        easing: QEasingCurve = QEasingCurve.InOutCubic,
+    ) -> None:
+        super().__init__(parent, snapshot, duration_ms, origin, easing)
+
+
+class BackgroundTransitionOverlay(_SnapshotTransitionOverlay):
+    """主窗口背景层交叉过渡遮罩：旧背景帧淡出、新背景层实时在底。
+
+    与 :class:`ContentTransitionOverlay`（整窗快照 + 内容层）的分工：
+
+    - 快照仅为**当前可见背景层**的一帧（调用方 ``grab()`` / GL 版
+      ``grabFramebuffer()``），非整窗：遮罩父级为主窗口 ``_root``，经
+      ``stack_below`` 压在三背景层之上、内容层之下——过渡期间内容层保持
+      实时（悬停/滚动/视频不冻结），只有背景区域做交叉淡入；
+    - 固定透明度淡出模式（``origin`` 恒为 None）：旧背景帧 1.0→0.0 渐隐，
+      透出下方已切好的新背景层；新层自始全量在底，故「旧帧淡出」即两背景
+      层之间的交叉淡入（与层内主题交叉淡入同时长同缓动）；
+    - ``start()`` 覆写：基类 ``raise_()`` 会把遮罩抬到父级最高层，这里在
+      起播前重新压回 ``stack_below`` 之下，保证内容层始终在最上；
+    - 只读访问器 :meth:`snapshot_pixmap` / :meth:`current_opacity` 供调用方
+      做「连切从屏幕现状出发」的合成快照（旧帧按当前透明度叠加到新层帧）。
+
+    其余行为与基类淡出模式一致：鼠标穿透、父级 resize 立即收尾、
+    ``finish_now`` 幂等（快速连续切换去重）。
     """
 
     DEFAULT_DURATION_MS: int = 450  # 对齐 ui/mica/config.XFADE_DURATION_MS
@@ -386,6 +542,39 @@ class ContentTransitionOverlay(_SnapshotTransitionOverlay):
         parent: QWidget,
         snapshot: QPixmap,
         duration_ms: int = DEFAULT_DURATION_MS,
-        origin: Optional[QPoint] = None,
+        stack_below: Optional[QWidget] = None,
     ) -> None:
-        super().__init__(parent, snapshot, duration_ms, origin)
+        """初始化背景过渡遮罩（固定淡出模式，无扩散圆心参数）。
+
+        Args:
+            parent: 覆盖目标控件（主窗口 ``_root``；遮罩几何贴合其 rect）。
+            snapshot: 切换前当前可见背景层的帧（调用方确保非空）。
+            duration_ms: 动画时长（毫秒，基类内部钳到下限 50）。
+            stack_below: 起播后需重新压低到的参照控件（主窗口 ``_content``）；
+                None 时保持基类 ``raise_()`` 行为（仅供独立使用场景）。
+        """
+        self._stack_below = stack_below
+        super().__init__(parent, snapshot, duration_ms, origin=None)
+
+    def start(self) -> None:
+        """起播（见基类）；随后重新压低到 ``stack_below`` 之下保持内容层在上。"""
+        super().start()
+        self._restack_below_reference()
+
+    def _restack_below_reference(self) -> None:
+        """把遮罩重新压到 ``stack_below`` 之下（基类 raise_ 之后调用，幂等）。"""
+        reference = self._stack_below
+        if reference is None:
+            return
+        try:
+            self.stackUnder(reference)
+        except (RuntimeError, TypeError):
+            pass  # 参照已销毁/类型异常时保持现栈序，不影响过渡本身
+
+    def snapshot_pixmap(self) -> QPixmap:
+        """返回当前快照位图（连切合成用；淡出模式不挖洞，位图保持完整）。"""
+        return self._snapshot
+
+    def current_opacity(self) -> float:
+        """返回当前淡出透明度（1.0 = 刚起播，0.0 = 已收尾）。"""
+        return max(0.0, min(1.0, self._opacity))

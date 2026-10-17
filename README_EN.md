@@ -275,6 +275,8 @@ python -m freeassetfilter.app.main
 
 ### Interface Layout
 
+FreeAssetFilter offers two main interface layouts, switchable in **Settings → General → Interface Layout** (takes effect immediately after clicking "OK"), or instantly via the **layout switch button at the top-right** of the main window:
+
 ```
 ┌─────────────────┬─────────────────┬─────────────────┐
 │                 │                 │                 │

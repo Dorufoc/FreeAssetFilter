@@ -334,10 +334,10 @@ class TestFileInfoPanelAsync:
         assert f"{hit.label}: {hit.value}" == f"大小: {hit.value}"
         safe_teardown(panel)
 
-    def test_path_wraps_inside_english_words(
+    def test_path_elides_middle_single_line(
         self, qapp: QApplication, tmp_path: Path
     ) -> None:
-        """文件地址允许在英文单词中间断行显示（不溢出也不截断）。"""
+        """文件地址单行显示：超长时中间省略（不换行不溢出；全文仍可复制/提示）。"""
         panel = _make_panel(qapp, tmp_path)
         target = tmp_path / ("SegmentWithoutSpaces" * 6)
         target = target.with_suffix(".txt")
@@ -345,13 +345,17 @@ class TestFileInfoPanelAsync:
         panel.set_file(_file_info(str(target)))
         qapp.processEvents()
 
-        fm = QFontMetrics(panel._canvas.FONT_PATH)
-        path = panel._summary["path"]
+        canvas = panel._canvas
         width = 260
-        lines, height = panel._canvas._path_lines(fm, path, width)
-        assert len(lines) > 1, "超长英文路径应在单词内部断行"
-        assert all(fm.horizontalAdvance(line) <= width for line in lines)
-        assert height >= len(lines) * fm.lineSpacing()
+        canvas._relayout(width)
+        fm = QFontMetrics(canvas.FONT_PATH)
+        path_item = next(i for i in canvas._items if i.kind == "path")
+        assert len(path_item.lines) == 1, "文件地址应为单行"
+        assert "\u2026" in path_item.text, "超长地址应中间省略"
+        assert fm.horizontalAdvance(path_item.text) <= width
+        assert path_item.full_text == str(target), "悬停/复制仍用全文"
+        assert path_item.value == str(target)
+        assert path_item.height == fm.height()
         safe_teardown(panel)
 
 
@@ -571,6 +575,28 @@ class TestFileInfoPanelTypographyAndScroll:
         assert not panel._float_bar.isVisible()
         safe_teardown(panel)
 
+    def test_empty_state_canvas_follows_viewport_height(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        """空状态改高度：画布高度恒等于视口高度，无滚动条（放大/缩小两向）。
+
+        空状态画布不钉固定高度，交由 widgetResizable 的滚动区撑满视口，
+        故拖动高度时画布随视口即时同步。回归点：曾用 setFixedHeight 钉死，
+        缩小视口时画布滞留旧高度 → 出现假溢出滚动条、提示文案下移需滚动。
+        """
+        panel = _make_panel(qapp, tmp_path)
+        viewport = panel._scroll_area.viewport()
+        native = panel._scroll_area.verticalScrollBar()
+
+        # 先放大再缩小，覆盖两向；空状态无内容，滚动范围应恒为 0。
+        for height in (300, 640, 160, 520):
+            panel.resize(540, height)
+            _pump(qapp, 150)
+            assert panel._canvas.height() == viewport.height()
+            assert native.maximum() == 0
+            assert not panel._float_bar.isVisible()
+        safe_teardown(panel)
+
 
 class TestFileInfoPanelMediaAsync:
     """视频/音频 light 行异步化：ffprobe 不阻塞 UI；陈旧 token 丢弃。"""
@@ -778,3 +804,100 @@ class TestHashTaskNativeWiring:
         values = self._run_task(task)
         assert len(values.get("SHA256", "")) == 64
         assert not Path(cache).exists(), "取消不得写缓存"
+
+
+class TestFileInfoPanelMinimums:
+    """信息面板最小尺寸：修改时间行单行完整显示 / 首三行 + 折叠入口可见。"""
+
+    def test_scroll_area_drops_generic_minimum_hint(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        """专用滚动区不携带 QAbstractScrollArea 的 200px 最小高度暗示。"""
+        panel = _make_panel(qapp, tmp_path)
+        hint = panel._scroll_area.minimumSizeHint()
+        assert hint.width() == 0 and hint.height() == 0
+        safe_teardown(panel)
+
+    def test_minimum_width_covers_reference_time_row(
+        self, qapp: QApplication, sample_image_file: str, tmp_path: Path
+    ) -> None:
+        """最小宽 = 标签列 + LABEL_GAP + 修改时间参考值单行宽（"0000-00-00 00:00"）。"""
+        panel = _make_panel(qapp, tmp_path)
+        panel.set_file(_file_info(sample_image_file))
+        qapp.processEvents()
+
+        canvas = panel._canvas
+        fm_label = QFontMetrics(canvas.FONT_LABEL)
+        fm_value = QFontMetrics(canvas.FONT_VALUE)
+        label_col = max(
+            (fm_label.horizontalAdvance(str(label)) for label, _ in panel._rows),
+            default=0,
+        )
+        label_col = max(
+            label_col, fm_label.horizontalAdvance(panel._MIN_WIDTH_FALLBACK_LABEL)
+        )
+        expect = (
+            2 * canvas.PAD_X
+            + label_col
+            + canvas.LABEL_GAP
+            + fm_value.horizontalAdvance(panel._MIN_WIDTH_VALUE_TEXT)
+        )
+        assert panel.minimumWidth() == expect
+        # 文件名/路径行超长不参与撑宽（单行中间省略）
+        assert panel.minimumWidth() < fm_label.horizontalAdvance(
+            str(panel._summary["path"])
+        ) + 2 * canvas.PAD_X
+
+        # 参考串覆盖真实时间值宽度（等长同格式，保证该行单行完整显示）
+        time_row = _row_by_label(panel, "修改时间")
+        if time_row is not None:
+            assert len(str(time_row.value)) <= len(panel._MIN_WIDTH_VALUE_TEXT)
+        safe_teardown(panel)
+
+    def test_minimum_height_covers_first_rows_and_fold_bar(
+        self, qapp: QApplication, sample_image_file: str, tmp_path: Path
+    ) -> None:
+        """最小高 = 文件名 + 路径 + 首行信息（文本底边）+ 折叠入口行。
+
+        与画布排版几何同源：最小高度下视口恰好裁在首行信息底部——不露出
+        第二行、也不出现「无需滚动」的假滚动条（历史缺陷：字体度量估算比
+        画布实测矮 1~2px，且把 PAD_BOTTOM 也计入最小高度）。
+        """
+        panel = _make_panel(qapp, tmp_path)
+        panel.set_file(_file_info(sample_image_file))
+        qapp.processEvents()
+
+        canvas = panel._canvas
+        first_row = canvas._row_blocks[0]
+        cut = first_row.rect.top() + first_row.text_h
+        root = panel.layout()
+        spacing = int(root.spacing()) if root is not None else 6
+        expect = cut + spacing + panel._fold_bar.sizeHint().height()
+        assert canvas.minimum_visible_height() == cut
+        assert panel.minimumHeight() == expect
+        assert panel.minimumHeight() == panel.minimum_content_height()
+
+        # 最小高度下视口恰好裁在首行信息底部：首行完整可见、第二行不可见
+        panel.resize(panel.width(), panel.minimum_content_height())
+        _pump(qapp, 300)
+        viewport = panel._scroll_area.viewport()
+        assert viewport.height() == cut
+        assert canvas._row_blocks[1].rect.top() >= viewport.height()
+        safe_teardown(panel)
+
+    def test_folder_min_height_has_no_scrollbar(
+        self, qapp: QApplication, sample_dir: str, tmp_path: Path
+    ) -> None:
+        """文件夹仅一行信息：最小高度下画布与视口等高，无假溢出滚动条。"""
+        panel = _make_panel(qapp, tmp_path)
+        panel.set_file({**_file_info(sample_dir), "is_dir": True})
+        panel.resize(panel.width(), panel.minimum_content_height())
+        _pump(qapp, 300)
+
+        canvas = panel._canvas
+        first_row = canvas._row_blocks[0]
+        assert canvas.height() == first_row.rect.top() + first_row.text_h
+        assert panel._scroll_area.viewport().height() == canvas.height()
+        assert panel._scroll_area.verticalScrollBar().maximum() == 0
+        assert not panel._float_bar.isVisible()
+        safe_teardown(panel)

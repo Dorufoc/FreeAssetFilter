@@ -226,7 +226,7 @@ def collect_data_files() -> List[Tuple[str, str]]:
     else:
         print_warning("未找到 shaders 目录")
 
-    # 6. 收集 docs 目录（开源许可证查看窗口加载 THIRD_PARTY_NOTICES.md）
+    # 6. 收集 docs 目录（设置页「关于」内嵌预览器加载 THIRD_PARTY_NOTICES.md）
     docs_dir = project_root / "freeassetfilter" / "docs"
     docs_extensions = {".md", ".txt", ".html"}
     if docs_dir.exists():

@@ -74,6 +74,7 @@ from freeassetfilter.ui.components.styled_chat_bubble import (  # noqa: E402
 from freeassetfilter.ui.theme.app_stylesheet import (  # noqa: E402
     apply_app_stylesheet,
     registered_widget_count,
+    stylesheet_mode,
 )
 from theme import tm  # noqa: E402
 
@@ -378,14 +379,20 @@ def _fill_pixel(bubble: StyledChatBubble) -> Tuple[int, int, int]:
 
 
 def _registered_rule(widget: QWidget) -> str:
-    """从应用级样式表里取回该控件已注册的作用域规则文本。
+    """取回该控件已注册的 QSS 片段文本（对两种下发模式均成立）。
+
+    ``widget`` 模式（当前默认）片段原文直接落在控件自身，控件同时带
+    ``fafQssId`` 注册标记；``app`` 模式片段经作用域改写后进入应用级
+    样式表，需按 ``fafQssId`` 标记取回对应规则行。
 
     Args:
         widget: 已注册 QSS 片段的控件。
 
     Returns:
-        包含 ``fafQssId`` 标记的全部行；未注册时返回空串。
+        片段/规则文本；未注册时返回空串。
     """
+    if stylesheet_mode() == "widget":
+        return widget.styleSheet() or ""
     scope = widget.property("fafQssId")
     if not scope:
         return ""
@@ -859,16 +866,30 @@ def test_bubble_styles_go_through_registry(
         f"构造气泡后注册表计数未增加（{before} → {registered_widget_count()}），"
         "说明样式片段没有经注册中心下发"
     )
-    direct: List[str] = []
-    for widget in [bubble, *bubble.findChildren(QWidget)]:
-        text: Optional[str] = widget.styleSheet()
-        if text:
-            direct.append(f"{type(widget).__name__}: {text[:60]!r}")
-    assert not direct, f"气泡子树存在直写样式表（违反 QSS 单例化约定）：{direct}"
+    if stylesheet_mode() == "widget":
+        # 逐控件下发：片段原文落在控件自身，控件必须带 fafQssId 注册标记，
+        # 且不得出现 app 模式的作用域改写痕迹（参见 test_layouts.py 同款口径）。
+        for widget in [bubble, *bubble.findChildren(QWidget)]:
+            text: Optional[str] = widget.styleSheet()
+            if not text:
+                continue
+            assert widget.property("fafQssId"), (
+                f"{type(widget).__name__} 存在非注册来源的直写样式表：{text[:60]!r}"
+            )
+            assert "fafQssId" not in text, (
+                f"{type(widget).__name__} 的片段被误按 app 模式作用域改写：{text[:60]!r}"
+            )
+    else:
+        direct: List[str] = []
+        for widget in [bubble, *bubble.findChildren(QWidget)]:
+            text: Optional[str] = widget.styleSheet()
+            if text:
+                direct.append(f"{type(widget).__name__}: {text[:60]!r}")
+        assert not direct, f"气泡子树存在直写样式表（违反 QSS 单例化约定）：{direct}"
 
     badge = _find_badge(bubble)
     assert _registered_rule(badge), (
-        "徽标未出现在应用级样式表中（fafQssId 作用域规则缺失）"
+        "徽标未出现在注册中心下发内容中（fafQssId 作用域规则缺失）"
     )
 
 

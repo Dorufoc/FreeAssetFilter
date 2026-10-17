@@ -22,7 +22,6 @@ from PySide6.QtCore import (
     QEvent,
     QObject,
     QPoint,
-    QUrl,
     QTimer,
     Signal,
     QAbstractNativeEventFilter,
@@ -30,7 +29,6 @@ from PySide6.QtCore import (
     QEasingCurve,
     QSize,
 )
-from PySide6.QtGui import QDesktopServices
 from PySide6.QtGui import QPainter, QPaintEvent, QPixmap, QRegion, QResizeEvent, QMoveEvent, QMouseEvent, QKeyEvent, QColor, QCursor, QPalette
 
 # 确保 ui 目录在 sys.path 中（组件 __init__.py 使用短路径导入）
@@ -73,10 +71,15 @@ from components.custom_background import BACKGROUND_DIR_NAME, CustomImageBackgro
 from freeassetfilter.ui.mica.config import DEFAULT_MICA_CONFIG
 from components.styled_button import StyledButton
 from components.styled_fluid_background import prewarm_top_level_rhi
-# 启动加载覆盖层：内容区只显示一个旋转圆环（见 MainWindow._setup_startup_overlay）
+# 启动加载覆盖层：铺满整个客户区、垫在标题栏之下只显示一个旋转圆环
+# （见 MainWindow._setup_startup_overlay / _mount_startup_overlay）
 from components.styled_loading import StyledLoading
 # 内容层主题过渡遮罩（旧外观快照自绘淡出，轻量自绘替代整窗遮罩的两处卡顿源）
-from components.theme_transition_overlay import ContentTransitionOverlay
+# 与背景层交叉过渡遮罩（设置页切换窗口背景：旧背景帧淡出、新层实时在底）
+from components.theme_transition_overlay import (
+    BackgroundTransitionOverlay,
+    ContentTransitionOverlay,
+)
 # 实验性原生 DWM 云母开关的底层桥接（dwmapi 薄封装，惰性加载，零 COM 初始化）
 from freeassetfilter.ui.mica import winapi as mica_winapi
 
@@ -90,6 +93,7 @@ from freeassetfilter.ui.mica import winapi as mica_winapi
 
 from freeassetfilter.utils.path_utils import get_app_data_path
 from freeassetfilter.core._paths import icons_dir
+from freeassetfilter.utils.animation_settings import is_animation_enabled
 from freeassetfilter.utils.app_logger import debug, warning
 # perf_metrics / StagingPoolService 同为首屏关键路径让位：分别由绘制埋点
 # （MicaBackgroundWidgetCpu.paintEvent）与 closeEvent 局部导入。
@@ -734,14 +738,18 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._floating_pool_conn_add = None
         self._floating_pool_conn_remove = None
         self._floating_pool_conn_pool_changed = None
-        # 启动加载覆盖层：内容区唯一加载动画，三栏就绪后淡出
-        # （见 _setup_startup_overlay / _dismiss_startup_overlay）
+        # 启动加载覆盖层：唯一加载动画，铺满整个客户区并垫在标题栏之下，
+        # 三栏就绪后淡出（见 _setup_startup_overlay / _dismiss_startup_overlay）
         self._startup_overlay = None
         self._startup_overlay_timer = None
         self._startup_overlay_animation = None
         self._startup_overlay_started_at = 0.0
         self._splitter_container = None
-        self._github_btn = None
+        # 自绘标题栏 QFrame：启动加载覆盖层据它做 stackUnder，使遮罩不透明底
+        # 铺到标题栏区域、而标题栏文字与按钮仍留在遮罩之上（见 _mount_startup_overlay）
+        self._title_bar_header = None
+        self._layout_toggle_btn = None
+        self._reset_layout_btn = None
         self._settings_btn = None
         self._theme_btn = None
         self._minimize_btn = None
@@ -755,12 +763,10 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 是基类包装（实测为 'QWidget'），`is obj` 身份比对恒失败；
         # 故创建窗口时递增代际并绑定到槽，槽内按代际比对清空引用
         self._settings_window_gen = 0
-        # 开源许可证查看窗口实例引用（与设置窗口同模式：owned 子窗口 +
-        # WA_DeleteOnClose，主窗口持有引用防 GC，destroyed 后清空）
-        self._license_viewer_window = None
-        self._license_viewer_gen = 0
         # 内容层主题过渡遮罩（单实例去重引用；见 _start_content_theme_transition）
         self._content_theme_overlay: QWidget | None = None
+        # 背景层交叉过渡遮罩（单实例去重引用；见 _start_background_transition）
+        self._background_transition_overlay: QWidget | None = None
         # 系统主题监听器（跟随系统模式的实时链路；见 _start_system_theme_watcher）
         self._system_theme_watcher = None
 
@@ -1103,7 +1109,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 内容是在 showEvent 之后创建的，因此手动补齐原本由 showEvent
         # 负责的首帧后工作，避免 Mica/覆盖层停留在未启动状态。
         if self._startup_overlay is not None:
-            self._startup_overlay.fit_to_parent()
+            self._mount_startup_overlay()
             if self._startup_overlay_timer is not None:
                 self._startup_overlay_timer.start(self.STARTUP_OVERLAY_MAX_MS)
         if self._background_mode == "mica" and self._mica_background is not None:
@@ -1237,8 +1243,9 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         container_layout.addWidget(self._main_layout)
         main_layout.addWidget(self._splitter_container, stretch=1)
 
-        # 启动加载覆盖层：铺满标题栏以下的内容区，只显示一个旋转圆环；
-        # 三栏真实布局就绪后淡出（见 _dismiss_startup_overlay）。
+        # 启动加载覆盖层：实色底铺满整个客户区（含自绘标题栏背后的区域，
+        # 标题栏文字/按钮仍在其上），只显示一个旋转圆环；三栏真实布局就绪后
+        # 淡出（见 _dismiss_startup_overlay）。
         self._setup_startup_overlay()
 
         # 连接主题切换信号（生效值变化刷新顶栏图标/面板）
@@ -1251,12 +1258,16 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
     # ──── 分阶段延迟构建三栏（首屏提速） ─────────────────────────────────
 
     def _setup_startup_overlay(self) -> None:
-        """创建启动加载覆盖层（铺满内容区、只显示旋转圆环）与撤销定时器。
+        """创建启动加载覆盖层（铺满整个客户区、只显示旋转圆环）与撤销定时器。
 
-        覆盖层挂在 ``_splitter_container`` 而不是整个窗口：标题栏保持可见可交互
-        （可拖动/最小化/关闭），只有标题栏以下的内容区被实色盖住。三栏真实布局
-        全部就绪后由 :meth:`_dismiss_startup_overlay` 淡出；构建异常时的兜底见
-        ``STARTUP_OVERLAY_MAX_MS``。创建失败不影响启动（回退到「加载中…」占位）。
+        覆盖层挂在 ``_content``（=整个客户区）而非 ``_splitter_container``：这样
+        不透明遮罩底色才能覆盖到自绘标题栏所在的区域，否则标题栏会透出云母/壁纸
+        等背景层，与下方实色内容区形成一条断色带。挂载时 ``stackUnder`` 标题栏
+        （见 :meth:`_mount_startup_overlay`），标题栏文字/按钮仍留在遮罩之上，
+        保持可见可交互（可拖动/最小化/关闭），只有标题栏以下的区域被实色盖住。
+        三栏真实布局全部就绪后由 :meth:`_dismiss_startup_overlay` 淡出；构建异常
+        时的兜底见 ``STARTUP_OVERLAY_MAX_MS``。创建失败不影响启动（回退到
+        「加载中…」占位）。
 
         必须在 ``_setup_content`` 内同步完成：此时早于 ``main.py`` 的
         ``window.show()``，覆盖层才能出现在首帧。
@@ -1271,13 +1282,31 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                 size="lg",
                 overlay=True,
                 backdrop="opaque",
-                parent=self._splitter_container,
+                parent=self._content,
             )
-            self._startup_overlay.fit_to_parent()
+            self._mount_startup_overlay()
             self._startup_overlay_started_at = time.perf_counter()
         except Exception as exc:  # 覆盖层失败不影响启动
             warning(f"启动加载覆盖层创建失败（回退占位标签）: {exc}")
             self._startup_overlay = None
+
+    def _mount_startup_overlay(self) -> None:
+        """把启动加载覆盖层铺满 ``_content`` 并垫在自绘标题栏之下。
+
+        ``fit_to_parent`` 会 ``raise_`` 覆盖层。要使最终 z 序为「标题栏 → 覆盖层
+        → 内容区」，必须先 ``header.raise_()`` 把标题栏提到最上层，再
+        ``overlay.stackUnder(header)``——``stackUnder`` 只把覆盖层放到标题栏
+        **正下方**，若标题栏本身还在栈底（标题栏先于内容容器创建），覆盖层会被
+        一并压到内容容器之下、反而盖不住。幂等，可重复调用（内容层重建后会再挂一次）。
+        """
+        overlay = self._startup_overlay
+        if overlay is None:
+            return
+        overlay.fit_to_parent()
+        header = getattr(self, "_title_bar_header", None)
+        if header is not None:
+            header.raise_()
+            overlay.stackUnder(header)
 
     def _dismiss_startup_overlay(self) -> None:
         """三栏就绪后撤下启动加载覆盖层（不足最短展示时长则补齐后再淡出）。
@@ -1421,6 +1450,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                     if slot is not None:
                         self._previewer.set_bottom_bar_host(slot)
                 self._replace_zone_placeholder(side, self._previewer)
+                # 预览器最小尺寸随模式（workspace 内容区 640×360；classic 清除）
+                self._apply_previewer_minimums()
             elif side == "pool":
                 from layout.file_pool_layout import FilePoolLayout
 
@@ -1486,6 +1517,11 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         ):
             QTimer.singleShot(60, self._finalize_panels)
             return
+        # 全部就绪：聚合叶子实测下限（底行最小高 / 预览器最小总高）→ 预览器
+        # 最小尺寸 → 主窗口最小尺寸，再应用默认比例
+        self._apply_leaf_minimums()
+        self._apply_previewer_minimums()
+        self._apply_window_minimums()
         QTimer.singleShot(0, self._apply_default_layout)
         # 全部真实布局已就绪：按需创建全局存储池浮窗（唯一入口，幂等 +
         # 启用门；与上方恢复调度同为 singleShot(0)，让建窗落在事件循环
@@ -1594,6 +1630,10 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         header = QFrame()
         header.setObjectName("TitleBar")
         header.setFixedHeight(48)
+        # 持有引用：启动加载覆盖层按它 stackUnder，把实色遮罩铺到标题栏区域
+        # 之下（标题栏文字/按钮仍留在最上层），避免标题栏透出云母/壁纸背景
+        # 与下方实色内容区形成断色（见 _mount_startup_overlay）。
+        self._title_bar_header = header
         # 完全透明，让下面的 Mica 效果（基底 + 模糊壁纸 + 遮罩）覆盖整个区域
         register_widget_qss(header,("""
             #TitleBar {
@@ -1610,18 +1650,29 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         header_layout.addWidget(self._title_label)
         header_layout.addStretch()
 
-        # GitHub 按钮（SVG图标）
-        github_icon_path = icons_dir() / "github.svg"
-        self._github_btn = StyledButton(
+        # 布局切换按钮（SVG图标）：在「预览优先 / 经典三栏」两种布局间切换
+        self._layout_toggle_btn = StyledButton(
+            "", variant="ghost", size="sm", icon=""
+        )
+        self._layout_toggle_btn.setFixedSize(32, 32)
+        register_widget_qss(self._layout_toggle_btn,(self._title_bar_button_style()))
+        self._layout_toggle_btn.clicked.connect(self._toggle_layout_mode)
+        header_layout.addWidget(self._layout_toggle_btn)
+        self._update_layout_toggle_button()
+
+        # 重置布局按钮（SVG图标）：把各区域位置大小恢复到默认值
+        reset_icon_path = icons_dir() / "refresh.svg"
+        self._reset_layout_btn = StyledButton(
             "",
             variant="ghost",
             size="sm",
-            icon=str(github_icon_path) if github_icon_path.exists() else ""
+            icon=str(reset_icon_path) if reset_icon_path.exists() else ""
         )
-        self._github_btn.setFixedSize(32, 32)
-        register_widget_qss(self._github_btn,(self._title_bar_button_style()))
-        self._github_btn.clicked.connect(self._open_github)
-        header_layout.addWidget(self._github_btn)
+        self._reset_layout_btn.setFixedSize(32, 32)
+        register_widget_qss(self._reset_layout_btn,(self._title_bar_button_style()))
+        self._reset_layout_btn.setToolTip("重置布局")
+        self._reset_layout_btn.clicked.connect(self._reset_layout)
+        header_layout.addWidget(self._reset_layout_btn)
 
         # 设置按钮（SVG图标）
         settings_icon_path = icons_dir() / "setting.svg"
@@ -1718,9 +1769,66 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             if max_2_path.exists():
                 self._maximize_btn.set_svg_icon(str(max_2_path))
     
-    def _open_github(self) -> None:
-        """打开 GitHub 项目页面"""
-        QDesktopServices.openUrl(QUrl("https://github.com/Dorufoc/FreeAssetFilter"))
+    def _reset_layout(self) -> None:
+        """把主界面各区域的位置大小恢复为当前布局模式的默认值（渐变过渡）"""
+        if self._main_layout is None:
+            return
+        self._main_layout.apply_default_ratios(
+            animated=is_animation_enabled("layout_reset", default=True)
+        )
+
+    def _toggle_layout_mode(self) -> None:
+        """布局切换按钮：在「预览优先」与「经典三栏」两种布局间即时切换。
+
+        与设置页「通用 → 界面布局」同一链路：先预抓拍旧外观快照（250ms
+        溶解过渡，受 layout_switch 动画门控），再 ``set_layout_mode``
+        即时重组布局，最后延迟写盘 ``general.layout_mode``，避免同步磁盘
+        IO 推迟过渡动画启动。按钮图标与提示由 ``set_layout_mode`` 内的
+        ``_update_layout_toggle_button`` 统一刷新，本方法不重复维护。
+        """
+        target = "classic" if self._layout_mode == "workspace" else "workspace"
+        self.begin_layout_transition()
+        if not self.set_layout_mode(target):
+            return
+        self._persist_layout_mode()
+
+    def _update_layout_toggle_button(self) -> None:
+        """按当前布局模式刷新切换按钮的图标与提示（图标=点击后的目标模式）。"""
+        btn = self._layout_toggle_btn
+        if btn is None:
+            return
+        if self._layout_mode == "workspace":
+            # 当前预览优先 → 点击切为经典三栏，显示经典布局图标
+            icon_path = icons_dir() / "layout_classic.svg"
+            btn.setToolTip("切换为经典三栏布局")
+        else:
+            icon_path = icons_dir() / "layout_workspace.svg"
+            btn.setToolTip("切换为预览优先布局")
+        if icon_path.exists():
+            btn.set_svg_icon(str(icon_path))
+
+    def _persist_layout_mode(self) -> None:
+        """延迟写盘布局偏好到 SettingsManagerV2（general.layout_mode）。
+
+        延迟到下一事件循环拍执行，避免同步磁盘 IO 推迟过渡动画启动；
+        回调内读取最新 ``_layout_mode``，快速连点只落最终值。失败仅告警，
+        不阻塞布局切换。
+        """
+
+        def _deferred_save() -> None:
+            try:
+                app = QApplication.instance()
+                v2 = getattr(app, "settings_manager", None)
+                if v2 is None:
+                    from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+                    v2 = SettingsManagerV2()
+                    v2.load()
+                v2.set("general.layout_mode", self._layout_mode)
+                v2.save()
+            except Exception as exc:  # noqa: BLE001 - 延迟写盘失败仅告警
+                warning(f"布局设置保存失败（重启后可能回退）：{exc}")
+
+        QTimer.singleShot(0, _deferred_save)
 
     def _open_settings_window(self) -> None:
         """打开设置窗口（每次新建，关闭即销毁，不缓存窗口实例）。
@@ -1770,61 +1878,41 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         if gen is not None and gen != self._settings_window_gen:
             return
         self._settings_window = None
+        # 窗口子树销毁会清空其 QSS 片段条目：``destroyed`` 在子控件销毁
+        # **之前**触发，因此推迟到下一事件循环拍再剪枝（此时子树已真正析构），
+        # 使注册表规模回到存活控件数（避免反复开关后表项堆积）。
+        QTimer.singleShot(0, self._prune_qss_registrations)
 
-    def _open_license_viewer(self) -> None:
-        """打开开源许可证查看窗口（每次新建，关闭即销毁，不缓存窗口实例）。
+    @staticmethod
+    def _prune_qss_registrations() -> None:
+        """清掉 QSS 注册表中已销毁控件的片段条目（失败不影响生命周期）。"""
+        try:
+            from freeassetfilter.ui.theme.app_stylesheet import (
+                prune_dead_registrations,
+            )
 
-        窗口以主窗口为 parent（Windows owned 子窗口）：始终相对主窗口置顶，
-        主窗口关闭/退出时随宿主一并关闭销毁。实例引用保存在
-        ``self._license_viewer_window``（与设置窗口同模式），防止函数返回后
-        Python GC 销毁顶层窗口；destroyed 后按代际清空引用以便下次重建。
-        已打开时不重复创建，聚焦到前台即可。
-        """
-        win = self._license_viewer_window
-        if win is not None:
-            try:
-                visible = win.isVisible()
-            except RuntimeError:
-                # 兜底：C++ 对象已销毁但引用尚未清空，视为已关闭
-                visible = False
-            if visible:
-                win.raise_()
-                win.activateWindow()
-                return
-            self._license_viewer_window = None
+            prune_dead_registrations()
+        except Exception as exc:  # noqa: BLE001 - 剪枝失败不影响窗口生命周期
+            debug(f"关闭后 QSS 注册表剪枝失败：{exc}")
 
-        window = LicenseViewerWindow(self)
-        self._license_viewer_window = window
-        self._license_viewer_gen += 1
-        gen = self._license_viewer_gen
-        window.setAttribute(Qt.WA_DeleteOnClose, True)
-        window.destroyed.connect(
-            lambda _obj=None, _gen=gen: self._on_license_viewer_closed(_gen)
-        )
-        window.show()
-        window.raise_()
-        window.activateWindow()
-
-    def _on_license_viewer_closed(self, gen: object = None) -> None:
-        """许可证窗口被关闭/销毁（含主窗口关闭连带销毁）后释放引用。
+    def _start_content_theme_transition(self, mode: str = "reveal") -> None:
+        """启动内容层过渡：切前抓整窗外观快照，切后按模式揭示/淡出/玻璃扫过。
 
         Args:
-            gen: 触发 destroyed 的窗口代际（创建窗口时绑定的计数器值）。
-                仅当传入代际与当前代际一致（或无代际参数的直接调用）时
-                才清空，防止旧窗口销毁事件晚到时误清已重建的新窗口引用。
-        """
-        if gen is not None and gen != self._license_viewer_gen:
-            return
-        self._license_viewer_window = None
+            mode: 过渡模式（字符串，未知值回退 ``"fade"``）：
 
-    def _start_content_theme_transition(self) -> None:
-        """启动内容层主题过渡：切前抓整窗外观快照，切后径向揭示新主题。
-
-        web 式 ``clip-path: circle()`` 扩散：以主题切换按钮中心为圆心，
-        整幅以旧外观快照打底、自圆心挖出扩张圆洞露出已切好的新主题。
-        半径 0 时即整幅旧外观（点击瞬间不发新主题闪现）；每像素同一时刻
-        只显示「旧」或「新」一个版本，消除交叉淡入的双重曝光叠印
-        （文字发糊的根因）。
+                - ``"reveal"``（默认，主题链路）：web 式 ``clip-path: circle()``
+                  扩散——以主题切换按钮中心为圆心，整幅以旧外观快照打底、
+                  自圆心挖出扩张圆洞露出已切好的新主题。半径 0 时即整幅旧
+                  外观（点击瞬间不发新主题闪现）；每像素同一时刻只显示
+                  「旧」或「新」一个版本，消除交叉淡入的双重曝光叠印
+                  （文字发糊的根因）。
+                - ``"fade"``：不传扩散圆心，旧外观快照整体渐隐（异常兜底；
+                  主题按钮缺失时 ``"reveal"`` 也退化为本模式）。
+                - ``"dissolve"``（布局切换链路，见 :meth:`begin_layout_transition`）：
+                  整窗旧外观快照 1→0 线性淡出、露出已切好的实时新布局。时长
+                  ``ContentTransitionOverlay.DISSOLVE_DURATION_MS``（250ms），
+                  缓动 ``QEasingCurve.Linear``。
 
         快照抓取 ``_root``（背景层 + 内容层）而非仅内容子树：面板填充
         多为 5%~72% alpha，内容层单独抓拍几乎全透明，铺到已切换的新内容
@@ -1841,6 +1929,9 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         未显示窗口（测试/最小化）无过渡——与 Mica 交叉过渡的 ``isVisible``
         守卫语义一致。
         """
+        mode_name = str(mode or "").strip().lower()
+        if mode_name not in ("reveal", "fade", "dissolve"):
+            mode_name = "fade"
         content = self._content
         if content is None or not content.isVisible():
             return
@@ -1858,10 +1949,22 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         snapshot = self._capture_theme_snapshot(size, content.devicePixelRatioF())
         if snapshot is None or snapshot.isNull():
             return
-        # 扩散圆心：主题按钮中心（内容层坐标）；按钮缺失/几何无效时
-        # 传 None 退化为历史透明度淡出，不影响切换本身。
-        origin = self._theme_toggle_origin(content)
-        overlay = ContentTransitionOverlay(content, snapshot, origin=origin)
+        if mode_name == "dissolve":
+            # 布局切换：整窗快照 250ms 线性溶解，不依赖主题按钮几何
+            overlay = ContentTransitionOverlay(
+                content,
+                snapshot,
+                duration_ms=ContentTransitionOverlay.DISSOLVE_DURATION_MS,
+                easing=QEasingCurve.Linear,
+            )
+        elif mode_name == "reveal":
+            # 扩散圆心：主题按钮中心（内容层坐标）；按钮缺失/几何无效时
+            # 传 None 退化为历史透明度淡出，不影响切换本身。
+            origin = self._theme_toggle_origin(content)
+            overlay = ContentTransitionOverlay(content, snapshot, origin=origin)
+        else:
+            # 透明度淡出：整幅平滑渐隐（异常/显式兜底路径）
+            overlay = ContentTransitionOverlay(content, snapshot)
         self._content_theme_overlay = overlay
         overlay.start()
 
@@ -2010,6 +2113,185 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         try:
             self._capture_background_pre_theme_state()
         except Exception:  # noqa: BLE001 - 抓拍失败不阻塞主题切换
+            pass
+
+    def begin_layout_transition(self) -> None:
+        """布局切换前预抓拍旧外观快照：切换后整窗快照线性溶解完成过渡。
+
+        与 :meth:`begin_theme_transition` 的区别：不传扩散圆心、不依赖主题
+        按钮几何，遮罩走「快照溶解」模式——整窗旧外观快照以
+        ``ContentTransitionOverlay.DISSOLVE_DURATION_MS``（250ms）+
+        ``QEasingCurve.Linear`` 自 1→0 淡出，露出已切好的实时新布局。本
+        方法受 ``layout_switch`` 动画设置门控（默认开启）；关闭时整段过渡
+        直接跳过（无快照、无遮罩、瞬时切换——真正的布局切换发生在其后的
+        设置流程中，不受影响）。快照抓取/isVisible 守卫/单实例去重与主题
+        链路共用；未显示窗口（测试/最小化）不建遮罩，快照失败静默跳过、
+        不阻塞布局切换本身。
+        """
+        # 门控：布局切换动画关闭时跳过过渡（与 _reset_layout 的 layout_reset 同款）
+        if not is_animation_enabled("layout_switch", default=True):
+            return
+        try:
+            self._start_content_theme_transition("dissolve")
+        except Exception:  # noqa: BLE001 - 快照失败不阻塞布局切换本身
+            pass
+
+    # ──── 背景模式过渡（设置页切换窗口背景的 450ms 交叉淡入） ───────────
+
+    def _can_transition_background(self) -> bool:
+        """背景过渡前置条件：窗口在屏、未最小化、根容器尺寸有效。
+
+        与内容层主题过渡的 ``isVisible`` 守卫同语义（测试/启动阶段不建
+        遮罩）；最小化时动画不可见，直接跳过省一次抓拍与动画。
+
+        Returns:
+            bool: 满足全部条件返回 True。
+        """
+        content = getattr(self, "_content", None)
+        root = getattr(self, "_root", None)
+        if content is None or root is None:
+            return False
+        try:
+            if not content.isVisible():
+                return False
+            if self.isMinimized():
+                return False
+            return not root.rect().isEmpty()
+        except Exception:  # noqa: BLE001 - 判定失败按不做过渡处理
+            return False
+
+    def _capture_background_frame(self) -> Optional[QPixmap]:
+        """抓拍当前可见背景层的帧（背景过渡遮罩的快照来源）。
+
+        按 ``_background_mode`` 取对应层：CPU 云母 / 图像 / 简约层走
+        ``QWidget.grab()``；实验性 GL 云母（``FAF_USE_GL_MICA=1``）经
+        ``grabFramebuffer()`` 取帧缓冲（``QWidget.render()`` 不含 GL 内容）。
+        未显示 / 空帧 / 抓取异常时返回 None，调用方跳过过渡、不阻塞切换。
+
+        Returns:
+            Optional[QPixmap]: 当前可见背景层的帧；不可用时 None。
+        """
+        mode = getattr(self, "_background_mode", "mica")
+        if mode == "image":
+            layer = getattr(self, "_custom_background", None)
+        elif mode == "minimalist":
+            layer = getattr(self, "_minimalist_background", None)
+        else:
+            layer = getattr(self, "_mica_background", None)
+        if layer is None:
+            return None
+        try:
+            # 以 isHidden()（未被显式隐藏）判定模式层可用：离屏/未 show 的
+            # 窗口 isVisible() 恒 False，但其模式层语义上「在屏」；整窗不可见
+            # 的情况已由 _can_transition_background 提前拦截。
+            if layer.isHidden():
+                return None
+            if isinstance(layer, QOpenGLWidget):
+                image = layer.grabFramebuffer()
+                if image.isNull():
+                    return None
+                snapshot = QPixmap.fromImage(image)
+                if snapshot.isNull():
+                    return None
+                snapshot.setDevicePixelRatio(float(layer.devicePixelRatioF()))
+                return snapshot
+            snapshot = layer.grab()
+        except Exception as exc:  # noqa: BLE001 - 抓拍失败跳过过渡，不阻塞切换
+            debug(f"背景过渡抓拍失败（跳过过渡）：{exc}")
+            return None
+        if snapshot.isNull():
+            return None
+        return snapshot
+
+    def _prepare_background_frame(self) -> Optional[QPixmap]:
+        """抓拍「当前屏幕背景现状」帧（连切时从现状连续出发）。
+
+        常规场景等价于 :meth:`_capture_background_frame`；若上一背景过渡
+        仍在起播/播放中，则把其快照按当前透明度叠加到新层帧之上——得到
+        与屏幕逐像素一致的混合态，新过渡从中连续出发（对齐 Mica 材质
+        「连切从屏幕现状出发」的语义），避免中途跳变。
+
+        Returns:
+            Optional[QPixmap]: 合成后的现状帧；抓拍不可用时 None。
+        """
+        frame = self._capture_background_frame()
+        if frame is None:
+            return None
+        overlay = getattr(self, "_background_transition_overlay", None)
+        if overlay is None:
+            return frame
+        try:
+            from shiboken6 import isValid
+
+            if not isValid(overlay):
+                self._background_transition_overlay = None
+                return frame
+            backdrop = overlay.snapshot_pixmap()
+            if backdrop is None or backdrop.isNull():
+                return frame
+            t = float(overlay.current_opacity())
+            if t >= 1.0:
+                # 起播瞬间（动画尚未推进）：屏幕此刻完整呈现旧帧。
+                return backdrop.copy()
+            if t <= 0.0:
+                return frame
+            canvas = QPixmap(frame.size())
+            if canvas.isNull():
+                return frame
+            canvas.setDevicePixelRatio(frame.devicePixelRatio())
+            painter = QPainter(canvas)
+            try:
+                painter.setOpacity(1.0)
+                painter.drawPixmap(0, 0, frame)
+                painter.setOpacity(t)
+                painter.drawPixmap(0, 0, backdrop)
+            finally:
+                painter.end()
+            return canvas
+        except Exception as exc:  # noqa: BLE001 - 合成失败退回裸帧
+            debug(f"背景过渡连切合成失败（退回裸帧）：{exc}")
+            return frame
+
+    def _start_background_transition(self, snapshot: QPixmap) -> None:
+        """启动背景层交叉过渡：旧背景帧 450ms 淡出、新背景层实时在底。
+
+        遮罩压在三背景层之上、内容层之下（``stack_below=_content``）：内容
+        保持实时交互，仅背景区域做交叉淡入。单实例去重：上一过渡未结束先
+        收尾（连切时已合成屏幕现状，不产生跳变）；创建失败仅告警，不阻塞
+        背景切换本身。
+
+        Args:
+            snapshot: 切换前背景现状帧（:meth:`_prepare_background_frame` 产物）。
+        """
+        root = getattr(self, "_root", None)
+        content = getattr(self, "_content", None)
+        if root is None or content is None or snapshot is None or snapshot.isNull():
+            return
+        if root.rect().isEmpty():
+            return
+        self._finish_background_transition()
+        try:
+            overlay = BackgroundTransitionOverlay(
+                root, snapshot, stack_below=content
+            )
+            self._background_transition_overlay = overlay
+            overlay.start()
+        except Exception as exc:  # noqa: BLE001 - 遮罩失败不阻塞背景切换
+            debug(f"背景过渡遮罩启动失败：{exc}")
+            self._background_transition_overlay = None
+
+    def _finish_background_transition(self) -> None:
+        """立即收尾进行中的背景过渡遮罩（幂等；连切去重/外部强制收尾用）。"""
+        prev = getattr(self, "_background_transition_overlay", None)
+        self._background_transition_overlay = None
+        if prev is None:
+            return
+        try:
+            from shiboken6 import isValid
+
+            if isValid(prev):
+                prev.finish_now()
+        except Exception:  # noqa: BLE001 - 已销毁引用按无需收尾处理
             pass
 
     def _on_theme_toggle(self) -> None:
@@ -2263,7 +2545,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             if self._title_label is not None:
                 register_widget_qss(self._title_label,(f'font-size: 14px; font-weight: 600; color: {tm.text.name()};'))
             # 刷新所有标题栏按钮的 styleSheet（tm 颜色值已变化）
-            register_widget_qss(self._github_btn,(self._title_bar_button_style()))
+            register_widget_qss(self._layout_toggle_btn,(self._title_bar_button_style()))
+            register_widget_qss(self._reset_layout_btn,(self._title_bar_button_style()))
             register_widget_qss(self._settings_btn,(self._title_bar_button_style()))
             register_widget_qss(self._theme_btn,(self._title_bar_button_style()))
             register_widget_qss(self._minimize_btn,(self._title_bar_button_style()))
@@ -2334,6 +2617,159 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         """
         if self._main_layout is not None:
             self._main_layout.apply_default_ratios()
+
+    # ──── 最小尺寸聚合（叶子实测 → 主布局 / 预览器 / 主窗口） ─────────────
+
+    def _apply_leaf_minimums(self) -> None:
+        """聚合叶子实测下限并下发主布局（底行最小高 / 预览器最小总高）。
+
+        口径：
+
+        - 底行最小高 = max(储存池一行卡片 + 其底栏, 信息面板最小高)
+          （workspace；见 ``FilePoolLayout.minimum_row_height`` /
+          ``FileInfoPanel.minimum_content_height``）；
+        - 预览器最小总高 = 内容区 360 + 顶栏 48（``WORKSPACE_PREVIEW_MIN_CONTENT_H``
+          + ``PREVIEW_CHROME_PX``）。
+
+        仅 workspace 组装消费这两个下限（classic 无底行概念、预览器自然最小），
+        但统一按当前叶子实测值下发，切换布局后无需重算。
+        """
+        if self._main_layout is None:
+            return
+        from layout.main_layout import (
+            PREVIEW_CHROME_PX,
+            WORKSPACE_PREVIEW_MIN_CONTENT_H,
+        )
+
+        pool_h = 0
+        if self._file_pool is not None:
+            try:
+                pool_h = int(self._file_pool.minimum_row_height())
+            except (AttributeError, RuntimeError):
+                pool_h = 0
+        info_h = 0
+        if self._info_panel is not None:
+            try:
+                info_h = int(self._info_panel.minimum_content_height())
+            except (AttributeError, RuntimeError):
+                info_h = 0
+        self._main_layout.set_leaf_minimums(
+            max(pool_h, info_h),
+            WORKSPACE_PREVIEW_MIN_CONTENT_H + PREVIEW_CHROME_PX,
+        )
+
+    def _apply_previewer_minimums(self) -> None:
+        """按当前布局模式设置预览器最小尺寸。
+
+        - workspace：内容区（画布）最小 640×360（16:9，含底行情况 1 平分
+          恒成立），预览器最小尺寸 = 640 × (360 + 顶栏 48)；
+        - classic：清除显式下限（恢复自然最小），使信息面板高度范围可以
+          完整覆盖（预览区高度范围由信息面板高度范围反推）。
+        """
+        if self._previewer is None:
+            return
+        from layout.main_layout import (
+            PREVIEW_CHROME_PX,
+            WORKSPACE_PREVIEW_MIN_CONTENT_H,
+            WORKSPACE_PREVIEW_MIN_CONTENT_W,
+        )
+
+        try:
+            if self._layout_mode == "workspace":
+                self._previewer.setMinimumSize(
+                    WORKSPACE_PREVIEW_MIN_CONTENT_W,
+                    WORKSPACE_PREVIEW_MIN_CONTENT_H + PREVIEW_CHROME_PX,
+                )
+            else:
+                self._previewer.setMinimumSize(0, 0)
+        except RuntimeError:  # 控件已销毁（极端时序）：忽略
+            pass
+
+    def _apply_window_minimums(self) -> None:
+        """按当前布局模式刷新主窗口最小尺寸（各区域最小尺寸的聚合 + 窗口装饰）。
+
+        布局最小尺寸口径（不含标题栏 / 容器边距）：
+
+        - workspace：宽 = 选择器最小宽 + 分隔条 + max(预览器最小宽 640,
+          底行最小宽〔储存 + 分隔条 + 信息〕)；高 = 预览器最小总高（360 + 48）
+          + 分隔条 + 底行最小高〔max(储存池一行 + 底栏, 信息面板最小高)〕；
+        - classic：宽 = 选择器 + 分隔条 + 储存池 + 分隔条 + 右列最小宽
+          〔max(预览器自然最小, 信息面板最小宽, 底栏最小宽)〕；高 = 右区最小高
+          〔max(2×信息面板最小高 + 分隔条, 预览器自然最小高 + 分隔条 + 信息最小高)〕
+          + 分隔条 + 底部操作栏槽位。
+
+        叶子尚未就绪时不施加（保持窗口自然尺寸）；就绪后由 ``_finalize_panels``
+        或 ``set_layout_mode`` 重新调用。窗口小于此尺寸时布局会被压到不可用，
+        故主窗口最小尺寸按上述聚合 + 自绘标题栏 / 容器边距换算。
+        """
+        if self._main_layout is None:
+            return
+        from layout.main_layout import (
+            CLASSIC_ACTION_SLOT_PX,
+            HANDLE_WIDTH,
+            PREVIEW_CHROME_PX,
+            WORKSPACE_PREVIEW_MIN_CONTENT_H,
+            WORKSPACE_PREVIEW_MIN_CONTENT_W,
+        )
+
+        def _min_width(widget) -> int:
+            if widget is None:
+                return 0
+            try:
+                return max(
+                    int(widget.minimumWidth()), int(widget.minimumSizeHint().width())
+                )
+            except RuntimeError:
+                return 0
+
+        def _min_height(widget) -> int:
+            if widget is None:
+                return 0
+            try:
+                return max(
+                    int(widget.minimumHeight()), int(widget.minimumSizeHint().height())
+                )
+            except RuntimeError:
+                return 0
+
+        selector_w = _min_width(self._file_selector)
+        pool_w = _min_width(self._file_pool)
+        info_w = _min_width(self._info_panel)
+        preview_w = _min_width(self._previewer)
+        info_h = _min_height(self._info_panel)
+        pool_h = _min_height(self._file_pool)
+
+        if self._layout_mode == "workspace":
+            preview_min_w = max(preview_w, WORKSPACE_PREVIEW_MIN_CONTENT_W)
+            preview_min_h = WORKSPACE_PREVIEW_MIN_CONTENT_H + PREVIEW_CHROME_PX
+            bottom_min_w = pool_w + HANDLE_WIDTH + info_w
+            bottom_min_h = max(pool_h, info_h)
+            width = selector_w + HANDLE_WIDTH + max(preview_min_w, bottom_min_w)
+            height = preview_min_h + HANDLE_WIDTH + bottom_min_h
+        else:
+            slot = self._main_layout.classic_action_slot()
+            right_min_w = max(preview_w, info_w, _min_width(slot))
+            width = selector_w + 2 * HANDLE_WIDTH + pool_w + right_min_w
+            info_span_h = 2 * info_h + HANDLE_WIDTH if info_h > 0 else 0
+            right_area_h = max(
+                info_span_h,
+                _min_height(self._previewer) + HANDLE_WIDTH + info_h,
+            )
+            height = right_area_h + HANDLE_WIDTH + CLASSIC_ACTION_SLOT_PX
+
+        # 加上窗口装饰：容器四周边距 + 自绘标题栏高度
+        chrome_w = 0
+        chrome_h = 0
+        container = self._splitter_container
+        if container is not None and container.layout() is not None:
+            margins = container.layout().contentsMargins()
+            chrome_w = margins.left() + margins.right()
+            chrome_h = margins.top() + margins.bottom()
+        header = getattr(self, "_title_bar_header", None)
+        if header is not None:
+            chrome_h += max(0, int(header.minimumHeight()))
+
+        self.setMinimumSize(max(0, width + chrome_w), max(0, height + chrome_h))
 
     def _on_colors_updated(self, colors: dict) -> None:
         """配色加载完成后的处理：重新套用三栏面板样式（确保颜色就绪后边框/填充正确）。
@@ -2499,7 +2935,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 启动加载覆盖层：显示时同步一次几何（构造期布局尚未跑过，容器尺寸还是
         # 默认值），并启动最长存活兜底（三栏构建异常时遮罩仍会撤下）
         if self._startup_overlay is not None:
-            self._startup_overlay.fit_to_parent()
+            self._mount_startup_overlay()
             if self._startup_overlay_timer is not None:
                 self._startup_overlay_timer.start(self.STARTUP_OVERLAY_MAX_MS)
 
@@ -2719,7 +3155,11 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
     def set_background_mode(self, mode: str) -> None:
         """切换背景模式（mica / image / minimalist）。
 
-        只切换背景层可见性、不销毁重建控件（三个背景层常驻，切换零构建成本）：
+        只切换背景层可见性、不销毁重建控件（三个背景层常驻，切换零构建成本）；
+        模式真正变化且窗口在屏时，额外做 450ms 背景交叉淡入（切前抓当前
+        可见层帧、切后旧帧淡出露出新层，见 ``_capture_background_frame`` /
+        ``_start_background_transition``）——内容层保持实时，仅背景区域
+        平滑过渡；抓拍/遮罩失败静默跳过，切换本身不受影响。
 
         - "image"：显示自定义图像层、隐藏云母层与简约层；
         - "minimalist"：显示简约层、隐藏云母层与自定义图像层，并把当前
@@ -2734,6 +3174,14 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         if mode not in ("mica", "image", "minimalist"):
             warning(f"忽略非法背景模式: {mode!r}（仅支持 'mica' / 'image' / 'minimalist'）")
             return
+        # 过渡预抓拍：模式真正变化且在屏时才抓旧帧（新层切换后全量在底，
+        # 旧帧淡出即交叉淡入；连切合成屏幕现状，见 _prepare_background_frame）。
+        backdrop = None
+        if (
+            mode != getattr(self, "_background_mode", "mica")
+            and self._can_transition_background()
+        ):
+            backdrop = self._prepare_background_frame()
         self._background_mode = mode
         minimalist = getattr(self, "_minimalist_background", None)
         if mode == "image":
@@ -2756,17 +3204,38 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             if not getattr(self, "_mica_refresh_started", False):
                 self._mica_refresh_started = True
                 self._start_mica_refresh()
+        if backdrop is not None:
+            self._start_background_transition(backdrop)
 
     def set_ambient_enabled(self, enabled: bool) -> None:
         """设置简约背景的氛围开关并转发给简约层。
 
+        已处于「简约」模式且该层在屏时，氛围值真正变化也走 450ms 交叉淡入
+        （切前抓旧渐变帧、切换后淡出）；其余场景（层未显示/同值重复）仅
+        记录并转发，由 ``set_background_mode`` 的过渡统一覆盖，不会双重过渡。
+
         Args:
             enabled: True 开启氛围渐变，False 使用纯色；经 bool() 归一后记录。
         """
-        self._background_ambient = bool(enabled)
+        enabled = bool(enabled)
+        backdrop = None
         minimalist = getattr(self, "_minimalist_background", None)
+        if (
+            enabled != bool(getattr(self, "_background_ambient", True))
+            and minimalist is not None
+            and getattr(self, "_background_mode", "mica") == "minimalist"
+            and self._can_transition_background()
+        ):
+            try:
+                if not minimalist.isHidden():
+                    backdrop = self._prepare_background_frame()
+            except Exception:  # noqa: BLE001 - 判定失败按不做过渡处理
+                backdrop = None
+        self._background_ambient = enabled
         if minimalist is not None:
             minimalist.set_ambient_enabled(self._background_ambient)
+        if backdrop is not None:
+            self._start_background_transition(backdrop)
 
     def get_background_mode(self) -> str:
         """返回当前背景模式（供设置页实时联动与测试）。
@@ -2910,6 +3379,7 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         if self._main_layout is None or self._splitter_container is None:
             # 轻量启动外壳阶段：仅记录偏好，构建时应用
             self._layout_mode = mode
+            self._update_layout_toggle_button()
             return True
         if mode == self._layout_mode:
             return True
@@ -2953,6 +3423,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._main_layout = new_layout
         self._zones = new_layout.zones
         self._layout_mode = mode
+        # 顶栏布局切换按钮随模式刷新（设置页切换与按钮点击同链路）
+        self._update_layout_toggle_button()
         # 统一操作按钮承载方式随布局切换（经典=底部栏 / New=预览器顶栏）
         if self._previewer is not None:
             self._previewer.set_actions_mode(mode == "workspace")
@@ -2966,6 +3438,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             self._file_pool.set_view_mode(
                 "grid" if mode == "workspace" else "list"
             )
+        # 预览器最小尺寸随模式（workspace 内容区 640×360；classic 清除）
+        self._apply_previewer_minimums()
         self._refresh_panel_styles()
         # 新布局尚未经历首次布局时 QWidget 停留在默认幽灵尺寸（100×30），
         # 而迁移/挂载过程已可能触发过该尺寸下的比例应用；这里先显式赋真实
@@ -2982,7 +3456,11 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                 new_layout.setGeometry(inner)
         except Exception:  # noqa: BLE001 - 几何赋值失败则退化为 resizeEvent 兜底
             pass
+        # 叶子实测下限下发到新布局实例（底行最小高 / 预览器最小总高），
+        # 再应用默认比例；最后聚合刷新主窗口最小尺寸
+        self._apply_leaf_minimums()
         new_layout.apply_default_ratios()
+        self._apply_window_minimums()
         return True
 
     @staticmethod
@@ -3006,6 +3484,11 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
     def set_custom_background_image(self, path: str) -> bool:
         """设置自定义背景图片（转发给背景层组件）。
 
+        已处于「图像」模式且该层在屏时，更换图片也走 450ms 交叉淡入
+        （切前抓旧图帧、切换后淡出）；其余场景（层未显示，如云母→图像
+        首次切入）只更新内容，由 ``set_background_mode`` 的过渡统一覆盖，
+        不会双重过渡。
+
         Args:
             path: 图片文件绝对路径。
 
@@ -3013,7 +3496,23 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             bool: 加载成功返回 True；路径无效或无法解码返回 False
             （组件内部已记录日志并回退纯色兜底）。
         """
-        return self._custom_background.set_image(path)
+        layer = getattr(self, "_custom_background", None)
+        if layer is None:
+            return False
+        backdrop = None
+        if (
+            getattr(self, "_background_mode", "mica") == "image"
+            and self._can_transition_background()
+        ):
+            try:
+                if not layer.isHidden() and layer.has_image():
+                    backdrop = self._prepare_background_frame()
+            except Exception:  # noqa: BLE001 - 判定失败按不做过渡处理
+                backdrop = None
+        changed = bool(layer.set_image(path))
+        if changed and backdrop is not None:
+            self._start_background_transition(backdrop)
+        return changed
 
     def set_image_background_params(self, blur: float, opacity: float) -> None:
         """设置自定义图像背景的模糊度与不透明度（转发给背景层组件）。
@@ -3097,13 +3596,21 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
 
 def _apply_theme_palette(widget: QWidget) -> None:
-    """把当前主题色写入 *widget* 的调色板（全角色，而非仅 Window）。
+    """把当前主题色写入 *widget* 的调色板（全角色，而非仅 Window），并注册
+    同色 QSS 背景片段。
 
     应用主题只靠 QSS 实现、未设应用级调色板；本函数用于纯色背景顶层窗口
     的根容器。只覆盖 ``Window`` 角色时，未被打上 QSS 的后代（QScrollArea
     viewport、尚未注册的 QLabel 等）仍会回落到系统调色板——系统深色下
     浅色主题就会闪现深底白字。补齐 Base/Text/WindowText 等角色后，
     「样式下发前的空窗帧」也能呈现当前主题色。
+
+    注意（调色板不抗 QSS 重刷）：任何 ``setStyleSheet`` 下发都会把控件调色板
+    还原为「上次应用样式时」的值——仅靠 ``setPalette`` 的窗口背景在下发后
+    仍停留在旧主题（实测：设置窗口切到浅色后根容器仍是深色 G1，卡片等浅色
+    QSS 全部画在深底上；许可证窗口同理）。因此这里同时注册
+    ``background-color`` 片段，由下发到控件自身的样式片段主导稳态绘制；
+    调色板仅兜底首帧前的空窗帧。
 
     Args:
         widget: 目标根容器（通常为窗口的 central widget）。
@@ -3119,6 +3626,9 @@ def _apply_theme_palette(widget: QWidget) -> None:
     palette.setColor(QPalette.Text, text)
     palette.setColor(QPalette.ButtonText, text)
     widget.setPalette(palette)
+    # 稳态背景由 QSS 片段主导（重刷安全，见 docstring）；窗口销毁后
+    # 片段随 weakref 注册项自动回收。
+    register_widget_qss(widget, f"background-color: {tm.qss_color(surface)};")
 
 
 class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
@@ -3237,11 +3747,11 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         """窗口显示/重新显示时刷新全量主题样式"""
         super().showEvent(event)
         self._sync_theme()
-        # 同步下发样式表：register_widget_qss 的合并重建排在下一事件循环
-        # tick，若不在首帧前落地，本窗口首帧会以"不含本窗口片段"的旧样式表
-        # 绘制（浅色主题下闪现系统深色底/白字），下一 tick 又触发一次全树
-        # 重刷（可见卡顿）。此处同步重建后窗体重排完成于可见之前，且原定时
-        # tick 因已非脏而空转（不重复下发）。
+        # 样式下发兜底：widget 模式下每次 ``register_widget_qss`` 已把片段
+        # 直接下发到控件自身，本窗口首帧天然带自己的样式（历史"首帧无片段
+        # 回退到不含本窗片段的旧全表"缺陷不再存在）；此处仅补发 teardown
+        # 窗口等未能即时下发的积压项，以及进程生命周期内首次调用的全量
+        # 重下发（等价旧实现启动时那次应用级统一下发，让 Qt 重算布局缓存）。
         apply_app_stylesheet()
 
     def _sync_theme(self) -> None:
@@ -3295,182 +3805,4 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                 layout.on_host_closing()
         except Exception as exc:
             debug(f"设置窗口关闭钩子失败（暂存缓存可能未清理）：{exc}")
-        super().closeEvent(event)
-
-
-class LicenseViewerWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
-    """开源许可证查看窗口 — 主窗口的 owned 子窗口，tm.surface 纯色背景。
-
-    从设置窗口「关于 → 开源许可证」的查看按钮弹出；窗口标题「开源许可证」，
-    自定义标题栏实现与设置窗口（``SettingsWindow``）保持一致（48px 标题栏 +
-    标题文字 + ✕ 关闭按钮 + startSystemMove 拖拽），内容区嵌入现有
-    ``TextPreviewerLayout``（markdown 文本预览器）并固定加载
-    ``freeassetfilter/docs/THIRD_PARTY_NOTICES.md`` 第三方开源许可证文档。
-    以主窗口为 parent（Windows owned 窗口）——始终相对主窗口置顶，
-    主窗口关闭时许可证窗口一并关闭销毁。
-    """
-
-    #: 标题栏 objectName（eventFilter 拖拽判定用，与设置窗口区分）
-    _TITLE_BAR_OBJECT_NAME = "LicenseViewerTitleBar"
-
-    def __init__(self, parent=None):
-        # 先初始化属性，防止父类初始化期间触发的事件访问未定义属性
-        self._root = None
-        self._title_label = None
-        self._close_btn = None
-        self._previewer = None
-
-        super().__init__(parent)
-
-        self.setWindowTitle("开源许可证")
-        self.setMinimumSize(640, 420)
-        self.resize(860, 640)
-
-        # 定位：居中到宿主主窗口；无宿主时回退到鼠标所在屏幕中心
-        self._center_on_host()
-
-        # 中央部件用纯 QWidget，保留本地无边框基类原生窗口特性；
-        # tm.surface 不透明纯色背景（与设置窗口 / styled 弹窗同款）
-        self._root = QWidget(self)
-        self.setCentralWidget(self._root)
-        _apply_theme_palette(self._root)
-        self._root.setAutoFillBackground(True)
-
-        layout = QVBoxLayout(self._root)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        # 标题栏（标题文字 + 关闭按钮，与设置窗口同款实现）
-        self._create_title_bar(layout)
-
-        # 内容区：嵌入现有 markdown 文本预览器，固定加载第三方许可证文档
-        from layout.preview.text_previewer_layout import TextPreviewerLayout  # 延迟导入（启动提速）
-
-        self._previewer = TextPreviewerLayout(
-            self._root, standalone=False
-        )
-        layout.addWidget(self._previewer, stretch=1)
-
-        # 固定加载 docs 目录内的第三方开源许可证文档
-        try:
-            from freeassetfilter.core._paths import docs_dir
-
-            notice_path = docs_dir() / "THIRD_PARTY_NOTICES.md"
-        except Exception:  # noqa: BLE001 - 路径解析失败时退化为项目文档根
-            notice_path = Path(__file__).resolve().parent.parent / "docs" / "THIRD_PARTY_NOTICES.md"
-        self._previewer.set_file(str(notice_path))
-
-        # 监听主题变化以刷新背景和标题栏颜色
-        tm.theme_changed.connect(self._on_theme_changed)
-
-    def _center_on_host(self) -> None:
-        """居中到宿主主窗口；无宿主时回退到鼠标所在屏幕中心"""
-        host = self.parentWidget()
-        if host is not None and host.isVisible():
-            geo = host.geometry()
-            x = geo.x() + (geo.width() - self.width()) // 2
-            y = geo.y() + (geo.height() - self.height()) // 2
-            self.move(x, y)
-            return
-        screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
-        geo = screen.geometry()
-        self.move(
-            geo.x() + (geo.width() - self.width()) // 2,
-            geo.y() + (geo.height() - self.height()) // 2,
-        )
-
-    def _create_title_bar(self, parent_layout: QVBoxLayout) -> None:
-        """创建标题栏（标题文字 + 关闭按钮，与设置窗口同款实现）"""
-        header = QFrame()
-        header.setObjectName(self._TITLE_BAR_OBJECT_NAME)
-        header.setFixedHeight(48)
-        register_widget_qss(header, ("""
-            #LicenseViewerTitleBar {
-                background-color: transparent;
-            }
-        """))
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(16, 8, 16, 8)
-        header_layout.setSpacing(0)
-
-        # 标题文字
-        self._title_label = QLabel("开源许可证")
-        register_widget_qss(self._title_label, (
-            f'font-size: 14px; font-weight: 600; color: {tm.text.name()};'
-        ))
-        header_layout.addWidget(self._title_label)
-        header_layout.addStretch()
-
-        # 关闭按钮
-        self._close_btn = StyledButton("", variant="ghost", size="sm")
-        self._close_btn.setFixedSize(32, 32)
-        self._close_btn.setText("✕")
-        register_widget_qss(self._close_btn, (self._close_button_style()))
-        self._close_btn.clicked.connect(self.close)
-        header_layout.addWidget(self._close_btn)
-
-        # 安装事件过滤器用于拖拽
-        header.installEventFilter(self)
-        parent_layout.addWidget(header)
-
-    def _close_button_style(self) -> str:
-        """生成关闭按钮的 styleSheet（与设置窗口同款样式）"""
-        return f"""
-            QPushButton {{ background: transparent; border: none; color: {tm.text.name()}; font-size: 16px; }}
-            QPushButton:hover {{ background: {tm.danger.name()}; color: {tm.text.name()}; }}
-        """
-
-    def _on_theme_changed(self, _theme: str) -> None:
-        """主题切换时刷新背景色和标题栏样式"""
-        self._sync_theme()
-
-    def showEvent(self, event) -> None:
-        """窗口显示/重新显示时刷新全量主题样式"""
-        super().showEvent(event)
-        self._sync_theme()
-        # 同步下发样式表（与设置窗口同款）：避免首帧以旧样式表绘制而闪现/
-        # 卡顿，详见 SettingsWindow.showEvent 的说明。
-        apply_app_stylesheet()
-
-    def _sync_theme(self) -> None:
-        """强制刷新当前主题下的所有样式"""
-        if self._root is not None:
-            _apply_theme_palette(self._root)
-        if self._title_label is not None:
-            register_widget_qss(self._title_label, (
-                f'font-size: 14px; font-weight: 600; color: {tm.text.name()};'
-            ))
-        if self._close_btn is not None:
-            register_widget_qss(self._close_btn, (self._close_button_style()))
-        # 内容区预览器内部自接管主题（TextPreviewerLayout.connect_theme）
-
-    def eventFilter(self, obj: QWidget, event: QEvent) -> bool:
-        """事件过滤器 - 处理标题栏拖拽（与设置窗口同款实现）"""
-        if not isinstance(event, QMouseEvent):
-            return False
-        if event.type() != QEvent.Type.MouseButtonPress:
-            return False
-        if event.button() != Qt.LeftButton:
-            return False
-
-        # 检查是否点击在按钮上
-        child = obj.childAt(event.position().toPoint())
-        if child is not None and isinstance(child, StyledButton):
-            return False  # 让按钮正常工作
-
-        # 在标题栏上拖拽移动窗口
-        if obj.objectName() == self._TITLE_BAR_OBJECT_NAME and self.windowHandle():
-            self.windowHandle().startSystemMove()
-            return True
-
-        return False
-
-    def closeEvent(self, event) -> None:
-        """窗口关闭时清理预览器（在途渲染任务/缩放弹窗/抽屉）。"""
-        try:
-            previewer = getattr(self, "_previewer", None)
-            if previewer is not None and hasattr(previewer, "cleanup"):
-                previewer.cleanup()
-        except Exception as exc:
-            debug(f"关闭时预览器清理失败：{exc}")
         super().closeEvent(event)
