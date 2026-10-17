@@ -18,6 +18,7 @@ FreeAssetFilter 应用引导层（精简版）
   - faulthandler（VEH/UEF 崩溃栈兜底，仅写日志文件）
   - 未捕获异常钩子（sys.excepthook / threading.excepthook）
   - AppUserModelID、DPI 感知、单实例互斥体、运行时实例信息
+  - 启动期提权自愈（管理员运行致 Explorer 拖入被 UIPI 拦截时，询问去提权重启）
   - 内部子进程分流：--faf-thumbnail-worker
   - 首帧分阶段启动调度（见 freeassetfilter.app.startup）
   - 退出链（心跳停止 → fd 卸载 → 设置落盘 → 日志 flush → 互斥体释放）
@@ -45,10 +46,12 @@ import sys
 import threading
 import time
 import warnings
+from typing import Any
 
 # 确保包能被正确导入（PyInstaller 直接执行本脚本时也需要）
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+from freeassetfilter.utils import elevation
 from freeassetfilter.utils.app_logger import (
     get_logger,
     debug,
@@ -369,6 +372,129 @@ def _warn_if_frameless_unsupported() -> None:
 
 
 # ──────────────────────────────────────────────────────────────
+# 启动期提权自愈（UIPI 拖放失效：去提权重启，办法一）
+# ──────────────────────────────────────────────────────────────
+
+#: 本次运行内是否已询问过去提权重启（内存标记，不落盘）。
+_deelevation_prompt_suppressed: bool = False
+
+
+def _deelevation_restart_command() -> tuple[list[str], str]:
+    """构造去提权重启的目标命令行与工作目录。
+
+    源码运行（``python -m freeassetfilter.app.main``）依赖 cwd 定位包，
+    必须携带仓库根目录；冻结运行（PyInstaller exe）直接重启自身，
+    cwd 取可执行文件所在目录（沿用 ``getattr(sys, "frozen", False)`` 惯例）。
+
+    Returns:
+        ``(argv, cwd)`` 二元组。
+    """
+    if getattr(sys, "frozen", False):
+        return [sys.executable], os.path.dirname(os.path.abspath(sys.executable))
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return [sys.executable, "-m", "freeassetfilter.app.main"], repo_root
+
+
+def _ask_deelevation_restart_choice() -> int:
+    """弹出去提权重启询问框（styled 组件），阻塞至用户点击。
+
+    Returns:
+        被点击按钮索引：0 = 「立即重启」；1 = 「保持管理员权限」。
+    """
+    from freeassetfilter.ui.components.styled_dialog import ask_custom_dialog
+
+    # show_close=False（显式声明）：不提供 X 关闭按钮，避免「关闭 → 兜底 0 →
+    # 被误读为立即重启」；StyledDialog 无 ESC 处理，用户必须二选一，语义无歧义。
+    return ask_custom_dialog(
+        title="以管理员权限运行",
+        message=(
+            "当前程序以管理员权限运行。Windows 的安全限制（UIPI）会使"
+            "「从资源管理器拖入文件/文件夹」失效。\n\n"
+            "立即以普通权限重新启动即可恢复正常；"
+            "选择「保持管理员权限」则继续使用，本次运行不再询问。"
+        ),
+        buttons=["立即重启", "保持管理员权限"],
+        dialog_type="question",
+        show_close=False,
+    )
+
+
+def _show_deelevation_restart_failure(detail: str) -> None:
+    """去提权重启失败告警（styled 组件），阻塞至用户确认。
+
+    Args:
+        detail: ``restart_de_elevated`` 返回的失败细节（原样展示，不吞掉）。
+    """
+    from freeassetfilter.ui.components.styled_dialog import ask_custom_dialog
+
+    ask_custom_dialog(
+        title="去提权重启失败",
+        message=(
+            "未能以普通权限重新启动程序，从资源管理器拖入文件仍将不可用。\n\n"
+            f"失败原因：{detail}\n\n"
+            "程序将继续以管理员权限运行。"
+        ),
+        buttons=["我知道了"],
+        dialog_type="danger",
+        show_close=False,
+    )
+
+
+def _offer_deelevation_restart_if_elevated(mutex_handle: Any) -> str:
+    """启动期提权自愈：提权且可去提权时，询问并（可选）立即去提权重启。
+
+    背景：提权运行时 UIPI 会拦截未提权 Explorer 的 OLE 投放，导致从资源
+    管理器拖入文件失效；以普通权限重启是根治手段（task 13 / 办法一）。
+
+    Args:
+        mutex_handle: 单实例互斥体句柄。选择「立即重启」时必须先释放，
+            否则重启出的新实例会因互斥体仍存在而拒绝启动。
+
+    Returns:
+        ``"continue"`` —— 未提权 / 无 shell 可借壳 / 本次运行已询问过，
+        按现状继续（零副作用）；
+        ``"keep"`` —— 用户选择保持管理员权限，本次运行不再询问；
+        ``"restart"`` —— 已成功发起去提权重启（互斥体与实例信息均已清理，
+        调用方应立即结束当前进程）；
+        ``"restart_failed"`` —— 已弹告警并附失败细节，继续以提权态运行
+        （交原生 WM_DROPFILES 兜底）。
+    """
+    global _deelevation_prompt_suppressed
+
+    if _deelevation_prompt_suppressed:
+        return "continue"
+    if not elevation.is_process_elevated():
+        return "continue"
+    if not elevation.deelevation_available():
+        return "continue"
+
+    info("[提权] 检测到以管理员权限运行：询问是否去提权重启（拖放受 UIPI 限制）")
+    restart_chosen = _ask_deelevation_restart_choice() == 0
+    _deelevation_prompt_suppressed = True
+    if not restart_chosen:
+        info("[提权] 用户选择保持管理员权限，本次运行不再询问")
+        return "keep"
+
+    # 释放互斥体 + 清理运行时实例信息必须先于重启：
+    # 否则新实例启动时会命中「已在运行」并直接退出。
+    instance_guard._release_mutex(mutex_handle)
+    try:
+        instance_guard._remove_runtime_instance_info(expected_pid=os.getpid())
+    except Exception as exc:  # noqa: BLE001 - 清理失败不阻断重启
+        debug(f"[提权] 清理运行时实例信息失败：{exc}")
+
+    argv, cwd = _deelevation_restart_command()
+    launched, detail = elevation.restart_de_elevated(argv, cwd)
+    if launched:
+        info(f"[提权] 已发起去提权重启（机制: {detail}）")
+        return "restart"
+
+    warning(f"[提权] 去提权重启失败：{detail}")
+    _show_deelevation_restart_failure(detail)
+    return "restart_failed"
+
+
+# ──────────────────────────────────────────────────────────────
 # 主入口
 # ──────────────────────────────────────────────────────────────
 
@@ -414,6 +540,17 @@ def main(argv=None) -> int:
         instance_guard._write_runtime_instance_info()
     except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError) as e:
         warning(f"写入运行实例信息失败: {e}")
+
+    # 启动期提权自愈（task 13）：管理员运行时 UIPI 会拦截 Explorer 的
+    # 拖入投放；询问用户是否以普通权限重启。必须在单实例互斥体已获取、
+    # 主窗口构建之前执行（非提权路径零副作用）。
+    deelevation_action = _offer_deelevation_restart_if_elevated(mutex_handle)
+    if deelevation_action == "restart":
+        # 互斥体与实例信息已在自愈流程内释放，重启出的新实例可正常启动。
+        sys.exit(0)
+    if deelevation_action == "restart_failed":
+        # 自愈流程已释放互斥体（失败后继续运行），置空防止退出链二次关闭句柄。
+        mutex_handle = None
 
     # 创建主窗口
     try:

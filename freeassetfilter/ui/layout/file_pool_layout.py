@@ -1290,6 +1290,7 @@ class FilePoolLayout(QWidget):
         """添加文件或文件夹到暂存池（创建 StyledInfoCard widget）。"""
         file_path = os.path.normpath(file_info["path"])
         if file_path in self._card_widgets:
+            warning(f"已存在于储存池，忽略重复添加: {file_path}")
             return
         file_info = dict(file_info)
         file_info.setdefault("display_name", file_info.get("name", os.path.basename(file_path)))
@@ -1363,6 +1364,7 @@ class FilePoolLayout(QWidget):
             self._card_container.setUpdatesEnabled(True)
             self._card_container.update()
         self._card_widgets[file_path] = card
+        debug(f"已添加文件到储存池: {file_path}")
         # 新增卡片后同步视图几何（网格：列宽与容器高度；列表：容器高度）
         self._sync_pool_card_geometry()
 
@@ -2246,10 +2248,7 @@ class FilePoolLayout(QWidget):
         if not event.mimeData().hasUrls():
             return
         urls = event.mimeData().urls()
-        for url in urls:
-            file_path = url.toLocalFile()
-            if os.path.exists(file_path):
-                self._add_dropped_item(file_path)
+        self.add_dropped_paths([url.toLocalFile() for url in urls])
         event.acceptProposedAction()
 
     def _set_drag_feedback(self, active: bool) -> None:
@@ -2267,6 +2266,16 @@ class FilePoolLayout(QWidget):
         style.unpolish(area)
         style.polish(area)
         area.update()
+
+    def add_dropped_paths(self, paths: list[str]) -> None:
+        """批量添加拖入路径（存在性过滤；OLE 拖入 / 提权兜底共用入口）。
+
+        Args:
+            paths: 待添加的本地路径列表；空串与不存在的路径一律跳过。
+        """
+        for file_path in paths:
+            if file_path and os.path.exists(file_path):
+                self._add_dropped_item(file_path)
 
     def _add_dropped_item(self, file_path: str) -> None:
         """构建文件信息并添加到暂存池。"""

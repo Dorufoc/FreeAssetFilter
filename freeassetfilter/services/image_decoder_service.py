@@ -12,7 +12,8 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 许可协议：https://github.com/Dorufoc/FreeAssetFilter/blob/main/LICENSE
 
 统一图像解码服务
-纯解码层，内部逻辑无 Qt 依赖（仅 _pil_to_qimage 使用 PySide6.QtGui.QImage）。
+纯解码层，Qt 依赖仅在具体解码方法内惰性导入（``QImage`` / ``QImageReader``），
+模块本身在无 PySide6 环境下仍可导入。
 支持格式：RAW、HEIF/AVIF、PSD，及常见标准格式的快速判定。
 """
 
@@ -188,6 +189,39 @@ class ImageDecoderService:
             return False, str(e)
         except Exception as e:
             error(f"[ImageDecoderService] 解码未知异常: {e}")
+            return False, str(e)
+
+    @classmethod
+    def decode_standard_to_qimage(
+        cls,
+        file_path: str,
+    ) -> Tuple[bool, Union[object, str]]:
+        """将标准格式图片（jpg/png/bmp/tiff/webp/svg/ico 等）解码为 QImage。
+
+        与图片预览器历史同步路径逐语义一致：``QImageReader`` +
+        ``setAutoTransform(True)``。本方法设计为在后台线程调用，只产出
+        ``QImage``，绝不构造 ``QPixmap``。
+
+        Parameters
+        ----------
+        file_path : str
+            图像文件路径。
+
+        Returns
+        -------
+        tuple[bool, QImage | str]
+            ``(True, QImage)`` 解码成功；``(False, "错误消息")`` 失败。
+        """
+        try:
+            from PySide6.QtGui import QImageReader
+
+            reader = QImageReader(file_path)
+            reader.setAutoTransform(True)
+            qimage = reader.read()
+            if qimage.isNull():
+                return False, f"无法加载图片: {reader.errorString()}"
+            return True, qimage
+        except Exception as e:  # noqa: BLE001
             return False, str(e)
 
     # ── RAW 解码 ────────────────────────────────────────────────────

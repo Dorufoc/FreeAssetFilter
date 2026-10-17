@@ -131,12 +131,13 @@ class OfficeConverterWorker(QThread):
         return self.isRunning()
 
     def request_cancel(self, grace: float | None = None) -> None:
-        """请求取消当前转换并真实终止活跃子进程。
+        """请求取消当前转换并异步终止活跃子进程（**不在调用线程等待**）。
 
-        幂等：已取消时直接返回。若 LibreOffice 转换正在进行，通过 T5 seam
-        拿到线程注册的 ``Popen`` 并 ``terminate()`` → 宽限 *grace* 秒 → 仍
-        存活则 ``kill()`` → ``wait()``，确保子进程死亡；若未发现 LO 子进程
-        （如 COM 后端 / 尚未启动），则做 best-effort 孤儿进程清理。
+        幂等：已取消时直接返回。置取消标志 + 停看门狗后，把
+        ``_terminate_active_subprocess`` 放到 daemon 线程执行：该函数可能
+        轮询等待 Popen 注册（最长 2s）并 terminate/wait/kill，放到后台可
+        避免快速切换预览时卡住 UI 线程。worker 的 ``run()`` 在转换返回后
+        根据 ``_cancel_requested`` 抑制成功结果。
 
         Parameters
         ----------
@@ -148,7 +149,31 @@ class OfficeConverterWorker(QThread):
         self._cancel_requested = True
         self._stop_watchdog()
         if self.isRunning():
+            threading.Thread(
+                target=self._terminate_active_subprocess_bg,
+                args=(grace,),
+                name="OfficeCancelTerminate",
+                daemon=True,
+            ).start()
+
+    def _terminate_active_subprocess_bg(self, grace: float | None) -> None:
+        """后台终止入口（吞掉退出阶段的任意异常，避免线程 traceback 噪音）。"""
+        try:
             self._terminate_active_subprocess(grace)
+        except Exception:  # noqa: BLE001 — 后台尽力而为
+            pass
+
+    def retire(self) -> None:
+        """非阻塞回收：请求取消，并在线程结束后 deleteLater。
+
+        供预览器快速切换/清理路径调用；调用方须先断开结果信号连接。
+        若线程已结束则直接安排删除。
+        """
+        if self.isRunning():
+            self.finished.connect(self.deleteLater)
+        self.request_cancel()
+        if not self.isRunning():
+            self.deleteLater()
 
     def cleanup(self, wait_ms: int = 3000) -> None:
         """取消并回收在途 worker，然后安全调度删除。

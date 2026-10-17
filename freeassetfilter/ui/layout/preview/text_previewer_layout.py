@@ -79,6 +79,7 @@ from theme import tm
 from components.styled_button import StyledButton
 from components.styled_checkbox import StyledCheckbox
 from components.styled_lineedit import StyledLineEdit
+from components.styled_loading import StyledLoading
 from components.styled_slider import StyledSlider
 from components.styled_combobox import StyledComboBox
 from components.styled_drawer import StyledDrawer
@@ -238,6 +239,81 @@ def _decode_auto_chain(raw: bytes, encoding: Optional[str] = None) -> tuple[str,
     from freeassetfilter.services.file_info_service import _decode_encoding_chain
 
     return _decode_encoding_chain(raw, encoding, errors="replace")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 文本读取/解码后台任务（文件 IO 与解码移出 UI 线程 + token 防陈旧）
+# ──────────────────────────────────────────────────────────────────────────────
+
+class _TextLoadSignals(QObject):
+    """文本读取/解码完成信号中转（任务持有，跨线程队列投递到 UI 线程）。"""
+
+    done = Signal(int, bool, object, str, str, str)
+    # (token, ok, raw, text, effective_encoding, error_message)
+
+
+class _TextLoadTask(QRunnable):
+    """后台读取文件并解码的池任务。
+
+    支持两种输入：
+    - ``file_path``：读取文件原始字节后按 ``encoding`` 解码；
+    - ``raw``：直接对内存字节重新解码（切换编码/探测结果回写）。
+
+    ``encoding`` 为 ``"auto"``/空串时走 ``_decode_auto_chain`` 快速回退链，
+    否则按指定编码 ``errors="replace"`` 解码。结果经 ``done`` 信号回主线程，
+    由布局侧 token 守卫决定采纳或丢弃；异常不向上抛，统一以 ``ok=False``
+    汇报。
+    """
+
+    def __init__(
+        self,
+        token: int,
+        *,
+        file_path: Optional[str] = None,
+        raw: Optional[bytes] = None,
+        encoding: str = "auto",
+    ) -> None:
+        """初始化任务。
+
+        Args:
+            token: 请求令牌（布局侧据此丢弃陈旧结果）。
+            file_path: 待读取文件路径；None 表示使用 ``raw``。
+            raw: 内存中的原始字节（file_path 为 None 时使用）。
+            encoding: 目标编码名；``"auto"``/空串走快速回退链。
+        """
+        super().__init__()
+        self.setAutoDelete(True)
+        self._signals = _TextLoadSignals()
+        self._token = token
+        self._file_path = file_path
+        self._raw = raw
+        self._encoding = encoding
+
+    @property
+    def done(self) -> Signal:
+        """完成信号 ``(token, ok, raw, text, encoding, error)``。"""
+        return self._signals.done
+
+    def start(self) -> None:
+        """投递到全局线程池执行。"""
+        QThreadPool.globalInstance().start(self)
+
+    def run(self) -> None:
+        """执行读取与解码。"""
+        try:
+            raw = self._raw
+            if self._file_path is not None:
+                raw = Path(self._file_path).read_bytes()
+            if raw is None:
+                raise ValueError("无可用原始字节")
+            if not self._encoding or self._encoding in ("auto", "自动识别"):
+                text, effective = _decode_auto_chain(raw, None)
+            else:
+                text = raw.decode(self._encoding, errors="replace")
+                effective = self._encoding
+            self.done.emit(self._token, True, raw, text, effective, "")
+        except Exception as exc:  # noqa: BLE001  # 读取/解码边界：统一失败上报
+            self.done.emit(self._token, False, None, "", "", str(exc))
 
 
 
@@ -1253,6 +1329,14 @@ class TextPreviewerLayout(QWidget):
         self._enc_detect_token: int = 0
         self._enc_detect_tasks: list[_EncodingDetectTask] = []
         self._fast_encoding: str = ""
+        # 文件读取/解码异步化状态：token 递增使旧任务失效；kind 区分首次
+        # 加载、编码切换、探测回写，决定是否启动探测/是否保持加载遮罩。
+        self._load_token: int = 0
+        self._load_kind: str = ""
+        self._text_load_tasks: list[_TextLoadTask] = []
+        self._loading_overlay_active: bool = False
+        #: 加载态下已投递 Markdown 渲染、等待完成后撤遮罩
+        self._md_render_pending: bool = False
         # 字号滑条防抖：仅 Markdown 模式启用，合并连续滑动为最终一次渲染
         self._font_debounce_timer: Optional[QTimer] = None
         # AI 功能入口（默认关闭）：开关由宿主（统一预览器 / 主窗口）在创建
@@ -1318,6 +1402,11 @@ class TextPreviewerLayout(QWidget):
         overlay_layout = QVBoxLayout(self._overlay)
         overlay_layout.setAlignment(Qt.AlignCenter)
         overlay_layout.setSpacing(16)
+
+        # 加载圆环（仅读取/解码/渲染中显示）
+        self._loading_spinner = StyledLoading(size="lg")
+        self._loading_spinner.setVisible(False)
+        overlay_layout.addWidget(self._loading_spinner, 0, Qt.AlignCenter)
 
         self._placeholder = QLabel("选择文本文件开始预览")
         self._placeholder.setAlignment(Qt.AlignCenter)
@@ -1422,6 +1511,35 @@ class TextPreviewerLayout(QWidget):
 
     # ── 公共接口 ────────────────────────────────────────────────────────────
 
+    def _show_loading(self, text: str) -> None:
+        """显示加载覆盖页（圆环 + 状态文本）。"""
+        self._loading_overlay_active = True
+        self._placeholder.setText(text)
+        self._loading_spinner.setVisible(True)
+        self._content_stack.setCurrentIndex(2)
+
+    def _hide_loading(self, target_index: int) -> None:
+        """隐藏加载圆环并切到指定内容页。
+
+        Args:
+            target_index: 内容页索引（0=源码，1=Markdown 渲染）。
+        """
+        self._loading_overlay_active = False
+        self._loading_spinner.setVisible(False)
+        self._content_stack.setCurrentIndex(target_index)
+
+    def _show_error_overlay(self, text: str) -> None:
+        """显示错误文本（覆盖页，隐藏圆环）。"""
+        self._loading_overlay_active = False
+        self._md_render_pending = False
+        self._loading_spinner.setVisible(False)
+        self._current_text = text
+        self._source_view._text_edit.setPlainText(text)
+        self._source_view._text_edit.setReadOnly(True)
+        self._source_view._sync_from_internal()
+        self._placeholder.setText(text)
+        self._content_stack.setCurrentIndex(2)
+
     def set_text_content(
         self,
         text: str,
@@ -1435,6 +1553,13 @@ class TextPreviewerLayout(QWidget):
             file_path: 文件路径（用于判断视图模式和高亮语言）。
             encoding: 文件编码名称。
         """
+        # 直接注入内容：使在途读取/探测/渲染任务全部过期并退出加载态
+        self._load_token += 1
+        self._enc_detect_token += 1
+        self._md_render_token += 1
+        self._loading_overlay_active = False
+        self._md_render_pending = False
+        self._loading_spinner.setVisible(False)
         self._current_raw = None
         if hasattr(self, "_encoding_combo") and self._encoding_combo is not None:
             self._encoding_combo.setCurrentIndex(0)
@@ -1443,11 +1568,11 @@ class TextPreviewerLayout(QWidget):
         self._set_decoded_text(text, file_path, encoding)
 
     def set_file(self, file_path: str) -> None:
-        """读取文件并设置预览内容。
+        """读取文件并设置预览内容（读取/解码在后台线程执行）。
 
-        编码探测移出 UI 线程（:class:`_EncodingDetectTask` + token 防陈旧）：
-        先按 ``utf-8 → latin-1`` 快速链显示防空白，探测完成后回调以探测编码
-        重新解码渲染。
+        读取与快速回退解码经 :class:`_TextLoadTask` 池任务完成；编码探测
+        仍由 :class:`_EncodingDetectTask` 异步执行。加载期间内容区显示
+        圆环 + 状态文本；Markdown 模式保持到首次渲染完成。
 
         Args:
             file_path: 要预览的文件路径。
@@ -1459,57 +1584,137 @@ class TextPreviewerLayout(QWidget):
             self._encoding_combo.reset_title_only()
             self._update_encoding_combo_width()
 
+        # 使旧读取/探测/渲染任务全部过期
+        self._load_token += 1
+        token = self._load_token
+        self._enc_detect_token += 1
+        self._md_render_token += 1
+
         path = Path(file_path)
+        self._current_file = str(path)
+        self._current_raw = None
+        self._fast_encoding = ""
+
         if not path.exists() or not path.is_file():
-            self._current_raw = None
-            self._fast_encoding = ""
-            self._set_decoded_text(f"无法读取文件: {file_path}", str(path), "unknown")
+            self._show_error_overlay(f"无法读取文件: {file_path}")
             return
 
-        try:
-            raw = path.read_bytes()
-            self._current_raw = raw
-        except Exception as exc:
-            self._current_raw = None
-            self._fast_encoding = ""
-            text = f"读取文件失败: {exc}"
-            encoding = "unknown"
-            self._set_decoded_text(text, str(path), encoding)
-            return
+        self._show_loading("正在读取并解码文件…")
+        self._start_text_load(
+            token, file_path=str(path), encoding="auto", kind="initial"
+        )
 
-        # 快速回退显示（utf-8 → latin-1），避免等待探测期间空白；
-        # 后台探测完成后以探测编码重新解码渲染（见 _on_encoding_detected）。
-        fast_text, fast_encoding = self._decode_bytes(raw, "auto")
-        self._fast_encoding = fast_encoding
-        self._set_decoded_text(fast_text, str(path), fast_encoding)
-        self._start_encoding_detect(raw, str(path))
-
-    def _decode_bytes(self, raw: bytes, encoding: str) -> tuple[str, str]:
-        """将原始字节按指定编码解码。
-
-        ``auto``/``自动识别`` 路径**不在 UI 线程做 chardet 探测**——探测已
-        移至 :class:`_EncodingDetectTask` worker（``set_file``/auto 选择时
-        自动投递），此处仅执行 ``utf-8 → latin-1`` 快速回退链解码，避免大
-        文件等待探测期间出现空白。指定编码则直接按名称解码。
+    def _start_text_load(
+        self,
+        token: int,
+        *,
+        file_path: Optional[str] = None,
+        raw: Optional[bytes] = None,
+        encoding: str = "auto",
+        kind: str,
+    ) -> None:
+        """投递文本读取/解码池任务。
 
         Args:
-            raw: 文件原始字节。
-            encoding: "auto"/"自动识别" 时走快速链；否则按名称解码。
-
-        Returns:
-            (解码后的文本, 实际使用的编码名称)
+            token: 请求令牌（陈旧结果丢弃用）。
+            file_path: 待读取文件路径；提供时忽略 ``raw``。
+            raw: 内存原始字节（切换编码/探测回写时使用）。
+            encoding: 目标编码名或 ``"auto"``。
+            kind: 请求种类（initial/encoding_auto/encoding_explicit/detect）。
         """
-        if encoding in ("auto", "自动识别"):
-            return _decode_auto_chain(raw, None)
-        return raw.decode(encoding, errors="replace"), encoding
+        self._load_kind = kind
+        task = _TextLoadTask(
+            token,
+            file_path=file_path,
+            raw=raw,
+            encoding=encoding,
+        )
+        task.done.connect(self._on_text_loaded)
+        self._track_text_load_task(task)
+        task.start()
 
-    def _set_decoded_text(self, text: str, file_path: str, encoding: str) -> None:
+    def _track_text_load_task(self, task: "_TextLoadTask") -> None:
+        """记录在途读取/解码任务引用（防 GC），完成时自动移除。"""
+        task.done.connect(
+            lambda *args, tk=task: self._untrack_text_load_task(tk)
+        )
+        self._text_load_tasks.append(task)
+
+    def _untrack_text_load_task(self, task: "_TextLoadTask") -> None:
+        """任务完成后从在途列表移除（防御 C++ 对象已销毁）。"""
+        try:
+            if task in self._text_load_tasks:
+                self._text_load_tasks.remove(task)
+        except RuntimeError:
+            pass
+
+    def _on_text_loaded(
+        self,
+        token: int,
+        ok: bool,
+        raw: object,
+        text: str,
+        encoding: str,
+        error: str,
+    ) -> None:
+        """读取/解码任务完成回调（令牌守卫，UI 线程）。
+
+        Args:
+            token: 投递时的请求令牌。
+            ok: 是否成功。
+            raw: 原始字节（失败为 None）。
+            text: 解码文本。
+            encoding: 实际使用的编码名。
+            error: 失败消息。
+        """
+        if token != self._load_token:
+            return
+        kind = self._load_kind
+        if not ok:
+            if kind == "detect":
+                # 探测后的静默重解码失败：保留当前已显示内容，不打断阅读
+                return
+            self._show_error_overlay(
+                f"读取文件失败: {error}" if kind == "initial" else f"解码失败: {error}"
+            )
+            return
+
+        self._current_raw = raw if isinstance(raw, bytes) else None
+        self._fast_encoding = encoding
+
+        defer = self._loading_overlay_active
+        self._set_decoded_text(
+            text, self._current_file, encoding, defer_switch=defer
+        )
+
+        if kind in ("initial", "encoding_auto"):
+            if self._current_raw is not None:
+                self._start_encoding_detect(self._current_raw, self._current_file)
+
+        if not defer:
+            return
+        if self._md_render_pending:
+            # Markdown 异步渲染尚未完成：保持圆环与覆盖页
+            self._placeholder.setText("正在渲染 Markdown…")
+            return
+        self._hide_loading(0)
+
+    def _set_decoded_text(
+        self,
+        text: str,
+        file_path: str,
+        encoding: str,
+        *,
+        defer_switch: bool = False,
+    ) -> None:
         """设置已解码的文本内容并选择正确的预览模式。
 
         Args:
             text: 文件文本内容。
             file_path: 文件路径（用于判断视图模式和高亮语言）。
             encoding: 文件编码名称。
+            defer_switch: True 时只灌数据/启动渲染，不切换内容页；由调用方
+                （加载完成/渲染回调）负责切页与隐藏圆环。
         """
         self._current_text = text
         self._current_file = file_path
@@ -1520,6 +1725,7 @@ class TextPreviewerLayout(QWidget):
 
         # 重置渲染/源码按钮可见性
         self._render_toggle_btn.setVisible(False)
+        self._md_render_pending = False
 
         # 总是先把文本写入源码视图
         self._source_view._text_edit.setPlainText(text)
@@ -1529,43 +1735,57 @@ class TextPreviewerLayout(QWidget):
         if self._current_mode == "markdown" and MARKDOWN_AVAILABLE:
             self._render_toggle_btn.setVisible(True)
             if self._render_markdown():
-                self._content_stack.setCurrentIndex(1)
                 self._render_toggle_btn.setText("源码")
+                if defer_switch:
+                    # 加载态：等待渲染回调再切页/撤遮罩
+                    self._md_render_pending = True
+                else:
+                    self._content_stack.setCurrentIndex(1)
             else:
                 # 渲染失败时回退为带语法高亮的源码视图
                 self._render_toggle_btn.setVisible(False)
                 self._apply_highlighter(language=self._get_language(file_path))
-                self._content_stack.setCurrentIndex(0)
+                if not defer_switch:
+                    self._content_stack.setCurrentIndex(0)
         elif self._current_mode == "markdown":
             # markdown 包不可用时当作带语法高亮的源码处理，并隐藏渲染切换按钮
             self._render_toggle_btn.setVisible(False)
             self._apply_highlighter(language=self._get_language(file_path))
-            self._content_stack.setCurrentIndex(0)
+            if not defer_switch:
+                self._content_stack.setCurrentIndex(0)
         elif self._current_mode == "code":
             self._apply_highlighter(language=self._get_language(file_path))
-            self._content_stack.setCurrentIndex(0)
+            if not defer_switch:
+                self._content_stack.setCurrentIndex(0)
         else:
-            self._content_stack.setCurrentIndex(0)
+            if not defer_switch:
+                self._content_stack.setCurrentIndex(0)
 
     def _on_encoding_selected(self, text: str) -> None:
-        """编码下拉框选择变化：使用内存中的原始字节重新解码。
+        """编码下拉框选择变化：后台用内存原始字节重新解码。
 
-        ``自动识别`` 走快速链显示 + 后台探测回调重渲染（与 ``set_file`` 同
-        路径，token 防陈旧）；指定编码直接按名称解码（纯解码，UI 线程安全）。
+        ``自动识别`` 走快速链显示 + 后台探测回调；指定编码按名称解码。
+        两者均经 :class:`_TextLoadTask` 池任务执行，UI 线程不阻塞。
+
+        Args:
+            text: 下拉框显示文本（``自动识别`` 或具体编码名）。
         """
         self._update_encoding_combo_width()
         if self._current_raw is None:
             return
         encoding = text if text != "自动识别" else "auto"
-        if encoding == "auto":
-            fast_text, fast_encoding = self._decode_bytes(self._current_raw, "auto")
-            self._fast_encoding = fast_encoding
-            self._set_decoded_text(fast_text, self._current_file, fast_encoding)
-            self._start_encoding_detect(self._current_raw, self._current_file)
-            return
-        decoded, effective = self._decode_bytes(self._current_raw, encoding)
-        self._fast_encoding = effective
-        self._set_decoded_text(decoded, self._current_file, effective)
+        # 用户显式切换编码：取消尚未完成的探测回写，避免覆盖用户选择
+        self._enc_detect_token += 1
+        self._load_token += 1
+        token = self._load_token
+        kind = "encoding_auto" if encoding == "auto" else "encoding_explicit"
+        self._show_loading("正在解码文本…")
+        self._start_text_load(
+            token,
+            raw=self._current_raw,
+            encoding=encoding,
+            kind=kind,
+        )
 
     def _start_encoding_detect(self, raw: bytes, path: str) -> None:
         """投递编码探测任务（token 递增使旧任务结果失效）。
@@ -1600,8 +1820,9 @@ class TextPreviewerLayout(QWidget):
         """编码探测后台结果回写（令牌守卫：陈旧结果直接丢弃）。
 
         探测无结果（空串 / native 置信度 <0.5 → 快速链已覆盖 ``utf-8 → 
-        latin-1``）→ 保持快速链显示；探测出具体编码 → 以其重新解码渲染。
-        探测结果与快速链编码一致（如普通 utf-8 文件）→ 跳过重渲染避免闪烁。
+        latin-1``）→ 保持快速链显示；探测出具体编码 → 以后台任务重新解码
+        渲染。探测结果与快速链编码一致（如普通 utf-8 文件）→ 跳过重渲染
+        避免闪烁。
 
         Args:
             token: 投递时的探测令牌。
@@ -1616,9 +1837,13 @@ class TextPreviewerLayout(QWidget):
         if detected == self._fast_encoding:
             self._current_encoding = detected
             return
-        text = self._current_raw.decode(detected, errors="replace")
-        self._fast_encoding = detected
-        self._set_decoded_text(text, self._current_file, detected)
+        self._load_token += 1
+        self._start_text_load(
+            self._load_token,
+            raw=self._current_raw,
+            encoding=detected,
+            kind="detect",
+        )
 
     def _init_search_drawer(self) -> None:
         """初始化左侧搜索抽屉面板：搜索框、选项、懒加载结果列表。"""
@@ -2048,9 +2273,16 @@ class TextPreviewerLayout(QWidget):
             self._exit_fullscreen()
         # 销毁缩放弹窗，避免清理后残留悬浮窗口（Qt 父级已保证随预览器销毁）
         self._discard_zoom_popup()
-        # 令在途 Markdown 渲染任务结果失效并停止字号防抖定时器
+        # 令在途 Markdown 渲染/读取解码/编码探测任务结果全部失效
         self._md_render_token += 1
         self._md_render_tasks.clear()
+        self._load_token += 1
+        self._enc_detect_token += 1
+        self._text_load_tasks.clear()
+        self._enc_detect_tasks.clear()
+        self._loading_overlay_active = False
+        self._md_render_pending = False
+        self._loading_spinner.setVisible(False)
         if self._font_debounce_timer is not None:
             self._font_debounce_timer.stop()
         if hasattr(self, "_search_drawer") and self._search_drawer is not None:
@@ -2200,12 +2432,13 @@ class TextPreviewerLayout(QWidget):
         """
         if token != self._md_render_token:
             return
+        self._md_render_pending = False
         if not ok or not html:
             # 渲染失败：回退为带语法高亮的源码视图，避免崩溃
             self._render_toggle_btn.setVisible(False)
             self._apply_highlighter(language=self._get_language(self._current_file))
-            self._content_stack.setCurrentIndex(0)
             self._render_toggle_btn.setText("渲染")
+            self._hide_loading(0)
             return
 
         self._markdown_view._text_browser.setHtml(html)
@@ -2217,6 +2450,10 @@ class TextPreviewerLayout(QWidget):
             self._markdown_view._text_browser.setSearchPaths([base_dir])
 
         self._markdown_view.set_current_file(self._current_file)
+
+        # 首次加载/解码触发的渲染：渲染完成后再撤下圆环并切到渲染页
+        if self._loading_overlay_active:
+            self._hide_loading(1)
 
 
     def _apply_stylesheet(self) -> None:

@@ -1074,6 +1074,15 @@ class TestSignalQueue:
         assert ("dur", 10.0) in received
         assert ("state", True) in received
 
+    def test_process_signal_queue_emits_buffering(self, qapp: Any) -> None:
+        """``_process_signal_queue`` 发射 bufferingChanged。"""
+        core = MPVPlayerCore()
+        received: List[bool] = []
+        core.bufferingChanged.connect(received.append)
+        core._enqueue_signal("bufferingChanged", True)  # noqa: SLF001
+        core._process_signal_queue()  # noqa: SLF001
+        assert received == [True]
+
     def test_process_signal_queue_skips_older_position(self, qapp: Any) -> None:
         """存在待处理 positionChanged 时跳过旧信号，只发射最新。"""
         core = MPVPlayerCore()
@@ -1232,6 +1241,27 @@ class TestPropertyChangeEvent:
             assert core._is_paused is True  # noqa: SLF001
             assert core._is_playing is False  # noqa: SLF001
         assert _queued_signal_count(core,"stateChanged") == 1  # noqa: SLF001
+
+    def test_paused_for_cache_updates_buffering(self, core: MPVPlayerCore) -> None:
+        """paused-for-cache 更新缓冲状态并入队 bufferingChanged（同值去重）。"""
+        core._handle_property_change_event(  # noqa: SLF001
+            c_void_p(0x1), MpvEvent(), extracted=("paused-for-cache", True)
+        )
+        with core._state_lock:  # noqa: SLF001
+            assert core._is_buffering is True  # noqa: SLF001
+        assert _queued_signal_count(core, "bufferingChanged") == 1  # noqa: SLF001
+
+        core._handle_property_change_event(  # noqa: SLF001
+            c_void_p(0x1), MpvEvent(), extracted=("paused-for-cache", True)
+        )
+        assert _queued_signal_count(core, "bufferingChanged") == 1  # noqa: SLF001
+
+        core._handle_property_change_event(  # noqa: SLF001
+            c_void_p(0x1), MpvEvent(), extracted=("paused-for-cache", False)
+        )
+        with core._state_lock:  # noqa: SLF001
+            assert core._is_buffering is False  # noqa: SLF001
+        assert _queued_signal_count(core, "bufferingChanged") == 2  # noqa: SLF001
 
     def test_volume_speed_mute_loop_update(self, core: MPVPlayerCore) -> None:
         """volume/speed/mute/loop-file 属性各自更新缓存。"""

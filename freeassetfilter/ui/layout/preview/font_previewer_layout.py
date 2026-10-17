@@ -31,6 +31,7 @@ if _project_root not in sys.path:
 from components.styled_button import StyledButton
 from components.styled_drawer import StyledDrawer
 from components.styled_floating_panel import FloatingPanel
+from components.styled_loading import StyledLoading
 from components.styled_slider import StyledSlider
 from components.styled_textarea import StyledTextarea
 from layout.preview.fullscreen_host import PreviewFullscreenHost
@@ -176,6 +177,11 @@ class _PreviewScrollArea(_StyledPreviewScrollArea):
 # 字体加载后台线程（从旧的 font_previewer.py 移植）
 # ──────────────────────────────────────────────────────────────────────────────
 
+#: 在途/待回收字体加载线程（模块级强引用，保证 QThread 在 run() 结束前不被
+#: Python GC 回收；``thread_finished`` 到达后移除并 deleteLater）。
+_RETIRED_FONT_THREADS: list["FontLoadThread"] = []
+
+
 class FontLoadThread(QThread):
     """字体加载后台线程。
 
@@ -186,6 +192,9 @@ class FontLoadThread(QThread):
 
     finished = Signal(int, bool, str, int)
     error = Signal(int, str)
+    #: run() 即将返回时发射（自定义 ``finished`` 已占用 QThread.finished 的
+    #: 名字，无法直接连接基类信号；此信号用于线程对象的安全回收）。
+    thread_finished = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         """初始化字体加载线程。
@@ -223,37 +232,61 @@ class FontLoadThread(QThread):
             self._abort = True
 
     def run(self) -> None:
-        """执行字体加载。"""
-        with QMutexLocker(self._mutex):
-            if self._abort:
-                return
-            file_path = self.file_path
-            request_id = self._request_id
-
+        """执行字体加载（无论成功/失败/中止，结束时发 ``thread_finished``）。"""
         try:
-            if not os.path.exists(file_path):
-                self.error.emit(request_id, f"字体文件不存在: {file_path}")
-                return
+            with QMutexLocker(self._mutex):
+                if self._abort:
+                    return
+                file_path = self.file_path
+                request_id = self._request_id
 
-            # 加载字体文件
-            font_id = QFontDatabase.addApplicationFont(file_path)
+            try:
+                if not os.path.exists(file_path):
+                    self.error.emit(request_id, f"字体文件不存在: {file_path}")
+                    return
 
-            if font_id == -1:
-                self.error.emit(request_id, "无法加载字体文件，可能格式不支持")
-                return
+                # 加载字体文件
+                font_id = QFontDatabase.addApplicationFont(file_path)
 
-            # 获取字体族名称
-            font_families = QFontDatabase.applicationFontFamilies(font_id)
+                if font_id == -1:
+                    self.error.emit(request_id, "无法加载字体文件，可能格式不支持")
+                    return
 
-            if not font_families:
-                self.error.emit(request_id, "无法获取字体族名称")
-                return
+                # 获取字体族名称
+                font_families = QFontDatabase.applicationFontFamilies(font_id)
 
-            font_family = font_families[0]
-            self.finished.emit(request_id, True, font_family, font_id)
+                if not font_families:
+                    self.error.emit(request_id, "无法获取字体族名称")
+                    return
 
-        except Exception as e:  # noqa: BLE001
-            self.error.emit(request_id, f"加载字体失败: {e!s}")
+                font_family = font_families[0]
+                self.finished.emit(request_id, True, font_family, font_id)
+
+            except Exception as e:  # noqa: BLE001
+                self.error.emit(request_id, f"加载字体失败: {e!s}")
+        finally:
+            self.thread_finished.emit()
+
+
+def _track_font_thread(thread: FontLoadThread) -> None:
+    """把字体加载线程纳入模块级保活列表，结束时移除并安全删除。
+
+    运行中的 QThread 若被 Python 引用计数回收会直接崩溃；``thread_finished``
+    在 ``run()`` 返回前发射，此时线程已结束，可安全 deleteLater。
+
+    Args:
+        thread: 新建且尚未启动/刚启动的字体加载线程。
+    """
+    _RETIRED_FONT_THREADS.append(thread)
+
+    def _release() -> None:
+        try:
+            _RETIRED_FONT_THREADS.remove(thread)
+        except ValueError:
+            pass
+
+    thread.thread_finished.connect(_release)
+    thread.thread_finished.connect(thread.deleteLater)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -695,6 +728,11 @@ class FontPreviewerLayout(QWidget):
         overlay_layout = QVBoxLayout(self._overlay)
         overlay_layout.setAlignment(Qt.AlignCenter)
         overlay_layout.setSpacing(16)
+
+        # 加载圆环（仅字体加载中显示）
+        self._loading_spinner = StyledLoading(size="lg")
+        self._loading_spinner.setVisible(False)
+        overlay_layout.addWidget(self._loading_spinner, 0, Qt.AlignCenter)
 
         self._placeholder = QLabel("选择字体文件开始预览")
         self._placeholder.setAlignment(Qt.AlignCenter)
@@ -1235,32 +1273,40 @@ class FontPreviewerLayout(QWidget):
         self.current_font_family = ""
         self._is_variable_font = False
         self._sync_weight_controls()
-        self._placeholder.setText(f"正在加载: {Path(file_path).name}")
+        self._placeholder.setText(f"正在加载字体：{Path(file_path).name}")
         self._refresh_placeholder_style()
+        self._loading_spinner.setVisible(True)
         self._content_stack.setCurrentIndex(1)
 
         self._load_font_async()
 
     def _load_font_async(self) -> None:
-        """启动 FontLoadThread 异步加载字体。"""
+        """启动 FontLoadThread 异步加载字体（线程不设父对象 + 退休槽保活）。"""
         self._load_request_id += 1
-        thread = FontLoadThread(self)
+        thread = FontLoadThread()
         thread.set_file(self._current_file)
         thread.set_request_id(self._load_request_id)
         thread.finished.connect(self._on_font_loaded)
         thread.error.connect(self._on_load_error)
         self._load_thread = thread
+        _track_font_thread(thread)
         thread.start()
 
     def _cancel_load(self) -> None:
-        """取消当前进行中的字体加载任务。"""
+        """取消当前进行中的字体加载任务（非阻塞，不等待线程结束）。"""
         thread = self._load_thread
         if thread is None:
             return
-        if thread.isRunning():
-            thread.abort()
-            thread.wait(300)
         self._load_thread = None
+        try:
+            thread.finished.disconnect(self._on_font_loaded)
+        except (RuntimeError, TypeError):
+            pass
+        try:
+            thread.error.disconnect(self._on_load_error)
+        except (RuntimeError, TypeError):
+            pass
+        thread.abort()
 
     def _on_font_loaded(
         self,
@@ -1278,10 +1324,8 @@ class FontPreviewerLayout(QWidget):
             font_id: QFontDatabase 返回的 application font id。
         """
         thread = self.sender()
-        if isinstance(thread, FontLoadThread):
-            if self._load_thread is thread:
-                self._load_thread = None
-            thread.deleteLater()
+        if isinstance(thread, FontLoadThread) and self._load_thread is thread:
+            self._load_thread = None
 
         if request_id != self._load_request_id:
             # 旧请求：卸载其字体，避免资源泄漏
@@ -1338,14 +1382,13 @@ class FontPreviewerLayout(QWidget):
             error_msg: 错误信息。
         """
         thread = self.sender()
-        if isinstance(thread, FontLoadThread):
-            if self._load_thread is thread:
-                self._load_thread = None
-            thread.deleteLater()
+        if isinstance(thread, FontLoadThread) and self._load_thread is thread:
+            self._load_thread = None
 
         if request_id != self._load_request_id:
             return
 
+        self._loading_spinner.setVisible(False)
         self._placeholder.setText(error_msg)
         register_widget_qss(self._placeholder,(
             f"color: {tm.danger.name()}; font-size: 14px; background: transparent;"
@@ -1404,6 +1447,7 @@ class FontPreviewerLayout(QWidget):
 
         self._placeholder.setText("选择字体文件开始预览")
         self._refresh_placeholder_style()
+        self._loading_spinner.setVisible(False)
         self._content_stack.setCurrentIndex(0)
 
     def _on_browse_file(self) -> None:

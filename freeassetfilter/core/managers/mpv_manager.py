@@ -159,6 +159,7 @@ class MPVManager(QObject):
 
     # 信号定义
     stateChanged = Signal(MPVState)  # 状态变化信号
+    bufferingChanged = Signal(bool)  # 缓冲状态变化信号（paused-for-cache）
     positionChanged = Signal(float, float)  # 位置变化信号（位置，时长）
     volumeChanged = Signal(int)  # 音量变化信号
     mutedChanged = Signal(bool)  # 静音状态变化信号
@@ -591,6 +592,7 @@ class MPVManager(QObject):
         # 连接信号（幂等：核心重建恢复时先断开旧连接，避免重复发射）
         for signal, slot in (
             (self._mpv_core.stateChanged, self._on_state_changed),
+            (self._mpv_core.bufferingChanged, self._on_buffering_changed),
             (self._mpv_core.positionChanged, self._on_position_changed),
             (self._mpv_core.durationChanged, self._on_duration_changed),
             (self._mpv_core.volumeChanged, self._on_volume_changed),
@@ -637,6 +639,7 @@ class MPVManager(QObject):
         # 断开信号连接
         try:
             self._mpv_core.stateChanged.disconnect(self._on_state_changed)
+            self._mpv_core.bufferingChanged.disconnect(self._on_buffering_changed)
             self._mpv_core.positionChanged.disconnect(self._on_position_changed)
             self._mpv_core.durationChanged.disconnect(self._on_duration_changed)
             self._mpv_core.volumeChanged.disconnect(self._on_volume_changed)
@@ -1210,6 +1213,10 @@ class MPVManager(QObject):
     def _on_state_changed(self, is_playing: bool):
         """播放状态变化回调"""
         self._request_state_changed_emit()
+
+    def _on_buffering_changed(self, is_buffering: bool):
+        """缓冲状态变化回调（直接转发，低频信号无需节流）。"""
+        self.bufferingChanged.emit(bool(is_buffering))
 
     def _on_position_changed(self, position: float, duration: float):
         """位置变化回调"""

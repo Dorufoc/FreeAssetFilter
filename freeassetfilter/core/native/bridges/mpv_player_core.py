@@ -483,6 +483,7 @@ class MPVPlayerCore(QObject):
     
     Signals:
         stateChanged: 播放状态变化信号 (is_playing: bool)
+        bufferingChanged: 网络/缓存缓冲状态变化信号 (is_buffering: bool)
         positionChanged: 播放位置变化信号 (position: float, duration: float)
         durationChanged: 时长变化信号 (duration: float)
         volumeChanged: 音量变化信号 (volume: int)
@@ -496,6 +497,7 @@ class MPVPlayerCore(QObject):
     """
     
     stateChanged = Signal(bool)
+    bufferingChanged = Signal(bool)
     positionChanged = Signal(float, float)
     durationChanged = Signal(float)
     volumeChanged = Signal(int)
@@ -539,6 +541,7 @@ class MPVPlayerCore(QObject):
         self._is_playing: bool = False
         self._is_paused: bool = False
         self._is_seeking: bool = False
+        self._is_buffering: bool = False
         self._duration: float = 0.0
         self._position: float = 0.0
         self._volume: int = 100
@@ -553,6 +556,7 @@ class MPVPlayerCore(QObject):
         self._last_emitted_position: Optional[float] = None
         self._last_emitted_duration: Optional[float] = None
         self._last_emitted_state: Optional[bool] = None
+        self._last_emitted_buffering: Optional[bool] = None
         self._last_emitted_volume: Optional[int] = None
         self._last_emitted_speed: Optional[float] = None
         self._last_emitted_muted: Optional[bool] = None
@@ -826,6 +830,7 @@ class MPVPlayerCore(QObject):
             ("time-pos", MpvFormat.DOUBLE),
             ("duration", MpvFormat.DOUBLE),
             ("pause", MpvFormat.FLAG),
+            ("paused-for-cache", MpvFormat.FLAG),
             ("volume", MpvFormat.INT64),
             ("speed", MpvFormat.DOUBLE),
             ("mute", MpvFormat.FLAG),
@@ -928,6 +933,14 @@ class MPVPlayerCore(QObject):
                 if self._last_emitted_state is None or self._last_emitted_state != state:
                     self._last_emitted_state = state
                     should_emit = True
+            elif signal_name == 'bufferingChanged':
+                buffering = bool(args[0])
+                if (
+                    self._last_emitted_buffering is None
+                    or self._last_emitted_buffering != buffering
+                ):
+                    self._last_emitted_buffering = buffering
+                    should_emit = True
             elif signal_name == 'volumeChanged':
                 volume = int(args[0])
                 if self._last_emitted_volume is None or self._last_emitted_volume != volume:
@@ -996,6 +1009,8 @@ class MPVPlayerCore(QObject):
                 is_paused = bool(value) if value is not None else False
                 self._is_paused = is_paused
                 self._is_playing = not is_paused
+            elif prop_name == "paused-for-cache":
+                self._is_buffering = bool(value) if value is not None else False
             elif prop_name == "volume" and value is not None:
                 self._volume = int(value)
             elif prop_name == "speed" and value is not None:
@@ -1017,6 +1032,8 @@ class MPVPlayerCore(QObject):
             self._queue_signal_if_changed('positionChanged', self._position, self._duration)
         elif prop_name == "pause":
             self._queue_signal_if_changed('stateChanged', self._is_playing)
+        elif prop_name == "paused-for-cache":
+            self._queue_signal_if_changed('bufferingChanged', self._is_buffering)
         elif prop_name == "volume" and value is not None:
             self._queue_signal_if_changed('volumeChanged', self._volume)
         elif prop_name == "speed" and value is not None:
@@ -1098,10 +1115,12 @@ class MPVPlayerCore(QObject):
         with self._state_lock:
             self._is_paused = is_paused
             self._is_playing = not is_paused
+            self._is_buffering = False
 
         # 将信号放入队列，由主线程处理
         # 使用 _enqueue_signal 而非 _queue_signal_if_changed，确保文件切换时始终刷新UI状态
         self._enqueue_signal('stateChanged', self._is_playing)
+        self._queue_signal_if_changed('bufferingChanged', False)
         self._enqueue_signal('fileLoaded', self._current_file)
     
     def _handle_end_file_event(self, mpv_handle: c_void_p, event: MpvEvent):
@@ -1118,7 +1137,9 @@ class MPVPlayerCore(QObject):
         with self._state_lock:
             self._is_playing = False
             self._is_paused = False
+            self._is_buffering = False
         self._queue_signal_if_changed('stateChanged', False)
+        self._queue_signal_if_changed('bufferingChanged', False)
         
         if reason == MpvEndFileReason.ERROR:
             # 使用安全的错误信息，不包含敏感路径
@@ -1281,10 +1302,12 @@ class MPVPlayerCore(QObject):
                 self._current_file = file_path
                 self._is_playing = False
                 self._is_paused = False
+                self._is_buffering = False
                 self._position = 0.0
                 self._duration = 0.0
             # 发出状态变化信号，更新 _last_emitted_state，防止后续信号被抑制
             self._queue_signal_if_changed('stateChanged', False)
+            self._queue_signal_if_changed('bufferingChanged', False)
             
             cmd_args = [b"loadfile", file_path.encode('utf-8'), None]
             cmd_array = (c_char_p * len(cmd_args))(*cmd_args)
@@ -2129,6 +2152,9 @@ class MPVPlayerCore(QObject):
                     elif signal_name == 'stateChanged':
                         _, is_playing = signal_data
                         self.stateChanged.emit(is_playing)
+                    elif signal_name == 'bufferingChanged':
+                        _, is_buffering = signal_data
+                        self.bufferingChanged.emit(is_buffering)
                     elif signal_name == 'volumeChanged':
                         _, volume = signal_data
                         self.volumeChanged.emit(volume)

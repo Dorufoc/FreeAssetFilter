@@ -198,6 +198,38 @@ class TestDecodeToQImageRealUnexpectedPaths:
         assert ok is False
         assert str(result)  # 错误消息非空即可，具体文案随 rawpy 版本变化
 
+
+class TestDecodeStandardToQImage:
+    """``decode_standard_to_qimage``：标准格式后台解码入口。"""
+
+    def test_png_success(self, tmp_path: Path) -> None:
+        """happy：PNG 解码为尺寸匹配的非空 QImage。"""
+        png_file: str = make_image(
+            tmp_path / "standard.png", fmt="PNG", size=(64, 48)
+        )
+        ok, result = ImageDecoderService.decode_standard_to_qimage(png_file)
+        assert ok is True
+        assert result.width() == 64
+        assert result.height() == 48
+
+    def test_jpeg_success(self, tmp_path: Path) -> None:
+        """happy：JPEG 解码成功。"""
+        jpg_file: str = make_image(
+            tmp_path / "standard.jpg", fmt="JPEG", size=(32, 32)
+        )
+        ok, result = ImageDecoderService.decode_standard_to_qimage(jpg_file)
+        assert ok is True
+        assert not result.isNull()
+
+    def test_missing_file_returns_error(self, tmp_path: Path) -> None:
+        """error：缺失文件返回 False + 错误消息，不抛异常。"""
+        ok, result = ImageDecoderService.decode_standard_to_qimage(
+            str(tmp_path / "ghost.png")
+        )
+        assert ok is False
+        assert str(result)
+
+
     def test_missing_cr2_returns_error_not_crash(self, tmp_path: Path) -> None:
         """error：不存在的 CR2 返回错误消息而非异常。
 
@@ -571,6 +603,65 @@ class TestImageDecodeWorker:
         time.sleep(0.2)
         flush_widget_queue(qapp)
         assert not emitted  # 已取消的结果不得发射
+        _shutdown_worker(worker)
+
+    def test_request_cancel_returns_immediately(
+        self, qapp: Any, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """boundary：request_cancel 只置标志，不等待阻塞中的解码线程。
+
+        Args:
+            qapp: 会话级 QApplication。
+            monkeypatch: pytest monkeypatch。
+            tmp_path: pytest 临时目录。
+        """
+        entered: threading.Event = threading.Event()
+        release: threading.Event = threading.Event()
+
+        def _blocking_decode(file_path: str):
+            entered.set()
+            release.wait(5)
+            return True, _fake_qimage()
+
+        monkeypatch.setattr(
+            ImageDecoderService, "decode_to_qimage", staticmethod(_blocking_decode)
+        )
+        worker: ImageDecodeWorker = ImageDecodeWorker(str(tmp_path / "slow.cr2"))
+        worker.start_with_timeout()
+        try:
+            assert entered.wait(3), "worker 解码未进入"
+            start: float = time.monotonic()
+            worker.request_cancel()
+            elapsed: float = time.monotonic() - start
+            assert elapsed < 0.5, f"request_cancel 阻塞了 {elapsed:.2f}s"
+            assert worker._is_cancelled is True  # noqa: SLF001
+        finally:
+            release.set()
+            _shutdown_worker(worker)
+
+    def test_custom_decoder_is_injected(
+        self, qapp: Any, tmp_path: Path
+    ) -> None:
+        """constructor：decoder 注入后 run() 调用注入函数而非默认服务。
+
+        Args:
+            qapp: 会话级 QApplication。
+            tmp_path: pytest 临时目录。
+        """
+        calls: List[str] = []
+
+        def _custom_decoder(file_path: str):
+            calls.append(file_path)
+            return True, _fake_qimage()
+
+        target: str = make_image(tmp_path / "custom.png", fmt="PNG")
+        worker: ImageDecodeWorker = ImageDecodeWorker(target, decoder=_custom_decoder)
+        received: List[str] = []
+        worker.decoded.connect(lambda _img, path: received.append(path))
+        worker.start_with_timeout()
+        assert wait_for_signal(worker.decoded, timeout_ms=5000)
+        assert received == [target]
+        assert calls == [target]
         _shutdown_worker(worker)
 
     def test_internal_timeout_kills_blocked_decode(self, qapp: Any, monkeypatch: Any, tmp_path: Path) -> None:

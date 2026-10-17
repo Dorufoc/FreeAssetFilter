@@ -18,7 +18,7 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from PySide6.QtCore import QThread, Signal, QTimer
 
@@ -28,6 +28,9 @@ from freeassetfilter.utils.app_logger import warning
 # ── 解码超时（毫秒）─────────────────────────────────────────────────────
 
 _DECODE_TIMEOUT_MS: int = 60_000  # 60 秒
+
+#: 解码函数签名：``(file_path) -> (success, QImage | error_str)``
+DecodeCallable = Callable[[str], tuple[bool, Any]]
 
 
 class ImageDecodeWorker(QThread):
@@ -52,7 +55,13 @@ class ImageDecodeWorker(QThread):
     decoded = Signal(object, str)  # QImage as object to avoid metatype issues
     failed = Signal(str)
 
-    def __init__(self, file_path: str, parent: Optional = None) -> None:
+    def __init__(
+        self,
+        file_path: str,
+        parent: Optional = None,
+        *,
+        decoder: Optional[DecodeCallable] = None,
+    ) -> None:
         """初始化工作线程。
 
         Parameters
@@ -61,9 +70,15 @@ class ImageDecodeWorker(QThread):
             要解码的图片文件路径。
         parent : QObject or None
             Qt 父对象（可选）。
+        decoder : DecodeCallable or None
+            解码函数；``None`` 使用 ``ImageDecoderService.decode_to_qimage``。
+            标准格式预览可传入 ``decode_standard_to_qimage``。
         """
         super().__init__(parent)
         self.file_path = file_path
+        self._decoder: DecodeCallable = (
+            decoder if decoder is not None else ImageDecoderService.decode_to_qimage
+        )
         self._is_cancelled: bool = False
         self._timeout_timer: Optional[QTimer] = None
 
@@ -91,15 +106,24 @@ class ImageDecodeWorker(QThread):
         # 确保 timer 在 worker 完成时停止，避免 timer 泄漏
         self.finished.connect(self._timeout_timer.stop)
 
-    def cancel(self) -> None:
-        """请求取消当前解码。
+    def request_cancel(self) -> None:
+        """请求取消当前解码（非阻塞，不等待线程结束）。
 
-        设置取消标志 + ``quit()`` + 最多等待 2 秒。
-        注意：如果线程卡在 rawpy/LibRaw 的 C 扩展中，wait 可能超时，
-        这是已知限制（与 ``RawProcessor.cancel()`` 行为一致）。
+        只置取消标志并 ``quit()``；原生解码不可中断时线程会继续跑完，
+        但结果会被 ``run()`` 内的取消检查丢弃。调用方如需回收运行中的
+        QThread，应保留引用并在 ``finished`` 后 deleteLater。
         """
         self._is_cancelled = True
         self.quit()
+
+    def cancel(self) -> None:
+        """请求取消当前解码，最多等待 2 秒（兼容旧 API）。
+
+        注意：如果线程卡在 rawpy/LibRaw 的 C 扩展中，wait 可能超时，
+        这是已知限制（与 ``RawProcessor.cancel()`` 行为一致）。UI 线程
+        请优先使用 :meth:`request_cancel`。
+        """
+        self.request_cancel()
         if not self.wait(2000):
             warning(
                 "[ImageDecodeWorker] cancel: wait timed out, "
@@ -109,18 +133,18 @@ class ImageDecodeWorker(QThread):
     # ── 内部方法 ─────────────────────────────────────────────────────
 
     def run(self) -> None:
-        """后台线程：调用 ImageDecoderService 解码。
+        """后台线程：调用注入的解码函数。
 
         执行步骤：
         1. 检查取消标志（快速失败路径）
-        2. 调用 ``decode_to_qimage()``（耗时操作）
+        2. 调用解码函数（耗时操作）
         3. 再次检查取消标志（避免发出已取消的结果）
         4. 根据结果发射 ``decoded`` 或 ``failed`` 信号
         """
         if self._is_cancelled:
             return
 
-        success, result = ImageDecoderService.decode_to_qimage(self.file_path)
+        success, result = self._decoder(self.file_path)
 
         if self._is_cancelled:
             return
@@ -131,12 +155,12 @@ class ImageDecodeWorker(QThread):
             self.failed.emit(str(result))
 
     def _on_timeout(self) -> None:
-        """超时回调：发射 failed 信号并取消线程。"""
+        """超时回调：发射 failed 信号并请求取消（不阻塞 UI 线程）。"""
         if self.isRunning():
             self.failed.emit(
                 f"解码超时（超过 {_DECODE_TIMEOUT_MS // 1000} 秒）"
             )
-            self.cancel()
+            self.request_cancel()
 
 
 __all__ = [

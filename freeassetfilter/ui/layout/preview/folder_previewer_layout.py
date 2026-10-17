@@ -40,6 +40,7 @@ if _project_root not in sys.path:
 
 from components.styled_button import StyledButton
 from components.styled_lineedit import StyledLineEdit
+from components.styled_loading import StyledLoading
 from PySide6.QtCore import (
     QAbstractListModel,
     QFileSystemWatcher,
@@ -735,6 +736,11 @@ class FolderPreviewerLayout(QWidget):
         overlay_layout.setAlignment(Qt.AlignCenter)
         overlay_layout.setSpacing(16)
 
+        # 加载圆环（仅加载中显示；空闲/空态/错误态隐藏）
+        self._loading_spinner = StyledLoading(size="lg")
+        self._loading_spinner.setVisible(False)
+        overlay_layout.addWidget(self._loading_spinner, 0, Qt.AlignCenter)
+
         self._placeholder = QLabel(_PLACEHOLDER_NO_FOLDER)
         self._placeholder.setAlignment(Qt.AlignCenter)
         register_widget_qss(self._placeholder,(
@@ -886,13 +892,21 @@ class FolderPreviewerLayout(QWidget):
 
     # ── 占位 / 覆盖层 ────────────────────────────────────────────────────────
 
-    def _show_overlay(self, text: str) -> None:
-        """显示覆盖层（占位 / 加载中 / 空态）。"""
+    def _show_overlay(self, text: str, busy: bool = False) -> None:
+        """显示覆盖层（占位 / 加载中 / 空态）。
+
+        Args:
+            text: 提示文本。
+            busy: True 时显示加载圆环（读取中/搜索中等进行中状态）；
+                False 时仅显示文本（占位/空态/错误）。
+        """
         self._placeholder.setText(text)
+        self._loading_spinner.setVisible(bool(busy))
         self._content_stack.setCurrentIndex(self._PAGE_OVERLAY)
 
     def _show_list(self) -> None:
-        """切换到条目列表页。"""
+        """切换到条目列表页（隐藏加载圆环）。"""
+        self._loading_spinner.setVisible(False)
         self._content_stack.setCurrentIndex(self._PAGE_LIST)
 
     # ── 状态刷新 ─────────────────────────────────────────────────────────────
@@ -917,7 +931,7 @@ class FolderPreviewerLayout(QWidget):
         self._loading = True
         self._token += 1
         token = self._token
-        self._show_overlay(_PLACEHOLDER_LOADING)
+        self._show_overlay(_PLACEHOLDER_LOADING, busy=True)
 
         worker = _FolderScanWorker(
             self._current_directory(),
