@@ -32,6 +32,7 @@ if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
 from freeassetfilter.ui.layout.preview.native_pdf_renderer import NativePdfRenderer
+from tests.support.qt_helpers import wait_until
 
 pytestmark = pytest.mark.unit
 
@@ -53,6 +54,39 @@ class TestNativePdfRendererSmoke:
         try:
             ok = renderer.load_document(str(tmp_path / "missing.pdf"))
             assert ok is False
+        finally:
+            renderer.close()
+
+    def test_load_document_async_emits_finished(
+        self, qapp: Any, sample_pdf_file: str
+    ) -> None:
+        """async：load_document_async 立即受理，完成后发 document_load_finished。"""
+        renderer = NativePdfRenderer()
+        received: list = []
+        renderer.document_load_finished.connect(
+            lambda ok, msg: received.append((ok, msg))
+        )
+        try:
+            assert renderer.load_document_async(sample_pdf_file) is True
+            assert wait_until(qapp, lambda: bool(received), timeout_ms=5000)
+            assert received[0][0] is True
+            assert renderer.page_count() == 1
+        finally:
+            renderer.close()
+
+    def test_load_document_async_missing_returns_false(
+        self, qapp: Any, tmp_path: Any
+    ) -> None:
+        """async：缺失路径同步返回 False，不发完成信号。"""
+        renderer = NativePdfRenderer()
+        received: list = []
+        renderer.document_load_finished.connect(
+            lambda ok, msg: received.append((ok, msg))
+        )
+        try:
+            assert renderer.load_document_async(str(tmp_path / "missing.pdf")) is False
+            qapp.processEvents()
+            assert not received
         finally:
             renderer.close()
 

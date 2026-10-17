@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
 )
 
 from theme import tm
+from components.styled_loading import StyledLoading
 from freeassetfilter.services.office_converter_worker import OfficeConverterWorker
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
@@ -131,6 +132,13 @@ class OfficePreviewerLayout(QWidget):
         self._overlay.setObjectName("OfficePreviewerOverlay")
         overlay_layout = QVBoxLayout(self._overlay)
         overlay_layout.setAlignment(Qt.AlignCenter)
+        overlay_layout.setSpacing(16)
+
+        # 转换期间显示圆形加载动画（与提示文本组成「圆环 + 状态」）
+        self._loading_spinner = StyledLoading(size="lg")
+        self._loading_spinner.setVisible(False)
+        overlay_layout.addWidget(self._loading_spinner, 0, Qt.AlignCenter)
+
         self._placeholder = QLabel("正在转换 Office 文档…")
         self._placeholder.setAlignment(Qt.AlignCenter)
         register_widget_qss(self._placeholder,(
@@ -244,24 +252,37 @@ class OfficePreviewerLayout(QWidget):
     # ── 内部：worker 生命周期 ───────────────────────────────────────────────
 
     def _cancel_worker(self) -> None:
-        """取消并回收在途 worker（cancel + wait + deleteLater）。
+        """取消并回收在途 worker（非阻塞，不在 UI 线程 wait）。
 
-        使用 worker 自带的 ``cleanup()``（内部完成 ``request_cancel()`` +
-        ``wait()`` + ``deleteLater()``），确保信号不会发射到已销毁对象。
+        优先使用 worker 的 ``retire()``（request_cancel + finished 后
+        deleteLater）；测试替身没有 ``retire`` 时回退 ``cleanup()``。
+        连接在回收前断开，避免迟到信号进入已切换/已销毁的视图。
         """
         worker = self._current_worker
         self._current_worker = None
-        if worker is not None:
+        if worker is None:
+            return
+        for signal_name in ("converted", "failed"):
             try:
-                worker.cleanup()
-            except (RuntimeError, TypeError):
+                getattr(worker, signal_name).disconnect()
+            except (RuntimeError, TypeError, AttributeError):
                 pass
+        retire = getattr(worker, "retire", None)
+        try:
+            if callable(retire):
+                retire()
+            else:
+                worker.cleanup()
+        except (RuntimeError, TypeError):
+            pass
 
     def _reset_views(self) -> None:
         """清空旧视图内容，回到覆盖层（同实例重分派时调用）。"""
         self._html_view.clear()
         self._outline_view.clear()
         self._error_view.clear()
+        self._placeholder.setText("正在转换 Office 文档…")
+        self._loading_spinner.setVisible(True)
         self._content_stack.setCurrentWidget(self._overlay)
 
     # ── 内部：信号路由 ─────────────────────────────────────────────────────
@@ -303,16 +324,19 @@ class OfficePreviewerLayout(QWidget):
 
     def _show_html(self, content: str) -> None:
         """显示 HTML 降级视图。"""
+        self._loading_spinner.setVisible(False)
         self._html_view.setHtml(content)
         self._content_stack.setCurrentWidget(self._html_view)
 
     def _show_outline(self, content: str) -> None:
         """显示大纲（纯文本）降级视图。"""
+        self._loading_spinner.setVisible(False)
         self._outline_view.setPlainText(content)
         self._content_stack.setCurrentWidget(self._outline_view)
 
     def _show_error(self, message: str) -> None:
         """显示错误提示视图。"""
+        self._loading_spinner.setVisible(False)
         self._error_view.setText(message)
         self._content_stack.setCurrentWidget(self._error_view)
 
@@ -325,6 +349,7 @@ class OfficePreviewerLayout(QWidget):
             转换产物 PDF 文件路径。
         """
         pdf = self._ensure_pdf()
+        self._loading_spinner.setVisible(False)
         pdf.set_file(path)
         self._content_stack.setCurrentWidget(self._pdf_holder)
 

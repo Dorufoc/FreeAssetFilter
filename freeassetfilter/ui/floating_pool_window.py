@@ -68,6 +68,7 @@ from PySide6.QtGui import (
     QPen,
     QPixmap,
     QResizeEvent,
+    QShowEvent,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -82,8 +83,9 @@ from PySide6.QtWidgets import (
 from components.styled_button import StyledButton
 from components.styled_scroll_area import StyledScrollArea
 from freeassetfilter.services.staging_pool_service import StagingPoolService
+from freeassetfilter.ui.elevated_drop import ElevatedDropFallbackMixin
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
-from freeassetfilter.utils.app_logger import debug
+from freeassetfilter.utils.app_logger import debug, info, warning
 from theme import tm
 
 COLLAPSED_SIZE = QSize(140, 48)
@@ -132,7 +134,7 @@ _RADIUS = 12
 """int: 自绘圆角背景的圆角半径。"""
 
 
-class FloatingPoolWindow(QWidget):
+class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
     """全局存储池浮窗窗口本体（无父顶层 Tool 置顶窗口）。
 
     折叠态是一个小的拖放目标胶囊，展开态是固定尺寸的存储池面板。窗口本体
@@ -166,6 +168,8 @@ class FloatingPoolWindow(QWidget):
         _move_anim: 在途的 ``QPropertyAnimation``（``pos`` 属性）；无则 None。
         _internal_moving: 程序化移动（动画 / 初始化）期间为 True，抑制静默定时器。
         _theme_conn: ``tm.theme_changed`` 的连接对象（销毁时断开用）。
+        _drag_move_logged: 本次外部拖拽是否已记录过 ``dragMoveEvent``
+            （日志去重：每次拖拽只记录一次，纯日志状态，不影响控制流）。
     """
 
     add_file_requested = Signal(dict)
@@ -189,6 +193,9 @@ class FloatingPoolWindow(QWidget):
 
         # 延后预声明状态：None 区分"从未收到更新"（防抖）/"无宿主窗口"。
         self._drag_active = False
+        # 外部拖入日志去重（dragMoveEvent 每次拖拽仅记录一次；纯日志状态）。
+        self._drag_move_logged = False
+        self._shown_diag_logged = False
         self._pending_items: Optional[list] = None
         self._host_window: Optional[QWidget] = None
         self._press_pos: Optional[QPoint] = None
@@ -319,10 +326,11 @@ class FloatingPoolWindow(QWidget):
 
         切换改变的是固定尺寸而非位置：先记录切换前的右边缘，切换尺寸后令右边缘
         回到原位（左边缘随宽度反向推移），使面板向左侧生长而不是越过屏幕右缘。
-        锚定得到的左边缘再钳入当前屏幕可用区域（``QApplication.screenAt`` →
-        ``availableGeometry``）；无可用屏幕时保留当前位置不动（不抛异常）。
-        尺寸经 ``setFixedSize`` 即时生效，位置位移经 :meth:`_animate_move`
-        以惯性启停缓动完成（``is_snapping()`` 可探测）。
+        锚定得到的左边缘与当前上边缘一并钳入当前屏幕可用区域
+        （``QApplication.screenAt`` → ``availableGeometry``，x / y 均为包含式
+        边界，防止展开后下缘越出屏幕）；无可用屏幕时保留当前位置不动（不抛异常）。
+        尺寸经 ``setFixedSize`` 即时生效，位置位移（单次合并 x / y 的动画）经
+        :meth:`_animate_move` 以惯性启停缓动完成（``is_snapping()`` 可探测）。
 
         Args:
             expanded: True 进入展开态，False 回到折叠态。
@@ -335,6 +343,7 @@ class FloatingPoolWindow(QWidget):
         right_edge = self.x() + self.width()
         self._apply_state_geometry()
         new_x = right_edge - self.width()
+        new_y = self.y()
         screen = QApplication.screenAt(self.pos())
         if screen is None:
             screen = QApplication.primaryScreen()
@@ -344,7 +353,11 @@ class FloatingPoolWindow(QWidget):
                 avail.left(),
                 min(new_x, avail.right() - self.width() + 1),
             )
-        self._animate_move(QPoint(new_x, self.y()))
+            new_y = max(
+                avail.top(),
+                min(new_y, avail.bottom() - self.height() + 1),
+            )
+        self._animate_move(QPoint(new_x, new_y))
         self.update()
 
     def is_expanded(self) -> bool:
@@ -409,6 +422,40 @@ class FloatingPoolWindow(QWidget):
         content = getattr(self, "_content", None)
         if content is not None:
             content.setGeometry(self.rect())
+
+    def showEvent(self, event: QShowEvent) -> None:
+        """显示时输出一次性诊断日志（HWND / 拖放注册状态）。
+
+        仅日志、无行为变化：真实运行环境下排查「外部拖入未达
+        ``dragEnterEvent``」类缺陷时，可仅凭日志文件判断窗口是否可见、原生句柄
+        是否建立、以及 Qt 的 ``WA_DropSiteRegistered``（OLE 投放目标是否真正
+        注册到该 HWND）是否就位。只记录一次，避免重复 show 刷屏。
+
+        Args:
+            event: 显示事件（交回基类处理）。
+        """
+        super().showEvent(event)
+        if self._shown_diag_logged:
+            return
+        self._shown_diag_logged = True
+        try:
+            handle = self.windowHandle()
+            wh_type = int(handle.type()) if handle is not None else -1
+            wh_flags = int(handle.flags()) & 0xFFFFFFFF if handle is not None else 0
+            info(
+                "[floating_pool] shown diagnostics: "
+                f"hwnd={int(self.winId())} geometry={self.geometry()} "
+                f"isVisible={self.isVisible()} "
+                f"acceptDrops={self.acceptDrops()} "
+                f"WA_AcceptDrops={self.testAttribute(Qt.WA_AcceptDrops)} "
+                f"WA_DropSiteRegistered={self.testAttribute(Qt.WA_DropSiteRegistered)} "
+                f"WA_TransparentForMouseEvents={self.testAttribute(Qt.WA_TransparentForMouseEvents)} "
+                f"WA_TranslucentBackground={self.testAttribute(Qt.WA_TranslucentBackground)} "
+                f"whExists={handle is not None} whType={wh_type} "
+                f"whFlags=0x{wh_flags:x}"
+            )
+        except Exception as exc:  # noqa: BLE001 - 诊断日志失败绝不阻断显示
+            warning(f"[floating_pool] shown diagnostics 失败: {exc}")
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """关闭前停止防抖 / 静默定时器与位移动画，避免销毁后残留回调触发。
@@ -504,9 +551,18 @@ class FloatingPoolWindow(QWidget):
         Args:
             event: 拖入事件。
         """
-        if event.mimeData().hasUrls():
+        self._drag_move_logged = False
+        mime = event.mimeData()
+        has_urls = mime.hasUrls()
+        debug(f"浮窗拖入进入：hasUrls={has_urls} | formats={mime.formats()}")
+        if has_urls:
             event.acceptProposedAction()
             self._set_drag_highlight(True)
+            urls = mime.urls()
+            debug(
+                f"浮窗拖入进入：已接受，url 数={len(urls)} | "
+                + " ; ".join(url.toString() for url in urls)
+            )
             return
         super().dragEnterEvent(event)
 
@@ -518,6 +574,12 @@ class FloatingPoolWindow(QWidget):
         Args:
             event: 拖拽移动事件。
         """
+        if not self._drag_move_logged:
+            self._drag_move_logged = True
+            mime = event.mimeData()
+            debug(
+                f"浮窗拖拽移动：hasUrls={mime.hasUrls()} | formats={mime.formats()}"
+            )
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
             return
@@ -529,6 +591,8 @@ class FloatingPoolWindow(QWidget):
         Args:
             event: 拖拽离开事件。
         """
+        debug("浮窗拖拽离开：清除拖放高亮")
+        self._drag_move_logged = False
         self._set_drag_highlight(False)
         super().dragLeaveEvent(event)
 
@@ -546,11 +610,18 @@ class FloatingPoolWindow(QWidget):
         mime = event.mimeData()
         emitted = 0
         if mime.hasUrls():
-            emitted = self._emit_dropped_urls(mime.urls())
+            urls = mime.urls()
+            debug(f"浮窗拖放落下：收到 url 数={len(urls)}")
+            emitted = self._emit_dropped_urls(urls)
             event.acceptProposedAction()
+        else:
+            debug(
+                "浮窗拖放落下：载荷不含 URL，忽略 | "
+                f"hasUrls={mime.hasUrls()} | formats={mime.formats()}"
+            )
         self._set_drag_highlight(False)
-        if emitted and not self.is_expanded():
-            self.set_expanded(True)
+        self._finish_external_drop(emitted)
+        debug(f"浮窗拖放处理完成：emitted={emitted}")
 
     def _emit_dropped_urls(self, urls: list[QUrl]) -> int:
         """遍历 URL 列表，构建文件信息并逐条发射信号。
@@ -564,18 +635,62 @@ class FloatingPoolWindow(QWidget):
         seen: set[str] = set()
         emitted = 0
         for url in urls:
+            raw_url = url.toString()
             file_path = url.toLocalFile()
-            if not file_path or file_path in seen:
+            debug(f"拖入项解析：url={raw_url} | toLocalFile={file_path}")
+            if not file_path:
+                warning(f"跳过拖入项：toLocalFile() 为空（url={raw_url}）")
+                continue
+            if file_path in seen:
+                warning(
+                    f"跳过拖入项：事件内重复（url={raw_url} / path={file_path}）"
+                )
                 continue
             seen.add(file_path)
             if not os.path.exists(file_path):
+                warning(
+                    "跳过拖入项：路径不存在(os.path.exists=False)"
+                    f"（url={raw_url} / path={file_path}）"
+                )
                 continue
             file_info = StagingPoolService.build_file_info(file_path)
             if file_info is None:
+                warning(
+                    "跳过拖入项：build_file_info 返回 None"
+                    f"（url={raw_url} / path={file_path}）"
+                )
                 continue
             self.add_file_requested.emit(file_info)
             emitted += 1
+            debug(f"拖入项已发射 add_file_requested：path={file_path}")
         return emitted
+
+    def _finish_external_drop(self, emitted: int) -> None:
+        """外部拖放收尾：有成功入池条目且处于折叠态时自动展开。
+
+        OLE ``dropEvent`` 与提权兜底（:meth:`_elevated_drop_accept_paths`）
+        共用，保证两条链路行为一致。
+
+        Args:
+            emitted: 本次拖放实际发射 ``add_file_requested`` 的次数。
+        """
+        if emitted and not self.is_expanded():
+            self.set_expanded(True)
+
+    def _elevated_drop_accept_paths(self, paths: list[str]) -> None:
+        """提权兜底入口：把原生 ``WM_DROPFILES`` 路径按 OLE 拖入同口径处理。
+
+        路径先转 ``QUrl`` 以复用 :meth:`_emit_dropped_urls` 的全部过滤 / 事件内
+        去重 / ``build_file_info`` 构建语义，再走 :meth:`_finish_external_drop`
+        的统一收尾。整窗都是接收区（``_elevated_drop_accepts_point`` 用默认实现）。
+
+        Args:
+            paths: 原生兜底解析出的本地路径列表。
+        """
+        debug(f"浮窗提权兜底拖入：收到路径数={len(paths)}")
+        emitted = self._emit_dropped_urls([QUrl.fromLocalFile(p) for p in paths])
+        self._finish_external_drop(emitted)
+        debug(f"浮窗提权兜底拖放处理完成：emitted={emitted}")
 
     def _set_drag_highlight(self, active: bool) -> None:
         """切换拖放高亮的 ``dragActive`` 动态属性并请求重绘。

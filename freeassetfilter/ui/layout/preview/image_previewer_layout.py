@@ -21,11 +21,14 @@ from PySide6.QtWidgets import (
     QGraphicsProxyWidget,
 )
 from PySide6.QtCore import Qt, Signal, QEvent, QPoint, QPointF, QRect, QRectF, QSize, QSizeF, QTimer
-from PySide6.QtGui import QFont, QPixmap, QImageReader, QWheelEvent, QPainter, QPen, QColor, QPaintEvent, QMouseEvent, QAction, QTransform, QMovie
+from PySide6.QtGui import QFont, QPixmap, QWheelEvent, QPainter, QPen, QColor, QPaintEvent, QMouseEvent, QAction, QTransform, QMovie
+
+from shiboken6 import isValid
 
 from theme import tm
 from components.styled_button import StyledButton
 from components.styled_floating_panel import FloatingPanel
+from components.styled_loading import StyledLoading
 from layout.preview.fullscreen_host import PreviewFullscreenHost
 from layout.preview.preview_toolbar import PreviewToolbarFrame
 from freeassetfilter.core._paths import icons_dir
@@ -58,7 +61,8 @@ def _retire_decode_worker(worker: ImageDecodeWorker) -> None:
         except ValueError:
             pass
 
-    worker.finished.connect(_release)
+    if isValid(worker):
+        worker.finished.connect(_release)
 
 
 class _StyledHScrollBar(StyledScrollBar):
@@ -384,6 +388,11 @@ class ImagePreviewerLayout(QWidget):
         overlay_layout.setAlignment(Qt.AlignCenter)
         overlay_layout.setSpacing(16)
 
+        # 加载圆环（仅读取/解码中显示；错误/空态隐藏）
+        self._loading_spinner = StyledLoading(size="lg")
+        self._loading_spinner.setVisible(False)
+        overlay_layout.addWidget(self._loading_spinner, 0, Qt.AlignCenter)
+
         # 提示文字
         self._placeholder = QLabel("选择图片文件开始预览")
         self._placeholder.setAlignment(Qt.AlignCenter)
@@ -493,17 +502,34 @@ class ImagePreviewerLayout(QWidget):
 
     # ── 公共 API ──
 
-    def set_file(self, file_path: str) -> bool:
-        """加载并显示图片文件。
+    def _show_loading(self, text: str) -> None:
+        """显示加载覆盖页（圆环 + 状态文本）。"""
+        self._placeholder.setText(text)
+        self._loading_spinner.setVisible(True)
+        self._content_stack.setCurrentIndex(1)
 
-        标准格式（jpg/png/bmp/tiff/webp/svg/ico）使用同步 QImageReader 解码；
-        复杂格式（RAW/HEIF/AVIF/PSD）通过 ImageDecodeWorker 异步解码。
+    def _hide_loading(self) -> None:
+        """隐藏加载圆环（内容页/错误页自行切换）。"""
+        self._loading_spinner.setVisible(False)
+
+    def _show_error(self, text: str) -> None:
+        """显示错误提示（隐藏圆环）。"""
+        self._loading_spinner.setVisible(False)
+        self._placeholder.setText(text)
+        self._content_stack.setCurrentIndex(1)
+
+    def set_file(self, file_path: str) -> bool:
+        """加载并显示图片文件（解析/解码全部在后台执行）。
+
+        标准格式（jpg/png/bmp/tiff/webp/svg/ico）与复杂格式
+        （RAW/HEIF/AVIF/PSD）统一经 ``ImageDecodeWorker`` 后台解码；
+        GIF 通过 ``QTimer.singleShot`` 延后一帧加载，保证圆环先绘制。
 
         Args:
             file_path: 图片文件路径
 
         Returns:
-            bool: 是否加载成功
+            bool: 是否受理加载请求（缺失/不支持格式返回 False）
         """
         if not file_path:
             return False
@@ -522,47 +548,100 @@ class ImagePreviewerLayout(QWidget):
         if self._is_gif_mode:
             self._clear_gif()
 
+        # 每次切换先递增序号：旧 worker 的迟到结果一律丢弃
+        self._current_decode_seq += 1
+        seq = self._current_decode_seq
+        self._cancel_decode_worker()
+
         suffix = Path(file_path).suffix.lower()
 
+        if not Path(file_path).is_file():
+            self._show_error(f"无法加载图片：文件不存在\n{file_path}")
+            return False
+
         if suffix == '.gif':
-            return self._load_gif(file_path)
+            self._show_loading("正在加载 GIF…")
+            QTimer.singleShot(
+                0, self, lambda p=file_path, s=seq: self._load_gif(p, s)
+            )
+            return True
 
         if suffix in ImageDecoderService.STANDARD_FORMATS:
-            return self._load_standard(file_path)
+            self._show_loading("正在解码图片…")
+            self._start_decode(
+                file_path, seq, ImageDecoderService.decode_standard_to_qimage
+            )
+            return True
 
         if ImageDecoderService.is_complex_format(suffix):
-            return self._load_complex_async(file_path)
+            self._show_loading("正在解码图片…")
+            self._start_decode(
+                file_path, seq, ImageDecoderService.decode_to_qimage
+            )
+            return True
 
-        self._placeholder.setText(f"不支持该图片格式（格式：{suffix}）")
-        self._content_stack.setCurrentIndex(1)
+        self._show_error(f"不支持该图片格式（格式：{suffix}）")
         return False
+
+    def _start_decode(
+        self,
+        file_path: str,
+        seq: int,
+        decoder: Any,
+    ) -> None:
+        """投递图片解码 worker。
+
+        Args:
+            file_path: 图片文件路径。
+            seq: 解码序号（用于丢弃迟到结果）。
+            decoder: 解码函数（标准格式/复杂格式各自注入）。
+        """
+        worker = ImageDecodeWorker(file_path, decoder=decoder)
+        worker.decoded.connect(
+            lambda qimage, path, s=seq: self._on_decoded(qimage, path, s)
+        )
+        worker.failed.connect(
+            lambda err, s=seq: self._on_decode_failed(err, s)
+        )
+        # 线程结束后清理引用，避免 cleanup 时访问已删除的 C++ 对象
+        worker.finished.connect(
+            lambda w=worker: self._on_decode_worker_finished(w)
+        )
+        worker.finished.connect(worker.deleteLater)
+        worker.start_with_timeout()
+        self._decode_worker = worker
+
+    def _on_decode_worker_finished(self, worker: ImageDecodeWorker) -> None:
+        """解码线程结束：若仍是当前 worker 则清空引用。"""
+        if self._decode_worker is worker:
+            self._decode_worker = None
 
     # ── GIF 动画方法 ──
 
-    def _load_gif(self, file_path: str) -> bool:
+    def _load_gif(self, file_path: str, seq: int) -> bool:
         """加载并播放 GIF 动画（通过 QGraphicsProxyWidget 嵌入 QLabel+QMovie）。
 
         Args:
             file_path: GIF 文件路径
+            seq: 加载序号（与当前序号不符时丢弃）
 
         Returns:
             bool: 是否加载成功
         """
-        self._cancel_decode_worker()
+        if seq != self._current_decode_seq:
+            return False
         self._clear_gif()
 
         movie = QMovie(file_path)
         if not movie.isValid():
-            self._placeholder.setText("无法加载GIF文件")
-            self._content_stack.setCurrentIndex(1)
+            self._show_error("无法加载GIF文件")
             return False
 
         # 先获取 GIF 第一帧尺寸，确保 QLabel 尺寸正确
         movie.jumpToFrame(0)
         frame_size = movie.currentPixmap().size()
         if not frame_size.isValid():
-            self._placeholder.setText("无法获取GIF尺寸")
-            self._content_stack.setCurrentIndex(1)
+            self._show_error("无法获取GIF尺寸")
             return False
 
         label = QLabel()
@@ -594,6 +673,7 @@ class ImagePreviewerLayout(QWidget):
 
         self._fit_to_view()
         self._queue_fit()  # 布局尚未激活时以最终 viewport 尺寸校正
+        self._hide_loading()
         self._content_stack.setCurrentIndex(0)
         return True
 
@@ -631,66 +711,6 @@ class ImagePreviewerLayout(QWidget):
             self._gif_play_btn.setToolTip("暂停")
             self._gif_paused = False
 
-    def _load_standard(self, file_path: str) -> bool:
-        """同步加载标准格式图片（jpg/png/bmp/tiff/webp/svg/ico）。
-
-        Args:
-            file_path: 图片文件路径
-
-        Returns:
-            bool: 是否加载成功
-        """
-        if self._is_gif_mode:
-            self._clear_gif()
-        reader = QImageReader(file_path)
-        reader.setAutoTransform(True)
-        qimage = reader.read()
-        if qimage.isNull():
-            self._placeholder.setText(f"无法加载图片: {reader.errorString()}")
-            self._content_stack.setCurrentIndex(1)
-            return False
-
-        pixmap = QPixmap.fromImage(qimage)
-        self._pixmap_item.setPixmap(pixmap)
-        self._image_scene.setSceneRect(QRectF(pixmap.rect()))
-
-        self._current_file = file_path
-        self._fit_to_view()
-        self._queue_fit()  # 布局尚未激活时以最终 viewport 尺寸校正
-        self._content_stack.setCurrentIndex(0)
-        return True
-
-    def _load_complex_async(self, file_path: str) -> bool:
-        """异步加载复杂格式图片（RAW/HEIF/AVIF/PSD）。
-
-        Args:
-            file_path: 图片文件路径
-
-        Returns:
-            bool: 始终返回 True（实际结果通过回调处理）
-        """
-        if self._is_gif_mode:
-            self._clear_gif()
-        self._cancel_decode_worker()
-        self._current_decode_seq += 1
-        seq = self._current_decode_seq
-
-        self._placeholder.setText("正在解码图片...")
-        self._content_stack.setCurrentIndex(1)
-
-        worker = ImageDecodeWorker(file_path)
-        worker.decoded.connect(
-            lambda qimage, path, s=seq: self._on_decoded(qimage, path, s)
-        )
-        worker.failed.connect(
-            lambda err, s=seq: self._on_decode_failed(err, s)
-        )
-        worker.finished.connect(worker.deleteLater)
-
-        worker.start_with_timeout()
-        self._decode_worker = worker
-        return True
-
     def _on_decoded(self, qimage, file_path: str, seq: int) -> None:
         """异步解码成功回调。
 
@@ -702,8 +722,7 @@ class ImagePreviewerLayout(QWidget):
         if seq != self._current_decode_seq:
             return
         if qimage is None or qimage.isNull():
-            self._placeholder.setText("解码结果为空")
-            self._content_stack.setCurrentIndex(1)
+            self._show_error("解码结果为空")
             return
 
         pixmap = QPixmap.fromImage(qimage)
@@ -713,6 +732,7 @@ class ImagePreviewerLayout(QWidget):
         self._current_file = file_path
         self._fit_to_view()
         self._queue_fit()  # 布局尚未激活时以最终 viewport 尺寸校正
+        self._hide_loading()
         self._content_stack.setCurrentIndex(0)
 
     def _on_decode_failed(self, error_msg: str, seq: int) -> None:
@@ -724,22 +744,30 @@ class ImagePreviewerLayout(QWidget):
         """
         if seq != self._current_decode_seq:
             return
-        self._placeholder.setText(f"解码失败: {error_msg}")
-        self._content_stack.setCurrentIndex(1)
+        self._show_error(f"解码失败: {error_msg}")
 
     def _cancel_decode_worker(self) -> None:
-        """取消当前正在运行的解码 worker。
+        """取消当前正在运行的解码 worker（非阻塞，不在 UI 线程 wait）。
 
         已知限制：rawpy/LibRaw 等原生解码不可中断（见
-        ``ImageDecodeWorker.cancel``）。取消等待超时后若线程仍在运行，
+        ``ImageDecodeWorker.request_cancel``）。取消后若线程仍在运行，
         绝不调用 ``deleteLater()``（销毁运行中的 QThread 会崩溃），而是
         交给模块级退休槽保留引用，待线程自然结束后再删除。
         """
         if self._decode_worker is not None:
             worker = self._decode_worker
             self._decode_worker = None
-            if worker.isRunning():
-                worker.cancel()
+            if not isValid(worker):
+                return
+            try:
+                worker.decoded.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            try:
+                worker.failed.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            worker.request_cancel()
             if worker.isRunning():
                 _retire_decode_worker(worker)
             else:

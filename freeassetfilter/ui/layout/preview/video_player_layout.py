@@ -19,6 +19,7 @@ GNU Affero General Public License for more details.
 
 import os
 import sys
+import threading
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -50,6 +51,7 @@ from PySide6.QtGui import QFont, QImage, QPixmap, QColor
 from theme import tm
 from components.styled_player_bar import StyledPlayerBar
 from components.styled_fluid_background import StyledFluidBackground
+from components.styled_loading import StyledLoading
 from components.styled_music_info_panel import StyledMusicInfoPanel
 from layout.preview.fullscreen_host import PreviewFullscreenHost
 from freeassetfilter.core.managers.mpv_manager import MPVManager, MPVState
@@ -165,6 +167,103 @@ class _AudioMetadataTask(QRunnable):
         self._signals.done.emit(self._token, result)
 
 
+class _MediaLoadSignals(QObject):
+    """媒体加载完成信号中转（任务持有，跨线程队列投递到 UI 线程）。"""
+
+    done = Signal(int, bool, str)  # (token, ok, error_message)
+
+
+class _MediaLoadTask(QRunnable):
+    """后台加载并起播媒体文件（阻塞的 MPVManager 调用移出 UI 线程）。
+
+    ``MPVManager.load_file`` / ``play`` 内部等待操作队列 future（最长
+    30s/5s）；在 UI 线程调用会在慢盘/队列繁忙时冻结界面。本任务在池线程
+    执行这两个调用，结果经 ``done`` 信号回主线程。``cancel_event`` 用于
+    快速切换文件时阻止尚未执行的 load/play。
+    """
+
+    def __init__(
+        self,
+        mpv_manager: Any,
+        file_path: str,
+        is_audio: bool,
+        component_id: str,
+        token: int,
+    ) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._mpv_manager = mpv_manager
+        self._file_path = file_path
+        self._is_audio = is_audio
+        self._component_id = component_id
+        self._token = token
+        self._cancel_event = threading.Event()
+        self._signals = _MediaLoadSignals()
+
+    @property
+    def done(self):
+        """加载完成信号 ``(token, ok, error)``。"""
+        return self._signals.done
+
+    def request_cancel(self) -> None:
+        """请求取消：阻止尚未执行的 load/play。"""
+        self._cancel_event.set()
+
+    def start(self) -> None:
+        """投递到全局线程池执行。"""
+        QThreadPool.globalInstance().start(self)
+
+    def run(self) -> None:
+        """加载并起播；异常统一转成 ``done(False, error)``。"""
+        if self._cancel_event.is_set():
+            return
+        ok = False
+        message = ""
+        try:
+            ok = bool(
+                self._mpv_manager.load_file(
+                    self._file_path,
+                    is_audio=self._is_audio,
+                    component_id=self._component_id,
+                )
+            )
+            if ok and not self._cancel_event.is_set():
+                self._mpv_manager.play(component_id=self._component_id)
+        except Exception as exc:  # noqa: BLE001 — mpv/驱动任意异常不崩溃
+            ok = False
+            message = str(exc)
+        if not self._cancel_event.is_set():
+            self._signals.done.emit(self._token, ok, message)
+
+
+class _ManagerStopTask(QRunnable):
+    """后台停止播放并注销组件（避免 UI 线程等待 MPV 操作 future）。"""
+
+    def __init__(
+        self,
+        mpv_manager: Any,
+        component_id: str,
+        unregister: bool = False,
+    ) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._mpv_manager = mpv_manager
+        self._component_id = component_id
+        self._unregister = unregister
+
+    def run(self) -> None:
+        """停止播放；``unregister`` 为真时随后注销组件。"""
+        try:
+            self._mpv_manager.stop(component_id=self._component_id)
+        except Exception:  # noqa: BLE001 — 关闭路径尽力而为
+            pass
+        if self._unregister:
+            try:
+                self._mpv_manager.unregister_component(self._component_id)
+            except Exception:  # noqa: BLE001
+                pass
+
+
 class _MediaTracksSignals(QObject):
     """音轨/字幕轨采集完成信号中转（任务持有，跨线程队列投递到 UI 线程）。"""
 
@@ -264,27 +363,113 @@ class VideoPlayerLayout(QWidget):
 
     # ── 公共 API ──
 
+    def _show_loading(self, text: str) -> None:
+        """显示加载覆盖页（圆环 + 状态文本）。"""
+        self._placeholder.setText(text)
+        self._loading_spinner.setVisible(True)
+        self._stack.setCurrentIndex(1)
+
+    def _show_error(self, text: str) -> None:
+        """显示错误提示（隐藏圆环）。"""
+        self._loading_spinner.setVisible(False)
+        self._placeholder.setText(text)
+        self._stack.setCurrentIndex(1)
+
+    def _restore_media_surface(self) -> None:
+        """根据当前媒体模式恢复视频/音频渲染页（媒体未就绪时保持覆盖页）。"""
+        if not self._media_ready:
+            self._stack.setCurrentIndex(1)
+            return
+        if self._current_media_is_audio:
+            self._stack.setCurrentIndex(self._audio_surface_index)
+        else:
+            self._stack.setCurrentIndex(0)
+
+    def _hide_loading(self, restore: bool = True) -> None:
+        """隐藏圆环；``restore`` 为真时恢复正确渲染页。"""
+        self._loading_spinner.setVisible(False)
+        if restore:
+            self._restore_media_surface()
+
     def set_file(self, file_path: str, is_audio: bool = False) -> bool:
-        """加载并播放视频/音频文件
+        """异步加载并播放视频/音频文件。
+
+        文件加载/起播的阻塞 MPVManager 调用在后台池任务执行；本方法立即返回
+        ``True``（请求已受理）。加载失败经覆盖页错误文本异步呈现。
 
         Args:
             file_path: 文件路径
             is_audio: 是否为音频文件
 
         Returns:
-            bool: 加载是否成功
+            bool: 是否受理加载请求（文件缺失/核心不可用返回 False）
         """
-        if not os.path.exists(file_path):
+        if not file_path or not os.path.exists(file_path):
             warning(f"文件不存在: {file_path}")
             return False
 
-        # 切换文件：令牌递增使在途的轨道采集结果失效（陈旧结果丢弃）
+        # 切换文件：令牌递增使在途轨道/加载结果失效
         self._tracks_token += 1
+        self._media_load_token += 1
+        token = self._media_load_token
+        if self._media_load_task is not None:
+            self._media_load_task.request_cancel()
+            self._media_load_task = None
+        self._media_ready = False
+        self._current_file = file_path
+        self._current_media_is_audio = bool(is_audio)
+
+        # 切换文件时使仍在途的音频元数据任务失效
+        self._audio_meta_token += 1
+
+        if self._mpv_manager is None:
+            self._show_error("无法初始化播放器")
+            return False
+
+        if not self._ensure_core_ready():
+            self._show_error("无法初始化播放器")
+            return False
 
         if is_audio:
-            return self._load_audio_file(file_path)
+            self._show_loading("正在加载音频…")
+            # 音频元数据/封面异步采集与媒体加载并行，UI 立即返回
+            self._update_audio_metadata(file_path)
+        else:
+            self._show_loading("正在加载视频…")
+            if not self._is_mpv_embedded:
+                self._embed_mpv_window()
+                if not self._is_mpv_embedded:
+                    self._show_error("无法初始化播放器")
+                    return False
+                # 嵌入过程会切到视频表面，重新把加载遮罩置顶
+                self._show_loading("正在加载视频…")
 
-        return self._load_video_file(file_path)
+        task = _MediaLoadTask(
+            self._mpv_manager,
+            file_path,
+            bool(is_audio),
+            self._component_id,
+            token,
+        )
+        task.done.connect(self._on_media_load_done)
+        self._media_load_task = task
+        task.start()
+        return True
+
+    def _on_media_load_done(self, token: int, ok: bool, message: str) -> None:
+        """后台加载/起播结果回调（令牌守卫）。
+
+        Args:
+            token: 投递时的加载令牌。
+            ok: ``load_file`` 是否成功。
+            message: 异常消息（成功为空）。
+        """
+        if token != self._media_load_token:
+            return
+        self._media_load_task = None
+        if not ok:
+            self._media_ready = False
+            self._show_error(message or "无法加载文件")
 
     @property
     def is_audio_mode(self) -> bool:
@@ -321,77 +506,6 @@ class VideoPlayerLayout(QWidget):
             error("MPV 核心重新初始化失败")
             return False
         info("MPV 核心重新初始化成功")
-        return True
-
-    def _load_video_file(self, file_path: str) -> bool:
-        """加载视频文件并嵌入 MPV 窗口。"""
-        if not self._ensure_core_ready():
-            self._placeholder.setText("无法初始化播放器")
-            self._stack.setCurrentIndex(1)
-            return False
-
-        if not self._is_mpv_embedded:
-            self._embed_mpv_window()
-            if not self._is_mpv_embedded:
-                self._placeholder.setText("无法初始化播放器")
-                self._stack.setCurrentIndex(1)
-                return False
-
-        if not self._mpv_manager:
-            return False
-
-        self._current_file = file_path
-        self._current_media_is_audio = False
-        # 切到视频时使仍在途的音频元数据任务失效（令牌守卫丢弃陈旧结果）
-        self._audio_meta_token += 1
-        result = self._mpv_manager.load_file(file_path, is_audio=False, component_id=self._component_id)
-        if result:
-            self._stack.setCurrentIndex(0)  # Show video surface
-            self._mpv_manager.play(component_id=self._component_id)
-        else:
-            self._placeholder.setText("无法加载文件")
-            # 切回 overlay 显示错误提示，避免停留在无渲染的黑色视频表面
-            self._stack.setCurrentIndex(1)
-
-        return result
-
-    def _load_audio_file(self, file_path: str) -> bool:
-        """加载音频文件并显示流体背景 + 音乐信息面板。
-
-        不嵌入 MPV 视频窗口；MPV 只负责音频播放。
-
-        Args:
-            file_path: 现有音频文件路径。
-
-        Returns:
-            bool: 加载是否成功。
-        """
-        if not self._mpv_manager:
-            return False
-
-        if not self._ensure_core_ready():
-            self._placeholder.setText("无法初始化播放器")
-            self._stack.setCurrentIndex(1)
-            return False
-
-        self._current_media_is_audio = True
-        result = self._mpv_manager.load_file(
-            file_path, is_audio=True, component_id=self._component_id
-        )
-        if not result:
-            self._placeholder.setText("无法加载文件")
-            self._stack.setCurrentIndex(1)
-            return False
-
-        self._current_file = file_path
-        self._update_audio_metadata(file_path)
-
-        # 先切换到音频表面，让流体背景所在页面可见后再初始化渲染器，
-        # 否则 QOpenGLWidget 无法创建有效的 OpenGL context。
-        self._stack.setCurrentIndex(self._audio_surface_index)
-        self._fluid_background.load()
-        self._mpv_manager.play(component_id=self._component_id)
-
         return True
 
     def _update_audio_metadata(self, file_path: str) -> None:
@@ -526,16 +640,29 @@ class VideoPlayerLayout(QWidget):
         """))
 
     def cleanup(self) -> None:
-        """清理资源，断开所有信号"""
-        # 令牌 +1 使仍在途的音频元数据任务全部失效（陈旧结果不再回写）
+        """清理资源，断开所有信号（可重复调用，不阻塞 UI 线程）。"""
+        if getattr(self, "_cleaned_up", False):
+            return
+        self._cleaned_up = True
+        # 令牌 +1 使仍在途的音频元数据/媒体加载任务全部失效
         self._audio_meta_token += 1
-        # 同样使在途的音轨/字幕轨采集任务失效
         self._tracks_token += 1
+        self._media_load_token += 1
+        if self._media_load_task is not None:
+            self._media_load_task.request_cancel()
+            self._media_load_task = None
+        self._media_ready = False
+        self._loading_spinner.setVisible(False)
         if self._fullscreen:
             self._exit_fullscreen()
         if self._mpv_manager:
-            self._mpv_manager.stop(component_id=self._component_id)
-            self._mpv_manager.unregister_component(self._component_id)
+            # 宿主清理顺序为先 stop_playback（异步停止）再 cleanup；这里只做
+            # 线程安全的组件注销，避免在 UI 线程等待 MPV 操作 future，也避免
+            # 关闭阶段再投递后台任务与 MPV 核心销毁竞态。
+            try:
+                self._mpv_manager.unregister_component(self._component_id)
+            except (RuntimeError, TypeError):
+                pass
 
         # 注销布局自身的心跳回调
         HeartbeatManager().unregister_tick_callback(
@@ -549,6 +676,7 @@ class VideoPlayerLayout(QWidget):
             except RuntimeError:
                 # 允许重复 cleanup 或已释放时忽略
                 pass
+        self._fluid_background_loaded = False
 
         # 隐藏音乐信息面板，避免随上层 surface 一起被 dispose 时产生闪烁
         if self._music_info_panel is not None:
@@ -562,6 +690,10 @@ class VideoPlayerLayout(QWidget):
                 pass
             try:
                 self._mpv_manager.stateChanged.disconnect(self._on_state_changed)
+            except (RuntimeError, TypeError):
+                pass
+            try:
+                self._mpv_manager.bufferingChanged.disconnect(self._on_buffering_changed)
             except (RuntimeError, TypeError):
                 pass
             try:
@@ -594,9 +726,17 @@ class VideoPlayerLayout(QWidget):
         debug("VideoPlayerLayout cleanup 完成")
 
     def stop_playback(self) -> None:
-        """停止播放"""
+        """停止播放（异步提交，不阻塞 UI 线程）。"""
+        self._media_load_token += 1
+        if self._media_load_task is not None:
+            self._media_load_task.request_cancel()
+            self._media_load_task = None
+        self._media_ready = False
         if self._mpv_manager:
-            self._mpv_manager.stop(component_id=self._component_id)
+            QThreadPool.globalInstance().start(
+                _ManagerStopTask(self._mpv_manager, self._component_id)
+            )
+        self._loading_spinner.setVisible(False)
         self._player_bar.set_playing(False)
         self._placeholder.setText("拖放视频文件或选择文件以播放")
         self._stack.setCurrentIndex(1)  # Show overlay
@@ -621,12 +761,17 @@ class VideoPlayerLayout(QWidget):
         self._video_surface.setFocusPolicy(Qt.NoFocus)
         self._stack.addWidget(self._video_surface)
 
-        # ── 占位覆盖层（index 1，未播放时显示）──
+        # ── 占位覆盖层（index 1，未播放/加载中/缓冲中显示）──
         self._overlay = QWidget()
         register_widget_qss(self._overlay,("background-color: #1a1a1a;"))
         overlay_layout = QVBoxLayout(self._overlay)
         overlay_layout.setAlignment(Qt.AlignCenter)
         overlay_layout.setSpacing(16)
+
+        # 加载/缓冲圆环（仅进行中状态显示）
+        self._loading_spinner = StyledLoading(size="lg")
+        self._loading_spinner.setVisible(False)
+        overlay_layout.addWidget(self._loading_spinner, 0, Qt.AlignCenter)
 
         # 提示文字
         self._placeholder = QLabel("拖放视频文件或选择文件以播放")
@@ -717,7 +862,12 @@ class VideoPlayerLayout(QWidget):
         # MPV 管理器在首次加载文件时惰性初始化
         self._is_mpv_embedded = False
         self._current_file = ""
+        # 异步媒体加载状态：token 丢弃陈旧结果；cancel_event 阻止过期 load/play
+        self._media_load_token: int = 0
+        self._media_load_task: Optional[_MediaLoadTask] = None
+        self._media_ready: bool = False
         self._current_media_is_audio = False
+        self._fluid_background_loaded: bool = False
         self._duration = 0.0
         self._current_position = 0.0
         self._current_speed = 1.0
@@ -966,6 +1116,7 @@ class VideoPlayerLayout(QWidget):
             return
         self._mpv_manager.positionChanged.connect(self._on_position_changed)
         self._mpv_manager.stateChanged.connect(self._on_state_changed)
+        self._mpv_manager.bufferingChanged.connect(self._on_buffering_changed)
         self._mpv_manager.volumeChanged.connect(self._on_volume_changed)
         self._mpv_manager.mutedChanged.connect(self._on_muted_changed)
         self._mpv_manager.speedChanged.connect(self._on_speed_changed_from_mpv)
@@ -996,6 +1147,22 @@ class VideoPlayerLayout(QWidget):
         """MPV 状态变化 → 更新暂停/播放按钮"""
         is_playing = state.is_playing and not state.is_paused
         self._player_bar.set_playing(is_playing)
+
+    def _on_buffering_changed(self, is_buffering: bool) -> None:
+        """MPV 缓存缓冲状态变化 → 显示/隐藏「正在缓冲…」圆环。
+
+        仅在媒体已就绪后响应（加载阶段由加载遮罩负责）；切页幂等，
+        快速抖动时不会反复重建控件。
+
+        Args:
+            is_buffering: ``True`` 表示 mpv ``paused-for-cache`` 生效。
+        """
+        if not self._media_ready:
+            return
+        if is_buffering:
+            self._show_loading("正在缓冲…")
+        else:
+            self._hide_loading(restore=True)
 
     def _on_volume_changed(self, volume: int) -> None:
         """MPV 音量变化 → 更新音量显示"""
@@ -1324,13 +1491,24 @@ class VideoPlayerLayout(QWidget):
             self._player_bar.hide_float_bar()
 
     def _on_file_loaded(self, file_path: str) -> None:
-        """文件加载完成"""
+        """文件加载完成 → 撤下加载圆环并切换到对应渲染表面。"""
+        expected = os.path.normcase(os.path.abspath(self._current_file)) if self._current_file else ""
+        actual = os.path.normcase(os.path.abspath(file_path)) if file_path else ""
+        if expected and actual and expected != actual:
+            debug(f"忽略过期 FILE_LOADED: {file_path}")
+            return
         info(f"文件加载完成: {file_path}")
+        self._media_ready = True
+        self._hide_loading(restore=False)
         # 文件加载成功后，确保 stack 切到对应的渲染表面。
         # 切换文件时 mpv 会先触发旧文件的 END_FILE，可能导致 stack 被切到 overlay，
         # 这里在 FILE_LOADED 时主动纠正，确保视频/音频表面可见。
         if self._current_media_is_audio:
             self._stack.setCurrentIndex(self._audio_surface_index)
+            # 音频表面可见后再初始化流体背景（隐藏时无有效 GL context）
+            if not self._fluid_background_loaded:
+                self._fluid_background.load()
+                self._fluid_background_loaded = True
         else:
             self._stack.setCurrentIndex(0)  # 视频表面
         # OSD 定位目标跟随当前渲染表面（音频模式 → 音频表面，视频模式 → 视频表面）

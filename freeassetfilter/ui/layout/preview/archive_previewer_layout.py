@@ -43,6 +43,7 @@ from components.styled_button import StyledButton
 from components.styled_context_menu import StyledContextMenu
 from components.styled_dialog import ask_custom_dialog, create_input_dialog
 from components.styled_lineedit import StyledLineEdit
+from components.styled_loading import StyledLoading
 from PySide6.QtCore import (
     QAbstractListModel,
     QEvent,
@@ -111,6 +112,7 @@ _ROW_RADIUS: int = 6  # hover / 选中圆角背景
 
 _PLACEHOLDER_NO_ARCHIVE: str = "选择压缩包文件开始预览"
 _PLACEHOLDER_LOADING: str = "正在读取压缩包内容…"
+_PLACEHOLDER_SEARCHING: str = "正在搜索压缩包…"
 _PLACEHOLDER_ROOT_EMPTY: str = "压缩包内无内容或无法读取"
 _PLACEHOLDER_DIR_EMPTY: str = "此目录为空"
 _PLACEHOLDER_PASSWORD_REQUIRED: str = "需要密码才能浏览此压缩包"
@@ -921,6 +923,11 @@ class ArchivePreviewerLayout(QWidget):
         overlay_layout.setAlignment(Qt.AlignCenter)
         overlay_layout.setSpacing(16)
 
+        # 加载圆环（仅读取/搜索等进行中状态显示）
+        self._loading_spinner = StyledLoading(size="lg")
+        self._loading_spinner.setVisible(False)
+        overlay_layout.addWidget(self._loading_spinner, 0, Qt.AlignCenter)
+
         self._placeholder = QLabel(_PLACEHOLDER_NO_ARCHIVE)
         self._placeholder.setAlignment(Qt.AlignCenter)
         register_widget_qss(self._placeholder,(
@@ -1046,13 +1053,21 @@ class ArchivePreviewerLayout(QWidget):
 
     # ── 占位 / 覆盖层 ────────────────────────────────────────────────────────
 
-    def _show_overlay(self, text: str) -> None:
-        """显示覆盖层（占位 / 加载中 / 空态）。"""
+    def _show_overlay(self, text: str, busy: bool = False) -> None:
+        """显示覆盖层（占位 / 加载中 / 空态）。
+
+        Args:
+            text: 提示文本。
+            busy: True 时显示加载圆环（读取/搜索进行中）；False 时仅显示
+                文本（占位/空态/密码/错误）。
+        """
         self._placeholder.setText(text)
+        self._loading_spinner.setVisible(bool(busy))
         self._content_stack.setCurrentIndex(self._PAGE_OVERLAY)
 
     def _show_list(self) -> None:
-        """切换到条目列表页。"""
+        """切换到条目列表页（隐藏加载圆环）。"""
+        self._loading_spinner.setVisible(False)
         self._content_stack.setCurrentIndex(self._PAGE_LIST)
 
     # ── 状态刷新 ─────────────────────────────────────────────────────────────
@@ -1065,7 +1080,7 @@ class ArchivePreviewerLayout(QWidget):
         self._loading = True
         self._token += 1
         token = self._token
-        self._show_overlay(_PLACEHOLDER_LOADING)
+        self._show_overlay(_PLACEHOLDER_LOADING, busy=True)
 
         worker = _ArchiveListWorker(
             self._archive_path,
@@ -1259,7 +1274,7 @@ class ArchivePreviewerLayout(QWidget):
         )
         self._search_worker.search_finished.connect(self._on_search_finished)
         self._search_worker.search_failed.connect(self._on_search_failed)
-        self._show_overlay(_PLACEHOLDER_LOADING)
+        self._show_overlay(_PLACEHOLDER_SEARCHING, busy=True)
         self._search_worker.start()
 
     def _on_search_finished(self, token: int, keyword: str, entries: list) -> None:

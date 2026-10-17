@@ -609,6 +609,50 @@ class TestOfficeConverterWorker:
         assert "已取消" in got[0]
         _shutdown_office_worker(worker, qapp)
 
+    def test_request_cancel_does_not_block_ui(
+        self, qapp: Any, monkeypatch: Any
+    ) -> None:
+        """boundary：request_cancel 把子进程终止放到后台，立即返回。
+
+        Args:
+            qapp: 会话级 QApplication。
+            monkeypatch: pytest monkeypatch。
+        """
+        entered: threading.Event = threading.Event()
+        release: threading.Event = threading.Event()
+        terminate_entered: threading.Event = threading.Event()
+
+        def _blocking_convert(file_info: dict) -> ConversionResult:
+            entered.set()
+            release.wait(5)
+            return ConversionResult(
+                content_type="html", content="late", backend_used="pure-python"
+            )
+
+        def _slow_terminate(self: Any, grace: float | None = None) -> None:
+            terminate_entered.set()
+            time.sleep(0.8)
+
+        monkeypatch.setattr(OfficeConverter, "convert", staticmethod(_blocking_convert))
+        monkeypatch.setattr(
+            OfficeConverterWorker, "_terminate_active_subprocess", _slow_terminate
+        )
+        worker: OfficeConverterWorker = OfficeConverterWorker(
+            {"path": "x.docx", "suffix": "docx"}
+        )
+        worker.start()
+        try:
+            assert entered.wait(3), "worker 转换未进入"
+            start: float = time.monotonic()
+            worker.request_cancel()
+            elapsed: float = time.monotonic() - start
+            assert elapsed < 0.5, f"request_cancel 阻塞了 {elapsed:.2f}s"
+            assert worker._cancel_requested is True  # noqa: SLF001
+            assert terminate_entered.wait(2), "终止线程未启动"
+        finally:
+            release.set()
+            _shutdown_office_worker(worker, qapp)
+
     def test_timeout_emits_timeout_failed(self, qapp: Any, monkeypatch: Any) -> None:
         """error：worker 超时设置应发射含「超时」的 failed。
 

@@ -291,6 +291,26 @@ class TestFilePoolLayout:
         assert layout.has_file(file_path) is False
         layout.deleteLater()
 
+    def test_add_file_same_path_twice_keeps_single_card(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        """同一路径重复 add_file：忽略第二次，卡片与 items 均只保留一份。"""
+        layout = FilePoolLayout()
+        _assert_layout_geometry(layout, qapp)
+        target = tmp_path / "dedup_pool.txt"
+        target.write_text("x", encoding="utf-8")
+
+        layout.add_file({"path": str(target), "name": target.name})
+        first_card = layout._card_widgets[os.path.normpath(str(target))]
+        layout.add_file({"path": str(target), "name": target.name})
+
+        norm = os.path.normpath(str(target))
+        assert len(layout._card_widgets) == 1
+        assert len(layout.items) == 1
+        assert layout._card_widgets[norm] is first_card
+        assert layout.has_file(str(target)) is True
+        layout.deleteLater()
+
     def test_grid_removal_shrink_and_smooth_fill(
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -3393,9 +3413,12 @@ class TestTextPreviewerLayout:
             path = tmp_path / "gbk.txt"
             path.write_bytes(raw)
             layout.set_file(str(path))
-            # 立即（未泵事件）已有快速链显示，不空白
-            fast_text = layout._source_view._text_edit.toPlainText()
-            assert len(fast_text) > 0, "快速链显示不应空白"
+            # 读取/解码已异步化：泵事件直到快速链文本落地（不再同步返回）
+            assert _pump_until(
+                qapp,
+                lambda: len(layout._source_view._text_edit.toPlainText()) > 0,
+                timeout_ms=6000,
+            ), "快速链显示不应空白"
             # 探测完成后回调重渲染为 gbk（异步，泵事件直到生效）
             expected = _normalize_eol(raw.decode("gbk", errors="replace"))
             assert _pump_until(
@@ -3515,7 +3538,12 @@ class TestVideoPlayerLayout:
             assert layout.set_file(str(media), is_audio=False) is True
             fake_manager.initialize.assert_called_once()  # 自愈重建
             fake_manager.set_window_id.assert_called_once()  # 重新嵌入
-            fake_manager.load_file.assert_called_once()
+            # 加载/起播已异步化：泵事件等待后台任务调用 load_file
+            assert _pump_until(
+                qapp, lambda: fake_manager.load_file.call_count == 1
+            )
+            # 模拟 mpv 的 FILE_LOADED → 切到视频表面
+            layout._on_file_loaded(str(media))  # noqa: SLF001
             assert layout._stack.currentIndex() == 0  # noqa: SLF001
         finally:
             qapp.setProperty("faf_disable_animation", animation_enabled_original)
@@ -3538,9 +3566,15 @@ class TestVideoPlayerLayout:
             fake_manager.load_file.return_value = False  # 加载失败
             layout._mpv_manager = fake_manager  # noqa: SLF001
 
-            assert layout.set_file(str(media), is_audio=False) is False
+            assert layout.set_file(str(media), is_audio=False) is True
+            assert _pump_until(
+                qapp, lambda: fake_manager.load_file.call_count == 1
+            )
+            assert _pump_until(
+                qapp,
+                lambda: "无法加载文件" in layout._placeholder.text(),  # noqa: SLF001
+            )
             assert layout._stack.currentIndex() == 1  # noqa: SLF001
-            assert "无法加载文件" in layout._placeholder.text()  # noqa: SLF001
         finally:
             qapp.setProperty("faf_disable_animation", animation_enabled_original)
         layout.deleteLater()

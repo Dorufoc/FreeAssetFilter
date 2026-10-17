@@ -169,6 +169,7 @@ tests/
 | `layout/preview/test_folder_previewer_layout.py` | 文件夹预览器 |
 | `layout/preview/test_native_pdf_renderer.py` | QPainter 交互式 PDF 渲染控件 |
 | `layout/preview/test_pdf_drawer_async.py` | PDF 缩略图抽屉异步批处理 |
+| `layout/preview/test_preview_loading_states.py` | 各预览器加载圆环显隐与主线程非阻塞行为 |
 | `layout/preview/test_preview_toolbar.py` | 共享预览顶栏框架 |
 | `layout/preview/test_zoom_popups.py` | 缩放 / 字重弹窗生命周期与随动 |
 | `mica/test_compositor_present.py` | 合成器呈现调度 |

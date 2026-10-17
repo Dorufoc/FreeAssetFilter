@@ -57,6 +57,8 @@ except ImportError:
         """回退实现：无本地无边框基类时 user32 原型表不可用。"""
         return None
 
+from freeassetfilter.ui.elevated_drop import ElevatedDropFallbackMixin
+
 # tm 别名已在 theme/__init__.py 中注册
 # from theme import tm 与从 freeassetfilter.ui.theme import tm 指向同一实例
 from theme import tm
@@ -669,7 +671,7 @@ class _FramelessNativeEffectsMixin:
         app.installNativeEventFilter(self._edge_hit_test_filter)
 
 
-class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
+class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, FramelessMainWindow):
     """
     主窗口类 - 使用无边框窗口和 Mica 效果
 
@@ -1576,6 +1578,40 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         except Exception as exc:  # noqa: BLE001 - 吸附意图下发失败不阻断建窗
             warning(f"浮窗贴边吸附意图应用失败: {exc}")
         floating.show()
+
+    def _elevated_drop_accepts_point(self, x: int, y: int) -> bool:
+        """提权兜底命中测试：仅文件池区域内的落点接受。
+
+        原生兜底安装后（``RevokeDragDrop`` 撤销顶层 OLE 投放）整个主窗口都会
+        收到 ``WM_DROPFILES``，故这里按文件池控件矩形收窄语义，池外丢弃。
+
+        Args:
+            x: 主窗口客户区逻辑 X 坐标。
+            y: 主窗口客户区逻辑 Y 坐标。
+
+        Returns:
+            bool: 落点位于文件池控件矩形内返回 ``True``。
+        """
+        pool = self._file_pool
+        if pool is None:
+            return False
+        local = pool.mapFrom(self, QPoint(x, y))
+        return pool.rect().contains(local)
+
+    def _elevated_drop_accept_paths(self, paths: list[str]) -> None:
+        """提权兜底入口：把原生 ``WM_DROPFILES`` 路径注入文件池。
+
+        与 ``FilePoolLayout.dropEvent`` 共用
+        :meth:`FilePoolLayout.add_dropped_paths` 的同款过滤语义。
+
+        Args:
+            paths: 原生兜底解析出的本地路径列表。
+        """
+        debug(f"主窗口提权兜底拖入：收到路径数={len(paths)}")
+        pool = self._file_pool
+        if pool is None:
+            return
+        pool.add_dropped_paths(paths)
 
     def _teardown_floating_pool(self) -> None:
         """断开浮窗信号连接、停用定时器、关闭并调度销毁（幂等；``None`` 安全）。

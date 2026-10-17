@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from PySide6.QtCore import (
@@ -32,6 +33,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QDragEnterEvent,
     QDragLeaveEvent,
+    QDragMoveEvent,
     QDropEvent,
     QMouseEvent,
     QCursor,
@@ -181,6 +183,55 @@ def test_set_expanded_clamps_when_moved_left(qapp: QApplication) -> None:
 
         assert window.x() == avail.left()
         assert window.x() + window.width() <= avail.right() + 1
+    finally:
+        window.deleteLater()
+
+
+def test_set_expanded_clamps_bottom_edge_when_near_screen_bottom(
+    qapp: QApplication,
+) -> None:
+    """折叠态贴着可用区下缘时展开：y 一并钳制，展开下缘不越出屏幕。
+
+    回归：``set_expanded`` 早期只钳 x 不钳 y，贴近屏幕底部的胶囊展开后
+    （高度 48 → 360）下缘越出可用区下界；同时锁定水平方向的既有右缘
+    锚定 + 左缘钳制不回归，且重定位恰经一次 ``_animate_move``。
+    """
+    window = FloatingPoolWindow()
+    try:
+        _screen, avail = _screen_and_available(window)
+        assert avail is not None
+
+        calls: list[QPoint] = []
+        original_animate_move = window._animate_move
+
+        def _spy_animate_move(target: QPoint) -> None:
+            calls.append(target)
+            original_animate_move(target)
+
+        window._animate_move = _spy_animate_move
+
+        # 折叠态下缘贴住可用区下缘（包含式：bottom() == y + height - 1）。
+        start_y = avail.bottom() - window.height() + 1
+        assert start_y > avail.top()
+        window.move(300, start_y)
+
+        window.set_expanded(True)
+        _wait_move_animation(window)
+
+        _screen_now, avail_now = _screen_and_available(window)
+        assert avail_now is not None
+        geo = window.geometry()
+        # 下缘不越界（包含式边界）。
+        assert window.y() + window.height() - 1 <= avail_now.bottom()
+        # 上缘同样不越界。
+        assert window.y() >= avail_now.top()
+        # 精确落位：y 被钳到可用区下缘（包含式）。
+        assert window.y() == avail_now.bottom() - window.height() + 1
+        # 水平方向保持既有右缘锚定 + 左缘钳制（无回归）。
+        assert geo.left() >= avail_now.left()
+        assert geo.right() <= avail_now.right()
+        # 展开重定位必须恰经一次位移动画（不得拆成两次调用）。
+        assert len(calls) == 1
     finally:
         window.deleteLater()
 
@@ -337,6 +388,106 @@ def test_drop_nonexistent_path_emits_nothing(
         window.deleteLater()
 
 
+def test_drop_non_local_url_emits_nothing(
+    qapp: QApplication,
+) -> None:
+    """``toLocalFile()`` 为空的 URL（如 http 虚拟项）被跳过，不发射信号。"""
+    window = FloatingPoolWindow()
+    received: list[dict] = []
+    window.add_file_requested.connect(received.append)
+    try:
+        mime = QMimeData()
+        mime.setUrls([QUrl("https://example.com/file.txt")])
+        assert mime.urls()[0].toLocalFile() == ""
+
+        event = QDropEvent(
+            QPointF(10.0, 10.0),
+            Qt.CopyAction,
+            mime,
+            Qt.LeftButton,
+            Qt.NoModifier,
+        )
+        window.dropEvent(event)
+
+        assert received == []
+    finally:
+        window.deleteLater()
+
+
+def test_drop_mixed_non_local_and_valid_emits_only_valid(
+    qapp: QApplication, tmp_path
+) -> None:
+    """混合载荷：非本地 URL 被跳过，有效本地文件仍正常发射一次。"""
+    window = FloatingPoolWindow()
+    received: list[dict] = []
+    window.add_file_requested.connect(received.append)
+    try:
+        target = tmp_path / "mixed.txt"
+        target.write_text("x", encoding="utf-8")
+
+        mime = QMimeData()
+        mime.setUrls(
+            [
+                QUrl("https://example.com/remote.txt"),
+                QUrl.fromLocalFile(str(target)),
+            ]
+        )
+        event = QDropEvent(
+            QPointF(10.0, 10.0),
+            Qt.CopyAction,
+            mime,
+            Qt.LeftButton,
+            Qt.NoModifier,
+        )
+        window.dropEvent(event)
+
+        assert len(received) == 1
+        assert Path(received[0]["path"]) == target
+    finally:
+        window.deleteLater()
+
+
+def test_drag_move_logged_once_per_drag(
+    qapp: QApplication, tmp_path
+) -> None:
+    """``dragMoveEvent`` 每次拖拽只记录一次：标志在 dragEnter/dragLeave 复位。"""
+    window = FloatingPoolWindow()
+    try:
+        target = tmp_path / "move.txt"
+        target.write_text("x", encoding="utf-8")
+        mime = _mime_for([str(target)])
+
+        enter = QDragEnterEvent(
+            QPoint(10, 10),
+            Qt.CopyAction,
+            mime,
+            Qt.LeftButton,
+            Qt.NoModifier,
+        )
+        window.dragEnterEvent(enter)
+        assert window._drag_move_logged is False
+
+        move = QDragMoveEvent(
+            QPoint(10, 20),
+            Qt.CopyAction,
+            mime,
+            Qt.LeftButton,
+            Qt.NoModifier,
+        )
+        window.dragMoveEvent(move)
+        assert window._drag_move_logged is True
+        assert move.isAccepted()
+
+        # 同一次拖拽内后续移动事件：不再重复记录，但持续接受
+        window.dragMoveEvent(move)
+        assert window._drag_move_logged is True
+
+        window.dragLeaveEvent(QDragLeaveEvent())
+        assert window._drag_move_logged is False
+    finally:
+        window.deleteLater()
+
+
 def test_drag_enter_and_leave_toggle_highlight(
     qapp: QApplication, tmp_path
 ) -> None:
@@ -360,6 +511,45 @@ def test_drag_enter_and_leave_toggle_highlight(
         leave = QDragLeaveEvent()
         window.dragLeaveEvent(leave)
         assert not window.property("dragActive")
+    finally:
+        window.deleteLater()
+
+
+def test_drag_enter_without_urls_logs_formats(
+    qapp: QApplication, monkeypatch
+) -> None:
+    """无 URL 载荷的 ``dragEnterEvent`` 也留无条件日志（含 hasUrls + formats）。
+
+    回归：原先唯一 ``debug`` 位于 ``if hasUrls():`` 内，载荷不含 URL 时无日志，
+    无法区分「未被调用」与「被调用但 hasUrls 为 False」。此用例钉死无条件日志。
+    """
+    window = FloatingPoolWindow()
+    try:
+        mock_debug = Mock()
+        monkeypatch.setattr(
+            "freeassetfilter.ui.floating_pool_window.debug", mock_debug
+        )
+
+        # PySide6 陷阱：QDragEnterEvent 不持有 QMimeData 所有权，须保持引用存活。
+        mime = QMimeData()
+        mime.setText("plain text, no urls")
+        assert mime.hasUrls() is False
+
+        enter = QDragEnterEvent(
+            QPoint(10, 10),
+            Qt.CopyAction,
+            mime,
+            Qt.LeftButton,
+            Qt.NoModifier,
+        )
+        window.dragEnterEvent(enter)
+
+        assert mock_debug.called
+        assert any(
+            isinstance(arg, str) and "hasUrls" in arg and "formats" in arg
+            for call in mock_debug.call_args_list
+            for arg in call.args
+        )
     finally:
         window.deleteLater()
 

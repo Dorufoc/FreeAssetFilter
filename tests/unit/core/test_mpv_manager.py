@@ -191,6 +191,7 @@ class TestCoreOperational:
             assert manager._do_initialize() is True  # noqa: SLF001
             for signal in (
                 fake.stateChanged,
+                fake.bufferingChanged,
                 fake.positionChanged,
                 fake.fileLoaded,
                 fake.fileEnded,
@@ -203,6 +204,15 @@ class TestCoreOperational:
             manager._mpv_core = None  # noqa: SLF001
             if manager._operation_thread and manager._operation_thread.is_alive():  # noqa: SLF001
                 manager._stop_operation_thread(2.0)  # noqa: SLF001
+
+    def test_on_buffering_changed_forwards(self, qapp: object) -> None:
+        """``_on_buffering_changed`` 直接转发 ``bufferingChanged`` 信号。"""
+        manager: MPVManager = MPVManager()
+        received: list = []
+        manager.bufferingChanged.connect(received.append)
+        manager._on_buffering_changed(True)  # noqa: SLF001
+        manager._on_buffering_changed(False)  # noqa: SLF001
+        assert received == [True, False]
 
 
 # =============================================================================

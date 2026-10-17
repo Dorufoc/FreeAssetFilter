@@ -26,7 +26,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
-from PySide6.QtCore import Qt, QRectF, QPointF, Signal
+from PySide6.QtCore import Qt, QRectF, QPointF, QObject, QRunnable, QThreadPool, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -47,6 +47,71 @@ from freeassetfilter.services.pdf_document_view import PdfDocumentView
 from freeassetfilter.services.pdf_renderer import PdfBackgroundRenderer
 from freeassetfilter.ui.theme import tm
 from freeassetfilter.utils.app_logger import warning
+
+
+# ── 异步文档打开任务（fitz.open + 页尺寸缓存移出 UI 线程）──────────────
+
+class _PdfOpenSignals(QObject):
+    """PDF 异步打开完成信号中转（任务持有，跨线程队列投递到 UI 线程）。"""
+
+    opened = Signal(int, object, str, list, list, list)
+    # (token, PdfDocument, file_path, page_widths, page_heights, accum_heights)
+    failed = Signal(int, str)  # (token, error_message)
+
+
+class _PdfOpenTask(QRunnable):
+    """后台打开 PDF 并读取全部页尺寸的池任务。
+
+    PyMuPDF 的 ``fitz.open`` 与逐页 ``page.rect`` 在超大 PDF 上可能耗时
+    秒级；本任务把这段工作移出 UI 线程。``PdfDocument`` 自身带
+    ``threading.Lock``，渲染任务仍按既有模式各自打开独立文档。
+    """
+
+    def __init__(self, file_path: str, token: int) -> None:
+        """初始化任务。
+
+        Args:
+            file_path: PDF 文件路径。
+            token: 加载令牌（布局/渲染器据此丢弃陈旧结果）。
+        """
+        super().__init__()
+        self.setAutoDelete(True)
+        self._file_path = file_path
+        self._token = token
+        self._signals = _PdfOpenSignals()
+
+    @property
+    def opened(self):
+        """打开成功信号 ``(token, doc, path, widths, heights, accums)``。"""
+        return self._signals.opened
+
+    @property
+    def failed(self):
+        """打开失败信号 ``(token, message)``。"""
+        return self._signals.failed
+
+    def start(self) -> None:
+        """投递到全局线程池执行。"""
+        QThreadPool.globalInstance().start(self)
+
+    def run(self) -> None:
+        """打开文档并读取页尺寸；异常统一经 ``failed`` 上报。"""
+        doc: Optional[PdfDocument] = None
+        try:
+            doc = PdfDocument(self._file_path)
+            widths = list(doc.page_widths)
+            heights = list(doc.page_heights)
+            accums = list(doc.accum_page_heights)
+            self._signals.opened.emit(
+                self._token, doc, self._file_path, widths, heights, accums
+            )
+        except Exception as exc:  # noqa: BLE001  # 打开边界：统一失败上报
+            if doc is not None:
+                try:
+                    doc.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            self._signals.failed.emit(self._token, str(exc))
 
 
 class NativePdfRenderer(QWidget):
@@ -91,6 +156,10 @@ class NativePdfRenderer(QWidget):
     page_changed = Signal(int)           # 0-based page number
     total_pages_changed = Signal(int)    # total page count
     zoom_changed = Signal(float)         # current zoom level
+    #: 异步/同步加载完成（success, error_message）
+    document_load_finished = Signal(bool, str)
+    #: 某页后台渲染完成（0-based page number）
+    page_rendered = Signal(int)
 
     # ── Lifecycle ─────────────────────────────────────────────────────
 
@@ -144,6 +213,10 @@ class NativePdfRenderer(QWidget):
         self._renderer: PdfBackgroundRenderer = PdfBackgroundRenderer(max_cache=10)
         self._renderer.render_ready.connect(self._on_page_rendered)
         self._file_path: Optional[str] = None
+
+        # 异步打开状态：令牌递增使旧任务结果失效；在途任务强引用防 GC。
+        self._load_token: int = 0
+        self._load_task: Optional[_PdfOpenTask] = None
 
         # ── Cached page dimensions (set in load_document) ──────────────
         self._page_widths: List[float] = []
@@ -208,50 +281,46 @@ class NativePdfRenderer(QWidget):
 
     # ── Public API ────────────────────────────────────────────────────
 
-    def load_document(self, file_path: str) -> bool:
-        """Open a PDF and set up the view for interactive rendering.
-
-        Workflow (matching sioyek's document-open behaviour):
-        1. Clean up any previously loaded document.
-        2. Open ``PdfDocument(path)``.
-        3. Create ``PdfDocumentView`` with the page dimensions cached.
-        4. Fit to page width and initialise the scroll offset.
-        5. Emit ``page_changed(0)`` and ``total_pages_changed(count)``.
-        6. Submit initial render requests for the first visible pages.
-
-        Parameters
-        ----------
-        file_path : str
-            Path to the PDF file to open.
-
-        Returns
-        -------
-        bool
-            ``True`` if the document was successfully loaded.
-        """
-        # Clean up previous document.
+    def _close_current_document(self) -> None:
+        """取消后台渲染并关闭当前文档（不改变加载令牌）。"""
         self._renderer.cancel_all()
         if self._doc is not None:
-            self._doc.close()
-            self._doc = None
-            self._view = None
+            try:
+                self._doc.close()
+            except Exception as exc:  # noqa: BLE001
+                warning(f"关闭 PDF 文档失败：{exc}")
+            finally:
+                self._doc = None
+        self._view = None
+        self._file_path = None
+        self._page_widths = []
+        self._page_heights = []
+        self._accum_heights = []
 
-        if not os.path.exists(file_path):
-            return False
+    def _install_document(
+        self,
+        doc: PdfDocument,
+        file_path: str,
+        page_widths: List[float],
+        page_heights: List[float],
+        accum_heights: List[float],
+    ) -> None:
+        """把已打开的文档安装到视图并提交首屏渲染（UI 线程）。
 
-        try:
-            self._doc = PdfDocument(file_path)
-        except Exception:
-            self._doc = None
-            self._file_path = None
-            return False
-
+        Args:
+            doc: 已打开的 PDF 文档（后台任务创建，带内部锁）。
+            file_path: 文档路径。
+            page_widths: 全部页宽（pt）。
+            page_heights: 全部页高（pt）。
+            accum_heights: 页高累计和。
+        """
+        self._doc = doc
         self._file_path = file_path
 
         # Cache page dimensions locally for fast paintEvent access.
-        self._page_widths = list(self._doc.page_widths)
-        self._page_heights = list(self._doc.page_heights)
-        self._accum_heights = list(self._doc.accum_page_heights)
+        self._page_widths = list(page_widths)
+        self._page_heights = list(page_heights)
+        self._accum_heights = list(accum_heights)
 
         # Create the view with the current widget size.
         w: int = self.width()
@@ -292,7 +361,110 @@ class NativePdfRenderer(QWidget):
         self._submit_render_for_visible_pages()
         self.update()
 
+    def load_document(self, file_path: str) -> bool:
+        """同步打开 PDF 并完成视图初始化（保留给独立组件/测试）。
+
+        预览器交互路径使用 :meth:`load_document_async`；本方法保留原签名与
+        返回值，供 ``test_native_pdf_renderer`` 等同步用例使用。
+
+        Parameters
+        ----------
+        file_path : str
+            Path to the PDF file to open.
+
+        Returns
+        -------
+        bool
+            ``True`` if the document was successfully loaded.
+        """
+        self._load_token += 1
+        self._load_task = None
+        self._close_current_document()
+
+        if not os.path.exists(file_path):
+            self.document_load_finished.emit(False, f"文件不存在: {file_path}")
+            return False
+
+        doc: Optional[PdfDocument] = None
+        try:
+            doc = PdfDocument(file_path)
+            widths = list(doc.page_widths)
+            heights = list(doc.page_heights)
+            accums = list(doc.accum_page_heights)
+        except Exception as exc:  # noqa: BLE001
+            if doc is not None:
+                try:
+                    doc.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            self.document_load_finished.emit(False, str(exc))
+            return False
+
+        self._install_document(doc, file_path, widths, heights, accums)
+        self.document_load_finished.emit(True, "")
         return True
+
+    def load_document_async(self, file_path: str) -> bool:
+        """异步打开 PDF（fitz.open + 页尺寸缓存移出 UI 线程）。
+
+        路径不存在时同步返回 ``False``；其余情况立即返回 ``True``（请求已
+        受理），结果经 ``document_load_finished(success, message)`` 通知。
+
+        Args:
+            file_path: PDF 文件路径。
+
+        Returns:
+            bool: 是否受理打开请求。
+        """
+        self._load_token += 1
+        token = self._load_token
+        self._load_task = None
+        self._close_current_document()
+
+        if not os.path.exists(file_path):
+            return False
+
+        task = _PdfOpenTask(file_path, token)
+        task.opened.connect(self._on_document_opened)
+        task.failed.connect(self._on_document_open_failed)
+        self._load_task = task
+        task.start()
+        return True
+
+    def _on_document_opened(
+        self,
+        token: int,
+        doc: object,
+        file_path: str,
+        widths: list,
+        heights: list,
+        accums: list,
+    ) -> None:
+        """异步打开成功回调（令牌守卫：陈旧结果关闭文档并丢弃）。"""
+        if token != self._load_token or not isinstance(doc, PdfDocument):
+            try:
+                if isinstance(doc, PdfDocument):
+                    doc.close()
+            except Exception:  # noqa: BLE001
+                pass
+            return
+        self._load_task = None
+        self._install_document(doc, file_path, widths, heights, accums)
+        self.document_load_finished.emit(True, "")
+
+    def _on_document_open_failed(self, token: int, message: str) -> None:
+        """异步打开失败回调（令牌守卫）。"""
+        if token != self._load_token:
+            return
+        self._load_task = None
+        self.document_load_finished.emit(False, message)
+
+    def close_document(self) -> None:
+        """取消在途打开/渲染并关闭当前文档（幂等，不阻塞）。"""
+        self._load_token += 1
+        self._load_task = None
+        self._close_current_document()
+        self.update()
 
     def go_to_page(self, page: int) -> None:
         """Navigate to a specific page (0-based).
@@ -799,9 +971,16 @@ class NativePdfRenderer(QWidget):
         """Slot connected to ``PdfBackgroundRenderer.render_ready``.
 
         Simply triggers a repaint; the ``paintEvent`` will pick up the
-        newly cached image from the renderer's LRU cache.
+        newly cached image from the renderer's LRU cache. 同时转发
+        ``page_rendered`` 供预览器结束加载遮罩（仅成功缓存的结果；取消/
+        失败任务虽也会发 render_ready，但缓存中无图像，不应提前撤遮罩）。
         """
         self.update()
+        if self._view is None:
+            return
+        cached = self._renderer.find_cached(page, self._view.zoom_level)
+        if cached is not None and cached.image is not None:
+            self.page_rendered.emit(page)
 
     def _submit_render_for_visible_pages(self) -> None:
         """Submit background render requests for all visible pages.
@@ -937,9 +1116,5 @@ class NativePdfRenderer(QWidget):
 
     def closeEvent(self, event: Any) -> None:  # noqa: N802
         """Clean up resources on widget close."""
-        self._renderer.cancel_all()
-        if self._doc is not None:
-            self._doc.close()
-            self._doc = None
-        self._view = None
+        self.close_document()
         super().closeEvent(event)

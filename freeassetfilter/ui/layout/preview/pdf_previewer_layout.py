@@ -31,6 +31,7 @@ from theme import tm
 from components.styled_button import StyledButton
 from components.styled_drawer import StyledDrawer
 from components.styled_floating_panel import FloatingPanel
+from components.styled_loading import StyledLoading
 from components.styled_number_input import StyledNumberInput
 from layout.preview.fullscreen_host import PreviewFullscreenHost
 from layout.preview.preview_toolbar import PreviewToolbarFrame
@@ -379,6 +380,70 @@ class _ThumbnailDrawerTask(QRunnable):
         self.finished.emit(self._generation)
 
 
+class _PdfBusyOverlay(QWidget):
+    """PDF 内容区浮动加载遮罩（圆环 + 状态文本，组合 StyledLoading）。
+
+    与其它预览器的覆盖页不同，PDF 打开/渲染期间需要保持渲染器可见并按真实
+    视口尺寸提交后台渲染，因此用独立子控件浮在 ``_content_area`` 上方。
+    遮罩铺满内容区并绘制主题 scrim，阻止加载期间的误操作。
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        """初始化遮罩。
+
+        Args:
+            parent: 父控件（PDF 内容区）。
+        """
+        super().__init__(parent)
+        self.setObjectName("PdfBusyOverlay")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
+        layout.setAlignment(Qt.AlignCenter)
+
+        self._spinner = StyledLoading(size="lg")
+        self._spinner.setVisible(False)
+        layout.addWidget(self._spinner, 0, Qt.AlignCenter)
+
+        self._label = QLabel("")
+        self._label.setAlignment(Qt.AlignCenter)
+        self._label.setWordWrap(True)
+        self._label.setMaximumWidth(560)
+        layout.addWidget(self._label, 0, Qt.AlignCenter)
+
+        self.update_theme()
+        self.hide()
+
+    def update_theme(self) -> None:
+        """主题切换后刷新提示文本颜色。"""
+        register_widget_qss(self._label,(
+            f"color: {tm.qss_color(tm.text_hint)}; font-size: 14px; background: transparent;"
+        ))
+
+    def show_loading(self, text: str) -> None:
+        """显示遮罩、圆环与状态文本（铺满父控件并置顶）。"""
+        self._label.setText(text)
+        self._spinner.setVisible(True)
+        parent = self.parentWidget()
+        if parent is not None:
+            self.setGeometry(parent.rect())
+        self.show()
+        self.raise_()
+
+    def hide_loading(self) -> None:
+        """隐藏遮罩与圆环（不改变内容页）。"""
+        self._spinner.setVisible(False)
+        self.hide()
+
+    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
+        """绘制半透明压暗底色（跟随主题 scrim）。"""
+        painter = QPainter(self)
+        try:
+            painter.fillRect(self.rect(), tm.scrim)
+        finally:
+            painter.end()
+
+
 class PdfPreviewerLayout(QWidget):
     """
     PDF 预览器布局
@@ -434,6 +499,21 @@ class PdfPreviewerLayout(QWidget):
         self._ai_drawer: Optional[StyledDrawer] = None
 
         self._init_ui()
+        # 异步打开/首帧渲染状态：浮动遮罩 + 首帧兜底定时器
+        self._busy_overlay = _PdfBusyOverlay(self._content_area)
+        self._busy_overlay.hide()
+        self._content_area.installEventFilter(self)
+        self._busy_hide_timer = QTimer(self)
+        self._busy_hide_timer.setSingleShot(True)
+        self._busy_hide_timer.setInterval(3000)
+        self._busy_hide_timer.timeout.connect(self._on_busy_fallback_timeout)
+        #: 本次加载是否已收到至少一页成功渲染（解决 render_ready 早于
+        #: document_load_finished 的排队竞态）
+        self._first_page_rendered: bool = False
+        self._renderer.document_load_finished.connect(
+            self._on_document_load_finished
+        )
+        self._renderer.page_rendered.connect(self._on_page_rendered)
         self._init_index_drawer()
         # StyledDrawer 创建后默认跟随 parent 可见，但其 backdrop 会覆盖内容区拦截鼠标事件。
         # 必须显式隐藏，等用户点击索引按钮时才通过 open_drawer() 显示。
@@ -961,6 +1041,12 @@ class PdfPreviewerLayout(QWidget):
         self._discard_zoom_popup()
         # 取消在途缩略图抽屉任务（关文件/退出时丢弃旧批，不阻塞 UI）
         self._cancel_thumbnail_drawer()
+        # 撤下加载遮罩并取消在途 PDF 打开/渲染
+        if getattr(self, "_busy_hide_timer", None) is not None:
+            self._busy_hide_timer.stop()
+        if getattr(self, "_busy_overlay", None) is not None:
+            self._busy_overlay.hide_loading()
+        self._renderer.close_document()
 
     def _on_app_mouse_press(self, event: QMouseEvent) -> None:
         """全局鼠标点击：点击菜单外部时关闭缩放弹窗。"""
@@ -1050,6 +1136,15 @@ class PdfPreviewerLayout(QWidget):
     def eventFilter(self, obj: Any, event: QEvent) -> bool:
         """应用级事件过滤：页码编辑失焦 + 弹窗手势关闭（拖拽豁免）+ 窗口移动跟随/缩放关闭。"""
         me = event if isinstance(event, QMouseEvent) else None
+
+        # 内容区尺寸变化：同步浮动加载遮罩几何
+        if (
+            obj is getattr(self, "_content_area", None)
+            and event.type() == QEvent.Resize
+        ):
+            overlay = getattr(self, "_busy_overlay", None)
+            if overlay is not None:
+                overlay.setGeometry(self._content_area.rect())
 
         # 弹窗外鼠标按下：仅记录手势起点（不立即关闭）。
         # 拖动主窗口的起点（标题栏 MouseButtonPress → startSystemMove）也是
@@ -1150,6 +1245,10 @@ class PdfPreviewerLayout(QWidget):
 
     def _stop_preview(self) -> None:
         """停止预览，切换回覆盖层显示（模仿 video_player_layout 的 on_file_ended）。"""
+        if getattr(self, "_busy_hide_timer", None) is not None:
+            self._busy_hide_timer.stop()
+        if getattr(self, "_busy_overlay", None) is not None:
+            self._busy_overlay.hide_loading()
         self._content_stack.setCurrentIndex(1)
         self._placeholder.setText("打开 PDF 文件开始预览")
 
@@ -1167,32 +1266,76 @@ class PdfPreviewerLayout(QWidget):
         self._update_page_button_text()
 
     def set_file(self, file_path: str) -> bool:
-        """加载 PDF 文件。
+        """异步加载 PDF 文件（打开/页尺寸读取在后台线程执行）。
+
+        加载期间内容区显示「圆环 + 状态文本」浮动遮罩；文档就绪后保持遮罩
+        到首帧渲染完成。文件缺失同步返回 False，其余请求立即返回 True。
 
         Args:
             file_path: 文件路径
 
         Returns:
-            bool: 是否加载成功
+            bool: 是否受理加载请求
         """
         # 加载新文件前收起缩放弹窗，避免残留旧文档的缩放状态
         self._close_zoom_popup()
-        success = self._renderer.load_document(file_path)
-        if success:
-            self._current_page = 1
-            self._total_pages = self._renderer.page_count()
-            self._update_page_button_text()
-            self._page_input.max_val = self._total_pages
-            # 切换到渲染器视图（index 0，模仿 video_player_layout set_file 模式）
-            self._content_stack.setCurrentIndex(0)
-            # 切换后渲染器从隐藏变为可见，尺寸从 0 变为实际值。
-            # load_document 中按 width=0 计算的 zoom 极小，这里重新适配。
-            QTimer.singleShot(50, self._renderer.fit_to_page)
-            # 更新滚动条范围
-            QTimer.singleShot(100, self._update_scroll_range_after_load)
-            # Populate thumbnail drawer
-            QTimer.singleShot(150, lambda: self._populate_thumbnail_drawer())
-        return success
+        self._busy_hide_timer.stop()
+        self._first_page_rendered = False
+
+        if not file_path or not Path(file_path).is_file():
+            self._busy_overlay.hide_loading()
+            self._placeholder.setText(f"无法打开 PDF：文件不存在\n{file_path}")
+            self._content_stack.setCurrentIndex(1)
+            return False
+
+        self._busy_overlay.show_loading("正在打开 PDF…")
+        if not self._renderer.load_document_async(file_path):
+            self._busy_overlay.hide_loading()
+            self._placeholder.setText(f"无法打开 PDF：文件不存在\n{file_path}")
+            self._content_stack.setCurrentIndex(1)
+            return False
+        return True
+
+    def _on_document_load_finished(self, success: bool, message: str) -> None:
+        """PDF 异步打开完成回调（切换视图/安排首屏任务/错误提示）。
+
+        Args:
+            success: 是否成功打开。
+            message: 失败消息。
+        """
+        self._busy_hide_timer.stop()
+        if not success:
+            self._busy_overlay.hide_loading()
+            self._placeholder.setText(f"无法打开 PDF：{message}")
+            self._content_stack.setCurrentIndex(1)
+            return
+
+        self._current_page = 1
+        self._total_pages = self._renderer.page_count()
+        self._update_page_button_text()
+        self._page_input.max_val = self._total_pages
+        # 先切到渲染器页（真实视口尺寸生效），再保留遮罩等待首帧渲染
+        self._content_stack.setCurrentIndex(0)
+        if self._first_page_rendered:
+            # render_ready 先于本信号排队到达（渲染极快）：直接撤遮罩
+            self._busy_overlay.hide_loading()
+        else:
+            self._busy_overlay.show_loading("正在渲染页面…")
+            self._busy_hide_timer.start()
+        QTimer.singleShot(50, self._renderer.fit_to_page)
+        QTimer.singleShot(100, self._update_scroll_range_after_load)
+        QTimer.singleShot(150, self._populate_thumbnail_drawer)
+
+    def _on_page_rendered(self, _page: int) -> None:
+        """首帧/任意页渲染完成：撤下加载遮罩（幂等）。"""
+        self._first_page_rendered = True
+        if not self._busy_overlay.isHidden():
+            self._busy_hide_timer.stop()
+            self._busy_overlay.hide_loading()
+
+    def _on_busy_fallback_timeout(self) -> None:
+        """首帧渲染兜底：超时仍未收到渲染信号时撤下遮罩。"""
+        self._busy_overlay.hide_loading()
 
     def _populate_thumbnail_drawer(self) -> None:
         """异步分批生成全部页面的缩略图（0.25x，QRunnable 池执行）。
@@ -1317,6 +1460,9 @@ class PdfPreviewerLayout(QWidget):
         # 缩放弹窗自绘主题色：可见时强制按新主题重绘
         if self._zoom_popup is not None and self._zoom_popup.isVisible():
             self._zoom_popup.update()
+        if getattr(self, "_busy_overlay", None) is not None:
+            self._busy_overlay.update_theme()
+            self._busy_overlay.update()
 
     def _refresh_text_colors(self) -> None:
         """主题切换时刷新页码按钮及输入器颜色。"""

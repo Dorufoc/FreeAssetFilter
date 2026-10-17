@@ -1,35 +1,35 @@
 {
   "schema": "faf-core-perf-baseline/v1",
-  "timestamp": "2026-10-16T14:52:51+00:00",
+  "timestamp": "2026-10-17T10:57:02+00:00",
   "mode": "full",
   "machine": {
     "platform": "Windows-10-10.0.26300-SP0",
     "machine": "AMD64",
     "processor": "Intel64 Family 6 Model 198 Stepping 2, GenuineIntel",
-    "python": "3.11.9",
+    "python": "3.9.13",
     "cpu_count": 24
   },
   "scan_directory": {
     "files": 10000,
     "samples": 5,
     "native": {
-      "p50_ms": 235.591,
-      "p95_ms": 284.296,
-      "mean_ms": 241.236,
-      "max_ms": 294.266
+      "p50_ms": 382.03,
+      "p95_ms": 436.269,
+      "mean_ms": 388.461,
+      "max_ms": 446.929
     },
     "python": {
-      "p50_ms": 86.909,
-      "p95_ms": 109.217,
-      "mean_ms": 92.051,
-      "max_ms": 114.606
+      "p50_ms": 116.798,
+      "p95_ms": 132.813,
+      "mean_ms": 116.543,
+      "max_ms": 134.712
     },
-    "p50_speedup_x": 0.369,
+    "p50_speedup_x": 0.306,
     "assertion": {
       "rule": "P50_native <= P50_python*1.2",
-      "p50_native_ms": 235.591,
-      "p50_python_ms": 86.909,
-      "limit_ms": 104.291,
+      "p50_native_ms": 382.03,
+      "p50_python_ms": 116.798,
+      "limit_ms": 140.158,
       "passed": false
     }
   },
@@ -38,23 +38,23 @@
     "chars": 66670,
     "samples": 5,
     "native": {
-      "p50_ms": 236.394,
-      "p95_ms": 282.461,
-      "mean_ms": 221.069,
-      "max_ms": 293.682
+      "p50_ms": 209.459,
+      "p95_ms": 302.724,
+      "mean_ms": 242.748,
+      "max_ms": 304.757
     },
     "python": {
-      "p50_ms": 217.628,
-      "p95_ms": 255.154,
-      "mean_ms": 219.183,
-      "max_ms": 258.751
+      "p50_ms": 311.843,
+      "p95_ms": 336.205,
+      "mean_ms": 310.153,
+      "max_ms": 338.065
     },
-    "p50_speedup_x": 0.921,
+    "p50_speedup_x": 1.489,
     "assertion": {
       "rule": "P50_native <= P50_python*1.2",
-      "p50_native_ms": 236.394,
-      "p50_python_ms": 217.628,
-      "limit_ms": 261.154,
+      "p50_native_ms": 209.459,
+      "p50_python_ms": 311.843,
+      "limit_ms": 374.212,
       "passed": true
     }
   },
@@ -63,24 +63,24 @@
     "chunk_bytes": 262144,
     "samples": 5,
     "native": {
-      "p50_ms": 67.329,
-      "p95_ms": 68.702,
-      "mean_ms": 67.606,
-      "max_ms": 68.967,
-      "mib_per_sec_p50": 475.28
+      "p50_ms": 70.577,
+      "p95_ms": 72.193,
+      "mean_ms": 70.714,
+      "max_ms": 72.421,
+      "mib_per_sec_p50": 453.41
     },
     "python": {
-      "p50_ms": 60.946,
-      "p95_ms": 63.514,
-      "mean_ms": 61.161,
-      "max_ms": 64.018,
-      "mib_per_sec_p50": 525.05
+      "p50_ms": 62.517,
+      "p95_ms": 63.562,
+      "mean_ms": 62.661,
+      "max_ms": 63.585,
+      "mib_per_sec_p50": 511.86
     },
     "assertion": {
       "rule": "P50_native <= P50_python*1.2",
-      "p50_native_ms": 67.329,
-      "p50_python_ms": 60.946,
-      "limit_ms": 73.135,
+      "p50_native_ms": 70.577,
+      "p50_python_ms": 62.517,
+      "limit_ms": 75.02,
       "passed": true
     }
   },
@@ -89,24 +89,24 @@
     "total_bytes": 8388608,
     "samples": 5,
     "native": {
-      "p50_ms": 5.491,
-      "p95_ms": 6.426,
-      "mean_ms": 5.526,
-      "max_ms": 6.615,
-      "mib_per_sec_p50": 1456.93
+      "p50_ms": 5.764,
+      "p95_ms": 7.3,
+      "mean_ms": 6.055,
+      "max_ms": 7.611,
+      "mib_per_sec_p50": 1387.93
     },
     "python": {
-      "p50_ms": 19.454,
-      "p95_ms": 20.703,
-      "mean_ms": 19.383,
-      "max_ms": 21.004,
-      "mib_per_sec_p50": 411.23
+      "p50_ms": 25.561,
+      "p95_ms": 31.087,
+      "mean_ms": 26.216,
+      "max_ms": 32.109,
+      "mib_per_sec_p50": 312.98
     },
     "assertion": {
       "rule": "P50_native <= P50_python*1.2",
-      "p50_native_ms": 5.491,
-      "p50_python_ms": 19.454,
-      "limit_ms": 23.345,
+      "p50_native_ms": 5.764,
+      "p50_python_ms": 25.561,
+      "limit_ms": 30.673,
       "passed": true
     }
   },
@@ -116,18 +116,18 @@
     "cap_bytes": 8388608,
     "samples": 3,
     "native_cap_reject": {
-      "p50_ms": 49.837,
-      "p95_ms": 110.475,
-      "mean_ms": 70.622,
-      "max_ms": 117.213
+      "p50_ms": 66.049,
+      "p95_ms": 108.826,
+      "mean_ms": 81.132,
+      "max_ms": 113.579
     },
     "python_fallback": {
-      "p50_ms": 2.036,
-      "p95_ms": 2.098,
-      "mean_ms": 1.967,
-      "max_ms": 2.105
+      "p50_ms": 4.468,
+      "p95_ms": 4.537,
+      "mean_ms": 4.377,
+      "max_ms": 4.544
     },
-    "total_fallback_p50_ms": 51.873,
+    "total_fallback_p50_ms": 70.517,
     "no_exception": true
   },
   "exif": {
@@ -135,23 +135,23 @@
     "sample": "sample_standard.jpg",
     "samples": 5,
     "native": {
-      "p50_ms": 0.046,
-      "p95_ms": 0.074,
-      "mean_ms": 0.052,
-      "max_ms": 0.08
+      "p50_ms": 0.118,
+      "p95_ms": 0.144,
+      "mean_ms": 0.123,
+      "max_ms": 0.145
     },
     "python": {
-      "p50_ms": 0.12,
-      "p95_ms": 0.132,
-      "mean_ms": 0.118,
-      "max_ms": 0.134
+      "p50_ms": 0.223,
+      "p95_ms": 0.269,
+      "mean_ms": 0.229,
+      "max_ms": 0.275
     },
-    "p50_speedup_x": 2.609,
+    "p50_speedup_x": 1.89,
     "assertion": {
       "rule": "P50_native <= P50_python*1.2",
-      "p50_native_ms": 0.046,
-      "p50_python_ms": 0.12,
-      "limit_ms": 0.144,
+      "p50_native_ms": 0.118,
+      "p50_python_ms": 0.223,
+      "limit_ms": 0.268,
       "passed": true
     }
   },
@@ -163,10 +163,10 @@
     "sample": "sample_layers_blend_mask.psd",
     "samples": 3,
     "python": {
-      "p50_ms": 23.588,
-      "p95_ms": 153.229,
-      "mean_ms": 69.317,
-      "max_ms": 167.634
+      "p50_ms": 10.008,
+      "p95_ms": 921.456,
+      "mean_ms": 347.557,
+      "max_ms": 1022.728
     },
     "assertion": {
       "rule": "DROP — native 恒 None 为预期（非 FAIL），无 PERF 对照",
@@ -179,23 +179,23 @@
     "chars": 1213,
     "samples": 5,
     "native": {
-      "p50_ms": 0.059,
-      "p95_ms": 0.127,
-      "mean_ms": 0.075,
-      "max_ms": 0.138
+      "p50_ms": 0.022,
+      "p95_ms": 0.049,
+      "mean_ms": 0.029,
+      "max_ms": 0.055
     },
     "python": {
-      "p50_ms": 0.226,
-      "p95_ms": 0.409,
-      "mean_ms": 0.274,
-      "max_ms": 0.439
+      "p50_ms": 0.123,
+      "p95_ms": 0.126,
+      "mean_ms": 0.122,
+      "max_ms": 0.127
     },
-    "p50_speedup_x": 3.831,
+    "p50_speedup_x": 5.591,
     "assertion": {
       "rule": "P50_native <= P50_python*1.2",
-      "p50_native_ms": 0.059,
-      "p50_python_ms": 0.226,
-      "limit_ms": 0.271,
+      "p50_native_ms": 0.022,
+      "p50_python_ms": 0.123,
+      "limit_ms": 0.148,
       "passed": true
     }
   },
@@ -208,10 +208,10 @@
     "height": 200,
     "samples": 3,
     "python": {
-      "p50_ms": 83.879,
-      "p95_ms": 116.919,
-      "mean_ms": 89.521,
-      "max_ms": 120.59
+      "p50_ms": 63.318,
+      "p95_ms": 70.82,
+      "mean_ms": 65.757,
+      "max_ms": 71.653
     },
     "assertion": {
       "rule": "DROP — native 恒 None 为预期（非 FAIL），无 PERF 对照",
@@ -224,23 +224,23 @@
     "output_chars": 1623,
     "samples": 5,
     "native": {
-      "p50_ms": 0.064,
-      "p95_ms": 0.089,
-      "mean_ms": 0.057,
-      "max_ms": 0.093
+      "p50_ms": 0.028,
+      "p95_ms": 0.076,
+      "mean_ms": 0.043,
+      "max_ms": 0.079
     },
     "python": {
-      "p50_ms": 0.154,
-      "p95_ms": 0.315,
-      "mean_ms": 0.204,
-      "max_ms": 0.32
+      "p50_ms": 0.137,
+      "p95_ms": 0.299,
+      "mean_ms": 0.18,
+      "max_ms": 0.328
     },
-    "p50_speedup_x": 2.406,
+    "p50_speedup_x": 4.893,
     "assertion": {
       "rule": "P50_native <= P50_python*1.2",
-      "p50_native_ms": 0.064,
-      "p50_python_ms": 0.154,
-      "limit_ms": 0.185,
+      "p50_native_ms": 0.028,
+      "p50_python_ms": 0.137,
+      "limit_ms": 0.164,
       "passed": true
     }
   },
@@ -250,23 +250,23 @@
     "pages": 3,
     "samples": 5,
     "native": {
-      "p50_ms": 0.567,
-      "p95_ms": 0.617,
-      "mean_ms": 0.578,
-      "max_ms": 0.621
+      "p50_ms": 0.74,
+      "p95_ms": 0.93,
+      "mean_ms": 0.794,
+      "max_ms": 0.935
     },
     "python": {
-      "p50_ms": 0.345,
-      "p95_ms": 0.386,
-      "mean_ms": 0.35,
-      "max_ms": 0.393
+      "p50_ms": 0.448,
+      "p95_ms": 0.589,
+      "mean_ms": 0.487,
+      "max_ms": 0.608
     },
-    "p50_speedup_x": 0.608,
+    "p50_speedup_x": 0.605,
     "assertion": {
       "rule": "P50_native <= P50_python*1.2",
-      "p50_native_ms": 0.567,
-      "p50_python_ms": 0.345,
-      "limit_ms": 0.414,
+      "p50_native_ms": 0.74,
+      "p50_python_ms": 0.448,
+      "limit_ms": 0.538,
       "passed": false
     }
   }
