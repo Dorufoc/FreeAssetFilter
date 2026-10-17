@@ -2443,6 +2443,83 @@ class TestUnifiedPreviewerLayout:
             assert own.isAncestorOf(btn)
         safe_teardown(layout)
 
+    def test_actions_mode_top_unsupported_shows_only_copy_and_close(
+        self, qapp: QApplication, tmp_path: Path,
+    ) -> None:
+        """无法预览的文件：顶栏只显示复制（左锚定）与清除（右锚定）两个按钮。"""
+        sample = tmp_path / "sample.zzz"
+        sample.write_bytes(b"hello")
+        layout = UnifiedPreviewerLayout()
+        _assert_layout_geometry(layout, qapp)
+        layout.set_actions_mode(True)
+        layout.set_file({"path": str(sample), "suffix": "zzz", "is_dir": False})
+        qapp.processEvents()
+
+        assert layout._current_preview_type is UnsupportedPreviewerLayout
+        own = layout._own_toolbar
+        assert own is not None
+        assert own.isVisibleTo(layout) is True
+        copy_btn, open_btn, locate_btn, close_btn = layout._top_buttons
+        assert own._left_widgets == [copy_btn]
+        assert own._right_widgets == [close_btn]
+        assert own._lead_widgets == [] and own._trail_widgets == []
+        assert open_btn.parent() is None and locate_btn.parent() is None
+
+        # 清除预览：两按钮摘除、统一工具栏隐藏
+        layout.clear_preview()
+        qapp.processEvents()
+        assert copy_btn.parent() is None and close_btn.parent() is None
+        assert own.isVisibleTo(layout) is False
+        safe_teardown(layout)
+
+    def test_actions_mode_top_unsupported_then_hosted_restores_all(
+        self, qapp: QApplication, tmp_path: Path,
+    ) -> None:
+        """不支持预览 → 带顶栏预览器：按钮组恢复为四枚并注入新宿主。"""
+        from layout.preview.preview_toolbar import PreviewToolbarFrame
+
+        sample = tmp_path / "sample.zzz"
+        sample.write_bytes(b"hello")
+        layout = UnifiedPreviewerLayout()
+        _assert_layout_geometry(layout, qapp)
+        layout.set_actions_mode(True)
+        layout.set_file({"path": str(sample), "suffix": "zzz", "is_dir": False})
+        qapp.processEvents()
+        assert layout._current_preview_type is UnsupportedPreviewerLayout
+        own = layout._own_toolbar
+        assert own is not None
+
+        class _FakePreviewer(QWidget):
+            """带统一工具栏宿主的替身预览器。"""
+
+            def __init__(self, parent=None) -> None:
+                super().__init__(parent)
+                self._top_bar = PreviewToolbarFrame(self)
+
+            def unified_action_host(self):
+                return self._top_bar
+
+            def cleanup(self) -> None:
+                """替身无资源可清。"""
+
+        layout._cleanup_current_preview()
+        previewer = _FakePreviewer(layout._content_top)
+        layout._ensure_content_layout()
+        layout._content_layout.addWidget(previewer)
+        layout._current_preview_widget = previewer
+        layout._current_preview_type = _FakePreviewer
+        layout._sync_action_host()
+
+        assert layout._top_host is previewer._top_bar
+        assert own.isVisibleTo(layout) is False
+        copy_btn, open_btn, locate_btn, close_btn = layout._top_buttons
+        for btn in (copy_btn, open_btn, locate_btn, close_btn):
+            assert previewer._top_bar.isAncestorOf(btn)
+        assert previewer._top_bar._left_widgets == [locate_btn]
+        assert previewer._top_bar._trail_widgets == [copy_btn, open_btn]
+        assert previewer._top_bar._right_widgets == [close_btn]
+        safe_teardown(layout)
+
     def test_actions_mode_back_to_classic_restores_bottom_bar(
         self, qapp: QApplication,
     ) -> None:

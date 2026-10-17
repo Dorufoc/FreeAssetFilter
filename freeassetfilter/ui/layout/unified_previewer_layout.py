@@ -12,6 +12,9 @@
 - New 布局：底部操作栏隐藏，图标按钮注入「预览器统一的顶部工具栏」——
   预览器自带顶栏时注入其顶栏（``unified_action_host`` 协议），
   无顶栏的预览器（视频 / 音频 / Office）由本容器在内容区顶部提供一条统一工具栏。
+
+无法预览的文件（``UnsupportedPreviewerLayout``）顶栏只保留两个按钮：
+「复制到剪切板」左锚定、「清除预览」右锚定（不提供系统打开 / 定位目录）。
 """
 
 import inspect
@@ -325,14 +328,28 @@ class UnifiedPreviewerLayout(QWidget):
         self._inject_top_buttons(target)
         self._top_host = target
 
+    def _is_unsupported_preview(self) -> bool:
+        """当前预览是否为「无法预览」占位视图（决定顶栏按钮裁剪）。"""
+        return self._current_preview_type is UnsupportedPreviewerLayout
+
     def _inject_top_buttons(self, host: QWidget) -> None:
-        """把四个图标按钮注入宿主：统一工具栏按锚定分区，自绘顶栏右侧追加。"""
+        """把图标按钮注入宿主：统一工具栏按锚定分区，自绘顶栏右侧追加。
+
+        无法预览的文件只注入两个按钮：「复制到剪切板」左锚定、
+        「清除预览」右锚定（不注入系统打开 / 定位目录）。
+        """
         copy_btn, open_btn, locate_btn, close_btn = self._top_buttons
+        unsupported = self._is_unsupported_preview()
         add_left = getattr(host, "add_left", None)
         add_trailing = getattr(host, "add_trailing", None)
         add_right = getattr(host, "add_right", None)
         if callable(add_left) and callable(add_trailing) and callable(add_right):
             # PreviewToolbarFrame 宿主：定位左锚定；复制/打开中部；清除右锚定
+            if unsupported:
+                # 无法预览：仅复制（左锚定）与清除（右锚定）
+                add_left(copy_btn)
+                add_right(close_btn)
+                return
             add_left(locate_btn)
             add_trailing(copy_btn)
             add_trailing(open_btn)
@@ -342,7 +359,12 @@ class UnifiedPreviewerLayout(QWidget):
         layout = host.layout()
         if layout is None:
             return
-        for btn in (copy_btn, open_btn, locate_btn, close_btn):
+        buttons = (
+            (copy_btn, close_btn)
+            if unsupported
+            else (copy_btn, open_btn, locate_btn, close_btn)
+        )
+        for btn in buttons:
             btn.setParent(host)
             layout.addWidget(btn)
             btn.show()
