@@ -18,13 +18,21 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
-from PySide6.QtCore import QEasingCurve, QEvent, QPoint, QPointF, Qt
-from PySide6.QtGui import QCloseEvent, QColor, QMouseEvent, QPixmap, QShowEvent
+from PySide6.QtCore import QEasingCurve, QEvent, QMimeData, QPoint, QPointF, Qt, QUrl
+from PySide6.QtGui import (
+    QCloseEvent,
+    QColor,
+    QDropEvent,
+    QMouseEvent,
+    QPixmap,
+    QShowEvent,
+)
 from PySide6.QtWidgets import QApplication, QWidget
 
 # main_window.py 自带 _ui_root bootstrap（第 22-30 行），
@@ -47,7 +55,14 @@ from freeassetfilter.ui.main_window import (  # noqa: E402
 # 测试中切换主题后必须手动恢复）
 from theme import tm  # noqa: E402
 
-from tests.support.qt_helpers import process_qt_events  # noqa: E402
+from freeassetfilter.ui.floating_pool_window import (  # noqa: E402
+    FLOATING_DRAG_MIME as _FLOATING_DRAG_FORMAT,
+)
+
+from tests.support.qt_helpers import (  # noqa: E402
+    process_qt_events,
+    wait_until,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -1731,5 +1746,592 @@ class TestLayoutSwitchPreviewSuspend:
             assert window.set_layout_mode("classic") is True
             assert stub.calls == ["suspend", "resume"]
         finally:
+            window.deleteLater()
+            qapp.processEvents()
+#: 浮窗拖出的自定义判别 MIME 字面串（与 Todo 4 floating_pool_window 同串）。
+
+
+def _counting_floating_factory(monkeypatch: pytest.MonkeyPatch) -> list:
+    """把 floating_pool_window.FloatingPoolWindow 替换为计数工厂。
+
+    返回一个列表，每次构造浮窗实例都会被追加，用于断言「唯一创建入口」
+    下不同代码路径不会重复创建。
+
+    Args:
+        monkeypatch: pytest monkeypatch 夹具。
+
+    Returns:
+        list: 每次构造追加实例的记账列表（按构造顺序）。
+    """
+    import freeassetfilter.ui.floating_pool_window as fpw
+
+    created: list = []
+    real_cls = fpw.FloatingPoolWindow
+
+    def _factory():
+        instance = real_cls()
+        created.append(instance)
+        return instance
+
+    monkeypatch.setattr(fpw, "FloatingPoolWindow", _factory)
+    return created
+
+
+def _make_floating_window(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    floating_enabled: bool = True,
+) -> MainWindow:
+    """构造可确定驱动 ``_finalize_panels`` 的主窗口（隔离自动分阶段构建）。
+
+    抑制 ``__init__`` 中 ``QTimer.singleShot(0, _build_panels_deferred)`` 的
+    自动分阶段构建与磁盘备份恢复，改由测试手动构建四区域后直接调用
+    ``_finalize_panels``，使全就绪分支可确定触发。
+
+    Args:
+        monkeypatch: pytest monkeypatch 夹具。
+        floating_enabled: 预置的 ``_floating_pool_enabled`` 取值。
+
+    Returns:
+        MainWindow: 补丁就绪的主窗口实例（未 show）。
+    """
+    monkeypatch.setattr(MainWindow, "_build_panels_deferred", lambda self: None)
+    monkeypatch.setattr(MainWindow, "_check_and_restore_backup", lambda self: None)
+    window = MainWindow()
+    window._floating_pool_enabled = bool(floating_enabled)
+    return window
+
+
+def _build_all_panels(window: MainWindow) -> None:
+    """手动构建四区域真实布局（替换占位）。
+
+    Args:
+        window: 目标主窗口。
+    """
+    for side in ("selector", "preview", "pool", "info"):
+        window._build_panel(side)
+
+
+def _drive_finalize(window: MainWindow, qapp: QApplication) -> None:
+    """驱动 ``_finalize_panels`` 全就绪分支并泵事件落地 singleShot(0) 回调。
+
+    Args:
+        window: 目标主窗口。
+        qapp: 全局 QApplication。
+    """
+    window._finalize_panels()
+    process_qt_events(qapp, 30)
+    qapp.processEvents()
+
+
+class TestFloatingPoolWiring:
+    """MainWindow 装配全局浮窗：创建 / 启用门 / 快照 / 信号接线 / 生命周期。"""
+
+    def test_finalize_creates_and_shows_floating_pool(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """开启时全就绪分支创建浮窗且可见（唯一入口 helper 末尾 show）。"""
+        window = _make_floating_window(monkeypatch, floating_enabled=True)
+        try:
+            _build_all_panels(window)
+            _drive_finalize(window, qapp)
+            assert window._floating_pool is not None
+            assert window._floating_pool.isVisible() is True
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_disabled_gate_skips_creation(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """禁用门：``_floating_pool_enabled=False`` 时全就绪后仍不创建。"""
+        window = _make_floating_window(monkeypatch, floating_enabled=False)
+        try:
+            _build_all_panels(window)
+            _drive_finalize(window, qapp)
+            assert window._floating_pool is None
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_initial_snapshot_receives_existing_items(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """初始快照：建窗前预置池条目，浮窗列表收到同样数量（恢复批不丢）。"""
+        window = _make_floating_window(monkeypatch, floating_enabled=True)
+        try:
+            _build_all_panels(window)
+            items = []
+            for index in range(3):
+                path = tmp_path / f"snapshot_{index}.txt"
+                path.write_text("x", encoding="utf-8")
+                items.append(
+                    {"path": str(path), "name": path.name, "size": 1, "is_dir": False}
+                )
+            window._file_pool.items = [dict(item) for item in items]
+
+            _drive_finalize(window, qapp)
+
+            assert window._floating_pool is not None
+            assert wait_until(
+                qapp,
+                lambda: len(window._floating_pool._rows) == 3,
+                timeout_ms=3000,
+            )
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_pool_changed_triggers_set_items(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """主池 ``pool_changed`` → 浮窗 ``set_items`` 被调用（接线生效）。"""
+        window = _make_floating_window(monkeypatch, floating_enabled=True)
+        try:
+            _build_all_panels(window)
+            _drive_finalize(window, qapp)
+            floating = window._floating_pool
+            assert floating is not None
+
+            calls: list = []
+            original = floating.set_items
+
+            def _spy(items):
+                calls.append(list(items))
+                original(items)
+
+            floating.set_items = _spy
+
+            path = tmp_path / "added.txt"
+            path.write_text("y", encoding="utf-8")
+            window._file_pool.add_file(
+                {"path": str(path), "name": path.name, "size": 1, "is_dir": False}
+            )
+
+            assert calls, "pool_changed 未桥接到浮窗 set_items"
+            assert any(
+                any(item.get("path") == str(path) for item in batch)
+                for batch in calls
+            )
+            assert wait_until(
+                qapp, lambda: len(floating._rows) == 1, timeout_ms=3000
+            )
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_single_creation_entry_across_paths(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``_finalize_panels`` 与 setter 两路径经同一 helper，创建同一实例。"""
+        created = _counting_floating_factory(monkeypatch)
+        window = _make_floating_window(monkeypatch, floating_enabled=True)
+        try:
+            _build_all_panels(window)
+            window.set_floating_pool_enabled(True)
+            assert window._floating_pool is created[0]
+
+            _drive_finalize(window, qapp)
+
+            assert window._floating_pool is created[0]
+            assert len(created) == 1
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_disable_tears_down_and_clears_connections(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``set_floating_pool_enabled(False)`` 销毁浮窗并清空已存连接对象。"""
+        window = _make_floating_window(monkeypatch, floating_enabled=True)
+        try:
+            _build_all_panels(window)
+            window.set_floating_pool_enabled(True)
+            floating = window._floating_pool
+            assert floating is not None
+            assert window._floating_pool_conn_add is not None
+            assert window._floating_pool_conn_remove is not None
+            assert window._floating_pool_conn_pool_changed is not None
+
+            window.set_floating_pool_enabled(False)
+
+            assert window._floating_pool is None
+            assert window._floating_pool_conn_add is None
+            assert window._floating_pool_conn_remove is None
+            assert window._floating_pool_conn_pool_changed is None
+            assert floating.isHidden() is True
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_enable_twice_is_idempotent(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """幂等：``set_floating_pool_enabled(True)`` 两次不重复创建实例。"""
+        created = _counting_floating_factory(monkeypatch)
+        window = _make_floating_window(monkeypatch, floating_enabled=False)
+        try:
+            _build_all_panels(window)
+            window.set_floating_pool_enabled(True)
+            first = window._floating_pool
+            window.set_floating_pool_enabled(True)
+            assert window._floating_pool is first
+            assert len(created) == 1
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_close_event_closes_floating_pool(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """closeEvent 关闭浮窗（isHidden）且在 dispose 之前完成。"""
+        window = _make_floating_window(monkeypatch, floating_enabled=True)
+        try:
+            _build_all_panels(window)
+            window.set_floating_pool_enabled(True)
+            floating = window._floating_pool
+            assert floating is not None
+            assert floating.isVisible() is True
+
+            event = QCloseEvent()
+            window.closeEvent(event)
+
+            assert event.isAccepted()
+            assert floating.isHidden() is True
+            # 计划契约：closeEvent 只 close 不置 None（置 None 仅在
+            # set_floating_pool_enabled(False) 路径）——推导持有自身引用
+            # 的测试（Todo 7 断言 isHidden）不被销毁干扰。
+            assert window._floating_pool is not None
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_close_event_closes_floating_before_flush_backup(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """closeEvent 在 flush_backup_save_now 之前已关闭浮窗（顺序契约）。"""
+        window = _make_floating_window(monkeypatch, floating_enabled=True)
+        try:
+            _build_all_panels(window)
+            window.set_floating_pool_enabled(True)
+            assert window._floating_pool is not None
+            assert window._floating_pool.isVisible() is True
+
+            observed: list = []
+
+            def _recording_flush(*args: Any, **kwargs: Any) -> None:
+                observed.append(window._floating_pool.isHidden())
+
+            monkeypatch.setattr(
+                window._file_pool, "flush_backup_save_now", _recording_flush
+            )
+
+            window.closeEvent(QCloseEvent())
+
+            assert observed, "flush_backup_save_now 未被 closeEvent 调用"
+            assert observed[0] is True, "flush 时浮窗尚未隐藏（关闭顺序晚于 flush）"
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_disable_calls_delete_later(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``set_floating_pool_enabled(False)`` 对浮窗调用 ``deleteLater`` 并置 None。"""
+        window = _make_floating_window(monkeypatch, floating_enabled=True)
+        try:
+            _build_all_panels(window)
+            window.set_floating_pool_enabled(True)
+            floating = window._floating_pool
+            assert floating is not None
+
+            calls: list = []
+            monkeypatch.setattr(floating, "deleteLater", lambda: calls.append(1))
+
+            window.set_floating_pool_enabled(False)
+
+            assert calls == [1]
+            assert window._floating_pool is None
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_close_event_without_floating_pool_no_raise(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``_floating_pool is None`` 时 closeEvent 不抛异常。"""
+        window = _make_floating_window(monkeypatch, floating_enabled=False)
+        try:
+            assert window._floating_pool is None
+            event = QCloseEvent()
+            window.closeEvent(event)
+            assert event.isAccepted()
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_finalize_reentry_does_not_recreate(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``_finalize_panels`` 重复进入（重试函数）不重复创建浮窗。"""
+        created = _counting_floating_factory(monkeypatch)
+        window = _make_floating_window(monkeypatch, floating_enabled=True)
+        try:
+            _build_all_panels(window)
+            _drive_finalize(window, qapp)
+            _drive_finalize(window, qapp)
+            assert window._floating_pool is not None
+            assert window._floating_pool is created[0]
+            assert len(created) == 1
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_drop_event_rejects_floating_drag(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """主池 dropEvent 收到浮窗拖拽 MIME 时拒绝（isAccepted 为 False）。"""
+        window = _make_floating_window(monkeypatch, floating_enabled=True)
+        try:
+            _build_all_panels(window)
+            pool = window._file_pool
+            assert pool is not None
+
+            path = tmp_path / "rejected.txt"
+            path.write_text("z", encoding="utf-8")
+            mime = QMimeData()
+            mime.setUrls([QUrl.fromLocalFile(str(path))])
+            mime.setData(_FLOATING_DRAG_FORMAT, b"1")
+            event = QDropEvent(
+                QPointF(2, 2),
+                Qt.CopyAction,
+                mime,
+                Qt.LeftButton,
+                Qt.NoModifier,
+            )
+
+            pool.dropEvent(event)
+
+            assert event.isAccepted() is False
+            assert pool.items == []
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_snap_toggle_mirrors_to_floating_window(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """贴边吸附：建窗即应用意图；setter 实时下发；重建后意图仍生效。"""
+        window = _make_floating_window(monkeypatch, floating_enabled=True)
+        try:
+            window._floating_pool_snap_enabled = False  # 意图：关闭吸附
+            _build_all_panels(window)
+            _drive_finalize(window, qapp)
+
+            floating = window._floating_pool
+            assert floating is not None
+            assert floating.is_snap_enabled() is False, "建窗未应用吸附意图"
+
+            window.set_floating_pool_snap_enabled(True)
+            assert floating.is_snap_enabled() is True, "setter 未实时下发"
+
+            window.set_floating_pool_enabled(False)
+            window.set_floating_pool_snap_enabled(False)
+            window.set_floating_pool_enabled(True)
+            rebuilt = window._floating_pool
+            assert rebuilt is not None
+            assert rebuilt.is_snap_enabled() is False, "重建后吸附意图未生效"
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+
+class TestLoadGeneralTogglesConsistency:
+    """(b) 启动读取一致性：``_load_general_toggles`` 7 元组含隐藏/系统与浮窗开关。"""
+
+    def test_load_general_toggles_returns_seven_tuple_with_bool(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """返回 7 元组且各项为 bool：关闭读到 False、非法值回退 True。"""
+        from freeassetfilter.core.managers.settings_manager_v2 import (
+            SettingsManagerV2,
+        )
+
+        v2 = SettingsManagerV2(str(tmp_path / "settings_v2.json"))
+        v2.load()
+        v2.set("general.floating_pool_enabled", False)
+        v2.set("general.floating_pool_snap_enabled", False)
+        monkeypatch.setattr(qapp, "settings_manager", v2)
+
+        result = MainWindow._load_general_toggles()
+        assert isinstance(result, tuple)
+        assert len(result) == 7
+        assert all(isinstance(flag, bool) for flag in result)
+        assert result[5] is False
+        assert result[6] is False
+
+        v2.set("general.floating_pool_snap_enabled", "not-a-bool")
+        result_invalid_snap = MainWindow._load_general_toggles()
+        assert result_invalid_snap[6] is True
+
+        v2.set("general.floating_pool_enabled", "not-a-bool")
+        result_invalid_pool = MainWindow._load_general_toggles()
+        assert result_invalid_pool[5] is True
+
+
+def _pool_has_path(pool: Any, path: Any) -> bool:
+    """判断主池是否含某路径（归一化分隔符比较，规避 QUrl 正斜杠差异）。
+
+    Args:
+        pool: ``FilePoolLayout`` 实例。
+        path: 目标路径（str / Path）。
+
+    Returns:
+        bool: 池内任一条目路径归一化后等于目标路径时返回 True。
+    """
+    target = os.path.normpath(str(path))
+    return any(
+        os.path.normpath(str(item.get("path") or "")) == target
+        for item in pool.items
+    )
+
+
+def _stub_drag_finished(
+    monkeypatch: pytest.MonkeyPatch,
+    floating: Any,
+    *,
+    window_at: Any,
+) -> None:
+    """为 ``_on_drag_finished`` 注入 ``window_at`` / ``cursor_pos`` 关键字默认值。
+
+    经 ``__kwdefaults__`` 注入而非替换方法：``_start_item_drag`` 以
+    ``self._on_drag_finished(action)`` 触发（不传关键字），故注入的默认值
+    生效、真实落点判定逻辑仍被覆盖（非重写）。
+
+    Args:
+        monkeypatch: pytest monkeypatch 夹具。
+        floating: 目标浮窗实例（取其类注入默认值）。
+        window_at: 注入的落点解析 callable。
+    """
+    monkeypatch.setattr(
+        type(floating)._on_drag_finished,
+        "__kwdefaults__",
+        {"window_at": window_at, "cursor_pos": lambda: QPoint(0, 0)},
+    )
+
+
+class TestFloatingPoolEndToEnd:
+    """浮窗端到端链路：拖入 → 入池 → 拖出(外部) → 移除 → 自投 → 保留。"""
+
+    def test_drag_in_out_and_self_drop_flow(
+        self,
+        qapp: QApplication,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """一条链路覆盖拖入 add / 外部拖出 remove / 自投保留（Metis #3）。"""
+        window = _make_floating_window(monkeypatch, floating_enabled=True)
+        try:
+            _build_all_panels(window)
+            _drive_finalize(window, qapp)
+            floating = window._floating_pool
+            pool = window._file_pool
+            assert floating is not None and floating.isVisible()
+
+            # ── 1) 拖入两个临时文件（真实 dropEvent 路径）──
+            path_a = tmp_path / "e2e_a.txt"
+            path_b = tmp_path / "e2e_b.txt"
+            path_a.write_text("a", encoding="utf-8")
+            path_b.write_text("b", encoding="utf-8")
+            mime = QMimeData()
+            mime.setUrls(
+                [QUrl.fromLocalFile(str(path_a)), QUrl.fromLocalFile(str(path_b))]
+            )
+            drop = QDropEvent(
+                QPointF(2, 2),
+                Qt.CopyAction,
+                mime,
+                Qt.LeftButton,
+                Qt.NoModifier,
+            )
+            floating.dropEvent(drop)
+
+            assert _pool_has_path(pool, path_a)
+            assert _pool_has_path(pool, path_b)
+            assert wait_until(
+                qapp, lambda: len(floating._rows) == 2, timeout_ms=3000
+            ), "拖入后浮窗列表未同步条目"
+
+            # ── 2) 条目 A 拖出到外部（落点 None → 外部）──
+            monkeypatch.setattr(floating, "_run_drag", lambda drag: Qt.CopyAction)
+            _stub_drag_finished(monkeypatch, floating, window_at=lambda p: None)
+            floating._start_item_drag(str(path_a))
+
+            assert wait_until(
+                qapp,
+                lambda: not _pool_has_path(pool, path_a),
+                timeout_ms=5000,
+            ), "拖出外部后主池未移除条目（等待退出动画完成）"
+            assert wait_until(
+                qapp, lambda: len(floating._rows) == 1, timeout_ms=5000
+            ), "拖出外部后浮窗列表未刷新"
+
+            # ── 3) 条目 B 自投（落到主池子控件 → 归属宿主）→ 保留 ──
+            target = pool._card_container
+            assert target.window() is window, "自投落点未归属宿主主窗口"
+            _stub_drag_finished(monkeypatch, floating, window_at=lambda p: target)
+            floating._start_item_drag(str(path_b))
+            qapp.processEvents()
+
+            assert _pool_has_path(pool, path_b), "自投落点不应移除条目"
+            assert len(pool.items) == 1
+            assert len(floating._rows) == 1
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_close_event_and_about_to_quit_path(
+        self,
+        qapp: QApplication,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """关闭：closeEvent 只 close 浮窗（不置 None）+ 退出路径触发 aboutToQuit。"""
+        window = _make_floating_window(monkeypatch, floating_enabled=True)
+        probe = None
+        try:
+            # 契约：非延迟构造路径（defer_heavy_init=False）
+            assert window._defer_heavy_init is False
+            _build_all_panels(window)
+            _drive_finalize(window, qapp)
+            floating = window._floating_pool
+            assert floating is not None
+            assert floating.isVisible() is True
+
+            probe_fired: list = []
+
+            def probe() -> None:
+                probe_fired.append(floating.isHidden())
+
+            qapp.aboutToQuit.connect(probe)
+
+            event = QCloseEvent()
+            window.closeEvent(event)
+
+            assert event.isAccepted()
+            # closeEvent 只 close 不置 None（None 仅见 set_floating_pool_enabled(False)）
+            assert window._floating_pool is not None
+            assert floating.isHidden() is True
+
+            # 进程退出路径：aboutToQuit 发射时浮窗已关闭（Metis #19）
+            qapp.aboutToQuit.emit()
+            assert probe_fired == [True], (
+                "进程退出路径未在浮窗关闭后触发 aboutToQuit"
+            )
+        finally:
+            if probe is not None:
+                try:
+                    qapp.aboutToQuit.disconnect(probe)
+                except (RuntimeError, TypeError):
+                    pass
             window.deleteLater()
             qapp.processEvents()

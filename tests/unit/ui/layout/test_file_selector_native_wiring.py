@@ -191,24 +191,29 @@ class TestSortModeSwitchNoRescan:
         ]
         assert len(layout._raw_entries) == 6  # noqa: SLF001
 
-        # 挂载计数包装（仍委托真实实现，断言「未被调用」）
+        # 挂载计数包装（仍委托真实实现，断言「未被调用」）。
+        # 计数接缝指向流式扫描生成器：`_reload_directory` 经后台
+        # `_DirectoryStreamRunnable` 调用它，故刷新必然命中。
         calls: List[str] = []
-        original_collect = layout._collect_directory_entries  # noqa: SLF001
+        original_iter = layout._iter_directory_batches  # noqa: SLF001
 
-        def counting_collect(
+        def counting_batches(
             path: str,
-            cancel_check: Any = None,
-            include_remote: Any = None,
-            **kwargs: Any,
+            include_remote: Any,
+            cancel_check: Any,
+            batch_size: int = 64,
+            batch_interval_s: float = 0.04,
         ) -> Any:
             calls.append(path)
-            return original_collect(path, cancel_check, include_remote, **kwargs)
+            yield from original_iter(
+                path, include_remote, cancel_check, batch_size, batch_interval_s
+            )
 
-        monkeypatch.setattr(layout, "_collect_directory_entries", counting_collect)
+        monkeypatch.setattr(layout, "_iter_directory_batches", counting_batches)
 
         # 切换排序 → 内存重排，不触发磁盘重扫
         layout._set_sort_mode(1)
-        assert calls == [], "切换排序不应触发磁盘重扫（_collect_directory_entries 计数应保持 0）"
+        assert calls == [], "切换排序不应触发磁盘重扫（扫描生成器计数应保持 0）"
         # 模式 1（名称↓）：文件先（小写名降序），目录最后
         assert _model_names(layout) == [
             "photo.png",
@@ -256,18 +261,21 @@ class TestFilterApplyNoRescan:
         layout._load_directory(str(src_dir))  # noqa: SLF001
 
         calls: List[str] = []
-        original_collect = layout._collect_directory_entries  # noqa: SLF001
+        original_iter = layout._iter_directory_batches  # noqa: SLF001
 
-        def counting_collect(
+        def counting_batches(
             path: str,
-            cancel_check: Any = None,
-            include_remote: Any = None,
-            **kwargs: Any,
+            include_remote: Any,
+            cancel_check: Any,
+            batch_size: int = 64,
+            batch_interval_s: float = 0.04,
         ) -> Any:
             calls.append(path)
-            return original_collect(path, cancel_check, include_remote, **kwargs)
+            yield from original_iter(
+                path, include_remote, cancel_check, batch_size, batch_interval_s
+            )
 
-        monkeypatch.setattr(layout, "_collect_directory_entries", counting_collect)
+        monkeypatch.setattr(layout, "_iter_directory_batches", counting_batches)
 
         # ── 应用筛选（等价 on_apply 的接线路径）──
         layout._filter_pattern = r"\.png$"  # noqa: SLF001

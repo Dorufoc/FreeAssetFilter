@@ -403,3 +403,97 @@ class TestStaleWriterProtection:
         fresh = SettingsManagerV2(tmp_file)
         fresh.load()
         assert fresh.get("general.layout_mode") == "workspace"
+
+
+class TestGeneralFloatingPoolEnabled:
+    """general.floating_pool_enabled：默认 True（general 下首个默认开启布尔）。
+
+    合并白名单回归（Oracle B1，BLOCKER 修复）：用户关闭浮窗落盘 ``False``
+    后，``_merge_with_defaults`` 的 general 白名单块必须回读该键，否则每次
+    启动加载时丢弃该值、``get`` 退回默认 ``True``——开关无法跨重启持久化
+    （静默失效）。
+    """
+
+    def test_default_floating_pool_enabled_is_true(self) -> None:
+        """默认树含 general.floating_pool_enabled 且为 True。"""
+        assert DEFAULT_SETTINGS_V2["general"]["floating_pool_enabled"] is True
+
+    def test_fresh_load_has_true_default(self, tmp_path: Path) -> None:
+        """新文件加载即含该键（默认 True）。"""
+        v2 = _fresh_v2(tmp_path)
+        v2.load()
+        assert v2.get("general.floating_pool_enabled") is True
+
+    def test_save_load_merge_keeps_disabled_false(self, tmp_path: Path) -> None:
+        """重启持久化：落盘 False → 新实例 load → 仍为 False（白名单回归守卫）。"""
+        tmp_file = str(tmp_path / "settings_v2.json")
+        v2 = SettingsManagerV2(tmp_file)
+        v2.load()
+        v2.set("general.floating_pool_enabled", False)
+        v2.save()
+
+        fresh = SettingsManagerV2(tmp_file)
+        fresh.load()
+        assert fresh.get("general.floating_pool_enabled") is False
+
+    def test_invalid_value_falls_back_true(self, tmp_path: Path) -> None:
+        """非布尔值（含字符串 "false"/数字）一律丢弃，回退默认 True。"""
+        import json
+
+        tmp_file = tmp_path / "settings_v2.json"
+        tmp_file.write_text(
+            json.dumps(
+                {"version": 2, "general": {"floating_pool_enabled": "false"}}
+            ),
+            encoding="utf-8",
+        )
+        v2 = SettingsManagerV2(str(tmp_file))
+        v2.load()
+        assert v2.get("general.floating_pool_enabled") is True
+
+
+class TestGeneralFloatingPoolSnapEnabled:
+    """general.floating_pool_snap_enabled：默认 True（镜像 floating_pool_enabled）。
+
+    与 :class:`TestGeneralFloatingPoolEnabled` 同构的合并白名单回归：用户
+    关闭贴边吸附落盘 ``False`` 后，``_merge_with_defaults`` 的 general
+    白名单块必须回读该键，否则每次启动加载时丢弃该值、``get`` 退回默认
+    ``True``——开关无法跨重启持久化（静默失效）。
+    """
+
+    def test_default_floating_pool_snap_enabled_is_true(self) -> None:
+        """默认树含 general.floating_pool_snap_enabled 且为 True。"""
+        assert DEFAULT_SETTINGS_V2["general"]["floating_pool_snap_enabled"] is True
+
+    def test_fresh_load_has_true_default(self, tmp_path: Path) -> None:
+        """新文件加载即含该键（默认 True）。"""
+        v2 = _fresh_v2(tmp_path)
+        v2.load()
+        assert v2.get("general.floating_pool_snap_enabled") is True
+
+    def test_save_load_merge_keeps_disabled_false(self, tmp_path: Path) -> None:
+        """重启持久化：落盘 False → 新实例 load → 仍为 False（白名单回归守卫）。"""
+        tmp_file = str(tmp_path / "settings_v2.json")
+        v2 = SettingsManagerV2(tmp_file)
+        v2.load()
+        v2.set("general.floating_pool_snap_enabled", False)
+        v2.save()
+
+        fresh = SettingsManagerV2(tmp_file)
+        fresh.load()
+        assert fresh.get("general.floating_pool_snap_enabled") is False
+
+    def test_invalid_value_falls_back_true(self, tmp_path: Path) -> None:
+        """非布尔值（含字符串 "false"/数字）一律丢弃，回退默认 True。"""
+        import json
+
+        tmp_file = tmp_path / "settings_v2.json"
+        tmp_file.write_text(
+            json.dumps(
+                {"version": 2, "general": {"floating_pool_snap_enabled": "false"}}
+            ),
+            encoding="utf-8",
+        )
+        v2 = SettingsManagerV2(str(tmp_file))
+        v2.load()
+        assert v2.get("general.floating_pool_snap_enabled") is True
