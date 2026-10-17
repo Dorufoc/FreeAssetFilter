@@ -415,6 +415,17 @@ class FileSelectorLayout(QWidget):
         self._history_index: int = -1
         self._sort_mode: int = 0
         self._first_show: bool = True
+        # 方向键导航状态（arrow-key-file-preview-nav Todo 1：仅状态与模型行
+        # 数学，不含按键处理）。_nav_cursor_path = 手势光标文件路径；
+        # _nav_active = 手势进行中（按下未释放）；_nav_cursor_row = 手势内
+        # 模型行（仅按住期间有效）；_nav_last_key = 手势起始方向键；
+        # _nav_model_key = 手势起始时的模型签名（路径/行数/视图），用于判定
+        # 模型是否已变化（变化即不再视为同一手势的延续）。
+        self._nav_cursor_path: str = ""
+        self._nav_active: bool = False
+        self._nav_cursor_row: int = -1
+        self._nav_last_key: int = 0
+        self._nav_model_key: Optional[Tuple[Any, int, str]] = None
         # 异步目录加载：递增 token 丢弃过期结果（快速连续导航场景）
         self._async_load_token: int = 0
         self._dir_entries_ready.connect(self._on_dir_entries_ready)
@@ -802,6 +813,7 @@ class FileSelectorLayout(QWidget):
         self._file_list.setUpdatesEnabled(False)
         try:
             self._file_model.set_files(entries)
+            self.reset_nav_state()
             self._update_grid_size()
             self._update_file_count(len(entries))
         finally:
@@ -1325,6 +1337,7 @@ class FileSelectorLayout(QWidget):
             try:
                 self._file_model.clear()
                 self._current_path = ""
+                self.reset_nav_state()
                 self._update_file_count(0)
             finally:
                 self._file_list.setUpdatesEnabled(True)
@@ -1352,6 +1365,7 @@ class FileSelectorLayout(QWidget):
             self._file_model.set_files(entries)
             self._update_grid_size()
             self._current_path = path
+            self.reset_nav_state()
             if not self._path_input_dirty:
                 # 路径框正在编辑（未提交）时不覆盖用户输入；失焦时会回填到 _current_path
                 self._update_path_input(path)
@@ -1492,6 +1506,7 @@ class FileSelectorLayout(QWidget):
             self._current_path = path
             self._raw_entries = list(batch)
             self._raw_entries_path = path
+            self.reset_nav_state()
             display = [e for e in batch if self._matches_filter(e["name"])]
             self._file_model.set_files(display)
             self._update_grid_size()
@@ -2007,15 +2022,9 @@ class FileSelectorLayout(QWidget):
         if is_dir:
             self._navigate_to(file_path)
             return
-        info = {
-            "name": self._file_model.data(index, FileNameRole) or "",
-            "path": file_path,
-            "is_dir": False,
-            "size": int(self._file_model.data(index, FileSizeRole) or 0),
-            "modified": self._file_model.data(index, ModifiedRole) or "",
-            "created": self._file_model.data(index, CreatedRole) or "",
-            "suffix": (self._file_model.data(index, SuffixRole) or "").lower(),
-        }
+        # 文件信息字典统一由 _build_file_info_for_path 构造（与方向键导航
+        # 释放共用，单一事实来源）。file_path 取自模型行，正常不会为 None。
+        info = self._build_file_info_for_path(file_path)
         # 再次点击当前预览文件 → 取消预览；否则预览
         import os
 
@@ -2024,7 +2033,36 @@ class FileSelectorLayout(QWidget):
                 == os.path.normcase(os.path.normpath(file_path))):
             self.preview_cancel_requested.emit()
         else:
-            self.file_selected.emit(info)
+            if info is not None:
+                self.file_selected.emit(info)
+
+    def _build_file_info_for_path(self, file_path: str) -> Optional[Dict[str, Any]]:
+        """构造 ``file_selected`` 信号使用的 7 键文件信息字典。
+
+        单一事实来源：点击预览（``_on_file_clicked``）与方向键手势释放
+        （``handle_nav_key_release``）共用，避免两处重复维护字典结构。
+
+        Args:
+            file_path: 模型内条目的完整路径（须与 ``FilePathRole`` 值精确
+                匹配；``get_row`` 为精确字典查找）。
+
+        Returns:
+            Optional[Dict[str, Any]]: name/path/is_dir/size/modified/created/
+            suffix 字典；路径不在当前模型中返回 None。
+        """
+        row = self._file_model.get_row(file_path)
+        if row < 0:
+            return None
+        idx = self._file_model.index(row, 0)
+        return {
+            "name": self._file_model.data(idx, FileNameRole) or "",
+            "path": file_path,
+            "is_dir": False,
+            "size": int(self._file_model.data(idx, FileSizeRole) or 0),
+            "modified": self._file_model.data(idx, ModifiedRole) or "",
+            "created": self._file_model.data(idx, CreatedRole) or "",
+            "suffix": (self._file_model.data(idx, SuffixRole) or "").lower(),
+        }
 
     # ── 右键菜单 ──────────────────────────────────────────────────────────
 
@@ -2920,6 +2958,246 @@ class FileSelectorLayout(QWidget):
             return
         idx = self._file_model.index(row, 0)
         self._file_list.scrollTo(idx, QAbstractItemView.PositionAtCenter)
+
+    # ── 方向键导航：状态与模型行数学（arrow-key-file-preview-nav Todo 1）──
+
+    def reset_nav_state(self) -> None:
+        """重置方向键导航手势状态（幂等）。
+
+        MainWindow 在主窗口失活时调用；模型重填（目录切换）路径同样调用，
+        保证旧目录的光标行/手势不会残留在新目录的模型上。
+        """
+        self._nav_active = False
+        self._nav_cursor_row = -1
+        self._nav_model_key = None
+
+    def _nav_cols(self) -> int:
+        """当前视图的一行格子数（列表模式恒为 1；卡片模式取 ``_grid_cols``）。
+
+        无副作用：绝不触发 ``_update_grid_size()``/``_apply_grid_layout()``
+        ——本方法运行在按键事件内，任何重排都会造成可见抖动。``_grid_cols``
+        尚未计算（0，列表未显示/未 resize）时回退为 1，等网格布局完成后
+        自然纠正。
+
+        Returns:
+            int: 大于等于 1 的列数。
+        """
+        if self._view_mode == "list":
+            return 1
+        return max(1, int(self._grid_cols or 0) or 1)
+
+    def _nav_model_signature(self) -> Tuple[Any, int, str]:
+        """当前模型签名（路径, 行数, 视图模式），用于判定手势新鲜度。
+
+        Returns:
+            Tuple[Any, int, str]: (``_current_path``, ``rowCount()``,
+            ``_view_mode``) 三元组。
+        """
+        return (self._current_path, self._file_model.rowCount(), self._view_mode)
+
+    def _row_is_dir(self, row: int) -> bool:
+        """判断模型行是否为目录（越界行按非目录处理）。
+
+        Args:
+            row: 模型行号。
+
+        Returns:
+            bool: True 表示该行是目录。
+        """
+        if not (0 <= row < self._file_model.rowCount()):
+            return False
+        return bool(
+            self._file_model.data(self._file_model.index(row, 0), IsDirRole) or False
+        )
+
+    def _row_path(self, row: int) -> str:
+        """取模型行的文件路径（越界行返回空串）。
+
+        Args:
+            row: 模型行号。
+
+        Returns:
+            str: 该行 ``FilePathRole`` 路径；越界或无数据为空串。
+        """
+        if not (0 <= row < self._file_model.rowCount()):
+            return ""
+        return self._file_model.data(self._file_model.index(row, 0), FilePathRole) or ""
+
+    def _scan_file_row(self, row: int, step: int) -> Optional[int]:
+        """沿模型顺序扫描下一个/上一个非目录行（跨目录连续跳过、环绕）。
+
+        Args:
+            row: 起始模型行号。
+            step: 步进方向（+1 向前 / -1 向后）。
+
+        Returns:
+            Optional[int]: 命中的非目录行号；全模型皆目录或空模型返回 None。
+        """
+        n = self._file_model.rowCount()
+        if n == 0:
+            return None
+        for i in range(1, n + 1):
+            r = (row + step * i) % n
+            if not self._row_is_dir(r):
+                return r
+        return None
+
+    def _grid_step_row(self, row: int, delta_rows: int) -> Optional[int]:
+        """卡片网格的垂直步进：按模型行算上/下相邻格，再吸附到最近非目录。
+
+        ``cols`` 计全部格子（含目录），故上下相邻格必须由模型行 ``divmod``
+        得出（不能用"文件序"步进——目录占用的格子会错位）；目标网格行整体
+        皆目录时返回 None，由调用方回退为文件序扫描。
+
+        Args:
+            row: 起始模型行号。
+            delta_rows: 行步进（+1 向下 / -1 向上）。
+
+        Returns:
+            Optional[int]: 命中的非目录行号；空模型或目标行无文件返回 None。
+        """
+        cols = self._nav_cols()
+        n = self._file_model.rowCount()
+        if n == 0:
+            return None
+        grid_row, grid_col = divmod(row, cols)
+        total = (n + cols - 1) // cols
+        ng = (grid_row + delta_rows) % total
+        start = ng * cols
+        end = min(start + cols, n)
+        for r in sorted(range(start, end), key=lambda r: (abs((r - start) - grid_col), r)):
+            if not self._row_is_dir(r):
+                return r
+        return None
+
+    def _resolve_anchor_row(self) -> int:
+        """解析当前导航锚点的模型行：手势光标路径优先，其次预览文件路径。
+
+        先按 ``get_row`` 精确查询；未命中时按 ``normcase``/``normpath`` 全表
+        扫描回退（Windows 盘符/路径段大小写差异，与
+        ``_locate_model_file_path`` 同口径）。两者皆无解析结果返回 -1。
+
+        Returns:
+            int: 锚点模型行号；无任何可解析锚点返回 -1。
+        """
+        for candidate in (self._nav_cursor_path, self._previewing_file_path):
+            if not candidate:
+                continue
+            row = self._file_model.get_row(str(candidate))
+            if row >= 0:
+                return row
+            target = os.path.normcase(os.path.normpath(str(candidate)))
+            for r in range(self._file_model.rowCount()):
+                if os.path.normcase(os.path.normpath(self._row_path(r))) == target:
+                    return r
+        return -1
+
+    # ── 方向键导航：按下/释放手势（arrow-key-file-preview-nav Todo 2）──────
+
+    def handle_nav_key_press(self, key: int) -> bool:
+        """处理一次方向键按下（按住连发 = 同一手势内持续步进）。
+
+        仅移动高亮（``set_previewing_file`` + ``_scroll_to_file``），**不发**
+        ``file_selected``；预览加载统一由 ``handle_nav_key_release`` 在释放时
+        只发一次。
+
+        手势模型：非活动态 / 换键 / 模型签名变化 → 新手势，先解析锚点行
+        （``_resolve_anchor_row``，无锚点则按方向取第一个/最后一个文件）；
+        否则在当前光标行继续步进（长按连发）。
+
+        Args:
+            key: Qt 键值（仅四个方向键被消费；其余原样放行）。
+
+        Returns:
+            bool: True = 事件已消费（光标已移动）；False = 非方向键 / 空模型 /
+            无文件可命中（调用方应放行事件）。
+        """
+        arrow_map = {
+            Qt.Key_Left: ("col", -1),
+            Qt.Key_Right: ("col", +1),
+            Qt.Key_Up: ("row", -1),
+            Qt.Key_Down: ("row", +1),
+        }
+        if key not in arrow_map:
+            return False
+        direction, step = arrow_map[key]
+        n = self._file_model.rowCount()
+        if n == 0:
+            return False
+        sig = self._nav_model_signature()
+        fresh = (
+            (not self._nav_active)
+            or (key != self._nav_last_key)
+            or (self._nav_model_key != sig)
+        )
+        if fresh:
+            self._nav_model_key = sig
+        if fresh:
+            base = self._resolve_anchor_row()
+        else:
+            base = self._nav_cursor_row
+        target: Optional[int]
+        if base < 0:
+            # 新手势无锚点：+ 方向取第一个文件、- 方向取最后一个文件（跳过目录）
+            target = None
+            rows = range(n) if step > 0 else range(n - 1, -1, -1)
+            for r in rows:
+                if not self._row_is_dir(r):
+                    target = r
+                    break
+            if target is None:
+                return False
+        elif direction == "col":
+            # 左右方向：离散点按 = 每次前进一个文件（跨目录连续跳过、环绕）
+            target = self._scan_file_row(base, step)
+        elif self._view_mode == "list":
+            target = self._scan_file_row(base, step)
+        else:
+            # 卡片模式：优先按模型行网格上下步进；目标行整行皆目录时回退
+            # 文件序扫描。必须用显式 None 判断：合法目标行 0 是 falsy，
+            # `or` 兜底会把"环绕到首行"误换成文件序邻居。
+            grid_target = self._grid_step_row(base, step)
+            target = (
+                grid_target
+                if grid_target is not None
+                else self._scan_file_row(base, step)
+            )
+        if target is None:
+            return False
+        self._nav_cursor_row = target
+        path = self._row_path(target)
+        if not path:
+            return False
+        self._nav_cursor_path = path
+        self._nav_active = True
+        self._nav_last_key = key
+        self.set_previewing_file(path)
+        self._scroll_to_file(path)
+        return True
+
+    def handle_nav_key_release(self, key: int) -> bool:
+        """处理方向键释放：结束手势并发出一次 ``file_selected``。
+
+        Args:
+            key: Qt 键值（须与手势起始键一致，否则视为无关释放原样放行）。
+
+        Returns:
+            bool: True = 释放已消费（含光标路径失效时的静默吞掉）；False =
+            无活动手势或键与手势不匹配。
+        """
+        if not self._nav_active:
+            return False
+        if key != self._nav_last_key:
+            return False
+        self._nav_active = False
+        path = self._nav_cursor_path
+        if not path:
+            return True
+        info = self._build_file_info_for_path(path)
+        if info is None:
+            return True
+        self.file_selected.emit(info)
+        return True
 
     # ── 网格布局 ──────────────────────────────────────────────────────────
 

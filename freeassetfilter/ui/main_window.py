@@ -12,7 +12,23 @@ from pathlib import Path
 from typing import Optional
 import os
 
-from PySide6.QtWidgets import QApplication, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QFrame, QSplitter, QGridLayout, QGraphicsOpacityEffect
+from PySide6.QtWidgets import (
+    QAbstractSlider,
+    QAbstractSpinBox,
+    QApplication,
+    QComboBox,
+    QFrame,
+    QGraphicsOpacityEffect,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPlainTextEdit,
+    QSplitter,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 import ctypes
 from ctypes import wintypes
@@ -733,6 +749,8 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         self._previewer = None
         self._info_panel = None
         self._info_card = None
+        # 应用级方向键导航过滤器安装标记（幂等安装/卸载，见 _install_nav_key_filter）
+        self._nav_filter_installed: bool = False
         # 全局存储池浮窗：实例引用 + 三个信号连接对象。连接对象必须存引用
         # （供 set_floating_pool_enabled(False) 精确断开——lambda 槽无法按
         # 方法断连）；唯一创建入口为 _ensure_floating_pool。
@@ -855,6 +873,13 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             self._setup_lightweight_content()
         else:
             self._setup_content()
+
+        # 应用级方向键导航过滤器：内容就绪后安装（幂等）。同时挂到 destroyed
+        # 做兜底卸载——未经 closeEvent 的销毁路径（测试/异常）不得在全局
+        # QApplication 上残留过滤器；槽内含 try/except RuntimeError 防御
+        # 析构中途调用（此时 C++ 对象已在拆除）。
+        self.destroyed.connect(lambda *_: self._uninstall_nav_key_filter())
+        self._install_nav_key_filter()
 
         # 将窗口定位到鼠标所在屏幕的中心
         self._center_on_mouse_screen()
@@ -2909,6 +2934,16 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         file_path = file_info.get("path", "")
         self._file_selector.set_previewing_file(file_path)
         self._file_pool.set_previewing_file(file_path)
+        getter = getattr(self._previewer, "current_file_info", None) if self._previewer is not None else None
+        if callable(getter):
+            try:
+                current = getter()
+            except Exception:  # noqa: BLE001 - 预览器状态读取失败时按"无当前文件"处理，继续刷新预览
+                current = None
+            if isinstance(current, dict):
+                cur = current.get("path", "")
+                if cur and os.path.normcase(os.path.normpath(cur)) == os.path.normcase(os.path.normpath(file_info.get("path", ""))):
+                    return
         self._show_preview(file_info)
 
     def _on_pool_item_clicked(self, file_info: dict) -> None:
@@ -3140,6 +3175,8 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
 
     def closeEvent(self, event: QEvent) -> None:
         """窗口关闭时刷新备份保存到磁盘，释放服务资源，并回收后台 Mica 线程。"""
+        # 卸载应用级方向键导航过滤器（幂等），避免全局过滤器在窗口销毁后残留
+        self._uninstall_nav_key_filter()
         # 连带关闭设置窗口：设置窗口是主窗口的 owned 子窗口，原生层会随宿主
         # 关闭，此处显式 close 使其走 WA_DeleteOnClose 及时销毁并释放引用，
         # 避免隐藏后残留孤儿实例
@@ -3183,9 +3220,66 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         StagingPoolService().dispose()
         super().closeEvent(event)
 
+    def changeEvent(self, event: QEvent) -> None:
+        """窗口状态变化：失活时重置文件选择器的方向键导航状态。
+
+        Alt+Tab 切走时若正处于按住方向键的手势中，选择器的导航游标必须
+        复位，避免回到窗口后的一次释放用陈旧游标加载预览（无 wedged 状态）。
+
+        Args:
+            event: 触发的窗口事件。
+        """
+        super().changeEvent(event)
+        if (
+            event.type() == QEvent.ActivationChange
+            and not self.isActiveWindow()
+            and self._file_selector is not None
+        ):
+            self._file_selector.reset_nav_state()
+
     def eventFilter(self, obj: QWidget, event: QEvent) -> bool:
-        """事件过滤器 - 处理标题栏拖拽"""
-        if not isinstance(event, QMouseEvent):
+        """事件过滤器 - 应用级方向键导航捕获 + 标题栏拖拽。
+
+        本过滤器同时挂在 QApplication（应用级，见 _install_nav_key_filter）
+        与自绘标题栏 header 上。应用级分支在主窗口激活时把方向键交给文件
+        选择器做文件导航（全屏预览宿主是独立顶层窗口，届时主窗口失活，
+        本分支自然不生效，全屏内方向键保持预览器自身语义）；鼠标分支保持
+        既有标题栏拖拽逻辑不变。
+
+        Args:
+            obj: 事件接收对象（应用级过滤时可能不是 QWidget）。
+            event: 待过滤事件。
+
+        Returns:
+            bool: True 表示事件已被本过滤器消费。
+        """
+        t = event.type()
+        if t in (QEvent.KeyPress, QEvent.KeyRelease):
+            k = event.key()
+            if (
+                k in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down)
+                and self._nav_should_capture()
+            ):
+                if t == QEvent.KeyPress:
+                    if (
+                        self._file_selector is not None
+                        and self._file_selector.handle_nav_key_press(k)
+                    ):
+                        event.accept()
+                        return True
+                elif not event.isAutoRepeat():
+                    if (
+                        self._file_selector is not None
+                        and self._file_selector.handle_nav_key_release(k)
+                    ):
+                        event.accept()
+                        return True
+
+        # ---- 既有鼠标 / 标题栏拖拽逻辑自此继续（未改动）----
+        # 应用级过滤下 obj 可能是非 QWidget（如 QApplication）：负向守卫兜底，
+        # 且本方法任何路径都必须显式返回 bool（返回 None 会让 PySide6 对每个
+        # 未捕获的全局事件报 RuntimeWarning）。
+        if not (isinstance(event, QMouseEvent) and isinstance(obj, QWidget)):
             return False
 
         # 只处理鼠标按下事件
@@ -3207,6 +3301,78 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             return True
 
         return False
+
+    # ──── 应用级方向键导航过滤器（arrow-key-file-preview-nav） ──────────
+
+    def _nav_should_capture(self) -> bool:
+        """判断当前是否应捕获方向键做文件选择器导航。
+
+        按以下顺序短路（任一条命中即不捕获；全部通过才捕获）：
+
+        1. 主窗口未激活（全屏预览宿主是独立顶层窗口，此时主窗口失活 →
+           全屏自然免除）；
+        2. ``QApplication.activeWindow()`` 不是本窗口（Windows 可能拒绝
+           前台激活，兜底判定）；
+        3. 存在活动弹出窗口（菜单/下拉等自行消费方向键）；
+        4. 无焦点控件；
+        5. 焦点控件不属于本窗口；
+        6. 焦点在单行编辑框（路径框/搜索框的插入符导航优先）；
+        7. 焦点在可编辑多行文本（只读文本预览不豁免，箭头切换文件）；
+        8. 焦点在自旋框/下拉框/滑块（控件自身键盘导航优先）；
+        9. 焦点在文件储存池或其子树（池内导航优先）。
+
+        Returns:
+            bool: True 表示方向键应被主窗口捕获用于文件导航。
+        """
+        if not self.isActiveWindow():
+            return False
+        if QApplication.activeWindow() is not self:
+            return False
+        if QApplication.activePopupWidget() is not None:
+            return False
+        fw = QApplication.focusWidget()
+        if fw is None:
+            return False
+        if fw.window() is not self:
+            return False
+        if isinstance(fw, QLineEdit):
+            return False
+        if isinstance(fw, (QTextEdit, QPlainTextEdit)) and not fw.isReadOnly():
+            return False
+        if isinstance(fw, (QAbstractSpinBox, QComboBox, QAbstractSlider)):
+            return False
+        pool = self._file_pool
+        if pool is not None and (fw is pool or pool.isAncestorOf(fw)):
+            return False
+        return True
+
+    def _install_nav_key_filter(self) -> None:
+        """幂等安装应用级方向键导航过滤器（安装到 QApplication）。
+
+        无 QApplication（极端独立场景）或已安装时直接返回，不重复安装。
+        """
+        qapp = QApplication.instance()
+        if qapp is None or getattr(self, "_nav_filter_installed", False):
+            return
+        qapp.installEventFilter(self)
+        self._nav_filter_installed = True
+
+    def _uninstall_nav_key_filter(self) -> None:
+        """幂等卸载应用级方向键导航过滤器。
+
+        先清标记再移除：本方法可在 ``destroyed`` 信号槽中执行（C++ 对象
+        正在拆除），``removeEventFilter`` 可能抛 ``RuntimeError``，此时
+        Qt 已在 ~QObject 内自动摘除本过滤器，忽略即可。
+        """
+        if not getattr(self, "_nav_filter_installed", False):
+            return
+        self._nav_filter_installed = False
+        qapp = QApplication.instance()
+        if qapp is not None:
+            try:
+                qapp.removeEventFilter(self)
+            except RuntimeError:
+                pass
 
     # ---- Public API ----
 
