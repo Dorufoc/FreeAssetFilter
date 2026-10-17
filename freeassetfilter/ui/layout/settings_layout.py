@@ -1561,6 +1561,11 @@ class GeneralSettingsPage(QWidget):
         self._ai_entry: bool = False
         self._include_remote_drives: bool = False
         self._blank_right_click_go_back: bool = False
+        # 全局浮窗开关状态（默认开启；控件在 _build_ui 挂载，刷新时经
+        # None 守卫同步展示）
+        self._floating_pool_enabled: bool = True
+        # 全局浮窗贴边吸附开关状态（默认开启；控件在 _build_ui 挂载）
+        self._floating_pool_snap_enabled: bool = True
         self._general_updating: bool = False  # 编程式同步开关的守卫标志
         self._ai_row: SettingsRow | None = None
         self._ai_toggle: StyledToggle | None = None
@@ -1568,6 +1573,10 @@ class GeneralSettingsPage(QWidget):
         self._drives_toggle: StyledToggle | None = None
         self._blank_back_row: SettingsRow | None = None
         self._blank_back_toggle: StyledToggle | None = None
+        self._floating_pool_row: SettingsRow | None = None
+        self._floating_pool_toggle: StyledToggle | None = None
+        self._floating_pool_snap_row: SettingsRow | None = None
+        self._floating_pool_snap_toggle: StyledToggle | None = None
         self._build_ui()
         self.refresh_from_staging()
 
@@ -1625,6 +1634,34 @@ class GeneralSettingsPage(QWidget):
         self._blank_back_row.set_control(self._blank_back_toggle)
         layout.addWidget(self._blank_back_row)
 
+        # ── 全局浮窗（默认开启）──
+        # 暂存隔离铁律：开关只写入 SettingsStagingCache
+        # （general.floating_pool_enabled），点击「确定」才经 _submit_settings
+        # 由主窗口 set_floating_pool_enabled 生效。
+        self._floating_pool_row = SettingsRow(
+            title="全局浮窗",
+            description="在桌面显示可拖入/拖出文件的悬浮窗",
+        )
+        self._floating_pool_toggle = StyledToggle(checked=True, size="default")
+        self._floating_pool_toggle.toggled.connect(self._on_floating_pool_toggled)
+        self._floating_pool_row.set_control(self._floating_pool_toggle)
+        layout.addWidget(self._floating_pool_row)
+
+        # ── 贴边吸附（默认开启；依赖全局浮窗）──
+        # 暂存隔离铁律：开关只写入 SettingsStagingCache
+        # （general.floating_pool_snap_enabled），点击「确定」才经
+        # _submit_settings 由主窗口 set_floating_pool_snap_enabled 生效。
+        self._floating_pool_snap_row = SettingsRow(
+            title="贴边吸附",
+            description="拖动浮窗靠近屏幕边缘时自动吸附",
+        )
+        self._floating_pool_snap_toggle = StyledToggle(checked=True, size="default")
+        self._floating_pool_snap_toggle.toggled.connect(
+            self._on_floating_pool_snap_toggled
+        )
+        self._floating_pool_snap_row.set_control(self._floating_pool_snap_toggle)
+        layout.addWidget(self._floating_pool_snap_row)
+
         layout.addStretch(1)
 
     # ── 交互 ──────────────────────────────────────────────────────────
@@ -1663,6 +1700,24 @@ class GeneralSettingsPage(QWidget):
             "general.blank_right_click_go_back", self._blank_right_click_go_back
         )
 
+    def _on_floating_pool_toggled(self, checked: bool) -> None:
+        """全局浮窗开关：只写入暂存缓存，点击「确定」才生效。"""
+        if self._general_updating:
+            return
+        self._floating_pool_enabled = bool(checked)
+        self._staging_cache.set(
+            "general.floating_pool_enabled", self._floating_pool_enabled
+        )
+
+    def _on_floating_pool_snap_toggled(self, checked: bool) -> None:
+        """贴边吸附开关：只写入暂存缓存，点击「确定」才生效。"""
+        if self._general_updating:
+            return
+        self._floating_pool_snap_enabled = bool(checked)
+        self._staging_cache.set(
+            "general.floating_pool_snap_enabled", self._floating_pool_snap_enabled
+        )
+
     def _layout_description_text(self) -> str:
         """返回当前布局的介绍文字 + 换行提示行。"""
         desc = self._LAYOUT_DESCRIPTIONS.get(
@@ -1690,7 +1745,11 @@ class GeneralSettingsPage(QWidget):
             self._layout_updating = False
 
     def _sync_general_toggles(self) -> None:
-        """按当前状态同步三个开关（守卫内赋值，不触发写暂存）。"""
+        """按当前状态同步五个开关（守卫内赋值，不触发写暂存）。
+
+        各开关控件均带 ``None`` 守卫：缺位时仅跳过控件同步，状态值仍已由
+        :meth:`refresh_from_staging` 更新。
+        """
         self._general_updating = True
         try:
             if self._ai_toggle is not None:
@@ -1699,6 +1758,12 @@ class GeneralSettingsPage(QWidget):
                 self._drives_toggle.checked = self._include_remote_drives
             if self._blank_back_toggle is not None:
                 self._blank_back_toggle.checked = self._blank_right_click_go_back
+            if self._floating_pool_toggle is not None:
+                self._floating_pool_toggle.checked = self._floating_pool_enabled
+            if self._floating_pool_snap_toggle is not None:
+                self._floating_pool_snap_toggle.checked = (
+                    self._floating_pool_snap_enabled
+                )
         finally:
             self._general_updating = False
 
@@ -1720,6 +1785,23 @@ class GeneralSettingsPage(QWidget):
         self._blank_right_click_go_back = (
             saved_blank_back if isinstance(saved_blank_back, bool) else False
         )
+        # 全局浮窗默认开启：缺键/非法值一律回退 True（general 下首个
+        # 默认开启布尔）。
+        saved_floating_pool = self._staging_cache.get(
+            "general.floating_pool_enabled", True
+        )
+        self._floating_pool_enabled = (
+            saved_floating_pool if isinstance(saved_floating_pool, bool) else True
+        )
+        # 贴边吸附默认开启：缺键/非法值一律回退 True（与浮窗开关同口径）。
+        saved_floating_pool_snap = self._staging_cache.get(
+            "general.floating_pool_snap_enabled", True
+        )
+        self._floating_pool_snap_enabled = (
+            saved_floating_pool_snap
+            if isinstance(saved_floating_pool_snap, bool)
+            else True
+        )
         self._sync_layout_segment()
         self._sync_general_toggles()
         self._sync_description_text()
@@ -1731,6 +1813,8 @@ class GeneralSettingsPage(QWidget):
             self._ai_row,
             self._drives_row,
             self._blank_back_row,
+            self._floating_pool_row,
+            self._floating_pool_snap_row,
         ):
             _refresh_settings_item_text(row)
 
@@ -2110,21 +2194,32 @@ class SettingsLayout(QWidget):
         if layout_mode not in ("classic", "workspace"):
             layout_mode = "workspace"
         # 通用页：AI 入口 / 网络盘与光驱 / 空白区右键返回开关
-        #（缺失/非法一律回退 False）。
+        #（缺失/非法一律回退 False）；全局浮窗与贴边吸附默认开启
+        #（缺失/非法回退 True）。
         if isinstance(staged_general, dict):
             ai_entry = staged_general.get("enable_ai_entry", False)
             include_remote = staged_general.get("include_remote_drives", False)
             blank_back = staged_general.get("blank_right_click_go_back", False)
+            floating_pool = staged_general.get("floating_pool_enabled", True)
+            floating_pool_snap = staged_general.get(
+                "floating_pool_snap_enabled", True
+            )
         else:
             ai_entry = False
             include_remote = False
             blank_back = False
+            floating_pool = True
+            floating_pool_snap = True
         if not isinstance(ai_entry, bool):
             ai_entry = False
         if not isinstance(include_remote, bool):
             include_remote = False
         if not isinstance(blank_back, bool):
             blank_back = False
+        if not isinstance(floating_pool, bool):
+            floating_pool = True
+        if not isinstance(floating_pool_snap, bool):
+            floating_pool_snap = True
 
         # 性能档位：只接受三档合法值，缺失/非法回退 balanced（与 V2 合并口径一致）。
         staged_perf = staged.get("performance", {}) if isinstance(staged, dict) else {}
@@ -2178,10 +2273,14 @@ class SettingsLayout(QWidget):
             # 通用页：主界面布局下发（失败仅警告，不阻断整体提交）
             self._apply_staged_layout_mode_to_main_window(layout_mode)
 
-            # 通用页：AI 入口 / 网络盘与光驱 / 空白区右键返回开关下发
-            #（失败仅警告，不阻断提交）
+            # 通用页：AI 入口 / 网络盘与光驱 / 空白区右键返回开关 /
+            # 全局浮窗 / 贴边吸附（失败仅警告，不阻断提交）
             self._apply_staged_general_toggles_to_main_window(
-                ai_entry, include_remote, blank_back
+                ai_entry,
+                include_remote,
+                blank_back,
+                floating_pool,
+                floating_pool_snap,
             )
 
             # 性能档位应用（仅提交路径调用；顺序：定时器档位 → 进程电源策略
@@ -2211,6 +2310,8 @@ class SettingsLayout(QWidget):
             v2.set("general.enable_ai_entry", ai_entry)
             v2.set("general.include_remote_drives", include_remote)
             v2.set("general.blank_right_click_go_back", blank_back)
+            v2.set("general.floating_pool_enabled", floating_pool)
+            v2.set("general.floating_pool_snap_enabled", floating_pool_snap)
             v2.set("performance.profile", perf_profile)
             v2.save()
         except Exception as exc:
@@ -2328,19 +2429,28 @@ class SettingsLayout(QWidget):
             warning(f"界面布局切换失败（{layout_mode}）: {exc}")
 
     def _apply_staged_general_toggles_to_main_window(
-        self, ai_entry: bool, include_remote: bool, blank_back: bool
+        self,
+        ai_entry: bool,
+        include_remote: bool,
+        blank_back: bool,
+        floating_pool: bool,
+        floating_pool_snap: bool,
     ) -> None:
         """将暂存的通用页开关应用到主窗口（仅提交路径调用）。
 
-        三个开关均为即时项：AI 入口控制预览器工具栏按钮与抽屉，
+        五个开关均为即时项：AI 入口控制预览器工具栏按钮与抽屉，
         网络盘/光驱控制文件选择器「All」视图的盘符过滤，空白区右键
-        返回控制文件选择器空白位右键的返回上级行为。失败仅记录
-        warning，不阻断整体提交。
+        返回控制文件选择器空白位右键的返回上级行为，全局浮窗控制
+        桌面浮窗的存在（``set_floating_pool_enabled`` 建/拆窗），贴边
+        吸附控制浮窗拖动靠边时的自动吸附（``set_floating_pool_snap_enabled``）。
+        失败仅记录 warning，不阻断整体提交。
 
         Args:
             ai_entry: 是否启用 AI 入口。
             include_remote: 是否包含网络/映射盘与光驱。
             blank_back: 是否启用空白区右键返回上一级。
+            floating_pool: 是否启用全局存储池浮窗。
+            floating_pool_snap: 是否启用浮窗贴边吸附。
         """
         try:
             mw = self._appearance_page.find_main_window()
@@ -2355,12 +2465,22 @@ class SettingsLayout(QWidget):
             blank_back_setter = getattr(mw, "set_blank_right_click_go_back", None)
             if blank_back_setter is not None:
                 blank_back_setter(blank_back)
+            floating_pool_setter = getattr(mw, "set_floating_pool_enabled", None)
+            if floating_pool_setter is not None:
+                floating_pool_setter(floating_pool)
+            floating_pool_snap_setter = getattr(
+                mw, "set_floating_pool_snap_enabled", None
+            )
+            if floating_pool_snap_setter is not None:
+                floating_pool_snap_setter(floating_pool_snap)
         except Exception as exc:  # noqa: BLE001 - 开关下发失败不阻断提交
             from freeassetfilter.utils.app_logger import warning
 
             warning(
                 "通用功能开关下发失败"
-                f"（AI={ai_entry}, 远程盘={include_remote}, 空白右键返回={blank_back}）: {exc}"
+                f"（AI={ai_entry}, 远程盘={include_remote}, "
+                f"空白右键返回={blank_back}, 全局浮窗={floating_pool}, "
+                f"贴边吸附={floating_pool_snap}）: {exc}"
             )
 
     def _apply_staged_perf_profile(self, profile: str) -> None:

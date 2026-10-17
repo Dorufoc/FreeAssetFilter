@@ -727,6 +727,13 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._previewer = None
         self._info_panel = None
         self._info_card = None
+        # 全局存储池浮窗：实例引用 + 三个信号连接对象。连接对象必须存引用
+        # （供 set_floating_pool_enabled(False) 精确断开——lambda 槽无法按
+        # 方法断连）；唯一创建入口为 _ensure_floating_pool。
+        self._floating_pool = None
+        self._floating_pool_conn_add = None
+        self._floating_pool_conn_remove = None
+        self._floating_pool_conn_pool_changed = None
         # 启动加载覆盖层：内容区唯一加载动画，三栏就绪后淡出
         # （见 _setup_startup_overlay / _dismiss_startup_overlay）
         self._startup_overlay = None
@@ -764,13 +771,18 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 主界面布局模式（general.layout_mode；非法值回退 workspace）
         self._layout_mode = self._load_layout_settings()
         # 通用功能开关（general.enable_ai_entry / general.include_remote_drives /
-        # general.blank_right_click_go_back；非法值一律回退 False，提交时经
+        # general.blank_right_click_go_back / general.floating_pool_enabled /
+        # general.floating_pool_snap_enabled；前三者非法值一律回退 False，
+        # 全局浮窗与贴边吸附非法值回退 True，提交时经
         # set_ai_entry_enabled / set_include_remote_drives /
-        # set_blank_right_click_go_back 即时生效）
+        # set_blank_right_click_go_back / set_floating_pool_enabled /
+        # set_floating_pool_snap_enabled 即时生效）
         (
             self._ai_entry_enabled,
             self._include_remote_drives,
             self._blank_right_click_go_back,
+            self._floating_pool_enabled,
+            self._floating_pool_snap_enabled,
         ) = self._load_general_toggles()
         self._background_mode = background_saved.get("mode", "mica")
         self._background_image_name = background_saved.get("image", "")
@@ -940,21 +952,27 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         return mode if mode in ("classic", "workspace") else "workspace"
 
     @staticmethod
-    def _load_general_toggles() -> tuple[bool, bool, bool]:
+    def _load_general_toggles() -> tuple[bool, bool, bool, bool, bool]:
         """启动时读取通用功能开关。
 
         读取 ``general.enable_ai_entry``（AI 入口）、
-        ``general.include_remote_drives``（网络盘/光驱）与
-        ``general.blank_right_click_go_back``（空白区右键返回上一级）；
-        缺失、类型非法一律回退 False（与 DEFAULT_SETTINGS_V2 默认一致）。
+        ``general.include_remote_drives``（网络盘/光驱）、
+        ``general.blank_right_click_go_back``（空白区右键返回上一级）、
+        ``general.floating_pool_enabled``（全局存储池浮窗）与
+        ``general.floating_pool_snap_enabled``（浮窗贴边吸附）。前三个开关
+        缺失、类型非法一律回退 False；全局浮窗与贴边吸附是 ``general`` 下
+        默认开启的布尔，缺失、类型非法回退 True（与 DEFAULT_SETTINGS_V2
+        默认一致）。
 
         Returns:
-            tuple[bool, bool, bool]: (AI 入口开关, 网络盘与光驱开关,
-            空白区右键返回开关)。
+            tuple[bool, bool, bool, bool, bool]: (AI 入口开关, 网络盘与光驱开关,
+            空白区右键返回开关, 全局浮窗开关, 贴边吸附开关)。
         """
         ai_entry = False
         include_remote = False
         blank_right_click_go_back = False
+        floating_pool = True
+        floating_pool_snap = True
         try:
             app = QApplication.instance()
             v2 = getattr(app, "settings_manager", None)
@@ -967,6 +985,10 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             saved_blank_back = v2.get(
                 "general.blank_right_click_go_back", False
             )
+            saved_floating = v2.get("general.floating_pool_enabled", True)
+            saved_floating_snap = v2.get(
+                "general.floating_pool_snap_enabled", True
+            )
             ai_entry = saved_ai if isinstance(saved_ai, bool) else False
             include_remote = (
                 saved_remote if isinstance(saved_remote, bool) else False
@@ -974,9 +996,23 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             blank_right_click_go_back = (
                 saved_blank_back if isinstance(saved_blank_back, bool) else False
             )
+            floating_pool = (
+                saved_floating if isinstance(saved_floating, bool) else True
+            )
+            floating_pool_snap = (
+                saved_floating_snap
+                if isinstance(saved_floating_snap, bool)
+                else True
+            )
         except Exception as exc:
-            debug(f"读取功能开关设置失败（按默认关闭处理）：{exc}")
-        return ai_entry, include_remote, blank_right_click_go_back
+            debug(f"读取功能开关设置失败（按默认值处理）：{exc}")
+        return (
+            ai_entry,
+            include_remote,
+            blank_right_click_go_back,
+            floating_pool,
+            floating_pool_snap,
+        )
 
     def _setup_window(self) -> None:
         """设置窗口基本属性"""
@@ -1451,9 +1487,106 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             QTimer.singleShot(60, self._finalize_panels)
             return
         QTimer.singleShot(0, self._apply_default_layout)
+        # 全部真实布局已就绪：按需创建全局存储池浮窗（唯一入口，幂等 +
+        # 启用门；与上方恢复调度同为 singleShot(0)，让建窗落在事件循环
+        # 下一拍、不阻塞 finalize 收尾）
+        QTimer.singleShot(0, self._ensure_floating_pool)
         # 全部真实布局已就绪：撤下启动加载覆盖层
         # （后台 FFmpeg/LUT 预热、缓存清理继续在背后跑，不阻塞使用）
         self._dismiss_startup_overlay()
+
+    def _ensure_floating_pool(self) -> None:
+        """按需创建全局存储池浮窗（唯一创建入口；幂等 + 启用门）。
+
+        ``_finalize_panels`` 是重试函数、``set_floating_pool_enabled`` 可被
+        反复调用，故首行守卫保证只创建一次；禁用时（设置关闭）直接跳过。
+        创建前守卫文件池就绪——浮窗的拖入/拖出信号全部桥接到文件池。
+
+        接线（lambda 槽的连接对象一律存引用，供 teardown 精确断开）：
+        ``add_file_requested → file_pool.add_file``、
+        ``remove_file_requested → file_pool.remove_file``、
+        ``file_pool.pool_changed → 浮窗.set_items(file_pool.items)``。
+        随后写 ``_host_window``（拖出落点自窗归属判定依赖）、灌入初始快照
+        （防恢复批在途丢失）、应用贴边吸附意图（``set_snap_enabled``，
+        与启动读取的 ``_floating_pool_snap_enabled`` 一致），最后 ``show()``
+        （启动路径经 helper 也须可见）。
+        """
+        if self._floating_pool is not None or not self._floating_pool_enabled:
+            return
+        if self._file_pool is None:
+            return
+        # 局部导入：浮窗依赖暂存池服务等模块，创建时才加载
+        from freeassetfilter.ui.floating_pool_window import FloatingPoolWindow
+
+        floating = FloatingPoolWindow()
+        self._floating_pool = floating
+        self._floating_pool_conn_add = floating.add_file_requested.connect(
+            self._file_pool.add_file
+        )
+        self._floating_pool_conn_remove = floating.remove_file_requested.connect(
+            self._file_pool.remove_file
+        )
+        self._floating_pool_conn_pool_changed = (
+            self._file_pool.pool_changed.connect(
+                lambda: floating.set_items(self._file_pool.items)
+            )
+        )
+        floating._host_window = self
+        # 初始快照：建窗时池内可能已有条目（恢复批），立即灌入防丢失
+        floating.set_items(self._file_pool.items)
+        # 应用贴边吸附意图（窗口侧 API 由 Todo 8 提供；失败不阻断建窗）
+        try:
+            floating.set_snap_enabled(self._floating_pool_snap_enabled)
+        except Exception as exc:  # noqa: BLE001 - 吸附意图下发失败不阻断建窗
+            warning(f"浮窗贴边吸附意图应用失败: {exc}")
+        floating.show()
+
+    def _teardown_floating_pool(self) -> None:
+        """断开浮窗信号连接、停用定时器、关闭并调度销毁（幂等；``None`` 安全）。
+
+        先断开三个业务连接与浮窗自身的主题连接（``_theme_conn`` 由全局
+        ``tm`` 持有，若不断开会把已弃浮窗经绑定槽引用保活），停掉 ``set_items``
+        防抖定时器（避免销毁后仍触发 ``_rebuild_list``），再 ``close()`` 并
+        ``deleteLater()``，最后清空实例引用与连接记账。
+        """
+        floating = self._floating_pool
+        if floating is None:
+            return
+        for attr in (
+            "_floating_pool_conn_add",
+            "_floating_pool_conn_remove",
+            "_floating_pool_conn_pool_changed",
+        ):
+            conn = getattr(self, attr, None)
+            if conn is not None:
+                # PySide6 的 connect() 返回 QMetaObject.Connection，无实例
+                # .disconnect()；经 QObject.disconnect(connection) 断开
+                try:
+                    QObject.disconnect(conn)
+                except (RuntimeError, TypeError):
+                    pass
+                setattr(self, attr, None)
+        theme_conn = getattr(floating, "_theme_conn", None)
+        if theme_conn is not None:
+            try:
+                QObject.disconnect(theme_conn)
+            except (RuntimeError, TypeError):
+                pass
+        timer = getattr(floating, "_debounce_timer", None)
+        if timer is not None:
+            try:
+                timer.stop()
+            except RuntimeError:
+                pass
+        try:
+            floating.close()
+        except RuntimeError:
+            pass
+        try:
+            floating.deleteLater()
+        except RuntimeError:
+            pass
+        self._floating_pool = None
 
     def _create_title_bar(self, parent_layout: QVBoxLayout) -> None:
         """创建标题栏"""
@@ -2514,6 +2647,14 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             finally:
                 self._settings_window = None
         self._dispose_mica()
+        # 全局浮窗：先于 flush_backup/dispose 关闭。计划契约——closeEvent 只
+        # close 不置 None（置 None 仅限 set_floating_pool_enabled(False) 路径），
+        # 故推导会持有自身引用的测试（断言 isHidden）不被销毁干扰。
+        if self._floating_pool is not None:
+            try:
+                self._floating_pool.close()
+            except RuntimeError:
+                pass
         try:
             if self._file_pool is not None:
                 self._file_pool.flush_backup_save_now()
@@ -2705,6 +2846,42 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                 )
             except Exception as exc:  # noqa: BLE001 - 开关应用失败不抛给调用方
                 warning(f"空白区右键返回开关应用失败: {exc}")
+
+    def set_floating_pool_enabled(self, enabled: bool) -> None:
+        """运行时开关全局存储池浮窗（设置提交路径调用；幂等）。
+
+        开启时经唯一入口 ``_ensure_floating_pool`` 创建（已存在则保留原
+        实例）；关闭时断开信号连接、关闭并释放浮窗。重复调用同一值安全
+        （开启两次不会创建第二个实例，关闭两次也不会抛异常）。
+
+        Args:
+            enabled: True 显示全局浮窗；False 关闭并释放。
+        """
+        self._floating_pool_enabled = bool(enabled)
+        if self._floating_pool_enabled:
+            self._ensure_floating_pool()
+            return
+        self._teardown_floating_pool()
+
+    def set_floating_pool_snap_enabled(self, enabled: bool) -> None:
+        """运行时开关全局浮窗贴边吸附（设置提交路径调用；幂等）。
+
+        始终记录意图 ``_floating_pool_snap_enabled``——建窗路径
+        ``_ensure_floating_pool`` 会按意图初始化（重启/重建后仍一致）；
+        浮窗已存在时同步调用窗口侧 ``set_snap_enabled`` 即时生效（窗口侧
+        API 缺失或失败仅记录 warning，不抛出）。重复调用同一值安全。
+
+        Args:
+            enabled: True 拖动浮窗靠近屏幕边缘时自动吸附；False 仅夹回屏内。
+        """
+        self._floating_pool_snap_enabled = bool(enabled)
+        floating = self._floating_pool
+        if floating is None:
+            return
+        try:
+            floating.set_snap_enabled(self._floating_pool_snap_enabled)
+        except Exception as exc:  # noqa: BLE001 - 吸附开关下发失败不抛给调用方
+            warning(f"浮窗贴边吸附开关应用失败: {exc}")
 
     def set_layout_mode(self, mode: str) -> bool:
         """切换主界面布局模式（运行时重组，叶子组件重新挂载、不销毁重建）。

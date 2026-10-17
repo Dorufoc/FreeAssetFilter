@@ -580,6 +580,16 @@ DEFAULT_SETTINGS_V2: Dict[str, Any] = {
         # 启动时读取，提交时经
         # MainWindow.set_blank_right_click_go_back 即时生效。
         "blank_right_click_go_back": False,
+        # 全局浮窗（设置页「通用」分类，默认开启——general 下第一个
+        # 默认开启的布尔）：在桌面显示可拖入/拖出文件的悬浮窗。
+        # 启动时由 MainWindow._load_general_toggles 读取；提交时经
+        # MainWindow.set_floating_pool_enabled 即时生效。
+        "floating_pool_enabled": True,
+        # 全局浮窗贴边吸附（设置页「通用」分类，默认开启）：浮窗拖动
+        # 靠近屏幕边缘时自动吸附；关闭后仍夹回屏内、仅不吸附。启动时
+        # 由 MainWindow._load_general_toggles 读取；提交时经
+        # MainWindow.set_floating_pool_snap_enabled 即时生效。
+        "floating_pool_snap_enabled": True,
     },
 }
 
@@ -953,7 +963,10 @@ class SettingsManagerV2:
         # general 域合并：layout_mode 只接受 classic/workspace；
         # 旧文件缺键或非法值时保留默认 workspace（不抛异常）。
         # enable_ai_entry / include_remote_drives / blank_right_click_go_back
-        # 为布尔白名单键，非布尔值（含字符串 "true"）一律丢弃、回退默认 False。
+        # 为布尔白名单键，非布尔值（含字符串 "true"）一律丢弃、回退默认 False；
+        # floating_pool_enabled / floating_pool_snap_enabled 同为布尔白名单键，
+        # 回退默认 True——不在此回读会导致用户关闭浮窗/吸附落盘 False 后
+        # 每次加载被静默丢弃（无法跨重启持久化，Oracle B1 回归守卫）。
         if "general" in loaded and isinstance(loaded["general"], dict):
             general_loaded = loaded["general"]
             staged_layout = general_loaded.get("layout_mode", None)
@@ -968,6 +981,18 @@ class SettingsManagerV2:
             staged_blank_back = general_loaded.get("blank_right_click_go_back", None)
             if isinstance(staged_blank_back, bool):
                 merged["general"]["blank_right_click_go_back"] = staged_blank_back
+            staged_floating_pool = general_loaded.get(
+                "floating_pool_enabled", None
+            )
+            if isinstance(staged_floating_pool, bool):
+                merged["general"]["floating_pool_enabled"] = staged_floating_pool
+            staged_floating_pool_snap = general_loaded.get(
+                "floating_pool_snap_enabled", None
+            )
+            if isinstance(staged_floating_pool_snap, bool):
+                merged["general"]["floating_pool_snap_enabled"] = (
+                    staged_floating_pool_snap
+                )
 
         # 保留磁盘上不在默认树中的顶层域（如 app / file_selector /
         # file_staging / video 等运行时数据），避免每次加载/合并写盘时

@@ -15,7 +15,7 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 继承 QAbstractListModel，提供 10 个自定义角色和 O(1) 路径→行号索引。
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from PySide6.QtCore import QAbstractListModel, QModelIndex, QSize, Qt
 from PySide6.QtGui import QPixmap
@@ -100,24 +100,63 @@ class FileListModel(QAbstractListModel):
             file_list: 文件信息字典列表。
         """
         self.beginResetModel()
-        self._files = []
-        for info in file_list:
-            entry: Dict[str, Any] = {
-                "name": info.get("name", ""),
-                "path": info.get("path", ""),
-                "is_dir": info.get("is_dir", False),
-                "size": info.get("size", 0),
-                "modified": info.get("modified", ""),
-                "created": info.get("created", ""),
-                "suffix": info.get("suffix", "").lower(),
-                "is_drive": bool(info.get("is_drive", False)),
-                "usage_ratio": info.get("usage_ratio"),
-                "is_selected": False,
-                "is_previewing": False,
-            }
-            self._files.append(entry)
+        self._files = [self._build_row(info) for info in file_list]
         self._rebuild_path_index()
         self.endResetModel()
+
+    def append_files(self, entries: List[Dict[str, Any]]) -> None:
+        """在列表尾部追加文件条目（增量插入，不重置模型）。
+
+        用于渐进式（流式）目录加载：首帧落地后，后续批次以
+        ``beginInsertRows``/``endInsertRows`` 增量追加，既不丢失已生成
+        的卡片状态，也不触发整表重置带来的闪烁。空列表直接返回。
+
+        Args:
+            entries: 待追加的文件信息字典列表（键与 ``set_files`` 一致）。
+        """
+        if not entries:
+            return
+        first: int = len(self._files)
+        last: int = first + len(entries) - 1
+        self.beginInsertRows(QModelIndex(), first, last)
+        for offset, info in enumerate(entries):
+            entry = self._build_row(info)
+            self._files.append(entry)
+            path = entry.get("path", "")
+            if path:
+                self._path_to_row[path] = first + offset
+        self.endInsertRows()
+
+    def apply_order(self, ordered_paths: List[str]) -> None:
+        """按给定路径顺序就地重排模型（复用现有条目对象，不重建字典）。
+
+        用于流式加载收尾：目录扫描完成、最终排序确定后，把增量追加的
+        条目一次性重排到正确顺序。复用现有字典对象可保留缓存状态
+        （如已生成图标/选中/预览态）；路径顺序与当前一致时直接返回，
+        不发射 ``layoutChanged``。
+
+        Args:
+            ordered_paths: 目标路径顺序；未覆盖的现有条目追加到末尾
+                （防御：路径缺失/重复时不丢数据）。
+        """
+        if not ordered_paths:
+            return
+        by_path: Dict[str, Dict[str, Any]] = {e["path"]: e for e in self._files}
+        new_files: List[Dict[str, Any]] = [
+            by_path[p] for p in ordered_paths if p in by_path
+        ]
+        covered: Set[str] = {e["path"] for e in new_files}
+        for entry in self._files:
+            if entry.get("path", "") not in covered:
+                new_files.append(entry)
+        if [e.get("path", "") for e in new_files] == [
+            e.get("path", "") for e in self._files
+        ]:
+            return
+        self.layoutAboutToBeChanged.emit()
+        self._files = new_files
+        self._rebuild_path_index()
+        self.layoutChanged.emit()
 
     def get_row(self, file_path: str) -> int:
         """获取指定文件路径对应的行号。
@@ -408,6 +447,34 @@ class FileListModel(QAbstractListModel):
         return Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable
 
     # ── 内部方法 ────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _build_row(info: Dict[str, Any]) -> Dict[str, Any]:
+        """从原始条目字典构建模型内部行字典（``set_files``/``append_files`` 共用）。
+
+        统一字段归一化（缺省值、``suffix`` 小写化、``is_drive`` 布尔化，
+        以及 ``is_selected``/``is_previewing`` 的初始 False），保证两条写入
+        路径产出的行结构逐字段一致。
+
+        Args:
+            info: 原始文件信息字典。
+
+        Returns:
+            Dict[str, Any]: 模型内部行字典。
+        """
+        return {
+            "name": info.get("name", ""),
+            "path": info.get("path", ""),
+            "is_dir": info.get("is_dir", False),
+            "size": info.get("size", 0),
+            "modified": info.get("modified", ""),
+            "created": info.get("created", ""),
+            "suffix": info.get("suffix", "").lower(),
+            "is_drive": bool(info.get("is_drive", False)),
+            "usage_ratio": info.get("usage_ratio"),
+            "is_selected": False,
+            "is_previewing": False,
+        }
 
     def _rebuild_path_index(self) -> None:
         """重建路径→行号索引，实现 O(1) 查找。"""

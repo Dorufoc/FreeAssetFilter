@@ -2214,6 +2214,13 @@ class FilePoolLayout(QWidget):
     def dropEvent(self, event: QDropEvent) -> None:
         """处理从外部拖入的文件/文件夹。"""
         self._set_drag_feedback(False)
+        # 全局浮窗条目拖出携带自定义判别 MIME；其落点语义由浮窗
+        # 自身判定（拖回主池 = 取消），主池绝不能把它当作外部拖入重复入池。
+        from freeassetfilter.ui.floating_pool_window import FLOATING_DRAG_MIME
+
+        if event.mimeData().hasFormat(FLOATING_DRAG_MIME):
+            event.ignore()
+            return
         if not event.mimeData().hasUrls():
             return
         urls = event.mimeData().urls()

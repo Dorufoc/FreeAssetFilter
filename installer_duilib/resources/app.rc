@@ -1,16 +1,56 @@
 #include <windows.h>
+
+// App/installer window icon (RT_GROUP_ICON). NOTE: winuser.h defines IDI_APPLICATION,
+// never IDI_APP - an undefined IDI_APP makes RC emit a *string-named* resource, which
+// LoadIconW(instance, MAKEINTRESOURCEW(<n>)) can never fetch. IDI_APP is therefore an
+// EXPLICIT NUMERIC id, kept in sync with installer_window.cpp (CreateAppWindow, wc.hIcon).
+// Free value 100 (1 = VERSIONINFO; 101/102/103 = IDR_LOGO/IDR_LICENSE/IDR_FAFVERSION).
+// Append-only per §13: existing resource ids are never renumbered.
+#ifndef IDI_APP
+#define IDI_APP 100
+#endif
 IDI_APP ICON "..\\..\\freeassetfilter\\icons\\FAF-setup.ico"
+
+// Numeric version = 1,0,0,5 (§7). String versions come from FAFVERSION (§18) =
+// "1.0.0-alpha.5" (leading 'v' stripped) - keep in sync with installer.nsi VI* keys.
 1 VERSIONINFO
-FILEVERSION 1,0,0,0
-PRODUCTVERSION 1,0,0,0
+FILEVERSION 1,0,0,5
+PRODUCTVERSION 1,0,0,5
 BEGIN
   BLOCK "StringFileInfo"
   BEGIN
     BLOCK "040904B0"
     BEGIN
+      VALUE "CompanyName", "Dorufoc & renmoren"
       VALUE "FileDescription", "FreeAssetFilter Installer"
-      VALUE "ProductName", "FreeAssetFilter"
       VALUE "FileVersion", "1.0.0-alpha.5"
+      VALUE "ProductName", "FreeAssetFilter"
+      VALUE "ProductVersion", "1.0.0-alpha.5"
+      VALUE "LegalCopyright", "Copyright (c) 2026 Dorufoc & renmoren"
     END
   END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0409, 1200
+  END
 END
+
+// Brand logo used by the D2D render layer (src/render/logo.h). Append-only per §13;
+// never renumber existing resource ids. IDR_LOGO value must match logo.h.
+#ifndef IDR_LOGO
+#define IDR_LOGO 101
+#endif
+IDR_LOGO RCDATA "..\\..\\freeassetfilter\\icons\\FAF-setup.png"
+
+// License full text + version string, consumed by the welcome/license pages
+// (src/render/pages_welcome.cpp, Todo 9). RCDATA points directly at the repo-root
+// files - no copies. Append-only per §13; existing ids (IDI_APP=100, IDR_LOGO=101,
+// `1 VERSIONINFO`) are never renumbered. Values must match pages_welcome.h.
+#ifndef IDR_LICENSE
+#define IDR_LICENSE 102
+#endif
+#ifndef IDR_FAFVERSION
+#define IDR_FAFVERSION 103
+#endif
+IDR_LICENSE RCDATA "..\\..\\LICENSE"
+IDR_FAFVERSION RCDATA "..\\..\\FAFVERSION"

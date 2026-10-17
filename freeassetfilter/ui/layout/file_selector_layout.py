@@ -7,9 +7,10 @@ import os
 import re
 import shutil
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QListView, QLabel, QAbstractItemView, QApplication, QListWidget, QListWidgetItem
 from PySide6.QtCore import Qt, Signal, QSize, QTimer, QEvent, QMargins, QObject, QPoint, QRect, QRunnable, QThreadPool
@@ -157,6 +158,65 @@ class _DirectoryCollectRunnable(QRunnable):
             pass
 
 
+class _DirectoryStreamRunnable(QRunnable):
+    """流式目录扫描任务（QRunnable 投 ``QThreadPool``）。
+
+    渐进式加载：后台线程逐批扫描目录，每批经 ``_dir_batch_ready`` 信号回主
+    线程应用（首帧立即跳转，后续增量追加）。世代 token 兼作取消检查——过期
+    请求在下一次迭代顶部尽快退出（``with os.scandir`` 保证句柄关闭）。与
+    ``_DirectoryCollectRunnable`` 不同：本任务按批回报，且"未应用任何批即
+    失败"与"已应用若干批后失败"由主线程槽侧区分（后者不回溯回滚）。
+
+    Args:
+        owner: 所属 FileSelectorLayout（扫描器与信号发射经由它）。
+        path: 待扫描目录路径（或 ``"All"`` 磁盘视图）。
+        token: 异步加载世代快照，过期批次由槽侧丢弃。
+        include_remote: 网络/映射盘与光驱开关快照（UI 线程派发时捕获，避免
+            后台线程读取可变实例状态）。
+    """
+
+    def __init__(
+        self,
+        owner: "FileSelectorLayout",
+        path: str,
+        token: int,
+        include_remote: bool = False,
+    ) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._owner = owner
+        self._path = path
+        self._token = token
+        self._include_remote = bool(include_remote)
+
+    def run(self) -> None:
+        def cancel() -> bool:
+            """世代 token 过期检查（不在后台线程读 UI 状态）。"""
+            return self._owner._async_load_token != self._token
+
+        try:
+            for batch, is_final in self._owner._iter_directory_batches(
+                self._path, self._include_remote, cancel
+            ):
+                if cancel():
+                    return
+                try:
+                    self._owner._dir_batch_ready.emit(
+                        self._path, batch, self._token, is_final
+                    )
+                except RuntimeError:
+                    # 宿主已销毁：丢弃结果即可
+                    return
+                if is_final:
+                    return
+        except Exception as exc:  # noqa: BLE001  # 后台任务兜底：打开目录失败按零批错误上报
+            debug(f"目录流式扫描异常（{self._path}）: {exc}")
+            try:
+                self._owner._dir_batch_ready.emit(self._path, None, self._token, True)
+            except RuntimeError:
+                pass
+
+
 class FileSelectorLayout(QWidget):
     """文件选择器布局（左侧栏）"""
 
@@ -168,6 +228,9 @@ class FileSelectorLayout(QWidget):
     remove_files_from_pool_requested = Signal(list)  # 框选全部已在池时批量移出储存池（file_info 列表）
     # 异步目录加载：后台线程收集完成后发射（path, entries 或 None, token）
     _dir_entries_ready = Signal(str, object, int)
+    # 流式目录加载：后台线程分批发射（path, batch 或 None, token, is_final）。
+    # entries 为 None 且 is_final=True 表示"零批错误"（打开目录即失败）。
+    _dir_batch_ready = Signal(str, object, int, bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -313,6 +376,14 @@ class FileSelectorLayout(QWidget):
         # 异步目录加载：递增 token 丢弃过期结果（快速连续导航场景）
         self._async_load_token: int = 0
         self._dir_entries_ready.connect(self._on_dir_entries_ready)
+        self._dir_batch_ready.connect(self._on_dir_batch_ready)
+        # 流式加载状态：_stream_active_token 为在途流式请求的 token（-1=无）；
+        # _stream_started_token 为首批已应用落地的 token（-1=无），用于区分
+        # "零批错误"（回滚）与"已应用若干批后错误"（保留部分结果）；"All"
+        # 视图载荷另存，避免污染目录 raw 缓存。
+        self._stream_active_token: int = -1
+        self._stream_started_token: int = -1
+        self._stream_all_entries: List[Dict[str, Any]] = []
         # 异步加载应用状态：本次请求的过渡方向（0=无动画）/初始加载标记/
         # 历史回滚标记（显式导航失败时回滚已压入的历史栈；刷新/返回不回滚）
         self._pending_transition_direction: int = 0
@@ -650,7 +721,7 @@ class FileSelectorLayout(QWidget):
         direction = self._infer_navigation_direction(self._current_path, "All")
         started = direction != 0 and self._file_list.begin_path_transition(direction)
         self._load_directory_async("All", direction if started else 0)
-        # 注：盘符过滤开关由 _load_directory_async → _DirectoryCollectRunnable
+        # 注：盘符过滤开关由 _load_directory_async → _DirectoryStreamRunnable
         # 在派发时快照 self._include_remote_drives，线程内不读实例状态。
         self._current_path = "All"
         self._update_path_input("All")
@@ -928,11 +999,38 @@ class FileSelectorLayout(QWidget):
         return FileSelectorLayout._collect_directory_entries_python(path, cancel_check)
 
     @staticmethod
+    def _entry_from_direntry(entry: "os.DirEntry") -> Dict[str, Any]:
+        """把 ``os.DirEntry`` 归一化为 7 键条目字典。
+
+        ``_collect_directory_entries_python``（同步/回退路径）与
+        ``_iter_directory_batches``（流式路径）共用，保证两条路径的字段
+        值与格式完全相同（``follow_symlinks=True`` 与 ``os.path.isdir``
+        口径一致，目录的 ``suffix`` 恒为空串）。
+
+        Args:
+            entry: ``os.scandir`` 产出的目录项。
+
+        Returns:
+            Dict[str, Any]: 7 键条目字典（name/path/is_dir/size/modified/
+                created/suffix）。
+        """
+        st = entry.stat(follow_symlinks=True)
+        is_dir = entry.is_dir(follow_symlinks=True)
+        name = entry.name
+        suffix = os.path.splitext(name)[1].lower().lstrip(".") if not is_dir else ""
+        modified = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
+        created = datetime.fromtimestamp(st.st_ctime).strftime("%Y-%m-%d %H:%M")
+        return {
+            "name": name, "path": entry.path, "is_dir": is_dir,
+            "size": st.st_size, "modified": modified, "created": created, "suffix": suffix,
+        }
+
+    @staticmethod
     def _collect_directory_entries_python(
         path: str,
         cancel_check=None,
     ) -> Optional[List[Dict[str, Any]]]:
-        """既有 Python 收集实现（listdir + 逐文件 stat），native 回退路径。
+        """既有 Python 收集实现（scandir + 逐文件 stat），native 回退路径。
 
         Args:
             path: 待收集目录路径。
@@ -945,25 +1043,70 @@ class FileSelectorLayout(QWidget):
         """
         try:
             entries: List[Dict[str, Any]] = []
-            for name in os.listdir(path):
-                if cancel_check is not None and cancel_check():
-                    return None
-                full_path = os.path.join(path, name)
-                try:
-                    st = os.stat(full_path)
-                    is_dir = os.path.isdir(full_path)
-                    suffix = os.path.splitext(name)[1].lower().lstrip(".") if not is_dir else ""
-                    modified = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
-                    created = datetime.fromtimestamp(st.st_ctime).strftime("%Y-%m-%d %H:%M")
-                    entries.append({
-                        "name": name, "path": full_path, "is_dir": is_dir,
-                        "size": st.st_size, "modified": modified, "created": created, "suffix": suffix,
-                    })
-                except (PermissionError, OSError):
-                    continue
+            with os.scandir(path) as it:
+                for direntry in it:
+                    if cancel_check is not None and cancel_check():
+                        return None
+                    try:
+                        entries.append(
+                            FileSelectorLayout._entry_from_direntry(direntry)
+                        )
+                    except (PermissionError, OSError):
+                        continue
             return entries
         except (PermissionError, FileNotFoundError, OSError):
             return None
+
+    @staticmethod
+    def _iter_directory_batches(
+        path: str,
+        include_remote: bool,
+        cancel_check: Callable[[], bool],
+        batch_size: int = 64,
+        batch_interval_s: float = 0.04,
+    ) -> Iterator[Tuple[List[Dict[str, Any]], bool]]:
+        """渐进式目录扫描生成器：逐批 ``yield (batch, is_final)``。
+
+        纯 IO：不读取任何 Qt/UI 状态，可在后台线程运行。``"All"`` 视图一次
+        枚举全部盘符并单批发完（``os.scandir`` 不适用于盘符视图）。普通目录
+        以 ``os.scandir`` 迭代，批满 ``batch_size`` 或距上次发射超过
+        ``batch_interval_s`` 即发一批；无论如何收尾必发 ``(batch, True)``
+        （空目录的唯一发射即 ``([], True)``）。每次迭代顶部检查
+        ``cancel_check()``，为 True 立即 ``return``（``with`` 关闭句柄）。
+        打开目录失败（权限/不存在）时异常向上抛出（零批），由调用方转成
+        错误信号。
+
+        Args:
+            path: 待扫描目录路径；``"All"`` 表示磁盘视图。
+            include_remote: ``"All"`` 视图的网络/映射盘与光驱开关；其他
+                路径忽略。
+            cancel_check: 取消检查回调（返回 True 表示请求已过期）。
+            batch_size: 单批最大条目数。
+            batch_interval_s: 单批最长等待秒数（与 ``batch_size`` 先到为准）。
+
+        Yields:
+            Tuple[List[Dict[str, Any]], bool]: 一批条目与该批是否为最后一批。
+        """
+        if path == "All":
+            entries = FileSelectorLayout._collect_all_drives_python(include_remote)
+            yield (entries, True)
+            return
+        batch: List[Dict[str, Any]] = []
+        last_emit: float = time.monotonic()
+        with os.scandir(path) as it:
+            for direntry in it:
+                if cancel_check():
+                    return
+                try:
+                    batch.append(FileSelectorLayout._entry_from_direntry(direntry))
+                except OSError:
+                    continue
+                now = time.monotonic()
+                if len(batch) >= batch_size or (now - last_emit) >= batch_interval_s:
+                    yield (batch, False)
+                    batch = []
+                    last_emit = now
+        yield (batch, True)
 
     def _load_directory(self, path: str) -> None:
         """同步加载目录（收集 + 应用），行为与旧实现逐字节等价。
@@ -1045,13 +1188,16 @@ class FileSelectorLayout(QWidget):
         initial: bool = False,
         rollback_history: bool = False,
     ) -> None:
-        """异步加载目录：后台线程收集条目，完成后回主线程应用。
+        """异步加载目录（流式）：后台线程分批扫描，首帧即跳转、增量追加。
 
         所有交互式导航（进入子目录/返回/刷新/路径框/收藏夹/定位）与启动
         首次加载统一走本入口：请求即返回，UI 线程零文件 IO。递增 token
-        保证快速连续导航只应用最后一次请求的结果；过期任务在 Python 回退
-        扫描中经 ``cancel_check`` 尽早退出（native 扫描无法中途取消，但
-        仍在后台线程执行，不阻塞 UI）。
+        保证快速连续导航只应用最后一次请求的结果；过期任务在扫描迭代中经
+        ``cancel_check`` 立即退出（``os.scandir`` 句柄随 ``with`` 关闭）。
+        计数标签立即切到「加载中… N」，但**不显示**压暗遮罩（遮罩会盖住
+        正在到达的卡片）；遮罩延迟计时器仍启动，由首批落地（
+        ``_apply_first_batch``）取消，故生产环境慢目录首帧前偶尔一闪、
+        首帧到达即撤下。
 
         Args:
             path: 待加载目录路径，或 ``"All"`` 磁盘视图。
@@ -1067,13 +1213,145 @@ class FileSelectorLayout(QWidget):
         self._pending_initial_load = initial
         self._pending_history_rollback = rollback_history
         self._pending_locate_path = ""
+        self._stream_active_token = token
         self._update_path_input(path)
+        self._set_count_loading(0)
         self._start_loading_indicator()
         QThreadPool.globalInstance().start(
-            _DirectoryCollectRunnable(
+            _DirectoryStreamRunnable(
                 self, path, token, self._include_remote_drives
             )
         )
+
+    def _on_dir_batch_ready(
+        self,
+        path: str,
+        entries: Optional[List[Dict[str, Any]]],
+        token: int,
+        is_final: bool,
+    ) -> None:
+        """流式批次落地槽（主线程）：过期批次丢弃，首帧跳转、后续增量追加。
+
+        ``entries is None`` 且为首批表示"零批错误"（打开目录即失败）→ 保留
+        旧视图并回滚；首批之后的错误以 ``(None, True)`` 到达，走收尾分支
+        保留已落地的部分结果（不回溯）。
+
+        Args:
+            path: 批次所属目录路径。
+            entries: 本批条目；``None`` 表示零批错误。
+            token: 异步加载世代 token。
+            is_final: 本批是否为最后一批。
+        """
+        if token != self._async_load_token:
+            return
+        first = self._stream_started_token != token
+
+        if first and entries is None:
+            self._abort_stream_keep_old(path, token)
+            return
+
+        if first:
+            self._stream_started_token = token
+            self._apply_first_batch(path, entries or [])
+        elif entries and path != "All":
+            self._raw_entries.extend(entries)
+            display = [e for e in entries if self._matches_filter(e["name"])]
+            if display:
+                self._file_model.append_files(display)
+            self._set_count_loading(self._file_model.rowCount())
+
+        if is_final:
+            self._finalize_stream(path, token)
+
+    def _apply_first_batch(self, path: str, batch: List[Dict[str, Any]]) -> None:
+        """应用首批：立即跳转到目标目录（重置 pending 标记、撤下遮罩）。
+
+        Args:
+            path: 目标目录路径或 ``"All"``。
+            batch: 首批条目。
+        """
+        direction = self._pending_transition_direction
+        self._pending_transition_direction = 0
+        self._pending_initial_load = False
+        self._pending_history_rollback = False
+        self._stop_loading_indicator()
+        if path == "All":
+            self._stream_all_entries = list(batch)
+            self._apply_all_entries(batch)
+        else:
+            self._current_path = path
+            self._raw_entries = list(batch)
+            self._raw_entries_path = path
+            display = [e for e in batch if self._matches_filter(e["name"])]
+            self._file_model.set_files(display)
+            self._update_grid_size()
+            self._update_path_input(path)
+            self._set_count_loading(len(display))
+        if direction != 0:
+            self._file_list.finish_path_transition(direction)
+
+    def _finalize_stream(self, path: str, token: int) -> None:
+        """流式收尾：停用流式态、内存重排到最终序、恢复计数、补挂定位。
+
+        Args:
+            path: 完成的目录路径或 ``"All"``。
+            token: 异步加载世代 token。
+        """
+        if self._stream_active_token != token:
+            return
+        self._stream_active_token = -1
+        self._stop_loading_indicator()
+        if path == "All":
+            final_n = self._file_model.rowCount()
+        else:
+            settled = self._sorted_filtered_raw()
+            settled_paths = [e["path"] for e in settled]
+            model = self._file_model
+            consistent = (
+                model.rowCount() == len(settled_paths)
+                and all(model.get_row(p) >= 0 for p in settled_paths)
+            )
+            if consistent:
+                model.apply_order(settled_paths)
+            else:
+                # 流式期间筛选条件变更过：增量追加的成员集与最终集合不一致，
+                # 需整表重建到最终集合（apply_order 只重排不删减）。
+                model.set_files(settled)
+            self._update_grid_size()
+            final_n = len(settled)
+        self._update_file_count(final_n)
+        if self._pending_locate_path:
+            self._handle_pending_locate()
+        legacy_entries = (
+            self._stream_all_entries if path == "All" else list(self._raw_entries)
+        )
+        self._dir_entries_ready.emit(path, legacy_entries, token)
+
+    def _abort_stream_keep_old(self, path: str, token: int) -> None:
+        """零批错误：保留旧视图，取消过渡，按需回退历史/回退到 All。
+
+        Args:
+            path: 加载失败的目标路径。
+            token: 异步加载世代 token。
+        """
+        self._stream_active_token = -1
+        self._stream_started_token = token
+        self._stop_loading_indicator()
+        initial = self._pending_initial_load
+        rollback_history = self._pending_history_rollback
+        self._pending_transition_direction = 0
+        self._pending_initial_load = False
+        self._pending_history_rollback = False
+        self._pending_locate_path = ""
+        self._file_list.cancel_path_transition()
+        self._update_file_count(self._file_model.rowCount())
+        if initial:
+            debug(f"启动恢复路径不可读，回退到 All 视图: {path}")
+            self._navigate_to_all()
+            return
+        if rollback_history:
+            self._rollback_failed_navigation(path)
+        debug(f"目录加载失败，保留当前视图: {path}")
 
     def _on_dir_entries_ready(
         self, path: str, entries: Optional[List[Dict[str, Any]]], token: int
@@ -1083,9 +1361,12 @@ class FileSelectorLayout(QWidget):
         成功：应用条目（All 视图走 ``_apply_all_entries``）→ 播放挂起的
         路径过渡动画 → 处理挂起定位请求；失败：取消过渡、保留当前目录
         视图（回滚路径框/历史/last_path），启动首次加载失败则回退到
-        All 视图。
+        All 视图。流式管线已应用过的 token（``_stream_started_token`` 命中）
+        在此直接返回——该信号在流式路径中仅作向后兼容广播。
         """
         if token != self._async_load_token:
+            return
+        if self._stream_started_token == token:
             return
         direction = self._pending_transition_direction
         initial = self._pending_initial_load
@@ -1189,6 +1470,36 @@ class FileSelectorLayout(QWidget):
         self._apply_sort(entries)
         return entries
 
+    def _filter_entries(
+        self, entries: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """按当前筛选正则过滤条目（无正则时返回浅拷贝）。
+
+        ``_apply_entries_in_memory`` 与流式收尾（``_finalize_stream``）共用，
+        保证两条路径的筛选口径一致。
+
+        Args:
+            entries: 7 键条目列表。
+
+        Returns:
+            List[Dict[str, Any]]: 过滤后的条目列表（新列表，元素为原对象）。
+        """
+        if not self._filter_pattern:
+            return list(entries)
+        return [e for e in entries if self._matches_filter(e["name"])]
+
+    def _sorted_filtered_raw(self) -> List[Dict[str, Any]]:
+        """从 raw 缓存计算最终展示序（筛选 + 排序），不写模型。
+
+        与 ``_apply_entries_in_memory`` 的管线一致：复制原始条目 → 筛选 →
+        内存排序（native ``faf_sort_entries`` 优先，否则 ``_apply_sort``）。
+
+        Returns:
+            List[Dict[str, Any]]: 最终展示顺序的条目列表。
+        """
+        entries = self._filter_entries([dict(e) for e in self._raw_entries])
+        return self._sort_entries(entries)
+
     def _apply_entries_in_memory(self) -> None:
         """从 raw 缓存内存重排（筛选 + 排序）并更新 model/网格/计数，不重扫磁盘。
 
@@ -1197,10 +1508,7 @@ class FileSelectorLayout(QWidget):
         （native ``faf_sort_entries`` 优先，否则 ``_apply_sort``）。仅在
         ``_raw_entries_path == _current_path`` 且非 "All" 时调用。
         """
-        entries = [dict(e) for e in self._raw_entries]
-        if self._filter_pattern:
-            entries = [e for e in entries if self._matches_filter(e["name"])]
-        sorted_entries = self._sort_entries(entries)
+        sorted_entries = self._sorted_filtered_raw()
         file_list = self._file_list
         file_list.setUpdatesEnabled(False)
         try:
@@ -1216,8 +1524,11 @@ class FileSelectorLayout(QWidget):
 
         仅当 ``_current_path`` 非空非 "All" 且缓存与当前路径绑定一致时走
         内存重排；"All" 视图（``_load_all`` 不写 raw 缓存）与缓存缺失场景
-        保持既有重扫行为（刷新语义）。
+        保持既有重扫行为（刷新语义）。流式加载进行中时直接返回——调用方已
+        更新 ``_filter_pattern``，收尾时按最新正则重derive 最终集合。
         """
+        if self._stream_active_token == self._async_load_token:
+            return
         if (
             self._current_path
             and self._current_path != "All"
@@ -2047,8 +2358,18 @@ class FileSelectorLayout(QWidget):
         self._path_input.setText(path)
 
     def _update_file_count(self, count: int) -> None:
+        """落地态计数标签：正常配色 + 数值。"""
         self._file_count_label.setText(f"{count} 个条目")
         register_widget_qss(self._file_count_label,(self._count_label_style()))
+
+    def _set_count_loading(self, n: int) -> None:
+        """加载态计数标签：显示「加载中… N」（N=已落地条目数），配色用 hint 色。
+
+        Args:
+            n: 已落地（筛选后展示）的条目数。
+        """
+        self._file_count_label.setText(f"加载中… {n}")
+        register_widget_qss(self._file_count_label, self._count_label_loading_style())
 
     @staticmethod
     def _count_label_style() -> str:
@@ -2058,9 +2379,22 @@ class FileSelectorLayout(QWidget):
             f"color: {tm.qss_color(tm.text_secondary)}; font-size: 11px;"
         )
 
+    @staticmethod
+    def _count_label_loading_style() -> str:
+        """加载态计数标签样式（hint 色，比落地态更弱，随主题现取）。"""
+        return (
+            "background: transparent; border: none;"
+            f"color: {tm.qss_color(tm.text_hint)}; font-size: 11px;"
+        )
+
     def _on_theme_changed(self, _theme: str) -> None:
-        """主题切换：刷新计数标签配色（面板边框/填充由 MainWindow 统一下放）。"""
-        register_widget_qss(self._file_count_label, (self._count_label_style()))
+        """主题切换：按流式是否在途刷新计数标签配色（面板边框/填充由 MainWindow 统一下放）。"""
+        if self._stream_active_token == self._async_load_token:
+            register_widget_qss(
+                self._file_count_label, self._count_label_loading_style()
+            )
+        else:
+            register_widget_qss(self._file_count_label, self._count_label_style())
 
     # ── 滚动条同步 ────────────────────────────────────────────────────────
 
@@ -2475,6 +2809,9 @@ class FileSelectorLayout(QWidget):
         self._sort_mode = mode
         self._sort_btn.setToolTip(f"排序: {self.SORT_MODE_NAMES[mode]}")
         if not self._current_path:
+            return
+        if self._stream_active_token == self._async_load_token:
+            # 流式加载进行中：仅更新模式，收尾时按新模式重排最终集合。
             return
         if self._current_path != "All" and self._raw_entries_path == self._current_path:
             self._apply_entries_in_memory()

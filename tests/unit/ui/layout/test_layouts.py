@@ -4753,6 +4753,361 @@ class TestGeneralSettingsPage:
                 pass  # teardown 还原主题失败：忽略，避免影响断言
             safe_teardown(layout)
 
+    def test_floating_pool_toggle_writes_staging_only(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """全局浮窗开关：只写暂存缓存；不触碰 tm / 主窗口（暂存铁律）。"""
+        import freeassetfilter.ui.layout.settings_layout as sl_mod
+
+        cache = self._make_cache("workspace")
+        page = GeneralSettingsPage(staging_cache=cache)
+
+        tm_mock = MagicMock()
+        monkeypatch.setattr(sl_mod, "tm", tm_mock)
+        main_window_lookups: list[int] = []
+        monkeypatch.setattr(
+            sl_mod.AppearanceSettingsPage,
+            "find_main_window",
+            lambda self: main_window_lookups.append(1),
+        )
+
+        page._on_floating_pool_toggled(True)
+        assert page._floating_pool_enabled is True
+        assert cache.get("general.floating_pool_enabled") is True
+
+        page._on_floating_pool_toggled(False)
+        assert page._floating_pool_enabled is False
+        assert cache.get("general.floating_pool_enabled") is False
+
+        assert tm_mock.mock_calls == [], "暂存写入不得触碰 tm"
+        assert main_window_lookups == [], "暂存写入不得触碰主窗口"
+        safe_teardown(page)
+
+    def test_refresh_from_staging_restores_floating_pool(
+        self, qapp: QApplication,
+    ) -> None:
+        """refresh_from_staging：回读浮窗开关（缺键默认 True、非法回退 True）。"""
+        cache = self._make_cache("workspace")  # 该快照不含 floating_pool_enabled
+        page = GeneralSettingsPage(staging_cache=cache)
+        assert page._floating_pool_enabled is True
+
+        cache.set("general.floating_pool_enabled", False)
+        page.refresh_from_staging()
+        assert page._floating_pool_enabled is False
+
+        cache.set("general.floating_pool_enabled", "yes")
+        page.refresh_from_staging()
+        assert page._floating_pool_enabled is True
+        safe_teardown(page)
+
+    def test_refresh_from_staging_applies_floating_pool_to_widget(
+        self, qapp: QApplication,
+    ) -> None:
+        """控件挂载后刷新把暂存状态写入真实开关（缺键默认 True、非法回退 True）。"""
+        cache = self._make_cache("workspace")  # 快照不含 floating_pool_enabled
+        page = GeneralSettingsPage(staging_cache=cache)
+        assert page._floating_pool_toggle is not None
+        assert page._floating_pool_toggle.checked is True
+
+        cache.set("general.floating_pool_enabled", False)
+        page.refresh_from_staging()
+        assert page._floating_pool_toggle.checked is False
+
+        cache.set("general.floating_pool_enabled", "yes")
+        page.refresh_from_staging()
+        assert page._floating_pool_toggle.checked is True
+        safe_teardown(page)
+
+    def test_floating_pool_row_built_and_in_refresh_theme(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """行控件已构建且列入 refresh_theme 迭代元组（Oracle round-7 观察 4）。"""
+        import freeassetfilter.ui.layout.settings_layout as sl_mod
+
+        page = GeneralSettingsPage(staging_cache=self._make_cache("workspace"))
+        assert page._floating_pool_row is not None
+        assert (
+            page._floating_pool_row.desc_label.text()
+            == "在桌面显示可拖入/拖出文件的悬浮窗"
+        )
+        assert page._floating_pool_toggle is not None
+
+        refreshed: list = []
+        monkeypatch.setattr(
+            sl_mod,
+            "_refresh_settings_item_text",
+            lambda item: refreshed.append(item),
+        )
+        page.refresh_theme()
+
+        assert page._floating_pool_row in refreshed, (
+            "refresh_theme 迭代元组未包含全局浮窗行"
+        )
+        safe_teardown(page)
+
+    def test_floating_pool_toggle_widget_writes_staging(
+        self, qapp: QApplication,
+    ) -> None:
+        """点击真实开关控件 → toggled 接线写暂存（不落盘、不触碰主窗口）。"""
+        cache = self._make_cache("workspace")
+        page = GeneralSettingsPage(staging_cache=cache)
+        assert page._floating_pool_toggle is not None
+        assert page._floating_pool_toggle.checked is True
+
+        page._floating_pool_toggle.checked = False
+        qapp.processEvents()
+
+        assert page._floating_pool_enabled is False
+        assert cache.get("general.floating_pool_enabled") is False
+        safe_teardown(page)
+
+    def test_apply_staged_general_toggles_five_args(self) -> None:
+        """``_apply_staged_general_toggles_to_main_window`` 五参签名覆盖浮窗吸附。"""
+        import freeassetfilter.ui.layout.settings_layout as sl_mod
+
+        class _FakeMainWindow:
+            """记录五路开关下发的假主窗口。"""
+
+            def __init__(self) -> None:
+                self.ai_calls: list[bool] = []
+                self.drives_calls: list[bool] = []
+                self.blank_back_calls: list[bool] = []
+                self.floating_calls: list[bool] = []
+                self.floating_snap_calls: list[bool] = []
+
+            def set_ai_entry_enabled(self, enabled: bool) -> None:
+                self.ai_calls.append(bool(enabled))
+
+            def set_include_remote_drives(self, enabled: bool) -> None:
+                self.drives_calls.append(bool(enabled))
+
+            def set_blank_right_click_go_back(self, enabled: bool) -> None:
+                self.blank_back_calls.append(bool(enabled))
+
+            def set_floating_pool_enabled(self, enabled: bool) -> None:
+                self.floating_calls.append(bool(enabled))
+
+            def set_floating_pool_snap_enabled(self, enabled: bool) -> None:
+                self.floating_snap_calls.append(bool(enabled))
+
+        fake_mw = _FakeMainWindow()
+        shim = SimpleNamespace(
+            _appearance_page=SimpleNamespace(find_main_window=lambda: fake_mw)
+        )
+        sl_mod.SettingsLayout._apply_staged_general_toggles_to_main_window(
+            shim, True, False, True, False, True
+        )
+        assert fake_mw.ai_calls == [True]
+        assert fake_mw.drives_calls == [False]
+        assert fake_mw.blank_back_calls == [True]
+        assert fake_mw.floating_calls == [False]
+        assert fake_mw.floating_snap_calls == [True]
+
+    def test_submit_routes_floating_pool_toggle_to_main_window(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """提交：浮窗开关下发主窗口（暂存期不下发）并将 False 落盘 V2。"""
+        import freeassetfilter.ui.layout.settings_layout as sl_mod
+        from freeassetfilter.core.managers.settings_manager_v2 import (
+            SettingsManagerV2,
+        )
+
+        tmp_file = str(tmp_path / "settings_v2.json")
+        monkeypatch.setattr(
+            sl_mod, "SettingsManagerV2", lambda *a, **k: SettingsManagerV2(tmp_file)
+        )
+        monkeypatch.setattr(
+            sl_mod.SettingsLayout,
+            "_apply_staged_perf_profile",
+            lambda self, profile: None,
+        )
+
+        class _FakeMainWindow:
+            """记录浮窗开关下发的假主窗口。"""
+
+            def __init__(self) -> None:
+                self.floating_calls: list[bool] = []
+
+            def set_floating_pool_enabled(self, enabled: bool) -> None:
+                self.floating_calls.append(bool(enabled))
+
+        fake_mw = _FakeMainWindow()
+        monkeypatch.setattr(
+            sl_mod.AppearanceSettingsPage, "find_main_window", lambda self: fake_mw
+        )
+
+        from theme import tm
+
+        prev_mode = tm.get_theme_mode()
+        layout = SettingsLayout()
+        try:
+            layout._general_page._on_floating_pool_toggled(False)
+            qapp.processEvents()
+            assert fake_mw.floating_calls == [], "暂存期不得下发主窗口"
+
+            assert layout._submit_settings() is True
+            assert fake_mw.floating_calls == [False]
+
+            saved = SettingsManagerV2(tmp_file)
+            saved.load()
+            assert saved.get("general.floating_pool_enabled") is False
+        finally:
+            try:
+                tm.set_theme_mode(prev_mode)
+            except Exception:
+                pass  # teardown 还原主题失败：忽略，避免影响断言
+            safe_teardown(layout)
+
+    def test_floating_pool_snap_toggle_writes_staging_only(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """贴边吸附开关：只写暂存缓存；不触碰 tm / 主窗口（暂存铁律）。"""
+        import freeassetfilter.ui.layout.settings_layout as sl_mod
+
+        cache = self._make_cache("workspace")  # 快照不含 floating_pool_snap_enabled
+        page = GeneralSettingsPage(staging_cache=cache)
+
+        tm_mock = MagicMock()
+        monkeypatch.setattr(sl_mod, "tm", tm_mock)
+        main_window_lookups: list[int] = []
+        monkeypatch.setattr(
+            sl_mod.AppearanceSettingsPage,
+            "find_main_window",
+            lambda self: main_window_lookups.append(1),
+        )
+
+        page._on_floating_pool_snap_toggled(False)
+        assert page._floating_pool_snap_enabled is False
+        assert cache.get("general.floating_pool_snap_enabled") is False
+
+        page._on_floating_pool_snap_toggled(True)
+        assert page._floating_pool_snap_enabled is True
+        assert cache.get("general.floating_pool_snap_enabled") is True
+
+        assert tm_mock.mock_calls == [], "暂存写入不得触碰 tm"
+        assert main_window_lookups == [], "暂存写入不得触碰主窗口"
+        safe_teardown(page)
+
+    def test_refresh_from_staging_restores_floating_pool_snap(
+        self, qapp: QApplication,
+    ) -> None:
+        """refresh_from_staging：回读贴边吸附（缺键默认 True、非法回退 True）。"""
+        cache = self._make_cache("workspace")  # 快照不含 floating_pool_snap_enabled
+        page = GeneralSettingsPage(staging_cache=cache)
+        assert page._floating_pool_snap_enabled is True
+
+        cache.set("general.floating_pool_snap_enabled", False)
+        page.refresh_from_staging()
+        assert page._floating_pool_snap_enabled is False
+
+        cache.set("general.floating_pool_snap_enabled", "yes")
+        page.refresh_from_staging()
+        assert page._floating_pool_snap_enabled is True
+        safe_teardown(page)
+
+    def test_refresh_from_staging_applies_floating_pool_snap_to_widget(
+        self, qapp: QApplication,
+    ) -> None:
+        """控件挂载后刷新把暂存状态写入真实开关（缺键默认 True、非法回退 True）。"""
+        cache = self._make_cache("workspace")  # 快照不含 floating_pool_snap_enabled
+        page = GeneralSettingsPage(staging_cache=cache)
+        assert page._floating_pool_snap_toggle is not None
+        assert page._floating_pool_snap_toggle.checked is True
+
+        cache.set("general.floating_pool_snap_enabled", False)
+        page.refresh_from_staging()
+        assert page._floating_pool_snap_toggle.checked is False
+
+        cache.set("general.floating_pool_snap_enabled", "yes")
+        page.refresh_from_staging()
+        assert page._floating_pool_snap_toggle.checked is True
+        safe_teardown(page)
+
+    def test_floating_pool_snap_row_built_after_floating_pool_row(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """「贴边吸附」行紧跟「全局浮窗」行且列入 refresh_theme 迭代元组。"""
+        import freeassetfilter.ui.layout.settings_layout as sl_mod
+
+        page = GeneralSettingsPage(staging_cache=self._make_cache("workspace"))
+        assert page._floating_pool_snap_row is not None
+        assert page._floating_pool_snap_toggle is not None
+        assert page._floating_pool_snap_toggle.checked is True
+
+        layout = page.layout()
+        assert (
+            layout.indexOf(page._floating_pool_snap_row)
+            == layout.indexOf(page._floating_pool_row) + 1
+        ), "「贴边吸附」行须紧跟「全局浮窗」行"
+
+        refreshed: list = []
+        monkeypatch.setattr(
+            sl_mod,
+            "_refresh_settings_item_text",
+            lambda item: refreshed.append(item),
+        )
+        page.refresh_theme()
+
+        assert page._floating_pool_snap_row in refreshed, (
+            "refresh_theme 迭代元组未包含贴边吸附行"
+        )
+        safe_teardown(page)
+
+    def test_submit_routes_floating_pool_snap_toggle_to_main_window(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """提交：贴边吸附开关下发主窗口（暂存期不下发）并将 False 落盘 V2。"""
+        import freeassetfilter.ui.layout.settings_layout as sl_mod
+        from freeassetfilter.core.managers.settings_manager_v2 import (
+            SettingsManagerV2,
+        )
+
+        tmp_file = str(tmp_path / "settings_v2.json")
+        monkeypatch.setattr(
+            sl_mod, "SettingsManagerV2", lambda *a, **k: SettingsManagerV2(tmp_file)
+        )
+        monkeypatch.setattr(
+            sl_mod.SettingsLayout,
+            "_apply_staged_perf_profile",
+            lambda self, profile: None,
+        )
+
+        class _FakeMainWindow:
+            """记录贴边吸附开关下发的假主窗口。"""
+
+            def __init__(self) -> None:
+                self.snap_calls: list[bool] = []
+
+            def set_floating_pool_snap_enabled(self, enabled: bool) -> None:
+                self.snap_calls.append(bool(enabled))
+
+        fake_mw = _FakeMainWindow()
+        monkeypatch.setattr(
+            sl_mod.AppearanceSettingsPage, "find_main_window", lambda self: fake_mw
+        )
+
+        from theme import tm
+
+        prev_mode = tm.get_theme_mode()
+        layout = SettingsLayout()
+        try:
+            layout._general_page._on_floating_pool_snap_toggled(False)
+            qapp.processEvents()
+            assert fake_mw.snap_calls == [], "暂存期不得下发主窗口"
+
+            assert layout._submit_settings() is True
+            assert fake_mw.snap_calls == [False]
+
+            saved = SettingsManagerV2(tmp_file)
+            saved.load()
+            assert saved.get("general.floating_pool_snap_enabled") is False
+        finally:
+            try:
+                tm.set_theme_mode(prev_mode)
+            except Exception:
+                pass  # teardown 还原主题失败：忽略，避免影响断言
+            safe_teardown(layout)
+
 
 # =============================================================================
 # AI 功能入口开关（PDF / 文本 / 字体预览器）

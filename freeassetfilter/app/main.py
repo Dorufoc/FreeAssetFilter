@@ -486,6 +486,18 @@ def main(argv=None) -> int:
         except Exception as e:
             warning(f"[退出] Mica GPU 渲染器回收失败: {e}")
 
+        # 1.6) 兜底关闭全局浮窗（MainWindow.closeEvent 未跑到时的保险）。
+        # C++ 对象可能已随主窗销毁，故 None 前置检查 + shiboken isValid +
+        # RuntimeError 守卫；close() 后不置 None（与 closeEvent 契约一致）。
+        try:
+            floating_ref = getattr(window, "_floating_pool", None)
+            if floating_ref is not None:
+                from shiboken6 import isValid
+                if isValid(floating_ref):
+                    floating_ref.close()
+        except Exception as e:
+            debug(f"[退出] 兜底关闭全局浮窗失败: {e}")
+
         # 2) 卸载 fd 捕获（排空管道 + join），再做 handler flush 与 faulthandler 清理
         _cleanup_process_facilities(facilities)
         exit_time = time.time()
