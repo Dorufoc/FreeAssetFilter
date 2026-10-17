@@ -11,6 +11,10 @@
   300ms 防抖重新扫描（网络盘等监听不生效场景自动降级，不影响手动导航）
 - **信息面板联动**：选中条目发出 ``entry_selected`` 信号（宿主转发给
   主窗口的信息面板），取消选中发 None
+- **隐藏/系统过滤**：按实例开关（``set_show_hidden_files`` /
+  ``set_show_system_files``，由统一预览器宿主下发）过滤带
+  FILE_ATTRIBUTE_HIDDEN / FILE_ATTRIBUTE_SYSTEM 属性的条目，语义与
+  文件选择器一致；默认关闭（不显示隐藏/系统条目），变更后立即重扫
 
 触发方式：文件夹被加入文件储存池后，左键点击文件池中的文件夹卡片时，
 由统一预览器宿主路由到本组件；与文件选择器的常规文件夹导航相互独立。
@@ -103,6 +107,12 @@ _PLACEHOLDER_LOADING: str = "正在读取文件夹内容…"
 _PLACEHOLDER_EMPTY: str = "此目录为空"
 _PLACEHOLDER_UNAVAILABLE: str = "无法访问该文件夹"
 
+# Windows 文件属性位（Win32 FILE_ATTRIBUTE_*，取自 stat 的 st_file_attributes）：
+# 隐藏位与系统位；目录收集后按实例开关过滤掉带对应位的条目（语义与文件
+# 选择器 file_selector_layout 的同名过滤完全一致）。
+_FILE_ATTRIBUTE_HIDDEN = 0x2
+_FILE_ATTRIBUTE_SYSTEM = 0x4
+
 
 def _native_scan_directory(path: str) -> Optional[list]:
     """经 faf_core 桥扫描目录；桥不可用/失败返回 None（调用方回退 Python）。
@@ -130,8 +140,12 @@ def _native_scan_directory(path: str) -> Optional[list]:
         return None
 
 
-def _collect_directory_entries(path: str) -> Optional[list]:
-    """收集目录条目（native 优先，Python 回退）。
+def _collect_directory_entries(
+    path: str,
+    show_hidden: Optional[bool] = None,
+    show_system: Optional[bool] = None,
+) -> Optional[list]:
+    """收集目录条目（native 优先，Python 回退），可选隐藏/系统过滤。
 
     单点接线：``_FolderScanWorker.run`` 的唯一扫描入口（后台线程可执行，
     不触碰 Qt/主线程状态）。faf_core 桥可用且 ``scan_directory`` 返回非
@@ -139,16 +153,81 @@ def _collect_directory_entries(path: str) -> Optional[list]:
     的原实现。返回契约与改造前一致：条目 dict 列表（7 键同构）或目录不可读
     时返回 None。
 
+    隐藏/系统过滤：``show_hidden`` 与 ``show_system`` 均为 ``None`` 时不做
+    任何过滤（保持静态直调的 legacy 口径）；否则对 native 或 Python 回退
+    收集到的条目统一套用 :func:`_apply_hidden_system_filter`（与文件选择器
+    ``file_selector_layout`` 的同名过滤语义一致——只删条目不改变条目结构）。
+
     Args:
         path: 要扫描的目录绝对路径。
+        show_hidden: 是否显示隐藏文件（FILE_ATTRIBUTE_HIDDEN）；``None``
+            表示不启用过滤。
+        show_system: 是否显示系统文件（FILE_ATTRIBUTE_SYSTEM）；仅当
+            ``show_hidden`` 亦为真时生效。
 
     Returns:
         Optional[list]: 条目 dict 列表；目录不可读/不存在时返回 None。
     """
     native_entries = _native_scan_directory(path)
     if native_entries is not None:
-        return native_entries
-    return _collect_directory_entries_python(path)
+        entries = native_entries
+    else:
+        entries = _collect_directory_entries_python(path)
+    if entries is None:
+        return None
+    return _apply_hidden_system_filter(entries, path, show_hidden, show_system)
+
+
+def _apply_hidden_system_filter(
+    entries: list,
+    path: str,
+    show_hidden: Optional[bool],
+    show_system: Optional[bool],
+) -> list:
+    """按隐藏/系统文件属性过滤条目（保持原顺序，只删不改）。
+
+    与文件选择器（``file_selector_layout.FileSelectorLayout._apply_hidden_system_filter``）
+    逐行同构：以 ``os.scandir`` 扫一遍目录建立 ``name -> st_file_attributes``
+    映射（逐条目 stat 失败则跳过该条目；scandir 本身失败则 fail-open 原样
+    返回）。无映射的条目（名称缺失）保持可见；``.`` 前缀不算隐藏（仅按
+    属性位判定）。
+
+    Args:
+        entries: 待过滤的条目 dict 列表。
+        path: 对应目录路径（供 scandir 读取属性）。
+        show_hidden: 是否显示隐藏文件；``None`` 表示不过滤。
+        show_system: 是否显示系统文件；仅当 ``show_hidden`` 亦为真时生效。
+
+    Returns:
+        list: 过滤后的条目列表。
+    """
+    if show_hidden is None and show_system is None:
+        return entries
+    show_hidden = bool(show_hidden)
+    effective_system = bool(show_system) and show_hidden
+    if show_hidden and effective_system:
+        return entries
+    attrs_by_name: dict = {}
+    try:
+        with os.scandir(path) as it:
+            for dir_entry in it:
+                try:
+                    st = dir_entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                attrs_by_name[dir_entry.name] = getattr(
+                    st, "st_file_attributes", 0
+                )
+    except OSError:
+        return entries
+    result: list = []
+    for entry in entries:
+        attrs = attrs_by_name.get(entry["name"], 0)
+        visible_hidden = not (attrs & _FILE_ATTRIBUTE_HIDDEN) or show_hidden
+        visible_system = not (attrs & _FILE_ATTRIBUTE_SYSTEM) or effective_system
+        if visible_hidden and visible_system:
+            result.append(entry)
+    return result
 
 
 def _collect_directory_entries_python(path: str) -> Optional[list]:
@@ -470,12 +549,25 @@ class _FolderScanWorker(QRunnable):
         directory_path: str,
         token: int,
         parent: Optional[QWidget] = None,
+        show_hidden: bool = False,
+        show_system: bool = False,
     ) -> None:
-        # parent 参数仅为兼容旧构造签名保留；QRunnable 非 QObject，不参与父子。
+        """初始化扫描任务。
+
+        Args:
+            directory_path: 要扫描的目录绝对路径。
+            token: 异步加载世代快照，过期结果由槽侧丢弃。
+            parent: 仅为兼容旧构造签名保留；QRunnable 非 QObject，不参与父子。
+            show_hidden: 显示隐藏文件开关快照（UI 线程派发时捕获，
+                避免后台线程读取可变实例状态）。
+            show_system: 显示系统文件开关快照（UI 线程派发时捕获）。
+        """
         super().__init__()
         self.setAutoDelete(True)
         self._directory_path = directory_path
         self._token = token
+        self._show_hidden = bool(show_hidden)
+        self._show_system = bool(show_system)
         self._signals = _FolderScanSignals()
 
     @property
@@ -493,7 +585,11 @@ class _FolderScanWorker(QRunnable):
         QThreadPool.globalInstance().start(self)
 
     def run(self) -> None:
-        entries = _collect_directory_entries(self._directory_path)
+        entries = _collect_directory_entries(
+            self._directory_path,
+            show_hidden=self._show_hidden,
+            show_system=self._show_system,
+        )
         if entries is None:
             self._signals.scan_failed.emit(self._token)
             return
@@ -548,6 +644,12 @@ class FolderPreviewerLayout(QWidget):
         self._token: int = 0
         self._loading: bool = False
         self._scan_worker: Optional[_FolderScanWorker] = None
+        # 显示隐藏文件开关（general.show_hidden_files，默认关闭；由统一
+        # 预览器宿主随启动读取结果与设置提交下发，经 set_show_hidden_files 更新）
+        self._show_hidden_files: bool = False
+        # 显示系统文件开关（general.show_system_files，默认关闭；仅当隐藏
+        # 文件开关亦开启时生效，经 set_show_system_files 下发）
+        self._show_system_files: bool = False
 
         # 自动监听刷新：监视当前目录，变更后防抖重扫（addPath 失败静默降级）
         self._watcher = QFileSystemWatcher(self)
@@ -715,6 +817,48 @@ class FolderPreviewerLayout(QWidget):
             debug(f"图标缓存清理失败：{exc}")
         self._view.viewport().update()
 
+    # ── 显示过滤开关（统一预览器宿主下发） ───────────────────────────────────
+
+    def set_show_hidden_files(self, enabled: bool) -> None:
+        """设置「显示隐藏文件」开关（幂等；宿主启动/设置提交路径调用）。
+
+        关闭时同步关闭「显示系统文件」（系统文件可见性以隐藏文件开关为
+        前提）；任一口径变化且当前已加载文件夹时立即重扫以体现新口径。
+
+        Args:
+            enabled: True 显示隐藏文件（带 FILE_ATTRIBUTE_HIDDEN 位）；
+                False 隐藏（默认）。
+        """
+        enabled = bool(enabled)
+        changed = enabled != self._show_hidden_files
+        if not enabled and self._show_system_files:
+            self._show_system_files = False
+            changed = True
+        self._show_hidden_files = enabled
+        if changed:
+            self._refresh_hidden_filter_view()
+
+    def set_show_system_files(self, enabled: bool) -> None:
+        """设置「显示系统文件」开关（幂等；宿主启动/设置提交路径调用）。
+
+        仅当「显示隐藏文件」亦开启时生效（AND 语义）；口径变化且当前已
+        加载文件夹时立即重扫以体现新口径。
+
+        Args:
+            enabled: True 显示系统文件（带 FILE_ATTRIBUTE_SYSTEM 位）；
+                False 隐藏（默认）。
+        """
+        enabled = bool(enabled) and self._show_hidden_files
+        if enabled == self._show_system_files:
+            return
+        self._show_system_files = enabled
+        self._refresh_hidden_filter_view()
+
+    def _refresh_hidden_filter_view(self) -> None:
+        """隐藏/系统过滤口径变化后，若已加载文件夹则重扫。"""
+        if self._root_path:
+            self._refresh()
+
     # ── 主题 ─────────────────────────────────────────────────────────────────
 
     def _connect_theme(self) -> None:
@@ -763,7 +907,8 @@ class FolderPreviewerLayout(QWidget):
         """按当前浏览目录异步重新扫描（每次进入/返回都会触发）。
 
         扫描前先撤销旧目录监听，成功后由 ``_on_scan_finished`` 重新布防，
-        避免导航期间旧目录事件误触发重扫。
+        避免导航期间旧目录事件误触发重扫。派发时捕获显示隐藏/系统过滤
+        开关快照（后台线程不读取可变实例状态）。
         """
         if not self._root_path:
             return
@@ -774,7 +919,12 @@ class FolderPreviewerLayout(QWidget):
         token = self._token
         self._show_overlay(_PLACEHOLDER_LOADING)
 
-        worker = _FolderScanWorker(self._current_directory(), token)
+        worker = _FolderScanWorker(
+            self._current_directory(),
+            token,
+            show_hidden=self._show_hidden_files,
+            show_system=self._show_system_files,
+        )
         self._scan_worker = worker
         worker.scan_finished.connect(self._on_scan_finished)
         worker.scan_failed.connect(self._on_scan_failed)

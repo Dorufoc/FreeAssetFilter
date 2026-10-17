@@ -758,6 +758,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._settings_window_gen = 0
         # 内容层主题过渡遮罩（单实例去重引用；见 _start_content_theme_transition）
         self._content_theme_overlay: QWidget | None = None
+        # 布局切换代际计数：新一轮切换递增，作废上一轮未收尾的恢复回调
+        self._layout_transition_generation: int = 0
         # 背景层交叉过渡遮罩（单实例去重引用；见 _start_background_transition）
         self._background_transition_overlay: QWidget | None = None
         # 系统主题监听器（跟随系统模式的实时链路；见 _start_system_theme_watcher）
@@ -770,13 +772,17 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 主界面布局模式（general.layout_mode；非法值回退 workspace）
         self._layout_mode = self._load_layout_settings()
         # 通用功能开关（general.enable_ai_entry / general.include_remote_drives /
-        # general.blank_right_click_go_back；非法值一律回退 False，提交时经
+        # general.blank_right_click_go_back / general.show_hidden_files /
+        # general.show_system_files；非法值一律回退 False，提交时经
         # set_ai_entry_enabled / set_include_remote_drives /
-        # set_blank_right_click_go_back 即时生效）
+        # set_blank_right_click_go_back / set_show_hidden_files /
+        # set_show_system_files 即时生效）
         (
             self._ai_entry_enabled,
             self._include_remote_drives,
             self._blank_right_click_go_back,
+            self._show_hidden_files,
+            self._show_system_files,
         ) = self._load_general_toggles()
         self._background_mode = background_saved.get("mode", "mica")
         self._background_image_name = background_saved.get("image", "")
@@ -946,21 +952,26 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         return mode if mode in ("classic", "workspace") else "workspace"
 
     @staticmethod
-    def _load_general_toggles() -> tuple[bool, bool, bool]:
+    def _load_general_toggles() -> tuple[bool, bool, bool, bool, bool]:
         """启动时读取通用功能开关。
 
         读取 ``general.enable_ai_entry``（AI 入口）、
-        ``general.include_remote_drives``（网络盘/光驱）与
-        ``general.blank_right_click_go_back``（空白区右键返回上一级）；
-        缺失、类型非法一律回退 False（与 DEFAULT_SETTINGS_V2 默认一致）。
+        ``general.include_remote_drives``（网络盘/光驱）、
+        ``general.blank_right_click_go_back``（空白区右键返回上一级）、
+        ``general.show_hidden_files``（显示隐藏文件）与
+        ``general.show_system_files``（显示系统文件）；缺失、类型非法
+        一律回退 False（与 DEFAULT_SETTINGS_V2 默认一致）。隐藏/系统开关
+        的 AND 语义由过滤层判定，此处不做归一化。
 
         Returns:
-            tuple[bool, bool, bool]: (AI 入口开关, 网络盘与光驱开关,
-            空白区右键返回开关)。
+            tuple[bool, bool, bool, bool, bool]: (AI 入口开关, 网络盘与光驱
+            开关, 空白区右键返回开关, 显示隐藏文件开关, 显示系统文件开关)。
         """
         ai_entry = False
         include_remote = False
         blank_right_click_go_back = False
+        show_hidden = False
+        show_system = False
         try:
             app = QApplication.instance()
             v2 = getattr(app, "settings_manager", None)
@@ -973,6 +984,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             saved_blank_back = v2.get(
                 "general.blank_right_click_go_back", False
             )
+            saved_hidden = v2.get("general.show_hidden_files", False)
+            saved_system = v2.get("general.show_system_files", False)
             ai_entry = saved_ai if isinstance(saved_ai, bool) else False
             include_remote = (
                 saved_remote if isinstance(saved_remote, bool) else False
@@ -980,9 +993,17 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             blank_right_click_go_back = (
                 saved_blank_back if isinstance(saved_blank_back, bool) else False
             )
+            show_hidden = saved_hidden if isinstance(saved_hidden, bool) else False
+            show_system = saved_system if isinstance(saved_system, bool) else False
         except Exception as exc:
             debug(f"读取功能开关设置失败（按默认关闭处理）：{exc}")
-        return ai_entry, include_remote, blank_right_click_go_back
+        return (
+            ai_entry,
+            include_remote,
+            blank_right_click_go_back,
+            show_hidden,
+            show_system,
+        )
 
     def _setup_window(self) -> None:
         """设置窗口基本属性"""
@@ -1396,6 +1417,16 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                     )
                 except Exception as exc:  # noqa: BLE001 - 开关下发失败不阻塞构建
                     warning(f"空白区右键返回开关下发失败: {exc}")
+                # 显示隐藏/系统文件开关随启动读取结果下发（默认关闭）
+                try:
+                    self._file_selector.set_show_hidden_files(
+                        self._show_hidden_files
+                    )
+                    self._file_selector.set_show_system_files(
+                        self._show_system_files
+                    )
+                except Exception as exc:  # noqa: BLE001 - 开关下发失败不阻塞构建
+                    warning(f"显示隐藏/系统文件开关下发失败: {exc}")
                 self._replace_zone_placeholder(side, self._file_selector)
             elif side == "preview":
                 from layout.unified_previewer_layout import UnifiedPreviewerLayout
@@ -1406,6 +1437,12 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                     self._previewer.set_ai_entry_enabled(self._ai_entry_enabled)
                 except Exception as exc:  # noqa: BLE001 - 开关下发失败不阻塞构建
                     warning(f"AI 入口开关下发失败: {exc}")
+                # 显示隐藏/系统文件开关随启动读取结果下发（文件夹预览器消费；默认关闭）
+                try:
+                    self._previewer.set_show_hidden_files(self._show_hidden_files)
+                    self._previewer.set_show_system_files(self._show_system_files)
+                except Exception as exc:  # noqa: BLE001 - 开关下发失败不阻塞构建
+                    warning(f"显示隐藏/系统文件开关下发失败: {exc}")
                 # 统一操作按钮承载方式：New 布局走预览器顶栏（经典走底部栏）
                 self._previewer.set_actions_mode(self._layout_mode == "workspace")
                 # 经典布局：底部操作栏挂到右列槽位（信息面板下方，整列最底部）
@@ -1995,6 +2032,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         链路共用；未显示窗口（测试/最小化）不建遮罩，快照失败静默跳过、
         不阻塞布局切换本身。
         """
+        # 新一轮布局切换：递增代际，作废上一轮过渡未收尾的恢复回调
+        self._layout_transition_generation += 1
         # 门控：布局切换动画关闭时跳过过渡（与 _reset_layout 的 layout_reset 同款）
         if not is_animation_enabled("layout_switch", default=True):
             return
@@ -3175,6 +3214,58 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             except Exception as exc:  # noqa: BLE001 - 开关应用失败不抛给调用方
                 warning(f"空白区右键返回开关应用失败: {exc}")
 
+    def set_show_hidden_files(self, enabled: bool) -> None:
+        """运行时切换「显示隐藏文件」（设置提交路径调用；幂等）。
+
+        关闭时同步关闭「显示系统文件」（系统文件可见性以隐藏文件开关为
+        前提）；文件选择器与文件夹预览器若在当前视图会立即重扫。
+
+        Args:
+            enabled: True 显示隐藏文件；False 隐藏（默认）。
+        """
+        self._show_hidden_files = bool(enabled)
+        if not self._show_hidden_files:
+            self._show_system_files = False
+        if self._file_selector is not None:
+            try:
+                self._file_selector.set_show_hidden_files(
+                    self._show_hidden_files
+                )
+            except Exception as exc:  # noqa: BLE001 - 开关应用失败不抛给调用方
+                warning(f"显示隐藏文件开关应用失败: {exc}")
+        if self._previewer is not None:
+            try:
+                self._previewer.set_show_hidden_files(
+                    self._show_hidden_files
+                )
+            except Exception as exc:  # noqa: BLE001 - 开关应用失败不抛给调用方
+                warning(f"显示隐藏文件开关应用失败（预览器）: {exc}")
+
+    def set_show_system_files(self, enabled: bool) -> None:
+        """运行时切换「显示系统文件」（设置提交路径调用；幂等）。
+
+        仅当「显示隐藏文件」亦开启时生效（AND 语义）；文件选择器与文件夹
+        预览器若在当前视图会立即重扫。
+
+        Args:
+            enabled: True 显示系统文件；False 隐藏（默认）。
+        """
+        self._show_system_files = bool(enabled) and self._show_hidden_files
+        if self._file_selector is not None:
+            try:
+                self._file_selector.set_show_system_files(
+                    self._show_system_files
+                )
+            except Exception as exc:  # noqa: BLE001 - 开关应用失败不抛给调用方
+                warning(f"显示系统文件开关应用失败: {exc}")
+        if self._previewer is not None:
+            try:
+                self._previewer.set_show_system_files(
+                    self._show_system_files
+                )
+            except Exception as exc:  # noqa: BLE001 - 开关应用失败不抛给调用方
+                warning(f"显示系统文件开关应用失败（预览器）: {exc}")
+
     def set_layout_mode(self, mode: str) -> bool:
         """切换主界面布局模式（运行时重组，叶子组件重新挂载、不销毁重建）。
 
@@ -3185,8 +3276,10 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
         - 幂等：重复传入当前模式直接返回 True；
         - 记忆态保留：储存池内容、选择器路径、滚动位置等均在原组件实例内保留；
-        - 播放守卫：切换前停止当前视频/音频播放，避免 MPV 原生子窗跨父级
-          迁移导致闪烁（切换后可再次点击文件恢复预览）；
+        - 播放挂起/恢复：切换前挂起当前视频/音频预览（快照文件、进度与
+          播放态）并停止渲染，避免 MPV 原生子窗跨父级迁移导致闪烁；
+          切换后待溶解过渡遮罩收尾再自动重新加载并还原进度与播放/暂停
+          态（避免恢复动作与动画争抢主线程），失败时静默降级；
         - 失败兜底：迁移异常时把内容回迁旧布局并返回 False；
         - 轻量启动外壳阶段（主布局尚未构建）：仅记录偏好，由
           ``initialize_deferred_content`` 后的构建路径应用。
@@ -3207,14 +3300,20 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         if mode == self._layout_mode:
             return True
 
-        # 播放守卫：停止当前预览器的播放（仅视频/音频预览器具备该方法）
+        # 播放守卫：挂起当前预览器的视频/音频播放并记录快照（具备挂起能力
+        # 时切换后自动恢复；否则退回仅停止播放）
+        suspended_preview = None
         if self._previewer is not None:
             try:
                 current = getattr(self._previewer, "_current_preview_widget", None)
-                if current is not None and hasattr(current, "stop_playback"):
-                    current.stop_playback()
-            except Exception:  # noqa: BLE001 - 播放停止失败不阻塞切换
-                pass
+                if current is not None:
+                    if hasattr(current, "suspend_for_layout_switch"):
+                        current.suspend_for_layout_switch()
+                        suspended_preview = current
+                    elif hasattr(current, "stop_playback"):
+                        current.stop_playback()
+            except Exception:  # noqa: BLE001 - 播放挂起失败不阻塞切换
+                suspended_preview = None
 
         # 底部操作栏先归位到预览器内部：随预览器一起迁移到新布局，
         # 且避免随旧布局（经典组装时槽位在旧布局内）被一并销毁
@@ -3240,6 +3339,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             except Exception:  # noqa: BLE001 - 回滚保护
                 pass
             new_layout.deleteLater()
+            # 回滚后恢复被挂起的预览（文件、进度与播放态；溶解过渡收尾后执行）
+            self._schedule_preview_resume_after_layout_switch(suspended_preview)
             return False
 
         old_layout.deleteLater()
@@ -3284,7 +3385,48 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._apply_leaf_minimums()
         new_layout.apply_default_ratios()
         self._apply_window_minimums()
+        # 迁移完成后恢复被挂起的预览（文件、进度与播放态；溶解过渡收尾后执行）
+        self._schedule_preview_resume_after_layout_switch(suspended_preview)
         return True
+
+    def _schedule_preview_resume_after_layout_switch(
+        self, preview_widget: object
+    ) -> None:
+        """在内容过渡遮罩收尾后再恢复被挂起的预览（无遮罩时立即恢复）。
+
+        布局切换的溶解过渡期间，立即执行恢复（load_file + play 为阻塞
+        调用）会与动画争抢主线程、破坏过渡观感；故把恢复动作挂到遮罩
+        ``finished`` 信号上，动画收尾后再执行。代际计数保证快速连续切换
+        时只有最新一轮的遮罩回调生效（旧遮罩被打断收尾时其回调作废）。
+        """
+        from shiboken6 import isValid
+
+        if preview_widget is None:
+            return
+        overlay = self._content_theme_overlay
+        if overlay is not None and isValid(overlay) and not overlay.is_finished():
+            generation = self._layout_transition_generation
+
+            def _on_overlay_finished() -> None:
+                if generation != self._layout_transition_generation:
+                    return
+                self._resume_preview_after_layout_switch(preview_widget)
+
+            overlay.finished.connect(_on_overlay_finished)
+            return
+        self._resume_preview_after_layout_switch(preview_widget)
+
+    @staticmethod
+    def _resume_preview_after_layout_switch(widget: object) -> None:
+        """布局切换收尾恢复被挂起的预览（无挂起或恢复失败时静默跳过）。"""
+        if widget is None:
+            return
+        try:
+            resume = getattr(widget, "resume_after_layout_switch", None)
+            if callable(resume):
+                resume()
+        except Exception as exc:  # noqa: BLE001 - 恢复失败不阻塞布局切换
+            warning(f"布局切换后恢复预览失败: {exc}")
 
     @staticmethod
     def _migrate_zone_contents(

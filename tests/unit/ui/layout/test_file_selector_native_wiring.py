@@ -12,6 +12,9 @@
 (d) 桥可用时 native ``scan_directory`` 结果与 Python oracle
     ``_collect_directory_entries_python`` 对 `tests/support/faf_core_fixtures/
     dir_samples/` 逐字段一致（DLL 缺失时 skip）。
+(e) 隐藏/系统文件过滤：``_collect_directory_entries`` 新开关经 Python 回退
+    与 native 双路径按 FILE_ATTRIBUTE_HIDDEN/SYSTEM 位正确过滤（条目仍
+    7 键）；实例级默认隐藏、setter 幂等与目录视图重扫口径（「All」不重扫）。
 
 测试纪律（与 tests/unit/ui/layout/test_layouts.py 一致）：
 
@@ -26,6 +29,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import os
 import sys
 from pathlib import Path
@@ -93,6 +97,44 @@ def _model_names(layout: Any) -> List[str]:
     ]
 
 
+def _set_file_attributes(path: Path, attrs: int) -> None:
+    """经 Win32 SetFileAttributesW 设置文件/目录属性位。
+
+    Args:
+        path: 目标文件或目录路径。
+        attrs: FILE_ATTRIBUTE_* 位组合。
+    """
+    ok = ctypes.windll.kernel32.SetFileAttributesW(str(path), attrs)
+    if ok == 0:
+        raise OSError(
+            ctypes.get_last_error(), f"SetFileAttributesW 失败: {path}"
+        )
+
+
+def _make_hidden_system_dir(tmp_path: Path) -> Path:
+    """构造含普通/隐藏/系统/双重属性与隐藏目录的临时目录。
+
+    Args:
+        tmp_path: pytest 内置每测试临时目录。
+
+    Returns:
+        Path: 构造后的目录路径。
+    """
+    src_dir: Path = tmp_path / "hs"
+    src_dir.mkdir()
+    (src_dir / "normal.txt").write_text("n", encoding="utf-8")
+    (src_dir / "hidden.txt").write_text("h", encoding="utf-8")
+    (src_dir / "system.txt").write_text("s", encoding="utf-8")
+    (src_dir / "both.txt").write_text("b", encoding="utf-8")
+    hidden_dir = src_dir / "hidden_dir"
+    hidden_dir.mkdir()
+    _set_file_attributes(src_dir / "hidden.txt", 0x2)
+    _set_file_attributes(src_dir / "system.txt", 0x4)
+    _set_file_attributes(src_dir / "both.txt", 0x2 | 0x4)
+    _set_file_attributes(hidden_dir, 0x2)
+    return src_dir
+
+
 class _UnavailableBridge:
     """降级桥替身：available=False 且无任何能力标志（模拟 DLL 缺失）。"""
 
@@ -154,10 +196,13 @@ class TestSortModeSwitchNoRescan:
         original_collect = layout._collect_directory_entries  # noqa: SLF001
 
         def counting_collect(
-            path: str, cancel_check: Any = None, include_remote: Any = None
+            path: str,
+            cancel_check: Any = None,
+            include_remote: Any = None,
+            **kwargs: Any,
         ) -> Any:
             calls.append(path)
-            return original_collect(path, cancel_check, include_remote)
+            return original_collect(path, cancel_check, include_remote, **kwargs)
 
         monkeypatch.setattr(layout, "_collect_directory_entries", counting_collect)
 
@@ -214,10 +259,13 @@ class TestFilterApplyNoRescan:
         original_collect = layout._collect_directory_entries  # noqa: SLF001
 
         def counting_collect(
-            path: str, cancel_check: Any = None, include_remote: Any = None
+            path: str,
+            cancel_check: Any = None,
+            include_remote: Any = None,
+            **kwargs: Any,
         ) -> Any:
             calls.append(path)
-            return original_collect(path, cancel_check, include_remote)
+            return original_collect(path, cancel_check, include_remote, **kwargs)
 
         monkeypatch.setattr(layout, "_collect_directory_entries", counting_collect)
 
@@ -389,3 +437,145 @@ class TestSinglePointWiring:
             os.path.abspath(str(tmp_path / "no_such_dir_xyz"))
         )
         assert missing is None
+
+
+# =============================================================================
+# (e) 隐藏/系统文件过滤（收集期单点接线 + 实例开关 + setter 重扫口径）
+# =============================================================================
+class TestHiddenSystemFiltering:
+    """隐藏/系统过滤经 Python 回退与 native 双路径生效，条目仍 7 键。"""
+
+    _ALL_NAMES = ["both.txt", "hidden.txt", "hidden_dir", "normal.txt", "system.txt"]
+
+    def test_python_fallback_filter_matrix(
+        self, qapp: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """回退路径：四组开关组合的可见名集正确 + 条目仍 7 键。
+
+        Args:
+            qapp: 会话级 QApplication。
+            tmp_path: pytest 内置每测试临时目录。
+            monkeypatch: pytest monkeypatch fixture。
+        """
+        src_dir = _make_hidden_system_dir(tmp_path)
+        monkeypatch.setattr(fsl_mod, "get_faf_core_bridge", lambda: _UnavailableBridge())
+
+        def names(show_hidden: bool, show_system: bool) -> List[str]:
+            entries = FileSelectorLayout._collect_directory_entries(
+                str(src_dir), show_hidden=show_hidden, show_system=show_system
+            )
+            assert entries is not None
+            for entry in entries:
+                assert set(entry.keys()) == {
+                    "name", "path", "is_dir", "size",
+                    "modified", "created", "suffix",
+                }, "过滤后条目必须保持 7 键同构"
+            return sorted(e["name"] for e in entries)
+
+        assert names(False, False) == ["normal.txt"]
+        assert names(True, False) == ["hidden.txt", "hidden_dir", "normal.txt"]
+        assert names(True, True) == self._ALL_NAMES
+        assert names(False, True) == ["normal.txt"]
+
+    def test_legacy_no_flags_returns_all(
+        self, qapp: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """静态直调未传开关（均 None）→ 不做过滤，保留 legacy 口径。
+
+        Args:
+            qapp: 会话级 QApplication。
+            tmp_path: pytest 内置每测试临时目录。
+            monkeypatch: pytest monkeypatch fixture。
+        """
+        src_dir = _make_hidden_system_dir(tmp_path)
+        monkeypatch.setattr(fsl_mod, "get_faf_core_bridge", lambda: _UnavailableBridge())
+        entries = FileSelectorLayout._collect_directory_entries(str(src_dir))
+        assert entries is not None
+        assert sorted(e["name"] for e in entries) == self._ALL_NAMES
+
+    def test_native_filter_matrix_when_dll_available(
+        self, qapp: Any, tmp_path: Path
+    ) -> None:
+        """native 路径：默认隐藏与开启隐藏两档可见名集正确（DLL 缺失 skip）。
+
+        Args:
+            qapp: 会话级 QApplication。
+            tmp_path: pytest 内置每测试临时目录。
+        """
+        import freeassetfilter.core.native.bridges.faf_core_bridge as fcb_mod
+
+        bridge = fcb_mod.get_faf_core_bridge()
+        if not bridge.available or not bridge._supports_scan:  # noqa: SLF001
+            pytest.skip("faf_core DLL 不可用或缺 scan 导出")
+        src_dir = _make_hidden_system_dir(tmp_path)
+
+        def names(show_hidden: bool, show_system: bool) -> List[str]:
+            entries = FileSelectorLayout._collect_directory_entries(
+                str(src_dir), show_hidden=show_hidden, show_system=show_system
+            )
+            assert entries is not None
+            return sorted(e["name"] for e in entries)
+
+        assert names(False, False) == ["normal.txt"]
+        assert names(True, False) == ["hidden.txt", "hidden_dir", "normal.txt"]
+
+    def test_instance_default_hides_hidden_and_system(
+        self, qapp: Any, tmp_path: Path
+    ) -> None:
+        """实例级 ``_load_directory`` 默认隐藏隐藏/系统条目。
+
+        Args:
+            qapp: 会话级 QApplication。
+            tmp_path: pytest 内置每测试临时目录。
+        """
+        src_dir = _make_hidden_system_dir(tmp_path)
+        layout: Any = FileSelectorLayout()
+        layout._load_directory(str(src_dir))  # noqa: SLF001
+        assert _model_names(layout) == ["normal.txt"]
+
+    def test_setter_reload_semantics(
+        self, qapp: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """setter 幂等 + AND 语义 + 目录视图重扫/「All」不重扫口径。
+
+        Args:
+            qapp: 会话级 QApplication。
+            tmp_path: pytest 内置每测试临时目录。
+            monkeypatch: pytest monkeypatch fixture。
+        """
+        src_dir = _make_hidden_system_dir(tmp_path)
+        layout: Any = FileSelectorLayout()
+        layout._current_path = str(src_dir)  # noqa: SLF001
+        reload_calls: List[str] = []
+        monkeypatch.setattr(
+            layout, "_reload_directory", lambda: reload_calls.append("reload")
+        )
+
+        # 隐藏关闭时开启系统 → AND 语义 no-op，不重扫
+        layout.set_show_system_files(True)
+        assert layout._show_system_files is False
+        assert reload_calls == []
+
+        # 开启隐藏 → 一次重扫
+        layout.set_show_hidden_files(True)
+        assert reload_calls == ["reload"]
+        # 重复同值 → 不重扫
+        layout.set_show_hidden_files(True)
+        assert reload_calls == ["reload"]
+
+        # 隐藏已开时开启系统 → 再一次重扫
+        layout.set_show_system_files(True)
+        assert layout._show_system_files is True
+        assert reload_calls == ["reload", "reload"]
+
+        # 关闭隐藏 → 同步关闭系统 + 再一次重扫
+        layout.set_show_hidden_files(False)
+        assert layout._show_hidden_files is False
+        assert layout._show_system_files is False
+        assert reload_calls == ["reload", "reload", "reload"]
+
+        # 「All」视图：值已存但不重扫
+        layout._current_path = "All"  # noqa: SLF001
+        layout.set_show_hidden_files(True)
+        assert layout._show_hidden_files is True
+        assert reload_calls == ["reload", "reload", "reload"]

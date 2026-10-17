@@ -4888,10 +4888,79 @@ class TestGeneralSettingsPage:
         assert page._blank_back_toggle.checked is False
         safe_teardown(page)
 
+    def test_hidden_system_toggles_default_false(self, qapp: QApplication) -> None:
+        """构造：显示隐藏文件 / 系统文件开关默认关闭，系统文件行默认隐藏。"""
+        page = GeneralSettingsPage(staging_cache=self._make_cache("workspace"))
+        assert page._show_hidden_files is False
+        assert page._show_system_files is False
+        assert page._hidden_toggle.checked is False
+        assert page._system_toggle.checked is False
+        assert page._system_row.isHidden() is True
+        safe_teardown(page)
+
+    def test_hidden_system_toggles_write_staging_only(self, qapp: QApplication) -> None:
+        """切换隐藏文件开关：写缓存并显示系统文件行；再开启系统文件写缓存。"""
+        cache = self._make_cache("workspace")
+        page = GeneralSettingsPage(staging_cache=cache)
+
+        page._hidden_toggle.checked = True
+        qapp.processEvents()
+
+        assert page._show_hidden_files is True
+        assert cache.get("general.show_hidden_files") is True
+        assert page._system_row.isHidden() is False
+
+        page._system_toggle.checked = True
+        qapp.processEvents()
+
+        assert page._show_system_files is True
+        assert cache.get("general.show_system_files") is True
+        safe_teardown(page)
+
+    def test_hidden_off_cascades_system_off(self, qapp: QApplication) -> None:
+        """关闭显示隐藏文件：联动关闭系统文件并隐藏其行，缓存同步为 False。"""
+        cache = self._make_cache("workspace")
+        page = GeneralSettingsPage(staging_cache=cache)
+
+        page._hidden_toggle.checked = True
+        page._system_toggle.checked = True
+        qapp.processEvents()
+        assert page._system_row.isHidden() is False
+        assert cache.get("general.show_system_files") is True
+
+        page._hidden_toggle.checked = False
+        qapp.processEvents()
+
+        assert page._show_hidden_files is False
+        assert page._show_system_files is False
+        assert page._system_toggle.checked is False
+        assert page._system_row.isHidden() is True
+        assert cache.get("general.show_hidden_files") is False
+        assert cache.get("general.show_system_files") is False
+        safe_teardown(page)
+
+    def test_refresh_from_staging_restores_hidden_system(
+        self, qapp: QApplication
+    ) -> None:
+        """refresh_from_staging：缓存两项为 True 时开关与系统文件行同步恢复。"""
+        cache = self._make_cache("workspace")
+        page = GeneralSettingsPage(staging_cache=cache)
+        cache.set("general.show_hidden_files", True)
+        cache.set("general.show_system_files", True)
+
+        page.refresh_from_staging()
+
+        assert page._show_hidden_files is True
+        assert page._show_system_files is True
+        assert page._hidden_toggle.checked is True
+        assert page._system_toggle.checked is True
+        assert page._system_row.isHidden() is False
+        safe_teardown(page)
+
     def test_submit_routes_general_toggles_to_main_window(
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
-        """提交：三个开关下发主窗口（暂存期不下发）并落盘到 V2。"""
+        """提交：五个开关下发主窗口（暂存期不下发）并落盘到 V2。"""
         import freeassetfilter.ui.layout.settings_layout as sl_mod
         from freeassetfilter.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
@@ -4914,6 +4983,8 @@ class TestGeneralSettingsPage:
                 self.ai_calls: list[bool] = []
                 self.drives_calls: list[bool] = []
                 self.blank_back_calls: list[bool] = []
+                self.hidden_calls: list[bool] = []
+                self.system_calls: list[bool] = []
 
             def set_ai_entry_enabled(self, enabled: bool) -> None:
                 self.ai_calls.append(bool(enabled))
@@ -4923,6 +4994,12 @@ class TestGeneralSettingsPage:
 
             def set_blank_right_click_go_back(self, enabled: bool) -> None:
                 self.blank_back_calls.append(bool(enabled))
+
+            def set_show_hidden_files(self, enabled: bool) -> None:
+                self.hidden_calls.append(bool(enabled))
+
+            def set_show_system_files(self, enabled: bool) -> None:
+                self.system_calls.append(bool(enabled))
 
         fake_mw = _FakeMainWindow()
         monkeypatch.setattr(
@@ -4937,21 +5014,29 @@ class TestGeneralSettingsPage:
             layout._general_page._ai_toggle.checked = True
             layout._general_page._drives_toggle.checked = True
             layout._general_page._blank_back_toggle.checked = True
+            layout._general_page._hidden_toggle.checked = True
+            layout._general_page._system_toggle.checked = True
             qapp.processEvents()
             assert fake_mw.ai_calls == []
             assert fake_mw.drives_calls == []
             assert fake_mw.blank_back_calls == []
+            assert fake_mw.hidden_calls == []
+            assert fake_mw.system_calls == []
 
             assert layout._submit_settings() is True
             assert fake_mw.ai_calls == [True]
             assert fake_mw.drives_calls == [True]
             assert fake_mw.blank_back_calls == [True]
+            assert fake_mw.hidden_calls == [True]
+            assert fake_mw.system_calls == [True]
 
             saved = SettingsManagerV2(tmp_file)
             saved.load()
             assert saved.get("general.enable_ai_entry") is True
             assert saved.get("general.include_remote_drives") is True
             assert saved.get("general.blank_right_click_go_back") is True
+            assert saved.get("general.show_hidden_files") is True
+            assert saved.get("general.show_system_files") is True
         finally:
             try:
                 tm.set_theme_mode(prev_mode)
@@ -5163,3 +5248,329 @@ class TestPaletteExtractionParity:
         """坏数据 → 两实现均返回空列表。"""
         assert VideoPlayerLayout._extract_palette_from_cover(b"not an image") == []
         assert self._reference_palette(b"not an image") == []
+
+
+# =============================================================================
+# ui.layout.file_selector_layout — 路径框内嵌跳转按钮与交互行为
+# =============================================================================
+class TestPathInputJumpBehavior:
+    """路径框内嵌跳转按钮：定位、空跳转回 All、无效路径弹窗、失焦回填。
+
+    全部用例以 offscreen 真实构造 ``FileSelectorLayout``，异步线程池经
+    ``_patch_async_pool`` 替换为记录替身（不跑真实 IO）；导航副作用
+    （last_path 写盘 / 过渡动画）以 MagicMock 屏蔽，焦点事件经
+    ``QApplication.sendEvent`` 走真实 eventFilter 路径。
+    """
+
+    def test_arrow_button_embedded_in_path_input(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """跳转按钮被 reparent 进路径框，几何位置落在输入框边界内。
+
+        Args:
+            qapp: 会话级 QApplication（offscreen）。
+            monkeypatch: 用例级猴子补丁。
+        """
+        layout = FileSelectorLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        qapp.processEvents()
+        try:
+            assert layout._arrow_btn.parent() is layout._path_input
+            geom = layout._arrow_btn.geometry()
+            assert geom.x() >= 0
+            assert geom.x() + geom.width() <= layout._path_input.width()
+            assert geom.y() >= 0
+            assert geom.y() + geom.height() <= layout._path_input.height()
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+    def test_empty_input_jump_goes_to_all_view(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """空输入跳转 → 切到 All 视图、路径框回填 All、取消输入焦点。
+
+        Args:
+            qapp: 会话级 QApplication（offscreen）。
+            monkeypatch: 用例级猴子补丁。
+        """
+        layout = FileSelectorLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        qapp.processEvents()
+        try:
+            _patch_async_pool(monkeypatch)
+            monkeypatch.setattr(layout, "_clear_last_path", MagicMock())
+            clear_focus_spy: MagicMock = MagicMock()
+            monkeypatch.setattr(layout._path_input, "clearFocus", clear_focus_spy)
+
+            layout._path_input.setText("   ")
+            layout._navigate_to_input_path()
+
+            assert layout._current_path == "All"
+            assert layout._path_input.text() == "All"
+            clear_focus_spy.assert_called_once()
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+    def test_invalid_path_shows_exact_dialog(
+        self, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """无效路径跳转 → 弹出固定标题/正文的提示弹窗，且不派发异步加载。
+
+        Args:
+            qapp: 会话级 QApplication（offscreen）。
+            tmp_path: pytest 临时目录（构造不存在路径）。
+            monkeypatch: 用例级猴子补丁。
+        """
+        layout = FileSelectorLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        qapp.processEvents()
+        try:
+            fake_pool = _patch_async_pool(monkeypatch)
+            captured: list = []
+            monkeypatch.setattr(
+                layout,
+                "_show_message_dialog",
+                lambda title, message, **kwargs: captured.append((title, message)),
+            )
+
+            layout._path_input.setText(str(tmp_path / "no_such_dir_xyz"))
+            layout._navigate_to_input_path()
+
+            assert captured == [("无效路径", "该路径不存在，请检查后重新输入")]
+            assert fake_pool.started == []
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+    def test_successful_jump_clears_focus_and_blur_does_not_revert(
+        self, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """成功跳转 → 取消焦点；随后失焦不回填（文本仍是目标目录）。
+
+        Args:
+            qapp: 会话级 QApplication（offscreen）。
+            tmp_path: pytest 临时目录（真实目录）。
+            monkeypatch: 用例级猴子补丁。
+        """
+        target = tmp_path / "real_dir"
+        target.mkdir()
+        target_str = os.path.abspath(str(target))
+
+        layout = FileSelectorLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        qapp.processEvents()
+        try:
+            _patch_async_pool(monkeypatch)
+            monkeypatch.setattr(layout, "_save_last_path", MagicMock())
+            monkeypatch.setattr(
+                layout._file_list, "begin_path_transition", MagicMock(return_value=False)
+            )
+            clear_focus_spy: MagicMock = MagicMock()
+            monkeypatch.setattr(layout._path_input, "clearFocus", clear_focus_spy)
+
+            layout._path_input.setText(target_str)
+            layout._navigate_to_input_path()
+
+            clear_focus_spy.assert_called_once()
+
+            from PySide6.QtGui import QFocusEvent
+
+            qapp.sendEvent(layout._path_input, QFocusEvent(QEvent.FocusOut))
+            assert os.path.normcase(layout._path_input.text()) == os.path.normcase(
+                target_str
+            )
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+    def test_blur_without_jump_restores_current_path(
+        self, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """手动编辑未提交即失焦 → 路径框回填当前显示路径。
+
+        Args:
+            qapp: 会话级 QApplication（offscreen）。
+            tmp_path: pytest 临时目录（当前显示路径）。
+            monkeypatch: 用例级猴子补丁。
+        """
+        current = str(tmp_path / "current_dir")
+        Path(current).mkdir()
+
+        layout = FileSelectorLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        qapp.processEvents()
+        try:
+            layout._current_path = current
+            # 模拟用户输入：setText 不触发 textEdited，需显式 emit 模拟手动编辑。
+            layout._path_input.setText("half-typed")
+            layout._path_input.textEdited.emit("half-typed")
+
+            from PySide6.QtGui import QFocusEvent
+
+            qapp.sendEvent(layout._path_input, QFocusEvent(QEvent.FocusOut))
+
+            assert os.path.normcase(layout._path_input.text()) == os.path.normcase(
+                current
+            )
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+    def test_invalid_path_confirm_restores_current_path(
+        self, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """无效路径弹窗确认关闭后立即回填当前路径并把焦点转交文件列表；随后失焦保持回填值。
+
+        Args:
+            qapp: 会话级 QApplication（offscreen）。
+            tmp_path: pytest 临时目录（当前显示路径）。
+            monkeypatch: 用例级猴子补丁。
+        """
+        current = str(tmp_path / "current_dir")
+        Path(current).mkdir()
+
+        layout = FileSelectorLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        qapp.processEvents()
+        try:
+            _patch_async_pool(monkeypatch)
+            layout._current_path = current
+            shown: dict = {}
+
+            def fake_show(title: str, message: str, *, on_closed=None) -> None:
+                shown["title"] = title
+                shown["message"] = message
+                shown["text_while_open"] = layout._path_input.text()
+                shown["on_closed"] = on_closed
+
+            monkeypatch.setattr(layout, "_show_message_dialog", fake_show)
+
+            invalid = "Z:/definitely/not/here_xyz"
+            layout._path_input.setText(invalid)
+            layout._navigate_to_input_path()
+
+            assert shown["title"] == "无效路径"
+            assert shown["message"] == "该路径不存在，请检查后重新输入"
+            # 弹窗打开期间保留无效文本（确认前不回填）
+            assert shown["text_while_open"] == invalid
+            # 模拟用户点击"确定"关闭弹窗 → 立即回填当前路径并把焦点转交文件列表
+            assert callable(shown["on_closed"])
+            focus_spy: MagicMock = MagicMock()
+            monkeypatch.setattr(layout._file_list, "setFocus", focus_spy)
+            shown["on_closed"]()
+            assert os.path.normcase(layout._path_input.text()) == os.path.normcase(current)
+            focus_spy.assert_called_once()
+
+            from PySide6.QtGui import QFocusEvent
+
+            qapp.sendEvent(layout._path_input, QFocusEvent(QEvent.FocusOut))
+            assert os.path.normcase(layout._path_input.text()) == os.path.normcase(current)
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+    def test_escape_restores_current_path_and_clears_focus(
+        self, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """编辑中按 ESC → 回填当前路径并移除焦点（事件被消费）。
+
+        Args:
+            qapp: 会话级 QApplication（offscreen）。
+            tmp_path: pytest 临时目录（当前显示路径）。
+            monkeypatch: 用例级猴子补丁。
+        """
+        current = str(tmp_path / "current_dir")
+        Path(current).mkdir()
+
+        layout = FileSelectorLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        qapp.processEvents()
+        try:
+            layout._current_path = current
+            # 模拟用户输入：setText 不触发 textEdited，需显式 emit 模拟手动编辑。
+            layout._path_input.setText("half-typed")
+            layout._path_input.textEdited.emit("half-typed")
+            clear_focus_spy: MagicMock = MagicMock()
+            monkeypatch.setattr(layout._path_input, "clearFocus", clear_focus_spy)
+
+            from PySide6.QtGui import QKeyEvent
+
+            qapp.sendEvent(
+                layout._path_input,
+                QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier),
+            )
+
+            assert os.path.normcase(layout._path_input.text()) == os.path.normcase(current)
+            clear_focus_spy.assert_called_once()
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+    def test_literal_all_jumps_to_all_view(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """输入字面 "all"（不分大小写）→ 跳转 All 视图、不回退为无效路径弹窗。
+
+        Args:
+            qapp: 会话级 QApplication（offscreen）。
+            monkeypatch: 用例级猴子补丁。
+        """
+        layout = FileSelectorLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        qapp.processEvents()
+        try:
+            _patch_async_pool(monkeypatch)
+            monkeypatch.setattr(layout, "_clear_last_path", MagicMock())
+            dialog_spy: MagicMock = MagicMock()
+            monkeypatch.setattr(layout, "_show_message_dialog", dialog_spy)
+            clear_focus_spy: MagicMock = MagicMock()
+            monkeypatch.setattr(layout._path_input, "clearFocus", clear_focus_spy)
+
+            layout._path_input.setText("all")
+            layout._navigate_to_input_path()
+
+            assert layout._current_path == "All"
+            assert layout._path_input.text() == "All"
+            clear_focus_spy.assert_called_once()
+            dialog_spy.assert_not_called()
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()
+
+    def test_completion_keeps_dirty_text_and_blur_restores_to_new_path(
+        self, qapp: QApplication, tmp_path: Path,
+    ) -> None:
+        """加载完成时路径框正被编辑 → 不覆盖；失焦回填到新的当前路径。
+
+        Args:
+            qapp: 会话级 QApplication（offscreen）。
+            tmp_path: pytest 临时目录（原路径与目标路径）。
+        """
+        original = str(tmp_path / "original_dir")
+        Path(original).mkdir()
+        target = str(tmp_path / "target_dir")
+        Path(target).mkdir()
+
+        layout = FileSelectorLayout()
+        layout.resize(*_LAYOUT_SIZE)
+        qapp.processEvents()
+        try:
+            layout._current_path = original
+            # 模拟用户正在编辑路径框（未提交）
+            layout._path_input.setText("being-typed")
+            layout._path_input.textEdited.emit("being-typed")
+
+            # 异步加载完成应用条目（目标路径）→ 不覆盖正在编辑的文本
+            layout._apply_directory_entries(target, [])
+            assert layout._path_input.text() == "being-typed"
+            assert layout._path_input_dirty is True
+
+            from PySide6.QtGui import QFocusEvent
+
+            qapp.sendEvent(layout._path_input, QFocusEvent(QEvent.FocusOut))
+            assert os.path.normcase(layout._path_input.text()) == os.path.normcase(target)
+        finally:
+            safe_teardown(layout)
+            qapp.processEvents()

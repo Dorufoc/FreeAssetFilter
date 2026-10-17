@@ -1345,6 +1345,38 @@ class TestContentTransitionOverlay:
         safe_teardown(overlay)
         safe_teardown(parent)
 
+    def test_finished_emitted_once_on_repeated_finish_now(
+        self, qapp: QApplication
+    ) -> None:
+        """finished 信号：finish_now 连调两次只发出一次（幂等收尾）。"""
+        parent = QWidget()
+        overlay = ContentTransitionOverlay(parent, QPixmap(10, 10))
+        emitted = _make_capture(overlay.finished)
+        overlay.start()
+        overlay.finish_now()
+        overlay.finish_now()
+        assert len(emitted) == 1
+        assert overlay.is_finished() is True
+        safe_teardown(parent)
+
+    def test_finished_emitted_once_on_natural_completion(
+        self, qapp: QApplication
+    ) -> None:
+        """finished 信号：动画自然跑完恰好发出一次。"""
+        from tests.support.qt_helpers import process_qt_events
+
+        parent = QWidget()
+        parent.resize(40, 40)
+        overlay = ContentTransitionOverlay(
+            parent, QPixmap(40, 40), duration_ms=50
+        )
+        emitted = _make_capture(overlay.finished)
+        overlay.start()
+        process_qt_events(qapp, ms=300)
+        assert len(emitted) == 1
+        assert overlay.is_finished() is True
+        safe_teardown(parent)
+
 
 class _SolidFillWidget(QWidget):
     """纯色填充探针控件（背景过渡栈序关系测试用）。"""

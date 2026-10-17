@@ -27,6 +27,7 @@ from PySide6.QtCore import (
     QRectF,
     QTimer,
     QVariantAnimation,
+    Signal,
 )
 from PySide6.QtGui import (
     QColor,
@@ -143,6 +144,9 @@ class _SnapshotTransitionOverlay(QWidget):
 
     DEFAULT_DURATION_MS: int = 450
 
+    # 过渡收尾信号：遮罩完成（自然结束或被 finish_now 打断）后恰好发出一次
+    finished = Signal()
+
     def __init__(
         self,
         parent: QWidget,
@@ -246,6 +250,10 @@ class _SnapshotTransitionOverlay(QWidget):
         """立即结束过渡并清理（快速连续切换时的去重路径，幂等）。"""
         self._on_finished()
 
+    def is_finished(self) -> bool:
+        """过渡是否已收尾（自然结束或被 finish_now 打断均计入）。"""
+        return self._finished
+
     def _on_value_changed(self, value: object) -> None:
         """动画帧回调：更新揭示半径 / 透明度并触发重绘。
 
@@ -263,7 +271,7 @@ class _SnapshotTransitionOverlay(QWidget):
         self.update()
 
     def _on_finished(self) -> None:
-        """动画结束清理：停动画、隐藏并调度销毁（幂等）。"""
+        """动画结束清理：停动画、隐藏、发出 ``finished`` 并调度销毁（幂等，信号恰好一次）。"""
         if self._finished:
             return
         self._finished = True
@@ -281,6 +289,7 @@ class _SnapshotTransitionOverlay(QWidget):
             pass
         self.hide()
         self.deleteLater()
+        self.finished.emit()
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802 - Qt 命名
         """过渡激活期间父级尺寸变化 → 立即收尾（快照与父级错位无意义）。"""

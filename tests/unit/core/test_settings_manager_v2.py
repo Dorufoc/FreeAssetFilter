@@ -183,21 +183,26 @@ class TestGeneralLayoutMode:
 
 
 class TestGeneralBooleanToggles:
-    """general 布尔开关：enable_ai_entry / include_remote_drives / blank_right_click_go_back。"""
+    """general 布尔开关：enable_ai_entry / include_remote_drives / blank_right_click_go_back
+    / show_hidden_files / show_system_files。"""
 
     def test_defaults_are_false(self) -> None:
-        """默认树三个开关均为 False（AI 入口 / 网络盘光驱 / 空白右键返回默认关闭）。"""
+        """默认树五个开关均为 False（AI 入口 / 网络盘光驱 / 空白右键返回 / 显示隐藏 / 显示系统文件默认关闭）。"""
         assert DEFAULT_SETTINGS_V2["general"]["enable_ai_entry"] is False
         assert DEFAULT_SETTINGS_V2["general"]["include_remote_drives"] is False
         assert DEFAULT_SETTINGS_V2["general"]["blank_right_click_go_back"] is False
+        assert DEFAULT_SETTINGS_V2["general"]["show_hidden_files"] is False
+        assert DEFAULT_SETTINGS_V2["general"]["show_system_files"] is False
 
     def test_fresh_load_has_false_defaults(self, tmp_path: Path) -> None:
-        """新文件加载即含三键且为 False。"""
+        """新文件加载即含五键且为 False。"""
         v2 = _fresh_v2(tmp_path)
         v2.load()
         assert v2.get("general.enable_ai_entry") is False
         assert v2.get("general.include_remote_drives") is False
         assert v2.get("general.blank_right_click_go_back") is False
+        assert v2.get("general.show_hidden_files") is False
+        assert v2.get("general.show_system_files") is False
 
     def test_save_load_merge_keeps_true(self, tmp_path: Path) -> None:
         """save → 新实例 load → merge 后 True 保持（布尔白名单键不丢失）。"""
@@ -207,6 +212,8 @@ class TestGeneralBooleanToggles:
         v2.set("general.enable_ai_entry", True)
         v2.set("general.include_remote_drives", True)
         v2.set("general.blank_right_click_go_back", True)
+        v2.set("general.show_hidden_files", True)
+        v2.set("general.show_system_files", True)
         v2.save()
 
         fresh = SettingsManagerV2(tmp_file)
@@ -214,6 +221,8 @@ class TestGeneralBooleanToggles:
         assert fresh.get("general.enable_ai_entry") is True
         assert fresh.get("general.include_remote_drives") is True
         assert fresh.get("general.blank_right_click_go_back") is True
+        assert fresh.get("general.show_hidden_files") is True
+        assert fresh.get("general.show_system_files") is True
 
     @pytest.mark.parametrize("bad", ["true", 1, 0, None, "yes"])
     def test_invalid_values_fall_back_false(self, tmp_path: Path, bad) -> None:
@@ -229,6 +238,8 @@ class TestGeneralBooleanToggles:
                         "enable_ai_entry": bad,
                         "include_remote_drives": bad,
                         "blank_right_click_go_back": bad,
+                        "show_hidden_files": bad,
+                        "show_system_files": bad,
                     },
                 }
             ),
@@ -239,6 +250,8 @@ class TestGeneralBooleanToggles:
         assert v2.get("general.enable_ai_entry") is False
         assert v2.get("general.include_remote_drives") is False
         assert v2.get("general.blank_right_click_go_back") is False
+        assert v2.get("general.show_hidden_files") is False
+        assert v2.get("general.show_system_files") is False
 
 
 class TestStaleWriterProtection:

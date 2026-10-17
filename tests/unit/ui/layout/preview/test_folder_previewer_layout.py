@@ -9,11 +9,15 @@
   - 进入子目录 → 返回根目录 → 根目录返回为空操作（不越出根文件夹）
   - 对文件条目进入无效；空目录空态文案
 - 异常路径：文件夹不存在 / 扫描不可读 → 覆盖层且不崩溃；cleanup 复位
-- 宿主集成：UnifiedPreviewerLayout.set_file(is_dir) → FolderPreviewerLayout
+- 隐藏/系统过滤：收集期单点接线（Python 回退 + native 双路径）、实例默认
+  隐藏、setter 幂等 / AND 语义 / 重扫口径
+- 宿主集成：UnifiedPreviewerLayout.set_file(is_dir) → FolderPreviewerLayout；
+  宿主隐藏/系统开关的创建时下发与预览中联动重扫
 """
 
 from __future__ import annotations
 
+import ctypes
 import os
 import sys
 import time
@@ -68,6 +72,50 @@ def _row_names(model: _FolderListModel) -> list:
         model.data(model.index(row), Qt.DisplayRole)
         for row in range(model.rowCount())
     ]
+
+
+def _set_file_attributes(path: Path, attrs: int) -> None:
+    """经 Win32 SetFileAttributesW 设置文件/目录属性位。"""
+    ok = ctypes.windll.kernel32.SetFileAttributesW(str(path), attrs)
+    if ok == 0:
+        raise OSError(ctypes.get_last_error(), f"SetFileAttributesW 失败: {path}")
+
+
+def _make_hidden_system_dir(tmp_path: Path) -> Path:
+    """构造含普通/隐藏/系统/双重属性与隐藏目录的临时目录。"""
+    src_dir: Path = tmp_path / "hs"
+    src_dir.mkdir()
+    (src_dir / "normal.txt").write_text("n", encoding="utf-8")
+    (src_dir / "hidden.txt").write_text("h", encoding="utf-8")
+    (src_dir / "system.txt").write_text("s", encoding="utf-8")
+    (src_dir / "both.txt").write_text("b", encoding="utf-8")
+    hidden_dir = src_dir / "hidden_dir"
+    hidden_dir.mkdir()
+    _set_file_attributes(src_dir / "hidden.txt", 0x2)
+    _set_file_attributes(src_dir / "system.txt", 0x4)
+    _set_file_attributes(src_dir / "both.txt", 0x2 | 0x4)
+    _set_file_attributes(hidden_dir, 0x2)
+    return src_dir
+
+
+def _wait_host_folder(
+    qapp: QApplication, host: object, timeout_ms: int = 10000
+) -> FolderPreviewerLayout:
+    """泵事件直到统一预览器路由出已加载的 FolderPreviewerLayout。"""
+    deadline = time.monotonic() + timeout_ms / 1000
+    widget = None
+    while time.monotonic() < deadline:
+        process_qt_events(qapp, 30)
+        candidate = host._current_preview_widget
+        if (
+            isinstance(candidate, FolderPreviewerLayout)
+            and not candidate._loading
+            and candidate._root_path
+        ):
+            widget = candidate
+            break
+    assert widget is not None, "文件夹预览器未在超时内就绪"
+    return widget
 
 
 @pytest.fixture()
@@ -291,13 +339,151 @@ class TestFallbacks:
         root.mkdir()
         (root / "a.txt").write_text("x", encoding="utf-8")
         monkeypatch.setattr(
-            folder_mod, "_collect_directory_entries", lambda path: None
+            folder_mod,
+            "_collect_directory_entries",
+            lambda path, **kwargs: None,
         )
         layout.set_file(str(root))
         _wait_loaded(layout, qapp)
         assert layout._content_stack.currentIndex() == layout._PAGE_OVERLAY
         assert layout._placeholder.text() == _PLACEHOLDER_UNAVAILABLE
         assert layout._model.rowCount() == 0
+
+
+# =============================================================================
+# 隐藏/系统文件过滤（收集期单点接线 + 实例开关 + setter 重扫口径）
+# =============================================================================
+
+class TestHiddenSystemFiltering:
+    """隐藏/系统过滤：收集单点、实例默认隐藏、setter 幂等/AND/重扫语义。"""
+
+    _ALL_NAMES = ["both.txt", "hidden.txt", "hidden_dir", "normal.txt", "system.txt"]
+
+    def test_python_fallback_filter_matrix(
+        self, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """回退路径：四组开关组合的可见名集正确 + 条目仍 7 键。"""
+        src_dir = _make_hidden_system_dir(tmp_path)
+        monkeypatch.setattr(folder_mod, "_native_scan_directory", lambda path: None)
+
+        def names(show_hidden: bool, show_system: bool) -> list:
+            entries = folder_mod._collect_directory_entries(
+                str(src_dir), show_hidden=show_hidden, show_system=show_system
+            )
+            assert entries is not None
+            for entry in entries:
+                assert set(entry.keys()) == {
+                    "name", "path", "is_dir", "size",
+                    "modified", "created", "suffix",
+                }, "过滤后条目必须保持 7 键同构"
+            return sorted(e["name"] for e in entries)
+
+        assert names(False, False) == ["normal.txt"]
+        assert names(True, False) == ["hidden.txt", "hidden_dir", "normal.txt"]
+        assert names(True, True) == self._ALL_NAMES
+        assert names(False, True) == ["normal.txt"]
+
+    def test_legacy_no_flags_returns_all(
+        self, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """静态直调未传开关（均 None）→ 不做过滤，保留 legacy 口径。"""
+        src_dir = _make_hidden_system_dir(tmp_path)
+        monkeypatch.setattr(folder_mod, "_native_scan_directory", lambda path: None)
+        entries = folder_mod._collect_directory_entries(str(src_dir))
+        assert entries is not None
+        assert sorted(e["name"] for e in entries) == self._ALL_NAMES
+
+    def test_instance_default_hides_hidden_and_system(
+        self, qapp: QApplication, layout: FolderPreviewerLayout, tmp_path: Path
+    ) -> None:
+        """实例级默认口径：隐藏/系统条目不可见（仅普通条目）。"""
+        src_dir = _make_hidden_system_dir(tmp_path)
+        layout.set_file(str(src_dir))
+        _wait_loaded(layout, qapp)
+        assert sorted(_row_names(layout._model)) == ["normal.txt"]
+
+    def test_setter_rescan_matrix_and_cascade(
+        self, qapp: QApplication, layout: FolderPreviewerLayout, tmp_path: Path
+    ) -> None:
+        """setter：开启隐藏/系统后重扫生效；关闭隐藏级联关闭系统。"""
+        src_dir = _make_hidden_system_dir(tmp_path)
+        layout.set_file(str(src_dir))
+        _wait_loaded(layout, qapp)
+        assert sorted(_row_names(layout._model)) == ["normal.txt"]
+
+        layout.set_show_hidden_files(True)
+        _wait_loaded(layout, qapp)
+        assert sorted(_row_names(layout._model)) == [
+            "hidden.txt", "hidden_dir", "normal.txt",
+        ]
+
+        layout.set_show_system_files(True)
+        _wait_loaded(layout, qapp)
+        assert sorted(_row_names(layout._model)) == self._ALL_NAMES
+
+        layout.set_show_hidden_files(False)
+        _wait_loaded(layout, qapp)
+        assert layout._show_hidden_files is False
+        assert layout._show_system_files is False
+        assert sorted(_row_names(layout._model)) == ["normal.txt"]
+
+    def test_setter_idempotent_and_guards(
+        self,
+        qapp: QApplication,
+        layout: FolderPreviewerLayout,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """setter：AND 语义 / 同值不重扫 / 未加载文件夹不重扫。"""
+        refresh_calls: list = []
+        monkeypatch.setattr(
+            layout, "_refresh", lambda: refresh_calls.append("refresh")
+        )
+
+        # 未加载文件夹：setter 只存值不重扫
+        layout.set_show_hidden_files(True)
+        assert layout._show_hidden_files is True
+        assert refresh_calls == []
+
+        # 隐藏关闭时开启系统 → AND 语义 no-op，不重扫
+        layout.set_show_hidden_files(False)
+        layout.set_show_system_files(True)
+        assert layout._show_system_files is False
+        assert refresh_calls == []
+
+        # 已加载文件夹（直接置 root）：口径变化触发重扫，同值不触发
+        layout._root_path = str(tmp_path)
+        layout.set_show_hidden_files(True)
+        assert refresh_calls == ["refresh"]
+        layout.set_show_hidden_files(True)
+        assert refresh_calls == ["refresh"]
+        layout.set_show_system_files(True)
+        assert layout._show_system_files is True
+        assert refresh_calls == ["refresh", "refresh"]
+        layout.set_show_hidden_files(False)
+        assert layout._show_system_files is False
+        assert refresh_calls == ["refresh", "refresh", "refresh"]
+
+    def test_native_filter_matrix_when_dll_available(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        """native 路径：默认隐藏与开启隐藏两档可见名集正确（DLL 缺失 skip）。"""
+        import freeassetfilter.core.native.bridges.faf_core_bridge as fcb_mod
+
+        bridge = fcb_mod.get_faf_core_bridge()
+        if not bridge.available or not bridge._supports_scan:  # noqa: SLF001
+            pytest.skip("faf_core DLL 不可用或缺 scan 导出")
+        src_dir = _make_hidden_system_dir(tmp_path)
+
+        def names(show_hidden: bool, show_system: bool) -> list:
+            entries = folder_mod._collect_directory_entries(
+                str(src_dir), show_hidden=show_hidden, show_system=show_system
+            )
+            assert entries is not None
+            return sorted(e["name"] for e in entries)
+
+        assert names(False, False) == ["normal.txt"]
+        assert names(True, False) == ["hidden.txt", "hidden_dir", "normal.txt"]
 
 
 # =============================================================================
@@ -475,6 +661,97 @@ class TestHostIntegration:
             assert widget._root_path == str(sample_dir)
             assert widget._model.rowCount() >= 2
             assert "alpha.txt" in _row_names(widget._model)
+        finally:
+            host.cleanup()
+            try:
+                host.deleteLater()
+            except RuntimeError:
+                pass
+            process_qt_events(qapp, 30)
+
+    def test_host_forwards_flags_on_previewer_creation(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        """宿主先存开关：文件夹预览器创建时收到快照并生效。"""
+        from freeassetfilter.ui.layout.unified_previewer_layout import (
+            UnifiedPreviewerLayout,
+        )
+
+        src_dir = _make_hidden_system_dir(tmp_path)
+        host = UnifiedPreviewerLayout()
+        host.resize(760, 640)
+        host.set_show_hidden_files(True)
+        host.set_show_system_files(True)
+        host.set_file(
+            {
+                "name": src_dir.name,
+                "path": str(src_dir),
+                "is_dir": True,
+                "size": 0,
+                "modified": "",
+                "created": "",
+                "suffix": "",
+            }
+        )
+        try:
+            widget = _wait_host_folder(qapp, host)
+            assert widget._show_hidden_files is True
+            assert widget._show_system_files is True
+            assert sorted(_row_names(widget._model)) == (
+                TestHiddenSystemFiltering._ALL_NAMES
+            )
+        finally:
+            host.cleanup()
+            try:
+                host.deleteLater()
+            except RuntimeError:
+                pass
+            process_qt_events(qapp, 30)
+
+    def test_host_setter_updates_live_folder_preview(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        """预览中切换开关：当前文件夹预览器收到下发并重扫。"""
+        from freeassetfilter.ui.layout.unified_previewer_layout import (
+            UnifiedPreviewerLayout,
+        )
+
+        src_dir = _make_hidden_system_dir(tmp_path)
+        host = UnifiedPreviewerLayout()
+        host.resize(760, 640)
+        host.set_file(
+            {
+                "name": src_dir.name,
+                "path": str(src_dir),
+                "is_dir": True,
+                "size": 0,
+                "modified": "",
+                "created": "",
+                "suffix": "",
+            }
+        )
+        try:
+            widget = _wait_host_folder(qapp, host)
+            assert sorted(_row_names(widget._model)) == ["normal.txt"]
+
+            host.set_show_hidden_files(True)
+            _wait_loaded(widget, qapp)
+            assert widget._show_hidden_files is True
+            assert sorted(_row_names(widget._model)) == [
+                "hidden.txt", "hidden_dir", "normal.txt",
+            ]
+
+            host.set_show_system_files(True)
+            _wait_loaded(widget, qapp)
+            assert sorted(_row_names(widget._model)) == (
+                TestHiddenSystemFiltering._ALL_NAMES
+            )
+
+            host.set_show_hidden_files(False)
+            _wait_loaded(widget, qapp)
+            assert widget._show_hidden_files is False
+            assert widget._show_system_files is False
+            assert sorted(_row_names(widget._model)) == ["normal.txt"]
         finally:
             host.cleanup()
             try:

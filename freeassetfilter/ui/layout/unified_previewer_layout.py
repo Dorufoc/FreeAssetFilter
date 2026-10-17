@@ -97,6 +97,9 @@ class UnifiedPreviewerLayout(QWidget):
         self._current_file_info: Optional[dict] = None
         # AI 功能入口开关（由主窗口下发；仅 PDF/文本预览器消费，默认关闭）
         self._ai_entry_enabled: bool = False
+        # 显示隐藏/系统文件开关（由主窗口下发；文件夹预览器消费，默认关闭）
+        self._show_hidden_files: bool = False
+        self._show_system_files: bool = False
         self._placeholder_label: Optional[QLabel] = None
         self._content_layout: Optional[QVBoxLayout] = None
 
@@ -561,6 +564,37 @@ class UnifiedPreviewerLayout(QWidget):
         if self._current_preview_widget is not None:
             self._apply_ai_entry_flag(self._current_preview_widget)
 
+    def set_show_hidden_files(self, enabled: bool) -> None:
+        """运行时切换「显示隐藏文件」（幂等；主窗口启动/设置提交路径调用）。
+
+        仅文件夹预览器消费（其余预览器不支持则静默跳过）。关闭时同步
+        关闭「显示系统文件」（系统文件可见性以隐藏文件开关为前提）；
+        尚未创建预览器时仅记录开关，创建时再下发；当前文件夹预览器会
+        立即重扫以体现新口径。
+
+        Args:
+            enabled: True 显示隐藏文件；False 隐藏（默认）。
+        """
+        enabled = bool(enabled)
+        if not enabled:
+            self._show_system_files = False
+        self._show_hidden_files = enabled
+        if self._current_preview_widget is not None:
+            self._apply_hidden_system_flags(self._current_preview_widget)
+
+    def set_show_system_files(self, enabled: bool) -> None:
+        """运行时切换「显示系统文件」（幂等；主窗口启动/设置提交路径调用）。
+
+        仅当「显示隐藏文件」亦开启时生效（AND 语义）；下发与重扫口径见
+        :meth:`set_show_hidden_files`。
+
+        Args:
+            enabled: True 显示系统文件；False 隐藏（默认）。
+        """
+        self._show_system_files = bool(enabled) and self._show_hidden_files
+        if self._current_preview_widget is not None:
+            self._apply_hidden_system_flags(self._current_preview_widget)
+
     def current_file_info(self) -> Optional[dict]:
         """返回当前预览文件信息（无预览时为 None；信息面板联动用）。"""
         return self._current_file_info
@@ -577,6 +611,25 @@ class UnifiedPreviewerLayout(QWidget):
             warning(f"AI 入口开关下发失败: {exc}")
     
     
+    def _apply_hidden_system_flags(self, widget: QWidget) -> None:
+        """将隐藏/系统文件开关下发给支持的预览器（不支持则静默跳过）。
+
+        顺序固定：先隐藏、后系统（系统可见性以隐藏开关为前提，反序会把
+        「两者同开」下发成系统开关 no-op）。
+        """
+        hidden_setter = getattr(widget, "set_show_hidden_files", None)
+        if callable(hidden_setter):
+            try:
+                hidden_setter(self._show_hidden_files)
+            except Exception as exc:  # noqa: BLE001 - 开关下发失败不影响预览
+                warning(f"显示隐藏文件开关下发失败: {exc}")
+        system_setter = getattr(widget, "set_show_system_files", None)
+        if callable(system_setter):
+            try:
+                system_setter(self._show_system_files)
+            except Exception as exc:  # noqa: BLE001 - 开关下发失败不影响预览
+                warning(f"显示系统文件开关下发失败: {exc}")
+
     def _get_previewer_class(self, file_info: dict) -> Optional[type]:
         """根据文件信息获取对应的预览器类。
         
@@ -711,6 +764,8 @@ class UnifiedPreviewerLayout(QWidget):
                 self._current_preview_type = previewer_class
                 # AI 入口开关下发（仅支持的预览器；关闭时不创建相关控件）
                 self._apply_ai_entry_flag(self._current_preview_widget)
+                # 显示隐藏/系统文件开关下发（仅支持的预览器；文件夹预览器消费）
+                self._apply_hidden_system_flags(self._current_preview_widget)
                 # 内层条目选中信号转发（文件夹预览器等；主窗口据此联动信息面板）
                 if hasattr(self._current_preview_widget, "entry_selected"):
                     try:

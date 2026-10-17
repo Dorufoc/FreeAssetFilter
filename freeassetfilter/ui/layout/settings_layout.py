@@ -1695,6 +1695,14 @@ class GeneralSettingsPage(QWidget):
         self._drives_toggle: StyledToggle | None = None
         self._blank_back_row: SettingsRow | None = None
         self._blank_back_toggle: StyledToggle | None = None
+        # 隐藏文件 / 受保护系统文件开关状态（默认关闭；系统文件行仅在显示
+        # 隐藏文件开启时可见，初值由 refresh_from_staging 从暂存缓存读取）
+        self._show_hidden_files: bool = False
+        self._show_system_files: bool = False
+        self._hidden_row: SettingsRow | None = None
+        self._hidden_toggle: StyledToggle | None = None
+        self._system_row: SettingsRow | None = None
+        self._system_toggle: StyledToggle | None = None
         self._build_ui()
         self.refresh_from_staging()
 
@@ -1741,6 +1749,29 @@ class GeneralSettingsPage(QWidget):
         self._drives_toggle.toggled.connect(self._on_remote_drives_toggled)
         self._drives_row.set_control(self._drives_toggle)
         layout.addWidget(self._drives_row)
+
+        # ── 显示隐藏文件（默认关闭）──
+        # 暂存隔离铁律：开关只写入 SettingsStagingCache（general.show_hidden_files），
+        # 点击「确定」才经 _submit_settings 下发主窗口并落盘。
+        self._hidden_row = SettingsRow(
+            title="显示隐藏文件",
+            description="在文件选择器中显示带「隐藏」属性的文件或文件夹",
+        )
+        self._hidden_toggle = StyledToggle(checked=False, size="default")
+        self._hidden_toggle.toggled.connect(self._on_show_hidden_files_toggled)
+        self._hidden_row.set_control(self._hidden_toggle)
+        layout.addWidget(self._hidden_row)
+
+        # ── 显示受保护的系统文件（默认关闭，仅在开启隐藏文件后可见）──
+        self._system_row = SettingsRow(
+            title="显示受保护的系统文件",
+            description="额外显示带「系统」属性的受保护操作系统文件或文件夹",
+        )
+        self._system_toggle = StyledToggle(checked=False, size="default")
+        self._system_toggle.toggled.connect(self._on_show_system_files_toggled)
+        self._system_row.set_control(self._system_toggle)
+        self._system_row.setVisible(False)
+        layout.addWidget(self._system_row)
 
         # ── 空白区右键返回上一级（默认关闭）──
         self._blank_back_row = SettingsRow(
@@ -1794,6 +1825,35 @@ class GeneralSettingsPage(QWidget):
         )
         self.staged_changed.emit()
 
+    def _on_show_hidden_files_toggled(self, checked: bool) -> None:
+        """显示隐藏文件开关：只写入暂存缓存，点击「确定」才生效。
+
+        关闭时联动强制关闭「显示受保护的系统文件」并隐藏其行——系统文件
+        仅在开启隐藏文件浏览时才有意义。
+        """
+        if self._general_updating:
+            return
+        self._show_hidden_files = bool(checked)
+        self._staging_cache.set(
+            "general.show_hidden_files", self._show_hidden_files
+        )
+        if not self._show_hidden_files:
+            self._show_system_files = False
+            self._staging_cache.set("general.show_system_files", False)
+        self._sync_general_toggles()
+        self.staged_changed.emit()
+
+    def _on_show_system_files_toggled(self, checked: bool) -> None:
+        """显示受保护系统文件开关：只写入暂存缓存，点击「确定」才生效。"""
+        if self._general_updating:
+            return
+        self._show_system_files = bool(checked)
+        self._staging_cache.set(
+            "general.show_system_files", self._show_system_files
+        )
+        self._sync_general_toggles()
+        self.staged_changed.emit()
+
     def _layout_description_text(self) -> str:
         """返回当前布局的介绍文字 + 换行提示行。"""
         desc = self._LAYOUT_DESCRIPTIONS.get(
@@ -1821,7 +1881,7 @@ class GeneralSettingsPage(QWidget):
             self._layout_updating = False
 
     def _sync_general_toggles(self) -> None:
-        """按当前状态同步三个开关（守卫内赋值，不触发写暂存）。"""
+        """按当前状态同步五个开关与系统文件行可见性（守卫内赋值，不写暂存）。"""
         self._general_updating = True
         try:
             if self._ai_toggle is not None:
@@ -1830,6 +1890,12 @@ class GeneralSettingsPage(QWidget):
                 self._drives_toggle.checked = self._include_remote_drives
             if self._blank_back_toggle is not None:
                 self._blank_back_toggle.checked = self._blank_right_click_go_back
+            if self._hidden_toggle is not None:
+                self._hidden_toggle.checked = self._show_hidden_files
+            if self._system_toggle is not None:
+                self._system_toggle.checked = self._show_system_files
+            if self._system_row is not None:
+                self._system_row.setVisible(self._show_hidden_files)
         finally:
             self._general_updating = False
 
@@ -1851,6 +1917,14 @@ class GeneralSettingsPage(QWidget):
         self._blank_right_click_go_back = (
             saved_blank_back if isinstance(saved_blank_back, bool) else False
         )
+        saved_hidden = self._staging_cache.get("general.show_hidden_files", False)
+        self._show_hidden_files = (
+            saved_hidden if isinstance(saved_hidden, bool) else False
+        )
+        saved_system = self._staging_cache.get("general.show_system_files", False)
+        self._show_system_files = (
+            saved_system if isinstance(saved_system, bool) else False
+        )
         self._sync_layout_segment()
         self._sync_general_toggles()
         self._sync_description_text()
@@ -1861,6 +1935,8 @@ class GeneralSettingsPage(QWidget):
             self._layout_row,
             self._ai_row,
             self._drives_row,
+            self._hidden_row,
+            self._system_row,
             self._blank_back_row,
         ):
             _refresh_settings_item_text(row)
@@ -2763,22 +2839,33 @@ class SettingsLayout(QWidget):
             layout_mode = "workspace"
         if layout_mode not in ("classic", "workspace"):
             layout_mode = "workspace"
-        # 通用页：AI 入口 / 网络盘与光驱 / 空白区右键返回开关
-        #（缺失/非法一律回退 False）。
+        # 通用页：AI 入口 / 网络盘与光驱 / 空白区右键返回 / 显示隐藏文件 /
+        # 显示受保护系统文件开关（缺失/非法一律回退 False）。
         if isinstance(staged_general, dict):
             ai_entry = staged_general.get("enable_ai_entry", False)
             include_remote = staged_general.get("include_remote_drives", False)
             blank_back = staged_general.get("blank_right_click_go_back", False)
+            show_hidden = staged_general.get("show_hidden_files", False)
+            show_system = staged_general.get("show_system_files", False)
         else:
             ai_entry = False
             include_remote = False
             blank_back = False
+            show_hidden = False
+            show_system = False
         if not isinstance(ai_entry, bool):
             ai_entry = False
         if not isinstance(include_remote, bool):
             include_remote = False
         if not isinstance(blank_back, bool):
             blank_back = False
+        if not isinstance(show_hidden, bool):
+            show_hidden = False
+        if not isinstance(show_system, bool):
+            show_system = False
+        # 未开启隐藏文件浏览时，系统文件开关强制关闭（联动语义与页面一致）。
+        if not show_hidden:
+            show_system = False
 
         # 性能档位：只接受三档合法值，缺失/非法回退 balanced（与 V2 合并口径一致）。
         staged_perf = staged.get("performance", {}) if isinstance(staged, dict) else {}
@@ -2835,10 +2922,10 @@ class SettingsLayout(QWidget):
             # 通用页：主界面布局下发（失败仅警告，不阻断整体提交）
             self._apply_staged_layout_mode_to_main_window(layout_mode)
 
-            # 通用页：AI 入口 / 网络盘与光驱 / 空白区右键返回开关下发
-            #（失败仅警告，不阻断提交）
+            # 通用页：AI 入口 / 网络盘与光驱 / 空白区右键返回 / 显示隐藏文件 /
+            # 显示受保护系统文件开关下发（失败仅警告，不阻断提交）
             self._apply_staged_general_toggles_to_main_window(
-                ai_entry, include_remote, blank_back
+                ai_entry, include_remote, blank_back, show_hidden, show_system
             )
 
             # 性能档位应用（仅提交路径调用；顺序：定时器档位 → 进程电源策略
@@ -2868,6 +2955,8 @@ class SettingsLayout(QWidget):
             v2.set("general.enable_ai_entry", ai_entry)
             v2.set("general.include_remote_drives", include_remote)
             v2.set("general.blank_right_click_go_back", blank_back)
+            v2.set("general.show_hidden_files", show_hidden)
+            v2.set("general.show_system_files", show_system)
             v2.set("performance.profile", perf_profile)
             v2.save()
         except Exception as exc:
@@ -3039,19 +3128,27 @@ class SettingsLayout(QWidget):
             warning(f"界面布局切换失败（{layout_mode}）: {exc}")
 
     def _apply_staged_general_toggles_to_main_window(
-        self, ai_entry: bool, include_remote: bool, blank_back: bool
+        self,
+        ai_entry: bool,
+        include_remote: bool,
+        blank_back: bool,
+        show_hidden_files: bool,
+        show_system_files: bool,
     ) -> None:
         """将暂存的通用页开关应用到主窗口（仅提交路径调用）。
 
-        三个开关均为即时项：AI 入口控制预览器工具栏按钮与抽屉，
+        五个开关均为即时项：AI 入口控制预览器工具栏按钮与抽屉，
         网络盘/光驱控制文件选择器「All」视图的盘符过滤，空白区右键
-        返回控制文件选择器空白位右键的返回上级行为。失败仅记录
+        返回控制文件选择器空白位右键的返回上级行为，显示隐藏文件与
+        显示受保护系统文件控制文件选择器的可见性过滤。失败仅记录
         warning，不阻断整体提交。
 
         Args:
             ai_entry: 是否启用 AI 入口。
             include_remote: 是否包含网络/映射盘与光驱。
             blank_back: 是否启用空白区右键返回上一级。
+            show_hidden_files: 是否显示带「隐藏」属性的文件/文件夹。
+            show_system_files: 是否额外显示受保护系统文件/文件夹。
         """
         try:
             mw = self._appearance_page.find_main_window()
@@ -3066,12 +3163,19 @@ class SettingsLayout(QWidget):
             blank_back_setter = getattr(mw, "set_blank_right_click_go_back", None)
             if blank_back_setter is not None:
                 blank_back_setter(blank_back)
+            hidden_setter = getattr(mw, "set_show_hidden_files", None)
+            if hidden_setter is not None:
+                hidden_setter(show_hidden_files)
+            system_setter = getattr(mw, "set_show_system_files", None)
+            if system_setter is not None:
+                system_setter(show_system_files)
         except Exception as exc:  # noqa: BLE001 - 开关下发失败不阻断提交
             from freeassetfilter.utils.app_logger import warning
 
             warning(
                 "通用功能开关下发失败"
-                f"（AI={ai_entry}, 远程盘={include_remote}, 空白右键返回={blank_back}）: {exc}"
+                f"（AI={ai_entry}, 远程盘={include_remote}, 空白右键返回={blank_back},"
+                f" 隐藏文件={show_hidden_files}, 系统文件={show_system_files}）: {exc}"
             )
 
     def _apply_staged_perf_profile(self, profile: str) -> None:

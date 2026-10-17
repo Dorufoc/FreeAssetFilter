@@ -9,7 +9,7 @@ import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QListView, QLabel, QAbstractItemView, QApplication, QListWidget, QListWidgetItem
 from PySide6.QtCore import Qt, Signal, QSize, QTimer, QEvent, QMargins, QObject, QPoint, QRect, QRunnable, QThreadPool
@@ -61,6 +61,11 @@ _PHYSICAL_DRIVE_TYPES = frozenset(
 # 网络/映射盘与光驱的静态默认值：仅作为不携带实例状态的静态调用
 #（测试/工具）的默认口径，交互路径始终由实例开关显式传入。
 _DEFAULT_INCLUDE_REMOTE_DRIVES = False
+
+# Windows 文件属性位（Win32 FILE_ATTRIBUTE_*，取自 stat 的 st_file_attributes）：
+# 隐藏位与系统位；目录收集后按实例开关过滤掉带对应位的条目。
+_FILE_ATTRIBUTE_HIDDEN = 0x2
+_FILE_ATTRIBUTE_SYSTEM = 0x4
 
 
 def _native_scan_directory(path: str) -> Optional[List[Dict[str, Any]]]:
@@ -124,6 +129,8 @@ class _DirectoryCollectRunnable(QRunnable):
         token: 异步加载世代快照，过期结果由槽侧丢弃。
         include_remote: 网络/映射盘与光驱开关快照（UI 线程派发时捕获，
             避免后台线程读取可变实例状态）。
+        show_hidden: 显示隐藏文件开关快照（UI 线程派发时捕获）。
+        show_system: 显示系统文件开关快照（UI 线程派发时捕获）。
     """
 
     def __init__(
@@ -132,6 +139,8 @@ class _DirectoryCollectRunnable(QRunnable):
         path: str,
         token: int,
         include_remote: bool = False,
+        show_hidden: bool = False,
+        show_system: bool = False,
     ) -> None:
         super().__init__()
         self.setAutoDelete(True)
@@ -139,6 +148,8 @@ class _DirectoryCollectRunnable(QRunnable):
         self._path = path
         self._token = token
         self._include_remote = bool(include_remote)
+        self._show_hidden = bool(show_hidden)
+        self._show_system = bool(show_system)
 
     def run(self) -> None:
         try:
@@ -146,6 +157,8 @@ class _DirectoryCollectRunnable(QRunnable):
                 self._path,
                 cancel_check=lambda: self._owner._async_load_token != self._token,
                 include_remote=self._include_remote,
+                show_hidden=self._show_hidden,
+                show_system=self._show_system,
             )
         except Exception as exc:  # noqa: BLE001  # 后台任务兜底：异常按不可读处理
             debug(f"目录收集异常（{self._path}）: {exc}")
@@ -178,6 +191,12 @@ class FileSelectorLayout(QWidget):
         # 空白区右键返回上一级开关（general.blank_right_click_go_back，默认
         # 关闭；启动时与设置提交时经 set_blank_right_click_go_back 下发）
         self._blank_right_click_go_back: bool = False
+        # 显示隐藏文件开关（general.show_hidden_files，默认关闭；启动时与
+        # 设置提交时经 set_show_hidden_files 下发）
+        self._show_hidden_files: bool = False
+        # 显示系统文件开关（general.show_system_files，默认关闭；仅当隐藏
+        # 文件开关亦开启时生效，经 set_show_system_files 下发）
+        self._show_system_files: bool = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
@@ -305,6 +324,8 @@ class FileSelectorLayout(QWidget):
 
         # 导航状态
         self._current_path: str = "All"
+        # 标记路径框是否被用户手动编辑但未提交跳转（失焦时回填当前显示路径）
+        self._path_input_dirty: bool = False
         self._view_mode: str = "card"
         self._nav_history: List[str] = []
         self._history_index: int = -1
@@ -342,6 +363,7 @@ class FileSelectorLayout(QWidget):
 
         # ── 信号连接 ──
         self._path_input.returnPressed.connect(self._navigate_to_input_path)
+        self._path_input.textEdited.connect(self._on_path_input_text_edited)
         self._arrow_btn.clicked.connect(self._navigate_to_input_path)
         self._refresh_btn.clicked.connect(self._reload_directory)
         self._undo_btn.clicked.connect(self._go_back)
@@ -398,14 +420,29 @@ class FileSelectorLayout(QWidget):
         左键按下/拖动/松开委托给框选手势（超过拖拽阈值后进入框选并实时
         更新选中态，未拖拽的单击保留原有"点击=预览"语义）；
         鼠标侧键（后退键）返回上一层级目录。
+        另外监听路径框：Resize 时跟动内嵌跳转按钮，FocusOut 时回填未提交编辑。
 
         Args:
-            obj: 事件来源对象（viewport 或文件列表视图）。
+            obj: 事件来源对象（viewport、文件列表视图或路径输入框）。
             event: Qt 事件对象。
 
         Returns:
             True 表示事件已消费，False 表示放行给默认处理。
         """
+        # 路径框：Resize 跟动内嵌跳转按钮，FocusOut 回填未提交的手动编辑。
+        # 需先于文件列表分支处理：路径框事件可能在 _file_list 创建前到达，
+        # 此刻读取 self._file_list 会抛 AttributeError；处理完直接放行。
+        if obj is self._path_input:
+            if event.type() == QEvent.Resize:
+                self._position_path_jump_btn()
+            elif event.type() == QEvent.FocusOut:
+                self._on_path_input_focus_out()
+            elif event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
+                # ESC：取消编辑，回填当前路径并移出焦点（消费事件不向上传递）
+                self._update_path_input(self._current_path)
+                self._path_input.clearFocus()
+                return True
+            return super().eventFilter(obj, event)
         # 同时监听 viewport 和 QListView 的 Resize（与旧 file_selector.py 一致）
         if obj is self._file_list.viewport() or obj is self._file_list:
             if event.type() == QEvent.Resize:
@@ -823,12 +860,19 @@ class FileSelectorLayout(QWidget):
 
         self._path_input = StyledLineEdit(size="default")
         self._path_input.setPlaceholderText("输入路径...")
+        # 右侧预留 36px 文本空间，防止输入文字被内嵌跳转按钮遮挡
+        # （28px 按钮 + 4px 间隙 + 4px 右边距）。
+        self._path_input.setTextMargins(12, 8, 36, 8)
         nav_row.addWidget(self._path_input, stretch=1)
 
         arrow_icon = str(icons_dir / "arrow_right.svg")
         self._arrow_btn = StyledButton("", variant="ghost", size="sm", icon=arrow_icon)
-        self._arrow_btn.setFixedSize(32, 32)
-        nav_row.addWidget(self._arrow_btn)
+        self._arrow_btn.setFixedSize(28, 28)
+        # 内嵌浮层方案：跳转按钮不占布局项，reparent 进路径框内部并 raise 到
+        # 最上层，浮于输入框右端（与 _file_scrollbar 覆盖在内容区上同一思路）。
+        self._arrow_btn.setParent(self._path_input)
+        self._arrow_btn.raise_()
+        self._path_input.installEventFilter(self)
 
         star_icon = str(icons_dir / "star.svg")
         self._star_btn = StyledButton("", variant="ghost", size="sm", icon=star_icon)
@@ -872,6 +916,17 @@ class FileSelectorLayout(QWidget):
         tool_row.addWidget(self._card_btn)
 
         top_layout.addLayout(tool_row)
+        # 构建末尾先摆一次内嵌跳转按钮（后续由 eventFilter 随输入框 resize 跟动）
+        self._position_path_jump_btn()
+
+    def _position_path_jump_btn(self) -> None:
+        """把内嵌跳转按钮定位到路径框右端（水平内缩，垂直居中，越界钳到 0）。
+
+        首次构建与路径框每次 resize 时调用；坐标以路径框本地坐标系为准。
+        """
+        x = self._path_input.width() - self._arrow_btn.width() - 4
+        y = (self._path_input.height() - self._arrow_btn.height()) // 2
+        self._arrow_btn.move(max(x, 0), max(y, 0))
 
     def _build_bottom_bar(self) -> None:
         icons_dir = get_icons_dir()
@@ -900,6 +955,8 @@ class FileSelectorLayout(QWidget):
         path: str,
         cancel_check=None,
         include_remote: Optional[bool] = None,
+        show_hidden: Optional[bool] = None,
+        show_system: Optional[bool] = None,
     ) -> Optional[List[Dict[str, Any]]]:
         """纯 IO 收集目录条目（桥可用时优先 native 扫描，否则 Python 回退）。
 
@@ -909,12 +966,22 @@ class FileSelectorLayout(QWidget):
         （不经 native 桥）。返回条目列表；目录不可读时返回 None
         （调用方执行与同步路径一致的清空处理）。
 
+        隐藏/系统过滤：``show_hidden`` 与 ``show_system`` 均为 ``None`` 时
+        不做任何过滤（保持静态直调的legacy 口径）；否则对 native 或 Python
+        回退收集到的条目统一套用 ``_apply_hidden_system_filter``（``"All"``
+        盘符分支始终不过滤）。过滤只删条目、不改条目结构，返回值仍为 7 键
+        条目列表。
+
         Args:
             path: 待收集目录路径；``"All"`` 表示磁盘视图。
             cancel_check: 可选取消检查回调（后台线程用，返回 True 表示
                 请求已过期、应尽快放弃）；仅 Python 回退路径消费。
             include_remote: ``"All"`` 视图的网络/映射盘与光驱开关；其他
                 路径忽略。``None`` 时取静态默认（关闭）。
+            show_hidden: 是否显示隐藏文件（FILE_ATTRIBUTE_HIDDEN）；``None``
+                表示不启用过滤。
+            show_system: 是否显示系统文件（FILE_ATTRIBUTE_SYSTEM）；仅当
+                ``show_hidden`` 亦为真时生效。
 
         Returns:
             Optional[List[Dict[str, Any]]]: 7 键条目列表；目录不可读返回
@@ -924,8 +991,64 @@ class FileSelectorLayout(QWidget):
             return FileSelectorLayout._collect_all_drives_python(include_remote)
         native_entries = _native_scan_directory(path)
         if native_entries is not None:
-            return native_entries
-        return FileSelectorLayout._collect_directory_entries_python(path, cancel_check)
+            entries = native_entries
+        else:
+            entries = FileSelectorLayout._collect_directory_entries_python(path, cancel_check)
+        if entries is None:
+            return None
+        return FileSelectorLayout._apply_hidden_system_filter(
+            entries, path, show_hidden, show_system
+        )
+
+    @staticmethod
+    def _apply_hidden_system_filter(
+        entries: List[Dict[str, Any]],
+        path: str,
+        show_hidden: Optional[bool],
+        show_system: Optional[bool],
+    ) -> List[Dict[str, Any]]:
+        """按隐藏/系统文件属性过滤条目（保持原顺序，只删不改）。
+
+        以 ``os.scandir`` 扫一遍目录建立 ``name -> st_file_attributes`` 映射
+        （逐条目 stat 失败则跳过该条目；scandir 本身失败则 fail-open 原样
+        返回）。无映射的条目（名称缺失）保持可见。
+
+        Args:
+            entries: 待过滤的 7 键条目列表。
+            path: 对应目录路径（供 scandir 读取属性）。
+            show_hidden: 是否显示隐藏文件；``None`` 表示不过滤。
+            show_system: 是否显示系统文件；仅当 ``show_hidden`` 亦为真时生效。
+
+        Returns:
+            List[Dict[str, Any]]: 过滤后的条目列表。
+        """
+        if show_hidden is None and show_system is None:
+            return entries
+        show_hidden = bool(show_hidden)
+        effective_system = bool(show_system) and show_hidden
+        if show_hidden and effective_system:
+            return entries
+        attrs_by_name: Dict[str, int] = {}
+        try:
+            with os.scandir(path) as it:
+                for dir_entry in it:
+                    try:
+                        st = dir_entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    attrs_by_name[dir_entry.name] = getattr(
+                        st, "st_file_attributes", 0
+                    )
+        except OSError:
+            return entries
+        result: List[Dict[str, Any]] = []
+        for entry in entries:
+            attrs = attrs_by_name.get(entry["name"], 0)
+            visible_hidden = not (attrs & _FILE_ATTRIBUTE_HIDDEN) or show_hidden
+            visible_system = not (attrs & _FILE_ATTRIBUTE_SYSTEM) or effective_system
+            if visible_hidden and visible_system:
+                result.append(entry)
+        return result
 
     @staticmethod
     def _collect_directory_entries_python(
@@ -972,7 +1095,10 @@ class FileSelectorLayout(QWidget):
         （后台线程收集，不阻塞 UI 线程）。
         """
         entries = self._collect_directory_entries(
-            path, include_remote=self._include_remote_drives
+            path,
+            include_remote=self._include_remote_drives,
+            show_hidden=self._show_hidden_files,
+            show_system=self._show_system_files,
         )
         if entries is None:
             self._file_list.setUpdatesEnabled(False)
@@ -1006,7 +1132,9 @@ class FileSelectorLayout(QWidget):
             self._file_model.set_files(entries)
             self._update_grid_size()
             self._current_path = path
-            self._update_path_input(path)
+            if not self._path_input_dirty:
+                # 路径框正在编辑（未提交）时不覆盖用户输入；失焦时会回填到 _current_path
+                self._update_path_input(path)
             self._update_file_count(len(entries))
         finally:
             file_list.setUpdatesEnabled(True)
@@ -1071,7 +1199,12 @@ class FileSelectorLayout(QWidget):
         self._start_loading_indicator()
         QThreadPool.globalInstance().start(
             _DirectoryCollectRunnable(
-                self, path, token, self._include_remote_drives
+                self,
+                path,
+                token,
+                self._include_remote_drives,
+                self._show_hidden_files,
+                self._show_system_files,
             )
         )
 
@@ -1264,9 +1397,48 @@ class FileSelectorLayout(QWidget):
         return True
 
     def _navigate_to_input_path(self) -> None:
+        """路径框跳转：空输入/字面 All 回 All 视图；无效路径弹提示；成功后取消输入焦点。
+
+        无效路径弹窗确认关闭后立即回填当前显示路径（不保留无效文本）。
+        """
         path = self._path_input.text().strip()
-        if path:
-            self._navigate_to(path)
+        # 显式跳转尝试：清除"未提交编辑"标记，失焦时不再回填当前路径
+        self._path_input_dirty = False
+        if not path or path.lower() == "all":
+            # 空输入或字面 "all"（不分大小写，与 All 视图下路径框显示值一致）→ All 视图
+            self._navigate_to_all()
+            self._path_input.clearFocus()
+            return
+        if self._navigate_to(path):
+            self._path_input.clearFocus()
+        else:
+            self._show_message_dialog(
+                "无效路径",
+                "该路径不存在，请检查后重新输入",
+                on_closed=self._on_invalid_path_dialog_closed,
+            )
+
+    def _on_invalid_path_dialog_closed(self) -> None:
+        """无效路径弹窗关闭：立即回填当前显示路径并把焦点转交文件列表。
+
+        弹窗关闭时系统会把焦点还原给路径框，主动转交文件列表可避免
+        路径框被自动聚焦。
+        """
+        self._update_path_input(self._current_path)
+        self._file_list.setFocus()
+
+    def _on_path_input_text_edited(self, _text: str) -> None:
+        """用户手动编辑路径框：标记未提交编辑（失焦时回填当前显示路径）。
+
+        Args:
+            _text: 编辑后的文本（不使用，仅用于匹配 textEdited 信号签名）。
+        """
+        self._path_input_dirty = True
+
+    def _on_path_input_focus_out(self) -> None:
+        """路径框失焦：未提交跳转的手动编辑回填为当前显示路径。"""
+        if self._path_input_dirty:
+            self._update_path_input(self._current_path)
 
     def _reload_directory(self) -> None:
         """刷新当前目录（异步重扫；不重排历史栈、不改 last_path）。"""
@@ -1303,6 +1475,46 @@ class FileSelectorLayout(QWidget):
             enabled: True 开启空白区右键返回；False 关闭（默认）。
         """
         self._blank_right_click_go_back = bool(enabled)
+
+    def set_show_hidden_files(self, enabled: bool) -> None:
+        """设置「显示隐藏文件」开关（启动与设置提交路径调用；幂等）。
+
+        关闭时同步关闭「显示系统文件」（系统文件可见性以隐藏文件开关为
+        前提）；任一口径变化且当前处于普通目录视图时立即重扫以体现新口径。
+
+        Args:
+            enabled: True 显示隐藏文件（带 FILE_ATTRIBUTE_HIDDEN 位）；
+                False 隐藏（默认）。
+        """
+        enabled = bool(enabled)
+        changed = enabled != self._show_hidden_files
+        if not enabled and self._show_system_files:
+            self._show_system_files = False
+            changed = True
+        self._show_hidden_files = enabled
+        if changed:
+            self._refresh_hidden_filter_view()
+
+    def set_show_system_files(self, enabled: bool) -> None:
+        """设置「显示系统文件」开关（启动与设置提交路径调用；幂等）。
+
+        仅当「显示隐藏文件」亦开启时生效（AND 语义）；口径变化且当前处于
+        普通目录视图时立即重扫以体现新口径。
+
+        Args:
+            enabled: True 显示系统文件（带 FILE_ATTRIBUTE_SYSTEM 位）；
+                False 隐藏（默认）。
+        """
+        enabled = bool(enabled) and self._show_hidden_files
+        if enabled == self._show_system_files:
+            return
+        self._show_system_files = enabled
+        self._refresh_hidden_filter_view()
+
+    def _refresh_hidden_filter_view(self) -> None:
+        """隐藏/系统过滤口径变化后，若当前处于普通目录视图则重扫。"""
+        if self._current_path and self._current_path != "All":
+            self._reload_directory()
 
     def _load_directory_with_transition(self, path: str, direction: int) -> None:
         """带路径过渡动画的异步目录加载。
@@ -1764,8 +1976,16 @@ class FileSelectorLayout(QWidget):
         edit.returnPressed.connect(ok_btn.click)
         _show_dialog(dialog)
 
-    def _show_message_dialog(self, title: str, message: str) -> None:
-        """通用消息提示弹窗（StyledDialog）。"""
+    def _show_message_dialog(
+        self, title: str, message: str, *, on_closed: Optional[Callable[[], None]] = None
+    ) -> None:
+        """通用消息提示弹窗（StyledDialog）。
+
+        Args:
+            title: 弹窗标题。
+            message: 弹窗正文。
+            on_closed: 弹窗关闭后的回调（可选，供调用方恢复状态）。
+        """
         body = QWidget()
         register_widget_qss(body,("background: transparent;"))
         body_layout = QVBoxLayout(body)
@@ -1779,6 +1999,9 @@ class FileSelectorLayout(QWidget):
 
         dialog = StyledDialog(title=title, body_widget=body, footer_type=FOOTER_CENTER)
         self._track_dialog(dialog)
+        if on_closed is not None:
+            # finished 信号带 result 参数，lambda 吞掉后调用无参回调
+            dialog.finished.connect(lambda *_: on_closed())
 
         ok_btn = StyledButton("确定", variant="primary")
         ok_btn.clicked.connect(lambda: dialog.close_dialog(0))
@@ -2044,7 +2267,9 @@ class FileSelectorLayout(QWidget):
     # ── UI 更新 ────────────────────────────────────────────────────────────
 
     def _update_path_input(self, path: str) -> None:
+        """同步路径框文本（程序化写入即视为已提交，清除未提交编辑标记）。"""
         self._path_input.setText(path)
+        self._path_input_dirty = False
 
     def _update_file_count(self, count: int) -> None:
         self._file_count_label.setText(f"{count} 个条目")

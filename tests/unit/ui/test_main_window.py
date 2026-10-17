@@ -224,6 +224,45 @@ class TestMainWindowPanelBuild:
         window.deleteLater()
         qapp.processEvents()
 
+    def test_hidden_system_flags_forwarded_on_preview_build(
+        self, qapp: QApplication
+    ) -> None:
+        """构建 preview 区域：当前显示隐藏/系统文件开关随启动结果下发。"""
+        window = MainWindow()
+        window._show_hidden_files = True
+        window._show_system_files = True
+        window._build_panel("preview")
+        assert window._previewer is not None
+        assert window._previewer._show_hidden_files is True
+        assert window._previewer._show_system_files is True
+        window.deleteLater()
+        qapp.processEvents()
+
+    def test_hidden_system_setters_forward_to_selector_and_previewer(
+        self, qapp: QApplication
+    ) -> None:
+        """主窗口 setter：开关同时下发文件选择器与统一预览器。"""
+        window = MainWindow()
+        window._build_panel("selector")
+        window._build_panel("preview")
+        try:
+            window.set_show_hidden_files(True)
+            assert window._file_selector._show_hidden_files is True
+            assert window._previewer._show_hidden_files is True
+
+            window.set_show_system_files(True)
+            assert window._file_selector._show_system_files is True
+            assert window._previewer._show_system_files is True
+
+            window.set_show_hidden_files(False)
+            assert window._file_selector._show_hidden_files is False
+            assert window._file_selector._show_system_files is False
+            assert window._previewer._show_hidden_files is False
+            assert window._previewer._show_system_files is False
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
     def test_build_single_panel_then_placeholders_remain(
         self, qapp: QApplication
     ) -> None:
@@ -697,7 +736,7 @@ class TestBackgroundModeTransition:
         try:
             window._finish_background_transition()
         except Exception:
-            pass
+            pass  # teardown 收尾过渡失败：忽略（不阻塞窗口销毁）
         window.deleteLater()
         qapp.processEvents()
 
@@ -1472,6 +1511,225 @@ class TestContentThemeTransition:
             assert overlay._duration_ms == overlay.DEFAULT_DURATION_MS
             assert overlay._easing.type() == QEasingCurve.InOutCubic
             overlay.finish_now()
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+
+class _RecordingPreviewWidget:
+    """记录挂起/恢复调用顺序的预览器替身（布局切换守卫用）。"""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def suspend_for_layout_switch(self) -> None:
+        """记录挂起调用。"""
+        self.calls.append("suspend")
+
+    def resume_after_layout_switch(self) -> None:
+        """记录恢复调用。"""
+        self.calls.append("resume")
+
+
+class _LegacyStopPreviewWidget:
+    """仅有 stop_playback 的旧预览器替身（无挂起/恢复能力）。"""
+
+    def __init__(self) -> None:
+        self.stop_calls: int = 0
+
+    def stop_playback(self) -> None:
+        """记录停止调用。"""
+        self.stop_calls += 1
+
+
+class _ExplodingSuspendPreviewWidget:
+    """挂起必抛异常的预览器替身（验证守卫隔离失败不阻塞切换）。"""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def suspend_for_layout_switch(self) -> None:
+        """记录挂起调用后抛出注入异常。"""
+        self.calls.append("suspend")
+        raise RuntimeError("injected suspend failure")
+
+    def resume_after_layout_switch(self) -> None:
+        """记录恢复调用（预期不应被调用）。"""
+        self.calls.append("resume")
+
+
+class TestLayoutSwitchPreviewSuspend:
+    """set_layout_mode 播放守卫：预览器挂起/恢复配对与失败隔离。"""
+
+    @staticmethod
+    def _make_window() -> MainWindow:
+        """构建含预览器与储存池的主窗口（workspace 起始态，不 show）。"""
+        window = MainWindow()
+        window._build_panel("preview")
+        window._build_panel("pool")
+        return window
+
+    @staticmethod
+    def _attach_current_preview(window: MainWindow, widget: object) -> None:
+        """替换统一预览器当前预览控件（守卫读取该属性）。"""
+        window._previewer._current_preview_widget = widget
+
+    def test_switch_both_directions_suspend_resume(
+        self, qapp: QApplication
+    ) -> None:
+        """双向切换：每轮挂起/恢复各一次且顺序配对。"""
+        window = self._make_window()
+        stub = _RecordingPreviewWidget()
+        self._attach_current_preview(window, stub)
+        try:
+            assert window.set_layout_mode("classic") is True
+            assert window.get_layout_mode() == "classic"
+            assert stub.calls == ["suspend", "resume"]
+
+            assert window.set_layout_mode("workspace") is True
+            assert window.get_layout_mode() == "workspace"
+            assert stub.calls == ["suspend", "resume", "suspend", "resume"]
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_switch_without_active_preview_still_succeeds(
+        self, qapp: QApplication
+    ) -> None:
+        """无当前预览（None）：跳过挂起/恢复，切换正常完成。"""
+        window = self._make_window()
+        self._attach_current_preview(window, None)
+        try:
+            assert window.set_layout_mode("classic") is True
+            assert window.get_layout_mode() == "classic"
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_switch_legacy_preview_stops_without_resume(
+        self, qapp: QApplication
+    ) -> None:
+        """旧预览器（仅 stop_playback）：停止播放，切换后无恢复调用。"""
+        window = self._make_window()
+        stub = _LegacyStopPreviewWidget()
+        self._attach_current_preview(window, stub)
+        try:
+            assert window.set_layout_mode("classic") is True
+            assert window.get_layout_mode() == "classic"
+            assert stub.stop_calls == 1
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_idempotent_switch_skips_preview_guard(
+        self, qapp: QApplication
+    ) -> None:
+        """同模式重复切换：幂等提前返回，不触碰预览器。"""
+        window = self._make_window()
+        stub = _RecordingPreviewWidget()
+        self._attach_current_preview(window, stub)
+        try:
+            assert window.set_layout_mode("workspace") is True
+            assert stub.calls == []
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_rollback_resumes_suspended_preview(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """迁移异常回滚：返回 False、保持原模式，并恢复被挂起的预览。"""
+        window = self._make_window()
+        stub = _RecordingPreviewWidget()
+        self._attach_current_preview(window, stub)
+
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("injected migrate failure")
+
+        monkeypatch.setattr(window, "_migrate_zone_contents", _boom)
+        try:
+            assert window.set_layout_mode("classic") is False
+            assert window.get_layout_mode() == "workspace"
+            assert stub.calls == ["suspend", "resume"]
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_suspend_failure_does_not_block_switch(
+        self, qapp: QApplication
+    ) -> None:
+        """挂起抛异常：守卫隔离失败，切换仍成功且不误调恢复。"""
+        window = self._make_window()
+        stub = _ExplodingSuspendPreviewWidget()
+        self._attach_current_preview(window, stub)
+        try:
+            assert window.set_layout_mode("classic") is True
+            assert window.get_layout_mode() == "classic"
+            assert stub.calls == ["suspend"]
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_resume_deferred_until_transition_overlay_finished(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """溶解过渡期间：恢复挂起到遮罩收尾后执行，切换同步段不恢复。"""
+        window = self._make_window()
+        stub = _RecordingPreviewWidget()
+        self._attach_current_preview(window, stub)
+        monkeypatch.setattr(window._content, "isVisible", lambda: True)
+        try:
+            window.begin_layout_transition()
+            assert window._content_theme_overlay is not None
+            assert window.set_layout_mode("classic") is True
+            assert stub.calls == ["suspend"]
+            window._content_theme_overlay.finish_now()
+            assert stub.calls == ["suspend", "resume"]
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_rapid_layout_switch_resumes_once_for_latest_overlay(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """快速连续切换：旧遮罩收尾回调作废，只有最新遮罩收尾恢复一次。"""
+        window = self._make_window()
+        stub = _RecordingPreviewWidget()
+        self._attach_current_preview(window, stub)
+        monkeypatch.setattr(window._content, "isVisible", lambda: True)
+        try:
+            window.begin_layout_transition()
+            first = window._content_theme_overlay
+            assert window.set_layout_mode("classic") is True
+            # 第二轮 begin：递增代际并打断第一轮遮罩（其回调须被跳过）
+            window.begin_layout_transition()
+            second = window._content_theme_overlay
+            assert second is not None
+            assert second is not first
+            assert window.set_layout_mode("workspace") is True
+            assert stub.calls == ["suspend", "suspend"]
+            assert second.is_finished() is False
+            second.finish_now()
+            assert stub.calls == ["suspend", "suspend", "resume"]
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_finished_transition_overlay_resumes_immediately(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """遮罩已收尾（无活动过渡）：恢复同步执行，不悬挂等待。"""
+        window = self._make_window()
+        stub = _RecordingPreviewWidget()
+        self._attach_current_preview(window, stub)
+        monkeypatch.setattr(window._content, "isVisible", lambda: True)
+        try:
+            window.begin_layout_transition()
+            overlay = window._content_theme_overlay
+            assert overlay is not None
+            overlay.finish_now()
+            assert window.set_layout_mode("classic") is True
+            assert stub.calls == ["suspend", "resume"]
         finally:
             window.deleteLater()
             qapp.processEvents()

@@ -601,6 +601,88 @@ class VideoPlayerLayout(QWidget):
         self._placeholder.setText("拖放视频文件或选择文件以播放")
         self._stack.setCurrentIndex(1)  # Show overlay
 
+    def suspend_for_layout_switch(self) -> None:
+        """布局切换前挂起播放：记录快照后停止（防 MPV 子窗跨父级迁移闪烁）。
+
+        快照包含当前文件、音/视类别、播放进度与播放/暂停态；随后执行
+        ``stop_playback`` 停止渲染。切换完成后由
+        ``resume_after_layout_switch`` 原样恢复（切换失败回滚时同样恢复）。
+        过渡期间重复调用（恢复尚未执行）时复用首份快照直接返回。
+        """
+        if self._layout_switch_suspend_state is not None:
+            # 已在挂起中（恢复尚未执行）：复用首份快照，避免重复停止把播放态误记为暂停
+            return
+        state: Optional[Dict[str, Any]] = None
+        if self._current_file:
+            position = float(self._current_position or 0.0)
+            was_playing = False
+            if self._mpv_manager is not None:
+                try:
+                    cached = float(self._mpv_manager.get_position() or 0.0)
+                    if cached > 0.0:
+                        position = cached
+                except Exception:  # noqa: BLE001 - 读取失败回退本地缓存
+                    pass
+                try:
+                    was_playing = bool(self._mpv_manager.is_playing()) and not bool(
+                        self._mpv_manager.is_paused()
+                    )
+                except Exception:  # noqa: BLE001 - 状态读取失败按暂停处理
+                    was_playing = False
+            state = {
+                "file": self._current_file,
+                "is_audio": bool(self._current_media_is_audio),
+                "position": max(0.0, position),
+                "was_playing": was_playing,
+            }
+        self._layout_switch_suspend_state = state
+        self.stop_playback()
+
+    def resume_after_layout_switch(self) -> None:
+        """布局切换后恢复挂起的视频/音频预览（还原文件、进度与播放态）。
+
+        重新加载原文件，并在 ``fileLoaded`` 后按快照还原进度与暂停态；
+        恢复前兜底校正迁移后可能变化的视频面原生窗口绑定；无挂起快照
+        或文件已不存在时静默跳过。
+        """
+        state = self._layout_switch_suspend_state
+        self._layout_switch_suspend_state = None
+        if not state:
+            return
+        file_path = state.get("file") or ""
+        if not file_path or not os.path.exists(file_path):
+            return
+        # 迁移可能重建了视频面原生窗口：恢复前兜底校正 MPV 绑定
+        try:
+            if (
+                self._is_mpv_embedded
+                and self._video_surface.internalWinId()
+                and self._mpv_manager is not None
+                and self._mpv_manager.is_initialized()
+            ):
+                win_id = int(self._video_surface.winId())
+                if win_id != getattr(self, "_embedded_win_id", 0):
+                    self._embedded_win_id = win_id
+                    self._mpv_manager.set_window_id(
+                        win_id, component_id=self._component_id
+                    )
+        except Exception:  # noqa: BLE001 - 绑定校正失败不阻塞恢复
+            pass
+        self._layout_switch_resume_pending = {
+            "file": os.path.normcase(os.path.abspath(file_path)),
+            "position": float(state.get("position") or 0.0),
+            "was_playing": bool(state.get("was_playing")),
+        }
+        try:
+            loaded = self.set_file(
+                file_path, is_audio=bool(state.get("is_audio"))
+            )
+        except Exception as exc:  # noqa: BLE001 - 加载异常仅告警并丢弃快照
+            warning(f"布局切换恢复加载失败: {exc}")
+            loaded = False
+        if not loaded:
+            self._layout_switch_resume_pending = None
+
     # ── 内部方法 ──
 
     def _init_ui(self) -> None:
@@ -742,6 +824,10 @@ class VideoPlayerLayout(QWidget):
         # 文件加载后后台取轨，切歌令牌递增丢弃陈旧结果）
         self._tracks_token = 0
         self._tracks_tasks: List["_MediaTracksTask"] = []
+
+        # 布局切换挂起/恢复状态（main_window.set_layout_mode 配对调用）
+        self._layout_switch_suspend_state: Optional[Dict[str, Any]] = None
+        self._layout_switch_resume_pending: Optional[Dict[str, Any]] = None
 
     def _embed_mpv_window(self) -> None:
         """将 MPV 窗口嵌入到 _video_surface"""
@@ -1344,6 +1430,33 @@ class VideoPlayerLayout(QWidget):
             self._mpv_manager.set_loop("yes", component_id=self._component_id)
         # 后台采集音轨/字幕轨并填充设置弹窗（阻塞式查询，不进 UI 线程）
         self._refresh_player_tracks()
+        # 布局切换恢复：文件加载完成后按挂起快照还原进度与播放/暂停态
+        self._apply_layout_switch_resume(file_path)
+
+    def _apply_layout_switch_resume(self, file_path: str) -> None:
+        """文件加载完成后应用布局切换恢复快照（进度/暂停态；一次性）。
+
+        仅当加载文件与挂起快照路径一致时生效；加载其他文件（用户抢先
+        切换等）视为恢复被抢占，快照直接作废丢弃。
+        """
+        pending = self._layout_switch_resume_pending
+        if not pending:
+            return
+        try:
+            loaded = os.path.normcase(os.path.abspath(file_path or ""))
+        except Exception:  # noqa: BLE001 - 路径规范化失败则作废快照
+            loaded = ""
+        if loaded != pending.get("file"):
+            self._layout_switch_resume_pending = None
+            return
+        self._layout_switch_resume_pending = None
+        if self._mpv_manager is None:
+            return
+        position = float(pending.get("position") or 0.0)
+        if position > 0.0:
+            self._mpv_manager.seek(position, component_id=self._component_id)
+        if not pending.get("was_playing"):
+            self._mpv_manager.pause(component_id=self._component_id)
 
     def _on_file_ended(self, reason: int) -> None:
         """播放结束"""

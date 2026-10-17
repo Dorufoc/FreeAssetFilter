@@ -580,6 +580,14 @@ DEFAULT_SETTINGS_V2: Dict[str, Any] = {
         # 启动时读取，提交时经
         # MainWindow.set_blank_right_click_go_back 即时生效。
         "blank_right_click_go_back": False,
+        # 显示隐藏文件（设置页「通用」分类，默认关闭）：
+        # 开启后文件选择器显示带「隐藏」属性（FILE_ATTRIBUTE_HIDDEN）的
+        # 文件与文件夹（与 Windows 资源管理器默认行为一致）。
+        "show_hidden_files": False,
+        # 显示受保护的系统文件（设置页「通用」分类，默认关闭）：
+        # 从属于「显示隐藏文件」，仅在后者开启时生效；开启后额外显示带
+        # 「系统」属性（FILE_ATTRIBUTE_SYSTEM）的受保护操作系统文件/文件夹。
+        "show_system_files": False,
     },
 }
 
@@ -952,8 +960,9 @@ class SettingsManagerV2:
 
         # general 域合并：layout_mode 只接受 classic/workspace；
         # 旧文件缺键或非法值时保留默认 workspace（不抛异常）。
-        # enable_ai_entry / include_remote_drives / blank_right_click_go_back
-        # 为布尔白名单键，非布尔值（含字符串 "true"）一律丢弃、回退默认 False。
+        # enable_ai_entry / include_remote_drives / blank_right_click_go_back /
+        # show_hidden_files / show_system_files 为布尔白名单键，非布尔值
+        # （含字符串 "true"）一律丢弃、回退默认 False。
         if "general" in loaded and isinstance(loaded["general"], dict):
             general_loaded = loaded["general"]
             staged_layout = general_loaded.get("layout_mode", None)
@@ -968,6 +977,12 @@ class SettingsManagerV2:
             staged_blank_back = general_loaded.get("blank_right_click_go_back", None)
             if isinstance(staged_blank_back, bool):
                 merged["general"]["blank_right_click_go_back"] = staged_blank_back
+            staged_hidden = general_loaded.get("show_hidden_files", None)
+            if isinstance(staged_hidden, bool):
+                merged["general"]["show_hidden_files"] = staged_hidden
+            staged_system = general_loaded.get("show_system_files", None)
+            if isinstance(staged_system, bool):
+                merged["general"]["show_system_files"] = staged_system
 
         # 保留磁盘上不在默认树中的顶层域（如 app / file_selector /
         # file_staging / video 等运行时数据），避免每次加载/合并写盘时
