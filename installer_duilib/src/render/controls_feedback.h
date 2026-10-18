@@ -144,7 +144,7 @@ private:
 };
 
 // WinUI3 步骤指示器单项：步骤点 + 连接线 + 标签。
-//  - Completed：实心 accent 点 + 白/黑对勾（glyph::Success）；连接线 accent。
+//  - Completed：实心 accent 点 + 白/黑自绘圆角矢量对勾（DrawCheckMark；原 glyph::Check 光栅化断口、glyph::Success 为圆圈对勾，均已弃用）；连接线 accent。
 //  - Current：accent 强调环 + 内点（强调动画）；标签 semiBold。
 //  - Future：次级描边环，无填充；标签次级色。
 // 状态切换经 AnimValue 动画过渡（未注入 Animator 时即时取态）。

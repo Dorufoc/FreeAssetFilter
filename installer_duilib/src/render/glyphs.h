@@ -28,6 +28,10 @@ constexpr wchar_t Close = L'\uE8BB';     // 关闭
 constexpr wchar_t Minimize = L'\uE921';  // 最小化
 // 成功：plan 建议的 U+EA52 经双族实测渲染为「后退/前进箭头」，非成功语义；
 // 实测替换为 U+E930（Completed，圆圈内对勾），两族均存在。见证据 glyphs-matrix.txt / probe。
+// 注意：顶部步骤条"已完成"节点已改为 D2D 自绘圆角矢量勾（controls_feedback.cpp::DrawCheckMark）——
+// 图标字体 Check(U+E73E) 在该 ~19px 尺寸下斜向长笔画会光栅化出 ≥2px 断口；Success(U+E930) 则是
+// 「圆圈内对勾」叠在 accent 圆盘上会双圆（套娃）。两常量均保留供其它场景（如 controls_basic.cpp
+// 的复选框仍用 Check）。见证据 .omo/evidence/installer-winui3-ui-refactor/stepper-check-path。
 constexpr wchar_t Success = L'\uE930';   // 成功（已完成）
 }  // namespace glyph
 

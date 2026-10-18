@@ -43,6 +43,15 @@ constexpr int kStepCount = 3;
 
 namespace {
 
+// 关闭按钮背景填充：Windows 标准关闭键色。theme.h 是不可变 token 表（§13），
+// 故此处仅本地局部色板（不进 Theme），不与既有 token 体系冲突。
+//   悬停 #C42B1C（196,43,28）/ 按下 #B0251A（176,37,26，略深）。
+D2D1_COLOR_F CloseHoverRed() { return D2D1::ColorF(0.769f, 0.169f, 0.110f, 1.0f); }
+D2D1_COLOR_F CloseArmedRed() { return D2D1::ColorF(0.690f, 0.145f, 0.102f, 1.0f); }
+}  // namespace
+
+namespace {
+
 constexpr wchar_t kWindowClass[] = L"FreeAssetFilterInstaller";  // §4 冻结类名
 constexpr wchar_t kWindowTitle[] = L"FreeAssetFilter 安装程序";
 constexpr UINT_PTR kTickTimerId = 1;
@@ -560,14 +569,7 @@ void InstallerWindow::DrawShellLayers(ID2D1DeviceContext* ctx, const faf::Theme&
 
     faf::ComPtr<ID2D1SolidColorBrush> card;
     if (FAILED(ctx->CreateSolidColorBrush(layer(theme.card), card.GetAddressOf()))) return;
-    faf::ComPtr<ID2D1SolidColorBrush> stroke;
-    ctx->CreateSolidColorBrush(faded(theme.cardStroke), stroke.GetAddressOf());
-
-    // 内容卡片（圆角 + 描边）。
-    const D2D1_ROUNDED_RECT cardRect =
-        D2D1::RoundedRect(s.contentCard, faf::radius::Medium, faf::radius::Medium);
-    ctx->FillRoundedRectangle(cardRect, card.Get());
-    if (stroke) ctx->DrawRoundedRectangle(cardRect, stroke.Get(), 1.0f);
+    // 内容卡片已移除：窗口直接承载内容（用户要求，全页面统一，无嵌套容器）。contentCard 仍作为页面内容/内边距区域。
 
     // 底部条（英雄页 bottomBar 为空矩形 → 跳过绘制/分隔线）。
     if (s.bottomBar.right > s.bottomBar.left && s.bottomBar.bottom > s.bottomBar.top) {
@@ -601,15 +603,47 @@ void InstallerWindow::DrawTitleBar(ID2D1DeviceContext* ctx, const faf::Theme& th
     DrawTextLine(ctx, kWindowTitle, faf::spacing::M, 0, titleW, titleH, faf::fontsize::Caption,
                  primary);
 
+    // 窗口按钮（最小化/关闭）悬停/按下背景填充。
+    // 视觉态派生自状态机：hot = 光标悬停命中；armed = 已按下且光标仍在同一按钮上（移出即灭）。
+    const bool minHot = hoverButton_ == WindowButton::Minimize;
+    const bool minArmed = minHot && armedButton_ == WindowButton::Minimize;
+    const bool closeHot = hoverButton_ == WindowButton::Close;
+    const bool closeArmed = closeHot && armedButton_ == WindowButton::Close;
+
+    // 最小化：中性叠加（复用 theme.hover / pressed token），字形颜色不变。
+    if (minHot) {
+        D2D1_COLOR_F fill = minArmed ? theme.pressed : theme.hover;
+        fill.a *= alpha;
+        faf::ComPtr<ID2D1SolidColorBrush> minBg;
+        if (SUCCEEDED(ctx->CreateSolidColorBrush(fill, minBg.GetAddressOf()))) {
+            ctx->FillRectangle(s.minButton, minBg.Get());
+        }
+    }
+    // 关闭：Windows 标准红填充（悬停 #C42B1C / 按下 #B0251A），覆盖整个 46x32 命中区。
+    if (closeHot) {
+        D2D1_COLOR_F fill = closeArmed ? CloseArmedRed() : CloseHoverRed();
+        fill.a *= alpha;
+        faf::ComPtr<ID2D1SolidColorBrush> closeBg;
+        if (SUCCEEDED(ctx->CreateSolidColorBrush(fill, closeBg.GetAddressOf()))) {
+            ctx->FillRectangle(s.closeButton, closeBg.Get());
+        }
+    }
+
     faf::ComPtr<ID2D1SolidColorBrush> stroke;
     if (SUCCEEDED(ctx->CreateSolidColorBrush(primary, stroke.GetAddressOf()))) {
         const float mcx = (s.minButton.left + s.minButton.right) * 0.5f;
         const float mcy = (s.minButton.top + s.minButton.bottom) * 0.5f;
         ctx->DrawLine(D2D1::Point2F(mcx - 6, mcy), D2D1::Point2F(mcx + 6, mcy), stroke.Get(), 1.0f);
+    }
+    // ✕ 字形：悬停/按下时转白（红底对比），否则保持原前色。
+    D2D1_COLOR_F closeGlyph = primary;
+    if (closeHot) closeGlyph = D2D1::ColorF(1.0f, 1.0f, 1.0f, alpha);
+    faf::ComPtr<ID2D1SolidColorBrush> closeStroke;
+    if (SUCCEEDED(ctx->CreateSolidColorBrush(closeGlyph, closeStroke.GetAddressOf()))) {
         const float ccx = (s.closeButton.left + s.closeButton.right) * 0.5f;
         const float ccy = (s.closeButton.top + s.closeButton.bottom) * 0.5f;
-        ctx->DrawLine(D2D1::Point2F(ccx - 5, ccy - 5), D2D1::Point2F(ccx + 5, ccy + 5), stroke.Get(), 1.0f);
-        ctx->DrawLine(D2D1::Point2F(ccx - 5, ccy + 5), D2D1::Point2F(ccx + 5, ccy - 5), stroke.Get(), 1.0f);
+        ctx->DrawLine(D2D1::Point2F(ccx - 5, ccy - 5), D2D1::Point2F(ccx + 5, ccy + 5), closeStroke.Get(), 1.0f);
+        ctx->DrawLine(D2D1::Point2F(ccx - 5, ccy + 5), D2D1::Point2F(ccx + 5, ccy - 5), closeStroke.Get(), 1.0f);
     }
 
     faf::ComPtr<ID2D1SolidColorBrush> divider;
@@ -645,6 +679,32 @@ void InstallerWindow::ClientPointToDip(POINT p, float* dx, float* dy) const {
     const float scale = faf::ClientPxToDipScale(dpi_);
     *dx = (static_cast<float>(p.x) - m) * scale;
     *dy = (static_cast<float>(p.y) - m) * scale;
+}
+
+// --- 自绘标题栏窗口按钮（最小化/关闭）状态机 ---------------------------------
+InstallerWindow::WindowButton InstallerWindow::HitTestWindowButton(float dipX, float dipY) const {
+    const D2D1_POINT_2F pt = D2D1::Point2F(dipX, dipY);
+    // 关闭优先（右边缘），其次最小化；命中区来自 layout（纯 DIP，不重新缩放）。
+    if (faf::HitTest(shellLayout_.closeButton, pt)) return WindowButton::Close;
+    if (faf::HitTest(shellLayout_.minButton, pt)) return WindowButton::Minimize;
+    return WindowButton::None;
+}
+
+void InstallerWindow::UpdateTitleBarHover(float dipX, float dipY) {
+    const WindowButton hit = HitTestWindowButton(dipX, dipY);
+    if (hit == hoverButton_) return;  // 无变化无需重绘
+    hoverButton_ = hit;
+    RequestAnimTick();  // 走既有重绘机制（置脏 + tick 定时器），悬停填充即时出现/消失
+}
+
+void InstallerWindow::PerformWindowButtonAction(WindowButton button) {
+    HWND hwnd = window_;
+    if (!hwnd) return;
+    if (button == WindowButton::Close) {
+        PostMessageW(hwnd, WM_CLOSE, 0, 0);  // 复用既有取消/关闭清理路径
+    } else if (button == WindowButton::Minimize) {
+        ShowWindow(hwnd, SW_MINIMIZE);
+    }
 }
 
 LRESULT CALLBACK InstallerWindow::WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -718,13 +778,13 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
                 static_cast<LONG>(static_cast<short>(HIWORD(lp)))};
         float dx = 0, dy = 0;
         ClientPointToDip(p, &dx, &dy);
-        const D2D1_POINT_2F pt = D2D1::Point2F(dx, dy);
-        if (faf::HitTest(shellLayout_.closeButton, pt)) {
-            PostMessageW(hwnd, WM_CLOSE, 0, 0);
-            return 0;
-        }
-        if (faf::HitTest(shellLayout_.minButton, pt)) {
-            ShowWindow(hwnd, SW_MINIMIZE);
+        // 窗口按钮：按下**不**触发动作——记录 armed 并捕获鼠标，等「同一按钮上松开」才执行
+        //（Win32 push-button 语义；按下即最小化/关闭是本次修复的缺陷）。
+        const WindowButton pressed = HitTestWindowButton(dx, dy);
+        if (pressed != WindowButton::None) {
+            armedButton_ = pressed;
+            SetCapture(hwnd);
+            RequestAnimTick();
             return 0;
         }
         // §4 自绘标题栏拖拽（HTCAPTION 已由 WM_NCHITTEST 承担；此处为等价兜底路径）。
@@ -747,6 +807,16 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
                 static_cast<LONG>(static_cast<short>(HIWORD(lp)))};
         float dx = 0, dy = 0;
         ClientPointToDip(p, &dx, &dy);
+        if (armedButton_ != WindowButton::None) {
+            // 激活条件：松开点仍命中**同一**按钮；否则静默取消（移出后松开 = 取消）。
+            const WindowButton armed = armedButton_;
+            const WindowButton released = HitTestWindowButton(dx, dy);
+            armedButton_ = WindowButton::None;
+            if (GetCapture() == hwnd) ReleaseCapture();
+            if (released == armed) PerformWindowButtonAction(armed);
+            RequestAnimTick();
+            return 0;  // 窗口按钮的 Up 不透传给页面
+        }
         faf::InputEvent ev{};
         ev.kind = faf::InputEvent::Up;
         ev.x = dx;
@@ -760,11 +830,39 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
                 static_cast<LONG>(static_cast<short>(HIWORD(lp)))};
         float dx = 0, dy = 0;
         ClientPointToDip(p, &dx, &dy);
+        // 首次移动注册 TME_LEAVE：光标离开时收到 WM_MOUSELEAVE 以复位悬停（无 Leave 会残留填充）。
+        if (!trackingLeave_) {
+            TRACKMOUSEEVENT tme{};
+            tme.cbSize = sizeof(tme);
+            tme.dwFlags = TME_LEAVE;
+            tme.hwndTrack = hwnd;
+            if (TrackMouseEvent(&tme)) trackingLeave_ = true;
+        }
+        UpdateTitleBarHover(dx, dy);  // 刷新窗口按钮悬停（变化时置脏重绘）
         faf::InputEvent ev{};
         ev.kind = faf::InputEvent::Move;
         ev.x = dx;
         ev.y = dy;
         DispatchPointer(ev);
+        return 0;
+    }
+
+    // 光标离开窗口/客户区：复位悬停填充，并允许下次移动重新注册 TME_LEAVE。
+    if (msg == WM_MOUSELEAVE) {
+        trackingLeave_ = false;
+        if (hoverButton_ != WindowButton::None) {
+            hoverButton_ = WindowButton::None;
+            RequestAnimTick();
+        }
+        return 0;
+    }
+
+    // 捕获丢失（被其它窗口抢走 / 显式释放）→ 清 armed，避免按钮停在按下红态。
+    if (msg == WM_CAPTURECHANGED) {
+        if (armedButton_ != WindowButton::None) {
+            armedButton_ = WindowButton::None;
+            RequestAnimTick();
+        }
         return 0;
     }
 
@@ -1202,7 +1300,7 @@ void InstallerWindow::ApplyPageEntry() {
             licensePage_->Layout(card);
             break;
         case Configure:
-            configurePage_->SyncFromState();
+            configurePage_->OnEnter();
             configurePage_->Layout(card);
             break;
         case Progress:

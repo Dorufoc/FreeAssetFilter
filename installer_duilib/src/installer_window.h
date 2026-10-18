@@ -85,6 +85,14 @@ private:
                          float alpha);                                       // §5 左栏/内容卡/底部条
     void DrawTitleBar(ID2D1DeviceContext* ctx, const faf::Theme& theme, float alpha);
 
+    // --- 自绘标题栏窗口按钮（最小化/关闭）悬停与按下状态机 ---
+    // 按下不立即激活：仅当「同一按钮上按下并在其上松开」才执行动作；移出后松开即取消
+    //（Win32 push-button 语义）。悬停命中区来自 ShellLayout（纯 DIP）。
+    enum class WindowButton { None, Minimize, Close };
+    WindowButton HitTestWindowButton(float dipX, float dipY) const;  // DIP 点 → 命中的窗口按钮
+    void UpdateTitleBarHover(float dipX, float dipY);                // WM_MOUSEMOVE：刷新悬停并重绘
+    void PerformWindowButtonAction(WindowButton button);             // 在同一按钮上松开 → 最小化/关闭
+
     // --- animation tick wiring（本 todo 唯一拥有：§16 + WM_TIMER 接线）---
     // 「WM_TIMER(~16ms) → 推进所有活动动画 → 若 dirty 或动画中则 PresentFrame → Commit」。
     void RequestAnimTick();  // 置脏 + 确保 tick 定时器在跑（闲置 KillTimer 后的重新武装路径）
@@ -155,6 +163,11 @@ private:
     bool win10Fallback_{false};
 
     faf::ShellLayout shellLayout_{};  // §6：900x600 DIP shell 几何（唯一来源 = layout.h）
+
+    // --- 自绘标题栏窗口按钮（最小化/关闭）状态 ---
+    WindowButton hoverButton_{WindowButton::None};  // 当前光标悬停的窗口按钮（驱动填充）
+    WindowButton armedButton_{WindowButton::None};  // 已按下并 SetCapture 的按钮（松开命中才激活）
+    bool trackingLeave_{false};                     // TrackMouseEvent(TME_LEAVE) 是否已注册
 
     UINT_PTR tickTimer_{0};
     HANDLE installThread_{};

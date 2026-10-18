@@ -174,14 +174,23 @@ bool ProbeWritable(const std::wstring& dir, std::wstring& errorOut) {
     if (dir.empty()) return false;
 
     std::error_code ec;
-    const std::filesystem::path target(dir);
-    std::filesystem::create_directories(target, ec);
-    if (!std::filesystem::is_directory(target, ec)) {
-        errorOut = L"目标位置不可写：无法创建目录";
+    // 不创建目标目录（仅查看配置页不得产生磁盘副作用）：新装时目标目录尚不存在属正常，
+    // 此时向上回溯到最近的已存在祖先目录，用它的可写性作为判定。
+    std::filesystem::path probeDir(dir);
+    while (!probeDir.empty() && !std::filesystem::is_directory(probeDir, ec)) {
+        const std::filesystem::path parent = probeDir.parent_path();
+        if (parent.empty() || parent == probeDir) {  // 到达根仍未找到目录
+            probeDir.clear();
+            break;
+        }
+        probeDir = parent;
+    }
+    if (probeDir.empty() || !std::filesystem::is_directory(probeDir, ec)) {
+        errorOut = L"目标位置不可写：无法访问上级目录";
         return false;
     }
 
-    const std::filesystem::path probe = target / L".faf_write_probe.tmp";
+    const std::filesystem::path probe = probeDir / L".faf_write_probe.tmp";
     {
         std::ofstream out(probe.c_str(), std::ios::binary | std::ios::trunc);
         if (!out) {
@@ -232,6 +241,9 @@ ConfigurePage::ConfigurePage(AppState& state) : state_(state) {
 
 void ConfigurePage::SetPayloadDir(std::wstring dir) {
     payloadDir_ = std::move(dir);
+    // payload 枚举是唯一的 O(文件数) 目录遍历；只在设置载荷目录时（启动期）执行一次并缓存，
+    // 切页 / 缩放不再重复枚举（Layout 无 I/O，RecomputeSpace 只读缓存）。
+    payloadTotalBytes_ = PayloadTotalBytes(payloadDir_);
     RecomputeSpace();
 }
 
@@ -278,7 +290,7 @@ void ConfigurePage::SyncToState() {
 }
 
 void ConfigurePage::RecomputeSpace() {
-    requiredBytes_ = PayloadTotalBytes(payloadDir_);
+    requiredBytes_ = payloadTotalBytes_;  // 读缓存——不再在此遍历 payload（见 SetPayloadDir）
     requiredText_ = FormatBytes(requiredBytes_);
     unsigned long long freeB = 0;
     if (VolumeFreeBytes(state_.installDir, freeB)) {
@@ -311,6 +323,13 @@ bool ConfigurePage::RefreshWritable() {
     }
     canProceed_ = true;
     return true;
+}
+
+void ConfigurePage::OnEnter() {
+    // 进入配置页的 I/O 钩子（由 ApplyPageEntry 调用）：Layout 保持纯几何，I/O 集中在此。
+    // 顺序重要：先同步 AppState → 再刷新可写/空间，使 UpdateNavButtons() 读到正确的 CanProceed。
+    SyncFromState();
+    RefreshWritable();
 }
 
 FolderPicker ConfigurePage::Browse(HWND owner) {
@@ -373,8 +392,8 @@ void ConfigurePage::Layout(const D2D1_RECT_F& contentCard) {
         y += cbH + cbGap;
     }
 
-    SyncFromState();
-    RefreshWritable();
+    // 纯几何：此处不再 SyncFromState / RefreshWritable（二者含状态同步与文件系统 I/O），
+    // 已移至 OnEnter()；本方法在切页与每次缩放/DPI 变化时都被调用，必须零 I/O。
 }
 
 void ConfigurePage::Render(ID2D1DeviceContext* dc, const Theme& theme) {

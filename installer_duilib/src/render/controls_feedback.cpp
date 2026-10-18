@@ -67,18 +67,42 @@ void DrawLine(ID2D1DeviceContext* dc, const TextFactory* text, const std::wstrin
     dc->DrawText(s.c_str(), static_cast<UINT32>(s.size()), fmt.Get(), rect, brush.Get());
 }
 
-// 居中绘制单个 Fluent 字形。
-void DrawGlyph(ID2D1DeviceContext* dc, const GlyphFont* glyphs, wchar_t codepoint,
-               const D2D1_RECT_F& rect, float size, const D2D1_COLOR_F& color) {
-    if (!glyphs || !glyphs->IsReady()) return;
-    ComPtr<IDWriteTextFormat> fmt;
-    if (FAILED(glyphs->CreateFormat(size, fmt.GetAddressOf()))) return;
-    fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-    fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+// 完成对勾：D2D 自绘圆角矢量勾（两段折线 + 圆头端点 / 圆角连接）。
+// 取代图标字体字形（原 glyph::Check(U+E73E)，该字形本尺寸下笔画中位宽仅 2px）。
+// 注：历史观测到的「对勾断口」真正成因并非字形光栅化——是「下一节点」的横向连接线自
+// 上一节点中心起画（宽 2.0 DIP、位于 cy），覆盖了上一节点圆盘内的对勾（仅换字形仍断，
+// 位置一致，见证据 stepper-check-path）。修复 = 本自绘矢量勾（笔画连续、宽度可控，不受
+// 字形 hinting / 光栅化影响）+ 连接线起点退到上一节点圆盘右缘，二者缺一不可。
+// 范式来源 pages_progress.cpp::DrawSuccessCheck。
+void DrawCheckMark(ID2D1DeviceContext* dc, float cx, float cy, float r,
+                   const D2D1_COLOR_F& color) {
+    if (!dc || r <= 0.0f) return;
     ComPtr<ID2D1SolidColorBrush> brush = MakeBrush(dc, color);
     if (!brush) return;
-    const wchar_t buf[2] = {codepoint, 0};
-    dc->DrawText(buf, 1, fmt.Get(), rect, brush.Get());
+
+    // 勾外接尺寸略大于半径；P0=左下起点，P1=折点（拐角），P2=右上终点。
+    const float s = r * 1.15f;
+    const D2D1_POINT_2F p0 = D2D1::Point2F(cx - 0.32f * s, cy + 0.02f * s);
+    const D2D1_POINT_2F p1 = D2D1::Point2F(cx - 0.10f * s, cy + 0.24f * s);
+    const D2D1_POINT_2F p2 = D2D1::Point2F(cx + 0.34f * s, cy - 0.28f * s);
+
+    // 圆头端点 + 圆角连接：ID2D1DeviceContext 无 CreateStrokeStyle，经 GetFactory 走 ID2D1Factory。
+    ComPtr<ID2D1StrokeStyle> stroke;
+    {
+        ComPtr<ID2D1Factory> factory;
+        dc->GetFactory(factory.GetAddressOf());
+        if (factory) {
+            const D2D1_STROKE_STYLE_PROPERTIES ssp = D2D1::StrokeStyleProperties(
+                D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
+                D2D1_LINE_JOIN_ROUND);
+            factory->CreateStrokeStyle(ssp, nullptr, 0, stroke.GetAddressOf());
+        }
+    }
+
+    // 笔画宽度 ≥2 DIP（144 DPI 下 ≥3px，远大于 1.5px 阈值）；随半径略增。
+    const float strokeWidth = std::max(2.0f, 0.22f * r);
+    dc->DrawLine(p0, p1, brush.Get(), strokeWidth, stroke.Get());
+    dc->DrawLine(p1, p2, brush.Get(), strokeWidth, stroke.Get());
 }
 
 // 顶/底边缘淡出遮罩：color（面板色）在该矩形内由不透明渐隐到透明。
@@ -519,16 +543,20 @@ void StepItem::Render(ID2D1DeviceContext* dc, const Theme& theme) {
     const float r = rBase + 2.0f * e;  // 当前步略微放大
 
     if (horizontal) {
-        // 横向连接线：自**上一节点中心**水平进入本节点左缘；「已完成或当前」时为 accent，
+        // 横向连接线：自**上一节点圆盘右缘**水平进入本节点左缘；「已完成或当前」时为 accent，
         // 保证蓝色进度线连续进入当前节点。双色规则沿用竖向（此处仅「进入段」）。
         // 注意：本列 bounds_ 是等宽列（左缘 = 列边界，不是上一节点中心），故起点须回退一个
-        // 列宽（列宽 == 相邻节点中心间距）。
+        // 列宽（列宽 == 相邻节点中心间距）到上一节点中心，再加 rBase 退到其圆盘右缘——
+        // 若直接自上一节点中心起画，accent 连接线会覆盖上一节点圆盘内的对勾，把它切成断口
+        // （见证据 stepper-check-path：断口的真正成因是本连接线覆盖，而非字形光栅化）。
+        // 上一节点恒为「已完成」(rBase) 或「当前」(rBase+2)：用 rBase 起画，前者恰好齐平、
+        // 后者内缩 2px（同色不可见），两种情况均不会产生可见缝隙。
         if (index_ > 0) {
             const D2D1_COLOR_F lineColor = Mix(theme.divider, theme.accent, std::max(c, e));
             ComPtr<ID2D1SolidColorBrush> lineBrush = MakeBrush(dc, lineColor);
             if (lineBrush) {
                 const float colW = bounds_.right - bounds_.left;  // 本列宽 = 相邻节点中心间距
-                dc->DrawLine(D2D1::Point2F(cx - colW, cy), D2D1::Point2F(cx - r, cy),
+                dc->DrawLine(D2D1::Point2F(cx - colW + rBase, cy), D2D1::Point2F(cx - r, cy),
                              lineBrush.Get(), 2.0f);
             }
         }
@@ -567,11 +595,16 @@ void StepItem::Render(ID2D1DeviceContext* dc, const Theme& theme) {
         dc->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), r, r), ringBrush.Get(), 2.0f + e);
     }
     // 完成对勾（深色主题 accent 亮 → 用黑勾；浅色主题 → 白勾）。
+    // 前端设计师修订：改为 D2D 自绘圆角矢量勾（DrawCheckMark）。glyph::Success(U+E930) 是
+    // "圆圈内对勾"字形，叠在实心 accent 圆盘上会形成双圆（✅ 套娃）→ 弃用；glyph::Check
+    // (U+E73E) 弃用原因是该字形在本尺寸下笔画偏细（中位宽仅 2px），且步骤点的「断口」
+    // 与字形无关（真正成因是下一节点连接线覆盖上一节点圆盘内的对勾，已随连接线起点
+    // 回退到上一节点圆盘右缘一并修复，见证据 stepper-check-path）。两常量在 glyphs.h
+    // 中保留不动（复选框仍在用）。
     if (c > 0.0f) {
         const D2D1_COLOR_F checkColor = theme.isDark ? D2D1::ColorF(0.0f, 0.0f, 0.0f, c)
                                                      : D2D1::ColorF(1.0f, 1.0f, 1.0f, c);
-        DrawGlyph(dc, glyphs_, glyph::Success,
-                  D2D1::RectF(cx - r, cy - r, cx + r, cy + r), r * 1.1f, checkColor);
+        DrawCheckMark(dc, cx, cy, r, checkColor);
     }
 
     // 标签：当前=semiBold + 主文本；完成/未来按进度在次级↔主文本间过渡。

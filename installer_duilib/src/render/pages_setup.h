@@ -56,8 +56,9 @@ enum class FolderPicker {
 // 成功时 out 收到所选绝对目录。owner 可为 null。
 FolderPicker PickInstallFolder(HWND owner, const std::wstring& initialDir, std::wstring& out);
 
-// 写入探针：能否在 dir（必要时先创建）下建/删临时文件？失败返回 false 并写
-// errorOut（中文内联文案）。成功时清理探针文件。
+// 写入探针：能否在 dir 下建/删临时文件？dir 尚不存在时改探测「最近的已存在祖先目录」，
+// 并以该祖先的可写性作为判定——不创建 dir（仅查看配置页不得产生磁盘副作用）。
+// 失败返回 false 并写 errorOut（中文内联文案）。成功时清理探针文件。
 bool ProbeWritable(const std::wstring& dir, std::wstring& errorOut);
 
 // ============================== 页面「安装配置」 ===========================
@@ -80,8 +81,12 @@ public:
     void BindText(const TextFactory* text);
     void BindGlyphs(const GlyphFont* glyphs);
 
-    // 依内容卡片矩形（DIP）布局控件；同时刷新空间信息与可写门控。
+    // 依内容卡片矩形（DIP）布局控件——纯几何、零文件系统 I/O（切页/缩放可安全高频调用）。
     void Layout(const D2D1_RECT_F& contentCard);
+
+    // 进入本页钩子（ApplyPageEntry 调用）：SyncFromState + RefreshWritable。
+    // 唯一带 I/O 的入口，保证进入配置页时 下一步 门控（CanProceed）即已定妥。
+    void OnEnter();
 
     void Render(ID2D1DeviceContext* dc, const Theme& theme);
 
@@ -143,6 +148,7 @@ private:
     D2D1_RECT_F optionHeadingRect_{};
     D2D1_RECT_F optionSubtitleRect_{};
 
+    unsigned long long payloadTotalBytes_ = 0;  // payload 总字节缓存（仅 SetPayloadDir 遍历一次）
     unsigned long long requiredBytes_ = 0;
     unsigned long long freeBytes_ = 0;
     std::wstring requiredText_;
