@@ -16,11 +16,17 @@
 #include <cmath>
 #include <cstdio>
 
+#include "render/logo.h"           // Finish 英雄页图标
+#include "render/pages_welcome.h"  // ReadVersionString()（§18 版本单源）
 #include "render/render_context.h"  // faf::ComPtr（最小 COM RAII 指针）
 
 namespace faf {
 
 namespace {
+
+// 英雄页（欢迎/完成）大按钮尺寸（DIP）——与 pages_welcome.cpp 保持一致。
+constexpr float kHeroButtonW = 200.0f;
+constexpr float kHeroButtonH = 44.0f;
 
 // 每个 FinishPage 实例唯一的对勾动画名（同名会复用同一 AnimValue）。
 std::atomic<unsigned> g_progressSerial{0};
@@ -258,44 +264,29 @@ void ProgressPage::Render(ID2D1DeviceContext* dc, const Theme& theme) {
 FinishPage::FinishPage(AppState& state) : state_(state) {
     const unsigned serial = g_progressSerial.fetch_add(1, std::memory_order_relaxed);
     checkName_ = SerialName("finish", serial, "check");
+    version_ = ReadVersionString();  // §18：只取 FAFVERSION 首行去 'v'，不硬编码
 
-    launchBox_.SetLabel(L"立即启动");
-    launchBox_.SetOnToggle([this](bool v) { SetLaunchOptedIn(v); });
-
-    openDirButton_.SetLabel(L"打开安装目录");
-    openDirButton_.SetGlyph(glyph::Folder);
-    openDirButton_.SetStyle(Button::Secondary);
-    openDirButton_.SetOnClick([this]() { RaiseOpenDirIntent(); });
-
-    finishButton_.SetLabel(L"完成");
+    // 英雄页大按钮「立即启动」（与欢迎页同构：唯一按钮 = 完成意图 → 去提权启动 + 关窗）。
+    finishButton_.SetLabel(L"立即启动");
     finishButton_.SetStyle(Button::Accent);
     finishButton_.SetOnClick([this]() { EmitFinishIntent(); });
 
-    host_.Add(&launchBox_);    // Tab 顺序：立即启动 → 打开目录 → 完成
-    host_.Add(&openDirButton_);
     host_.Add(&finishButton_);
-
-    // 同步复选框与 AppState（§2 默认 1）。
-    launchBox_.SetChecked(state_.optLaunch);
 }
 
 void FinishPage::BindAnimator(Animator* animator) {
     animator_ = animator;
-    launchBox_.BindAnimator(animator);
-    openDirButton_.BindAnimator(animator);
     finishButton_.BindAnimator(animator);
 }
 
 void FinishPage::BindText(const TextFactory* text) {
     text_ = text;
-    launchBox_.BindText(text);
-    openDirButton_.BindText(text);
     finishButton_.BindText(text);
 }
 
 void FinishPage::BindGlyphs(const GlyphFont* glyphs) {
     glyphs_ = glyphs;
-    openDirButton_.BindGlyphs(glyphs);
+    finishButton_.BindGlyphs(glyphs);
 }
 
 void FinishPage::StartCheckAnim() {
@@ -312,55 +303,41 @@ float FinishPage::CheckProgress() const {
     return checkFallback_;
 }
 
-void FinishPage::SetLaunchOptedIn(bool optedIn) {
-    state_.optLaunch = optedIn;  // §12：只置位，不启动进程
-    launchBox_.SetChecked(optedIn);
-    if (optedIn) {
-        launchIntentEmitted_ = true;
-        if (onLaunchIntent_) onLaunchIntent_(true);
-    }
-}
-
-void FinishPage::RaiseOpenDirIntent() {
-    openDirIntentEmitted_ = true;
-    // 仅抬高意图；真实「打开安装目录」由 Todo 15 执行（本文件不 ShellExecute）。
-    if (onOpenDirIntent_) onOpenDirIntent_();
-}
-
 void FinishPage::EmitFinishIntent() {
     finishIntentEmitted_ = true;
-    // 仅抬高完成意图；真实启动（若 optLaunch）由 Todo 15 执行。
+    // 仅抬高完成意图；真实启动（§15 去提权）由外壳 OnFinishIntent 执行。
     if (onFinishIntent_) onFinishIntent_();
 }
 
 void FinishPage::Layout(const D2D1_RECT_F& contentCard) {
     card_ = contentCard;
-    const float pad = spacing::L;
+    const float x0 = contentCard.left + spacing::L;
+    const float contentW = (contentCard.right - contentCard.left) - 2.0f * spacing::L;
     const float cx = (contentCard.left + contentCard.right) * 0.5f;
-    const float x0 = contentCard.left + pad;
-    const float contentW = (contentCard.right - contentCard.left) - 2.0f * pad;
 
-    // UI-fix：内容块垂直居中（原先固定贴顶 contentCard.top + pad，短内容在卡内显得下坠）。
-    // 块高 = 对勾圆 + 标题 + 副标题 + 启动选项（末行之后不计间距）。
-    const float r = 32.0f;  // 对勾圆半径
-    const float cbH = 28.0f;
-    const float blockH = (2.0f * r + spacing::M) + (fontsize::Title + spacing::S) +
-                         (fontsize::Body + spacing::M) + cbH;
+    // 英雄页（与欢迎页内容一致）：图标（成功对勾）+ 名称 + 版本 + 标语 + 大按钮，整体垂直居中。
+    const float r = 48.0f;  // 对勾圆半径（图标直径 96，与欢迎页 Logo 尺寸一致）
+    const float blockH = (2.0f * r) + spacing::L + (fontsize::Title + spacing::S) +
+                         (fontsize::Body + spacing::XS) + (fontsize::Body + spacing::L) +
+                         kHeroButtonH;
     const float cardH = contentCard.bottom - contentCard.top;
     float y = contentCard.top + std::max(spacing::L, (cardH - blockH) * 0.5f);
 
     checkRect_ = D2D1::RectF(cx - r, y, cx + r, y + 2.0f * r);
-    y += 2.0f * r + spacing::M;
+    y += 2.0f * r + spacing::L;
 
-    headingRect_ = D2D1::RectF(x0, y, x0 + contentW, y + fontsize::Title + spacing::S);
+    nameRect_ = D2D1::RectF(x0, y, x0 + contentW, y + fontsize::Title + spacing::S);
     y += fontsize::Title + spacing::S;
-    subtitleRect_ = D2D1::RectF(x0, y, x0 + contentW, y + fontsize::Body + spacing::S);
-    y += fontsize::Body + spacing::M;
 
-    launchBox_.SetBounds(D2D1::RectF(x0, y, x0 + contentW, y + cbH));
+    versionRect_ = D2D1::RectF(x0, y, x0 + contentW, y + fontsize::Body + spacing::XS);
+    y += fontsize::Body + spacing::XS;
 
-    // UI-fix：「打开安装目录」/「完成」不再由页内摆放——外壳 LayoutFooterButtons() 统一
-    // 托管到底部条（完成右缘 872、宽 96；打开目录宽 128、间距 spacing::S）。
+    taglineRect_ = D2D1::RectF(x0, y, x0 + contentW, y + fontsize::Body + spacing::L);
+    y += fontsize::Body + spacing::L;
+
+    buttonRect_ = D2D1::RectF(cx - kHeroButtonW * 0.5f, y, cx + kHeroButtonW * 0.5f,
+                              y + kHeroButtonH);
+    finishButton_.SetBounds(buttonRect_);
 }
 
 void FinishPage::Render(ID2D1DeviceContext* dc, const Theme& theme) {
@@ -375,13 +352,20 @@ void FinishPage::Render(ID2D1DeviceContext* dc, const Theme& theme) {
     const D2D1_COLOR_F white = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
     DrawSuccessCheck(dc, CheckProgress(), theme.accent, white, cx, cy, r);
 
-    DrawText(dc, text_, L"安装完成", headingRect_, fontsize::Title, weight::SemiBold,
+    DrawText(dc, text_, productName_, nameRect_, fontsize::Title, weight::SemiBold,
              DWRITE_TEXT_ALIGNMENT_CENTER, theme.textPrimary);
-    DrawText(dc, text_, L"FreeAssetFilter 已成功安装到您的电脑。", subtitleRect_, fontsize::Body,
-             weight::Regular, DWRITE_TEXT_ALIGNMENT_CENTER, theme.textSecondary);
 
-    launchBox_.Render(dc, theme);
-    openDirButton_.Render(dc, theme);
+    const std::wstring verText =
+        version_.empty() ? L"版本：未知（FAFVERSION 资源缺失）" : (L"版本 " + version_);
+    DrawText(dc, text_, verText, versionRect_, fontsize::Body, weight::Regular,
+             DWRITE_TEXT_ALIGNMENT_CENTER, theme.textSecondary);
+
+    // 标语：与欢迎页完全一致（同字号/字重/颜色），保证两英雄页文本块内容一致。
+    if (!tagline_.empty()) {
+        DrawText(dc, text_, tagline_, taglineRect_, fontsize::Body, weight::Regular,
+                 DWRITE_TEXT_ALIGNMENT_CENTER, theme.textSecondary);
+    }
+
     finishButton_.Render(dc, theme);
 }
 

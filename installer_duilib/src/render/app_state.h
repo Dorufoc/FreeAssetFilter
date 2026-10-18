@@ -8,11 +8,12 @@
 //
 #include <string>
 
+// 追加需求（2026-10-18）：5 页 —— Welcome / License / Configure / Progress / Finish。
+// 顺序冻结（layout::IsHeroPage 与 installer_window 的步骤映射依赖此顺序）。
 enum Page {
     Welcome = 0,
     License,
-    Location,
-    Options,
+    Configure,
     Progress,
     Finish,
 };

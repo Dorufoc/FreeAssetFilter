@@ -24,6 +24,7 @@
 #include <d2d1_1.h>
 #include <dwrite.h>
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -61,7 +62,8 @@ std::vector<std::wstring> LicenseSummaryLines();
 
 // ============================== 页面① 欢迎 =================================
 
-// 欢迎页：Logo + 产品名 + 版本 + 标语 + 亮点 + 「开始」按钮。
+// 欢迎页（英雄页，追加需求 2026-10-18）：Logo + 产品名 + 版本 + 标语 + 大按钮「下一步」。
+// 无顶部步骤区、无底部导航（前进由本页大按钮承担，外壳不再渲染底部按钮）。
 class WelcomePage : public Widget {
 public:
     explicit WelcomePage(AppState& state);
@@ -72,7 +74,10 @@ public:
     void BindGlyphs(const GlyphFont* glyphs);
     void SetLogo(const LogoBitmap* logo) { logo_ = logo; }
 
-    // 依内容卡片矩形（DIP）布局静态元素与「开始」按钮。
+    // 英雄页大按钮「下一步」的点击意图（由外壳注入 GoNext 路径）。
+    void SetOnNextIntent(std::function<void()> cb) { onNextIntent_ = std::move(cb); }
+
+    // 依内容卡片矩形（DIP）布局静态元素与大按钮。
     void Layout(const D2D1_RECT_F& contentCard);
     // 从 AppState 同步（欢迎页无输入字段，仅保证接口对称/供 Todo 12 调用）。
     void SyncFromState();
@@ -95,7 +100,7 @@ public:
     const std::wstring& ProductName() const noexcept { return productName_; }
     const std::wstring& Version() const noexcept { return version_; }
     const std::wstring& Tagline() const noexcept { return tagline_; }
-    const std::vector<std::wstring>& Highlights() const noexcept { return highlights_; }
+    Button& NextButton() noexcept { return nextButton_; }
 
 private:
     void StartIntro();
@@ -104,8 +109,8 @@ private:
     std::wstring productName_ = L"FreeAssetFilter";
     std::wstring version_;
     std::wstring tagline_;
-    std::vector<std::wstring> highlights_;
 
+    Button nextButton_;
     WidgetHost host_;
 
     const LogoBitmap* logo_ = nullptr;
@@ -116,12 +121,14 @@ private:
     AnimValue* enterAnim_ = nullptr;
     std::string enterName_;
 
+    std::function<void()> onNextIntent_;
+
     D2D1_RECT_F card_{};
     D2D1_RECT_F logoRect_{};
     D2D1_RECT_F nameRect_{};
     D2D1_RECT_F versionRect_{};
     D2D1_RECT_F taglineRect_{};
-    std::vector<D2D1_RECT_F> highlightRects_;
+    D2D1_RECT_F buttonRect_{};
 };
 
 // ============================== 页面② 许可协议 =============================

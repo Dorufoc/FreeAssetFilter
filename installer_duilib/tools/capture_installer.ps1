@@ -38,7 +38,7 @@ param(
     [string]$Exe = (Join-Path $PSScriptRoot '..\..\build\test-installer\FreeAssetFilterInstaller.exe'),
     [string]$Payload = '',
     [string]$Scratch = 'C:\Users\89553\AppData\Local\Temp\opencode\faf_t20',
-    [ValidateRange(0, 5)][int]$Page = 0,
+    [ValidateRange(0, 4)][int]$Page = 0,
     [int]$PadPx = 24,
     [int]$MarkerTimeoutMs = 90000,
     [int]$SettleMs = 550,

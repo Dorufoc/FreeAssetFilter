@@ -30,6 +30,10 @@ constexpr float kLogoSize = 96.0f;
 // UI-fix：kButtonW 已删除（页内「开始」/「下一步」按钮移除后无引用）；kButtonH 仍用于许可行高。
 constexpr float kButtonH = 36.0f;
 
+// 英雄页（欢迎/完成）大按钮尺寸（DIP）。
+constexpr float kHeroButtonW = 200.0f;
+constexpr float kHeroButtonH = 44.0f;
+
 // 按比例缩放主题全部颜色的 alpha（页面淡入用；不改其它通道）。
 Theme ScaleAlpha(const Theme& t, float a) {
     Theme out = t;
@@ -133,27 +137,30 @@ WelcomePage::WelcomePage(AppState& state) : state_(state) {
     enterName_ = "page-welcome-enter";
     version_ = ReadVersionString();  // §18：只取 FAFVERSION 首行去 'v'，不硬编码
     tagline_ = L"让文件浏览如丝般高效顺滑";
-    highlights_ = {
-        L"支持 100+ 种文件格式预览",
-        L"三栏布局，高效工作流",
-        L"深色 / 浅色主题随意切换",
-        L"高性能原生扩展，流畅不卡顿",
-    };
 
-    // UI-fix：页内「开始」按钮已移除——前进统一走外壳底部条「下一步」（避免重复按钮）。
+    // 英雄页大按钮「下一步」：前进统一走本页（欢迎页无底部导航）。
+    nextButton_.SetLabel(L"下一步");
+    nextButton_.SetStyle(Button::Accent);
+    nextButton_.SetOnClick([this]() {
+        if (onNextIntent_) onNextIntent_();
+    });
+    host_.Add(&nextButton_);
 }
 
 void WelcomePage::BindAnimator(Animator* animator) {
     animator_ = animator;
+    nextButton_.BindAnimator(animator);
     StartIntro();
 }
 
 void WelcomePage::BindText(const TextFactory* text) {
     text_ = text;
+    nextButton_.BindText(text);
 }
 
 void WelcomePage::BindGlyphs(const GlyphFont* glyphs) {
     glyphs_ = glyphs;
+    nextButton_.BindGlyphs(glyphs);
 }
 
 void WelcomePage::StartIntro() {
@@ -177,16 +184,14 @@ void WelcomePage::SyncFromState() { (void)state_; }  // 欢迎页无输入字段
 
 void WelcomePage::Layout(const D2D1_RECT_F& contentCard) {
     card_ = contentCard;
-    const float pad = spacing::L;
-    const float x0 = contentCard.left + pad;
-    const float contentW = (contentCard.right - contentCard.left) - 2.0f * pad;
+    const float x0 = contentCard.left + spacing::L;
+    const float contentW = (contentCard.right - contentCard.left) - 2.0f * spacing::L;
     const float cx = contentCard.left + (contentCard.right - contentCard.left) * 0.5f;
 
-    // UI-fix：内容块垂直居中（原先固定贴顶 contentCard.top + pad，短内容在卡内显得下坠）。
-    // 块高 = Logo + 名称 + 版本号 + 标语 + 亮点行数（末行之后不计间距）。
+    // 英雄页：Logo + 名称 + 版本 + 标语 + 大按钮，整体垂直居中。
     const float blockH = kLogoSize + spacing::L + (fontsize::Title + spacing::S) +
                          (fontsize::Body + spacing::XS) + (fontsize::Body + spacing::L) +
-                         highlights_.size() * (fontsize::Body + spacing::S);
+                         kHeroButtonH;
     const float cardH = contentCard.bottom - contentCard.top;
     float y = contentCard.top + std::max(spacing::L, (cardH - blockH) * 0.5f);
 
@@ -202,13 +207,11 @@ void WelcomePage::Layout(const D2D1_RECT_F& contentCard) {
     taglineRect_ = D2D1::RectF(x0, y, x0 + contentW, y + fontsize::Body + spacing::L);
     y += fontsize::Body + spacing::L;
 
-    highlightRects_.clear();
-    for (std::size_t i = 0; i < highlights_.size(); ++i) {
-        highlightRects_.push_back(D2D1::RectF(x0, y, x0 + contentW, y + fontsize::Body));
-        y += fontsize::Body + spacing::S;
-    }
+    buttonRect_ = D2D1::RectF(cx - kHeroButtonW * 0.5f, y, cx + kHeroButtonW * 0.5f,
+                              y + kHeroButtonH);
+    nextButton_.SetBounds(buttonRect_);
 
-    // UI-fix：页内「开始」按钮已删除——前进由外壳底部条「下一步」承担（避免重复按钮）。
+    SyncFromState();
 }
 
 void WelcomePage::Render(ID2D1DeviceContext* dc, const Theme& theme) {
@@ -242,18 +245,8 @@ void WelcomePage::Render(ID2D1DeviceContext* dc, const Theme& theme) {
     DrawText(dc, text_, tagline_, taglineRect_, fontsize::Body, weight::Regular,
              DWRITE_TEXT_ALIGNMENT_CENTER, t.textSecondary);
 
-    for (std::size_t i = 0; i < highlightRects_.size() && i < highlights_.size(); ++i) {
-        const D2D1_RECT_F& r = highlightRects_[i];
-        const float gh = r.bottom - r.top;
-        const D2D1_RECT_F glyphRect = D2D1::RectF(r.left, r.top, r.left + gh, r.bottom);
-        DrawGlyph(dc, glyphs_, glyph::Check, glyphRect, fontsize::Body, t.accent);
-        const D2D1_RECT_F textRect =
-            D2D1::RectF(r.left + gh + spacing::S, r.top, r.right, r.bottom);
-        DrawText(dc, text_, highlights_[i], textRect, fontsize::Body, weight::Regular,
-                 DWRITE_TEXT_ALIGNMENT_LEADING, t.textSecondary);
-    }
+    nextButton_.Render(dc, t);
 
-    // UI-fix：页内「开始」按钮已删除（外壳底部条承担前进）。
     dc->SetTransform(D2D1::Matrix3x2F::Identity());
 }
 

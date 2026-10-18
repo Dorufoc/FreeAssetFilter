@@ -1,11 +1,11 @@
 #pragma once
 //
-// pages_setup.h - 安装向导页面③「安装位置」与页面④「安装选项」（新增页）(Todo 10)。
+// pages_setup.h - 安装向导页面「安装配置」（安装位置 + 安装选项合并单屏）。
 //
-// 独立页文件：与 Todo 9（pages_welcome）与 Todo 11（pages_progress）互不触碰。
-// 供 Todo 12（步骤状态机 / 导航接线）经 RenderLocation(...) / RenderOptions(...)
-// 接入外壳；页面状态一律读写 AppState（Frozen contracts §12），四个安装选项默认值
-// 遵循 §2（桌面=1、开始菜单=1、开机自启=0、完成后启动=1）。
+// 追加需求（2026-10-18）：原「安装位置」与「安装选项」两页合并为单屏 `ConfigurePage`
+//（5 页模型：Welcome / License / Configure / Progress / Finish）。页面状态一律读写
+// AppState（Frozen contracts §12），四个安装选项默认值遵循 §2（桌面=1、开始菜单=1、
+// 开机自启=0、完成后启动=1）。
 //
 // 坐标与绘制全程 DIP（§6）：本文件不乘 DPI，由宿主的 ID2D1DeviceContext::SetDpi
 // 负责放大。控件全部复用 Todo 7 的 Button / CheckBox / PathField（不重复实现）。
@@ -60,12 +60,14 @@ FolderPicker PickInstallFolder(HWND owner, const std::wstring& initialDir, std::
 // errorOut（中文内联文案）。成功时清理探针文件。
 bool ProbeWritable(const std::wstring& dir, std::wstring& errorOut);
 
-// ============================== 页面③ 安装位置 =============================
+// ============================== 页面「安装配置」 ===========================
 
-// Location 页：PathField + 「浏览」按钮 + 所需空间/可用空间 + 不可写内联错误。
-class LocationPage {
+// Configure 页（安装位置 + 安装选项合并）：PathField + 「浏览」按钮 + 所需/可用空间 +
+// 不可写内联错误 + 四个安装选项 CheckBox（桌面快捷方式 / 开始菜单 / 开机自启 /
+// 完成后启动）。option 状态直接写入 AppState（§12），默认按 §2。
+class ConfigurePage {
 public:
-    explicit LocationPage(AppState& state);
+    explicit ConfigurePage(AppState& state);
 
     // payload 根目录（所需空间的来源；由宿主经 /payload 提供）。
     void SetPayloadDir(std::wstring dir);
@@ -86,8 +88,10 @@ public:
     // 输入/Tab 分发宿主（Todo 12 负责事件翻译）。
     WidgetHost& Host() noexcept { return host_; }
 
-    // 从 AppState 同步（如 /installdir 预填后调用）。
+    // 从 AppState 同步（如 /installdir 预填后调用）：路径框 + 四个复选框。
     void SyncFromState();
+    // 把四个复选框状态写回 AppState（§12）——离开页面/下一步时调用。
+    void SyncToState();
 
     // 打开文件夹选择对话框；成功后回填 AppState.installDir + PathField 并重估可写。
     FolderPicker Browse(HWND owner);
@@ -95,7 +99,7 @@ public:
     // 重估目标可写性（写内联错误 + 门控）。返回是否可写。
     bool RefreshWritable();
 
-    // 状态（供 Todo 12 门控「下一步」+ 证据断言）。
+    // 状态（供 Todo 12 门控「安装」+ 证据断言）。
     bool CanProceed() const noexcept { return canProceed_; }
     bool HasInlineError() const noexcept { return !error_.empty(); }
     const std::wstring& InlineError() const noexcept { return error_; }
@@ -107,6 +111,10 @@ public:
 
     PathField& Field() noexcept { return pathField_; }
     Button& BrowseButton() noexcept { return browseButton_; }
+    CheckBox& DesktopBox() noexcept { return desktop_; }
+    CheckBox& StartmenuBox() noexcept { return startmenu_; }
+    CheckBox& AutostartBox() noexcept { return autostart_; }
+    CheckBox& LaunchBox() noexcept { return launch_; }
 
 private:
     void RecomputeSpace();
@@ -117,56 +125,6 @@ private:
 
     PathField pathField_;
     Button browseButton_;
-    WidgetHost host_;
-
-    const TextFactory* text_ = nullptr;
-    const GlyphFont* glyphs_ = nullptr;
-
-    D2D1_RECT_F card_{};
-    D2D1_RECT_F headingRect_{};
-    D2D1_RECT_F subtitleRect_{};
-    D2D1_RECT_F requiredRect_{};
-    D2D1_RECT_F freeRect_{};
-    D2D1_RECT_F errorRect_{};
-
-    unsigned long long requiredBytes_ = 0;
-    unsigned long long freeBytes_ = 0;
-    std::wstring requiredText_;
-    std::wstring freeText_;
-    std::wstring error_;
-    bool spaceSufficient_ = true;
-    bool canProceed_ = true;
-};
-
-// ============================== 页面④ 安装选项 =============================
-
-// Options 页（新增）：四个 CheckBox——桌面快捷方式 / 开始菜单 / 开机自启 /
-// 完成后启动。状态直接写入 AppState（§12），默认按 §2。
-class OptionsPage {
-public:
-    explicit OptionsPage(AppState& state);
-
-    void BindAnimator(Animator* animator);
-    void BindText(const TextFactory* text);
-    void BindGlyphs(const GlyphFont* glyphs);
-
-    void Layout(const D2D1_RECT_F& contentCard);
-    void Render(ID2D1DeviceContext* dc, const Theme& theme);
-
-    WidgetHost& Host() noexcept { return host_; }
-
-    // 从 AppState（§2 默认）同步到复选框——进入页面时调用。
-    void SyncFromState();
-    // 把四个复选框状态写回 AppState（§12）——离开页面/下一步时调用。
-    void SyncToState();
-
-    CheckBox& DesktopBox() noexcept { return desktop_; }
-    CheckBox& StartmenuBox() noexcept { return startmenu_; }
-    CheckBox& AutostartBox() noexcept { return autostart_; }
-    CheckBox& LaunchBox() noexcept { return launch_; }
-
-private:
-    AppState& state_;  // 借用（§12 共享状态）
     CheckBox desktop_;
     CheckBox startmenu_;
     CheckBox autostart_;
@@ -179,14 +137,24 @@ private:
     D2D1_RECT_F card_{};
     D2D1_RECT_F headingRect_{};
     D2D1_RECT_F subtitleRect_{};
+    D2D1_RECT_F requiredRect_{};
+    D2D1_RECT_F freeRect_{};
+    D2D1_RECT_F errorRect_{};
+    D2D1_RECT_F optionHeadingRect_{};
+    D2D1_RECT_F optionSubtitleRect_{};
+
+    unsigned long long requiredBytes_ = 0;
+    unsigned long long freeBytes_ = 0;
+    std::wstring requiredText_;
+    std::wstring freeText_;
+    std::wstring error_;
+    bool spaceSufficient_ = true;
+    bool canProceed_ = true;
 };
 
 // ============================== Todo 12 接线入口 ===========================
 
-// 页面③渲染入口（薄包装，供 Todo 12 调用）。
-void RenderLocation(ID2D1DeviceContext* dc, const Theme& theme, LocationPage& page);
-
-// 页面④渲染入口（薄包装，供 Todo 12 调用）。
-void RenderOptions(ID2D1DeviceContext* dc, const Theme& theme, OptionsPage& page);
+// 页面「安装配置」渲染入口（薄包装，供 Todo 12 调用）。
+void RenderConfigure(ID2D1DeviceContext* dc, const Theme& theme, ConfigurePage& page);
 
 }  // namespace faf

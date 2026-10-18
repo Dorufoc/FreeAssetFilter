@@ -152,6 +152,11 @@ class StepItem : public Widget {
 public:
     enum State { Future, Current, Completed };
 
+    // 追加需求（2026-10-18）：排布方向。
+    //  - Vertical（默认）：左栏竖向（标签在节点右侧，连接线竖直穿过节点）——保留不变。
+    //  - Horizontal：顶部横向（标签在节点上方，连接线横向穿过节点）。
+    enum class Orientation { Vertical, Horizontal };
+
     void SetBounds(const D2D1_RECT_F& rect) { bounds_ = rect; }
     const D2D1_RECT_F& Bounds() const noexcept { return bounds_; }
 
@@ -159,6 +164,9 @@ public:
     int Index() const noexcept { return index_; }
     void SetLabel(std::wstring label) { label_ = std::move(label); }
     const std::wstring& Label() const noexcept { return label_; }
+
+    void SetOrientation(Orientation orientation) { orientation_ = orientation; }
+    Orientation GetOrientation() const noexcept { return orientation_; }
 
     void SetState(State state);
     State CurrentState() const noexcept { return state_; }
@@ -188,6 +196,7 @@ private:
     D2D1_RECT_F bounds_{};
     int index_ = 0;
     bool last_ = false;
+    Orientation orientation_ = Orientation::Vertical;  // 默认竖向（保留既有行为）
     std::wstring label_;
     State state_ = Future;
 

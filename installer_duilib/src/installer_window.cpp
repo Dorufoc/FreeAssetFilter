@@ -26,21 +26,19 @@ namespace fs = std::filesystem;
 
 namespace {
 
-// Todo 12：左栏步骤栏 6 步文案（向导步骤，非 pages_progress 的 4 段安装进度语义）。
-constexpr const wchar_t* kStepLabels[6] = {L"欢迎",     L"许可协议", L"安装位置",
-                                           L"安装选项", L"安装进度", L"完成"};
+// 追加需求（2026-10-18）：顶部横向 3 节点进度带【协议】【配置】【部署】。
+// 欢迎/完成页为英雄页（无步骤区、无底部导航）。
+constexpr const wchar_t* kStepLabels[3] = {L"协议", L"配置", L"部署"};
 // Todo 12：底部导航按钮尺寸（DIP）。中心落在 bottomBar 垂直中线。
 constexpr float kNavButtonW = 112.0f;
 constexpr float kNavButtonH = 36.0f;
 constexpr float kNavBackCenterX = 680.0f;  // 上一步按钮中心 X（DIP）
 constexpr float kNavNextCenterX = 816.0f;  // 下一步按钮中心 X（DIP）
-// UI-fix：页托管底部条按钮（取消 / 打开安装目录 / 完成）的统一几何（画布 DIP）。
+// UI-fix：页托管底部条按钮（取消 / 完成）的统一几何（画布 DIP）。
 // 页坐标 = 画布 + shadowMarginDip_（Win10 兜底外扩边距；页 Render 用 Identity 变换）。
 constexpr float kFooterRightEdgeX = 872.0f;  // 页操作按钮右缘（画布）
 constexpr float kCancelButtonW = 96.0f;      // 「取消」宽度
-constexpr float kFinishButtonW = 96.0f;      // 「完成」宽度
-constexpr float kOpenDirButtonW = 128.0f;    // 「打开安装目录」宽度
-constexpr int kStepCount = 6;
+constexpr int kStepCount = 3;
 }  // namespace
 
 namespace {
@@ -153,8 +151,7 @@ InstallerWindow::~InstallerWindow() {
     // render_.Shutdown()（含 CoUninitialize）之前析构，避免在失效 COM 单元上 Release。
     welcomePage_.reset();
     licensePage_.reset();
-    locationPage_.reset();
-    optionsPage_.reset();
+    configurePage_.reset();
     progressPage_.reset();
     finishPage_.reset();
     render_.Shutdown();
@@ -330,9 +327,10 @@ void InstallerWindow::RefreshSystemTheme() {
 }
 
 void InstallerWindow::Layout() {
-    // §6：shell 几何唯一来源 = faf::ComputeShellLayout()（纯 DIP 计算，不依赖 DPI）。
-    // 标题栏最小化/关闭命中区、左栏、内容卡片、底部条均由该结果提供。
-    shellLayout_ = faf::ComputeShellLayout();
+    // §6：shell 几何唯一来源 = faf::ComputeShellLayout(bool hero)（纯 DIP 计算，不依赖 DPI）。
+    // 标题栏最小化/关闭命中区、步骤带、内容卡片、底部条均由该结果提供。
+    // 模式由当前页决定（英雄页 欢迎/完成 无步骤带/底部条；state_.page 缺省 = Welcome=0=英雄页）。
+    shellLayout_ = faf::ComputeShellLayout(faf::IsHeroPage(state_.page));
     // Todo 12：shell 几何变化后重排步骤栏/导航按钮/当前页（页面构造前为空操作）。
     if (pagesReady_) {
         LayoutStepBar();
@@ -471,12 +469,14 @@ void InstallerWindow::DrawContent(ID2D1DeviceContext* ctx) {
 
     // --- Todo 12：步骤栏 + 当前页 + 导航按钮（状态唯一来源 = AppState::page，§12）---
     if (pagesReady_) {
-        for (int i = 0; i < kStepCount; ++i) stepItems_[i].Render(ctx, faded);
+        // 追加需求：英雄页（欢迎/完成）无步骤带——仅向导页绘制 3 个横向节点。
+        if (!faf::IsHeroPage(state_.page)) {
+            for (int i = 0; i < kStepCount; ++i) stepItems_[i].Render(ctx, faded);
+        }
         // 页内 Render 自行 SetTransform（会覆盖 shell 平移），渲染后再恢复边距平移。
         RenderActivePage(ctx, faded);
         ctx->SetTransform(D2D1::Matrix3x2F::Translation(m, m));
-        // UI-fix：导航按钮按页面可见性绘制（Welcome 隐藏「上一步」；Progress/Finish 全隐藏，
-        // 页内操作按钮已由外壳底部条托管，避免重复按钮）。
+        // UI-fix：导航按钮按页面可见性绘制（英雄页全隐藏；Progress 隐藏；Configure 由门控决定）。
         if (navBackVisible_) backButton_.Render(ctx, faded);
         if (navNextVisible_) nextButton_.Render(ctx, faded);
     }
@@ -563,39 +563,25 @@ void InstallerWindow::DrawShellLayers(ID2D1DeviceContext* ctx, const faf::Theme&
     faf::ComPtr<ID2D1SolidColorBrush> stroke;
     ctx->CreateSolidColorBrush(faded(theme.cardStroke), stroke.GetAddressOf());
 
-    // 左栏（半透明层）。
-    ctx->FillRectangle(s.rail, card.Get());
-
     // 内容卡片（圆角 + 描边）。
     const D2D1_ROUNDED_RECT cardRect =
         D2D1::RoundedRect(s.contentCard, faf::radius::Medium, faf::radius::Medium);
     ctx->FillRoundedRectangle(cardRect, card.Get());
     if (stroke) ctx->DrawRoundedRectangle(cardRect, stroke.Get(), 1.0f);
 
-    // 底部条。
-    ctx->FillRectangle(s.bottomBar, card.Get());
-
-    // UI-fix：真实品牌头（产品名 SemiBold + 副标题）——此前 brandHeader 只画下方分隔线、
-    // 从不绘制任何文字，是「标题栏与内容区间 ~120 DIP 空带」的观感来源之一。
-    {
-        const float bx = s.brandHeader.left + faf::spacing::M;
-        const float by = s.brandHeader.top + faf::spacing::L;
-        const float bw = (s.brandHeader.right - s.brandHeader.left) - 2.0f * faf::spacing::M;
-        const float nameH = faf::fontsize::Subtitle + faf::spacing::S;
-        const D2D1_COLOR_F nameColor = faded(theme.textPrimary);
-        const D2D1_COLOR_F subColor = faded(theme.textSecondary);
-        DrawTextLine(ctx, L"FreeAssetFilter", bx, by, bw, nameH, faf::fontsize::Subtitle,
-                     nameColor, DWRITE_FONT_WEIGHT_SEMI_BOLD);
-        DrawTextLine(ctx, L"文件浏览与管理工具", bx, by + nameH, bw,
-                     faf::fontsize::Caption + faf::spacing::S, faf::fontsize::Caption, subColor);
+    // 底部条（英雄页 bottomBar 为空矩形 → 跳过绘制/分隔线）。
+    if (s.bottomBar.right > s.bottomBar.left && s.bottomBar.bottom > s.bottomBar.top) {
+        ctx->FillRectangle(s.bottomBar, card.Get());
     }
 
-    // 左栏品牌头与步骤列表之间的分隔线（可视化 layout 的 brandHeader 边界）。
-    faf::ComPtr<ID2D1SolidColorBrush> divider;
-    if (SUCCEEDED(ctx->CreateSolidColorBrush(faded(theme.divider), divider.GetAddressOf()))) {
-        ctx->DrawLine(D2D1::Point2F(s.brandHeader.left, s.brandHeader.bottom),
-                      D2D1::Point2F(s.brandHeader.right, s.brandHeader.bottom), divider.Get(),
-                      1.0f);
+    // 追加需求：顶部横向步骤带只在向导页存在（英雄页 stepper 为空 → 跳过）。
+    // 步骤节点/连接线/标签由 DrawContent() 内的 StepItem::Render 绘制；此处只画步骤带下缘分隔线。
+    if (s.stepper.right > s.stepper.left && s.stepper.bottom > s.stepper.top) {
+        faf::ComPtr<ID2D1SolidColorBrush> divider;
+        if (SUCCEEDED(ctx->CreateSolidColorBrush(faded(theme.divider), divider.GetAddressOf()))) {
+            ctx->DrawLine(D2D1::Point2F(s.stepper.left, s.stepper.bottom),
+                          D2D1::Point2F(s.stepper.right, s.stepper.bottom), divider.Get(), 1.0f);
+        }
     }
 }
 
@@ -945,21 +931,11 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
 void InstallerWindow::SetPage(int page) {
     // §12：页面唯一来源 = AppState::page；进入页面统一走 ApplyPageEntry（Synced + Layout）。
     state_.page = page;
+    // 追加需求：英雄页（欢迎/完成）⇄ 向导页切换时 shell 几何不同（有无步骤带/底部条），
+    // 必须在布局页面之前重算，否则页/步骤带/导航按钮会沿用旧几何。
+    shellLayout_ = faf::ComputeShellLayout(faf::IsHeroPage(page));
     ApplyPageEntry();
     RequestAnimTick();  // 置脏 + 确保 tick 定时器在跑（页面切换动画 + 步骤栏高亮）
-}
-
-void InstallerWindow::Browse() {
-    BROWSEINFOW bi{};
-    bi.hwndOwner = window_;
-    bi.lpszTitle = L"选择 FreeAssetFilter 安装目录";
-    LPITEMIDLIST id = SHBrowseForFolderW(&bi);
-    if (id) {
-        wchar_t path[MAX_PATH] = {};
-        if (SHGetPathFromIDListW(id, path)) state_.installDir = path;
-        CoTaskMemFree(id);
-        RequestAnimTick();  // 置脏 + 确保 tick 定时器在跑
-    }
 }
 
 DWORD WINAPI InstallerWindow::InstallThreadProc(LPVOID p) {
@@ -987,24 +963,21 @@ void InstallerWindow::WriteCancelResult() {
 
 void InstallerWindow::OnFinishIntent() {
     // §15（唯一 owner = Todo 15）：完成后启动。
-    //   * 仅当 `state_.optLaunch` 为真才启动（未勾选 → 绝不启动，直接关闭）。
+    // 追加需求（2026-10-18）：完成页改为英雄页——大按钮「立即启动」= **无条件启动**
+    // （页内不再有「立即启动」勾选框，AppState.optLaunch 恒为默认真）。
     //   * 去提权：经 render/launch_forward.h 的 explorer 转发（绝不直接
     //     ShellExecuteW(exe)——会以管理员令牌运行）。
-    if (state_.optLaunch) {
-        const faf::LaunchOutcome outcome =
-            faf::LaunchInstalledAppDeElevated(state_.installDir, window_);
-        DiagLog(L"launch attempted opted=1 dir=" + state_.installDir + L" launched=" +
-                std::to_wstring(outcome.launched ? 1 : 0) + L" missing=" +
-                std::to_wstring(outcome.missingExe ? 1 : 0) + L" error=" + outcome.error);
-        if (!outcome.launched) {
-            // 目标缺失/转发失败：不崩溃、不关闭 —— 窗口内提示（与载荷缺失同一展示路径），
-            // 用户可自行关闭（WM_CLOSE → 非安装中即销毁）。
-            errorText_ = outcome.error.empty() ? L"启动失败" : (L"启动失败：" + outcome.error);
-            RequestAnimTick();
-            return;
-        }
-    } else {
-        DiagLog(L"launch skipped opted=0");
+    const faf::LaunchOutcome outcome =
+        faf::LaunchInstalledAppDeElevated(state_.installDir, window_);
+    DiagLog(L"launch attempted dir=" + state_.installDir + L" launched=" +
+            std::to_wstring(outcome.launched ? 1 : 0) + L" missing=" +
+            std::to_wstring(outcome.missingExe ? 1 : 0) + L" error=" + outcome.error);
+    if (!outcome.launched) {
+        // 目标缺失/转发失败：不崩溃、不关闭 —— 窗口内提示（与载荷缺失同一展示路径），
+        // 用户可自行关闭（WM_CLOSE → 非安装中即销毁）。
+        errorText_ = outcome.error.empty() ? L"启动失败" : (L"启动失败：" + outcome.error);
+        RequestAnimTick();
+        return;
     }
     PostMessageW(window_, WM_CLOSE, 0, 0);
 }
@@ -1083,7 +1056,8 @@ void InstallerWindow::EnsurePages() {
     welcomePage_->BindText(&textFactory_);
     welcomePage_->BindGlyphs(&glyphFont_);
     welcomePage_->SetLogo(&logoBitmap_);
-    // UI-fix：欢迎页页内「开始」按钮已移除——前进统一走外壳底部条「下一步」（避免重复按钮）。
+    // 追加需求：欢迎页为英雄页——页内大按钮「下一步」承担前进（无底部导航）。
+    welcomePage_->SetOnNextIntent([this]() { GoNext(); });
 
     licensePage_ = std::make_unique<faf::LicensePage>(state_);
     licensePage_->BindAnimator(&animator_);
@@ -1092,20 +1066,15 @@ void InstallerWindow::EnsurePages() {
     licensePage_->BindWriteFactory(dwrite);
     // UI-fix：许可页页内「下一步」按钮已移除——门控由 UpdateNavButtons() 读 state_.agreed。
 
-    locationPage_ = std::make_unique<faf::LocationPage>(state_);
-    locationPage_->SetPayloadDir(payload_);
-    locationPage_->SetOwner(window_);
-    locationPage_->BindAnimator(&animator_);
-    locationPage_->BindText(&textFactory_);
-    locationPage_->BindGlyphs(&glyphFont_);
-    // Todo 15 证据：Location 页 PathField 的实际持值（= /installdir 预填结果；页面进入
+    configurePage_ = std::make_unique<faf::ConfigurePage>(state_);
+    configurePage_->SetPayloadDir(payload_);
+    configurePage_->SetOwner(window_);
+    configurePage_->BindAnimator(&animator_);
+    configurePage_->BindText(&textFactory_);
+    configurePage_->BindGlyphs(&glyphFont_);
+    // Todo 15 证据：Configure 页 PathField 的实际持值（= /installdir 预填结果；页面进入
     // 时 ApplyPageEntry → SyncFromState 会再次从此值同步）。
-    DiagLog(L"location prefill field=" + locationPage_->Field().Path());
-
-    optionsPage_ = std::make_unique<faf::OptionsPage>(state_);
-    optionsPage_->BindAnimator(&animator_);
-    optionsPage_->BindText(&textFactory_);
-    optionsPage_->BindGlyphs(&glyphFont_);
+    DiagLog(L"configure prefill field=" + configurePage_->Field().Path());
 
     progressPage_ = std::make_unique<faf::ProgressPage>(state_);
     progressPage_->BindAnimator(&animator_);
@@ -1117,11 +1086,8 @@ void InstallerWindow::EnsurePages() {
     finishPage_->BindAnimator(&animator_);
     finishPage_->BindText(&textFactory_);
     finishPage_->BindGlyphs(&glyphFont_);
-    // Todo 15 接线（§15）：勾选变化只记录意图（真实启动时点 = 完成按钮）；完成意图
-    // → OnFinishIntent()：仅当 optLaunch 为真时才去提权启动，然后关闭窗口。
-    finishPage_->SetOnLaunchIntent([this](bool optedIn) {
-        DiagLog(L"launch intent opted=" + std::to_wstring(optedIn ? 1 : 0));
-    });
+    finishPage_->SetLogo(&logoBitmap_);  // 英雄页图标（成功对勾由页内动画绘制，Logo 备用）
+    // 追加需求：完成页为英雄页——大按钮「立即启动」= 无条件去提权启动 + 关窗。
     finishPage_->SetOnFinishIntent([this]() { OnFinishIntent(); });
 
     for (int i = 0; i < kStepCount; ++i) {
@@ -1155,7 +1121,7 @@ void InstallerWindow::EnsurePages() {
     LayoutFooterButtons();
     ApplyPageEntry();
     RequestAnimTick();
-    DiagLog(L"pages ready count=6");
+    DiagLog(L"pages ready count=5");
 }
 
 D2D1_RECT_F InstallerWindow::PageRect() const {
@@ -1166,12 +1132,14 @@ D2D1_RECT_F InstallerWindow::PageRect() const {
 }
 
 void InstallerWindow::LayoutStepBar() {
-    const D2D1_RECT_F& list = shellLayout_.stepList;
-    const float rowH = (list.bottom - list.top) / static_cast<float>(kStepCount);
+    // 追加需求：横向 3 节点进度带——stepItems_ 均分 stepper 宽度（每列一段；节点居列底、
+    // 标签居列中、连接线自上一列中心到本列节点）。
+    const D2D1_RECT_F& band = shellLayout_.stepper;
+    const float colW = (band.right - band.left) / static_cast<float>(kStepCount);
     for (int i = 0; i < kStepCount; ++i) {
-        const float top = list.top + rowH * static_cast<float>(i);
-        stepItems_[i].SetBounds(D2D1::RectF(list.left + faf::spacing::M, top,
-                                            list.right - faf::spacing::M, top + rowH));
+        stepItems_[i].SetOrientation(faf::StepItem::Orientation::Horizontal);
+        const float left = band.left + colW * static_cast<float>(i);
+        stepItems_[i].SetBounds(D2D1::RectF(left, band.top, left + colW, band.bottom));
     }
 }
 
@@ -1180,7 +1148,9 @@ void InstallerWindow::LayoutStepBar() {
 // Layout（Layout/EnsurePages/LayoutPages/ApplyPageEntry）之后调用，保持按钮与 shell 几何同步。
 void InstallerWindow::LayoutFooterButtons() {
     const D2D1_RECT_F& bar = shellLayout_.bottomBar;
-    const float cy = (bar.top + bar.bottom) * 0.5f;
+    // 追加需求：英雄页（欢迎/完成）bottomBar 为空矩形 → 无底部条（导航/页托管按钮均不参与）。
+    const bool hasBar = bar.right > bar.left && bar.bottom > bar.top;
+    const float cy = hasBar ? (bar.top + bar.bottom) * 0.5f : 0.0f;
     backButton_.SetBounds(D2D1::RectF(kNavBackCenterX - kNavButtonW * 0.5f,
                                       cy - kNavButtonH * 0.5f,
                                       kNavBackCenterX + kNavButtonW * 0.5f,
@@ -1194,19 +1164,12 @@ void InstallerWindow::LayoutFooterButtons() {
     const float m = static_cast<float>(shadowMarginDip_);
     const float rowTop = cy - kNavButtonH * 0.5f + m;
     const float rowBottom = cy + kNavButtonH * 0.5f + m;
-    if (progressPage_) {
+    if (progressPage_ && hasBar) {
         progressPage_->CancelButton().SetBounds(D2D1::RectF(
             kFooterRightEdgeX - kCancelButtonW + m, rowTop, kFooterRightEdgeX + m, rowBottom));
     }
-    if (finishPage_) {
-        const float finishRight = kFooterRightEdgeX + m;
-        const float finishLeft = finishRight - kFinishButtonW;
-        finishPage_->FinishButton().SetBounds(
-            D2D1::RectF(finishLeft, rowTop, finishRight, rowBottom));
-        const float openRight = finishLeft - faf::spacing::S;
-        finishPage_->OpenDirButton().SetBounds(
-            D2D1::RectF(openRight - kOpenDirButtonW, rowTop, openRight, rowBottom));
-    }
+    // 追加需求：完成页「立即启动」大按钮改由 FinishPage::Layout 自行居中摆放（英雄页无底部条），
+    // 外壳不再托管 openDir/finish 按钮（二者已从 FinishPage 删除）。
 }
 
 void InstallerWindow::LayoutPages() {
@@ -1215,8 +1178,7 @@ void InstallerWindow::LayoutPages() {
     switch (state_.page) {
         case Welcome: welcomePage_->Layout(card); break;
         case License: licensePage_->Layout(card); break;
-        case Location: locationPage_->Layout(card); break;
-        case Options: optionsPage_->Layout(card); break;
+        case Configure: configurePage_->Layout(card); break;
         case Progress: progressPage_->Layout(card); break;
         case Finish: finishPage_->Layout(card); break;
         default: break;
@@ -1239,13 +1201,9 @@ void InstallerWindow::ApplyPageEntry() {
             licensePage_->SyncFromState();
             licensePage_->Layout(card);
             break;
-        case Location:
-            locationPage_->SyncFromState();
-            locationPage_->Layout(card);
-            break;
-        case Options:
-            optionsPage_->SyncFromState();
-            optionsPage_->Layout(card);
+        case Configure:
+            configurePage_->SyncFromState();
+            configurePage_->Layout(card);
             break;
         case Progress:
             progressPage_->Layout(card);
@@ -1260,12 +1218,24 @@ void InstallerWindow::ApplyPageEntry() {
     }
     SyncStepBar();
     UpdateNavButtons();
-    // UI-fix：页面切换后重摆底部条（含页托管的取消/打开目录/完成按钮）。
+    // UI-fix：页面切换后重摆底部条（含页托管的取消/完成按钮）。
     LayoutFooterButtons();
+    // 追加需求：英雄页⇄向导页切换会改变 shell 几何（步骤带有无）——必须按当前几何重排步骤带，
+    // 否则向导页的 3 个横向节点会沿用英雄页的空 bounds（不可见）。
+    LayoutStepBar();
 }
 
 void InstallerWindow::SyncStepBar() {
-    for (int i = 0; i < kStepCount; ++i) stepItems_[i].SetStep(i, state_.page);
+    // 追加需求：页 → 3 节点映射（License→0「协议」/ Configure→1「配置」/ Progress→2「部署」）；
+    // 英雄页（欢迎/完成）无步骤带 → 映射为 -1（不点亮任何节点）。
+    int step = -1;
+    switch (state_.page) {
+        case License: step = 0; break;
+        case Configure: step = 1; break;
+        case Progress: step = 2; break;
+        default: step = -1; break;
+    }
+    for (int i = 0; i < kStepCount; ++i) stepItems_[i].SetStep(i, step);
 }
 
 void InstallerWindow::UpdateNavButtons() {
@@ -1273,11 +1243,11 @@ void InstallerWindow::UpdateNavButtons() {
     bool canBack = false;
     bool canNext = false;
     // UI-fix：按页面决定外壳导航按钮的可见性（期间始终禁用，见下方门控）。
+    // 追加需求：英雄页（欢迎/完成）全隐藏——前进/启动由页内大按钮承担。
     switch (state_.page) {
         case Welcome:
-            navBackVisible_ = false;  // 欢迎页无「上一步」
-            navNextVisible_ = true;
-            canNext = true;
+            navBackVisible_ = false;  // 英雄页无外壳导航
+            navNextVisible_ = false;
             break;
         case License:
             navBackVisible_ = true;
@@ -1285,20 +1255,14 @@ void InstallerWindow::UpdateNavButtons() {
             canNext = state_.agreed;
             canBack = true;
             break;
-        case Location:
+        case Configure:
             navBackVisible_ = true;
             navNextVisible_ = true;
-            canNext = locationPage_ && locationPage_->CanProceed();
-            canBack = true;
-            break;
-        case Options:
-            navBackVisible_ = true;
-            navNextVisible_ = true;
-            canNext = true;
+            canNext = configurePage_ && configurePage_->CanProceed();
             canBack = true;
             break;
         case Progress:  // 安装进度页：无导航（取消按钮由页托管到底部条）
-        case Finish:    // 完成页：无导航（打开目录/完成按钮由页托管到底部条）
+        case Finish:    // 完成页：英雄页，无导航（「立即启动」大按钮由页内自我摆放）
         default:
             navBackVisible_ = false;
             navNextVisible_ = false;
@@ -1308,8 +1272,8 @@ void InstallerWindow::UpdateNavButtons() {
         canBack = false;
         canNext = false;
     }
-    // UI-fix：下一步按钮文案随页面切换（安装选项页 = 「安装」）。
-    nextButton_.SetLabel(state_.page == Options ? L"安装" : L"下一步");
+    // UI-fix：下一步按钮文案随页面切换（配置页 = 「安装」）。
+    nextButton_.SetLabel(state_.page == Configure ? L"安装" : L"下一步");
     backButton_.SetEnabled(canBack);
     nextButton_.SetEnabled(canNext);
 }
@@ -1322,14 +1286,11 @@ void InstallerWindow::GoNext() {
             break;
         case License:
             if (!state_.agreed) return;  // 未勾选同意不得前进
-            SetPage(Location);
+            SetPage(Configure);
             break;
-        case Location:
-            if (!locationPage_ || !locationPage_->CanProceed()) return;  // 不可写/空间不足
-            SetPage(Options);
-            break;
-        case Options:
-            if (optionsPage_) optionsPage_->SyncToState();  // 四选项写回 AppState
+        case Configure:
+            if (!configurePage_ || !configurePage_->CanProceed()) return;  // 不可写/空间不足
+            configurePage_->SyncToState();  // 四选项写回 AppState
             StartInstall();  // 内部 SetPage(Progress) + 起安装线程
             break;
         default:
@@ -1344,11 +1305,8 @@ void InstallerWindow::GoBack() {
         case License:
             SetPage(Welcome);
             break;
-        case Location:
+        case Configure:
             SetPage(License);
-            break;
-        case Options:
-            SetPage(Location);
             break;
         default:
             return;  // Welcome/Progress/Finish 无上一步
@@ -1395,8 +1353,7 @@ faf::WidgetHost& InstallerWindow::ActivePageHost() {
     switch (state_.page) {
         case Welcome: return welcomePage_->Host();
         case License: return licensePage_->Host();
-        case Location: return locationPage_->Host();
-        case Options: return optionsPage_->Host();
+        case Configure: return configurePage_->Host();
         case Progress: return progressPage_->Host();
         case Finish: return finishPage_->Host();
         default: return empty;
@@ -1408,8 +1365,7 @@ void InstallerWindow::RenderActivePage(ID2D1DeviceContext* ctx, const faf::Theme
     switch (state_.page) {
         case Welcome: faf::RenderWelcome(ctx, theme, *welcomePage_); break;
         case License: faf::RenderLicense(ctx, theme, *licensePage_); break;
-        case Location: faf::RenderLocation(ctx, theme, *locationPage_); break;
-        case Options: faf::RenderOptions(ctx, theme, *optionsPage_); break;
+        case Configure: faf::RenderConfigure(ctx, theme, *configurePage_); break;
         case Progress: faf::RenderProgress(ctx, theme, *progressPage_); break;
         case Finish: faf::RenderFinish(ctx, theme, *finishPage_); break;
         default: break;
@@ -1425,7 +1381,7 @@ void InstallerWindow::EnableAutoDrive(std::wstring profile, int stopPage) {
 #ifdef FAF_TESTMODE
     autoDriveEnabled_ = true;
     autoProfile_ = profile;  // 空串 = 全默认档
-    // 越界/负值 → 不停（走完全程）；0..5 合法则到站即停。
+    // 越界/负值 → 不停（走完全程）；0..4 合法则到站即停。
     autoStopPage_ = (stopPage >= Welcome && stopPage <= Finish) ? stopPage : -1;
 #else
     // 生产构建保底 no-op：交互行为不受 /auto 影响（规格 §17）。
@@ -1499,12 +1455,9 @@ void InstallerWindow::AutoDriveTick() {
             if (licensePage_) licensePage_->SyncFromState();
             GoNext();
             break;
-        case Location:
-            // 门控 = 目录可写 + 空间足够（LocationPage::CanProceed）；默认预填即可过。
-            GoNext();
-            break;
-        case Options:
-            // GoNext → OptionsPage::SyncToState() + StartInstall()（进入进度页）。
+        case Configure:
+            // 门控 = 目录可写 + 空间足够（ConfigurePage::CanProceed）；默认预填即可过。
+            // GoNext → ConfigurePage::SyncToState() + StartInstall()（进入进度页）。
             GoNext();
             break;
         default:

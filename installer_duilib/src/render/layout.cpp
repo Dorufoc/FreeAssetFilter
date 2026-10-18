@@ -1,9 +1,8 @@
 //
 // layout.cpp - 900x600 DIP 布局外壳实现（Frozen contract §6：全程 DIP）。
 //
-// 唯一职责：把冻结的 900x600 DIP 逻辑画布切成左步骤栏（品牌头 + 步骤列表）与
-// 右区（内容卡片 + 底部按钮条），并提供 DIP 命中测试与 DPI 守卫。
-// 所有坐标均为 DIP，绝不乘 DPI。
+// 唯一职责：把冻结的 900x600 DIP 逻辑画布切成标题栏与内容区（向导页另加顶部横向
+// 步骤区与底部按钮条），并提供 DIP 命中测试与 DPI 守卫。所有坐标均为 DIP，绝不乘 DPI。
 //
 #include "render/layout.h"
 
@@ -16,13 +15,21 @@ D2D1_RECT_F Rect(float left, float top, float right, float bottom) {
     return D2D1_RECT_F{left, top, right, bottom};
 }
 
+// 空矩形（英雄页无步骤区/无底部条）。
+D2D1_RECT_F EmptyRect() { return Rect(0.0f, 0.0f, 0.0f, 0.0f); }
+
 }  // namespace
 
-ShellLayout ComputeShellLayout() {
+bool IsHeroPage(int page) {
+    // Welcome=0 / Finish=4（5 页枚举顺序冻结于追加需求 §12）。
+    return page == 0 || page == 4;
+}
+
+ShellLayout ComputeShellLayout(bool hero) {
     const float W = layout::kCanvasWidth;
     const float H = layout::kCanvasHeight;
     const float titleH = layout::kTitleBarHeight;
-    const float railW = layout::kRailWidth;
+    const float stepperH = layout::kStepperHeight;
     const float bottomH = layout::kBottomBarHeight;
     const float margin = spacing::L;  // 24：卡片外留白（token，无魔法数）
 
@@ -34,19 +41,18 @@ ShellLayout ComputeShellLayout() {
     s.closeButton = Rect(W - btnW, 0.0f, W, titleH);
     s.minButton = Rect(W - 2.0f * btnW, 0.0f, W - btnW, titleH);
 
-    // --- 左步骤栏：品牌头（~96 DIP）+ 步骤列表 ---
-    s.rail = Rect(0.0f, titleH, railW, H);
-    s.brandHeader = Rect(0.0f, titleH, railW, titleH + layout::kBrandHeaderHeight);
-    s.stepList = Rect(0.0f, s.brandHeader.bottom, railW, H);
+    if (hero) {
+        // 英雄页：无顶部步骤区、无底部条；内容卡片占满标题栏以下（仅留 margin）。
+        s.stepper = EmptyRect();
+        s.bottomBar = EmptyRect();
+        s.contentCard = Rect(margin, titleH + margin, W - margin, H - margin);
+        return s;
+    }
 
-    // --- 右区：内容卡片 + 底部按钮条（互为唯一定义）---
-    // UI-fix：内容卡片顶部原先经「标题区」（titleZone 无任何绘制方）多下推 96+24 DIP，
-    // 使标题栏与内容卡片之间留出 ~120 DIP 空带；现改为仅留一个 spacing::L
-    //（top = titleH + 24 = 56），底边保持 H - bottomH - margin = 504。
-    s.rightArea = Rect(railW, titleH, W, H);
-    s.contentCard =
-        Rect(railW + margin, titleH + margin, W - margin, H - bottomH - margin);
-    s.bottomBar = Rect(railW, H - bottomH, W, H);
+    // --- 向导页：顶部横向步骤区 + 内容卡片 + 底部按钮条（全宽）---
+    s.stepper = Rect(0.0f, titleH, W, titleH + stepperH);
+    s.contentCard = Rect(margin, s.stepper.bottom + margin, W - margin, H - bottomH - margin);
+    s.bottomBar = Rect(0.0f, H - bottomH, W, H);
 
     return s;
 }

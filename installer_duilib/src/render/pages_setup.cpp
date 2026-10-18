@@ -1,9 +1,10 @@
 //
-// pages_setup.cpp - 安装向导页面③「安装位置」与页面④「安装选项」(Todo 10)。
+// pages_setup.cpp - 安装向导页面「安装配置」（安装位置 + 安装选项合并单屏）。
 //
-// 主路径文件夹选择 = IFileOpenDialog（FOS_PICKFOLDERS）；SHBrowseForFolderW 仅在
-// COM 失败时回退。四个安装选项直接读写 AppState（§12），默认值遵循 §2。坐标全程
-// DIP（§6），控件复用 Todo 7 的 Button / CheckBox / PathField。
+// 追加需求（2026-10-18）：合并原「安装位置」与「安装选项」两页。主路径文件夹选择 =
+// IFileOpenDialog（FOS_PICKFOLDERS）；SHBrowseForFolderW 仅在 COM 失败时回退。四个
+// 安装选项直接读写 AppState（§12），默认值遵循 §2。坐标全程 DIP（§6），控件复用
+// Todo 7 的 Button / CheckBox / PathField。
 //
 #include "render/pages_setup.h"
 
@@ -199,39 +200,84 @@ bool ProbeWritable(const std::wstring& dir, std::wstring& errorOut) {
     return true;
 }
 
-// ============================== 页面③ 安装位置 =============================
+// ============================== 页面「安装配置」 ===========================
 
-LocationPage::LocationPage(AppState& state) : state_(state) {
+ConfigurePage::ConfigurePage(AppState& state) : state_(state) {
     pathField_.SetPath(state_.installDir);
     browseButton_.SetLabel(L"浏览");
     browseButton_.SetGlyph(glyph::Folder);
     browseButton_.SetStyle(Button::Secondary);
     browseButton_.SetOnClick([this]() { Browse(owner_); });
-    host_.Add(&pathField_);    // Tab 顺序：路径框 → 浏览按钮
+
+    desktop_.SetLabel(L"创建桌面快捷方式");
+    startmenu_.SetLabel(L"添加到开始菜单");
+    autostart_.SetLabel(L"开机时自动启动");
+    launch_.SetLabel(L"安装完成后立即启动");
+
+    // §12：四个选项直接写入 AppState。
+    desktop_.SetOnToggle([this](bool v) { state_.optDesktop = v; });
+    startmenu_.SetOnToggle([this](bool v) { state_.optStartmenu = v; });
+    autostart_.SetOnToggle([this](bool v) { state_.optAutostart = v; });
+    launch_.SetOnToggle([this](bool v) { state_.optLaunch = v; });
+
+    host_.Add(&pathField_);  // Tab 顺序：路径框 → 浏览 → 四个选项
     host_.Add(&browseButton_);
+    host_.Add(&desktop_);
+    host_.Add(&startmenu_);
+    host_.Add(&autostart_);
+    host_.Add(&launch_);
+
+    SyncFromState();
 }
 
-void LocationPage::SetPayloadDir(std::wstring dir) {
+void ConfigurePage::SetPayloadDir(std::wstring dir) {
     payloadDir_ = std::move(dir);
     RecomputeSpace();
 }
 
-void LocationPage::BindAnimator(Animator* animator) { browseButton_.BindAnimator(animator); }
+void ConfigurePage::BindAnimator(Animator* animator) {
+    browseButton_.BindAnimator(animator);
+    desktop_.BindAnimator(animator);
+    startmenu_.BindAnimator(animator);
+    autostart_.BindAnimator(animator);
+    launch_.BindAnimator(animator);
+}
 
-void LocationPage::BindText(const TextFactory* text) {
+void ConfigurePage::BindText(const TextFactory* text) {
     text_ = text;
     pathField_.BindText(text);
     browseButton_.BindText(text);
+    desktop_.BindText(text);
+    startmenu_.BindText(text);
+    autostart_.BindText(text);
+    launch_.BindText(text);
 }
 
-void LocationPage::BindGlyphs(const GlyphFont* glyphs) {
+void ConfigurePage::BindGlyphs(const GlyphFont* glyphs) {
     glyphs_ = glyphs;
     browseButton_.BindGlyphs(glyphs);
+    desktop_.BindGlyphs(glyphs);
+    startmenu_.BindGlyphs(glyphs);
+    autostart_.BindGlyphs(glyphs);
+    launch_.BindGlyphs(glyphs);
 }
 
-void LocationPage::SyncFromState() { pathField_.SetPath(state_.installDir); }
+void ConfigurePage::SyncFromState() {
+    pathField_.SetPath(state_.installDir);
+    desktop_.SetChecked(state_.optDesktop);
+    startmenu_.SetChecked(state_.optStartmenu);
+    autostart_.SetChecked(state_.optAutostart);
+    launch_.SetChecked(state_.optLaunch);
+}
 
-void LocationPage::RecomputeSpace() {
+void ConfigurePage::SyncToState() {
+    state_.optDesktop = desktop_.Checked();
+    state_.optStartmenu = startmenu_.Checked();
+    state_.optAutostart = autostart_.Checked();
+    state_.optLaunch = launch_.Checked();
+}
+
+void ConfigurePage::RecomputeSpace() {
     requiredBytes_ = PayloadTotalBytes(payloadDir_);
     requiredText_ = FormatBytes(requiredBytes_);
     unsigned long long freeB = 0;
@@ -244,7 +290,7 @@ void LocationPage::RecomputeSpace() {
     }
 }
 
-bool LocationPage::RefreshWritable() {
+bool ConfigurePage::RefreshWritable() {
     RecomputeSpace();
     error_.clear();
     if (state_.installDir.empty()) {
@@ -267,7 +313,7 @@ bool LocationPage::RefreshWritable() {
     return true;
 }
 
-FolderPicker LocationPage::Browse(HWND owner) {
+FolderPicker ConfigurePage::Browse(HWND owner) {
     std::wstring chosen;
     const FolderPicker result =
         PickInstallFolder(owner ? owner : owner_, state_.installDir, chosen);
@@ -278,44 +324,66 @@ FolderPicker LocationPage::Browse(HWND owner) {
     return result;
 }
 
-void LocationPage::Layout(const D2D1_RECT_F& contentCard) {
+void ConfigurePage::Layout(const D2D1_RECT_F& contentCard) {
     card_ = contentCard;
     const float pad = spacing::L;
     const float x0 = contentCard.left + pad;
     const float contentW = (contentCard.right - contentCard.left) - 2.0f * pad;
 
-    // UI-fix：内容块垂直居中（原先固定贴顶 contentCard.top + pad，短内容在卡内显得下坠）。
-    // 块高 = 标题 + 副标题 + 路径行 + 所需空间 + 可用空间 + 错误行（末行之后不计间距）。
-    const float rowH = 32.0f;
-    const float blockH = (fontsize::Subtitle + spacing::S) + (fontsize::Caption + spacing::M) +
-                         (rowH + spacing::M) + (fontsize::Body + spacing::S) +
-                         (fontsize::Body + spacing::S + spacing::S) + (fontsize::Body + spacing::S);
+    // 内容块垂直居中（短内容不再固定贴顶；末行之后不计间距）。两块合一：
+    // 上「安装位置」（标题/副标题/路径行/所需/可用/错误行）+ 下「安装选项」（标题/副标题/4 勾选）。
+    const float rowH = 32.0f;                 // 路径行高
+    const float cbH = 28.0f;                  // 勾选行高
+    const float cbGap = spacing::S;
+    const float hHeading = fontsize::Subtitle + spacing::S;
+    const float hSub = fontsize::Caption + spacing::S;
+    const float hPath = rowH + spacing::S;
+    const float hText = fontsize::Body + spacing::S;
+    const float blockH = hHeading + hSub + hPath + 3.0f * hText + hHeading + hSub +
+                         4.0f * cbH + 3.0f * cbGap;
     const float cardH = contentCard.bottom - contentCard.top;
     float y = contentCard.top + std::max(spacing::L, (cardH - blockH) * 0.5f);
 
     headingRect_ = D2D1::RectF(x0, y, x0 + contentW, y + fontsize::Subtitle + spacing::S);
-    y += fontsize::Subtitle + spacing::S;
+    y += hHeading;
     subtitleRect_ = D2D1::RectF(x0, y, x0 + contentW, y + fontsize::Caption + spacing::S);
-    y += fontsize::Caption + spacing::M;
+    y += hSub;
 
     const float browseW = 88.0f;
     const float gap = spacing::S;
     pathField_.SetBounds(D2D1::RectF(x0, y, x0 + contentW - gap - browseW, y + rowH));
     browseButton_.SetBounds(D2D1::RectF(x0 + contentW - browseW, y, x0 + contentW, y + rowH));
-    y += rowH + spacing::M;
+    y += hPath;
 
     requiredRect_ = D2D1::RectF(x0, y, x0 + contentW, y + fontsize::Body + spacing::S);
-    y += fontsize::Body + spacing::S;
+    y += hText;
     freeRect_ = D2D1::RectF(x0, y, x0 + contentW, y + fontsize::Body + spacing::S);
-    y += fontsize::Body + spacing::S + spacing::S;
+    y += hText;
     errorRect_ = D2D1::RectF(x0, y, x0 + contentW, y + fontsize::Body + spacing::S);
+    y += hText;
+
+    optionHeadingRect_ = D2D1::RectF(x0, y, x0 + contentW, y + fontsize::Subtitle + spacing::S);
+    y += hHeading;
+    optionSubtitleRect_ = D2D1::RectF(x0, y, x0 + contentW, y + fontsize::Caption + spacing::S);
+    y += hSub;
+
+    CheckBox* boxes[4] = {&desktop_, &startmenu_, &autostart_, &launch_};
+    for (CheckBox* box : boxes) {
+        box->SetBounds(D2D1::RectF(x0, y, x0 + contentW, y + cbH));
+        y += cbH + cbGap;
+    }
 
     SyncFromState();
     RefreshWritable();
 }
 
-void LocationPage::Render(ID2D1DeviceContext* dc, const Theme& theme) {
+void ConfigurePage::Render(ID2D1DeviceContext* dc, const Theme& theme) {
     if (!dc) return;
+
+    // UI-fix：恢复单位变换——页布局坐标已是 page coords（= 画布 + shadowMarginDip_），
+    // 不重置会叠加外壳预置的 Translation(m,m) 造成 +m 偏移（与其它页的约定一致）。
+    dc->SetTransform(D2D1::Matrix3x2F::Identity());
+
     DrawText(dc, text_, L"选择安装位置", headingRect_, fontsize::Subtitle, weight::SemiBold,
              DWRITE_TEXT_ALIGNMENT_LEADING, theme.textPrimary);
     DrawText(dc, text_, L"请选择 FreeAssetFilter 的安装目录。", subtitleRect_, fontsize::Caption,
@@ -333,101 +401,10 @@ void LocationPage::Render(ID2D1DeviceContext* dc, const Theme& theme) {
         DrawText(dc, text_, error_, errorRect_, fontsize::Body, weight::Regular,
                  DWRITE_TEXT_ALIGNMENT_LEADING, D2D1::ColorF(0.85f, 0.20f, 0.20f, 1.0f));
     }
-}
 
-// ============================== 页面④ 安装选项 =============================
-
-OptionsPage::OptionsPage(AppState& state) : state_(state) {
-    desktop_.SetLabel(L"创建桌面快捷方式");
-    startmenu_.SetLabel(L"添加到开始菜单");
-    autostart_.SetLabel(L"开机时自动启动");
-    launch_.SetLabel(L"安装完成后立即启动");
-
-    // §12：四个选项直接写入 AppState。
-    desktop_.SetOnToggle([this](bool v) { state_.optDesktop = v; });
-    startmenu_.SetOnToggle([this](bool v) { state_.optStartmenu = v; });
-    autostart_.SetOnToggle([this](bool v) { state_.optAutostart = v; });
-    launch_.SetOnToggle([this](bool v) { state_.optLaunch = v; });
-
-    host_.Add(&desktop_);
-    host_.Add(&startmenu_);
-    host_.Add(&autostart_);
-    host_.Add(&launch_);
-
-    SyncFromState();
-}
-
-void OptionsPage::BindAnimator(Animator* animator) {
-    desktop_.BindAnimator(animator);
-    startmenu_.BindAnimator(animator);
-    autostart_.BindAnimator(animator);
-    launch_.BindAnimator(animator);
-}
-
-void OptionsPage::BindText(const TextFactory* text) {
-    text_ = text;
-    desktop_.BindText(text);
-    startmenu_.BindText(text);
-    autostart_.BindText(text);
-    launch_.BindText(text);
-}
-
-void OptionsPage::BindGlyphs(const GlyphFont* glyphs) {
-    glyphs_ = glyphs;
-    desktop_.BindGlyphs(glyphs);
-    startmenu_.BindGlyphs(glyphs);
-    autostart_.BindGlyphs(glyphs);
-    launch_.BindGlyphs(glyphs);
-}
-
-void OptionsPage::SyncFromState() {
-    desktop_.SetChecked(state_.optDesktop);
-    startmenu_.SetChecked(state_.optStartmenu);
-    autostart_.SetChecked(state_.optAutostart);
-    launch_.SetChecked(state_.optLaunch);
-}
-
-void OptionsPage::SyncToState() {
-    state_.optDesktop = desktop_.Checked();
-    state_.optStartmenu = startmenu_.Checked();
-    state_.optAutostart = autostart_.Checked();
-    state_.optLaunch = launch_.Checked();
-}
-
-void OptionsPage::Layout(const D2D1_RECT_F& contentCard) {
-    card_ = contentCard;
-    const float pad = spacing::L;
-    const float x0 = contentCard.left + pad;
-    const float contentW = (contentCard.right - contentCard.left) - 2.0f * pad;
-
-    // UI-fix：内容块垂直居中（短内容不再固定贴顶；末行之后不计间距）。
-    // 块高 = 标题 + 副标题 + 4 个选项行（3 个行距 + 末行本身）。
-    const float cbH = 28.0f;
-    const float cbGap = spacing::M;
-    const float blockH = (fontsize::Subtitle + spacing::S) + (fontsize::Caption + spacing::M) +
-                         3.0f * (cbH + cbGap) + cbH;
-    const float cardH = contentCard.bottom - contentCard.top;
-    float y = contentCard.top + std::max(spacing::L, (cardH - blockH) * 0.5f);
-
-    headingRect_ = D2D1::RectF(x0, y, x0 + contentW, y + fontsize::Subtitle + spacing::S);
-    y += fontsize::Subtitle + spacing::S;
-    subtitleRect_ = D2D1::RectF(x0, y, x0 + contentW, y + fontsize::Caption + spacing::S);
-    y += fontsize::Caption + spacing::M;
-
-    CheckBox* boxes[4] = {&desktop_, &startmenu_, &autostart_, &launch_};
-    for (CheckBox* box : boxes) {
-        box->SetBounds(D2D1::RectF(x0, y, x0 + contentW, y + cbH));
-        y += cbH + cbGap;
-    }
-
-    SyncFromState();
-}
-
-void OptionsPage::Render(ID2D1DeviceContext* dc, const Theme& theme) {
-    if (!dc) return;
-    DrawText(dc, text_, L"安装选项", headingRect_, fontsize::Subtitle, weight::SemiBold,
+    DrawText(dc, text_, L"安装选项", optionHeadingRect_, fontsize::Subtitle, weight::SemiBold,
              DWRITE_TEXT_ALIGNMENT_LEADING, theme.textPrimary);
-    DrawText(dc, text_, L"选择安装时创建的附加项。", subtitleRect_, fontsize::Caption,
+    DrawText(dc, text_, L"选择安装时创建的附加项。", optionSubtitleRect_, fontsize::Caption,
              weight::Regular, DWRITE_TEXT_ALIGNMENT_LEADING, theme.textSecondary);
 
     desktop_.Render(dc, theme);
@@ -438,11 +415,7 @@ void OptionsPage::Render(ID2D1DeviceContext* dc, const Theme& theme) {
 
 // ============================== Todo 12 接线入口 ===========================
 
-void RenderLocation(ID2D1DeviceContext* dc, const Theme& theme, LocationPage& page) {
-    page.Render(dc, theme);
-}
-
-void RenderOptions(ID2D1DeviceContext* dc, const Theme& theme, OptionsPage& page) {
+void RenderConfigure(ID2D1DeviceContext* dc, const Theme& theme, ConfigurePage& page) {
     page.Render(dc, theme);
 }
 

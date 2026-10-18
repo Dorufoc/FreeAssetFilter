@@ -35,8 +35,7 @@
 namespace faf {
 class WelcomePage;
 class LicensePage;
-class LocationPage;
-class OptionsPage;
+class ConfigurePage;
 class ProgressPage;
 class FinishPage;
 }  // namespace faf
@@ -58,8 +57,8 @@ public:
     // 由 main.cpp 在 FAF_TESTMODE 构建中调用（生产构建解析 /auto 后直接丢弃、
     // 不会调用此处；即便调用亦为 no-op，交互行为保持不变）。
     // `profile`：`/auto:opts=` 的原始四位 0/1 串（空/缺位 ⇒ §2 默认 1,1,0,1）。
-    // `stopPage`：`/auto:page=N`（0..5，停在该页不再前进；越界/缺省 = 不停，走完）。
-    // 驱动时序：窗口/页面就绪后固定间隔自动 欢迎→许可→位置→选项→进度→完成
+    // `stopPage`：`/auto:page=N`（0..4，停在该页不再前进；越界/缺省 = 不停，走完）。
+    // 驱动时序：窗口/页面就绪后固定间隔自动 欢迎→许可→配置→部署→完成
     //（或停在第 stopPage 页），全程只经既有 GoNext/SetPage 路径。
     void EnableAutoDrive(std::wstring profile, int stopPage);
 
@@ -103,12 +102,12 @@ private:
 
     // --- page state machine wiring（Todo 12：把 9/10/11 页文件接入外壳）---
     // 页面唯一来源 = AppState::page（§12）；本组方法只做接线，不改页内部实现。
-    void EnsurePages();      // render 就绪后惰性构造/绑定 6 页 + 步骤栏 + 导航按钮
+    void EnsurePages();      // render 就绪后惰性构造/绑定 5 页 + 步骤区 + 导航按钮
     void ApplyPageEntry();   // 进入/切换页面：入场动效 + SyncFromState + Layout + 步骤栏/按钮刷新
     void LayoutPages();      // 仅按当前 shell 几何重排当前页（不含入场重置）
-    void SyncStepBar();      // 把 state_.page 推入 StepItem 状态
+    void SyncStepBar();      // 把 state_.page 推入 StepItem 状态（映射到 3 节点）
     void UpdateNavButtons(); // 依页面/安装态/门控启用或禁用 上一步/下一步
-    void GoNext();           // 下一步（安装中无效；Options→Progress 触发安装）
+    void GoNext();           // 下一步（安装中无效；Configure→Progress 触发安装）
     void GoBack();           // 上一步（安装中无效；Welcome/Finish/Progress 无效）
     void RaiseCancelIntent();// 抬高取消意图（Progress 页 RequestCancel）；不写结果文件
     void OnEscape();         // ESC：非安装中 = WM_CLOSE；安装中 no-op（「安装中禁止」）
@@ -128,7 +127,6 @@ private:
     // 为真时经 `render/launch_forward.h` 去提权启动；未勾选绝不启动。目标缺失/
     // 转发失败 ⇒ 窗口内提示且不关闭（不崩溃）。
     void OnFinishIntent();
-    void Browse();
     static DWORD WINAPI InstallThreadProc(LPVOID);
     void InstallThread();
     void WriteCancelResult();  // 保留名（Todo 15 兼容）；内部统一走 §1 唯一写入器
@@ -187,8 +185,7 @@ private:
 
     std::unique_ptr<faf::WelcomePage> welcomePage_;
     std::unique_ptr<faf::LicensePage> licensePage_;
-    std::unique_ptr<faf::LocationPage> locationPage_;
-    std::unique_ptr<faf::OptionsPage> optionsPage_;
+    std::unique_ptr<faf::ConfigurePage> configurePage_;  // 追加需求：Location+Options 合并为 Configure
     std::unique_ptr<faf::ProgressPage> progressPage_;
     std::unique_ptr<faf::FinishPage> finishPage_;
 
@@ -199,7 +196,7 @@ private:
     bool navBackVisible_{false};
     bool navNextVisible_{false};
     faf::WidgetHost shellHost_;
-    std::array<faf::StepItem, 6> stepItems_{};
+    std::array<faf::StepItem, 3> stepItems_{};  // 追加需求：3 节点【协议】【配置】【部署】
 
     // --- Todo 19：/auto 测试驱动内部状态（仅 FAF_TESTMODE 构建编入；生产零残留）---
 #ifdef FAF_TESTMODE
@@ -209,7 +206,7 @@ private:
     void ApplyAutoProfile(const std::wstring& bits);  // §17 四位 → AppState 四选项
 
     bool autoDriveEnabled_{false};
-    int autoStopPage_{-1};           // -1 = 不停；0..5 = 抵达该页后停
+    int autoStopPage_{-1};           // -1 = 不停；0..4 = 抵达该页后停
     std::wstring autoProfile_;       // /auto:opts= 原始串（空 = 全默认）
     UINT_PTR autoTimer_{0};          // 驱动专用定时器（与动画 tick 定时器独立）
     bool autoHalted_{false};         // 到站/完成后不再推进（防重复标记）

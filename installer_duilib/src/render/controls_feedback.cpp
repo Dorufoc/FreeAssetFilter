@@ -510,19 +510,43 @@ void StepItem::Render(ID2D1DeviceContext* dc, const Theme& theme) {
 
     const float e = Emphasis();
     const float c = CheckProgress();
-    const float cx = bounds_.left + 12.0f;
-    const float cy = (bounds_.top + bounds_.bottom) * 0.5f;
+    const bool horizontal = (orientation_ == Orientation::Horizontal);
+
+    // 节点中心：竖向 = 左内边距 + 垂直中线；横向 = 水平中心 + 底边上抬 spacing::L。
+    const float cx = horizontal ? (bounds_.left + bounds_.right) * 0.5f : bounds_.left + 12.0f;
+    const float cy = horizontal ? (bounds_.bottom - spacing::L) : (bounds_.top + bounds_.bottom) * 0.5f;
     const float rBase = 9.0f;
     const float r = rBase + 2.0f * e;  // 当前步略微放大
 
-    // 连接线（从上一项进入 + 向下一项延伸）；完成态为 accent。
-    const D2D1_COLOR_F lineColor = Mix(theme.divider, theme.accent, c);
-    ComPtr<ID2D1SolidColorBrush> lineBrush = MakeBrush(dc, lineColor);
-    if (lineBrush) {
-        if (index_ > 0) dc->DrawLine(D2D1::Point2F(cx, bounds_.top), D2D1::Point2F(cx, cy - r),
-                                     lineBrush.Get(), 2.0f);
-        if (!last_) dc->DrawLine(D2D1::Point2F(cx, cy + r), D2D1::Point2F(cx, bounds_.bottom),
-                                 lineBrush.Get(), 2.0f);
+    if (horizontal) {
+        // 横向连接线：自**上一节点中心**水平进入本节点左缘；「已完成或当前」时为 accent，
+        // 保证蓝色进度线连续进入当前节点。双色规则沿用竖向（此处仅「进入段」）。
+        // 注意：本列 bounds_ 是等宽列（左缘 = 列边界，不是上一节点中心），故起点须回退一个
+        // 列宽（列宽 == 相邻节点中心间距）。
+        if (index_ > 0) {
+            const D2D1_COLOR_F lineColor = Mix(theme.divider, theme.accent, std::max(c, e));
+            ComPtr<ID2D1SolidColorBrush> lineBrush = MakeBrush(dc, lineColor);
+            if (lineBrush) {
+                const float colW = bounds_.right - bounds_.left;  // 本列宽 = 相邻节点中心间距
+                dc->DrawLine(D2D1::Point2F(cx - colW, cy), D2D1::Point2F(cx - r, cy),
+                             lineBrush.Get(), 2.0f);
+            }
+        }
+    } else {
+        // 连接线：上半段（自上一节点进入）在「已完成或当前」时为 accent，保证蓝色进度线连续
+        // 到当前节点；下半段（去往下一节点）仅「已完成」时 accent。
+        const D2D1_COLOR_F upperColor = Mix(theme.divider, theme.accent, std::max(c, e));
+        ComPtr<ID2D1SolidColorBrush> upperBrush = MakeBrush(dc, upperColor);
+        if (upperBrush) {
+            if (index_ > 0) dc->DrawLine(D2D1::Point2F(cx, bounds_.top), D2D1::Point2F(cx, cy - r),
+                                         upperBrush.Get(), 2.0f);
+        }
+        const D2D1_COLOR_F lowerColor = Mix(theme.divider, theme.accent, c);
+        ComPtr<ID2D1SolidColorBrush> lowerBrush = MakeBrush(dc, lowerColor);
+        if (lowerBrush) {
+            if (!last_) dc->DrawLine(D2D1::Point2F(cx, cy + r), D2D1::Point2F(cx, bounds_.bottom),
+                                     lowerBrush.Get(), 2.0f);
+        }
     }
 
     // 已完成：实心 accent 圆。
@@ -551,13 +575,23 @@ void StepItem::Render(ID2D1DeviceContext* dc, const Theme& theme) {
     }
 
     // 标签：当前=semiBold + 主文本；完成/未来按进度在次级↔主文本间过渡。
+    //  - 竖向：节点右侧，左对齐。
+    //  - 横向：节点上方，水平居中。
     const DWRITE_FONT_WEIGHT weight =
         (state_ == Current) ? weight::SemiBold : weight::Regular;
     const D2D1_COLOR_F labelColor = Mix(theme.textSecondary, theme.textPrimary, std::max(c, e));
-    const D2D1_RECT_F labelRect =
-        D2D1::RectF(cx + r + spacing::S, bounds_.top, bounds_.right, bounds_.bottom);
-    DrawLine(dc, text_, label_, labelRect, fontsize::Body, weight, DWRITE_TEXT_ALIGNMENT_LEADING,
-             labelColor);
+    if (horizontal) {
+        const D2D1_RECT_F labelRect =
+            D2D1::RectF(bounds_.left, bounds_.top, bounds_.right, cy - r - spacing::S);
+        DrawLine(dc, text_, label_, labelRect, fontsize::Body, weight, DWRITE_TEXT_ALIGNMENT_CENTER,
+                 labelColor);
+    } else {
+        const D2D1_RECT_F labelRect =
+            D2D1::RectF(cx + r + spacing::S, bounds_.top, bounds_.right, bounds_.bottom);
+        DrawLine(dc, text_, label_, labelRect, fontsize::Body, weight, DWRITE_TEXT_ALIGNMENT_LEADING,
+                 labelColor);
+    }
 }
+
 
 }  // namespace faf

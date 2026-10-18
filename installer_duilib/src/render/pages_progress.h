@@ -11,10 +11,12 @@
 //    Todo 13 的安装引擎产出；本页只消费 permille，**不制造任何假进度**。
 //  - §3：取消只抬高「取消意图」并切换到取消态；引擎安全停止 + 清理本次写入 +
 //    写 `abort=1` 由 Todo 13 负责，本 todo 不实现（见 CancelIntent 注释）。
-//  - §12：页面/选项状态读写 AppState。Finish 页「立即启动」只把 AppState.optLaunch
-//    置位并抬高完成意图。
+//  - §12：页面/选项状态读写 AppState。Finish 页「立即启动」抬高高完成意图。
 //  - §15：「立即启动」的真实进程启动由 Todo 15 执行；本文件**绝不 ShellExecute**。
 //  - §13：视觉只消费 theme.h 的 token；文字/字形经 text.h / glyphs.h。
+//
+// 追加需求（2026-10-18）：Finish 页改为英雄页（与欢迎页同构）——图标（成功对勾）+
+// 软件名称 + 版本 + 大按钮「立即启动」；删除「打开安装目录」与「立即启动」勾选框。
 //
 // 坐标与绘制全程 DIP（§6）。控件复用 Todo 7 的 Button / CheckBox 与 Todo 8 的
 // ProgressBar，不重复实现；动画经 animation.h 的 AnimValue（由宿主经 BindAnimator
@@ -37,6 +39,8 @@
 #include "render/theme.h"
 
 namespace faf {
+
+class LogoBitmap;  // render/logo.h（Finish 英雄页图标，前向声明避免额外 include）
 
 // ============================== 纯函数辅助 =================================
 
@@ -125,8 +129,9 @@ private:
 
 // ============================== 页面⑥ 完成 ================================
 
-// Finish 页：对勾描边动画（AnimValue）+「安装完成」+「立即启动」CheckBox +
-// 「打开安装目录」+ 完成按钮。
+// Finish 页（英雄页，追加需求 2026-10-18）：成功对勾描边动画（AnimValue）作为图标 +
+// 软件名称 + 版本 + 标语 + 大按钮「立即启动」。无顶部步骤区、无底部导航。
+// 与欢迎页**内容一致**（图标 + 名称 + 版本 + 标语 + 大按钮；仅按钮文案与图标不同）。
 class FinishPage {
 public:
     explicit FinishPage(AppState& state);
@@ -135,6 +140,7 @@ public:
     void BindAnimator(Animator* animator);
     void BindText(const TextFactory* text);
     void BindGlyphs(const GlyphFont* glyphs);
+    void SetLogo(const LogoBitmap* logo) { logo_ = logo; }
 
     void Layout(const D2D1_RECT_F& contentCard);
     void Render(ID2D1DeviceContext* dc, const Theme& theme);
@@ -148,38 +154,32 @@ public:
 
     // ---------------------------------------------------------------------
     // 意图钩子（Intent hooks）—— 本 todo 绝不 ShellExecute / 不启动进程：
-    //   * onLaunchIntent_(bool)： 「立即启动」勾选变化时抬高（记录用户意图）。
-    //   * onOpenDirIntent_()：   「打开安装目录」点击时抬高。
-    //   * onFinishIntent_()：    完成按钮点击时抬高（完成意图）。
-    // 实际启动进程（§15）由 Todo 15 读取 AppState.optLaunch 执行；打开目录同理。
+    //   * onFinishIntent_()： 「立即启动」点击时抬高（完成意图 = 启动 + 关窗）。
+    // 实际启动进程（§15）由 Todo 15 读取 AppState 执行（英雄页按钮 = 无条件启动）。
     // ---------------------------------------------------------------------
-    void SetOnLaunchIntent(std::function<void(bool)> cb) { onLaunchIntent_ = std::move(cb); }
-    void SetOnOpenDirIntent(std::function<void()> cb) { onOpenDirIntent_ = std::move(cb); }
     void SetOnFinishIntent(std::function<void()> cb) { onFinishIntent_ = std::move(cb); }
 
-    // §12：只把 AppState.optLaunch 置位 + 抬高启动意图（不启动进程）。
-    void SetLaunchOptedIn(bool optedIn);
-    bool LaunchOptedIn() const noexcept { return state_.optLaunch; }
-    // 抬高「打开安装目录」意图（不 ShellExecute）。
-    void RaiseOpenDirIntent();
     // 抬高完成意图（不启动进程）。
     void EmitFinishIntent();
 
-    bool LaunchIntentEmitted() const noexcept { return launchIntentEmitted_; }
-    bool OpenDirIntentEmitted() const noexcept { return openDirIntentEmitted_; }
     bool FinishIntentEmitted() const noexcept { return finishIntentEmitted_; }
 
-    CheckBox& LaunchBox() noexcept { return launchBox_; }
-    Button& OpenDirButton() noexcept { return openDirButton_; }
     Button& FinishButton() noexcept { return finishButton_; }
+    const std::wstring& ProductName() const noexcept { return productName_; }
+    const std::wstring& Version() const noexcept { return version_; }
+    const std::wstring& Tagline() const noexcept { return tagline_; }
 
 private:
     AppState& state_;  // 借用（§12 共享状态）
-    CheckBox launchBox_;
-    Button openDirButton_;
+    std::wstring productName_ = L"FreeAssetFilter";
+    std::wstring version_;
+    // 标语：与欢迎页完全一致的字符串（需求：完成页内容 = 欢迎页内容，仅按钮文案/图标不同）。
+    std::wstring tagline_ = L"让文件浏览如丝般高效顺滑";
+
     Button finishButton_;
     WidgetHost host_;
 
+    const LogoBitmap* logo_ = nullptr;
     const TextFactory* text_ = nullptr;
     const GlyphFont* glyphs_ = nullptr;
 
@@ -188,18 +188,15 @@ private:
     float checkFallback_ = 1.0f;  // 无动画器 → 完成态（终值）
     std::string checkName_;
 
-    std::function<void(bool)> onLaunchIntent_;
-    std::function<void()> onOpenDirIntent_;
     std::function<void()> onFinishIntent_;
-
-    bool launchIntentEmitted_ = false;
-    bool openDirIntentEmitted_ = false;
     bool finishIntentEmitted_ = false;
 
     D2D1_RECT_F card_{};
     D2D1_RECT_F checkRect_{};
-    D2D1_RECT_F headingRect_{};
-    D2D1_RECT_F subtitleRect_{};
+    D2D1_RECT_F nameRect_{};
+    D2D1_RECT_F versionRect_{};
+    D2D1_RECT_F taglineRect_{};
+    D2D1_RECT_F buttonRect_{};
 };
 
 // ============================== Todo 12 接线入口 ===========================

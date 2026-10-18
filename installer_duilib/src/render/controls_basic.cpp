@@ -232,6 +232,10 @@ void Button::Render(ID2D1DeviceContext* dc, const Theme& theme) {
         D2D1_RECT_F gRect = D2D1::RectF(r.left + pad, cy - gsize, r.left + pad + gsize, cy + gsize);
         DrawGlyph(dc, glyphs_, glyph_, gRect, gsize, fg);
         textRect.left += pad + gsize + spacing::S;
+    } else {
+        // 无字形按钮：左右等距内缩，保证居中文字严格落在按钮中心
+        // （此前仅右侧内缩 textRect.right -= pad，导致文字整体左偏 pad/2 = 8 DIP）。
+        textRect.left += pad;
     }
     textRect.right -= pad;
     DrawLine(dc, text_, label_, textRect, fontsize::Body, weight::SemiBold,
