@@ -73,6 +73,7 @@ from PySide6.QtGui import (
     QMouseEvent,
     QContextMenuEvent,
     QDesktopServices,
+    QWheelEvent,
 )
 
 from theme import tm
@@ -588,11 +589,56 @@ class _StyledPreviewScrollArea(QWidget):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 源码预览视图（使用无输入框样式的 QTextEdit）
+# Ctrl+滚轮字号缩放感知控件
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _wheel_zoom_step(event: QWheelEvent) -> int:
+    """把 Ctrl+滚轮事件折算为字号步进（+1 / -1 / 0）。
+
+    仅按滚动方向步进、不做 delta 累积，与字体预览器（``_ZoomAwareTextEdit``）、
+    图片与 PDF 预览器的既有 Ctrl+滚轮口径保持一致；``angleDelta`` 为 0
+    （纯像素位移设备）时回退到 ``pixelDelta`` 判定方向。
+    """
+    delta = event.angleDelta().y()
+    if delta == 0:
+        delta = event.pixelDelta().y()
+    if delta > 0:
+        return 1
+    if delta < 0:
+        return -1
+    return 0
+
+
+class _ZoomAwareTextEdit(QTextEdit):
+    """源码视图文本控件：拦截 Ctrl+滚轮并转换为字号调整请求。
+
+    Qt 原生的 Ctrl+滚轮缩放只改控件自身字号，不经过布局 ``_font_size``，
+    会导致缩放弹窗滑块与实际字号脱节；此处吞掉事件并上报变化量，统一
+    走布局的字号链路。
+
+    Signals:
+        font_size_change_requested(delta): 正数表示增大，负数表示减小。
+    """
+
+    font_size_change_requested = Signal(int)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
+        """Ctrl+滚轮时触发自定义字号调整，避免 QTextEdit 默认缩放行为。"""
+        if event.modifiers() & Qt.ControlModifier:
+            step = _wheel_zoom_step(event)
+            if step:
+                self.font_size_change_requested.emit(step)
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 源码预览视图（使用无输入框样式的 QTextEdit，支持 Ctrl+滚轮字号缩放）
 # ──────────────────────────────────────────────────────────────────────────────
 
 class _SourceView(_StyledPreviewScrollArea):
-    """源码预览包装器：只读 QTextEdit + 自定义 StyledScrollBar + 平滑滚轮。
+    """源码预览包装器：只读 ``_ZoomAwareTextEdit`` + 自定义 StyledScrollBar + 平滑滚轮。
 
     使用 ``QTextEdit`` 而非 ``QPlainTextEdit``，使其垂直滚动单位为像素，与
     Markdown 渲染视图（``QTextBrowser``）的滚动行为一致；StyledScrollBar
@@ -600,7 +646,7 @@ class _SourceView(_StyledPreviewScrollArea):
     """
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
-        self._text_edit = QTextEdit()
+        self._text_edit = _ZoomAwareTextEdit()
         self._text_edit.setObjectName("TextPreviewerSourceEdit")
         self._text_edit.setReadOnly(True)
         self._text_edit.setLineWrapMode(QTextEdit.WidgetWidth)
@@ -690,6 +736,30 @@ class _LinkTextBrowser(QTextBrowser):
             clipboard.setText(anchor)
 
 
+class _ZoomAwareTextBrowser(_LinkTextBrowser):
+    """Markdown 渲染视图控件：在 ``_LinkTextBrowser`` 上叠加 Ctrl+滚轮字号请求。
+
+    行为、锚点点击与右键菜单均继承自 ``_LinkTextBrowser``，仅拦截
+    Ctrl+滚轮，避免 Qt 原生缩放绕过布局 ``_font_size`` 导致与缩放弹窗
+    滑块脱节。
+
+    Signals:
+        font_size_change_requested(delta): 正数表示增大，负数表示减小。
+    """
+
+    font_size_change_requested = Signal(int)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
+        """Ctrl+滚轮时触发自定义字号调整，避免 QTextBrowser 默认缩放行为。"""
+        if event.modifiers() & Qt.ControlModifier:
+            step = _wheel_zoom_step(event)
+            if step:
+                self.font_size_change_requested.emit(step)
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Markdown 渲染包装器
 # ──────────────────────────────────────────────────────────────────────────────
@@ -698,7 +768,7 @@ class _MarkdownView(_StyledPreviewScrollArea):
     """Markdown 渲染包装器：隐藏 QTextBrowser 默认滚动条，使用 StyledScrollBar。"""
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
-        self._text_browser = _LinkTextBrowser()
+        self._text_browser = _ZoomAwareTextBrowser()
         self._text_browser.setObjectName("TextPreviewerMarkdownView")
         self._text_browser.setOpenExternalLinks(False)
         self._text_browser.setOpenLinks(False)
@@ -1392,6 +1462,15 @@ class TextPreviewerLayout(QWidget):
         # index 1：Markdown 渲染视图
         self._markdown_view = _MarkdownView(self._content_area)
         self._content_stack.addWidget(self._markdown_view)
+
+        # Ctrl+滚轮字号缩放：两个内容视图统一上报到布局的字号链路
+        # （与缩放弹窗滑条共用 _apply_font_size_from_zoom）
+        self._source_view._text_edit.font_size_change_requested.connect(
+            self._on_wheel_font_size_change
+        )
+        self._markdown_view._text_browser.font_size_change_requested.connect(
+            self._on_wheel_font_size_change
+        )
 
         # 字号初始化需要在源码视图和 Markdown 视图都创建完成后执行
         self._apply_font_size()
@@ -2594,6 +2673,24 @@ class TextPreviewerLayout(QWidget):
             self._font_debounce_timer.start()
         else:
             self._apply_font_size()
+
+    def _on_wheel_font_size_change(self, delta: int) -> None:
+        """Ctrl+滚轮调整字号：复用缩放弹窗的字号链路并同步弹窗显示。
+
+        与字体预览器一致：字号状态立即更新（弹窗滑块/百分比实时跟随），
+        Markdown 模式的重新渲染沿用 ``FONT_DEBOUNCE_MS`` 防抖合并。
+
+        Args:
+            delta: 字号变化量，+1 或 -1。
+        """
+        new_size = max(
+            self.FONT_SIZE_MIN, min(self.FONT_SIZE_MAX, self._font_size + delta)
+        )
+        if new_size == self._font_size:
+            return
+        self._apply_font_size_from_zoom(new_size)
+        if self._zoom_popup is not None:
+            self._zoom_popup.sync_from_parent()
 
     def _on_browse_file(self) -> None:
         """独立模式下打开文件选择对话框（仅文本文件）。"""
