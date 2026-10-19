@@ -26,6 +26,7 @@ class AnimatedFileListView(QListView):
     - begin_path_transition(direction): 捕获旧视图快照并进入等待状态
     - finish_path_transition(direction=None): 捕获新视图快照并播放动画
     - cancel_path_transition(update=True): 取消当前动画
+    - flush_pending_layout(): 同步完成挂起布局（快照捕获前保证几何完整）
 
     动画开关由 ``is_animation_enabled('directory_transition')`` 控制。
     """
@@ -175,6 +176,31 @@ class AnimatedFileListView(QListView):
         self._path_transition_incoming_pixmap = QPixmap()
         if update:
             self.viewport().update()
+
+    def flush_pending_layout(self) -> None:
+        """同步完成全部项的几何布局（路径过渡快照捕获前调用）。
+
+        QListView 默认 ``Batched`` 布局每轮事件循环只布局 ``batchSize``
+        项（Qt ``QListView::doItemsLayout`` + ``batchLayoutTimer``），
+        ``viewport.render()`` 同步抓帧时通常只拿到前 50 项的几何，其余
+        卡片缺卡/错位（动画结束才补全，观感为"闪"）。
+
+        本方法临时切到 ``SinglePass``，显式登记一次挂起布局再同步执行：
+        ``scheduleDelayedItemsLayout()`` 置起 pending 标记，
+        ``executeDelayedItemsLayout()`` 随即同步调用 ``doItemsLayout()``，
+        SinglePass 分支一次性布局全部条目（Qt 内部单趟完成，切换本身不
+        触发重排）；完成后恢复原布局模式。Qt 侧单趟布局的完成标志
+        （``batchStartRow = last + 1``）也能让遗留的批次计时器安全空转
+        终止，不会出现"快照后网格重建"的二次闪动。条目数量级为「首帧
+        落地」规模（数百条），``try/finally`` 兜底恢复，成本可忽略。
+        """
+        previous_mode = self.layoutMode()
+        try:
+            self.setLayoutMode(QListView.LayoutMode.SinglePass)
+            self.scheduleDelayedItemsLayout()
+            self.executeDelayedItemsLayout()
+        finally:
+            self.setLayoutMode(previous_mode)
 
     # ── 内部辅助 ─────────────────────────────────────────────────────────
 

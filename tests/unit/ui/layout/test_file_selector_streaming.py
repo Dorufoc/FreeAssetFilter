@@ -1,14 +1,18 @@
 # -*- coding: utf-8 -*-
 """文件选择器渐进式（流式）目录加载单元测试。
 
-覆盖 ``file_selector_layout.py`` 的流式管线：
+覆盖 ``file_selector_layout.py`` 的流式管线（OPT-002 Phase 1：缓冲窗口）：
 
-(a) 首批落地即跳转（``_current_path``/模型就绪）并撤下加载遮罩；
-(b) 后续批次增量追加（``FileListModel.append_files``），计数标签显示
-    「加载中… N」；
-(c) 收尾（``_finalize_stream``）按最终筛选/排序重排，计数恢复为「N 个条目」；
+(a) 缓冲窗口内非收尾批不落地：路径/模型保持旧视图（计数标签继续
+    「加载中… N」反馈，遮罩延迟策略不变）；
+(b) 收尾批在窗口内到达 → 原子落地：单次模型重置、模型即最终排序、
+    收尾不再重排（无 ``layoutChanged``）；
+(c) 超窗（时长/条数上限）转渐进：先落地已缓冲部分（已排序，即最终序
+    在该子集上的投影），后续批次合帧结算（flush 前不逐批插入），收尾
+    按最终筛选/排序口径核对重排；
 (d) 空目录：单批 ``([], True)`` → 计数 0；
-(e) 零批错误（``entries=None`` 且未落地任何批）→ 保留旧视图；
+(e) 零批错误（``entries=None`` 且未落地任何批）→ 保留旧视图；缓冲期
+    "已读到部分"后失败 → 落地已读到部分并收尾（不回溯、不丢数据）；
 (f) 过期 token 批次丢弃；
 (g) 流式期间引入筛选 / 切换排序 → 收尾按最新口径重derive 最终集合；
 (h) 「All」视图载荷不污染目录 raw 缓存（``_raw_entries_path``）；
@@ -64,6 +68,30 @@ class _FakePool:
             runnable: 生产代码构造的 ``_DirectoryStreamRunnable``。
         """
         self.started.append(runnable)
+
+
+class _SignalWatch:
+    """模型信号计数器：断言原子落地不发生二次重排。"""
+
+    def __init__(self, layout: FileSelectorLayout) -> None:
+        """连接目标模型的 ``modelReset`` / ``layoutChanged`` 计数。
+
+        Args:
+            layout: FileSelectorLayout 实例。
+        """
+        self.resets: int = 0
+        self.layout_changes: int = 0
+        model = layout._file_model  # noqa: SLF001
+        model.modelReset.connect(self._on_reset)
+        model.layoutChanged.connect(self._on_layout)
+
+    def _on_reset(self, *args: Any) -> None:
+        """``modelReset`` 计数（签名兼容信号带参/不带参）。"""
+        self.resets += 1
+
+    def _on_layout(self, *args: Any) -> None:
+        """``layoutChanged`` 计数（签名兼容信号带参/不带参）。"""
+        self.layout_changes += 1
 
 
 def _begin_stream(
@@ -128,62 +156,215 @@ def _model_names(layout: FileSelectorLayout) -> List[str]:
 
 
 # =============================================================================
-# (a)(b)(c) 首批跳转 / 增量追加 / 收尾重排
+# (a)(b) 缓冲窗口 → 收尾批原子落地
 # =============================================================================
-class TestProgressiveStreaming:
-    """首批落地即跳转、后续批次增量追加、收尾排序。"""
+class TestAtomicLanding:
+    """小目录（多数场景）：缓冲窗口内收尾 → 单次原子落地，首帧即最终序。"""
 
-    def test_first_batch_jumps_before_final(
+    def test_hold_then_final_lands_once_sorted(
         self, qapp: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """首批落地：``_current_path`` 与模型立即就绪（无需等待收尾）。"""
+        """非收尾批只进缓冲；收尾批落地后模型一次成型且已排序。"""
         layout = FileSelectorLayout()
         try:
             token = _begin_stream(layout, "C:/stream", monkeypatch)
+            watch = _SignalWatch(layout)
             before = layout._current_path  # noqa: SLF001
             assert before != "C:/stream", "派发阶段不应提前切换当前路径"
 
-            layout._on_dir_batch_ready(  # noqa: SLF001
-                "C:/stream", [_entry("a.txt")], token, False
-            )
-            assert layout._current_path == "C:/stream"  # noqa: SLF001
-            assert _model_names(layout) == ["a.txt"]
-        finally:
-            safe_teardown(layout)
-
-    def test_multi_batch_appends_progressively(
-        self, qapp: Any, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """多批：模型逐批增长、计数字样为「加载中… N」、收尾恢复并排序。"""
-        layout = FileSelectorLayout()
-        try:
-            token = _begin_stream(layout, "C:/stream", monkeypatch)
             layout._on_dir_batch_ready(  # noqa: SLF001
                 "C:/stream",
                 [_entry("banana.txt"), _entry("apple.txt")],
                 token,
                 False,
             )
-            assert layout._file_model.rowCount() == 2  # noqa: SLF001
+
+            assert layout._stream_holding is True  # noqa: SLF001
+            assert layout._current_path == before, "缓冲窗口内不得提前跳转"  # noqa: SLF001
+            assert layout._file_model.rowCount() == 0  # noqa: SLF001
             assert layout._file_count_label.text() == "加载中… 2"  # noqa: SLF001
 
             layout._on_dir_batch_ready(  # noqa: SLF001
-                "C:/stream", [_entry("cherry.txt")], token, False
+                "C:/stream", [_entry("cherry.txt")], token, True
             )
-            assert layout._file_model.rowCount() == 3  # noqa: SLF001
-            assert layout._file_count_label.text() == "加载中… 3"  # noqa: SLF001
 
-            layout._on_dir_batch_ready("C:/stream", [], token, True)  # noqa: SLF001
-            assert _model_names(layout) == ["apple.txt", "banana.txt", "cherry.txt"]
+            assert layout._current_path == "C:/stream"  # noqa: SLF001
+            assert _model_names(layout) == [
+                "apple.txt",
+                "banana.txt",
+                "cherry.txt",
+            ], "首帧落地即最终排序，无二次重排"
             assert layout._file_count_label.text() == "3 个条目"  # noqa: SLF001
+            assert watch.resets == 1, "原子落地应只发生一次模型重置"
+            assert watch.layout_changes == 0, "收尾不得再发射 layoutChanged"
+            assert layout._stream_holding is False  # noqa: SLF001
+            assert layout._stream_active_token == -1  # noqa: SLF001
             assert len(layout._raw_entries) == 3  # noqa: SLF001
         finally:
             safe_teardown(layout)
 
+    def test_small_directory_single_final_batch_sorted(
+        self, qapp: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """真实小目录形态：单批 ``(未排序条目, True)`` → 落地即最终序。"""
+        layout = FileSelectorLayout()
+        try:
+            token = _begin_stream(layout, "C:/small", monkeypatch)
+            watch = _SignalWatch(layout)
+
+            layout._on_dir_batch_ready(  # noqa: SLF001
+                "C:/small",
+                [_entry("b.txt"), _entry("a.txt"), _entry("c.txt")],
+                token,
+                True,
+            )
+
+            assert _model_names(layout) == ["a.txt", "b.txt", "c.txt"]
+            assert layout._file_count_label.text() == "3 个条目"  # noqa: SLF001
+            assert watch.resets == 1 and watch.layout_changes == 0
+        finally:
+            safe_teardown(layout)
+
+    def test_atomic_landing_finishes_path_transition_snapshot_after_sort(
+        self, qapp: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """落地路径在收尾（排序后）才抓路径过渡快照，且仅抓一次。"""
+        layout = FileSelectorLayout()
+        try:
+            token = _begin_stream(layout, "C:/stream", monkeypatch)
+            calls: List[int] = []
+            monkeypatch.setattr(
+                layout._file_list,  # noqa: SLF001
+                "finish_path_transition",
+                lambda direction=None: calls.append(direction or 0) or True,
+            )
+            layout._pending_transition_direction = 1  # noqa: SLF001
+
+            layout._on_dir_batch_ready(  # noqa: SLF001
+                "C:/stream", [_entry("b.txt"), _entry("a.txt")], token, True
+            )
+
+            assert calls == [1], "路径过渡快照应恰好在落地时抓取一次"
+            assert _model_names(layout) == ["a.txt", "b.txt"]
+        finally:
+            safe_teardown(layout)
+
+
+# =============================================================================
+# (c) 超窗转渐进：先落地已缓冲部分，后续批次合帧结算
+# =============================================================================
+class TestProgressiveFallback:
+    """慢目录（超窗）：先进入并展示已缓冲部分，后续批次渐进追加。"""
+
+    def test_timeout_presents_buffered_sorted(
+        self, qapp: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """缓冲窗口到时：已缓冲条目按最终序落地并进入渐进模式。"""
+        layout = FileSelectorLayout()
+        try:
+            token = _begin_stream(layout, "C:/slow", monkeypatch)
+            watch = _SignalWatch(layout)
+            layout._on_dir_batch_ready(  # noqa: SLF001
+                "C:/slow", [_entry("b.txt"), _entry("a.txt")], token, False
+            )
+            assert layout._file_model.rowCount() == 0  # noqa: SLF001
+
+            layout._on_stream_hold_timeout()  # noqa: SLF001
+
+            assert layout._current_path == "C:/slow"  # noqa: SLF001
+            assert _model_names(layout) == ["a.txt", "b.txt"], "已缓冲部分按最终序落地"
+            assert layout._file_count_label.text() == "加载中… 2"  # noqa: SLF001
+            assert layout._stream_holding is False  # noqa: SLF001
+
+            layout._on_dir_batch_ready("C:/slow", [_entry("c.txt")], token, True)  # noqa: SLF001
+            assert _model_names(layout) == ["a.txt", "b.txt", "c.txt"]
+            assert layout._file_count_label.text() == "3 个条目"  # noqa: SLF001
+            assert watch.layout_changes == 0, "收尾序已一致，不应触发重排"
+        finally:
+            safe_teardown(layout)
+
+    def test_empty_buffer_timeout_waits_for_first_batch(
+        self, qapp: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """窗口到时但缓冲为空：不落地；首批到达后按超窗分支转渐进。"""
+        monkeypatch.setattr(fsl_mod, "DIR_STREAM_HOLD_MAX_MS", 0)
+        layout = FileSelectorLayout()
+        try:
+            token = _begin_stream(layout, "C:/slow", monkeypatch)
+
+            layout._on_stream_hold_timeout()  # noqa: SLF001
+            assert layout._file_model.rowCount() == 0  # noqa: SLF001
+            assert layout._stream_holding is True  # noqa: SLF001
+
+            layout._on_dir_batch_ready(  # noqa: SLF001
+                "C:/slow", [_entry("b.txt"), _entry("a.txt")], token, False
+            )
+            assert layout._current_path == "C:/slow"  # noqa: SLF001
+            assert _model_names(layout) == ["a.txt", "b.txt"]
+            assert layout._file_count_label.text() == "加载中… 2"  # noqa: SLF001
+
+            layout._on_dir_batch_ready("C:/slow", [], token, True)  # noqa: SLF001
+            assert layout._file_count_label.text() == "2 个条目"  # noqa: SLF001
+        finally:
+            safe_teardown(layout)
+
+    def test_hold_cap_triggers_progressive(
+        self, qapp: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """缓冲达到条数上限：立即转渐进并落地已缓冲部分。"""
+        cap = fsl_mod.DIR_STREAM_HOLD_MAX_ENTRIES
+        layout = FileSelectorLayout()
+        try:
+            token = _begin_stream(layout, "C:/big", monkeypatch)
+            batch = [_entry(f"f{i:04d}.txt") for i in range(cap + 1)]
+
+            layout._on_dir_batch_ready("C:/big", batch, token, False)  # noqa: SLF001
+
+            assert layout._file_model.rowCount() == cap + 1  # noqa: SLF001
+            assert layout._file_count_label.text() == f"加载中… {cap + 1}"  # noqa: SLF001
+
+            layout._on_dir_batch_ready("C:/big", [], token, True)  # noqa: SLF001
+            assert layout._file_count_label.text() == f"{cap + 1} 个条目"  # noqa: SLF001
+        finally:
+            safe_teardown(layout)
+
+    def test_progressive_batches_coalesce_until_flush(
+        self, qapp: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """渐进模式：批次先入合帧缓冲，flush 一次插入（不逐批 relayout）。"""
+        monkeypatch.setattr(fsl_mod, "DIR_STREAM_HOLD_MAX_MS", 0)
+        layout = FileSelectorLayout()
+        try:
+            token = _begin_stream(layout, "C:/big", monkeypatch)
+            layout._on_dir_batch_ready("C:/big", [_entry("a.txt")], token, False)  # noqa: SLF001
+            assert layout._file_model.rowCount() == 1  # noqa: SLF001
+
+            layout._on_dir_batch_ready("C:/big", [_entry("b.txt")], token, False)  # noqa: SLF001
+            layout._on_dir_batch_ready("C:/big", [_entry("c.txt")], token, False)  # noqa: SLF001
+            assert layout._file_model.rowCount() == 1, "flush 前不逐批插入"  # noqa: SLF001
+            assert len(layout._raw_entries) == 3, "raw 缓存即时累积"  # noqa: SLF001
+
+            layout._flush_stream_batches()  # noqa: SLF001
+            assert layout._file_model.rowCount() == 3  # noqa: SLF001
+            assert layout._file_count_label.text() == "加载中… 3"  # noqa: SLF001
+
+            layout._on_dir_batch_ready("C:/big", [], token, True)  # noqa: SLF001
+            assert _model_names(layout) == ["a.txt", "b.txt", "c.txt"]
+            assert layout._file_count_label.text() == "3 个条目"  # noqa: SLF001
+        finally:
+            safe_teardown(layout)
+
+
+# =============================================================================
+# (d) 空目录
+# =============================================================================
+class TestEmptyDirectory:
+    """空目录：单批 ``([], True)`` 原子落地。"""
+
     def test_empty_directory_finalizes_to_zero(
         self, qapp: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """空目录：单批 ``([], True)`` → 模型空、计数 0、raw 缓存绑定目标路径。"""
+        """空目录：模型空、计数 0、raw 缓存绑定目标路径。"""
         layout = FileSelectorLayout()
         try:
             token = _begin_stream(layout, "C:/empty", monkeypatch)
@@ -191,20 +372,21 @@ class TestProgressiveStreaming:
             assert layout._file_model.rowCount() == 0  # noqa: SLF001
             assert layout._file_count_label.text() == "0 个条目"  # noqa: SLF001
             assert layout._raw_entries_path == "C:/empty"  # noqa: SLF001
+            assert layout._current_path == "C:/empty"  # noqa: SLF001
         finally:
             safe_teardown(layout)
 
 
 # =============================================================================
-# (d) 零批错误保留旧视图
+# (e) 错误：零批回滚 / 缓冲期部分落地
 # =============================================================================
 class TestStreamAbort:
-    """零批错误（首帧即失败）：保留旧视图，不回溯已落地批次。"""
+    """错误语义：未读到任何内容 → 保留旧视图；已读到部分 → 落地不回溯。"""
 
     def test_zero_batch_error_keeps_old_view(
         self, qapp: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """``entries=None`` 且无首批落地 → 保留旧目录与模型。"""
+        """``entries=None`` 且无任何缓冲内容 → 保留旧目录与模型。"""
         layout = FileSelectorLayout()
         try:
             layout._current_path = "C:/old"  # noqa: SLF001
@@ -219,22 +401,23 @@ class TestStreamAbort:
             assert layout._current_path == "C:/old"  # noqa: SLF001
             assert _model_names(layout) == ["keep.txt"]
             assert layout._raw_entries_path == "C:/old"  # noqa: SLF001
+            assert layout._stream_holding is False  # noqa: SLF001
         finally:
             safe_teardown(layout)
 
-    def test_mid_stream_error_keeps_landed_batches(
+    def test_mid_stream_error_keeps_read_entries(
         self, qapp: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """已落地若干批后错误到达：保留已落地部分（不回溯、不丢失）。"""
+        """缓冲期已读到部分后错误到达：落地已读到部分（不回溯、不丢失）。"""
         layout = FileSelectorLayout()
         try:
             token = _begin_stream(layout, "C:/stream", monkeypatch)
             layout._on_dir_batch_ready(  # noqa: SLF001
                 "C:/stream", [_entry("a.txt"), _entry("b.txt")], token, False
             )
-            # 收尾批携带 None（扫描中途异常）：不应清空已落地模型
+            # 收尾批携带 None（扫描中途异常）：不应清空已读到的部分
             layout._on_dir_batch_ready("C:/stream", None, token, True)  # noqa: SLF001
-            assert layout._file_model.rowCount() == 2  # noqa: SLF001
+            assert _model_names(layout) == ["a.txt", "b.txt"]
             assert layout._file_count_label.text() == "2 个条目"  # noqa: SLF001
         finally:
             safe_teardown(layout)
@@ -249,7 +432,7 @@ class TestStaleToken:
     def test_stale_batch_discarded(
         self, qapp: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """token 不匹配的批次不得追加任何条目。"""
+        """token 不匹配的批次不得落地/追加任何条目。"""
         layout = FileSelectorLayout()
         try:
             before = layout._current_path  # noqa: SLF001
@@ -259,6 +442,23 @@ class TestStaleToken:
             )
             assert layout._file_model.rowCount() == 0  # noqa: SLF001
             assert layout._current_path == before, "过期批次不得改变当前路径"  # noqa: SLF001
+        finally:
+            safe_teardown(layout)
+
+    def test_batch_after_finalize_discarded(
+        self, qapp: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """收尾后的迟到批次（同 token）被丢弃（世代已终止）。"""
+        layout = FileSelectorLayout()
+        try:
+            token = _begin_stream(layout, "C:/stream", monkeypatch)
+            layout._on_dir_batch_ready(  # noqa: SLF001
+                "C:/stream", [_entry("a.txt")], token, True
+            )
+            layout._on_dir_batch_ready(  # noqa: SLF001
+                "C:/stream", [_entry("late.txt")], token, False
+            )
+            assert _model_names(layout) == ["a.txt"]
         finally:
             safe_teardown(layout)
 
@@ -279,13 +479,15 @@ class TestMidStreamReconcile:
             layout._on_dir_batch_ready(  # noqa: SLF001
                 "C:/stream", [_entry("a.txt"), _entry("b.png")], token, False
             )
-            assert layout._file_model.rowCount() == 2  # noqa: SLF001
+            assert layout._file_model.rowCount() == 0, "缓冲期不提前落地"  # noqa: SLF001
+            assert layout._file_count_label.text() == "加载中… 2"  # noqa: SLF001
 
             layout._filter_pattern = r"\.png$"  # noqa: SLF001
             layout._on_dir_batch_ready(  # noqa: SLF001
                 "C:/stream", [_entry("c.png")], token, False
             )
-            assert _model_names(layout) == ["a.txt", "b.png", "c.png"]
+            assert layout._file_model.rowCount() == 0  # noqa: SLF001
+            assert layout._file_count_label.text() == "加载中… 2", "计数按新筛选口径反馈"  # noqa: SLF001
 
             layout._on_dir_batch_ready("C:/stream", [], token, True)  # noqa: SLF001
             assert _model_names(layout) == ["b.png", "c.png"]

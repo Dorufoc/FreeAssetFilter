@@ -418,10 +418,14 @@ def test_folder_loading_spinner_and_gated_scan(
     entered = threading.Event()
     real_collect = folder_mod._collect_directory_entries  # noqa: SLF001
 
-    def _gated_collect(path: str):
+    def _gated_collect(
+        path: str,
+        show_hidden: Optional[bool] = None,
+        show_system: Optional[bool] = None,
+    ):
         entered.set()
         gate.wait(5)
-        return real_collect(path)
+        return real_collect(path, show_hidden=show_hidden, show_system=show_system)
 
     monkeypatch.setattr(folder_mod, "_collect_directory_entries", _gated_collect)
     previewer = FolderPreviewerLayout()

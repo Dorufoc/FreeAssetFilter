@@ -398,14 +398,19 @@ class TestResetNavState:
         finally:
             layout.deleteLater()
 
-    def test_apply_first_batch_resets_nav_state(self, qapp: QApplication) -> None:
-        """流式首批落地（_apply_first_batch，生产导航路径）后手势状态被复位。"""
+    def test_first_frame_landing_resets_nav_state(self, qapp: QApplication) -> None:
+        """流式首帧落地（_on_dir_batch_ready，生产导航路径）后手势状态被复位。"""
         layout = _make_layout(qapp, [_entry("a.txt")])
         try:
             layout._nav_active = True
             layout._nav_cursor_row = 0
             layout._nav_model_key = (_BASE_DIR, 1, "card")
-            layout._apply_first_batch(_BASE_DIR, [_entry("x.txt")])
+            # 模拟一次在途流式加载（不派发真实后台任务）：收尾批原子落地
+            token = layout._async_load_token + 1
+            layout._async_load_token = token
+            layout._stream_active_token = token
+            layout._stream_holding = True
+            layout._on_dir_batch_ready(_BASE_DIR, [_entry("x.txt")], token, True)
             assert layout._nav_active is False
             assert layout._nav_cursor_row == -1
             assert layout._nav_model_key is None

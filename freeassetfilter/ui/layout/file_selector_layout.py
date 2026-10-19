@@ -47,6 +47,22 @@ from freeassetfilter.core.native.bridges.faf_core_bridge import get_faf_core_bri
 # 机械盘/网络盘）才有转圈反馈。
 DIR_LOADING_INDICATOR_DELAY_MS = 120
 
+# ── 流式目录加载缓冲策略（OPT-002 Phase 1：小目录原子落地，超大/网络目录才渐进）──
+# 扫描期间批次先进缓冲窗口，满足任一条件才首次落地：
+#   1) 收尾批到达（本地绝大多数目录：扫描快，单批即收尾）；
+#   2) 缓冲条目数达到 DIR_STREAM_HOLD_MAX_ENTRIES（对齐 Nemo 的
+#      MAX_LOADING_PENDING_HELD）；
+#   3) 距请求派发超过 DIR_STREAM_HOLD_MAX_MS（慢盘/超大盘保住"先进入、
+#      慢慢加载"的体验）。
+# 这样快目录只发生一次「已排序的原子落地」：路径过渡快照永远是完整最终
+# 帧，不再出现「未排序首帧 → 收尾重排」的卡片跳闪。
+DIR_STREAM_HOLD_MAX_ENTRIES = 500
+DIR_STREAM_HOLD_MAX_MS = DIR_LOADING_INDICATOR_DELAY_MS
+
+# 渐进模式下主线程合帧结算间隔（毫秒）：同一帧到达的多批条目合并为一次
+# 模型插入 + 一次重绘，避免快扫描时逐批 relayout。
+DIR_STREAM_FLUSH_INTERVAL_MS = 16
+
 # Windows 盘类型常量（GetDriveTypeW 返回值）。「All」视图默认只加载物理
 # 磁盘（固定盘/可移动盘/RAM 盘）；网络磁盘与映射盘（DRIVE_REMOTE）以及
 # 光驱（DRIVE_CDROM）由设置项 general.include_remote_drives（默认关闭）
@@ -177,10 +193,11 @@ class _DirectoryStreamRunnable(QRunnable):
     """流式目录扫描任务（QRunnable 投 ``QThreadPool``）。
 
     渐进式加载：后台线程逐批扫描目录，每批经 ``_dir_batch_ready`` 信号回主
-    线程应用（首帧立即跳转，后续增量追加）。世代 token 兼作取消检查——过期
-    请求在下一次迭代顶部尽快退出（``with os.scandir`` 保证句柄关闭）。与
-    ``_DirectoryCollectRunnable`` 不同：本任务按批回报，且"未应用任何批即
-    失败"与"已应用若干批后失败"由主线程槽侧区分（后者不回溯回滚）。
+    线程（主线程侧走"缓冲窗口 + 原子落地/渐进追加"管线，见
+    ``_on_dir_batch_ready``）。世代 token 兼作取消检查——过期请求在下一次
+    迭代顶部尽快退出（``with os.scandir`` 保证句柄关闭）。与
+    ``_DirectoryCollectRunnable`` 不同：本任务按批回报，且"未读到任何条目即
+    失败"与"已读到若干批后失败"由主线程槽侧区分（后者不回溯回滚）。
 
     Args:
         owner: 所属 FileSelectorLayout（扫描器与信号发射经由它）。
@@ -433,12 +450,29 @@ class FileSelectorLayout(QWidget):
         self._dir_entries_ready.connect(self._on_dir_entries_ready)
         self._dir_batch_ready.connect(self._on_dir_batch_ready)
         # 流式加载状态：_stream_active_token 为在途流式请求的 token（-1=无）；
-        # _stream_started_token 为首批已应用落地的 token（-1=无），用于区分
-        # "零批错误"（回滚）与"已应用若干批后错误"（保留部分结果）；"All"
+        # _stream_started_token 为首帧已落地（呈现）的 token（-1=无），用于区分
+        # "零批错误"（回滚）与"已落地若干批后错误"（保留部分结果）；"All"
         # 视图载荷另存，避免污染目录 raw 缓存。
         self._stream_active_token: int = -1
         self._stream_started_token: int = -1
         self._stream_all_entries: List[Dict[str, Any]] = []
+        # 缓冲窗口状态（OPT-002 Phase 1）：_stream_holding=True 表示首帧尚未
+        # 落地，批次先积累在 _stream_hold_entries（收尾批/积满/超时才落地，
+        # 见 DIR_STREAM_HOLD_MAX_*）；_stream_hold_path 为超时落地时定位用；
+        # _stream_hold_start 为窗口起点（monotonic 秒）。
+        self._stream_holding: bool = False
+        self._stream_hold_entries: List[Dict[str, Any]] = []
+        self._stream_hold_path: str = ""
+        self._stream_hold_start: float = 0.0
+        self._stream_hold_timer = QTimer(self)
+        self._stream_hold_timer.setSingleShot(True)
+        self._stream_hold_timer.timeout.connect(self._on_stream_hold_timeout)
+        # 渐进模式合帧缓冲：批次先入 _stream_pending_batches，帧定时器到点
+        # 一次性结算（一次插入 + 一次重绘），避免逐批 relayout。
+        self._stream_pending_batches: List[List[Dict[str, Any]]] = []
+        self._stream_flush_timer = QTimer(self)
+        self._stream_flush_timer.setSingleShot(True)
+        self._stream_flush_timer.timeout.connect(self._flush_stream_batches)
         # 异步加载应用状态：本次请求的过渡方向（0=无动画）/初始加载标记/
         # 历史回滚标记（显式导航失败时回滚已压入的历史栈；刷新/返回不回滚）
         self._pending_transition_direction: int = 0
@@ -1420,16 +1454,21 @@ class FileSelectorLayout(QWidget):
         initial: bool = False,
         rollback_history: bool = False,
     ) -> None:
-        """异步加载目录（流式）：后台线程分批扫描，首帧即跳转、增量追加。
+        """异步加载目录（流式）：后台线程分批扫描，主线程缓冲/原子落地。
 
         所有交互式导航（进入子目录/返回/刷新/路径框/收藏夹/定位）与启动
         首次加载统一走本入口：请求即返回，UI 线程零文件 IO。递增 token
         保证快速连续导航只应用最后一次请求的结果；过期任务在扫描迭代中经
         ``cancel_check`` 立即退出（``os.scandir`` 句柄随 ``with`` 关闭）。
-        计数标签立即切到「加载中… N」，但**不显示**压暗遮罩（遮罩会盖住
-        正在到达的卡片）；遮罩延迟计时器仍启动，由首批落地（
-        ``_apply_first_batch``）取消，故生产环境慢目录首帧前偶尔一闪、
-        首帧到达即撤下。
+
+        首帧呈现策略（OPT-002 Phase 1）：扫描期间批次先进缓冲窗口——
+        收尾批到达、或窗口内积满 ``DIR_STREAM_HOLD_MAX_ENTRIES`` 条、
+        或超过 ``DIR_STREAM_HOLD_MAX_MS`` 仍未收尾（网络盘/超大盘），才
+        首次落地；前两者单次 ``set_files(最终排序结果)``（首帧即最终帧），
+        后者先落地已缓冲部分并转渐进模式。计数标签立即切到「加载中… N」，
+        但**不显示**压暗遮罩（遮罩会盖住正在到达的卡片）；遮罩延迟计时器
+        仍启动，由首帧落地（``_present_first_frame``）取消，故仅慢目录
+        首帧前偶尔一闪、首帧到达即撤下。
 
         Args:
             path: 待加载目录路径，或 ``"All"`` 磁盘视图。
@@ -1446,6 +1485,7 @@ class FileSelectorLayout(QWidget):
         self._pending_history_rollback = rollback_history
         self._pending_locate_path = ""
         self._stream_active_token = token
+        self._reset_stream_pipeline(path)
         self._update_path_input(path)
         self._set_count_loading(0)
         self._start_loading_indicator()
@@ -1467,51 +1507,99 @@ class FileSelectorLayout(QWidget):
         token: int,
         is_final: bool,
     ) -> None:
-        """流式批次落地槽（主线程）：过期批次丢弃，首帧跳转、后续增量追加。
+        """流式批次落地槽（主线程）：缓冲窗口内先积聚、收尾原子落地；超窗转渐进。
 
-        ``entries is None`` 且为首批表示"零批错误"（打开目录即失败）→ 保留
-        旧视图并回滚；首批之后的错误以 ``(None, True)`` 到达，走收尾分支
-        保留已落地的部分结果（不回溯）。
+        小目录（本地绝大多数）扫描在缓冲窗口（``DIR_STREAM_HOLD_MAX_MS``）
+        内收尾，条目只落地一次且已是最终序——路径过渡快照永远是完整最终
+        帧，不再出现"未排序首帧 → 收尾重排"的卡片跳闪。慢目录（网络盘/
+        超大盘）超过窗口（时长或 ``DIR_STREAM_HOLD_MAX_ENTRIES`` 条）后
+        转渐进模式，保住"先进入、慢慢加载"的体验。
+
+        ``entries is None`` 表示"零批/中途错误"：缓冲为空 → 保留旧视图并
+        回滚；缓冲非空 → 落地已读到的部分（与旧"不回溯已落地批次"语义
+        一致，不丢数据）。
 
         Args:
             path: 批次所属目录路径。
-            entries: 本批条目；``None`` 表示零批错误。
+            entries: 本批条目；``None`` 表示错误。
             token: 异步加载世代 token。
             is_final: 本批是否为最后一批。
         """
-        if token != self._async_load_token:
-            return
-        first = self._stream_started_token != token
-
-        if first and entries is None:
-            self._abort_stream_keep_old(path, token)
+        if token != self._async_load_token or self._stream_active_token != token:
+            # 过期世代（已被新导航取代）或本世代已收尾/中止：批次一律丢弃
             return
 
-        if first:
-            self._stream_started_token = token
-            self._apply_first_batch(path, entries or [])
-        elif entries and path != "All":
-            self._raw_entries.extend(entries)
-            display = [e for e in entries if self._matches_filter(e["name"])]
-            if display:
-                self._file_model.append_files(display)
-            self._set_count_loading(self._file_model.rowCount())
+        if self._stream_holding:
+            if entries is None:
+                if self._stream_hold_entries:
+                    # 缓冲期已读到部分条目后失败：落地已读到部分并正常收尾
+                    self._present_first_frame(path, token, streaming=True)
+                    self._finalize_stream(path, token)
+                else:
+                    self._abort_stream_keep_old(path, token)
+                return
+            self._stream_hold_entries.extend(entries)
+            if not is_final:
+                if path != "All":
+                    self._set_count_loading(self._count_held_display())
+                expired = (
+                    (time.monotonic() - self._stream_hold_start) * 1000.0
+                    >= DIR_STREAM_HOLD_MAX_MS
+                )
+                if (
+                    len(self._stream_hold_entries) >= DIR_STREAM_HOLD_MAX_ENTRIES
+                    or expired
+                ):
+                    # 超过缓冲窗口：转渐进模式，已缓冲部分先落地
+                    self._present_first_frame(path, token, streaming=True)
+                return
+            # 收尾批在缓冲窗口内到达：一次成型（首帧即最终序，无二次重排）
+            self._present_first_frame(path, token, streaming=False)
+            self._finalize_stream(path, token, already_settled=True)
+            return
 
+        # 渐进模式（首帧已落地）
+        if entries and path != "All":
+            self._queue_stream_batch(entries)
         if is_final:
+            self._flush_stream_batches()
             self._finalize_stream(path, token)
 
-    def _apply_first_batch(self, path: str, batch: List[Dict[str, Any]]) -> None:
-        """应用首批：立即跳转到目标目录（重置 pending 标记、撤下遮罩）。
+    def _present_first_frame(
+        self, path: str, token: int, *, streaming: bool
+    ) -> None:
+        """首次落地（原子/渐进共用）：跳转目标目录并按最终序呈现首帧。
+
+        ``streaming=False``：收尾批在缓冲窗口内到达，单次 ``set_files``
+        即为最终序（唯一一次重绘，无跳变）；``streaming=True``：超窗/
+        中途失败转渐进，先落地已缓冲部分（其相对序即最终序在该子集上的
+        投影），后续批次经合帧缓冲渐进追加。
+
+        两种模式均在路径过渡快照捕获前同步完成挂起布局，避免 ``Batched``
+        布局下快照只含部分卡片（缺卡/错位）。
 
         Args:
             path: 目标目录路径或 ``"All"``。
-            batch: 首批条目。
+            token: 异步加载世代 token。
+            streaming: 是否为"超窗/失败转渐进"的首次落地。
         """
+        if self._stream_started_token == token:
+            return
+        self._stream_started_token = token
+        self._stream_holding = False
+        self._stream_hold_timer.stop()
         direction = self._pending_transition_direction
         self._pending_transition_direction = 0
         self._pending_initial_load = False
         self._pending_history_rollback = False
         self._stop_loading_indicator()
+        batch = self._stream_hold_entries
+        self._stream_hold_entries = []
+        self._stream_hold_path = ""
+        debug(
+            f"目录首帧落地（{'渐进' if streaming else '原子'}）: {path} "
+            f"共 {len(batch)} 条"
+        )
         if path == "All":
             self._stream_all_entries = list(batch)
             self._apply_all_entries(batch)
@@ -1520,26 +1608,131 @@ class FileSelectorLayout(QWidget):
             self._raw_entries = list(batch)
             self._raw_entries_path = path
             self.reset_nav_state()
-            display = [e for e in batch if self._matches_filter(e["name"])]
-            self._file_model.set_files(display)
-            self._update_grid_size()
-            self._update_path_input(path)
-            self._set_count_loading(len(display))
+            display = self._sorted_filtered_raw()
+            file_list = self._file_list
+            file_list.setUpdatesEnabled(False)
+            try:
+                self._file_model.set_files(display)
+                self._update_grid_size()
+                self._update_path_input(path)
+                self._set_count_loading(len(display))
+            finally:
+                file_list.setUpdatesEnabled(True)
+            file_list.viewport().update()
         if direction != 0:
+            # 快照前同步完成布局：Batched 模式下入帧快照可能只含部分卡片
+            self._file_list.flush_pending_layout()
             self._file_list.finish_path_transition(direction)
 
-    def _finalize_stream(self, path: str, token: int) -> None:
-        """流式收尾：停用流式态、内存重排到最终序、恢复计数、补挂定位。
+    def _on_stream_hold_timeout(self) -> None:
+        """缓冲窗口到时（毫秒计时器）：已缓冲条目立即转渐进落地。
+
+        空缓冲时保留缓冲态，等首批到达时由 ``_on_dir_batch_ready`` 的
+        超窗分支直接转渐进（避免慢盘"第一条"还要再等一个窗口）。
+        """
+        if not self._stream_holding or not self._stream_hold_entries:
+            return
+        token = self._stream_active_token
+        if token < 0:
+            return
+        self._present_first_frame(self._stream_hold_path, token, streaming=True)
+
+    def _queue_stream_batch(self, entries: List[Dict[str, Any]]) -> None:
+        """渐进模式：批次入合帧缓冲，按帧一次性结算（减少逐批 relayout）。
+
+        Args:
+            entries: 本批原始条目（后台已完成隐藏/系统过滤）。
+        """
+        self._raw_entries.extend(entries)
+        self._stream_pending_batches.append(entries)
+        if not self._stream_flush_timer.isActive():
+            self._stream_flush_timer.start(DIR_STREAM_FLUSH_INTERVAL_MS)
+
+    def _flush_stream_batches(self) -> None:
+        """结算合帧缓冲中的全部批次（一次插入 + 一次重绘），刷新加载计数。
+
+        收尾（``_finalize_stream``）会先同步调用本方法再清 token，保证
+        挂起批次不丢；定时器晚到触发时缓冲已空则直接返回。
+        """
+        self._stream_flush_timer.stop()
+        batches = self._stream_pending_batches
+        if not batches:
+            return
+        self._stream_pending_batches = []
+        if self._stream_active_token < 0:
+            return
+        display = [
+            e
+            for batch in batches
+            for e in batch
+            if self._matches_filter(e["name"])
+        ]
+        if not display:
+            return
+        file_list = self._file_list
+        file_list.setUpdatesEnabled(False)
+        try:
+            self._file_model.append_files(display)
+        finally:
+            file_list.setUpdatesEnabled(True)
+        file_list.viewport().update()
+        self._set_count_loading(self._file_model.rowCount())
+
+    def _count_held_display(self) -> int:
+        """缓冲窗口内已读条目按当前筛选口径的可展示数（计数标签反馈用）。"""
+        if not self._filter_pattern:
+            return len(self._stream_hold_entries)
+        return sum(
+            1 for e in self._stream_hold_entries if self._matches_filter(e["name"])
+        )
+
+    def _reset_stream_pipeline(self, path: str) -> None:
+        """复位流式管线并开启缓冲窗口（派发新请求时调用）。
+
+        Args:
+            path: 本次请求目标路径（超时落地时定位用）。
+        """
+        self._stream_holding = True
+        self._stream_hold_entries = []
+        self._stream_hold_path = path
+        self._stream_hold_start = time.monotonic()
+        self._stream_pending_batches = []
+        self._stream_flush_timer.stop()
+        self._stream_hold_timer.start(DIR_STREAM_HOLD_MAX_MS)
+
+    def _clear_stream_pipeline(self) -> None:
+        """停止流式管线计时器并清空缓冲（收尾/中止共用，幂等）。"""
+        self._stream_holding = False
+        self._stream_hold_entries = []
+        self._stream_hold_path = ""
+        self._stream_hold_timer.stop()
+        self._stream_pending_batches = []
+        self._stream_flush_timer.stop()
+
+    def _finalize_stream(
+        self, path: str, token: int, *, already_settled: bool = False
+    ) -> None:
+        """流式收尾：停用流式态、恢复计数、补挂定位。
+
+        ``already_settled=True``（缓冲窗口内收尾批原子落地）：模型已经是
+        最终序，此处不再重排/重设网格——首帧与最终帧完全一致，无跳变；
+        否则（渐进模式）：先结算合帧缓冲，再按最终筛选/排序口径核对重排
+        （``apply_order`` 只重排不删减；期间口径变更过则整表重建）。
 
         Args:
             path: 完成的目录路径或 ``"All"``。
             token: 异步加载世代 token。
+            already_settled: 模型是否已处于最终展示序（原子落地路径）。
         """
         if self._stream_active_token != token:
             return
-        self._stream_active_token = -1
         self._stop_loading_indicator()
-        if path == "All":
+        if not already_settled:
+            # 先结算挂起批次（flush 以 token 判定世代，必须在清 token 前）
+            self._flush_stream_batches()
+        self._stream_active_token = -1
+        self._clear_stream_pipeline()
+        if already_settled or path == "All":
             final_n = self._file_model.rowCount()
         else:
             settled = self._sorted_filtered_raw()
@@ -1574,6 +1767,7 @@ class FileSelectorLayout(QWidget):
         """
         self._stream_active_token = -1
         self._stream_started_token = token
+        self._clear_stream_pipeline()
         self._stop_loading_indicator()
         initial = self._pending_initial_load
         rollback_history = self._pending_history_rollback
@@ -1606,6 +1800,10 @@ class FileSelectorLayout(QWidget):
             return
         if self._stream_started_token == token:
             return
+        if self._stream_active_token == token:
+            # 兼容路径（生产交互不经过）：本世代结果由此落地，终止流式管线
+            self._stream_active_token = -1
+            self._clear_stream_pipeline()
         direction = self._pending_transition_direction
         initial = self._pending_initial_load
         rollback_history = self._pending_history_rollback

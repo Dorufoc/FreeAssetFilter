@@ -542,6 +542,52 @@ class TestAnimatedFileListView:
         view.cancel_path_transition()  # 清理 finish 启动的过渡
         safe_teardown(view)
 
+    def test_flush_pending_layout_completes_batched_geometry(
+        self, qapp: QApplication
+    ) -> None:
+        """Batched(50) 下 flush 同步补齐全部项几何（路径过渡快照完整性机制）。
+
+        回归保护：``set_files`` 后 Batched 布局同步只完成首批条目，
+        ``flush_pending_layout()`` 必须一次补齐全部条目（否则
+        ``viewport.render()`` 抓帧缺卡），且完成后恢复 ``Batched`` 模式。
+        """
+        view = AnimatedFileListView()
+        view.setUniformItemSizes(True)
+        view.setLayoutMode(QListView.Batched)
+        view.setBatchSize(50)
+        model = FileListModel()
+        view.setModel(model)
+        view.resize(400, 300)
+        view.show()
+        qapp.processEvents()
+
+        entries = [
+            {
+                "path": rf"C:\demo\f{i:03d}.txt",
+                "name": f"f{i:03d}.txt",
+                "size": 0,
+                "modified": "",
+                "created": "",
+            }
+            for i in range(120)
+        ]
+        model.set_files(entries)
+
+        def _laid_out_count() -> int:
+            """当前已具备有效几何的条目数（查询本身不泵事件）。"""
+            count = 0
+            for row in range(model.rowCount()):
+                rect = view.visualRect(model.index(row, 0))
+                if rect.isValid() and rect.height() > 0:
+                    count += 1
+            return count
+
+        assert _laid_out_count() < model.rowCount(), "Batched 不应一次完成全部布局"
+        view.flush_pending_layout()
+        assert _laid_out_count() == model.rowCount(), "flush 后应全部完成布局"
+        assert view.layoutMode() == QListView.Batched, "flush 后应恢复原布局模式"
+        safe_teardown(view)
+
 
 # =============================================================================
 # ui.components.file_list_model
