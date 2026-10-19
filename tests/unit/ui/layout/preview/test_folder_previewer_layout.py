@@ -768,3 +768,228 @@ class TestHostIntegration:
             except RuntimeError:
                 pass
             process_qt_events(qapp, 30)
+
+
+# =============================================================================
+# 条目图标约束（已创建缩略图的图片比例异常回归）
+# =============================================================================
+
+class _StubIconManager:
+    """固定返回指定 pixmap 的图标管理器替身（隔离 FileIconManager 缓存）。"""
+
+    def __init__(self, pixmap: object) -> None:
+        self._pixmap = pixmap
+        self.calls: list = []
+
+    def get_icon_pixmap(self, file_info: dict, icon_size: int, dpr: float):
+        self.calls.append((dict(file_info), icon_size, dpr))
+        return self._pixmap
+
+
+def _make_pixmap(width: int, height: int, dpr: float = 1.0):
+    """构造纯色 QPixmap（物理像素 width×height，逻辑尺寸 = /dpr）。"""
+    from PySide6.QtGui import QColor, QPixmap
+
+    pixmap = QPixmap(width, height)
+    pixmap.fill(QColor(200, 60, 60))
+    pixmap.setDevicePixelRatio(dpr)
+    return pixmap
+
+
+def _make_delegate(icon_manager: object):
+    """构造被测条目委托（QListView + 单条模型）。"""
+    from PySide6.QtWidgets import QListView
+
+    from freeassetfilter.ui.layout.preview.folder_previewer_layout import (
+        _FolderEntryDelegate,
+    )
+
+    view = QListView()
+    model = _FolderListModel()
+    model.set_entries(
+        [{"name": "photo.png", "path": "x/photo.png", "is_dir": False, "suffix": "png"}]
+    )
+    view.setModel(model)
+    delegate = _FolderEntryDelegate(view, icon_manager)
+    return view, model, delegate
+
+
+class TestEntryIconFitting:
+    """缩略图命中时图标必须等比约束在行图标框内。"""
+
+    def test_oversized_thumbnail_is_fitted(self, qapp: QApplication) -> None:
+        """128×40 缩略图（逻辑 128×40）被等比缩到 18px 图标框内。"""
+        from freeassetfilter.ui.layout.preview.folder_previewer_layout import _ICON_SIZE
+
+        manager = _StubIconManager(_make_pixmap(128, 40))
+        view, model, delegate = _make_delegate(manager)
+        try:
+            pixmap = delegate._fetch_icon(model.entry_at(0))
+            assert pixmap is not None and not pixmap.isNull()
+            dpr = pixmap.devicePixelRatio() or 1.0
+            logical_w = pixmap.width() / dpr
+            logical_h = pixmap.height() / dpr
+            assert logical_w <= _ICON_SIZE + 1e-6
+            assert logical_h <= _ICON_SIZE + 1e-6
+            # 等比：高度按源图比例（40/128）计算，允许 1px 整数取整误差
+            assert abs(logical_h - logical_w * 40 / 128) <= 1.0
+            # 请求尺寸语义未被改变
+            assert manager.calls[0][1] == _ICON_SIZE
+        finally:
+            view.deleteLater()
+
+    def test_square_thumbnail_is_fitted(self, qapp: QApplication) -> None:
+        """128×128 缩略图缩到 18×18。"""
+        from freeassetfilter.ui.layout.preview.folder_previewer_layout import _ICON_SIZE
+
+        manager = _StubIconManager(_make_pixmap(128, 128))
+        view, model, delegate = _make_delegate(manager)
+        try:
+            pixmap = delegate._fetch_icon(model.entry_at(0))
+            dpr = pixmap.devicePixelRatio() or 1.0
+            assert abs(pixmap.width() / dpr - _ICON_SIZE) < 1.0
+            assert abs(pixmap.height() / dpr - _ICON_SIZE) < 1.0
+        finally:
+            view.deleteLater()
+
+    def test_default_icon_passthrough(self, qapp: QApplication) -> None:
+        """已是 18×18 的默认图标原样返回（零缩放）。"""
+        from freeassetfilter.ui.layout.preview.folder_previewer_layout import _ICON_SIZE
+
+        source = _make_pixmap(_ICON_SIZE, _ICON_SIZE)
+        manager = _StubIconManager(source)
+        view, model, delegate = _make_delegate(manager)
+        try:
+            pixmap = delegate._fetch_icon(model.entry_at(0))
+            assert pixmap is source
+        finally:
+            view.deleteLater()
+
+    def test_shared_source_pixmap_not_mutated(self, qapp: QApplication) -> None:
+        """缩放只产生副本，不改动图标管理器缓存里的共享 pixmap。"""
+        source = _make_pixmap(128, 40)
+        manager = _StubIconManager(source)
+        view, model, delegate = _make_delegate(manager)
+        try:
+            delegate._fetch_icon(model.entry_at(0))
+            assert source.width() == 128
+            assert source.height() == 40
+            assert source.devicePixelRatio() == 1.0
+        finally:
+            view.deleteLater()
+
+    def test_paint_keeps_text_after_icon_box(self, qapp: QApplication) -> None:
+        """离屏绘制：图标像素不越过图标框，图标与文字间空隙无像素。"""
+        from PySide6.QtCore import QRect
+        from PySide6.QtGui import QImage, QPainter
+        from PySide6.QtWidgets import QStyleOptionViewItem
+
+        from freeassetfilter.ui.layout.preview.folder_previewer_layout import (
+            _ICON_SIZE,
+            _ICON_TEXT_GAP,
+            _ROW_HEIGHT,
+            _TEXT_LEFT,
+        )
+
+        manager = _StubIconManager(_make_pixmap(128, 40))
+        view, model, delegate = _make_delegate(manager)
+        try:
+            width = 240
+            image = QImage(width, _ROW_HEIGHT, QImage.Format_ARGB32)
+            image.fill(Qt.transparent)
+            painter = QPainter(image)
+            option = QStyleOptionViewItem()
+            option.rect = QRect(0, 0, width, _ROW_HEIGHT)
+            option.font = view.font()
+            delegate.paint(painter, option, model.index(0))
+            painter.end()
+
+            icon_right_limit = _TEXT_LEFT + _ICON_SIZE
+            gap_left = icon_right_limit + 1
+            gap_right = _TEXT_LEFT + _ICON_SIZE + _ICON_TEXT_GAP
+            icon_pixels = []
+            gap_pixels = 0
+            for y in range(image.height()):
+                for x in range(image.width()):
+                    if image.pixelColor(x, y).alpha() <= 0:
+                        continue
+                    if x <= icon_right_limit:
+                        icon_pixels.append((x, y))
+                    elif gap_left <= x < gap_right:
+                        gap_pixels += 1
+
+            assert icon_pixels, "应绘制出图标像素"
+            assert max(x for x, _ in icon_pixels) <= icon_right_limit
+            assert gap_pixels == 0, "图标与文字之间的空隙不应有像素（未被巨图顶开）"
+        finally:
+            view.deleteLater()
+
+    def test_paint_aligns_icons_and_text_across_aspect_ratios(
+        self, qapp: QApplication,
+    ) -> None:
+        """横图/竖图/方图/默认图标：图标中心与文字起点必须逐行一致。"""
+        from PySide6.QtCore import QRect
+        from PySide6.QtGui import QImage, QPainter
+        from PySide6.QtWidgets import QStyleOptionViewItem
+
+        from freeassetfilter.ui.layout.preview.folder_previewer_layout import (
+            _ICON_SIZE,
+            _ROW_HEIGHT,
+            _TEXT_LEFT,
+        )
+
+        cases = {
+            "wide": (128, 40),
+            "tall": (40, 128),
+            "square": (128, 128),
+            "default": (_ICON_SIZE, _ICON_SIZE),
+        }
+        width = 260
+        icon_left = _TEXT_LEFT
+        icon_right = icon_left + _ICON_SIZE
+        gap_right = icon_right + 10  # _ICON_TEXT_GAP
+        text_starts: dict = {}
+        icon_centers: dict = {}
+
+        for label, (pw, ph) in cases.items():
+            manager = _StubIconManager(_make_pixmap(pw, ph))
+            view, model, delegate = _make_delegate(manager)
+            try:
+                image = QImage(width, _ROW_HEIGHT, QImage.Format_ARGB32)
+                image.fill(Qt.transparent)
+                painter = QPainter(image)
+                option = QStyleOptionViewItem()
+                option.rect = QRect(0, 0, width, _ROW_HEIGHT)
+                option.font = view.font()
+                delegate.paint(painter, option, model.index(0))
+                painter.end()
+
+                icon_xs = []
+                text_xs = []
+                for y in range(image.height()):
+                    for x in range(image.width()):
+                        if image.pixelColor(x, y).alpha() <= 0:
+                            continue
+                        if x <= icon_right:
+                            icon_xs.append(x)
+                        elif x >= gap_right:
+                            text_xs.append(x)
+
+                assert icon_xs, f"{label}: 应绘制出图标像素"
+                assert text_xs, f"{label}: 应绘制出文字像素"
+                assert max(icon_xs) <= icon_right, f"{label}: 图标越出图标框"
+                icon_centers[label] = (min(icon_xs) + max(icon_xs)) / 2.0
+                text_starts[label] = min(text_xs)
+            finally:
+                view.deleteLater()
+
+        # 图标中心一致（±1px 取整误差）
+        centers = list(icon_centers.values())
+        assert max(centers) - min(centers) <= 1.0, (
+            f"不同比例缩略图的图标中心不一致: {icon_centers}"
+        )
+        # 文字起点完全一致
+        starts = list(text_starts.values())
+        assert max(starts) - min(starts) <= 1, (
+            f"不同比例缩略图的文字起点不一致: {text_starts}"
+        )

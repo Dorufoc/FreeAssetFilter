@@ -387,7 +387,7 @@ class _FolderEntryDelegate(QStyledItemDelegate):
         self._list_view.viewport().update()
 
     def _fetch_icon(self, entry: dict) -> object:
-        """获取条目图标 pixmap（可能为空）。"""
+        """获取条目图标 pixmap（可能为空），并约束到列表行图标框。"""
         if not entry:
             return None
         try:
@@ -397,10 +397,48 @@ class _FolderEntryDelegate(QStyledItemDelegate):
                 self._list_view.devicePixelRatioF(),
             )
             if pixmap is not None and not pixmap.isNull():
-                return pixmap
+                return self._fit_icon_to_row(pixmap)
         except Exception as exc:
             debug(f"文件夹条目图标生成失败（回退占位）：{exc}")
         return None
+
+    def _fit_icon_to_row(self, pixmap: object) -> object:
+        """把图标/缩略图等比约束到列表行图标框（``_icon_size`` 逻辑像素）。
+
+        ``FileIconManager.get_icon_pixmap`` 对「图片/视频且磁盘已有缩略图」
+        的条目直接返回缩略图原始位图（BASE_SIZE=128 级，忽略 ``icon_size``
+        请求），其余类型才精确渲染为 ``icon_size × icon_size``。若原样交给
+        ``paint`` 按自然尺寸绘制，已有缩略图的行会画出远超 32px 行高的巨图，
+        文字起点被一并顶开——即「已创建缩略图的图片比例异常」缺陷。
+
+        本方法只做等比缩小、不放大：默认 SVG 图标（已 ≤ 图标框）原样返回，
+        零额外开销；超框位图缩到 ``_icon_size × _icon_size`` 边界内并居中由
+        ``paint`` 完成。缩放结果设置 DPR 后返回副本，不修改
+        ``FileIconManager`` 缓存中共享的原图。
+
+        Args:
+            pixmap: ``get_icon_pixmap`` 返回的源 pixmap（非空）。
+
+        Returns:
+            object: 逻辑尺寸不超过图标框的 pixmap。
+        """
+        view_dpr = float(self._list_view.devicePixelRatioF() or 1.0)
+        src_dpr = float(pixmap.devicePixelRatio() or 1.0)
+        logical_w = pixmap.width() / src_dpr
+        logical_h = pixmap.height() / src_dpr
+
+        if logical_w <= self._icon_size and logical_h <= self._icon_size:
+            return pixmap
+
+        box_phys = max(1, int(round(self._icon_size * view_dpr)))
+        fitted = pixmap.scaled(
+            box_phys,
+            box_phys,
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
+        )
+        fitted.setDevicePixelRatio(view_dpr)
+        return fitted
 
     def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:  # noqa: U100
         return QSize(0, _ROW_HEIGHT)
@@ -443,17 +481,29 @@ class _FolderEntryDelegate(QStyledItemDelegate):
             painter.setBrush(bg)
             painter.drawPath(path)
 
-        # ── 图标 ───────────────────────────────────────────────────────
+        # ── 图标：固定 _ICON_SIZE 图标框，位图在框内居中 ────────────────
+        # 缩略图比例各异（横图/竖图/方图），若按各自宽度左对齐绘制，
+        # 文字起点会随图片宽度漂移、行与行无法对齐；统一以图标框中心
+        # 定位，文字起点只由图标框右缘 + 固定间距决定。
         entry = index.data(_FolderListModel.EntryRole) or {}
         pixmap = self._fetch_icon(entry)
-        text_left = rect.left() + _TEXT_LEFT
+        icon_left = rect.left() + _TEXT_LEFT
+        icon_box = QRectF(
+            icon_left,
+            rect.top() + (rect.height() - _ICON_SIZE) / 2.0,
+            _ICON_SIZE,
+            _ICON_SIZE,
+        )
         if pixmap is not None:
-            pw = pixmap.width() / pixmap.devicePixelRatio()
-            ph = pixmap.height() / pixmap.devicePixelRatio()
-            pix_x = int(rect.left() + _TEXT_LEFT)
-            pix_y = int(rect.top() + (rect.height() - ph) / 2)
+            pixmap_dpr = pixmap.devicePixelRatio() or 1.0
+            pw = pixmap.width() / pixmap_dpr
+            ph = pixmap.height() / pixmap_dpr
+            pix_x = int(round(icon_box.center().x() - pw / 2.0))
+            pix_y = int(round(icon_box.center().y() - ph / 2.0))
             painter.drawPixmap(pix_x, pix_y, pixmap)
-            text_left = pix_x + int(pw) + _ICON_TEXT_GAP
+
+        # 文字起点与图片宽高无关，恒为图标框右缘 + 固定间距
+        text_left = int(round(icon_left + _ICON_SIZE + _ICON_TEXT_GAP))
 
         # ── 文件名 ─────────────────────────────────────────────────────
         painter.setPen(tm.text)
