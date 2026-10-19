@@ -11,7 +11,10 @@
 - 经典布局：底部操作栏（历史行为，逐像素不变）；
 - New 布局：底部操作栏隐藏，图标按钮注入「预览器统一的顶部工具栏」——
   预览器自带顶栏时注入其顶栏（``unified_action_host`` 协议），
-  无顶栏的预览器（视频 / 音频 / Office）由本容器在内容区顶部提供一条统一工具栏。
+  无顶栏的预览器（视频 / 音频 / Office 转换期间等）由本容器在内容区顶部
+  提供一条统一工具栏；运行中才产出顶栏的预览器经可选的
+  ``unified_action_host_changed`` 信号通知本容器迁移按钮（如 Office 转换
+  完成后内嵌 PDF 视图接管顶部），保证功能栏始终单层。
 
 无法预览的文件（``UnsupportedPreviewerLayout``）顶栏只保留两个按钮：
 「复制到剪切板」左锚定、「清除预览」右锚定（不提供系统打开 / 定位目录）。
@@ -287,6 +290,23 @@ class UnifiedPreviewerLayout(QWidget):
         except Exception:  # noqa: BLE001 - 宿主探测失败按无顶栏处理
             return None
         return host if isinstance(host, QWidget) else None
+
+    def _connect_action_host_changed(self, widget: QWidget) -> None:
+        """连接预览器的「操作宿主变化」可选信号（不支持则静默跳过）。
+
+        Office 等异步预览器运行中才产出自带顶栏（转换完成后内嵌 PDF 视图
+        接管顶部），届时发射 ``unified_action_host_changed``；本容器收到后
+        重新迁移图标按钮，避免自建工具栏与预览器顶栏同时显示（双层）。
+        仅随新建预览器连接；旧预览器销毁时 Qt 自动断开。
+        """
+        signal = getattr(widget, "unified_action_host_changed", None)
+        connect = getattr(signal, "connect", None)
+        if not callable(connect):
+            return
+        try:
+            connect(self._sync_action_host)
+        except (RuntimeError, TypeError):  # pragma: no cover - 防御性路径
+            pass
 
     def _ensure_own_toolbar(self) -> PreviewToolbarFrame:
         """无顶栏预览器时由本容器提供的统一工具栏（内容区顶部，懒创建）。"""
@@ -767,6 +787,8 @@ class UnifiedPreviewerLayout(QWidget):
                 self._apply_ai_entry_flag(self._current_preview_widget)
                 # 显示隐藏/系统文件开关下发（仅支持的预览器；文件夹预览器消费）
                 self._apply_hidden_system_flags(self._current_preview_widget)
+                # 运行中操作宿主变化通知（Office 转换完成后 PDF 顶栏接管时迁移按钮）
+                self._connect_action_host_changed(self._current_preview_widget)
                 # 内层条目选中信号转发（文件夹预览器等；主窗口据此联动信息面板）
                 if hasattr(self._current_preview_widget, "entry_selected"):
                     try:

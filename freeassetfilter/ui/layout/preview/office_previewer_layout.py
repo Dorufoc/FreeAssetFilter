@@ -12,6 +12,12 @@ Office 预览器布局 — 统一预览 6 种 Office 格式（doc/docx/xls/xlsx/
 每次 ``set_file`` 取消+等待在途 worker、清空旧视图，并用 generation counter
 守卫过期异步结果（迟到的 ``converted``/``failed`` 一律丢弃）。
 
+统一操作按钮宿主（``unified_action_host`` 协议）：PDF 视图接管内容区时返回
+内嵌 ``PdfPreviewerLayout`` 的顶栏，其余视图返回 ``None``；宿主容器据此在
+「自建统一工具栏 / 预览器顶栏」之间迁移图标按钮。视图栈切换会发射
+``unified_action_host_changed`` 信号（转换完成、切换文件等时机），
+宿主容器收到后重新迁移按钮，保证功能栏始终单层。
+
 ``cleanup()`` 契约（Metis B4）：(a) cancel+wait 在途 worker，(b) 调用内嵌
 ``pdf.cleanup()``（退出全屏，避免 dangling pointer），(c) 然后才允许 deleteLater。
 镜像 ``video_player_layout.cleanup()``（仓库金标准），且可安全调用两次。
@@ -60,9 +66,14 @@ class OfficePreviewerLayout(QWidget):
 
     Signals:
         close_requested: 关闭预览请求信号
+        unified_action_host_changed: 统一操作按钮宿主可用性变化
+            （PDF 视图接管 / 释放顶部时发射；宿主容器据此迁移图标按钮，
+            保证功能栏单层）
     """
 
     close_requested = Signal()
+    #: 统一操作按钮宿主可用性变化（``unified_action_host`` 返回值变化时发射）
+    unified_action_host_changed = Signal()
 
     def __init__(
         self,
@@ -229,6 +240,28 @@ class OfficePreviewerLayout(QWidget):
         self._current_worker = worker
         worker.start()
 
+    def unified_action_host(self):
+        """统一操作按钮宿主（``unified_action_host`` 协议，New 布局注入用）。
+
+        PDF 视图（懒内嵌 ``PdfPreviewerLayout``）接管内容区时返回其顶栏，
+        使统一图标按钮并入该顶栏；覆盖层 / HTML / 大纲 / 错误视图没有顶栏，
+        返回 ``None``——宿主容器据此改用自己的统一工具栏（转换期间等场景
+        仍可操作复制 / 打开 / 定位 / 清除）。
+
+        Returns:
+            Optional[QWidget]: 内嵌 PDF 预览器顶栏（PDF 视图当前时）；
+            其余情况返回 ``None``。
+        """
+        if self._pdf is None:
+            return None
+        if self._content_stack.currentWidget() is not self._pdf_holder:
+            return None
+        getter = getattr(self._pdf, "unified_action_host", None)
+        if not callable(getter):
+            return None
+        host = getter()
+        return host if isinstance(host, QWidget) else None
+
     def cleanup(self) -> None:
         """清理资源（Metis B4）：cancel+wait 在途 worker → 内嵌 pdf.cleanup()。
 
@@ -284,6 +317,8 @@ class OfficePreviewerLayout(QWidget):
         self._placeholder.setText("正在转换 Office 文档…")
         self._loading_spinner.setVisible(True)
         self._content_stack.setCurrentWidget(self._overlay)
+        # 覆盖层无顶栏：通知宿主迁移统一按钮（若此前在 PDF 顶栏内）
+        self.unified_action_host_changed.emit()
 
     # ── 内部：信号路由 ─────────────────────────────────────────────────────
 
@@ -352,6 +387,8 @@ class OfficePreviewerLayout(QWidget):
         self._loading_spinner.setVisible(False)
         pdf.set_file(path)
         self._content_stack.setCurrentWidget(self._pdf_holder)
+        # PDF 视图接管顶部：通知宿主把统一按钮迁入内嵌 PDF 顶栏（功能栏单层）
+        self.unified_action_host_changed.emit()
 
     def _ensure_pdf(self) -> Any:
         """懒创建 ``PdfPreviewerLayout`` 实例（首次调用时创建）。

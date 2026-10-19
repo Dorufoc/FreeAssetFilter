@@ -2555,6 +2555,66 @@ class TestUnifiedPreviewerLayout:
             assert btn.parent() is None
         safe_teardown(layout)
 
+    def test_actions_mode_top_office_pdf_takeover_keeps_single_bar(
+        self, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Office 转换完成后按钮迁入内嵌 PDF 顶栏：容器内可见功能栏恒为 1 条。
+
+        回归：Office 视图接入 ``unified_action_host`` 协议前，容器自建统一
+        工具栏与内嵌 PDF 顶栏在转换完成后同时可见（功能栏「双层」）。
+        """
+        fitz = pytest.importorskip("fitz")
+        monkeypatch.setattr(_opl, "OfficeConverterWorker", _FakeOfficeWorker)
+        pdf_path = tmp_path / "converted.pdf"
+        doc = fitz.open()
+        doc.new_page(width=595, height=842)
+        doc.save(str(pdf_path))
+        doc.close()
+
+        layout = UnifiedPreviewerLayout()
+        _assert_layout_geometry(layout, qapp)
+        layout.set_actions_mode(True)
+
+        def _visible_bars() -> list:
+            """容器内可见的功能栏（容器自建统一工具栏 / 内嵌 PDF 顶栏）。"""
+            return [
+                w for w in layout.findChildren(QWidget)
+                if w.objectName() in ("UnifiedPreviewerToolbar", "PdfPreviewerTopBar")
+                and w.isVisibleTo(layout)
+            ]
+
+        layout.set_file(
+            {"path": str(tmp_path / "sample.xlsx"), "suffix": "xlsx", "is_dir": False}
+        )
+        qapp.processEvents()
+
+        # 转换中：只有容器自建统一工具栏（内嵌 PDF 尚未创建），按钮在其中
+        own = layout._own_toolbar
+        assert own is not None and own.isVisibleTo(layout) is True
+        assert _visible_bars() == [own]
+        for btn in layout._top_buttons:
+            assert own.isAncestorOf(btn)
+
+        # 转换完成：PDF 视图接管顶部 → 自建栏退场、按钮迁入 PDF 顶栏
+        office = layout._current_preview_widget
+        assert isinstance(office, OfficePreviewerLayout)
+        office._current_worker.converted.emit(str(pdf_path))  # noqa: SLF001
+        assert _pump_until(qapp, lambda: office.unified_action_host() is not None)
+
+        assert own.isVisibleTo(layout) is False
+        pdf_bar = office.unified_action_host()
+        assert _visible_bars() == [pdf_bar]
+        for btn in layout._top_buttons:
+            assert pdf_bar.isAncestorOf(btn)
+
+        # 清理路径：先摘除按钮再销毁预览器（按钮不随预览器销毁）
+        layout.clear_preview()
+        qapp.processEvents()
+        for btn in layout._top_buttons:
+            assert btn.parent() is None
+        assert own.isVisibleTo(layout) is False
+        safe_teardown(layout)
+
 
 # =============================================================================
 # ui.layout.preview.font_previewer_layout
@@ -3250,6 +3310,48 @@ class TestOfficePreviewerLayout:
         assert isinstance(layout._current_worker, _FakeOfficeWorker)
         layout.cleanup()
         layout.deleteLater()
+
+    def test_unified_action_host_protocol(
+        self, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """操作宿主协议：PDF 视图接管后返回其顶栏；覆盖层 / 重置后为 None。"""
+        fitz = pytest.importorskip("fitz")
+        monkeypatch.setattr(_opl, "OfficeConverterWorker", _FakeOfficeWorker)
+        pdf_path = tmp_path / "converted.pdf"
+        doc = fitz.open()
+        doc.new_page(width=595, height=842)
+        doc.save(str(pdf_path))
+        doc.close()
+
+        layout = OfficePreviewerLayout()
+        _assert_layout_geometry(layout, qapp)
+        changes: List[bool] = []
+        layout.unified_action_host_changed.connect(lambda: changes.append(True))
+        try:
+            # 初始覆盖层：无内嵌 PDF → 无宿主（容器改用自己的统一工具栏）
+            assert layout.unified_action_host() is None
+
+            layout.set_file(str(tmp_path / "sample.xlsx"))
+            qapp.processEvents()
+            assert layout.unified_action_host() is None  # 转换中仍无顶栏
+            assert changes  # 重置视图已通知宿主（覆盖层无顶栏）
+            changes.clear()
+
+            # 转换完成 → PDF 视图接管顶部：宿主 = 内嵌 PDF 预览器顶栏
+            layout._current_worker.converted.emit(str(pdf_path))  # noqa: SLF001
+            _pump_until(qapp, lambda: layout._pdf is not None)  # noqa: SLF001
+            assert layout._content_stack.currentWidget() is layout._pdf_holder  # noqa: SLF001
+            assert layout.unified_action_host() is layout._pdf._top_bar  # noqa: SLF001
+            assert changes  # 接管通知已发射（宿主容器据此迁移按钮）
+
+            # 再次 set_file：回到覆盖层 → 宿主撤销
+            layout.set_file(str(tmp_path / "other.xlsx"))
+            qapp.processEvents()
+            assert layout.unified_action_host() is None
+        finally:
+            layout.cleanup()
+            layout.deleteLater()
+            qapp.processEvents()
 
 
 # =============================================================================
