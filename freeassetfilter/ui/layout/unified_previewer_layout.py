@@ -585,7 +585,8 @@ class UnifiedPreviewerLayout(QWidget):
     def set_show_system_files(self, enabled: bool) -> None:
         """运行时切换「显示系统文件」（幂等；主窗口启动/设置提交路径调用）。
 
-        仅当「显示隐藏文件」亦开启时生效（AND 语义）；下发与重扫口径见
+        仅当「显示隐藏文件」亦开启时生效（AND 语义），且只影响同时带
+        「隐藏+系统」双重位的受保护操作系统文件/文件夹；下发与重扫口径见
         :meth:`set_show_hidden_files`。
 
         Args:

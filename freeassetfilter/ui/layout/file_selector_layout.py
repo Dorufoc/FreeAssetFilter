@@ -64,7 +64,9 @@ _PHYSICAL_DRIVE_TYPES = frozenset(
 _DEFAULT_INCLUDE_REMOTE_DRIVES = False
 
 # Windows 文件属性位（Win32 FILE_ATTRIBUTE_*，取自 stat 的 st_file_attributes）：
-# 隐藏位与系统位；目录收集后按实例开关过滤掉带对应位的条目。
+# 隐藏位与系统位。过滤口径对齐资源管理器：仅「隐藏」位随显示隐藏文件开关；
+# 仅「系统」位（如重定向后的桌面/下载/音乐等系统文件夹）恒可见；「隐藏+系统」
+# 双重位（受保护的操作系统文件）需隐藏文件与系统文件开关同时开启。
 _FILE_ATTRIBUTE_HIDDEN = 0x2
 _FILE_ATTRIBUTE_SYSTEM = 0x4
 
@@ -1083,9 +1085,11 @@ class FileSelectorLayout(QWidget):
             include_remote: ``"All"`` 视图的网络/映射盘与光驱开关；其他
                 路径忽略。``None`` 时取静态默认（关闭）。
             show_hidden: 是否显示隐藏文件（FILE_ATTRIBUTE_HIDDEN）；``None``
-                表示不启用过滤。
+                表示不启用过滤。仅「系统」位（FILE_ATTRIBUTE_SYSTEM 单独
+                出现，如重定向后的桌面/下载/音乐等系统文件夹）恒可见。
             show_system: 是否显示系统文件（FILE_ATTRIBUTE_SYSTEM）；仅当
-                ``show_hidden`` 亦为真时生效。
+                ``show_hidden`` 亦为真时生效，且只影响同时带「隐藏+系统」
+                双重位的受保护操作系统文件/文件夹。
 
         Returns:
             Optional[List[Dict[str, Any]]]: 7 键条目列表；目录不可读返回
@@ -1115,7 +1119,9 @@ class FileSelectorLayout(QWidget):
 
         以 ``os.scandir`` 扫一遍目录建立 ``name -> st_file_attributes`` 映射
         （逐条目 stat 失败则跳过该条目；scandir 本身失败则 fail-open 原样
-        返回）。无映射的条目（名称缺失）保持可见。
+        返回）。无映射的条目（名称缺失）保持可见；``.`` 前缀不算隐藏（仅按
+        属性位判定）。过滤口径与 :meth:`_entry_visible_by_attrs` 一致：仅
+        「系统」位单独出现的条目恒可见。
 
         Args:
             entries: 待过滤的 7 键条目列表。
@@ -1193,6 +1199,11 @@ class FileSelectorLayout(QWidget):
     ) -> bool:
         """按隐藏/系统属性判断条目是否可见（与过滤函数同口径）。
 
+        口径对齐资源管理器：仅「隐藏」位 → 随 ``show_hidden``；仅「系统」
+        位（如重定向后的桌面/下载/音乐等系统文件夹）恒可见；「隐藏+系统」
+        双重位（受保护的操作系统文件）需 ``show_hidden`` 与 ``show_system``
+        同时开启。
+
         Args:
             entry: 7 键条目字典。
             attrs_by_name: ``_hidden_system_attrs_map`` 产出的属性映射。
@@ -1203,10 +1214,12 @@ class FileSelectorLayout(QWidget):
             bool: True 表示该条目应显示。
         """
         attrs = attrs_by_name.get(entry["name"], 0)
+        is_hidden = bool(attrs & _FILE_ATTRIBUTE_HIDDEN)
+        is_system = bool(attrs & _FILE_ATTRIBUTE_SYSTEM)
         effective_system = bool(show_system) and bool(show_hidden)
-        if (attrs & _FILE_ATTRIBUTE_HIDDEN) and not show_hidden:
+        if is_hidden and not show_hidden:
             return False
-        if (attrs & _FILE_ATTRIBUTE_SYSTEM) and not effective_system:
+        if is_hidden and is_system and not effective_system:
             return False
         return True
 
@@ -1901,11 +1914,12 @@ class FileSelectorLayout(QWidget):
     def set_show_system_files(self, enabled: bool) -> None:
         """设置「显示系统文件」开关（启动与设置提交路径调用；幂等）。
 
-        仅当「显示隐藏文件」亦开启时生效（AND 语义）；口径变化且当前处于
+        仅当「显示隐藏文件」亦开启时生效（AND 语义），且只影响同时带
+        「隐藏+系统」双重位的受保护操作系统文件/文件夹；口径变化且当前处于
         普通目录视图时立即重扫以体现新口径。
 
         Args:
-            enabled: True 显示系统文件（带 FILE_ATTRIBUTE_SYSTEM 位）；
+            enabled: True 显示同时带「隐藏+系统」双重位的条目；
                 False 隐藏（默认）。
         """
         enabled = bool(enabled) and self._show_hidden_files

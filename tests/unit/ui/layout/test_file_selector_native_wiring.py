@@ -460,6 +460,9 @@ class TestHiddenSystemFiltering:
     ) -> None:
         """回退路径：四组开关组合的可见名集正确 + 条目仍 7 键。
 
+        口径对齐资源管理器：仅「系统」位的 system.txt 恒可见；仅「隐藏」
+        位的随 show_hidden；「隐藏+系统」双重位的 both.txt 需两开关同开。
+
         Args:
             qapp: 会话级 QApplication。
             tmp_path: pytest 内置每测试临时目录。
@@ -480,10 +483,12 @@ class TestHiddenSystemFiltering:
                 }, "过滤后条目必须保持 7 键同构"
             return sorted(e["name"] for e in entries)
 
-        assert names(False, False) == ["normal.txt"]
-        assert names(True, False) == ["hidden.txt", "hidden_dir", "normal.txt"]
+        assert names(False, False) == ["normal.txt", "system.txt"]
+        assert names(True, False) == [
+            "hidden.txt", "hidden_dir", "normal.txt", "system.txt",
+        ]
         assert names(True, True) == self._ALL_NAMES
-        assert names(False, True) == ["normal.txt"]
+        assert names(False, True) == ["normal.txt", "system.txt"]
 
     def test_legacy_no_flags_returns_all(
         self, qapp: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -524,13 +529,15 @@ class TestHiddenSystemFiltering:
             assert entries is not None
             return sorted(e["name"] for e in entries)
 
-        assert names(False, False) == ["normal.txt"]
-        assert names(True, False) == ["hidden.txt", "hidden_dir", "normal.txt"]
+        assert names(False, False) == ["normal.txt", "system.txt"]
+        assert names(True, False) == [
+            "hidden.txt", "hidden_dir", "normal.txt", "system.txt",
+        ]
 
-    def test_instance_default_hides_hidden_and_system(
+    def test_instance_default_hides_hidden_keeps_system_only(
         self, qapp: Any, tmp_path: Path
     ) -> None:
-        """实例级 ``_load_directory`` 默认隐藏隐藏/系统条目。
+        """实例级 ``_load_directory`` 默认口径：隐藏与双重位不可见，仅系统位可见。
 
         Args:
             qapp: 会话级 QApplication。
@@ -539,7 +546,7 @@ class TestHiddenSystemFiltering:
         src_dir = _make_hidden_system_dir(tmp_path)
         layout: Any = FileSelectorLayout()
         layout._load_directory(str(src_dir))  # noqa: SLF001
-        assert _model_names(layout) == ["normal.txt"]
+        assert _model_names(layout) == ["normal.txt", "system.txt"]
 
     def test_setter_reload_semantics(
         self, qapp: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

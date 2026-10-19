@@ -1003,7 +1003,8 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         ``general.floating_pool_snap_enabled``（浮窗贴边吸附）。前五个开关
         缺失、类型非法一律回退 False（与 DEFAULT_SETTINGS_V2 默认一致）；
         全局浮窗与贴边吸附是 ``general`` 下默认开启的布尔，缺失、类型非法
-        回退 True。隐藏/系统开关的 AND 语义由过滤层判定，此处不做归一化。
+        回退 True。隐藏/系统开关的 AND 语义由过滤层判定（系统开关只影响
+        同时带「隐藏+系统」双重位的条目），此处不做归一化。
 
         Returns:
             tuple[bool, bool, bool, bool, bool, bool, bool]: (AI 入口开关,

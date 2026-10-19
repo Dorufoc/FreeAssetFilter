@@ -355,14 +355,19 @@ class TestFallbacks:
 # =============================================================================
 
 class TestHiddenSystemFiltering:
-    """隐藏/系统过滤：收集单点、实例默认隐藏、setter 幂等/AND/重扫语义。"""
+    """隐藏/系统过滤：收集单点、实例默认隐藏（系统位单独出现恒可见）、
+    setter 幂等/AND/重扫语义。"""
 
     _ALL_NAMES = ["both.txt", "hidden.txt", "hidden_dir", "normal.txt", "system.txt"]
 
     def test_python_fallback_filter_matrix(
         self, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """回退路径：四组开关组合的可见名集正确 + 条目仍 7 键。"""
+        """回退路径：四组开关组合的可见名集正确 + 条目仍 7 键。
+
+        口径对齐资源管理器：仅「系统」位的 system.txt 恒可见；仅「隐藏」
+        位的随 show_hidden；「隐藏+系统」双重位的 both.txt 需两开关同开。
+        """
         src_dir = _make_hidden_system_dir(tmp_path)
         monkeypatch.setattr(folder_mod, "_native_scan_directory", lambda path: None)
 
@@ -378,10 +383,12 @@ class TestHiddenSystemFiltering:
                 }, "过滤后条目必须保持 7 键同构"
             return sorted(e["name"] for e in entries)
 
-        assert names(False, False) == ["normal.txt"]
-        assert names(True, False) == ["hidden.txt", "hidden_dir", "normal.txt"]
+        assert names(False, False) == ["normal.txt", "system.txt"]
+        assert names(True, False) == [
+            "hidden.txt", "hidden_dir", "normal.txt", "system.txt",
+        ]
         assert names(True, True) == self._ALL_NAMES
-        assert names(False, True) == ["normal.txt"]
+        assert names(False, True) == ["normal.txt", "system.txt"]
 
     def test_legacy_no_flags_returns_all(
         self, qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -393,14 +400,14 @@ class TestHiddenSystemFiltering:
         assert entries is not None
         assert sorted(e["name"] for e in entries) == self._ALL_NAMES
 
-    def test_instance_default_hides_hidden_and_system(
+    def test_instance_default_hides_hidden_keeps_system_only(
         self, qapp: QApplication, layout: FolderPreviewerLayout, tmp_path: Path
     ) -> None:
-        """实例级默认口径：隐藏/系统条目不可见（仅普通条目）。"""
+        """实例级默认口径：隐藏与双重位条目不可见，仅系统位条目可见。"""
         src_dir = _make_hidden_system_dir(tmp_path)
         layout.set_file(str(src_dir))
         _wait_loaded(layout, qapp)
-        assert sorted(_row_names(layout._model)) == ["normal.txt"]
+        assert sorted(_row_names(layout._model)) == ["normal.txt", "system.txt"]
 
     def test_setter_rescan_matrix_and_cascade(
         self, qapp: QApplication, layout: FolderPreviewerLayout, tmp_path: Path
@@ -409,12 +416,12 @@ class TestHiddenSystemFiltering:
         src_dir = _make_hidden_system_dir(tmp_path)
         layout.set_file(str(src_dir))
         _wait_loaded(layout, qapp)
-        assert sorted(_row_names(layout._model)) == ["normal.txt"]
+        assert sorted(_row_names(layout._model)) == ["normal.txt", "system.txt"]
 
         layout.set_show_hidden_files(True)
         _wait_loaded(layout, qapp)
         assert sorted(_row_names(layout._model)) == [
-            "hidden.txt", "hidden_dir", "normal.txt",
+            "hidden.txt", "hidden_dir", "normal.txt", "system.txt",
         ]
 
         layout.set_show_system_files(True)
@@ -425,7 +432,7 @@ class TestHiddenSystemFiltering:
         _wait_loaded(layout, qapp)
         assert layout._show_hidden_files is False
         assert layout._show_system_files is False
-        assert sorted(_row_names(layout._model)) == ["normal.txt"]
+        assert sorted(_row_names(layout._model)) == ["normal.txt", "system.txt"]
 
     def test_setter_idempotent_and_guards(
         self,
@@ -482,8 +489,10 @@ class TestHiddenSystemFiltering:
             assert entries is not None
             return sorted(e["name"] for e in entries)
 
-        assert names(False, False) == ["normal.txt"]
-        assert names(True, False) == ["hidden.txt", "hidden_dir", "normal.txt"]
+        assert names(False, False) == ["normal.txt", "system.txt"]
+        assert names(True, False) == [
+            "hidden.txt", "hidden_dir", "normal.txt", "system.txt",
+        ]
 
 
 # =============================================================================
@@ -732,13 +741,13 @@ class TestHostIntegration:
         )
         try:
             widget = _wait_host_folder(qapp, host)
-            assert sorted(_row_names(widget._model)) == ["normal.txt"]
+            assert sorted(_row_names(widget._model)) == ["normal.txt", "system.txt"]
 
             host.set_show_hidden_files(True)
             _wait_loaded(widget, qapp)
             assert widget._show_hidden_files is True
             assert sorted(_row_names(widget._model)) == [
-                "hidden.txt", "hidden_dir", "normal.txt",
+                "hidden.txt", "hidden_dir", "normal.txt", "system.txt",
             ]
 
             host.set_show_system_files(True)
@@ -751,7 +760,7 @@ class TestHostIntegration:
             _wait_loaded(widget, qapp)
             assert widget._show_hidden_files is False
             assert widget._show_system_files is False
-            assert sorted(_row_names(widget._model)) == ["normal.txt"]
+            assert sorted(_row_names(widget._model)) == ["normal.txt", "system.txt"]
         finally:
             host.cleanup()
             try:

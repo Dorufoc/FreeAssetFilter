@@ -1774,7 +1774,7 @@ class GeneralSettingsPage(QWidget):
         # ── 显示受保护的系统文件（默认关闭，仅在开启隐藏文件后可见）──
         self._system_row = SettingsRow(
             title="显示受保护的系统文件",
-            description="额外显示带「系统」属性的受保护操作系统文件或文件夹",
+            description="额外显示同时带「隐藏」「系统」属性的受保护操作系统文件或文件夹",
         )
         self._system_toggle = StyledToggle(checked=False, size="default")
         self._system_toggle.toggled.connect(self._on_show_system_files_toggled)

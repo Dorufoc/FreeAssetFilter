@@ -14,7 +14,8 @@
 - **隐藏/系统过滤**：按实例开关（``set_show_hidden_files`` /
   ``set_show_system_files``，由统一预览器宿主下发）过滤带
   FILE_ATTRIBUTE_HIDDEN / FILE_ATTRIBUTE_SYSTEM 属性的条目，语义与
-  文件选择器一致；默认关闭（不显示隐藏/系统条目），变更后立即重扫
+  文件选择器一致（仅「系统」位的条目恒可见；「隐藏+系统」双重位才受
+  系统开关控制）；默认关闭（不显示隐藏/双重位条目），变更后立即重扫
 
 触发方式：文件夹被加入文件储存池后，左键点击文件池中的文件夹卡片时，
 由统一预览器宿主路由到本组件；与文件选择器的常规文件夹导航相互独立。
@@ -109,8 +110,9 @@ _PLACEHOLDER_EMPTY: str = "此目录为空"
 _PLACEHOLDER_UNAVAILABLE: str = "无法访问该文件夹"
 
 # Windows 文件属性位（Win32 FILE_ATTRIBUTE_*，取自 stat 的 st_file_attributes）：
-# 隐藏位与系统位；目录收集后按实例开关过滤掉带对应位的条目（语义与文件
-# 选择器 file_selector_layout 的同名过滤完全一致）。
+# 隐藏位与系统位。目录收集后按实例开关过滤，语义与文件选择器完全一致：
+# 仅「系统」位单独出现（如重定向后的桌面/下载/音乐等系统文件夹）恒可见；
+# 「隐藏+系统」双重位（受保护的操作系统文件）需两个开关同时开启。
 _FILE_ATTRIBUTE_HIDDEN = 0x2
 _FILE_ATTRIBUTE_SYSTEM = 0x4
 
@@ -162,9 +164,11 @@ def _collect_directory_entries(
     Args:
         path: 要扫描的目录绝对路径。
         show_hidden: 是否显示隐藏文件（FILE_ATTRIBUTE_HIDDEN）；``None``
-            表示不启用过滤。
+            表示不启用过滤。仅「系统」位（FILE_ATTRIBUTE_SYSTEM 单独
+            出现，如重定向后的桌面/下载/音乐等系统文件夹）恒可见。
         show_system: 是否显示系统文件（FILE_ATTRIBUTE_SYSTEM）；仅当
-            ``show_hidden`` 亦为真时生效。
+            ``show_hidden`` 亦为真时生效，且只影响同时带「隐藏+系统」
+            双重位的受保护操作系统文件/文件夹。
 
     Returns:
         Optional[list]: 条目 dict 列表；目录不可读/不存在时返回 None。
@@ -191,7 +195,9 @@ def _apply_hidden_system_filter(
     逐行同构：以 ``os.scandir`` 扫一遍目录建立 ``name -> st_file_attributes``
     映射（逐条目 stat 失败则跳过该条目；scandir 本身失败则 fail-open 原样
     返回）。无映射的条目（名称缺失）保持可见；``.`` 前缀不算隐藏（仅按
-    属性位判定）。
+    属性位判定）。过滤口径对齐资源管理器：仅「隐藏」位随 ``show_hidden``；
+    仅「系统」位（如重定向后的桌面/下载/音乐等系统文件夹）恒可见；
+    「隐藏+系统」双重位（受保护的操作系统文件）需两个开关同时开启。
 
     Args:
         entries: 待过滤的条目 dict 列表。
@@ -224,10 +230,13 @@ def _apply_hidden_system_filter(
     result: list = []
     for entry in entries:
         attrs = attrs_by_name.get(entry["name"], 0)
-        visible_hidden = not (attrs & _FILE_ATTRIBUTE_HIDDEN) or show_hidden
-        visible_system = not (attrs & _FILE_ATTRIBUTE_SYSTEM) or effective_system
-        if visible_hidden and visible_system:
-            result.append(entry)
+        is_hidden = bool(attrs & _FILE_ATTRIBUTE_HIDDEN)
+        is_system = bool(attrs & _FILE_ATTRIBUTE_SYSTEM)
+        if is_hidden and not show_hidden:
+            continue
+        if is_hidden and is_system and not effective_system:
+            continue
+        result.append(entry)
     return result
 
 
@@ -847,11 +856,12 @@ class FolderPreviewerLayout(QWidget):
     def set_show_system_files(self, enabled: bool) -> None:
         """设置「显示系统文件」开关（幂等；宿主启动/设置提交路径调用）。
 
-        仅当「显示隐藏文件」亦开启时生效（AND 语义）；口径变化且当前已
+        仅当「显示隐藏文件」亦开启时生效（AND 语义），且只影响同时带
+        「隐藏+系统」双重位的受保护操作系统文件/文件夹；口径变化且当前已
         加载文件夹时立即重扫以体现新口径。
 
         Args:
-            enabled: True 显示系统文件（带 FILE_ATTRIBUTE_SYSTEM 位）；
+            enabled: True 显示同时带「隐藏+系统」双重位的条目；
                 False 隐藏（默认）。
         """
         enabled = bool(enabled) and self._show_hidden_files
