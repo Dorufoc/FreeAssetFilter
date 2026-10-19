@@ -11,7 +11,9 @@
 * 右键菜单构建与动作（复制/图片另存为/缩放组/全选）；
 * 交互面：拖拽选区与剪贴板、Ctrl+滚轮缩放、普通滚轮不缩放、
   中键双击重置缩放、Ctrl 键状态跟踪、复制选中文字与全选
-  （直接构造事件调用处理器，不依赖窗口系统）。
+  （直接构造事件调用处理器，不依赖窗口系统）；
+* 页面卡片外框主题口径：深色描边、浅色不描边（浅色下 G4 为近黑，
+  会在预览区边缘形成黑边），像素级采样断言（固定底色宿主）。
 """
 
 from __future__ import annotations
@@ -24,15 +26,16 @@ import pytest
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QKeyEvent, QMouseEvent, QWheelEvent
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
 # ui 短路径导入引导（styled 组件内部使用 ``from theme/components import ...``）
 _UI_ROOT: str = str(Path(__file__).resolve().parents[5] / "freeassetfilter" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
+from theme import tm  # noqa: E402
 from freeassetfilter.ui.layout.preview.native_pdf_renderer import NativePdfRenderer
-from tests.support.qt_helpers import wait_until
+from tests.support.qt_helpers import process_qt_events, wait_until
 
 pytestmark = pytest.mark.unit
 
@@ -360,3 +363,134 @@ class TestInteractionCoverage:
             assert QApplication.clipboard().text() == text
         finally:
             renderer.close()
+
+
+class TestPageCardBorderTheme:
+    """页面卡片外框主题口径：深色描边、浅色不描边（像素级采样断言）。
+
+    浅色模式下 G4（``tm.text``）为近黑 ``#1a1a1a``：页面卡片若照画外框，
+    在 fit-to-width 贴边时会沿预览区边缘形成黑边。新口径为浅色不描边、
+    仅深色保留近白细线；断言基于固定底色宿主窗口上的抓图采样，不依赖
+    系统 / mica 背景。
+    """
+
+    #: 固定宿主底色：浅色用例用浅底（黑边检测），深色用例用深底（白线检测）
+    _BACKDROP_LIGHT = "#f0f0f0"
+    _BACKDROP_DARK = "#2b2b2b"
+
+    @staticmethod
+    def _mount(qapp: Any, backdrop: str) -> tuple:
+        """把渲染器挂到固定底色宿主窗口上并显示（布局激活后返回）。
+
+        Args:
+            qapp: session QApplication。
+            backdrop: 宿主的固定背景色（CSS 颜色）。
+
+        Returns:
+            tuple: ``(host, renderer)``；宿主为抓图根（渲染器透明、透出底色）。
+        """
+        host = QWidget()
+        host.setStyleSheet(f"background-color: {backdrop};")
+        host_layout = QVBoxLayout(host)
+        host_layout.setContentsMargins(0, 0, 0, 0)
+        renderer = NativePdfRenderer()
+        host_layout.addWidget(renderer)
+        host.resize(600, 400)
+        host.show()
+        process_qt_events(qapp, ms=0)
+        return host, renderer
+
+    @staticmethod
+    def _wait_first_page(qapp: Any, renderer: NativePdfRenderer) -> None:
+        """有界等待首屏页面渲染进入缓存（未渲染完成时卡片不绘制）。"""
+        assert wait_until(
+            qapp,
+            lambda: renderer._renderer.find_cached(
+                0, renderer._view.zoom_level
+            ) is not None,
+            timeout_ms=8000,
+        ), "页面渲染未在超时内完成"
+
+    @staticmethod
+    def _card_left_x(renderer: NativePdfRenderer) -> float:
+        """按 paintEvent 同口径计算页面卡片左边缘（逻辑坐标）。"""
+        view = renderer._view
+        zoom = view.zoom_level
+        win_x = (0.0 - view.offset_x) * zoom + view.frame_center_x()
+        return win_x + 6.0  # card_margin
+
+    @staticmethod
+    def _band_extremes(image: Any, x_logical: float, half: float = 3.0) -> tuple:
+        """取卡片左边缘（纵向中线）±half 逻辑像素条带的最小/最大亮度。
+
+        Args:
+            image: 抓图位图（物理像素，采样按 devicePixelRatio 换算）。
+            x_logical: 条带中心的逻辑 x（通常为卡片左边缘）。
+            half: 条带半宽（逻辑像素）。
+
+        Returns:
+            tuple[float, float]: ``(min, max)`` 亮度（0-255）。
+        """
+        dpr = image.devicePixelRatio() or 1.0
+        y_dev = min(image.height() - 1, max(0, image.height() // 2))
+        x0 = max(0, int((x_logical - half) * dpr))
+        x1 = min(image.width() - 1, int((x_logical + half) * dpr))
+        values = []
+        for x_dev in range(x0, x1 + 1):
+            color = image.pixelColor(x_dev, y_dev)
+            values.append((color.red() + color.green() + color.blue()) / 3.0)
+        return min(values), max(values)
+
+    @staticmethod
+    def _restore_theme(qapp: Any, initial_dark: bool) -> None:
+        """把主题恢复到用例开始时的明暗状态（避免跨用例污染）。"""
+        tm.set_theme_mode("dark" if initial_dark else "light")
+        process_qt_events(qapp, ms=0)
+
+    def test_light_theme_page_card_has_no_dark_border(
+        self, qapp: Any, sample_pdf_file: str,
+    ) -> None:
+        """浅色：卡片外沿无描边（不再出现近黑 G4 线 → 无黑边）。"""
+        initial_dark = tm.is_dark_theme()
+        tm.set_theme_mode("light")
+        host, renderer = self._mount(qapp, self._BACKDROP_LIGHT)
+        try:
+            assert renderer.load_document(sample_pdf_file) is True
+            self._wait_first_page(qapp, renderer)
+            image = host.grab().toImage()
+            card_left = self._card_left_x(renderer)
+            lo, _hi = self._band_extremes(image, card_left)
+            assert lo > 150, (
+                f"浅色模式页面卡片边缘出现深色描边（条带最暗亮度 {lo:.0f}，"
+                f"卡片左边缘 x={card_left:.1f}）"
+            )
+        finally:
+            renderer.close()
+            host.close()
+            host.deleteLater()
+            self._restore_theme(qapp, initial_dark)
+
+    def test_dark_theme_page_card_keeps_light_border(
+        self, qapp: Any, sample_pdf_file: str,
+    ) -> None:
+        """深色：卡片外沿保留近白 1.5px 描边（贴边时勾勒白页）。"""
+        initial_dark = tm.is_dark_theme()
+        tm.set_theme_mode("dark")
+        host, renderer = self._mount(qapp, self._BACKDROP_DARK)
+        try:
+            assert renderer.load_document(sample_pdf_file) is True
+            self._wait_first_page(qapp, renderer)
+            image = host.grab().toImage()
+            card_left = self._card_left_x(renderer)
+            # 描边在卡片外侧仅约 0.75 逻辑像素：取外沿窄带最大亮度，
+            # 覆盖高 DPI 下抗锯齿摊分（任一滴像素显著亮于底色即证明描边存在）。
+            _lo, hi = self._band_extremes(image, card_left - 1.0, half=0.5)
+            assert hi > 150, (
+                f"深色模式页面卡片描边缺失（外沿条带最亮亮度 {hi:.0f}，"
+                f"卡片左边缘 x={card_left:.1f}）"
+            )
+        finally:
+            renderer.close()
+            host.close()
+            host.deleteLater()
+            self._restore_theme(qapp, initial_dark)

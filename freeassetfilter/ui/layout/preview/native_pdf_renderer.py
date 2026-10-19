@@ -663,8 +663,8 @@ class NativePdfRenderer(QWidget):
             # 从 LRU 缓存中查找渲染结果
             response = self._renderer.find_cached(page_num, zoom)
             if response is not None and response.image is not None:
-                # 卡片式页面：用 6px 内边距的白色底色 + 1px G4 色边框，
-                # 使页面即使在 fit-to-width 模式下也有可见的卡片分隔。
+                # 卡片式页面：用 6px 内边距的白色底色，使页面即使在
+                # fit-to-width 模式下也有可见的卡片分隔。
                 card_margin: float = 6.0
                 card_x: float = win_x + card_margin
                 card_y: float = win_y + card_margin
@@ -683,10 +683,13 @@ class NativePdfRenderer(QWidget):
                     QRectF(0, 0, response.image.width(), response.image.height()),
                 )
 
-                # 卡片外边框 (G4 色，1.5px 粗)
-                painter.setPen(QPen(QColor(tm.text.name()), 1.5))
-                painter.setBrush(Qt.NoBrush)
-                painter.drawRect(QRectF(card_x, card_y, card_w, card_h))
+                # 卡片外边框：仅深色模式描边（G4 近白细线勾勒白页）；
+                # 浅色模式下 G4 为近黑，会在预览区边缘形成黑边，故不描边，
+                # 改由白卡底色与浅色画布自然区分。
+                if tm.is_dark_theme():
+                    painter.setPen(QPen(QColor(tm.text.name()), 1.5))
+                    painter.setBrush(Qt.NoBrush)
+                    painter.drawRect(QRectF(card_x, card_y, card_w, card_h))
             else:
                 # 页面尚未渲染完成：显示 "渲染中..." 占位
                 painter.setPen(QColor(180, 180, 180))

@@ -1451,6 +1451,9 @@ class PdfPreviewerLayout(QWidget):
         self._refresh_text_colors()
         self._style_browse_button()
         self.set_section_styles("", "")
+        # PDF 画布自绘的页面卡片外框随主题显隐（浅色不描边 / 深色描边），
+        # 强制重绘，避免显隐滞后到下一次滚动或缩放才生效。
+        self._renderer.update()
         self._top_bar.update()
         self.update()
         # 空状态占位文字随主题刷新（构建期一次性注册，切主题后需重注册）
