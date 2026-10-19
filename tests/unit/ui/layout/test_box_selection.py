@@ -3,6 +3,7 @@
 
 覆盖：
 - BoxSelectionGesture：拖拽阈值激活、命中集合替换回调、释放收尾、守卫兜底；
+- SelectionBandOverlay：分数 DPR（1.25/1.5）下四条边框完整（缺边回归）；
 - FileSelectorLayout：左键拖拽框选更新模型选中态且不触发预览；单击清除；
   右键已选中卡片批量入池信号；右键未选中卡片单卡信号；右键空白（开关
   开启且命中空卡片位时）返回上级；
@@ -27,7 +28,7 @@ from typing import Any, Dict, List
 
 import pytest
 from PySide6.QtCore import QEvent, QModelIndex, QPoint, QPointF, Qt
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtGui import QColor, QImage, QMouseEvent, QPixmap
 from PySide6.QtWidgets import QApplication, QWidget
 
 # 布局模块内部使用短路径导入（from theme import tm / components.*），
@@ -36,7 +37,10 @@ _UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "freeassetfilter" / "u
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-from components.box_selection import BoxSelectionGesture  # noqa: E402
+from components.box_selection import (  # noqa: E402
+    BoxSelectionGesture,
+    SelectionBandOverlay,
+)
 from components.file_card_delegate import (  # noqa: E402
     FileCardDelegate,
     _STATE_BOX_SELECTED,
@@ -177,6 +181,100 @@ class TestBoxSelectionGesture:
         assert gesture.started is False
         assert hits_seen == [{3}]
         _teardown(parent)
+
+
+# =============================================================================
+# SelectionBandOverlay：分数 DPR 边框渲染（缺边回归）
+# =============================================================================
+class TestSelectionBandOverlayRendering:
+    """选框覆层渲染：分数 DPR 下四条边框必须完整。
+
+    回归背景：旧实现用 1px QPen 描边、正好压在控件最外圈像素
+    上；Windows 分数缩放（DPR 1.25/1.5）下笔迹取整与控件设备裁剪取整不
+    一致，会把部分边整条裁掉（"缺边"选框）。现实现改用 fillRect 边带，
+    本测试把宿主渲染进带分数 devicePixelRatio 的 QPixmap 复现该场景。
+    """
+
+    _BG = "#202020"
+    _BORDER = "#07c160"
+    _BOX_SIZE = (61, 41)
+
+    @staticmethod
+    def _render(offset: tuple, scale: float) -> QImage:
+        """在带分数 DPR 的 Pixmap 中渲染含覆层的宿主，返回设备像素图像。"""
+        host = QWidget()
+        host.resize(200, 120)
+        host.setAutoFillBackground(True)
+        host.setStyleSheet(f"background: {TestSelectionBandOverlayRendering._BG};")
+        overlay = SelectionBandOverlay(host)
+        overlay.set_color(QColor(TestSelectionBandOverlayRendering._BORDER))
+        overlay.setGeometry(
+            10 + offset[0], 8 + offset[1],
+            *TestSelectionBandOverlayRendering._BOX_SIZE,
+        )
+        overlay.show()
+        overlay.raise_()
+        host.show()
+        QApplication.processEvents()
+        try:
+            pixmap = QPixmap(
+                int(round(host.width() * scale)),
+                int(round(host.height() * scale)),
+            )
+            pixmap.setDevicePixelRatio(scale)
+            pixmap.fill(QColor(TestSelectionBandOverlayRendering._BG))
+            host.render(pixmap)
+            image = pixmap.toImage()
+        finally:
+            _teardown(host)
+        return image
+
+    @staticmethod
+    def _side_coverage(image: QImage) -> tuple:
+        """返回选框上/下/左/右四边的边框色像素覆盖率（0~1）。
+
+        边框色为不透明强调色（绿通道显著高于填充/背景），填充为强调色
+        半透明叠加，二者可用阈值区分。
+        """
+        width, height = image.width(), image.height()
+
+        def _is_border(x: int, y: int) -> bool:
+            color = image.pixelColor(x, y)
+            return color.green() > 110 and color.green() - color.blue() > 35
+
+        xs, ys = [], []
+        for y in range(height):
+            for x in range(width):
+                color = image.pixelColor(x, y)
+                if color.name() != TestSelectionBandOverlayRendering._BG:
+                    xs.append(x)
+                    ys.append(y)
+        assert xs and ys, "覆层未渲染：渲染图中找不到选框像素"
+        x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+        wlen, hlen = x1 - x0 + 1, y1 - y0 + 1
+
+        def _count(points) -> int:
+            return sum(1 for x, y in points if _is_border(x, y))
+
+        return (
+            _count([(x, y0) for x in range(x0, x1 + 1)]) / wlen,
+            _count([(x, y1) for x in range(x0, x1 + 1)]) / wlen,
+            _count([(x0, y) for y in range(y0, y1 + 1)]) / hlen,
+            _count([(x1, y) for y in range(y0, y1 + 1)]) / hlen,
+        )
+
+    @pytest.mark.parametrize("scale", (1.0, 1.25, 1.5))
+    @pytest.mark.parametrize("offset", ((0, 0), (1, 0), (0, 1), (1, 1)))
+    def test_border_visible_on_all_sides(
+        self, qapp: QApplication, scale: float, offset: tuple
+    ) -> None:
+        """任意分数 DPR 与像素相位下，选框四边都应有连续边框色。"""
+        image = self._render(offset, scale)
+        top, bottom, left, right = self._side_coverage(image)
+        assert min(top, bottom, left, right) >= 0.9, (
+            f"选框缺边（scale={scale}, offset={offset}）："
+            f"上/下/左/右覆盖率 = {top:.2f}/{bottom:.2f}/{left:.2f}/{right:.2f}"
+        )
 
 
 # =============================================================================

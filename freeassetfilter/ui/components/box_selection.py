@@ -3,7 +3,8 @@
 文件框选手势共享组件（文件选择器 / 文件储存池通用）。
 
 包含：
-- SelectionBandOverlay：自绘选框覆层（半透明填充 + 1px 实线边框），
+- SelectionBandOverlay：自绘选框覆层（半透明填充 + 四边 1px 实线边带，
+  边带以 fillRect 绘制，规避分数 DPI 下 1px 描边被裁切），
   鼠标事件全部透传，仅作视觉层；
 - BoxSelectionGesture：左键拖拽框选手势状态机（拖拽阈值激活、实时命中
   回调、越界自动滚动、释放丢失守卫、应用失活兜底收尾）。
@@ -20,7 +21,7 @@ from __future__ import annotations
 from typing import Callable, Optional, Set
 
 from PySide6.QtCore import QObject, QPoint, QRect, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QApplication, QWidget
 
 from theme import tm
@@ -59,7 +60,13 @@ class SelectionBandOverlay(QWidget):
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt 命名
-        """自绘单边框矩形：半透明填充 + 1px 实心边框（无抗锯齿防发虚）。"""
+        """自绘选框：半透明填充 + 四边 1px 实心边带（无抗锯齿防发虚）。
+
+        边框不用 QPen 描边：1px 描边正好压在控件最外圈像素上，Windows
+        分数缩放（125%/150%）下笔迹的设备像素取整与控件自身裁剪取整不
+        一致，会把部分边整条裁掉（"缺边"选框）；改用与填充同源的
+        fillRect 边带后，四边在任何 DPR 下都稳定可见。
+        """
         color = self._color
         if color.alpha() == 0:
             return
@@ -68,10 +75,13 @@ class SelectionBandOverlay(QWidget):
             painter.setRenderHint(QPainter.Antialiasing, False)
             fill = QColor(color)
             fill.setAlpha(BOX_SELECT_FILL_ALPHA)
-            painter.fillRect(self.rect(), fill)
-            painter.setPen(QPen(color, 1))
-            painter.setBrush(Qt.NoBrush)
-            painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
+            rect = self.rect()
+            painter.fillRect(rect, fill)
+            # 四边 1px 实心边带（角落自然重叠；不透明强调色）
+            painter.fillRect(rect.left(), rect.top(), rect.width(), 1, color)
+            painter.fillRect(rect.left(), rect.bottom(), rect.width(), 1, color)
+            painter.fillRect(rect.left(), rect.top(), 1, rect.height(), color)
+            painter.fillRect(rect.right(), rect.top(), 1, rect.height(), color)
         finally:
             painter.end()
 
