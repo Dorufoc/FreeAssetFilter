@@ -928,8 +928,9 @@ class FolderPreviewerLayout(QWidget):
     # ── 主题 ─────────────────────────────────────────────────────────────────
 
     def _connect_theme(self) -> None:
-        """连接主题切换信号。"""
+        """连接主题切换信号（明暗与强调色分别经由两个信号下发）。"""
         tm.theme_changed.connect(self._on_theme_changed)
+        tm.colors_updated.connect(self._on_theme_changed)
 
     def _on_theme_changed(self, theme_name: str) -> None:
         """主题变更时刷新样式。"""

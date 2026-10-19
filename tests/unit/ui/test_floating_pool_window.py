@@ -53,6 +53,7 @@ from freeassetfilter.ui.floating_pool_window import (
     FloatingPoolWindow,
     _PoolItemRow,
 )
+from freeassetfilter.ui.theme import tm
 
 pytestmark = pytest.mark.unit
 
@@ -764,6 +765,44 @@ def test_rebuild_list_skips_non_dict_entry(
         assert window._count_label.text() == "存储池 (1)"
         assert Path(window._rows[0].path) == tmp_path / "valid.txt"
     finally:
+        window.deleteLater()
+
+
+# ── 主题/强调色刷新（colors_updated 链路） ───────────────────────────────
+
+
+def test_colors_updated_refreshes_row_icons(
+    qapp: QApplication, tmp_path
+) -> None:
+    """强调色单独变化（colors_updated）后，窗口即时重建全部条目行图标。
+
+    回归背景：行图标在构造时 ``setPixmap`` 一次，而强调色变化只发
+    ``colors_updated``（不发 ``theme_changed``）；历史实现下图标一直
+    显示旧配色，鼠标扫过等重绘也无法刷新。
+    """
+    window = FloatingPoolWindow()
+    original: str = tm.accent.name()
+    try:
+        target = tmp_path / "icon_me.png"
+        target.write_bytes(b"fake-png")
+        window.set_items([_item(str(target), name="icon_me.png")])
+        _flush_debounce()
+        assert len(window._rows) == 1
+
+        first = window._rows[0]._icon_label.pixmap()
+        assert not first.isNull(), "行图标应渲染非空"
+
+        probe: str = "#FF00AA" if original.lower() != "#ff00aa" else "#22CC99"
+        assert tm.set_color("accent.primary", probe) is True
+        qapp.processEvents()
+
+        second = window._rows[0]._icon_label.pixmap()
+        assert not second.isNull()
+        assert second.cacheKey() != first.cacheKey(), (
+            "强调色变化后浮窗条目行图标应即时重建（colors_updated 未连线？）"
+        )
+    finally:
+        tm.set_color("accent.primary", original)
         window.deleteLater()
 
 

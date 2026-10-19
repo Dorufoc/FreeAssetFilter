@@ -36,8 +36,9 @@ class StyledLineEdit(QLineEdit):
         self.setAttribute(Qt.WA_Hover, True)
         self._apply_size()
         self._apply_stylesheet()
-        # 主题切换时刷新配色
+        # 主题切换时刷新配色（强调色单独变化只发 colors_updated，同样需刷新）
         tm.theme_changed.connect(self._on_theme_changed)
+        tm.colors_updated.connect(self._on_theme_changed)
 
     def _apply_size(self):
         config = self.SIZE_CONFIG[self._size]

@@ -1703,6 +1703,12 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
                 QObject.disconnect(theme_conn)
             except (RuntimeError, TypeError):
                 pass
+        colors_conn = getattr(floating, "_colors_conn", None)
+        if colors_conn is not None:
+            try:
+                QObject.disconnect(colors_conn)
+            except (RuntimeError, TypeError):
+                pass
         timer = getattr(floating, "_debounce_timer", None)
         if timer is not None:
             try:

@@ -208,11 +208,12 @@ _COLORS_CACHE: Dict[bool, Dict[str, Any]] = {}
 
 
 def _clear_colors_cache(*_args) -> None:
-    """主题变化时清空配色缓存（兜底覆盖同主题重设/热更新）。"""
+    """主题/配色变化时清空配色缓存（兜底覆盖同主题重设、强调色单独变化）。"""
     _COLORS_CACHE.clear()
 
 
 tm.theme_changed.connect(_clear_colors_cache)
+tm.colors_updated.connect(_clear_colors_cache)
 
 # 缩放配置缓存：(id(config), scale) → dict（scale 档位有限，内存占用极小）
 _SCALED_CONFIG_CACHE: Dict[tuple, Dict[str, Any]] = {}

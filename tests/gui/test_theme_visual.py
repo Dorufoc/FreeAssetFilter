@@ -52,6 +52,7 @@ from freeassetfilter.ui.components.styled_button import StyledButton
 from freeassetfilter.ui.components.styled_lineedit import StyledLineEdit
 
 from scripts.qt_capture import capture_widget
+from tests.support.parity import pixel_hash
 from tests.support.qt_helpers import assert_pixmap_nonempty, safe_teardown
 
 pytestmark = pytest.mark.gui
@@ -253,3 +254,156 @@ class TestThemeIsolation:
             assert pixmap.size() == QSize(320, 120) or pixmap.width() > 0
         finally:
             safe_teardown(button)
+
+
+# =============================================================================
+# 强调色（主题色）单独变化的即时刷新回归
+# =============================================================================
+class TestAccentLiveRefresh:
+    """主题色切换（只发 ``colors_updated``）时的即时刷新回归。
+
+    回归背景：强调色变化不走 ``theme_changed``；仅在 ``theme_changed``
+    时清缓存/重建位图的组件会卡住旧色（表现为「换主题色后部分控件不变，
+    鼠标扫过才恢复」）。此处覆盖按钮配色缓存与图标重建两条链路。
+    """
+
+    def test_set_color_emits_colors_updated_only(self, qapp: Any) -> None:
+        """set_color 只发 colors_updated，不发 theme_changed。
+
+        Args:
+            qapp: 会话级 QApplication。
+        """
+        theme_events: list[str] = []
+        color_events: list[Any] = []
+        tm.theme_changed.connect(lambda theme: theme_events.append(theme))
+        tm.colors_updated.connect(lambda colors: color_events.append(colors))
+        original: str = tm.accent.name()
+        try:
+            probe: str = "#FF00AA" if original.lower() != "#ff00aa" else "#22CC99"
+            changed: bool = tm.set_color("accent.primary", probe)
+            assert changed is True, "accent.primary 应为可写路径"
+            assert color_events, "强调色变化应发射 colors_updated"
+            assert theme_events == [], "强调色变化不应发射 theme_changed"
+            assert tm.accent.name().lower() == probe.lower()
+        finally:
+            tm.set_color("accent.primary", original)
+            tm.theme_changed.disconnect()
+            tm.colors_updated.disconnect()
+
+    def test_primary_button_repaints_without_hover(
+        self, qapp: Any, screenshots_dir: str
+    ) -> None:
+        """强调色变化后 primary 按钮像素即时变化（无需鼠标扫过）。
+
+        Args:
+            qapp: 会话级 QApplication。
+            screenshots_dir: 截图输出目录。
+        """
+        tm.set_theme("dark")
+        button: Any = StyledButton(text="即时换色", variant="primary")
+        original: str = tm.accent.name()
+        try:
+            first: Any = capture_widget(
+                button, output_path=str(Path(screenshots_dir) / "accent_btn_before.png"),
+                size=(240, 90),
+            )
+            first_hash: str = pixel_hash(first)
+
+            probe: str = "#FF00AA" if original.lower() != "#ff00aa" else "#22CC99"
+            assert tm.set_color("accent.primary", probe) is True
+            qapp.processEvents()
+
+            second: Any = capture_widget(
+                button, output_path=str(Path(screenshots_dir) / "accent_btn_after.png"),
+                size=(240, 90),
+            )
+            assert pixel_hash(second) != first_hash, (
+                "强调色变化后 primary 按钮应即时按新色重绘（配色缓存未清空？）"
+            )
+        finally:
+            tm.set_color("accent.primary", original)
+            safe_teardown(button)
+
+    def test_floating_pool_row_refresh_icon_rebuilds_pixmap(
+        self, qapp: Any, tmp_path: Path
+    ) -> None:
+        """浮窗条目行 ``refresh_icon`` 按新强调色重建图标位图。
+
+        Args:
+            qapp: 会话级 QApplication。
+            tmp_path: pytest 临时目录。
+        """
+        from freeassetfilter.ui.floating_pool_window import _PoolItemRow
+
+        png_path: Path = tmp_path / "row_icon.png"
+        png_path.write_bytes(b"fake-png")
+        row: Any = _PoolItemRow(
+            {
+                "path": str(png_path),
+                "name": "row_icon.png",
+                "suffix": "png",
+                "is_dir": False,
+                "size": 1,
+            }
+        )
+        original: str = tm.accent.name()
+        try:
+            first: Any = row._icon_label.pixmap()
+            assert first is not None and not first.isNull(), "行图标应渲染非空"
+
+            probe: str = "#00AACC" if original.lower() != "#00aacc" else "#CC7700"
+            assert tm.set_color("accent.primary", probe) is True
+            row.refresh_icon()
+            qapp.processEvents()
+
+            second: Any = row._icon_label.pixmap()
+            assert second is not None and not second.isNull()
+            assert second.cacheKey() != first.cacheKey(), (
+                "refresh_icon 后浮窗行图标应重新渲染"
+            )
+        finally:
+            tm.set_color("accent.primary", original)
+            safe_teardown(row)
+
+    def test_unsupported_previewer_icon_refreshes_on_accent_change(
+        self, qapp: Any, tmp_path: Path
+    ) -> None:
+        """「无法预览」页大图标随强调色变化即时重建（信号连线路径）。
+
+        Args:
+            qapp: 会话级 QApplication。
+            tmp_path: pytest 临时目录。
+        """
+        from freeassetfilter.ui.layout.preview.unsupported_previewer_layout import (
+            UnsupportedPreviewerLayout,
+        )
+
+        target: Path = tmp_path / "sample.txt"
+        target.write_text("hello", encoding="utf-8")
+
+        previewer: Any = UnsupportedPreviewerLayout()
+        original: str = tm.accent.name()
+        try:
+            previewer.set_file(
+                {
+                    "path": str(target),
+                    "suffix": "txt",
+                    "is_dir": False,
+                    "name": "sample.txt",
+                }
+            )
+            first: Any = previewer._icon_label.pixmap()
+            assert first is not None and not first.isNull(), "预览图标应渲染非空"
+
+            probe: str = "#77AA22" if original.lower() != "#77aa22" else "#AA2277"
+            assert tm.set_color("accent.primary", probe) is True
+            qapp.processEvents()
+
+            second: Any = previewer._icon_label.pixmap()
+            assert second is not None and not second.isNull()
+            assert second.cacheKey() != first.cacheKey(), (
+                "强调色变化后「无法预览」页图标应重新渲染"
+            )
+        finally:
+            tm.set_color("accent.primary", original)
+            safe_teardown(previewer)

@@ -135,6 +135,7 @@ class BoxSelectionGesture(QObject):
 
         try:
             tm.theme_changed.connect(self._refresh_style)
+            tm.colors_updated.connect(self._refresh_style)
         except (RuntimeError, TypeError, AttributeError) as exc:
             # 3.1#19：绑定失败仅意味着无主题跟随；debug 留痕便于排障。
             debug(f"框选手势主题信号绑定失败（无主题跟随）：{exc}")

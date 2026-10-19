@@ -43,7 +43,7 @@ from PySide6.QtGui import (
     QMouseEvent,
     QPixmap,
 )
-from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QScrollArea, QVBoxLayout, QWidget
 
 # 布局模块内部使用短路径导入（from theme import tm / components.*），
 # 要求 freeassetfilter/ui 位于 sys.path；与 layout/preview 模块自身的
@@ -4787,6 +4787,13 @@ class TestGeneralSettingsPage:
         cache.begin({"general": {"layout_mode": mode}})
         return cache
 
+    @staticmethod
+    def _row_fully_visible(scroll: QScrollArea, row: QWidget) -> bool:
+        """返回行是否完整位于滚动视口内。"""
+        viewport = scroll.viewport()
+        top = row.mapTo(viewport, QPoint(0, 0)).y()
+        return top >= 0 and top + row.height() <= viewport.height()
+
     def test_construct_and_default_from_cache(self, qapp: QApplication) -> None:
         """构造：从暂存缓存读取布局模式并同步分段选中。"""
         page = GeneralSettingsPage(staging_cache=self._make_cache("classic"))
@@ -5033,6 +5040,189 @@ class TestGeneralSettingsPage:
         assert page._system_toggle.checked is False
         assert page._system_row.isHidden() is True
         safe_teardown(page)
+
+    def test_sub_option_rows_indented_with_branch_arrow(
+        self, qapp: QApplication,
+    ) -> None:
+        """系统文件 / 贴边吸附按子选项排版：右缩进 + 竖折向右箭头。"""
+        page = GeneralSettingsPage(staging_cache=self._make_cache("workspace"))
+
+        # 父选项保持普通行排版（无缩进、无箭头）。
+        assert page._hidden_row.is_sub_option is False
+        assert page._hidden_row._sub_branch is None
+        assert page._floating_pool_row.is_sub_option is False
+        assert page._floating_pool_row._sub_branch is None
+
+        for row in (page._system_row, page._floating_pool_snap_row):
+            assert row is not None
+            assert row.is_sub_option is True
+            assert row._sub_branch is not None
+            assert row._sub_branch.width() > 0
+            assert row.layout().contentsMargins().left() > 0
+
+        # 子选项确实比父行（左内边距 0）更靠右。
+        assert (
+            page._system_row.layout().contentsMargins().left()
+            > page._hidden_row.layout().contentsMargins().left()
+        )
+        safe_teardown(page)
+
+    def test_floating_pool_snap_visibility_follows_parent_setting(
+        self, qapp: QApplication,
+    ) -> None:
+        """贴边吸附是全局浮窗的子选项：浮窗关闭即隐藏，开启即显示。"""
+        page = GeneralSettingsPage(staging_cache=self._make_cache("workspace"))
+        assert page._floating_pool_enabled is True
+        assert page._floating_pool_snap_row.isHidden() is False
+
+        page._floating_pool_toggle.checked = False
+        qapp.processEvents()
+        assert page._floating_pool_enabled is False
+        assert page._floating_pool_snap_row.isHidden() is True
+        # 子选项偏好保留：重新开启浮窗后仍按原值显示。
+        assert page._floating_pool_snap_toggle.checked is True
+
+        page._floating_pool_toggle.checked = True
+        qapp.processEvents()
+        assert page._floating_pool_snap_row.isHidden() is False
+        safe_teardown(page)
+
+    def test_floating_pool_disabled_from_cache_hides_snap_sub_option(
+        self, qapp: QApplication,
+    ) -> None:
+        """refresh_from_staging：缓存中浮窗关闭时贴边吸附行隐藏（无动画）。"""
+        cache = self._make_cache("workspace")
+        cache.set("general.floating_pool_enabled", False)
+        page = GeneralSettingsPage(staging_cache=cache)
+
+        assert page._floating_pool_enabled is False
+        assert page._floating_pool_snap_row.isHidden() is True
+        assert page._floating_pool_snap_toggle.checked is True
+        safe_teardown(page)
+
+    def test_bottom_sub_option_scrolls_into_view_after_reveal(
+        self, qapp: QApplication,
+    ) -> None:
+        """底部的全局浮窗展开子项后：仅补滚到子项完整可见。"""
+        cache = self._make_cache("workspace")
+        cache.set("general.floating_pool_enabled", False)
+        page = GeneralSettingsPage(staging_cache=cache)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidget(page)
+        scroll.resize(430, 320)
+        scroll.show()
+        qapp.processEvents()
+        try:
+            vbar = scroll.verticalScrollBar()
+            vbar.setValue(vbar.maximum())
+            qapp.processEvents()
+            assert page._floating_pool_snap_row.isHidden() is True
+            assert self._row_fully_visible(scroll, page._floating_pool_row)
+            before = vbar.value()
+            assert before > 0
+
+            page._floating_pool_toggle.checked = True
+            qapp.processEvents()
+            assert wait_until(
+                qapp,
+                lambda: page._floating_pool_snap_row.maximumHeight() == 16777215,
+                timeout_ms=1500,
+            )
+            assert wait_until(
+                qapp,
+                lambda: self._row_fully_visible(
+                    scroll, page._floating_pool_snap_row
+                ),
+                timeout_ms=1500,
+            )
+            # 只向下补到新子项可见；父行仍在视口内。
+            assert vbar.value() > before
+            assert self._row_fully_visible(scroll, page._floating_pool_row)
+        finally:
+            scroll.hide()
+            safe_teardown(scroll)
+
+    def test_visible_sub_option_does_not_scroll(
+        self, qapp: QApplication,
+    ) -> None:
+        """子项本来就在视口内：展开后不滚动（中间选项不跳动）。"""
+        page = GeneralSettingsPage(staging_cache=self._make_cache("workspace"))
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidget(page)
+        scroll.resize(430, 430)
+        scroll.show()
+        qapp.processEvents()
+        try:
+            vbar = scroll.verticalScrollBar()
+            vbar.setValue(0)
+            qapp.processEvents()
+            assert page._system_row.isHidden() is True
+            before = vbar.value()
+
+            page._hidden_toggle.checked = True
+            qapp.processEvents()
+            assert wait_until(
+                qapp,
+                lambda: page._system_row.maximumHeight() == 16777215,
+                timeout_ms=1500,
+            )
+            # 给按需滚动的 0ms 定时器留出执行机会；若误滚动会改变 value。
+            time.sleep(0.25)
+            qapp.processEvents()
+            assert self._row_fully_visible(scroll, page._system_row)
+            assert vbar.value() == before
+        finally:
+            scroll.hide()
+            safe_teardown(scroll)
+
+    def test_system_sub_option_reveal_and_collapse_animate(
+        self, qapp: QApplication,
+    ) -> None:
+        """页面可见时：开启隐藏文件播放插入动画，关闭时先收起再隐藏。"""
+        page = GeneralSettingsPage(staging_cache=self._make_cache("workspace"))
+        page.resize(640, 480)
+        page.show()
+        qapp.processEvents()
+        try:
+            assert page._system_row.isHidden() is True
+
+            page._hidden_toggle.checked = True
+            qapp.processEvents()
+            assert page._system_row.isVisible() is True
+            assert page._system_row.maximumHeight() != 16777215, (
+                "展开动画在途时高度上限应小于 QWIDGETSIZE_MAX"
+            )
+            assert wait_until(
+                qapp,
+                lambda: page._system_row.maximumHeight() == 16777215,
+                timeout_ms=1500,
+            )
+            assert page._system_row._opacity_effect is None
+            assert page._system_row.isHidden() is False
+
+            # 回归：箭头须与标题垂直居中对齐，不能落在标题与描述之间。
+            branch = page._system_row._sub_branch
+            title = page._system_row.title_label
+            assert abs(
+                branch.geometry().center().y() - title.geometry().center().y()
+            ) <= 2, "子选项箭头应与标题垂直居中对齐"
+
+            page._hidden_toggle.checked = False
+            qapp.processEvents()
+            assert page._system_row.isHidden() is False, "收起动画应先播放再隐藏"
+            assert wait_until(
+                qapp,
+                lambda: page._system_row.isHidden(),
+                timeout_ms=1500,
+            )
+            assert page._system_row.maximumHeight() == 0
+        finally:
+            page.hide()
+            safe_teardown(page)
 
     def test_hidden_system_toggles_write_staging_only(self, qapp: QApplication) -> None:
         """切换隐藏文件开关：写缓存并显示系统文件行；再开启系统文件写缓存。"""

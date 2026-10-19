@@ -275,6 +275,7 @@ class StyledTextarea(QWidget):
 
         # 主题切换：刷新边框/文字/计数/说明（背景色在 paintEvent 现取，无需处理）
         tm.theme_changed.connect(self._on_theme_changed)
+        tm.colors_updated.connect(self._on_theme_changed)
 
     # ---- helpers ----
 

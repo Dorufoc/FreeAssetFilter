@@ -133,6 +133,29 @@ def _debug_log(message: str) -> None:
         pass  # 日志系统不可用时静默（不得影响样式注册）
 
 
+def _repaint_all_widgets() -> None:
+    """标脏应用内所有控件（配色变化后自绘组件即时换色的兜底）。
+
+    不依赖 ``theme_changed`` 的组件（分段控件 / 开关 / 滑块 / 卡片委托 /
+    框选覆层等）只在 paint 时读取 ``tm``；配色单独变化时必须统一标脏，
+    否则要等鼠标扫过等外部失效才换色。``update()`` 仅登记脏区，
+    成本与控件数量同阶；等待 ``deleteLater`` 析构的控件包 RuntimeError
+    跳过（其底层 C++ 对象已销毁）。
+    """
+    try:
+        from PySide6.QtWidgets import QApplication
+    except Exception:
+        return
+    app = QApplication.instance()
+    if app is None:
+        return
+    for widget in app.allWidgets():
+        try:
+            widget.update()
+        except (RuntimeError, AttributeError):
+            continue
+
+
 #: Dynamic property used to scope registered fragments. Chosen over
 #: ``objectName`` so ``findChild`` lookups and existing ``#id`` selectors
 #: keep working untouched. Also used in ``widget`` mode as a cheap
@@ -907,12 +930,16 @@ class _AppStylesheetRegistry:
             return False
 
     def _ensure_theme_hook(self) -> None:
-        """Connect ``ThemeManager.theme_changed`` to the delivery hook.
+        """Connect ``ThemeManager`` theme/color signals to the hooks.
 
         ``app`` 模式下主题回调**同步**执行一次全树重刷（实测 1600×900
         主窗 ~50ms，含设置窗口 ~206ms）——这是历史视觉同步的必要代价。
         ``widget`` 模式下各控件片段由其订阅者重新注册时逐控件下发，
         回调本身零成本（仅当全局模板非空时下发模板）。
+
+        ``colors_updated`` 只有强调色变化时也会发射（不发
+        ``theme_changed``）；此时样式片段需由各自订阅者重新注册，
+        自绘组件则靠 :meth:`_on_colors_updated` 的全树标脏即时换色。
         """
         if self._signal_connected:
             return
@@ -920,9 +947,26 @@ class _AppStylesheetRegistry:
             from freeassetfilter.ui.theme.theme_manager import ThemeManager
 
             ThemeManager().theme_changed.connect(self._on_theme_changed)
+            ThemeManager().colors_updated.connect(self._on_colors_updated)
             self._signal_connected = True
         except Exception as exc:
             _debug_log(f"主题信号连接失败（样式表退化为手动触发重建）：{exc}")
+
+    def _on_colors_updated(self, _colors: dict) -> None:
+        """配色变化回调：标脏全应用控件，保证自绘组件即时换色。
+
+        强调色（主题色）单独变化时不发 ``theme_changed``，而自绘组件
+        （分段控件 / 开关 / 滑块 / 卡片委托 / 框选覆层等）只在 paint 时
+        读取 ``tm``，没有订阅者主动标脏就要等鼠标扫过等外部失效才换色
+        （历史缺陷：「换主题色后部分控件卡住旧色」）。
+
+        ``update()`` 只登记脏区，成本与控件数量同阶，远低于重绘本身；
+        主题色改动已由设置页去抖合并，不会逐帧触发。
+
+        Args:
+            _colors: 更新后的配色字典（未使用）。
+        """
+        _repaint_all_widgets()
 
     def _on_theme_changed(self, _theme: str) -> None:
         """Theme-switch callback: app mode rebuilds, widget mode is free.

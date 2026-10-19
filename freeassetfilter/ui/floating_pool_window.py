@@ -224,8 +224,10 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         self.move(self._compute_initial_position(self.size()))
         self._internal_moving = False
 
-        # 主题切换实时重绘；连接对象存引用，供生命周期断开。
-        self._theme_conn = tm.theme_changed.connect(self.update)
+        # 主题切换实时重绘 + 条目行图标重建（明暗/强调色均需刷新）；
+        # 连接对象存引用，供生命周期断开。
+        self._theme_conn = tm.theme_changed.connect(self._on_theme_refresh)
+        self._colors_conn = tm.colors_updated.connect(self._on_theme_refresh)
 
     # ── 展开内容构建 ────────────────────────────────────────────
 
@@ -467,6 +469,24 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         self._settle_timer.stop()
         self._stop_move_animation()
         super().closeEvent(event)
+
+    def _on_theme_refresh(self, *_args) -> None:
+        """主题/配色变化：重绘自身并重建全部条目行图标。
+
+        行图标在构造时经 ``setPixmap`` 存入 ``QLabel``，类型图标含主题色
+        替换，不会自动跟随；必须逐行重取回填，否则一直显示旧配色（历史
+        缺陷）。真实磁盘缩略图仍走 thumb 键，不重读磁盘。
+
+        Args:
+            *_args: 主题信号附带参数（未使用）。
+        """
+        self.update()
+        for row in self._rows:
+            try:
+                row.refresh_icon()
+            except RuntimeError:
+                # 行已随重建销毁（deleteLater 未及清理）：跳过。
+                continue
 
     def _compute_initial_position(self, size: QSize) -> QPoint:
         """计算初始位置：鼠标所在屏幕可用区域右上角，内缩 ``INITIAL_INSET``。
@@ -1150,6 +1170,18 @@ class _PoolItemRow(QWidget):
         except Exception as exc:
             debug(f"浮窗条目图标生成失败（回退占位）：{exc}")
         return None
+
+    def refresh_icon(self) -> None:
+        """按当前主题重取并回填图标（明暗/强调色变化后由窗口调用）。
+
+        重取失败（异常 / 空 pixmap）时清空图标回退，绝不抛出以保护主题
+        刷新链路。
+        """
+        pixmap = self._load_icon()
+        if pixmap is not None and not pixmap.isNull():
+            self._icon_label.setPixmap(pixmap)
+        else:
+            self._icon_label.clear()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         """左键按下记录拖出起点；其余按钮交回基类。

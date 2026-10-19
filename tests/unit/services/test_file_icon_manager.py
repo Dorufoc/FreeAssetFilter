@@ -15,12 +15,13 @@
 
 from __future__ import annotations
 
+import os
 import types
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import pytest
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QPixmap
 
 from freeassetfilter.services.file_icon_manager import FileIconManager
 from tests.support.data_factories import make_image
@@ -238,6 +239,173 @@ class TestMediaIconKeyIsolation:
         assert pixmap_b is not pixmap_c, (
             "同后缀不同文件的默认图标不得共享缓存条目（含路径键约束）"
         )
+
+
+# ── 主题签名缓存键（换色即时刷新回归） ─────────────────────────────────
+
+
+class TestThemeSignatureCaching:
+    """回退图标与系统图标占位符必须按主题签名分键。
+
+    回归背景：无缩略图的图片/视频回退图标与 exe/lnk/url 占位符曾写入
+    主题无关的缓存键；切换主题色（强调色）或明暗模式后永久命中旧色
+    pixmap，表现为「换主题色后图标一直不变」。
+    """
+
+    @pytest.fixture
+    def no_async_loader(self, monkeypatch: Any) -> None:
+        """阻断系统图标异步加载（避免测试触发线程与 win32 提取）。
+
+        Args:
+            monkeypatch: pytest monkeypatch。
+        """
+        monkeypatch.setattr(
+            FileIconManager,
+            "_request_async_system_icon",
+            lambda self, file_path, icon_size, dpr: None,
+        )
+
+    def test_media_fallback_refreshes_on_theme_change(
+        self,
+        icon_manager: FileIconManager,
+        theme_colors: List[str],
+        monkeypatch: Any,
+        tmp_path: Path,
+    ) -> None:
+        """回归：无缩略图回退图标在主题色变化后必须重新渲染。
+
+        Args:
+            icon_manager: 图标管理器 fixture。
+            theme_colors: 可变主题色 fixture。
+            monkeypatch: pytest monkeypatch。
+            tmp_path: pytest 临时目录。
+        """
+        monkeypatch.setattr(
+            "freeassetfilter.services.file_icon_manager.get_existing_thumbnail_path",
+            lambda file_path: None,
+        )
+        png_path: str = make_image(tmp_path / "no_thumb.png", fmt="PNG")
+        info: Dict[str, Any] = _file_info("png", path=png_path)
+
+        first = icon_manager.get_icon_pixmap(info, 48, 1.0)
+        assert_pixmap_nonempty(first, "无缩略图 PNG 应渲染回退图标")
+
+        theme_colors[3] = "#FF0000"  # accent 变化 → 主题签名变化
+        second = icon_manager.get_icon_pixmap(info, 48, 1.0)
+        assert second is not first, "主题色变化后回退图标不得命中旧色缓存"
+        assert_pixmap_nonempty(second)
+
+        # 同一主题内仍应命中缓存（复用同一对象）
+        third = icon_manager.get_icon_pixmap(info, 48, 1.0)
+        assert third is second
+
+    def test_media_real_thumbnail_survives_theme_change(
+        self,
+        icon_manager: FileIconManager,
+        theme_colors: List[str],
+        monkeypatch: Any,
+        tmp_path: Path,
+    ) -> None:
+        """回归：真实磁盘缩略图与主题无关，变色后仍命中同一对象。
+
+        Args:
+            icon_manager: 图标管理器 fixture。
+            theme_colors: 可变主题色 fixture。
+            monkeypatch: pytest monkeypatch。
+            tmp_path: pytest 临时目录。
+        """
+        thumb_path: str = make_image(tmp_path / "thumb.jpg", size=(128, 128), fmt="JPEG")
+        video: str = str(tmp_path / "clip.mp4")
+        Path(video).write_bytes(b"fake-video")
+        monkeypatch.setattr(
+            "freeassetfilter.services.file_icon_manager.get_existing_thumbnail_path",
+            lambda file_path: thumb_path,
+        )
+        info: Dict[str, Any] = _file_info("mp4", path=video)
+
+        first = icon_manager.get_icon_pixmap(info, 48, 1.0)
+        assert first.width() == 128
+
+        theme_colors[3] = "#00FF00"
+        second = icon_manager.get_icon_pixmap(info, 48, 1.0)
+        assert second is first, "真实缩略图不应随主题色重读磁盘"
+        assert second.width() == 128
+
+    def test_clear_cache_by_path_removes_fallback_key(
+        self,
+        icon_manager: FileIconManager,
+        theme_colors: List[str],
+        monkeypatch: Any,
+        tmp_path: Path,
+    ) -> None:
+        """boundary：clear_cache(path) 需同时失效 thumb 与 thumb_icon 键。
+
+        Args:
+            icon_manager: 图标管理器 fixture。
+            theme_colors: 固定主题色 fixture。
+            monkeypatch: pytest monkeypatch。
+            tmp_path: pytest 临时目录。
+        """
+        monkeypatch.setattr(
+            "freeassetfilter.services.file_icon_manager.get_existing_thumbnail_path",
+            lambda file_path: None,
+        )
+        png_path: str = make_image(tmp_path / "clear_me.png", fmt="PNG")
+        info: Dict[str, Any] = _file_info("png", path=png_path)
+        icon_manager.get_icon_pixmap(info, 48, 1.0)
+
+        norm = os.path.normcase(png_path)
+        assert any(
+            isinstance(k, tuple) and k[0] == "thumb_icon" and k[1] == norm
+            for k in icon_manager._icon_cache
+        ), "回退图标应写入 thumb_icon 键"
+
+        icon_manager.clear_cache(png_path)
+        assert not any(
+            isinstance(k, tuple)
+            and k[0] in ("thumb", "thumb_icon")
+            and k[1] == norm
+            for k in icon_manager._icon_cache
+        ), "按路径清缓存后不得残留该路径的缩略图/回退图标条目"
+        pixmap = icon_manager.get_icon_pixmap(info, 48, 1.0)
+        assert_pixmap_nonempty(pixmap, "清缓存后仍可重新渲染回退图标")
+
+    def test_system_placeholder_refreshes_on_theme_change(
+        self,
+        icon_manager: FileIconManager,
+        theme_colors: List[str],
+        no_async_loader: None,
+        tmp_path: Path,
+    ) -> None:
+        """回归：系统图标占位符按主题签名分键，且真实图标优先于占位符。
+
+        Args:
+            icon_manager: 图标管理器 fixture。
+            theme_colors: 可变主题色 fixture。
+            no_async_loader: 阻断异步加载的 fixture。
+            tmp_path: pytest 临时目录。
+        """
+        exe_path: str = str(tmp_path / "tool.exe")
+        Path(exe_path).write_bytes(b"fake-exe")
+        info: Dict[str, Any] = _file_info("exe", path=exe_path)
+
+        placeholder = icon_manager.get_icon_pixmap(info, 48, 1.0)
+        assert_pixmap_nonempty(placeholder, "系统图标占位符应非空")
+
+        theme_colors[3] = "#ABCDEF"
+        placeholder2 = icon_manager.get_icon_pixmap(info, 48, 1.0)
+        assert placeholder2 is not placeholder, (
+            "主题色变化后系统图标占位符不得命中旧色缓存"
+        )
+
+        # 异步真实图标到达后必须立即取代占位符（且与主题无关）
+        real = QPixmap(10, 10)
+        real.fill(QColor("#123456"))
+        icon_manager._on_system_icon_loaded(exe_path, real)
+        assert icon_manager.get_icon_pixmap(info, 48, 1.0) is real
+
+        theme_colors[3] = "#FEDCBA"
+        assert icon_manager.get_icon_pixmap(info, 48, 1.0) is real
 
 
 # ── 缓存行为 ─────────────────────────────────────────────────────────────

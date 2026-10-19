@@ -61,6 +61,7 @@ from freeassetfilter.core.native.platform_timing import (
 )
 from freeassetfilter.ui.layout.settings_staging_cache import SettingsStagingCache
 from freeassetfilter.utils.app_logger import debug, warning
+from freeassetfilter.utils.animation_settings import is_animation_enabled
 from freeassetfilter.utils.path_utils import get_app_data_path
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
@@ -80,6 +81,12 @@ SETTINGS_THEME_FADE_MS = 300
 #: 下发。首击仍立即生效（见 ``SettingsLayout._request_appearance_preview``），
 #: 因此单击零额外延迟、连点最多只多一次补发。
 APPEARANCE_PREVIEW_DEBOUNCE_MS = 120
+
+#: 子选项展开后的「最小必要滚动」参数：只在子项被视口裁掉时补滚，且
+#: 只补到完整可见 + 少量留白；子项本来就可见时完全不滚动（中间选项不会
+#: 因父开关变化而跳动）。
+SETTINGS_SUB_SCROLL_MARGIN = 10  # 子项与视口上/下边缘的最小留白（px）
+SETTINGS_SUB_SCROLL_MS = 180     # 最小必要滚动的缓动时长（ms）
 
 
 def _normalize_bg_blur(value: object) -> int:
@@ -115,7 +122,7 @@ def _normalize_bg_transparency(value: object) -> int:
 
 
 def _refresh_settings_item_text(item: QWidget | None) -> None:
-    """按统一 token 重注册设置项（行/块）的标题与描述样式。
+    """按统一 token 重注册设置项（行/块）的标题与描述样式，并重绘子选项箭头。
 
     主题切换时各页自行调用（替代历史上宿主通刷所有 QLabel 的做法——
     通刷会把描述文字与读数一并覆盖成标题字号/字重/颜色）。
@@ -131,6 +138,10 @@ def _refresh_settings_item_text(item: QWidget | None) -> None:
     desc_label = getattr(item, "desc_label", None)
     if desc_label is not None:
         apply_settings_desc_style(desc_label)
+    # 子选项箭头用 QPainter 直接取 tm 颜色，主题切换时需主动重绘。
+    sub_branch = getattr(item, "_sub_branch", None)
+    if sub_branch is not None:
+        sub_branch.update()
 
 
 # ── 关于页应用信息（logo + 名称 + 简介 + 版本行 + 链接行） ──
@@ -1691,7 +1702,8 @@ class GeneralSettingsPage(QWidget):
         # 全局浮窗开关状态（默认开启；控件在 _build_ui 挂载，刷新时经
         # None 守卫同步展示）
         self._floating_pool_enabled: bool = True
-        # 全局浮窗贴边吸附开关状态（默认开启；控件在 _build_ui 挂载）
+        # 全局浮窗贴边吸附开关状态（默认开启；作为全局浮窗的子选项，
+        # 仅在浮窗开启时显示）
         self._floating_pool_snap_enabled: bool = True
         self._general_updating: bool = False  # 编程式同步开关的守卫标志
         self._ai_row: SettingsRow | None = None
@@ -1712,6 +1724,10 @@ class GeneralSettingsPage(QWidget):
         self._floating_pool_toggle: StyledToggle | None = None
         self._floating_pool_snap_row: SettingsRow | None = None
         self._floating_pool_snap_toggle: StyledToggle | None = None
+        # 子选项展开后的按需滚动：仅在用户打开父开关、且新子项被视口裁掉时
+        # 生效；_pending 标记本次展开是否需要检查，避免刷新/初始化误滚动。
+        self._pending_sub_option_scroll: SettingsRow | None = None
+        self._sub_option_scroll_anim: QPropertyAnimation | None = None
         self._build_ui()
         self.refresh_from_staging()
 
@@ -1772,14 +1788,17 @@ class GeneralSettingsPage(QWidget):
         layout.addWidget(self._hidden_row)
 
         # ── 显示受保护的系统文件（默认关闭，仅在开启隐藏文件后可见）──
+        # 子选项排版：右缩进 + 竖折右箭头，显隐走 SettingsRow.set_revealed
+        # 的高度/透明度插入动画（宿主不可见时立即切换）。
         self._system_row = SettingsRow(
             title="显示受保护的系统文件",
-            description="额外显示同时带「隐藏」「系统」属性的受保护操作系统文件或文件夹",
+            description="额外显示同时带「隐藏」「系统」属性的文件或文件夹",
+            sub_option=True,
         )
         self._system_toggle = StyledToggle(checked=False, size="default")
         self._system_toggle.toggled.connect(self._on_show_system_files_toggled)
         self._system_row.set_control(self._system_toggle)
-        self._system_row.setVisible(False)
+        self._system_row.set_revealed(False, animated=False)
         layout.addWidget(self._system_row)
 
         # ── 空白区右键返回上一级（默认关闭）──
@@ -1805,13 +1824,15 @@ class GeneralSettingsPage(QWidget):
         self._floating_pool_row.set_control(self._floating_pool_toggle)
         layout.addWidget(self._floating_pool_row)
 
-        # ── 贴边吸附（默认开启；依赖全局浮窗）──
+        # ── 贴边吸附（默认开启；全局浮窗的子选项）──
         # 暂存隔离铁律：开关只写入 SettingsStagingCache
         # （general.floating_pool_snap_enabled），点击「确定」才经
         # _submit_settings 由主窗口 set_floating_pool_snap_enabled 生效。
+        # 仅当「全局浮窗」开启时显示，显隐同样走子选项插入动画。
         self._floating_pool_snap_row = SettingsRow(
             title="贴边吸附",
             description="拖动浮窗靠近屏幕边缘时自动吸附",
+            sub_option=True,
         )
         self._floating_pool_snap_toggle = StyledToggle(checked=True, size="default")
         self._floating_pool_snap_toggle.toggled.connect(
@@ -1820,6 +1841,18 @@ class GeneralSettingsPage(QWidget):
         self._floating_pool_snap_row.set_control(self._floating_pool_snap_toggle)
         layout.addWidget(self._floating_pool_snap_row)
 
+        # 子选项展开完成 → 仅在必要时做最小滚动，避免底部开关打开后
+        # 新子项藏在视口下方；中间选项本来可见时不会产生滚动。
+        self._system_row.reveal_finished.connect(
+            lambda revealed, row=self._system_row: self._on_sub_option_reveal_finished(
+                row, revealed
+            )
+        )
+        self._floating_pool_snap_row.reveal_finished.connect(
+            lambda revealed, row=self._floating_pool_snap_row: (
+                self._on_sub_option_reveal_finished(row, revealed)
+            )
+        )
         layout.addStretch(1)
 
     # ── 交互 ──────────────────────────────────────────────────────────
@@ -1865,8 +1898,9 @@ class GeneralSettingsPage(QWidget):
     def _on_show_hidden_files_toggled(self, checked: bool) -> None:
         """显示隐藏文件开关：只写入暂存缓存，点击「确定」才生效。
 
-        关闭时联动强制关闭「显示受保护的系统文件」并隐藏其行——系统文件
-        仅在开启隐藏文件浏览时才有意义。
+        关闭时联动强制关闭「显示受保护的系统文件」并收起其行——系统文件
+        仅在开启隐藏文件浏览时才有意义。``_sync_general_toggles`` 传入
+        ``animated=True``，让子选项以插入动画淡入/收起。
         """
         if self._general_updating:
             return
@@ -1877,7 +1911,10 @@ class GeneralSettingsPage(QWidget):
         if not self._show_hidden_files:
             self._show_system_files = False
             self._staging_cache.set("general.show_system_files", False)
-        self._sync_general_toggles()
+        self._request_sub_option_scroll(
+            self._system_row if self._show_hidden_files else None
+        )
+        self._sync_general_toggles(animated=True)
         self.staged_changed.emit()
 
     def _on_show_system_files_toggled(self, checked: bool) -> None:
@@ -1888,17 +1925,26 @@ class GeneralSettingsPage(QWidget):
         self._staging_cache.set(
             "general.show_system_files", self._show_system_files
         )
-        self._sync_general_toggles()
+        self._sync_general_toggles(animated=True)
         self.staged_changed.emit()
 
     def _on_floating_pool_toggled(self, checked: bool) -> None:
-        """全局浮窗开关：只写入暂存缓存，点击「确定」才生效。"""
+        """全局浮窗开关：只写入暂存缓存，点击「确定」才生效。
+
+        「贴边吸附」是全局浮窗的子选项：浮窗关闭时收起该行（保留其开关
+        偏好，重新开启浮窗后按原值展开），显隐走子选项插入动画。
+        """
         if self._general_updating:
             return
         self._floating_pool_enabled = bool(checked)
         self._staging_cache.set(
             "general.floating_pool_enabled", self._floating_pool_enabled
         )
+        self._request_sub_option_scroll(
+            self._floating_pool_snap_row if self._floating_pool_enabled else None
+        )
+        self._sync_general_toggles(animated=True)
+        self.staged_changed.emit()
 
     def _on_floating_pool_snap_toggled(self, checked: bool) -> None:
         """贴边吸附开关：只写入暂存缓存，点击「确定」才生效。"""
@@ -1908,6 +1954,7 @@ class GeneralSettingsPage(QWidget):
         self._staging_cache.set(
             "general.floating_pool_snap_enabled", self._floating_pool_snap_enabled
         )
+        self.staged_changed.emit()
 
     def _layout_description_text(self) -> str:
         """返回当前布局的介绍文字 + 换行提示行。"""
@@ -1935,11 +1982,16 @@ class GeneralSettingsPage(QWidget):
         finally:
             self._layout_updating = False
 
-    def _sync_general_toggles(self) -> None:
-        """按当前状态同步七个开关与系统文件行可见性（守卫内赋值，不写暂存）。
+    def _sync_general_toggles(self, animated: bool = False) -> None:
+        """按当前状态同步七个开关与两个子选项的显隐（守卫内赋值，不写暂存）。
 
         各开关控件均带 ``None`` 守卫：缺位时仅跳过控件同步，状态值仍已由
-        :meth:`refresh_from_staging` 更新。
+        :meth:`refresh_from_staging` 更新。子选项显隐经
+        :meth:`SettingsRow.set_revealed`：``animated=True`` 时播放插入/
+        收起动画，初始化与刷新路径保持 ``False`` 以免后台播动画。
+
+        Args:
+            animated: 是否允许子选项显隐播放过渡动画。
         """
         self._general_updating = True
         try:
@@ -1954,18 +2006,120 @@ class GeneralSettingsPage(QWidget):
             if self._system_toggle is not None:
                 self._system_toggle.checked = self._show_system_files
             if self._system_row is not None:
-                self._system_row.setVisible(self._show_hidden_files)
+                self._system_row.set_revealed(
+                    self._show_hidden_files, animated=animated
+                )
             if self._floating_pool_toggle is not None:
                 self._floating_pool_toggle.checked = self._floating_pool_enabled
             if self._floating_pool_snap_toggle is not None:
                 self._floating_pool_snap_toggle.checked = (
                     self._floating_pool_snap_enabled
                 )
+            if self._floating_pool_snap_row is not None:
+                # 贴边吸附是全局浮窗的子选项：仅在浮窗开启时显示。
+                self._floating_pool_snap_row.set_revealed(
+                    self._floating_pool_enabled, animated=animated
+                )
         finally:
             self._general_updating = False
 
+    def _request_sub_option_scroll(self, row: SettingsRow | None) -> None:
+        """记录本次用户展开的子选项；仅当它当前未完整展开时才需要检查滚动。"""
+        if row is None:
+            self._pending_sub_option_scroll = None
+            return
+        self._pending_sub_option_scroll = (
+            row if row.isHidden() or not row.is_revealed else None
+        )
+
+    def _on_sub_option_reveal_finished(
+        self, row: SettingsRow, revealed: bool
+    ) -> None:
+        """子选项展开/收起完成：用户触发展开时，等布局稳定后按需滚动。
+
+        只处理「本次由父开关打开」的那一行；初始化、刷新、收起都不滚动。
+        """
+        if row is not self._pending_sub_option_scroll:
+            return
+        self._pending_sub_option_scroll = None
+        if not revealed or not self.isVisible():
+            return
+        QTimer.singleShot(0, lambda r=row: self._scroll_sub_option_into_view(r))
+
+    def _find_ancestor_scroll_area(self) -> QScrollArea | None:
+        """返回页面所在的滚动区（设置页由 ``_FloatingScrollArea`` 包裹）。"""
+        parent = self.parentWidget()
+        while parent is not None:
+            if isinstance(parent, QScrollArea):
+                return parent
+            parent = parent.parentWidget()
+        return None
+
+    def _scroll_sub_option_into_view(self, row: SettingsRow) -> None:
+        """仅当子选项被视口裁切时，补滚到「完整可见 + 少量留白」。
+
+        Qt 中对应 Web 的 ``scrollIntoView({ block: 'nearest' })``：
+        - 子项本来就完整可见：不滚动（中间选项不会因父开关变化而跳动）；
+        - 子项被下/上边缘裁掉：只补缺失的像素数，并留出
+          ``SETTINGS_SUB_SCROLL_MARGIN`` 的呼吸空间。
+        """
+        scroll = self._find_ancestor_scroll_area()
+        if scroll is None or not scroll.isVisible():
+            return
+        viewport = scroll.viewport()
+        if viewport.height() <= 0 or row.height() <= 0:
+            return
+        # 展开动画结束后 maxHeight 才解除；先让页面布局落地再取最终行高。
+        self.layout().activate()
+        top = row.mapTo(viewport, QPoint(0, 0)).y()
+        bottom = top + row.height()
+        viewport_h = viewport.height()
+        if top >= 0 and bottom <= viewport_h:
+            return  # 已完整可见：绝不滚动
+
+        margin = SETTINGS_SUB_SCROLL_MARGIN
+        if row.height() + 2 * margin >= viewport_h:
+            # 子项高于视口：优先对齐顶部，保证标题先进入视野。
+            delta = top - margin
+        elif bottom > viewport_h - margin:
+            delta = bottom - (viewport_h - margin)
+        else:
+            delta = top - margin
+        if delta == 0:
+            return
+
+        vbar = scroll.verticalScrollBar()
+        target = max(vbar.minimum(), min(vbar.maximum(), vbar.value() + delta))
+        if target == vbar.value():
+            return
+        if not is_animation_enabled("settings_sub_option", default=True):
+            vbar.setValue(target)
+            return
+
+        if self._sub_option_scroll_anim is not None:
+            old = self._sub_option_scroll_anim
+            self._sub_option_scroll_anim = None
+            old.stop()
+            old.deleteLater()
+        anim = QPropertyAnimation(vbar, b"value", self)
+        anim.setDuration(SETTINGS_SUB_SCROLL_MS)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.setStartValue(vbar.value())
+        anim.setEndValue(target)
+        anim.finished.connect(lambda a=anim: self._on_sub_option_scroll_finished(a))
+        self._sub_option_scroll_anim = anim
+        anim.start()
+
+    def _on_sub_option_scroll_finished(self, anim: QPropertyAnimation) -> None:
+        """滚动动画结束：清理引用（滚动动画不阻塞后续展开）。"""
+        if self._sub_option_scroll_anim is anim:
+            self._sub_option_scroll_anim = None
+        anim.deleteLater()
+
     def refresh_from_staging(self) -> None:
         """从暂存缓存刷新控件展示（取消/重置未提交时恢复原始状态）。"""
+        # 刷新/重置不属于用户展开动作：清掉待滚动标记，避免初始化时滚动。
+        self._pending_sub_option_scroll = None
         saved = self._staging_cache.get("general.layout_mode", "workspace")
         self._layout_mode = saved if saved in self.LAYOUT_MODES else "workspace"
         saved_ai = self._staging_cache.get("general.enable_ai_entry", False)
@@ -2365,6 +2519,9 @@ class SettingsLayout(QWidget):
         # 主题切换时刷新内容区背景（生效值变化 + 偏好变化均需刷新，
         # 后者覆盖生效值不变但分段需切换的场景，如 白天→跟随系统且系统正为浅色）。
         tm.theme_changed.connect(self._on_theme_changed)
+        # 强调色（主题色）单独变化只发 colors_updated：设置页内嵌强调色的
+        # 样式片段（输入框、卡片、侧栏）与生效值均需即时重注册。
+        tm.colors_updated.connect(self._on_theme_changed)
         try:
             tm.theme_mode_changed.connect(self._on_theme_changed)
         except Exception as exc:

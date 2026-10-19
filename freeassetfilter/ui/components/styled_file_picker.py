@@ -214,6 +214,18 @@ class StyledFilePicker(QWidget):
         else:
             self._input.setPlaceholderText("选择文件...")
 
+        # 主题/配色变化：输入框样式内嵌 accent（选中背景），需重注册。
+        tm.theme_changed.connect(self._on_theme_changed)
+        tm.colors_updated.connect(self._on_theme_changed)
+
+    def _on_theme_changed(self, *_args) -> None:
+        """主题/配色变化时重注册输入框样式。
+
+        Args:
+            *_args: 主题信号附带参数（未使用）。
+        """
+        self._apply_stylesheet()
+
     # ── UI construction ────────────────────────────────────────────
 
     def _setup_ui(self):

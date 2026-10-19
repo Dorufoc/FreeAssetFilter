@@ -34,11 +34,12 @@ _CARD_CONFIG_CACHE: dict = {}
 
 
 def _clear_info_card_color_cache(*_args) -> None:
-    """主题变化时清空配色缓存（兜底覆盖同主题重设/热更新）。"""
+    """主题/配色变化时清空配色缓存（兜底覆盖同主题重设、热更新）。"""
     _INFO_CARD_COLORS_CACHE.clear()
 
 
 tm.theme_changed.connect(_clear_info_card_color_cache)
+tm.colors_updated.connect(_clear_info_card_color_cache)
 
 
 class _CardOverlayWidget(QWidget):

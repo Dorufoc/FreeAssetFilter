@@ -11,7 +11,8 @@ from theme import tm
 
 # 按钮配色映射缓存：(is_dark) → color_map。主题切换时以 is_dark_theme()
 # 为 key 自动失效，避免每次 paintEvent 重复解析主题颜色；并监听
-# theme_changed 兜底清空（覆盖同主题重设/热更新场景）。
+# theme_changed / colors_updated 兜底清空（覆盖同主题重设、强调色单独
+# 变化等场景：primary 底色直接取自 accent，而缓存键不含 accent）。
 _COLOR_MAP_CACHE: dict = {}
 
 
@@ -20,6 +21,7 @@ def _clear_color_map_cache(*_args) -> None:
 
 
 tm.theme_changed.connect(_clear_color_map_cache)
+tm.colors_updated.connect(_clear_color_map_cache)
 
 
 class StyledButton(QPushButton):

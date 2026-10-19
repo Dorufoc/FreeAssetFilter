@@ -3,7 +3,7 @@
 import math
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QSizePolicy
 from PySide6.QtCore import Qt, QRectF, QPropertyAnimation, QEasingCurve, Property
-from PySide6.QtGui import QPainter, QPaintEvent, QFont, QPen
+from PySide6.QtGui import QColor, QPainter, QPaintEvent, QFont, QPen
 from theme import tm
 
 
@@ -15,14 +15,32 @@ class StyledProgressCircle(QWidget):
     Features: percentage label, smooth animation
     """
 
+    #: 变体 → 主题令牌名。历史实现把 QColor 直接快照进类字典，导入后
+    #: 主题色变化不再更新（容量圆环卡旧色）；改为存令牌名，绘制期经
+    #: :meth:`variant_color` 实时解析，跟随强调色/明暗变化。
     COLOR_CONFIG = {
-        "default": tm.accent,
-        "success": tm.accent,
-        "warning": tm.warning,
-        "danger": tm.danger,
+        "default": "accent",
+        "success": "accent",
+        "warning": "warning",
+        "danger": "danger",
     }
     WARNING_THRESHOLD = 0.8
     DANGER_THRESHOLD = 0.9
+
+    @classmethod
+    def variant_color(cls, variant: str) -> QColor:
+        """返回变体对应的当前主题色（绘制期现取，跟随强调色/明暗变化）。
+
+        与 ``StyledLoading._variant_color`` 的绘制期取色约定一致；白名单
+        之外的变体回退 ``default`` → 强调色。
+
+        Args:
+            variant: 变体名（``default`` / ``success`` / ``warning`` / ``danger``）。
+
+        Returns:
+            QColor: 当前主题下的变体颜色。
+        """
+        return getattr(tm, cls.COLOR_CONFIG.get(variant, "accent"))
 
     @classmethod
     def variant_for_value(cls, value: float) -> str:
@@ -71,7 +89,7 @@ class StyledProgressCircle(QWidget):
             painter.setPen(pen)
             painter.drawEllipse(center, radius, radius)
             if value > 0.0:
-                pen.setColor(cls.COLOR_CONFIG[variant])
+                pen.setColor(cls.variant_color(variant))
                 painter.setPen(pen)
                 painter.drawArc(
                     int(center.x() - radius), int(center.y() - radius),

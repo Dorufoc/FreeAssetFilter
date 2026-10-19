@@ -55,6 +55,8 @@ from freeassetfilter.ui.components.paint_utils import (  # noqa: E402
     draw_rounded_rect,
 )
 from freeassetfilter.ui.components.settings_card import (  # noqa: E402
+    SETTINGS_SUB_BRANCH_WIDTH,
+    SETTINGS_SUB_INDENT,
     NotificationRow,
     PluginItem,
     SettingsCard,
@@ -730,6 +732,37 @@ class TestSettingsCard:
         assert row.title_label is not None
         assert row.desc_label is not None
         assert row.control_layout.itemAt(0).widget() is btn
+        safe_teardown(row)
+
+    def test_settings_row_sub_option_layout_and_reveal(
+        self, qapp: QApplication,
+    ) -> None:
+        """子选项行：右缩进 + 箭头，set_revealed 切换显隐（未显示时立即生效）。"""
+        row = SettingsRow(title="子项", description="描述", sub_option=True)
+        assert row.is_sub_option is True
+        assert row._sub_branch is not None
+        assert row._sub_branch.width() == SETTINGS_SUB_BRANCH_WIDTH
+        assert row.layout().contentsMargins().left() == SETTINGS_SUB_INDENT
+
+        row.set_revealed(False, animated=False)
+        assert row.is_revealed is False
+        assert row.isHidden() is True
+        assert row.maximumHeight() == 0
+
+        row.set_revealed(True, animated=False)
+        assert row.is_revealed is True
+        assert row.isHidden() is False
+        assert row.maximumHeight() == 16777215
+        safe_teardown(row)
+
+    def test_settings_row_without_sub_option_has_no_branch(
+        self, qapp: QApplication,
+    ) -> None:
+        """普通设置行不缩进、不创建子选项箭头。"""
+        row = SettingsRow(title="父项", description="描述")
+        assert row.is_sub_option is False
+        assert row._sub_branch is None
+        assert row.layout().contentsMargins().left() == 0
         safe_teardown(row)
 
     def test_notification_row_control(self, qapp: QApplication) -> None:

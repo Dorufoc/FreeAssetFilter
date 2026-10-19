@@ -173,6 +173,7 @@ class _ChatCaptionButton(QAbstractButton):
         self.setFocusPolicy(Qt.NoFocus)
         self.setAttribute(Qt.WA_Hover, True)
         tm.theme_changed.connect(self._on_theme_changed)
+        tm.colors_updated.connect(self._on_theme_changed)
 
     def _background(self) -> Optional[QColor]:
         """返回当前状态下的底色。
@@ -332,6 +333,7 @@ class StyledAIChatTitleBar(QWidget):
         self._close.clicked.connect(lambda: self.close_requested.emit())
 
         tm.theme_changed.connect(self._on_theme_changed)
+        tm.colors_updated.connect(self._on_theme_changed)
         self._apply_qss()
 
     def title(self) -> str:
@@ -428,6 +430,7 @@ class StyledAIChatHeader(QWidget):
         layout.addLayout(text_column, 1)
 
         tm.theme_changed.connect(self._on_theme_changed)
+        tm.colors_updated.connect(self._on_theme_changed)
         self._apply_qss()
 
     def set_status(self, text: str, online: bool = True) -> None:
@@ -520,6 +523,7 @@ class StyledAIMessageList(QScrollArea):
 
         StyledScrollArea.apply_to(self)
         tm.theme_changed.connect(self._on_theme_changed)
+        tm.colors_updated.connect(self._on_theme_changed)
         self._apply_qss()
 
     # ------------------------------------------------------------------
@@ -827,6 +831,7 @@ class StyledChatComposer(QWidget):
         layout.addWidget(self.send_button)
 
         tm.theme_changed.connect(self._on_theme_changed)
+        tm.colors_updated.connect(self._on_theme_changed)
         self._apply_qss()
 
     # ------------------------------------------------------------------
@@ -1028,6 +1033,7 @@ class StyledAIChatWindow(QWidget):
         )
 
         tm.theme_changed.connect(self._on_theme_changed)
+        tm.colors_updated.connect(self._on_theme_changed)
         self._apply_qss()
 
     def set_title(self, title: str) -> None:
@@ -1127,6 +1133,7 @@ class StyledAIToolApproval(QWidget):
         layout.addLayout(actions)
 
         tm.theme_changed.connect(self._on_theme_changed)
+        tm.colors_updated.connect(self._on_theme_changed)
         self._apply_qss()
 
     def _apply_qss(self) -> None:
@@ -1224,6 +1231,7 @@ class StyledAIChatPanel(QWidget):
         root.addLayout(actions)
 
         tm.theme_changed.connect(self._on_theme_changed)
+        tm.colors_updated.connect(self._on_theme_changed)
         self._apply_qss()
 
     def _send(self) -> None:

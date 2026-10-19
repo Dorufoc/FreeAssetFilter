@@ -1182,6 +1182,9 @@ class FileInfoPanel(QWidget):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._build_skeleton()
         tm.theme_changed.connect(self._on_theme_changed)
+        # 强调色单独变化只发 colors_updated：详情/哈希链接的悬停色取自
+        # accent，需一并刷新（否则悬停前一直用旧色）。
+        tm.colors_updated.connect(self._on_theme_changed)
         self._sync_canvas()
         self._apply_minimums()
 

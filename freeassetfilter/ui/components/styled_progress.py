@@ -2,7 +2,7 @@
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy
 from PySide6.QtCore import Qt, QRectF, QPropertyAnimation, QEasingCurve, Property, QTimer
-from PySide6.QtGui import QPainter, QPaintEvent, QFont
+from PySide6.QtGui import QColor, QPainter, QPaintEvent, QFont
 from theme import tm
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
@@ -15,12 +15,29 @@ class StyledProgress(QWidget):
     Features: label support, striped animation, inline label mode
     """
 
+    #: 变体 → 主题令牌名。历史实现把 QColor 直接快照进类字典，导入后
+    #: 主题色变化不再更新；改为存令牌名，绘制期经 :meth:`variant_color`
+    #: 实时解析，跟随强调色/明暗变化（与 StyledLoading 绘制期取色一致）。
     COLOR_CONFIG = {
-        "default": tm.accent,
-        "success": tm.accent,
-        "warning": tm.warning,
-        "danger": tm.danger,
+        "default": "accent",
+        "success": "accent",
+        "warning": "warning",
+        "danger": "danger",
     }
+
+    @classmethod
+    def variant_color(cls, variant: str) -> QColor:
+        """返回变体对应的当前主题色（绘制期现取，跟随强调色/明暗变化）。
+
+        白名单之外的变体回退 ``default`` → 强调色。
+
+        Args:
+            variant: 变体名（``default`` / ``success`` / ``warning`` / ``danger``）。
+
+        Returns:
+            QColor: 当前主题下的变体颜色。
+        """
+        return getattr(tm, cls.COLOR_CONFIG.get(variant, "accent"))
 
     SIZE_CONFIG = {
         "sm": {"track_height": 4, "font_size": 11},
@@ -299,7 +316,7 @@ class ProgressTrack(QWidget):
 
             # Track fill - draw with proper rounded ends
             if fill_width > 0:
-                fill_color = StyledProgress.COLOR_CONFIG[self._variant]
+                fill_color = StyledProgress.variant_color(self._variant)
                 painter.setBrush(fill_color)
 
                 # Draw rounded rect exactly at fill width

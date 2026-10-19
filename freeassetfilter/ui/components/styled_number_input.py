@@ -258,6 +258,11 @@ class StyledNumberInput(QWidget):
         if not enabled:
             self._set_enabled(False)
 
+        # 主题/配色变化：选中背景色内嵌 accent，强调色单独变化（只发
+        # colors_updated）同样需重注册样式。
+        tm.theme_changed.connect(self.refresh_theme)
+        tm.colors_updated.connect(self.refresh_theme)
+
     # ── Config ─────────────────────────────────────────────────
 
     def _get_config(self) -> dict:

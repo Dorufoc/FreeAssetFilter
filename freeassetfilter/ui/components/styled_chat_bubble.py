@@ -110,6 +110,7 @@ class _ReasoningIcon(QWidget):
         # 控件销毁仍可能被调用（实测报 "Internal C++ object already deleted"）；
         # 绑定方法让 PySide6 能识别接收者并在销毁时自动断开。
         tm.theme_changed.connect(self._on_theme_changed)
+        tm.colors_updated.connect(self._on_theme_changed)
 
     def _on_theme_changed(self, _theme: str = "") -> None:
         """主题切换后重绘。
@@ -166,6 +167,7 @@ class _ChevronIcon(QWidget):
         self._animation.setDuration(self.DURATION_MS)
         self._animation.setEasingCurve(QEasingCurve.OutCubic)
         tm.theme_changed.connect(self._on_theme_changed)
+        tm.colors_updated.connect(self._on_theme_changed)
 
     def _on_theme_changed(self, _theme: str = "") -> None:
         """主题切换后重绘（绑定方法便于自动断开）。
@@ -427,6 +429,7 @@ class StyledAIAvatar(QWidget):
         self.setFixedSize(int(size), int(size))
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         tm.theme_changed.connect(self._on_theme_changed)
+        tm.colors_updated.connect(self._on_theme_changed)
         self._rebuild_pixmap()
 
     def _rebuild_pixmap(self) -> None:
@@ -1129,6 +1132,7 @@ class StyledChatBubble(QFrame):
 
         self.setAttribute(Qt.WA_Hover, True)
         tm.theme_changed.connect(self._on_theme_changed)
+        tm.colors_updated.connect(self._on_theme_changed)
         self._refresh_styles()
         self.set_max_width(self._max_width)
 
@@ -2139,6 +2143,7 @@ class StyledReasoningDrawer(QWidget):
         )
         self._styled.append((self._title, self._title_qss, ""))
         tm.theme_changed.connect(self._on_theme_changed)
+        tm.colors_updated.connect(self._on_theme_changed)
         self._refresh_styles()
         self._sync_header_text()
         self._chevron.set_expanded(False)

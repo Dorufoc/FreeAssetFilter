@@ -489,6 +489,9 @@ class FilePoolLayout(QWidget):
 
         # ── 主题切换 ────────────────────────────────────────────────────
         tm.theme_changed.connect(self._on_theme_changed)
+        # 强调色单独变化不发 theme_changed，仅发 colors_updated：卡片图标
+        # 与拖放虚线边框（含 accent）同样需要即时刷新。
+        tm.colors_updated.connect(self._on_theme_changed)
         # 文件夹大小计算经信号回主线程，避免 worker 线程直接触碰 QWidget。
         self._folder_size_ready.connect(self._on_folder_size_ready_gui)
 
@@ -635,7 +638,7 @@ class FilePoolLayout(QWidget):
         ))
 
     def _on_theme_changed(self, theme: str) -> None:
-        """主题切换时刷新标签文字颜色及池视图主题"""
+        """主题/配色切换时刷新标签文字颜色、池视图主题与卡片图标。"""
         self._update_separator_color()
         register_widget_qss(self._count_label,(
             "background: transparent; border: none;"
@@ -647,6 +650,36 @@ class FilePoolLayout(QWidget):
         ))
         self._apply_empty_hint_style()
         self._apply_pool_theme()
+        self._refresh_card_icons()
+
+    def _refresh_card_icons(self) -> None:
+        """按当前主题重取所有卡片图标并回填。
+
+        卡片图标在加入时经 ``set_media_pixmap`` 存入（含主题色替换的
+        类型图标/缩略图），不会自动跟随主题；明暗或强调色变化后必须
+        重取回填，否则一直显示旧配色（历史缺陷：储存池卡片图标换主题
+        后不刷新，须移除重加才更新）。
+        """
+        if not self._card_widgets:
+            return
+        info_by_path = {}
+        for file_info in self.items:
+            path = os.path.normpath(file_info.get("path", ""))
+            if path:
+                info_by_path[path] = file_info
+        for path, card in self._card_widgets.items():
+            if path in self._removing_paths:
+                continue
+            file_info = info_by_path.get(path)
+            if not file_info:
+                continue
+            try:
+                icon_pixmap = self._get_file_icon_pixmap(file_info)
+                if icon_pixmap and not icon_pixmap.isNull():
+                    card.set_media_pixmap(icon_pixmap)
+            except (RuntimeError, AttributeError) as exc:
+                # 卡片已销毁（移除动画与主题刷新交错）：跳过该卡片。
+                debug(f"刷新储存池卡片图标失败（已销毁）：{exc}")
 
     def _apply_empty_hint_style(self) -> None:
         """刷新空池引导提示样式（次级提示文字色，随主题/强调色变化）。"""

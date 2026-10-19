@@ -90,6 +90,7 @@ class UnsupportedPreviewerLayout(QWidget):
             button.setFixedWidth(button.sizeHint().width())
         self._apply_styles()
         tm.theme_changed.connect(self._on_theme_changed)
+        tm.colors_updated.connect(self._on_theme_changed)
 
     def _apply_styles(self) -> None:
         """应用主题相关文字样式。"""
@@ -113,9 +114,14 @@ class UnsupportedPreviewerLayout(QWidget):
             f"color: {secondary}; font-size: 12px;",
         )
 
-    def _on_theme_changed(self, _theme: str) -> None:
-        """主题切换时刷新文字颜色。"""
+    def _on_theme_changed(self, *_args) -> None:
+        """主题/配色变化时刷新文字颜色与图标（图标含主题色替换）。
+
+        Args:
+            *_args: 主题信号附带参数（未使用）。
+        """
         self._apply_styles()
+        self._render_icon()
 
     def set_file(self, file_info: str | dict) -> None:
         """设置待展示文件。"""

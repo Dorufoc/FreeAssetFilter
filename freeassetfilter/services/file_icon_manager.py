@@ -47,7 +47,9 @@ class FileIconManager(QObject):
     - 通过 SvgRenderer 渲染为 QPixmap（含主题色替换）
     - 未知文件/压缩包自动叠加文字标识
     - 双层缓存：L1 OrderedDict(256) + L2 QPixmapCache
-    - 缓存键包含 5 个主题色，主题变更时自动失效
+    - 通用缓存键包含 5 个主题色，主题变更时自动失效；图片/视频的
+      「无缩略图回退图标」与 exe/lnk/url 的主题化占位符同样按主题签名
+      分键（真实缩略图与真实系统图标与主题无关，保持原键）
 
     Signals:
         system_icon_loaded(str): 系统图标异步加载完成通知（预留 Todo 2）
@@ -58,6 +60,7 @@ class FileIconManager(QObject):
     _initialized = False
     _ICON_CACHE_MAX_ENTRIES: int = 256
     _SYSTEM_ICON_CACHE_MAX_ENTRIES: int = 256
+    _SYSTEM_ICON_PLACEHOLDER_CACHE_MAX_ENTRIES: int = 256
 
     system_icon_loaded = Signal(str)  # 系统图标异步加载完成通知
 
@@ -91,6 +94,11 @@ class FileIconManager(QObject):
             self._cache_lock = threading.Lock()
             self._system_icon_cache: OrderedDict[str, QPixmap] = OrderedDict()
             self._system_icon_cache_lock = threading.Lock()
+            # 主题化占位符缓存：键为 (file_path, *主题签名)。真实系统图标
+            # 与主题无关，单独放在 _system_icon_cache；占位符由 SVG 主题色
+            # 渲染，配色变化后需按新签名重新渲染。
+            self._system_icon_placeholder_cache: OrderedDict = OrderedDict()
+            self._system_icon_placeholder_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Public API
@@ -158,6 +166,17 @@ class FileIconManager(QObject):
                 file_info, file_path, icon_size, dpr,
             )
 
+        # ── 系统图标（exe / lnk / url）：独立管线 ─────────────────────
+        # 真实 Windows 图标（与主题无关，按路径缓存）优先；异步加载未就绪
+        # 时返回主题化 SVG 占位符（按 (路径, 主题签名) 缓存，换色后自动
+        # 重渲染）。两者都在通用 L1/L2 之前判定：旧实现把占位符写进后缀
+        # 共享的通用键，同后缀所有文件的占位符互相污染，且异步真实图标
+        # 到达后被通用键命中遮蔽，换色后占位符颜色也永久过期。
+        if not is_dir and suffix in self._SYSTEM_ICON_SUFFIXES:
+            return self._get_system_icon_pixmap(
+                file_info, file_path, icon_size, dpr, _trigger_async,
+            )
+
         # 4. 构建缓存键（含全部 5 个主题色 → 主题变更自动失效）
         cache_key = (
             "svg",
@@ -190,15 +209,6 @@ class FileIconManager(QObject):
                 self._icon_cache.move_to_end(cache_key)
                 self._trim_cache()
             return qp_cached
-
-        # ── 系统图标缓存（exe / lnk / url） ────────────────────────────
-        is_system_type = not is_dir and suffix in self._SYSTEM_ICON_SUFFIXES
-        if is_system_type:
-            with self._system_icon_cache_lock:
-                sys_cached = self._system_icon_cache.get(file_path)
-                if sys_cached is not None and not sys_cached.isNull():
-                    self._system_icon_cache.move_to_end(file_path)
-                    return sys_cached
 
         # 7. 缓存 miss：此时才解析图标路径（磁盘 stat 每文件仅首次发生）
         icon_path = get_file_icon_path(file_info)
@@ -239,15 +249,6 @@ class FileIconManager(QObject):
                 device_pixel_ratio=dpr,
             )
 
-        # ── 系统图标：缓存占位符 + 触发异步加载 ──────────────────────
-        if is_system_type and pixmap and not pixmap.isNull():
-            with self._system_icon_cache_lock:
-                self._system_icon_cache[file_path] = pixmap
-                self._system_icon_cache.move_to_end(file_path)
-                self._trim_system_icon_cache()
-            if _trigger_async:
-                self._request_async_system_icon(file_path, icon_size, dpr)
-
         # 8. 存入双层缓存
         if pixmap and not pixmap.isNull():
             with self._cache_lock:
@@ -267,25 +268,29 @@ class FileIconManager(QObject):
         """清除缓存。
 
         Args:
-            file_path: 如果为 ``None``，清除全部缓存（L1 + L2 + 系统图标）；
-                       如果提供，仅失效该文件路径关联的磁盘缩略图缓存
-                       条目（含路径键的 L1 + L2）。
+            file_path: 如果为 ``None``，清除全部缓存（L1 + L2 + 系统图标
+                       + 系统图标主题化占位符）；如果提供，仅失效该文件
+                       路径关联的缩略图/回退图标缓存条目（含路径键的
+                       L1 + L2）。
         """
         with self._cache_lock:
             if file_path is None:
                 self._icon_cache.clear()
                 with self._system_icon_cache_lock:
                     self._system_icon_cache.clear()
+                with self._system_icon_placeholder_lock:
+                    self._system_icon_placeholder_cache.clear()
                 QPixmapCache.clear()
             else:
-                # 按 normcase 路径精确失效缩略图键（L1 + 对应 L2）
+                # 按 normcase 路径精确失效缩略图键（thumb）与无缩略图回退
+                # 图标键（thumb_icon）的 L1 + 对应 L2 条目。
                 norm_path = os.path.normcase(file_path)
                 stale_keys = [
                     key
                     for key in self._icon_cache
                     if isinstance(key, tuple)
                     and len(key) >= 2
-                    and key[0] == "thumb"
+                    and key[0] in ("thumb", "thumb_icon")
                     and key[1] == norm_path
                 ]
                 for key in stale_keys:
@@ -347,9 +352,10 @@ class FileIconManager(QObject):
         """图片/视频类型的图标获取（含路径的独立缓存键体系）。
 
         优先级：thumb 键 L1 → L2 → 磁盘缩略图 → 默认类型 SVG 图标。
-        缩略图与默认图标均写入含文件路径的 thumb 键（同键同内容），
-        不同文件互不干扰；缩略图生成后经 ``clear_cache(file_path)``
-        按路径失效即可正确更新。
+        真实缩略图与默认图标分开缓存：真实缩略图与主题无关（thumb 键）；
+        默认图标含主题色替换，键含主题签名（thumb_icon 键），明暗/强调色
+        变化后自动重渲染。不同文件互不干扰；缩略图生成后经
+        ``clear_cache(file_path)`` 按路径失效即可正确更新。
 
         Args:
             file_info: 文件信息字典。
@@ -397,8 +403,34 @@ class FileIconManager(QObject):
                 QPixmapCache.insert(thumb_qp_key, pixmap)
                 return pixmap
 
-        # 3. 无缩略图：渲染默认类型 SVG 图标，同样写入含路径的 thumb 键
-        #    （不写入 suffix 共享键，避免污染同后缀其他文件的缩略图显示）
+        # 3. 无缩略图：渲染默认类型 SVG 图标（含主题色替换）。
+        #    与真实缩略图分开缓存：真实缩略图与主题无关，保持原 thumb 键
+        #    （换肤后无需重读磁盘）；回退图标键含主题签名，明暗/强调色
+        #    变化后自动重渲染（旧实现写入 thumb 键，换色后永久命中旧色）。
+        fallback_key = (
+            "thumb_icon",
+            os.path.normcase(file_path),
+            icon_size,
+            dpr,
+        ) + tuple(self._theme_signature())
+        fallback_qp_key = f"faf_fim_thumb_{hash(fallback_key)}"
+
+        with self._cache_lock:
+            fallback_cached = self._icon_cache.get(fallback_key)
+            if fallback_cached is not None and not fallback_cached.isNull():
+                self._icon_cache.move_to_end(fallback_key)
+                return fallback_cached
+        fallback_qp_cached = QPixmap()
+        if (
+            QPixmapCache.find(fallback_qp_key, fallback_qp_cached)
+            and not fallback_qp_cached.isNull()
+        ):
+            with self._cache_lock:
+                self._icon_cache[fallback_key] = fallback_qp_cached
+                self._icon_cache.move_to_end(fallback_key)
+                self._trim_cache()
+            return fallback_qp_cached
+
         icon_path = get_file_icon_path(file_info)
         if not icon_path or not os.path.exists(icon_path):
             return QPixmap()
@@ -411,10 +443,86 @@ class FileIconManager(QObject):
         )
         if pixmap and not pixmap.isNull():
             with self._cache_lock:
-                self._icon_cache[thumb_key] = pixmap
-                self._icon_cache.move_to_end(thumb_key)
+                self._icon_cache[fallback_key] = pixmap
+                self._icon_cache.move_to_end(fallback_key)
                 self._trim_cache()
-            QPixmapCache.insert(thumb_qp_key, pixmap)
+            QPixmapCache.insert(fallback_qp_key, pixmap)
+        return pixmap
+
+    def _theme_signature(self) -> tuple:
+        """当前主题配色签名（5 色），供依赖主题的缓存键使用。
+
+        与 ``_get_theme_colors()`` 同源：强调色/明暗变化都会改变签名，
+        使主题化缓存条目自动失效而非永久命中旧色。
+        """
+        return self._get_theme_colors()
+
+    def _get_system_icon_pixmap(
+        self,
+        file_info: dict,
+        file_path: str,
+        icon_size: int,
+        dpr: float,
+        _trigger_async: bool,
+    ) -> QPixmap:
+        """exe / lnk / url 图标：真实系统图标优先，未就绪时主题化占位符。
+
+        优先级：
+        1. ``_system_icon_cache``（异步加载完成的真实 Windows 图标，
+           与主题无关，按路径缓存）；
+        2. ``_system_icon_placeholder_cache``（SVG 占位符按
+           ``(路径, 主题签名)`` 缓存，配色变化后自动按新签名重渲染）；
+        3. 渲染占位符并按需触发异步加载。
+
+        不走通用 L1/L2：占位符与真实图标的替换必须即时生效，不能被
+        后缀共享的通用键命中遮蔽。
+
+        Args:
+            file_info: 文件信息字典。
+            file_path: 文件路径。
+            icon_size: 图标逻辑尺寸。
+            dpr: 设备像素比。
+            _trigger_async: 是否触发异步加载（预加载时设为 False）。
+
+        Returns:
+            渲染完成的 QPixmap；失败时返回空 QPixmap。
+        """
+        # 1. 真实系统图标（与主题无关，长期有效）
+        if file_path:
+            with self._system_icon_cache_lock:
+                real_cached = self._system_icon_cache.get(file_path)
+                if real_cached is not None and not real_cached.isNull():
+                    self._system_icon_cache.move_to_end(file_path)
+                    return real_cached
+
+        # 2. 主题化占位符（键含主题签名：换色后重回 3 重新渲染）
+        theme_sig = self._theme_signature()
+        placeholder_key = (file_path,) + tuple(theme_sig)
+        with self._system_icon_placeholder_lock:
+            placeholder = self._system_icon_placeholder_cache.get(placeholder_key)
+            if placeholder is not None and not placeholder.isNull():
+                self._system_icon_placeholder_cache.move_to_end(placeholder_key)
+                return placeholder
+
+        # 3. 渲染占位符 + 触发异步加载
+        icon_path = get_file_icon_path(file_info)
+        if not icon_path or not os.path.exists(icon_path):
+            return QPixmap()
+        pixmap = SvgRenderer.render_svg_to_exact_pixmap(
+            icon_path,
+            icon_width=icon_size,
+            icon_height=icon_size,
+            replace_colors=True,
+            device_pixel_ratio=dpr,
+        )
+        if not pixmap or pixmap.isNull():
+            return QPixmap()
+        with self._system_icon_placeholder_lock:
+            self._system_icon_placeholder_cache[placeholder_key] = pixmap
+            self._system_icon_placeholder_cache.move_to_end(placeholder_key)
+            self._trim_system_icon_placeholder_cache()
+        if _trigger_async and file_path:
+            self._request_async_system_icon(file_path, icon_size, dpr)
         return pixmap
 
     def _get_theme_colors(self) -> tuple:
@@ -458,6 +566,10 @@ class FileIconManager(QObject):
     def _on_system_icon_loaded(self, file_path: str, pixmap) -> None:
         """系统图标异步加载完成回调。
 
+        真实 Windows 图标存入 ``_system_icon_cache``（按路径，与主题无关）；
+        ``_get_system_icon_pixmap`` 取值时真实图标优先于主题化占位符，
+        因此下次重绘即生效，无需失效其它缓存。
+
         Args:
             file_path: 文件路径。
             pixmap: 加载完成的 QPixmap（失败时可能为 None）。
@@ -481,6 +593,14 @@ class FileIconManager(QObject):
         """裁剪系统图标缓存，防止按路径无限增长。"""
         while len(self._system_icon_cache) > self._SYSTEM_ICON_CACHE_MAX_ENTRIES:
             self._system_icon_cache.popitem(last=False)
+
+    def _trim_system_icon_placeholder_cache(self) -> None:
+        """裁剪系统图标占位符缓存，防止按 (路径, 主题签名) 无限增长。"""
+        while (
+            len(self._system_icon_placeholder_cache)
+            > self._SYSTEM_ICON_PLACEHOLDER_CACHE_MAX_ENTRIES
+        ):
+            self._system_icon_placeholder_cache.popitem(last=False)
 
     def _build_unknown_icon_pixmap(
         self,

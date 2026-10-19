@@ -1120,6 +1120,7 @@ class TestMainThreadPaintBudget:
             {
                 "_get_icon_pixmap_impl",
                 "_get_media_icon_pixmap",
+                "_get_system_icon_pixmap",
                 "_build_unknown_icon_pixmap",
             },
         )

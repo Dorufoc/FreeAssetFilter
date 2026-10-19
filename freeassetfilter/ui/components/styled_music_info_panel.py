@@ -16,9 +16,8 @@ GNU Affero General Public License for more details.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QRectF
-from PySide6.QtGui import QFont, QFontMetrics, QPainter, QPixmap
-from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont, QFontMetrics, QPixmap
 from PySide6.QtWidgets import (
     QLabel,
     QHBoxLayout,
@@ -28,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from freeassetfilter.core._paths import icons_dir
+from freeassetfilter.core.preview.svg_renderer import SvgRenderer
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 from theme import tm
 
@@ -62,12 +62,18 @@ class StyledMusicInfoPanel(QWidget):
         self._elide_enabled: bool = True
         self._elide_mode: Qt.TextElideMode = Qt.TextElideMode.ElideRight
         self._placeholder_pixmap: QPixmap = QPixmap()
+        # 封面当前是否显示占位图：主题变化时仅刷新占位图，不覆盖真实封面。
+        self._use_placeholder: bool = True
 
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
 
         self._init_ui()
         self._load_placeholder()
+        # 占位图含主题色替换（#0a59f7 → accent），明暗/强调色变化后需
+        # 重渲染，否则一直显示旧配色。
+        tm.theme_changed.connect(self._on_theme_changed)
+        tm.colors_updated.connect(self._on_theme_changed)
 
     def _init_ui(self) -> None:
         """Build the panel layout."""
@@ -122,49 +128,34 @@ class StyledMusicInfoPanel(QWidget):
         root_layout.addWidget(text_container, stretch=1)
 
     def _load_placeholder(self) -> None:
-        """Load the SVG placeholder into the cover label."""
+        """（重）渲染主题化 SVG 占位图并按需回填封面。
+
+        走 ``SvgRenderer`` 的换色管线（``#0a59f7`` → accent 等主题令牌），
+        保证占位图跟随主题色；文件缺失/渲染失败时退回 ``tm.track_fill``
+        纯色填充，保证封面区非空。
+        """
         placeholder_path = icons_dir() / "音乐_playing.svg"
-        self._placeholder_pixmap = self._render_svg_to_pixmap(
-            placeholder_path, self.COVER_SIZE, self.COVER_SIZE
-        )
-        self._cover_label.setPixmap(self._placeholder_pixmap)
+        pixmap = QPixmap()
+        if placeholder_path.exists():
+            pixmap = SvgRenderer.render_svg_to_exact_pixmap(
+                str(placeholder_path),
+                icon_width=self.COVER_SIZE,
+                icon_height=self.COVER_SIZE,
+            )
+        if pixmap.isNull():
+            pixmap = QPixmap(self.COVER_SIZE, self.COVER_SIZE)
+            pixmap.fill(tm.track_fill)
+        self._placeholder_pixmap = pixmap
+        if self._use_placeholder:
+            self._cover_label.setPixmap(pixmap)
 
-    @staticmethod
-    def _render_svg_to_pixmap(svg_path: Path, width: int, height: int) -> QPixmap:
-        """Render an SVG file to a pixmap of the requested size.
-
-        If the file cannot be loaded, a solid mid-tone fallback pixmap is
-        returned so that the UI still shows a non-empty cover area.
+    def _on_theme_changed(self, *_args) -> None:
+        """主题/配色变化：重渲染主题化占位图（不覆盖真实封面）。
 
         Args:
-            svg_path: Path to the SVG file.
-            width: Target pixmap width in pixels.
-            height: Target pixmap height in pixels.
-
-        Returns:
-            A ``QPixmap`` containing the rendered SVG or the fallback fill.
+            *_args: 主题信号附带参数（未使用）。
         """
-        pixmap = QPixmap(width, height)
-        pixmap.fill(Qt.GlobalColor.transparent)
-
-        if svg_path.exists():
-            try:
-                renderer = QSvgRenderer(str(svg_path))
-                if renderer.isValid():
-                    painter = QPainter(pixmap)
-                    try:
-                        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-                        renderer.render(
-                            painter, QRectF(0, 0, width, height)
-                        )
-                    finally:
-                        painter.end()
-                    return pixmap
-            except OSError:
-                pass
-
-        pixmap.fill(tm.track_fill)
-        return pixmap
+        self._load_placeholder()
 
     def set_title(self, title: str) -> None:
         """Set the track title.
@@ -192,12 +183,15 @@ class StyledMusicInfoPanel(QWidget):
             pixmap: Cover image, or ``None`` to fall back to the placeholder.
         """
         if pixmap is not None and not pixmap.isNull():
+            self._use_placeholder = False
             self._cover_label.setPixmap(pixmap)
         else:
+            self._use_placeholder = True
             self._cover_label.setPixmap(self._placeholder_pixmap)
 
     def set_placeholder(self) -> None:
         """Restore the default SVG placeholder cover."""
+        self._use_placeholder = True
         self._cover_label.setPixmap(self._placeholder_pixmap)
 
     def clear(self) -> None:

@@ -760,8 +760,9 @@ class StyledPlayerBar(QWidget):
 
         self._setup_ui()
 
-        # Regenerate icons on theme change
+        # Regenerate icons on theme change（强调色单独变化同样需重建）
         tm.theme_changed.connect(self._on_theme_changed_icons)
+        tm.colors_updated.connect(self._on_theme_changed_icons)
 
         # OSD overlay
         self._osd_widget = _OSDWidget(self)

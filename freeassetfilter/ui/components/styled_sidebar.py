@@ -752,6 +752,8 @@ class StyledSidebar(QWidget):
                 f"SidebarItem {{ background-color: transparent; "
                 f"border-top: 1px solid {tm.qss_color(tm.alpha_of(tm.text, 90) if not tm.is_dark_theme() else tm.alpha_of(tm.surface, 90))}; }}"
             ))
+        # 紧凑态标题（首字母 logo）以 accent 着色：强调色变化需重注册。
+        self._apply_title_style(self._compact)
 
     def _get_item_bar_rect(self, index: int) -> tuple:
         """Get the (x, top_y, bottom_y) of the highlight bar for an item, relative to sidebar."""
