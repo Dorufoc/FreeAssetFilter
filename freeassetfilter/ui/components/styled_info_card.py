@@ -190,6 +190,8 @@ class StyledInfoCard(QWidget):
         # Selection and preview states
         self._is_selected = False
         self._is_previewing = False
+        # 重命名编辑态：整体强调色边框 + 淡强调色背景（文件储存池 New 布局使用）
+        self._is_rename_mode = False
         self._anim_bg_color = QColor(tm.surface)
         self._anim_border_color = QColor(tm.control_border)
         self._border_width = 1
@@ -472,6 +474,25 @@ class StyledInfoCard(QWidget):
             else:
                 self._trigger_deselect_animation()
             self.selection_changed.emit(selected, self._file_path)
+
+    def set_rename_mode(self, enabled: bool) -> None:
+        """设置重命名编辑态（强调色边框 + 淡强调色背景）。
+
+        仅影响绘制外观，不改变选中/预览状态；文件储存池 New 布局在
+        「点击卡片重命名」编辑模式下统一应用到所有卡片。
+
+        Args:
+            enabled: True 进入编辑态，False 退出。
+        """
+        enabled = bool(enabled)
+        if self._is_rename_mode == enabled:
+            return
+        self._is_rename_mode = enabled
+        self.update()
+
+    def is_rename_mode(self) -> bool:
+        """返回当前是否处于重命名编辑态。"""
+        return self._is_rename_mode
 
     def set_previewing(self, previewing: bool) -> None:
         """设置预览状态。
@@ -992,18 +1013,19 @@ class StyledInfoCard(QWidget):
         super().mouseReleaseEvent(event)
 
     def enterEvent(self, event):
-        # 选中/预览态同样维护 _hovered（用于背景遮罩反馈），
-        # 但不显示操作按钮 overlay（保留原设计：状态卡片不浮出按钮层）
+        # 选中/预览态同样维护 _hovered（用于背景遮罩反馈）。
+        # 预览态也允许浮出操作层：经典布局下当前预览卡同样可以悬浮重命名；
+        # 框选选中态仍不显示（避免多选时误触删除/重命名）。
         self._hovered = True
         if not self._disabled:
-            if not (self._is_selected or self._is_previewing):
+            if not self._is_selected:
                 self._animate_overlay(1.0)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         self._hovered = False
         self._pressed = False
-        if not (self._is_selected or self._is_previewing):
+        if not self._is_selected:
             self._animate_overlay(0.0)
         self._animate_card_scale(1.0)
         super().leaveEvent(event)
@@ -1067,28 +1089,33 @@ class StyledInfoCard(QWidget):
                 painter.scale(self._card_shrink, self._card_shrink)
                 painter.translate(-w / 2.0, -h / 2.0)
 
-            # Card background and border - 考虑选中态和预览态
-            # 边框宽度：预览态 2px，框选选中态 1.5px（虚线），其他状态 1px
-            if self._is_previewing:
+            # Card background and border - 考虑选中态、预览态与重命名编辑态
+            # 边框宽度：预览态 2px，框选选中/重命名编辑态 1.5px，其他状态 1px
+            if self._is_previewing and not self._is_rename_mode:
                 border_width = 2
-            elif self._is_selected:
+            elif self._is_selected or self._is_rename_mode:
                 border_width = 1.5
             else:
                 border_width = 1
 
-            # 背景：框选选中态 = accent 25% 覆盖层，其余 = 默认背景
-            bg_color = (
-                self._anim_bg_color
-                if self._is_selected
-                else colors["bg"]
-            )
+            # 背景：框选选中态 = accent 25% 覆盖层；重命名编辑态 = 更淡的
+            # 强调色底；其余 = 默认背景
+            if self._is_selected:
+                bg_color = self._anim_bg_color
+            elif self._is_rename_mode:
+                bg_color = self._style_colors["selected_bg"]
+            else:
+                bg_color = colors["bg"]
 
             # 边框：预览态 = 主题色→G1 径向渐变（焦点旋转动画）；
-            # 框选选中态 = accent 虚线边框；其余按状态
-            if self._is_previewing:
+            # 框选选中态 = accent 虚线边框；重命名编辑态 = accent 实线；
+            # 其余按状态
+            if self._is_previewing and not self._is_rename_mode:
                 border_brush = QBrush(
                     self._make_preview_gradient(QRectF(0, 0, w, h), self._preview_angle)
                 )
+            elif self._is_rename_mode:
+                border_brush = QBrush(self._style_colors["selected_border"])
             elif self._is_selected:
                 # 选中态使用动画边框色（虚线在 setPen 处设置）
                 border_brush = QBrush(self._anim_border_color)
@@ -1110,7 +1137,11 @@ class StyledInfoCard(QWidget):
 
             # 同时设置画笔和画刷，一次调用绘制背景和边框
             border_pen = QPen(border_brush, border_width)
-            if self._is_selected and not self._is_previewing:
+            if (
+                self._is_selected
+                and not self._is_previewing
+                and not self._is_rename_mode
+            ):
                 # 框选选中态：虚线边框（与预览流光、正常态实线区分）
                 border_pen.setStyle(Qt.DashLine)
             painter.setPen(border_pen)

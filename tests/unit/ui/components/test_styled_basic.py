@@ -731,6 +731,34 @@ class TestStyledInfoCard:
         assert card._overlay_widget is not None
         card.deleteLater()
 
+    def test_rename_mode_and_preview_hover_actions(self, qapp: QApplication) -> None:
+        """重命名编辑态可绘制；预览卡悬浮时也浮出操作层。"""
+        card = StyledInfoCard(
+            layout_mode="horizontal", overlay_enabled=True, title="T"
+        )
+        card.add_action("A", callback=lambda: None)
+        card.resize(180, 90)
+
+        card.set_previewing(True)
+        assert card._overlay_widget is not None
+        card.enterEvent(
+            QEnterEvent(QPointF(5.0, 5.0), QPointF(5.0, 5.0), QPointF(5.0, 5.0))
+        )
+        # 预览卡不再抑制悬浮操作层（经典布局可悬浮重命名当前预览卡）
+        assert card._hover_anim.endValue() == pytest.approx(1.0)
+        card.leaveEvent(QEvent(QEvent.Leave))
+        assert card._hover_anim.endValue() == pytest.approx(0.0)
+        card.set_previewing(False)
+
+        card.set_rename_mode(True)
+        assert card.is_rename_mode() is True
+        pixmap = QPixmap(card.size())
+        pixmap.fill(Qt.transparent)
+        card.render(pixmap)  # 编辑态强调色边框绘制冒烟
+        card.set_rename_mode(False)
+        assert card.is_rename_mode() is False
+        card.deleteLater()
+
     def test_card_shrink_paint_property(self, qapp: QApplication) -> None:
         """card_shrink：绘制级"向后缩小"属性（下限钳制 + 缩小状态渲染冒烟）。
 

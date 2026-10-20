@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
@@ -574,6 +575,187 @@ class TestFilePoolLayout:
         assert card.minimumWidth() == card.maximumWidth()
         assert len(card._actions) == 0
         assert card.toolTip() == "D:/dummy/grid_new.png"
+        layout.deleteLater()
+
+    def test_new_layout_rename_mode_toggle_and_card_click(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """New 布局底栏重命名按钮：空池禁用、点击切换编辑态、卡片点击改名。"""
+        import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
+
+        monkeypatch.setattr(
+            fpl_mod, "is_animation_enabled", lambda *args, **kwargs: False
+        )
+        layout = FilePoolLayout()
+        layout.resize(600, 420)
+        layout.show()
+        _pump_events(qapp)
+
+        # 经典布局不显示底栏重命名按钮
+        assert layout._rename_btn.isHidden() is True
+
+        layout.set_view_mode("grid")
+        _pump_events(qapp)
+        assert layout._rename_btn.isHidden() is False
+        assert layout._rename_btn.isEnabled() is False
+        layout._rename_btn.click()
+        assert layout.is_rename_mode() is False
+
+        file_path = os.path.normpath("D:/dummy/rename_mode.png")
+        layout.add_file({"path": file_path, "name": "rename_mode.png"})
+        _pump_events(qapp)
+        card = layout._card_widgets[file_path]
+        assert layout._rename_btn.isEnabled() is True
+        assert card.is_rename_mode() is False
+        assert str(layout._rename_btn._svg_icon_path).endswith("rename.svg")
+
+        # 进入编辑态：卡片高亮、按钮变 X、提示切换
+        layout._rename_btn.click()
+        _pump_events(qapp)
+        assert layout.is_rename_mode() is True
+        assert card.is_rename_mode() is True
+        assert str(layout._rename_btn._svg_icon_path).endswith("close.svg")
+        assert layout._rename_btn.toolTip() == "退出重命名"
+
+        # 编辑态点击卡片 = 打开重命名，不触发预览
+        rename_calls: list[str] = []
+        previews: list[dict] = []
+        monkeypatch.setattr(
+            layout, "rename_file_by_path", lambda p: rename_calls.append(p)
+        )
+        layout.item_left_clicked.connect(lambda info: previews.append(info))
+        layout._handle_card_clicked(file_path)
+        assert rename_calls == [file_path]
+        assert previews == []
+
+        # 再点按钮退出：图标与卡片状态恢复
+        layout._rename_btn.click()
+        _pump_events(qapp)
+        assert layout.is_rename_mode() is False
+        assert card.is_rename_mode() is False
+        assert str(layout._rename_btn._svg_icon_path).endswith("rename.svg")
+        assert layout._rename_btn.toolTip() == "重命名"
+        layout.deleteLater()
+
+    def test_rename_mode_auto_exits_on_layout_switch_and_empty_pool(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """切回经典布局、清空池或移除最后一张卡片时自动退出重命名编辑态。"""
+        import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
+
+        monkeypatch.setattr(
+            fpl_mod, "is_animation_enabled", lambda *args, **kwargs: False
+        )
+        layout = FilePoolLayout()
+        layout.resize(600, 420)
+        layout.show()
+        _pump_events(qapp)
+
+        first = os.path.normpath("D:/dummy/rename_auto_1.png")
+        second = os.path.normpath("D:/dummy/rename_auto_2.png")
+        for path in (first, second):
+            layout.add_file({"path": path, "name": os.path.basename(path)})
+        layout.set_view_mode("grid")
+        _pump_events(qapp)
+        assert layout._rename_btn.isEnabled() is True
+
+        layout.set_rename_edit_mode(True)
+        assert layout.is_rename_mode() is True
+        assert all(c.is_rename_mode() for c in layout._card_widgets.values())
+
+        # 切回经典布局：退出并隐藏底栏按钮
+        layout.set_view_mode("list")
+        _pump_events(qapp)
+        assert layout.is_rename_mode() is False
+        assert layout._rename_btn.isHidden() is True
+        assert all(not c.is_rename_mode() for c in layout._card_widgets.values())
+
+        # 清空池：退出编辑态，按钮随空池禁用
+        layout.set_view_mode("grid")
+        _pump_events(qapp)
+        layout.set_rename_edit_mode(True)
+        assert layout.is_rename_mode() is True
+        layout.clear_all_without_confirmation()
+        _pump_events(qapp)
+        assert layout.is_rename_mode() is False
+        assert layout._rename_btn.isEnabled() is False
+
+        # 移除最后一张卡片：自动退出
+        layout.add_file({"path": first, "name": os.path.basename(first)})
+        _pump_events(qapp)
+        layout.set_rename_edit_mode(True)
+        assert layout.is_rename_mode() is True
+        layout.remove_file(first)
+        _pump_events(qapp)
+        assert layout.is_rename_mode() is False
+        assert layout._rename_btn.isEnabled() is False
+        layout.deleteLater()
+
+    def test_apply_display_name_persists_backup_export_and_json(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """显示名重命名：卡片/内存更新，自动备份、手动 JSON 与文件导出均用新名。"""
+        import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
+
+        monkeypatch.setattr(
+            fpl_mod, "is_animation_enabled", lambda *args, **kwargs: False
+        )
+        _patch_fpl_bridge(monkeypatch, _FakeBridge(available=False))
+
+        source = tmp_path / "original.txt"
+        source.write_bytes(b"payload")
+        layout = FilePoolLayout()
+        layout.backup_file = str(tmp_path / "pool_backup.json")
+        layout.add_file({"path": str(source), "name": source.name})
+        norm = os.path.normpath(str(source))
+
+        assert layout._apply_display_name(norm, "renamed.txt") is True
+        assert layout.items[0]["display_name"] == "renamed.txt"
+        assert layout.items[0]["original_name"] == "original.txt"
+        assert layout._card_widgets[norm]._title == "renamed.txt"
+        # 只改显示名，磁盘文件不重命名
+        assert source.exists() is True
+        assert (tmp_path / "renamed.txt").exists() is False
+
+        # 自动备份 JSON 与重新加载
+        backup = json.loads((tmp_path / "pool_backup.json").read_text(encoding="utf-8"))
+        assert backup["items"][0]["display_name"] == "renamed.txt"
+        reloaded = layout.load_backup()
+        assert reloaded["items"][0]["display_name"] == "renamed.txt"
+
+        # 手动“导出数据” JSON
+        exported_json = tmp_path / "manual_export.json"
+        monkeypatch.setattr(
+            fpl_mod.QFileDialog,
+            "getSaveFileName",
+            lambda *args, **kwargs: (str(exported_json), "JSON 文件 (*.json)"),
+        )
+        monkeypatch.setattr(fpl_mod, "_show_custom_dialog", lambda *a, **k: None)
+        layout.export_data()
+        manual = json.loads(exported_json.read_text(encoding="utf-8"))
+        assert manual["items"][0]["display_name"] == "renamed.txt"
+
+        # 重新导入手动导出的 JSON：显示名保持不变
+        monkeypatch.setattr(
+            fpl_mod.QFileDialog,
+            "getOpenFileName",
+            lambda *args, **kwargs: (str(exported_json), "JSON 文件 (*.json)"),
+        )
+        imported = FilePoolLayout()
+        imported.backup_file = str(tmp_path / "imported_backup.json")
+        imported._suspend_backup_save = True
+        imported.import_data()
+        assert imported.items[0]["display_name"] == "renamed.txt"
+        assert imported._card_widgets[norm]._title == "renamed.txt"
+        imported.deleteLater()
+
+        # 文件导出使用 display_name 作为目标文件名
+        out = tmp_path / "out"
+        out.mkdir()
+        success, failed, errors = layout.copy_files([layout.items[0]], str(out))
+        assert (success, failed, errors) == (1, 0, [])
+        assert (out / "renamed.txt").read_bytes() == b"payload"
+        assert (out / "original.txt").exists() is False
         layout.deleteLater()
 
     def test_empty_pool_hint_visibility(

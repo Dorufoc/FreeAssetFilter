@@ -2910,7 +2910,7 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
                 self._file_pool.remove_file(path)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        """Esc：清除文件选择器 / 文件储存池的框选选中态。
+        """Esc：退出储存池重命名编辑态 / 清除框选选中态。
 
         键盘事件冒泡到主窗口说明当前焦点控件未消费 Esc（全屏预览、弹窗等
         在各自控件内处理并接受事件），因此不会与其 Esc 语义冲突。
@@ -2919,6 +2919,8 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             if self._file_selector is not None:
                 self._file_selector.clear_box_selection()
             if self._file_pool is not None:
+                if self._file_pool.is_rename_mode():
+                    self._file_pool.set_rename_edit_mode(False)
                 self._file_pool.clear_box_selection()
             event.accept()
             return

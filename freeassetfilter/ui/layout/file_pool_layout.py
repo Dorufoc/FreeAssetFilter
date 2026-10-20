@@ -4,9 +4,10 @@
 基于 StyledInfoCard 列表，提供文件暂存池的完整交互：
 - 卡片列表展示（StyledInfoCard 实例列表）
 - 添加/删除/清空文件操作
-- hover 悬浮操作按钮（重命名/删除）
+- 经典布局 hover 悬浮操作按钮（重命名/删除）
+- New 布局底栏重命名按钮 + 单击卡片编辑态
 - 自动备份保存/恢复
-- 重命名对话框
+- 重命名对话框（仅修改 display_name）
 - 主题切换适配
 """
 
@@ -375,6 +376,8 @@ class FilePoolLayout(QWidget):
         self._card_base_overrides: dict = dict(LIST_CONFIG)
         # 视图模式：list（经典列表）/ grid（New 布局网格，竖向瓦片 + 自动列数）
         self._view_mode: str = "list"
+        # 重命名编辑态（仅 New 布局网格视图可用）：底栏按钮切换，卡片点击改名
+        self._rename_edit_mode: bool = False
         # 各视图模式各自记忆缩放（网格默认最小值，列表默认 1.0）
         self._list_scale: float = 1.0
         self._grid_scale: float = self._card_scale_min
@@ -497,13 +500,15 @@ class FilePoolLayout(QWidget):
 
         # 最小高度：默认网格缩放下一行卡片 + 底栏（主布局据此推导底行下限）
         self.setMinimumHeight(self.minimum_row_height())
+        # 底栏重命名按钮初始状态（经典列表视图隐藏）
+        self._update_rename_button()
 
     # ═════════════════════════════════════════════════════════════════════
     #  底栏（骨架保留部分）
     # ═════════════════════════════════════════════════════════════════════
 
     def _build_bottom_bar(self) -> None:
-        """构建底栏：导入/导出数据 + 导出文件 + 删除"""
+        """构建底栏：重命名（New 布局）+ 删除 + 导入/导出数据 + 导出文件。"""
         icons_dir = self._icons_dir
         bottom_layout = QHBoxLayout(self._bottom_bar)
         bottom_layout.setContentsMargins(10, 6, 10, 6)
@@ -544,6 +549,19 @@ class FilePoolLayout(QWidget):
 
         # 将按钮区域推到右侧
         bottom_layout.addStretch(1)
+
+        # 图标按钮 — rename.svg（仅 New 布局网格视图显示）
+        rename_icon = str(icons_dir / "rename.svg")
+        self._rename_btn = StyledButton(
+            "", variant="ghost", size="sm", icon=rename_icon
+        )
+        self._rename_btn.setFixedSize(32, 32)
+        self._rename_btn.setToolTip("重命名")
+        self._rename_btn.setAccessibleName("重命名")
+        self._rename_btn.clicked.connect(self._toggle_rename_edit_mode)
+        self._rename_btn.setVisible(False)
+        self._rename_btn_icon_path: str = rename_icon
+        bottom_layout.addWidget(self._rename_btn)
 
         # 图标按钮 — trash.svg
         trash_icon = str(icons_dir / "trash.svg")
@@ -740,9 +758,14 @@ class FilePoolLayout(QWidget):
                     self._handle_card_zoom(event)
                     return True
             elif event.type() == QEvent.MouseButtonPress:
-                if event.button() == Qt.LeftButton and not isinstance(obj, QAbstractButton):
+                if (
+                    event.button() == Qt.LeftButton
+                    and not isinstance(obj, QAbstractButton)
+                    and not (self._rename_edit_mode and self._view_mode == "grid")
+                ):
                     # 只记录起点，不消费按下事件（保留卡片单击/按钮语义）；
-                    # 按钮上的按下不参与框选，避免按钮按压状态被拖拽打断。
+                    # 按钮上的按下不参与框选，避免按钮按压状态被拖拽打断；
+                    # 重命名编辑态下左键单击用于改名，不启动框选。
                     pos = self._pool_viewport_pos(event, obj)
                     self._box_press_card_path = self._pool_card_path_at(pos)
                     self._box_gesture.begin(pos)
@@ -1080,13 +1103,18 @@ class FilePoolLayout(QWidget):
         - 列表：横向信息卡、单列全宽（历史行为，含路径副标题与悬浮重命名/删除），
           缩放记忆 ``_list_scale``；
         - 网格：竖向平铺瓦片（与文件选择器网格卡同一规格：居中双行文件名、
-          无副标题、无悬浮操作），自动列数流式排布，缩放记忆 ``_grid_scale``
+          无副标题、无悬浮操作；重命名走底栏按钮 + 单击卡片编辑态），
+          自动列数流式排布，缩放记忆 ``_grid_scale``
           （默认最小值 0.7，Ctrl+滚轮仍可缩放）；
         - 现有卡片原地迁移（不重建），切换后立即重排。
         """
         mode = mode if mode in ("list", "grid") else "list"
         if mode == self._view_mode:
+            self._update_rename_button()
             return
+        # 离开 New 网格视图时退出重命名编辑态（经典布局无此模式）
+        if self._rename_edit_mode:
+            self.set_rename_edit_mode(False)
         # 记忆当前模式的缩放，取回目标模式的缩放
         if self._view_mode == "grid":
             self._grid_scale = self._card_scale
@@ -1118,10 +1146,75 @@ class FilePoolLayout(QWidget):
                 )
         self._card_layout.setSpacing(4 if is_grid else int(5 * self._card_scale))
         self._sync_pool_card_geometry()
+        self._update_rename_button()
 
     def get_view_mode(self) -> str:
         """返回当前视图模式（"list" / "grid"，供测试与主窗口查询）。"""
         return self._view_mode
+
+    def is_rename_mode(self) -> bool:
+        """返回是否处于 New 布局的「点击卡片重命名」编辑态。"""
+        return self._rename_edit_mode
+
+    def set_rename_edit_mode(self, active: bool) -> bool:
+        """切换 New 布局重命名编辑态（仅 grid 视图且池内有卡片时可用）。
+
+        进入编辑态后，卡片点击不再预览而是打开重命名弹窗；底栏按钮图标
+        从铅笔切换为 X，再次关闭后恢复。框选选中态在进入时清除，编辑态
+        期间左键拖拽不启动框选（见 :meth:`eventFilter`）。
+
+        Args:
+            active: True 进入编辑态，False 退出。
+
+        Returns:
+            bool: 切换后的实际编辑态（非法请求会被归一化为 False）。
+        """
+        active = bool(active)
+        if active and (self._view_mode != "grid" or not self._card_widgets):
+            active = False
+        if active == self._rename_edit_mode:
+            self._update_rename_button()
+            return self._rename_edit_mode
+
+        self._rename_edit_mode = active
+        if active:
+            # 进入编辑态先清除框选，避免“点击卡片重命名”与多选语义冲突
+            self.clear_box_selection()
+        for path, card in list(self._card_widgets.items()):
+            if path in self._removing_paths:
+                continue
+            try:
+                card.set_rename_mode(active)
+            except (RuntimeError, AttributeError):
+                # 卡片已销毁（移除动画与模式切换交错）：跳过。
+                continue
+        self._update_rename_button()
+        return self._rename_edit_mode
+
+    def _toggle_rename_edit_mode(self) -> None:
+        """底栏重命名按钮：在「进入编辑态 / 退出编辑态」之间切换。"""
+        self.set_rename_edit_mode(not self._rename_edit_mode)
+
+    def _update_rename_button(self) -> None:
+        """同步底栏重命名按钮的显隐、可用态、图标与提示文字。
+
+        - 仅 grid（New 布局）显示；经典列表使用卡片悬浮重命名按钮；
+        - 空池禁用（无卡片可改名）；
+        - 编辑态图标切换为 X，提示“退出重命名”。
+        """
+        button = getattr(self, "_rename_btn", None)
+        if button is None:
+            return
+        button.setVisible(self._view_mode == "grid")
+        button.setEnabled(bool(self._card_widgets))
+        icon_name = "close.svg" if self._rename_edit_mode else "rename.svg"
+        target_icon = str(self._icons_dir / icon_name)
+        if getattr(self, "_rename_btn_icon_path", "") != target_icon:
+            button.set_svg_icon(target_icon)
+            self._rename_btn_icon_path = target_icon
+        label = "退出重命名" if self._rename_edit_mode else "重命名"
+        button.setToolTip(label)
+        button.setAccessibleName(label)
 
     def _card_layout_mode(self) -> str:
         """当前视图对应的卡片形态（列表=horizontal / 网格=vertical）。"""
@@ -1298,7 +1391,8 @@ class FilePoolLayout(QWidget):
     def _add_card_actions(self, card: StyledInfoCard, file_path: str) -> None:
         """为列表卡添加悬浮操作按钮（重命名 / 删除）。
 
-        网格瓦片卡不添加按钮（删除走右键；New 布局下暂不提供重命名）。
+        网格瓦片卡不添加悬浮按钮（删除走右键；重命名走底栏按钮进入编辑态
+        后单击卡片，见 :meth:`set_rename_edit_mode`）。
 
         Args:
             card: 目标卡片。
@@ -1351,6 +1445,9 @@ class FilePoolLayout(QWidget):
             parent=self._card_container,
         )
         card.set_file_path(file_path)
+        # 编辑态期间新加入的卡片继承重命名高亮外观
+        if self._rename_edit_mode:
+            card.set_rename_mode(True)
 
         # 尝试加载缩略图/图标
         icon_pixmap = self._get_file_icon_pixmap(file_info)
@@ -1358,7 +1455,7 @@ class FilePoolLayout(QWidget):
             card.set_media_pixmap(icon_pixmap)
 
         if is_grid:
-            # 网格瓦片：无悬浮操作按钮（删除走右键，New 布局下不提供重命名），
+            # 网格瓦片：无悬浮操作按钮（删除走右键；重命名走底栏编辑态），
             # 隐藏的副标题信息以 tooltip 提供
             card.setToolTip(info_text or file_path)
         else:
@@ -2005,6 +2102,8 @@ class FilePoolLayout(QWidget):
 
     def clear_all_without_confirmation(self) -> None:
         """不显示确认对话框，直接清空所有项目。"""
+        if self._rename_edit_mode:
+            self.set_rename_edit_mode(False)
         if not is_animation_enabled("file_record_changes", default=True):
             self._clear_all_immediate()
             return
@@ -2070,6 +2169,8 @@ class FilePoolLayout(QWidget):
 
     def _clear_all_immediate(self) -> None:
         """立即清空所有项目（无动画）。"""
+        if self._rename_edit_mode:
+            self.set_rename_edit_mode(False)
         for card in list(self._card_widgets.values()):
             self._card_layout.removeWidget(card)
             card.deleteLater()
@@ -2095,6 +2196,10 @@ class FilePoolLayout(QWidget):
         self._count_label.setText(f"{total_items}个条目")
         self._size_label.setText(self._format_file_size(total_size))
         self._update_empty_hint_visibility()
+        # 池内最后一张卡片被移除 / 清空后自动退出重命名编辑态
+        if self._rename_edit_mode and not self._card_widgets:
+            self.set_rename_edit_mode(False)
+        self._update_rename_button()
 
     @staticmethod
     def _format_file_size(size_bytes: int) -> str:
@@ -2125,7 +2230,11 @@ class FilePoolLayout(QWidget):
         return set(self._card_widgets.keys())
 
     def _handle_card_clicked(self, file_path: str) -> None:
-        """处理 StyledInfoCard 点击：清除框选后，如果正在预览则取消，否则发射预览信号。"""
+        """处理 StyledInfoCard 点击：编辑态下重命名，否则预览/取消预览。"""
+        # New 布局重命名编辑态：左键单击卡片 = 对该文件打开重命名弹窗
+        if self._rename_edit_mode and self._view_mode == "grid":
+            self.rename_file_by_path(file_path)
+            return
         # 单击卡片 = 预览 + 清除框选选中态（"点击其他地方"即取消多选）
         self.clear_box_selection()
         norm_path = os.path.normpath(file_path) if file_path else ""
@@ -2159,7 +2268,11 @@ class FilePoolLayout(QWidget):
     # ═════════════════════════════════════════════════════════════════════
 
     def rename_file_by_path(self, file_path: str) -> None:
-        """重命名池中的文件（显示名）。使用 styled 弹窗（create_input_dialog）输入新名称。"""
+        """重命名池中文件的显示名（不改磁盘文件名）。
+
+        使用 styled 弹窗（create_input_dialog）输入新名称；确认后统一走
+        :meth:`_apply_display_name` 更新卡片、备份 JSON 与导出名称。
+        """
         norm_path = os.path.normpath(file_path) if file_path else ""
         # 在 self.items 中查找
         current_info = None
@@ -2198,23 +2311,52 @@ class FilePoolLayout(QWidget):
             return
         new_name = rename_dialog._input_field.text().strip()
 
-        # 合法性校验
-        if not new_name:
-            return
-        if len(new_name) > 255:
-            return
+        self._apply_display_name(norm_path, new_name)
+
+    def _apply_display_name(self, file_path: str, new_name: str) -> bool:
+        """更新池内条目的显示名并立即持久化（不改磁盘文件名）。
+
+        经典布局悬浮重命名与 New 布局编辑态点击重命名共用此入口：
+        更新 ``items[].display_name`` 与卡片标题，立即写入储存池备份 JSON
+        （导出文件 / 导出数据使用该名称），并通知外部刷新池内容。
+
+        Args:
+            file_path: 条目路径（内部统一 normpath）。
+            new_name: 新显示名；空串 / 超长 / 含 Windows 非法字符时拒绝。
+
+        Returns:
+            bool: 是否成功更新。
+        """
+        new_name = str(new_name or "").strip()
+        if not new_name or len(new_name) > 255:
+            return False
         illegal_chars = r'\/:*?"<>|'
         if any(c in new_name for c in illegal_chars):
-            return
+            return False
 
-        # 更新 self.items
+        norm_path = os.path.normpath(file_path) if file_path else ""
+        current_info = None
+        for fi in self.items:
+            p = fi.get("path")
+            if p and os.path.normpath(str(p)) == norm_path:
+                current_info = fi
+                break
+        if current_info is None:
+            return False
+
         current_info["display_name"] = new_name
-        # 更新对应的 StyledInfoCard
         card = self._card_widgets.get(norm_path)
-        if card:
-            card.set_title(new_name)
+        if card is not None:
+            try:
+                card.set_title(new_name)
+            except RuntimeError:
+                # 卡片已被移除（动画交错）：items / JSON 仍然更新。
+                pass
         self.update_stats()
-        self._save_backup_if_needed()
+        # 重命名是用户明确提交的变更：立即落盘，不依赖防抖定时器。
+        self.flush_backup_save_now()
+        self.pool_changed.emit()
+        return True
 
     # ═════════════════════════════════════════════════════════════════════
     #  预览状态管理
