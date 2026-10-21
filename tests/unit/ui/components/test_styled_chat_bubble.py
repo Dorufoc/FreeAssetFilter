@@ -584,19 +584,19 @@ class TestPaintingAndTheme:
             dark_accent = accent_color().name()
         finally:
             tm.set_theme(original)
-        assert light_fill == light_accent == "#0078d4"
+        assert light_fill == light_accent == tm.accent.name()
         assert dark_fill == dark_accent == tm.accent.name()
         # 主题切换不得改变几何：上限保持、短文本仍紧凑（「主题」二字 = 28 + 26 + 6）。
         assert bubble.max_width() == 200
         assert bubble.sizeHint().width() == 2 * 14 + 13 * 2 + SHADOW_MARGIN * 2
 
-    def test_light_accent_matches_reference_design(self, qapp: Any) -> None:
-        """浅色模式强调蓝对齐参考设计稿的 #0078D4。"""
+    def test_light_accent_uses_theme_token(self, qapp: Any) -> None:
+        """浅色模式强调色直接使用 tm.accent。"""
         original = tm.effective_theme()
         try:
             tm.set_theme("light")
-            assert accent_color().name().upper() == "#0078D4"
-            assert StyledChatBubble("user", "text", "x")._frame._fill_color().name().upper() == "#0078D4"
+            assert accent_color().name() == tm.accent.name()
+            assert StyledChatBubble("user", "text", "x")._frame._fill_color().name() == tm.accent.name()
         finally:
             tm.set_theme(original)
 
@@ -611,22 +611,21 @@ class TestPaintingAndTheme:
             tm.set_theme(original)
 
     def test_assistant_bubble_uses_surface_fill(self, qapp: Any) -> None:
-        """对方气泡使用主题表面色（浅色即卡片白）。"""
+        """对方气泡使用主题表面色。"""
         bubble = StyledChatBubble("assistant", "text", "主题")
         original = tm.effective_theme()
         try:
             tm.set_theme("light")
             assert bubble._frame._fill_color().name() == QColor(tm.surface).name()
-            assert bubble._frame._fill_color().name().upper() == "#F5F5F5"
         finally:
             tm.set_theme(original)
 
-    def test_window_fill_matches_reference_mica(self, qapp: Any) -> None:
-        """对话窗口底色浅色时对齐参考设计的 #F3F3F3。"""
+    def test_window_fill_uses_theme_fill(self, qapp: Any) -> None:
+        """对话窗口底色浅/深色均取 tm.fill。"""
         original = tm.effective_theme()
         try:
             tm.set_theme("light")
-            assert window_fill_color().name().upper() == "#F3F3F3"
+            assert window_fill_color().name() == QColor(tm.fill).name()
             tm.set_theme("dark")
             assert window_fill_color().name() == QColor(tm.fill).name()
         finally:

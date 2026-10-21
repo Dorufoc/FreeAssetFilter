@@ -129,7 +129,7 @@ class _ReasoningIcon(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setPen(Qt.NoPen)
-        color = QColor(accent_color() if not tm.is_dark_theme() else tm.info)
+        color = QColor(accent_color())
         painter.setBrush(color)
         dot = 4.0
         gap = 2.0
@@ -254,45 +254,27 @@ EXT_COLORS = {
     "gif": "#7C4DFF",
     "txt": "#5D5D5D",
 }
-#: 状态圆点颜色（HTML ``--online: #0F7B0F``）。
-ONLINE_COLOR = QColor("#0F7B0F")
-#: 参考设计（WinUI 3 HTML 原型）的强调蓝，浅色模式实底气泡/头像使用它。
-#: 取值依据：目标截图逐像素采样为 ``#0078D4``（Windows 系统强调蓝），
-#: 而本项目 ``tm.accent`` 是主题强调色 ``#3A9DCB``（可被用户在设置里改）。
-#: 为了与用户给定的设计稿完全一致，浅色模式采用参考蓝；深色模式仍回落到
-#: ``tm.accent``，避免在深色底上用过亮的蓝。如需全主题跟随主题强调色，
-#: 把本常量改成 None 即可。
-REFERENCE_ACCENT = QColor("#0078D4")
-#: 参考设计的浅色 Mica 窗口底（目标截图标题栏/会话头/消息区/页脚实测 ``#F3F3F3``）。
-MICA_LIGHT = QColor("#F3F3F3")
 
 
 def accent_color() -> QColor:
-    """当前模式下我方气泡/头像的强调蓝。
+    """当前主题的强调色（我方气泡 / 头像 / 在线圆点）。
 
-    浅色模式返回参考设计蓝（见 :data:`REFERENCE_ACCENT`），深色模式返回
-    主题强调色，保证两种模式下都有足够对比度。
+    颜色统一来自 :attr:`ThemeManager.accent`，深浅主题与用户自定义强调色
+    都会即时生效，不再在浅色模式下覆写为固定色值。
 
     Returns:
         强调色（QColor）。
     """
-    if REFERENCE_ACCENT is None or tm.is_dark_theme():
-        return QColor(tm.accent)
-    return QColor(REFERENCE_ACCENT)
+    return QColor(tm.accent)
 
 
 def window_fill_color() -> QColor:
-    """聊天窗口的 Mica 底色（标题栏 / 会话头 / 页脚）。
-
-    浅色模式用参考设计的 ``#F3F3F3``（目标截图逐像素实测值），深色模式回落
-    ``tm.fill``，避免浅灰在深色主题下发灰。
+    """聊天窗口的底面颜色（标题栏 / 会话头 / 消息区 / 页脚）。
 
     Returns:
-        底色（QColor）。
+        :attr:`ThemeManager.fill` 对应的底色（QColor）。
     """
-    if tm.is_dark_theme():
-        return QColor(tm.fill)
-    return QColor(MICA_LIGHT)
+    return QColor(tm.fill)
 
 
 def surface_fill_color() -> QColor:
@@ -1876,6 +1858,19 @@ class ChatMessageRow(QWidget):
         self._column.setSpacing(2)
 
         self._avatar = avatar or self._default_avatar()
+        # 气泡下方常驻一段不可见的操作页脚（``FOOTER_MARGIN_TOP + FOOTER_HEIGHT``），
+        # 若头像直接与气泡底对齐会被这段页脚顶低 22px，看起来像浮在气泡下方。
+        # 这里用带底部内边距的容器托住头像，让头像底边与**可见气泡**底边齐平。
+        self._avatar_holder = QWidget(self)
+        avatar_layout = QVBoxLayout(self._avatar_holder)
+        avatar_layout.setContentsMargins(
+            0, 0, 0, FOOTER_MARGIN_TOP + FOOTER_HEIGHT
+        )
+        avatar_layout.setSpacing(0)
+        avatar_layout.addWidget(self._avatar)
+        self._avatar_holder.setSizePolicy(
+            QSizePolicy.Fixed, QSizePolicy.Maximum
+        )
         self._bubble = StyledChatBubble(
             self.role,
             data.message_type,
@@ -1891,20 +1886,17 @@ class ChatMessageRow(QWidget):
         layout = QHBoxLayout(badge_row)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(self.GAP)
-        # 关键的左右分工：**对侧放自适应空白，头像侧放固定占位**。
-        # 若两侧都用 stretch（早期实现），剩余空间会被对等分给左右，气泡只能长到
-        # 半宽、永远伸不到对面区域；而头像侧必须留出"头像 + 间距"的固定空档，
-        # 否则加长的气泡会顶到对面头像上。这样我方气泡靠右对齐、但可以一直往左
-        # 延伸，只要能容下对方头像的空档即可（反之亦然）。
-        reserved = self.AVATAR_SIZE + self.GAP
+        # 关键的左右分工：**对侧放自适应空白，头像紧贴气泡**。若两侧都用
+        # stretch（早期实现），剩余空间会被对等分给左右，气泡只能长到半宽、
+        # 永远伸不到对面区域；头像侧的固定空档已由 ``layout.setSpacing(GAP)``
+        # 表达，不能再额外 ``addSpacing``（否则头像与气泡之间会多出一整段
+        # 头像宽度的空隙）。
         if self.is_me:
             layout.addStretch(1)
             layout.addWidget(self._bubble, 0, Qt.AlignBottom)
-            layout.addSpacing(reserved)
-            layout.addWidget(self._avatar, 0, Qt.AlignBottom)
+            layout.addWidget(self._avatar_holder, 0, Qt.AlignBottom)
         else:
-            layout.addWidget(self._avatar, 0, Qt.AlignBottom)
-            layout.addSpacing(reserved)
+            layout.addWidget(self._avatar_holder, 0, Qt.AlignBottom)
             layout.addWidget(self._bubble, 0, Qt.AlignBottom)
             layout.addStretch(1)
         self._column.addWidget(badge_row)
@@ -2363,8 +2355,6 @@ class StyledReasoningDrawer(QWidget):
 
 __all__ = [
     "ChatMessageRow",
-    "MICA_LIGHT",
-    "REFERENCE_ACCENT",
     "RowSpec",
     "StyledAIAvatar",
     "StyledAIAvatarAccent",

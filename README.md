@@ -1,3 +1,5 @@
+<p align="center"><strong>该项目将于不久后推出2.0版本，敬请期待。届时该项目将以全新面貌带来全新体验。</strong></p>
+
 <div align="center">
 
 <img src="freeassetfilter/icons/FAF-main.png" alt="FreeAssetFilter Logo" width="128" height="128">

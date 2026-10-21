@@ -634,8 +634,10 @@ class StyledSidebar(QWidget):
     item_selected = Signal(int, str)
 
     COMPACT_WIDTH = 58
+    #: 展开态默认宽度。
+    DEFAULT_WIDTH = 220
 
-    def __init__(self, title="", width=220, compact=False, transparent=False, parent=None):
+    def __init__(self, title="", width=DEFAULT_WIDTH, compact=False, transparent=False, parent=None):
         super().__init__(parent)
         self._title = title
         self._width = width

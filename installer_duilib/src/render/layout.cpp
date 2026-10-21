@@ -6,6 +6,8 @@
 //
 #include "render/layout.h"
 
+#include "render/app_state.h"
+
 namespace faf {
 
 namespace {
@@ -21,8 +23,8 @@ D2D1_RECT_F EmptyRect() { return Rect(0.0f, 0.0f, 0.0f, 0.0f); }
 }  // namespace
 
 bool IsHeroPage(int page) {
-    // Welcome=0 / Finish=4（5 页枚举顺序冻结于追加需求 §12）。
-    return page == 0 || page == 4;
+    // Welcome=0 / Finish=4，以及只追加到末尾的维护页(5)/卸载确认(6)/消息(7)。
+    return page == Welcome || page == Finish || page >= Maintenance;
 }
 
 ShellLayout ComputeShellLayout(bool hero) {

@@ -47,8 +47,10 @@ struct ShellLayout {
     D2D1_RECT_F closeButton;  // 标题栏关闭命中区
 };
 
-// 英雄页判定（无步骤区/无底部条/无外壳导航）：欢迎页(0) 与 完成页(4)。
-// 页面枚举顺序冻结于追加需求 §12：Welcome, License, Configure, Progress, Finish。
+// 英雄页判定（无步骤区/无底部条/无外壳导航）：欢迎页(0)、完成页(4)，以及维护/卸载
+// 追加页（>= Maintenance，即 5/6/7）。
+// 页面枚举（app_state.h::Page）为**只追加**：0..4（Welcome, License, Configure,
+// Progress, Finish）顺序冻结，维护页/卸载确认页/消息页一律追加到末尾，禁止重排或插入。
 bool IsHeroPage(int page);
 
 // 依据冻结的 900x600 DIP 逻辑画布计算 shell 几何。

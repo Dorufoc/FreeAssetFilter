@@ -2,7 +2,7 @@
 // install_engine.cpp - 安装引擎实现（Todo 13）。
 //
 // Frozen contracts（不得另行发明）：§1 结果 INI schema / §3 取消与失败语义 /
-// §10 permille 进度 / §11 payload 就绪哨兵。
+// §10 permille 进度 / §11 payload 就绪哨兵；T6/D15-H1 的 Repair 模式见 Run/Finalize。
 //
 #include "render/install_engine.h"
 
@@ -12,7 +12,9 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdlib>
+#include <cwctype>
 #include <system_error>
+#include <unordered_set>
 
 namespace fs = std::filesystem;
 
@@ -27,8 +29,57 @@ static_assert(kDefaultPayloadTimeoutMs < 1800000ULL,
 
 constexpr wchar_t kSentinelName[] = L"payload.ready";
 constexpr DWORD kSentinelPollMs = 100;
+constexpr wchar_t kInternalDir[] = L"_internal";
+constexpr wchar_t kDataDir[] = L"data";
 
 const wchar_t* BoolText(bool value) { return value ? L"1" : L"0"; }
+
+std::wstring Lowercase(std::wstring value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(std::towlower(ch));
+    });
+    return value;
+}
+
+bool ComponentEquals(const std::filesystem::path& component, const wchar_t* expected) {
+    return Lowercase(component.wstring()) == expected;
+}
+
+// D15 C3/H1：用户数据子树 = `data`（$INSTDIR\data）或 `_internal\data`。
+// 修复的复制与清旧都必须跳过；比较按路径组件、大小写不敏感（Windows 路径语义）。
+bool IsRepairDataRelative(const std::filesystem::path& relative) {
+    auto it = relative.begin();
+    if (it == relative.end()) return false;
+    if (ComponentEquals(*it, kDataDir)) return true;
+    if (!ComponentEquals(*it, kInternalDir)) return false;
+    ++it;
+    return it != relative.end() && ComponentEquals(*it, kDataDir);
+}
+
+std::wstring RelativeKey(const std::filesystem::path& relative) {
+    return Lowercase(relative.lexically_normal().wstring());
+}
+
+// D15 H1：payloadBytes × 1.1（向上取整到字节，避免浮点）。
+std::uint64_t RequiredBytesWithMargin(std::uint64_t payloadBytes) {
+    return payloadBytes + (payloadBytes + 9ULL) / 10ULL;
+}
+
+// 查询 path 所在卷的可用空间；路径不存在时上溯到最近的已存在祖先。
+// 查询失败返回 false（调用方保守跳过空间判定，不阻塞修复）。
+bool QueryAvailableBytes(const std::filesystem::path& path, std::uint64_t* available) {
+    std::filesystem::path probe = path;
+    std::error_code ec;
+    while (!probe.empty() && !std::filesystem::exists(probe, ec)) {
+        const std::filesystem::path parent = probe.parent_path();
+        if (parent.empty() || parent == probe) break;
+        probe = parent;
+    }
+    ULARGE_INTEGER freeBytes{};
+    if (!GetDiskFreeSpaceExW(probe.c_str(), &freeBytes, nullptr, nullptr)) return false;
+    *available = static_cast<std::uint64_t>(freeBytes.QuadPart);
+    return true;
+}
 
 // §1：以 UTF-16LE + BOM（0xFF 0xFE）预创建结果文件。**仅允许在结果写入例程内调用**——
 // 严禁在 GUI 启动或开始安装时预创建（否则 NSIS 的 IfFileExists 早于结果成立）。
@@ -102,20 +153,30 @@ int InstallEngine::PermilleFor(std::uint64_t written, std::uint64_t total) {
     return static_cast<int>(std::min<std::uint64_t>(permille, 1000ULL));
 }
 
-InstallEngine::InstallEngine(std::wstring payload, std::wstring installDir, std::wstring resultPath)
+InstallEngine::InstallEngine(std::wstring payload, std::wstring installDir,
+                             std::wstring resultPath, std::uint64_t payloadTimeoutMs)
     : payload_(std::move(payload)),
       installDir_(std::move(installDir)),
-      resultPath_(std::move(resultPath)) {}
+      resultPath_(std::move(resultPath)),
+      payloadTimeoutMs_(payloadTimeoutMs) {}
 
 InstallResult InstallEngine::Run(const InstallOptions& options, const std::atomic<bool>& cancel,
+                                 const ProgressFn& onProgress) {
+    return Run(options, InstallMode::Fresh, cancel, onProgress);
+}
+
+InstallResult InstallEngine::Run(const InstallOptions& options, InstallMode mode,
+                                 const std::atomic<bool>& cancel,
                                  const ProgressFn& onProgress) {
     writtenFiles_.clear();
     createdDirs_.clear();
     InstallResult result;
+    result.mode = mode;
 
-    // ---- 1. §11：先等哨兵（必须早于预扫描）----
+    // ---- 1. §11：先等哨兵（必须早于预扫描）；循环每 ~100ms 检查 cancel ----
     const fs::path sentinel = PayloadSentinelPath(fs::path(payload_));
-    const std::uint64_t timeoutMs = PayloadTimeoutMs();
+    const std::uint64_t timeoutMs =
+        payloadTimeoutMs_ != 0 ? payloadTimeoutMs_ : PayloadTimeoutMs();
     const auto waitStart = std::chrono::steady_clock::now();
     std::error_code waitEc;
     while (!fs::exists(sentinel, waitEc)) {
@@ -169,8 +230,14 @@ InstallResult InstallEngine::Run(const InstallOptions& options, const std::atomi
                     const fs::path relative = fs::relative(source, fs::path(payload_), relEc);
                     const std::uint64_t size = it->file_size(fileEc);
                     if (!relEc && !fileEc) {
-                        entries.push_back(Entry{source, relative, size});
-                        totalBytes += size;
+                        // Repair（D15 C3/H1）：绝不复制用户数据子树；同时让
+                        // totalFiles/totalBytes 只反映本次真正要复制的文件（进度/空间同源）。
+                        if (mode == InstallMode::Repair && IsRepairDataRelative(relative)) {
+                            // skip
+                        } else {
+                            entries.push_back(Entry{source, relative, size});
+                            totalBytes += size;
+                        }
                     }
                 }
             }
@@ -180,8 +247,20 @@ InstallResult InstallEngine::Run(const InstallOptions& options, const std::atomi
     result.totalFiles = entries.size();
     result.totalBytes = totalBytes;
 
-    // ---- 3. 复制：累计已写字节 → permille（§10）；取消即停（§3）----
+    // D15 H1：Repair 的空间检查必须发生在哨兵预扫描之后、首次安装写入之前。
+    // payloadBytes 取本次实际复制集合（用户数据子树已在上方剔除）。
     const fs::path targetRoot(installDir_);
+    if (mode == InstallMode::Repair && totalBytes > 0) {
+        std::uint64_t available = 0;
+        if (QueryAvailableBytes(targetRoot, &available)) {
+            if (available < RequiredBytesWithMargin(totalBytes)) {
+                result.error = L"repair-no-space";
+                return Finalize(result, options);  // 尚未创建目录/写文件
+            }
+        }
+    }
+
+    // ---- 3. 复制：累计已写字节 → permille（§10）；取消即停（§3）----
     {
         std::error_code mkEc;
         fs::create_directories(targetRoot, mkEc);
@@ -223,9 +302,67 @@ InstallResult InstallEngine::Run(const InstallOptions& options, const std::atomi
         result.error = L"cancelled";
         return Finalize(result, options);
     }
+
+    // Repair（D15 H1）：先覆盖、成功后清旧；失败/取消不走这里。
+    if (mode == InstallMode::Repair) {
+        RemoveStaleInternalFiles(targetRoot, entries);
+    }
+
     if (onProgress) onProgress(1000);  // 终值恒发（节流方保证不丢 1000）
     result.ok = true;
     return Finalize(result, options);
+}
+
+void InstallEngine::RemoveStaleInternalFiles(const std::filesystem::path& targetRoot,
+                                             const std::vector<Entry>& copied) const {
+    std::unordered_set<std::wstring> manifest;
+    bool hasInternalEntry = false;
+    manifest.reserve(copied.size());
+    for (const Entry& entry : copied) {
+        manifest.insert(RelativeKey(entry.relative));
+        auto it = entry.relative.begin();
+        if (!hasInternalEntry) {
+            hasInternalEntry = it != entry.relative.end() && ComponentEquals(*it, kInternalDir);
+        }
+    }
+    // 防御：新 payload 不含 `_internal` 时（不完整 payload/旧布局）不做破坏性清旧。
+    if (!hasInternalEntry) return;
+
+    const fs::path internal = targetRoot / kInternalDir;
+    std::error_code dirEc;
+    if (!fs::is_directory(internal, dirEc)) return;
+
+    std::vector<fs::path> stale;
+    std::error_code itEc;
+    fs::recursive_directory_iterator it(internal,
+                                        fs::directory_options::skip_permission_denied, itEc);
+    const fs::recursive_directory_iterator end;
+    while (!itEc && it != end) {
+        std::error_code relEc;
+        const fs::path relative = fs::relative(it->path(), targetRoot, relEc);
+        if (relEc) {
+            it.increment(itEc);
+            continue;
+        }
+        // `_internal\data` 整棵子树跳过（含其下所有后代）；`$INSTDIR\data` 不在扫描范围。
+        if (IsRepairDataRelative(relative)) {
+            std::error_code typeEc;
+            if (it->is_directory(typeEc) && !typeEc) it.disable_recursion_pending();
+            it.increment(itEc);
+            continue;
+        }
+        std::error_code fileEc;
+        if (it->is_regular_file(fileEc) && !fileEc &&
+            manifest.find(RelativeKey(relative)) == manifest.end()) {
+            stale.push_back(it->path());
+        }
+        it.increment(itEc);
+    }
+    // 尽力而为：旧文件被占用时保留，不能把已经完成的覆盖修复判为失败。
+    for (const fs::path& path : stale) {
+        std::error_code removeEc;
+        fs::remove(path, removeEc);
+    }
 }
 
 bool InstallEngine::EnsureParentCreated(const std::filesystem::path& parent) {
@@ -269,7 +406,14 @@ void InstallEngine::CleanupWritten() {
 }
 
 InstallResult InstallEngine::Finalize(InstallResult result, const InstallOptions& options) {
-    if (!result.ok) CleanupWritten();  // §3：取消或发生错误 ⇒ 删除本次运行已写入的文件
+    if (!result.ok && result.mode == InstallMode::Fresh) {
+        CleanupWritten();  // §3：Fresh 取消/错误 ⇒ 删除本次运行已写入的文件
+    }
+    // D4/D15 H1：Repair 失败/取消一律保留已写文件（不回滚），error 统一 `repair-` 前缀。
+    if (!result.ok && result.mode == InstallMode::Repair &&
+        result.error.rfind(L"repair-", 0) != 0) {
+        result.error = L"repair-" + result.error;
+    }
     // §1：abort = 失败/取消/超时（成功为 0）；error 恒写（成功空串）。
     result.iniWritten =
         WriteInstallResultIni(resultPath_, installDir_, /*abort=*/!result.ok, result.error, options);

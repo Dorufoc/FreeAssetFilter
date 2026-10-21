@@ -15,6 +15,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <utility>
 
 #include "render/logo.h"           // Finish 英雄页图标
 #include "render/pages_welcome.h"  // ReadVersionString()（§18 版本单源）
@@ -35,6 +36,45 @@ std::string SerialName(const char* kind, unsigned serial, const char* prop) {
     return std::string(kind) + std::to_string(serial) + "." + prop;
 }
 
+// T8：AppState::Operation → ProgressKind（ProgressPage/FinishPage 的便捷重载）。
+ProgressKind KindFromOperation(Operation op) {
+    switch (op) {
+        case Operation::Repair:
+            return ProgressKind::Repair;
+        case Operation::Uninstall:
+            return ProgressKind::Uninstall;
+        case Operation::Install:
+        default:
+            return ProgressKind::Install;
+    }
+}
+
+// T8：进度页标题。
+std::wstring HeadingForKind(ProgressKind kind) {
+    switch (kind) {
+        case ProgressKind::Repair:
+            return L"正在修复 FreeAssetFilter";
+        case ProgressKind::Uninstall:
+            return L"正在卸载 FreeAssetFilter";
+        case ProgressKind::Install:
+        default:
+            return L"正在安装 FreeAssetFilter";
+    }
+}
+
+// T8：repair/uninstall 的默认提示（install 无提示）；避免页内硬编码字面量散落。
+std::wstring DefaultNotice(ProgressKind kind) {
+    switch (kind) {
+        case ProgressKind::Repair:
+            return L"修复过程中请勿关闭窗口";
+        case ProgressKind::Uninstall:
+            return L"卸载过程中请勿关闭窗口";
+        case ProgressKind::Install:
+        default:
+            return std::wstring();
+    }
+}
+
 ComPtr<ID2D1SolidColorBrush> MakeBrush(ID2D1DeviceContext* dc, const D2D1_COLOR_F& color) {
     ComPtr<ID2D1SolidColorBrush> brush;
     if (!dc) return brush;
@@ -42,17 +82,17 @@ ComPtr<ID2D1SolidColorBrush> MakeBrush(ID2D1DeviceContext* dc, const D2D1_COLOR_
     return brush;
 }
 
-// 绘制一行文字（NoWrap）。text 为空 / 未就绪时安全跳过。
+// 绘制文字（默认 NoWrap；wrap=true 用于 Finish 页的非终端 warning）。
 void DrawText(ID2D1DeviceContext* dc, const TextFactory* tf, const std::wstring& s,
               const D2D1_RECT_F& rect, float size, DWRITE_FONT_WEIGHT weight,
-              DWRITE_TEXT_ALIGNMENT align, const D2D1_COLOR_F& color) {
+              DWRITE_TEXT_ALIGNMENT align, const D2D1_COLOR_F& color, bool wrap = false) {
     if (!dc || !tf || !tf->IsReady() || s.empty()) return;
     ComPtr<IDWriteTextFormat> fmt;
     if (FAILED(tf->CreateFormat(size, weight, align, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
                                 fmt.GetAddressOf()))) {
         return;
     }
-    fmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    fmt->SetWordWrapping(wrap ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP);
     ComPtr<ID2D1SolidColorBrush> brush = MakeBrush(dc, color);
     if (!brush) return;
     dc->DrawText(s.c_str(), static_cast<UINT32>(s.size()), fmt.Get(), rect, brush.Get());
@@ -139,6 +179,33 @@ std::wstring ProgressStepText(int permille) {
     }
 }
 
+std::wstring ProgressStepText(ProgressKind kind, int permille) {
+    const int p = std::clamp(permille, 0, 1000);
+    if (kind == ProgressKind::Repair) {
+        // 与 Install 同构的 4 段（仅首段文案不同）。
+        switch (ProgressStepIndex(p)) {
+            case 0:
+                return L"准备文件";
+            case 1:
+                return L"复制文件";
+            case 2:
+                return L"写入快捷方式";
+            default:
+                return L"完成";
+        }
+    }
+    if (kind == ProgressKind::Uninstall) {
+        // 4 个真实清理阶段 + 完成；阈值与窗口的 stage→permille 映射一致
+        //（0/250/500/750/1000），不制造字节级假进度。
+        if (p >= 1000) return L"完成";
+        if (p >= 750) return L"清理用户数据";
+        if (p >= 500) return L"删除程序文件";
+        if (p >= 250) return L"清理注册表";
+        return L"清理快捷方式";
+    }
+    return ProgressStepText(p);  // Install：与旧签名完全一致
+}
+
 std::wstring ProgressPercentText(int permille) {
     const int p = std::clamp(permille, 0, 1000);
     const double percent = static_cast<double>(p) / 10.0;  // §10：permille/10.0
@@ -173,12 +240,41 @@ void ProgressPage::BindGlyphs(const GlyphFont* glyphs) {
     cancelButton_.BindGlyphs(glyphs);
 }
 
+void ProgressPage::SetKind(Kind kind) {
+    if (kind_ == kind) return;  // 允许宿主逐帧调用；仅在切换时重置提示/stage 文案
+    kind_ = kind;
+    phase_ = State::Running;
+    cancelRequested_ = false;
+    stageText_.clear();
+    notice_ = DefaultNotice(kind_);
+    // T8：repair/uninstall 隐藏取消；install 保持可用。
+    SetCancellable(kind_ == Kind::Install);
+}
+
+void ProgressPage::SetKind(Operation operation) { SetKind(KindFromOperation(operation)); }
+
+void ProgressPage::SetCancellable(bool cancellable) {
+    if (cancellable_ == cancellable) return;
+    cancellable_ = cancellable;
+    // 隐藏时同时移出 Tab/输入分发；显示时重新加入。
+    host_.Clear();
+    if (cancellable_) host_.Add(&cancelButton_);
+    cancelButton_.SetEnabled(cancellable_ && phase_ == State::Running);
+}
+
+void ProgressPage::SetNotice(std::wstring text) { notice_ = std::move(text); }
+
+void ProgressPage::SetStageText(std::wstring text) { stageText_ = std::move(text); }
+
+std::wstring ProgressPage::HeadingText() const { return HeadingForKind(kind_); }
+
 void ProgressPage::SetProgressPermille(int permille) {
     permille_ = std::clamp(permille, 0, 1000);
     bar_.SetProgressPermille(permille_);
 }
 
 void ProgressPage::RequestCancel() {
+    if (!cancellable_) return;  // T8：repair/uninstall 不允许取消
     if (cancelRequested_) return;
     cancelRequested_ = true;  // 抬高取消意图（无回调宿主的轮询兜底）
     if (phase_ == State::Running) phase_ = State::Cancelling;
@@ -231,13 +327,13 @@ void ProgressPage::Render(ID2D1DeviceContext* dc, const Theme& theme) {
     // 不重置会叠加外壳预置的 Translation(m,m) 造成 +m 偏移（与其它页的约定一致）。
     dc->SetTransform(D2D1::Matrix3x2F::Identity());
 
-    // 取消进行中 / 已取消时禁用「取消」按钮。
-    cancelButton_.SetEnabled(phase_ == State::Running);
+    // 取消进行中 / 已取消时禁用「取消」按钮（repair/uninstall 无「取消」）。
+    if (cancellable_) cancelButton_.SetEnabled(phase_ == State::Running);
 
-    DrawText(dc, text_, L"正在安装 FreeAssetFilter", headingRect_, fontsize::Subtitle,
-             weight::SemiBold, DWRITE_TEXT_ALIGNMENT_LEADING, theme.textPrimary);
+    DrawText(dc, text_, HeadingText(), headingRect_, fontsize::Subtitle, weight::SemiBold,
+             DWRITE_TEXT_ALIGNMENT_LEADING, theme.textPrimary);
 
-    // 步骤文字随 permille 阈值切换（§10）。
+    // 步骤文字随 permille 阈值切换（§10）；uninstall 优先使用宿主传入的真实 stage 文案。
     DrawText(dc, text_, L"步骤：" + StepText(), stepRect_, fontsize::Body, weight::Regular,
              DWRITE_TEXT_ALIGNMENT_LEADING, theme.textSecondary);
 
@@ -254,9 +350,13 @@ void ProgressPage::Render(ID2D1DeviceContext* dc, const Theme& theme) {
         const D2D1_COLOR_F fail = D2D1::ColorF(0.85f, 0.20f, 0.20f, 1.0f);
         DrawText(dc, text_, L"安装已取消。", noticeRect_, fontsize::Caption, weight::Regular,
                  DWRITE_TEXT_ALIGNMENT_LEADING, fail);
+    } else if (!notice_.empty()) {
+        // T8：repair/uninstall 的“请勿关闭窗口”等提示；与 stage 文案分离。
+        DrawText(dc, text_, notice_, noticeRect_, fontsize::Caption, weight::Regular,
+                 DWRITE_TEXT_ALIGNMENT_LEADING, theme.textSecondary);
     }
 
-    cancelButton_.Render(dc, theme);
+    if (cancellable_) cancelButton_.Render(dc, theme);
 }
 
 // ============================== 页面⑥ 完成 ================================
@@ -265,28 +365,69 @@ FinishPage::FinishPage(AppState& state) : state_(state) {
     const unsigned serial = g_progressSerial.fetch_add(1, std::memory_order_relaxed);
     checkName_ = SerialName("finish", serial, "check");
     version_ = ReadVersionString();  // §18：只取 FAFVERSION 首行去 'v'，不硬编码
+    title_ = productName_;
 
     // 英雄页大按钮「立即启动」（与欢迎页同构：唯一按钮 = 完成意图 → 去提权启动 + 关窗）。
     finishButton_.SetLabel(L"立即启动");
     finishButton_.SetStyle(Button::Accent);
     finishButton_.SetOnClick([this]() { EmitFinishIntent(); });
 
+    // T8：Repair 专用复选框（默认值来自 AppState，默认 false）；仅 Repair 渲染/参与 Tab。
+    launchBox_.SetLabel(L"立即启动 FreeAssetFilter");
+    launchBox_.SetChecked(state_.optLaunchAfterRepair);
+    launchBox_.SetOnToggle([this](bool checked) { state_.optLaunchAfterRepair = checked; });
+
+    RebuildHost();  // Install 默认仅按钮
+}
+
+void FinishPage::RebuildHost() {
+    host_.Clear();
+    if (kind_ == Kind::Repair) host_.Add(&launchBox_);  // Tab 顺序：复选框 → 按钮
     host_.Add(&finishButton_);
 }
+
+void FinishPage::SetKind(Kind kind) {
+    kind_ = kind;
+    switch (kind_) {
+        case Kind::Repair:
+            title_ = L"修复完成";
+            finishButton_.SetLabel(L"完成");
+            launchBox_.SetLabel(L"立即启动 FreeAssetFilter");
+            launchBox_.SetChecked(state_.optLaunchAfterRepair);  // 默认 false（T11 已归零）
+            break;
+        case Kind::Uninstall:
+            title_ = L"卸载完成";
+            finishButton_.SetLabel(L"关闭");
+            break;
+        case Kind::Install:
+        default:
+            title_ = productName_;
+            finishButton_.SetLabel(L"立即启动");
+            break;
+    }
+    RebuildHost();
+}
+
+void FinishPage::SetKind(Operation operation) { SetKind(KindFromOperation(operation)); }
+
+void FinishPage::SetNotice(std::wstring notice) { notice_ = std::move(notice); }
 
 void FinishPage::BindAnimator(Animator* animator) {
     animator_ = animator;
     finishButton_.BindAnimator(animator);
+    launchBox_.BindAnimator(animator);
 }
 
 void FinishPage::BindText(const TextFactory* text) {
     text_ = text;
     finishButton_.BindText(text);
+    launchBox_.BindText(text);
 }
 
 void FinishPage::BindGlyphs(const GlyphFont* glyphs) {
     glyphs_ = glyphs;
     finishButton_.BindGlyphs(glyphs);
+    launchBox_.BindGlyphs(glyphs);
 }
 
 void FinishPage::StartCheckAnim() {
@@ -311,16 +452,73 @@ void FinishPage::EmitFinishIntent() {
 
 void FinishPage::Layout(const D2D1_RECT_F& contentCard) {
     card_ = contentCard;
+    noticeRect_ = {};
     const float x0 = contentCard.left + spacing::L;
     const float contentW = (contentCard.right - contentCard.left) - 2.0f * spacing::L;
     const float cx = (contentCard.left + contentCard.right) * 0.5f;
-
-    // 英雄页（与欢迎页内容一致）：图标（成功对勾）+ 名称 + 版本 + 标语 + 大按钮，整体垂直居中。
     const float r = 48.0f;  // 对勾圆半径（图标直径 96，与欢迎页 Logo 尺寸一致）
-    const float blockH = (2.0f * r) + spacing::L + (fontsize::Title + spacing::S) +
-                         (fontsize::Body + spacing::XS) + (fontsize::Body + spacing::L) +
-                         kHeroButtonH;
     const float cardH = contentCard.bottom - contentCard.top;
+
+    if (kind_ == Kind::Install) {
+        // Install 布局分毫不变（回归要求）：图标 + 名称 + 版本 + 标语 + 大按钮，整体垂直居中。
+        const float blockH = (2.0f * r) + spacing::L + (fontsize::Title + spacing::S) +
+                             (fontsize::Body + spacing::XS) + (fontsize::Body + spacing::L) +
+                             kHeroButtonH;
+        float y = contentCard.top + std::max(spacing::L, (cardH - blockH) * 0.5f);
+
+        checkRect_ = D2D1::RectF(cx - r, y, cx + r, y + 2.0f * r);
+        y += 2.0f * r + spacing::L;
+
+        nameRect_ = D2D1::RectF(x0, y, x0 + contentW, y + fontsize::Title + spacing::S);
+        y += fontsize::Title + spacing::S;
+
+        versionRect_ = D2D1::RectF(x0, y, x0 + contentW, y + fontsize::Body + spacing::XS);
+        y += fontsize::Body + spacing::XS;
+
+        taglineRect_ = D2D1::RectF(x0, y, x0 + contentW, y + fontsize::Body + spacing::L);
+        y += fontsize::Body + spacing::L;
+
+        buttonRect_ = D2D1::RectF(cx - kHeroButtonW * 0.5f, y, cx + kHeroButtonW * 0.5f,
+                                  y + kHeroButtonH);
+        finishButton_.SetBounds(buttonRect_);
+        return;
+    }
+
+    if (kind_ == Kind::Repair) {
+        // Repair：对勾 + 「修复完成」+ 版本 + 复选框 + 「完成」。
+        const float checkboxH = 24.0f;
+        const float blockH = (2.0f * r) + spacing::L + (fontsize::Title + spacing::S) +
+                             (fontsize::Body + spacing::XS) + (checkboxH + spacing::L) +
+                             kHeroButtonH;
+        float y = contentCard.top + std::max(spacing::L, (cardH - blockH) * 0.5f);
+
+        checkRect_ = D2D1::RectF(cx - r, y, cx + r, y + 2.0f * r);
+        y += 2.0f * r + spacing::L;
+
+        nameRect_ = D2D1::RectF(x0, y, x0 + contentW, y + fontsize::Title + spacing::S);
+        y += fontsize::Title + spacing::S;
+
+        versionRect_ = D2D1::RectF(x0, y, x0 + contentW, y + fontsize::Body + spacing::XS);
+        y += fontsize::Body + spacing::XS;
+
+        const float checkboxW = 240.0f;
+        checkboxRect_ =
+            D2D1::RectF(cx - checkboxW * 0.5f, y, cx + checkboxW * 0.5f, y + checkboxH);
+        launchBox_.SetBounds(checkboxRect_);
+        y += checkboxH + spacing::L;
+
+        buttonRect_ = D2D1::RectF(cx - kHeroButtonW * 0.5f, y, cx + kHeroButtonW * 0.5f,
+                                  y + kHeroButtonH);
+        finishButton_.SetBounds(buttonRect_);
+        return;
+    }
+
+    // Uninstall：对勾 + 「卸载完成」+ 可选 warning（非终端提示）+ 「关闭」。
+    const float noticeH =
+        notice_.empty() ? 0.0f : (2.0f * fontsize::Caption + spacing::S);
+    const float blockH = (2.0f * r) + spacing::L + (fontsize::Title + spacing::S) +
+                         (notice_.empty() ? spacing::L : (noticeH + spacing::L)) +
+                         kHeroButtonH;
     float y = contentCard.top + std::max(spacing::L, (cardH - blockH) * 0.5f);
 
     checkRect_ = D2D1::RectF(cx - r, y, cx + r, y + 2.0f * r);
@@ -328,15 +526,15 @@ void FinishPage::Layout(const D2D1_RECT_F& contentCard) {
 
     nameRect_ = D2D1::RectF(x0, y, x0 + contentW, y + fontsize::Title + spacing::S);
     y += fontsize::Title + spacing::S;
+    if (!notice_.empty()) {
+        noticeRect_ = D2D1::RectF(x0, y, x0 + contentW, y + noticeH);
+        y += noticeH + spacing::L;
+    } else {
+        y += spacing::L;
+    }
 
-    versionRect_ = D2D1::RectF(x0, y, x0 + contentW, y + fontsize::Body + spacing::XS);
-    y += fontsize::Body + spacing::XS;
-
-    taglineRect_ = D2D1::RectF(x0, y, x0 + contentW, y + fontsize::Body + spacing::L);
-    y += fontsize::Body + spacing::L;
-
-    buttonRect_ = D2D1::RectF(cx - kHeroButtonW * 0.5f, y, cx + kHeroButtonW * 0.5f,
-                              y + kHeroButtonH);
+    buttonRect_ =
+        D2D1::RectF(cx - kHeroButtonW * 0.5f, y, cx + kHeroButtonW * 0.5f, y + kHeroButtonH);
     finishButton_.SetBounds(buttonRect_);
 }
 
@@ -352,19 +550,31 @@ void FinishPage::Render(ID2D1DeviceContext* dc, const Theme& theme) {
     const D2D1_COLOR_F white = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
     DrawSuccessCheck(dc, CheckProgress(), theme.accent, white, cx, cy, r);
 
-    DrawText(dc, text_, productName_, nameRect_, fontsize::Title, weight::SemiBold,
+    DrawText(dc, text_, title_, nameRect_, fontsize::Title, weight::SemiBold,
              DWRITE_TEXT_ALIGNMENT_CENTER, theme.textPrimary);
 
-    const std::wstring verText =
-        version_.empty() ? L"版本：未知（FAFVERSION 资源缺失）" : (L"版本 " + version_);
-    DrawText(dc, text_, verText, versionRect_, fontsize::Body, weight::Regular,
-             DWRITE_TEXT_ALIGNMENT_CENTER, theme.textSecondary);
+    // 版本/标语：Install 原样；Repair 保留版本行；Uninstall 不显示。
+    if (kind_ == Kind::Install || kind_ == Kind::Repair) {
+        const std::wstring verText =
+            version_.empty() ? L"版本：未知（FAFVERSION 资源缺失）" : (L"版本 " + version_);
+        DrawText(dc, text_, verText, versionRect_, fontsize::Body, weight::Regular,
+                 DWRITE_TEXT_ALIGNMENT_CENTER, theme.textSecondary);
+    }
 
-    // 标语：与欢迎页完全一致（同字号/字重/颜色），保证两英雄页文本块内容一致。
-    if (!tagline_.empty()) {
+    // 标语：仅 Install（与欢迎页完全一致，保证两英雄页文本块内容一致）。
+    if (kind_ == Kind::Install && !tagline_.empty()) {
         DrawText(dc, text_, tagline_, taglineRect_, fontsize::Body, weight::Regular,
                  DWRITE_TEXT_ALIGNMENT_CENTER, theme.textSecondary);
     }
+
+    // 卸载完成后的 warning 仅作非终端提示，不改变 Finish/关闭语义。
+    if (kind_ == Kind::Uninstall && !notice_.empty()) {
+        DrawText(dc, text_, notice_, noticeRect_, fontsize::Caption, weight::Regular,
+                 DWRITE_TEXT_ALIGNMENT_CENTER, theme.textSecondary, true);
+    }
+
+    // Repair 专用复选框（安装/卸载不渲染）。
+    if (kind_ == Kind::Repair) launchBox_.Render(dc, theme);
 
     finishButton_.Render(dc, theme);
 }

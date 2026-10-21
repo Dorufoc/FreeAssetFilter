@@ -6,6 +6,27 @@ from PySide6.QtGui import QFont
 from theme import tm
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss, unregister_widget_qss
 
+#: 项目 UI 统一字体族（与 StyledButton / StyledTextarea 等组件保持一致）。
+FONT_FAMILY = "Microsoft YaHei UI"
+
+
+def styled_font(size: int) -> QFont:
+    """按 styled 组件的像素口径创建字体。
+
+    ``SIZE_CONFIG`` 里的 ``font_size`` 是 QSS ``font-size`` 的像素值，
+    自绘控件若用 ``QFont(family, size)``（点值）会随屏幕 DPI 放大，
+    与 QSS 像素字号不一致，因此统一改用 :meth:`QFont.setPixelSize`。
+
+    Args:
+        size: 像素字号（取 ``SIZE_CONFIG[...]["font_size"]``）。
+
+    Returns:
+        使用统一字体族、像素字号的 QFont。
+    """
+    font = QFont(FONT_FAMILY)
+    font.setPixelSize(int(size))
+    return font
+
 
 class StyledLineEdit(QLineEdit):
     """A styled line edit matching the web component exactly.
@@ -45,7 +66,7 @@ class StyledLineEdit(QLineEdit):
         # Set unique objectName to scope styles to this widget only (prevent inheritance)
         self.setObjectName(f"StyledLineEdit_{id(self)}")
         unregister_widget_qss(self)  # Clear any existing
-        font = QFont("Microsoft YaHei UI", config["font_size"])
+        font = QFont(FONT_FAMILY, config["font_size"])
         self.setFont(font)
         # Set fixed height to match Web CSS exactly
         self.setFixedHeight(config["height"])
