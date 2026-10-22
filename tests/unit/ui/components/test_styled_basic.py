@@ -3,7 +3,8 @@
 
 覆盖 ui/components 下 26 个 styled_* 组件的构造契约与核心行为：每个组件
 以默认参数或关键变体构造不抛异常；属性/信号断言只落在源码与离屏探针确认
-过的事实（信号先 connect 再触发、有界等待、不弹真实窗口、不做像素比对）。
+过的事实（信号先 connect 再触发、有界等待、不弹真实窗口）。仅 hover 遮罩
+方向回归做离屏渲染像素采样，不做整图像素比对。
 
 验证命令：
     python -m pytest tests/unit/ui/ -k "test_styled_basic" --timeout 30 -q
@@ -729,6 +730,8 @@ class TestStyledInfoCard:
         card.clear_actions()
         card.add_action("A", callback=lambda: None)
         assert card._overlay_widget is not None
+        # 竖向卡的操作层渐变同样为纵向（自绘遮罩与子控件方向一致）
+        assert card._overlay_widget._vertical is True
         card.deleteLater()
 
     def test_rename_mode_and_preview_hover_actions(self, qapp: QApplication) -> None:
@@ -781,6 +784,48 @@ class TestStyledInfoCard:
         card.card_shrink = 1.0
         card.render(pix)
         card.deleteLater()
+
+    def test_hover_veil_orientation_matches_layout_mode(self, qapp: QApplication) -> None:
+        """hover 遮罩方向随卡片形态：横向右实左透 / 纵向下实上透。
+
+        回归：New 布局存储池使用竖向网格瓦片，hover 遮罩曾固定为横向
+        渐变 + 右侧滑入，视觉上仍是经典列表卡的效果。
+        """
+
+        def render_card(card: StyledInfoCard, hovered: bool):
+            """离屏渲染卡片；hovered=True 时遮罩完全就位。"""
+            card._hovered = hovered
+            card._overlay_slide = 1.0 if hovered else 0.0
+            card._overlay_opacity = 1.0 if hovered else 0.0
+            pixmap = QPixmap(card.size())
+            pixmap.fill(Qt.transparent)
+            card.render(pixmap)
+            return pixmap.toImage()
+
+        def color_delta(a: QColor, b: QColor) -> int:
+            """两像素 RGB 差值绝对和（用于判断遮罩覆盖强度）。"""
+            return abs(a.red() - b.red()) + abs(a.green() - b.green()) + abs(a.blue() - b.blue())
+
+        horizontal = StyledInfoCard(layout_mode="horizontal", title="T")
+        base = render_card(horizontal, False)
+        hover = render_card(horizontal, True)
+        w, h = base.width(), base.height()
+        y = max(8, h // 2)
+        left_delta = color_delta(base.pixelColor(8, y), hover.pixelColor(8, y))
+        right_delta = color_delta(base.pixelColor(w - 8, y), hover.pixelColor(w - 8, y))
+        assert right_delta > left_delta
+
+        vertical = StyledInfoCard(layout_mode="vertical", tile_style=True, title="t.png")
+        base = render_card(vertical, False)
+        hover = render_card(vertical, True)
+        w, h = base.width(), base.height()
+        x = w // 2
+        top_delta = color_delta(base.pixelColor(x, 8), hover.pixelColor(x, 8))
+        bottom_delta = color_delta(base.pixelColor(x, h - 8), hover.pixelColor(x, h - 8))
+        assert bottom_delta > top_delta
+
+        horizontal.deleteLater()
+        vertical.deleteLater()
 
 
 # =============================================================================

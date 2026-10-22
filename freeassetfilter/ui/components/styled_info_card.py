@@ -45,17 +45,25 @@ tm.colors_updated.connect(_clear_info_card_color_cache)
 class _CardOverlayWidget(QWidget):
     """Hover action overlay: self-painted gradient background + buttons.
 
-    Replaces the former whole-widget opacity fade: the G-color horizontal
-    gradient (same stops as the old background) is drawn in paintEvent
-    with ``painter.setOpacity``, driven per animation frame through
-    :meth:`set_fade`. Action buttons are plain children shown/hidden
-    with the overlay. Steady states render exactly as before; no
-    offscreen effect pipeline sits on the paint path.
+    Replaces the former whole-widget opacity fade: the G-color gradient
+    (same stops as the old background) is drawn in paintEvent with
+    ``painter.setOpacity``, driven per animation frame through
+    :meth:`set_fade`. The gradient axis follows the card layout mode:
+    horizontal cards slide in from the right, vertical cards from the
+    bottom. Action buttons are plain children shown/hidden with the
+    overlay. Steady states render exactly as before; no offscreen effect
+    pipeline sits on the paint path.
     """
 
-    def __init__(self, radius: int = 6, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        radius: int = 6,
+        vertical: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._radius = max(0, int(radius))
+        self._vertical = bool(vertical)
         self._overlay_opacity = 0.0
         self._overlay_slide = 1.0
         self.setAttribute(Qt.WA_StyledBackground, False)
@@ -78,8 +86,12 @@ class _CardOverlayWidget(QWidget):
         transparent = QColor(g.red(), g.green(), g.blue(), 0)
         solid = QColor(g.red(), g.green(), g.blue(), int(255 * 0.9))
         w = max(1, self.width())
-        x1 = max(0.0, min(1.0, 1.0 - self._overlay_slide))
-        gradient = QLinearGradient(x1 * w, 0.0, float(w), 0.0)
+        h = max(1, self.height())
+        edge = max(0.0, min(1.0, 1.0 - self._overlay_slide))
+        if self._vertical:
+            gradient = QLinearGradient(0.0, edge * h, 0.0, float(h))
+        else:
+            gradient = QLinearGradient(edge * w, 0.0, float(w), 0.0)
         gradient.setColorAt(0.0, transparent)
         gradient.setColorAt(0.2, transparent)
         gradient.setColorAt(0.8, solid)
@@ -179,7 +191,9 @@ class StyledInfoCard(QWidget):
         self._hovered = False
         self._pressed = False
         self._overlay_opacity = 0.0
-        self._overlay_slide = 0.0  # 0=遮罩完全在卡片右侧外，1=完全就位（从右侧滑入）
+        # 0=遮罩完全在卡片进入侧外（横向右缘 / 纵向下缘），
+        # 1=完全就位（横向从右侧、纵向从底部滑入）
+        self._overlay_slide = 0.0
         self._card_opacity = 1.0
         self._card_scale = 1.0
         self._x_offset = 0
@@ -900,8 +914,12 @@ class StyledInfoCard(QWidget):
         config = self._get_config()
         radius = config["radius"]
 
-        # Create overlay widget
-        self._overlay_widget = _CardOverlayWidget(radius, self)
+        # Create overlay widget（渐变方向随卡片形态：横向右→左 / 纵向下→上）
+        self._overlay_widget = _CardOverlayWidget(
+            radius,
+            vertical=(self._layout_mode == "vertical"),
+            parent=self,
+        )
         self._overlay_widget.setAttribute(Qt.WA_StyledBackground, False)
         self._overlay_widget.setAttribute(Qt.WA_TransparentForMouseEvents, False)
         self._overlay_widget.raise_()
@@ -968,9 +986,9 @@ class StyledInfoCard(QWidget):
     def _update_overlay_geometry(self):
         """保持 hover overlay 与绘制内容同步，支持 x/y_offset 位移动画。
 
-        滑入/滑出动画通过自绘渐变窗口起点（x1 随 slide 变化）实现，
-        widget 始终占满整卡几何、右缘固定于卡片右缘，四角由圆角约束——
-        动画期间不会以矩形边缘遮挡卡片圆角。
+        滑入/滑出动画通过自绘渐变窗口起点（随 slide 变化）实现，widget
+        始终占满整卡几何，进入侧边缘（横向右缘 / 纵向下缘）固定于卡片
+        对应边缘，四角由圆角约束——动画期间不会以矩形边缘遮挡卡片圆角。
         """
         if not self._overlay_widget:
             return
@@ -1033,7 +1051,10 @@ class StyledInfoCard(QWidget):
     # ── Animations ────────────────────────────────────────────
 
     def _animate_overlay(self, target: float):
-        """同时驱动遮罩淡入淡出与从右侧滑入/滑出（opacity + slide 同步）。"""
+        """同时驱动遮罩淡入淡出与滑入/滑出（opacity + slide 同步）。
+
+        滑入方向随卡片形态：横向从右侧、纵向从底部。
+        """
         self._hover_anim.stop()
         self._slide_anim.stop()
         d = abs(target - self._overlay_opacity)
@@ -1150,14 +1171,16 @@ class StyledInfoCard(QWidget):
 
             painter.setPen(Qt.NoPen)
 
-            # hover 反馈（所有状态统一）：infocard 背景 G 色（surface）水平渐变遮罩，整体从右侧滑入 + 淡入淡出
-            # 渐变映射（相对卡片宽度）：0–0.2 全透明，0.2–0.8 渐变到 G 色，0.8–1.0 保持 G 色
+            # hover 反馈（所有状态统一）：infocard 背景 G 色（surface）渐变遮罩 + 淡入淡出。
+            # 渐变方向随卡片形态：横向卡从左透明到右实色、从右侧滑入；纵向卡从
+            # 上透明到下实色、从底部滑入（New 布局网格瓦片为纵向形态）。
+            # 渐变映射（相对卡片尺寸）：0–0.2 全透明，0.2–0.8 渐变到 G 色，0.8–1.0 保持 G 色。
             # 绘制条件含动画进行中：鼠标移出（_hovered=False）时动画仍反向滑出/淡出，不会直接消失
             if (self._hovered or self._overlay_slide > 0.01 or self._overlay_opacity > 0.01) and not self._disabled:
-                x_shift = w * (1.0 - self._overlay_slide)
+                is_vertical = self._layout_mode == "vertical"
                 painter.save()
                 # 遮罩受整卡圆角裁切：clip 用整卡 (0,0,w,h) 圆角，
-                # 滑入过程中遮罩右缘轮廓与卡片圆角完全重合，不会遮盖卡片圆角
+                # 滑入过程中进入侧边缘轮廓与卡片圆角完全重合，不会遮盖卡片圆角
                 clip_path = QPainterPath()
                 clip_path.addRoundedRect(QRectF(0, 0, w, h), radius, radius)
                 painter.setClipPath(clip_path)
@@ -1166,15 +1189,23 @@ class StyledInfoCard(QWidget):
                 overlay_color.setAlpha(
                     int(colors["hover_overlay"].alpha() * self._overlay_opacity)
                 )
-                hover_grad = QLinearGradient(0, 0, w, 0)
+                if is_vertical:
+                    # 纵向卡：顶部透明 → 底部实色，遮罩从底部向上滑入
+                    y_shift = h * (1.0 - self._overlay_slide)
+                    hover_grad = QLinearGradient(0, 0, 0, h)
+                    panel_rect = QRectF(0, y_shift, w, h)
+                else:
+                    # 横向卡：左侧透明 → 右侧实色，遮罩从右侧向左滑入
+                    x_shift = w * (1.0 - self._overlay_slide)
+                    hover_grad = QLinearGradient(0, 0, w, 0)
+                    panel_rect = QRectF(x_shift, 0, w, h)
                 hover_grad.setColorAt(0.0, tm.transparent)
                 hover_grad.setColorAt(0.2, tm.transparent)
                 hover_grad.setColorAt(0.8, overlay_color)
                 hover_grad.setColorAt(1.0, overlay_color)
                 painter.setBrush(QBrush(hover_grad))
                 # 面板尺寸与卡片同轮廓（整卡 (0,0,w,h)），随 slide 平移；
-                # 无论滑入滑出，右缘轮廓始终由整卡圆角 clip 决定，与卡片圆角完全重合
-                panel_rect = QRectF(x_shift, 0, w, h)
+                # 无论滑入滑出，进入侧轮廓始终由整卡圆角 clip 决定，与卡片圆角完全重合
                 painter.drawRoundedRect(panel_rect, radius, radius)
                 painter.restore()
 
