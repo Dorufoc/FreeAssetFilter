@@ -97,6 +97,14 @@ _SYMBOL_TO_MODULE: dict[str, str] = {
     "ChatMessageRow": "styled_chat_bubble",
     "RowSpec": "styled_chat_bubble",
     "StyledReasoningDrawer": "styled_chat_bubble",
+    "StyledAIChatSidebar": "styled_ai_chat_sidebar",
+    "AIConversationItem": "styled_ai_chat_sidebar",
+    "ConversationEntry": "styled_ai_chat_sidebar",
+    "StyledAIWelcome": "styled_ai_welcome",
+    "StyledAISuggestionCard": "styled_ai_welcome",
+    "StyledAIComposer": "styled_ai_composer",
+    "StyledAIModelChip": "styled_ai_composer",
+    "StyledIconButton": "styled_icon_button",
 }
 
 __all__ = [
@@ -180,6 +188,14 @@ __all__ = [
     "ChatMessageRow",
     "RowSpec",
     "StyledReasoningDrawer",
+    "StyledAIChatSidebar",
+    "AIConversationItem",
+    "ConversationEntry",
+    "StyledAIWelcome",
+    "StyledAISuggestionCard",
+    "StyledAIComposer",
+    "StyledAIModelChip",
+    "StyledIconButton",
 ]
 
 

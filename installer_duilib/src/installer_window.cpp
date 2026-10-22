@@ -8,19 +8,25 @@
 
 #include <d2d1_1helper.h>
 #include <shlobj.h>
+#include <tlhelp32.h>  // T11：已安装应用运行探测（CreateToolhelp32Snapshot）
 #include <uxtheme.h>  // MARGINS（须先于 dwmapi.h）
 #include <dwmapi.h>
 
 #include <algorithm>
 #include <filesystem>
 
+#include "process_control.h"  // T11/D9：按完整路径关闭已安装应用
+#include "render/maintenance_protocol.h"  // T11：kAppExeName（唯一常量来源）
 #include "render/messages.h"  // §10：WM_INSTALL_PROGRESS/DONE + WM_UI_TICK
 #include "render/install_engine.h"  // Todo 13：真实安装引擎（§1/§3/§10/§11 唯一实现）
 #include "render/launch_forward.h"  // Todo 15：§15 去提权启动（唯一 owner）
 // Todo 12：把 Todo 9/10/11 的页文件接入外壳（仅接线，不改页内部实现）。
-#include "render/pages_progress.h"  // Progress/Finish 页
-#include "render/pages_setup.h"     // Location/Options 页
-#include "render/pages_welcome.h"   // Welcome/License 页
+#include "render/pages_maintenance.h"  // T10：Maintenance/UninstallConfirm/Message 页
+#include "render/pages_progress.h"     // Progress/Finish 页
+#include "render/pages_setup.h"        // Location/Options 页
+#include "render/pages_welcome.h"      // Welcome/License 页
+#include "uninstall_coordinator.h"     // T12：卸载协调器（request/helper/result 轮询）
+#include "uninstall_protocol.h"        // T11：WriteMaintenanceDecision（D3 终端键）
 
 namespace fs = std::filesystem;
 
@@ -39,6 +45,32 @@ constexpr float kNavNextCenterX = 816.0f;  // 下一步按钮中心 X（DIP）
 constexpr float kFooterRightEdgeX = 872.0f;  // 页操作按钮右缘（画布）
 constexpr float kCancelButtonW = 96.0f;      // 「取消」宽度
 constexpr int kStepCount = 3;
+
+// T12：UninstallStage → Progress 页阶段文案（wParam/lParam 只传枚举，中文只在此映射）。
+const wchar_t* UninstallStageLabel(faf::UninstallStage stage) {
+    switch (stage) {
+        case faf::UninstallStage::Started: return L"准备卸载";
+        case faf::UninstallStage::RemovingShortcuts: return L"正在删除快捷方式";
+        case faf::UninstallStage::RemovingRegistry: return L"正在清理注册表";
+        case faf::UninstallStage::RemovingFiles: return L"正在删除程序文件";
+        case faf::UninstallStage::RemovingUserData: return L"正在清理用户数据";
+        case faf::UninstallStage::Done: return L"卸载完成";
+        case faf::UninstallStage::Failed: return L"卸载失败";
+        case faf::UninstallStage::Cancelled: return L"卸载已取消";
+    }
+    return L"正在卸载";
+}
+
+bool IsKnownUninstallStage(int value) {
+    return value >= static_cast<int>(faf::UninstallStage::Started) &&
+           value <= static_cast<int>(faf::UninstallStage::Cancelled);
+}
+
+bool IsTerminalUninstallStage(int value) {
+    return value == static_cast<int>(faf::UninstallStage::Done) ||
+           value == static_cast<int>(faf::UninstallStage::Failed) ||
+           value == static_cast<int>(faf::UninstallStage::Cancelled);
+}
 }  // namespace
 
 namespace {
@@ -53,7 +85,10 @@ D2D1_COLOR_F CloseArmedRed() { return D2D1::ColorF(0.690f, 0.145f, 0.102f, 1.0f)
 namespace {
 
 constexpr wchar_t kWindowClass[] = L"FreeAssetFilterInstaller";  // §4 冻结类名
-constexpr wchar_t kWindowTitle[] = L"FreeAssetFilter 安装程序";
+// T10：标题按启动模式设置（自绘标题栏与 CreateWindowExW 共用同一来源）。
+constexpr wchar_t kTitleInstall[] = L"FreeAssetFilter 安装程序";
+constexpr wchar_t kTitleMaintenance[] = L"FreeAssetFilter 维护";
+constexpr wchar_t kTitleUninstall[] = L"FreeAssetFilter 卸载";
 constexpr UINT_PTR kTickTimerId = 1;
 constexpr UINT kTickIntervalMs = 16;      // §2 主循环 ~16ms 驱动动画 tick
 constexpr int kWin10ShadowMarginDip = 12; // §4 Win10 兜底透明外扩边距（DIP）
@@ -67,6 +102,16 @@ constexpr UINT kAutoStepMs = 700;     // 固定步进间隔（无人值守取证
 // §6：逻辑画布尺寸（DIP）——唯一来源为 layout.h，不再内联硬编码（亦不得用旧 720x480）。
 constexpr int kCanvasW = static_cast<int>(faf::layout::kCanvasWidth);
 constexpr int kCanvasH = static_cast<int>(faf::layout::kCanvasHeight);
+
+// T10：启动模式 → 窗口标题（唯一映射点；构造期写入 windowTitle_）。
+const wchar_t* TitleForMode(AppMode mode) {
+    switch (mode) {
+        case AppMode::Maintenance: return kTitleMaintenance;
+        case AppMode::Uninstall: return kTitleUninstall;
+        case AppMode::Install:
+        default: return kTitleInstall;
+    }
+}
 
 std::string WideToUtf8(const std::wstring& text) {
     if (text.empty()) return {};
@@ -104,6 +149,64 @@ void DiagLogRaw(const std::string& utf8Line) {
 }
 
 void DiagLog(const std::wstring& line) { DiagLogRaw(WideToUtf8(line)); }
+
+// T11：把路径归一化为可比较的绝对长路径（去掉 `\\?\` 前缀，统一小写比较交由
+// CompareStringOrdinal(..., TRUE) 完成，不在此改写大小写）。
+std::wstring NormalizedPath(const std::wstring& path) {
+    wchar_t full[MAX_PATH] = {};
+    if (GetFullPathNameW(path.c_str(), ARRAYSIZE(full), full, nullptr) == 0) {
+        return path;
+    }
+    wchar_t longPath[MAX_PATH] = {};
+    std::wstring result = full;
+    if (GetLongPathNameW(full, longPath, ARRAYSIZE(longPath)) > 0) result = longPath;
+    if (result.rfind(L"\\\\?\\", 0) == 0) result.erase(0, 4);
+    while (result.size() > 3 && (result.back() == L'\\' || result.back() == L'/')) result.pop_back();
+    return result;
+}
+
+// T11：探测 `<installDir>\FreeAssetFilter.exe` 是否在运行。
+//
+// 为什么窗口侧另做一次探测：process_control.h（T3）只暴露“关闭”入口，没有只读
+// 探测 API，而 T11 必须区分两条路径 —— 未运行 → 直接写 decision 开始修复；运行中
+// → 先异步关闭，**关闭成功后**才允许写 decision。匹配口径与 faf::CloseInstalledApp
+// 保持一致：先按映像名预筛，再用 QueryFullProcessImageNameW 取完整路径做大小写不
+// 敏感比较，绝不按映像名单独判定（避免误判/误关其它目录的同名 exe）。
+bool IsInstalledAppRunning(const std::wstring& installDir) {
+    if (installDir.empty()) return false;
+    const std::wstring target =
+        NormalizedPath(installDir + L"\\" + faf::protocol::kAppExeName);
+    if (target.empty()) return false;
+
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return false;
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    bool running = false;
+    if (Process32FirstW(snapshot, &entry)) {
+        do {
+            if (CompareStringOrdinal(entry.szExeFile, -1, faf::protocol::kAppExeName, -1, TRUE) !=
+                CSTR_EQUAL) {
+                continue;
+            }
+            HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+                                         entry.th32ProcessID);
+            if (!process) continue;
+            wchar_t image[MAX_PATH] = {};
+            DWORD size = ARRAYSIZE(image);
+            if (QueryFullProcessImageNameW(process, 0, image, &size)) {
+                if (CompareStringOrdinal(NormalizedPath(image).c_str(), -1, target.c_str(), -1,
+                                         TRUE) == CSTR_EQUAL) {
+                    running = true;
+                }
+            }
+            CloseHandle(process);
+            if (running) break;
+        } while (Process32NextW(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
+    return running;
+}
 
 bool AppsUseLightTheme() {
     DWORD value = 1;
@@ -146,24 +249,92 @@ bool WindowsBuild22621OrLater() {
 }  // namespace
 
 InstallerWindow::InstallerWindow(HINSTANCE instance, std::wstring payload, std::wstring resultPath,
-                                 std::wstring installDir)
-    : instance_(instance), payload_(std::move(payload)), resultPath_(std::move(resultPath)) {
-    // §15/Todo 15：/installdir（重装预填）优先；缺省为产品默认安装目录。
-    state_.installDir = installDir.empty() ? std::wstring(L"C:\\Program Files\\FreeAssetFilter")
-                                           : std::move(installDir);
+                                 std::wstring installDir, AppMode mode, std::wstring decisionPath,
+                                 DWORD setupPid, std::uint64_t payloadTimeoutMs, DWORD helperPid,
+                                 std::wstring uninstallRequestPath,
+                                 std::wstring uninstallResultPath)
+    : instance_(instance),
+      payload_(std::move(payload)),
+      resultPath_(std::move(resultPath)),
+      mode_(mode),
+      decisionPath_(std::move(decisionPath)),
+      helperPid_(helperPid),
+      uninstallRequestPath_(std::move(uninstallRequestPath)),
+      uninstallResultPath_(std::move(uninstallResultPath)),
+      setupPid_(setupPid),
+      payloadTimeoutMs_(payloadTimeoutMs) {
+    // §15/Todo 15：/installdir（重装预填）优先。产品默认目录只属于安装模式；
+    // 维护/卸载缺少 /installdir 时由 main.cpp 从当前 exe 父目录推导（C4）。这里
+    // 绝不再对非安装模式回退 Program Files，否则直接卸载可能指向错误目录。
+    if (!installDir.empty()) {
+        state_.installDir = std::move(installDir);
+    } else if (mode_ == AppMode::Install) {
+        state_.installDir = L"C:\\Program Files\\FreeAssetFilter";
+    }
+    // C4：非安装模式若仍拿到空 installDir，交由既有 startup-error 路径失败关闭；
+    // 同时不得拼出 `\uninstall-request.ini` 这类根路径。
+    if (mode_ != AppMode::Install && state_.installDir.empty()) {
+        startupErrorTitle_ = L"无法确定安装目录";
+        startupErrorBody_ =
+            L"未提供 /installdir，且无法从当前程序位置推导安装目录。操作已取消。";
+        exitCode_ = 1;
+        maintenanceSuppressDecision_ = true;
+    }
+    // T12：未显式传路径时按 installDir 推导（D5：文件固定在安装目录）。
+    if (!state_.installDir.empty()) {
+        if (uninstallRequestPath_.empty()) {
+            uninstallRequestPath_ =
+                state_.installDir + L"\\" + faf::protocol::kUninstallRequestFile;
+        }
+        if (uninstallResultPath_.empty()) {
+            uninstallResultPath_ =
+                state_.installDir + L"\\" + faf::protocol::kUninstallResultFile;
+        }
+    }
+    UpdateWindowTitle();  // T13：windowTitle_ 初始化（window_ 尚为空，仅落字符串）
+    // T11/D9：setup 退出 watchdog —— 只监视（SYNCHRONIZE），绝不终止 setup 进程。
+    // 打开失败（PID 已消失/无权限）时保持空句柄：此时无法区分“PID 无效”和“setup 已
+    // 退出”，贸然中止会误杀正常安装；wait-for-payload 的最终超时仍由 NSIS 侧兜底。
+    if (setupPid_ != 0) {
+        setupProcess_ = OpenProcess(SYNCHRONIZE, FALSE, setupPid_);
+        DiagLog(L"setup watchdog pid=" + std::to_wstring(setupPid_) + L" opened=" +
+                std::to_wstring(setupProcess_ ? 1 : 0));
+    }
     // §16：生产动画采样 sink = 既有 DiagLog（env 门控，未设置时 no-op）。
     animator_.SetSink([](const std::string& line) { DiagLogRaw(line); });
 }
 
 InstallerWindow::~InstallerWindow() {
-    // Todo 12：页面持 COM 对象（LicenseBox 的 IDWriteTextLayout 等），必须在
+    DiagLog(L"destructor begin");
+    // T12：先停协调器（worker 可能在轮询并 PostMessage），再收尾关闭线程/句柄。
+    uninstallCoordinator_.reset();
+    // T13：异常销毁路径下安装 worker 可能仍存活（它通过 this 访问引擎/错误槽并
+    // PostMessage）。先取消并显式 join，再拆页面/停渲染，避免 use-after-free。
+    FinishInstallThread();
+    // T11：跨线程句柄必须先收尾——关闭应用的工作线程可能仍在 faf::CloseInstalledApp
+    // 内运行并访问本对象成员（closeTargetDir_/closeMutex_），因此在拆页面/停渲染之前
+    // join；setup watchdog 的进程句柄同样在此关闭（CloseHandle 不终止 setup）。
+    FinishCloseThread();
+    if (setupProcess_) {
+        CloseHandle(setupProcess_);
+        setupProcess_ = nullptr;
+    }
+    // Todo 12 / T10：页面持 COM 对象（LicenseBox 的 IDWriteTextLayout 等），必须在
     // render_.Shutdown()（含 CoUninitialize）之前析构，避免在失效 COM 单元上 Release。
+    // 新增的英雄页同样先于 COM 拆卸。
+    maintenancePage_.reset();
+    uninstallConfirmPage_.reset();
+    messagePage_.reset();
     welcomePage_.reset();
     licensePage_.reset();
     configurePage_.reset();
     progressPage_.reset();
     finishPage_.reset();
-    render_.Shutdown();
+    DiagLog(L"destructor before render shutdown");
+    // render_ 声明在 shellHost_/控件之前，析构顺序为后者先于 render_。显式 Shutdown
+    // 会在这些成员仍持有 D2D/DWrite 资源时拆掉 COM 单元，导致关闭时访问冲突；
+    // 统一交给 ~RenderContext() 在其余成员析构后执行一次。
+    DiagLog(L"destructor end");
 }
 
 int InstallerWindow::Run() {
@@ -173,7 +344,18 @@ int InstallerWindow::Run() {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    DiagLog(L"run loop exited wparam=" + std::to_wstring(msg.wParam));
     return static_cast<int>(msg.wParam);
+}
+
+void InstallerWindow::SetStartupError(std::wstring title, std::wstring body) {
+    startupErrorTitle_ = std::move(title);
+    startupErrorBody_ = std::move(body);
+    exitCode_ = 1;
+    // 双保险：startup error 的 WM_CLOSE 分支本身不写任何协议，这里同时屏蔽维护
+    // decision（防止任何意外路径经 OnMaintenanceCloseIntent 补写 cancel）。
+    maintenanceSuppressDecision_ = true;
+    DiagLog(L"startup error set title=" + startupErrorTitle_);
 }
 
 bool InstallerWindow::CreateAppWindow() {
@@ -203,9 +385,10 @@ bool InstallerWindow::CreateAppWindow() {
     // §4：WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX + WS_EX_NOREDIRECTIONBITMAP。
     const DWORD style = WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX;
     const DWORD exStyle = WS_EX_APPWINDOW | WS_EX_NOREDIRECTIONBITMAP;
-    window_ = CreateWindowExW(exStyle, kWindowClass, kWindowTitle, style, left, top, widthPx,
-                              heightPx, nullptr, nullptr, instance_, this);
+    window_ = CreateWindowExW(exStyle, kWindowClass, windowTitle_.c_str(), style, left, top,
+                              widthPx, heightPx, nullptr, nullptr, instance_, this);
     if (!window_) return false;
+    UpdateWindowTitle();  // T13：原生标题与自绘标题栏共用 windowTitle_
 
     UINT windowDpi = GetDpiForWindow(window_);  // §6：窗口 DPI 用 GetDpiForWindow
     if (windowDpi) dpi_ = windowDpi;
@@ -335,11 +518,20 @@ void InstallerWindow::RefreshSystemTheme() {
     Render();
 }
 
+void InstallerWindow::UpdateWindowTitle() {
+    // T13：标题唯一映射仍在 TitleForMode()；本函数只负责把同一字符串同时写入
+    // 自绘标题栏数据源与原生窗口（任务栏/Alt+Tab）。窗口未创建时仅更新字符串。
+    windowTitle_ = TitleForMode(mode_);
+    if (window_) SetWindowTextW(window_, windowTitle_.c_str());
+}
+
 void InstallerWindow::Layout() {
     // §6：shell 几何唯一来源 = faf::ComputeShellLayout(bool hero)（纯 DIP 计算，不依赖 DPI）。
     // 标题栏最小化/关闭命中区、步骤带、内容卡片、底部条均由该结果提供。
-    // 模式由当前页决定（英雄页 欢迎/完成 无步骤带/底部条；state_.page 缺省 = Welcome=0=英雄页）。
-    shellLayout_ = faf::ComputeShellLayout(faf::IsHeroPage(state_.page));
+    // 模式由当前页 + 操作类型决定（英雄页 欢迎/完成/维护/卸载确认/消息 无步骤带/底部条；
+    // Repair/Uninstall 复用 Progress/Finish 时也必须是英雄页几何——与 SetPage 同一判据）。
+    shellLayout_ = faf::ComputeShellLayout(faf::IsHeroPage(state_.page) ||
+                                           state_.operation != Operation::Install);
     // Todo 12：shell 几何变化后重排步骤栏/导航按钮/当前页（页面构造前为空操作）。
     if (pagesReady_) {
         LayoutStepBar();
@@ -396,6 +588,9 @@ void InstallerWindow::OnDpiChanged(UINT newDpi, const RECT* suggested) {
 // PresentFrame()（Render 内部 = BeginDraw → Clear(透明) → DrawContent → PresentFrame → Commit）
 // → 无动画且无 dirty 时 KillTimer 进入闲置；下次新动画/置脏经 RequestAnimTick 重新武装。
 void InstallerWindow::Tick() {
+    // T11/D9：setup 退出监视必须先于动画推进——setup 消失时立即抬高取消信号，让
+    // 引擎在下一个轮询点安全停止（引擎收尾后由 WM_INSTALL_DONE 展示终止原因）。
+    CheckSetupWatchdog();
     const double nowMs = faf::SteadyNowMs();
     const bool worked = animator_.Tick(nowMs);  // 推进 + §16 每 tick 采样/边界行
     if (dirty_ || worked) {
@@ -404,7 +599,9 @@ void InstallerWindow::Tick() {
                 L" dirty=" + std::to_wstring(dirty_ ? 1 : 0));
         Render();  // 内部 PresentFrame() 已含 dcomp->Commit()
     }
-    if (!animator_.IsActive() && !dirty_) {
+    // T11：安装/修复期间即使无动画也保持 tick 定时器——CheckSetupWatchdog 依赖它，
+    // 否则等待 payload 哨兵的静默期会导致 watchdog 停摆（要求 10s 内中止）。
+    if (!keepTickAlive_ && !animator_.IsActive() && !dirty_) {
         DiagLog(L"anim idle t=" + std::to_wstring(static_cast<long long>(nowMs)) +
                 L" -> KillTimer (no active anim, not dirty)");
         KillTickTimer();
@@ -479,7 +676,8 @@ void InstallerWindow::DrawContent(ID2D1DeviceContext* ctx) {
     // --- Todo 12：步骤栏 + 当前页 + 导航按钮（状态唯一来源 = AppState::page，§12）---
     if (pagesReady_) {
         // 追加需求：英雄页（欢迎/完成）无步骤带——仅向导页绘制 3 个横向节点。
-        if (!faf::IsHeroPage(state_.page)) {
+        // T10：Repair/Uninstall 一律不画安装步骤带（operation 非 Install 时）。
+        if (state_.operation == Operation::Install && !faf::IsHeroPage(state_.page)) {
             for (int i = 0; i < kStepCount; ++i) stepItems_[i].Render(ctx, faded);
         }
         // 页内 Render 自行 SetTransform（会覆盖 shell 平移），渲染后再恢复边距平移。
@@ -600,7 +798,8 @@ void InstallerWindow::DrawTitleBar(ID2D1DeviceContext* ctx, const faf::Theme& th
     dividerColor.a *= alpha;
 
     // §5：标题栏区域保持透明（Win11 让 Mica 透出）；文字/字形用 token 前色，底部一条分隔线。
-    DrawTextLine(ctx, kWindowTitle, faf::spacing::M, 0, titleW, titleH, faf::fontsize::Caption,
+    // T10：标题文字来自构造期按 mode 设置的 windowTitle_（CreateWindowExW 同源）。
+    DrawTextLine(ctx, windowTitle_, faf::spacing::M, 0, titleW, titleH, faf::fontsize::Caption,
                  primary);
 
     // 窗口按钮（最小化/关闭）悬停/按下背景填充。
@@ -959,7 +1158,45 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         Render();
         return 0;
     }
+    // T10：第二实例请求恢复并置前（T13 的 SingleInstanceGuard 发出）。
+    if (msg == WM_FAF_ACTIVATE) {
+        ShowWindow(hwnd, SW_RESTORE);
+        SetForegroundWindow(hwnd);
+        return 0;
+    }
+    // T10：维护/卸载跨线程消息占位分发（真实分流由 T11-T13 填充）。
+    if (msg == WM_APP_CLOSE_DONE) {
+        OnCloseDoneMessage(wp);
+        return 0;
+    }
+    if (msg == WM_UNINSTALL_PROGRESS) {
+        OnUninstallProgressMessage(wp, lp);
+        return 0;
+    }
+    if (msg == WM_UNINSTALL_DONE) {
+        OnUninstallDoneMessage(wp, lp);
+        return 0;
+    }
     if (msg == WM_CLOSE) {
+        // T14：启动期致命错误页（helper 非管理员 / 身份不一致 / 缺 /decision）
+        // 关闭时只销毁窗口：绝不写 maintenance-decision.ini、uninstall-request.ini、
+        // uninstall-result.ini 或 install-result.ini，也不触发模式的关闭业务。
+        if (!startupErrorTitle_.empty()) {
+            DiagLog(L"WM_CLOSE startup error -> DestroyWindow");
+            KillTickTimer();
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        // T10：非 Install 模式的关闭语义分流到 T11/T12 的接缝方法（写 decision /
+        // ui_done 等业务由后续 todo 完成；本 todo 不在此写 INI、不终止进程）。
+        if (mode_ == AppMode::Maintenance) {
+            OnMaintenanceCloseIntent();
+            return 0;
+        }
+        if (mode_ == AppMode::Uninstall) {
+            OnUninstallCloseIntent();
+            return 0;
+        }
         // Todo 12/13：窗口关闭等同取消。安装中不得立即销毁——引擎仍需按 §3 安全停止、
         // 清理本次写入并写 §1 结果（abort=1）；销毁延迟到 WM_INSTALL_DONE。
         if (installing_) {
@@ -973,8 +1210,10 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     if (msg == WM_DESTROY) {
+        DiagLog(L"WM_DESTROY exitCode=" + std::to_wstring(exitCode_));
         KillTickTimer();
-        PostQuitMessage(0);
+        // T14：startup error 页以 1 退出；其余模式保持既有 0。
+        PostQuitMessage(exitCode_);
         return 0;
     }
     if (msg == WM_INSTALL_PROGRESS) {  // §10：wParam = permille 0..1000
@@ -986,6 +1225,7 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
     }
     if (msg == WM_INSTALL_DONE) {  // wParam：1 = 成功；0 = 取消/超时/失败（引擎已写 §1 INI）
         installing_ = false;
+        keepTickAlive_ = false;  // T11：操作结束，允许 tick 定时器在闲置时停表
         if (installThread_) {
             CloseHandle(installThread_);
             installThread_ = nullptr;
@@ -993,6 +1233,10 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         const bool ok = wp != 0;
         const bool cancelled = installCancelled_.load();
         const bool timedOut = installTimedOut_.load();
+        // T11：setup 提前退出会置 cancel_ + installTimedOut_，但 UI 文案必须以
+        // “安装程序已退出，操作已终止”为准（不得显示成用户取消或自动关窗）。
+        const bool setupExited = state_.setupExited;
+        const bool repair = state_.operation == Operation::Repair;
         std::wstring error;
         {
             std::lock_guard<std::mutex> lock(errorMutex_);
@@ -1000,7 +1244,29 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         }
         DiagLog(L"install done ok=" + std::to_wstring(ok ? 1 : 0) + L" cancelled=" +
                 std::to_wstring(cancelled ? 1 : 0) + L" timeout=" +
-                std::to_wstring(timedOut ? 1 : 0) + L" error=" + error);
+                std::to_wstring(timedOut ? 1 : 0) + L" setup_exited=" +
+                std::to_wstring(setupExited ? 1 : 0) + L" repair=" +
+                std::to_wstring(repair ? 1 : 0) + L" error=" + error);
+
+        if (repair) {
+            // T11：修复终点。成功 → Finish(Repair)；失败/取消 → Message，窗口保持
+            // 打开（修复不回滚，绝不能自动关闭或伪造成功）。
+            if (ok) {
+                SetPage(Finish);
+                return 0;
+            }
+            if (setupExited) {
+                ShowError(L"修复已终止", L"安装程序已退出，操作已终止", L"关闭", L"");
+            } else if (cancelled) {
+                ShowError(L"修复已取消", L"修复未完成，已写入的程序文件保持原样。", L"关闭", L"");
+            } else {
+                ShowError(L"修复失败",
+                          error.empty() ? L"修复过程中出现未知错误。" : (L"修复失败：" + error),
+                          L"关闭", L"");
+            }
+            return 0;
+        }
+
         if (closePending_) {
             // 安装中收到的关闭：引擎已安全停止并完成 §1 结果写入 → 现在销毁。
             KillTickTimer();
@@ -1011,15 +1277,20 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
             SetPage(Finish);  // 自动进入完成页（Progress→Finish 自动，无需用户下一步）
             return 0;
         }
+        if (setupExited) {
+            // T11/T13：setup 已退出 → 不自动关窗，统一走可见错误页明确告知操作被终止。
+            ShowError(L"安装已终止", L"安装程序已退出，操作已终止", L"关闭", L"");
+            return 0;
+        }
         if (cancelled) {
             if (progressPage_) progressPage_->MarkCancelled();  // §3：引擎确认已清理完成
             PostMessageW(hwnd, WM_CLOSE, 0, 0);  // 统一关闭路径（resultWritten_ 守卫防二次写）
             return 0;
         }
-        // 超时/失败：引擎已写 abort=1 + error=；窗口内展示原因并保持打开（与载荷缺失
-        // 启动错误同一展示路径）。
-        errorText_ = error.empty() ? L"安装失败" : (L"安装失败：" + error);
-        RequestAnimTick();
+        // 超时/失败：引擎已写 abort=1 + error=；T13 统一显示可见、可关闭的错误页，
+        // 窗口保持打开（不自动退出）。关闭时 WriteCancelResult 受 resultWritten_ 保护。
+        ShowError(L"安装失败", error.empty() ? L"安装失败" : (L"安装失败：" + error), L"关闭",
+                  L"");
         return 0;
     }
 
@@ -1031,7 +1302,9 @@ void InstallerWindow::SetPage(int page) {
     state_.page = page;
     // 追加需求：英雄页（欢迎/完成）⇄ 向导页切换时 shell 几何不同（有无步骤带/底部条），
     // 必须在布局页面之前重算，否则页/步骤带/导航按钮会沿用旧几何。
-    shellLayout_ = faf::ComputeShellLayout(faf::IsHeroPage(page));
+    // T10：Repair/Uninstall（operation != Install）复用 Progress/Finish 时也按英雄页布局。
+    shellLayout_ = faf::ComputeShellLayout(faf::IsHeroPage(page) ||
+                                           state_.operation != Operation::Install);
     ApplyPageEntry();
     RequestAnimTick();  // 置脏 + 确保 tick 定时器在跑（页面切换动画 + 步骤栏高亮）
 }
@@ -1060,6 +1333,40 @@ void InstallerWindow::WriteCancelResult() {
 }
 
 void InstallerWindow::OnFinishIntent() {
+    // T12/D15 C1：Finish(Uninstall) 关闭前写 ui_done=1；协调器已失败则不写（helper
+    // 已失败/退出，不能伪造 UI 同意收尾）。随后统一走 WM_CLOSE → OnUninstallCloseIntent。
+    if (state_.operation == Operation::Uninstall) {
+        if (uninstallCoordinator_ && !uninstallCoordinator_->Failed()) {
+            uninstallCoordinator_->WriteUiDone();
+        }
+        PostMessageW(window_, WM_CLOSE, 0, 0);
+        return;
+    }
+    // T11/Acceptance：Finish(Repair) —— 仅当用户勾选「立即启动 FreeAssetFilter」时启动
+    // （复选框直接绑定 state_.optLaunchAfterRepair，默认 false），随后关窗；未勾选只关窗。
+    if (state_.operation == Operation::Repair) {
+        if (!state_.optLaunchAfterRepair) {
+            DiagLog(L"repair finish without launch");
+            PostMessageW(window_, WM_CLOSE, 0, 0);
+            return;
+        }
+        const faf::LaunchOutcome repairOutcome =
+            faf::LaunchInstalledAppDeElevated(state_.installDir, window_);
+        DiagLog(L"repair launch attempted dir=" + state_.installDir + L" launched=" +
+                std::to_wstring(repairOutcome.launched ? 1 : 0) + L" missing=" +
+                std::to_wstring(repairOutcome.missingExe ? 1 : 0) + L" error=" +
+                repairOutcome.error);
+        if (!repairOutcome.launched) {
+            // 启动失败不关窗（不伪造成功）；T13 与安装完成页共用可见错误页。
+            ShowError(L"启动失败",
+                      repairOutcome.error.empty() ? L"启动失败"
+                                                  : (L"启动失败：" + repairOutcome.error),
+                      L"关闭", L"");
+            return;
+        }
+        PostMessageW(window_, WM_CLOSE, 0, 0);
+        return;
+    }
     // §15（唯一 owner = Todo 15）：完成后启动。
     // 追加需求（2026-10-18）：完成页改为英雄页——大按钮「立即启动」= **无条件启动**
     // （页内不再有「立即启动」勾选框，AppState.optLaunch 恒为默认真）。
@@ -1071,10 +1378,10 @@ void InstallerWindow::OnFinishIntent() {
             std::to_wstring(outcome.launched ? 1 : 0) + L" missing=" +
             std::to_wstring(outcome.missingExe ? 1 : 0) + L" error=" + outcome.error);
     if (!outcome.launched) {
-        // 目标缺失/转发失败：不崩溃、不关闭 —— 窗口内提示（与载荷缺失同一展示路径），
-        // 用户可自行关闭（WM_CLOSE → 非安装中即销毁）。
-        errorText_ = outcome.error.empty() ? L"启动失败" : (L"启动失败：" + outcome.error);
-        RequestAnimTick();
+        // 目标缺失/转发失败：不崩溃、不关闭；T13 统一显示可见错误页，用户可关闭。
+        ShowError(L"启动失败",
+                  outcome.error.empty() ? L"启动失败" : (L"启动失败：" + outcome.error),
+                  L"关闭", L"");
         return;
     }
     PostMessageW(window_, WM_CLOSE, 0, 0);
@@ -1089,15 +1396,17 @@ void InstallerWindow::InstallThread() {
 
     // Todo 13：真实引擎 = §11 哨兵等待 → 预扫描 → 逐文件复制（permille 上报）→
     // §3 取消清理 → §1 结果 INI。引擎内无 HWND/COM，结果 INI 由其唯一写入器完成。
+    // T11：installMode_ 在创建线程前由 UI 线程写入，worker 只读（无并发写）。
     faf::InstallEngine engine(payload_, state_.installDir, resultPath_);
-    const faf::InstallResult result = engine.Run(options, cancel_, [this](int permille) {
-        // §10：PostMessage 节流 ~30fps；终值 1000 恒发（节流不得吞掉终值）。
-        const ULONGLONG now = GetTickCount64();
-        if (permille >= 1000 || now - lastProgressPostTick_ >= kProgressPostIntervalMs) {
-            lastProgressPostTick_ = now;
-            PostMessageW(window_, WM_INSTALL_PROGRESS, static_cast<WPARAM>(permille), 0);
-        }
-    });
+    const faf::InstallResult result =
+        engine.Run(options, installMode_, cancel_, [this](int permille) {
+            // §10：PostMessage 节流 ~30fps；终值 1000 恒发（节流不得吞掉终值）。
+            const ULONGLONG now = GetTickCount64();
+            if (permille >= 1000 || now - lastProgressPostTick_ >= kProgressPostIntervalMs) {
+                lastProgressPostTick_ = now;
+                PostMessageW(window_, WM_INSTALL_PROGRESS, static_cast<WPARAM>(permille), 0);
+            }
+        });
 
     resultWritten_ = result.iniWritten;
     installCancelled_ = result.cancelled;
@@ -1109,8 +1418,9 @@ void InstallerWindow::InstallThread() {
     PostMessageW(window_, WM_INSTALL_DONE, result.ok ? 1 : 0, 0);
 }
 
-void InstallerWindow::StartInstall() {
+void InstallerWindow::StartInstall(faf::InstallMode mode) {
     if (installing_) return;  // 防重入（导航已门控，此处为最后防线）
+    installMode_ = mode;
     // 每次安装重置取消/结果/错误/进度状态（含失败后重装路径）。
     cancel_ = false;
     closePending_ = false;
@@ -1124,15 +1434,91 @@ void InstallerWindow::StartInstall() {
         installError_.clear();
     }
     installing_ = true;
+    // T11：修复期间保持 tick 定时器（setup 退出 watchdog 依赖它；无动画时也不停表）。
+    keepTickAlive_ = true;
+    if (mode == faf::InstallMode::Repair) {
+        // T11：repair 复用 Progress 页 —— operation 是唯一来源（SetPage/布局/步骤栏均读它）。
+        state_.operation = Operation::Repair;
+    } else {
+        state_.operation = Operation::Install;
+    }
     SetPage(Progress);
-    DiagLog(L"install start dir=" + state_.installDir);
+    if (mode == faf::InstallMode::Repair && progressPage_) {
+        progressPage_->SetKind(faf::ProgressPage::Kind::Repair);
+        progressPage_->SetCancellable(false);  // 修复中不允许取消/ESC/X
+        progressPage_->SetNotice(L"修复过程中请勿关闭窗口");
+    }
+    DiagLog(std::wstring(L"install start dir=") + state_.installDir + L" mode=" +
+            std::to_wstring(mode == faf::InstallMode::Repair ? 1 : 0));
     installThread_ = CreateThread(nullptr, 0, InstallThreadProc, this, 0, nullptr);
     if (!installThread_) {
         installing_ = false;
+        keepTickAlive_ = false;
         WriteAbortResult(L"thread-create-failed");  // §1：失败必须写 error=
-        errorText_ = L"安装线程创建失败";
-        RequestAnimTick();
+        if (mode == faf::InstallMode::Repair) {
+            ShowError(L"无法开始修复", L"修复线程创建失败，程序文件未改动。", L"关闭", L"");
+        } else {
+            ShowError(L"无法开始安装", L"安装线程创建失败，程序文件未改动。", L"关闭", L"");
+        }
     }
+}
+
+void InstallerWindow::StartUninstall() {
+    if (mode_ != AppMode::Maintenance && mode_ != AppMode::Uninstall) {
+        DiagLog(L"uninstall intent ignored outside maintenance/uninstall mode");
+        return;
+    }
+    if (installing_ || closingApp_ || uninstallRunning_) return;  // 防重入
+
+    // T12：Progress 页复用 —— operation 是唯一来源（SetPage/布局/步骤栏均读它）。
+    state_.operation = Operation::Uninstall;
+    progressPermille_ = 0;
+    uninstallTerminal_ = false;
+    SetPage(Progress);
+    if (progressPage_) {
+        progressPage_->SetKind(faf::ProgressPage::Kind::Uninstall);
+        progressPage_->SetCancellable(false);  // 卸载中不允许取消/ESC/X
+        progressPage_->SetNotice(L"卸载过程中请勿关闭窗口");
+        progressPage_->SetStageText(UninstallStageLabel(faf::UninstallStage::Started));
+        progressPage_->SetProgressPermille(0);
+    }
+    DiagLog(L"uninstall start dir=" + state_.installDir + L" helper_pid=" +
+            std::to_wstring(helperPid_) + L" delete_user_data=" +
+            std::to_wstring(state_.deleteUserData ? 1 : 0));
+
+    if (mode_ == AppMode::Maintenance) {
+        // D3/T12：action 是 decision 的终端键，只写一次。写失败不得开始卸载。
+        if (!WriteMaintenanceDecisionOnce(MaintenanceAction::Uninstall)) {
+            // 与 T11 预检失败一致：X/ESC 也不得补写 cancel。
+            maintenanceSuppressDecision_ = true;
+            ShowError(L"无法开始卸载", L"无法写入维护决定文件，卸载未开始。", L"关闭", L"");
+            return;
+        }
+        // setup 必须先 ack（D15 C2：写 ack 后立即 Abort 释放 SetupMutex）；未 ack
+        // 就启动 helper 会与仍在运行的 setup 冲突。ack 是启动协调器的前置条件。
+        if (!faf::WaitForDecisionAck(decisionPath_, faf::protocol::kAckTimeoutMs)) {
+            ShowError(L"无法开始卸载",
+                      L"安装程序未在限定时间内确认卸载请求，卸载未开始。", L"关闭", L"");
+            return;
+        }
+    }
+
+    // helperPid_==0 时由协调器先写 request 再启动 helper；非 0 时只附着，不二次启动。
+    uninstallCoordinator_ = std::make_shared<faf::UninstallCoordinator>(
+        state_.installDir, state_.deleteUserData, GetCurrentProcessId(), helperPid_,
+        uninstallRequestPath_, uninstallResultPath_, window_);
+    std::wstring error;
+    if (!uninstallCoordinator_->Start(&error)) {
+        uninstallCoordinator_.reset();
+        ShowError(L"无法开始卸载", error.empty() ? L"卸载程序启动失败。" : error, L"关闭",
+                  L"");
+        return;
+    }
+    uninstallRunning_ = true;
+    // 维护卸载不接入 setup watchdog：setup 在 ack 后按 D15 C2 主动退出，属正常收尾。
+    keepTickAlive_ = false;
+    DiagLog(L"uninstall coordinator started request=" + uninstallRequestPath_ +
+            L" result=" + uninstallResultPath_);
 }
 
 // ======================= Todo 12：页面状态机 / 导航接线 =====================
@@ -1188,6 +1574,29 @@ void InstallerWindow::EnsurePages() {
     // 追加需求：完成页为英雄页——大按钮「立即启动」= 无条件去提权启动 + 关窗。
     finishPage_->SetOnFinishIntent([this]() { OnFinishIntent(); });
 
+    // T10：三个英雄页（T7）。回调仅接到本类的占位接缝；T11/T12/T13 替换为真实业务。
+    maintenancePage_ = std::make_unique<faf::MaintenancePage>(state_);
+    maintenancePage_->BindAnimator(&animator_);
+    maintenancePage_->BindText(&textFactory_);
+    maintenancePage_->BindGlyphs(&glyphFont_);
+    maintenancePage_->SetOnRepair([this]() { OnMaintenanceRepairIntent(); });
+    maintenancePage_->SetOnUninstall([this]() { OnMaintenanceUninstallIntent(); });
+    maintenancePage_->SetOnCancel([this]() { OnMaintenanceCancelIntent(); });
+
+    uninstallConfirmPage_ = std::make_unique<faf::UninstallConfirmPage>(state_);
+    uninstallConfirmPage_->BindAnimator(&animator_);
+    uninstallConfirmPage_->BindText(&textFactory_);
+    uninstallConfirmPage_->BindGlyphs(&glyphFont_);
+    uninstallConfirmPage_->SetOnConfirm([this]() { OnUninstallConfirmIntent(); });
+    uninstallConfirmPage_->SetOnCancel([this]() { OnUninstallCancelIntent(); });
+
+    messagePage_ = std::make_unique<faf::MessagePage>(state_);
+    messagePage_->BindAnimator(&animator_);
+    messagePage_->BindText(&textFactory_);
+    messagePage_->BindGlyphs(&glyphFont_);
+    messagePage_->SetOnPrimary([this]() { OnMessagePrimaryIntent(); });
+    messagePage_->SetOnSecondary([this]() { OnMessageSecondaryIntent(); });
+
     for (int i = 0; i < kStepCount; ++i) {
         stepItems_[i].SetIndex(i);
         stepItems_[i].SetLabel(kStepLabels[i]);
@@ -1215,11 +1624,32 @@ void InstallerWindow::EnsurePages() {
     shellHost_.Add(&nextButton_);
 
     pagesReady_ = true;
-    LayoutStepBar();
-    LayoutFooterButtons();
-    ApplyPageEntry();
+    // T14：启动期致命错误优先于任何模式初始化（维护模式绝不能因此进入
+    // EnterMaintenanceMode/Detect 流程，卸载模式也不能进入确认页）。
+    if (!startupErrorTitle_.empty()) {
+        exitCode_ = 1;
+        DiagLog(L"startup error page shown title=" + startupErrorTitle_);
+        ShowError(startupErrorTitle_, startupErrorBody_, L"关闭", L"");
+        RequestAnimTick();
+        return;
+    }
+    if (mode_ == AppMode::Maintenance) {
+        // T11：维护模式的初始页 = 页 5（Detect + SetInfo），而非安装向导的欢迎页。
+        // EnterMaintenanceMode 内部经 SetPage 完成 shell 几何重算 + ApplyPageEntry。
+        EnterMaintenanceMode();
+    } else {
+        // T12：/uninstall 的初始页 = 卸载确认页（不是安装向导的欢迎页）。
+        if (mode_ == AppMode::Uninstall) {
+            state_.page = UninstallConfirm;
+            shellLayout_ = faf::ComputeShellLayout(
+                faf::IsHeroPage(state_.page) || state_.operation != Operation::Install);
+        }
+        LayoutStepBar();
+        LayoutFooterButtons();
+        ApplyPageEntry();
+    }
     RequestAnimTick();
-    DiagLog(L"pages ready count=5");
+    DiagLog(L"pages ready count=8");
 }
 
 D2D1_RECT_F InstallerWindow::PageRect() const {
@@ -1277,8 +1707,19 @@ void InstallerWindow::LayoutPages() {
         case Welcome: welcomePage_->Layout(card); break;
         case License: licensePage_->Layout(card); break;
         case Configure: configurePage_->Layout(card); break;
-        case Progress: progressPage_->Layout(card); break;
-        case Finish: finishPage_->Layout(card); break;
+        case Progress:
+            // T10：Repair/Uninstall 复用 Progress 页 —— 布局前同步操作类型。
+            progressPage_->SetKind(state_.operation);
+            progressPage_->Layout(card);
+            break;
+        case Finish:
+            // T10：Repair/Uninstall 复用 Finish 页 —— 布局前同步操作类型。
+            finishPage_->SetKind(state_.operation);
+            finishPage_->Layout(card);
+            break;
+        case Maintenance: maintenancePage_->Layout(card); break;
+        case UninstallConfirm: uninstallConfirmPage_->Layout(card); break;
+        case Message: messagePage_->Layout(card); break;
         default: break;
     }
     // UI-fix：页面 Layout 之后刷新底部条（页托管按钮随页布局同步）。
@@ -1304,12 +1745,29 @@ void InstallerWindow::ApplyPageEntry() {
             configurePage_->Layout(card);
             break;
         case Progress:
+            // T10：页 3 复用（修复/卸载）时先同步 Kind，再渲染进度与文案。
+            progressPage_->SetKind(state_.operation);
             progressPage_->Layout(card);
             progressPage_->SetProgressPermille(progressPermille_);
             break;
         case Finish:
+            // T10：页 4 复用（修复/卸载）时先同步 Kind，再启动对勾动画。
+            finishPage_->SetKind(state_.operation);
             finishPage_->Layout(card);
             finishPage_->StartCheckAnim();
+            break;
+        case Maintenance:
+            // T11 在 OnEnter 时 Detect() + SetInfo()；此处只做几何布局。
+            maintenancePage_->Layout(card);
+            break;
+        case UninstallConfirm:
+            // T12：每次进入确认页都重置为“不删除用户数据”（D15 C3 默认 false）。
+            state_.deleteUserData = false;
+            uninstallConfirmPage_->SyncFromState();
+            uninstallConfirmPage_->Layout(card);
+            break;
+        case Message:
+            messagePage_->Layout(card);
             break;
         default:
             break;
@@ -1326,12 +1784,15 @@ void InstallerWindow::ApplyPageEntry() {
 void InstallerWindow::SyncStepBar() {
     // 追加需求：页 → 3 节点映射（License→0「协议」/ Configure→1「配置」/ Progress→2「部署」）；
     // 英雄页（欢迎/完成）无步骤带 → 映射为 -1（不点亮任何节点）。
+    // T10：仅安装操作映射 0/1/2；修复/卸载（含复用 Progress 页）一律 -1。
     int step = -1;
-    switch (state_.page) {
-        case License: step = 0; break;
-        case Configure: step = 1; break;
-        case Progress: step = 2; break;
-        default: step = -1; break;
+    if (state_.operation == Operation::Install) {
+        switch (state_.page) {
+            case License: step = 0; break;
+            case Configure: step = 1; break;
+            case Progress: step = 2; break;
+            default: step = -1; break;
+        }
     }
     for (int i = 0; i < kStepCount; ++i) stepItems_[i].SetStep(i, step);
 }
@@ -1359,14 +1820,19 @@ void InstallerWindow::UpdateNavButtons() {
             canNext = configurePage_ && configurePage_->CanProceed();
             canBack = true;
             break;
-        case Progress:  // 安装进度页：无导航（取消按钮由页托管到底部条）
-        case Finish:    // 完成页：英雄页，无导航（「立即启动」大按钮由页内自我摆放）
+        // T10：安装/修复/卸载的进度与完成页均无外壳导航（页内按钮自行摆放）；
+        // 维护 / 卸载确认 / 消息页为英雄页，同样隐藏外壳导航。
+        case Progress:
+        case Finish:
+        case Maintenance:
+        case UninstallConfirm:
+        case Message:
         default:
             navBackVisible_ = false;
             navNextVisible_ = false;
             break;
     }
-    if (installing_) {  // 「安装中不可返回/前进」
+    if (installing_ || uninstallRunning_) {  // 「安装/卸载中不可返回/前进」
         canBack = false;
         canNext = false;
     }
@@ -1421,11 +1887,580 @@ void InstallerWindow::RaiseCancelIntent() {
 }
 
 void InstallerWindow::OnEscape() {
-    if (installing_) {
-        DiagLog(L"esc ignored while installing");
-        return;  // 「ESC 关闭（等同取消，安装中禁止）」
-    }
+    // T13：ESC 与 WM_CLOSE 完全同义，不再提前用 installing_/uninstallRunning_ 拦截。
+    // 模式差异全部交给 WM_CLOSE 分支：
+    //   * Install 安装中 → closePending_ + RaiseCancelIntent（既有取消/清理流程）；
+    //   * Repair/Uninstall Progress → On*CloseIntent 内忽略（且不置 closePending_）；
+    //   * Finish → T11/T12 的完成动作（Uninstall 写 ui_done）。
     PostMessageW(window_, WM_CLOSE, 0, 0);
+}
+
+// ===================== T11：维护与修复流程 =====================
+// 生命周期总览（D3/D9）：
+//   维护页 → 修复意图 → 预检 → [app 运行中 ? 异步关闭（WM_APP_CLOSE_DONE）: 直接]
+//   → WriteMaintenanceDecision(repair)（终端键，一次性）→ Progress(Repair) → 引擎
+//   → 成功 Finish(Repair) / 失败 Message（窗口保持打开）。
+// 取消 / WM_CLOSE / ESC 在维护模式下写一次 cancel decision 后关窗；修复进行中一律忽略。
+
+void InstallerWindow::EnterMaintenanceMode() {
+    if (!maintenancePage_) return;
+    // T11：Detect 是唯一的安装判定来源（exe 或 _internal 存在）；版本/选项一并读取。
+    maintenanceInfo_ = faf::Detect(state_.installDir);
+    if (!maintenanceInfo_.installDir.empty()) {
+        state_.installDir = maintenanceInfo_.installDir;  // 归一化后的路径（D10）
+    }
+    state_.installedVersion = maintenanceInfo_.version;
+    state_.installDetected = maintenanceInfo_.detected;
+    maintenancePage_->SetInfo(maintenanceInfo_.installDir, maintenanceInfo_.version,
+                              maintenanceInfo_.detected, maintenanceInfo_.complete);
+    DiagLog(L"maintenance detect dir=" + maintenanceInfo_.installDir + L" detected=" +
+            std::to_wstring(maintenanceInfo_.detected ? 1 : 0) + L" complete=" +
+            std::to_wstring(maintenanceInfo_.complete ? 1 : 0) + L" version=" +
+            maintenanceInfo_.version + L" inferred=" +
+            std::to_wstring(maintenanceInfo_.optionsInferred ? 1 : 0));
+
+    if (!maintenanceInfo_.detected) {
+        // 未检测到安装：只给“关闭”，绝不写 decision、绝不进入修复。
+        // suppress 标志同时覆盖用户直接点 X / ESC 的关闭路径（同样不写 decision）。
+        maintenanceSuppressDecision_ = true;
+        ShowError(L"未找到已安装的 FreeAssetFilter",
+                  L"在 " + state_.installDir +
+                      L" 未检测到 FreeAssetFilter 的程序文件，无法执行修复。",
+                  L"关闭", L"");
+        return;
+    }
+    SetPage(Maintenance);
+}
+
+bool InstallerWindow::RepairPreflight(std::wstring* error) const {
+    const auto fail = [error](const std::wstring& text) {
+        if (error) *error = text;
+        return false;
+    };
+    if (!maintenanceInfo_.detected) {
+        return fail(L"未检测到已安装的 FreeAssetFilter，无法修复。");
+    }
+    const std::wstring& dir = state_.installDir;
+    if (dir.empty()) return fail(L"安装目录为空，无法修复。");
+    const DWORD attrs = GetFileAttributesW(dir.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+        return fail(L"安装目录不存在：" + dir);
+    }
+    // 可写探测：在安装目录内创建带 PID 的临时文件（FILE_FLAG_DELETE_ON_CLOSE，关闭即
+    // 自动删除，不残留、不触碰用户数据）。磁盘空间**不在此处检查**：T6 引擎在哨兵
+    // 预扫描之后、首次写入之前判定（D15 H1），避免重复口径。
+    const std::wstring probe = dir + L"\\.faf-repair-probe-" +
+                               std::to_wstring(GetCurrentProcessId()) + L".tmp";
+    HANDLE file = CreateFileW(probe.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return fail(L"安装目录不可写（错误码 " + std::to_wstring(GetLastError()) + L"）：" + dir);
+    }
+    CloseHandle(file);
+    return true;
+}
+
+bool InstallerWindow::WriteMaintenanceDecisionOnce(MaintenanceAction action) {
+    if (mode_ != AppMode::Maintenance) return false;
+    // action 是 decision 的终端键：写成功后任何后续关闭/取消都不得覆盖。
+    if (maintenanceDecisionWritten_) return false;
+    // 未检测到安装 / 预检失败路径明确不写 decision（D15 H1 的“不写”要求）。
+    if (maintenanceSuppressDecision_) return false;
+    if (decisionPath_.empty()) {
+        DiagLog(L"maintenance decision path empty -> not written");
+        return false;
+    }
+    const int actionValue = static_cast<int>(action);
+    const bool ok = faf::WriteMaintenanceDecision(decisionPath_, action, GetCurrentProcessId());
+    if (ok) maintenanceDecisionWritten_ = true;
+    DiagLog(L"maintenance decision action=" + std::to_wstring(actionValue) + L" ok=" +
+            std::to_wstring(ok ? 1 : 0) + L" path=" + decisionPath_);
+    return ok;
+}
+
+void InstallerWindow::StartRepair() {
+    if (mode_ != AppMode::Maintenance) {
+        DiagLog(L"repair intent ignored outside maintenance mode");
+        return;
+    }
+    if (installing_ || closingApp_) return;  // 已在进行中：防重入
+
+    std::wstring error;
+    if (!RepairPreflight(&error)) {
+        // 预检失败：不写 decision、不启动引擎（空间检查留给引擎预扫描）。
+        // suppress 必须在展示前置位：X/ESC 走 OnMaintenanceCloseIntent 也不得补写 cancel。
+        maintenanceSuppressDecision_ = true;
+        DiagLog(L"repair preflight failed: " + error);
+        ShowError(L"无法修复", error, L"关闭", L"");
+        return;
+    }
+
+    // T11：选项沿用 Detect 的注册表/推断结果；修复完成页的「立即启动」默认不勾选。
+    state_.operation = Operation::Repair;
+    state_.optDesktop = maintenanceInfo_.optDesktop;
+    state_.optStartmenu = maintenanceInfo_.optStartmenu;
+    state_.optAutostart = maintenanceInfo_.optAutostart;
+    state_.optLaunchAfterRepair = false;
+
+    if (!IsInstalledAppRunning(state_.installDir)) {
+        // 未运行：直接写 decision 并开始修复。
+        BeginRepairInstall();
+        return;
+    }
+
+    // 运行中：先异步关闭（faf::CloseInstalledApp 按完整路径匹配，最长 5s 优雅 + 2s 强制），
+    // 关闭成功后才允许写 decision —— D9 的硬性顺序要求。
+    DiagLog(L"repair closing running app dir=" + state_.installDir);
+    closingApp_ = true;
+    keepTickAlive_ = true;  // 关闭等待期间也保持 watchdog 运行
+    closeTargetDir_ = state_.installDir;
+    {
+        std::lock_guard<std::mutex> lock(closeMutex_);
+        closeError_.clear();
+        closeForced_ = false;
+    }
+    messagePrimaryAction_ = MessageAction::None;
+    messageSecondaryAction_ = MessageAction::None;
+    messagePage_->SetContent(L"正在关闭 FreeAssetFilter",
+                             L"修复前需要先关闭正在运行的 FreeAssetFilter，请稍候。", L"", L"",
+                             false);
+    messagePage_->SetBusy(true, L"正在关闭…");
+    SetPage(Message);
+    RequestAnimTick();
+
+    closeThread_ = CreateThread(nullptr, 0, CloseThreadProc, this, 0, nullptr);
+    if (!closeThread_) {
+        closingApp_ = false;
+        keepTickAlive_ = false;
+        // T13：保留 T11 的「重试 / 取消」决策语义（取消 = 写一次 maintenance cancel）。
+        ShowError(L"无法关闭 FreeAssetFilter",
+                  L"无法创建关闭线程，请手动退出 FreeAssetFilter 后重试。", L"重试",
+                  MessageAction::RetryRepair, L"取消", MessageAction::CancelMaintenance);
+    }
+}
+
+void InstallerWindow::BeginRepairInstall() {
+    if (state_.setupExited) {
+        // setup 已退出：不再开始任何写操作（避免无主修复）。
+        ShowError(L"修复已终止", L"安装程序已退出，操作已终止", L"关闭", L"");
+        return;
+    }
+    if (!WriteMaintenanceDecisionOnce(MaintenanceAction::Repair)) {
+        // decision 写不进去就不能开始修复：setup 无法获知 repair 意图。
+        // 同样在展示前置 suppress —— 关闭（X/ESC）也不得再补写 cancel。
+        maintenanceSuppressDecision_ = true;
+        ShowError(L"无法开始修复", L"无法写入维护决定文件，修复未开始。", L"关闭", L"");
+        return;
+    }
+    StartInstall(faf::InstallMode::Repair);
+}
+
+void InstallerWindow::ShowMessagePage(std::wstring title, std::wstring body,
+                                      std::wstring primaryLabel, MessageAction primary,
+                                      std::wstring secondaryLabel, MessageAction secondary) {
+    if (!messagePage_) return;
+    const bool showSecondary = secondary != MessageAction::None && !secondaryLabel.empty();
+    // 先设内容/按钮语义再切页：SetPage → ApplyPageEntry → Layout 会按新内容排版，
+    // 避免首帧显示上一条消息（busy 态也必须显式解除）。
+    messagePage_->SetBusy(false);
+    messagePage_->SetContent(std::move(title), std::move(body), std::move(primaryLabel),
+                             std::move(secondaryLabel), showSecondary);
+    messagePrimaryAction_ = primary;
+    messageSecondaryAction_ = showSecondary ? secondary : MessageAction::None;
+    SetPage(Message);
+}
+
+void InstallerWindow::ShowError(std::wstring title, std::wstring body,
+                                std::wstring primaryLabel, std::wstring secondaryLabel) {
+    // T13：默认「关闭」走统一 WM_CLOSE 路径，让各模式既有的决策守卫生效：
+    //   * 维护模式：suppress（未检测到安装/预检失败）时不写 cancel；decision 已写
+    //     （repair/uninstall 终端）时不覆盖；仅未开始的普通关闭补一次 cancel。
+    //   * /uninstall：直接销毁，绝不写 maintenance decision。
+    //   * Install：非安装中按既有 WriteCancelResult（resultWritten_ 守卫防覆盖）。
+    // 次按钮若传入标签也走同一关闭语义（关闭失败路径会用带 action 的重载覆盖）。
+    ShowError(std::move(title), std::move(body), std::move(primaryLabel), MessageAction::Close,
+              std::move(secondaryLabel), MessageAction::Close);
+}
+
+void InstallerWindow::ShowError(std::wstring title, std::wstring body,
+                                std::wstring primaryLabel, MessageAction primary,
+                                std::wstring secondaryLabel, MessageAction secondary) {
+    // T13：薄封装——错误页复用既有 Message 页与 MessageAction 决策机，不新增页面。
+    ShowMessagePage(std::move(title), std::move(body), std::move(primaryLabel), primary,
+                    std::move(secondaryLabel), secondary);
+}
+
+void InstallerWindow::HandleMessageAction(MessageAction action) {
+    switch (action) {
+        case MessageAction::None:
+            return;
+        case MessageAction::Close:
+            // 统一关闭路径（维护模式尚未写 decision 时由 OnMaintenanceCloseIntent 补 cancel）。
+            PostMessageW(window_, WM_CLOSE, 0, 0);
+            return;
+        case MessageAction::CloseNoDecision:
+            // 未检测到安装 / 预检失败：明确禁止任何 decision 写入。
+            maintenanceSuppressDecision_ = true;
+            PostMessageW(window_, WM_CLOSE, 0, 0);
+            return;
+        case MessageAction::CancelMaintenance:
+            WriteMaintenanceDecisionOnce(MaintenanceAction::Cancel);
+            PostMessageW(window_, WM_CLOSE, 0, 0);
+            return;
+        case MessageAction::RetryRepair:
+            StartRepair();
+            return;
+        case MessageAction::RetryUninstall:
+            // 关闭已安装应用失败后的重试：必须重新执行“是否运行中”检查。
+            OnUninstallConfirmIntent();
+            return;
+    }
+}
+
+DWORD WINAPI InstallerWindow::CloseThreadProc(LPVOID p) {
+    static_cast<InstallerWindow*>(p)->CloseAppThread();
+    return 0;
+}
+
+void InstallerWindow::CloseAppThread() {
+    // 工作线程只做内核/用户枚举 + PostMessage，绝不触碰 UI。
+    const faf::ProcessCloseResult result =
+        faf::CloseInstalledApp(closeTargetDir_, /*gracefulTimeoutMs=*/5000,
+                               /*forceTimeoutMs=*/2000);
+    {
+        std::lock_guard<std::mutex> lock(closeMutex_);
+        closeError_ = result.error;
+        closeForced_ = result.forced;
+    }
+    PostMessageW(window_, WM_APP_CLOSE_DONE, result.ok ? 1 : 0, 0);
+}
+
+void InstallerWindow::FinishCloseThread() {
+    if (!closeThread_) return;
+    // close worker 最长 7s（5s 优雅 + 2s 强制）；析构路径必须 join，否则 worker 可能在
+    // 本对象销毁后继续访问 closeTargetDir_/closeMutex_。UI 线程的完成路径此时 join 立即
+    // 返回（worker 已 PostMessage 并即将退出）。
+    //
+    // T13：使用 INFINITE 显式 join——CloseInstalledApp 内部所有等待均有界；固定 15s
+    // 超时后仍关闭句柄会让 worker 在 this 析构后继续使用成员（use-after-free）。
+    WaitForSingleObject(closeThread_, INFINITE);
+    CloseHandle(closeThread_);
+    closeThread_ = nullptr;
+}
+
+void InstallerWindow::FinishInstallThread() {
+    if (!installThread_) return;
+    // T13：安装/修复 worker 通过 this 读写引擎状态、错误槽并向 window_ PostMessage。
+    // 异常销毁（窗口已 DestroyWindow 但 worker 尚未投递 WM_INSTALL_DONE）时必须先
+    // 置取消，再显式 join；引擎的哨兵等待与复制循环都会轮询 cancel_，因此可退出。
+    cancel_ = true;
+    WaitForSingleObject(installThread_, INFINITE);
+    CloseHandle(installThread_);
+    installThread_ = nullptr;
+    installing_ = false;
+}
+
+void InstallerWindow::CheckSetupWatchdog() {
+    if (!setupProcess_ || state_.setupExited) return;
+    // T12：维护卸载在 setup ack 后，setup 主动退出属于正常收尾（D15 C2），
+    // 不得按“setup 提前退出”中止卸载。
+    if (uninstallRunning_) return;
+    // 仅在操作进行中监视：维护页/完成页停留时 setup 退出属于正常收尾，不应中止。
+    if (!installing_ && !closingApp_) return;
+    if (WaitForSingleObject(setupProcess_, 0) != WAIT_OBJECT_0) return;
+    state_.setupExited = true;
+    cancel_ = true;             // 引擎在下一个轮询点安全停止（repair 不回滚）
+    installTimedOut_ = true;    // 保留既有超时分流语义，UI 文案以 setupExited 为准
+    DiagLog(L"setup exited during operation installing=" +
+            std::to_wstring(installing_ ? 1 : 0) + L" closing=" +
+            std::to_wstring(closingApp_ ? 1 : 0));
+    RequestAnimTick();
+}
+
+void InstallerWindow::OnMaintenanceRepairIntent() {
+    DiagLog(L"maintenance repair intent");
+    StartRepair();
+}
+
+void InstallerWindow::OnMaintenanceUninstallIntent() {
+    // T11：只导航到卸载确认页（页 6）；request/helper/进程收尾全部归 T12。
+    // 导航本身不写 decision（只有用户最终选择 uninstall 时才由 T12 写）。
+    DiagLog(L"maintenance uninstall intent -> UninstallConfirm");
+    SetPage(UninstallConfirm);
+}
+
+void InstallerWindow::OnMaintenanceCancelIntent() {
+    // 维护页「取消」：写一次 cancel decision 后走统一关闭路径（守卫防二次写）。
+    DiagLog(L"maintenance cancel intent");
+    if (installing_ || closingApp_) return;  // 修复进行中：取消不可用（双保险）
+    WriteMaintenanceDecisionOnce(MaintenanceAction::Cancel);
+    PostMessageW(window_, WM_CLOSE, 0, 0);
+}
+
+void InstallerWindow::OnUninstallConfirmIntent() {
+    // T12：SyncToState → 关闭 app（如运行中）→ 写 request → 启动/附着 helper。
+    if (mode_ != AppMode::Maintenance && mode_ != AppMode::Uninstall) {
+        DiagLog(L"uninstall confirm ignored outside maintenance/uninstall mode");
+        return;
+    }
+    if (installing_ || closingApp_ || uninstallRunning_) return;  // 防重入
+    if (!uninstallConfirmPage_) return;
+
+    uninstallConfirmPage_->SyncToState();
+    DiagLog(L"uninstall confirm dir=" + state_.installDir + L" delete_user_data=" +
+            std::to_wstring(state_.deleteUserData ? 1 : 0));
+
+    if (!IsInstalledAppRunning(state_.installDir)) {
+        StartUninstall();
+        return;
+    }
+
+    // 已安装应用运行中：沿用 T11 的 CloseThread 模式异步关闭；关闭成功后才允许
+    // 写 request / 启动 helper（D9 的“先关闭再操作”顺序）。
+    DiagLog(L"uninstall closing running app dir=" + state_.installDir);
+    pendingUninstallClose_ = true;
+    closingApp_ = true;
+    keepTickAlive_ = true;
+    closeTargetDir_ = state_.installDir;
+    {
+        std::lock_guard<std::mutex> lock(closeMutex_);
+        closeError_.clear();
+        closeForced_ = false;
+    }
+    messagePrimaryAction_ = MessageAction::None;
+    messageSecondaryAction_ = MessageAction::None;
+    messagePage_->SetContent(L"正在关闭 FreeAssetFilter",
+                             L"卸载前需要先关闭正在运行的 FreeAssetFilter，请稍候。", L"",
+                             L"", false);
+    messagePage_->SetBusy(true, L"正在关闭…");
+    SetPage(Message);
+    RequestAnimTick();
+
+    closeThread_ = CreateThread(nullptr, 0, CloseThreadProc, this, 0, nullptr);
+    if (!closeThread_) {
+        closingApp_ = false;
+        keepTickAlive_ = false;
+        pendingUninstallClose_ = false;
+        const MessageAction secondary = mode_ == AppMode::Maintenance
+                                            ? MessageAction::CancelMaintenance
+                                            : MessageAction::Close;
+        ShowError(L"无法关闭 FreeAssetFilter",
+                  L"无法创建关闭线程，请手动退出 FreeAssetFilter 后重试。", L"重试",
+                  MessageAction::RetryUninstall, L"取消", secondary);
+    }
+}
+
+void InstallerWindow::OnUninstallCancelIntent() {
+    // T12：维护模式的确认页取消 → 返回维护页（不关窗、不写 decision）；
+    // /uninstall 模式：helper 启动的 UI 先写 cancelled=1 再退出，直接启动则直接退出。
+    if (installing_ || closingApp_ || uninstallRunning_) return;
+    if (mode_ == AppMode::Maintenance) {
+        DiagLog(L"uninstall cancel -> Maintenance");
+        SetPage(Maintenance);
+        return;
+    }
+    if (mode_ == AppMode::Uninstall) {
+        if (helperPid_ != 0) {
+            const bool ok = faf::WriteUninstallCancel(uninstallRequestPath_);
+            DiagLog(L"uninstall cancel request written=" + std::to_wstring(ok ? 1 : 0) +
+                    L" path=" + uninstallRequestPath_);
+        }
+        PostMessageW(window_, WM_CLOSE, 0, 0);
+    }
+}
+
+void InstallerWindow::OnMessagePrimaryIntent() {
+    DiagLog(L"message primary intent action=" +
+            std::to_wstring(static_cast<int>(messagePrimaryAction_)));
+    HandleMessageAction(messagePrimaryAction_);
+}
+
+void InstallerWindow::OnMessageSecondaryIntent() {
+    DiagLog(L"message secondary intent action=" +
+            std::to_wstring(static_cast<int>(messageSecondaryAction_)));
+    HandleMessageAction(messageSecondaryAction_);
+}
+
+void InstallerWindow::OnCloseDoneMessage(WPARAM wp) {
+    if (!closingApp_) {
+        DiagLog(L"close-done ignored (no close in progress) ok=" + std::to_wstring(wp ? 1 : 0));
+        return;
+    }
+    const bool forUninstall = pendingUninstallClose_;
+    if (!forUninstall && mode_ != AppMode::Maintenance) {
+        DiagLog(L"close-done ignored outside maintenance/repair path ok=" +
+                std::to_wstring(wp ? 1 : 0));
+        return;
+    }
+    closingApp_ = false;
+    keepTickAlive_ = false;
+    FinishCloseThread();
+    std::wstring error;
+    bool forced = false;
+    {
+        std::lock_guard<std::mutex> lock(closeMutex_);
+        error = closeError_;
+        forced = closeForced_;
+    }
+    DiagLog(L"close-done ok=" + std::to_wstring(wp ? 1 : 0) + L" forced=" +
+            std::to_wstring(forced ? 1 : 0) + L" uninstall=" +
+            std::to_wstring(forUninstall ? 1 : 0) + L" error=" + error);
+    if (wp != 0) {
+        pendingUninstallClose_ = false;
+        if (forUninstall) {
+            // 卸载前置关闭成功：现在才允许写 request / 启动 helper。
+            StartUninstall();
+        } else {
+            // 关闭成功：现在才允许写 repair decision 并进入 Progress。
+            BeginRepairInstall();
+        }
+        return;
+    }
+
+    // 关闭失败：不写 decision/request；给「重试 / 取消」。
+    // 重试必须重新执行关闭检查（RetryUninstall → OnUninstallConfirmIntent）。
+    pendingUninstallClose_ = false;
+    const std::wstring body =
+        L"关闭已安装的 FreeAssetFilter 失败（" +
+        (error.empty() ? std::wstring(L"未知错误") : error) +
+        L"）。请手动退出程序后重试。";
+    if (forUninstall) {
+        const MessageAction secondary = mode_ == AppMode::Maintenance
+                                            ? MessageAction::CancelMaintenance
+                                            : MessageAction::Close;
+        ShowError(L"无法关闭 FreeAssetFilter", body, L"重试",
+                  MessageAction::RetryUninstall, L"取消", secondary);
+        return;
+    }
+    ShowError(L"无法关闭 FreeAssetFilter", body, L"重试", MessageAction::RetryRepair,
+              L"取消", MessageAction::CancelMaintenance);
+}
+
+void InstallerWindow::OnUninstallProgressMessage(WPARAM wp, LPARAM lp) {
+    // T12：wParam=permille 0..1000，lParam=protocol::UninstallStage（中文文案在此映射）。
+    if (state_.operation != Operation::Uninstall) return;
+    if (uninstallTerminal_) return;          // 终态后忽略陈旧进度
+    if (state_.page != Progress) return;     // 仅进度页消费
+    const int stageValue = static_cast<int>(static_cast<long long>(lp));
+    if (!IsKnownUninstallStage(stageValue)) return;
+    const auto stage = static_cast<faf::UninstallStage>(stageValue);
+    const unsigned long long rawPermille = static_cast<unsigned long long>(wp);
+    const int permille = rawPermille > 1000ull ? 1000 : static_cast<int>(rawPermille);
+    progressPermille_ = permille;
+    if (progressPage_) {
+        progressPage_->SetProgressPermille(permille);
+        progressPage_->SetStageText(UninstallStageLabel(stage));
+        // D15 C3：未勾选删除用户数据时，helper 跳过用户数据阶段并保留全部数据。
+        if (stage == faf::UninstallStage::RemovingUserData && !state_.deleteUserData) {
+            progressPage_->SetNotice(L"用户数据已保留");
+        }
+    }
+    DiagLog(L"uninstall-progress permille=" + std::to_wstring(permille) + L" stage=" +
+            std::to_wstring(stageValue));
+    RequestAnimTick();
+}
+
+void InstallerWindow::OnUninstallDoneMessage(WPARAM wp, LPARAM lp) {
+    // T12/D15 C1：wParam=终端 UninstallStage（Done/Failed/Cancelled）；warning 不参与。
+    (void)lp;
+    const int stageValue = static_cast<int>(static_cast<long long>(wp));
+    if (!IsTerminalUninstallStage(stageValue)) {
+        DiagLog(L"uninstall-done ignored non-terminal stage=" + std::to_wstring(stageValue));
+        return;
+    }
+    if (state_.operation != Operation::Uninstall) return;
+    if (uninstallTerminal_) return;  // 只认第一个终态
+    uninstallTerminal_ = true;
+    uninstallRunning_ = false;
+    keepTickAlive_ = false;
+    const auto stage = static_cast<faf::UninstallStage>(stageValue);
+    DiagLog(L"uninstall-done stage=" + std::to_wstring(stageValue));
+
+    switch (stage) {
+        case faf::UninstallStage::Done:
+            progressPermille_ = 1000;
+            if (progressPage_) progressPage_->SetProgressPermille(1000);
+            // warning 仅作为 Finish 页非终端提示；Done 仍走 Finish，绝不降级为 Message。
+            if (finishPage_) {
+                const std::wstring warning =
+                    uninstallCoordinator_ ? uninstallCoordinator_->Warning() : std::wstring();
+                finishPage_->SetNotice(warning.empty() ? std::wstring() : (L"注意：" + warning));
+            }
+            SetPage(Finish);  // ApplyPageEntry → FinishPage::SetKind(Uninstall)
+            break;
+        case faf::UninstallStage::Failed: {
+            const std::wstring error =
+                uninstallCoordinator_ ? uninstallCoordinator_->Error() : std::wstring();
+            // T13：终态失败页。关闭走统一 WM_CLOSE；operation==Uninstall 且 page==Message
+            // 时绝不会补写 cancel，因此不会覆盖 helper 已落盘的 failed 终态。
+            ShowError(L"卸载未完成",
+                      error.empty() ? L"卸载过程中出现未知错误。" : error, L"关闭", L"");
+            break;
+        }
+        case faf::UninstallStage::Cancelled:
+            ShowError(L"卸载已取消", L"未删除任何文件", L"关闭", L"");
+            break;
+        default:
+            break;
+    }
+}
+
+void InstallerWindow::OnMaintenanceCloseIntent() {
+    // T11：修复进行中（含“正在关闭 app”）一律忽略 X/ESC；其余关闭语义 = 用户取消。
+    if (installing_ || closingApp_ || uninstallRunning_) {
+        DiagLog(L"maintenance close ignored while operation in progress");
+        return;
+    }
+    // T12：维护模式的 WM_CLOSE 按 mode_ 分流到本函数（而不是 OnUninstallCloseIntent）。
+    // 卸载流程只有 Finish 写 ui_done；Progress/Message 关闭时绝不能写 Cancel——
+    // 否则会覆盖已落盘的卸载决定，把 Failed/Cancelled 又改写成 Cancelled。
+    if (state_.operation == Operation::Uninstall) {
+        if (state_.page == Finish) {
+            if (uninstallCoordinator_ && !uninstallCoordinator_->Failed()) {
+                const bool ok = uninstallCoordinator_->WriteUiDone();
+                DiagLog(L"maintenance uninstall finish ui_done written=" +
+                        std::to_wstring(ok ? 1 : 0));
+            } else {
+                DiagLog(L"maintenance uninstall finish ui_done skipped (coordinator failed/absent)");
+            }
+        } else if (state_.page == UninstallConfirm) {
+            // 保留确认页原有的取消行为；这仍是未启动卸载的取消。
+            WriteMaintenanceDecisionOnce(MaintenanceAction::Cancel);
+        } else {
+            DiagLog(L"maintenance uninstall close without decision");
+        }
+        KillTickTimer();
+        if (window_) DestroyWindow(window_);
+        return;
+    }
+    // 未检测到安装 / 预检失败的路径明确不写 decision（suppress）；正常维护页写一次 cancel。
+    WriteMaintenanceDecisionOnce(MaintenanceAction::Cancel);
+    KillTickTimer();
+    if (window_) DestroyWindow(window_);
+}
+
+void InstallerWindow::OnUninstallCloseIntent() {
+    // T12/D15 C1：Progress（含关闭前置）一律忽略；Finish(Uninstall) 关闭前写 ui_done；
+    // 确认页/消息页直接退出。C++ UI 从不删除文件。
+    if (installing_ || closingApp_ || uninstallRunning_) {
+        DiagLog(L"uninstall close ignored while operation in progress");
+        return;
+    }
+    if (state_.operation == Operation::Uninstall && state_.page == Progress) {
+        // 双保险：正常情况下 uninstallRunning_ 已拦截；终态后 page 已不是 Progress。
+        DiagLog(L"uninstall close ignored on Progress page");
+        return;
+    }
+    if (state_.operation == Operation::Uninstall && state_.page == Finish) {
+        if (uninstallCoordinator_ && !uninstallCoordinator_->Failed()) {
+            const bool ok = uninstallCoordinator_->WriteUiDone();
+            DiagLog(L"uninstall finish ui_done written=" + std::to_wstring(ok ? 1 : 0));
+        } else {
+            DiagLog(L"uninstall finish ui_done skipped (coordinator failed/absent)");
+        }
+    }
+    KillTickTimer();
+    if (window_) DestroyWindow(window_);
 }
 
 bool InstallerWindow::DispatchPointer(const faf::InputEvent& event) {
@@ -1454,6 +2489,9 @@ faf::WidgetHost& InstallerWindow::ActivePageHost() {
         case Configure: return configurePage_->Host();
         case Progress: return progressPage_->Host();
         case Finish: return finishPage_->Host();
+        case Maintenance: return maintenancePage_->Host();
+        case UninstallConfirm: return uninstallConfirmPage_->Host();
+        case Message: return messagePage_->Host();
         default: return empty;
     }
 }
@@ -1464,8 +2502,13 @@ void InstallerWindow::RenderActivePage(ID2D1DeviceContext* ctx, const faf::Theme
         case Welcome: faf::RenderWelcome(ctx, theme, *welcomePage_); break;
         case License: faf::RenderLicense(ctx, theme, *licensePage_); break;
         case Configure: faf::RenderConfigure(ctx, theme, *configurePage_); break;
+        // T10：页 3/4 的 Kind 已在 ApplyPageEntry/LayoutPages 中按 state_.operation
+        // 同步（SetKind 会重建 Tab 顺序，禁止在逐帧渲染路径重复调用）。
         case Progress: faf::RenderProgress(ctx, theme, *progressPage_); break;
         case Finish: faf::RenderFinish(ctx, theme, *finishPage_); break;
+        case Maintenance: faf::RenderMaintenance(ctx, theme, *maintenancePage_); break;
+        case UninstallConfirm: faf::RenderUninstallConfirm(ctx, theme, *uninstallConfirmPage_); break;
+        case Message: faf::RenderMessage(ctx, theme, *messagePage_); break;
         default: break;
     }
 }
@@ -1475,16 +2518,25 @@ void InstallerWindow::RenderActivePage(ID2D1DeviceContext* ctx, const faf::Theme
 // 时定义）。生产构建保留的只有 EnableAutoDrive 的 no-op 定义；驱动成员/定时器/
 // 推进逻辑全部被预处理器剔除——/auto 开关在生产中解析后即丢弃，无任何效果。
 
-void InstallerWindow::EnableAutoDrive(std::wstring profile, int stopPage) {
+void InstallerWindow::EnableAutoDrive(AutoDriveOptions options) {
 #ifdef FAF_TESTMODE
     autoDriveEnabled_ = true;
-    autoProfile_ = profile;  // 空串 = 全默认档
-    // 越界/负值 → 不停（走完全程）；0..4 合法则到站即停。
-    autoStopPage_ = (stopPage >= Welcome && stopPage <= Finish) ? stopPage : -1;
+    autoProfile_ = std::move(options.profile);  // 空串 = 全默认档
+    // T14/D15 H6：合法 stopPage 扩展到 Welcome..Message（0..7）；越界/负值 = 不停。
+    autoStopPage_ = (options.stopPage >= Welcome && options.stopPage <= Message)
+                        ? options.stopPage
+                        : -1;
+    // T14：维护/卸载扩展参数只在测试构建存储；生产构建整个结构体被丢弃。
+    autoMode_ = options.mode;
+    autoAction_ = std::move(options.action);
+    autoDeleteUserData_ = std::move(options.deleteUserData);
+    DiagLog(L"auto options stop=" +
+            (autoStopPage_ < 0 ? std::wstring(L"none") : std::to_wstring(autoStopPage_)) +
+            L" mode=" + std::to_wstring(static_cast<int>(autoMode_)) + L" action=" +
+            autoAction_ + L" delete_user_data=" + autoDeleteUserData_);
 #else
     // 生产构建保底 no-op：交互行为不受 /auto 影响（规格 §17）。
-    (void)profile;
-    (void)stopPage;
+    (void)options;
 #endif
 }
 
@@ -1542,6 +2594,81 @@ void InstallerWindow::AutoDriveTick() {
     // 安装进行中（Progress）：等待 WM_INSTALL_DONE 自动转完成页；本 tick 不动作、
     // 不记录推进（避免固定周期的重复日志噪音）。
     if (page == Progress) return;
+
+    const auto actionIs = [this](const wchar_t* value) {
+        return !autoAction_.empty() && _wcsicmp(autoAction_.c_str(), value) == 0;
+    };
+
+    // T14/D15 H6：维护页按 /auto:action=repair|uninstall|cancel 推进；缺省/未知
+    // 动作时停在维护页（不替用户做危险决定）。
+    if (page == Maintenance) {
+        if (actionIs(L"repair")) {
+            DiagLog(L"auto maintenance action=repair");
+            OnMaintenanceRepairIntent();
+            return;
+        }
+        if (actionIs(L"uninstall")) {
+            DiagLog(L"auto maintenance action=uninstall");
+            OnMaintenanceUninstallIntent();
+            return;
+        }
+        if (actionIs(L"cancel")) {
+            DiagLog(L"auto maintenance action=cancel");
+            OnMaintenanceCancelIntent();
+            return;
+        }
+        autoHalted_ = true;
+        DiagLog(L"auto maintenance waiting action=" + autoAction_);
+        StopAutoDrive();
+        return;
+    }
+
+    // T14/D15 H6：卸载确认页按 /auto:action=uninstall|cancel 推进；uninstall 时
+    // 可先写入 /auto:delete-user-data=0|1，再走既有确认入口。
+    if (page == UninstallConfirm) {
+        if (actionIs(L"uninstall")) {
+            if (!autoDeleteUserData_.empty()) {
+                const bool deleteUserData = autoDeleteUserData_ == L"1";
+                if (state_.deleteUserData != deleteUserData) {
+                    state_.deleteUserData = deleteUserData;
+                    if (uninstallConfirmPage_) uninstallConfirmPage_->SyncFromState();
+                }
+            }
+            DiagLog(L"auto uninstall action=uninstall delete_user_data=" +
+                    autoDeleteUserData_);
+            OnUninstallConfirmIntent();
+            return;
+        }
+        if (actionIs(L"cancel")) {
+            DiagLog(L"auto uninstall action=cancel");
+            OnUninstallCancelIntent();
+            return;
+        }
+        autoHalted_ = true;
+        DiagLog(L"auto uninstall waiting action=" + autoAction_);
+        StopAutoDrive();
+        return;
+    }
+
+    // T14/D15 H6：Message 页按动作点击主/次按钮（busy 态两者皆 None → 停住等待）。
+    if (page == Message) {
+        if (actionIs(L"cancel") && messageSecondaryAction_ != MessageAction::None) {
+            DiagLog(L"auto message action=cancel(secondary)");
+            OnMessageSecondaryIntent();
+            return;
+        }
+        if (messagePrimaryAction_ != MessageAction::None) {
+            DiagLog(L"auto message action=" +
+                    std::to_wstring(static_cast<int>(messagePrimaryAction_)));
+            OnMessagePrimaryIntent();
+            return;
+        }
+        autoHalted_ = true;
+        DiagLog(L"auto message waiting action=" + autoAction_);
+        StopAutoDrive();
+        return;
+    }
+
     DiagLog(L"auto advance page=" + std::to_wstring(page));
     switch (page) {
         case Welcome:

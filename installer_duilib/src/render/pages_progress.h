@@ -44,12 +44,26 @@ class LogoBitmap;  // render/logo.h（Finish 英雄页图标，前向声明避�
 
 // ============================== 纯函数辅助 =================================
 
+// 操作类型（T8）：安装 / 修复 / 卸载。ProgressPage / FinishPage 各自以
+// `using Kind = ProgressKind;` 暴露 `ProgressPage::Kind` / `FinishPage::Kind`，
+// 因此调用方既可用 `ProgressPage::Kind::Repair`，也可直接使用本类型。
+enum class ProgressKind { Install, Repair, Uninstall };
+
 // permille → 步骤索引：0 初始化 / 1 复制文件 / 2 写入快捷方式 / 3 完成。
 // 阈值：<250 初始化、<750 复制文件、<1000 写入快捷方式、==1000 完成。纯函数，便于断言。
+// 仅描述 Install（旧契约），行为保持不变。
 int ProgressStepIndex(int permille);
 
+// 旧签名（Install，保留以兼容既有调用/测试）：
 // permille → 步骤中文文案（「初始化」/「复制文件」/「写入快捷方式」/「完成」）。
 std::wstring ProgressStepText(int permille);
+
+// 新签名：按 kind 返回步骤中文文案。纯函数，便于断言。
+//  - Install  ：初始化 / 复制文件 / 写入快捷方式 / 完成（与旧签名完全一致）。
+//  - Repair   ：准备文件 / 复制文件 / 写入快捷方式 / 完成（与安装同构）。
+//  - Uninstall：清理快捷方式 / 清理注册表 / 删除程序文件 / 清理用户数据 / 完成
+//    （按 helper 的真实 stage→permille 映射；不制造字节级假进度）。
+std::wstring ProgressStepText(ProgressKind kind, int permille);
 
 // permille → 百分比文案（`permille/10.0`，保留一位小数，如 500 ⇒ L"50.0%"）。
 // §10：**不做** 0..100 反推，直接以 permille 语义换算。
@@ -60,6 +74,9 @@ std::wstring ProgressPercentText(int permille);
 // Progress 页：determinate 进度条（§10 permille）+ 步骤文字 + 实时百分比 + 「取消」。
 class ProgressPage {
 public:
+    // T8：操作类型（Install / Repair / Uninstall）；与 ProgressKind 同型。
+    using Kind = ProgressKind;
+
     // 取消态：Running（安装中）→ Cancelling（已抬高取消意图，等引擎安全停止）→
     // Cancelled（引擎确认已按 §3 清理完成，由 Todo 13 调用 MarkCancelled）。
     enum class State { Running, Cancelling, Cancelled };
@@ -70,6 +87,31 @@ public:
     void BindAnimator(Animator* animator);
     void BindText(const TextFactory* text);
     void BindGlyphs(const GlyphFont* glyphs);
+
+    // T8：按操作类型切换标题 / 步骤文案 / 默认提示 / 取消可用性。
+    //  - Install：保持原有 4 段文案与「取消」按钮（视觉/行为不变）。
+    //  - Repair / Uninstall：隐藏「取消」，并写入“请勿关闭窗口”默认提示。
+    // 仅在 kind 实际变化时重置提示与 stage 文案，便于宿主逐帧调用。
+    void SetKind(Kind kind);
+    // 便捷重载：T10 可直接传 AppState.operation。
+    void SetKind(Operation operation);
+    Kind GetKind() const noexcept { return kind_; }
+
+    // T8：repair/uninstall 隐藏「取消」按钮（同时移出 Tab 顺序）；Install 保持。
+    void SetCancellable(bool cancellable);
+    bool Cancellable() const noexcept { return cancellable_; }
+
+    // T8：提示行。与 SetStageText 分离，避免阶段文案覆盖警告/提示。
+    void SetNotice(std::wstring text);
+    const std::wstring& Notice() const noexcept { return notice_; }
+
+    // T8：当前卸载阶段中文名（T12 按 UninstallStage 传入）。设置后 StepText()
+    // 优先返回它；未设置时退回 ProgressStepText(kind, permille) 纯函数映射。
+    void SetStageText(std::wstring text);
+    const std::wstring& StageText() const noexcept { return stageText_; }
+
+    // 标题（正在安装/修复/卸载 FreeAssetFilter），供渲染与测试断言。
+    std::wstring HeadingText() const;
 
     // 依内容卡片矩形（DIP）布局控件。
     void Layout(const D2D1_RECT_F& contentCard);
@@ -84,7 +126,9 @@ public:
     int Permille() const noexcept { return permille_; }
     float Percent() const noexcept { return static_cast<float>(permille_) / 10.0f; }
     std::wstring PercentText() const { return ProgressPercentText(permille_); }
-    std::wstring StepText() const { return ProgressStepText(permille_); }
+    std::wstring StepText() const {
+        return stageText_.empty() ? ProgressStepText(kind_, permille_) : stageText_;
+    }
 
     // ---------------------------------------------------------------------
     // 取消意图（CancelIntent）—— 本 todo 的唯一职责边界：
@@ -117,6 +161,10 @@ private:
     int permille_ = 0;
     State phase_ = State::Running;
     bool cancelRequested_ = false;
+    Kind kind_ = Kind::Install;
+    bool cancellable_ = true;
+    std::wstring notice_;
+    std::wstring stageText_;
     std::function<void()> onCancel_;
 
     D2D1_RECT_F card_{};
@@ -134,6 +182,9 @@ private:
 // 与欢迎页**内容一致**（图标 + 名称 + 版本 + 标语 + 大按钮；仅按钮文案与图标不同）。
 class FinishPage {
 public:
+    // T8：操作类型（Install / Repair / Uninstall）；与 ProgressKind 同型。
+    using Kind = ProgressKind;
+
     explicit FinishPage(AppState& state);
 
     // 依赖注入（宿主构造后绑定；均可为空）。
@@ -141,6 +192,19 @@ public:
     void BindText(const TextFactory* text);
     void BindGlyphs(const GlyphFont* glyphs);
     void SetLogo(const LogoBitmap* logo) { logo_ = logo; }
+
+    // T8：按操作类型切换完成页形态。
+    //  - Install  ：原样（产品名 + 版本 + 标语 + 大按钮「立即启动」；无复选框）。
+    //  - Repair   ：标题「修复完成」+ 复选框「立即启动 FreeAssetFilter」
+    //               （绑定 state_.optLaunchAfterRepair，默认 false）+ 按钮「完成」。
+    //  - Uninstall：标题「卸载完成」+ 按钮「关闭」；无复选框。
+    void SetKind(Kind kind);
+    // 便捷重载：T10 可直接传 AppState.operation。
+    void SetKind(Operation operation);
+    Kind GetKind() const noexcept { return kind_; }
+
+    // 非终端提示（例如卸载完成后的清理 warning）；仅 Uninstall 页渲染，不改变终态。
+    void SetNotice(std::wstring notice);
 
     void Layout(const D2D1_RECT_F& contentCard);
     void Render(ID2D1DeviceContext* dc, const Theme& theme);
@@ -154,8 +218,8 @@ public:
 
     // ---------------------------------------------------------------------
     // 意图钩子（Intent hooks）—— 本 todo 绝不 ShellExecute / 不启动进程：
-    //   * onFinishIntent_()： 「立即启动」点击时抬高（完成意图 = 启动 + 关窗）。
-    // 实际启动进程（§15）由 Todo 15 读取 AppState 执行（英雄页按钮 = 无条件启动）。
+    //   * onFinishIntent_()： 「立即启动」/「完成」/「关闭」点击时抬高完成意图。
+    // 实际启动/关窗由宿主读取 AppState 执行（§15 由 Todo 15 负责）。
     // ---------------------------------------------------------------------
     void SetOnFinishIntent(std::function<void()> cb) { onFinishIntent_ = std::move(cb); }
 
@@ -165,18 +229,32 @@ public:
     bool FinishIntentEmitted() const noexcept { return finishIntentEmitted_; }
 
     Button& FinishButton() noexcept { return finishButton_; }
+    CheckBox& LaunchAfterRepairBox() noexcept { return launchBox_; }
+    bool LaunchAfterRepair() const noexcept { return launchBox_.Checked(); }
+
     const std::wstring& ProductName() const noexcept { return productName_; }
     const std::wstring& Version() const noexcept { return version_; }
     const std::wstring& Tagline() const noexcept { return tagline_; }
+    // 当前标题（Install = 产品名；Repair = 修复完成；Uninstall = 卸载完成）。
+    const std::wstring& Title() const noexcept { return title_; }
 
 private:
+    void RebuildHost();  // 按 kind 重建 Tab 顺序（Repair 追加复选框）
+
     AppState& state_;  // 借用（§12 共享状态）
     std::wstring productName_ = L"FreeAssetFilter";
     std::wstring version_;
     // 标语：与欢迎页完全一致的字符串（需求：完成页内容 = 欢迎页内容，仅按钮文案/图标不同）。
     std::wstring tagline_ = L"让文件浏览如丝般高效顺滑";
+    // 标题：Install = 产品名；Repair/Uninstall = 状态文案。
+    std::wstring title_ = L"FreeAssetFilter";
+    // 卸载完成后的 warning（非终端提示；仅 Uninstall 页渲染）。
+    std::wstring notice_;
+
+    Kind kind_ = Kind::Install;
 
     Button finishButton_;
+    CheckBox launchBox_;  // Repair 专用；Install/Uninstall 不渲染、不参与 Tab
     WidgetHost host_;
 
     const LogoBitmap* logo_ = nullptr;
@@ -196,6 +274,8 @@ private:
     D2D1_RECT_F nameRect_{};
     D2D1_RECT_F versionRect_{};
     D2D1_RECT_F taglineRect_{};
+    D2D1_RECT_F checkboxRect_{};
+    D2D1_RECT_F noticeRect_{};
     D2D1_RECT_F buttonRect_{};
 };
 

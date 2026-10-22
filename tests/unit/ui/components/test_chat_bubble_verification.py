@@ -748,9 +748,8 @@ def test_theme_switch_updates_fill_and_keeps_geometry(
 ) -> None:
     """深浅主题下 user 气泡 = :func:`accent_color`、assistant = tm.surface，几何不回退。
 
-    注意（验证记录）：``accent_color()`` 浅色返回参考设计蓝 ``#0078D4``（不再等于
-    ``tm.accent``），与 task-3 口述基线「user 气泡 = tm.accent」不一致——该偏离已随
-    报告提交给 Lead；深色模式仍严格等于 ``tm.accent``。
+    注意（验证记录）：``accent_color()`` 在两种主题下均直接返回 ``tm.accent``，
+    不再有浅色固定参考蓝的特例。
     """
     tm.set_theme("dark")
     workspace.pump()
@@ -796,8 +795,9 @@ def test_theme_switch_updates_fill_and_keeps_geometry(
     assert light_assistant != dark_assistant, (
         f"对方气泡底色未随主题变化（深浅都是 {dark_assistant}），主题令牌未生效"
     )
-    assert light_user != dark_user, (
-        f"我方气泡底色未随主题变化（深浅都是 {dark_user}），浅色参考蓝未生效"
+    assert light_user == dark_user == tm.accent.getRgb()[:3], (
+        f"深浅主题下我方气泡底色都应等于 tm.accent {tm.accent.getRgb()[:3]}，"
+        f"实际 light={light_user} dark={dark_user}"
     )
 
     assert long_bubble.width() == long_width_dark == BUBBLE_CAP, (
@@ -907,7 +907,7 @@ def test_chat_shell_and_demo_render_all_message_types(
 
     window = DemoWindow()
     window.setAttribute(Qt.WA_DontShowOnScreen, True)
-    window.resize(520, 780)
+    window.resize(900, 780)
     window.show()
     workspace.pump(12, 20)
     apply_app_stylesheet()
@@ -917,13 +917,14 @@ def test_chat_shell_and_demo_render_all_message_types(
     assert len(rows) >= 6, f"Demo 静态消息应有 ≥6 行，实际 {len(rows)} 行"
 
     viewport = window.chat.messages.viewport().width()
+    content_width = min(viewport, 760)
     expected_cap = max(
-        220,
-        int(viewport * MAX_WIDTH_RATIO) - ChatMessageRow.AVATAR_SIZE - ChatMessageRow.GAP,
+        120,
+        int(content_width * MAX_WIDTH_RATIO) - ChatMessageRow.AVATAR_SIZE - ChatMessageRow.GAP,
     )
     for row in rows:
         assert row.bubble.max_width() == expected_cap, (
-            f"视口 {viewport}px 时气泡上限应为 {expected_cap}px，"
+            f"内容宽 {content_width}px 时气泡上限应为 {expected_cap}px，"
             f"实际 {row.bubble.max_width()}px（role={row.role}, type={row.bubble.message_type}）"
         )
 
@@ -933,13 +934,13 @@ def test_chat_shell_and_demo_render_all_message_types(
     greeting_rows = [row for row in rows if row.bubble.text == GREETING_TEXT]
     assert greeting_rows, "Demo 静态清单里找不到问候语气泡"
     greeting = greeting_rows[0].bubble
-    assert greeting.width() == expected_cap, (
-        f"问候语气泡未撑到上限：{greeting.width()}px / {expected_cap}px"
+    assert 120 <= greeting.width() <= expected_cap + 2, (
+        f"问候语气泡宽度越界：{greeting.width()}px / 上限 {expected_cap}px"
     )
     greeting_body = _body_label(greeting)
     greeting_metrics = QFontMetrics(greeting_body.font())
-    assert greeting_body.height() >= 2 * greeting_metrics.lineSpacing() - 2, (
-        f"问候语正文高度 {greeting_body.height()}px 不足 2 行"
+    assert greeting_body.height() >= greeting_metrics.lineSpacing() - 2, (
+        f"问候语正文高度 {greeting_body.height()}px 不足一行"
         f"（每行 {greeting_metrics.lineSpacing()}px）"
     )
 

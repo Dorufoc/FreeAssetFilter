@@ -22,7 +22,7 @@ HTML 原型                         本项目表达
 分隔线 ``rgba(0,0,0,0.0803)``      ``tm.alpha_of(tm.text, 8)``
 加重的底边 ``rgba(0,0,0,0.10)``    ``tm.alpha_of(tm.text, 10)``
 正文 ``#1A1A1A`` / 次要 ``#5D5D5D``  ``tm.text`` / ``tm.text_secondary``
-在线圆点 ``#0F7B0F``               ``styled_chat_bubble.ONLINE_COLOR``
+在线圆点 ``#0F7B0F``               ``tm.accent``
 控件圆角 4px / 浮层圆角 8px         ``CONTROL_RADIUS`` / 气泡组件内实现
 ===============================  ==========================================
 
@@ -38,7 +38,14 @@ from datetime import datetime
 from typing import Optional
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPaintEvent, QPen
+from PySide6.QtGui import (
+    QColor,
+    QFontMetrics,
+    QMouseEvent,
+    QPainter,
+    QPaintEvent,
+    QPen,
+)
 from PySide6.QtWidgets import (
     QAbstractButton,
     QFrame,
@@ -48,19 +55,30 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
+from freeassetfilter.ui.components.styled_ai_composer import (
+    StyledAIComposer,
+    StyledAIModelChip,
+)
+from freeassetfilter.ui.components.styled_ai_welcome import StyledAIWelcome
 from freeassetfilter.ui.components.styled_button import StyledButton
 from freeassetfilter.ui.components.styled_chat_bubble import (
-    ONLINE_COLOR,
     ChatMessageRow,
     RowSpec,
     StyledChatBubble,
     StyledReasoningDrawer,
     make_ai_avatar_pixmap,
     window_fill_color,
+)
+from freeassetfilter.ui.components.styled_icon_button import StyledIconButton
+from freeassetfilter.ui.components.styled_lineedit import (
+    FONT_FAMILY,
+    StyledLineEdit,
+    styled_font,
 )
 from freeassetfilter.ui.components.styled_scroll_area import (
     StyledScrollArea,
@@ -78,8 +96,10 @@ from theme import tm
 TITLE_BAR_HEIGHT = 40
 #: 标题栏窗口按钮宽度（HTML 三个按钮各 46px）。
 CAPTION_BUTTON_WIDTH = 46
-#: 会话头头像直径（HTML ``.chat-header__avatar`` 40px）。
-HEADER_AVATAR_SIZE = 40
+#: 会话头头像直径。
+HEADER_AVATAR_SIZE = 28
+#: 消息内容列最大宽度。
+MESSAGE_CONTENT_MAX_WIDTH = 760
 #: 在线状态圆点直径（HTML ``.status-dot`` 7px）。
 STATUS_DOT_SIZE = 7
 #: 输入类控件高度（HTML ``height: 34px``）。
@@ -91,7 +111,7 @@ TIME_LABEL_HEIGHT = 20
 #: 气泡最大宽度占消息区视口的比例（与气泡组件的换算口径一致）。
 MESSAGE_WIDTH_RATIO = 0.74
 #: 整窗默认标题。
-DEFAULT_WINDOW_TITLE = "对话 Demo — WinUI 3 · 多类型消息"
+DEFAULT_WINDOW_TITLE = "FreeAsset AI"
 
 
 def _hairline(pct: float) -> str:
@@ -352,6 +372,32 @@ class StyledAIChatTitleBar(QWidget):
         """
         self._title.setText(title)
 
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        """空白区按下时交给系统移动窗口。
+
+        Args:
+            event: 鼠标事件。
+        """
+        if event.button() == Qt.LeftButton:
+            handle = self.window().windowHandle()
+            if handle is not None:
+                handle.startSystemMove()
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        """双击切换最大化 / 还原。
+
+        Args:
+            event: 鼠标事件。
+        """
+        if event.button() == Qt.LeftButton:
+            self.maximize_requested.emit()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
     def _apply_qss(self) -> None:
         """注册标题栏样式片段（透明底 + 次要色小标题）。"""
         register_widget_qss(
@@ -376,20 +422,28 @@ class StyledAIChatTitleBar(QWidget):
 
 
 class StyledAIChatHeader(QWidget):
-    """会话头：40px 渐变 AI 头像 + 名称 + 在线状态。
+    """会话头：AI 头像 + 会话标题 + 在线状态 + 模型胶囊 + 更多操作。
 
-    行内间距 12px、内边距 ``8px 18px 14px``（对齐 HTML ``.chat-header``）。
+    高度由内容与现有内边距决定，底部使用 1px 发丝分隔线；颜色全部来自
+    ``tm``，字号复用 ``StyledLineEdit`` 的 lg / sm 档位。
 
     Args:
         name: 会话名（默认"智能助手"）。
         status: 初始状态文案（默认"在线"）。
+        default_model: 模型胶囊初始文案。
         parent: 父控件。
+
+    Signals:
+        more_requested: 点击更多按钮。
     """
+
+    more_requested = Signal()
 
     def __init__(
         self,
         name: str = "智能助手",
         status: str = "在线",
+        default_model: str = "默认模型",
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -423,11 +477,24 @@ class StyledAIChatHeader(QWidget):
         text_column.addWidget(self._name)
         text_column.addLayout(status_row)
 
+        self.model_chip = StyledAIModelChip(default_model, self)
+        self._more = StyledIconButton(
+            "more_horizontal",
+            size="default",
+            shape="square",
+            variant="ghost",
+            tooltip="更多操作",
+            parent=self,
+        )
+        self._more.clicked.connect(lambda: self.more_requested.emit())
+
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(18, 8, 18, 14)
+        layout.setContentsMargins(18, 10, 14, 10)
         layout.setSpacing(12)
         layout.addWidget(self._avatar, 0, Qt.AlignVCenter)
         layout.addLayout(text_column, 1)
+        layout.addWidget(self.model_chip, 0, Qt.AlignVCenter)
+        layout.addWidget(self._more, 0, Qt.AlignVCenter)
 
         tm.theme_changed.connect(self._on_theme_changed)
         tm.colors_updated.connect(self._on_theme_changed)
@@ -438,7 +505,7 @@ class StyledAIChatHeader(QWidget):
 
         Args:
             text: 状态文案，例如"在线"、"正在输入…"。
-            online: True 为在线绿点，False 为中性灰点。
+            online: True 为在线强调色圆点，False 为中性灰点。
         """
         self._status.setText(text)
         self._online = bool(online)
@@ -452,21 +519,58 @@ class StyledAIChatHeader(QWidget):
         """
         return self._status.text()
 
+    def set_title(self, title: str) -> None:
+        """设置会话标题。
+
+        Args:
+            title: 新标题。
+        """
+        self._name.setText(title)
+
+    def title(self) -> str:
+        """返回会话标题。
+
+        Returns:
+            标题文本。
+        """
+        return self._name.text()
+
+    def set_model(self, model: str) -> None:
+        """设置模型胶囊文案。
+
+        Args:
+            model: 模型名。
+        """
+        self.model_chip.set_model(model)
+
+    def set_models(self, models: list[str]) -> None:
+        """设置模型胶囊的可选列表。
+
+        Args:
+            models: 模型名列表。
+        """
+        self.model_chip.set_models(models)
+
     def _apply_qss(self) -> None:
-        """注册会话头样式片段（透明底 + 名称 / 状态 / 圆点）。"""
-        dot = ONLINE_COLOR if self._online else tm.mid
+        """注册会话头样式片段（发丝分隔线 + 名称 / 状态 / 圆点）。"""
+        dot = tm.accent if self._online else tm.mid
         register_widget_qss(
             self,
             f"""
-            StyledAIChatHeader {{ background: transparent; }}
+            StyledAIChatHeader {{
+                background: transparent;
+                border-bottom: 1px solid {_hairline(8)};
+            }}
             #StyledAIChatHeaderName {{
                 color: {tm.qss_color(tm.text)};
-                font-size: 14px;
+                font-family: "{FONT_FAMILY}";
+                font-size: {StyledLineEdit.SIZE_CONFIG["lg"]["font_size"]}px;
                 font-weight: 600;
             }}
             #StyledAIChatHeaderStatus {{
                 color: {tm.qss_color(tm.text_secondary)};
-                font-size: 12px;
+                font-family: "{FONT_FAMILY}";
+                font-size: {StyledLineEdit.SIZE_CONFIG["sm"]["font_size"]}px;
             }}
             #StyledAIChatHeaderDot {{
                 background-color: {tm.qss_color(dot)};
@@ -684,21 +788,63 @@ class StyledAIMessageList(QScrollArea):
         bar = self.verticalScrollBar()
         bar.setValue(bar.maximum())
 
+    def clear(self) -> None:
+        """清空全部消息行与时间胶囊。"""
+        while self._column.count() > 1:
+            item = self._column.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+                continue
+            layout = item.layout()
+            if layout is not None:
+                while layout.count():
+                    child = layout.takeAt(0)
+                    child_widget = child.widget()
+                    if child_widget is not None:
+                        child_widget.setParent(None)
+                        child_widget.deleteLater()
+
     # ------------------------------------------------------------------
     # 内部实现
     # ------------------------------------------------------------------
 
+    def _content_width(self) -> int:
+        """返回消息内容列的可用宽度。
+
+        Returns:
+            ``min(视口宽, MESSAGE_CONTENT_MAX_WIDTH)``。
+        """
+        viewport = max(1, self.viewport().width())
+        return min(viewport, MESSAGE_CONTENT_MAX_WIDTH)
+
+    def _apply_column_margins(self) -> None:
+        """按视口宽度把内容列水平居中。"""
+        viewport = max(1, self.viewport().width())
+        side = max(
+            self.CONTENTS_MARGINS[0],
+            (viewport - MESSAGE_CONTENT_MAX_WIDTH) // 2,
+        )
+        self._column.setContentsMargins(
+            side,
+            self.CONTENTS_MARGINS[1],
+            side,
+            self.CONTENTS_MARGINS[3],
+        )
+
     def _apply_row_widths(self) -> None:
         """按当前视口宽度重算每条消息行的气泡宽度上限。
 
-        行控件内部按"视口宽 × 74%"换算气泡可用宽度；直接 ``add_widget`` 进来
+        行控件内部按"内容宽 × 74%"换算气泡可用宽度；直接 ``add_widget`` 进来
         的裸气泡没有这层换算，这里按同一口径兜底下发。
         """
-        viewport = max(1, self.viewport().width())
+        self._apply_column_margins()
+        content_width = self._content_width()
         rows = self._host.findChildren(ChatMessageRow)
         for row in rows:
-            row.set_max_width(viewport)
-        fallback_width = int(viewport * MESSAGE_WIDTH_RATIO)
+            row.set_max_width(content_width)
+        fallback_width = int(content_width * MESSAGE_WIDTH_RATIO)
         for bubble in self._host.findChildren(StyledChatBubble):
             # 行内的气泡可能嵌在行的内部容器里（如"头像 + 气泡"那一层），因此要
             # 沿父链判断是否属于某个 ChatMessageRow，不能只看直接父控件——否则会
@@ -815,9 +961,10 @@ class StyledChatComposer(QWidget):
         self._input.textChanged.connect(self._on_text_changed)
 
         self.send_button = StyledButton("发送", variant="primary", parent=self)
-        self.send_button.setFont(QFont("Microsoft YaHei UI", 10))
+        button_font = styled_font(StyledLineEdit.SIZE_CONFIG["default"]["font_size"])
+        self.send_button.setFont(button_font)
         self.send_button.setFixedHeight(CONTROL_HEIGHT)
-        metrics = QFontMetrics(QFont("Microsoft YaHei UI", 10))
+        metrics = QFontMetrics(button_font)
         # 设计稿要求左右各 20px 内边距
         self.send_button.setMinimumWidth(metrics.horizontalAdvance("发送") + 40)
         self.send_button.setEnabled(False)
@@ -966,107 +1113,234 @@ class StyledChatComposer(QWidget):
 
 
 class StyledAIChatWindow(QWidget):
-    """WinUI 3 风格对话容器：标题栏 + 会话头 + 消息区 + 输入栏。
+    """WinUI 3 方向的可嵌入对话容器。
+
+    布局为「标题栏（可选）+ 会话头 + 欢迎态/消息区 + 多行输入器」，不包含
+    侧边栏。``show_title_bar=False`` 时可直接嵌入其他控件。
 
     Args:
         parent: 父控件。
-        title: 标题栏文案。
+        title: 标题栏与会话头初始文案。
+        show_title_bar: 是否创建标题栏与窗口按钮。
+        models: 模型胶囊可选列表。
+        model: 初始模型文案。
 
     Signals:
-        send_requested: 输入栏提交文本。
-        attach_requested: 点击输入栏「+」附件按钮。
-        image_requested: 宿主请求选择图片（``composer.request_image()``）。
-        file_requested: 宿主请求选择文件（``composer.request_file()``）。
+        send_requested: 输入器提交文本。
+        stop_requested: 忙碌态下点击停止。
+        attach_requested: 点击附件按钮。
+        model_changed: 模型切换，携带模型名。
+        suggestion_selected: 点击欢迎态建议卡片，携带建议文本。
+        more_requested: 点击会话头更多按钮。
         minimize_requested: 请求最小化宿主窗口。
         maximize_requested: 请求最大化 / 还原宿主窗口。
         close_requested: 请求关闭宿主窗口。
+        image_requested: 兼容旧 API 的图片请求信号（新输入器不再发出）。
+        file_requested: 兼容旧 API 的文件请求信号（新输入器不再发出）。
     """
 
     send_requested = Signal(str)
+    stop_requested = Signal()
     attach_requested = Signal()
-    image_requested = Signal()
-    file_requested = Signal()
+    model_changed = Signal(str)
+    suggestion_selected = Signal(str)
+    more_requested = Signal()
     minimize_requested = Signal()
     maximize_requested = Signal()
     close_requested = Signal()
+    image_requested = Signal()
+    file_requested = Signal()
 
     def __init__(
         self,
         parent: Optional[QWidget] = None,
         title: str = DEFAULT_WINDOW_TITLE,
+        show_title_bar: bool = True,
+        models: Optional[list[str]] = None,
+        model: str = "默认模型",
     ) -> None:
         super().__init__(parent)
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setObjectName("StyledAIChatWindow")
+        self._show_title_bar = bool(show_title_bar)
 
-        self.title_bar = StyledAIChatTitleBar(title, self)
-        self.header = StyledAIChatHeader(parent=self)
+        self.title_bar: Optional[StyledAIChatTitleBar] = (
+            StyledAIChatTitleBar(title, self) if self._show_title_bar else None
+        )
+        self.header = StyledAIChatHeader(
+            name=title, default_model=model, parent=self
+        )
+        if models:
+            self.header.set_models(models)
+
+        self.welcome = StyledAIWelcome(parent=self)
         self.messages = StyledAIMessageList(self)
-        self.composer = StyledChatComposer(parent=self)
+        self._stack = QStackedWidget(self)
+        self._stack.addWidget(self.welcome)
+        self._stack.addWidget(self.messages)
+        self._stack.setCurrentWidget(self.welcome)
+
+        self.composer = StyledAIComposer(
+            models=models, model=model, parent=self
+        )
+        composer_host = QWidget(self)
+        composer_layout = QHBoxLayout(composer_host)
+        composer_layout.setContentsMargins(18, 4, 18, 8)
+        composer_layout.setSpacing(0)
+        composer_layout.addStretch(1)
+        self.composer.setMaximumWidth(MESSAGE_CONTENT_MAX_WIDTH)
+        composer_layout.addWidget(self.composer)
+        composer_layout.addStretch(1)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        root.addWidget(self.title_bar)
+        if self.title_bar is not None:
+            root.addWidget(self.title_bar)
         root.addWidget(self.header)
-        root.addWidget(self.messages, 1)
-        root.addWidget(self.composer)
+        root.addWidget(self._stack, 1)
+        root.addWidget(composer_host)
 
-        self.composer.send_requested.connect(
-            lambda text: self.send_requested.emit(text)
+        self.composer.send_requested.connect(self._on_composer_send)
+        self.composer.stop_requested.connect(
+            lambda: self.stop_requested.emit()
         )
         self.composer.attach_requested.connect(
             lambda: self.attach_requested.emit()
         )
-        self.composer.image_requested.connect(
-            lambda: self.image_requested.emit()
-        )
-        self.composer.file_requested.connect(lambda: self.file_requested.emit())
-        self.title_bar.minimize_requested.connect(
-            lambda: self.minimize_requested.emit()
-        )
-        self.title_bar.maximize_requested.connect(
-            lambda: self.maximize_requested.emit()
-        )
-        self.title_bar.close_requested.connect(
-            lambda: self.close_requested.emit()
-        )
+        self.composer.model_changed.connect(self._on_model_changed)
+        self.header.model_chip.model_selected.connect(self._on_model_changed)
+        self.header.more_requested.connect(lambda: self.more_requested.emit())
+        self.welcome.suggestion_selected.connect(self._on_suggestion)
+
+        if self.title_bar is not None:
+            self.title_bar.minimize_requested.connect(
+                lambda: self.minimize_requested.emit()
+            )
+            self.title_bar.maximize_requested.connect(
+                lambda: self.maximize_requested.emit()
+            )
+            self.title_bar.close_requested.connect(
+                lambda: self.close_requested.emit()
+            )
 
         tm.theme_changed.connect(self._on_theme_changed)
         tm.colors_updated.connect(self._on_theme_changed)
         self._apply_qss()
 
+    # ------------------------------------------------------------------
+    # 公开 API
+    # ------------------------------------------------------------------
+
     def set_title(self, title: str) -> None:
-        """设置标题栏文案。
+        """设置标题栏与会话头文案。
 
         Args:
             title: 新标题。
         """
-        self.title_bar.set_title(title)
+        if self.title_bar is not None:
+            self.title_bar.set_title(title)
+        self.header.set_title(title)
 
-    def sizeHint(self) -> QSize:  # noqa: N802 - Qt API
-        """返回默认建议尺寸。
+    def set_model(self, model: str) -> None:
+        """设置模型胶囊文案并同步模型菜单。
+
+        Args:
+            model: 模型名。
+        """
+        self.header.set_model(model)
+        self.composer.set_model(model)
+
+    def set_models(self, models: list[str]) -> None:
+        """设置模型胶囊可选列表。
+
+        Args:
+            models: 模型名列表。
+        """
+        self.header.set_models(models)
+        self.composer.set_models(models)
+
+    def show_welcome(self, visible: bool) -> None:
+        """在欢迎态与消息列表之间切换。
+
+        Args:
+            visible: True 显示欢迎态。
+        """
+        self._stack.setCurrentWidget(self.welcome if visible else self.messages)
+
+    def is_welcome_visible(self) -> bool:
+        """返回当前是否显示欢迎态。
 
         Returns:
-            建议尺寸：参考设计稿（WinUI 3 HTML）窗口内容区 511×747。宽度按
-            目标截图反推——目标窗口外框 502px、消息区左右各 18px 内边距，
-            文字气泡在其 74% 上限下需要 511px 内容宽才能复现 338px 的两行气泡
-            （实测：内容宽 511 时气泡 337px、首行墨迹 294px，与目标 338/292
-            相差 0.3%）。
+            欢迎态是否可见。
         """
-        return QSize(511, 747)
+        return self._stack.currentWidget() is self.welcome
+
+    def clear_conversation(self) -> None:
+        """清空消息并回到欢迎态。"""
+        self.messages.clear()
+        self.show_welcome(True)
+        self.header.set_status("新对话", True)
+
+    def set_busy(self, busy: bool) -> None:
+        """切换输入器的发送 / 停止状态。
+
+        Args:
+            busy: 是否忙碌。
+        """
+        self.composer.set_busy(busy)
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt API
+        """返回建议尺寸。
+
+        Returns:
+            内容列宽度 + 输入器留白后的建议尺寸。
+        """
+        return QSize(MESSAGE_CONTENT_MAX_WIDTH, 640)
+
+    # ------------------------------------------------------------------
+    # 内部信号处理
+    # ------------------------------------------------------------------
+
+    def _on_composer_send(self, text: str) -> None:
+        """发送前隐藏欢迎态并转发信号。
+
+        Args:
+            text: 输入文本。
+        """
+        self.show_welcome(False)
+        self.send_requested.emit(text)
+
+    def _on_model_changed(self, model: str) -> None:
+        """同步两侧模型胶囊并转发信号。
+
+        Args:
+            model: 模型名。
+        """
+        self.header.set_model(model)
+        self.composer.set_model(model)
+        self.model_changed.emit(model)
+
+    def _on_suggestion(self, text: str) -> None:
+        """把建议文本填入输入器并聚焦。
+
+        Args:
+            text: 建议文本。
+        """
+        self.composer.set_text(text)
+        self.composer.focus()
+        self.suggestion_selected.emit(text)
 
     def _apply_qss(self) -> None:
-        """注册整窗样式片段（填充底色）。
-
-        底色走 :func:`window_fill_color`：浅色为参考设计的 Mica 灰 ``#F3F3F3``
-        （目标截图实测值），深色回落 ``tm.fill``；消息区与输入栏保持透明，
-        由本底色统一透出（实测与目标截图同色，避免多一层色差）。
-        """
+        """注册整窗样式片段（窗口底 + 透明内容区）。"""
         register_widget_qss(
             self,
-            "StyledAIChatWindow { background-color: "
-            f"{tm.qss_color(window_fill_color())}; }}",
+            f"""
+            StyledAIChatWindow {{
+                background-color: {tm.qss_color(window_fill_color())};
+            }}
+            QStackedWidget {{ background: transparent; }}
+            """,
         )
 
     def _on_theme_changed(self, _theme: str = "") -> None:
