@@ -83,6 +83,21 @@ void AnimValue::Configure(std::string name, float from, float to, float duration
     active_ = true;  // 待首个 tick 落 start（减少动画时同 tick 直接终态）
 }
 
+void AnimValue::Retarget(float to) {
+    if (!active_) {
+        // 无活动动画：从当前显示值重新起跑，保留已配置的时长与曲线。
+        from_ = value_;
+        to_ = to;
+        startMs_ = 0.0;
+        progress_ = 0.0f;
+        started_ = false;
+        active_ = true;
+        return;
+    }
+    // 活动动画：仅更新终值，让既有轨迹继续推进（不重置起点/时钟/进度）。
+    to_ = to;
+}
+
 bool AnimValue::Advance(double nowMs) {
     if (!active_) return false;
     if (!started_) {

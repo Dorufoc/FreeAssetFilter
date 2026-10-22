@@ -93,6 +93,12 @@ constexpr UINT_PTR kTickTimerId = 1;
 constexpr UINT kTickIntervalMs = 16;      // §2 主循环 ~16ms 驱动动画 tick
 constexpr int kWin10ShadowMarginDip = 12; // §4 Win10 兜底透明外扩边距（DIP）
 constexpr ULONGLONG kProgressPostIntervalMs = 33;  // §10：进度 PostMessage 节流 ~30fps
+// UI-fix（进度 UX）：初始化合成斜坡 + 完成前 100% 停留（仅 UI 状态，不改引擎契约）。
+constexpr UINT_PTR kCompletionHoldTimerId = 3;  // 完成页切换专用一次性定时器
+constexpr UINT kCompletionHoldMs = 500;         // 100% 停留总时长：220ms 填充动画后仍留 ~280ms 满格可见
+constexpr ULONGLONG kInitRampMs = 8000;         // 0→50% 匀速斜坡总时长
+constexpr int kInitRampMaxPermille = 500;       // 斜坡上限（50%）
+constexpr ULONGLONG kInitRampUpdateMs = 80;     // 斜坡推进节流
 #ifdef FAF_TESTMODE
 // Todo 19（§17）：/auto 测试驱动常量——仅测试构建编入（生产零残留）。
 constexpr UINT_PTR kAutoTimerId = 2;  // 驱动定时器（独立于 ~16ms 动画 tick）
@@ -592,6 +598,9 @@ void InstallerWindow::Tick() {
     // 引擎在下一个轮询点安全停止（引擎收尾后由 WM_INSTALL_DONE 展示终止原因）。
     CheckSetupWatchdog();
     const double nowMs = faf::SteadyNowMs();
+    // UI-fix（进度 UX）：初始化合成斜坡先于动画推进——仅 UI 侧 0→50% 匀速，
+    // 首个真实进度或安装结束时停止（不触碰引擎/结果 INI）。
+    AdvanceInitProgress(nowMs);
     const bool worked = animator_.Tick(nowMs);  // 推进 + §16 每 tick 采样/边界行
     if (dirty_ || worked) {
         DiagLog(L"frame present t=" + std::to_wstring(static_cast<long long>(nowMs)) +
@@ -1121,6 +1130,16 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
             Tick();
             return 0;
         }
+        // UI-fix（进度 UX）：成功收尾的 100% 停留结束 → 切完成页（一次性定时器）。
+        if (wp == kCompletionHoldTimerId) {
+            KillTimer(window_, kCompletionHoldTimerId);
+            if (!completionHold_) return 0;  // 已回退/重置的陈旧定时器：绝不切页
+            completionHold_ = false;
+            keepTickAlive_ = false;
+            SetPage(Finish);
+            DiagLog(L"completion hold finish");
+            return 0;
+        }
 #ifdef FAF_TESTMODE
         if (wp == kAutoTimerId) {
             AutoDriveTick();  // Todo 19：/auto 固定时序推进（仅测试构建存在该定时器）
@@ -1216,14 +1235,33 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         PostQuitMessage(exitCode_);
         return 0;
     }
-    if (msg == WM_INSTALL_PROGRESS) {  // §10：wParam = permille 0..1000
-        progressPermille_ = static_cast<int>(wp);
-        // Todo 12：转发到 Progress 页（页面只消费 permille，不制造假进度）。
+    if (msg == WM_INSTALL_PROGRESS) {  // §10：wParam = 引擎真实 permille 0..1000
+        // UI-fix（进度 UX）：初始化斜坡期间——首个真实进度（>0）到达即停止斜坡，
+        // 把此后所有真实值单调映射进 base..1000；0 不结束斜坡（引擎可能先报 0）。
+        const int raw = std::clamp(static_cast<int>(wp), 0, 1000);
+        if (initProgressActive_) {
+            if (raw > 0) {
+                EndInitProgress(raw);
+                RequestAnimTick();
+            }
+            return 0;  // raw == 0：保持斜坡，不结束初始化
+        }
+        if (progressMappingActive_) {
+            const int base = std::clamp(progressMappingBasePermille_, 0, 1000);
+            const int mapped = raw >= 1000 ? 1000 : base + (raw * (1000 - base)) / 1000;
+            if (mapped > progressPermille_) progressPermille_ = mapped;  // 单调，不回退
+        } else {
+            progressPermille_ = raw;
+        }
+        // Todo 12：转发到 Progress 页（页面只消费 permille；合成斜坡状态只在窗口侧）。
         if (progressPage_) progressPage_->SetProgressPermille(progressPermille_);
         RequestAnimTick();  // 置脏 + 确保 tick 定时器在跑（可能在闲置被 KillTimer）
         return 0;
     }
     if (msg == WM_INSTALL_DONE) {  // wParam：1 = 成功；0 = 取消/超时/失败（引擎已写 §1 INI）
+        // UI-fix（进度 UX）：终点一律结束合成斜坡与映射（成功路径随后进入 100% 停留）。
+        initProgressActive_ = false;
+        progressMappingActive_ = false;
         installing_ = false;
         keepTickAlive_ = false;  // T11：操作结束，允许 tick 定时器在闲置时停表
         if (installThread_) {
@@ -1248,11 +1286,17 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
                 std::to_wstring(setupExited ? 1 : 0) + L" repair=" +
                 std::to_wstring(repair ? 1 : 0) + L" error=" + error);
 
+        // UI-fix（进度 UX）：成功 + 关闭待决 = 保持既有「立即销毁」行为（不做 100% 停留）。
+        if (ok && closePending_) {
+            KillTickTimer();
+            DestroyWindow(hwnd);
+            return 0;
+        }
         if (repair) {
-            // T11：修复终点。成功 → Finish(Repair)；失败/取消 → Message，窗口保持
-            // 打开（修复不回滚，绝不能自动关闭或伪造成功）。
+            // T11：修复终点。成功 → 先在 100% 停留再 Finish(Repair)；失败/取消 → Message，
+            // 窗口保持打开（修复不回滚，绝不能自动关闭或伪造成功）。
             if (ok) {
-                SetPage(Finish);
+                BeginCompletionHold();
                 return 0;
             }
             if (setupExited) {
@@ -1274,7 +1318,9 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         if (ok) {
-            SetPage(Finish);  // 自动进入完成页（Progress→Finish 自动，无需用户下一步）
+            // UI-fix（进度 UX）：不立即切页——先 SetProgressPermille(1000) 并停留
+            // ~300ms，让 220ms 填充动画可见，再由 WM_TIMER(id=3) 进入完成页。
+            BeginCompletionHold();
             return 0;
         }
         if (setupExited) {
@@ -1428,6 +1474,14 @@ void InstallerWindow::StartInstall(faf::InstallMode mode) {
     installCancelled_ = false;
     installTimedOut_ = false;
     progressPermille_ = 0;
+    // UI-fix（进度 UX）：重置初始化斜坡 / 映射 / 完成停留状态（含失败后重装路径）。
+    initProgressActive_ = false;
+    progressMappingActive_ = false;
+    progressMappingBasePermille_ = 0;
+    initProgressStartMs_ = 0.0;
+    lastInitProgressUpdateMs_ = 0.0;
+    completionHold_ = false;
+    if (window_) KillTimer(window_, kCompletionHoldTimerId);
     errorText_.clear();
     {
         std::lock_guard<std::mutex> lock(errorMutex_);
@@ -1448,12 +1502,18 @@ void InstallerWindow::StartInstall(faf::InstallMode mode) {
         progressPage_->SetCancellable(false);  // 修复中不允许取消/ESC/X
         progressPage_->SetNotice(L"修复过程中请勿关闭窗口");
     }
+    // UI-fix（进度 UX）：引擎等待 payload/预扫描期间没有真实回调，先启动 UI 侧 0→50%
+    // 匀速斜坡（正向前景文案）；首个真实 permille>0 到达时在 WM_INSTALL_PROGRESS 结束。
+    BeginInitProgress();
     DiagLog(std::wstring(L"install start dir=") + state_.installDir + L" mode=" +
             std::to_wstring(mode == faf::InstallMode::Repair ? 1 : 0));
     installThread_ = CreateThread(nullptr, 0, InstallThreadProc, this, 0, nullptr);
     if (!installThread_) {
         installing_ = false;
         keepTickAlive_ = false;
+        initProgressActive_ = false;
+        progressMappingActive_ = false;
+        completionHold_ = false;
         WriteAbortResult(L"thread-create-failed");  // §1：失败必须写 error=
         if (mode == faf::InstallMode::Repair) {
             ShowError(L"无法开始修复", L"修复线程创建失败，程序文件未改动。", L"关闭", L"");
@@ -1461,6 +1521,89 @@ void InstallerWindow::StartInstall(faf::InstallMode mode) {
             ShowError(L"无法开始安装", L"安装线程创建失败，程序文件未改动。", L"关闭", L"");
         }
     }
+}
+
+// UI-fix（进度 UX）：安装/修复初始化合成斜坡。引擎在 payload.ready 等待与递归预扫描
+// 期间不产生任何进度回调，UI 因此长时间停在 0%；这里由窗口自身在 0..500 permille 间
+// 以固定线性速度推进（约 8s 到达 50%），给用户正向反馈。该进度只存在于 UI 状态，
+// 不写结果 INI、不触碰引擎、不伪造安装成功；首个真实进度到达即停止（EndInitProgress）。
+void InstallerWindow::BeginInitProgress() {
+    const bool repair = state_.operation == Operation::Repair;
+    initProgressActive_ = true;
+    progressMappingActive_ = false;
+    progressMappingBasePermille_ = 0;
+    completionHold_ = false;
+    initProgressStartMs_ = faf::SteadyNowMs();
+    lastInitProgressUpdateMs_ = initProgressStartMs_;
+    progressPermille_ = 0;
+    if (progressPage_) {
+        progressPage_->SetProgressPermille(0);
+        progressPage_->SetStageText(repair ? L"正在准备修复环境" : L"正在准备安装环境");
+        progressPage_->SetNotice(L"一切都在顺利进行，请稍候。");
+    }
+    DiagLog(std::wstring(L"init progress start mode=") + (repair ? L"1" : L"0"));
+}
+
+// 仅 UI 侧推进：installing_ 且斜坡激活时按 ~80ms 节流匀速推进；只允许前进（单调）。
+void InstallerWindow::AdvanceInitProgress(double now_ms) {
+    if (!installing_ || !initProgressActive_) return;
+    if (now_ms - lastInitProgressUpdateMs_ < static_cast<double>(kInitRampUpdateMs)) return;
+    lastInitProgressUpdateMs_ = now_ms;
+    const double elapsed = std::max(0.0, now_ms - initProgressStartMs_);
+    const int target = std::min(
+        kInitRampMaxPermille,
+        static_cast<int>(elapsed * kInitRampMaxPermille / static_cast<double>(kInitRampMs)));
+    if (target > progressPermille_) {
+        progressPermille_ = target;
+        if (progressPage_) progressPage_->SetProgressPermille(target);
+    }
+}
+
+// 首个真实进度到达：停止斜坡，记录当前进度作为映射 base；此后真实 permille 0..1000
+// 线性映射到 base..1000（整数除法；1000 恒映射 1000），保证进度条绝不回退。
+void InstallerWindow::EndInitProgress(int raw_permille) {
+    if (!initProgressActive_) return;
+    const bool repair = state_.operation == Operation::Repair;
+    initProgressActive_ = false;
+    progressMappingActive_ = true;
+    progressMappingBasePermille_ = std::clamp(progressPermille_, 0, kInitRampMaxPermille);
+    if (progressPage_) {
+        progressPage_->SetStageText(L"");  // 回到 ProgressStepText 常规阶段文案
+        progressPage_->SetNotice(repair ? L"修复过程中请勿关闭窗口" : L"正在安装文件，请稍候。");
+    }
+    const int raw = std::clamp(raw_permille, 0, 1000);
+    const int base = progressMappingBasePermille_;
+    const int mapped = raw >= 1000 ? 1000 : base + (raw * (1000 - base)) / 1000;
+    progressPermille_ = mapped;
+    if (progressPage_) progressPage_->SetProgressPermille(mapped);
+    DiagLog(L"init progress end base=" + std::to_wstring(base) + L" raw=" +
+            std::to_wstring(raw) + L" mapped=" + std::to_wstring(mapped));
+}
+
+// 成功收尾：先把进度条置满并停留 ~300ms（让 220ms 填充动画可见），再由 WM_TIMER(id=3)
+// 切到完成页。保持 tick 存活以便该帧被绘制。
+void InstallerWindow::BeginCompletionHold() {
+    const bool repair = state_.operation == Operation::Repair;
+    progressPermille_ = 1000;
+    if (progressPage_) {
+        progressPage_->SetProgressPermille(1000);
+        progressPage_->SetStageText(L"完成");
+        progressPage_->SetNotice(repair ? L"修复完成，正在进入完成页…" : L"安装完成，正在进入完成页…");
+    }
+    keepTickAlive_ = true;
+    RequestAnimTick();
+    completionHold_ = true;
+    const UINT_PTR timer =
+        window_ ? SetTimer(window_, kCompletionHoldTimerId, kCompletionHoldMs, nullptr) : 0;
+    if (timer == 0) {
+        // UI-fix：SetTimer 失败不得把窗口卡在 Progress——立即回退切完成页。
+        completionHold_ = false;
+        keepTickAlive_ = false;
+        DiagLog(L"completion hold timer failed -> immediate Finish");
+        SetPage(Finish);
+        return;
+    }
+    DiagLog(L"completion hold start");
 }
 
 void InstallerWindow::StartUninstall() {
@@ -1474,6 +1617,15 @@ void InstallerWindow::StartUninstall() {
     state_.operation = Operation::Uninstall;
     progressPermille_ = 0;
     uninstallTerminal_ = false;
+    // UI-fix（进度 UX）：卸载路径不受初始化斜坡/映射/完成停留影响（行为不变），
+    // 但完整复位相关状态并与 StartInstall 对称（含杀掉可能陈旧的停留定时器）。
+    initProgressActive_ = false;
+    progressMappingActive_ = false;
+    progressMappingBasePermille_ = 0;
+    initProgressStartMs_ = 0.0;
+    lastInitProgressUpdateMs_ = 0.0;
+    completionHold_ = false;
+    if (window_) KillTimer(window_, kCompletionHoldTimerId);
     SetPage(Progress);
     if (progressPage_) {
         progressPage_->SetKind(faf::ProgressPage::Kind::Uninstall);
@@ -1881,7 +2033,10 @@ void InstallerWindow::GoBack() {
 void InstallerWindow::RaiseCancelIntent() {
     DiagLog(L"cancel intent raised installing=" + std::to_wstring(installing_ ? 1 : 0));
     // Todo 13：安装中同时置引擎取消信号（§3：安全停止 + 清理本次写入 + abort=1）。
-    if (installing_) cancel_ = true;
+    if (installing_) {
+        cancel_ = true;
+        initProgressActive_ = false;  // UI-fix（进度 UX）：取消即停止初始化斜坡
+    }
     if (progressPage_) progressPage_->RequestCancel();
     RequestAnimTick();
 }

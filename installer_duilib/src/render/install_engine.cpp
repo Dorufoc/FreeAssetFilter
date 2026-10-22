@@ -81,6 +81,50 @@ bool QueryAvailableBytes(const std::filesystem::path& path, std::uint64_t* avail
     return true;
 }
 
+// CopyFileExW 分块进度上下文（栈上存活于单次文件复制，不跨线程/跨文件复用）。
+struct CopyProgressContext {
+    const std::atomic<bool>* cancel = nullptr;       // §3 取消信号
+    const InstallEngine::ProgressFn* onProgress = nullptr;  // 进度回调（不节流）
+    BOOL* pbCancel = nullptr;                        // 传给 CopyFileExW 的取消标志
+    std::uint64_t baseBytes = 0;                     // 本文件之前已累计写入的字节
+    std::uint64_t totalBytes = 0;                    // 预扫描总字节（permille 分母）
+    std::uint64_t fileBytes = 0;                     // 预扫描本文件字节（钳制上界）
+    int lastPermille = -1;                           // 上次上报值（同值不重复回调）
+};
+
+// LPPROGRESS_ROUTINE：大文件复制期间按块推进 permille；取消时置 *pbCancel
+// 并返回 PROGRESS_CANCEL（CopyFileExW 随即以 ERROR_REQUEST_ABORTED 失败）。
+DWORD CALLBACK CopyProgressRoutine(LARGE_INTEGER /*totalFileSize*/,
+                                   LARGE_INTEGER totalBytesTransferred,
+                                   LARGE_INTEGER /*streamSize*/,
+                                   LARGE_INTEGER /*streamBytesTransferred*/,
+                                   DWORD /*streamNumber*/, DWORD /*callbackReason*/,
+                                   HANDLE /*sourceFile*/, HANDLE /*destinationFile*/,
+                                   LPVOID data) {
+    auto* context = static_cast<CopyProgressContext*>(data);
+    if (context == nullptr) return PROGRESS_CONTINUE;
+    if (context->cancel != nullptr && context->cancel->load()) {
+        if (context->pbCancel != nullptr) *context->pbCancel = TRUE;
+        return PROGRESS_CANCEL;
+    }
+    if (context->onProgress == nullptr || context->totalBytes == 0) return PROGRESS_CONTINUE;
+
+    // 预扫描后源文件仍可能变化：以扫描值为上界，避免越过本文件预算。
+    const LONGLONG rawTransferred = totalBytesTransferred.QuadPart;
+    const std::uint64_t transferred =
+        rawTransferred <= 0
+            ? 0
+            : std::min<std::uint64_t>(static_cast<std::uint64_t>(rawTransferred),
+                                      context->fileBytes);
+    const int permille = InstallEngine::PermilleFor(context->baseBytes + transferred,
+                                                    context->totalBytes);
+    if (permille != context->lastPermille) {
+        context->lastPermille = permille;
+        (*context->onProgress)(permille);
+    }
+    return PROGRESS_CONTINUE;
+}
+
 // §1：以 UTF-16LE + BOM（0xFF 0xFE）预创建结果文件。**仅允许在结果写入例程内调用**——
 // 严禁在 GUI 启动或开始安装时预创建（否则 NSIS 的 IfFileExists 早于结果成立）。
 bool PrecreateUtf16BomFile(const std::wstring& path) {
@@ -260,7 +304,7 @@ InstallResult InstallEngine::Run(const InstallOptions& options, InstallMode mode
         }
     }
 
-    // ---- 3. 复制：累计已写字节 → permille（§10）；取消即停（§3）----
+    // ---- 3. 复制：CopyFileExW 分块累计已写字节 → permille（§10）；取消即停（§3）----
     {
         std::error_code mkEc;
         fs::create_directories(targetRoot, mkEc);
@@ -283,9 +327,37 @@ InstallResult InstallEngine::Run(const InstallOptions& options, InstallMode mode
             result.error = L"mkdir-failed: " + entry.relative.wstring();
             return Finalize(result, options);
         }
-        std::error_code copyEc;
-        fs::copy_file(entry.source, destination, fs::copy_options::overwrite_existing, copyEc);
-        if (copyEc) {
+        // 目标是否已存在决定失败/取消时是否可删除半成品（既有文件绝不删）。
+        std::error_code existsEc;
+        const bool destinationExisted = fs::exists(destination, existsEc);
+
+        BOOL cancelCopy = FALSE;
+        CopyProgressContext progress;
+        progress.cancel = &cancel;
+        progress.onProgress = &onProgress;
+        progress.pbCancel = &cancelCopy;
+        progress.baseBytes = copiedBytes;
+        progress.totalBytes = totalBytes;
+        progress.fileBytes = entry.size;
+        progress.lastPermille = PermilleFor(copiedBytes, totalBytes);
+
+        SetLastError(ERROR_SUCCESS);
+        const BOOL copied = CopyFileExW(entry.source.c_str(), destination.c_str(),
+                                        &CopyProgressRoutine, &progress, &cancelCopy, 0);
+        if (!copied) {
+            const DWORD copyError = GetLastError();
+            // 仅在目标原本不存在时删除本次产生的半成品；覆盖既有目标失败保持原样。
+            if (!existsEc && !destinationExisted) {
+                std::error_code removeEc;
+                fs::remove(destination, removeEc);
+            }
+            const bool callbackCancelled =
+                cancelCopy != FALSE || copyError == ERROR_REQUEST_ABORTED;
+            if (callbackCancelled) {
+                result.cancelled = true;
+                result.error = L"cancelled";
+                return Finalize(result, options);
+            }
             result.error = L"copy-failed: " + entry.relative.wstring();
             return Finalize(result, options);
         }

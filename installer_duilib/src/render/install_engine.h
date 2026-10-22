@@ -9,8 +9,9 @@
 //      `FAF_PAYLOAD_TIMEOUT_MS` **无条件**覆盖（不依赖 FAF_TESTMODE）；
 //      超时才写 `abort=1 error=payload-timeout` 并退出。
 //   2) **再**递归预扫描 payload 总字节与文件数（哨兵在 payload 目录之外，绝不计数）。
-//   3) 复制时按真实已写字节产出 **permille 0..1000**（§10）经回调上报；支持取消
-//      （§3：停止复制 + 删除本次运行已写入的文件 + 写 `abort=1`）。
+//   3) 复制时按真实已写字节产出 **permille 0..1000**（§10）经回调上报；大文件经
+//      CopyFileExW 分块推进进度（不再只在整文件完成后上报一次）；支持取消
+//      （§3：分块回调中止复制 + 删除本次运行已写入的文件 + 写 `abort=1`）。
 //   4) §1：结果为 INI（`WritePrivateProfileStringW` W 变体、UTF-16LE + BOM、
 //      `[faf]` 占位节先写使 `[install]` 永不为首节、`abort` 最后写为终端键、
 //      无 `launch` 键）。**本文件是结果 INI 的唯一写作者**——任何其它模块不得另立写法。
@@ -78,7 +79,8 @@ std::uint64_t PayloadTimeoutMs();
 
 class InstallEngine {
 public:
-    // 每写完一个文件回调一次 permille（0..1000 整数）；成功收尾时恒回调 1000。
+    // 复制大文件时经 CopyFileExW 分块回调，permille 变化时上报（0..1000 整数）；
+    // 每个文件结束后仍按累计字节上报一次，成功收尾时恒回调 1000。
     // PostMessage 的 ~30fps 节流由调用方（InstallerWindow）负责；本回调不节流。
     using ProgressFn = std::function<void(int permille)>;
 

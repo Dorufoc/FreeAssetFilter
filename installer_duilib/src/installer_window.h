@@ -172,6 +172,16 @@ private:
     // T11：安装/修复共用同一引擎启动路径。缺省 Fresh 保持安装 0..4 的既有行为；
     // 维护修复传 InstallMode::Repair（失败/取消不回滚，由 T6 引擎语义保证）。
     void StartInstall(faf::InstallMode mode = faf::InstallMode::Fresh);
+    // UI-fix（进度 UX）：安装/修复初始化阶段的 UI 侧合成进度斜坡。引擎等待
+    // payload.ready 与递归预扫描期间没有进度回调，故由窗口在 0..500 间匀速推进；
+    // 首个真实 permille>0 到达即停止，并按当前值作为 base 映射后续真实进度。
+    // 仅 UI 状态，不改变引擎 permille 契约，也不伪造安装成功。
+    void BeginInitProgress();
+    void AdvanceInitProgress(double now_ms);
+    void EndInitProgress(int raw_permille);
+    // UI-fix：成功收尾时先在 100% 停留一个短定时器（让 220ms 填充动画可见），
+    // 再由 WM_TIMER(id=3) 切到完成页；避免 SetPage(Finish) 抢在绘制之前。
+    void BeginCompletionHold();
     // §15（唯一 owner = Todo 15）：完成页「完成」意图 —— 仅当 `state_.optLaunch`
     // 为真时经 `render/launch_forward.h` 去提权启动；未勾选绝不启动。目标缺失/
     // 转发失败 ⇒ 窗口内提示且不关闭（不崩溃）。
@@ -311,6 +321,14 @@ private:
     UINT_PTR tickTimer_{0};
     HANDLE installThread_{};
     int progressPermille_{0};
+
+    // UI-fix（进度 UX）：初始化合成斜坡 / 真实进度映射 / 完成前停留状态（UI 线程独占）。
+    bool initProgressActive_{false};        // 斜坡进行中（首个真实进度前）
+    bool progressMappingActive_{false};     // 后续真实 permille 走 base 映射
+    int progressMappingBasePermille_{0};    // 映射 base = 斜坡结束时的当前进度
+    double initProgressStartMs_{0.0};       // 斜坡起点（faf::SteadyNowMs 口径）
+    double lastInitProgressUpdateMs_{0.0};  // ~80ms 节流
+    bool completionHold_{false};            // 100% 停留中（等待完成页切换定时器）
 
     // --- Todo 13：安装引擎接线状态（worker 写 / UI 读；跨线程一律 atomic 或 mutex）---
     std::atomic<bool> cancel_{false};            // §3：取消信号（哨兵等待与复制循环轮询）

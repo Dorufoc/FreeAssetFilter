@@ -161,9 +161,15 @@ void ProgressBar::StartFillAnim(float target) {
         fillFallback_ = target;
         return;
     }
-    const float from = fillAnim_ ? fillAnim_->Value() : fillFallback_;
+    const float from = FillFraction();
     fillFallback_ = target;
     if (from == target) return;
+    // 高频进度更新（~30fps）命中活动动画时只重定向终值：重启会清零轨迹推进，
+    // 导致填充永远追不上目标（可见为长时间停在 50%~54%）。
+    if (fillAnim_ && fillAnim_->IsActive()) {
+        fillAnim_->Retarget(target);
+        return;
+    }
     // 220ms 标准缓动：新 permille 平滑插值，无视觉跳变。
     fillAnim_ = &animator_->Animate(fillName_, from, target, 220.0f, easing::Standard);
 }

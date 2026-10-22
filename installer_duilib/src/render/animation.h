@@ -56,6 +56,11 @@ public:
     // 不会产生中间 tick，首个 tick 即落到终值。
     void Configure(std::string name, float from, float to, float durationMs, CubicBezier curve);
 
+    // 重定向动画终值：活动时**只**更新 to_，保留 from_/startMs_/progress_/durationMs_，
+    // 避免高频更新时反复重启导致轨迹推进被清零；非活动时从当前 value_ 起跑，
+    // 沿用既有 durationMs_/curve_（减少动画的 0 时长同样沿用）。
+    void Retarget(float to);
+
     // 用当前时间（毫秒，单调）推进。返回推进后是否仍活动。
     bool Advance(double nowMs);
 
