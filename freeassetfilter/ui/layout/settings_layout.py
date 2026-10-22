@@ -908,17 +908,28 @@ class AppearanceSettingsPage(QWidget):
         return self._color_buttons
 
     def find_main_window(self) -> QWidget | None:
-        """定位主窗口（按 _mica_background 属性鸭子类型判定，避免循环导入）。
+        """定位主窗口（``_mica_background`` + ``get_background_mode`` 鸭子类型）。
 
         设置窗口是主窗口的 owned 子窗口后，self.window() 直接就是主窗口
         （QWidget.window() 返回顶层祖先），因此优先直接判定；遍历
         topLevelWidgets 仅作为回退路径（例如设置窗口未被挂载到主窗口的场景）。
+        设置窗口自身虽然保留 ``_mica_background = None`` 的防御属性，但增加
+        背景模式 API 判据可确保任何未来变化下都不会被误判为主窗口。
         """
+        def _is_main_window_candidate(widget) -> bool:
+            # 主窗口同时具备 Mica 背景属性和背景模式 API；设置窗口虽然也有
+            # ``_mica_background = None`` 的鸭子类型防御，但绝不能被误判为主窗。
+            return (
+                widget is not None
+                and getattr(widget, "_mica_background", None) is not None
+                and callable(getattr(widget, "get_background_mode", None))
+            )
+
         w = self.window()
-        if w is not None and getattr(w, "_mica_background", None) is not None:
+        if _is_main_window_candidate(w):
             return w
         for w in QApplication.topLevelWidgets():
-            if getattr(w, "_mica_background", None) is not None:
+            if _is_main_window_candidate(w):
                 return w
         return None
 

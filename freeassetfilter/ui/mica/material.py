@@ -432,7 +432,19 @@ class MicaMaterial(QObject):
     ``paint``、``paint_gpu``、``set_effect_parameters``、``set_theme``、``refresh``、
     ``begin_interaction``、``invalidate_cache``、``dispose``、``set_active`` 均保持
     同样的签名与语义。
+
+    共享层模式
+    ----------
+    ``layer_source`` 非空时本实例不再持有壁纸源、不启动烘焙线程，只订阅源材质的
+    :attr:`layer_changed`，把源材质的 ``ViewportLayer`` 直接当作自己的层绘制。
+    典型用途是设置窗口借用主窗口已烘焙好的整块虚拟桌面层：两个窗口共享同一份
+    QPixmap，各自按自己的屏幕矩形取子矩形，既不会重复烘焙，也不会新增第二个
+    OpenGL 上下文。
     """
+
+    #: 当前视口层发生变化（新层提交 / 同步烘焙完成 / 原生模式清层）。
+    #: 共享层借用方据此同步引用并触发重绘。
+    layer_changed = Signal()
 
     def __init__(
         self,
@@ -444,6 +456,7 @@ class MicaMaterial(QObject):
         saturation: float = 4.5,
         overlay_opacity: float = 0.7,
         lazy: bool = False,
+        layer_source: Optional["MicaMaterial"] = None,
     ) -> None:
         """初始化材质层。
 
@@ -456,6 +469,8 @@ class MicaMaterial(QObject):
             saturation: 色度增益，0–8。
             overlay_opacity: 色调场绘制不透明度（0–1），仅绘制期生效，改它不重烘焙。
             lazy: 为 ``True`` 时延迟到显式 ``refresh()`` 才做首次烘焙。
+            layer_source: 非空时进入共享层借用模式（见类文档）。借用方不创建
+                壁纸源、不启动烘焙线程，只复制源材质的层引用。
         """
         super().__init__()
         self._widget = widget
@@ -481,8 +496,18 @@ class MicaMaterial(QObject):
             tint_opacity=100.0,
         )
 
-        # 壁纸源（持有缓存；fallback 随主题更新）
-        self._provider = WallpaperProvider(fallback_rgb=G1_DARK if self._dark else G1_LIGHT)
+        # 共享层借用模式：借用方不持有壁纸源、不启动烘焙，仅订阅源材质。
+        # ``_borrowed`` 在实例生命周期内保持稳定（dispose 也不改），供各入口
+        # 快速分流；源引用用弱引用，避免设置窗口 → 主窗口材质的引用环。
+        self._borrowed = layer_source is not None
+        self._layer_source_ref: Optional[weakref.ReferenceType] = None
+
+        # 壁纸源（持有缓存；fallback 随主题更新）。借用方为 None。
+        self._provider = (
+            None
+            if self._borrowed
+            else WallpaperProvider(fallback_rgb=G1_DARK if self._dark else G1_LIGHT)
+        )
         self._bake_lock = threading.Lock()
 
         # 烘焙产物
@@ -616,8 +641,88 @@ class MicaMaterial(QObject):
         if top is not None:
             top.installEventFilter(self)
 
+        if layer_source is not None:
+            try:
+                self._layer_source_ref = weakref.ref(layer_source)
+                layer_source.layer_changed.connect(self._on_source_layer_changed)
+            except (AttributeError, TypeError, RuntimeError) as exc:
+                # 保持 borrowed 模式：此时 _provider 已经为 None，退回自烘焙
+                # 会缺壁纸源；静默以纯色兜底即可。
+                _LOG.debug("Mica 共享层源绑定失败：%s", exc)
+                self._layer_source_ref = None
+            else:
+                self._adopt_shared_layer()
+
         if not lazy:
             self.refresh()
+
+    # ------------------------------------------------------------------
+    # 共享层借用
+    # ------------------------------------------------------------------
+
+    def _layer_source(self) -> Optional["MicaMaterial"]:
+        """返回共享层源材质；非借用模式或源已销毁时返回 ``None``。"""
+        ref = self._layer_source_ref
+        return ref() if ref is not None else None
+
+    def _adopt_shared_layer(self) -> None:
+        """把源材质当前的层几何与像素原子地复制到本实例的合成器。
+
+        源层覆盖整块虚拟桌面，绘制时仍由本实例的 ``_window_rect_tuple()``
+        决定子矩形，因此两个窗口可以安全共享同一份 ``QPixmap``。
+        """
+        src = self._layer_source()
+        if src is None:
+            self._compositor.clear()
+            return
+        try:
+            layer = getattr(src, "_layer", None)
+            pixmap = getattr(src, "_layer_pixmap", None)
+        except (AttributeError, RuntimeError):
+            # 源 QObject 已进入析构流程 / 不是完整材质：按无层兜底。
+            self._compositor.clear()
+            return
+        if layer is not None and pixmap is not None and not pixmap.isNull():
+            self._compositor.set_layer(layer, pixmap)
+        else:
+            self._compositor.clear()
+        self._layer_key = getattr(src, "_layer_key", None)
+        self._has_shown = bool(getattr(src, "_has_shown", False))
+        # 层像素已按源材质的参数/主题预合成；借用方的绘制状态与之保持一致，
+        # 避免后续回退路径用不同的深浅色或叠加透明度。
+        try:
+            self._params = src._params
+            self._overlay_opacity = src._overlay_opacity
+            self._dark = src._dark
+            self._surface_color = QColor(src._surface_color)
+            self._luminosity = src._luminosity
+        except (AttributeError, RuntimeError):
+            pass
+
+    def _on_source_layer_changed(self) -> None:
+        """源材质交付新层：先抓自身旧外观，再接管新层并交叉淡入。"""
+        if self._disposed:
+            return
+        backdrop: Optional[QPixmap] = None
+        try:
+            if (
+                self._has_shown
+                and self._active
+                and self._fade_alpha > 0.001
+                and self._widget.isVisible()
+            ):
+                backdrop = self._capture_visual_state(self._window_rect_tuple())
+        except Exception:  # noqa: BLE001 - 抓拍失败则直接换层
+            backdrop = None
+        try:
+            self._adopt_shared_layer()
+            self._widget.update()
+            if backdrop is not None and not backdrop.isNull():
+                self._start_xfade(backdrop)
+        except RuntimeError:
+            # 宿主控件已进入析构流程：停止同步，不向源材质的 emit 传播异常。
+            return
+        self.layer_changed.emit()
 
     # ------------------------------------------------------------------
     # 层状态视图（property 委托到合成器，保持旧字段读写契约）
@@ -653,6 +758,11 @@ class MicaMaterial(QObject):
         if self._native_backdrop or self._disposed:
             # 原生 DWM 云母模式下自研层停用：不烘焙、不改状态。
             return
+        if self._borrowed:
+            src = self._layer_source()
+            if src is not None:
+                src.refresh_async()
+            return
         if self._worker_thread is not None:
             return
         field = self._bake_sync()
@@ -676,6 +786,12 @@ class MicaMaterial(QObject):
         """
         if self._native_backdrop or self._disposed:
             # 原生 DWM 云母模式下自研层停用：绝不起后台线程（零渲染开销）。
+            return
+        if self._borrowed:
+            # 借用方永远不烘：把刷新请求转交给源材质（多次调用由源端幂等合并）。
+            src = self._layer_source()
+            if src is not None:
+                src.refresh_async()
             return
         if not self._widget.isVisible():
             # 显示前几何守卫：窗口尚未显示时 ``_window_rect_tuple()`` 退化为
@@ -957,6 +1073,14 @@ class MicaMaterial(QObject):
             contrast: 色度上限倍率；``None`` 保持不变。
             overlay_opacity: 色调场烘焙不透明度（0–1）；``None`` 保持不变。
         """
+        if self._borrowed:
+            # 借用方只更新自己的兜底底色；不向源材质转发主题/参数——主窗口
+            # 自己监听主题信号并负责重烘焙，设置窗口只等 layer_changed。
+            self._surface_color = _parse_color(surface_color, self._surface_color)
+            self._luminosity = max(0.0, min(1.0, float(luminosity)))
+            self._dark = _is_dark_color(self._surface_color)
+            self._widget.update()
+            return
         params = self._params
         if blur_radius is not None:
             params = params.replace(blur_radius=max(0.0, float(blur_radius)))
@@ -986,6 +1110,10 @@ class MicaMaterial(QObject):
 
         已有过渡进行中（快速连切）时保持原时钟，不重复抓拍。
         """
+        if self._borrowed:
+            # 主题过渡由源材质起钟；借用方在新层通过 layer_changed 到达时
+            # 自行做一次交叉淡入（见 _on_source_layer_changed）。
+            return
         if self._native_backdrop:
             return
         if self._xfade_active:
@@ -1054,6 +1182,25 @@ class MicaMaterial(QObject):
             saturation: 色度增益，或 ``None`` 保持。
             contrast: 色度上限倍率，或 ``None`` 保持。
         """
+        if self._borrowed:
+            # 仅更新本地绘制状态（不重烘焙、不改源材质）：共享层像素已按源
+            # 参数预合成，设置窗口不应反向修改主窗口效果。
+            if blur_radius is not None:
+                self._params = self._params.replace(
+                    blur_radius=max(0.0, float(blur_radius))
+                )
+            if saturation is not None:
+                self._params = self._params.replace(
+                    saturation=max(0.0, float(saturation))
+                )
+            if contrast is not None:
+                self._params = self._params.replace(
+                    contrast=max(0.0, float(contrast))
+                )
+            if overlay_opacity is not None:
+                self._overlay_opacity = max(0.0, min(1.0, float(overlay_opacity)))
+            self._widget.update()
+            return
         needs_rebuild = False
         opacity_changed = False
 
@@ -1155,6 +1302,19 @@ class MicaMaterial(QObject):
         if enabled == self._native_backdrop:
             return
         self._native_backdrop = enabled
+        if self._borrowed:
+            # 借用方独立切换自己的绘制模式，绝不改动源材质的层。
+            if enabled:
+                self._paused = True
+                self._stop_fade()
+                self._finish_xfade()
+                self._stop_settle_fade()
+            else:
+                self._paused = False
+                self._fade_alpha = 1.0
+                self._fade_to = 1.0
+            self._widget.update()
+            return
         if enabled:
             self._compositor.clear()
             self._pixmap = None
@@ -1165,6 +1325,7 @@ class MicaMaterial(QObject):
             self._defer_timer.stop()
             self._opacity_timer.stop()
             self._stop_settle_fade()
+            self.layer_changed.emit()
         else:
             self._paused = False
             self._fade_alpha = 1.0
@@ -1252,6 +1413,11 @@ class MicaMaterial(QObject):
 
     def invalidate_cache(self) -> None:
         """使缓存失效：下次绘制前强制重烘焙。"""
+        if self._borrowed:
+            src = self._layer_source()
+            if src is not None:
+                src.invalidate_cache()
+            return
         self._last_req = None
         self._pixmap = None
         self._layer_cache.clear()
@@ -1301,6 +1467,14 @@ class MicaMaterial(QObject):
     def dispose(self) -> None:
         """释放资源：阻止重试、移除焦点过滤器、回收在途线程。窗口关闭时调用。"""
         self._disposed = True
+        # 共享层借用方只解除订阅，绝不 dispose 源材质（源窗口可能仍在运行）。
+        src = self._layer_source()
+        if src is not None:
+            try:
+                src.layer_changed.disconnect(self._on_source_layer_changed)
+            except (TypeError, RuntimeError) as exc:
+                _LOG.debug("Mica 共享层订阅解除失败：%s", exc)
+        self._layer_source_ref = None
         self._compositor.clear()
         self._layer_cache.clear()
         self._speculative_key = None
@@ -1485,6 +1659,8 @@ class MicaMaterial(QObject):
 
     def _bake_sync(self):
         """主线程同步烘焙（带锁，防止与后台 worker 并发访问 provider 缓存）。"""
+        if self._borrowed or self._provider is None:
+            return None
         with self._bake_lock:
             try:
                 source = self._provider.acquire()
@@ -1505,6 +1681,9 @@ class MicaMaterial(QObject):
         Args:
             force: 强制重烘焙（忽略 key 判据）。
         """
+        if self._borrowed:
+            self.refresh_async()
+            return
         win = self._window_rect_tuple()
         region = self._virtual_rect()
         layer_display_long = _layer_display_long(region)
@@ -1564,6 +1743,11 @@ class MicaMaterial(QObject):
 
     def _request_rebuild(self) -> None:
         """使相对上一次请求的判据失效并触发热重烘焙（视口层）。"""
+        if self._borrowed:
+            src = self._layer_source()
+            if src is not None:
+                src._request_rebuild()
+            return
         self._layer_key = None
         self._last_req = None
         self._maybe_rebake(force=True)
@@ -1653,6 +1837,8 @@ class MicaMaterial(QObject):
         Returns:
             监视器矩形 ``(x, y, w, h)``。
         """
+        if self._provider is None:
+            return window_rect
         try:
             info = self._provider.probe()
             monitors = info.monitors
@@ -1687,6 +1873,8 @@ class MicaMaterial(QObject):
             ``(params, dark, source_signature, region, layer_display_long)``；
             任一成分变化即视为需重烘焙。
         """
+        if self._provider is None:
+            return (self._params, self._dark, "", region, int(layer_display_long))
         try:
             signature = self._provider.probe().signature()
         except Exception:  # pragma: no cover - 防御性兜底
@@ -1778,6 +1966,7 @@ class MicaMaterial(QObject):
         self._layer_pixmap = pixmap
         self._layer_key = layer_key
         self._has_shown = True
+        self.layer_changed.emit()
         self._defer_timer.stop()
         if self._xfade_prestarted:
             self._xfade_prestarted = False
@@ -1820,7 +2009,7 @@ class MicaMaterial(QObject):
         Returns:
             已提交后台任务返回 True，否则 False。
         """
-        if self._native_backdrop or self._disposed:
+        if self._borrowed or self._native_backdrop or self._disposed:
             return False
         if self._worker_thread is not None:
             return False
@@ -1992,6 +2181,8 @@ class MicaMaterial(QObject):
         self._layer_pixmap = _pixmap_from_rgb(display)
         self._layer_key = layer_key
         self._has_shown = True
+        # 共享层借用方同步接管（必须在 update 前后皆可；此处层已提交）。
+        self.layer_changed.emit()
         # 入缓存：往返切换（深↔浅）命中即零烘焙。
         try:
             self._store_layer_cache(
@@ -2165,6 +2356,7 @@ class MicaMaterial(QObject):
             )
         self._pixmap = _pixmap_from_rgb(display)
         self._has_shown = True
+        self.layer_changed.emit()
         self._widget.update()
 
     # ------------------------------------------------------------------

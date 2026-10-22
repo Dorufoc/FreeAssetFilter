@@ -637,6 +637,8 @@ class TestBackgroundMode:
         self._patch_background_settings(monkeypatch, {"mode": "mica", "image": ""})
         window = MainWindow()
         assert getattr(window, "_mica_refresh_started", False) is False
+        mode_signals: list[str] = []
+        window.background_mode_changed.connect(mode_signals.append)
 
         window.set_background_mode("image")
         assert window._background_mode == "image"
@@ -649,10 +651,14 @@ class TestBackgroundMode:
         assert window._mica_background.isHidden() is False
         # image 模式启动跳过了 Mica 后台刷新，切回 mica 时补刷标志已置位
         assert window._mica_refresh_started is True
+        # 只有真正变化才广播；重复同模式不触发设置窗口重排。
+        window.set_background_mode("mica")
+        assert mode_signals == ["image", "mica"]
 
         # 非法模式被忽略：状态不被破坏
         window.set_background_mode("bogus")
         assert window._background_mode == "mica"
+        assert mode_signals == ["image", "mica"]
         window.deleteLater()
         qapp.processEvents()
 
@@ -1184,12 +1190,15 @@ class TestSettingsWindow:
     """SettingsWindow：独立设置窗口构造/主题刷新/事件过滤。"""
 
     def test_construct(self, qapp: QApplication) -> None:
-        """构造：标题、根容器、关闭按钮、无 Mica（防御属性保留）。"""
+        """构造：标题、根容器、关闭按钮；无宿主时不创建共享 Mica 视图。"""
         win = SettingsWindow()
         assert win.windowTitle() == "设置"
         assert win._root is not None
         assert win._close_btn is not None
-        assert win._mica_background is None  # 设置窗口不使用 Mica
+        # 设置窗口自身仍不是主窗口（_mica_background 保持 None 做鸭子类型防御）
+        assert win._mica_background is None
+        # 无宿主可借用材质：不创建 Mica 背景视图，保持 tm.surface 纯色兜底。
+        assert win._mica_view is None
         win.deleteLater()
         qapp.processEvents()
 

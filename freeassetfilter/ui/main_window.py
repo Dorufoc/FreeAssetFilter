@@ -189,8 +189,14 @@ class _MicaBackgroundMixin:
         contrast: float,
         saturation: float,
         tint_opacity: int = 70,
+        layer_source=None,
     ) -> None:
-        """按当前主题设置纯色背景/luminosity，创建 MicaMaterial 并设置基底色。"""
+        """按当前主题设置纯色背景/luminosity，创建 MicaMaterial 并设置基底色。
+
+        Args:
+            layer_source: 可选的源 ``MicaMaterial``；非空时本背景控件不烘焙，
+                只共享源材质的视口层（设置窗口沿用主窗口 Mica 背景用）。
+        """
         self._blur_radius = blur_radius
         self._contrast = contrast
         self._saturation = saturation
@@ -201,6 +207,9 @@ class _MicaBackgroundMixin:
         else:
             self._luminosity = 0.85
         self._surface_color = self._theme_surface_color()
+        #: 共享层借用模式的源材质；``None`` 表示普通（自烘焙）背景控件。
+        #: 设置窗口由 make_mica_background(..., layer_source=主窗口材质) 传入。
+        self._mica_layer_source = layer_source
 
         # 材质（MicaMaterial）延迟到窗口显示后创建（见 _ensure_mica_material）：
         # 其导入链含 numpy（约 0.12s），不应计入窗口出现前的关键路径；材质本就
@@ -236,6 +245,7 @@ class _MicaBackgroundMixin:
             saturation=self._saturation,
             overlay_opacity=self._tint_opacity / 100.0,
             lazy=True,  # 延迟壁纸加载/模糊到窗口显示后（首帧提速，见 showEvent）
+            layer_source=self._mica_layer_source,
         )
         return self._mica
 
@@ -420,13 +430,17 @@ class MicaBackgroundWidgetGL(QOpenGLWidget, _MicaBackgroundMixin):
         contrast: float = 1.5,
         saturation: float = 4.5,
         tint_opacity: int = 70,
+        layer_source=None,
     ) -> None:
         # 应用级防护（静态属性，重复设置无副作用）：阻止原生子窗（MPV 视频面等）
         # 连带把兄弟控件原生化。否则嵌入视频时本 GL 背景被原生化→合成失效→
         # 客户区未绘制像素在 DWM 玻璃板上直接透出桌面（窗口“全透明”bug）。
         QApplication.setAttribute(Qt.ApplicationAttribute.AA_DontCreateNativeWidgetSiblings, True)
         super().__init__(parent)
-        self._init_mica_common(blur_radius, surface_color, luminosity, contrast, saturation, tint_opacity)
+        self._init_mica_common(
+            blur_radius, surface_color, luminosity, contrast, saturation,
+            tint_opacity, layer_source=layer_source,
+        )
         # 背景恒不透明并铺满整窗，声明不透明绘制
         self.setAttribute(Qt.WA_OpaquePaintEvent, True)
 
@@ -468,11 +482,15 @@ class MicaBackgroundWidgetCpu(QWidget, _MicaBackgroundMixin):
         contrast: float = 1.5,
         saturation: float = 4.5,
         tint_opacity: int = 70,
+        layer_source=None,
     ) -> None:
         super().__init__(parent)
         # 纯色不透明基底（挡住 win32 控件）
         self.setAutoFillBackground(True)
-        self._init_mica_common(blur_radius, surface_color, luminosity, contrast, saturation, tint_opacity)
+        self._init_mica_common(
+            blur_radius, surface_color, luminosity, contrast, saturation,
+            tint_opacity, layer_source=layer_source,
+        )
         # 烘焙后 paint 始终铺满整个 rect 且不透明，声明不透明绘制
         self.setAttribute(Qt.WA_OpaquePaintEvent, True)
 
@@ -524,6 +542,9 @@ def make_mica_background(
     contrast: float = 1.5,
     saturation: float = 4.5,
     tint_opacity: int = 70,
+    *,
+    layer_source=None,
+    force_cpu: bool = False,
 ) -> QWidget:
     """
     创建 Mica 背景控件：默认 CPU 光栅版，环境变量 ``FAF_USE_GL_MICA=1`` 强制 GPU 版。
@@ -539,8 +560,14 @@ def make_mica_background(
 
     两者公共 API 一致（sync_theme / refresh_background / handle_window_resize /
     handle_window_move / _mica），调用方无需区分。
+
+    Args:
+        layer_source: 共享层借用模式的源 ``MicaMaterial``（设置窗口叠加在主窗口
+            背景之上时传入）。
+        force_cpu: 强制使用 CPU 光栅版。设置窗口必须走此路径：QOpenGLWidget 会
+            新建 GL 上下文/表面，与主窗口的背景控件叠加时容易触发合成问题。
     """
-    use_gl = os.environ.get("FAF_USE_GL_MICA", "") == "1"
+    use_gl = os.environ.get("FAF_USE_GL_MICA", "") == "1" and not force_cpu
     cls = MicaBackgroundWidgetGL if (use_gl and _opengl_available()) else MicaBackgroundWidgetCpu
     return cls(
         parent,
@@ -550,6 +577,7 @@ def make_mica_background(
         contrast=contrast,
         saturation=saturation,
         tint_opacity=tint_opacity,
+        layer_source=layer_source,
     )
 
 
@@ -703,6 +731,10 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
     STARTUP_OVERLAY_MIN_MS = 400
     STARTUP_OVERLAY_MAX_MS = 8000
     STARTUP_OVERLAY_FADE_MS = 200
+
+    #: 背景模式真正变化后发出（参数为目标模式）。设置窗口据此只在 mica
+    #: 模式下显示共享层背景，切到 image / minimalist 时立即隐藏。
+    background_mode_changed = Signal(str)
 
     def __init__(
         self,
@@ -3423,10 +3455,8 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         # 过渡预抓拍：模式真正变化且在屏时才抓旧帧（新层切换后全量在底，
         # 旧帧淡出即交叉淡入；连切合成屏幕现状，见 _prepare_background_frame）。
         backdrop = None
-        if (
-            mode != getattr(self, "_background_mode", "mica")
-            and self._can_transition_background()
-        ):
+        mode_changed = mode != getattr(self, "_background_mode", "mica")
+        if mode_changed and self._can_transition_background():
             backdrop = self._prepare_background_frame()
         self._background_mode = mode
         minimalist = getattr(self, "_minimalist_background", None)
@@ -3450,6 +3480,9 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             if not getattr(self, "_mica_refresh_started", False):
                 self._mica_refresh_started = True
                 self._start_mica_refresh()
+        if mode_changed:
+            # 设置窗口等观察者据此同步背景可见性；在层可见性落定后发。
+            self.background_mode_changed.emit(mode)
         if backdrop is not None:
             self._start_background_transition(backdrop)
 
@@ -3982,18 +4015,27 @@ def _apply_theme_palette(widget: QWidget) -> None:
 
 class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
     """
-    设置窗口 — 主窗口的 owned 子窗口，tm.surface 纯色背景（不使用 Mica）
+    设置窗口 — 主窗口的 owned 子窗口，跟随主窗口背景模式
 
-    不构造 Mica（壁纸加载+模糊+烘焙开销大），以加快窗口打开速度；
-    背景色与 styled 弹窗 DialogContent 一致（tm.surface）。
+    - 主窗口处于 ``mica`` 模式：叠加一层 CPU 光栅 Mica 视图，**借用**主窗口
+      已烘焙的整块虚拟桌面视口层，按设置窗口自身的屏幕矩形取子矩形绘制。
+      不新建壁纸源、不启动烘焙线程、不创建第二个 OpenGL 上下文。
+    - ``image`` / ``minimalist`` 模式：隐藏共享视图，使用与 styled 弹窗
+      DialogContent 一致的 ``tm.surface`` 纯色兜底背景。
+
     点击主窗口标题栏的设置按钮后弹出；以主窗口为 parent（Windows owned
     窗口）——始终相对主窗口置顶，主窗口关闭时设置窗口一并关闭销毁。
     """
 
     def __init__(self, parent=None):
         # 先初始化属性，防止父类初始化期间触发的事件访问未定义属性
-        self._mica_background = None  # 设置窗口不使用 Mica，保留属性做防御
+        self._mica_background = None  # 设置窗口自身不是主窗口；保留属性做鸭子类型防御
+        self._mica_view = None  # 共享主窗口视口层的 CPU 背景（仅 mica 模式显示）
+        self._settings_background_mode = ""
+        self._host_signal_connected = False
         self._root = None
+        self._content_container = None
+        self._overlay_layout = None
         self._title_label = None
         self._close_btn = None
 
@@ -4008,14 +4050,29 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._center_on_host()
 
         # 中央部件用纯 QWidget，保留本地无边框基类原生窗口特性；
-        # tm.surface 不透明纯色背景（styled 弹窗同款），无 Mica 开销
+        # tm.surface 不透明纯色背景（styled 弹窗同款），同时作为 mica 视图
+        # 未启用/被隐藏时的兜底背景。
         self._root = QWidget(self)
         self.setCentralWidget(self._root)
         _apply_theme_palette(self._root)
         self._root.setAutoFillBackground(True)
 
-        # 主布局直接建在根容器上
-        layout = QVBoxLayout(self._root)
+        # 叠层布局：内容层在上，共享 Mica 背景视图在下方（按需创建）。
+        # 不把 Mica 视图放进内容容器，才能覆盖标题栏区域。
+        self._overlay_layout = QGridLayout(self._root)
+        self._overlay_layout.setContentsMargins(0, 0, 0, 0)
+        self._overlay_layout.setSpacing(0)
+        self._content_container = QWidget(self._root)
+        # 内容容器必须显式透明：Qt 会给带样式表父级的子 QWidget 置
+        # WA_StyledBackground，默认会用 palette.Window 铺一层 tm.surface，
+        # 把下方的共享 Mica 完全盖住（表现为设置页仍是纯色）。
+        register_widget_qss(
+            self._content_container, "background: transparent; border: none;"
+        )
+        self._overlay_layout.addWidget(self._content_container, 0, 0)
+
+        # 主布局建在内容容器上
+        layout = QVBoxLayout(self._content_container)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
@@ -4025,11 +4082,13 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 设置内容区
         from layout.settings_layout import SettingsLayout  # 延迟导入（启动提速）
 
-        self._settings_layout = SettingsLayout(self._root, host_window=self)
+        self._settings_layout = SettingsLayout(self._content_container, host_window=self)
         layout.addWidget(self._settings_layout)
 
         # 监听主题变化以刷新背景和按钮颜色
         tm.theme_changed.connect(self._on_theme_changed)
+        # 跟随主机背景模式：仅 mica 时启用共享层；创建时先按当前模式同步一次。
+        self._connect_host_background()
 
     def _center_on_host(self) -> None:
         """居中到宿主主窗口；无宿主时回退到鼠标所在屏幕中心"""
@@ -4046,6 +4105,129 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             geo.x() + (geo.width() - self.width()) // 2,
             geo.y() + (geo.height() - self.height()) // 2,
         )
+
+    def _host_background_mode(self) -> str:
+        """读取宿主主窗口当前背景模式；无宿主/非主窗口时返回空串。"""
+        host = self.parentWidget()
+        getter = getattr(host, "get_background_mode", None)
+        if not callable(getter):
+            return ""
+        try:
+            return str(getter())
+        except Exception:  # noqa: BLE001 - 宿主处于销毁流程按非 mica 处理
+            return ""
+
+    def _connect_host_background(self) -> None:
+        """订阅宿主背景模式变化，并按当前模式同步一次设置窗口背景。"""
+        host = self.parentWidget()
+        signal = getattr(host, "background_mode_changed", None)
+        if signal is not None:
+            try:
+                signal.connect(self._on_host_background_mode_changed)
+                self._host_signal_connected = True
+            except (TypeError, RuntimeError) as exc:
+                debug(f"设置窗口订阅背景模式失败：{exc}")
+        self._on_host_background_mode_changed(self._host_background_mode())
+
+    def _on_host_background_mode_changed(self, mode: str) -> None:
+        """宿主背景模式变化：仅 mica 显示共享层，image/minimalist 恢复纯色。"""
+        self._settings_background_mode = str(mode or "")
+        if self._settings_background_mode == "mica":
+            if not self._ensure_settings_mica_view():
+                return
+            view = self._mica_view
+            if view is None:
+                return
+            try:
+                view.sync_theme()
+                view.show()
+                view.lower()
+                # 未显示的设置窗口不要提前取 winId（会强制原生化并打断
+                # 无边框基类的首个 WinIdChange 路径）；首次显示时由
+                # showEvent / resizeEvent 做几何同步。
+                if self.isVisible():
+                    view.handle_window_resize()
+                view.update()
+            except (RuntimeError, AttributeError) as exc:
+                debug(f"设置窗口 Mica 背景同步失败：{exc}")
+            return
+        # 非 mica：隐藏共享层，由根容器的 tm.surface 纯色兜底。
+        view = self._mica_view
+        if view is not None:
+            try:
+                view.hide()
+            except RuntimeError:
+                self._mica_view = None
+
+    def _ensure_settings_mica_view(self) -> bool:
+        """惰性创建共享主窗口视口层的 CPU 背景视图。
+
+        Returns:
+            bool: 视图已可用返回 True；宿主没有可借用的 Mica 材质时 False。
+        """
+        if self._mica_view is not None:
+            return True
+        host = self.parentWidget()
+        host_bg = getattr(host, "_mica_background", None)
+        ensure = getattr(host_bg, "_ensure_mica_material", None)
+        if not callable(ensure):
+            return False
+        try:
+            source = ensure()
+        except Exception as exc:  # noqa: BLE001 - 设置窗口打开不应因 Mica 失败
+            debug(f"设置窗口获取主窗口 Mica 材质失败：{exc}")
+            return False
+        if source is None:
+            return False
+
+        fixed = fixed_mica_params()
+        dark = tm.is_dark_theme()
+        try:
+            view = make_mica_background(
+                self._root,
+                blur_radius=fixed["blur_radius"],
+                surface_color="#000000" if dark else "#FFFFFF",
+                luminosity=0.65 if dark else 0.85,
+                contrast=fixed["contrast"],
+                saturation=fixed["saturation"],
+                tint_opacity=fixed["tint_opacity"],
+                layer_source=source,
+                force_cpu=True,  # 绝不在设置窗口新建第二个 GL 上下文
+            )
+        except Exception as exc:  # noqa: BLE001 - 降级为纯色背景
+            debug(f"设置窗口创建共享 Mica 背景失败：{exc}")
+            return False
+
+        view.setObjectName("SettingsMicaBackground")
+        view.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        view.setFocusPolicy(Qt.NoFocus)
+        self._overlay_layout.addWidget(view, 0, 0)
+        view.lower()
+        self._mica_view = view
+        try:
+            # 立即建立借用材质并请求源材质刷新（源已在烘焙时幂等合并）。
+            view._ensure_mica_material()
+            view.refresh_background()
+        except Exception as exc:  # noqa: BLE001 - 背景异步失败不影响设置页
+            debug(f"设置窗口启动共享 Mica 刷新失败：{exc}")
+        return True
+
+    def _dispose_settings_mica_view(self) -> None:
+        """释放共享层材质订阅（源材质属于主窗口，绝不能在此 dispose）。"""
+        view = self._mica_view
+        self._mica_view = None
+        if view is None:
+            return
+        mica = getattr(view, "_mica", None)
+        if mica is not None:
+            try:
+                mica.dispose()
+            except (RuntimeError, AttributeError) as exc:
+                debug(f"设置窗口释放 Mica 材质失败：{exc}")
+        try:
+            view.hide()
+        except RuntimeError:
+            pass
 
     def _create_title_bar(self, parent_layout: QVBoxLayout) -> None:
         """创建标题栏（仅标题文字和关闭按钮）"""
@@ -4096,6 +4278,14 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         """窗口显示/重新显示时刷新全量主题样式"""
         super().showEvent(event)
         self._sync_theme()
+        # 首次显示后同步一次共享层取样几何（此前不取 winId，避免在窗口
+        # 显示前强制原生化）。
+        view = getattr(self, "_mica_view", None)
+        if view is not None and not view.isHidden():
+            try:
+                view.handle_window_resize()
+            except (RuntimeError, AttributeError):
+                pass
         # 样式下发兜底：widget 模式下每次 ``register_widget_qss`` 已把片段
         # 直接下发到控件自身，本窗口首帧天然带自己的样式（历史"首帧无片段
         # 回退到不含本窗片段的旧全表"缺陷不再存在）；此处仅补发 teardown
@@ -4108,6 +4298,14 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 纯色背景（tm.surface 随主题变化）
         if self._root is not None:
             _apply_theme_palette(self._root)
+        # 共享 Mica 背景：仅更新本地兜底底色；新层由源材质 layer_changed 交付。
+        view = getattr(self, "_mica_view", None)
+        if view is not None:
+            try:
+                view.sync_theme()
+                view.update()
+            except (RuntimeError, AttributeError) as exc:
+                debug(f"设置窗口同步 Mica 主题失败：{exc}")
         # 标题栏文字
         if self._title_label is not None:
             register_widget_qss(self._title_label,(
@@ -4119,6 +4317,26 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 设置内容区（侧边栏 + 卡片）
         if hasattr(self, '_settings_layout') and self._settings_layout is not None:
             self._settings_layout.refresh_theme()
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        """窗口缩放后让共享 Mica 背景按新客户区重新取样（不重烘焙）。"""
+        super().resizeEvent(event)
+        view = getattr(self, "_mica_view", None)
+        if view is not None and view.isVisible():
+            try:
+                view.handle_window_resize()
+            except (RuntimeError, AttributeError):
+                pass
+
+    def moveEvent(self, event: QMoveEvent) -> None:
+        """窗口移动后更新共享层取样位置（层覆盖整块虚拟桌面，O(1) 重绘）。"""
+        super().moveEvent(event)
+        view = getattr(self, "_mica_view", None)
+        if view is not None and view.isVisible():
+            try:
+                view.handle_window_move()
+            except (RuntimeError, AttributeError):
+                pass
 
     def eventFilter(self, obj: QWidget, event: QEvent) -> bool:
         """事件过滤器 - 处理标题栏拖拽"""
@@ -4154,4 +4372,19 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                 layout.on_host_closing()
         except Exception as exc:
             debug(f"设置窗口关闭钩子失败（暂存缓存可能未清理）：{exc}")
+        # 先解除共享层订阅并释放借用材质，再让窗口树析构（QPixmap 必须在
+        # Qt 对象仍有效时清理；源材质属于主窗口，dispose 内部只断连不销毁）。
+        try:
+            self._dispose_settings_mica_view()
+        except Exception as exc:  # noqa: BLE001 - 关闭路径绝不抛出
+            debug(f"设置窗口释放共享背景失败：{exc}")
+        if self._host_signal_connected:
+            host = self.parentWidget()
+            signal = getattr(host, "background_mode_changed", None)
+            if signal is not None:
+                try:
+                    signal.disconnect(self._on_host_background_mode_changed)
+                except (TypeError, RuntimeError):
+                    pass
+            self._host_signal_connected = False
         super().closeEvent(event)
