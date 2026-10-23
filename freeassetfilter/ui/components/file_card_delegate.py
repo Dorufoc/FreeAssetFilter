@@ -16,9 +16,7 @@ from typing import Any, Dict, Optional
 from freeassetfilter.utils.app_logger import debug
 
 from PySide6.QtCore import (
-    QEasingCurve,
     QModelIndex,
-    Property,
     QRect,
     QRectF,
     QSize,

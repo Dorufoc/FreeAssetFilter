@@ -8,8 +8,6 @@ C++ LUT 预览生成器扩展模块编译配置 - MinGW 专用版本
 """
 
 import os
-import sys
-import platform
 from setuptools import setup, Extension
 from setuptools.command.build_ext import build_ext
 

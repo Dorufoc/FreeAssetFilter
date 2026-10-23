@@ -14,7 +14,6 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QListView, QLabel, QAbstractItemView, QApplication, QListWidget, QListWidgetItem
 from PySide6.QtCore import Qt, Signal, QSize, QTimer, QEvent, QMargins, QObject, QPoint, QRect, QRunnable, QThreadPool
-from PySide6.QtGui import QFont, QFontMetrics
 
 from theme import tm
 from freeassetfilter.utils.path_utils import get_app_data_path

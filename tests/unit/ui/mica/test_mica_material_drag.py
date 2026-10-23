@@ -25,7 +25,7 @@ from unittest import mock
 
 import numpy as np
 import pytest
-from PySide6.QtCore import QRectF, QThread
+from PySide6.QtCore import QRectF
 from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import QWidget
 

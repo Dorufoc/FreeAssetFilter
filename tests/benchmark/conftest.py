@@ -18,7 +18,6 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 from pathlib import Path
 from typing import Any, Dict
@@ -39,7 +38,7 @@ def _snapshot_to_baseline() -> bool:
     Returns:
         bool: 是否成功完成导出。
     """
-    from freeassetfilter.utils.perf_metrics import export_perf_metrics, get_perf_snapshot
+    from freeassetfilter.utils.perf_metrics import get_perf_snapshot
 
     snapshot: Dict[str, Any] = get_perf_snapshot()
     _PERF_SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)

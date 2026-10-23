@@ -20,10 +20,9 @@ import sys
 import shutil
 import subprocess
 import argparse
-import glob
 import importlib.util
 from pathlib import Path
-from typing import List, Dict, Set, Tuple
+from typing import List, Tuple
 
 from freeassetfilter.utils.app_logger import info, warning, error
 
@@ -201,13 +200,7 @@ def collect_data_files() -> List[Tuple[str, str]]:
             data_files.append((str(file), str(rel_path.parent)))
         print_info(f"收集到 {len(list(syntax_dir.glob('*.json')))} 个语法文件")
     
-    # 3. 收集color_schemes.json
-    color_schemes = project_root / "freeassetfilter" / "utils" / "color_schemes.json"
-    if color_schemes.exists():
-        data_files.append((str(color_schemes), "freeassetfilter/utils"))
-        print_info("收集到 color_schemes.json")
-
-    # 4. 收集 FAFVERSION（更新检查依赖）
+    # 3. 收集 FAFVERSION（更新检查依赖）
     fafversion_file = project_root / "FAFVERSION"
     if fafversion_file.exists():
         data_files.append((str(fafversion_file), "."))
@@ -802,7 +795,6 @@ def verify_output() -> bool:
     resources_to_check = [
         "FAFVERSION",
         "freeassetfilter/icons/FAF-main.ico",
-        "freeassetfilter/utils/color_schemes.json",
         "freeassetfilter/core/native/bin/libmpv-2.dll",
         "freeassetfilter/core/native/bin/thumbnail_generator.dll",
         "freeassetfilter/core/native/bin/faf_core.dll",

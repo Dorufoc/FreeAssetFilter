@@ -14,7 +14,6 @@ import ctypes
 import math
 import sys
 import time
-from ctypes import wintypes
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent

@@ -28,7 +28,7 @@ from typing import Any, ClassVar, NamedTuple
 
 from PySide6.QtCore import QPointF, QRect, QEventLoop, QTimer, Qt
 from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPixmap, QResizeEvent
-from PySide6.QtWidgets import QWidget, QApplication
+from PySide6.QtWidgets import QWidget
 
 from components._styled_fluid_cpu import render_static_frame
 from components._styled_fluid_math import hsv_shift, wrap_phase

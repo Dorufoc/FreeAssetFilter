@@ -12,8 +12,6 @@
 * 非 Windows / 缺失 dwmapi / 调用失败均安全返回 ``False``，绝不抛异常。
 """
 
-import ctypes
-import sys
 import types
 
 import pytest

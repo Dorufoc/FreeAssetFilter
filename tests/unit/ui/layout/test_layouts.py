@@ -35,11 +35,10 @@ from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock
 
 import pytest
-from PySide6.QtCore import QEvent, QModelIndex, QPoint, QPointF, QObject, QRect, QSequentialAnimationGroup, Qt, QThread, Signal
+from PySide6.QtCore import QEvent, QPoint, QPointF, QObject, QRect, QSequentialAnimationGroup, Qt, QThread, Signal
 from PySide6.QtGui import (
     QCloseEvent,
     QColor,
-    QEnterEvent,
     QHideEvent,
     QMouseEvent,
     QPixmap,

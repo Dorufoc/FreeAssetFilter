@@ -48,7 +48,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QRect, Qt, QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QBrush, QColor, QImage, QLinearGradient, QPainter, QPaintEvent, QPixmap
 from PySide6.QtWidgets import QWidget
 from components._styled_fluid_math import mix_rgb

@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QScroller,
     QScrollerProperties,
-    QApplication,
     QGraphicsEffect,
     QScrollBar,
     QWidget,

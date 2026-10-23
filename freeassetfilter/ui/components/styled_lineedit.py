@@ -1,7 +1,7 @@
 """Styled LineEdit component - matches web input exactly."""
 
 from PySide6.QtWidgets import QLineEdit, QWidget, QHBoxLayout
-from PySide6.QtCore import Qt, QRectF
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from theme import tm
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss, unregister_widget_qss

@@ -7,7 +7,7 @@ from typing import Any
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
 from .agent import AIAgentService
-from .models import AIError, ChatMessage, StreamEvent
+from .models import AIError, ChatMessage
 
 
 class AIWorkerSignals(QObject):

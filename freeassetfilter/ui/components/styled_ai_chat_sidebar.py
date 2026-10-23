@@ -43,10 +43,7 @@ from PySide6.QtWidgets import (
 from freeassetfilter.ui.components.icon_utils import render_icon
 from freeassetfilter.ui.components.styled_avatar import StyledAvatar
 from freeassetfilter.ui.components.styled_button import StyledButton
-from freeassetfilter.ui.components.styled_chat_bubble import (
-    RADIUS_BUBBLE,
-    make_ai_avatar_pixmap,
-)
+from freeassetfilter.ui.components.styled_chat_bubble import make_ai_avatar_pixmap
 from freeassetfilter.ui.components.styled_context_menu import StyledContextMenu
 from freeassetfilter.ui.components.styled_icon_button import StyledIconButton
 from freeassetfilter.ui.components.styled_lineedit import (

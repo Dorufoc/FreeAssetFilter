@@ -25,7 +25,7 @@ from __future__ import annotations
 import os
 import threading
 import time
-from typing import Any, List, Tuple
+from typing import Any, List
 
 import pytest
 

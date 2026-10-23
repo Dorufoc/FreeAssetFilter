@@ -42,6 +42,14 @@ def _pump(qapp: QApplication, ms: int = 30) -> None:
         qapp.processEvents()
 
 
+def _wait_for(qapp: QApplication, predicate: Any, timeout_ms: int = 1500) -> None:
+    """等待线程池任务落地（``stop`` / ``load_file`` / ``play`` 均为异步投递）。"""
+    elapsed = 0
+    while not predicate() and elapsed < timeout_ms:
+        _pump(qapp, 10)
+        elapsed += 10
+
+
 def _make_fake_mpv() -> MagicMock:
     """构造假 MPVManager（核心可用、可加载、位置从 0 开始）。"""
     fake = MagicMock()
@@ -96,6 +104,9 @@ def test_suspend_snapshots_state_and_stops(
         layout._stack.setCurrentIndex(0)  # 预置视频表面，验证挂起后切到遮罩层  # noqa: SLF001
         layout.suspend_for_layout_switch()
 
+        # stop 由 _ManagerStopTask 异步投递到全局线程池
+        _wait_for(qapp, lambda: fake.stop.called)
+
         assert layout._layout_switch_suspend_state == {  # noqa: SLF001
             "file": "C:/media/clip.mp4",
             "is_audio": False,
@@ -142,6 +153,9 @@ def test_suspend_without_file_keeps_none_state_but_stops(
         layout._stack.setCurrentIndex(0)  # 预置视频表面，验证挂起后切到遮罩层  # noqa: SLF001
         layout.suspend_for_layout_switch()
 
+        # stop 由 _ManagerStopTask 异步投递到全局线程池
+        _wait_for(qapp, lambda: fake.stop.called)
+
         assert layout._layout_switch_suspend_state is None  # noqa: SLF001
         fake.stop.assert_called_once_with(component_id=layout._component_id)
         assert layout._stack.currentIndex() == 1  # noqa: SLF001
@@ -165,6 +179,9 @@ def test_resume_reloads_file_and_arms_pending(
             "was_playing": False,
         }
         layout.resume_after_layout_switch()
+
+        # load/play 由 _MediaLoadTask 投递到全局线程池异步执行，等任务落地再断言
+        _wait_for(qapp, lambda: fake.play.called)
 
         assert layout._layout_switch_suspend_state is None  # noqa: SLF001
         assert layout._layout_switch_resume_pending == {  # noqa: SLF001

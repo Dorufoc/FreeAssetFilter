@@ -9,7 +9,6 @@ log_exception_details、install_console_capture（幂等 + 文件可写）。
 from __future__ import annotations
 
 import logging
-import re
 import sys
 import threading
 

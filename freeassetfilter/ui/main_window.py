@@ -24,7 +24,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPlainTextEdit,
-    QSplitter,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -43,7 +42,6 @@ from PySide6.QtCore import (
     QAbstractNativeEventFilter,
     QPropertyAnimation,
     QEasingCurve,
-    QSize,
 )
 from PySide6.QtGui import QPainter, QPaintEvent, QPixmap, QRegion, QResizeEvent, QMoveEvent, QMouseEvent, QKeyEvent, QColor, QCursor, QPalette
 
@@ -80,12 +78,11 @@ from freeassetfilter.ui.elevated_drop import ElevatedDropFallbackMixin
 from theme import tm
 
 from components.custom_background import BACKGROUND_DIR_NAME, CustomImageBackgroundWidget
-# components.mica_material（MicaMaterial）不在模块级导入：它经 mica.engine
-# 连带 numpy，导入约 0.16s，属「窗口出现前」关键路径。材质改为窗口显示后
-# 惰性创建（见 _MicaBackgroundMixin._ensure_mica_material），与既有
+# MicaMaterial（freeassetfilter.ui.mica.material）不在模块级导入：它经
+# mica.engine 连带 numpy，导入约 0.16s，属「窗口出现前」关键路径。材质改为
+# 窗口显示后惰性创建（见 _MicaBackgroundMixin._ensure_mica_material），与既有
 # lazy=True「首帧纯色、后台烘焙」策略同源。
-# 默认配置常量同样避开 components.mica_window shim（它再导出 mica.material →
-# numpy），改从纯数据模块 mica.config 取（定义已迁至彼处，material 仍再导出）。
+# 默认配置常量从纯数据模块 mica.config 取，避免连带 numpy（material 仍再导出）。
 from freeassetfilter.ui.mica.config import DEFAULT_MICA_CONFIG
 from components.styled_button import StyledButton
 from components.styled_fluid_background import prewarm_top_level_rhi
@@ -163,7 +160,7 @@ def fixed_mica_params() -> dict:
 class _MicaChainPreloader(QObject):
     """Mica 依赖链预导入的完成通知（延迟导入 → 记账回调）。
 
-    依赖链（``components.mica_material`` → ``mica.engine`` → numpy 等）首次导入
+    依赖链（``freeassetfilter.ui.mica.material`` → ``mica.engine`` → numpy 等）首次导入
     实测约 0.16s。历史实现丢到后台线程导入以避开首帧，但 PySide6 6.10 下
     「后台线程导入 + 主线程 Qt 事件处理」存在原生竞态（进程 Aborted / 挂死，
     见 ``_start_mica_chain_preload`` 说明），现改为主线程 ``QTimer`` 延迟导入，
@@ -224,7 +221,7 @@ class _MicaBackgroundMixin:
     def _ensure_mica_material(self):
         """惰性创建 MicaMaterial（窗口显示后由 _start_mica_refresh 首次触发）。
 
-        延迟原因：``components.mica_material`` → ``mica.engine`` → numpy 的导入
+        延迟原因：``ui.mica.material`` → ``mica.engine`` → numpy 的导入
         约 0.16s，属「窗口出现前」关键路径；而材质本就 ``lazy=True``（首帧以
         纯色呈现、壁纸模糊在窗口显示后的后台线程完成），整体后移不改变首帧观感。
         材质未就位期间由 :meth:`_paint_solid_fallback` 铺同色基底。
@@ -234,7 +231,7 @@ class _MicaBackgroundMixin:
         """
         if self._mica is not None:
             return self._mica
-        from components.mica_material import MicaMaterial
+        from freeassetfilter.ui.mica.material import MicaMaterial
 
         self._mica = MicaMaterial(
             self,
@@ -3111,7 +3108,7 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         的说明一致——原后台线程方案存在跨线程导入竞态，已废弃。
         """
         try:
-            import components.mica_material  # noqa: F401 - 仅预热导入
+            import freeassetfilter.ui.mica.material  # noqa: F401 - 仅预热导入
         except Exception as e:  # noqa: BLE001 - 预热失败留主线程兜底导入
             warning(f"云母依赖链预导入失败（回退主线程导入）: {e}")
         finally:

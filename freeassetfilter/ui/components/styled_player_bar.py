@@ -12,7 +12,6 @@ from PySide6.QtGui import (
     QPainter, QPaintEvent, QFont, QMouseEvent,
     QPen, QCursor,
 )
-from pathlib import Path
 from typing import Callable, Optional
 import time
 

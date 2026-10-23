@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 import pytest
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal

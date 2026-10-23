@@ -10,7 +10,6 @@ C++ LUT 预览生成器扩展模块编译配置
 """
 
 import os
-import sys
 import platform
 import subprocess
 from pybind11.setup_helpers import Pybind11Extension, build_ext

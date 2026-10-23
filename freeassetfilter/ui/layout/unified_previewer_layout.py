@@ -23,7 +23,6 @@
 import inspect
 import os
 import sys
-from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QMimeData, QUrl, Qt, Signal
