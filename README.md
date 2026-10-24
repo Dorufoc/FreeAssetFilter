@@ -148,6 +148,7 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 - **C++ 扩展** - 核心算法使用 C++ 实现，性能卓越
 - **内存管理** - 智能缓存清理，优化内存占用
 - **启动加速** - 预加载机制，快速启动应用
+- **独显加速** - 设置页开启「使用硬件加速」后，下次启动经独显启动器运行
 
 ### 功能对比
 
@@ -389,9 +390,9 @@ FreeAssetFilter/
 │   ├── utils/                  # 通用工具（路径 / 日志 / 高亮 / 性能埋点等）
 │   ├── docs/                   # 第三方组件与许可证清单
 │   └── icons/                  # 界面与文件类型图标资源
-├── launcher/                   # 独显启动器（C 源码 + 预编译 FAF-Launcher.exe）
-├── scripts/                    # 辅助脚本（样式统计、Effect 门禁、截图工具）
-├── tools/                      # 内存基线采样等工具脚本
+├── launcher/                   # 独显启动器（C 源码 + 构建脚本；FAF-Launcher.exe 本地构建，不入库）
+├── installer_duilib/           # 自研安装器（C++/NSIS 源码与构建脚本）
+├── scripts/                    # 辅助脚本（GUI 测试截图工具）
 ├── tests/                      # 测试体系（详见 tests/README.md）
 ├── data/                       # 运行期数据（本地生成、gitignore）：settings_v2.json、缩略图缓存、日志
 ├── requirements.txt            # Python 依赖清单
@@ -460,11 +461,19 @@ python setup_mingw.py build_ext --inplace
 
 ### 打包应用
 
-```bash
-# 使用 PyInstaller（唯一受支持的打包方式）
-python Pyinstall_build.py
+发布链共三步（启动器可选）：构建独显启动器 → PyInstaller 生成安装器载荷 → 自研安装器打包。
 
+```bash
+# 1) 构建独显启动器（可选；构建后安装版才能启用「使用硬件加速」）
+powershell -ExecutionPolicy Bypass -File launcher/build_launcher.ps1
+
+# 2) 生成 PyInstaller 载荷 → build/pyinstall/FreeAssetFilter
+python Pyinstall_build.py
 # 可选参数：--no-clean 保留旧构建输出；--skip-build 仅清理与验证
+
+# 3) 构建安装器（需要 CMake + MinGW + NSIS）
+powershell -ExecutionPolicy Bypass -File installer_duilib/build.ps1
+# 产物：build/FreeAssetFilter_NSIS_Setup.exe
 ```
 
 ### 添加新的文件预览支持

@@ -13,11 +13,15 @@
  * Semantics:
  *   - Zero UI: built with /SUBSYSTEM:WINDOWS, creates no window, spawns
  *     the child with CREATE_NO_WINDOW, never touches GPU/D3D itself.
- *   - Spawns the real app via CreateProcessW (NOT system()/cmd.exe):
- *     default target is `python -m freeassetfilter.app.main` resolved
- *     against the project root (parent dir of this EXE, walked up until
- *     freeassetfilter/app/main.py is found). Extra launcher argv are
- *     forwarded verbatim to the child.
+ *   - Spawns the real app via CreateProcessW (NOT system()/cmd.exe).
+ *     Target selection:
+ *       1. a sibling `FreeAssetFilter.exe` in this EXE's directory or up to
+ *          three parent directories (installed layout: launcher lives in
+ *          `<install>\_internal\launcher`), so frozen builds work;
+ *       2. otherwise `python -m freeassetfilter.app.main` against the
+ *          project root (parent dir of this EXE, walked up until
+ *          `freeassetfilter/app/main.py` is found) for source runs.
+ *     Extra launcher argv are forwarded verbatim to the child.
  *   - Test override: env FAF_LAUNCHER_CMD, when non-empty, is used as the
  *     full child command line instead (lets QA prove exit-code
  *     propagation without booting the GUI).
@@ -145,18 +149,70 @@ static BOOL file_exists(const wchar_t *path) {
     return GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
 }
 
+/* Walk a directory upward (<=3 levels) looking for FreeAssetFilter.exe. */
+static BOOL find_app_exe(const wchar_t *start_dir,
+                         wchar_t *out, DWORD out_cap) {
+    wchar_t cur[MAX_PATH];
+    int up;
+    size_t n = wcslen(start_dir);
+    if (n + 1 > MAX_PATH) return FALSE;
+    wcscpy_s(cur, MAX_PATH, start_dir);
+    for (up = 0; up <= 3; up++) {
+        wchar_t probe[MAX_PATH];
+        _snwprintf_s(probe, MAX_PATH, _TRUNCATE,
+                     L"%s\\FreeAssetFilter.exe", cur);
+        if (GetFileAttributesW(probe) != INVALID_FILE_ATTRIBUTES) {
+            wcsncpy_s(out, out_cap, probe, _TRUNCATE);
+            return TRUE;
+        }
+        {
+            wchar_t *sep = wcsrchr(cur, L'\\');
+            if (sep == NULL || sep == cur) break;
+            if (sep == cur + 2 && cur[1] == L':') break;
+            *sep = L'\0';
+        }
+    }
+    return FALSE;
+}
+
+/* Copy the directory part of a full path into out. */
+static BOOL dirname_of(const wchar_t *path, wchar_t *out, DWORD out_cap) {
+    const wchar_t *sep = wcsrchr(path, L'\\');
+    size_t dn = (sep != NULL) ? (size_t)(sep - path) : 0;
+    if (dn == 0 || dn >= out_cap) return FALSE;
+    wcsncpy_s(out, out_cap, path, dn);
+    return TRUE;
+}
+
+/* Forward argv[1..] of the launcher to the child command line. */
+static BOOL append_forwarded_args(
+    wchar_t *dst, size_t cap, size_t *len) {
+    int i, argc = 0;
+    LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (argv == NULL) return TRUE;
+    for (i = 1; i < argc; i++) {
+        if (*len + 1 >= cap) break;
+        dst[(*len)++] = L' ';
+        dst[*len] = L'\0';
+        if (!append_quoted(dst, cap, len, argv[i])) break;
+    }
+    LocalFree(argv);
+    return TRUE;
+}
+
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev,
                    LPSTR cmd_ansi, int show) {
     wchar_t exe_path[MAX_PATH];
     wchar_t exe_dir[MAX_PATH];
     wchar_t root[MAX_PATH];
+    wchar_t app_exe[MAX_PATH];
+    wchar_t work_dir[MAX_PATH];
     wchar_t cmdline[CMDLINE_CAP];
     size_t cmdlen = 0;
     wchar_t *mutable_cmd = NULL;
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
     DWORD child_code = 1;
-    wchar_t *wargv = NULL;
     (void)inst;
     (void)prev;
     (void)cmd_ansi;
@@ -172,6 +228,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev,
         wcsncpy_s(exe_dir, MAX_PATH, exe_path, dn);
     }
     find_project_root(exe_dir, root, MAX_PATH);
+    wcsncpy_s(work_dir, MAX_PATH, root, _TRUNCATE);
 
     /* Test/QA override: full child command line from the environment. */
     {
@@ -185,12 +242,19 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev,
         }
     }
 
-    /* Default target: <python> -m freeassetfilter.app.main [fwd args]. */
+    /* Preferred target: installed/frozen app exe next to (or above) us. */
+    if (find_app_exe(exe_dir, app_exe, MAX_PATH) &&
+        dirname_of(app_exe, work_dir, MAX_PATH)) {
+        if (!append_quoted(cmdline, CMDLINE_CAP, &cmdlen, app_exe))
+            return 1;
+        append_forwarded_args(cmdline, CMDLINE_CAP, &cmdlen);
+        goto spawn;
+    }
+
+    /* Fallback target: <python> -m freeassetfilter.app.main [fwd args]. */
     {
         wchar_t python[MAX_PATH];
         wchar_t venv_py[MAX_PATH];
-        int i, argc = 0;
-        LPWSTR *argv = NULL;
 
         /* 1) explicit env, 2) repo .venv, 3) PATH `python`. */
         if (GetEnvironmentVariableW(
@@ -211,6 +275,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev,
             static const wchar_t *fixed_args[] = {
                 L"-m", L"freeassetfilter.app.main"
             };
+            int i;
             for (i = 0; i < 2; i++) {
                 if (cmdlen + 1 >= CMDLINE_CAP) return 1;
                 cmdline[cmdlen++] = L' ';
@@ -220,19 +285,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev,
                     return 1;
             }
         }
-        /* Forward launcher argv[1..] verbatim. */
-        argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-        if (argv != NULL) {
-            for (i = 1; i < argc; i++) {
-                if (cmdlen + 1 >= CMDLINE_CAP) break;
-                cmdline[cmdlen++] = L' ';
-                cmdline[cmdlen] = L'\0';
-                if (!append_quoted(cmdline, CMDLINE_CAP, &cmdlen, argv[i]))
-                    break;
-            }
-            LocalFree(argv);
-        }
-        wargv = NULL;
+        append_forwarded_args(cmdline, CMDLINE_CAP, &cmdlen);
     }
 
 spawn:
@@ -247,7 +300,7 @@ spawn:
     if (!CreateProcessW(NULL, mutable_cmd,
                         NULL, NULL, FALSE,
                         CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
-                        NULL, root, &si, &pi)) {
+                        NULL, work_dir, &si, &pi)) {
         DWORD err = GetLastError();
         wchar_t msg[512];
         _snwprintf_s(msg, 512, _TRUNCATE,

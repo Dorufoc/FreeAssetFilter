@@ -834,27 +834,8 @@ def settings_file(tmp_path: Path) -> str:
 
 
 # =============================================================================
-# 性能基准数据集
+# 视频样本 fixture
 # =============================================================================
-@pytest.fixture(scope="session")
-def benchmark_dataset(tmp_path_factory: Any) -> List[str]:
-    """生成一个缩小版基准数据集（20 张 PNG 图片，session scope）。
-
-    Args:
-        tmp_path_factory: pytest 内置的会话级临时目录工厂。
-
-    Returns:
-        list[str]: 20 张已生成 PNG 图片的路径列表。
-    """
-    from tests.support.data_factories import make_image
-
-    base_dir: Path = tmp_path_factory.mktemp("benchmark_dataset")
-    paths: List[str] = []
-    for i in range(20):
-        paths.append(make_image(base_dir / f"bench_{i:03d}.png", fmt="PNG"))
-    return paths
-
-
 @pytest.fixture(scope="session")
 def video_sample_paths(tmp_path_factory: Any) -> List[str]:
     """把 ``tests/support/media/`` 的全部视频样本复制到临时目录（session scope）。

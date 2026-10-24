@@ -66,6 +66,8 @@ freeassetfilter/core/native/src/**/*.dll
 # --- Installer / launcher runtime outputs (每次构建重新生成) ---
 installer_duilib/install-result.ini
 launcher/FAF-Launcher.exe
+launcher/FAF-Launcher.exp
+launcher/FAF-Launcher.lib
 
 # --- Dotfiles (agent workspaces, code index) ---
 .*
@@ -83,6 +85,9 @@ launcher/FAF-Launcher.exe
 # 夹具树需完整入库（含隐藏文件、Markdown、中文名、多层目录），供 native-oracle 逐字段对拍。
 # 必须置于 .* 与 *.md 之后才能覆盖它们。
 !tests/support/faf_core_fixtures/**
+# 上一条的重新包含会连带放行夹具树内的 Python 缓存，这里再次排除。
+tests/support/faf_core_fixtures/**/__pycache__/
+tests/support/faf_core_fixtures/**/*.pyc
 
 # --- Backup & refactor notes ---
 *备份*

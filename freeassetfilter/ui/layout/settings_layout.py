@@ -669,6 +669,10 @@ class AppearanceSettingsPage(QWidget):
         self._perf_profile: str = "balanced"  # "performance"（性能） / "balanced"（均衡） / "powersave"（省电）
         self._perf_updating: bool = False  # 编程式切换性能分段控件的守卫标志
         self._perf_segmented: StyledSegmented | None = None
+        # 使用硬件加速（独显启动器）开关状态（初值在 _build_ui 中从暂存缓存覆盖）
+        self._hw_accel: bool = False
+        self._hw_toggle: StyledToggle | None = None
+        self._hw_row: SettingsRow | None = None
         self._build_ui()
         self._load_v2_settings()
 
@@ -896,6 +900,20 @@ class AppearanceSettingsPage(QWidget):
             self._perf_updating = False
         self._perf_row.set_control(self._perf_segmented)
         perf_group.addWidget(self._perf_row)
+
+        # 使用硬件加速（独显启动器）：仅暂存，点击确定后落盘，下次启动生效。
+        staged_hw = self._staging_cache.get(
+            "performance.hardware_acceleration", False
+        )
+        self._hw_accel = staged_hw if isinstance(staged_hw, bool) else False
+        self._hw_row = SettingsRow(
+            title="使用硬件加速",
+            description="开启后下次启动优先使用独立显卡",
+        )
+        self._hw_toggle = StyledToggle(checked=self._hw_accel, size="default")
+        self._hw_toggle.toggled.connect(self._on_hw_accel_toggled)
+        self._hw_row.set_control(self._hw_toggle)
+        perf_group.addWidget(self._hw_row)
         layout.addLayout(perf_group)
 
         layout.addStretch(1)
@@ -1301,6 +1319,18 @@ class AppearanceSettingsPage(QWidget):
         finally:
             self._perf_updating = False
 
+    def _on_hw_accel_toggled(self, checked: bool) -> None:
+        """使用硬件加速开关：仅写入暂存，点击确定后才落盘。
+
+        Args:
+            checked: 开关新状态；True 表示下次启动请求独立显卡。
+        """
+        self._hw_accel = bool(checked)
+        self._staging_cache.set(
+            "performance.hardware_acceleration", self._hw_accel
+        )
+        self.staged_changed.emit()
+
     def _on_dark_toggle(self, checked: bool) -> None:
         """兼容旧深色开关调用：等价于暂存夜晚/白天偏好（点击确定才生效）。
 
@@ -1525,6 +1555,7 @@ class AppearanceSettingsPage(QWidget):
             self._bg_row,
             self._bg_image_row,
             self._perf_row,
+            self._hw_row,
             self._ambient_row,
         ):
             _refresh_settings_item_text(item)
@@ -1602,6 +1633,19 @@ class AppearanceSettingsPage(QWidget):
         self._perf_profile = self._resolve_staged_perf_profile()
         self._sync_perf_segment()
 
+        # 使用硬件加速：从暂存恢复开关展示（守卫内切换，不触发处理器）。
+        staged_hw = self._staging_cache.get(
+            "performance.hardware_acceleration", False
+        )
+        self._hw_accel = staged_hw if isinstance(staged_hw, bool) else False
+        if self._hw_toggle is not None:
+            try:
+                self._hw_toggle.toggled.disconnect(self._on_hw_accel_toggled)
+            except Exception as exc:
+                debug(f"硬件加速开关信号断开失败（按未连接处理）：{exc}")
+            self._hw_toggle.checked = self._hw_accel
+            self._hw_toggle.toggled.connect(self._on_hw_accel_toggled)
+
     def _sync_bg_segment(self) -> None:
         """按暂存背景模式同步分段控件选中项（守卫内切换，不触发处理器）。"""
         target = {"minimalist": 0, "mica": 1, "image": 2}.get(self._bg_mode, 1)
@@ -1631,8 +1675,8 @@ class AppearanceSettingsPage(QWidget):
         """收集暂存区的 V2 设置值（提交事务的数据源）。
 
         Returns:
-            dict: V2 分类树格式的设置字典（含主题、强调色、窗口背景与
-                性能档位）。
+            dict: V2 分类树格式的设置字典（含主题、强调色、窗口背景、
+                性能档位与硬件加速开关）。
         """
         return {
             "appearance": {
@@ -1658,6 +1702,9 @@ class AppearanceSettingsPage(QWidget):
             "performance": {
                 "profile": self._staging_cache.get(
                     "performance.profile", self._perf_profile
+                ),
+                "hardware_acceleration": self._staging_cache.get(
+                    "performance.hardware_acceleration", self._hw_accel
                 ),
             },
         }
@@ -3033,7 +3080,7 @@ class SettingsLayout(QWidget):
     def _update_dirty_hint(self) -> None:
         """按暂存脏键刷新底栏「有更改未保存」提示可见性。
 
-        仅当存在**非外观键**（``general.*`` / ``performance.profile``）时显示——
+        仅当存在**非外观键**（``general.*`` / ``performance.*``）时显示——
         外观项是即时项（点 ✕ 自动保存），无需提示。
         """
         if self._dirty_hint is None:
@@ -3131,13 +3178,18 @@ class SettingsLayout(QWidget):
             floating_pool_snap = True
 
         # 性能档位：只接受三档合法值，缺失/非法回退 balanced（与 V2 合并口径一致）。
+        # 使用硬件加速：布尔白名单键，非布尔值回退 False。
         staged_perf = staged.get("performance", {}) if isinstance(staged, dict) else {}
         if isinstance(staged_perf, dict):
             perf_profile = staged_perf.get("profile", "balanced")
+            hw_accel = staged_perf.get("hardware_acceleration", False)
         else:
             perf_profile = "balanced"
+            hw_accel = False
         if perf_profile not in ("performance", "balanced", "powersave"):
             perf_profile = "balanced"
+        if not isinstance(hw_accel, bool):
+            hw_accel = False
 
         saved_accent = accent
         if isinstance(accent, str) and accent.lower() == "auto":
@@ -3229,6 +3281,7 @@ class SettingsLayout(QWidget):
             v2.set("general.floating_pool_enabled", floating_pool)
             v2.set("general.floating_pool_snap_enabled", floating_pool_snap)
             v2.set("performance.profile", perf_profile)
+            v2.set("performance.hardware_acceleration", hw_accel)
             v2.save()
         except Exception as exc:
             try:

@@ -275,6 +275,17 @@ def collect_binaries() -> List[Tuple[str, str]]:
         for sidecar in sorted([*lut_dir.glob("*.pyd"), *lut_dir.glob("*.dll")]):
             binaries.append((str(sidecar), "freeassetfilter/core/native/bin/lut_preview"))
             print_info(f"收集到 LUT 扩展 {sidecar.name}")
+    # 独显启动器（可选）：仅当已用 launcher/build_launcher.ps1 构建时收集。
+    # PyInstaller 6 onedir 会把它放到 _internal/launcher/，与
+    # platform_gpu.launcher_exe_path() 的冻结态路径一致。
+    launcher_exe = project_root / "launcher" / "FAF-Launcher.exe"
+    if launcher_exe.is_file():
+        binaries.append((str(launcher_exe), "launcher"))
+        print_info("收集到 FAF-Launcher.exe（硬件加速）")
+    else:
+        print_warning(
+            "未找到 FAF-Launcher.exe：发布包将无法启用硬件加速（直启回退）"
+        )
     print_success(f"共收集到 {len(binaries)} 个运行时二进制文件")
     return binaries
 

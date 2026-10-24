@@ -42,6 +42,7 @@ import ctypes
 import faulthandler
 import logging
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -495,6 +496,129 @@ def _offer_deelevation_restart_if_elevated(mutex_handle: Any) -> str:
 
 
 # ──────────────────────────────────────────────────────────────
+# 使用硬件加速：经独显启动器重启自身
+# ──────────────────────────────────────────────────────────────
+
+#: 子进程标记：本次启动已经过 FAF-Launcher.exe，禁止再次重启（防递归）。
+_GPU_LAUNCHED_ENV: str = "FAF_GPU_LAUNCHED"
+#: 父进程 PID：子进程据此等待父进程释放单实例互斥体。
+_GPU_PARENT_PID_ENV: str = "FAF_GPU_PARENT_PID"
+
+
+def _hardware_acceleration_enabled() -> bool:
+    """读取 V2 设置中的「使用硬件加速」开关。
+
+    Returns:
+        bool: True 表示下次/本次启动请求独占显卡；设置不可读时按关闭处理。
+    """
+    try:
+        from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+
+        settings = SettingsManagerV2().load()
+        performance = settings.get("performance", {})
+        if not isinstance(performance, dict):
+            return False
+        return performance.get("hardware_acceleration", False) is True
+    except Exception as exc:  # noqa: BLE001 - 设置不可读时按关闭处理
+        debug(f"[硬件加速] 读取设置失败，按关闭处理：{exc}")
+        return False
+
+
+def _gpu_launcher_ready() -> bool:
+    """检查独显启动器是否存在且带两个必需 PE 导出。
+
+    Returns:
+        bool: True 表示启动器可用；否则记录告警并返回 False（直启回退）。
+    """
+    from freeassetfilter.core.native.platform_gpu import (
+        launcher_exe_path,
+        launcher_has_gpu_exports,
+    )
+
+    exe = launcher_exe_path()
+    if not exe.is_file():
+        warning(f"[硬件加速] 启动器未构建：{exe}（回退直启）")
+        return False
+    if not launcher_has_gpu_exports(exe):
+        warning(f"[硬件加速] 启动器缺少 GPU 导出：{exe}（回退直启）")
+        return False
+    return True
+
+
+def _maybe_relaunch_with_gpu_launcher(argv: list[str]) -> bool:
+    """启用硬件加速且尚未经启动器启动时，经 FAF-Launcher.exe 重启自身。
+
+    Args:
+        argv: 当前进程完整参数列表（``argv[0]`` 不转发）。
+
+    Returns:
+        bool: True 表示已发起重启，调用方应立即结束当前进程；
+        False 表示继续正常启动。
+    """
+    if os.environ.get(_GPU_LAUNCHED_ENV) == "1":
+        return False
+    if not _hardware_acceleration_enabled():
+        return False
+    if not _gpu_launcher_ready():
+        return False
+
+    from freeassetfilter.core.native.platform_gpu import launcher_exe_path
+
+    exe = launcher_exe_path()
+    env = os.environ.copy()
+    env[_GPU_LAUNCHED_ENV] = "1"
+    env[_GPU_PARENT_PID_ENV] = str(os.getpid())
+    cwd = (
+        os.path.dirname(os.path.abspath(sys.executable))
+        if getattr(sys, "frozen", False)
+        else os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )
+    )
+    try:
+        subprocess.Popen(
+            [str(exe), *argv[1:]], cwd=cwd, env=env, close_fds=True
+        )
+    except OSError as exc:
+        warning(f"[硬件加速] 启动器拉起失败，回退直启：{exc}")
+        return False
+    info(f"[硬件加速] 已通过独显启动器重启：{exe}")
+    return True
+
+
+def _wait_for_gpu_launcher_parent() -> None:
+    """等待发起重启的父进程退出，避免子进程撞上单实例互斥体。"""
+    raw_pid = os.environ.pop(_GPU_PARENT_PID_ENV, None)
+    if not raw_pid or sys.platform != "win32":
+        return
+    try:
+        pid = int(raw_pid)
+    except ValueError:
+        return
+    try:
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.OpenProcess.argtypes = [
+            wintypes.DWORD, wintypes.BOOL, wintypes.DWORD
+        ]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+        handle = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+        if not handle:
+            return
+        try:
+            kernel32.WaitForSingleObject(handle, 15000)
+        finally:
+            kernel32.CloseHandle(handle)
+    except (OSError, ValueError) as exc:
+        debug(f"[硬件加速] 等待父进程退出失败：{exc}")
+
+
+# ──────────────────────────────────────────────────────────────
 # 主入口
 # ──────────────────────────────────────────────────────────────
 
@@ -512,6 +636,13 @@ def main(argv=None) -> int:
         except Exception as e:
             error(f"缩略图子进程执行失败: {e}")
             sys.exit(1)
+
+    # 独显启动器子进程：先等父进程退出，再走正常单实例流程。
+    _wait_for_gpu_launcher_parent()
+
+    # 使用硬件加速：经独显启动器重启自身（必须早于 QApplication 与单实例互斥体）。
+    if _maybe_relaunch_with_gpu_launcher(argv):
+        return 0
 
     # 任务栏图标与 DPI 感知
     sys.argv[0] = os.path.abspath(__file__)

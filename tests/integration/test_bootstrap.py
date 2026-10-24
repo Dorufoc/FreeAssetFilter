@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -179,6 +180,76 @@ class TestSettingsInit:
         app_main._init_settings_manager(qapp)
         assert qapp.settings_manager is fake
         assert fake.loaded is True
+
+
+class TestHardwareAccelerationRelaunch:
+    """使用硬件加速：经独显启动器重启的决策（不实际启动进程）。"""
+
+    def test_marker_prevents_recursive_relaunch(
+        self, app_main: Any, monkeypatch: Any
+    ) -> None:
+        """子进程已带 FAF_GPU_LAUNCHED 标记时直接继续，不再读设置。"""
+        monkeypatch.setenv(app_main._GPU_LAUNCHED_ENV, "1")
+        called = {"settings": False}
+
+        def _fake_enabled() -> bool:
+            called["settings"] = True
+            return True
+
+        monkeypatch.setattr(
+            app_main, "_hardware_acceleration_enabled", _fake_enabled
+        )
+        assert app_main._maybe_relaunch_with_gpu_launcher(["prog"]) is False
+        assert called["settings"] is False
+
+    def test_enabled_launches_launcher_with_marker(
+        self, app_main: Any, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """开启且启动器就绪：拉起启动器并注入防递归标记与父 PID。"""
+        exe = tmp_path / "FAF-Launcher.exe"
+        exe.write_bytes(b"MZ")
+        monkeypatch.delenv(app_main._GPU_LAUNCHED_ENV, raising=False)
+        monkeypatch.setattr(
+            app_main, "_hardware_acceleration_enabled", lambda: True
+        )
+        monkeypatch.setattr(app_main, "_gpu_launcher_ready", lambda: True)
+
+        import freeassetfilter.core.native.platform_gpu as gpu_mod
+
+        monkeypatch.setattr(gpu_mod, "launcher_exe_path", lambda: exe)
+        calls: dict[str, Any] = {}
+
+        def _fake_popen(cmd: Any, **kwargs: Any) -> object:
+            calls["cmd"] = cmd
+            calls["kwargs"] = kwargs
+            return object()
+
+        monkeypatch.setattr(app_main.subprocess, "Popen", _fake_popen)
+        argv = ["prog", "--open-path", "C:\\tmp"]
+        assert app_main._maybe_relaunch_with_gpu_launcher(argv) is True
+        assert calls["cmd"] == [str(exe), "--open-path", "C:\\tmp"]
+        env = calls["kwargs"]["env"]
+        assert env[app_main._GPU_LAUNCHED_ENV] == "1"
+        assert env[app_main._GPU_PARENT_PID_ENV] == str(os.getpid())
+
+    def test_unavailable_launcher_falls_back(
+        self, app_main: Any, monkeypatch: Any
+    ) -> None:
+        """启动器缺失/导出校验失败：不拉起进程，继续直启。"""
+        monkeypatch.delenv(app_main._GPU_LAUNCHED_ENV, raising=False)
+        monkeypatch.setattr(
+            app_main, "_hardware_acceleration_enabled", lambda: True
+        )
+        monkeypatch.setattr(app_main, "_gpu_launcher_ready", lambda: False)
+        called = {"popen": False}
+
+        def _fake_popen(*args: Any, **kwargs: Any) -> object:
+            called["popen"] = True
+            return object()
+
+        monkeypatch.setattr(app_main.subprocess, "Popen", _fake_popen)
+        assert app_main._maybe_relaunch_with_gpu_launcher(["prog"]) is False
+        assert called["popen"] is False
 
 
 class TestStartupController:

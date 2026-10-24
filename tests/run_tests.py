@@ -2,23 +2,19 @@
 # -*- coding: utf-8 -*-
 """FreeAssetFilter 统一测试运行器（tests/run_tests.py）。
 
-七个 argparse 子命令（``python tests/run_tests.py <子命令>``）：
+五个 argparse 子命令（``python tests/run_tests.py <子命令>``）：
 
-* **all**（默认）—— 全量非基准套件，追加 ``-m "not benchmark and not gui"``
-  （benchmark 仅由显式 ``benchmark`` 子命令执行；同时保留 pytest.ini
-  ``addopts`` 中 ``-m "not gui"`` 的排除语义——CLI ``-m`` 会整体覆盖 ini 的
-  ``-m``，故必须在这里**合并**两个排除，V3 修正见计划 todo-5/29）；
+* **all**（默认）—— 全量非 GUI 套件，追加
+  ``-m "not benchmark and not gui"``（同时保留 pytest.ini ``addopts`` 中
+  ``-m "not gui"`` 的排除语义——CLI ``-m`` 会整体覆盖 ini 的 ``-m``，
+  故必须在这里**合并**两个排除）；
 * **unit / integration** —— 按目录范围运行对应分层；
   骨架期自动追加 ``tests/.omo_qa_smoke/``（探针）保证 collected ≥ 1，
-  规避零收集退出码 5（todo-5 验收口径）；
+  规避零收集退出码 5；
 * **gui** —— 隐式 ``-m gui`` + ``FAF_VISUAL=1``，并**取消**默认 offscreen
-  （真实显示器环境，todo-26 语义）；
-* **benchmark** —— 隐式 ``-m benchmark``，默认超时 300s；
+  （真实显示器环境）；
 * **coverage** —— 同 ``all`` 范围并附加 ``--cov=freeassetfilter
-  --cov-report=term``；``--strict`` 时再运行 ``coverage_manifest``；
-* **regression** —— 运行 benchmark 后对比
-  ``.omo/evidence/tests-comprehensive-refactor/perf_baseline.json``，
-  仅输出对比报告、不作为性能 gate（todo-27 Momus 修正）。
+  --cov-report=term``；``--strict`` 时再运行 ``coverage_manifest``。
 
 公共行为：
 
@@ -47,36 +43,21 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
-from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 #: 仓库根（本文件位于 tests/ 下，上溯一级即根目录）。
 ROOT_DIR: Path = Path(__file__).resolve().parents[1]
 
 #: 全部子命令清单（--help 展示、argparse choices）。
 SUBCOMMANDS: Tuple[str, ...] = (
-    "all", "unit", "integration",
-    "gui", "benchmark", "coverage", "regression",
+    "all", "unit", "integration", "gui", "coverage",
 )
 
-#: 非基准子命令的默认超时（秒）。
+#: 默认超时（秒）。
 DEFAULT_TIMEOUT: int = 30
-#: benchmark / regression 子命令的专属默认超时（秒）。
-BENCHMARK_TIMEOUT: int = 300
-
-#: 回归基线文件路径（todo-27 benchmark 子命令写入）。
-PERF_BASELINE: Path = (
-    ROOT_DIR / ".omo" / "evidence" / "tests-comprehensive-refactor" / "perf_baseline.json"
-)
-#: 产品性能快照目录（perf_metrics 输出，见 freeassetfilter/utils/perf_metrics.py）。
-PERF_SNAPSHOT_DIR: Path = Path.home() / ".freeassetfilter" / "performance"
-#: 回归退化阈值（沿用旧 perf_regression_checker 默认 15%）。
-REGRESSION_THRESHOLD: float = 0.15
 
 #: 运行器挂载的 support 插件（progress 周期小结 / log_setup 双写日志）。
 _PROGRESS_PLUGIN: str = "tests.support.progress"
@@ -97,9 +78,9 @@ def _ensure_sys_path() -> None:
 def _resolve_timeout(command: str, args: argparse.Namespace) -> int:
     """计算本次子命令生效的 CLI 超时秒数。
 
-    优先级：用户显式 ``--timeout N`` > 子命令默认（benchmark/regression 为
-    300，其余 30）。注意这里的取值只影响 CLI 兜底层——任何显式 timeout
-    marker 或 timeout_policy 自动打标仍优先（见 tests/support/timeout_policy.py）。
+    优先级：用户显式 ``--timeout N`` > 默认 30。注意这里的取值只影响
+    CLI 兜底层——任何显式 timeout marker 或 timeout_policy 自动打标仍优先
+    （见 tests/support/timeout_policy.py）。
 
     Args:
         command: 当前子命令名。
@@ -110,8 +91,6 @@ def _resolve_timeout(command: str, args: argparse.Namespace) -> int:
     """
     if args.timeout is not None:
         return args.timeout
-    if command in ("benchmark", "regression"):
-        return BENCHMARK_TIMEOUT
     return DEFAULT_TIMEOUT
 
 
@@ -162,8 +141,6 @@ def _scope_paths(command: str) -> List[str]:
         return paths
     if command == "gui":
         return [str(tests_root / "gui")]
-    if command in ("benchmark", "regression"):
-        return [str(tests_root / "benchmark")]
     if command == "coverage":
         return [str(tests_root)]
     raise ValueError(f"未知子命令: {command}")
@@ -175,9 +152,8 @@ def _marker_args(command: str) -> List[str]:
     ``all``/``coverage`` 必须合并两个排除（not benchmark and not gui）——
     因为 CLI ``-m`` 整体覆盖 pytest.ini addopts 里的 ``-m "not gui"``，
     只传 ``-m "not benchmark"`` 会导致 gui 用例被纳入默认套件。
-    gui/benchmark 子命令则用 ``-m gui`` / ``-m benchmark`` 反选对应 marker
-    （覆盖 addopts 的默认排除）。其余分层子命令不传 ``-m``，沿用 ini 的
-    ``-m "not gui"``。
+    gui 子命令则用 ``-m gui`` 反选对应 marker（覆盖 addopts 的默认排除）。
+    其余分层子命令不传 ``-m``，沿用 ini 的 ``-m "not gui"``。
 
     Args:
         command: 当前子命令名。
@@ -189,8 +165,6 @@ def _marker_args(command: str) -> List[str]:
         return ["-m", "not benchmark and not gui"]
     if command == "gui":
         return ["-m", "gui"]
-    if command == "benchmark":
-        return ["-m", "benchmark"]
     return []
 
 
@@ -253,260 +227,6 @@ def _run_pytest(pytest_args: List[str]) -> int:
     return pytest.main(pytest_args)
 
 
-# ---------------------------------------------------------------------------
-# regression 子命令：旧 perf_regression_checker 的 compare_metrics /
-# generate_report / print_report 逻辑移植（归档快照为唯一来源，接口不变）。
-# 运行器自包含该逻辑，不依赖 todo-27 新建的 tests/benchmark/perf_regression.py。
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class _PerfMetric:
-    """性能指标数据类（移植自旧 perf_regression_checker.PerfMetric）。"""
-
-    name: str
-    avg_ms: float
-    p95_ms: float
-    p99_ms: float
-    calls: int = 0
-
-
-@dataclass
-class _RegressionResult:
-    """单指标回归检测结果（移植自旧 perf_regression_checker.RegressionResult）。"""
-
-    metric_name: str
-    baseline_value: float
-    current_value: float
-    change_percent: float
-    is_regression: bool
-    severity: str
-
-
-def _load_metrics(path: str) -> Dict[str, _PerfMetric]:
-    """加载 JSON 性能文件的 events 映射为 ``_PerfMetric``。
-
-    Args:
-        path: JSON 文件路径（基线或快照）。
-
-    Returns:
-        dict[str, _PerfMetric]: 指标名 → 指标数据。
-    """
-    with open(path, "r", encoding="utf-8") as f:
-        data: Dict[str, Any] = json.load(f)
-    metrics: Dict[str, _PerfMetric] = {}
-    events: Dict[str, Dict[str, Any]] = data.get("events", {})
-    for name, event_data in events.items():
-        metrics[name] = _PerfMetric(
-            name=name,
-            avg_ms=float(event_data.get("avg_ms", 0.0)),
-            p95_ms=float(event_data.get("p95_ms", 0.0)),
-            p99_ms=float(event_data.get("p99_ms", 0.0)),
-            calls=int(event_data.get("calls", 0)),
-        )
-    return metrics
-
-
-def _compare_metrics(
-    baseline: Dict[str, _PerfMetric],
-    current: Dict[str, _PerfMetric],
-) -> List[_RegressionResult]:
-    """对比基线和当前性能并产出逐指标回归结果。
-
-    Args:
-        baseline: 基线指标映射。
-        current: 当前指标映射。
-
-    Returns:
-        list[_RegressionResult]: 全部指标（新增/缺失/变化）的对比结果。
-    """
-    results: List[_RegressionResult] = []
-    all_metrics: set = set(baseline.keys()) | set(current.keys())
-    for metric_name in all_metrics:
-        base: Optional[_PerfMetric] = baseline.get(metric_name)
-        curr: Optional[_PerfMetric] = current.get(metric_name)
-        if base is None:
-            results.append(
-                _RegressionResult(
-                    metric_name=metric_name,
-                    baseline_value=0.0,
-                    current_value=curr.avg_ms if curr else 0.0,
-                    change_percent=float("inf"),
-                    is_regression=False,
-                    severity="info",
-                )
-            )
-            continue
-        if curr is None:
-            results.append(
-                _RegressionResult(
-                    metric_name=metric_name,
-                    baseline_value=base.avg_ms,
-                    current_value=0.0,
-                    change_percent=float("-inf"),
-                    is_regression=True,
-                    severity="high",
-                )
-            )
-            continue
-        if base.avg_ms == 0:
-            change_percent: float = 0.0 if curr.avg_ms == 0 else float("inf")
-        else:
-            change_percent = (curr.avg_ms - base.avg_ms) / base.avg_ms
-        is_regression: bool = change_percent > REGRESSION_THRESHOLD
-        if change_percent > REGRESSION_THRESHOLD * 2:
-            severity: str = "high"
-        elif change_percent > REGRESSION_THRESHOLD:
-            severity = "medium"
-        elif change_percent > 0:
-            severity = "low"
-        else:
-            severity = "improved"
-        results.append(
-            _RegressionResult(
-                metric_name=metric_name,
-                baseline_value=base.avg_ms,
-                current_value=curr.avg_ms,
-                change_percent=change_percent,
-                is_regression=is_regression,
-                severity=severity,
-            )
-        )
-    return results
-
-
-def _generate_report(results: List[_RegressionResult]) -> Dict[str, Any]:
-    """汇总回归对比报告 dict。
-
-    Args:
-        results: 逐指标对比结果。
-
-    Returns:
-        dict[str, Any]: summary / regressions / improvements 三段的报告。
-    """
-    regressions: List[_RegressionResult] = [r for r in results if r.is_regression]
-    improvements: List[_RegressionResult] = [r for r in results if r.severity == "improved"]
-    unchanged: List[_RegressionResult] = [r for r in results if r.severity == "low"]
-    report: Dict[str, Any] = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "threshold": REGRESSION_THRESHOLD,
-        "summary": {
-            "total_metrics": len(results),
-            "regressions": len(regressions),
-            "improvements": len(improvements),
-            "unchanged": len(unchanged),
-            "has_regression": len(regressions) > 0,
-        },
-        "regressions": [
-            {
-                "metric": r.metric_name,
-                "baseline_ms": round(r.baseline_value, 3),
-                "current_ms": round(r.current_value, 3),
-                "change": f"{r.change_percent:+.1%}",
-                "severity": r.severity,
-            }
-            for r in sorted(regressions, key=lambda x: x.change_percent, reverse=True)
-        ],
-        "improvements": [
-            {
-                "metric": r.metric_name,
-                "baseline_ms": round(r.baseline_value, 3),
-                "current_ms": round(r.current_value, 3),
-                "change": f"{r.change_percent:+.1%}",
-            }
-            for r in sorted(improvements, key=lambda x: x.change_percent)
-        ],
-    }
-    return report
-
-
-def _print_report(report: Dict[str, Any]) -> None:
-    """把回归对比报告打印到控制台。
-
-    Args:
-        report: ``_generate_report`` 的产物。
-    """
-    summary: Dict[str, Any] = report["summary"]
-    print("\n" + "=" * 60)
-    print("性能回归对比报告（仅报告，不 gate）")
-    print("=" * 60)
-    print(f"检测时间: {report['timestamp']}")
-    print(f"退化阈值: {report['threshold']:.1%}")
-    print("-" * 60)
-    print(f"总指标数: {summary['total_metrics']}")
-    print(f"退化数量: {summary['regressions']}")
-    print(f"改进数量: {summary['improvements']}")
-    print(f"未变化: {summary['unchanged']}")
-    print("-" * 60)
-    if report["regressions"]:
-        print("\n性能退化项:")
-        for item in report["regressions"]:
-            severity_icon: str = "HIGH" if item["severity"] == "high" else "med"
-            print(f"  [{severity_icon}] {item['metric']} "
-                  f"基线 {item['baseline_ms']}ms -> 当前 {item['current_ms']}ms ({item['change']})")
-    if report["improvements"]:
-        print("\n性能改进项:")
-        for item in report["improvements"]:
-            print(f"  [improved] {item['metric']} "
-                  f"基线 {item['baseline_ms']}ms -> 当前 {item['current_ms']}ms ({item['change']})")
-    print("\n" + "=" * 60)
-
-
-def _latest_perf_snapshot() -> Optional[Path]:
-    """返回最新的性能快照文件（perf_metrics_*.json）。
-
-    Returns:
-        Optional[Path]: 最新快照路径；目录不存在或无快照时返回 None。
-    """
-    if not PERF_SNAPSHOT_DIR.is_dir():
-        return None
-    snapshots: List[Path] = sorted(
-        PERF_SNAPSHOT_DIR.glob("perf_metrics_*.json"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    return snapshots[0] if snapshots else None
-
-
-def _run_regression(args: argparse.Namespace) -> int:
-    """执行 regression：跑 benchmark 后对比基线并打印报告。
-
-    退出码恒 0（仅报告，不作为性能 gate）——与 Scope"禁止性能秒数上限
-    gate"及 todo-27 Momus 修正一致。仅当基线文件或当前快照缺失（基础设施
-    未就绪）时返回 1。
-
-    Args:
-        args: 解析后的参数命名空间。
-
-    Returns:
-        int: 0（正常对比完成）；1（基线/快照缺失或对比失败）。
-    """
-    benchmark_args: List[str] = build_pytest_args("regression", args)
-    print("[run_tests] [regression] 步骤 1/2: 运行 benchmark 套件", flush=True)
-    _run_pytest(benchmark_args)
-
-    if not PERF_BASELINE.exists():
-        print(f"[run_tests] [regression] 错误: 回归基线不存在: {PERF_BASELINE} "
-              f"（请先运行 benchmark 子命令生成）", file=sys.stderr, flush=True)
-        return 1
-
-    current_snapshot: Optional[Path] = _latest_perf_snapshot()
-    if current_snapshot is None:
-        print("[run_tests] [regression] 错误: 未发现性能快照 "
-              "perf_metrics_*.json，无法对比", file=sys.stderr, flush=True)
-        return 1
-
-    print(f"[run_tests] [regression] 步骤 2/2: 对比基线 {PERF_BASELINE.name} "
-          f"vs 当前 {current_snapshot.name}", flush=True)
-    baseline_metrics: Dict[str, _PerfMetric] = _load_metrics(str(PERF_BASELINE))
-    current_metrics: Dict[str, _PerfMetric] = _load_metrics(str(current_snapshot))
-    results: List[_RegressionResult] = _compare_metrics(baseline_metrics, current_metrics)
-    report: Dict[str, Any] = _generate_report(results)
-    _print_report(report)
-    # 仅报告：即使检测到退化也返回 0，不 gate（计划 todo-27）。
-    return 0
-
-
 def _run_coverage(args: argparse.Namespace) -> int:
     """执行 coverage：同 all 范围 + 覆盖率选项；``--strict`` 再跑 manifest。
 
@@ -527,7 +247,7 @@ def _run_coverage(args: argparse.Namespace) -> int:
 
 
 def _run_layered(command: str, args: argparse.Namespace) -> int:
-    """执行分层 / all / gui / benchmark 子命令（单一 pytest 进程）。
+    """执行分层 / all / gui 子命令（单一 pytest 进程）。
 
     Args:
         command: 当前子命令名。
@@ -555,23 +275,21 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(
         prog="run_tests",
-        description="FreeAssetFilter 统一测试运行器：分层/全覆盖/覆盖率/回归。",
+        description="FreeAssetFilter 统一测试运行器：分层 / 全量 / 覆盖率。",
     )
     parser.add_argument(
         "command",
         nargs="?",
         default="all",
         choices=SUBCOMMANDS,
-        help="子命令（默认 all）：all | unit | integration "
-             "| gui | benchmark | coverage | regression",
+        help="子命令（默认 all）：all | unit | integration | gui | coverage",
     )
     parser.add_argument(
         "--timeout",
         type=int,
         default=None,
         metavar="N",
-        help="CLI 兜底超时秒数（仅对无 marker 测试生效；marker 优先；"
-             "benchmark/regression 默认 300，其余 30）",
+        help="CLI 兜底超时秒数（仅对无 marker 测试生效；marker 优先；默认 30）",
     )
     parser.add_argument(
         "-k",
@@ -633,8 +351,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     if args.command == "coverage":
         return _run_coverage(args)
-    if args.command == "regression":
-        return _run_regression(args)
     return _run_layered(args.command, args)
 
 
