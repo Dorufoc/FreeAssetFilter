@@ -195,6 +195,25 @@ def _reset_all_singletons() -> None:
 
     import freeassetfilter.core.managers.thumbnail_manager as _thumbnail_module
 
+    # UpdateService 持有私有 QThreadPool，先走 shutdown/close 再清空单例。
+    try:
+        from freeassetfilter.services.update_service import UpdateService
+
+        _update_service = UpdateService._instance
+        if _update_service is not None:
+            try:
+                _update_service.shutdown(timeout=2.0)
+            except Exception:  # 清理阶段：服务可能已自行关闭
+                pass
+            try:
+                _update_service.close()
+            except Exception:  # 清理阶段：重复关闭必须无副作用
+                pass
+        UpdateService._instance = None
+        UpdateService._initialized = False
+    except Exception:  # 测试环境可能尚未加载 UpdateService
+        pass
+
     # 类级 _instance 一律归零；_initialized 仅当类上真实存在该属性时才归零。
     for _singleton in (
         HeartbeatManager,

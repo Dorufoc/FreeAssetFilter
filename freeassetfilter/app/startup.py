@@ -7,11 +7,12 @@ FreeAssetFilter 启动阶段任务编排（startup）
 
   - ``StartupWarmupThread``：后台预热 FFmpeg 工具链，避免阻塞首屏
   - ``StartupController``：首帧后分阶段调度（心跳、附加字体注册、AVIF
-    图标缓存清理、缩略图缓存清理）
+    图标缓存清理、缩略图缓存清理、启动更新检查）
 
-说明：旧版的静默更新检查 / 下载 / 安装引导已整体移除（2026-09 重构，
-功能不再提供）；启动 flags 门控与看门狗随更新流程一并移除，本模块的
-各任务相互独立、失败仅记日志。
+说明：静默更新检查已由 Rust native updater 恢复——首帧 3 秒后按
+``update_startup`` 的策略（环境变量门控 / 设置开关 / 24 小时节流）发起
+一次非阻塞检查，并在发现新版本时弹出启动提示。下载 / 安装引导仍由后续
+更新流程负责；本模块各任务相互独立，失败仅记日志。
 
 线程模型：``StartupWarmupThread`` 已从「run 即弃 QThread」重构为
 ``QRunnable`` 池任务（投递到 ``QThreadPool.globalInstance()``），
@@ -25,9 +26,9 @@ import os
 import threading
 import time
 import traceback
-from typing import Optional
+from typing import Any, Optional
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, Signal
 
 from freeassetfilter.utils.app_logger import error, info, warning
 from freeassetfilter.utils.path_utils import get_resource_path
@@ -95,14 +96,16 @@ class StartupWarmupThread(QRunnable):
             error(f"FFmpeg 预热失败: {e}")
 
 
-class StartupController:
-    """引导层启动任务编排器（非 Qt 对象，全部经 QTimer 调度到主线程）。"""
+class StartupController(QObject):
+    """引导层启动任务编排器（全部经 QTimer 调度到主线程）。"""
 
     def __init__(self, app, window) -> None:
+        super().__init__()
         self.app = app
         self.window = window
         self._heartbeat = None
         self._warmup_thread = None
+        self._update_signal_connected = False
 
     # ── 调度入口 ────────────────────────────────────────────────
 
@@ -119,6 +122,7 @@ class StartupController:
         QTimer.singleShot(0, self._safe("_start_background_warmup"))
         QTimer.singleShot(0, self._safe("_cleanup_icon_cache"))
         QTimer.singleShot(100, self._safe("_schedule_thumbnail_cleanup"))
+        QTimer.singleShot(3000, self._safe("_maybe_check_updates"))
 
         # 首帧后启动心跳（主线程周期性调度；GPU 流体背景 ~30FPS 动画依赖它）
         if self._heartbeat is not None:
@@ -219,10 +223,39 @@ class StartupController:
     def _on_warmup_finished(self) -> None:
         info("[预热] 启动阶段后台预热任务结束")
 
+    # ── 启动更新检查 ────────────────────────────────────────────
+
+    def _maybe_check_updates(self) -> None:
+        """按启动策略发起一次非阻塞更新检查，并接好启动提示。
+
+        更新服务与对话框模块均惰性导入，避免拖慢首屏。信号必须在检查
+        之前连接（且只连一次），这样即使服务在 ``maybe_startup_check``
+        内同步发出信号也不会漏掉通知。
+        """
+        from freeassetfilter.services.update_service import get_update_service
+
+        service = get_update_service()
+        if service is None:
+            return
+
+        if not self._update_signal_connected:
+            service.startup_update_available.connect(
+                self._on_startup_update_available, Qt.QueuedConnection
+            )
+            self._update_signal_connected = True
+
+        service.maybe_startup_check(self.window)
+
+    def _on_startup_update_available(self, info: Any) -> None:
+        """把启动检查发现的新版本交给启动提示对话框。"""
+        from freeassetfilter.ui.layout import update_dialogs
+
+        update_dialogs.show_startup_update(self.window, info)
+
     # ── 退出清理 ────────────────────────────────────────────────
 
     def cleanup(self) -> None:
-        """退出前停止心跳并等待预热任务完成（有界 2 秒）。"""
+        """退出前停止心跳、等待预热任务并停止已存在的更新服务（有界 2 秒）。"""
         if self._heartbeat is not None:
             try:
                 self._heartbeat.stop_all()
@@ -235,6 +268,19 @@ class StartupController:
                     warning("[退出] 预热任务未在 2 秒内完成")
             except Exception as e:
                 warning(f"[退出] 预热任务清理失败: {e}")
+
+        # 退出路径只触碰已存在的服务：get_update_service() 会构造新实例，
+        # 既可能拉起原生 updater，也可能让退出多等数秒。
+        try:
+            from freeassetfilter.services.update_service import (
+                get_update_service_if_exists,
+            )
+
+            service = get_update_service_if_exists()
+            if service is not None:
+                service.shutdown(timeout=2.0)
+        except Exception as e:
+            warning(f"[退出] 更新服务停止失败: {e}")
 
 
 __all__ = [

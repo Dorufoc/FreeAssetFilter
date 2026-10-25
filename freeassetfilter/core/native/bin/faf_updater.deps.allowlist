@@ -1,0 +1,16 @@
+KERNEL32.dll
+ntdll.dll
+ADVAPI32.dll
+bcrypt.dll
+bcryptprimitives.dll
+crypt32.dll
+secur32.dll
+USER32.dll
+WS2_32.dll
+VCRUNTIME140.dll
+api-ms-win-core-synch-l1-2-0.dll
+api-ms-win-crt-math-l1-1-0.dll
+api-ms-win-crt-runtime-l1-1-0.dll
+api-ms-win-crt-stdio-l1-1-0.dll
+api-ms-win-crt-locale-l1-1-0.dll
+api-ms-win-crt-heap-l1-1-0.dll

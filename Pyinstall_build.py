@@ -15,15 +15,16 @@ FreeAssetFilter PyInstaller 打包脚本
     - PyInstaller (pip install pyinstaller)
 """
 
+from __future__ import annotations
+
 import os
 import sys
 import shutil
 import subprocess
 import argparse
-import glob
 import importlib.util
 from pathlib import Path
-from typing import List, Dict, Set, Tuple
+from typing import List, Tuple
 
 from freeassetfilter.utils.app_logger import info, warning, error
 
@@ -258,6 +259,7 @@ def collect_binaries() -> List[Tuple[str, str]]:
         ("libmpv-2.dll", native_bin, "freeassetfilter/core/native/bin"),
         ("thumbnail_generator.dll", native_bin, "freeassetfilter/core/native/bin"),
         ("faf_core.dll", native_bin, "freeassetfilter/core/native/bin"),
+        ("faf_updater.exe", native_bin, "freeassetfilter/core/native/bin"),
         ("mica_render.dll", native_bin, "freeassetfilter/core/native/bin"),
         ("ffmpeg.exe", native_bin, "freeassetfilter/core/native/bin"),
         ("ffprobe.exe", native_bin, "freeassetfilter/core/native/bin"),
@@ -558,7 +560,7 @@ def run_pyinstaller_build(cmd: List[str]) -> bool:
     env["PYTHONPATH"] = ui_root + (os.pathsep + existing_pythonpath if existing_pythonpath else "")
 
     try:
-        result = subprocess.run(cmd, check=True, env=env)
+        subprocess.run(cmd, check=True, env=env)
         print_success("PyInstaller打包完成")
         return True
     except subprocess.CalledProcessError as e:
@@ -772,12 +774,25 @@ def clean_native_sources_from_dist():
                     print_warning(f"无法删除 {p}: {e}")
 
 
-def verify_output() -> bool:
-    """验证输出目录结构"""
+def verify_output(dist_root: Path | None = None) -> bool:
+    """验证输出目录结构
+
+    Args:
+        dist_root: 待验证的发布目录；``None`` 时使用默认的
+            ``build/pyinstall/FreeAssetFilter``。为临时目录/负例验证提供入口，
+            默认行为保持不变。
+
+    Returns:
+        bool: 关键文件与必需资源全部存在时为 ``True``。
+    """
     print_header("验证输出目录")
     
     project_root = get_project_root()
-    output_dir = project_root / OUTPUT_DIR / PROJECT_NAME
+    output_dir = (
+        Path(dist_root)
+        if dist_root is not None
+        else project_root / OUTPUT_DIR / PROJECT_NAME
+    )
     
     if not output_dir.exists():
         print_error(f"输出目录不存在: {output_dir}")
@@ -806,12 +821,15 @@ def verify_output() -> bool:
         "freeassetfilter/core/native/bin/libmpv-2.dll",
         "freeassetfilter/core/native/bin/thumbnail_generator.dll",
         "freeassetfilter/core/native/bin/faf_core.dll",
+        "freeassetfilter/core/native/bin/faf_updater.exe",
         "freeassetfilter/core/native/bin/mica_render.dll",
         "freeassetfilter/core/native/bin/ffmpeg.exe",
         "freeassetfilter/core/native/bin/ffprobe.exe",
         "freeassetfilter/core/native/bin/7z/7z.exe",
         "freeassetfilter/core/native/bin/7z/7z.dll",
     ]
+    # 更新器 sidecar 是更新功能的硬依赖：缺失即验证失败，其它资源仍按警告处理。
+    required_resources = {"freeassetfilter/core/native/bin/faf_updater.exe"}
     
     for resource in resources_to_check:
         # PyInstaller 5 布局：资源与外置 exe 同级；PyInstaller 6 onedir 布局：
@@ -822,6 +840,9 @@ def verify_output() -> bool:
             candidates.insert(0, internal_dir / resource)
         if any(p.exists() for p in candidates):
             print_success(f"资源存在: {resource}")
+        elif resource in required_resources:
+            print_error(f"必需资源缺失: {resource}")
+            all_exist = False
         else:
             print_warning(f"资源缺失: {resource}")
     
@@ -915,8 +936,8 @@ def generate_report(removed_dlls: int, saved_space: int):
         # 保存报告到文件
         report_path = project_root / OUTPUT_DIR / "build_report.txt"
         with open(report_path, 'w', encoding='utf-8') as f:
-            f.write(f"FreeAssetFilter PyInstaller 打包报告\n")
-            f.write(f"=====================================\n\n")
+            f.write("FreeAssetFilter PyInstaller 打包报告\n")
+            f.write("=====================================\n\n")
             f.write(f"输出目录: {output_dir}\n")
             f.write(f"可执行文件: {PROJECT_NAME}.exe\n")
             f.write(f"总文件数: {file_count}\n")
@@ -980,9 +1001,9 @@ def main():
     
     if args.skip_build:
         print_info("跳打包，仅执行验证")
-        verify_output()
+        verified = verify_output()
         analyze_output_size()
-        return 0
+        return 0 if verified else 1
     
     # 检查环境
     if not check_virtual_env():
@@ -1012,11 +1033,15 @@ def main():
     # 清理打包目录中的原生源码残留（仅保留运行所需DLL）
     clean_native_sources_from_dist()
     # 验证输出
-    if not verify_output():
-        print_warning("输出验证未通过，但打包可能仍然可用")
+    verified = verify_output()
+    if not verified:
+        print_error("输出验证未通过：关键文件或必需资源缺失")
     
     # 生成报告
     generate_report(removed_dlls, saved_space)
+    
+    if not verified:
+        return 1
     
     print_header("打包完成")
     print_success(f"可执行文件位于: {OUTPUT_DIR}/{PROJECT_NAME}/{PROJECT_NAME}.exe")

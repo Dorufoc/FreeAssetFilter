@@ -96,6 +96,7 @@ test_*.py
 freeassetfilter/core/native/src/color_extractor_rust/target/
 freeassetfilter/core/native/src/thumbnail_rust/target/
 freeassetfilter/core/native/src/faf_core/target/
+freeassetfilter/core/native/src/faf_updater/target/
 
 # C++ build directory (msvc .obj, .lib, .exp intermediate files)
 freeassetfilter/core/native/src/cpp_lut_preview/build/

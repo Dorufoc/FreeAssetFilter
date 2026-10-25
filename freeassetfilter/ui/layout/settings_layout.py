@@ -7,6 +7,8 @@ from __future__ import annotations
 import copy
 import os
 import time
+import weakref
+from typing import Any, Callable
 
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QFrame, QLabel, QStackedWidget,
@@ -42,7 +44,7 @@ from components.settings_card import (
     apply_settings_title_style,
     apply_settings_value_style,
 )
-from components.styled_dialog import create_danger_dialog
+from components.styled_dialog import create_basic_dialog, create_danger_dialog
 from components.styled_color_picker import _ColorPanel
 from components.custom_background import (
     BACKGROUND_DIR_NAME,
@@ -59,6 +61,12 @@ from freeassetfilter.core.native.platform_timing import (
     get_active_profile as _get_timing_active_profile,
     set_active_profile as _set_timing_active_profile,
 )
+from freeassetfilter.services.update_service import (
+    UpdateError,
+    UpdateInfo,
+    get_update_service,
+)
+from freeassetfilter.ui.layout import update_dialogs
 from freeassetfilter.ui.layout.settings_staging_cache import SettingsStagingCache
 from freeassetfilter.utils.app_logger import debug, warning
 from freeassetfilter.utils.animation_settings import is_animation_enabled
@@ -1735,6 +1743,10 @@ class GeneralSettingsPage(QWidget):
         self._floating_pool_toggle: StyledToggle | None = None
         self._floating_pool_snap_row: SettingsRow | None = None
         self._floating_pool_snap_toggle: StyledToggle | None = None
+        # 启动时检查更新开关状态（默认开启；普通行，非子选项）
+        self._check_updates: bool = True
+        self._check_updates_row: SettingsRow | None = None
+        self._check_updates_toggle: StyledToggle | None = None
         # 子选项展开后的按需滚动：仅在用户打开父开关、且新子项被视口裁掉时
         # 生效；_pending 标记本次展开是否需要检查，避免刷新/初始化误滚动。
         self._pending_sub_option_scroll: SettingsRow | None = None
@@ -1852,6 +1864,19 @@ class GeneralSettingsPage(QWidget):
         self._floating_pool_snap_row.set_control(self._floating_pool_snap_toggle)
         layout.addWidget(self._floating_pool_snap_row)
 
+        # ── 启动时检查更新（默认开启；普通行，不是子选项）──
+        # 暂存隔离铁律：开关只写入 SettingsStagingCache
+        # （general.check_updates_on_startup），点击「确定」才经
+        # _submit_settings 落盘；启动策略每次直读该设置。
+        self._check_updates_row = SettingsRow(
+            title="启动时检查更新",
+            description="启动后静默检查新版本（每 24 小时最多一次）",
+        )
+        self._check_updates_toggle = StyledToggle(checked=True, size="default")
+        self._check_updates_toggle.toggled.connect(self._on_check_updates_toggled)
+        self._check_updates_row.set_control(self._check_updates_toggle)
+        layout.addWidget(self._check_updates_row)
+
         # 子选项展开完成 → 仅在必要时做最小滚动，避免底部开关打开后
         # 新子项藏在视口下方；中间选项本来可见时不会产生滚动。
         self._system_row.reveal_finished.connect(
@@ -1967,6 +1992,16 @@ class GeneralSettingsPage(QWidget):
         )
         self.staged_changed.emit()
 
+    def _on_check_updates_toggled(self, checked: bool) -> None:
+        """启动时检查更新开关：只写入暂存缓存，点击「确定」才落盘。"""
+        if self._general_updating:
+            return
+        self._check_updates = bool(checked)
+        self._staging_cache.set(
+            "general.check_updates_on_startup", self._check_updates
+        )
+        self.staged_changed.emit()
+
     def _layout_description_text(self) -> str:
         """返回当前布局的介绍文字 + 换行提示行。"""
         desc = self._LAYOUT_DESCRIPTIONS.get(
@@ -1994,7 +2029,7 @@ class GeneralSettingsPage(QWidget):
             self._layout_updating = False
 
     def _sync_general_toggles(self, animated: bool = False) -> None:
-        """按当前状态同步七个开关与两个子选项的显隐（守卫内赋值，不写暂存）。
+        """按当前状态同步八个开关与两个子选项的显隐（守卫内赋值，不写暂存）。
 
         各开关控件均带 ``None`` 守卫：缺位时仅跳过控件同步，状态值仍已由
         :meth:`refresh_from_staging` 更新。子选项显隐经
@@ -2026,6 +2061,8 @@ class GeneralSettingsPage(QWidget):
                 self._floating_pool_snap_toggle.checked = (
                     self._floating_pool_snap_enabled
                 )
+            if self._check_updates_toggle is not None:
+                self._check_updates_toggle.checked = self._check_updates
             if self._floating_pool_snap_row is not None:
                 # 贴边吸附是全局浮窗的子选项：仅在浮窗开启时显示。
                 self._floating_pool_snap_row.set_revealed(
@@ -2172,6 +2209,13 @@ class GeneralSettingsPage(QWidget):
             if isinstance(saved_floating_pool_snap, bool)
             else True
         )
+        # 启动时检查更新默认开启：缺键/非法值一律回退 True（与浮窗同口径）。
+        saved_check_updates = self._staging_cache.get(
+            "general.check_updates_on_startup", True
+        )
+        self._check_updates = (
+            saved_check_updates if isinstance(saved_check_updates, bool) else True
+        )
         self._sync_layout_segment()
         self._sync_general_toggles()
         self._sync_description_text()
@@ -2187,6 +2231,7 @@ class GeneralSettingsPage(QWidget):
             self._blank_back_row,
             self._floating_pool_row,
             self._floating_pool_snap_row,
+            self._check_updates_row,
         ):
             _refresh_settings_item_text(row)
 
@@ -2219,6 +2264,13 @@ class AboutSettingsPage(QWidget):
         self._contact_email_label: QLabel | None = None
         #: 联系信息框显隐状态（默认隐藏）
         self._contact_visible: bool = False
+        #: 当前手动检查请求 id（仅同 id + manual 的结果驱动本页 UI）
+        self._request_id: str | None = None
+        #: 本页是否正在检查（连点/重试重入守卫）
+        self._check_active: bool = False
+        self._update_service: Any | None = None
+        # 构造期一次性订阅；Qt 不会对 connect 去重，点击时不得重复连接。
+        self._connect_update_service()
         self._build_ui()
         self.refresh_theme()
 
@@ -2345,9 +2397,197 @@ class AboutSettingsPage(QWidget):
         self._contact_visible = not self._contact_visible
         self._contact_box.setVisible(self._contact_visible)
 
+    def _connect_update_service(self) -> None:
+        """构造期一次性订阅更新服务信号。
+
+        Qt 不会对同一 receiver/slot 的 ``connect`` 去重，若每次点击都连接，
+        同一个结果会弹出多个对话框。因此只在此处连接一次；接收者是本页，
+        页面销毁时 Qt 自动断开，禁止手动 ``disconnect``，也不要把
+        ``destroyed`` 连到访问 ``self`` 的槽。
+        """
+        try:
+            service = get_update_service()
+        except Exception as exc:  # noqa: BLE001 - 服务异常不应拖垮设置页
+            warning(f"初始化更新服务失败：{exc}")
+            return
+        self._update_service = service
+        service.check_started.connect(self._on_check_started)
+        service.check_finished.connect(self._on_check_finished)
+
+    def _on_check_started(self, request_id: str, manual: bool) -> None:
+        """记录当前手动检查 id（重试时也必须更新，否则结果被同 id 过滤）。
+
+        Args:
+            request_id: 服务分配的检查请求 id。
+            manual: 是否手动检查；启动检查不触碰关于页。
+        """
+        if not manual:
+            return
+        self._request_id = request_id
+
+    def _on_check_finished(
+        self,
+        request_id: str,
+        manual: bool,
+        info: object,
+        error: object,
+    ) -> None:
+        """处理手动检查结果：只接受同 ``request_id`` 且 ``manual=True``。
+
+        Args:
+            request_id: 服务回传的请求 id。
+            manual: 是否手动检查。
+            info: ``UpdateInfo`` 或 ``None``。
+            error: ``UpdateError`` 或 ``None``。
+        """
+        if not manual:
+            return
+        if self._request_id is None or request_id != self._request_id:
+            return
+        self._request_id = None
+        self._check_active = False
+        try:
+            retry = self._make_retry_callback()
+            typed_error = error if isinstance(error, UpdateError) else None
+            typed_info = info if isinstance(info, UpdateInfo) else None
+            if typed_error is not None:
+                update_dialogs.show_check_error(typed_error, retry)
+            elif typed_info is None:
+                update_dialogs.show_check_error(UpdateError("internal"), retry)
+            elif typed_info.update_available:
+                update_dialogs.show_update_available(
+                    typed_info,
+                    self._make_download_callback(typed_info),
+                )
+            else:
+                update_dialogs.show_no_update(typed_info)
+        except NotImplementedError:
+            debug("更新结果对话框尚未实现（Todo 16）")
+        finally:
+            self._set_checking_state(False)
+
+    def _make_retry_callback(self) -> Callable[[], None]:
+        """返回弱引用重试回调；禁止强引用关于页实例。
+
+        Returns:
+            Callable[[], None]: 页面仍存活时重新发起手动检查，否则静默 no-op。
+        """
+        weak_retry = weakref.WeakMethod(self._retry_check)
+
+        def _retry() -> None:
+            callback = weak_retry()
+            if callback is not None:
+                callback()
+
+        return _retry
+
+    def _make_download_callback(
+        self, info: UpdateInfo
+    ) -> Callable[[], None]:
+        """返回弱引用下载回调；详情对话框关闭后不得延长页面生命周期。
+
+        Args:
+            info: 本次可更新版本的元数据，回调触发时原样交给下载入口。
+
+        Returns:
+            Callable[[], None]: 页面仍存活时开始下载，否则静默 no-op。
+        """
+        weak_download = weakref.WeakMethod(self._start_download)
+
+        def _download() -> None:
+            callback = weak_download()
+            if callback is not None:
+                callback(info)
+
+        return _download
+
+    def _start_download(self, info: UpdateInfo) -> None:
+        """打开下载进度对话框并交由服务启动下载。
+
+        Args:
+            info: 本次可更新版本的元数据。
+        """
+        service = self._update_service
+        if service is None:
+            self._show_update_unavailable()
+            return
+        try:
+            update_dialogs.show_download_progress(info, service)
+        except Exception as exc:  # noqa: BLE001 - 下载入口失败不应拖垮设置页
+            warning(f"打开下载进度对话框失败：{exc}")
+
+    def _retry_check(self) -> None:
+        """错误弹窗的重试入口：再次发起手动检查。"""
+        self._begin_manual_check()
+
+    def _set_checking_state(self, checking: bool) -> None:
+        """切换按钮的检查中/空闲视觉状态。
+
+        Args:
+            checking: True 进入 0.0 进度并禁用；False 退出进度并恢复按钮。
+        """
+        if self._check_update_btn is None:
+            return
+        self._check_update_btn.setEnabled(not checking)
+        self._check_update_btn.set_progress(0.0 if checking else None)
+
+    def _show_update_unavailable(self) -> None:
+        """提示更新组件不可用（仅 exe 缺失时使用）。"""
+        try:
+            create_basic_dialog(
+                title="更新组件不可用",
+                message=UpdateError("unavailable").message,
+                cancel_text="",
+                confirm_text="知道了",
+            )
+        except Exception as exc:  # noqa: BLE001 - 提示失败不影响设置页
+            warning(f"显示更新组件不可用提示失败：{exc}")
+
+    def _begin_manual_check(self) -> None:
+        """校验可用性并发起手动检查；连点/重试进行中时直接忽略。"""
+        if self._check_active:
+            return
+        service = self._update_service
+        if service is None:
+            self._show_update_unavailable()
+            return
+        try:
+            available = bool(service.is_available())
+        except Exception as exc:  # noqa: BLE001 - 探测失败按不可用处理
+            warning(f"探测更新组件可用性失败：{exc}")
+            available = False
+        if not available:
+            self._show_update_unavailable()
+            return
+
+        self._check_active = True
+        self._set_checking_state(True)
+        try:
+            request_id = service.check(manual=True)
+        except Exception as exc:  # noqa: BLE001 - 检查派发失败给出重试
+            warning(f"发起更新检查失败：{exc}")
+            self._check_active = False
+            self._request_id = None
+            self._set_checking_state(False)
+            try:
+                update_dialogs.show_check_error(
+                    UpdateError("internal"), self._make_retry_callback()
+                )
+            except NotImplementedError:
+                debug("更新错误对话框尚未实现（Todo 16）")
+            return
+        # 同步 check_started 已写入 id；启动检查在途（无 check_started）
+        # 时用 check() 返回的既有 id 补齐，结果才能通过同 id 过滤。
+        if self._check_active and self._request_id is None:
+            self._request_id = request_id
+
     def _check_update(self) -> None:
-        """检查更新：跳转到项目 Releases 页面（应用内暂无更新服务端）。"""
-        self._open_link(f"{ABOUT_REPO_URL}/releases")
+        """检查更新：真实查询 GitHub 发布并展示检查中/无更新/错误三态。
+
+        可用性、请求 id、同 id 过滤与重试全部由本方法链路处理；不再打开
+        浏览器。发布页链接仍由链接行与详情对话框保留。
+        """
+        self._begin_manual_check()
 
     def _apply_header_styles(self) -> None:
         """按当前主题重注册应用信息块样式并重建链接行富文本。"""
@@ -3129,6 +3369,16 @@ class SettingsLayout(QWidget):
             floating_pool = True
         if not isinstance(floating_pool_snap, bool):
             floating_pool_snap = True
+        # 启动时检查更新：仅接受真实 bool（缺失/非法一律回退 True，与
+        # V2 合并口径一致）；本键只落盘，不触发网络或更新服务。
+        if isinstance(staged_general, dict):
+            check_updates_on_startup = staged_general.get(
+                "check_updates_on_startup", True
+            )
+        else:
+            check_updates_on_startup = True
+        if not isinstance(check_updates_on_startup, bool):
+            check_updates_on_startup = True
 
         # 性能档位：只接受三档合法值，缺失/非法回退 balanced（与 V2 合并口径一致）。
         staged_perf = staged.get("performance", {}) if isinstance(staged, dict) else {}
@@ -3142,6 +3392,12 @@ class SettingsLayout(QWidget):
         saved_accent = accent
         if isinstance(accent, str) and accent.lower() == "auto":
             accent = get_system_accent_color()
+
+        # V2 持久化回滚上下文：save() 或后续步骤失败时把本键内存值还原到
+        # 提交前快照。哨兵保证「尚未走到快照点」时不会误回滚。
+        v2: SettingsManagerV2 | None = None
+        _unset_value = object()
+        prev_check_updates_on_startup: object = _unset_value
 
         # 设置窗口过渡：与实时预览同款整窗交叉淡入淡出（单实例去重）；
         # 遮罩创建失败仅告警，不阻塞提交本身。
@@ -3209,6 +3465,9 @@ class SettingsLayout(QWidget):
 
             v2 = SettingsManagerV2()
             v2.load()
+            prev_check_updates_on_startup = v2.get(
+                "general.check_updates_on_startup", True
+            )
             v2.set("appearance.theme_mode", theme_mode)
             v2.set("appearance.theme", theme)
             v2.set("appearance.accent_color", saved_accent)
@@ -3228,6 +3487,9 @@ class SettingsLayout(QWidget):
             v2.set("general.show_system_files", show_system)
             v2.set("general.floating_pool_enabled", floating_pool)
             v2.set("general.floating_pool_snap_enabled", floating_pool_snap)
+            v2.set(
+                "general.check_updates_on_startup", check_updates_on_startup
+            )
             v2.set("performance.profile", perf_profile)
             v2.save()
         except Exception as exc:
@@ -3241,6 +3503,17 @@ class SettingsLayout(QWidget):
                 _set_timing_active_profile(prev_perf_profile)
             except Exception as rollback_exc:
                 debug(f"回滚性能档位失败：{rollback_exc}")
+            if (
+                v2 is not None
+                and prev_check_updates_on_startup is not _unset_value
+            ):
+                try:
+                    v2.set(
+                        "general.check_updates_on_startup",
+                        prev_check_updates_on_startup,
+                    )
+                except Exception as rollback_exc:
+                    debug(f"回滚启动检查更新设置失败：{rollback_exc}")
             self._notify_save_failure(exc)
             return False
 

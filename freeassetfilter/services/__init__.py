@@ -32,6 +32,7 @@ _SYMBOL_TO_MODULE: dict[str, str] = {
     "FileIconManager": "file_icon_manager",
     "PreviewerRegistry": "previewer_registry",
     "StagingPoolService": "staging_pool_service",
+    "UpdateService": "update_service",
 }
 
 __all__ = [
@@ -43,6 +44,7 @@ __all__ = [
     "MediaMetadataService",
     "PreviewerRegistry",
     "StagingPoolService",
+    "UpdateService",
 ]
 
 

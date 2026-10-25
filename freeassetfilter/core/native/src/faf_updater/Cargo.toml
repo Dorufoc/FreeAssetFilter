@@ -1,0 +1,38 @@
+[package]
+name = "faf_updater"
+version = "0.1.0"
+edition = "2021"
+description = "FreeAssetFilter standalone updater sidecar (NDJSON over stdio)"
+license = "AGPL-3.0"
+
+[[bin]]
+name = "faf_updater"
+path = "src/main.rs"
+
+[dependencies]
+# Plan C1: fixed dependency set. TLS is native-tls (Windows SChannel via the
+# system certificate store). The `gzip` feature is intentionally NOT enabled -
+# every request pins `Accept-Encoding: identity` so transfer sizes and Range
+# offsets always refer to the raw bytes on the wire.
+ureq = { version = "3", default-features = false, features = ["native-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+semver = "1"
+regex = "1"
+url = "2"
+# `std` only: no `clock`/`alloc` baggage, all timestamps come from the wire.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+# FILE_FLAG_OPEN_REPARSE_POINT + GetFileInformationByHandle for `verify`.
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+# Local HTTP stubs for protocol/watchdog tests; never used in production paths.
+tiny_http = "0.12"
+tempfile = "3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+strip = true

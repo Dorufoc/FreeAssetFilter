@@ -6239,6 +6239,255 @@ MIT OR Apache-2.0 OR Zlib
 （本许可证全文已在上方 adler2 (2.0.1) 条目引用，逐字一致。）
 （许可证表达式另含 Zlib，本项目证据未收录其全文，详见上游官方文本。）
 
+## B2. Rust crate — faf_updater（更新器 sidecar，locked 发布依赖）
+
+本节登记 `faf_updater.exe` 的完整**发布**依赖树。命令在
+`freeassetfilter/core/native/src/faf_updater/` 目录执行，
+`--locked` 保证与仓库内 `Cargo.lock` 的锁定版本一致：
+
+```powershell
+cargo tree --locked --edges normal
+```
+
+`--edges normal` 只遍历 `[dependencies]`（发布依赖）及其传递依赖。
+`[dev-dependencies]`（`tiny_http` / `tempfile`）仅用于测试，不参与发布构建，
+也不进入冻结产物，单列于 B2.2。
+
+```text
+faf_updater v0.1.0 (freeassetfilter/core/native/src/faf_updater)
+|-- chrono v0.4.45
+|   `-- num-traits v0.2.19
+|-- regex v1.13.1
+|   |-- aho-corasick v1.1.5
+|   |   `-- memchr v2.8.3
+|   |-- memchr v2.8.3
+|   |-- regex-automata v0.4.18
+|   |   |-- aho-corasick v1.1.5 (*)
+|   |   |-- memchr v2.8.3
+|   |   `-- regex-syntax v0.8.11
+|   `-- regex-syntax v0.8.11
+|-- semver v1.0.28
+|-- serde v1.0.229
+|   |-- serde_core v1.0.229
+|   `-- serde_derive v1.0.229 (proc-macro)
+|       |-- proc-macro2 v1.0.107
+|       |   `-- unicode-ident v1.0.27
+|       |-- quote v1.0.47
+|       |   `-- proc-macro2 v1.0.107 (*)
+|       `-- syn v3.0.9
+|           |-- proc-macro2 v1.0.107 (*)
+|           |-- quote v1.0.47 (*)
+|           `-- unicode-ident v1.0.27
+|-- serde_json v1.0.154
+|   |-- itoa v1.0.18
+|   |-- memchr v2.8.3
+|   |-- serde_core v1.0.229
+|   `-- zmij v1.0.23
+|-- sha2 v0.10.9
+|   |-- cfg-if v1.0.5
+|   |-- cpufeatures v0.2.17
+|   `-- digest v0.10.7
+|       |-- block-buffer v0.10.4
+|       |   `-- generic-array v0.14.7
+|       |       `-- typenum v1.20.1
+|       `-- crypto-common v0.1.7
+|           |-- generic-array v0.14.7 (*)
+|           `-- typenum v1.20.1
+|-- ureq v3.5.0
+|   |-- base64 v0.23.1
+|   |-- der v0.8.2
+|   |   |-- pem-rfc7468 v1.0.0
+|   |   |   `-- base64ct v1.8.3
+|   |   `-- zeroize v1.9.1
+|   |-- log v0.4.34
+|   |-- native-tls v0.2.18
+|   |   `-- schannel v0.1.30
+|   |       `-- windows-sys v0.61.2
+|   |           `-- windows-link v0.2.1
+|   |-- percent-encoding v2.3.2
+|   |-- rustls-pki-types v1.15.1
+|   |   `-- zeroize v1.9.1
+|   |-- ureq-proto v0.6.5
+|   |   |-- base64 v0.23.1
+|   |   |-- http v1.5.0
+|   |   |   |-- bytes v1.12.1
+|   |   |   `-- itoa v1.0.18
+|   |   |-- httparse v1.10.1
+|   |   `-- log v0.4.34
+|   |-- utf8-zero v0.8.1
+|   `-- webpki-root-certs v1.0.11
+|       `-- rustls-pki-types v1.15.1 (*)
+|-- url v2.5.8
+|   |-- form_urlencoded v1.2.2
+|   |   `-- percent-encoding v2.3.2
+|   |-- idna v1.1.0
+|   |   |-- idna_adapter v1.2.2
+|   |   |   |-- icu_normalizer v2.4.0
+|   |   |   |   |-- icu_collections v2.4.0
+|   |   |   |   |   |-- displaydoc v0.2.7 (proc-macro)
+|   |   |   |   |   |   |-- proc-macro2 v1.0.107 (*)
+|   |   |   |   |   |   |-- quote v1.0.47 (*)
+|   |   |   |   |   |   `-- syn v3.0.9 (*)
+|   |   |   |   |   |-- potential_utf v0.1.6
+|   |   |   |   |   |   `-- zerovec v0.11.9
+|   |   |   |   |   |       |-- yoke v0.8.4
+|   |   |   |   |   |       |   |-- stable_deref_trait v1.2.1
+|   |   |   |   |   |       |   |-- yoke-derive v0.8.4 (proc-macro)
+|   |   |   |   |   |       |   |   |-- proc-macro2 v1.0.107 (*)
+|   |   |   |   |   |       |   |   |-- quote v1.0.47 (*)
+|   |   |   |   |   |       |   |   |-- syn v3.0.9 (*)
+|   |   |   |   |   |       |   |   `-- synstructure v0.14.0
+|   |   |   |   |   |       |   |       |-- proc-macro2 v1.0.107 (*)
+|   |   |   |   |   |       |   |       |-- quote v1.0.47 (*)
+|   |   |   |   |   |       |   |       `-- syn v3.0.9 (*)
+|   |   |   |   |   |       |   `-- zerofrom v0.1.8
+|   |   |   |   |   |       |       `-- zerofrom-derive v0.1.8 (proc-macro)
+|   |   |   |   |   |       |           |-- proc-macro2 v1.0.107 (*)
+|   |   |   |   |   |       |           |-- quote v1.0.47 (*)
+|   |   |   |   |   |       |           |-- syn v3.0.9 (*)
+|   |   |   |   |   |       |           `-- synstructure v0.14.0 (*)
+|   |   |   |   |   |       |-- zerofrom v0.1.8 (*)
+|   |   |   |   |   |       `-- zerovec-derive v0.11.7 (proc-macro)
+|   |   |   |   |   |           |-- proc-macro2 v1.0.107 (*)
+|   |   |   |   |   |           |-- quote v1.0.47 (*)
+|   |   |   |   |   |           `-- syn v3.0.9 (*)
+|   |   |   |   |   |-- utf8_iter v1.0.4
+|   |   |   |   |   |-- yoke v0.8.4 (*)
+|   |   |   |   |   |-- zerofrom v0.1.8 (*)
+|   |   |   |   |   `-- zerovec v0.11.9 (*)
+|   |   |   |   |-- icu_normalizer_data v2.4.0
+|   |   |   |   |-- icu_provider v2.4.0
+|   |   |   |   |   |-- displaydoc v0.2.7 (proc-macro) (*)
+|   |   |   |   |   |-- icu_locale_core v2.4.0
+|   |   |   |   |   |   |-- displaydoc v0.2.7 (proc-macro) (*)
+|   |   |   |   |   |   |-- litemap v0.8.3
+|   |   |   |   |   |   |-- tinystr v0.8.5
+|   |   |   |   |   |   |   |-- displaydoc v0.2.7 (proc-macro) (*)
+|   |   |   |   |   |   |   `-- zerovec v0.11.9 (*)
+|   |   |   |   |   |   |-- writeable v0.6.4
+|   |   |   |   |   |   `-- zerovec v0.11.9 (*)
+|   |   |   |   |   |-- writeable v0.6.4
+|   |   |   |   |   |-- yoke v0.8.4 (*)
+|   |   |   |   |   |-- zerofrom v0.1.8 (*)
+|   |   |   |   |   |-- zerotrie v0.2.5
+|   |   |   |   |   |   |-- displaydoc v0.2.7 (proc-macro) (*)
+|   |   |   |   |   |   |-- yoke v0.8.4 (*)
+|   |   |   |   |   |   `-- zerofrom v0.1.8 (*)
+|   |   |   |   |   `-- zerovec v0.11.9 (*)
+|   |   |   |   |-- smallvec v1.16.4
+|   |   |   |   `-- zerovec v0.11.9 (*)
+|   |   |   `-- icu_properties v2.4.0
+|   |   |       |-- displaydoc v0.2.7 (proc-macro) (*)
+|   |   |       |-- icu_collections v2.4.0 (*)
+|   |   |       |-- icu_locale_core v2.4.0 (*)
+|   |   |       |-- icu_properties_data v2.4.0
+|   |   |       |-- icu_provider v2.4.0 (*)
+|   |   |       |-- zerotrie v0.2.5 (*)
+|   |   |       `-- zerovec v0.11.9 (*)
+|   |   |-- smallvec v1.16.4
+|   |   `-- utf8_iter v1.0.4
+|   `-- percent-encoding v2.3.2
+`-- windows-sys v0.59.0
+    `-- windows-targets v0.52.6
+        `-- windows_x86_64_msvc v0.52.6
+```
+
+### B2.1 逐包许可证核对（发布依赖）
+
+许可证取自锁定版本 crate 元数据（`cargo tree --format "{p}|{l}"` 与
+`Cargo.lock` 对应版本一致）。`(proc-macro)` 标注的是编译期过程宏依赖，
+不进入运行时二进制。表中每个表达式均为宽松/OSI 认可许可证，与项目
+AGPL-3.0 分发兼容；MIT / Apache-2.0 / Unicode-3.0 的全文已在 B 节收录，
+`CDLA-Permissive-2.0`、`Unlicense` 等其余许可证见上游官方文本。
+
+| 包 | 版本 | 许可证 |
+| --- | --- | --- |
+| `aho-corasick` | 1.1.5 | Unlicense OR MIT |
+| `base64` | 0.23.1 | MIT OR Apache-2.0 |
+| `base64ct` | 1.8.3 | Apache-2.0 OR MIT |
+| `block-buffer` | 0.10.4 | MIT OR Apache-2.0 |
+| `bytes` | 1.12.1 | MIT |
+| `cfg-if` | 1.0.5 | MIT OR Apache-2.0 |
+| `chrono` | 0.4.45 | MIT OR Apache-2.0 |
+| `cpufeatures` | 0.2.17 | MIT OR Apache-2.0 |
+| `crypto-common` | 0.1.7 | MIT OR Apache-2.0 |
+| `der` | 0.8.2 | Apache-2.0 OR MIT |
+| `digest` | 0.10.7 | MIT OR Apache-2.0 |
+| `displaydoc` | 0.2.7 | MIT OR Apache-2.0 (proc-macro) |
+| `form_urlencoded` | 1.2.2 | MIT OR Apache-2.0 |
+| `generic-array` | 0.14.7 | MIT |
+| `http` | 1.5.0 | MIT OR Apache-2.0 |
+| `httparse` | 1.10.1 | MIT OR Apache-2.0 |
+| `icu_collections` | 2.4.0 | Unicode-3.0 |
+| `icu_locale_core` | 2.4.0 | Unicode-3.0 |
+| `icu_normalizer` | 2.4.0 | Unicode-3.0 |
+| `icu_normalizer_data` | 2.4.0 | Unicode-3.0 |
+| `icu_properties` | 2.4.0 | Unicode-3.0 |
+| `icu_properties_data` | 2.4.0 | Unicode-3.0 |
+| `icu_provider` | 2.4.0 | Unicode-3.0 |
+| `idna` | 1.1.0 | MIT OR Apache-2.0 |
+| `idna_adapter` | 1.2.2 | Apache-2.0 OR MIT |
+| `itoa` | 1.0.18 | MIT OR Apache-2.0 |
+| `litemap` | 0.8.3 | Unicode-3.0 |
+| `log` | 0.4.34 | MIT OR Apache-2.0 |
+| `memchr` | 2.8.3 | Unlicense OR MIT |
+| `native-tls` | 0.2.18 | MIT OR Apache-2.0 |
+| `num-traits` | 0.2.19 | MIT OR Apache-2.0 |
+| `pem-rfc7468` | 1.0.0 | Apache-2.0 OR MIT |
+| `percent-encoding` | 2.3.2 | MIT OR Apache-2.0 |
+| `potential_utf` | 0.1.6 | Unicode-3.0 |
+| `proc-macro2` | 1.0.107 | MIT OR Apache-2.0 |
+| `quote` | 1.0.47 | MIT OR Apache-2.0 |
+| `regex` | 1.13.1 | MIT OR Apache-2.0 |
+| `regex-automata` | 0.4.18 | MIT OR Apache-2.0 |
+| `regex-syntax` | 0.8.11 | MIT OR Apache-2.0 |
+| `rustls-pki-types` | 1.15.1 | MIT OR Apache-2.0 |
+| `schannel` | 0.1.30 | MIT |
+| `semver` | 1.0.28 | MIT OR Apache-2.0 |
+| `serde` | 1.0.229 | MIT OR Apache-2.0 |
+| `serde_core` | 1.0.229 | MIT OR Apache-2.0 |
+| `serde_derive` | 1.0.229 | MIT OR Apache-2.0 (proc-macro) |
+| `serde_json` | 1.0.154 | MIT OR Apache-2.0 |
+| `sha2` | 0.10.9 | MIT OR Apache-2.0 |
+| `smallvec` | 1.16.4 | MIT OR Apache-2.0 |
+| `stable_deref_trait` | 1.2.1 | MIT OR Apache-2.0 |
+| `syn` | 3.0.9 | MIT OR Apache-2.0 |
+| `synstructure` | 0.14.0 | MIT |
+| `tinystr` | 0.8.5 | Unicode-3.0 |
+| `typenum` | 1.20.1 | MIT OR Apache-2.0 |
+| `unicode-ident` | 1.0.27 | (MIT OR Apache-2.0) AND Unicode-3.0 |
+| `ureq` | 3.5.0 | MIT OR Apache-2.0 |
+| `ureq-proto` | 0.6.5 | MIT OR Apache-2.0 |
+| `url` | 2.5.8 | MIT OR Apache-2.0 |
+| `utf8-zero` | 0.8.1 | MIT OR Apache-2.0 |
+| `utf8_iter` | 1.0.4 | Apache-2.0 OR MIT |
+| `webpki-root-certs` | 1.0.11 | CDLA-Permissive-2.0 |
+| `windows-link` | 0.2.1 | MIT OR Apache-2.0 |
+| `windows-sys` | 0.59.0 | MIT OR Apache-2.0 |
+| `windows-sys` | 0.61.2 | MIT OR Apache-2.0 |
+| `windows-targets` | 0.52.6 | MIT OR Apache-2.0 |
+| `windows_x86_64_msvc` | 0.52.6 | MIT OR Apache-2.0 |
+| `writeable` | 0.6.4 | Unicode-3.0 |
+| `yoke` | 0.8.4 | Unicode-3.0 |
+| `yoke-derive` | 0.8.4 | Unicode-3.0 (proc-macro) |
+| `zerofrom` | 0.1.8 | Unicode-3.0 |
+| `zerofrom-derive` | 0.1.8 | Unicode-3.0 (proc-macro) |
+| `zeroize` | 1.9.1 | Apache-2.0 OR MIT |
+| `zerotrie` | 0.2.5 | Unicode-3.0 |
+| `zerovec` | 0.11.9 | Unicode-3.0 |
+| `zerovec-derive` | 0.11.7 | Unicode-3.0 (proc-macro) |
+| `zmij` | 1.0.23 | MIT |
+
+### B2.2 dev-only 依赖（不随发布分发）
+
+以下为 `[dev-dependencies]`，仅用于 `cargo test`，**不进入发布构建、不进入
+`faf_updater.exe`，也不随安装包分发**（`cargo tree --locked --edges dev`）：
+
+| 包 | 版本 | 许可证 |
+| --- | --- | --- |
+| `tiny_http` | 0.12.0 | MIT OR Apache-2.0 |
+| `tempfile` | 3.27.0 | MIT OR Apache-2.0 |
+
 ## C. 随包原生二进制
 
 随应用分发的原生动态库、可执行文件，以及随 Python wheel 内嵌的原生库。

@@ -147,6 +147,11 @@ class StyledDialog(QWidget):
         self._animate = animate
         self._is_closing = False
         self._shown_once = False
+        # Public footer API state: initialized before any footer/show path so
+        # ``add_footer_button`` never raises ``AttributeError`` on a dialog
+        # whose footer was never built (FOOTER_NONE) or that was never shown.
+        self._footer_layout = None
+        self._show_started = False
 
         # Drag support
         self._drag_pos: QPoint = None
@@ -423,6 +428,42 @@ class StyledDialog(QWidget):
         self._result = result
         self.close()
 
+    def add_footer_button(self, text: str, variant: str = "primary") -> StyledButton:
+        """Append a styled button to the dialog footer.
+
+        Must be called before the dialog is shown for the first time. If the
+        dialog was built without a footer (``FOOTER_NONE``), a right-aligned
+        footer is created lazily from the content layout.
+
+        Args:
+            text: Button label.
+            variant: StyledButton variant (primary/secondary/ghost/danger/info).
+
+        Returns:
+            StyledButton: The created button, already added to the footer.
+
+        Raises:
+            RuntimeError: If called after the first ``show()`` (including
+                after ``hide()``); footer composition is frozen once shown.
+        """
+        if self._show_started:
+            raise RuntimeError(
+                "add_footer_button() cannot be called after the dialog has "
+                "been shown; add footer buttons before calling show()."
+            )
+        if self._footer_layout is None:
+            # FOOTER_NONE dialogs have no footer container; build the default
+            # right-aligned footer lazily on the existing content layout.
+            self._build_footer(FOOTER_RIGHT, self._content_widget.layout())
+            self._footer_type = FOOTER_RIGHT
+        button = StyledButton(text, variant=variant)
+        self._footer_layout.addWidget(button)
+        return button
+
+    def show_dialog(self) -> None:
+        """Show the dialog using the shared centered/fixed-size helper."""
+        _show_dialog(self)
+
     def _on_finished(self, result: int):
         self.finished.emit(result)
 
@@ -450,6 +491,10 @@ class StyledDialog(QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        # Gate for the public footer API: once the dialog has been shown,
+        # footer composition is frozen. Independent of animation state and
+        # never reset by hide(), unlike ``_shown_once`` / isVisible().
+        self._show_started = True
         if (
             self._animate
             and self._enter_opacity_anim is not None

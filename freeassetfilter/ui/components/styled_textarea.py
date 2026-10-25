@@ -222,10 +222,12 @@ class StyledTextarea(QWidget):
         size: str = "default",
         error: bool = False,
         parent=None,
+        read_only: bool = False,
     ):
         super().__init__(parent)
         self._error = error
         self._max_length = max_length
+        self._read_only = bool(read_only)
 
         # --- Layout ---
         layout = QVBoxLayout(self)
@@ -243,6 +245,7 @@ class StyledTextarea(QWidget):
         # --- Text edit ---
         self._text_edit = _StyledTextEdit(size, error, self)
         self._text_edit.setPlaceholderText(placeholder)
+        self._text_edit.setReadOnly(self._read_only)
         if text:
             self._text_edit.setPlainText(text)
         self._text_edit.textChanged.connect(self._on_text_changed)
@@ -268,7 +271,7 @@ class StyledTextarea(QWidget):
             f"font-size: 11px; color: {tm.qss_color(tm.text_hint)};"
         ))
         self._counter_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self._counter_label.setVisible(max_length is not None)
+        self._counter_label.setVisible(max_length is not None and not self._read_only)
         bottom_row.addWidget(self._counter_label)
 
         layout.addLayout(bottom_row)
@@ -322,7 +325,7 @@ class StyledTextarea(QWidget):
             text = truncated
 
         # Update counter
-        if self._max_length is not None:
+        if self._max_length is not None and not self._read_only:
             self._counter_label.setText(f"{len(text)}/{self._max_length}")
 
         self.text_changed.emit(text)
@@ -375,8 +378,24 @@ class StyledTextarea(QWidget):
     @max_length.setter
     def max_length(self, value: Optional[int]):
         self._max_length = value
-        if value is not None:
+        if value is not None and not self._read_only:
             self._counter_label.setText(f"{len(self.text)}/{value}")
+            self._counter_label.setVisible(True)
+        else:
+            self._counter_label.setText("")
+            self._counter_label.setVisible(False)
+
+    @property
+    def read_only(self) -> bool:
+        """Whether user editing is disabled (counter is hidden while read-only)."""
+        return self._read_only
+
+    @read_only.setter
+    def read_only(self, value: bool):
+        self._read_only = bool(value)
+        self._text_edit.setReadOnly(self._read_only)
+        if self._max_length is not None and not self._read_only:
+            self._counter_label.setText(f"{len(self.text)}/{self._max_length}")
             self._counter_label.setVisible(True)
         else:
             self._counter_label.setText("")

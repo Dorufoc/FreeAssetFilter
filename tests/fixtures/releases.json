@@ -1,0 +1,192 @@
+[
+  {
+    "id": 1006,
+    "tag_name": "v1.0.0-alpha.6",
+    "name": "v1.0.0-alpha.6",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-06-02T01:02:03Z",
+    "created_at": "2026-06-01T00:00:00Z",
+    "html_url": "https://github.com/Dorufoc/FreeAssetFilter/releases/tag/v1.0.0-alpha.6",
+    "assets_url": "https://api.github.com/repos/Dorufoc/FreeAssetFilter/releases/1006/assets",
+    "author": {"login": "Dorufoc", "id": 1},
+    "body": "## 更新内容\n\n构建日期：2026/06/01\n\n- 修复中文路径下的预览问题\n- 优化启动速度",
+    "assets": [
+      {
+        "name": "FreeAssetFilter-1.0.0-alpha.6_win10_win11_x64_Setup.exe",
+        "size": 172000000,
+        "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "browser_download_url": "https://github.com/Dorufoc/FreeAssetFilter/releases/download/v1.0.0-alpha.6/FreeAssetFilter-1.0.0-alpha.6_win10_win11_x64_Setup.exe"
+      },
+      {
+        "name": "FreeAssetFilter_Setup.exe",
+        "size": 1000,
+        "digest": null,
+        "browser_download_url": "https://github.com/Dorufoc/FreeAssetFilter/releases/download/v1.0.0-alpha.6/FreeAssetFilter_Setup.exe"
+      },
+      {
+        "name": "FreeAssetFilter_Setup.EXE",
+        "size": 2000,
+        "digest": null,
+        "browser_download_url": "https://github.com/Dorufoc/FreeAssetFilter/releases/download/v1.0.0-alpha.6/FreeAssetFilter_Setup.EXE"
+      },
+      {
+        "name": "portable.exe",
+        "size": 64000000,
+        "digest": null,
+        "browser_download_url": "https://github.com/Dorufoc/FreeAssetFilter/releases/download/v1.0.0-alpha.6/portable.exe"
+      },
+      {
+        "name": "launcher.exe",
+        "size": 32000000,
+        "digest": null,
+        "browser_download_url": "https://github.com/Dorufoc/FreeAssetFilter/releases/download/v1.0.0-alpha.6/launcher.exe"
+      }
+    ]
+  },
+  {
+    "id": 1009,
+    "tag_name": "v1.0.0-alpha.9",
+    "name": "v1.0.0-alpha.9",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-06-03T02:03:04Z",
+    "created_at": "2026-06-02T00:00:00Z",
+    "html_url": "https://github.com/Dorufoc/FreeAssetFilter/releases/tag/v1.0.0-alpha.9",
+    "body": "构建日期: 2026-06-02\n\n预发布版本 alpha.9。",
+    "assets": [
+      {
+        "name": "FreeAssetFilter-1.0.0-alpha.9_win10_win11_x64_Setup.exe",
+        "size": 171000000,
+        "digest": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+        "browser_download_url": "https://github.com/Dorufoc/FreeAssetFilter/releases/download/v1.0.0-alpha.9/FreeAssetFilter-1.0.0-alpha.9_win10_win11_x64_Setup.exe"
+      }
+    ]
+  },
+  {
+    "id": 1010,
+    "tag_name": "v1.0.0-alpha.10",
+    "name": "v1.0.0-alpha.10",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-06-04T03:04:05Z",
+    "created_at": "2026-06-03T00:00:00Z",
+    "html_url": "https://github.com/Dorufoc/FreeAssetFilter/releases/tag/v1.0.0-alpha.10",
+    "body": "构建日期: 2026/6/3\n\n预发布版本 alpha.10。",
+    "assets": [
+      {
+        "name": "FreeAssetFilter-1.0.0-alpha.10_win10_win11_x64_Setup.exe",
+        "size": 170000000,
+        "digest": "SHA256:FEDCBA9876543210FEDCBA9876543210FEDCBA9876543210FEDCBA9876543210",
+        "browser_download_url": "https://github.com/Dorufoc/FreeAssetFilter/releases/download/v1.0.0-alpha.10/FreeAssetFilter-1.0.0-alpha.10_win10_win11_x64_Setup.exe"
+      }
+    ]
+  },
+  {
+    "id": 1007,
+    "tag_name": "v1.0.0-alpha.7",
+    "name": "v1.0.0-alpha.7",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-06-05T04:05:06Z",
+    "created_at": "2026-06-04T00:00:00Z",
+    "html_url": "https://github.com/Dorufoc/FreeAssetFilter/releases/tag/v1.0.0-alpha.7",
+    "body": "构建日期：2026/06/04\n\n该版本只发布了便携包，没有安装包。",
+    "assets": [
+      {
+        "name": "portable.exe",
+        "size": 64000000,
+        "digest": null,
+        "browser_download_url": "https://github.com/Dorufoc/FreeAssetFilter/releases/download/v1.0.0-alpha.7/portable.exe"
+      },
+      {
+        "name": "launcher.exe",
+        "size": 32000000,
+        "digest": null,
+        "browser_download_url": "https://github.com/Dorufoc/FreeAssetFilter/releases/download/v1.0.0-alpha.7/launcher.exe"
+      },
+      {
+        "name": "FreeAssetFilter-1.0.0-alpha.7.zip",
+        "size": 90000000,
+        "digest": null,
+        "browser_download_url": "https://github.com/Dorufoc/FreeAssetFilter/releases/download/v1.0.0-alpha.7/FreeAssetFilter-1.0.0-alpha.7.zip"
+      }
+    ]
+  },
+  {
+    "id": 1008,
+    "tag_name": "v1.0.0-alpha.8",
+    "name": "v1.0.0-alpha.8 (draft)",
+    "draft": true,
+    "prerelease": true,
+    "published_at": "2026-06-06T05:06:07Z",
+    "created_at": "2026-06-05T00:00:00Z",
+    "html_url": "https://github.com/Dorufoc/FreeAssetFilter/releases/tag/v1.0.0-alpha.8",
+    "body": "构建日期：2026/06/05\n\n草稿版本，不应被选中。",
+    "assets": [
+      {
+        "name": "FreeAssetFilter-1.0.0-alpha.8_win10_win11_x64_Setup.exe",
+        "size": 169000000,
+        "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "browser_download_url": "https://github.com/Dorufoc/FreeAssetFilter/releases/download/v1.0.0-alpha.8/FreeAssetFilter-1.0.0-alpha.8_win10_win11_x64_Setup.exe"
+      }
+    ]
+  },
+  {
+    "id": 2001,
+    "tag_name": "v1.0.0-beta.1",
+    "name": "v1.0.0-beta.1",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-06-10T12:00:00Z",
+    "created_at": "2026-06-09T00:00:00Z",
+    "html_url": "https://github.com/Dorufoc/FreeAssetFilter/releases/tag/v1.0.0-beta.1",
+    "body": "Beta 版本，未标注构建日期，应回退到 published_at。",
+    "assets": [
+      {
+        "name": "FreeAssetFilter-1.0.0-beta.1_win10_win11_x64_Setup.exe",
+        "size": 168000000,
+        "digest": null,
+        "browser_download_url": "https://github.com/Dorufoc/FreeAssetFilter/releases/download/v1.0.0-beta.1/FreeAssetFilter-1.0.0-beta.1_win10_win11_x64_Setup.exe"
+      }
+    ]
+  },
+  {
+    "id": 3001,
+    "tag_name": "v1.0.0",
+    "name": "FreeAssetFilter v1.0.0",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-06-20T08:30:00Z",
+    "created_at": "2026-06-19T00:00:00Z",
+    "html_url": "https://evil.example/Dorufoc/FreeAssetFilter/releases/tag/v1.0.0",
+    "body": "稳定版发布。\n\n构建日期: 2026-06-19",
+    "assets": [
+      {
+        "name": "FreeAssetFilter-1.0.0_win10_win11_x64_Setup.exe",
+        "size": 180000000,
+        "digest": "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+        "browser_download_url": "https://github.com/Dorufoc/FreeAssetFilter/releases/download/v1.0.0/FreeAssetFilter-1.0.0_win10_win11_x64_Setup.exe"
+      }
+    ]
+  },
+  {
+    "id": 9001,
+    "tag_name": "not-a-version",
+    "name": "invalid tag",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-06-21T00:00:00Z",
+    "created_at": "2026-06-21T00:00:00Z",
+    "html_url": "https://github.com/Dorufoc/FreeAssetFilter/releases/tag/not-a-version",
+    "body": "无法解析的 tag，选择时必须跳过。",
+    "assets": [
+      {
+        "name": "FreeAssetFilter-Setup.exe",
+        "size": 150000000,
+        "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "browser_download_url": "https://github.com/Dorufoc/FreeAssetFilter/releases/download/not-a-version/FreeAssetFilter-Setup.exe"
+      }
+    ]
+  }
+]

@@ -1,0 +1,110 @@
+{
+  "schema": 1,
+  "cases": [
+    {
+      "input": "FreeAssetFilter-1.0.0-alpha.6_win10_win11_x64_Setup.exe",
+      "expected": "FreeAssetFilter-1.0.0-alpha.6_win10_win11_x64_Setup.exe",
+      "note": "plain asset name"
+    },
+    {
+      "input": "../../evil.exe",
+      "expected": "evil.exe",
+      "note": "basename only; traversal is rejected by dest_path validation"
+    },
+    {
+      "input": "C:\\Temp\\Foo Setup.exe",
+      "expected": "Foo Setup.exe",
+      "note": "windows basename"
+    },
+    {
+      "input": "dir/sub/App.exe",
+      "expected": "App.exe",
+      "note": "posix basename"
+    },
+    {
+      "input": "CON.exe",
+      "expected": null,
+      "note": "reserved CON"
+    },
+    {
+      "input": "con.exe",
+      "expected": null,
+      "note": "reserved case-insensitive"
+    },
+    {
+      "input": "LPT9.exe",
+      "expected": null,
+      "note": "reserved LPT9"
+    },
+    {
+      "input": "COM10.exe",
+      "expected": "COM10.exe",
+      "note": "COM10 is not reserved"
+    },
+    {
+      "input": "Aux.tar.exe",
+      "expected": null,
+      "note": "reserved stem before extension"
+    },
+    {
+      "input": "name.exe.",
+      "expected": "name.exe",
+      "note": "trailing dot stripped"
+    },
+    {
+      "input": "name.exe   ",
+      "expected": "name.exe",
+      "note": "trailing spaces stripped"
+    },
+    {
+      "input": "bad<>:\"|?*name.exe",
+      "expected": "badname.exe",
+      "note": "illegal characters removed"
+    },
+    {
+      "input": "bad\u0001name.exe",
+      "expected": "badname.exe",
+      "note": "control character removed"
+    },
+    {
+      "input": "更新程序.exe",
+      "expected": "更新程序.exe",
+      "note": "chinese preserved"
+    },
+    {
+      "input": "更新 程序 .exe",
+      "expected": "更新 程序.exe",
+      "note": "trailing space on stem stripped"
+    },
+    {
+      "input": "测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测.exe",
+      "expected": "测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测测.exe",
+      "note": "117 multibyte chars truncated to 116 chars"
+    },
+    {
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.exe",
+      "expected": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.exe",
+      "note": "120 ascii chars truncated to 116 chars"
+    },
+    {
+      "input": "SETUP.EXE",
+      "expected": "SETUP.EXE",
+      "note": "suffix casing preserved"
+    },
+    {
+      "input": "installer",
+      "expected": "installer.exe",
+      "note": "missing suffix appended"
+    },
+    {
+      "input": "<>:\"|?*",
+      "expected": null,
+      "note": "empty after illegal removal"
+    },
+    {
+      "input": ".exe",
+      "expected": null,
+      "note": "empty stem"
+    }
+  ]
+}

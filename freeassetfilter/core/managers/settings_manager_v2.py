@@ -601,6 +601,10 @@ DEFAULT_SETTINGS_V2: Dict[str, Any] = {
         # 由 MainWindow._load_general_toggles 读取；提交时经
         # MainWindow.set_floating_pool_snap_enabled 即时生效。
         "floating_pool_snap_enabled": True,
+        # 启动时检查更新（设置页「通用」分类，默认开启）：应用启动后
+        # 静默检查新版本（每 24 小时最多一次）。启动策略每次直读该键，
+        # 提交时经 SettingLayout._submit_settings 落盘。
+        "check_updates_on_startup": True,
     },
 }
 
@@ -1010,6 +1014,15 @@ class SettingsManagerV2:
             if isinstance(staged_floating_pool_snap, bool):
                 merged["general"]["floating_pool_snap_enabled"] = (
                     staged_floating_pool_snap
+                )
+            # check_updates_on_startup 同为默认 True 的布尔白名单键：
+            # 非布尔值（含 "false"、0）丢弃并回退 True；旧文件缺键亦为 True。
+            staged_check_updates = general_loaded.get(
+                "check_updates_on_startup", None
+            )
+            if isinstance(staged_check_updates, bool):
+                merged["general"]["check_updates_on_startup"] = (
+                    staged_check_updates
                 )
 
         # 保留磁盘上不在默认树中的顶层域（如 app / file_selector /
