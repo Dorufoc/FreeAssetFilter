@@ -162,3 +162,45 @@ class TestCloseEventDestroyedRefDefense:
             assert window._settings_window is None
         finally:
             _teardown(window, qapp)
+
+
+class TestCloseEventUpdateCleanup:
+    """closeEvent 关闭更新弹窗并停止 updater 边车。"""
+
+    def test_close_event_resets_entry_and_shuts_service(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """关闭主窗口时释放控制器并以 1.5s 预算停止更新组件。"""
+        from freeassetfilter.services import update_service as us_module
+        from freeassetfilter.ui import update_entry as ue_module
+
+        reset_calls: list[bool] = []
+        shutdown_calls: list[float] = []
+
+        class _FakeService:
+            @staticmethod
+            def shutdown(timeout: float = 4.0) -> bool:
+                shutdown_calls.append(timeout)
+                return True
+
+        monkeypatch.setattr(
+            ue_module,
+            "reset_update_entry_controller",
+            lambda: reset_calls.append(True),
+        )
+        monkeypatch.setattr(
+            us_module.UpdateService,
+            "get_update_service_if_exists",
+            classmethod(lambda cls: _FakeService()),
+        )
+
+        window = _make_window(qapp)
+        try:
+            event = QCloseEvent()
+            window.closeEvent(event)
+
+            assert event.isAccepted()
+            assert reset_calls == [True]
+            assert shutdown_calls == [1.5]
+        finally:
+            _teardown(window, qapp)

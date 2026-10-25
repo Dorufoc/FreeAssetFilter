@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Callable, Iterator, List
 
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
 # 组件模块内部使用短路径导入（from theme import tm），
 # 要求 freeassetfilter/ui 位于 sys.path；与 test_styled_basic.py 一致。
@@ -321,3 +321,49 @@ class TestUpdateDialogsSkeleton:
 
         assert dialog not in update_dialogs._active_dialogs
         assert "req-3" not in update_dialogs._active_progress_dialogs
+
+
+class TestRemeasure:
+    """``remeasure()``：运行期内容变化后重算固定尺寸。"""
+
+    def test_remeasure_grows_and_keeps_center(self, qapp: QApplication) -> None:
+        """向已显示的 body 追加内容后窗口变高，中心不跳。"""
+        body = QWidget()
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(8)
+        body_layout.addWidget(QLabel("第一行"))
+
+        dialog = StyledDialog(title="remeasure", body_widget=body, animate=False)
+        try:
+            dialog.show_dialog()
+            qapp.processEvents()
+            before_height = dialog.height()
+            before_center = dialog.frameGeometry().center()
+
+            extra = QLabel("第二行")
+            body_layout.addWidget(extra)
+            extra.show()
+            dialog.remeasure()
+            qapp.processEvents()
+
+            assert dialog.height() > before_height
+            after_center = dialog.frameGeometry().center()
+            assert abs(after_center.x() - before_center.x()) <= 2
+            assert abs(after_center.y() - before_center.y()) <= 2
+        finally:
+            safe_teardown(dialog)
+            drain_deferred_deletes(qapp)
+
+    def test_remeasure_keeps_minimum_height(self, qapp: QApplication) -> None:
+        """空内容仍保持至少 80px 内容高度（加阴影边距）。"""
+        dialog = StyledDialog(title="empty", animate=False)
+        try:
+            dialog.show_dialog()
+            qapp.processEvents()
+            dialog.remeasure()
+
+            assert dialog.height() >= 80 + dialog.SHADOW_MARGIN * 2
+        finally:
+            safe_teardown(dialog)
+            drain_deferred_deletes(qapp)

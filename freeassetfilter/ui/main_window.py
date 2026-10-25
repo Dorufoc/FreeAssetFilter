@@ -799,6 +799,7 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         self._title_bar_header = None
         self._layout_toggle_btn = None
         self._reset_layout_btn = None
+        self._update_btn = None
         self._settings_btn = None
         self._theme_btn = None
         self._minimize_btn = None
@@ -1804,6 +1805,21 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         self._reset_layout_btn.clicked.connect(self._reset_layout)
         header_layout.addWidget(self._reset_layout_btn)
 
+        # 检查更新按钮（SVG图标）：弹出更新中心弹窗，按钮本身不反映检查状态
+        update_icon_path = icons_dir() / "title_update.svg"
+        self._update_btn = StyledButton(
+            "",
+            variant="ghost",
+            size="sm",
+            icon=str(update_icon_path) if update_icon_path.exists() else "",
+        )
+        self._update_btn.setObjectName("TitleBarUpdateButton")
+        self._update_btn.setFixedSize(32, 32)
+        register_widget_qss(self._update_btn, self._title_bar_button_style())
+        self._update_btn.setToolTip("检查更新")
+        self._update_btn.clicked.connect(self._on_check_update_clicked)
+        header_layout.addWidget(self._update_btn)
+
         # 设置按钮（SVG图标）
         settings_icon_path = icons_dir() / "setting.svg"
         self._settings_btn = StyledButton(
@@ -1865,6 +1881,15 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         # 安装事件过滤器用于拖拽
         header.installEventFilter(self)
         parent_layout.addWidget(header)
+
+    def _on_check_update_clicked(self) -> None:
+        """标题栏检查更新入口：委托共享控制器，按钮本身不反映任何状态。"""
+        try:
+            from freeassetfilter.ui.update_entry import get_update_entry_controller
+
+            get_update_entry_controller().request_check()
+        except Exception as exc:  # noqa: BLE001 - 入口失败不应拖垮主窗口
+            warning(f"打开检查更新失败：{exc}")
 
     def _title_bar_button_style(self, font_size: str = "14px") -> str:
         """生成标题栏按钮的 styleSheet（使用 tm 当前颜色值）"""
@@ -2679,6 +2704,8 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             # 刷新所有标题栏按钮的 styleSheet（tm 颜色值已变化）
             register_widget_qss(self._layout_toggle_btn,(self._title_bar_button_style()))
             register_widget_qss(self._reset_layout_btn,(self._title_bar_button_style()))
+            if self._update_btn is not None:
+                register_widget_qss(self._update_btn,(self._title_bar_button_style()))
             register_widget_qss(self._settings_btn,(self._title_bar_button_style()))
             register_widget_qss(self._theme_btn,(self._title_bar_button_style()))
             register_widget_qss(self._minimize_btn,(self._title_bar_button_style()))
@@ -3252,6 +3279,21 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
                 self._info_panel.stop()
         except Exception as exc:
             debug(f"退出时信息面板停止失败：{exc}")
+        # 关闭更新弹窗并停止 faf_updater 边车，避免退出后残留子进程。
+        try:
+            from freeassetfilter.ui.update_entry import reset_update_entry_controller
+
+            reset_update_entry_controller()
+        except Exception as exc:  # noqa: BLE001 - 退出路径不允许更新组件阻断
+            debug(f"退出时关闭更新弹窗失败：{exc}")
+        try:
+            from freeassetfilter.services.update_service import UpdateService
+
+            update_service = UpdateService.get_update_service_if_exists()
+            if update_service is not None:
+                update_service.shutdown(timeout=1.5)
+        except Exception as exc:  # noqa: BLE001 - 退出路径不允许更新组件阻断
+            debug(f"退出时关闭更新组件失败：{exc}")
         # 局部导入：暂存池服务依赖文件池/缩略图等重型模块，退出路径再加载
         from freeassetfilter.services.staging_pool_service import StagingPoolService
 

@@ -195,6 +195,14 @@ def _reset_all_singletons() -> None:
 
     import freeassetfilter.core.managers.thumbnail_manager as _thumbnail_module
 
+    # 更新入口控制器持有弹窗并订阅 UpdateService 信号，先释放再销毁服务。
+    try:
+        from freeassetfilter.ui.update_entry import reset_update_entry_controller
+
+        reset_update_entry_controller()
+    except Exception:  # 清理阶段：控制器可能尚未创建
+        pass
+
     # UpdateService 持有私有 QThreadPool，先走 shutdown/close 再清空单例。
     try:
         from freeassetfilter.services.update_service import UpdateService

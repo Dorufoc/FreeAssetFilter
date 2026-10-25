@@ -10,6 +10,8 @@ This module hosts all user-facing update dialogs built on
 * ``show_download_progress`` — download progress with pause/resume/cancel
 * ``show_install_confirm`` — synchronous install confirmation
 * ``show_uac_cancelled`` — elevation cancelled notice
+* ``UpdateCenterDialog`` — single-window check flow (checking / up to date /
+  update available / failure), shared by the title bar and the About page
 
 All dialogs listed above are implemented, including the download progress
 dialog (``show_download_progress``), the synchronous install confirmation
@@ -35,9 +37,10 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Set
 
 from PySide6.QtCore import QEventLoop, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QCloseEvent, QDesktopServices, QKeyEvent
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QLayout, QVBoxLayout, QWidget
 
 from components.styled_dialog import StyledDialog
+from components.styled_loading import StyledLoading
 from components.styled_progress import StyledProgress
 from components.styled_textarea import StyledTextarea
 from theme import tm
@@ -1360,4 +1363,413 @@ def _open_installer_folder(path_text: str) -> None:
     """
     folder = Path(path_text).resolve().parent if path_text else Path.cwd()
     QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
+
+class UpdateCenterDialog(StyledDialog):
+    """Single-window update center with four visual states.
+
+    The dialog shell is built once. Every footer button is created before
+    the first ``show()`` because the public footer API freezes afterwards;
+    state switches only toggle visibility and rebuild the body children,
+    then call :meth:`StyledDialog.remeasure` so the fixed window size
+    follows the content.
+    """
+
+    STATE_CHECKING = "checking"
+    STATE_NO_UPDATE = "no_update"
+    STATE_AVAILABLE = "available"
+    STATE_ERROR = "error"
+
+    #: Release notes viewport height (same cap as ``show_update_available``).
+    NOTES_MAX_HEIGHT = 240
+
+    def __init__(
+        self,
+        on_download: Optional[Callable[["UpdateInfo"], None]] = None,
+        on_retry: Optional[Callable[[], None]] = None,
+    ) -> None:
+        """Build the dialog shell and its footer actions.
+
+        Args:
+            on_download: Called with the ``UpdateInfo`` when the user asks
+                to download the available installer.
+            on_retry: Called when the user asks to run the check again.
+        """
+        self._on_download = on_download
+        self._on_retry = on_retry
+        self._state = ""
+        self._info: Optional["UpdateInfo"] = None
+        self._body, self._body_layout = _body()
+        self._loading_widget: Optional[StyledLoading] = None
+        self._version_label: Optional[QLabel] = None
+        self._notes_area: Optional[StyledTextarea] = None
+
+        super().__init__(
+            size="default",
+            dialog_type="default",
+            title="检查更新",
+            body_widget=self._body,
+            animate=False,
+            show_close=True,
+        )
+
+        # add_footer_button() is only legal before the first show(); create
+        # every action now and let each state toggle visibility.
+        self._close_button = self.add_footer_button("关闭", variant="secondary")
+        self._later_button = self.add_footer_button("稍后", variant="secondary")
+        self._release_button = self.add_footer_button("前往发布页", variant="secondary")
+        self._retry_button = self.add_footer_button("重试", variant="primary")
+        self._download_button = self.add_footer_button("下载更新", variant="primary")
+
+        self._close_button.clicked.connect(self.close_dialog)
+        self._later_button.clicked.connect(self.close_dialog)
+        self._release_button.clicked.connect(self._open_release_page)
+        self._retry_button.clicked.connect(self._request_retry)
+        self._download_button.clicked.connect(self._request_download)
+
+        for button in (
+            self._close_button,
+            self._later_button,
+            self._release_button,
+            self._retry_button,
+            self._download_button,
+        ):
+            button.hide()
+
+    # -- State API -----------------------------------------------------
+
+    def current_state(self) -> str:
+        """Return the state currently rendered by the dialog.
+
+        Returns:
+            str: One of ``checking`` / ``no_update`` / ``available`` /
+            ``error``; an empty string before the first state is applied.
+        """
+        return self._state
+
+    def set_checking(self, local_version: str = "") -> None:
+        """Render the "checking for updates" state.
+
+        Args:
+            local_version: Local version shown below the spinner.
+        """
+        self._info = None
+        self._apply_state(
+            self.STATE_CHECKING,
+            lambda: self._build_checking(local_version),
+        )
+
+    def set_result(self, info: "UpdateInfo") -> None:
+        """Render a completed check result.
+
+        Args:
+            info: Result snapshot produced by the update service.
+        """
+        self._info = info
+        if bool(getattr(info, "update_available", False)):
+            self._apply_state(self.STATE_AVAILABLE, self._build_available)
+        else:
+            self._apply_state(self.STATE_NO_UPDATE, self._build_no_update)
+
+    def set_error(self, err: object) -> None:
+        """Render a manual check failure with a retry action.
+
+        Args:
+            err: Error object raised by the update check (``UpdateError``
+                is a frozen dataclass, not an ``Exception`` subclass).
+        """
+        self._info = None
+        self._apply_state(self.STATE_ERROR, lambda: self._build_error(err))
+
+    # -- State plumbing ------------------------------------------------
+
+    def _apply_state(self, state: str, builder: Callable[[], None]) -> None:
+        """Clear the body, rebuild it and resize the dialog.
+
+        Args:
+            state: New state name.
+            builder: Callable that appends the body widgets for ``state``.
+        """
+        self._state = state
+        self._clear_body()
+        builder()
+        self._sync_buttons()
+        # Widgets created after the dialog is already visible are not polished
+        # and still carry the hidden flag, so both their sizeHint() and the
+        # layout contribution are zero until the next event-loop turn. Polish
+        # and show the rebuilt subtree so the measurement below is accurate.
+        self._body.ensurePolished()
+        for child in self._body.findChildren(QWidget):
+            child.ensurePolished()
+            child.show()
+        self._body_layout.invalidate()
+        self._body_layout.activate()
+        self._body.updateGeometry()
+        self.remeasure()
+
+    def _clear_body(self) -> None:
+        """Delete every widget/layout previously added to the body."""
+        while self._body_layout.count():
+            item = self._body_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                # Detach before deleteLater so the stale widget is no longer
+                # returned by findChildren() during the next state rebuild.
+                widget.hide()
+                widget.setParent(None)
+                widget.deleteLater()
+                continue
+            child = item.layout()
+            if child is not None:
+                self._clear_nested_layout(child)
+
+    @staticmethod
+    def _clear_nested_layout(layout: QLayout) -> None:
+        """Delete all items of a nested layout and the layout itself.
+
+        Args:
+            layout: Layout to drain and delete.
+        """
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.hide()
+                widget.setParent(None)
+                widget.deleteLater()
+                continue
+            child = item.layout()
+            if child is not None:
+                UpdateCenterDialog._clear_nested_layout(child)
+        layout.deleteLater()
+
+    def _sync_buttons(self) -> None:
+        """Toggle the pre-created footer buttons for the current state."""
+        state = self._state
+        info = self._info
+
+        self._close_button.setVisible(
+            state in (self.STATE_CHECKING, self.STATE_NO_UPDATE, self.STATE_ERROR)
+        )
+        self._close_button.setText(
+            "知道了" if state == self.STATE_NO_UPDATE else "关闭"
+        )
+        self._later_button.setVisible(state == self.STATE_AVAILABLE)
+        self._release_button.setVisible(state == self.STATE_AVAILABLE)
+        self._retry_button.setVisible(state == self.STATE_ERROR)
+        self._download_button.setVisible(state == self.STATE_AVAILABLE)
+
+        download_enabled = (
+            state == self.STATE_AVAILABLE
+            and info is not None
+            and bool(_sha256(info))
+            and self._on_download is not None
+        )
+        self._download_button.setEnabled(download_enabled)
+        if state == self.STATE_AVAILABLE and info is not None:
+            asset = _asset(info)
+            size_text = _format_size(asset.get("size") if asset else None)
+            self._download_button.setText(
+                f"下载更新（{size_text}）" if size_text else "下载更新"
+            )
+
+    # -- Body builders -------------------------------------------------
+
+    def _build_checking(self, local_version: str) -> None:
+        """Append the checking state body.
+
+        Args:
+            local_version: Local version shown under the spinner.
+        """
+        loading_row = QHBoxLayout()
+        loading_row.setContentsMargins(0, 0, 0, 0)
+        loading_row.setSpacing(12)
+        self._loading_widget = StyledLoading(size="default", auto_start=True)
+        loading_row.addWidget(self._loading_widget)
+
+        title = QLabel("正在检查更新…")
+        title.setTextFormat(Qt.PlainText)
+        register_widget_qss(
+            title,
+            (
+                f"font-size: 14px; font-weight: 600; "
+                f"color: {tm.text.name()}; background: transparent;"
+            ),
+        )
+        loading_row.addWidget(title, 1)
+        self._body_layout.addLayout(loading_row)
+
+        self._version_label = _label(
+            self._body_layout,
+            f"当前版本：v{local_version}" if local_version else "当前版本：未知",
+            "UpdateCenterVersion",
+            font_size=12,
+            hint=True,
+        )
+        _label(
+            self._body_layout,
+            "正在连接 GitHub 获取最新发布信息。",
+            "UpdateCenterHint",
+            font_size=12,
+            hint=True,
+        )
+        self._body_layout.addStretch(1)
+
+    def _build_no_update(self) -> None:
+        """Append the already-up-to-date state body."""
+        info = self._info
+        local = _local_tag(info) if info is not None else ""
+        skipped_message = _skipped_tag_message(info) if info is not None else ""
+
+        _label(
+            self._body_layout,
+            "暂无可用的新版本" if skipped_message else "已是最新版本",
+            "UpdateCenterTitle",
+            font_size=14,
+            bold=True,
+        )
+        self._version_label = _label(
+            self._body_layout,
+            f"当前版本：{local or '未知'}",
+            "UpdateCenterVersion",
+            font_size=13,
+        )
+        if skipped_message:
+            _label(
+                self._body_layout,
+                skipped_message,
+                "UpdateSkippedTagLabel",
+                font_size=12,
+                hint=True,
+            )
+        else:
+            _label(
+                self._body_layout,
+                "当前已是最新版本。",
+                "UpdateCenterMessage",
+                font_size=12,
+                hint=True,
+            )
+        self._body_layout.addStretch(1)
+
+    def _build_available(self) -> None:
+        """Append the update-available state body."""
+        info = self._info
+        if info is None:
+            return
+        digest = _sha256(info)
+        skipped_message = _skipped_tag_message(info)
+
+        self._version_label = _label(
+            self._body_layout,
+            f"版本：{_remote_version(info) or '未知'}",
+            "UpdateVersionLabel",
+            font_size=15,
+            bold=True,
+        )
+        _label(
+            self._body_layout,
+            f"构建日期：{_remote_date(info)}",
+            "UpdateDateLabel",
+            font_size=12,
+            hint=True,
+        )
+        if skipped_message:
+            _label(
+                self._body_layout,
+                skipped_message,
+                "UpdateSkippedTagLabel",
+                font_size=12,
+                hint=True,
+            )
+
+        _label(self._body_layout, "更新说明", "UpdateNotesTitleLabel", bold=True)
+        self._notes_area = StyledTextarea(
+            text=_notes(info),
+            placeholder="该版本未提供更新说明",
+            read_only=True,
+        )
+        self._notes_area.setObjectName("UpdateNotesTextarea")
+        self._notes_area.setMaximumHeight(self.NOTES_MAX_HEIGHT)
+        self._body_layout.addWidget(self._notes_area)
+
+        if _notes_truncated(info):
+            _label(
+                self._body_layout,
+                "更新说明过长，已截断，仅显示部分内容。",
+                "UpdateNotesTruncatedLabel",
+                font_size=12,
+                hint=True,
+            )
+        if not digest:
+            _label(
+                self._body_layout,
+                "该版本缺少安装包校验值，无法在应用内下载，请前往发布页手动下载。",
+                "UpdateManualDownloadHint",
+                font_size=12,
+                hint=True,
+            )
+        elif self._on_download is None:
+            _label(
+                self._body_layout,
+                "下载功能暂不可用，请前往发布页手动下载安装包。",
+                "UpdateManualDownloadHint",
+                font_size=12,
+                hint=True,
+            )
+        self._body_layout.addStretch(1)
+
+    def _build_error(self, err: object) -> None:
+        """Append the check-failure state body.
+
+        Args:
+            err: Error object raised by the update check.
+        """
+        raw_message = _clean_text(getattr(err, "message", "")) or _clean_text(
+            str(err)
+        )
+        message = raw_message or "更新检查失败，请稍后重试。"
+        if "Traceback" in message:
+            message = "更新检查失败，请稍后重试。"
+
+        _label(
+            self._body_layout,
+            message,
+            "UpdateErrorMessage",
+            font_size=13,
+            bold=True,
+        )
+        _label(
+            self._body_layout,
+            "你可以点击“重试”重新检查。",
+            "UpdateErrorHint",
+            font_size=12,
+            hint=True,
+        )
+        self._body_layout.addStretch(1)
+
+    # -- Actions -------------------------------------------------------
+
+    def _open_release_page(self) -> None:
+        """Open the allow-listed release page for the current release."""
+        if self._info is not None:
+            _open_url(_release_url(self._info))
+        else:
+            _open_url(RELEASES_URL)
+
+    def _request_retry(self) -> None:
+        """Close the dialog and hand control back to the retry callback."""
+        callback = self._on_retry
+        self.close_dialog()
+        if callback is not None:
+            QTimer.singleShot(0, callback)
+
+    def _request_download(self) -> None:
+        """Hand the current update info to the download callback."""
+        callback = self._on_download
+        info = self._info
+        if callback is None or info is None:
+            return
+        callback(info)
+
 

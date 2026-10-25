@@ -464,6 +464,21 @@ class StyledDialog(QWidget):
         """Show the dialog using the shared centered/fixed-size helper."""
         _show_dialog(self)
 
+    def remeasure(self) -> None:
+        """Recompute the window size after the body content changed.
+
+        Dialogs are sized once by :func:`_show_dialog` and then kept at a
+        fixed size, so a runtime state switch (for example a progress view
+        replaced by a details view) must explicitly re-run the measurement.
+        The window center is preserved so the dialog does not jump.
+        """
+        center = self.frameGeometry().center()
+        _measure_and_apply(self)
+        self.move(
+            center.x() - self.width() // 2,
+            center.y() - self.height() // 2,
+        )
+
     def _on_finished(self, result: int):
         self.finished.emit(result)
 
@@ -643,42 +658,61 @@ def _make_body_label(text: str) -> QWidget:
     return w
 
 
-def _show_dialog(dialog: StyledDialog):
-    """Position dialog at screen center (where mouse is) and show it."""
+def _measure_and_apply(dialog: StyledDialog) -> tuple[int, int]:
+    """Measure the dialog content and apply the resulting fixed size.
+
+    Args:
+        dialog: Dialog whose body/footer content is already populated.
+
+    Returns:
+        tuple[int, int]: ``(content_width, content_height)`` in pixels.
+    """
     content_width = SIZE_CONFIG[dialog._size]["width"]
-    
+
     # Set content widget fixed width so layout can compute height properly
     dialog._content_widget.setFixedWidth(content_width)
-    
-    # Force layout calculation before showing
+
+    # Force layout calculation before measuring
     dialog._content_widget.ensurePolished()
-    dialog._content_widget.layout().activate()
-    
+    content_layout = dialog._content_widget.layout()
+    content_layout.activate()
+
     # Calculate content height by summing all layout items
-    layout = dialog._content_widget.layout()
     content_height = 0
-    margins = layout.contentsMargins()
+    margins = content_layout.contentsMargins()
     content_height += margins.top() + margins.bottom()
-    
-    for i in range(layout.count()):
-        item = layout.itemAt(i)
+
+    for i in range(content_layout.count()):
+        item = content_layout.itemAt(i)
         if item.widget():
+            # Nested containers cache their sizeHint; a runtime body swap
+            # changes the inner layout, so force it to recompute first.
+            child_layout = item.widget().layout()
+            if child_layout is not None:
+                child_layout.invalidate()
+                child_layout.activate()
             content_height += item.widget().sizeHint().height()
         elif item.layout():
             content_height += item.layout().totalSizeHint().height()
-        content_height += layout.spacing()
-    
+        content_height += content_layout.spacing()
+
     # Remove last spacing
-    if layout.count() > 0:
-        content_height -= layout.spacing()
-    
+    if content_layout.count() > 0:
+        content_height -= content_layout.spacing()
+
     if content_height < 80:
         content_height = 80
-    
-    # Set final size BEFORE showing to avoid flicker
-    window_width = content_width + dialog.SHADOW_MARGIN * 2
-    window_height = content_height + dialog.SHADOW_MARGIN * 2
-    dialog.setFixedSize(window_width, window_height)
+
+    dialog.setFixedSize(
+        content_width + dialog.SHADOW_MARGIN * 2,
+        content_height + dialog.SHADOW_MARGIN * 2,
+    )
+    return content_width, content_height
+
+
+def _show_dialog(dialog: StyledDialog):
+    """Position dialog at screen center (where mouse is) and show it."""
+    content_width, content_height = _measure_and_apply(dialog)
     
     # Move to screen center (cursor's screen so multi-monitor setups are honored)
     cursor_pos = QCursor.pos()

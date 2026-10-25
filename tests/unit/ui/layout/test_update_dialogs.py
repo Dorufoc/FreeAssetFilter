@@ -12,9 +12,8 @@
 from __future__ import annotations
 
 import gc
-import weakref
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import pytest
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
@@ -28,7 +27,6 @@ from freeassetfilter.services.update_service import UpdateError, UpdateInfo
 from freeassetfilter.utils.version_info import RELEASES_URL
 from tests.support.qt_helpers import (
     drain_deferred_deletes,
-    flush_widget_queue,
     safe_teardown,
 )
 
@@ -234,362 +232,6 @@ def _emit_result(
     fake_service.check_finished.emit(request_id, manual, info, error)
 
 
-class TestAboutPageCheckUpdate:
-    """关于页手动检查：三态、同 id 过滤、重试与生命周期。"""
-
-    def test_about_constructor_connects_check_finished_once(
-        self,
-        qapp: QApplication,
-        monkeypatch: Any,
-        fake_service: FakeUpdateService,
-        dialog_calls: dict[str, list[Any]],
-    ) -> None:
-        """构造期一次性连接：check() 内同步发事件也能被页面槽收到。"""
-        seen: list[tuple[str, bool]] = []
-        original = sl_mod.AboutSettingsPage._on_check_finished
-
-        def _spy(
-            self: Any,
-            request_id: str,
-            manual: bool,
-            info: object,
-            error: object,
-        ) -> None:
-            seen.append((request_id, manual))
-            original(self, request_id, manual, info, error)
-
-        monkeypatch.setattr(
-            sl_mod.AboutSettingsPage, "_on_check_finished", _spy
-        )
-        fake_service.emit_result = (_info(), None)
-        page = _make_page(monkeypatch, fake_service)
-        try:
-            page._check_update()
-            assert seen == [("check-1", True)]
-            assert fake_service.check_calls == [True]
-        finally:
-            safe_teardown(page)
-            drain_deferred_deletes()
-
-    def test_about_click_disables_button_and_sets_progress(
-        self,
-        about_page: Any,
-        fake_service: FakeUpdateService,
-        monkeypatch: Any,
-    ) -> None:
-        """点击后按钮禁用并进入 0.0 进度；不允许走打开浏览器。"""
-        progress_calls: list[float | None] = []
-        original = about_page._check_update_btn.set_progress
-
-        def _record(value: float | None) -> None:
-            progress_calls.append(value)
-            original(value)
-
-        opened: list[Any] = []
-
-        class _Desktop:
-            @staticmethod
-            def openUrl(url: Any) -> None:
-                opened.append(url)
-
-        monkeypatch.setattr(about_page._check_update_btn, "set_progress", _record)
-        monkeypatch.setattr(sl_mod, "QDesktopServices", _Desktop)
-
-        about_page._check_update()
-
-        assert progress_calls == [0.0]
-        assert about_page._check_update_btn.isEnabled() is False
-        assert about_page._check_update_btn.progress() == 0.0
-        assert fake_service.check_calls == [True]
-        assert opened == []
-
-    def test_about_same_id_manual_result_shows_no_update(
-        self,
-        about_page: Any,
-        fake_service: FakeUpdateService,
-        dialog_calls: dict[str, list[Any]],
-    ) -> None:
-        """同 id + manual=True + 无更新 → show_no_update 并恢复按钮。"""
-        about_page._check_update()
-        info = _info(reason="none")
-        _emit_result(fake_service, "check-1", info=info, error=None)
-
-        assert dialog_calls["no_update"] == [info]
-        assert dialog_calls["error"] == []
-        assert about_page._check_update_btn.isEnabled() is True
-        assert about_page._check_update_btn.progress() is None
-
-    def test_about_skipped_tag_is_handed_off_with_both_tags(
-        self,
-        about_page: Any,
-        fake_service: FakeUpdateService,
-        dialog_calls: dict[str, list[Any]],
-    ) -> None:
-        """skipped_newer_tag 非空时把被跳过 tag 与当前可用 tag 一并交给弹窗。
-
-        可见文案由 Todo 16 的 ``show_no_update`` 生成；本任务保证它拿到的
-        ``UpdateInfo`` 同时携带两个 tag，因而能输出「vX 暂无安装包，
-        当前最新可用安装包为 vY」而不是误导性的「已是最新」。
-        """
-        about_page._check_update()
-        info = _info(
-            reason="local_newer",
-            skipped_newer_tag="v1.0.0-alpha.7",
-            remote={
-                "version": "1.0.0-alpha.5",
-                "tag": "v1.0.0-alpha.5",
-                "date": "2026-05-22",
-            },
-        )
-        _emit_result(fake_service, "check-1", info=info, error=None)
-
-        assert len(dialog_calls["no_update"]) == 1
-        handed = dialog_calls["no_update"][0]
-        assert handed.skipped_newer_tag == "v1.0.0-alpha.7"
-        assert handed.remote.get("tag") == "v1.0.0-alpha.5"
-        # 关于页不会自行拼出「已是最新」文案（摘要由弹窗层负责）。
-        assert "已是最新" not in about_page._links_label.text()
-        assert handed.update_available is False
-
-    def test_about_error_shows_retry_and_retry_rerequests_new_id(
-        self,
-        about_page: Any,
-        fake_service: FakeUpdateService,
-        dialog_calls: dict[str, list[Any]],
-    ) -> None:
-        """错误弹窗带重试；重试 check_started 更新 _request_id 并通过过滤。"""
-        about_page._check_update()
-        error = UpdateError("network")
-        _emit_result(fake_service, "check-1", info=None, error=error)
-
-        assert len(dialog_calls["error"]) == 1
-        captured_error, on_retry = dialog_calls["error"][0]
-        assert captured_error is error
-        assert callable(on_retry)
-        assert about_page._check_update_btn.isEnabled() is True
-
-        fake_service.next_id = "check-2"
-        on_retry()
-        assert fake_service.check_calls == [True, True]
-        assert about_page._request_id == "check-2"
-        assert about_page._check_update_btn.isEnabled() is False
-
-        info = _info(reason="none")
-        _emit_result(fake_service, "check-2", info=info, error=None)
-        assert dialog_calls["no_update"] == [info]
-
-    def test_about_retry_callback_does_not_keep_page_alive(
-        self,
-        qapp: QApplication,
-        monkeypatch: Any,
-        fake_service: FakeUpdateService,
-        dialog_calls: dict[str, list[Any]],
-    ) -> None:
-        """错误弹窗的重试回调不得强引用关于页，销毁后调用也不抛异常。"""
-        page = _make_page(monkeypatch, fake_service)
-        page._check_update()
-        _emit_result(
-            fake_service, "check-1", info=None, error=UpdateError("timeout")
-        )
-        on_retry: Callable[[], None] = dialog_calls["error"][0][1]
-        page_ref = weakref.ref(page)
-
-        safe_teardown(page)
-        drain_deferred_deletes()
-        del page
-        gc.collect()
-
-        assert page_ref() is None
-        on_retry()  # 弱引用失效后安全 no-op
-
-    def test_about_completion_restores_progress_and_button(
-        self,
-        about_page: Any,
-        fake_service: FakeUpdateService,
-        dialog_calls: dict[str, list[Any]],
-        monkeypatch: Any,
-    ) -> None:
-        """完成时调用 set_progress(None) 并恢复按钮。"""
-        progress_calls: list[float | None] = []
-        original = about_page._check_update_btn.set_progress
-
-        def _record(value: float | None) -> None:
-            progress_calls.append(value)
-            original(value)
-
-        monkeypatch.setattr(about_page._check_update_btn, "set_progress", _record)
-        about_page._check_update()
-        _emit_result(fake_service, "check-1", info=_info(), error=None)
-
-        assert progress_calls == [0.0, None]
-        assert about_page._check_update_btn.isEnabled() is True
-        assert about_page._check_update_btn.progress() is None
-
-    def test_about_ignores_startup_results_and_errors(
-        self,
-        about_page: Any,
-        fake_service: FakeUpdateService,
-        dialog_calls: dict[str, list[Any]],
-    ) -> None:
-        """manual=False 的启动结果/错误不触发关于页任何 UI。"""
-        _emit_result(
-            fake_service,
-            "check-1",
-            info=_info(update_available=True),
-            error=None,
-            manual=False,
-        )
-        _emit_result(
-            fake_service,
-            "check-1",
-            info=None,
-            error=UpdateError("network"),
-            manual=False,
-        )
-
-        assert dialog_calls["no_update"] == []
-        assert dialog_calls["error"] == []
-        assert dialog_calls["available"] == []
-        assert dialog_calls["unavailable"] == []
-        assert about_page._check_update_btn.isEnabled() is True
-        assert about_page._check_update_btn.progress() is None
-
-    def test_about_startup_in_flight_then_manual_click_handles_manual_result(
-        self,
-        about_page: Any,
-        fake_service: FakeUpdateService,
-        dialog_calls: dict[str, list[Any]],
-    ) -> None:
-        """启动检查在途 + 手动点击：最终收到 manual=True 结果并恢复按钮。"""
-        fake_service.emit_started = False
-        about_page._check_update()
-        assert fake_service.check_calls == [True]
-        assert about_page._request_id == "check-1"
-        assert about_page._check_update_btn.isEnabled() is False
-
-        info = _info(reason="none")
-        _emit_result(fake_service, "check-1", info=info, error=None, manual=True)
-
-        assert dialog_calls["no_update"] == [info]
-        assert about_page._check_update_btn.isEnabled() is True
-
-    def test_about_reopen_twice_handles_single_result_without_destroy_error(
-        self,
-        qapp: QApplication,
-        monkeypatch: Any,
-        fake_service: FakeUpdateService,
-        dialog_calls: dict[str, list[Any]],
-    ) -> None:
-        """设置窗重开两次：旧页销毁后只剩新页处理一次结果且无回调异常。"""
-        first = _make_page(monkeypatch, fake_service)
-        first._check_update()
-        safe_teardown(first)
-        drain_deferred_deletes()
-        del first
-        gc.collect()
-
-        second = _make_page(monkeypatch, fake_service)
-        try:
-            second._check_update()
-            info = _info(reason="none")
-            _emit_result(fake_service, "check-1", info=info, error=None)
-            flush_widget_queue(qapp)
-            assert dialog_calls["no_update"] == [info]
-        finally:
-            safe_teardown(second)
-            drain_deferred_deletes()
-
-    def test_about_double_click_same_instance_shows_single_dialog(
-        self,
-        about_page: Any,
-        fake_service: FakeUpdateService,
-        dialog_calls: dict[str, list[Any]],
-    ) -> None:
-        """同一实例连点两次只发起一次检查、只弹一个结果框。"""
-        about_page._check_update()
-        about_page._check_update()
-        assert fake_service.check_calls == [True]
-
-        info = _info(reason="none")
-        _emit_result(fake_service, "check-1", info=info, error=None)
-
-        assert dialog_calls["no_update"] == [info]
-
-    def test_about_unavailable_only_skips_checking_state(
-        self,
-        about_page: Any,
-        fake_service: FakeUpdateService,
-        dialog_calls: dict[str, list[Any]],
-        monkeypatch: Any,
-    ) -> None:
-        """仅 exe 缺失：提示不可用，不调用 check，也不进入检查态。"""
-        fake_service.available = False
-        progress_calls: list[float | None] = []
-        original = about_page._check_update_btn.set_progress
-
-        def _record(value: float | None) -> None:
-            progress_calls.append(value)
-            original(value)
-
-        monkeypatch.setattr(about_page._check_update_btn, "set_progress", _record)
-        about_page._check_update()
-
-        assert fake_service.check_calls == []
-        assert len(dialog_calls["unavailable"]) == 1
-        assert "不可用" in dialog_calls["unavailable"][0]["title"]
-        assert progress_calls == []
-        assert about_page._check_update_btn.isEnabled() is True
-        assert about_page._check_update_btn.progress() is None
-
-    def test_about_can_check_again_after_uac_cancelled_shutdown(
-        self,
-        about_page: Any,
-        fake_service: FakeUpdateService,
-        dialog_calls: dict[str, list[Any]],
-    ) -> None:
-        """UAC 取消导致服务 shutdown 后 is_available 仍为 True，可再次检查。"""
-        about_page._check_update()
-        _emit_result(fake_service, "check-1", info=_info(), error=None)
-        fake_service.shutdown()
-        assert fake_service.available is True
-
-        fake_service.next_id = "check-2"
-        about_page._check_update()
-        assert fake_service.check_calls == [True, True]
-        assert about_page._request_id == "check-2"
-
-        _emit_result(fake_service, "check-2", info=_info(), error=None)
-        assert len(dialog_calls["no_update"]) == 2
-
-    def test_about_update_available_hands_off_to_details(
-        self,
-        about_page: Any,
-        fake_service: FakeUpdateService,
-        dialog_calls: dict[str, list[Any]],
-    ) -> None:
-        """有更新时交给 Todo 16 的详情入口，本任务不实现下载。"""
-        about_page._check_update()
-        info = _info(
-            update_available=True,
-            reason="newer_version",
-            remote={
-                "version": "1.0.0-alpha.6",
-                "tag": "v1.0.0-alpha.6",
-                "date": "2026-06-01",
-            },
-            asset={
-                "name": "FreeAssetFilter-1.0.0-alpha.6_win10_win11_x64_Setup.exe",
-                "size": 172000000,
-                "sha256": "a" * 64,
-            },
-        )
-        _emit_result(fake_service, "check-1", info=info, error=None)
-
-        assert dialog_calls["available"] == [info]
-        assert dialog_calls["no_update"] == []
-        assert about_page._check_update_btn.isEnabled() is True
-
-
 # =============================================================================
 # Todo 16 — 更新详情 / 启动提示 / 无更新 / 错误
 # =============================================================================
@@ -672,6 +314,74 @@ def _cleanup_tracked_dialogs(qapp: QApplication):
     drain_deferred_deletes(qapp)
     ud_mod._active_dialogs.clear()
     ud_mod._active_progress_dialogs.clear()
+
+
+class TestAboutPageDelegatesToUpdateCenter:
+    """关于页检查更新已改为委托共享控制器与单弹窗。"""
+
+    def test_about_has_check_update_button(self, about_page: Any) -> None:
+        """关于页保留原位、原文案的检查更新按钮。"""
+        assert about_page._check_update_btn is not None
+        assert about_page._check_update_btn.text() == "检查更新"
+
+    def test_about_click_delegates_without_local_progress(
+        self, about_page: Any, monkeypatch: Any
+    ) -> None:
+        """点击只委托控制器：不在按钮上显示进度，也不打开浏览器。"""
+        calls: list[bool] = []
+
+        class _StubEntry:
+            @staticmethod
+            def request_check() -> None:
+                calls.append(True)
+
+        monkeypatch.setattr(
+            "freeassetfilter.ui.update_entry.get_update_entry_controller",
+            lambda: _StubEntry(),
+        )
+        progress_calls: list[float | None] = []
+        original = about_page._check_update_btn.set_progress
+
+        def _record(value: float | None) -> None:
+            progress_calls.append(value)
+            original(value)
+
+        monkeypatch.setattr(about_page._check_update_btn, "set_progress", _record)
+        opened: list[Any] = []
+
+        class _Desktop:
+            @staticmethod
+            def openUrl(url: Any) -> None:
+                opened.append(url)
+
+        monkeypatch.setattr(sl_mod, "QDesktopServices", _Desktop)
+
+        about_page._check_update()
+
+        assert calls == [True]
+        assert progress_calls == []
+        assert opened == []
+
+    def test_about_double_click_delegates_each_time(
+        self, about_page: Any, monkeypatch: Any
+    ) -> None:
+        """连点两次都委托控制器；去重由控制器的在途请求负责。"""
+        calls: list[bool] = []
+
+        class _StubEntry:
+            @staticmethod
+            def request_check() -> None:
+                calls.append(True)
+
+        monkeypatch.setattr(
+            "freeassetfilter.ui.update_entry.get_update_entry_controller",
+            lambda: _StubEntry(),
+        )
+
+        about_page._check_update()
+        about_page._check_update()
+
+        assert calls == [True, True]
 
 
 class TestUpdateDetailsDialog:
@@ -898,8 +608,8 @@ class TestUpdateDetailsDialog:
         info = _available_info()
         dialog = ud_mod.show_update_available(
             info,
-            on_download=page._retry_check,
-            on_open_release=page._retry_check,
+            on_download=page._check_update,
+            on_open_release=page._check_update,
         )
 
         safe_teardown(page)
@@ -1057,7 +767,7 @@ class TestCheckErrorDialog:
         """绑定方法按弱引用保存：关于页销毁后点击重试安全 no-op。"""
         page = _make_page(monkeypatch, fake_service)
         dialog = ud_mod.show_check_error(
-            UpdateError("timeout"), page._retry_check
+            UpdateError("timeout"), page._check_update
         )
 
         safe_teardown(page)

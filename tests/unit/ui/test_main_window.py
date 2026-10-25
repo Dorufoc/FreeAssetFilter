@@ -172,6 +172,7 @@ class TestMainWindowStructure:
             "_settings_btn",
             "_reset_layout_btn",
             "_layout_toggle_btn",
+            "_update_btn",
         ):
             assert getattr(window, attr) is not None, f"{attr} 缺失"
         window.deleteLater()
@@ -191,8 +192,34 @@ class TestMainWindowStructure:
             "_settings_btn",
             "_reset_layout_btn",
             "_layout_toggle_btn",
+            "_update_btn",
         ):
             assert getattr(window, attr) is not None
+        window.deleteLater()
+        qapp.processEvents()
+
+    def test_title_bar_update_button_delegates_to_controller(
+        self, qapp: QApplication, monkeypatch: Any
+    ) -> None:
+        """点击检查更新只委托共享控制器，按钮外观不反映检查状态。"""
+        window = MainWindow()
+        calls: list[bool] = []
+
+        class _StubEntry:
+            @staticmethod
+            def request_check() -> None:
+                calls.append(True)
+
+        monkeypatch.setattr(
+            "freeassetfilter.ui.update_entry.get_update_entry_controller",
+            lambda: _StubEntry(),
+        )
+
+        window._update_btn.click()
+
+        assert calls == [True]
+        assert window._update_btn.isEnabled() is True
+        assert window._update_btn.progress() is None
         window.deleteLater()
         qapp.processEvents()
 
