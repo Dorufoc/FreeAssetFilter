@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 from PySide6.QtGui import QCloseEvent
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication
 
 _UI_ROOT: str = str(Path(__file__).resolve().parents[3] / "freeassetfilter" / "ui")
 if _UI_ROOT not in sys.path:

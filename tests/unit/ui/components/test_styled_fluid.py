@@ -59,12 +59,10 @@ from freeassetfilter.ui.components.styled_fluid_background import (  # noqa: E40
 )
 from freeassetfilter.utils.app_logger import warning  # noqa: E402
 from freeassetfilter.utils.perf_metrics import (  # noqa: E402
+    clear_perf_metrics,
+    get_perf_snapshot,
     record_perf_duration,
     set_perf_metadata,
-)
-from tests.benchmark.perf_benchmark_utils import (  # noqa: E402
-    get_perf_summary,
-    reset_perf_metrics,
 )
 
 pytestmark = pytest.mark.unit
@@ -865,7 +863,7 @@ def _reset_budget_evidence(request: Any) -> None:
         return
     cls._EVIDENCE_FILE.parent.mkdir(parents=True, exist_ok=True)
     cls._EVIDENCE_FILE.write_text("", encoding="utf-8")
-    reset_perf_metrics()
+    clear_perf_metrics()
 
 
 class TestMainThreadPaintBudget:
@@ -928,7 +926,7 @@ class TestMainThreadPaintBudget:
     @pytest.fixture(autouse=True)
     def _isolate_budget_events(self) -> None:
         """函数级：每个预算用例前清空 perf 事件，避免跨用例串扰。"""
-        reset_perf_metrics()
+        clear_perf_metrics()
 
     @classmethod
     def _measure(cls, event: str, fn: Any, iters: int) -> tuple[list[float], Any]:
@@ -966,7 +964,7 @@ class TestMainThreadPaintBudget:
         Returns:
             float: 该事件的 P50（毫秒）。
         """
-        stats = get_perf_summary().get(event, {})
+        stats = get_perf_snapshot().get("events", {}).get(event, {})
         p50 = stats.get("p50_ms")
         assert isinstance(p50, (int, float)) and p50 >= 0.0, (
             f"{event} 未产出 P50（stats={stats}）"
@@ -1142,7 +1140,9 @@ class TestMainThreadPaintBudget:
         svg_file: Path = tmp_path / "budget_thread.svg"
         svg_file.write_text(self._SVG_ICON, encoding="utf-8")
         SvgRenderer.render_svg_to_pixmap(str(svg_file), icon_size=48, replace_colors=True)
-        counters = (get_perf_summary().get("svg.render_pixmap") or {}).get("counters", {})
+        counters = (
+            get_perf_snapshot().get("events", {}).get("svg.render_pixmap") or {}
+        ).get("counters", {})
         assert counters.get("main_thread", 0) >= 1
         assert counters.get("worker_thread", 0) == 0
 

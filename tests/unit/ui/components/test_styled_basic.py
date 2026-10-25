@@ -28,10 +28,9 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any
 
 import pytest
-from PySide6.QtCore import QEvent, QObject, QPointF, QRect, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QEnterEvent,

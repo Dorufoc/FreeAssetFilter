@@ -148,6 +148,7 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 - **C++ Extensions** - Core algorithms implemented in C++ for excellent performance
 - **Memory Management** - Smart cache cleanup to optimize memory usage
 - **Startup Acceleration** - Preloading mechanism for fast application launch
+- **Discrete GPU** - Enable "Use hardware acceleration" in settings to launch via the discrete-GPU launcher next time
 
 ### Feature Comparison
 
@@ -356,9 +357,9 @@ FreeAssetFilter/
 │   ├── utils/                  # Shared utilities (paths / logging / highlighting / perf metrics)
 │   ├── docs/                   # Third-party notices and license list
 │   └── icons/                  # UI and file type icon assets
-├── launcher/                   # Discrete-GPU launcher (C source + prebuilt FAF-Launcher.exe)
-├── scripts/                    # Helper scripts (stylesheet stats, effect gate, screenshot tool)
-├── tools/                      # Utility scripts (memory baseline sampling)
+├── launcher/                   # Discrete-GPU launcher (C source + build script; FAF-Launcher.exe is built locally, not committed)
+├── installer_duilib/           # In-house installer (C++/NSIS source + build script)
+├── scripts/                    # Helper scripts (GUI test screenshot tool)
 ├── tests/                      # Test suite (see tests/README.md)
 ├── data/                       # Runtime data (generated locally, gitignored): settings_v2.json, thumbnail cache, logs
 ├── requirements.txt            # Python dependencies
@@ -427,11 +428,19 @@ python setup_mingw.py build_ext --inplace
 
 ### Package Application
 
-```bash
-# Using PyInstaller (the only supported packaging method)
-python Pyinstall_build.py
+The release pipeline has three steps (launcher optional): build the discrete-GPU launcher, build the installer payload with PyInstaller, then package it with the in-house installer.
 
+```bash
+# 1) Build the discrete-GPU launcher (optional; required for "Use hardware acceleration")
+powershell -ExecutionPolicy Bypass -File launcher/build_launcher.ps1
+
+# 2) Build the PyInstaller payload -> build/pyinstall/FreeAssetFilter
+python Pyinstall_build.py
 # Optional flags: --no-clean keeps previous build output; --skip-build only cleans and validates
+
+# 3) Build the installer (requires CMake + MinGW + NSIS)
+powershell -ExecutionPolicy Bypass -File installer_duilib/build.ps1
+# Output: build/FreeAssetFilter_NSIS_Setup.exe
 ```
 
 ### Add New File Preview Support

@@ -479,21 +479,18 @@ def faf_core_available() -> bool:
 def cpp_lut_available() -> bool:
     """探测 C++ LUT 预览扩展模块是否可用（session scope）。
 
-    尝试导入 ``freeassetfilter.core.native.src.cpp_lut_preview`` 并调用
-    其 ``_try_import_cpp_module()`` 触发底层 .pyd 加载，再读
-    ``is_cpp_available()`` 结果。加载失败/导入异常一律返回 False。
+    经产品实际使用的加载器 ``lut_preview_native`` 探测（发布目录
+    ``core/native/bin/lut_preview`` 优先），返回 ``is_cpp_available()`` 结果。
+    加载失败/导入异常一律返回 False。
 
     Returns:
         bool: C++ 扩展可用则为 True，否则 False。
     """
     try:
-        from freeassetfilter.core.native.src.cpp_lut_preview import (
-            _try_import_cpp_module,
-            is_cpp_available,
-        )
+        from freeassetfilter.core.native.bridges import lut_preview_native
 
-        _try_import_cpp_module()
-        return bool(is_cpp_available())
+        lut_preview_native.reset()
+        return bool(lut_preview_native.is_cpp_available())
     except Exception:
         return False
 
@@ -856,27 +853,8 @@ def settings_file(tmp_path: Path) -> str:
 
 
 # =============================================================================
-# 性能基准数据集
+# 视频样本 fixture
 # =============================================================================
-@pytest.fixture(scope="session")
-def benchmark_dataset(tmp_path_factory: Any) -> List[str]:
-    """生成一个缩小版基准数据集（20 张 PNG 图片，session scope）。
-
-    Args:
-        tmp_path_factory: pytest 内置的会话级临时目录工厂。
-
-    Returns:
-        list[str]: 20 张已生成 PNG 图片的路径列表。
-    """
-    from tests.support.data_factories import make_image
-
-    base_dir: Path = tmp_path_factory.mktemp("benchmark_dataset")
-    paths: List[str] = []
-    for i in range(20):
-        paths.append(make_image(base_dir / f"bench_{i:03d}.png", fmt="PNG"))
-    return paths
-
-
 @pytest.fixture(scope="session")
 def video_sample_paths(tmp_path_factory: Any) -> List[str]:
     """把 ``tests/support/media/`` 的全部视频样本复制到临时目录（session scope）。

@@ -25,9 +25,7 @@ import types
 # 与 ``from freeassetfilter.services.X import Y`` 解析到同一对象。
 _SYMBOL_TO_MODULE: dict[str, str] = {
     "BaseService": "base",
-    "DriveService": "drive_service",
     "FavoritesService": "favorites_service",
-    "FileService": "file_service",
     "MediaMetadataService": "media_metadata_service",
     "FileIconManager": "file_icon_manager",
     "PreviewerRegistry": "previewer_registry",
@@ -37,10 +35,8 @@ _SYMBOL_TO_MODULE: dict[str, str] = {
 
 __all__ = [
     "BaseService",
-    "DriveService",
     "FavoritesService",
     "FileIconManager",
-    "FileService",
     "MediaMetadataService",
     "PreviewerRegistry",
     "StagingPoolService",

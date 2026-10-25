@@ -202,13 +202,7 @@ def collect_data_files() -> List[Tuple[str, str]]:
             data_files.append((str(file), str(rel_path.parent)))
         print_info(f"收集到 {len(list(syntax_dir.glob('*.json')))} 个语法文件")
     
-    # 3. 收集color_schemes.json
-    color_schemes = project_root / "freeassetfilter" / "utils" / "color_schemes.json"
-    if color_schemes.exists():
-        data_files.append((str(color_schemes), "freeassetfilter/utils"))
-        print_info("收集到 color_schemes.json")
-
-    # 4. 收集 FAFVERSION（更新检查依赖）
+    # 3. 收集 FAFVERSION（更新检查依赖）
     fafversion_file = project_root / "FAFVERSION"
     if fafversion_file.exists():
         data_files.append((str(fafversion_file), "."))
@@ -284,6 +278,17 @@ def collect_binaries() -> List[Tuple[str, str]]:
         for sidecar in sorted([*lut_dir.glob("*.pyd"), *lut_dir.glob("*.dll")]):
             binaries.append((str(sidecar), "freeassetfilter/core/native/bin/lut_preview"))
             print_info(f"收集到 LUT 扩展 {sidecar.name}")
+    # 独显启动器（可选）：仅当已用 launcher/build_launcher.ps1 构建时收集。
+    # PyInstaller 6 onedir 会把它放到 _internal/launcher/，与
+    # platform_gpu.launcher_exe_path() 的冻结态路径一致。
+    launcher_exe = project_root / "launcher" / "FAF-Launcher.exe"
+    if launcher_exe.is_file():
+        binaries.append((str(launcher_exe), "launcher"))
+        print_info("收集到 FAF-Launcher.exe（硬件加速）")
+    else:
+        print_warning(
+            "未找到 FAF-Launcher.exe：发布包将无法启用硬件加速（直启回退）"
+        )
     print_success(f"共收集到 {len(binaries)} 个运行时二进制文件")
     return binaries
 
@@ -817,7 +822,6 @@ def verify_output(dist_root: Path | None = None) -> bool:
     resources_to_check = [
         "FAFVERSION",
         "freeassetfilter/icons/FAF-main.ico",
-        "freeassetfilter/utils/color_schemes.json",
         "freeassetfilter/core/native/bin/libmpv-2.dll",
         "freeassetfilter/core/native/bin/thumbnail_generator.dll",
         "freeassetfilter/core/native/bin/faf_core.dll",

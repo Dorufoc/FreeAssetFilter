@@ -17,7 +17,6 @@ if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
 from freeassetfilter.ui.components.styled_ai_chat import (  # noqa: E402
-    MESSAGE_CONTENT_MAX_WIDTH,
     StyledAIChatWindow,
 )
 from freeassetfilter.ui.components.styled_ai_chat_sidebar import (  # noqa: E402
@@ -156,22 +155,3 @@ def test_chat_window_embed_and_send(qapp: Any) -> None:
 
     window.clear_conversation()
     assert window.is_welcome_visible()
-
-
-def test_demo_static_messages_and_send(qapp: Any) -> None:
-    """Demo 静态消息齐全，发送后追加用户气泡。"""
-    from freeassetfilter.ui.demos.styled_ai_chat_demo import DemoWindow
-
-    demo = DemoWindow()
-    _show_offscreen(demo, 900, 780)
-    assert len(demo.chat.messages.findChildren(QWidget)) > 0
-    assert demo.chat.messages.viewport().width() > 0
-    assert demo.chat.composer.maximumWidth() == MESSAGE_CONTENT_MAX_WIDTH
-
-    sent: List[str] = []
-    demo.chat.send_requested.connect(sent.append)
-    demo.chat.composer.set_text("测试发送")
-    QTest.keyClick(demo.chat.composer._editor, Qt.Key_Return)
-    QApplication.processEvents()
-    assert sent == ["测试发送"]
-    demo.close()

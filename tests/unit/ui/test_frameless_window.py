@@ -35,7 +35,6 @@ from PySide6.QtGui import QResizeEvent
 
 import freeassetfilter.ui.frameless_window as fw
 from freeassetfilter.ui.frameless_window import (
-    _EDGE_BORDER,
     _HTBOTTOM,
     _HTBOTTOMLEFT,
     _HTBOTTOMRIGHT,

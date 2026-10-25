@@ -21,7 +21,7 @@ from typing import Any
 
 import pytest
 from PySide6.QtCore import Qt, QPoint
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication
 
 _PROJECT_ROOT = next(
     p for p in Path(__file__).resolve().parents if (p / "freeassetfilter").is_dir()

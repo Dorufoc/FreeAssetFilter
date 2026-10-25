@@ -44,8 +44,7 @@ if _UI_ROOT not in sys.path:
 from tests.support.qt_helpers import safe_teardown  # noqa: E402
 
 from freeassetfilter.ui.components.icon_utils import icon_path, render_icon  # noqa: E402
-from freeassetfilter.ui.components.mica_material import MicaMaterial, MicaWidget  # noqa: E402
-from freeassetfilter.ui.components.mica_window import MicaWindow  # noqa: E402
+from freeassetfilter.ui.mica.material import MicaMaterial, MicaWidget, MicaWindow  # noqa: E402
 from freeassetfilter.ui.components.paint_utils import (  # noqa: E402
     draw_capsule,
     draw_checkmark,

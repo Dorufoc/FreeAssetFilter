@@ -158,6 +158,80 @@ class TestProfileSelectorStaging:
             safe_teardown(layout)
 
 
+class TestHardwareAccelerationStaging:
+    """硬件加速开关：仅暂存，提交后落盘（下次启动生效）。"""
+
+    def test_toggle_stages_only(
+        self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """切换开关 → 暂存为 True；V2 磁盘仍为 False。"""
+        from freeassetfilter.core.managers.settings_manager_v2 import (
+            SettingsManagerV2,
+        )
+
+        tmp_file = _patch_v2_to_tmp(monkeypatch, tmp_path)
+        _patch_overlay_noop(monkeypatch)
+        layout = _make_layout(qapp, monkeypatch, tmp_path)
+        try:
+            page = layout._appearance_page
+            assert page._hw_accel is False
+            page._on_hw_accel_toggled(True)
+            assert page._hw_accel is True
+            assert (
+                page._staging_cache.get("performance.hardware_acceleration")
+                is True
+            )
+            fresh = SettingsManagerV2(tmp_file)
+            fresh.load()
+            assert fresh.get("performance.hardware_acceleration") is False
+        finally:
+            safe_teardown(layout)
+
+    def test_submit_persists_enabled(
+        self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """暂存 True → 确定 → V2 落盘 True。"""
+        from freeassetfilter.core.managers.settings_manager_v2 import (
+            SettingsManagerV2,
+        )
+        from theme import tm
+
+        tmp_file = _patch_v2_to_tmp(monkeypatch, tmp_path)
+        _patch_overlay_noop(monkeypatch)
+        _patch_hook_spies(monkeypatch)
+        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+
+        prev_mode = tm.get_theme_mode()
+        prev_colors = copy.deepcopy(tm._colors)
+        layout = SettingsLayout()
+        try:
+            layout._appearance_page._on_hw_accel_toggled(True)
+            ok = layout._submit_settings(close_after=False)
+            assert ok is True
+            fresh = SettingsManagerV2(tmp_file)
+            fresh.load()
+            assert fresh.get("performance.hardware_acceleration") is True
+        finally:
+            safe_teardown(layout)
+            _restore_tm_quietly(tm, prev_mode, prev_colors)
+
+    def test_refresh_from_staging_restores_toggle(
+        self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """取消/关闭路径：refresh_from_staging 按暂存恢复开关展示。"""
+        layout = _make_layout(qapp, monkeypatch, tmp_path)
+        try:
+            page = layout._appearance_page
+            page._on_hw_accel_toggled(True)
+            layout._staging_cache.discard()
+            page.refresh_from_staging()
+            assert page._hw_accel is False
+            assert page._hw_toggle is not None
+            assert page._hw_toggle.checked is False
+        finally:
+            safe_teardown(layout)
+
+
 class TestProfileSubmit:
     """(2)(3) 提交应用 + 落盘：三钩子被调用，V2 持久化。"""
 

@@ -6,8 +6,8 @@
 现存模块清单（物理模块 ∪ 旧式扁平懒别名），逐个 ``importlib.import_module``
 冒烟验证：
 
-* **物理模块**：AST 扫描 ``freeassetfilter/**/*.py``（排除 ui/demos、
-  core/native/src、setup.py、__init__.py、*.pyi）得到的全部可导入模块；
+* **物理模块**：AST 扫描 ``freeassetfilter/**/*.py``（排除 core/native/src、
+  setup.py、__init__.py、*.pyi）得到的全部可导入模块；
 * **懒别名**：``freeassetfilter.core.settings_manager`` 等旧扁平路径经
   ``core/__init__.py`` 的 ``_LazyModuleAlias`` 注册为 ``sys.modules``
   占位符，首次属性访问（或包级 ``__getattr__``）时解析到真实子包模块并

@@ -558,6 +558,10 @@ DEFAULT_SETTINGS_V2: Dict[str, Any] = {
         # 注意：工作线程钩子（MMCSS/钉核）在线程入口注册，只影响
         # 新建/下轮工作线程会话，不追溯已在跑的线程。
         "profile": "balanced",
+        # 使用硬件加速（设置页「使用硬件加速」开关，默认关闭）：
+        # 开启后下次启动经 FAF-Launcher.exe 请求独立显卡；启动器缺失或
+        # PE 导出校验失败时自动回退直启。
+        "hardware_acceleration": False,
     },
     "general": {
         # 主界面布局（设置页「通用」分类）：
@@ -967,6 +971,7 @@ class SettingsManagerV2:
 
         # performance 域合并：profile 为扁平键，只接受三档合法值；
         # 旧文件缺键或非法值时回退默认 balanced（不抛异常）。
+        # hardware_acceleration 为布尔白名单键，非布尔值一律丢弃并回退 False。
         if "performance" in loaded and isinstance(loaded["performance"], dict):
             perf_loaded = loaded["performance"]
             staged_profile = perf_loaded.get("profile", None)
@@ -974,6 +979,9 @@ class SettingsManagerV2:
                 staged_profile in PERFORMANCE_PROFILES
             ):
                 merged["performance"]["profile"] = staged_profile
+            staged_hw_accel = perf_loaded.get("hardware_acceleration", None)
+            if isinstance(staged_hw_accel, bool):
+                merged["performance"]["hardware_acceleration"] = staged_hw_accel
 
         # general 域合并：layout_mode 只接受 classic/workspace；
         # 旧文件缺键或非法值时保留默认 workspace（不抛异常）。

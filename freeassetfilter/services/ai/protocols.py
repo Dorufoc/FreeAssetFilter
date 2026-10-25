@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Iterable, Mapping
 
 from .models import (
-    AIAccountConfig, AIHTTPError, AIProtocolError, AIProvider, ChatMessage,
+    AIAccountConfig, AIProtocolError, AIProvider, ChatMessage,
     StreamEvent, ToolCallRequest, ToolDefinition,
 )
 

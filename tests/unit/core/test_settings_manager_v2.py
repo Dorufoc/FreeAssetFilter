@@ -115,6 +115,53 @@ class TestPerformanceProfileRoundTrip:
         assert v2.get("performance.profile") == "balanced"
 
 
+class TestHardwareAccelerationSetting:
+    """performance.hardware_acceleration：默认关闭、往返与合并白名单。"""
+
+    def test_default_is_disabled(self) -> None:
+        """默认树含 hardware_acceleration == False。"""
+        assert DEFAULT_SETTINGS_V2["performance"]["hardware_acceleration"] is False
+
+    def test_set_get_roundtrip(self, tmp_path: Path) -> None:
+        """内存读写往返；相同值二次写入返回 False。"""
+        v2 = _fresh_v2(tmp_path)
+        v2.load()
+        assert v2.get("performance.hardware_acceleration") is False
+        v2.set("performance.hardware_acceleration", True)
+        assert v2.get("performance.hardware_acceleration") is True
+        assert v2.set("performance.hardware_acceleration", True) is False
+
+    def test_save_load_merge_keeps_enabled(self, tmp_path: Path) -> None:
+        """save → 新实例 load → merge 后 True 保持。"""
+        tmp_file = str(tmp_path / "settings_v2.json")
+        v2 = SettingsManagerV2(tmp_file)
+        v2.load()
+        v2.set("performance.hardware_acceleration", True)
+        v2.save()
+
+        fresh = SettingsManagerV2(tmp_file)
+        fresh.load()
+        assert fresh.get("performance.hardware_acceleration") is True
+
+    def test_non_bool_value_falls_back_disabled(self, tmp_path: Path) -> None:
+        """非布尔值（含字符串 "true"）合并时回退 False。"""
+        import json
+
+        tmp_file = tmp_path / "settings_v2.json"
+        tmp_file.write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "performance": {"hardware_acceleration": "true"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        v2 = SettingsManagerV2(str(tmp_file))
+        v2.load()
+        assert v2.get("performance.hardware_acceleration") is False
+
+
 class TestNoRegressionOnAppearance:
     """只增不改：appearance 既有键合并行为不变。"""
 

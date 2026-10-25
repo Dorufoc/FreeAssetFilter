@@ -22,7 +22,6 @@
 from __future__ import annotations
 
 import ctypes
-import os
 import queue
 import threading
 import time

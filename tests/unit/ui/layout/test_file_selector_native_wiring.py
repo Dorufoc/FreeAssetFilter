@@ -49,7 +49,7 @@ import freeassetfilter.ui.layout.file_selector_layout as fsl_mod  # noqa: E402
 # 与布局模块共享同一模块实例（components.* 短路径），FileNameRole 为 int 角色值。
 from components.file_list_model import FileNameRole  # noqa: E402
 
-from tests.support.qt_helpers import wait_for_signal, wait_until  # noqa: E402
+from tests.support.qt_helpers import wait_until  # noqa: E402
 
 pytestmark = pytest.mark.unit
 

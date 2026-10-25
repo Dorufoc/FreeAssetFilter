@@ -9,8 +9,8 @@ Uses offscreen rendering to avoid paint device conflicts.
 
 import os
 from PySide6.QtWidgets import QApplication
-from PySide6.QtGui import QPixmap, QPainter, QImage
-from PySide6.QtCore import Qt, QRect, QEvent, QBuffer, QIODevice, QPoint
+from PySide6.QtGui import QPixmap, QPainter
+from PySide6.QtCore import Qt, QEvent, QPoint
 
 
 def capture_widget(widget, output_path=None, size=None):

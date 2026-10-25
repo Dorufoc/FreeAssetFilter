@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import (
     Qt, Signal, Property, QPropertyAnimation, QEasingCurve, QPoint, QEvent,
 )
-from PySide6.QtGui import QFont, QCursor, QKeyEvent, QMouseEvent, QPainter, QPaintEvent, QColor
+from PySide6.QtGui import QFont, QCursor, QMouseEvent, QPainter, QPaintEvent, QColor
 
 from theme import tm
 from components.paint_utils import render_soft_shadow

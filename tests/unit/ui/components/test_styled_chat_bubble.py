@@ -36,7 +36,6 @@ from freeassetfilter.ui.components.styled_chat_bubble import (  # noqa: E402
     StyledAIAvatar,
     StyledAIAvatarAccent,
     StyledChatBubble,
-    StyledReasoningDrawer,
     accent_color,
     file_badge_color,
     file_badge_text,

@@ -7,10 +7,8 @@
 ```
 tests/
 ├── conftest.py              # 顶层 fixture 工厂（QApplication、单例重置、原生可用性探测等）
-├── run_tests.py             # 官方测试运行器（子命令式封装 pytest，共 7 个子命令）
+├── run_tests.py             # 官方测试运行器（子命令式封装 pytest，共 5 个子命令）
 ├── __init__.py
-├── acceptance/              # 计划验收自检脚本（thumbnail-rust-refactor / rust-hot-path-native-migration）
-├── benchmark/               # 性能基准测试与回归检查（默认排除，需显式指定范围）
 ├── gui/                     # 可视化 GUI 测试（需要真实显示器）
 ├── integration/             # 跨模块联动、全生命周期与真实二进制集成的测试
 ├── log/                     # 测试运行日志（运行时生成，gitignore）
@@ -22,8 +20,6 @@ tests/
 
 | 目录 | 定位 |
 | --- | --- |
-| `acceptance/` | 计划验收自检脚本：扫描产物与跑指定子集，产出 PASS/FAIL 报告，非 pytest 用例 |
-| `benchmark/` | 缩略图、缓存、SVG、faf_core 等性能基准与回归对比，耗时较长，默认排除 |
 | `gui/` | 主题切换视觉一致性测试，必须真实显示器（`QT_QPA_PLATFORM` 取消 offscreen） |
 | `integration/` | 跨组件流程、线程安全、模块导入冒烟、真实二进制（MPV / FFmpeg / Rust DLL）集成 |
 | `support/` | 非测试代码的基础设施模块，被 conftest 与运行器引用 |
@@ -31,32 +27,6 @@ tests/
 | `unit/ui/` | UI 层测试（组件 / 布局 / Mica / 主题 / 主窗口与无边框窗口） |
 
 ## 各测试文件职责
-
-### acceptance/（计划验收自检）
-
-| 文件 | 职责 |
-| --- | --- |
-| `verify_plan.py` | thumbnail-rust-refactor 计划验收（11 项检查，产出 JSON 报告，`--full` 跑全量分组） |
-| `verify_faf_core.py` | rust-hot-path-native-migration 计划验收（9 项检查） |
-
-### benchmark/（性能基准）
-
-| 文件 | 职责 |
-| --- | --- |
-| `conftest.py` | 基准专用配置：会话快照落盘、首跑写基线（不覆写） |
-| `perf_benchmark_utils.py` | 基准辅助（小规模定时数据生成、快照读取） |
-| `perf_regression.py` | 性能回归对比器（仅报告、不 gate） |
-| `scenarios_s1_s10.py` | S1-S10 十场景性能天花板基准 |
-| `test_batch_thumbnail_perf.py` | 批量缩略图生成性能基准 |
-| `test_cache_perf.py` | 缩略图缓存读写性能基准 |
-| `test_faf_core_perf.py` | faf_core 各接口 native vs Python 基准 |
-| `test_perf_metrics_pipeline.py` | 性能埋点采集管线基准 |
-| `test_svg_perf.py` | SVG 渲染性能基准 |
-| `test_thumbnail_latency_throughput.py` | 缩略图延迟分位与批量吞吐基准 |
-| `test_thumbnail_perf.py` | 单张缩略图生成性能基准 |
-| `test_thumbnail_soak.py` | 30 分钟混合负载浸泡压测（`-m soak` 显式选中） |
-
-另有 `baseline/`（性能基线 JSON）、`fixtures.manifest.json`（夹具清单）。
 
 ### gui/（可视化测试，需真实显示器）
 
@@ -124,17 +94,15 @@ tests/
 | `test_thumbnail_fixtures.py` | 全格式夹具经桥命中 T1 原生路径回归 |
 | `test_thumbnail_manager.py` | ThumbnailManager 缓存与生成、四队列调度 |
 
-### unit/services/（业务服务层，15 个测试文件）
+### unit/services/（业务服务层，13 个测试文件）
 
 | 文件 | 职责 |
 | --- | --- |
 | `test_base.py` | `BaseService` 生命周期模板 |
-| `test_drive_service.py` | 盘符枚举与可用性检查服务 |
 | `test_encoding_native_parity.py` | 编码探测 native（faf_core）vs chardet 对拍 |
 | `test_favorites_service.py` | 收藏夹 CRUD 与 JSON 持久化 |
 | `test_file_icon_manager.py` | 文件类型图标管线（SVG/缩略图/系统图标 + 缓存） |
 | `test_file_info_service.py` | 文件信息采集（stat/EXIF/字体/编码/压缩包/哈希 + 缓存） |
-| `test_file_service.py` | 文件扫描 / 通配筛选 / 排序纯逻辑 |
 | `test_font_native_parity.py` | 字体 native vs fontTools 对拍 |
 | `test_image_services.py` | `ImageDecoderService` 与 `ImageDecodeWorker` |
 | `test_media_metadata_service.py` | 音频标签 / 封面 / 编码参数提取 |
@@ -215,10 +183,10 @@ tests/
 ### 官方运行器（推荐）
 
 ```powershell
-# 运行一个范围（子命令对应目录）：unit / integration / gui / benchmark
+# 运行一个范围（子命令对应目录）：unit / integration / gui
 python tests/run_tests.py unit
 
-# 所有非 GUI / 非基准测试
+# 所有非 GUI 测试
 python tests/run_tests.py all
 
 # 收集模式（只收集不执行，验证收集是否正常）
@@ -230,9 +198,9 @@ python tests/run_tests.py coverage --strict
 
 运行器要点：
 
-- 子命令共 7 个：`all` / `unit` / `integration` / `gui` / `benchmark` / `coverage` / `regression`。
+- 子命令共 5 个：`all` / `unit` / `integration` / `gui` / `coverage`。
 - 默认 `QT_QPA_PLATFORM=offscreen`（无头模式）；`--visual` 时取消 offscreen 并置 `FAF_VISUAL=1`，用于 gui 目录。
-- 默认 `--timeout 30`（benchmark / regression 默认 300）；可用 `--timeout N` 覆盖，但**不覆盖**显式 timeout marker（见 `support/timeout_policy.py`）。
+- 默认 `--timeout 30`；可用 `--timeout N` 覆盖，但**不覆盖**显式 timeout marker（见 `support/timeout_policy.py`）。
 - 支持透传 `-k`、`-x`、`--tb`、`--co`（`--collect-only`）等 pytest 参数。
 - `coverage --strict` 会额外启用 `tests/support/coverage_manifest` 覆盖清单检查。
 
@@ -243,16 +211,13 @@ python tests/run_tests.py coverage --strict
 python -m pytest tests/ -v
 
 # 运行单个文件
-python -m pytest tests/unit/services/test_file_service.py -v
+python -m pytest tests/unit/services/test_file_info_service.py -v
 
 # 按关键词过滤
 python -m pytest tests/ -k "thumbnail" -v
 
 # GUI 测试（需要真实显示器）
 python -m pytest tests/gui/ -v
-
-# 性能基准测试
-python -m pytest tests/benchmark/ -v
 
 # 覆盖率报告
 python -m pytest tests/ --cov=freeassetfilter --cov-report=term
@@ -289,7 +254,7 @@ python -m coverage report
 | `com_available` | session | 探测 MS Office / WPS COM ProgID（注册表不可用时回退 win32com） |
 | `ffmpeg_available` | session | 探测捆绑 `ffmpeg.exe` 且 `-version` 返回 0 |
 
-另有数据生成 fixture 全部基于 `tests/support/data_factories`：`sample_image_file`、`sample_pdf_file`、`sample_text_file`、`sample_zip_file`、`sample_svg_file`、`sample_font_file`、`sample_dir`、`sample_dir_info`、`sample_file_info`（可经 parametrize 指定扩展名）、`sample_image_data`、`temp_file`、`temp_settings_file`、`settings_file`，以及基准用 `benchmark_dataset`、`video_sample_paths` 与 GUI 开关 `visual_mode`。`_reset_all_singletons` 是普通辅助函数（非 fixture），供 `reset_singletons` 两阶段复用。
+另有数据生成 fixture 全部基于 `tests/support/data_factories`：`sample_image_file`、`sample_pdf_file`、`sample_text_file`、`sample_zip_file`、`sample_svg_file`、`sample_font_file`、`sample_dir`、`sample_dir_info`、`sample_file_info`（可经 parametrize 指定扩展名）、`sample_image_data`、`temp_file`、`temp_settings_file`、`settings_file`，以及 `video_sample_paths` 与 GUI 开关 `visual_mode`。`_reset_all_singletons` 是普通辅助函数（非 fixture），供 `reset_singletons` 两阶段复用。
 
 ## 测试注意事项
 
@@ -303,7 +268,7 @@ python -m coverage report
   - `progress.py`：运行进度条报告插件。
   - `timeout_policy.py`：目录级超时策略，统一显式 marker、自动打标与 CLI `--timeout` 的优先级。
   - `coverage_manifest.py`：覆盖清单扫描，检测缺测模块并告警。
-- **可选/开发依赖**：`requirements-dev.txt` 的 `psutil` 供 `benchmark/test_thumbnail_soak.py` 使用（缺失会让 `pytest tests/` 在收集阶段直接报错）；`requirements.txt` 的 `brotli` 供 `fontTools` 解码 WOFF/WOFF2（字体预览对拍依赖）。
+- **可选/开发依赖**：`requirements-dev.txt` 的 `psutil` 供并发与内存探针测试使用；`requirements.txt` 的 `brotli` 供 `fontTools` 解码 WOFF/WOFF2（字体预览对拍依赖）。
 - **已知注意点**：
   - 测试全局日志为双写（stdout/stderr 与日志文件同时记录）。
   - `--cov-branch` 分支覆盖因触发原生崩溃而禁用，只用行覆盖。

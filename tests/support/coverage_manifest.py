@@ -3,7 +3,7 @@
 功能：
 
 * AST 扫描 ``freeassetfilter/**/*.py``，提取公开类/函数/方法清单；
-* **显式排除**：``ui/demos/``、``core/native/src/**``（构建脚本区）、
+* **显式排除**：``core/native/src/**``（构建脚本区）、
   ``setup.py``、``__init__.py``、``py.typed``；
 * 有效模块集合**并入 ``core/__init__.py`` 的 ``_MODULE_MAP`` /
   ``_SYMBOL_MAP`` 懒别名项** —— 它们把扁平旧路径（如
@@ -49,7 +49,6 @@ CORE_INIT: Path = SRC_DIR / "core" / "__init__.py"
 
 #: 显式排除的路径后缀（相对 SRC_DIR 的部件元组）。
 EXCLUDED_PATH_SUFFIXES: Tuple[Tuple[str, ...], ...] = (
-    ("ui", "demos"),
     ("core", "native", "src"),
 )
 #: 显式排除的文件名。
