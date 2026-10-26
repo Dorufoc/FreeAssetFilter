@@ -790,6 +790,9 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         self._floating_pool_conn_add = None
         self._floating_pool_conn_remove = None
         self._floating_pool_conn_pool_changed = None
+        self._floating_pool_conn_hide = None
+        # closeEvent 重入保护（退场动画期间的有界事件循环会放行其他事件）。
+        self._close_in_progress = False
         # 启动加载覆盖层：唯一加载动画，铺满整个客户区并垫在标题栏之下，
         # 三栏就绪后淡出（见 _setup_startup_overlay / _dismiss_startup_overlay）
         self._startup_overlay = None
@@ -1706,6 +1709,12 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
                 lambda: floating.set_items(self._file_pool.items)
             )
         )
+        # 「本次启动期间隐藏」：只关内存意图，不落盘（下次启动仍按设置加载）
+        self._floating_pool_conn_hide = (
+            floating.hide_for_session_requested.connect(
+                self._on_floating_pool_hide_for_session
+            )
+        )
         floating._host_window = self
         # 初始快照：建窗时池内可能已有条目（恢复批），立即灌入防丢失
         floating.set_items(self._file_pool.items)
@@ -1753,10 +1762,32 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
     def _teardown_floating_pool(self) -> None:
         """断开浮窗信号连接、停用定时器、关闭并调度销毁（幂等；``None`` 安全）。
 
-        先断开三个业务连接与浮窗自身的主题连接（``_theme_conn`` 由全局
-        ``tm`` 持有，若不断开会把已弃浮窗经绑定槽引用保活），停掉 ``set_items``
-        防抖定时器（避免销毁后仍触发 ``_rebuild_list``），再 ``close()`` 并
-        ``deleteLater()``，最后清空实例引用与连接记账。
+        先经 :meth:`_disconnect_floating_pool` 断开业务 / 主题连接并存 ``set_items``
+        防抖定时器，再同步 ``close()`` + ``deleteLater()``（设置页关闭路径不播
+        出场动画），最后清空实例引用与连接记账。
+        """
+        floating = self._floating_pool
+        if floating is None:
+            return
+        self._disconnect_floating_pool()
+        # 设置页关闭浮窗（非程序退出）走同步拆卸：需立即 close + deleteLater，
+        # 不播出场动画（出场动画只属于程序退出路径，见 closeEvent）。
+        try:
+            floating.close()
+        except RuntimeError:
+            pass
+        try:
+            floating.deleteLater()
+        except RuntimeError:
+            pass
+        self._floating_pool = None
+
+    def _disconnect_floating_pool(self) -> None:
+        """断开浮窗的全部业务 / 主题信号连接（幂等；不动窗口本体）。
+
+        四个业务连接（含「本次启动期间隐藏」）与浮窗自身的主题连接
+        （``_theme_conn`` 由全局 ``tm`` 持有，不断开会把已弃浮窗经绑定槽
+        引用保活）一并断开，并停掉 ``set_items`` 防抖定时器。
         """
         floating = self._floating_pool
         if floating is None:
@@ -1765,6 +1796,7 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             "_floating_pool_conn_add",
             "_floating_pool_conn_remove",
             "_floating_pool_conn_pool_changed",
+            "_floating_pool_conn_hide",
         ):
             conn = getattr(self, attr, None)
             if conn is not None:
@@ -1793,15 +1825,18 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
                 timer.stop()
             except RuntimeError:
                 pass
-        try:
-            floating.close()
-        except RuntimeError:
-            pass
-        try:
-            floating.deleteLater()
-        except RuntimeError:
-            pass
+
+    def _on_floating_pool_hide_for_session(self) -> None:
+        """浮窗请求「本次启动期间隐藏」：仅停用本会话意图并释放引用。
+
+        **不写入设置**（下次启动仍按用户设置正常加载）。浮窗自身负责播出场
+        动画与销毁，故这里不调 ``close()``；只断开信号并关闭内存开关，
+        防止本会话任何重建路径（如 ``_finalize_panels`` 重试）把浮窗建回来。
+        """
+        self._floating_pool_enabled = False
+        self._disconnect_floating_pool()
         self._floating_pool = None
+        debug("[floating_pool] 用户选择本次启动期间隐藏，已停用本会话重建")
 
     def _create_title_bar(self, parent_layout: QVBoxLayout) -> None:
         """创建标题栏"""
@@ -3288,6 +3323,12 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
 
     def closeEvent(self, event: QEvent) -> None:
         """窗口关闭时刷新备份保存到磁盘，释放服务资源，并回收后台 Mica 线程。"""
+        # 重入保护：收尾阶段会为浮窗出场动画跑一段有界事件循环，期间用户
+        # 再次触发关闭不得让清理流程执行第二遍。
+        if self._close_in_progress:
+            event.accept()
+            return
+        self._close_in_progress = True
         # 卸载应用级方向键导航过滤器（幂等），避免全局过滤器在窗口销毁后残留
         self._uninstall_nav_key_filter()
         # 连带关闭设置窗口：设置窗口是主窗口的 owned 子窗口，原生层会随宿主
@@ -3307,11 +3348,15 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         # 全局浮窗：先于 flush_backup/dispose 关闭。计划契约——closeEvent 只
         # close 不置 None（置 None 仅限 set_floating_pool_enabled(False) 路径），
         # 故推导会持有自身引用的测试（断言 isHidden）不被销毁干扰。
+        # 出场动画（整体缩放 + 淡出）此处非阻塞启动，真正等待放在清理末尾。
         if self._floating_pool is not None:
             try:
-                self._floating_pool.close()
-            except RuntimeError:
-                pass
+                self._floating_pool.request_close_with_animation()
+            except (RuntimeError, AttributeError):
+                try:
+                    self._floating_pool.close()
+                except RuntimeError:
+                    pass
         try:
             if self._file_pool is not None:
                 self._file_pool.flush_backup_save_now()
@@ -3346,6 +3391,13 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         from freeassetfilter.services.staging_pool_service import StagingPoolService
 
         StagingPoolService().dispose()
+        # 浮窗出场动画收尾：清理均已完成，这里做**有界**等待（正常 ~200ms，
+        # 硬上限 EXIT_BUDGET_MS=3s）。超时直接放行，绝不因单个浮窗拖累退出。
+        if self._floating_pool is not None:
+            try:
+                self._floating_pool.wait_for_exit_animation()
+            except (RuntimeError, AttributeError):
+                pass
         super().closeEvent(event)
 
     def changeEvent(self, event: QEvent) -> None:

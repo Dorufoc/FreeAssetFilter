@@ -11,18 +11,28 @@
 「卡片」：窗口几何负责命中区域与布局，卡片几何负责观感，两者解耦后几何
 切换可以在测试可断言的同步语义下仍然播放形变动画。
 
+* **入场 / 出场（Appear / Disappear）**：首次上屏与程序退出时，卡片以
+  「整体缩放（``0.92 ↔ 1.0``）+ 透明度（``0 ↔ 1``）」的非线性缓动淡入淡出，
+  不再硬切入 / 硬消失；退出时若面板展开先收回圆形再淡出（避免内容与卡片
+  错位）。启动 5s / 退出 3s 双预算兜底：超时直接无动画显示或立即关闭，
+  绝不因一个小浮窗拖累主程序。
 * **圆形入口（折叠态）**：卡片是正方形，圆角半径恒等于高度的一半 → 完美
   圆形；悬停时描边泛出主题色微光并轻微放大，配合计数徽标显示池内条目数。
-* **拖入胶囊（Drag-over）**：外部 URL 拖入后窗口横向拉伸（右缘锚定，向左
-  生长）成胶囊，卡片圆角仍是高度的一半，因此形变永远是「圆 → 胶囊」的
+* **就近边缘锚定（Edge Anchoring）**：展开 / 拉伸前先按「浮窗距工作区哪侧
+  更近」选定固定边（水平、垂直各自独立判定；两侧相等时回退右 + 上），
+  形态变化时固定边不动、内容向屏幕内侧生长，使展开的面板与胶囊始终完整
+  落在屏幕内；收拢沿同一组固定边缩回圆形，不会出现位置滑移。
+* **拖入胶囊（Drag-over）**：外部 URL 拖入后窗口横向拉伸（固定边不动、向
+  屏幕内侧生长）成胶囊，卡片圆角仍是高度的一半，因此形变永远是「圆 → 胶囊」的
   连续过渡；提示文案随拉伸进度淡入。
 * **成功回弹（Drop Success）**：接收成功后卡片按关键帧做
   ``1.00 → 0.90 → 1.10 → 0.975 → 1.02 → 1.00`` 的弹性缩放（squish &
   bounce），随后与展开动画叠加，形成「接住并摊开」的观感。
-* **展开面板（Click-to-Expand）**：点击圆形入口后，卡片从右上角的圆形
+* **展开面板（Click-to-Expand）**：点击圆形入口后，卡片从锚定角的圆形
   向外扩散成圆角矩形（``morphProgress`` 0→1，``QEasingCurve.OutQuart``），
   内容容器同步 mask 到卡片区域，实现「逐步揭示」；收拢时反向播放，动画
-  结束才落定窗口尺寸（圆形恰好落在原位，几何跳变不可见）。
+  结束才落定窗口尺寸（圆形恰好落在原位，几何跳变不可见）。形变缓动到
+  终值即结束，**不叠加缩放回弹**（越过终态尺寸的弹性抖动已按实测反馈移除）。
 
 所有动画都是 ``QPropertyAnimation`` 驱动本类的 Qt Property（``morphProgress``
 / ``dragProgress`` / ``hoverProgress`` / ``pulseScale``），帧内只做绘制与
@@ -58,7 +68,11 @@ Module constants:
     DRAG_STRETCH_DURATION_MS: 圆形 → 胶囊的横向拉伸时长（ms）。
     HOVER_DURATION_MS: 悬停微光过渡时长（ms）。
     SUCCESS_BOUNCE_MS: 成功接收回弹动画时长（ms）。
-    FADE_IN_MS: 首次显示的不透明度淡入时长（ms）。
+    ENTRANCE_DURATION_MS: 首次入场（整体缩放 + 透明度）动画时长（ms）。
+    EXIT_DURATION_MS: 出场（整体缩放 + 透明度）动画时长（ms）。
+    ENTRANCE_SCALE_FROM / EXIT_SCALE_TO: 入场起始 / 出场终止绘制缩放。
+    ENTRANCE_BUDGET_MS: 启动兜底预算（自构造起超时则直接显示，不播动画）。
+    EXIT_BUDGET_MS: 退出兜底预算（超时直接关闭，绝不拖累主程序退出）。
     DRAG_HINT_TEXT: 拖入悬停态主提示文案。
     EMPTY_HINT_TEXT: 展开态空池引导文案。
     COUNT_LABEL_FORMAT: 展开态计数标签格式（``存储池 (N)``）。
@@ -73,11 +87,14 @@ from typing import Callable, Optional, Sequence
 from PySide6.QtCore import (
     QAbstractAnimation,
     QEasingCurve,
+    QEventLoop,
     QMimeData,
+    QParallelAnimationGroup,
     QPoint,
     QPointF,
     Property,
     QPropertyAnimation,
+    QRect,
     QRectF,
     QSize,
     Qt,
@@ -88,6 +105,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QBrush,
     QCloseEvent,
+    QContextMenuEvent,
     QCursor,
     QDrag,
     QDragEnterEvent,
@@ -106,6 +124,7 @@ from PySide6.QtGui import (
     QPixmap,
     QRegion,
     QResizeEvent,
+    QScreen,
     QShowEvent,
 )
 from PySide6.QtWidgets import (
@@ -123,16 +142,18 @@ from components.styled_icon_button import StyledIconButton
 from components.styled_scroll_area import StyledScrollArea
 from freeassetfilter.services.staging_pool_service import StagingPoolService
 from freeassetfilter.ui.components.icon_utils import render_icon
+from freeassetfilter.ui.components.styled_context_menu import StyledContextMenu
 from freeassetfilter.ui.elevated_drop import ElevatedDropFallbackMixin
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 from freeassetfilter.utils.app_logger import debug, info, warning
+from freeassetfilter.utils.screen_utils import screen_work_area
 from theme import tm
 
 COLLAPSED_SIZE = QSize(64, 64)
 """QSize: 折叠态窗口尺寸（正方形，绘制出的卡片为完美圆形）。"""
 
 DRAG_HOVER_SIZE = QSize(212, 64)
-"""QSize: 拖入悬停态窗口尺寸（右缘锚定、向左拉伸成胶囊）。"""
+"""QSize: 拖入悬停态窗口尺寸（固定边不动，向屏幕内侧拉伸成胶囊）。"""
 
 EXPANDED_SIZE = QSize(296, 384)
 """QSize: 展开态固定尺寸（宽度固定，高度受屏幕可用高度钳制）。"""
@@ -170,8 +191,23 @@ HOVER_DURATION_MS = 160
 SUCCESS_BOUNCE_MS = 520
 """int: 成功接收的 squish & bounce 关键帧动画时长（ms）。"""
 
-FADE_IN_MS = 180
-"""int: 首次显示时的不透明度淡入时长（ms）。"""
+ENTRANCE_DURATION_MS = 240
+"""int: 首次入场（整体缩放 + 透明度）动画时长（ms，``OutQuart`` / ``OutCubic``）。"""
+
+EXIT_DURATION_MS = 200
+"""int: 出场（整体缩放 + 透明度）动画时长（ms，``InCubic``）。"""
+
+ENTRANCE_SCALE_FROM = 0.92
+"""float: 入场起始绘制缩放（终态为 1.0）。"""
+
+EXIT_SCALE_TO = 0.92
+"""float: 出场终止绘制缩放。"""
+
+ENTRANCE_BUDGET_MS = 5000
+"""int: 启动兜底预算——自浮窗构造起超过该时长仍未走完入场，直接无动画显示。"""
+
+EXIT_BUDGET_MS = 3000
+"""int: 退出兜底预算——出场动画超时仍未结束，直接关闭（绝不拖累主程序退出）。"""
 
 COLLAPSED_PLACEHOLDER = "拖入文件"
 """str: 折叠态占位文案（保留常量用于兼容，现由自绘图标替代显示）。"""
@@ -261,13 +297,22 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         _expanded: 当前是否处于展开态（状态语义，立即翻转）。
         _visual_expanded: 绘制语义上的展开态（收拢动画期间仍为 True）。
         _morph: 圆形 ↔ 面板的形变进度（0 = 圆形，1 = 面板）。
+        _anchor_right: 展开 / 拉伸是否以右缘为固定边（False = 左缘固定）
+        _anchor_bottom: 展开是否以下缘为固定边（False = 上缘固定）
         _drag_progress: 拖入胶囊的拉伸进度（0 = 圆形，1 = 胶囊）。
         _hover_progress: 悬停微光进度（0–1）。
         _pulse: 绘制缩放倍率（回弹 / 按压反馈，静止时为 1.0）。
+        _fade: 整体绘制不透明度（入场 / 出场淡入淡出系数，静止时为 1.0）。
+        _entrance_done: 入场是否已结束（含跳过）。
+        _entrance_expired: 启动预算（5s）是否已耗尽（耗尽后一律不播入场）。
+        _exit_requested: 是否已请求带出场动画关闭。
+        _exit_finished: 出场流程是否已彻底结束（幂等门）。
+        _exit_waiters: 关闭后要执行的回调（如 ``deleteLater``）。
+        _exit_guard: 退出兜底定时器（``EXIT_BUDGET_MS`` 超时直接关闭）。
         _count: 池内条目数（折叠态计数徽标）。
         _content: 展开态内容容器（可见性跟随 ``_expanded``）。
         _count_label: 标题栏计数标签（文本 ``存储池 (N)``）。
-        _collapse_button: 标题栏折叠按钮（点击回到折叠态）。
+        _collapse_button: 标题栏折叠按钮（短横线图标，点击收回为折叠态小圆形）。
         _scroll_area: 条目列表滚动区（``StyledScrollArea``）。
         _rows_container: 滚动区内容容器。
         _rows_layout: 条目行垂直布局（含空态提示与尾部弹簧）。
@@ -298,6 +343,13 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
 
     remove_file_requested = Signal(str)
     """Signal(str): 条目拖出且落点为外部时发射，负载为源文件路径。"""
+
+    hide_for_session_requested = Signal()
+    """Signal(): 用户选择「本次启动期间隐藏」时发射。
+
+    只改宿主的**内存**意图（本会话不再重建），不写入设置：下次启动仍按用户
+    设置正常加载浮窗。
+    """
 
     # ── 动画驱动的 Qt Property ───────────────────────────────────
 
@@ -396,6 +448,46 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
     pulseScale = Property(float, _get_pulse, _set_pulse)
     """float: 卡片绘制缩放倍率（按压 squish / 成功回弹）。"""
 
+    def _get_fade(self) -> float:
+        """返回整体绘制不透明度（入场 / 出场淡入淡出系数）。
+
+        Returns:
+            float: 1.0 = 完全可见；0.0 = 完全透明。
+        """
+        return self._fade
+
+    def _set_fade(self, value: float) -> None:
+        """写入绘制不透明度并请求重绘。
+
+        走自绘透明度而非 ``setWindowOpacity``：本窗口是 ``WS_EX_LAYERED``
+        半透明窗口，平台层不透明度在部分合成路径上不生效（实测无法验证），
+        自绘才能保证入场 / 出场真的看得到淡入淡出。
+
+        Args:
+            value: 目标不透明度（越界自动钳制到 0–1）。
+        """
+        value = max(0.0, min(1.0, float(value)))
+        if value == self._fade:
+            return
+        self._fade = value
+        self.update()
+
+    fadeProgress = Property(float, _get_fade, _set_fade)
+    """float: 整体绘制不透明度（入场 / 出场动画驱动）。"""
+
+    def _set_paint_opacity(self, painter: QPainter, alpha: float) -> None:
+        """把内部元素的不透明度乘以淡入淡出系数后写入绘制器。
+
+        所有带淡入的绘制环节必须经此入口：直接 ``painter.setOpacity`` 会
+        把入场 / 出场的基础透明度覆盖掉。
+
+        Args:
+            painter: 绘制器。
+            alpha: 该元素自身的相对不透明度（0–1）。
+        """
+        painter.setOpacity(max(0.0, min(1.0, alpha)) * self._fade)
+
+
     def __init__(self) -> None:
         """构造浮窗：设置窗口标志 / 属性、构建展开内容、进入折叠态并定位。"""
         super().__init__(
@@ -426,20 +518,36 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         self._geometry_anim_active = False
         self._move_anim: Optional[QPropertyAnimation] = None
 
+        # 展开 / 拉伸方向的固定边（True = 以右 / 下缘为固定边）：形态变化前
+        # 由 _update_anchor 按「距工作区哪侧更近」重算，绘制与几何共用同一
+        # 组值，保证形变朝固定边的对角方向生长。默认右 + 上（历史行为）。
+        self._anchor_right = True
+        self._anchor_bottom = False
+
         # 动效进度（绘制输入）。
         self._morph = 1.0 if self._expanded else 0.0
         self._drag_progress = 0.0
         self._hover_progress = 0.0
         self._pulse = 1.0
+        self._fade = 1.0
         self._count = 0
         self._shown_once = False
+
+        # 入场 / 出场（整体缩放 + 透明度）状态与预算兜底。
+        self._entrance_done = False
+        self._entrance_expired = False
+        self._exit_requested = False
+        self._exit_finished = False
+        self._exit_waiters: list[Callable[[], None]] = []
+        self._exit_guard: Optional[QTimer] = None
 
         # 动画句柄（每次启动前先停旧的，避免叠加）。
         self._morph_anim: Optional[QPropertyAnimation] = None
         self._drag_anim: Optional[QPropertyAnimation] = None
         self._hover_anim: Optional[QPropertyAnimation] = None
         self._pulse_anim: Optional[QPropertyAnimation] = None
-        self._fade_anim: Optional[QPropertyAnimation] = None
+        self._entrance_anim: Optional[QParallelAnimationGroup] = None
+        self._exit_anim: Optional[QParallelAnimationGroup] = None
 
         self._build_content()
 
@@ -453,6 +561,13 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         self._settle_timer = QTimer(self)
         self._settle_timer.setSingleShot(True)
         self._settle_timer.timeout.connect(self._settle_and_snap)
+
+        # 启动兜底：自构造起 ENTRANCE_BUDGET_MS 内入场还没走完 → 直接无动画显示，
+        # 避免浮窗动画拖累启动（见 _on_entrance_budget_exceeded）。
+        self._entrance_guard = QTimer(self)
+        self._entrance_guard.setSingleShot(True)
+        self._entrance_guard.timeout.connect(self._on_entrance_budget_exceeded)
+        self._entrance_guard.start(ENTRANCE_BUDGET_MS)
 
         self._internal_moving = True
         self._apply_state_geometry()
@@ -501,8 +616,10 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         title_layout.addWidget(self._count_label)
         title_layout.addStretch(1)
 
+        # 折叠按钮用「短横线」（最小化语义）：点击后面板收回为折叠态的小圆形
+        # 浮窗，不与展开方向的 chevron 混淆（chevron 会暗示“继续展开”）。
         self._collapse_button = StyledIconButton(
-            "chevron_down",
+            "minus",
             size="sm",
             shape="circle",
             variant="ghost",
@@ -594,22 +711,20 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
     def set_expanded(self, expanded: bool) -> None:
         """切换折叠 / 展开态（状态立即翻转，形变异步播放）。
 
-        展开：尺寸与位置**同帧原子更新**（``setGeometry`` 一次平台调用），
-        右边缘保持不动、面板向左生长。之所以不再分两步（先 ``setFixedSize``
-        再位移动画）：卡片始终锚定在窗口右缘，右缘不动就意味着卡片在屏幕上
-        根本不需要位移；分两步反而会让窗口先向右多出一个面板宽度（面板被
-        推到屏幕外）再滑回来。位置钳制（靠近屏幕下缘时上移）也随原子几何一步
-        到位，由 ``morphProgress`` 的展开形变承担全部动效。
+        展开：先按当前折叠位置重算**锚定边**（:meth:`_update_anchor`：哪侧更
+        贴近工作区边缘就以该侧为固定边），再尺寸与位置**同帧原子更新**
+        （``setGeometry`` 一次平台调用）——固定边不动，面板向屏幕内侧生长。
+        之所以不再分两步（先 ``setFixedSize`` 再位移动画）：卡片始终锚定在
+        固定边上，固定边不动就意味着卡片在屏幕上根本不需要位移；分两步
+        反而会让窗口先在生长方向多出一个面板宽度（面板被推出屏幕）再滑回。
+        整体几何再夹回真实工作区，由 ``morphProgress`` 的展开形变承担全部
+        动效。
 
         收起：``_expanded`` 立即为 False（对外状态同步可断言），但**几何落定
-        推迟到收拢动画结束**——可见窗口先播放面板缩回圆形的形变，再一次性把
-        窗口缩到 ``COLLAPSED_SIZE`` 并保持右边缘锚定，于是圆形恰好落在动画
-        终点、几何跳变不可见。窗口不可见（测试 / 未上屏）时无从观看动画，
-        直接同步落定。
-
-        锚定得到的左边缘与当前上边缘一并钳入当前屏幕可用区域
-        （``QApplication.screenAt`` → ``availableGeometry``，x / y 均为包含式
-        边界，防止展开后下缘越出屏幕）；无可用屏幕时保留当前位置不动。
+        推迟到收拢动画结束**——可见窗口先播放面板缩回圆形的形变，再一次性
+        把窗口缩到 ``COLLAPSED_SIZE`` 并保持**同一组锚定边**（收拢不重算
+        锚定），于是圆形恰好落在动画终点、几何跳变与位置偏移都不可见。窗口
+        不可见（测试 / 未上屏）时无从观看动画，直接同步落定。
 
         Args:
             expanded: True 进入展开态，False 回到折叠态。
@@ -618,7 +733,6 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         if expanded == self._expanded:
             self.update()
             return
-        right_edge = self.x() + self.width()
 
         if expanded:
             self._expanded = True
@@ -626,16 +740,12 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
             self._collapse_pending = False
             self._reset_drag_state()
             target_size = self._expanded_size()
-            target = self._clamped_position(target_size, right_edge, self.y())
+            self._update_anchor()
+            target = self._anchored_rect(target_size)
             self._stop_move_animation()
             self._settle_timer.stop()
             self._internal_moving = True
-            self.setGeometry(
-                target.x(),
-                target.y(),
-                target_size.width(),
-                target_size.height(),
-            )
+            self.setGeometry(target)
             self._internal_moving = False
             self._apply_state_geometry()
             self._animate_morph(1.0)
@@ -651,24 +761,22 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         self._finish_collapse()
 
     def _finish_collapse(self) -> None:
-        """收拢落定：缩回折叠尺寸、右缘锚定、复位形变 / 蒙版并重绘。"""
+        """收拢落定：缩回折叠尺寸、保持锚定边、复位形变 / 蒙版并重绘。
+
+        沿用展开时算出的锚定边（不重算），圆形才能回到同一个角，不会出现
+        收拢后位置滑移。
+        """
         self._collapse_pending = False
-        right_edge = self.x() + self.width()
         target_size = self._target_size()
-        target = self._clamped_position(target_size, right_edge, self.y())
+        target = self._anchored_rect(target_size)
         self._visual_expanded = False
-        # 收拢动画已把圆形画到窗口右上角：此处纯几何收边，位置跳变不可见。
+        # 收拢动画已把圆形画到窗口的锚定角：此处纯几何收边，位置跳变不可见。
         # 尺寸与位置一次 `setGeometry` 同时生效，避免中间帧错位；位移是
         # 程序化的，抑制静默定时器，避免折叠后又被吸附规则挪动。
         self._stop_move_animation()
         self._settle_timer.stop()
         self._internal_moving = True
-        self.setGeometry(
-            target.x(),
-            target.y(),
-            target_size.width(),
-            target_size.height(),
-        )
+        self.setGeometry(target)
         self._internal_moving = False
         self._apply_state_geometry()
         self._stop_animation("_pulse_anim")
@@ -676,6 +784,9 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         self._morph = 0.0
         self._sync_content_mask()
         self.update()
+        # 出场请求在收拢阶段到达：面板已缩回圆形，接上缩放 + 淡出。
+        if self._exit_requested and self._exit_anim is None:
+            self._play_exit_fade()
 
     def is_expanded(self) -> bool:
         """返回当前是否处于展开态。
@@ -707,8 +818,11 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
     def _expanded_size(self) -> QSize:
         """计算展开态尺寸：高度钳制到屏幕可用高度的 70%。
 
-        ``avail_h`` 取自鼠标所在屏幕（``screenAt``）；``screenAt`` 返回 None
-        时回退主屏幕，两者皆不可用时退回 ``EXPANDED_SIZE``。
+        ``avail_h`` 取自窗口所在屏幕（``screenAt``）；``screenAt`` 返回 None
+        时回退主屏幕，两者皆不可用时退回 ``EXPANDED_SIZE``。可用高度经
+        :func:`screen_work_area` 取真实工作区高度——Qt 的
+        ``availableGeometry()`` 在任务栏停靠左 / 上侧时会越出物理屏幕（见
+        ``utils/screen_utils`` 模块文档）。
 
         Returns:
             QSize: 宽度固定为 ``EXPANDED_SIZE.width()``，高度为
@@ -719,7 +833,10 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
             screen = QApplication.primaryScreen()
         if screen is None:
             return QSize(EXPANDED_SIZE)
-        avail_h = screen.availableGeometry().height()
+        avail = screen_work_area(screen)
+        if not avail.isValid():
+            return QSize(EXPANDED_SIZE)
+        avail_h = avail.height()
         clamped = min(
             EXPANDED_SIZE.height(),
             int(avail_h * EXPANDED_HEIGHT_RATIO),
@@ -740,37 +857,82 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         self._sync_content_mask()
 
     def _apply_collapsed_geometry(self) -> None:
-        """折叠态宽度变化（拖入拉伸）：保持右边缘锚定并同步内容几何。"""
+        """折叠态宽度变化（拖入拉伸）：固定锚定边并向屏幕内侧生长。"""
         target = self._target_size()
         if target == self.size():
             return
-        right_edge = self.x() + self.width()
+        rect = self._anchored_rect(target)
         self.setFixedSize(target)
-        self.move(right_edge - target.width(), self.y())
+        self.move(rect.topLeft())
 
-    def _clamped_position(
-        self, size: QSize, right_edge: int, top: int
-    ) -> QPoint:
-        """按「右缘锚定 + 完整落入可用区」计算目标左上角坐标。
+    def _current_screen(self) -> Optional[QScreen]:
+        """返回窗口几何中心所在屏幕（``screenAt`` → 主屏幕回退）。
+
+        Returns:
+            QScreen | None: 当前屏幕；无可用屏幕时为 None。
+        """
+        screen = QApplication.screenAt(self.frameGeometry().center())
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        return screen
+
+    def _compute_anchor(self) -> tuple[bool, bool]:
+        """按「距工作区哪侧更近」决定展开 / 拉伸时的固定边。
+
+        水平 / 垂直各自独立判定：窗口左缘比右缘更接近工作区对应边时，左缘
+        为固定边（向右展开），否则右缘固定（向左展开）；垂直同理（上缘固定
+        向下展开 / 下缘固定向上展开）。两侧边距相等时回退历史默认（右 + 上），
+        避免居中摆放的浮窗出现无意义的方向跳变。
+
+        Returns:
+            tuple: ``(anchor_right, anchor_bottom)``。
+        """
+        work = screen_work_area(self._current_screen())
+        if not work.isValid():
+            return True, False
+        left_gap = self.x() - work.left()
+        right_gap = work.right() - (self.x() + self.width() - 1)
+        top_gap = self.y() - work.top()
+        bottom_gap = work.bottom() - (self.y() + self.height() - 1)
+        return right_gap <= left_gap, bottom_gap < top_gap
+
+    def _update_anchor(self) -> None:
+        """形态变化（展开 / 拖入拉伸）起点重算锚定边。
+
+        收拢时**不得**重算：收拢必须回到展开时固定边的那个角，否则圆形会
+        滑到另一侧（用户感知为「缩小后位置偏移」）。
+        """
+        self._anchor_right, self._anchor_bottom = self._compute_anchor()
+
+    def _anchored_rect(self, size: QSize) -> QRect:
+        """按当前锚定边计算目标矩形：固定边不动，向屏幕内侧生长。
+
+        生长出的矩形再整体夹回真实工作区（:func:`screen_work_area`：任务栏
+        停靠左 / 上侧时 Qt 的 ``availableGeometry()`` 会越出物理屏幕，见该
+        模块文档），保证展开内容完整落在屏幕内。
 
         Args:
             size: 目标窗口尺寸。
-            right_edge: 期望保持不变的右边缘全局 x（包含式）。
-            top: 期望的窗口上边缘全局 y。
 
         Returns:
-            QPoint: 钳制后的左上角全局坐标；无可用屏幕时退回未钳制值。
+            QRect: 目标几何（全局坐标）。
         """
-        x = right_edge - size.width()
-        y = top
-        screen = QApplication.screenAt(self.pos())
-        if screen is None:
-            screen = QApplication.primaryScreen()
-        if screen is not None:
-            avail = screen.availableGeometry()
-            x = max(avail.left(), min(x, avail.right() - size.width() + 1))
-            y = max(avail.top(), min(y, avail.bottom() - size.height() + 1))
-        return QPoint(x, y)
+        current = self.geometry()
+        width = size.width()
+        height = size.height()
+        if self._anchor_right:
+            x = current.right() - width + 1
+        else:
+            x = current.left()
+        if self._anchor_bottom:
+            y = current.bottom() - height + 1
+        else:
+            y = current.top()
+        work = screen_work_area(self._current_screen())
+        if work.isValid():
+            x = max(work.left(), min(x, work.right() - width + 1))
+            y = max(work.top(), min(y, work.bottom() - height + 1))
+        return QRect(x, y, width, height)
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         """窗口尺寸变化时同步展开内容容器几何与裁剪蒙版。
@@ -798,7 +960,7 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         super().showEvent(event)
         if not self._shown_once:
             self._shown_once = True
-            self._fade_in()
+            self._play_entrance()
         if self._shown_diag_logged:
             return
         self._shown_diag_logged = True
@@ -822,22 +984,29 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
             warning(f"[floating_pool] shown diagnostics 失败: {exc}")
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        """关闭前停止全部定时器 / 动画并恢复不透明度，避免销毁后残留回调。
+        """关闭前停止全部定时器 / 动画并复位视觉状态，避免销毁后残留回调。
 
         Args:
             event: 关闭事件（交回基类处理）。
         """
         self._debounce_timer.stop()
         self._settle_timer.stop()
+        self._entrance_guard.stop()
+        if self._exit_guard is not None:
+            self._exit_guard.stop()
         self._stop_move_animation()
         for attr in (
             "_morph_anim",
             "_drag_anim",
             "_hover_anim",
             "_pulse_anim",
-            "_fade_anim",
+            "_entrance_anim",
+            "_exit_anim",
         ):
             self._stop_animation(attr)
+        # 复位视觉状态（可能因中途关闭而停在缩放 / 淡出途中）
+        self._pulse = 1.0
+        self._fade = 1.0
         try:
             self.setWindowOpacity(1.0)
         except RuntimeError:
@@ -867,6 +1036,12 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
     def _compute_initial_position(self, size: QSize) -> QPoint:
         """计算初始位置：鼠标所在屏幕可用区域右上角，内缩 ``INITIAL_INSET``。
 
+        可用区经 :func:`screen_work_area` 求解（不能用 Qt 的
+        ``availableGeometry()``——任务栏停靠左 / 上侧时它的右缘 / 下缘会越出
+        物理屏幕，导致浮窗首帧就有一截露在屏幕外）。右缘留白与
+        :meth:`_settle_and_snap` 的吸附口径一致（均按包含式边界留
+        ``INITIAL_INSET``，避免落定后被吸附规则再挪 1px）。
+
         Args:
             size: 窗口当前尺寸（用于从右边缘向左推算 x）。
 
@@ -876,10 +1051,10 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         screen = QApplication.screenAt(QCursor.pos())
         if screen is None:
             screen = QApplication.primaryScreen()
-        if screen is None:
+        avail = screen_work_area(screen)
+        if not avail.isValid():
             return QPoint(0, 0)
-        avail = screen.availableGeometry()
-        x = avail.right() - INITIAL_INSET - size.width()
+        x = avail.right() - INITIAL_INSET - size.width() + 1
         y = avail.top() + INITIAL_INSET
         return QPoint(x, y)
 
@@ -889,8 +1064,10 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         """返回卡片（可见圆角矩形）在窗口内的矩形。
 
         折叠态：铺满窗口留白内的整个区域，圆角半径取高度一半 → 进度为 0
-        时是完美圆形，拖入拉伸后是连续过渡出的胶囊。展开态：从右上角的
-        圆形按 ``_morph`` 向左 / 向下扩散到完整面板。
+        时是完美圆形，拖入拉伸后是连续过渡出的胶囊。展开态：从**锚定角**
+        （:attr:`_anchor_right` / :attr:`_anchor_bottom` 所指的角）的圆形按
+        ``_morph`` 向外扩散到完整面板——固定边不动，形变方向与窗口几何的
+        生长方向严格一致。
 
         Returns:
             QRectF: 卡片矩形（窗口本地坐标）。
@@ -905,12 +1082,13 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         diameter = max(1.0, float(COLLAPSED_SIZE.height() - 2 * _CARD_MARGIN))
         card_w = diameter + (width - diameter) * progress
         card_h = diameter + (height - diameter) * progress
-        return QRectF(
-            _CARD_MARGIN + width - card_w,
-            float(_CARD_MARGIN),
-            card_w,
-            card_h,
+        left = float(_CARD_MARGIN) + (
+            width - card_w if self._anchor_right else 0.0
         )
+        top = float(_CARD_MARGIN) + (
+            height - card_h if self._anchor_bottom else 0.0
+        )
+        return QRectF(left, top, card_w, card_h)
 
     def _card_radius(self, card: QRectF) -> float:
         """返回卡片圆角半径（折叠态恒为高度一半，展开态插值到面板圆角）。
@@ -958,10 +1136,18 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         radius = self._card_radius(card)
         scale = self._effective_pulse(card)
         if abs(scale - 1.0) > 1e-3:
-            anchor = QPointF(card.right(), card.top())
+            # 缩放围绕锚定角进行，放大才不会把固定边那一侧推离原位。
+            anchor = QPointF(
+                card.right() if self._anchor_right else card.left(),
+                card.bottom() if self._anchor_bottom else card.top(),
+            )
             painter.translate(anchor)
             painter.scale(scale, scale)
             painter.translate(-anchor)
+
+        # 入场 / 出场：整体透明度作用到后续全部绘制（内部淡入必经
+        # _set_paint_opacity 叠乘，否则会把该基础透明度覆盖掉）。
+        self._set_paint_opacity(painter, 1.0)
 
         # 悬停微光只作用于圆形入口；展开面板保持克制，避免整块面板持续发光。
         glow = 0.0
@@ -1103,7 +1289,7 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
 
         painter.save()
         painter.setClipPath(clip)
-        painter.setOpacity(fade)
+        self._set_paint_opacity(painter, fade)
 
         # 标题行左侧的强调色圆点（与标题文字基线居中对齐）
         dot = 6.0
@@ -1127,7 +1313,7 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
                 QPointF(card.left() + 14, y), QPointF(card.right() - 14, y)
             )
 
-        painter.setOpacity(1.0)
+        self._set_paint_opacity(painter, 1.0)
         painter.restore()
 
     def _paint_circle_content(self, painter: QPainter, card: QRectF) -> None:
@@ -1146,7 +1332,7 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
                 bool(self.property("dragActive"))
                 or self._hover_progress > 0.5
             )
-            painter.setOpacity(icon_opacity)
+            painter.setOpacity(icon_opacity * self._fade)
             side = min(23.0, card.height() * 0.42)
             render_icon(
                 painter,
@@ -1160,12 +1346,12 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
                 tm.accent_text if highlight else tm.text,
                 1.7,
             )
-            painter.setOpacity(1.0)
+            self._set_paint_opacity(painter, 1.0)
 
         if self._count > 0 and progress < 0.4:
-            painter.setOpacity(1.0 - min(1.0, progress / 0.4))
+            self._set_paint_opacity(painter, 1.0 - min(1.0, progress / 0.4))
             self._paint_count_badge(painter, card)
-            painter.setOpacity(1.0)
+            self._set_paint_opacity(painter, 1.0)
 
         if progress > 0.05:
             self._paint_drag_hint(painter, card, progress)
@@ -1178,7 +1364,10 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
             card: 卡片矩形。
         """
         diameter = 17.0
-        center = QPointF(card.right() - 14.0, card.top() + 14.0)
+        center = QPointF(
+            card.right() - 14.0 if self._anchor_right else card.left() + 14.0,
+            card.top() + 14.0,
+        )
         badge = QRectF(
             center.x() - diameter / 2.0,
             center.y() - diameter / 2.0,
@@ -1197,7 +1386,11 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
     def _paint_drag_hint(
         self, painter: QPainter, card: QRectF, progress: float
     ) -> None:
-        """绘制拖入胶囊内的引导文案（随拉伸进度淡入，由卡片左缘带出）。
+        """绘制拖入胶囊内的引导文案（随拉伸进度淡入，由新露出的那一侧带出）。
+
+        文案填充在**新生长出来的区域**：右缘固定时从卡片左缘带入（图标在
+        左、文字左对齐），左缘固定时左右镜像（图标靠右、文字右对齐），
+        避免提示文字压在圆形入口上。
 
         Args:
             painter: 绘制器。
@@ -1207,34 +1400,45 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         fade = min(1.0, max(0.0, (progress - 0.15) / 0.55))
         if fade <= 0.01:
             return
-        painter.setOpacity(fade)
+        self._set_paint_opacity(painter, fade)
 
         icon_side = 22.0
+        icon_x = (
+            card.left() + 20.0
+            if self._anchor_right
+            else card.right() - 20.0 - icon_side
+        )
         icon_rect = QRectF(
-            card.left() + 20.0,
+            icon_x,
             card.center().y() - icon_side / 2.0,
             icon_side,
             icon_side,
         )
         render_icon(painter, "download", icon_rect, tm.accent_text, 1.6)
 
-        text_left = card.left() + 52.0
-        text_width = max(10.0, card.right() - 14.0 - text_left)
+        if self._anchor_right:
+            text_left = card.left() + 52.0
+            text_width = max(10.0, card.right() - 14.0 - text_left)
+            align = int(Qt.AlignLeft | Qt.AlignVCenter)
+        else:
+            text_left = card.left() + 14.0
+            text_width = max(10.0, card.right() - 52.0 - text_left)
+            align = int(Qt.AlignRight | Qt.AlignVCenter)
         painter.setFont(_ui_font(12, QFont.Weight.DemiBold))
         painter.setPen(tm.text)
         painter.drawText(
             QRectF(text_left, card.top() + 14.0, text_width, 18.0),
-            int(Qt.AlignLeft | Qt.AlignVCenter),
+            align,
             DRAG_HINT_TEXT,
         )
         painter.setFont(_ui_font(10))
         painter.setPen(tm.text_hint)
         painter.drawText(
             QRectF(text_left, card.top() + 31.0, text_width, 16.0),
-            int(Qt.AlignLeft | Qt.AlignVCenter),
+            align,
             DRAG_HINT_SUB_TEXT,
         )
-        painter.setOpacity(1.0)
+        self._set_paint_opacity(painter, 1.0)
 
     def _sync_content_mask(self) -> None:
         """把展开内容裁剪到当前卡片区域（形变期间的「逐步揭示」）。
@@ -1281,6 +1485,11 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         窗口不可见时不播放（无人观看，也让测试的同步语义保持确定），直接
         落定数值并调用 ``finished``。
 
+        展开方向只用 ``QEasingCurve.OutQuart`` 缓动收敛到终值后直接结束，
+        **不**再串联任何缩放脉冲：历史上曾在形变结束后叠加一个
+        ``1.0 → 0.982 → 1.008 → 1.0`` 的「落定回弹」，其中 ``1.008`` 越过
+        终态尺寸，用户实测表现为面板展开到末期又轻微鼓一下（弹性溢出）。
+
         Args:
             target: 目标进度（0 = 圆形，1 = 面板）。
             finished: 动画自然结束后的回调（被新动画打断时不触发）。
@@ -1302,8 +1511,6 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         anim.setEndValue(target)
         if finished is not None:
             anim.finished.connect(finished)
-        if expanding:
-            anim.finished.connect(self._play_settle_pop)
         anim.finished.connect(lambda: setattr(self, "_morph_anim", None))
         self._morph_anim = anim
         anim.start()
@@ -1325,6 +1532,10 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
             self._geometry_anim_active = False
             self.dragProgress = 0.0
             return
+        if active:
+            # 拉伸前按当前折叠位置重算固定边（收回时沿用同一组值，
+            # 否则胶囊缩回圆形时可能滑到另一侧）。
+            self._update_anchor()
         if not self.isVisible():
             self._geometry_anim_active = False
             self.dragProgress = target
@@ -1410,42 +1621,345 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
             SUCCESS_BOUNCE_MS,
         )
 
-    def _play_settle_pop(self) -> None:
-        """播放展开落定的轻微回弹（面板放大到位的「Q 弹」收尾）。"""
+    def _play_receive_press(self) -> None:
+        """播放「面板已展开时又拖入文件」的轻微下压确认（关键帧全程 ≤ 1.0）。
+
+        只做一次下压再回到终值，不产生越过终态尺寸的弹性抖动；展开形变本身
+        不再叠加任何缩放脉冲（见 :meth:`_animate_morph`）。
+        """
         self._animate_pulse(
-            ((0.0, 1.0), (0.35, 0.982), (0.72, 1.008), (1.0, 1.0)),
+            ((0.0, 1.0), (0.45, 0.982), (1.0, 1.0)),
             240,
         )
 
-    def _fade_in(self) -> None:
-        """首次显示时以不透明度淡入（避免浮窗硬切入桌面）。"""
-        self._stop_animation("_fade_anim")
-        try:
-            self.setWindowOpacity(0.0)
-        except RuntimeError:
-            return
-        anim = QPropertyAnimation(self, b"windowOpacity", self)
-        anim.setDuration(FADE_IN_MS)
-        anim.setEasingCurve(QEasingCurve.OutCubic)
-        anim.setStartValue(0.0)
-        anim.setEndValue(1.0)
-        anim.finished.connect(self._on_fade_finished)
-        self._fade_anim = anim
-        anim.start()
+    # ── 入场 / 出场（整体缩放 + 透明度）──────────────────────────
 
-    def _on_fade_finished(self) -> None:
-        """淡入结束：确保不透明度回到 1.0 并清空句柄。"""
-        self._fade_anim = None
+    def _play_entrance(self) -> None:
+        """播放首次入场：整体缩放（``0.92 → 1.0``）+ 透明度（``0 → 1``）。
+
+        两段动画并行、均用非线性缓动（缩放 ``OutQuart``、透明度
+        ``OutCubic``），避免浮窗硬切入桌面。只播一次（``_shown_once`` 门）；
+        入场预算已耗尽（:meth:`_on_entrance_budget_exceeded`）或窗口不可见时
+        直接落定终态，不播动画。
+        """
+        self._stop_animation("_entrance_anim")
+        if self._entrance_expired or not self.isVisible():
+            self._settle_entrance()
+            return
+
+        self._pulse = ENTRANCE_SCALE_FROM
+        self._fade = 0.0
+        group = QParallelAnimationGroup(self)
+        fade = QPropertyAnimation(self, b"fadeProgress", group)
+        fade.setDuration(ENTRANCE_DURATION_MS)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.setStartValue(0.0)
+        fade.setEndValue(1.0)
+        scale = QPropertyAnimation(self, b"pulseScale", group)
+        scale.setDuration(ENTRANCE_DURATION_MS)
+        scale.setEasingCurve(QEasingCurve.OutQuart)
+        scale.setStartValue(ENTRANCE_SCALE_FROM)
+        scale.setEndValue(1.0)
+        group.addAnimation(fade)
+        group.addAnimation(scale)
+        group.finished.connect(self._on_entrance_finished)
+        self._entrance_anim = group
+        group.start()
+
+    def _on_entrance_finished(self) -> None:
+        """入场动画自然结束：落定终态并解除启动预算守护。"""
+        self._entrance_anim = None
+        self._settle_entrance()
+
+    def _settle_entrance(self) -> None:
+        """把入场强制收尾到终态（缩放 / 透明度归 1，停预算守护；幂等）。"""
+        self._entrance_done = True
+        self._stop_animation("_entrance_anim")
+        self._entrance_guard.stop()
+        self.pulseScale = 1.0
+        self.fadeProgress = 1.0
         try:
             self.setWindowOpacity(1.0)
         except RuntimeError:
             pass
+        self.update()
+
+    def _on_entrance_budget_exceeded(self) -> None:
+        """启动预算耗尽：后续入场一律不播（若正在播则立即拆到终态）。
+
+        典型场景：窗口迟迟未 show（启动慢 / 被主窗口启动遮罩延后），此时
+        入场动画对用户已无意义，硬切入即可——不能让一个小浮窗拖累启动。
+        """
+        self._entrance_expired = True
+        if not self._entrance_done:
+            self._settle_entrance()
+
+    def _abort_entrance(self) -> None:
+        """中止入场但保留当前透明度 / 缩放（作为出场起点，避免闪一下全显）。"""
+        self._entrance_done = True
+        self._stop_animation("_entrance_anim")
+        self._entrance_guard.stop()
+
+    def request_close_with_animation(
+        self, finished: Optional[Callable[[], None]] = None
+    ) -> None:
+        """请求带出场动画关闭（非阻塞、幂等）。
+
+        行为：未上屏 / 入场预算已耗尽 → 立即 ``close()``；否则先播放
+        「整体缩放 + 透明度」出场（若面板展开则先折回圆形，避免内容与卡片
+        错位），动画结束后才真正关闭。``finished`` 回调在关闭之后执行，供调用
+        方 ``deleteLater``。整个过程受 :data:`EXIT_BUDGET_MS` 兜底。
+
+        Args:
+            finished: 关闭完成后执行的回调（可选；多个调用方的回调都会执行）。
+        """
+        if finished is not None:
+            self._exit_waiters.append(finished)
+        if self._exit_requested:
+            return
+        self._exit_requested = True
+        self._entrance_guard.stop()
+        # 无人观看（未显示 / 入场预算耗尽）：不播动画，立即关
+        if not self.isVisible() or self._entrance_expired:
+            self._finish_exit()
+            return
+        self._abort_entrance()
+        if self._expanded:
+            # 先把面板收回圆形：否则卡片缩小时子控件内容不跟着缩，会错位
+            self.set_expanded(False)
+            if self._collapse_pending:
+                # 收拢动画结束（_finish_collapse）中会接上出场淡出
+                return
+        self._play_exit_fade()
+
+    def _play_exit_fade(self) -> None:
+        """播放出场：整体缩放（``1.0 → 0.92``）+ 透明度（``1 → 0``），结束后关闭。"""
+        if self._exit_finished or self._exit_anim is not None:
+            return
+        group = QParallelAnimationGroup(self)
+        fade = QPropertyAnimation(self, b"fadeProgress", group)
+        fade.setDuration(EXIT_DURATION_MS)
+        fade.setEasingCurve(QEasingCurve.InCubic)
+        fade.setStartValue(self._fade)
+        fade.setEndValue(0.0)
+        scale = QPropertyAnimation(self, b"pulseScale", group)
+        scale.setDuration(EXIT_DURATION_MS)
+        scale.setEasingCurve(QEasingCurve.InCubic)
+        scale.setStartValue(self._pulse)
+        scale.setEndValue(EXIT_SCALE_TO)
+        group.addAnimation(fade)
+        group.addAnimation(scale)
+        group.finished.connect(self._finish_exit)
+        self._exit_anim = group
+        # 退出兜底：超时直接关（保住「不拖累主程序退出」的底线）
+        if self._exit_guard is None:
+            self._exit_guard = QTimer(self)
+            self._exit_guard.setSingleShot(True)
+            self._exit_guard.timeout.connect(self._finish_exit)
+        self._exit_guard.start(EXIT_BUDGET_MS)
+        group.start()
+
+    def _finish_exit(self) -> None:
+        """出场收尾：停动画 / 复位视觉 / 关闭窗口，并执行全部关闭回调（幂等）。"""
+        if self._exit_finished:
+            return
+        self._exit_finished = True
+        if self._exit_guard is not None:
+            self._exit_guard.stop()
+        self._stop_animation("_exit_anim")
+        try:
+            self.close()
+        except RuntimeError:
+            pass
+        # close 之后再复位视觉（否则会先以全不透明重绘一帧再消失）
+        self._pulse = 1.0
+        self._fade = 1.0
+        callbacks, self._exit_waiters = self._exit_waiters, []
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception as exc:  # noqa: BLE001 - 关闭回调失败不影响退出
+                debug(f"浮窗关闭回调失败：{exc}")
+
+    def is_exit_finished(self) -> bool:
+        """返回出场流程（含动画）是否已彻底结束。
+
+        Returns:
+            bool: 已关闭 / 动画已收尾为 True。
+        """
+        return self._exit_finished
+
+    def wait_for_exit_animation(self, timeout_ms: int = EXIT_BUDGET_MS) -> bool:
+        """有界等待出场流程结束（绝不无上限阻塞调用方）。
+
+        供主窗口在退出前调用：正常仅等待 ~200–400ms（展开态会先收拢再淡出），
+        最长不超过 ``timeout_ms``（默认 :data:`EXIT_BUDGET_MS`）；未在出场 /
+        已关闭时立即返回。用短定时轮询 ``_exit_finished`` 而非监听单个动画，
+        因为「展开态出场」是「收拢 → 淡出」两段动画串起来的。
+
+        Args:
+            timeout_ms: 最长等待毫秒数。
+
+        Returns:
+            bool: True 表示已彻底结束；False 表示未在出场或等待超时。
+        """
+        if self._exit_finished:
+            return True
+        if not self._exit_requested or timeout_ms <= 0:
+            return False
+
+        loop = QEventLoop()
+        # 定时器不挂父对象：即使窗口在等待期间被销毁，也能保证循环退出。
+        budget = QTimer()
+        budget.setSingleShot(True)
+        budget.timeout.connect(loop.quit)
+        budget.start(int(timeout_ms))
+        poll = QTimer()
+        poll.setInterval(10)
+
+        def _check_finished() -> None:
+            if self._exit_finished:
+                loop.quit()
+
+        poll.timeout.connect(_check_finished)
+        poll.start()
+        # 窗口被销毁（如 teardown 的 deleteLater）也要立即结束等待
+        try:
+            self.destroyed.connect(loop.quit)
+        except (RuntimeError, TypeError):
+            pass
+        loop.exec()
+        budget.stop()
+        poll.stop()
+        poll.deleteLater()
+        budget.deleteLater()
+        return self._exit_finished
 
     def _reset_drag_state(self) -> None:
         """立即收回拖入胶囊形态（展开 / 收拢前调用，不播放动画）。"""
         self._stop_animation("_drag_anim")
         self._geometry_anim_active = False
         self._drag_progress = 0.0
+
+    # ── 右键菜单 ────────────────────────────────────────────────
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        """右键菜单：打开主窗口 / 清空全部文件池内容 / 本次启动期间隐藏。
+
+        子控件（面板标题 / 条目行）不消费右键事件，事件会沿父链冒泡到本窗，
+        因此折叠态圆形与展开态面板上右键行为一致。
+
+        Args:
+            event: 右键菜单事件。
+        """
+        self._build_context_menu().exec(event.globalPos())
+        event.accept()
+
+    def _build_context_menu(self) -> StyledContextMenu:
+        """构建浮窗右键菜单（样式走 styled 系列组件）。
+
+        Returns:
+            StyledContextMenu: 已挂好三个动作的菜单（调用方负责 ``exec``）。
+        """
+        menu = StyledContextMenu(parent=self)
+        pool = self._host_file_pool()
+        menu.add_item(
+            "打开主窗口",
+            callback=lambda: self._defer(self._activate_host_window),
+        )
+        menu.add_item(
+            "清空全部文件池内容",
+            danger=True,
+            disabled=not self._pool_has_items(pool),
+            callback=lambda: self._defer(self._clear_pool_with_confirmation),
+        )
+        menu.add_separator()
+        menu.add_item(
+            "本次启动期间隐藏",
+            callback=lambda: self._defer(self.hide_for_session),
+        )
+        return menu
+
+    @staticmethod
+    def _defer(callback: Callable[[], None]) -> None:
+        """把菜单动作推迟到下一轮事件循环（先让菜单收起，避免重入）。
+
+        Args:
+            callback: 待执行的动作。
+        """
+        QTimer.singleShot(0, callback)
+
+    def _host_file_pool(self) -> Optional[QWidget]:
+        """返回宿主的文件池控件（无宿主 / 已销毁时为 None）。
+
+        Returns:
+            FilePoolLayout | None: 主池控件（不重建强类型依赖，仅鸭子类型使用）。
+        """
+        host = self._host_window
+        if host is None:
+            return None
+        try:
+            return getattr(host, "_file_pool", None)
+        except RuntimeError:
+            self._host_window = None
+            return None
+
+    @staticmethod
+    def _pool_has_items(pool: Optional[QWidget]) -> bool:
+        """判定主池是否有条目（无池 / 读取失败一律视为空）。
+
+        Args:
+            pool: 主池控件（可为 None）。
+
+        Returns:
+            bool: 有内容为 True。
+        """
+        if pool is None:
+            return False
+        try:
+            return bool(getattr(pool, "items", None))
+        except RuntimeError:
+            return False
+
+    def _activate_host_window(self) -> None:
+        """把宿主主窗口从最小化 / 后台切到前台并获得焦点。"""
+        host = self._host_window
+        if host is None:
+            return
+        try:
+            if host.isMinimized():
+                host.showNormal()
+            host.raise_()
+            host.activateWindow()
+            handle = host.windowHandle()
+            if handle is not None:
+                handle.requestActivate()
+            debug("[floating_pool] 已请求激活主窗口")
+        except RuntimeError:
+            self._host_window = None
+
+    def _clear_pool_with_confirmation(self) -> None:
+        """拉主窗口的「确认清空」弹窗并执行清空（复用主池的确认链路）。"""
+        pool = self._host_file_pool()
+        if pool is None:
+            return
+        # 先把主窗口抬到前台：确认弹窗属于主窗口，后台窗口的弹窗会被淹没。
+        self._activate_host_window()
+        try:
+            pool.clear_all()
+        except RuntimeError:
+            pass
+        except Exception as exc:  # noqa: BLE001 - 菜单动作失败不得影响浮窗
+            warning(f"浮窗右键清空文件池失败：{exc}")
+
+    def hide_for_session(self) -> None:
+        """本次启动期间隐藏：通知宿主后播出场动画并关闭（不写入设置）。
+
+        宿主收到 :attr:`hide_for_session_requested` 后仅关闭本会话的启用意图
+        并释放引用；下次启动仍按用户设置正常加载。重复调用幂等。
+        """
+        self.hide_for_session_requested.emit()
+        self.request_close_with_animation(self.deleteLater)
 
     # ── 悬停 ────────────────────────────────────────────────────
 
@@ -1607,7 +2121,7 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         if not emitted:
             return
         if self.is_expanded():
-            self._play_settle_pop()
+            self._play_receive_press()
             return
         self._play_success_bounce()
         self.set_expanded(True)
@@ -1910,20 +2424,21 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         """移动静默结束后：先完整夹回屏内，再按阈值四边吸附，最后动画位移。
 
         取窗口几何中心所在屏幕（``screenAt`` → ``primaryScreen`` 回退）的
-        ``availableGeometry()``；无可用屏幕时静默返回。夹回保证窗口四边都落在
-        可用区内；吸附仅在 :meth:`is_snap_enabled` 为 True 时对左 / 右 / 上 /
-        下四条边分别判定（外边缘距对应边 ≤ ``SNAP_THRESHOLD`` 时吸到
-        ``INITIAL_INSET`` 留白处）。目标位置经 :meth:`_animate_move` 缓动移动；
-        目标与当前位置相同时不产生动画。``_internal_moving`` 为 True 时早退。
+        真实工作区（:func:`screen_work_area`）；无可用屏幕时静默返回。夹回
+        保证窗口四边都落在工作区内；吸附仅在 :meth:`is_snap_enabled` 为 True
+        时对左 / 右 / 上 / 下四条边分别判定（外边缘距对应边 ≤ ``SNAP_THRESHOLD``
+        时吸到 ``INITIAL_INSET`` 留白处）。目标位置经 :meth:`_animate_move`
+        缓动移动；目标与当前位置相同时不产生动画。``_internal_moving`` 为
+        True 时早退。
         """
         if self._internal_moving:
             return
         screen = QApplication.screenAt(self.frameGeometry().center())
         if screen is None:
             screen = QApplication.primaryScreen()
-        if screen is None:
+        avail = screen_work_area(screen)
+        if not avail.isValid():
             return
-        avail = screen.availableGeometry()
         width = self.width()
         height = self.height()
 

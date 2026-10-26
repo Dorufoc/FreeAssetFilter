@@ -2000,6 +2000,43 @@ class TestFloatingPoolWiring:
             window.deleteLater()
             qapp.processEvents()
 
+    def test_hide_for_session_disables_rebuild_without_persisting(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """「本次启动期间隐藏」：只关内存开关，不落盘，且不会重建。"""
+        from freeassetfilter.core.managers.settings_manager_v2 import (
+            SettingsManagerV2,
+        )
+
+        window = _make_floating_window(monkeypatch, floating_enabled=True)
+        try:
+            _build_all_panels(window)
+            window.set_floating_pool_enabled(True)
+            floating = window._floating_pool
+            assert floating is not None
+
+            settings = SettingsManagerV2()
+            before = settings.get("general.floating_pool_enabled", True)
+
+            floating.hide_for_session()
+
+            assert window._floating_pool is None
+            assert window._floating_pool_enabled is False
+            assert window._floating_pool_conn_hide is None
+            assert (
+                settings.get("general.floating_pool_enabled", True) == before
+            ), "本次启动隐藏不得写入设置（下次启动应正常加载）"
+
+            # 本会话内任何重建路径都应被拦住
+            window._ensure_floating_pool()
+            assert window._floating_pool is None
+
+            # 浮窗自身的出场动画照常收尾
+            assert floating.wait_for_exit_animation(1500) is True
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
+
     def test_enable_twice_is_idempotent(
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2020,7 +2057,10 @@ class TestFloatingPoolWiring:
     def test_close_event_closes_floating_pool(
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """closeEvent 关闭浮窗（isHidden）且在 dispose 之前完成。"""
+        """closeEvent 关闭浮窗（isHidden）且在 dispose 之前完成。
+
+        closeEvent 内有界等待出场动画（正常 ~200ms），返回时浮窗已真正关闭。
+        """
         window = _make_floating_window(monkeypatch, floating_enabled=True)
         try:
             _build_all_panels(window)
@@ -2045,7 +2085,11 @@ class TestFloatingPoolWiring:
     def test_close_event_closes_floating_before_flush_backup(
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """closeEvent 在 flush_backup_save_now 之前已关闭浮窗（顺序契约）。"""
+        """closeEvent 在 flush_backup_save_now 之前已**请求**关闭浮窗（顺序契约）。
+
+        出场动画是异步的（收拢 → 缩放 + 淡出），故 flush 时窗口可能尚未真正
+        隐藏；此处锁定的是「关闭已发起」而不是「已隐藏」。
+        """
         window = _make_floating_window(monkeypatch, floating_enabled=True)
         try:
             _build_all_panels(window)
@@ -2056,7 +2100,12 @@ class TestFloatingPoolWiring:
             observed: list = []
 
             def _recording_flush(*args: Any, **kwargs: Any) -> None:
-                observed.append(window._floating_pool.isHidden())
+                floating_ref = window._floating_pool
+                observed.append(
+                    floating_ref is None
+                    or floating_ref.isHidden()
+                    or getattr(floating_ref, "_exit_requested", False)
+                )
 
             monkeypatch.setattr(
                 window._file_pool, "flush_backup_save_now", _recording_flush
@@ -2065,7 +2114,7 @@ class TestFloatingPoolWiring:
             window.closeEvent(QCloseEvent())
 
             assert observed, "flush_backup_save_now 未被 closeEvent 调用"
-            assert observed[0] is True, "flush 时浮窗尚未隐藏（关闭顺序晚于 flush）"
+            assert observed[0] is True, "flush 时浮窗仍未发起关闭（关闭顺序晚于 flush）"
         finally:
             window.deleteLater()
             qapp.processEvents()

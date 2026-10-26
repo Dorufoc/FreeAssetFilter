@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -26,6 +27,7 @@ from PySide6.QtCore import (
     QMimeData,
     QPoint,
     QPointF,
+    QRect,
     QSize,
     Qt,
     QUrl,
@@ -44,6 +46,8 @@ from PySide6.QtWidgets import QApplication, QDialog, QWidget
 from freeassetfilter.ui.floating_pool_window import (
     COLLAPSED_SIZE,
     DRAG_HOVER_SIZE,
+    ENTRANCE_SCALE_FROM,
+    EXIT_BUDGET_MS,
     EXPANDED_HEIGHT_RATIO,
     EXPANDED_SIZE,
     FLOATING_DRAG_MIME,
@@ -60,12 +64,13 @@ from freeassetfilter.ui.components.styled_scroll_area import (
     StyledScrollBar,
 )
 from freeassetfilter.ui.theme import tm
+from freeassetfilter.utils.screen_utils import derive_work_area, screen_work_area
 
 pytestmark = pytest.mark.unit
 
 
 def _expected_expanded_size() -> QSize:
-    """按同款钳制公式从当前屏幕可用高度推导展开态期望尺寸。
+    """按同款钳制公式从当前屏幕真实可用高度推导展开态期望尺寸。
 
     Returns:
         QSize: 宽度取 ``EXPANDED_SIZE.width()``，高度为
@@ -75,7 +80,7 @@ def _expected_expanded_size() -> QSize:
     if screen is None:
         screen = QApplication.primaryScreen()
     assert screen is not None
-    avail_h = screen.availableGeometry().height()
+    avail_h = screen_work_area(screen).height()
     clamped = min(EXPANDED_SIZE.height(), int(avail_h * EXPANDED_HEIGHT_RATIO))
     return QSize(EXPANDED_SIZE.width(), clamped)
 
@@ -127,7 +132,7 @@ def test_set_expanded_false_restores_collapsed(qapp: QApplication) -> None:
 
 
 def _screen_and_available(window: FloatingPoolWindow) -> tuple:
-    """返回窗口所在屏幕及其可用区域（``screenAt`` → 主屏幕回退）。
+    """返回窗口所在屏幕及其真实可用工作区（``screenAt`` → 主屏幕回退）。
 
     Args:
         window: 目标浮窗（以左上角全局坐标判定落在哪块屏幕）。
@@ -140,7 +145,109 @@ def _screen_and_available(window: FloatingPoolWindow) -> tuple:
         screen = QApplication.primaryScreen()
     if screen is None:
         return None, None
-    return screen, screen.availableGeometry()
+    return screen, screen_work_area(screen)
+
+
+# ── 工作区推导（任务栏任意停靠侧）─────────────────────────────
+
+
+def test_derive_work_area_left_docked_taskbar_at_150_percent() -> None:
+    """任务栏在左（实测 150% 缩放）：左缩量取缩放值，右缘不越屏。"""
+    geometry = QRect(0, 0, 1707, 1067)
+    # Qt 实测输出：左缩量 72 是未缩放的物理像素（应为 48）
+    available = QRect(72, 0, 1659, 1067)
+
+    work = derive_work_area(geometry, available)
+
+    assert work.left() == 48
+    assert work.top() == 0
+    assert work.width() == 1659
+    assert work.height() == 1067
+    assert work.right() == geometry.right()
+    assert geometry.contains(work)
+
+
+def test_derive_work_area_top_docked_taskbar_at_150_percent() -> None:
+    """任务栏在上（150% 缩放）：上缩量取缩放值，下缘不越屏。"""
+    geometry = QRect(0, 0, 1707, 1067)
+    available = QRect(0, 60, 1707, 1027)  # 60 物理像素 → 40 逻辑像素
+
+    work = derive_work_area(geometry, available)
+
+    assert work.top() == 40
+    assert work.height() == 1027
+    assert work.bottom() == geometry.bottom()
+    assert geometry.contains(work)
+
+
+def test_derive_work_area_right_docked_taskbar_insets_right_edge() -> None:
+    """任务栏在右：内缩量归右缘（左上角无偏移）。"""
+    geometry = QRect(0, 0, 1920, 1080)
+    available = QRect(0, 0, 1872, 1080)  # 48px 任务栏
+
+    work = derive_work_area(geometry, available)
+
+    assert work == QRect(0, 0, 1872, 1080)
+
+
+def test_derive_work_area_bottom_taskbar_matches_qt() -> None:
+    """任务栏在下（回归基线）：结果与原 Qt 可用区等价，行为不应变化。"""
+    geometry = QRect(0, 0, 1920, 1080)
+    available = QRect(0, 0, 1920, 1040)
+
+    assert derive_work_area(geometry, available) == available
+
+
+def test_derive_work_area_without_taskbar_returns_geometry() -> None:
+    """无任务栏占位（自动隐藏 / 全屏）时工作区即物理屏幕。"""
+    geometry = QRect(-1920, 0, 1920, 1080)
+
+    assert derive_work_area(geometry, geometry) == geometry
+    assert derive_work_area(geometry, QRect()) == geometry
+    assert derive_work_area(QRect(), QRect(0, 0, 10, 10)) == QRect()
+
+
+def test_initial_position_stays_inside_work_area(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """任务栏在左时首帧定位不得越出工作区（回归：右缘曾露到屏幕外）。"""
+    import freeassetfilter.ui.floating_pool_window as fpw
+
+    work = QRect(48, 0, 1659, 1067)  # 2560x1600 @150% + 左侧 72px 任务栏
+    monkeypatch.setattr(fpw, "screen_work_area", lambda _screen: QRect(work))
+
+    window = fpw.FloatingPoolWindow()
+    try:
+        geo = window.geometry()
+        assert geo.left() >= work.left()
+        assert geo.top() >= work.top()
+        assert geo.right() <= work.right()
+        assert geo.bottom() <= work.bottom()
+        # 右缘留白与吸附口径一致（均为 INITIAL_INSET）
+        assert geo.right() == work.right() - INITIAL_INSET
+        assert geo.top() == work.top() + INITIAL_INSET
+    finally:
+        window.deleteLater()
+
+
+def test_settle_clamps_inside_work_area_with_left_taskbar(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """任务栏在左 + 关闭吸附：拖到屏外后仍完整夹回工作区内。"""
+    import freeassetfilter.ui.floating_pool_window as fpw
+
+    work = QRect(48, 0, 1659, 1067)
+    monkeypatch.setattr(fpw, "screen_work_area", lambda _screen: QRect(work))
+
+    window = fpw.FloatingPoolWindow()
+    try:
+        final = _settle_at(window, work.right() + 200, work.bottom() + 200, snap=False)
+        assert final.x() == work.right() - window.width() + 1
+        assert final.y() == work.bottom() - window.height() + 1
+        assert final.x() + window.width() - 1 <= work.right()
+        assert final.y() + window.height() - 1 <= work.bottom()
+    finally:
+        window.deleteLater()
 
 
 def test_set_expanded_stays_within_available_geometry(
@@ -177,19 +284,172 @@ def test_set_expanded_preserves_right_edge(qapp: QApplication) -> None:
         window.deleteLater()
 
 
-def test_set_expanded_clamps_when_moved_left(qapp: QApplication) -> None:
-    """移到屏幕左侧后展开：右边缘锚定会越界，左边缘钳到可用区左界。"""
+def test_set_expanded_grows_right_when_near_left_edge(qapp: QApplication) -> None:
+    """贴工作区左缘时以左缘为固定边向右展开（左缘不动）。"""
     window = FloatingPoolWindow()
     try:
         _screen, avail = _screen_and_available(window)
         assert avail is not None
-        window.move(avail.left() + 16, avail.top() + 16)
+        start_x = avail.left() + INITIAL_INSET
+        window.move(start_x, avail.top() + INITIAL_INSET)
 
         window.set_expanded(True)
         _wait_move_animation(window)
 
-        assert window.x() == avail.left()
-        assert window.x() + window.width() <= avail.right() + 1
+        assert window.x() == start_x, "左缘应为固定边，不得移动"
+        assert window.x() + window.width() - 1 <= avail.right()
+    finally:
+        window.deleteLater()
+
+
+@pytest.mark.parametrize(
+    "corner", ["top-left", "top-right", "bottom-left", "bottom-right"]
+)
+def test_expanded_panel_anchors_to_nearest_edges(
+    qapp: QApplication, corner: str
+) -> None:
+    """四个角：展开时固定边不动、整体完整落在真实工作区内。"""
+    window = FloatingPoolWindow()
+    try:
+        _screen, work = _screen_and_available(window)
+        assert work is not None
+        near_right = "right" in corner
+        near_bottom = "bottom" in corner
+        x = (
+            work.right() - window.width() + 1 - INITIAL_INSET
+            if near_right
+            else work.left() + INITIAL_INSET
+        )
+        y = (
+            work.bottom() - window.height() + 1 - INITIAL_INSET
+            if near_bottom
+            else work.top() + INITIAL_INSET
+        )
+        window.move(x, y)
+        fixed_right = window.x() + window.width() - 1
+        fixed_bottom = window.y() + window.height() - 1
+
+        window.set_expanded(True)
+        _wait_move_animation(window)
+
+        geo = window.geometry()
+        assert work.contains(geo), f"展开后越出工作区：{geo} vs {work}"
+        if near_right:
+            assert geo.right() == fixed_right, "右缘为固定边，不得移动"
+        else:
+            assert geo.left() == x, "左缘为固定边，不得移动"
+        if near_bottom:
+            assert geo.bottom() == fixed_bottom, "下缘为固定边，不得移动"
+        else:
+            assert geo.top() == y, "上缘为固定边，不得移动"
+    finally:
+        window.deleteLater()
+
+
+@pytest.mark.parametrize(
+    "corner", ["top-left", "top-right", "bottom-left", "bottom-right"]
+)
+def test_collapse_returns_to_original_circle_position(
+    qapp: QApplication, corner: str
+) -> None:
+    """展开再收拢：圆形回到原位（不滑到另一侧、整体无位移）。"""
+    window = FloatingPoolWindow()
+    try:
+        _screen, work = _screen_and_available(window)
+        assert work is not None
+        window.set_snap_enabled(False)
+        x = (
+            work.right() - window.width() + 1 - INITIAL_INSET
+            if "right" in corner
+            else work.left() + INITIAL_INSET
+        )
+        y = (
+            work.bottom() - window.height() + 1 - INITIAL_INSET
+            if "bottom" in corner
+            else work.top() + INITIAL_INSET
+        )
+        window.move(x, y)
+        original = window.geometry()
+
+        window.show()
+        qapp.processEvents()
+        window.set_expanded(True)
+        assert _wait_until(lambda: window._morph >= 1.0)
+
+        window.set_expanded(False)
+        assert _wait_until(lambda: window.size() == COLLAPSED_SIZE)
+        assert window.geometry() == original, "收拢后圆形位置发生偏移"
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_drag_hover_pill_grows_inward_when_near_left_edge(
+    qapp: QApplication, tmp_path: Path
+) -> None:
+    """贴左缘时拖入胶囊以左缘为固定边向右拉伸，收回后位置不偏移。"""
+    window = FloatingPoolWindow()
+    try:
+        _screen, work = _screen_and_available(window)
+        assert work is not None
+        start_x = work.left() + INITIAL_INSET
+        window.move(start_x, work.top() + INITIAL_INSET)
+        window.show()
+        qapp.processEvents()
+
+        target = tmp_path / "pill_left_growth.txt"
+        target.write_text("x", encoding="utf-8")
+        mime = _mime_for([str(target)])
+        window.dragEnterEvent(
+            QDragEnterEvent(
+                QPoint(10, 10),
+                Qt.CopyAction,
+                mime,
+                Qt.LeftButton,
+                Qt.NoModifier,
+            )
+        )
+        assert _wait_until(lambda: window.size() == DRAG_HOVER_SIZE), (
+            "拖入后窗口未拉伸为胶囊"
+        )
+        assert window.x() == start_x, "左缘为固定边，不得向屏幕外生长"
+        assert window.x() + window.width() - 1 <= work.right()
+
+        window.dragLeaveEvent(QDragLeaveEvent())
+        assert _wait_until(lambda: window.size() == COLLAPSED_SIZE)
+        assert window.x() == start_x, "胶囊收回后圆形位置发生偏移"
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+@pytest.mark.parametrize(
+    ("anchor_right", "anchor_bottom"),
+    [(True, False), (False, True), (False, False), (True, True)],
+)
+def test_morph_card_grows_from_anchored_corner(
+    qapp: QApplication, anchor_right: bool, anchor_bottom: bool
+) -> None:
+    """形变卡片从锚定角扩散：固定边在窗口内保持不动，卡片不越出窗口。"""
+    window = FloatingPoolWindow()
+    try:
+        window.set_expanded(True)  # 未上屏：同步落定展开几何与 morph=1
+        window._anchor_right = anchor_right
+        window._anchor_bottom = anchor_bottom
+        window._morph = 0.5
+
+        card = window._card_rect()
+        assert window.rect().contains(card.toAlignedRect())
+        assert card.width() < window.width() - 2 * _CARD_MARGIN
+        assert card.height() < window.height() - 2 * _CARD_MARGIN
+        if anchor_right:
+            assert card.right() == pytest.approx(window.width() - _CARD_MARGIN)
+        else:
+            assert card.left() == pytest.approx(float(_CARD_MARGIN))
+        if anchor_bottom:
+            assert card.bottom() == pytest.approx(window.height() - _CARD_MARGIN)
+        else:
+            assert card.top() == pytest.approx(float(_CARD_MARGIN))
     finally:
         window.deleteLater()
 
@@ -200,9 +460,9 @@ def test_set_expanded_clamps_bottom_edge_when_near_screen_bottom(
     """折叠态贴着可用区下缘时展开：y 一并钳制，展开下缘不越出屏幕。
 
     回归：``set_expanded`` 早期只钳 x 不钳 y，贴近屏幕底部的胶囊展开后
-    （高度 48 → 360）下缘越出可用区下界；同时锁定水平方向的既有右缘
-    锚定 + 左缘钳制不回归。展开改为原子 ``setGeometry`` 后**不得**再经
-    位移动画（否则右缘外扩会把面板推出屏幕再滑回）。
+    （高度 48 → 360）下缘越出可用区下界；同时锁定水平 / 垂直都不越出工作区。
+    展开改为原子 ``setGeometry`` 后**不得**再经位移动画（否则固定边外扩会把
+    面板推出屏幕再滑回）。
     """
     window = FloatingPoolWindow()
     try:
@@ -235,7 +495,7 @@ def test_set_expanded_clamps_bottom_edge_when_near_screen_bottom(
         assert window.y() >= avail_now.top()
         # 精确落位：y 被钳到可用区下缘（包含式）。
         assert window.y() == avail_now.bottom() - window.height() + 1
-        # 水平方向保持既有右缘锚定 + 左缘钳制（无回归）。
+        # 水平方向按就近锚定（此位置贴左侧 → 左缘固定），整体不越界。
         assert geo.left() >= avail_now.left()
         assert geo.right() <= avail_now.right()
         # 展开几何原子落定，不得再叠一层位移动画。
@@ -810,6 +1070,19 @@ def test_colors_updated_refreshes_row_icons(
         )
     finally:
         tm.set_color("accent.primary", original)
+        window.deleteLater()
+
+
+def test_collapse_button_uses_minimize_dash_icon(qapp: QApplication) -> None:
+    """标题栏折叠按钮用最小化短横线（不是展开方向的 chevron）。"""
+    window = FloatingPoolWindow()
+    try:
+        button = window._collapse_button
+        assert button.icon_name() == "minus", (
+            f"折叠按钮图标应为最小化短横线，实际为 {button.icon_name()!r}"
+        )
+        assert "chevron" not in button.icon_name()
+    finally:
         window.deleteLater()
 
 
@@ -1903,6 +2176,70 @@ def test_expand_runs_morph_and_clears_content_mask(
         window.deleteLater()
 
 
+def test_expand_never_overshoots_terminal_values(
+    qapp: QApplication,
+) -> None:
+    """展开形变缓动到终值即结束：形变 / 缩放均不得越过终值。
+
+    回归背景：展开完成后曾串联 ``1.0 → 0.982 → 1.008 → 1.0`` 的落定回弹，
+    其中 ``1.008`` 越过终态尺寸，实测表现为面板展开到末期又轻微鼓一下。
+    """
+    window = FloatingPoolWindow()
+    try:
+        window.show()
+        qapp.processEvents()
+
+        window.set_expanded(True)
+        peak_morph = 0.0
+        peak_pulse = 1.0
+        # 采样窗覆盖形变（320ms）之后的收尾区间，才能抓到串联的落定回弹。
+        for _ in range(90):
+            peak_morph = max(peak_morph, window._morph)
+            peak_pulse = max(peak_pulse, window._pulse)
+            QTest.qWait(10)
+
+        assert peak_morph <= 1.0 + 1e-6, f"形变进度越过终值：{peak_morph}"
+        assert peak_pulse <= 1.0 + 1e-6, f"缩放越过终值（弹性溢出）：{peak_pulse}"
+        assert window._morph == 1.0
+        assert window._pulse == 1.0
+        assert window._pulse_anim is None, "展开结束后不应再起缩放回弹"
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_expanded_drop_feedback_never_overshoots(
+    qapp: QApplication, tmp_path: Path
+) -> None:
+    """已展开时拖入文件：下压确认仍在，但缩放全程不超过终值。"""
+    window = FloatingPoolWindow()
+    received: list[dict] = []
+    window.add_file_requested.connect(received.append)
+    try:
+        window.show()
+        qapp.processEvents()
+        window.set_expanded(True)
+        assert _wait_until(lambda: window._morph >= 1.0)
+
+        target = tmp_path / "expanded_press.txt"
+        target.write_text("x", encoding="utf-8")
+        event, _mime = _drop_event([str(target)])
+        window.dropEvent(event)
+
+        assert len(received) == 1
+        assert window._pulse_anim is not None, "展开态接收缺少确认反馈"
+
+        peak = 1.0
+        for _ in range(40):
+            peak = max(peak, window._pulse)
+            QTest.qWait(10)
+        assert peak <= 1.0 + 1e-6, f"确认反馈缩放越过终值：{peak}"
+        assert window._pulse == 1.0
+    finally:
+        window.close()
+        window.deleteLater()
+
+
 def test_collapse_defers_geometry_until_animation_finishes(
     qapp: QApplication,
 ) -> None:
@@ -2131,3 +2468,245 @@ def test_scrollbar_handle_drag_scrolls(
     finally:
         window.close()
         window.deleteLater()
+
+
+# ── 入场 / 出场（整体缩放 + 透明度）与预算兜底 ──────────────────
+
+
+def test_first_show_plays_entrance_animation(qapp: QApplication) -> None:
+    """首次显示播放「整体缩放 + 透明度」入场，结束后落定终态。"""
+    window = FloatingPoolWindow()
+    try:
+        window.show()
+        qapp.processEvents()
+
+        assert window._entrance_anim is not None, "首次显示未启动入场动画"
+        assert window._fade < 1.0
+        assert window._pulse <= ENTRANCE_SCALE_FROM + 1e-6
+
+        assert _wait_until(lambda: window._entrance_done), "入场动画未结束"
+        assert window._fade == 1.0
+        assert window._pulse == 1.0
+        assert window._entrance_anim is None
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_entrance_budget_exceeded_shows_immediately(qapp: QApplication) -> None:
+    """启动预算（5s）耗尽后：入场直接落定，不播任何动画。"""
+    window = FloatingPoolWindow()
+    try:
+        window._on_entrance_budget_exceeded()
+
+        window.show()
+        qapp.processEvents()
+
+        assert window._entrance_expired is True
+        assert window._entrance_anim is None
+        assert window._entrance_done is True
+        assert window._fade == 1.0
+        assert window._pulse == 1.0
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_exit_request_without_show_closes_immediately() -> None:
+    """未上屏就请求关闭：不播出场动画，立即关闭并执行回调。"""
+    window = FloatingPoolWindow()
+    calls: list[int] = []
+    try:
+        window.request_close_with_animation(lambda: calls.append(1))
+
+        assert window.is_exit_finished() is True
+        assert window._exit_anim is None
+        assert calls == [1]
+    finally:
+        window.deleteLater()
+
+
+def test_exit_plays_fade_out_then_closes(qapp: QApplication) -> None:
+    """已上屏时请求关闭：播缩放 + 淡出，动画结束才真正 close。"""
+    window = FloatingPoolWindow()
+    calls: list[int] = []
+    try:
+        window.show()
+        qapp.processEvents()
+        assert _wait_until(lambda: window._entrance_done)
+
+        window.request_close_with_animation(lambda: calls.append(1))
+
+        assert window.is_exit_finished() is False, "不应立即关闭"
+        assert window._exit_anim is not None, "未启动出场动画"
+        assert _wait_until(lambda: window.is_exit_finished()), "出场动画未收尾"
+        assert window.isVisible() is False
+        assert calls == [1]
+    finally:
+        window.deleteLater()
+
+
+def test_exit_budget_forces_close(qapp: QApplication) -> None:
+    """出场兜底（3s）触发时直接关闭，不等待动画。"""
+    window = FloatingPoolWindow()
+    try:
+        window.show()
+        qapp.processEvents()
+        assert _wait_until(lambda: window._entrance_done)
+
+        window.request_close_with_animation()
+        assert window._exit_anim is not None
+
+        window._finish_exit()  # 模拟 EXIT_BUDGET_MS 超时
+
+        assert window.is_exit_finished() is True
+        assert window._exit_anim is None
+        assert window.isVisible() is False
+    finally:
+        window.deleteLater()
+
+
+def test_wait_for_exit_animation_is_bounded(qapp: QApplication) -> None:
+    """有界等待：动画自然结束时立即返回，总耗时远小于 3s 预算。"""
+    window = FloatingPoolWindow()
+    try:
+        window.show()
+        qapp.processEvents()
+        assert _wait_until(lambda: window._entrance_done)
+
+        window.request_close_with_animation()
+        started = time.monotonic()
+        assert window.wait_for_exit_animation(EXIT_BUDGET_MS) is True
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 1.0, f"等待未受控：{elapsed:.2f}s"
+        assert window.isVisible() is False
+    finally:
+        window.deleteLater()
+
+
+def test_exit_while_expanded_collapses_before_fade(qapp: QApplication) -> None:
+    """展开态退出：先收回圆形再淡出，内容不会与卡片错位。"""
+    window = FloatingPoolWindow()
+    try:
+        window.show()
+        qapp.processEvents()
+        assert _wait_until(lambda: window._entrance_done)
+
+        window.set_expanded(True)
+        assert _wait_until(lambda: window._morph >= 1.0)
+
+        window.request_close_with_animation()
+        assert _wait_until(lambda: window.is_exit_finished(), timeout_ms=3000)
+        assert window.is_expanded() is False
+        assert window.isVisible() is False
+    finally:
+        window.deleteLater()
+
+
+# ── 右键菜单 ──────────────────────────────────────────────────
+
+
+def test_context_menu_items_and_flags(qapp: QApplication) -> None:
+    """右键菜单三项齐备；清空项为危险态且无宿主（空池）时禁用。"""
+    window = FloatingPoolWindow()
+    try:
+        menu = window._build_context_menu()
+        labels = [a.text() for a in menu.actions() if not a.isSeparator()]
+        assert labels == ["打开主窗口", "清空全部文件池内容", "本次启动期间隐藏"]
+
+        actions = {a.text(): a for a in menu.actions() if not a.isSeparator()}
+        assert actions["清空全部文件池内容"].property("danger") is True
+        assert actions["清空全部文件池内容"].isEnabled() is False
+        assert actions["打开主窗口"].isEnabled() is True
+        assert actions["本次启动期间隐藏"].isEnabled() is True
+    finally:
+        window.deleteLater()
+
+
+def test_context_menu_clear_delegates_to_host_pool(
+    qapp: QApplication,
+) -> None:
+    """「清空全部文件池内容」走主池 ``clear_all``（由它弹确认对话框）。"""
+    window = FloatingPoolWindow()
+    host = QWidget()
+    calls: list[str] = []
+
+    class _Pool(QWidget):
+        items = [{"path": "x"}]
+
+        def clear_all(self) -> None:  # noqa: D401 - 测试探针
+            calls.append("clear_all")
+
+    host._file_pool = _Pool(host)
+    window._host_window = host
+    try:
+        menu = window._build_context_menu()
+        actions = {a.text(): a for a in menu.actions() if not a.isSeparator()}
+        assert actions["清空全部文件池内容"].isEnabled() is True
+
+        actions["清空全部文件池内容"].trigger()
+        qapp.processEvents()  # _defer 的 singleShot(0)
+
+        assert calls == ["clear_all"]
+    finally:
+        window.deleteLater()
+        host.deleteLater()
+
+
+def test_activate_host_window_restores_minimized(qapp: QApplication) -> None:
+    """「打开主窗口」：最小化先还原，再 raise + activate。"""
+
+    class _FakeHost:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def isMinimized(self) -> bool:  # noqa: N802 - 镜像 Qt 接口
+            return True
+
+        def showNormal(self) -> None:  # noqa: N802
+            self.calls.append("showNormal")
+
+        def raise_(self) -> None:
+            self.calls.append("raise")
+
+        def activateWindow(self) -> None:  # noqa: N802
+            self.calls.append("activate")
+
+        def windowHandle(self):  # noqa: N802
+            return None
+
+    window = FloatingPoolWindow()
+    host = _FakeHost()
+    window._host_window = host
+    try:
+        window._activate_host_window()
+        assert host.calls == ["showNormal", "raise", "activate"]
+    finally:
+        window.deleteLater()
+
+
+def test_hide_for_session_emits_and_exits(qapp: QApplication) -> None:
+    """「本次启动期间隐藏」：先通知宿主，再播出场动画并最终销毁。"""
+    window = FloatingPoolWindow()
+    fired: list[int] = []
+    destroyed: list[int] = []
+    window.hide_for_session_requested.connect(lambda: fired.append(1))
+    window.destroyed.connect(lambda *_args: destroyed.append(1))
+    try:
+        window.show()
+        qapp.processEvents()
+        assert _wait_until(lambda: window._entrance_done)
+
+        window.hide_for_session()
+
+        assert fired == [1], "未通知宿主（宿主无法停用本会话重建）"
+        # 出场动画结束 → close → deleteLater，以 destroyed 作为最终事实
+        assert _wait_until(lambda: bool(destroyed), timeout_ms=3000), (
+            "浮窗未在出场动画后销毁"
+        )
+    finally:
+        try:
+            window.deleteLater()
+        except RuntimeError:
+            pass
