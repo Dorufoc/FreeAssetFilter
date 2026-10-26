@@ -43,6 +43,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QWidget
 
 from freeassetfilter.ui.floating_pool_window import (
     COLLAPSED_SIZE,
+    DRAG_HOVER_SIZE,
     EXPANDED_HEIGHT_RATIO,
     EXPANDED_SIZE,
     FLOATING_DRAG_MIME,
@@ -51,7 +52,12 @@ from freeassetfilter.ui.floating_pool_window import (
     SNAP_DURATION_MS,
     SNAP_THRESHOLD,
     FloatingPoolWindow,
+    _CARD_MARGIN,
     _PoolItemRow,
+)
+from freeassetfilter.ui.components.styled_scroll_area import (
+    StyledScrollArea,
+    StyledScrollBar,
 )
 from freeassetfilter.ui.theme import tm
 
@@ -195,7 +201,8 @@ def test_set_expanded_clamps_bottom_edge_when_near_screen_bottom(
 
     回归：``set_expanded`` 早期只钳 x 不钳 y，贴近屏幕底部的胶囊展开后
     （高度 48 → 360）下缘越出可用区下界；同时锁定水平方向的既有右缘
-    锚定 + 左缘钳制不回归，且重定位恰经一次 ``_animate_move``。
+    锚定 + 左缘钳制不回归。展开改为原子 ``setGeometry`` 后**不得**再经
+    位移动画（否则右缘外扩会把面板推出屏幕再滑回）。
     """
     window = FloatingPoolWindow()
     try:
@@ -231,8 +238,8 @@ def test_set_expanded_clamps_bottom_edge_when_near_screen_bottom(
         # 水平方向保持既有右缘锚定 + 左缘钳制（无回归）。
         assert geo.left() >= avail_now.left()
         assert geo.right() <= avail_now.right()
-        # 展开重定位必须恰经一次位移动画（不得拆成两次调用）。
-        assert len(calls) == 1
+        # 展开几何原子落定，不得再叠一层位移动画。
+        assert calls == []
     finally:
         window.deleteLater()
 
@@ -1382,15 +1389,24 @@ def test_snap_enabled_api_default_and_toggle(qapp: QApplication) -> None:
         window.deleteLater()
 
 
-def test_set_expanded_animates_position(qapp: QApplication) -> None:
-    """``set_expanded`` 的位置变化走位移动画（尺寸即时，位置异步）。"""
+def test_set_expanded_applies_geometry_atomically(
+    qapp: QApplication,
+) -> None:
+    """``set_expanded`` 尺寸与位置同帧落定（右缘锚定，不产生位移动画）。
+
+    回归背景：卡片锚定在窗口右缘；若先 ``setFixedSize``（右缘外扩一个面板
+    宽度）再位移动画滑回，面板会被推到屏幕外再滑入。展开改为一次
+    ``setGeometry``，形变由 ``morphProgress`` 承担。
+    """
     window = FloatingPoolWindow()
     try:
-        window.set_expanded(True)
-        assert window.is_snapping() is True
+        right_edge = window.x() + window.width()
 
-        _wait_move_animation(window)
+        window.set_expanded(True)
+
         assert window.is_snapping() is False
+        assert window.size() == _expected_expanded_size()
+        assert window.x() + window.width() == right_edge
     finally:
         window.deleteLater()
 
@@ -1750,6 +1766,368 @@ def test_move_event_settle_timer_triggers_snap(qapp: QApplication) -> None:
         _wait_move_animation(window)
 
         assert window.pos() == QPoint(INITIAL_INSET, INITIAL_INSET)
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+# ── 视觉形态与动效（圆形入口 / 胶囊拉伸 / 形变 / 回弹） ─────────────────
+
+
+def _wait_until(predicate, timeout_ms: int = 2500) -> bool:
+    """泵事件循环等待条件成立。
+
+    Args:
+        predicate: 无参谓词（返回 True 即视为成立）。
+        timeout_ms: 最长等待毫秒数。
+
+    Returns:
+        bool: 条件是否在超时前成立。
+    """
+    waited = 0
+    while waited < timeout_ms:
+        if predicate():
+            return True
+        QTest.qWait(10)
+        waited += 10
+    return bool(predicate())
+
+
+def test_collapsed_card_is_perfect_circle(qapp: QApplication) -> None:
+    """折叠态卡片为正方形，且圆角半径等于边长一半（完美圆形）。"""
+    window = FloatingPoolWindow()
+    try:
+        card = window._card_rect()
+        assert card.width() == pytest.approx(card.height())
+        assert window._card_radius(card) == pytest.approx(card.height() / 2.0)
+        # 卡片留白内缩：完整落入窗口，留给外发光 / 回弹缩放
+        assert card.left() >= 1.0
+        assert card.right() <= window.width() - 1.0
+    finally:
+        window.deleteLater()
+
+
+def test_drag_enter_stretches_to_pill(qapp: QApplication, tmp_path) -> None:
+    """折叠态拖入 → 横向拉伸为胶囊（圆角仍为高度一半）；离开后收回圆形。"""
+    window = FloatingPoolWindow()
+    try:
+        window.show()
+        qapp.processEvents()
+
+        target = tmp_path / "pill.txt"
+        target.write_text("x", encoding="utf-8")
+        mime = _mime_for([str(target)])
+        window.dragEnterEvent(
+            QDragEnterEvent(
+                QPoint(10, 10),
+                Qt.CopyAction,
+                mime,
+                Qt.LeftButton,
+                Qt.NoModifier,
+            )
+        )
+        assert window.property("dragActive") is True
+        assert _wait_until(lambda: window.size() == DRAG_HOVER_SIZE), (
+            "拖入后窗口未拉伸为胶囊"
+        )
+
+        card = window._card_rect()
+        assert card.height() == pytest.approx(
+            DRAG_HOVER_SIZE.height() - 2 * _CARD_MARGIN
+        )
+        assert window._card_radius(card) == pytest.approx(card.height() / 2.0)
+
+        window.dragLeaveEvent(QDragLeaveEvent())
+        assert window.property("dragActive") is False
+        assert _wait_until(lambda: window.size() == COLLAPSED_SIZE), (
+            "拖拽离开后窗口未收回圆形"
+        )
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_drag_enter_does_not_stretch_expanded_window(
+    qapp: QApplication, tmp_path
+) -> None:
+    """已展开态拖入：不横向拉伸（面板本身就是完整接收区），仅点亮高亮。"""
+    window = FloatingPoolWindow()
+    try:
+        window.show()
+        window.set_expanded(True)
+        expanded_size = window.size()
+
+        target = tmp_path / "expanded_pill.txt"
+        target.write_text("x", encoding="utf-8")
+        mime = _mime_for([str(target)])
+        window.dragEnterEvent(
+            QDragEnterEvent(
+                QPoint(10, 10),
+                Qt.CopyAction,
+                mime,
+                Qt.LeftButton,
+                Qt.NoModifier,
+            )
+        )
+        QTest.qWait(60)
+
+        assert window.property("dragActive") is True
+        assert window.size() == expanded_size
+        assert window._drag_progress == 0.0
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_expand_runs_morph_and_clears_content_mask(
+    qapp: QApplication,
+) -> None:
+    """可见窗口展开：形变动画在途 → 完成后内容蒙版清空（逐步揭示复用）。"""
+    window = FloatingPoolWindow()
+    try:
+        window.show()
+        qapp.processEvents()
+
+        window.set_expanded(True)
+        assert window._morph_anim is not None, "展开未启动形变动画"
+        assert not window._content.mask().isEmpty(), (
+            "形变期间内容应被裁剪到卡片区域"
+        )
+
+        assert _wait_until(lambda: window._morph >= 1.0)
+        assert window._content.mask().isEmpty(), (
+            "形变完成后应清空内容蒙版（避免圆角边缘锯齿裁切）"
+        )
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_collapse_defers_geometry_until_animation_finishes(
+    qapp: QApplication,
+) -> None:
+    """可见窗口收起：状态立即为折叠，几何滞后到收拢动画结束才落定。"""
+    window = FloatingPoolWindow()
+    try:
+        window.show()
+        window.set_expanded(True)
+        assert _wait_until(lambda: window._morph >= 1.0)
+        right_edge = window.x() + window.width()
+
+        window.set_expanded(False)
+
+        assert window.is_expanded() is False
+        assert window._collapse_pending is True
+        assert window.size() != COLLAPSED_SIZE, "收拢动画期间几何不应立即跳变"
+
+        assert _wait_until(lambda: window.size() == COLLAPSED_SIZE), (
+            "收拢动画结束后窗口未缩回折叠尺寸"
+        )
+        assert window._morph == 0.0
+        assert window._visual_expanded is False
+        assert window._collapse_pending is False
+        # 右缘锚定：圆形落在收拢动画终点，几何跳变不可见
+        assert window.x() + window.width() == right_edge
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_collapse_with_hidden_window_is_immediate(
+    qapp: QApplication,
+) -> None:
+    """不可见窗口收起：无动画可看，尺寸同步落定（既有语义）。"""
+    window = FloatingPoolWindow()
+    try:
+        window.set_expanded(True)
+        window.set_expanded(False)
+
+        assert window.is_expanded() is False
+        assert window._collapse_pending is False
+        assert window.size() == COLLAPSED_SIZE
+        assert window._morph == 0.0
+    finally:
+        window.deleteLater()
+
+
+def test_drop_success_starts_bounce(
+    qapp: QApplication, tmp_path
+) -> None:
+    """折叠态成功接收：回弹动画起跑且窗口立刻进入展开态（状态同步）。"""
+    window = FloatingPoolWindow()
+    received: list[dict] = []
+    window.add_file_requested.connect(received.append)
+    try:
+        window.show()
+        qapp.processEvents()
+
+        target = tmp_path / "bounce.txt"
+        target.write_text("x", encoding="utf-8")
+        event, _mime = _drop_event([str(target)])
+        window.dropEvent(event)
+
+        assert len(received) == 1
+        assert window.is_expanded() is True
+        assert window._pulse_anim is not None, "成功接收未播放回弹动画"
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_count_badge_tracks_items(qapp: QApplication, tmp_path) -> None:
+    """折叠态计数徽标跟随条目数（``_count`` 与列表重建同步）。"""
+    window = FloatingPoolWindow()
+    try:
+        assert window._count == 0
+        window.set_items(
+            [
+                _item(str(tmp_path / "a.txt")),
+                _item(str(tmp_path / "b.txt")),
+            ]
+        )
+        _flush_debounce()
+
+        assert window._count == 2
+    finally:
+        window.deleteLater()
+
+
+# ── 展开列表滚动条（StyledScrollBar 可点击 / 可拖动） ─────────────────
+
+
+def _prepare_scrolled_window(
+    window: FloatingPoolWindow, qapp: QApplication, count: int, tmp_path
+) -> StyledScrollBar:
+    """展开窗口并灌入 *count* 个条目，返回竖向滚动条。
+
+    Args:
+        window: 目标浮窗。
+        qapp: 应用实例（泵事件循环用）。
+        count: 条目数量。
+        tmp_path: 临时目录。
+
+    Returns:
+        StyledScrollBar: 已布局完成的竖向滚动条。
+    """
+    window.show()
+    window.set_expanded(True)
+    window.set_items(
+        [_item(str(tmp_path / f"row_{i}.txt"), name=f"row_{i}.txt") for i in range(count)]
+    )
+    _flush_debounce()
+    qapp.processEvents()
+    QTest.qWait(30)
+    return window._scroll_area.verticalScrollBar()
+
+
+def test_scroll_area_uses_visible_styled_scrollbar(
+    qapp: QApplication,
+) -> None:
+    """竖向滚动条由 ``StyledScrollBar`` 接管且策略为按需显示（非原生条）。"""
+    window = FloatingPoolWindow()
+    try:
+        area = window._scroll_area
+        assert isinstance(area, StyledScrollArea)
+        assert area.verticalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+        assert isinstance(area.verticalScrollBar(), StyledScrollBar)
+        # 透明 QSS 只作用于滚动区自身，不得泄漏到滚动条（否则样式接管原生绘制）
+        assert area.verticalScrollBar().styleSheet() == ""
+    finally:
+        window.deleteLater()
+
+
+def test_scrollbar_visible_only_when_content_overflows(
+    qapp: QApplication, tmp_path
+) -> None:
+    """条目不足时滚动条隐藏；溢出后可见并占位（不再被 AlwaysOff 藏掉）。"""
+    window = FloatingPoolWindow()
+    try:
+        bar = _prepare_scrolled_window(window, qapp, 3, tmp_path)
+        assert bar.maximum() == 0
+        assert bar.isVisible() is False
+        wide_viewport = window._scroll_area.viewport().width()
+
+        window.set_items(
+            [
+                _item(str(tmp_path / f"more_{i}.txt"), name=f"more_{i}.txt")
+                for i in range(24)
+            ]
+        )
+        _flush_debounce()
+        qapp.processEvents()
+        QTest.qWait(30)
+
+        assert bar.maximum() > 0
+        assert bar.isVisible() is True
+        assert bar.width() > 0
+        assert bar.height() > 0
+        # 滚动条只在溢出时占位：视口变窄恰好一个滚动条宽度
+        assert (
+            window._scroll_area.viewport().width()
+            == wide_viewport - bar.width()
+        )
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_scrollbar_track_click_jumps(
+    qapp: QApplication, tmp_path
+) -> None:
+    """单击滚动条轨道下半部 → 列表跳转（不再只能靠滚轮）。"""
+    window = FloatingPoolWindow()
+    try:
+        bar = _prepare_scrolled_window(window, qapp, 24, tmp_path)
+        assert bar.maximum() > 0
+        bar.setValue(0)
+
+        point = QPoint(bar.width() // 2, bar.height() - 6)
+        bar.mousePressEvent(
+            _mouse_event(
+                QEvent.Type.MouseButtonPress, point, Qt.LeftButton, Qt.LeftButton
+            )
+        )
+
+        assert bar.value() > 0
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_scrollbar_handle_drag_scrolls(
+    qapp: QApplication, tmp_path
+) -> None:
+    """按住滑块向下拖动 → 列表随滑块滚动，释放后退出按下态。"""
+    window = FloatingPoolWindow()
+    try:
+        bar = _prepare_scrolled_window(window, qapp, 24, tmp_path)
+        assert bar.maximum() > 0
+        bar.setValue(0)
+
+        handle = bar._get_handle_rect()
+        start = handle.center().toPoint()
+        bar.mousePressEvent(
+            _mouse_event(
+                QEvent.Type.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton
+            )
+        )
+        assert bar._dragging is True
+
+        moved = QPoint(start.x(), start.y() + 40)
+        bar.mouseMoveEvent(
+            _mouse_event(
+                QEvent.Type.MouseMove, moved, Qt.NoButton, Qt.LeftButton
+            )
+        )
+        assert bar.value() > 0
+
+        bar.mouseReleaseEvent(
+            _mouse_event(
+                QEvent.Type.MouseButtonRelease, moved, Qt.LeftButton, Qt.NoButton
+            )
+        )
+        assert bar._pressed is False
+        assert bar._dragging is False
     finally:
         window.close()
         window.deleteLater()

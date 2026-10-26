@@ -5,7 +5,30 @@
 不进入任务栏，主窗口最小化或被遮挡时仍常驻桌面；``WA_ShowWithoutActivating``
 保证显示 / 重建时不会抢走用户当前应用的输入焦点。
 
-本模块已实现窗口骨架（折叠 / 展开两态、主题化圆角自绘背景与拖动定位）、
+视觉与动效
+----------
+窗口是一个 **透明画布**，真正被看到的是 ``paintEvent`` 里按状态绘制的一张
+「卡片」：窗口几何负责命中区域与布局，卡片几何负责观感，两者解耦后几何
+切换可以在测试可断言的同步语义下仍然播放形变动画。
+
+* **圆形入口（折叠态）**：卡片是正方形，圆角半径恒等于高度的一半 → 完美
+  圆形；悬停时描边泛出主题色微光并轻微放大，配合计数徽标显示池内条目数。
+* **拖入胶囊（Drag-over）**：外部 URL 拖入后窗口横向拉伸（右缘锚定，向左
+  生长）成胶囊，卡片圆角仍是高度的一半，因此形变永远是「圆 → 胶囊」的
+  连续过渡；提示文案随拉伸进度淡入。
+* **成功回弹（Drop Success）**：接收成功后卡片按关键帧做
+  ``1.00 → 0.90 → 1.10 → 0.975 → 1.02 → 1.00`` 的弹性缩放（squish &
+  bounce），随后与展开动画叠加，形成「接住并摊开」的观感。
+* **展开面板（Click-to-Expand）**：点击圆形入口后，卡片从右上角的圆形
+  向外扩散成圆角矩形（``morphProgress`` 0→1，``QEasingCurve.OutQuart``），
+  内容容器同步 mask 到卡片区域，实现「逐步揭示」；收拢时反向播放，动画
+  结束才落定窗口尺寸（圆形恰好落在原位，几何跳变不可见）。
+
+所有动画都是 ``QPropertyAnimation`` 驱动本类的 Qt Property（``morphProgress``
+/ ``dragProgress`` / ``hoverProgress`` / ``pulseScale``），帧内只做绘制与
+一次 ``setFixedSize``，不阻塞事件循环。
+
+本模块实现窗口骨架（折叠 / 展开两态、主题化圆角自绘背景与拖动定位）、
 外部 URL 拖入链路（``dragEnterEvent`` / ``dragMoveEvent`` /
 ``dragLeaveEvent`` / ``dropEvent`` → ``StagingPoolService.build_file_info``
 → ``add_file_requested`` 信号）、展开内容列表（``set_items`` 防抖重建条目行、
@@ -21,15 +44,22 @@ exec 返回后经 :meth:`FloatingPoolWindow._on_drag_finished` 判定落点，
 ``tests/unit/ui/test_floating_pool_window.py``。
 
 Module constants:
-    COLLAPSED_SIZE: 折叠态固定尺寸（胶囊形拖放目标）。
+    COLLAPSED_SIZE: 折叠态窗口尺寸（正方形 → 绘制出的卡片为完美圆形）。
+    DRAG_HOVER_SIZE: 拖入悬停态窗口尺寸（横向拉伸后的胶囊）。
     EXPANDED_SIZE: 展开态固定尺寸（高度会按屏幕可用高度钳制）。
     EXPANDED_HEIGHT_RATIO: 展开态高度占屏幕可用高度的比例上限。
     TITLE_BAR_HEIGHT: 展开态标题栏条带高度（拖动热点区）。
     INITIAL_INSET: 初始定位相对屏幕右上角的内缩距离（px）。
     SNAP_THRESHOLD: 松手后外边缘距屏幕可用区对应边 ≤ 该值时吸附（px）。
-    SNAP_DURATION_MS: 夹回 / 吸附 / 展开重定位位移动画时长（ms，惯性启停缓动）。
+    SNAP_DURATION_MS: 夹回 / 吸附位移动画时长（ms，惯性启停缓动）。
     SETTLE_DELAY_MS: 系统移动循环结束的静默判定窗口（ms，无移动后触发吸附）。
-    COLLAPSED_PLACEHOLDER: 折叠态占位文案。
+    MORPH_DURATION_MS: 圆形 → 面板的展开形变时长（ms）。
+    COLLAPSE_DURATION_MS: 面板 → 圆形的收拢形变时长（ms）。
+    DRAG_STRETCH_DURATION_MS: 圆形 → 胶囊的横向拉伸时长（ms）。
+    HOVER_DURATION_MS: 悬停微光过渡时长（ms）。
+    SUCCESS_BOUNCE_MS: 成功接收回弹动画时长（ms）。
+    FADE_IN_MS: 首次显示的不透明度淡入时长（ms）。
+    DRAG_HINT_TEXT: 拖入悬停态主提示文案。
     EMPTY_HINT_TEXT: 展开态空池引导文案。
     COUNT_LABEL_FORMAT: 展开态计数标签格式（``存储池 (N)``）。
     FLOATING_DRAG_MIME: 条目拖出时携带的自定义判别 MIME 格式。
@@ -38,13 +68,15 @@ Module constants:
 from __future__ import annotations
 
 import os
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 from PySide6.QtCore import (
     QAbstractAnimation,
     QEasingCurve,
     QMimeData,
     QPoint,
+    QPointF,
+    Property,
     QPropertyAnimation,
     QRectF,
     QSize,
@@ -54,6 +86,7 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtGui import (
+    QBrush,
     QCloseEvent,
     QCursor,
     QDrag,
@@ -61,12 +94,17 @@ from PySide6.QtGui import (
     QDragLeaveEvent,
     QDragMoveEvent,
     QDropEvent,
+    QFont,
+    QFontMetrics,
+    QLinearGradient,
     QMouseEvent,
     QMoveEvent,
     QPaintEvent,
     QPainter,
+    QPainterPath,
     QPen,
     QPixmap,
+    QRegion,
     QResizeEvent,
     QShowEvent,
 )
@@ -76,28 +114,33 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLayout,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
-from components.styled_button import StyledButton
+from components.styled_icon_button import StyledIconButton
 from components.styled_scroll_area import StyledScrollArea
 from freeassetfilter.services.staging_pool_service import StagingPoolService
+from freeassetfilter.ui.components.icon_utils import render_icon
 from freeassetfilter.ui.elevated_drop import ElevatedDropFallbackMixin
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 from freeassetfilter.utils.app_logger import debug, info, warning
 from theme import tm
 
-COLLAPSED_SIZE = QSize(140, 48)
-"""QSize: 折叠态固定尺寸。"""
+COLLAPSED_SIZE = QSize(64, 64)
+"""QSize: 折叠态窗口尺寸（正方形，绘制出的卡片为完美圆形）。"""
 
-EXPANDED_SIZE = QSize(280, 360)
+DRAG_HOVER_SIZE = QSize(212, 64)
+"""QSize: 拖入悬停态窗口尺寸（右缘锚定、向左拉伸成胶囊）。"""
+
+EXPANDED_SIZE = QSize(296, 384)
 """QSize: 展开态固定尺寸（宽度固定，高度受屏幕可用高度钳制）。"""
 
 EXPANDED_HEIGHT_RATIO = 0.7
 """float: 展开态高度上限相对屏幕可用高度的比例。"""
 
-TITLE_BAR_HEIGHT = 32
+TITLE_BAR_HEIGHT = 40
 """int: 展开态标题栏条带高度，命中该区域即触发窗口拖动。"""
 
 INITIAL_INSET = 16
@@ -112,11 +155,38 @@ SNAP_DURATION_MS = 220
 SETTLE_DELAY_MS = 150
 """int: 系统移动循环结束的静默判定窗口（ms，无移动事件后触发吸附）。"""
 
+MORPH_DURATION_MS = 320
+"""int: 圆形 → 展开面板的形变时长（ms，``QEasingCurve.OutQuart``）。"""
+
+COLLAPSE_DURATION_MS = 200
+"""int: 展开面板 → 圆形的收拢时长（ms，``QEasingCurve.InCubic``）。"""
+
+DRAG_STRETCH_DURATION_MS = 240
+"""int: 拖入时圆形 → 胶囊的横向拉伸时长（ms）。"""
+
+HOVER_DURATION_MS = 160
+"""int: 悬停微光 / 轻微放大的过渡时长（ms）。"""
+
+SUCCESS_BOUNCE_MS = 520
+"""int: 成功接收的 squish & bounce 关键帧动画时长（ms）。"""
+
+FADE_IN_MS = 180
+"""int: 首次显示时的不透明度淡入时长（ms）。"""
+
 COLLAPSED_PLACEHOLDER = "拖入文件"
-"""str: 折叠态居中显示的占位文案。"""
+"""str: 折叠态占位文案（保留常量用于兼容，现由自绘图标替代显示）。"""
+
+DRAG_HINT_TEXT = "拖拽文件到此处"
+"""str: 拖入悬停态的主提示文案。"""
+
+DRAG_HINT_SUB_TEXT = "松开即加入存储池"
+"""str: 拖入悬停态的辅助提示文案。"""
 
 EMPTY_HINT_TEXT = "拖入文件到浮窗加入存储池"
 """str: 展开态空池时显示的引导文案。"""
+
+EMPTY_HINT_SUB_TEXT = "支持拖入多个文件或文件夹"
+"""str: 展开态空池时的辅助说明。"""
 
 COUNT_LABEL_FORMAT = "存储池 ({count})"
 """str: 展开态标题栏计数标签格式。"""
@@ -130,23 +200,71 @@ FLOATING_DRAG_MIME = "application/x-faf-floating-drag"
 _ROW_HEIGHT = 56
 """int: 展开态单个条目行的固定高度（px，48 图标 + 上下各 4 边距）。"""
 
-_RADIUS = 12
-"""int: 自绘圆角背景的圆角半径。"""
+_TITLE_ROW_HEIGHT = 32
+"""int: 展开态标题行高度（px）。"""
+
+_TITLE_DOT_SPACE = 14
+"""int: 标题标签左侧留给强调色圆点的内边距（px）。"""
+
+_ROW_RADIUS = 8
+"""int: 条目行卡片的圆角半径。"""
+
+_CARD_MARGIN = 4
+"""int: 卡片相对窗口边界的留白（px），用于绘制外发光与回弹缩放余量。"""
+
+_PANEL_RADIUS = 14
+"""int: 展开面板卡片的圆角半径。"""
+
+_SCROLL_BAR_WIDTH = 4
+"""int: 竖向滚动条滑块常态宽度（px，命中宽度由 ``sizeHint()`` 的 8px 提供）。"""
+
+_SCROLL_BAR_HOVER_WIDTH = 6
+"""int: 竖向滚动条滑块悬停 / 拖动时的宽度（px）。"""
+
+_FONT_CACHE: dict = {}
+"""dict: ``(像素尺寸, 字重)`` → ``QFont`` 缓存（绘制路径避免逐帧构造）。"""
+
+
+def _ui_font(pixel_size: int, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
+    """返回按像素尺寸缓存的界面字体。
+
+    Args:
+        pixel_size: 字号（逻辑像素，随 DPI 自动缩放）。
+        weight: 字重枚举。
+
+    Returns:
+        QFont: 共享字体对象（调用方不得修改）。
+    """
+    key = (int(pixel_size), int(weight))
+    font = _FONT_CACHE.get(key)
+    if font is None:
+        font = QFont(QApplication.font())
+        font.setPixelSize(int(pixel_size))
+        font.setWeight(weight)
+        _FONT_CACHE[key] = font
+    return font
 
 
 class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
     """全局存储池浮窗窗口本体（无父顶层 Tool 置顶窗口）。
 
-    折叠态是一个小的拖放目标胶囊，展开态是固定尺寸的存储池面板。窗口本体
-    只负责窗口标志 / 属性、两态几何切换、主题圆角自绘、拖动定位与展开态
-    内容列表渲染；池数据拖入 / 拖出由信号桥接到主池。
+    折叠态是一个圆形拖放入口，拖入时横向拉伸为胶囊，展开态是固定尺寸的
+    存储池面板。窗口本体只负责窗口标志 / 属性、两态几何切换、主题化卡片
+    自绘、动效编排、拖动定位与展开态内容列表渲染；池数据拖入 / 拖出由信号
+    桥接到主池。
 
     Attributes:
         add_file_requested: 拖入有效文件 / 目录后发射，携带
             ``StagingPoolService.build_file_info`` 产出的文件信息字典。
         remove_file_requested: 条目拖出面板且落点为外部（非本应用窗口）时
             发射，负载为被拖出文件的路径字符串（由主窗口接线到主池移除）。
-        _expanded: 当前是否处于展开态。
+        _expanded: 当前是否处于展开态（状态语义，立即翻转）。
+        _visual_expanded: 绘制语义上的展开态（收拢动画期间仍为 True）。
+        _morph: 圆形 ↔ 面板的形变进度（0 = 圆形，1 = 面板）。
+        _drag_progress: 拖入胶囊的拉伸进度（0 = 圆形，1 = 胶囊）。
+        _hover_progress: 悬停微光进度（0–1）。
+        _pulse: 绘制缩放倍率（回弹 / 按压反馈，静止时为 1.0）。
+        _count: 池内条目数（折叠态计数徽标）。
         _content: 展开态内容容器（可见性跟随 ``_expanded``）。
         _count_label: 标题栏计数标签（文本 ``存储池 (N)``）。
         _collapse_button: 标题栏折叠按钮（点击回到折叠态）。
@@ -154,7 +272,7 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         _rows_container: 滚动区内容容器。
         _rows_layout: 条目行垂直布局（含空态提示与尾部弹簧）。
         _rows: 当前条目行 widget 列表（``_PoolItemRow``）。
-        _empty_hint: 空池引导标签（仅零条目时可见）。
+        _empty_hint: 空池引导控件（仅零条目时可见）。
         _debounce_timer: 单次防抖定时器，合并同轮 ``set_items`` 调用。
         _drag_active: 拖出手势是否进行中（防抖回调据此互斥）。
         _pending_items: 待重建的条目列表；``None`` 表示"从未收到更新"或
@@ -166,6 +284,9 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         _snap_enabled: 是否启用贴边吸附（``set_snap_enabled`` 切换）。
         _settle_timer: 单次静默定时器，系统移动结束后触发夹回 / 吸附。
         _move_anim: 在途的 ``QPropertyAnimation``（``pos`` 属性）；无则 None。
+        _geometry_anim_active: 拉伸形变引起的程序化位移期间为 True
+            （``moveEvent`` 据此不再重启静默定时器）。
+        _collapse_pending: 收拢动画在途（窗口几何尚未落定）为 True。
         _internal_moving: 程序化移动（动画 / 初始化）期间为 True，抑制静默定时器。
         _theme_conn: ``tm.theme_changed`` 的连接对象（销毁时断开用）。
         _drag_move_logged: 本次外部拖拽是否已记录过 ``dragMoveEvent``
@@ -178,6 +299,103 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
     remove_file_requested = Signal(str)
     """Signal(str): 条目拖出且落点为外部时发射，负载为源文件路径。"""
 
+    # ── 动画驱动的 Qt Property ───────────────────────────────────
+
+    def _get_morph(self) -> float:
+        """返回圆形 ↔ 面板形变进度。
+
+        Returns:
+            float: 0（圆形）到 1（完整面板）。
+        """
+        return self._morph
+
+    def _set_morph(self, value: float) -> None:
+        """写入形变进度（同步内容裁剪并请求重绘）。
+
+        Args:
+            value: 目标进度（越界自动钳制到 0–1）。
+        """
+        value = max(0.0, min(1.0, float(value)))
+        if value == self._morph:
+            return
+        self._morph = value
+        self._sync_content_mask()
+        self.update()
+
+    morphProgress = Property(float, _get_morph, _set_morph)
+    """float: 圆形 → 展开面板的形变进度（``QPropertyAnimation`` 驱动）。"""
+
+    def _get_drag_progress(self) -> float:
+        """返回拖入胶囊的拉伸进度。
+
+        Returns:
+            float: 0（圆形）到 1（完整胶囊）。
+        """
+        return self._drag_progress
+
+    def _set_drag_progress(self, value: float) -> None:
+        """写入拉伸进度（同步窗口宽度并请求重绘）。
+
+        Args:
+            value: 目标进度（越界自动钳制到 0–1）。
+        """
+        value = max(0.0, min(1.0, float(value)))
+        if value == self._drag_progress:
+            return
+        self._drag_progress = value
+        if not self._expanded and not self._collapse_pending:
+            self._apply_collapsed_geometry()
+        self.update()
+
+    dragProgress = Property(float, _get_drag_progress, _set_drag_progress)
+    """float: 拖入胶囊的横向拉伸进度（``QPropertyAnimation`` 驱动）。"""
+
+    def _get_hover_progress(self) -> float:
+        """返回悬停微光进度。
+
+        Returns:
+            float: 0（未悬停）到 1（完全悬停）。
+        """
+        return self._hover_progress
+
+    def _set_hover_progress(self, value: float) -> None:
+        """写入悬停进度并请求重绘。
+
+        Args:
+            value: 目标进度（越界自动钳制到 0–1）。
+        """
+        value = max(0.0, min(1.0, float(value)))
+        if value == self._hover_progress:
+            return
+        self._hover_progress = value
+        self.update()
+
+    hoverProgress = Property(float, _get_hover_progress, _set_hover_progress)
+    """float: 悬停微光进度（``QPropertyAnimation`` 驱动）。"""
+
+    def _get_pulse(self) -> float:
+        """返回绘制缩放倍率。
+
+        Returns:
+            float: 静止 1.0；按压 < 1，回弹 > 1。
+        """
+        return self._pulse
+
+    def _set_pulse(self, value: float) -> None:
+        """写入绘制缩放倍率并请求重绘。
+
+        Args:
+            value: 缩放倍率（钳制到 0.80–1.25）。
+        """
+        value = max(0.80, min(1.25, float(value)))
+        if value == self._pulse:
+            return
+        self._pulse = value
+        self.update()
+
+    pulseScale = Property(float, _get_pulse, _set_pulse)
+    """float: 卡片绘制缩放倍率（按压 squish / 成功回弹）。"""
+
     def __init__(self) -> None:
         """构造浮窗：设置窗口标志 / 属性、构建展开内容、进入折叠态并定位。"""
         super().__init__(
@@ -187,11 +405,12 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setAcceptDrops(True)
+        self.setMouseTracking(True)
 
+        # 状态位（延后预声明：None 区分"从未收到更新"（防抖）/"无宿主窗口"）。
         self._expanded = False
-        self._radius = _RADIUS
-
-        # 延后预声明状态：None 区分"从未收到更新"（防抖）/"无宿主窗口"。
+        self._visual_expanded = False
+        self._collapse_pending = False
         self._drag_active = False
         # 外部拖入日志去重（dragMoveEvent 每次拖拽仅记录一次；纯日志状态）。
         self._drag_move_logged = False
@@ -204,7 +423,23 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         # 贴边吸附 / 惯性位移动画状态。
         self._snap_enabled = True
         self._internal_moving = False
+        self._geometry_anim_active = False
         self._move_anim: Optional[QPropertyAnimation] = None
+
+        # 动效进度（绘制输入）。
+        self._morph = 1.0 if self._expanded else 0.0
+        self._drag_progress = 0.0
+        self._hover_progress = 0.0
+        self._pulse = 1.0
+        self._count = 0
+        self._shown_once = False
+
+        # 动画句柄（每次启动前先停旧的，避免叠加）。
+        self._morph_anim: Optional[QPropertyAnimation] = None
+        self._drag_anim: Optional[QPropertyAnimation] = None
+        self._hover_anim: Optional[QPropertyAnimation] = None
+        self._pulse_anim: Optional[QPropertyAnimation] = None
+        self._fade_anim: Optional[QPropertyAnimation] = None
 
         self._build_content()
 
@@ -232,45 +467,48 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
     # ── 展开内容构建 ────────────────────────────────────────────
 
     def _build_content(self) -> None:
-        """构建展开态内容：标题行（计数 + 折叠按钮）+ 滚动条目列表 + 空态提示。
+        """构建展开态内容：标题行（强调色圆点 + 计数 + 折叠按钮）+ 滚动条目列表 + 空态提示。
 
         内容容器 ``self._content`` 覆盖整个窗口，可见性跟随展开态（折叠态
-        隐藏以保证折叠占位文案自绘干净）。标题栏条带严格位于顶部
-        ``TITLE_BAR_HEIGHT`` 像素内，保证 ``_is_drag_region`` 判定准确。
+        隐藏以保证圆形入口自绘干净）。标题栏条带严格位于顶部
+        ``TITLE_BAR_HEIGHT`` 像素内，保证 ``_is_drag_region`` 判定准确；
+        ``_CARD_MARGIN`` 的卡片留白折算进布局边距，使内容不压住圆角描边。
         """
         self._content = QWidget(self)
         self._content.setAttribute(Qt.WA_TranslucentBackground)
 
         root_layout = QVBoxLayout(self._content)
-        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setContentsMargins(
+            _CARD_MARGIN + 12,
+            _CARD_MARGIN + 4,
+            _CARD_MARGIN + 10,
+            _CARD_MARGIN + 8,
+        )
         root_layout.setSpacing(0)
 
         # 标题行：计数标签（鼠标透传）+ 折叠按钮（标题区唯一消费点击的控件）
         title_row = QWidget(self._content)
-        title_row.setFixedHeight(TITLE_BAR_HEIGHT)
+        title_row.setFixedHeight(_TITLE_ROW_HEIGHT)
         title_layout = QHBoxLayout(title_row)
-        title_layout.setContentsMargins(12, 0, 6, 0)
+        title_layout.setContentsMargins(0, 0, 0, 0)
         title_layout.setSpacing(6)
 
         self._count_label = QLabel(
             COUNT_LABEL_FORMAT.format(count=0), title_row
         )
         self._count_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        register_widget_qss(
-            self._count_label,
-            "background: transparent; border: none;",
-        )
+        self._count_label.setFont(_ui_font(12, QFont.Weight.DemiBold))
         title_layout.addWidget(self._count_label)
         title_layout.addStretch(1)
 
-        self._collapse_button = StyledButton(
-            "▴",
-            variant="ghost",
+        self._collapse_button = StyledIconButton(
+            "chevron_down",
             size="sm",
+            shape="circle",
+            variant="ghost",
+            tooltip="折叠",
             parent=title_row,
         )
-        self._collapse_button.setFixedSize(24, 24)
-        self._collapse_button.setToolTip("折叠")
         self._collapse_button.clicked.connect(
             lambda: self.set_expanded(False)
         )
@@ -278,17 +516,21 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
 
         root_layout.addWidget(title_row)
 
-        # 滚动条目列表（隐藏原生滚动条，滚动范围仍由 Qt 维护）
+        # 滚动条目列表：竖向滚动条必须是**真正可见**的 ``StyledScrollBar``
+        # （``StyledScrollArea`` 构造时已装入），支持滑块拖动与轨道点击跳转；
+        # 历史实现用 ``ScrollBarAlwaysOff`` 把整条滚动条藏掉，只剩滚轮可用。
         self._scroll_area = StyledScrollArea(self._content)
         self._scroll_area.setWidgetResizable(True)
         self._scroll_area.setFrameShape(QFrame.NoFrame)
         self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        # 只对滚动区自身去底色：无选择器的片段会泄漏到子控件（含滚动条）。
         register_widget_qss(
             self._scroll_area,
-            "background-color: transparent; border: none;",
+            "QScrollArea { background-color: transparent; border: none; }",
         )
         self._scroll_area.viewport().setAutoFillBackground(False)
+        self._style_vertical_scrollbar()
         root_layout.addWidget(self._scroll_area, 1)
 
         self._rows_container = QWidget()
@@ -298,21 +540,19 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         )
         self._rows_layout = QVBoxLayout(self._rows_container)
         self._rows_layout.setContentsMargins(6, 4, 6, 4)
-        self._rows_layout.setSpacing(2)
+        self._rows_layout.setSpacing(4)
         # widgetResizable 的 QScrollArea 依据容器 minimumSize 计算滚动范围，
         # 而非布局 minimumSizeHint；SetMinAndMaxSize 把容器最小/最大尺寸
         # 绑到布局尺寸，条目溢出时滚动条范围（range）才会 > 0。
         self._rows_layout.setSizeConstraint(QLayout.SetMinAndMaxSize)
 
-        self._empty_hint = QLabel(EMPTY_HINT_TEXT, self._rows_container)
-        self._empty_hint.setAlignment(Qt.AlignCenter)
+        # 空态：自绘图标 + 主 / 辅助文案（布局常驻，垂直弹性伸缩以居中）
+        self._empty_hint = _EmptyState(self._rows_container)
         self._empty_hint.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        register_widget_qss(
-            self._empty_hint,
-            "background: transparent; border: none;",
+        self._empty_hint.setSizePolicy(
+            QSizePolicy.Preferred, QSizePolicy.Expanding
         )
-        # 布局常驻：空态提示 + 尾部弹簧；条目行插入到弹簧之前。
-        self._rows_layout.addWidget(self._empty_hint)
+        self._rows_layout.addWidget(self._empty_hint, 1)
         self._rows_layout.addStretch(1)
         self._scroll_area.setWidget(self._rows_container)
 
@@ -320,19 +560,56 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
 
         self._content.setGeometry(self.rect())
         self._content.setVisible(self._expanded)
+        self._apply_label_styles()
+
+    def _style_vertical_scrollbar(self) -> None:
+        """校准竖向 ``StyledScrollBar`` 的视觉度量（与主界面浮动滚动条同口径）。
+
+        滚动条命中宽度来自 ``sizeHint()``（8px）；滑块本体只 4px（悬停 /
+        拖动时 6px）、2px 贴边内缩 —— 与 ``StyledScrollArea`` 默认值一致，
+        这里显式声明以便浮窗面板跟随同一套视觉参数。
+        """
+        configure = getattr(
+            self._scroll_area.verticalScrollBar(), "configure", None
+        )
+        if callable(configure):
+            configure(
+                normal_width=_SCROLL_BAR_WIDTH,
+                hover_width=_SCROLL_BAR_HOVER_WIDTH,
+                padding=2,
+            )
+
+    def _apply_label_styles(self) -> None:
+        """按当前主题重注册标题标签样式（强调色圆点由 ``paintEvent`` 绘制）。"""
+        register_widget_qss(
+            self._count_label,
+            "background: transparent; border: none;"
+            f" padding-left: {_TITLE_DOT_SPACE}px;"
+            f" color: {tm.text.name()};"
+            " font-size: 12px; font-weight: 600;",
+        )
 
     # ── 两态切换 ────────────────────────────────────────────────
 
     def set_expanded(self, expanded: bool) -> None:
-        """切换折叠 / 展开态（尺寸即时 + 位置动画），保持窗口右边缘锚定。
+        """切换折叠 / 展开态（状态立即翻转，形变异步播放）。
 
-        切换改变的是固定尺寸而非位置：先记录切换前的右边缘，切换尺寸后令右边缘
-        回到原位（左边缘随宽度反向推移），使面板向左侧生长而不是越过屏幕右缘。
+        展开：尺寸与位置**同帧原子更新**（``setGeometry`` 一次平台调用），
+        右边缘保持不动、面板向左生长。之所以不再分两步（先 ``setFixedSize``
+        再位移动画）：卡片始终锚定在窗口右缘，右缘不动就意味着卡片在屏幕上
+        根本不需要位移；分两步反而会让窗口先向右多出一个面板宽度（面板被
+        推到屏幕外）再滑回来。位置钳制（靠近屏幕下缘时上移）也随原子几何一步
+        到位，由 ``morphProgress`` 的展开形变承担全部动效。
+
+        收起：``_expanded`` 立即为 False（对外状态同步可断言），但**几何落定
+        推迟到收拢动画结束**——可见窗口先播放面板缩回圆形的形变，再一次性把
+        窗口缩到 ``COLLAPSED_SIZE`` 并保持右边缘锚定，于是圆形恰好落在动画
+        终点、几何跳变不可见。窗口不可见（测试 / 未上屏）时无从观看动画，
+        直接同步落定。
+
         锚定得到的左边缘与当前上边缘一并钳入当前屏幕可用区域
         （``QApplication.screenAt`` → ``availableGeometry``，x / y 均为包含式
-        边界，防止展开后下缘越出屏幕）；无可用屏幕时保留当前位置不动（不抛异常）。
-        尺寸经 ``setFixedSize`` 即时生效，位置位移（单次合并 x / y 的动画）经
-        :meth:`_animate_move` 以惯性启停缓动完成（``is_snapping()`` 可探测）。
+        边界，防止展开后下缘越出屏幕）；无可用屏幕时保留当前位置不动。
 
         Args:
             expanded: True 进入展开态，False 回到折叠态。
@@ -341,25 +618,63 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         if expanded == self._expanded:
             self.update()
             return
-        self._expanded = expanded
         right_edge = self.x() + self.width()
+
+        if expanded:
+            self._expanded = True
+            self._visual_expanded = True
+            self._collapse_pending = False
+            self._reset_drag_state()
+            target_size = self._expanded_size()
+            target = self._clamped_position(target_size, right_edge, self.y())
+            self._stop_move_animation()
+            self._settle_timer.stop()
+            self._internal_moving = True
+            self.setGeometry(
+                target.x(),
+                target.y(),
+                target_size.width(),
+                target_size.height(),
+            )
+            self._internal_moving = False
+            self._apply_state_geometry()
+            self._animate_morph(1.0)
+            self.update()
+            return
+
+        self._expanded = False
+        if self.isVisible() and self._morph > 0.01:
+            # 可见：几何滞后到收拢动画结束再落定（圆形落在动画终点）。
+            self._collapse_pending = True
+            self._animate_morph(0.0, finished=self._finish_collapse)
+            return
+        self._finish_collapse()
+
+    def _finish_collapse(self) -> None:
+        """收拢落定：缩回折叠尺寸、右缘锚定、复位形变 / 蒙版并重绘。"""
+        self._collapse_pending = False
+        right_edge = self.x() + self.width()
+        target_size = self._target_size()
+        target = self._clamped_position(target_size, right_edge, self.y())
+        self._visual_expanded = False
+        # 收拢动画已把圆形画到窗口右上角：此处纯几何收边，位置跳变不可见。
+        # 尺寸与位置一次 `setGeometry` 同时生效，避免中间帧错位；位移是
+        # 程序化的，抑制静默定时器，避免折叠后又被吸附规则挪动。
+        self._stop_move_animation()
+        self._settle_timer.stop()
+        self._internal_moving = True
+        self.setGeometry(
+            target.x(),
+            target.y(),
+            target_size.width(),
+            target_size.height(),
+        )
+        self._internal_moving = False
         self._apply_state_geometry()
-        new_x = right_edge - self.width()
-        new_y = self.y()
-        screen = QApplication.screenAt(self.pos())
-        if screen is None:
-            screen = QApplication.primaryScreen()
-        if screen is not None:
-            avail = screen.availableGeometry()
-            new_x = max(
-                avail.left(),
-                min(new_x, avail.right() - self.width() + 1),
-            )
-            new_y = max(
-                avail.top(),
-                min(new_y, avail.bottom() - self.height() + 1),
-            )
-        self._animate_move(QPoint(new_x, new_y))
+        self._stop_animation("_pulse_anim")
+        self._pulse = 1.0
+        self._morph = 0.0
+        self._sync_content_mask()
         self.update()
 
     def is_expanded(self) -> bool:
@@ -374,11 +689,20 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         """返回当前状态下应使用的固定尺寸。
 
         Returns:
-            QSize: 折叠态为 ``COLLAPSED_SIZE``，展开态为钳制后的展开尺寸。
+            QSize: 展开态为钳制后的展开尺寸；折叠态为按拖入进度插值的宽度
+            （进度为 0 时即 ``COLLAPSED_SIZE``）。
         """
-        if not self._expanded:
-            return COLLAPSED_SIZE
-        return self._expanded_size()
+        if self._expanded:
+            return self._expanded_size()
+        base = COLLAPSED_SIZE
+        progress = self._drag_progress
+        if progress <= 0.0:
+            return QSize(base)
+        width = round(
+            base.width()
+            + (DRAG_HOVER_SIZE.width() - base.width()) * progress
+        )
+        return QSize(width, base.height())
 
     def _expanded_size(self) -> QSize:
         """计算展开态尺寸：高度钳制到屏幕可用高度的 70%。
@@ -405,17 +729,51 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
     def _apply_state_geometry(self) -> None:
         """把当前状态的固定尺寸应用到窗口（``setFixedSize``）。
 
-        同时同步展开内容容器的几何与可见性（折叠态隐藏内容，保证折叠占位
-        文案自绘干净）。
+        同时同步展开内容容器的几何、可见性与裁剪蒙版（折叠态隐藏内容，
+        保证圆形入口自绘干净）。
         """
         self.setFixedSize(self._target_size())
         content = getattr(self, "_content", None)
         if content is not None:
             content.setGeometry(self.rect())
             content.setVisible(self._expanded)
+        self._sync_content_mask()
+
+    def _apply_collapsed_geometry(self) -> None:
+        """折叠态宽度变化（拖入拉伸）：保持右边缘锚定并同步内容几何。"""
+        target = self._target_size()
+        if target == self.size():
+            return
+        right_edge = self.x() + self.width()
+        self.setFixedSize(target)
+        self.move(right_edge - target.width(), self.y())
+
+    def _clamped_position(
+        self, size: QSize, right_edge: int, top: int
+    ) -> QPoint:
+        """按「右缘锚定 + 完整落入可用区」计算目标左上角坐标。
+
+        Args:
+            size: 目标窗口尺寸。
+            right_edge: 期望保持不变的右边缘全局 x（包含式）。
+            top: 期望的窗口上边缘全局 y。
+
+        Returns:
+            QPoint: 钳制后的左上角全局坐标；无可用屏幕时退回未钳制值。
+        """
+        x = right_edge - size.width()
+        y = top
+        screen = QApplication.screenAt(self.pos())
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            x = max(avail.left(), min(x, avail.right() - size.width() + 1))
+            y = max(avail.top(), min(y, avail.bottom() - size.height() + 1))
+        return QPoint(x, y)
 
     def resizeEvent(self, event: QResizeEvent) -> None:
-        """窗口尺寸变化时同步展开内容容器几何。
+        """窗口尺寸变化时同步展开内容容器几何与裁剪蒙版。
 
         Args:
             event: 尺寸变化事件（交回基类处理）。
@@ -424,19 +782,23 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         content = getattr(self, "_content", None)
         if content is not None:
             content.setGeometry(self.rect())
+        self._sync_content_mask()
 
     def showEvent(self, event: QShowEvent) -> None:
-        """显示时输出一次性诊断日志（HWND / 拖放注册状态）。
+        """显示时淡入并输出一次性诊断日志（HWND / 拖放注册状态）。
 
-        仅日志、无行为变化：真实运行环境下排查「外部拖入未达
-        ``dragEnterEvent``」类缺陷时，可仅凭日志文件判断窗口是否可见、原生句柄
-        是否建立、以及 Qt 的 ``WA_DropSiteRegistered``（OLE 投放目标是否真正
-        注册到该 HWND）是否就位。只记录一次，避免重复 show 刷屏。
+        淡入只在首次显示时播放（``windowOpacity`` 0→1），避免每次从主窗口
+        切回都被重播；诊断日志仅一次，避免重复 show 刷屏——真实运行环境下
+        排查「外部拖入未达 ``dragEnterEvent``」类缺陷时可仅凭日志判断窗口
+        是否可见、原生句柄是否建立、``WA_DropSiteRegistered`` 是否就位。
 
         Args:
             event: 显示事件（交回基类处理）。
         """
         super().showEvent(event)
+        if not self._shown_once:
+            self._shown_once = True
+            self._fade_in()
         if self._shown_diag_logged:
             return
         self._shown_diag_logged = True
@@ -460,7 +822,7 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
             warning(f"[floating_pool] shown diagnostics 失败: {exc}")
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        """关闭前停止防抖 / 静默定时器与位移动画，避免销毁后残留回调触发。
+        """关闭前停止全部定时器 / 动画并恢复不透明度，避免销毁后残留回调。
 
         Args:
             event: 关闭事件（交回基类处理）。
@@ -468,10 +830,23 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         self._debounce_timer.stop()
         self._settle_timer.stop()
         self._stop_move_animation()
+        for attr in (
+            "_morph_anim",
+            "_drag_anim",
+            "_hover_anim",
+            "_pulse_anim",
+            "_fade_anim",
+        ):
+            self._stop_animation(attr)
+        try:
+            self.setWindowOpacity(1.0)
+        except RuntimeError:
+            pass
+        self._collapse_pending = False
         super().closeEvent(event)
 
     def _on_theme_refresh(self, *_args) -> None:
-        """主题/配色变化：重绘自身并重建全部条目行图标。
+        """主题/配色变化：重绘自身、重注册文字样式并重建全部条目行图标。
 
         行图标在构造时经 ``setPixmap`` 存入 ``QLabel``，类型图标含主题色
         替换，不会自动跟随；必须逐行重取回填，否则一直显示旧配色（历史
@@ -480,6 +855,7 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         Args:
             *_args: 主题信号附带参数（未使用）。
         """
+        self._apply_label_styles()
         self.update()
         for row in self._rows:
             try:
@@ -509,61 +885,593 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
 
     # ── 绘制 ────────────────────────────────────────────────────
 
-    def paintEvent(self, event: QPaintEvent) -> None:
-        """自绘主题化圆角背景 + 1px 边框；折叠态居中绘制占位文案。
+    def _card_rect(self) -> QRectF:
+        """返回卡片（可见圆角矩形）在窗口内的矩形。
 
-        颜色实时取自主题（``tm.surface`` 85% 填充、``tm.mid``/``tm.text`` 30%
-        边框），与 ``styled_floating_panel.FloatingPanel.paintEvent`` 同款口径。
+        折叠态：铺满窗口留白内的整个区域，圆角半径取高度一半 → 进度为 0
+        时是完美圆形，拖入拉伸后是连续过渡出的胶囊。展开态：从右上角的
+        圆形按 ``_morph`` 向左 / 向下扩散到完整面板。
+
+        Returns:
+            QRectF: 卡片矩形（窗口本地坐标）。
+        """
+        width = max(1.0, float(self.width() - 2 * _CARD_MARGIN))
+        height = max(1.0, float(self.height() - 2 * _CARD_MARGIN))
+        if not self._visual_expanded:
+            return QRectF(
+                float(_CARD_MARGIN), float(_CARD_MARGIN), width, height
+            )
+        progress = self._morph
+        diameter = max(1.0, float(COLLAPSED_SIZE.height() - 2 * _CARD_MARGIN))
+        card_w = diameter + (width - diameter) * progress
+        card_h = diameter + (height - diameter) * progress
+        return QRectF(
+            _CARD_MARGIN + width - card_w,
+            float(_CARD_MARGIN),
+            card_w,
+            card_h,
+        )
+
+    def _card_radius(self, card: QRectF) -> float:
+        """返回卡片圆角半径（折叠态恒为高度一半，展开态插值到面板圆角）。
+
+        Args:
+            card: 当前卡片矩形。
+
+        Returns:
+            float: 圆角半径（px）。
+        """
+        if not self._visual_expanded:
+            return card.height() / 2.0
+        progress = self._morph
+        radius = card.height() / 2.0 * (1.0 - progress) + _PANEL_RADIUS * progress
+        return max(_PANEL_RADIUS * 0.6, min(radius, card.height() / 2.0))
+
+    def _effective_pulse(self, card: QRectF) -> float:
+        """把回弹缩放钳制在留白余量内（放大不得越出窗口被裁切）。
+
+        Args:
+            card: 当前卡片矩形。
+
+        Returns:
+            float: 实际使用的缩放倍率。
+        """
+        span = max(1.0, min(card.width(), card.height()))
+        limit = 1.0 + (2.0 * _CARD_MARGIN) / span
+        return max(0.80, min(self._pulse, limit))
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        """自绘主题化卡片：渐变底 + 玻璃边缘 + 拖放发光 + 圆形入口内容。
+
+        配色实时取自主题（``tm`` 语义 token），与
+        ``styled_floating_panel.FloatingPanel.paintEvent`` 同口径；拖放高亮
+        沿用 ``dragActive`` 动态属性，悬停 / 拖入 / 回弹由动画进度驱动。
 
         Args:
             event: 绘制事件（未直接使用）。
         """
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        width = self.width()
-        height = self.height()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setRenderHint(QPainter.TextAntialiasing, True)
 
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(tm.alpha_of(tm.surface, 85))
-        painter.drawRoundedRect(
-            QRectF(0, 0, width, height), self._radius, self._radius
-        )
+        card = self._card_rect()
+        radius = self._card_radius(card)
+        scale = self._effective_pulse(card)
+        if abs(scale - 1.0) > 1e-3:
+            anchor = QPointF(card.right(), card.top())
+            painter.translate(anchor)
+            painter.scale(scale, scale)
+            painter.translate(-anchor)
 
-        painter.setPen(
-            QPen(
-                tm.alpha_of(tm.mid if tm.is_dark_theme() else tm.text, 30),
-                1,
-            )
-        )
+        # 悬停微光只作用于圆形入口；展开面板保持克制，避免整块面板持续发光。
+        glow = 0.0
+        if self.property("dragActive"):
+            glow = 1.0
+        elif not self._visual_expanded:
+            glow = self._hover_progress * 0.6
+        self._paint_glow(painter, card, radius, glow)
+        self._paint_surface(painter, card, radius)
+
+        if self._visual_expanded:
+            self._paint_panel_furniture(painter, card)
+        else:
+            self._paint_circle_content(painter, card)
+
+        self._paint_border(painter, card, radius, glow)
+        painter.end()
+
+    def _paint_glow(
+        self, painter: QPainter, card: QRectF, radius: float, glow: float
+    ) -> None:
+        """绘制卡片外圈的主题色光晕（悬停微光 / 拖入高亮）。
+
+        Args:
+            painter: 绘制器。
+            card: 卡片矩形。
+            radius: 卡片圆角半径。
+            glow: 光晕强度（0–1）。
+        """
+        if glow <= 0.01:
+            return
         painter.setBrush(Qt.NoBrush)
-        painter.drawRoundedRect(
-            QRectF(0.5, 0.5, width - 1, height - 1),
-            self._radius,
-            self._radius,
+        for step, alpha in ((1.5, 30.0), (3.0, 18.0), (4.5, 9.0)):
+            painter.setPen(
+                QPen(tm.alpha_of(tm.accent, alpha * glow), 1.0 + step * 0.7)
+            )
+            painter.drawRoundedRect(
+                card.adjusted(-step, -step, step, step),
+                radius + step,
+                radius + step,
+            )
+
+    def _paint_surface(
+        self, painter: QPainter, card: QRectF, radius: float
+    ) -> None:
+        """绘制卡片底：下沉阴影 + 主题渐变填充 + 拖入强调色叠加。
+
+        Args:
+            painter: 绘制器。
+            card: 卡片矩形。
+            radius: 卡片圆角半径。
+        """
+        dark = tm.is_dark_theme()
+        painter.setPen(Qt.NoPen)
+
+        # 1) 底部柔和投影（留白内，模拟轻量抬升）
+        painter.setBrush(
+            tm.alpha_of(tm.black if dark else tm.text, 30 if dark else 16)
         )
+        painter.drawRoundedRect(card.translated(0, 1.5), radius, radius)
+
+        # 2) 垂直渐变底：上亮下稍实，接近亚克力板材的透光层次
+        gradient = QLinearGradient(card.topLeft(), card.bottomLeft())
+        if dark:
+            gradient.setColorAt(0.0, tm.alpha_of(tm.surface, 90))
+            gradient.setColorAt(1.0, tm.alpha_of(tm.surface, 78))
+        else:
+            gradient.setColorAt(0.0, tm.alpha_of(tm.white, 95))
+            gradient.setColorAt(1.0, tm.alpha_of(tm.white, 86))
+        painter.setBrush(QBrush(gradient))
+        painter.drawRoundedRect(card, radius, radius)
+
+        # 3) 拖入态强调色薄层（与光晕一起构成明确的接收反馈）
+        if self.property("dragActive"):
+            painter.setBrush(tm.alpha_of(tm.accent, 14))
+            painter.drawRoundedRect(card, radius, radius)
+
+    def _paint_border(
+        self, painter: QPainter, card: QRectF, radius: float, glow: float
+    ) -> None:
+        """绘制卡片描边、顶部玻璃高光与拖入强调色边框。
+
+        Args:
+            painter: 绘制器。
+            card: 卡片矩形。
+            radius: 卡片圆角半径。
+            glow: 光晕强度（0–1，决定描边向强调色过渡的程度）。
+        """
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(tm.card_border, 1))
+        painter.drawRoundedRect(
+            card.adjusted(0.5, 0.5, -0.5, -0.5),
+            max(0.0, radius - 0.5),
+            max(0.0, radius - 0.5),
+        )
+
+        # 顶部玻璃高光：只在内侧直边段绘制，避免压进圆角
+        if card.width() > 2.0 * radius and card.height() > 4.0:
+            painter.setPen(
+                QPen(tm.alpha_of(tm.white, 26 if tm.is_dark_theme() else 78), 1)
+            )
+            painter.drawLine(
+                QPointF(card.left() + radius, card.top() + 1.0),
+                QPointF(card.right() - radius, card.top() + 1.0),
+            )
 
         if self.property("dragActive"):
-            painter.setPen(QPen(tm.accent, 2))
+            painter.setPen(QPen(tm.accent, 1.6))
             painter.drawRoundedRect(
-                QRectF(1, 1, width - 2, height - 2),
-                self._radius,
-                self._radius,
+                card.adjusted(0.8, 0.8, -0.8, -0.8),
+                max(0.0, radius - 0.8),
+                max(0.0, radius - 0.8),
+            )
+        elif glow > 0.02:
+            painter.setPen(
+                QPen(tm.alpha_of(tm.accent, 65 * min(1.0, glow * 1.7)), 1.2)
+            )
+            painter.drawRoundedRect(
+                card.adjusted(0.7, 0.7, -0.7, -0.7),
+                max(0.0, radius - 0.7),
+                max(0.0, radius - 0.7),
             )
 
-        if not self._expanded:
-            painter.setPen(tm.text)
-            painter.drawText(
-                QRectF(0, 0, width, height),
-                Qt.AlignCenter,
-                COLLAPSED_PLACEHOLDER,
+    def _paint_panel_furniture(self, painter: QPainter, card: QRectF) -> None:
+        """绘制展开面板的装饰：标题区强调色圆点 + 分隔线（随形变淡入）。
+
+        装饰统一裁剪到卡片圆角路径内，形变过程中不会溢到卡片之外。
+
+        Args:
+            painter: 绘制器。
+            card: 卡片矩形。
+        """
+        fade = min(1.0, max(0.0, (self._morph - 0.45) / 0.4))
+        if fade <= 0.01:
+            return
+        radius = self._card_radius(card)
+        clip = QPainterPath()
+        clip.addRoundedRect(card, radius, radius)
+
+        painter.save()
+        painter.setClipPath(clip)
+        painter.setOpacity(fade)
+
+        # 标题行左侧的强调色圆点（与标题文字基线居中对齐）
+        dot = 6.0
+        center_y = card.top() + _CARD_MARGIN + _TITLE_ROW_HEIGHT / 2.0
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(tm.accent)
+        painter.drawEllipse(
+            QRectF(
+                card.left() + _CARD_MARGIN + 8.0,
+                center_y - dot / 2.0,
+                dot,
+                dot,
+            )
+        )
+
+        # 标题区下沿分隔线
+        if card.height() > TITLE_BAR_HEIGHT + 6:
+            painter.setPen(QPen(tm.divider, 1))
+            y = card.top() + TITLE_BAR_HEIGHT - _CARD_MARGIN
+            painter.drawLine(
+                QPointF(card.left() + 14, y), QPointF(card.right() - 14, y)
             )
 
-        painter.end()
+        painter.setOpacity(1.0)
+        painter.restore()
+
+    def _paint_circle_content(self, painter: QPainter, card: QRectF) -> None:
+        """绘制圆形入口内容：拖放图标、计数徽标与拖入提示文案。
+
+        Args:
+            painter: 绘制器。
+            card: 卡片矩形。
+        """
+        progress = self._drag_progress
+        center = card.center()
+
+        icon_opacity = 1.0 - min(1.0, progress * 1.6)
+        if icon_opacity > 0.02:
+            highlight = (
+                bool(self.property("dragActive"))
+                or self._hover_progress > 0.5
+            )
+            painter.setOpacity(icon_opacity)
+            side = min(23.0, card.height() * 0.42)
+            render_icon(
+                painter,
+                "download",
+                QRectF(
+                    center.x() - side / 2.0,
+                    center.y() - side / 2.0,
+                    side,
+                    side,
+                ),
+                tm.accent_text if highlight else tm.text,
+                1.7,
+            )
+            painter.setOpacity(1.0)
+
+        if self._count > 0 and progress < 0.4:
+            painter.setOpacity(1.0 - min(1.0, progress / 0.4))
+            self._paint_count_badge(painter, card)
+            painter.setOpacity(1.0)
+
+        if progress > 0.05:
+            self._paint_drag_hint(painter, card, progress)
+
+    def _paint_count_badge(self, painter: QPainter, card: QRectF) -> None:
+        """绘制折叠态条目数徽标（主题色实底 + 自动可读前景）。
+
+        Args:
+            painter: 绘制器。
+            card: 卡片矩形。
+        """
+        diameter = 17.0
+        center = QPointF(card.right() - 14.0, card.top() + 14.0)
+        badge = QRectF(
+            center.x() - diameter / 2.0,
+            center.y() - diameter / 2.0,
+            diameter,
+            diameter,
+        )
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(tm.accent)
+        painter.drawEllipse(badge)
+
+        text = "99+" if self._count > 99 else str(self._count)
+        painter.setPen(tm.readable_on(tm.accent))
+        painter.setFont(_ui_font(9, QFont.Weight.DemiBold))
+        painter.drawText(badge, Qt.AlignCenter, text)
+
+    def _paint_drag_hint(
+        self, painter: QPainter, card: QRectF, progress: float
+    ) -> None:
+        """绘制拖入胶囊内的引导文案（随拉伸进度淡入，由卡片左缘带出）。
+
+        Args:
+            painter: 绘制器。
+            card: 卡片矩形。
+            progress: 拉伸进度（0–1）。
+        """
+        fade = min(1.0, max(0.0, (progress - 0.15) / 0.55))
+        if fade <= 0.01:
+            return
+        painter.setOpacity(fade)
+
+        icon_side = 22.0
+        icon_rect = QRectF(
+            card.left() + 20.0,
+            card.center().y() - icon_side / 2.0,
+            icon_side,
+            icon_side,
+        )
+        render_icon(painter, "download", icon_rect, tm.accent_text, 1.6)
+
+        text_left = card.left() + 52.0
+        text_width = max(10.0, card.right() - 14.0 - text_left)
+        painter.setFont(_ui_font(12, QFont.Weight.DemiBold))
+        painter.setPen(tm.text)
+        painter.drawText(
+            QRectF(text_left, card.top() + 14.0, text_width, 18.0),
+            int(Qt.AlignLeft | Qt.AlignVCenter),
+            DRAG_HINT_TEXT,
+        )
+        painter.setFont(_ui_font(10))
+        painter.setPen(tm.text_hint)
+        painter.drawText(
+            QRectF(text_left, card.top() + 31.0, text_width, 16.0),
+            int(Qt.AlignLeft | Qt.AlignVCenter),
+            DRAG_HINT_SUB_TEXT,
+        )
+        painter.setOpacity(1.0)
+
+    def _sync_content_mask(self) -> None:
+        """把展开内容裁剪到当前卡片区域（形变期间的「逐步揭示」）。
+
+        完整展开（``_morph`` ≈ 1）或未展开时清空蒙版：蒙版只为动画服务，
+        常驻会让子控件在圆角边缘出现锯齿裁切。
+        """
+        content = getattr(self, "_content", None)
+        if content is None:
+            return
+        if not self._visual_expanded or self._morph >= 0.999:
+            content.clearMask()
+            return
+        card = self._card_rect()
+        path = QPainterPath()
+        path.addRoundedRect(card, self._card_radius(card), self._card_radius(card))
+        content.setMask(QRegion(path.toFillPolygon().toPolygon()))
+
+    # ── 动效编排 ────────────────────────────────────────────────
+
+    def _stop_animation(self, attr: str) -> None:
+        """停止并销毁指定动画句柄（幂等；``stop()`` 不发射 ``finished``）。
+
+        Args:
+            attr: 保存 ``QPropertyAnimation`` 的实例属性名。
+        """
+        anim = getattr(self, attr, None)
+        setattr(self, attr, None)
+        if anim is None:
+            return
+        try:
+            anim.stop()
+        except RuntimeError:
+            pass
+        anim.deleteLater()
+
+    def _animate_morph(
+        self,
+        target: float,
+        finished: Optional[Callable[[], None]] = None,
+    ) -> None:
+        """播放圆形 ↔ 面板形变动画。
+
+        窗口不可见时不播放（无人观看，也让测试的同步语义保持确定），直接
+        落定数值并调用 ``finished``。
+
+        Args:
+            target: 目标进度（0 = 圆形，1 = 面板）。
+            finished: 动画自然结束后的回调（被新动画打断时不触发）。
+        """
+        self._stop_animation("_morph_anim")
+        if not self.isVisible():
+            self.morphProgress = target
+            if finished is not None:
+                finished()
+            return
+
+        expanding = target > self._morph
+        anim = QPropertyAnimation(self, b"morphProgress", self)
+        anim.setDuration(MORPH_DURATION_MS if expanding else COLLAPSE_DURATION_MS)
+        anim.setEasingCurve(
+            QEasingCurve.OutQuart if expanding else QEasingCurve.InCubic
+        )
+        anim.setStartValue(self._morph)
+        anim.setEndValue(target)
+        if finished is not None:
+            anim.finished.connect(finished)
+        if expanding:
+            anim.finished.connect(self._play_settle_pop)
+        anim.finished.connect(lambda: setattr(self, "_morph_anim", None))
+        self._morph_anim = anim
+        anim.start()
+
+    def _animate_drag_stretch(self, active: bool) -> None:
+        """播放 / 收回拖入胶囊的横向拉伸。
+
+        已展开或窗口不可见时不拉伸（展开面板本身就是完整接收区），直接落定
+        进度。拉伸期间 ``_geometry_anim_active`` 为 True，``moveEvent`` 不再
+        重启静默吸附定时器（右缘锚定需要每帧移动窗口）。
+
+        Args:
+            active: True 拉伸成胶囊，False 收回圆形。
+        """
+        target = 1.0 if active else 0.0
+        self._stop_animation("_drag_anim")
+        if self._expanded:
+            # 展开面板本身就是完整接收区：不拉伸，只保留高亮。
+            self._geometry_anim_active = False
+            self.dragProgress = 0.0
+            return
+        if not self.isVisible():
+            self._geometry_anim_active = False
+            self.dragProgress = target
+            return
+        if self._drag_progress == target:
+            self._geometry_anim_active = False
+            return
+
+        self._settle_timer.stop()
+        self._geometry_anim_active = True
+        anim = QPropertyAnimation(self, b"dragProgress", self)
+        anim.setDuration(DRAG_STRETCH_DURATION_MS)
+        anim.setEasingCurve(
+            QEasingCurve.OutCubic if active else QEasingCurve.InOutCubic
+        )
+        anim.setStartValue(self._drag_progress)
+        anim.setEndValue(target)
+        anim.finished.connect(self._on_geometry_anim_finished)
+        self._drag_anim = anim
+        anim.start()
+
+    def _on_geometry_anim_finished(self) -> None:
+        """几何形变动画结束：解除 ``moveEvent`` 抑制并清空句柄。"""
+        self._geometry_anim_active = False
+        self._drag_anim = None
+
+    def _animate_hover(self, target: float) -> None:
+        """播放悬停微光过渡（窗口不可见时直接落定）。
+
+        Args:
+            target: 1.0 进入悬停，0.0 离开。
+        """
+        self._stop_animation("_hover_anim")
+        if not self.isVisible():
+            self.hoverProgress = target
+            return
+        anim = QPropertyAnimation(self, b"hoverProgress", self)
+        anim.setDuration(HOVER_DURATION_MS)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.setStartValue(self._hover_progress)
+        anim.setEndValue(target)
+        anim.finished.connect(lambda: setattr(self, "_hover_anim", None))
+        self._hover_anim = anim
+        anim.start()
+
+    def _animate_pulse(
+        self,
+        keys: Sequence[tuple],
+        duration: int,
+        easing: QEasingCurve.Type = QEasingCurve.OutCubic,
+    ) -> None:
+        """播放卡片缩放关键帧动画（按压 / 回弹）。
+
+        Args:
+            keys: ``(时间占比, 缩放倍率)`` 序列，首尾应分别覆盖 0 与 1。
+            duration: 动画时长（ms）。
+            easing: 段间缓动曲线。
+        """
+        self._stop_animation("_pulse_anim")
+        if not self.isVisible():
+            self.pulseScale = keys[-1][1]
+            return
+        anim = QPropertyAnimation(self, b"pulseScale", self)
+        anim.setDuration(duration)
+        anim.setEasingCurve(easing)
+        for position, value in keys:
+            anim.setKeyValueAt(float(position), float(value))
+        anim.finished.connect(lambda: setattr(self, "_pulse_anim", None))
+        self._pulse_anim = anim
+        anim.start()
+
+    def _play_success_bounce(self) -> None:
+        """播放「文件已接收」的 squish & bounce 弹性缩放。"""
+        self._animate_pulse(
+            (
+                (0.0, 1.0),
+                (0.16, 0.90),
+                (0.40, 1.10),
+                (0.62, 0.975),
+                (0.82, 1.02),
+                (1.0, 1.0),
+            ),
+            SUCCESS_BOUNCE_MS,
+        )
+
+    def _play_settle_pop(self) -> None:
+        """播放展开落定的轻微回弹（面板放大到位的「Q 弹」收尾）。"""
+        self._animate_pulse(
+            ((0.0, 1.0), (0.35, 0.982), (0.72, 1.008), (1.0, 1.0)),
+            240,
+        )
+
+    def _fade_in(self) -> None:
+        """首次显示时以不透明度淡入（避免浮窗硬切入桌面）。"""
+        self._stop_animation("_fade_anim")
+        try:
+            self.setWindowOpacity(0.0)
+        except RuntimeError:
+            return
+        anim = QPropertyAnimation(self, b"windowOpacity", self)
+        anim.setDuration(FADE_IN_MS)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.finished.connect(self._on_fade_finished)
+        self._fade_anim = anim
+        anim.start()
+
+    def _on_fade_finished(self) -> None:
+        """淡入结束：确保不透明度回到 1.0 并清空句柄。"""
+        self._fade_anim = None
+        try:
+            self.setWindowOpacity(1.0)
+        except RuntimeError:
+            pass
+
+    def _reset_drag_state(self) -> None:
+        """立即收回拖入胶囊形态（展开 / 收拢前调用，不播放动画）。"""
+        self._stop_animation("_drag_anim")
+        self._geometry_anim_active = False
+        self._drag_progress = 0.0
+
+    # ── 悬停 ────────────────────────────────────────────────────
+
+    def enterEvent(self, event) -> None:
+        """鼠标进入：点亮圆形入口的微光。
+
+        Args:
+            event: 进入事件（交回基类处理）。
+        """
+        self._animate_hover(1.0)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        """鼠标离开：熄灭微光并解除按压待决状态。
+
+        Args:
+            event: 离开事件（交回基类处理）。
+        """
+        self._animate_hover(0.0)
+        self._press_pos = None
+        super().leaveEvent(event)
 
     # ── 外部拖入 ────────────────────────────────────────────────
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
-        """外部 URL 拖入窗口时接受并点亮拖放高亮。
+        """外部 URL 拖入窗口时接受、点亮高亮并横向拉伸为胶囊。
 
         折叠 / 展开两态一律接受；``mimeData().hasUrls()`` 之外的内容
         （纯文本等）交回基类处理。
@@ -606,7 +1514,7 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         super().dragMoveEvent(event)
 
     def dragLeaveEvent(self, event: QDragLeaveEvent) -> None:
-        """拖拽离开窗口时清除拖放高亮。
+        """拖拽离开窗口时清除高亮并收回胶囊。
 
         Args:
             event: 拖拽离开事件。
@@ -621,8 +1529,8 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
 
         依次遍历 ``mimeData().urls()``：``toLocalFile()`` 为空、路径不存在、
         同一事件内重复或 ``build_file_info`` 返回 ``None`` 的条目一律跳过。
-        处理完全部 URL 后清除高亮；若有条目成功发射且当前为折叠态，则自动
-        展开窗口。本方法**只发射信号**，不触碰主池数据源。
+        处理完全部 URL 后清除高亮；若有条目成功发射且当前为折叠态，则播放
+        接收回弹并自动展开窗口。本方法**只发射信号**，不触碰主池数据源。
 
         Args:
             event: 拖放事件。
@@ -686,16 +1594,23 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         return emitted
 
     def _finish_external_drop(self, emitted: int) -> None:
-        """外部拖放收尾：有成功入池条目且处于折叠态时自动展开。
+        """外部拖放收尾：有成功入池条目且处于折叠态时回弹并自动展开。
 
         OLE ``dropEvent`` 与提权兜底（:meth:`_elevated_drop_accept_paths`）
-        共用，保证两条链路行为一致。
+        共用，保证两条链路行为一致。回弹在展开形变之前起跑（缩放作用于
+        圆形入口），随后卡片向外扩散并露出列表，形成「接住 → 摊开」的
+        连续观感。
 
         Args:
             emitted: 本次拖放实际发射 ``add_file_requested`` 的次数。
         """
-        if emitted and not self.is_expanded():
-            self.set_expanded(True)
+        if not emitted:
+            return
+        if self.is_expanded():
+            self._play_settle_pop()
+            return
+        self._play_success_bounce()
+        self.set_expanded(True)
 
     def _elevated_drop_accept_paths(self, paths: list[str]) -> None:
         """提权兜底入口：把原生 ``WM_DROPFILES`` 路径按 OLE 拖入同口径处理。
@@ -716,7 +1631,7 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         """切换拖放高亮的 ``dragActive`` 动态属性并请求重绘。
 
         本窗口为手动自绘（非 QSS 样式控件），故只置属性 + ``update()``，
-        不走 ``unpolish`` / ``polish``。
+        不走 ``unpolish`` / ``polish``；同时播放 / 收回胶囊拉伸。
 
         Args:
             active: True 点亮高亮，False 清除。
@@ -725,6 +1640,7 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         if bool(self.property("dragActive")) == active:
             return
         self.setProperty("dragActive", active)
+        self._animate_drag_stretch(active)
         self.update()
 
     # ── 展开内容列表 ────────────────────────────────────────────
@@ -747,7 +1663,8 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
 
         拖出手势进行中（``self._drag_active``）时直接返回，**不**重新武装
         定时器（重启由拖出手势处理器 finally 负责）。重建为「清空 + 重加」
-        而非追加；完成后把 ``self._pending_items`` 复位为 ``None``。
+        而非追加；完成后把 ``self._pending_items`` 复位为 ``None``，并同步
+        折叠态计数徽标。
         """
         if self._drag_active:
             return
@@ -770,7 +1687,9 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
 
         self._count_label.setText(COUNT_LABEL_FORMAT.format(count=valid))
         self._empty_hint.setVisible(valid == 0)
+        self._count = valid
         self._pending_items = None
+        self.update()
 
     def _clear_rows(self) -> None:
         """移除并延迟销毁当前全部条目行（重建前清场，绝不追加）。"""
@@ -860,10 +1779,11 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
     # ── 拖动定位 ────────────────────────────────────────────────
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        """可拖动区左键按下：展开态立即移动，折叠态记录起点待定。
+        """可拖动区左键按下：展开态立即移动，折叠态记录起点 + 按下压缩。
 
         展开态标题栏按下即 ``_start_system_move()``；折叠态
-        按下只记录起点，是否移动 / 展开延后到移动 / 释放事件仲裁。
+        按下只记录起点并播放轻微压缩，是否移动 / 展开延后到移动 / 释放
+        事件仲裁。
 
         Args:
             event: 鼠标事件。
@@ -875,6 +1795,7 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
                 self._start_system_move()
             else:
                 self._press_pos = event.position().toPoint()
+                self._animate_pulse(((0.0, 1.0), (1.0, 0.955)), 110)
             event.accept()
             return
         super().mousePressEvent(event)
@@ -893,19 +1814,21 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
             ).manhattanLength()
             if delta > QApplication.startDragDistance():
                 self._press_pos = None
+                self._animate_pulse(((0.0, 0.955), (1.0, 1.0)), 160)
                 self._start_system_move()
                 event.accept()
                 return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        """折叠态待决手势：未超阈值释放则展开窗口。
+        """折叠态待决手势：未超阈值释放则回弹并展开窗口。
 
         Args:
             event: 鼠标事件。
         """
         if self._press_pos is not None and event.button() == Qt.LeftButton:
             self._press_pos = None
+            self._animate_pulse(((0.0, 0.955), (0.55, 1.028), (1.0, 1.0)), 260)
             self.set_expanded(True)
             event.accept()
             return
@@ -972,13 +1895,14 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         系统移动循环（``startSystemMove``）不投递 ``mouseReleaseEvent``，故以
         「距上次移动静默 ``SETTLE_DELAY_MS``」作为松手启发式：超时回调
         :meth:`_settle_and_snap` 完成夹回 / 吸附。``_internal_moving`` 为 True
-        （动画 / 初始化等程序化移动）时不重启，避免自触发循环。
+        （动画 / 初始化等程序化移动）或 ``_geometry_anim_active`` 为 True
+        （拖入胶囊拉伸的右缘锚定位移）时不重启，避免自触发循环。
 
         Args:
             event: 移动事件（交回基类处理）。
         """
         super().moveEvent(event)
-        if self._internal_moving:
+        if self._internal_moving or self._geometry_anim_active:
             return
         self._settle_timer.start(SETTLE_DELAY_MS)
 
@@ -1065,20 +1989,23 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
             anim.deleteLater()
         self._internal_moving = False
 
-
 class _PoolItemRow(QWidget):
     """浮窗展开列表中的单个条目行（图标 + 显示名 + 大小副标题）。
 
-    仅承载展示信息，**无**点击 / 右键语义；实现「拖出复制」手势——左键按下
-    记录起点，位移超过 ``QApplication.startDragDistance()`` 后委托给窗口
-    （``self.window()``，``isinstance`` 守卫）启动 ``QDrag``。共享拖拽状态
-    （``_drag_active`` / ``_pending_items`` / ``_debounce_timer``）留在窗口，
-    故本行只做阈值检测与委托。
+    视觉上对齐主界面卡片语言：8px 圆角、悬停时铺 ``tm.hover_veil`` 并浮出
+    强调色描边；文字层级用 ``tm.text`` / ``tm.text_hint``，与
+    ``file_card_delegate`` 的标题 / 副标题口径一致。仅承载展示信息，**无**
+    点击 / 右键语义；实现「拖出复制」手势——左键按下记录起点，位移超过
+    ``QApplication.startDragDistance()`` 后委托给窗口（``self.window()``，
+    ``isinstance`` 守卫）启动 ``QDrag``。共享拖拽状态（``_drag_active`` /
+    ``_pending_items`` / ``_debounce_timer``）留在窗口，故本行只做阈值检测
+    与委托。
 
     Attributes:
         file_info: 原始文件信息字典（引用，拖出手势复用）。
         path: 文件路径字符串（空路径条目不会构造本行）。
         _press_pos: 左键按下的行本地起点；``None`` 表示无待决拖出手势。
+        _hovered: 鼠标是否悬停在本行（决定悬停覆盖层绘制）。
     """
 
     def __init__(
@@ -1094,11 +2021,15 @@ class _PoolItemRow(QWidget):
         self.file_info = file_info
         self.path = str(file_info.get("path") or "")
         self._press_pos: Optional[QPoint] = None
+        self._hovered = False
         self.setFixedHeight(_ROW_HEIGHT)
+        self.setAttribute(Qt.WA_Hover, True)
+        self.setToolTip(self.path)
+        self.setCursor(Qt.OpenHandCursor)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 4, 8, 4)
-        layout.setSpacing(8)
+        layout.setContentsMargins(8, 4, 10, 4)
+        layout.setSpacing(10)
 
         self._icon_label = QLabel(self)
         self._icon_label.setFixedSize(48, 48)
@@ -1110,25 +2041,29 @@ class _PoolItemRow(QWidget):
 
         text_layout = QVBoxLayout()
         text_layout.setContentsMargins(0, 0, 0, 0)
-        text_layout.setSpacing(0)
+        text_layout.setSpacing(2)
 
         self._name_label = QLabel(self._display_name(), self)
-        register_widget_qss(
-            self._name_label, "background: transparent; border: none;"
+        self._name_label.setFont(_ui_font(12, QFont.Weight.Medium))
+        self._name_label.setTextFormat(Qt.PlainText)
+        # 长文件名不得反向撑宽行（滚动区已关横向滚动）
+        self._name_label.setSizePolicy(
+            QSizePolicy.Ignored, QSizePolicy.Preferred
         )
         text_layout.addWidget(self._name_label)
 
         self._size_label = QLabel(
             StagingPoolService.format_file_size(file_info.get("size")), self
         )
-        register_widget_qss(
-            self._size_label, "background: transparent; border: none;"
-        )
+        self._size_label.setFont(_ui_font(10))
         if not self._size_label.text():
             self._size_label.hide()
         text_layout.addWidget(self._size_label)
 
         layout.addLayout(text_layout, 1)
+
+        self._apply_label_styles()
+        self._apply_elide()
 
     def _display_name(self) -> str:
         """返回条目显示名：``display_name`` → ``name`` → 路径 basename。
@@ -1142,6 +2077,31 @@ class _PoolItemRow(QWidget):
             or os.path.basename(self.path)
         )
         return str(name)
+
+    def _apply_label_styles(self) -> None:
+        """按当前主题重注册名称 / 大小标签颜色（文字层级与主卡片一致）。"""
+        register_widget_qss(
+            self._name_label,
+            "background: transparent; border: none;"
+            f" color: {tm.text.name()};",
+        )
+        register_widget_qss(
+            self._size_label,
+            "background: transparent; border: none;"
+            f" color: {tm.text_hint.name()};",
+        )
+
+    def _apply_elide(self) -> None:
+        """按当前行宽对显示名做中段省略（避免长文件名撑破面板）。"""
+        available = self._name_label.width()
+        if available <= 8:
+            available = max(24, self.width() - (8 + 48 + 10 + 10))
+        metrics = QFontMetrics(self._name_label.font())
+        elided = metrics.elidedText(
+            self._display_name(), Qt.ElideMiddle, available
+        )
+        if elided != self._name_label.text():
+            self._name_label.setText(elided)
 
     def _load_icon(self) -> Optional[QPixmap]:
         """加载条目图标（与主池卡片同管线的 ``FileIconManager``）。
@@ -1172,16 +2132,73 @@ class _PoolItemRow(QWidget):
         return None
 
     def refresh_icon(self) -> None:
-        """按当前主题重取并回填图标（明暗/强调色变化后由窗口调用）。
+        """按当前主题重取并回填图标、刷新文字配色与省略状态。
 
         重取失败（异常 / 空 pixmap）时清空图标回退，绝不抛出以保护主题
         刷新链路。
         """
+        self._apply_label_styles()
+        self._apply_elide()
         pixmap = self._load_icon()
         if pixmap is not None and not pixmap.isNull():
             self._icon_label.setPixmap(pixmap)
         else:
             self._icon_label.clear()
+        self.update()
+
+    # ── 绘制 ────────────────────────────────────────────────────
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        """绘制行卡片底：静息为极淡填充，悬停铺覆盖层并浮出强调色描边。
+
+        Args:
+            event: 绘制事件（未直接使用）。
+        """
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        rect = QRectF(self.rect()).adjusted(1.0, 1.0, -1.0, -1.0)
+        if self._hovered:
+            painter.setPen(QPen(tm.alpha_of(tm.accent, 45), 1))
+            painter.setBrush(tm.hover_veil)
+        else:
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(
+                tm.alpha_of(tm.text, 5 if tm.is_dark_theme() else 4)
+            )
+        painter.drawRoundedRect(rect, _ROW_RADIUS, _ROW_RADIUS)
+        painter.end()
+
+    def enterEvent(self, event) -> None:
+        """鼠标进入：点亮行悬停态。
+
+        Args:
+            event: 进入事件（交回基类处理）。
+        """
+        self._hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        """鼠标离开：熄灭行悬停态。
+
+        Args:
+            event: 离开事件（交回基类处理）。
+        """
+        self._hovered = False
+        self._press_pos = None
+        self.update()
+        super().leaveEvent(event)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        """行宽变化时重算文件名省略。
+
+        Args:
+            event: 尺寸变化事件（交回基类处理）。
+        """
+        super().resizeEvent(event)
+        self._apply_elide()
+
+    # ── 拖出手势 ────────────────────────────────────────────────
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         """左键按下记录拖出起点；其余按钮交回基类。
@@ -1191,6 +2208,7 @@ class _PoolItemRow(QWidget):
         """
         if event.button() == Qt.LeftButton:
             self._press_pos = event.position().toPoint()
+            self.setCursor(Qt.ClosedHandCursor)
             event.accept()
             return
         super().mousePressEvent(event)
@@ -1217,10 +2235,74 @@ class _PoolItemRow(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        """释放清空拖出起点，交回基类。
+        """释放清空拖出起点并恢复手型光标，交回基类。
 
         Args:
             event: 鼠标事件。
         """
         self._press_pos = None
+        self.setCursor(Qt.OpenHandCursor)
         super().mouseReleaseEvent(event)
+
+
+class _EmptyState(QWidget):
+    """展开态空池引导：自绘拖放图标 + 两级文案（与面板同色阶）。"""
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        """构造空态控件。
+
+        Args:
+            parent: 父控件（通常为 ``_rows_container``）。
+        """
+        super().__init__(parent)
+        self.setMinimumHeight(140)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+
+    def sizeHint(self) -> QSize:
+        """返回空态控件的建议尺寸。
+
+        ``_rows_layout`` 开了 ``SetMinAndMaxSize``，容器的最大高度即布局 size
+        hint；返回固定高度才能让空态在列表区里垂直居中，而不是被锁在顶部。
+
+        Returns:
+            QSize: 建议尺寸（高度足以容纳图标 + 两级文案并留出上留白）。
+        """
+        return QSize(200, 260)
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        """绘制居中的拖放图标与引导文案。
+
+        Args:
+            event: 绘制事件（未直接使用）。
+        """
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setRenderHint(QPainter.TextAntialiasing, True)
+        width = float(self.width())
+        center_y = self.height() / 2.0
+
+        side = 34.0
+        render_icon(
+            painter,
+            "download",
+            QRectF((width - side) / 2.0, center_y - 62.0, side, side),
+            tm.alpha_of(tm.text_hint, 62),
+            1.4,
+        )
+
+        painter.setFont(_ui_font(12, QFont.Weight.Medium))
+        painter.setPen(tm.text_hint)
+        painter.drawText(
+            QRectF(0.0, center_y - 18.0, width, 20.0),
+            Qt.AlignCenter,
+            EMPTY_HINT_TEXT,
+        )
+
+        painter.setFont(_ui_font(10))
+        painter.setPen(tm.alpha_of(tm.text_hint, 62))
+        painter.drawText(
+            QRectF(0.0, center_y + 6.0, width, 18.0),
+            Qt.AlignCenter,
+            EMPTY_HINT_SUB_TEXT,
+        )
+        painter.end()
