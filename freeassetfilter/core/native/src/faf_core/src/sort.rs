@@ -26,8 +26,6 @@
 //! - 时间/大小取原值：时间按字符串逐码点比较（UTF-8 字节序 = 码点序，
 //!   与 Python 字符串比较一致）；大小按整数比较。
 
-use std::cmp::Reverse;
-
 use serde_json::Value;
 
 use crate::STATUS_INVALID_ARG;
@@ -145,15 +143,24 @@ fn mode_to_params(sort_mode: i32) -> Result<(SortKind, bool), i32> {
 /// 令文件在前（dirs-first 翻转）。
 pub fn sort_entries_impl(entries: &mut [Entry], sort_mode: i32) -> Result<(), i32> {
     let (kind, reverse) = mode_to_params(sort_mode)?;
-    entries.sort_by(|a, b| {
-        let ka = sort_key(a, kind);
-        let kb = sort_key(b, kind);
-        if reverse {
-            Reverse(ka).cmp(&Reverse(kb))
-        } else {
-            ka.cmp(&kb)
-        }
-    });
+    // Schwartzian 变换（P2.2）：比较键只计算一次。原实现在 `sort_by` 内部
+    // 每次比较都调用 `sort_key`，Name 模式会做 O(n log n) 次
+    // `to_lowercase()` 分配（10k 条目约 26 万次）。
+    //
+    // 稳定排序 + （可选）反转比较器，equal-key 保持**输入序**——精确对齐
+    // CPython `reverse=True` 的实测语义（稳定升序 + 反转比较器）。
+    let mut keyed: Vec<((bool, SortKey), Entry)> = entries
+        .iter()
+        .map(|entry| (sort_key(entry, kind), entry.clone()))
+        .collect();
+    if reverse {
+        keyed.sort_by(|a, b| b.0.cmp(&a.0));
+    } else {
+        keyed.sort_by(|a, b| a.0.cmp(&b.0));
+    }
+    for (slot, (_key, entry)) in entries.iter_mut().zip(keyed.into_iter()) {
+        *slot = entry;
+    }
     Ok(())
 }
 

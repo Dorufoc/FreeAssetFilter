@@ -263,7 +263,9 @@ class ThumbnailManager:
     MAX_FRAME_READ_RETRIES = 3
 
     # 视频帧缓存过期时间（秒）
-    FRAME_CACHE_EXPIRY = 60
+    # P7.3：60s → 10s——帧组只在预览可见期间有意义，停止拖拽 10s 后
+    # 保留它们只占内存（每组最大 32MB）。
+    FRAME_CACHE_EXPIRY = 10
 
     # 视频处理超时时间（秒）
     VIDEO_PROCESSING_TIMEOUT = 30
@@ -279,7 +281,9 @@ class ThumbnailManager:
     THUMB_CACHE_TARGET_FILES = int(MAX_THUMB_CACHE_FILES * 0.8)
 
     # 视频帧缓存全局限制
-    MAX_FRAME_CACHE_GROUPS = 128
+    # P7.3：组数 128 → 16（切文件即释放上一组，同时同时预览的视频数
+    # 实际不会超过个位数；配合 10s 过期，峰值内存从 256MB 降到可控区间）。
+    MAX_FRAME_CACHE_GROUPS = 16
     MAX_FRAME_CACHE_BYTES = 256 * 1024 * 1024
     MAX_FRAME_CACHE_BYTES_PER_GROUP = 32 * 1024 * 1024
 
@@ -327,9 +331,19 @@ class ThumbnailManager:
 
         # Rust 原生缩略图引擎（延迟加载，首次使用时初始化）
         self._rust_bridge = None
-        self._native_cache_limit = 200 * 1024 * 1024
+        try:
+            from freeassetfilter.core.memory_budget import get_memory_budget
+
+            self._native_cache_limit = (
+                get_memory_budget().tier.rust_thumb_cache_bytes
+            )
+        except Exception:  # noqa: BLE001 - 预算不可用时退回既有默认值
+            self._native_cache_limit = 200 * 1024 * 1024
         self._available_hwaccels: list[str] = []
-        self._native_batch_workers_image = self._get_cpu_count_safe()
+        # P5：线程预算收敛——图片批不再取 ``cpu_count``（24），而是复用
+        # ``core.pools`` 的 decode 预算；视频槽位取预算的一半（防止硬解
+        # 会话与图片批互相抢核，同时把 57 线程降到 <=32）。
+        self._native_batch_workers_image = self._get_native_batch_workers_image()
         self._native_batch_workers_video = self.DEFAULT_NATIVE_BATCH_WORKERS_VIDEO
         self._python_batch_workers_video = self._get_python_batch_workers_video()
 
@@ -373,6 +387,14 @@ class ThumbnailManager:
     def _ensure_rust_bridge(self):
         """延迟加载 Rust 原生引擎，首次实际使用时才初始化"""
         if self._rust_bridge is None:
+            # P6.2：rayon 全局池只在 DLL 首次建池时读一次 RAYON_NUM_THREADS；
+            # 必须在任何 bridge 调用之前设置（faf_core + thumbnail_rust 各一份）。
+            try:
+                from freeassetfilter.core.pools import RAYON_PER_POOL
+
+                os.environ.setdefault("RAYON_NUM_THREADS", str(RAYON_PER_POOL))
+            except Exception:  # noqa: BLE001 - 预算不可用时交给 rayon 默认值
+                pass
             from freeassetfilter.core.native.bridges.rust_thumbnail_bridge import (
                 RustThumbnailBridge,
             )
@@ -401,15 +423,27 @@ class ThumbnailManager:
         return max(1, int(os.cpu_count() or 1))
 
     def _get_native_batch_workers_image(self) -> int:
-        """按 CPU 核心数动态计算原生图片批处理并发数"""
-        cpu_count = self._get_cpu_count_safe()
-        return max(1, cpu_count)
+        """图片批并发：取 ``core.pools`` 的 decode 预算（P5）。"""
+        try:
+            from freeassetfilter.core.pools import budget
+
+            return max(1, int(budget("decode")))
+        except Exception:  # noqa: BLE001 - 预算不可用时退回安全小值
+            return max(1, min(4, self._get_cpu_count_safe() // 4 or 1))
 
     def _get_native_batch_workers_video(self) -> int:
         """按硬解后端数量做更积极的启发式估算，避免仅按后端类型数导致硬件利用率偏低"""
         cpu_count = self._get_cpu_count_safe()
+
+        try:
+            from freeassetfilter.core.pools import budget
+
+            budget_cap = max(1, int(budget("decode")) // 2)
+        except Exception:  # noqa: BLE001
+            budget_cap = max(1, min(3, cpu_count // 8 or 1))
+
         if not self._is_native_available():
-            return self.DEFAULT_NATIVE_BATCH_WORKERS_VIDEO
+            return min(self.DEFAULT_NATIVE_BATCH_WORKERS_VIDEO, budget_cap)
 
         try:
             hwaccels = self._rust_bridge.get_available_hwaccels()
@@ -426,12 +460,16 @@ class ThumbnailManager:
         estimated_workers = detected_count * 2
         cpu_cap = max(1, cpu_count - 1)
         safe_cap = 8
-        return max(1, min(estimated_workers, cpu_cap, safe_cap))
+        return max(1, min(estimated_workers, cpu_cap, safe_cap, budget_cap))
 
     def _get_python_batch_workers_video(self) -> int:
-        """按 CPU 核心数减 1 计算软解并发数，为主线程保留一个核心"""
-        cpu_count = self._get_cpu_count_safe()
-        return max(1, cpu_count - 1)
+        """软解并发：取 decode 预算的一半（P5：原为 cpu-1 = 23）。"""
+        try:
+            from freeassetfilter.core.pools import budget
+
+            return max(1, int(budget("decode")) // 2)
+        except Exception:  # noqa: BLE001
+            return max(1, min(3, self._get_cpu_count_safe() // 8 or 1))
 
     def _make_empty_subprocess_decode_stats(self) -> dict[str, int]:
         """创建父进程侧的子进程视频解码路径聚合统计结构"""
@@ -1117,18 +1155,30 @@ class ThumbnailManager:
             dpi_scaled_size = int(self.BASE_SIZE * self.dpi_scale)
             file_paths = [item["file_path"] for item in items]
             batch_jpgs: list[bytes | None] = []
+            batch_statuses: list[int] | None = None
 
             try:
                 if self._is_native_available():
-                    batch_jpgs = self._rust_bridge.generate_jpg_batch(file_paths, dpi_scaled_size, dpi_scaled_size)
+                    # P4.1：优先让 Rust 直接落盘（字节不回传、不在 Python 逐张写）。
+                    batch_statuses = self._rust_bridge.generate_batch_to_paths(
+                        file_paths,
+                        [item["thumbnail_path"] for item in items],
+                        dpi_scaled_size,
+                        dpi_scaled_size,
+                    )
+                    if batch_statuses is None:
+                        batch_jpgs = self._rust_bridge.generate_jpg_batch(
+                            file_paths, dpi_scaled_size, dpi_scaled_size
+                        )
             except Exception as e:  # noqa: BLE001  # broad catch intentional at thumbnail pipeline
                 warning(f"Rust批量生成失败，逐项回退: {e}")
+                batch_statuses = None
                 batch_jpgs = [None for _ in items]
 
-            if len(batch_jpgs) < len(items):
+            if batch_statuses is None and len(batch_jpgs) < len(items):
                 batch_jpgs.extend([None] * (len(items) - len(batch_jpgs)))
 
-            for item, jpg_bytes in zip(items, batch_jpgs):
+            for index, item in enumerate(items):
                 file_path = item["file_path"]
                 thumbnail_path = item["thumbnail_path"]
                 legacy_thumbnail_path = item["legacy_thumbnail_path"]
@@ -1137,27 +1187,55 @@ class ThumbnailManager:
                 success = False
 
                 try:
-                    if jpg_bytes:
-                        with open(thumbnail_path, "wb") as f:
-                            f.write(jpg_bytes)
-                        result_path = thumbnail_path
-                        self._set_cached_path_exists(thumbnail_path, True)
-                    else:
-                        # 批量通道 generate_jpg_batch 仅返回 bytes、不带逐项状态；
-                        # 失败项统一落单发 with_status 通道获取状态，与单张路径
-                        # 共用同一状态源（结构体直读），天然逐项一致。
-                        item_status: int = STATUS_BRIDGE_UNAVAILABLE
-                        result_path, item_status = self._create_native_thumbnail_with_status(
-                            file_path, thumbnail_path, legacy_thumbnail_path
+                    if batch_statuses is not None:
+                        status = (
+                            batch_statuses[index]
+                            if index < len(batch_statuses)
+                            else -5
                         )
-                        # TOO_LARGE(-7)：跳过 Python 解码重试（与单张路径路由一致）
-                        if result_path is None and item_status != STATUS_TOO_LARGE:
+                        if status == 0:
+                            result_path = thumbnail_path
+                            self._set_cached_path_exists(thumbnail_path, True)
+                        elif status != STATUS_TOO_LARGE:
                             if queue_name == "native_video":
-                                result_path = self._create_video_thumbnail_ffmpeg(file_path, thumbnail_path)
+                                result_path = self._create_video_thumbnail_ffmpeg(
+                                    file_path, thumbnail_path
+                                )
                             else:
-                                result_path = self._create_image_thumbnail(file_path, legacy_thumbnail_path)
+                                result_path = self._create_image_thumbnail(
+                                    file_path, legacy_thumbnail_path
+                                )
+                    else:
+                        jpg_bytes = (
+                            batch_jpgs[index] if index < len(batch_jpgs) else None
+                        )
+                        if jpg_bytes:
+                            with open(thumbnail_path, "wb") as f:
+                                f.write(jpg_bytes)
+                            result_path = thumbnail_path
+                            self._set_cached_path_exists(thumbnail_path, True)
+                        else:
+                            # 批量通道失败项统一落单发 with_status 获取状态。
+                            item_status: int = STATUS_BRIDGE_UNAVAILABLE
+                            result_path, item_status = (
+                                self._create_native_thumbnail_with_status(
+                                    file_path, thumbnail_path, legacy_thumbnail_path
+                                )
+                            )
+                            if result_path is None and item_status != STATUS_TOO_LARGE:
+                                if queue_name == "native_video":
+                                    result_path = self._create_video_thumbnail_ffmpeg(
+                                        file_path, thumbnail_path
+                                    )
+                                else:
+                                    result_path = self._create_image_thumbnail(
+                                        file_path, legacy_thumbnail_path
+                                    )
 
-                    success = bool(result_path and self._get_cached_path_exists(result_path, force_refresh=True))
+                    success = bool(
+                        result_path
+                        and self._get_cached_path_exists(result_path, force_refresh=True)
+                    )
                     if success:
                         self._set_cached_path_exists(result_path, True)
                         self._update_file_access_time(result_path)
@@ -1260,7 +1338,10 @@ class ThumbnailManager:
                     increment_perf_counter("thumbnail.create_thumbnails_batch", "queue_python_image")
                     task_queues["python_image"].append(item)
 
-        max_workers = sum(queue_limits.values())
+        max_workers = min(
+            sum(queue_limits.values()),
+            max(4, int(self._get_native_batch_workers_image()) * 2),
+        )
 
         def _has_pending_tasks() -> bool:
             return any(task_queues[name] for name in task_queues)
@@ -1825,6 +1906,115 @@ class ThumbnailManager:
             if oldest_cache is not None:
                 oldest_cache.clear()
 
+    def release_caches(self) -> None:
+        """释放视频帧与 SVG 渲染缓存（内存压力兜底，P7.3）。"""
+        with self._frame_cache_lock:
+            for cache in self._frame_caches.values():
+                cache.clear()
+            self._frame_caches.clear()
+        try:
+            with self._svg_cache_lock:
+                self._svg_render_cache.clear()
+        except Exception:  # noqa: BLE001 - 缓存结构缺失时跳过
+            pass
+
+    def release_frame_cache(self, keep_path: str = "") -> int:
+        """释放除 ``keep_path`` 外的全部视频帧组（P7.3，切文件即释放上一组）。
+
+        Args:
+            keep_path: 需要保留的视频路径（当前正在预览的那一个）；
+                空串表示全部释放。
+
+        Returns:
+            int: 实际释放的组数。
+        """
+        released = 0
+        with self._frame_cache_lock:
+            for key in [k for k in self._frame_caches if k != keep_path]:
+                cache = self._frame_caches.pop(key, None)
+                if cache is not None:
+                    cache.clear()
+                    released += 1
+        if released:
+            set_perf_metadata("thumbnail.frame_cache.release", "groups", released)
+        return released
+
+    def shrink_caches(self, reason: str = "") -> dict:
+        """主动收缩缓存（P7.3，切目录/退出预览时调用）。
+
+        与 :meth:`release_caches`（压力兜底，全清）不同，本方法只**收缩**：
+
+        * 视频帧：先丢过期组，再把组数收缩到上限的一半（至少保留 1 组）；
+        * SVG：收缩到上限的一半；
+        * Rust 缩略图缓存：把上限临时降到一半（Rust 侧 ``set_cache_limit``
+          立即按新预算淘汰），随后恢复原上限。
+
+        Args:
+            reason: 触发原因（仅用于性能元数据）。
+
+        Returns:
+            dict: ``{"frames": 释放组数, "svg": 释放条目数, "rust": 是否执行}``。
+        """
+        released_frames = 0
+        now = time.time()
+        with self._frame_cache_lock:
+            target_groups = max(1, self.MAX_FRAME_CACHE_GROUPS // 2)
+            for key in [
+                k
+                for k, v in self._frame_caches.items()
+                if now - v.last_accessed > self.FRAME_CACHE_EXPIRY
+            ]:
+                cache = self._frame_caches.pop(key, None)
+                if cache is not None:
+                    cache.clear()
+                    released_frames += 1
+            while len(self._frame_caches) > target_groups:
+                oldest_key = min(
+                    self._frame_caches,
+                    key=lambda k: self._frame_caches[k].last_accessed,
+                )
+                cache = self._frame_caches.pop(oldest_key, None)
+                if cache is None:
+                    break
+                cache.clear()
+                released_frames += 1
+
+        released_svg = 0
+        try:
+            with self._svg_cache_lock:
+                target_svg = max(0, self.MAX_SVG_CACHE_ENTRIES // 2)
+                while len(self._svg_render_cache) > target_svg:
+                    self._svg_render_cache.popitem(last=False)
+                    released_svg += 1
+        except Exception:  # noqa: BLE001 - 缓存结构缺失时跳过
+            pass
+
+        rust_shrunk = False
+        bridge = getattr(self, "_rust_bridge", None)
+        # 缩略图缓存只在**确实有东西被腾掉**时才做一次 FFI：Rust 侧
+        # ``set_cache_limit`` 会当场按预算淘汰，代价是遍历整个缓存——
+        # 每次导航都无条件跑两遍会变成 UI 线程上的固定开销。
+        if (released_frames or released_svg) and bridge is not None and getattr(
+            bridge, "available", False
+        ):
+            limit = int(getattr(self, "_native_cache_limit", 0) or 0)
+            if limit > 16 * 1024 * 1024:
+                try:
+                    bridge.set_cache_limit(limit // 2)
+                    bridge.set_cache_limit(limit)
+                    rust_shrunk = True
+                except Exception:  # noqa: BLE001 - 收缩失败不影响调用
+                    rust_shrunk = False
+
+        result = {
+            "frames": released_frames,
+            "svg": released_svg,
+            "rust": rust_shrunk,
+        }
+        if reason:
+            set_perf_metadata("thumbnail.cache.shrink", "reason", reason)
+        return result
+
     def _get_or_create_frame_cache(self, file_path: str) -> VideoFrameCache:
         """获取或创建视频帧缓存"""
         with self._frame_cache_lock:
@@ -1884,8 +2074,10 @@ class ThumbnailManager:
             self._release_video_lock(file_path)
 
     def _get_subprocess_creationflags(self) -> int:
-        """获取适用于当前平台的子进程创建标志"""
-        return int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        """获取子进程创建标志（P5：追加低优先级，避免抢占 UI）。"""
+        flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        flags |= int(getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0))
+        return flags
 
     def _get_subprocess_startupinfo(self):
         """获取适用于当前平台的子进程启动信息，用于隐藏窗口"""
@@ -2036,7 +2228,7 @@ class ThumbnailManager:
                     "error",
                     "-nostdin",
                     "-threads",
-                    "0",
+                    "2",
                 ]
 
                 if seek_seconds > 0:

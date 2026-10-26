@@ -4,7 +4,9 @@ from __future__ import annotations
 import threading
 from typing import Any
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
+from PySide6.QtCore import QObject, QRunnable, Signal
+
+from freeassetfilter.core import pools as thread_pools
 
 from .agent import AIAgentService
 from .models import AIError, ChatMessage
@@ -28,7 +30,7 @@ class AIWorker(QRunnable):
         self.kwargs["cancel"] = self.cancel_event
 
     def start(self) -> None:
-        QThreadPool.globalInstance().start(self)
+        thread_pools.pool("net").start(self)
 
     def cancel(self) -> None:
         self.cancel_event.set()

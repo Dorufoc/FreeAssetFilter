@@ -64,7 +64,8 @@ class RustThumbnailBridge:
         self._available = False
         self._supports_jpg = False
         self._supports_batch_jpg = False
-        # 新导出能力标记（errorlog 查询/清空、格式表、ffmpeg 能力表）
+        # P4.1：批量直写目标文件（Rust 落盘，字节不回传）
+        self._supports_batch_to_paths = False
         self._supports_errorlog = False
         self._supports_formats = False
         self._supports_caps = False
@@ -144,6 +145,7 @@ class RustThumbnailBridge:
     def _bind(self, dll):
         self._supports_jpg = False
         self._supports_batch_jpg = False
+        self._supports_batch_to_paths = False
         self._supports_errorlog = False
         self._supports_formats = False
         self._supports_caps = False
@@ -201,6 +203,21 @@ class RustThumbnailBridge:
             self._supports_batch_jpg = True
         except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             self._supports_batch_jpg = False
+
+        try:
+            # P4.1：批量直写（paths, out_paths, count, w, h, out_status）→ 成功数
+            dll.native_generate_batch_to_paths.argtypes = [
+                POINTER(c_char_p),
+                POINTER(c_char_p),
+                c_int,
+                c_int,
+                c_int,
+                POINTER(c_int),
+            ]
+            dll.native_generate_batch_to_paths.restype = c_int
+            self._supports_batch_to_paths = True
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            self._supports_batch_to_paths = False
 
         # 新导出：错误日志查询/清空
         try:
@@ -675,6 +692,57 @@ class RustThumbnailBridge:
         except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             warning(f"generate_jpg 失败: {e}")
             return None
+
+    def generate_batch_to_paths(
+        self,
+        file_paths: list[str],
+        out_paths: list[str],
+        width: int,
+        height: int,
+    ) -> list[int] | None:
+        """批量生成缩略图并**由 Rust 直接写入目标文件**（P4.1）。
+
+        与 :meth:`generate_jpg_batch` 的区别：字节不再跨 FFI 回传，省掉
+        Python 侧 N 次 ``open().write()`` 与 N 次 stat/utime。
+
+        Args:
+            file_paths: 源文件路径列表。
+            out_paths: 目标文件路径列表（与 ``file_paths`` 等长）。
+            width: 目标宽。
+            height: 目标高。
+
+        Returns:
+            Optional[list[int]]: 与输入等长的状态码列表（0 成功）；能力缺失/
+                参数非法/调用失败返回 ``None``（调用方回退 ``generate_jpg_batch``）。
+        """
+        if not self.available or not self._supports_batch_to_paths:
+            return None
+        if not file_paths or len(file_paths) != len(out_paths):
+            return None
+        count = len(file_paths)
+        encoded_src = [
+            (p.encode("utf-8") if p and os.path.exists(p) else None)
+            for p in file_paths
+        ]
+        encoded_dst = [p.encode("utf-8") if p else None for p in out_paths]
+        src_arr = (c_char_p * count)(*encoded_src)
+        dst_arr = (c_char_p * count)(*encoded_dst)
+        status_arr = (c_int * count)()
+        try:
+            ok = self._dll.native_generate_batch_to_paths(
+                ctypes.cast(src_arr, POINTER(c_char_p)),
+                ctypes.cast(dst_arr, POINTER(c_char_p)),
+                count,
+                int(width),
+                int(height),
+                ctypes.cast(status_arr, POINTER(c_int)),
+            )
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            warning(f"批量直写失败: {e}")
+            return None
+        if int(ok) < 0:
+            return None
+        return [int(status_arr[i]) for i in range(count)]
 
     def generate_jpg_batch(self, file_paths: list[str], width: int, height: int) -> list[bytes | None]:
         """

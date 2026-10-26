@@ -1019,10 +1019,11 @@ class _FakeBridge:
 
 
 def _patch_fpl_bridge(monkeypatch: pytest.MonkeyPatch, bridge) -> Any:
-    """替换 ``file_pool_layout`` 模块内的 ``get_faf_core_bridge``。"""
+    """替换 ``native_api`` 的桥单例（P1.4 后 ``file_pool_layout`` 经门面访问）。"""
     import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
+    from freeassetfilter.core.native import api as native_api
 
-    monkeypatch.setattr(fpl_mod, "get_faf_core_bridge", lambda: bridge)
+    monkeypatch.setattr(native_api, "bridge", lambda: bridge)
     return fpl_mod
 
 
@@ -1102,13 +1103,13 @@ class TestFilePoolLayoutExport:
 
             if bridge is None:
                 # 真实 DLL 路径：恢复真正的单例取回器。
-                import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
+                from freeassetfilter.core.native import api as native_api
                 from freeassetfilter.core.native.bridges.faf_core_bridge import (
                     get_faf_core_bridge as _real_getter,
                 )
 
                 monkeypatch.setattr(
-                    fpl_mod, "get_faf_core_bridge", lambda: _real_getter()
+                    native_api, "bridge", lambda: _real_getter()
                 )
             else:
                 _patch_fpl_bridge(monkeypatch, bridge)
@@ -1511,8 +1512,9 @@ def _patch_async_pool(monkeypatch: pytest.MonkeyPatch) -> _FakeThreadPool:
     import freeassetfilter.ui.layout.file_selector_layout as fsl_mod
 
     fake = _FakeThreadPool()
+    # P6.2：布局已改走 ``core.pools`` 命名池，patch 门面的 ``pool()``。
     monkeypatch.setattr(
-        fsl_mod, "QThreadPool", SimpleNamespace(globalInstance=lambda: fake)
+        fsl_mod.thread_pools, "pool", lambda name="interactive": fake
     )
     return fake
 
@@ -4733,7 +4735,6 @@ class TestLoadAllStaysPython:
         """
         import ctypes
 
-        import freeassetfilter.ui.layout.file_selector_layout as fsl_mod
         from components.file_list_model import FileNameRole, FilePathRole, IsDirRole
 
         # 位掩码 0b0000_0000_0000_0111 = 位 0/1/2 → A:/B:/C:
@@ -4753,9 +4754,11 @@ class TestLoadAllStaysPython:
                 return fake_stat
             return orig_stat(path, **kwargs)
 
+        from freeassetfilter.core.native import api as native_api
+
         monkeypatch.setattr(
-            fsl_mod,
-            "get_faf_core_bridge",
+            native_api,
+            "bridge",
             lambda: bridge_calls.append("bridge"),
         )
         monkeypatch.setattr(
@@ -4803,7 +4806,6 @@ class TestLoadAllStaysPython:
         """
         import ctypes
 
-        import freeassetfilter.ui.layout.file_selector_layout as fsl_mod
         from components.file_list_model import FileNameRole
 
         fake_stat = MagicMock(
@@ -4818,9 +4820,9 @@ class TestLoadAllStaysPython:
                 return fake_stat
             return orig_stat(path, **kwargs)
 
-        monkeypatch.setattr(
-            fsl_mod, "get_faf_core_bridge", lambda: None
-        )
+        from freeassetfilter.core.native import api as native_api
+
+        monkeypatch.setattr(native_api, "bridge", lambda: None)
         monkeypatch.setattr(
             ctypes.windll.kernel32, "GetLogicalDrives", lambda: 0b101
         )
@@ -4861,7 +4863,6 @@ class TestLoadAllStaysPython:
         """
         import ctypes
 
-        import freeassetfilter.ui.layout.file_selector_layout as fsl_mod
 
         drives_bitmask: int = 0b111
         stat_calls: list[str] = []
@@ -4884,9 +4885,11 @@ class TestLoadAllStaysPython:
             value = getattr(path, "value", path)
             return 4 if str(value) == "A:\\" else 3
 
+        from freeassetfilter.core.native import api as native_api
+
         monkeypatch.setattr(
-            fsl_mod,
-            "get_faf_core_bridge",
+            native_api,
+            "bridge",
             lambda: bridge_calls.append("bridge"),
         )
         monkeypatch.setattr(
@@ -4913,7 +4916,6 @@ class TestLoadAllStaysPython:
         """
         import ctypes
 
-        import freeassetfilter.ui.layout.file_selector_layout as fsl_mod
 
         drives_bitmask: int = 0b1111
         drive_types = {"A:\\": 4, "B:\\": 3, "C:\\": 5, "D:\\": 6}

@@ -24,6 +24,38 @@ class SubprocessCancelled(Exception):
     """子进程被 ``should_stop`` 回调主动取消（已 kill，输出不可用）。"""
 
 
+def terminate_then_kill(process: subprocess.Popen, grace: float = 1.0) -> None:
+    """三段式终止子进程：``terminate() → wait(grace) → kill()``（P6.5）。
+
+    先用可捕获信号给子进程一次正常退出的机会（ffmpeg/7z 会写完尾部的
+    索引/临时文件），宽限超时仍未退出才强杀。绝不抛出：终止失败只记日志。
+
+    Args:
+        process: 目标子进程。
+        grace: ``terminate`` 后的宽限秒数（默认 1s）。
+    """
+    try:
+        if process.poll() is not None:
+            return
+        process.terminate()
+    except Exception as exc:  # noqa: BLE001 - 终止失败只记日志
+        debug(f"terminate 子进程失败：{exc}")
+    try:
+        process.wait(timeout=grace)
+        return
+    except Exception as exc:  # noqa: BLE001 - 宽限超时/已退出
+        debug(f"等待子进程自主退出失败/超时：{exc}")
+    if process.poll() is None:
+        try:
+            process.kill()
+        except Exception as exc:  # noqa: BLE001 - 强杀失败只记日志
+            debug(f"强杀子进程失败：{exc}")
+        try:
+            process.wait(timeout=grace)
+        except Exception as exc:  # noqa: BLE001 - 回收失败只记日志
+            debug(f"强杀后回收子进程失败（可能残留）：{exc}")
+
+
 def _coerce_output_limit(value: Optional[int]) -> int:
     try:
         limit = int(value if value is not None else DEFAULT_MAX_OUTPUT_BYTES)
@@ -83,11 +115,7 @@ def _wait_with_cancel(
     )
     while True:
         if should_stop():
-            process.kill()
-            try:
-                process.wait(timeout=2)
-            except Exception as exc:
-                debug(f"取消后回收子进程失败（可能残留）：{exc}")
+            terminate_then_kill(process)
             raise SubprocessCancelled(f"子进程已取消: {process.args!r}")
         wait_for = poll
         if deadline is not None:
@@ -145,11 +173,7 @@ def run_with_limited_output(
                     process, timeout, should_stop, poll_interval
                 )
         except subprocess.TimeoutExpired as exc:
-            process.kill()
-            try:
-                process.wait(timeout=2)
-            except Exception as wait_exc:
-                debug(f"超时后回收子进程失败（可能残留）：{wait_exc}")
+            terminate_then_kill(process, grace=2.0)
 
             stdout, stdout_truncated, stdout_size = _read_limited_output(
                 stdout_file,

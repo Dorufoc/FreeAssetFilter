@@ -677,11 +677,20 @@ class PdfDocumentView:
         # Rust path while the Python tuples remain authoritative for caches.
         page_words: Dict[int, List[_WordTuple]] = {}
         words_json: List[dict] = []
+        flat_words: List[Tuple[int, _WordTuple]] = []
+        # P4.2：每个页面的 9 键 dict 列表只构造一次（拖拽期每帧都要选区）。
+        # 文档切换时（id(doc) 变化）整体失效。
+        doc_key = id(self.doc)
+        if getattr(self, "_words_dicts_doc_id", None) != doc_key:
+            self._words_dicts_cache = {}
+            self._words_dicts_doc_id = doc_key
+        dicts_cache: Dict[int, List[dict]] = self._words_dicts_cache
         for p in range(start_page, end_page + 1):
             words = self.doc.get_text_words(p)
             page_words[p] = words
-            for wx0, wy0, wx1, wy1, word, block, line, wno in words:
-                words_json.append(
+            items = dicts_cache.get(p)
+            if items is None:
+                items = [
                     {
                         "page": p,
                         "block": block,
@@ -693,7 +702,13 @@ class PdfDocumentView:
                         "x1": wx1,
                         "y1": wy1,
                     }
-                )
+                    for wx0, wy0, wx1, wy1, word, block, line, wno in words
+                ]
+                if len(dicts_cache) >= 32:
+                    dicts_cache.clear()
+                dicts_cache[p] = items
+            words_json.extend(items)
+            flat_words.extend((p, entry) for entry in words)
 
         # Prefer native word filtering (``faf_core.pdf_select_words``, already
         # wired).  ``None`` signals "native unavailable" and triggers the
@@ -706,6 +721,7 @@ class PdfDocumentView:
             begin_abs_y,
             end_abs_x,
             end_abs_y,
+            flat_words=flat_words,
         )
 
         if selected_words is None:
@@ -800,6 +816,7 @@ class PdfDocumentView:
         begin_abs_y: float,
         end_abs_x: float,
         end_abs_y: float,
+        flat_words: Optional[List[Tuple[int, _WordTuple]]] = None,
     ) -> Optional[List[_SelectedEntry]]:
         """Run the smart selection filter through faf_core when available.
 
@@ -853,8 +870,28 @@ class PdfDocumentView:
                 "end_abs_y": end_abs_y,
                 "page_heights": list(self._page_heights),
             }
+            selection_text = json.dumps(selection_json)
+            # P4.2：优先走下标版本——调用方持有权威词表，每帧只回传下标，
+            # 避免选中词字典物化与 f64 序列化漂移。
+            if flat_words is not None:
+                indices = bridge.pdf_select_indices(
+                    json.dumps(words_json), selection_text
+                )
+                if indices is not None:
+                    resolved: List[_SelectedEntry] = []
+                    for index in indices:
+                        if not isinstance(index, int) or not (
+                            0 <= index < len(flat_words)
+                        ):
+                            return None
+                        page, entry = flat_words[index]
+                        wx0, wy0, wx1, wy1, word, block, line, wno = entry
+                        resolved.append(
+                            (page, block, line, wno, word, wx0, wy0, wx1, wy1)
+                        )
+                    return resolved
             raw = bridge.pdf_select_words(
-                json.dumps(words_json), json.dumps(selection_json)
+                json.dumps(words_json), selection_text
             )
             if raw is None:
                 return None

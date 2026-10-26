@@ -741,6 +741,7 @@ class TestPdfSelectionNativeParity:
         if bridge is None or not bridge._supports_pdf_select_words:
             pytest.skip("桥 pdf_select_words 不可用")
         calls: List[Tuple[object, ...]] = []
+        index_calls: List[Tuple[object, ...]] = []
         real = bridge.pdf_select_words
 
         def _recording(*args: object, **kwargs: object) -> Optional[list]:
@@ -748,11 +749,23 @@ class TestPdfSelectionNativeParity:
             return real(*args, **kwargs)
 
         monkeypatch.setattr(bridge, "pdf_select_words", _recording)
+        real_indices = getattr(bridge, "pdf_select_indices", None)
+        if callable(real_indices):
+
+            def _recording_indices(
+                *args: object, **kwargs: object
+            ) -> Optional[list]:
+                index_calls.append(args)
+                return real_indices(*args, **kwargs)
+
+            monkeypatch.setattr(bridge, "pdf_select_indices", _recording_indices)
         doc, view = self._open_view()
         try:
             text: str = view.get_text_selection(72.0, 90.0, 560.0, 200.0)
             assert text, "选中文本不应为空"
-            assert calls, "DLL 可用时 get_text_selection 应优先消费 native 选区过滤"
+            assert calls or index_calls, (
+                "DLL 可用时 get_text_selection 应优先消费 native 选区过滤"
+            )
         finally:
             doc.close()
 
@@ -950,9 +963,27 @@ class TestPdfSelectionRectParityAndBudget:
                 return real(*args, **kwargs)
 
             monkeypatch.setattr(bridge, "pdf_select_words", _recording)
+            # P4.2：native 优先路径已切到下标版本；两种调用均算“消费 native”。
+            index_calls: List[Tuple[object, ...]] = []
+            real_indices = getattr(bridge, "pdf_select_indices", None)
+            if callable(real_indices):
+
+                def _recording_indices(
+                    *args: object, **kwargs: object
+                ) -> Optional[list]:
+                    index_calls.append(args)
+                    return real_indices(*args, **kwargs)
+
+                monkeypatch.setattr(
+                    bridge, "pdf_select_indices", _recording_indices
+                )
             native_states = self._rects_for_states(native_view, case)
-            assert calls, "DLL 可用时 native 路径必须先消费 faf_pdf_select_words"
+            assert calls or index_calls, (
+                "DLL 可用时 native 路径必须先消费 pdf_select_words 或 pdf_select_indices"
+            )
             monkeypatch.setattr(bridge, "pdf_select_words", _noop_select)
+            if callable(real_indices):
+                monkeypatch.setattr(bridge, "pdf_select_indices", _noop_select)
             python_states = self._rects_for_states(python_view, case)
 
             counts = [len(state) for state in native_states]
@@ -1056,6 +1087,7 @@ class TestPdfSelectionRectParityAndBudget:
             assert view is not None
 
             native_calls: List[Tuple[object, ...]] = []
+            index_calls: List[Tuple[object, ...]] = []
             bridge = current_bridge()
             recorded_mode: str = "python-fallback"
             if bridge is not None and bridge.available and getattr(
@@ -1070,6 +1102,18 @@ class TestPdfSelectionRectParityAndBudget:
                     return real(*args, **kwargs)
 
                 monkeypatch.setattr(bridge, "pdf_select_words", _record)
+                real_indices = getattr(bridge, "pdf_select_indices", None)
+                if callable(real_indices):
+
+                    def _record_indices(
+                        *args: object, **kwargs: object
+                    ) -> Optional[list]:
+                        index_calls.append(args)
+                        return real_indices(*args, **kwargs)
+
+                    monkeypatch.setattr(
+                        bridge, "pdf_select_indices", _record_indices
+                    )
                 recorded_mode = "native-prefer"
 
             # 初始化选区分支状态（等价于按下左键后进入拖拽选择）。
@@ -1102,8 +1146,9 @@ class TestPdfSelectionRectParityAndBudget:
             assert view.selected_character_rects, (
                 "拖拽选区应在页面文本上产生高亮矩形（预算路径被真实执行）"
             )
-            assert not native_calls or len(native_calls) == n_samples, (
-                "native 优先模式下每次 mouseMove 都应消费 pdf_select_words"
+            total_native_calls = len(native_calls) + len(index_calls)
+            assert total_native_calls in (0, n_samples), (
+                "native 优先模式下每次 mouseMove 都应消费 select_words/select_indices"
             )
 
             p50: float = _percentile_ms(samples, 0.50)

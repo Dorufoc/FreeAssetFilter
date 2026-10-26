@@ -13,7 +13,9 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QListView, QLabel, QAbstractItemView, QApplication, QListWidget, QListWidgetItem
-from PySide6.QtCore import Qt, Signal, QSize, QTimer, QEvent, QMargins, QObject, QPoint, QRect, QRunnable, QThreadPool
+from PySide6.QtCore import Qt, Signal, QSize, QTimer, QEvent, QMargins, QObject, QPoint, QRect, QRunnable
+
+from freeassetfilter.core import pools as thread_pools
 
 from theme import tm
 from freeassetfilter.utils.path_utils import get_app_data_path
@@ -39,7 +41,7 @@ from components.animated_file_list_view import AnimatedFileListView
 from freeassetfilter.services.favorites_service import FavoritesService
 from freeassetfilter.services.file_icon_manager import FileIconManager
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
-from freeassetfilter.core.native.bridges.faf_core_bridge import get_faf_core_bridge
+from freeassetfilter.core.native import api as native_api
 
 
 # 目录加载指示器延迟显示时长（毫秒）：快目录不闪遮罩，慢目录（大目录/
@@ -61,6 +63,34 @@ DIR_STREAM_HOLD_MAX_MS = DIR_LOADING_INDICATOR_DELAY_MS
 # 渐进模式下主线程合帧结算间隔（毫秒）：同一帧到达的多批条目合并为一次
 # 模型插入 + 一次重绘，避免快扫描时逐批 relayout。
 DIR_STREAM_FLUSH_INTERVAL_MS = 16
+
+#: 待合帧批次数上限（P6.5 背压）：超限丢最旧批次——界面合帧只关心最新窗口，
+#: 原始条目已进入 ``_raw_entries``，丢弃只影响展示时机、不丢数据。
+DIR_STREAM_MAX_PENDING_BATCHES = 64
+
+# ── native 排序门控（P1.2，依据 build/bench 的 P0 实测）──
+# 2000 条时 native 路径净成本 ≥3.1ms（json.dumps 1.97 + json.loads 1.13）
+# vs 纯 Python ``sort`` 0.32ms；30k 条时 native 的 8MB 守卫先白烧 115.2ms
+# 再整体回退 Python（后者只要 2.7ms）。因此默认**关闭** native 排序；
+# 仅在 P3 句柄式 ABI 落地并复测转正后才启用。
+# 设置 ``FAF_NATIVE_SORT=1`` 可临时打开做对照实验。
+NATIVE_SORT_ENABLED: bool = os.environ.get("FAF_NATIVE_SORT", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+#: native 排序的最小条目数门槛（仅 ``NATIVE_SORT_ENABLED`` 时生效）。
+NATIVE_SORT_MIN_ENTRIES: int = 20000
+
+# ── native 流式扫描（P3.4，默认开启）──
+# Rust 持有 ``ReadDir`` 迭代器跨批推进，保留 P2.1 的「零额外 syscall」收益，
+# 并把 Windows 属性位（隐藏/系统）一并回传。P0 实测整目录扫描 10k 条目
+# 50.5ms vs Python 133.7ms（2.65×）；任何异常/旧 DLL → 自动回退 Python。
+# 对照实验可设 ``FAF_NATIVE_STREAM=0`` 强制走 Python 逐批。
+NATIVE_STREAM_ENABLED: bool = os.environ.get(
+    "FAF_NATIVE_STREAM", "1"
+).strip().lower() not in {"0", "false", "off", "no"}
 
 # Windows 盘类型常量（GetDriveTypeW 返回值）。「All」视图默认只加载物理
 # 磁盘（固定盘/可移动盘/RAM 盘）；网络磁盘与映射盘（DRIVE_REMOTE）以及
@@ -96,16 +126,7 @@ def _native_scan_directory(path: str) -> Optional[List[Dict[str, Any]]]:
         Optional[List[Dict[str, Any]]]: 7 键条目列表；DLL 缺失、native 失败
             或超 8MB 上限时返回 ``None``。
     """
-    try:
-        bridge = get_faf_core_bridge()
-    except Exception:  # noqa: BLE001  # FFI 边界防御
-        return None
-    if bridge is None or not bridge.available or not getattr(bridge, "_supports_scan", False):
-        return None
-    try:
-        return bridge.scan_directory(path)
-    except Exception:  # noqa: BLE001  # FFI 边界防御
-        return None
+    return native_api.scan_directory(path)
 
 
 def _native_sort_entries(
@@ -120,20 +141,11 @@ def _native_sort_entries(
     Returns:
         Optional[List[Dict[str, Any]]]: 排序后的条目列表；失败返回 ``None``。
     """
-    try:
-        bridge = get_faf_core_bridge()
-    except Exception:  # noqa: BLE001  # FFI 边界防御
-        return None
-    if bridge is None or not bridge.available or not getattr(bridge, "_supports_sort", False):
-        return None
-    try:
-        return bridge.sort_entries(entries, mode)
-    except Exception:  # noqa: BLE001  # FFI 边界防御
-        return None
+    return native_api.sort_entries(entries, mode)
 
 
 class _DirectoryCollectRunnable(QRunnable):
-    """异步目录收集任务（QRunnable 投 ``QThreadPool.globalInstance()``）。
+    """异步目录收集任务（QRunnable 投 ``thread_pools.pool("interactive")``）。
 
     一次性任务：后台线程执行 ``listdir + stat`` 收集目录条目，完成经
     ``_dir_entries_ready`` 信号回主线程应用（跨线程信号按 AutoConnection
@@ -231,16 +243,19 @@ class _DirectoryStreamRunnable(QRunnable):
             """世代 token 过期检查（不在后台线程读 UI 状态）。"""
             return self._owner._async_load_token != self._token
 
-        # 隐藏/系统过滤在后台线程完成：属性映射一次性建立，逐批复用不重扫。
-        attrs_by_name = None
-        if self._path != "All":
-            attrs_by_name = self._owner._hidden_system_attrs_map(
-                self._path, self._show_hidden, self._show_system
-            )
+        # P1.3 单遍扫描：属性位随条目扫描一并采集（`follow_symlinks=False`
+        # 口径与 `_hidden_system_attrs_map` 一致），不再前置一次整目录枚举。
+        need_filter = self._path != "All" and not (
+            self._show_hidden and self._show_system
+        )
+        attrs_by_name: Optional[Dict[str, int]] = {} if need_filter else None
 
         try:
             for batch, is_final in self._owner._iter_directory_batches(
-                self._path, self._include_remote, cancel
+                self._path,
+                self._include_remote,
+                cancel,
+                attrs_out=attrs_by_name,
             ):
                 if cancel():
                     return
@@ -798,9 +813,25 @@ class FileSelectorLayout(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
-        if self._first_show:
+        if getattr(self, "_first_show", False):
             self._first_show = False
-            QTimer.singleShot(50, self._init_navigation)
+            # 首次导航本身已经异步（后台扫描 + 分批落地），无需再等 50ms；
+            # 越早派发越早拿到首批条目（实测省 ~50ms 首帧延迟）。
+            QTimer.singleShot(0, self._init_navigation)
+
+    def start_initial_navigation(self) -> None:
+        """启动首次导航（幂等）；由宿主任意时机调用均可。
+
+        典型调用点是主窗口刚构建完选择器、还未 addWidget/show 时：目录扫描
+        在后台线程跑，不依赖控件可见，提前派发可将扫描与其余三个面板的构建
+        并行，把“转圈结束后才出首批条目”的延迟前移。
+        """
+        if getattr(self, "_initial_navigation_started", False):
+            return
+        self._initial_navigation_started = True
+        # 标记首显钩子已消费，避免 showEvent 重复导航
+        self._first_show = False
+        self._init_navigation()
 
     def _init_navigation(self) -> None:
         app = QApplication.instance()
@@ -1130,15 +1161,22 @@ class FileSelectorLayout(QWidget):
         """
         if path == "All":
             return FileSelectorLayout._collect_all_drives_python(include_remote)
+        # P1.3：仅在需要过滤时收集属性旁路表；native 路径不返回属性位，
+        # 留 None 让 ``_apply_hidden_system_filter`` 自行 scandir。
+        wants_filter = not (show_hidden is None and show_system is None)
         native_entries = _native_scan_directory(path)
         if native_entries is not None:
             entries = native_entries
+            attrs_by_name: Optional[Dict[str, int]] = None
         else:
-            entries = FileSelectorLayout._collect_directory_entries_python(path, cancel_check)
+            attrs_by_name = {} if wants_filter else None
+            entries = FileSelectorLayout._collect_directory_entries_python(
+                path, cancel_check, attrs_out=attrs_by_name
+            )
         if entries is None:
             return None
         return FileSelectorLayout._apply_hidden_system_filter(
-            entries, path, show_hidden, show_system
+            entries, path, show_hidden, show_system, attrs_by_name=attrs_by_name
         )
 
     @staticmethod
@@ -1147,6 +1185,7 @@ class FileSelectorLayout(QWidget):
         path: str,
         show_hidden: Optional[bool],
         show_system: Optional[bool],
+        attrs_by_name: Optional[Dict[str, int]] = None,
     ) -> List[Dict[str, Any]]:
         """按隐藏/系统文件属性过滤条目（保持原顺序，只删不改）。
 
@@ -1156,11 +1195,16 @@ class FileSelectorLayout(QWidget):
         属性位判定）。过滤口径与 :meth:`_entry_visible_by_attrs` 一致：仅
         「系统」位单独出现的条目恒可见。
 
+        P1.3：若调用方已在条目扫描时同步采集了属性（``attrs_by_name`` 非
+        None），则**不再**重复 scandir——这是单遍扫描的收益来源。
+
         Args:
             entries: 待过滤的 7 键条目列表。
-            path: 对应目录路径（供 scandir 读取属性）。
+            path: 对应目录路径（仅在需要自行 scandir 时使用）。
             show_hidden: 是否显示隐藏文件；``None`` 表示不过滤。
             show_system: 是否显示系统文件；仅当 ``show_hidden`` 亦为真时生效。
+            attrs_by_name: 可选旁路属性表（``name -> st_file_attributes``，
+                ``follow_symlinks=False`` 口径）；``None`` 时本方法自行枚举。
 
         Returns:
             List[Dict[str, Any]]: 过滤后的条目列表。
@@ -1171,9 +1215,10 @@ class FileSelectorLayout(QWidget):
         show_system = bool(show_system)
         if show_hidden and show_system:
             return entries
-        attrs_by_name = FileSelectorLayout._hidden_system_attrs_map(
-            path, show_hidden, show_system
-        )
+        if attrs_by_name is None:
+            attrs_by_name = FileSelectorLayout._hidden_system_attrs_map(
+                path, show_hidden, show_system
+            )
         if attrs_by_name is None:
             return entries
         return [
@@ -1257,7 +1302,10 @@ class FileSelectorLayout(QWidget):
         return True
 
     @staticmethod
-    def _entry_from_direntry(entry: "os.DirEntry") -> Dict[str, Any]:
+    def _entry_from_direntry(
+        entry: "os.DirEntry",
+        attrs_out: Optional[Dict[str, int]] = None,
+    ) -> Dict[str, Any]:
         """把 ``os.DirEntry`` 归一化为 7 键条目字典。
 
         ``_collect_directory_entries_python``（同步/回退路径）与
@@ -1265,8 +1313,17 @@ class FileSelectorLayout(QWidget):
         值与格式完全相同（``follow_symlinks=True`` 与 ``os.path.isdir``
         口径一致，目录的 ``suffix`` 恒为空串）。
 
+        P1.3：传入 ``attrs_out`` 时额外采集 ``st_file_attributes``（**必须**
+        用 ``follow_symlinks=False``，与 ``_hidden_system_attrs_map`` 同
+        口径——隐藏/系统位属于链接自身）。Windows 上该 stat 直接读
+        ``read_dir`` 缓存的 ``WIN32_FIND_DATA``，不产生额外 syscall，因此
+        这一遍采集几乎免费，却能省掉一次整目录枚举。**不写入 7 键条目**
+        （契约锁定）。
+
         Args:
             entry: ``os.scandir`` 产出的目录项。
+            attrs_out: 可选旁路属性表；传入时写入
+                ``name -> st_file_attributes``。
 
         Returns:
             Dict[str, Any]: 7 键条目字典（name/path/is_dir/size/modified/
@@ -1275,6 +1332,13 @@ class FileSelectorLayout(QWidget):
         st = entry.stat(follow_symlinks=True)
         is_dir = entry.is_dir(follow_symlinks=True)
         name = entry.name
+        if attrs_out is not None:
+            try:
+                st_no_follow = entry.stat(follow_symlinks=False)
+            except OSError:
+                st_no_follow = None
+            if st_no_follow is not None:
+                attrs_out[name] = getattr(st_no_follow, "st_file_attributes", 0)
         suffix = os.path.splitext(name)[1].lower().lstrip(".") if not is_dir else ""
         modified = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
         created = datetime.fromtimestamp(st.st_ctime).strftime("%Y-%m-%d %H:%M")
@@ -1287,6 +1351,7 @@ class FileSelectorLayout(QWidget):
     def _collect_directory_entries_python(
         path: str,
         cancel_check=None,
+        attrs_out: Optional[Dict[str, int]] = None,
     ) -> Optional[List[Dict[str, Any]]]:
         """既有 Python 收集实现（scandir + 逐文件 stat），native 回退路径。
 
@@ -1294,6 +1359,8 @@ class FileSelectorLayout(QWidget):
             path: 待收集目录路径。
             cancel_check: 可选取消检查回调；每个条目处理前调用，返回 True
                 时立即放弃并返回 ``None``（过期结果由 token 侧丢弃）。
+            attrs_out: 可选旁路属性表；传入时同步采集
+                ``name -> st_file_attributes``（P1.3 单遍扫描）。
 
         Returns:
             Optional[List[Dict[str, Any]]]: 7 键条目列表；目录不可读返回
@@ -1307,7 +1374,9 @@ class FileSelectorLayout(QWidget):
                         return None
                     try:
                         entries.append(
-                            FileSelectorLayout._entry_from_direntry(direntry)
+                            FileSelectorLayout._entry_from_direntry(
+                                direntry, attrs_out=attrs_out
+                            )
                         )
                     except (PermissionError, OSError):
                         continue
@@ -1322,8 +1391,83 @@ class FileSelectorLayout(QWidget):
         cancel_check: Callable[[], bool],
         batch_size: int = 64,
         batch_interval_s: float = 0.04,
+        *,
+        attrs_out: Optional[Dict[str, int]] = None,
     ) -> Iterator[Tuple[List[Dict[str, Any]], bool]]:
-        """渐进式目录扫描生成器：逐批 ``yield (batch, is_final)``。
+        """渐进式目录扫描入口：优先 native 流式游标，否则 Python 逐批。
+
+        P3.4：DLL 提供 ``faf_scan_*`` 时，由 Rust 持有 ``ReadDir`` 迭代器
+        跨批推进（保留 P2.1 的零额外 syscall），并把 Windows 属性位一起
+        回传（写进 ``attrs_out``，**不进** 7 键条目）。任何异常/游标不可用
+        时立即回退到 :meth:`_iter_directory_batches_python`，语义完全一致。
+
+        Args:
+            path: 待扫描目录路径；``"All"`` 表示磁盘视图。
+            include_remote: ``"All"`` 视图的网络/映射盘与光驱开关。
+            cancel_check: 取消检查回调（返回 True 表示请求已过期）。
+            batch_size: 单批最大条目数。
+            batch_interval_s: 单批最长等待秒数（仅 Python 路径使用）。
+            attrs_out: 可选旁路属性表。
+
+        Yields:
+            Tuple[List[Dict[str, Any]], bool]: 一批条目与该批是否为最后一批。
+        """
+        if NATIVE_STREAM_ENABLED and path != "All" and native_api.supports(
+            "scanstream"
+        ):
+            handle = native_api.scan_begin(path)
+            if handle:
+                try:
+                    yielded = 0
+                    while True:
+                        if cancel_check():
+                            return
+                        rows = native_api.scan_next(handle, batch_size)
+                        if rows is None:
+                            if yielded == 0:
+                                # 首批就失败：交给 Python 路径重新开始（无重复发射）。
+                                break
+                            # 中途失败：按最后一批收尾（已交付批次不回滚）。
+                            yield ([], True)
+                            return
+                        if not rows:
+                            yield ([], True)
+                            return
+                        if attrs_out is not None:
+                            for row in rows:
+                                attrs_out[row["name"]] = int(row.pop("attrs", 0) or 0)
+                        else:
+                            for row in rows:
+                                row.pop("attrs", None)
+                        is_last = len(rows) < batch_size
+                        yielded += len(rows)
+                        yield (rows, is_last)
+                        if is_last:
+                            return
+                finally:
+                    native_api.scan_free(handle)
+                if yielded:
+                    return
+        yield from FileSelectorLayout._iter_directory_batches_python(
+            path,
+            include_remote,
+            cancel_check,
+            batch_size,
+            batch_interval_s,
+            attrs_out=attrs_out,
+        )
+
+    @staticmethod
+    def _iter_directory_batches_python(
+        path: str,
+        include_remote: bool,
+        cancel_check: Callable[[], bool],
+        batch_size: int = 64,
+        batch_interval_s: float = 0.04,
+        *,
+        attrs_out: Optional[Dict[str, int]] = None,
+    ) -> Iterator[Tuple[List[Dict[str, Any]], bool]]:
+        """渐进式目录扫描生成器（纯 Python oracle / 回退路径）。
 
         纯 IO：不读取任何 Qt/UI 状态，可在后台线程运行。``"All"`` 视图一次
         枚举全部盘符并单批发完（``os.scandir`` 不适用于盘符视图）。普通目录
@@ -1341,6 +1485,9 @@ class FileSelectorLayout(QWidget):
             cancel_check: 取消检查回调（返回 True 表示请求已过期）。
             batch_size: 单批最大条目数。
             batch_interval_s: 单批最长等待秒数（与 ``batch_size`` 先到为准）。
+            attrs_out: 可选旁路属性表；传入时每条目同步写入
+                ``name -> st_file_attributes``（P1.3 单遍扫描），
+                写入发生在 ``yield`` **之前**，保证消费方可直接过滤本批。
 
         Yields:
             Tuple[List[Dict[str, Any]], bool]: 一批条目与该批是否为最后一批。
@@ -1356,7 +1503,11 @@ class FileSelectorLayout(QWidget):
                 if cancel_check():
                     return
                 try:
-                    batch.append(FileSelectorLayout._entry_from_direntry(direntry))
+                    batch.append(
+                        FileSelectorLayout._entry_from_direntry(
+                            direntry, attrs_out=attrs_out
+                        )
+                    )
                 except OSError:
                     continue
                 now = time.monotonic()
@@ -1399,6 +1550,8 @@ class FileSelectorLayout(QWidget):
         """
         self._raw_entries = list(entries)
         self._raw_entries_path = path
+        # P7.3：切目录后旧目录的缩略图/视频帧不再可见，主动收缩缓存。
+        self._shrink_thumbnail_caches("navigate")
         # A4 批量纪律：model 重置 + 网格尺寸 + 路径输入 + 计数标签合并为一次重绘，
         # 目录切换非动画帧，此处 setUpdatesEnabled 批量安全。
         file_list = self._file_list
@@ -1488,7 +1641,7 @@ class FileSelectorLayout(QWidget):
         self._update_path_input(path)
         self._set_count_loading(0)
         self._start_loading_indicator()
-        QThreadPool.globalInstance().start(
+        thread_pools.pool("interactive").start(
             _DirectoryStreamRunnable(
                 self,
                 path,
@@ -1643,9 +1796,22 @@ class FileSelectorLayout(QWidget):
             entries: 本批原始条目（后台已完成隐藏/系统过滤）。
         """
         self._raw_entries.extend(entries)
+        if len(self._stream_pending_batches) >= DIR_STREAM_MAX_PENDING_BATCHES:
+            self._stream_pending_batches.pop(0)
+            try:
+                from freeassetfilter.utils.perf_metrics import increment_global
+
+                increment_global("dir_stream.batch_dropped")
+            except Exception:  # noqa: BLE001 - 埋点不得影响流式路径
+                pass
         self._stream_pending_batches.append(entries)
         if not self._stream_flush_timer.isActive():
-            self._stream_flush_timer.start(DIR_STREAM_FLUSH_INTERVAL_MS)
+            # 首屏首批立即结算（典型为 0ms 定时器）：早一帧上屏，避免
+            # “转圈结束后网格空白”的观感。后续批次仍 16ms 合帧。
+            first_landing = self._file_model.rowCount() == 0
+            self._stream_flush_timer.start(
+                0 if first_landing else DIR_STREAM_FLUSH_INTERVAL_MS
+            )
 
     def _flush_stream_batches(self) -> None:
         """结算合帧缓冲中的全部批次（一次插入 + 一次重绘），刷新加载计数。
@@ -1864,6 +2030,26 @@ class FileSelectorLayout(QWidget):
         # 目录过渡动画（120ms）结束后再滚动，避免与过渡快照错位
         QTimer.singleShot(180, lambda p=model_file_path: self._scroll_to_file(p))
 
+    @staticmethod
+    def _shrink_thumbnail_caches(reason: str) -> None:
+        """在切目录时主动收缩缩略图缓存（P7.3）。
+
+        惰性导入 + 全异常吞掉：缓存收缩是纯收益动作，不得影响导航。
+
+        Args:
+            reason: 触发原因（写入性能元数据）。
+        """
+        try:
+            from freeassetfilter.core.managers.thumbnail_manager import (
+                ThumbnailManager,
+            )
+
+            manager = getattr(ThumbnailManager, "_instance", None)
+            if manager is not None:
+                manager.shrink_caches(reason)
+        except Exception:  # noqa: BLE001 - 收缩失败不得影响导航
+            pass
+
     def _apply_sort(self, entries: List[Dict[str, Any]]) -> None:
         mode = self._sort_mode
         if mode == 0:
@@ -1884,12 +2070,18 @@ class FileSelectorLayout(QWidget):
             entries.sort(key=lambda x: (not x["is_dir"], x.get("created", "")))
 
     def _sort_entries(self, entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """排序条目列表（name 预排序 + 模式排序；native 优先，回退 Python）。
+        """排序条目列表（native 门控；P0 实测后默认走纯 Python）。
 
-        与既有 ``_apply_directory_entries`` 的排序管线逐字节一致：先按
-        ``(not is_dir, name.lower())`` 稳定预排序，再按当前模式排序——
-        equal-key 相对序由预排序决定，native（``faf_sort_entries``，语义与
-        ``_apply_sort`` 逐字节一致）与 Python 结果等价，故两路径可互换。
+        口径与 ``_apply_directory_entries`` 逐字节一致：
+
+        * mode 2–7：**必须**先按 ``(not is_dir, name.lower())`` 稳定预排序
+          ——native 与 Python 的稳定排序都保持 equal-key 的输入序，而输入
+          序来自 ``read_dir``（非确定），预排序是平局确定性的唯一来源；
+        * mode 0/1：排序键与预排序键完全相同，预排序纯冗余，跳过。
+
+        native 路径默认关闭（``NATIVE_SORT_ENABLED=False``）：P0 实测其
+        JSON 往返成本高于 Python 排序本身（2000 条 ≥3.1ms vs 0.32ms），
+        且大目录会先撞 8MB 上限再整体回退（30k 条白烧 115.2ms）。
 
         Args:
             entries: 7 键条目列表（不被就地修改）。
@@ -1898,10 +2090,13 @@ class FileSelectorLayout(QWidget):
             List[Dict[str, Any]]: 排序后的条目列表。
         """
         entries = list(entries)
-        entries.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
-        native = _native_sort_entries(entries, self._sort_mode)
-        if native is not None:
-            return native
+        mode = self._sort_mode
+        if mode >= 2:
+            entries.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
+        if NATIVE_SORT_ENABLED and len(entries) >= NATIVE_SORT_MIN_ENTRIES:
+            native = _native_sort_entries(entries, mode)
+            if native is not None:
+                return native
         self._apply_sort(entries)
         return entries
 
@@ -1926,13 +2121,18 @@ class FileSelectorLayout(QWidget):
     def _sorted_filtered_raw(self) -> List[Dict[str, Any]]:
         """从 raw 缓存计算最终展示序（筛选 + 排序），不写模型。
 
-        与 ``_apply_entries_in_memory`` 的管线一致：复制原始条目 → 筛选 →
-        内存排序（native ``faf_sort_entries`` 优先，否则 ``_apply_sort``）。
+        与 ``_apply_entries_in_memory`` 的管线一致：筛选 → 内存排序
+        （``_sort_entries`` 内部会复制列表再排）。
+
+        P3.6/P7.3：**不再逐条 ``dict(e)`` 深拷**——``_filter_entries`` 已返回
+        新列表（元素为原字典），``_sort_entries`` 又复制一份再排序，两者都
+        只动顺序不动字典，因此 10k 条目可省掉一次全量字典构造（约 6ms +
+        2MB 瞬时峰值）。
 
         Returns:
             List[Dict[str, Any]]: 最终展示顺序的条目列表。
         """
-        entries = self._filter_entries([dict(e) for e in self._raw_entries])
+        entries = self._filter_entries(self._raw_entries)
         return self._sort_entries(entries)
 
     def _apply_entries_in_memory(self) -> None:

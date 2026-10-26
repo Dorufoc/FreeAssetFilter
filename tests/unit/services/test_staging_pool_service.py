@@ -320,7 +320,7 @@ class TestFolderSize:
                 return {"results": [{"path": paths[0], "size": total, "error": None}]}
 
         monkeypatch.setattr(
-            "freeassetfilter.services.staging_pool_service.get_faf_core_bridge",
+            "freeassetfilter.core.native.api.bridge",
             lambda: NativeBridge(),
         )
         size = StagingPoolService().calculate_folder_size(str(base))
@@ -345,7 +345,7 @@ class TestFolderSize:
                 return {"results": [{"path": paths[0], "size": 0, "error": None}]}
 
         monkeypatch.setattr(
-            "freeassetfilter.services.staging_pool_service.get_faf_core_bridge",
+            "freeassetfilter.core.native.api.bridge",
             lambda: NativeBridge(),
         )
         cancel: threading.Event = threading.Event()
@@ -370,7 +370,7 @@ class TestFolderSize:
                 }
 
         monkeypatch.setattr(
-            "freeassetfilter.services.staging_pool_service.get_faf_core_bridge",
+            "freeassetfilter.core.native.api.bridge",
             lambda: ErrBridge(),
         )
         assert StagingPoolService().calculate_folder_size(str(base)) == 200
@@ -387,7 +387,7 @@ class TestFolderSize:
             _supports_sizesum = False
 
         monkeypatch.setattr(
-            "freeassetfilter.services.staging_pool_service.get_faf_core_bridge",
+            "freeassetfilter.core.native.api.bridge",
             lambda: NoBridge(),
         )
         assert StagingPoolService().calculate_folder_size(str(base)) == 200

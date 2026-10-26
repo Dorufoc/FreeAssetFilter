@@ -45,6 +45,7 @@ if _UI_ROOT not in sys.path:
 
 from freeassetfilter.ui.layout.file_selector_layout import FileSelectorLayout  # noqa: E402
 import freeassetfilter.ui.layout.file_selector_layout as fsl_mod  # noqa: E402
+from freeassetfilter.core.native import api as native_api  # noqa: E402
 
 # 与布局模块共享同一模块实例（components.* 短路径），FileNameRole 为 int 角色值。
 from components.file_list_model import FileNameRole  # noqa: E402
@@ -203,6 +204,7 @@ class TestSortModeSwitchNoRescan:
             cancel_check: Any,
             batch_size: int = 64,
             batch_interval_s: float = 0.04,
+            **kwargs: Any,
         ) -> Any:
             calls.append(path)
             yield from original_iter(
@@ -269,6 +271,7 @@ class TestFilterApplyNoRescan:
             cancel_check: Any,
             batch_size: int = 64,
             batch_interval_s: float = 0.04,
+            **kwargs: Any,
         ) -> Any:
             calls.append(path)
             yield from original_iter(
@@ -347,7 +350,7 @@ class TestBridgeUnavailableFallback:
             monkeypatch: pytest monkeypatch fixture。
         """
         src_dir = _make_src_dir(tmp_path)
-        monkeypatch.setattr(fsl_mod, "get_faf_core_bridge", lambda: _UnavailableBridge())
+        monkeypatch.setattr(native_api, "bridge", lambda: _UnavailableBridge())
 
         entries = FileSelectorLayout._collect_directory_entries(str(src_dir))
         assert entries is not None, "DLL 缺失时 Python 回退不应返回 None"
@@ -375,7 +378,7 @@ class TestBridgeUnavailableFallback:
         baseline = FileSelectorLayout._collect_directory_entries(str(src_dir))
         assert baseline is not None
 
-        monkeypatch.setattr(fsl_mod, "get_faf_core_bridge", lambda: _FailingBridge())
+        monkeypatch.setattr(native_api, "bridge", lambda: _FailingBridge())
         actual = FileSelectorLayout._collect_directory_entries(str(src_dir))
         assert actual is not None, "native 失败回退 Python 不应返回 None"
 
@@ -469,7 +472,7 @@ class TestHiddenSystemFiltering:
             monkeypatch: pytest monkeypatch fixture。
         """
         src_dir = _make_hidden_system_dir(tmp_path)
-        monkeypatch.setattr(fsl_mod, "get_faf_core_bridge", lambda: _UnavailableBridge())
+        monkeypatch.setattr(native_api, "bridge", lambda: _UnavailableBridge())
 
         def names(show_hidden: bool, show_system: bool) -> List[str]:
             entries = FileSelectorLayout._collect_directory_entries(
@@ -501,7 +504,7 @@ class TestHiddenSystemFiltering:
             monkeypatch: pytest monkeypatch fixture。
         """
         src_dir = _make_hidden_system_dir(tmp_path)
-        monkeypatch.setattr(fsl_mod, "get_faf_core_bridge", lambda: _UnavailableBridge())
+        monkeypatch.setattr(native_api, "bridge", lambda: _UnavailableBridge())
         entries = FileSelectorLayout._collect_directory_entries(str(src_dir))
         assert entries is not None
         assert sorted(e["name"] for e in entries) == self._ALL_NAMES

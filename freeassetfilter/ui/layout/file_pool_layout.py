@@ -31,7 +31,7 @@ import threading
 from typing import Callable, Optional
 
 from PySide6.QtCore import (
-    Qt, Signal, QTimer, QEvent, QRunnable, QThreadPool, QEventLoop,
+    Qt, Signal, QTimer, QEvent, QRunnable, QEventLoop,
     QPoint, QRect, QSize, QEasingCurve, QPropertyAnimation, QParallelAnimationGroup,
     QSequentialAnimationGroup, QPauseAnimation, QAbstractAnimation,
 )
@@ -53,6 +53,7 @@ from PySide6.QtWidgets import (
     QWidgetItem,
 )
 
+from freeassetfilter.core import pools as thread_pools
 from theme import tm
 from components.styled_button import StyledButton
 from components.styled_info_card import StyledInfoCard
@@ -70,7 +71,7 @@ from freeassetfilter.utils.path_utils import get_app_data_path
 from freeassetfilter.core._paths import icons_dir
 from freeassetfilter.services.staging_pool_service import StagingPoolService
 from freeassetfilter.core.workers.staging_tasks import MD5CalculationTask
-from freeassetfilter.core.native.bridges.faf_core_bridge import get_faf_core_bridge
+from freeassetfilter.core.native import api as native_api
 from freeassetfilter.utils.animation_settings import is_animation_enabled
 from freeassetfilter.utils.app_logger import debug, warning
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
@@ -97,7 +98,7 @@ def _show_custom_dialog(parent, title, message, buttons, variants=None, vertical
 
 
 class _ExportCopyRunnable(QRunnable):
-    """导出复制任务（QRunnable 投 ``QThreadPool.globalInstance()``）。
+    """导出复制任务（QRunnable 投 ``thread_pools.pool("interactive")``）。
 
     一次性任务：后台线程平铺/分类复制文件，进度经 ``update_progress``
     信号回主线程，完成统计经 ``_export_finished`` 信号回传；线程池
@@ -1796,6 +1797,24 @@ class FilePoolLayout(QWidget):
             0, lambda p=normalized_path: self._animate_card_exit(p)
         )
 
+    def _settle_pool_layout(self) -> None:
+        """同步跑一轮卡片布局（替代 ``QApplication.processEvents()``，P6.3）。
+
+        ``processEvents`` 会重入事件循环（重入绘制/输入/定时器），是卡顿与
+        状态不一致的源头，且无法预算耗时。这里只做布局激活：
+        ``invalidate → activate → updateGeometry → 再 activate``
+        （第二次 activate 吸收第一轮 updateGeometry 触发的几何变更）。
+        """
+        try:
+            layout = self._card_layout
+            layout.invalidate()
+            layout.activate()
+            self._card_container.updateGeometry()
+            layout.activate()
+        except RuntimeError:
+            # 控件已销毁：静默（与 processEvents 路径的容错口径一致）
+            pass
+
     def _animate_card_exit(self, file_path: str) -> None:
         """播放卡片移除动画。
 
@@ -1812,7 +1831,7 @@ class FilePoolLayout(QWidget):
         self._finalize_card_animation(file_path)
         self._remove_entry_spacer(file_path)
 
-        QApplication.processEvents()
+        self._settle_pool_layout()
         start_rect = card.geometry()
         if not start_rect.isValid():
             self._finalize_remove(file_path)
@@ -2129,7 +2148,7 @@ class FilePoolLayout(QWidget):
             except RuntimeError:
                 pass
 
-        QApplication.processEvents()
+        self._settle_pool_layout()
         rects = {card: QRect(card.geometry()) for card in cards}
         for card in cards:
             self._card_layout.removeWidget(card)
@@ -2795,7 +2814,7 @@ class FilePoolLayout(QWidget):
         self._export_finished.connect(_on_finish)
 
         # 投递后台复制任务（线程池 daemon 语义，进程退出自动结束）
-        QThreadPool.globalInstance().start(
+        thread_pools.pool("interactive").start(
             _ExportCopyRunnable(
                 self, files, target_dir, mode, cancel_event=_cancel_event
             )
@@ -2884,10 +2903,7 @@ class FilePoolLayout(QWidget):
         Returns:
             (成功数, 失败数, 错误信息列表)
         """
-        bridge = get_faf_core_bridge()
-        native_usable = (
-            bridge is not None and bridge.available and bridge._supports_copy
-        )
+        native_usable = native_api.supports("copy")
         success = 0
         failed = 0
         errors: list = []
@@ -2908,7 +2924,7 @@ class FilePoolLayout(QWidget):
             result = None
             if native_usable:
                 try:
-                    result = bridge.copy_files([p[1] for p in pending], dest)
+                    result = native_api.copy_files([p[1] for p in pending], dest)
                 except Exception:  # noqa: BLE001  # FFI 边界兜底 → 回退 Python
                     warning("native 复制失败，回退 Python 复制路径")
                     result = None
@@ -3121,4 +3137,4 @@ class FilePoolLayout(QWidget):
             callback: 回调函数，接收 MD5 字符串或 None。
         """
         task = MD5CalculationTask(file_path, callback)
-        QThreadPool.globalInstance().start(task)
+        thread_pools.pool("interactive").start(task)

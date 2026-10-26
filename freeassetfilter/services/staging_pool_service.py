@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from freeassetfilter.services.base import BaseService
 from freeassetfilter.utils.app_logger import debug, warning
-from freeassetfilter.core.native.bridges.faf_core_bridge import get_faf_core_bridge
+from freeassetfilter.core.native import api as native_api
 
 
 class StagingPoolService(BaseService):
@@ -426,17 +426,8 @@ class StagingPoolService(BaseService):
         Returns:
             总大小（字节数），计算被取消则返回 None。
         """
-        bridge = get_faf_core_bridge()
-        if (
-            bridge is not None
-            and bridge.available
-            and bridge._supports_sizesum  # noqa: SLF001  # 能力探测经公开属性旁路
-        ):
-            try:
-                result = bridge.sum_directory_sizes([folder_path])
-            except Exception:  # noqa: BLE001  # FFI 边界兜底 → 回退 Python walk
-                warning("native 目录大小聚合失败，回退 Python 实现")
-                result = None
+        if native_api.supports("sizesum"):
+            result = native_api.sum_directory_sizes([folder_path])
             if result is not None:
                 results = result.get("results")
                 if isinstance(results, list) and results:

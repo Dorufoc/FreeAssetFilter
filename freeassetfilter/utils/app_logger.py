@@ -23,7 +23,6 @@ import io
 import atexit
 import logging
 import traceback
-import inspect
 import platform
 import threading
 from datetime import datetime
@@ -431,43 +430,62 @@ def _get_app_info() -> Dict[str, Any]:
 # 标记是否正在输出启动信息
 _in_startup_log = False
 
-def _get_caller_filename() -> str:
-    """
-    获取调用日志函数的文件名
-    
+#: 调用者文件名缓存（``co_filename`` → 不含扩展名的 basename）。
+#: 日志过滤器每条记录都要解析调用者；命中缓存后只剩一次 dict 查找。
+_CALLER_STEM_CACHE: Dict[str, str] = {}
+
+#: 需要跳过的日志基础设施文件（按 basename 子串匹配）。
+_CALLER_SKIP_PATTERNS = ("app_logger.py", "__init__.py")
+
+
+def _stem_for_filename(filename: str) -> str:
+    """取文件名的无扩展名部分（带缓存）。
+
+    Args:
+        filename: ``frame.f_code.co_filename``。
+
     Returns:
-        str: 调用者文件名（不含路径）
+        str: 不含目录与扩展名的文件名；无法解析时返回 ``"unknown"``。
+    """
+    cached = _CALLER_STEM_CACHE.get(filename)
+    if cached is not None:
+        return cached
+    try:
+        stem, _ = os.path.splitext(os.path.basename(filename))
+    except (TypeError, ValueError):
+        return "unknown"
+    _CALLER_STEM_CACHE[filename] = stem
+    return stem
+
+
+def _get_caller_filename() -> str:
+    """获取调用日志函数的文件名（不含路径与扩展名）。
+
+    实现说明（启动流畅度关键路径）：原实现用 ``inspect.stack()``——它会为
+    **每条日志**做 ``findsource`` / ``getmodule`` / ``realpath`` / ``linecache``
+    校验，实测单条约 1–3ms，启动期一次几十上百条日志就会在主线程上叠出
+    100–300ms 的卡顿（转圈动画直接掉帧）。这里改为直接沿 ``f_back`` 走帧读
+    ``co_filename``，不碰源码与文件系统，单条成本降到微秒级。
+
+    Returns:
+        str: 调用者文件名（不含目录与扩展名）；无法判定时返回 ``"unknown"``。
     """
     global _in_startup_log
-    
+
     if _in_startup_log:
         return 'app_logger'
-    
+
     try:
-        # 获取当前调用栈
-        stack = inspect.stack()
-        
-        # 跳过的文件名模式列表
-        skip_patterns = ['app_logger.py', '__init__.py']
-        
-        # 查找第一个不在跳过列表中的调用者
-        for frame_info in stack:
-            filename = frame_info.filename
-            basename = os.path.basename(filename)
-            
-            # 检查是否需要跳过该文件
-            should_skip = False
-            for pattern in skip_patterns:
-                if pattern in basename:
-                    should_skip = True
-                    break
-            
-            if not should_skip:
-                # 获取文件名（不含扩展名）
-                name, _ = os.path.splitext(basename)
-                return name
-    except (IndexError, AttributeError):
-        pass
+        frame = sys._getframe(1)  # 从调用方开始（本函数自身已跳过）
+    except (AttributeError, ValueError):
+        return 'unknown'
+
+    while frame is not None:
+        filename = frame.f_code.co_filename
+        basename = os.path.basename(filename)
+        if not any(pattern in basename for pattern in _CALLER_SKIP_PATTERNS):
+            return _stem_for_filename(filename)
+        frame = frame.f_back
     return 'unknown'
 
 
@@ -1130,29 +1148,31 @@ class AppLogger:
         except (ValueError, TypeError) as e:
             _write_bootstrap_fallback(f"[警告] 清理旧日志文件失败 - 数据转换错误: {e}")
     
-    def debug(self, msg):
-        """输出调试日志"""
-        self.logger.debug(msg)
-    
-    def info(self, msg):
-        """输出信息日志"""
-        self.logger.info(msg)
-    
-    def warning(self, msg):
-        """输出警告日志"""
-        self.logger.warning(msg)
-    
-    def error(self, msg):
-        """输出错误日志"""
-        self.logger.error(msg)
-    
-    def critical(self, msg):
-        """输出严重错误日志"""
-        self.logger.critical(msg)
-    
-    def exception(self, msg):
-        """输出异常信息，包含堆栈跟踪"""
-        self.logger.exception(msg)
+    # 注：与模块级便捷函数一致，全部接受 ``*args``——logging 只在启用该级别时
+    # 才做 ``msg % args``，热路径用 ``debug("x=%s", x)`` 可完全避免字符串拼接。
+    def debug(self, msg, *args):
+        """输出调试日志（支持 ``%s`` 惰性格式化）。"""
+        self.logger.debug(msg, *args)
+
+    def info(self, msg, *args):
+        """输出信息日志（支持 ``%s`` 惰性格式化）。"""
+        self.logger.info(msg, *args)
+
+    def warning(self, msg, *args):
+        """输出警告日志（支持 ``%s`` 惰性格式化）。"""
+        self.logger.warning(msg, *args)
+
+    def error(self, msg, *args):
+        """输出错误日志（支持 ``%s`` 惰性格式化）。"""
+        self.logger.error(msg, *args)
+
+    def critical(self, msg, *args):
+        """输出严重错误日志（支持 ``%s`` 惰性格式化）。"""
+        self.logger.critical(msg, *args)
+
+    def exception(self, msg, *args):
+        """输出异常信息，包含堆栈跟踪。"""
+        self.logger.exception(msg, *args)
     
     def get_log_file_path(self):
         """获取当前日志文件路径"""
@@ -1343,10 +1363,10 @@ def log_exception(exc_type, exc_value, exc_traceback):
         safe_exc_value = sanitize_sensitive_info(safe_exc_value)
 
         # 构建异常信息
-        error_msg = f"\n=== 检测到未捕获的异常 ===\n"
+        error_msg = "\n=== 检测到未捕获的异常 ===\n"
         error_msg += f"异常类型: {exc_type.__name__}\n"
         error_msg += f"异常值: {safe_exc_value}\n"
-        error_msg += f"异常堆栈:\n"
+        error_msg += "异常堆栈:\n"
 
         # 获取堆栈跟踪字符串并过滤敏感信息
         stack_trace = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
@@ -1363,29 +1383,33 @@ def log_exception(exc_type, exc_value, exc_traceback):
 
 
 # 便捷的日志函数
-def debug(msg):
-    """输出调试日志"""
-    get_logger().debug(msg)
+#
+# P6.6：全部接受 ``*args``——``logging`` 只在启用该级别时才做 ``msg % args``，
+# 因此热路径请用 ``debug("x=%s", x)`` 而不是 ``debug(f"x={x}")``，
+# 未开 DEBUG 时连字符串拼接都不会发生。
+def debug(msg, *args):
+    """输出调试日志（支持 ``%s`` 惰性格式化）。"""
+    get_logger().debug(msg, *args)
 
 
-def info(msg):
-    """输出信息日志"""
-    get_logger().info(msg)
+def info(msg, *args):
+    """输出信息日志（支持 ``%s`` 惰性格式化）。"""
+    get_logger().info(msg, *args)
 
 
-def warning(msg):
-    """输出警告日志"""
-    get_logger().warning(msg)
+def warning(msg, *args):
+    """输出警告日志（支持 ``%s`` 惰性格式化）。"""
+    get_logger().warning(msg, *args)
 
 
-def error(msg):
-    """输出错误日志"""
-    get_logger().error(msg)
+def error(msg, *args):
+    """输出错误日志（支持 ``%s`` 惰性格式化）。"""
+    get_logger().error(msg, *args)
 
 
-def critical(msg):
-    """输出严重错误日志"""
-    get_logger().critical(msg)
+def critical(msg, *args):
+    """输出严重错误日志（支持 ``%s`` 惰性格式化）。"""
+    get_logger().critical(msg, *args)
 
 
 def exception_details(message: str, exc: Optional[BaseException] = None, level: str = 'error'):

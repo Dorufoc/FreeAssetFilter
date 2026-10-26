@@ -43,7 +43,6 @@ from PySide6.QtCore import (
     QRunnable,
     QSize,
     Qt,
-    QThreadPool,
     QTimer,
     Signal,
 )
@@ -57,9 +56,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from freeassetfilter.core import pools as thread_pools
 from theme import tm
 
-from freeassetfilter.core.native.bridges import faf_core_bridge as _faf_bridge
+from freeassetfilter.core.native import api as _native_api
 from freeassetfilter.services import file_info_service as fis
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
@@ -111,7 +111,7 @@ class _WorkTask(QRunnable):
 
     def start(self) -> None:
         """投递到全局线程池执行（替代旧 QThread.start()）。"""
-        QThreadPool.globalInstance().start(self)
+        thread_pools.pool("io").start(self)
 
 
 class _DetailTask(_WorkTask):
@@ -164,11 +164,9 @@ class _HashTask(_WorkTask):
         stop_check = lambda: self._cancelled  # 模块既有风格：进度/取消回调为闭包
         values: Optional[Dict[str, str]] = None
         try:
-            bridge = _faf_bridge.get_faf_core_bridge()
-            if bridge is not None and bridge.available and bridge._supports_hash:
-                values = bridge.hash_file_streaming(
-                    self._path, progress=_report, should_stop=stop_check
-                )
+            values = _native_api.hash_file_streaming(
+                self._path, progress=_report, should_stop=stop_check
+            )
         except Exception:  # noqa: BLE001
             values = None
         if values is None:

@@ -26,7 +26,9 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
-from PySide6.QtCore import Qt, QRectF, QPointF, QObject, QRunnable, QThreadPool, Signal
+from PySide6.QtCore import Qt, QRectF, QPointF, QObject, QRunnable, Signal
+
+from freeassetfilter.core import pools as thread_pools
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -92,7 +94,7 @@ class _PdfOpenTask(QRunnable):
 
     def start(self) -> None:
         """投递到全局线程池执行。"""
-        QThreadPool.globalInstance().start(self)
+        thread_pools.pool("decode").start(self)
 
     def run(self) -> None:
         """打开文档并读取页尺寸；异常统一经 ``failed`` 上报。"""

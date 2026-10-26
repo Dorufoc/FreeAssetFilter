@@ -31,6 +31,8 @@ Office 转换异步工作线程
 
 from __future__ import annotations
 
+import os
+
 import threading
 import time
 from datetime import datetime
@@ -175,20 +177,32 @@ class OfficeConverterWorker(QThread):
         if not self.isRunning():
             self.deleteLater()
 
-    def cleanup(self, wait_ms: int = 3000) -> None:
+    def cleanup(self, wait_ms: int = 0) -> None:
         """取消并回收在途 worker，然后安全调度删除。
 
-        QA 场景（预览关闭瞬间）：先 ``request_cancel()`` + ``wait()`` 等待
-        线程结束，再 ``deleteLater()`` —— 保证信号不会发射到已销毁对象。
+        P6.3：默认**不阻塞调用线程**（``wait_ms=0``）——``request_cancel()``
+        已终止 soffice 子进程，线程会自然结束；用 ``finished → deleteLater``
+        代替同步 ``wait()``。仅在 ``wait_ms > 0`` 或
+        ``FAF_OFFICE_BLOCKING_CLEANUP=1`` 时保留旧的有界等待（退出路径）。
 
         Parameters
         ----------
         wait_ms : int
-            等待线程结束的最大毫秒数（默认 3000）。
+            等待线程结束的最大毫秒数（默认 0 = 不阻塞）。
         """
+        blocking = wait_ms > 0 or os.environ.get(
+            "FAF_OFFICE_BLOCKING_CLEANUP", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
         if self.isRunning():
             self.request_cancel()
-            self.wait(wait_ms)
+            if blocking:
+                self.wait(wait_ms or 300)
+            else:
+                try:
+                    self.finished.connect(self.deleteLater)
+                except Exception:  # noqa: BLE001 - 已销毁对象
+                    pass
+                return
         self.deleteLater()
 
     # ── 线程入口 ─────────────────────────────────────────────────────

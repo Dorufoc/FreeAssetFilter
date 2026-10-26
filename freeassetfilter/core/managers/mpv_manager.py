@@ -648,7 +648,7 @@ class MPVManager(QObject):
             self._mpv_core.fileLoaded.disconnect(self._on_file_loaded)
             self._mpv_core.fileEnded.disconnect(self._on_file_ended)
             self._mpv_core.errorOccurred.disconnect(self._on_error_occurred)
-        except RuntimeError as e:
+        except RuntimeError:
             # 信号可能未连接，这是正常情况
             pass
 
@@ -1440,6 +1440,55 @@ class MPVManager(QObject):
         except RuntimeError as e:
             error(f"初始化失败: {e}")
             return False
+
+    def initialize_async(
+        self,
+        on_done: Callable[[bool], None],
+        initial_window_id: Optional[int] = None,
+        timeout: float = 10.0,
+    ) -> None:
+        """异步初始化（P6.3：不阻塞主线程）。
+
+        与 :meth:`initialize` 共用同一 ``_submit_operation`` 管线；用
+        ``QTimer`` 16ms 轮询 future，完成/超时都经 ``on_done(ok)`` 回到
+        调用线程（主线程）。``initialize`` 保留给测试与 CLI 同步场景。
+
+        Args:
+            on_done: 完成回调（参数为是否成功）。
+            initial_window_id: 首次初始化时嵌入的视频输出窗口句柄。
+            timeout: 超时秒数。
+        """
+        deadline = time.monotonic() + max(0.1, float(timeout))
+        self.reset_core_crash()
+        with self._shutdown_lock:
+            is_shutting_down = self._is_shutting_down
+        if is_shutting_down:
+            on_done(False)
+            return
+        if self._mpv_core is None:
+            self._mpv_core = MPVPlayerCore()
+        if initial_window_id is not None:
+            self._mpv_core.set_initial_window_id(initial_window_id)
+        self._start_operation_thread()
+        future = self._submit_operation(
+            MPVOperationType.INITIALIZE, component_id="manager", priority=1
+        )
+
+        def _poll() -> None:
+            if future.done():
+                try:
+                    ok = bool(future.result(timeout=0))
+                except Exception:  # noqa: BLE001 - 失败语义统一为 False
+                    ok = False
+                on_done(ok)
+                return
+            if time.monotonic() >= deadline:
+                error("初始化操作超时（async）")
+                on_done(False)
+                return
+            QTimer.singleShot(16, _poll)
+
+        QTimer.singleShot(16, _poll)
 
     def close(self, async_mode: bool = True, timeout: float = 2.0) -> bool:
         """
@@ -2470,7 +2519,7 @@ class MPVManager(QObject):
         try:
             if self._mpv_core is not None:
                 self.close()
-        except RuntimeError as e:
+        except RuntimeError:
             pass
 
 

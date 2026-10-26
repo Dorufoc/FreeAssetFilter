@@ -226,7 +226,10 @@ class TestStartupSchedule:
         controller.schedule_startup_tasks()
 
         delays = [msec for msec, _ in calls]
-        assert delays[:4] == [0, 0, 0, 100]
+        # 首帧后：字体 / 图标缓存清理（0ms）→ 缩略图缓存清理（100ms）→
+        # FFmpeg 预热（200ms）→ 预算补应用（400ms）→ 更新检查（3000ms）。
+        # 后两项都会导入重模块或跑 FFI，刻意错开面板构建网格（0–24ms）。
+        assert delays[:5] == [0, 200, 0, 400, 100]
         update_callbacks = [callback for msec, callback in calls if msec == 3000]
         assert len(update_callbacks) == 1
         update_callbacks[0]()

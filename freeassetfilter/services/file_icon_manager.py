@@ -61,6 +61,10 @@ class FileIconManager(QObject):
     _ICON_CACHE_MAX_ENTRIES: int = 256
     _SYSTEM_ICON_CACHE_MAX_ENTRIES: int = 256
     _SYSTEM_ICON_PLACEHOLDER_CACHE_MAX_ENTRIES: int = 256
+    #: P7.3 家族总预算：三套缓存共享同一个条目上限（同 key 去重后总量
+    #: 从 3×256 收敛到 256，条目 −66%）。单项上限仍保留（兼容既有测试与
+    #: 单价缓存语义），但三项之和超过本预算时按 LRU 跨缓存淘汰。
+    _ICON_CACHE_FAMILY_BUDGET: int = 256
 
     system_icon_loaded = Signal(str)  # 系统图标异步加载完成通知
 
@@ -90,6 +94,10 @@ class FileIconManager(QObject):
                 return
             super().__init__(parent)
             self._initialized = True
+            # P7.2：构造期自应用内存预算档位。
+            # 启动路径不能为了打补丁而提前导入本模块（冷导入 174–290ms），因此
+            # 预算侧把它标为 pending，由这里在实例化时自己读档位。
+            self._apply_budget_limits()
             self._icon_cache: OrderedDict = OrderedDict()
             self._cache_lock = threading.Lock()
             self._system_icon_cache: OrderedDict[str, QPixmap] = OrderedDict()
@@ -98,11 +106,31 @@ class FileIconManager(QObject):
             # 与主题无关，单独放在 _system_icon_cache；占位符由 SVG 主题色
             # 渲染，配色变化后需按新签名重新渲染。
             self._system_icon_placeholder_cache: OrderedDict = OrderedDict()
-            self._system_icon_placeholder_lock = threading.Lock()
+            # RLock：占位符裁剪内会回调家族预算收敛（同一把锁重入）。
+            self._system_icon_placeholder_lock = threading.RLock()
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    @classmethod
+    def _apply_budget_limits(cls) -> bool:
+        """按内存预算档位设置图标缓存上限（P7.2，构造期自应用）。
+
+        Returns:
+            bool: 是否已应用（预算模块不可用时保持类默认值）。
+        """
+        try:
+            from freeassetfilter.core.memory_budget import get_memory_budget
+
+            tier = get_memory_budget().tier  # property，不是方法
+        except Exception:  # noqa: BLE001 - 预算不可用时保持默认上限
+            return False
+        cls._ICON_CACHE_MAX_ENTRIES = tier.icon_cache_entries
+        cls._SYSTEM_ICON_CACHE_MAX_ENTRIES = tier.icon_cache_entries
+        cls._SYSTEM_ICON_PLACEHOLDER_CACHE_MAX_ENTRIES = tier.icon_cache_entries
+        cls._ICON_CACHE_FAMILY_BUDGET = tier.icon_cache_entries
+        return True
 
     def get_icon_pixmap(self, file_info: dict, icon_size: int, dpr: float) -> QPixmap:
         """获取文件图标 QPixmap（完整的 SVG 解析 → 缩略图 → 缓存管线）。
@@ -582,12 +610,55 @@ class FileIconManager(QObject):
             self._system_icon_cache.move_to_end(file_path)
             self._trim_system_icon_cache()
 
+        # P7.3 同 key 去重：真实图标就位后，该路径的主题化占位符不再需要。
+        with self._system_icon_placeholder_lock:
+            stale = [
+                key
+                for key in self._system_icon_placeholder_cache
+                if isinstance(key, tuple) and key and key[0] == file_path
+            ]
+            for key in stale:
+                self._system_icon_placeholder_cache.pop(key, None)
+
         self.system_icon_loaded.emit(file_path)
 
     def _trim_cache(self) -> None:
-        """裁剪 L1 缓存至最大条目数（LRU 淘汰）。"""
+        """裁剪 L1 缓存至最大条目数（LRU 淘汰），并收敛家族总预算。"""
         while len(self._icon_cache) > self._ICON_CACHE_MAX_ENTRIES:
             self._icon_cache.popitem(last=False)
+        self._trim_cache_family()
+
+    def _trim_cache_family(self) -> None:
+        """把三套图标缓存收敛到家族总预算内（P7.3，同 key 去重）。
+
+        淘汰顺序：L1（``_icon_cache``，含缩略图/通用图标，最易重建）→
+        占位符（可由真实图标替换）→ 真实系统图标（最贵，最后动）。
+        锁序恒为 ``_cache_lock`` → 占位符锁 → 系统图标锁，不存在反向
+        获取路径，不会死锁。
+        """
+        budget = max(1, self._ICON_CACHE_FAMILY_BUDGET)
+        extra = (
+            len(self._icon_cache)
+            + len(self._system_icon_cache)
+            + len(self._system_icon_placeholder_cache)
+        ) - budget
+        if extra <= 0:
+            return
+        while extra > 0 and self._icon_cache:
+            self._icon_cache.popitem(last=False)
+            extra -= 1
+        if extra <= 0:
+            return
+        with self._system_icon_placeholder_lock:
+            while extra > 0 and self._system_icon_placeholder_cache:
+                self._system_icon_placeholder_cache.popitem(last=False)
+                extra -= 1
+        if extra <= 0:
+            return
+        with self._system_icon_cache_lock:
+            while extra > 0 and self._system_icon_cache:
+                self._system_icon_cache.popitem(last=False)
+                extra -= 1
 
     def _trim_system_icon_cache(self) -> None:
         """裁剪系统图标缓存，防止按路径无限增长。"""
@@ -601,6 +672,7 @@ class FileIconManager(QObject):
             > self._SYSTEM_ICON_PLACEHOLDER_CACHE_MAX_ENTRIES
         ):
             self._system_icon_placeholder_cache.popitem(last=False)
+        self._trim_cache_family()
 
     def _build_unknown_icon_pixmap(
         self,

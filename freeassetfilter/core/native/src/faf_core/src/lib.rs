@@ -66,6 +66,12 @@ mod archive;
 /// [`pdfsel::select_words_impl`]）。
 mod pdfsel;
 
+/// 目录句柄（P3.2：扫描/排序结果留在 Rust，Python 按窗口取行）。
+mod dirhandle;
+
+/// 流式扫描游标（P3.4：`ReadDir` 迭代器跨批推进，带 `attrs` 旁路）。
+mod scanstream;
+
 // ---------------------------------------------------------------------------
 // 状态码（与 thumbnail_rust 语义对齐）
 // ---------------------------------------------------------------------------
@@ -235,6 +241,179 @@ pub extern "C" fn faf_free_message(msg: *mut c_char) {
 ///（与 [`faf_sort_entries`]/[`faf_free_message`]/thumbnail 契约一致）；入参经
 /// `guard_c_str` null 守卫，指针来源限定为本 crate 调用方（ctypes `c_char_p`），
 /// 故不标记 `unsafe`。
+/// ABI 版本闸门（P3.1）：`{"abi":1,"version":...,"max_json_bytes":...,
+/// "handles":true,"handle_cap":...}`。
+///
+/// Python 桥在加载时比对 `abi`；不匹配则拒绝使用原生能力（回退全 Python）。
+#[no_mangle]
+pub extern "C" fn faf_abi_version() -> *mut c_char {
+    catch_to_ptr(|| {
+        let payload = format!(
+            "{{\"abi\":1,\"version\":\"{}\",\"max_json_bytes\":{},\"handles\":true,\"handle_cap\":{},\"scan_stream\":true,\"scan_stream_cap\":{}}}",
+            FAF_CORE_VERSION,
+            MAX_JSON_BYTES,
+            dirhandle::MAX_HANDLES,
+            scanstream::MAX_CURSORS
+        );
+        alloc_json_message(&payload)
+    })
+}
+
+/// 打开流式扫描游标（P3.4）：返回非零游标；目录不可读/游标表满返回 0。
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn faf_scan_begin(path: *const c_char) -> u64 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let Ok(raw) = (unsafe { guard_c_str(path) }) else {
+            return 0;
+        };
+        let Ok(text) = raw.to_str() else {
+            return 0;
+        };
+        scanstream::begin(std::path::Path::new(text))
+    }))
+    .unwrap_or(0)
+}
+
+/// 读下一批（至多 `max_count` 条，JSON 数组带 `attrs`）。
+///
+/// 游标耗尽返回空数组；非法句柄/参数返回 null。
+#[no_mangle]
+pub extern "C" fn faf_scan_next(handle: u64, max_count: c_int) -> *mut c_char {
+    catch_to_ptr(|| {
+        if max_count <= 0 {
+            return std::ptr::null_mut();
+        }
+        let Some(batch) = scanstream::next_batch(handle, max_count as usize) else {
+            return std::ptr::null_mut();
+        };
+        match scanstream::batch_json(&batch) {
+            Ok(payload) => alloc_json_message(&payload),
+            Err(_) => std::ptr::null_mut(),
+        }
+    })
+}
+
+/// 关闭流式游标（幂等），成功返回 0。
+#[no_mangle]
+pub extern "C" fn faf_scan_free(handle: u64) -> c_int {
+    catch_unwind(AssertUnwindSafe(|| {
+        if scanstream::free(handle) {
+            STATUS_OK
+        } else {
+            STATUS_INVALID_ARG
+        }
+    }))
+    .unwrap_or(STATUS_INTERNAL)
+}
+
+/// 打开目录句柄（P3.2）：扫描结果留在 Rust，返回非零句柄；失败返回 0。
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn faf_dir_open(path: *const c_char) -> u64 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let Ok(raw) = (unsafe { guard_c_str(path) }) else {
+            return 0;
+        };
+        let Ok(text) = raw.to_str() else {
+            return 0;
+        };
+        dirhandle::open(std::path::Path::new(text))
+    }))
+    .unwrap_or(0)
+}
+
+/// 句柄条目数；非法句柄返回 -1。
+#[no_mangle]
+pub extern "C" fn faf_dir_count(handle: u64) -> c_int {
+    catch_unwind(AssertUnwindSafe(|| dirhandle::count(handle))).unwrap_or(-1)
+}
+
+/// 取 `[first, first+count)` 窗口的 JSON 数组（窗口化，不再受 8MB 悬崖影响）。
+#[no_mangle]
+pub extern "C" fn faf_dir_rows(handle: u64, first: c_int, count: c_int) -> *mut c_char {
+    catch_to_ptr(|| match dirhandle::rows(handle, first, count) {
+        Some(payload) => alloc_json_message(&payload),
+        None => std::ptr::null_mut(),
+    })
+}
+
+/// 在句柄上原地排序；返回 0 成功，-1 非法句柄/模式。
+#[no_mangle]
+pub extern "C" fn faf_dir_sort(handle: u64, mode: c_int) -> c_int {
+    catch_unwind(AssertUnwindSafe(|| dirhandle::sort(handle, mode))).unwrap_or(-1)
+}
+
+/// 关闭句柄（幂等）；返回 0 成功，-1 句柄不存在。
+#[no_mangle]
+pub extern "C" fn faf_dir_close(handle: u64) -> c_int {
+    catch_unwind(AssertUnwindSafe(|| {
+        if dirhandle::close(handle) {
+            STATUS_OK
+        } else {
+            STATUS_NOT_FOUND
+        }
+    }))
+    .unwrap_or(STATUS_INTERNAL)
+}
+
+/// 流式游标（P3.4）：取下一块（≤ max_count 条）JSON 数组；游标前移。
+#[no_mangle]
+pub extern "C" fn faf_dir_next(handle: u64, max_count: c_int) -> *mut c_char {
+    catch_to_ptr(|| match dirhandle::next_chunk(handle, max_count) {
+        Some(payload) => alloc_json_message(&payload),
+        None => std::ptr::null_mut(),
+    })
+}
+
+/// 取消句柄（P3.7，幂等）；返回 0 成功，-1 句柄不存在。
+#[no_mangle]
+pub extern "C" fn faf_dir_cancel(handle: u64) -> c_int {
+    catch_unwind(AssertUnwindSafe(|| {
+        if dirhandle::cancel(handle) {
+            STATUS_OK
+        } else {
+            STATUS_NOT_FOUND
+        }
+    }))
+    .unwrap_or(STATUS_INTERNAL)
+}
+
+/// POD 行通道（P3.3）：返回 `[FafDirRow; n] ++ arena` 裸缓冲。
+///
+/// 所有权移交调用方，必须经 [`faf_free_buffer`] 按 `*out_total_len` 释放。
+#[no_mangle]
+pub extern "C" fn faf_dir_rows_pod(
+    handle: u64,
+    first: c_int,
+    count: c_int,
+    out_count: *mut u32,
+    out_arena_len: *mut u32,
+    out_total_len: *mut usize,
+) -> *mut u8 {
+    catch_to_raw(|| {
+        if out_count.is_null() || out_arena_len.is_null() || out_total_len.is_null() {
+            return std::ptr::null_mut();
+        }
+        match dirhandle::rows_pod(handle, first, count) {
+            Some(pod) => {
+                let total = pod.buffer.len();
+                let mut boxed = pod.buffer.into_boxed_slice();
+                let ptr = boxed.as_mut_ptr();
+                std::mem::forget(boxed);
+                // SAFETY：out_* 已做 null 守卫；指针来源为 FFI 调用方。
+                unsafe {
+                    *out_count = pod.count;
+                    *out_arena_len = pod.arena_len;
+                    *out_total_len = total;
+                }
+                ptr
+            }
+            None => std::ptr::null_mut(),
+        }
+    })
+}
+
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn faf_scan_directory(path: *const c_char) -> *mut c_char {
@@ -765,6 +944,37 @@ pub extern "C" fn faf_pdf_select_words(
             return std::ptr::null_mut();
         };
         match pdfsel::select_words_impl(words_text, selection_text) {
+            Ok(value) => alloc_json_message(&value.to_string()),
+            Err(_) => std::ptr::null_mut(),
+        }
+    })
+}
+
+/// PDF 选区**下标**版本（P4.2）：返回词表下标 JSON 数组。
+///
+/// 与 `faf_pdf_select_words` 共用同一过滤/排序实现；调用方持有权威词表，
+/// 每帧只回传下标，避免选中词字典物化与 f64 序列化漂移。
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn faf_pdf_select_indices(
+    words_json: *const c_char,
+    selection_json: *const c_char,
+) -> *mut c_char {
+    catch_to_ptr(|| {
+        // SAFETY：guard_c_str 已做 null 守卫；NUL 终止性由 ctypes c_char_p 契约保证。
+        let Ok(words_cstr) = (unsafe { guard_c_str(words_json) }) else {
+            return std::ptr::null_mut();
+        };
+        let Ok(selection_cstr) = (unsafe { guard_c_str(selection_json) }) else {
+            return std::ptr::null_mut();
+        };
+        let Ok(words_text) = words_cstr.to_str() else {
+            return std::ptr::null_mut();
+        };
+        let Ok(selection_text) = selection_cstr.to_str() else {
+            return std::ptr::null_mut();
+        };
+        match pdfsel::select_indices_impl(words_text, selection_text) {
             Ok(value) => alloc_json_message(&value.to_string()),
             Err(_) => std::ptr::null_mut(),
         }

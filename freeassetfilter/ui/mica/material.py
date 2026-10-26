@@ -1427,22 +1427,47 @@ class MicaMaterial(QObject):
         self._worker_speculative = False
         self._maybe_rebake(force=True)
 
-    @staticmethod
+    def release_cached_layers(self) -> int:
+        """释放层缓存与当前层像素（P7.4，最小化/失焦宽限后调用）。
+
+        与 :meth:`invalidate_cache` 不同：本方法**不触发重烘焙**，恢复时
+        由下一次绘制按需重建（代价是一次烘焙，收益是释整桌面层的
+        ``QPixmap``（双 4K 约 66MB））。
+
+        ``_layer`` / ``_pixmap`` 是经 ``ViewportCompositor`` 的属性视图，
+        因此这里统一走 ``_compositor.clear()``，不直接赋值。
+
+        Returns:
+            int: 释放的缓存条目数（含当前层像素）。
+        """
+        if self._borrowed:
+            src = self._layer_source()
+            if src is not None:
+                return src.release_cached_layers()
+            return 0
+        release = 1 if getattr(self, "_layer_pixmap", None) is not None else 0
+        released = len(self._layer_cache) + release
+        self._layer_cache.clear()
+        self._compositor.clear()
+        self._speculative_key = None
+        self._speculative_extra = None
+        self._last_req = None
+        return released
+
     def _stop_worker_thread(
-        thread: Optional[QThread], worker: Optional[QObject] = None
+        self, thread: Optional[QThread], worker: Optional[QObject] = None
     ) -> None:
-        """协作式停止后台烘焙线程：``quit`` + 有界等待，**绝不强杀**。
+        """协作式停止后台烘焙线程：``quit`` + 可选有界等待，**绝不强杀**。
 
         历史实现直接 ``terminate()``：工作线程可能正阻塞在 ``gpu_bake`` 的
         COM/D3D 原生调用里，强杀会留下损坏的 COM 公寓与全局 D3D 设备状态，
         后续任意 GPU 调用可能在原生层野内存访问（组合跑测试时偶发
-        ``0xC0000005``）。本辅助只做协作式退出（``quit`` + 有界 ``wait``）：
-        worker 的槽方法通常已跑完或即将返回；若越界仍在途，留给其自然结束
-        —— QThread 与其上的 worker 均为进程内守护语义，GPU 任务本身有
-        ``JOB_TIMEOUT_MS`` 看门狗兜底，不会无限驻留。
+        ``0xC0000005``）。本辅助只做协作式退出。
 
-        ``worker`` 的 ``deleteLater`` 在此交付（若给了 worker）：线程停止后
-        再投递销毁，避免已删对象在 finished 信号派发前被回收。
+        P6.3：默认**不阻塞主线程**——``quit()`` 后把线程放进
+        ``_retired_threads`` 强引用列表（上限 4，超出后对最老的
+        ``deleteLater``），并连接 ``finished → deleteLater``。仅在
+        ``FAF_MICA_BLOCKING_STOP=1`` 或应用正在关闭时才 ``wait(2000)``。
 
         Args:
             thread: 目标 QThread；``None`` 或已结束时仍会清理 worker。
@@ -1453,9 +1478,35 @@ class MicaMaterial(QObject):
                 if not thread.isFinished():
                     try:
                         thread.quit()
-                        thread.wait(2000)
                     except Exception:  # noqa: BLE001 - 线程回收失败不向上抛
                         pass
+                    try:
+                        thread.finished.connect(thread.deleteLater)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    retired = getattr(self, "_retired_threads", None)
+                    if retired is None:
+                        retired = []
+                        self._retired_threads = retired
+                    retired.append(thread)
+                    while len(retired) > 4:
+                        oldest = retired.pop(0)
+                        try:
+                            oldest.deleteLater()
+                        except Exception:  # noqa: BLE001
+                            pass
+                    blocking = os.environ.get(
+                        "FAF_MICA_BLOCKING_STOP", ""
+                    ).strip().lower() in {"1", "true", "yes", "on"}
+                    if not blocking:
+                        try:
+                            from PySide6.QtCore import QCoreApplication
+
+                            blocking = QCoreApplication.closingDown()
+                        except Exception:  # noqa: BLE001
+                            blocking = False
+                    if blocking:
+                        thread.wait(2000)
             except RuntimeError:
                 pass
         if worker is not None:
@@ -1515,10 +1566,6 @@ class MicaMaterial(QObject):
             self._worker_thread = None
             self._worker = None
             self._stop_worker_thread(thread, worker)
-            try:
-                thread.deleteLater()
-            except Exception:  # noqa: BLE001
-                pass
 
     def set_active(self, active: bool) -> None:
         """设置主窗口焦点状态：失焦淡出隐藏并暂停绘制，回焦淡入恢复。

@@ -21,12 +21,13 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import (
     Qt, Signal, QEvent, QPoint, QRect, QRectF, QTimer,
-    QObject, QRunnable, QThreadPool,
+    QObject, QRunnable,
 )
 from PySide6.QtGui import QFont, QFontMetrics, QMouseEvent, QPainter, QPainterPath, QPen, QPaintEvent, QPixmap, QImage
 
 import fitz
 
+from freeassetfilter.core import pools as thread_pools
 from theme import tm
 from components.styled_button import StyledButton
 from components.styled_drawer import StyledDrawer
@@ -320,7 +321,7 @@ class _ThumbnailDrawerTask(QRunnable):
 
     def start(self) -> None:
         """投递到全局线程池执行（复用 ``_WorkTask`` 模式）。"""
-        QThreadPool.globalInstance().start(self)
+        thread_pools.pool("decode").start(self)
 
     def _render_thumbnail(self, doc: Any, page_idx: int) -> QImage:
         """单页 0.25x 渲染（worker 线程执行；与改造前像素一致）。
@@ -1433,13 +1434,13 @@ class PdfPreviewerLayout(QWidget):
         """
         # 顶栏透明无背景：不在此设置任何样式
         # 内容区：背景透明（透出宿主面板），边框透明
-        register_widget_qss(self._content_area,(f"""
+        register_widget_qss(self._content_area,("""
             background-color: transparent;
             border: 1px solid transparent;
             border-radius: 8px;
         """))
         # 覆盖层背景与内容区一致（透明）
-        register_widget_qss(self._overlay,(f"""
+        register_widget_qss(self._overlay,("""
             background-color: transparent;
         """))
         for _w in (self._top_bar, self._content_area, self._overlay):

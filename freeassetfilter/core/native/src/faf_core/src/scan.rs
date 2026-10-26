@@ -49,6 +49,9 @@ pub struct Entry {
     pub created: String,
     /// 扩展名（`splitext[1].lower().lstrip(".")`）；目录为空串。
     pub suffix: String,
+    /// Windows 文件属性位（`FILE_ATTRIBUTE_*`，与 `st_file_attributes` 同值）；
+    /// 非 Windows 恒为 0。P3.4：隐藏/系统过滤不得再单独枚举一遍目录。
+    pub attrs: u32,
 }
 
 /// 扫描目录并返回**原始未排序**条目列表（顺序为 `read_dir` 枚举序）。
@@ -72,8 +75,14 @@ pub fn scan_directory_impl(path: &Path) -> Result<Vec<Entry>, i32> {
         let Ok(dir_entry) = item else { continue };
         let name = dir_entry.file_name().to_string_lossy().into_owned();
         let full_path = dir_entry.path();
-        // 每项一次 stat（跟随符号链接，等价 Python `os.stat`）。
-        let meta = std::fs::metadata(&full_path);
+        // P2.1：Windows 上 `DirEntry::metadata()` 直接复用 `read_dir` 缓存的
+        // `WIN32_FIND_DATA`（零额外 syscall）；原实现每项一次
+        // `std::fs::metadata` = 每项一次 `CreateFileW`（实测 10k 条目约 200–300ms）。
+        // 符号链接保持原语义（跟随目标）：仅对链接项补一次 `std::fs::metadata`。
+        let meta = match dir_entry.file_type() {
+            Ok(file_type) if file_type.is_symlink() => std::fs::metadata(&full_path),
+            _ => dir_entry.metadata(),
+        };
         if let Some(entry) = entry_from_metadata(name, full_path, &meta) {
             entries.push(entry);
         }
@@ -86,7 +95,11 @@ pub fn scan_directory_impl(path: &Path) -> Result<Vec<Entry>, i32> {
 /// 独立成函数以便在 Windows 上直接以注入的 `Err(PermissionDenied)` 模拟
 /// 不可读条目（见 `dir_samples/PERMISSIONS_NOTE.txt`；icacls deny 需提权且
 /// 污染 checkout，故夹具不构造真实不可读文件）。
-fn entry_from_metadata(name: String, full_path: PathBuf, meta: &IoResult<Metadata>) -> Option<Entry> {
+pub(crate) fn entry_from_metadata(
+    name: String,
+    full_path: PathBuf,
+    meta: &IoResult<Metadata>,
+) -> Option<Entry> {
     match meta {
         Ok(m) => Some(build_entry(&name, &full_path, m)),
         Err(_) => None,
@@ -109,7 +122,21 @@ fn build_entry(name: &str, full_path: &Path, meta: &Metadata) -> Entry {
         modified,
         created,
         suffix: compute_suffix(name, is_dir),
+        attrs: file_attributes(meta),
     }
+}
+
+/// 取 Windows 文件属性位（`FILE_ATTRIBUTE_HIDDEN=0x2` / `SYSTEM=0x4`）；
+/// 非 Windows 平台恒 0（Python oracle 侧 `st_file_attributes` 也只有 Windows 有）。
+#[cfg(windows)]
+fn file_attributes(meta: &Metadata) -> u32 {
+    use std::os::windows::fs::MetadataExt;
+    meta.file_attributes()
+}
+
+#[cfg(not(windows))]
+fn file_attributes(_meta: &Metadata) -> u32 {
+    0
 }
 
 /// `created()` 结果 → 格式化创建时间；Err 时回退已格式化的 modified 值。
@@ -179,19 +206,45 @@ fn split_ext(name: &str) -> (&str, &str) {
 /// 用 `serde_json::json!` 构建（避免依赖传递的 `serde` derive），键序与 oracle
 /// dict 同构（`name/path/is_dir/size/modified/created/suffix`）。
 pub(crate) fn entries_to_json(entries: &[Entry]) -> Result<String, i32> {
+    let values: Vec<serde_json::Value> = entries.iter().map(entry_to_value).collect();
+    let payload = serde_json::to_string(&values).map_err(|_| STATUS_INTERNAL)?;
+    if payload.len() > MAX_JSON_BYTES {
+        return Err(STATUS_TOO_LARGE);
+    }
+    Ok(payload)
+}
+
+/// 单条 → 7 键 JSON 值（与 ``faf_scan_directory`` 输出完全同构）。
+pub(crate) fn entry_to_value(e: &Entry) -> serde_json::Value {
+    serde_json::json!({
+        "name": e.name,
+        "path": e.path,
+        "is_dir": e.is_dir,
+        "size": e.size,
+        "modified": e.modified,
+        "created": e.created,
+        "suffix": e.suffix,
+    })
+}
+
+/// 单条 → 8 键 JSON 值（7 键 + ``attrs``）。
+///
+/// 仅供**内部通道**使用（流式游标 / 目录句柄行）：
+/// ``faf_scan_directory`` 的公开契约仍是 7 键，调用方（UI 层）据此
+/// 把属性位旁路到 ``attrs_out`` 并**不**进入 7 键条目。
+pub(crate) fn entry_to_value_with_attrs(e: &Entry) -> serde_json::Value {
+    let mut value = entry_to_value(e);
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("attrs".to_string(), serde_json::json!(e.attrs));
+    }
+    value
+}
+
+/// 序列化带 ``attrs`` 的条目（内部通道；同样受 [`MAX_JSON_BYTES`] 约束）。
+pub(crate) fn entries_to_json_with_attrs(entries: &[Entry]) -> Result<String, i32> {
     let values: Vec<serde_json::Value> = entries
         .iter()
-        .map(|e| {
-            serde_json::json!({
-                "name": e.name,
-                "path": e.path,
-                "is_dir": e.is_dir,
-                "size": e.size,
-                "modified": e.modified,
-                "created": e.created,
-                "suffix": e.suffix,
-            })
-        })
+        .map(entry_to_value_with_attrs)
         .collect();
     let payload = serde_json::to_string(&values).map_err(|_| STATUS_INTERNAL)?;
     if payload.len() > MAX_JSON_BYTES {
@@ -418,6 +471,7 @@ mod tests {
             modified: FALLBACK_TIME.to_string(),
             created: FALLBACK_TIME.to_string(),
             suffix: String::new(),
+            attrs: 0,
         }];
         assert_eq!(entries_to_json(&entries), Err(STATUS_TOO_LARGE));
         // 反例：正常小载荷 → Ok 且未超限。
@@ -429,6 +483,7 @@ mod tests {
             modified: FALLBACK_TIME.to_string(),
             created: FALLBACK_TIME.to_string(),
             suffix: "txt".to_string(),
+            attrs: 0,
         }];
         let payload = entries_to_json(&small).expect("小载荷应序列化成功");
         assert!(payload.len() <= MAX_JSON_BYTES);
@@ -463,6 +518,7 @@ mod tests {
             ),
             created: format!("2023-{:02}-{:02} 00:00", 1 + (i % 12), 1 + (i % 28)),
             suffix: String::new(),
+            attrs: 0,
         }
     }
 

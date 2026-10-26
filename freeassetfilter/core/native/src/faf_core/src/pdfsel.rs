@@ -184,8 +184,46 @@ pub fn select_words_impl(
     Ok(select_words(&words, &sel))
 }
 
+/// 选中词**下标**版本（P4.2）：返回词表下标数组（按 `(page,block,line,word_no)`
+/// 稳定升序）。句柄化后调用方只需保存词表一次，每帧只回传下标。
+pub fn select_indices_impl(
+    words_json: &str,
+    selection_json: &str,
+) -> Result<Value, i32> {
+    let words_val: Value =
+        serde_json::from_str(words_json).map_err(|_| STATUS_INVALID_ARG)?;
+    let sel_val: Value =
+        serde_json::from_str(selection_json).map_err(|_| STATUS_INVALID_ARG)?;
+    let words: Vec<Word> = words_val
+        .as_array()
+        .ok_or(STATUS_INVALID_ARG)?
+        .iter()
+        .map(word_from_value)
+        .collect::<Option<Vec<_>>>()
+        .ok_or(STATUS_INVALID_ARG)?;
+    let sel = selection_from_value(&sel_val).ok_or(STATUS_INVALID_ARG)?;
+    let indices = select_word_indices(&words, &sel);
+    Ok(Value::Array(
+        indices
+            .into_iter()
+            .map(|idx| Value::from(idx as u64))
+            .collect(),
+    ))
+}
+
 /// 纯几何过滤 + 排序（复刻 `get_text_selection` L654-745）。
 fn select_words(words: &[Word], sel: &Selection) -> Value {
+    let indices = select_word_indices(words, sel);
+    Value::Array(
+        indices
+            .into_iter()
+            .map(|idx| json_obj(&words[idx]))
+            .collect(),
+    )
+}
+
+/// 过滤谓词主体：返回选中词在 `words` 中的下标（已稳定排序）。
+fn select_word_indices(words: &[Word], sel: &Selection) -> Vec<usize> {
     // `_accum_page_heights`（`pdf_document.py:449-458`）：页高运行和。
     let mut accum: Vec<f64> = Vec::with_capacity(sel.page_heights.len());
     let mut running: f64 = 0.0;
@@ -195,7 +233,7 @@ fn select_words(words: &[Word], sel: &Selection) -> Value {
     }
     // `get_text_selection` 空文档早退（L651-653）→ 空数组。
     if accum.is_empty() {
-        return Value::Array(Vec::new());
+        return Vec::new();
     }
 
     // 归一化矩形（L655-658）。⚠️ oracle 亦计算归一化 x0/x1 但过滤用不到——
@@ -211,9 +249,9 @@ fn select_words(words: &[Word], sel: &Selection) -> Value {
     // 拖拽方向（L664）。
     let dragging_down: bool = sel.begin_abs_y <= sel.end_abs_y;
 
-    let mut selected: Vec<&Word> = Vec::new();
+    let mut selected: Vec<usize> = Vec::new();
 
-    for w in words {
+    for (index, w) in words.iter().enumerate() {
         // 词所在页不在选区页范围 / 越界 / 负数 → 跳过。
         let Ok(wp) = usize::try_from(w.page) else {
             continue;
@@ -264,15 +302,22 @@ fn select_words(words: &[Word], sel: &Selection) -> Value {
         }
         // else：同时跨两边界（罕见大词）——归一化矩形已由 Y 重叠保证。
 
-        selected.push(w);
+        selected.push(index);
     }
 
     // 稳定排序（L735）。
-    selected.sort_by(|a, b| {
-        (a.page, a.block, a.line, a.word_no).cmp(&(b.page, b.block, b.line, b.word_no))
+    selected.sort_by(|&a, &b| {
+        let wa = &words[a];
+        let wb = &words[b];
+        (wa.page, wa.block, wa.line, wa.word_no).cmp(&(
+            wb.page,
+            wb.block,
+            wb.line,
+            wb.word_no,
+        ))
     });
 
-    Value::Array(selected.iter().map(|w| json_obj(w)).collect())
+    selected
 }
 
 #[cfg(test)]

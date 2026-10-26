@@ -204,9 +204,10 @@ class TestNativePath:
 
         import freeassetfilter.core.native.bridges.faf_core_bridge as bridge_mod
 
-        monkeypatch.setattr(
-            bridge_mod, "get_faf_core_bridge", lambda: _DegradedBridge()
-        )
+        from freeassetfilter.core.native import api as native_api
+
+        # P1.4：markdown 路径已收敛到 native 门面，patch 门面的桥单例。
+        monkeypatch.setattr(native_api, "bridge", lambda: _DegradedBridge())
 
     def test_native_preferred_when_available(self, renderer: Any) -> None:
         """桥可用时 render() 走 native：strikethrough 输出 ``<del>``。

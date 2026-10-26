@@ -1427,12 +1427,9 @@ def faf_core_highlight_available() -> bool:
         bool: 是否可走 native 高亮。
     """
     try:
-        bridge = get_faf_core_bridge()
-        return bool(
-            bridge is not None
-            and bridge.available
-            and getattr(bridge, "_supports_highlight", False)
-        )
+        from freeassetfilter.core.native import api as _native_api
+
+        return _native_api.supports("highlight")
     except Exception:  # noqa: BLE001  # broad catch: 桥初始化失败按不可用处理
         return False
 

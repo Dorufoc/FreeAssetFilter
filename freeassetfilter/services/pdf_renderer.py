@@ -27,6 +27,8 @@ from typing import Callable, List, Optional
 import fitz
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
+
+from freeassetfilter.core import pools as thread_pools
 from PySide6.QtGui import QImage
 
 from freeassetfilter.utils.app_logger import debug
@@ -262,7 +264,7 @@ class PdfBackgroundRenderer(QObject):
         self._pending: List[_RenderTask] = []
 
         # 默认使用全局线程池；允许注入私有池（测试隔离 / 嵌入式场景）。
-        self._pool: QThreadPool = pool if pool is not None else QThreadPool.globalInstance()
+        self._pool: QThreadPool = pool if pool is not None else thread_pools.pool("decode")
 
     # ── Public API ─────────────────────────────────────────────────────
 

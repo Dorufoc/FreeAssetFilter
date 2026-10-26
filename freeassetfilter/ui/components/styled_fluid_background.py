@@ -23,10 +23,11 @@ import logging
 import math
 import os
 import time
+import weakref
 from collections.abc import Callable
 from typing import Any, ClassVar, NamedTuple
 
-from PySide6.QtCore import QPointF, QRect, QEventLoop, QTimer, Qt
+from PySide6.QtCore import QPointF, QRect, QTimer, Qt
 from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPixmap, QResizeEvent
 from PySide6.QtWidgets import QWidget
 
@@ -119,6 +120,10 @@ class StyledFluidBackground(QWidget):
 
     _PALETTE_SIZE = 5
 
+    #: P7.4：存活实例弱集合。主窗口最小化/失焦宽限时对整个集合调用
+    #: :meth:`suspend` / :meth:`resume`，无需逐个布局接线。
+    _LIVE_INSTANCES: ClassVar["weakref.WeakSet"] = weakref.WeakSet()
+
     # Angular velocity of the circular noise-offset drift in radians per
     # second (one lap every ~16 s). Constant speed keeps the domain warp
     # evolving uniformly with no periodic sprint.
@@ -171,6 +176,8 @@ class StyledFluidBackground(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        # P7.4：登记存活实例，主窗口最小化/失焦宽限时统一挂起（无需逐布局接线）。
+        type(self)._LIVE_INSTANCES.add(self)
         # 宿主只负责承载 CPU/GPU 渲染层，未覆盖区域必须透出下方内容，
         # 不能让 QWidget 的系统默认背景（通常为白色）参与合成。
         self.setAutoFillBackground(False)
@@ -179,6 +186,7 @@ class StyledFluidBackground(QWidget):
         self._palette: list[QColor] = []
         self._mode = "accent"
         self._loaded = False
+        self._suspended = False
         self._renderer: str | None = None
         self._gpu_attempted = False
         self._gpu_widget: QWidget | None = None
@@ -283,9 +291,66 @@ class StyledFluidBackground(QWidget):
             # Push palette/overlay uniforms immediately so the first visible
             # frame is already scrimmed instead of waiting for the first tick.
             self._sync_gpu_widget()
+        elif self._renderer == "gpu_pending":
+            # P6.3：GPU 管线就绪前先用 CPU 静态帧占位（不再阻塞主线程）。
+            self._bake_static_frame()
         elif self._renderer == "cpu":
             self._bake_static_frame()
         self.update()
+
+    def suspend(self) -> None:
+        """挂起渲染：停 tick + 释放 GPU 纹理/静态帧（P7.4，可逆）。
+
+        最小化时调用；不销毁控件、不断开主题信号，因此 :meth:`resume`
+        可以直接重建。释放的显存是流体纹理（``w×h×4``，4K 下约 33MB）。
+        """
+        if not self._loaded:
+            return
+        self._suspended = True
+        self._stop_animation()
+        self._release_gpu_widget()
+        self._static_pixmap = None
+        self.update()
+
+    def resume(self) -> None:
+        """从 :meth:`suspend` 恢复（P7.4）：重选渲染器并重建首帧。"""
+        if not self._loaded or not getattr(self, "_suspended", False):
+            return
+        self._suspended = False
+        self._renderer = self._choose_renderer()
+        if self._renderer == "gpu":
+            self._start_animation()
+            self._sync_gpu_widget()
+        elif self._renderer in {"gpu_pending", "cpu"}:
+            self._bake_static_frame()
+        self.update()
+
+    @classmethod
+    def suspend_all(cls) -> int:
+        """挂起所有存活实例（P7.4）；返回实际挂起的实例数。"""
+        count = 0
+        for widget in list(cls._LIVE_INSTANCES):
+            try:
+                if widget._loaded and not getattr(widget, "_suspended", False):
+                    widget.suspend()
+                    count += 1
+            except RuntimeError:
+                # C++ 对象已销毁（弱集滞后一拍），跳过
+                continue
+        return count
+
+    @classmethod
+    def resume_all(cls) -> int:
+        """恢复所有被挂起的实例（P7.4）；返回实际恢复的实例数。"""
+        count = 0
+        for widget in list(cls._LIVE_INSTANCES):
+            try:
+                if getattr(widget, "_suspended", False):
+                    widget.resume()
+                    count += 1
+            except RuntimeError:
+                continue
+        return count
 
     def unload(self) -> None:
         """Stop animation, release the renderer, and schedule cleanup.
@@ -302,6 +367,7 @@ class StyledFluidBackground(QWidget):
         self._static_pixmap = None
         self._renderer = None
         self._disconnect_theme_signals()
+        type(self)._LIVE_INSTANCES.discard(self)
         self.setParent(None)
         self.deleteLater()
 
@@ -529,32 +595,22 @@ class StyledFluidBackground(QWidget):
         try:
             gpu = _FluidGPUShaderWidget(parent=self)
             gpu.setGeometry(self._gpu_geometry())
-            # QRhiWidget 在控件首次显示并收到平台绘制事件后才创建 QRhi 并回调
-            # initialize()。注意：单纯 QApplication.processEvents() 不足以触发
-            # 该初始化（平台绘制事件需真实事件循环派发），这里用嵌套事件循环
-            # 有限等待；超时仍未就绪则回退 CPU 路径。
-            #
-            # 注意：就绪的前提是顶层窗口已启用 RHI 合成（见
-            # :func:`prewarm_top_level_rhi`）。顶层窗口若已以 raster 合成，
-            # initialize() 永不回调，这里必然超时——这是设计上的兜底，不是
-            # 异常。
             gpu.show()
-            deadline = time.monotonic() + _GPU_READY_TIMEOUT_S
-            while not gpu.is_ready() and time.monotonic() < deadline:
-                loop = QEventLoop()
-                QTimer.singleShot(15, loop.quit)
-                loop.exec()
-            if not gpu.is_ready():
-                raise RuntimeError("QRhi fluid renderer initialization failed")
             self._gpu_widget = gpu
-            # 赋值后按当前几何再同步一次：show()+processEvents()
-            # 期间布局可能已经稳定，此前触发的 resizeEvent 发生于赋值
-            # 之前，同步的是旧控件，新控件会残留构造瞬间的过期尺寸。
-            try:
-                gpu.setGeometry(self._gpu_geometry())
-            except RuntimeError:
-                pass
-            return "gpu"
+            # P6.3：**不做同步等待**。QRhiWidget 在首次显示并收到平台绘制
+            # 事件后才回调 initialize()；原实现用嵌套 QEventLoop 轮询，会
+            # 在主线程阻塞最长 500ms 并重入事件循环。现在先返回 pending，
+            # 由 ``_poll_gpu_ready`` 在后续事件循环中轮询，期间 paintEvent
+            # 画 CPU 静态帧占位。
+            if gpu.is_ready():
+                try:
+                    gpu.setGeometry(self._gpu_geometry())
+                except RuntimeError:
+                    pass
+                return "gpu"
+            self._gpu_deadline = time.monotonic() + _GPU_READY_TIMEOUT_S
+            QTimer.singleShot(16, self._poll_gpu_ready)
+            return "gpu_pending"
         except Exception:
             logger.exception(
                 "GPU fluid background initialization failed; falling back to CPU"
@@ -562,7 +618,43 @@ class StyledFluidBackground(QWidget):
             if gpu is not None:
                 gpu.setParent(None)
                 gpu.deleteLater()
+            self._gpu_widget = None
             return "cpu"
+
+    def _poll_gpu_ready(self) -> None:
+        """轮询 GPU 管线就绪（P6.3：非阻塞替代嵌套 QEventLoop）。"""
+        if not self._loaded or self._renderer != "gpu_pending":
+            return
+        gpu = self._gpu_widget
+        if gpu is None:
+            self._renderer = "cpu"
+            self.update()
+            return
+        try:
+            ready = gpu.is_ready()
+        except RuntimeError:
+            ready = False
+        if ready:
+            self._renderer = "gpu"
+            try:
+                gpu.setGeometry(self._gpu_geometry())
+            except RuntimeError:
+                pass
+            self._static_pixmap = None
+            self._start_animation()
+            self._sync_gpu_widget()
+            self.update()
+            return
+        deadline = getattr(self, "_gpu_deadline", 0.0)
+        if time.monotonic() >= deadline:
+            logger.warning("GPU fluid renderer not ready in time; falling back to CPU")
+            self._release_gpu_widget()
+            self._renderer = "cpu"
+            if self._static_pixmap is None:
+                self._bake_static_frame()
+            self.update()
+            return
+        QTimer.singleShot(16, self._poll_gpu_ready)
 
     def _has_native_sibling(self) -> bool:
         """Detect a native-window sibling in the same parent layout."""

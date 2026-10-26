@@ -18,7 +18,9 @@ PyMuPDF PDF 文档封装服务
 
 from __future__ import annotations
 
+import os
 import threading
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
 import fitz
@@ -78,6 +80,12 @@ class PdfDocument:
 
         # LRU-like cache for TextPage objects (character-level access)
         self._textpage_cache: Dict[int, fitz.TextPage] = {}
+        # P4.2：页级词表缓存——拖拽选区每帧都取词，PyMuPDF 每页约 0.3–1ms，
+        # 且调用方还要基于元组重新构造 9 键 dict（更贵）。
+        self._words_cache: "OrderedDict[int, List[Tuple[float, float, float, float, str, int, int, int]]]" = OrderedDict()
+        self._words_cache_max: int = max(
+            1, int(os.environ.get("FAF_PDF_WORDS_CACHE_MAX", "16"))
+        )
 
     def close(self) -> None:
         """Close the underlying fitz document and release resources.
@@ -95,6 +103,7 @@ class PdfDocument:
             finally:
                 self._doc = None  # type: ignore[assignment]
             self._textpage_cache.clear()
+            self._words_cache.clear()
             self._page_widths.clear()
             self._page_heights.clear()
             self._accum_page_heights.clear()
@@ -282,10 +291,17 @@ class PdfDocument:
             If the document has been closed.
         """
         with self._lock:
+            cached = self._words_cache.get(page_num)
+            if cached is not None:
+                self._words_cache.move_to_end(page_num)
+                return cached
             page = self._doc.load_page(page_num)
             raw: List[Tuple[float, float, float, float, str, int, int, int]] = (
                 page.get_text("words")
             )
+            self._words_cache[page_num] = raw
+            while len(self._words_cache) > self._words_cache_max:
+                self._words_cache.popitem(last=False)
         return raw
 
     def get_textpage(self, page_num: int) -> fitz.TextPage:

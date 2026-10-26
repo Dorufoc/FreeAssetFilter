@@ -55,7 +55,6 @@ from PySide6.QtCore import (
     QRunnable,
     QSize,
     Qt,
-    QThreadPool,
     QTimer,
     Signal,
 )
@@ -84,6 +83,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from freeassetfilter.core import pools as thread_pools
 from theme import tm
 
 from freeassetfilter.core._paths import icons_dir
@@ -626,7 +626,7 @@ class _ArchiveListWorker(QRunnable):
 
     def start(self) -> None:
         """投递到全局线程池执行（替代旧 QThread.start()）。"""
-        QThreadPool.globalInstance().start(self)
+        thread_pools.pool("interactive").start(self)
 
     def run(self) -> None:
         try:
@@ -682,7 +682,7 @@ class _ArchiveSearchWorker(QRunnable):
 
     def start(self) -> None:
         """投递到全局线程池执行。"""
-        QThreadPool.globalInstance().start(self)
+        thread_pools.pool("interactive").start(self)
 
     def run(self) -> None:
         try:
@@ -734,7 +734,7 @@ class _ArchiveExtractWorker(QRunnable):
 
     def start(self) -> None:
         """投递到全局线程池执行。"""
-        QThreadPool.globalInstance().start(self)
+        thread_pools.pool("interactive").start(self)
 
     def run(self) -> None:
         try:

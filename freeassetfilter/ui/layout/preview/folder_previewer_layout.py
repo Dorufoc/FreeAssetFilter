@@ -51,7 +51,6 @@ from PySide6.QtCore import (
     QRunnable,
     QSize,
     Qt,
-    QThreadPool,
     QTimer,
     Signal,
 )
@@ -78,10 +77,11 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from freeassetfilter.core import pools as thread_pools
 from theme import tm
 
 from freeassetfilter.core._paths import icons_dir
-from freeassetfilter.core.native.bridges.faf_core_bridge import get_faf_core_bridge
+from freeassetfilter.core.native import api as native_api
 from freeassetfilter.services.file_icon_manager import FileIconManager
 from freeassetfilter.ui.components.styled_scroll_area import (
     StyledScrollArea,
@@ -131,16 +131,7 @@ def _native_scan_directory(path: str) -> Optional[list]:
         Optional[list]: 7 键条目字典列表；DLL 缺失、native 失败或超
             ``MAX_JSON_BYTES`` 上限时返回 ``None``。
     """
-    try:
-        bridge = get_faf_core_bridge()
-    except Exception:  # noqa: BLE001  # FFI 边界防御
-        return None
-    if bridge is None or not bridge.available or not getattr(bridge, "_supports_scan", False):
-        return None
-    try:
-        return bridge.scan_directory(path)
-    except Exception:  # noqa: BLE001  # FFI 边界防御
-        return None
+    return native_api.scan_directory(path)
 
 
 def _collect_directory_entries(
@@ -174,13 +165,20 @@ def _collect_directory_entries(
         Optional[list]: 条目 dict 列表；目录不可读/不存在时返回 None。
     """
     native_entries = _native_scan_directory(path)
+    # P1.3：仅在需要过滤时收集属性旁路表；native 路径不返回属性位，
+    # 留 None 让 ``_apply_hidden_system_filter`` 自行 scandir。
+    wants_filter = not (show_hidden is None and show_system is None)
     if native_entries is not None:
         entries = native_entries
+        attrs_by_name: Optional[dict] = None
     else:
-        entries = _collect_directory_entries_python(path)
+        attrs_by_name = {} if wants_filter else None
+        entries = _collect_directory_entries_python(path, attrs_out=attrs_by_name)
     if entries is None:
         return None
-    return _apply_hidden_system_filter(entries, path, show_hidden, show_system)
+    return _apply_hidden_system_filter(
+        entries, path, show_hidden, show_system, attrs_by_name=attrs_by_name
+    )
 
 
 def _apply_hidden_system_filter(
@@ -188,6 +186,7 @@ def _apply_hidden_system_filter(
     path: str,
     show_hidden: Optional[bool],
     show_system: Optional[bool],
+    attrs_by_name: Optional[dict] = None,
 ) -> list:
     """按隐藏/系统文件属性过滤条目（保持原顺序，只删不改）。
 
@@ -199,11 +198,16 @@ def _apply_hidden_system_filter(
     仅「系统」位（如重定向后的桌面/下载/音乐等系统文件夹）恒可见；
     「隐藏+系统」双重位（受保护的操作系统文件）需两个开关同时开启。
 
+    P1.3：若调用方已在条目扫描时同步采集了属性（``attrs_by_name`` 非
+    None），则**不再**重复 scandir。
+
     Args:
         entries: 待过滤的条目 dict 列表。
-        path: 对应目录路径（供 scandir 读取属性）。
+        path: 对应目录路径（仅在需要自行 scandir 时使用）。
         show_hidden: 是否显示隐藏文件；``None`` 表示不过滤。
         show_system: 是否显示系统文件；仅当 ``show_hidden`` 亦为真时生效。
+        attrs_by_name: 可选旁路属性表（``name -> st_file_attributes``，
+            ``follow_symlinks=False`` 口径）。
 
     Returns:
         list: 过滤后的条目列表。
@@ -214,19 +218,20 @@ def _apply_hidden_system_filter(
     effective_system = bool(show_system) and show_hidden
     if show_hidden and effective_system:
         return entries
-    attrs_by_name: dict = {}
-    try:
-        with os.scandir(path) as it:
-            for dir_entry in it:
-                try:
-                    st = dir_entry.stat(follow_symlinks=False)
-                except OSError:
-                    continue
-                attrs_by_name[dir_entry.name] = getattr(
-                    st, "st_file_attributes", 0
-                )
-    except OSError:
-        return entries
+    if attrs_by_name is None:
+        attrs_by_name = {}
+        try:
+            with os.scandir(path) as it:
+                for dir_entry in it:
+                    try:
+                        st = dir_entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    attrs_by_name[dir_entry.name] = getattr(
+                        st, "st_file_attributes", 0
+                    )
+        except OSError:
+            return entries
     result: list = []
     for entry in entries:
         attrs = attrs_by_name.get(entry["name"], 0)
@@ -240,27 +245,48 @@ def _apply_hidden_system_filter(
     return result
 
 
-def _collect_directory_entries_python(path: str) -> Optional[list]:
-    """纯 IO 收集目录条目（listdir + 逐文件 stat），native 回退路径。
+def _collect_directory_entries_python(
+    path: str,
+    attrs_out: Optional[dict] = None,
+) -> Optional[list]:
+    """纯 IO 收集目录条目（scandir + 逐文件 stat），native 回退路径。
 
     与文件选择器（file_selector_layout._collect_directory_entries_python）
     语义一致：
     - 条目字段同构（含后缀/大小/修改与创建时间），隐藏文件不过滤
     - 单项 stat 权限异常跳过，目录整体不可读时返回 None
 
+    P1.3：改用 ``os.scandir``（与文件选择器同构）以复用目录项缓存；
+    传入 ``attrs_out`` 时同步采集 ``st_file_attributes``（``follow_symlinks=
+    False`` 口径），避免额外的整目录枚举。
+
     Args:
         path: 要扫描的目录绝对路径。
+        attrs_out: 可选旁路属性表；传入时写入
+            ``name -> st_file_attributes``。
 
     Returns:
         条目 dict 列表；目录不可读/不存在时返回 None。
     """
     try:
         entries: list = []
-        for name in os.listdir(path):
-            full_path = os.path.join(path, name)
-            try:
-                st = os.stat(full_path)
-                is_dir = os.path.isdir(full_path)
+        with os.scandir(path) as it:
+            for dir_entry in it:
+                try:
+                    st = dir_entry.stat(follow_symlinks=True)
+                    is_dir = dir_entry.is_dir(follow_symlinks=True)
+                except (PermissionError, OSError):
+                    continue
+                name = dir_entry.name
+                if attrs_out is not None:
+                    try:
+                        st_no_follow = dir_entry.stat(follow_symlinks=False)
+                    except OSError:
+                        st_no_follow = None
+                    if st_no_follow is not None:
+                        attrs_out[name] = getattr(
+                            st_no_follow, "st_file_attributes", 0
+                        )
                 suffix = (
                     os.path.splitext(name)[1].lower().lstrip(".")
                     if not is_dir
@@ -275,7 +301,7 @@ def _collect_directory_entries_python(path: str) -> Optional[list]:
                 entries.append(
                     {
                         "name": name,
-                        "path": full_path,
+                        "path": dir_entry.path,
                         "is_dir": is_dir,
                         "size": st.st_size,
                         "modified": modified,
@@ -283,8 +309,6 @@ def _collect_directory_entries_python(path: str) -> Optional[list]:
                         "suffix": suffix,
                     }
                 )
-            except (PermissionError, OSError):
-                continue
         return entries
     except (PermissionError, FileNotFoundError, OSError):
         return None
@@ -599,7 +623,7 @@ class _FolderScanSignals(QObject):
 class _FolderScanWorker(QRunnable):
     """后台扫描磁盘目录的池任务（每次导航新建，令牌守卫防覆盖）。
 
-    ``run()`` 在 ``QThreadPool.globalInstance()`` 的池线程中执行；
+    ``run()`` 在 ``thread_pools.pool("interactive")`` 的池线程中执行；
     ``scan_finished`` / ``scan_failed`` 信号挂在 ``_FolderScanSignals``
     中转对象上（以属性方式透出），调用方连接签名与旧 QThread 版一致。
     """
@@ -642,7 +666,7 @@ class _FolderScanWorker(QRunnable):
 
     def start(self) -> None:
         """投递到全局线程池执行（替代旧 QThread.start()）。"""
-        QThreadPool.globalInstance().start(self)
+        thread_pools.pool("interactive").start(self)
 
     def run(self) -> None:
         entries = _collect_directory_entries(

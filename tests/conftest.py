@@ -263,6 +263,30 @@ def _reset_all_singletons() -> None:
 
     _path_utils_module._APP_DATA_PATH_CACHE = None
 
+    # 主线程卡顿哨兵模块级单例（P6.1）：卸载并注销快照 provider。
+    try:
+        import freeassetfilter.utils.ui_watchdog as _ui_watchdog
+
+        _ui_watchdog.uninstall()
+    except Exception:  # 测试隔离：模块未导入/未安装时无需卸载
+        pass
+
+    # 线程池分层单例（P6.2）：排空并清空，避免跨用例残留线程。
+    try:
+        from freeassetfilter.core import pools as _pools
+
+        _pools.reset_for_tests()
+    except Exception:  # 测试隔离：线程池模块未导入时跳过
+        pass
+
+    # 内存预算单例（P7.2）：重置档位与账本。
+    try:
+        from freeassetfilter.core import memory_budget as _memory_budget
+
+        _memory_budget.reset_for_tests()
+    except Exception:  # 测试隔离：预算模块未导入时跳过
+        pass
+
     # A1 QSS singleton: drop app-stylesheet registry between tests so the
     # central sheet never accumulates session-wide under the session qapp
     # (full-tree re-polish cost grows with accumulation). Live widgets

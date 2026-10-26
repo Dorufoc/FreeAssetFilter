@@ -772,9 +772,7 @@ class TestHashTaskNativeWiring:
         degraded = Mock(available=False, _supports_hash=False)
         cache = str(tmp_path / "fic.json")
         raw = Path(temp_file).read_bytes()
-        with patch.object(
-            fip_module._faf_bridge, "get_faf_core_bridge", return_value=degraded
-        ):
+        with patch.object(fip_module._native_api, "bridge", return_value=degraded):
             values = self._run_task(_HashTask(temp_file, cache))
         assert values["SHA256"] == hashlib.sha256(raw).hexdigest()
         cached = fis.read_cached(temp_file, cache_path=cache)

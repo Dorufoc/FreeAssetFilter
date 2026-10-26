@@ -297,16 +297,11 @@ class MarkdownRenderer:
             Optional[str]: native body 片段；不可用时 ``None``。
         """
         try:
-            from freeassetfilter.core.native.bridges.faf_core_bridge import (
-                get_faf_core_bridge,
-            )
+            from freeassetfilter.core.native import api as native_api
 
-            bridge = get_faf_core_bridge()
-            if bridge is None or not bridge.available:
+            if not native_api.supports("markdown"):
                 return None
-            if not getattr(bridge, "_supports_render_markdown", False):
-                return None
-            result = bridge.render_markdown(text)
+            result = native_api.render_markdown(text)
             if not isinstance(result, dict):
                 return None
             html = result.get("html")

@@ -59,6 +59,7 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import struct
 import sys
 import threading
 from collections.abc import Callable
@@ -74,6 +75,13 @@ LIBRARY_NAME: str = "faf_core.dll"
 # 超限时 native 返回 null / 跳过，Python 侧回退自身实现。
 MAX_JSON_BYTES: int = 8 * 1024 * 1024
 
+#: 期望的 faf_core ABI 版本（P3.1 闸门；不匹配则禁用原生能力）。
+EXPECTED_ABI: int = 1
+
+#: P3.3 POD 行布局：`<10I Q B 3x I` = 56 字节（与 Rust `FafDirRow` 对齐），
+#: 末尾 `attrs` 为 Windows 文件属性位（P3.4）。
+_DIR_ROW_STRUCT: struct.Struct = struct.Struct("<10IQB3xI")
+
 # 流式哈希 I/O 参数（语义对齐 ``file_info_service.compute_hashes``：
 # 256KiB 块读取、每累计 1MiB 触发一次进度回调）。
 HASH_CHUNK_SIZE: int = 256 * 1024
@@ -82,6 +90,49 @@ HASH_PROGRESS_GRANULARITY: int = 1024 * 1024
 # 模块级惰性单例（``threading.Lock`` 保证并发首次构造安全）。
 _instance_lock: threading.Lock = threading.Lock()
 _instance: Optional["FafCoreBridge"] = None
+
+
+def _build_dir_row(arena: bytes, values: tuple) -> dict:
+    """把一条 POD 行（`<10IQB3xI`）还原为 8 键条目字典（P3.3/P3.4）。
+
+    Args:
+        arena: 紧跟行数组之后的字符串 arena。
+        values: ``_DIR_ROW_STRUCT.unpack_from`` 的 13 元组。
+
+    Returns:
+        dict: 与 ``dir_rows``（JSON 通道）逐字段一致的条目。
+    """
+    (
+        name_off,
+        name_len,
+        path_off,
+        path_len,
+        suffix_off,
+        suffix_len,
+        modified_off,
+        modified_len,
+        created_off,
+        created_len,
+        size,
+        is_dir,
+        attrs,
+    ) = values
+
+    def _text(offset: int, length: int) -> str:
+        if length <= 0:
+            return ""
+        return arena[offset : offset + length].decode("utf-8", errors="replace")
+
+    return {
+        "name": _text(name_off, name_len),
+        "path": _text(path_off, path_len),
+        "is_dir": bool(is_dir),
+        "size": int(size),
+        "modified": _text(modified_off, modified_len),
+        "created": _text(created_off, created_len),
+        "suffix": _text(suffix_off, suffix_len),
+        "attrs": int(attrs),
+    }
 
 
 def get_faf_core_bridge() -> Optional["FafCoreBridge"]:
@@ -125,8 +176,17 @@ class FafCoreBridge:
         self._supports_free_buffer = False
         self._supports_parse_7z_list = False
         self._supports_pdf_select_words = False
+        self._supports_pdf_select_indices = False
+        # P3.1/P3.2/P3.3：ABI 闸门、目录句柄与 POD 行通道。
+        self._supports_abi_version = False
+        self._supports_dir_handle = False
+        self._supports_dir_rows_pod = False
+        self._supports_scan_stream = False
+        self._abi_info = None
         self._dll_directory_handle = None
         self._load()
+        if self._available:
+            self._validate_abi()
 
     @property
     def available(self) -> bool:
@@ -235,6 +295,7 @@ class FafCoreBridge:
         self._supports_free_buffer = False
         self._supports_parse_7z_list = False
         self._supports_pdf_select_words = False
+        self._supports_pdf_select_indices = False
 
         self._native_free_message = dll.faf_free_message
         self._native_free_message.argtypes = [c_void_p]
@@ -400,6 +461,79 @@ class FafCoreBridge:
         except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
             self._supports_pdf_select_words = False
 
+        try:
+            # P4.2：下标版本（与 select_words 共用过滤实现）。
+            dll.faf_pdf_select_indices.argtypes = [c_char_p, c_char_p]
+            dll.faf_pdf_select_indices.restype = c_void_p
+            self._native_pdf_select_indices = dll.faf_pdf_select_indices
+            self._supports_pdf_select_indices = True
+        except Exception:  # noqa: BLE001
+            self._supports_pdf_select_indices = False
+
+        try:
+            dll.faf_abi_version.argtypes = []
+            dll.faf_abi_version.restype = c_void_p
+            self._supports_abi_version = True
+        except Exception:  # noqa: BLE001
+            self._supports_abi_version = False
+
+        try:
+            dll.faf_dir_open.argtypes = [c_char_p]
+            dll.faf_dir_open.restype = c_uint64
+            dll.faf_dir_count.argtypes = [c_uint64]
+            dll.faf_dir_count.restype = c_int
+            dll.faf_dir_rows.argtypes = [c_uint64, c_int, c_int]
+            dll.faf_dir_rows.restype = c_void_p
+            dll.faf_dir_sort.argtypes = [c_uint64, c_int]
+            dll.faf_dir_sort.restype = c_int
+            dll.faf_dir_close.argtypes = [c_uint64]
+            dll.faf_dir_close.restype = c_int
+            dll.faf_dir_next.argtypes = [c_uint64, c_int]
+            dll.faf_dir_next.restype = c_void_p
+            dll.faf_dir_cancel.argtypes = [c_uint64]
+            dll.faf_dir_cancel.restype = c_int
+            self._native_dir_open = dll.faf_dir_open
+            self._native_dir_count = dll.faf_dir_count
+            self._native_dir_rows = dll.faf_dir_rows
+            self._native_dir_sort = dll.faf_dir_sort
+            self._native_dir_close = dll.faf_dir_close
+            self._native_dir_next = dll.faf_dir_next
+            self._native_dir_cancel = dll.faf_dir_cancel
+            self._supports_dir_handle = True
+        except Exception:  # noqa: BLE001
+            self._supports_dir_handle = False
+
+        # P3.4 流式扫描游标单独探测（旧 DLL 无此导出时走 Python 逐批）。
+        try:
+            dll.faf_scan_begin.argtypes = [c_char_p]
+            dll.faf_scan_begin.restype = c_uint64
+            dll.faf_scan_next.argtypes = [c_uint64, c_int]
+            dll.faf_scan_next.restype = c_void_p
+            dll.faf_scan_free.argtypes = [c_uint64]
+            dll.faf_scan_free.restype = c_int
+            self._native_scan_begin = dll.faf_scan_begin
+            self._native_scan_next = dll.faf_scan_next
+            self._native_scan_free = dll.faf_scan_free
+            self._supports_scan_stream = True
+        except Exception:  # noqa: BLE001
+            self._supports_scan_stream = False
+
+        # P3.3 POD 行通道单独探测：旧 DLL 只有 JSON 行时仍可用句柄。
+        try:
+            dll.faf_dir_rows_pod.argtypes = [
+                c_uint64,
+                c_int,
+                c_int,
+                POINTER(ctypes.c_uint32),
+                POINTER(ctypes.c_uint32),
+                POINTER(c_size_t),
+            ]
+            dll.faf_dir_rows_pod.restype = c_void_p
+            self._native_dir_rows_pod = dll.faf_dir_rows_pod
+            self._supports_dir_rows_pod = True
+        except Exception:  # noqa: BLE001
+            self._supports_dir_rows_pod = False
+
     def free_message(self, raw) -> None:
         """释放 Rust 侧堆分配的 JSON 字符串指针（null 安全）。
 
@@ -413,6 +547,251 @@ class FafCoreBridge:
             self._native_free_message(raw)
         except Exception:  # noqa: BLE001, S110  # broad catch intentional at ctypes FFI boundary; ignore intentional (ctypes FFI boundary)
             pass
+
+    def _validate_abi(self) -> None:
+        """校验 DLL 的 ABI 版本（P3.1；不匹配则禁用原生能力）。"""
+        info = self.abi_version()
+        if info is None:
+            # 旧 DLL 无 abi_version：按旧契约继续（逐能力探测兜底）。
+            debug("faf_core 未提供 abi_version（旧 DLL），按能力探测加载")
+            return
+        self._abi_info = info
+        abi = info.get("abi")
+        if abi != EXPECTED_ABI:
+            warning(
+                f"faf_core ABI 不匹配（期望 {EXPECTED_ABI}，实际 {abi}）"
+                " → 禁用原生能力，回退 Python 实现"
+            )
+            self._available = False
+
+    @property
+    def abi_info(self) -> Optional[dict]:
+        """已加载 DLL 的 ABI 信息（旧 DLL 为 ``None``）。"""
+        return self._abi_info
+
+    def abi_version(self) -> Optional[dict]:
+        """查询 DLL 的 ABI 信息（P3.1）。
+
+        Returns:
+            Optional[dict]: ``{"abi", "version", "max_json_bytes", ...}``；
+                导出缺失或解析失败返回 ``None``。
+        """
+        if not self._available or not self._supports_abi_version:
+            return None
+        raw = None
+        try:
+            raw = self._dll.faf_abi_version()
+            if not raw:
+                return None
+            payload = ctypes.string_at(raw)
+            if not payload:
+                return None
+            parsed = json.loads(payload.decode("utf-8", errors="replace"))
+            return parsed if isinstance(parsed, dict) else None
+        except Exception as e:  # noqa: BLE001
+            warning(f"abi_version 失败: {e}")
+            return None
+        finally:
+            if raw is not None:
+                self.free_message(raw)
+
+    def scan_begin(self, path: str) -> int:
+        """打开流式扫描游标（P3.4）；失败返回 0（调用方回退 Python）。
+
+        Args:
+            path: 目录路径。
+
+        Returns:
+            int: 非零游标；不可用/目录不可读/游标表满返回 0。
+        """
+        if not self.available or not self._supports_scan_stream:
+            return 0
+        if not isinstance(path, str) or not path:
+            return 0
+        return self._call_handle(
+            lambda: self._native_scan_begin(path.encode("utf-8", errors="replace")),
+            default=0,
+            name="scan_begin",
+        )
+
+    def scan_next(self, handle: int, max_count: int) -> Optional[list]:
+        """读下一批（至多 ``max_count`` 条，JSON 数组带 ``attrs``）。
+
+        Args:
+            handle: 游标。
+            max_count: 本批上限。
+
+        Returns:
+            Optional[list]: 批次行（耗尽时为空数组）；失败返回 ``None``。
+        """
+        if not self.available or not self._supports_scan_stream:
+            return None
+        if max_count <= 0:
+            return None
+        return self._call_json_list_export(
+            lambda: self._native_scan_next(int(handle), int(max_count))
+        )
+
+    def scan_free(self, handle: int) -> bool:
+        """关闭游标（幂等）；成功返回 True。"""
+        if not self.available or not self._supports_scan_stream:
+            return False
+        return self._call_handle(
+            lambda: self._native_scan_free(int(handle)),
+            default=-1,
+            name="scan_free",
+            transform=lambda code: int(code) == 0,
+        )
+
+    def dir_open(self, path: str) -> int:
+        """打开目录句柄（P3.2）；失败返回 0。"""
+        if not self.available or not self._supports_dir_handle:
+            return 0
+        if not isinstance(path, str) or not path:
+            return 0
+        return self._call_handle(
+            lambda: self._native_dir_open(path.encode("utf-8", errors="replace")),
+            default=0,
+            name="dir_open",
+        )
+
+    def dir_count(self, handle: int) -> int:
+        """句柄条目数；非法句柄返回 -1。"""
+        if not self.available or not self._supports_dir_handle:
+            return -1
+        return self._call_handle(
+            lambda: self._native_dir_count(int(handle)),
+            default=-1,
+            name="dir_count",
+        )
+
+    def dir_rows(self, handle: int, first: int, count: int) -> Optional[list]:
+        """取窗口行（P3.2，JSON 数组；窗口 ≤ count 天然有界）。
+
+        P3.5：DLL 提供 ``faf_dir_rows_pod`` 时优先走 POD 通道（无 JSON
+        编解码，跨 FFI 字节降到「行数组 + arena」），旧 DLL 回退 JSON。
+        """
+        if not self.available or not self._supports_dir_handle:
+            return None
+        if first < 0 or count <= 0:
+            return None
+        if self._supports_dir_rows_pod:
+            pod_rows = self.dir_rows_pod(handle, first, count)
+            if pod_rows is not None:
+                return pod_rows
+        return self._call_json_list_export(
+            lambda: self._native_dir_rows(int(handle), int(first), int(count))
+        )
+
+    def dir_rows_pod(self, handle: int, first: int, count: int) -> Optional[list]:
+        """POD 行通道（P3.3）：一次拷贝取行数组 + 字符串 arena，无 JSON 往返。
+
+        行数组固定 56 字节/行（`<10IQB7x`），字符串以 `(offset, len)` 指向
+        紧随其后的 arena。返回的 7 键字典与 :meth:`dir_rows` 逐字段一致。
+
+        Args:
+            handle: 目录句柄。
+            first: 起始下标。
+            count: 最大行数。
+
+        Returns:
+            Optional[list]: 7 键条目列表；不可用/非法参数/解析失败返回 ``None``。
+        """
+        if not self.available or not self._supports_dir_handle:
+            return None
+        if first < 0 or count <= 0:
+            return None
+        if not self._supports_dir_rows_pod:
+            return None
+        out_count = ctypes.c_uint32(0)
+        out_arena_len = ctypes.c_uint32(0)
+        out_total_len = c_size_t(0)
+
+        def _invoke():
+            raw = self._native_dir_rows_pod(
+                int(handle),
+                int(first),
+                int(count),
+                ctypes.byref(out_count),
+                ctypes.byref(out_arena_len),
+                ctypes.byref(out_total_len),
+            )
+            return raw, out_count.value, out_total_len.value
+
+        return self._call_pod_array(_DIR_ROW_STRUCT, _invoke, _build_dir_row)
+
+    def dir_sort(self, handle: int, mode: int) -> int:
+        """在句柄上原地排序；返回 0 成功。"""
+        if not self.available or not self._supports_dir_handle:
+            return -1
+        return self._call_handle(
+            lambda: self._native_dir_sort(int(handle), int(mode)),
+            default=-1,
+            name="dir_sort",
+        )
+
+    def dir_close(self, handle: int) -> bool:
+        """关闭句柄（幂等）；成功返回 True。"""
+        if not self.available or not self._supports_dir_handle:
+            return False
+        return self._call_handle(
+            lambda: self._native_dir_close(int(handle)),
+            default=-1,
+            name="dir_close",
+            transform=lambda code: int(code) == 0,
+        )
+
+    def dir_next(self, handle: int, max_count: int) -> Optional[list]:
+        """流式游标取下一块（P3.4）；取消/耗尽后返回空数组。"""
+        if not self.available or not self._supports_dir_handle:
+            return None
+        if max_count <= 0:
+            return None
+        return self._call_json_list_export(
+            lambda: self._native_dir_next(int(handle), int(max_count))
+        )
+
+    def dir_cancel(self, handle: int) -> bool:
+        """取消句柄（P3.7，幂等）；成功返回 True。"""
+        if not self.available or not self._supports_dir_handle:
+            return False
+        return self._call_handle(
+            lambda: self._native_dir_cancel(int(handle)),
+            default=-1,
+            name="dir_cancel",
+            transform=lambda code: int(code) == 0,
+        )
+
+    def dir_sort_window(
+        self,
+        handle: int,
+        mode: int,
+        first: int,
+        count: int,
+        *,
+        presort_name: bool = True,
+    ) -> Optional[list]:
+        """句柄上原地排序 + 只取窗口行（P3.6，排序结果不回传）。
+
+        ``mode >= 2`` 时先按 ``(not is_dir, name.lower())`` 在 Rust 侧做一次
+        稳定排序，再排目标键——equal-key 的输入序由这一步锁定，与
+        ``_sort_entries`` 的 Python 预排序口径等价（Rust ``sort_by`` 稳定）。
+
+        Args:
+            handle: 目录句柄。
+            mode: 排序模式（0–7）。
+            first: 窗口起始下标。
+            count: 窗口行数。
+            presort_name: 是否先做名称预排序（mode 0/1 传 ``False``）。
+
+        Returns:
+            Optional[list]: 窗口内的 7 键条目；失败返回 ``None``。
+        """
+        if mode >= 2 and presort_name and self.dir_sort(handle, 0) != 0:
+            return None
+        if self.dir_sort(handle, int(mode)) != 0:
+            return None
+        return self.dir_rows(handle, int(first), int(count))
 
     def version(self) -> Optional[dict]:
         """查询 faf_core 版本信息。
@@ -444,6 +823,75 @@ class FafCoreBridge:
         finally:
             if raw is not None:
                 self.free_message(raw)
+
+    def _call_handle(self, invoke, default, *, name: str, transform=None):
+        """句柄/状态码导出统一骨架（P3.5）。
+
+        Args:
+            invoke: 无参可调用对象，执行 native 调用并返回整数状态。
+            default: 调用失败时的返回值（``-1`` / ``0``）。
+            name: 导出名（仅用于日志）。
+            transform: 可选结果变换（如状态码 → ``bool``）。
+
+        Returns:
+            object: ``transform(value)``；异常时返回 ``default``（不抛异常）。
+        """
+        try:
+            value = invoke()
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            warning(f"faf_core 句柄导出 {name} 失败: {e}")
+            return default
+        if transform is None:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
+        try:
+            return transform(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _call_pod_array(self, row_struct, invoke, build) -> Optional[list]:
+        """POD 记录数组导出统一骨架（P3.5）。
+
+        ``invoke`` 返回 ``(raw, count, total_bytes)``；骨架统一做「一次
+        ``string_at`` 拷贝 → 逐行 ``unpack_from`` → ``build(arena, values)``
+        → ``finally`` 释放 Rust 缓冲」，调用方只关心行布局与构造逻辑。
+
+        Args:
+            row_struct: 单行布局的 :class:`struct.Struct`。
+            invoke: 无参可调用对象，返回 ``(ptr, count, total_bytes)``。
+            build: ``(arena_bytes, values) -> Any`` 行构造函数。
+
+        Returns:
+            Optional[list]: 构造出的行列表；失败返回 ``None``（不抛异常）。
+        """
+        raw = None
+        total = 0
+        try:
+            raw, count, total = invoke()
+            if not raw:
+                return None
+            count = int(count)
+            total = int(total)
+            row_size = row_struct.size
+            if count <= 0 or total <= 0 or total < count * row_size:
+                return None
+            blob = ctypes.string_at(raw, total)
+            arena = blob[count * row_size :]
+            return [
+                build(arena, row_struct.unpack_from(blob, index * row_size))
+                for index in range(count)
+            ]
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            warning(f"faf_core POD 数组导出失败: {e}")
+            return None
+        finally:
+            if raw and total > 0 and self._supports_free_buffer:
+                try:
+                    self._native_free_buffer(raw, total)
+                except Exception:  # noqa: BLE001  # 释放不得影响调用
+                    pass
 
     def _call_json_list_export(self, invoke) -> Optional[list]:
         """JSON 数组导出统一调用骨架：string_at 拷贝 → json 解析 → finally free。
@@ -1177,5 +1625,37 @@ class FafCoreBridge:
         # 形状校验：条目必须为字典（malformed 载荷回退）。
         for item in raw:
             if not isinstance(item, dict):
+                return None
+        return raw
+
+    def pdf_select_indices(
+        self, words_json: str, selection_json: str
+    ) -> Optional[list]:
+        """经 faf_core 返回选中词**下标**（P4.2）。
+
+        与 :meth:`pdf_select_words` 共用同一过滤/排序实现；调用方持有权威
+        词表，每帧只回传下标（避免选中词字典物化与 f64 序列化漂移）。
+
+        Args:
+            words_json: 词表 JSON。
+            selection_json: 选区参数 JSON。
+
+        Returns:
+            Optional[list]: 下标整数列表；不可用/非法载荷返回 ``None``。
+        """
+        if not self.available or not self._supports_pdf_select_indices:
+            return None
+        if not isinstance(words_json, str) or not isinstance(selection_json, str):
+            return None
+        raw = self._call_json_list_export(
+            lambda: self._native_pdf_select_indices(
+                words_json.encode("utf-8", errors="replace"),
+                selection_json.encode("utf-8", errors="replace"),
+            )
+        )
+        if raw is None:
+            return None
+        for item in raw:
+            if not isinstance(item, int) or isinstance(item, bool):
                 return None
         return raw

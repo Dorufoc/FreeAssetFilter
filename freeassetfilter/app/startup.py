@@ -15,7 +15,7 @@ FreeAssetFilter 启动阶段任务编排（startup）
 更新流程负责；本模块各任务相互独立，失败仅记日志。
 
 线程模型：``StartupWarmupThread`` 已从「run 即弃 QThread」重构为
-``QRunnable`` 池任务（投递到 ``QThreadPool.globalInstance()``），
+``QRunnable`` 池任务（投递到 ``thread_pools.pool("background")``），
 完成信号经主线程持有的 ``_StartupWarmupSignals`` 中转对象跨线程投递；
 退出等待语义经内部 ``threading.Event`` 保持（cleanup 有界等待 2s）。
 """
@@ -28,9 +28,11 @@ import time
 import traceback
 from typing import Any, Optional
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, Signal
+from PySide6.QtCore import QObject, QRunnable, QTimer, Qt, Signal
 
-from freeassetfilter.utils.app_logger import error, info, warning
+# 注：`freeassetfilter.core.pools` 在 `_start_background_warmup` 内延迟导入，
+# 避免把 Qt 池/ctypes 初始化拉到「进程→首帧」的关键路径上。
+from freeassetfilter.utils.app_logger import debug, error, info, warning
 from freeassetfilter.utils.path_utils import get_resource_path
 
 
@@ -56,6 +58,8 @@ class StartupWarmupThread(QRunnable):
         self.setAutoDelete(True)
         self._signals = _StartupWarmupSignals()
         self._done = threading.Event()
+        # P6.3：协作式取消标记（预热子步骤在下一步开始前检查）。
+        self._cancelled = threading.Event()
 
     @property
     def finished(self):
@@ -78,6 +82,10 @@ class StartupWarmupThread(QRunnable):
         """
         return self._done.wait(timeout_ms / 1000.0)
 
+    def cancel(self) -> None:
+        """请求取消预热（已开始的子步骤不可中断，仅阻止后续步骤）。"""
+        self._cancelled.set()
+
     def run(self):
         try:
             self._warm_ffmpeg()
@@ -86,6 +94,8 @@ class StartupWarmupThread(QRunnable):
             self._signals.finished.emit()
 
     def _warm_ffmpeg(self) -> None:
+        if self._cancelled.is_set():
+            return
         try:
             from freeassetfilter.core.native.bridges.media_probe import (
                 warmup_ffmpeg_tools,
@@ -119,8 +129,12 @@ class StartupController(QObject):
             error(f"[启动] 心跳管理器创建失败: {e}")
 
         QTimer.singleShot(0, self._safe("_register_extra_fonts"))
-        QTimer.singleShot(0, self._safe("_start_background_warmup"))
+        # P6.2/P7.2：这两项都会导入重模块或跑 FFI（pools 导入 ~20ms、预算补应用
+        # 含 set_cache_limit），放在面板构建（0/30/60/90ms 网格）期间会推迟
+        # 四区齐备与覆盖层淡出。延到面板构建完后再跑，与首次交互并行。
+        QTimer.singleShot(200, self._safe("_start_background_warmup"))
         QTimer.singleShot(0, self._safe("_cleanup_icon_cache"))
+        QTimer.singleShot(400, self._safe("_reapply_memory_budget"))
         QTimer.singleShot(100, self._safe("_schedule_thumbnail_cleanup"))
         QTimer.singleShot(3000, self._safe("_maybe_check_updates"))
 
@@ -136,6 +150,20 @@ class StartupController(QObject):
                 error(f"启动回调 [{name}] 失败: {e}")
                 error(traceback.format_exc())
         return _runner
+
+    def _reapply_memory_budget(self) -> None:
+        """首帧后补齐内存预算（P7.2）。
+
+        启动早期只能给**已导入**模块打补丁；主窗口构造后图标/缩略图模块已就位，
+        此时再跑一次 `apply()` 只做常量赋值（实测 <10ms），不会拖慢首屏。
+        """
+        try:
+            from freeassetfilter.core.memory_budget import get_memory_budget
+
+            result = get_memory_budget().apply(None)
+            debug(f"[启动] 预算补应用: applied={result.get('applied')}")
+        except Exception as exc:  # noqa: BLE001 - 预算补应用失败不阻塞启动
+            warning(f"[启动] 预算补应用失败: {exc}")
 
     # ── 附加字体与可选插件 ──────────────────────────────────────
 
@@ -218,7 +246,11 @@ class StartupController(QObject):
             return
         self._warmup_thread = StartupWarmupThread()
         self._warmup_thread.finished.connect(self._on_warmup_finished)
-        QThreadPool.globalInstance().start(self._warmup_thread)
+        # P6.2：池模块略带 Qt/ctypes 初始化开销（~20ms），放到真正需要它的
+        # 预热回调里导入，不占用“进程→首帧”的关键路径。
+        from freeassetfilter.core import pools as thread_pools
+
+        thread_pools.pool("background").start(self._warmup_thread)
 
     def _on_warmup_finished(self) -> None:
         info("[预热] 启动阶段后台预热任务结束")
@@ -264,8 +296,17 @@ class StartupController(QObject):
 
         if self._warmup_thread is not None and not self._warmup_thread.is_done:
             try:
-                if not self._warmup_thread.wait(2000):
-                    warning("[退出] 预热任务未在 2 秒内完成")
+                # P6.3：退出路径只给 300ms；预热子步骤不可中断，超时即放弃
+                # （线程池为守护语义，不阻塞进程退出）。
+                self._warmup_thread.cancel()
+                if not self._warmup_thread.wait(300):
+                    warning("[退出] 预热任务未在 300ms 内完成，已放弃等待")
+                    try:
+                        from freeassetfilter.utils import perf_metrics as pm
+
+                        pm.increment_global("startup.warmup_abandoned")
+                    except Exception:  # noqa: BLE001 - 埋点不得影响退出
+                        pass
             except Exception as e:
                 warning(f"[退出] 预热任务清理失败: {e}")
 

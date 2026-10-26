@@ -1182,7 +1182,7 @@ class FontPreviewerLayout(QWidget):
         """
         # 顶栏透明无背景：不在此设置任何样式
         register_widget_qss(self._content_area,(
-            f"""
+            """
             background-color: transparent;
             border: 1px solid transparent;
             border-radius: 8px;

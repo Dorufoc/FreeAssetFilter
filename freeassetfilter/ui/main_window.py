@@ -725,7 +725,10 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
 
     #: 启动加载覆盖层：最短展示时长（避免启动过快时一闪而过）/ 最长存活兜底
     #: （三栏构建异常时仍会撤下遮罩）/ 淡出时长；单位毫秒
-    STARTUP_OVERLAY_MIN_MS = 400
+    #: 启动覆盖层最短展示时长（避免启动过快时一闪而过，也避免“已经好了还在转”）。
+    #: 400ms 在旧启动耗下刚好不闪；启动路径优化后它反而成为束缚尾延迟，
+    #: 降到 250ms 仍能防“闪一下”，同时缩短感知的转圈时间。
+    STARTUP_OVERLAY_MIN_MS = 250
     STARTUP_OVERLAY_MAX_MS = 8000
     STARTUP_OVERLAY_FADE_MS = 200
 
@@ -819,6 +822,8 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         self._layout_transition_generation: int = 0
         # 背景层交叉过渡遮罩（单实例去重引用；见 _start_background_transition）
         self._background_transition_overlay: QWidget | None = None
+        # P7.4：失焦宽限期定时器（30s 后释放流体/Mica 纹理）
+        self._idle_texture_timer: QTimer | None = None
         # 系统主题监听器（跟随系统模式的实时链路；见 _start_system_theme_watcher）
         self._system_theme_watcher = None
 
@@ -1436,11 +1441,16 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         文件选择器（最重）优先构建并显示，预览区、储存池、信息面板随后补齐；
         全部就绪后连接跨栏信号、刷新样式并应用默认比例（16:9 / 半高上限）。
         """
+        # 区域构建网格（毫秒）。只作“让每个区各自占一拍事件循环、先画再建下一区”
+        # 的节拍，不承担防白屏职责；30ms 间距会把四区齐备硬推到 ~90ms，
+        # 再叠加 120ms 的 finalize 网格，启动覆盖层就要多转 100ms+。
+        # 改为 8ms 步进：仍保证每区之间有一次绘制，但不再量化拉长。
         QTimer.singleShot(0, lambda: self._build_panel("selector"))
-        QTimer.singleShot(30, lambda: self._build_panel("preview"))
-        QTimer.singleShot(60, lambda: self._build_panel("pool"))
-        QTimer.singleShot(90, lambda: self._build_panel("info"))
-        QTimer.singleShot(120, self._finalize_panels)
+        QTimer.singleShot(8, lambda: self._build_panel("preview"))
+        QTimer.singleShot(16, lambda: self._build_panel("pool"))
+        QTimer.singleShot(24, lambda: self._build_panel("info"))
+        # 兜底：四区齐备时会由 _build_panel 立即收尾（见 _panels_ready_dispatched）。
+        QTimer.singleShot(32, self._finalize_panels)
 
     def _replace_zone_placeholder(self, key: str, widget: QWidget) -> None:
         """移除指定区域的加载占位，并放入真实组件。"""
@@ -1518,6 +1528,12 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
                 except Exception as exc:  # noqa: BLE001 - 开关下发失败不阻塞构建
                     warning(f"显示隐藏/系统文件开关下发失败: {exc}")
                 self._replace_zone_placeholder(side, self._file_selector)
+                # 提前派发首次导航：扫描在后台跑，不等 showEvent（那要等整窗
+                # 布局完成），可与其余三区构建并行，缩短“转圈结束后才出条目”。
+                try:
+                    self._file_selector.start_initial_navigation()
+                except Exception as exc:  # noqa: BLE001 - 提前导航失败不阻塞构建
+                    warning(f"首次导航提前派发失败: {exc}")
             elif side == "preview":
                 from layout.unified_previewer_layout import UnifiedPreviewerLayout
 
@@ -1558,13 +1574,45 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         # 该区域刚就绪即刷新其边框/填充：即使其它区域尚未构建，也能让已就绪区正确显示
         self._refresh_panel_styles()
 
+        # 四区一旦齐备就立刻收尾（连信号 + 应用比例 + 撤下加载覆盖层），
+        # 不等 120ms 网格与 60ms 重试：那两个定时器只是兜底，提前收尾能把
+        # “转圈”时长从「网格量化」降回「实际构建时长」。
+        if not getattr(self, "_panels_ready_dispatched", False) and all(
+            widget is not None
+            for widget in (
+                self._file_selector,
+                self._file_pool,
+                self._previewer,
+                self._info_panel,
+            )
+        ):
+            self._panels_ready_dispatched = True
+            QTimer.singleShot(0, self._finalize_panels)
+
     def _finalize_panels(self) -> None:
         """全部区域就绪后：连接跨栏信号、刷新样式、应用默认比例。
 
         预览器较重，120ms 时可能仍未构建完成；故逐区域守卫连接已就绪者，
         并在仍有区域缺失时延后重试，确保跨栏信号最终全部连上（边框/填充已由
         _build_panel 渐进套用，不受此影响）。
+
+        幂等：四区齐备后可能被“提前收尾”与“120ms 网格”各调一次，
+        ``_panels_finalized`` 保证最小尺寸/默认比例/覆盖层只结算一次。
         """
+        if getattr(self, "_panels_finalized", False):
+            return
+        # 四区齐备的那一次调用即“结算点”：先把标志立起来，避免“提前收尾”
+        # 与“120ms 网格/60ms 重试”重复连信号（Qt 默认允许重复连接）。
+        if all(
+            widget is not None
+            for widget in (
+                self._file_selector,
+                self._file_pool,
+                self._previewer,
+                self._info_panel,
+            )
+        ):
+            self._panels_finalized = True
         if self._file_selector is not None:
             # 信号连接：文件选择器 → 文件池
             self._file_selector.toggle_pool_requested.connect(self._on_toggle_pool_requested)
@@ -3316,6 +3364,102 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             and self._file_selector is not None
         ):
             self._file_selector.reset_nav_state()
+        # P7.4：失焦（非最小化）只停 tick，30s 宽限后才释放纹理——
+        # 重建管线约 4ms，立即释放会在快速切窗/截图时闪一帧。
+        if event.type() == QEvent.ActivationChange:
+            try:
+                if self.isActiveWindow() or self.isMinimized():
+                    self._cancel_idle_texture_release()
+                else:
+                    self._schedule_idle_texture_release()
+            except Exception:  # noqa: BLE001 - 调度失败不影响窗口状态
+                pass
+        # P7.5：最小化时释放可回收缓存（QPixmap / 视频帧 / SVG），
+        # 恢复时各控件按需重填；避免后台驻留时白占内存与显存。
+        # P7.4：同时挂起流体（释放颜色纹理）与 Mica（释放整桌面层 QPixmap）。
+        if event.type() == QEvent.WindowStateChange:
+            try:
+                if self.isMinimized():
+                    from freeassetfilter.core.memory_budget import get_memory_budget
+
+                    get_memory_budget().release_caches()
+                    self._suspend_background_renderers()
+                else:
+                    self._cancel_idle_texture_release()
+                    self._resume_background_renderers()
+            except Exception:  # noqa: BLE001 - 释放失败不影响窗口状态
+                pass
+
+    # ── 显存释放（P7.4）──────────────────────────────────────────────
+
+    def _suspend_background_renderers(self) -> None:
+        """挂起流体背景（停 tick + 释放颜色纹理）并释放 Mica 层像素。"""
+        try:
+            from components.styled_fluid_background import StyledFluidBackground
+
+            StyledFluidBackground.suspend_all()
+        except Exception:  # noqa: BLE001 - 可选组件
+            pass
+        mica = self._mica_material()
+        if mica is not None:
+            try:
+                mica.release_cached_layers()
+            except Exception:  # noqa: BLE001 - 释放失败降级为下次重烘焙
+                pass
+
+    def _resume_background_renderers(self) -> None:
+        """恢复流体背景（重建首帧）；Mica 由下一次绘制按需重烘焙。"""
+        try:
+            from components.styled_fluid_background import StyledFluidBackground
+
+            StyledFluidBackground.resume_all()
+        except Exception:  # noqa: BLE001 - 可选组件
+            pass
+
+    def _mica_material(self):
+        """取主窗口 Mica 材质实例（GL/内置两条实现都兼容）。"""
+        background = getattr(self, "_mica_background", None)
+        if background is None:
+            return None
+        for attr in ("mica", "_mica", "_material"):
+            candidate = getattr(background, attr, None)
+            if candidate is not None and hasattr(candidate, "release_cached_layers"):
+                return candidate
+        if hasattr(background, "release_cached_layers"):
+            return background
+        return None
+
+    def _schedule_idle_texture_release(self) -> None:
+        """显式失焦后 30s 释放纹理（P7.4）；重复调度不叠加。"""
+        if getattr(self, "_idle_texture_timer", None) is not None:
+            return
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(self._on_idle_texture_timeout)
+        self._idle_texture_timer = timer
+        timer.start(30000)
+
+    def _cancel_idle_texture_release(self) -> None:
+        """取消待执行的显存释放并清空计时器（P7.4）。"""
+        timer = getattr(self, "_idle_texture_timer", None)
+        if timer is None:
+            return
+        self._idle_texture_timer = None
+        try:
+            timer.stop()
+            timer.deleteLater()
+        except RuntimeError:
+            pass
+
+    def _on_idle_texture_timeout(self) -> None:
+        """宽限期到期：若仍未激活且未最小化，释放纹理（P7.4）。"""
+        self._idle_texture_timer = None
+        try:
+            if self.isActiveWindow() or self.isMinimized():
+                return
+        except RuntimeError:
+            return
+        self._suspend_background_renderers()
 
     def eventFilter(self, obj: QWidget, event: QEvent) -> bool:
         """事件过滤器 - 应用级方向键导航捕获 + 标题栏拖拽。

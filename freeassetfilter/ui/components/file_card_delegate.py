@@ -230,7 +230,9 @@ _FONT_METRICS_CACHE: Dict[tuple, "QFontMetrics"] = {}
 # 同一张预烘焙 pixmap，跳档阈值内不触发重缩放。
 _ICON_SCALE_LADDER: tuple = (16, 32, 48, 64, 96, 128, 192, 256, 384)
 _ICON_SCALE_CACHE_CAP: int = 256  # 与 icon_cache.py / async_icon_loader.py 同口径上限
-_ICON_SCALE_CACHE_MAX_DISPLAY: int = 512  # display_size 超过此值不缓存，按需直接缩放
+# P7.3：512 → 256——超过 256px 的缩放结果多为四倍内存换少量锐度，
+# 改为按需直接缩放，不进入缓存。
+_ICON_SCALE_CACHE_MAX_DISPLAY: int = 256  # display_size 超过此值不缓存，按需直接缩放
 _ICON_LADDER_SNAP_PX: int = 1  # 与最近档位差 ≤ 此像素才吸附（绘制结果 ≤1px 视觉等价）
 # (cacheKey, src_w, src_h, quantized_size, dpr) → 已缩放 QPixmap（LRU，move_to_end）。
 # 键含原图 cacheKey + 源物理尺寸：原图被替换（cacheKey 变化）即 miss，杜绝 stale 复用。

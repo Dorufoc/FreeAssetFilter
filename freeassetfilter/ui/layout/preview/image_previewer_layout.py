@@ -1270,12 +1270,12 @@ class ImagePreviewerLayout(QWidget):
         不在预览区涂 tm.surface 深色块。
         """
         # 顶栏透明无背景：不在此设置任何样式
-        register_widget_qss(self._content_area,(f"""
+        register_widget_qss(self._content_area,("""
             background-color: transparent;
             border: 1px solid transparent;
             border-radius: 8px;
         """))
-        register_widget_qss(self._overlay,(f"""
+        register_widget_qss(self._overlay,("""
             background-color: transparent;
         """))
         for _w in (self._top_bar, self._content_area, self._overlay):

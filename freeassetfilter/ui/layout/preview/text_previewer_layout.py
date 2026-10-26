@@ -56,7 +56,6 @@ from PySide6.QtCore import (
     QEvent,
     QObject,
     QRunnable,
-    QThreadPool,
     QUrl,
     QAbstractListModel,
     QModelIndex,
@@ -76,6 +75,7 @@ from PySide6.QtGui import (
     QWheelEvent,
 )
 
+from freeassetfilter.core import pools as thread_pools
 from theme import tm
 from components.styled_button import StyledButton
 from components.styled_checkbox import StyledCheckbox
@@ -101,7 +101,10 @@ from freeassetfilter.ui.components.styled_scroll_area import (
 )
 from freeassetfilter.ui.components.styled_context_menu import StyledContextMenu
 from freeassetfilter.core._paths import icons_dir
-from freeassetfilter.utils.syntax_highlighter import create_highlighter
+from freeassetfilter.utils.syntax_highlighter import (
+    create_highlighter,
+    get_auto_theme_scheme,
+)
 
 
 from freeassetfilter.utils.markdown_renderer import (
@@ -153,7 +156,7 @@ class _MarkdownRenderTask(QRunnable):
 
     def start(self) -> None:
         """投递到全局线程池执行。"""
-        QThreadPool.globalInstance().start(self)
+        thread_pools.pool("interactive").start(self)
 
     def run(self) -> None:
         ok = False
@@ -206,7 +209,7 @@ class _EncodingDetectTask(QRunnable):
 
     def start(self) -> None:
         """投递到全局线程池执行。"""
-        QThreadPool.globalInstance().start(self)
+        thread_pools.pool("interactive").start(self)
 
     def run(self) -> None:
         detected = ""
@@ -297,7 +300,7 @@ class _TextLoadTask(QRunnable):
 
     def start(self) -> None:
         """投递到全局线程池执行。"""
-        QThreadPool.globalInstance().start(self)
+        thread_pools.pool("interactive").start(self)
 
     def run(self) -> None:
         """执行读取与解码。"""
@@ -916,19 +919,42 @@ class _TextHighlighter(QSyntaxHighlighter):
 
     逐文本块调用高亮器的 tokenize(text, language) 方法，并将返回的 Token
     通过 get_qtextformat(token_type) 应用到 QTextDocument。
+
+    生命周期纪律（P1.0）：本类在控件生命周期内**复用**，不得每次加载文件
+    都新建。``QSyntaxHighlighter`` 挂在 ``QTextDocument`` 上；旧实现每次
+    ``_apply_highlighter`` 都 ``new`` 一个、只把 Python 引用置 ``None``，
+    导致同一 document 上累积多个高亮器（内存泄漏 + 每次 rehighlight 重复
+    setFormat）。``dispose()`` 负责把实例从 document 上摘除。
     """
 
     def __init__(
         self,
-        parent=None,
+        document=None,
         file_path: Optional[str] = None,
         language: Optional[str] = None,
         dark_mode: Optional[bool] = None,
+        owner: Optional[object] = None,
     ) -> None:
-        super().__init__(parent)
+        """创建适配器。
+
+        Args:
+            document: 目标 ``QTextDocument``。
+            file_path: 文件路径（用于推断语言）。
+            language: 显式语言标识（优先于 ``file_path``）。
+            dark_mode: 主题明暗；``None`` 时由引擎自动判定。
+            owner: 可选 QObject 所有者；传入时高亮器归属控件而非文档，
+                避免文档销毁后仍被持有。
+        """
+        if owner is not None:
+            super().__init__(owner)
+            if document is not None:
+                self.setDocument(document)
+        else:
+            super().__init__(document)
         self.language = language or self._detect_language(file_path)
         self.faf_highlighter = create_highlighter("auto", dark_mode=dark_mode)
         self.color_scheme = self.faf_highlighter.color_scheme
+        self._disposed = False
 
     def _detect_language(self, file_path: Optional[str]) -> str:
         """根据文件路径检测语言标识。"""
@@ -937,9 +963,44 @@ class _TextHighlighter(QSyntaxHighlighter):
         ext = Path(file_path).suffix.lower()
         return CODE_EXTENSIONS.get(ext, "text")
 
+    def set_language(self, language: str) -> None:
+        """切换高亮语言（幂等；变化时触发一次 rehighlight）。"""
+        if not language or language == self.language:
+            return
+        self.language = language
+        try:
+            self.rehighlight()
+        except RuntimeError:
+            pass
+
+    def apply_theme(self, dark_mode: bool) -> None:
+        """主题切换：只替换配色方案并重绘，不重建引擎、不重新解析。"""
+        try:
+            self.faf_highlighter.set_color_scheme(
+                get_auto_theme_scheme(dark_mode=dark_mode)
+            )
+            self.color_scheme = self.faf_highlighter.color_scheme
+            self.rehighlight()
+        except (RuntimeError, AttributeError, ValueError):
+            pass
+
+    def dispose(self) -> None:
+        """从 document 上摘除并释放引用（幂等）。"""
+        if self._disposed:
+            return
+        self._disposed = True
+        try:
+            self.setDocument(None)
+        except (RuntimeError, TypeError):
+            pass
+        try:
+            self.setParent(None)
+        except (RuntimeError, TypeError):
+            pass
+
     def highlightBlock(self, text: str) -> None:
         """实现 QSyntaxHighlighter 接口：逐块高亮。"""
-        if not text or self.language == "text":
+        if self._disposed or not text or self.language == "text":
             return
         try:
             tokens = self.faf_highlighter.tokenize(text, self.language)
@@ -2379,7 +2440,9 @@ class TextPreviewerLayout(QWidget):
         self._current_raw = None
         self._current_encoding = ""
         self._current_mode = "plain"
-        self._highlighter = None
+        if self._highlighter is not None:
+            self._highlighter.dispose()
+            self._highlighter = None
         self._render_toggle_btn.setVisible(False)
         if hasattr(self, "_encoding_combo") and self._encoding_combo is not None:
             self._encoding_combo.setCurrentIndex(0)
@@ -2412,12 +2475,12 @@ class TextPreviewerLayout(QWidget):
     def set_section_styles(self, fill_color: str, border_color: str) -> None:
         """应用面板样式（主题切换时由主窗口调用）。"""
         # 顶栏透明无背景：不在此设置任何样式
-        register_widget_qss(self._content_area,(f"""
+        register_widget_qss(self._content_area,("""
             background-color: transparent;
             border: 1px solid transparent;
             border-radius: 8px;
         """))
-        register_widget_qss(self._overlay,(f"""
+        register_widget_qss(self._overlay,("""
             background-color: transparent;
         """))
         for _w in (self._top_bar, self._content_area, self._overlay):
@@ -2445,16 +2508,48 @@ class TextPreviewerLayout(QWidget):
         return CODE_EXTENSIONS.get(ext, "text")
 
     def _apply_highlighter(self, language: Optional[str] = None) -> None:
-        """为源码视图应用语法高亮器（按需创建）。"""
-        if not language or language == "text":
-            self._highlighter = None
+        """为源码视图应用语法高亮器（幂等复用，P1.0）。
+
+        同一控件生命周期内只创建一个 ``_TextHighlighter``：切换语言时复用
+        实例并 ``rehighlight()``，主题切换只重设配色。旧实现每次调用都
+        新建实例且不销毁，导致同一 ``QTextDocument`` 上累积多个高亮器。
+
+        Args:
+            language: 语言标识；``None``/``"text"`` 表示移除高亮。
+        """
+        try:
+            document = self._source_view._text_edit.document()
+        except RuntimeError:
             return
-        self._highlighter = _TextHighlighter(
-            self._source_view._text_edit.document(),
-            file_path=self._current_file,
-            language=language,
-            dark_mode=tm.is_dark_theme(),
-        )
+
+        if not language or language == "text":
+            if self._highlighter is not None:
+                self._highlighter.dispose()
+                self._highlighter = None
+            return
+
+        highlighter = self._highlighter
+        attached = None
+        if highlighter is not None:
+            try:
+                attached = highlighter.document()
+            except RuntimeError:
+                attached = None
+
+        if highlighter is None or attached is not document:
+            if highlighter is not None:
+                highlighter.dispose()
+            self._highlighter = _TextHighlighter(
+                document,
+                file_path=self._current_file,
+                language=language,
+                dark_mode=tm.is_dark_theme(),
+                owner=self,
+            )
+            return
+
+        highlighter.set_language(language)
+        highlighter.apply_theme(tm.is_dark_theme())
 
     def _render_markdown(self) -> bool:
         """异步渲染当前文本到 QTextBrowser（render 在池线程，setHtml 回主线程）。

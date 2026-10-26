@@ -108,8 +108,9 @@ def _begin_stream(
         int: 本次流式加载的世代 token。
     """
     fake = _FakePool()
+    # P6.2：布局已改走 ``core.pools`` 命名池，patch 门面的 ``pool()``。
     monkeypatch.setattr(
-        fsl_mod, "QThreadPool", SimpleNamespace(globalInstance=lambda: fake)
+        fsl_mod.thread_pools, "pool", lambda name="interactive": fake
     )
     layout._load_directory_async(path)  # noqa: SLF001
     assert len(fake.started) == 1, "应投递一个流式扫描任务"

@@ -45,7 +45,9 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QApplication,
     QStackedLayout, QPushButton, QGridLayout,
 )
-from PySide6.QtCore import QEvent, QObject, QRunnable, QThreadPool, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QRunnable, Qt, QTimer, Signal
+
+from freeassetfilter.core import pools as thread_pools
 from PySide6.QtGui import QFont, QImage, QPixmap, QColor
 
 from theme import tm
@@ -108,7 +110,7 @@ class _AudioMetadataSignals(QObject):
 class _AudioMetadataTask(QRunnable):
     """音频元数据 + 封面调色板后台池任务（todo-30，沿 file_info_panel worker 模式）。
 
-    ``run()`` 在 ``QThreadPool.globalInstance()`` 的池线程执行：单次
+    ``run()`` 在 ``thread_pools.pool("interactive")`` 的池线程执行：单次
     ``MediaMetadataService.extract_audio_metadata`` 读取标签/封面/编码参数，
     并在 worker 内完成封面 64x64 Counter 调色板提取（算法与布局的
     ``_extract_palette_from_cover`` 逐字一致，仅移线程）。结果经 ``done``
@@ -130,7 +132,7 @@ class _AudioMetadataTask(QRunnable):
 
     def start(self) -> None:
         """投递到全局线程池执行（替代旧 QThread.start()）。"""
-        QThreadPool.globalInstance().start(self)
+        thread_pools.pool("interactive").start(self)
 
     def run(self) -> None:
         metadata_service = MediaMetadataService()
@@ -211,7 +213,7 @@ class _MediaLoadTask(QRunnable):
 
     def start(self) -> None:
         """投递到全局线程池执行。"""
-        QThreadPool.globalInstance().start(self)
+        thread_pools.pool("interactive").start(self)
 
     def run(self) -> None:
         """加载并起播；异常统一转成 ``done(False, error)``。"""
@@ -275,7 +277,7 @@ class _MediaTracksTask(QRunnable):
 
     ``get_audio_tracks`` / ``get_subtitle_tracks`` 为阻塞式调用（各最长
     ``timeout`` 秒），在 UI 线程执行会卡顿。任务在
-    ``QThreadPool.globalInstance()`` 的池线程顺序查询后经
+    ``thread_pools.pool("interactive")`` 的池线程顺序查询后经
     ``done(token, audio, subtitle)`` 信号回主线程，由布局令牌守卫决定是否
     采纳——快速切换文件时陈旧结果直接丢弃。
     """
@@ -294,7 +296,7 @@ class _MediaTracksTask(QRunnable):
 
     def start(self) -> None:
         """投递到全局线程池执行。"""
-        QThreadPool.globalInstance().start(self)
+        thread_pools.pool("interactive").start(self)
 
     def run(self) -> None:
         audio_tracks: List[Dict[str, Any]] = []
@@ -409,6 +411,7 @@ class VideoPlayerLayout(QWidget):
             return False
 
         # 切换文件：令牌递增使在途轨道/加载结果失效
+        previous_file = self._current_file
         self._tracks_token += 1
         self._media_load_token += 1
         token = self._media_load_token
@@ -418,6 +421,9 @@ class VideoPlayerLayout(QWidget):
         self._media_ready = False
         self._current_file = file_path
         self._current_media_is_audio = bool(is_audio)
+        # P7.3：切文件立即释放上一段的视频帧组（帧组只在当前预览期间有意义）。
+        if previous_file and previous_file != file_path:
+            self._release_frame_caches(keep_path=file_path)
 
         # 切换文件时使仍在途的音频元数据任务失效
         self._audio_meta_token += 1
@@ -639,11 +645,31 @@ class VideoPlayerLayout(QWidget):
             }}
         """))
 
+    @staticmethod
+    def _release_frame_caches(keep_path: str) -> None:
+        """释放视频帧缓存组（P7.3，切文件/退出预览）。
+
+        Args:
+            keep_path: 需要保留的视频路径；空串表示全部释放。
+        """
+        try:
+            from freeassetfilter.core.managers.thumbnail_manager import (
+                ThumbnailManager,
+            )
+
+            manager = getattr(ThumbnailManager, "_instance", None)
+            if manager is not None:
+                manager.release_frame_cache(keep_path)
+        except Exception:  # noqa: BLE001 - 缓存释放不得影响播放
+            pass
+
     def cleanup(self) -> None:
         """清理资源，断开所有信号（可重复调用，不阻塞 UI 线程）。"""
         if getattr(self, "_cleaned_up", False):
             return
         self._cleaned_up = True
+        # P7.3：退出预览释放全部视频帧组
+        self._release_frame_caches(keep_path="")
         # 令牌 +1 使仍在途的音频元数据/媒体加载任务全部失效
         self._audio_meta_token += 1
         self._tracks_token += 1
@@ -725,6 +751,25 @@ class VideoPlayerLayout(QWidget):
 
         debug("VideoPlayerLayout cleanup 完成")
 
+    def hideEvent(self, event) -> None:  # noqa: N802 - Qt 接口
+        """预览不可见时停止播放（P7.4）：释放 MPV 硬解表面与音频设备。
+
+        布局切换已由 ``suspend_for_layout_switch`` 处理（快照后可恢复），
+        此处在未挂起时才动作，避免把待恢复的播放态误停成暂停。
+
+        Args:
+            event: 隐藏事件。
+        """
+        super().hideEvent(event)
+        if self._layout_switch_suspend_state is not None:
+            return
+        if not self._current_file:
+            return
+        try:
+            self.stop_playback()
+        except (RuntimeError, TypeError):
+            pass
+
     def stop_playback(self) -> None:
         """停止播放（异步提交，不阻塞 UI 线程）。"""
         self._media_load_token += 1
@@ -733,7 +778,7 @@ class VideoPlayerLayout(QWidget):
             self._media_load_task = None
         self._media_ready = False
         if self._mpv_manager:
-            QThreadPool.globalInstance().start(
+            thread_pools.pool("interactive").start(
                 _ManagerStopTask(self._mpv_manager, self._component_id)
             )
         self._loading_spinner.setVisible(False)
@@ -999,14 +1044,42 @@ class VideoPlayerLayout(QWidget):
             embedded = self._mpv_manager.set_window_id(
                 win_id, component_id=self._component_id
             )
+            self._finish_mpv_embed(embedded)
         else:
-            embedded = self._mpv_manager.initialize(initial_window_id=win_id)
+            # P6.3：初始化改异步（原 ``initialize()`` 在主线程最长阻塞 10s）。
+            # 仅对真实 MPVManager 走异步；测试替身（Mock）仍走同步语义，
+            # 避免 Mock 自动生成 ``initialize_async`` 却永不回调。
+            if isinstance(self._mpv_manager, MPVManager):
+                self._mpv_manager.initialize_async(
+                    lambda ok, w=win_id: self._on_mpv_initialized(ok, w),
+                    initial_window_id=win_id,
+                )
+            else:
+                self._finish_mpv_embed(
+                    self._mpv_manager.initialize(initial_window_id=win_id)
+                )
 
-        if embedded:
-            self._is_mpv_embedded = True
-            # 应用初始音量/倍速
-            self._mpv_manager.set_volume(70, component_id=self._component_id)
-            self._mpv_manager.set_speed(self._current_speed, component_id=self._component_id)
+    def _finish_mpv_embed(self, embedded: bool) -> None:
+        """嵌入成功后应用初始音量/倍速（同步与异步路径共用）。"""
+        if not embedded or self._mpv_manager is None:
+            return
+        self._is_mpv_embedded = True
+        self._mpv_manager.set_volume(70, component_id=self._component_id)
+        self._mpv_manager.set_speed(
+            self._current_speed, component_id=self._component_id
+        )
+
+    def _on_mpv_initialized(self, ok: bool, win_id: int) -> None:
+        """异步初始化回调（令牌守卫：窗口已重建则放弃本次结果）。"""
+        if not ok or self._mpv_manager is None:
+            return
+        try:
+            current = int(self._video_surface.winId())
+        except RuntimeError:
+            return
+        if current != win_id:
+            return
+        self._finish_mpv_embed(True)
 
     def eventFilter(self, watched, event) -> bool:
         """检测视频面原生句柄变化（顶层重建导致），失效时重新嵌入 MPV。"""
@@ -1641,7 +1714,7 @@ class VideoPlayerLayout(QWidget):
         # REDIRECT 表示 loadfile 替换了当前文件（切换到下一个视频），
         # 新文件的 FILE_LOADED 事件会随后到达并刷新 UI。
         if reason == MpvEndFileReason.REDIRECT:
-            debug(f"文件被 loadfile 替换（REDIRECT），跳过 overlay 切换")
+            debug("文件被 loadfile 替换（REDIRECT），跳过 overlay 切换")
             return
         self._player_bar.set_playing(False)
         debug(f"播放结束, 原因码: {reason}")

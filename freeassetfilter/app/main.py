@@ -92,7 +92,7 @@ def _install_process_facilities() -> dict:
     state["fd_streams"] = {}
     try:
         state["fd_streams"] = install_fd_capture(logger.get_log_file_path())
-    except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError) as e:
+    except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError):
         warning("fd capture init failed")
 
     # 2) stdout/stderr 双写捕获
@@ -103,7 +103,7 @@ def _install_process_facilities() -> dict:
             saved_stderr=state["fd_streams"].get(2),
         ):
             info("console capture unavailable (non-fatal)")
-    except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError) as e:
+    except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError):
         warning("console capture init failed")
 
     # 3) 重指 AppLogger 控制台 handler 到备份的控制台流（防双写）。
@@ -115,7 +115,7 @@ def _install_process_facilities() -> dict:
             for handler in list(getattr(logger, "logger", None).handlers or []):
                 if type(handler) is logging.StreamHandler and handler.stream is sys.__stdout__:
                     handler.stream = saved_stdout
-    except (OSError, ValueError, AttributeError, TypeError) as e:
+    except (OSError, ValueError, AttributeError, TypeError):
         warning("console handler repoint failed")
 
     # 4) faulthandler：只写日志文件，不输出终端（VEH/UEF 兜底）。
@@ -136,7 +136,7 @@ def _install_process_facilities() -> dict:
             faulthandler.enable(file=fault_file, all_threads=True)
             state["fault_file"] = fault_file
             state["fault_enabled"] = True
-    except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError) as e:
+    except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError):
         warning("faulthandler init failed")
     if not state["fault_enabled"]:
         info("faulthandler not enabled (non-fatal)")
@@ -214,6 +214,9 @@ def _parse_internal_worker_args(argv) -> tuple:
 
 def _run_thumbnail_worker(payload: dict) -> int:
     """执行缩略图子进程任务（--faf-thumbnail-worker）。"""
+    # P5：子进程只处理一个文件，内层 rayon 必须单线程——否则 23 个并发
+    # 子进程 × 各自线程池会把 CPU 打满（实测最坏 ~552 可运行线程 / 24 核）。
+    os.environ["RAYON_NUM_THREADS"] = "1"
     from freeassetfilter.core.managers.thumbnail_manager import _run_batch_video_thumbnail_subprocess
 
     file_path = payload.get("file_path", "")
@@ -306,21 +309,99 @@ def _create_application(argv, initial_navigate_path):
     app = QApplication(argv)
     try:
         install_qt_message_handler()
-    except (OSError, ValueError, TypeError) as e:
+    except (OSError, ValueError, TypeError):
         warning("qt message handler init failed")
 
     # L2 缓存层上限（配合各组件 L1 缓存使用）
     QPixmapCache.setCacheLimit(50 * 1024)
+
+    # P6.6：GIL 切换间隔——后台解码线程在 Python 段的连续执行会推迟主线程。
+    # 默认 5ms；交互场景调到 2ms 以降低主线程尾部延迟（可用环境变量覆盖）。
+    try:
+        import sys as _sys
+
+        interval = float(os.environ.get("FAF_SWITCH_INTERVAL", "0.002"))
+        if interval > 0:
+            _sys.setswitchinterval(interval)
+    except Exception as e:  # noqa: BLE001 - 调优失败不影响启动
+        warning(f"GIL 切换间隔设置失败: {e}")
 
     # 右键菜单初始导航路径（文件选择器启动时消费）
     app.initial_navigate_path = initial_navigate_path
     # 设置管理器：主窗口构造前加载（MainWindow 读取背景/恢复设置时复用）
     _init_settings_manager(app)
 
+    # 注：线程池预算／内存预算**不在**此处初始化。两者首次调用会付
+    # 「QThreadPool 全局单例首次创建 ~100ms」「pools/memory_probe 导入 ~25ms」
+    # 与「预算 apply ~10ms」——那些钱花在“进程→首帧”的关键路径上，用户能
+    # 直接感知到启动变慢。改为首帧后的 ``_init_runtime_budgets`` 里执行。
+
     # 任务栏图标
     icon_path = get_resource_path("freeassetfilter/icons/FAF-main.ico")
     app.setWindowIcon(QIcon(icon_path))
     return app
+
+
+def _init_runtime_budgets(app) -> None:
+    """首帧后初始化线程池与内存预算（P6.2 / P7.2）。
+
+    必须在轻量窗口已显示、重内容尚未构建时调用：
+
+    * ``QThreadPool.globalInstance()`` 首次调用实测 ~100–140ms（Qt 内部
+      单例首次创建），放到首帧后不影响“点开就有窗口”的体感；
+    * 内存预算需要赶在缩略图/图标缓存增长前生效，所以在
+      ``initialize_deferred_content()`` 之前执行。
+
+    Args:
+        app: 当前 QApplication（传给预算 apply）。
+    """
+    try:
+        from PySide6.QtCore import QThreadPool
+
+        from freeassetfilter.core import pools as thread_pools
+        from freeassetfilter.utils.perf_metrics import register_snapshot_provider
+
+        QThreadPool.globalInstance().setMaxThreadCount(2)
+        register_snapshot_provider("pools", thread_pools.snapshot)
+        debug(f"[pools] budget={thread_pools.snapshot()['budget']}")
+    except Exception as e:  # noqa: BLE001 - 线程账本初始化失败不阻塞启动
+        warning(f"线程池预算初始化失败: {e}")
+
+    try:
+        from freeassetfilter.core.memory_budget import get_memory_budget
+        from freeassetfilter.utils.perf_metrics import register_snapshot_provider
+
+        budget = get_memory_budget()
+        budget.set_tier(budget.detect_tier_name())
+        budget.apply(app)
+        # P7.3：RSS 过阈值时自动释放可回收缓存（soft/hard 同一策略）。
+        budget.on_pressure(lambda _level, _sample: budget.release_caches())
+        register_snapshot_provider("memory", budget.snapshot)
+    except Exception as e:  # noqa: BLE001 - 预算初始化失败不阻塞启动
+        warning(f"内存预算初始化失败: {e}")
+
+    # 首个目录扫描会在后台首次 ``CDLL`` 加载 faf_core（~40–80ms）并校验 ABI；
+    # 若等到用户导航时才加载，这段会被算进“转圈后到首帧”的延迟里。这里提前
+    # 在后台池里把它热好，与重内容构建并行。
+    try:
+        from PySide6.QtCore import QRunnable
+
+        from freeassetfilter.core import pools as thread_pools
+
+        class _NativeBridgeWarmup(QRunnable):
+            """后台预热原生桥（DLL 加载 + ABI 校验），不阻塞主线程。"""
+
+            def run(self) -> None:
+                try:
+                    from freeassetfilter.core.native import api as native_api
+
+                    native_api.bridge()
+                except Exception:  # noqa: BLE001 - 预热失败由调用方回退
+                    pass
+
+        thread_pools.pool("background").start(_NativeBridgeWarmup())
+    except Exception as e:  # noqa: BLE001 - 预热失败不影响启动
+        warning(f"原生桥预热调度失败: {e}")
 
 
 def _warn_if_frameless_unsupported() -> None:
@@ -712,6 +793,9 @@ def main(argv=None) -> int:
 
     def _finish_deferred_ui() -> None:
         try:
+            # 先立预算再建内容：线程池/内存档位必须在缓存增长前生效，
+            # 但可以晚于首帧（用户已经看到窗口）。
+            _init_runtime_budgets(app)
             window.initialize_deferred_content()
             info(f"[启动] 完整内容初始化: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
         except Exception as e:
@@ -765,6 +849,21 @@ def main(argv=None) -> int:
                     floating_ref.close()
         except Exception as e:
             debug(f"[退出] 兜底关闭全局浮窗失败: {e}")
+
+        # 1.7) 排空命名线程池（P6.0/P6.2）：先让后台任务有界退场，
+        # 再卸载卡顿哨兵；随后才进入 fd 捕获清理。
+        try:
+            from freeassetfilter.core import pools as thread_pools
+
+            thread_pools.shutdown(2000)
+        except Exception as e:  # noqa: BLE001 - 退出路径不得抛
+            warning(f"[退出] 线程池排空失败: {e}")
+        try:
+            from freeassetfilter.utils import ui_watchdog
+
+            ui_watchdog.uninstall()
+        except Exception as e:  # noqa: BLE001 - 退出路径不得抛
+            debug(f"[退出] 卡顿哨兵卸载失败: {e}")
 
         # 2) 卸载 fd 捕获（排空管道 + join），再做 handler flush 与 faulthandler 清理
         _cleanup_process_facilities(facilities)

@@ -70,7 +70,7 @@ import struct
 from collections.abc import Sequence
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import (
     QColor,
     QRhiBuffer,
@@ -188,6 +188,49 @@ class _FluidGPUShaderWidget(QRhiWidget):
     def is_ready(self) -> bool:
         """渲染管线是否已成功创建（未就绪时调用方应回退 CPU 路径）。"""
         return self._initialized
+
+    def _apply_texture_cap(self) -> None:
+        """把颜色缓冲**等比**限制在内存档位上限内（P7.4）。
+
+        ``QRhiWidget`` 默认令颜色缓冲尺寸跟随「控件尺寸 × DPR」，4K 全屏
+        音频模式下单张 RGBA8 纹理可达 33MB（叠加顶层 backing store 后翻倍）。
+        本方法把最长边等比缩到 ``MemoryBudget.tier.fluid_texture_max_px``：
+
+        * **等比**（长宽比不变）——模块头注释否决的是「固定 1024×512」的
+          非等比拉伸与跨档突变，等比缩放不具备该问题；
+        * 未超限时传 ``QSize()``（无效尺寸）= 跟随控件（Qt 默认行为）。
+        """
+        setter = getattr(self, "setFixedColorTextureSize", None)
+        if setter is None:
+            return
+        try:
+            from freeassetfilter.core.memory_budget import get_memory_budget
+
+            cap = int(get_memory_budget().tier.fluid_texture_max_px)
+        except Exception:  # noqa: BLE001 - 预算不可用时给安全上限
+            cap = 4096
+        dpr = float(self.devicePixelRatioF())
+        width = max(1, round(self.width() * dpr))
+        height = max(1, round(self.height() * dpr))
+        longest = max(width, height)
+        try:
+            if longest <= cap:
+                setter(QSize())
+                return
+            scale = cap / longest
+            setter(QSize(max(1, round(width * scale)), max(1, round(height * scale))))
+        except (RuntimeError, TypeError):
+            pass
+
+    def resizeEvent(self, event: object) -> None:  # noqa: N802 - Qt 接口
+        """尺寸变化时重新套用纹理上限。"""
+        super().resizeEvent(event)  # type: ignore[arg-type]
+        self._apply_texture_cap()
+
+    def showEvent(self, event: object) -> None:  # noqa: N802 - Qt 接口
+        """首次显示时套用纹理上限（部分平台 show 前无 resize）。"""
+        super().showEvent(event)  # type: ignore[arg-type]
+        self._apply_texture_cap()
 
     def initialize(self, cb) -> None:  # noqa: ANN001 - QRhiCommandBuffer
         """构建缓冲区、资源绑定与渲染管线（幂等）。

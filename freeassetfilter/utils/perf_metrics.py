@@ -44,7 +44,7 @@ import time
 from collections import defaultdict, deque
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Deque, Dict, Iterable, Optional
+from typing import Any, Callable, Deque, Dict, Iterable, Optional
 
 from freeassetfilter.utils.app_logger import debug, info, warning
 from freeassetfilter.utils.path_utils import get_app_data_path
@@ -331,37 +331,54 @@ class PerfMetricsRegistry:
             debug(f"PerfMetrics cleared: {event_count} events, {counter_count} counters")
 
     def snapshot(self) -> Dict[str, Any]:
+        """构造当前指标快照（含扩展 provider 段）。
+
+        扩展 provider 在锁**外**调用，避免 provider 内部反向写指标时死锁；
+        单个 provider 抛异常只在该段置 ``{"error": ...}``，不影响整份快照。
+        """
         with self._lock:
             events = {
                 name: stats.to_dict()
                 for name, stats in sorted(self._events.items(), key=lambda item: item[0])
             }
-            # W10 句柄预算（加法式扩展：既有键保持不变）。
-            # 延迟导入避免 core/native 与 utils 之间的导入环；
-            # 采样失败时降级为计数字段全 None 的字典，不抛异常。
-            try:
-                from freeassetfilter.core.native.platform_monitor import (
-                    sample_gui_resources,
-                )
+            global_counters = dict(sorted(self._global_counters.items()))
+        # W10 句柄预算（加法式扩展：既有键保持不变）。
+        # 延迟导入避免 core/native 与 utils 之间的导入环；
+        # 采样失败时降级为计数字段全 None 的字典，不抛异常。
+        try:
+            from freeassetfilter.core.native.platform_monitor import (
+                sample_gui_resources,
+            )
 
-                gui_resources = sample_gui_resources()
-            except Exception:
-                gui_resources = {
-                    "user_objects": None,
-                    "gdi_objects": None,
-                    "user_warn": False,
-                    "gdi_warn": False,
-                    "user_over_cap": False,
-                    "gdi_over_cap": False,
-                    "platform": "unknown",
-                }
-            return {
-                "enabled": self._enabled,
-                "global_counters": dict(sorted(self._global_counters.items())),
-                "events": events,
-                "frame_times": frame_time_stats(),
-                "gui_resources": gui_resources,
+            gui_resources = sample_gui_resources()
+        except Exception:
+            gui_resources = {
+                "user_objects": None,
+                "gdi_objects": None,
+                "user_warn": False,
+                "gdi_warn": False,
+                "user_over_cap": False,
+                "gdi_over_cap": False,
+                "platform": "unknown",
             }
+
+        providers: Dict[str, Any] = {}
+        with _snapshot_providers_lock:
+            registry_items = list(_snapshot_providers.items())
+        for provider_name, provider in registry_items:
+            try:
+                providers[provider_name] = provider()
+            except Exception as exc:  # noqa: BLE001 - 单个 provider 失败不得影响快照
+                providers[provider_name] = {"error": repr(exc)}
+
+        return {
+            "enabled": self._enabled,
+            "global_counters": global_counters,
+            "events": events,
+            "frame_times": frame_time_stats(),
+            "gui_resources": gui_resources,
+            "providers": providers,
+        }
 
     def export_snapshot(self, output_path: Optional[str] = None) -> str:
         snapshot = self.snapshot()
@@ -398,6 +415,11 @@ class PerfMetricsRegistry:
 
 _registry = PerfMetricsRegistry()
 
+#: 快照扩展 provider 表（P6.1 加法式扩展；既有键保持不变）。
+#: provider 不得修改指标状态，只能读取自身快照。
+_snapshot_providers: Dict[str, Callable[[], Dict[str, Any]]] = {}
+_snapshot_providers_lock = threading.Lock()
+
 
 def get_perf_registry() -> PerfMetricsRegistry:
     return _registry
@@ -431,3 +453,39 @@ def export_perf_metrics(output_path: Optional[str] = None) -> str:
 
 def get_perf_snapshot() -> Dict[str, Any]:
     return _registry.snapshot()
+
+
+def increment_global(counter_name: str, delta: int = 1) -> None:
+    """累加一个全局计数器（不绑定到具体 event）。
+
+    Args:
+        counter_name: 计数器名（如 ``ui_watchdog.stalls``）。
+        delta: 增量。
+    """
+    _registry.increment_global(counter_name, delta)
+
+
+def record_duration(
+    event_name: str, elapsed_ms: float, *, success: bool = True
+) -> None:
+    """记录一次耗时（与 :func:`record_perf_duration` 同义，供诊断模块使用）。"""
+    _registry.record_duration(event_name, elapsed_ms, success=success)
+
+
+def register_snapshot_provider(
+    name: str, provider: Callable[[], Dict[str, Any]]
+) -> None:
+    """注册一个快照扩展段（幂等：同名覆盖）。
+
+    Args:
+        name: 段名（写入 ``snapshot()["providers"][name]``）。
+        provider: 无参回调，返回可 JSON 序列化的字典。
+    """
+    with _snapshot_providers_lock:
+        _snapshot_providers[name] = provider
+
+
+def unregister_snapshot_provider(name: str) -> None:
+    """注销快照扩展段（不存在时静默）。"""
+    with _snapshot_providers_lock:
+        _snapshot_providers.pop(name, None)

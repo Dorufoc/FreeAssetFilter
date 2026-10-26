@@ -16,10 +16,11 @@ FreeAssetFilter 心跳管理器
 
 from __future__ import annotations
 
+import heapq
+import itertools
 import threading
 import time
 import weakref
-from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -77,6 +78,13 @@ class _CallbackEntry:
 
     # every_n_ticks 的 tick 计数器
     _tick_counter: int = field(default=0, repr=False)
+    # P6.4：注销标记（tick 迭代中跳过，避免重建列表）
+    dead: bool = field(default=False, repr=False)
+    # P6.4：注册时的原始 every_n_ticks（降级后可恢复）
+    base_every_n: int = field(default=1, repr=False)
+    # P6.4：回调耗时的 EWMA（毫秒）与连续超预算次数
+    cost_ms: float = field(default=0.0, repr=False)
+    _slow_streak: int = field(default=0, repr=False)
 
     def resolve(self) -> Optional[Callable]:
         """解析可调用对象，弱引用失效时返回 None"""
@@ -194,8 +202,15 @@ class HeartbeatManager(QObject):
         self._callback_lock: threading.RLock = threading.RLock()
 
         # Cross-thread dispatch queue
-        self._pending_calls: deque = deque()
+        self._pending_calls: list = []
         self._pending_calls_lock: threading.RLock = threading.RLock()
+        # P6.4：有序回调缓存（注册/注销时置脏，tick 只迭代不复制不排序）
+        self._ordered_normal: list[_CallbackEntry] = []
+        self._ordered_fast: list[_CallbackEntry] = []
+        self._ordered_dirty: bool = True
+        self._resume_index: int = 0
+        self._pending_seq = itertools.count()
+        self._overrun_by_cb: dict[str, int] = {}
 
         # Normal tick timer
         self._normal_timer: QTimer = QTimer(self)
@@ -313,12 +328,14 @@ class HeartbeatManager(QObject):
                 callback_id=callback_id,
                 priority=max(0, min(4, priority)),
                 every_n_ticks=max(1, every_n_ticks),
+                base_every_n=max(1, every_n_ticks),
                 owner_ref=owner_ref,
                 use_fast_tick=use_fast_tick,
                 callback=None if weak_method is not None else callback,
                 weak_method=weak_method,
             )
             self._callbacks[callback_id] = entry
+            self._ordered_dirty = True
 
         if use_fast_tick:
             self._animation_callback_count += 1
@@ -341,6 +358,9 @@ class HeartbeatManager(QObject):
         """
         with self._callback_lock:
             entry = self._callbacks.pop(callback_id, None)
+            if entry is not None:
+                entry.dead = True
+                self._ordered_dirty = True
 
         if entry is None:
             return False
@@ -411,7 +431,10 @@ class HeartbeatManager(QObject):
         """
         future = FutureHandle()
         with self._pending_calls_lock:
-            self._pending_calls.append((priority, fn, future))
+            heapq.heappush(
+                self._pending_calls,
+                (priority, next(self._pending_seq), fn, future),
+            )
 
         # 确保普通定时器运行以消耗队列
         # 使用 invokeMethod 从任意线程安全启动定时器
@@ -429,81 +452,113 @@ class HeartbeatManager(QObject):
     # ================================================================
 
     def _process_normal_tick(self) -> None:
-        """处理一个普通的 tick"""
+        """处理一个普通 tick（P6.4：有序缓存 + 预算降级 + 断点续跑）。"""
         if not self._running:
             return
 
         # 优先处理跨线程队列
         self._drain_pending_queue()
 
-        # 收集并按优先级排序回调
         with self._callback_lock:
             if not self._callbacks:
                 self._maybe_stop_normal_timer()
                 return
-            entries = list(self._callbacks.values())
+            if self._ordered_dirty:
+                self._rebuild_ordered_locked()
+            entries = self._ordered_normal
 
         self._normal_tick_count += 1
-        entries.sort(key=lambda e: e.priority)
+        if not entries:
+            self._maybe_stop_normal_timer()
+            return
 
         start = time.monotonic()
+        budget_ms = self._normal_tick_interval * 0.5
         dead_ids: list[str] = []
+        start_index = self._resume_index % len(entries)
+        self._resume_index = 0
 
-        for entry in entries:
-            # 跳过使用快速 tick 的条目（由快速定时器处理）
-            if entry.use_fast_tick:
+        for offset in range(len(entries)):
+            idx = (start_index + offset) % len(entries)
+            entry = entries[idx]
+            # 跳过已注销与快速 tick 条目（不重建列表）
+            if entry.dead or entry.use_fast_tick:
                 continue
 
-            # 每 N 次 tick 触发控制
             if entry.every_n_ticks > 1:
                 entry._tick_counter += 1
                 if entry._tick_counter % entry.every_n_ticks != 0:
                     continue
 
-            # 解析并执行
             cb = entry.resolve()
             if cb is None:
+                entry.dead = True
                 dead_ids.append(entry.callback_id)
                 continue
 
+            cb_start = time.monotonic()
             try:
                 cb()
             except Exception as exc:
                 warning(
-                    f"Heartbeat: callback '{entry.callback_id}' raised {type(exc).__name__}: {exc}"
+                    f"Heartbeat: callback '{entry.callback_id}' raised "
+                    f"{type(exc).__name__}: {exc}"
                 )
+                self._bump_overrun(entry.callback_id)
+            cost_ms = (time.monotonic() - cb_start) * 1000.0
+            entry.cost_ms = 0.8 * entry.cost_ms + 0.2 * cost_ms
+            if entry.cost_ms > budget_ms * 0.5:
+                entry._slow_streak += 1
+                if entry._slow_streak >= 2 and entry.every_n_ticks < 4:
+                    entry.every_n_ticks = min(4, entry.every_n_ticks * 2)
+                    entry._slow_streak = 0
+                    self._note("heartbeat.degraded")
+            else:
+                entry._slow_streak = 0
 
-        # 清理失效的弱引用回调
+            # 断点续跑：优先留给 priority ≤ 1 的回调，其余下次从断点继续。
+            if (
+                entry.priority > 1
+                and (time.monotonic() - start) * 1000.0 > budget_ms
+            ):
+                self._resume_index = (idx + 1) % len(entries)
+                self._note("heartbeat.overrun")
+                break
+
         if dead_ids:
             with self._callback_lock:
                 for cid in dead_ids:
                     entry = self._callbacks.pop(cid, None)
                     if entry and entry.use_fast_tick:
                         self._animation_callback_count -= 1
+                self._ordered_dirty = True
 
-        # 定期清理扫描
         if self._normal_tick_count % self._TICK_PRUNING_INTERVAL == 0:
             self._prune_dead_callbacks()
 
-        # tick 超时检测
         elapsed_ms = (time.monotonic() - start) * 1000
+        self._note_duration("heartbeat.tick", elapsed_ms)
         if elapsed_ms > self._normal_tick_interval:
-            warning(
-                f"Heartbeat: normal tick overrun "
-                f"({elapsed_ms:.1f}ms > {self._normal_tick_interval}ms interval)"
-            )
+            self._note("heartbeat.overrun")
+            # 5s 节流：卡顿期日志 I/O 会二次放大卡顿。
+            if self._normal_tick_count % 120 == 1:
+                warning(
+                    f"Heartbeat: normal tick overrun "
+                    f"({elapsed_ms:.1f}ms > {self._normal_tick_interval}ms interval)"
+                )
 
-        # 空 tick 优化
         if self._running:
             self._maybe_stop_normal_timer()
 
     def _process_fast_tick(self) -> None:
-        """处理单个快速 tick（仅动画回调）"""
+        """处理单个快速 tick（仅动画回调；P6.4 有序缓存）。"""
         if not self._running:
             return
 
         with self._callback_lock:
-            entries = [e for e in self._callbacks.values() if e.use_fast_tick]
+            if self._ordered_dirty:
+                self._rebuild_ordered_locked()
+            entries = self._ordered_fast
 
         if not entries:
             self._fast_timer.stop()
@@ -511,14 +566,15 @@ class HeartbeatManager(QObject):
             return
 
         self._fast_tick_count += 1
-        entries.sort(key=lambda e: e.priority)
-
         start = time.monotonic()
         dead_ids: list[str] = []
 
         for entry in entries:
+            if entry.dead:
+                continue
             cb = entry.resolve()
             if cb is None:
+                entry.dead = True
                 dead_ids.append(entry.callback_id)
                 continue
 
@@ -536,6 +592,7 @@ class HeartbeatManager(QObject):
                     entry = self._callbacks.pop(cid, None)
                     if entry and entry.use_fast_tick:
                         self._animation_callback_count -= 1
+                self._ordered_dirty = True
                 if self._animation_callback_count <= 0:
                     self._fast_timer.stop()
 
@@ -547,17 +604,16 @@ class HeartbeatManager(QObject):
             )
 
     def _drain_pending_queue(self) -> None:
-        """在主线程执行所有排队的跨线程请求"""
+        """在主线程执行所有排队的跨线程请求（heapq 保优先级 + FIFO）。"""
         with self._pending_calls_lock:
             if not self._pending_calls:
                 return
             calls = list(self._pending_calls)
             self._pending_calls.clear()
 
-        # 按优先级排序（数字越小优先级越高）
-        calls.sort(key=lambda x: x[0])
-
-        for _priority, fn, future in calls:
+        heapq.heapify(calls)
+        while calls:
+            _priority, _seq, fn, future = heapq.heappop(calls)
             try:
                 result = fn()
                 future._set_result(result)
@@ -567,6 +623,53 @@ class HeartbeatManager(QObject):
     # ================================================================
     # 内部：所有者生命周期
     # ================================================================
+
+    def _rebuild_ordered_locked(self) -> None:
+        """按优先级重建两份有序列表（调用方必须持有 ``_callback_lock``）。"""
+        normal: list[_CallbackEntry] = []
+        fast: list[_CallbackEntry] = []
+        for entry in self._callbacks.values():
+            if entry.dead:
+                continue
+            if entry.use_fast_tick:
+                fast.append(entry)
+            else:
+                normal.append(entry)
+        normal.sort(key=lambda e: e.priority)
+        fast.sort(key=lambda e: e.priority)
+        self._ordered_normal = normal
+        self._ordered_fast = fast
+        self._ordered_dirty = False
+
+    @staticmethod
+    def _note(counter_name: str) -> None:
+        """累加一个 ``perf_metrics`` 全局计数（失败静默）。"""
+        try:
+            from freeassetfilter.utils import perf_metrics as pm
+
+            pm.increment_global(counter_name)
+        except Exception:  # noqa: BLE001 - 埋点不得影响心跳
+            pass
+
+    @staticmethod
+    def _note_duration(event_name: str, elapsed_ms: float) -> None:
+        """记录一次耗时（失败静默）。"""
+        try:
+            from freeassetfilter.utils import perf_metrics as pm
+
+            pm.record_duration(event_name, elapsed_ms)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _bump_overrun(self, callback_id: str) -> None:
+        """记录单回调异常/超时次数（本地字典，避免热路径取锁）。"""
+        self._overrun_by_cb[callback_id] = (
+            self._overrun_by_cb.get(callback_id, 0) + 1
+        )
+
+    def overrun_by_callback(self) -> dict[str, int]:
+        """返回单个回调的异常/超时次数副本（诊断用）。"""
+        return dict(self._overrun_by_cb)
 
     def _on_owner_destroyed(self) -> None:
         """连接到 owner.destroyed 信号的槽。

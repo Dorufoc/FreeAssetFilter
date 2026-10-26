@@ -902,6 +902,82 @@ pub extern "C" fn native_generate_batch_jpg(
     })
 }
 
+/// 批量生成缩略图并**直接写入目标文件**（P4.1）。
+///
+/// `paths` 与 `out_paths` 等长（均为 UTF-8 C 字符串数组）；每个文件的
+/// 状态写入 `out_status[i]`（`STATUS_OK`=0 表示成功落盘）。字节不再跨
+/// FFI 回传，Python 侧省掉 N 次 `open().write()` 与 N 次 stat/utime。
+///
+/// 返回成功写盘的数量；参数非法/panic 返回 -1。
+#[no_mangle]
+pub extern "C" fn native_generate_batch_to_paths(
+    paths: *const *const c_char,
+    out_paths: *const *const c_char,
+    count: c_int,
+    width: c_int,
+    height: c_int,
+    out_status: *mut c_int,
+) -> c_int {
+    std::panic::catch_unwind(|| {
+        if paths.is_null()
+            || out_paths.is_null()
+            || out_status.is_null()
+            || count <= 0
+            || width <= 0
+            || height <= 0
+        {
+            return -1;
+        }
+        let n = count as usize;
+        let src_slice = unsafe { std::slice::from_raw_parts(paths, n) };
+        let dst_slice = unsafe { std::slice::from_raw_parts(out_paths, n) };
+        let status_slice = unsafe { std::slice::from_raw_parts_mut(out_status, n) };
+
+        let pairs: Vec<(String, String)> = (0..n)
+            .map(|i| {
+                (
+                    ptr_to_string(src_slice[i]).unwrap_or_default(),
+                    ptr_to_string(dst_slice[i]).unwrap_or_default(),
+                )
+            })
+            .collect();
+
+        let codes: Vec<i32> = pairs
+            .par_iter()
+            .map(|(src, dst)| {
+                if src.is_empty() || dst.is_empty() {
+                    return STATUS_INVALID_ARG;
+                }
+                if !Path::new(src).exists() {
+                    return STATUS_NOT_FOUND;
+                }
+                match generate_jpeg_bytes(src, width as u32, height as u32) {
+                    Ok(bytes) => {
+                        if let Some(parent) = Path::new(dst).parent() {
+                            let _ = fs::create_dir_all(parent);
+                        }
+                        match fs::write(dst, &bytes) {
+                            Ok(_) => STATUS_OK,
+                            Err(_) => STATUS_INTERNAL,
+                        }
+                    }
+                    Err(code) => code,
+                }
+            })
+            .collect();
+
+        let mut ok = 0;
+        for (i, code) in codes.into_iter().enumerate() {
+            status_slice[i] = code;
+            if code == STATUS_OK {
+                ok += 1;
+            }
+        }
+        ok
+    })
+    .unwrap_or(-1)
+}
+
 #[no_mangle]
 pub extern "C" fn native_get_decode_stats_json() -> *mut c_char {
     std::panic::catch_unwind(|| c_message(&decode_stats_to_json()))

@@ -416,6 +416,7 @@ def test_snapshot_shape() -> None:
         "events",
         "frame_times",
         "gui_resources",
+        "providers",
     }
     assert isinstance(registry.enabled, bool)
 

@@ -22,7 +22,9 @@ from __future__ import annotations
 import threading
 import time
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
+from PySide6.QtCore import QObject, QRunnable, Signal
+
+from freeassetfilter.core import pools as thread_pools
 
 from freeassetfilter.core.managers.thumbnail_manager import (
     clear_all_thumbnails,
@@ -55,7 +57,7 @@ class _GenerationTask(QRunnable):
     """生成任务 QRunnable：内部持有世代 token 与取消 Event。
 
     由 :meth:`ThumbnailController.start_generation` 投递到
-    ``QThreadPool.globalInstance()``；``run()`` 委托控制器执行体
+    ``thread_pools.pool("decode")``；``run()`` 委托控制器执行体
     ``_run_generation``，token 失效丢弃结果与节流发射保持原语义
     （线程池持有引用，``run`` 结束后 AutoDelete 释放）。
 
@@ -93,7 +95,7 @@ class _ClearTask(QRunnable):
     """清除任务 QRunnable：内部持有世代 token（清除任务无取消语义）。
 
     由 :meth:`ThumbnailController.start_clear` 投递到
-    ``QThreadPool.globalInstance()``。
+    ``thread_pools.pool("decode")``。
 
     Args:
         controller: 所属 ThumbnailController（任务收尾与信号发射经由它）。
@@ -119,7 +121,7 @@ class ThumbnailController(QObject):
 
     封装 ``ThumbnailManager.create_thumbnails_batch``（同步阻塞、内部
     自带线程池）与 ``clear_all_thumbnails``，以 QRunnable 投
-    ``QThreadPool.globalInstance()`` 编排，UI 层只与本类交互：
+    ``thread_pools.pool("decode")`` 编排，UI 层只与本类交互：
 
     * 生成与清除互斥（``is_busy`` 为 True 时 ``start_*`` 返回 False）；
     * ``cancel()`` 置取消 Event 并释放互斥，旧任务的过期事件经
@@ -197,7 +199,7 @@ class ThumbnailController(QObject):
         # 状态断言/释放操作不会跑在任务启动之前。线程池投递无此保证，
         # 故在此有界等待任务进入阻塞调用（超时则放行，永不挂起 UI）。
         started = threading.Event()
-        QThreadPool.globalInstance().start(
+        thread_pools.pool("decode").start(
             _GenerationTask(self, pending_files, token, self._cancel_event, started)
         )
         started.wait(timeout=10.0)
@@ -222,7 +224,7 @@ class ThumbnailController(QObject):
         # 启动交会（同 start_generation）：有界等待清除任务进入磁盘删除，
         # 超时放行，永不挂起调用方。
         started = threading.Event()
-        QThreadPool.globalInstance().start(_ClearTask(self, token, started))
+        thread_pools.pool("decode").start(_ClearTask(self, token, started))
         started.wait(timeout=10.0)
         return True
 

@@ -18,7 +18,9 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 import os
 import sys
 
-from PySide6.QtCore import QDateTime, QObject, QRunnable, Qt, QThreadPool, Signal
+from PySide6.QtCore import QDateTime, QObject, QRunnable, Qt, Signal
+
+from freeassetfilter.core import pools as thread_pools
 
 
 class _FileListSignals(QObject):
@@ -31,7 +33,7 @@ class _FileListSignals(QObject):
 class FileListLoaderThread(QRunnable):
     """后台任务：扫描目录并返回文件列表（通过信号中转对象与 UI 通信）。
 
-    ``run()`` 在 ``QThreadPool.globalInstance()`` 的池线程中执行；
+    ``run()`` 在 ``thread_pools.pool("interactive")`` 的池线程中执行；
     ``loaded`` / ``failed`` 信号挂在主线程持有的 ``_FileListSignals``
     中转对象上（以属性方式透出），连接方式与旧 QThread 版完全一致。
     类名与构造签名保持向后兼容。
@@ -56,7 +58,7 @@ class FileListLoaderThread(QRunnable):
 
     def start(self) -> None:
         """投递到全局线程池执行（替代旧 QThread.start()）。"""
-        QThreadPool.globalInstance().start(self)
+        thread_pools.pool("interactive").start(self)
 
     def run(self):
         files = []

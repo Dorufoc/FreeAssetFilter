@@ -18,6 +18,7 @@ MPV 管理器用 MagicMock 假对象替换（不真实播放）；布局不显�
 from __future__ import annotations
 
 import os
+import time
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -350,6 +351,12 @@ def test_suspend_twice_reuses_first_snapshot(
             "position": 30.0,
             "was_playing": True,
         }
+        # P6.3：``stop_playback`` 经命名池异步执行 stop（不阻塞 UI），
+        # 因此这里需等待后台任务落地，而非同步断言。
+        deadline = time.monotonic() + 2.0
+        while not fake.stop.called and time.monotonic() < deadline:
+            qapp.processEvents()
+            time.sleep(0.01)
         fake.stop.assert_called_once_with(component_id=layout._component_id)
     finally:
         _teardown(qapp, layout)
