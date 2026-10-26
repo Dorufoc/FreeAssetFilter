@@ -12,15 +12,16 @@ from PySide6.QtWidgets import (
     QApplication,
 )
 from PySide6.QtCore import (
-    Qt, Signal, QObject, QEventLoop, QPropertyAnimation, QEasingCurve, Property, QRectF, QPoint,
+    Qt, Signal, QObject, QEventLoop, QPropertyAnimation, QEasingCurve, Property, QRect, QRectF, QPoint,
+    QTimer,
 )
-from PySide6.QtGui import QPainter, QColor, QPaintEvent, QFont, QCursor, QMouseEvent
+from PySide6.QtGui import QPainter, QColor, QPaintEvent, QFont, QCursor, QMouseEvent, QPixmap
 from typing import Dict, List, Optional
 
 from theme import tm
 
 from components.styled_button import StyledButton
-from components.paint_utils import render_soft_shadow
+from components.paint_utils import render_soft_shadow, shadow_padding
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 
@@ -95,8 +96,19 @@ class StyledDialog(QWidget):
     Footer layouts: right, center, left, stacked, three, with_help, no_border
     """
 
-    # Shadow margin to prevent clipping
-    SHADOW_MARGIN = 20
+    # 阴影留白：模糊核的尾部（≈3σ）必须完整落在位图与窗口内，否则渐变会
+    # 在被切掉的位置形成一圈肉眼可见的隐形矩形硬边（旧值 20px 远小于
+    # blur=60 所需的 ~92px，正是弹窗阴影被裁切的根因）。SHADOW_MARGIN 由
+    # blur 推导，窗口尺寸再据此预留；OFFSET_Y 让阴影略向下沉。
+    SHADOW_BLUR = 32
+    SHADOW_OFFSET_Y = 10
+    SHADOW_MARGIN = shadow_padding(SHADOW_BLUR, 20)
+
+    # 入场/退场动效：内容从略小、略低的状态非线性上浮放大到稳态，
+    # 与窗口透明度淡入/淡出并行；退场沿同一条曲线反向播放。
+    ANIM_DURATION = 180
+    ANIM_START_SCALE = 0.96
+    ANIM_START_OFFSET_Y = 12
 
     finished = Signal(int)
 
@@ -166,11 +178,17 @@ class StyledDialog(QWidget):
         # via _build_header(), so we capture the title here and sync it then.
         self._registered_title: str = ""
 
-        # Animation (opacity via windowOpacity; scale micro-zoom retired
-        # with the offscreen path — steady states render identically)
+        # Animation: windowOpacity fade runs in parallel with the
+        # scale/rise motion (painted from a captured content bitmap).
         self._anim_effect: Optional[DialogAnimationEffect] = None
         self._enter_opacity_anim: Optional[QPropertyAnimation] = None
         self._exit_opacity_anim: Optional[QPropertyAnimation] = None
+        self._enter_motion_anim: Optional[QPropertyAnimation] = None
+        self._exit_motion_anim: Optional[QPropertyAnimation] = None
+        self._anim_progress: float = 1.0
+        self._animating: bool = False
+        self._anim_content_pixmap: Optional[QPixmap] = None
+        self._enter_start_timer: Optional[QTimer] = None
         if self._animate:
             self._setup_animations()
 
@@ -484,25 +502,109 @@ class StyledDialog(QWidget):
 
     # ── Animation ──────────────────────────────────────────────────
 
+    def _get_anim_progress(self) -> float:
+        return self._anim_progress
+
+    def _set_anim_progress(self, value: float) -> None:
+        self._anim_progress = max(0.0, min(1.0, float(value)))
+        if self._animating:
+            self.update()
+
+    #: 0.0 = 缩小且下沉的起始态，1.0 = 稳态；入场/退场共用同一属性。
+    anim_progress = Property(float, _get_anim_progress, _set_anim_progress)
+
     def _setup_animations(self) -> None:
-        """Wire enter/exit fades to ``windowOpacity`` (WM-composited)."""
+        """Wire the fade and the scale/rise motion to parallel animations.
+
+        Opacity goes through ``windowOpacity`` (WM-composited), while the
+        scale/rise part animates :attr:`anim_progress` and is turned into
+        a painter transform in ``paintEvent``. Enter uses OutCubic (fast
+        start, gentle settle); exit mirrors it with InCubic.
+        """
         self._anim_effect = DialogAnimationEffect(self)
         self._anim_effect.opacity = 1.0
         self._anim_effect.scale = 1.0
 
         self._enter_opacity_anim = QPropertyAnimation(self, b"windowOpacity", self)
-        self._enter_opacity_anim.setDuration(180)
+        self._enter_opacity_anim.setDuration(self.ANIM_DURATION)
         self._enter_opacity_anim.setStartValue(0.0)
         self._enter_opacity_anim.setEndValue(1.0)
-        self._enter_opacity_anim.setEasingCurve(QEasingCurve.InOutCubic)
+        self._enter_opacity_anim.setEasingCurve(QEasingCurve.OutCubic)
 
         self._exit_opacity_anim = QPropertyAnimation(self, b"windowOpacity", self)
-        self._exit_opacity_anim.setDuration(180)
+        self._exit_opacity_anim.setDuration(self.ANIM_DURATION)
         self._exit_opacity_anim.setStartValue(1.0)
         self._exit_opacity_anim.setEndValue(0.0)
-        self._exit_opacity_anim.setEasingCurve(QEasingCurve.InOutCubic)
+        self._exit_opacity_anim.setEasingCurve(QEasingCurve.InCubic)
 
-        self._exit_opacity_anim.finished.connect(self._finish_close)
+        # Motion (scale + rise). The exit animation owns the close hand-off
+        # so finished() cannot fire twice when both animations end together.
+        self._enter_motion_anim = QPropertyAnimation(self, b"anim_progress", self)
+        self._enter_motion_anim.setDuration(self.ANIM_DURATION)
+        self._enter_motion_anim.setStartValue(0.0)
+        self._enter_motion_anim.setEndValue(1.0)
+        self._enter_motion_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._enter_motion_anim.finished.connect(self._end_motion)
+
+        # Child timer: the deferred start is dropped automatically if the
+        # dialog is destroyed before the first tick (QTimer.singleShot(0,
+        # bound_method) would fire into a deleted C++ object).
+        self._enter_start_timer = QTimer(self)
+        self._enter_start_timer.setSingleShot(True)
+        self._enter_start_timer.setInterval(0)
+        self._enter_start_timer.timeout.connect(self._start_enter_motion)
+
+        self._exit_motion_anim = QPropertyAnimation(self, b"anim_progress", self)
+        self._exit_motion_anim.setDuration(self.ANIM_DURATION)
+        self._exit_motion_anim.setStartValue(1.0)
+        self._exit_motion_anim.setEndValue(0.0)
+        self._exit_motion_anim.setEasingCurve(QEasingCurve.InCubic)
+        self._exit_motion_anim.finished.connect(self._finish_close)
+
+    def _begin_motion(self) -> None:
+        """Capture the content bitmap and switch to the transformed paint path.
+
+        The real content widget is hidden for the duration of the motion so
+        the scaled copy can be drawn with a painter transform; the steady
+        path stays untouched (one shadow blit, no extra pixmap). Re-entrant
+        calls (closing mid-enter) reuse the already captured bitmap.
+        """
+        if self._animating and self._anim_content_pixmap is not None:
+            return
+        if self._content_widget is None or not self._content_widget.isVisible():
+            return
+        if self._content_widget.width() <= 0 or self._content_widget.height() <= 0:
+            return
+        self._anim_content_pixmap = self._content_widget.grab()
+        # Flip the paint path before hiding the widget so the very next
+        # repaint already draws the snapshot (no blank frame in between).
+        self._animating = True
+        self._content_widget.setVisible(False)
+        self.update()
+
+    def _end_motion(self) -> None:
+        """Restore the steady paint path once the motion is over."""
+        self._animating = False
+        self._anim_content_pixmap = None
+        self._anim_progress = 1.0
+        if self._content_widget is not None:
+            self._content_widget.setVisible(True)
+        self.update()
+
+    def _start_enter_motion(self) -> None:
+        """Start the enter fade + motion once the first frame is laid out."""
+        if (
+            self._is_closing
+            or not self.isVisible()
+            or self._enter_opacity_anim is None
+            or self._enter_motion_anim is None
+        ):
+            return
+        self._begin_motion()
+        self._anim_progress = 0.0
+        self._enter_opacity_anim.start()
+        self._enter_motion_anim.start()
+        self.update()
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -517,13 +619,31 @@ class StyledDialog(QWidget):
         ):
             self._shown_once = True
             self.setWindowOpacity(0.0)
-            self._enter_opacity_anim.start()
+            # Defer one tick so the content widget is polished and laid out
+            # before grab(); the window is already fully transparent here.
+            if self._enter_start_timer is not None:
+                self._enter_start_timer.start()
 
     def closeEvent(self, event) -> None:
-        if self._animate and not self._is_closing and self._exit_opacity_anim is not None:
+        if (
+            self._animate
+            and not self._is_closing
+            and self._exit_opacity_anim is not None
+            and self._exit_motion_anim is not None
+        ):
             self._is_closing = True
             event.ignore()
+            # Reverse from whatever state the enter animation reached.
+            self._begin_motion()
+            if self._enter_motion_anim is not None:
+                self._enter_motion_anim.stop()
+            self._enter_opacity_anim.stop()
+            self._exit_motion_anim.stop()
+            self._exit_motion_anim.setStartValue(float(self._anim_progress))
+            self._exit_opacity_anim.stop()
+            self._exit_opacity_anim.setStartValue(float(self.windowOpacity()))
             self._exit_opacity_anim.start()
+            self._exit_motion_anim.start()
             return
         self._is_closing = False
         self.setWindowOpacity(1.0)
@@ -531,6 +651,7 @@ class StyledDialog(QWidget):
         super().closeEvent(event)
 
     def _finish_close(self) -> None:
+        self._end_motion()
         self.close()
 
     # ── Drag support ───────────────────────────────────────────────
@@ -558,26 +679,63 @@ class StyledDialog(QWidget):
         self._drag_pos = None
         super().mouseReleaseEvent(event)
 
-    def paintEvent(self, event: QPaintEvent) -> None:
-        """Paint the pre-baked content shadow under the content widget.
+    def _paint_shadow(self, painter: QPainter, geom: QRect) -> None:
+        """Composite the pre-baked content shadow at its steady position."""
+        shadow = render_soft_shadow(
+            geom.width(), geom.height(), 12, self.SHADOW_BLUR,
+            self._shadow_color, self.SHADOW_MARGIN,
+        )
+        if shadow.isNull():
+            return
+        # 位图内边距可能大于 SHADOW_MARGIN（由 blur 推导），按实际
+        # 尺寸反推偏移，保证阴影与内容框同心且不被 pixmap 边界裁断。
+        pad = (shadow.width() - geom.width()) // 2
+        painter.drawPixmap(
+            geom.x() - pad,
+            geom.y() - pad + self.SHADOW_OFFSET_Y,
+            shadow,
+        )
 
-        The root stays transparent (``WA_TranslucentBackground``); the
-        shadow bitmap is composited with one ``drawPixmap`` before the
-        children paint themselves on top.
+    def _paint_motion_frame(self, painter: QPainter, geom: QRect) -> None:
+        """Draw shadow + captured content under the entry/exit transform.
+
+        The transform is anchored at the content centre: progress 0.0 sits
+        slightly smaller and lower (``ANIM_START_SCALE`` /
+        ``ANIM_START_OFFSET_Y``), progress 1.0 is the steady state, so the
+        exit animation reverses the enter motion for free.
+        """
+        progress = self._anim_progress
+        scale = self.ANIM_START_SCALE + (1.0 - self.ANIM_START_SCALE) * progress
+        offset_y = self.ANIM_START_OFFSET_Y * (1.0 - progress)
+        center_x = geom.x() + geom.width() / 2.0
+        center_y = geom.y() + geom.height() / 2.0
+        painter.save()
+        try:
+            painter.translate(center_x, center_y + offset_y)
+            painter.scale(scale, scale)
+            painter.translate(-center_x, -center_y)
+            self._paint_shadow(painter, geom)
+            if self._anim_content_pixmap is not None:
+                painter.drawPixmap(geom.topLeft(), self._anim_content_pixmap)
+        finally:
+            painter.restore()
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        """Paint the shadow (and the animated content copy during transitions).
+
+        The root stays transparent (``WA_TranslucentBackground``); in the
+        steady state the shadow bitmap is composited with one ``drawPixmap``
+        before the children paint themselves on top. While the enter/exit
+        motion runs, the children are hidden and a captured copy is drawn
+        under the same transform instead.
         """
         painter = QPainter(self)
         try:
             geom = self._content_widget.geometry()
-            shadow = render_soft_shadow(
-                geom.width(), geom.height(), 12, 60,
-                self._shadow_color, self.SHADOW_MARGIN,
-            )
-            if not shadow.isNull():
-                painter.drawPixmap(
-                    geom.x() - self.SHADOW_MARGIN,
-                    geom.y() - self.SHADOW_MARGIN + 10,
-                    shadow,
-                )
+            if self._animating and self._anim_content_pixmap is not None:
+                self._paint_motion_frame(painter, geom)
+                return
+            self._paint_shadow(painter, geom)
         finally:
             painter.end()
 
@@ -586,7 +744,10 @@ class StyledDialog(QWidget):
         super().resizeEvent(event)
         if self._content_widget:
             content_width = self.width() - self.SHADOW_MARGIN * 2
-            content_height = self.height() - self.SHADOW_MARGIN * 2
+            content_height = max(
+                0,
+                self.height() - self.SHADOW_MARGIN * 2 - self.SHADOW_OFFSET_Y,
+            )
             self._content_widget.setGeometry(
                 self.SHADOW_MARGIN, self.SHADOW_MARGIN,
                 content_width, content_height
@@ -705,7 +866,8 @@ def _measure_and_apply(dialog: StyledDialog) -> tuple[int, int]:
 
     dialog.setFixedSize(
         content_width + dialog.SHADOW_MARGIN * 2,
-        content_height + dialog.SHADOW_MARGIN * 2,
+        # 底部额外预留阴影下沉量，避免 +OFFSET_Y 后的位图被窗口底边裁掉。
+        content_height + dialog.SHADOW_MARGIN * 2 + dialog.SHADOW_OFFSET_Y,
     )
     return content_width, content_height
 

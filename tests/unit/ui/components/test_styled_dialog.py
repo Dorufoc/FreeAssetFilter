@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Callable, Iterator, List
 
 import pytest
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
 # 组件模块内部使用短路径导入（from theme import tm），
@@ -367,3 +368,54 @@ class TestRemeasure:
         finally:
             safe_teardown(dialog)
             drain_deferred_deletes(qapp)
+
+
+# =============================================================================
+# 入场/退场动效
+# =============================================================================
+class TestMotionAnimation:
+    """缩放 + 上浮动效与透明度并行；结束后回到稳态绘制路径。"""
+
+    def test_enter_motion_uses_snapshot_then_restores(
+        self, qapp: QApplication, make_dialog: Callable[..., StyledDialog]
+    ) -> None:
+        """入场期隐藏真实子控件并改用抓图；结束后恢复。"""
+        dialog = make_dialog(animate=True)
+        dialog.show_dialog()
+        qapp.processEvents()
+
+        assert dialog._animating is True
+        assert dialog._content_widget.isVisible() is False
+        assert dialog._anim_content_pixmap is not None
+
+        QTest.qWait(StyledDialog.ANIM_DURATION + 60)
+        qapp.processEvents()
+
+        assert dialog._animating is False
+        assert dialog._content_widget.isVisible() is True
+        assert dialog._anim_content_pixmap is None
+        assert dialog._anim_progress == pytest.approx(1.0)
+
+    def test_exit_reverses_from_current_state(
+        self, qapp: QApplication, make_dialog: Callable[..., StyledDialog]
+    ) -> None:
+        """关闭时反向播放动效，完成后才真正隐藏窗口。"""
+        dialog = make_dialog(animate=True)
+        dialog.show_dialog()
+        qapp.processEvents()
+        QTest.qWait(StyledDialog.ANIM_DURATION + 60)
+        qapp.processEvents()
+
+        dialog.close()
+
+        assert dialog._is_closing is True
+        assert dialog._animating is True
+        assert dialog._content_widget.isVisible() is False
+
+        QTest.qWait(StyledDialog.ANIM_DURATION + 60)
+        qapp.processEvents()
+
+        assert dialog.isVisible() is False
+        assert dialog._is_closing is False
+        assert dialog._animating is False
+        assert dialog._anim_content_pixmap is None

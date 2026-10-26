@@ -12,6 +12,7 @@ effect pipeline on the paint path. numpy 缺失时同一几何自动降级为纯
 Qt 缩放模糊近似（审查 3.1#15），不再直接 ImportError。
 """
 
+import math
 from functools import lru_cache
 from typing import Optional
 
@@ -237,6 +238,28 @@ def draw_dashed_line(
     painter.restore()
 
 
+def shadow_padding(blur_px: int, pad: int) -> int:
+    """Return the transparent padding a soft shadow needs around its mask.
+
+    :func:`_cached_shadow_bitmap` runs a triple box blur of half-width
+    ``blur_px // 2``, whose equivalent standard deviation is
+    ``sqrt(r² + r)``. Anything closer to the mask than three sigma still
+    carries visible alpha, so a smaller *pad* clips the falloff into a
+    hard rectangular edge. This helper expands *pad* to cover 3σ while
+    never shrinking a caller-provided margin.
+
+    Args:
+        blur_px: Blur diameter passed to :func:`render_soft_shadow`.
+        pad: Minimum transparent margin requested by the caller.
+
+    Returns:
+        int: Effective padding in pixels (``>= pad``).
+    """
+    radius = max(1, max(1, int(blur_px)) // 2)
+    sigma = math.sqrt(radius * radius + radius)
+    return max(int(pad), int(math.ceil(3.0 * sigma)))
+
+
 def _box_blur_alpha(alpha: "object", radius: int) -> "object":
     """Separable box blur of a 2D float32 alpha plane, zero-padded edges.
 
@@ -400,9 +423,11 @@ def render_soft_shadow(
     """Return a pre-baked soft-shadow pixmap for a rounded-rect content box.
 
     The caller draws it with a single ``drawPixmap`` at
-    ``(content_x - pad + offset_x, content_y - pad + offset_y)`` inside its
-    own paintEvent — no graphics effect involved. Results are cached per
-    geometry so repeated frames cost one blit.
+    ``(content_x - pad_eff + offset_x, content_y - pad_eff + offset_y)``
+    inside its own paintEvent — no graphics effect involved, where
+    ``pad_eff`` is the effective padding reported by
+    :func:`shadow_padding` (``(pixmap.width() - content_w) // 2``).
+    Results are cached per geometry so repeated frames cost one blit.
 
     Args:
         content_w: Content width the shadow belongs to.
@@ -410,7 +435,10 @@ def render_soft_shadow(
         radius_px: Content corner radius.
         blur_px: Blur diameter (drop-shadow blur-radius equivalent).
         color: Shadow tint (alpha scales the falloff).
-        pad: Transparent margin baked around the mask.
+        pad: Minimum transparent margin; expanded by
+            :func:`shadow_padding` so the whole falloff fits. Callers
+            must offset the blit by the *returned* pixmap's padding
+            (``(pixmap.width() - content_w) // 2``).
 
     Returns:
         QPixmap: ``(content_w + 2*pad, content_h + 2*pad)`` shadow bitmap;
@@ -421,11 +449,13 @@ def render_soft_shadow(
     pad = int(pad)
     if content_w <= 0 or content_h <= 0 or pad <= 0:
         return QPixmap()
-    full_w = content_w + pad * 2
-    full_h = content_h + pad * 2
     color_rgba = (color.red(), color.green(), color.blue(), color.alpha())
     radius_px = max(0, int(radius_px))
     blur_px = max(1, int(blur_px))
+    # 阴影尾部（≈3σ）必须落在位图内，否则会在位图边界被硬切成矩形。
+    pad = shadow_padding(blur_px, pad)
+    full_w = content_w + pad * 2
+    full_h = content_h + pad * 2
     try:
         raw = _cached_shadow_bitmap(
             content_w, content_h, radius_px, blur_px, color_rgba, pad

@@ -884,6 +884,27 @@ class TestPaintUtils:
         img = fallback.toImage()
         assert img.pixelColor(img.width() // 2, img.height() // 2).alpha() > 0
 
+    def test_shadow_padding_covers_blur_tail(self) -> None:
+        """留白必须覆盖模糊尾部（3σ），且不小于调用方给的最小值。"""
+        import freeassetfilter.ui.components.paint_utils as pu
+
+        assert pu.shadow_padding(32, 20) >= 49
+        assert pu.shadow_padding(60, 24) >= 91
+        assert pu.shadow_padding(16, 40) == 40
+        assert pu.shadow_padding(1, 0) >= 1
+
+    def test_render_soft_shadow_edges_fade_to_zero(self, qapp: QApplication) -> None:
+        """位图四边 alpha 必须收敛到 0，不得把渐变硬切成矩形。"""
+        import freeassetfilter.ui.components.paint_utils as pu
+
+        pm = pu.render_soft_shadow(120, 80, 8, 60, QColor(0, 0, 0, 200), 20)
+        img = pm.toImage()
+        w, h = img.width(), img.height()
+        assert max(img.pixelColor(x, 0).alpha() for x in range(w)) <= 1
+        assert max(img.pixelColor(x, h - 1).alpha() for x in range(w)) <= 1
+        assert max(img.pixelColor(0, y).alpha() for y in range(h)) <= 1
+        assert max(img.pixelColor(w - 1, y).alpha() for y in range(h)) <= 1
+
 
 # =============================================================================
 # ui.components.mica_material

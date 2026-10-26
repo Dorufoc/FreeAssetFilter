@@ -25,7 +25,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QFont, QCursor, QMouseEvent, QPainter, QPaintEvent, QColor
 
 from theme import tm
-from components.paint_utils import render_soft_shadow
+from components.paint_utils import render_soft_shadow, shadow_padding
 from freeassetfilter.ui.theme.app_stylesheet import register_widget_qss
 
 SIZE_CONFIG: dict[str, dict[str, int]] = {
@@ -51,7 +51,9 @@ class _DrawerBackdrop(QWidget):
     pipeline on the paint path.
     """
 
-    _GLOW_PAD: int = 24
+    _GLOW_BLUR: int = 60
+    # 位图留白必须覆盖模糊尾部（≈3σ），否则光晕会在位图边界被切成硬边。
+    _GLOW_PAD: int = shadow_padding(_GLOW_BLUR, 24)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -92,7 +94,7 @@ class _DrawerBackdrop(QWidget):
             ):
                 geom = self._panel.geometry()
                 glow = render_soft_shadow(
-                    geom.width(), geom.height(), 0, 60,
+                    geom.width(), geom.height(), 0, self._GLOW_BLUR,
                     self._glow_color, self._GLOW_PAD,
                 )
                 if not glow.isNull():
