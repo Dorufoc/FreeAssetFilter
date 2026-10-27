@@ -29,23 +29,59 @@ layout(std140, binding = 0) uniform Params {
 #define PALETTE_SIZE 5
 #define BLOB_COUNT 4
 
-float hash(vec2 p)
+// ── 伪随机与噪声 ────────────────────────────────────────────────────────
+// 旧实现：value noise + ``fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453)``。
+// 两个固有缺陷会在域扭曲（domain warp）上留下轴对齐的矩形痕迹：
+//   1. ``uv * 2.0`` 只有 2×2 个 cell，cell 边界是贯穿半个屏幕的直线；
+//      smoothstep 插值在边界处导数为 0，两侧形成一个平台折角（亮度断层）。
+//      ``t * 0.12`` 让边界缓慢平移，当它扫过画面中线（t≈25s）时，整块
+//      色域看上去就像一块被错误裁切的矩形叠加层。
+//   2. sin-hash 在大参数下依赖平台的范围归约，相邻 cell 的哈希相关性增强，
+//      进一步把噪声推向低频大块。
+// 现在改为 PCG 整数哈希 + 梯度噪声（quintic 权重，边界一阶连续）+ 双 octave
+// fbm，从结构上消除规则网格。
+uint pcg_hash(uint v)
 {
-    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+    uint state = v * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
 }
 
-float noise(vec2 p)
+float hash21(ivec2 p)
 {
-    vec2 i = floor(p);
+    uint h = pcg_hash(uint(p.x) ^ pcg_hash(uint(p.y)));
+    // 取低 24 位再归一化：float32 尾数只有 24 位，直接除 2^32-1 会丢失低位。
+    return float(h & 0x00FFFFFFu) * (1.0 / 16777215.0);
+}
+
+vec2 grad21(ivec2 p)
+{
+    // 双哈希构造随机梯度，避免每像素 sin/cos。Perlin 的 C1 连续性只依赖
+    // quintic 权重在 cell 边界处导数为 0，梯度长度无需归一化。
+    vec2 h = vec2(hash21(p), hash21(p + ivec2(57, 113)));
+    return h * 2.0 - 1.0;
+}
+
+// 梯度噪声：输出 [0,1]
+float gnoise(vec2 p)
+{
+    ivec2 i = ivec2(floor(p));
     vec2 f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
+    vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
 
-    float a = hash(i);
-    float b = hash(i + vec2(1.0, 0.0));
-    float c = hash(i + vec2(0.0, 1.0));
-    float d = hash(i + vec2(1.0, 1.0));
+    float g00 = dot(grad21(i), f);
+    float g10 = dot(grad21(i + ivec2(1, 0)), f - vec2(1.0, 0.0));
+    float g01 = dot(grad21(i + ivec2(0, 1)), f - vec2(0.0, 1.0));
+    float g11 = dot(grad21(i + ivec2(1, 1)), f - vec2(1.0, 1.0));
 
-    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+    float v = mix(mix(g00, g10, u.x), mix(g01, g11, u.x), u.y);
+    return clamp(0.5 + 0.85 * v, 0.0, 1.0);
+}
+
+// 双 octave fbm：高频层打散低频层的规则 cell 结构。
+float fbm21(vec2 p)
+{
+    return gnoise(p) * 0.68 + gnoise(p * 2.07 + vec2(19.7, 7.3)) * 0.32;
 }
 
 // Fully soft gaussian-like blob: no hard inner plateau, long smooth tail.
@@ -102,8 +138,8 @@ void main()
     // seconds, so these scale the on-screen speed directly).
     float t = u_resolution_time.z;
     vec2 noise_offset = u_noise_offset.xy;
-    float n1 = noise(uv * 2.0 + noise_offset + t * 0.12);
-    float n2 = noise(uv * 3.5 - noise_offset * 0.7 - t * 0.08);
+    float n1 = fbm21(uv * 3.0 + noise_offset + t * 0.12);
+    float n2 = fbm21(uv * 4.5 - noise_offset * 0.7 - t * 0.08);
     float angle = (n1 - 0.5) * 0.9 + t * 0.05;
     mat2 rot = mat2(cos(angle), -sin(angle), sin(angle), cos(angle));
     vec2 centered = (uv - vec2(0.5)) * rot;
@@ -137,7 +173,7 @@ void main()
     col = mix(col, u_overlay_color.rgb, u_overlay_color.a);
 
     // Tiny screen-space dither hides gradient banding on large soft blobs.
-    col += (hash(gl_FragCoord.xy) - 0.5) * (1.5 / 255.0);
+    col += (hash21(ivec2(gl_FragCoord.xy)) - 0.5) * (1.5 / 255.0);
 
     fragColor = vec4(col, 1.0);
 }

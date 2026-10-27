@@ -52,7 +52,10 @@ from PySide6.QtGui import QFont, QImage, QPixmap, QColor
 
 from theme import tm
 from components.styled_player_bar import StyledPlayerBar
-from components.styled_fluid_background import StyledFluidBackground
+from components.styled_fluid_background import (
+    StyledFluidBackground,
+    prewarm_top_level_rhi,
+)
 from components.styled_loading import StyledLoading
 from components.styled_music_info_panel import StyledMusicInfoPanel
 from layout.preview.fullscreen_host import PreviewFullscreenHost
@@ -342,6 +345,12 @@ class VideoPlayerLayout(QWidget):
 
         self._fullscreen: bool = False
         self._fullscreen_host: Optional[PreviewFullscreenHost] = None
+        # 全屏宿主的 RHI 预热标记控件（宿主为独立顶层窗口，建窗前必须预热）
+        self._fullscreen_rhi_prewarm: Optional[QWidget] = None
+        # 进入/退出全屏时的 reparent 会派生 hideEvent；此时不能把它当成
+        # “预览器被隐藏”而停止播放（否则 _media_ready 被清零、stack 停在
+        # 加载遮罩页，返回内嵌布局后只剩一块与四周割裂的残留区域）。
+        self._suppress_hide_stop: bool = False
 
         self._init_ui()
         self._init_mpv()
@@ -761,6 +770,8 @@ class VideoPlayerLayout(QWidget):
             event: 隐藏事件。
         """
         super().hideEvent(event)
+        if self._suppress_hide_stop:
+            return
         if self._layout_switch_suspend_state is not None:
             return
         if not self._current_file:
@@ -1587,9 +1598,24 @@ class VideoPlayerLayout(QWidget):
             self._fullscreen_host.activated_changed.connect(
                 self._on_fullscreen_host_active_changed
             )
-        if not self._fullscreen_host.attach(self):
-            return
-        self._fullscreen_host.show_fullscreen()
+        # attach() 会 reparent 本控件并触发 hideEvent；必须屏蔽其中的
+        # stop_playback（否则音频页会停在加载遮罩、流体丢失）。
+        self._suppress_hide_stop = True
+        try:
+            if not self._fullscreen_host.attach(self):
+                return
+            # 独立预览宿主是**新的顶层窗口**：必须在 showFullScreen() 建窗之前
+            # 预热 RHI 合成后端。QRhiWidget 只在 QWindow 创建前已存在于层级中时
+            # 才能拿到 QRhi；晚一步则音频模式的流体背景 initialize() 永不回调，
+            # 宿主窗口里只剩一块纯色底（实测 ready=False / tex=None）。
+            self._fullscreen_rhi_prewarm = prewarm_top_level_rhi(self._fullscreen_host)
+            self._fullscreen_host.show_fullscreen()
+            # 全屏切换会让 MPV 重新配置输出（可能瞬时 buffering），叠加层会把
+            # stack 切到加载遮罩页；音频页不可见时流体 QRhiWidget 不会初始化，
+            # 回到内嵌布局后就会残留一块与四周割裂的区域。这里主动恢复当前媒体页。
+            self._restore_media_surface()
+        finally:
+            self._suppress_hide_stop = False
         # 同步控制栏全屏按钮状态（进入全屏 → 显示还原图标）
         self._player_bar.set_fullscreen(True)
         # 进入全屏后启用浮动控制栏（自动隐藏 + 动画），目标改为宿主所在屏幕
@@ -1613,9 +1639,16 @@ class VideoPlayerLayout(QWidget):
         # 同步控制栏全屏按钮状态（退出全屏 → 显示全屏图标），
         # 覆盖 Esc / 宿主关闭等非按钮触发的退出链路（与旧版 set_detached(False) 一致）
         self._player_bar.set_fullscreen(False)
-        self._fullscreen_host.exit_fullscreen()
+        # exit_fullscreen() 内部 detach/hide 同样会派生 hideEvent，屏蔽 stop_playback
+        self._suppress_hide_stop = True
+        try:
+            self._fullscreen_host.exit_fullscreen()
+        finally:
+            self._suppress_hide_stop = False
         self._fullscreen_host.deleteLater()
         self._fullscreen_host = None
+        # 预热控件随宿主一起销毁，清引用避免后续误用失效包装器
+        self._fullscreen_rhi_prewarm = None
         self._fullscreen = False
 
     def _allow_floating_bar_show(self) -> bool:

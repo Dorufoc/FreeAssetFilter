@@ -28,7 +28,14 @@ from collections.abc import Callable
 from typing import Any, ClassVar, NamedTuple
 
 from PySide6.QtCore import QPointF, QRect, QTimer, Qt
-from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPixmap, QResizeEvent
+from PySide6.QtGui import (
+    QColor,
+    QPainter,
+    QPaintEvent,
+    QPixmap,
+    QResizeEvent,
+    QShowEvent,
+)
 from PySide6.QtWidgets import QWidget
 
 from components._styled_fluid_cpu import render_static_frame
@@ -39,9 +46,10 @@ from freeassetfilter.ui.theme import tm
 logger = logging.getLogger(__name__)
 
 #: 等待 GPU 渲染管线就绪的最长时间（秒）。QRhiWidget 在首次绘制时才创建
-#: QRhi 并回调 initialize()（正常 0~1 帧内完成），超出该时间仍未就绪即
-#: 回退 CPU 路径。
-_GPU_READY_TIMEOUT_S = 0.5
+#: QRhi 并回调 initialize()（正常 0~1 帧内完成）。首次初始化可能夹在建窗后的
+#: D3D11 设备创建、Mica/缩略图烘焙等主线程繁忙时刻之后，超时给得太短会让
+#: 一次性延迟变成永久回退 CPU 静态帧（一旦回退不再重试），故留足 2s。
+_GPU_READY_TIMEOUT_S = 2.0
 
 try:
     from components._styled_fluid_gpu import _FluidGPUShaderWidget
@@ -76,6 +84,17 @@ def prewarm_top_level_rhi(window: QWidget) -> QWidget | None:
     """
     if _FluidGPUShaderWidget is None:
         return None
+    # 建窗后再预热不但无效，还会让预热控件自己报 "QRhiWidget: No QRhi"。
+    # ``internalWinId()`` 只读缓存的 WId、不会像 ``winId()`` 那样强制建窗。
+    try:
+        if window.internalWinId() != 0:
+            logger.warning(
+                "RHI 合成预热晚于顶层窗口创建，流体背景将回退 CPU 静态帧；"
+                "prewarm_top_level_rhi 必须在 show()/winId() 之前调用"
+            )
+            return None
+    except (AttributeError, RuntimeError):  # pragma: no cover - 非 Qt 窗口对象
+        pass
     try:
         warmup = _FluidGPUShaderWidget(window)
     except Exception:  # noqa: BLE001 - 预热失败只影响流体背景走 CPU 路径
@@ -199,6 +218,8 @@ class StyledFluidBackground(QWidget):
         self._colors_updated_slot: Callable | None = None
         self._last_overlay_color: QColor | None = None
         self._last_baked_palette: list[QColor] | None = None
+        #: 上一次因顶层窗口切换而重建 GPU 控件的时间（节流，避免 show/hide 抖动）
+        self._last_gpu_rebuild_at: float = 0.0
         self.use_accent_theme()
 
     # ------------------------------------------------------------------
@@ -928,6 +949,46 @@ class StyledFluidBackground(QWidget):
         super().resizeEvent(event)
         if self._gpu_widget is not None:
             self._gpu_widget.setGeometry(self._gpu_geometry())
+
+    def showEvent(self, event: QShowEvent | None = None) -> None:
+        """显示时校验 GPU 渲染器仍然有效（顶层窗口迁移后可能失效）。
+
+        独立预览宿主（``PreviewFullscreenHost``）会把整个预览器迁移到新的
+        顶层窗口。旧 ``QRhiWidget`` 归属于原窗口的 QRhi，迁移后 Qt 只会
+        ``releaseResources()`` 而不再回调 ``initialize()``（新窗口若本就没有
+        RHI 合成则彻底拿不到 QRhi）。此时 ``_renderer`` 仍是 ``gpu``，而
+        ``paintEvent`` 在 GPU 模式不绘制任何内容，于是流体区域整块露出宿主
+        底色（或只剩迁移前的残留纹理）——视觉上就是一块与四周割裂的矩形。
+
+        这里在每次显示时校验一次：未就绪则重建 GPU 控件，让它在当前顶层
+        窗口的 RHI 上重新初始化。
+        """
+        super().showEvent(event)
+        self._ensure_gpu_renderer_after_show()
+
+    def _ensure_gpu_renderer_after_show(self) -> None:
+        """GPU 控件未就绪时重建（节流 1s，避免 show/hide 抖动反复重建）。"""
+        if not self._loaded or self._suspended or self._renderer != "gpu":
+            return
+        gpu = self._gpu_widget
+        if gpu is not None:
+            try:
+                if gpu.is_ready():
+                    return
+            except RuntimeError:
+                pass
+        now = time.monotonic()
+        if now - self._last_gpu_rebuild_at < 1.0:
+            return
+        self._last_gpu_rebuild_at = now
+        self._release_gpu_widget()
+        self._renderer = self._choose_renderer()
+        if self._renderer == "gpu":
+            self._start_animation()
+            self._sync_gpu_widget()
+        elif self._renderer in {"gpu_pending", "cpu"}:
+            self._bake_static_frame()
+        self.update()
 
     def paintEvent(self, event: QPaintEvent | None = None) -> None:
         """Paint the fluid background or a solid placeholder.

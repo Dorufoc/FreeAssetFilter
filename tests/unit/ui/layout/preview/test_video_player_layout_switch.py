@@ -24,6 +24,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from PySide6.QtCore import QTimer
+from PySide6.QtGui import QHideEvent
 from PySide6.QtWidgets import QApplication
 
 from freeassetfilter.ui.layout.preview.video_player_layout import VideoPlayerLayout
@@ -359,4 +360,78 @@ def test_suspend_twice_reuses_first_snapshot(
             time.sleep(0.01)
         fake.stop.assert_called_once_with(component_id=layout._component_id)
     finally:
+        _teardown(qapp, layout)
+
+
+def test_hide_during_fullscreen_reparent_keeps_playback(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """全屏 reparent 派生的 hideEvent 不得停止播放（_suppress_hide_stop 守卫）。
+
+    回归：进入/退出独立预览宿主时 ``setParent`` 会同步触发 hideEvent，
+    若照常 ``stop_playback``，``_media_ready`` 被清零、stack 落到加载遮罩，
+    返回内嵌布局后音频页不可见，流体区域只剩与四周割裂的残留帧。
+    """
+    layout = _make_layout(_make_fake_mpv())
+    try:
+        layout._current_file = "C:/media/track.mp3"  # noqa: SLF001
+        layout._media_ready = True  # noqa: SLF001
+        layout._current_media_is_audio = True  # noqa: SLF001
+        layout._stack.setCurrentIndex(layout._audio_surface_index)  # noqa: SLF001
+
+        stop_calls: list[int] = []
+        monkeypatch.setattr(layout, "stop_playback", lambda: stop_calls.append(1))
+
+        layout._suppress_hide_stop = True  # noqa: SLF001
+        try:
+            layout.hideEvent(QHideEvent())
+        finally:
+            layout._suppress_hide_stop = False  # noqa: SLF001
+
+        assert stop_calls == []
+        assert layout._media_ready is True  # noqa: SLF001
+        assert layout._stack.currentIndex() == layout._audio_surface_index  # noqa: SLF001
+
+        # 正常隐藏仍应停止播放：守卫不改变原有语义
+        layout.hideEvent(QHideEvent())
+        assert stop_calls == [1]
+    finally:
+        _teardown(qapp, layout)
+
+
+def test_enter_fullscreen_keeps_media_surface(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """进入独立预览宿主后必须仍处于媒体页（不得落到加载遮罩）。"""
+    from unittest.mock import MagicMock
+
+    layout = _make_layout(_make_fake_mpv())
+    try:
+        layout._current_file = "C:/media/track.mp3"  # noqa: SLF001
+        layout._media_ready = True  # noqa: SLF001
+        layout._current_media_is_audio = True  # noqa: SLF001
+        layout._stack.setCurrentIndex(layout._audio_surface_index)  # noqa: SLF001
+
+        fake_host = MagicMock()
+        fake_host.attach.return_value = True
+        fake_host.screen.return_value = None
+        monkeypatch.setattr(layout, "_fullscreen_host", fake_host)
+        monkeypatch.setattr(
+            "freeassetfilter.ui.layout.preview.video_player_layout.prewarm_top_level_rhi",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            layout._player_bar, "enter_floating_mode", lambda **_kwargs: None
+        )
+
+        layout._enter_fullscreen()
+
+        assert layout._media_ready is True  # noqa: SLF001
+        assert layout._stack.currentIndex() == layout._audio_surface_index  # noqa: SLF001
+        assert layout._fullscreen is True  # noqa: SLF001
+        assert layout._suppress_hide_stop is False  # noqa: SLF001
+        fake_host.attach.assert_called_once_with(layout)
+        fake_host.show_fullscreen.assert_called_once()
+    finally:
+        layout._fullscreen = False  # noqa: SLF001
         _teardown(qapp, layout)

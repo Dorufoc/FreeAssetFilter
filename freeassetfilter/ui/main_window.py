@@ -888,11 +888,13 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         self._mica_chain_preloader = _MicaChainPreloader(self)
         self._mica_chain_preloader.ready.connect(self._on_mica_chain_ready)
 
-        # 合成后端预热：默认构造路径（不延迟初始化）仍在建窗前预热，保持历史
-        # 行为一致；正式入口则把它移到首帧之后，避免 QRhi 初始化阻塞窗口出现。
-        self._rhi_prewarm = None
-        if not self._defer_heavy_init:
-            self._rhi_prewarm = prewarm_top_level_rhi(self)
+        # 合成后端预热：**必须在顶层窗口建窗（show()/winId()）之前完成**。
+        # 顶层窗口只在 QWindow 创建前其层级内已存在 QRhiWidget 时才选 RHI
+        # 合成后端；晚于建窗再挂预热控件，之后创建的 QRhiWidget 永远拿不到
+        # QRhi（实测控制台仅打印 "QRhiWidget: No QRhi"），流体背景只能回退
+        # CPU 静态帧。预热控件 1x1 且隐藏、从不渲染，因此不会推迟首帧，
+        # 两条构造路径（defer_heavy_init 与否）都必须在这里创建。
+        self._rhi_prewarm = prewarm_top_level_rhi(self)
 
         # 隐藏 Qt 6.9+ 的 `_q_titlebar` 系统标题栏子窗口（由本地无边框基类
         # FramelessMainWindow 在 __init__/showEvent/WinIdChange 自动处理，
@@ -1188,7 +1190,8 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         self._startup_overlay = None
         self._startup_overlay_timer = None
         self._setup_content()
-        self._rhi_prewarm = prewarm_top_level_rhi(self)
+        # RHI 合成后端已在 __init__ 建窗之前预热（见那里注释）；此时窗口早已
+        # show()，再挂预热控件只会得到 "QRhiWidget: No QRhi"，因此不再重复。
         # 内容是在 showEvent 之后创建的，因此手动补齐原本由 showEvent
         # 负责的首帧后工作，避免 Mica/覆盖层停留在未启动状态。
         if self._startup_overlay is not None:
@@ -3422,6 +3425,11 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             try:
                 if self.isActiveWindow() or self.isMinimized():
                     self._cancel_idle_texture_release()
+                    # 宽限期可能已经到期并执行过 suspend（释放了流体 GPU 控件）：
+                    # 回到前台必须恢复，否则 `_renderer` 仍是 `gpu` 而
+                    # `_gpu_widget` 已被销毁，`paintEvent` 不绘制任何内容，
+                    # 音频页只剩一块与四周割裂的残留区域。
+                    self._resume_background_renderers()
                 else:
                     self._schedule_idle_texture_release()
             except Exception:  # noqa: BLE001 - 调度失败不影响窗口状态
