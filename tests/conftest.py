@@ -27,6 +27,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tempfile
 
 try:  # 非 Windows 无 winreg；项目仅支持 Windows，守卫保证导入失败时回退 COM 探测
@@ -386,6 +387,33 @@ def redirect_layout_app_data_writes(
     _app_data.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(fsl_mod, "get_app_data_path", lambda: _app_data)
     monkeypatch.setattr(fpl_mod, "get_app_data_path", lambda: _app_data)
+
+
+@pytest.fixture(autouse=True, scope="function")
+def isolate_floating_pool_position(monkeypatch: pytest.MonkeyPatch) -> None:
+    """隔离浮窗「位置记忆」的磁盘读写（测试默认不读不写）。
+
+    背景：``FloatingPoolWindow`` 关闭时会把位置写入 V2 设置
+    （``data/settings_v2.json``），启动时再读回。若测试直连真实存储：
+
+    * 会污染开发者本地的设置文件；
+    * 前一个用例保存的位置会被后一个用例恢复，使位置相关断言随机失败。
+
+    此处把两个存储入口换成无副作用的桩；需要验证持久化语义的用例可在
+    自身的 ``monkeypatch`` 中重新覆盖（后设置生效）。只对已加载浮窗模块
+    的用例生效（避免为全套测试引入额外导入开销）。
+
+    Args:
+        monkeypatch: pytest monkeypatch fixture。
+
+    Returns:
+        None。
+    """
+    fpw = sys.modules.get("freeassetfilter.ui.floating_pool_window")
+    if fpw is None:
+        return
+    monkeypatch.setattr(fpw, "_load_persisted_position", lambda: None)
+    monkeypatch.setattr(fpw, "_save_persisted_position", lambda payload: None)
 
 
 @pytest.fixture

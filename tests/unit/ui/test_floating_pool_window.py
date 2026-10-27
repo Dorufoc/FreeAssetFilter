@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from unittest.mock import Mock
@@ -2746,3 +2747,150 @@ def test_hide_for_session_emits_and_exits(qapp: QApplication) -> None:
             window.deleteLater()
         except RuntimeError:
             pass
+
+
+# ── 位置记忆（退出保存 / 启动恢复）────────────────────────────
+
+
+def test_screen_env_signature_is_stable_and_serializable(
+    qapp: QApplication,
+) -> None:
+    """环境指纹：两次读取一致、可 JSON 序列化、首项为主屏名。"""
+    import freeassetfilter.ui.floating_pool_window as fpw
+
+    first = fpw._screen_env_signature()
+    assert first == fpw._screen_env_signature()
+    assert json.loads(json.dumps(first)) == first
+    screen = QApplication.primaryScreen()
+    assert first[0] == (screen.name() if screen is not None else "")
+    assert first[1], "指纹应包含至少一块屏幕"
+
+
+def test_position_restored_when_environment_matches(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """环境指纹一致：启动时直接使用上次保存的位置。"""
+    import freeassetfilter.ui.floating_pool_window as fpw
+
+    screen = QApplication.primaryScreen()
+    assert screen is not None
+    work = screen_work_area(screen)
+    target = QPoint(work.left() + 120, work.top() + 80)
+    monkeypatch.setattr(
+        fpw,
+        "_load_persisted_position",
+        lambda: {
+            "x": target.x(),
+            "y": target.y(),
+            "env": fpw._screen_env_signature(),
+        },
+    )
+
+    window = FloatingPoolWindow()
+    try:
+        assert window.pos() == target, "环境一致时未恢复到上次位置"
+    finally:
+        window.deleteLater()
+
+
+def test_position_default_when_environment_changed(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """显示器 / 分辨率 / 任务栏 / DPI 变化（指纹不同）：回默认位置。"""
+    import freeassetfilter.ui.floating_pool_window as fpw
+
+    monkeypatch.setattr(
+        fpw,
+        "_load_persisted_position",
+        lambda: {"x": 5, "y": 5, "env": ["旧环境", []]},
+    )
+
+    window = FloatingPoolWindow()
+    try:
+        assert window.pos() == window._compute_initial_position(window.size())
+    finally:
+        window.deleteLater()
+
+
+def test_restored_position_is_clamped_into_work_area(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """存盘位置已越界（布局微小漂移）：恢复时夹回工作区。"""
+    import freeassetfilter.ui.floating_pool_window as fpw
+
+    screen = QApplication.primaryScreen()
+    assert screen is not None
+    work = screen_work_area(screen)
+    monkeypatch.setattr(
+        fpw,
+        "_load_persisted_position",
+        lambda: {
+            "x": work.right() + 500,
+            "y": work.bottom() + 500,
+            "env": fpw._screen_env_signature(),
+        },
+    )
+
+    window = FloatingPoolWindow()
+    try:
+        assert window.x() + window.width() - 1 <= work.right()
+        assert window.y() + window.height() - 1 <= work.bottom()
+    finally:
+        window.deleteLater()
+
+
+def test_close_persists_position_with_env(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """关闭时写入位置与环境指纹，且 payload 可 JSON 序列化。"""
+    import freeassetfilter.ui.floating_pool_window as fpw
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        fpw, "_save_persisted_position", lambda payload: captured.update(payload)
+    )
+
+    screen = QApplication.primaryScreen()
+    assert screen is not None
+    work = screen_work_area(screen)
+    window = FloatingPoolWindow()
+    try:
+        window.show()
+        qapp.processEvents()
+        window.move(work.left() + 200, work.top() + 150)
+        qapp.processEvents()
+
+        window.close()
+
+        assert captured, "关闭时未保存位置"
+        assert (captured["x"], captured["y"]) == (
+            work.left() + 200,
+            work.top() + 150,
+        )
+        assert captured["env"] == fpw._screen_env_signature()
+        json.dumps(captured)
+    finally:
+        window.deleteLater()
+
+
+def test_persist_uses_collapsed_corner_when_expanded(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """展开态退出：保存的是圆形应在的角（非面板左上角）。"""
+    import freeassetfilter.ui.floating_pool_window as fpw
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        fpw, "_save_persisted_position", lambda payload: captured.update(payload)
+    )
+
+    window = FloatingPoolWindow()
+    try:
+        window.set_expanded(True)  # 未上屏：几何与 morph 同步落定
+        expected = window._anchored_rect(QSize(COLLAPSED_SIZE))
+
+        window._persist_position()
+
+        assert (captured["x"], captured["y"]) == (expected.x(), expected.y())
+    finally:
+        window.deleteLater()

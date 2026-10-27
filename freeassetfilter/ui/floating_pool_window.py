@@ -16,6 +16,10 @@
   不再硬切入 / 硬消失；退出时若面板展开先收回圆形再淡出（避免内容与卡片
   错位）。启动 5s / 退出 3s 双预算兜底：超时直接无动画显示或立即关闭，
   绝不因一个小浮窗拖累主程序。
+* **位置记忆（Position Memory）**：关闭 / 退出时把**折叠态**左上角与屏幕
+  环境指纹（主屏、每屏名称 / 显示器矩形 / 可用区 / DPI）写入 V2 设置
+  （``app.floating_pool_position``）；下次启动仅在指纹完全一致时原位恢复，
+  显示器、分辨率、任务栏位置或缩放发生变化时一律回默认位置。
 * **圆形入口（折叠态）**：卡片是正方形，圆角半径恒等于高度的一半 → 完美
   圆形；悬停时描边泛出主题色微光并轻微放大，配合计数徽标显示池内条目数。
 * **就近边缘锚定（Edge Anchoring）**：展开、收拢、拖入拉伸三类形态变化
@@ -83,7 +87,7 @@ Module constants:
 from __future__ import annotations
 
 import os
-from typing import Callable, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 from PySide6.QtCore import (
     QAbstractAnimation,
@@ -260,6 +264,96 @@ _SCROLL_BAR_HOVER_WIDTH = 6
 
 _FONT_CACHE: dict = {}
 """dict: ``(像素尺寸, 字重)`` → ``QFont`` 缓存（绘制路径避免逐帧构造）。"""
+
+_POSITION_KEY = "app.floating_pool_position"
+"""str: V2 设置里保存浮窗位置与环境指纹的点号键。
+
+值形如 ``{"x": int, "y": int, "env": [主屏名, [[屏幕名, 显示器矩形, 可用区,
+DPI], ...]]}``。只存**折叠态（圆形）左上角**，并在屏幕环境指纹不一致时
+直接忽略（回默认位置），避免跨分辨率 / DPI / 任务栏布局错位。
+"""
+
+
+def _screen_env_signature() -> list:
+    """返回屏幕环境指纹（影响坐标映射的一切因素）。
+
+    包含：主屏名、每块屏幕的名称 / 显示器矩形 / 真实可用区（已扣除任务栏）
+    与设备像素比，按屏幕名排序（屏顺序不稳定）。任一项变化（插拔显示器、
+    改分辨率、移任务栏、改缩放）都会使上次保存的位置失效。
+
+    Returns:
+        list: 可直接 JSON 序列化的指纹（主屏名 + 屏条目列表）。
+    """
+    app = QApplication.instance()
+    if app is None:
+        return ["", []]
+    primary = app.primaryScreen()
+    entries: list = []
+    for screen in app.screens():
+        geometry = screen.geometry()
+        work = screen_work_area(screen)
+        entries.append(
+            [
+                str(screen.name()),
+                geometry.x(),
+                geometry.y(),
+                geometry.width(),
+                geometry.height(),
+                work.x(),
+                work.y(),
+                work.width(),
+                work.height(),
+                round(float(screen.devicePixelRatio()), 3),
+            ]
+        )
+    entries.sort()
+    return [primary.name() if primary is not None else "", entries]
+
+
+def _position_settings() -> Any:
+    """返回用于读写位置的 V2 设置管理器。
+
+    优先复用应用级实例（``app.settings_manager``，启动时已加载）；无则新建
+    （``save()`` 只合并脏键，多实例并发写盘不会丢其它写入方的新值）。
+
+    Returns:
+        SettingsManagerV2: V2 设置管理器实例。
+    """
+    app = QApplication.instance()
+    manager = getattr(app, "settings_manager", None) if app is not None else None
+    if manager is not None:
+        return manager
+    from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+
+    return SettingsManagerV2()
+
+
+def _load_persisted_position() -> Optional[dict]:
+    """读取上次退出时保存的浮窗位置（失败一律当作无记录）。
+
+    Returns:
+        dict | None: ``{"x", "y", "env"}``；无记录 / 读取失败为 None。
+    """
+    try:
+        value = _position_settings().get(_POSITION_KEY, None)
+    except Exception as exc:  # noqa: BLE001 - 位置恢复失败不得阻断建窗
+        debug(f"[floating_pool] 读取保存位置失败：{exc}")
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _save_persisted_position(payload: dict) -> None:
+    """把浮窗位置与环境指纹写入 V2 设置并立即落盘。
+
+    Args:
+        payload: ``{"x", "y", "env"}``（必须可 JSON 序列化）。
+    """
+    try:
+        manager = _position_settings()
+        manager.set(_POSITION_KEY, payload)
+        manager.save()
+    except Exception as exc:  # noqa: BLE001 - 退出路径不得因持久化抛错
+        warning(f"[floating_pool] 保存位置失败：{exc}")
 
 
 def _ui_font(pixel_size: int, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
@@ -572,7 +666,9 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
 
         self._internal_moving = True
         self._apply_state_geometry()
-        self.move(self._compute_initial_position(self.size()))
+        # 位置记忆：环境指纹一致 → 用上次退出的位置；否则回默认（右上角）。
+        if not self._restore_saved_position():
+            self.move(self._compute_initial_position(self.size()))
         self._internal_moving = False
 
         # 主题切换实时重绘 + 条目行图标重建（明暗/强调色均需刷新）；
@@ -995,11 +1091,13 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
             warning(f"[floating_pool] shown diagnostics 失败: {exc}")
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        """关闭前停止全部定时器 / 动画并复位视觉状态，避免销毁后残留回调。
+        """关闭前记忆位置、停止全部定时器 / 动画并复位视觉状态。
 
         Args:
             event: 关闭事件（交回基类处理）。
         """
+        # 退出即记忆位置（只存折叠态左上角 + 屏幕环境指纹，见 _persist_position）
+        self._persist_position()
         self._debounce_timer.stop()
         self._settle_timer.stop()
         self._entrance_guard.stop()
@@ -1044,8 +1142,75 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
                 # 行已随重建销毁（deleteLater 未及清理）：跳过。
                 continue
 
+    # ── 位置记忆（退出时保存 / 启动时恢复）───────────────
+
+    def _restore_saved_position(self) -> bool:
+        """尝试用上次退出时记住的位置摆放浮窗。
+
+        仅当屏幕环境指纹（:func:`_screen_env_signature`）与保存时完全一致
+        才恢复；显示器 / 分辨率 / 任务栏位置 / DPI 等任一变化均视为环境不
+        匹配，交回调用方使用默认位置。恢复出的坐标还会夹回所在屏幕的
+        真实工作区，避免存盘期间布局微小漂移把浮窗摆到屏幕外。
+
+        Returns:
+            bool: 已按保存位置定位返回 True；无记录 / 环境不匹配 / 数据非法
+            返回 False（调用方退回默认位置）。
+        """
+        state = _load_persisted_position()
+        if not state:
+            return False
+        if state.get("env") != _screen_env_signature():
+            debug("[floating_pool] 屏幕环境已变化，使用默认位置")
+            return False
+        try:
+            x = int(state["x"])
+            y = int(state["y"])
+        except (KeyError, TypeError, ValueError):
+            return False
+
+        point = QPoint(x, y)
+        screen = QApplication.screenAt(point)
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        work = screen_work_area(screen)
+        size = self.size()
+        if work.isValid():
+            x = max(work.left(), min(x, work.right() - size.width() + 1))
+            y = max(work.top(), min(y, work.bottom() - size.height() + 1))
+        self.move(QPoint(x, y))
+        debug(f"[floating_pool] 已恢复上次位置：({x}, {y})")
+        return True
+
+    def _collapsed_geometry_for_persist(self) -> QRect:
+        """返回应当持久化的几何——始终是**折叠态（圆形）**的位置。
+
+        展开 / 收拢动画中 / 拖入胶囊拉伸中，直接存当前矩形会得到面板或胶囊
+        的左上角（下一次启动会以它为圆形的左上角，看起来就是位置偏移）；
+        因此这三种情形下按当前锚定边反推圆形应在的角。
+
+        Returns:
+            QRect: 折叠尺寸的窗口矩形（全局坐标）。
+        """
+        if self._expanded or self._collapse_pending or self._drag_progress > 0.01:
+            return self._anchored_rect(QSize(COLLAPSED_SIZE))
+        return self.geometry()
+
+    def _persist_position(self) -> None:
+        """把当前折叠态位置 + 屏幕环境指纹写入设置（退出 / 关闭时调用）。"""
+        try:
+            rect = self._collapsed_geometry_for_persist()
+            _save_persisted_position(
+                {
+                    "x": int(rect.x()),
+                    "y": int(rect.y()),
+                    "env": _screen_env_signature(),
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 - 关闭路径不得因持久化失败中断
+            warning(f"[floating_pool] 退出时记忆位置失败：{exc}")
+
     def _compute_initial_position(self, size: QSize) -> QPoint:
-        """计算初始位置：鼠标所在屏幕可用区域右上角，内缩 ``INITIAL_INSET``。
+        """计算默认（无可用记忆）位置：屏幕可用区域右上角，内缩 ``INITIAL_INSET``。
 
         可用区经 :func:`screen_work_area` 求解（不能用 Qt 的
         ``availableGeometry()``——任务栏停靠左 / 上侧时它的右缘 / 下缘会越出
