@@ -18,10 +18,11 @@
   绝不因一个小浮窗拖累主程序。
 * **圆形入口（折叠态）**：卡片是正方形，圆角半径恒等于高度的一半 → 完美
   圆形；悬停时描边泛出主题色微光并轻微放大，配合计数徽标显示池内条目数。
-* **就近边缘锚定（Edge Anchoring）**：展开 / 拉伸前先按「浮窗距工作区哪侧
-  更近」选定固定边（水平、垂直各自独立判定；两侧相等时回退右 + 上），
-  形态变化时固定边不动、内容向屏幕内侧生长，使展开的面板与胶囊始终完整
-  落在屏幕内；收拢沿同一组固定边缩回圆形，不会出现位置滑移。
+* **就近边缘锚定（Edge Anchoring）**：展开、收拢、拖入拉伸三类形态变化
+  都先按「浮窗距工作区哪侧更近」重新选定固定边（水平、垂直各自独立判定；
+  两侧相等时回退右 + 上），固定边不动、内容向屏幕内侧生长，使展开的面板
+  与胶囊始终完整落在屏幕内；收拢也按当前位置重算，圆形总是缩到当前更
+  贴近的那一侧，且形变方向与几何落点同源（无位置跳变）。
 * **拖入胶囊（Drag-over）**：外部 URL 拖入后窗口横向拉伸（固定边不动、向
   屏幕内侧生长）成胶囊，卡片圆角仍是高度的一半，因此形变永远是「圆 → 胶囊」的
   连续过渡；提示文案随拉伸进度淡入。
@@ -722,9 +723,11 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
 
         收起：``_expanded`` 立即为 False（对外状态同步可断言），但**几何落定
         推迟到收拢动画结束**——可见窗口先播放面板缩回圆形的形变，再一次性
-        把窗口缩到 ``COLLAPSED_SIZE`` 并保持**同一组锚定边**（收拢不重算
-        锚定），于是圆形恰好落在动画终点、几何跳变与位置偏移都不可见。窗口
-        不可见（测试 / 未上屏）时无从观看动画，直接同步落定。
+        把窗口缩到 ``COLLAPSED_SIZE``。收拢前同样按**当前位置**重算锚定边
+        （与展开同一套判定：哪侧更近就以该侧为固定边），保证形变方向与几何
+        落点同源：圆形恰好落在收拢动画终点，既无位置跳变，也总是落在当前
+        更贴近的那一侧。窗口不可见（测试 / 未上屏）时无从观看动画，直接
+        同步落定。
 
         Args:
             expanded: True 进入展开态，False 回到折叠态。
@@ -753,6 +756,10 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
             return
 
         self._expanded = False
+        # 回收也要按**当前位置**重算固定边（展开 / 收拢同一套判定）：形变
+        # 方向与最终几何必须同源，否则圆形会朝旧锚定角缩回、再被几何落定
+        # 拉到新一侧，出现可见跳变。
+        self._update_anchor()
         if self.isVisible() and self._morph > 0.01:
             # 可见：几何滞后到收拢动画结束再落定（圆形落在动画终点）。
             self._collapse_pending = True
@@ -761,10 +768,10 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         self._finish_collapse()
 
     def _finish_collapse(self) -> None:
-        """收拢落定：缩回折叠尺寸、保持锚定边、复位形变 / 蒙版并重绘。
+        """收拢落定：缩回折叠尺寸、按收拢时重算的锚定边、复位形变 / 蒙版并重绘。
 
-        沿用展开时算出的锚定边（不重算），圆形才能回到同一个角，不会出现
-        收拢后位置滑移。
+        沿用 :meth:`set_expanded` 收拢分支刚刚重算的锚定边（与收拢形变的
+        方向同源），圆形落在形变终点，不产生位置跳变。
         """
         self._collapse_pending = False
         target_size = self._target_size()
@@ -897,10 +904,14 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         return right_gap <= left_gap, bottom_gap < top_gap
 
     def _update_anchor(self) -> None:
-        """形态变化（展开 / 拖入拉伸）起点重算锚定边。
+        """形态变化（展开 / 收拢 / 拖入拉伸）起点重算锚定边。
 
-        收拢时**不得**重算：收拢必须回到展开时固定边的那个角，否则圆形会
-        滑到另一侧（用户感知为「缩小后位置偏移」）。
+        三种形态变化都以**当前位置**重新判定（:meth:`_compute_anchor`：距
+        工作区哪侧更近就以该侧为固定边），保证：
+
+        * 展开：固定边不动，向屏幕内侧生长（不越屏）；
+        * 收拢：与形变方向同源，圆形落在当前更贴近的那一侧，无跳变；
+        * 拖入拉伸：胶囊向屏幕内侧生长，收回不横移。
         """
         self._anchor_right, self._anchor_bottom = self._compute_anchor()
 

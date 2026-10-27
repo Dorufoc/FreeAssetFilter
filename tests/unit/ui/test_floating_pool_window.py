@@ -352,7 +352,7 @@ def test_expanded_panel_anchors_to_nearest_edges(
 def test_collapse_returns_to_original_circle_position(
     qapp: QApplication, corner: str
 ) -> None:
-    """展开再收拢：圆形回到原位（不滑到另一侧、整体无位移）。"""
+    """展开再收拢（未移动）：圆形回到原位（重算锚定不改变落点、无位移）。"""
     window = FloatingPoolWindow()
     try:
         _screen, work = _screen_and_available(window)
@@ -379,6 +379,42 @@ def test_collapse_returns_to_original_circle_position(
         window.set_expanded(False)
         assert _wait_until(lambda: window.size() == COLLAPSED_SIZE)
         assert window.geometry() == original, "收拢后圆形位置发生偏移"
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_collapse_recomputes_anchor_from_current_position(
+    qapp: QApplication,
+) -> None:
+    """展开后把面板拖到另一侧再收拢：圆形落在**当前**更近的一侧。
+
+    回归：收拢曾直接沿用展开时算出的锚定边，导致拖到另一侧后再收起，
+    圆形仍飞到旧锚定角（用户感知为「位置偏移」）。
+    """
+    window = FloatingPoolWindow()
+    try:
+        _screen, work = _screen_and_available(window)
+        assert work is not None
+        window.set_snap_enabled(False)
+        window.show()
+        qapp.processEvents()
+        assert _wait_until(lambda: window._entrance_done)
+
+        window.set_expanded(True)
+        assert _wait_until(lambda: window._morph >= 1.0)
+        assert window._anchor_right is True, "默认右上角展开应为右缘固定"
+
+        # 把展开态面板拖到工作区左侧贴边（模拟「先展开再拖动」）
+        left = work.left() + INITIAL_INSET
+        window.move(left, window.y())
+        qapp.processEvents()
+
+        window.set_expanded(False)
+        assert _wait_until(lambda: window.size() == COLLAPSED_SIZE)
+
+        assert window._anchor_right is False, "收拢未按当前位置重算锚定边"
+        assert window.x() == left, "圆形未落在收拢时更近的左侧"
     finally:
         window.close()
         window.deleteLater()
