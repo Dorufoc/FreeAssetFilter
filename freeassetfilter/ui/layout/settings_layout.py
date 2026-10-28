@@ -354,9 +354,13 @@ class _FloatingScrollArea(QScrollArea):
 
 
 class AccentColorButton(QWidget):
-    """主题色选择圆形按钮 — 自绘圆形 + 选中描边。"""
+    """主题色选择圆形按钮 — 自绘圆形 + 选中描边。
 
-    clicked = Signal(str)  # 发送颜色 hex 字符串
+    *color_hex* 仅用于绘制（「自动」为启动期解析出的系统强调色）；
+    点击信号发射 *value* 逻辑值（具体 ``#RRGGBB`` 或 ``"auto"``）。
+    """
+
+    clicked = Signal(str)  # 发送逻辑值："auto" 或具体 #RRGGBB
 
     def __init__(
         self,
@@ -424,7 +428,9 @@ class AccentColorButton(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
-            self.clicked.emit(self._color_hex)
+            # 必须发逻辑值：「自动」按钮显示的是解析后的系统色，但
+            # 暂存/落盘只能保留 "auto"，否则下次启动会变成固定颜色。
+            self.clicked.emit(self._value)
             event.accept()
         else:
             super().mousePressEvent(event)
@@ -1344,11 +1350,17 @@ class AppearanceSettingsPage(QWidget):
         self.sync_theme_segment()
 
     def _on_color_clicked(self, color_hex: str) -> None:
-        """主题色选择 — 写入暂存缓存，点击「应用」/「确定」才全局生效。"""
-        self._current_accent = color_hex
-        self._staging_cache.set("appearance.accent_color", color_hex)
+        """主题色选择 — 写入暂存缓存，点击「应用」/「确定」才全局生效。
+
+        Args:
+            color_hex: 按钮逻辑值；预设色为 ``#RRGGBB``，「自动」为
+                ``"auto"``（不得写入启动期解析出的系统色）。
+        """
+        value = "auto" if str(color_hex).strip().lower() == "auto" else color_hex
+        self._current_accent = value
+        self._staging_cache.set("appearance.accent_color", value)
         for btn in self._color_buttons:
-            btn.selected = (btn.color_hex.upper() == color_hex.upper())
+            btn.selected = (btn.color_hex.upper() == value.upper())
         if self._custom_btn is not None:
             self._custom_btn.selected = False
         # 选择预设色时关闭浮动选择面板
@@ -3090,6 +3102,9 @@ class SettingsLayout(QWidget):
         saved_accent = appearance.get("accent_color", "#007AFF")
         if not isinstance(saved_accent, str) or not saved_accent:
             saved_accent = "#007AFF"
+        elif saved_accent.strip().lower() == "auto":
+            # 自动模式必须落盘为字面量 "auto"（不得是解析后的系统色）。
+            saved_accent = "auto"
         try:
             theme = tm.effective_theme()
         except Exception:
@@ -3245,9 +3260,13 @@ class SettingsLayout(QWidget):
         if not isinstance(hw_accel, bool):
             hw_accel = False
 
-        saved_accent = accent
-        if isinstance(accent, str) and accent.lower() == "auto":
+        saved_accent = accent if isinstance(accent, str) and accent else "#007AFF"
+        if saved_accent.strip().lower() == "auto":
+            # 自动模式必须落盘为字面量 "auto"；运行时才解析成系统色。
+            saved_accent = "auto"
             accent = get_system_accent_color()
+        else:
+            accent = saved_accent
 
         # V2 持久化回滚上下文：save() 或后续步骤失败时把本键内存值还原到
         # 提交前快照。哨兵保证「尚未走到快照点」时不会误回滚。

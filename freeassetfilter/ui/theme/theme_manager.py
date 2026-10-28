@@ -111,6 +111,10 @@ class ThemeManager(QObject):
 
         V2 的 ``DEFAULT_SETTINGS_V2`` 已内嵌全部默认配色，
         ``settings_v2.json`` 丢失时自动以此模板生成。
+
+        ``appearance.accent_color == "auto"`` 时在启动期实时解析当前
+        Windows 系统强调色（仅写入运行时 ``self._colors``，不落盘），
+        保证每次实际启动都跟随系统强调色的最新值。
         """
         from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
 
@@ -145,21 +149,37 @@ class ThemeManager(QObject):
         else:
             self._dark_mode = (self._theme_mode == "dark")
         saved_accent = v2.get("appearance.accent_color")
-        if saved_accent and isinstance(self._colors.get("accent"), dict):
+        if (
+            isinstance(saved_accent, str)
+            and saved_accent
+            and isinstance(self._colors.get("accent"), dict)
+        ):
             self._colors["accent"]["primary"] = saved_accent
 
-        # 若强调色为 "auto"，解析为当前 Windows 系统强调色。
+        # 若强调色为 "auto"，在启动期实时解析当前 Windows 系统强调色。
+        # 解析结果只写入运行时配色，绝不回写 V2——否则下次启动会退化为
+        # 固定颜色，无法跟随系统强调色变化。
         if isinstance(self._colors.get("accent"), dict):
             primary = self._colors["accent"].get("primary", "")
             if isinstance(primary, str) and primary.lower() == "auto":
-                try:
-                    from freeassetfilter.ui.theme.system_accent import (
-                        get_system_accent_color,
-                    )
-                except ImportError:  # 兼容短路径别名（sys.modules['theme']）
-                    from theme.system_accent import get_system_accent_color
+                self._colors["accent"]["primary"] = self._resolve_system_accent()
 
-                self._colors["accent"]["primary"] = get_system_accent_color()
+    @staticmethod
+    def _resolve_system_accent() -> str:
+        """解析当前 Windows 系统强调色（启动期 ``"auto"`` 专用）。
+
+        Returns:
+            str: 可直接用于主题配色的 ``#RRGGBB``；
+                :func:`get_system_accent_color` 自身保证合法与兜底。
+        """
+        try:
+            from freeassetfilter.ui.theme.system_accent import (
+                get_system_accent_color,
+            )
+        except ImportError:  # 兼容短路径别名（sys.modules['theme']）
+            from theme.system_accent import get_system_accent_color
+
+        return get_system_accent_color()
 
     def _count_tokens(self, d: dict, prefix: str = "") -> int:
         """Count leaf (string) values in nested dict."""

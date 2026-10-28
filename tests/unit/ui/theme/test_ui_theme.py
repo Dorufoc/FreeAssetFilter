@@ -2,8 +2,9 @@
 """主题层单元测试（todo-23 批 3 / task-23）。
 
 覆盖 ui/theme 下 2 个模块：
-1. ``system_accent`` — 读取 Windows 系统强调色；DWM / 注册表均失败时
-   回退默认值。
+1. ``system_accent`` — 读取 Windows 系统强调色（AccentColorMenu / DWM
+   AccentColor / AccentPalette / ColorizationColor）；全部数据源失败或
+   颜色不可辨识时回退默认值。
 2. ``theme_manager`` — 单例 ThemeManager 的构造/主题切换/信号发射/accent
    解析；``theme_changed`` / ``colors_updated`` 信号先 connect 再触发
    （monkeypatch.setattr raising=True 默认）。
@@ -20,6 +21,7 @@ ui/theme/theme_manager 的 ``_instance`` / ``_initialized``，
 
 from __future__ import annotations
 
+import copy
 import sys
 from pathlib import Path
 
@@ -57,43 +59,142 @@ def _reset_theme_singleton() -> None:
 # =============================================================================
 # ui.theme.system_accent
 # =============================================================================
+def _silence_all_sources(monkeypatch: pytest.MonkeyPatch) -> None:
+    """切断全部真实数据源，避免宿主机强调色污染断言。
+
+    Args:
+        monkeypatch: pytest 打补丁工具。
+    """
+    monkeypatch.setattr(
+        system_accent, "_get_accent_color_from_accent_registry", lambda: None
+    )
+    monkeypatch.setattr(
+        system_accent, "_get_accent_color_from_dwm_accent", lambda: None
+    )
+    monkeypatch.setattr(system_accent, "_read_accent_palette", lambda: [])
+    monkeypatch.setattr(system_accent, "_get_accent_color_from_dwm", lambda: None)
+    monkeypatch.setattr(
+        system_accent, "_get_accent_color_from_registry", lambda: None
+    )
+
+
 class TestSystemAccent:
-    """获取系统强调色：真实调用 + DWM/注册表双失败回退。"""
+    """获取系统强调色：数据源优先级、ABGR 解码与优雅降级。"""
 
     def test_get_system_accent_returns_hex(self) -> None:
-        """真实环境调用返回 ``#RRGGBB`` 字符串（两边都尝试过仍回退默认）。"""
+        """真实环境调用返回可直接用于配色的 ``#RRGGBB`` 字符串。"""
         color = system_accent.get_system_accent_color()
         assert isinstance(color, str)
         assert color.startswith("#")
-        assert len(color) >= 7
+        assert len(color) == 7
+        assert system_accent._is_usable_accent(color)
 
     def test_fallback_default_when_no_source(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """DWM 与注册表均失败 → 返回传入的默认值。"""
-        monkeypatch.setattr(system_accent, "_get_accent_color_from_dwm", lambda: None)
+        """全部数据源失败 → 返回传入的默认值。"""
+        _silence_all_sources(monkeypatch)
+        assert system_accent.get_system_accent_color("#ABCDEF") == "#ABCDEF"
+
+    def test_returns_accent_menu_first(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """强调色本体（AccentColorMenu）优先于 DWM 记录值。"""
+        _silence_all_sources(monkeypatch)
         monkeypatch.setattr(
-            system_accent, "_get_accent_color_from_registry", lambda: None
+            system_accent, "_get_accent_color_from_accent_registry", lambda: "#3366CC"
+        )
+        monkeypatch.setattr(
+            system_accent, "_get_accent_color_from_dwm_accent", lambda: "#445566"
+        )
+        assert system_accent.get_system_accent_color("#ABCDEF") == "#3366CC"
+
+    def test_dwm_accent_used_when_menu_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AccentColorMenu 缺失时使用 DWM AccentColor（同为 ABGR）。"""
+        _silence_all_sources(monkeypatch)
+        monkeypatch.setattr(
+            system_accent, "_get_accent_color_from_dwm_accent", lambda: "#303F4E"
+        )
+        assert system_accent.get_system_accent_color("#ABCDEF") == "#303F4E"
+
+    def test_dark_colored_accent_uses_lighter_shade(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """过暗但有色的强调色 → 取同源色阶中最亮的可用档位。"""
+        _silence_all_sources(monkeypatch)
+        monkeypatch.setattr(
+            system_accent, "_get_accent_color_from_accent_registry", lambda: "#101828"
+        )
+        monkeypatch.setattr(
+            system_accent,
+            "_read_accent_palette",
+            lambda: ["#516B84", "#303F4E"],
+        )
+        assert system_accent.get_system_accent_color("#ABCDEF") == "#516B84"
+
+    def test_black_accent_ignores_grayscale_palette(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """纯黑强调色的同源色阶全是灰阶 → 不取灰色，回退默认色。"""
+        _silence_all_sources(monkeypatch)
+        monkeypatch.setattr(
+            system_accent, "_get_accent_color_from_accent_registry", lambda: "#000000"
+        )
+        monkeypatch.setattr(
+            system_accent,
+            "_read_accent_palette",
+            lambda: ["#6B6B6B", "#141414"],
         )
         assert system_accent.get_system_accent_color("#ABCDEF") == "#ABCDEF"
 
-    def test_returns_dwm_color_first(
+    def test_black_accent_without_palette_falls_back(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """DWM 成功 → 优先返回 DWM 读取的颜色。"""
+        """纯黑强调色且无可用色阶 → 回退默认色，绝不返回纯黑。"""
+        _silence_all_sources(monkeypatch)
         monkeypatch.setattr(
-            system_accent, "_get_accent_color_from_dwm", lambda: "#112233"
+            system_accent, "_get_accent_color_from_accent_registry", lambda: "#000000"
+        )
+        assert system_accent.get_system_accent_color("#ABCDEF") == "#ABCDEF"
+
+    def test_light_accent_uses_darkest_usable_shade(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """过亮但有色的强调色 → 取同源色阶中最暗的可用档位。"""
+        _silence_all_sources(monkeypatch)
+        monkeypatch.setattr(
+            system_accent, "_get_accent_color_from_accent_registry", lambda: "#FFFFCC"
         )
         monkeypatch.setattr(
-            system_accent, "_get_accent_color_from_registry", lambda: "#445566"
+            system_accent,
+            "_read_accent_palette",
+            lambda: ["#AAAA44", "#444422"],
         )
-        assert system_accent.get_system_accent_color("#ABCDEF") == "#112233"
+        assert system_accent.get_system_accent_color("#ABCDEF") == "#444422"
+
+    def test_invalid_default_normalized(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """非法/不可辨识的默认值 → 使用内置兜底色 ``#007AFF``。"""
+        _silence_all_sources(monkeypatch)
+        assert system_accent.get_system_accent_color("not-a-color") == "#007AFF"
+        assert system_accent.get_system_accent_color("#000000") == "#007AFF"
+
+    def test_dwm_api_fallback_after_primary_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """主数据源与色阶均缺失 → 使用 DwmGetColorizationColor 近似值。"""
+        _silence_all_sources(monkeypatch)
+        monkeypatch.setattr(
+            system_accent, "_get_accent_color_from_dwm", lambda: "#3366CC"
+        )
+        assert system_accent.get_system_accent_color("#ABCDEF") == "#3366CC"
 
     def test_registry_fallback_after_dwm_fails(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """DWM 失败、注册表成功 → 返回注册表颜色。"""
-        monkeypatch.setattr(system_accent, "_get_accent_color_from_dwm", lambda: None)
+        """DWM API 失败、ColorizationColor 注册表成功 → 返回注册表颜色。"""
+        _silence_all_sources(monkeypatch)
         monkeypatch.setattr(
             system_accent, "_get_accent_color_from_registry", lambda: "#445566"
         )
@@ -105,8 +206,49 @@ class TestSystemAccent:
         """winreg 缺失（非 Windows 守卫）→ 注册表读取安全返回 None 并回退默认。"""
         monkeypatch.setattr(system_accent, "winreg", None)
         assert system_accent._get_accent_color_from_registry() is None
-        monkeypatch.setattr(system_accent, "_get_accent_color_from_dwm", lambda: None)
+        _silence_all_sources(monkeypatch)
         assert system_accent.get_system_accent_color("#ABCDEF") == "#ABCDEF"
+
+    def test_abgr_decoding(self) -> None:
+        """ABGR DWORD（0xAABBGGRR）→ 正确的 ``#RRGGBB``。"""
+        assert system_accent._abgr_to_hex(0xFF4E3F30) == "#303F4E"
+        assert system_accent._abgr_to_hex(0) is None
+        assert system_accent._abgr_to_hex(0x00112233) is None
+
+    def test_argb_decoding(self) -> None:
+        """ARGB DWORD（0xAARRGGBB）→ 正确的 ``#RRGGBB``。"""
+        assert system_accent._argb_to_hex(0xFF0078D4) == "#0078D4"
+        assert system_accent._argb_to_hex(0) is None
+        assert system_accent._argb_to_hex(0x00112233) is None
+
+    def test_palette_parsing_ignores_sentinel(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AccentPalette 只取前 7 条 RGB，忽略固定哨兵 ``88 17 98 00``。"""
+        raw = bytes(
+            [
+                0x51, 0x6B, 0x84, 0xFF,
+                0x43, 0x59, 0x6E, 0xFF,
+                0x3A, 0x4C, 0x5E, 0xFF,
+                0x30, 0x3F, 0x4E, 0xFF,
+                0x26, 0x33, 0x3F, 0xFF,
+                0x1D, 0x26, 0x2F, 0xFF,
+                0x0F, 0x14, 0x19, 0xFF,
+                0x88, 0x17, 0x98, 0x00,
+            ]
+        )
+        monkeypatch.setattr(
+            system_accent, "_read_registry_value", lambda subkey, name: raw
+        )
+        assert system_accent._read_accent_palette() == [
+            "#516B84",
+            "#43596E",
+            "#3A4C5E",
+            "#303F4E",
+            "#26333F",
+            "#1D262F",
+            "#0F1419",
+        ]
 
 
 # =============================================================================
@@ -257,3 +399,155 @@ class TestSemanticTokens:
         assert tm.readable_on(QColor("#f59e0b")).red() < 128
         assert tm.readable_on(QColor("#1a1a1a")).red() > 128
         assert tm.readable_on(QColor("#000000")).red() > 128
+
+
+class TestThemeManagerAutoAccent:
+    """启动期解析：``appearance.accent_color == "auto"`` 必须实时取系统色。"""
+
+    @staticmethod
+    def _install_fake_v2(
+        monkeypatch: pytest.MonkeyPatch,
+        accent: object,
+        colors: dict | None = None,
+    ) -> None:
+        """把 ``_load_colors`` 使用的 SettingsManagerV2 替换为内存替身。
+
+        Args:
+            monkeypatch: pytest 打补丁工具。
+            accent: ``appearance.accent_color`` 的模拟值。
+            colors: ``appearance.colors`` 的模拟值；缺省为普通具体色。
+        """
+        import freeassetfilter.core.managers.settings_manager_v2 as sv2_mod
+
+        initial_colors = (
+            copy.deepcopy(colors)
+            if colors is not None
+            else {"accent": {"primary": "#3A9DCB"}}
+        )
+
+        class _FakeV2:
+            def load(self) -> dict:
+                return {}
+
+            def get(self, key_path: str, default: object = None) -> object:
+                if key_path == "appearance.colors":
+                    return initial_colors
+                if key_path == "appearance.theme_mode":
+                    return "dark"
+                if key_path == "appearance.theme":
+                    return "dark"
+                if key_path == "appearance.accent_color":
+                    return accent
+                return default
+
+            def reset_to_defaults(self) -> None:
+                return None
+
+        monkeypatch.setattr(sv2_mod, "SettingsManagerV2", _FakeV2)
+
+    @staticmethod
+    def _fresh_theme_manager() -> ThemeManager:
+        """在干净单例状态下构造 ThemeManager（触发一次 ``_load_colors``）。"""
+        ThemeManager._instance = None
+        ThemeManager._initialized = False
+        return ThemeManager()
+
+    def test_auto_resolved_from_system(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``"auto"`` → 启动期调用系统强调色解析并写入 accent.primary。"""
+        self._install_fake_v2(monkeypatch, "auto")
+        monkeypatch.setattr(
+            system_accent, "get_system_accent_color", lambda: "#3366CC"
+        )
+        tm = self._fresh_theme_manager()
+        assert tm._colors["accent"]["primary"] == "#3366CC"
+
+    def test_auto_is_case_insensitive(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """历史/外部写入的 ``"AUTO"`` 同样按自动模式解析。"""
+        self._install_fake_v2(monkeypatch, "AUTO")
+        monkeypatch.setattr(
+            system_accent, "get_system_accent_color", lambda: "#8A1538"
+        )
+        tm = self._fresh_theme_manager()
+        assert tm._colors["accent"]["primary"] == "#8A1538"
+
+    def test_restart_picks_latest_system_accent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """同一份 auto 配置，两次启动分别读取当时最新的系统强调色。"""
+        self._install_fake_v2(monkeypatch, "auto")
+        monkeypatch.setattr(
+            system_accent, "get_system_accent_color", lambda: "#111111"
+        )
+        first = self._fresh_theme_manager()
+        assert first._colors["accent"]["primary"] == "#111111"
+
+        monkeypatch.setattr(
+            system_accent, "get_system_accent_color", lambda: "#222222"
+        )
+        second = self._fresh_theme_manager()
+        assert second._colors["accent"]["primary"] == "#222222"
+
+    def test_concrete_accent_kept_without_system_read(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """手动预设色启动时原样保留，且不触发系统色读取。"""
+        self._install_fake_v2(monkeypatch, "#8A1538")
+        called: list[int] = []
+        monkeypatch.setattr(
+            system_accent,
+            "get_system_accent_color",
+            lambda: called.append(1) or "#3366CC",
+        )
+        tm = self._fresh_theme_manager()
+        assert tm._colors["accent"]["primary"] == "#8A1538"
+        assert called == []
+
+    def test_colors_primary_auto_when_accent_key_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``accent_color`` 缺失但 colors.primary 为 auto 时同样解析（旧配置兼容）。"""
+        self._install_fake_v2(monkeypatch, None, {"accent": {"primary": "auto"}})
+        monkeypatch.setattr(
+            system_accent, "get_system_accent_color", lambda: "#4477AA"
+        )
+        tm = self._fresh_theme_manager()
+        assert tm._colors["accent"]["primary"] == "#4477AA"
+
+    def test_invalid_accent_value_does_not_override_colors(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """非字符串 accent_color（脏配置）不得污染 accent.primary。"""
+        self._install_fake_v2(monkeypatch, {"bad": "value"})
+        tm = self._fresh_theme_manager()
+        assert tm._colors["accent"]["primary"] == "#3A9DCB"
+
+    def test_legacy_theme_migrated_to_three_state_mode(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """旧配置只有 appearance.theme、无 theme_mode 时仍能迁移为三态偏好。"""
+        import freeassetfilter.core.managers.settings_manager_v2 as sv2_mod
+
+        class _LegacyV2:
+            def load(self) -> dict:
+                return {}
+
+            def get(self, key_path: str, default: object = None) -> object:
+                if key_path == "appearance.colors":
+                    return {"accent": {"primary": "#3A9DCB"}}
+                if key_path == "appearance.accent_color":
+                    return "#3A9DCB"
+                if key_path == "appearance.theme":
+                    return "light"
+                return default
+
+            def reset_to_defaults(self) -> None:
+                return None
+
+        monkeypatch.setattr(sv2_mod, "SettingsManagerV2", _LegacyV2)
+        tm = self._fresh_theme_manager()
+        assert tm.get_theme_mode() == "light"
+        assert tm.is_dark_theme() is False

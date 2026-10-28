@@ -478,6 +478,83 @@ class TestBottomButtons:
         finally:
             safe_teardown(layout)
 
+    def test_auto_accent_click_stages_literal_auto(
+        self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """点击「自动」只暂存 "auto"，不得把启动期解析出的系统色写入缓存。"""
+        from PySide6.QtCore import QEvent, QPointF, Qt
+        from PySide6.QtGui import QMouseEvent
+
+        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+
+        _patch_v2_to_tmp(monkeypatch, tmp_path)
+        _patch_overlay_noop(monkeypatch)
+        _patch_appearance_runtime(monkeypatch)
+        layout = SettingsLayout()
+        try:
+            page = layout._appearance_page
+            auto_btn = page._color_buttons[0]
+            assert auto_btn.color_hex == "auto"
+            press = QMouseEvent(
+                QEvent.MouseButtonPress,
+                QPointF(20, 20),
+                Qt.LeftButton,
+                Qt.LeftButton,
+                Qt.NoModifier,
+            )
+            auto_btn.mousePressEvent(press)
+            assert page._staging_cache.get("appearance.accent_color") == "auto"
+        finally:
+            safe_teardown(layout)
+
+    def test_auto_accent_submit_persists_literal_auto(
+        self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """提交后 V2 落盘必须是 "auto"，而不是本次启动解析出的系统色。"""
+        from freeassetfilter.core.managers.settings_manager_v2 import (
+            SettingsManagerV2,
+        )
+        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+
+        tmp_file = _patch_v2_to_tmp(monkeypatch, tmp_path)
+        _patch_overlay_noop(monkeypatch)
+        _patch_appearance_runtime(monkeypatch)
+        layout = SettingsLayout()
+        try:
+            page = layout._appearance_page
+            page._on_color_clicked("auto")
+            assert layout._submit_settings(close_after=False) is True
+            fresh = SettingsManagerV2(tmp_file)
+            fresh.load()
+            assert fresh.get("appearance.accent_color") == "auto"
+            assert fresh.get("appearance.colors.accent.primary") == "auto"
+        finally:
+            safe_teardown(layout)
+
+    def test_auto_accent_close_autosave_persists_literal_auto(
+        self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """点 ✕ 关闭自动保存外观时，自动模式同样只写 "auto"。"""
+        from freeassetfilter.core.managers.settings_manager_v2 import (
+            SettingsManagerV2,
+        )
+        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+
+        tmp_file = _patch_v2_to_tmp(monkeypatch, tmp_path)
+        _patch_overlay_noop(monkeypatch)
+        _patch_appearance_runtime(monkeypatch)
+        layout = SettingsLayout()
+        try:
+            page = layout._appearance_page
+            page._on_color_clicked("auto")
+            layout.on_host_closing()
+            fresh = SettingsManagerV2(tmp_file)
+            fresh.load()
+            assert fresh.get("appearance.accent_color") == "auto"
+            assert fresh.get("appearance.colors.accent.primary") == "auto"
+        finally:
+            safe_teardown(layout)
+
     def test_apply_commits_and_persists_under_200ms(
         self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
     ) -> None:

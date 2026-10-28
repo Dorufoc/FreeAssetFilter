@@ -4252,6 +4252,26 @@ class TestAccentColorButton:
         assert received == ["#007AFF"]
         safe_teardown(btn)
 
+    def test_auto_click_emits_logical_value(self, qapp: QApplication) -> None:
+        """「自动」按钮显示系统色，但点击只发逻辑值 "auto"（不得落盘为具体色）。"""
+        btn = AccentColorButton("#007AFF", name="自动", center_text="A", value="auto")
+        received: list = []
+
+        def _on_clicked(value: str) -> None:
+            received.append(value)
+
+        btn.clicked.connect(_on_clicked)
+        press = QMouseEvent(
+            QEvent.MouseButtonPress,
+            QPointF(20, 20),
+            Qt.LeftButton,
+            Qt.LeftButton,
+            Qt.NoModifier,
+        )
+        btn.mousePressEvent(press)
+        assert received == ["auto"]
+        safe_teardown(btn)
+
     def test_paint_event_safe(self, qapp: QApplication) -> None:
         """离屏渲染不抛异常。"""
         btn = AccentColorButton("#007AFF", center_text="A")

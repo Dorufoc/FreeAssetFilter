@@ -2589,7 +2589,21 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
                 effective = "dark" if tm.is_dark_theme() else "light"
             v2.set("appearance.theme_mode", mode)
             v2.set("appearance.theme", effective)
-            v2.set("appearance.colors", dict(tm._colors))
+            colors = tm.snapshot_colors()
+            saved_accent = v2.get("appearance.accent_color")
+            raw_primary = v2.get("appearance.colors.accent.primary")
+            auto_accent = (
+                isinstance(saved_accent, str) and saved_accent.lower() == "auto"
+            ) or (
+                isinstance(raw_primary, str) and raw_primary.lower() == "auto"
+            )
+            if auto_accent and isinstance(colors.get("accent"), dict):
+                # 「自动」偏好必须以字面量落盘：本次启动解析出的系统色
+                # 只用于运行时，写回配置会让下次启动不再跟随系统强调色。
+                # 旧配置可能只在 colors.primary 标记 auto，此处一并归一化。
+                colors["accent"]["primary"] = "auto"
+                v2.set("appearance.accent_color", "auto")
+            v2.set("appearance.colors", colors)
             if not defer_save:
                 v2.save()
                 return
