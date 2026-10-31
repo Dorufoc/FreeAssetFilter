@@ -1,4 +1,4 @@
-<p align="center"><strong>该项目将于不久后推出2.0版本，敬请期待。届时该项目将以全新面貌带来全新体验。</strong></p>
+<p align="center"><strong>该项目将于不久后推出2.0版本，即将更名为 Sopeek 品牌，敬请期待。届时该项目将以全新面貌带来全新体验。</strong></p>
 
 <div align="center">
 
