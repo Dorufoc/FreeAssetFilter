@@ -30,8 +30,8 @@ from typing import Any, Callable, List, Optional
 import pytest
 from PySide6.QtCore import QThreadPool
 
-from freeassetfilter.core.managers.heartbeat_manager import HeartbeatManager
-from freeassetfilter.core.workers.staging_tasks import MD5CalculationTask
+from sopeek.core.managers.heartbeat_manager import HeartbeatManager
+from sopeek.core.workers.staging_tasks import MD5CalculationTask
 from tests.support.qt_helpers import process_qt_events
 
 pytestmark = pytest.mark.unit
@@ -97,7 +97,7 @@ def test_md5_normal_file(monkeypatch, tmp_path: Path) -> None:
         monkeypatch: pytest monkeypatch fixture。
         tmp_path: 临时目录。
     """
-    content: bytes = b"FreeAssetFilter staging md5 payload"
+    content: bytes = b"Sopeek staging md5 payload"
     target: Path = tmp_path / "data.bin"
     target.write_bytes(content)
 

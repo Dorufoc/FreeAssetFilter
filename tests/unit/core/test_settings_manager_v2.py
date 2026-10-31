@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """SettingsManagerV2 单元测试（todo 14 新建；此前仅有 v1 测试）。
 
-覆盖 ``freeassetfilter/core/managers/settings_manager_v2.py``：
+覆盖 ``sopeek/core/managers/settings_manager_v2.py``：
 
 * 默认树含 ``performance.profile == "balanced"``；
 * ``performance.profile`` 点号读写往返；
@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from freeassetfilter.core.managers.settings_manager_v2 import (
+from sopeek.core.managers.settings_manager_v2 import (
     DEFAULT_PERFORMANCE_PROFILE,
     DEFAULT_SETTINGS_V2,
     PERFORMANCE_PROFILES,
@@ -403,7 +403,7 @@ class TestStaleWriterProtection:
         """默认文件路径跟随应用数据目录（安装版可写目录由 path_utils 统一）。"""
         import os
 
-        from freeassetfilter.utils.path_utils import get_app_data_path
+        from sopeek.utils.path_utils import get_app_data_path
 
         v2 = SettingsManagerV2()
         assert v2.file_path == os.path.join(

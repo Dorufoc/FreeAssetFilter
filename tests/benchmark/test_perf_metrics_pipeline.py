@@ -2,7 +2,7 @@
 # targets: utils.perf_metrics
 """性能指标管线基准（todo-27 benchmark 重写）。
 
-覆盖 ``freeassetfilter.utils.perf_metrics`` 的完整管线（非 UI 依赖）：
+覆盖 ``sopeek.utils.perf_metrics`` 的完整管线（非 UI 依赖）：
 事件耗时记录、分位数（p50/p95/p99）、缓存命中/未命中计数、元数据、
 错误路径 failure 计数、JSON 快照导出往返一致性，以及事件吞吐量下限。
 
@@ -21,7 +21,7 @@ from typing import Any, Dict
 
 import pytest
 
-from freeassetfilter.utils.perf_metrics import (
+from sopeek.utils.perf_metrics import (
     clear_perf_metrics,
     export_perf_metrics,
     get_perf_snapshot,
@@ -136,7 +136,7 @@ class TestPerfMetricsPipeline:
         """导出到默认性能快照目录，供 ``run_tests.py regression`` 消费。
 
         回归子命令通过 ``_latest_perf_snapshot()`` 读取
-        ``~/.freeassetfilter/performance/perf_metrics_*.json``（见
+        ``~/.sopeek/performance/perf_metrics_*.json``（见
         run_tests.py ``PERF_SNAPSHOT_DIR``），故基准会话必须至少导出一次
         默认快照——否则 regression 报"未发现性能快照"退出 1。
         """

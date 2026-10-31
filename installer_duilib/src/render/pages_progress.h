@@ -38,7 +38,7 @@
 #include "render/text.h"
 #include "render/theme.h"
 
-namespace faf {
+namespace spk {
 
 class LogoBitmap;  // render/logo.h（Finish 英雄页图标，前向声明避免额外 include）
 
@@ -110,7 +110,7 @@ public:
     void SetStageText(std::wstring text);
     const std::wstring& StageText() const noexcept { return stageText_; }
 
-    // 标题（正在安装/修复/卸载 FreeAssetFilter），供渲染与测试断言。
+    // 标题（正在安装/修复/卸载 Sopeek），供渲染与测试断言。
     std::wstring HeadingText() const;
 
     // 依内容卡片矩形（DIP）布局控件。
@@ -195,7 +195,7 @@ public:
 
     // T8：按操作类型切换完成页形态。
     //  - Install  ：原样（产品名 + 版本 + 标语 + 大按钮「立即启动」；无复选框）。
-    //  - Repair   ：标题「修复完成」+ 复选框「立即启动 FreeAssetFilter」
+    //  - Repair   ：标题「修复完成」+ 复选框「立即启动 Sopeek」
     //               （绑定 state_.optLaunchAfterRepair，默认 false）+ 按钮「完成」。
     //  - Uninstall：标题「卸载完成」+ 按钮「关闭」；无复选框。
     void SetKind(Kind kind);
@@ -242,12 +242,12 @@ private:
     void RebuildHost();  // 按 kind 重建 Tab 顺序（Repair 追加复选框）
 
     AppState& state_;  // 借用（§12 共享状态）
-    std::wstring productName_ = L"FreeAssetFilter";
+    std::wstring productName_ = L"Sopeek";
     std::wstring version_;
     // 标语：与欢迎页完全一致的字符串（需求：完成页内容 = 欢迎页内容，仅按钮文案/图标不同）。
     std::wstring tagline_ = L"让文件浏览如丝般高效顺滑";
     // 标题：Install = 产品名；Repair/Uninstall = 状态文案。
-    std::wstring title_ = L"FreeAssetFilter";
+    std::wstring title_ = L"Sopeek";
     // 卸载完成后的 warning（非终端提示；仅 Uninstall 页渲染）。
     std::wstring notice_;
 
@@ -287,4 +287,4 @@ void RenderProgress(ID2D1DeviceContext* dc, const Theme& theme, ProgressPage& pa
 // 页面⑥渲染入口（薄包装，供 Todo 12 调用）。
 void RenderFinish(ID2D1DeviceContext* dc, const Theme& theme, FinishPage& page);
 
-}  // namespace faf
+}  // namespace spk

@@ -20,13 +20,13 @@ from PySide6.QtCore import QPoint, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPixmap, QRegion
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QVBoxLayout, QWidget
 
-# 组件模块内部使用短路径导入（from theme import tm），要求 freeassetfilter/ui
+# 组件模块内部使用短路径导入（from theme import tm），要求 sopeek/ui
 # 位于 sys.path；与 tests/unit/ui/components/test_styled_basic.py 保持一致。
-_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "freeassetfilter" / "ui")
+_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-from freeassetfilter.ui.components.styled_chat_bubble import (  # noqa: E402
+from sopeek.ui.components.styled_chat_bubble import (  # noqa: E402
     FILE_NAME_MIN_WIDTH,
     FOOTER_HEIGHT,
     HEADER_HEIGHT,
@@ -43,7 +43,7 @@ from freeassetfilter.ui.components.styled_chat_bubble import (  # noqa: E402
     make_ai_avatar_pixmap,
     window_fill_color,
 )
-from freeassetfilter.ui.theme import tm  # noqa: E402
+from sopeek.ui.theme import tm  # noqa: E402
 
 LONG_ASSISTANT_TEXT = "你好呀，可以给我发送文字、图片或文件试试，我会自动回复你。"
 

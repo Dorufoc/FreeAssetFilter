@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from freeassetfilter.utils import app_logger
+from sopeek.utils import app_logger
 
 pytestmark = pytest.mark.unit
 

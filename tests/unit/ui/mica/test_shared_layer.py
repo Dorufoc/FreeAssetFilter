@@ -18,8 +18,8 @@ from PySide6.QtCore import Signal
 from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import QWidget
 
-from freeassetfilter.ui.mica import material as material_mod
-from freeassetfilter.ui.mica.drag import ViewportLayer
+from sopeek.ui.mica import material as material_mod
+from sopeek.ui.mica.drag import ViewportLayer
 
 pytestmark = pytest.mark.unit
 
@@ -173,8 +173,8 @@ class TestSettingsWindowSharedBackground:
 
     def test_mica_mode_uses_cpu_shared_view(self, qapp, monkeypatch) -> None:
         """即使强制 GL 环境变量开启，设置窗口背景仍必须是 CPU 借用版。"""
-        monkeypatch.setenv("FAF_USE_GL_MICA", "1")
-        from freeassetfilter.ui.main_window import (
+        monkeypatch.setenv("SPK_USE_GL_MICA", "1")
+        from sopeek.ui.main_window import (
             MicaBackgroundWidgetCpu,
             MicaBackgroundWidgetGL,
             SettingsWindow,
@@ -201,7 +201,7 @@ class TestSettingsWindowSharedBackground:
 
     def test_follows_host_background_mode(self, qapp) -> None:
         """切到 image/minimalist 时隐藏共享层，切回 mica 时恢复。"""
-        from freeassetfilter.ui.main_window import SettingsWindow
+        from sopeek.ui.main_window import SettingsWindow
 
         host = _FakeHost()
         window = None
@@ -231,7 +231,7 @@ class TestSettingsWindowSharedBackground:
 
     def test_content_is_transparent_over_shared_layer(self, qapp) -> None:
         """内容容器必须透出共享层，而不是用 palette.Window 铺满整窗。"""
-        from freeassetfilter.ui.main_window import SettingsWindow
+        from sopeek.ui.main_window import SettingsWindow
 
         host = _FakeHost()
         window = None

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Unit tests for ``freeassetfilter.core.native.platform_gpu`` (W1, todo 10)."""
+"""Unit tests for ``sopeek.core.native.platform_gpu`` (W1, todo 10)."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ import subprocess
 
 import pytest
 
-from freeassetfilter.core.native import platform_gpu
-from freeassetfilter.core.native.platform_gpu import (
+from sopeek.core.native import platform_gpu
+from sopeek.core.native.platform_gpu import (
     apply_gpu_profile,
     build_launcher_command,
     current_gpu_affinity,
@@ -21,9 +21,9 @@ from freeassetfilter.core.native.platform_gpu import (
 
 
 def test_launcher_exe_path_points_into_repo_launcher_dir() -> None:
-    """launcher_exe_path resolves to <repo>/launcher/FAF-Launcher.exe."""
+    """launcher_exe_path resolves to <repo>/launcher/SPK-Launcher.exe."""
     exe = launcher_exe_path()
-    assert exe.name == "FAF-Launcher.exe"
+    assert exe.name == "SPK-Launcher.exe"
     assert exe.parent.name == "launcher"
     assert (exe.parent / "launcher.c").is_file()
 
@@ -31,11 +31,11 @@ def test_launcher_exe_path_points_into_repo_launcher_dir() -> None:
 def test_gpu_diag_script_env_override(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
-    """FAF_GPU_DIAG_SCRIPT 覆盖诊断脚本查找（审查 3.1#27）。"""
-    from freeassetfilter.core.native import _diagnostics
+    """SPK_GPU_DIAG_SCRIPT 覆盖诊断脚本查找（审查 3.1#27）。"""
+    from sopeek.core.native import _diagnostics
 
     target = tmp_path / "gpu_check.py"
-    monkeypatch.setenv("FAF_GPU_DIAG_SCRIPT", str(target))
+    monkeypatch.setenv("SPK_GPU_DIAG_SCRIPT", str(target))
     assert _diagnostics.gpu_diag_script() == target
 
 
@@ -123,7 +123,7 @@ def test_launcher_propagates_child_exit_code() -> None:
     import os
 
     env = dict(os.environ)
-    env["FAF_LAUNCHER_CMD"] = 'cmd.exe /c "exit 42"'
+    env["SPK_LAUNCHER_CMD"] = 'cmd.exe /c "exit 42"'
     proc = subprocess.run([str(exe)], env=env, capture_output=True,
                           timeout=60)
     assert proc.returncode == 42

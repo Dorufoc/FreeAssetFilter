@@ -13,8 +13,8 @@ import os
 
 import pytest
 
-from freeassetfilter.utils import path_utils
-from freeassetfilter.utils.path_utils import (
+from sopeek.utils import path_utils
+from sopeek.utils.path_utils import (
     contains_injection_chars,
     get_resource_path,
     is_sensitive_path,
@@ -31,14 +31,14 @@ class TestGetResourcePath:
 
     def test_existing_root_resource(self) -> None:
         """项目根资源存在时返回可解析路径。"""
-        result = get_resource_path("FAFVERSION")
+        result = get_resource_path("SPKVERSION")
         assert isinstance(result, str)
         assert os.path.exists(result)
         assert os.path.isfile(result)
 
     def test_existing_nested_resource(self) -> None:
         """嵌套路径资源存在时返回可解析路径。"""
-        result = get_resource_path("freeassetfilter/icons/FAF-main.png")
+        result = get_resource_path("sopeek/icons/SPK-main.png")
         assert os.path.exists(result)
         assert os.path.isfile(result)
 
@@ -50,20 +50,20 @@ class TestGetResourcePath:
 
     def test_result_is_absolute(self) -> None:
         """返回路径为绝对路径。"""
-        result = get_resource_path("FAFVERSION")
+        result = get_resource_path("SPKVERSION")
         assert os.path.isabs(result)
 
     def test_dev_branch_joins_cwd(self) -> None:
         """开发环境优先拼接 CWD。"""
-        result = get_resource_path("FAFVERSION")
-        assert result == os.path.join(os.path.abspath("."), "FAFVERSION")
+        result = get_resource_path("SPKVERSION")
+        assert result == os.path.join(os.path.abspath("."), "SPKVERSION")
 
     def test_walks_up_when_cwd_missing(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
         """CWD 不含资源时向上回溯到项目根目录。"""
         monkeypatch.chdir(tmp_path)
-        result = get_resource_path("FAFVERSION")
+        result = get_resource_path("SPKVERSION")
         assert os.path.exists(result)
-        assert result == os.path.join(path_utils._get_project_root(), "FAFVERSION")
+        assert result == os.path.join(path_utils._get_project_root(), "SPKVERSION")
 
 
 class TestIsSensitivePath:
@@ -257,14 +257,14 @@ class TestAppDataAndConfigDirs:
     def test_get_app_data_path_env_override_uncached(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """env 覆盖：直接返回 FAF_DATA_DIR 且不写进程级缓存。"""
-        from freeassetfilter.utils import path_utils
+        """env 覆盖：直接返回 SPK_DATA_DIR 且不写进程级缓存。"""
+        from sopeek.utils import path_utils
 
         created: list = []
         monkeypatch.setattr(path_utils, "_APP_DATA_PATH_CACHE", None)
-        monkeypatch.setenv("FAF_DATA_DIR", str(tmp_path / "isolated" / "data"))
+        monkeypatch.setenv("SPK_DATA_DIR", str(tmp_path / "isolated" / "data"))
         monkeypatch.setattr(
-            "freeassetfilter.utils.path_utils.os.makedirs",
+            "sopeek.utils.path_utils.os.makedirs",
             lambda *a, **k: created.append(a),
         )
         data_dir = path_utils.get_app_data_path()
@@ -279,13 +279,13 @@ class TestAppDataAndConfigDirs:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """无 env 覆盖：默认推导结果进程内缓存，二次调用无副作用。"""
-        from freeassetfilter.utils import path_utils
+        from sopeek.utils import path_utils
 
         created: list = []
-        monkeypatch.delenv("FAF_DATA_DIR", raising=False)
+        monkeypatch.delenv("SPK_DATA_DIR", raising=False)
         monkeypatch.setattr(path_utils, "_APP_DATA_PATH_CACHE", None)
         monkeypatch.setattr(
-            "freeassetfilter.utils.path_utils.os.makedirs",
+            "sopeek.utils.path_utils.os.makedirs",
             lambda *a, **k: created.append(a),
         )
         data_dir = path_utils.get_app_data_path()
@@ -300,11 +300,11 @@ class TestAppDataAndConfigDirs:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """``get_config_path`` 返回 config 目录。"""
-        from freeassetfilter.utils import path_utils
+        from sopeek.utils import path_utils
 
         created: list = []
         monkeypatch.setattr(
-            "freeassetfilter.utils.path_utils.os.makedirs",
+            "sopeek.utils.path_utils.os.makedirs",
             lambda *a, **k: created.append(a),
         )
         config_dir = path_utils.get_config_path()
@@ -314,20 +314,20 @@ class TestAppDataAndConfigDirs:
     def test_get_app_data_path_frozen_uses_local_appdata(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """冻结态数据目录 = ``%LOCALAPPDATA%\\FreeAssetFilter\\data``（用户可写）。"""
+        """冻结态数据目录 = ``%LOCALAPPDATA%\\Sopeek\\data``（用户可写）。"""
         import sys
 
-        monkeypatch.delenv("FAF_DATA_DIR", raising=False)
+        monkeypatch.delenv("SPK_DATA_DIR", raising=False)
         monkeypatch.setattr(path_utils, "_APP_DATA_PATH_CACHE", None)
         monkeypatch.setattr(sys, "frozen", True, raising=False)
         monkeypatch.setattr(
-            sys, "executable", str(tmp_path / "app" / "FreeAssetFilter.exe")
+            sys, "executable", str(tmp_path / "app" / "Sopeek.exe")
         )
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
 
         data_dir = path_utils.get_app_data_path()
         assert data_dir == os.path.join(
-            str(tmp_path / "LocalAppData"), "FreeAssetFilter", "data"
+            str(tmp_path / "LocalAppData"), "Sopeek", "data"
         )
         assert os.path.isdir(data_dir)
 
@@ -345,11 +345,11 @@ class TestAppDataAndConfigDirs:
         )
         (legacy_data / "backgrounds" / "bg.png").write_bytes(b"png")
 
-        monkeypatch.delenv("FAF_DATA_DIR", raising=False)
+        monkeypatch.delenv("SPK_DATA_DIR", raising=False)
         monkeypatch.setattr(path_utils, "_APP_DATA_PATH_CACHE", None)
         monkeypatch.setattr(sys, "frozen", True, raising=False)
         monkeypatch.setattr(
-            sys, "executable", str(app_dir / "FreeAssetFilter.exe")
+            sys, "executable", str(app_dir / "Sopeek.exe")
         )
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
 
@@ -370,16 +370,16 @@ class TestAppDataAndConfigDirs:
             '{"version": 2, "old": true}', encoding="utf-8"
         )
 
-        monkeypatch.delenv("FAF_DATA_DIR", raising=False)
+        monkeypatch.delenv("SPK_DATA_DIR", raising=False)
         monkeypatch.setattr(path_utils, "_APP_DATA_PATH_CACHE", None)
         monkeypatch.setattr(sys, "frozen", True, raising=False)
         monkeypatch.setattr(
-            sys, "executable", str(app_dir / "FreeAssetFilter.exe")
+            sys, "executable", str(app_dir / "Sopeek.exe")
         )
         local_appdata = tmp_path / "LocalAppData"
         monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
 
-        new_data = local_appdata / "FreeAssetFilter" / "data"
+        new_data = local_appdata / "Sopeek" / "data"
         new_data.mkdir(parents=True)
         (new_data / "settings_v2.json").write_text(
             '{"version": 2, "new": true}', encoding="utf-8"
@@ -400,7 +400,7 @@ class TestPathSafetyStrategy:
 
     def test_is_path_allowed_empty_false(self) -> None:
         """空路径直接拒绝。"""
-        from freeassetfilter.utils import path_utils
+        from sopeek.utils import path_utils
 
         assert path_utils.is_path_allowed("") is False
         assert path_utils.is_path_allowed(None) is False
@@ -409,7 +409,7 @@ class TestPathSafetyStrategy:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """白名单内路径放行（monkeypatch 白名单避免真实目录探测）。"""
-        from freeassetfilter.utils import path_utils
+        from sopeek.utils import path_utils
 
         monkeypatch.setattr(
             path_utils, "_ALLOWED_BASE_PATHS", [str(monkeypatch) or "/"]
@@ -428,7 +428,7 @@ class TestPathSafetyStrategy:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """非严格模式：带扩展名的普通文件路径放行。"""
-        from freeassetfilter.utils import path_utils
+        from sopeek.utils import path_utils
 
         monkeypatch.setattr(path_utils, "_ALLOWED_BASE_PATHS", [])
         monkeypatch.setattr(path_utils, "_init_allowed_paths", lambda: None)
@@ -444,7 +444,7 @@ class TestPathSafetyStrategy:
 
     def test_is_path_within_base(self, tmp_path: object) -> None:
         """子路径在基目录内返回 True；兄弟路径返回 False。"""
-        from freeassetfilter.utils import path_utils
+        from sopeek.utils import path_utils
 
         base = str(tmp_path)
         child = str(tmp_path / "sub" / "file.txt")
@@ -455,7 +455,7 @@ class TestPathSafetyStrategy:
 
     def test_validate_safe_path_empty_raises(self) -> None:
         """空路径抛 ``ValueError``。"""
-        from freeassetfilter.utils import path_utils
+        from sopeek.utils import path_utils
 
         with pytest.raises(ValueError):
             path_utils.validate_safe_path("")
@@ -464,7 +464,7 @@ class TestPathSafetyStrategy:
         self, tmp_path: object
     ) -> None:
         """未指定 base 时返回真实绝对路径。"""
-        from freeassetfilter.utils import path_utils
+        from sopeek.utils import path_utils
 
         target = str(tmp_path / "a.txt")
         result = path_utils.validate_safe_path(target)
@@ -472,7 +472,7 @@ class TestPathSafetyStrategy:
 
     def test_validate_safe_path_base_normalization(self, tmp_path: object) -> None:
         """base 内路径返回规范化路径；base 外抛 ``ValueError``。"""
-        from freeassetfilter.utils import path_utils
+        from sopeek.utils import path_utils
 
         inside = str(tmp_path / "ok" / "file.txt")
         assert path_utils.validate_safe_path(
@@ -490,10 +490,10 @@ class TestPathSafetyStrategy:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """DLL 搜索路径优先 core 与项目根。"""
-        from freeassetfilter.utils import path_utils
+        from sopeek.utils import path_utils
 
         monkeypatch.setattr(path_utils, "validate_dll_path", lambda p: True)
         paths = path_utils.get_safe_dll_paths("libmpv-2.dll")
         root = path_utils._get_project_root()
-        assert os.path.join(root, "freeassetfilter", "core", "libmpv-2.dll") in paths
+        assert os.path.join(root, "sopeek", "core", "libmpv-2.dll") in paths
         assert os.path.join(root, "libmpv-2.dll") in paths

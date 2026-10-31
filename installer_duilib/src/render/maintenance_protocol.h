@@ -12,10 +12,10 @@
 //
 #include <cstdint>
 
-namespace faf::protocol {
+namespace spk::protocol {
 
-// 测试构建由 CMake -DFAF_TESTMODE=ON 注入（cmake/test_mode.cmake）；生产构建该宏未定义。
-#ifdef FAF_TESTMODE
+// 测试构建由 CMake -DSPK_TESTMODE=ON 注入（cmake/test_mode.cmake）；生产构建该宏未定义。
+#ifdef SPK_TESTMODE
 inline constexpr bool kTestMode = true;
 #else
 inline constexpr bool kTestMode = false;
@@ -27,21 +27,21 @@ inline constexpr bool kTestMode = false;
 
 // 安装信息键（位于 HKCU / HKEY_CURRENT_USER）：
 //   InstallDir / InstallLocation / OptDesktop / OptStartmenu / OptAutostart / Version。
-inline constexpr wchar_t kInstallInfoKeyProd[] = L"Software\\FreeAssetFilter";
-inline constexpr wchar_t kInstallInfoKeyTest[] = L"Software\\FreeAssetFilterTest";
+inline constexpr wchar_t kInstallInfoKeyProd[] = L"Software\\Sopeek";
+inline constexpr wchar_t kInstallInfoKeyTest[] = L"Software\\SopeekTest";
 inline constexpr const wchar_t* kInstallInfoKey =
     kTestMode ? kInstallInfoKeyTest : kInstallInfoKeyProd;
 
 // 卸载键（Add/Remove Programs）：
-//   生产 = HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilter
+//   生产 = HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\Sopeek
 //          64 位视图（NSIS 配合 SetRegView 64；C++ 使用 KEY_WOW64_64KEY）。
-//   测试 = HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilterTest
+//   测试 = HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\SopeekTest
 //          （与 installer.nsi 现有测试分支、D13/T16 一致；HKCU\...\Uninstall
 //          不受 WOW64 重定向，测试绝不触碰生产键）。
 inline constexpr wchar_t kUninstallKeyProd[] =
-    L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\FreeAssetFilter";
+    L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Sopeek";
 inline constexpr wchar_t kUninstallKeyTest[] =
-    L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\FreeAssetFilterTest";
+    L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\SopeekTest";
 inline constexpr const wchar_t* kUninstallKey =
     kTestMode ? kUninstallKeyTest : kUninstallKeyProd;
 
@@ -58,22 +58,22 @@ inline constexpr wchar_t kValueVersion[] = L"Version";
 // ---------------------------------------------------------------------------
 
 // SetupMutex：NSIS setup 从 .onInit 持有到进程退出。
-inline constexpr wchar_t kSetupMutexProd[] = L"Local\\FreeAssetFilterSetupMutex";
-inline constexpr wchar_t kSetupMutexTest[] = L"Local\\FreeAssetFilterSetupMutex.Test";
+inline constexpr wchar_t kSetupMutexProd[] = L"Local\\SopeekSetupMutex";
+inline constexpr wchar_t kSetupMutexTest[] = L"Local\\SopeekSetupMutex.Test";
 inline constexpr const wchar_t* kSetupMutex =
     kTestMode ? kSetupMutexTest : kSetupMutexProd;
 
 // MaintenanceMutex：C++ GUI 所有模式持有到窗口销毁，防止第二个 UI。
-inline constexpr wchar_t kMaintenanceMutexProd[] = L"Local\\FreeAssetFilterMaintenanceMutex";
-inline constexpr wchar_t kMaintenanceMutexTest[] = L"Local\\FreeAssetFilterMaintenanceMutex.Test";
+inline constexpr wchar_t kMaintenanceMutexProd[] = L"Local\\SopeekMaintenanceMutex";
+inline constexpr wchar_t kMaintenanceMutexTest[] = L"Local\\SopeekMaintenanceMutex.Test";
 inline constexpr const wchar_t* kMaintenanceMutex =
     kTestMode ? kMaintenanceMutexTest : kMaintenanceMutexProd;
 
 // UninstallEngineMutex：NSIS 卸载 helper 从 un.onInit 持有到进程退出。
 inline constexpr wchar_t kUninstallEngineMutexProd[] =
-    L"Local\\FreeAssetFilterUninstallEngineMutex";
+    L"Local\\SopeekUninstallEngineMutex";
 inline constexpr wchar_t kUninstallEngineMutexTest[] =
-    L"Local\\FreeAssetFilterUninstallEngineMutex.Test";
+    L"Local\\SopeekUninstallEngineMutex.Test";
 inline constexpr const wchar_t* kUninstallEngineMutex =
     kTestMode ? kUninstallEngineMutexTest : kUninstallEngineMutexProd;
 
@@ -116,21 +116,21 @@ inline constexpr wchar_t kActionCancel[] = L"cancel";
 // 安装目录内固定文件名（D10/C4；供 UI、进程匹配与卸载入口复用）
 // ---------------------------------------------------------------------------
 
-inline constexpr wchar_t kAppExeName[] = L"FreeAssetFilter.exe";
-inline constexpr wchar_t kUninstallUiExeName[] = L"FreeAssetFilterUninstall.exe";
+inline constexpr wchar_t kAppExeName[] = L"Sopeek.exe";
+inline constexpr wchar_t kUninstallUiExeName[] = L"SopeekUninstall.exe";
 inline constexpr wchar_t kUninstallHelperExeName[] = L"UninstallHelper.exe";
 inline constexpr wchar_t kLibwinpthreadDllName[] = L"libwinpthread-1.dll";
 inline constexpr wchar_t kInternalDirName[] = L"_internal";
 
 // 快捷方式词干（D13/F2 测试隔离的唯一事实来源）：
-//   生产 = FreeAssetFilter：桌面 <Desktop>\FreeAssetFilter.lnk，开始菜单
-//          <Programs>\FreeAssetFilter\FreeAssetFilter.lnk（同名文件夹）。
-//   测试 = FreeAssetFilterTest：桌面 <Desktop>\FreeAssetFilterTest.lnk，开始菜单
-//          <Programs>\FreeAssetFilterTest.lnk（扁平，不使用生产文件夹）。
+//   生产 = Sopeek：桌面 <Desktop>\Sopeek.lnk，开始菜单
+//          <Programs>\Sopeek\Sopeek.lnk（同名文件夹）。
+//   测试 = SopeekTest：桌面 <Desktop>\SopeekTest.lnk，开始菜单
+//          <Programs>\SopeekTest.lnk（扁平，不使用生产文件夹）。
 // installer.nsi 不能 include 本头文件，必须同步维护
 // !define SHORTCUT_STEM_PROD / SHORTCUT_STEM_TEST（见 installer.nsi）。
-inline constexpr wchar_t kShortcutStemProd[] = L"FreeAssetFilter";
-inline constexpr wchar_t kShortcutStemTest[] = L"FreeAssetFilterTest";
+inline constexpr wchar_t kShortcutStemProd[] = L"Sopeek";
+inline constexpr wchar_t kShortcutStemTest[] = L"SopeekTest";
 inline constexpr const wchar_t* kShortcutStem =
     kTestMode ? kShortcutStemTest : kShortcutStemProd;
 
@@ -180,4 +180,4 @@ inline constexpr std::uint32_t kGuiWindowDetectMs = 10u * 1000u;
 // 跨进程轮询间隔：200 毫秒（D3/M4/H5）。
 inline constexpr std::uint32_t kPollIntervalMs = 200u;
 
-}  // namespace faf::protocol
+}  // namespace spk::protocol

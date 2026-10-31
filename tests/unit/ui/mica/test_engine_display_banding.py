@@ -21,8 +21,8 @@ import dataclasses
 
 import numpy as np
 
-from freeassetfilter.ui.mica import engine
-from freeassetfilter.ui.mica.config import MicaParams
+from sopeek.ui.mica import engine
+from sopeek.ui.mica.config import MicaParams
 
 
 def _make_gradient_field(gw: int = 320, gh: int = 200) -> "engine.BakedField":

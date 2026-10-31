@@ -8,7 +8,7 @@
 
 #include "render/app_state.h"
 
-namespace faf {
+namespace spk {
 
 namespace {
 
@@ -68,4 +68,4 @@ UINT SafeDpi(UINT dpi) { return dpi != 0 ? dpi : layout::kFallbackDpi; }
 
 float ClientPxToDipScale(UINT dpi) { return 96.0f / static_cast<float>(SafeDpi(dpi)); }
 
-}  // namespace faf
+}  // namespace spk

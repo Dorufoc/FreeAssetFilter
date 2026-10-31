@@ -17,7 +17,7 @@
   ``cpp_lut_available``——复用归档旧逻辑并新增 Rust / C++ 原生探测。
 * 数据生成器 fixtures 全部基于 ``tests.support.data_factories``，取代旧
   conftest 中以 ``temp_image_file`` 等命名的重复实现。
-* ``FAF_VISUAL`` 环境变量驱动 ``visual_mode``，供 GUI 测试区分视觉模式。
+* ``SPK_VISUAL`` 环境变量驱动 ``visual_mode``，供 GUI 测试区分视觉模式。
 """
 
 from __future__ import annotations
@@ -40,21 +40,21 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-# 项目根目录加入 sys.path，保证裸 `pytest`（非 -m）也能解析 freeassetfilter/。
+# 项目根目录加入 sys.path，保证裸 `pytest`（非 -m）也能解析 sopeek/。
 _PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in os.sys.path:
     os.sys.path.insert(0, str(_PROJECT_ROOT))
 
-# 数据目录统一重定向（review 3.5-4）：``FAF_DATA_DIR`` 会话级指向临时目录，
+# 数据目录统一重定向（review 3.5-4）：``SPK_DATA_DIR`` 会话级指向临时目录，
 # 作为"逐测试重定向"（redirect_layout_app_data_writes）之外的全局安全网，
 # 保证任何走 get_app_data_path() 的模块都不会落到仓库真实 data/。
 # 全局引用持有到进程结束，随解释器退出自动清理。
-_FAF_TEST_DATA_TMP = tempfile.TemporaryDirectory(prefix="faf_test_data_")
-os.environ["FAF_DATA_DIR"] = _FAF_TEST_DATA_TMP.name
+_SPK_TEST_DATA_TMP = tempfile.TemporaryDirectory(prefix="spk_test_data_")
+os.environ["SPK_DATA_DIR"] = _SPK_TEST_DATA_TMP.name
 try:
     # 缓存可能已被运行器/更早的导入预热为真实 data/：强制失效，
-    # 保证进程内所有后续解析都走 FAF_DATA_DIR。
-    import freeassetfilter.utils.path_utils as _path_utils_module
+    # 保证进程内所有后续解析都走 SPK_DATA_DIR。
+    import sopeek.utils.path_utils as _path_utils_module
 
     _path_utils_module._APP_DATA_PATH_CACHE = None
 except Exception:
@@ -106,7 +106,7 @@ def qt_app(qapp: Any) -> Any:
 def _cleanup_qt_runtime() -> None:
     """回收会话级 Qt 原生资源（GPU 渲染器线程 / 线程池）。
 
-    会话结束时调用：Mica GPU 的常驻守护线程（``faf-mica-gpu``）持有
+    会话结束时调用：Mica GPU 的常驻守护线程（``spk-mica-gpu``）持有
     D3D11/COM 上下文，若不显式回收，测试进程退出阶段可能撞上原生清理而
     触发访问冲突（历史症状：``test_styled_complex`` 之后组合运行偶发
     ``0xC0000005``）。``shutdown_gpu_renderer`` 内部有界 join，卡死时只
@@ -117,7 +117,7 @@ def _cleanup_qt_runtime() -> None:
         None。
     """
     try:
-        from freeassetfilter.ui.mica.gpu import shutdown_gpu_renderer
+        from sopeek.ui.mica.gpu import shutdown_gpu_renderer
 
         shutdown_gpu_renderer()
     except Exception:
@@ -136,7 +136,7 @@ def cleanup_qt_runtime(qapp: Any) -> Any:
 
     在整套测试结束后回收 Mica GPU 渲染器常驻线程与全局线程池，
     并做一轮有界事件泵让 deferred delete 落地，最后统计存活顶层窗口
-    （仅在 ``FAF_TEST_RUNTIME_DEBUG=1`` 时打印，供隔离诊断）。
+    （仅在 ``SPK_TEST_RUNTIME_DEBUG=1`` 时打印，供隔离诊断）。
 
     Args:
         qapp: 会话级 QApplication（保证清理发生在应用存活期内）。
@@ -146,7 +146,7 @@ def cleanup_qt_runtime(qapp: Any) -> Any:
     """
     yield qapp
     _cleanup_qt_runtime()
-    if os.environ.get("FAF_TEST_RUNTIME_DEBUG") == "1":
+    if os.environ.get("SPK_TEST_RUNTIME_DEBUG") == "1":
         try:
             alive = len(qapp.topLevelWidgets())
             print(f"[cleanup] session end: topLevelWidgets={alive}", flush=True)
@@ -168,7 +168,7 @@ def _reset_all_singletons() -> None:
       用 ``hasattr`` 守卫跳过）。
     * 模块级惰性缓存（类属性重置覆盖不到）：
       ``thumbnail_manager._thumbnail_manager``、``app_logger._app_logger``、
-      ``async_icon_loader._instance``、``faf_core_bridge._instance``、
+      ``async_icon_loader._instance``、``spk_core_bridge._instance``、
       ``lut_preview_generator._preview_generator``、
       ``lut_preview_native._module``、``mica_render._LIB``、
       ``py7z_core._7z_core_instance``。
@@ -188,17 +188,17 @@ def _reset_all_singletons() -> None:
     Returns:
         None。
     """
-    from freeassetfilter.core.managers.heartbeat_manager import HeartbeatManager
-    from freeassetfilter.core.managers.mpv_manager import MPVManager
-    from freeassetfilter.core.managers.thumbnail_manager import ThumbnailManager
-    from freeassetfilter.utils.app_logger import AppLogger
-    from freeassetfilter.utils.async_icon_loader import AsyncIconLoader
+    from sopeek.core.managers.heartbeat_manager import HeartbeatManager
+    from sopeek.core.managers.mpv_manager import MPVManager
+    from sopeek.core.managers.thumbnail_manager import ThumbnailManager
+    from sopeek.utils.app_logger import AppLogger
+    from sopeek.utils.async_icon_loader import AsyncIconLoader
 
-    import freeassetfilter.core.managers.thumbnail_manager as _thumbnail_module
+    import sopeek.core.managers.thumbnail_manager as _thumbnail_module
 
     # 更新入口控制器持有弹窗并订阅 UpdateService 信号，先释放再销毁服务。
     try:
-        from freeassetfilter.ui.update_entry import reset_update_entry_controller
+        from sopeek.ui.update_entry import reset_update_entry_controller
 
         reset_update_entry_controller()
     except Exception:  # 清理阶段：控制器可能尚未创建
@@ -206,7 +206,7 @@ def _reset_all_singletons() -> None:
 
     # UpdateService 持有私有 QThreadPool，先走 shutdown/close 再清空单例。
     try:
-        from freeassetfilter.services.update_service import UpdateService
+        from sopeek.services.update_service import UpdateService
 
         _update_service = UpdateService._instance
         if _update_service is not None:
@@ -240,17 +240,17 @@ def _reset_all_singletons() -> None:
     # AsyncIconLoader 模块级单例缓存。
     AsyncIconLoader._instance = None
 
-    # faf_core 桥模块级单例缓存（get_faf_core_bridge 的返回值）。
-    import freeassetfilter.core.native.bridges.faf_core_bridge as _faf_core_bridge
+    # spk_core 桥模块级单例缓存（get_spk_core_bridge 的返回值）。
+    import sopeek.core.native.bridges.spk_core_bridge as _spk_core_bridge
 
-    _faf_core_bridge._instance = None
+    _spk_core_bridge._instance = None
 
     # 模块级惰性缓存（类属性重置覆盖不到；review 3.5-4 补齐）。
-    import freeassetfilter.core.native.bridges.lut_preview_generator as _lut_gen
-    import freeassetfilter.core.native.bridges.lut_preview_native as _lut_native
-    import freeassetfilter.core.native.bridges.mica_render as _mica_render
-    import freeassetfilter.core.native.bridges.py7z_core as _py7z
-    import freeassetfilter.utils.app_logger as _app_logger_module
+    import sopeek.core.native.bridges.lut_preview_generator as _lut_gen
+    import sopeek.core.native.bridges.lut_preview_native as _lut_native
+    import sopeek.core.native.bridges.mica_render as _mica_render
+    import sopeek.core.native.bridges.py7z_core as _py7z
+    import sopeek.utils.app_logger as _app_logger_module
 
     _app_logger_module._app_logger = None
     _lut_gen._preview_generator = None
@@ -259,14 +259,14 @@ def _reset_all_singletons() -> None:
     _py7z._7z_core_instance = None
 
     # 数据目录缓存逐测试失效：即使某处（运行器预导入/晚到的异步回调）
-    # 曾把真实 data/ 写进缓存，后续一律重新解析到 FAF_DATA_DIR 临时目录。
-    import freeassetfilter.utils.path_utils as _path_utils_module
+    # 曾把真实 data/ 写进缓存，后续一律重新解析到 SPK_DATA_DIR 临时目录。
+    import sopeek.utils.path_utils as _path_utils_module
 
     _path_utils_module._APP_DATA_PATH_CACHE = None
 
     # 主线程卡顿哨兵模块级单例（P6.1）：卸载并注销快照 provider。
     try:
-        import freeassetfilter.utils.ui_watchdog as _ui_watchdog
+        import sopeek.utils.ui_watchdog as _ui_watchdog
 
         _ui_watchdog.uninstall()
     except Exception:  # 测试隔离：模块未导入/未安装时无需卸载
@@ -274,7 +274,7 @@ def _reset_all_singletons() -> None:
 
     # 线程池分层单例（P6.2）：排空并清空，避免跨用例残留线程。
     try:
-        from freeassetfilter.core import pools as _pools
+        from sopeek.core import pools as _pools
 
         _pools.reset_for_tests()
     except Exception:  # 测试隔离：线程池模块未导入时跳过
@@ -282,7 +282,7 @@ def _reset_all_singletons() -> None:
 
     # 内存预算单例（P7.2）：重置档位与账本。
     try:
-        from freeassetfilter.core import memory_budget as _memory_budget
+        from sopeek.core import memory_budget as _memory_budget
 
         _memory_budget.reset_for_tests()
     except Exception:  # 测试隔离：预算模块未导入时跳过
@@ -294,7 +294,7 @@ def _reset_all_singletons() -> None:
     # re-register from their own constructors; visual tests pump events
     # which triggers the coalesced re-apply automatically.
     try:
-        from freeassetfilter.ui.theme.app_stylesheet import reset_qss_registry
+        from sopeek.ui.theme.app_stylesheet import reset_qss_registry
 
         reset_qss_registry()
     except Exception:
@@ -347,7 +347,7 @@ def scavenge_leaked_toplevel_widgets() -> None:
     yield
     try:
         removed = scavenge_toplevel_widgets(baseline)
-        if removed and os.environ.get("FAF_TEST_SCAVENGE_DEBUG") == "1":
+        if removed and os.environ.get("SPK_TEST_SCAVENGE_DEBUG") == "1":
             print(
                 f"[scavenge] removed {removed} toplevel widget(s) after "
                 f"{os.environ.get('PYTEST_CURRENT_TEST', '?')}",
@@ -366,7 +366,7 @@ def redirect_layout_app_data_writes(
 
     背景：FileSelectorLayout / FilePoolLayout 在导航/增删文件时会把
     ``last_path.json`` / ``staging_pool_backup.json`` 写入真实的
-    ``freeassetfilter/data/`` 目录，导致测试结束后真实应用启动时可能
+    ``sopeek/data/`` 目录，导致测试结束后真实应用启动时可能
     恢复并跳转到 pytest 的临时目录（``_pytest`` 会保留最近几次运行的
     basetemp）。此处把两个布局模块命名空间中已绑定的
     ``get_app_data_path`` 引用统一重定向到本用例的临时目录，保证布局
@@ -380,10 +380,10 @@ def redirect_layout_app_data_writes(
     Returns:
         None。
     """
-    import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
-    import freeassetfilter.ui.layout.file_selector_layout as fsl_mod
+    import sopeek.ui.layout.file_pool_layout as fpl_mod
+    import sopeek.ui.layout.file_selector_layout as fsl_mod
 
-    _app_data: Path = tmp_path / "faf_test_appdata"
+    _app_data: Path = tmp_path / "spk_test_appdata"
     _app_data.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(fsl_mod, "get_app_data_path", lambda: _app_data)
     monkeypatch.setattr(fpl_mod, "get_app_data_path", lambda: _app_data)
@@ -409,7 +409,7 @@ def isolate_floating_pool_position(monkeypatch: pytest.MonkeyPatch) -> None:
     Returns:
         None。
     """
-    fpw = sys.modules.get("freeassetfilter.ui.floating_pool_window")
+    fpw = sys.modules.get("sopeek.ui.floating_pool_window")
     if fpw is None:
         return
     monkeypatch.setattr(fpw, "_load_persisted_position", lambda: None)
@@ -426,7 +426,7 @@ def settings_manager(tmp_path: Path) -> Any:
     Returns:
         SettingsManagerV2: 绑定临时 ``settings_v2.json`` 的新实例。
     """
-    from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+    from sopeek.core.managers.settings_manager_v2 import SettingsManagerV2
 
     settings_file: Path = tmp_path / "test_settings_v2.json"
     manager = SettingsManagerV2(file_path=str(settings_file))
@@ -446,7 +446,7 @@ def heartbeat_manager(qapp: Any) -> Any:
     Returns:
         HeartbeatManager: 已 start 的新实例。
     """
-    from freeassetfilter.core.managers.heartbeat_manager import HeartbeatManager
+    from sopeek.core.managers.heartbeat_manager import HeartbeatManager
 
     HeartbeatManager._instance = None
     HeartbeatManager._initialized = False
@@ -479,7 +479,7 @@ def _probe_bundled_dll(dll_names: List[str]) -> bool:
             continue
     for search_dir in search_dirs:
         for base in dll_names:
-            candidate: Path = search_dir / "freeassetfilter" / "core" / "native" / "bin" / base
+            candidate: Path = search_dir / "sopeek" / "core" / "native" / "bin" / base
             if candidate.is_file():
                 try:
                     ctypes.CDLL(str(candidate))
@@ -494,7 +494,7 @@ def mpv_available() -> bool:
     """探测 libmpv-2.dll 是否可加载（session scope）。
 
     复用归档旧逻辑（old-tests-snapshot/tests/conftest.py:480-521）：
-    先尝试系统默认加载，再搜索项目内 ``freeassetfilter/core/native/bin``
+    先尝试系统默认加载，再搜索项目内 ``sopeek/core/native/bin``
     下的捆绑 DLL 逐位置尝试。从不抛出异常——任何尝试失败都返回 False。
 
     Returns:
@@ -520,18 +520,18 @@ def rust_available() -> bool:
 
 
 @pytest.fixture(scope="session")
-def faf_core_available() -> bool:
-    """探测 faf_core 统一原生核心 DLL 是否可用（session scope）。
+def spk_core_available() -> bool:
+    """探测 spk_core 统一原生核心 DLL 是否可用（session scope）。
 
-    探测 ``native/bin`` 下的 ``faf_core.dll``，
+    探测 ``native/bin`` 下的 ``spk_core.dll``，
     用 ctypes 尝试加载以判断可用性。
     用 ctypes 探测，避免导入模块时产生副作用。
 
     Returns:
-        bool: faf_core.dll 可加载即为 True。
+        bool: spk_core.dll 可加载即为 True。
     """
     return _probe_bundled_dll(
-        ["faf_core.dll"]
+        ["spk_core.dll"]
     )
 
 
@@ -547,7 +547,7 @@ def cpp_lut_available() -> bool:
         bool: C++ 扩展可用则为 True，否则 False。
     """
     try:
-        from freeassetfilter.core.native.bridges import lut_preview_native
+        from sopeek.core.native.bridges import lut_preview_native
 
         lut_preview_native.reset()
         return bool(lut_preview_native.is_cpp_available())
@@ -568,7 +568,7 @@ def py7z_available() -> bool:
     """
     if importlib.util.find_spec("py7zr") is not None:
         return True
-    seven_zip: Path = _PROJECT_ROOT / "freeassetfilter" / "core" / "native" / "bin" / "7z" / "7z.exe"
+    seven_zip: Path = _PROJECT_ROOT / "sopeek" / "core" / "native" / "bin" / "7z" / "7z.exe"
     return seven_zip.is_file()
 
 
@@ -577,14 +577,14 @@ def soffice_available() -> bool:
     """探测 LibreOffice soffice 可执行文件是否可用（session scope）。
 
     复用归档旧逻辑（old-tests-snapshot/tests/conftest.py:524-551），通过
-    ``freeassetfilter.core._paths.soffice_paths()`` 获取候选目录并在调用点
+    ``sopeek.core._paths.soffice_paths()`` 获取候选目录并在调用点
     try/except 包裹，避免与核心路径模块产生 import 时序耦合。
 
     Returns:
         bool: 至少一个候选目录存在 soffice 可执行文件则为 True。
     """
     try:
-        from freeassetfilter.core._paths import soffice_paths
+        from sopeek.core._paths import soffice_paths
     except (ImportError, AttributeError):
         return False
     try:
@@ -654,7 +654,7 @@ def ffmpeg_available() -> bool:
     """探测捆绑的 ffmpeg.exe 是否可执行（session scope）。
 
     镜像 ``mpv_available`` / ``rust_available`` 的探测纪律：检查
-    ``freeassetfilter/core/native/bin/ffmpeg.exe`` 存在，且
+    ``sopeek/core/native/bin/ffmpeg.exe`` 存在，且
     ``subprocess.run([path, "-version"], timeout=5)`` 返回码为 0。
     从不抛出异常——任何失败都返回 False。
 
@@ -662,7 +662,7 @@ def ffmpeg_available() -> bool:
         bool: ffmpeg.exe 存在且 ``-version`` 返回 0 则为 True。
     """
     ffmpeg_bin: Path = (
-        _PROJECT_ROOT / "freeassetfilter" / "core" / "native" / "bin" / "ffmpeg.exe"
+        _PROJECT_ROOT / "sopeek" / "core" / "native" / "bin" / "ffmpeg.exe"
     )
     if not ffmpeg_bin.is_file():
         return False
@@ -942,16 +942,16 @@ def video_sample_paths(tmp_path_factory: Any) -> List[str]:
 # =============================================================================
 @pytest.fixture(scope="session")
 def visual_mode() -> bool:
-    """读取 ``FAF_VISUAL`` 环境变量判断当前是否为视觉/GUI 模式。
+    """读取 ``SPK_VISUAL`` 环境变量判断当前是否为视觉/GUI 模式。
 
     运行器（tests/run_tests.py, todo-5）在 ``gui`` 子命令中会设置
-    ``FAF_VISUAL=1`` 并取消 offscreen；gui 测试据此决定是否执行真实
+    ``SPK_VISUAL=1`` 并取消 offscreen；gui 测试据此决定是否执行真实
     渲染断言。
 
     Returns:
-        bool: ``FAF_VISUAL`` 为 1/true/yes/on 等真值时返回 True。
+        bool: ``SPK_VISUAL`` 为 1/true/yes/on 等真值时返回 True。
     """
-    value: str = os.environ.get("FAF_VISUAL", "")
+    value: str = os.environ.get("SPK_VISUAL", "")
     return value.strip().lower() in ("1", "true", "yes", "on")
 
 

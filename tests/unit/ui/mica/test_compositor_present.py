@@ -16,7 +16,7 @@ from __future__ import annotations
 import pytest
 from PySide6.QtGui import QPixmap
 
-from freeassetfilter.ui.mica.compositor import (
+from sopeek.ui.mica.compositor import (
     MAX_PRESENT_INTERVAL_MS,
     MIN_PRESENT_INTERVAL_MS,
     PRESENT_DEFER,
@@ -24,7 +24,7 @@ from freeassetfilter.ui.mica.compositor import (
     PRESENT_SKIP,
     ViewportCompositor,
 )
-from freeassetfilter.ui.mica.drag import ViewportLayer
+from sopeek.ui.mica.drag import ViewportLayer
 
 #: 虚拟桌面矩形（层 1:1 覆盖）。
 REGION = (0, 0, 2560, 1440)

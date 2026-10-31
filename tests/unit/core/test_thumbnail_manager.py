@@ -44,7 +44,7 @@ def thumb_manager(tmp_path: Any) -> Any:
     Returns:
         ThumbnailManager: 绑定临时缓存目录的新实例。
     """
-    from freeassetfilter.core.managers.thumbnail_manager import ThumbnailManager
+    from sopeek.core.managers.thumbnail_manager import ThumbnailManager
 
     manager = ThumbnailManager()
     thumb_dir: str = str(tmp_path / "thumbs")
@@ -106,7 +106,7 @@ class TestFileClassification:
 
     def test_module_level_singleton_bridge(self, thumb_manager: Any) -> None:
         """``get_thumbnail_manager`` 返回同构单例（类级 _instance 共用）。"""
-        import freeassetfilter.core.managers.thumbnail_manager as tm_module
+        import sopeek.core.managers.thumbnail_manager as tm_module
 
         manager: Any = tm_module.get_thumbnail_manager()
         assert manager is thumb_manager
@@ -349,7 +349,7 @@ class TestFrameCacheEntries:
 
     def test_frame_cache_entry_fields(self) -> None:
         """帧缓存条目：frame/timestamp/position/estimated_bytes。"""
-        from freeassetfilter.core.managers.thumbnail_manager import FrameCacheEntry
+        from sopeek.core.managers.thumbnail_manager import FrameCacheEntry
 
         entry = FrameCacheEntry(frame=b"\x00", timestamp=1.5, position=10)
         assert entry.frame == b"\x00"
@@ -361,7 +361,7 @@ class TestFrameCacheEntries:
 
     def test_svg_render_cache_entry_fields(self) -> None:
         """SVG 渲染缓存条目：image/mtime/last_validated_at。"""
-        from freeassetfilter.core.managers.thumbnail_manager import SvgRenderCacheEntry
+        from sopeek.core.managers.thumbnail_manager import SvgRenderCacheEntry
 
         entry = SvgRenderCacheEntry(image=object(), mtime=3.0, last_validated_at=4.0)
         assert entry.mtime == 3.0
@@ -373,7 +373,7 @@ class TestVideoFrameCache:
 
     def test_put_get_roundtrip(self) -> None:
         """写入后按 position 取回，miss 返回 None。"""
-        from freeassetfilter.core.managers.thumbnail_manager import VideoFrameCache
+        from sopeek.core.managers.thumbnail_manager import VideoFrameCache
 
         cache = VideoFrameCache(max_entries=2)
         cache.put(0, "frame-a")
@@ -384,7 +384,7 @@ class TestVideoFrameCache:
 
     def test_clear_empties_cache(self) -> None:
         """clear 后 get 全部 miss 且容量归零。"""
-        from freeassetfilter.core.managers.thumbnail_manager import VideoFrameCache
+        from sopeek.core.managers.thumbnail_manager import VideoFrameCache
 
         cache = VideoFrameCache(max_entries=2)
         cache.put(0, "a")
@@ -396,7 +396,7 @@ class TestVideoFrameCache:
 
     def test_eviction_replaces_oldest(self) -> None:
         """超出 max_entries 时淘汰最旧条目。"""
-        from freeassetfilter.core.managers.thumbnail_manager import VideoFrameCache
+        from sopeek.core.managers.thumbnail_manager import VideoFrameCache
 
         cache = VideoFrameCache(max_entries=2)
         cache.put(0, "old")

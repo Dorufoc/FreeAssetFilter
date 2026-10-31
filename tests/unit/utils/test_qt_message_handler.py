@@ -46,7 +46,7 @@ def _reset_app_logger_singleton() -> Any:
     Yields:
         None。
     """
-    import freeassetfilter.utils.app_logger as _logger_module
+    import sopeek.utils.app_logger as _logger_module
 
     _logger_module._app_logger = None
     yield
@@ -85,7 +85,7 @@ def restore_qt_handler(request: Any, qapp: Any) -> Any:
 def collected_records(
     _reset_app_logger_singleton: Any, restore_qt_handler: Any
 ) -> List[logging.LogRecord]:
-    """给 "FreeAssetFilter" logger 挂载收集用 ListHandler。
+    """给 "Sopeek" logger 挂载收集用 ListHandler。
 
     Args:
         _reset_app_logger_singleton: 日志单例隔离 fixture。
@@ -94,8 +94,8 @@ def collected_records(
     Returns:
         list[logging.LogRecord]: 收集到的日志记录列表。
     """
-    from freeassetfilter.utils.app_logger import get_logger
-    from freeassetfilter.utils.qt_message_handler import install_qt_message_handler
+    from sopeek.utils.app_logger import get_logger
+    from sopeek.utils.qt_message_handler import install_qt_message_handler
 
     assert install_qt_message_handler() is True
     # 先实例化单例：AppLogger.__init__ 会清空 logger.handlers，
@@ -104,7 +104,7 @@ def collected_records(
     records: List[logging.LogRecord] = []
     handler = _ListHandler(records)
     handler.setLevel(logging.DEBUG)
-    qt_logger = logging.getLogger("FreeAssetFilter")
+    qt_logger = logging.getLogger("Sopeek")
     old_level = qt_logger.level
     qt_logger.setLevel(logging.DEBUG)
     qt_logger.addHandler(handler)
@@ -126,7 +126,7 @@ def test_install_returns_true(
         _reset_app_logger_singleton: 日志单例隔离 fixture。
         restore_qt_handler: Qt handler 恢复 fixture。
     """
-    from freeassetfilter.utils.qt_message_handler import install_qt_message_handler
+    from sopeek.utils.qt_message_handler import install_qt_message_handler
 
     assert install_qt_message_handler() is True
 
@@ -142,8 +142,8 @@ def test_qwarning_captured_as_warning(
     """
     from PySide6.QtCore import qWarning
 
-    qWarning("faf-qt-test-warning")
-    matches = [r for r in collected_records if "faf-qt-test-warning" in r.getMessage()]
+    qWarning("spk-qt-test-warning")
+    matches = [r for r in collected_records if "spk-qt-test-warning" in r.getMessage()]
     assert matches, "qWarning 消息未被 Qt handler 捕获"
     assert any(r.levelno == logging.WARNING for r in matches)
     assert any(r.getMessage().startswith("[Qt]") for r in matches)
@@ -160,8 +160,8 @@ def test_qcritical_captured_as_error(
     """
     from PySide6.QtCore import qCritical
 
-    qCritical("faf-qt-test-critical")
-    matches = [r for r in collected_records if "faf-qt-test-critical" in r.getMessage()]
+    qCritical("spk-qt-test-critical")
+    matches = [r for r in collected_records if "spk-qt-test-critical" in r.getMessage()]
     assert matches, "qCritical 消息未被 Qt handler 捕获"
     assert any(r.levelno == logging.ERROR for r in matches)
     assert any(r.getMessage().startswith("[Qt]") for r in matches)
@@ -181,7 +181,7 @@ def test_handler_exception_falls_back_without_raise(
 
     from PySide6.QtCore import QtMsgType, qWarning
 
-    import freeassetfilter.utils.qt_message_handler as _qt_module
+    import sopeek.utils.qt_message_handler as _qt_module
 
     assert _qt_module.install_qt_message_handler() is True
 
@@ -197,9 +197,9 @@ def test_handler_exception_falls_back_without_raise(
         patch.object(_qt_module, "_write_bootstrap_fallback") as _fallback,
     ):
         # 经真实 Qt 通道触发（handler 内异常绝不向上抛，进程不崩溃）。
-        qWarning("faf-qt-failure-path-warning")
+        qWarning("spk-qt-failure-path-warning")
         assert _fallback.called
 
         # 直接调用 handler（覆盖 QtFatalMsg 分支亦不抛）。
-        _qt_module._qt_message_handler(QtMsgType.QtFatalMsg, None, "faf-qt-fatal-direct")
+        _qt_module._qt_message_handler(QtMsgType.QtFatalMsg, None, "spk-qt-fatal-direct")
         assert _fallback.call_count >= 2

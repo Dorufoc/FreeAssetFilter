@@ -38,7 +38,7 @@ import pytest
 pytestmark = [pytest.mark.benchmark, pytest.mark.timeout(120)]
 
 #: 产物路径（P0.2 隔离：默认 build/bench/）。
-_OUTPUT_ENV: str = os.environ.get("FAF_BENCH_OUTPUT", "").strip()
+_OUTPUT_ENV: str = os.environ.get("SPK_BENCH_OUTPUT", "").strip()
 if _OUTPUT_ENV:
     _candidate: Path = Path(_OUTPUT_ENV)
     OUTPUT_PATH: Path = (
@@ -214,7 +214,7 @@ def _cache_declarations() -> Dict[str, Any]:
         declarations["qpixmap_cache_kb"] = f"unavailable: {exc}"
 
     try:
-        from freeassetfilter.core.managers.thumbnail_manager import ThumbnailManager
+        from sopeek.core.managers.thumbnail_manager import ThumbnailManager
 
         declarations.update(
             {
@@ -235,7 +235,7 @@ def _cache_declarations() -> Dict[str, Any]:
         declarations["thumbnail_manager"] = f"unavailable: {exc}"
 
     try:
-        from freeassetfilter.services.file_icon_manager import FileIconManager
+        from sopeek.services.file_icon_manager import FileIconManager
 
         declarations["icon_cache_entries"] = int(FileIconManager._ICON_CACHE_MAX_ENTRIES)
         declarations["system_icon_cache_entries"] = int(
@@ -245,7 +245,7 @@ def _cache_declarations() -> Dict[str, Any]:
         declarations["file_icon_manager"] = f"unavailable: {exc}"
 
     try:
-        from freeassetfilter.ui.components.file_card_delegate import (
+        from sopeek.ui.components.file_card_delegate import (
             _ICON_SCALE_CACHE_CAP,
         )
 
@@ -311,7 +311,7 @@ def test_p04_thread_memory_baseline(qapp: Any) -> None:
     thread_values: List[int] = [t for t in thread_samples if t is not None]
 
     baseline: Dict[str, Any] = {
-        "schema": "faf-thread-memory-baseline/v1",
+        "schema": "spk-thread-memory-baseline/v1",
         "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
         "machine": _machine_summary(),
         "process_threads": {

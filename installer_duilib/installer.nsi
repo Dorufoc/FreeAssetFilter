@@ -8,87 +8,87 @@ SetCompressorDictSize 64
 ; Test-build isolation scaffolding. The test-mode macro checked here is a makensis
 ; command-line define; the production build never passes it and therefore always
 ; takes the `!else` branch below (unchanged behavior).
-!ifdef FAF_TESTMODE
+!ifdef SPK_TESTMODE
 RequestExecutionLevel user
 !else
 RequestExecutionLevel admin
 !endif
 ManifestDPIAware true
-Name "FreeAssetFilter Installer"
-; Output override for isolated QA builds: pass -DFAF_OUTFILE=<path> on the
+Name "Sopeek Installer"
+; Output override for isolated QA builds: pass -DSPK_OUTFILE=<path> on the
 ; makensis command line; the default below is the unchanged production artifact.
-!ifndef FAF_OUTFILE
-  !define FAF_OUTFILE "..\build\FreeAssetFilter_NSIS_Setup.exe"
+!ifndef SPK_OUTFILE
+  !define SPK_OUTFILE "..\build\Sopeek_NSIS_Setup.exe"
 !endif
-OutFile "${FAF_OUTFILE}"
+OutFile "${SPK_OUTFILE}"
 ; Test build installs into the per-user profile (no elevation needed); the
 ; production build keeps the machine-wide Program Files default (unchanged).
-!ifdef FAF_TESTMODE
-InstallDir "$LOCALAPPDATA\FreeAssetFilterTest"
+!ifdef SPK_TESTMODE
+InstallDir "$LOCALAPPDATA\SopeekTest"
 !else
-InstallDir "$PROGRAMFILES64\FreeAssetFilter"
+InstallDir "$PROGRAMFILES64\Sopeek"
 !endif
 ; T15: the installed-detection source is the same key Section Install writes.
 ; The test build uses the isolated HKCU test key (never the production one).
-!ifdef FAF_TESTMODE
-  InstallDirRegKey HKCU "Software\FreeAssetFilterTest" "InstallDir"
+!ifdef SPK_TESTMODE
+  InstallDirRegKey HKCU "Software\SopeekTest" "InstallDir"
 !else
-  InstallDirRegKey HKCU "Software\FreeAssetFilter" "InstallDir"
+  InstallDirRegKey HKCU "Software\Sopeek" "InstallDir"
 !endif
 SilentInstall silent
 SilentUninstall silent
 ShowInstDetails nevershow
-; Setup / uninstaller icon: project icon (FAF-setup.ico) instead of the default NSIS icon.
-Icon "..\freeassetfilter\icons\FAF-setup.ico"
-UninstallIcon "..\freeassetfilter\icons\FAF-setup.ico"
-; Numeric version 1.0.0.5; string versions come from FAFVERSION (1.0.0-alpha.5).
+; Setup / uninstaller icon: project icon (SPK-setup.ico) instead of the default NSIS icon.
+Icon "..\sopeek\icons\SPK-setup.ico"
+UninstallIcon "..\sopeek\icons\SPK-setup.ico"
+; Numeric version 1.0.0.5; string versions come from SPKVERSION (1.0.0-alpha.5).
 VIProductVersion "1.0.0.5"
-VIAddVersionKey /LANG=1033 "ProductName" "FreeAssetFilter"
-VIAddVersionKey /LANG=1033 "FileDescription" "FreeAssetFilter Installer"
+VIAddVersionKey /LANG=1033 "ProductName" "Sopeek"
+VIAddVersionKey /LANG=1033 "FileDescription" "Sopeek"
 VIAddVersionKey /LANG=1033 "FileVersion" "1.0.0-alpha.5"
 VIAddVersionKey /LANG=1033 "ProductVersion" "1.0.0-alpha.5"
 VIAddVersionKey /LANG=1033 "CompanyName" "Dorufoc & renmoren"
 VIAddVersionKey /LANG=1033 "LegalCopyright" "Copyright (c) 2026 Dorufoc & renmoren"
 
-!define APP "FreeAssetFilter"
-!define PAYLOAD "..\build\pyinstall\FreeAssetFilter"
+!define APP "Sopeek.exe"
+!define PAYLOAD "..\build\pyinstall\Sopeek"
 ; Result protocol: the GUI install engine is the ONLY writer of this INI; NSIS is a
 ; pure reader. Only the terminal `abort` key (written last by the GUI) means
 ; "finished" - file existence alone is never used as the readiness signal.
 !define RESULT_INI "$PLUGINSDIR\install-result.ini"
 ; Bounded wait for the terminal key. Production default 30 min, strictly greater
 ; than the GUI's own payload-wait default of 25 min (so the GUI never keeps waiting
-; on a dead NSIS process). QA override: makensis -DFAF_WAIT_TIMEOUT_MS=60000 installer.nsi
-!ifndef FAF_WAIT_TIMEOUT_MS
-  !define FAF_WAIT_TIMEOUT_MS 1800000
+; on a dead NSIS process). QA override: makensis -DSPK_WAIT_TIMEOUT_MS=60000 installer.nsi
+!ifndef SPK_WAIT_TIMEOUT_MS
+  !define SPK_WAIT_TIMEOUT_MS 1800000
 !endif
 ; H5: bounded wait for the GUI's FIRST visible window. Together with the Exec
 ; error check this turns "process started but never produced a UI" into a fast,
 ; nonzero failure instead of a 30-minute silent wait. Seen-window liveness keeps
 ; the existing 3s grace and total timeout.
-!ifndef FAF_GUI_WINDOW_DETECT_MS
-  !define FAF_GUI_WINDOW_DETECT_MS 10000
+!ifndef SPK_GUI_WINDOW_DETECT_MS
+  !define SPK_GUI_WINDOW_DETECT_MS 10000
 !endif
 
 ; T15 maintenance handoff. Strings mirror src/render/maintenance_protocol.h; NSIS
 ; cannot include the C++ header. Mutexes are per-session Local\ objects. The test
 ; build gets its own names so it can never collide with a real setup / real UI.
-!ifdef FAF_TESTMODE
-  !define SETUP_MUTEX "Local\FreeAssetFilterSetupMutex.Test"
-  !define MAINTENANCE_MUTEX "Local\FreeAssetFilterMaintenanceMutex.Test"
+!ifdef SPK_TESTMODE
+  !define SETUP_MUTEX "Local\SopeekSetupMutex.Test"
+  !define MAINTENANCE_MUTEX "Local\SopeekMaintenanceMutex.Test"
 !else
-  !define SETUP_MUTEX "Local\FreeAssetFilterSetupMutex"
-  !define MAINTENANCE_MUTEX "Local\FreeAssetFilterMaintenanceMutex"
+  !define SETUP_MUTEX "Local\SopeekSetupMutex"
+  !define MAINTENANCE_MUTEX "Local\SopeekMaintenanceMutex"
 !endif
 
 ; D13/F2 shortcut isolation (mirrors maintenance_protocol.h::kShortcutStem*).
-; Production: desktop FreeAssetFilter.lnk + Start Menu folder
-; FreeAssetFilter\FreeAssetFilter.lnk. Test: flat FreeAssetFilterTest.lnk on both
+; Production: desktop Sopeek.lnk + Start Menu folder
+; Sopeek\Sopeek.lnk. Test: flat SopeekTest.lnk on both
 ; desktop and Start Menu; it must never create/delete/overwrite a production
 ; shortcut (including the legacy flat production Start Menu file).
-!define SHORTCUT_STEM_PROD "FreeAssetFilter"
-!ifdef FAF_TESTMODE
-  !define SHORTCUT_STEM_TEST "FreeAssetFilterTest"
+!define SHORTCUT_STEM_PROD "Sopeek"
+!ifdef SPK_TESTMODE
+  !define SHORTCUT_STEM_TEST "SopeekTest"
   !define SHORTCUT_STEM "${SHORTCUT_STEM_TEST}"
 !else
   !define SHORTCUT_STEM "${SHORTCUT_STEM_PROD}"
@@ -101,18 +101,18 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "Copyright (c) 2026 Dorufoc & renmor
 !define DECISION_SECTION "maintenance"
 !define DECISION_KEY_ACTION "action"
 !define DECISION_KEY_ACK "ack"
-!ifndef FAF_DECISION_TIMEOUT_MS
-  !define FAF_DECISION_TIMEOUT_MS 1800000
+!ifndef SPK_DECISION_TIMEOUT_MS
+  !define SPK_DECISION_TIMEOUT_MS 1800000
 !endif
 
 ; Automated test drive profile (contract §17): four 0/1 chars =
 ; desktop/startmenu/autostart/launch, forwarded to the test GUI as
 ; `/auto:opts=<bits>` (see the test Exec in .onInit). QA overrides it on the
-; makensis command line (-DFAF_AUTO_PROFILE=1101); the !ifndef fallback keeps a
-; plain `makensis -DFAF_TESTMODE installer.nsi` build compiling and runnable.
-!ifdef FAF_TESTMODE
-  !ifndef FAF_AUTO_PROFILE
-    !define FAF_AUTO_PROFILE "1101"
+; makensis command line (-DSPK_AUTO_PROFILE=1101); the !ifndef fallback keeps a
+; plain `makensis -DSPK_TESTMODE installer.nsi` build compiling and runnable.
+!ifdef SPK_TESTMODE
+  !ifndef SPK_AUTO_PROFILE
+    !define SPK_AUTO_PROFILE "1101"
   !endif
 !endif
 
@@ -132,12 +132,12 @@ Var /GLOBAL DecisionIni
 ; render/maintenance_protocol.h; NSIS cannot include the C++ headers. Test builds
 ; get an isolated engine mutex and user-data root so they can never touch a real
 ; uninstall or the production profile.
-!ifdef FAF_TESTMODE
-  !define UNINSTALL_ENGINE_MUTEX "Local\FreeAssetFilterUninstallEngineMutex.Test"
-  !define UNINSTALL_DATA_ROOT "$LOCALAPPDATA\FreeAssetFilterTestUserData"
+!ifdef SPK_TESTMODE
+  !define UNINSTALL_ENGINE_MUTEX "Local\SopeekUninstallEngineMutex.Test"
+  !define UNINSTALL_DATA_ROOT "$LOCALAPPDATA\SopeekTestUserData"
 !else
-  !define UNINSTALL_ENGINE_MUTEX "Local\FreeAssetFilterUninstallEngineMutex"
-  !define UNINSTALL_DATA_ROOT "$LOCALAPPDATA\FreeAssetFilter"
+  !define UNINSTALL_ENGINE_MUTEX "Local\SopeekUninstallEngineMutex"
+  !define UNINSTALL_DATA_ROOT "$LOCALAPPDATA\Sopeek"
 !endif
 !define UNINSTALL_SECTION "uninstall"
 !define UNINSTALL_REQUEST_FILE "uninstall-request.ini"
@@ -145,29 +145,29 @@ Var /GLOBAL DecisionIni
 ; Production defaults match maintenance_protocol.h. QA may override any of these
 ; on the makensis command line (for example a 6s request timeout to exercise the
 ; launcher cancellation path without waiting 30 minutes).
-!ifndef FAF_UNINSTALL_REQUEST_TIMEOUT_MS
-  !define FAF_UNINSTALL_REQUEST_TIMEOUT_MS 1800000
+!ifndef SPK_UNINSTALL_REQUEST_TIMEOUT_MS
+  !define SPK_UNINSTALL_REQUEST_TIMEOUT_MS 1800000
 !endif
-!ifndef FAF_UNINSTALL_UI_DONE_TIMEOUT_MS
-  !define FAF_UNINSTALL_UI_DONE_TIMEOUT_MS 60000
+!ifndef SPK_UNINSTALL_UI_DONE_TIMEOUT_MS
+  !define SPK_UNINSTALL_UI_DONE_TIMEOUT_MS 60000
 !endif
-!ifndef FAF_UNINSTALL_UI_PROCESS_WAIT_MS
-  !define FAF_UNINSTALL_UI_PROCESS_WAIT_MS 10000
+!ifndef SPK_UNINSTALL_UI_PROCESS_WAIT_MS
+  !define SPK_UNINSTALL_UI_PROCESS_WAIT_MS 10000
 !endif
-!ifndef FAF_UNINSTALL_SETUP_MUTEX_WAIT_MS
-  !define FAF_UNINSTALL_SETUP_MUTEX_WAIT_MS 15000
+!ifndef SPK_UNINSTALL_SETUP_MUTEX_WAIT_MS
+  !define SPK_UNINSTALL_SETUP_MUTEX_WAIT_MS 15000
 !endif
-!ifndef FAF_UNINSTALL_POLL_MS
-  !define FAF_UNINSTALL_POLL_MS 200
+!ifndef SPK_UNINSTALL_POLL_MS
+  !define SPK_UNINSTALL_POLL_MS 200
 !endif
 ; QA-only extra arguments appended to the UI command line by the launcher path.
 ; Empty in every normal test build; a QA build may pass e.g.
-; -DFAF_QA_UI_EXTRA="/auto:page=6 /auto:action=uninstall". Never defined for
-; production. T20 also reads FAF_QA_UI_RUNTIME_EXTRA at launch time so one test
+; -DSPK_QA_UI_EXTRA="/auto:page=6 /auto:action=uninstall". Never defined for
+; production. T20 also reads SPK_QA_UI_RUNTIME_EXTRA at launch time so one test
 ; setup can exercise both delete_user_data=0 and =1 without rebuilding.
-!ifdef FAF_TESTMODE
-  !ifndef FAF_QA_UI_EXTRA
-    !define FAF_QA_UI_EXTRA ""
+!ifdef SPK_TESTMODE
+  !ifndef SPK_QA_UI_EXTRA
+    !define SPK_QA_UI_EXTRA ""
   !endif
 !endif
 
@@ -184,7 +184,7 @@ Var /GLOBAL UnWarning
 Var /GLOBAL UnErrorText
 Var /GLOBAL UnFailedPath
 Var /GLOBAL UnTarget
-Var /GLOBAL UnFafDataDir
+Var /GLOBAL UnSpkDataDir
 
 Var /GLOBAL UnArgMode
 Var /GLOBAL UnArgInstallDir
@@ -207,7 +207,7 @@ FunctionEnd
 Function ActivateExistingGui
   StrCpy $0 0
 activateLoop:
-  FindWindow $1 "FreeAssetFilterInstaller" ""
+  FindWindow $1 "SopeekInstaller" ""
   StrCmp $1 0 0 activateFound
   IntCmp $0 5000 activateDone 0 activateDone
   Sleep 100
@@ -265,19 +265,19 @@ FunctionEnd
 ; M1: remove maintenance GUI copies left behind by a setup/UI that died before
 ; cleanup. Runs after both single-instance mutexes are clear and before
 ; InitPluginsDir/PrepareGuiCopy creates this setup's own copy. Only exact
-; $TEMP\FreeAssetFilterMaintenance-<digits> directories are considered:
+; $TEMP\SopeekMaintenance-<digits> directories are considered:
 ; non-directories, reparse points and paths younger than 24h are skipped.
 ; Age is an exact 64-bit FILETIME comparison, not a calendar-day check.
 Function SweepStaleGuiCopies
   ClearErrors
-  FindFirst $9 $8 "$TEMP\FreeAssetFilterMaintenance-*"
+  FindFirst $9 $8 "$TEMP\SopeekMaintenance-*"
   StrCmp $9 0 sweepDone
 sweepLoop:
   StrCmp $8 "" sweepClose
   ; Leaf must be exactly the prefix followed by one or more ASCII digits.
-  StrCpy $7 $8 27
-  StrCmp $7 "FreeAssetFilterMaintenance-" 0 sweepNext
-  StrCpy $7 $8 "" 27
+  StrCpy $7 $8 18
+  StrCmp $7 "SopeekMaintenance-" 0 sweepNext
+  StrCpy $7 $8 "" 18
   StrCmp $7 "" sweepNext
   StrLen $6 $7
   StrCpy $5 0
@@ -359,11 +359,11 @@ FunctionEnd
 Function PrepareGuiCopy
   System::Call 'kernel32::GetCurrentProcessId() i.r0'
   StrCpy $SetupPid $0
-  StrCpy $GuiTempDir "$TEMP\FreeAssetFilterMaintenance-$SetupPid"
+  StrCpy $GuiTempDir "$TEMP\SopeekMaintenance-$SetupPid"
   CreateDirectory "$GuiTempDir"
-  CopyFiles /SILENT "$PLUGINSDIR\FreeAssetFilterInstaller.exe" "$GuiTempDir"
+  CopyFiles /SILENT "$PLUGINSDIR\SopeekInstaller.exe" "$GuiTempDir"
   CopyFiles /SILENT "$PLUGINSDIR\libwinpthread-1.dll" "$GuiTempDir"
-  StrCpy $GuiTempExe "$GuiTempDir\FreeAssetFilterInstaller.exe"
+  StrCpy $GuiTempExe "$GuiTempDir\SopeekInstaller.exe"
   IfFileExists "$GuiTempExe" 0 guiCopyFailed
   IfFileExists "$GuiTempDir\libwinpthread-1.dll" 0 guiCopyFailed
   Return
@@ -395,7 +395,7 @@ waitLoop:
   ReadINIStr $0 "${RESULT_INI}" "install" "abort"
   StrCmp $0 "" 0 waitDone
 waitLiveness:
-  FindWindow $R0 "FreeAssetFilterInstaller" ""
+  FindWindow $R0 "SopeekInstaller" ""
   StrCmp $R0 0 0 waitAlive
   ; Window not found: only judgeable once it has been seen at least once.
   StrCmp $Seen 1 0 waitNoWindowCheck
@@ -405,17 +405,17 @@ waitLiveness:
 waitNoWindowCheck:
   ; H5: first-window deadline. A process that never shows a UI (blocked before
   ; window creation, silent crash, wrong image) fails fast and nonzero.
-  IntCmp $2 ${FAF_GUI_WINDOW_DETECT_MS} waitNoWindow waitTick waitNoWindow
+  IntCmp $2 ${SPK_GUI_WINDOW_DETECT_MS} waitNoWindow waitTick waitNoWindow
 waitAlive:
   StrCpy $Seen 1
   StrCpy $3 0
 waitTick:
   Sleep 100
   IntOp $2 $2 + 100
-  IntCmp $2 ${FAF_WAIT_TIMEOUT_MS} 0 0 waitTimeout
+  IntCmp $2 ${SPK_WAIT_TIMEOUT_MS} 0 0 waitTimeout
   Goto waitLoop
 waitTimeout:
-  ; Bounded fallback: no terminal key within FAF_WAIT_TIMEOUT_MS -> silent abort.
+  ; Bounded fallback: no terminal key within SPK_WAIT_TIMEOUT_MS -> silent abort.
   Call CloseSetupMutex
   Abort
 waitNoWindow:
@@ -508,22 +508,22 @@ engineMutexClear:
   Call SweepStaleGuiCopies
   InitPluginsDir
   SetOutPath "$PLUGINSDIR"
-  ; GUI binary. Test branch embeds the FAF_TESTMODE build from
+  ; GUI binary. Test branch embeds the SPK_TESTMODE build from
   ; tools/build_test_gui.ps1 (repo-root build/test-installer, a separate output
   ; dir from the production build/installer artifact). Production branch
   ; unchanged. The MinGW runtime follows the same branch.
-!ifdef FAF_TESTMODE
-  File "..\build\test-installer\FreeAssetFilterInstaller.exe"
+!ifdef SPK_TESTMODE
+  File "..\build\test-installer\SopeekInstaller.exe"
   File "..\build\test-installer\libwinpthread-1.dll"
 !else
-  File "..\build\installer\FreeAssetFilterInstaller.exe"
+  File "..\build\installer\SopeekInstaller.exe"
   File "..\build\installer\libwinpthread-1.dll"
 !endif
   Call PrepareGuiCopy
 
   ; T15 installed detection is exactly: app exe OR _internal. No other signal
   ; (result INI, shortcuts, Add/Remove entry) may force maintenance mode.
-  IfFileExists "$INSTDIR\FreeAssetFilter.exe" installed 0
+  IfFileExists "$INSTDIR\Sopeek.exe" installed 0
   IfFileExists "$INSTDIR\_internal" installed 0
 
   ; Fresh install: behavior is unchanged. The only difference is that the GUI
@@ -531,13 +531,13 @@ engineMutexClear:
   ; Test branch drives the GUI unattended: /auto:opts=<bits> (contract §17)
   ; automates 欢迎→…→完成 with the frozen option bits (default 1101);
   ; production branch stays interactive (no /auto flag).
-!ifdef FAF_TESTMODE
-  ; T20 runtime override: FAF_QA_INSTALL_OPTS lets one test setup install with
+!ifdef SPK_TESTMODE
+  ; T20 runtime override: SPK_QA_INSTALL_OPTS lets one test setup install with
   ; option bits that avoid touching the real desktop/start-menu (e.g. 0000).
-  ; Empty/unset keeps the frozen FAF_AUTO_PROFILE contract.
-  ReadEnvStr $R3 "FAF_QA_INSTALL_OPTS"
+  ; Empty/unset keeps the frozen SPK_AUTO_PROFILE contract.
+  ReadEnvStr $R3 "SPK_QA_INSTALL_OPTS"
   StrCmp $R3 "" 0 installOptsReady
-  StrCpy $R3 "${FAF_AUTO_PROFILE}"
+  StrCpy $R3 "${SPK_AUTO_PROFILE}"
 installOptsReady:
   ClearErrors
   Exec '"$GuiTempExe" /payload "$PLUGINSDIR\payload" /result "${RESULT_INI}" /installdir "$INSTDIR" /auto:opts=$R3'
@@ -562,9 +562,9 @@ installed:
   ; Never infer readiness from the file's existence - only a non-empty `action`.
   StrCpy $DecisionIni "$INSTDIR\maintenance-decision.ini"
   Delete "$DecisionIni"
-!ifdef FAF_TESTMODE
+!ifdef SPK_TESTMODE
   ; T20 runtime hook: /auto:mode=maintenance + action for unattended QA.
-  ReadEnvStr $R2 "FAF_QA_MAINTENANCE_EXTRA"
+  ReadEnvStr $R2 "SPK_QA_MAINTENANCE_EXTRA"
   ClearErrors
   Exec '"$GuiTempExe" /maintenance /payload "$PLUGINSDIR\payload" /result "${RESULT_INI}" /installdir "$INSTDIR" /decision "$DecisionIni" /setup-pid $SetupPid $R2'
 !else
@@ -582,7 +582,7 @@ decisionLoop:
   ReadINIStr $0 "$DecisionIni" "${DECISION_SECTION}" "${DECISION_KEY_ACTION}"
   StrCmp $0 "" 0 decisionReady
 decisionLiveness:
-  FindWindow $R0 "FreeAssetFilterInstaller" ""
+  FindWindow $R0 "SopeekInstaller" ""
   StrCmp $R0 0 0 decisionAlive
   ; Not-yet-seen is not a failure; seen-then-gone without action is.
   StrCmp $Seen 1 0 decisionNoWindowCheck
@@ -591,14 +591,14 @@ decisionLiveness:
   Goto decisionTick
 decisionNoWindowCheck:
   ; H5: same first-window deadline as WaitForInstallResult (200ms ticks).
-  IntCmp $2 ${FAF_GUI_WINDOW_DETECT_MS} decisionNoWindow decisionTick decisionNoWindow
+  IntCmp $2 ${SPK_GUI_WINDOW_DETECT_MS} decisionNoWindow decisionTick decisionNoWindow
 decisionAlive:
   StrCpy $Seen 1
   StrCpy $3 0
 decisionTick:
   Sleep 200
   IntOp $2 $2 + 200
-  IntCmp $2 ${FAF_DECISION_TIMEOUT_MS} 0 0 decisionTimeout
+  IntCmp $2 ${SPK_DECISION_TIMEOUT_MS} 0 0 decisionTimeout
   Goto decisionLoop
 decisionNoWindow:
   ; H5: Exec succeeded but the maintenance UI never appeared.
@@ -771,7 +771,7 @@ unInsideDone:
 FunctionEnd
 
 ; $R5 = base, $R6 = candidate -> $R7 = 1 when either path contains the other.
-; Used to avoid deleting a target that contains a custom FAF_DATA_DIR (or is
+; Used to avoid deleting a target that contains a custom SPK_DATA_DIR (or is
 ; contained by it).
 Function un.PathsOverlap
   Push $R5
@@ -868,7 +868,7 @@ unTreeDone:
 FunctionEnd
 
 ; M1: after the UI has exited, remove the setup-owned maintenance copy it ran
-; from. Only an exact $TEMP\FreeAssetFilterMaintenance-<digits> parent is
+; from. Only an exact $TEMP\SopeekMaintenance-<digits> parent is
 ; eligible; $INSTDIR, $PLUGINSDIR and every other path are refused. The UI may
 ; already have self-cleaned (its cleanup is asynchronous), so a missing
 ; directory is a normal no-op.
@@ -889,7 +889,7 @@ unCleanupTempSepFound:
   StrCmp $0 "" unCleanupTempDone
   StrCmp $0 "$INSTDIR" unCleanupTempDone
   StrCmp $0 "$PLUGINSDIR" unCleanupTempDone
-  StrCpy $1 "$TEMP\FreeAssetFilterMaintenance-"
+  StrCpy $1 "$TEMP\SopeekMaintenance-"
   StrLen $2 $1
   StrCpy $3 $0 $2
   StrCmp $3 $1 0 unCleanupTempDone
@@ -1009,7 +1009,7 @@ unReqLiveness:
   StrCmp $7 0 unReqGone
   Goto unReqTick
 unReqFind:
-  FindWindow $R0 "FreeAssetFilterInstaller" ""
+  FindWindow $R0 "SopeekInstaller" ""
   StrCmp $R0 0 0 unReqSeen
   StrCmp $2 1 0 unReqTick
   IntOp $1 $1 + 1
@@ -1019,9 +1019,9 @@ unReqSeen:
   StrCpy $2 1
   StrCpy $1 0
 unReqTick:
-  Sleep ${FAF_UNINSTALL_POLL_MS}
-  IntOp $0 $0 + ${FAF_UNINSTALL_POLL_MS}
-  IntCmp $0 ${FAF_UNINSTALL_REQUEST_TIMEOUT_MS} 0 0 unReqTimeout
+  Sleep ${SPK_UNINSTALL_POLL_MS}
+  IntOp $0 $0 + ${SPK_UNINSTALL_POLL_MS}
+  IntCmp $0 ${SPK_UNINSTALL_REQUEST_TIMEOUT_MS} 0 0 unReqTimeout
   Goto unReqLoop
 unReqTimeout:
 unReqGone:
@@ -1084,7 +1084,7 @@ unArgDone:
 unArgDirDone:
   StrCpy $UnRequestIni "$INSTDIR\${UNINSTALL_REQUEST_FILE}"
   StrCpy $UnResultIni "$INSTDIR\${UNINSTALL_RESULT_FILE}"
-  StrCpy $UnUiExe "$INSTDIR\FreeAssetFilterUninstall.exe"
+  StrCpy $UnUiExe "$INSTDIR\SopeekUninstall.exe"
   StrCmp $UnArgUi "" unArgUiDone
   StrCpy $UnUiExe $UnArgUi
 unArgUiDone:
@@ -1124,7 +1124,7 @@ unEngineDone:
   ; the returned handle works for both the absent and already-running cases.
   System::Call 'kernel32::CreateMutexW(p 0, i 0, w "${SETUP_MUTEX}") p .r1'
   StrCmp $1 0 unSetupProceed
-  System::Call 'kernel32::WaitForSingleObject(p $1, i ${FAF_UNINSTALL_SETUP_MUTEX_WAIT_MS}) i .r3'
+  System::Call 'kernel32::WaitForSingleObject(p $1, i ${SPK_UNINSTALL_SETUP_MUTEX_WAIT_MS}) i .r3'
   System::Call 'kernel32::CloseHandle(p $1)'
   StrCmp $3 0 unSetupProceed
   StrCmp $3 128 unSetupProceed
@@ -1164,11 +1164,11 @@ unLauncherNoSid:
   StrCmp $UnArgOrigLocalAppData "" unLauncherNoLocal
   StrCpy $3 '$3 /orig-localappdata "$UnArgOrigLocalAppData"'
 unLauncherNoLocal:
-!ifdef FAF_TESTMODE
-  StrCpy $3 '$3 ${FAF_QA_UI_EXTRA}'
+!ifdef SPK_TESTMODE
+  StrCpy $3 '$3 ${SPK_QA_UI_EXTRA}'
   ; T20 runtime hook: /auto:mode=uninstall /auto:action=uninstall
   ; /auto:delete-user-data=... selected by the QA harness.
-  ReadEnvStr $R4 "FAF_QA_UI_RUNTIME_EXTRA"
+  ReadEnvStr $R4 "SPK_QA_UI_RUNTIME_EXTRA"
   StrCpy $3 '$3 $R4'
 !endif
   ClearErrors
@@ -1210,14 +1210,14 @@ Section "Install"
   ; T16: test builds must never create or delete any production key. The 32-bit
   ; orphan cleanup below is a production-only action; production writes go to the
   ; native 64-bit view.
-!ifdef FAF_TESTMODE
+!ifdef SPK_TESTMODE
   SetRegView 64
 !else
   ; Upgrade orphan cleanup: an older installer may have left the Uninstall entry in
   ; the 32-bit view (Wow6432Node); remove that same-named entry first so an upgrade
   ; cannot produce a duplicate Add/Remove Programs item.
   SetRegView 32
-  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilter"
+  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Sopeek"
   SetRegView 64
 !endif
 
@@ -1226,18 +1226,18 @@ Section "Install"
   ; and renamed into place only after the complete copy is verified, so a partial
   ; file can never be referenced by UninstallString.
   CreateDirectory "$INSTDIR"
-  Delete "$INSTDIR\FreeAssetFilterUninstall.exe.tmp"
+  Delete "$INSTDIR\SopeekUninstall.exe.tmp"
   Delete "$INSTDIR\libwinpthread-1.dll.tmp"
-  CopyFiles /SILENT "$PLUGINSDIR\FreeAssetFilterInstaller.exe" "$INSTDIR\FreeAssetFilterUninstall.exe.tmp"
+  CopyFiles /SILENT "$PLUGINSDIR\SopeekInstaller.exe" "$INSTDIR\SopeekUninstall.exe.tmp"
   CopyFiles /SILENT "$PLUGINSDIR\libwinpthread-1.dll" "$INSTDIR\libwinpthread-1.dll.tmp"
-  IfFileExists "$INSTDIR\FreeAssetFilterUninstall.exe.tmp" 0 uninstallPayloadFailed
+  IfFileExists "$INSTDIR\SopeekUninstall.exe.tmp" 0 uninstallPayloadFailed
   IfFileExists "$INSTDIR\libwinpthread-1.dll.tmp" 0 uninstallPayloadFailed
 
-!ifdef FAF_TESTMODE
+!ifdef SPK_TESTMODE
   ; T20/F1: deterministic UI-payload failure injection (test builds only;
   ; production compiles this block out). Proves that aborting here leaves no
   ; UninstallString/uninstall key and no uninstaller executable behind.
-  ReadEnvStr $R2 "FAF_QA_FAIL_UI_COPY"
+  ReadEnvStr $R2 "SPK_QA_FAIL_UI_COPY"
   StrCmp $R2 "1" 0 uiCopyCheckDone
   SetErrorLevel 2
   Goto uninstallPayloadFailed
@@ -1252,13 +1252,13 @@ uiCopyCheckDone:
   Rename "$INSTDIR\libwinpthread-1.dll.tmp" "$INSTDIR\libwinpthread-1.dll"
   IfErrors uninstallDllRenameFailed
 
-  Delete "$INSTDIR\FreeAssetFilterUninstall.exe.old"
-  Rename "$INSTDIR\FreeAssetFilterUninstall.exe" "$INSTDIR\FreeAssetFilterUninstall.exe.old"
+  Delete "$INSTDIR\SopeekUninstall.exe.old"
+  Rename "$INSTDIR\SopeekUninstall.exe" "$INSTDIR\SopeekUninstall.exe.old"
   ClearErrors
-  Rename "$INSTDIR\FreeAssetFilterUninstall.exe.tmp" "$INSTDIR\FreeAssetFilterUninstall.exe"
+  Rename "$INSTDIR\SopeekUninstall.exe.tmp" "$INSTDIR\SopeekUninstall.exe"
   IfErrors uninstallUiRenameFailed
 
-  IfFileExists "$INSTDIR\FreeAssetFilterUninstall.exe" 0 uninstallPayloadFailed
+  IfFileExists "$INSTDIR\SopeekUninstall.exe" 0 uninstallPayloadFailed
   IfFileExists "$INSTDIR\libwinpthread-1.dll" 0 uninstallPayloadFailed
 
   ; WriteUninstaller failure is an install failure: verify the helper on disk and
@@ -1271,33 +1271,33 @@ uiCopyCheckDone:
   ; UI + helper + DLL are all verified; only now remove the legacy single-file
   ; uninstaller and the retired backups.
   Delete "$INSTDIR\Uninstall.exe"
-  Delete "$INSTDIR\FreeAssetFilterUninstall.exe.old"
+  Delete "$INSTDIR\SopeekUninstall.exe.old"
   Delete "$INSTDIR\libwinpthread-1.dll.old"
 
   ; Optional desktop shortcut (flag from the result INI). A stale shortcut from an
   ; earlier install is removed when the flag is 0. Test builds use the isolated
-  ; FreeAssetFilterTest.lnk and can never touch the production shortcut.
+  ; SopeekTest.lnk and can never touch the production shortcut.
   ReadINIStr $0 "${RESULT_INI}" "install" "desktop"
   StrCmp $0 "1" 0 desktopRemove
-  CreateShortcut "$DESKTOP\${SHORTCUT_STEM}.lnk" "$INSTDIR\FreeAssetFilter.exe"
+  CreateShortcut "$DESKTOP\${SHORTCUT_STEM}.lnk" "$INSTDIR\Sopeek.exe"
   Goto desktopDone
 desktopRemove:
   Delete "$DESKTOP\${SHORTCUT_STEM}.lnk"
 desktopDone:
-  ; Optional Start Menu shortcut. Production owns only its own FreeAssetFilter
-  ; folder; test builds use a flat FreeAssetFilterTest.lnk and never create or
+  ; Optional Start Menu shortcut. Production owns only its own Sopeek
+  ; folder; test builds use a flat SopeekTest.lnk and never create or
   ; remove a production folder.
   ReadINIStr $0 "${RESULT_INI}" "install" "startmenu"
   StrCmp $0 "1" 0 startmenuRemove
-!ifdef FAF_TESTMODE
-  CreateShortcut "$SMPROGRAMS\${SHORTCUT_STEM}.lnk" "$INSTDIR\FreeAssetFilter.exe"
+!ifdef SPK_TESTMODE
+  CreateShortcut "$SMPROGRAMS\${SHORTCUT_STEM}.lnk" "$INSTDIR\Sopeek.exe"
 !else
   CreateDirectory "$SMPROGRAMS\${SHORTCUT_STEM}"
-  CreateShortcut "$SMPROGRAMS\${SHORTCUT_STEM}\${SHORTCUT_STEM}.lnk" "$INSTDIR\FreeAssetFilter.exe"
+  CreateShortcut "$SMPROGRAMS\${SHORTCUT_STEM}\${SHORTCUT_STEM}.lnk" "$INSTDIR\Sopeek.exe"
 !endif
   Goto startmenuDone
 startmenuRemove:
-!ifdef FAF_TESTMODE
+!ifdef SPK_TESTMODE
   Delete "$SMPROGRAMS\${SHORTCUT_STEM}.lnk"
 !else
   Delete "$SMPROGRAMS\${SHORTCUT_STEM}\${SHORTCUT_STEM}.lnk"
@@ -1307,39 +1307,39 @@ startmenuDone:
 
   ; T16: install-info metadata. Test builds use the isolated per-user test key;
   ; production uses the production key.
-!ifdef FAF_TESTMODE
-  WriteRegStr HKCU "Software\FreeAssetFilterTest" "InstallDir" "$INSTDIR"
+!ifdef SPK_TESTMODE
+  WriteRegStr HKCU "Software\SopeekTest" "InstallDir" "$INSTDIR"
 !else
-  WriteRegStr HKCU "Software\FreeAssetFilter" "InstallDir" "$INSTDIR"
+  WriteRegStr HKCU "Software\Sopeek" "InstallDir" "$INSTDIR"
 !endif
 
   ; Add/Remove Programs metadata. Production: native 64-bit HKLM view. Test: the
   ; same value names under the per-user HKCU test key; never a production key.
-!ifdef FAF_TESTMODE
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilterTest" "DisplayName" "FreeAssetFilter"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilterTest" "UninstallString" '"$INSTDIR\UninstallHelper.exe" /uninstall-launcher /installdir "$INSTDIR" /ui "$INSTDIR\FreeAssetFilterUninstall.exe"'
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilterTest" "QuietUninstallString" '"$INSTDIR\UninstallHelper.exe" /S /installdir "$INSTDIR"'
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilterTest" "InstallLocation" "$INSTDIR"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilterTest" "DisplayIcon" '"$INSTDIR\FreeAssetFilter.exe"'
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilterTest" "DisplayVersion" "1.0.0-alpha.5"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilterTest" "Publisher" "Dorufoc & renmoren"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilterTest" "URLInfoAbout" "https://github.com/Dorufoc/FreeAssetFilter"
+!ifdef SPK_TESTMODE
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SopeekTest" "DisplayName" "Sopeek"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SopeekTest" "UninstallString" '"$INSTDIR\UninstallHelper.exe" /uninstall-launcher /installdir "$INSTDIR" /ui "$INSTDIR\SopeekUninstall.exe"'
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SopeekTest" "QuietUninstallString" '"$INSTDIR\UninstallHelper.exe" /S /installdir "$INSTDIR"'
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SopeekTest" "InstallLocation" "$INSTDIR"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SopeekTest" "DisplayIcon" '"$INSTDIR\Sopeek.exe"'
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SopeekTest" "DisplayVersion" "1.0.0-alpha.5"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SopeekTest" "Publisher" "Dorufoc & renmoren"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SopeekTest" "URLInfoAbout" "https://github.com/Dorufoc/Sopeek"
   ; EstimatedSize is a DWORD in KB (${GetSize} with /S=0K returns the total in KB in $0).
   ${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2
-  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilterTest" "EstimatedSize" $0
+  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SopeekTest" "EstimatedSize" $0
 !else
   ; Add/Remove Programs metadata (production: native 64-bit HKLM view).
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilter" "DisplayName" "FreeAssetFilter"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilter" "UninstallString" '"$INSTDIR\UninstallHelper.exe" /uninstall-launcher /installdir "$INSTDIR" /ui "$INSTDIR\FreeAssetFilterUninstall.exe"'
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilter" "QuietUninstallString" '"$INSTDIR\UninstallHelper.exe" /S /installdir "$INSTDIR"'
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilter" "InstallLocation" "$INSTDIR"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilter" "DisplayIcon" '"$INSTDIR\FreeAssetFilter.exe"'
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilter" "DisplayVersion" "1.0.0-alpha.5"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilter" "Publisher" "Dorufoc & renmoren"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilter" "URLInfoAbout" "https://github.com/Dorufoc/FreeAssetFilter"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Sopeek" "DisplayName" "Sopeek"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Sopeek" "UninstallString" '"$INSTDIR\UninstallHelper.exe" /uninstall-launcher /installdir "$INSTDIR" /ui "$INSTDIR\SopeekUninstall.exe"'
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Sopeek" "QuietUninstallString" '"$INSTDIR\UninstallHelper.exe" /S /installdir "$INSTDIR"'
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Sopeek" "InstallLocation" "$INSTDIR"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Sopeek" "DisplayIcon" '"$INSTDIR\Sopeek.exe"'
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Sopeek" "DisplayVersion" "1.0.0-alpha.5"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Sopeek" "Publisher" "Dorufoc & renmoren"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Sopeek" "URLInfoAbout" "https://github.com/Dorufoc/Sopeek"
   ; EstimatedSize is a DWORD in KB (${GetSize} with /S=0K returns the total in KB in $0).
   ${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2
-  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilter" "EstimatedSize" $0
+  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Sopeek" "EstimatedSize" $0
 !endif
 
   ; Persisted option flags (D11): DWORDs written even when 0 so MaintenanceDetector
@@ -1356,31 +1356,31 @@ optStartmenuOn:
   StrCmp $6 "1" optAutostartOn
   StrCpy $6 0
 optAutostartOn:
-!ifdef FAF_TESTMODE
-  WriteRegDWORD HKCU "Software\FreeAssetFilterTest" "OptDesktop" $4
-  WriteRegDWORD HKCU "Software\FreeAssetFilterTest" "OptStartmenu" $5
-  WriteRegDWORD HKCU "Software\FreeAssetFilterTest" "OptAutostart" $6
+!ifdef SPK_TESTMODE
+  WriteRegDWORD HKCU "Software\SopeekTest" "OptDesktop" $4
+  WriteRegDWORD HKCU "Software\SopeekTest" "OptStartmenu" $5
+  WriteRegDWORD HKCU "Software\SopeekTest" "OptAutostart" $6
 !else
-  WriteRegDWORD HKCU "Software\FreeAssetFilter" "OptDesktop" $4
-  WriteRegDWORD HKCU "Software\FreeAssetFilter" "OptStartmenu" $5
-  WriteRegDWORD HKCU "Software\FreeAssetFilter" "OptAutostart" $6
+  WriteRegDWORD HKCU "Software\Sopeek" "OptDesktop" $4
+  WriteRegDWORD HKCU "Software\Sopeek" "OptStartmenu" $5
+  WriteRegDWORD HKCU "Software\Sopeek" "OptAutostart" $6
 !endif
 
   ; Optional autostart Run value (production only). Test builds must never read,
   ; write, or delete the production Run value; OptAutostart is still persisted in
   ; the isolated test install-info key above.
-!ifdef FAF_TESTMODE
+!ifdef SPK_TESTMODE
   ; Intentionally no Run side effect in test builds.
 !else
   ; When disabled, delete only a value that is OURS (quote-consistent compare) -
   ; a value pointing elsewhere is never touched.
   StrCmp $6 "1" 0 autostartOff
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "FreeAssetFilter" '"$INSTDIR\FreeAssetFilter.exe"'
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Sopeek" '"$INSTDIR\Sopeek.exe"'
   Goto autostartDone
 autostartOff:
-  ReadRegStr $1 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "FreeAssetFilter"
-  StrCmp $1 '"$INSTDIR\FreeAssetFilter.exe"' 0 autostartDone
-  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "FreeAssetFilter"
+  ReadRegStr $1 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Sopeek"
+  StrCmp $1 '"$INSTDIR\Sopeek.exe"' 0 autostartDone
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Sopeek"
 autostartDone:
 !endif
 
@@ -1392,14 +1392,14 @@ uninstallDllRenameFailed:
   Rename "$INSTDIR\libwinpthread-1.dll.old" "$INSTDIR\libwinpthread-1.dll"
   Goto uninstallPayloadFailed
 uninstallUiRenameFailed:
-  Rename "$INSTDIR\FreeAssetFilterUninstall.exe.old" "$INSTDIR\FreeAssetFilterUninstall.exe"
+  Rename "$INSTDIR\SopeekUninstall.exe.old" "$INSTDIR\SopeekUninstall.exe"
   Goto uninstallPayloadFailed
 uninstallHelperFailed:
-  Delete "$INSTDIR\FreeAssetFilterUninstall.exe.old"
+  Delete "$INSTDIR\SopeekUninstall.exe.old"
   Delete "$INSTDIR\libwinpthread-1.dll.old"
   Abort
 uninstallPayloadFailed:
-  Delete "$INSTDIR\FreeAssetFilterUninstall.exe.tmp"
+  Delete "$INSTDIR\SopeekUninstall.exe.tmp"
   Delete "$INSTDIR\libwinpthread-1.dll.tmp"
   Abort
 installDone:
@@ -1410,7 +1410,7 @@ Section "Uninstall"
   StrCmp $UnResultIni "" 0 unSecPathsReady
   StrCpy $UnRequestIni "$INSTDIR\${UNINSTALL_REQUEST_FILE}"
   StrCpy $UnResultIni "$INSTDIR\${UNINSTALL_RESULT_FILE}"
-  StrCpy $UnUiExe "$INSTDIR\FreeAssetFilterUninstall.exe"
+  StrCpy $UnUiExe "$INSTDIR\SopeekUninstall.exe"
 unSecPathsReady:
 
   ; ---- Stage 1: shortcuts -------------------------------------------------
@@ -1422,7 +1422,7 @@ unSecPathsReady:
   StrCpy $UnErrorText "$DESKTOP\${SHORTCUT_STEM}.lnk"
   Goto unSecFail
 unSecDesktopDone:
-!ifdef FAF_TESTMODE
+!ifdef SPK_TESTMODE
   Delete "$SMPROGRAMS\${SHORTCUT_STEM}.lnk"
   IfFileExists "$SMPROGRAMS\${SHORTCUT_STEM}.lnk" 0 unSecStartDone
   StrCpy $UnErrorText "$SMPROGRAMS\${SHORTCUT_STEM}.lnk"
@@ -1434,7 +1434,7 @@ unSecDesktopDone:
   Goto unSecFail
 !endif
 unSecStartDone:
-!ifndef FAF_TESTMODE
+!ifndef SPK_TESTMODE
   ; A folder containing unrelated user files is left alone; it is not an error.
   RMDir "$SMPROGRAMS\${SHORTCUT_STEM}"
 !endif
@@ -1444,66 +1444,66 @@ unSecStartDone:
   StrCpy $1 "300"
   Call un.WriteProgress
   SetRegView 64
-!ifndef FAF_TESTMODE
+!ifndef SPK_TESTMODE
   ; Run value: remove only the quote-consistent value written by Section Install.
-  ReadRegStr $2 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "FreeAssetFilter"
-  StrCmp $2 '"$INSTDIR\FreeAssetFilter.exe"' 0 unSecRunDone
+  ReadRegStr $2 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Sopeek"
+  StrCmp $2 '"$INSTDIR\Sopeek.exe"' 0 unSecRunDone
   ClearErrors
-  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "FreeAssetFilter"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Sopeek"
   IfErrors unSecRunFail
   Goto unSecRunDone
 unSecRunFail:
-  StrCpy $UnErrorText "HKCU\Software\Microsoft\Windows\CurrentVersion\Run\FreeAssetFilter"
+  StrCpy $UnErrorText "HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Sopeek"
   Goto unSecFail
 unSecRunDone:
 !endif
 
   ; Add/Remove entry, native 64-bit view (production HKLM; test HKCU test key).
-!ifdef FAF_TESTMODE
-  ReadRegStr $2 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilterTest" "DisplayName"
+!ifdef SPK_TESTMODE
+  ReadRegStr $2 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SopeekTest" "DisplayName"
   StrCmp $2 "" unSecUninst64Done
   ClearErrors
-  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilterTest"
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SopeekTest"
   IfErrors unSecUninst64Fail
   Goto unSecUninst64Done
 unSecUninst64Fail:
-  StrCpy $UnErrorText "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilterTest"
+  StrCpy $UnErrorText "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\SopeekTest"
   Goto unSecFail
 unSecUninst64Done:
 !else
-  ReadRegStr $2 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilter" "DisplayName"
+  ReadRegStr $2 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Sopeek" "DisplayName"
   StrCmp $2 "" unSecUninst64Done
   ClearErrors
-  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilter"
+  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Sopeek"
   IfErrors unSecUninst64Fail
   Goto unSecUninst64Done
 unSecUninst64Fail:
-  StrCpy $UnErrorText "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilter"
+  StrCpy $UnErrorText "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\Sopeek"
   Goto unSecFail
 unSecUninst64Done:
 !endif
 
   ; Install-info key (InstallDir/Opt*); InstallLocation lives on the uninstall key.
-!ifdef FAF_TESTMODE
-  ReadRegStr $2 HKCU "Software\FreeAssetFilterTest" "InstallDir"
+!ifdef SPK_TESTMODE
+  ReadRegStr $2 HKCU "Software\SopeekTest" "InstallDir"
   StrCmp $2 "" unSecInfoDone
   ClearErrors
-  DeleteRegKey HKCU "Software\FreeAssetFilterTest"
+  DeleteRegKey HKCU "Software\SopeekTest"
   IfErrors unSecInfoFail
   Goto unSecInfoDone
 unSecInfoFail:
-  StrCpy $UnErrorText "HKCU\Software\FreeAssetFilterTest"
+  StrCpy $UnErrorText "HKCU\Software\SopeekTest"
   Goto unSecFail
 unSecInfoDone:
 !else
-  ReadRegStr $2 HKCU "Software\FreeAssetFilter" "InstallDir"
+  ReadRegStr $2 HKCU "Software\Sopeek" "InstallDir"
   StrCmp $2 "" unSecInfoDone
   ClearErrors
-  DeleteRegKey HKCU "Software\FreeAssetFilter"
+  DeleteRegKey HKCU "Software\Sopeek"
   IfErrors unSecInfoFail
   Goto unSecInfoDone
 unSecInfoFail:
-  StrCpy $UnErrorText "HKCU\Software\FreeAssetFilter"
+  StrCpy $UnErrorText "HKCU\Software\Sopeek"
   Goto unSecFail
 unSecInfoDone:
 !endif
@@ -1511,26 +1511,26 @@ unSecInfoDone:
   ; Legacy 32-bit HKLM view. HKCU is not WOW64-redirected; for test builds this
   ; repeats the same idempotent test-key deletion and normally finds nothing.
   SetRegView 32
-!ifdef FAF_TESTMODE
-  ReadRegStr $2 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilterTest" "DisplayName"
+!ifdef SPK_TESTMODE
+  ReadRegStr $2 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SopeekTest" "DisplayName"
   StrCmp $2 "" unSecUninst32Done
   ClearErrors
-  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilterTest"
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SopeekTest"
   IfErrors unSecUninst32Fail
   Goto unSecUninst32Done
 unSecUninst32Fail:
-  StrCpy $UnErrorText "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilterTest"
+  StrCpy $UnErrorText "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\SopeekTest"
   Goto unSecFail
 unSecUninst32Done:
 !else
-  ReadRegStr $2 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilter" "DisplayName"
+  ReadRegStr $2 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Sopeek" "DisplayName"
   StrCmp $2 "" unSecUninst32Done
   ClearErrors
-  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilter"
+  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Sopeek"
   IfErrors unSecUninst32Fail
   Goto unSecUninst32Done
 unSecUninst32Fail:
-  StrCpy $UnErrorText "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilter"
+  StrCpy $UnErrorText "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\Sopeek"
   Goto unSecFail
 unSecUninst32Done:
 !endif
@@ -1550,10 +1550,10 @@ unSecUninst32Done:
   StrCmp $UnFailedPath "" 0 unSecPathFail
 unSecInternalDone:
 
-  IfFileExists "$INSTDIR\FreeAssetFilter.exe" 0 unSecAppDone
-  Delete "$INSTDIR\FreeAssetFilter.exe"
-  IfFileExists "$INSTDIR\FreeAssetFilter.exe" 0 unSecAppDone
-  StrCpy $UnErrorText "$INSTDIR\FreeAssetFilter.exe"
+  IfFileExists "$INSTDIR\Sopeek.exe" 0 unSecAppDone
+  Delete "$INSTDIR\Sopeek.exe"
+  IfFileExists "$INSTDIR\Sopeek.exe" 0 unSecAppDone
+  StrCpy $UnErrorText "$INSTDIR\Sopeek.exe"
   Goto unSecFail
 unSecAppDone:
 
@@ -1565,9 +1565,9 @@ unSecAppDone:
 unSecLegacyDone:
 
   ; Retired install-stack leftovers are app-owned; report the exact leftover.
-  Delete "$INSTDIR\FreeAssetFilterUninstall.exe.old"
-  IfFileExists "$INSTDIR\FreeAssetFilterUninstall.exe.old" 0 unSecTempUiOldDone
-  StrCpy $UnErrorText "$INSTDIR\FreeAssetFilterUninstall.exe.old"
+  Delete "$INSTDIR\SopeekUninstall.exe.old"
+  IfFileExists "$INSTDIR\SopeekUninstall.exe.old" 0 unSecTempUiOldDone
+  StrCpy $UnErrorText "$INSTDIR\SopeekUninstall.exe.old"
   Goto unSecFail
 unSecTempUiOldDone:
   Delete "$INSTDIR\libwinpthread-1.dll.old"
@@ -1575,9 +1575,9 @@ unSecTempUiOldDone:
   StrCpy $UnErrorText "$INSTDIR\libwinpthread-1.dll.old"
   Goto unSecFail
 unSecTempDllOldDone:
-  Delete "$INSTDIR\FreeAssetFilterUninstall.exe.tmp"
-  IfFileExists "$INSTDIR\FreeAssetFilterUninstall.exe.tmp" 0 unSecTempUiTmpDone
-  StrCpy $UnErrorText "$INSTDIR\FreeAssetFilterUninstall.exe.tmp"
+  Delete "$INSTDIR\SopeekUninstall.exe.tmp"
+  IfFileExists "$INSTDIR\SopeekUninstall.exe.tmp" 0 unSecTempUiTmpDone
+  StrCpy $UnErrorText "$INSTDIR\SopeekUninstall.exe.tmp"
   Goto unSecFail
 unSecTempUiTmpDone:
   Delete "$INSTDIR\libwinpthread-1.dll.tmp"
@@ -1594,19 +1594,19 @@ unSecUserData:
   Call un.WriteProgress
   StrCmp $UnDeleteUserData "1" 0 unSecFinishing
 
-  ReadEnvStr $UnFafDataDir "FAF_DATA_DIR"
-  StrCpy $R5 $UnFafDataDir
+  ReadEnvStr $UnSpkDataDir "SPK_DATA_DIR"
+  StrCpy $R5 $UnSpkDataDir
   Call un.StripTrailingSlash
-  StrCpy $UnFafDataDir $R5
+  StrCpy $UnSpkDataDir $R5
 
   ; Canonical per-user data root (test build has its own root).
   StrCpy $UnTarget "${UNINSTALL_DATA_ROOT}"
   StrCpy $R5 $UnTarget
   Call un.StripTrailingSlash
   StrCpy $UnTarget $R5
-  StrCmp $UnFafDataDir "" unSecCanonicalGo
+  StrCmp $UnSpkDataDir "" unSecCanonicalGo
   StrCpy $R5 $UnTarget
-  StrCpy $R6 $UnFafDataDir
+  StrCpy $R6 $UnSpkDataDir
   Call un.PathsOverlap
   StrCmp $R7 1 0 unSecCanonicalGo
   StrCpy $0 "user-data-custom-overlap"
@@ -1626,9 +1626,9 @@ unSecCanonicalDone:
   StrCpy $R5 $UnTarget
   Call un.StripTrailingSlash
   StrCpy $UnTarget $R5
-  StrCmp $UnFafDataDir "" unSecInstallDataGo
+  StrCmp $UnSpkDataDir "" unSecInstallDataGo
   StrCpy $R5 $UnTarget
-  StrCpy $R6 $UnFafDataDir
+  StrCpy $R6 $UnSpkDataDir
   Call un.PathsOverlap
   StrCmp $R7 1 0 unSecInstallDataGo
   StrCpy $0 "user-data-custom-overlap"
@@ -1647,9 +1647,9 @@ unSecInstallDataDone:
   StrCpy $R5 $UnTarget
   Call un.StripTrailingSlash
   StrCpy $UnTarget $R5
-  StrCmp $UnFafDataDir "" unSecInternalDataGo
+  StrCmp $UnSpkDataDir "" unSecInternalDataGo
   StrCpy $R5 $UnTarget
-  StrCpy $R6 $UnFafDataDir
+  StrCpy $R6 $UnSpkDataDir
   Call un.PathsOverlap
   StrCmp $R7 1 0 unSecInternalDataGo
   StrCpy $0 "user-data-custom-overlap"
@@ -1684,26 +1684,26 @@ unSecUiProc:
   StrCmp $1 0 unSecDeleteTerminal
   Goto unSecUiTick
 unSecUiFind:
-  FindWindow $R0 "FreeAssetFilterInstaller" ""
+  FindWindow $R0 "SopeekInstaller" ""
   StrCmp $R0 0 unSecDeleteTerminal
 unSecUiTick:
-  Sleep ${FAF_UNINSTALL_POLL_MS}
-  IntOp $0 $0 + ${FAF_UNINSTALL_POLL_MS}
-  IntCmp $0 ${FAF_UNINSTALL_UI_DONE_TIMEOUT_MS} 0 0 unSecUiTimeout
+  Sleep ${SPK_UNINSTALL_POLL_MS}
+  IntOp $0 $0 + ${SPK_UNINSTALL_POLL_MS}
+  IntCmp $0 ${SPK_UNINSTALL_UI_DONE_TIMEOUT_MS} 0 0 unSecUiTimeout
   Goto unSecUiWaitLoop
 unSecUiDone:
   StrCmp $UnUiProcess 0 unSecUiDoneFind
-  System::Call 'kernel32::WaitForSingleObject(p $UnUiProcess, i ${FAF_UNINSTALL_UI_PROCESS_WAIT_MS}) i .r1'
+  System::Call 'kernel32::WaitForSingleObject(p $UnUiProcess, i ${SPK_UNINSTALL_UI_PROCESS_WAIT_MS}) i .r1'
   StrCmp $1 0 unSecDeleteTerminal
   Goto unSecUiTimeout
 unSecUiDoneFind:
   StrCpy $0 0
 unSecUiDoneFindLoop:
-  FindWindow $R0 "FreeAssetFilterInstaller" ""
+  FindWindow $R0 "SopeekInstaller" ""
   StrCmp $R0 0 unSecDeleteTerminal
-  Sleep ${FAF_UNINSTALL_POLL_MS}
-  IntOp $0 $0 + ${FAF_UNINSTALL_POLL_MS}
-  IntCmp $0 ${FAF_UNINSTALL_UI_PROCESS_WAIT_MS} 0 0 unSecUiTimeout
+  Sleep ${SPK_UNINSTALL_POLL_MS}
+  IntOp $0 $0 + ${SPK_UNINSTALL_POLL_MS}
+  IntCmp $0 ${SPK_UNINSTALL_UI_PROCESS_WAIT_MS} 0 0 unSecUiTimeout
   Goto unSecUiDoneFindLoop
 
 unSecUiTimeout:

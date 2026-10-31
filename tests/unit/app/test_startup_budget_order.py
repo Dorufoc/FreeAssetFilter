@@ -23,13 +23,13 @@ from typing import Any, Dict
 
 import pytest
 
-from freeassetfilter.core import memory_budget as mb_mod
+from sopeek.core import memory_budget as mb_mod
 
 pytestmark = pytest.mark.unit
 
 _MAIN_PY = (
     Path(__file__).resolve().parents[3]
-    / "freeassetfilter"
+    / "sopeek"
     / "app"
     / "main.py"
 )
@@ -59,8 +59,8 @@ def test_create_application_does_not_touch_pools_or_budget() -> None:
     """启动早期不得导入 pools / memory_budget，也不得调 globalInstance。"""
     node = _create_application_node()
     modules = _lint_module_imports(node)
-    assert "freeassetfilter.core.pools" not in modules
-    assert "freeassetfilter.core.memory_budget" not in modules
+    assert "sopeek.core.pools" not in modules
+    assert "sopeek.core.memory_budget" not in modules
     # 用 AST 而非源码文本：注释里提到 QThreadPool 不算违规。
     referenced = {
         n.id for n in ast.walk(node) if isinstance(n, ast.Name)
@@ -98,7 +98,7 @@ def test_apply_marks_heavy_module_pending_instead_of_importing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """apply() 不给未导入的 file_icon_manager 打工：标记 pending 即可。"""
-    module_name = "freeassetfilter.services.file_icon_manager"
+    module_name = "sopeek.services.file_icon_manager"
     if module_name not in sys.modules:
         pytest.skip("本进程未导入 file_icon_manager，无法构造 pending 场景")
     saved = sys.modules[module_name]
@@ -116,7 +116,7 @@ def test_apply_marks_heavy_module_pending_instead_of_importing(
 
 def test_apply_patches_icon_manager_when_already_imported() -> None:
     """模块已导入时照常打补丁（首帧后的延迟 re-apply 走的就是这条）。"""
-    from freeassetfilter.services.file_icon_manager import FileIconManager
+    from sopeek.services.file_icon_manager import FileIconManager
 
     mb_mod.reset_for_tests()
     budget = mb_mod.get_memory_budget()
@@ -131,7 +131,7 @@ def test_apply_patches_icon_manager_when_already_imported() -> None:
 
 def test_icon_manager_self_applies_budget_at_construction() -> None:
     """FileIconManager 构造期自读档位：即使 apply() 早于导入，上限也正确。"""
-    from freeassetfilter.services.file_icon_manager import FileIconManager
+    from sopeek.services.file_icon_manager import FileIconManager
 
     mb_mod.reset_for_tests()
     budget = mb_mod.get_memory_budget()
@@ -150,8 +150,8 @@ def test_runtime_budgets_is_idempotent_and_registers_providers(
     qapp: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """预算初始化可重复调用（首帧后一次 + 任务补一次）。"""
-    from freeassetfilter.app import main as app_main
-    from freeassetfilter.utils import perf_metrics
+    from sopeek.app import main as app_main
+    from sopeek.utils import perf_metrics
 
     calls: Dict[str, int] = {"apply": 0}
     real_apply = mb_mod.MemoryBudget.apply

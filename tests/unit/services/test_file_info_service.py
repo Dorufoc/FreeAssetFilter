@@ -9,7 +9,7 @@
     python -m pytest tests/unit/services/test_file_info_service.py --timeout 60 -q
 """
 
-# targets: freeassetfilter.services.file_info_service
+# targets: sopeek.services.file_info_service
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from unittest.mock import patch
 
 import pytest
 
-from freeassetfilter.services import file_info_service as fis
+from sopeek.services import file_info_service as fis
 
 
 pytestmark = pytest.mark.unit
@@ -220,7 +220,7 @@ class TestDetailData:
             ]
 
         with patch(
-            "freeassetfilter.core.native.bridges.py7z_core.list_archive",
+            "sopeek.core.native.bridges.py7z_core.list_archive",
             side_effect=_fake_list_archive,
         ):
             values = dict(fis.collect_detail_data(sample_zip_file)["rows"])
@@ -275,10 +275,10 @@ class TestHashes:
 
 
 # =============================================================================
-# native 流式哈希对拍（todo 24：faf_hash_* FFI 接线）
+# native 流式哈希对拍（todo 24：spk_hash_* FFI 接线）
 # =============================================================================
 class TestNativeStreamingHashes:
-    """faf_core 流式哈希（``hash_file_streaming``）对拍与边界。
+    """spk_core 流式哈希（``hash_file_streaming``）对拍与边界。
 
     * 流式结果 == hashlib 参考（已知内容，跨块 + 非整块尾）；
     * 取消：should_stop 中途 → 返回已读部分结果、进度停在取消点；
@@ -292,13 +292,13 @@ class TestNativeStreamingHashes:
     @staticmethod
     def _bridge():
         """返回支持流式哈希的桥实例；DLL 缺失/旧版时跳过。"""
-        from freeassetfilter.core.native.bridges.faf_core_bridge import (
-            get_faf_core_bridge,
+        from sopeek.core.native.bridges.spk_core_bridge import (
+            get_spk_core_bridge,
         )
 
-        bridge = get_faf_core_bridge()
+        bridge = get_spk_core_bridge()
         if not bridge.available or not bridge._supports_hash:  # noqa: SLF001
-            pytest.skip("faf_core.dll 不含流式哈希导出，跳过 native 对拍")
+            pytest.skip("spk_core.dll 不含流式哈希导出，跳过 native 对拍")
         return bridge
 
     @staticmethod
@@ -433,7 +433,7 @@ class TestCache:
 # rust-hot-path-native-migration todo 7：EXIF native/exifread 逐字段对拍
 # =============================================================================
 class TestExifNativeParity:
-    """native faf_parse_exif vs exifread 逐字段对拍（faf_core_available 启用）。
+    """native spk_parse_exif vs exifread 逐字段对拍（spk_core_available 启用）。
 
     accepted-diff（todo 6 对拍已核）：native 不输出
     ``Image GPSInfo: <偏移>`` 指针行——kamadak 将 ExifIFDPointer(0x8769) /
@@ -445,7 +445,7 @@ class TestExifNativeParity:
     _FIXTURE_DIR = (
         Path(__file__).resolve().parents[2]
         / "support"
-        / "faf_core_fixtures"
+        / "spk_core_fixtures"
         / "exif_samples"
     )
 
@@ -481,11 +481,11 @@ class TestExifNativeParity:
         ["sample_standard.jpg", "sample_gps_multivalue.jpg", "sample_corrupt.jpg"],
     )
     def test_native_vs_exifread_field_by_field(
-        self, faf_core_available: bool, sample: str
+        self, spk_core_available: bool, sample: str
     ) -> None:
         """逐样本对拍：native 行与 exifread oracle 一致（指针行豁免）。"""
-        if not faf_core_available:
-            pytest.skip("faf_core.dll 不可用，跳过 native 对拍")
+        if not spk_core_available:
+            pytest.skip("spk_core.dll 不可用，跳过 native 对拍")
         if fis.exifread is None:
             pytest.skip("exifread 未安装")
         path = str(self._FIXTURE_DIR / sample)
@@ -501,11 +501,11 @@ class TestExifNativeParity:
         assert diffs == [], f"{sample} native/exifread 不一致: {diffs}"
 
     def test_collect_detail_data_exif_rows(
-        self, faf_core_available: bool
+        self, spk_core_available: bool
     ) -> None:
         """collect_detail_data 图片详情 EXIF 行与改造前（exifread oracle）一致。"""
-        if not faf_core_available:
-            pytest.skip("faf_core.dll 不可用，跳过 native 对拍")
+        if not spk_core_available:
+            pytest.skip("spk_core.dll 不可用，跳过 native 对拍")
         if fis.exifread is None:
             pytest.skip("exifread 未安装")
         path = str(self._FIXTURE_DIR / "sample_standard.jpg")
@@ -517,12 +517,12 @@ class TestExifNativeParity:
     def test_native_unavailable_falls_back_to_exifread(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """DLL 缺失（get_faf_core_bridge → None）时服务层回退 exifread。"""
+        """DLL 缺失（get_spk_core_bridge → None）时服务层回退 exifread。"""
         if fis.exifread is None:
             pytest.skip("exifread 未安装")
-        import freeassetfilter.core.native.bridges.faf_core_bridge as bridge_mod
+        import sopeek.core.native.bridges.spk_core_bridge as bridge_mod
 
-        monkeypatch.setattr(bridge_mod, "get_faf_core_bridge", lambda: None)
+        monkeypatch.setattr(bridge_mod, "get_spk_core_bridge", lambda: None)
         path = str(self._FIXTURE_DIR / "sample_standard.jpg")
         oracle = fis._collect_exif_exifread(path)
         assert fis._collect_exif(path) == oracle

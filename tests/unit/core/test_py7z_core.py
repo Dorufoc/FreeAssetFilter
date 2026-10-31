@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """7z 压缩包处理核心单测（tests-comprehensive-refactor todo-9 补全）。
 
-覆盖 ``freeassetfilter.core.native.bridges.py7z_core``：
+覆盖 ``sopeek.core.native.bridges.py7z_core``：
 
 * **7z.exe 可用（真实执行路径）**：``list_archive`` 列出 ZIP 内容、
   ``_run_7z_command`` 解压单个条目到临时目录、``get_archive_type`` /
@@ -25,9 +25,9 @@ from typing import Any, List
 
 import pytest
 
-from freeassetfilter.core._paths import archive_7z_dir
-from freeassetfilter.core.native.bridges import py7z_core as py7z_mod
-from freeassetfilter.core.native.bridges.py7z_core import (
+from sopeek.core._paths import archive_7z_dir
+from sopeek.core.native.bridges import py7z_core as py7z_mod
+from sopeek.core.native.bridges.py7z_core import (
     Py7zCore,
     get_7z_core,
     get_archive_type,
@@ -147,7 +147,7 @@ class TestReal7zExecution:
         # pytest 的 tmp_path 目录名含函数名 test_is_encrypted_real_negative，
         # 路径中带 "encrypted" 子串；7z 输出会回显归档路径导致关键字误命中。
         # 因此把 zip 放到 pytest-<num> 基目录下的中性命名子目录。
-        neutral_dir = tmp_path_factory.mktemp("faf_neutral")
+        neutral_dir = tmp_path_factory.mktemp("spk_neutral")
         zip_path = make_zip(
             neutral_dir / "sample.zip",
             {"hello.txt": "Hello from ZIP!"},
@@ -450,7 +450,7 @@ class TestConstructorWithout7z:
 _SEVEN_ZIP_SAMPLE_DIR = (
     Path(__file__).resolve().parents[2]
     / "support"
-    / "faf_core_fixtures"
+    / "spk_core_fixtures"
     / "seven_zip_samples"
 )
 
@@ -476,14 +476,14 @@ class Test7zNativeParity:
     @pytest.mark.parametrize("current_path", ["", "docs"])
     def test_native_matches_python_oracle(
         self,
-        faf_core_available: bool,
+        spk_core_available: bool,
         fixture_name: str,
         encoding: str,
         current_path: str,
     ) -> None:
         """native 与 _parse_list_output 逐条逐字段一致（含中文/GBK 样本）。"""
-        if not faf_core_available:
-            pytest.skip("faf_core.dll 不可用，跳过 native 对拍")
+        if not spk_core_available:
+            pytest.skip("spk_core.dll 不可用，跳过 native 对拍")
         core = Py7zCore.__new__(Py7zCore)
         output = _read_slt_fixture(fixture_name, encoding)
         native = core._try_native_parse_list_output(  # noqa: SLF001
@@ -497,7 +497,7 @@ class Test7zNativeParity:
         self, monkeypatch: Any, tmp_path: Any
     ) -> None:
         """同一 mock 7z 输出下，native 与回退两路径的 list_archive 产出一致。"""
-        import freeassetfilter.core.native.bridges.faf_core_bridge as _faf_mod
+        import sopeek.core.native.bridges.spk_core_bridge as _spk_mod
 
         archive = tmp_path / "sample.zip"
         archive.write_bytes(b"PK\x03\x04")
@@ -505,19 +505,19 @@ class Test7zNativeParity:
             list(a[0]), 0, stdout=_SLT_SAMPLE, stderr=""
         )
         with_native = _mocked_core(monkeypatch, fake).list_archive(str(archive))
-        monkeypatch.setattr(_faf_mod, "get_faf_core_bridge", lambda: None)
+        monkeypatch.setattr(_spk_mod, "get_spk_core_bridge", lambda: None)
         fallback = _mocked_core(monkeypatch, fake).list_archive(str(archive))
         assert with_native == fallback
 
     def test_list_archive_prefers_native_parse(
-        self, faf_core_available: bool, monkeypatch: Any, tmp_path: Any
+        self, spk_core_available: bool, monkeypatch: Any, tmp_path: Any
     ) -> None:
         """DLL 可用时 list_archive 真的消费 bridge.parse_7z_list（录音 wrapper）。"""
-        if not faf_core_available:
-            pytest.skip("faf_core.dll 不可用，跳过 native 接线断言")
-        import freeassetfilter.core.native.bridges.faf_core_bridge as _faf_mod
+        if not spk_core_available:
+            pytest.skip("spk_core.dll 不可用，跳过 native 接线断言")
+        import sopeek.core.native.bridges.spk_core_bridge as _spk_mod
 
-        bridge = _faf_mod.get_faf_core_bridge()
+        bridge = _spk_mod.get_spk_core_bridge()
         calls: List[Any] = []
         real_parse = bridge.parse_7z_list
 
@@ -545,13 +545,13 @@ class Test7zNativeFallback:
         self, monkeypatch: Any, tmp_path: Any
     ) -> None:
         """DLL 缺失时桥 parse_7z_list 返回 None（调用方据此回退）。"""
-        from freeassetfilter.core.native.bridges.faf_core_bridge import FafCoreBridge
+        from sopeek.core.native.bridges.spk_core_bridge import SpkCoreBridge
 
         missing = tmp_path / "missing.dll"
         monkeypatch.setattr(
-            FafCoreBridge, "_candidate_paths", lambda self: [missing]
+            SpkCoreBridge, "_candidate_paths", lambda self: [missing]
         )
-        inst = FafCoreBridge()
+        inst = SpkCoreBridge()
         assert inst.parse_7z_list(_SLT_SAMPLE, "", "x.zip") is None
         assert inst.parse_7z_list(123, "", "x.zip") is None
 
@@ -559,7 +559,7 @@ class Test7zNativeFallback:
         self, monkeypatch: Any, tmp_path: Any
     ) -> None:
         """native 抛异常时 list_archive 回退 Python 解析且产出正常。"""
-        import freeassetfilter.core.native.bridges.faf_core_bridge as _faf_mod
+        import sopeek.core.native.bridges.spk_core_bridge as _spk_mod
 
         class _RaisingBridge:
             def parse_7z_list(
@@ -567,7 +567,7 @@ class Test7zNativeFallback:
             ) -> Any:
                 raise RuntimeError("native boom")
 
-        monkeypatch.setattr(_faf_mod, "get_faf_core_bridge", lambda: _RaisingBridge())
+        monkeypatch.setattr(_spk_mod, "get_spk_core_bridge", lambda: _RaisingBridge())
         archive = tmp_path / "sample.zip"
         archive.write_bytes(b"PK\x03\x04")
         fake = lambda *a, **k: subprocess.CompletedProcess(  # noqa: E731
@@ -582,9 +582,9 @@ class Test7zNativeFallback:
         self, monkeypatch: Any, tmp_path: Any
     ) -> None:
         """回退路径对 UTF-8/GBK 夹具的解析正确（中文条目逐字段）。"""
-        import freeassetfilter.core.native.bridges.faf_core_bridge as _faf_mod
+        import sopeek.core.native.bridges.spk_core_bridge as _spk_mod
 
-        monkeypatch.setattr(_faf_mod, "get_faf_core_bridge", lambda: None)
+        monkeypatch.setattr(_spk_mod, "get_spk_core_bridge", lambda: None)
         core = Py7zCore.__new__(Py7zCore)
         for fixture_name, encoding in (
             ("slt_output_utf8.txt", "utf-8"),

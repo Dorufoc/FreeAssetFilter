@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""lut_utils.py（freeassetfilter/utils/lut_utils.py）单元测试。
+"""lut_utils.py（sopeek/utils/lut_utils.py）单元测试。
 
 覆盖 CubeLUTParser 的 CUBE 解析（3D/1D、TITLE、注释与空行、数据不完整、
 文件缺失、非法尺寸）、apply_to_pixel 的 3D/1D 插值与越界钳制、validate_lut_file
@@ -14,8 +14,8 @@ from typing import Any, Dict
 
 import pytest
 
-from freeassetfilter.utils import lut_utils as lu
-from freeassetfilter.utils.lut_utils import CubeLUTParser, LUTInfo
+from sopeek.utils import lut_utils as lu
+from sopeek.utils.lut_utils import CubeLUTParser, LUTInfo
 
 pytestmark = pytest.mark.unit
 

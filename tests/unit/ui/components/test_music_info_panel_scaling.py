@@ -20,11 +20,11 @@ from PySide6.QtCore import QSize
 from PySide6.QtGui import QColor, QPixmap, QResizeEvent
 from PySide6.QtWidgets import QApplication, QWidget
 
-_UI_ROOT: str = str(Path(__file__).resolve().parents[3] / "freeassetfilter" / "ui")
+_UI_ROOT: str = str(Path(__file__).resolve().parents[3] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-from freeassetfilter.ui.components.styled_music_info_panel import (  # noqa: E402
+from sopeek.ui.components.styled_music_info_panel import (  # noqa: E402
     StyledMusicInfoPanel,
 )
 

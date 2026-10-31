@@ -27,7 +27,7 @@
 #include "render/text.h"
 #include "render/theme.h"
 
-namespace faf {
+namespace spk {
 
 // ============================== 纯函数辅助 =================================
 
@@ -163,4 +163,4 @@ private:
 // 页面「安装配置」渲染入口（薄包装，供 Todo 12 调用）。
 void RenderConfigure(ID2D1DeviceContext* dc, const Theme& theme, ConfigurePage& page);
 
-}  // namespace faf
+}  // namespace spk

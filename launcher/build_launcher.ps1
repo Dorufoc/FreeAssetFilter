@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-    Build FAF-Launcher.exe (W1 discrete-GPU launcher, todo 10).
+    Build SPK-Launcher.exe (W1 discrete-GPU launcher for Sopeek, todo 10).
 
 .DESCRIPTION
     Compiles launcher/launcher.c (+ launcher.def) into
-    launcher/FAF-Launcher.exe with MSVC (cl.exe). The resulting EXE
+    launcher/SPK-Launcher.exe with MSVC (cl.exe). The resulting EXE
     exports NvOptimusEnablement=1 and
     AmdPowerXpressRequestHighPerformance=1 from its PE export table so
     the NVIDIA Optimus / AMD PowerXpress driver selects the discrete
@@ -34,11 +34,11 @@ $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $Src = Join-Path $PSScriptRoot 'launcher.c'
 $Def = Join-Path $PSScriptRoot 'launcher.def'
-$Out = Join-Path $PSScriptRoot 'FAF-Launcher.exe'
+$Out = Join-Path $PSScriptRoot 'SPK-Launcher.exe'
 
 if ($Clean -and (Test-Path $Out)) {
     Remove-Item -LiteralPath $Out -Force
-    Write-Host "[launcher] removed $Out"
+    Write-Host "[SPK-Launcher] removed $Out"
 }
 
 foreach ($f in @($Src, $Def)) {
@@ -67,8 +67,8 @@ function Build-Msvc([string]$installPath) {
         "cl.exe /nologo /O2 /W3 /DUNICODE /D_UNICODE " +
         "`"$Src`" `"$Def`" " +
         "/Fe:`"$Out`" /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib"
-    Write-Host "[launcher] MSVC: $installPath"
-    Write-Host "[launcher] $inner"
+    Write-Host "[SPK-Launcher] MSVC: $installPath"
+    Write-Host "[SPK-Launcher] $inner"
     $null = & cmd.exe /c $inner
     if ($LASTEXITCODE -ne 0) { throw "cl.exe failed (exit $LASTEXITCODE)" }
 }
@@ -77,11 +77,11 @@ function Build-MinGW {
     $gcc = Get-Command gcc -ErrorAction SilentlyContinue
     if ($null -eq $gcc) { throw 'no gcc on PATH for MinGW fallback' }
     $objdump = Get-Command objdump -ErrorAction SilentlyContinue
-    Write-Host "[launcher] MinGW: $($gcc.Source)"
+    Write-Host "[SPK-Launcher] MinGW: $($gcc.Source)"
     & gcc -O2 -Wall -mwindows "-Wl,--def=$Def" -o $Out $Src
     if ($LASTEXITCODE -ne 0) { throw "gcc failed (exit $LASTEXITCODE)" }
     if ($null -ne $objdump) {
-        Write-Host '[launcher] objdump export table:'
+        Write-Host '[SPK-Launcher] objdump export table:'
         & objdump -p $Out | Select-String -Pattern `
             'NvOptimusEnablement|AmdPowerXpressRequestHighPerformance'
     }
@@ -101,7 +101,7 @@ else {
 
 if (-not (Test-Path -LiteralPath $Out)) { throw "build produced no $Out" }
 $size = (Get-Item -LiteralPath $Out).Length
-Write-Host "[launcher] built $Out ($size bytes)"
+Write-Host "[SPK-Launcher] built $Out ($size bytes)"
 
 # Export-table verification (MSVC path): fail closed when a name is missing.
 $dumpbin = Get-Command dumpbin -ErrorAction SilentlyContinue
@@ -114,9 +114,9 @@ if ($null -ne $dumpbin) {
             throw "export verification FAILED: $sym not in export table"
         }
     }
-    Write-Host '[launcher] export verification PASSED (both symbols present)'
+    Write-Host '[SPK-Launcher] export verification PASSED (both symbols present)'
 }
 else {
-    Write-Host '[launcher] dumpbin not on PATH — verify manually:'
+    Write-Host '[SPK-Launcher] dumpbin not on PATH — verify manually:'
     Write-Host "    dumpbin /exports `"$Out`""
 }

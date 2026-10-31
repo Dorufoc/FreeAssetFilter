@@ -35,17 +35,17 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QVBoxLayout, QWidget
 
 # 组件模块内部使用短路径导入（from theme import tm / components.*），
-# 要求 freeassetfilter/ui 位于 sys.path；与 tests/unit/ui/layout 下
+# 要求 sopeek/ui 位于 sys.path；与 tests/unit/ui/layout 下
 # test_layouts.py 的 bootstrap 方式保持一致。
-_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "freeassetfilter" / "ui")
+_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
 from tests.support.qt_helpers import safe_teardown  # noqa: E402
 
-from freeassetfilter.ui.components.icon_utils import icon_path, render_icon  # noqa: E402
-from freeassetfilter.ui.mica.material import MicaMaterial, MicaWidget, MicaWindow  # noqa: E402
-from freeassetfilter.ui.components.paint_utils import (  # noqa: E402
+from sopeek.ui.components.icon_utils import icon_path, render_icon  # noqa: E402
+from sopeek.ui.mica.material import MicaMaterial, MicaWidget, MicaWindow  # noqa: E402
+from sopeek.ui.components.paint_utils import (  # noqa: E402
     draw_capsule,
     draw_checkmark,
     draw_chevron,
@@ -53,7 +53,7 @@ from freeassetfilter.ui.components.paint_utils import (  # noqa: E402
     draw_dashed_line,
     draw_rounded_rect,
 )
-from freeassetfilter.ui.components.settings_card import (  # noqa: E402
+from sopeek.ui.components.settings_card import (  # noqa: E402
     SETTINGS_SUB_BRANCH_WIDTH,
     SETTINGS_SUB_INDENT,
     NotificationRow,
@@ -61,26 +61,26 @@ from freeassetfilter.ui.components.settings_card import (  # noqa: E402
     SettingsCard,
     SettingsRow,
 )
-from freeassetfilter.ui.components.styled_accordion import (  # noqa: E402
+from sopeek.ui.components.styled_accordion import (  # noqa: E402
     StyledAccordion,
     StyledAccordionItem,
 )
-from freeassetfilter.ui.components.styled_carousel import StyledCarousel  # noqa: E402
-from freeassetfilter.ui.components.styled_cascader import StyledCascader  # noqa: E402
-from freeassetfilter.ui.components.styled_date_picker import (  # noqa: E402
+from sopeek.ui.components.styled_carousel import StyledCarousel  # noqa: E402
+from sopeek.ui.components.styled_cascader import StyledCascader  # noqa: E402
+from sopeek.ui.components.styled_date_picker import (  # noqa: E402
     StyledDatePicker,
     StyledTimePicker,
 )
-from freeassetfilter.ui.components.styled_file_picker import (  # noqa: E402
+from sopeek.ui.components.styled_file_picker import (  # noqa: E402
     StyledFileDropZone,
     StyledFilePicker,
 )
-from freeassetfilter.ui.components.styled_music_info_panel import (  # noqa: E402
+from sopeek.ui.components.styled_music_info_panel import (  # noqa: E402
     StyledMusicInfoPanel,
 )
-from freeassetfilter.ui.components.styled_pagination import StyledPagination  # noqa: E402
-from freeassetfilter.ui.components.styled_player_bar import StyledPlayerBar  # noqa: E402
-from freeassetfilter.ui.components.styled_sidebar import (  # noqa: E402
+from sopeek.ui.components.styled_pagination import StyledPagination  # noqa: E402
+from sopeek.ui.components.styled_player_bar import StyledPlayerBar  # noqa: E402
+from sopeek.ui.components.styled_sidebar import (  # noqa: E402
     AnimatedHighlightBar,
     ContentScrollBar,
     SidebarIconWidget,
@@ -88,13 +88,13 @@ from freeassetfilter.ui.components.styled_sidebar import (  # noqa: E402
     SidebarScrollBar,
     StyledSidebar,
 )
-from freeassetfilter.ui.components.styled_table import (  # noqa: E402
+from sopeek.ui.components.styled_table import (  # noqa: E402
     StatusBadgeDelegate,
     StyledTable,
 )
-from freeassetfilter.ui.components.styled_tabs import StyledTabWidget  # noqa: E402
-from freeassetfilter.ui.components.styled_timeline import StyledTimeline  # noqa: E402
-from freeassetfilter.ui.components.theme_transition_overlay import (  # noqa: E402
+from sopeek.ui.components.styled_tabs import StyledTabWidget  # noqa: E402
+from sopeek.ui.components.styled_timeline import StyledTimeline  # noqa: E402
+from sopeek.ui.components.theme_transition_overlay import (  # noqa: E402
     BackgroundTransitionOverlay,
     ContentTransitionOverlay,
     ThemeTransitionOverlay,
@@ -869,7 +869,7 @@ class TestPaintUtils:
         self, qapp: QApplication, monkeypatch: Any
     ) -> None:
         """numpy 缺失时纯 Qt 回退仍产出同尺寸非空阴影（审查 3.1#15）。"""
-        import freeassetfilter.ui.components.paint_utils as pu
+        import sopeek.ui.components.paint_utils as pu
 
         normal = pu.render_soft_shadow(120, 80, 8, 16, QColor(0, 0, 0, 120), 24)
         assert not normal.isNull()
@@ -886,7 +886,7 @@ class TestPaintUtils:
 
     def test_shadow_padding_covers_blur_tail(self) -> None:
         """留白必须覆盖模糊尾部（3σ），且不小于调用方给的最小值。"""
-        import freeassetfilter.ui.components.paint_utils as pu
+        import sopeek.ui.components.paint_utils as pu
 
         assert pu.shadow_padding(32, 20) >= 49
         assert pu.shadow_padding(60, 24) >= 91
@@ -895,7 +895,7 @@ class TestPaintUtils:
 
     def test_render_soft_shadow_edges_fade_to_zero(self, qapp: QApplication) -> None:
         """位图四边 alpha 必须收敛到 0，不得把渐变硬切成矩形。"""
-        import freeassetfilter.ui.components.paint_utils as pu
+        import sopeek.ui.components.paint_utils as pu
 
         pm = pu.render_soft_shadow(120, 80, 8, 60, QColor(0, 0, 0, 200), 20)
         img = pm.toImage()
@@ -1000,7 +1000,7 @@ class TestMicaWindow:
         self, qapp: QApplication
     ) -> None:
         """材质登记入退出兜底注册表；dispose 幂等（修复退出期 0xC0000005）。"""
-        from freeassetfilter.ui.mica import material as material_mod
+        from sopeek.ui.mica import material as material_mod
 
         win = MicaWindow()
         mica = win.mica
@@ -1083,7 +1083,7 @@ class TestThemeTransitionOverlay:
 
     def test_fit_snapshot_pads_narrow_grab(self, qapp: QApplication) -> None:
         """回归：窄/矮抓拍补透明边到窗口物理尺寸，内容 1:1 左上落点。"""
-        from freeassetfilter.ui.components.theme_transition_overlay import (
+        from sopeek.ui.components.theme_transition_overlay import (
             _fit_snapshot_to_window,
         )
 

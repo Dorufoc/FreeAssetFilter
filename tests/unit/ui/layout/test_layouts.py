@@ -46,40 +46,40 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QApplication, QScrollArea, QVBoxLayout, QWidget
 
 # 布局模块内部使用短路径导入（from theme import tm / components.*），
-# 要求 freeassetfilter/ui 位于 sys.path；与 layout/preview 模块自身的
+# 要求 sopeek/ui 位于 sys.path；与 layout/preview 模块自身的
 # bootstrap 保持一致（详见 file_pool_layout.py:46 的用法）。
-_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "freeassetfilter" / "ui")
+_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-from freeassetfilter.ui.layout.file_pool_layout import FilePoolLayout
-from freeassetfilter.ui.layout.file_selector_layout import FileSelectorLayout
-from freeassetfilter.ui.layout.preview.font_previewer_layout import (
+from sopeek.ui.layout.file_pool_layout import FilePoolLayout
+from sopeek.ui.layout.file_selector_layout import FileSelectorLayout
+from sopeek.ui.layout.preview.font_previewer_layout import (
     DEFAULT_PREVIEW_TEXT,
     FontLoadThread,
     FontPreviewerLayout,
 )
-from freeassetfilter.ui.layout.preview.fullscreen_host import PreviewFullscreenHost
-from freeassetfilter.ui.layout.preview.image_previewer_layout import ImagePreviewerLayout
-import freeassetfilter.ui.layout.preview.office_previewer_layout as _opl
-from freeassetfilter.ui.layout.preview.office_previewer_layout import (
+from sopeek.ui.layout.preview.fullscreen_host import PreviewFullscreenHost
+from sopeek.ui.layout.preview.image_previewer_layout import ImagePreviewerLayout
+import sopeek.ui.layout.preview.office_previewer_layout as _opl
+from sopeek.ui.layout.preview.office_previewer_layout import (
     OfficePreviewerLayout,
 )
-from freeassetfilter.ui.layout.preview.pdf_previewer_layout import PdfPreviewerLayout
-from freeassetfilter.ui.layout.preview.text_previewer_layout import TextPreviewerLayout
-import freeassetfilter.ui.layout.preview.text_previewer_layout as _tpl
-from freeassetfilter.ui.layout.preview.video_player_layout import VideoPlayerLayout
-from freeassetfilter.ui.layout.preview.unsupported_previewer_layout import (
+from sopeek.ui.layout.preview.pdf_previewer_layout import PdfPreviewerLayout
+from sopeek.ui.layout.preview.text_previewer_layout import TextPreviewerLayout
+import sopeek.ui.layout.preview.text_previewer_layout as _tpl
+from sopeek.ui.layout.preview.video_player_layout import VideoPlayerLayout
+from sopeek.ui.layout.preview.unsupported_previewer_layout import (
     UnsupportedPreviewerLayout,
 )
-from freeassetfilter.ui.layout.settings_layout import (
+from sopeek.ui.layout.settings_layout import (
     AccentColorButton,
     AppearanceSettingsPage,
     CustomAccentButton,
     GeneralSettingsPage,
     SettingsLayout,
 )
-from freeassetfilter.ui.layout.unified_previewer_layout import UnifiedPreviewerLayout
+from sopeek.ui.layout.unified_previewer_layout import UnifiedPreviewerLayout
 
 from tests.support.qt_helpers import safe_teardown, wait_until  # noqa: E402
 
@@ -276,7 +276,7 @@ class TestFilePoolLayout:
     ) -> None:
         """add_file 入池后 has_file / get_pool_paths 可见，可安全移除。"""
         # 禁用删除动画，使 remove_file 同步完成（否则经 _removing_paths 异步走）
-        import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
+        import sopeek.ui.layout.file_pool_layout as fpl_mod
 
         monkeypatch.setattr(
             fpl_mod, "is_animation_enabled", lambda *args, **kwargs: False
@@ -315,7 +315,7 @@ class TestFilePoolLayout:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """New 布局网格移除：原地缩小渐隐（card_shrink + 淡出）+ 其余卡片同期平滑补位。"""
-        import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
+        import sopeek.ui.layout.file_pool_layout as fpl_mod
 
         monkeypatch.setattr(fpl_mod, "is_animation_enabled", lambda *a, **k: True)
         layout = FilePoolLayout()
@@ -388,7 +388,7 @@ class TestFilePoolLayout:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """网格批量移出：多轮补位互不叠加，剩余卡片最终连续排布无空位。"""
-        import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
+        import sopeek.ui.layout.file_pool_layout as fpl_mod
 
         monkeypatch.setattr(fpl_mod, "is_animation_enabled", lambda *a, **k: True)
         layout = FilePoolLayout()
@@ -435,7 +435,7 @@ class TestFilePoolLayout:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """经典列表移除保持左滑 + 占位折叠：退出动画不引入 card_shrink。"""
-        import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
+        import sopeek.ui.layout.file_pool_layout as fpl_mod
 
         monkeypatch.setattr(fpl_mod, "is_animation_enabled", lambda *a, **k: True)
         layout = FilePoolLayout()
@@ -478,7 +478,7 @@ class TestFilePoolLayout:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """New 布局网格：瓦片卡、与选择器同款列宽算法、默认最小缩放。"""
-        import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
+        import sopeek.ui.layout.file_pool_layout as fpl_mod
 
         monkeypatch.setattr(
             fpl_mod, "is_animation_enabled", lambda *args, **kwargs: False
@@ -554,7 +554,7 @@ class TestFilePoolLayout:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """先切网格再加入的卡片：平铺瓦片 + 固定列宽 + 无悬浮操作。"""
-        import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
+        import sopeek.ui.layout.file_pool_layout as fpl_mod
 
         monkeypatch.setattr(
             fpl_mod, "is_animation_enabled", lambda *args, **kwargs: False
@@ -580,7 +580,7 @@ class TestFilePoolLayout:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """New 布局底栏重命名按钮：空池禁用、点击切换编辑态、卡片点击改名。"""
-        import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
+        import sopeek.ui.layout.file_pool_layout as fpl_mod
 
         monkeypatch.setattr(
             fpl_mod, "is_animation_enabled", lambda *args, **kwargs: False
@@ -640,7 +640,7 @@ class TestFilePoolLayout:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """切回经典布局、清空池或移除最后一张卡片时自动退出重命名编辑态。"""
-        import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
+        import sopeek.ui.layout.file_pool_layout as fpl_mod
 
         monkeypatch.setattr(
             fpl_mod, "is_animation_enabled", lambda *args, **kwargs: False
@@ -694,7 +694,7 @@ class TestFilePoolLayout:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """显示名重命名：卡片/内存更新，自动备份、手动 JSON 与文件导出均用新名。"""
-        import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
+        import sopeek.ui.layout.file_pool_layout as fpl_mod
 
         monkeypatch.setattr(
             fpl_mod, "is_animation_enabled", lambda *args, **kwargs: False
@@ -765,7 +765,7 @@ class TestFilePoolLayout:
         两种布局模式（经典列表 / New 网格）共用同一 FilePoolLayout 实例，
         提示随之同时覆盖两种布局；切换视图模式不重建提示控件。
         """
-        import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
+        import sopeek.ui.layout.file_pool_layout as fpl_mod
 
         monkeypatch.setattr(
             fpl_mod, "is_animation_enabled", lambda *args, **kwargs: False
@@ -815,7 +815,7 @@ class TestFilePoolLayout:
         下发内容 / widget 模式的诊断视图）无畸形文本；widget 模式下片段
         已直接落在控件自身。
         """
-        from freeassetfilter.ui.theme.app_stylesheet import (
+        from sopeek.ui.theme.app_stylesheet import (
             _REGISTRY,
             stylesheet_mode,
         )
@@ -828,8 +828,8 @@ class TestFilePoolLayout:
         _pump_events(qapp)
         sheet = _REGISTRY.build_combined()
 
-        content_sid = layout._content_area.property("fafQssId")
-        bar_sid = layout._bottom_bar.property("fafQssId")
+        content_sid = layout._content_area.property("spkQssId")
+        bar_sid = layout._bottom_bar.property("spkQssId")
         assert content_sid and bar_sid
 
         if stylesheet_mode() == "widget":
@@ -837,16 +837,16 @@ class TestFilePoolLayout:
             own = layout._content_area.styleSheet()
             assert "background-color: rgba(255,255,255,0.05);" in own
             assert 'dragActive="true"' in own
-            assert 'fafQssId' not in own
+            assert 'spkQssId' not in own
             layout.deleteLater()
             return
 
         def _fragment(sid: str) -> str:
-            """截取组合样式表中某控件片段（按 faf 注释标记分段）。"""
-            marker = f"/* faf:{sid} */"
+            """截取组合样式表中某控件片段（按 spk 注释标记分段）。"""
+            marker = f"/* spk:{sid} */"
             start = sheet.find(marker)
             assert start != -1, f"片段 {sid} 未进入组合样式表"
-            nxt = sheet.find("/* faf:", start + len(marker))
+            nxt = sheet.find("/* spk:", start + len(marker))
             return sheet[start + len(marker) : nxt if nxt != -1 else len(sheet)]
 
         content_fragment = _fragment(content_sid)
@@ -961,7 +961,7 @@ def _snapshot_tree(root: str) -> Dict[str, bytes]:
 
 
 class _FakeBridge:
-    """faf_core 桥确定性替身（语义等价 native 批量复制 / 大小聚合）。
+    """spk_core 桥确定性替身（语义等价 native 批量复制 / 大小聚合）。
 
     - ``copy_files`` 记录每次调用（批次）并做真实 ``copy2/copytree``
       （目标名 = 源文件名），返回 ``{"copied","failed"}``；
@@ -1020,8 +1020,8 @@ class _FakeBridge:
 
 def _patch_fpl_bridge(monkeypatch: pytest.MonkeyPatch, bridge) -> Any:
     """替换 ``native_api`` 的桥单例（P1.4 后 ``file_pool_layout`` 经门面访问）。"""
-    import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
-    from freeassetfilter.core.native import api as native_api
+    import sopeek.ui.layout.file_pool_layout as fpl_mod
+    from sopeek.core.native import api as native_api
 
     monkeypatch.setattr(native_api, "bridge", lambda: bridge)
     return fpl_mod
@@ -1080,15 +1080,15 @@ class TestFilePoolLayoutExport:
         tmp_path: Path,
     ) -> None:
         """冲突改名结果与改造前字节一致（native 可用 / 假桥 / DLL 缺失三态）。"""
-        from freeassetfilter.core.native.bridges.faf_core_bridge import (
-            FafCoreBridge,
+        from sopeek.core.native.bridges.spk_core_bridge import (
+            SpkCoreBridge,
         )
 
         cases = [
             ("fallback", _FakeBridge(available=False)),
             ("native-fake", _FakeBridge(available=True)),
         ]
-        if FafCoreBridge().available and FafCoreBridge()._supports_copy:  # noqa: SLF001
+        if SpkCoreBridge().available and SpkCoreBridge()._supports_copy:  # noqa: SLF001
             cases.append(("native-real", None))
 
         # 目标目录里预置同名文件，进一步触发改名链。
@@ -1103,9 +1103,9 @@ class TestFilePoolLayoutExport:
 
             if bridge is None:
                 # 真实 DLL 路径：恢复真正的单例取回器。
-                from freeassetfilter.core.native import api as native_api
-                from freeassetfilter.core.native.bridges.faf_core_bridge import (
-                    get_faf_core_bridge as _real_getter,
+                from sopeek.core.native import api as native_api
+                from sopeek.core.native.bridges.spk_core_bridge import (
+                    get_spk_core_bridge as _real_getter,
                 )
 
                 monkeypatch.setattr(
@@ -1324,7 +1324,7 @@ class TestFilePoolLayoutExport:
     def test_export_runnable_cancel_event(self, qapp: QApplication,
                                           tmp_path: Path) -> None:
         """``_ExportCopyRunnable`` 取消标记经 ``cancel_event`` 接线。"""
-        import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
+        import sopeek.ui.layout.file_pool_layout as fpl_mod
 
         layout = FilePoolLayout()
         ev = threading.Event()
@@ -1372,7 +1372,7 @@ class TestFileSelectorLayout:
         """文件池预览文件不在当前目录：locate_file 异步导航并延迟高亮卡片。"""
         import os
 
-        import freeassetfilter.ui.layout.file_selector_layout as fsl_mod
+        import sopeek.ui.layout.file_selector_layout as fsl_mod
 
         messages: list = []
         monkeypatch.setattr(
@@ -1411,7 +1411,7 @@ class TestFileSelectorLayout:
         """目标文件已在当前目录：locate_file 不重复导航，仅高亮滚动。"""
         import os
 
-        import freeassetfilter.ui.layout.file_selector_layout as fsl_mod
+        import sopeek.ui.layout.file_selector_layout as fsl_mod
 
         messages: list = []
         monkeypatch.setattr(
@@ -1456,7 +1456,7 @@ class TestFileSelectorLayout:
         """目标目录不存在：弹提示且不导航、不高亮。"""
         import os
 
-        import freeassetfilter.ui.layout.file_selector_layout as fsl_mod
+        import sopeek.ui.layout.file_selector_layout as fsl_mod
 
         messages: list = []
         monkeypatch.setattr(
@@ -1509,7 +1509,7 @@ def _patch_async_pool(monkeypatch: pytest.MonkeyPatch) -> _FakeThreadPool:
     Returns:
         _FakeThreadPool: 记录投递任务的替身（测试内手动触发完成信号）。
     """
-    import freeassetfilter.ui.layout.file_selector_layout as fsl_mod
+    import sopeek.ui.layout.file_selector_layout as fsl_mod
 
     fake = _FakeThreadPool()
     # P6.2：布局已改走 ``core.pools`` 命名池，patch 门面的 ``pool()``。
@@ -2274,7 +2274,7 @@ class TestSettingsLayout:
         from PySide6.QtWidgets import QScrollArea
 
         from components.styled_scroll_area import StyledScrollBar
-        from freeassetfilter.ui.layout.settings_layout import _FloatingScrollArea
+        from sopeek.ui.layout.settings_layout import _FloatingScrollArea
 
         layout = SettingsLayout()
         scrolls = layout._stack.findChildren(QScrollArea)
@@ -2300,7 +2300,7 @@ class TestSettingsLayout:
         self, qapp: QApplication,
     ) -> None:
         """浮动滚动条与内部滚动条范围/值双向同步，随内容显隐。"""
-        from freeassetfilter.ui.layout.settings_layout import _FloatingScrollArea
+        from sopeek.ui.layout.settings_layout import _FloatingScrollArea
 
         area = _FloatingScrollArea()
         area.resize(400, 300)
@@ -2340,7 +2340,7 @@ class TestSettingsLayout:
         且缩放窗口也不恢复。修复后滚动区始终铺满卡片内容区（上下各 20px
         布局边距除外），溢出内容全部经滚动范围可达。
         """
-        from freeassetfilter.ui.layout.settings_layout import _FloatingScrollArea
+        from sopeek.ui.layout.settings_layout import _FloatingScrollArea
 
         def _expected_fill_height(card: QWidget) -> int:
             """卡片内滚动区的满高：卡片内容高 - 上下各 20px 布局边距。"""
@@ -3000,7 +3000,7 @@ class TestFontWeightControlsLayout:
         self, qapp: QApplication,
     ) -> None:
         """字重数值按钮与 AI/缩放按钮间距为统一 6px（AI 入口显式开启）。"""
-        from freeassetfilter.ui.layout.preview.preview_toolbar import (
+        from sopeek.ui.layout.preview.preview_toolbar import (
             PreviewToolbarFrame,
         )
 
@@ -3040,7 +3040,7 @@ class TestFontWeightControlsLayout:
         self, qapp: QApplication,
     ) -> None:
         """字重弹窗水平中心与数值按钮中心对齐。"""
-        import freeassetfilter.ui.layout.preview.font_previewer_layout as fpl_module
+        import sopeek.ui.layout.preview.font_previewer_layout as fpl_module
 
         layout = self._shown_layout(qapp)
         anchor = layout._weight_anchor_global()
@@ -3065,7 +3065,7 @@ class TestPreviewToolbarPopupAnchoring:
     """顶栏弹窗锚点：功能按钮下缘中心对齐 + 折叠回退 + 溢出菜单居中。"""
 
     def _shown_toolbar(self, qapp: QApplication) -> Any:
-        from freeassetfilter.ui.layout.preview.preview_toolbar import (
+        from sopeek.ui.layout.preview.preview_toolbar import (
             PreviewToolbarFrame,
         )
 
@@ -3760,7 +3760,7 @@ class TestTextPreviewerLayout:
     _ENC_FIXTURE_DIR = (
         Path(__file__).resolve().parents[3]
         / "support"
-        / "faf_core_fixtures"
+        / "spk_core_fixtures"
         / "encoding_samples"
     )
 
@@ -3853,13 +3853,13 @@ class TestVideoPlayerLayout:
         self, qapp: QApplication, heartbeat_manager: Any
     ) -> None:
         """默认构造 + resize 后 geometry 非空（HeartbeatManager 已启动）。"""
-        animation_enabled_original = qapp.property("faf_disable_animation")
+        animation_enabled_original = qapp.property("spk_disable_animation")
         try:
-            qapp.setProperty("faf_disable_animation", True)
+            qapp.setProperty("spk_disable_animation", True)
             layout = VideoPlayerLayout()
             assert layout is not None
         finally:
-            qapp.setProperty("faf_disable_animation", animation_enabled_original)
+            qapp.setProperty("spk_disable_animation", animation_enabled_original)
         _assert_layout_geometry(layout, qapp)
         layout.deleteLater()
 
@@ -3867,22 +3867,22 @@ class TestVideoPlayerLayout:
         self, qapp: QApplication, heartbeat_manager: Any
     ) -> None:
         """无 libmpv 时 set_file(缺失路径) 返回 False，不做真实播放。"""
-        animation_enabled_original = qapp.property("faf_disable_animation")
+        animation_enabled_original = qapp.property("spk_disable_animation")
         try:
-            qapp.setProperty("faf_disable_animation", True)
+            qapp.setProperty("spk_disable_animation", True)
             layout = VideoPlayerLayout()
             assert layout.set_file(_MISSING_FILE) is False
         finally:
-            qapp.setProperty("faf_disable_animation", animation_enabled_original)
+            qapp.setProperty("spk_disable_animation", animation_enabled_original)
         layout.deleteLater()
 
     def test_set_file_recovers_dead_core(
         self, qapp: QApplication, heartbeat_manager: Any, tmp_path: object
     ) -> None:
         """核心死亡时 set_file 自动重建（initialize）并重新嵌入窗口后正常加载。"""
-        animation_enabled_original = qapp.property("faf_disable_animation")
+        animation_enabled_original = qapp.property("spk_disable_animation")
         try:
-            qapp.setProperty("faf_disable_animation", True)
+            qapp.setProperty("spk_disable_animation", True)
             media = tmp_path / "sample.mp4"
             media.write_bytes(b"\x00" * 16)
             layout = VideoPlayerLayout()
@@ -3908,16 +3908,16 @@ class TestVideoPlayerLayout:
             layout._on_file_loaded(str(media))  # noqa: SLF001
             assert layout._stack.currentIndex() == 0  # noqa: SLF001
         finally:
-            qapp.setProperty("faf_disable_animation", animation_enabled_original)
+            qapp.setProperty("spk_disable_animation", animation_enabled_original)
         layout.deleteLater()
 
     def test_load_failure_shows_overlay(
         self, qapp: QApplication, heartbeat_manager: Any, tmp_path: object
     ) -> None:
         """load_file 失败时切回 overlay 显示错误（不再停留黑色视频表面）。"""
-        animation_enabled_original = qapp.property("faf_disable_animation")
+        animation_enabled_original = qapp.property("spk_disable_animation")
         try:
-            qapp.setProperty("faf_disable_animation", True)
+            qapp.setProperty("spk_disable_animation", True)
             media = tmp_path / "bad.mp4"
             media.write_bytes(b"\x00" * 16)
             layout = VideoPlayerLayout()
@@ -3938,16 +3938,16 @@ class TestVideoPlayerLayout:
             )
             assert layout._stack.currentIndex() == 1  # noqa: SLF001
         finally:
-            qapp.setProperty("faf_disable_animation", animation_enabled_original)
+            qapp.setProperty("spk_disable_animation", animation_enabled_original)
         layout.deleteLater()
 
     def test_core_rebuild_failure_shows_overlay(
         self, qapp: QApplication, heartbeat_manager: Any, tmp_path: object
     ) -> None:
         """核心重建失败时切回 overlay 显示"无法初始化播放器"。"""
-        animation_enabled_original = qapp.property("faf_disable_animation")
+        animation_enabled_original = qapp.property("spk_disable_animation")
         try:
-            qapp.setProperty("faf_disable_animation", True)
+            qapp.setProperty("spk_disable_animation", True)
             media = tmp_path / "dead.mp4"
             media.write_bytes(b"\x00" * 16)
             layout = VideoPlayerLayout()
@@ -3961,7 +3961,7 @@ class TestVideoPlayerLayout:
             assert layout._stack.currentIndex() == 1  # noqa: SLF001
             assert "无法初始化播放器" in layout._placeholder.text()  # noqa: SLF001
         finally:
-            qapp.setProperty("faf_disable_animation", animation_enabled_original)
+            qapp.setProperty("spk_disable_animation", animation_enabled_original)
         layout.deleteLater()
 
 
@@ -4025,7 +4025,7 @@ class TestVideoPlayerLayoutAsyncAudio:
             )
 
         monkeypatch.setattr(
-            "freeassetfilter.services.media_metadata_service.mutagen_file", _slow_mutagen
+            "sopeek.services.media_metadata_service.mutagen_file", _slow_mutagen
         )
 
         orig_palette = VideoPlayerLayout._extract_palette_from_cover
@@ -4035,7 +4035,7 @@ class TestVideoPlayerLayoutAsyncAudio:
             return orig_palette(cover_data)
 
         monkeypatch.setattr(
-            "freeassetfilter.ui.layout.preview.video_player_layout.VideoPlayerLayout"
+            "sopeek.ui.layout.preview.video_player_layout.VideoPlayerLayout"
             "._extract_palette_from_cover",
             staticmethod(_recording_palette),
         )
@@ -4091,7 +4091,7 @@ class TestVideoPlayerLayoutAsyncAudio:
             return _FakeAudio(tags={}, info=_FakeAudioInfo())
 
         monkeypatch.setattr(
-            "freeassetfilter.services.media_metadata_service.mutagen_file",
+            "sopeek.services.media_metadata_service.mutagen_file",
             _gated_mutagen,
         )
 
@@ -4134,7 +4134,7 @@ class TestVideoPlayerLayoutAsyncAudio:
             return _FakeAudio(tags={"TITLE": "第二首"}, info=_FakeAudioInfo())
 
         monkeypatch.setattr(
-            "freeassetfilter.services.media_metadata_service.mutagen_file",
+            "sopeek.services.media_metadata_service.mutagen_file",
             _path_aware_mutagen,
         )
 
@@ -4439,8 +4439,8 @@ class TestAppearanceSettingsPage:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
         """默认（V2 无背景设置）：mica 模式——分段 0、图片行隐藏、滑动条可用。"""
-        import freeassetfilter.ui.layout.settings_layout as sl_mod
-        from freeassetfilter.core.managers.settings_manager_v2 import (
+        import sopeek.ui.layout.settings_layout as sl_mod
+        from sopeek.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
         )
 
@@ -4461,8 +4461,8 @@ class TestAppearanceSettingsPage:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
         """V2 保存 image 模式且文件存在：初始即 image UI 状态（不触发应用）。"""
-        import freeassetfilter.ui.layout.settings_layout as sl_mod
-        from freeassetfilter.core.managers.settings_manager_v2 import (
+        import sopeek.ui.layout.settings_layout as sl_mod
+        from sopeek.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
         )
         from components.custom_background import BACKGROUND_DIR_NAME
@@ -4503,8 +4503,8 @@ class TestAppearanceSettingsPage:
         新语义：仅写入暂存缓存并刷新本页 UI；主窗口应用与 V2 落盘统一由
         ``SettingsLayout._submit_settings`` 在点击应用/确定时执行。
         """
-        import freeassetfilter.ui.layout.settings_layout as sl_mod
-        from freeassetfilter.core.managers.settings_manager_v2 import (
+        import sopeek.ui.layout.settings_layout as sl_mod
+        from sopeek.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
         )
 
@@ -4548,8 +4548,8 @@ class TestAppearanceSettingsPage:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
         """已有持久化图片时切换分段：暂存 image 模式（不经文件对话框、不直写）。"""
-        import freeassetfilter.ui.layout.settings_layout as sl_mod
-        from freeassetfilter.core.managers.settings_manager_v2 import (
+        import sopeek.ui.layout.settings_layout as sl_mod
+        from sopeek.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
         )
         from components.custom_background import BACKGROUND_DIR_NAME
@@ -4588,8 +4588,8 @@ class TestAppearanceSettingsPage:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
         """无图片时切换分段后取消选择：分段回退、设置不变、不调用主窗口。"""
-        import freeassetfilter.ui.layout.settings_layout as sl_mod
-        from freeassetfilter.core.managers.settings_manager_v2 import (
+        import sopeek.ui.layout.settings_layout as sl_mod
+        from sopeek.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
         )
 
@@ -4623,8 +4623,8 @@ class TestAppearanceSettingsPage:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
         """导入失败：弹 danger 对话框、分段回退、不切换不改设置。"""
-        import freeassetfilter.ui.layout.settings_layout as sl_mod
-        from freeassetfilter.core.managers.settings_manager_v2 import (
+        import sopeek.ui.layout.settings_layout as sl_mod
+        from sopeek.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
         )
 
@@ -4667,8 +4667,8 @@ class TestAppearanceSettingsPage:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
         """按钮点击选择图片成功：暂存文件名与 image 模式（提交前不直写）。"""
-        import freeassetfilter.ui.layout.settings_layout as sl_mod
-        from freeassetfilter.core.managers.settings_manager_v2 import (
+        import sopeek.ui.layout.settings_layout as sl_mod
+        from sopeek.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
         )
 
@@ -4710,8 +4710,8 @@ class TestAppearanceSettingsPage:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
         """_update_bg_ui_state：image 模式显示图片行，mica 模式隐藏。"""
-        import freeassetfilter.ui.layout.settings_layout as sl_mod
-        from freeassetfilter.core.managers.settings_manager_v2 import (
+        import sopeek.ui.layout.settings_layout as sl_mod
+        from sopeek.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
         )
 
@@ -4732,16 +4732,16 @@ class TestAppearanceSettingsPage:
 
 
 # =============================================================================
-# _load_all 保持 Python（faf-core-rust-migration todo 10 回归测试）
+# _load_all 保持 Python（spk-core-rust-migration todo 10 回归测试）
 # =============================================================================
 
 class TestLoadAllStaysPython:
-    """``FileSelectorLayout._load_all`` 保持 Python 实现，不经 faf_core native。
+    """``FileSelectorLayout._load_all`` 保持 Python 实现，不经 spk_core native。
 
-    回归背景（faf-core-rust-migration todo 10）：「All」视图枚举
+    回归背景（spk-core-rust-migration todo 10）：「All」视图枚举
     逻辑驱动器（GetLogicalDrives 位掩码 ≤26 个盘 + 每盘 os.stat）无性能需求，
     显式排除出 native 范围。本组 mock 位掩码 + 注入确定性元数据，断言驱动
-    列表正确且枚举路径仍为 Python（os.stat 逐盘调用、faf_core 桥零触碰）。
+    列表正确且枚举路径仍为 Python（os.stat 逐盘调用、spk_core 桥零触碰）。
     """
 
     def test_load_all_drives_from_bitmask_stays_python(
@@ -4774,7 +4774,7 @@ class TestLoadAllStaysPython:
                 return fake_stat
             return orig_stat(path, **kwargs)
 
-        from freeassetfilter.core.native import api as native_api
+        from sopeek.core.native import api as native_api
 
         monkeypatch.setattr(
             native_api,
@@ -4808,9 +4808,9 @@ class TestLoadAllStaysPython:
             assert paths == ["A:\\", "B:\\", "C:\\"]
             for i in range(model.rowCount()):
                 assert model.data(model.index(i, 0), IsDirRole) is True
-            # 确认走 Python：逐盘 os.stat 一次，faf_core 桥完全不触碰
+            # 确认走 Python：逐盘 os.stat 一次，spk_core 桥完全不触碰
             assert stat_calls == ["A:\\", "B:\\", "C:\\"]
-            assert bridge_calls == [], "_load_all 不得触碰 faf_core 桥（保持 Python）"
+            assert bridge_calls == [], "_load_all 不得触碰 spk_core 桥（保持 Python）"
         finally:
             safe_teardown(layout)
             qapp.processEvents()
@@ -4840,7 +4840,7 @@ class TestLoadAllStaysPython:
                 return fake_stat
             return orig_stat(path, **kwargs)
 
-        from freeassetfilter.core.native import api as native_api
+        from sopeek.core.native import api as native_api
 
         monkeypatch.setattr(native_api, "bridge", lambda: None)
         monkeypatch.setattr(
@@ -4875,7 +4875,7 @@ class TestLoadAllStaysPython:
 
         位掩码 0b111 → A:/B:/C:，GetDriveTypeW 将 A: 标为 DRIVE_REMOTE(4)、
         其余标为 DRIVE_FIXED(3)；断言仅 B:/C: 进入条目、网络盘不做 stat，
-        且 ``_collect_directory_entries("All")`` 分支不触碰 faf_core 桥。
+        且 ``_collect_directory_entries("All")`` 分支不触碰 spk_core 桥。
 
         Args:
             qapp: 会话级 QApplication（offscreen）。
@@ -4905,7 +4905,7 @@ class TestLoadAllStaysPython:
             value = getattr(path, "value", path)
             return 4 if str(value) == "A:\\" else 3
 
-        from freeassetfilter.core.native import api as native_api
+        from sopeek.core.native import api as native_api
 
         monkeypatch.setattr(
             native_api,
@@ -4924,7 +4924,7 @@ class TestLoadAllStaysPython:
 
         assert [e["name"] for e in entries] == ["B:", "C:"], "仅物理磁盘进入 All 视图"
         assert stat_calls == ["B:\\", "C:\\"], "网络盘不应触发 stat"
-        assert bridge_calls == [], "All 收集不得触碰 faf_core 桥（保持 Python）"
+        assert bridge_calls == [], "All 收集不得触碰 spk_core 桥（保持 Python）"
 
     def test_collect_all_includes_remote_and_cdrom_when_enabled(
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
@@ -4982,7 +4982,7 @@ class TestGeneralSettingsPage:
     @staticmethod
     def _make_cache(mode: str = "workspace") -> Any:
         """构造带指定布局模式的暂存缓存。"""
-        from freeassetfilter.ui.layout.settings_staging_cache import (
+        from sopeek.ui.layout.settings_staging_cache import (
             SettingsStagingCache,
         )
 
@@ -5059,8 +5059,8 @@ class TestGeneralSettingsPage:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
         """提交：布局模式下发主窗口（暂存期不下发）并落盘到 V2。"""
-        import freeassetfilter.ui.layout.settings_layout as sl_mod
-        from freeassetfilter.core.managers.settings_manager_v2 import (
+        import sopeek.ui.layout.settings_layout as sl_mod
+        from sopeek.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
         )
 
@@ -5131,8 +5131,8 @@ class TestGeneralSettingsPage:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
         """提交：布局未变化时维持主题径向链路（不更换过渡方式）。"""
-        import freeassetfilter.ui.layout.settings_layout as sl_mod
-        from freeassetfilter.core.managers.settings_manager_v2 import (
+        import sopeek.ui.layout.settings_layout as sl_mod
+        from sopeek.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
         )
 
@@ -5490,8 +5490,8 @@ class TestGeneralSettingsPage:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
         """提交：五个开关下发主窗口（暂存期不下发）并落盘到 V2。"""
-        import freeassetfilter.ui.layout.settings_layout as sl_mod
-        from freeassetfilter.core.managers.settings_manager_v2 import (
+        import sopeek.ui.layout.settings_layout as sl_mod
+        from sopeek.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
         )
 
@@ -5577,7 +5577,7 @@ class TestGeneralSettingsPage:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """全局浮窗开关：只写暂存缓存；不触碰 tm / 主窗口（暂存铁律）。"""
-        import freeassetfilter.ui.layout.settings_layout as sl_mod
+        import sopeek.ui.layout.settings_layout as sl_mod
 
         cache = self._make_cache("workspace")
         page = GeneralSettingsPage(staging_cache=cache)
@@ -5642,7 +5642,7 @@ class TestGeneralSettingsPage:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """行控件已构建且列入 refresh_theme 迭代元组（Oracle round-7 观察 4）。"""
-        import freeassetfilter.ui.layout.settings_layout as sl_mod
+        import sopeek.ui.layout.settings_layout as sl_mod
 
         page = GeneralSettingsPage(staging_cache=self._make_cache("workspace"))
         assert page._floating_pool_row is not None
@@ -5683,7 +5683,7 @@ class TestGeneralSettingsPage:
 
     def test_apply_staged_general_toggles_seven_args(self) -> None:
         """``_apply_staged_general_toggles_to_main_window`` 七参签名覆盖隐藏/系统与浮窗吸附。"""
-        import freeassetfilter.ui.layout.settings_layout as sl_mod
+        import sopeek.ui.layout.settings_layout as sl_mod
 
         class _FakeMainWindow:
             """记录七路开关下发的假主窗口。"""
@@ -5737,8 +5737,8 @@ class TestGeneralSettingsPage:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
         """提交：浮窗开关下发主窗口（暂存期不下发）并将 False 落盘 V2。"""
-        import freeassetfilter.ui.layout.settings_layout as sl_mod
-        from freeassetfilter.core.managers.settings_manager_v2 import (
+        import sopeek.ui.layout.settings_layout as sl_mod
+        from sopeek.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
         )
 
@@ -5792,7 +5792,7 @@ class TestGeneralSettingsPage:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """贴边吸附开关：只写暂存缓存；不触碰 tm / 主窗口（暂存铁律）。"""
-        import freeassetfilter.ui.layout.settings_layout as sl_mod
+        import sopeek.ui.layout.settings_layout as sl_mod
 
         cache = self._make_cache("workspace")  # 快照不含 floating_pool_snap_enabled
         page = GeneralSettingsPage(staging_cache=cache)
@@ -5857,7 +5857,7 @@ class TestGeneralSettingsPage:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """「贴边吸附」行紧跟「全局浮窗」行且列入 refresh_theme 迭代元组。"""
-        import freeassetfilter.ui.layout.settings_layout as sl_mod
+        import sopeek.ui.layout.settings_layout as sl_mod
 
         page = GeneralSettingsPage(staging_cache=self._make_cache("workspace"))
         assert page._floating_pool_snap_row is not None
@@ -5887,8 +5887,8 @@ class TestGeneralSettingsPage:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
         """提交：贴边吸附开关下发主窗口（暂存期不下发）并将 False 落盘 V2。"""
-        import freeassetfilter.ui.layout.settings_layout as sl_mod
-        from freeassetfilter.core.managers.settings_manager_v2 import (
+        import sopeek.ui.layout.settings_layout as sl_mod
+        from sopeek.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
         )
 
@@ -5963,13 +5963,13 @@ class TestAiEntryToggles:
         self, qapp: QApplication, kind: str,
     ) -> None:
         """默认不在顶栏且抽屉未创建；开启后挂载并可展开；关闭后摘除收起。"""
-        from freeassetfilter.ui.layout.preview.font_previewer_layout import (
+        from sopeek.ui.layout.preview.font_previewer_layout import (
             FontPreviewerLayout,
         )
-        from freeassetfilter.ui.layout.preview.pdf_previewer_layout import (
+        from sopeek.ui.layout.preview.pdf_previewer_layout import (
             PdfPreviewerLayout,
         )
-        from freeassetfilter.ui.layout.preview.text_previewer_layout import (
+        from sopeek.ui.layout.preview.text_previewer_layout import (
             TextPreviewerLayout,
         )
 

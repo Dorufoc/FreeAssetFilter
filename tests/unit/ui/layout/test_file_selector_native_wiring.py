@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
-"""文件选择器 faf_core native 接线单元测试（faf-core-rust-migration todo 9）。
+"""文件选择器 spk_core native 接线单元测试（spk-core-rust-migration todo 9）。
 
-验证 ``file_selector_layout.py`` 的 faf_core native 接线与 raw entries 缓存：
+验证 ``file_selector_layout.py`` 的 spk_core native 接线与 raw entries 缓存：
 
 (a) 排序切换**不触发磁盘重扫**（mock ``_collect_directory_entries`` 计数为 0）
     + 内存重排结果与真实重扫一致（模型顺序断言）；
 (b) 筛选应用/清除**不重扫**（计数不变）+ 结果与重扫一致；
-(c) 桥不可用（monkeypatch ``get_faf_core_bridge`` 返回 available=False 或
+(c) 桥不可用（monkeypatch ``get_spk_core_bridge`` 返回 available=False 或
     native 返回 None 的降级实例）→ ``_collect_directory_entries`` 回退
     Python 路径，行为不变；
 (d) 桥可用时 native ``scan_directory`` 结果与 Python oracle
-    ``_collect_directory_entries_python`` 对 `tests/support/faf_core_fixtures/
+    ``_collect_directory_entries_python`` 对 `tests/support/spk_core_fixtures/
     dir_samples/` 逐字段一致（DLL 缺失时 skip）。
 (e) 隐藏/系统文件过滤：``_collect_directory_entries`` 新开关经 Python 回退
     与 native 双路径按 FILE_ATTRIBUTE_HIDDEN/SYSTEM 位正确过滤（条目仍
@@ -38,14 +38,14 @@ from typing import Any, List
 import pytest
 
 # 布局模块内部使用短路径导入（from theme import tm / components.*），
-# 要求 freeassetfilter/ui 位于 sys.path——与 test_layouts.py 的 bootstrap 惯例一致。
-_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "freeassetfilter" / "ui")
+# 要求 sopeek/ui 位于 sys.path——与 test_layouts.py 的 bootstrap 惯例一致。
+_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-from freeassetfilter.ui.layout.file_selector_layout import FileSelectorLayout  # noqa: E402
-import freeassetfilter.ui.layout.file_selector_layout as fsl_mod  # noqa: E402
-from freeassetfilter.core.native import api as native_api  # noqa: E402
+from sopeek.ui.layout.file_selector_layout import FileSelectorLayout  # noqa: E402
+import sopeek.ui.layout.file_selector_layout as fsl_mod  # noqa: E402
+from sopeek.core.native import api as native_api  # noqa: E402
 
 # 与布局模块共享同一模块实例（components.* 短路径），FileNameRole 为 int 角色值。
 from components.file_list_model import FileNameRole  # noqa: E402
@@ -55,7 +55,7 @@ from tests.support.qt_helpers import wait_until  # noqa: E402
 pytestmark = pytest.mark.unit
 
 _FIXTURES_DIR: Path = (
-    Path(__file__).resolve().parents[3] / "support" / "faf_core_fixtures" / "dir_samples"
+    Path(__file__).resolve().parents[3] / "support" / "spk_core_fixtures" / "dir_samples"
 )
 
 
@@ -406,11 +406,11 @@ class TestNativeScanParityOnFixtures:
             monkeypatch: pytest monkeypatch fixture。
             sample: 夹具目录名（parametrize）。
         """
-        import freeassetfilter.core.native.bridges.faf_core_bridge as fcb_mod
+        import sopeek.core.native.bridges.spk_core_bridge as fcb_mod
 
-        bridge = fcb_mod.get_faf_core_bridge()
+        bridge = fcb_mod.get_spk_core_bridge()
         if not bridge.available or not bridge._supports_scan:  # noqa: SLF001
-            pytest.skip("faf_core DLL 不可用或缺 scan 导出")
+            pytest.skip("spk_core DLL 不可用或缺 scan 导出")
 
         path: Path = _FIXTURES_DIR / sample
         native = bridge.scan_directory(str(path))
@@ -518,11 +518,11 @@ class TestHiddenSystemFiltering:
             qapp: 会话级 QApplication。
             tmp_path: pytest 内置每测试临时目录。
         """
-        import freeassetfilter.core.native.bridges.faf_core_bridge as fcb_mod
+        import sopeek.core.native.bridges.spk_core_bridge as fcb_mod
 
-        bridge = fcb_mod.get_faf_core_bridge()
+        bridge = fcb_mod.get_spk_core_bridge()
         if not bridge.available or not bridge._supports_scan:  # noqa: SLF001
-            pytest.skip("faf_core DLL 不可用或缺 scan 导出")
+            pytest.skip("spk_core DLL 不可用或缺 scan 导出")
         src_dir = _make_hidden_system_dir(tmp_path)
 
         def names(show_hidden: bool, show_system: bool) -> List[str]:

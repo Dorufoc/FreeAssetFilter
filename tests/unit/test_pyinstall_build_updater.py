@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Pyinstall_build 的 faf_updater 打包接线与验证契约。
+"""Pyinstall_build 的 spk_updater 打包接线与验证契约。
 
 覆盖：
 - ``collect_binaries`` 的 ``required`` 仍为 3 元组、返回仍为 2 元组且包含更新器；
-- ``verify_output`` 的 ``faf_updater.exe`` 必需资源分支与 ``dist_root`` 参数；
+- ``verify_output`` 的 ``spk_updater.exe`` 必需资源分支与 ``dist_root`` 参数；
 - ``main`` 在 ``--skip-build`` 与正常路径上验证失败时均返回 1。
 """
 
@@ -18,7 +18,8 @@ import pytest
 import Pyinstall_build as pb
 
 
-UPDATER_RESOURCE = "freeassetfilter/core/native/bin/faf_updater.exe"
+UPDATER_RESOURCE = "sopeek/core/native/bin/spk_updater.exe"
+UPDATER_ALLOWLIST = "sopeek/core/native/bin/spk_updater.deps.allowlist"
 
 
 def _prepare_dist(root: Path, *, with_updater: bool) -> None:
@@ -26,7 +27,7 @@ def _prepare_dist(root: Path, *, with_updater: bool) -> None:
     (root / f"{pb.PROJECT_NAME}.exe").write_bytes(b"MZ")
     internal = root / "_internal"
     internal.mkdir(parents=True)
-    (internal / "FAFVERSION").write_text(
+    (internal / "SPKVERSION").write_text(
         "v1.0.0-alpha.5\n2026-05-22\n",
         encoding="utf-8",
     )
@@ -34,6 +35,10 @@ def _prepare_dist(root: Path, *, with_updater: bool) -> None:
         updater = internal / UPDATER_RESOURCE
         updater.parent.mkdir(parents=True)
         updater.write_bytes(b"MZ")
+        # 更新器依赖白名单是 verify_output 的必需资源（缺失即打包失败）。
+        (internal / UPDATER_ALLOWLIST).write_text(
+            "KERNEL32.dll\n", encoding="utf-8"
+        )
 
 
 def _collect_required_tuple() -> ast.Tuple:
@@ -54,7 +59,7 @@ def _collect_required_tuple() -> ast.Tuple:
 
 
 def test_required_entries_are_three_tuples_and_include_updater() -> None:
-    """required 保持 3 元组，并登记 faf_updater.exe。"""
+    """required 保持 3 元组，并登记 spk_updater.exe。"""
     required = _collect_required_tuple()
     assert required.elts, "required 不应为空"
     assert all(
@@ -66,10 +71,10 @@ def test_required_entries_are_three_tuples_and_include_updater() -> None:
         for element in required.elts
         if isinstance(element.elts[0], ast.Constant)
     }
-    assert "faf_updater.exe" in named_entries
-    destination = named_entries["faf_updater.exe"].elts[2]
+    assert "spk_updater.exe" in named_entries
+    destination = named_entries["spk_updater.exe"].elts[2]
     assert isinstance(destination, ast.Constant)
-    assert destination.value == "freeassetfilter/core/native/bin"
+    assert destination.value == "sopeek/core/native/bin"
 
 
 def test_collect_binaries_returns_two_tuples_with_updater() -> None:
@@ -78,8 +83,8 @@ def test_collect_binaries_returns_two_tuples_with_updater() -> None:
     assert binaries
     assert all(isinstance(item, tuple) and len(item) == 2 for item in binaries)
     assert any(
-        Path(source).name == "faf_updater.exe"
-        and destination == "freeassetfilter/core/native/bin"
+        Path(source).name == "spk_updater.exe"
+        and destination == "sopeek/core/native/bin"
         for source, destination in binaries
     )
 

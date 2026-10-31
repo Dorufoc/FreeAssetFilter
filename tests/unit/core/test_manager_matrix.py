@@ -29,8 +29,8 @@ import pytest
 from PIL import Image
 from unittest.mock import patch
 
-from freeassetfilter.core.managers.thumbnail_manager import ThumbnailManager
-from freeassetfilter.core.native.bridges.rust_thumbnail_bridge import (
+from sopeek.core.managers.thumbnail_manager import ThumbnailManager
+from sopeek.core.native.bridges.rust_thumbnail_bridge import (
     STATUS_DECODE_FAILED,
     STATUS_TOO_LARGE,
     STATUS_UNSUPPORTED,

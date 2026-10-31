@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""file_icon_helper.py（freeassetfilter/utils/file_icon_helper.py）单元测试。
+"""file_icon_helper.py（sopeek/utils/file_icon_helper.py）单元测试。
 
 产品仅保留一套多彩 v3 图标（文件名为 ``X – 3.svg``），不再存在图标样式
 选择能力。本测试覆盖：
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-import freeassetfilter.utils.file_icon_helper as fih
+import sopeek.utils.file_icon_helper as fih
 
 pytestmark = pytest.mark.unit
 

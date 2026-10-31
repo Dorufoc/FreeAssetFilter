@@ -2,7 +2,7 @@
 # targets: services.office_cache
 """``office_cache`` 单元测试。
 
-纯数据层模块（freeassetfilter/services/ 下）只做文件 I/O，返回类型安全
+纯数据层模块（sopeek/services/ 下）只做文件 I/O，返回类型安全
 的静默降级。覆盖：
 
 * ``office_cache`` —— 缓存目录调用期解析、稳定缓存键、put/get 往返、空文件
@@ -21,8 +21,8 @@ from typing import Dict, List
 
 import pytest
 
-from freeassetfilter.services import office_cache as office_cache_module
-from freeassetfilter.services.office_cache import (
+from sopeek.services import office_cache as office_cache_module
+from sopeek.services.office_cache import (
     MAX_OFFICE_CACHE_AGE_DAYS,
     OFFICE_CACHE_DIR_NAME,
 )
@@ -44,7 +44,7 @@ def office_cache_tmp(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     Returns:
         Path: 充当 ``get_app_data_path()`` 的临时目录。
     """
-    import freeassetfilter.utils.path_utils as path_utils_module
+    import sopeek.utils.path_utils as path_utils_module
 
     monkeypatch.setattr(
         path_utils_module,

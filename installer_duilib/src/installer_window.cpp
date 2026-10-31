@@ -47,29 +47,29 @@ constexpr float kCancelButtonW = 96.0f;      // 「取消」宽度
 constexpr int kStepCount = 3;
 
 // T12：UninstallStage → Progress 页阶段文案（wParam/lParam 只传枚举，中文只在此映射）。
-const wchar_t* UninstallStageLabel(faf::UninstallStage stage) {
+const wchar_t* UninstallStageLabel(spk::UninstallStage stage) {
     switch (stage) {
-        case faf::UninstallStage::Started: return L"准备卸载";
-        case faf::UninstallStage::RemovingShortcuts: return L"正在删除快捷方式";
-        case faf::UninstallStage::RemovingRegistry: return L"正在清理注册表";
-        case faf::UninstallStage::RemovingFiles: return L"正在删除程序文件";
-        case faf::UninstallStage::RemovingUserData: return L"正在清理用户数据";
-        case faf::UninstallStage::Done: return L"卸载完成";
-        case faf::UninstallStage::Failed: return L"卸载失败";
-        case faf::UninstallStage::Cancelled: return L"卸载已取消";
+        case spk::UninstallStage::Started: return L"准备卸载";
+        case spk::UninstallStage::RemovingShortcuts: return L"正在删除快捷方式";
+        case spk::UninstallStage::RemovingRegistry: return L"正在清理注册表";
+        case spk::UninstallStage::RemovingFiles: return L"正在删除程序文件";
+        case spk::UninstallStage::RemovingUserData: return L"正在清理用户数据";
+        case spk::UninstallStage::Done: return L"卸载完成";
+        case spk::UninstallStage::Failed: return L"卸载失败";
+        case spk::UninstallStage::Cancelled: return L"卸载已取消";
     }
     return L"正在卸载";
 }
 
 bool IsKnownUninstallStage(int value) {
-    return value >= static_cast<int>(faf::UninstallStage::Started) &&
-           value <= static_cast<int>(faf::UninstallStage::Cancelled);
+    return value >= static_cast<int>(spk::UninstallStage::Started) &&
+           value <= static_cast<int>(spk::UninstallStage::Cancelled);
 }
 
 bool IsTerminalUninstallStage(int value) {
-    return value == static_cast<int>(faf::UninstallStage::Done) ||
-           value == static_cast<int>(faf::UninstallStage::Failed) ||
-           value == static_cast<int>(faf::UninstallStage::Cancelled);
+    return value == static_cast<int>(spk::UninstallStage::Done) ||
+           value == static_cast<int>(spk::UninstallStage::Failed) ||
+           value == static_cast<int>(spk::UninstallStage::Cancelled);
 }
 }  // namespace
 
@@ -84,11 +84,11 @@ D2D1_COLOR_F CloseArmedRed() { return D2D1::ColorF(0.690f, 0.145f, 0.102f, 1.0f)
 
 namespace {
 
-constexpr wchar_t kWindowClass[] = L"FreeAssetFilterInstaller";  // §4 冻结类名
+constexpr wchar_t kWindowClass[] = L"SopeekInstaller";  // §4 冻结类名
 // T10：标题按启动模式设置（自绘标题栏与 CreateWindowExW 共用同一来源）。
-constexpr wchar_t kTitleInstall[] = L"FreeAssetFilter 安装程序";
-constexpr wchar_t kTitleMaintenance[] = L"FreeAssetFilter 维护";
-constexpr wchar_t kTitleUninstall[] = L"FreeAssetFilter 卸载";
+constexpr wchar_t kTitleInstall[] = L"Sopeek 安装程序";
+constexpr wchar_t kTitleMaintenance[] = L"Sopeek 维护";
+constexpr wchar_t kTitleUninstall[] = L"Sopeek 卸载";
 constexpr UINT_PTR kTickTimerId = 1;
 constexpr UINT kTickIntervalMs = 16;      // §2 主循环 ~16ms 驱动动画 tick
 constexpr int kWin10ShadowMarginDip = 12; // §4 Win10 兜底透明外扩边距（DIP）
@@ -99,15 +99,15 @@ constexpr UINT kCompletionHoldMs = 500;         // 100% 停留总时长：220ms 
 constexpr ULONGLONG kInitRampMs = 8000;         // 0→50% 匀速斜坡总时长
 constexpr int kInitRampMaxPermille = 500;       // 斜坡上限（50%）
 constexpr ULONGLONG kInitRampUpdateMs = 80;     // 斜坡推进节流
-#ifdef FAF_TESTMODE
+#ifdef SPK_TESTMODE
 // Todo 19（§17）：/auto 测试驱动常量——仅测试构建编入（生产零残留）。
 constexpr UINT_PTR kAutoTimerId = 2;  // 驱动定时器（独立于 ~16ms 动画 tick）
 constexpr UINT kAutoStepMs = 700;     // 固定步进间隔（无人值守取证时序可复现）
 #endif
 
 // §6：逻辑画布尺寸（DIP）——唯一来源为 layout.h，不再内联硬编码（亦不得用旧 720x480）。
-constexpr int kCanvasW = static_cast<int>(faf::layout::kCanvasWidth);
-constexpr int kCanvasH = static_cast<int>(faf::layout::kCanvasHeight);
+constexpr int kCanvasW = static_cast<int>(spk::layout::kCanvasWidth);
+constexpr int kCanvasH = static_cast<int>(spk::layout::kCanvasHeight);
 
 // T10：启动模式 → 窗口标题（唯一映射点；构造期写入 windowTitle_）。
 const wchar_t* TitleForMode(AppMode mode) {
@@ -137,12 +137,12 @@ std::wstring ToHex(DWORD value) {
     return out;
 }
 
-// 无条件运行时诊断落盘（仅当设置 FAF_DIAG_PATH 时写入；未设置时不影响默认行为）。
-// 与 FAF_FORCE_WARP / FAF_PAYLOAD_TIMEOUT_MS 同性质，非 FAF_TESTMODE 门闩。
+// 无条件运行时诊断落盘（仅当设置 SPK_DIAG_PATH 时写入；未设置时不影响默认行为）。
+// 与 SPK_FORCE_WARP / SPK_PAYLOAD_TIMEOUT_MS 同性质，非 SPK_TESTMODE 门闩。
 // 底层接受已是 UTF-8 的一行（§16 动画采样行直接走此入口）。
 void DiagLogRaw(const std::string& utf8Line) {
     wchar_t path[MAX_PATH] = {};
-    const DWORD n = GetEnvironmentVariableW(L"FAF_DIAG_PATH", path, static_cast<DWORD>(ARRAYSIZE(path)));
+    const DWORD n = GetEnvironmentVariableW(L"SPK_DIAG_PATH", path, static_cast<DWORD>(ARRAYSIZE(path)));
     if (n == 0 || n >= ARRAYSIZE(path)) return;
     HANDLE file = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_ALWAYS,
                               FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -171,17 +171,17 @@ std::wstring NormalizedPath(const std::wstring& path) {
     return result;
 }
 
-// T11：探测 `<installDir>\FreeAssetFilter.exe` 是否在运行。
+// T11：探测 `<installDir>\Sopeek.exe` 是否在运行。
 //
 // 为什么窗口侧另做一次探测：process_control.h（T3）只暴露“关闭”入口，没有只读
 // 探测 API，而 T11 必须区分两条路径 —— 未运行 → 直接写 decision 开始修复；运行中
-// → 先异步关闭，**关闭成功后**才允许写 decision。匹配口径与 faf::CloseInstalledApp
+// → 先异步关闭，**关闭成功后**才允许写 decision。匹配口径与 spk::CloseInstalledApp
 // 保持一致：先按映像名预筛，再用 QueryFullProcessImageNameW 取完整路径做大小写不
 // 敏感比较，绝不按映像名单独判定（避免误判/误关其它目录的同名 exe）。
 bool IsInstalledAppRunning(const std::wstring& installDir) {
     if (installDir.empty()) return false;
     const std::wstring target =
-        NormalizedPath(installDir + L"\\" + faf::protocol::kAppExeName);
+        NormalizedPath(installDir + L"\\" + spk::protocol::kAppExeName);
     if (target.empty()) return false;
 
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -191,7 +191,7 @@ bool IsInstalledAppRunning(const std::wstring& installDir) {
     bool running = false;
     if (Process32FirstW(snapshot, &entry)) {
         do {
-            if (CompareStringOrdinal(entry.szExeFile, -1, faf::protocol::kAppExeName, -1, TRUE) !=
+            if (CompareStringOrdinal(entry.szExeFile, -1, spk::protocol::kAppExeName, -1, TRUE) !=
                 CSTR_EQUAL) {
                 continue;
             }
@@ -275,7 +275,7 @@ InstallerWindow::InstallerWindow(HINSTANCE instance, std::wstring payload, std::
     if (!installDir.empty()) {
         state_.installDir = std::move(installDir);
     } else if (mode_ == AppMode::Install) {
-        state_.installDir = L"C:\\Program Files\\FreeAssetFilter";
+        state_.installDir = L"C:\\Program Files\\Sopeek";
     }
     // C4：非安装模式若仍拿到空 installDir，交由既有 startup-error 路径失败关闭；
     // 同时不得拼出 `\uninstall-request.ini` 这类根路径。
@@ -290,11 +290,11 @@ InstallerWindow::InstallerWindow(HINSTANCE instance, std::wstring payload, std::
     if (!state_.installDir.empty()) {
         if (uninstallRequestPath_.empty()) {
             uninstallRequestPath_ =
-                state_.installDir + L"\\" + faf::protocol::kUninstallRequestFile;
+                state_.installDir + L"\\" + spk::protocol::kUninstallRequestFile;
         }
         if (uninstallResultPath_.empty()) {
             uninstallResultPath_ =
-                state_.installDir + L"\\" + faf::protocol::kUninstallResultFile;
+                state_.installDir + L"\\" + spk::protocol::kUninstallResultFile;
         }
     }
     UpdateWindowTitle();  // T13：windowTitle_ 初始化（window_ 尚为空，仅落字符串）
@@ -317,7 +317,7 @@ InstallerWindow::~InstallerWindow() {
     // T13：异常销毁路径下安装 worker 可能仍存活（它通过 this 访问引擎/错误槽并
     // PostMessage）。先取消并显式 join，再拆页面/停渲染，避免 use-after-free。
     FinishInstallThread();
-    // T11：跨线程句柄必须先收尾——关闭应用的工作线程可能仍在 faf::CloseInstalledApp
+    // T11：跨线程句柄必须先收尾——关闭应用的工作线程可能仍在 spk::CloseInstalledApp
     // 内运行并访问本对象成员（closeTargetDir_/closeMutex_），因此在拆页面/停渲染之前
     // join；setup watchdog 的进程句柄同样在此关闭（CloseHandle 不终止 setup）。
     FinishCloseThread();
@@ -432,7 +432,7 @@ bool InstallerWindow::CreateAppWindow() {
         errorText_ = L"错误：未找到安装载荷目录：" + payload_;
     }
 
-    // --- 证据用诊断（无 FAF_DIAG_PATH 时不产生任何副作用）---
+    // --- 证据用诊断（无 SPK_DIAG_PATH 时不产生任何副作用）---
     wchar_t className[64] = {};
     GetClassNameW(window_, className, ARRAYSIZE(className));
     const DWORD ex = static_cast<DWORD>(GetWindowLongPtrW(window_, GWL_EXSTYLE));
@@ -458,12 +458,12 @@ bool InstallerWindow::CreateAppWindow() {
     // WM_TIMER → animator_.Tick() → Render()（dirty 或动画中）→ PresentFrame → Commit。
     // 减少动画时不创建（introAlpha_ 保持 1，立即全不透明，无中间 tick）。
     if (!reduceMotion_) {
-        introAnim_ = &animator_.Animate("shellIntro", 0.0f, 1.0f, 300.0f, faf::easing::Entrance);
+        introAnim_ = &animator_.Animate("shellIntro", 0.0f, 1.0f, 300.0f, spk::easing::Entrance);
     }
     dirty_ = true;
     Render();
     if (!reduceMotion_) RequestAnimTick();  // 有活动动画 → 武装 tick 定时器
-#ifdef FAF_TESTMODE
+#ifdef SPK_TESTMODE
     // Todo 19（§17）：/auto 测试驱动——窗口/页面就绪后武装固定时序定时器（生产不编入）。
     if (autoDriveEnabled_) ArmAutoDrive();
 #endif
@@ -532,11 +532,11 @@ void InstallerWindow::UpdateWindowTitle() {
 }
 
 void InstallerWindow::Layout() {
-    // §6：shell 几何唯一来源 = faf::ComputeShellLayout(bool hero)（纯 DIP 计算，不依赖 DPI）。
+    // §6：shell 几何唯一来源 = spk::ComputeShellLayout(bool hero)（纯 DIP 计算，不依赖 DPI）。
     // 标题栏最小化/关闭命中区、步骤带、内容卡片、底部条均由该结果提供。
     // 模式由当前页 + 操作类型决定（英雄页 欢迎/完成/维护/卸载确认/消息 无步骤带/底部条；
     // Repair/Uninstall 复用 Progress/Finish 时也必须是英雄页几何——与 SetPage 同一判据）。
-    shellLayout_ = faf::ComputeShellLayout(faf::IsHeroPage(state_.page) ||
+    shellLayout_ = spk::ComputeShellLayout(spk::IsHeroPage(state_.page) ||
                                            state_.operation != Operation::Install);
     // Todo 12：shell 几何变化后重排步骤栏/导航按钮/当前页（页面构造前为空操作）。
     if (pagesReady_) {
@@ -597,7 +597,7 @@ void InstallerWindow::Tick() {
     // T11/D9：setup 退出监视必须先于动画推进——setup 消失时立即抬高取消信号，让
     // 引擎在下一个轮询点安全停止（引擎收尾后由 WM_INSTALL_DONE 展示终止原因）。
     CheckSetupWatchdog();
-    const double nowMs = faf::SteadyNowMs();
+    const double nowMs = spk::SteadyNowMs();
     // UI-fix（进度 UX）：初始化合成斜坡先于动画推进——仅 UI 侧 0→50% 匀速，
     // 首个真实进度或安装结束时停止（不触碰引擎/结果 INI）。
     AdvanceInitProgress(nowMs);
@@ -657,7 +657,7 @@ void InstallerWindow::Render() {
 }
 
 void InstallerWindow::DrawContent(ID2D1DeviceContext* ctx) {
-    const faf::Theme theme = faf::GetTheme(darkMode_);  // §13：唯一 token 表
+    const spk::Theme theme = spk::GetTheme(darkMode_);  // §13：唯一 token 表
     const float m = static_cast<float>(shadowMarginDip_);
     ctx->SetTransform(D2D1::Matrix3x2F::Translation(m, m));
 
@@ -665,7 +665,7 @@ void InstallerWindow::DrawContent(ID2D1DeviceContext* ctx) {
     introAlpha_ = introAnim_ ? introAnim_->Value() : 1.0f;
 
     // Todo 12：步骤栏 / 导航按钮与 shell 层共享入场进度（同帧动画协同，§16 tick 驱动）。
-    faf::Theme faded = theme;
+    spk::Theme faded = theme;
     faded.card.a *= introAlpha_;
     faded.cardStroke.a *= introAlpha_;
     faded.textPrimary.a *= introAlpha_;
@@ -686,7 +686,7 @@ void InstallerWindow::DrawContent(ID2D1DeviceContext* ctx) {
     if (pagesReady_) {
         // 追加需求：英雄页（欢迎/完成）无步骤带——仅向导页绘制 3 个横向节点。
         // T10：Repair/Uninstall 一律不画安装步骤带（operation 非 Install 时）。
-        if (state_.operation == Operation::Install && !faf::IsHeroPage(state_.page)) {
+        if (state_.operation == Operation::Install && !spk::IsHeroPage(state_.page)) {
             for (int i = 0; i < kStepCount; ++i) stepItems_[i].Render(ctx, faded);
         }
         // 页内 Render 自行 SetTransform（会覆盖 shell 平移），渲染后再恢复边距平移。
@@ -700,34 +700,34 @@ void InstallerWindow::DrawContent(ID2D1DeviceContext* ctx) {
     DrawTitleBar(ctx, theme, introAlpha_);
 
     if (!errorText_.empty()) {
-        const faf::ShellLayout& s = shellLayout_;
+        const spk::ShellLayout& s = shellLayout_;
         const float cardW = s.contentCard.right - s.contentCard.left;
-        DrawTextLine(ctx, errorText_, s.contentCard.left + faf::spacing::M,
-                     s.contentCard.top + faf::spacing::M, cardW - 2.0f * faf::spacing::M,
-                     faf::fontsize::Body + faf::spacing::S, faf::fontsize::Body,
+        DrawTextLine(ctx, errorText_, s.contentCard.left + spk::spacing::M,
+                     s.contentCard.top + spk::spacing::M, cardW - 2.0f * spk::spacing::M,
+                     spk::fontsize::Body + spk::spacing::S, spk::fontsize::Body,
                      D2D1::ColorF(0.85f, 0.20f, 0.20f, introAlpha_));
     }
 
     ctx->SetTransform(D2D1::Matrix3x2F::Identity());
 }
 
-void InstallerWindow::DrawMicaFallbackBase(ID2D1DeviceContext* ctx, const faf::Theme& theme,
+void InstallerWindow::DrawMicaFallbackBase(ID2D1DeviceContext* ctx, const spk::Theme& theme,
                                            float alpha) {
-    const float W = faf::layout::kCanvasWidth;
-    const float H = faf::layout::kCanvasHeight;
+    const float W = spk::layout::kCanvasWidth;
+    const float H = spk::layout::kCanvasHeight;
     const float m = static_cast<float>(shadowMarginDip_);
 
     // §4 Win10 兜底的 (可选) 自绘柔化阴影：只显现在透明外扩边距内。§14 规定阴影断言
     // 须用桌面 DC，故此阴影仅近似；真正的阴影/圆角证明归 Todo 20 真机截图。
     if (m > 0.0f) {
-        faf::ComPtr<ID2D1SolidColorBrush> shadow;
+        spk::ComPtr<ID2D1SolidColorBrush> shadow;
         if (SUCCEEDED(ctx->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 0.10f * alpha),
                                                  shadow.GetAddressOf()))) {
             const int steps = 5;
             for (int i = steps - 1; i >= 0; --i) {
                 const float grow =
                     (static_cast<float>(i) + 1.0f) * (m / static_cast<float>(steps)) * 0.6f;
-                const float r = faf::radius::Medium + grow;
+                const float r = spk::radius::Medium + grow;
                 ctx->FillRoundedRectangle(
                     D2D1::RoundedRect(D2D1::RectF(-grow, -grow, W + grow, H + grow), r, r),
                     shadow.Get());
@@ -744,23 +744,23 @@ void InstallerWindow::DrawMicaFallbackBase(ID2D1DeviceContext* ctx, const faf::T
         stops[0] = {0.0f, D2D1::ColorF(0.980f, 0.980f, 0.980f, alpha)};
         stops[1] = {1.0f, D2D1::ColorF(0.925f, 0.925f, 0.925f, alpha)};
     }
-    faf::ComPtr<ID2D1GradientStopCollection> coll;
+    spk::ComPtr<ID2D1GradientStopCollection> coll;
     if (FAILED(ctx->CreateGradientStopCollection(stops, 2, coll.GetAddressOf()))) return;
-    faf::ComPtr<ID2D1LinearGradientBrush> base;
+    spk::ComPtr<ID2D1LinearGradientBrush> base;
     if (FAILED(ctx->CreateLinearGradientBrush(
             D2D1::LinearGradientBrushProperties(D2D1::Point2F(0, 0), D2D1::Point2F(0, H)),
             coll.Get(), base.GetAddressOf()))) {
         return;
     }
     ctx->FillRoundedRectangle(
-        D2D1::RoundedRect(D2D1::RectF(0, 0, W, H), faf::radius::Medium, faf::radius::Medium),
+        D2D1::RoundedRect(D2D1::RectF(0, 0, W, H), spk::radius::Medium, spk::radius::Medium),
         base.Get());
 }
 
-void InstallerWindow::DrawShellLayers(ID2D1DeviceContext* ctx, const faf::Theme& theme,
+void InstallerWindow::DrawShellLayers(ID2D1DeviceContext* ctx, const spk::Theme& theme,
                                       float alpha) {
     // §6：矩形全部来自 layout（纯 DIP），此处不再硬编码 railW/bottomH/margin/card rect。
-    const faf::ShellLayout& s = shellLayout_;
+    const spk::ShellLayout& s = shellLayout_;
 
     // §5：Win10 层为不透明；Win11 层保留 token alpha（半透明，透出 Mica）。
     // 入场 alpha 再乘入（淡入）。
@@ -774,7 +774,7 @@ void InstallerWindow::DrawShellLayers(ID2D1DeviceContext* ctx, const faf::Theme&
         return c;
     };
 
-    faf::ComPtr<ID2D1SolidColorBrush> card;
+    spk::ComPtr<ID2D1SolidColorBrush> card;
     if (FAILED(ctx->CreateSolidColorBrush(layer(theme.card), card.GetAddressOf()))) return;
     // 内容卡片已移除：窗口直接承载内容（用户要求，全页面统一，无嵌套容器）。contentCard 仍作为页面内容/内边距区域。
 
@@ -786,7 +786,7 @@ void InstallerWindow::DrawShellLayers(ID2D1DeviceContext* ctx, const faf::Theme&
     // 追加需求：顶部横向步骤带只在向导页存在（英雄页 stepper 为空 → 跳过）。
     // 步骤节点/连接线/标签由 DrawContent() 内的 StepItem::Render 绘制；此处只画步骤带下缘分隔线。
     if (s.stepper.right > s.stepper.left && s.stepper.bottom > s.stepper.top) {
-        faf::ComPtr<ID2D1SolidColorBrush> divider;
+        spk::ComPtr<ID2D1SolidColorBrush> divider;
         if (SUCCEEDED(ctx->CreateSolidColorBrush(faded(theme.divider), divider.GetAddressOf()))) {
             ctx->DrawLine(D2D1::Point2F(s.stepper.left, s.stepper.bottom),
                           D2D1::Point2F(s.stepper.right, s.stepper.bottom), divider.Get(), 1.0f);
@@ -794,12 +794,12 @@ void InstallerWindow::DrawShellLayers(ID2D1DeviceContext* ctx, const faf::Theme&
     }
 }
 
-void InstallerWindow::DrawTitleBar(ID2D1DeviceContext* ctx, const faf::Theme& theme, float alpha) {
-    const faf::ShellLayout& s = shellLayout_;
+void InstallerWindow::DrawTitleBar(ID2D1DeviceContext* ctx, const spk::Theme& theme, float alpha) {
+    const spk::ShellLayout& s = shellLayout_;
     const float titleH = s.titleBar.bottom;
     // 标题文字右边界让出两个窗口按钮命中区（layout 常量）。
     const float titleW =
-        s.titleBar.right - 2.0f * faf::layout::kWindowButtonWidth - faf::spacing::M;
+        s.titleBar.right - 2.0f * spk::layout::kWindowButtonWidth - spk::spacing::M;
 
     D2D1_COLOR_F primary = theme.textPrimary;
     primary.a *= alpha;
@@ -808,7 +808,7 @@ void InstallerWindow::DrawTitleBar(ID2D1DeviceContext* ctx, const faf::Theme& th
 
     // §5：标题栏区域保持透明（Win11 让 Mica 透出）；文字/字形用 token 前色，底部一条分隔线。
     // T10：标题文字来自构造期按 mode 设置的 windowTitle_（CreateWindowExW 同源）。
-    DrawTextLine(ctx, windowTitle_, faf::spacing::M, 0, titleW, titleH, faf::fontsize::Caption,
+    DrawTextLine(ctx, windowTitle_, spk::spacing::M, 0, titleW, titleH, spk::fontsize::Caption,
                  primary);
 
     // 窗口按钮（最小化/关闭）悬停/按下背景填充。
@@ -822,7 +822,7 @@ void InstallerWindow::DrawTitleBar(ID2D1DeviceContext* ctx, const faf::Theme& th
     if (minHot) {
         D2D1_COLOR_F fill = minArmed ? theme.pressed : theme.hover;
         fill.a *= alpha;
-        faf::ComPtr<ID2D1SolidColorBrush> minBg;
+        spk::ComPtr<ID2D1SolidColorBrush> minBg;
         if (SUCCEEDED(ctx->CreateSolidColorBrush(fill, minBg.GetAddressOf()))) {
             ctx->FillRectangle(s.minButton, minBg.Get());
         }
@@ -831,13 +831,13 @@ void InstallerWindow::DrawTitleBar(ID2D1DeviceContext* ctx, const faf::Theme& th
     if (closeHot) {
         D2D1_COLOR_F fill = closeArmed ? CloseArmedRed() : CloseHoverRed();
         fill.a *= alpha;
-        faf::ComPtr<ID2D1SolidColorBrush> closeBg;
+        spk::ComPtr<ID2D1SolidColorBrush> closeBg;
         if (SUCCEEDED(ctx->CreateSolidColorBrush(fill, closeBg.GetAddressOf()))) {
             ctx->FillRectangle(s.closeButton, closeBg.Get());
         }
     }
 
-    faf::ComPtr<ID2D1SolidColorBrush> stroke;
+    spk::ComPtr<ID2D1SolidColorBrush> stroke;
     if (SUCCEEDED(ctx->CreateSolidColorBrush(primary, stroke.GetAddressOf()))) {
         const float mcx = (s.minButton.left + s.minButton.right) * 0.5f;
         const float mcy = (s.minButton.top + s.minButton.bottom) * 0.5f;
@@ -846,7 +846,7 @@ void InstallerWindow::DrawTitleBar(ID2D1DeviceContext* ctx, const faf::Theme& th
     // ✕ 字形：悬停/按下时转白（红底对比），否则保持原前色。
     D2D1_COLOR_F closeGlyph = primary;
     if (closeHot) closeGlyph = D2D1::ColorF(1.0f, 1.0f, 1.0f, alpha);
-    faf::ComPtr<ID2D1SolidColorBrush> closeStroke;
+    spk::ComPtr<ID2D1SolidColorBrush> closeStroke;
     if (SUCCEEDED(ctx->CreateSolidColorBrush(closeGlyph, closeStroke.GetAddressOf()))) {
         const float ccx = (s.closeButton.left + s.closeButton.right) * 0.5f;
         const float ccy = (s.closeButton.top + s.closeButton.bottom) * 0.5f;
@@ -854,7 +854,7 @@ void InstallerWindow::DrawTitleBar(ID2D1DeviceContext* ctx, const faf::Theme& th
         ctx->DrawLine(D2D1::Point2F(ccx - 5, ccy + 5), D2D1::Point2F(ccx + 5, ccy - 5), closeStroke.Get(), 1.0f);
     }
 
-    faf::ComPtr<ID2D1SolidColorBrush> divider;
+    spk::ComPtr<ID2D1SolidColorBrush> divider;
     if (SUCCEEDED(ctx->CreateSolidColorBrush(dividerColor, divider.GetAddressOf()))) {
         ctx->DrawLine(D2D1::Point2F(0, titleH), D2D1::Point2F(s.titleBar.right, titleH),
                       divider.Get(), 1.0f);
@@ -866,7 +866,7 @@ void InstallerWindow::DrawTextLine(ID2D1DeviceContext* ctx, const std::wstring& 
                                    const D2D1_COLOR_F& color, DWRITE_FONT_WEIGHT weight) {
     IDWriteFactory* dwrite = render_.WriteFactory();
     if (!dwrite) return;
-    faf::ComPtr<IDWriteTextFormat> format;
+    spk::ComPtr<IDWriteTextFormat> format;
     if (FAILED(dwrite->CreateTextFormat(L"Segoe UI", nullptr, weight,
                                         DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, sizeDip,
                                         L"zh-cn", format.GetAddressOf()))) {
@@ -874,7 +874,7 @@ void InstallerWindow::DrawTextLine(ID2D1DeviceContext* ctx, const std::wstring& 
     }
     format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
     format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-    faf::ComPtr<ID2D1SolidColorBrush> brush;
+    spk::ComPtr<ID2D1SolidColorBrush> brush;
     if (FAILED(ctx->CreateSolidColorBrush(color, brush.GetAddressOf()))) return;
     ctx->DrawText(text.c_str(), static_cast<UINT32>(text.size()), format.Get(),
                   D2D1::RectF(x, y, x + width, y + height), brush.Get());
@@ -884,7 +884,7 @@ void InstallerWindow::ClientPointToDip(POINT p, float* dx, float* dy) const {
     const float m = static_cast<float>(MarginPx());
     // §6：客户端物理像素 → DIP 的换算比例 = 96 / SafeDpi(dpi_)。dpi_ 为 0 时
     // ClientPxToDipScale 守卫回退 96，绝不出现 96/0 除零（见 layout.h::SafeDpi）。
-    const float scale = faf::ClientPxToDipScale(dpi_);
+    const float scale = spk::ClientPxToDipScale(dpi_);
     *dx = (static_cast<float>(p.x) - m) * scale;
     *dy = (static_cast<float>(p.y) - m) * scale;
 }
@@ -893,8 +893,8 @@ void InstallerWindow::ClientPointToDip(POINT p, float* dx, float* dy) const {
 InstallerWindow::WindowButton InstallerWindow::HitTestWindowButton(float dipX, float dipY) const {
     const D2D1_POINT_2F pt = D2D1::Point2F(dipX, dipY);
     // 关闭优先（右边缘），其次最小化；命中区来自 layout（纯 DIP，不重新缩放）。
-    if (faf::HitTest(shellLayout_.closeButton, pt)) return WindowButton::Close;
-    if (faf::HitTest(shellLayout_.minButton, pt)) return WindowButton::Minimize;
+    if (spk::HitTest(shellLayout_.closeButton, pt)) return WindowButton::Close;
+    if (spk::HitTest(shellLayout_.minButton, pt)) return WindowButton::Minimize;
     return WindowButton::None;
 }
 
@@ -973,8 +973,8 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         const D2D1_POINT_2F pt = D2D1::Point2F(dx, dy);
         if (dy >= shellLayout_.titleBar.top && dy < shellLayout_.titleBar.bottom) {
             // 命中区来自 layout（DIP），HitTest 不重新缩放。
-            if (faf::HitTest(shellLayout_.minButton, pt) ||
-                faf::HitTest(shellLayout_.closeButton, pt))
+            if (spk::HitTest(shellLayout_.minButton, pt) ||
+                spk::HitTest(shellLayout_.closeButton, pt))
                 return HTCLIENT;
             return HTCAPTION;  // §4 标题栏可拖
         }
@@ -1002,8 +1002,8 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         // Todo 12：非标题栏 → 外壳导航按钮 / 当前页 指针分发（经 controls_base.h）。
-        faf::InputEvent ev{};
-        ev.kind = faf::InputEvent::Down;
+        spk::InputEvent ev{};
+        ev.kind = spk::InputEvent::Down;
         ev.x = dx;
         ev.y = dy;
         DispatchPointer(ev);
@@ -1025,8 +1025,8 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
             RequestAnimTick();
             return 0;  // 窗口按钮的 Up 不透传给页面
         }
-        faf::InputEvent ev{};
-        ev.kind = faf::InputEvent::Up;
+        spk::InputEvent ev{};
+        ev.kind = spk::InputEvent::Up;
         ev.x = dx;
         ev.y = dy;
         DispatchPointer(ev);
@@ -1047,8 +1047,8 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
             if (TrackMouseEvent(&tme)) trackingLeave_ = true;
         }
         UpdateTitleBarHover(dx, dy);  // 刷新窗口按钮悬停（变化时置脏重绘）
-        faf::InputEvent ev{};
-        ev.kind = faf::InputEvent::Move;
+        spk::InputEvent ev{};
+        ev.kind = spk::InputEvent::Move;
         ev.x = dx;
         ev.y = dy;
         DispatchPointer(ev);
@@ -1082,8 +1082,8 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         float dx = 0, dy = 0;
         ClientPointToDip(p, &dx, &dy);
         if (pagesReady_) {
-            faf::InputEvent ev{};
-            ev.kind = faf::InputEvent::Wheel;
+            spk::InputEvent ev{};
+            ev.kind = spk::InputEvent::Wheel;
             // 页内坐标 = 画布 DIP + Win10 兜底外扩边距（页布局同偏移，见 PageRect）。
             const float m = static_cast<float>(shadowMarginDip_);
             ev.x = dx + m;
@@ -1113,8 +1113,8 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         if (pagesReady_) {
-            faf::InputEvent ev{};
-            ev.kind = faf::InputEvent::Key;
+            spk::InputEvent ev{};
+            ev.kind = spk::InputEvent::Key;
             ev.key = vk;
             ev.shift = shift;
             if (ActivePageHost().Dispatch(ev)) {
@@ -1140,7 +1140,7 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
             DiagLog(L"completion hold finish");
             return 0;
         }
-#ifdef FAF_TESTMODE
+#ifdef SPK_TESTMODE
         if (wp == kAutoTimerId) {
             AutoDriveTick();  // Todo 19：/auto 固定时序推进（仅测试构建存在该定时器）
             return 0;
@@ -1178,7 +1178,7 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     // T10：第二实例请求恢复并置前（T13 的 SingleInstanceGuard 发出）。
-    if (msg == WM_FAF_ACTIVATE) {
+    if (msg == WM_SPK_ACTIVATE) {
         ShowWindow(hwnd, SW_RESTORE);
         SetForegroundWindow(hwnd);
         return 0;
@@ -1349,7 +1349,7 @@ void InstallerWindow::SetPage(int page) {
     // 追加需求：英雄页（欢迎/完成）⇄ 向导页切换时 shell 几何不同（有无步骤带/底部条），
     // 必须在布局页面之前重算，否则页/步骤带/导航按钮会沿用旧几何。
     // T10：Repair/Uninstall（operation != Install）复用 Progress/Finish 时也按英雄页布局。
-    shellLayout_ = faf::ComputeShellLayout(faf::IsHeroPage(page) ||
+    shellLayout_ = spk::ComputeShellLayout(spk::IsHeroPage(page) ||
                                            state_.operation != Operation::Install);
     ApplyPageEntry();
     RequestAnimTick();  // 置脏 + 确保 tick 定时器在跑（页面切换动画 + 步骤栏高亮）
@@ -1361,14 +1361,14 @@ DWORD WINAPI InstallerWindow::InstallThreadProc(LPVOID p) {
 }
 
 void InstallerWindow::WriteAbortResult(const std::wstring& error) {
-    // §1：唯一结果写入器（faf::WriteInstallResultIni）的中止包装（abort=1 + error）。
+    // §1：唯一结果写入器（spk::WriteInstallResultIni）的中止包装（abort=1 + error）。
     // resultWritten_ 守卫：引擎已写成功时此处为 no-op（同一进程最多写一次结果）。
     if (resultWritten_) return;
-    faf::InstallOptions options;
+    spk::InstallOptions options;
     options.desktop = state_.optDesktop;
     options.startmenu = state_.optStartmenu;
     options.autostart = state_.optAutostart;
-    if (faf::WriteInstallResultIni(resultPath_, state_.installDir, /*abort=*/true, error, options)) {
+    if (spk::WriteInstallResultIni(resultPath_, state_.installDir, /*abort=*/true, error, options)) {
         resultWritten_ = true;
     }
 }
@@ -1388,7 +1388,7 @@ void InstallerWindow::OnFinishIntent() {
         PostMessageW(window_, WM_CLOSE, 0, 0);
         return;
     }
-    // T11/Acceptance：Finish(Repair) —— 仅当用户勾选「立即启动 FreeAssetFilter」时启动
+    // T11/Acceptance：Finish(Repair) —— 仅当用户勾选「立即启动 Sopeek」时启动
     // （复选框直接绑定 state_.optLaunchAfterRepair，默认 false），随后关窗；未勾选只关窗。
     if (state_.operation == Operation::Repair) {
         if (!state_.optLaunchAfterRepair) {
@@ -1396,8 +1396,8 @@ void InstallerWindow::OnFinishIntent() {
             PostMessageW(window_, WM_CLOSE, 0, 0);
             return;
         }
-        const faf::LaunchOutcome repairOutcome =
-            faf::LaunchInstalledAppDeElevated(state_.installDir, window_);
+        const spk::LaunchOutcome repairOutcome =
+            spk::LaunchInstalledAppDeElevated(state_.installDir, window_);
         DiagLog(L"repair launch attempted dir=" + state_.installDir + L" launched=" +
                 std::to_wstring(repairOutcome.launched ? 1 : 0) + L" missing=" +
                 std::to_wstring(repairOutcome.missingExe ? 1 : 0) + L" error=" +
@@ -1418,8 +1418,8 @@ void InstallerWindow::OnFinishIntent() {
     // （页内不再有「立即启动」勾选框，AppState.optLaunch 恒为默认真）。
     //   * 去提权：经 render/launch_forward.h 的 explorer 转发（绝不直接
     //     ShellExecuteW(exe)——会以管理员令牌运行）。
-    const faf::LaunchOutcome outcome =
-        faf::LaunchInstalledAppDeElevated(state_.installDir, window_);
+    const spk::LaunchOutcome outcome =
+        spk::LaunchInstalledAppDeElevated(state_.installDir, window_);
     DiagLog(L"launch attempted dir=" + state_.installDir + L" launched=" +
             std::to_wstring(outcome.launched ? 1 : 0) + L" missing=" +
             std::to_wstring(outcome.missingExe ? 1 : 0) + L" error=" + outcome.error);
@@ -1435,7 +1435,7 @@ void InstallerWindow::OnFinishIntent() {
 
 void InstallerWindow::InstallThread() {
     // §2/§1：选项从 AppState 快照（INI 选项键与 GUI 状态的唯一一致性来源）。
-    faf::InstallOptions options;
+    spk::InstallOptions options;
     options.desktop = state_.optDesktop;
     options.startmenu = state_.optStartmenu;
     options.autostart = state_.optAutostart;
@@ -1443,8 +1443,8 @@ void InstallerWindow::InstallThread() {
     // Todo 13：真实引擎 = §11 哨兵等待 → 预扫描 → 逐文件复制（permille 上报）→
     // §3 取消清理 → §1 结果 INI。引擎内无 HWND/COM，结果 INI 由其唯一写入器完成。
     // T11：installMode_ 在创建线程前由 UI 线程写入，worker 只读（无并发写）。
-    faf::InstallEngine engine(payload_, state_.installDir, resultPath_);
-    const faf::InstallResult result =
+    spk::InstallEngine engine(payload_, state_.installDir, resultPath_);
+    const spk::InstallResult result =
         engine.Run(options, installMode_, cancel_, [this](int permille) {
             // §10：PostMessage 节流 ~30fps；终值 1000 恒发（节流不得吞掉终值）。
             const ULONGLONG now = GetTickCount64();
@@ -1464,7 +1464,7 @@ void InstallerWindow::InstallThread() {
     PostMessageW(window_, WM_INSTALL_DONE, result.ok ? 1 : 0, 0);
 }
 
-void InstallerWindow::StartInstall(faf::InstallMode mode) {
+void InstallerWindow::StartInstall(spk::InstallMode mode) {
     if (installing_) return;  // 防重入（导航已门控，此处为最后防线）
     installMode_ = mode;
     // 每次安装重置取消/结果/错误/进度状态（含失败后重装路径）。
@@ -1490,15 +1490,15 @@ void InstallerWindow::StartInstall(faf::InstallMode mode) {
     installing_ = true;
     // T11：修复期间保持 tick 定时器（setup 退出 watchdog 依赖它；无动画时也不停表）。
     keepTickAlive_ = true;
-    if (mode == faf::InstallMode::Repair) {
+    if (mode == spk::InstallMode::Repair) {
         // T11：repair 复用 Progress 页 —— operation 是唯一来源（SetPage/布局/步骤栏均读它）。
         state_.operation = Operation::Repair;
     } else {
         state_.operation = Operation::Install;
     }
     SetPage(Progress);
-    if (mode == faf::InstallMode::Repair && progressPage_) {
-        progressPage_->SetKind(faf::ProgressPage::Kind::Repair);
+    if (mode == spk::InstallMode::Repair && progressPage_) {
+        progressPage_->SetKind(spk::ProgressPage::Kind::Repair);
         progressPage_->SetCancellable(false);  // 修复中不允许取消/ESC/X
         progressPage_->SetNotice(L"修复过程中请勿关闭窗口");
     }
@@ -1506,7 +1506,7 @@ void InstallerWindow::StartInstall(faf::InstallMode mode) {
     // 匀速斜坡（正向前景文案）；首个真实 permille>0 到达时在 WM_INSTALL_PROGRESS 结束。
     BeginInitProgress();
     DiagLog(std::wstring(L"install start dir=") + state_.installDir + L" mode=" +
-            std::to_wstring(mode == faf::InstallMode::Repair ? 1 : 0));
+            std::to_wstring(mode == spk::InstallMode::Repair ? 1 : 0));
     installThread_ = CreateThread(nullptr, 0, InstallThreadProc, this, 0, nullptr);
     if (!installThread_) {
         installing_ = false;
@@ -1515,7 +1515,7 @@ void InstallerWindow::StartInstall(faf::InstallMode mode) {
         progressMappingActive_ = false;
         completionHold_ = false;
         WriteAbortResult(L"thread-create-failed");  // §1：失败必须写 error=
-        if (mode == faf::InstallMode::Repair) {
+        if (mode == spk::InstallMode::Repair) {
             ShowError(L"无法开始修复", L"修复线程创建失败，程序文件未改动。", L"关闭", L"");
         } else {
             ShowError(L"无法开始安装", L"安装线程创建失败，程序文件未改动。", L"关闭", L"");
@@ -1533,7 +1533,7 @@ void InstallerWindow::BeginInitProgress() {
     progressMappingActive_ = false;
     progressMappingBasePermille_ = 0;
     completionHold_ = false;
-    initProgressStartMs_ = faf::SteadyNowMs();
+    initProgressStartMs_ = spk::SteadyNowMs();
     lastInitProgressUpdateMs_ = initProgressStartMs_;
     progressPermille_ = 0;
     if (progressPage_) {
@@ -1628,10 +1628,10 @@ void InstallerWindow::StartUninstall() {
     if (window_) KillTimer(window_, kCompletionHoldTimerId);
     SetPage(Progress);
     if (progressPage_) {
-        progressPage_->SetKind(faf::ProgressPage::Kind::Uninstall);
+        progressPage_->SetKind(spk::ProgressPage::Kind::Uninstall);
         progressPage_->SetCancellable(false);  // 卸载中不允许取消/ESC/X
         progressPage_->SetNotice(L"卸载过程中请勿关闭窗口");
-        progressPage_->SetStageText(UninstallStageLabel(faf::UninstallStage::Started));
+        progressPage_->SetStageText(UninstallStageLabel(spk::UninstallStage::Started));
         progressPage_->SetProgressPermille(0);
     }
     DiagLog(L"uninstall start dir=" + state_.installDir + L" helper_pid=" +
@@ -1648,7 +1648,7 @@ void InstallerWindow::StartUninstall() {
         }
         // setup 必须先 ack（D15 C2：写 ack 后立即 Abort 释放 SetupMutex）；未 ack
         // 就启动 helper 会与仍在运行的 setup 冲突。ack 是启动协调器的前置条件。
-        if (!faf::WaitForDecisionAck(decisionPath_, faf::protocol::kAckTimeoutMs)) {
+        if (!spk::WaitForDecisionAck(decisionPath_, spk::protocol::kAckTimeoutMs)) {
             ShowError(L"无法开始卸载",
                       L"安装程序未在限定时间内确认卸载请求，卸载未开始。", L"关闭", L"");
             return;
@@ -1656,7 +1656,7 @@ void InstallerWindow::StartUninstall() {
     }
 
     // helperPid_==0 时由协调器先写 request 再启动 helper；非 0 时只附着，不二次启动。
-    uninstallCoordinator_ = std::make_shared<faf::UninstallCoordinator>(
+    uninstallCoordinator_ = std::make_shared<spk::UninstallCoordinator>(
         state_.installDir, state_.deleteUserData, GetCurrentProcessId(), helperPid_,
         uninstallRequestPath_, uninstallResultPath_, window_);
     std::wstring error;
@@ -1687,7 +1687,7 @@ void InstallerWindow::EnsurePages() {
     glyphFont_.Initialize(dwrite);
     logoBitmap_.Load(dc);
 
-    welcomePage_ = std::make_unique<faf::WelcomePage>(state_);
+    welcomePage_ = std::make_unique<spk::WelcomePage>(state_);
     welcomePage_->BindAnimator(&animator_);
     welcomePage_->BindText(&textFactory_);
     welcomePage_->BindGlyphs(&glyphFont_);
@@ -1695,14 +1695,14 @@ void InstallerWindow::EnsurePages() {
     // 追加需求：欢迎页为英雄页——页内大按钮「下一步」承担前进（无底部导航）。
     welcomePage_->SetOnNextIntent([this]() { GoNext(); });
 
-    licensePage_ = std::make_unique<faf::LicensePage>(state_);
+    licensePage_ = std::make_unique<spk::LicensePage>(state_);
     licensePage_->BindAnimator(&animator_);
     licensePage_->BindText(&textFactory_);
     licensePage_->BindGlyphs(&glyphFont_);
     licensePage_->BindWriteFactory(dwrite);
     // UI-fix：许可页页内「下一步」按钮已移除——门控由 UpdateNavButtons() 读 state_.agreed。
 
-    configurePage_ = std::make_unique<faf::ConfigurePage>(state_);
+    configurePage_ = std::make_unique<spk::ConfigurePage>(state_);
     configurePage_->SetPayloadDir(payload_);
     configurePage_->SetOwner(window_);
     configurePage_->BindAnimator(&animator_);
@@ -1712,13 +1712,13 @@ void InstallerWindow::EnsurePages() {
     // 时 ApplyPageEntry → SyncFromState 会再次从此值同步）。
     DiagLog(L"configure prefill field=" + configurePage_->Field().Path());
 
-    progressPage_ = std::make_unique<faf::ProgressPage>(state_);
+    progressPage_ = std::make_unique<spk::ProgressPage>(state_);
     progressPage_->BindAnimator(&animator_);
     progressPage_->BindText(&textFactory_);
     progressPage_->BindGlyphs(&glyphFont_);
     progressPage_->SetOnCancel([this]() { RaiseCancelIntent(); });
 
-    finishPage_ = std::make_unique<faf::FinishPage>(state_);
+    finishPage_ = std::make_unique<spk::FinishPage>(state_);
     finishPage_->BindAnimator(&animator_);
     finishPage_->BindText(&textFactory_);
     finishPage_->BindGlyphs(&glyphFont_);
@@ -1727,7 +1727,7 @@ void InstallerWindow::EnsurePages() {
     finishPage_->SetOnFinishIntent([this]() { OnFinishIntent(); });
 
     // T10：三个英雄页（T7）。回调仅接到本类的占位接缝；T11/T12/T13 替换为真实业务。
-    maintenancePage_ = std::make_unique<faf::MaintenancePage>(state_);
+    maintenancePage_ = std::make_unique<spk::MaintenancePage>(state_);
     maintenancePage_->BindAnimator(&animator_);
     maintenancePage_->BindText(&textFactory_);
     maintenancePage_->BindGlyphs(&glyphFont_);
@@ -1735,14 +1735,14 @@ void InstallerWindow::EnsurePages() {
     maintenancePage_->SetOnUninstall([this]() { OnMaintenanceUninstallIntent(); });
     maintenancePage_->SetOnCancel([this]() { OnMaintenanceCancelIntent(); });
 
-    uninstallConfirmPage_ = std::make_unique<faf::UninstallConfirmPage>(state_);
+    uninstallConfirmPage_ = std::make_unique<spk::UninstallConfirmPage>(state_);
     uninstallConfirmPage_->BindAnimator(&animator_);
     uninstallConfirmPage_->BindText(&textFactory_);
     uninstallConfirmPage_->BindGlyphs(&glyphFont_);
     uninstallConfirmPage_->SetOnConfirm([this]() { OnUninstallConfirmIntent(); });
     uninstallConfirmPage_->SetOnCancel([this]() { OnUninstallCancelIntent(); });
 
-    messagePage_ = std::make_unique<faf::MessagePage>(state_);
+    messagePage_ = std::make_unique<spk::MessagePage>(state_);
     messagePage_->BindAnimator(&animator_);
     messagePage_->BindText(&textFactory_);
     messagePage_->BindGlyphs(&glyphFont_);
@@ -1759,14 +1759,14 @@ void InstallerWindow::EnsurePages() {
     }
 
     backButton_.SetLabel(L"上一步");
-    backButton_.SetStyle(faf::Button::Secondary);
+    backButton_.SetStyle(spk::Button::Secondary);
     backButton_.SetOnClick([this]() { GoBack(); });
     backButton_.BindAnimator(&animator_);
     backButton_.BindText(&textFactory_);
     backButton_.BindGlyphs(&glyphFont_);
 
     nextButton_.SetLabel(L"下一步");
-    nextButton_.SetStyle(faf::Button::Accent);
+    nextButton_.SetStyle(spk::Button::Accent);
     nextButton_.SetOnClick([this]() { GoNext(); });
     nextButton_.BindAnimator(&animator_);
     nextButton_.BindText(&textFactory_);
@@ -1793,8 +1793,8 @@ void InstallerWindow::EnsurePages() {
         // T12：/uninstall 的初始页 = 卸载确认页（不是安装向导的欢迎页）。
         if (mode_ == AppMode::Uninstall) {
             state_.page = UninstallConfirm;
-            shellLayout_ = faf::ComputeShellLayout(
-                faf::IsHeroPage(state_.page) || state_.operation != Operation::Install);
+            shellLayout_ = spk::ComputeShellLayout(
+                spk::IsHeroPage(state_.page) || state_.operation != Operation::Install);
         }
         LayoutStepBar();
         LayoutFooterButtons();
@@ -1817,7 +1817,7 @@ void InstallerWindow::LayoutStepBar() {
     const D2D1_RECT_F& band = shellLayout_.stepper;
     const float colW = (band.right - band.left) / static_cast<float>(kStepCount);
     for (int i = 0; i < kStepCount; ++i) {
-        stepItems_[i].SetOrientation(faf::StepItem::Orientation::Horizontal);
+        stepItems_[i].SetOrientation(spk::StepItem::Orientation::Horizontal);
         const float left = band.left + colW * static_cast<float>(i);
         stepItems_[i].SetBounds(D2D1::RectF(left, band.top, left + colW, band.bottom));
     }
@@ -2060,7 +2060,7 @@ void InstallerWindow::OnEscape() {
 void InstallerWindow::EnterMaintenanceMode() {
     if (!maintenancePage_) return;
     // T11：Detect 是唯一的安装判定来源（exe 或 _internal 存在）；版本/选项一并读取。
-    maintenanceInfo_ = faf::Detect(state_.installDir);
+    maintenanceInfo_ = spk::Detect(state_.installDir);
     if (!maintenanceInfo_.installDir.empty()) {
         state_.installDir = maintenanceInfo_.installDir;  // 归一化后的路径（D10）
     }
@@ -2078,9 +2078,9 @@ void InstallerWindow::EnterMaintenanceMode() {
         // 未检测到安装：只给“关闭”，绝不写 decision、绝不进入修复。
         // suppress 标志同时覆盖用户直接点 X / ESC 的关闭路径（同样不写 decision）。
         maintenanceSuppressDecision_ = true;
-        ShowError(L"未找到已安装的 FreeAssetFilter",
+        ShowError(L"未找到已安装的 Sopeek",
                   L"在 " + state_.installDir +
-                      L" 未检测到 FreeAssetFilter 的程序文件，无法执行修复。",
+                      L" 未检测到 Sopeek 的程序文件，无法执行修复。",
                   L"关闭", L"");
         return;
     }
@@ -2093,7 +2093,7 @@ bool InstallerWindow::RepairPreflight(std::wstring* error) const {
         return false;
     };
     if (!maintenanceInfo_.detected) {
-        return fail(L"未检测到已安装的 FreeAssetFilter，无法修复。");
+        return fail(L"未检测到已安装的 Sopeek，无法修复。");
     }
     const std::wstring& dir = state_.installDir;
     if (dir.empty()) return fail(L"安装目录为空，无法修复。");
@@ -2104,7 +2104,7 @@ bool InstallerWindow::RepairPreflight(std::wstring* error) const {
     // 可写探测：在安装目录内创建带 PID 的临时文件（FILE_FLAG_DELETE_ON_CLOSE，关闭即
     // 自动删除，不残留、不触碰用户数据）。磁盘空间**不在此处检查**：T6 引擎在哨兵
     // 预扫描之后、首次写入之前判定（D15 H1），避免重复口径。
-    const std::wstring probe = dir + L"\\.faf-repair-probe-" +
+    const std::wstring probe = dir + L"\\.spk-repair-probe-" +
                                std::to_wstring(GetCurrentProcessId()) + L".tmp";
     HANDLE file = CreateFileW(probe.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                               FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
@@ -2126,7 +2126,7 @@ bool InstallerWindow::WriteMaintenanceDecisionOnce(MaintenanceAction action) {
         return false;
     }
     const int actionValue = static_cast<int>(action);
-    const bool ok = faf::WriteMaintenanceDecision(decisionPath_, action, GetCurrentProcessId());
+    const bool ok = spk::WriteMaintenanceDecision(decisionPath_, action, GetCurrentProcessId());
     if (ok) maintenanceDecisionWritten_ = true;
     DiagLog(L"maintenance decision action=" + std::to_wstring(actionValue) + L" ok=" +
             std::to_wstring(ok ? 1 : 0) + L" path=" + decisionPath_);
@@ -2163,7 +2163,7 @@ void InstallerWindow::StartRepair() {
         return;
     }
 
-    // 运行中：先异步关闭（faf::CloseInstalledApp 按完整路径匹配，最长 5s 优雅 + 2s 强制），
+    // 运行中：先异步关闭（spk::CloseInstalledApp 按完整路径匹配，最长 5s 优雅 + 2s 强制），
     // 关闭成功后才允许写 decision —— D9 的硬性顺序要求。
     DiagLog(L"repair closing running app dir=" + state_.installDir);
     closingApp_ = true;
@@ -2176,8 +2176,8 @@ void InstallerWindow::StartRepair() {
     }
     messagePrimaryAction_ = MessageAction::None;
     messageSecondaryAction_ = MessageAction::None;
-    messagePage_->SetContent(L"正在关闭 FreeAssetFilter",
-                             L"修复前需要先关闭正在运行的 FreeAssetFilter，请稍候。", L"", L"",
+    messagePage_->SetContent(L"正在关闭 Sopeek",
+                             L"修复前需要先关闭正在运行的 Sopeek，请稍候。", L"", L"",
                              false);
     messagePage_->SetBusy(true, L"正在关闭…");
     SetPage(Message);
@@ -2188,8 +2188,8 @@ void InstallerWindow::StartRepair() {
         closingApp_ = false;
         keepTickAlive_ = false;
         // T13：保留 T11 的「重试 / 取消」决策语义（取消 = 写一次 maintenance cancel）。
-        ShowError(L"无法关闭 FreeAssetFilter",
-                  L"无法创建关闭线程，请手动退出 FreeAssetFilter 后重试。", L"重试",
+        ShowError(L"无法关闭 Sopeek",
+                  L"无法创建关闭线程，请手动退出 Sopeek 后重试。", L"重试",
                   MessageAction::RetryRepair, L"取消", MessageAction::CancelMaintenance);
     }
 }
@@ -2207,7 +2207,7 @@ void InstallerWindow::BeginRepairInstall() {
         ShowError(L"无法开始修复", L"无法写入维护决定文件，修复未开始。", L"关闭", L"");
         return;
     }
-    StartInstall(faf::InstallMode::Repair);
+    StartInstall(spk::InstallMode::Repair);
 }
 
 void InstallerWindow::ShowMessagePage(std::wstring title, std::wstring body,
@@ -2279,8 +2279,8 @@ DWORD WINAPI InstallerWindow::CloseThreadProc(LPVOID p) {
 
 void InstallerWindow::CloseAppThread() {
     // 工作线程只做内核/用户枚举 + PostMessage，绝不触碰 UI。
-    const faf::ProcessCloseResult result =
-        faf::CloseInstalledApp(closeTargetDir_, /*gracefulTimeoutMs=*/5000,
+    const spk::ProcessCloseResult result =
+        spk::CloseInstalledApp(closeTargetDir_, /*gracefulTimeoutMs=*/5000,
                                /*forceTimeoutMs=*/2000);
     {
         std::lock_guard<std::mutex> lock(closeMutex_);
@@ -2384,8 +2384,8 @@ void InstallerWindow::OnUninstallConfirmIntent() {
     }
     messagePrimaryAction_ = MessageAction::None;
     messageSecondaryAction_ = MessageAction::None;
-    messagePage_->SetContent(L"正在关闭 FreeAssetFilter",
-                             L"卸载前需要先关闭正在运行的 FreeAssetFilter，请稍候。", L"",
+    messagePage_->SetContent(L"正在关闭 Sopeek",
+                             L"卸载前需要先关闭正在运行的 Sopeek，请稍候。", L"",
                              L"", false);
     messagePage_->SetBusy(true, L"正在关闭…");
     SetPage(Message);
@@ -2399,8 +2399,8 @@ void InstallerWindow::OnUninstallConfirmIntent() {
         const MessageAction secondary = mode_ == AppMode::Maintenance
                                             ? MessageAction::CancelMaintenance
                                             : MessageAction::Close;
-        ShowError(L"无法关闭 FreeAssetFilter",
-                  L"无法创建关闭线程，请手动退出 FreeAssetFilter 后重试。", L"重试",
+        ShowError(L"无法关闭 Sopeek",
+                  L"无法创建关闭线程，请手动退出 Sopeek 后重试。", L"重试",
                   MessageAction::RetryUninstall, L"取消", secondary);
     }
 }
@@ -2416,7 +2416,7 @@ void InstallerWindow::OnUninstallCancelIntent() {
     }
     if (mode_ == AppMode::Uninstall) {
         if (helperPid_ != 0) {
-            const bool ok = faf::WriteUninstallCancel(uninstallRequestPath_);
+            const bool ok = spk::WriteUninstallCancel(uninstallRequestPath_);
             DiagLog(L"uninstall cancel request written=" + std::to_wstring(ok ? 1 : 0) +
                     L" path=" + uninstallRequestPath_);
         }
@@ -2476,18 +2476,18 @@ void InstallerWindow::OnCloseDoneMessage(WPARAM wp) {
     // 重试必须重新执行关闭检查（RetryUninstall → OnUninstallConfirmIntent）。
     pendingUninstallClose_ = false;
     const std::wstring body =
-        L"关闭已安装的 FreeAssetFilter 失败（" +
+        L"关闭已安装的 Sopeek 失败（" +
         (error.empty() ? std::wstring(L"未知错误") : error) +
         L"）。请手动退出程序后重试。";
     if (forUninstall) {
         const MessageAction secondary = mode_ == AppMode::Maintenance
                                             ? MessageAction::CancelMaintenance
                                             : MessageAction::Close;
-        ShowError(L"无法关闭 FreeAssetFilter", body, L"重试",
+        ShowError(L"无法关闭 Sopeek", body, L"重试",
                   MessageAction::RetryUninstall, L"取消", secondary);
         return;
     }
-    ShowError(L"无法关闭 FreeAssetFilter", body, L"重试", MessageAction::RetryRepair,
+    ShowError(L"无法关闭 Sopeek", body, L"重试", MessageAction::RetryRepair,
               L"取消", MessageAction::CancelMaintenance);
 }
 
@@ -2498,7 +2498,7 @@ void InstallerWindow::OnUninstallProgressMessage(WPARAM wp, LPARAM lp) {
     if (state_.page != Progress) return;     // 仅进度页消费
     const int stageValue = static_cast<int>(static_cast<long long>(lp));
     if (!IsKnownUninstallStage(stageValue)) return;
-    const auto stage = static_cast<faf::UninstallStage>(stageValue);
+    const auto stage = static_cast<spk::UninstallStage>(stageValue);
     const unsigned long long rawPermille = static_cast<unsigned long long>(wp);
     const int permille = rawPermille > 1000ull ? 1000 : static_cast<int>(rawPermille);
     progressPermille_ = permille;
@@ -2506,7 +2506,7 @@ void InstallerWindow::OnUninstallProgressMessage(WPARAM wp, LPARAM lp) {
         progressPage_->SetProgressPermille(permille);
         progressPage_->SetStageText(UninstallStageLabel(stage));
         // D15 C3：未勾选删除用户数据时，helper 跳过用户数据阶段并保留全部数据。
-        if (stage == faf::UninstallStage::RemovingUserData && !state_.deleteUserData) {
+        if (stage == spk::UninstallStage::RemovingUserData && !state_.deleteUserData) {
             progressPage_->SetNotice(L"用户数据已保留");
         }
     }
@@ -2528,11 +2528,11 @@ void InstallerWindow::OnUninstallDoneMessage(WPARAM wp, LPARAM lp) {
     uninstallTerminal_ = true;
     uninstallRunning_ = false;
     keepTickAlive_ = false;
-    const auto stage = static_cast<faf::UninstallStage>(stageValue);
+    const auto stage = static_cast<spk::UninstallStage>(stageValue);
     DiagLog(L"uninstall-done stage=" + std::to_wstring(stageValue));
 
     switch (stage) {
-        case faf::UninstallStage::Done:
+        case spk::UninstallStage::Done:
             progressPermille_ = 1000;
             if (progressPage_) progressPage_->SetProgressPermille(1000);
             // warning 仅作为 Finish 页非终端提示；Done 仍走 Finish，绝不降级为 Message。
@@ -2543,7 +2543,7 @@ void InstallerWindow::OnUninstallDoneMessage(WPARAM wp, LPARAM lp) {
             }
             SetPage(Finish);  // ApplyPageEntry → FinishPage::SetKind(Uninstall)
             break;
-        case faf::UninstallStage::Failed: {
+        case spk::UninstallStage::Failed: {
             const std::wstring error =
                 uninstallCoordinator_ ? uninstallCoordinator_->Error() : std::wstring();
             // T13：终态失败页。关闭走统一 WM_CLOSE；operation==Uninstall 且 page==Message
@@ -2552,7 +2552,7 @@ void InstallerWindow::OnUninstallDoneMessage(WPARAM wp, LPARAM lp) {
                       error.empty() ? L"卸载过程中出现未知错误。" : error, L"关闭", L"");
             break;
         }
-        case faf::UninstallStage::Cancelled:
+        case spk::UninstallStage::Cancelled:
             ShowError(L"卸载已取消", L"未删除任何文件", L"关闭", L"");
             break;
         default:
@@ -2618,12 +2618,12 @@ void InstallerWindow::OnUninstallCloseIntent() {
     if (window_) DestroyWindow(window_);
 }
 
-bool InstallerWindow::DispatchPointer(const faf::InputEvent& event) {
+bool InstallerWindow::DispatchPointer(const spk::InputEvent& event) {
     if (!pagesReady_) return false;
     // 外壳导航按钮（画布坐标；外壳层经 Translation(m,m) 绘制与命中）。
     bool consumed = shellHost_.Dispatch(event);
     // 当前页（页布局含 Win10 外扩边距，故命中坐标同偏移）。
-    faf::InputEvent pageEvent = event;
+    spk::InputEvent pageEvent = event;
     const float m = static_cast<float>(shadowMarginDip_);
     pageEvent.x += m;
     pageEvent.y += m;
@@ -2635,8 +2635,8 @@ bool InstallerWindow::DispatchPointer(const faf::InputEvent& event) {
     return consumed;
 }
 
-faf::WidgetHost& InstallerWindow::ActivePageHost() {
-    static faf::WidgetHost empty;
+spk::WidgetHost& InstallerWindow::ActivePageHost() {
+    static spk::WidgetHost empty;
     if (!pagesReady_) return empty;
     switch (state_.page) {
         case Welcome: return welcomePage_->Host();
@@ -2651,30 +2651,30 @@ faf::WidgetHost& InstallerWindow::ActivePageHost() {
     }
 }
 
-void InstallerWindow::RenderActivePage(ID2D1DeviceContext* ctx, const faf::Theme& theme) {
+void InstallerWindow::RenderActivePage(ID2D1DeviceContext* ctx, const spk::Theme& theme) {
     if (!pagesReady_ || !ctx) return;
     switch (state_.page) {
-        case Welcome: faf::RenderWelcome(ctx, theme, *welcomePage_); break;
-        case License: faf::RenderLicense(ctx, theme, *licensePage_); break;
-        case Configure: faf::RenderConfigure(ctx, theme, *configurePage_); break;
+        case Welcome: spk::RenderWelcome(ctx, theme, *welcomePage_); break;
+        case License: spk::RenderLicense(ctx, theme, *licensePage_); break;
+        case Configure: spk::RenderConfigure(ctx, theme, *configurePage_); break;
         // T10：页 3/4 的 Kind 已在 ApplyPageEntry/LayoutPages 中按 state_.operation
         // 同步（SetKind 会重建 Tab 顺序，禁止在逐帧渲染路径重复调用）。
-        case Progress: faf::RenderProgress(ctx, theme, *progressPage_); break;
-        case Finish: faf::RenderFinish(ctx, theme, *finishPage_); break;
-        case Maintenance: faf::RenderMaintenance(ctx, theme, *maintenancePage_); break;
-        case UninstallConfirm: faf::RenderUninstallConfirm(ctx, theme, *uninstallConfirmPage_); break;
-        case Message: faf::RenderMessage(ctx, theme, *messagePage_); break;
+        case Progress: spk::RenderProgress(ctx, theme, *progressPage_); break;
+        case Finish: spk::RenderFinish(ctx, theme, *finishPage_); break;
+        case Maintenance: spk::RenderMaintenance(ctx, theme, *maintenancePage_); break;
+        case UninstallConfirm: spk::RenderUninstallConfirm(ctx, theme, *uninstallConfirmPage_); break;
+        case Message: spk::RenderMessage(ctx, theme, *messagePage_); break;
         default: break;
     }
 }
 
 // ==================== Todo 19（§17）：/auto 无人值守测试驱动 ====================
-// 仅 FAF_TESTMODE 构建有驱动行为（宏由 cmake/test_mode.cmake 在 -DFAF_TESTMODE=ON
+// 仅 SPK_TESTMODE 构建有驱动行为（宏由 cmake/test_mode.cmake 在 -DSPK_TESTMODE=ON
 // 时定义）。生产构建保留的只有 EnableAutoDrive 的 no-op 定义；驱动成员/定时器/
 // 推进逻辑全部被预处理器剔除——/auto 开关在生产中解析后即丢弃，无任何效果。
 
 void InstallerWindow::EnableAutoDrive(AutoDriveOptions options) {
-#ifdef FAF_TESTMODE
+#ifdef SPK_TESTMODE
     autoDriveEnabled_ = true;
     autoProfile_ = std::move(options.profile);  // 空串 = 全默认档
     // T14/D15 H6：合法 stopPage 扩展到 Welcome..Message（0..7）；越界/负值 = 不停。
@@ -2695,7 +2695,7 @@ void InstallerWindow::EnableAutoDrive(AutoDriveOptions options) {
 #endif
 }
 
-#ifdef FAF_TESTMODE
+#ifdef SPK_TESTMODE
 
 void InstallerWindow::ApplyAutoProfile(const std::wstring& bits) {
     // §17：四位 0/1 = 桌面 / 开始菜单 / 开机自启 / 完成后启动；缺位/非法位取 §2
@@ -2845,4 +2845,4 @@ void InstallerWindow::AutoDriveTick() {
     }
 }
 
-#endif  // FAF_TESTMODE
+#endif  // SPK_TESTMODE

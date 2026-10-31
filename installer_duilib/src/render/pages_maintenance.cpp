@@ -16,9 +16,9 @@
 #include <algorithm>
 #include <utility>
 
-#include "render/render_context.h"  // faf::ComPtr
+#include "render/render_context.h"  // spk::ComPtr
 
-namespace faf {
+namespace spk {
 
 namespace {
 
@@ -74,10 +74,10 @@ bool HasCard(const D2D1_RECT_F& card) {
 const std::vector<std::wstring>& ScopeLines() {
     static const std::vector<std::wstring> kScope = {
         L"未勾选时，用户数据全部保留；勾选后将删除以下已知用户数据：",
-        L"· %LOCALAPPDATA%\\FreeAssetFilter（设置、缓存、日志）",
+        L"· %LOCALAPPDATA%\\Sopeek（设置、缓存、日志）",
         L"· 安装目录\\data（$INSTDIR\\data）",
         L"· 安装目录\\_internal\\data（$INSTDIR\\_internal\\data）",
-        L"· 环境变量 FAF_DATA_DIR 指定的自定义目录永不删除。",
+        L"· 环境变量 SPK_DATA_DIR 指定的自定义目录永不删除。",
         L"· 安装目录下的未知用户文件与你导出的文件不会被删除。",
     };
     return kScope;
@@ -231,7 +231,7 @@ void MaintenancePage::Render(ID2D1DeviceContext* dc, const Theme& theme) {
     dc->SetTransform(D2D1::Matrix3x2F::Identity());
 
     // 标题 / 副标题（T7 固定文案）。
-    DrawLineText(dc, text_, L"FreeAssetFilter 维护", titleRect_, fontsize::Title,
+    DrawLineText(dc, text_, L"Sopeek 维护", titleRect_, fontsize::Title,
                  weight::SemiBold, DWRITE_TEXT_ALIGNMENT_CENTER, theme.textPrimary);
     DrawLineText(dc, text_, L"修复程序文件，或卸载应用。你的文档和导出文件不会被删除。",
                  subtitleRect_, fontsize::Body, weight::Regular, DWRITE_TEXT_ALIGNMENT_CENTER,
@@ -252,7 +252,7 @@ void MaintenancePage::Render(ID2D1DeviceContext* dc, const Theme& theme) {
     std::wstring statusText;
     bool statusWarn = false;
     if (!detected_) {
-        statusText = L"未检测到已安装的 FreeAssetFilter，无法执行修复。";
+        statusText = L"未检测到已安装的 Sopeek，无法执行修复。";
         statusWarn = true;
     } else if (!complete_) {
         statusText = L"程序文件不完整，建议执行修复。";
@@ -396,7 +396,7 @@ void UninstallConfirmPage::Render(ID2D1DeviceContext* dc, const Theme& theme) {
     if (!dc) return;
     dc->SetTransform(D2D1::Matrix3x2F::Identity());
 
-    DrawLineText(dc, text_, L"卸载 FreeAssetFilter", titleRect_, fontsize::Title,
+    DrawLineText(dc, text_, L"卸载 Sopeek", titleRect_, fontsize::Title,
                  weight::SemiBold, DWRITE_TEXT_ALIGNMENT_CENTER, theme.textPrimary);
     DrawLineText(dc, text_, L"将删除程序文件、快捷方式、注册表项。", introRect_,
                  fontsize::Body, weight::Regular, DWRITE_TEXT_ALIGNMENT_CENTER,
@@ -581,4 +581,4 @@ void RenderMessage(ID2D1DeviceContext* dc, const Theme& theme, MessagePage& page
     page.Render(dc, theme);
 }
 
-}  // namespace faf
+}  // namespace spk

@@ -1,4 +1,4 @@
 # 编码测试样本（GBK/Big5/Shift-JIS 等）是"二进制测试数据"：禁止 Git 任何
 # 文本/行尾转换。否则 Windows core.autocrlf=true 检出时会把样本里的 LF
 # 改成 CRLF，污染字节并使逐字节断言的测试失败（如 text 预览器三个编码用例）。
-tests/support/faf_core_fixtures/encoding_samples/** -text
+tests/support/spk_core_fixtures/encoding_samples/** -text

@@ -4,7 +4,7 @@
 // 关键点（Frozen contracts）：
 //   §12 页面状态一律读写 AppState（许可同意直接写 state_.agreed；「下一步」仅由此门控）。
 //   §13 视觉只消费 theme.h token；RCDATA 资源行 append-only（app.rc 由本 todo 追加）。
-//   §18 版本字符串只取根 FAFVERSION 首行、去掉前导 'v'——绝不硬编码。
+//   §18 版本字符串只取根 SPKVERSION 首行、去掉前导 'v'——绝不硬编码。
 //   §6  坐标全程 DIP（不乘 DPI）。
 // 页面切换动效 = 淡入 + 轻微上移：由注入的 Animator 的 AnimValue 驱动（页面不自持
 // 帧时钟；无 Animator 时 EnterProgress() 退回终值 1）。
@@ -16,9 +16,9 @@
 #include <algorithm>
 #include <cstddef>
 
-#include "render/render_context.h"  // faf::ComPtr
+#include "render/render_context.h"  // spk::ComPtr
 
-namespace faf {
+namespace spk {
 
 namespace {
 
@@ -111,7 +111,7 @@ bool ReadUtf8Resource(UINT resourceId, std::wstring& out) {
 
 std::wstring ReadVersionString() {
     std::wstring text;
-    if (!ReadUtf8Resource(IDR_FAFVERSION, text)) return std::wstring();
+    if (!ReadUtf8Resource(IDR_SPKVERSION, text)) return std::wstring();
     const std::size_t nl = text.find_first_of(L"\r\n");
     std::wstring line = (nl == std::wstring::npos) ? text : text.substr(0, nl);
     const wchar_t* ws = L" \t\r\n";
@@ -135,7 +135,7 @@ std::vector<std::wstring> LicenseSummaryLines() {
 
 WelcomePage::WelcomePage(AppState& state) : state_(state) {
     enterName_ = "page-welcome-enter";
-    version_ = ReadVersionString();  // §18：只取 FAFVERSION 首行去 'v'，不硬编码
+    version_ = ReadVersionString();  // §18：只取 SPKVERSION 首行去 'v'，不硬编码
     tagline_ = L"让文件浏览如丝般高效顺滑";
 
     // 英雄页大按钮「下一步」：前进统一走本页（欢迎页无底部导航）。
@@ -239,7 +239,7 @@ void WelcomePage::Render(ID2D1DeviceContext* dc, const Theme& theme) {
              DWRITE_TEXT_ALIGNMENT_CENTER, t.textPrimary);
 
     const std::wstring verText =
-        version_.empty() ? L"版本：未知（FAFVERSION 资源缺失）" : (L"版本 " + version_);
+        version_.empty() ? L"版本：未知（SPKVERSION 资源缺失）" : (L"版本 " + version_);
     DrawText(dc, text_, verText, versionRect_, fontsize::Body, weight::Regular,
              DWRITE_TEXT_ALIGNMENT_CENTER, t.textSecondary);
     DrawText(dc, text_, tagline_, taglineRect_, fontsize::Body, weight::Regular,
@@ -405,4 +405,4 @@ void RenderLicense(ID2D1DeviceContext* dc, const Theme& theme, LicensePage& page
     page.Render(dc, theme);
 }
 
-}  // namespace faf
+}  // namespace spk

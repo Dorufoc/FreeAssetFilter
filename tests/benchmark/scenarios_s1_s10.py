@@ -16,13 +16,13 @@ pytest 临时目录，逐文件 SHA-256 后写入
 ``tests/benchmark/fixtures.manifest.json``；各场景经 manifest 读夹具
 路径（不硬编码），快照记录 manifest 整体 hash。
 
-显示约定：S3/S4/S6/S10 需真实显示器——``FAF_VISUAL=1``（或
+显示约定：S3/S4/S6/S10 需真实显示器——``SPK_VISUAL=1``（或
 ``QT_QPA_PLATFORM`` 非 offscreen）时实测，否则写
 ``{"skipped": true, "reason": ...}`` 快照并 ``pytest.skip``，
 绝不编造数字。
 
 S9 双模式：默认 ``--smoke`` 语义（30s 冒烟，输出标记 ``S9-smoke``）；
-``--s9-full`` / ``FAF_S9_FULL=1`` 才跑完整 5 分钟（CI/冒烟永不触发）。
+``--s9-full`` / ``SPK_S9_FULL=1`` 才跑完整 5 分钟（CI/冒烟永不触发）。
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pytest
 
-from freeassetfilter.utils.perf_metrics import PerfEventStats
+from sopeek.utils.perf_metrics import PerfEventStats
 
 pytestmark = [pytest.mark.benchmark, pytest.mark.timeout(600)]
 
@@ -241,9 +241,9 @@ def _is_visual() -> bool:
     """判定是否为真实显示器模式。
 
     Returns:
-        bool: ``FAF_VISUAL=1`` 或未走 offscreen 即为 True。
+        bool: ``SPK_VISUAL=1`` 或未走 offscreen 即为 True。
     """
-    if os.environ.get("FAF_VISUAL", "").strip().lower() in ("1", "true", "yes", "on"):
+    if os.environ.get("SPK_VISUAL", "").strip().lower() in ("1", "true", "yes", "on"):
         return True
     return os.environ.get("QT_QPA_PLATFORM", "").strip().lower() != "offscreen"
 
@@ -262,7 +262,7 @@ def _s9_mode(request: Any) -> str:
             return "full"
     except Exception:
         pass  # 选项探测失败：按环境变量/默认档继续
-    if os.environ.get("FAF_S9_FULL", "").strip().lower() in ("1", "true", "yes", "on"):
+    if os.environ.get("SPK_S9_FULL", "").strip().lower() in ("1", "true", "yes", "on"):
         return "full"
     return "smoke"
 
@@ -418,7 +418,7 @@ def _write_handmade_pdf(path: str, target_bytes: int) -> None:
         parts: List[bytes] = [b"BT /F1 10 Tf 36 800 Td 12 TL\n"]
         for row in range(lines_per_page):
             text = (
-                f"faf-ceiling-pdf seed={FIXTURE_SEED} "
+                f"spk-ceiling-pdf seed={FIXTURE_SEED} "
                 f"page={page_no} line={row} {filler}"
             )
             parts.append(b"(" + text.encode("ascii") + b") Tj T*\n")
@@ -504,7 +504,7 @@ def _generate_fixtures(root: Path) -> List[Dict[str, Any]]:
     dir10k.mkdir(parents=True, exist_ok=True)
     for i in range(DIR_10K_COUNT):
         (dir10k / f"file_{i:05d}.txt").write_text(
-            f"faf-ceiling-fixture seed={FIXTURE_SEED} index={i}\n", encoding="utf-8"
+            f"spk-ceiling-fixture seed={FIXTURE_SEED} index={i}\n", encoding="utf-8"
         )
     entries.append(
         {
@@ -542,7 +542,7 @@ def _generate_fixtures(root: Path) -> List[Dict[str, Any]]:
     path4k: Path = root / "video_4k.mp4"
     ffmpeg_bin: Path = (
         Path(__file__).resolve().parents[2]
-        / "freeassetfilter"
+        / "sopeek"
         / "core"
         / "native"
         / "bin"
@@ -577,7 +577,7 @@ def _generate_fixtures(root: Path) -> List[Dict[str, Any]]:
         except Exception:
             continue
     if video_synthetic:
-        header = b"\x00\x00\x00\x18ftypmp42" + b"faf-ceiling-video-seed-20260912"
+        header = b"\x00\x00\x00\x18ftypmp42" + b"spk-ceiling-video-seed-20260912"
         body = bytes((i * 37 + 11) % 256 for i in range(1024 * 1024))
         with open(path4k, "wb") as fh:
             fh.write(header)
@@ -614,7 +614,7 @@ def _generate_fixtures(root: Path) -> List[Dict[str, Any]]:
             fh.write(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
             chunk = (
                 b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
-                b"faf-ceiling-pdf-seed-20260912-0123456789abcdef\n"
+                b"spk-ceiling-pdf-seed-20260912-0123456789abcdef\n"
             )
             chunk = chunk * (1024 // len(chunk) + 1)
             chunk = chunk[:1024]
@@ -672,7 +672,7 @@ def ceiling_manifest(tmp_path_factory: Any) -> Dict[str, Any]:
     Returns:
         dict: 含 files/overall_hash/generated_at 的 manifest。
     """
-    fixture_root: Path = tmp_path_factory.mktemp("faf_ceiling_fixtures")
+    fixture_root: Path = tmp_path_factory.mktemp("spk_ceiling_fixtures")
     files = _generate_fixtures(fixture_root)
     overall = hashlib.sha256(
         json.dumps(files, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -722,7 +722,7 @@ class TestCeilingScenarios:
         def _cold_import_ms() -> float:
             start = time.perf_counter()
             completed = subprocess.run(
-                [sys.executable, "-c", "import freeassetfilter.app.main"],
+                [sys.executable, "-c", "import sopeek.app.main"],
                 capture_output=True,
                 timeout=180,
                 cwd=str(Path(__file__).resolve().parents[2]),
@@ -894,14 +894,14 @@ class TestCeilingScenarios:
         """S5: 切换主题总耗时 + re-polish 控件数（offscreen 可实测）。"""
         from PySide6.QtWidgets import QPushButton
 
-        from freeassetfilter.ui.theme.theme_manager import ThemeManager
+        from sopeek.ui.theme.theme_manager import ThemeManager
 
         assert ceiling_manifest["by_name"], "经 manifest 读夹具"
         tm = ThemeManager()
         # 真实 re-polish 负载：50 个具名控件，切换后逐个 unpolish/polish。
         probes = [QPushButton(f"theme-probe-{i}") for i in range(50)]
         for widget in probes:
-            widget.setObjectName(f"faf-theme-probe-{id(widget) % 100000}")
+            widget.setObjectName(f"spk-theme-probe-{id(widget) % 100000}")
         samples: List[float] = []
         repolished = 0
         for theme in ("dark", "light", "dark"):
@@ -956,7 +956,7 @@ class TestCeilingScenarios:
 
         rebake_count: Optional[int] = None
         try:
-            from freeassetfilter.ui.mica import compositor as _mica_mod
+            from sopeek.ui.mica import compositor as _mica_mod
 
             counter = getattr(_mica_mod, "PRESENT_BUDGET", None)
             rebake_count = 0 if counter is not None else None
@@ -1172,7 +1172,7 @@ class TestCeilingScenarios:
 
         assert ceiling_manifest["by_name"], "经 manifest 读夹具"
         try:
-            from freeassetfilter.ui.components.styled_fluid_background import (
+            from sopeek.ui.components.styled_fluid_background import (
                 StyledFluidBackground,
             )
         except Exception as exc:

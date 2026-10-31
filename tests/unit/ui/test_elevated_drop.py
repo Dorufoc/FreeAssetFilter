@@ -40,22 +40,22 @@ from PySide6.QtGui import QShowEvent
 from PySide6.QtWidgets import QApplication, QWidget
 
 # main_window / floating_pool_window 依赖 ui 短路径导入，与 test_main_window.py 同款
-_UI_ROOT: str = str(Path(__file__).resolve().parents[3] / "freeassetfilter" / "ui")
+_UI_ROOT: str = str(Path(__file__).resolve().parents[3] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-from freeassetfilter.ui import elevated_drop  # noqa: E402
-from freeassetfilter.ui.elevated_drop import (  # noqa: E402
+from sopeek.ui import elevated_drop  # noqa: E402
+from sopeek.ui.elevated_drop import (  # noqa: E402
     MSGFLT_ALLOW,
     WM_COPYDATA,
     WM_COPYGLOBALDATA,
     WM_DROPFILES,
     ElevatedDropFallbackMixin,
 )
-from freeassetfilter.ui.floating_pool_window import FloatingPoolWindow  # noqa: E402
-from freeassetfilter.ui.frameless_window import FramelessMainWindow  # noqa: E402
-from freeassetfilter.ui.main_window import MainWindow  # noqa: E402
-from freeassetfilter.utils import elevation  # noqa: E402
+from sopeek.ui.floating_pool_window import FloatingPoolWindow  # noqa: E402
+from sopeek.ui.frameless_window import FramelessMainWindow  # noqa: E402
+from sopeek.ui.main_window import MainWindow  # noqa: E402
+from sopeek.utils import elevation  # noqa: E402
 
 pytestmark = [
     pytest.mark.unit,
@@ -570,7 +570,7 @@ class _StubMicaBackground(QWidget):
 def stub_mica(monkeypatch: pytest.MonkeyPatch) -> None:
     """把 Mica 背景工厂替换为普通 QWidget（防止 MicaMaterial 事件过滤器污染）。"""
     monkeypatch.setattr(
-        "freeassetfilter.ui.main_window.make_mica_background",
+        "sopeek.ui.main_window.make_mica_background",
         lambda *a, **k: _StubMicaBackground(),
     )
 

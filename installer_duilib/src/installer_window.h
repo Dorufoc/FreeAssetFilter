@@ -2,7 +2,7 @@
 //
 // installer_window.h - 无边框 DirectComposition 安装器窗口外壳（Todo 2）。
 //
-// 窗口类名冻结为 "FreeAssetFilterInstaller"（§4），NSIS 的 FindWindow 与取证脚本
+// 窗口类名冻结为 "SopeekInstaller"（§4），NSIS 的 FindWindow 与取证脚本
 // 均按此名定位，重写时不得改名。
 //
 // 窗口配方（§4，Todo 2 实测选定）：WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX
@@ -37,7 +37,7 @@
 // （页面对象以 std::unique_ptr 持有，析构在 cpp 内完成——见 Todo 12 接线）。
 // T10：维护 / 卸载确认 / 通用消息页同样只前向声明；T12 的卸载协调器仅以
 // std::shared_ptr 持有时无需完整类型（析构器类型擦除），实现由 T12 提供。
-namespace faf {
+namespace spk {
 class WelcomePage;
 class LicensePage;
 class ConfigurePage;
@@ -47,12 +47,12 @@ class MaintenancePage;
 class UninstallConfirmPage;
 class MessagePage;
 class UninstallCoordinator;  // T12：卸载协调器（前向声明，T10 只保留接缝）
-}  // namespace faf
+}  // namespace spk
 
 class InstallerWindow {
 public:
     // `installDir`：§15 重装预填（/installdir，由 NSIS 生产 Exec 行传入；空 ⇒ 默认
-    // `C:\Program Files\FreeAssetFilter`）。owner 次序：Todo 2 → 15 → 19（§13）。
+    // `C:\Program Files\Sopeek`）。owner 次序：Todo 2 → 15 → 19（§13）。
     // T10：`mode`/`decisionPath`/`setupPid`/`payloadTimeoutMs` 为维护/卸载模式入口；
     // T12：`helperPid`/`uninstallRequestPath`/`uninstallResultPath` 为卸载模式入口
     // （helper 先启动时传 /helper-pid；路径为空时按 installDir 推导）。
@@ -75,8 +75,8 @@ public:
     // 初始化流程，关闭时只销毁窗口（不写 decision/request/result/注册表）。
     void SetStartupError(std::wstring title, std::wstring body);
 
-    // --- Todo 19（§17）/T14：/auto 无人值守测试驱动入口（仅 FAF_TESTMODE 有行为）---
-    // 由 main.cpp 在 FAF_TESTMODE 构建中调用（生产构建解析 /auto 后直接丢弃、
+    // --- Todo 19（§17）/T14：/auto 无人值守测试驱动入口（仅 SPK_TESTMODE 有行为）---
+    // 由 main.cpp 在 SPK_TESTMODE 构建中调用（生产构建解析 /auto 后直接丢弃、
     // 不会调用此处；即便调用亦为 no-op，交互行为保持不变）。
     // 驱动时序：窗口/页面就绪后固定间隔自动 欢迎→许可→配置→部署→完成
     //（或停在第 stopPage 页），全程只经既有 GoNext/SetPage 路径。
@@ -108,7 +108,7 @@ private:
     // T13：标题唯一同步点——windowTitle_ 是自绘标题栏文字，SetWindowTextW 同步
     // 原生窗口标题（任务栏/Alt+Tab）。构造期与窗口创建后各调用一次。
     void UpdateWindowTitle();
-    void Layout();                 // 刷新 shell 几何（唯一来源 = faf::ComputeShellLayout，纯 DIP）
+    void Layout();                 // 刷新 shell 几何（唯一来源 = spk::ComputeShellLayout，纯 DIP）
     void OnSizeChanged(UINT widthPx, UINT heightPx);
     void OnDpiChanged(UINT newDpi, const RECT* suggested);
 
@@ -116,11 +116,11 @@ private:
     void Render();
     void Tick();
     void DrawContent(ID2D1DeviceContext* ctx);
-    void DrawMicaFallbackBase(ID2D1DeviceContext* ctx, const faf::Theme& theme,
+    void DrawMicaFallbackBase(ID2D1DeviceContext* ctx, const spk::Theme& theme,
                               float alpha);                                  // §5 Win10 不透明渐变底
-    void DrawShellLayers(ID2D1DeviceContext* ctx, const faf::Theme& theme,
+    void DrawShellLayers(ID2D1DeviceContext* ctx, const spk::Theme& theme,
                          float alpha);                                       // §5 左栏/内容卡/底部条
-    void DrawTitleBar(ID2D1DeviceContext* ctx, const faf::Theme& theme, float alpha);
+    void DrawTitleBar(ID2D1DeviceContext* ctx, const spk::Theme& theme, float alpha);
 
     // --- 自绘标题栏窗口按钮（最小化/关闭）悬停与按下状态机 ---
     // 按下不立即激活：仅当「同一按钮上按下并在其上松开」才执行动作；移出后松开即取消
@@ -159,9 +159,9 @@ private:
     // Repair/Uninstall Progress 则由各自 CloseIntent 忽略；此处不再提前拦截。
     void OnEscape();
     D2D1_RECT_F PageRect() const;  // 页内容矩形 = contentCard + Win10 兜底外扩边距
-    faf::WidgetHost& ActivePageHost();  // 当前页的输入/Tab 宿主
-    void RenderActivePage(ID2D1DeviceContext* ctx, const faf::Theme& theme);
-    bool DispatchPointer(const faf::InputEvent& event);  // 外壳导航按钮 + 当前页分发
+    spk::WidgetHost& ActivePageHost();  // 当前页的输入/Tab 宿主
+    void RenderActivePage(ID2D1DeviceContext* ctx, const spk::Theme& theme);
+    bool DispatchPointer(const spk::InputEvent& event);  // 外壳导航按钮 + 当前页分发
     void LayoutStepBar();
     // UI-fix：总布局页脚——外壳导航按钮（画布坐标）+ 页托管按钮（取消/打开目录/完成，
     // 页坐标 = 画布 + shadowMarginDip_）。每次页面 Layout 之后必须调用。
@@ -171,7 +171,7 @@ private:
     void SetPage(int page);
     // T11：安装/修复共用同一引擎启动路径。缺省 Fresh 保持安装 0..4 的既有行为；
     // 维护修复传 InstallMode::Repair（失败/取消不回滚，由 T6 引擎语义保证）。
-    void StartInstall(faf::InstallMode mode = faf::InstallMode::Fresh);
+    void StartInstall(spk::InstallMode mode = spk::InstallMode::Fresh);
     // UI-fix（进度 UX）：安装/修复初始化阶段的 UI 侧合成进度斜坡。引擎等待
     // payload.ready 与递归预扫描期间没有进度回调，故由窗口在 0..500 间匀速推进；
     // 首个真实 permille>0 到达即停止，并按当前值作为 base 映射后续真实进度。
@@ -246,7 +246,7 @@ private:
                    MessageAction secondary);
     void HandleMessageAction(MessageAction action);
     static DWORD WINAPI CloseThreadProc(LPVOID);
-    void CloseAppThread();     // 工作线程：faf::CloseInstalledApp（完整路径匹配）
+    void CloseAppThread();     // 工作线程：spk::CloseInstalledApp（完整路径匹配）
     void FinishCloseThread();  // 等待并关闭关闭线程句柄（析构/完成时，防悬空 this）
     // T13：异常销毁路径下安装 worker 可能仍存活；取消并显式 join，避免 this 释放后
     // 继续被 worker 访问（正常流程 WM_INSTALL_DONE 已先关闭句柄）。
@@ -268,9 +268,9 @@ private:
     HANDLE setupProcess_{};               // T11：setup 退出 watchdog（OpenProcess(SYNCHRONIZE)）
     DWORD setupPid_{0};                   // T10：保存 setup 进程 PID，T11 据此打开 setupProcess_
     std::uint64_t payloadTimeoutMs_{0};   // T6：引擎 payload 哨兵超时（0 = 环境/内置默认）
-    faf::MaintenanceInfo maintenanceInfo_{};  // T11：Detect() 结果
+    spk::MaintenanceInfo maintenanceInfo_{};  // T11：Detect() 结果
     HANDLE closeThread_{};                // T11/T12：关闭已安装应用的工作线程
-    std::shared_ptr<faf::UninstallCoordinator> uninstallCoordinator_;  // T12 注入
+    std::shared_ptr<spk::UninstallCoordinator> uninstallCoordinator_;  // T12 注入
     std::wstring windowTitle_;            // 按 mode 设置的自绘标题栏文字
     // T14：启动期致命错误（helper 非管理员 / 原用户身份不一致 / 缺 /decision）。
     // 非空时 EnsurePages 在模式初始化之前显示 Message 页；WM_CLOSE 直接销毁，
@@ -287,7 +287,7 @@ private:
     bool uninstallRunning_{false};             // T12：协调器已启动、等待 done=1（独立于 installing_）
     bool uninstallTerminal_{false};            // T12：已收到 WM_UNINSTALL_DONE，忽略后续陈旧消息
     bool keepTickAlive_{false};                // 修复/安装期间保持 tick（setup 退出 watchdog）
-    faf::InstallMode installMode_{faf::InstallMode::Fresh};  // 本次引擎运行模式（worker 只读）
+    spk::InstallMode installMode_{spk::InstallMode::Fresh};  // 本次引擎运行模式（worker 只读）
     std::wstring closeTargetDir_;              // 关闭线程用的安装目录快照（不跨线程读 state_）
     std::mutex closeMutex_;                    // 保护 closeError_/closeForced_（worker 写 / UI 读）
     std::wstring closeError_;
@@ -295,7 +295,7 @@ private:
     MessageAction messagePrimaryAction_{MessageAction::None};
     MessageAction messageSecondaryAction_{MessageAction::None};
 
-    faf::RenderContext render_;
+    spk::RenderContext render_;
     AppState state_{};
     bool renderReady_{false};
     bool dirty_{true};
@@ -311,7 +311,7 @@ private:
     bool extendOk_{false};
     bool win10Fallback_{false};
 
-    faf::ShellLayout shellLayout_{};  // §6：900x600 DIP shell 几何（唯一来源 = layout.h）
+    spk::ShellLayout shellLayout_{};  // §6：900x600 DIP shell 几何（唯一来源 = layout.h）
 
     // --- 自绘标题栏窗口按钮（最小化/关闭）状态 ---
     WindowButton hoverButton_{WindowButton::None};  // 当前光标悬停的窗口按钮（驱动填充）
@@ -326,7 +326,7 @@ private:
     bool initProgressActive_{false};        // 斜坡进行中（首个真实进度前）
     bool progressMappingActive_{false};     // 后续真实 permille 走 base 映射
     int progressMappingBasePermille_{0};    // 映射 base = 斜坡结束时的当前进度
-    double initProgressStartMs_{0.0};       // 斜坡起点（faf::SteadyNowMs 口径）
+    double initProgressStartMs_{0.0};       // 斜坡起点（spk::SteadyNowMs 口径）
     double lastInitProgressUpdateMs_{0.0};  // ~80ms 节流
     bool completionHold_{false};            // 100% 停留中（等待完成页切换定时器）
 
@@ -341,39 +341,39 @@ private:
     std::wstring installError_;                  // 引擎失败原因（error= 原样回显）
 
     // §16 动画：帧时钟 + 可动画值 + 采样日志 sink（生产接 DiagLog）。
-    faf::Animator animator_;
-    faf::AnimValue* introAnim_{nullptr};  // 外壳入场动画（0→1，减少动画时不创建）
+    spk::Animator animator_;
+    spk::AnimValue* introAnim_{nullptr};  // 外壳入场动画（0→1，减少动画时不创建）
     float introAlpha_{1.0f};              // 入场进度 → shell 层全局不透明度
     bool reduceMotion_{false};            // SPI_GETCLIENTAREAANIMATION 关闭动画时为 true
 
     // --- Todo 12：页面对象 + 左栏步骤栏 + 底部导航按钮 ---
     // 依赖注入对象须先于页面声明/构造（页面借用其地址），销毁序相反 → 页面先析构。
-    faf::TextFactory textFactory_;
-    faf::GlyphFont glyphFont_;
-    faf::LogoBitmap logoBitmap_;
+    spk::TextFactory textFactory_;
+    spk::GlyphFont glyphFont_;
+    spk::LogoBitmap logoBitmap_;
     bool pagesReady_{false};
 
-    std::unique_ptr<faf::WelcomePage> welcomePage_;
-    std::unique_ptr<faf::LicensePage> licensePage_;
-    std::unique_ptr<faf::ConfigurePage> configurePage_;  // 追加需求：Location+Options 合并为 Configure
-    std::unique_ptr<faf::ProgressPage> progressPage_;
-    std::unique_ptr<faf::FinishPage> finishPage_;
+    std::unique_ptr<spk::WelcomePage> welcomePage_;
+    std::unique_ptr<spk::LicensePage> licensePage_;
+    std::unique_ptr<spk::ConfigurePage> configurePage_;  // 追加需求：Location+Options 合并为 Configure
+    std::unique_ptr<spk::ProgressPage> progressPage_;
+    std::unique_ptr<spk::FinishPage> finishPage_;
     // T10：维护 / 卸载确认 / 通用消息页（T7 实现；均为英雄页）。
-    std::unique_ptr<faf::MaintenancePage> maintenancePage_;
-    std::unique_ptr<faf::UninstallConfirmPage> uninstallConfirmPage_;
-    std::unique_ptr<faf::MessagePage> messagePage_;
+    std::unique_ptr<spk::MaintenancePage> maintenancePage_;
+    std::unique_ptr<spk::UninstallConfirmPage> uninstallConfirmPage_;
+    std::unique_ptr<spk::MessagePage> messagePage_;
 
-    faf::Button backButton_;
-    faf::Button nextButton_;
+    spk::Button backButton_;
+    spk::Button nextButton_;
     // UI-fix：按页面控制导航按钮可见性（Welcome 隐藏「上一步」；Progress/Finish 全隐藏），
     // 由 UpdateNavButtons() 随页面切换更新、DrawContent() 据此跳过绘制。
     bool navBackVisible_{false};
     bool navNextVisible_{false};
-    faf::WidgetHost shellHost_;
-    std::array<faf::StepItem, 3> stepItems_{};  // 追加需求：3 节点【协议】【配置】【部署】
+    spk::WidgetHost shellHost_;
+    std::array<spk::StepItem, 3> stepItems_{};  // 追加需求：3 节点【协议】【配置】【部署】
 
-    // --- Todo 19：/auto 测试驱动内部状态（仅 FAF_TESTMODE 构建编入；生产零残留）---
-#ifdef FAF_TESTMODE
+    // --- Todo 19：/auto 测试驱动内部状态（仅 SPK_TESTMODE 构建编入；生产零残留）---
+#ifdef SPK_TESTMODE
     void ArmAutoDrive();                              // 窗口就绪后：应用档位 + 武装定时器
     void AutoDriveTick();                             // 固定时序推进一页（WM_TIMER 分发）
     void StopAutoDrive();                             // 停表（到站/走完/销毁时）

@@ -20,12 +20,12 @@ from pathlib import Path
 import pytest
 from PySide6.QtWidgets import QApplication, QWidget
 
-_UI_ROOT: str = str(Path(__file__).resolve().parents[3] / "freeassetfilter" / "ui")
+_UI_ROOT: str = str(Path(__file__).resolve().parents[3] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
 from components import styled_fluid_background as fluid_bg  # noqa: E402
-from freeassetfilter.ui import main_window as mw  # noqa: E402
+from sopeek.ui import main_window as mw  # noqa: E402
 
 pytestmark = pytest.mark.unit
 

@@ -23,15 +23,15 @@ from pathlib import Path
 import pytest
 from PySide6.QtWidgets import QApplication
 
-# 组件模块内部使用短路径导入（from theme import tm），要求 freeassetfilter/ui
+# 组件模块内部使用短路径导入（from theme import tm），要求 sopeek/ui
 # 位于 sys.path；与 test_styled_dialog.py / test_styled_basic.py 约定一致。
-_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "freeassetfilter" / "ui")
+_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
 from tests.support.qt_helpers import safe_teardown  # noqa: E402
 
-from freeassetfilter.ui.components.styled_textarea import StyledTextarea  # noqa: E402
+from sopeek.ui.components.styled_textarea import StyledTextarea  # noqa: E402
 
 pytestmark = pytest.mark.unit
 

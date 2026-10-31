@@ -8,7 +8,7 @@
   capture 被配置为 ``no:cacheprovider`` + Tee 后保留原始能力）；
 * :func:`get_current_log_path` —— 查询当前日志文件路径。
 
-:class:`_TeeStream` 复用了 ``freeassetfilter.utils.app_logger`` 的
+:class:`_TeeStream` 复用了 ``sopeek.utils.app_logger`` 的
 TeeStream 思路，但此处为**独立实现**，不导入任何产品模块，避免测试
 基础设施与产品日志互耦。
 """

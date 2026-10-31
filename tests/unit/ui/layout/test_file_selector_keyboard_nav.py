@@ -34,13 +34,13 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 # 布局模块内部使用短路径导入（from theme import tm / components.*），
-# 要求 freeassetfilter/ui 位于 sys.path；与 test_layouts.py:48-53 的
+# 要求 sopeek/ui 位于 sys.path；与 test_layouts.py:48-53 的
 # bootstrap 约定一致。
-_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "freeassetfilter" / "ui")
+_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-from freeassetfilter.ui.layout.file_selector_layout import FileSelectorLayout
+from sopeek.ui.layout.file_selector_layout import FileSelectorLayout
 
 pytestmark = pytest.mark.unit
 

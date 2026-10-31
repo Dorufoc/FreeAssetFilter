@@ -5,7 +5,7 @@
 //
 #include "single_instance.h"
 
-namespace faf {
+namespace spk {
 namespace {
 
 // FindWindowW 轮询间隔；与协议约定的跨进程轮询量级一致（D3/M4/H5）。
@@ -99,4 +99,4 @@ bool IsMutexHeld(const wchar_t* name) {
     return true;
 }
 
-}  // namespace faf
+}  // namespace spk

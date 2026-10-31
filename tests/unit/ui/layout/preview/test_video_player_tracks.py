@@ -25,7 +25,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
 from unittest.mock import MagicMock
 
-from freeassetfilter.ui.layout.preview.video_player_layout import VideoPlayerLayout
+from sopeek.ui.layout.preview.video_player_layout import VideoPlayerLayout
 
 pytestmark = pytest.mark.unit
 

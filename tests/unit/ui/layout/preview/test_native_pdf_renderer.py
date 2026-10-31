@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# targets: freeassetfilter.ui.layout.preview.native_pdf_renderer
+# targets: sopeek.ui.layout.preview.native_pdf_renderer
 """NativePdfRenderer 单元测试。
 
 旧版该组件的测试随 tests/components/test_previewers.py（旧组件测试资产）
@@ -29,12 +29,12 @@ from PySide6.QtGui import QKeyEvent, QMouseEvent, QWheelEvent
 from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
 # ui 短路径导入引导（styled 组件内部使用 ``from theme/components import ...``）
-_UI_ROOT: str = str(Path(__file__).resolve().parents[5] / "freeassetfilter" / "ui")
+_UI_ROOT: str = str(Path(__file__).resolve().parents[5] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
 from theme import tm  # noqa: E402
-from freeassetfilter.ui.layout.preview.native_pdf_renderer import NativePdfRenderer
+from sopeek.ui.layout.preview.native_pdf_renderer import NativePdfRenderer
 from tests.support.qt_helpers import process_qt_events, wait_until
 
 pytestmark = pytest.mark.unit
@@ -191,7 +191,7 @@ class TestContextMenu:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """图片另存为：对话框返回路径后按原始字节写盘。"""
-        import freeassetfilter.ui.layout.preview.native_pdf_renderer as npr_mod
+        import sopeek.ui.layout.preview.native_pdf_renderer as npr_mod
 
         renderer = self._renderer(sample_pdf_file)
         out_path = tmp_path / "img.png"
@@ -212,7 +212,7 @@ class TestContextMenu:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """图片另存为：对话框取消（空路径）不写任何文件。"""
-        import freeassetfilter.ui.layout.preview.native_pdf_renderer as npr_mod
+        import sopeek.ui.layout.preview.native_pdf_renderer as npr_mod
 
         renderer = self._renderer(sample_pdf_file)
         monkeypatch.setattr(

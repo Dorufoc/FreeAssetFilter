@@ -32,8 +32,8 @@ from PySide6.QtGui import QColor, QImage, QMouseEvent, QPixmap
 from PySide6.QtWidgets import QApplication, QWidget
 
 # 布局模块内部使用短路径导入（from theme import tm / components.*），
-# 要求 freeassetfilter/ui 位于 sys.path——与 test_layouts.py 的 bootstrap 惯例一致。
-_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "freeassetfilter" / "ui")
+# 要求 sopeek/ui 位于 sys.path——与 test_layouts.py 的 bootstrap 惯例一致。
+_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
@@ -48,8 +48,8 @@ from components.file_card_delegate import (  # noqa: E402
     _STATE_PREVIEWING,
 )
 from components.file_list_model import FileListModel  # noqa: E402
-from freeassetfilter.ui.layout.file_pool_layout import FilePoolLayout  # noqa: E402
-from freeassetfilter.ui.layout.file_selector_layout import FileSelectorLayout  # noqa: E402
+from sopeek.ui.layout.file_pool_layout import FilePoolLayout  # noqa: E402
+from sopeek.ui.layout.file_selector_layout import FileSelectorLayout  # noqa: E402
 
 pytestmark = pytest.mark.unit
 
@@ -560,7 +560,7 @@ class TestPoolBoxSelection:
     def _make_pool(
         qapp: QApplication, monkeypatch: pytest.MonkeyPatch
     ) -> FilePoolLayout:
-        import freeassetfilter.ui.layout.file_pool_layout as fpl_mod
+        import sopeek.ui.layout.file_pool_layout as fpl_mod
 
         # 禁用增删动画，使 add/remove 同步完成（避免异步定时器跨测试残留）
         monkeypatch.setattr(fpl_mod, "is_animation_enabled", lambda *a, **k: False)

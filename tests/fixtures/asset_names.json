@@ -2,8 +2,8 @@
   "schema": 1,
   "cases": [
     {
-      "input": "FreeAssetFilter-1.0.0-alpha.6_win10_win11_x64_Setup.exe",
-      "expected": "FreeAssetFilter-1.0.0-alpha.6_win10_win11_x64_Setup.exe",
+      "input": "Sopeek-1.0.0-alpha.6_win10_win11_x64_Setup.exe",
+      "expected": "Sopeek-1.0.0-alpha.6_win10_win11_x64_Setup.exe",
       "note": "plain asset name"
     },
     {

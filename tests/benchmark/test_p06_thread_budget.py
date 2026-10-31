@@ -39,7 +39,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pytest
 
-from freeassetfilter.core.native import api as native_api
+from sopeek.core.native import api as native_api
 
 pytestmark = [pytest.mark.benchmark, pytest.mark.timeout(600)]
 
@@ -54,7 +54,7 @@ ROUNDS: int = 3
 #: 句柄排序规模（P3.6 验收规模）。
 SORT_ENTRIES: int = 10000
 
-_OUTPUT_ENV: str = os.environ.get("FAF_BENCH_OUTPUT", "").strip()
+_OUTPUT_ENV: str = os.environ.get("SPK_BENCH_OUTPUT", "").strip()
 if _OUTPUT_ENV:
     _candidate: Path = Path(_OUTPUT_ENV)
     OUTPUT_PATH: Path = (
@@ -74,7 +74,7 @@ _RESULTS: Dict[str, Any] = {}
 
 
 def _percentile(sorted_values: List[float], pct: float) -> float:
-    """线性插值分位数（与 test_faf_core_perf 同口径）。"""
+    """线性插值分位数（与 test_spk_core_perf 同口径）。"""
     if not sorted_values:
         return 0.0
     if len(sorted_values) == 1:
@@ -116,7 +116,7 @@ def synthetic_images() -> Any:
     """生成 ``IMAGE_COUNT`` 张 512×512 JPEG（模块级复用，测完即删）。"""
     from PIL import Image
 
-    with tempfile.TemporaryDirectory(prefix="faf_p06_") as tmp:
+    with tempfile.TemporaryDirectory(prefix="spk_p06_") as tmp:
         root = Path(tmp)
         source = Image.new("RGB", (IMAGE_EDGE, IMAGE_EDGE), (48, 96, 144))
         paths: List[str] = []

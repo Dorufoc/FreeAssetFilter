@@ -18,8 +18,8 @@
   硬崩溃会直接杀死测试进程，天然 FAIL）；
 * 吞吐不回退：末轮较首轮每张耗时上涨 > 50% 记 FAIL。
 
-时长经环境变量 ``FAF_SOAK_MINUTES`` 可调（默认 30 分钟；至少跑 1 轮；
-``FAF_BENCH_SMOKE=1`` 且未显式设置时长时降级为约 3 秒冒烟）。
+时长经环境变量 ``SPK_SOAK_MINUTES`` 可调（默认 30 分钟；至少跑 1 轮；
+``SPK_BENCH_SMOKE=1`` 且未显式设置时长时降级为约 3 秒冒烟）。
 报告落盘 ``.omo/evidence/thumbnail-rust-refactor/task-31-soak-report.json``
 （失败同样落盘、verdict=FAIL），供 orchestrator 收集。
 
@@ -49,24 +49,24 @@ from typing import Any, Dict, List, Tuple
 import psutil
 import pytest
 
-from freeassetfilter.core.native.bridges.rust_thumbnail_bridge import (
+from sopeek.core.native.bridges.rust_thumbnail_bridge import (
     RustThumbnailBridge,
 )
 from tests.support.data_factories import make_image
 
 # --- 时长与环境变量 ---
-#: 冒烟模式开关（FAF_BENCH_SMOKE=1 时启用，与 todo 30 同款解析）。
-_SMOKE_ENV: str = os.environ.get("FAF_BENCH_SMOKE", "").strip().lower()
+#: 冒烟模式开关（SPK_BENCH_SMOKE=1 时启用，与 todo 30 同款解析）。
+_SMOKE_ENV: str = os.environ.get("SPK_BENCH_SMOKE", "").strip().lower()
 SMOKE_MODE: bool = _SMOKE_ENV not in ("", "0", "false", "no")
 
 
 def _parse_soak_minutes() -> float:
-    """解析 soak 时长（分钟）：FAF_SOAK_MINUTES > 冒烟降级 > 默认 30。
+    """解析 soak 时长（分钟）：SPK_SOAK_MINUTES > 冒烟降级 > 默认 30。
 
     Returns:
         float: soak 目标时长（分钟），恒为正。
     """
-    raw: str = os.environ.get("FAF_SOAK_MINUTES", "").strip()
+    raw: str = os.environ.get("SPK_SOAK_MINUTES", "").strip()
     if raw:
         try:
             value = float(raw)
@@ -349,7 +349,7 @@ def soak_selected(request: Any) -> None:
     if not _soak_explicitly_selected(request.config):
         pytest.skip(
             "soak 用例默认跳过：需 -m soak 显式运行"
-            "（时长经 FAF_SOAK_MINUTES 可调，默认 30 分钟）"
+            "（时长经 SPK_SOAK_MINUTES 可调，默认 30 分钟）"
         )
 
 
@@ -382,7 +382,7 @@ def soak_corpus(
     Returns:
         dict: 语料分组字典。
     """
-    return _build_corpus(tmp_path_factory.mktemp("faf_soak_corpus"))
+    return _build_corpus(tmp_path_factory.mktemp("spk_soak_corpus"))
 
 
 class TestThumbnailSoak:

@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-# targets: core.native.bridges.faf_core_bridge, ui.layout.file_selector_layout
+# targets: core.native.bridges.spk_core_bridge, ui.layout.file_selector_layout
 """P0.3 目录扫描四臂对比：消解「native 是否更快」的历史矛盾。
 
 背景：仓库里有两份互相矛盾的基线——
 
 * ``task-22``（2026-09-24，5k）：native 116.668ms vs Python 849.516ms → 7.281×
-* 旧 ``baseline/faf-core-perf.json``（2026-10-17，10k）：
+* 旧 ``baseline/spk-core-perf.json``（2026-10-17，10k）：
   native 382.03ms vs Python 116.798ms → 0.306×（``passed: false``）
 
 两者测的是同一份 ``scan.rs``（该文件只有创建提交 ``19e6bb4``），差异必然
@@ -17,7 +17,7 @@
 ============ ============================================================
 臂           实现
 ============ ============================================================
-``native``   ``bridge.scan_directory`` → Rust ``faf_scan_directory``
+``native``   ``bridge.scan_directory`` → Rust ``spk_scan_directory``
 ``py_single``  ``FileSelectorLayout._collect_directory_entries_python``
               （1 次 ``os.scandir`` + 逐项 ``stat(follow=True)`` + 2×strftime）
 ``py_double``  ``py_single`` + ``_apply_hidden_system_filter``
@@ -49,18 +49,18 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pytest
 
-from freeassetfilter.core.native.bridges.faf_core_bridge import (
-    FafCoreBridge,
-    get_faf_core_bridge,
+from sopeek.core.native.bridges.spk_core_bridge import (
+    SpkCoreBridge,
+    get_spk_core_bridge,
 )
 
 #: 布局模块内部使用短路径导入（``from theme import tm`` 等），要求
-#: ``freeassetfilter/ui`` 位于 sys.path（与 test_faf_core_perf.py 一致）。
-_UI_ROOT: str = str(Path(__file__).resolve().parents[2] / "freeassetfilter" / "ui")
+#: ``sopeek/ui`` 位于 sys.path（与 test_spk_core_perf.py 一致）。
+_UI_ROOT: str = str(Path(__file__).resolve().parents[2] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-from freeassetfilter.ui.layout.file_selector_layout import FileSelectorLayout
+from sopeek.ui.layout.file_selector_layout import FileSelectorLayout
 
 pytestmark = [pytest.mark.benchmark, pytest.mark.timeout(300)]
 
@@ -72,7 +72,7 @@ SAMPLES: int = 5
 _FILE_BODY: bytes = b"x = 1\n" * 5
 
 #: 输出路径（P0.2 产物隔离：默认 build/bench/）。
-_OUTPUT_ENV: str = os.environ.get("FAF_BENCH_OUTPUT", "").strip()
+_OUTPUT_ENV: str = os.environ.get("SPK_BENCH_OUTPUT", "").strip()
 if _OUTPUT_ENV:
     _candidate: Path = Path(_OUTPUT_ENV)
     OUTPUT_PATH: Path = (
@@ -93,7 +93,7 @@ _RESULTS: Dict[str, Any] = {}
 
 
 def _percentile(sorted_values: List[float], pct: float) -> float:
-    """线性插值分位数（与 test_faf_core_perf._percentile 同口径）。"""
+    """线性插值分位数（与 test_spk_core_perf._percentile 同口径）。"""
     if not sorted_values:
         return 0.0
     if len(sorted_values) == 1:
@@ -184,11 +184,11 @@ def _canonical(entries: List[Dict[str, Any]]) -> List[Tuple[Any, ...]]:
 
 
 @pytest.fixture(scope="module")
-def bridge() -> FafCoreBridge:
+def bridge() -> SpkCoreBridge:
     """共享原生桥；DLL 不可用时跳过 native 臂相关断言。"""
-    inst: Optional[FafCoreBridge] = get_faf_core_bridge()
+    inst: Optional[SpkCoreBridge] = get_spk_core_bridge()
     if inst is None or not inst.available:
-        pytest.skip("faf_core.dll 不可用，跳过扫描四臂对比")
+        pytest.skip("spk_core.dll 不可用，跳过扫描四臂对比")
     return inst
 
 
@@ -212,7 +212,7 @@ def _time_call(func: Any) -> float:
     return time.perf_counter() - start
 
 
-def _run_case(bridge: FafCoreBridge, path: str, files: int) -> Dict[str, Any]:
+def _run_case(bridge: SpkCoreBridge, path: str, files: int) -> Dict[str, Any]:
     """对单个目录跑四臂交错采样，返回结构化结果。"""
     native_scan = bridge.scan_directory
 
@@ -338,7 +338,7 @@ def _run_case(bridge: FafCoreBridge, path: str, files: int) -> Dict[str, Any]:
 
 
 def test_scan_four_arms_across_sizes(
-    bridge: FafCoreBridge, scan_dirs: Dict[int, str]
+    bridge: SpkCoreBridge, scan_dirs: Dict[int, str]
 ) -> None:
     """对 5k / 10k 两个规模跑四臂对比，并落盘 JSON。"""
     cases: List[Dict[str, Any]] = []
@@ -363,7 +363,7 @@ def test_scan_four_arms_across_sizes(
 def test_zzz_write_report() -> None:
     """把四臂结果写入 JSON（文件名排序保证最后执行）。"""
     document: Dict[str, Any] = {
-        "schema": "faf-scan-three-arm/v1",
+        "schema": "spk-scan-three-arm/v1",
         "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
         "machine": _machine_summary(),
         "sizes": list(SCAN_SIZES),

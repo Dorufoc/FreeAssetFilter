@@ -29,7 +29,7 @@ import pytest
 from PySide6.QtCore import QObject
 from PySide6.QtTest import QTest
 
-from freeassetfilter.core.managers.heartbeat_manager import (
+from sopeek.core.managers.heartbeat_manager import (
     FutureHandle,
     HeartbeatManager,
 )

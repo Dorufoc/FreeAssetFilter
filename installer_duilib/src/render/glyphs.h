@@ -14,7 +14,7 @@
 
 #include <string>
 
-namespace faf {
+namespace spk {
 
 // 安装器用到的图标码点。命名语义 → BMP 码点（已对两族逐一验证）。
 namespace glyph {
@@ -65,4 +65,4 @@ private:
     std::wstring family_;
 };
 
-}  // namespace faf
+}  // namespace spk

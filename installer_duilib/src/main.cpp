@@ -28,9 +28,9 @@ constexpr wchar_t kAutoActionPrefix[] = L"/auto:action=";
 constexpr wchar_t kAutoDeleteUserDataPrefix[] = L"/auto:delete-user-data=";
 constexpr wchar_t kTestDumpMaintenancePrefix[] = L"/test-dump-maintenance=";
 // C4：安装模式的产品默认目录。维护/卸载绝不使用该默认值（见 ResolveInstallDir）。
-constexpr wchar_t kDefaultInstallDir[] = L"C:\\Program Files\\FreeAssetFilter";
-// M1：setup 维护/卸载时临时释放 GUI 的目录名前缀（%TEMP%\FreeAssetFilterMaintenance-<pid>）。
-constexpr wchar_t kMaintenanceTempLeafPrefix[] = L"FreeAssetFilterMaintenance-";
+constexpr wchar_t kDefaultInstallDir[] = L"C:\\Program Files\\Sopeek";
+// M1：setup 维护/卸载时临时释放 GUI 的目录名前缀（%TEMP%\SopeekMaintenance-<pid>）。
+constexpr wchar_t kMaintenanceTempLeafPrefix[] = L"SopeekMaintenance-";
 
 template <std::size_t N>
 constexpr std::size_t LiteralLength(const wchar_t (&)[N]) {
@@ -49,10 +49,10 @@ std::string WideToUtf8(const std::wstring& text) {
 }
 
 // M1：环境变量门控的诊断落盘（与 installer_window.cpp 的 DiagLog 同格式：UTF-8 追加）。
-// 未设置 FAF_DIAG_PATH 时完全 no-op，生产默认行为不受影响。
+// 未设置 SPK_DIAG_PATH 时完全 no-op，生产默认行为不受影响。
 void DiagLog(const std::wstring& line) {
     wchar_t path[MAX_PATH] = {};
-    const DWORD n = GetEnvironmentVariableW(L"FAF_DIAG_PATH", path, static_cast<DWORD>(ARRAYSIZE(path)));
+    const DWORD n = GetEnvironmentVariableW(L"SPK_DIAG_PATH", path, static_cast<DWORD>(ARRAYSIZE(path)));
     if (n == 0 || n >= ARRAYSIZE(path)) return;
     HANDLE file = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_ALWAYS,
                               FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -90,7 +90,7 @@ struct ParsedArgs {
     AppMode autoMode = AppMode::Install;
     std::wstring autoAction;
     std::wstring autoDeleteUserData;
-#ifdef FAF_TESTMODE
+#ifdef SPK_TESTMODE
     std::wstring testDumpPath;
 #endif
 };
@@ -170,7 +170,7 @@ ParsedArgs ParseArguments(int argc, wchar_t** argv) {
             args.uninstallLauncher = true;
         } else if (_wcsicmp(arg, L"/uninstall-helper") == 0) {
             args.uninstallHelper = true;
-#if defined(FAF_TESTMODE)
+#if defined(SPK_TESTMODE)
         } else if (_wcsnicmp(arg, kTestDumpMaintenancePrefix,
                              LiteralLength(kTestDumpMaintenancePrefix)) == 0) {
             args.testDumpPath = arg + LiteralLength(kTestDumpMaintenancePrefix);
@@ -333,19 +333,19 @@ bool EqualsIgnoreCase(const std::wstring& lhs, const std::wstring& rhs) {
 }
 
 // C4：安装目录是否包含已安装产品的判定信号（与 maintenance_detector 一致：
-// FreeAssetFilter.exe 或 _internal 任一存在即可）。
+// Sopeek.exe 或 _internal 任一存在即可）。
 bool HasInstalledPayload(const std::wstring& directory) {
     if (directory.empty()) return false;
     std::error_code ec;
     const std::filesystem::path base(directory);
-    return std::filesystem::exists(base / L"FreeAssetFilter.exe", ec) ||
+    return std::filesystem::exists(base / L"Sopeek.exe", ec) ||
            std::filesystem::exists(base / L"_internal", ec);
 }
 
 // C4：在进入任何诊断、身份校验或窗口创建之前解析出非空且与模式匹配的安装目录。
 //   - Install：空 /installdir 仍沿用既有产品默认目录；
 //   - Uninstall/Maintenance：只接受显式 /installdir，或当前 exe 的父目录（且必须
-//     含 FreeAssetFilter.exe / _internal）。绝不回退 Program Files。
+//     含 Sopeek.exe / _internal）。绝不回退 Program Files。
 // 返回 false 时 errorDetail 为可见错误页文案（调用方走 ShowStartupError）。
 bool ResolveInstallDir(ParsedArgs* args, AppMode mode, std::wstring* errorDetail) {
     if (!args) return false;
@@ -367,7 +367,7 @@ bool ResolveInstallDir(ParsedArgs* args, AppMode mode, std::wstring* errorDetail
     if (parent.empty() || !HasInstalledPayload(parent.wstring())) {
         if (errorDetail) {
             *errorDetail = L"未提供 /installdir，且当前程序所在目录“" + parent.wstring() +
-                           L"”未检测到 FreeAssetFilter 程序文件。操作已取消。";
+                           L"”未检测到 Sopeek 程序文件。操作已取消。";
         }
         return false;
     }
@@ -394,7 +394,7 @@ std::wstring CanonicalPathForCompare(const std::wstring& value) {
     return NormalizeDirectoryForCompare(ec ? value : canonical.wstring());
 }
 
-// M1：当前 exe 是否恰好位于 `%TEMP%\FreeAssetFilterMaintenance-<十进制数字>\`。
+// M1：当前 exe 是否恰好位于 `%TEMP%\SopeekMaintenance-<十进制数字>\`。
 // 目录名不匹配（含多余字符、绝对路径不同、%TEMP% 本身）一律返回 false，
 // 保证清理守卫永远不会删除无关路径。
 bool MatchMaintenanceTempDirectory(const std::wstring& executablePath,
@@ -414,7 +414,7 @@ bool MatchMaintenanceTempDirectory(const std::wstring& executablePath,
     }
 
     // exe 的父目录才是维护临时目录；必须再上一级恰好等于 %TEMP%，否则
-    // `%TEMP%\sub\FreeAssetFilterMaintenance-<digits>` 这类无关路径也会被误删。
+    // `%TEMP%\sub\SopeekMaintenance-<digits>` 这类无关路径也会被误删。
     const std::filesystem::path container = parent.parent_path();
     if (container.empty()) return false;
 
@@ -474,17 +474,23 @@ private:
         cmdPath += L"\\cmd.exe";
 
         // cmd /d 跳过 AutoRun。exe/DLL 在进程存活期间被锁定，因此不能在析构点
-        // 一次性 rmdir；这里用 ~1s（ping -n 2）间隔重试最多 10 次，覆盖进程退出
-        // 释放锁的瞬间，同时把总时长控制在 QA 的 15s 观察窗内。路径已在 Arm()
-        // 中精确校验，rmdir 只作用于该目录。timeout 在无控制台时不可靠，故仍用 ping。
+        // 一次性 rmdir；这里先等待 ~1s（ping -n 2）让本进程退出释放锁，再重试
+        // 最多 10 次，总时长控制在 QA 的 15s 观察窗内。路径已在 Arm() 中精确校验，
+        // rmdir 只作用于该目录。timeout 在无控制台时不可靠，故仍用 ping。
+        //
+        // cmd 解析陷阱（曾导致本守卫完全失效）：`if not exist "dir" exit /b 0 &
+        // ping ...` 中 `& ping ...` 会被整体当作 if 的*命令体*，条件为假时连 ping
+        // 都不执行，循环会在几毫秒内空转 10 次后退出；此时进程仍持有 exe 锁，
+        // 目录（只剩 SopeekInstaller.exe）永远删不掉。修复有两点：等待放在循环体
+        // 最前（与条件无关），且 if 的命令体用括号显式分组。
         constexpr int kDeleteAttempts = 10;
         std::wstring commandLine = L"\"" + cmdPath + L"\" /d /c for /l %i in (1,1,";
         commandLine += std::to_wstring(kDeleteAttempts);
-        commandLine += L") do @(rmdir /s /q \"";
+        commandLine += L") do @(ping -n 2 127.0.0.1 >nul & rmdir /s /q \"";
         commandLine += tempDirectory_;
         commandLine += L"\" 2>nul & if not exist \"";
         commandLine += tempDirectory_;
-        commandLine += L"\" exit /b 0 & ping -n 2 127.0.0.1 >nul)";
+        commandLine += L"\" (exit /b 0))";
 
         // 关键修复：绝不让子进程继承已消失的当前目录。NSIS `Exec` 继承 `$OUTDIR`
         // （本流程为 `$PLUGINSDIR`），setup 在维护取消后立即 Abort 并删除该目录；
@@ -582,7 +588,7 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     ParsedArgs args = ParseArguments(argc, argv);
-#ifdef FAF_TESTMODE
+#ifdef SPK_TESTMODE
     if (argv) LocalFree(argv);
     argv = nullptr;
 #else
@@ -601,11 +607,11 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
         return ShowStartupError(instance, L"无法确定安装目录", installDirError, mode, args);
     }
 
-#ifdef FAF_TESTMODE
+#ifdef SPK_TESTMODE
     // 测试钩子：写 MaintenanceInfo 后立即退出；发生在提权/互斥体/窗口之前。
     if (!args.testDumpPath.empty()) {
-        const faf::MaintenanceInfo info = faf::Detect(args.installDir);
-        return faf::WriteMaintenanceDump(info, args.testDumpPath) ? 0 : 1;
+        const spk::MaintenanceInfo info = spk::Detect(args.installDir);
+        return spk::WriteMaintenanceDump(info, args.testDumpPath) ? 0 : 1;
     }
 #endif
 
@@ -623,17 +629,17 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
         return ShowStartupError(instance, L"用户身份不一致", identityDetail, mode, args);
     }
 
-#ifndef FAF_TESTMODE
-    // FAF_TESTMODE 完全跳过提权（测试 setup 为 RequestExecutionLevel user）。生产：
+#ifndef SPK_TESTMODE
+    // SPK_TESTMODE 完全跳过提权（测试 setup 为 RequestExecutionLevel user）。生产：
     //   * /elevated 仍非管理员 → MessageBox + 1（防递归）；
     //   * /helper-pid 已继承 helper 的管理员令牌 → 绝不再次提权；仍非管理员 →
     //     可见错误页 + 1（不写协议）；
     //   * 直接 /uninstall 或 /maintenance 未提权 → runas 重启自身，父进程退出 0。
-    const bool admin = faf::IsProcessElevated();
+    const bool admin = spk::IsProcessElevated();
     if (args.elevated && !admin) {
         MessageBoxW(nullptr,
                     L"维护/卸载需要管理员权限，但当前进程未获得管理员权限，已取消。",
-                    L"FreeAssetFilter", MB_OK | MB_ICONERROR);
+                    L"Sopeek", MB_OK | MB_ICONERROR);
         return 1;
     }
 
@@ -650,14 +656,14 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
         if (currentSid.empty() || currentLocalAppData.empty()) {
             MessageBoxW(nullptr,
                         L"无法读取当前用户身份信息，提升权限失败，操作已取消。",
-                        L"FreeAssetFilter", MB_OK | MB_ICONERROR);
+                        L"Sopeek", MB_OK | MB_ICONERROR);
             return 1;
         }
 
         const std::wstring selfExe = SelfExePath();
         if (selfExe.empty()) {
             MessageBoxW(nullptr, L"无法定位安装程序自身，提升权限失败，操作已取消。",
-                        L"FreeAssetFilter", MB_OK | MB_ICONERROR);
+                        L"Sopeek", MB_OK | MB_ICONERROR);
             return 1;
         }
 
@@ -678,7 +684,7 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
                         mode == AppMode::Uninstall
                             ? L"卸载需要管理员权限，已取消。"
                             : L"维护操作需要管理员权限，已取消。",
-                        L"FreeAssetFilter", MB_OK | MB_ICONERROR);
+                        L"Sopeek", MB_OK | MB_ICONERROR);
             return 1;
         }
         return 0;  // 提权子进程已启动；父进程不持有互斥体、不创建窗口。
@@ -693,9 +699,9 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
     // 唯一实例后 Arm()，重复实例（AlreadyRunning/!Acquired）绝不会删除第一个
     // GUI 正在使用的临时目录。
     MaintenanceTempCleanupGuard cleanupGuard;
-    faf::SingleInstanceGuard singleInstance;
+    spk::SingleInstanceGuard singleInstance;
     if (singleInstance.AlreadyRunning()) {
-        faf::ActivateExistingWindow();
+        spk::ActivateExistingWindow();
         return 0;
     }
     if (!singleInstance.Acquired()) return 1;
@@ -712,7 +718,7 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
     InstallerWindow window(instance, args.payload, args.resultPath, args.installDir, mode,
                            args.decisionPath, args.setupPid, args.payloadTimeoutMs,
                            args.helperPid);
-#ifdef FAF_TESTMODE
+#ifdef SPK_TESTMODE
     // 测试构建：/auto 及其维护/卸载扩展参数才真正驱动无人值守流程；生产构建
     // 解析后直接丢弃（EnableAutoDrive 为 no-op，交互行为完全不变）。
     if (args.autoDrive) {

@@ -21,10 +21,10 @@ from PySide6.QtGui import QCloseEvent, QKeyEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QWidget
 
-import freeassetfilter.ui.layout.settings_layout as sl_mod
-import freeassetfilter.ui.layout.update_dialogs as ud_mod
-from freeassetfilter.services.update_service import UpdateError, UpdateInfo
-from freeassetfilter.utils.version_info import RELEASES_URL
+import sopeek.ui.layout.settings_layout as sl_mod
+import sopeek.ui.layout.update_dialogs as ud_mod
+from sopeek.services.update_service import UpdateError, UpdateInfo
+from sopeek.utils.version_info import RELEASES_URL
 from tests.support.qt_helpers import (
     drain_deferred_deletes,
     safe_teardown,
@@ -237,7 +237,7 @@ def _emit_result(
 # =============================================================================
 
 _VALID_RELEASE_URL = (
-    "https://github.com/Dorufoc/FreeAssetFilter/releases/tag/v1.0.0-alpha.6"
+    "https://github.com/Dorufoc/Sopeek/releases/tag/v1.0.0-alpha.6"
 )
 
 
@@ -276,7 +276,7 @@ def _available_info(
         remote["html_url"] = html_url
     resolved_asset = (
         {
-            "name": "FreeAssetFilter-setup.exe",
+            "name": "Sopeek-setup.exe",
             "size": 1024 * 1024,
             "sha256": "a" * 64,
             "download_url": f"{_VALID_RELEASE_URL}/setup.exe",
@@ -336,7 +336,7 @@ class TestAboutPageDelegatesToUpdateCenter:
                 calls.append(True)
 
         monkeypatch.setattr(
-            "freeassetfilter.ui.update_entry.get_update_entry_controller",
+            "sopeek.ui.update_entry.get_update_entry_controller",
             lambda: _StubEntry(),
         )
         progress_calls: list[float | None] = []
@@ -374,7 +374,7 @@ class TestAboutPageDelegatesToUpdateCenter:
                 calls.append(True)
 
         monkeypatch.setattr(
-            "freeassetfilter.ui.update_entry.get_update_entry_controller",
+            "sopeek.ui.update_entry.get_update_entry_controller",
             lambda: _StubEntry(),
         )
 
@@ -432,7 +432,7 @@ class TestUpdateDetailsDialog:
         [
             None,
             {
-                "name": "FreeAssetFilter-setup.exe",
+                "name": "Sopeek-setup.exe",
                 "size": 1024 * 1024,
                 "sha256": None,
                 "download_url": "https://example.invalid/setup.exe",
@@ -1098,7 +1098,7 @@ class TestDownloadProgressDialog:
         finished_calls: list[int] = []
         dialog.finished.connect(finished_calls.append)
 
-        installer_path = r"C:\tmp\FreeAssetFilter-setup.exe"
+        installer_path = r"C:\tmp\Sopeek-setup.exe"
         fake_service.download_finished.emit("download-1", installer_path)
 
         assert dialog._download_active is False
@@ -1133,7 +1133,7 @@ class TestDownloadProgressDialog:
         finished_calls: list[int] = []
         dialog.finished.connect(finished_calls.append)
 
-        installer_path = r"C:\tmp\FreeAssetFilter-setup.exe"
+        installer_path = r"C:\tmp\Sopeek-setup.exe"
         fake_service.download_finished.emit("download-1", installer_path)
         assert finished_calls == []
         assert install_calls == []

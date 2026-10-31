@@ -28,23 +28,23 @@ from PySide6.QtCore import QItemSelectionModel, Qt
 from PySide6.QtWidgets import QApplication
 
 _PROJECT_ROOT = next(
-    p for p in Path(__file__).resolve().parents if (p / "freeassetfilter").is_dir()
+    p for p in Path(__file__).resolve().parents if (p / "sopeek").is_dir()
 )
-_UI_ROOT = _PROJECT_ROOT / "freeassetfilter" / "ui"
+_UI_ROOT = _PROJECT_ROOT / "sopeek" / "ui"
 if str(_UI_ROOT) not in sys.path:
     sys.path.insert(0, str(_UI_ROOT))
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-import freeassetfilter.ui.layout.preview.folder_previewer_layout as folder_mod  # noqa: E402
-from freeassetfilter.ui.layout.preview.folder_previewer_layout import (  # noqa: E402
+import sopeek.ui.layout.preview.folder_previewer_layout as folder_mod  # noqa: E402
+from sopeek.ui.layout.preview.folder_previewer_layout import (  # noqa: E402
     FolderPreviewerLayout,
     _FolderListModel,
     _PLACEHOLDER_EMPTY,
     _PLACEHOLDER_NO_FOLDER,
     _PLACEHOLDER_UNAVAILABLE,
 )
-from freeassetfilter.services.previewer_registry import PreviewerRegistry  # noqa: E402
+from sopeek.services.previewer_registry import PreviewerRegistry  # noqa: E402
 from tests.support.qt_helpers import process_qt_events  # noqa: E402
 
 pytestmark = pytest.mark.unit
@@ -475,11 +475,11 @@ class TestHiddenSystemFiltering:
         self, qapp: QApplication, tmp_path: Path
     ) -> None:
         """native 路径：默认隐藏与开启隐藏两档可见名集正确（DLL 缺失 skip）。"""
-        import freeassetfilter.core.native.bridges.faf_core_bridge as fcb_mod
+        import sopeek.core.native.bridges.spk_core_bridge as fcb_mod
 
-        bridge = fcb_mod.get_faf_core_bridge()
+        bridge = fcb_mod.get_spk_core_bridge()
         if not bridge.available or not bridge._supports_scan:  # noqa: SLF001
-            pytest.skip("faf_core DLL 不可用或缺 scan 导出")
+            pytest.skip("spk_core DLL 不可用或缺 scan 导出")
         src_dir = _make_hidden_system_dir(tmp_path)
 
         def names(show_hidden: bool, show_system: bool) -> list:
@@ -636,7 +636,7 @@ class TestHostIntegration:
         self, qapp: QApplication, sample_dir: Path,
     ) -> None:
         """UnifiedPreviewerLayout.set_file(is_dir=True) → FolderPreviewerLayout。"""
-        from freeassetfilter.ui.layout.unified_previewer_layout import (
+        from sopeek.ui.layout.unified_previewer_layout import (
             UnifiedPreviewerLayout,
         )
 
@@ -682,7 +682,7 @@ class TestHostIntegration:
         self, qapp: QApplication, tmp_path: Path
     ) -> None:
         """宿主先存开关：文件夹预览器创建时收到快照并生效。"""
-        from freeassetfilter.ui.layout.unified_previewer_layout import (
+        from sopeek.ui.layout.unified_previewer_layout import (
             UnifiedPreviewerLayout,
         )
 
@@ -721,7 +721,7 @@ class TestHostIntegration:
         self, qapp: QApplication, tmp_path: Path
     ) -> None:
         """预览中切换开关：当前文件夹预览器收到下发并重扫。"""
-        from freeassetfilter.ui.layout.unified_previewer_layout import (
+        from sopeek.ui.layout.unified_previewer_layout import (
             UnifiedPreviewerLayout,
         )
 
@@ -800,7 +800,7 @@ def _make_delegate(icon_manager: object):
     """构造被测条目委托（QListView + 单条模型）。"""
     from PySide6.QtWidgets import QListView
 
-    from freeassetfilter.ui.layout.preview.folder_previewer_layout import (
+    from sopeek.ui.layout.preview.folder_previewer_layout import (
         _FolderEntryDelegate,
     )
 
@@ -819,7 +819,7 @@ class TestEntryIconFitting:
 
     def test_oversized_thumbnail_is_fitted(self, qapp: QApplication) -> None:
         """128×40 缩略图（逻辑 128×40）被等比缩到 18px 图标框内。"""
-        from freeassetfilter.ui.layout.preview.folder_previewer_layout import _ICON_SIZE
+        from sopeek.ui.layout.preview.folder_previewer_layout import _ICON_SIZE
 
         manager = _StubIconManager(_make_pixmap(128, 40))
         view, model, delegate = _make_delegate(manager)
@@ -840,7 +840,7 @@ class TestEntryIconFitting:
 
     def test_square_thumbnail_is_fitted(self, qapp: QApplication) -> None:
         """128×128 缩略图缩到 18×18。"""
-        from freeassetfilter.ui.layout.preview.folder_previewer_layout import _ICON_SIZE
+        from sopeek.ui.layout.preview.folder_previewer_layout import _ICON_SIZE
 
         manager = _StubIconManager(_make_pixmap(128, 128))
         view, model, delegate = _make_delegate(manager)
@@ -854,7 +854,7 @@ class TestEntryIconFitting:
 
     def test_default_icon_passthrough(self, qapp: QApplication) -> None:
         """已是 18×18 的默认图标原样返回（零缩放）。"""
-        from freeassetfilter.ui.layout.preview.folder_previewer_layout import _ICON_SIZE
+        from sopeek.ui.layout.preview.folder_previewer_layout import _ICON_SIZE
 
         source = _make_pixmap(_ICON_SIZE, _ICON_SIZE)
         manager = _StubIconManager(source)
@@ -884,7 +884,7 @@ class TestEntryIconFitting:
         from PySide6.QtGui import QImage, QPainter
         from PySide6.QtWidgets import QStyleOptionViewItem
 
-        from freeassetfilter.ui.layout.preview.folder_previewer_layout import (
+        from sopeek.ui.layout.preview.folder_previewer_layout import (
             _ICON_SIZE,
             _ICON_TEXT_GAP,
             _ROW_HEIGHT,
@@ -932,7 +932,7 @@ class TestEntryIconFitting:
         from PySide6.QtGui import QImage, QPainter
         from PySide6.QtWidgets import QStyleOptionViewItem
 
-        from freeassetfilter.ui.layout.preview.folder_previewer_layout import (
+        from sopeek.ui.layout.preview.folder_previewer_layout import (
             _ICON_SIZE,
             _ROW_HEIGHT,
             _TEXT_LEFT,

@@ -17,13 +17,13 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from freeassetfilter.ui.mica.config import (
+from sopeek.ui.mica.config import (
     BAKE_LONG_MAX,
     BAKE_LONG_MIN,
     MicaParams,
     bake_grid_size,
 )
-from freeassetfilter.ui.mica.drag import (
+from sopeek.ui.mica.drag import (
     LAYER_DISPLAY_LONG_MAX,
     LAYER_GRID_CAP,
     DragField,

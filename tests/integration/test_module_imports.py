@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
-# targets: freeassetfilter.app.main
+# targets: sopeek.app.main
 """integration 批 1（W6/todo-24）：模块导入集成测试。
 
-基于 ``tests.support.coverage_manifest`` 动态导出 freeassetfilter 全部
+基于 ``tests.support.coverage_manifest`` 动态导出 sopeek 全部
 现存模块清单（物理模块 ∪ 旧式扁平懒别名），逐个 ``importlib.import_module``
 冒烟验证：
 
-* **物理模块**：AST 扫描 ``freeassetfilter/**/*.py``（排除 core/native/src、
+* **物理模块**：AST 扫描 ``sopeek/**/*.py``（排除 core/native/src、
   setup.py、__init__.py、*.pyi）得到的全部可导入模块；
-* **懒别名**：``freeassetfilter.core.settings_manager`` 等旧扁平路径经
+* **懒别名**：``sopeek.core.settings_manager`` 等旧扁平路径经
   ``core/__init__.py`` 的 ``_LazyModuleAlias`` 注册为 ``sys.modules``
   占位符，首次属性访问（或包级 ``__getattr__``）时解析到真实子包模块并
   替换占位条目；本文件断言替换后 ``sys.modules`` 条目指向真实模块；
@@ -17,7 +17,7 @@
   ``ImportError`` 的模块（当前为空），按名单 try/except +
   ``pytest.skip`` 而非硬失败。
 
-环境对齐：``ui/main_window.py:22-30`` 在应用启动时把 ``freeassetfilter/ui``
+环境对齐：``ui/main_window.py:22-30`` 在应用启动时把 ``sopeek/ui``
 插入 ``sys.path``（``ui.components._styled_fluid_cpu`` 等用裸短路径
 ``from theme import tm`` 导入）；本文件在模块顶部做同样的事，保证这些
 ui 模块照常导入而非误报失败。
@@ -45,10 +45,10 @@ pytestmark = pytest.mark.integration
 
 
 # ---------------------------------------------------------------------------
-# 环境对齐：与 ui/main_window.py:22-30 一致，把 freeassetfilter/ui 加入 sys.path
+# 环境对齐：与 ui/main_window.py:22-30 一致，把 sopeek/ui 加入 sys.path
 # ---------------------------------------------------------------------------
 _PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
-_UI_ROOT: Path = _PROJECT_ROOT / "freeassetfilter" / "ui"
+_UI_ROOT: Path = _PROJECT_ROOT / "sopeek" / "ui"
 _UI_PATH: str = str(_UI_ROOT)
 if _UI_PATH not in sys.path:
     sys.path.insert(0, _UI_PATH)
@@ -59,9 +59,9 @@ if _UI_PATH not in sys.path:
 _inventory: ModuleInventory = ModuleInventory()
 scan_source_modules(_inventory)
 _inventory.alias_to_real = extract_alias_modules()
-#: 物理模块名（如 freeassetfilter.components.unified_previewer）。
+#: 物理模块名（如 sopeek.components.unified_previewer）。
 PHYSICAL_MODULES: List[str] = sorted(_inventory.modules)
-#: 旧式扁平别名模块名（如 freeassetfilter.core.settings_manager）。
+#: 旧式扁平别名模块名（如 sopeek.core.settings_manager）。
 ALIAS_MODULES: List[str] = sorted(_inventory.alias_to_real)
 
 #: 已知「import 时因原生依赖缺失而抛 ImportError」的模块（跳过而非失败）。
@@ -118,23 +118,23 @@ class TestLazyAliasCompatibility:
     def test_aliases_registered_in_sys_modules(self) -> None:
         """全部扁平别名应被 core/__init__.py 注册进 sys.modules。
 
-        导入 ``freeassetfilter.core`` 触发安装后，对清单中的全部别名
+        导入 ``sopeek.core`` 触发安装后，对清单中的全部别名
         逐一断言条目存在（值可能为 _LazyModuleAlias 占位符或已解析真实模块）。
         """
-        importlib.import_module("freeassetfilter.core")
+        importlib.import_module("sopeek.core")
         for alias in ALIAS_MODULES:
             assert alias in sys.modules, f"别名 {alias} 未注册到 sys.modules"
 
     def test_alias_resolves_to_real_module(self) -> None:
         """触发包级 __getattr__ 后，sys.modules 条目应指向真实物理模块。
 
-        对应 ``from freeassetfilter.core import <flat_name>`` 的
+        对应 ``from sopeek.core import <flat_name>`` 的
         行为（core/__init__.py 会把 sys.modules[alias] 替换为真实模块）。
         """
-        importlib.import_module("freeassetfilter.core")
+        importlib.import_module("sopeek.core")
         for alias, real in _inventory.alias_to_real.items():
             flat_name: str = alias.rsplit(".", 1)[-1]  # 如 heartbeat_manager
-            getattr(importlib.import_module("freeassetfilter.core"), flat_name)
+            getattr(importlib.import_module("sopeek.core"), flat_name)
             assert (
                 sys.modules[alias] is importlib.import_module(real)
             ), f"别名 {alias} 未能替换为真实模块 {real}"

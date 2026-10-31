@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from freeassetfilter.core.native import platform_timing as pt
+from sopeek.core.native import platform_timing as pt
 
 IS_WINDOWS = sys.platform == "win32"
 
@@ -35,8 +35,8 @@ def _isolated_timer_state():
 def test_default_probe_path_follows_evidence_env(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """FAF_EVIDENCE_DIR 覆盖时默认产物路径跟随（审查 3.1#27）。"""
-    monkeypatch.setenv("FAF_EVIDENCE_DIR", str(tmp_path))
+    """SPK_EVIDENCE_DIR 覆盖时默认产物路径跟随（审查 3.1#27）。"""
+    monkeypatch.setenv("SPK_EVIDENCE_DIR", str(tmp_path))
     assert pt.default_probe_artifact_path() == (
         tmp_path / "task-13" / "swapchain_probe.txt"
     )

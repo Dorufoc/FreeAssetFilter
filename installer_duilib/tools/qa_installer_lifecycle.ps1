@@ -1,7 +1,7 @@
 <#
 T20 installer lifecycle QA.
 
-Runs only the FAF_TESTMODE setup (FreeAssetFilterTest paths) and only against
+Runs only the SPK_TESTMODE setup (SopeekTest paths) and only against
 test artifacts. Never invokes production setup/uninstaller entries.
 
 Modes: fresh | repair | cancel | second-instance | uninstall | failure |
@@ -13,8 +13,8 @@ param(
     [ValidateSet('fresh', 'repair', 'cancel', 'second-instance', 'uninstall', 'failure', 'shortcut-isolation', 'uac-cancel', 'all')]
     [string]$Mode,
 
-    [string]$SetupPath = 'build/test-installer/FreeAssetFilter_NSIS_Test.exe',
-    [string]$EvidenceDir = '.omo/evidence/installer-repair-uninstall/t20',
+    [string]$SetupPath = 'build/test-installer/Sopeek_NSIS_Test.exe',
+    [string]$EvidenceDir = '.omo/evidence/sopeek-installer/t20',
     [switch]$Keep
 )
 
@@ -26,13 +26,13 @@ $SetupPath = (Resolve-Path (Join-Path $RepoRoot $SetupPath)).Path
 $EvidenceDir = [System.IO.Path]::GetFullPath((Join-Path $RepoRoot $EvidenceDir))
 New-Item -ItemType Directory -Force -Path $EvidenceDir | Out-Null
 
-$TestInstallDir = Join-Path $env:LOCALAPPDATA 'FreeAssetFilterTest'
-$TestUninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilterTest'
-$TestAppKey = 'HKCU:\Software\FreeAssetFilterTest'
-$CanonicalDataDir = Join-Path $env:LOCALAPPDATA 'FreeAssetFilterTestUserData'
-$CustomDataDir = Join-Path $env:LOCALAPPDATA 'FreeAssetFilterTestFafData'
-$DesktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'FreeAssetFilterTest.lnk'
-$StartMenuShortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'FreeAssetFilterTest.lnk'
+$TestInstallDir = Join-Path $env:LOCALAPPDATA 'SopeekTest'
+$TestUninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\SopeekTest'
+$TestAppKey = 'HKCU:\Software\SopeekTest'
+$CanonicalDataDir = Join-Path $env:LOCALAPPDATA 'SopeekTestUserData'
+$CustomDataDir = Join-Path $env:LOCALAPPDATA 'SopeekTestSpkData'
+$DesktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'SopeekTest.lnk'
+$StartMenuShortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'SopeekTest.lnk'
 $TranscriptPath = Join-Path $EvidenceDir 'transcript.log'
 $SummaryPath = Join-Path $EvidenceDir 'summary.json'
 
@@ -75,7 +75,7 @@ function Assert-UnderTestRoot([string]$Path) {
 }
 
 # M1 destructive-cleanup guard. Deliberately separate from Assert-UnderTestRoot:
-# %TEMP%\FreeAssetFilterMaintenance-<digits> is neither under the test install
+# %TEMP%\SopeekMaintenance-<digits> is neither under the test install
 # dir nor under %TEMP%\opencode. Cleanup is allowed only for the exact leaf shape
 # whose parent is exactly %TEMP% (never %TEMP% itself, never a production copy
 # that this run did not register).
@@ -88,7 +88,7 @@ function Assert-MaintenanceTempPath([string]$Path) {
         -not [string]::Equals($parent.TrimEnd([System.IO.Path]::DirectorySeparatorChar), $tempRoot, [StringComparison]::OrdinalIgnoreCase)) {
         throw "REFUSING temp cleanup outside %TEMP%: $full"
     }
-    if ($leaf -notmatch '^FreeAssetFilterMaintenance-\d+$') {
+    if ($leaf -notmatch '^SopeekMaintenance-\d+$') {
         throw "REFUSING temp cleanup with unexpected leaf: $full"
     }
     if ($full.Equals($tempRoot, [StringComparison]::OrdinalIgnoreCase)) {
@@ -116,14 +116,14 @@ function Remove-TestState {
         if (Test-Path -LiteralPath $s) { Remove-Item -LiteralPath $s -Force -ErrorAction SilentlyContinue }
     }
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-        Where-Object { $_.ExecutablePath -and ($_.ExecutablePath -like "$env:TEMP\~nsu*" -or $_.ExecutablePath -like "$env:TEMP\*FreeAssetFilter*") } |
+        Where-Object { $_.ExecutablePath -and ($_.ExecutablePath -like "$env:TEMP\~nsu*" -or $_.ExecutablePath -like "$env:TEMP\*Sopeek*") } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-    Get-Process -Name 'FreeAssetFilterInstaller', 'FreeAssetFilterUninstall', 'UninstallHelper', 'FreeAssetFilter', 'Un', 'Au_' -ErrorAction SilentlyContinue |
+    Get-Process -Name 'SopeekInstaller', 'SopeekUninstall', 'UninstallHelper', 'Sopeek', 'Un', 'Au_' -ErrorAction SilentlyContinue |
         Where-Object { $_.Path -and $_.Path.StartsWith($TestInstallDir, [StringComparison]::OrdinalIgnoreCase) } |
         Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 300
     # M1: remove only maintenance temp dirs this run registered, after their
-    # exact %TEMP%\FreeAssetFilterMaintenance-<digits> shape is re-validated.
+    # exact %TEMP%\SopeekMaintenance-<digits> shape is re-validated.
     foreach ($p in @($script:CreatedTempDirs)) {
         Assert-MaintenanceTempPath $p
         if (Test-Path -LiteralPath $p) {
@@ -180,7 +180,7 @@ function Get-InstallWindows([int]$ProcessId = 0) {
         param($h, $l)
         $sb = [System.Text.StringBuilder]::new(256)
         [void][T20Native]::GetClassNameW($h, $sb, 256)
-        if ($sb.ToString() -eq 'FreeAssetFilterInstaller' -and [T20Native]::IsWindowVisible($h)) {
+        if ($sb.ToString() -eq 'SopeekInstaller' -and [T20Native]::IsWindowVisible($h)) {
             [uint32]$ownerPid = 0
             [void][T20Native]::GetWindowThreadProcessId($h, [ref]$ownerPid)
             if ($ProcessId -eq 0 -or $ownerPid -eq $ProcessId) {
@@ -199,7 +199,7 @@ function Get-InstallWindow([int]$ProcessId = 0) {
         param($h, $l)
         $sb = [System.Text.StringBuilder]::new(256)
         [void][T20Native]::GetClassNameW($h, $sb, 256)
-        if ($sb.ToString() -eq 'FreeAssetFilterInstaller' -and [T20Native]::IsWindowVisible($h)) {
+        if ($sb.ToString() -eq 'SopeekInstaller' -and [T20Native]::IsWindowVisible($h)) {
             [uint32]$ownerPid = 0
             [void][T20Native]::GetWindowThreadProcessId($h, [ref]$ownerPid)
             if ($ProcessId -eq 0 -or $ownerPid -eq $ProcessId) {
@@ -293,30 +293,35 @@ function Close-InstallWindow([IntPtr]$Hwnd, [System.Diagnostics.Process]$Process
 function Start-TestSetup([string]$Tag, [string]$InstallOpts = $null, [string]$MaintenanceExtra = $null, [string]$UiExtra = $null) {
     $diag = Join-Path $EvidenceDir "$Tag.diag.log"
     Remove-Item -LiteralPath $diag -Force -ErrorAction SilentlyContinue
-    $env:FAF_DIAG_PATH = $diag
-    if ($null -ne $InstallOpts) { $env:FAF_QA_INSTALL_OPTS = $InstallOpts } else { Remove-Item Env:\FAF_QA_INSTALL_OPTS -ErrorAction SilentlyContinue }
-    if ($null -ne $MaintenanceExtra) { $env:FAF_QA_MAINTENANCE_EXTRA = $MaintenanceExtra } else { Remove-Item Env:\FAF_QA_MAINTENANCE_EXTRA -ErrorAction SilentlyContinue }
-    if (-not [string]::IsNullOrWhiteSpace($UiExtra)) { $env:FAF_QA_UI_RUNTIME_EXTRA = $UiExtra } else { Remove-Item Env:\FAF_QA_UI_RUNTIME_EXTRA -ErrorAction SilentlyContinue }
+    $env:SPK_DIAG_PATH = $diag
+    if ($null -ne $InstallOpts) { $env:SPK_QA_INSTALL_OPTS = $InstallOpts } else { Remove-Item Env:\SPK_QA_INSTALL_OPTS -ErrorAction SilentlyContinue }
+    if ($null -ne $MaintenanceExtra) { $env:SPK_QA_MAINTENANCE_EXTRA = $MaintenanceExtra } else { Remove-Item Env:\SPK_QA_MAINTENANCE_EXTRA -ErrorAction SilentlyContinue }
+    if (-not [string]::IsNullOrWhiteSpace($UiExtra)) { $env:SPK_QA_UI_RUNTIME_EXTRA = $UiExtra } else { Remove-Item Env:\SPK_QA_UI_RUNTIME_EXTRA -ErrorAction SilentlyContinue }
     $p = Start-Process -FilePath $SetupPath -PassThru
     $script:CurrentDiag = $diag
+    # M1: every setup owns %TEMP%\SopeekMaintenance-<setup-pid>. Register it up
+    # front (shape re-validated by Assert-MaintenanceTempPath) so end-of-run
+    # cleanup also covers copies left behind by killed/failed UI scenarios that
+    # never reach the normal self-clean path.
+    Register-MaintenanceTempPath (Join-Path $env:TEMP "SopeekMaintenance-$($p.Id)")
     return $p
 }
 
 function Start-TestUninstaller([string]$Tag, [int]$DeleteUserData, [string]$UiExtra = $null) {
     $helper = Join-Path $TestInstallDir 'UninstallHelper.exe'
-    $ui = Join-Path $TestInstallDir 'FreeAssetFilterUninstall.exe'
+    $ui = Join-Path $TestInstallDir 'SopeekUninstall.exe'
     Assert-True (Test-Path -LiteralPath $helper) "test uninstall helper exists: $helper"
     Assert-True (Test-Path -LiteralPath $ui) "test uninstaller UI exists: $ui"
     $diag = Join-Path $EvidenceDir "$Tag.diag.log"
     Remove-Item -LiteralPath $diag -Force -ErrorAction SilentlyContinue
-    $env:FAF_DIAG_PATH = $diag
-    if (-not [string]::IsNullOrWhiteSpace($UiExtra)) { $env:FAF_QA_UI_RUNTIME_EXTRA = $UiExtra } else { $env:FAF_QA_UI_RUNTIME_EXTRA = "/auto:mode=uninstall /auto:action=uninstall /auto:delete-user-data=$DeleteUserData" }
-    Remove-Item Env:\FAF_QA_INSTALL_OPTS -ErrorAction SilentlyContinue
-    Remove-Item Env:\FAF_QA_MAINTENANCE_EXTRA -ErrorAction SilentlyContinue
+    $env:SPK_DIAG_PATH = $diag
+    if (-not [string]::IsNullOrWhiteSpace($UiExtra)) { $env:SPK_QA_UI_RUNTIME_EXTRA = $UiExtra } else { $env:SPK_QA_UI_RUNTIME_EXTRA = "/auto:mode=uninstall /auto:action=uninstall /auto:delete-user-data=$DeleteUserData" }
+    Remove-Item Env:\SPK_QA_INSTALL_OPTS -ErrorAction SilentlyContinue
+    Remove-Item Env:\SPK_QA_MAINTENANCE_EXTRA -ErrorAction SilentlyContinue
     $p = Start-Process -FilePath $helper -ArgumentList @('/uninstall-launcher','/installdir',"$TestInstallDir",'/ui',"$ui") -PassThru
-    Write-Log "uninstall env extra=$($env:FAF_QA_UI_RUNTIME_EXTRA)"
+    Write-Log "uninstall env extra=$($env:SPK_QA_UI_RUNTIME_EXTRA)"
     Start-Sleep -Seconds 3
-    $uiProc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq 'FreeAssetFilterUninstall.exe' } | Select-Object -First 1
+    $uiProc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq 'SopeekUninstall.exe' } | Select-Object -First 1
     if ($uiProc) { Write-Log "uninstall UI cmdline=$($uiProc.CommandLine)" } else { Write-Log 'uninstall UI not started yet' 'WARN' }
     $script:CurrentDiag = $diag
     return $p
@@ -358,9 +363,9 @@ function Get-ProductionShortcutSnapshot([string]$Path) {
 function Snapshot-Production {
     $items = [ordered]@{}
     $artifacts = @(
-        'build/installer/FreeAssetFilterInstaller.exe',
+        'build/installer/SopeekInstaller.exe',
         'build/installer/libwinpthread-1.dll',
-        'build/FreeAssetFilter_NSIS_Setup.exe'
+        'build/Sopeek_NSIS_Setup.exe'
     )
     foreach ($rel in $artifacts) {
         $p = Join-Path $RepoRoot $rel
@@ -374,24 +379,24 @@ function Snapshot-Production {
         } else { $items[$rel] = 'MISSING' }
     }
     $keys = @(
-        'HKCU:\Software\FreeAssetFilter',
-        'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilter',
-        'HKLM:\Software\FreeAssetFilter',
-        'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilter',
-        'HKLM:\Software\WOW6432Node\FreeAssetFilter',
-        'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\FreeAssetFilter'
+        'HKCU:\Software\Sopeek',
+        'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Sopeek',
+        'HKLM:\Software\Sopeek',
+        'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Sopeek',
+        'HKLM:\Software\WOW6432Node\Sopeek',
+        'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Sopeek'
     )
     foreach ($k in $keys) { $items["reg:$k"] = (Test-Path -LiteralPath $k) }
-    $items['prodDirExists'] = (Test-Path -LiteralPath (Join-Path $env:LOCALAPPDATA 'FreeAssetFilter'))
+    $items['prodDirExists'] = (Test-Path -LiteralPath (Join-Path $env:LOCALAPPDATA 'Sopeek'))
     # D13/F2: production shortcuts are part of the guard. Hash/size/mtime detect
     # overwrite/delete even when a shortcut is recreated at the same path.
     $desktop = [Environment]::GetFolderPath('Desktop')
     $programs = [Environment]::GetFolderPath('Programs')
-    $prodStartMenuFolder = Join-Path $programs 'FreeAssetFilter'
+    $prodStartMenuFolder = Join-Path $programs 'Sopeek'
     $items['startMenuProdFolderExists'] = (Test-Path -LiteralPath $prodStartMenuFolder)
-    $items['desktopProdShortcut'] = Get-ProductionShortcutSnapshot (Join-Path $desktop 'FreeAssetFilter.lnk')
-    $items['startMenuProdShortcutFolder'] = Get-ProductionShortcutSnapshot (Join-Path $prodStartMenuFolder 'FreeAssetFilter.lnk')
-    $items['startMenuProdShortcutLegacy'] = Get-ProductionShortcutSnapshot (Join-Path $programs 'FreeAssetFilter.lnk')
+    $items['desktopProdShortcut'] = Get-ProductionShortcutSnapshot (Join-Path $desktop 'Sopeek.lnk')
+    $items['startMenuProdShortcutFolder'] = Get-ProductionShortcutSnapshot (Join-Path $prodStartMenuFolder 'Sopeek.lnk')
+    $items['startMenuProdShortcutLegacy'] = Get-ProductionShortcutSnapshot (Join-Path $programs 'Sopeek.lnk')
     return ($items | ConvertTo-Json -Depth 6 -Compress)
 }
 
@@ -403,8 +408,8 @@ function Install-Fresh([string]$Tag = 'fresh') {
     $p = Start-TestSetup $Tag -InstallOpts '0000'
     $code = Complete-FinishPage $Tag $p
     Assert-True ($code -eq 0) "$Tag setup exit code 0 (actual $code)"
-    Assert-True (Test-Path -LiteralPath (Join-Path $TestInstallDir 'FreeAssetFilter.exe')) 'app exe installed'
-    Assert-True (Test-Path -LiteralPath (Join-Path $TestInstallDir 'FreeAssetFilterUninstall.exe')) 'uninstaller installed'
+    Assert-True (Test-Path -LiteralPath (Join-Path $TestInstallDir 'Sopeek.exe')) 'app exe installed'
+    Assert-True (Test-Path -LiteralPath (Join-Path $TestInstallDir 'SopeekUninstall.exe')) 'uninstaller installed'
     Assert-True (Test-Path -LiteralPath (Join-Path $TestInstallDir 'UninstallHelper.exe')) 'UninstallHelper installed'
     Assert-True (Test-Path -LiteralPath $TestUninstallKey) 'test uninstall registry key exists'
     Assert-True (-not (Test-Path -LiteralPath $DesktopShortcut)) 'options=0000: no test desktop shortcut'
@@ -415,14 +420,14 @@ function Install-Fresh([string]$Tag = 'fresh') {
 }
 
 function Ensure-Installed {
-    if (-not (Test-Path -LiteralPath (Join-Path $TestInstallDir 'FreeAssetFilter.exe'))) { Install-Fresh 'fresh' }
+    if (-not (Test-Path -LiteralPath (Join-Path $TestInstallDir 'Sopeek.exe'))) { Install-Fresh 'fresh' }
 }
 
 function Test-Repair {
     Write-Log '--- repair ---'
     Ensure-Installed
     $before = Snapshot-Production
-    $appExe = Join-Path $TestInstallDir 'FreeAssetFilter.exe'
+    $appExe = Join-Path $TestInstallDir 'Sopeek.exe'
     $h = (Get-FileHash -LiteralPath $appExe -Algorithm SHA256).Hash
     $dataDir = Join-Path $TestInstallDir 'data'
     New-Item -ItemType Directory -Force -Path $dataDir, $CanonicalDataDir | Out-Null
@@ -462,7 +467,7 @@ function Test-Cancel {
     Assert-True (Test-Path -LiteralPath $decision) 'maintenance-decision.ini exists'
     Assert-True ((Read-IniValue $decision 'maintenance' 'action') -eq 'cancel') 'decision action=cancel'
     Assert-True ((Read-IniValue $decision 'maintenance' 'ack') -eq '1') 'decision ack=1'
-    Assert-True (Test-Path -LiteralPath (Join-Path $TestInstallDir 'FreeAssetFilter.exe')) 'cancel kept app exe'
+    Assert-True (Test-Path -LiteralPath (Join-Path $TestInstallDir 'Sopeek.exe')) 'cancel kept app exe'
     Assert-True (Test-Path -LiteralPath $TestUninstallKey) 'cancel kept uninstall key'
     $after = Snapshot-Production
     Assert-True ($before -eq $after) 'production artifacts/keys/shortcuts unchanged after cancel'
@@ -484,8 +489,8 @@ function Test-SecondInstance {
     $decisionBefore = (Get-FileHash -LiteralPath $decision -Algorithm SHA256).Hash
     $resultBefore = (Get-FileHash -LiteralPath $result -Algorithm SHA256).Hash
     $windowsBefore = @(Get-InstallWindows).Count
-    $env:FAF_DIAG_PATH = Join-Path $EvidenceDir 'second-instance-second.diag.log'
-    $env:FAF_QA_MAINTENANCE_EXTRA = '/auto:page=6'
+    $env:SPK_DIAG_PATH = Join-Path $EvidenceDir 'second-instance-second.diag.log'
+    $env:SPK_QA_MAINTENANCE_EXTRA = '/auto:page=6'
     $p2 = Start-Process -FilePath $SetupPath -PassThru
     $exited = $p2.WaitForExit(30000)
     if (-not $exited) { try { $p2.Kill($true) } catch {} }
@@ -501,7 +506,7 @@ function Test-SecondInstance {
     Assert-True ($windowsAfter -eq 1) "exactly one GUI after second attempt (actual $windowsAfter)"
     Assert-True ($decisionAfter -eq $decisionBefore) 'second instance did not overwrite maintenance-decision.ini'
     Assert-True ($resultAfter -eq $resultBefore) 'second instance did not overwrite uninstall-result.ini'
-    Assert-True (Test-Path -LiteralPath (Join-Path $TestInstallDir 'FreeAssetFilter.exe')) 'second instance did not damage install'
+    Assert-True (Test-Path -LiteralPath (Join-Path $TestInstallDir 'Sopeek.exe')) 'second instance did not damage install'
     Add-Result 'second-instance' 'PASS' "second exit=$($p2.ExitCode); one GUI; decision/result unchanged"
 }
 
@@ -522,13 +527,13 @@ function Test-Uninstall([int]$DeleteUserData) {
     Set-Content -LiteralPath (Join-Path $internalDataDir 'sentinel.txt') -Value 'install-internal-data' -Encoding utf8
 
     # Real installed app, with isolated data dir. The uninstall helper must close it.
-    $env:FAF_DATA_DIR = $CustomDataDir
-    $app = Start-Process -FilePath (Join-Path $TestInstallDir 'FreeAssetFilter.exe') -PassThru
+    $env:SPK_DATA_DIR = $CustomDataDir
+    $app = Start-Process -FilePath (Join-Path $TestInstallDir 'Sopeek.exe') -PassThru
     # Let the installed app finish first-run initialization before the helper tries to close it.
     Start-Sleep -Seconds 5
     Assert-True (-not $app.HasExited) "app running before $tag (pid=$($app.Id))"
     Assert-True ($app.Path.StartsWith($TestInstallDir, [StringComparison]::OrdinalIgnoreCase)) 'app image is the test install'
-    Remove-Item Env:\FAF_DATA_DIR -ErrorAction SilentlyContinue
+    Remove-Item Env:\SPK_DATA_DIR -ErrorAction SilentlyContinue
 
     $p = Start-TestUninstaller $tag $DeleteUserData
     $code = Complete-FinishPage $tag $p
@@ -557,8 +562,8 @@ function Test-Uninstall([int]$DeleteUserData) {
     $warning = Read-IniValue $result 'uninstall' 'warning'
     Assert-True ($warning -eq 'install-dir-not-empty') "warning=install-dir-not-empty (actual '$warning')"
     Assert-True (-not (Test-Path -LiteralPath $TestUninstallKey)) 'test uninstall key removed'
-    Assert-True (-not (Test-Path -LiteralPath (Join-Path $TestInstallDir 'FreeAssetFilter.exe'))) 'app exe removed'
-    Assert-True (-not (Test-Path -LiteralPath (Join-Path $TestInstallDir 'FreeAssetFilterUninstall.exe'))) 'uninstaller exe removed'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $TestInstallDir 'Sopeek.exe'))) 'app exe removed'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $TestInstallDir 'SopeekUninstall.exe'))) 'uninstaller exe removed'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $TestInstallDir 'libwinpthread-1.dll'))) 'libwinpthread removed'
     Assert-True (Test-Path -LiteralPath (Join-Path $TestInstallDir 'UninstallHelper.exe')) 'helper remains (install-dir-not-empty)'
 
@@ -616,7 +621,7 @@ function Test-FailureKillUi {
     Assert-True (Test-Path -LiteralPath $result) 'kill UI: uninstall-result.ini exists'
     Assert-True ((Read-IniValue $result 'uninstall' 'stage') -eq 'cancelled') "kill UI stage=cancelled (actual '$(Read-IniValue $result 'uninstall' 'stage')')"
     Assert-True ((Read-IniValue $result 'uninstall' 'done') -eq '1') 'kill UI done=1'
-    Assert-True (Test-Path -LiteralPath (Join-Path $TestInstallDir 'FreeAssetFilter.exe')) 'kill UI kept app exe'
+    Assert-True (Test-Path -LiteralPath (Join-Path $TestInstallDir 'Sopeek.exe')) 'kill UI kept app exe'
     Assert-True (Test-Path -LiteralPath $TestUninstallKey) 'kill UI kept uninstall key'
     $after = Snapshot-Production
     Assert-True ($before -eq $after) 'production untouched after UI kill'
@@ -627,16 +632,16 @@ function Test-FailureUiCopy {
     Write-Log '--- failure UI copy ---'
     Remove-TestState
     $before = Snapshot-Production
-    $env:FAF_QA_FAIL_UI_COPY = '1'
+    $env:SPK_QA_FAIL_UI_COPY = '1'
     try {
         $p = Start-TestSetup 'failure-ui-copy' -InstallOpts '0000'
         $code = Complete-FinishPage 'failure-ui-copy' $p
     } finally {
-        Remove-Item Env:\FAF_QA_FAIL_UI_COPY -ErrorAction SilentlyContinue
+        Remove-Item Env:\SPK_QA_FAIL_UI_COPY -ErrorAction SilentlyContinue
     }
     Assert-True ($code -ne 0) "UI copy failure setup exits nonzero (actual $code)"
     Assert-True (-not (Test-Path -LiteralPath $TestUninstallKey)) 'UI copy failure: no test uninstall key (and no UninstallString)'
-    Assert-True (-not (Test-Path -LiteralPath (Join-Path $TestInstallDir 'FreeAssetFilterUninstall.exe'))) 'UI copy failure: no uninstaller executable'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $TestInstallDir 'SopeekUninstall.exe'))) 'UI copy failure: no uninstaller executable'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $TestInstallDir 'UninstallHelper.exe'))) 'UI copy failure: no helper written'
     $after = Snapshot-Production
     Assert-True ($before -eq $after) 'production untouched after UI copy failure'
@@ -648,16 +653,16 @@ function Test-FailureUiLaunch {
     Remove-TestState
     Install-Fresh 'failure-ui-launch'
     $before = Snapshot-Production
-    $ui = Join-Path $TestInstallDir 'FreeAssetFilterUninstall.exe'
-    $app = Join-Path $TestInstallDir 'FreeAssetFilter.exe'
+    $ui = Join-Path $TestInstallDir 'SopeekUninstall.exe'
+    $app = Join-Path $TestInstallDir 'Sopeek.exe'
     $helper = Join-Path $TestInstallDir 'UninstallHelper.exe'
     $appHash = (Get-FileHash -LiteralPath $app -Algorithm SHA256).Hash
     $helperHash = (Get-FileHash -LiteralPath $helper -Algorithm SHA256).Hash
     Set-Content -LiteralPath $ui -Value 'not a portable executable' -Encoding ascii
     $diag = Join-Path $EvidenceDir 'failure-ui-launch.diag.log'
     Remove-Item -LiteralPath $diag -Force -ErrorAction SilentlyContinue
-    $env:FAF_DIAG_PATH = $diag
-    Remove-Item Env:\FAF_QA_UI_RUNTIME_EXTRA -ErrorAction SilentlyContinue
+    $env:SPK_DIAG_PATH = $diag
+    Remove-Item Env:\SPK_QA_UI_RUNTIME_EXTRA -ErrorAction SilentlyContinue
     try {
         # `_?=` keeps NSIS from self-copying to %TEMP%\~nsu*.tmp, so the outer stub
         # exits with the real uninstaller exit code instead of always returning 0.
@@ -668,7 +673,7 @@ function Test-FailureUiLaunch {
         Assert-True ($helperExit -ne 0) "UI launch failure returns nonzero (actual $helperExit)"
         Wait-HelperTerminal 'failure-ui-launch' 60
     } finally {
-        Remove-Item Env:\FAF_QA_UI_RUNTIME_EXTRA -ErrorAction SilentlyContinue
+        Remove-Item Env:\SPK_QA_UI_RUNTIME_EXTRA -ErrorAction SilentlyContinue
     }
     $result = Join-Path $TestInstallDir 'uninstall-result.ini'
     Assert-True (Test-Path -LiteralPath $result) 'UI launch failure: uninstall-result.ini exists'
@@ -689,7 +694,7 @@ function Test-ShortcutIsolation {
     Remove-TestState
     $before = Snapshot-Production
     # 1111 = desktop + startmenu + autostart + launch. Test mode must create only
-    # FreeAssetFilterTest.lnk and must not touch production shortcuts.
+    # SopeekTest.lnk and must not touch production shortcuts.
     $p = Start-TestSetup 'shortcut-isolation-on' -InstallOpts '1111'
     $code = Complete-FinishPage 'shortcut-isolation-on' $p
     Assert-True ($code -eq 0) "shortcut isolation: 1111 setup exit 0 (actual $code)"
@@ -700,7 +705,7 @@ function Test-ShortcutIsolation {
 
     # Force the next setup down the fresh-install path while keeping the test
     # shortcuts, so options=0000 must actively remove them.
-    Remove-Item -LiteralPath (Join-Path $TestInstallDir 'FreeAssetFilter.exe') -Force
+    Remove-Item -LiteralPath (Join-Path $TestInstallDir 'Sopeek.exe') -Force
     Remove-Item -LiteralPath (Join-Path $TestInstallDir '_internal') -Recurse -Force
     $p2 = Start-TestSetup 'shortcut-isolation-off' -InstallOpts '0000'
     $code2 = Complete-FinishPage 'shortcut-isolation-off' $p2
@@ -716,10 +721,10 @@ function Test-MaintenanceTempLifecycle {
     Write-Log '--- maintenance temp lifecycle (M1) ---'
     Remove-TestState
     $staleSuffix = [int]$PID
-    while (Test-Path -LiteralPath (Join-Path $env:TEMP "FreeAssetFilterMaintenance-$staleSuffix")) {
+    while (Test-Path -LiteralPath (Join-Path $env:TEMP "SopeekMaintenance-$staleSuffix")) {
         $staleSuffix += 100003
     }
-    $stale = Join-Path $env:TEMP "FreeAssetFilterMaintenance-$staleSuffix"
+    $stale = Join-Path $env:TEMP "SopeekMaintenance-$staleSuffix"
     Register-MaintenanceTempPath $stale
     New-Item -ItemType Directory -Path $stale -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $stale 'stale-marker.txt') -Value 'stale-copy' -Encoding utf8
@@ -736,10 +741,10 @@ function Test-MaintenanceTempLifecycle {
     $p2 = Start-TestSetup 'maintenance-temp-active' -MaintenanceExtra '/auto:page=6'
     $hwnd = Wait-InstallWindow 0 45
     Save-WindowPng $hwnd (Join-Path $EvidenceDir 'maintenance-temp-active.png')
-    $tempDir = Join-Path $env:TEMP "FreeAssetFilterMaintenance-$($p2.Id)"
+    $tempDir = Join-Path $env:TEMP "SopeekMaintenance-$($p2.Id)"
     Register-MaintenanceTempPath $tempDir
     Assert-True (Test-Path -LiteralPath $tempDir) "active maintenance temp dir exists while UI is alive (pid=$($p2.Id))"
-    Assert-True (Test-Path -LiteralPath (Join-Path $tempDir 'FreeAssetFilterInstaller.exe')) 'active temp dir contains FreeAssetFilterInstaller.exe'
+    Assert-True (Test-Path -LiteralPath (Join-Path $tempDir 'SopeekInstaller.exe')) 'active temp dir contains SopeekInstaller.exe'
     Assert-True (Test-Path -LiteralPath (Join-Path $tempDir 'libwinpthread-1.dll')) 'active temp dir contains libwinpthread-1.dll'
     Write-Log "captured active maintenance temp dir=$tempDir"
 
@@ -750,10 +755,30 @@ function Test-MaintenanceTempLifecycle {
         throw 'maintenance temp lifecycle: setup did not exit after normal UI close'
     }
     Write-Log "maintenance temp setup exit code=$($p2.ExitCode)"
+
+    # M1 regression guard: the cleanup helper must be a *retrying* process, not a
+    # one-shot loop that collapses in milliseconds. The UI still holds the exe
+    # lock when the helper is spawned, so a correct helper is alive (or has
+    # already finished deleting) after the UI/setup exits. A helper that died
+    # while the directory remains is exactly the historic failure mode.
+    $spawnMatch = Select-String -LiteralPath $script:CurrentDiag -Pattern 'maintenance temp cleanup spawned pid=(\d+)' |
+        Select-Object -Last 1
+    Assert-True ($null -ne $spawnMatch) 'normal UI exit spawned a maintenance temp cleanup helper'
+    $helperPid = [int]$spawnMatch.Matches[0].Groups[1].Value
+    Write-Log "maintenance temp cleanup helper pid=$helperPid"
+    $retryObserved = $false
+    $retryDeadline = (Get-Date).AddSeconds(2)
+    while (((Get-Date) -lt $retryDeadline) -and (Test-Path -LiteralPath $tempDir)) {
+        if (Get-Process -Id $helperPid -ErrorAction SilentlyContinue) { $retryObserved = $true; break }
+        Start-Sleep -Milliseconds 100
+    }
+    Assert-True ($retryObserved -or -not (Test-Path -LiteralPath $tempDir)) `
+        'cleanup helper stayed alive while its temp dir still existed (retry loop did not collapse)'
+
     $deadline = (Get-Date).AddSeconds(15)
     while ((Test-Path -LiteralPath $tempDir) -and ((Get-Date) -lt $deadline)) { Start-Sleep -Milliseconds 300 }
     Assert-True (-not (Test-Path -LiteralPath $tempDir)) 'normal UI exit removed its maintenance temp dir within 15s'
-    Add-Result 'maintenance-temp-lifecycle' 'PASS' 'stale >24h swept; active copy had exe+dll; normal exit cleaned within 15s'
+    Add-Result 'maintenance-temp-lifecycle' 'PASS' 'stale >24h swept; active copy had exe+dll; retrying helper observed; normal exit cleaned within 15s'
 }
 
 function Test-Failure {
@@ -761,10 +786,10 @@ function Test-Failure {
     # 1) UI missing -> helper silent uninstall succeeds.
     Remove-TestState
     Install-Fresh 'failure-ui-missing'
-    Remove-Item -LiteralPath (Join-Path $TestInstallDir 'FreeAssetFilterUninstall.exe') -Force
-    Assert-True (-not (Test-Path -LiteralPath (Join-Path $TestInstallDir 'FreeAssetFilterUninstall.exe'))) 'injected: UI missing'
-    $env:FAF_DIAG_PATH = Join-Path $EvidenceDir 'failure-ui-missing.diag.log'
-    Remove-Item Env:\FAF_QA_UI_RUNTIME_EXTRA -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path $TestInstallDir 'SopeekUninstall.exe') -Force
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $TestInstallDir 'SopeekUninstall.exe'))) 'injected: UI missing'
+    $env:SPK_DIAG_PATH = Join-Path $EvidenceDir 'failure-ui-missing.diag.log'
+    Remove-Item Env:\SPK_QA_UI_RUNTIME_EXTRA -ErrorAction SilentlyContinue
     $p = Start-Process -FilePath (Join-Path $TestInstallDir 'UninstallHelper.exe') -ArgumentList @('/S','/installdir',"$TestInstallDir") -PassThru
     Assert-True ($p.WaitForExit(90000)) 'UI missing: helper silent uninstall exited'
     Assert-True ($p.ExitCode -eq 0) "UI missing: silent uninstall exit 0 (actual $($p.ExitCode))"
@@ -772,8 +797,8 @@ function Test-Failure {
     while ((Test-Path -LiteralPath $TestUninstallKey) -and ((Get-Date) -lt $deadline)) { Start-Sleep -Milliseconds 300 }
     Assert-True (-not (Test-Path -LiteralPath $TestUninstallKey)) 'UI missing: uninstall key removed'
     $deadline = (Get-Date).AddSeconds(30)
-    while ((Test-Path -LiteralPath (Join-Path $TestInstallDir 'FreeAssetFilter.exe')) -and ((Get-Date) -lt $deadline)) { Start-Sleep -Milliseconds 300 }
-    Assert-True (-not (Test-Path -LiteralPath (Join-Path $TestInstallDir 'FreeAssetFilter.exe'))) 'UI missing: app exe removed'
+    while ((Test-Path -LiteralPath (Join-Path $TestInstallDir 'Sopeek.exe')) -and ((Get-Date) -lt $deadline)) { Start-Sleep -Milliseconds 300 }
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $TestInstallDir 'Sopeek.exe'))) 'UI missing: app exe removed'
     Add-Result 'failure-ui-missing' 'PASS' 'silent uninstall exit 0; key/app removed'
 
     # 2) helper missing -> installed uninstall entry unavailable (observed, no deletion).
@@ -783,7 +808,7 @@ function Test-Failure {
     $uninstallString = (Get-ItemProperty -LiteralPath $TestUninstallKey).UninstallString
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $TestInstallDir 'UninstallHelper.exe'))) 'injected: helper missing'
     Assert-True ($uninstallString -match 'UninstallHelper\.exe') 'UninstallString still points at missing helper'
-    Assert-True (Test-Path -LiteralPath (Join-Path $TestInstallDir 'FreeAssetFilter.exe')) 'helper missing: app exe untouched'
+    Assert-True (Test-Path -LiteralPath (Join-Path $TestInstallDir 'Sopeek.exe')) 'helper missing: app exe untouched'
     Assert-True (Test-Path -LiteralPath $TestUninstallKey) 'helper missing: uninstall key untouched'
     Add-Result 'failure-helper-missing' 'PASS' 'entry points at missing helper; state observed unchanged'
 
@@ -800,7 +825,7 @@ function Test-Failure {
     if (-not $p.WaitForExit(30000)) { try { $p.Kill($true) } catch {} }
     $stage = Read-IniValue (Join-Path $TestInstallDir 'uninstall-result.ini') 'uninstall' 'stage'
     Assert-True ($stage -eq 'cancelled') "UI cancel stage=cancelled (actual '$stage')"
-    Assert-True (Test-Path -LiteralPath (Join-Path $TestInstallDir 'FreeAssetFilter.exe')) 'UI cancel kept app exe'
+    Assert-True (Test-Path -LiteralPath (Join-Path $TestInstallDir 'Sopeek.exe')) 'UI cancel kept app exe'
     Assert-True (Test-Path -LiteralPath $TestUninstallKey) 'UI cancel kept uninstall key'
     Add-Result 'failure-ui-cancel' 'PASS' "exit=$($p.ExitCode); stage=cancelled; no deletion"
 
@@ -853,7 +878,7 @@ try {
     } else {
         Write-Log 'cleanup skipped (-Keep)'
     }
-    Remove-Item Env:\FAF_DIAG_PATH, Env:\FAF_QA_INSTALL_OPTS, Env:\FAF_QA_MAINTENANCE_EXTRA, Env:\FAF_QA_UI_RUNTIME_EXTRA, Env:\FAF_QA_FAIL_UI_COPY -ErrorAction SilentlyContinue
+    Remove-Item Env:\SPK_DIAG_PATH, Env:\SPK_QA_INSTALL_OPTS, Env:\SPK_QA_MAINTENANCE_EXTRA, Env:\SPK_QA_UI_RUNTIME_EXTRA, Env:\SPK_QA_FAIL_UI_COPY -ErrorAction SilentlyContinue
     $summary = [pscustomobject]@{
         mode = $Mode
         setup = $SetupPath

@@ -26,8 +26,8 @@ from PySide6.QtGui import QDropEvent
 from PySide6.QtWidgets import QApplication
 
 # 浮窗模块内部使用短路径导入（from theme import tm / components.*）：
-# 需把 freeassetfilter/ui 置于 sys.path（与其他 UI 测试模块同约定）。
-_UI_ROOT: str = str(Path(__file__).resolve().parents[2] / "freeassetfilter" / "ui")
+# 需把 sopeek/ui 置于 sys.path（与其他 UI 测试模块同约定）。
+_UI_ROOT: str = str(Path(__file__).resolve().parents[2] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
@@ -70,7 +70,7 @@ def test_floating_pool_drag_in_and_not_in_taskbar(
     if not _display_available():
         pytest.skip("需要真实显示器（offscreen 无法建立真实顶层窗口）")
 
-    from freeassetfilter.ui.floating_pool_window import FloatingPoolWindow
+    from sopeek.ui.floating_pool_window import FloatingPoolWindow
 
     path = tmp_path / "gui_floating_drop.txt"
     path.write_text("gui", encoding="utf-8")

@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Tuple
 import pytest
 from PySide6.QtGui import QColor, QPixmap
 
-from freeassetfilter.services.file_icon_manager import FileIconManager
+from sopeek.services.file_icon_manager import FileIconManager
 from tests.support.data_factories import make_image
 from tests.support.parity import pixel_hash
 from tests.support.qt_helpers import assert_pixmap_nonempty, flush_widget_queue
@@ -184,7 +184,7 @@ class TestMediaIconKeyIsolation:
         Path(video_a).write_bytes(b"fake-a")
         Path(video_b).write_bytes(b"fake-b")
         monkeypatch.setattr(
-            "freeassetfilter.services.file_icon_manager.get_existing_thumbnail_path",
+            "sopeek.services.file_icon_manager.get_existing_thumbnail_path",
             lambda file_path: thumb_path if file_path == video_a else None,
         )
         return {"video_a": video_a, "video_b": video_b, "thumb_path": thumb_path}
@@ -281,7 +281,7 @@ class TestThemeSignatureCaching:
             tmp_path: pytest 临时目录。
         """
         monkeypatch.setattr(
-            "freeassetfilter.services.file_icon_manager.get_existing_thumbnail_path",
+            "sopeek.services.file_icon_manager.get_existing_thumbnail_path",
             lambda file_path: None,
         )
         png_path: str = make_image(tmp_path / "no_thumb.png", fmt="PNG")
@@ -318,7 +318,7 @@ class TestThemeSignatureCaching:
         video: str = str(tmp_path / "clip.mp4")
         Path(video).write_bytes(b"fake-video")
         monkeypatch.setattr(
-            "freeassetfilter.services.file_icon_manager.get_existing_thumbnail_path",
+            "sopeek.services.file_icon_manager.get_existing_thumbnail_path",
             lambda file_path: thumb_path,
         )
         info: Dict[str, Any] = _file_info("mp4", path=video)
@@ -347,7 +347,7 @@ class TestThemeSignatureCaching:
             tmp_path: pytest 临时目录。
         """
         monkeypatch.setattr(
-            "freeassetfilter.services.file_icon_manager.get_existing_thumbnail_path",
+            "sopeek.services.file_icon_manager.get_existing_thumbnail_path",
             lambda file_path: None,
         )
         png_path: str = make_image(tmp_path / "clear_me.png", fmt="PNG")
@@ -491,7 +491,7 @@ class TestMissingFallback:
             monkeypatch: pytest monkeypatch。
         """
         monkeypatch.setattr(
-            "freeassetfilter.services.file_icon_manager.get_file_icon_path",
+            "sopeek.services.file_icon_manager.get_file_icon_path",
             lambda _info: "C:/does/not/exist/icon.svg",
         )
         pixmap = icon_manager.get_icon_pixmap(_file_info("mp3"), 48, 1.0)
@@ -508,7 +508,7 @@ class TestMissingFallback:
         """
         sentinel: str = "C:/picked/icon.svg"
         monkeypatch.setattr(
-            "freeassetfilter.services.file_icon_manager.get_file_icon_path",
+            "sopeek.services.file_icon_manager.get_file_icon_path",
             lambda _info: sentinel,
         )
         assert icon_manager.get_icon_path(_file_info("mp3")) == sentinel
@@ -618,7 +618,7 @@ class TestNativeSvgWiring:
     @pytest.fixture
     def native_tm(self, monkeypatch: Any) -> None:
         """把 svg_renderer.tm stub 成 native 编译期常量（深色主题镜像）。"""
-        import freeassetfilter.core.preview.svg_renderer as svg_mod
+        import sopeek.core.preview.svg_renderer as svg_mod
 
         monkeypatch.setattr(
             svg_mod,
@@ -637,7 +637,7 @@ class TestNativeSvgWiring:
         theme_colors: List[str],
         native_tm: None,
         monkeypatch: Any,
-        faf_core_available: bool,
+        spk_core_available: bool,
     ) -> None:
         """happy：native 换色渲染的图标像素 hash 与 Python 回退一致。
 
@@ -646,16 +646,16 @@ class TestNativeSvgWiring:
             theme_colors: 固定主题色 fixture（缓存键确定性）。
             native_tm: tm stub fixture。
             monkeypatch: pytest monkeypatch fixture。
-            faf_core_available: faf_core.dll 可用性（session 探测）。
+            spk_core_available: spk_core.dll 可用性（session 探测）。
         """
-        if not faf_core_available:
-            pytest.skip("faf_core.dll 不可用，跳过真实 native 像素对拍")
+        if not spk_core_available:
+            pytest.skip("spk_core.dll 不可用，跳过真实 native 像素对拍")
         info: Dict[str, Any] = _file_info("mp3")
         pixmap_native = icon_manager.get_icon_pixmap(info, 48, 1.0)
         assert_pixmap_nonempty(pixmap_native)
         icon_manager.clear_cache()
 
-        import freeassetfilter.core.native.bridges.faf_core_bridge as br_mod
+        import sopeek.core.native.bridges.spk_core_bridge as br_mod
 
         class _NoneBridge:
             available = True
@@ -663,7 +663,7 @@ class TestNativeSvgWiring:
             def replace_svg_colors(self, *args: Any, **kwargs: Any) -> None:
                 return None
 
-        monkeypatch.setattr(br_mod, "get_faf_core_bridge", lambda: _NoneBridge())
+        monkeypatch.setattr(br_mod, "get_spk_core_bridge", lambda: _NoneBridge())
         pixmap_fallback = icon_manager.get_icon_pixmap(info, 48, 1.0)
         assert_pixmap_nonempty(pixmap_fallback)
         assert pixel_hash(pixmap_native) == pixel_hash(pixmap_fallback)

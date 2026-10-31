@@ -29,7 +29,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import pytest
 
-from freeassetfilter.services.office_cache import (
+from sopeek.services.office_cache import (
     MAX_OFFICE_CACHE_AGE_DAYS,
     OFFICE_CACHE_TARGET_BYTES,
     cleanup_cache,
@@ -39,15 +39,15 @@ from freeassetfilter.services.office_cache import (
     start_periodic_cleanup,
     stop_periodic_cleanup,
 )
-from freeassetfilter.services.office_converter import (
+from sopeek.services.office_converter import (
     ERROR_MESSAGE,
     ConversionResult,
     OfficeConverter,
     clear_active_lo_popen,
     get_active_lo_popen,
 )
-import freeassetfilter.services.office_converter as _oc_module
-from freeassetfilter.services.office_converter_worker import OfficeConverterWorker
+import sopeek.services.office_converter as _oc_module
+from sopeek.services.office_converter_worker import OfficeConverterWorker
 from tests.support.qt_helpers import flush_widget_queue, wait_for_signal
 
 pytestmark = pytest.mark.unit
@@ -79,7 +79,7 @@ def office_cache_redirect(monkeypatch: Any, tmp_path: Path) -> Path:
     target: Path = tmp_path / "office_cache"
     target.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(
-        "freeassetfilter.services.office_cache.office_cache_dir",
+        "sopeek.services.office_cache.office_cache_dir",
         lambda: target,
     )
     return target
@@ -451,7 +451,7 @@ class TestOfficeCacheModule:
         for index in range(4):
             (cache_dir / f"{index}.pdf").write_bytes(b"x" * 40)
         monkeypatch.setattr(
-            "freeassetfilter.services.office_cache.OFFICE_CACHE_TARGET_BYTES", 60
+            "sopeek.services.office_cache.OFFICE_CACHE_TARGET_BYTES", 60
         )
         removed: int = cleanup_cache(cache_dir)
         assert removed >= 1
@@ -476,7 +476,7 @@ class TestOfficeCacheModule:
         old_time: float = time.time() - 10 * 86400
         os.utime(stale, (old_time, old_time))
         monkeypatch.setattr(
-            "freeassetfilter.services.office_cache.MAX_OFFICE_CACHE_AGE_DAYS", 7
+            "sopeek.services.office_cache.MAX_OFFICE_CACHE_AGE_DAYS", 7
         )
         cleanup_cache(cache_dir)
         assert fresh.exists()

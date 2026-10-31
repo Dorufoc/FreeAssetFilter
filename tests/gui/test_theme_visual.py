@@ -15,11 +15,11 @@
 * **ui/theme ThemeManager 不在根 conftest 的 ``reset_singletons`` 清单内**
   ——本文件用 autouse fixture 在每个测试前后手动归零
   ``ThemeManager._instance = None`` / ``ThemeManager._initialized = False``。
-* ui 短路径导入依赖 ``freeassetfilter/ui`` 位于 ``sys.path``（参照
+* ui 短路径导入依赖 ``sopeek/ui`` 位于 ``sys.path``（参照
   tests/unit/ui/test_ui_theme.py 的 bootstrap），并且**必须先 import
-  ``freeassetfilter.ui.theme``** 注册 ``sys.modules['theme']`` 别名，
+  ``sopeek.ui.theme``** 注册 ``sys.modules['theme']`` 别名，
   保证 styled 组件内 ``from theme import tm`` 与本文件的
-  ``from freeassetfilter.ui.theme import tm`` 收敛到**同一单例**，避免
+  ``from sopeek.ui.theme import tm`` 收敛到**同一单例**，避免
   双实例 Identity 分裂。
 * 每个测试显式依赖 ``qapp``；``pytestmark = pytest.mark.gui``；截图只写
   ``screenshots_dir``（gui conftest fixture，自动建目录）。
@@ -38,18 +38,18 @@ import pytest
 from PySide6.QtCore import QSize
 
 # UI 短路径导入 bootstrap（参照 tests/unit/ui/test_ui_theme.py:31-33）。
-_UI_ROOT: str = str(Path(__file__).resolve().parents[2] / "freeassetfilter" / "ui")
+_UI_ROOT: str = str(Path(__file__).resolve().parents[2] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
 # 必须先导入并注册 'theme' 模块别名（ui/theme/__init__.py:29-30），
 # 保证 styled 组件内 `from theme import tm` 与本文件拿到同一个单例。
-import freeassetfilter.ui.theme  # noqa: F401  (注册 sys.modules['theme'] 别名，副作用导入)
-from freeassetfilter.ui.theme import tm
-from freeassetfilter.ui.theme.theme_manager import ThemeManager
+import sopeek.ui.theme  # noqa: F401  (注册 sys.modules['theme'] 别名，副作用导入)
+from sopeek.ui.theme import tm
+from sopeek.ui.theme.theme_manager import ThemeManager
 
-from freeassetfilter.ui.components.styled_button import StyledButton
-from freeassetfilter.ui.components.styled_lineedit import StyledLineEdit
+from sopeek.ui.components.styled_button import StyledButton
+from sopeek.ui.components.styled_lineedit import StyledLineEdit
 
 from scripts.qt_capture import capture_widget
 from tests.support.parity import pixel_hash
@@ -333,7 +333,7 @@ class TestAccentLiveRefresh:
             qapp: 会话级 QApplication。
             tmp_path: pytest 临时目录。
         """
-        from freeassetfilter.ui.floating_pool_window import _PoolItemRow
+        from sopeek.ui.floating_pool_window import _PoolItemRow
 
         png_path: Path = tmp_path / "row_icon.png"
         png_path.write_bytes(b"fake-png")
@@ -374,7 +374,7 @@ class TestAccentLiveRefresh:
             qapp: 会话级 QApplication。
             tmp_path: pytest 临时目录。
         """
-        from freeassetfilter.ui.layout.preview.unsupported_previewer_layout import (
+        from sopeek.ui.layout.preview.unsupported_previewer_layout import (
             UnsupportedPreviewerLayout,
         )
 

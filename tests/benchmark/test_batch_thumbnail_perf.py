@@ -48,7 +48,7 @@ def dataset(tmp_path_factory: Any) -> Any:
     Returns:
         PerfBenchmarkDataset: 数据集对象。
     """
-    base_dir: Any = tmp_path_factory.mktemp("faf_bench_batch")
+    base_dir: Any = tmp_path_factory.mktemp("spk_bench_batch")
     return create_benchmark_dataset(
         str(base_dir), image_count=20, svg_count=5, archive_count=1
     )
@@ -65,7 +65,7 @@ def thumb_manager(tmp_path: Any, qapp: Any) -> Any:
     Returns:
         ThumbnailManager: 绑定临时缓存目录的新实例。
     """
-    from freeassetfilter.core.managers.thumbnail_manager import ThumbnailManager
+    from sopeek.core.managers.thumbnail_manager import ThumbnailManager
 
     manager = ThumbnailManager()
     thumb_dir: str = str(tmp_path / "thumbs")

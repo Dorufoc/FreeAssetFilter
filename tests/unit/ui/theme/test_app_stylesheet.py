@@ -31,12 +31,12 @@ import pytest
 from PySide6.QtWidgets import QWidget
 
 # 模块内部使用短路径导入（from theme.system_accent import ...），
-# 需要 freeassetfilter/ui 位于 sys.path。
-_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "freeassetfilter" / "ui")
+# 需要 sopeek/ui 位于 sys.path。
+_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-from freeassetfilter.ui.theme.app_stylesheet import (  # noqa: E402
+from sopeek.ui.theme.app_stylesheet import (  # noqa: E402
     DIRECT_SETSTYLESHEET_SITES,
     _AppStylesheetRegistry,
     _resolve_mode,
@@ -46,7 +46,7 @@ from freeassetfilter.ui.theme.app_stylesheet import (  # noqa: E402
     scope_qss,
     stylesheet_mode,
 )
-from freeassetfilter.ui.theme.app_stylesheet import (  # noqa: E402
+from sopeek.ui.theme.app_stylesheet import (  # noqa: E402
     unregister_widget_qss,
 )
 
@@ -94,8 +94,8 @@ class TestScopeQss:
         scoped = scope_qss("t1", "background: transparent; border: none;")
         rules = _parse_rules(scoped)
         selectors = [sel for sel, _ in rules]
-        assert '*[fafQssId="t1"]' in selectors
-        assert '[fafQssId="t1"] *' in selectors
+        assert '*[spkQssId="t1"]' in selectors
+        assert '[spkQssId="t1"] *' in selectors
         assert all(
             "background: transparent;" in decls for _, decls in rules
         )
@@ -106,15 +106,15 @@ class TestScopeQss:
         rules = _parse_rules(scoped)
         assert len(rules) == 1
         selector, decls = rules[0]
-        assert '[fafQssId="t2"] QLabel' in selector
-        assert 'QLabel[fafQssId="t2"]' in selector
+        assert '[spkQssId="t2"] QLabel' in selector
+        assert 'QLabel[spkQssId="t2"]' in selector
         assert "color: #888888;" in decls
 
     def test_declarations_then_rule_split(self) -> None:
         """回归：裸声明 + 后续选择器规则不再被切碎（储存池丢样式根因）。
 
         历史缺陷：``[^{}]+`` 会把声明的 ``rgba(...)`` 逗号当选择器分隔符，
-        生成 ``[fafQssId=...] background-color: rgba(255, ...`` 之类的畸形
+        生成 ``[spkQssId=...] background-color: rgba(255, ...`` 之类的畸形
         规则；Qt 解析器遇到畸形规则后会丢弃整张样式表后续内容，
         导致储存池内容区/底栏/空池提示整体丢样式。
         """
@@ -133,8 +133,8 @@ class TestScopeQss:
         assert "border-radius: 8px;" in joined
         # 动态属性选择器规则完整保留（后代 + 自身两种作用域形态）
         selectors = " ".join(sel for sel, _ in rules)
-        assert '[fafQssId="t3"] QFrame[dragActive="true"]' in selectors
-        assert 'QFrame[fafQssId="t3"][dragActive="true"]' in selectors
+        assert '[spkQssId="t3"] QFrame[dragActive="true"]' in selectors
+        assert 'QFrame[spkQssId="t3"][dragActive="true"]' in selectors
         assert "border: 2px dashed #4a90d9;" in joined
 
     def test_explicit_universal_block_with_rule(self) -> None:
@@ -149,8 +149,8 @@ class TestScopeQss:
         rules = _parse_rules(scoped)
         selectors = [sel for sel, _ in rules]
         # ``*`` 选择器与裸声明同语义：自身 + 子树两条规则，外加拖放反馈规则
-        assert '*[fafQssId="t4"]' in selectors
-        assert '[fafQssId="t4"] *' in selectors
+        assert '*[spkQssId="t4"]' in selectors
+        assert '[spkQssId="t4"] *' in selectors
         assert any('dragActive="true"' in sel for sel in selectors)
         joined_decls = " ".join(decls for _, decls in rules)
         assert "background-color: rgba(255,255,255,0.05);" in joined_decls
@@ -169,8 +169,8 @@ class TestScopeQss:
         assert scope_qss("t6", "   \n  ") == ""
 
 
-#: 包根：freeassetfilter/（本文件位于 tests/unit/ui/theme/ 下，向上四级）。
-_PACKAGE_ROOT: Path = Path(__file__).resolve().parents[4] / "freeassetfilter"
+#: 包根：sopeek/（本文件位于 tests/unit/ui/theme/ 下，向上四级）。
+_PACKAGE_ROOT: Path = Path(__file__).resolve().parents[4] / "sopeek"
 
 
 class _DirectStylesheetCollector(ast.NodeVisitor):
@@ -242,21 +242,21 @@ class _CountingWidget(QWidget):
 
 
 class TestDeliveryModeResolution:
-    """下发模式解析：默认 widget（性能优先），``FAF_QSS_MODE=app`` 回退。"""
+    """下发模式解析：默认 widget（性能优先），``SPK_QSS_MODE=app`` 回退。"""
 
     def test_default_is_widget(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """未设置环境变量时默认逐控件下发。"""
-        monkeypatch.delenv("FAF_QSS_MODE", raising=False)
+        monkeypatch.delenv("SPK_QSS_MODE", raising=False)
         assert _resolve_mode() == "widget"
         assert stylesheet_mode() in ("widget", "app")
 
     def test_app_mode_via_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """``FAF_QSS_MODE=app`` 解析为历史应用级模式。"""
-        monkeypatch.setenv("FAF_QSS_MODE", "app")
+        """``SPK_QSS_MODE=app`` 解析为历史应用级模式。"""
+        monkeypatch.setenv("SPK_QSS_MODE", "app")
         assert _resolve_mode() == "app"
-        monkeypatch.setenv("FAF_QSS_MODE", "WIDGET")
+        monkeypatch.setenv("SPK_QSS_MODE", "WIDGET")
         assert _resolve_mode() == "widget"
-        monkeypatch.setenv("FAF_QSS_MODE", "nonsense")
+        monkeypatch.setenv("SPK_QSS_MODE", "nonsense")
         assert _resolve_mode() == "widget"
 
 
@@ -299,7 +299,7 @@ class TestWidgetModeDelivery:
             registry.register(widget, "color: red;")
             registry.unregister(widget)
             assert widget.styleSheet() == ""
-            assert widget.property("fafQssId") in ("", None)
+            assert widget.property("spkQssId") in ("", None)
             assert registry.registered_count() == 0
         finally:
             widget.deleteLater()
@@ -349,7 +349,7 @@ class TestWidgetModeDelivery:
             assert widget.sheet_calls == []
             combined = registry.build_combined()
             # app 模式渲染为作用域形态（自身 + 后代两种锚定）
-            assert 'QLabel[fafQssId="' in combined
+            assert 'QLabel[spkQssId="' in combined
             assert "color: #123456;" in combined
         finally:
             widget.deleteLater()

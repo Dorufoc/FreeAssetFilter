@@ -16,7 +16,7 @@ import types
 
 import pytest
 
-from freeassetfilter.ui.mica import winapi
+from sopeek.ui.mica import winapi
 
 
 def _fake_dwmapi(captured) -> object:

@@ -28,7 +28,7 @@ from unittest.mock import patch
 
 import pytest
 
-from freeassetfilter.core.workers.file_list_loader import FileListLoaderThread
+from sopeek.core.workers.file_list_loader import FileListLoaderThread
 from tests.support.data_factories import make_image, make_text
 
 pytestmark = pytest.mark.unit

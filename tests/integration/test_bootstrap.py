@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-# targets: freeassetfilter.app.main, freeassetfilter.app.instance_guard,
-#          freeassetfilter.app.startup
+# targets: sopeek.app.main, sopeek.app.instance_guard,
+#          sopeek.app.startup
 """新版应用引导层（app/ 包）集成测试。
 
 引导层已拆分为三个模块（main / instance_guard / startup），模块级零副作用
 （导入不再安装 fd 捕获 / faulthandler / 异常钩子），本文件直接导入并覆盖：
 
-* 内部子进程参数分流（--faf-thumbnail-worker）
+* 内部子进程参数分流（--spk-thumbnail-worker）
 * 右键 ``--open-path`` 解析与初始导航路径推导
 * 运行时实例信息（runtime_instance.json）写/读/删往返
 * Windows 进程守卫纯函数边界
@@ -29,7 +29,7 @@ pytestmark = pytest.mark.integration
 @pytest.fixture
 def app_main() -> Any:
     """导入引导层 main 模块（模块级无副作用）。"""
-    import freeassetfilter.app.main as main_module
+    import sopeek.app.main as main_module
 
     return main_module
 
@@ -37,7 +37,7 @@ def app_main() -> Any:
 @pytest.fixture
 def instance_guard() -> Any:
     """导入单实例守卫模块。"""
-    import freeassetfilter.app.instance_guard as guard_module
+    import sopeek.app.instance_guard as guard_module
 
     return guard_module
 
@@ -45,16 +45,16 @@ def instance_guard() -> Any:
 @pytest.fixture
 def startup() -> Any:
     """导入启动任务编排模块。"""
-    import freeassetfilter.app.startup as startup_module
+    import sopeek.app.startup as startup_module
 
     return startup_module
 
 
 class TestInternalWorkerArgs:
-    """--faf-thumbnail-worker 内部分流。"""
+    """--spk-thumbnail-worker 内部分流。"""
 
     def test_thumbnail_worker_args(self, app_main: Any) -> None:
-        argv = ["prog", "--faf-thumbnail-worker", "C:/v.mp4", "1.4", "1"]
+        argv = ["prog", "--spk-thumbnail-worker", "C:/v.mp4", "1.4", "1"]
         kind, payload = app_main._parse_internal_worker_args(argv)
         assert kind == "thumbnail"
         assert payload["file_path"] == "C:/v.mp4"
@@ -66,7 +66,7 @@ class TestInternalWorkerArgs:
 
     def test_insufficient_worker_args_returns_none(self, app_main: Any) -> None:
         assert app_main._parse_internal_worker_args(
-            ["prog", "--faf-thumbnail-worker"]
+            ["prog", "--spk-thumbnail-worker"]
         ) == (None, {})
 
 
@@ -135,6 +135,85 @@ class TestRuntimeInstanceInfo:
         assert instance_guard._read_runtime_instance_info() is None
 
 
+class _FakeWin32Function:
+    """记录 argtypes/restype 赋值的可调用桩。"""
+
+    def __init__(self, result: Any = None) -> None:
+        self.result = result
+        self.argtypes = None
+        self.restype = None
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        return self.result
+
+
+class _FakeKernel32:
+    """CreateMutexW 桩：固定句柄与固定 GetLastError 返回值。"""
+
+    def __init__(self, mutex_handle: int, last_error: int) -> None:
+        self._last_error = last_error
+        self.CreateMutexW = _FakeWin32Function(mutex_handle)
+        self.closed_handles: list[int] = []
+
+    def GetLastError(self) -> int:
+        return self._last_error
+
+    def CloseHandle(self, handle: int) -> bool:
+        self.closed_handles.append(handle)
+        return True
+
+
+class TestSingleInstanceAcquisition:
+    """单实例互斥体：第二个实例必须静默快速退出，不得弹模态框。"""
+
+    def test_second_instance_exits_zero_without_dialog(
+        self, instance_guard: Any, monkeypatch: Any
+    ) -> None:
+        """ERROR_ALREADY_EXISTS → SystemExit(0)，关闭句柄，不调用任何弹窗。"""
+        import ctypes
+        from types import SimpleNamespace
+
+        fake = _FakeKernel32(mutex_handle=4242, last_error=183)
+        monkeypatch.setattr(ctypes, "windll", SimpleNamespace(kernel32=fake))
+        dialog_calls: list[Any] = []
+        error_calls: list[Any] = []
+        monkeypatch.setattr(
+            instance_guard,
+            "_show_already_running_dialog_and_handle_restart",
+            lambda handle: dialog_calls.append(handle),
+        )
+        monkeypatch.setattr(
+            instance_guard,
+            "_show_error_box",
+            lambda *args: error_calls.append(args),
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            instance_guard._acquire_single_instance()
+
+        assert exc_info.value.code == 0
+        assert dialog_calls == []
+        assert error_calls == []
+        assert fake.closed_handles == [4242]
+
+    def test_first_instance_returns_mutex_handle(
+        self, instance_guard: Any, monkeypatch: Any
+    ) -> None:
+        """首个实例取得句柄后直接返回，且不关闭句柄。"""
+        import ctypes
+        from types import SimpleNamespace
+
+        fake = _FakeKernel32(mutex_handle=4242, last_error=0)
+        monkeypatch.setattr(ctypes, "windll", SimpleNamespace(kernel32=fake))
+
+        assert instance_guard._acquire_single_instance() == 4242
+        assert fake.closed_handles == []
+
+    def test_mutex_name_is_stable(self, instance_guard: Any) -> None:
+        """命名互斥体名称是跨进程契约，不得改动。"""
+        assert instance_guard._MUTEX_NAME == "Sopeek_SingleInstance_Mutex"
+
+
 class TestProcessGuards:
     """进程守卫纯函数边界（未运行 Windows 时保守为 False/None）。"""
 
@@ -174,7 +253,7 @@ class TestSettingsInit:
     def test_init_settings_manager_uses_v2(self, qapp: Any, app_main: Any, monkeypatch: Any) -> None:
         fake = FakeV2Settings()
         monkeypatch.setattr(
-            "freeassetfilter.core.managers.settings_manager_v2.SettingsManagerV2",
+            "sopeek.core.managers.settings_manager_v2.SettingsManagerV2",
             lambda: fake,
         )
         app_main._init_settings_manager(qapp)
@@ -188,7 +267,7 @@ class TestHardwareAccelerationRelaunch:
     def test_marker_prevents_recursive_relaunch(
         self, app_main: Any, monkeypatch: Any
     ) -> None:
-        """子进程已带 FAF_GPU_LAUNCHED 标记时直接继续，不再读设置。"""
+        """子进程已带 SPK_GPU_LAUNCHED 标记时直接继续，不再读设置。"""
         monkeypatch.setenv(app_main._GPU_LAUNCHED_ENV, "1")
         called = {"settings": False}
 
@@ -206,7 +285,7 @@ class TestHardwareAccelerationRelaunch:
         self, app_main: Any, monkeypatch: Any, tmp_path: Path
     ) -> None:
         """开启且启动器就绪：拉起启动器并注入防递归标记与父 PID。"""
-        exe = tmp_path / "FAF-Launcher.exe"
+        exe = tmp_path / "SPK-Launcher.exe"
         exe.write_bytes(b"MZ")
         monkeypatch.delenv(app_main._GPU_LAUNCHED_ENV, raising=False)
         monkeypatch.setattr(
@@ -214,7 +293,7 @@ class TestHardwareAccelerationRelaunch:
         )
         monkeypatch.setattr(app_main, "_gpu_launcher_ready", lambda: True)
 
-        import freeassetfilter.core.native.platform_gpu as gpu_mod
+        import sopeek.core.native.platform_gpu as gpu_mod
 
         monkeypatch.setattr(gpu_mod, "launcher_exe_path", lambda: exe)
         calls: dict[str, Any] = {}
@@ -278,7 +357,7 @@ class TestStartupController:
         self, controller: Any, monkeypatch: Any
     ) -> None:
         """清理周期参数透传到 clean_thumbnails（修复硬编码 7 天）。"""
-        from freeassetfilter.core.managers import thumbnail_manager as tm_mod
+        from sopeek.core.managers import thumbnail_manager as tm_mod
 
         received: list = []
 
@@ -294,8 +373,8 @@ class TestStartupController:
         self, controller: Any, monkeypatch: Any
     ) -> None:
         """调度读取 cache_cleanup_period 并在执行时按配置值调用。"""
-        import freeassetfilter.app.startup as startup_mod
-        from freeassetfilter.core.managers import thumbnail_manager as tm_mod
+        import sopeek.app.startup as startup_mod
+        from sopeek.core.managers import thumbnail_manager as tm_mod
 
         calls: list = []
         scheduled: list = []
@@ -348,7 +427,7 @@ class TestStartupWarmupThread:
             calls.append("ffmpeg")
 
         monkeypatch.setattr(
-            "freeassetfilter.core.native.bridges.media_probe.warmup_ffmpeg_tools", _ffmpeg
+            "sopeek.core.native.bridges.media_probe.warmup_ffmpeg_tools", _ffmpeg
         )
         thread = startup.StartupWarmupThread()
         thread.run()
@@ -364,7 +443,7 @@ class TestStartupWarmupThread:
             raise RuntimeError("boom")
 
         monkeypatch.setattr(
-            "freeassetfilter.core.native.bridges.media_probe.warmup_ffmpeg_tools", _ffmpeg
+            "sopeek.core.native.bridges.media_probe.warmup_ffmpeg_tools", _ffmpeg
         )
         thread = startup.StartupWarmupThread()
         thread.run()

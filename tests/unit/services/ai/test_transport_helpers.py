@@ -1,5 +1,5 @@
-from freeassetfilter.services.ai.models import AIAccountConfig, AIProvider
-from freeassetfilter.services.ai.transport import HTTPTransport
+from sopeek.services.ai.models import AIAccountConfig, AIProvider
+from sopeek.services.ai.transport import HTTPTransport
 
 
 def test_deepseek_management_urls(monkeypatch):

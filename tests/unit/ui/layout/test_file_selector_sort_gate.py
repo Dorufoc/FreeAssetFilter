@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """文件选择器排序门控测试（P1.2）。
 
-P0 实测结论：native ``faf_sort_entries`` 的 JSON 往返成本高于 Python
+P0 实测结论：native ``spk_sort_entries`` 的 JSON 往返成本高于 Python
 ``sort`` 本身（2000 条 ≥3.1ms vs 0.32ms），且 30k 条会先撞 8MB 上限再
 整体回退（白烧 115.2ms）。因此 ``NATIVE_SORT_ENABLED`` 默认关闭。
 
@@ -10,7 +10,7 @@ P0 实测结论：native ``faf_sort_entries`` 的 JSON 往返成本高于 Python
 1. 默认配置下 ``_sort_entries`` **不调用** native；
 2. 8 种排序模式的结果与「预排序 + ``_apply_sort``」oracle 逐项一致
    （含 mode 2–7 的 equal-key 平局）；
-3. 显式打开 ``FAF_NATIVE_SORT`` 且超过门槛时，native 路径才会被调用。
+3. 显式打开 ``SPK_NATIVE_SORT`` 且超过门槛时，native 路径才会被调用。
 
 验证命令：
     python -m pytest tests/unit/ui/layout/test_file_selector_sort_gate.py -v
@@ -24,12 +24,12 @@ from typing import Any, Dict, List
 
 import pytest
 
-_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "freeassetfilter" / "ui")
+_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-import freeassetfilter.ui.layout.file_selector_layout as fsl_mod  # noqa: E402
-from freeassetfilter.ui.layout.file_selector_layout import FileSelectorLayout  # noqa: E402
+import sopeek.ui.layout.file_selector_layout as fsl_mod  # noqa: E402
+from sopeek.ui.layout.file_selector_layout import FileSelectorLayout  # noqa: E402
 
 pytestmark = pytest.mark.unit
 

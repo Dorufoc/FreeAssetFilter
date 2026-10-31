@@ -18,8 +18,8 @@ from unittest import mock
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QWidget
 
-from freeassetfilter.ui.mica import material as material_mod
-from freeassetfilter.ui.mica.drag import ViewportLayer
+from sopeek.ui.mica import material as material_mod
+from sopeek.ui.mica.drag import ViewportLayer
 
 #: 模拟拖动事件数。
 EVENTS: int = 10_000

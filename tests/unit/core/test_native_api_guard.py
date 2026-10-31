@@ -18,8 +18,8 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from freeassetfilter.core.native import api as native_api
-from freeassetfilter.utils import perf_metrics
+from sopeek.core.native import api as native_api
+from sopeek.utils import perf_metrics
 
 pytestmark = pytest.mark.unit
 

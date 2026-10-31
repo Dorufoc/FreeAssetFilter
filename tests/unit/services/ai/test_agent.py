@@ -1,5 +1,5 @@
-from freeassetfilter.services.ai.agent import AIAgentService
-from freeassetfilter.services.ai.models import AIAccountConfig, AIProvider, ChatMessage, StreamEvent, ToolCallRequest, ToolDefinition
+from sopeek.services.ai.agent import AIAgentService
+from sopeek.services.ai.models import AIAccountConfig, AIProvider, ChatMessage, StreamEvent, ToolCallRequest, ToolDefinition
 
 
 class FakeAdapter:

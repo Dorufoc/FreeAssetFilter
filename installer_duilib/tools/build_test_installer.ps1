@@ -1,17 +1,17 @@
 $ErrorActionPreference = 'Stop'
-# T18: build an isolated FAF_TESTMODE NSIS test setup.
+# T18: build an isolated SPK_TESTMODE NSIS test setup.
 #
 # This script is build-only. It never runs the produced setup/uninstaller and
 # never writes HKCU/HKLM or %LOCALAPPDATA% install/data directories.
 #
 # Pipeline:
 #   1. snapshot the three production artifacts (hash + size + mtime);
-#   2. statically audit the installer.nsi FAF_TESTMODE / production branches;
-#   3. rebuild the FAF_TESTMODE GUI via tools\build_test_gui.ps1;
-#   4. compile installer.nsi with /DFAF_TESTMODE and an explicit test OutFile;
+#   2. statically audit the installer.nsi SPK_TESTMODE / production branches;
+#   3. rebuild the SPK_TESTMODE GUI via tools\build_test_gui.ps1;
+#   4. compile installer.nsi with /DSPK_TESTMODE and an explicit test OutFile;
 #   5. re-check production artifacts and objdump the test GUI.
 #
-# Output: <repo>\build\test-installer\FreeAssetFilter_NSIS_Test.exe
+# Output: <repo>\build\test-installer\Sopeek_NSIS_Test.exe
 
 $toolsDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $installerDir = Split-Path -Parent $toolsDir
@@ -23,12 +23,12 @@ $buildTestGui = Join-Path $toolsDir 'build_test_gui.ps1'
 $nsisExe = 'C:\Program Files (x86)\NSIS\makensis.exe'
 $objdumpExe = 'C:\msys64\mingw64\bin\objdump.exe'
 $mingwDll = 'C:\msys64\mingw64\bin\libwinpthread-1.dll'
-$testGui = Join-Path $testDir 'FreeAssetFilterInstaller.exe'
+$testGui = Join-Path $testDir 'SopeekInstaller.exe'
 $testDll = Join-Path $testDir 'libwinpthread-1.dll'
-$testGuiBuild = Join-Path $installerDir 'build\test-gui\FreeAssetFilterInstaller.exe'
-$testSetup = Join-Path $testDir 'FreeAssetFilter_NSIS_Test.exe'
-$productionSetup = Join-Path $buildDir 'FreeAssetFilter_NSIS_Setup.exe'
-$productionGui = Join-Path $buildDir 'installer\FreeAssetFilterInstaller.exe'
+$testGuiBuild = Join-Path $installerDir 'build\test-gui\SopeekInstaller.exe'
+$testSetup = Join-Path $testDir 'Sopeek_NSIS_Test.exe'
+$productionSetup = Join-Path $buildDir 'Sopeek_NSIS_Setup.exe'
+$productionGui = Join-Path $buildDir 'installer\SopeekInstaller.exe'
 $productionDll = Join-Path $buildDir 'installer\libwinpthread-1.dll'
 $productionPaths = @($productionGui, $productionDll, $productionSetup)
 
@@ -108,8 +108,8 @@ function Assert-ProductionUnchanged {
     }
 }
 
-# Parse installer.nsi compile-time branches under the assumption FAF_TESTMODE is
-# defined. Only FAF_TESTMODE conditionals affect the active-state calculation;
+# Parse installer.nsi compile-time branches under the assumption SPK_TESTMODE is
+# defined. Only SPK_TESTMODE conditionals affect the active-state calculation;
 # other !ifdef/!ifndef/!if directives are tracked solely for nesting balance.
 function Get-NsisTestModeLines {
     param([string[]]$Lines)
@@ -123,13 +123,13 @@ function Get-NsisTestModeLines {
         $lineNo = $i + 1
         $isElse = $false
 
-        if ($trim -match '^!ifdef\s+FAF_TESTMODE\b') {
+        if ($trim -match '^!ifdef\s+SPK_TESTMODE\b') {
             $stack.Push([pscustomobject]@{ IsTest = $true; ParentActive = $active; DefinedWhenTrue = $true })
-            # FAF_TESTMODE is defined for this build, so the if-branch is active.
+            # SPK_TESTMODE is defined for this build, so the if-branch is active.
         }
-        elseif ($trim -match '^!ifndef\s+FAF_TESTMODE\b') {
+        elseif ($trim -match '^!ifndef\s+SPK_TESTMODE\b') {
             $stack.Push([pscustomobject]@{ IsTest = $true; ParentActive = $active; DefinedWhenTrue = $false })
-            # FAF_TESTMODE is defined, so the ifndef-branch is inactive.
+            # SPK_TESTMODE is defined, so the ifndef-branch is inactive.
             $active = $false
         }
         elseif ($trim -match '^!(?:ifdef|ifndef|if|ifmacrodef|ifmacrondef)\b') {
@@ -141,11 +141,11 @@ function Get-NsisTestModeLines {
             if ($top.IsTest) {
                 $isElse = $true
                 if ($top.DefinedWhenTrue) {
-                    # !ifdef FAF_TESTMODE / !else => inactive because the macro is defined.
+                    # !ifdef SPK_TESTMODE / !else => inactive because the macro is defined.
                     $active = $false
                 }
                 else {
-                    # !ifndef FAF_TESTMODE / !else => active when the macro is defined.
+                    # !ifndef SPK_TESTMODE / !else => active when the macro is defined.
                     $active = $top.ParentActive
                 }
             }
@@ -179,7 +179,7 @@ function Assert-ActiveTestLine {
         $_.ActiveInTest -and $_.Text.Trim() -eq $Exact
     })
     if ($found.Count -eq 0) {
-        throw "NSIS test-isolation assertion failed ($Label): no active FAF_TESTMODE line equals: $Exact"
+        throw "NSIS test-isolation assertion failed ($Label): no active SPK_TESTMODE line equals: $Exact"
     }
     return $found[0]
 }
@@ -222,11 +222,11 @@ $nsiLines = Get-Content -LiteralPath $nsiPath
 $nsiRecords = @(Get-NsisTestModeLines -Lines $nsiLines)
 
 Assert-ActiveTestLine -Records $nsiRecords -Label 'test InstallDir' `
-    -Exact 'InstallDir "$LOCALAPPDATA\FreeAssetFilterTest"' | Out-Null
+    -Exact 'InstallDir "$LOCALAPPDATA\SopeekTest"' | Out-Null
 Assert-ActiveTestLine -Records $nsiRecords -Label 'test InstallDirRegKey' `
-    -Exact 'InstallDirRegKey HKCU "Software\FreeAssetFilterTest" "InstallDir"' | Out-Null
+    -Exact 'InstallDirRegKey HKCU "Software\SopeekTest" "InstallDir"' | Out-Null
 Assert-ActiveTestLine -Records $nsiRecords -Label 'test GUI File source' `
-    -Exact 'File "..\build\test-installer\FreeAssetFilterInstaller.exe"' | Out-Null
+    -Exact 'File "..\build\test-installer\SopeekInstaller.exe"' | Out-Null
 Assert-ActiveTestLine -Records $nsiRecords -Label 'test runtime File source' `
     -Exact 'File "..\build\test-installer\libwinpthread-1.dll"' | Out-Null
 
@@ -235,7 +235,7 @@ $badTestFileRefs = @($nsiRecords | Where-Object {
 })
 if ($badTestFileRefs.Count -gt 0) {
     $detail = ($badTestFileRefs | ForEach-Object { "installer.nsi:$($_.LineNumber): $($_.Text.Trim())" }) -join "`n"
-    throw "NSIS test-isolation assertion failed: FAF_TESTMODE branch references production build/installer:`n$detail"
+    throw "NSIS test-isolation assertion failed: SPK_TESTMODE branch references production build/installer:`n$detail"
 }
 
 $activeRegistryLines = @($nsiRecords | Where-Object {
@@ -249,7 +249,7 @@ $badHklm = @($activeRegistryLines | Where-Object { $_.Text -match '\bHKLM\b' })
 if ($badHklm.Count -gt 0) {
     throw "NSIS test-isolation assertion failed: test mode writes/reads HKLM:`n$(($badHklm | ForEach-Object { $_.Text.Trim() }) -join "`n")"
 }
-$badProductionKeys = @($activeRegistryLines | Where-Object { $_.Text -match 'Software\\FreeAssetFilter(?!Test)' })
+$badProductionKeys = @($activeRegistryLines | Where-Object { $_.Text -match 'Software\\Sopeek(?!Test)' })
 if ($badProductionKeys.Count -gt 0) {
     throw "NSIS test-isolation assertion failed: test mode touches a production key:`n$(($badProductionKeys | ForEach-Object { $_.Text.Trim() }) -join "`n")"
 }
@@ -258,18 +258,18 @@ $testWriteRegStr = @($activeRegistryLines | Where-Object { $_.Text -match '\bWri
 if ($testWriteRegStr.Count -eq 0) {
     throw 'NSIS test-isolation assertion failed: test mode has no WriteRegStr'
 }
-$badWriteRegStr = @($testWriteRegStr | Where-Object { $_.Text -notmatch 'FreeAssetFilterTest' })
+$badWriteRegStr = @($testWriteRegStr | Where-Object { $_.Text -notmatch 'SopeekTest' })
 if ($badWriteRegStr.Count -gt 0) {
-    throw "NSIS test-isolation assertion failed: test-mode WriteRegStr is not under FreeAssetFilterTest:`n$(($badWriteRegStr | ForEach-Object { $_.Text.Trim() }) -join "`n")"
+    throw "NSIS test-isolation assertion failed: test-mode WriteRegStr is not under SopeekTest:`n$(($badWriteRegStr | ForEach-Object { $_.Text.Trim() }) -join "`n")"
 }
 
 $testDeleteRegKey = @($activeRegistryLines | Where-Object { $_.Text -match '\bDeleteRegKey\b' })
 if ($testDeleteRegKey.Count -eq 0) {
     throw 'NSIS test-isolation assertion failed: test mode has no DeleteRegKey'
 }
-$badDeleteRegKey = @($testDeleteRegKey | Where-Object { $_.Text -notmatch 'FreeAssetFilterTest' })
+$badDeleteRegKey = @($testDeleteRegKey | Where-Object { $_.Text -notmatch 'SopeekTest' })
 if ($badDeleteRegKey.Count -gt 0) {
-    throw "NSIS test-isolation assertion failed: test-mode DeleteRegKey is not under FreeAssetFilterTest:`n$(($badDeleteRegKey | ForEach-Object { $_.Text.Trim() }) -join "`n")"
+    throw "NSIS test-isolation assertion failed: test-mode DeleteRegKey is not under SopeekTest:`n$(($badDeleteRegKey | ForEach-Object { $_.Text.Trim() }) -join "`n")"
 }
 
 $testDeleteRegValue = @($activeRegistryLines | Where-Object { $_.Text -match '\bDeleteRegValue\b' })
@@ -293,22 +293,22 @@ $uninstallStringText = $testUninstallString[0].Text
 if ($uninstallStringText -notmatch [regex]::Escape('$INSTDIR\UninstallHelper.exe')) {
     throw "NSIS test-isolation assertion failed: test UninstallString does not point at `$INSTDIR\UninstallHelper.exe"
 }
-if ($uninstallStringText -notmatch [regex]::Escape('$INSTDIR\FreeAssetFilterUninstall.exe')) {
-    throw "NSIS test-isolation assertion failed: test UninstallString does not point at `$INSTDIR\FreeAssetFilterUninstall.exe"
+if ($uninstallStringText -notmatch [regex]::Escape('$INSTDIR\SopeekUninstall.exe')) {
+    throw "NSIS test-isolation assertion failed: test UninstallString does not point at `$INSTDIR\SopeekUninstall.exe"
 }
 
-# D13/F2: the test branch must use the FreeAssetFilterTest stem and must never
+# D13/F2: the test branch must use the SopeekTest stem and must never
 # reference a production shortcut path (desktop singleton, Start Menu folder, or
 # the legacy flat production Start Menu file). This catches a regression to the
-# pre-F2 hard-coded FreeAssetFilter.lnk before packaging.
+# pre-F2 hard-coded Sopeek.lnk before packaging.
 Assert-ActiveTestLine -Records $nsiRecords -Label 'test shortcut stem define' `
-    -Exact '!define SHORTCUT_STEM_TEST "FreeAssetFilterTest"' | Out-Null
+    -Exact '!define SHORTCUT_STEM_TEST "SopeekTest"' | Out-Null
 Assert-ActiveTestLine -Records $nsiRecords -Label 'selected test shortcut stem' `
     -Exact '!define SHORTCUT_STEM "${SHORTCUT_STEM_TEST}"' | Out-Null
 Assert-ActiveTestLine -Records $nsiRecords -Label 'test desktop shortcut create' `
-    -Exact 'CreateShortcut "$DESKTOP\${SHORTCUT_STEM}.lnk" "$INSTDIR\FreeAssetFilter.exe"' | Out-Null
+    -Exact 'CreateShortcut "$DESKTOP\${SHORTCUT_STEM}.lnk" "$INSTDIR\Sopeek.exe"' | Out-Null
 Assert-ActiveTestLine -Records $nsiRecords -Label 'test start-menu shortcut create' `
-    -Exact 'CreateShortcut "$SMPROGRAMS\${SHORTCUT_STEM}.lnk" "$INSTDIR\FreeAssetFilter.exe"' | Out-Null
+    -Exact 'CreateShortcut "$SMPROGRAMS\${SHORTCUT_STEM}.lnk" "$INSTDIR\Sopeek.exe"' | Out-Null
 
 $testShortcutOps = @($nsiRecords | Where-Object {
     $_.ActiveInTest -and -not $_.Text.Trim().StartsWith(';') -and
@@ -319,9 +319,9 @@ if ($testShortcutOps.Count -lt 6) {
 }
 $badTestShortcutRefs = @($nsiRecords | Where-Object {
     $_.ActiveInTest -and -not $_.Text.Trim().StartsWith(';') -and (
-        $_.Text -match '\$DESKTOP\\FreeAssetFilter\.lnk' -or
-        $_.Text -match '\$SMPROGRAMS\\FreeAssetFilter(?:\\|")' -or
-        $_.Text -match '\$SMPROGRAMS\\FreeAssetFilter\.lnk'
+        $_.Text -match '\$DESKTOP\\Sopeek\.lnk' -or
+        $_.Text -match '\$SMPROGRAMS\\Sopeek(?:\\|")' -or
+        $_.Text -match '\$SMPROGRAMS\\Sopeek\.lnk'
     )
 })
 if ($badTestShortcutRefs.Count -gt 0) {
@@ -333,7 +333,7 @@ Write-Host ("NSIS static assertions: PASS ({0} active test-mode lines; {1} test 
     @($nsiRecords | Where-Object { $_.ActiveInTest }).Count, $activeRegistryLines.Count, $testDeleteRegKey.Count)
 
 # ---------------------------------------------------------------------------
-# Rebuild the FAF_TESTMODE GUI (test-only output directory).
+# Rebuild the SPK_TESTMODE GUI (test-only output directory).
 # ---------------------------------------------------------------------------
 Write-Host "Build step 1/2: & `"$buildTestGui`""
 & $buildTestGui
@@ -348,7 +348,7 @@ Assert-ProductionUnchanged -Paths $productionPaths -Before $productionBefore -Af
 
 if (-not (Test-Path -LiteralPath $testGui -PathType Leaf)) { throw "Missing test GUI: $testGui" }
 if (-not (Test-Path -LiteralPath $testDll -PathType Leaf)) { throw "Missing test runtime DLL: $testDll" }
-if (-not (Test-Path -LiteralPath $testGuiBuild -PathType Leaf)) { throw "Missing FAF_TESTMODE GUI build output: $testGuiBuild" }
+if (-not (Test-Path -LiteralPath $testGuiBuild -PathType Leaf)) { throw "Missing SPK_TESTMODE GUI build output: $testGuiBuild" }
 
 $testGuiHash = (Get-FileHash -LiteralPath $testGui -Algorithm SHA256).Hash
 $testGuiBuildHash = (Get-FileHash -LiteralPath $testGuiBuild -Algorithm SHA256).Hash
@@ -356,7 +356,7 @@ $testDllHash = (Get-FileHash -LiteralPath $testDll -Algorithm SHA256).Hash
 $mingwDllHash = (Get-FileHash -LiteralPath $mingwDll -Algorithm SHA256).Hash
 
 if ($testGuiHash -ne $testGuiBuildHash) {
-    throw "Test GUI provenance failed: $testGui is not the FAF_TESTMODE output from $testGuiBuild"
+    throw "Test GUI provenance failed: $testGui is not the SPK_TESTMODE output from $testGuiBuild"
 }
 if ($testDllHash -ne $mingwDllHash) {
     throw "Test runtime provenance failed: $testDll is not the MinGW libwinpthread-1.dll"
@@ -374,7 +374,7 @@ $productionGuiBefore = $productionBefore[$productionGuiIndex]
 # Only comparable when the production GUI exists (clean checkouts legitimately
 # have no production GUI; the test build itself must not create one).
 if ($null -ne $productionGuiBefore -and $testGuiHash -eq $productionGuiBefore.SHA256) {
-    throw "Test GUI provenance failed: test GUI hash equals the production GUI (test build did not use FAF_TESTMODE)"
+    throw "Test GUI provenance failed: test GUI hash equals the production GUI (test build did not use SPK_TESTMODE)"
 }
 
 Write-Host ("Test GUI   : {0} ({1} bytes) SHA256 {2}" -f $testGui, (Get-Item -LiteralPath $testGui).Length, $testGuiHash)
@@ -389,8 +389,8 @@ if (Test-Path -LiteralPath $testSetup) {
 
 $makensisArgs = @(
     '/WX'
-    '/DFAF_TESTMODE'
-    "/DFAF_OUTFILE=$testSetup"
+    '/DSPK_TESTMODE'
+    "/DSPK_OUTFILE=$testSetup"
     $nsiPath
 )
 Write-Host "Build step 2/2: & `"$nsisExe`" $($makensisArgs -join ' ')"

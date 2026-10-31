@@ -2,13 +2,13 @@
 
 <div align="center">
 
-<img src="freeassetfilter/icons/FAF-main.png" alt="FreeAssetFilter Logo" width="128" height="128">
+<img src="sopeek/icons/SPK-main.png" alt="Sopeek Logo" width="128" height="128">
 
-# FreeAssetFilter
+# Sopeek
 
 **A powerful multi-functional file preview and management tool that makes file browsing silky smooth and efficient**
 
-[![GitHub Release](https://img.shields.io/github/v/release/Dorufoc/FreeAssetFilter?style=flat-square&logo=github&color=blue)](https://github.com/Dorufoc/FreeAssetFilter/releases)
+[![GitHub Release](https://img.shields.io/github/v/release/Dorufoc/Sopeek?style=flat-square&logo=github&color=blue)](https://github.com/Dorufoc/Sopeek/releases)
 [![Python Version](https://img.shields.io/badge/Python-3.9%2B-blue?style=flat-square&logo=python)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/PySide6-6.10%2B-green?style=flat-square&logo=qt)](https://wiki.qt.io/Qt_for_Python)  
 [![License](https://img.shields.io/badge/License-AGPL--3.0-orange?style=flat-square)](LICENSE)
@@ -16,13 +16,13 @@
 
 [中文](README.md) • [Feature Preview](#feature-preview) • [Quick Start](#quick-start) • [Features](#features) • [Installation Guide](#installation-guide) • [Usage Guide](#usage-guide) • [Technical Architecture](#technical-architecture) • [Development Guide](#development-guide) • [Contributing Guide](#contributing-guide)
 
-<img src="freeassetfilter/icons/example1.png" alt="FreeAssetFilter Screenshot" width="800">
+<img src="sopeek/icons/example1.png" alt="Sopeek Screenshot" width="800">
 
 </div>
 
 ---
 
-![Stone Badge](https://stone.professorlee.work/api/stone/Dorufoc/FreeAssetFilter)
+![Stone Badge](https://stone.professorlee.work/api/stone/Dorufoc/Sopeek)
 
 ## Feature Preview
 
@@ -52,8 +52,8 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/Dorufoc/FreeAssetFilter.git
-cd FreeAssetFilter
+git clone https://github.com/Dorufoc/Sopeek.git
+cd Sopeek
 
 # Create virtual environment (recommended)
 python -m venv venv
@@ -63,7 +63,7 @@ venv\Scripts\activate
 pip install -r requirements.txt
 
 # Run the application
-python -m freeassetfilter.app.main
+python -m sopeek.app.main
 ```
 
 ### FAQ
@@ -152,7 +152,7 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 ### Feature Comparison
 
-| Feature | FreeAssetFilter | QuickLook | Seer | Explorer |
+| Feature | Sopeek | QuickLook | Seer | Explorer |
 | -------- | --------------- | ----------- | ----------- | --------- |
 | Image Preview | 100+ formats | Common formats | Common formats | Limited |
 | Video Playback | Built-in player | Plugin required | Plugin required | Not supported |
@@ -224,15 +224,15 @@ TTF, OTF, WOFF, WOFF2, EOT
 
 Download the latest pre-compiled version:
 
-- [Download Windows Installer](https://github.com/Dorufoc/FreeAssetFilter/releases)
+- [Download Windows Installer](https://github.com/Dorufoc/Sopeek/releases)
 
 ### Method 2: Install from Source
 
 #### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/Dorufoc/FreeAssetFilter.git
-cd FreeAssetFilter
+git clone https://github.com/Dorufoc/Sopeek.git
+cd Sopeek
 ```
 
 #### 2. Create Virtual Environment
@@ -252,14 +252,14 @@ pip install -r requirements.txt
 
 ```bash
 # Build the LUT preview module (MSVC; use setup_mingw.py on MinGW)
-cd freeassetfilter/core/native/src/cpp_lut_preview
+cd sopeek/core/native/src/cpp_lut_preview
 python setup.py build_ext --inplace
 ```
 
 #### 5. Run the Application
 
 ```bash
-python -m freeassetfilter.app.main
+python -m sopeek.app.main
 ```
 
 ### Detailed System Requirements
@@ -278,7 +278,7 @@ python -m freeassetfilter.app.main
 
 ### Interface Layout
 
-FreeAssetFilter offers two main interface layouts, switchable in **Settings → General → Interface Layout** (takes effect immediately after clicking "OK"), or instantly via the **layout switch button at the top-right** of the main window:
+Sopeek offers two main interface layouts, switchable in **Settings → General → Interface Layout** (takes effect immediately after clicking "OK"), or instantly via the **layout switch button at the top-right** of the main window:
 
 ```
 ┌─────────────────┬─────────────────┬─────────────────┐
@@ -327,7 +327,7 @@ FreeAssetFilter offers two main interface layouts, switchable in **Settings → 
 ### Core Technology Stack
 
 ```
-FreeAssetFilter
+Sopeek
 ├── GUI Framework: PySide6 (Qt6) - Cross-platform GUI
 ├── Image Processing: Pillow + rawpy - Image decoding and processing
 ├── Video Playback: MPV (libmpv) - High-performance video playback
@@ -340,8 +340,8 @@ FreeAssetFilter
 ### Project Structure
 
 ```
-FreeAssetFilter/
-├── freeassetfilter/
+Sopeek/
+├── sopeek/
 │   ├── app/                    # Application entry (main / startup / instance_guard)
 │   ├── core/                   # Core managers and native bridges
 │   │   ├── managers/           # Settings V2 / heartbeat / MPV / thumbnail managers
@@ -357,7 +357,7 @@ FreeAssetFilter/
 │   ├── utils/                  # Shared utilities (paths / logging / highlighting / perf metrics)
 │   ├── docs/                   # Third-party notices and license list
 │   └── icons/                  # UI and file type icon assets
-├── launcher/                   # Discrete-GPU launcher (C source + build script; FAF-Launcher.exe is built locally, not committed)
+├── launcher/                   # Discrete-GPU launcher (C source + build script; SPK-Launcher.exe is built locally, not committed)
 ├── installer_duilib/           # In-house installer (C++/NSIS source + build script)
 ├── scripts/                    # Helper scripts (GUI test screenshot tool)
 ├── tests/                      # Test suite (see tests/README.md)
@@ -385,8 +385,8 @@ FreeAssetFilter/
 #### 1. Clone Repository and Create Branch
 
 ```bash
-git clone https://github.com/Dorufoc/FreeAssetFilter.git
-cd FreeAssetFilter
+git clone https://github.com/Dorufoc/Sopeek.git
+cd Sopeek
 git checkout -b feature/your-feature-name
 ```
 
@@ -410,7 +410,7 @@ VS Code or PyCharm is recommended with the following plugins:
 
 ```bash
 # LUT preview module (the only maintained C++ extension; MSVC toolchain)
-cd freeassetfilter/core/native/src/cpp_lut_preview
+cd sopeek/core/native/src/cpp_lut_preview
 python setup.py build_ext --inplace
 
 # On MinGW, use:
@@ -434,20 +434,20 @@ The release pipeline has three steps (launcher optional): build the discrete-GPU
 # 1) Build the discrete-GPU launcher (optional; required for "Use hardware acceleration")
 powershell -ExecutionPolicy Bypass -File launcher/build_launcher.ps1
 
-# 2) Build the PyInstaller payload -> build/pyinstall/FreeAssetFilter
+# 2) Build the PyInstaller payload -> build/pyinstall/Sopeek
 python Pyinstall_build.py
 # Optional flags: --no-clean keeps previous build output; --skip-build only cleans and validates
 
 # 3) Build the installer (requires CMake + MinGW + NSIS)
 powershell -ExecutionPolicy Bypass -File installer_duilib/build.ps1
-# Output: build/FreeAssetFilter_NSIS_Setup.exe
+# Output: build/installer/SopeekInstaller.exe, build/Sopeek_NSIS_Setup.exe
 ```
 
 ### Add New File Preview Support
 
-1. **Create Previewer Layout** Add a new layout class under `freeassetfilter/ui/layout/preview/` (see `image_previewer_layout.py` as a reference), implementing the `set_file(path, ...)` entry point expected by the unified previewer;
-2. **Register File Type** Register an "extension → (module path, class name)" entry in `_EXTENSION_MAP` of `freeassetfilter/services/previewer_registry.py` (lazy import, no first-frame cost);
-3. **Add Icon** Add a file type icon in `freeassetfilter/icons/` (follow the v3 multi-color "X – 3.svg" series naming).
+1. **Create Previewer Layout** Add a new layout class under `sopeek/ui/layout/preview/` (see `image_previewer_layout.py` as a reference), implementing the `set_file(path, ...)` entry point expected by the unified previewer;
+2. **Register File Type** Register an "extension → (module path, class name)" entry in `_EXTENSION_MAP` of `sopeek/services/previewer_registry.py` (lazy import, no first-frame cost);
+3. **Add Icon** Add a file type icon in `sopeek/icons/` (follow the v3 multi-color "X – 3.svg" series naming).
 
 ---
 
@@ -458,7 +458,7 @@ We welcome all forms of contribution! Whether it's bug fixes, new features, docu
 ### Contribution Process
 
 1. **Fork the Repository** - Click the Fork button in the top right corner
-2. **Clone the Repository** - `git clone https://github.com/your-username/FreeAssetFilter.git`
+2. **Clone the Repository** - `git clone https://github.com/your-username/Sopeek.git`
 3. **Create Branch** - `git checkout -b feature/AmazingFeature`
 4. **Commit Changes** - `git commit -m 'Add some AmazingFeature'`
 5. **Push Branch** - `git push origin feature/AmazingFeature`
@@ -547,7 +547,7 @@ We will respond within 48 hours and fix the vulnerability as soon as possible.
 This project is open-sourced under the [AGPL-3.0](LICENSE) license.
 
 ```
-FreeAssetFilter - Multi-functional File Preview and Management Tool
+Sopeek - Multi-functional File Preview and Management Tool
 Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 This program is free software: you can redistribute it and/or modify
@@ -632,7 +632,7 @@ Thanks to all developers who have contributed to the project:
 
 **If this project helps you, please give us a Star!**
 
-[Submit Bug](https://github.com/Dorufoc/FreeAssetFilter/issues) • [Feature Request](https://github.com/Dorufoc/FreeAssetFilter/issues) • [Contribute](https://github.com/Dorufoc/FreeAssetFilter/pulls)
+[Submit Bug](https://github.com/Dorufoc/Sopeek/issues) • [Feature Request](https://github.com/Dorufoc/Sopeek/issues) • [Contribute](https://github.com/Dorufoc/Sopeek/pulls)
 
 Made with love by [Dorufoc](https://github.com/Dorufoc) & [renmoren](https://github.com/renmoren)
 

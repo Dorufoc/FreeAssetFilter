@@ -9,7 +9,7 @@
 #include <d2d1.h>
 #include <dwrite.h>
 
-namespace faf {
+namespace spk {
 
 // 一套完整配色 token。浅/深各一份，见 LightTheme()/DarkTheme()。
 struct Theme {
@@ -63,4 +63,4 @@ Theme DarkTheme();
 // 按 isDark 选择主题。
 Theme GetTheme(bool isDark);
 
-}  // namespace faf
+}  // namespace spk

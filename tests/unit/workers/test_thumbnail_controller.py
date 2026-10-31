@@ -4,9 +4,9 @@
 覆盖（spec Task 4，happy + boundary/error 各至少一条）：
 
 * 依赖边界 —— ``ThumbnailController`` 可从
-  ``freeassetfilter.core.workers.thumbnail_controller`` 导入且文件位于
+  ``sopeek.core.workers.thumbnail_controller`` 导入且文件位于
   core/workers 分层路径下；controller / 布局接线 / 模型三处源码均不依赖
-  ``freeassetfilter.components`` 与 ``freeassetfilter.widgets``（分层断言，
+  ``sopeek.components`` 与 ``sopeek.widgets``（分层断言，
   读源码字符串，简单可靠）；
 * 收集过滤与去重 —— 非媒体列表 → 空任务同步 ``batch_finished(0, 0)``
   （不启动线程、无 ``files_ready``）；混合列表（媒体 + 非媒体 + 已有
@@ -37,8 +37,8 @@ from typing import Any, Callable, List, Optional, Tuple
 
 import pytest
 
-import freeassetfilter.core.workers.thumbnail_controller as tc_module
-from freeassetfilter.core.workers.thumbnail_controller import ThumbnailController
+import sopeek.core.workers.thumbnail_controller as tc_module
+from sopeek.core.workers.thumbnail_controller import ThumbnailController
 from tests.support.data_factories import make_image, make_text
 
 pytestmark = pytest.mark.unit
@@ -48,15 +48,15 @@ _PROJECT_ROOT: Path = Path(__file__).resolve().parents[3]
 
 #: 依赖边界断言覆盖的被测源文件（相对项目根）。
 _BOUNDARY_SOURCE_RELPATHS: List[str] = [
-    "freeassetfilter/core/workers/thumbnail_controller.py",
-    "freeassetfilter/ui/layout/file_selector_layout.py",
-    "freeassetfilter/ui/components/file_list_model.py",
+    "sopeek/core/workers/thumbnail_controller.py",
+    "sopeek/ui/layout/file_selector_layout.py",
+    "sopeek/ui/components/file_list_model.py",
 ]
 
 #: 分层边界禁止出现的导入前缀（UI 层不得反向依赖 components/widgets 包）。
 _FORBIDDEN_IMPORT_PREFIXES: Tuple[str, ...] = (
-    "from freeassetfilter.components",
-    "from freeassetfilter.widgets",
+    "from sopeek.components",
+    "from sopeek.widgets",
 )
 
 
@@ -79,7 +79,7 @@ def thumb_env(tmp_path: Path) -> Any:
     Returns:
         Any: 绑定临时缓存目录的 ThumbnailManager 单例。
     """
-    from freeassetfilter.core.managers.thumbnail_manager import (
+    from sopeek.core.managers.thumbnail_manager import (
         get_thumbnail_manager,
     )
 
@@ -262,14 +262,14 @@ class TestDependencyBoundaries:
         module_path: str = inspect.getfile(tc_module)
         parts: List[str] = Path(module_path).parts
         assert tc_module.ThumbnailController is ThumbnailController
-        assert "freeassetfilter" in parts
+        assert "sopeek" in parts
         assert "core" in parts
         assert "workers" in parts
         assert Path(module_path).name == "thumbnail_controller.py"
 
     @pytest.mark.parametrize("relpath", _BOUNDARY_SOURCE_RELPATHS)
     def test_sources_avoid_component_and_widget_imports(self, relpath: str) -> None:
-        """被测三处源码不得依赖 freeassetfilter.components / widgets 包。
+        """被测三处源码不得依赖 sopeek.components / widgets 包。
 
         Args:
             relpath: 相对项目根的被测源文件路径。

@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from PySide6.QtWidgets import QApplication
 
-from freeassetfilter.ui.layout.preview.unsupported_previewer_layout import (
+from sopeek.ui.layout.preview.unsupported_previewer_layout import (
     UnsupportedPreviewerLayout,
 )
 
@@ -40,10 +40,10 @@ def test_explorer_uses_select_argument_on_windows(
     widget.set_file({"path": str(path), "suffix": "zzz", "is_dir": False})
 
     with patch(
-        "freeassetfilter.ui.layout.preview.unsupported_previewer_layout.sys.platform",
+        "sopeek.ui.layout.preview.unsupported_previewer_layout.sys.platform",
         "win32",
     ), patch(
-        "freeassetfilter.ui.layout.preview.unsupported_previewer_layout.subprocess.Popen"
+        "sopeek.ui.layout.preview.unsupported_previewer_layout.subprocess.Popen"
     ) as popen:
         widget.open_in_explorer()
 

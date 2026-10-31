@@ -21,7 +21,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
-from freeassetfilter.core.managers.settings_manager_v2 import (
+from sopeek.core.managers.settings_manager_v2 import (
     DEFAULT_SETTINGS_V2,
     SettingsManagerV2,
 )

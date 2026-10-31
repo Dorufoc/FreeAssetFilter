@@ -6,7 +6,7 @@
 
 * **首帧延迟**（time-to-first-batch）：渐进式加载的核心语义。若 native 必须
   扫完整个目录才发第一批，首帧会从毫秒级退化到几十毫秒——那就不合格。
-  本模块用 ``faf_scan_begin`` + 首次 ``faf_scan_next`` 与 Python 首次
+  本模块用 ``spk_scan_begin`` + 首次 ``spk_scan_next`` 与 Python 首次
   ``yield`` 对比。
 * **全量耗时**：同目录读完所有条目的墙钟。
 
@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Tuple
 
 import pytest
 
-from freeassetfilter.core.native import api as native_api
+from sopeek.core.native import api as native_api
 
 pytestmark = [pytest.mark.benchmark, pytest.mark.timeout(600)]
 
@@ -41,7 +41,7 @@ SAMPLES: int = 5
 #: 生产批次大小（与 ``_iter_directory_batches`` 默认一致）。
 BATCH_SIZE: int = 64
 
-_OUTPUT_ENV: str = os.environ.get("FAF_BENCH_OUTPUT", "").strip()
+_OUTPUT_ENV: str = os.environ.get("SPK_BENCH_OUTPUT", "").strip()
 if _OUTPUT_ENV:
     _candidate: Path = Path(_OUTPUT_ENV)
     OUTPUT_PATH: Path = (
@@ -74,7 +74,7 @@ def _percentile(sorted_values: List[float], pct: float) -> float:
 
 def _iter_python(path: Path):
     """生产 Python 逐批（oracle）。"""
-    from freeassetfilter.ui.layout.file_selector_layout import FileSelectorLayout
+    from sopeek.ui.layout.file_selector_layout import FileSelectorLayout
 
     return FileSelectorLayout._iter_directory_batches_python(
         str(path), False, lambda: False, batch_size=BATCH_SIZE
@@ -130,7 +130,7 @@ def big_dir(request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFac
 def test_native_stream_vs_python(big_dir: Any) -> None:
     """首帧延迟 + 全量耗时：native 游标 vs Python 逐批。"""
     if not native_api.supports("scanstream"):
-        pytest.skip("faf_core 缺流式扫描导出，跳过 P3.4 实测")
+        pytest.skip("spk_core 缺流式扫描导出，跳过 P3.4 实测")
     size, root = big_dir
 
     # 预热（文件系统元数据缓存与 ctypes 首次绑定不计入样本）。

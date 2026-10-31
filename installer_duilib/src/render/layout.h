@@ -19,7 +19,7 @@
 
 #include "render/theme.h"  // 唯一 token 表：spacing/radius/fontsize
 
-namespace faf {
+namespace spk {
 
 // shell 布局的冻结度量（全部 DIP）。禁止使用旧 720x480 常量。
 namespace layout {
@@ -69,4 +69,4 @@ UINT SafeDpi(UINT dpi);
 // 仅用于把鼠标命中点换算回 DIP；**绘制/布局本身绝不乘 DPI**。
 float ClientPxToDipScale(UINT dpi);
 
-}  // namespace faf
+}  // namespace spk

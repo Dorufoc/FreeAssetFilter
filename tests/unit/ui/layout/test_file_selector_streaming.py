@@ -36,13 +36,13 @@ from typing import Any, Dict, List
 import pytest
 
 # 布局模块内部使用短路径导入（from theme import tm / components.*），
-# 要求 freeassetfilter/ui 位于 sys.path——与 test_layouts.py 的 bootstrap 惯例一致。
-_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "freeassetfilter" / "ui")
+# 要求 sopeek/ui 位于 sys.path——与 test_layouts.py 的 bootstrap 惯例一致。
+_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-from freeassetfilter.ui.layout.file_selector_layout import FileSelectorLayout  # noqa: E402
-import freeassetfilter.ui.layout.file_selector_layout as fsl_mod  # noqa: E402
+from sopeek.ui.layout.file_selector_layout import FileSelectorLayout  # noqa: E402
+import sopeek.ui.layout.file_selector_layout as fsl_mod  # noqa: E402
 
 from components.file_list_model import FileNameRole  # noqa: E402
 

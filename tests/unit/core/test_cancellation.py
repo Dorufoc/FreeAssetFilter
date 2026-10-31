@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from freeassetfilter.core.cancellation import (
+from sopeek.core.cancellation import (
     BoundedBatchQueue,
     CancelledError,
     CancellationToken,

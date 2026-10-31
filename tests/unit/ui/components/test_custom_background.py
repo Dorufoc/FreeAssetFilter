@@ -26,16 +26,16 @@ from PySide6.QtGui import QColor, QPaintEvent, QPixmap
 from PySide6.QtWidgets import QApplication
 
 # 组件模块内部使用短路径导入（from theme import tm），
-# 要求 freeassetfilter/ui 位于 sys.path；与 test_styled_complex.py 的
+# 要求 sopeek/ui 位于 sys.path；与 test_styled_complex.py 的
 # bootstrap 方式保持一致。
-_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "freeassetfilter" / "ui")
+_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
 from tests.support.qt_helpers import safe_teardown  # noqa: E402
 
-import freeassetfilter.ui.components.custom_background as custom_background  # noqa: E402
-from freeassetfilter.ui.components.custom_background import (  # noqa: E402
+import sopeek.ui.components.custom_background as custom_background  # noqa: E402
+from sopeek.ui.components.custom_background import (  # noqa: E402
     BACKGROUND_FILENAME_PREFIX,
     CustomImageBackgroundWidget,
     compute_cover_geometry,

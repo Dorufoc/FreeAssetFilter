@@ -6,7 +6,7 @@
 //
 #include "render/theme.h"
 
-namespace faf {
+namespace spk {
 
 namespace {
 
@@ -48,4 +48,4 @@ Theme DarkTheme() {
 
 Theme GetTheme(bool isDark) { return isDark ? DarkTheme() : LightTheme(); }
 
-}  // namespace faf
+}  // namespace spk

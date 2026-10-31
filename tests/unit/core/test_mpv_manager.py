@@ -29,7 +29,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pytest import MonkeyPatch
 
-from freeassetfilter.core.managers.mpv_manager import (
+from sopeek.core.managers.mpv_manager import (
     MPVManager,
     MPVState,
 )
@@ -72,7 +72,7 @@ class TestSingletonAndDefaults:
 
     def test_singleton_returns_same_instance(self, qapp: object) -> None:
         """同一进程内 ``MPVManager()`` 恒返回同一实例。"""
-        from freeassetfilter.core.managers.mpv_manager import MPVManager as M
+        from sopeek.core.managers.mpv_manager import MPVManager as M
 
         first: M = M()
         second: M = M()
@@ -128,7 +128,7 @@ class TestSingletonAndDefaults:
         fake_core: MagicMock = MagicMock()
         fake_core.initialize.return_value = True
         with patch(
-            "freeassetfilter.core.managers.mpv_manager.MPVPlayerCore",
+            "sopeek.core.managers.mpv_manager.MPVPlayerCore",
             return_value=fake_core,
         ):
             assert manager.initialize(timeout=5.0) is True
@@ -369,7 +369,7 @@ class TestMpvOperationTypes:
 
     def test_operation_type_values(self) -> None:
         """枚举值覆盖全部操作类型（含初始化/关闭/字幕/音频）。"""
-        from freeassetfilter.core.managers.mpv_manager import MPVOperationType
+        from sopeek.core.managers.mpv_manager import MPVOperationType
 
         assert MPVOperationType.INITIALIZE.value == "initialize"
         assert MPVOperationType.LOAD_FILE.value == "load_file"
@@ -380,7 +380,7 @@ class TestMpvOperationTypes:
 
     def test_operation_dataclass_defaults(self) -> None:
         """默认字段：priority=5、component_id=unknown、args/kwargs 空。"""
-        from freeassetfilter.core.managers.mpv_manager import MPVOperation, MPVOperationType
+        from sopeek.core.managers.mpv_manager import MPVOperation, MPVOperationType
 
         op: MPVOperation = MPVOperation(operation_type=MPVOperationType.PLAY)
         assert op.operation_type == MPVOperationType.PLAY
@@ -395,7 +395,7 @@ class TestGetMpvManager:
 
     def test_returns_singleton(self) -> None:
         """返回与 MPVManager() 同一实例。"""
-        from freeassetfilter.core.managers.mpv_manager import MPVManager, get_mpv_manager
+        from sopeek.core.managers.mpv_manager import MPVManager, get_mpv_manager
 
         assert get_mpv_manager() is MPVManager()
 
@@ -410,7 +410,7 @@ class TestOperationQueueInternals:
         """提交后队列出现 (priority, seq, MPVOperation)，Future 即返回值。"""
         from concurrent.futures import Future
 
-        from freeassetfilter.core.managers.mpv_manager import MPVOperationType
+        from sopeek.core.managers.mpv_manager import MPVOperationType
 
         manager: MPVManager = MPVManager()
         future: Future = manager._submit_operation(  # noqa: SLF001
@@ -430,7 +430,7 @@ class TestOperationQueueInternals:
 
     def test_submit_operation_raises_when_shutting_down(self, qapp: object) -> None:
         """关闭中直接提交操作抛 RuntimeError。"""
-        from freeassetfilter.core.managers.mpv_manager import MPVOperationType
+        from sopeek.core.managers.mpv_manager import MPVOperationType
 
         manager: MPVManager = MPVManager()
         manager._is_shutting_down = True  # noqa: SLF001
@@ -439,7 +439,7 @@ class TestOperationQueueInternals:
 
     def test_submit_operation_coalesces_same_component(self, qapp: object) -> None:
         """同组件同类型合并：前一个 future 立即置 False，仅保留最新。"""
-        from freeassetfilter.core.managers.mpv_manager import MPVOperationType
+        from sopeek.core.managers.mpv_manager import MPVOperationType
 
         manager: MPVManager = MPVManager()
         first = manager._submit_operation(  # noqa: SLF001
@@ -455,7 +455,7 @@ class TestOperationQueueInternals:
 
     def test_priority_ordering(self, qapp: object) -> None:
         """优先级数字越小越先出队（PriorityQueue）。"""
-        from freeassetfilter.core.managers.mpv_manager import MPVOperationType
+        from sopeek.core.managers.mpv_manager import MPVOperationType
 
         manager: MPVManager = MPVManager()
         manager._submit_operation(MPVOperationType.PLAY, component_id="a", priority=5)  # noqa: SLF001
@@ -481,7 +481,7 @@ class TestOperationProcessingLoop:
 
     def test_process_operation_sets_future_result(self, qapp: object) -> None:
         """循环执行 PLAY 并写回 True，mock 核心被调用。"""
-        from freeassetfilter.core.managers.mpv_manager import MPVOperationType
+        from sopeek.core.managers.mpv_manager import MPVOperationType
 
         manager: MPVManager = MPVManager()
         manager._mpv_core = MagicMock()  # noqa: SLF001
@@ -506,7 +506,7 @@ class TestOperationProcessingLoop:
 
     def test_stale_coalesced_operation_skipped(self, qapp: object) -> None:
         """旧合并操作被跳过，只有最新 SET_VOLUME 被执行。"""
-        from freeassetfilter.core.managers.mpv_manager import MPVOperationType
+        from sopeek.core.managers.mpv_manager import MPVOperationType
 
         manager: MPVManager = MPVManager()
         manager._mpv_core = MagicMock()  # noqa: SLF001
@@ -527,7 +527,7 @@ class TestOperationProcessingLoop:
     def test_execute_operation_unknown_type_raises(self, qapp: object) -> None:
         """未知操作类型直接抛 ValueError（无线程副作用）。"""
         manager: MPVManager = MPVManager()
-        from freeassetfilter.core.managers.mpv_manager import MPVOperation
+        from sopeek.core.managers.mpv_manager import MPVOperation
 
         bogus: MPVOperation = MPVOperation(operation_type="bogus_type")  # type: ignore[arg-type]
         with pytest.raises(ValueError):
@@ -535,13 +535,13 @@ class TestOperationProcessingLoop:
 
     def test_execute_operation_rethrows_runtime_error(self, qapp: object) -> None:
         """``_do_*`` 抛 RuntimeError 时由 ``_execute_operation`` 统一重抛。"""
-        from freeassetfilter.core.managers.mpv_manager import MPVOperation, MPVOperationType
+        from sopeek.core.managers.mpv_manager import MPVOperation, MPVOperationType
 
         manager: MPVManager = MPVManager()
         manager._mpv_core = MagicMock()  # noqa: SLF001
         manager._mpv_core.play.side_effect = RuntimeError("boom")  # type: ignore[union-attr]
         op: MPVOperation = MPVOperation(operation_type=MPVOperationType.PLAY)
-        with patch("freeassetfilter.core.managers.mpv_manager.QMetaObject.invokeMethod"):
+        with patch("sopeek.core.managers.mpv_manager.QMetaObject.invokeMethod"):
             with pytest.raises(RuntimeError, match="boom"):
                 manager._execute_operation(op)  # noqa: SLF001
         assert manager.is_busy() is False
@@ -561,13 +561,13 @@ class TestDoOperationImplementations:
 
     @staticmethod
     def _op(operation_type: object, *args: object, **kwargs: object) -> object:
-        from freeassetfilter.core.managers.mpv_manager import MPVOperation
+        from sopeek.core.managers.mpv_manager import MPVOperation
 
         return MPVOperation(operation_type=operation_type, args=args, kwargs=kwargs)
 
     # ---- 设置类操作：委托 core ----
     def test_do_set_loop_delegates(self, manager: MPVManager) -> None:
-        from freeassetfilter.core.managers.mpv_manager import MPVOperationType
+        from sopeek.core.managers.mpv_manager import MPVOperationType
 
         result = manager._execute_operation(  # noqa: SLF001
             self._op(MPVOperationType.SET_LOOP, "inf")
@@ -576,7 +576,7 @@ class TestDoOperationImplementations:
         manager._mpv_core.set_loop.assert_called_once_with("inf")  # type: ignore[union-attr]
 
     def test_do_set_window_id_delegates(self, manager: MPVManager) -> None:
-        from freeassetfilter.core.managers.mpv_manager import MPVOperationType
+        from sopeek.core.managers.mpv_manager import MPVOperationType
 
         manager._mpv_core.set_window_id.return_value = True  # type: ignore[union-attr]
         result = manager._execute_operation(  # noqa: SLF001
@@ -586,7 +586,7 @@ class TestDoOperationImplementations:
         manager._mpv_core.set_window_id.assert_called_once_with(1234)  # type: ignore[union-attr]
 
     def test_do_set_subtitle_visibility_and_track(self, manager: MPVManager) -> None:
-        from freeassetfilter.core.managers.mpv_manager import MPVOperationType
+        from sopeek.core.managers.mpv_manager import MPVOperationType
 
         manager._mpv_core.set_subtitle_visibility.return_value = True  # type: ignore[union-attr]
         manager._mpv_core.set_subtitle_track.return_value = True  # type: ignore[union-attr]
@@ -600,7 +600,7 @@ class TestDoOperationImplementations:
         manager._mpv_core.set_subtitle_track.assert_called_once_with(None)  # type: ignore[union-attr]
 
     def test_do_set_audio_track_delegates(self, manager: MPVManager) -> None:
-        from freeassetfilter.core.managers.mpv_manager import MPVOperationType
+        from sopeek.core.managers.mpv_manager import MPVOperationType
 
         manager._mpv_core.set_audio_track.return_value = True  # type: ignore[union-attr]
         assert manager._execute_operation(  # noqa: SLF001
@@ -610,7 +610,7 @@ class TestDoOperationImplementations:
 
     def test_do_load_unload_lut_tracks_current_path(self, manager: MPVManager) -> None:
         """LUT 状态跟踪：加载成功置位、卸载成功清空（审查 3.1#10）。"""
-        from freeassetfilter.core.managers.mpv_manager import MPVOperationType
+        from sopeek.core.managers.mpv_manager import MPVOperationType
 
         manager._mpv_core.set_lut.return_value = True  # type: ignore[union-attr]
         assert manager._execute_operation(  # noqa: SLF001
@@ -626,7 +626,7 @@ class TestDoOperationImplementations:
 
     # ---- 获取类操作：委托 core 返回值 ----
     def test_do_get_volume_speed_delegates(self, manager: MPVManager) -> None:
-        from freeassetfilter.core.managers.mpv_manager import MPVOperationType
+        from sopeek.core.managers.mpv_manager import MPVOperationType
 
         manager._mpv_core.get_volume.return_value = 42  # type: ignore[union-attr]
         manager._mpv_core.get_speed.return_value = 1.75  # type: ignore[union-attr]
@@ -638,7 +638,7 @@ class TestDoOperationImplementations:
         ) == 1.75
 
     def test_do_get_position_duration_handle_none(self, manager: MPVManager) -> None:
-        from freeassetfilter.core.managers.mpv_manager import MPVOperationType
+        from sopeek.core.managers.mpv_manager import MPVOperationType
 
         manager._mpv_core.get_position_cached.return_value = None  # type: ignore[union-attr]
         manager._mpv_core.get_duration.return_value = None  # type: ignore[union-attr]
@@ -650,7 +650,7 @@ class TestDoOperationImplementations:
         ) == 0.0
 
     def test_do_subtitle_audio_state_delegates(self, manager: MPVManager) -> None:
-        from freeassetfilter.core.managers.mpv_manager import MPVOperationType
+        from sopeek.core.managers.mpv_manager import MPVOperationType
 
         manager._mpv_core.get_subtitle_state.return_value = {"has_available_subtitles": True}  # type: ignore[union-attr]
         manager._mpv_core.get_audio_state.return_value = {"track_count": 1}  # type: ignore[union-attr]
@@ -663,7 +663,7 @@ class TestDoOperationImplementations:
 
     # ---- 无核心：默认值路径 ----
     def test_do_operations_defaults_without_core(self, qapp: object) -> None:
-        from freeassetfilter.core.managers.mpv_manager import MPVOperation, MPVOperationType
+        from sopeek.core.managers.mpv_manager import MPVOperation, MPVOperationType
 
         manager: MPVManager = MPVManager()  # _mpv_core 为 None
         assert manager._execute_operation(  # noqa: SLF001
@@ -710,19 +710,19 @@ class TestDoOperationImplementations:
         ) is False
 
     def test_do_load_file_without_core_raises(self, qapp: object) -> None:
-        from freeassetfilter.core.managers.mpv_manager import MPVOperation, MPVOperationType
+        from sopeek.core.managers.mpv_manager import MPVOperation, MPVOperationType
 
         manager: MPVManager = MPVManager()
         op: MPVOperation = MPVOperation(
             operation_type=MPVOperationType.LOAD_FILE, args=("x.mp4",)
         )
-        with patch("freeassetfilter.core.managers.mpv_manager.QMetaObject.invokeMethod"):
+        with patch("sopeek.core.managers.mpv_manager.QMetaObject.invokeMethod"):
             with pytest.raises(RuntimeError):
                 manager._execute_operation(op)  # noqa: SLF001
 
     def test_do_load_file_normal_and_stop_interrupt(self, manager: MPVManager) -> None:
         """正常加载委托 core；停止事件中断加载间隔等待则放弃。"""
-        from freeassetfilter.core.managers.mpv_manager import MPVOperation, MPVOperationType
+        from sopeek.core.managers.mpv_manager import MPVOperation, MPVOperationType
 
         # 正常路径：首次调用无延迟
         manager._mpv_core.load_file.return_value = True  # type: ignore[union-attr]
@@ -1042,7 +1042,7 @@ class TestStateAndAccessors:
 
         core._is_worker_crashed.return_value = True
         core.get_worker_crash_info.return_value = "crash!"
-        with patch("freeassetfilter.core.managers.mpv_manager.QMetaObject.invokeMethod") as mock_invoke:
+        with patch("sopeek.core.managers.mpv_manager.QMetaObject.invokeMethod") as mock_invoke:
             manager._pump_core_signals()  # noqa: SLF001
         assert manager._core_crashed is True  # noqa: SLF001
         mock_invoke.assert_called_once()  # type: ignore[attr-defined]
@@ -1050,7 +1050,7 @@ class TestStateAndAccessors:
     def test_cleanup_resources_drains_queue(self, qapp: object) -> None:
         from concurrent.futures import Future
 
-        from freeassetfilter.core.managers.mpv_manager import MPVOperation, MPVOperationType
+        from sopeek.core.managers.mpv_manager import MPVOperation, MPVOperationType
 
         manager: MPVManager = MPVManager()
         future: Future = Future()

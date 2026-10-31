@@ -21,7 +21,7 @@
 
 #include "render/maintenance_protocol.h"
 
-namespace faf {
+namespace spk {
 namespace {
 
 // protocol 头未收录 Run 键（它不属于安装信息键/卸载键）。值名与快捷方式名
@@ -148,7 +148,7 @@ std::wstring NormalizeInstallDir(std::wstring dir) {
     return normalized;
 }
 
-// 快捷方式 / Run 值名（生产 FreeAssetFilter，测试 FreeAssetFilterTest）。
+// 快捷方式 / Run 值名（生产 Sopeek，测试 SopeekTest）。
 // 不再从 exe 名推导：测试 exe 名带 Test 但必须与生产快捷方式完全隔离。
 std::wstring ShortcutStem() {
     return protocol::kShortcutStem;
@@ -479,4 +479,4 @@ bool WriteMaintenanceDump(const MaintenanceInfo& info, const std::wstring& iniPa
     return ok;
 }
 
-}  // namespace faf
+}  // namespace spk

@@ -27,8 +27,8 @@ from typing import Any, List, Tuple
 import pytest
 from unittest.mock import patch
 
-from freeassetfilter.core.workers import drive_list_loader as _dl
-from freeassetfilter.core.workers.drive_list_loader import (
+from sopeek.core.workers import drive_list_loader as _dl
+from sopeek.core.workers.drive_list_loader import (
     DriveListLoaderThread,
     _DriveAvailabilityCheckRunnable,
     _DriveAvailabilitySignals,

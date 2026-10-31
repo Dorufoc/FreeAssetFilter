@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """todo 33（桥状态透传）状态通道测试：桥层直测 + ThumbnailManager 路由。
 
-覆盖 ``freeassetfilter.core.native.bridges.rust_thumbnail_bridge`` 的
+覆盖 ``sopeek.core.native.bridges.rust_thumbnail_bridge`` 的
 ``*_with_status`` 状态通道入口与 ``ThumbnailManager`` 的按状态路由语义。
 
 **运行时状态来源（源码核实，决定各用例断言口径）**：
@@ -44,7 +44,7 @@ import pytest
 from PIL import Image
 from unittest.mock import patch
 
-from freeassetfilter.core.native.bridges.rust_thumbnail_bridge import (
+from sopeek.core.native.bridges.rust_thumbnail_bridge import (
     STATUS_DECODE_FAILED,
     STATUS_OK,
     STATUS_TOO_LARGE,
@@ -88,7 +88,7 @@ _PNG_OVERSIZE_IHDR_10000: bytes = bytes([
 def _oversize_png_bytes() -> bytes:
     """返回与 Rust 侧 png.rs `PNG_OVERSIZE_IHDR_10000` 完全一致的伪造字节。
 
-    来源：`freeassetfilter/core/native/src/thumbnail_rust/src/decoders/png.rs`
+    来源：`sopeek/core/native/src/thumbnail_rust/src/decoders/png.rs`
     的已验证测试夹具（伪造 IHDR 声明 10000x10000，合法 CRC），
     确保 `png_dimensions` 预检能按偏移正确读取宽高并返回 TOO_LARGE(-7)。
 
@@ -194,7 +194,7 @@ def status_manager(tmp_path: Any) -> Any:
     Returns:
         ThumbnailManager: 绑定临时缓存目录的新实例。
     """
-    from freeassetfilter.core.managers.thumbnail_manager import ThumbnailManager
+    from sopeek.core.managers.thumbnail_manager import ThumbnailManager
 
     manager = ThumbnailManager()
     if not manager._is_native_available():  # noqa: SLF001

@@ -209,7 +209,7 @@ class TestVersionCommands:
 
     def test_ffmpeg_version_rc0(self, ffmpeg_ready: None) -> None:
         """ffmpeg -hide_banner -version 返回 0。"""
-        from freeassetfilter.core.native.bridges.media_probe import get_ffmpeg_path
+        from sopeek.core.native.bridges.media_probe import get_ffmpeg_path
 
         completed = subprocess.run(
             [get_ffmpeg_path(), "-hide_banner", "-version"],
@@ -223,7 +223,7 @@ class TestVersionCommands:
 
     def test_ffprobe_version_rc0(self, ffmpeg_ready: None) -> None:
         """ffprobe -version 返回 0。"""
-        from freeassetfilter.core.native.bridges.media_probe import get_ffprobe_path
+        from sopeek.core.native.bridges.media_probe import get_ffprobe_path
 
         completed = subprocess.run(
             [get_ffprobe_path(), "-version"],
@@ -249,14 +249,14 @@ class TestWarmup:
 
     def test_warmup_returns_structure_contract(self, ffmpeg_ready: None) -> None:
         """返回 dict 且键恰为 ffmpeg_version / ffprobe_version / ffmpeg_hwaccels。"""
-        from freeassetfilter.core.native.bridges.media_probe import warmup_ffmpeg_tools
+        from sopeek.core.native.bridges.media_probe import warmup_ffmpeg_tools
 
         result = warmup_ffmpeg_tools(force=True)
         assert set(result) == {"ffmpeg_version", "ffprobe_version", "ffmpeg_hwaccels"}
 
     def test_warmup_underlying_commands_healthy(self, ffmpeg_ready: None) -> None:
         """warmup 的三条底层命令全部返回 0（真实二进制健康度）。"""
-        from freeassetfilter.core.native.bridges.media_probe import (
+        from sopeek.core.native.bridges.media_probe import (
             get_ffmpeg_path,
             get_ffprobe_path,
         )
@@ -287,7 +287,7 @@ class TestWarmup:
         ``command`` 位置 + ``label=/timeout=`` 关键字提交，三条底层命令
         真实执行成功。
         """
-        from freeassetfilter.core.native.bridges.media_probe import warmup_ffmpeg_tools
+        from sopeek.core.native.bridges.media_probe import warmup_ffmpeg_tools
 
         result = warmup_ffmpeg_tools(force=True)
         assert all(result.values())
@@ -301,7 +301,7 @@ class TestManifestAllowList:
 
     def test_demuxers(self, ffmpeg_ready: None) -> None:
         """-formats 的 D 标志行含全部 9 个 demuxer（含逗号别名组拆分）。"""
-        from freeassetfilter.core.native.bridges.media_probe import get_ffmpeg_path
+        from sopeek.core.native.bridges.media_probe import get_ffmpeg_path
 
         output: str = _run_tool_capture([get_ffmpeg_path(), "-hide_banner", "-formats"])
         # 别名组形如 `mov,mp4,m4a,3gp,3g2,mj2` / `matroska,webm`，按逗号拆开后
@@ -317,7 +317,7 @@ class TestManifestAllowList:
 
     def test_muxers(self, ffmpeg_ready: None) -> None:
         """-formats 的 E 标志行含 image2 与 image2pipe 两个 muxer。"""
-        from freeassetfilter.core.native.bridges.media_probe import get_ffmpeg_path
+        from sopeek.core.native.bridges.media_probe import get_ffmpeg_path
 
         output: str = _run_tool_capture([get_ffmpeg_path(), "-hide_banner", "-formats"])
         muxers: Set[str] = {
@@ -330,7 +330,7 @@ class TestManifestAllowList:
 
     def test_decoders(self, ffmpeg_ready: None) -> None:
         """-codecs 的 D 标志行含全部 16 个解码器（逐项，不数总数）。"""
-        from freeassetfilter.core.native.bridges.media_probe import get_ffmpeg_path
+        from sopeek.core.native.bridges.media_probe import get_ffmpeg_path
 
         output: str = _run_tool_capture([get_ffmpeg_path(), "-hide_banner", "-codecs"])
         codecs: Dict[str, str] = _parse_name_flags(output.splitlines())
@@ -349,7 +349,7 @@ class TestManifestAllowList:
 
     def test_encoder_mjpeg(self, ffmpeg_ready: None) -> None:
         """-codecs 的 E 标志行含 mjpeg 编码器。"""
-        from freeassetfilter.core.native.bridges.media_probe import get_ffmpeg_path
+        from sopeek.core.native.bridges.media_probe import get_ffmpeg_path
 
         output: str = _run_tool_capture([get_ffmpeg_path(), "-hide_banner", "-codecs"])
         codecs: Dict[str, str] = _parse_name_flags(output.splitlines())
@@ -359,7 +359,7 @@ class TestManifestAllowList:
 
     def test_scale_filter_present(self, ffmpeg_ready: None) -> None:
         """-filters 含 scale 滤镜。"""
-        from freeassetfilter.core.native.bridges.media_probe import get_ffmpeg_path
+        from sopeek.core.native.bridges.media_probe import get_ffmpeg_path
 
         output: str = _run_tool_capture([get_ffmpeg_path(), "-hide_banner", "-filters"])
         filters: Dict[str, str] = _parse_name_flags(output.splitlines())
@@ -367,7 +367,7 @@ class TestManifestAllowList:
 
     def test_protocols_file_and_pipe(self, ffmpeg_ready: None) -> None:
         """-protocols 的 Input 与 Output 两段均含 file 与 pipe。"""
-        from freeassetfilter.core.native.bridges.media_probe import get_ffmpeg_path
+        from sopeek.core.native.bridges.media_probe import get_ffmpeg_path
 
         output: str = _run_tool_capture([get_ffmpeg_path(), "-hide_banner", "-protocols"])
         sections: Dict[str, Set[str]] = _parse_protocol_sections(output)
@@ -378,7 +378,7 @@ class TestManifestAllowList:
 
     def test_hwaccels_d3d11va_dxva2(self, ffmpeg_ready: None) -> None:
         """-hwaccels 含 d3d11va 与 dxva2（额外条目如 vaapi 允许存在）。"""
-        from freeassetfilter.core.native.bridges.media_probe import get_ffmpeg_path
+        from sopeek.core.native.bridges.media_probe import get_ffmpeg_path
 
         output: str = _run_tool_capture([get_ffmpeg_path(), "-hide_banner", "-hwaccels"])
         names: Set[str] = {
@@ -400,7 +400,7 @@ class TestFfprobeDuration:
     def test_ffprobe_duration_and_video_stream(
         self, video_sample: str, ffmpeg_ready: None
     ) -> None:
-        from freeassetfilter.core.native.bridges.media_probe import run_ffprobe_json
+        from sopeek.core.native.bridges.media_probe import run_ffprobe_json
 
         result = run_ffprobe_json(video_sample)
         assert result is not None, f"ffprobe 未能解析样本: {video_sample}"
@@ -425,7 +425,7 @@ class TestPythonFrameExtraction:
     def test_python_ffmpeg_frame_extraction(
         self, video_sample: str, ffmpeg_ready: None, qapp: Any, tmp_path: Any
     ) -> None:
-        from freeassetfilter.core.managers.thumbnail_manager import get_thumbnail_manager
+        from sopeek.core.managers.thumbnail_manager import get_thumbnail_manager
 
         manager = get_thumbnail_manager()
         out_path: str = str(tmp_path / f"{Path(video_sample).stem}_py.jpg")
@@ -450,7 +450,7 @@ class TestRustBridge:
     ) -> None:
         if not rust_available:
             pytest.skip("Rust 原生扩展不可用（rust_available=False），跳过")
-        from freeassetfilter.core.native.bridges.rust_thumbnail_bridge import (
+        from sopeek.core.native.bridges.rust_thumbnail_bridge import (
             RustThumbnailBridge,
         )
 
@@ -479,8 +479,8 @@ class TestFailurePath:
         self, ffmpeg_ready: None, qapp: Any, tmp_path: Any
     ) -> None:
         from tests.support.data_factories import make_video_sample
-        from freeassetfilter.core.managers.thumbnail_manager import get_thumbnail_manager
-        from freeassetfilter.core.native.bridges.media_probe import run_ffprobe_json
+        from sopeek.core.managers.thumbnail_manager import get_thumbnail_manager
+        from sopeek.core.native.bridges.media_probe import run_ffprobe_json
 
         corrupt_path: str = make_video_sample(
             "sample_h264.mp4", tmp_path / "corrupt.mp4"
@@ -521,7 +521,7 @@ class TestRustBridgeVideoRgba:
         """generate_rgba 返回 channels==4 且 len==w*h*4（视频 RGBA 缓存路径）。"""
         if not rust_available:
             pytest.skip("Rust 原生扩展不可用（rust_available=False），跳过")
-        from freeassetfilter.core.native.bridges.rust_thumbnail_bridge import (
+        from sopeek.core.native.bridges.rust_thumbnail_bridge import (
             RustThumbnailBridge,
         )
 

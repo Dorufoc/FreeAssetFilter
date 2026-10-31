@@ -37,11 +37,11 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 # main_window.py 自带 _ui_root bootstrap（第 22-30 行），
 # 但其依赖的 components/layout 模块同样依赖该 short-path。
-_UI_ROOT: str = str(Path(__file__).resolve().parents[3] / "freeassetfilter" / "ui")
+_UI_ROOT: str = str(Path(__file__).resolve().parents[3] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-from freeassetfilter.ui.main_window import (  # noqa: E402
+from sopeek.ui.main_window import (  # noqa: E402
     FIXED_MICA_PARAMS,
     MainWindow,
     MicaBackgroundWidgetCpu,
@@ -55,7 +55,7 @@ from freeassetfilter.ui.main_window import (  # noqa: E402
 # 测试中切换主题后必须手动恢复）
 from theme import tm  # noqa: E402
 
-from freeassetfilter.ui.floating_pool_window import (  # noqa: E402
+from sopeek.ui.floating_pool_window import (  # noqa: E402
     FLOATING_DRAG_MIME as _FLOATING_DRAG_FORMAT,
 )
 
@@ -127,7 +127,7 @@ def _block_deferred_panel_build(monkeypatch: pytest.MonkeyPatch) -> None:
     """
 
     monkeypatch.setattr(
-        "freeassetfilter.ui.main_window.make_mica_background",
+        "sopeek.ui.main_window.make_mica_background",
         lambda *a, **k: _StubMicaBackground(),
     )
 
@@ -211,7 +211,7 @@ class TestMainWindowStructure:
                 calls.append(True)
 
         monkeypatch.setattr(
-            "freeassetfilter.ui.update_entry.get_update_entry_controller",
+            "sopeek.ui.update_entry.get_update_entry_controller",
             lambda: _StubEntry(),
         )
 
@@ -435,7 +435,7 @@ class TestMainWindowMinimumSizes:
         self, qapp: QApplication
     ) -> None:
         """workspace：预览器最小 640×(360+48)；窗口最小 = 叶子聚合 + 窗口装饰。"""
-        from freeassetfilter.ui.layout.main_layout import (
+        from sopeek.ui.layout.main_layout import (
             HANDLE_WIDTH,
             PREVIEW_CHROME_PX,
             WORKSPACE_PREVIEW_MIN_CONTENT_H,
@@ -489,7 +489,7 @@ class TestMainWindowMinimumSizes:
         self, qapp: QApplication
     ) -> None:
         """切经典：预览器下限清除；窗口最小高覆盖信息区两倍最小高 + 底栏槽位。"""
-        from freeassetfilter.ui.layout.main_layout import (
+        from sopeek.ui.layout.main_layout import (
             CLASSIC_ACTION_SLOT_PX,
             HANDLE_WIDTH,
         )
@@ -934,7 +934,7 @@ class TestFixedMicaParams:
 
     def test_fixed_params_follow_theme(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """fixed_mica_params 按当前主题返回对应定值（返回副本）。"""
-        import freeassetfilter.ui.main_window as mw_mod
+        import sopeek.ui.main_window as mw_mod
 
         monkeypatch.setattr(mw_mod.tm, "is_dark_theme", lambda: False)
         assert mw_mod.fixed_mica_params() == FIXED_MICA_PARAMS["light"]
@@ -949,13 +949,13 @@ class TestFixedMicaParams:
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """_load_mica_settings 返回主题定值，不再读取设置文件。"""
-        import freeassetfilter.ui.main_window as mw_mod
+        import sopeek.ui.main_window as mw_mod
 
         def _boom(*_a: Any, **_k: Any) -> None:
             raise AssertionError("参数固定后不得读取 SettingsManagerV2")
 
         monkeypatch.setattr(
-            "freeassetfilter.core.managers.settings_manager_v2."
+            "sopeek.core.managers.settings_manager_v2."
             "SettingsManagerV2.load",
             _boom,
         )
@@ -973,7 +973,7 @@ class TestFixedMicaParams:
         ``_StubMicaBackground``（无 ``_mica`` 属性），因此只断言
         MainWindow 侧消费结果，不触达真实 MicaMaterial。
         """
-        import freeassetfilter.ui.main_window as mw_mod
+        import sopeek.ui.main_window as mw_mod
 
         monkeypatch.setattr(
             MainWindow, "_load_background_settings",
@@ -993,7 +993,7 @@ class TestFixedMicaParams:
 class TestMicaChainPreload:
     """Mica 依赖链预导入：主线程延迟执行（修复跨线程导入竞态）。
 
-    历史实现启动 ``faf-mica-preload`` daemon 线程导入 numpy/PySide 链，
+    历史实现启动 ``spk-mica-preload`` daemon 线程导入 numpy/PySide 链，
     在 PySide6 6.10 下与主线程 Qt 事件处理存在原生竞态（进程 Aborted /
     挂死；``test_main_window`` 全文件运行稳定复现）。修复后改为
     ``QTimer.singleShot(0)`` 主线程执行，本类钉住该行为防回归。
@@ -1011,7 +1011,7 @@ class TestMicaChainPreload:
         assert window._mica_preload_started is True
         qapp.processEvents()
         after = {t.name for t in threading.enumerate() if t.is_alive()}
-        assert "faf-mica-preload" not in (after - before)
+        assert "spk-mica-preload" not in (after - before)
         # 主线程导入已完成并置位记账（后续刷新请求不再等待）
         assert window._mica_chain_ready is True
         window.deleteLater()
@@ -1332,7 +1332,7 @@ class TestContentThemeTransition:
         # theme_changed 广播路径无需额外补丁。
         # 拦截持久化：SettingsManagerV2.save 默认写真实 data/settings_v2.json
         monkeypatch.setattr(
-            "freeassetfilter.core.managers.settings_manager_v2.SettingsManagerV2.save",
+            "sopeek.core.managers.settings_manager_v2.SettingsManagerV2.save",
             lambda self: None,
         )
         return window
@@ -1430,7 +1430,7 @@ class TestContentThemeTransition:
         """返回 _persist_theme_state 将复用的设置管理器实例（供实例级打桩）。"""
         settings_manager = getattr(qapp, "settings_manager", None)
         if settings_manager is None:
-            from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+            from sopeek.core.managers.settings_manager_v2 import SettingsManagerV2
 
             settings_manager = SettingsManagerV2()
             settings_manager.load()
@@ -1468,7 +1468,7 @@ class TestContentThemeTransition:
                 return True
 
         monkeypatch.setattr(
-            "freeassetfilter.ui.main_window.ContentTransitionOverlay",
+            "sopeek.ui.main_window.ContentTransitionOverlay",
             _SpyContentOverlay,
         )
         try:
@@ -1539,7 +1539,7 @@ class TestContentThemeTransition:
             return False
 
         monkeypatch.setattr(
-            "freeassetfilter.ui.main_window.is_animation_enabled", fake_gate
+            "sopeek.ui.main_window.is_animation_enabled", fake_gate
         )
         try:
             window.begin_layout_transition()
@@ -1799,7 +1799,7 @@ def _counting_floating_factory(monkeypatch: pytest.MonkeyPatch) -> list:
     Returns:
         list: 每次构造追加实例的记账列表（按构造顺序）。
     """
-    import freeassetfilter.ui.floating_pool_window as fpw
+    import sopeek.ui.floating_pool_window as fpw
 
     created: list = []
     real_cls = fpw.FloatingPoolWindow
@@ -2004,7 +2004,7 @@ class TestFloatingPoolWiring:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """「本次启动期间隐藏」：只关内存开关，不落盘，且不会重建。"""
-        from freeassetfilter.core.managers.settings_manager_v2 import (
+        from sopeek.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
         )
 
@@ -2238,7 +2238,7 @@ class TestLoadGeneralTogglesConsistency:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """返回 7 元组且各项为 bool：关闭读到 False、非法值回退 True。"""
-        from freeassetfilter.core.managers.settings_manager_v2 import (
+        from sopeek.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
         )
 

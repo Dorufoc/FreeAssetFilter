@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """W9/W10 平台监视器单元测试（todo 14）。
 
-覆盖 ``freeassetfilter/core/native/platform_monitor.py``：
+覆盖 ``sopeek/core/native/platform_monitor.py``：
 
 * W10 句柄预算：``check_gui_resource_budget`` 纯函数阈值逻辑
   （正常 / 警告水位 / 越过上限 / 缺失值降级）；
@@ -23,7 +23,7 @@ from typing import Any
 
 import pytest
 
-from freeassetfilter.core.native import platform_monitor as pm
+from sopeek.core.native import platform_monitor as pm
 
 pytestmark = pytest.mark.unit
 
@@ -154,8 +154,8 @@ class TestDwmProbe:
     def test_default_path_follows_evidence_env(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:
-        """FAF_EVIDENCE_DIR 覆盖时默认产物路径跟随（审查 3.1#27）。"""
-        monkeypatch.setenv("FAF_EVIDENCE_DIR", str(tmp_path))
+        """SPK_EVIDENCE_DIR 覆盖时默认产物路径跟随（审查 3.1#27）。"""
+        monkeypatch.setenv("SPK_EVIDENCE_DIR", str(tmp_path))
         assert pm.default_probe_artifact_path() == str(
             tmp_path / "task-14" / "w14_dwm_probe.txt"
         )
@@ -166,7 +166,7 @@ class TestPerfSnapshotWiring:
 
     def test_snapshot_has_gui_resources(self) -> None:
         """快照含 gui_resources 段，且既有键齐全。"""
-        from freeassetfilter.utils.perf_metrics import get_perf_snapshot
+        from sopeek.utils.perf_metrics import get_perf_snapshot
 
         snapshot = get_perf_snapshot()
         assert "enabled" in snapshot

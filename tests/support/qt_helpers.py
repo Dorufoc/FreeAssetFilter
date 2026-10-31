@@ -1,7 +1,7 @@
 """Qt 测试辅助：事件泵、信号等待、安全清理与非空断言。
 
 本模块只依赖 PySide6 与"概念性" widget/QObject（含传参的实际子类），
-**禁止导入任何 freeassetfilter 产品模块**，从而成为纯测试基础设施。
+**禁止导入任何 sopeek 产品模块**，从而成为纯测试基础设施。
 
 设计要点：
 
@@ -297,7 +297,7 @@ def scavenge_toplevel_widgets(baseline: set) -> int:
     if not targets:
         return 0
     try:
-        from freeassetfilter.ui.theme.app_stylesheet import (
+        from sopeek.ui.theme.app_stylesheet import (
             resume_qss_apply,
             suspend_qss_apply,
         )

@@ -10,7 +10,7 @@
 // 页面状态一律读写 AppState（Frozen contracts §12）：许可页的同意勾选直接写
 // `state.agreed`，「下一步」按钮的可用性只由 `state.agreed` 决定（未勾选禁用）。
 //
-// 版本字符串只取根 `FAFVERSION`（Frozen contracts §18）：经 IDR_FAFVERSION RCDATA
+// 版本字符串只取根 `SPKVERSION`（Frozen contracts §18）：经 IDR_SPKVERSION RCDATA
 // 运行时 UTF-8 读取首行、去掉前导 'v'——绝不硬编码。许可全文经 IDR_LICENSE RCDATA
 // 指向根 `LICENSE` 运行时读取（不复制副本，§13 append-only 资源行；BOM 兜底）。
 //
@@ -38,22 +38,22 @@
 #include "render/text.h"
 #include "render/theme.h"
 
-namespace faf {
+namespace spk {
 
 // RCDATA 资源 ID。必须与 installer_duilib/resources/app.rc 中的定义一致；既有
 // IDR_LOGO=101 与 `1 VERSIONINFO` 不重编号（§13 append-only）。102/103 为新号。
 #ifndef IDR_LICENSE
 #define IDR_LICENSE 102
 #endif
-#ifndef IDR_FAFVERSION
-#define IDR_FAFVERSION 103
+#ifndef IDR_SPKVERSION
+#define IDR_SPKVERSION 103
 #endif
 
 // 从本模块的 RCDATA 资源按 UTF-8 解码为宽串（BOM 兜底）。资源缺失、为空或解码
 // 失败时返回 false（out 清空）。
 bool ReadUtf8Resource(UINT resourceId, std::wstring& out);
 
-// 版本字符串：读取 IDR_FAFVERSION 首行（UTF-8，BOM 兜底），去掉首尾空白与前导
+// 版本字符串：读取 IDR_SPKVERSION 首行（UTF-8，BOM 兜底），去掉首尾空白与前导
 // 'v'/'V'。失败（资源缺失）返回空串——调用方决定回退展示，绝不硬编码版本。
 std::wstring ReadVersionString();
 
@@ -106,7 +106,7 @@ private:
     void StartIntro();
 
     AppState& state_;  // 借用（§12 共享状态）
-    std::wstring productName_ = L"FreeAssetFilter";
+    std::wstring productName_ = L"Sopeek";
     std::wstring version_;
     std::wstring tagline_;
 
@@ -202,4 +202,4 @@ void RenderWelcome(ID2D1DeviceContext* dc, const Theme& theme, WelcomePage& page
 // 页面②渲染入口（薄包装，供 Todo 12 调用）。
 void RenderLicense(ID2D1DeviceContext* dc, const Theme& theme, LicensePage& page);
 
-}  // namespace faf
+}  // namespace spk

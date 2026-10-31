@@ -48,12 +48,12 @@ from PySide6.QtWidgets import (
 # main_window.py 自带 _ui_root bootstrap（见文件头），但其依赖的
 # components/layout 模块同样依赖该 short-path，此处补齐（同
 # test_main_window.py 的约定）。
-_UI_ROOT: str = str(Path(__file__).resolve().parents[3] / "freeassetfilter" / "ui")
+_UI_ROOT: str = str(Path(__file__).resolve().parents[3] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-from freeassetfilter.ui.layout.file_selector_layout import FileSelectorLayout  # noqa: E402
-from freeassetfilter.ui.main_window import MainWindow  # noqa: E402
+from sopeek.ui.layout.file_selector_layout import FileSelectorLayout  # noqa: E402
+from sopeek.ui.main_window import MainWindow  # noqa: E402
 
 from tests.support.qt_helpers import drain_deferred_deletes  # noqa: E402
 
@@ -93,7 +93,7 @@ def _stub_mica_background(monkeypatch: pytest.MonkeyPatch) -> None:
     不建真实面板。
     """
     monkeypatch.setattr(
-        "freeassetfilter.ui.main_window.make_mica_background",
+        "sopeek.ui.main_window.make_mica_background",
         lambda *a, **k: _StubMicaBackground(),
     )
     monkeypatch.setattr(MainWindow, "_build_panels_deferred", lambda self: None)

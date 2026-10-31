@@ -28,13 +28,13 @@ from typing import Tuple
 import pytest
 from PySide6.QtWidgets import QApplication
 
-# 布局模块内部使用短路径导入（from theme import tm 等），要求 freeassetfilter/ui
+# 布局模块内部使用短路径导入（from theme import tm 等），要求 sopeek/ui
 # 位于 sys.path；与 tests/unit/ui/layout/test_layouts.py 的 bootstrap 保持一致。
-_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "freeassetfilter" / "ui")
+_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-from freeassetfilter.ui.layout.main_layout import (  # noqa: E402
+from sopeek.ui.layout.main_layout import (  # noqa: E402
     BOTTOM_MIN_PX,
     CLASSIC_MODE,
     HANDLE_WIDTH,

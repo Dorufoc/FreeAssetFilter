@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """媒体探测模块单测（tests-comprehensive-refactor todo-9 补全）。
 
-覆盖 ``freeassetfilter.core.native.bridges.media_probe``：
+覆盖 ``sopeek.core.native.bridges.media_probe``：
 
 * ``get_ffprobe_path`` / ``get_ffmpeg_path`` 的 bundled 优先路径解析、
   ``get_subprocess_creationflags`` / ``get_subprocess_startupinfo``；
@@ -27,7 +27,7 @@ from typing import Any, Dict, List
 
 import pytest
 
-from freeassetfilter.core.native.bridges import media_probe
+from sopeek.core.native.bridges import media_probe
 
 
 pytestmark = pytest.mark.unit

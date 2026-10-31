@@ -6,7 +6,7 @@
 1. **预算收敛**：各命名池之和 + 两个 rayon 池 + 预留 ≤ ``THREAD_CEILING``；
 2. **命名池单例**：``pool(name)`` 幂等，``maxThreadCount`` 等于预算；
 3. **投递可用**：``start()`` 能在池线程执行 runnable 并完成线程命名；
-4. **全局池退场**：``freeassetfilter/**`` 内除 ``app/main.py`` 的兜底限流外
+4. **全局池退场**：``sopeek/**`` 内除 ``app/main.py`` 的兜底限流外
    不得再出现 ``QThreadPool.globalInstance`` 调用（AST 扫描）。
 
 验证命令：
@@ -23,7 +23,7 @@ from typing import Any, List
 import pytest
 from PySide6.QtCore import QRunnable
 
-from freeassetfilter.core import pools
+from sopeek.core import pools
 
 pytestmark = pytest.mark.unit
 
@@ -60,7 +60,7 @@ def test_pool_singleton_and_limit() -> None:
     second = pools.pool("io")
     assert first is second
     assert first.maxThreadCount() == pools.budget("io")
-    assert first.objectName() == "faf-io"
+    assert first.objectName() == "spk-io"
 
 
 def test_start_runs_on_named_pool() -> None:
@@ -99,7 +99,7 @@ def test_snapshot_shape() -> None:
 def test_no_global_pool_calls_outside_main() -> None:
     """AST 扫描：业务代码不得再调用 ``QThreadPool.globalInstance``。"""
     offenders: List[str] = []
-    for path in ( _REPO_ROOT / "freeassetfilter").rglob("*.py"):
+    for path in ( _REPO_ROOT / "sopeek").rglob("*.py"):
         if path.name in _ALLOWED_GLOBAL_POOL:
             continue
         try:

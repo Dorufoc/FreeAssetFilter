@@ -1,11 +1,11 @@
 """Real-network smoke test for the native updater (plan Todo 20).
 
 The tool drives the production :class:`UpdateService` (and therefore the real
-``faf_updater.exe`` sidecar) against GitHub, records the redirect chain of the
+``spk_updater.exe`` sidecar) against GitHub, records the redirect chain of the
 release asset, pauses a real download at a byte threshold, resumes it, and
 verifies the SHA-256 digest.  It never launches the installer and never writes
 inside the repository: the service download directory is redirected to a
-temporary ``FAF_DATA_DIR`` for the whole run.
+temporary ``SPK_DATA_DIR`` for the whole run.
 
 Typical usage (PowerShell)::
 
@@ -43,7 +43,7 @@ from urllib.request import (
 )
 
 # Qt must be configured before PySide6 is imported, and the app-data override
-# must exist before any ``freeassetfilter`` module reads it.
+# must exist before any ``sopeek`` module reads it.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 _REPO_ROOT: Path = Path(__file__).resolve().parent.parent
@@ -52,21 +52,21 @@ if str(_REPO_ROOT) not in sys.path:
 
 
 def _prepare_data_dir() -> Path:
-    """Point ``FAF_DATA_DIR`` at a temporary directory outside the repo.
+    """Point ``SPK_DATA_DIR`` at a temporary directory outside the repo.
 
     Returns:
         Path: The effective application-data directory used by the service.
     """
-    existing = os.environ.get("FAF_DATA_DIR", "").strip()
+    existing = os.environ.get("SPK_DATA_DIR", "").strip()
     if existing:
         return Path(existing)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     directory = (
         Path(tempfile.gettempdir())
-        / "faf_updater_smoke"
+        / "spk_updater_smoke"
         / f"run-{stamp}-{os.getpid()}"
     )
-    os.environ["FAF_DATA_DIR"] = str(directory)
+    os.environ["SPK_DATA_DIR"] = str(directory)
     return directory
 
 
@@ -80,13 +80,13 @@ from PySide6.QtCore import (  # noqa: E402 - env must be set before Qt import
     Slot,
 )
 
-from freeassetfilter.services.update_service import (  # noqa: E402
+from sopeek.services.update_service import (  # noqa: E402
     UpdateError,
     UpdateInfo,
     UpdateService,
     sanitize_asset_name,
 )
-from freeassetfilter.utils.path_utils import get_app_data_path  # noqa: E402
+from sopeek.utils.path_utils import get_app_data_path  # noqa: E402
 
 #: Keeps the CLI-owned ``QCoreApplication`` alive for the whole process.
 _QT_APP: Optional[QCoreApplication] = None
@@ -95,9 +95,9 @@ DEFAULT_PREFLIGHT: Path = (
     _REPO_ROOT / ".omo" / "evidence" / "rust-native-updater" / "preflight.txt"
 )
 RELEASES_API: str = (
-    "https://api.github.com/repos/Dorufoc/FreeAssetFilter/releases?per_page=30"
+    "https://api.github.com/repos/Dorufoc/Sopeek/releases?per_page=30"
 )
-USER_AGENT: str = "FreeAssetFilter-updater-smoke"
+USER_AGENT: str = "Sopeek-updater-smoke"
 REDIRECT_STATUSES: frozenset[int] = frozenset({301, 302, 303, 307, 308})
 MAX_REDIRECT_HOPS: int = 10
 MIB: int = 1024 * 1024
@@ -1300,7 +1300,7 @@ def _build_parser() -> argparse.ArgumentParser:
         argparse.ArgumentParser: Configured parser.
     """
     parser = argparse.ArgumentParser(
-        description="Real-network smoke test for the FreeAssetFilter updater.",
+        description="Real-network smoke test for the Sopeek updater.",
     )
     parser.add_argument(
         "--check",
@@ -1379,7 +1379,7 @@ def _append_evidence(path: Path, payload: dict[str, Any]) -> None:
         f"CWD: {Path.cwd()}",
         f"Python: {platform.python_version()} ({platform.platform()})",
         f"QT_QPA_PLATFORM: {os.environ.get('QT_QPA_PLATFORM')}",
-        f"FAF_DATA_DIR: {os.environ.get('FAF_DATA_DIR')}",
+        f"SPK_DATA_DIR: {os.environ.get('SPK_DATA_DIR')}",
         f"Mode: {payload.get('mode')}",
         f"Verdict: {payload.get('verdict')}",
         "-" * 78,

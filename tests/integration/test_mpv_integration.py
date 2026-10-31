@@ -28,7 +28,7 @@ from unittest.mock import MagicMock
 import pytest
 from pytest import MonkeyPatch
 
-from freeassetfilter.core.managers.mpv_manager import MPVManager, MPVState
+from sopeek.core.managers.mpv_manager import MPVManager, MPVState
 from tests.support.qt_helpers import process_qt_events, wait_for_signal
 
 
@@ -79,7 +79,7 @@ def _activate_mock_branch(
     monkeypatch.setattr(manager, "_register_luajit_veh", lambda: None)
     monkeypatch.setattr(manager, "_unregister_luajit_veh", lambda: None)
     monkeypatch.setattr(
-        "freeassetfilter.core.managers.mpv_manager.MPVPlayerCore",
+        "sopeek.core.managers.mpv_manager.MPVPlayerCore",
         lambda *args, **kwargs: fake,
     )
 

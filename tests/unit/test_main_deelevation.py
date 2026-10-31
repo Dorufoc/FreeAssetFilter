@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """启动期提权自愈（floating-pool-window 任务 13，办法一）单元测试。
 
-覆盖 ``freeassetfilter.app.main`` 的 ``_offer_deelevation_restart_if_elevated``
+覆盖 ``sopeek.app.main`` 的 ``_offer_deelevation_restart_if_elevated``
 与 ``_deelevation_restart_command``：
 
 * 未提权 / 无 shell 可借壳 → 零副作用 ``"continue"``（不弹窗、不重启）；
@@ -24,9 +24,9 @@ from typing import Any
 
 import pytest
 
-import freeassetfilter.app.main as main_module
-from freeassetfilter.app import instance_guard
-from freeassetfilter.utils import elevation
+import sopeek.app.main as main_module
+from sopeek.app import instance_guard
+from sopeek.utils import elevation
 
 #: 独立于生产代码推导仓库根：tests/unit/<本文件> → parents[2]。
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -149,7 +149,7 @@ class TestOfferDeElevationRestart:
         assert env.mutex_handles == [handle]
         assert len(env.relaunch_calls) == 1
         argv, cwd = env.relaunch_calls[0]
-        assert argv == [sys.executable, "-m", "freeassetfilter.app.main"]
+        assert argv == [sys.executable, "-m", "sopeek.app.main"]
         assert isinstance(cwd, str)
         assert os.path.normcase(cwd) == os.path.normcase(str(_PROJECT_ROOT))
         assert env.alert_details == []
@@ -179,10 +179,10 @@ class TestDeElevationRestartCommand:
     def test_source_run_uses_module_entry_and_repo_root(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """源码运行：``python -m freeassetfilter.app.main`` + 仓库根 cwd。"""
+        """源码运行：``python -m sopeek.app.main`` + 仓库根 cwd。"""
         monkeypatch.delattr(sys, "frozen", raising=False)
         argv, cwd = main_module._deelevation_restart_command()
-        assert argv == [sys.executable, "-m", "freeassetfilter.app.main"]
+        assert argv == [sys.executable, "-m", "sopeek.app.main"]
         assert os.path.normcase(cwd) == os.path.normcase(str(_PROJECT_ROOT))
 
     def test_frozen_run_uses_executable_and_its_directory(
@@ -200,7 +200,7 @@ class TestDialogWrappers:
 
     def test_choice_dialog_kwargs(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """询问框：按钮顺序/类型正确，且显式 show_close=False（无 X 关闭歧义）。"""
-        import freeassetfilter.ui.components.styled_dialog as styled_dialog
+        import sopeek.ui.components.styled_dialog as styled_dialog
 
         calls: list[dict[str, Any]] = []
 
@@ -220,7 +220,7 @@ class TestDialogWrappers:
 
     def test_failure_alert_kwargs(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """失败告警：单一确认按钮、danger 类型、失败细节原样进入正文。"""
-        import freeassetfilter.ui.components.styled_dialog as styled_dialog
+        import sopeek.ui.components.styled_dialog as styled_dialog
 
         calls: list[dict[str, Any]] = []
 

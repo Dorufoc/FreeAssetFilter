@@ -3,7 +3,7 @@
 
 锁定五条契约：
 
-1. 档位可由 ``FAF_MEMORY_TIER`` 强制覆盖；
+1. 档位可由 ``SPK_MEMORY_TIER`` 强制覆盖；
 2. ``apply()`` 把 QPixmapCache 上限设为档位值（幂等）；
 3. ``snapshot()`` 形状稳定（含档位、阈值、进程/系统/显存段、账本）；
 4. 压力分级按 RSS 阈值判定并派发回调（回调异常被隔离）；
@@ -20,7 +20,7 @@ from typing import Any, Dict, List
 import pytest
 from PySide6.QtGui import QPixmapCache
 
-from freeassetfilter.core import memory_budget as mb
+from sopeek.core import memory_budget as mb
 
 pytestmark = pytest.mark.unit
 
@@ -35,11 +35,11 @@ def _reset_budget() -> Any:
 
 def test_tier_override_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """环境变量可强制档位。"""
-    monkeypatch.setenv("FAF_MEMORY_TIER", "low")
+    monkeypatch.setenv("SPK_MEMORY_TIER", "low")
     budget = mb.get_memory_budget()
     assert budget.detect_tier_name() == "low"
 
-    monkeypatch.setenv("FAF_MEMORY_TIER", "high")
+    monkeypatch.setenv("SPK_MEMORY_TIER", "high")
     assert budget.detect_tier_name() == "high"
 
 
@@ -47,7 +47,7 @@ def test_default_tier_is_balanced_for_midrange(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """12–32GB 机器自动落在 balanced（与改造前上限一致）。"""
-    monkeypatch.delenv("FAF_MEMORY_TIER", raising=False)
+    monkeypatch.delenv("SPK_MEMORY_TIER", raising=False)
     budget = mb.get_memory_budget()
     monkeypatch.setattr(
         mb.memory_probe,
@@ -60,7 +60,7 @@ def test_default_tier_is_balanced_for_midrange(
 
 def test_apply_sets_pixmap_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     """apply() 把 QPixmapCache 设为档位值且幂等。"""
-    monkeypatch.setenv("FAF_MEMORY_TIER", "low")
+    monkeypatch.setenv("SPK_MEMORY_TIER", "low")
     budget = mb.get_memory_budget()
     budget.set_tier("low")
     result = budget.apply()

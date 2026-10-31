@@ -33,8 +33,8 @@ import pytest
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QResizeEvent
 
-import freeassetfilter.ui.frameless_window as fw
-from freeassetfilter.ui.frameless_window import (
+import sopeek.ui.frameless_window as fw
+from sopeek.ui.frameless_window import (
     _HTBOTTOM,
     _HTBOTTOMLEFT,
     _HTBOTTOMRIGHT,

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""``FavoritesService``（freeassetfilter/services/favorites_service.py）单元测试。
+"""``FavoritesService``（sopeek/services/favorites_service.py）单元测试。
 
 覆盖（happy + boundary/error 各至少一条）：
 
@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from freeassetfilter.services.favorites_service import FavoritesService
+from sopeek.services.favorites_service import FavoritesService
 
 pytestmark = pytest.mark.unit
 

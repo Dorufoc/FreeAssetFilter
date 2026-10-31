@@ -12,26 +12,26 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QWidget
 
 # 组件模块内部使用短路径导入（from theme import tm），要求 ui 目录在 sys.path。
-_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "freeassetfilter" / "ui")
+_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-from freeassetfilter.ui.components.styled_ai_chat import (  # noqa: E402
+from sopeek.ui.components.styled_ai_chat import (  # noqa: E402
     StyledAIChatWindow,
 )
-from freeassetfilter.ui.components.styled_ai_chat_sidebar import (  # noqa: E402
+from sopeek.ui.components.styled_ai_chat_sidebar import (  # noqa: E402
     COMPACT_WIDTH,
     AIConversationItem,
     ConversationEntry,
     StyledAIChatSidebar,
 )
-from freeassetfilter.ui.components.styled_ai_composer import (  # noqa: E402
+from sopeek.ui.components.styled_ai_composer import (  # noqa: E402
     StyledAIComposer,
 )
-from freeassetfilter.ui.components.styled_ai_welcome import (  # noqa: E402
+from sopeek.ui.components.styled_ai_welcome import (  # noqa: E402
     StyledAIWelcome,
 )
-from freeassetfilter.ui.components.styled_icon_button import (  # noqa: E402
+from sopeek.ui.components.styled_icon_button import (  # noqa: E402
     StyledIconButton,
 )
 from theme import tm  # noqa: E402

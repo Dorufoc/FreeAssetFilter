@@ -43,27 +43,27 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QApplication, QPushButton, QWidget
 
 # 组件模块内部使用短路径导入（from theme import tm / components.*），
-# 要求 freeassetfilter/ui 位于 sys.path；与 tests/unit/ui/layout 下
+# 要求 sopeek/ui 位于 sys.path；与 tests/unit/ui/layout 下
 # test_layouts.py 的 bootstrap 方式保持一致。
-_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "freeassetfilter" / "ui")
+_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
 from tests.support.qt_helpers import wait_for_signal  # noqa: E402
 
-from freeassetfilter.ui.components.styled_avatar import AvatarGroup, StyledAvatar  # noqa: E402
-from freeassetfilter.ui.components.styled_badge import BadgeWrapper, StyledBadge  # noqa: E402
-from freeassetfilter.ui.components.styled_breadcrumb import (  # noqa: E402
+from sopeek.ui.components.styled_avatar import AvatarGroup, StyledAvatar  # noqa: E402
+from sopeek.ui.components.styled_badge import BadgeWrapper, StyledBadge  # noqa: E402
+from sopeek.ui.components.styled_breadcrumb import (  # noqa: E402
     BreadcrumbLink,
     StyledBreadcrumb,
     parse_svg_path,
 )
-from freeassetfilter.ui.components.styled_button import StyledButton  # noqa: E402
-from freeassetfilter.ui.components.styled_checkbox import StyledCheckbox  # noqa: E402
-from freeassetfilter.ui.components.styled_color_picker import BG_INPUT, StyledColorPicker  # noqa: E402
-from freeassetfilter.ui.components.styled_combobox import StyledComboBox  # noqa: E402
-from freeassetfilter.ui.components.styled_context_menu import StyledContextMenu  # noqa: E402
-from freeassetfilter.ui.components.styled_dialog import (  # noqa: E402
+from sopeek.ui.components.styled_button import StyledButton  # noqa: E402
+from sopeek.ui.components.styled_checkbox import StyledCheckbox  # noqa: E402
+from sopeek.ui.components.styled_color_picker import BG_INPUT, StyledColorPicker  # noqa: E402
+from sopeek.ui.components.styled_combobox import StyledComboBox  # noqa: E402
+from sopeek.ui.components.styled_context_menu import StyledContextMenu  # noqa: E402
+from sopeek.ui.components.styled_dialog import (  # noqa: E402
     DialogAnimationEffect,
     DialogIconCircle,
     StyledDialog,
@@ -73,26 +73,26 @@ from freeassetfilter.ui.components.styled_dialog import (  # noqa: E402
     create_danger_dialog,
     create_input_dialog,
 )
-from freeassetfilter.ui.components.styled_divider import StyledDivider  # noqa: E402
-from freeassetfilter.ui.components.styled_drawer import StyledDrawer  # noqa: E402
-from freeassetfilter.ui.components.styled_info_card import StyledInfoCard  # noqa: E402
-from freeassetfilter.ui.components.styled_lineedit import InputWrapper, StyledLineEdit  # noqa: E402
-from freeassetfilter.ui.components.styled_notification_badge import (  # noqa: E402
+from sopeek.ui.components.styled_divider import StyledDivider  # noqa: E402
+from sopeek.ui.components.styled_drawer import StyledDrawer  # noqa: E402
+from sopeek.ui.components.styled_info_card import StyledInfoCard  # noqa: E402
+from sopeek.ui.components.styled_lineedit import InputWrapper, StyledLineEdit  # noqa: E402
+from sopeek.ui.components.styled_notification_badge import (  # noqa: E402
     NotificationBadgeList,
     NotificationItem,
 )
-from freeassetfilter.ui.components.styled_number_input import StyledNumberInput  # noqa: E402
-from freeassetfilter.ui.components.styled_progress import ProgressTrack, StyledProgress  # noqa: E402
-from freeassetfilter.ui.components.styled_progress_circle import CircleWidget, StyledProgressCircle  # noqa: E402
-from freeassetfilter.ui.components.styled_radio import StyledRadio  # noqa: E402
-from freeassetfilter.ui.components.styled_scroll_area import StyledScrollArea, StyledScrollBar  # noqa: E402
-from freeassetfilter.ui.components.styled_segmented import StyledSegmented  # noqa: E402
-from freeassetfilter.ui.components.styled_slider import SliderTrack, StyledSlider  # noqa: E402
-from freeassetfilter.ui.components.styled_steps import StepWidget, StyledSteps  # noqa: E402
-from freeassetfilter.ui.components.styled_tag import StyledTag  # noqa: E402
-from freeassetfilter.ui.components.styled_textarea import StyledTextarea  # noqa: E402
-from freeassetfilter.ui.components.styled_toggle import StyledToggle  # noqa: E402
-from freeassetfilter.ui.components.styled_tooltip import StyledTooltip  # noqa: E402
+from sopeek.ui.components.styled_number_input import StyledNumberInput  # noqa: E402
+from sopeek.ui.components.styled_progress import ProgressTrack, StyledProgress  # noqa: E402
+from sopeek.ui.components.styled_progress_circle import CircleWidget, StyledProgressCircle  # noqa: E402
+from sopeek.ui.components.styled_radio import StyledRadio  # noqa: E402
+from sopeek.ui.components.styled_scroll_area import StyledScrollArea, StyledScrollBar  # noqa: E402
+from sopeek.ui.components.styled_segmented import StyledSegmented  # noqa: E402
+from sopeek.ui.components.styled_slider import SliderTrack, StyledSlider  # noqa: E402
+from sopeek.ui.components.styled_steps import StepWidget, StyledSteps  # noqa: E402
+from sopeek.ui.components.styled_tag import StyledTag  # noqa: E402
+from sopeek.ui.components.styled_textarea import StyledTextarea  # noqa: E402
+from sopeek.ui.components.styled_toggle import StyledToggle  # noqa: E402
+from sopeek.ui.components.styled_tooltip import StyledTooltip  # noqa: E402
 
 pytestmark = pytest.mark.unit
 
@@ -706,7 +706,7 @@ class TestStyledInfoCard:
 
     def test_tile_style_matches_grid_card_height(self, qapp: QApplication) -> None:
         """平铺样式卡高 = 选择器网格卡规格（CARD_CONFIG × scale）。"""
-        from freeassetfilter.ui.components.file_card_delegate import (
+        from sopeek.ui.components.file_card_delegate import (
             CARD_CONFIG,
             FileCardDelegate,
         )
@@ -1142,7 +1142,7 @@ class TestDialogFactories:
     @pytest.fixture(autouse=True)
     def _suppress_show(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """将模块级 _show_dialog 替换为 no-op，避免测试弹出真实窗口。"""
-        import freeassetfilter.ui.components.styled_dialog as _sd
+        import sopeek.ui.components.styled_dialog as _sd
 
         monkeypatch.setattr(_sd, "_show_dialog", lambda dialog: None)
 
@@ -1167,7 +1167,7 @@ class TestAskCustomDialog:
     @pytest.fixture(autouse=True)
     def _stub_factory(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """用假对话框替换 create_custom_dialog，避免真实窗口。"""
-        import freeassetfilter.ui.components.styled_dialog as _sd
+        import sopeek.ui.components.styled_dialog as _sd
 
         class FakeDialog(QObject):
             finished = Signal(int)
@@ -1177,7 +1177,7 @@ class TestAskCustomDialog:
         self._fake_cls = FakeDialog
 
     def test_returns_clicked_index(self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
-        import freeassetfilter.ui.components.styled_dialog as _sd
+        import sopeek.ui.components.styled_dialog as _sd
 
         fake = self._fake_cls()
         monkeypatch.setattr(_sd, "create_custom_dialog", lambda **kwargs: fake)
@@ -1189,7 +1189,7 @@ class TestAskCustomDialog:
     def test_destroyed_without_finished_falls_back_to_zero(
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import freeassetfilter.ui.components.styled_dialog as _sd
+        import sopeek.ui.components.styled_dialog as _sd
 
         fake = self._fake_cls()
         monkeypatch.setattr(_sd, "create_custom_dialog", lambda **kwargs: fake)

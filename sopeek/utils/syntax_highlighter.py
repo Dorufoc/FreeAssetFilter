@@ -1,0 +1,2180 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Sopeek v1.0
+
+Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
+
+协议说明：本软件基于 AGPL-3.0 协议开源
+1. 个人非商业使用：需保留本注释及开发者署名；
+
+项目地址：https://github.com/Dorufoc/Sopeek
+许可协议：https://github.com/Dorufoc/Sopeek/blob/main/LICENSE
+
+语法高亮模块 - 基于 Syntect 实现
+
+功能说明：
+- 使用 pysyntect 库实现高性能语法高亮
+- 支持 500+ 种编程语言的语法定义
+- 兼容 VS Code / Sublime Text 的 TextMate 语法文件
+- 支持 TextMate 主题定义
+- 纯 Python 实现，无需 Node.js 依赖
+
+工作原理：
+1. 加载语法定义：从内置或自定义路径加载 .sublime-syntax 文件
+2. 加载主题：从内置或自定义路径加载 .tmTheme 文件
+3. 逐行扫描：使用 Oniguruma 正则引擎对代码进行词法分析
+4. 生成 Token：输出带样式信息的 Token 列表
+5. 合成样式：根据主题将 Token 映射为颜色值
+
+TextMate 语法文件支持：
+- 支持 .sublime-syntax (Sublime Text 3+)
+- 支持 .tmLanguage (TextMate / VS Code)
+- 支持 .plist 格式的语法定义
+- 支持从 VS Code 扩展加载语法
+"""
+
+import json
+import plistlib
+from dataclasses import dataclass
+from enum import Enum, auto
+from typing import List, Dict, Optional, Union, Any
+from pathlib import Path
+
+# PySide6 导入
+from PySide6.QtGui import QColor, QTextCharFormat
+
+# 尝试导入 pysyntect
+try:
+    from syntect import (
+        highlight,
+        load_default_syntax,
+        load_syntax_folder,
+        load_theme_folder,
+        Style
+    )
+    SYNTECT_AVAILABLE = True
+except ImportError:
+    SYNTECT_AVAILABLE = False
+    Style = None  # 类型占位
+
+# 尝试导入 Pygments 作为备选方案
+try:
+    from pygments import lex
+    from pygments.lexers import get_lexer_by_name, TextLexer, guess_lexer
+    from pygments.token import Token
+    from pygments.styles import get_style_by_name
+    PYGMENTS_AVAILABLE = True
+except ImportError:
+    PYGMENTS_AVAILABLE = False
+
+# 导入日志模块
+from sopeek.utils.app_logger import info, debug, warning, error
+
+# spk_core 原生语法高亮桥（惰性单例，DLL 缺失时 available is False）
+from sopeek.core.native.bridges.spk_core_bridge import get_spk_core_bridge
+
+
+class TokenType(Enum):
+    """Token 类型枚举"""
+    KEYWORD = auto()           # 关键字
+    STRING = auto()            # 字符串
+    NUMBER = auto()            # 数字
+    COMMENT = auto()           # 注释
+    FUNCTION = auto()          # 函数名
+    CLASS_TYPE = auto()        # 类名/类型
+    OPERATOR = auto()          # 运算符
+    PUNCTUATION = auto()       # 标点符号
+    VARIABLE = auto()          # 变量
+    CONSTANT = auto()          # 常量
+    TAG = auto()               # XML/HTML 标签
+    ATTRIBUTE = auto()         # 属性名
+    VALUE = auto()             # 属性值
+    PREPROCESSOR = auto()      # 预处理指令
+    DEFAULT = auto()           # 默认文本
+    WHITESPACE = auto()        # 空白字符
+
+
+@dataclass
+class Token:
+    """语法 Token 数据类
+    
+    Attributes:
+        text: Token 文本内容
+        token_type: Token 类型
+        start_pos: 起始位置（字符索引）
+        end_pos: 结束位置（字符索引）
+        scopes: 作用域栈（用于调试）
+    """
+    text: str
+    token_type: TokenType
+    start_pos: int
+    end_pos: int
+    scopes: List[str] = None
+    
+    def __post_init__(self):
+        if self.scopes is None:
+            self.scopes = []
+
+
+@dataclass
+class ColorScheme:
+    """颜色方案数据类
+    
+    Attributes:
+        name: 方案名称
+        background: 背景色 (hex)
+        foreground: 前景色 (hex)
+        colors: Token 类型到颜色的映射
+    """
+    name: str
+    background: str
+    foreground: str
+    colors: Dict[TokenType, str]
+
+
+class ColorSchemes:
+    """预定义颜色方案"""
+    
+    @staticmethod
+    def github_dark() -> ColorScheme:
+        """GitHub Dark 主题"""
+        return ColorScheme(
+            name="github_dark",
+            background="#0d1117",
+            foreground="#c9d1d9",
+            colors={
+                TokenType.KEYWORD: "#ff7b72",
+                TokenType.STRING: "#a5d6ff",
+                TokenType.NUMBER: "#79c0ff",
+                TokenType.COMMENT: "#8b949e",
+                TokenType.FUNCTION: "#d2a8ff",
+                TokenType.CLASS_TYPE: "#ffa657",
+                TokenType.OPERATOR: "#ff7b72",
+                TokenType.PUNCTUATION: "#c9d1d9",
+                TokenType.VARIABLE: "#c9d1d9",
+                TokenType.CONSTANT: "#79c0ff",
+                TokenType.TAG: "#7ee787",
+                TokenType.ATTRIBUTE: "#79c0ff",
+                TokenType.VALUE: "#a5d6ff",
+                TokenType.PREPROCESSOR: "#ff7b72",
+                TokenType.DEFAULT: "#c9d1d9",
+                TokenType.WHITESPACE: "#c9d1d9",
+            }
+        )
+    
+    @staticmethod
+    def github_light() -> ColorScheme:
+        """GitHub Light 主题"""
+        return ColorScheme(
+            name="github_light",
+            background="#ffffff",
+            foreground="#24292e",
+            colors={
+                TokenType.KEYWORD: "#d73a49",
+                TokenType.STRING: "#032f62",
+                TokenType.NUMBER: "#005cc5",
+                TokenType.COMMENT: "#6a737d",
+                TokenType.FUNCTION: "#6f42c1",
+                TokenType.CLASS_TYPE: "#e36209",
+                TokenType.OPERATOR: "#d73a49",
+                TokenType.PUNCTUATION: "#24292e",
+                TokenType.VARIABLE: "#24292e",
+                TokenType.CONSTANT: "#005cc5",
+                TokenType.TAG: "#22863a",
+                TokenType.ATTRIBUTE: "#005cc5",
+                TokenType.VALUE: "#032f62",
+                TokenType.PREPROCESSOR: "#d73a49",
+                TokenType.DEFAULT: "#24292e",
+                TokenType.WHITESPACE: "#24292e",
+            }
+        )
+    
+    @staticmethod
+    def vscode_dark() -> ColorScheme:
+        """VS Code Dark+ 主题"""
+        return ColorScheme(
+            name="vscode_dark",
+            background="#1e1e1e",
+            foreground="#d4d4d4",
+            colors={
+                TokenType.KEYWORD: "#569cd6",
+                TokenType.STRING: "#ce9178",
+                TokenType.NUMBER: "#b5cea8",
+                TokenType.COMMENT: "#6a9955",
+                TokenType.FUNCTION: "#dcdcaa",
+                TokenType.CLASS_TYPE: "#4ec9b0",
+                TokenType.OPERATOR: "#d4d4d4",
+                TokenType.PUNCTUATION: "#d4d4d4",
+                TokenType.VARIABLE: "#9cdcfe",
+                TokenType.CONSTANT: "#4fc1ff",
+                TokenType.TAG: "#569cd6",
+                TokenType.ATTRIBUTE: "#9cdcfe",
+                TokenType.VALUE: "#ce9178",
+                TokenType.PREPROCESSOR: "#c586c0",
+                TokenType.DEFAULT: "#d4d4d4",
+                TokenType.WHITESPACE: "#d4d4d4",
+            }
+        )
+    
+    @staticmethod
+    def vscode_light() -> ColorScheme:
+        """VS Code Light+ 主题"""
+        return ColorScheme(
+            name="vscode_light",
+            background="#ffffff",
+            foreground="#000000",
+            colors={
+                TokenType.KEYWORD: "#0000ff",
+                TokenType.STRING: "#a31515",
+                TokenType.NUMBER: "#098658",
+                TokenType.COMMENT: "#008000",
+                TokenType.FUNCTION: "#795e26",
+                TokenType.CLASS_TYPE: "#267f99",
+                TokenType.OPERATOR: "#000000",
+                TokenType.PUNCTUATION: "#000000",
+                TokenType.VARIABLE: "#001080",
+                TokenType.CONSTANT: "#0070c1",
+                TokenType.TAG: "#800000",
+                TokenType.ATTRIBUTE: "#e50000",
+                TokenType.VALUE: "#0000ff",
+                TokenType.PREPROCESSOR: "#af00db",
+                TokenType.DEFAULT: "#000000",
+                TokenType.WHITESPACE: "#000000",
+            }
+        )
+
+    @staticmethod
+    def base16_ocean_dark() -> ColorScheme:
+        """Base16 Ocean Dark 主题"""
+        return ColorScheme(
+            name="base16_ocean_dark",
+            background="#2b303b",
+            foreground="#c0c5ce",
+            colors={
+                TokenType.KEYWORD: "#b48ead",
+                TokenType.STRING: "#a3be8c",
+                TokenType.NUMBER: "#d08770",
+                TokenType.COMMENT: "#65737e",
+                TokenType.FUNCTION: "#8fa1b3",
+                TokenType.CLASS_TYPE: "#ebcb8b",
+                TokenType.OPERATOR: "#bf616a",
+                TokenType.PUNCTUATION: "#c0c5ce",
+                TokenType.VARIABLE: "#c0c5ce",
+                TokenType.CONSTANT: "#d08770",
+                TokenType.TAG: "#bf616a",
+                TokenType.ATTRIBUTE: "#ebcb8b",
+                TokenType.VALUE: "#a3be8c",
+                TokenType.PREPROCESSOR: "#b48ead",
+                TokenType.DEFAULT: "#c0c5ce",
+                TokenType.WHITESPACE: "#c0c5ce",
+            }
+        )
+
+    @staticmethod
+    def base16_ocean_light() -> ColorScheme:
+        """Base16 Ocean Light 主题"""
+        return ColorScheme(
+            name="base16_ocean_light",
+            background="#eff1f5",
+            foreground="#4f5b66",
+            colors={
+                TokenType.KEYWORD: "#b48ead",
+                TokenType.STRING: "#a3be8c",
+                TokenType.NUMBER: "#d08770",
+                TokenType.COMMENT: "#a7adba",
+                TokenType.FUNCTION: "#8fa1b3",
+                TokenType.CLASS_TYPE: "#ebcb8b",
+                TokenType.OPERATOR: "#bf616a",
+                TokenType.PUNCTUATION: "#4f5b66",
+                TokenType.VARIABLE: "#4f5b66",
+                TokenType.CONSTANT: "#d08770",
+                TokenType.TAG: "#bf616a",
+                TokenType.ATTRIBUTE: "#ebcb8b",
+                TokenType.VALUE: "#a3be8c",
+                TokenType.PREPROCESSOR: "#b48ead",
+                TokenType.DEFAULT: "#4f5b66",
+                TokenType.WHITESPACE: "#4f5b66",
+            }
+        )
+
+
+@dataclass
+class TextMateGrammar:
+    """TextMate 语法定义数据类
+    
+    用于表示从 .tmLanguage 或 .sublime-syntax 文件加载的语法定义
+    
+    Attributes:
+        name: 语法名称
+        scope_name: 作用域名（如 source.python）
+        file_extensions: 支持的文件扩展名列表
+        patterns: 匹配规则列表
+        repository: 命名模式仓库
+        uuid: 唯一标识符
+        source_file: 源文件路径
+    """
+    name: str
+    scope_name: str
+    file_extensions: List[str]
+    patterns: List[Dict[str, Any]]
+    repository: Dict[str, Any]
+    uuid: Optional[str] = None
+    source_file: Optional[str] = None
+
+
+class TextMateGrammarLoader:
+    """TextMate 语法文件加载器
+    
+    支持加载多种格式的语法定义文件：
+    - .sublime-syntax (Sublime Text 3+, YAML 格式)
+    - .tmLanguage (TextMate, XML plist 格式)
+    - .json (VS Code, JSON 格式)
+    - .plist (属性列表格式)
+    
+    使用示例：
+        loader = TextMateGrammarLoader()
+        
+        # 加载单个文件
+        grammar = loader.load_file("path/to/python.tmLanguage")
+        
+        # 加载整个文件夹
+        grammars = loader.load_folder("path/to/grammars/")
+        
+        # 从 VS Code 扩展加载
+        grammars = loader.load_vscode_extension("path/to/extension/")
+    """
+    
+    def __init__(self):
+        self.grammars: Dict[str, TextMateGrammar] = {}
+        self._scope_to_grammar: Dict[str, TextMateGrammar] = {}
+    
+    def load_file(self, file_path: str) -> Optional[TextMateGrammar]:
+        """加载单个语法定义文件
+        
+        Args:
+            file_path: 语法文件路径
+            
+        Returns:
+            TextMateGrammar 对象或 None
+        """
+        path = Path(file_path)
+        if not path.exists():
+            warning(f"语法文件不存在: {file_path}")
+            return None
+
+        try:
+            suffix = path.suffix.lower()
+
+            if suffix == '.sublime-syntax':
+                return self._load_sublime_syntax(file_path)
+            elif suffix == '.tmlanguage':
+                return self._load_tm_language(file_path)
+            elif suffix == '.json':
+                return self._load_json(file_path)
+            elif suffix == '.plist':
+                return self._load_plist(file_path)
+            else:
+                warning(f"不支持的语法文件格式: {suffix}")
+                return None
+
+        except (IOError, OSError, ValueError, KeyError) as e:
+            error(f"语法文件加载失败: {file_path}, 错误: {e}")
+            return None
+    
+    def _load_sublime_syntax(self, file_path: str) -> Optional[TextMateGrammar]:
+        """加载 Sublime Syntax 文件 (YAML 格式)
+        
+        Args:
+            file_path: 文件路径
+            
+        Returns:
+            TextMateGrammar 对象
+        """
+        try:
+            import yaml
+        except ImportError:
+            warning("需要 PyYAML 库加载 .sublime-syntax 文件")
+            return None
+        
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = yaml.safe_load(f)
+        
+        return self._parse_grammar_data(data, file_path)
+    
+    def _load_tm_language(self, file_path: str) -> Optional[TextMateGrammar]:
+        """加载 TextMate Language 文件 (XML plist 格式)
+        
+        Args:
+            file_path: 文件路径
+            
+        Returns:
+            TextMateGrammar 对象
+        """
+        with open(file_path, 'rb') as f:
+            data = plistlib.load(f)
+        
+        return self._parse_grammar_data(data, file_path)
+    
+    def _load_json(self, file_path: str) -> Optional[TextMateGrammar]:
+        """加载 JSON 格式的语法定义
+        
+        Args:
+            file_path: 文件路径
+            
+        Returns:
+            TextMateGrammar 对象
+        """
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        return self._parse_grammar_data(data, file_path)
+    
+    def _load_plist(self, file_path: str) -> Optional[TextMateGrammar]:
+        """加载 plist 格式的语法定义
+        
+        Args:
+            file_path: 文件路径
+            
+        Returns:
+            TextMateGrammar 对象
+        """
+        with open(file_path, 'rb') as f:
+            data = plistlib.load(f)
+        
+        return self._parse_grammar_data(data, file_path)
+    
+    def _parse_grammar_data(self, data: Dict[str, Any], source_file: str) -> TextMateGrammar:
+        """解析语法定义数据
+        
+        Args:
+            data: 原始数据字典
+            source_file: 源文件路径
+            
+        Returns:
+            TextMateGrammar 对象
+        """
+        # 处理不同格式的字段名差异
+        name = data.get('name', '')
+        scope_name = data.get('scopeName', data.get('scope_name', ''))
+        file_extensions = data.get('fileTypes', data.get('file_extensions', []))
+        patterns = data.get('patterns', [])
+        repository = data.get('repository', {})
+        uuid = data.get('uuid')
+        
+        grammar = TextMateGrammar(
+            name=name,
+            scope_name=scope_name,
+            file_extensions=file_extensions if isinstance(file_extensions, list) else [],
+            patterns=patterns if isinstance(patterns, list) else [],
+            repository=repository if isinstance(repository, dict) else {},
+            uuid=uuid,
+            source_file=source_file
+        )
+        
+        if scope_name:
+            self._scope_to_grammar[scope_name] = grammar
+        if name:
+            self.grammars[name.lower()] = grammar
+        
+        return grammar
+
+    def load_folder(self, folder_path: str) -> Dict[str, TextMateGrammar]:
+        """加载文件夹中的所有语法定义
+        
+        Args:
+            folder_path: 文件夹路径
+            
+        Returns:
+            语法名称到 TextMateGrammar 的映射
+        """
+        folder = Path(folder_path)
+        if not folder.exists() or not folder.is_dir():
+            warning(f"语法文件夹不存在: {folder_path}")
+            return {}
+
+        grammars = {}
+
+        extensions = ['.sublime-syntax', '.tmlanguage', '.json', '.plist']
+
+        for ext in extensions:
+            for file_path in folder.glob(f'*{ext}'):
+                grammar = self.load_file(str(file_path))
+                if grammar and grammar.name:
+                    grammars[grammar.name.lower()] = grammar
+
+        info(f"从 {folder_path} 加载了 {len(grammars)} 个语法定义")
+        return grammars
+    
+    def load_vscode_extension(self, extension_path: str) -> Dict[str, TextMateGrammar]:
+        """从 VS Code 扩展加载语法定义
+        
+        VS Code 扩展通常位于：
+        - Windows: %USERPROFILE%\.vscode\extensions\
+        - macOS: ~/.vscode/extensions/
+        - Linux: ~/.vscode/extensions/
+        
+        Args:
+            extension_path: 扩展文件夹路径
+            
+        Returns:
+            语法名称到 TextMateGrammar 的映射
+        """
+        ext_path = Path(extension_path)
+        if not ext_path.exists():
+            return {}
+        
+        grammars = {}
+        
+        # 查找 syntaxes 或 grammars 文件夹
+        for subfolder in ['syntaxes', 'grammars']:
+            grammar_folder = ext_path / subfolder
+            if grammar_folder.exists():
+                folder_grammars = self.load_folder(str(grammar_folder))
+                grammars.update(folder_grammars)
+        
+        return grammars
+    
+    def get_grammar_by_scope(self, scope_name: str) -> Optional[TextMateGrammar]:
+        """通过作用域名获取语法定义
+        
+        Args:
+            scope_name: 作用域名（如 source.python）
+            
+        Returns:
+            TextMateGrammar 对象或 None
+        """
+        return self._scope_to_grammar.get(scope_name)
+    
+    def get_grammar_by_extension(self, extension: str) -> Optional[TextMateGrammar]:
+        """通过文件扩展名获取语法定义
+        
+        Args:
+            extension: 文件扩展名（如 .py）
+            
+        Returns:
+            TextMateGrammar 对象或 None
+        """
+        ext = extension.lower()
+        if not ext.startswith('.'):
+            ext = '.' + ext
+        
+        for grammar in self.grammars.values():
+            if ext in [e.lower() for e in grammar.file_extensions]:
+                return grammar
+        
+        return None
+
+
+# 文件扩展名到语言的映射
+EXTENSION_TO_LANGUAGE = {
+    # Python
+    '.py': 'python', '.pyw': 'python', '.pyi': 'python',
+    # C/C++
+    '.c': 'c', '.cpp': 'cpp', '.cxx': 'cpp', '.cc': 'cpp',
+    '.h': 'c', '.hpp': 'cpp', '.hxx': 'cpp',
+    # Java
+    '.java': 'java',
+    # JavaScript/TypeScript
+    '.js': 'javascript', '.jsx': 'javascript', '.mjs': 'javascript',
+    '.ts': 'typescript', '.tsx': 'typescript',
+    # C#
+    '.cs': 'csharp',
+    # Go
+    '.go': 'go',
+    # Rust
+    '.rs': 'rust',
+    # SQL
+    '.sql': 'sql',
+    # PHP
+    '.php': 'php', '.phtml': 'php',
+    # R
+    '.r': 'r', '.R': 'r',
+    # Lua
+    '.lua': 'lua',
+    # VB/VBA
+    '.vb': 'vb', '.vbs': 'vb', '.vba': 'vb',
+    # HTML
+    '.html': 'html', '.htm': 'html',
+    # CSS
+    '.css': 'css', '.scss': 'scss', '.sass': 'sass', '.less': 'less',
+    # JSON
+    '.json': 'json',
+    # XML
+    '.xml': 'xml', '.xhtml': 'xml', '.svg': 'xml', '.xsl': 'xml', '.xslt': 'xml',
+    # 其他
+    '.sh': 'bash', '.bat': 'batch', '.ps1': 'powershell',
+    '.yml': 'yaml', '.yaml': 'yaml', '.ini': 'ini', '.cfg': 'ini',
+    '.toml': 'toml', '.md': 'markdown', '.rst': 'rst',
+    '.rb': 'ruby', '.swift': 'swift', '.kt': 'kotlin',
+    '.m': 'matlab', '.pl': 'perl', '.pm': 'perl',
+    '.vue': 'vue', '.svelte': 'svelte',
+}
+
+
+@dataclass
+class TextMateTheme:
+    """TextMate 主题数据类
+    
+    用于表示从 .tmTheme 文件加载的颜色主题
+    
+    Attributes:
+        name: 主题名称
+        author: 作者
+        settings: 颜色设置列表
+        uuid: 唯一标识符
+        source_file: 源文件路径
+    """
+    name: str
+    author: str
+    settings: List[Dict[str, Any]]
+    uuid: Optional[str] = None
+    source_file: Optional[str] = None
+
+
+class TextMateThemeLoader:
+    """TextMate 主题文件加载器
+    
+    支持加载多种格式的主题文件：
+    - .tmTheme (TextMate / VS Code, XML plist 格式)
+    - .json (VS Code, JSON 格式)
+    - .plist (属性列表格式)
+    
+    使用示例：
+        loader = TextMateThemeLoader()
+        
+        # 加载单个主题
+        theme = loader.load_file("path/to/theme.tmTheme")
+        
+        # 加载整个文件夹
+        themes = loader.load_folder("path/to/themes/")
+        
+        # 转换为 ColorScheme
+        color_scheme = loader.to_color_scheme(theme, "my_theme")
+    """
+    
+    def __init__(self):
+        self.themes: Dict[str, TextMateTheme] = {}
+    
+    def load_file(self, file_path: str) -> Optional[TextMateTheme]:
+        """加载单个主题文件
+        
+        Args:
+            file_path: 主题文件路径
+            
+        Returns:
+            TextMateTheme 对象或 None
+        """
+        path = Path(file_path)
+        if not path.exists():
+            warning(f"主题文件不存在: {file_path}")
+            return None
+
+        try:
+            suffix = path.suffix.lower()
+
+            if suffix == '.tmtheme':
+                return self._load_tm_theme(file_path)
+            elif suffix == '.json':
+                return self._load_json(file_path)
+            elif suffix == '.plist':
+                return self._load_plist(file_path)
+            else:
+                warning(f"不支持的主题文件格式: {suffix}")
+                return None
+
+        except (IOError, OSError, ValueError, KeyError) as e:
+            error(f"主题文件加载失败: {file_path}, 错误: {e}")
+            return None
+    
+    def _load_tm_theme(self, file_path: str) -> Optional[TextMateTheme]:
+        """加载 TextMate Theme 文件 (XML plist 格式)
+        
+        Args:
+            file_path: 文件路径
+            
+        Returns:
+            TextMateTheme 对象
+        """
+        with open(file_path, 'rb') as f:
+            data = plistlib.load(f)
+        
+        return self._parse_theme_data(data, file_path)
+    
+    def _load_json(self, file_path: str) -> Optional[TextMateTheme]:
+        """加载 JSON 格式的主题
+        
+        Args:
+            file_path: 文件路径
+            
+        Returns:
+            TextMateTheme 对象
+        """
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        return self._parse_theme_data(data, file_path)
+    
+    def _load_plist(self, file_path: str) -> Optional[TextMateTheme]:
+        """加载 plist 格式的主题
+        
+        Args:
+            file_path: 文件路径
+            
+        Returns:
+            TextMateTheme 对象
+        """
+        with open(file_path, 'rb') as f:
+            data = plistlib.load(f)
+        
+        return self._parse_theme_data(data, file_path)
+    
+    def _parse_theme_data(self, data: Dict[str, Any], source_file: str) -> TextMateTheme:
+        """解析主题数据
+        
+        Args:
+            data: 原始数据字典
+            source_file: 源文件路径
+            
+        Returns:
+            TextMateTheme 对象
+        """
+        name = data.get('name', '')
+        author = data.get('author', '')
+        settings = data.get('settings', [])
+        uuid = data.get('uuid')
+        
+        theme = TextMateTheme(
+            name=name,
+            author=author,
+            settings=settings if isinstance(settings, list) else [],
+            uuid=uuid,
+            source_file=source_file
+        )
+        
+        if name:
+            self.themes[name.lower()] = theme
+        
+        return theme
+    
+    def load_folder(self, folder_path: str) -> Dict[str, TextMateTheme]:
+        """加载文件夹中的所有主题
+        
+        Args:
+            folder_path: 文件夹路径
+            
+        Returns:
+            主题名称到 TextMateTheme 的映射
+        """
+        folder = Path(folder_path)
+        if not folder.exists() or not folder.is_dir():
+            warning(f"主题文件夹不存在: {folder_path}")
+            return {}
+
+        themes = {}
+
+        extensions = ['.tmtheme', '.json', '.plist']
+
+        for ext in extensions:
+            for file_path in folder.glob(f'*{ext}'):
+                theme = self.load_file(str(file_path))
+                if theme and theme.name:
+                    themes[theme.name.lower()] = theme
+
+        info(f"从 {folder_path} 加载了 {len(themes)} 个主题")
+        return themes
+    
+    def to_color_scheme(self, theme: TextMateTheme, scheme_name: str) -> ColorScheme:
+        """将 TextMate 主题转换为 ColorScheme
+        
+        Args:
+            theme: TextMateTheme 对象
+            scheme_name: 颜色方案名称
+            
+        Returns:
+            ColorScheme 对象
+        """
+        background = "#1e1e1e"
+        foreground = "#d4d4d4"
+        colors = {token_type: foreground for token_type in TokenType}
+        
+        # 解析主题设置
+        for setting in theme.settings:
+            if not isinstance(setting, dict):
+                continue
+            
+            scope = setting.get('scope', '')
+            settings = setting.get('settings', {})
+            
+            if not scope:
+                # 全局设置
+                background = settings.get('background', background)
+                foreground = settings.get('foreground', foreground)
+                
+                # 更新所有 Token 的默认颜色
+                for token_type in TokenType:
+                    colors[token_type] = foreground
+            else:
+                # 根据作用域映射到 TokenType
+                foreground_color = settings.get('foreground', foreground)
+                
+                # 简单的作用域映射
+                scope_lower = scope.lower()
+                if 'keyword' in scope_lower:
+                    colors[TokenType.KEYWORD] = foreground_color
+                elif 'string' in scope_lower:
+                    colors[TokenType.STRING] = foreground_color
+                elif 'number' in scope_lower or 'constant.numeric' in scope_lower:
+                    colors[TokenType.NUMBER] = foreground_color
+                elif 'comment' in scope_lower:
+                    colors[TokenType.COMMENT] = foreground_color
+                elif 'function' in scope_lower:
+                    colors[TokenType.FUNCTION] = foreground_color
+                elif 'class' in scope_lower or 'type' in scope_lower:
+                    colors[TokenType.CLASS_TYPE] = foreground_color
+                elif 'operator' in scope_lower:
+                    colors[TokenType.OPERATOR] = foreground_color
+                elif 'tag' in scope_lower:
+                    colors[TokenType.TAG] = foreground_color
+                elif 'attribute' in scope_lower:
+                    colors[TokenType.ATTRIBUTE] = foreground_color
+                elif 'variable' in scope_lower:
+                    colors[TokenType.VARIABLE] = foreground_color
+                elif 'constant' in scope_lower:
+                    colors[TokenType.CONSTANT] = foreground_color
+        
+        return ColorScheme(
+            name=scheme_name,
+            background=background,
+            foreground=foreground,
+            colors=colors
+        )
+
+
+# Pygments token 到 TokenType 的映射（延迟初始化以避免导入错误）
+PYGMENTS_TOKEN_MAP = {}
+
+def _init_pygments_token_map():
+    """初始化 Pygments Token 映射"""
+    global PYGMENTS_TOKEN_MAP
+    if PYGMENTS_TOKEN_MAP or not PYGMENTS_AVAILABLE:
+        return
+    
+    from pygments.token import (
+        Keyword, String, Number, Comment, Name, Operator, Punctuation, Text
+    )
+    
+    PYGMENTS_TOKEN_MAP.update({
+        Keyword: TokenType.KEYWORD,
+        Keyword.Constant: TokenType.KEYWORD,
+        Keyword.Declaration: TokenType.KEYWORD,
+        Keyword.Namespace: TokenType.KEYWORD,
+        Keyword.Reserved: TokenType.KEYWORD,
+        Keyword.Type: TokenType.KEYWORD,
+        String: TokenType.STRING,
+        String.Single: TokenType.STRING,
+        String.Double: TokenType.STRING,
+        String.Triple: TokenType.STRING,
+        String.Backtick: TokenType.STRING,
+        String.Doc: TokenType.COMMENT,
+        Number: TokenType.NUMBER,
+        Number.Integer: TokenType.NUMBER,
+        Number.Float: TokenType.NUMBER,
+        Number.Hex: TokenType.NUMBER,
+        Number.Oct: TokenType.NUMBER,
+        Comment: TokenType.COMMENT,
+        Comment.Single: TokenType.COMMENT,
+        Comment.Multiline: TokenType.COMMENT,
+        Comment.Special: TokenType.COMMENT,
+        Name.Function: TokenType.FUNCTION,
+        Name.Function.Magic: TokenType.FUNCTION,
+        Name.Class: TokenType.CLASS_TYPE,
+        Name.Type: TokenType.CLASS_TYPE,
+        Name.Type.Class: TokenType.CLASS_TYPE,
+        Operator: TokenType.OPERATOR,
+        Operator.Word: TokenType.OPERATOR,
+        Punctuation: TokenType.PUNCTUATION,
+        Name: TokenType.VARIABLE,
+        Name.Variable: TokenType.VARIABLE,
+        Name.Constant: TokenType.CONSTANT,
+        Name.Attribute: TokenType.ATTRIBUTE,
+        Name.Tag: TokenType.TAG,
+        Name.Builtin: TokenType.KEYWORD,
+        Name.Builtin.Pseudo: TokenType.KEYWORD,
+        Name.Decorator: TokenType.PREPROCESSOR,
+        Comment.Preproc: TokenType.PREPROCESSOR,
+        Text: TokenType.DEFAULT,
+        Text.Whitespace: TokenType.WHITESPACE,
+    })
+
+
+class SyntectHighlighter:
+    """基于 Syntect 的语法高亮器
+    
+    使用 pysyntect 库实现高性能语法高亮，支持 500+ 种语言。
+    同时支持加载自定义 TextMate 语法文件和主题。
+    
+    Attributes:
+        syntax_set: 语法定义集合
+        theme: 当前主题
+        color_scheme: 颜色方案
+        grammar_loader: TextMate 语法加载器
+        theme_loader: TextMate 主题加载器
+    """
+    
+    def __init__(self, color_scheme: Optional[ColorScheme] = None):
+        """初始化语法高亮器
+        
+        Args:
+            color_scheme: 颜色方案，默认为 GitHub Dark
+        """
+        self.color_scheme = color_scheme or ColorSchemes.github_dark()
+        self.syntax_set = None
+        self.theme = None
+        self._formats_cache: Dict[str, QTextCharFormat] = {}
+        
+        self.grammar_loader = TextMateGrammarLoader()
+        self.theme_loader = TextMateThemeLoader()
+        
+        if SYNTECT_AVAILABLE:
+            self._init_syntect()
+            self._init_default_theme()
+    
+    def _init_syntect(self):
+        """初始化 Syntect 语法集合"""
+        try:
+            self.syntax_set = load_default_syntax()
+        except (ImportError, RuntimeError, OSError) as e:
+            error(f"加载默认语法失败: {e}")
+            self.syntax_set = None
+    
+    def _init_default_theme(self):
+        """初始化默认主题
+        
+        注意：pysyntect库的Theme类没有公开的构造函数，
+        主题必须通过load_theme_folder从.tmTheme文件加载。
+        这里我们不加载默认主题，而是依赖color_scheme进行颜色映射。
+        """
+        # pysyntect的Theme不能直接实例化，需要通过主题文件加载
+        # 我们将使用color_scheme来进行颜色映射，而不是依赖syntect主题
+        self.theme = None
+    
+    def is_available(self) -> bool:
+        """检查高亮器是否可用
+        
+        Syntect需要主题才能工作，如果没有主题则不可用
+        
+        Returns:
+            bool: 是否可用
+        """
+        return SYNTECT_AVAILABLE and self.syntax_set is not None and self.theme is not None
+    
+    def load_syntax_from_folder(self, folder_path: str):
+        """从文件夹加载语法定义
+        
+        Args:
+            folder_path: 包含 .sublime-syntax 文件的文件夹路径
+        """
+        if not SYNTECT_AVAILABLE:
+            return
+
+        try:
+            self.syntax_set = load_syntax_folder(folder_path)
+        except (IOError, OSError, ValueError) as e:
+            error(f"加载语法失败: {e}")
+
+    def load_theme_from_folder(self, folder_path: str) -> Dict[str, any]:
+        """从文件夹加载主题
+
+        Args:
+            folder_path: 包含 .tmTheme 文件的文件夹路径
+
+        Returns:
+            主题名称到主题对象的映射
+        """
+        if not SYNTECT_AVAILABLE:
+            return {}
+
+        try:
+            themes = load_theme_folder(folder_path)
+            return {name: theme for name, theme in themes.items()}
+        except (IOError, OSError, ValueError) as e:
+            error(f"加载主题失败: {e}")
+            return {}
+    
+    def load_textmate_grammar(self, file_path: str) -> Optional[TextMateGrammar]:
+        """加载 TextMate 语法定义文件
+        
+        支持格式：
+        - .sublime-syntax (Sublime Text 3+)
+        - .tmLanguage (TextMate / VS Code)
+        - .json (VS Code)
+        - .plist (属性列表)
+        
+        Args:
+            file_path: 语法文件路径
+            
+        Returns:
+            TextMateGrammar 对象或 None
+        """
+        return self.grammar_loader.load_file(file_path)
+    
+    def load_textmate_grammars_from_folder(self, folder_path: str) -> Dict[str, TextMateGrammar]:
+        """从文件夹加载所有 TextMate 语法定义
+        
+        Args:
+            folder_path: 包含语法文件的文件夹路径
+            
+        Returns:
+            语法名称到 TextMateGrammar 的映射
+        """
+        return self.grammar_loader.load_folder(folder_path)
+    
+    def load_vscode_extension_grammars(self, extension_path: str) -> Dict[str, TextMateGrammar]:
+        """从 VS Code 扩展加载语法定义
+        
+        VS Code 扩展通常位于：
+        - Windows: %USERPROFILE%\\.vscode\\extensions\
+        - macOS: ~/.vscode/extensions/
+        - Linux: ~/.vscode/extensions/
+        
+        Args:
+            extension_path: 扩展文件夹路径
+            
+        Returns:
+            语法名称到 TextMateGrammar 的映射
+        """
+        return self.grammar_loader.load_vscode_extension(extension_path)
+    
+    def load_textmate_theme(self, file_path: str) -> Optional[TextMateTheme]:
+        """加载 TextMate 主题文件
+        
+        支持格式：
+        - .tmTheme (TextMate / VS Code)
+        - .json (VS Code)
+        - .plist (属性列表)
+        
+        Args:
+            file_path: 主题文件路径
+            
+        Returns:
+            TextMateTheme 对象或 None
+        """
+        return self.theme_loader.load_file(file_path)
+    
+    def load_textmate_themes_from_folder(self, folder_path: str) -> Dict[str, TextMateTheme]:
+        """从文件夹加载所有 TextMate 主题
+        
+        Args:
+            folder_path: 包含主题文件的文件夹路径
+            
+        Returns:
+            主题名称到 TextMateTheme 的映射
+        """
+        return self.theme_loader.load_folder(folder_path)
+    
+    def apply_textmate_theme(self, theme: TextMateTheme, scheme_name: Optional[str] = None):
+        """应用 TextMate 主题
+        
+        Args:
+            theme: TextMateTheme 对象
+            scheme_name: 颜色方案名称（可选）
+        """
+        if scheme_name is None:
+            scheme_name = theme.name.lower().replace(' ', '_')
+
+        self.color_scheme = self.theme_loader.to_color_scheme(theme, scheme_name)
+        info(f"已应用主题: {theme.name}")
+    
+    def get_textmate_grammar_info(self, grammar_name: str) -> Optional[Dict[str, Any]]:
+        """获取 TextMate 语法信息
+        
+        Args:
+            grammar_name: 语法名称
+            
+        Returns:
+            包含语法信息的字典或 None
+        """
+        grammar = self.grammar_loader.grammars.get(grammar_name.lower())
+        if grammar is None:
+            return None
+        
+        return {
+            'name': grammar.name,
+            'scope_name': grammar.scope_name,
+            'file_extensions': grammar.file_extensions,
+            'uuid': grammar.uuid,
+            'source_file': grammar.source_file,
+            'pattern_count': len(grammar.patterns),
+            'repository_count': len(grammar.repository)
+        }
+    
+    def get_textmate_theme_info(self, theme_name: str) -> Optional[Dict[str, Any]]:
+        """获取 TextMate 主题信息
+        
+        Args:
+            theme_name: 主题名称
+            
+        Returns:
+            包含主题信息的字典或 None
+        """
+        theme = self.theme_loader.themes.get(theme_name.lower())
+        if theme is None:
+            return None
+        
+        return {
+            'name': theme.name,
+            'author': theme.author,
+            'uuid': theme.uuid,
+            'source_file': theme.source_file,
+            'setting_count': len(theme.settings)
+        }
+    
+    def get_supported_languages(self) -> List[str]:
+        """获取支持的语言列表
+        
+        Returns:
+            支持的语言名称列表
+        """
+        if self.syntax_set:
+            try:
+                return list(self.syntax_set.languages)
+            except (AttributeError, TypeError) as e:
+                debug(f"获取支持语言列表失败: {e}")
+        return list(set(EXTENSION_TO_LANGUAGE.values()))
+    
+    def highlight_line(self, line: str, language: str) -> List[Token]:
+        """高亮单行代码
+        
+        Args:
+            line: 代码行文本
+            language: 语言标识符
+            
+        Returns:
+            Token 列表
+        """
+        if not SYNTECT_AVAILABLE or not self.syntax_set:
+            return [Token(line, TokenType.DEFAULT, 0, len(line))]
+        
+        try:
+            # 使用 Syntect 高亮（需要 theme 参数）
+            if self.theme is None:
+                # 如果没有主题，使用 Pygments 作为备选
+                return self._fallback_highlight(line, language)
+            
+            color_ranges = highlight(line, language, self.syntax_set, self.theme)
+            
+            tokens = []
+            current_pos = 0
+            
+            for style, text in color_ranges:
+                token_type = self._map_syntect_style_to_token_type(style)
+                end_pos = current_pos + len(text)
+                tokens.append(Token(
+                    text=text,
+                    token_type=token_type,
+                    start_pos=current_pos,
+                    end_pos=end_pos
+                ))
+                current_pos = end_pos
+            
+            return tokens
+        except (ValueError, TypeError, RuntimeError) as e:
+            error(f"代码高亮失败: {e}")
+            return [Token(line, TokenType.DEFAULT, 0, len(line))]
+    
+    def _map_syntect_style_to_token_type(self, style) -> TokenType:
+        """将 Syntect 样式映射为 TokenType
+        
+        Args:
+            style: Syntect 样式对象
+            
+        Returns:
+            TokenType
+        """
+        # 根据前景色判断类型（简化映射）
+        fg = style.foreground
+        hex_color = f"#{fg.r:02x}{fg.g:02x}{fg.b:02x}"
+        
+        for token_type, color in self.color_scheme.colors.items():
+            if color.lower() == hex_color.lower():
+                return token_type
+        
+        return TokenType.DEFAULT
+    
+    def _fallback_highlight(self, line: str, language: str) -> List[Token]:
+        """备选高亮方案（使用 Pygments）
+        
+        Args:
+            line: 代码行文本
+            language: 语言标识符
+            
+        Returns:
+            Token 列表
+        """
+        if not PYGMENTS_AVAILABLE:
+            return [Token(line, TokenType.DEFAULT, 0, len(line))]
+        
+        try:
+            from pygments import lex
+            from pygments.lexers import get_lexer_by_name, TextLexer
+            
+            try:
+                lexer = get_lexer_by_name(language)
+            except (ImportError, ValueError) as e:
+                debug(f"获取词法分析器失败 ({language}): {e}")
+                lexer = TextLexer()
+            
+            _init_pygments_token_map()
+            tokens = []
+            current_pos = 0
+            
+            for token_type, value in lex(line, lexer):
+                pygments_type = TokenType.DEFAULT
+                for token_parent in token_type:
+                    if token_parent in PYGMENTS_TOKEN_MAP:
+                        pygments_type = PYGMENTS_TOKEN_MAP[token_parent]
+                        break
+                
+                end_pos = current_pos + len(value)
+                tokens.append(Token(
+                    text=value,
+                    token_type=pygments_type,
+                    start_pos=current_pos,
+                    end_pos=end_pos
+                ))
+                current_pos = end_pos
+            
+            return tokens
+        except (ValueError, TypeError, ImportError) as e:
+            debug(f"备选高亮失败: {e}")
+            return [Token(line, TokenType.DEFAULT, 0, len(line))]
+    
+    def get_qtextformat(self, token_type: TokenType) -> QTextCharFormat:
+        """获取 TokenType 对应的 QTextCharFormat
+        
+        Args:
+            token_type: Token 类型
+            
+        Returns:
+            QTextCharFormat 对象
+        """
+        cache_key = f"{self.color_scheme.name}_{token_type.name}"
+        
+        if cache_key not in self._formats_cache:
+            fmt = QTextCharFormat()
+            color_hex = self.color_scheme.colors.get(token_type, self.color_scheme.foreground)
+            fmt.setForeground(QColor(color_hex))
+            self._formats_cache[cache_key] = fmt
+        
+        return self._formats_cache[cache_key]
+    
+    def guess_language(self, filename: str) -> Optional[str]:
+        """根据文件名猜测语言
+        
+        Args:
+            filename: 文件名
+            
+        Returns:
+            语言标识符或 None
+        """
+        ext = Path(filename).suffix.lower()
+        return EXTENSION_TO_LANGUAGE.get(ext)
+
+
+class PygmentsHighlighter:
+    """基于 Pygments 的语法高亮器（备选方案）
+    
+    当 Syntect 不可用时使用 Pygments 作为备选。
+    
+    Attributes:
+        color_scheme: 颜色方案
+        style: Pygments 样式
+    """
+    
+    def __init__(self, color_scheme: Optional[ColorScheme] = None):
+        """初始化语法高亮器
+        
+        Args:
+            color_scheme: 颜色方案，默认为 GitHub Dark
+        """
+        self.color_scheme = color_scheme or ColorSchemes.github_dark()
+        self._formats_cache: Dict[str, QTextCharFormat] = {}
+        self._pygments_style = None
+        
+        if PYGMENTS_AVAILABLE:
+            self._init_pygments_style()
+    
+    def _init_pygments_style(self):
+        """初始化 Pygments 样式"""
+        try:
+            # 根据颜色方案选择 Pygments 样式
+            if 'dark' in self.color_scheme.name.lower():
+                self._pygments_style = get_style_by_name('monokai')
+            else:
+                self._pygments_style = get_style_by_name('default')
+        except (ImportError, ValueError) as e:
+            debug(f"初始化 Pygments 样式失败: {e}")
+            self._pygments_style = None
+    
+    def highlight_line(self, line: str, language: str) -> List[Token]:
+        """高亮单行代码
+        
+        Args:
+            line: 代码行文本
+            language: 语言标识符
+            
+        Returns:
+            Token 列表
+        """
+        if not PYGMENTS_AVAILABLE:
+            return [Token(line, TokenType.DEFAULT, 0, len(line))]
+        
+        try:
+            lexer = get_lexer_by_name(language)
+        except (ImportError, ValueError) as e:
+            debug(f"获取词法分析器失败 ({language}): {e}")
+            try:
+                lexer = guess_lexer(line)
+            except (ImportError, ValueError) as e:
+                debug(f"猜测词法分析器失败: {e}")
+                lexer = TextLexer()
+        
+        tokens = []
+        current_pos = 0
+        
+        for token_type, value in lex(line, lexer):
+            pygments_type = self._map_pygments_token(token_type)
+            end_pos = current_pos + len(value)
+            tokens.append(Token(
+                text=value,
+                token_type=pygments_type,
+                start_pos=current_pos,
+                end_pos=end_pos
+            ))
+            current_pos = end_pos
+        
+        return tokens
+    
+    def _map_pygments_token(self, token) -> TokenType:
+        """将 Pygments token 映射为 TokenType
+        
+        Args:
+            token: Pygments token
+            
+        Returns:
+            TokenType
+        """
+        _init_pygments_token_map()
+        
+        # 直接检查token本身是否在映射中
+        if token in PYGMENTS_TOKEN_MAP:
+            return PYGMENTS_TOKEN_MAP[token]
+        
+        # 逐级查找映射（使用token.parent属性获取父级）
+        current = token
+        while current:
+            if current in PYGMENTS_TOKEN_MAP:
+                return PYGMENTS_TOKEN_MAP[current]
+            current = current.parent
+        
+        return TokenType.DEFAULT
+    
+    def get_qtextformat(self, token_type: TokenType) -> QTextCharFormat:
+        """获取 TokenType 对应的 QTextCharFormat
+        
+        Args:
+            token_type: Token 类型
+            
+        Returns:
+            QTextCharFormat 对象
+        """
+        cache_key = f"pygments_{self.color_scheme.name}_{token_type.name}"
+        
+        if cache_key not in self._formats_cache:
+            fmt = QTextCharFormat()
+            color_hex = self.color_scheme.colors.get(token_type, self.color_scheme.foreground)
+            fmt.setForeground(QColor(color_hex))
+            self._formats_cache[cache_key] = fmt
+        
+        return self._formats_cache[cache_key]
+    
+    def guess_language(self, filename: str) -> Optional[str]:
+        """根据文件名猜测语言
+        
+        Args:
+            filename: 文件名
+            
+        Returns:
+            语言标识符或 None
+        """
+        ext = Path(filename).suffix.lower()
+        return EXTENSION_TO_LANGUAGE.get(ext)
+    
+    def get_supported_languages(self) -> List[str]:
+        """获取支持的语言列表"""
+        return list(set(EXTENSION_TO_LANGUAGE.values()))
+
+
+def spk_core_highlight_available() -> bool:
+    """spk_core 原生语法高亮能力是否可用。
+
+    桥模块级单例可用（``available``）且 DLL 含 ``spk_highlight_text``
+    导出（``_supports_highlight``）时为 ``True``。引擎选择与测试均据此
+    判定是否优先走 native 高亮路径。
+
+    Returns:
+        bool: 是否可走 native 高亮。
+    """
+    try:
+        from sopeek.core.native import api as _native_api
+
+        return _native_api.supports("highlight")
+    except Exception:  # noqa: BLE001  # broad catch: 桥初始化失败按不可用处理
+        return False
+
+
+class SpkCoreHighlighter:
+    """基于 spk_core（Rust + syntect）的语法高亮器（最高优先级引擎）。
+
+    经 :func:`spk_core_highlight_available` 判定可用后由
+    :class:`SyntaxHighlighter` 在 ``'auto'`` 模式下选中。native 返回的
+    span（**字符偏移**，``token_type`` 索引 1-16）直接映射回
+    :class:`TokenType` 枚举；颜色/主题不跨界——``get_qtextformat`` 仍由
+    Python ``color_scheme`` 决定（与 Pygments/Syntect 引擎同契约）。
+
+    native 失败 / 返回 ``None``（含逐语言回退 -6，如 PowerShell）→ 委托内部
+    :class:`PygmentsHighlighter` 兜底，不崩溃。
+
+    Attributes:
+        color_scheme: 颜色方案
+    """
+
+    def __init__(self, color_scheme: Optional[ColorScheme] = None):
+        """初始化语法高亮器
+
+        Args:
+            color_scheme: 颜色方案，默认为 GitHub Dark
+        """
+        self.color_scheme = color_scheme or ColorSchemes.github_dark()
+        self._formats_cache: Dict[str, QTextCharFormat] = {}
+        self._bridge = None
+        if spk_core_highlight_available():
+            self._bridge = get_spk_core_bridge()
+        self._pygments_fallback: Optional[PygmentsHighlighter] = None
+
+    def _get_fallback(self) -> PygmentsHighlighter:
+        """惰性构造 Pygments 兜底引擎（native None 时的逐语言回退）。"""
+        if self._pygments_fallback is None:
+            self._pygments_fallback = PygmentsHighlighter(self.color_scheme)
+        return self._pygments_fallback
+
+    @staticmethod
+    def _token_type_from_index(index: int) -> TokenType:
+        """把 native 返回的 token_type 索引（1-16）映射回 TokenType 枚举。
+
+        Args:
+            index: native span 的 ``token_type``（与 ``TokenType(Enum)`` 的
+                ``auto()`` 顺序精确对齐，Python 从 1 开始）。
+
+        Returns:
+            对应枚举成员；越界/非法 → ``TokenType.DEFAULT``。
+        """
+        try:
+            return TokenType(int(index))
+        except (ValueError, TypeError):
+            return TokenType.DEFAULT
+
+    def highlight_line(self, line: str, language: str) -> List[Token]:
+        """高亮单行代码
+
+        Args:
+            line: 代码行文本
+            language: 语言标识符
+
+        Returns:
+            Token 列表（native None → Pygments 兜底；native 空 span（未知
+            语言/空行，Rust 侧返回 ``[]``）→ 单 DEFAULT token 保默认样式）
+        """
+        if self._bridge is None:
+            return self._get_fallback().highlight_line(line, language)
+        spans = self._bridge.highlight_text(language, line)
+        if spans is None:
+            # native 失败/不支持该语言 → 委托 Pygments（逐语言回退不崩溃）
+            return self._get_fallback().highlight_line(line, language)
+        if not spans:
+            # 未知语言/空行：Rust 返回空数组，Python 保默认样式（与
+            # Pygments 每行至少一个 token 的契约一致）
+            return [Token(line, TokenType.DEFAULT, 0, len(line))]
+
+        tokens: List[Token] = []
+        for span in spans:
+            start = int(span["start"])
+            end = max(start, min(start + int(span["len"]), len(line)))
+            if end <= start:
+                continue  # 防御：空/越界 span 跳过
+            tokens.append(Token(
+                text=line[start:end],
+                token_type=self._token_type_from_index(int(span["token_type"])),
+                start_pos=start,
+                end_pos=end,
+            ))
+        return tokens
+
+    def tokenize(self, text: str, language: str) -> List[Token]:
+        """Tokenize 单行代码（``highlight_line`` 的别名，兼容接口）。
+
+        Args:
+            text: 代码行文本
+            language: 语言标识符
+
+        Returns:
+            Token 列表
+        """
+        return self.highlight_line(text, language)
+
+    def highlight_text(self, text: str, language: str) -> List[List[Token]]:
+        """高亮多行代码（**整块经 native 一次高亮**，跨行状态保持）。
+
+        native 对整块文本解析一次，返回连续覆盖全文的 span；此处按
+        ``\\n`` 切行把 span 裁剪到各行（换行符本身不属于任何行 token）。
+
+        Args:
+            text: 代码文本
+            language: 语言标识符
+
+        Returns:
+            每行的 Token 列表（native None → Pygments 兜底，与现状一致）
+        """
+        if self._bridge is None:
+            return self._fallback_text(text, language)
+        spans = self._bridge.highlight_text(language, text)
+        if spans is None:
+            return self._fallback_text(text, language)
+        if not spans:
+            # 未知语言/空文本：Rust 返回空数组，Python 保默认样式（每行
+            # 一个 DEFAULT token，与 Pygments 现状契约一致）
+            lines = text.split("\n")
+            return [[Token(line, TokenType.DEFAULT, 0, len(line))] for line in lines]
+        return self._spans_to_blocks(text, spans)
+
+    def _fallback_text(self, text: str, language: str) -> List[List[Token]]:
+        """native 不可用/失败时按行委托 Pygments。"""
+        fallback = self._get_fallback()
+        return [fallback.highlight_line(line, language) for line in text.split("\n")]
+
+    def _spans_to_blocks(self, text: str, spans: List[dict]) -> List[List[Token]]:
+        """把整块 span 列表按 ``\\n`` 裁剪为每行的 Token 块。
+
+        每行忽略行尾换行符（与 wrapper ``highlight_text`` 的
+        ``text.split("\\n")`` 分块语义一致；token 拼接后 ``rstrip("\\n")``
+        与原行相等）。
+
+        Args:
+            text: 与 spans 对应的整块文本。
+            spans: native 返回的 span 列表（连续覆盖全文）。
+
+        Returns:
+            每行一个 Token 块。
+        """
+        # 行字符区间（不含换行符本身）
+        line_ranges: List[tuple] = []
+        line_start = 0
+        for idx, ch in enumerate(text):
+            if ch == "\n":
+                line_ranges.append((line_start, idx))
+                line_start = idx + 1
+        line_ranges.append((line_start, len(text)))
+
+        blocks: List[List[Token]] = []
+        span_idx = 0
+        for line_start, line_end in line_ranges:
+            tokens: List[Token] = []
+            cursor = line_start
+            while span_idx < len(spans):
+                span = spans[span_idx]
+                span_start = int(span["start"])
+                span_end = span_start + int(span["len"])
+                if span_end <= cursor:
+                    span_idx += 1  # 前一个跨行 span 的尾部已消费完
+                    continue
+                if span_start >= line_end:
+                    break  # 后续 span 属于更靠后的行
+                overlap_start = max(span_start, cursor)
+                overlap_end = min(span_end, line_end)
+                if overlap_end > overlap_start:
+                    tokens.append(Token(
+                        text=text[overlap_start:overlap_end],
+                        token_type=self._token_type_from_index(int(span["token_type"])),
+                        start_pos=overlap_start - line_start,
+                        end_pos=overlap_end - line_start,
+                    ))
+                    cursor = overlap_end
+                if span_end <= line_end:
+                    span_idx += 1
+                if cursor >= line_end:
+                    break
+            if not tokens:
+                # 空行 / span 未覆盖：保每行至少一个 DEFAULT token（与
+                # highlight_line 的 len>=1 契约一致，空 token 保默认样式）
+                missing_line = text[line_start:line_end]
+                tokens.append(Token(
+                    missing_line, TokenType.DEFAULT, 0, len(missing_line)
+                ))
+            blocks.append(tokens)
+        return blocks
+
+    def get_qtextformat(self, token_type: TokenType) -> QTextCharFormat:
+        """获取 TokenType 对应的 QTextCharFormat
+
+        Args:
+            token_type: Token 类型
+
+        Returns:
+            QTextCharFormat 对象
+        """
+        cache_key = f"spkcore_{self.color_scheme.name}_{token_type.name}"
+
+        if cache_key not in self._formats_cache:
+            fmt = QTextCharFormat()
+            color_hex = self.color_scheme.colors.get(token_type, self.color_scheme.foreground)
+            fmt.setForeground(QColor(color_hex))
+            self._formats_cache[cache_key] = fmt
+
+        return self._formats_cache[cache_key]
+
+    def guess_language(self, filename: str) -> Optional[str]:
+        """根据文件名猜测语言
+
+        Args:
+            filename: 文件名
+
+        Returns:
+            语言标识符或 None
+        """
+        ext = Path(filename).suffix.lower()
+        return EXTENSION_TO_LANGUAGE.get(ext)
+
+    def get_supported_languages(self) -> List[str]:
+        """获取支持的语言列表"""
+        return list(set(EXTENSION_TO_LANGUAGE.values()))
+
+
+class SyntaxHighlighter:
+    """统一的语法高亮接口
+    
+    自动选择最佳可用的高亮引擎（Syntect > Pygments > 无高亮）
+    支持自动加载 TextMate 语法文件并根据文件扩展名进行高亮
+    
+    Attributes:
+        engine: 实际使用的高亮引擎
+        color_scheme: 颜色方案
+        grammar_loader: TextMate 语法加载器
+        _ext_to_language: 文件扩展名到语言的映射缓存
+    """
+    
+    # 默认语法文件目录
+    DEFAULT_SYNTAX_DIR = Path(__file__).parent / "syntax"
+    
+    def __init__(self, color_scheme: Optional[ColorScheme] = None,
+                 engine: Optional[str] = None,
+                 syntax_dir: Optional[str] = None):
+        """初始化语法高亮器
+
+        Args:
+            color_scheme: 颜色方案
+            engine: 指定引擎 ('syntect', 'pygments', 'auto')
+                'auto' / None 时按可用性选择：SpkCore（native）→ Pygments；
+                'syntect' 仅在显式请求且 ``SYNTECT_AVAILABLE`` 时走原逻辑
+                （SyntectHighlighter 死码兼容，保留不删）。
+            syntax_dir: TextMate 语法文件目录，默认为 core/syntax
+        """
+        debug(f"初始化语法高亮器，引擎: {engine or 'auto'}")
+        self.color_scheme = color_scheme or ColorSchemes.github_dark()
+        self._engine: Union[
+            SpkCoreHighlighter, SyntectHighlighter, PygmentsHighlighter, None
+        ] = None
+        self.grammar_loader = TextMateGrammarLoader()
+        self._ext_to_language: Dict[str, str] = {}
+        self._language_to_scope: Dict[str, str] = {}
+
+        # 选择引擎
+        if engine == 'syntect' and SYNTECT_AVAILABLE:
+            syntect_highlighter = SyntectHighlighter(self.color_scheme)
+            # 检查Syntect是否真正可用（需要主题）
+            if syntect_highlighter.is_available():
+                self._engine = syntect_highlighter
+            elif PYGMENTS_AVAILABLE:
+                warning("Syntect需要主题文件，切换到Pygments引擎")
+                self._engine = PygmentsHighlighter(self.color_scheme)
+        elif engine == 'pygments' and PYGMENTS_AVAILABLE:
+            self._engine = PygmentsHighlighter(self.color_scheme)
+        elif engine == 'auto' or engine is None:
+            # 自动选择最佳引擎：SpkCore（native）→ Pygments
+            # （SYNTECT_AVAILABLE 语义现由 spk_core_highlight_available 取代；
+            #  SyntectHighlighter 保留作 dead-code 兼容，可经显式 'syntect' 触发）
+            if spk_core_highlight_available():
+                self._engine = SpkCoreHighlighter(self.color_scheme)
+            if self._engine is None and PYGMENTS_AVAILABLE:
+                self._engine = PygmentsHighlighter(self.color_scheme)
+
+        if self._engine is None:
+            warning("没有可用的语法高亮引擎")
+        
+        # 加载 TextMate 语法文件
+        self._load_textmate_syntaxes(syntax_dir)
+    
+    def _load_textmate_syntaxes(self, syntax_dir: Optional[str] = None):
+        """加载 TextMate 语法文件
+        
+        Args:
+            syntax_dir: 语法文件目录，None 则使用默认目录
+        """
+        if syntax_dir is None:
+            syntax_dir = self.DEFAULT_SYNTAX_DIR
+        
+        syntax_path = Path(syntax_dir)
+        if not syntax_path.exists():
+            warning(f"语法目录不存在: {syntax_dir}")
+            return
+        
+        grammars = self.grammar_loader.load_folder(str(syntax_path))
+        
+        if not grammars:
+            return
+        
+        # 语法名称到扩展名的映射（VS Code 语法文件通常没有 fileTypes）
+        grammar_to_extensions = {
+            'c': ['.c', '.h'],
+            'c++': ['.cpp', '.cxx', '.cc', '.hpp', '.hxx', '.h'],
+            'c#': ['.cs'],
+            'objective-c': ['.m', '.h'],
+            'objective-c++': ['.mm', '.h'],
+            'cuda c++': ['.cu', '.cuh'],
+            'java': ['.java'],
+            'javascript': ['.js', '.jsx', '.mjs', '.es', '.es6'],
+            'typescript': ['.ts', '.tsx'],
+            'python': ['.py', '.pyw', '.pyi'],
+            'go': ['.go'],
+            'ruby': ['.rb', '.rbw', '.rake', '.gemspec'],
+            'php': ['.php', '.phtml', '.php3', '.php4', '.php5', '.phps'],
+            'perl': ['.pl', '.pm', '.pod'],
+            'perl 6': ['.p6', '.pl6', '.pm6'],
+            'r': ['.r', '.R', '.rdata', '.rds', '.rda'],
+            'shell script': ['.sh', '.bash', '.zsh', '.fish', '.ksh'],
+            'powershell': ['.ps1', '.psm1', '.psd1'],
+            'html': ['.html', '.htm', '.shtml', '.xhtml'],
+            'css': ['.css'],
+            'scss': ['.scss'],
+            'less': ['.less'],
+            'json': ['.json', '.jsonc', '.jsonl'],
+            'yaml': ['.yaml', '.yml'],
+            'xml': ['.xml', '.xsl', '.xslt', '.xsd', '.svg', '.rss'],
+            'markdown': ['.md', '.markdown', '.mdown', '.mkd', '.mkdn'],
+            'dockerfile': ['dockerfile', '.dockerfile'],
+            'makefile': ['makefile', 'Makefile', '.mk'],
+            'ini': ['.ini', '.cfg', '.conf', '.config'],
+            'clojure': ['.clj', '.cljs', '.cljc', '.edn'],
+            'coffeescript': ['.coffee', '.cson'],
+            'dart': ['.dart'],
+            'elixir': ['.ex', '.exs'],
+            'erlang': ['.erl', '.hrl'],
+            'fsharp': ['.fs', '.fsx', '.fsi'],
+            'groovy': ['.groovy', '.gvy', '.gy', '.gsh'],
+            'kotlin': ['.kt', '.kts'],
+            'latex': ['.tex', '.latex', '.ltx'],
+            'matlab': ['.m'],
+            'pug': ['.pug', '.jade'],
+            'hlsl': ['.hlsl', '.hlsli', '.fx', '.fxh'],
+            'shaderlab': ['.shader', '.cginc', '.compute'],
+            'vb': ['.vb', '.vbs', '.vba', '.bas'],
+            'viml': ['.vim'],
+            'vue': ['.vue'],
+            'toml': ['.toml'],
+            'dotenv': ['.env'],
+            'batch file': ['.bat', '.cmd'],
+            # ---- 显式覆盖表（有意设计，保留重复键）----
+            # 下列语言名与上方基础映射重复（F601），但属“后者覆盖前者”的有意模式：
+            # 上方是 Syntect 语法包推导的宽扩展名集，下方是按规范化语法名精调的窄集合，
+            # 二者值不同，删除任一都会丢失可读性/覆盖意图，故保留并逐行 noqa。
+            # 本方法仅将 grammar_to_extensions 当查找表使用（不迭代），
+            # 运行时取到的值是最后一个（窄集），行为与覆盖前完全一致。
+            # 处置结论：保留覆盖模式并按行 noqa（本段注释即完整记录）。
+            'coffeescript': ['.coffee'],  # noqa: F601 -- 有意覆盖上方 ['.coffee', '.cson']
+            'diff': ['.diff', '.patch'],
+            'dockerfile': ['dockerfile'],  # noqa: F601 -- 有意覆盖上方含 '.dockerfile' 的宽集
+            'gitignore': ['.gitignore'],
+            'groovy': ['.groovy'],  # noqa: F601 -- 有意覆盖上方多方言宽集
+            'julia': ['.jl'],
+            'latex': ['.tex'],  # noqa: F601 -- 有意覆盖上方含 '.latex' '.ltx' 的宽集
+            'lua': ['.lua'],
+            'makefile': ['makefile'],  # noqa: F601 -- 有意覆盖上方含大小写变体/'.mk' 的宽集
+            'perl': ['.pl'],  # noqa: F601 -- 有意覆盖上方含 '.pm' '.pod' 的宽集
+            'perl 6': ['.p6'],  # noqa: F601 -- 有意覆盖上方含 '.pl6' '.pm6' 的宽集
+            'powershell': ['.ps1'],  # noqa: F601 -- 有意覆盖上方含 '.psm1' '.psd1' 的宽集
+            'pug': ['.pug'],  # noqa: F601 -- 有意覆盖上方含 '.jade' 的宽集
+            'r': ['.r'],  # noqa: F601 -- 有意覆盖上方含大写/数据文件扩展的宽集
+            'ruby': ['.rb'],  # noqa: F601 -- 有意覆盖上方含 '.rbw' 等的宽集
+            'rust': ['.rs'],
+            'scala': ['.scala'],
+            'handlebars': ['.hbs', '.handlebars'],
+            'bibtex': ['.bib'],
+            'tex': ['.tex'],
+            'xsl': ['.xsl', '.xslt'],
+            'shell script': ['.sh'],  # noqa: F601 -- 有意覆盖上方含 '.bash' '.zsh' 等的宽集
+            'sql': ['.sql'],
+            'swift': ['.swift'],
+            'typescript': ['.ts'],  # noqa: F601 -- 有意覆盖上方含 '.tsx' 的宽集
+            'vb': ['.vb'],  # noqa: F601 -- 有意覆盖上方含 '.vbs' 等的宽集
+            'xml': ['.xml'],  # noqa: F601 -- 有意覆盖上方含 '.xsl' '.svg' 等的宽集
+            'yaml': ['.yaml'],  # noqa: F601 -- 有意覆盖上方含 '.yml' 的宽集
+        }
+        
+        # 构建扩展名到语言的映射
+        for name, grammar in grammars.items():
+            # 从语法名称提取语言标识符
+            language = self._normalize_language_name(grammar.name)
+            
+            # 从语法定义中获取扩展名
+            for ext in grammar.file_extensions:
+                ext = ext.lower()
+                if not ext.startswith('.'):
+                    ext = '.' + ext
+                self._ext_to_language[ext] = language
+            
+            # 从映射表中获取扩展名
+            name_lower = grammar.name.lower()
+            if name_lower in grammar_to_extensions:
+                for ext in grammar_to_extensions[name_lower]:
+                    ext_lower = ext.lower()
+                    if not ext_lower.startswith('.'):
+                        ext_lower = '.' + ext_lower
+                    self._ext_to_language[ext_lower] = language
+            
+            # 映射作用域名
+            if grammar.scope_name:
+                self._language_to_scope[language] = grammar.scope_name
+
+        info(f"已加载 {len(grammars)} 个语法定义，"
+              f"支持 {len(self._ext_to_language)} 种文件扩展名")
+    
+    def _normalize_language_name(self, name: str) -> str:
+        """规范化语言名称
+        
+        将语法名称转换为统一的语言标识符
+        
+        Args:
+            name: 原始名称
+            
+        Returns:
+            规范化的语言标识符
+        """
+        name_lower = name.lower()
+        
+        # 常见语言名称映射
+        name_mapping = {
+            'c++': 'cpp',
+            'c#': 'csharp',
+            'objective-c': 'objc',
+            'objective-c++': 'objcpp',
+            'javascript (with react support)': 'javascript',
+            'typescriptreact': 'typescript',
+            'javascriptreact': 'javascript',
+            'json with comments': 'json',
+            'json lines': 'json',
+            'magicpython': 'python',
+            'shell script': 'bash',
+            'shell-unix-bash': 'bash',
+            'yaml ain\'t markup language': 'yaml',
+            'perl 6': 'perl6',
+            'asp vb.net': 'vb',
+        }
+        
+        if name_lower in name_mapping:
+            return name_mapping[name_lower]
+        
+        # 移除括号内容
+        import re
+        name_clean = re.sub(r'\s*\([^)]*\)', '', name_lower).strip()
+        
+        # 替换空格和特殊字符
+        name_clean = re.sub(r'[\s\-]+', '_', name_clean)
+        
+        return name_clean
+    
+    def get_language_by_extension(self, filename: str) -> Optional[str]:
+        """根据文件扩展名获取语言标识符
+        
+        优先使用 TextMate 语法中的映射，其次使用内置映射
+        
+        Args:
+            filename: 文件名或路径
+            
+        Returns:
+            语言标识符或 None
+        """
+        ext = Path(filename).suffix.lower()
+        
+        # 首先尝试 TextMate 语法映射
+        if ext in self._ext_to_language:
+            return self._ext_to_language[ext]
+        
+        # 然后尝试内置映射
+        if ext in EXTENSION_TO_LANGUAGE:
+            return EXTENSION_TO_LANGUAGE[ext]
+        
+        # 尝试通过 grammar_loader 查找
+        grammar = self.grammar_loader.get_grammar_by_extension(ext)
+        if grammar:
+            return self._normalize_language_name(grammar.name)
+        
+        return None
+    
+    def highlight_file(self, text: str, filename: str) -> List[List[Token]]:
+        """根据文件名自动选择语言并高亮
+
+        Args:
+            text: 代码文本
+            filename: 文件名（用于推断语言）
+
+        Returns:
+            每行的 Token 列表
+        """
+        debug(f"高亮文件: {filename}")
+        language = self.get_language_by_extension(filename)
+
+        if language:
+            debug(f"检测到语言: {language}")
+            return self.highlight_text(text, language)
+        else:
+            debug(f"无法识别文件类型: {filename}")
+            # 使用默认高亮（无语法高亮）
+            lines = text.split('\n')
+            return [[Token(line, TokenType.DEFAULT, 0, len(line))] for line in lines]
+    
+    def highlight_line(self, line: str, language: str) -> List[Token]:
+        """高亮单行代码
+        
+        Args:
+            line: 代码行文本
+            language: 语言标识符
+            
+        Returns:
+            Token 列表
+        """
+        if self._engine:
+            return self._engine.highlight_line(line, language)
+        return [Token(line, TokenType.DEFAULT, 0, len(line))]
+    
+    def tokenize(self, line: str, language: str) -> List[Token]:
+        """Tokenize单行代码（highlight_line的别名，用于兼容接口）
+        
+        Args:
+            line: 代码行文本
+            language: 语言标识符
+            
+        Returns:
+            Token 列表
+        """
+        return self.highlight_line(line, language)
+    
+    def highlight_text(self, text: str, language: str) -> List[List[Token]]:
+        """高亮多行代码（引擎支持整块高亮时路由整块路径，跨行状态保持）。
+
+        当前引擎暴露 ``highlight_text``（如 SpkCoreHighlighter 的整块
+        native 高亮）时直接委托——跨行注释/字符串状态一次保持；否则回退
+        逐行 ``highlight_line``（Pygments/Syntect 引擎语义不变）。
+
+        Args:
+            text: 代码文本
+            language: 语言标识符
+
+        Returns:
+            每行的 Token 列表
+        """
+        if self._engine is not None:
+            engine_highlight_text = getattr(self._engine, "highlight_text", None)
+            if callable(engine_highlight_text):
+                return engine_highlight_text(text, language)
+        debug(f"高亮代码，语言: {language}, 长度: {len(text)} 字符")
+        lines = text.split('\n')
+        result = [self.highlight_line(line, language) for line in lines]
+        debug(f"代码高亮完成，共 {len(lines)} 行")
+        return result
+    
+    def get_qtextformat(self, token_type: TokenType) -> QTextCharFormat:
+        """获取 TokenType 对应的 QTextCharFormat
+        
+        Args:
+            token_type: Token 类型
+            
+        Returns:
+            QTextCharFormat 对象
+        """
+        if self._engine:
+            return self._engine.get_qtextformat(token_type)
+        
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(self.color_scheme.foreground))
+        return fmt
+    
+    def get_background_color(self) -> QColor:
+        """获取背景颜色
+        
+        Returns:
+            QColor 对象
+        """
+        return QColor(self.color_scheme.background)
+    
+    def get_foreground_color(self) -> QColor:
+        """获取前景颜色
+        
+        Returns:
+            QColor 对象
+        """
+        return QColor(self.color_scheme.foreground)
+    
+    def guess_language(self, filename: str) -> Optional[str]:
+        """根据文件名猜测语言
+        
+        Args:
+            filename: 文件名
+            
+        Returns:
+            语言标识符或 None
+        """
+        if self._engine:
+            return self._engine.guess_language(filename)
+        return None
+    
+    def get_supported_languages(self) -> List[str]:
+        """获取支持的语言列表"""
+        if self._engine:
+            return self._engine.get_supported_languages()
+        return []
+    
+    def set_color_scheme(self, color_scheme: ColorScheme):
+        """设置颜色方案
+        
+        Args:
+            color_scheme: 新的颜色方案
+        """
+        self.color_scheme = color_scheme
+        if self._engine:
+            self._engine.color_scheme = color_scheme
+            self._engine._formats_cache.clear()
+
+
+# 便捷函数
+def create_highlighter(theme: str = 'github_dark',
+                       dark_mode: Optional[bool] = None) -> SyntaxHighlighter:
+    """创建语法高亮器
+
+    Args:
+        theme: 主题名称 ('github_dark', 'github_light', 'vscode_dark', 'vscode_light', 'auto')
+               'auto' 会根据当前主题模式自动选择
+        dark_mode: 可选的暗色模式覆盖；仅在 ``theme`` 为 ``'auto'`` 时使用。
+            为 ``None`` 时从设置中读取。
+
+    Returns:
+        SyntaxHighlighter 实例
+    """
+    debug(f"创建语法高亮器，主题: {theme}")
+    if theme == 'auto':
+        # 自动根据暗色模式选择配色方案
+        color_scheme = get_auto_theme_scheme(dark_mode=dark_mode)
+    else:
+        scheme_map = {
+            'github_dark': ColorSchemes.github_dark(),
+            'github_light': ColorSchemes.github_light(),
+            'vscode_dark': ColorSchemes.vscode_dark(),
+            'vscode_light': ColorSchemes.vscode_light(),
+        }
+        color_scheme = scheme_map.get(theme, ColorSchemes.github_dark())
+
+    return SyntaxHighlighter(color_scheme)
+
+
+def get_supported_languages() -> List[str]:
+    """获取支持的语言列表"""
+    return list(set(EXTENSION_TO_LANGUAGE.values()))
+
+
+def is_dark_mode() -> bool:
+    """检测是否为深色模式。
+
+    统一从 ``SettingsManagerV2`` 读取 ``appearance.theme``（新版唯一
+    配色配置源；旧版 SettingsManager 已移除）。
+
+    Returns:
+        是否为深色模式
+    """
+    try:
+        from sopeek.core.managers.settings_manager_v2 import SettingsManagerV2
+
+        sm = SettingsManagerV2()
+        # SettingsManagerV2.get() assumes data is already loaded; otherwise it
+        # deadlocks because it acquires _lock and then calls load() which also
+        # acquires _lock. Explicitly load once first.
+        sm.load()
+        return sm.get("appearance.theme", "dark") == "dark"
+    except Exception as exc:
+        debug(f"读取主题设置失败（按深色处理）：{exc}")
+
+    # 默认返回False（亮色模式），与设置管理器默认值保持一致
+    return False
+
+
+def get_auto_theme_scheme(dark_mode: Optional[bool] = None) -> ColorScheme:
+    """根据系统主题获取自动配色方案
+
+    暗色模式使用 VS Code Dark+，亮色模式使用 VS Code Light+。
+
+    Args:
+        dark_mode: 可选的暗色模式覆盖；为 ``None`` 时从设置中读取。
+
+    Returns:
+        合适的颜色方案
+    """
+    if dark_mode is None:
+        dark = is_dark_mode()
+    else:
+        dark = dark_mode
+
+    if dark:
+        return ColorSchemes.vscode_dark()
+    return ColorSchemes.vscode_light()
+
+
+def guess_language_from_filename(filename: str) -> Optional[str]:
+    """根据文件名猜测语言
+    
+    Args:
+        filename: 文件名
+        
+    Returns:
+        语言标识符或 None
+    """
+    ext = Path(filename).suffix.lower()
+    return EXTENSION_TO_LANGUAGE.get(ext)
+
+
+# 向后兼容的别名
+LanguagePatterns = None  # 旧版兼容
+
+
+if __name__ == '__main__':
+    # 简单测试
+    info("语法高亮模块测试")
+    info(f"Syntect 可用: {SYNTECT_AVAILABLE}, Pygments 可用: {PYGMENTS_AVAILABLE}")
+
+    # 创建高亮器
+    highlighter = create_highlighter('github_dark')
+
+    test_code = '''def hello_world():
+    """这是一个测试函数"""
+    message = "Hello, World!"
+    print(message)
+    return 42'''
+
+    tokens_list = highlighter.highlight_text(test_code, 'python')

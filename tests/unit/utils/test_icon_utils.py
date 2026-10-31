@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # targets: utils.icon_utils
-"""icon_utils.py（freeassetfilter/utils/icon_utils.py）单元测试。
+"""icon_utils.py（sopeek/utils/icon_utils.py）单元测试。
 
 覆盖窗口/文件图标获取（HICON 有效性 + DestroyIcon 释放）、HICON→QPixmap
 转换成功路径、以及**资源 finally 清理路径**（强制 GetDIBits 失败后断言
@@ -20,7 +20,7 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
 
-from freeassetfilter.utils import icon_utils as iu
+from sopeek.utils import icon_utils as iu
 
 pytestmark = pytest.mark.unit
 

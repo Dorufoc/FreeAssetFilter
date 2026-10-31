@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from freeassetfilter.core.native import memory_probe
+from sopeek.core.native import memory_probe
 
 pytestmark = pytest.mark.unit
 

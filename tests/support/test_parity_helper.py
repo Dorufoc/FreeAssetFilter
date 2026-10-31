@@ -177,7 +177,7 @@ def test_fluid_reference_frame_png_hash_matches_record() -> None:
     该用例把夹具（``fluid_samples/*.json`` / ``*.png``）与 parity helper
     的像素 hash 通路端到端串起来：PNG → RGBA md5 == 生成时记录值。
     """
-    fixture_dir: Path = Path(__file__).resolve().parent / "faf_core_fixtures" / "fluid_samples"
+    fixture_dir: Path = Path(__file__).resolve().parent / "spk_core_fixtures" / "fluid_samples"
     for stem in ("fluid_frame_64x48", "fluid_frame_160x100"):
         meta: Dict[str, Any] = json.loads(
             (fixture_dir / f"{stem}.json").read_text(encoding="utf-8")

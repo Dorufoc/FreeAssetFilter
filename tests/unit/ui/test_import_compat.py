@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""短路径导入别名收敛测试（freeassetfilter/_import_compat）。
+"""短路径导入别名收敛测试（sopeek/_import_compat）。
 
 覆盖审查 P2 项：``theme`` / ``components`` 短路径与
-``freeassetfilter.ui.*`` 规范路径必须指向同一模块对象（含子模块与
+``sopeek.ui.*`` 规范路径必须指向同一模块对象（含子模块与
 ``theme.tm`` 单例），与导入顺序无关。
 
-进程内用例依赖测试会话已导入 ``freeassetfilter``（finder 已安装）；
+进程内用例依赖测试会话已导入 ``sopeek``（finder 已安装）；
 两个子进程用例分别复刻：
 1. 冻结启动顺序 —— 先 import ``pyinstaller_runtime_compat``（runtime
    hook 预加载短名），再走应用导入链；
@@ -58,12 +58,12 @@ def _run_probe(script: str, timeout_s: int = 120) -> subprocess.CompletedProcess
 
 def test_in_process_aliases_converge() -> None:
     """会话进程内：短名与规范名已是同一模块、同一 ``tm`` 单例。"""
-    import freeassetfilter  # noqa: F401 - 安装重定向 finder
-    from freeassetfilter._import_compat import install
+    import sopeek  # noqa: F401 - 安装重定向 finder
+    from sopeek._import_compat import install
 
     install()  # 幂等：重复安装不改变既有收敛结果
     import theme
-    import freeassetfilter.ui.theme as canonical_theme
+    import sopeek.ui.theme as canonical_theme
 
     assert theme is canonical_theme
     assert theme.tm is canonical_theme.tm
@@ -76,15 +76,15 @@ import os
 import sys
 
 sys.path.insert(0, os.getcwd())
-sys.path.insert(0, os.path.join(os.getcwd(), "freeassetfilter", "ui"))
+sys.path.insert(0, os.path.join(os.getcwd(), "sopeek", "ui"))
 
 # 复刻 PyInstaller runtime hook：先以短名预加载（finder 尚未安装）。
 import pyinstaller_runtime_compat  # noqa: F401
 
 # 应用导入链（规范路径）。
-import freeassetfilter  # noqa: F401
-import freeassetfilter.ui.theme as ft
-import freeassetfilter.ui.components as fc
+import sopeek  # noqa: F401
+import sopeek.ui.theme as ft
+import sopeek.ui.components as fc
 
 import theme as t
 import components as c
@@ -95,11 +95,11 @@ assert t.tm is ft.tm
 
 # 子模块级收敛
 import theme.theme_manager as t_mgr
-import freeassetfilter.ui.theme.theme_manager as ft_mgr
+import sopeek.ui.theme.theme_manager as ft_mgr
 assert t_mgr is ft_mgr
 
 import components.file_list_model as c_short
-import freeassetfilter.ui.components.file_list_model as c_long
+import sopeek.ui.components.file_list_model as c_long
 assert c_short is c_long
 
 print("OK")
@@ -112,14 +112,14 @@ import os
 import sys
 
 sys.path.insert(0, os.getcwd())
-sys.path.insert(0, os.path.join(os.getcwd(), "freeassetfilter", "ui"))
+sys.path.insert(0, os.path.join(os.getcwd(), "sopeek", "ui"))
 
-import freeassetfilter.ui.theme as ft
+import sopeek.ui.theme as ft
 import theme as t
 assert t is ft
 assert t.tm is ft.tm
 
-import freeassetfilter.ui.theme.app_stylesheet as fas
+import sopeek.ui.theme.app_stylesheet as fas
 import theme.app_stylesheet as tas
 assert tas is fas
 

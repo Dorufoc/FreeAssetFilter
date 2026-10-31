@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Protocol contract against the real ``faf_updater.exe`` sidecar.
+"""Protocol contract against the real ``spk_updater.exe`` sidecar.
 
 The sidecar downloads from a loopback ``ThreadingHTTPServer`` stub with Range
 support. No real network, installer, UAC prompt or repository mutation is
@@ -17,17 +17,17 @@ from typing import Any, Iterator
 
 import pytest
 
-from freeassetfilter.core.native.bridges.faf_updater_bridge import FafUpdaterBridge
+from sopeek.core.native.bridges.spk_updater_bridge import SpkUpdaterBridge
 
 pytestmark = pytest.mark.integration
 
 _EXE = (
     Path(__file__).resolve().parents[2]
-    / "freeassetfilter"
+    / "sopeek"
     / "core"
     / "native"
     / "bin"
-    / "faf_updater.exe"
+    / "spk_updater.exe"
 )
 _ETAG = '"contract-etag"'
 _PAYLOAD = bytes((index * 7 + 11) % 256 for index in range(2 * 1024 * 1024))
@@ -119,14 +119,14 @@ class _RangeServer(ThreadingHTTPServer):
 def updater_exe() -> Path:
     """Hard-gate the real sidecar; never skip when it is missing."""
     if not _EXE.is_file():
-        pytest.fail(f"必需的真实 faf_updater.exe 不存在: {_EXE}")
+        pytest.fail(f"必需的真实 spk_updater.exe 不存在: {_EXE}")
     return _EXE
 
 
 @pytest.fixture
-def bridge(updater_exe: Path) -> Iterator[FafUpdaterBridge]:
+def bridge(updater_exe: Path) -> Iterator[SpkUpdaterBridge]:
     """Start the real sidecar and always reap it."""
-    instance = FafUpdaterBridge(executable=updater_exe)
+    instance = SpkUpdaterBridge(executable=updater_exe)
     try:
         assert instance.ensure_started() is True
         hello = instance.request("hello", {}, timeout=5.0)
@@ -191,7 +191,7 @@ class TestUpdaterProtocolContract:
 
     def test_download_pause_resume_cancel_verify_and_default_idle(
         self,
-        bridge: FafUpdaterBridge,
+        bridge: SpkUpdaterBridge,
         range_server: _RangeServer,
         tmp_path: Path,
     ) -> None:

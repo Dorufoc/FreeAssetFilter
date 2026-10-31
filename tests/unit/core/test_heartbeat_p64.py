@@ -19,7 +19,7 @@ from typing import Any, List
 
 import pytest
 
-from freeassetfilter.core.managers.heartbeat_manager import HeartbeatManager
+from sopeek.core.managers.heartbeat_manager import HeartbeatManager
 
 pytestmark = pytest.mark.unit
 
@@ -91,7 +91,7 @@ def test_pending_queue_priority_and_fifo(heartbeat: HeartbeatManager) -> None:
 
 def test_tick_metrics_recorded(heartbeat: HeartbeatManager) -> None:
     """tick 耗时写入 perf_metrics（provider 可读）。"""
-    from freeassetfilter.utils import perf_metrics as pm
+    from sopeek.utils import perf_metrics as pm
 
     pm.clear_perf_metrics()
     heartbeat.register_tick_callback("p64_metric", lambda: None)

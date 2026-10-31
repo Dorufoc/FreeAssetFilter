@@ -27,12 +27,12 @@ from typing import Any, Dict, List
 
 import pytest
 
-_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "freeassetfilter" / "ui")
+_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-import freeassetfilter.ui.layout.file_selector_layout as fsl_mod  # noqa: E402
-from freeassetfilter.ui.layout.file_selector_layout import FileSelectorLayout  # noqa: E402
+import sopeek.ui.layout.file_selector_layout as fsl_mod  # noqa: E402
+from sopeek.ui.layout.file_selector_layout import FileSelectorLayout  # noqa: E402
 
 pytestmark = pytest.mark.unit
 

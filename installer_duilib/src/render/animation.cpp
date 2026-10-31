@@ -11,7 +11,7 @@
 #include <cmath>
 #include <cstdio>
 
-namespace faf {
+namespace spk {
 
 namespace {
 
@@ -189,4 +189,4 @@ double SteadyNowMs() {
     return std::chrono::duration<double, std::milli>(Clock::now() - origin).count();
 }
 
-}  // namespace faf
+}  // namespace spk

@@ -33,12 +33,12 @@ fitz = pytest.importorskip("fitz")  # PyMuPDF 缺失时跳过整个模块
 from PySide6.QtCore import QRectF, QThreadPool
 from PySide6.QtGui import QImage
 
-from freeassetfilter.core.native.bridges.faf_core_bridge import (
-    get_faf_core_bridge,
+from sopeek.core.native.bridges.spk_core_bridge import (
+    get_spk_core_bridge,
 )
-from freeassetfilter.services.pdf_document import PdfDocument
-from freeassetfilter.services.pdf_document_view import PdfDocumentView
-from freeassetfilter.services.pdf_renderer import (
+from sopeek.services.pdf_document import PdfDocument
+from sopeek.services.pdf_document_view import PdfDocumentView
+from sopeek.services.pdf_renderer import (
     PdfBackgroundRenderer,
     RenderRequest,
     RenderResponse,
@@ -624,16 +624,16 @@ def _noop_select(*args: object, **kwargs: object) -> None:
 
 
 def current_bridge() -> Optional[object]:
-    """当前副本的 faf_core 桥单例（DLL 缺失时返回 ``available=False`` 降级实例）。
+    """当前副本的 spk_core 桥单例（DLL 缺失时返回 ``available=False`` 降级实例）。
 
     Returns:
         Optional[object]: 桥实例（永远非 None，类型注解与模块一致）。
     """
-    return get_faf_core_bridge()
+    return get_spk_core_bridge()
 
 
 class TestPdfSelectionNativeParity:
-    """``get_text_selection`` 优先 native（``faf_pdf_select_words``）接线对拍。
+    """``get_text_selection`` 优先 native（``spk_pdf_select_words``）接线对拍。
 
     - native 优先：DLL 可用时 ``pdf_select_words`` 被消费，选中词序列/文本/
       缓存/矩形与纯 Python 回退逐字段一致（bbox 以 Python 权威值为准，
@@ -647,12 +647,12 @@ class TestPdfSelectionNativeParity:
     _FIXTURE_DIR = (
         Path(__file__).resolve().parents[2]
         / "support"
-        / "faf_core_fixtures"
+        / "spk_core_fixtures"
         / "pdf_samples"
     )
 
     # 向下/向上拖拽、跨页/单页、首末行 x 严格边界、空选区全覆盖
-    # （用例源自 faf_core_fixtures/pdf_samples/ 的 sample_multi_page.pdf）。
+    # （用例源自 spk_core_fixtures/pdf_samples/ 的 sample_multi_page.pdf）。
     _SELECTION_CASES: List[Tuple[Tuple[int, int], Tuple[int, int]]] = [
         ((50, 50), (560, 2400)),
         ((72, 90), (560, 200)),
@@ -727,17 +727,17 @@ class TestPdfSelectionNativeParity:
             doc_fb.close()
 
     def test_get_text_selection_consumes_native_bridge(
-        self, monkeypatch: pytest.MonkeyPatch, faf_core_available: bool
+        self, monkeypatch: pytest.MonkeyPatch, spk_core_available: bool
     ) -> None:
         """native 可用时 ``get_text_selection`` 必须消费桥 ``pdf_select_words``。
 
         Args:
             monkeypatch: pytest monkeypatch。
-            faf_core_available: session 级 DLL 可用性探测。
+            spk_core_available: session 级 DLL 可用性探测。
         """
-        if not faf_core_available:
-            pytest.skip("faf_core.dll 不可用，跳过 native 接线断言")
-        bridge = get_faf_core_bridge()
+        if not spk_core_available:
+            pytest.skip("spk_core.dll 不可用，跳过 native 接线断言")
+        bridge = get_spk_core_bridge()
         if bridge is None or not bridge._supports_pdf_select_words:
             pytest.skip("桥 pdf_select_words 不可用")
         calls: List[Tuple[object, ...]] = []
@@ -770,7 +770,7 @@ class TestPdfSelectionNativeParity:
             doc.close()
 
     def test_fallback_without_native_keeps_python_path(
-        self, monkeypatch: pytest.MonkeyPatch, faf_core_available: bool
+        self, monkeypatch: pytest.MonkeyPatch, spk_core_available: bool
     ) -> None:
         """failure：DLL 缺失（模拟桥恒 None）回退 Python 且与 oracle 一致。
 
@@ -779,9 +779,9 @@ class TestPdfSelectionNativeParity:
 
         Args:
             monkeypatch: pytest monkeypatch。
-            faf_core_available: session 级 DLL 可用性探测（仅作记录性入参）。
+            spk_core_available: session 级 DLL 可用性探测（仅作记录性入参）。
         """
-        del faf_core_available
+        del spk_core_available
         bridge = current_bridge()
         if bridge is not None and bridge.available:
             monkeypatch.setattr(bridge, "pdf_select_words", _noop_select)
@@ -929,7 +929,7 @@ class TestPdfSelectionRectParityAndBudget:
     def test_rects_parity_native_vs_python_across_states(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        faf_core_available: bool,
+        spk_core_available: bool,
         case: Tuple[Tuple[int, int], Tuple[int, int]],
     ) -> None:
         """happy：native 优先 vs 纯 Python 回退，缩放/滚动后矩形逐项一致。
@@ -940,11 +940,11 @@ class TestPdfSelectionRectParityAndBudget:
 
         Args:
             monkeypatch: pytest monkeypatch。
-            faf_core_available: session 级 DLL 可用性探测。
+            spk_core_available: session 级 DLL 可用性探测。
             case: 选区参数对。
         """
-        if not faf_core_available:
-            pytest.skip("faf_core.dll 不可用，跳过 native-vs-Python 矩形对拍")
+        if not spk_core_available:
+            pytest.skip("spk_core.dll 不可用，跳过 native-vs-Python 矩形对拍")
         bridge = current_bridge()
         if bridge is None or not getattr(
             bridge, "_supports_pdf_select_words", False
@@ -1051,7 +1051,7 @@ class TestPdfSelectionRectParityAndBudget:
         qapp: Any,
         monkeypatch: pytest.MonkeyPatch,
         sample_pdf_file: str,
-        faf_core_available: bool,
+        spk_core_available: bool,
     ) -> None:
         """记录性：主线程 mouseMove 选区路径耗时 P50/mean/max（不 FAIL）。
 
@@ -1066,16 +1066,16 @@ class TestPdfSelectionRectParityAndBudget:
             qapp: session QApplication。
             monkeypatch: pytest monkeypatch。
             sample_pdf_file: 单页 PDF 路径。
-            faf_core_available: session 级 DLL 可用性探测。
+            spk_core_available: session 级 DLL 可用性探测。
         """
-        del faf_core_available
-        ui_root = str(Path(__file__).resolve().parents[3] / "freeassetfilter" / "ui")
+        del spk_core_available
+        ui_root = str(Path(__file__).resolve().parents[3] / "sopeek" / "ui")
         if ui_root not in sys.path:
             sys.path.insert(0, ui_root)
         from PySide6.QtCore import QEvent, QPointF, Qt as _Qt
         from PySide6.QtGui import QMouseEvent
 
-        from freeassetfilter.ui.layout.preview.native_pdf_renderer import (
+        from sopeek.ui.layout.preview.native_pdf_renderer import (
             NativePdfRenderer,
         )
 

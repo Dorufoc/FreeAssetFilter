@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import pytest
 
-_MMS = "freeassetfilter.services.media_metadata_service"
+_MMS = "sopeek.services.media_metadata_service"
 
 pytestmark = pytest.mark.unit
 
@@ -181,7 +181,7 @@ class TestRealMediaFiles:
             tmp_path: pytest 临时目录。
         """
         path: str = _make_wav(tmp_path / "song.wav", seconds=2.0)
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+        from sopeek.services.media_metadata_service import MediaMetadataService
 
         svc = MediaMetadataService()
         meta: Optional[Dict[str, Any]] = svc.extract_audio_metadata(path)
@@ -197,7 +197,7 @@ class TestRealMediaFiles:
             tmp_path: pytest 临时目录。
         """
         path: str = _make_mp3(tmp_path / "song.mp3")
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+        from sopeek.services.media_metadata_service import MediaMetadataService
 
         svc = MediaMetadataService()
         meta: Optional[Dict[str, Any]] = svc.extract_audio_metadata(path)
@@ -214,7 +214,7 @@ class TestRealMediaFiles:
             tmp_path: pytest 临时目录。
         """
         path: str = _make_flac(tmp_path / "song.flac")
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+        from sopeek.services.media_metadata_service import MediaMetadataService
 
         svc = MediaMetadataService()
         meta: Optional[Dict[str, Any]] = svc.extract_audio_metadata(path)
@@ -230,7 +230,7 @@ class TestRealMediaFiles:
             tmp_path: pytest 临时目录。
         """
         path: str = _make_mp3(tmp_path / "tagged.mp3", add_id3=True)
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+        from sopeek.services.media_metadata_service import MediaMetadataService
 
         svc = MediaMetadataService()
         tags: Dict[str, Any] = svc.extract_audio_tags(path)
@@ -246,7 +246,7 @@ class TestRealMediaFiles:
             tmp_path: pytest 临时目录。
         """
         path: str = _make_mp3(tmp_path / "cover.mp3", cover=_PNG_BYTES)
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+        from sopeek.services.media_metadata_service import MediaMetadataService
 
         svc = MediaMetadataService()
         cover: Optional[bytes] = svc.extract_audio_cover(path)
@@ -260,7 +260,7 @@ class TestRealMediaFiles:
             tmp_path: pytest 临时目录。
         """
         path: str = _make_wav(tmp_path / "plain.wav")
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+        from sopeek.services.media_metadata_service import MediaMetadataService
 
         svc = MediaMetadataService()
         assert svc.extract_audio_cover(path) is None
@@ -278,7 +278,7 @@ class TestMissingAndCorruptFallback:
         Args:
             tmp_path: pytest 临时目录。
         """
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+        from sopeek.services.media_metadata_service import MediaMetadataService
 
         svc = MediaMetadataService()
         assert svc.extract_audio_metadata(str(tmp_path)) is None
@@ -289,7 +289,7 @@ class TestMissingAndCorruptFallback:
         Args:
             tmp_path: pytest 临时目录。
         """
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+        from sopeek.services.media_metadata_service import MediaMetadataService
 
         svc = MediaMetadataService()
         assert svc.extract_audio_tags(str(tmp_path / "ghost.mp3")) is None
@@ -303,7 +303,7 @@ class TestMissingAndCorruptFallback:
         """
         bad: Path = tmp_path / "broken.wav"
         bad.write_bytes(b"\x00NOT-A-REAL-WAV\xff\xff")
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+        from sopeek.services.media_metadata_service import MediaMetadataService
 
         svc = MediaMetadataService()
         tags: Optional[Dict[str, Any]] = svc.extract_audio_tags(str(bad))
@@ -326,7 +326,7 @@ class TestMockedMutagen:
             monkeypatch: pytest monkeypatch。
             tmp_path: pytest 临时目录。
         """
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+        from sopeek.services.media_metadata_service import MediaMetadataService
 
         dummy: Path = tmp_path / "dummy.wav"
         dummy.write_bytes(b"x")
@@ -347,7 +347,7 @@ class TestMockedMutagen:
             monkeypatch: pytest monkeypatch。
             tmp_path: pytest 临时目录。
         """
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+        from sopeek.services.media_metadata_service import MediaMetadataService
 
         dummy: Path = tmp_path / "dummy.m4a"
         dummy.write_bytes(b"x")
@@ -368,7 +368,7 @@ class TestMockedMutagen:
             monkeypatch: pytest monkeypatch。
             tmp_path: pytest 临时目录。
         """
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+        from sopeek.services.media_metadata_service import MediaMetadataService
 
         dummy: Path = tmp_path / "dummy.mp3"
         dummy.write_bytes(b"x")
@@ -386,7 +386,7 @@ class TestMockedMutagen:
             monkeypatch: pytest monkeypatch。
             tmp_path: pytest 临时目录。
         """
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+        from sopeek.services.media_metadata_service import MediaMetadataService
 
         dummy: Path = tmp_path / "dummy.mp3"
         dummy.write_bytes(b"x")
@@ -406,7 +406,7 @@ class TestMockedMutagen:
             monkeypatch: pytest monkeypatch。
             tmp_path: pytest 临时目录。
         """
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+        from sopeek.services.media_metadata_service import MediaMetadataService
 
         dummy: Path = tmp_path / "dummy.mp3"
         dummy.write_bytes(b"x")
@@ -426,7 +426,7 @@ class TestMockedMutagen:
             monkeypatch: pytest monkeypatch。
             tmp_path: pytest 临时目录。
         """
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+        from sopeek.services.media_metadata_service import MediaMetadataService
 
         dummy: Path = tmp_path / "dummy.mp3"
         dummy.write_bytes(b"x")
@@ -444,7 +444,7 @@ class TestMockedMutagen:
             monkeypatch: pytest monkeypatch。
             tmp_path: pytest 临时目录。
         """
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+        from sopeek.services.media_metadata_service import MediaMetadataService
 
         dummy: Path = tmp_path / "dummy.mp3"
         dummy.write_bytes(b"x")
@@ -469,11 +469,11 @@ class TestSingleMutagenOpen:
             monkeypatch: pytest monkeypatch。
             tmp_path: pytest 临时目录。
         """
-        import freeassetfilter.services.media_metadata_service as _mms_module
+        import sopeek.services.media_metadata_service as _mms_module
 
         if _mms_module.mutagen_file is None:
             pytest.skip("mutagen 未安装")
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+        from sopeek.services.media_metadata_service import MediaMetadataService
 
         calls: List[str] = []
         real_mutagen = _mms_module.mutagen_file
@@ -505,11 +505,11 @@ class TestSingleMutagenOpen:
             monkeypatch: pytest monkeypatch。
             tmp_path: pytest 临时目录。
         """
-        import freeassetfilter.services.media_metadata_service as _mms_module
+        import sopeek.services.media_metadata_service as _mms_module
 
         if _mms_module.mutagen_file is None:
             pytest.skip("mutagen 未安装")
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+        from sopeek.services.media_metadata_service import MediaMetadataService
 
         calls: List[str] = []
         real_mutagen = _mms_module.mutagen_file
@@ -534,7 +534,7 @@ class TestSingleMutagenOpen:
         Args:
             tmp_path: pytest 临时目录。
         """
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+        from sopeek.services.media_metadata_service import MediaMetadataService
 
         svc = MediaMetadataService()
         assert svc.extract_audio_metadata(str(tmp_path / "ghost.mp3")) is None
@@ -547,7 +547,7 @@ class TestSingleMutagenOpen:
         """
         bad: Path = tmp_path / "broken.mp3"
         bad.write_bytes(b"\x00NOT-A-REAL-MP3\xff\xff")
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+        from sopeek.services.media_metadata_service import MediaMetadataService
 
         svc = MediaMetadataService()
         meta: Optional[Dict[str, Any]] = svc.extract_audio_metadata(str(bad))
@@ -566,7 +566,7 @@ class TestSingleMutagenOpen:
             monkeypatch: pytest monkeypatch。
             tmp_path: pytest 临时目录。
         """
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+        from sopeek.services.media_metadata_service import MediaMetadataService
 
         dummy: Path = tmp_path / "dummy.mp3"
         dummy.write_bytes(b"x")
@@ -587,20 +587,20 @@ class TestFormatHelpers:
 
     def test_format_duration_formats(self) -> None:
         """happy：``_format_duration`` 输出 MM:SS / HH:MM:SS。"""
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+        from sopeek.services.media_metadata_service import MediaMetadataService
 
         assert MediaMetadataService._format_duration(65.0) == "01:05"
         assert MediaMetadataService._format_duration(3661.0) == "01:01:01"
 
     def test_format_duration_negative(self) -> None:
         """error：负时长返回占位文案。"""
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+        from sopeek.services.media_metadata_service import MediaMetadataService
 
         assert MediaMetadataService._format_duration(-0.5) == "无法获取"
 
     def test_format_bitrate_units(self) -> None:
         """happy：``_format_bitrate`` 输出 bps / Kbps / Mbps。"""
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+        from sopeek.services.media_metadata_service import MediaMetadataService
 
         assert MediaMetadataService._format_bitrate(500) == "500 bps"
         assert MediaMetadataService._format_bitrate(128000) == "128.0 Kbps"
@@ -608,7 +608,7 @@ class TestFormatHelpers:
 
     def test_looks_like_image_magic_bytes(self) -> None:
         """happy：JPEG / PNG / BMP 魔术字节被识别，纯文本被拒绝。"""
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+        from sopeek.services.media_metadata_service import MediaMetadataService
 
         assert MediaMetadataService._looks_like_image(b"\xff\xd8\xff\xe0rest")
         assert MediaMetadataService._looks_like_image(b"\x89PNG rest")
@@ -624,7 +624,7 @@ class TestLifecycle:
 
     def test_initialize_and_dispose_idempotent(self) -> None:
         """happy：initialize/dispose 可重复调用且互不干扰。"""
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+        from sopeek.services.media_metadata_service import MediaMetadataService
 
         svc = MediaMetadataService()
         assert svc.initialize() is True
@@ -637,7 +637,7 @@ class TestLifecycle:
     @pytest.mark.skipif(not _MUTAGEN_INSTALLED, reason="mutagen 未安装，跳过真实音频解析")
     def test_extract_returns_before_initialize(self, tmp_path: Path) -> None:
         """boundary：未 initialize 也可提取音频元数据（无资源依赖）。"""
-        from freeassetfilter.services.media_metadata_service import MediaMetadataService
+        from sopeek.services.media_metadata_service import MediaMetadataService
 
         svc = MediaMetadataService()
         path: str = _make_wav(tmp_path / "w.wav")

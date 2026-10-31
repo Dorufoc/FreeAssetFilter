@@ -23,19 +23,19 @@ from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication
 
 # 组件模块内部使用短路径导入（from theme import tm），要求
-# freeassetfilter/ui 位于 sys.path；与 test_styled_basic.py 的 bootstrap
+# sopeek/ui 位于 sys.path；与 test_styled_basic.py 的 bootstrap
 # 方式保持一致。
-_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "freeassetfilter" / "ui")
+_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-from freeassetfilter.ui.components.styled_progress import (  # noqa: E402
+from sopeek.ui.components.styled_progress import (  # noqa: E402
     ProgressTrack,
 )
-from freeassetfilter.ui.components.styled_progress_circle import (  # noqa: E402
+from sopeek.ui.components.styled_progress_circle import (  # noqa: E402
     StyledProgressCircle,
 )
-from freeassetfilter.ui.theme import tm  # noqa: E402
+from sopeek.ui.theme import tm  # noqa: E402
 
 #: 探针色候选（均与内置默认强调色/相互之间差异足够大，便于像素判定）。
 _PROBE_COLORS = ("#FF00AA", "#00AACC", "#FFAA00")

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-# targets: freeassetfilter.ui.layout.preview.pdf_previewer_layout
-"""PDF 缩略图抽屉异步批处理测试（faf-core-rust-migration todo 31）。
+# targets: sopeek.ui.layout.preview.pdf_previewer_layout
+"""PDF 缩略图抽屉异步批处理测试（spk-core-rust-migration todo 31）。
 
 验证 ``PdfPreviewerLayout._populate_thumbnail_drawer`` 0.25x 逐页循环移出
 UI 线程后的四条核心契约：
@@ -32,7 +32,7 @@ from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QThreadPool
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 
-from freeassetfilter.ui.layout.preview.pdf_previewer_layout import (
+from sopeek.ui.layout.preview.pdf_previewer_layout import (
     PdfPreviewerLayout,
     _ThumbnailDrawerTask,
 )
@@ -243,7 +243,7 @@ def test_drawer_late_stale_batch_not_adopted(
 
 def test_worker_path_has_no_qpixmap_construction(qapp: QApplication) -> None:
     """grep 断言：``_ThumbnailDrawerTask`` 类体不出现 ``QPixmap(`` 构造。"""
-    import freeassetfilter.ui.layout.preview.pdf_previewer_layout as _mod
+    import sopeek.ui.layout.preview.pdf_previewer_layout as _mod
 
     src: str = Path(_mod.__file__).read_text(encoding="utf-8")
     start: int = src.index("class _ThumbnailDrawerTask")

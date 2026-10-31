@@ -27,17 +27,17 @@ pytestmark = [pytest.mark.benchmark, pytest.mark.timeout(120)]
 _REPO_ROOT: Path = Path(__file__).resolve().parents[2]
 #: 基准产物目录（与 conftest 的默认输出一致）。
 BENCH_DIR: Path = Path(
-    os.environ.get("FAF_BENCH_OUTPUT", str(_REPO_ROOT / "build" / "bench"))
+    os.environ.get("SPK_BENCH_OUTPUT", str(_REPO_ROOT / "build" / "bench"))
 )
 if BENCH_DIR.suffix:
     BENCH_DIR = BENCH_DIR.parent
 
 #: 需要覆盖的最小产物集合（缺任一即视为 P0 未完成）。
 _REQUIRED: Dict[str, str] = {
-    "faf-core-perf.json": "faf-core-perf-baseline/v1",
-    "p03-scan-three-arm.json": "faf-scan-three-arm/v1",
-    "p03b-highlight-three-arm.json": "faf-highlight-three-arm/v1",
-    "p04-thread-memory-baseline.json": "faf-thread-memory-baseline/v1",
+    "spk-core-perf.json": "spk-core-perf-baseline/v1",
+    "p03-scan-three-arm.json": "spk-scan-three-arm/v1",
+    "p03b-highlight-three-arm.json": "spk-highlight-three-arm/v1",
+    "p04-thread-memory-baseline.json": "spk-thread-memory-baseline/v1",
 }
 
 
@@ -50,7 +50,7 @@ def _load(name: str) -> Optional[Dict[str, Any]]:
 
 
 def _collect_verdicts(document: Dict[str, Any], prefix: str) -> List[Dict[str, Any]]:
-    """从 faf-core-perf 基线中抽取各路径的 verdict。"""
+    """从 spk-core-perf 基线中抽取各路径的 verdict。"""
     rows: List[Dict[str, Any]] = []
     for section, payload in document.items():
         if not isinstance(payload, dict):
@@ -79,7 +79,7 @@ def test_gate_summary() -> None:
         f"缺少基准产物 {missing}；请先运行 P0.3/P0.3b/P0.4 与主基准。"
     )
 
-    core = _load("faf-core-perf.json") or {}
+    core = _load("spk-core-perf.json") or {}
     scan = _load("p03-scan-three-arm.json") or {}
     highlight = _load("p03b-highlight-three-arm.json") or {}
     memory = _load("p04-thread-memory-baseline.json") or {}
@@ -87,7 +87,7 @@ def test_gate_summary() -> None:
     rows: List[Dict[str, Any]] = []
 
     # ---- 主基准各路径 verdict ----
-    rows.extend(_collect_verdicts(core, "faf_core"))
+    rows.extend(_collect_verdicts(core, "spk_core"))
 
     # ---- 目录扫描四臂 ----
     for case in scan.get("cases", []):
@@ -141,7 +141,7 @@ def test_gate_summary() -> None:
     )
 
     summary: Dict[str, Any] = {
-        "schema": "faf-p0-gate-summary/v1",
+        "schema": "spk-p0-gate-summary/v1",
         "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
         "bench_dir": str(BENCH_DIR),
         "rows": rows,

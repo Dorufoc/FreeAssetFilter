@@ -15,7 +15,7 @@ from typing import Any, Iterator
 
 import pytest
 
-from freeassetfilter.core.native.bridges import lut_preview_native as lpn
+from sopeek.core.native.bridges import lut_preview_native as lpn
 
 pytestmark = pytest.mark.unit
 

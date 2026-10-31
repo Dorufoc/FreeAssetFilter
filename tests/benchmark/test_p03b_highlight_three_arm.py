@@ -14,9 +14,9 @@
 ============ ================================================================
 臂           实现
 ============ ================================================================
-``line_native``  当前生产路径：逐行 ``FafCoreHighlighter.tokenize``
+``line_native``  当前生产路径：逐行 ``SpkCoreHighlighter.tokenize``
                  （每行 1 次 ctypes + 1 次 ``json.loads``）
-``block_native`` 整块 ``FafCoreHighlighter.highlight_text``（1 次 FFI +
+``block_native`` 整块 ``SpkCoreHighlighter.highlight_text``（1 次 FFI +
                  纯 Python ``_spans_to_blocks`` 切分）
 ``line_pygments`` 逐行 ``PygmentsHighlighter.highlight_line``（DLL 缺失时的回退）
 ============ ================================================================
@@ -37,28 +37,28 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pytest
 
-from freeassetfilter.core.native.bridges.faf_core_bridge import get_faf_core_bridge
+from sopeek.core.native.bridges.spk_core_bridge import get_spk_core_bridge
 
-_UI_ROOT: str = str(Path(__file__).resolve().parents[2] / "freeassetfilter" / "ui")
+_UI_ROOT: str = str(Path(__file__).resolve().parents[2] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-from freeassetfilter.utils.syntax_highlighter import (  # noqa: E402
-    FafCoreHighlighter,
+from sopeek.utils.syntax_highlighter import (  # noqa: E402
+    SpkCoreHighlighter,
     PygmentsHighlighter,
-    faf_core_highlight_available,
+    spk_core_highlight_available,
 )
 
 pytestmark = [pytest.mark.benchmark, pytest.mark.timeout(300)]
 
-#: 语料行数（与 test_faf_core_perf.HIGHLIGHT_ITERS × 3 对齐）。
+#: 语料行数（与 test_spk_core_perf.HIGHLIGHT_ITERS × 3 对齐）。
 CORPUS_LINES: int = 3000
 #: 采样次数。
 SAMPLES: int = 5
 #: 语言标识。
 LANGUAGE: str = "python"
 
-_OUTPUT_ENV: str = os.environ.get("FAF_BENCH_OUTPUT", "").strip()
+_OUTPUT_ENV: str = os.environ.get("SPK_BENCH_OUTPUT", "").strip()
 if _OUTPUT_ENV:
     _candidate: Path = Path(_OUTPUT_ENV)
     OUTPUT_PATH: Path = (
@@ -171,9 +171,9 @@ def _time_s(func: Any) -> float:
 @pytest.fixture(scope="module")
 def bridge() -> Any:
     """原生桥；DLL 不可用时跳过。"""
-    inst = get_faf_core_bridge()
-    if inst is None or not inst.available or not faf_core_highlight_available():
-        pytest.skip("faf_core 高亮不可用，跳过三臂对比")
+    inst = get_spk_core_bridge()
+    if inst is None or not inst.available or not spk_core_highlight_available():
+        pytest.skip("spk_core 高亮不可用，跳过三臂对比")
     return inst
 
 
@@ -181,13 +181,13 @@ def test_highlight_three_arms(bridge: Any) -> None:
     """逐行 native vs 整块 native vs 逐行 Pygments。"""
     text: str = _corpus()
     lines: List[str] = text.split("\n")
-    native = FafCoreHighlighter()
+    native = SpkCoreHighlighter()
     pygments = PygmentsHighlighter()
     # 注意：``reset_singletons``（function 级 autouse）会在 module 级 fixture
-    # 之后把 ``faf_core_bridge._instance`` 归零，因此高亮器可能拿到另一个
+    # 之后把 ``spk_core_bridge._instance`` 归零，因此高亮器可能拿到另一个
     # bridge 实例。计数必须以**高亮器实际持有的实例**为准，不能依赖 fixture。
     target_bridge = native._bridge
-    assert target_bridge is not None, "FafCoreHighlighter 未挂上 bridge"
+    assert target_bridge is not None, "SpkCoreHighlighter 未挂上 bridge"
 
     arms: Dict[str, Any] = {}
 
@@ -263,7 +263,7 @@ def test_highlight_three_arms(bridge: Any) -> None:
     )
 
     document: Dict[str, Any] = {
-        "schema": "faf-highlight-three-arm/v1",
+        "schema": "spk-highlight-three-arm/v1",
         "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
         "machine": _machine_summary(),
         "corpus": {"lines": CORPUS_LINES, "chars": len(text), "language": LANGUAGE},

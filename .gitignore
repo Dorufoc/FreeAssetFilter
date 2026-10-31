@@ -1,5 +1,5 @@
 # ============================================================
-# FreeAssetFilter .gitignore
+# Sopeek .gitignore
 # ============================================================
 # 策略：跟踪所有源码（Python + C++ + Rust），
 # 忽略构建中间产物（target/、build/、__pycache__/ 等）。
@@ -60,14 +60,14 @@ dist/
 nuitka-crash-report.xml
 
 # --- Native build outputs (源码目录不得提交编译产物) ---
-freeassetfilter/core/native/src/**/*.pyd
-freeassetfilter/core/native/src/**/*.dll
+sopeek/core/native/src/**/*.pyd
+sopeek/core/native/src/**/*.dll
 
 # --- Installer / launcher runtime outputs (每次构建重新生成) ---
 installer_duilib/install-result.ini
-launcher/FAF-Launcher.exe
-launcher/FAF-Launcher.exp
-launcher/FAF-Launcher.lib
+launcher/SPK-Launcher.exe
+launcher/SPK-Launcher.exp
+launcher/SPK-Launcher.lib
 
 # --- Dotfiles (agent workspaces, code index) ---
 .*
@@ -78,16 +78,16 @@ launcher/FAF-Launcher.lib
 *.cube
 *.md
 !tests/README.md
-!freeassetfilter/docs/THIRD_PARTY_NOTICES.md
+!sopeek/docs/THIRD_PARTY_NOTICES.md
 !docs/*.md
 
 # --- Test fixtures ---
 # 夹具树需完整入库（含隐藏文件、Markdown、中文名、多层目录），供 native-oracle 逐字段对拍。
 # 必须置于 .* 与 *.md 之后才能覆盖它们。
-!tests/support/faf_core_fixtures/**
+!tests/support/spk_core_fixtures/**
 # 上一条的重新包含会连带放行夹具树内的 Python 缓存，这里再次排除。
-tests/support/faf_core_fixtures/**/__pycache__/
-tests/support/faf_core_fixtures/**/*.pyc
+tests/support/spk_core_fixtures/**/__pycache__/
+tests/support/spk_core_fixtures/**/*.pyc
 
 # --- Backup & refactor notes ---
 *备份*
@@ -106,12 +106,12 @@ test_*.py
 # ============================================================
 
 # Rust build cache (target/ is entirely reproducible)
-freeassetfilter/core/native/src/color_extractor_rust/target/
-freeassetfilter/core/native/src/thumbnail_rust/target/
-freeassetfilter/core/native/src/faf_core/target/
-freeassetfilter/core/native/src/faf_updater/target/
+sopeek/core/native/src/color_extractor_rust/target/
+sopeek/core/native/src/thumbnail_rust/target/
+sopeek/core/native/src/spk_core/target/
+sopeek/core/native/src/spk_updater/target/
 
 # C++ build directory (msvc .obj, .lib, .exp intermediate files)
-freeassetfilter/core/native/src/cpp_lut_preview/build/
+sopeek/core/native/src/cpp_lut_preview/build/
 outputs/*
 docs/native_capabilities.md

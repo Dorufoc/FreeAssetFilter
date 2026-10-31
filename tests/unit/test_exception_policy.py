@@ -3,7 +3,7 @@
 
 规则
 ----
-扫描 ``freeassetfilter/``、``tests/``、``scripts/`` 与根目录
+扫描 ``sopeek/``、``tests/``、``scripts/`` 与根目录
 两个构建/兼容脚本；对每个 ``except Exception`` / ``except BaseException``
 （含裸 ``except:``）且处理体**仅有** ``pass`` 的处理器：
 
@@ -28,13 +28,13 @@ from typing import Iterator, List, Tuple
 
 _PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
 
-_SCAN_DIRS: Tuple[str, ...] = ("freeassetfilter", "tests", "scripts")
+_SCAN_DIRS: Tuple[str, ...] = ("sopeek", "tests", "scripts")
 _SCAN_ROOT_FILES: Tuple[str, ...] = (
     "Pyinstall_build.py",
     "pyinstaller_runtime_compat.py",
 )
 _SKIP_PARTS = {".venv", "__pycache__", "target", "build"}
-_SKIP_SUBSTRINGS = ("tests/support/faf_core_fixtures",)
+_SKIP_SUBSTRINGS = ("tests/support/spk_core_fixtures",)
 
 
 def _iter_sources() -> Iterator[Tuple[Path, str]]:

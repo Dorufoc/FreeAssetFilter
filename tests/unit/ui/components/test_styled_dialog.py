@@ -29,22 +29,22 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
 # 组件模块内部使用短路径导入（from theme import tm），
-# 要求 freeassetfilter/ui 位于 sys.path；与 test_styled_basic.py 一致。
-_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "freeassetfilter" / "ui")
+# 要求 sopeek/ui 位于 sys.path；与 test_styled_basic.py 一致。
+_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
 from tests.support.qt_helpers import drain_deferred_deletes, safe_teardown  # noqa: E402
 
-import freeassetfilter.ui.components.styled_dialog as styled_dialog_module  # noqa: E402
-from freeassetfilter.ui.components.styled_button import StyledButton  # noqa: E402
-from freeassetfilter.ui.components.styled_dialog import (  # noqa: E402
+import sopeek.ui.components.styled_dialog as styled_dialog_module  # noqa: E402
+from sopeek.ui.components.styled_button import StyledButton  # noqa: E402
+from sopeek.ui.components.styled_dialog import (  # noqa: E402
     FOOTER_NONE,
     FOOTER_RIGHT,
     SIZE_CONFIG,
     StyledDialog,
 )
-from freeassetfilter.ui.layout import update_dialogs  # noqa: E402
+from sopeek.ui.layout import update_dialogs  # noqa: E402
 
 pytestmark = pytest.mark.unit
 

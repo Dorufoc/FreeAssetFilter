@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """预览层图像色彩工具单测（tests-comprehensive-refactor todo-9）。
 
-覆盖 ``freeassetfilter.core.preview.image_color_utils``：
+覆盖 ``sopeek.core.preview.image_color_utils``：
 
 * ``apply_exif_orientation``：PIL ImageOps.exif_transpose 的方向校正；
 * ``convert_pil_to_srgb``：ICC Profile → sRGB 转换，无 ICC 时原样返回；
@@ -25,7 +25,7 @@ import pytest
 
 pytest.importorskip("PIL")
 
-from freeassetfilter.core.preview import image_color_utils as icutils
+from sopeek.core.preview import image_color_utils as icutils
 
 
 # ---------------------------------------------------------------------------

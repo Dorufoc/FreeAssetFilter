@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# targets: freeassetfilter.ui.layout.preview.pdf_previewer_layout
+# targets: sopeek.ui.layout.preview.pdf_previewer_layout
 """PDF 预览器主题重绘契约。
 
 页面卡片外框随主题显隐（浅色不描边 / 深色描边），而渲染器自身不订阅
@@ -14,9 +14,9 @@ import pytest
 
 from PySide6.QtWidgets import QApplication
 
-import freeassetfilter.ui.layout.preview.pdf_previewer_layout as pdf_layout_mod
-from freeassetfilter.ui.layout.preview.native_pdf_renderer import NativePdfRenderer
-from freeassetfilter.ui.layout.preview.pdf_previewer_layout import PdfPreviewerLayout
+import sopeek.ui.layout.preview.pdf_previewer_layout as pdf_layout_mod
+from sopeek.ui.layout.preview.native_pdf_renderer import NativePdfRenderer
+from sopeek.ui.layout.preview.pdf_previewer_layout import PdfPreviewerLayout
 from tests.support.qt_helpers import flush_widget_queue, safe_teardown
 
 pytestmark = pytest.mark.unit

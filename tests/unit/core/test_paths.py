@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # targets: core._paths
-"""``freeassetfilter.core._paths`` 单元测试。
+"""``sopeek.core._paths`` 单元测试。
 
 覆盖模块的全部 6 个公开路径解析函数：
 
@@ -13,7 +13,7 @@
 会被过滤；PATH 命中只取其父目录；``native_bin_dir`` 是前向兼容候选。
 
 测试全部使用 ``monkeypatch``/``tmp_path`` 隔离环境变量与路径解析，
-不触碰真实的 ``freeassetfilter/data/`` 或用户配置文件。
+不触碰真实的 ``sopeek/data/`` 或用户配置文件。
 """
 
 from __future__ import annotations
@@ -23,8 +23,8 @@ from typing import List
 
 import pytest
 
-from freeassetfilter.core import _paths
-from freeassetfilter.core._paths import (
+from sopeek.core import _paths
+from sopeek.core._paths import (
     archive_7z_dir,
     core_dir,
     get_app_data_path,
@@ -50,7 +50,7 @@ def test_core_dir_is_module_parent() -> None:
     """``core_dir`` 是该模块文件（_paths.py）所在目录。"""
     module_dir: Path = (
         Path(__file__).resolve().parent.parent.parent.parent
-        / "freeassetfilter"
+        / "sopeek"
         / "core"
     )
     assert core_dir() == module_dir
@@ -91,20 +91,22 @@ def test_icons_dir_is_core_sibling() -> None:
 # =============================================================================
 def test_get_app_data_path_creates_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """``get_app_data_path`` 必须创建 data 目录并返回其 Path（无 env 覆盖时）。"""
-    monkeypatch.delenv("FAF_DATA_DIR", raising=False)
-    fake_core: Path = tmp_path / "freeassetfilter" / "core"
-    monkeypatch.setattr(_paths, "core_dir", lambda: fake_core)
+    from sopeek.utils import path_utils
+
+    monkeypatch.delenv("SPK_DATA_DIR", raising=False)
+    monkeypatch.setattr(path_utils, "_APP_DATA_PATH_CACHE", None)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
 
     result: Path = get_app_data_path()
-    assert result == fake_core.parent / "data"
+    assert result == tmp_path / "Sopeek" / "data"
     assert result is not None
     assert result.is_dir()
 
 
 def test_get_app_data_path_env_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """``FAF_DATA_DIR`` 环境变量优先于默认推导（测试隔离 / 便携部署通路）。"""
+    """``SPK_DATA_DIR`` 环境变量优先于默认推导（测试隔离 / 便携部署通路）。"""
     override: Path = tmp_path / "custom_data"
-    monkeypatch.setenv("FAF_DATA_DIR", str(override))
+    monkeypatch.setenv("SPK_DATA_DIR", str(override))
 
     result: Path = get_app_data_path()
     assert result == override

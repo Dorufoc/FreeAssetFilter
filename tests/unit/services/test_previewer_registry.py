@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""``PreviewerRegistry``（freeassetfilter/services/previewer_registry.py）单元测试。
+"""``PreviewerRegistry``（sopeek/services/previewer_registry.py）单元测试。
 
 覆盖（happy + boundary/error 各至少一条）：
 
@@ -21,12 +21,12 @@ from typing import Dict, List, Tuple
 
 import pytest
 
-from freeassetfilter.services.previewer_registry import PreviewerRegistry
+from sopeek.services.previewer_registry import PreviewerRegistry
 
 pytestmark = pytest.mark.unit
 
 _IMAGE_KEY: str = (
-    "freeassetfilter.ui.layout.preview.image_previewer_layout."
+    "sopeek.ui.layout.preview.image_previewer_layout."
     "ImagePreviewerLayout"
 )
 
@@ -122,7 +122,7 @@ class TestGetPreviewerClass:
         assert cls is dict
         assert imported == [
             (
-                "freeassetfilter.ui.layout.preview.image_previewer_layout",
+                "sopeek.ui.layout.preview.image_previewer_layout",
                 "ImagePreviewerLayout",
             )
         ]
@@ -228,7 +228,7 @@ class TestClassCache:
         assert len(calls) == 1
         PreviewerRegistry.register(
             "jpg",
-            "freeassetfilter.ui.layout.preview.image_previewer_layout",
+            "sopeek.ui.layout.preview.image_previewer_layout",
             "ImagePreviewerLayout",
         )
         PreviewerRegistry.get_previewer_class({"suffix": "jpg"})

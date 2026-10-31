@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""``freeassetfilter.utils.elevation`` 单元测试（floating-pool-window 任务 12）。
+"""``sopeek.utils.elevation`` 单元测试（floating-pool-window 任务 12）。
 
 测试纪律：
 - **不启动任何真实进程**，也不触发真实 Win32 提权/启动 API —— 所有模块级
@@ -22,11 +22,11 @@ from typing import Any, Callable, NoReturn, Sequence
 
 import pytest
 
-from freeassetfilter.utils import elevation
+from sopeek.utils import elevation
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "win32",
-    reason="freeassetfilter.utils.elevation 为 Windows 专用模块",
+    reason="sopeek.utils.elevation 为 Windows 专用模块",
 )
 
 _EXPECTED_EXPORTS = {

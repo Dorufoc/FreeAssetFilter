@@ -17,11 +17,11 @@ from typing import Any, Callable, Optional
 import pytest
 from PySide6.QtCore import QCoreApplication, QObject, Signal
 
-from freeassetfilter.app import startup as startup_module
-from freeassetfilter.app.startup import StartupController
-from freeassetfilter.services import update_service as update_service_module
-from freeassetfilter.services import update_startup
-from freeassetfilter.services.update_service import UpdateInfo, UpdateService
+from sopeek.app import startup as startup_module
+from sopeek.app.startup import StartupController
+from sopeek.services import update_service as update_service_module
+from sopeek.services import update_startup
+from sopeek.services.update_service import UpdateInfo, UpdateService
 
 pytestmark = pytest.mark.unit
 
@@ -185,7 +185,7 @@ def update_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.fixture
 def shown(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, UpdateInfo]]:
     """替换启动提示 UI 并记录调用参数。"""
-    from freeassetfilter.ui.layout import update_dialogs
+    from sopeek.ui.layout import update_dialogs
 
     calls: list[tuple[Any, UpdateInfo]] = []
     monkeypatch.setattr(
@@ -209,7 +209,7 @@ class TestStartupSchedule:
             def singleShot(msec: int, callback: Callable[[], None]) -> None:
                 calls.append((msec, callback))
 
-        from freeassetfilter.core.managers import heartbeat_manager as hb_module
+        from sopeek.core.managers import heartbeat_manager as hb_module
 
         class DummyHeartbeat:
             def start(self) -> None:
@@ -286,7 +286,7 @@ class TestUpdateSignalWiring:
         shown: list[tuple[Any, UpdateInfo]],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from freeassetfilter.ui.layout import update_dialogs
+        from sopeek.ui.layout import update_dialogs
 
         threads: list[threading.Thread] = []
         monkeypatch.setattr(
@@ -321,7 +321,7 @@ class TestUpdateSignalWiring:
         assert shown == [(controller.window, info)]
 
     def test_update_dialogs_skeleton_is_importable(self) -> None:
-        from freeassetfilter.ui.layout import update_dialogs
+        from sopeek.ui.layout import update_dialogs
 
         assert callable(update_dialogs.show_startup_update)
 
@@ -467,11 +467,11 @@ class TestCleanup:
     def test_unstarted_service_shutdown_returns_true_without_pipe_writes(
         self, qapp: Any
     ) -> None:
-        from freeassetfilter.core.native.bridges.faf_updater_bridge import (
-            FafUpdaterBridge,
+        from sopeek.core.native.bridges.spk_updater_bridge import (
+            SpkUpdaterBridge,
         )
 
-        bridge = FafUpdaterBridge()
+        bridge = SpkUpdaterBridge()
         service = UpdateService(bridge_factory=lambda: bridge)
         try:
             assert bridge._process is None

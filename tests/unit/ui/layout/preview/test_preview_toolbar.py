@@ -18,19 +18,19 @@ import pytest
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 _PROJECT_ROOT = next(
-    p for p in Path(__file__).resolve().parents if (p / "freeassetfilter").is_dir()
+    p for p in Path(__file__).resolve().parents if (p / "sopeek").is_dir()
 )
-_UI_ROOT = _PROJECT_ROOT / "freeassetfilter" / "ui"
+_UI_ROOT = _PROJECT_ROOT / "sopeek" / "ui"
 if str(_UI_ROOT) not in sys.path:
     sys.path.insert(0, str(_UI_ROOT))
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from freeassetfilter.ui.components.styled_button import StyledButton  # noqa: E402
-from freeassetfilter.ui.layout.preview.preview_toolbar import (  # noqa: E402
+from sopeek.ui.components.styled_button import StyledButton  # noqa: E402
+from sopeek.ui.layout.preview.preview_toolbar import (  # noqa: E402
     PreviewToolbarFrame,
 )
-from freeassetfilter.ui.layout.preview.text_previewer_layout import (  # noqa: E402
+from sopeek.ui.layout.preview.text_previewer_layout import (  # noqa: E402
     TextPreviewerLayout,
 )
 from tests.support.qt_helpers import process_qt_events  # noqa: E402
@@ -240,7 +240,7 @@ class TestEncodingComboFormatLabel:
         layout.deleteLater()
 
     def test_combo_without_title_keeps_single_row(self, qapp):
-        from freeassetfilter.ui.components.styled_combobox import StyledComboBox
+        from sopeek.ui.components.styled_combobox import StyledComboBox
 
         combo = StyledComboBox(items=["Regular", "Bold"], size="sm")
         assert combo._title == ""

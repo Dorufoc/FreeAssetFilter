@@ -48,23 +48,23 @@ from PIL import Image
 from PySide6.QtGui import QPixmap
 
 # 布局模块内部使用短路径导入（from theme import tm / components.*），
-# 要求 freeassetfilter/ui 位于 sys.path——与
+# 要求 sopeek/ui 位于 sys.path——与
 # tests/unit/ui/layout/test_layouts.py 的 bootstrap 惯例一致。
-_UI_ROOT: str = str(Path(__file__).resolve().parents[2] / "freeassetfilter" / "ui")
+_UI_ROOT: str = str(Path(__file__).resolve().parents[2] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-from freeassetfilter.ui.layout.file_selector_layout import FileSelectorLayout  # noqa: E402
+from sopeek.ui.layout.file_selector_layout import FileSelectorLayout  # noqa: E402
 
 # 与布局模块共享同一模块实例（components.* 短路径），IconPixmapRole 为 int
 # 角色值，两处导入形式等价；此处取短路径以与被测接线保持一致。
 from components.file_list_model import IconPixmapRole  # noqa: E402
 
-from freeassetfilter.core.managers.thumbnail_manager import (  # noqa: E402
+from sopeek.core.managers.thumbnail_manager import (  # noqa: E402
     get_existing_thumbnail_path,
 )
-import freeassetfilter.core.workers.thumbnail_controller as tc_module  # noqa: E402
-from freeassetfilter.services.file_icon_manager import FileIconManager  # noqa: E402
+import sopeek.core.workers.thumbnail_controller as tc_module  # noqa: E402
+from sopeek.services.file_icon_manager import FileIconManager  # noqa: E402
 from tests.support.qt_helpers import (  # noqa: E402
     assert_pixmap_nonempty,
     flush_widget_queue,
@@ -92,7 +92,7 @@ def thumb_env(tmp_path: Path) -> Any:
     Returns:
         Any: 绑定临时缓存目录的 ThumbnailManager 单例。
     """
-    from freeassetfilter.core.managers.thumbnail_manager import (
+    from sopeek.core.managers.thumbnail_manager import (
         get_thumbnail_manager,
     )
 

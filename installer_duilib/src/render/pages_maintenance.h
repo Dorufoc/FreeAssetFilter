@@ -23,12 +23,12 @@
 //   * MessagePage           —— 通用标题/正文/主次按钮 + busy 态（隐藏并禁用按钮）。
 //
 // T10 接线方式（与既有页面一致）：
-//   maintenancePage_ = std::make_unique<faf::MaintenancePage>(state_);
+//   maintenancePage_ = std::make_unique<spk::MaintenancePage>(state_);
 //   maintenancePage_->BindAnimator(&animator_);
 //   maintenancePage_->BindText(&textFactory_);
 //   maintenancePage_->BindGlyphs(&glyphFont_);
 //   ...
-//   faf::RenderMaintenance(ctx, theme, *maintenancePage_);
+//   spk::RenderMaintenance(ctx, theme, *maintenancePage_);
 //
 #include <windows.h>
 
@@ -46,7 +46,7 @@
 #include "render/text.h"
 #include "render/theme.h"
 
-namespace faf {
+namespace spk {
 
 // ============================== Maintenance 页（Page=5） ====================
 
@@ -146,8 +146,8 @@ private:
 //   * 勾选/取消勾选时也即时写回 state（与 LicensePage 的同意勾选一致），保证
 //     Layout / 重绘不会回退用户的选择。
 //
-// 文案遵循 D15 C3：`%LOCALAPPDATA%\FreeAssetFilter`、`$INSTDIR\data`、
-// `$INSTDIR\_internal\data` 为已知用户数据；`FAF_DATA_DIR` 自定义目录永不删除；
+// 文案遵循 D15 C3：`%LOCALAPPDATA%\Sopeek`、`$INSTDIR\data`、
+// `$INSTDIR\_internal\data` 为已知用户数据；`SPK_DATA_DIR` 自定义目录永不删除；
 // 未知用户文件与用户导出的文件不会被删除。
 class UninstallConfirmPage {
 public:
@@ -206,7 +206,7 @@ private:
 
 // 通用消息页（英雄页）：标题 + 正文（自动换行）+ 主/次按钮。
 //
-// 用于：「正在关闭 FreeAssetFilter…」「无法关闭」「卸载未完成」「未找到已安装版本」
+// 用于：「正在关闭 Sopeek…」「无法关闭」「卸载未完成」「未找到已安装版本」
 // 等所有需要用户知情/决策的路径（T13 的 ShowError 封装到 SetContent）。
 //
 // 按钮规则：
@@ -293,4 +293,4 @@ void RenderUninstallConfirm(ID2D1DeviceContext* dc, const Theme& theme,
                             UninstallConfirmPage& page);
 void RenderMessage(ID2D1DeviceContext* dc, const Theme& theme, MessagePage& page);
 
-}  // namespace faf
+}  // namespace spk

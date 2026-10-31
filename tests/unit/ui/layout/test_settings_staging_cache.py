@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """新版设置暂存缓存与底部按钮组单元测试。
 
-覆盖 ``freeassetfilter/ui/layout/settings_staging_cache.py`` 与
-``freeassetfilter/ui/layout/settings_layout.py`` 的新暂存链路：
+覆盖 ``sopeek/ui/layout/settings_staging_cache.py`` 与
+``sopeek/ui/layout/settings_layout.py`` 的新暂存链路：
 
 * 暂存缓存隔离层：快照隔离、点号读写、脏跟踪、丢弃/重置/提交、边界与并发；
 * 底部按钮组：保存(primary 强调)/取消(secondary 次选)/重置(danger)与「有更改未保存」提示；
@@ -27,11 +27,11 @@ from typing import Any
 import pytest
 from PySide6.QtWidgets import QApplication
 
-_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "freeassetfilter" / "ui")
+_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-from freeassetfilter.ui.layout.settings_staging_cache import (
+from sopeek.ui.layout.settings_staging_cache import (
     STAGING_NAMESPACE,
     SettingsStagingCache,
     is_debug_enabled,
@@ -243,8 +243,8 @@ def _patch_v2_to_tmp(monkeypatch: Any, tmp_path: Path) -> Any:
     Returns:
         Any: 临时文件路径字符串。
     """
-    import freeassetfilter.ui.layout.settings_layout as sl_mod
-    from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+    import sopeek.ui.layout.settings_layout as sl_mod
+    from sopeek.core.managers.settings_manager_v2 import SettingsManagerV2
 
     tmp_file = str(tmp_path / "settings_v2.json")
 
@@ -264,7 +264,7 @@ def _patch_overlay_noop(monkeypatch: Any) -> None:
     Args:
         monkeypatch: pytest 补丁器。
     """
-    import freeassetfilter.ui.layout.settings_layout as sl_mod
+    import sopeek.ui.layout.settings_layout as sl_mod
 
     class _NoopOverlay:
         @staticmethod
@@ -292,7 +292,7 @@ def _make_layout(
     Returns:
         Any: SettingsLayout 实例。
     """
-    from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+    from sopeek.ui.layout.settings_layout import SettingsLayout
 
     _patch_v2_to_tmp(monkeypatch, tmp_path)
     _patch_overlay_noop(monkeypatch)
@@ -310,7 +310,7 @@ def _patch_overlay_recorder(monkeypatch: Any) -> list[dict]:
     Returns:
         list[dict]: 每次 ``from_widget`` 的调用参数（``duration_ms``/``origin``）。
     """
-    import freeassetfilter.ui.layout.settings_layout as sl_mod
+    import sopeek.ui.layout.settings_layout as sl_mod
 
     calls: list[dict] = []
 
@@ -339,7 +339,7 @@ class TestSettingsThemeFade:
         self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
     ) -> None:
         """外观实时预览：遮罩不传扩散圆心（淡化模式）且时长为配置常量。"""
-        from freeassetfilter.ui.layout.settings_layout import (
+        from sopeek.ui.layout.settings_layout import (
             SETTINGS_THEME_FADE_MS,
         )
 
@@ -348,7 +348,7 @@ class TestSettingsThemeFade:
         _patch_appearance_runtime(monkeypatch)
         calls = _patch_overlay_recorder(monkeypatch)  # 覆盖 no-op 桩
 
-        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+        from sopeek.ui.layout.settings_layout import SettingsLayout
 
         layout = SettingsLayout()
         try:
@@ -364,8 +364,8 @@ class TestSettingsThemeFade:
         self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
     ) -> None:
         """提交路径复用同一淡化遮罩创建入口（不再内联径向揭示）。"""
-        import freeassetfilter.ui.layout.settings_layout as sl_mod
-        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+        import sopeek.ui.layout.settings_layout as sl_mod
+        from sopeek.ui.layout.settings_layout import SettingsLayout
 
         _patch_v2_to_tmp(monkeypatch, tmp_path)
         _patch_overlay_noop(monkeypatch)
@@ -393,7 +393,7 @@ class TestLayoutTransitionRouting:
 
     def test_layout_mode_will_change_degrades_without_getter(self) -> None:
         """缺少 get_layout_mode（测试替身/旧接口）或取值异常：按无变化处理。"""
-        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+        from sopeek.ui.layout.settings_layout import SettingsLayout
 
         class _Bare:
             pass
@@ -455,11 +455,11 @@ class TestBottomButtons:
         self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
     ) -> None:
         """暂存修改未提交前，V2 磁盘文件保持原始值。"""
-        from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+        from sopeek.core.managers.settings_manager_v2 import SettingsManagerV2
 
         tmp_file = _patch_v2_to_tmp(monkeypatch, tmp_path)
         _patch_overlay_noop(monkeypatch)
-        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+        from sopeek.ui.layout.settings_layout import SettingsLayout
 
         layout = SettingsLayout()
         try:
@@ -485,7 +485,7 @@ class TestBottomButtons:
         from PySide6.QtCore import QEvent, QPointF, Qt
         from PySide6.QtGui import QMouseEvent
 
-        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+        from sopeek.ui.layout.settings_layout import SettingsLayout
 
         _patch_v2_to_tmp(monkeypatch, tmp_path)
         _patch_overlay_noop(monkeypatch)
@@ -511,10 +511,10 @@ class TestBottomButtons:
         self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
     ) -> None:
         """提交后 V2 落盘必须是 "auto"，而不是本次启动解析出的系统色。"""
-        from freeassetfilter.core.managers.settings_manager_v2 import (
+        from sopeek.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
         )
-        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+        from sopeek.ui.layout.settings_layout import SettingsLayout
 
         tmp_file = _patch_v2_to_tmp(monkeypatch, tmp_path)
         _patch_overlay_noop(monkeypatch)
@@ -535,10 +535,10 @@ class TestBottomButtons:
         self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
     ) -> None:
         """点 ✕ 关闭自动保存外观时，自动模式同样只写 "auto"。"""
-        from freeassetfilter.core.managers.settings_manager_v2 import (
+        from sopeek.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
         )
-        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+        from sopeek.ui.layout.settings_layout import SettingsLayout
 
         tmp_file = _patch_v2_to_tmp(monkeypatch, tmp_path)
         _patch_overlay_noop(monkeypatch)
@@ -559,12 +559,12 @@ class TestBottomButtons:
         self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
     ) -> None:
         """应用提交：事务落盘、基线前移、耗时 <200ms（质量门）。"""
-        from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+        from sopeek.core.managers.settings_manager_v2 import SettingsManagerV2
         from theme import tm
 
         tmp_file = _patch_v2_to_tmp(monkeypatch, tmp_path)
         _patch_overlay_noop(monkeypatch)
-        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+        from sopeek.ui.layout.settings_layout import SettingsLayout
 
         prev_theme = "dark" if tm.is_dark_theme() else "light"
         prev_colors = copy.deepcopy(tm._colors)
@@ -637,12 +637,12 @@ class TestBottomButtons:
         self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
     ) -> None:
         """重置：暂存回默认值、界面同步，但不直接落盘。"""
-        from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+        from sopeek.core.managers.settings_manager_v2 import SettingsManagerV2
 
         tmp_file = _patch_v2_to_tmp(monkeypatch, tmp_path)
         layout = _make_layout(qapp, monkeypatch, tmp_path)
         try:
-            from freeassetfilter.core.managers.settings_manager_v2 import (
+            from sopeek.core.managers.settings_manager_v2 import (
                 DEFAULT_SETTINGS_V2,
             )
 
@@ -710,7 +710,7 @@ def _patch_appearance_runtime(monkeypatch: Any) -> dict[str, list]:
     Returns:
         dict[str, list]: 各打桩调用记录（mode / color / replace / bg）。
     """
-    import freeassetfilter.ui.layout.settings_layout as sl_mod
+    import sopeek.ui.layout.settings_layout as sl_mod
     from theme import tm
 
     calls: dict[str, list] = {"mode": [], "color": [], "replace": [], "bg": []}
@@ -739,14 +739,14 @@ class TestAppearanceLivePreview:
         self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
     ) -> None:
         """切换深色模式 → 立即下发 tm 偏好值，且磁盘保持初值。"""
-        from freeassetfilter.core.managers.settings_manager_v2 import (
+        from sopeek.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
         )
 
         tmp_file = _patch_v2_to_tmp(monkeypatch, tmp_path)
         _patch_overlay_noop(monkeypatch)
         calls = _patch_appearance_runtime(monkeypatch)
-        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+        from sopeek.ui.layout.settings_layout import SettingsLayout
 
         fresh_before = SettingsManagerV2(tmp_file)
         fresh_before.load()
@@ -773,13 +773,13 @@ class TestCloseAutoSaveAppearance:
         self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
     ) -> None:
         """外观改动 + 通用改动 → 关闭后仅外观落盘，通用保持初值。"""
-        from freeassetfilter.core.managers.settings_manager_v2 import (
+        from sopeek.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
         )
 
         tmp_file = _patch_v2_to_tmp(monkeypatch, tmp_path)
         _patch_overlay_noop(monkeypatch)
-        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+        from sopeek.ui.layout.settings_layout import SettingsLayout
 
         layout = SettingsLayout()
         try:
@@ -806,7 +806,7 @@ class TestCloseAutoSaveAppearance:
         """无任何改动时关闭：不落盘、缓存保持干净。"""
         _patch_v2_to_tmp(monkeypatch, tmp_path)
         _patch_overlay_noop(monkeypatch)
-        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+        from sopeek.ui.layout.settings_layout import SettingsLayout
 
         layout = SettingsLayout()
         try:
@@ -826,7 +826,7 @@ class TestDirtyHintVisibility:
         """通用/性能改动显示；丢弃或仅外观改动隐藏。"""
         _patch_v2_to_tmp(monkeypatch, tmp_path)
         _patch_overlay_noop(monkeypatch)
-        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+        from sopeek.ui.layout.settings_layout import SettingsLayout
 
         layout = SettingsLayout()
         try:
@@ -865,7 +865,7 @@ class TestCancelRollbackAppearance:
         _patch_v2_to_tmp(monkeypatch, tmp_path)
         _patch_overlay_noop(monkeypatch)
         calls = _patch_appearance_runtime(monkeypatch)
-        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+        from sopeek.ui.layout.settings_layout import SettingsLayout
 
         layout = SettingsLayout()
         try:

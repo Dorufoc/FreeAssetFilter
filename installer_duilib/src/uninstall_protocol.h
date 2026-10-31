@@ -30,7 +30,7 @@
 #include "render/app_state.h"             // MaintenanceAction
 #include "render/maintenance_protocol.h"  // UninstallStage / protocol::* 常量
 
-namespace faf {
+namespace spk {
 
 using protocol::UninstallStage;
 
@@ -80,4 +80,4 @@ bool WriteMaintenanceDecision(const std::wstring& path, MaintenanceAction action
 // setup 侧/诊断用：在已有 decision 文件上写 ack=1。文件不存在返回 false。
 bool WriteMaintenanceAck(const std::wstring& path);
 
-}  // namespace faf
+}  // namespace spk

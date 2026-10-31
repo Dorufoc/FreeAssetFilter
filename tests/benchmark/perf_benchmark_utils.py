@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from freeassetfilter.utils.perf_metrics import (
+from sopeek.utils.perf_metrics import (
     clear_perf_metrics,
     export_perf_metrics,
     get_perf_snapshot,
@@ -203,7 +203,7 @@ def export_perf_snapshot(output_path: Optional[str] = None) -> str:
 
     Args:
         output_path: 输出路径；None 时导出到默认快照目录
-            （``~/.freeassetfilter/performance/``，供 regression 子命令
+            （``~/.sopeek/performance/``，供 regression 子命令
             读取最新快照做时序对比）。
 
     Returns:

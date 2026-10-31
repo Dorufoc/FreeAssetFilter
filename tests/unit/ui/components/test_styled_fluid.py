@@ -33,32 +33,32 @@ from PySide6.QtGui import QColor, QImage, QPainter, QPixmap, QShader
 from PySide6.QtWidgets import QApplication, QListView, QRhiWidget
 
 # 组件模块内部使用短路径导入（from theme import tm / components.*），
-# 要求 freeassetfilter/ui 位于 sys.path；与 test_styled_basic.py 一致。
-_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "freeassetfilter" / "ui")
+# 要求 sopeek/ui 位于 sys.path；与 test_styled_basic.py 一致。
+_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
 from tests.support.qt_helpers import assert_pixmap_nonempty, safe_teardown  # noqa: E402
 
-import freeassetfilter.ui.components._styled_fluid_cpu as _fluid_cpu  # noqa: E402
-import freeassetfilter.ui.components._styled_fluid_gpu as _fluid_gpu  # noqa: E402
-import freeassetfilter.ui.components._styled_fluid_math as _fluid_math  # noqa: E402
-from freeassetfilter.ui.components.animated_file_list_view import (  # noqa: E402
+import sopeek.ui.components._styled_fluid_cpu as _fluid_cpu  # noqa: E402
+import sopeek.ui.components._styled_fluid_gpu as _fluid_gpu  # noqa: E402
+import sopeek.ui.components._styled_fluid_math as _fluid_math  # noqa: E402
+from sopeek.ui.components.animated_file_list_view import (  # noqa: E402
     AnimatedFileListView,
 )
-from freeassetfilter.ui.components.file_card_delegate import FileCardDelegate  # noqa: E402
-import freeassetfilter.ui.components.file_card_delegate as _delegate_mod  # noqa: E402
-from freeassetfilter.ui.components.file_list_model import (  # noqa: E402
+from sopeek.ui.components.file_card_delegate import FileCardDelegate  # noqa: E402
+import sopeek.ui.components.file_card_delegate as _delegate_mod  # noqa: E402
+from sopeek.ui.components.file_list_model import (  # noqa: E402
     FileListModel,
     FileNameRole,
     FilePathRole,
     IsDirRole,
 )
-from freeassetfilter.ui.components.styled_fluid_background import (  # noqa: E402
+from sopeek.ui.components.styled_fluid_background import (  # noqa: E402
     StyledFluidBackground,
 )
-from freeassetfilter.utils.app_logger import warning  # noqa: E402
-from freeassetfilter.utils.perf_metrics import (  # noqa: E402
+from sopeek.utils.app_logger import warning  # noqa: E402
+from sopeek.utils.perf_metrics import (  # noqa: E402
     clear_perf_metrics,
     get_perf_snapshot,
     record_perf_duration,
@@ -259,7 +259,7 @@ class TestFluidCpu:
 class TestFluidFallbackKeepsPythonPath:
     """todo 13 按 spike 裁决 DROP 执行：Python CPU 路径保持为唯一事实来源。
 
-    Rust ``faf_render_fluid_frame`` 恒返回 ``STATUS_UNSUPPORTED``（1 ULP 实测差异）
+    Rust ``spk_render_fluid_frame`` 恒返回 ``STATUS_UNSUPPORTED``（1 ULP 实测差异）
     → 桥
     ``render_fluid_frame`` 恒返回 ``None``；``render_static_frame`` 走纯 Python
     渲染并复现夹具参考帧的 ``rgba_md5``。完整接线（消费桥结果 / 显式回退）留待
@@ -270,7 +270,7 @@ class TestFluidFallbackKeepsPythonPath:
         Path(__file__).resolve().parents[4]
         / "tests"
         / "support"
-        / "faf_core_fixtures"
+        / "spk_core_fixtures"
         / "fluid_samples"
     )
 
@@ -286,9 +286,9 @@ class TestFluidFallbackKeepsPythonPath:
         Rust 侧 ``STATUS_UNSUPPORTED`` → FFI 返回 null → 桥返回 ``None``；
         DLL 缺失时 ``available is False`` 同样返回 ``None``，两种情况等价。
         """
-        from freeassetfilter.core.native.bridges.faf_core_bridge import FafCoreBridge
+        from sopeek.core.native.bridges.spk_core_bridge import SpkCoreBridge
 
-        inst = FafCoreBridge()
+        inst = SpkCoreBridge()
         assert inst.render_fluid_frame(64, 48, "[]", 12345, 2.5, "{}") is None
         assert inst.render_fluid_frame(160, 100, "[]", 987, 0.0, "{}") is None
 
@@ -484,8 +484,8 @@ class TestStyledFluidBackground:
         safe_teardown(bg)
 
     def test_cpu_load_and_unload(self, qapp: QApplication, monkeypatch: Any) -> None:
-        """FAF_FORCE_FLUID_CPU=1 时 load 选 CPU 渲染器，unload 复位。"""
-        monkeypatch.setenv("FAF_FORCE_FLUID_CPU", "1")
+        """SPK_FORCE_FLUID_CPU=1 时 load 选 CPU 渲染器，unload 复位。"""
+        monkeypatch.setenv("SPK_FORCE_FLUID_CPU", "1")
         bg = StyledFluidBackground()
         bg.resize(160, 90)
         bg.load()
@@ -496,7 +496,7 @@ class TestStyledFluidBackground:
 
     def test_bake_static_frame_smoke(self, qapp: QApplication, monkeypatch: Any) -> None:
         """CPU 路径生成静态 pixmap。"""
-        monkeypatch.setenv("FAF_FORCE_FLUID_CPU", "1")
+        monkeypatch.setenv("SPK_FORCE_FLUID_CPU", "1")
         bg = StyledFluidBackground()
         bg.resize(160, 90)
         bg.load()
@@ -872,7 +872,7 @@ class TestMainThreadPaintBudget:
     主线程调用 native 路径的耗时预算（P50），仅记录不设硬门槛：
 
     * ``SvgRenderer._replace_svg_colors``：SVG 换色——主题色与编译期常量逐一致
-      时走 faf_core 原生，否则回退 Python；文件选择器滚动热路径。
+      时走 spk_core 原生，否则回退 Python；文件选择器滚动热路径。
     * ``SvgRenderer.render_svg_to_exact_pixmap``：``FileIconManager`` 主线程
       paint 的最终光栅化调用点（``file_icon_manager.py:212-238``）。
     * ``_fluid_cpu.render_static_frame``：流体 CPU 帧——todo 1(v)/13 裁决 DROP，
@@ -910,7 +910,7 @@ class TestMainThreadPaintBudget:
         Args:
             monkeypatch: pytest monkeypatch fixture。
         """
-        import freeassetfilter.core.preview.svg_renderer as svg_mod
+        import sopeek.core.preview.svg_renderer as svg_mod
 
         monkeypatch.setattr(
             svg_mod,
@@ -1031,7 +1031,7 @@ class TestMainThreadPaintBudget:
         self, qapp: QApplication, monkeypatch: Any,
     ) -> None:
         """主线程 SVG 换色（native 优先）P50 记录；仅崩溃/异常才 FAIL。"""
-        from freeassetfilter.core.preview.svg_renderer import SvgRenderer
+        from sopeek.core.preview.svg_renderer import SvgRenderer
 
         self._native_theme(monkeypatch)
         native_out = SvgRenderer._try_native_replace_svg_colors(
@@ -1058,7 +1058,7 @@ class TestMainThreadPaintBudget:
         self, qapp: QApplication, monkeypatch: Any, tmp_path: Any,
     ) -> None:
         """主线程 ``render_svg_to_exact_pixmap``（file_icon_manager paint 点）P50。"""
-        from freeassetfilter.core.preview.svg_renderer import SvgRenderer
+        from sopeek.core.preview.svg_renderer import SvgRenderer
 
         self._native_theme(monkeypatch)
         svg_file: Path = tmp_path / "budget_icon.svg"
@@ -1111,7 +1111,7 @@ class TestMainThreadPaintBudget:
 
     def test_qpixmap_not_constructed_in_worker_grep(self) -> None:
         """grep 断言：file_icon_manager / _styled_fluid_cpu 的 worker 路径无 QPixmap。"""
-        import freeassetfilter.services.file_icon_manager as fim_mod
+        import sopeek.services.file_icon_manager as fim_mod
 
         self._assert_no_worker_qpixmap(
             fim_mod,
@@ -1131,7 +1131,7 @@ class TestMainThreadPaintBudget:
         self, qapp: QApplication, tmp_path: Any,
     ) -> None:
         """线程 id 断言：预算路径运行在 GUI 线程；生产埋点 worker_thread==0。"""
-        from freeassetfilter.core.preview.svg_renderer import SvgRenderer
+        from sopeek.core.preview.svg_renderer import SvgRenderer
 
         app = QApplication.instance()
         assert app is not None

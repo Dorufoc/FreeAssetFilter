@@ -20,11 +20,11 @@ import pytest
 from PySide6.QtCore import QCoreApplication, QThreadPool
 from PySide6.QtTest import QSignalSpy
 
-from freeassetfilter.core.managers import settings_manager_v2 as settings_manager_module
-from freeassetfilter.core.native.bridges.faf_updater_bridge import UpdaterBridgeError
-from freeassetfilter.services import update_service as update_service_module
-from freeassetfilter.services import update_startup
-from freeassetfilter.services.update_service import (
+from sopeek.core.managers import settings_manager_v2 as settings_manager_module
+from sopeek.core.native.bridges.spk_updater_bridge import UpdaterBridgeError
+from sopeek.services import update_service as update_service_module
+from sopeek.services import update_startup
+from sopeek.services.update_service import (
     ERROR_MESSAGES,
     RETRYABLE_CODES,
     UpdateError,
@@ -34,8 +34,8 @@ from freeassetfilter.services.update_service import (
     get_update_service_if_exists,
     sanitize_asset_name,
 )
-from freeassetfilter.utils import version_info
-from freeassetfilter.utils.version_info import RELEASES_URL
+from sopeek.utils import version_info
+from sopeek.utils.version_info import RELEASES_URL
 
 pytestmark = pytest.mark.unit
 
@@ -89,10 +89,10 @@ def _pump(seconds: float = 0.08) -> None:
 
 def _info(
     *,
-    name: str = "FreeAssetFilter_Setup.exe",
+    name: str = "Sopeek_Setup.exe",
     sha256: str | None = SHA,
     size: object = 4096,
-    url: str = "https://example.com/FreeAssetFilter_Setup.exe",
+    url: str = "https://example.com/Sopeek_Setup.exe",
     version: str = "v1.0.1",
 ) -> UpdateInfo:
     """构造一个下载用 UpdateInfo。"""
@@ -476,7 +476,7 @@ class TestVersionInfo:
         date = version_info.get_local_build_date()
         assert version == "1.0.0-alpha.5"
         assert date == "2026-05-22"
-        assert version_info.RELEASES_URL == "https://github.com/Dorufoc/FreeAssetFilter/releases"
+        assert version_info.RELEASES_URL == "https://github.com/Dorufoc/Sopeek/releases"
         assert RELEASES_URL == version_info.RELEASES_URL
 
     def test_missing_or_blank_file_has_safe_fallback(
@@ -487,7 +487,7 @@ class TestVersionInfo:
         assert version_info.get_local_version() == "0.0.0"
         assert version_info.get_local_build_date() is None
 
-        blank = tmp_path / "FAFVERSION"
+        blank = tmp_path / "SPKVERSION"
         blank.write_text("\n\n", encoding="utf-8")
         monkeypatch.setattr(version_info, "get_resource_path", lambda *a, **k: str(blank))
         assert version_info.get_local_version() == "0.0.0"
@@ -496,7 +496,7 @@ class TestVersionInfo:
     def test_strips_exactly_one_leading_v(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        path = tmp_path / "FAFVERSION"
+        path = tmp_path / "SPKVERSION"
         monkeypatch.setattr(version_info, "get_resource_path", lambda *a, **k: str(path))
         for raw, expected in (("v1.2.3", "1.2.3"), ("V1.2.3", "1.2.3"), ("vv1.2.3", "v1.2.3")):
             path.write_text(raw + "\n2026-05-22\n", encoding="utf-8")
@@ -505,7 +505,7 @@ class TestVersionInfo:
     def test_build_date_requires_valid_iso_date(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        path = tmp_path / "FAFVERSION"
+        path = tmp_path / "SPKVERSION"
         monkeypatch.setattr(version_info, "get_resource_path", lambda *a, **k: str(path))
         for raw in ("2026-02-30", "2026/05/22", "not-a-date", "2026-5-2"):
             path.write_text("v1.0.0\n" + raw + "\n", encoding="utf-8")
@@ -516,7 +516,7 @@ class TestVersionInfo:
     def test_blank_second_line_is_not_skipped(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        path = tmp_path / "FAFVERSION"
+        path = tmp_path / "SPKVERSION"
         monkeypatch.setattr(version_info, "get_resource_path", lambda *a, **k: str(path))
         path.write_text("v1.0.0\n\n2026-05-22\n", encoding="utf-8")
         assert version_info.get_local_version() == "1.0.0"
@@ -639,7 +639,7 @@ class TestCheck:
         assert not hasattr(info, "latest_version")
         assert not hasattr(info, "release_url")
         assert bridge.ensure_calls == 1
-        assert bridge.check_calls[0]["repo"] == "Dorufoc/FreeAssetFilter"
+        assert bridge.check_calls[0]["repo"] == "Dorufoc/Sopeek"
         assert bridge.check_calls[0]["current_version"] == "1.0.0-alpha.5"
         assert bridge.check_calls[0]["include_prerelease"] is True
 
@@ -833,7 +833,7 @@ class TestStartupPolicy:
         monkeypatch: pytest.MonkeyPatch,
         value: str,
     ) -> None:
-        monkeypatch.setenv("FAF_DISABLE_UPDATE_CHECK", value)
+        monkeypatch.setenv("SPK_DISABLE_UPDATE_CHECK", value)
         assert update_startup.should_check_on_startup(now=self.NOW) is False
         assert startup_setting["calls"] == 0
 
@@ -1056,7 +1056,7 @@ class TestDownloadValidation:
         recorder = Recorder(service)
         request_id = service.start_download(_info(size="not-a-number"))
         assert _pump_until(lambda: len(recorder.download_finished) == 1)
-        dest = _dest(appdata, "FreeAssetFilter_Setup.exe")
+        dest = _dest(appdata, "Sopeek_Setup.exe")
         assert recorder.download_finished[0] == (request_id, str(dest))
         assert bridge.begin_calls[0]["params"]["expected_size"] == 0
 
@@ -1124,7 +1124,7 @@ class TestDownloadValidation:
         dest = Path(params["dest_path"])
         assert dest.parent == _download_dir(appdata) and dest.parent.is_dir()
         assert dest.name == "Setup.exe"
-        assert params["source_url"] == "https://example.com/FreeAssetFilter_Setup.exe"
+        assert params["source_url"] == "https://example.com/Sopeek_Setup.exe"
         assert params["expected_sha256"] == SHA
         assert params["expected_size"] == 4096
         assert recorder.download_finished[0] == (request_id, str(dest))

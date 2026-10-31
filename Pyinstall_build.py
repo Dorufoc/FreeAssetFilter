@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-FreeAssetFilter PyInstaller 打包脚本
+Sopeek PyInstaller 打包脚本
 
-使用PyInstaller将FreeAssetFilter打包为Windows可执行程序
+使用PyInstaller将Sopeek打包为Windows可执行程序
 
 使用方法:
     python Pyinstall_build.py              # 默认清理后重新打包
@@ -26,11 +26,11 @@ import importlib.util
 from pathlib import Path
 from typing import List, Tuple
 
-from freeassetfilter.utils.app_logger import info, warning, error
+from sopeek.utils.app_logger import info, warning, error
 
 # 配置
-PROJECT_NAME = "FreeAssetFilter"
-ENTRY_POINT = "freeassetfilter/app/main.py"
+PROJECT_NAME = "Sopeek"
+ENTRY_POINT = "sopeek/app/main.py"
 OUTPUT_DIR = "build/pyinstall"
 WORK_PATH = "build/pyinstall/work"
 # 发布构建明确不使用 UPX。PyInstaller 的默认行为也由 --noupx 固定关闭。
@@ -183,7 +183,7 @@ def collect_data_files() -> List[Tuple[str, str]]:
     data_files = []
     
     # 1. 收集图标与字体资源（仅包含运行时真正需要的资源后缀）
-    icons_dir = project_root / "freeassetfilter" / "icons"
+    icons_dir = project_root / "sopeek" / "icons"
     icon_extensions = {".svg", ".png", ".ico", ".ttf", ".otf", ".woff", ".woff2"}
     if icons_dir.exists():
         icon_count = 0
@@ -195,23 +195,23 @@ def collect_data_files() -> List[Tuple[str, str]]:
         print_info(f"收集到 {icon_count} 个图标/字体资源文件")
     
     # 2. 收集语法高亮JSON文件
-    syntax_dir = project_root / "freeassetfilter" / "utils" / "syntax"
+    syntax_dir = project_root / "sopeek" / "utils" / "syntax"
     if syntax_dir.exists():
         for file in syntax_dir.glob("*.json"):
             rel_path = file.relative_to(project_root)
             data_files.append((str(file), str(rel_path.parent)))
         print_info(f"收集到 {len(list(syntax_dir.glob('*.json')))} 个语法文件")
     
-    # 3. 收集 FAFVERSION（更新检查依赖）
-    fafversion_file = project_root / "FAFVERSION"
-    if fafversion_file.exists():
-        data_files.append((str(fafversion_file), "."))
-        print_info("收集到 FAFVERSION")
+    # 3. 收集 SPKVERSION（更新检查依赖）
+    spkversion_file = project_root / "SPKVERSION"
+    if spkversion_file.exists():
+        data_files.append((str(spkversion_file), "."))
+        print_info("收集到 SPKVERSION")
     else:
-        print_warning("未找到 FAFVERSION")
+        print_warning("未找到 SPKVERSION")
 
     # 5. 收集流体背景着色器（QRhi 运行时加载 .qsb）
-    shaders_dir = project_root / "freeassetfilter" / "ui" / "components" / "shaders"
+    shaders_dir = project_root / "sopeek" / "ui" / "components" / "shaders"
     if shaders_dir.exists():
         shader_files = sorted(shaders_dir.glob("*.qsb"))
         for file in shader_files:
@@ -222,7 +222,7 @@ def collect_data_files() -> List[Tuple[str, str]]:
         print_warning("未找到 shaders 目录")
 
     # 6. 收集 docs 目录（设置页「关于」内嵌预览器加载 THIRD_PARTY_NOTICES.md）
-    docs_dir = project_root / "freeassetfilter" / "docs"
+    docs_dir = project_root / "sopeek" / "docs"
     docs_extensions = {".md", ".txt", ".html"}
     if docs_dir.exists():
         doc_count = 0
@@ -247,18 +247,19 @@ def collect_binaries() -> List[Tuple[str, str]]:
     print_header("收集二进制文件")
     
     project_root = get_project_root()
-    native_bin = project_root / "freeassetfilter" / "core" / "native" / "bin"
+    native_bin = project_root / "sopeek" / "core" / "native" / "bin"
     binaries: List[Tuple[str, str]] = []
     required = (
-        ("libmpv-2.dll", native_bin, "freeassetfilter/core/native/bin"),
-        ("thumbnail_generator.dll", native_bin, "freeassetfilter/core/native/bin"),
-        ("faf_core.dll", native_bin, "freeassetfilter/core/native/bin"),
-        ("faf_updater.exe", native_bin, "freeassetfilter/core/native/bin"),
-        ("mica_render.dll", native_bin, "freeassetfilter/core/native/bin"),
-        ("ffmpeg.exe", native_bin, "freeassetfilter/core/native/bin"),
-        ("ffprobe.exe", native_bin, "freeassetfilter/core/native/bin"),
-        ("7z.exe", native_bin / "7z", "freeassetfilter/core/native/bin/7z"),
-        ("7z.dll", native_bin / "7z", "freeassetfilter/core/native/bin/7z"),
+        ("libmpv-2.dll", native_bin, "sopeek/core/native/bin"),
+        ("thumbnail_generator.dll", native_bin, "sopeek/core/native/bin"),
+        ("spk_core.dll", native_bin, "sopeek/core/native/bin"),
+        ("spk_updater.exe", native_bin, "sopeek/core/native/bin"),
+        ("spk_updater.deps.allowlist", native_bin, "sopeek/core/native/bin"),
+        ("mica_render.dll", native_bin, "sopeek/core/native/bin"),
+        ("ffmpeg.exe", native_bin, "sopeek/core/native/bin"),
+        ("ffprobe.exe", native_bin, "sopeek/core/native/bin"),
+        ("7z.exe", native_bin / "7z", "sopeek/core/native/bin/7z"),
+        ("7z.dll", native_bin / "7z", "sopeek/core/native/bin/7z"),
     )
     missing: List[str] = []
     for name, source_dir, destination in required:
@@ -276,18 +277,18 @@ def collect_binaries() -> List[Tuple[str, str]]:
     lut_dir = native_bin / "lut_preview"
     if lut_dir.is_dir():
         for sidecar in sorted([*lut_dir.glob("*.pyd"), *lut_dir.glob("*.dll")]):
-            binaries.append((str(sidecar), "freeassetfilter/core/native/bin/lut_preview"))
+            binaries.append((str(sidecar), "sopeek/core/native/bin/lut_preview"))
             print_info(f"收集到 LUT 扩展 {sidecar.name}")
     # 独显启动器（可选）：仅当已用 launcher/build_launcher.ps1 构建时收集。
     # PyInstaller 6 onedir 会把它放到 _internal/launcher/，与
     # platform_gpu.launcher_exe_path() 的冻结态路径一致。
-    launcher_exe = project_root / "launcher" / "FAF-Launcher.exe"
+    launcher_exe = project_root / "launcher" / "SPK-Launcher.exe"
     if launcher_exe.is_file():
         binaries.append((str(launcher_exe), "launcher"))
-        print_info("收集到 FAF-Launcher.exe（硬件加速）")
+        print_info("收集到 SPK-Launcher.exe（硬件加速）")
     else:
         print_warning(
-            "未找到 FAF-Launcher.exe：发布包将无法启用硬件加速（直启回退）"
+            "未找到 SPK-Launcher.exe：发布包将无法启用硬件加速（直启回退）"
         )
     print_success(f"共收集到 {len(binaries)} 个运行时二进制文件")
     return binaries
@@ -298,22 +299,22 @@ def collect_hidden_imports() -> List[str]:
     
     hidden_imports = [
         # LUT native wrapper is optional; the Python implementation remains the fallback.
-        "freeassetfilter.core.native.bridges.rust_thumbnail_bridge",
-        "freeassetfilter.core.native.bridges.faf_core_bridge",
+        "sopeek.core.native.bridges.rust_thumbnail_bridge",
+        "sopeek.core.native.bridges.spk_core_bridge",
         # 核心管理模块
-        "freeassetfilter.core.managers.heartbeat_manager",
+        "sopeek.core.managers.heartbeat_manager",
         # 预览模块（保留在 preview/ 中的模块）
-        "freeassetfilter.core.preview.image_color_utils",
-        "freeassetfilter.core.preview.svg_renderer",
+        "sopeek.core.preview.image_color_utils",
+        "sopeek.core.preview.svg_renderer",
         # 管理器模块（moved from preview/ and video/）
-        "freeassetfilter.core.managers.thumbnail_manager",
-        "freeassetfilter.core.managers.mpv_manager",
+        "sopeek.core.managers.thumbnail_manager",
+        "sopeek.core.managers.mpv_manager",
         # 原生桥接模块（moved from preview/, video/, archive/）
-        "freeassetfilter.core.native.bridges.media_probe",
-        "freeassetfilter.core.native.bridges.lut_preview_generator",
-        "freeassetfilter.core.native.bridges.lut_preview_native",
-        "freeassetfilter.core.native.bridges.mpv_player_core",
-        "freeassetfilter.core.native.bridges.py7z_core",
+        "sopeek.core.native.bridges.media_probe",
+        "sopeek.core.native.bridges.lut_preview_generator",
+        "sopeek.core.native.bridges.lut_preview_native",
+        "sopeek.core.native.bridges.mpv_player_core",
+        "sopeek.core.native.bridges.py7z_core",
         # 重要包（第一轮瘦身：移除 numpy/scipy/skimage/imageio 的强制隐藏导入，
         # 交给 PyInstaller 按实际导入链分析，避免把整套科学计算/可选插件带进产物）
         "PIL",
@@ -376,12 +377,12 @@ def build_pyinstaller_command(data_files: List[Tuple[str, str]],
     
     project_root = get_project_root()
     entry_point = project_root / ENTRY_POINT
-    ui_root = project_root / "freeassetfilter" / "ui"
+    ui_root = project_root / "sopeek" / "ui"
     output_dir = project_root / OUTPUT_DIR
     work_path = project_root / WORK_PATH
     
     # 图标路径
-    icon_path = project_root / "freeassetfilter" / "icons" / "FAF-main.ico"
+    icon_path = project_root / "sopeek" / "icons" / "SPK-main.ico"
     if icon_path.exists():
         print_info(f"使用图标: {icon_path}")
     else:
@@ -490,8 +491,8 @@ def build_pyinstaller_command(data_files: List[Tuple[str, str]],
             cmd.extend(["--collect-submodules", _pkg])
             print_info(f"收集动态子模块: {_pkg}")
 
-    # ── UI 短路径别名包收集（freeassetfilter/_import_compat.py 契约）────────
-    # 运行时把 theme/components（短名）与 freeassetfilter.ui.theme/components
+    # ── UI 短路径别名包收集（sopeek/_import_compat.py 契约）────────
+    # 运行时把 theme/components（短名）与 sopeek.ui.theme/components
     # （规范名）收敛为同一模块对象。PyInstaller 6 的子模块解析按「父包
     # __path__ 前缀 + 尾名」查询 PYZ 条目：若某名称树下缺子模块条目，别名后的
     # 父包前缀会直接解析失败（冻结启动即崩溃）。因此两棵树都必须完整收集；
@@ -503,8 +504,8 @@ def build_pyinstaller_command(data_files: List[Tuple[str, str]],
     for _pkg in (
         "theme",
         "components",
-        "freeassetfilter.ui.theme",
-        "freeassetfilter.ui.components",
+        "sopeek.ui.theme",
+        "sopeek.ui.components",
     ):
         if importlib.util.find_spec(_pkg) is not None:
             cmd.extend(["--collect-submodules", _pkg])
@@ -560,7 +561,7 @@ def run_pyinstaller_build(cmd: List[str]) -> bool:
     # `--collect-submodules theme` 静默收集为空。这里显式把 ui_root
     # （theme/components 短路径包所在目录）注入 PYTHONPATH 兜底。
     env = os.environ.copy()
-    ui_root = str(get_project_root() / "freeassetfilter" / "ui")
+    ui_root = str(get_project_root() / "sopeek" / "ui")
     existing_pythonpath = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = ui_root + (os.pathsep + existing_pythonpath if existing_pythonpath else "")
 
@@ -746,7 +747,7 @@ def clean_native_sources_from_dist():
     print_header("清理打包目录中的原生源码残留")
 
     project_root = get_project_root()
-    dist_root = project_root / OUTPUT_DIR / PROJECT_NAME / "_internal" / "freeassetfilter" / "core"
+    dist_root = project_root / OUTPUT_DIR / PROJECT_NAME / "_internal" / "sopeek" / "core"
 
     if not dist_root.exists():
         print_info("未发现 core 目录，跳过")
@@ -784,7 +785,7 @@ def verify_output(dist_root: Path | None = None) -> bool:
 
     Args:
         dist_root: 待验证的发布目录；``None`` 时使用默认的
-            ``build/pyinstall/FreeAssetFilter``。为临时目录/负例验证提供入口，
+            ``build/pyinstall/Sopeek``。为临时目录/负例验证提供入口，
             默认行为保持不变。
 
     Returns:
@@ -820,20 +821,24 @@ def verify_output(dist_root: Path | None = None) -> bool:
     
     # 检查资源文件
     resources_to_check = [
-        "FAFVERSION",
-        "freeassetfilter/icons/FAF-main.ico",
-        "freeassetfilter/core/native/bin/libmpv-2.dll",
-        "freeassetfilter/core/native/bin/thumbnail_generator.dll",
-        "freeassetfilter/core/native/bin/faf_core.dll",
-        "freeassetfilter/core/native/bin/faf_updater.exe",
-        "freeassetfilter/core/native/bin/mica_render.dll",
-        "freeassetfilter/core/native/bin/ffmpeg.exe",
-        "freeassetfilter/core/native/bin/ffprobe.exe",
-        "freeassetfilter/core/native/bin/7z/7z.exe",
-        "freeassetfilter/core/native/bin/7z/7z.dll",
+        "SPKVERSION",
+        "sopeek/icons/SPK-main.ico",
+        "sopeek/core/native/bin/libmpv-2.dll",
+        "sopeek/core/native/bin/thumbnail_generator.dll",
+        "sopeek/core/native/bin/spk_core.dll",
+        "sopeek/core/native/bin/spk_updater.exe",
+        "sopeek/core/native/bin/spk_updater.deps.allowlist",
+        "sopeek/core/native/bin/mica_render.dll",
+        "sopeek/core/native/bin/ffmpeg.exe",
+        "sopeek/core/native/bin/ffprobe.exe",
+        "sopeek/core/native/bin/7z/7z.exe",
+        "sopeek/core/native/bin/7z/7z.dll",
     ]
     # 更新器 sidecar 是更新功能的硬依赖：缺失即验证失败，其它资源仍按警告处理。
-    required_resources = {"freeassetfilter/core/native/bin/faf_updater.exe"}
+    required_resources = {
+        "sopeek/core/native/bin/spk_updater.exe",
+        "sopeek/core/native/bin/spk_updater.deps.allowlist",
+    }
     
     for resource in resources_to_check:
         # PyInstaller 5 布局：资源与外置 exe 同级；PyInstaller 6 onedir 布局：
@@ -940,7 +945,7 @@ def generate_report(removed_dlls: int, saved_space: int):
         # 保存报告到文件
         report_path = project_root / OUTPUT_DIR / "build_report.txt"
         with open(report_path, 'w', encoding='utf-8') as f:
-            f.write("FreeAssetFilter PyInstaller 打包报告\n")
+            f.write("Sopeek PyInstaller 打包报告\n")
             f.write("=====================================\n\n")
             f.write(f"输出目录: {output_dir}\n")
             f.write(f"可执行文件: {PROJECT_NAME}.exe\n")
@@ -988,14 +993,14 @@ def clean_build():
 
 def main():
     """主函数"""
-    parser = argparse.ArgumentParser(description="FreeAssetFilter PyInstaller打包脚本")
+    parser = argparse.ArgumentParser(description="Sopeek PyInstaller打包脚本")
     parser.add_argument("--no-clean", action="store_true", help="禁用清理，保留之前的构建输出")
     parser.add_argument("--skip-build", action="store_true", help="仅执行清理和验证，不打包")
     parser.add_argument("--no-clean-qt", action="store_true", help="不清理Qt6 DLL")
     parser.add_argument("--no-upx", action="store_true", help="兼容参数：始终禁用 UPX")
     args = parser.parse_args()
     
-    print_header("FreeAssetFilter PyInstaller打包脚本")
+    print_header("Sopeek PyInstaller打包脚本")
     info(f"项目: {PROJECT_NAME}")
     info(f"入口: {ENTRY_POINT}")
     info(f"输出: {OUTPUT_DIR}")

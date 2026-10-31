@@ -20,9 +20,9 @@
 #include <fstream>
 #include <system_error>
 
-#include "render/render_context.h"  // faf::ComPtr
+#include "render/render_context.h"  // spk::ComPtr
 
-namespace faf {
+namespace spk {
 
 namespace {
 
@@ -122,7 +122,7 @@ FolderPicker PickInstallFolder(HWND owner, const std::wstring& initialDir, std::
             if (SUCCEEDED(dialog->GetOptions(&opts))) {
                 dialog->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
             }
-            dialog->SetTitle(L"选择 FreeAssetFilter 安装目录");
+            dialog->SetTitle(L"选择 Sopeek 安装目录");
             if (!initialDir.empty()) {
                 ComPtr<IShellItem> folder;
                 if (SUCCEEDED(SHCreateItemFromParsingName(initialDir.c_str(), nullptr,
@@ -153,7 +153,7 @@ FolderPicker PickInstallFolder(HWND owner, const std::wstring& initialDir, std::
     // ---- 回退：SHBrowseForFolderW（仅当 COM 主路径未成功时）----
     BROWSEINFOW bi{};
     bi.hwndOwner = owner;
-    bi.lpszTitle = L"选择 FreeAssetFilter 安装目录";
+    bi.lpszTitle = L"选择 Sopeek 安装目录";
     bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
     bi.lpfn = BrowseCallbackProc;
     bi.lParam = initialDir.empty() ? 0 : reinterpret_cast<LPARAM>(initialDir.c_str());
@@ -190,7 +190,7 @@ bool ProbeWritable(const std::wstring& dir, std::wstring& errorOut) {
         return false;
     }
 
-    const std::filesystem::path probe = probeDir / L".faf_write_probe.tmp";
+    const std::filesystem::path probe = probeDir / L".spk_write_probe.tmp";
     {
         std::ofstream out(probe.c_str(), std::ios::binary | std::ios::trunc);
         if (!out) {
@@ -405,7 +405,7 @@ void ConfigurePage::Render(ID2D1DeviceContext* dc, const Theme& theme) {
 
     DrawText(dc, text_, L"选择安装位置", headingRect_, fontsize::Subtitle, weight::SemiBold,
              DWRITE_TEXT_ALIGNMENT_LEADING, theme.textPrimary);
-    DrawText(dc, text_, L"请选择 FreeAssetFilter 的安装目录。", subtitleRect_, fontsize::Caption,
+    DrawText(dc, text_, L"请选择 Sopeek 的安装目录。", subtitleRect_, fontsize::Caption,
              weight::Regular, DWRITE_TEXT_ALIGNMENT_LEADING, theme.textSecondary);
 
     pathField_.Render(dc, theme);
@@ -438,4 +438,4 @@ void RenderConfigure(ID2D1DeviceContext* dc, const Theme& theme, ConfigurePage& 
     page.Render(dc, theme);
 }
 
-}  // namespace faf
+}  // namespace spk

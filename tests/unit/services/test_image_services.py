@@ -23,8 +23,8 @@ from typing import Any, List, Tuple
 
 import pytest
 
-from freeassetfilter.services.image_decode_worker import ImageDecodeWorker
-from freeassetfilter.services.image_decoder_service import (
+from sopeek.services.image_decode_worker import ImageDecodeWorker
+from sopeek.services.image_decoder_service import (
     CorruptFileError,
     DecodeError,
     DependencyError,
@@ -385,7 +385,7 @@ class TestDecodeToQImageMockedBackend:
 class TestPsdFallbackKeepsPythonPath:
     """todo 8（rust-hot-path-native-migration）：PSD 裁决 DROP 的 Python 回退验证。
 
-    Rust ``faf_composite_psd`` 恒返回 ``STATUS_UNSUPPORTED`` → 桥 ``composite_psd``
+    Rust ``spk_composite_psd`` 恒返回 ``STATUS_UNSUPPORTED`` → 桥 ``composite_psd``
     恒返回 ``None``；项目保持 ``psd-tools`` 合成路径。这里用 multiply 混合模式
     样本验证：(1) 桥返回 ``None``（回退触发条件，DLL 缺失时同样成立）；
     (2) ``_decode_psd`` 的 psd-tools 路径正确应用混合模式——正是 Rust ``psd``
@@ -395,11 +395,11 @@ class TestPsdFallbackKeepsPythonPath:
 
     def test_bridge_composite_psd_returns_none(self, tmp_path: Path) -> None:
         """DROP：桥 ``composite_psd`` 恒返回 ``None``（Rust 侧 UNSUPPORTED）。"""
-        from freeassetfilter.core.native.bridges.faf_core_bridge import FafCoreBridge
+        from sopeek.core.native.bridges.spk_core_bridge import SpkCoreBridge
 
         psd = tmp_path / "a.psd"
         psd.write_bytes(b"8BPS")
-        inst = FafCoreBridge()
+        inst = SpkCoreBridge()
         assert inst.composite_psd(str(psd)) is None
 
     def test_decode_psd_psdtools_applies_multiply_blend(self, tmp_path: Path) -> None:
@@ -444,7 +444,7 @@ class TestPsdFallbackKeepsPythonPath:
                 return None
 
         monkeypatch.setattr(
-            "freeassetfilter.core.native.bridges.faf_core_bridge.get_faf_core_bridge",
+            "sopeek.core.native.bridges.spk_core_bridge.get_spk_core_bridge",
             lambda: _FakeBridge(),
         )
 
@@ -473,7 +473,7 @@ class TestPsdFallbackKeepsPythonPath:
         corrupt = (
             Path(__file__).resolve().parent.parent.parent
             / "support"
-            / "faf_core_fixtures"
+            / "spk_core_fixtures"
             / "psd_samples"
             / "sample_corrupt.psd"
         )
@@ -676,7 +676,7 @@ class TestImageDecodeWorker:
             tmp_path: pytest 临时目录。
         """
         started: float = time.monotonic()
-        monkeypatch.setattr("freeassetfilter.services.image_decode_worker._DECODE_TIMEOUT_MS", 50)
+        monkeypatch.setattr("sopeek.services.image_decode_worker._DECODE_TIMEOUT_MS", 50)
         # cancel() 内 wait(2000) 会阻塞主线程；此处替换为纯标志版，只测超时路径。
         monkeypatch.setattr(
             ImageDecodeWorker,

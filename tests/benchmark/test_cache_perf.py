@@ -3,7 +3,7 @@
 """缩略图缓存性能基准（todo-27 benchmark 重写）。
 
 旧快照的 ``test_cache_performance.py`` 针对不存在的
-``freeassetfilter.core.lru_k_cache.LRUKCache`` 做 put/get 延迟测量——
+``sopeek.core.lru_k_cache.LRUKCache`` 做 put/get 延迟测量——
 该模块在当前源码树中已不存在（V3 审计确认）。本文件改测 ThumbnailManager
 的真实缓存路径：
 
@@ -46,7 +46,7 @@ def thumb_manager(tmp_path: Any, qapp: Any) -> Any:
     Returns:
         ThumbnailManager: 绑定临时缓存目录的新实例。
     """
-    from freeassetfilter.core.managers.thumbnail_manager import ThumbnailManager
+    from sopeek.core.managers.thumbnail_manager import ThumbnailManager
 
     manager = ThumbnailManager()
     thumb_dir: str = str(tmp_path / "thumbs")

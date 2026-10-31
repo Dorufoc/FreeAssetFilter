@@ -1,5 +1,5 @@
-from freeassetfilter.services.ai.models import AIAccountConfig, AIProvider, ChatMessage
-from freeassetfilter.services.ai.protocols import AnthropicAdapter, DeepSeekChatAdapter, DeepSeekResponsesAdapter, OpenAICompatibleAdapter
+from sopeek.services.ai.models import AIAccountConfig, AIProvider, ChatMessage
+from sopeek.services.ai.protocols import AnthropicAdapter, DeepSeekChatAdapter, DeepSeekResponsesAdapter, OpenAICompatibleAdapter
 
 
 def account(provider):

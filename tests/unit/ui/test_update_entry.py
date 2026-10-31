@@ -20,8 +20,8 @@ import pytest
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication
 
-from freeassetfilter.services.update_service import UpdateError, UpdateInfo
-from freeassetfilter.ui.update_entry import UpdateEntryController
+from sopeek.services.update_service import UpdateError, UpdateInfo
+from sopeek.ui.update_entry import UpdateEntryController
 from tests.support.qt_helpers import drain_deferred_deletes
 
 pytestmark = pytest.mark.unit
@@ -141,7 +141,7 @@ def _available_info() -> UpdateInfo:
             "notes": "修复若干问题。",
         },
         asset={
-            "name": "FreeAssetFilter-setup.exe",
+            "name": "Sopeek-setup.exe",
             "size": 2 * 1024 * 1024,
             "sha256": "a" * 64,
         },
@@ -181,7 +181,7 @@ def controller(
     """构造注入假服务与假弹窗的控制器，并在用例后销毁。"""
     del qapp, dialogs
     monkeypatch.setattr(
-        "freeassetfilter.utils.version_info.get_local_version",
+        "sopeek.utils.version_info.get_local_version",
         lambda: "1.0.0-alpha.5",
     )
     instance = UpdateEntryController(service_factory=lambda: fake_service)
@@ -411,7 +411,7 @@ class TestFiltering:
         """下载动作关闭中心弹窗并交给既有进度弹窗。"""
         opened: list[tuple[object, object]] = []
         monkeypatch.setattr(
-            "freeassetfilter.ui.layout.update_dialogs.show_download_progress",
+            "sopeek.ui.layout.update_dialogs.show_download_progress",
             lambda info, service: opened.append((info, service)),
         )
 
@@ -435,7 +435,7 @@ class TestRealDialogIntegration:
     ) -> None:
         """真实弹窗从 checking 切到 no_update 并保持同一实例。"""
         monkeypatch.setattr(
-            "freeassetfilter.utils.version_info.get_local_version",
+            "sopeek.utils.version_info.get_local_version",
             lambda: "1.0.0-alpha.5",
         )
         controller = UpdateEntryController(service_factory=lambda: fake_service)

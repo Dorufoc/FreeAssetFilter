@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""``BaseService``（freeassetfilter/services/base.py）单元测试。
+"""``BaseService``（sopeek/services/base.py）单元测试。
 
 覆盖（happy + boundary/error 各至少一条）：
 
@@ -23,7 +23,7 @@ from typing import List
 
 import pytest
 
-from freeassetfilter.services.base import BaseService
+from sopeek.services.base import BaseService
 
 pytestmark = pytest.mark.unit
 

@@ -17,7 +17,7 @@
 
 #include "render/maintenance_protocol.h"
 
-namespace faf {
+namespace spk {
 
 // 维护 UI 互斥体的 RAII 守卫。构造即尝试创建/打开命名互斥体：
 //   - 首次实例：Acquired() == true，持有句柄至析构；
@@ -56,11 +56,11 @@ private:
 // 等待类名为 `className` 的已有窗口出现（轮询），随后 ShowWindow(SW_RESTORE)
 // 并 SetForegroundWindow。返回 true 表示窗口已在前台或置前成功；超时、参数
 // 非法或置前失败返回 false。默认类名与 installer_window.cpp 的冻结类名一致。
-bool ActivateExistingWindow(const wchar_t* className = L"FreeAssetFilterInstaller",
+bool ActivateExistingWindow(const wchar_t* className = L"SopeekInstaller",
                             DWORD timeoutMs = 5000);
 
 // 判断命名互斥体当前是否存在：OpenMutexW(SYNCHRONIZE) 成功即存在，随后
 // CloseHandle；ERROR_ACCESS_DENIED 视为存在（对象在但当前 token 无权打开）。
 bool IsMutexHeld(const wchar_t* name);
 
-}  // namespace faf
+}  // namespace spk

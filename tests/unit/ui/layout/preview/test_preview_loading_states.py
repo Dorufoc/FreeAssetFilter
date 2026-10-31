@@ -30,33 +30,33 @@ from PySide6.QtGui import QColor, QImage
 from PySide6.QtWidgets import QApplication
 
 _PROJECT_ROOT = next(
-    p for p in Path(__file__).resolve().parents if (p / "freeassetfilter").is_dir()
+    p for p in Path(__file__).resolve().parents if (p / "sopeek").is_dir()
 )
-_UI_ROOT = _PROJECT_ROOT / "freeassetfilter" / "ui"
+_UI_ROOT = _PROJECT_ROOT / "sopeek" / "ui"
 for _p in (str(_UI_ROOT), str(_PROJECT_ROOT)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import freeassetfilter.ui.layout.preview.folder_previewer_layout as folder_mod  # noqa: E402
-import freeassetfilter.ui.layout.preview.office_previewer_layout as office_mod  # noqa: E402
-import freeassetfilter.ui.layout.preview.text_previewer_layout as text_mod  # noqa: E402
-from freeassetfilter.services.image_decoder_service import ImageDecoderService  # noqa: E402
-from freeassetfilter.ui.layout.preview.folder_previewer_layout import (  # noqa: E402
+import sopeek.ui.layout.preview.folder_previewer_layout as folder_mod  # noqa: E402
+import sopeek.ui.layout.preview.office_previewer_layout as office_mod  # noqa: E402
+import sopeek.ui.layout.preview.text_previewer_layout as text_mod  # noqa: E402
+from sopeek.services.image_decoder_service import ImageDecoderService  # noqa: E402
+from sopeek.ui.layout.preview.folder_previewer_layout import (  # noqa: E402
     FolderPreviewerLayout,
 )
-from freeassetfilter.ui.layout.preview.image_previewer_layout import (  # noqa: E402
+from sopeek.ui.layout.preview.image_previewer_layout import (  # noqa: E402
     ImagePreviewerLayout,
 )
-from freeassetfilter.ui.layout.preview.office_previewer_layout import (  # noqa: E402
+from sopeek.ui.layout.preview.office_previewer_layout import (  # noqa: E402
     OfficePreviewerLayout,
 )
-from freeassetfilter.ui.layout.preview.pdf_previewer_layout import (  # noqa: E402
+from sopeek.ui.layout.preview.pdf_previewer_layout import (  # noqa: E402
     PdfPreviewerLayout,
 )
-from freeassetfilter.ui.layout.preview.text_previewer_layout import (  # noqa: E402
+from sopeek.ui.layout.preview.text_previewer_layout import (  # noqa: E402
     TextPreviewerLayout,
 )
-from freeassetfilter.ui.layout.preview.video_player_layout import (  # noqa: E402
+from sopeek.ui.layout.preview.video_player_layout import (  # noqa: E402
     VideoPlayerLayout,
 )
 from tests.support.qt_helpers import flush_widget_queue, wait_until  # noqa: E402
@@ -378,11 +378,11 @@ def test_font_loading_spinner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """字体加载期间圆环可见，成功回调后隐藏并切预览页。"""
-    monkeypatch.setattr("freeassetfilter.ui.layout.preview.font_previewer_layout.FontLoadThread", _FakeFontThread)
+    monkeypatch.setattr("sopeek.ui.layout.preview.font_previewer_layout.FontLoadThread", _FakeFontThread)
     path = tmp_path / "fake.ttf"
     path.write_bytes(b"\x00")
     previewer = __import__(
-        "freeassetfilter.ui.layout.preview.font_previewer_layout",
+        "sopeek.ui.layout.preview.font_previewer_layout",
         fromlist=["FontPreviewerLayout"],
     ).FontPreviewerLayout()
     try:
@@ -452,7 +452,7 @@ def test_folder_loading_spinner_and_gated_scan(
 
 def test_archive_overlay_busy_contract(qapp: QApplication) -> None:
     """压缩包覆盖层：busy=True 显示圆环，busy=False 隐藏。"""
-    from freeassetfilter.ui.layout.preview.archive_previewer_layout import (
+    from sopeek.ui.layout.preview.archive_previewer_layout import (
         ArchivePreviewerLayout,
     )
 

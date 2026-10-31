@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from freeassetfilter.ui.mica import tint
+from sopeek.ui.mica import tint
 
 
 def test_quantize_u8_no_dither_is_pure_rounding() -> None:

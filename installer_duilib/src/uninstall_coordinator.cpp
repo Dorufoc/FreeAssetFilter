@@ -15,7 +15,7 @@
 #include "render/messages.h"     // WM_UNINSTALL_PROGRESS / WM_UNINSTALL_DONE
 #include "uninstall_protocol.h"  // WriteUninstallRequest / ReadUninstallProgress / ...
 
-namespace faf {
+namespace spk {
 namespace {
 
 // UI 侧必须比 helper 的 request 等待更久：helper 写完 done=1 后还会等待
@@ -85,7 +85,7 @@ bool UninstallCoordinator::Start(std::wstring* error) {
     if (exeLen == 0 || exeLen >= ARRAYSIZE(exePath)) {
         return fail(L"无法获取当前卸载程序路径。");
     }
-    if (!faf::WriteUninstallRequest(requestPath_, deleteUserData_, uiPid_, exePath)) {
+    if (!spk::WriteUninstallRequest(requestPath_, deleteUserData_, uiPid_, exePath)) {
         return fail(L"无法写入卸载请求文件：" + requestPath_);
     }
 
@@ -127,8 +127,8 @@ bool UninstallCoordinator::Start(std::wstring* error) {
 bool UninstallCoordinator::WriteUiDone() {
     if (requestPath_.empty()) return false;
     if (uiDoneWritten_.load()) return true;
-    // 显式 faf:: 限定：成员函数名与协议函数同名，避免被名字查找遮蔽。
-    if (!faf::WriteUiDone(requestPath_)) return false;
+    // 显式 spk:: 限定：成员函数名与协议函数同名，避免被名字查找遮蔽。
+    if (!spk::WriteUiDone(requestPath_)) return false;
     uiDoneWritten_.store(true);
     return true;
 }
@@ -264,4 +264,4 @@ void UninstallCoordinator::SetWarning(std::wstring warning) {
     warning_ = std::move(warning);
 }
 
-}  // namespace faf
+}  // namespace spk

@@ -24,7 +24,7 @@
 
 #include "render/maintenance_protocol.h"  // protocol::UninstallStage / kUninstallHelperExeName
 
-namespace faf {
+namespace spk {
 
 class UninstallCoordinator {
 public:
@@ -93,4 +93,4 @@ private:
     std::wstring warning_;
 };
 
-}  // namespace faf
+}  // namespace spk

@@ -4,17 +4,17 @@
 性能治理 P0.2 的三条硬约束：
 
 * **自门控**：裸 ``python -m pytest tests/`` 不得收集/运行 benchmark。
-  只有显式指定 ``tests/benchmark`` 路径，或设置 ``FAF_BENCH=1`` 才运行。
+  只有显式指定 ``tests/benchmark`` 路径，或设置 ``SPK_BENCH=1`` 才运行。
   原因：``pytest.ini`` 的 ``testpaths = tests`` 会递归收集本目录，而
   ``pytest-timeout`` 的 ``timeout_method = thread`` 在 Windows 上等价于
   ``os._exit``——一次 native 卡死会带走整个 pytest 进程。
 
-* **产物隔离**：基准 JSON 由各测试文件通过 ``FAF_BENCH_OUTPUT`` 决定落点，
+* **产物隔离**：基准 JSON 由各测试文件通过 ``SPK_BENCH_OUTPUT`` 决定落点，
   默认 ``build/bench/``；**永不**覆盖 ``tests/benchmark/baseline/``
-  （需显式 ``FAF_BENCH_UPDATE=1``），也**永不**写用户 ``data/`` 或
-  ``~/.freeassetfilter/``。
+  （需显式 ``SPK_BENCH_UPDATE=1``），也**永不**写用户 ``data/`` 或
+  ``~/.sopeek/``。
 
-* **显式快照导出**：仅当 ``FAF_BENCH_EXPORT_SNAPSHOT=1`` 时导出 perf
+* **显式快照导出**：仅当 ``SPK_BENCH_EXPORT_SNAPSHOT=1`` 时导出 perf
   快照（兼容 ``run_tests.py regression`` 的旧消费契约）。默认关闭。
 """
 
@@ -35,7 +35,7 @@ _PERF_BASELINE: Path = (
     _REPO_ROOT / ".omo" / "evidence" / "tests-comprehensive-refactor" / "perf_baseline.json"
 )
 #: 默认性能快照目录（仅在显式开启导出时使用）。
-_PERF_SNAPSHOT_DIR: Path = Path.home() / ".freeassetfilter" / "performance"
+_PERF_SNAPSHOT_DIR: Path = Path.home() / ".sopeek" / "performance"
 #: 默认基准产物目录（仓库内，已被 .gitignore 的 build/ 覆盖）。
 _DEFAULT_OUTPUT_DIR: Path = _REPO_ROOT / "build" / "bench"
 
@@ -50,7 +50,7 @@ def _benchmark_requested(config: Any) -> bool:
 
     满足任一条件即视为请求：
 
-    * ``FAF_BENCH`` 为真值；
+    * ``SPK_BENCH`` 为真值；
     * 命令行参数（``config.args``）中任意路径落在 ``tests/benchmark`` 下；
     * 通过 ``-k`` / ``-m`` 选择了 benchmark（保守放行，由用户显式表达意图）。
 
@@ -60,7 +60,7 @@ def _benchmark_requested(config: Any) -> bool:
     Returns:
         bool: 是否运行 benchmark。
     """
-    if _truthy_env("FAF_BENCH"):
+    if _truthy_env("SPK_BENCH"):
         return True
     for arg in getattr(config, "args", []) or []:
         text: str = str(arg).replace("\\", "/").rstrip("/")
@@ -92,7 +92,7 @@ def pytest_addoption(parser: Any) -> None:
         action="store",
         default=None,
         metavar="DIR",
-        help="基准 JSON 输出目录；缺省读 FAF_BENCH_OUTPUT，再缺省写 build/bench/。",
+        help="基准 JSON 输出目录；缺省读 SPK_BENCH_OUTPUT，再缺省写 build/bench/。",
     )
 
 
@@ -111,7 +111,7 @@ def pytest_collection_modifyitems(config: Any, items: list[Any]) -> None:
     if _benchmark_requested(config):
         return
     skip_marker = pytest.mark.skip(
-        reason="benchmark 需显式运行：pytest tests/benchmark/ 或 FAF_BENCH=1"
+        reason="benchmark 需显式运行：pytest tests/benchmark/ 或 SPK_BENCH=1"
     )
     benchmark_root = Path(__file__).resolve().parent
     for item in items:
@@ -128,7 +128,7 @@ def pytest_collection_modifyitems(config: Any, items: list[Any]) -> None:
 def pytest_configure(config: Any) -> None:
     """注册 benchmark 专属 marker，并把输出目录固化到环境变量。
 
-    测试模块（``test_faf_core_perf.py``）在 import 时计算 ``BASELINE_PATH``，
+    测试模块（``test_spk_core_perf.py``）在 import 时计算 ``BASELINE_PATH``，
     因此必须在 collection 之前设置环境变量。
 
     ``pytest.ini`` 启用了 ``--strict-markers``，历史上 ``soak`` 等 benchmark
@@ -147,11 +147,11 @@ def pytest_configure(config: Any) -> None:
         config.addinivalue_line("markers", marker_line)
 
     explicit_dir: str | None = config.getoption("--bench-output", default=None)
-    if explicit_dir and not os.environ.get("FAF_BENCH_OUTPUT"):
-        os.environ["FAF_BENCH_OUTPUT"] = str(Path(explicit_dir).resolve())
-    elif not os.environ.get("FAF_BENCH_OUTPUT"):
+    if explicit_dir and not os.environ.get("SPK_BENCH_OUTPUT"):
+        os.environ["SPK_BENCH_OUTPUT"] = str(Path(explicit_dir).resolve())
+    elif not os.environ.get("SPK_BENCH_OUTPUT"):
         _DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        os.environ["FAF_BENCH_OUTPUT"] = str(_DEFAULT_OUTPUT_DIR.resolve())
+        os.environ["SPK_BENCH_OUTPUT"] = str(_DEFAULT_OUTPUT_DIR.resolve())
 
 
 def _snapshot_to_baseline() -> bool:
@@ -160,7 +160,7 @@ def _snapshot_to_baseline() -> bool:
     Returns:
         bool: 事件键契约是否满足消费方要求。
     """
-    from freeassetfilter.utils.perf_metrics import get_perf_snapshot
+    from sopeek.utils.perf_metrics import get_perf_snapshot
 
     snapshot: Dict[str, Any] = get_perf_snapshot()
     _PERF_SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -189,7 +189,7 @@ def pytest_sessionfinish(session: Any, exitstatus: int) -> None:
         session: pytest 会话对象（本钩子不使用）。
         exitstatus: pytest 退出码。
     """
-    if not _truthy_env("FAF_BENCH_EXPORT_SNAPSHOT"):
+    if not _truthy_env("SPK_BENCH_EXPORT_SNAPSHOT"):
         return None
     try:
         _snapshot_to_baseline()

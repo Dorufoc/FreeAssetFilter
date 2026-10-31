@@ -19,9 +19,9 @@
 
 #include "render/logo.h"           // Finish 英雄页图标
 #include "render/pages_welcome.h"  // ReadVersionString()（§18 版本单源）
-#include "render/render_context.h"  // faf::ComPtr（最小 COM RAII 指针）
+#include "render/render_context.h"  // spk::ComPtr（最小 COM RAII 指针）
 
-namespace faf {
+namespace spk {
 
 namespace {
 
@@ -53,12 +53,12 @@ ProgressKind KindFromOperation(Operation op) {
 std::wstring HeadingForKind(ProgressKind kind) {
     switch (kind) {
         case ProgressKind::Repair:
-            return L"正在修复 FreeAssetFilter";
+            return L"正在修复 Sopeek";
         case ProgressKind::Uninstall:
-            return L"正在卸载 FreeAssetFilter";
+            return L"正在卸载 Sopeek";
         case ProgressKind::Install:
         default:
-            return L"正在安装 FreeAssetFilter";
+            return L"正在安装 Sopeek";
     }
 }
 
@@ -364,7 +364,7 @@ void ProgressPage::Render(ID2D1DeviceContext* dc, const Theme& theme) {
 FinishPage::FinishPage(AppState& state) : state_(state) {
     const unsigned serial = g_progressSerial.fetch_add(1, std::memory_order_relaxed);
     checkName_ = SerialName("finish", serial, "check");
-    version_ = ReadVersionString();  // §18：只取 FAFVERSION 首行去 'v'，不硬编码
+    version_ = ReadVersionString();  // §18：只取 SPKVERSION 首行去 'v'，不硬编码
     title_ = productName_;
 
     // 英雄页大按钮「立即启动」（与欢迎页同构：唯一按钮 = 完成意图 → 去提权启动 + 关窗）。
@@ -373,7 +373,7 @@ FinishPage::FinishPage(AppState& state) : state_(state) {
     finishButton_.SetOnClick([this]() { EmitFinishIntent(); });
 
     // T8：Repair 专用复选框（默认值来自 AppState，默认 false）；仅 Repair 渲染/参与 Tab。
-    launchBox_.SetLabel(L"立即启动 FreeAssetFilter");
+    launchBox_.SetLabel(L"立即启动 Sopeek");
     launchBox_.SetChecked(state_.optLaunchAfterRepair);
     launchBox_.SetOnToggle([this](bool checked) { state_.optLaunchAfterRepair = checked; });
 
@@ -392,7 +392,7 @@ void FinishPage::SetKind(Kind kind) {
         case Kind::Repair:
             title_ = L"修复完成";
             finishButton_.SetLabel(L"完成");
-            launchBox_.SetLabel(L"立即启动 FreeAssetFilter");
+            launchBox_.SetLabel(L"立即启动 Sopeek");
             launchBox_.SetChecked(state_.optLaunchAfterRepair);  // 默认 false（T11 已归零）
             break;
         case Kind::Uninstall:
@@ -556,7 +556,7 @@ void FinishPage::Render(ID2D1DeviceContext* dc, const Theme& theme) {
     // 版本/标语：Install 原样；Repair 保留版本行；Uninstall 不显示。
     if (kind_ == Kind::Install || kind_ == Kind::Repair) {
         const std::wstring verText =
-            version_.empty() ? L"版本：未知（FAFVERSION 资源缺失）" : (L"版本 " + version_);
+            version_.empty() ? L"版本：未知（SPKVERSION 资源缺失）" : (L"版本 " + version_);
         DrawText(dc, text_, verText, versionRect_, fontsize::Body, weight::Regular,
                  DWRITE_TEXT_ALIGNMENT_CENTER, theme.textSecondary);
     }
@@ -589,4 +589,4 @@ void RenderFinish(ID2D1DeviceContext* dc, const Theme& theme, FinishPage& page) 
     page.Render(dc, theme);
 }
 
-}  // namespace faf
+}  // namespace spk

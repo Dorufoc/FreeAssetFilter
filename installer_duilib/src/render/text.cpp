@@ -3,7 +3,7 @@
 //
 #include "render/text.h"
 
-namespace faf {
+namespace spk {
 
 namespace {
 
@@ -77,4 +77,4 @@ HRESULT TextFactory::CreateFormat(float sizeDip, DWRITE_FONT_WEIGHT weight,
                         DWRITE_PARAGRAPH_ALIGNMENT_NEAR, out);
 }
 
-}  // namespace faf
+}  // namespace spk

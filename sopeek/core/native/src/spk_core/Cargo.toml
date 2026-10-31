@@ -1,0 +1,51 @@
+[package]
+name = "spk_core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "spk_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+# todo 1 裁决落定：
+# 全部 permissive license（MIT / MIT OR Apache-2.0），可静态合并进 spk_core.dll，
+# 与 AGPL-3.0 组合兼容。无 zip crate。
+serde_json = "1.0"
+once_cell = "1.20"
+rayon = "1.10"
+chrono = "0.4"
+# syntect 方案 B（spike 裁决）：内置默认语法集 load_defaults_newlines()。
+# feature 实证（syntect-5.3.0/Cargo.toml [features]）：
+#   default-syntaxes = ["parsing", "dump-load"]（随 crate 静态内嵌的
+#     sublime-syntax dump，经 flate2+bincode 纯 Rust 解压，无运行时外部 DLL）
+#   regex-fancy = ["fancy-regex"]（纯 Rust 正则引擎；regex-onig 需 C 工具链
+#     编译 onig_sys，故弃用）
+#   yaml-load / html / parsing 为 todo 11（highlight）/ todo 15（markdown）预留。
+syntect = { version = "5", default-features = false, features = ["default-syntaxes", "regex-fancy", "parsing", "yaml-load", "html"] }
+pulldown-cmark = "0.13"
+md-5 = "0.10"
+sha1 = "0.10"
+sha2 = "0.10"
+chardetng = "0.1"
+ttf-parser = "0.25"
+# spk_copy_files 复制后保留 mtime（等价 shutil.copy2 的 copystat）；
+# 纯 Rust（std::fs::FileTimes），无运行时外部 DLL。
+filetime = "0.2"
+# todo 1(iii) 裁决 KEEP：
+# EXIF 解析（todo 6：spk_parse_exif）用 kamadak-exif 0.6.x（解析版本 0.6.1）。
+# ⚠️ license 为 **BSD-2-Clause**（非 MIT/Apache，已实测其源代码
+# Cargo.toml 校验），同 permissive、与 AGPL-3.0 组合兼容；纯 Rust 无外部 DLL
+#（传递依赖仅 mutate_once，MIT OR Apache-2.0）。
+kamadak-exif = "0.6"
+# SVG 换色（todo 11：spk_replace_svg_colors）与 7z -slt 输出解析（todo 16：
+# spk_parse_7z_list）用 regex 1.x（MIT OR Apache-2.0，纯 Rust，无外部 DLL）。
+# 2 处 lookahead（_RE_PATH_NO_FILL、re.split(r'\n(?=Path = )')）用手工移植
+# 或 fancy-regex（已是 syntect regex-fancy 传递依赖）；aho-corasick 可选不引入。
+regex = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+strip = true

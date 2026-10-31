@@ -11,15 +11,15 @@ import sys
 
 import pytest
 
-from freeassetfilter.utils import version_info
+from sopeek.utils import version_info
 
 
 def test_reads_version_from_meipass(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
-    """sys.frozen=True 时从 _MEIPASS/FAFVERSION 读取。"""
-    (tmp_path / "FAFVERSION").write_text(
+    """sys.frozen=True 时从 _MEIPASS/SPKVERSION 读取。"""
+    (tmp_path / "SPKVERSION").write_text(
         "v9.8.7\n2026-10-25\n",
         encoding="utf-8",
     )
@@ -37,7 +37,7 @@ def test_frozen_internal_fallback(
     """_MEIPASS 根缺失时回退到 _MEIPASS/_internal（PyInstaller 6 布局）。"""
     internal = tmp_path / "_internal"
     internal.mkdir()
-    (internal / "FAFVERSION").write_text(
+    (internal / "SPKVERSION").write_text(
         "v1.0.0-alpha.5\n2026-05-22\n",
         encoding="utf-8",
     )

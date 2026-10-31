@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """MPV 播放核心单测（tests-comprehensive-refactor todo-9 补全）。
 
-覆盖 ``freeassetfilter.core.native.bridges.mpv_player_core``：
+覆盖 ``sopeek.core.native.bridges.mpv_player_core``：
 
 * **非 DLL 依赖（恒运行）**：枚举常量（MpvErrorCode / MpvFormat /
   MpvEventId / MpvEndFileReason / MPVCommandType）、``_deep_copy_mpv_node``
@@ -39,7 +39,7 @@ from typing import Any, Dict, List, Optional
 import pytest
 from unittest.mock import MagicMock, patch
 
-from freeassetfilter.core.native.bridges.mpv_player_core import (
+from sopeek.core.native.bridges.mpv_player_core import (
     MPVCommandType,
     MPVDLLLoader,
     MPVError,

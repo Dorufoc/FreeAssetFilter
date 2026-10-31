@@ -2,7 +2,7 @@
 // process_control.cpp - T3 精确关闭已安装应用（契约见 process_control.h / D9）。
 //
 // 关键约束（不得回退）：
-//   - 只杀完整路径等于 `<installDir>\FreeAssetFilter.exe` 的进程；
+//   - 只杀完整路径等于 `<installDir>\Sopeek.exe` 的进程；
 //   - 优雅阶段只 PostMessage(WM_CLOSE)，不在此阶段调用 TerminateProcess；
 //   - 超时才进入强制阶段，最终仍失败必须返回 "app-close-timeout"；
 //   - 不创建子进程（taskkill/PowerShell 都是禁止项）。
@@ -20,7 +20,7 @@
 
 #include "render/maintenance_protocol.h"
 
-namespace faf {
+namespace spk {
 namespace {
 
 // 内核句柄统一 RAII：快照/进程/令牌句柄离开作用域即关闭。
@@ -295,4 +295,4 @@ bool IsProcessElevated() {
     return elevation.TokenIsElevated != 0;
 }
 
-}  // namespace faf
+}  // namespace spk

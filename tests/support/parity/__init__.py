@@ -3,7 +3,7 @@
 比较 dict/list 嵌套结构并输出字段级差异；调用方可通过 accepted-diffs
 清单注入已知允许的分歧（命中清单的差异不再 FAIL）。
 
-本包由 faf-core-rust-migration todo 5 创建；``normalize_html`` 模块为
+本包由 spk-core-rust-migration todo 5 创建；``normalize_html`` 模块为
 todo 15/17 预留位置（实现留到对应 todo，本包只占位对齐目录结构）。
 """
 

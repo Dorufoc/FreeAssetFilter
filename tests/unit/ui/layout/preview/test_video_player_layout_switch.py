@@ -27,7 +27,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtGui import QHideEvent
 from PySide6.QtWidgets import QApplication
 
-from freeassetfilter.ui.layout.preview.video_player_layout import VideoPlayerLayout
+from sopeek.ui.layout.preview.video_player_layout import VideoPlayerLayout
 
 pytestmark = pytest.mark.unit
 
@@ -417,7 +417,7 @@ def test_enter_fullscreen_keeps_media_surface(
         fake_host.screen.return_value = None
         monkeypatch.setattr(layout, "_fullscreen_host", fake_host)
         monkeypatch.setattr(
-            "freeassetfilter.ui.layout.preview.video_player_layout.prewarm_top_level_rhi",
+            "sopeek.ui.layout.preview.video_player_layout.prewarm_top_level_rhi",
             lambda *_args, **_kwargs: None,
         )
         monkeypatch.setattr(

@@ -1,6 +1,6 @@
 import json
-from freeassetfilter.services.ai.models import AIAccountConfig, AIProvider, ChatMessage
-from freeassetfilter.services.ai.protocols import DeepSeekChatAdapter, DeepSeekResponsesAdapter
+from sopeek.services.ai.models import AIAccountConfig, AIProvider, ChatMessage
+from sopeek.services.ai.protocols import DeepSeekChatAdapter, DeepSeekResponsesAdapter
 
 
 def test_chat_docs_parameters_and_non_stream_response():

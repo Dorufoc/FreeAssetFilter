@@ -15,8 +15,8 @@ from typing import Any
 
 import pytest
 
-import freeassetfilter.core.native.platform_threads as pt
-from freeassetfilter.core.native.platform_threads import (
+import sopeek.core.native.platform_threads as pt
+from sopeek.core.native.platform_threads import (
     THREAD_PRIORITY_TIME_CRITICAL,
     THREAD_POWER_THROTTLING_STATE,
 )

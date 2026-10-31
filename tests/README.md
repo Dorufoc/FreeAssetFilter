@@ -1,4 +1,4 @@
-# FreeAssetFilter 测试套件指南
+# Sopeek 测试套件指南
 
 本文档介绍仓库 `tests/` 目录的结构、各测试文件覆盖的对象，以及如何运行测试。面向维护者与贡献者，全部示例命令均在 Windows 环境下以 PowerShell 执行为准。
 
@@ -63,13 +63,13 @@ tests/
 | `parity/comparator.py` | 逐字段 parity 断言：python 实现输出 vs native 输出 |
 | `parity/normalize_html.py` | HTML 归一化器（Markdown 渲染对拍用） |
 | `parity/pixels.py` | 像素 parity 断言：多源图像归一化 RGBA + 确定性 hash + 逐像素差异诊断 |
-| `faf_core_fixtures/` | 夹具集（code_samples / dir_samples / encoding_samples / exif_samples / fluid_samples / font_samples / markdown_samples / pdf_samples / psd_samples / seven_zip_samples / svg_samples）；`generate_fixtures.py` 为固定 seed 生成脚本 |
+| 原生夹具（`support/`） | 夹具集（code_samples / dir_samples / encoding_samples / exif_samples / fluid_samples / font_samples / markdown_samples / pdf_samples / psd_samples / seven_zip_samples / svg_samples）；`generate_fixtures.py` 为固定 seed 生成脚本 |
 
 ### unit/core/（核心模块，24 个测试文件）
 
 | 文件 | 职责 |
 | --- | --- |
-| `test_faf_core_bridge.py` | faf_core DLL ctypes 桥（扫描/排序/哈希/EXIF/SVG/7z 等） |
+| 原生核心桥测试（`core/`） | spk_core DLL ctypes 桥（扫描/排序/哈希/EXIF/SVG/7z 等） |
 | `test_heartbeat_manager.py` | HeartbeatManager 调度、注册/注销与跨线程 FutureHandle |
 | `test_image_color_utils.py` | 预览层图像色彩工具（RAW 解码 / ICC / EXIF 方向） |
 | `test_lut_preview_generator.py` | LUT 预览生成器（C++ 与 Python 双实现） |
@@ -99,7 +99,7 @@ tests/
 | 文件 | 职责 |
 | --- | --- |
 | `test_base.py` | `BaseService` 生命周期模板 |
-| `test_encoding_native_parity.py` | 编码探测 native（faf_core）vs chardet 对拍 |
+| `test_encoding_native_parity.py` | 编码探测 native（spk_core）vs chardet 对拍 |
 | `test_favorites_service.py` | 收藏夹 CRUD 与 JSON 持久化 |
 | `test_file_icon_manager.py` | 文件类型图标管线（SVG/缩略图/系统图标 + 缓存） |
 | `test_file_info_service.py` | 文件信息采集（stat/EXIF/字体/编码/压缩包/哈希 + 缓存） |
@@ -127,7 +127,7 @@ tests/
 | `components/test_styled_fluid.py` | 流体数学与背景动效、文件列表组件 |
 | `components/test_styled_loading.py` | StyledLoading 加载动画 |
 | `layout/test_box_selection.py` | 框选手势共享组件 |
-| `layout/test_file_selector_native_wiring.py` | 文件选择器 faf_core native 接线 |
+| `layout/test_file_selector_native_wiring.py` | 文件选择器 spk_core native 接线 |
 | `layout/test_layouts.py` | 各主界面布局（文件池、选择器、设置、统一预览与各预览器、调色板对拍等） |
 | `layout/test_main_layout.py` | MainLayout 两种装配（classic / workspace）与比例规则 |
 | `layout/test_perf_profile_staging.py` | 性能档位三段选择器暂存隔离 |
@@ -192,14 +192,14 @@ python tests/run_tests.py all
 # 收集模式（只收集不执行，验证收集是否正常）
 python tests/run_tests.py unit --co
 
-# 覆盖率（等同 all 范围 + --cov=freeassetfilter --cov-report=term）
+# 覆盖率（等同 all 范围 + --cov=sopeek --cov-report=term）
 python tests/run_tests.py coverage --strict
 ```
 
 运行器要点：
 
 - 子命令共 5 个：`all` / `unit` / `integration` / `gui` / `coverage`。
-- 默认 `QT_QPA_PLATFORM=offscreen`（无头模式）；`--visual` 时取消 offscreen 并置 `FAF_VISUAL=1`，用于 gui 目录。
+- 默认 `QT_QPA_PLATFORM=offscreen`（无头模式）；`--visual` 时取消 offscreen 并置 `SPK_VISUAL=1`，用于 gui 目录。
 - 默认 `--timeout 30`；可用 `--timeout N` 覆盖，但**不覆盖**显式 timeout marker（见 `support/timeout_policy.py`）。
 - 支持透传 `-k`、`-x`、`--tb`、`--co`（`--collect-only`）等 pytest 参数。
 - `coverage --strict` 会额外启用 `tests/support/coverage_manifest` 覆盖清单检查。
@@ -220,7 +220,7 @@ python -m pytest tests/ -k "thumbnail" -v
 python -m pytest tests/gui/ -v
 
 # 覆盖率报告
-python -m pytest tests/ --cov=freeassetfilter --cov-report=term
+python -m pytest tests/ --cov=sopeek --cov-report=term
 ```
 
 ### 覆盖度量
@@ -231,7 +231,7 @@ python -m coverage run -m pytest <target> -q --timeout 120
 python -m coverage report
 ```
 
-其中 `<target>` 可以是 `tests/unit/`、`tests/integration/` 等任意收集目标。内存中的 `freeassetfilter` 包与测试本身均可被度量。
+其中 `<target>` 可以是 `tests/unit/`、`tests/integration/` 等任意收集目标。内存中的 `sopeek` 包与测试本身均可被度量。
 
 ## conftest 关键 Fixtures
 
@@ -247,7 +247,7 @@ python -m coverage report
 | `settings_manager` | function | 绑定临时 `settings.json` 的全新 SettingsManager 实例 |
 | `heartbeat_manager` | function | 创建并启动新 HeartbeatManager，teardown 时 `stop_all()` |
 | `mpv_available` | session | 探测 `libmpv-2.dll` 可加载性（系统路径加捆绑 bin 目录） |
-| `rust_available` | session | 探测 Rust 原生 DLL（`faf_core.dll` / `thumbnail_generator.dll`） |
+| `rust_available` | session | 探测 Rust 原生 DLL（`spk_core.dll` / `thumbnail_generator.dll`） |
 | `cpp_lut_available` | session | 探测 C++ LUT 预览 .pyd 扩展可用性 |
 | `py7z_available` | session | 探测 py7zr 可导入或捆绑 `7z.exe` 存在 |
 | `soffice_available` | session | 探测 LibreOffice `soffice` 可执行文件 |
@@ -259,7 +259,7 @@ python -m coverage report
 ## 测试注意事项
 
 - **GUI 测试需要真实显示器**：`tests/gui/` 走真实渲染断言，无头环境（CI）需设置 `QT_QPA_PLATFORM=offscreen`，或在无显示器的机器上跳过该目录。
-- **单例与模块级缓存跨测试隔离**：类级单例（HeartbeatManager / ThumbnailManager / MPVManager / AppLogger）、模块级惰性缓存（thumbnail_manager / app_logger / async_icon_loader / faf_core 桥 / lut_preview_generator / lut_preview_native / mica_render / py7z_core）与 QSS 注册表均由 autouse fixture `reset_singletons` 在每个测试函数前后归零；清单与"明确不重置"的例外（`ui/theme` 主题单例，见原因）都以 `_reset_all_singletons` 的 docstring 为准。若引入新的单例/惰性缓存，记得同步到该清单。
+- **单例与模块级缓存跨测试隔离**：类级单例（HeartbeatManager / ThumbnailManager / MPVManager / AppLogger）、模块级惰性缓存（thumbnail_manager / app_logger / async_icon_loader / spk_core 桥 / lut_preview_generator / lut_preview_native / mica_render / py7z_core）与 QSS 注册表均由 autouse fixture `reset_singletons` 在每个测试函数前后归零；清单与"明确不重置"的例外（`ui/theme` 主题单例，见原因）都以 `_reset_all_singletons` 的 docstring 为准。若引入新的单例/惰性缓存，记得同步到该清单。
 - **依赖原生二进制的测试自动跳过**：libmpv-2.dll、Rust DLL、7z.exe、soffice、ffmpeg.exe 等均通过对应的 `*_available` fixture 作 session 级探测，缺失时相关测试 `pytest.skip`，不影响其余用例。
 - **support/ 模块用途**：
   - `qt_helpers.py`：Qt 辅助，提供事件泵（`flush_widget_queue`）、DeferredDelete 派发（`drain_deferred_deletes`）、顶层窗口快照/清道夫（`toplevel_widget_snapshot` / `scavenge_toplevel_widgets`）、信号等待（`wait_for_signal`，默认 5s 有界）、条件等待（`wait_until`，可自定义有界超时）与安全清理（`safe_teardown`）。
@@ -274,11 +274,11 @@ python -m coverage report
   - `--cov-branch` 分支覆盖因触发原生崩溃而禁用，只用行覆盖。
   - 组合运行曾偶发 access violation 与心跳时序问题，已通过将事件泵浦超时从 5s 提升到 15s 修复；若再遇"回调未在超时前触发"的失败，建议继续增大 `_pump_until` 的超时值。
   - UI 测试大量创建 `MainWindow`/预览布局；`scavenge_leaked_toplevel_widgets` 清道夫依赖显式派发 DeferredDelete + 先 dispose Mica 材质，**不要**把 `deleteLater` 后的控件在未清理材质时强制销毁（原生访问冲突签名见 `safe_teardown`）。
-  - `tests/unit/ui/mica/` 单独运行需要 `freeassetfilter/ui` 在 `sys.path`（该目录测试模块自行 bootstrap 的约定，全量运行由其它 UI 测试模块先行完成）。
+  - `tests/unit/ui/mica/` 单独运行需要 `sopeek/ui` 在 `sys.path`（该目录测试模块自行 bootstrap 的约定，全量运行由其它 UI 测试模块先行完成）。
 
 ### 工作区隔离与确定性纪律（review 3.5 收口）
 
-- **数据目录隔离**：`conftest` 在导入期设置 `FAF_DATA_DIR` 指向会话临时目录（`get_app_data_path()` 会优先使用，`utils/path_utils.py` 与 `core/_paths.py` 双实现均支持），任何模块都不会写到仓库真实 `data/`；`redirect_layout_app_data_writes` 仍为布局层提供逐测试临时目录。**新增写盘模块时，一律经 `get_app_data_path()` 取路径**，不要硬编码仓库相对路径。
+- **数据目录隔离**：`conftest` 在导入期设置 `SPK_DATA_DIR` 指向会话临时目录（`get_app_data_path()` 会优先使用，`utils/path_utils.py` 与 `core/_paths.py` 双实现均支持），任何模块都不会写到仓库真实 `data/`；`redirect_layout_app_data_writes` 仍为布局层提供逐测试临时目录。**新增写盘模块时，一律经 `get_app_data_path()` 取路径**，不要硬编码仓库相对路径。
 - **等待纪律**：`wait_for_signal` 只适合"信号预期很快到达"的场景；异步扫描/线程池任务等受负载影响的等待，用 `wait_until(app, predicate, timeout_ms=...)` 或"**先连接信号、再触发动作**"的计数器模式（参考 `test_file_selector_native_wiring.py` 的重扫等待），不要用固定 `time.sleep` 替代等待。刻意模拟延迟/防抖语义的 sleep 保留，但需有注释说明用途。
 - **原生资源会话纪律**：Mica GPU 渲染线程与全局 QThreadPool 由 session 级 `cleanup_qt_runtime` 统一回收；`safe_teardown`/清道夫保证 DeferredDelete 落地。不要绕过这些设施强杀控件或线程。
 - **超时策略单一事实源**：`support/timeout_policy.py` 定义目录级超时与显式 marker 的优先级；单个用例若需更长超时，用 `@pytest.mark.timeout(N)` 显式声明，不要改全局值。

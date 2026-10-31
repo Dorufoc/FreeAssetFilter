@@ -19,11 +19,11 @@ import pytest
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QApplication
 
-_UI_ROOT: str = str(Path(__file__).resolve().parents[3] / "freeassetfilter" / "ui")
+_UI_ROOT: str = str(Path(__file__).resolve().parents[3] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-from freeassetfilter.ui.main_window import MainWindow  # noqa: E402
+from sopeek.ui.main_window import MainWindow  # noqa: E402
 
 pytestmark = pytest.mark.unit
 
@@ -45,7 +45,7 @@ def _stub_mica_background(monkeypatch: pytest.MonkeyPatch) -> None:
             """空实现：替身无需响应窗口移动。"""
 
     monkeypatch.setattr(
-        "freeassetfilter.ui.main_window.make_mica_background",
+        "sopeek.ui.main_window.make_mica_background",
         lambda *a, **k: _Stub(),
     )
 
@@ -171,8 +171,8 @@ class TestCloseEventUpdateCleanup:
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """关闭主窗口时释放控制器并以 1.5s 预算停止更新组件。"""
-        from freeassetfilter.services import update_service as us_module
-        from freeassetfilter.ui import update_entry as ue_module
+        from sopeek.services import update_service as us_module
+        from sopeek.ui import update_entry as ue_module
 
         reset_calls: list[bool] = []
         shutdown_calls: list[float] = []

@@ -29,13 +29,13 @@ import pytest
 from PySide6.QtGui import QColor
 
 # 模块内部使用短路径导入（from theme.system_accent import ...），
-# 需要 freeassetfilter/ui 位于 sys.path。
-_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "freeassetfilter" / "ui")
+# 需要 sopeek/ui 位于 sys.path。
+_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-from freeassetfilter.ui.theme import system_accent
-from freeassetfilter.ui.theme.theme_manager import ThemeManager, get_theme_manager
+from sopeek.ui.theme import system_accent
+from sopeek.ui.theme.theme_manager import ThemeManager, get_theme_manager
 
 pytestmark = pytest.mark.unit
 
@@ -417,7 +417,7 @@ class TestThemeManagerAutoAccent:
             accent: ``appearance.accent_color`` 的模拟值。
             colors: ``appearance.colors`` 的模拟值；缺省为普通具体色。
         """
-        import freeassetfilter.core.managers.settings_manager_v2 as sv2_mod
+        import sopeek.core.managers.settings_manager_v2 as sv2_mod
 
         initial_colors = (
             copy.deepcopy(colors)
@@ -529,7 +529,7 @@ class TestThemeManagerAutoAccent:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """旧配置只有 appearance.theme、无 theme_mode 时仍能迁移为三态偏好。"""
-        import freeassetfilter.core.managers.settings_manager_v2 as sv2_mod
+        import sopeek.core.managers.settings_manager_v2 as sv2_mod
 
         class _LegacyV2:
             def load(self) -> dict:

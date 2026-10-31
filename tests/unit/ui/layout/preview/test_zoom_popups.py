@@ -30,18 +30,18 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
-from freeassetfilter.ui.layout.preview.font_previewer_layout import (
+from sopeek.ui.layout.preview.font_previewer_layout import (
     FontPreviewerLayout,
     _ZoomPopup as FontZoomPopup,
     _WeightPopup as FontWeightPopup,
 )
-from freeassetfilter.ui.layout.preview.image_previewer_layout import (
+from sopeek.ui.layout.preview.image_previewer_layout import (
     ImagePreviewerLayout,
 )
-from freeassetfilter.ui.layout.preview.pdf_previewer_layout import (
+from sopeek.ui.layout.preview.pdf_previewer_layout import (
     PdfPreviewerLayout,
 )
-from freeassetfilter.ui.layout.preview.text_previewer_layout import (
+from sopeek.ui.layout.preview.text_previewer_layout import (
     TextPreviewerLayout,
 )
 

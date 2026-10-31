@@ -56,7 +56,7 @@ def svg_dataset(tmp_path_factory: Any) -> Any:
     Returns:
         list[str]: 5 个 SVG 文件路径。
     """
-    base_dir: Any = tmp_path_factory.mktemp("faf_bench_svg")
+    base_dir: Any = tmp_path_factory.mktemp("spk_bench_svg")
     return [make_svg(base_dir / f"icon_{i:02d}.svg") for i in range(5)]
 
 
@@ -65,7 +65,7 @@ class TestSvgPerf:
 
     def test_color_replace_avg_below_200ms(self) -> None:
         """``_replace_svg_colors`` 30 次平均 < 0.2s（颜色替换热点）。"""
-        from freeassetfilter.core.preview.svg_renderer import SvgRenderer
+        from sopeek.core.preview.svg_renderer import SvgRenderer
 
         # 预热（SettingsManager 首个实例懒加载）
         SvgRenderer._replace_svg_colors(_COMPLEX_SVG)
@@ -87,7 +87,7 @@ class TestSvgPerf:
         self, svg_dataset: List[str], qapp: Any
     ) -> None:
         """``render_svg_to_pixmap`` 15 次平均 < 0.2s。"""
-        from freeassetfilter.core.preview.svg_renderer import SvgRenderer
+        from sopeek.core.preview.svg_renderer import SvgRenderer
 
         svg_path: str = svg_dataset[0]
         assert SvgRenderer.render_svg_to_pixmap(svg_path, icon_size=64) is not None
@@ -110,7 +110,7 @@ class TestSvgPerf:
         self, svg_dataset: List[str], icon_size: int, qapp: Any
     ) -> None:
         """不同尺寸精确渲染平均 < 0.2s（24/32/64px）。"""
-        from freeassetfilter.core.preview.svg_renderer import SvgRenderer
+        from sopeek.core.preview.svg_renderer import SvgRenderer
 
         svg_path: str = svg_dataset[1 % len(svg_dataset)]
 
@@ -134,7 +134,7 @@ class TestSvgPerf:
         self, svg_dataset: List[str], qapp: Any
     ) -> None:
         """批量渲染 5 个 SVG（模拟选择器滚动）平均 < 0.2s。"""
-        from freeassetfilter.core.preview.svg_renderer import SvgRenderer
+        from sopeek.core.preview.svg_renderer import SvgRenderer
 
         # 预热
         for path in svg_dataset:

@@ -25,7 +25,7 @@
 #include "render/text.h"
 #include "render/theme.h"
 
-namespace faf {
+namespace spk {
 
 // WinUI3 进度条。圆角 4（radius::Small）。
 //  - determinate：填充比例平滑插值到新的 permille（无视觉跳变）。
@@ -212,4 +212,4 @@ private:
     const GlyphFont* glyphs_ = nullptr;
 };
 
-}  // namespace faf
+}  // namespace spk

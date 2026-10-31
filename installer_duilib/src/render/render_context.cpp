@@ -5,7 +5,7 @@
 
 #include <d2d1_1helper.h>
 
-namespace faf {
+namespace spk {
 
 namespace {
 
@@ -42,7 +42,7 @@ RenderContext::~RenderContext() { Shutdown(); }
 bool RenderContext::ForceWarpRequested() {
     wchar_t value[8] = {};
     const DWORD length =
-        GetEnvironmentVariableW(L"FAF_FORCE_WARP", value, static_cast<DWORD>(ARRAYSIZE(value)));
+        GetEnvironmentVariableW(L"SPK_FORCE_WARP", value, static_cast<DWORD>(ARRAYSIZE(value)));
     return length > 0 && value[0] == L'1';
 }
 
@@ -73,7 +73,7 @@ HRESULT RenderContext::Initialize(HWND hwnd, UINT widthPx, UINT heightPx, float 
 }
 
 HRESULT RenderContext::CreateDeviceResources() {
-    // --- D3D11 设备：默认硬件；FAF_FORCE_WARP=1 或硬件失败时回退 WARP ---
+    // --- D3D11 设备：默认硬件；SPK_FORCE_WARP=1 或硬件失败时回退 WARP ---
     const D3D_DRIVER_TYPE driverType =
         ForceWarpRequested() ? D3D_DRIVER_TYPE_WARP : D3D_DRIVER_TYPE_HARDWARE;
 
@@ -243,4 +243,4 @@ void RenderContext::Shutdown() {
     usingWarp_ = false;
 }
 
-}  // namespace faf
+}  // namespace spk

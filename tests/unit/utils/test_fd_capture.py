@@ -36,13 +36,13 @@ def _run_child(script_lines: List[str], log_arg: str) -> subprocess.CompletedPro
 _CHILD_PREAMBLE = [
     "import os, sys",
     "log_path = sys.argv[1]",
-    "from freeassetfilter.utils.fd_capture import install_fd_capture, uninstall_fd_capture",
+    "from sopeek.utils.fd_capture import install_fd_capture, uninstall_fd_capture",
 ]
 
 _CHILD_MARKER = _CHILD_PREAMBLE + [
     "install_fd_capture(log_path)",
-    'os.write(2, b"faf-native-marker-123\\n")',
-    'os.write(1, b"faf-native-stdout-123\\n")',
+    'os.write(2, b"spk-native-marker-123\\n")',
+    'os.write(1, b"spk-native-stdout-123\\n")',
     "uninstall_fd_capture()",
 ]
 
@@ -56,7 +56,7 @@ _CHILD_BIG = _CHILD_PREAMBLE + [
     "cut = len(data) // 2 + 1",
     "os.write(2, data[:cut])",
     "os.write(2, data[cut:])",
-    'os.write(2, "结尾标记行-faf-big-end\\n".encode("utf-8"))',
+    'os.write(2, "结尾标记行-spk-big-end\\n".encode("utf-8"))',
     "uninstall_fd_capture()",
 ]
 
@@ -70,25 +70,25 @@ _CHILD_WRITEFILE = _CHILD_PREAMBLE + [
     "kernel32.WriteFile.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID]",
     "kernel32.WriteFile.restype = wintypes.BOOL",
     "handle = kernel32.GetStdHandle(wintypes.DWORD(-12))",
-    'buf = ctypes.create_string_buffer(b"faf-writefile-marker-456\\n")',
+    'buf = ctypes.create_string_buffer(b"spk-writefile-marker-456\\n")',
     "written = wintypes.DWORD(0)",
-    "ok = kernel32.WriteFile(handle, buf, len(b\"faf-writefile-marker-456\\n\"), ctypes.byref(written), None)",
+    "ok = kernel32.WriteFile(handle, buf, len(b\"spk-writefile-marker-456\\n\"), ctypes.byref(written), None)",
     "assert ok, 'WriteFile failed'",
     "uninstall_fd_capture()",
 ]
 
 _CHILD_UNINSTALL = _CHILD_PREAMBLE + [
     "install_fd_capture(log_path)",
-    'os.write(2, b"faf-before-uninstall\\n")',
+    'os.write(2, b"spk-before-uninstall\\n")',
     "uninstall_fd_capture()",
-    'os.write(2, b"faf-after-uninstall\\n")',
+    'os.write(2, b"spk-after-uninstall\\n")',
 ]
 
 _CHILD_BAD_PATH = _CHILD_PREAMBLE + [
     "# 日志路径为目录：open 失败 → 仅回显不落盘，但不得抛异常。",
     "d = install_fd_capture(log_path)",
     "assert d.get(1) is not None and d.get(2) is not None, d",
-    'os.write(2, b"faf-echo-only-marker\\n")',
+    'os.write(2, b"spk-echo-only-marker\\n")',
     "uninstall_fd_capture()",
 ]
 
@@ -98,7 +98,7 @@ _CHILD_IDEMPOTENT = _CHILD_PREAMBLE + [
     "assert d2 is d1, 'repeat install must return existing dict'",
     "uninstall_fd_capture()",
     "uninstall_fd_capture()",
-    'os.write(2, b"faf-idempotent-ok\\n")',
+    'os.write(2, b"spk-idempotent-ok\\n")',
     "print('FD_CAPTURE_IDEMPOTENT_OK')",
 ]
 
@@ -108,11 +108,11 @@ def test_os_write_marker_echo_and_log(tmp_path: Path) -> None:
     log = tmp_path / "fd.log"
     proc = _run_child(_CHILD_MARKER, str(log))
     assert proc.returncode == 0, f"child failed: {proc.stderr}"
-    assert "faf-native-marker-123" in proc.stderr
-    assert "faf-native-stdout-123" in proc.stdout
+    assert "spk-native-marker-123" in proc.stderr
+    assert "spk-native-stdout-123" in proc.stdout
     text = log.read_text(encoding="utf-8")
-    assert "[native-stderr] faf-native-marker-123" in text
-    assert "[native-stdout] faf-native-stdout-123" in text
+    assert "[native-stderr] spk-native-marker-123" in text
+    assert "[native-stdout] spk-native-stdout-123" in text
 
 
 def test_multibyte_long_line_no_corruption(tmp_path: Path) -> None:
@@ -126,7 +126,7 @@ def test_multibyte_long_line_no_corruption(tmp_path: Path) -> None:
     assert f"[native-stderr] {expected_big}" in text
     expected_split = "跨次拼接-" * 2000
     assert f"[native-stderr] {expected_split}" in text
-    assert "[native-stderr] 结尾标记行-faf-big-end" in text
+    assert "[native-stderr] 结尾标记行-spk-big-end" in text
 
 
 @pytest.mark.skipif(os.name != "nt", reason="GetStdHandle/WriteFile only on Windows")
@@ -135,9 +135,9 @@ def test_writefile_via_getstdhandle_goes_to_log(tmp_path: Path) -> None:
     log = tmp_path / "fd.log"
     proc = _run_child(_CHILD_WRITEFILE, str(log))
     assert proc.returncode == 0, f"child failed: {proc.stderr}"
-    assert "faf-writefile-marker-456" in proc.stderr
+    assert "spk-writefile-marker-456" in proc.stderr
     text = log.read_text(encoding="utf-8")
-    assert "[native-stderr] faf-writefile-marker-456" in text
+    assert "[native-stderr] spk-writefile-marker-456" in text
 
 
 def test_no_log_after_uninstall(tmp_path: Path) -> None:
@@ -145,18 +145,18 @@ def test_no_log_after_uninstall(tmp_path: Path) -> None:
     log = tmp_path / "fd.log"
     proc = _run_child(_CHILD_UNINSTALL, str(log))
     assert proc.returncode == 0, f"child failed: {proc.stderr}"
-    assert "faf-before-uninstall" in proc.stderr
-    assert "faf-after-uninstall" in proc.stderr
+    assert "spk-before-uninstall" in proc.stderr
+    assert "spk-after-uninstall" in proc.stderr
     text = log.read_text(encoding="utf-8")
-    assert "[native-stderr] faf-before-uninstall" in text
-    assert "faf-after-uninstall" not in text
+    assert "[native-stderr] spk-before-uninstall" in text
+    assert "spk-after-uninstall" not in text
 
 
 def test_unwritable_log_path_echo_only_no_raise(tmp_path: Path) -> None:
     """failure QA：日志路径不可写时仍返回有效 saved streams，仅回显不落盘，不抛异常。"""
     proc = _run_child(_CHILD_BAD_PATH, str(tmp_path))
     assert proc.returncode == 0, f"child failed: {proc.stderr}"
-    assert "faf-echo-only-marker" in proc.stderr
+    assert "spk-echo-only-marker" in proc.stderr
 
 
 def test_install_uninstall_idempotent(tmp_path: Path) -> None:

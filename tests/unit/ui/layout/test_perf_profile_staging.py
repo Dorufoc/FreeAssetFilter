@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """性能档位三段选择器暂存隔离测试（todo 14）。
 
-覆盖 ``freeassetfilter/ui/layout/settings_layout.py`` 的性能档位链路，
+覆盖 ``sopeek/ui/layout/settings_layout.py`` 的性能档位链路，
 遵循设置页暂存铁律：
 
 * (1) 暂存写入：选择器切换只写 ``SettingsStagingCache``，
@@ -32,8 +32,8 @@ pytestmark = pytest.mark.unit
 
 def _patch_v2_to_tmp(monkeypatch: Any, tmp_path: Path) -> str:
     """将 settings_layout 内的 V2 绑定到临时文件。"""
-    import freeassetfilter.ui.layout.settings_layout as sl_mod
-    from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+    import sopeek.ui.layout.settings_layout as sl_mod
+    from sopeek.core.managers.settings_manager_v2 import SettingsManagerV2
 
     tmp_file = str(tmp_path / "settings_v2.json")
 
@@ -48,7 +48,7 @@ def _patch_v2_to_tmp(monkeypatch: Any, tmp_path: Path) -> str:
 
 def _patch_overlay_noop(monkeypatch: Any) -> None:
     """将主题过渡遮罩打桩为 no-op（离屏测试提速）。"""
-    import freeassetfilter.ui.layout.settings_layout as sl_mod
+    import sopeek.ui.layout.settings_layout as sl_mod
 
     class _NoopOverlay:
         @staticmethod
@@ -65,7 +65,7 @@ def _patch_overlay_noop(monkeypatch: Any) -> None:
 
 def _patch_hook_spies(monkeypatch: Any) -> dict[str, list]:
     """将三钩子打桩为记录调用的 spy（默认成功语义）。"""
-    import freeassetfilter.ui.layout.settings_layout as sl_mod
+    import sopeek.ui.layout.settings_layout as sl_mod
 
     calls: dict[str, list] = {"gpu": [], "power": [], "timing": []}
 
@@ -90,7 +90,7 @@ def _make_layout(
     qapp: QApplication, monkeypatch: Any, tmp_path: Path
 ) -> Any:
     """构造 V2 隔离的 SettingsLayout。"""
-    from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+    from sopeek.ui.layout.settings_layout import SettingsLayout
 
     _patch_v2_to_tmp(monkeypatch, tmp_path)
     _patch_overlay_noop(monkeypatch)
@@ -118,14 +118,14 @@ class TestProfileSelectorStaging:
         self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
     ) -> None:
         """切换档位 → 暂存有值；V2 磁盘仍为初值；三钩子零调用。"""
-        from freeassetfilter.core.managers.settings_manager_v2 import (
+        from sopeek.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
         )
 
         tmp_file = _patch_v2_to_tmp(monkeypatch, tmp_path)
         _patch_overlay_noop(monkeypatch)
         calls = _patch_hook_spies(monkeypatch)
-        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+        from sopeek.ui.layout.settings_layout import SettingsLayout
 
         layout = SettingsLayout()
         try:
@@ -165,7 +165,7 @@ class TestHardwareAccelerationStaging:
         self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
     ) -> None:
         """切换开关 → 暂存为 True；V2 磁盘仍为 False。"""
-        from freeassetfilter.core.managers.settings_manager_v2 import (
+        from sopeek.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
         )
 
@@ -191,7 +191,7 @@ class TestHardwareAccelerationStaging:
         self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
     ) -> None:
         """暂存 True → 确定 → V2 落盘 True。"""
-        from freeassetfilter.core.managers.settings_manager_v2 import (
+        from sopeek.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
         )
         from theme import tm
@@ -199,7 +199,7 @@ class TestHardwareAccelerationStaging:
         tmp_file = _patch_v2_to_tmp(monkeypatch, tmp_path)
         _patch_overlay_noop(monkeypatch)
         _patch_hook_spies(monkeypatch)
-        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+        from sopeek.ui.layout.settings_layout import SettingsLayout
 
         prev_mode = tm.get_theme_mode()
         prev_colors = copy.deepcopy(tm._colors)
@@ -239,7 +239,7 @@ class TestProfileSubmit:
         self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
     ) -> None:
         """暂存 performance → 确定 → 三钩子各被调用一次 + V2 落盘。"""
-        from freeassetfilter.core.managers.settings_manager_v2 import (
+        from sopeek.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
         )
         from theme import tm
@@ -247,7 +247,7 @@ class TestProfileSubmit:
         tmp_file = _patch_v2_to_tmp(monkeypatch, tmp_path)
         _patch_overlay_noop(monkeypatch)
         calls = _patch_hook_spies(monkeypatch)
-        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+        from sopeek.ui.layout.settings_layout import SettingsLayout
 
         prev_mode = tm.get_theme_mode()
         prev_colors = copy.deepcopy(tm._colors)
@@ -278,7 +278,7 @@ class TestProfileSubmit:
         _patch_v2_to_tmp(monkeypatch, tmp_path)
         _patch_overlay_noop(monkeypatch)
         calls = _patch_hook_spies(monkeypatch)
-        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+        from sopeek.ui.layout.settings_layout import SettingsLayout
 
         prev_mode = tm.get_theme_mode()
         prev_colors = copy.deepcopy(tm._colors)
@@ -302,7 +302,7 @@ class TestProfileSubmit:
         tm 的两个写方法打桩为记录式 fake：既不断言广播语义，也不触发
         广播；只验证回滚被调用。
         """
-        import freeassetfilter.ui.layout.settings_layout as sl_mod
+        import sopeek.ui.layout.settings_layout as sl_mod
         from theme import tm
 
         _patch_v2_to_tmp(monkeypatch, tmp_path)
@@ -338,7 +338,7 @@ class TestProfileSubmit:
         )
         monkeypatch.setattr(tm, "set_theme", lambda t: tm_calls.append(("theme", t)))
 
-        from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+        from sopeek.ui.layout.settings_layout import SettingsLayout
 
         layout = SettingsLayout()
         try:
@@ -406,7 +406,7 @@ class TestProfileDiscard:
         self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
     ) -> None:
         """重置 → 暂存回默认值并刷新界面（不直接落盘）。"""
-        from freeassetfilter.core.managers.settings_manager_v2 import (
+        from sopeek.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
         )
 

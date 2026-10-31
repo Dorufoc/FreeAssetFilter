@@ -1,5 +1,5 @@
-from freeassetfilter.services.ai.models import AIAccountConfig, AIProvider
-from freeassetfilter.services.ai.config_store import AIConfigStore
+from sopeek.services.ai.models import AIAccountConfig, AIProvider
+from sopeek.services.ai.config_store import AIConfigStore
 
 def test_config_store_does_not_store_plaintext_secret(tmp_path):
     store = AIConfigStore(str(tmp_path))

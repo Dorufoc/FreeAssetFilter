@@ -31,10 +31,10 @@ from typing import Any, Dict, List
 
 import pytest
 
-from freeassetfilter.core.native import api as native_api
+from sopeek.core.native import api as native_api
 
-#: 布局模块用短路径导入（``from theme import tm``），需 ``freeassetfilter/ui`` 在 sys.path。
-_UI_ROOT: str = str(Path(__file__).resolve().parents[3] / "freeassetfilter" / "ui")
+#: 布局模块用短路径导入（``from theme import tm``），需 ``sopeek/ui`` 在 sys.path。
+_UI_ROOT: str = str(Path(__file__).resolve().parents[3] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
@@ -67,7 +67,7 @@ def sample_tree(tmp_path: Path) -> Path:
 def test_scan_directory_parity(sample_tree: Path) -> None:
     """``scan_directory`` 与 Python 收集器逐字段相等（7 键 + 时间字符串）。"""
     _require("scan")
-    from freeassetfilter.ui.layout.file_selector_layout import FileSelectorLayout
+    from sopeek.ui.layout.file_selector_layout import FileSelectorLayout
 
     native_rows = native_api.scan_directory(str(sample_tree))
     assert native_rows is not None
@@ -110,7 +110,7 @@ class _SortShim:
 
 def _sort_oracle(rows: List[Dict[str, Any]], mode: int) -> List[Dict[str, Any]]:
     """用生产 ``_apply_sort`` 作为排序 oracle（就地排序后返回）。"""
-    from freeassetfilter.ui.layout import file_selector_layout as fsl_mod
+    from sopeek.ui.layout import file_selector_layout as fsl_mod
 
     copies = [dict(row) for row in rows]
     fsl_mod.FileSelectorLayout._apply_sort(_SortShim(mode), copies)

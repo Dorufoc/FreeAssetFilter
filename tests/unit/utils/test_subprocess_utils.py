@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from freeassetfilter.utils.subprocess_utils import (
+from sopeek.utils.subprocess_utils import (
     DEFAULT_MAX_OUTPUT_BYTES,
     SubprocessCancelled,
     _coerce_output_limit,

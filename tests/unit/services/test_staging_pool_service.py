@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""``StagingPoolService``（freeassetfilter/services/staging_pool_service.py）单元测试。
+"""``StagingPoolService``（sopeek/services/staging_pool_service.py）单元测试。
 
 覆盖（happy + boundary/error 各至少一条）：
 
@@ -29,7 +29,7 @@ from typing import Any, Dict, Optional
 
 import pytest
 
-from freeassetfilter.services.staging_pool_service import StagingPoolService
+from sopeek.services.staging_pool_service import StagingPoolService
 
 pytestmark = pytest.mark.unit
 
@@ -320,7 +320,7 @@ class TestFolderSize:
                 return {"results": [{"path": paths[0], "size": total, "error": None}]}
 
         monkeypatch.setattr(
-            "freeassetfilter.core.native.api.bridge",
+            "sopeek.core.native.api.bridge",
             lambda: NativeBridge(),
         )
         size = StagingPoolService().calculate_folder_size(str(base))
@@ -345,7 +345,7 @@ class TestFolderSize:
                 return {"results": [{"path": paths[0], "size": 0, "error": None}]}
 
         monkeypatch.setattr(
-            "freeassetfilter.core.native.api.bridge",
+            "sopeek.core.native.api.bridge",
             lambda: NativeBridge(),
         )
         cancel: threading.Event = threading.Event()
@@ -370,7 +370,7 @@ class TestFolderSize:
                 }
 
         monkeypatch.setattr(
-            "freeassetfilter.core.native.api.bridge",
+            "sopeek.core.native.api.bridge",
             lambda: ErrBridge(),
         )
         assert StagingPoolService().calculate_folder_size(str(base)) == 200
@@ -387,7 +387,7 @@ class TestFolderSize:
             _supports_sizesum = False
 
         monkeypatch.setattr(
-            "freeassetfilter.core.native.api.bridge",
+            "sopeek.core.native.api.bridge",
             lambda: NoBridge(),
         )
         assert StagingPoolService().calculate_folder_size(str(base)) == 200

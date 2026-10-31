@@ -22,7 +22,7 @@ _DEFAULT_SVG: str = (
     '  <rect width="120" height="80" fill="#ffffff"/>\n'
     '  <circle cx="60" cy="40" r="25" fill="#d04040"/>\n'
     '  <text x="60" y="72" font-size="12" text-anchor="middle" fill="#333333">'
-    "FAF test</text>\n"
+    "SPK test</text>\n"
     "</svg>\n"
 )
 
@@ -210,7 +210,7 @@ def make_font_path() -> Optional[str]:
     Returns:
         Optional[str]: 复制后的字体文件路径；失败为 None。
     """
-    cache_dir: Path = Path(tempfile.gettempdir()) / "faf_test_fonts"
+    cache_dir: Path = Path(tempfile.gettempdir()) / "spk_test_fonts"
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
     except OSError:

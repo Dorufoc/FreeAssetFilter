@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""markdown_renderer.py（freeassetfilter/utils/markdown_renderer.py）单元测试。
+"""markdown_renderer.py（sopeek/utils/markdown_renderer.py）单元测试。
 
 覆盖标题（含 id 重写）、粗斜体、fenced code 代码块（Pygments 高亮 span）、
 表格、任务列表（task-item / task-checkbox）、字号设置（含异常）与完整 HTML
 文档结构；并验证渲染结果可注入 QTextDocument 且纯文本无损。
 
-todo-17 新增 native 高优先级路径覆盖：faf_core 桥可用时 ``render()`` 走
+todo-17 新增 native 高优先级路径覆盖：spk_core 桥可用时 ``render()`` 走
 原生引擎（strikethrough ``<del>``、代码块包装归一、md_in_html 标记剥离、
 task-item 类吸收），并对核心元素做 normalize 结构等价对拍；桥不可用 /
 降级时回退 python-markdown 现状路径。
@@ -24,7 +24,7 @@ from typing import Any
 import pytest
 from PySide6.QtGui import QTextDocument
 
-from freeassetfilter.utils.markdown_renderer import (
+from sopeek.utils.markdown_renderer import (
     MARKDOWN_AVAILABLE,
     MarkdownRenderer,
 )
@@ -34,7 +34,7 @@ pytestmark = pytest.mark.unit
 _SAMPLE_DIR = (
     Path(__file__).resolve().parents[2]
     / "support"
-    / "faf_core_fixtures"
+    / "spk_core_fixtures"
     / "markdown_samples"
 )
 
@@ -167,7 +167,7 @@ class TestQTextDocument:
 
 
 # =============================================================================
-# todo-17：faf_core native 高优先级路径（桥可用时优先；缺省回退 python）
+# todo-17：spk_core native 高优先级路径（桥可用时优先；缺省回退 python）
 # =============================================================================
 class TestNativePath:
     """``render()`` 的 native 高优先级路径与 python-markdown 回退路径。
@@ -180,13 +180,13 @@ class TestNativePath:
 
     @staticmethod
     def _native_ready() -> bool:
-        """faf_core 桥可加载且含 ``faf_render_markdown`` 导出。"""
+        """spk_core 桥可加载且含 ``spk_render_markdown`` 导出。"""
         try:
-            from freeassetfilter.core.native.bridges.faf_core_bridge import (
-                get_faf_core_bridge,
+            from sopeek.core.native.bridges.spk_core_bridge import (
+                get_spk_core_bridge,
             )
 
-            bridge = get_faf_core_bridge()
+            bridge = get_spk_core_bridge()
         except Exception:  # noqa: BLE001  # 导入链异常视为不可用
             return False
         return bool(
@@ -202,9 +202,9 @@ class TestNativePath:
         class _DegradedBridge:  # noqa: D401 - 降级占位对象，仅提供 available 属性
             available = False
 
-        import freeassetfilter.core.native.bridges.faf_core_bridge as bridge_mod
+        import sopeek.core.native.bridges.spk_core_bridge as bridge_mod
 
-        from freeassetfilter.core.native import api as native_api
+        from sopeek.core.native import api as native_api
 
         # P1.4：markdown 路径已收敛到 native 门面，patch 门面的桥单例。
         monkeypatch.setattr(native_api, "bridge", lambda: _DegradedBridge())
@@ -216,14 +216,14 @@ class TestNativePath:
         保留），native 的 ``<del>`` 是引擎归属的强判别信号。
         """
         if not self._native_ready():
-            pytest.skip("faf_core 不可用，跳过 native 路径测试")
+            pytest.skip("spk_core 不可用，跳过 native 路径测试")
         html = renderer.render("~~删除线~~")
         assert "<del>删除线</del>" in html
 
     def test_native_code_block_wrapper_normalized(self, renderer: Any) -> None:
         """native ``<pre><code class="highlight">`` 归一为 codehilite 包装形态。"""
         if not self._native_ready():
-            pytest.skip("faf_core 不可用，跳过 native 路径测试")
+            pytest.skip("spk_core 不可用，跳过 native 路径测试")
         html = renderer.render("```python\nprint('hi')\n```")
         # 共享后处理把 native 的裸 pre/code 包裹成 `.highlight pre` 可着色形态。
         assert '<div class="highlight"><pre><code>' in html
@@ -245,7 +245,7 @@ class TestNativePath:
     def test_task_list_task_item_class(self, renderer: Any) -> None:
         """native 任务列表经共享后处理吸收 ``task-item`` 类（CSS 契约）。"""
         if not self._native_ready():
-            pytest.skip("faf_core 不可用，跳过 native 路径测试")
+            pytest.skip("spk_core 不可用，跳过 native 路径测试")
         html = renderer.render("- [x] 已完成\n- [ ] 待办")
         assert 'class="task-item"' in html
         assert 'class="task-checkbox checked"' in html
@@ -254,7 +254,7 @@ class TestNativePath:
     def test_native_vs_python_normalized_equivalent(self, renderer: Any, monkeypatch: pytest.MonkeyPatch) -> None:
         """核心元素 native 路径输出与强制 python 路径 normalize 后结构等价。"""
         if not self._native_ready():
-            pytest.skip("faf_core 不可用，跳过 native 路径测试")
+            pytest.skip("spk_core 不可用，跳过 native 路径测试")
         from tests.support.parity.normalize_html import normalize_html_for_parity
 
         samples = [
@@ -306,7 +306,7 @@ class TestNativePath:
           blockquote 精确回退（扩展降级映射）。
         """
         if not self._native_ready():
-            pytest.skip("faf_core 不可用，跳过 native 路径测试")
+            pytest.skip("spk_core 不可用，跳过 native 路径测试")
         from tests.support.parity.normalize_html import normalize_html_for_parity
 
         render = renderer.render
@@ -354,7 +354,7 @@ class TestNativePath:
         之外，对每个样本断言核心 HTML 元素 / ASCII 锚点在**两条路径**的最终
         ``render()`` 输出中都存在——防止引擎回归丢失基础结构（如 heading、
         task-item 类、table、pre/code、blockquote、a/img）。native 不可用时
-        跳过 native 侧（对拍在 ``faf_core_available`` 时启用），python 侧恒验。
+        跳过 native 侧（对拍在 ``spk_core_available`` 时启用），python 侧恒验。
         """
         render = renderer.render
 

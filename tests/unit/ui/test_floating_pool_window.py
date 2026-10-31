@@ -44,7 +44,7 @@ from PySide6.QtGui import (
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog, QWidget
 
-from freeassetfilter.ui.floating_pool_window import (
+from sopeek.ui.floating_pool_window import (
     COLLAPSED_SIZE,
     DRAG_HOVER_SIZE,
     ENTRANCE_SCALE_FROM,
@@ -60,12 +60,12 @@ from freeassetfilter.ui.floating_pool_window import (
     _CARD_MARGIN,
     _PoolItemRow,
 )
-from freeassetfilter.ui.components.styled_scroll_area import (
+from sopeek.ui.components.styled_scroll_area import (
     StyledScrollArea,
     StyledScrollBar,
 )
-from freeassetfilter.ui.theme import tm
-from freeassetfilter.utils.screen_utils import derive_work_area, screen_work_area
+from sopeek.ui.theme import tm
+from sopeek.utils.screen_utils import derive_work_area, screen_work_area
 
 pytestmark = pytest.mark.unit
 
@@ -212,7 +212,7 @@ def test_initial_position_stays_inside_work_area(
     qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """任务栏在左时首帧定位不得越出工作区（回归：右缘曾露到屏幕外）。"""
-    import freeassetfilter.ui.floating_pool_window as fpw
+    import sopeek.ui.floating_pool_window as fpw
 
     work = QRect(48, 0, 1659, 1067)  # 2560x1600 @150% + 左侧 72px 任务栏
     monkeypatch.setattr(fpw, "screen_work_area", lambda _screen: QRect(work))
@@ -235,7 +235,7 @@ def test_settle_clamps_inside_work_area_with_left_taskbar(
     qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """任务栏在左 + 关闭吸附：拖到屏外后仍完整夹回工作区内。"""
-    import freeassetfilter.ui.floating_pool_window as fpw
+    import sopeek.ui.floating_pool_window as fpw
 
     work = QRect(48, 0, 1659, 1067)
     monkeypatch.setattr(fpw, "screen_work_area", lambda _screen: QRect(work))
@@ -832,7 +832,7 @@ def test_drag_enter_without_urls_logs_formats(
     try:
         mock_debug = Mock()
         monkeypatch.setattr(
-            "freeassetfilter.ui.floating_pool_window.debug", mock_debug
+            "sopeek.ui.floating_pool_window.debug", mock_debug
         )
 
         # PySide6 陷阱：QDragEnterEvent 不持有 QMimeData 所有权，须保持引用存活。
@@ -2756,7 +2756,7 @@ def test_screen_env_signature_is_stable_and_serializable(
     qapp: QApplication,
 ) -> None:
     """环境指纹：两次读取一致、可 JSON 序列化、首项为主屏名。"""
-    import freeassetfilter.ui.floating_pool_window as fpw
+    import sopeek.ui.floating_pool_window as fpw
 
     first = fpw._screen_env_signature()
     assert first == fpw._screen_env_signature()
@@ -2770,7 +2770,7 @@ def test_position_restored_when_environment_matches(
     qapp: QApplication, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """环境指纹一致：启动时直接使用上次保存的位置。"""
-    import freeassetfilter.ui.floating_pool_window as fpw
+    import sopeek.ui.floating_pool_window as fpw
 
     screen = QApplication.primaryScreen()
     assert screen is not None
@@ -2797,7 +2797,7 @@ def test_position_default_when_environment_changed(
     qapp: QApplication, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """显示器 / 分辨率 / 任务栏 / DPI 变化（指纹不同）：回默认位置。"""
-    import freeassetfilter.ui.floating_pool_window as fpw
+    import sopeek.ui.floating_pool_window as fpw
 
     monkeypatch.setattr(
         fpw,
@@ -2816,7 +2816,7 @@ def test_restored_position_is_clamped_into_work_area(
     qapp: QApplication, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """存盘位置已越界（布局微小漂移）：恢复时夹回工作区。"""
-    import freeassetfilter.ui.floating_pool_window as fpw
+    import sopeek.ui.floating_pool_window as fpw
 
     screen = QApplication.primaryScreen()
     assert screen is not None
@@ -2843,7 +2843,7 @@ def test_close_persists_position_with_env(
     qapp: QApplication, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """关闭时写入位置与环境指纹，且 payload 可 JSON 序列化。"""
-    import freeassetfilter.ui.floating_pool_window as fpw
+    import sopeek.ui.floating_pool_window as fpw
 
     captured: dict = {}
     monkeypatch.setattr(
@@ -2877,7 +2877,7 @@ def test_persist_uses_collapsed_corner_when_expanded(
     qapp: QApplication, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """展开态退出：保存的是圆形应在的角（非面板左上角）。"""
-    import freeassetfilter.ui.floating_pool_window as fpw
+    import sopeek.ui.floating_pool_window as fpw
 
     captured: dict = {}
     monkeypatch.setattr(

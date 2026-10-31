@@ -2,7 +2,7 @@
 """test_perf_metrics: perf_metrics.py 覆盖测试（todo-10, unit/utils 批 1）。
 
 覆盖：PerfEventStats.add_sample/to_dict/_percentile、线程安全并发、
-FAF_PERF_METRICS_ENABLED 禁用、export/clear/snapshot/summary_lines、
+SPK_PERF_METRICS_ENABLED 禁用、export/clear/snapshot/summary_lines、
 模块级便捷函数。
 """
 
@@ -14,8 +14,8 @@ import time
 
 import pytest
 
-from freeassetfilter.utils import perf_metrics
-from freeassetfilter.utils.perf_metrics import (
+from sopeek.utils import perf_metrics
+from sopeek.utils.perf_metrics import (
     FRAME_RING_MAXLEN,
     PerfEventStats,
     PerfMetricsRegistry,
@@ -146,7 +146,7 @@ class TestPerfEventStats:
 
     def test_sample_limit_respected(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """样本上限（deque maxlen）约束保留的样本数。"""
-        monkeypatch.setenv("FAF_PERF_SAMPLE_LIMIT", "100")
+        monkeypatch.setenv("SPK_PERF_SAMPLE_LIMIT", "100")
         registry = PerfMetricsRegistry()
         for value in range(1, 181):
             registry.record_duration("evt", float(value))
@@ -239,8 +239,8 @@ class TestPerfMetricsRegistry:
         assert lines[0].startswith("scan:")
 
     def test_disabled_by_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """FAF_PERF_METRICS_ENABLED=0 时所有写入为空操作。"""
-        monkeypatch.setenv("FAF_PERF_METRICS_ENABLED", "0")
+        """SPK_PERF_METRICS_ENABLED=0 时所有写入为空操作。"""
+        monkeypatch.setenv("SPK_PERF_METRICS_ENABLED", "0")
         registry = PerfMetricsRegistry()
         assert registry.enabled is False
         registry.record_duration("evt", 1.0)
@@ -331,13 +331,13 @@ class TestEnvHelpers:
             raw: 环境变量值。
             expected: 期望的真值。
         """
-        monkeypatch.setenv("FAF_TEST_TRUTHY", raw)
-        assert _truthy_env("FAF_TEST_TRUTHY", "1") is expected
+        monkeypatch.setenv("SPK_TEST_TRUTHY", raw)
+        assert _truthy_env("SPK_TEST_TRUTHY", "1") is expected
 
     def test_truthy_env_default_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """未设置时使用默认值 "1"（启用）。"""
-        monkeypatch.delenv("FAF_TEST_TRUTHY_DEFAULT", raising=False)
-        assert _truthy_env("FAF_TEST_TRUTHY_DEFAULT", "1") is True
+        monkeypatch.delenv("SPK_TEST_TRUTHY_DEFAULT", raising=False)
+        assert _truthy_env("SPK_TEST_TRUTHY_DEFAULT", "1") is True
 
     @pytest.mark.parametrize(
         ("raw", "expected"),
@@ -350,18 +350,18 @@ class TestEnvHelpers:
         ids=["valid", "floor-clamped", "invalid", "empty"],
     )
     def test_read_sample_limit(self, monkeypatch: pytest.MonkeyPatch, raw: str, expected: int) -> None:
-        """FAF_PERF_SAMPLE_LIMIT 解析与钳制。
+        """SPK_PERF_SAMPLE_LIMIT 解析与钳制。
 
         Args:
             raw: 环境变量值。
             expected: 期望的样本上限。
         """
-        monkeypatch.setenv("FAF_PERF_SAMPLE_LIMIT", raw)
+        monkeypatch.setenv("SPK_PERF_SAMPLE_LIMIT", raw)
         assert PerfMetricsRegistry._read_sample_limit() == expected
 
     def test_read_sample_limit_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """未设置时默认 2048。"""
-        monkeypatch.delenv("FAF_PERF_SAMPLE_LIMIT", raising=False)
+        monkeypatch.delenv("SPK_PERF_SAMPLE_LIMIT", raising=False)
         assert PerfMetricsRegistry._read_sample_limit() == 2048
 
 

@@ -2,13 +2,13 @@
 
 <div align="center">
 
-<img src="freeassetfilter/icons/FAF-main.png" alt="FreeAssetFilter Logo" width="128" height="128">
+<img src="sopeek/icons/SPK-main.png" alt="Sopeek Logo" width="128" height="128">
 
-# FreeAssetFilter
+# Sopeek
 
 **一款强大的多功能文件预览与管理工具，让文件浏览如丝般高效顺滑**
 
-[![GitHub Release](https://img.shields.io/github/v/release/Dorufoc/FreeAssetFilter?style=flat-square\&logo=github\&color=blue)](https://github.com/Dorufoc/FreeAssetFilter/releases)
+[![GitHub Release](https://img.shields.io/github/v/release/Dorufoc/Sopeek?style=flat-square\&logo=github\&color=blue)](https://github.com/Dorufoc/Sopeek/releases)
 [![Python Version](https://img.shields.io/badge/Python-3.9%2B-blue?style=flat-square\&logo=python)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/PySide6-6.10%2B-green?style=flat-square\&logo=qt)](https://wiki.qt.io/Qt_for_Python)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-orange?style=flat-square)](LICENSE)
@@ -16,13 +16,13 @@
 
 [English](README_EN.md) • [功能预览](#-功能预览) • [快速开始](#-快速开始) • [功能特性](#-功能特性) • [安装指南](#-安装指南) • [使用说明](#-使用说明) • [技术架构](#-技术架构) • [开发指南](#-开发指南) • [贡献指南](#-贡献指南)
 
-<img src="freeassetfilter/icons/example1.png" alt="FreeAssetFilter Screenshot" width="800">
+<img src="sopeek/icons/example1.png" alt="Sopeek Screenshot" width="800">
 
 </div>
 
 ***
 
-![Stone Badge](https://stone.professorlee.work/api/stone/Dorufoc/FreeAssetFilter)
+![Stone Badge](https://stone.professorlee.work/api/stone/Dorufoc/Sopeek)
 
 ## 功能预览
 
@@ -52,8 +52,8 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/Dorufoc/FreeAssetFilter.git
-cd FreeAssetFilter
+git clone https://github.com/Dorufoc/Sopeek.git
+cd Sopeek
 
 # 创建虚拟环境（推荐）
 python -m venv venv
@@ -63,7 +63,7 @@ venv\Scripts\activate
 pip install -r requirements.txt
 
 # 运行应用
-python -m freeassetfilter.app.main
+python -m sopeek.app.main
 ```
 
 ### 常见问题
@@ -152,7 +152,7 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 ### 功能对比
 
-| 功能     | FreeAssetFilter | QuickLook | Seer   | Explorer |
+| 功能     | Sopeek | QuickLook | Seer   | Explorer |
 | ------ | --------------- | --------- | ------ | -------- |
 | 图像预览   | ✅ 100+ 格式       | ✅ 常见格式    | ✅ 常见格式 | ⚠️ 有限    |
 | 视频播放   | ✅ 内置播放器         | ⚠️ 需插件    | ⚠️ 需插件 | ❌        |
@@ -224,15 +224,15 @@ TTF, OTF, WOFF, WOFF2, EOT
 
 下载最新的预编译版本：
 
-- [📦 下载 Windows 安装包](https://github.com/Dorufoc/FreeAssetFilter/releases)
+- [📦 下载 Windows 安装包](https://github.com/Dorufoc/Sopeek/releases)
 
 ### 方法二：从源码安装
 
 #### 1. 克隆仓库
 
 ```bash
-git clone https://github.com/Dorufoc/FreeAssetFilter.git
-cd FreeAssetFilter
+git clone https://github.com/Dorufoc/Sopeek.git
+cd Sopeek
 ```
 
 #### 2. 创建虚拟环境
@@ -252,14 +252,14 @@ pip install -r requirements.txt
 
 ```bash
 # 构建 LUT 预览模块（MSVC 环境；MinGW 可改用 setup_mingw.py）
-cd freeassetfilter/core/native/src/cpp_lut_preview
+cd sopeek/core/native/src/cpp_lut_preview
 python setup.py build_ext --inplace
 ```
 
 #### 5. 运行应用
 
 ```bash
-python -m freeassetfilter.app.main
+python -m sopeek.app.main
 ```
 
 ### 系统要求详情
@@ -360,7 +360,7 @@ python -m freeassetfilter.app.main
 ### 核心技术栈
 
 ```
-FreeAssetFilter
+Sopeek
 ├── GUI 框架: PySide6 (Qt6) - 跨平台图形界面
 ├── 图像处理: Pillow + rawpy - 图像解码与处理
 ├── 视频播放: MPV (libmpv) - 高性能视频播放
@@ -373,8 +373,8 @@ FreeAssetFilter
 ### 项目结构
 
 ```
-FreeAssetFilter/
-├── freeassetfilter/
+Sopeek/
+├── sopeek/
 │   ├── app/                    # 应用入口（main / startup / instance_guard）
 │   ├── core/                   # 核心管理与原生桥
 │   │   ├── managers/           # 设置 V2 / 心跳 / MPV / 缩略图管理器
@@ -390,7 +390,7 @@ FreeAssetFilter/
 │   ├── utils/                  # 通用工具（路径 / 日志 / 高亮 / 性能埋点等）
 │   ├── docs/                   # 第三方组件与许可证清单
 │   └── icons/                  # 界面与文件类型图标资源
-├── launcher/                   # 独显启动器（C 源码 + 构建脚本；FAF-Launcher.exe 本地构建，不入库）
+├── launcher/                   # 独显启动器（C 源码 + 构建脚本；SPK-Launcher.exe 本地构建，不入库）
 ├── installer_duilib/           # 自研安装器（C++/NSIS 源码与构建脚本）
 ├── scripts/                    # 辅助脚本（GUI 测试截图工具）
 ├── tests/                      # 测试体系（详见 tests/README.md）
@@ -418,8 +418,8 @@ FreeAssetFilter/
 #### 1. 克隆仓库并创建分支
 
 ```bash
-git clone https://github.com/Dorufoc/FreeAssetFilter.git
-cd FreeAssetFilter
+git clone https://github.com/Dorufoc/Sopeek.git
+cd Sopeek
 git checkout -b feature/your-feature-name
 ```
 
@@ -443,7 +443,7 @@ pip install -r requirements.txt
 
 ```bash
 # LUT 预览模块（唯一仍在维护的 C++ 扩展；MSVC 环境）
-cd freeassetfilter/core/native/src/cpp_lut_preview
+cd sopeek/core/native/src/cpp_lut_preview
 python setup.py build_ext --inplace
 
 # MinGW 环境改用：
@@ -467,20 +467,20 @@ python setup_mingw.py build_ext --inplace
 # 1) 构建独显启动器（可选；构建后安装版才能启用「使用硬件加速」）
 powershell -ExecutionPolicy Bypass -File launcher/build_launcher.ps1
 
-# 2) 生成 PyInstaller 载荷 → build/pyinstall/FreeAssetFilter
+# 2) 生成 PyInstaller 载荷 → build/pyinstall/Sopeek
 python Pyinstall_build.py
 # 可选参数：--no-clean 保留旧构建输出；--skip-build 仅清理与验证
 
 # 3) 构建安装器（需要 CMake + MinGW + NSIS）
 powershell -ExecutionPolicy Bypass -File installer_duilib/build.ps1
-# 产物：build/FreeAssetFilter_NSIS_Setup.exe
+# 产物：build/installer/SopeekInstaller.exe、build/Sopeek_NSIS_Setup.exe
 ```
 
 ### 添加新的文件预览支持
 
-1. **创建预览器布局** 在 `freeassetfilter/ui/layout/preview/` 下新增布局类（可参考 `image_previewer_layout.py`），实现与统一预览器约定的入口方法 `set_file(path, ...)`；
-2. **注册文件类型** 在 `freeassetfilter/services/previewer_registry.py` 的 `_EXTENSION_MAP` 中登记「扩展名 → (模块路径, 类名)」映射（惰性导入，不影响首屏加载）；
-3. **添加图标** 在 `freeassetfilter/icons/` 添加文件类型图标（命名沿用 v3 多彩系列「X – 3.svg」）。
+1. **创建预览器布局** 在 `sopeek/ui/layout/preview/` 下新增布局类（可参考 `image_previewer_layout.py`），实现与统一预览器约定的入口方法 `set_file(path, ...)`；
+2. **注册文件类型** 在 `sopeek/services/previewer_registry.py` 的 `_EXTENSION_MAP` 中登记「扩展名 → (模块路径, 类名)」映射（惰性导入，不影响首屏加载）；
+3. **添加图标** 在 `sopeek/icons/` 添加文件类型图标（命名沿用 v3 多彩系列「X – 3.svg」）。
 
 ***
 
@@ -491,7 +491,7 @@ powershell -ExecutionPolicy Bypass -File installer_duilib/build.ps1
 ### 贡献流程
 
 1. **Fork 仓库** - 点击右上角的 Fork 按钮
-2. **克隆仓库** - `git clone https://github.com/your-username/FreeAssetFilter.git`
+2. **克隆仓库** - `git clone https://github.com/your-username/Sopeek.git`
 3. **创建分支** - `git checkout -b feature/AmazingFeature`
 4. **提交更改** - `git commit -m 'Add some AmazingFeature'`
 5. **推送分支** - `git push origin feature/AmazingFeature`
@@ -580,7 +580,7 @@ powershell -ExecutionPolicy Bypass -File installer_duilib/build.ps1
 本项目基于 [AGPL-3.0](LICENSE) 许可证开源。
 
 ```
-FreeAssetFilter - 多功能文件预览与管理工具
+Sopeek - 多功能文件预览与管理工具
 Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 This program is free software: you can redistribute it and/or modify
@@ -665,7 +665,7 @@ GNU Affero General Public License for more details.
 
 **⭐ 如果这个项目对您有帮助，请给我们一个 Star！**
 
-[🐛 提交 Bug](https://github.com/Dorufoc/FreeAssetFilter/issues) • [💡 功能建议](https://github.com/Dorufoc/FreeAssetFilter/issues) • [🤝 参与贡献](https://github.com/Dorufoc/FreeAssetFilter/pulls)
+[🐛 提交 Bug](https://github.com/Dorufoc/Sopeek/issues) • [💡 功能建议](https://github.com/Dorufoc/Sopeek/issues) • [🤝 参与贡献](https://github.com/Dorufoc/Sopeek/pulls)
 
 Made with ❤️ by [Dorufoc](https://github.com/Dorufoc) & [renmoren](https://github.com/renmoren)
 

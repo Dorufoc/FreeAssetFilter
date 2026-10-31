@@ -20,8 +20,8 @@ from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
 from PySide6.QtWidgets import QApplication, QTextEdit
 
-from freeassetfilter.ui.layout.preview import text_previewer_layout as _tpl
-from freeassetfilter.ui.layout.preview.text_previewer_layout import (
+from sopeek.ui.layout.preview import text_previewer_layout as _tpl
+from sopeek.ui.layout.preview.text_previewer_layout import (
     TextPreviewerLayout,
 )
 from tests.support.qt_helpers import safe_teardown

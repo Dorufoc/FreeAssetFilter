@@ -15,7 +15,7 @@
 
 #include "render/theme.h"
 
-namespace faf {
+namespace spk {
 
 // 归一化输入事件。一次只描述一件事（kind 决定其余字段的语义）。
 struct InputEvent {
@@ -129,4 +129,4 @@ private:
     Widget* focused_ = nullptr;
 };
 
-}  // namespace faf
+}  // namespace spk

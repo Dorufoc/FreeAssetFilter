@@ -16,7 +16,7 @@
 #include <dwrite.h>
 #include <dxgi1_2.h>
 
-namespace faf {
+namespace spk {
 
 // 自实现最小 COM 智能指针（RAII），不依赖任何外部库。
 template <typename T>
@@ -95,7 +95,7 @@ public:
     UINT Width() const noexcept { return width_; }
     UINT Height() const noexcept { return height_; }
     float Dpi() const noexcept { return dpi_; }
-    // FAF_FORCE_WARP=1 或硬件设备创建失败并回退时返回 true（供 Todo 2 断言 WARP 路径）。
+    // SPK_FORCE_WARP=1 或硬件设备创建失败并回退时返回 true（供 Todo 2 断言 WARP 路径）。
     bool UsingWarp() const noexcept { return usingWarp_; }
 
 private:
@@ -104,7 +104,7 @@ private:
     HRESULT CreateD2DTarget();           // 后台缓冲 → ID2D1Bitmap1 并设为 D2D 目标
     void ReleaseTarget();                // 先撤 target 再释放位图（Resize 前置条件）
 
-    // FAF_FORCE_WARP 为无条件运行时诊断覆盖（未设置时不影响默认行为）。
+    // SPK_FORCE_WARP 为无条件运行时诊断覆盖（未设置时不影响默认行为）。
     static bool ForceWarpRequested();
 
     // 进程级 COM(STA)。非本对象初始化的单元不计入反初始化。
@@ -129,4 +129,4 @@ private:
     bool usingWarp_ = false;
 };
 
-}  // namespace faf
+}  // namespace spk

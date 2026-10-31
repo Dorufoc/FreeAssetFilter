@@ -5,7 +5,7 @@
 
 #include <wincodec.h>
 
-namespace faf {
+namespace spk {
 
 HRESULT LogoBitmap::Load(ID2D1DeviceContext* dc, UINT resourceId) {
     bitmap_.Reset();
@@ -63,4 +63,4 @@ HRESULT LogoBitmap::Load(ID2D1DeviceContext* dc, UINT resourceId) {
     return S_OK;
 }
 
-}  // namespace faf
+}  // namespace spk

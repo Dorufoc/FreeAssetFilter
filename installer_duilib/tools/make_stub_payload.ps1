@@ -5,8 +5,8 @@
 
 .DESCRIPTION
   Recreates a deterministic stub payload used by `capture_installer.ps1` runs of
-  the test build (`build/test-installer/FreeAssetFilterInstaller.exe`,
-  FAF_TESTMODE=ON) driven by /auto.
+  the test build (`build/test-installer/SopeekInstaller.exe`,
+  SPK_TESTMODE=ON) driven by /auto.
 
   - Always wipes and recreates -PayloadDir.
   - Writes -FileCount deterministic files of -BytesPerFile bytes spread over the
@@ -18,8 +18,8 @@
     Progress screenshot).
 
 .EXAMPLE
-  ./make_stub_payload.ps1 -PayloadDir C:\Users\89553\AppData\Local\Temp\opencode\faf_t20\payload
-  ./make_stub_payload.ps1 -PayloadDir C:\Users\89553\AppData\Local\Temp\opencode\faf_t20\payload -NoSentinel
+  ./make_stub_payload.ps1 -PayloadDir C:\Users\89553\AppData\Local\Temp\opencode\spk_t20\payload
+  ./make_stub_payload.ps1 -PayloadDir C:\Users\89553\AppData\Local\Temp\opencode\spk_t20\payload -NoSentinel
 #>
 param(
     [Parameter(Mandatory = $true)][string]$PayloadDir,

@@ -10,7 +10,7 @@
     python -m pytest tests/unit/ui/layout/preview/test_file_info_panel.py --timeout 60 -q
 """
 
-# targets: freeassetfilter.ui.layout.preview.file_info_panel
+# targets: sopeek.ui.layout.preview.file_info_panel
 
 from __future__ import annotations
 
@@ -27,12 +27,12 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel
 
 # 与 test_layouts.py 相同的路径引导：布局模块内部使用短路径导入
-_UI_ROOT: str = str(Path(__file__).resolve().parents[5] / "freeassetfilter" / "ui")
+_UI_ROOT: str = str(Path(__file__).resolve().parents[5] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-from freeassetfilter.ui.layout.preview.file_info_panel import FileInfoPanel  # noqa: E402
-from freeassetfilter.services import file_info_service as fis  # noqa: E402
+from sopeek.ui.layout.preview.file_info_panel import FileInfoPanel  # noqa: E402
+from sopeek.services import file_info_service as fis  # noqa: E402
 from tests.support.qt_helpers import safe_teardown, wait_for_signal  # noqa: E402
 
 
@@ -407,7 +407,7 @@ class TestFileInfoPanelCanvasInteraction:
         self, qapp: QApplication, sample_image_file: str, tmp_path: Path
     ) -> None:
         """Ctrl+左键点击文件路径：打开资源管理器选中文件，不复制不提示。"""
-        import freeassetfilter.ui.layout.preview.file_info_panel as fip_module
+        import sopeek.ui.layout.preview.file_info_panel as fip_module
         from unittest.mock import patch
 
         panel = _make_panel(qapp, tmp_path)
@@ -540,7 +540,7 @@ class TestFileInfoPanelTypographyAndScroll:
 
     def test_toast_style_matches_fold_text(self, qapp: QApplication, tmp_path: Path) -> None:
         """「已复制」与折叠行文字同字号同色，且纯透明无胶囊背景。"""
-        import freeassetfilter.ui.layout.preview.file_info_panel as fip_module
+        import sopeek.ui.layout.preview.file_info_panel as fip_module
 
         panel = _make_panel(qapp, tmp_path)
         stylesheet = panel._toast_label.styleSheet()
@@ -701,14 +701,14 @@ class TestFileInfoPanelMediaAsync:
 
 
 class TestFileInfoPanelCacheMissWrite:
-    """确保测试不会写入仓库默认缓存文件（默认路径经 FAF_DATA_DIR 重定向）。"""
+    """确保测试不会写入仓库默认缓存文件（默认路径经 SPK_DATA_DIR 重定向）。"""
 
     def test_default_cache_path_redirected_from_repo(self) -> None:
-        """测试进程内默认缓存路径必须落在 FAF_DATA_DIR，绝不指向仓库 data/。"""
+        """测试进程内默认缓存路径必须落在 SPK_DATA_DIR，绝不指向仓库 data/。"""
         resolved = Path(fis.get_cache_path(None))
         repo_data = Path(__file__).resolve().parents[5] / "data"
-        env_dir = os.environ.get("FAF_DATA_DIR", "")
-        assert env_dir, "测试进程缺少 FAF_DATA_DIR（conftest 会话级重定向失效）"
+        env_dir = os.environ.get("SPK_DATA_DIR", "")
+        assert env_dir, "测试进程缺少 SPK_DATA_DIR（conftest 会话级重定向失效）"
         assert str(resolved).startswith(env_dir), resolved
         assert repo_data not in resolved.parents, resolved
 
@@ -717,7 +717,7 @@ class TestHashTaskNativeWiring:
     """``_HashTask`` native 流式接线（todo 24）。
 
     直接同步执行 ``_HashTask.run()``（与 QThreadPool 跨线程投递同一实现）：
-    native 可用时走 ``faf_core.hash_file_streaming``；DLL 缺失/失败回退
+    native 可用时走 ``spk_core.hash_file_streaming``；DLL 缺失/失败回退
     ``fis.compute_hashes``；缓存写回（``write_cached`` / ``_CACHE_LOCK`` /
     800 上限 / 原子替换）契约不变；取消不写缓存；缺失文件落 ``-`` 占位。
     """
@@ -725,7 +725,7 @@ class TestHashTaskNativeWiring:
     @staticmethod
     def _run_task(task) -> dict:
         """同步执行任务并捕获 done 结果（同线程直接连接，emit 同步触发）。"""
-        import freeassetfilter.ui.layout.preview.file_info_panel as fip_module
+        import sopeek.ui.layout.preview.file_info_panel as fip_module
 
         out: dict = {}
         task.done.connect(lambda values: out.update(values or {}))
@@ -734,11 +734,11 @@ class TestHashTaskNativeWiring:
 
     @staticmethod
     def _native_available() -> bool:
-        from freeassetfilter.core.native.bridges.faf_core_bridge import (
-            get_faf_core_bridge,
+        from sopeek.core.native.bridges.spk_core_bridge import (
+            get_spk_core_bridge,
         )
 
-        bridge = get_faf_core_bridge()
+        bridge = get_spk_core_bridge()
         return bool(bridge.available and bridge._supports_hash)  # noqa: SLF001
 
     def test_native_streaming_result_and_cache(
@@ -746,10 +746,10 @@ class TestHashTaskNativeWiring:
     ) -> None:
         import hashlib
 
-        from freeassetfilter.ui.layout.preview.file_info_panel import _HashTask
+        from sopeek.ui.layout.preview.file_info_panel import _HashTask
 
         if not self._native_available():
-            pytest.skip("faf_core.dll 不含流式哈希导出，跳过 native 路径")
+            pytest.skip("spk_core.dll 不含流式哈希导出，跳过 native 路径")
         cache = str(tmp_path / "fic.json")
         raw = Path(temp_file).read_bytes()
         values = self._run_task(_HashTask(temp_file, cache))
@@ -766,8 +766,8 @@ class TestHashTaskNativeWiring:
         import hashlib
         from unittest.mock import Mock, patch
 
-        import freeassetfilter.ui.layout.preview.file_info_panel as fip_module
-        from freeassetfilter.ui.layout.preview.file_info_panel import _HashTask
+        import sopeek.ui.layout.preview.file_info_panel as fip_module
+        from sopeek.ui.layout.preview.file_info_panel import _HashTask
 
         degraded = Mock(available=False, _supports_hash=False)
         cache = str(tmp_path / "fic.json")
@@ -781,7 +781,7 @@ class TestHashTaskNativeWiring:
 
     def test_missing_file_placeholder(self, qapp: QApplication, tmp_path: Path) -> None:
         """缺失文件 → native OSError None → 回退 compute_hashes 落 `-` 占位。"""
-        from freeassetfilter.ui.layout.preview.file_info_panel import _HashTask
+        from sopeek.ui.layout.preview.file_info_panel import _HashTask
 
         values = self._run_task(_HashTask(str(tmp_path / "nope.bin"), None))
         assert values == {
@@ -792,7 +792,7 @@ class TestHashTaskNativeWiring:
 
     def test_cancel_writes_no_cache(self, qapp: QApplication, tmp_path: Path) -> None:
         """取消（协作式标记）→ 返回部分结果、绝不写缓存。"""
-        from freeassetfilter.ui.layout.preview.file_info_panel import _HashTask
+        from sopeek.ui.layout.preview.file_info_panel import _HashTask
 
         path = tmp_path / "big.bin"
         path.write_bytes(bytes(3 * 1024 * 1024))  # 3MiB（多块）

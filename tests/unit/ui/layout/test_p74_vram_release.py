@@ -21,7 +21,7 @@ from typing import Any, List
 import pytest
 from PySide6.QtGui import QColor, QPixmap
 
-from freeassetfilter.ui.components.styled_fluid_background import (
+from sopeek.ui.components.styled_fluid_background import (
     StyledFluidBackground,
 )
 
@@ -78,7 +78,7 @@ def test_mica_release_cached_layers_clears_without_rebake(
     qapp: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """释放层缓存与当前层像素，且不触发重烘焙。"""
-    from freeassetfilter.ui.mica import material as material_mod
+    from sopeek.ui.mica import material as material_mod
 
     rebaked: List[int] = []
     monkeypatch.setattr(
@@ -113,7 +113,7 @@ def test_main_window_suspend_path_touches_fluid_and_mica(
     qapp: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """主窗口最小化路径：流体 suspend_all + Mica release_cached_layers。"""
-    from freeassetfilter.ui.main_window import MainWindow
+    from sopeek.ui.main_window import MainWindow
 
     calls: List[str] = []
 
@@ -143,7 +143,7 @@ def test_main_window_suspend_path_touches_fluid_and_mica(
 
 def test_mica_material_lookup_prefers_mica_property(qapp: Any) -> None:
     """``_mica_material`` 能从包装控件上找到材质（GL/内置两条实现）。"""
-    from freeassetfilter.ui.main_window import MainWindow
+    from sopeek.ui.main_window import MainWindow
 
     class _Material:
         def release_cached_layers(self) -> int:

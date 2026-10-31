@@ -2,7 +2,7 @@
 
 功能：
 
-* AST 扫描 ``freeassetfilter/**/*.py``，提取公开类/函数/方法清单；
+* AST 扫描 ``sopeek/**/*.py``，提取公开类/函数/方法清单；
 * **显式排除**：``core/native/src/**``（构建脚本区）、
   ``setup.py``、``__init__.py``、``py.typed``；
 * 有效模块集合**并入 ``core/__init__.py`` 的 ``_MODULE_MAP`` /
@@ -43,7 +43,7 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 #: 仓库根（本文件位于 tests/support/ 下，上溯两级）。
 ROOT_DIR: Path = Path(__file__).resolve().parents[2]
-SRC_DIR: Path = ROOT_DIR / "freeassetfilter"
+SRC_DIR: Path = ROOT_DIR / "sopeek"
 TESTS_DIR: Path = ROOT_DIR / "tests"
 CORE_INIT: Path = SRC_DIR / "core" / "__init__.py"
 
@@ -67,7 +67,7 @@ class ModuleInventory:
     """源模块清单：路径、公开符号与别名映射。"""
 
     def __init__(self) -> None:
-        #: 物理模块名（如 freeassetfilter.components.unified_previewer）→ 路径。
+        #: 物理模块名（如 sopeek.components.unified_previewer）→ 路径。
         self.modules: Dict[str, Path] = {}
         #: 模块名 → 公开符号集合（类名/函数名/类限定方法名）。
         self.symbols: Dict[str, Set[str]] = {}
@@ -100,7 +100,7 @@ class ModuleInventory:
 
 
 def normalize_dotted(parts: Sequence[str]) -> str:
-    """把部件序列拼成 ``freeassetfilter.`` 开头的模块名。
+    """把部件序列拼成 ``sopeek.`` 开头的模块名。
 
     Args:
         parts: 相对 SRC_DIR 的部件（不含 .py）。
@@ -108,7 +108,7 @@ def normalize_dotted(parts: Sequence[str]) -> str:
     Returns:
         str: 完整 dotted 模块名。
     """
-    return "freeassetfilter." + ".".join(parts)
+    return "sopeek." + ".".join(parts)
 
 
 def is_excluded(rel_parts: Tuple[str, ...]) -> bool:
@@ -180,7 +180,7 @@ def scan_source_modules(inventory: ModuleInventory) -> None:
 def extract_alias_modules() -> Dict[str, str]:
     """解析 core/__init__.py 的 _MODULE_MAP/_SYMBOL_MAP 别名。
 
-    ``_MODULE_MAP`` 的扁平键生成 ``freeassetfilter.core.<flat>`` 别名
+    ``_MODULE_MAP`` 的扁平键生成 ``sopeek.core.<flat>`` 别名
     模块名，值即真实模块；``_SYMBOL_MAP`` 的键是符号（不产生模块名），
     取值用于校验对应真实模块存在。
 
@@ -216,7 +216,7 @@ def extract_alias_modules() -> Dict[str, str]:
         if target.id == "_MODULE_MAP":
             for flat, real in pairs:
                 if flat and real:
-                    alias_to_real[f"freeassetfilter.core.{flat}"] = real
+                    alias_to_real[f"sopeek.core.{flat}"] = real
     return alias_to_real
 
 
@@ -239,7 +239,7 @@ class TestFile:
 
 
 def _extract_imported_modules(tree: ast.Module) -> Set[str]:
-    """从测试文件的 import 语句提取 freeassetfilter 模块引用。
+    """从测试文件的 import 语句提取 sopeek 模块引用。
 
     Args:
         tree: 测试文件 AST。
@@ -251,12 +251,12 @@ def _extract_imported_modules(tree: ast.Module) -> Set[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name.startswith("freeassetfilter."):
+                if alias.name.startswith("sopeek."):
                     refs.add(alias.name)
         elif isinstance(node, ast.ImportFrom) and node.module:
             if (
-                node.module.startswith("freeassetfilter.")
-                or (node.level == 0 and node.module.split(".")[0] == "freeassetfilter")
+                node.module.startswith("sopeek.")
+                or (node.level == 0 and node.module.split(".")[0] == "sopeek")
             ):
                 refs.add(node.module)
     return refs
@@ -427,7 +427,7 @@ def resolve_test_targets(
     if declared_raw:
         normalized: List[str] = []
         for name in declared_raw:
-            full: str = name if name.startswith("freeassetfilter.") else f"freeassetfilter.{name}"
+            full: str = name if name.startswith("sopeek.") else f"sopeek.{name}"
             normalized.append(full)
         for full in normalized:
             real: Optional[str] = inventory.resolve(full)
@@ -650,7 +650,7 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(
         prog="coverage-manifest",
-        description="扫描 freeassetfilter 公开符号并比对测试目标的缺失矩阵（测试基础设施）。",
+        description="扫描 sopeek 公开符号并比对测试目标的缺失矩阵（测试基础设施）。",
     )
     parser.add_argument(
         "--strict",

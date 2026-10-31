@@ -1,10 +1,10 @@
 #requires -Version 7.0
 <#
 .SYNOPSIS
-  Todo 20 capture tool for the FreeAssetFilter installer (plan §14 workflow).
+  Todo 20 capture tool for the Sopeek installer (plan §14 workflow).
 
   Takes a real-machine screenshot of the installer window (class
-  `FreeAssetFilterInstaller`) while the Todo 19 /auto drive holds it on
+  `SopeekInstaller`) while the Todo 19 /auto drive holds it on
   page N, using a *desktop DC* BitBlt (GetDC(NULL) -> CreateCompatibleBitmap ->
   BitBlt SRCCOPY|CAPTUREBLT). PrintWindow is never used (plan §14).
 
@@ -33,7 +33,7 @@
     maintenance : same capture pipeline, but launch with /maintenance
                 /decision <ini> /installdir <scratch dir>. Before launch a
                 minimal installed fixture is created at
-                <installDir>\FreeAssetFilter.exe (copy of the TEST GUI) plus
+                <installDir>\Sopeek.exe (copy of the TEST GUI) plus
                 <installDir>\_internal, so page 5 does not show the
                 "not installed" error. Pages 5 and 6 are supported; page 6
                 additionally passes /auto:action=uninstall to navigate
@@ -70,9 +70,9 @@
   Optional file to APPEND a summary + stats JSON line to (append-only).
 #>
 param(
-    [string]$Exe = (Join-Path $PSScriptRoot '..\..\build\test-installer\FreeAssetFilterInstaller.exe'),
+    [string]$Exe = (Join-Path $PSScriptRoot '..\..\build\test-installer\SopeekInstaller.exe'),
     [string]$Payload = '',
-    [string]$Scratch = 'C:\Users\89553\AppData\Local\Temp\opencode\faf_t19',
+    [string]$Scratch = 'C:\Users\89553\AppData\Local\Temp\opencode\spk_t19',
     [ValidateSet('install', 'maintenance', 'uninstall')][string]$Mode = 'install',
     [ValidateRange(0, 7)][int]$Page = 0,
     [int]$PadPx = 24,
@@ -107,7 +107,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 
-public static class FafCap
+public static class SpkCap
 {
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
     public delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
@@ -320,10 +320,10 @@ function Read-DiagText([string]$path) {
     } catch { return '' }
 }
 
-[FafCap]::EnablePmv2() | Out-Null
+[SpkCap]::EnablePmv2() | Out-Null
 
 function Invoke-GateAndSave([System.Drawing.Bitmap]$bmp, [string]$tag) {
-    $stats = [FafCap]::Stats($bmp)
+    $stats = [SpkCap]::Stats($bmp)
     Write-Host "[STATS] $stats"
     $o = $stats | ConvertFrom-Json
     $pass = ($o.stddev -gt 5.0) -and ($o.nonbg -gt 0.005)
@@ -348,10 +348,10 @@ function Invoke-GateAndSave([System.Drawing.Bitmap]$bmp, [string]$tag) {
 }
 
 if ($Baseline) {
-    $vs = [FafCap]::VirtualScreenArr()
+    $vs = [SpkCap]::VirtualScreenArr()
     $tag = "[BASELINE] virtual-screen x=$($vs[0]) y=$($vs[1]) w=$($vs[2]) h=$($vs[3])"
     Write-Host $tag
-    try { $bmp = [FafCap]::CaptureRect($vs[0], $vs[1], $vs[2], $vs[3]) }
+    try { $bmp = [SpkCap]::CaptureRect($vs[0], $vs[1], $vs[2], $vs[3]) }
     catch { Fail 6 ("baseline capture failed: " + $_.Exception.Message) }
     Invoke-GateAndSave $bmp $tag
 }
@@ -394,8 +394,8 @@ $installFull = [System.IO.Path]::GetFullPath($installDir)
 if (-not $installFull.StartsWith($scratchFull + '\', [StringComparison]::OrdinalIgnoreCase)) {
     Fail 1 "refusing install dir outside -Scratch: $installFull"
 }
-foreach ($forbidden in @((Join-Path $env:LOCALAPPDATA 'FreeAssetFilter'),
-                         (Join-Path $env:LOCALAPPDATA 'FreeAssetFilterTest'))) {
+foreach ($forbidden in @((Join-Path $env:LOCALAPPDATA 'Sopeek'),
+                         (Join-Path $env:LOCALAPPDATA 'SopeekTest'))) {
     $forbiddenFull = [System.IO.Path]::GetFullPath($forbidden).TrimEnd('\')
     if ([string]::Equals($installFull.TrimEnd('\'), $forbiddenFull, [StringComparison]::OrdinalIgnoreCase)) {
         Fail 1 "refusing production/test install directory: $installFull"
@@ -405,7 +405,7 @@ foreach ($forbidden in @((Join-Path $env:LOCALAPPDATA 'FreeAssetFilter'),
 if ($Mode -eq 'maintenance') {
     # The fixture must be built from the test GUI, never the production one.
     if ($exeFull -match '\\build\\installer\\') {
-        Fail 1 "refusing to build the maintenance fixture from the production GUI: $exeFull (use the FAF_TESTMODE build under build/test-installer)"
+        Fail 1 "refusing to build the maintenance fixture from the production GUI: $exeFull (use the SPK_TESTMODE build under build/test-installer)"
     }
 }
 
@@ -436,14 +436,14 @@ if ($Mode -eq 'maintenance') {
     $script:installDir = $installDir
     try {
         New-Item -ItemType Directory -Force -Path $installDir -ErrorAction Stop | Out-Null
-        $fixtureExe = Join-Path $installDir 'FreeAssetFilter.exe'
+        $fixtureExe = Join-Path $installDir 'Sopeek.exe'
         $fixtureInternal = Join-Path $installDir '_internal'
         Copy-Item -LiteralPath $exeFull -Destination $fixtureExe -Force -ErrorAction Stop
         New-Item -ItemType Directory -Force -Path $fixtureInternal -ErrorAction Stop | Out-Null
         if (-not (Test-Path -LiteralPath $fixtureExe -PathType Leaf)) { throw "fixture exe missing after copy" }
         if (-not (Test-Path -LiteralPath $fixtureInternal -PathType Container)) { throw "fixture _internal missing after create" }
         $script:fixtureCreated = $true
-        Write-Host "[FIXTURE] created $installDir (FreeAssetFilter.exe=$((Get-Item -LiteralPath $fixtureExe).Length) bytes, _internal=dir)"
+        Write-Host "[FIXTURE] created $installDir (Sopeek.exe=$((Get-Item -LiteralPath $fixtureExe).Length) bytes, _internal=dir)"
     } catch {
         # Mark the partial fixture for cleanup even if it was only half-made.
         $script:fixtureCreated = $true
@@ -512,17 +512,17 @@ $arg = $argParts -join ' '
 
 Write-Host "[LAUNCH] mode=$Mode page=$Page exe=$Exe"
 Write-Host "[LAUNCH] args=$arg (diag=$diag)"
-$env:FAF_DIAG_PATH = $diag
-$env:FAF_PAYLOAD_TIMEOUT_MS = '120000'
+$env:SPK_DIAG_PATH = $diag
+$env:SPK_PAYLOAD_TIMEOUT_MS = '120000'
 try {
     $script:child = Start-Process -FilePath $Exe -ArgumentList $arg -WorkingDirectory $Scratch -PassThru -ErrorAction Stop
 } catch {
-    Remove-Item Env:\FAF_DIAG_PATH -ErrorAction SilentlyContinue
-    Remove-Item Env:\FAF_PAYLOAD_TIMEOUT_MS -ErrorAction SilentlyContinue
+    Remove-Item Env:\SPK_DIAG_PATH -ErrorAction SilentlyContinue
+    Remove-Item Env:\SPK_PAYLOAD_TIMEOUT_MS -ErrorAction SilentlyContinue
     Fail 1 ("failed to start installer: " + $_.Exception.Message)
 }
-Remove-Item Env:\FAF_DIAG_PATH -ErrorAction SilentlyContinue
-Remove-Item Env:\FAF_PAYLOAD_TIMEOUT_MS -ErrorAction SilentlyContinue
+Remove-Item Env:\SPK_DIAG_PATH -ErrorAction SilentlyContinue
+Remove-Item Env:\SPK_PAYLOAD_TIMEOUT_MS -ErrorAction SilentlyContinue
 
 $marker = "auto stop reached page=$Page"
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -580,19 +580,19 @@ foreach ($pat in $ForbidDiag) { if ($txt -match $pat) { Fail 3 "forbidden diag p
 $hwnd = [IntPtr]::Zero
 $sw2 = [System.Diagnostics.Stopwatch]::StartNew()
 while ($sw2.ElapsedMilliseconds -lt 5000) {
-    $hwnd = [FafCap]::FindVisibleWindow([uint32]$script:child.Id, 'FreeAssetFilterInstaller')
+    $hwnd = [SpkCap]::FindVisibleWindow([uint32]$script:child.Id, 'SopeekInstaller')
     if ($hwnd -ne [IntPtr]::Zero) { break }
     Start-Sleep -Milliseconds 100
 }
-if ($hwnd -eq [IntPtr]::Zero) { Fail 4 "window class FreeAssetFilterInstaller not found (visible) for pid $($script:child.Id)" }
+if ($hwnd -eq [IntPtr]::Zero) { Fail 4 "window class SopeekInstaller not found (visible) for pid $($script:child.Id)" }
 
-[FafCap]::SetWindowPos($hwnd, [IntPtr](-1), 0, 0, 0, 0, 0x13) | Out-Null  # HWND_TOPMOST, NOSIZE|NOMOVE|NOACTIVATE
-[FafCap]::SetForegroundWindow($hwnd) | Out-Null
+[SpkCap]::SetWindowPos($hwnd, [IntPtr](-1), 0, 0, 0, 0, 0x13) | Out-Null  # HWND_TOPMOST, NOSIZE|NOMOVE|NOACTIVATE
+[SpkCap]::SetForegroundWindow($hwnd) | Out-Null
 Start-Sleep -Milliseconds 150
 
-$r = [FafCap]::WindowRectArr($hwnd)
+$r = [SpkCap]::WindowRectArr($hwnd)
 if (-not $r) { Fail 6 "GetWindowRect failed" }
-$vs = [FafCap]::VirtualScreenArr()
+$vs = [SpkCap]::VirtualScreenArr()
 $vx = $vs[0]; $vy = $vs[1]; $vw = $vs[2]; $vh = $vs[3]
 $x = $r[0] - $PadPx; $y = $r[1] - $PadPx; $w = $r[2] + 2 * $PadPx; $h = $r[3] + 2 * $PadPx
 $clamped = $false
@@ -603,8 +603,8 @@ if (($y + $h) -gt ($vy + $vh)) { $h = ($vy + $vh) - $y; $clamped = $true }
 $tag = "[WINDOW] mode=$Mode page=$Page pid=$($script:child.Id) hwnd=0x$('{0:X}' -f [int64]$hwnd) rect=$($r[0]),$($r[1]),$($r[2]),$($r[3]) capture=$x,$y,$w,$h pad=$PadPx clamped=$clamped"
 Write-Host $tag
 
-try { $bmp = [FafCap]::CaptureRect($x, $y, $w, $h) }
+try { $bmp = [SpkCap]::CaptureRect($x, $y, $w, $h) }
 catch { Fail 6 ("capture failed: " + $_.Exception.Message) }
 
-[FafCap]::SetWindowPos($hwnd, [IntPtr](-2), 0, 0, 0, 0, 0x13) | Out-Null  # HWND_NOTOPMOST
+[SpkCap]::SetWindowPos($hwnd, [IntPtr](-2), 0, 0, 0, 0, 0x13) | Out-Null  # HWND_NOTOPMOST
 Invoke-GateAndSave $bmp $tag

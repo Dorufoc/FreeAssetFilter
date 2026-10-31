@@ -24,23 +24,23 @@ from PySide6.QtCore import Qt, QPoint
 from PySide6.QtWidgets import QApplication
 
 _PROJECT_ROOT = next(
-    p for p in Path(__file__).resolve().parents if (p / "freeassetfilter").is_dir()
+    p for p in Path(__file__).resolve().parents if (p / "sopeek").is_dir()
 )
-_UI_ROOT = _PROJECT_ROOT / "freeassetfilter" / "ui"
+_UI_ROOT = _PROJECT_ROOT / "sopeek" / "ui"
 if str(_UI_ROOT) not in sys.path:
     sys.path.insert(0, str(_UI_ROOT))
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-import freeassetfilter.ui.layout.preview.archive_previewer_layout as archive_mod  # noqa: E402
-from freeassetfilter.ui.layout.preview.archive_previewer_layout import (  # noqa: E402
+import sopeek.ui.layout.preview.archive_previewer_layout as archive_mod  # noqa: E402
+from sopeek.ui.layout.preview.archive_previewer_layout import (  # noqa: E402
     ArchivePreviewerLayout,
     _ArchiveListModel,
     _PLACEHOLDER_NO_ARCHIVE,
     _PLACEHOLDER_ROOT_EMPTY,
     _WARNING_TEXT,
 )
-from freeassetfilter.services.previewer_registry import PreviewerRegistry  # noqa: E402
+from sopeek.services.previewer_registry import PreviewerRegistry  # noqa: E402
 from tests.support.qt_helpers import process_qt_events  # noqa: E402
 
 pytestmark = pytest.mark.unit

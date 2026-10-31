@@ -22,11 +22,11 @@ import pytest
 from PySide6.QtCore import QEvent
 from PySide6.QtWidgets import QApplication
 
-_UI_ROOT: str = str(Path(__file__).resolve().parents[3] / "freeassetfilter" / "ui")
+_UI_ROOT: str = str(Path(__file__).resolve().parents[3] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-from freeassetfilter.ui.main_window import MainWindow  # noqa: E402
+from sopeek.ui.main_window import MainWindow  # noqa: E402
 
 pytestmark = pytest.mark.unit
 

@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 from PySide6.QtWidgets import QApplication
 
-import freeassetfilter.services.installer_launcher as il
+import sopeek.services.installer_launcher as il
 
 pytestmark = pytest.mark.unit
 
@@ -82,7 +82,7 @@ def _make_file(tmp_path: Path, name: str = "setup.exe") -> tuple[Path, str]:
     """创建安装包并返回路径与 SHA-256。"""
     path = tmp_path / "download" / name
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = b"FreeAssetFilter installer payload"
+    payload = b"Sopeek installer payload"
     path.write_bytes(payload)
     return path, hashlib.sha256(payload).hexdigest()
 

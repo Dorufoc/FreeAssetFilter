@@ -1,5 +1,5 @@
 from pathlib import Path
-from freeassetfilter.services.ai.context import AIFileContextService, render_file_context
+from sopeek.services.ai.context import AIFileContextService, render_file_context
 
 def test_text_context_budget(tmp_path: Path):
     path = tmp_path / "a.md"

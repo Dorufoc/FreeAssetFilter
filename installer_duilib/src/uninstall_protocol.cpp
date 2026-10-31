@@ -17,7 +17,7 @@
 #include <filesystem>
 #include <system_error>
 
-namespace faf {
+namespace spk {
 namespace {
 
 namespace proto = protocol;
@@ -377,4 +377,4 @@ bool WriteMaintenanceAck(const std::wstring& path) {
     return ok;
 }
 
-}  // namespace faf
+}  // namespace spk

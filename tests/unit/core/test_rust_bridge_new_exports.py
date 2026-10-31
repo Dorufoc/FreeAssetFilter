@@ -27,14 +27,14 @@ from typing import Any
 
 import pytest
 
-from freeassetfilter.core.native.bridges.rust_thumbnail_bridge import (
+from sopeek.core.native.bridges.rust_thumbnail_bridge import (
     RustThumbnailBridge,
 )
 
 pytestmark = [pytest.mark.unit, pytest.mark.rust]
 
 bridge = pytest.importorskip(
-    "freeassetfilter.core.native.bridges.rust_thumbnail_bridge"
+    "sopeek.core.native.bridges.rust_thumbnail_bridge"
 )
 
 

@@ -22,24 +22,24 @@ import numpy as np
 import pytest
 from PySide6.QtWidgets import QWidget
 
-from freeassetfilter.ui.mica import engine
-from freeassetfilter.ui.mica import material as material_mod
-from freeassetfilter.ui.mica.config import (
+from sopeek.ui.mica import engine
+from sopeek.ui.mica import material as material_mod
+from sopeek.ui.mica.config import (
     BAKE_LONG_MAX,
     G1_DARK,
     G1_LIGHT,
     MicaParams,
     bake_grid_size,
 )
-from freeassetfilter.ui.mica.drag import (
+from sopeek.ui.mica.drag import (
     LAYER_GRID_CAP,
     ViewportLayer,
     _window_scale,
     layer_grid,
     layer_to_source,
 )
-from freeassetfilter.ui.mica.resample import crop_f32, crop_resize
-from freeassetfilter.ui.mica.source import DesktopInfo, MonitorInfo, WallpaperSource
+from sopeek.ui.mica.resample import crop_f32, crop_resize
+from sopeek.ui.mica.source import DesktopInfo, MonitorInfo, WallpaperSource
 
 #: 等变性测试的窗口尺寸 / 监视器 / 参考位置。
 _WIN = (800, 600)

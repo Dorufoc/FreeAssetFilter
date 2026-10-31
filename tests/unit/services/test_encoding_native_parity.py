@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""编码探测 native/chardet 对拍（faf-core-rust-migration todo-25）。
+"""编码探测 native/chardet 对拍（spk-core-rust-migration todo-25）。
 
-覆盖 ``freeassetfilter.services.file_info_service`` 的编码 native 接线
+覆盖 ``sopeek.services.file_info_service`` 的编码 native 接线
 （``_detect_encoding_native`` path+mtime+窗口缓存 / ``_text_light_rows``
 1KB 窗口 / ``_text_detail_rows`` 4KB 窗口 / ``_decode_encoding_chain``
-回退链）与 ``faf_core_bridge.detect_encoding``：
+回退链）与 ``spk_core_bridge.detect_encoding``：
 
 * **全文件对拍（验收门槛）**：语料 20 文件（CJK ≥8KB：gbk/big5/shift-jis）
   native 探测编码 vs chardet 探测编码各自解码**全文件**字节，经同一
@@ -29,7 +29,7 @@
     python -m pytest tests/unit/services/test_encoding_native_parity.py -v
 """
 
-# targets: freeassetfilter.services.file_info_service / faf_core_bridge
+# targets: sopeek.services.file_info_service / spk_core_bridge
 
 from __future__ import annotations
 
@@ -41,14 +41,14 @@ import pytest
 
 import chardet
 
-from freeassetfilter.services import file_info_service as fis
+from sopeek.services import file_info_service as fis
 
 pytestmark = pytest.mark.unit
 
 _ENC_DIR = (
     Path(__file__).resolve().parents[2]
     / "support"
-    / "faf_core_fixtures"
+    / "spk_core_fixtures"
     / "encoding_samples"
 )
 
@@ -95,13 +95,13 @@ class TestNativeEncodingParity:
     """native 解码文本与 chardet 路径逐字节一致（20 语料，CJK ≥8KB）。"""
 
     @pytest.mark.parametrize("path", _CORPUS)
-    def test_decode_text_byte_identical(self, faf_core_available: bool, path: str) -> None:
+    def test_decode_text_byte_identical(self, spk_core_available: bool, path: str) -> None:
         """单文件：native 全文件探测 vs chardet 全文件探测 → 解码文本逐字节一致。
 
         分歧文件仅在 accepted-diffs 清单内放行（≤2 项，附原因）。
         """
-        if not faf_core_available:
-            pytest.skip("faf_core.dll 不可用，跳过 native 对拍")
+        if not spk_core_available:
+            pytest.skip("spk_core.dll 不可用，跳过 native 对拍")
         raw = Path(path).read_bytes()
         native_enc = _native_encoding(path, window=None)
         chardet_result = chardet.detect(raw) or {}
@@ -117,10 +117,10 @@ class TestNativeEncodingParity:
             # 记录原因（对拍测试保留 accepted-diffs 清单可追溯性）
             assert _ACCEPTED_DIFFS[name], "accepted-diffs 原因不能为空"
 
-    def test_all_corpus_diffs_within_limit(self, faf_core_available: bool) -> None:
+    def test_all_corpus_diffs_within_limit(self, spk_core_available: bool) -> None:
         """全语料汇总：未列入 accepted-diffs 的分歧必须为零（≤2 项门槛护栏）。"""
-        if not faf_core_available:
-            pytest.skip("faf_core.dll 不可用，跳过 native 对拍")
+        if not spk_core_available:
+            pytest.skip("spk_core.dll 不可用，跳过 native 对拍")
         diffs: List[str] = []
         for path in _CORPUS:
             raw = Path(path).read_bytes()
@@ -133,11 +133,11 @@ class TestNativeEncodingParity:
         assert unexpected == [], f"accepted-diffs 外零分歧，实测: {unexpected}"
 
     def test_cjk_full_file_detects_correct_encoding(
-        self, faf_core_available: bool,
+        self, spk_core_available: bool,
     ) -> None:
         """CJK ≥8KB 全文件窗口 native 探测正确（gbk/big5/shift_jis/utf-8）。"""
-        if not faf_core_available:
-            pytest.skip("faf_core.dll 不可用，跳过 native 对拍")
+        if not spk_core_available:
+            pytest.skip("spk_core.dll 不可用，跳过 native 对拍")
         cases = {
             "gbk_01.txt": "gbk", "gbk_02.txt": "gbk",
             "big5_01.txt": "big5",
@@ -149,11 +149,11 @@ class TestNativeEncodingParity:
             assert enc == expected, f"{name} 全文件应为 {expected}，实测 {enc}"
 
     def test_utf8_bom_stripped_on_both_paths(
-        self, faf_core_available: bool,
+        self, spk_core_available: bool,
     ) -> None:
         """UTF-8 BOM 文件：native(utf-8→utf-8-sig) 与 chardet(UTF-8-SIG) 均剥离 BOM。"""
-        if not faf_core_available:
-            pytest.skip("faf_core.dll 不可用，跳过 native 对拍")
+        if not spk_core_available:
+            pytest.skip("spk_core.dll 不可用，跳过 native 对拍")
         for name in ("utf8bom_01.txt", "utf8bom_02.txt"):
             path = str(_ENC_DIR / name)
             raw = Path(path).read_bytes()
@@ -170,11 +170,11 @@ class TestUtf8WindowCompletion:
     """1KB/4KB 固定字节窗口补全到 UTF-8 字符边界，utf-8 候选不因尾截断失效。"""
 
     def test_utf8_cjk_1kb_window_stays_utf8(
-        self, faf_core_available: bool,
+        self, spk_core_available: bool,
     ) -> None:
         """utf-8 中文文件 1KB 前缀补全后探测仍为 utf-8（未补全会跌落 windows-1252）。"""
-        if not faf_core_available:
-            pytest.skip("faf_core.dll 不可用，跳过 native 对拍")
+        if not spk_core_available:
+            pytest.skip("spk_core.dll 不可用，跳过 native 对拍")
         path = str(_ENC_DIR / "utf8_01.txt")
         raw = Path(path).read_bytes()
         raw_window = raw[: fis._TEXT_LIGHT_WINDOW]  # noqa: SLF001
@@ -186,9 +186,9 @@ class TestUtf8WindowCompletion:
         except UnicodeDecodeError:
             truncated_valid = False
         completed.decode("utf-8")  # 不抛即合法
-        from freeassetfilter.core.native.bridges.faf_core_bridge import get_faf_core_bridge
+        from sopeek.core.native.bridges.spk_core_bridge import get_spk_core_bridge
 
-        bridge = get_faf_core_bridge()
+        bridge = get_spk_core_bridge()
         enc = (bridge.detect_encoding(completed) or {}).get("encoding")
         assert enc == "utf-8", f"1KB 补全窗口应为 utf-8，实测 {enc}"
         # 说明性断言：若未补全的窗口也恰好合法则跳过强断言（内容差异）
@@ -220,9 +220,9 @@ class TestEncodingNativeCache:
     def _install_counting_bridge(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> Dict[str, int]:
-        import freeassetfilter.core.native.bridges.faf_core_bridge as bridge_mod
+        import sopeek.core.native.bridges.spk_core_bridge as bridge_mod
 
-        bridge = bridge_mod.get_faf_core_bridge()
+        bridge = bridge_mod.get_spk_core_bridge()
         calls: Dict[str, int] = {"n": 0}
         real_detect = bridge.detect_encoding
 
@@ -231,15 +231,15 @@ class TestEncodingNativeCache:
             return real_detect(data)
 
         monkeypatch.setattr(bridge, "detect_encoding", counting_detect)
-        monkeypatch.setattr(bridge_mod, "get_faf_core_bridge", lambda: bridge)
+        monkeypatch.setattr(bridge_mod, "get_spk_core_bridge", lambda: bridge)
         return calls
 
     def test_same_window_reuses_single_native_call(
-        self, faf_core_available: bool, monkeypatch: pytest.MonkeyPatch,
+        self, spk_core_available: bool, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """同一窗口重复调用合计仅 1 次 native；不同窗口独立探测。"""
-        if not faf_core_available:
-            pytest.skip("faf_core.dll 不可用，跳过 native 对拍")
+        if not spk_core_available:
+            pytest.skip("spk_core.dll 不可用，跳过 native 对拍")
         path = str(_ENC_DIR / "utf8_01.txt")
         calls = self._install_counting_bridge(monkeypatch)
         fis._text_light_rows(path)  # 1KB 窗口
@@ -251,12 +251,12 @@ class TestEncodingNativeCache:
         assert calls["n"] == 3, "1KB/4KB/全文件 三个窗口各 1 次 native 调用"
 
     def test_mtime_change_invalidates_cache(
-        self, faf_core_available: bool, monkeypatch: pytest.MonkeyPatch,
+        self, spk_core_available: bool, monkeypatch: pytest.MonkeyPatch,
         tmp_path: Any,
     ) -> None:
         """mtime 变化 → 缓存失效重新探测（path+mtime 键语义）。"""
-        if not faf_core_available:
-            pytest.skip("faf_core.dll 不可用，跳过 native 对拍")
+        if not spk_core_available:
+            pytest.skip("spk_core.dll 不可用，跳过 native 对拍")
         dst = tmp_path / "e.txt"
         dst.write_bytes((_ENC_DIR / "utf8_01.txt").read_bytes())
         path = str(dst)
@@ -279,11 +279,11 @@ class TestEncodingNativeFallback:
 
     def test_low_confidence_returns_empty_json(self) -> None:
         """latin-1 样本（native 置信度 <0.5 → {}）→ `_detect_encoding_native` None。"""
-        from freeassetfilter.core.native.bridges.faf_core_bridge import get_faf_core_bridge
+        from sopeek.core.native.bridges.spk_core_bridge import get_spk_core_bridge
 
-        bridge = get_faf_core_bridge()
+        bridge = get_spk_core_bridge()
         if not bridge.available or not bridge._supports_detect_encoding:  # noqa: SLF001
-            pytest.skip("faf_core.dll 不含 detect 导出，跳过可用路径测试")
+            pytest.skip("spk_core.dll 不含 detect 导出，跳过可用路径测试")
         raw = (_ENC_DIR / "latin1_01.txt").read_bytes()
         assert bridge.detect_encoding(raw) == {}
         path = str(_ENC_DIR / "latin1_01.txt")
@@ -306,34 +306,34 @@ class TestEncodingNativeFallback:
 
     def test_short_cjk_sample_low_confidence(self) -> None:
         """超短 CJK 样本（n < 阈值）→ {} → None（走 utf-8 → latin-1 链）。"""
-        from freeassetfilter.core.native.bridges.faf_core_bridge import get_faf_core_bridge
+        from sopeek.core.native.bridges.spk_core_bridge import get_spk_core_bridge
 
-        bridge = get_faf_core_bridge()
+        bridge = get_spk_core_bridge()
         if not bridge.available or not bridge._supports_detect_encoding:  # noqa: SLF001
-            pytest.skip("faf_core.dll 不含 detect 导出，跳过可用路径测试")
+            pytest.skip("spk_core.dll 不含 detect 导出，跳过可用路径测试")
         assert bridge.detect_encoding("中".encode("utf-8")) == {}
 
     def test_bridge_detect_encoding_missing_dll_returns_none(
         self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """DLL 缺失时桥 `detect_encoding` 返回 None；非 bytes/空样本 → None。"""
-        from freeassetfilter.core.native.bridges.faf_core_bridge import FafCoreBridge
+        from sopeek.core.native.bridges.spk_core_bridge import SpkCoreBridge
 
         missing = tmp_path / "missing.dll"
         monkeypatch.setattr(
-            FafCoreBridge, "_candidate_paths", lambda self: [Path(missing)]
+            SpkCoreBridge, "_candidate_paths", lambda self: [Path(missing)]
         )
-        inst = FafCoreBridge()
+        inst = SpkCoreBridge()
         assert inst.available is False
         assert inst.detect_encoding(b"hello world") is None
 
     def test_bridge_detect_encoding_malformed_input(self) -> None:
         """非 bytes / 空样本 → None（不抛异常，malformed 输入防御）。"""
-        from freeassetfilter.core.native.bridges.faf_core_bridge import get_faf_core_bridge
+        from sopeek.core.native.bridges.spk_core_bridge import get_spk_core_bridge
 
-        bridge = get_faf_core_bridge()
+        bridge = get_spk_core_bridge()
         if not bridge.available or not bridge._supports_detect_encoding:  # noqa: SLF001
-            pytest.skip("faf_core.dll 不含 detect 导出，跳过可用路径测试")
+            pytest.skip("spk_core.dll 不含 detect 导出，跳过可用路径测试")
         assert bridge.detect_encoding(b"") is None
         assert bridge.detect_encoding("not-bytes") is None
         assert bridge.detect_encoding(123) is None
@@ -341,10 +341,10 @@ class TestEncodingNativeFallback:
     def test_native_unavailable_service_still_works(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """get_faf_core_bridge 返回 None（DLL 缺失语义）→ chardet 仍产出。"""
-        import freeassetfilter.core.native.bridges.faf_core_bridge as bridge_mod
+        """get_spk_core_bridge 返回 None（DLL 缺失语义）→ chardet 仍产出。"""
+        import sopeek.core.native.bridges.spk_core_bridge as bridge_mod
 
-        monkeypatch.setattr(bridge_mod, "get_faf_core_bridge", lambda: None)
+        monkeypatch.setattr(bridge_mod, "get_spk_core_bridge", lambda: None)
         path = str(_ENC_DIR / "gbk_02.txt")
         rows = dict(fis._text_light_rows(path))
         assert rows["编码格式"] not in (fis.UNAVAILABLE, None)

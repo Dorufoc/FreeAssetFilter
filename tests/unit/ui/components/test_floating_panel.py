@@ -31,7 +31,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import QApplication, QWidget
 
-from freeassetfilter.ui.components.styled_floating_panel import FloatingPanel
+from sopeek.ui.components.styled_floating_panel import FloatingPanel
 
 pytestmark = pytest.mark.unit
 

@@ -14,7 +14,7 @@
 
 #include <string>
 
-namespace faf {
+namespace spk {
 
 class TextFactory {
 public:
@@ -48,4 +48,4 @@ private:
     bool preferredFound_ = false;
 };
 
-}  // namespace faf
+}  // namespace spk

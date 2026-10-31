@@ -19,7 +19,7 @@
 #include <string>
 #include <vector>
 
-namespace faf {
+namespace spk {
 
 // 三次贝塞尔缓动曲线：P0=(0,0)、P3=(1,1)，由控制点 P1=(x1,y1)、P2=(x2,y2) 决定。
 // 与 CSS `cubic-bezier(x1,y1,x2,y2)` / WinUI3 缓动同义：沿 x 轴求参数 t 使
@@ -133,4 +133,4 @@ private:
 // 全项目统一使用此时间源（含 installer_window 与 harness）。
 double SteadyNowMs();
 
-}  // namespace faf
+}  // namespace spk

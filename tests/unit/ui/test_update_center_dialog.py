@@ -16,9 +16,9 @@ from typing import Any
 import pytest
 from PySide6.QtWidgets import QApplication
 
-import freeassetfilter.ui.layout.update_dialogs as ud_mod
-from freeassetfilter.services.update_service import UpdateError, UpdateInfo
-from freeassetfilter.ui.layout.update_dialogs import UpdateCenterDialog
+import sopeek.ui.layout.update_dialogs as ud_mod
+from sopeek.services.update_service import UpdateError, UpdateInfo
+from sopeek.ui.layout.update_dialogs import UpdateCenterDialog
 from tests.support.qt_helpers import drain_deferred_deletes, safe_teardown
 
 pytestmark = pytest.mark.unit
@@ -41,12 +41,12 @@ def _info(
     asset: dict[str, Any] | None = None
     if sha256 is not None:
         asset = {
-            "name": "FreeAssetFilter-1.0.0-alpha.6_win10_win11_x64_Setup.exe",
+            "name": "Sopeek-1.0.0-alpha.6_win10_win11_x64_Setup.exe",
             "size": 2 * 1024 * 1024,
             "sha256": sha256,
             "download_url": (
-                "https://github.com/Dorufoc/FreeAssetFilter/releases/download/"
-                "v1.0.0-alpha.6/FreeAssetFilter-setup.exe"
+                "https://github.com/Dorufoc/Sopeek/releases/download/"
+                "v1.0.0-alpha.6/Sopeek-setup.exe"
             ),
         }
     return UpdateInfo(
@@ -62,7 +62,7 @@ def _info(
             "notes": "修复若干问题。",
             "notes_truncated": False,
             "html_url": (
-                "https://github.com/Dorufoc/FreeAssetFilter/releases/"
+                "https://github.com/Dorufoc/Sopeek/releases/"
                 "tag/v1.0.0-alpha.6"
             ),
         },

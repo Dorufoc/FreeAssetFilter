@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""FreeAssetFilter 统一测试运行器（tests/run_tests.py）。
+"""Sopeek 统一测试运行器（tests/run_tests.py）。
 
 五个 argparse 子命令（``python tests/run_tests.py <子命令>``）：
 
@@ -11,9 +11,9 @@
 * **unit / integration** —— 按目录范围运行对应分层；
   骨架期自动追加 ``tests/.omo_qa_smoke/``（探针）保证 collected ≥ 1，
   规避零收集退出码 5；
-* **gui** —— 隐式 ``-m gui`` + ``FAF_VISUAL=1``，并**取消**默认 offscreen
+* **gui** —— 隐式 ``-m gui`` + ``SPK_VISUAL=1``，并**取消**默认 offscreen
   （真实显示器环境）；
-* **coverage** —— 同 ``all`` 范围并附加 ``--cov=freeassetfilter
+* **coverage** —— 同 ``all`` 范围并附加 ``--cov=sopeek
   --cov-report=term``；``--strict`` 时再运行 ``coverage_manifest``。
 
 公共行为：
@@ -99,7 +99,7 @@ def _configure_platform(command: str, visual: bool) -> None:
 
     默认 ``QT_QPA_PLATFORM=offscreen``（``--visual`` 时取消）；
     ``gui`` 子命令无条件取消 offscreen（真实显示器）并设置
-    ``FAF_VISUAL=1``（供 gui 套件判断断言层/截图层深浅模式）。
+    ``SPK_VISUAL=1``（供 gui 套件判断断言层/截图层深浅模式）。
 
     Args:
         command: 当前子命令名。
@@ -111,9 +111,9 @@ def _configure_platform(command: str, visual: bool) -> None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     if command == "gui":
         os.environ.pop("QT_QPA_PLATFORM", None)
-        os.environ["FAF_VISUAL"] = "1"
+        os.environ["SPK_VISUAL"] = "1"
     else:
-        os.environ.pop("FAF_VISUAL", None)
+        os.environ.pop("SPK_VISUAL", None)
 
 
 def _scope_paths(command: str) -> List[str]:
@@ -237,7 +237,7 @@ def _run_coverage(args: argparse.Namespace) -> int:
         int: pytest 退出码；``--strict`` 时若 pytest 通过则返回 manifest 结果。
     """
     pytest_args: List[str] = build_pytest_args("coverage", args)
-    pytest_args.extend(["--cov=freeassetfilter", "--cov-report=term"])
+    pytest_args.extend(["--cov=sopeek", "--cov-report=term"])
     code: int = _run_pytest(pytest_args)
     if code != 0 or not args.strict:
         return code
@@ -275,7 +275,7 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(
         prog="run_tests",
-        description="FreeAssetFilter 统一测试运行器：分层 / 全量 / 覆盖率。",
+        description="Sopeek 统一测试运行器：分层 / 全量 / 覆盖率。",
     )
     parser.add_argument(
         "command",

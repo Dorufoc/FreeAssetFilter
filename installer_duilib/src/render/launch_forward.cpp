@@ -14,7 +14,7 @@
 
 namespace fs = std::filesystem;
 
-namespace faf {
+namespace spk {
 
 LaunchOutcome LaunchInstalledAppDeElevated(const std::wstring& installDir, HWND owner) {
     LaunchOutcome outcome;
@@ -23,7 +23,7 @@ LaunchOutcome LaunchInstalledAppDeElevated(const std::wstring& installDir, HWND 
         return outcome;
     }
 
-    const fs::path exePath = fs::path(installDir) / L"FreeAssetFilter.exe";
+    const fs::path exePath = fs::path(installDir) / L"Sopeek.exe";
     std::error_code ec;
     if (!fs::exists(exePath, ec)) {
         // 目标缺失：不崩溃、不抛异常 —— 只返回可展示的错误（QA 场景 launch-missing）。
@@ -47,4 +47,4 @@ LaunchOutcome LaunchInstalledAppDeElevated(const std::wstring& installDir, HWND 
     return outcome;
 }
 
-}  // namespace faf
+}  // namespace spk

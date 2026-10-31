@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """预览层 SVG 渲染器单测（tests-comprehensive-refactor todo-9）。
 
-覆盖 ``freeassetfilter.core.preview.svg_renderer`` 的纯函数与静态工具：
+覆盖 ``sopeek.core.preview.svg_renderer`` 的纯函数与静态工具：
 
 * ``_smart_render_size`` 的尺寸兜底与 DPR 缩放；
 * ``_replace_svg_colors`` 的颜色替换矩阵（black/white/accent/normal、
@@ -23,7 +23,7 @@ import pytest
 from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import QLabel, QWidget, QVBoxLayout
 
-from freeassetfilter.core.preview.svg_renderer import SvgRenderer, _smart_render_size
+from sopeek.core.preview.svg_renderer import SvgRenderer, _smart_render_size
 from tests.support.parity import pixel_hash
 
 
@@ -63,7 +63,7 @@ class TestReplaceSvgColors:
         新版颜色源为 ``ui.theme`` 的 tm 令牌；测试经 monkeypatch 把模块
         内的 ``tm`` 替换为返回固定色值的桩，保证断言与机器主题无关。
         """
-        import freeassetfilter.core.preview.svg_renderer as svg_mod
+        import sopeek.core.preview.svg_renderer as svg_mod
 
         class _Color:
             def __init__(self, value: str) -> None:
@@ -313,12 +313,12 @@ class TestRenderEntrypoints:
 
 
 # ---------------------------------------------------------------------------
-# native SVG 换色接线（todo 12：优先 faf_core、Python 回退、像素对拍）
+# native SVG 换色接线（todo 12：优先 spk_core、Python 回退、像素对拍）
 # ---------------------------------------------------------------------------
 class TestNativeSvgColorsWiring:
     """``_replace_svg_colors`` 的 native 优先接线、Python 回退与像素对拍。
 
-    native（``faf_core``）以编译期常量镜像默认深色主题色值（task-11 契约）：
+    native（``spk_core``）以编译期常量镜像默认深色主题色值（task-11 契约）：
     accent ``#3a9dcb`` / fill ``#3e3e3e`` / text ``#ffffff`` / mid ``#888888``。
     接线仅当 ``tm`` 当前色值与常量逐一致时才走 native，否则回退 Python——
     保证任意主题（深色/浅色/自定义配色）下输出逐字节一致。
@@ -327,7 +327,7 @@ class TestNativeSvgColorsWiring:
     @pytest.fixture(autouse=True)
     def _native_theme(self, monkeypatch: Any) -> None:
         """把 svg_renderer.tm stub 成 native 编译期常量（深色主题镜像）。"""
-        import freeassetfilter.core.preview.svg_renderer as svg_mod
+        import sopeek.core.preview.svg_renderer as svg_mod
 
         monkeypatch.setattr(
             svg_mod,
@@ -353,7 +353,7 @@ class TestNativeSvgColorsWiring:
         """
         src = (
             Path(__file__).resolve().parents[2]
-            / "support" / "faf_core_fixtures" / "svg_samples" / name
+            / "support" / "spk_core_fixtures" / "svg_samples" / name
         )
         dst = tmp_path / name
         dst.write_bytes(src.read_bytes())
@@ -361,12 +361,12 @@ class TestNativeSvgColorsWiring:
 
     @staticmethod
     def _force_python_bridge(monkeypatch: Any) -> None:
-        """把 faf_core 桥替换为恒返回 None 的桩 → 强制 Python 回退。
+        """把 spk_core 桥替换为恒返回 None 的桩 → 强制 Python 回退。
 
         Args:
             monkeypatch: pytest monkeypatch fixture。
         """
-        import freeassetfilter.core.native.bridges.faf_core_bridge as br_mod
+        import sopeek.core.native.bridges.spk_core_bridge as br_mod
 
         class _NoneBridge:
             available = True
@@ -374,11 +374,11 @@ class TestNativeSvgColorsWiring:
             def replace_svg_colors(self, *args: Any, **kwargs: Any) -> None:
                 return None
 
-        monkeypatch.setattr(br_mod, "get_faf_core_bridge", lambda: _NoneBridge())
+        monkeypatch.setattr(br_mod, "get_spk_core_bridge", lambda: _NoneBridge())
 
     def test_native_preferred_when_bridge_available(self, monkeypatch: Any) -> None:
         """happy：桥可用且主题色匹配常量 → 直接返回 native 输出。"""
-        import freeassetfilter.core.native.bridges.faf_core_bridge as br_mod
+        import sopeek.core.native.bridges.spk_core_bridge as br_mod
 
         calls: list = []
 
@@ -389,14 +389,14 @@ class TestNativeSvgColorsWiring:
                 calls.append((svg_text, invert, force))
                 return '<svg fill="#3e3e3e"/>'
 
-        monkeypatch.setattr(br_mod, "get_faf_core_bridge", lambda: _FakeBridge())
+        monkeypatch.setattr(br_mod, "get_spk_core_bridge", lambda: _FakeBridge())
         out: str = SvgRenderer._replace_svg_colors('<svg fill="#000000"/>')
         assert out == '<svg fill="#3e3e3e"/>'
         assert calls == [('<svg fill="#000000"/>', False, False)]
 
     def test_fallback_python_when_bridge_returns_none(self, monkeypatch: Any) -> None:
         """failure：桥返回 None（native 失败/空文本）→ 回退 Python 换色。"""
-        import freeassetfilter.core.native.bridges.faf_core_bridge as br_mod
+        import sopeek.core.native.bridges.spk_core_bridge as br_mod
 
         class _NoneBridge:
             available = True
@@ -404,7 +404,7 @@ class TestNativeSvgColorsWiring:
             def replace_svg_colors(self, *args: Any, **kwargs: Any) -> None:
                 return None
 
-        monkeypatch.setattr(br_mod, "get_faf_core_bridge", lambda: _NoneBridge())
+        monkeypatch.setattr(br_mod, "get_spk_core_bridge", lambda: _NoneBridge())
         out: str = SvgRenderer._replace_svg_colors('<svg><path fill="#000000"/></svg>')
         assert 'fill="#ffffff"' in out  # secondary（常量白）由 Python 路径产出
 
@@ -416,8 +416,8 @@ class TestNativeSvgColorsWiring:
 
     def test_fallback_python_when_theme_mismatch(self, monkeypatch: Any) -> None:
         """boundary：浅色/自定义配色（tm 与常量不符）→ 禁止 native、走 Python。"""
-        import freeassetfilter.core.preview.svg_renderer as svg_mod
-        import freeassetfilter.core.native.bridges.faf_core_bridge as br_mod
+        import sopeek.core.preview.svg_renderer as svg_mod
+        import sopeek.core.native.bridges.spk_core_bridge as br_mod
 
         monkeypatch.setattr(
             svg_mod,
@@ -441,7 +441,7 @@ class TestNativeSvgColorsWiring:
                 return None
 
         fake = _FakeBridge()
-        monkeypatch.setattr(br_mod, "get_faf_core_bridge", lambda: fake)
+        monkeypatch.setattr(br_mod, "get_spk_core_bridge", lambda: fake)
         out: str = SvgRenderer._replace_svg_colors('<svg><path fill="#0a59f7"/></svg>')
         # QColor("#FF0000").name() 归一化为小写 #ff0000 → Python 路径按该值替换
         assert 'fill="#ff0000"' in out  # 使用 stub 的 accent
@@ -449,7 +449,7 @@ class TestNativeSvgColorsWiring:
 
     def test_fallback_python_when_bridge_raises(self, monkeypatch: Any) -> None:
         """failure：桥抛异常 → 回退 Python 换色不崩溃。"""
-        import freeassetfilter.core.native.bridges.faf_core_bridge as br_mod
+        import sopeek.core.native.bridges.spk_core_bridge as br_mod
 
         class _RaisingBridge:
             available = True
@@ -457,16 +457,16 @@ class TestNativeSvgColorsWiring:
             def replace_svg_colors(self, *args: Any, **kwargs: Any) -> None:
                 raise RuntimeError("native boom")
 
-        monkeypatch.setattr(br_mod, "get_faf_core_bridge", lambda: _RaisingBridge())
+        monkeypatch.setattr(br_mod, "get_spk_core_bridge", lambda: _RaisingBridge())
         out: str = SvgRenderer._replace_svg_colors('<svg><path fill="#000000"/></svg>')
         assert 'fill="#ffffff"' in out
 
     def test_native_output_matches_python_bytes(
-        self, monkeypatch: Any, faf_core_available: bool
+        self, monkeypatch: Any, spk_core_available: bool
     ) -> None:
         """happy（真实 DLL）：tm=常量时 native 换色与 Python 回退逐字节一致。"""
-        if not faf_core_available:
-            pytest.skip("faf_core.dll 不可用，跳过真实 native 对拍")
+        if not spk_core_available:
+            pytest.skip("spk_core.dll 不可用，跳过真实 native 对拍")
         svg: str = (
             '<svg><path fill="#000000" stroke="#FFFFFF"/>'
             '<circle fill="#0a59f7"/><rect style="fill: #cecece"/></svg>'
@@ -477,15 +477,15 @@ class TestNativeSvgColorsWiring:
         assert native == fallback
 
     def test_pixel_hash_parity_real_native(
-        self, monkeypatch: Any, qapp: Any, tmp_path: Any, faf_core_available: bool
+        self, monkeypatch: Any, qapp: Any, tmp_path: Any, spk_core_available: bool
     ) -> None:
         """happy（真实 DLL）：render_svg_to_exact_pixmap 像素 hash 与改造前一致。
 
         native 换色 → 光栅化 的像素 hash 必须等于 Python 换色 → 光栅化 的像素
         hash（todo-5 夹具 ``sample_hit_all.svg`` 覆盖 18 条正则各命中）。
         """
-        if not faf_core_available:
-            pytest.skip("faf_core.dll 不可用，跳过真实 native 像素对拍")
+        if not spk_core_available:
+            pytest.skip("spk_core.dll 不可用，跳过真实 native 像素对拍")
         svg_file: str = self._copy_fixture_svg(tmp_path)
         native_pixmap = SvgRenderer.render_svg_to_exact_pixmap(
             svg_file, icon_width=48, icon_height=48, device_pixel_ratio=1.0

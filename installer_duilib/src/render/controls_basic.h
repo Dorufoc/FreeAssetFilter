@@ -24,7 +24,7 @@
 #include "render/text.h"
 #include "render/theme.h"
 
-namespace faf {
+namespace spk {
 
 // 强调/次要按钮。圆角 4；hover = hover token 叠加，pressed = pressed token 叠加 +
 // 轻微缩放（按下时缩到 0.98 并整体微移），focus = accent 外描边；支持纯文字或
@@ -194,4 +194,4 @@ private:
     const TextFactory* text_ = nullptr;
 };
 
-}  // namespace faf
+}  // namespace spk

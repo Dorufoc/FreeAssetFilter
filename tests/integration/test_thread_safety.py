@@ -88,7 +88,7 @@ def _run_concurrently(
 
     for i in range(num_workers):
         t = threading.Thread(
-            target=_wrapped, args=(i,), name=f"faf_concurrent_{i}", daemon=True
+            target=_wrapped, args=(i,), name=f"spk_concurrent_{i}", daemon=True
         )
         t.start()
         threads.append(t)
@@ -109,7 +109,7 @@ class TestSettingsManagerConcurrency:
         self, tmp_path: Any, qapp: Any
     ) -> None:
         """50 线程各写各的 key，join 后每个 key 都保有各自写入值。"""
-        from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+        from sopeek.core.managers.settings_manager_v2 import SettingsManagerV2
 
         start: float = time.monotonic()
 
@@ -139,7 +139,7 @@ class TestSettingsManagerConcurrency:
         self, tmp_path: Any, qapp: Any
     ) -> None:
         """50 线程写同一 key，最终值必属于写入值集合（最后写入者胜）。"""
-        from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+        from sopeek.core.managers.settings_manager_v2 import SettingsManagerV2
 
         manager = SettingsManagerV2(file_path=str(tmp_path / "thr_race.json"))
         manager.load()
@@ -165,7 +165,7 @@ class TestHeartbeatManagerConcurrency:
 
     def test_concurrent_register_unregister(self, qapp: Any) -> None:
         """50 线程各注册唯一 id 再注销；全部成功、零异常。"""
-        from freeassetfilter.core.managers.heartbeat_manager import HeartbeatManager
+        from sopeek.core.managers.heartbeat_manager import HeartbeatManager
 
         HeartbeatManager._instance = None  # noqa: SLF001
         HeartbeatManager._initialized = False  # noqa: SLF001
@@ -190,7 +190,7 @@ class TestHeartbeatManagerConcurrency:
 
     def test_duplicate_id_raises_valueerror_concurrently(self, qapp: Any) -> None:
         """并发注册同一 id：恰好一次成功，其余全部 ValueError 且不挂死。"""
-        from freeassetfilter.core.managers.heartbeat_manager import HeartbeatManager
+        from sopeek.core.managers.heartbeat_manager import HeartbeatManager
 
         HeartbeatManager._instance = None  # noqa: SLF001
         HeartbeatManager._initialized = False  # noqa: SLF001

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""P3.4 流式扫描游标（`faf_scan_begin/next/free`）与 UI 派发测试。
+"""P3.4 流式扫描游标（`spk_scan_begin/next/free`）与 UI 派发测试。
 
 锁定五条契约：
 
@@ -23,14 +23,14 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import pytest
 
-from freeassetfilter.core.native import api as native_api
+from sopeek.core.native import api as native_api
 
-#: 布局模块用短路径导入，需 ``freeassetfilter/ui`` 在 sys.path。
-_UI_ROOT: str = str(Path(__file__).resolve().parents[3] / "freeassetfilter" / "ui")
+#: 布局模块用短路径导入，需 ``sopeek/ui`` 在 sys.path。
+_UI_ROOT: str = str(Path(__file__).resolve().parents[3] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-from freeassetfilter.ui.layout import file_selector_layout as fsl_mod  # noqa: E402
+from sopeek.ui.layout import file_selector_layout as fsl_mod  # noqa: E402
 
 pytestmark = pytest.mark.unit
 
@@ -57,7 +57,7 @@ def sample_dir(tmp_path: Path) -> Path:
 def _require_stream() -> None:
     """DLL 或导出缺失时跳过。"""
     if not native_api.supports("scanstream"):
-        pytest.skip("faf_core 流式扫描导出不可用")
+        pytest.skip("spk_core 流式扫描导出不可用")
 
 
 def _drain(path: Path, chunk: int) -> List[Dict[str, Any]]:

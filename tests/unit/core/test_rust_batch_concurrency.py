@@ -31,12 +31,12 @@ from typing import Any, List, Optional, Tuple
 import pytest
 from PIL import Image
 
-from freeassetfilter.core.native.bridges.rust_thumbnail_bridge import RustThumbnailBridge
+from sopeek.core.native.bridges.rust_thumbnail_bridge import RustThumbnailBridge
 
 pytestmark = [pytest.mark.unit, pytest.mark.rust]
 
 bridge = pytest.importorskip(
-    "freeassetfilter.core.native.bridges.rust_thumbnail_bridge"
+    "sopeek.core.native.bridges.rust_thumbnail_bridge"
 )
 
 try:

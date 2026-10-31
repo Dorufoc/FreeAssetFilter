@@ -22,7 +22,7 @@ worker 数 = CPU 数），再叠加 16 个批量调用方会让计时粒度模�
   解码冷缓存）不计入统计；
 * 原生内存缓存保持热态（契约原文"预热后计时"），度量稳态用户可感延迟。
 
-冒烟降级：设环境变量 ``FAF_BENCH_SMOKE=1`` 时以 5 样本快速模式运行
+冒烟降级：设环境变量 ``SPK_BENCH_SMOKE=1`` 时以 5 样本快速模式运行
 （阈值不变、仅缩样本），供 CI 冒烟门控。
 
 语料口径（todo 30 实测发现）：固化夹具中 ``min(w,h) < 8`` 的微缩图经原生
@@ -49,15 +49,15 @@ from typing import Any, Dict, List, Sequence
 
 import pytest
 
-from freeassetfilter.core.native.bridges.rust_thumbnail_bridge import (
+from sopeek.core.native.bridges.rust_thumbnail_bridge import (
     RustThumbnailBridge,
 )
 from tests.support.data_factories import make_image
 
 pytestmark = [pytest.mark.benchmark, pytest.mark.rust]
 
-#: 冒烟模式开关（FAF_BENCH_SMOKE=1 时启用 5 样本快速断言）。
-_SMOKE_ENV: str = os.environ.get("FAF_BENCH_SMOKE", "").strip().lower()
+#: 冒烟模式开关（SPK_BENCH_SMOKE=1 时启用 5 样本快速断言）。
+_SMOKE_ENV: str = os.environ.get("SPK_BENCH_SMOKE", "").strip().lower()
 SMOKE_MODE: bool = _SMOKE_ENV not in ("", "0", "false", "no")
 
 # --- 契约阈值（todo 30 原文，不许改） ---
@@ -277,7 +277,7 @@ def image_corpus(
             continue
         corpus.append(str(p))
 
-    workdir: Any = tmp_path_factory.mktemp("faf_bench_corpus")
+    workdir: Any = tmp_path_factory.mktemp("spk_bench_corpus")
     for name, fmt, size in GENERATED_SPECS:
         corpus.append(make_image(workdir / name, fmt=fmt, size=size))
 

@@ -1,6 +1,6 @@
 #pragma once
 //
-// logo.h - 从可执行文件资源解码 IDR_LOGO（FAF-setup.png）为 ID2D1Bitmap1。
+// logo.h - 从可执行文件资源解码 IDR_LOGO（SPK-setup.png）为 ID2D1Bitmap1。
 //
 // 走 WIC（CoCreateInstance(CLSID_WICImagingFactory)）解码 PNG。要求进程 COM(STA)
 // 已初始化（由 RenderContext 负责）。资源 ID 必须与 installer_duilib/resources/app.rc
@@ -10,9 +10,9 @@
 
 #include <d2d1_1.h>
 
-#include "render/render_context.h"  // 复用 faf::ComPtr
+#include "render/render_context.h"  // 复用 spk::ComPtr
 
-namespace faf {
+namespace spk {
 
 // IDR_LOGO 的数值；必须与 resources/app.rc 中的定义保持一致。
 #ifndef IDR_LOGO
@@ -37,4 +37,4 @@ private:
     UINT height_ = 0;
 };
 
-}  // namespace faf
+}  // namespace spk

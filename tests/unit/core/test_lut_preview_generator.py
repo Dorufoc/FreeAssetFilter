@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """C++/Python 双引擎 LUT 预览生成器单测（tests-comprehensive-refactor todo-9）。
 
-覆盖 ``freeassetfilter.core.native.bridges.lut_preview_generator``：
+覆盖 ``sopeek.core.native.bridges.lut_preview_generator``：
 
 * ``LUTPreviewGenerator`` 初始化（默认参考图路径解析）；
 * ``load_reference_image`` 的缺失/存在/转换路径；
@@ -29,13 +29,13 @@ import pytest
 try:
     from PIL import Image
 
-    from freeassetfilter.core.native.bridges.lut_preview_generator import (
+    from sopeek.core.native.bridges.lut_preview_generator import (
         LUTPreviewGenerator,
         generate_lut_preview,
         get_preview_generator,
         create_default_reference_image,
     )
-    from freeassetfilter.utils.lut_utils import CubeLUTParser
+    from sopeek.utils.lut_utils import CubeLUTParser
 except (ImportError, RuntimeError) as exc:  # pragma: no cover - 环境依赖缺失
     pytest.skip(f"lut_preview_generator 依赖不可用: {exc}", allow_module_level=True)
 
@@ -89,7 +89,7 @@ def _isolate_preview_dir(monkeypatch: Any, tmp_path: Any) -> str:
     fake_dir = tmp_path / "lut_previews"
     fake_dir.mkdir(exist_ok=True)
     monkeypatch.setattr(
-        "freeassetfilter.core.native.bridges.lut_preview_generator.get_lut_preview_dir",
+        "sopeek.core.native.bridges.lut_preview_generator.get_lut_preview_dir",
         lambda: str(fake_dir),
     )
     return str(fake_dir)
@@ -175,7 +175,7 @@ class TestGeneratePreview:
         ref, lut = _prepared
         gen = LUTPreviewGenerator(ref)
         monkeypatch.setattr(
-            "freeassetfilter.core.native.bridges.lut_preview_generator._cpp_available",
+            "sopeek.core.native.bridges.lut_preview_generator._cpp_available",
             lambda: True,
         )
         import io
@@ -190,7 +190,7 @@ class TestGeneratePreview:
             return png_bytes.getvalue()
 
         monkeypatch.setattr(
-            "freeassetfilter.core.native.bridges.lut_preview_generator.cpp_generate_preview",
+            "sopeek.core.native.bridges.lut_preview_generator.cpp_generate_preview",
             _fake_generate,
         )
         pixmap = gen.generate_preview(lut, output_size=(64, 64))
@@ -202,7 +202,7 @@ class TestGeneratePreview:
         ref, lut = _prepared
         gen = LUTPreviewGenerator(ref)
         monkeypatch.setattr(
-            "freeassetfilter.core.native.bridges.lut_preview_generator._cpp_available",
+            "sopeek.core.native.bridges.lut_preview_generator._cpp_available",
             lambda: False,
         )
         pixmap = gen.generate_preview(lut, output_size=(64, 64))
@@ -216,7 +216,7 @@ class TestGeneratePreview:
         ref, lut = _prepared
         gen = LUTPreviewGenerator(ref)
         monkeypatch.setattr(
-            "freeassetfilter.core.native.bridges.lut_preview_generator._cpp_available",
+            "sopeek.core.native.bridges.lut_preview_generator._cpp_available",
             lambda: False,
         )
         cache = tmp_path / "out.png"
@@ -231,7 +231,7 @@ class TestGeneratePreview:
         ref, _ = _prepared
         gen = LUTPreviewGenerator(ref)
         monkeypatch.setattr(
-            "freeassetfilter.core.native.bridges.lut_preview_generator._cpp_available",
+            "sopeek.core.native.bridges.lut_preview_generator._cpp_available",
             lambda: False,
         )
         bad_lut = tmp_path / "bad.cube"
@@ -306,7 +306,7 @@ class TestModuleEntrypoints:
 
     def test_get_preview_generator_singleton(self, monkeypatch: Any) -> None:
         """返回同类型实例（不强制单例断言）。"""
-        import freeassetfilter.core.native.bridges.lut_preview_generator as mod
+        import sopeek.core.native.bridges.lut_preview_generator as mod
 
         monkeypatch.setattr(mod, "_preview_generator", None)
         gen = get_preview_generator()

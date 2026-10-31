@@ -1,7 +1,7 @@
-"""可复用的假 `faf_updater` 边车，用于 Python 桥与下载流程测试。
+"""可复用的假 `spk_updater` 边车，用于 Python 桥与下载流程测试。
 
 该脚本通过 ``python tests/support/fake_updater.py`` 启动，严格镜像真实
-`faf_updater.exe` 的 NDJSON 线路形状（一行一个 JSON 对象、UTF-8、响应回显
+`spk_updater.exe` 的 NDJSON 线路形状（一行一个 JSON 对象、UTF-8、响应回显
 请求 ``id``）：
 
 * ``hello`` / ``check`` / ``verify`` / ``shutdown``
@@ -14,9 +14,9 @@
 * ``pause``/``cancel`` 校验 ``params.target`` 与当前下载 id；不匹配时返回
   ``accepted:false`` 且不改变任何状态。
 * abort 模式：控制请求携带 ``"abort": true`` 或环境变量
-  ``FAF_FAKE_ABORT`` 非空时，写 ack → 写 paused/cancelled 终态 →
+  ``SPK_FAKE_ABORT`` 非空时，写 ack → 写 paused/cancelled 终态 →
   ``os._exit(0)``（模拟真实边车的 watchdog 强制退出）。
-* ``FAF_FAKE_IGNORE_SHUTDOWN`` 非空时，`shutdown` 不写 ack 且主循环继续
+* ``SPK_FAKE_IGNORE_SHUTDOWN`` 非空时，`shutdown` 不写 ack 且主循环继续
   读取 stdin，用于验证桥的 terminate/kill 预算分支。
 """
 
@@ -121,7 +121,7 @@ def _abort_requested(params: dict[str, Any]) -> Optional[str]:
     """解析 abort 模式（暂停/取消）；未启用时返回 ``None``。"""
     raw = params.get("abort")
     if raw is None:
-        raw = os.environ.get("FAF_FAKE_ABORT")
+        raw = os.environ.get("SPK_FAKE_ABORT")
     if not raw:
         return None
     text = str(raw).strip().lower()
@@ -258,9 +258,9 @@ def _download_worker(
     expected = str(params.get("expected_sha256") or hashlib.sha256(body).hexdigest())
     part = _part_path(dest)
     meta = _meta_path(dest)
-    chunk_size = max(1, _env_int("FAF_FAKE_CHUNK_SIZE", int(params.get("chunk_size", CHUNK_DEFAULT))))
-    delay = max(0.0, _env_float("FAF_FAKE_CHUNK_DELAY", float(params.get("chunk_delay", 0.0))))
-    crash_at = _env_int("FAF_FAKE_CRASH_AT", 0)
+    chunk_size = max(1, _env_int("SPK_FAKE_CHUNK_SIZE", int(params.get("chunk_size", CHUNK_DEFAULT))))
+    delay = max(0.0, _env_float("SPK_FAKE_CHUNK_DELAY", float(params.get("chunk_delay", 0.0))))
+    crash_at = _env_int("SPK_FAKE_CRASH_AT", 0)
 
     _emit_event(request_id, {"event": "state", "state": "resolving"})
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -469,7 +469,7 @@ def _handle_control(request_id: str, cmd: str, params: dict[str, Any]) -> None:
                     state_for_abort = current
             else:
                 accepted = True
-                if os.environ.get("FAF_FAKE_IGNORE_CANCEL"):
+                if os.environ.get("SPK_FAKE_IGNORE_CANCEL"):
                     # 模拟取消与完成竞态：ack 已接受但 worker 继续跑完。
                     pass
                 elif current.get("paused"):
@@ -585,7 +585,7 @@ def _worker_check(request_id: str, cmd: str, params: dict[str, Any]) -> None:
     if cmd == "verify":
         path = Path(str(params.get("path", "")))
         expected = str(params.get("sha256", ""))
-        if os.environ.get("FAF_FAKE_REAL_VERIFY"):
+        if os.environ.get("SPK_FAKE_REAL_VERIFY"):
             try:
                 actual = hashlib.sha256(path.read_bytes()).hexdigest()
                 identity = _real_identity(path)
@@ -610,7 +610,7 @@ def _worker_check(request_id: str, cmd: str, params: dict[str, Any]) -> None:
         )
         return
     if cmd == "check":
-        result_path = os.environ.get("FAF_FAKE_CHECK_RESULT")
+        result_path = os.environ.get("SPK_FAKE_CHECK_RESULT")
         if result_path and Path(result_path).is_file():
             try:
                 payload = json.loads(Path(result_path).read_text(encoding="utf-8"))
@@ -634,11 +634,11 @@ def _handle_shutdown(request_id: str) -> bool:
 
     Returns:
         bool: 已接受 shutdown 并写出 ack 时为 ``True``；被
-        ``FAF_FAKE_IGNORE_SHUTDOWN`` 抑制时为 ``False``，调用方必须继续
+        ``SPK_FAKE_IGNORE_SHUTDOWN`` 抑制时为 ``False``，调用方必须继续
         读取 stdin，让进程保持存活直到被 terminate/kill。
     """
     global _exiting
-    if os.environ.get("FAF_FAKE_IGNORE_SHUTDOWN"):
+    if os.environ.get("SPK_FAKE_IGNORE_SHUTDOWN"):
         # 测试 stop() 的 terminate/kill 预算分支：故意不 ack、不退出。
         return False
     with _state_lock:

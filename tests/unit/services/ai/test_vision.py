@@ -1,4 +1,4 @@
-from freeassetfilter.services.ai.context import AIFileContextService
+from sopeek.services.ai.context import AIFileContextService
 
 def test_deepseek_vision_data_url(tmp_path):
     path = tmp_path / "image.png"

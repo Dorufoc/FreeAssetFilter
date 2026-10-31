@@ -2,7 +2,7 @@
 """End-to-end update flow: fake sidecar -> UpdateService -> dialogs/About page.
 
 The sidecar is ``tests/support/fake_updater.py`` launched through the real
-``FafUpdaterBridge`` command-injection seam. No network, installer or UAC
+``SpkUpdaterBridge`` command-injection seam. No network, installer or UAC
 prompt is used; ``ShellExecuteW`` is mocked. Paused artifacts are always
 removed by the fixture teardown.
 """
@@ -22,24 +22,24 @@ import pytest
 from PySide6.QtCore import QCoreApplication, QTimer
 from PySide6.QtWidgets import QApplication
 
-import freeassetfilter.core.managers.settings_manager_v2 as settings_v2
-import freeassetfilter.services.installer_launcher as launcher_mod
-import freeassetfilter.services.update_service as update_service_module
-import freeassetfilter.ui.layout.settings_layout as settings_mod
-import freeassetfilter.ui.layout.update_dialogs as dialogs_mod
-from freeassetfilter.core.native.bridges.faf_updater_bridge import FafUpdaterBridge
-from freeassetfilter.services.update_service import (
+import sopeek.core.managers.settings_manager_v2 as settings_v2
+import sopeek.services.installer_launcher as launcher_mod
+import sopeek.services.update_service as update_service_module
+import sopeek.ui.layout.settings_layout as settings_mod
+import sopeek.ui.layout.update_dialogs as dialogs_mod
+from sopeek.core.native.bridges.spk_updater_bridge import SpkUpdaterBridge
+from sopeek.services.update_service import (
     UpdateService,
     get_update_service_if_exists,
 )
-from freeassetfilter.ui.theme import tm
+from sopeek.ui.theme import tm
 from tests.support.qt_helpers import drain_deferred_deletes, safe_teardown
 
 pytestmark = pytest.mark.integration
 
 _FAKE_UPDATER = Path(__file__).resolve().parents[1] / "support" / "fake_updater.py"
 _PAYLOAD = bytes((index % 251) for index in range(1024 * 1024))
-_ASSET_NAME = "FreeAssetFilter_Setup.exe"
+_ASSET_NAME = "Sopeek_Setup.exe"
 _SHA256 = hashlib.sha256(_PAYLOAD).hexdigest()
 
 
@@ -68,7 +68,7 @@ class Flow:
     """One isolated fake-sidecar update service."""
 
     service: UpdateService
-    bridge: FafUpdaterBridge
+    bridge: SpkUpdaterBridge
     appdata: Path
     check_file: Path
 
@@ -95,7 +95,7 @@ def _check_result() -> dict[str, Any]:
             "version": "1.0.0-alpha.6",
             "tag": "v1.0.0-alpha.6",
             "date": "2026-06-01",
-            "html_url": "https://github.com/Dorufoc/FreeAssetFilter/releases/tag/v1.0.0-alpha.6",
+            "html_url": "https://github.com/Dorufoc/Sopeek/releases/tag/v1.0.0-alpha.6",
         },
         "asset": {
             "name": _ASSET_NAME,
@@ -138,13 +138,13 @@ def flow_factory(
     def make(env: dict[str, str] | None = None) -> Flow:
         check_file.write_text(json.dumps(_check_result()), encoding="utf-8")
         merged = {
-            "FAF_FAKE_CHECK_RESULT": str(check_file),
-            "FAF_FAKE_CHUNK_SIZE": "32768",
-            "FAF_FAKE_CHUNK_DELAY": "0.01",
+            "SPK_FAKE_CHECK_RESULT": str(check_file),
+            "SPK_FAKE_CHUNK_SIZE": "32768",
+            "SPK_FAKE_CHUNK_DELAY": "0.01",
         }
         if env:
             merged.update(env)
-        bridge = FafUpdaterBridge(
+        bridge = SpkUpdaterBridge(
             command=[sys.executable, str(_FAKE_UPDATER)],
             env=merged,
         )
@@ -300,9 +300,9 @@ class TestAboutPageFlow:
         """A cancel racing a completion emits one cancelled terminal."""
         flow = flow_factory(
             {
-                "FAF_FAKE_IGNORE_CANCEL": "1",
-                "FAF_FAKE_CHUNK_DELAY": "0.02",
-                "FAF_FAKE_CHUNK_SIZE": "16384",
+                "SPK_FAKE_IGNORE_CANCEL": "1",
+                "SPK_FAKE_CHUNK_DELAY": "0.02",
+                "SPK_FAKE_CHUNK_SIZE": "16384",
             }
         )
         finished: list[tuple[str, str]] = []
@@ -339,9 +339,9 @@ class TestAboutPageFlow:
         """A sidecar crash at 50% surfaces a retryable failure."""
         flow = flow_factory(
             {
-                "FAF_FAKE_CRASH_AT": str(len(_PAYLOAD) // 2),
-                "FAF_FAKE_CHUNK_DELAY": "0.01",
-                "FAF_FAKE_CHUNK_SIZE": "16384",
+                "SPK_FAKE_CRASH_AT": str(len(_PAYLOAD) // 2),
+                "SPK_FAKE_CHUNK_DELAY": "0.01",
+                "SPK_FAKE_CHUNK_SIZE": "16384",
             }
         )
         failed: list[tuple[str, str]] = []
@@ -377,7 +377,7 @@ class TestAboutPageFlow:
         expect_uac: bool,
     ) -> None:
         """ShellExecuteW success installs; UAC cancel restores the bridge."""
-        flow = flow_factory({"FAF_FAKE_REAL_VERIFY": "1"})
+        flow = flow_factory({"SPK_FAKE_REAL_VERIFY": "1"})
         monkeypatch.setattr(
             launcher_mod, "get_app_data_path", lambda: flow.appdata
         )

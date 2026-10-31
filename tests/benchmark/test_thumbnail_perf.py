@@ -45,7 +45,7 @@ def thumb_manager(tmp_path: Any, qapp: Any) -> Any:
     Returns:
         ThumbnailManager: 绑定临时缓存目录的新实例。
     """
-    from freeassetfilter.core.managers.thumbnail_manager import ThumbnailManager
+    from sopeek.core.managers.thumbnail_manager import ThumbnailManager
 
     manager = ThumbnailManager()
     thumb_dir: str = str(tmp_path / "thumbs")

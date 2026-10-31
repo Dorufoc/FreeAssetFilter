@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """更新设置通用页开关的暂存路由测试（rust-native-updater todo 11）。
 
-覆盖 ``freeassetfilter/core/managers/settings_manager_v2.py`` 的
+覆盖 ``sopeek/core/managers/settings_manager_v2.py`` 的
 ``general.check_updates_on_startup`` 默认值 / 白名单合并，以及
-``freeassetfilter/ui/layout/settings_layout.py`` 的 ``GeneralSettingsPage``
+``sopeek/ui/layout/settings_layout.py`` 的 ``GeneralSettingsPage``
 暂存写入、回填、取消恢复与主题刷新。
 
 验证命令：
@@ -21,12 +21,12 @@ import pytest
 from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QApplication
 
-from freeassetfilter.core.managers.settings_manager_v2 import (
+from sopeek.core.managers.settings_manager_v2 import (
     DEFAULT_SETTINGS_V2,
     SettingsManagerV2,
 )
-from freeassetfilter.ui.layout.settings_layout import GeneralSettingsPage
-from freeassetfilter.ui.layout.settings_staging_cache import SettingsStagingCache
+from sopeek.ui.layout.settings_layout import GeneralSettingsPage
+from sopeek.ui.layout.settings_staging_cache import SettingsStagingCache
 from tests.support.qt_helpers import safe_teardown
 
 pytestmark = pytest.mark.unit
@@ -142,7 +142,7 @@ class TestCheckUpdatesToggleStaging:
         self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
     ) -> None:
         """切换开关写暂存 True/False，V2 内存值与磁盘均保持原值。"""
-        import freeassetfilter.ui.layout.settings_layout as sl_mod
+        import sopeek.ui.layout.settings_layout as sl_mod
 
         tmp_file = tmp_path / "settings_v2.json"
         v2 = SettingsManagerV2(str(tmp_file))
@@ -256,7 +256,7 @@ class TestCheckUpdatesThemeAndGuard:
         self, qapp: QApplication, monkeypatch: Any
     ) -> None:
         """refresh_theme 的 row 元组包含新行并按统一 token 重注册。"""
-        import freeassetfilter.ui.layout.settings_layout as sl_mod
+        import sopeek.ui.layout.settings_layout as sl_mod
 
         refreshed: list[Any] = []
         monkeypatch.setattr(
@@ -309,7 +309,7 @@ def _patch_update_submit_env(
         tuple[str, list[SettingsManagerV2]]: 临时文件路径与工厂创建的
         管理器实例列表（按创建顺序）。
     """
-    import freeassetfilter.ui.layout.settings_layout as sl_mod
+    import sopeek.ui.layout.settings_layout as sl_mod
 
     tmp_file = tmp_path / "settings_v2.json"
     if initial_payload is not None:
@@ -380,7 +380,7 @@ def _make_submit_layout(
         tuple[Any, str, list[SettingsManagerV2]]: 布局实例、临时文件路径与
         工厂创建的管理器实例列表。
     """
-    from freeassetfilter.ui.layout.settings_layout import SettingsLayout
+    from sopeek.ui.layout.settings_layout import SettingsLayout
 
     tmp_file, created = _patch_update_submit_env(
         monkeypatch, tmp_path, initial_payload
@@ -470,7 +470,7 @@ class TestCheckUpdatesSubmit:
         self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
     ) -> None:
         """提交本身不调用更新服务（构造期一次性订阅除外），也不触发网络。"""
-        import freeassetfilter.services.update_service as us_mod
+        import sopeek.services.update_service as us_mod
 
         calls: list[str] = []
         monkeypatch.setattr(
@@ -501,7 +501,7 @@ class TestCheckUpdatesSubmit:
         self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
     ) -> None:
         """``save()`` 抛异常 → 返回 False，内存与磁盘均保持旧值。"""
-        import freeassetfilter.ui.layout.settings_layout as sl_mod
+        import sopeek.ui.layout.settings_layout as sl_mod
 
         initial = {
             "version": 2,

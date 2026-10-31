@@ -15,7 +15,7 @@ import threading
 import pytest
 from unittest.mock import MagicMock, patch
 
-from freeassetfilter.utils.app_logger import (
+from sopeek.utils.app_logger import (
     AppLogger,
     ComponentSourceFilter,
     ComponentSourceFormatter,
@@ -35,7 +35,7 @@ from freeassetfilter.utils.app_logger import (
     warning,
 )
 
-import freeassetfilter.utils.app_logger as _logger_module
+import sopeek.utils.app_logger as _logger_module
 
 
 @pytest.fixture(autouse=True)
@@ -104,7 +104,7 @@ class TestSanitizePath:
 
     def test_no_username_leak_in_drive_only(self) -> None:
         """纯盘符路径只被脱敏为 [DRIVE]，不泄露用户名。"""
-        result = sanitize_path(r"E:\Projects\FreeAssetFilter")
+        result = sanitize_path(r"E:\Projects\Sopeek")
         assert "E:" not in result
         assert "[DRIVE]" in result
 

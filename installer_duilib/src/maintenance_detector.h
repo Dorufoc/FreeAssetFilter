@@ -5,9 +5,9 @@
 // 契约来源：计划 T2 / D11 / D13 / D15-H1；常量统一取自
 // `render/maintenance_protocol.h`（生产/测试键由 kTestMode 在编译期决定）。
 //
-//   detected         : installDir\FreeAssetFilter.exe 存在 || installDir\_internal 存在
+//   detected         : installDir\Sopeek.exe 存在 || installDir\_internal 存在
 //   complete         : 两者都存在（程序文件完整）
-//   version          : FreeAssetFilter.exe 的 StringFileInfo\...\FileVersion；
+//   version          : Sopeek.exe 的 StringFileInfo\...\FileVersion；
 //                      任何一步失败（exe 不存在、无版本资源、无该字符串）=> 空串
 //   optDesktop       : 优先 HKCU 安装信息键 OptDesktop (DWORD)；
 //                      缺失/类型或长度非法时按桌面快捷方式是否存在推断；
@@ -24,7 +24,7 @@
 //
 #include <string>
 
-namespace faf {
+namespace spk {
 
 struct MaintenanceInfo {
     bool detected = false;
@@ -51,4 +51,4 @@ MaintenanceInfo Detect(const std::wstring& installDir);
 // 父目录必须已存在（本函数不创建目录）。成功返回 true。
 bool WriteMaintenanceDump(const MaintenanceInfo& info, const std::wstring& iniPath);
 
-}  // namespace faf
+}  // namespace spk

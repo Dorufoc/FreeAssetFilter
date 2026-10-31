@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""字体 native/fontTools 对拍（faf-core-rust-migration todo-26）。
+"""字体 native/fontTools 对拍（spk-core-rust-migration todo-26）。
 
-覆盖 ``freeassetfilter.services.file_info_service`` 的字体 native 接线
+覆盖 ``sopeek.services.file_info_service`` 的字体 native 接线
 （``_get_font_native`` path+mtime 缓存 / ``_font_name_rows`` /
-``_font_detail_rows``）与 ``faf_core_bridge.parse_font``：
+``_font_detail_rows``）与 ``spk_core_bridge.parse_font``：
 
 * **逐字段对拍**（TTF/OTF）：native 的 ``format/glyph_count/ascent/descent/
   line_gap/name1..6`` 与 fontTools ``font["hhea"]`` / ``maxp.numGlyphs`` /
@@ -21,7 +21,7 @@
     python -m pytest tests/unit/services/test_font_native_parity.py -v
 """
 
-# targets: freeassetfilter.services.file_info_service / faf_core_bridge
+# targets: sopeek.services.file_info_service / spk_core_bridge
 
 from __future__ import annotations
 
@@ -32,14 +32,14 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from freeassetfilter.services import file_info_service as fis
+from sopeek.services import file_info_service as fis
 
 pytestmark = pytest.mark.unit
 
 _FONT_DIR = (
     Path(__file__).resolve().parents[2]
     / "support"
-    / "faf_core_fixtures"
+    / "spk_core_fixtures"
     / "font_samples"
 )
 
@@ -148,10 +148,10 @@ class TestNativeFontParity:
 
     @pytest.mark.parametrize("ext", ["ttf", "otf"])
     def test_native_fields_match_fonttools(
-        self, faf_core_available: bool, ext: str
+        self, spk_core_available: bool, ext: str
     ) -> None:
-        if not faf_core_available:
-            pytest.skip("faf_core.dll 不可用，跳过 native 对拍")
+        if not spk_core_available:
+            pytest.skip("spk_core.dll 不可用，跳过 native 对拍")
         if importlib.util.find_spec("fontTools") is None:
             pytest.skip("fontTools 未安装")
         path = str(_FONT_DIR / f"sample_regular.{ext}")
@@ -163,11 +163,11 @@ class TestNativeFontParity:
 
     @pytest.mark.parametrize("ext", ["ttf", "otf"])
     def test_service_rows_match_oracle(
-        self, faf_core_available: bool, ext: str
+        self, spk_core_available: bool, ext: str
     ) -> None:
         """服务层 light/detail 行与 fontTools oracle 推导一致。"""
-        if not faf_core_available:
-            pytest.skip("faf_core.dll 不可用，跳过 native 对拍")
+        if not spk_core_available:
+            pytest.skip("spk_core.dll 不可用，跳过 native 对拍")
         if importlib.util.find_spec("fontTools") is None:
             pytest.skip("fontTools 未安装")
         path = str(_FONT_DIR / f"sample_regular.{ext}")
@@ -175,14 +175,14 @@ class TestNativeFontParity:
         assert dict(fis._font_name_rows(path)) == _expected_name_rows(oracle)
         assert dict(fis._font_detail_rows(path)) == _expected_detail_rows(oracle)
 
-    def test_accepted_diffs_within_limit(self, faf_core_available: bool) -> None:
+    def test_accepted_diffs_within_limit(self, spk_core_available: bool) -> None:
         """全语料字段差异汇总 ≤2（accepted-diffs 机制镜像编码 todo-25）。
 
         实测 ttf/otf 零差异（todo-22 探针已核）；WOFF/WOFF2 走 fontTools
         回退故不产生 native 差异。保留阈值护栏防止未来夹具/原生回归静默。
         """
-        if not faf_core_available:
-            pytest.skip("faf_core.dll 不可用，跳过 native 对拍")
+        if not spk_core_available:
+            pytest.skip("spk_core.dll 不可用，跳过 native 对拍")
         if importlib.util.find_spec("fontTools") is None:
             pytest.skip("fontTools 未安装")
         all_diffs: List[str] = []
@@ -206,11 +206,11 @@ class TestFontNativeFallback:
 
     @pytest.mark.parametrize("ext", ["woff", "woff2"])
     def test_woff_woff2_native_none_fonttools_rows(
-        self, faf_core_available: bool, ext: str
+        self, spk_core_available: bool, ext: str
     ) -> None:
         """WOFF/WOFF2（todo 1 裁决）native 返回 None，服务层回退 fontTools。"""
-        if not faf_core_available:
-            pytest.skip("faf_core.dll 不可用，跳过 native 对拍")
+        if not spk_core_available:
+            pytest.skip("spk_core.dll 不可用，跳过 native 对拍")
         if importlib.util.find_spec("fontTools") is None:
             pytest.skip("fontTools 未安装")
         path = str(_FONT_DIR / f"sample_regular.{ext}")
@@ -219,10 +219,10 @@ class TestFontNativeFallback:
         assert dict(fis._font_name_rows(path)) == _expected_name_rows(oracle)
         assert dict(fis._font_detail_rows(path)) == _expected_detail_rows(oracle)
 
-    def test_corrupt_returns_placeholders(self, faf_core_available: bool) -> None:
+    def test_corrupt_returns_placeholders(self, spk_core_available: bool) -> None:
         """损坏字体 → native None + 服务层占位符（绝不抛 TTLibError）。"""
-        if not faf_core_available:
-            pytest.skip("faf_core.dll 不可用，跳过 native 对拍")
+        if not spk_core_available:
+            pytest.skip("spk_core.dll 不可用，跳过 native 对拍")
         path = str(_FONT_DIR / "sample_corrupt.ttf")
         assert fis._get_font_native(path) is None
         assert fis._font_name_rows(path) == []
@@ -239,25 +239,25 @@ class TestFontNativeFallback:
         self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """DLL 缺失时桥 ``parse_font`` 返回 None；非 str 入参 → None。"""
-        from freeassetfilter.core.native.bridges.faf_core_bridge import FafCoreBridge
+        from sopeek.core.native.bridges.spk_core_bridge import SpkCoreBridge
 
         missing = tmp_path / "missing.dll"
         monkeypatch.setattr(
-            FafCoreBridge, "_candidate_paths", lambda self: [Path(missing)]
+            SpkCoreBridge, "_candidate_paths", lambda self: [Path(missing)]
         )
-        inst = FafCoreBridge()
+        inst = SpkCoreBridge()
         assert inst.parse_font("anything.ttf") is None
         assert inst.parse_font(123) is None
 
     def test_native_unavailable_service_falls_back_to_fonttools(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """get_faf_core_bridge 返回 None（DLL 缺失语义）→ fontTools 仍产出。"""
+        """get_spk_core_bridge 返回 None（DLL 缺失语义）→ fontTools 仍产出。"""
         if importlib.util.find_spec("fontTools") is None:
             pytest.skip("fontTools 未安装")
-        import freeassetfilter.core.native.bridges.faf_core_bridge as bridge_mod
+        import sopeek.core.native.bridges.spk_core_bridge as bridge_mod
 
-        monkeypatch.setattr(bridge_mod, "get_faf_core_bridge", lambda: None)
+        monkeypatch.setattr(bridge_mod, "get_spk_core_bridge", lambda: None)
         path = str(_FONT_DIR / "sample_regular.ttf")
         oracle = _fonttools_oracle(path)
         assert dict(fis._font_name_rows(path)) == _expected_name_rows(oracle)
@@ -273,9 +273,9 @@ class TestFontNativeCache:
     def _install_counting_bridge(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> Dict[str, int]:
-        import freeassetfilter.core.native.bridges.faf_core_bridge as bridge_mod
+        import sopeek.core.native.bridges.spk_core_bridge as bridge_mod
 
-        bridge = bridge_mod.get_faf_core_bridge()
+        bridge = bridge_mod.get_spk_core_bridge()
         calls: Dict[str, int] = {"n": 0}
         real_parse = bridge.parse_font
 
@@ -284,15 +284,15 @@ class TestFontNativeCache:
             return real_parse(p)
 
         monkeypatch.setattr(bridge, "parse_font", counting_parse)
-        monkeypatch.setattr(bridge_mod, "get_faf_core_bridge", lambda: bridge)
+        monkeypatch.setattr(bridge_mod, "get_spk_core_bridge", lambda: bridge)
         return calls
 
     def test_light_detail_share_single_native_call(
-        self, faf_core_available: bool, monkeypatch: pytest.MonkeyPatch
+        self, spk_core_available: bool, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """light + detail + 重复调用合计仅 1 次 native 解析。"""
-        if not faf_core_available:
-            pytest.skip("faf_core.dll 不可用，跳过 native 对拍")
+        if not spk_core_available:
+            pytest.skip("spk_core.dll 不可用，跳过 native 对拍")
         path = str(_FONT_DIR / "sample_regular.ttf")
         calls = self._install_counting_bridge(monkeypatch)
         fis._font_name_rows(path)
@@ -302,13 +302,13 @@ class TestFontNativeCache:
 
     def test_mtime_change_invalidates_cache(
         self,
-        faf_core_available: bool,
+        spk_core_available: bool,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Any,
     ) -> None:
         """mtime 变化 → 缓存失效重新解析（path+mtime 键语义）。"""
-        if not faf_core_available:
-            pytest.skip("faf_core.dll 不可用，跳过 native 对拍")
+        if not spk_core_available:
+            pytest.skip("spk_core.dll 不可用，跳过 native 对拍")
         dst = tmp_path / "f.ttf"
         dst.write_bytes((_FONT_DIR / "sample_regular.ttf").read_bytes())
         path = str(dst)

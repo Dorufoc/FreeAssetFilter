@@ -18,14 +18,14 @@
 
 namespace fs = std::filesystem;
 
-namespace faf {
+namespace spk {
 namespace {
 
-// §11：生产默认 1500000ms，严格小于 NSIS 的 FAF_WAIT_TIMEOUT_MS（1800000ms），
+// §11：生产默认 1500000ms，严格小于 NSIS 的 SPK_WAIT_TIMEOUT_MS（1800000ms），
 // 避免 NSIS 先 Abort 而 GUI 仍在等待形成孤儿进程。
 constexpr std::uint64_t kDefaultPayloadTimeoutMs = 1500000ULL;
 static_assert(kDefaultPayloadTimeoutMs < 1800000ULL,
-              "Frozen §11: payload timeout must stay strictly below NSIS FAF_WAIT_TIMEOUT_MS");
+              "Frozen §11: payload timeout must stay strictly below NSIS SPK_WAIT_TIMEOUT_MS");
 
 constexpr wchar_t kSentinelName[] = L"payload.ready";
 constexpr DWORD kSentinelPollMs = 100;
@@ -147,11 +147,11 @@ std::filesystem::path PayloadSentinelPath(const std::filesystem::path& payload) 
 }
 
 std::uint64_t PayloadTimeoutMs() {
-    // §11：无条件读取（与 NSIS 侧 FAF_WAIT_TIMEOUT_MS 同性质的运行时诊断覆盖，
-    // 不受 #ifdef FAF_TESTMODE 约束）；未设置或非法 ⇒ 生产默认。
+    // §11：无条件读取（与 NSIS 侧 SPK_WAIT_TIMEOUT_MS 同性质的运行时诊断覆盖，
+    // 不受 #ifdef SPK_TESTMODE 约束）；未设置或非法 ⇒ 生产默认。
     wchar_t buffer[64] = {};
     const DWORD length =
-        GetEnvironmentVariableW(L"FAF_PAYLOAD_TIMEOUT_MS", buffer, ARRAYSIZE(buffer));
+        GetEnvironmentVariableW(L"SPK_PAYLOAD_TIMEOUT_MS", buffer, ARRAYSIZE(buffer));
     if (length == 0 || length >= ARRAYSIZE(buffer)) return kDefaultPayloadTimeoutMs;
     errno = 0;
     wchar_t* end = nullptr;
@@ -171,9 +171,9 @@ bool WriteInstallResultIni(const std::wstring& resultPath, const std::wstring& d
     // §1：唯一允许的 BOM 预创建点（结果写入例程内）。
     if (!PrecreateUtf16BomFile(resultPath)) return false;
 
-    // §1：先写 [faf] 占位节（schema=1），使 [install] 永不为文件首节——规避
+    // §1：先写 [spk] 占位节（schema=1），使 [install] 永不为文件首节——规避
     // GetPrivateProfileString 对「BOM + 首节」的历史性怪癖。
-    bool ok = WritePrivateProfileStringW(L"faf", L"schema", L"1", resultPath.c_str()) != FALSE;
+    bool ok = WritePrivateProfileStringW(L"spk", L"schema", L"1", resultPath.c_str()) != FALSE;
     auto write = [&](const wchar_t* key, const wchar_t* value) {
         ok = (WritePrivateProfileStringW(L"install", key, value, resultPath.c_str()) != FALSE) && ok;
     };
@@ -492,4 +492,4 @@ InstallResult InstallEngine::Finalize(InstallResult result, const InstallOptions
     return result;
 }
 
-}  // namespace faf
+}  // namespace spk

@@ -1,0 +1,273 @@
+{
+  "schema": "spk-core-perf-baseline/v1",
+  "timestamp": "2026-10-17T10:57:02+00:00",
+  "mode": "full",
+  "machine": {
+    "platform": "Windows-10-10.0.26300-SP0",
+    "machine": "AMD64",
+    "processor": "Intel64 Family 6 Model 198 Stepping 2, GenuineIntel",
+    "python": "3.9.13",
+    "cpu_count": 24
+  },
+  "scan_directory": {
+    "files": 10000,
+    "samples": 5,
+    "native": {
+      "p50_ms": 382.03,
+      "p95_ms": 436.269,
+      "mean_ms": 388.461,
+      "max_ms": 446.929
+    },
+    "python": {
+      "p50_ms": 116.798,
+      "p95_ms": 132.813,
+      "mean_ms": 116.543,
+      "max_ms": 134.712
+    },
+    "p50_speedup_x": 0.306,
+    "assertion": {
+      "rule": "P50_native <= P50_python*1.2",
+      "p50_native_ms": 382.03,
+      "p50_python_ms": 116.798,
+      "limit_ms": 140.158,
+      "passed": false
+    }
+  },
+  "highlight": {
+    "lines": 3000,
+    "chars": 66670,
+    "samples": 5,
+    "native": {
+      "p50_ms": 209.459,
+      "p95_ms": 302.724,
+      "mean_ms": 242.748,
+      "max_ms": 304.757
+    },
+    "python": {
+      "p50_ms": 311.843,
+      "p95_ms": 336.205,
+      "mean_ms": 310.153,
+      "max_ms": 338.065
+    },
+    "p50_speedup_x": 1.489,
+    "assertion": {
+      "rule": "P50_native <= P50_python*1.2",
+      "p50_native_ms": 209.459,
+      "p50_python_ms": 311.843,
+      "limit_ms": 374.212,
+      "passed": true
+    }
+  },
+  "hash_throughput": {
+    "file_mib": 32.0,
+    "chunk_bytes": 262144,
+    "samples": 5,
+    "native": {
+      "p50_ms": 70.577,
+      "p95_ms": 72.193,
+      "mean_ms": 70.714,
+      "max_ms": 72.421,
+      "mib_per_sec_p50": 453.41
+    },
+    "python": {
+      "p50_ms": 62.517,
+      "p95_ms": 63.562,
+      "mean_ms": 62.661,
+      "max_ms": 63.585,
+      "mib_per_sec_p50": 511.86
+    },
+    "assertion": {
+      "rule": "P50_native <= P50_python*1.2",
+      "p50_native_ms": 70.577,
+      "p50_python_ms": 62.517,
+      "limit_ms": 75.02,
+      "passed": true
+    }
+  },
+  "copy_throughput": {
+    "sources": 16,
+    "total_bytes": 8388608,
+    "samples": 5,
+    "native": {
+      "p50_ms": 5.764,
+      "p95_ms": 7.3,
+      "mean_ms": 6.055,
+      "max_ms": 7.611,
+      "mib_per_sec_p50": 1387.93
+    },
+    "python": {
+      "p50_ms": 25.561,
+      "p95_ms": 31.087,
+      "mean_ms": 26.216,
+      "max_ms": 32.109,
+      "mib_per_sec_p50": 312.98
+    },
+    "assertion": {
+      "rule": "P50_native <= P50_python*1.2",
+      "p50_native_ms": 5.764,
+      "p50_python_ms": 25.561,
+      "limit_ms": 30.673,
+      "passed": true
+    }
+  },
+  "overlimit_fallback": {
+    "entries": 30000,
+    "payload_mib": 12.528,
+    "cap_bytes": 8388608,
+    "samples": 3,
+    "native_cap_reject": {
+      "p50_ms": 66.049,
+      "p95_ms": 108.826,
+      "mean_ms": 81.132,
+      "max_ms": 113.579
+    },
+    "python_fallback": {
+      "p50_ms": 4.468,
+      "p95_ms": 4.537,
+      "mean_ms": 4.377,
+      "max_ms": 4.544
+    },
+    "total_fallback_p50_ms": 70.517,
+    "no_exception": true
+  },
+  "exif": {
+    "status": "KEEP",
+    "sample": "sample_standard.jpg",
+    "samples": 5,
+    "native": {
+      "p50_ms": 0.118,
+      "p95_ms": 0.144,
+      "mean_ms": 0.123,
+      "max_ms": 0.145
+    },
+    "python": {
+      "p50_ms": 0.223,
+      "p95_ms": 0.269,
+      "mean_ms": 0.229,
+      "max_ms": 0.275
+    },
+    "p50_speedup_x": 1.89,
+    "assertion": {
+      "rule": "P50_native <= P50_python*1.2",
+      "p50_native_ms": 0.118,
+      "p50_python_ms": 0.223,
+      "limit_ms": 0.268,
+      "passed": true
+    }
+  },
+  "psd": {
+    "status": "DROP",
+    "note": "todo 1/9 裁决 native composite_psd 恒 None，基准只测 Python psd-tools",
+    "native_none_expected": true,
+    "native_returned_none": true,
+    "sample": "sample_layers_blend_mask.psd",
+    "samples": 3,
+    "python": {
+      "p50_ms": 10.008,
+      "p95_ms": 921.456,
+      "mean_ms": 347.557,
+      "max_ms": 1022.728
+    },
+    "assertion": {
+      "rule": "DROP — native 恒 None 为预期（非 FAIL），无 PERF 对照",
+      "passed": true
+    }
+  },
+  "svg_replace_colors": {
+    "status": "KEEP",
+    "note": "主题门控（tm 色值等于 native 常量才走 native）",
+    "chars": 1213,
+    "samples": 5,
+    "native": {
+      "p50_ms": 0.022,
+      "p95_ms": 0.049,
+      "mean_ms": 0.029,
+      "max_ms": 0.055
+    },
+    "python": {
+      "p50_ms": 0.123,
+      "p95_ms": 0.126,
+      "mean_ms": 0.122,
+      "max_ms": 0.127
+    },
+    "p50_speedup_x": 5.591,
+    "assertion": {
+      "rule": "P50_native <= P50_python*1.2",
+      "p50_native_ms": 0.022,
+      "p50_python_ms": 0.123,
+      "limit_ms": 0.148,
+      "passed": true
+    }
+  },
+  "fluid_frame": {
+    "status": "DROP",
+    "note": "todo 13/14 裁决 native render_fluid_frame 恒 None（ULP parity 不可达），基准只测 Python CPU 路径",
+    "native_none_expected": true,
+    "native_returned_none": true,
+    "width": 320,
+    "height": 200,
+    "samples": 3,
+    "python": {
+      "p50_ms": 63.318,
+      "p95_ms": 70.82,
+      "mean_ms": 65.757,
+      "max_ms": 71.653
+    },
+    "assertion": {
+      "rule": "DROP — native 恒 None 为预期（非 FAIL），无 PERF 对照",
+      "passed": true
+    }
+  },
+  "sevenz_parse": {
+    "status": "KEEP",
+    "note": "仅解析 -slt 文本，不含 7z.exe 子进程 / 编码重试",
+    "output_chars": 1623,
+    "samples": 5,
+    "native": {
+      "p50_ms": 0.028,
+      "p95_ms": 0.076,
+      "mean_ms": 0.043,
+      "max_ms": 0.079
+    },
+    "python": {
+      "p50_ms": 0.137,
+      "p95_ms": 0.299,
+      "mean_ms": 0.18,
+      "max_ms": 0.328
+    },
+    "p50_speedup_x": 4.893,
+    "assertion": {
+      "rule": "P50_native <= P50_python*1.2",
+      "p50_native_ms": 0.028,
+      "p50_python_ms": 0.137,
+      "limit_ms": 0.164,
+      "passed": true
+    }
+  },
+  "pdf_select_words": {
+    "status": "KEEP",
+    "note": "仅选区过滤；PyMuPDF get_text_words 取词保留 Python",
+    "pages": 3,
+    "samples": 5,
+    "native": {
+      "p50_ms": 0.74,
+      "p95_ms": 0.93,
+      "mean_ms": 0.794,
+      "max_ms": 0.935
+    },
+    "python": {
+      "p50_ms": 0.448,
+      "p95_ms": 0.589,
+      "mean_ms": 0.487,
+      "max_ms": 0.608
+    },
+    "p50_speedup_x": 0.605,
+    "assertion": {
+      "rule": "P50_native <= P50_python*1.2",
+      "p50_native_ms": 0.74,
+      "p50_python_ms": 0.448,
+      "limit_ms": 0.538,
+      "passed": false
+    }
+  }
+}

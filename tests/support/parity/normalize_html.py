@@ -1,6 +1,6 @@
 """HTML 归一化器（todo 15 交付实现，替代 todo 5 占位）。
 
-用途：对拍探针（native `faf_render_markdown` vs python-markdown 现状输出）
+用途：对拍探针（native `spk_render_markdown` vs python-markdown 现状输出）
 在 diff 前对两侧 HTML 做结构归一化，**只忽略结构无关差异**：
 
 1. **忽略 `id`/`class` 属性差异**（引擎生成的锚点 id / 样式 class 不同，

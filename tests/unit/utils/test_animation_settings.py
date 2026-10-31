@@ -13,10 +13,10 @@ from typing import Any
 
 import pytest
 
-from freeassetfilter.utils.animation_settings import is_animation_enabled, resolve_settings_manager
+from sopeek.utils.animation_settings import is_animation_enabled, resolve_settings_manager
 
 #: SettingsManagerV2 导入目标（resolve_settings_manager 内部 from-import 用）。
-_SETTINGS_MODULE_NAME: str = "freeassetfilter.core.managers.settings_manager_v2"
+_SETTINGS_MODULE_NAME: str = "sopeek.core.managers.settings_manager_v2"
 
 
 class FakeSettingsManager:

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Rust 缩略图引擎综合功能验证（图像精度 + 视频功能）集成测试。
 
-覆盖 ``freeassetfilter.core.native.bridges.rust_thumbnail_bridge`` 的
+覆盖 ``sopeek.core.native.bridges.rust_thumbnail_bridge`` 的
 真实解码回路（DLL 直调，桥内无 Python 回退）：
 
 * **图像多分辨率精度**（``TestImageMultiResolution``）：16x16 / 256x256 /
@@ -49,7 +49,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 import pytest
 from PIL import Image, ImageDraw
 
-from freeassetfilter.core.native.bridges.rust_thumbnail_bridge import (
+from sopeek.core.native.bridges.rust_thumbnail_bridge import (
     STATUS_OK,
     STATUS_UNSUPPORTED,
     RustThumbnailBridge,
@@ -60,7 +60,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.rust]
 
 
 bridge = pytest.importorskip(
-    "freeassetfilter.core.native.bridges.rust_thumbnail_bridge"
+    "sopeek.core.native.bridges.rust_thumbnail_bridge"
 )
 
 # 系统 PATH 中的完整版 ffmpeg（生成视频夹具用；模块级探测一次）
@@ -573,7 +573,7 @@ import sys
 import time
 
 t0 = time.perf_counter()
-from freeassetfilter.core.native.bridges.rust_thumbnail_bridge import (
+from sopeek.core.native.bridges.rust_thumbnail_bridge import (
     RustThumbnailBridge,
 )
 t1 = time.perf_counter()
@@ -690,14 +690,14 @@ def _parse_cold_start_output(stdout: str) -> Dict[str, float]:
 
 @pytest.fixture()
 def perf_quiet_logs() -> Iterator[None]:
-    """性能测量期抑制 ``FreeAssetFilter`` logger 的 DEBUG/INFO 输出。
+    """性能测量期抑制 ``Sopeek`` logger 的 DEBUG/INFO 输出。
 
     测量环境净化而非引擎改动：``-s`` 直通终端时 AppLogger 的 DEBUG 行
     逐条打印（实测每条 ~12ms 终端开销），远大于缓存命中 5ms 量级的
     被测时间，构成观察者效应污染；生产 GUI 无此直通路径。测试后恢复
     原级别。
     """
-    logger = logging.getLogger("FreeAssetFilter")
+    logger = logging.getLogger("Sopeek")
     old_level = logger.level
     logger.setLevel(logging.WARNING)
     try:

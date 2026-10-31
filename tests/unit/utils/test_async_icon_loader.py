@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""async_icon_loader.py（freeassetfilter/utils/async_icon_loader.py）单元测试。
+"""async_icon_loader.py（sopeek/utils/async_icon_loader.py）单元测试。
 
 覆盖回调生命周期（requester 被 GC 后回调仍完成）、多线程并发 load_icon、
 ``_callbacks`` / ``_runnables`` 完成后无泄漏、取消（cancel_load/clear）后
@@ -18,7 +18,7 @@ from typing import Any, Callable, Dict, List, Optional
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from freeassetfilter.utils import async_icon_loader as ail
+from sopeek.utils import async_icon_loader as ail
 
 pytestmark = pytest.mark.unit
 

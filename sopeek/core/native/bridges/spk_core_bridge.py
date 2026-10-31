@@ -1,0 +1,1661 @@
+#!/usr/bin/env python3
+"""spk_core 统一原生核心桥接层（ctypes）。
+
+本模块是 ``spk_core.dll``（Rust cdylib，见
+``sopeek/core/native/src/spk_core/``）的 Python 桥。遵循
+``rust_thumbnail_bridge.py`` 的加载范式与 ``mica_render.py`` 的路径范式：
+
+* 候选路径以 :func:`sopeek.core._paths.native_bin_dir` 解析的
+  ``core/native/bin/spk_core.dll`` 优先，开发期回退
+  ``src/spk_core/target/release|debug`` 下的 cargo 产物；
+* ``os.add_dll_directory`` 预置运行时目录后 ``ctypes.CDLL`` 加载（释放 GIL）；
+* JSON 返回统一 ``c_void_p`` + ``ctypes.string_at`` 拷贝 +
+  ``finally: spk_free_message`` 释放；
+* 可选导出经 ``try/except`` 能力探测 ``_supports_*``；
+* DLL 缺失时安全降级（``available is False``，调用返回 ``None`` 不抛异常）。
+
+已绑定业务导出：``spk_version`` / ``spk_free_message`` /
+``spk_free_buffer``（流体帧等裸缓冲释放，审查 3.1#26） /
+``spk_scan_directory``（目录扫描，7 键 JSON）/ ``spk_sort_entries``
+（条目排序，8 种模式）/ ``spk_highlight_text``（代码语法高亮，span-only
+JSON ``[{start,len,token_type}]``，字符偏移）/ ``spk_render_markdown``
+（Markdown 渲染，body 片段 JSON ``{"html": ...}``，无 CSS/颜色，主题由
+调用方注入。见 ``sopeek/utils/markdown_renderer.py`` todo-17
+接线）/ ``spk_parse_font``（字体解析，JSON
+``{"name1".."name6","format","glyph_count","ascent","descent","line_gap"}``，
+name 缺失键为 null；WOFF/WOFF2 与损坏字体返回 null 由调用方回退
+fontTools。见 ``file_info_service.py`` todo-26 接线）/ ``spk_hash_init/
+update/final/free``（流式三哈希 MD5/SHA1/SHA256，句柄式注册表；Rust 侧
+不做文件 I/O——I/O 循环在 Python 侧 :meth:`SpkCoreBridge.hash_file_streaming`
+持行，逐块喂入，每块前可取消）/ ``spk_detect_encoding``（文本编码探测，
+只吃调用方提供的原始字节样本 ``(ptr, len)``，JSON
+``{"encoding","confidence"}``，置信度 <0.5 返回空 JSON ``{}``。见
+``file_info_service.py`` todo-25 三处收敛接线）/ ``spk_copy_files``（批量
+复制，≤32 源/批 rayon 并行，JSON ``{"copied","failed"}``，目标名=源文件名。
+见 ``file_pool_layout.py`` todo-29 导出接线）/ ``spk_sum_directory_sizes``
+（单遍递归目录大小聚合，JSON ``{"results"}``、``follow_symlinks=False``。
+见 ``staging_pool_service.py`` todo-29 接线）。公开入口经
+:func:`get_spk_core_bridge` 模块级惰性单例获取（避免每次调用重建 ctypes
+绑定）。
+
+新增导出（rust-hot-path-native-migration todo 3 接线）：``spk_parse_exif``
+（图片 EXIF，JSON ``{"common","rest"}``，见 ``file_info_service.py``
+todo-7 接线）/ ``spk_composite_psd``（PSD 合成，spike 裁决 DROP——恒返回
+null，Python 保持 psd-tools）/ ``spk_replace_svg_colors``（SVG 图标换色，
+返回**裸 SVG 文本**非 JSON，见 ``svg_renderer.py`` todo-12 接线）/
+``spk_render_fluid_frame``（流体 CPU 帧，spike 裁决 DROP——恒返回 null，
+返回 **RGBA 像素缓冲**非 JSON，经 ``spk_free_buffer`` 释放，
+``QPixmap`` 构造留 GUI 线程）/
+``spk_parse_7z_list``（7z ``-slt`` 输出解析，JSON 数组，见 ``py7z_core.py``
+todo-17 接线；7z.exe 子进程保留在 Python）/ ``spk_pdf_select_words``
+（PDF 选区逐词过滤，JSON 数组，见 ``pdf_document_view.py`` todo-19 接线；
+PyMuPDF 取词保留在 Python）。JSON 导出统一走
+:meth:`_call_json_list_export` / :meth:`_call_json_object_export` 骨架
+（先 ``string_at`` 拷贝后 ``finally: spk_free_message`` 释放）。
+"""
+
+from __future__ import annotations
+
+import ctypes
+import json
+import os
+import struct
+import sys
+import threading
+from collections.abc import Callable
+from ctypes import POINTER, c_char_p, c_double, c_int, c_size_t, c_uint64, c_void_p
+from pathlib import Path
+from typing import Optional
+
+from sopeek.utils.app_logger import debug, info, warning
+
+LIBRARY_NAME: str = "spk_core.dll"
+
+# JSON 载荷上限（与 Rust 侧 ``lib.rs::MAX_JSON_BYTES`` 同值）。
+# 超限时 native 返回 null / 跳过，Python 侧回退自身实现。
+MAX_JSON_BYTES: int = 8 * 1024 * 1024
+
+#: 期望的 spk_core ABI 版本（P3.1 闸门；不匹配则禁用原生能力）。
+EXPECTED_ABI: int = 1
+
+#: P3.3 POD 行布局：`<10I Q B 3x I` = 56 字节（与 Rust `SpkDirRow` 对齐），
+#: 末尾 `attrs` 为 Windows 文件属性位（P3.4）。
+_DIR_ROW_STRUCT: struct.Struct = struct.Struct("<10IQB3xI")
+
+# 流式哈希 I/O 参数（语义对齐 ``file_info_service.compute_hashes``：
+# 256KiB 块读取、每累计 1MiB 触发一次进度回调）。
+HASH_CHUNK_SIZE: int = 256 * 1024
+HASH_PROGRESS_GRANULARITY: int = 1024 * 1024
+
+# 模块级惰性单例（``threading.Lock`` 保证并发首次构造安全）。
+_instance_lock: threading.Lock = threading.Lock()
+_instance: Optional["SpkCoreBridge"] = None
+
+
+def _build_dir_row(arena: bytes, values: tuple) -> dict:
+    """把一条 POD 行（`<10IQB3xI`）还原为 8 键条目字典（P3.3/P3.4）。
+
+    Args:
+        arena: 紧跟行数组之后的字符串 arena。
+        values: ``_DIR_ROW_STRUCT.unpack_from`` 的 13 元组。
+
+    Returns:
+        dict: 与 ``dir_rows``（JSON 通道）逐字段一致的条目。
+    """
+    (
+        name_off,
+        name_len,
+        path_off,
+        path_len,
+        suffix_off,
+        suffix_len,
+        modified_off,
+        modified_len,
+        created_off,
+        created_len,
+        size,
+        is_dir,
+        attrs,
+    ) = values
+
+    def _text(offset: int, length: int) -> str:
+        if length <= 0:
+            return ""
+        return arena[offset : offset + length].decode("utf-8", errors="replace")
+
+    return {
+        "name": _text(name_off, name_len),
+        "path": _text(path_off, path_len),
+        "is_dir": bool(is_dir),
+        "size": int(size),
+        "modified": _text(modified_off, modified_len),
+        "created": _text(created_off, created_len),
+        "suffix": _text(suffix_off, suffix_len),
+        "attrs": int(attrs),
+    }
+
+
+def get_spk_core_bridge() -> Optional["SpkCoreBridge"]:
+    """获取 spk_core 桥的模块级惰性单例（线程安全）。
+
+    DLL 缺失时返回 ``available is False`` 的降级实例；调用方经
+    ``available`` / ``_supports_*`` 探测后决定是否走 native 路径。惰性
+    构造避免启动期在 DLL 缺失环境产生不必要的 I/O。
+
+    Returns:
+        Optional[SpkCoreBridge]: 桥实例（模块首次调用时构造）。
+    """
+    global _instance
+    if _instance is None:
+        with _instance_lock:
+            if _instance is None:
+                _instance = SpkCoreBridge()
+    return _instance
+
+
+class SpkCoreBridge:
+    """spk_core 原生核心桥接。"""
+
+    def __init__(self) -> None:
+        self._dll = None
+        self._available = False
+        self._supports_version = False
+        self._supports_scan = False
+        self._supports_sort = False
+        self._supports_highlight = False
+        self._supports_render_markdown = False
+        self._supports_parse_font = False
+        self._supports_hash = False
+        self._supports_detect_encoding = False
+        self._supports_copy = False
+        self._supports_sizesum = False
+        self._supports_parse_exif = False
+        self._supports_composite_psd = False
+        self._supports_replace_svg_colors = False
+        self._supports_render_fluid_frame = False
+        self._supports_free_buffer = False
+        self._supports_parse_7z_list = False
+        self._supports_pdf_select_words = False
+        self._supports_pdf_select_indices = False
+        # P3.1/P3.2/P3.3：ABI 闸门、目录句柄与 POD 行通道。
+        self._supports_abi_version = False
+        self._supports_dir_handle = False
+        self._supports_dir_rows_pod = False
+        self._supports_scan_stream = False
+        self._abi_info = None
+        self._dll_directory_handle = None
+        self._load()
+        if self._available:
+            self._validate_abi()
+
+    @property
+    def available(self) -> bool:
+        """DLL 是否已成功加载。"""
+        return self._available and self._dll is not None
+
+    def _native_runtime_dir(self) -> Path:
+        """返回原生运行时目录（``os.add_dll_directory`` 目标）。
+
+        优先 :func:`sopeek.core._paths.native_bin_dir`（mica_render
+        范式）；``_paths`` 不可用时退回相对定位。
+
+        Returns:
+            Path: ``core/native/bin/`` 目录。
+        """
+        try:
+            from sopeek.core._paths import native_bin_dir
+
+            return native_bin_dir()
+        except Exception:  # pragma: no cover - _paths 不可用时退回相对定位
+            return Path(__file__).resolve().parent.parent / "bin"
+
+    def _is_frozen_app(self) -> bool:
+        """是否运行于打包产物中。"""
+        return bool(getattr(sys, "frozen", False))
+
+    def _candidate_paths(self) -> list[Path]:
+        """返回 DLL 候选路径（按优先级，未过滤存在性）。
+
+        打包后只允许 ``core/native/bin/spk_core.dll``；开发期额外允许
+        ``src/spk_core/target/release|debug`` 下的 cargo 产物，便于编译后
+        立即验证而无需先拷贝（todo 4 之前 DLL 尚未拷贝进 ``bin/``）。
+
+        Returns:
+            list[Path]: 候选路径列表。
+        """
+        native_dir = Path(__file__).resolve().parent.parent
+        bundled_dll = self._native_runtime_dir() / LIBRARY_NAME
+        dev_release_dll = native_dir / "src" / "spk_core" / "target" / "release" / LIBRARY_NAME
+        dev_debug_dll = native_dir / "src" / "spk_core" / "target" / "debug" / LIBRARY_NAME
+
+        if self._is_frozen_app():
+            return [bundled_dll]
+
+        return [bundled_dll, dev_release_dll, dev_debug_dll]
+
+    def _prepare_local_runtime(self) -> None:
+        """显式准备项目内自带的原生运行时目录。"""
+        runtime_dir = self._native_runtime_dir()
+        if not runtime_dir.exists():
+            debug(f"原生运行时目录不存在: {runtime_dir}")
+            return
+
+        if os.name == "nt" and hasattr(os, "add_dll_directory"):
+            try:
+                self._dll_directory_handle = os.add_dll_directory(str(runtime_dir))
+                debug(f"已添加 DLL 目录: {runtime_dir}")
+            except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+                warning(f"添加 DLL 目录失败: {e}")
+
+    def _load(self) -> None:
+        """按候选路径顺序加载第一个可用的 DLL。"""
+        debug("开始加载 spk_core 原生核心")
+        self._prepare_local_runtime()
+        for path in self._candidate_paths():
+            if not path.exists():
+                debug(f"候选路径不存在: {path}")
+                continue
+            try:
+                dll = ctypes.CDLL(str(path))
+                self._bind(dll)
+                self._dll = dll
+                self._available = True
+                info(f"已加载 spk_core 原生核心: {path}")
+                return
+            except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+                warning(f"加载失败 {path}: {e}")
+        self._available = False
+        self._dll = None
+        warning("未找到可用的 spk_core.dll，将回退 Python 实现")
+
+    def _bind(self, dll) -> None:
+        """为 DLL 导出绑定 ctypes 签名（try/except 能力探测）。
+
+        业务导出按 ``try/except`` 能力探测形态逐个追加：某个导出缺失
+        （旧版 DLL）仅影响对应能力标志（``_supports_*`` = False），调用方
+        据此回退 Python 实现。
+
+        Args:
+            dll: 已加载的 DLL 句柄。
+        """
+        self._supports_version = False
+        self._supports_scan = False
+        self._supports_sort = False
+        self._supports_highlight = False
+        self._supports_render_markdown = False
+        self._supports_parse_font = False
+        self._supports_hash = False
+        self._supports_detect_encoding = False
+        self._supports_copy = False
+        self._supports_sizesum = False
+        self._supports_parse_exif = False
+        self._supports_composite_psd = False
+        self._supports_replace_svg_colors = False
+        self._supports_render_fluid_frame = False
+        self._supports_free_buffer = False
+        self._supports_parse_7z_list = False
+        self._supports_pdf_select_words = False
+        self._supports_pdf_select_indices = False
+
+        self._native_free_message = dll.spk_free_message
+        self._native_free_message.argtypes = [c_void_p]
+        self._native_free_message.restype = None
+
+        try:
+            # 审查 3.1#26：裸缓冲释放导出（与 spk_free_message 并列；旧 DLL
+            # 缺失时保持不支持，渲染方法仅在拿到缓冲且支持时释放）。
+            dll.spk_free_buffer.argtypes = [c_void_p, c_size_t]
+            dll.spk_free_buffer.restype = None
+            self._native_free_buffer = dll.spk_free_buffer
+            self._supports_free_buffer = True
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            self._supports_free_buffer = False
+
+        try:
+            dll.spk_version.argtypes = []
+            dll.spk_version.restype = c_void_p
+            self._supports_version = True
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            self._supports_version = False
+
+        try:
+            dll.spk_scan_directory.argtypes = [c_char_p]
+            dll.spk_scan_directory.restype = c_void_p
+            self._native_scan_directory = dll.spk_scan_directory
+            self._supports_scan = True
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            self._supports_scan = False
+
+        try:
+            dll.spk_sort_entries.argtypes = [c_char_p, c_int]
+            dll.spk_sort_entries.restype = c_void_p
+            self._native_sort_entries = dll.spk_sort_entries
+            self._supports_sort = True
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            self._supports_sort = False
+
+        try:
+            dll.spk_highlight_text.argtypes = [c_char_p, c_char_p]
+            dll.spk_highlight_text.restype = c_void_p
+            self._native_highlight_text = dll.spk_highlight_text
+            self._supports_highlight = True
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            self._supports_highlight = False
+
+        try:
+            dll.spk_render_markdown.argtypes = [c_char_p]
+            dll.spk_render_markdown.restype = c_void_p
+            self._native_render_markdown = dll.spk_render_markdown
+            self._supports_render_markdown = True
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            self._supports_render_markdown = False
+
+        try:
+            # 流式三哈希：spk_hash_init() -> u64 句柄 / update(handle, chunk, len)
+            # -> int / final(handle) -> JSON 指针（成功即销毁句柄）/ free(handle)
+            # -> int（幂等）。句柄 0 为失败保留值，null/非法句柄不崩溃。
+            dll.spk_hash_init.argtypes = []
+            dll.spk_hash_init.restype = c_uint64
+            dll.spk_hash_update.argtypes = [c_uint64, c_char_p, c_int]
+            dll.spk_hash_update.restype = c_int
+            dll.spk_hash_final.argtypes = [c_uint64]
+            dll.spk_hash_final.restype = c_void_p
+            dll.spk_hash_free.argtypes = [c_uint64]
+            dll.spk_hash_free.restype = c_int
+            self._native_hash_init = dll.spk_hash_init
+            self._native_hash_update = dll.spk_hash_update
+            self._native_hash_final = dll.spk_hash_final
+            self._native_hash_free = dll.spk_hash_free
+            self._supports_hash = True
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            self._supports_hash = False
+
+        try:
+            # 文本编码探测：spk_detect_encoding(sample_ptr, len) -> JSON 指针。
+            # 入参为调用方提供的原始字节样本（指针 + 长度，样本可含 NUL）。
+            # 置信度 <0.5 时返回空 JSON "{}"；null 指针/负 len/空样本返回 null。
+            dll.spk_detect_encoding.argtypes = [c_void_p, c_int]
+            dll.spk_detect_encoding.restype = c_void_p
+            self._native_detect_encoding = dll.spk_detect_encoding
+            self._supports_detect_encoding = True
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            self._supports_detect_encoding = False
+
+        try:
+            dll.spk_parse_font.argtypes = [c_char_p]
+            dll.spk_parse_font.restype = c_void_p
+            self._native_parse_font = dll.spk_parse_font
+            self._supports_parse_font = True
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            self._supports_parse_font = False
+
+        try:
+            dll.spk_copy_files.argtypes = [c_char_p, c_char_p, c_char_p]
+            dll.spk_copy_files.restype = c_void_p
+            self._native_copy_files = dll.spk_copy_files
+            self._supports_copy = True
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            self._supports_copy = False
+
+        try:
+            dll.spk_sum_directory_sizes.argtypes = [c_char_p]
+            dll.spk_sum_directory_sizes.restype = c_void_p
+            self._native_sum_directory_sizes = dll.spk_sum_directory_sizes
+            self._supports_sizesum = True
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            self._supports_sizesum = False
+
+        try:
+            dll.spk_parse_exif.argtypes = [c_char_p]
+            dll.spk_parse_exif.restype = c_void_p
+            self._native_parse_exif = dll.spk_parse_exif
+            self._supports_parse_exif = True
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            self._supports_parse_exif = False
+
+        try:
+            dll.spk_composite_psd.argtypes = [c_char_p]
+            dll.spk_composite_psd.restype = c_void_p
+            self._native_composite_psd = dll.spk_composite_psd
+            self._supports_composite_psd = True
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            self._supports_composite_psd = False
+
+        try:
+            dll.spk_replace_svg_colors.argtypes = [c_char_p, c_int, c_int]
+            dll.spk_replace_svg_colors.restype = c_void_p
+            self._native_replace_svg_colors = dll.spk_replace_svg_colors
+            self._supports_replace_svg_colors = True
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            self._supports_replace_svg_colors = False
+
+        try:
+            dll.spk_render_fluid_frame.argtypes = [
+                c_int,
+                c_int,
+                c_char_p,
+                c_int,
+                c_double,
+                c_char_p,
+                POINTER(c_size_t),
+            ]
+            dll.spk_render_fluid_frame.restype = c_void_p
+            self._native_render_fluid_frame = dll.spk_render_fluid_frame
+            self._supports_render_fluid_frame = True
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            self._supports_render_fluid_frame = False
+
+        try:
+            dll.spk_parse_7z_list.argtypes = [c_char_p, c_char_p, c_char_p]
+            dll.spk_parse_7z_list.restype = c_void_p
+            self._native_parse_7z_list = dll.spk_parse_7z_list
+            self._supports_parse_7z_list = True
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            self._supports_parse_7z_list = False
+
+        try:
+            dll.spk_pdf_select_words.argtypes = [c_char_p, c_char_p]
+            dll.spk_pdf_select_words.restype = c_void_p
+            self._native_pdf_select_words = dll.spk_pdf_select_words
+            self._supports_pdf_select_words = True
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            self._supports_pdf_select_words = False
+
+        try:
+            # P4.2：下标版本（与 select_words 共用过滤实现）。
+            dll.spk_pdf_select_indices.argtypes = [c_char_p, c_char_p]
+            dll.spk_pdf_select_indices.restype = c_void_p
+            self._native_pdf_select_indices = dll.spk_pdf_select_indices
+            self._supports_pdf_select_indices = True
+        except Exception:  # noqa: BLE001
+            self._supports_pdf_select_indices = False
+
+        try:
+            dll.spk_abi_version.argtypes = []
+            dll.spk_abi_version.restype = c_void_p
+            self._supports_abi_version = True
+        except Exception:  # noqa: BLE001
+            self._supports_abi_version = False
+
+        try:
+            dll.spk_dir_open.argtypes = [c_char_p]
+            dll.spk_dir_open.restype = c_uint64
+            dll.spk_dir_count.argtypes = [c_uint64]
+            dll.spk_dir_count.restype = c_int
+            dll.spk_dir_rows.argtypes = [c_uint64, c_int, c_int]
+            dll.spk_dir_rows.restype = c_void_p
+            dll.spk_dir_sort.argtypes = [c_uint64, c_int]
+            dll.spk_dir_sort.restype = c_int
+            dll.spk_dir_close.argtypes = [c_uint64]
+            dll.spk_dir_close.restype = c_int
+            dll.spk_dir_next.argtypes = [c_uint64, c_int]
+            dll.spk_dir_next.restype = c_void_p
+            dll.spk_dir_cancel.argtypes = [c_uint64]
+            dll.spk_dir_cancel.restype = c_int
+            self._native_dir_open = dll.spk_dir_open
+            self._native_dir_count = dll.spk_dir_count
+            self._native_dir_rows = dll.spk_dir_rows
+            self._native_dir_sort = dll.spk_dir_sort
+            self._native_dir_close = dll.spk_dir_close
+            self._native_dir_next = dll.spk_dir_next
+            self._native_dir_cancel = dll.spk_dir_cancel
+            self._supports_dir_handle = True
+        except Exception:  # noqa: BLE001
+            self._supports_dir_handle = False
+
+        # P3.4 流式扫描游标单独探测（旧 DLL 无此导出时走 Python 逐批）。
+        try:
+            dll.spk_scan_begin.argtypes = [c_char_p]
+            dll.spk_scan_begin.restype = c_uint64
+            dll.spk_scan_next.argtypes = [c_uint64, c_int]
+            dll.spk_scan_next.restype = c_void_p
+            dll.spk_scan_free.argtypes = [c_uint64]
+            dll.spk_scan_free.restype = c_int
+            self._native_scan_begin = dll.spk_scan_begin
+            self._native_scan_next = dll.spk_scan_next
+            self._native_scan_free = dll.spk_scan_free
+            self._supports_scan_stream = True
+        except Exception:  # noqa: BLE001
+            self._supports_scan_stream = False
+
+        # P3.3 POD 行通道单独探测：旧 DLL 只有 JSON 行时仍可用句柄。
+        try:
+            dll.spk_dir_rows_pod.argtypes = [
+                c_uint64,
+                c_int,
+                c_int,
+                POINTER(ctypes.c_uint32),
+                POINTER(ctypes.c_uint32),
+                POINTER(c_size_t),
+            ]
+            dll.spk_dir_rows_pod.restype = c_void_p
+            self._native_dir_rows_pod = dll.spk_dir_rows_pod
+            self._supports_dir_rows_pod = True
+        except Exception:  # noqa: BLE001
+            self._supports_dir_rows_pod = False
+
+    def free_message(self, raw) -> None:
+        """释放 Rust 侧堆分配的 JSON 字符串指针（null 安全）。
+
+        Args:
+            raw: ``spk_version``（及后续 JSON 导出）返回的原始指针；
+                ``None`` / null 时直接返回。
+        """
+        try:
+            if raw is None:
+                return
+            self._native_free_message(raw)
+        except Exception:  # noqa: BLE001, S110  # broad catch intentional at ctypes FFI boundary; ignore intentional (ctypes FFI boundary)
+            pass
+
+    def _validate_abi(self) -> None:
+        """校验 DLL 的 ABI 版本（P3.1；不匹配则禁用原生能力）。"""
+        info = self.abi_version()
+        if info is None:
+            # 旧 DLL 无 abi_version：按旧契约继续（逐能力探测兜底）。
+            debug("spk_core 未提供 abi_version（旧 DLL），按能力探测加载")
+            return
+        self._abi_info = info
+        abi = info.get("abi")
+        if abi != EXPECTED_ABI:
+            warning(
+                f"spk_core ABI 不匹配（期望 {EXPECTED_ABI}，实际 {abi}）"
+                " → 禁用原生能力，回退 Python 实现"
+            )
+            self._available = False
+
+    @property
+    def abi_info(self) -> Optional[dict]:
+        """已加载 DLL 的 ABI 信息（旧 DLL 为 ``None``）。"""
+        return self._abi_info
+
+    def abi_version(self) -> Optional[dict]:
+        """查询 DLL 的 ABI 信息（P3.1）。
+
+        Returns:
+            Optional[dict]: ``{"abi", "version", "max_json_bytes", ...}``；
+                导出缺失或解析失败返回 ``None``。
+        """
+        if not self._available or not self._supports_abi_version:
+            return None
+        raw = None
+        try:
+            raw = self._dll.spk_abi_version()
+            if not raw:
+                return None
+            payload = ctypes.string_at(raw)
+            if not payload:
+                return None
+            parsed = json.loads(payload.decode("utf-8", errors="replace"))
+            return parsed if isinstance(parsed, dict) else None
+        except Exception as e:  # noqa: BLE001
+            warning(f"abi_version 失败: {e}")
+            return None
+        finally:
+            if raw is not None:
+                self.free_message(raw)
+
+    def scan_begin(self, path: str) -> int:
+        """打开流式扫描游标（P3.4）；失败返回 0（调用方回退 Python）。
+
+        Args:
+            path: 目录路径。
+
+        Returns:
+            int: 非零游标；不可用/目录不可读/游标表满返回 0。
+        """
+        if not self.available or not self._supports_scan_stream:
+            return 0
+        if not isinstance(path, str) or not path:
+            return 0
+        return self._call_handle(
+            lambda: self._native_scan_begin(path.encode("utf-8", errors="replace")),
+            default=0,
+            name="scan_begin",
+        )
+
+    def scan_next(self, handle: int, max_count: int) -> Optional[list]:
+        """读下一批（至多 ``max_count`` 条，JSON 数组带 ``attrs``）。
+
+        Args:
+            handle: 游标。
+            max_count: 本批上限。
+
+        Returns:
+            Optional[list]: 批次行（耗尽时为空数组）；失败返回 ``None``。
+        """
+        if not self.available or not self._supports_scan_stream:
+            return None
+        if max_count <= 0:
+            return None
+        return self._call_json_list_export(
+            lambda: self._native_scan_next(int(handle), int(max_count))
+        )
+
+    def scan_free(self, handle: int) -> bool:
+        """关闭游标（幂等）；成功返回 True。"""
+        if not self.available or not self._supports_scan_stream:
+            return False
+        return self._call_handle(
+            lambda: self._native_scan_free(int(handle)),
+            default=-1,
+            name="scan_free",
+            transform=lambda code: int(code) == 0,
+        )
+
+    def dir_open(self, path: str) -> int:
+        """打开目录句柄（P3.2）；失败返回 0。"""
+        if not self.available or not self._supports_dir_handle:
+            return 0
+        if not isinstance(path, str) or not path:
+            return 0
+        return self._call_handle(
+            lambda: self._native_dir_open(path.encode("utf-8", errors="replace")),
+            default=0,
+            name="dir_open",
+        )
+
+    def dir_count(self, handle: int) -> int:
+        """句柄条目数；非法句柄返回 -1。"""
+        if not self.available or not self._supports_dir_handle:
+            return -1
+        return self._call_handle(
+            lambda: self._native_dir_count(int(handle)),
+            default=-1,
+            name="dir_count",
+        )
+
+    def dir_rows(self, handle: int, first: int, count: int) -> Optional[list]:
+        """取窗口行（P3.2，JSON 数组；窗口 ≤ count 天然有界）。
+
+        P3.5：DLL 提供 ``spk_dir_rows_pod`` 时优先走 POD 通道（无 JSON
+        编解码，跨 FFI 字节降到「行数组 + arena」），旧 DLL 回退 JSON。
+        """
+        if not self.available or not self._supports_dir_handle:
+            return None
+        if first < 0 or count <= 0:
+            return None
+        if self._supports_dir_rows_pod:
+            pod_rows = self.dir_rows_pod(handle, first, count)
+            if pod_rows is not None:
+                return pod_rows
+        return self._call_json_list_export(
+            lambda: self._native_dir_rows(int(handle), int(first), int(count))
+        )
+
+    def dir_rows_pod(self, handle: int, first: int, count: int) -> Optional[list]:
+        """POD 行通道（P3.3）：一次拷贝取行数组 + 字符串 arena，无 JSON 往返。
+
+        行数组固定 56 字节/行（`<10IQB7x`），字符串以 `(offset, len)` 指向
+        紧随其后的 arena。返回的 7 键字典与 :meth:`dir_rows` 逐字段一致。
+
+        Args:
+            handle: 目录句柄。
+            first: 起始下标。
+            count: 最大行数。
+
+        Returns:
+            Optional[list]: 7 键条目列表；不可用/非法参数/解析失败返回 ``None``。
+        """
+        if not self.available or not self._supports_dir_handle:
+            return None
+        if first < 0 or count <= 0:
+            return None
+        if not self._supports_dir_rows_pod:
+            return None
+        out_count = ctypes.c_uint32(0)
+        out_arena_len = ctypes.c_uint32(0)
+        out_total_len = c_size_t(0)
+
+        def _invoke():
+            raw = self._native_dir_rows_pod(
+                int(handle),
+                int(first),
+                int(count),
+                ctypes.byref(out_count),
+                ctypes.byref(out_arena_len),
+                ctypes.byref(out_total_len),
+            )
+            return raw, out_count.value, out_total_len.value
+
+        return self._call_pod_array(_DIR_ROW_STRUCT, _invoke, _build_dir_row)
+
+    def dir_sort(self, handle: int, mode: int) -> int:
+        """在句柄上原地排序；返回 0 成功。"""
+        if not self.available or not self._supports_dir_handle:
+            return -1
+        return self._call_handle(
+            lambda: self._native_dir_sort(int(handle), int(mode)),
+            default=-1,
+            name="dir_sort",
+        )
+
+    def dir_close(self, handle: int) -> bool:
+        """关闭句柄（幂等）；成功返回 True。"""
+        if not self.available or not self._supports_dir_handle:
+            return False
+        return self._call_handle(
+            lambda: self._native_dir_close(int(handle)),
+            default=-1,
+            name="dir_close",
+            transform=lambda code: int(code) == 0,
+        )
+
+    def dir_next(self, handle: int, max_count: int) -> Optional[list]:
+        """流式游标取下一块（P3.4）；取消/耗尽后返回空数组。"""
+        if not self.available or not self._supports_dir_handle:
+            return None
+        if max_count <= 0:
+            return None
+        return self._call_json_list_export(
+            lambda: self._native_dir_next(int(handle), int(max_count))
+        )
+
+    def dir_cancel(self, handle: int) -> bool:
+        """取消句柄（P3.7，幂等）；成功返回 True。"""
+        if not self.available or not self._supports_dir_handle:
+            return False
+        return self._call_handle(
+            lambda: self._native_dir_cancel(int(handle)),
+            default=-1,
+            name="dir_cancel",
+            transform=lambda code: int(code) == 0,
+        )
+
+    def dir_sort_window(
+        self,
+        handle: int,
+        mode: int,
+        first: int,
+        count: int,
+        *,
+        presort_name: bool = True,
+    ) -> Optional[list]:
+        """句柄上原地排序 + 只取窗口行（P3.6，排序结果不回传）。
+
+        ``mode >= 2`` 时先按 ``(not is_dir, name.lower())`` 在 Rust 侧做一次
+        稳定排序，再排目标键——equal-key 的输入序由这一步锁定，与
+        ``_sort_entries`` 的 Python 预排序口径等价（Rust ``sort_by`` 稳定）。
+
+        Args:
+            handle: 目录句柄。
+            mode: 排序模式（0–7）。
+            first: 窗口起始下标。
+            count: 窗口行数。
+            presort_name: 是否先做名称预排序（mode 0/1 传 ``False``）。
+
+        Returns:
+            Optional[list]: 窗口内的 7 键条目；失败返回 ``None``。
+        """
+        if mode >= 2 and presort_name and self.dir_sort(handle, 0) != 0:
+            return None
+        if self.dir_sort(handle, int(mode)) != 0:
+            return None
+        return self.dir_rows(handle, int(first), int(count))
+
+    def version(self) -> Optional[dict]:
+        """查询 spk_core 版本信息。
+
+        Returns:
+            Optional[dict]: 解析后的 ``{"version": ...}`` 字典；DLL 不可用、
+                绑定缺失、返回空指针或内容非法时返回 ``None``（不抛异常）。
+        """
+        if not self.available or not self._supports_version:
+            return None
+        raw = None
+        try:
+            raw = self._dll.spk_version()
+            if not raw:
+                return None
+            # 先 string_at 拷贝出字节，再在 finally 中释放 Rust 堆内存。
+            payload = ctypes.string_at(raw)
+            if not payload:
+                return None
+            text = payload.decode("utf-8", errors="replace")
+            parsed = json.loads(text)
+            if not isinstance(parsed, dict):
+                return None
+            debug(f"spk_core 版本: {parsed}")
+            return parsed
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            warning(f"version 失败: {e}")
+            return None
+        finally:
+            if raw is not None:
+                self.free_message(raw)
+
+    def _call_handle(self, invoke, default, *, name: str, transform=None):
+        """句柄/状态码导出统一骨架（P3.5）。
+
+        Args:
+            invoke: 无参可调用对象，执行 native 调用并返回整数状态。
+            default: 调用失败时的返回值（``-1`` / ``0``）。
+            name: 导出名（仅用于日志）。
+            transform: 可选结果变换（如状态码 → ``bool``）。
+
+        Returns:
+            object: ``transform(value)``；异常时返回 ``default``（不抛异常）。
+        """
+        try:
+            value = invoke()
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            warning(f"spk_core 句柄导出 {name} 失败: {e}")
+            return default
+        if transform is None:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
+        try:
+            return transform(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _call_pod_array(self, row_struct, invoke, build) -> Optional[list]:
+        """POD 记录数组导出统一骨架（P3.5）。
+
+        ``invoke`` 返回 ``(raw, count, total_bytes)``；骨架统一做「一次
+        ``string_at`` 拷贝 → 逐行 ``unpack_from`` → ``build(arena, values)``
+        → ``finally`` 释放 Rust 缓冲」，调用方只关心行布局与构造逻辑。
+
+        Args:
+            row_struct: 单行布局的 :class:`struct.Struct`。
+            invoke: 无参可调用对象，返回 ``(ptr, count, total_bytes)``。
+            build: ``(arena_bytes, values) -> Any`` 行构造函数。
+
+        Returns:
+            Optional[list]: 构造出的行列表；失败返回 ``None``（不抛异常）。
+        """
+        raw = None
+        total = 0
+        try:
+            raw, count, total = invoke()
+            if not raw:
+                return None
+            count = int(count)
+            total = int(total)
+            row_size = row_struct.size
+            if count <= 0 or total <= 0 or total < count * row_size:
+                return None
+            blob = ctypes.string_at(raw, total)
+            arena = blob[count * row_size :]
+            return [
+                build(arena, row_struct.unpack_from(blob, index * row_size))
+                for index in range(count)
+            ]
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            warning(f"spk_core POD 数组导出失败: {e}")
+            return None
+        finally:
+            if raw and total > 0 and self._supports_free_buffer:
+                try:
+                    self._native_free_buffer(raw, total)
+                except Exception:  # noqa: BLE001  # 释放不得影响调用
+                    pass
+
+    def _call_json_list_export(self, invoke) -> Optional[list]:
+        """JSON 数组导出统一调用骨架：string_at 拷贝 → json 解析 → finally free。
+
+        Args:
+            invoke: 无参可调用对象，执行 native 调用并返回 ``c_void_p`` 指针
+                （null 时 ctypes 返回 ``None``）。
+
+        Returns:
+            Optional[list]: 解析后的列表；失败/非法内容返回 ``None``
+                （不抛异常）。
+        """
+        raw = None
+        try:
+            raw = invoke()
+            if not raw:
+                return None
+            # 先 string_at 拷贝出字节，再在 finally 中释放 Rust 堆内存。
+            payload = ctypes.string_at(raw)
+            if not payload:
+                return None
+            text = payload.decode("utf-8", errors="replace")
+            parsed = json.loads(text)
+            if not isinstance(parsed, list):
+                return None
+            return parsed
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            warning(f"spk_core JSON 数组导出失败: {e}")
+            return None
+        finally:
+            if raw is not None:
+                self.free_message(raw)
+
+    def _call_json_object_export(self, invoke) -> Optional[dict]:
+        """JSON 对象导出统一调用骨架：string_at 拷贝 → json 解析 → finally free。
+
+        Args:
+            invoke: 无参可调用对象，执行 native 调用并返回 ``c_void_p`` 指针
+                （null 时 ctypes 返回 ``None``）。
+
+        Returns:
+            Optional[dict]: 解析后的字典；失败/非法内容返回 ``None``
+                （不抛异常）。
+        """
+        raw = None
+        try:
+            raw = invoke()
+            if not raw:
+                return None
+            # 先 string_at 拷贝出字节，再在 finally 中释放 Rust 堆内存。
+            payload = ctypes.string_at(raw)
+            if not payload:
+                return None
+            text = payload.decode("utf-8", errors="replace")
+            parsed = json.loads(text)
+            if not isinstance(parsed, dict):
+                return None
+            return parsed
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            warning(f"spk_core JSON 对象导出失败: {e}")
+            return None
+        finally:
+            if raw is not None:
+                self.free_message(raw)
+
+    def scan_directory(self, path: str) -> Optional[list]:
+        """经 spk_core 扫描目录，返回 7 键条目字典列表（原始未排序）。
+
+        Args:
+            path: 待扫描目录绝对路径。
+
+        Returns:
+            Optional[list]: 条目字典列表；DLL 不可用、绑定缺失、native 失败
+                或输出超 ``MAX_JSON_BYTES`` 时返回 ``None``（不抛异常）。
+        """
+        if not self.available or not self._supports_scan:
+            return None
+        encoded: bytes = path.encode("utf-8", errors="replace")
+        return self._call_json_list_export(lambda: self._native_scan_directory(encoded))
+
+    def sort_entries(self, entries: list, mode: int) -> Optional[list]:
+        """经 spk_core 排序目录条目（8 种模式，与 Python ``_apply_sort`` 一致）。
+
+        Args:
+            entries: 7 键条目字典列表（原始未排序）。
+            mode: 排序模式 0-7（``SORT_MODE_NAMES`` 语义）。
+
+        Returns:
+            Optional[list]: 排序后的条目字典列表；DLL 不可用、绑定缺失、
+                序列化超限或 native 失败时返回 ``None``（不抛异常）。
+        """
+        if not self.available or not self._supports_sort:
+            return None
+        try:
+            payload: str = json.dumps(entries, ensure_ascii=False, separators=(",", ":"))
+            if len(payload.encode("utf-8", errors="replace")) > MAX_JSON_BYTES:
+                return None
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            warning(f"sort_entries 序列化失败: {e}")
+            return None
+        encoded: bytes = payload.encode("utf-8", errors="replace")
+        return self._call_json_list_export(lambda: self._native_sort_entries(encoded, int(mode)))
+
+    def highlight_text(self, language: str, text: str) -> Optional[list]:
+        """经 spk_core 高亮代码文本，返回 span 列表 ``[{start,len,token_type}]``。
+
+        ``start``/``len`` 为**字符偏移**（非 byte），``token_type`` 索引
+        1-16 与 Python ``TokenType`` 枚举顺序精确对齐（见
+        ``sopeek/utils/syntax_highlighter.py:76-93``）。颜色/主题
+        不跨 FFI——调用方自行用 token_type 索引映射配色。
+
+        Args:
+            language: 应用语言名（如 ``'python'``/``'json'``）。
+            text: 待高亮代码文本（含换行，整块高亮跨行状态保持）。
+
+        Returns:
+            Optional[list]: span 字典列表；DLL 不可用、绑定缺失、native
+                失败/返回 null（含逐语言回退 -6）、序列化超限或非法 span
+                形状时返回 ``None``（不抛异常，调用方回退 Python 引擎）。
+        """
+        if not self.available or not self._supports_highlight:
+            return None
+        if not isinstance(language, str) or not isinstance(text, str):
+            return None
+        lang_b: bytes = language.encode("utf-8", errors="replace")
+        text_b: bytes = text.encode("utf-8", errors="replace")
+        raw = self._call_json_list_export(
+            lambda: self._native_highlight_text(lang_b, text_b)
+        )
+        if raw is None:
+            return None
+        # span 形状校验：任一 item 缺键/非 int → 整单丢弃（malformed 输入回退）。
+        for item in raw:
+            if not isinstance(item, dict):
+                return None
+            if not all(isinstance(item.get(key), int) for key in ("start", "len", "token_type")):
+                return None
+        return raw
+
+    def render_markdown(self, text: str) -> Optional[dict]:
+        """经 spk_core 渲染 Markdown 文本，返回 ``{"html": "<body 片段>"}``。
+
+        native 产物是 **body 片段**（不含 ``<html>/<head>/<style>``，无任何
+        颜色/CSS——主题 CSS 由调用方 ``_build_css`` 注入）。支持
+        tables/footnotes/tasklists/strikethrough/fenced_code（内嵌 syntect
+        高亮）；admonition/def_list/abbr/toc 语法按普通段落降级；损坏输入
+        不 panic 仍返回可渲染 body。``html`` 字段为空串合法（空文本输入）。
+
+        Args:
+            text: Markdown 源文本。
+
+        Returns:
+            Optional[dict]: ``{"html": ...}``（body 片段）；DLL 不可用、
+                绑定缺失、native 失败/返回 null/非法载荷（非 ``{"html": str}``
+                形状）时返回 ``None``（不抛异常，调用方回退 python-markdown）。
+        """
+        if not self.available or not self._supports_render_markdown:
+            return None
+        if not isinstance(text, str):
+            return None
+        raw = None
+        try:
+            raw = self._native_render_markdown(text.encode("utf-8", errors="replace"))
+            if not raw:
+                return None
+            # 先 string_at 拷贝出字节，再在 finally 中释放 Rust 堆内存。
+            payload = ctypes.string_at(raw)
+            if not payload:
+                return None
+            parsed = json.loads(payload.decode("utf-8", errors="replace"))
+            if not isinstance(parsed, dict):
+                return None
+            if not isinstance(parsed.get("html"), str):
+                return None
+            return parsed
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            warning(f"render_markdown 失败: {e}")
+            return None
+        finally:
+            if raw is not None:
+                self.free_message(raw)
+
+    def copy_files(self, sources: list, dest_dir: str) -> Optional[dict]:
+        """经 spk_core 批量复制文件/目录到目标目录（todo 27/29 接线）。
+
+        native 语义与 Python ``FilePoolLayout.copy_files`` 对齐：文件
+        ``shutil.copy2``（内容 + mtime/权限）、目录 ``shutil.copytree(
+        dirs_exist_ok=True)``（递归、跟随符号链接）；≤32 源/批内部 rayon
+        并行；单源失败记入 ``failed`` 不中断整批。**目标名 = 源文件名**
+        （冲突改名保持在调用方 Python 侧 dispatch 前完成）。
+
+        Args:
+            sources: 源路径字符串列表（目录/文件均可）。
+            dest_dir: 目标目录绝对路径。
+
+        Returns:
+            Optional[dict]: ``{"copied": [{"src","dst","size"}], "failed":
+            [{"src","error"}]}``；DLL 不可用、绑定缺失、native 失败/返回
+            null、序列化超限或非法载荷（非上述形状）时返回 ``None``
+            （不抛异常，调用方回退 Python 复制路径）。
+        """
+        if not self.available or not self._supports_copy:
+            return None
+        if not isinstance(sources, list) or not isinstance(dest_dir, str):
+            return None
+        try:
+            payload: str = json.dumps(
+                [str(s) for s in sources], ensure_ascii=False, separators=(",", ":")
+            )
+            if len(payload.encode("utf-8", errors="replace")) > MAX_JSON_BYTES:
+                return None
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            warning(f"copy_files 序列化失败: {e}")
+            return None
+        sources_b: bytes = payload.encode("utf-8", errors="replace")
+        dest_b: bytes = dest_dir.encode("utf-8", errors="replace")
+        opts_b: bytes = b"{}"
+        parsed = self._call_json_object_export(
+            lambda: self._native_copy_files(sources_b, dest_b, opts_b)
+        )
+        if parsed is None:
+            return None
+        # 形状校验：copied/failed 必须为列表（malformed 输入回退）。
+        if not isinstance(parsed.get("copied"), list) or not isinstance(
+            parsed.get("failed"), list
+        ):
+            return None
+        return parsed
+
+    def sum_directory_sizes(self, paths: list) -> Optional[dict]:
+        """经 spk_core 单遍递归聚合目录大小（todo 27/29 接线）。
+
+        native 语义与 Python ``staging_pool_service._iter_file_entries``
+        对齐：单遍 walk、**``follow_symlinks=False``**、rayon 顶层并行；
+        缺失/不可读/非目录路径记入对应 ``error`` 字段，不中断其它路径。
+
+        Args:
+            paths: 目录绝对路径字符串列表。
+
+        Returns:
+            Optional[dict]: ``{"results": [{"path","size","error"}]}``
+            （成功 ``error`` 为 ``None``）；DLL 不可用、绑定缺失、native
+            失败/返回 null、序列化超限或非法载荷（非上述形状）时返回
+            ``None``（不抛异常，调用方回退 Python ``os.scandir`` walk）。
+        """
+        if not self.available or not self._supports_sizesum:
+            return None
+        if not isinstance(paths, list):
+            return None
+        try:
+            payload: str = json.dumps(
+                [str(p) for p in paths], ensure_ascii=False, separators=(",", ":")
+            )
+            if len(payload.encode("utf-8", errors="replace")) > MAX_JSON_BYTES:
+                return None
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            warning(f"sum_directory_sizes 序列化失败: {e}")
+            return None
+        paths_b: bytes = payload.encode("utf-8", errors="replace")
+        parsed = self._call_json_object_export(
+            lambda: self._native_sum_directory_sizes(paths_b)
+        )
+        if parsed is None:
+            return None
+        # 形状校验：results 必须为列表（malformed 输入回退）。
+        if not isinstance(parsed.get("results"), list):
+            return None
+        return parsed
+
+    def parse_font(self, path: str) -> Optional[dict]:
+        """经 spk_core 解析字体文件（ttf-parser），返回字段字典。
+
+        JSON 契约（与 ``font.rs::parse_font_impl`` 对齐）：
+        ``{"name1".."name6","format","glyph_count","ascent","descent","line_gap"}``
+        ——name 表 1/2/3/4/5/6（镜像 Python ``_font_name_rows`` 的逐记录
+        UTF-8→latin-1 解码链 + 首记录优先 + seen 去重，缺失键为 ``None``），
+        ``format`` 为 ``"TrueType"``/``"OpenType/CFF"``，
+        ``glyph_count``/``ascent``/``descent``/``line_gap`` 为 **raw 原值**
+        （ttf-parser 读 hhea/maxp 表，与 fontTools ``font["hhea"]``/``maxp``
+        原值逐字节一致，非统一缩放值）。
+
+        WOFF/WOFF2（todo 1 裁决：ttf-parser 不支持，回退 fontTools）、
+        损坏字体、空文件、缺失文件、超限文件 → native 返回 null → 本方法
+        返回 ``None``（不抛异常，调用方回退 fontTools 路径）。
+
+        Args:
+            path: 字体文件绝对路径。
+
+        Returns:
+            Optional[dict]: 上述字段字典；DLL 不可用、绑定缺失、native
+                失败/返回 null 或非法载荷（非 dict）时返回 ``None``。
+        """
+        if not self.available or not self._supports_parse_font:
+            return None
+        if not isinstance(path, str):
+            return None
+        raw = None
+        try:
+            raw = self._native_parse_font(path.encode("utf-8", errors="replace"))
+            if not raw:
+                return None
+            # 先 string_at 拷贝出字节，再在 finally 中释放 Rust 堆内存。
+            payload = ctypes.string_at(raw)
+            if not payload:
+                return None
+            parsed = json.loads(payload.decode("utf-8", errors="replace"))
+            if not isinstance(parsed, dict):
+                return None
+            return parsed
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            warning(f"parse_font 失败: {e}")
+            return None
+        finally:
+            if raw is not None:
+                self.free_message(raw)
+
+    def hash_file_streaming(
+        self,
+        path: str,
+        progress: Optional[Callable[[int], None]] = None,
+        should_stop: Optional[Callable[[], bool]] = None,
+    ) -> Optional[dict]:
+        """经 spk_core 流式计算文件三哈希（MD5/SHA1/SHA256）。
+
+        **Python 侧持 I/O 循环**（语义对齐
+        ``sopeek.services.file_info_service.compute_hashes``）：
+        256KiB ``f.read`` 分块 → 逐块 ``spk_hash_update``；每累计 1MiB 触发
+        一次 ``progress``（0-100 整数）；**每块读取前**探测 ``should_stop``，
+        取消时**返回已读部分的结果**（不补发 100% 进度）；正常完成时补发
+        ``progress(100)``。文件句柄与 Rust 注册表句柄均在 ``finally`` 中
+        清理（含异常路径）。
+
+        Args:
+            path: 目标文件绝对路径。
+            progress: 可选进度回调（工作线程执行）。
+            should_stop: 可选取消回调（每块前探测；True → 提前终结并返回
+                部分结果，调用方据此丢弃缓存写入）。
+
+        Returns:
+            Optional[dict]: ``{"MD5": .., "SHA1": .., "SHA256": ..}``；DLL
+                不可用、绑定缺失、文件缺失/OSError、native 失败或非法载荷
+                时返回 ``None``（不抛异常，调用方回退 ``compute_hashes``）。
+        """
+        if not self.available or not self._supports_hash:
+            return None
+        handle: Optional[int] = None
+        try:
+            total = os.path.getsize(path)
+            handle = self._native_hash_init()
+            if not handle:
+                return None
+            read_bytes = 0
+            with open(path, "rb") as f:
+                while True:
+                    if should_stop is not None and should_stop():
+                        break
+                    chunk = f.read(HASH_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    if self._native_hash_update(handle, chunk, len(chunk)) != 0:
+                        return None
+                    read_bytes += len(chunk)
+                    if (
+                        progress is not None
+                        and total > 0
+                        and read_bytes % HASH_PROGRESS_GRANULARITY == 0
+                    ):
+                        progress(int(read_bytes * 100 / total))
+            raw = self._native_hash_final(handle)
+            handle = None  # final 成功即销毁句柄（注册表移除）
+            if not raw:
+                return None
+            try:
+                payload = ctypes.string_at(raw)
+                if not payload:
+                    return None
+                parsed = json.loads(payload.decode("utf-8", errors="replace"))
+                if not isinstance(parsed, dict):
+                    return None
+                if not all(
+                    isinstance(parsed.get(k), str) for k in ("MD5", "SHA1", "SHA256")
+                ):
+                    return None
+                # 正常完成补发 100%；取消（should_stop 已为 True）不发，让进度停在取消点。
+                if progress is not None and (should_stop is None or not should_stop()):
+                    progress(100)
+                return parsed
+            finally:
+                self.free_message(raw)
+        except OSError:
+            return None
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            warning(f"hash_file_streaming 失败: {e}")
+            return None
+        finally:
+            if handle is not None:
+                try:
+                    self._native_hash_free(handle)
+                except Exception:  # noqa: BLE001, S110  # ignore intentional (cleanup best-effort)
+                    pass
+
+    def detect_encoding(self, data: bytes) -> Optional[dict]:
+        """经 spk_core 探测文本编码（chardetng），返回探测结果字典。
+
+        native 只吃调用方提供的原始字节样本——不做文件 I/O、不读磁盘，
+        I/O 由调用方（``file_info_service`` / 文本预览器）按各自采样窗口
+        （1KB/4KB/全文件）负责。返回值语义：
+
+        * ``{"encoding": "gbk", "confidence": 0.98}``：置信度 ≥0.5 的探测
+          结果（``encoding`` 为 encoding_rs 小写名称，``bytes.decode`` 可直用）；
+        * ``{}``：native 置信度 <0.5（含 chardetng 否决信号）——调用方
+          据此走 ``utf-8 → latin-1`` 回退链（计划 C6 / todo 25 明文）；
+        * ``None``：DLL 不可用、绑定缺失、非 ``bytes``/空样本入参、
+          native 返回 null（空样本/守卫失败/panic）、返回内容非法或解析
+          失败——调用方回退 chardet 现状（不抛异常）。
+
+        Args:
+            data: 待探测的原始字节样本。
+
+        Returns:
+            Optional[dict]: ``{"encoding","confidence"}`` 或 ``{}``；失败为
+                ``None``。
+        """
+        if not self.available or not self._supports_detect_encoding:
+            return None
+        if not isinstance(data, bytes) or not data:
+            return None
+        raw = None
+        try:
+            # create_string_buffer 按字节逐字拷贝（含内嵌 NUL），c_void_p 取
+            # 起始地址直传；argtypes [c_void_p, c_int] 保证不截断样本。
+            buf = ctypes.create_string_buffer(data)
+            raw = self._native_detect_encoding(ctypes.cast(buf, c_void_p), len(data))
+            if not raw:
+                return None
+            # 先 string_at 拷贝出字节，再在 finally 中释放 Rust 堆内存。
+            payload = ctypes.string_at(raw)
+            if not payload:
+                return None
+            parsed = json.loads(payload.decode("utf-8", errors="replace"))
+            if not isinstance(parsed, dict):
+                return None
+            # 形状校验：非空 dict 必须含 encoding(str) + confidence(数)。
+            # malformed 输入（缺键/错型）→ None 回退。
+            if parsed:
+                if not isinstance(parsed.get("encoding"), str):
+                    return None
+                confidence = parsed.get("confidence")
+                if not isinstance(confidence, (int, float)):
+                    return None
+            return parsed
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            warning(f"detect_encoding 失败: {e}")
+            return None
+        finally:
+            if raw is not None:
+                self.free_message(raw)
+
+    def parse_exif(self, path: str) -> Optional[dict]:
+        """经 spk_core 解析图片 EXIF 元数据（rust-hot-path-native-migration）。
+
+        JSON 契约（与 Rust ``exif::parse_exif_impl`` 对齐，已逐字段核验）：
+        ``{"common": ["label: value",...], "rest": ["label: value",...]}``——
+        每行为已连接的 ``"label: value"`` 单串（exifread 键无冒号 → 标签即
+        完整键、common 恒空，属与 oracle 对齐的既有行为）。对应 Python oracle
+        ``_collect_exif`` 的 ``(common, rest)`` 两组行（常用子集 + 文件内顺序
+        平铺），接线侧经 ``_split_exif_native_row`` 切回二元组。
+
+        native 已实现并接线；DLL 不可用、绑定缺失或 native 失败/返回 null
+        时返回 ``None``，调用方回退 exifread 路径。
+
+        Args:
+            path: 图片文件绝对路径。
+
+        Returns:
+            Optional[dict]: ``{"common","rest"}`` 两组行；DLL 不可用、绑定
+                缺失、native 失败/返回 null 或非法载荷（非 dict 或缺列表键）
+                时返回 ``None``（不抛异常）。
+        """
+        if not self.available or not self._supports_parse_exif:
+            return None
+        if not isinstance(path, str):
+            return None
+        parsed = self._call_json_object_export(
+            lambda: self._native_parse_exif(path.encode("utf-8", errors="replace"))
+        )
+        if parsed is None:
+            return None
+        # 形状校验：common/rest 必须为列表（malformed 载荷回退）。
+        if not isinstance(parsed.get("common"), list) or not isinstance(
+            parsed.get("rest"), list
+        ):
+            return None
+        return parsed
+
+    def composite_psd(self, path: str) -> Optional[dict]:
+        """经 spk_core 合成 PSD 图层（rust-hot-path-native-migration）。
+
+        **spike 裁决 DROP**（结论见 Rust ``psd.rs``）：Rust ``psd`` crate 无法
+        等价 ``psd-tools .composite()``（混合模式/蒙版不应用），Rust 侧恒返回
+        ``STATUS_UNSUPPORTED`` → null → 本方法恒返回 ``None``，Python 保持
+        ``_decode_psd``（``image_decoder_service.py``）路径。本方法保留为能力
+        探测与未来裁决翻转的预留入口，禁止降级为错误的合成结果。
+
+        Args:
+            path: PSD 文件绝对路径。
+
+        Returns:
+            Optional[dict]: 合成结果 JSON；DLL 不可用、绑定缺失、native
+                失败/返回 null 时返回 ``None``（不抛异常）。
+        """
+        if not self.available or not self._supports_composite_psd:
+            return None
+        if not isinstance(path, str):
+            return None
+        return self._call_json_object_export(
+            lambda: self._native_composite_psd(path.encode("utf-8", errors="replace"))
+        )
+
+    def replace_svg_colors(
+        self,
+        svg_text: str,
+        invert_white_to_black: bool,
+        force_black_to_base: bool,
+    ) -> Optional[str]:
+        """经 spk_core 替换 SVG 图标颜色（rust-hot-path-native-migration）。
+
+        **返回裸 SVG 文本（非 JSON）**——契约与 ``svg_renderer._replace_svg_colors``
+        （``sopeek/core/preview/svg_renderer.py`` 的 Python 回退口径）
+        对齐：18 条正则替换顺序 + ``_convert_rgba_to_hex``/``rgba_to_hex``
+        语义（已完整移植）。返回指针经 ``spk_free_message`` 释放（与 JSON 导出
+        同分配契约——Rust 侧 ``alloc_json_message`` 分配）。
+
+        native 已实现并接线；DLL 不可用、绑定缺失或 native 失败时返回
+        ``None``，调用方回退 Python 换色。
+
+        Args:
+            svg_text: 待替换颜色的 SVG 源文本。
+            invert_white_to_black: 白转黑开关。
+            force_black_to_base: 黑强制转基础色开关。
+
+        Returns:
+            Optional[str]: 替换后的完整 SVG 文本；DLL 不可用、绑定缺失、
+                native 失败/返回 null、非 str 入参时返回 ``None``（不抛异常）。
+        """
+        if not self.available or not self._supports_replace_svg_colors:
+            return None
+        if not isinstance(svg_text, str):
+            return None
+        raw = None
+        try:
+            raw = self._native_replace_svg_colors(
+                svg_text.encode("utf-8", errors="replace"),
+                int(bool(invert_white_to_black)),
+                int(bool(force_black_to_base)),
+            )
+            if not raw:
+                return None
+            # 先 string_at 拷贝出字节，再在 finally 中释放 Rust 堆内存。
+            payload = ctypes.string_at(raw)
+            if not payload:
+                return None
+            return payload.decode("utf-8", errors="replace")
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            warning(f"replace_svg_colors 失败: {e}")
+            return None
+        finally:
+            if raw is not None:
+                self.free_message(raw)
+
+    def render_fluid_frame(
+        self,
+        width: int,
+        height: int,
+        palette_json: str,
+        noise_seed: int,
+        time: float,
+        overlay_json: str,
+    ) -> Optional[bytes]:
+        """经 spk_core 渲染流体背景 CPU 帧（rust-hot-path-native-migration）。
+
+        **返回 RGBA 像素缓冲（非 JSON）**——Rust 分配 ``c_void_p`` +
+        ``*out_len``，本方法 ``string_at(raw, out_len)`` 拷贝为 ``bytes``。
+        ``QPixmap``/``QImage`` 构造留在调用方（GUI 线程）。
+
+        **spike 裁决 DROP**：float ULP（``math.hypot``
+        vs ``f64::hypot`` 差 1 ULP）令逐像素 parity 不可达，Rust 侧恒返回
+        ``STATUS_UNSUPPORTED`` → null → 本方法恒返回 ``None``，Python 保持
+        ``_styled_fluid_cpu.render_static_frame`` 路径。
+
+        **缓冲释放（审查 3.1#26）**：raw 为**裸 RGBA 缓冲**，与 ``CString``
+        分配不兼容（``spk_free_message`` 禁用于此）。native 侧已提供
+        ``spk_free_buffer(ptr, len)``；本方法在 ``finally`` 内按 ``(raw, size)``
+        成对释放，未来 native 流体启用后按帧返回缓冲也不会逐帧泄漏。
+
+        Args:
+            width: 帧宽（像素）。
+            height: 帧高（像素）。
+            palette_json: 调色板 JSON 串。
+            noise_seed: 噪声种子（int）。
+            time: 帧时间（float）。
+            overlay_json: 叠加参数 JSON 串。
+
+        Returns:
+            Optional[bytes]: RGBA 像素缓冲（``width * height * 4`` 字节）；DLL
+                不可用、绑定缺失、native 失败/返回 null、负/零尺寸或非法入参
+                时返回 ``None``（不抛异常）。
+        """
+        if not self.available or not self._supports_render_fluid_frame:
+            return None
+        raw = None
+        size = 0
+        try:
+            if width <= 0 or height <= 0:
+                return None
+            if not isinstance(palette_json, str) or not isinstance(overlay_json, str):
+                return None
+            out_len = ctypes.c_size_t(0)
+            raw = self._native_render_fluid_frame(
+                int(width),
+                int(height),
+                palette_json.encode("utf-8", errors="replace"),
+                int(noise_seed),
+                float(time),
+                overlay_json.encode("utf-8", errors="replace"),
+                ctypes.byref(out_len),
+            )
+            if not raw:
+                return None
+            size = int(out_len.value)
+            if size <= 0:
+                return None
+            # RGBA 缓冲按 out_len 拷贝（含内嵌 NUL 字节）；DROP 终态不可达。
+            return ctypes.string_at(raw, size)
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            warning(f"render_fluid_frame 失败: {e}")
+            return None
+        finally:
+            # 审查 3.1#26：native 缓冲所有权在本方法内终结——成功/失败路径均
+            # 经 spk_free_buffer(ptr, len) 释放；DROP 终态下 native 恒返回 null，
+            # 旧 DLL 无该导出时也不会出现"拿到缓冲却无释放路径"。
+            if raw and size > 0 and self._supports_free_buffer:
+                try:
+                    self._native_free_buffer(raw, size)
+                except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+                    warning(f"render_fluid_frame 缓冲释放失败: {e}")
+
+    def parse_7z_list(
+        self, output: str, current_path: str, archive_path: str
+    ) -> Optional[list]:
+        """经 spk_core 解析 7z ``-slt`` 列表输出（rust-hot-path-native-migration）。
+
+        JSON 契约（与 Rust ``archive::parse_7z_list_impl`` 对齐）：条目 JSON
+        数组——对应 Python oracle ``py7z_core._parse_list_output``
+        （``sopeek/core/native/bridges/py7z_core.py``）的 6 键
+        条目（``name/path/is_dir/size/modified/suffix``）。**7z.exe 子进程
+        与编码重试保留在 Python**，本方法只吃 stdout 文本。
+
+        native 已实现并接线（分块解析/路径归一/目录合成/10k 上限）；DLL
+        不可用、绑定缺失或 native 失败时返回 ``None``，调用方回退
+        ``_parse_list_output``。
+
+        Args:
+            output: 7z 命令的 ``-slt`` 输出文本。
+            current_path: 当前浏览路径（目录过滤基准）。
+            archive_path: 压缩包路径（排除压缩包自身）。
+
+        Returns:
+            Optional[list]: 条目字典列表；DLL 不可用、绑定缺失、native
+                失败/返回 null、非 str 入参或非法载荷（非列表/含非 dict 项）
+                时返回 ``None``（不抛异常）。
+        """
+        if not self.available or not self._supports_parse_7z_list:
+            return None
+        if (
+            not isinstance(output, str)
+            or not isinstance(current_path, str)
+            or not isinstance(archive_path, str)
+        ):
+            return None
+        raw = self._call_json_list_export(
+            lambda: self._native_parse_7z_list(
+                output.encode("utf-8", errors="replace"),
+                current_path.encode("utf-8", errors="replace"),
+                archive_path.encode("utf-8", errors="replace"),
+            )
+        )
+        if raw is None:
+            return None
+        # 形状校验：条目必须为字典（malformed 载荷回退）。
+        for item in raw:
+            if not isinstance(item, dict):
+                return None
+        return raw
+
+    def pdf_select_words(
+        self, words_json: str, selection_json: str
+    ) -> Optional[list]:
+        """经 spk_core 过滤 PDF 选区逐词（rust-hot-path-native-migration）。
+
+        JSON 契约（与 Rust ``pdfsel::select_words_impl`` 对齐）：选中词条目
+        JSON 数组——对应 Python oracle
+        ``pdf_document_view.get_text_selection`` 的 smart x-bound 过滤 +
+        ``sort((page,block,line,word_no))``。**PyMuPDF ``get_text_words`` 取词
+        保留在 Python**，Rust 只吃词表 + 选区参数。
+
+        native 已实现并接线（归一化/逐页范围/smart x-bound/排序）；DLL 不可用、
+        绑定缺失或 native 失败时返回 ``None``，调用方回退 Python 选区过滤。
+
+        Args:
+            words_json: 词表 JSON（PyMuPDF ``get_text_words`` 产物序列化）。
+            selection_json: 选区参数 JSON（归一化矩形/拖拽方向等）。
+
+        Returns:
+            Optional[list]: 选中词条目列表；DLL 不可用、绑定缺失、native
+                失败/返回 null、非 str 入参或非法载荷（非列表/含非 dict 项）
+                时返回 ``None``（不抛异常）。
+        """
+        if not self.available or not self._supports_pdf_select_words:
+            return None
+        if not isinstance(words_json, str) or not isinstance(selection_json, str):
+            return None
+        raw = self._call_json_list_export(
+            lambda: self._native_pdf_select_words(
+                words_json.encode("utf-8", errors="replace"),
+                selection_json.encode("utf-8", errors="replace"),
+            )
+        )
+        if raw is None:
+            return None
+        # 形状校验：条目必须为字典（malformed 载荷回退）。
+        for item in raw:
+            if not isinstance(item, dict):
+                return None
+        return raw
+
+    def pdf_select_indices(
+        self, words_json: str, selection_json: str
+    ) -> Optional[list]:
+        """经 spk_core 返回选中词**下标**（P4.2）。
+
+        与 :meth:`pdf_select_words` 共用同一过滤/排序实现；调用方持有权威
+        词表，每帧只回传下标（避免选中词字典物化与 f64 序列化漂移）。
+
+        Args:
+            words_json: 词表 JSON。
+            selection_json: 选区参数 JSON。
+
+        Returns:
+            Optional[list]: 下标整数列表；不可用/非法载荷返回 ``None``。
+        """
+        if not self.available or not self._supports_pdf_select_indices:
+            return None
+        if not isinstance(words_json, str) or not isinstance(selection_json, str):
+            return None
+        raw = self._call_json_list_export(
+            lambda: self._native_pdf_select_indices(
+                words_json.encode("utf-8", errors="replace"),
+                selection_json.encode("utf-8", errors="replace"),
+            )
+        )
+        if raw is None:
+            return None
+        for item in raw:
+            if not isinstance(item, int) or isinstance(item, bool):
+                return None
+        return raw

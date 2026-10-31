@@ -29,8 +29,8 @@ from PySide6.QtCore import QRectF
 from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import QWidget
 
-from freeassetfilter.ui.mica import material as material_mod
-from freeassetfilter.ui.mica.drag import ViewportLayer, layer_to_source
+from sopeek.ui.mica import material as material_mod
+from sopeek.ui.mica.drag import ViewportLayer, layer_to_source
 
 #: 两块相邻监视器（虚拟桌面坐标）。
 MONITOR_A = (0, 0, 2560, 1440)

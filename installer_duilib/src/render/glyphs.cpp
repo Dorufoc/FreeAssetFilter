@@ -3,7 +3,7 @@
 //
 #include "render/glyphs.h"
 
-namespace faf {
+namespace spk {
 
 bool GlyphFont::FamilyExists(IDWriteFactory* factory, const wchar_t* family) {
     if (!factory || !family || !*family) return false;
@@ -82,4 +82,4 @@ HRESULT GlyphFont::CreateFormat(float sizeDip, IDWriteTextFormat** out) const {
                                       L"en-US", out);
 }
 
-}  // namespace faf
+}  // namespace spk

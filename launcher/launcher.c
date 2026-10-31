@@ -1,4 +1,4 @@
-/* FAF-Launcher -- FreeAssetFilter discrete-GPU-enforcing tiny launcher.
+/* SPK-Launcher -- Sopeek discrete-GPU-enforcing tiny launcher.
  *
  * W1 (performance-ceiling-optimization, todo 10): on hybrid-graphics
  * machines the NVIDIA Optimus / AMD PowerXpress driver decides the adapter
@@ -15,26 +15,30 @@
  *     the child with CREATE_NO_WINDOW, never touches GPU/D3D itself.
  *   - Spawns the real app via CreateProcessW (NOT system()/cmd.exe).
  *     Target selection:
- *       1. a sibling `FreeAssetFilter.exe` in this EXE's directory or up to
+ *       1. a sibling `Sopeek.exe` in this EXE's directory or up to
  *          three parent directories (installed layout: launcher lives in
  *          `<install>\_internal\launcher`), so frozen builds work;
- *       2. otherwise `python -m freeassetfilter.app.main` against the
+ *       2. otherwise `python -m sopeek.app.main` against the
  *          project root (parent dir of this EXE, walked up until
- *          `freeassetfilter/app/main.py` is found) for source runs.
+ *          `sopeek/app/main.py` is found) for source runs.
  *     Extra launcher argv are forwarded verbatim to the child.
- *   - Test override: env FAF_LAUNCHER_CMD, when non-empty, is used as the
+ *   - Test override: env SPK_LAUNCHER_CMD, when non-empty, is used as the
  *     full child command line instead (lets QA prove exit-code
  *     propagation without booting the GUI).
+ *   - Environment passthrough: the caller (sopeek.app.main) sets
+ *     SPK_GPU_LAUNCHED=1 and SPK_GPU_PARENT_PID=<caller pid>;
+ *     CreateProcessW with lpEnvironment=NULL inherits this process's
+ *     environment unchanged, so the child receives both.
  *   - Waits (WaitForSingleObject) and propagates the child exit code.
  *
  * Build (MSVC, from repo root):
  *   launcher\\build_launcher.ps1
  * or directly:
  *   cl launcher\\launcher.c launcher\\launcher.def /O2 /nologo ^
- *      /Fe:launcher\\FAF-Launcher.exe /link /SUBSYSTEM:WINDOWS
+ *      /Fe:launcher\\SPK-Launcher.exe /link /SUBSYSTEM:WINDOWS
  *
  * Verify:
- *   dumpbin /exports launcher\\FAF-Launcher.exe   (must list BOTH names)
+ *   dumpbin /exports launcher\\SPK-Launcher.exe   (must list BOTH names)
  */
 
 #define WIN32_LEAN_AND_MEAN
@@ -115,11 +119,11 @@ static BOOL append_quoted(
     return TRUE;
 }
 
-/* Walk exe_dir upward (<=3 levels) for freeassetfilter/app/main.py. */
+/* Walk exe_dir upward (<=3 levels) for sopeek/app/main.py. */
 static BOOL find_project_root(const wchar_t *exe_dir,
                               wchar_t *root, DWORD root_cap) {
     static const wchar_t *marker =
-        L"freeassetfilter\\app\\main.py";
+        L"sopeek\\app\\main.py";
     wchar_t cur[MAX_PATH];
     int up;
     size_t n = wcslen(exe_dir);
@@ -149,7 +153,7 @@ static BOOL file_exists(const wchar_t *path) {
     return GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
 }
 
-/* Walk a directory upward (<=3 levels) looking for FreeAssetFilter.exe. */
+/* Walk a directory upward (<=3 levels) looking for Sopeek.exe. */
 static BOOL find_app_exe(const wchar_t *start_dir,
                          wchar_t *out, DWORD out_cap) {
     wchar_t cur[MAX_PATH];
@@ -160,7 +164,7 @@ static BOOL find_app_exe(const wchar_t *start_dir,
     for (up = 0; up <= 3; up++) {
         wchar_t probe[MAX_PATH];
         _snwprintf_s(probe, MAX_PATH, _TRUNCATE,
-                     L"%s\\FreeAssetFilter.exe", cur);
+                     L"%s\\Sopeek.exe", cur);
         if (GetFileAttributesW(probe) != INVALID_FILE_ATTRIBUTES) {
             wcsncpy_s(out, out_cap, probe, _TRUNCATE);
             return TRUE;
@@ -232,11 +236,11 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev,
 
     /* Test/QA override: full child command line from the environment. */
     {
-        DWORD need = GetEnvironmentVariableW(L"FAF_LAUNCHER_CMD", NULL, 0);
+        DWORD need = GetEnvironmentVariableW(L"SPK_LAUNCHER_CMD", NULL, 0);
         if (need > 1 && need <= CMDLINE_CAP) {
             static wchar_t override_cmd[CMDLINE_CAP];
             GetEnvironmentVariableW(
-                L"FAF_LAUNCHER_CMD", override_cmd, CMDLINE_CAP);
+                L"SPK_LAUNCHER_CMD", override_cmd, CMDLINE_CAP);
             wcsncpy_s(cmdline, CMDLINE_CAP, override_cmd, _TRUNCATE);
             goto spawn;
         }
@@ -251,14 +255,14 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev,
         goto spawn;
     }
 
-    /* Fallback target: <python> -m freeassetfilter.app.main [fwd args]. */
+    /* Fallback target: <python> -m sopeek.app.main [fwd args]. */
     {
         wchar_t python[MAX_PATH];
         wchar_t venv_py[MAX_PATH];
 
         /* 1) explicit env, 2) repo .venv, 3) PATH `python`. */
         if (GetEnvironmentVariableW(
-                L"FAF_PYTHON", python, MAX_PATH) > 0) {
+                L"SPK_PYTHON", python, MAX_PATH) > 0) {
             /* use as-is */
         } else {
             _snwprintf_s(venv_py, MAX_PATH, _TRUNCATE,
@@ -273,7 +277,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev,
             return 1;
         {
             static const wchar_t *fixed_args[] = {
-                L"-m", L"freeassetfilter.app.main"
+                L"-m", L"sopeek.app.main"
             };
             int i;
             for (i = 0; i < 2; i++) {
@@ -304,10 +308,10 @@ spawn:
         DWORD err = GetLastError();
         wchar_t msg[512];
         _snwprintf_s(msg, 512, _TRUNCATE,
-                     L"FAF-Launcher: failed to start child process "
+                     L"SPK-Launcher: failed to start child process "
                      L"(error %lu).\nCommand: %.380s",
                      err, mutable_cmd);
-        MessageBoxW(NULL, msg, L"FAF-Launcher", MB_OK | MB_ICONERROR);
+        MessageBoxW(NULL, msg, L"SPK-Launcher", MB_OK | MB_ICONERROR);
         HeapFree(GetProcessHeap(), 0, mutable_cmd);
         return 1;
     }

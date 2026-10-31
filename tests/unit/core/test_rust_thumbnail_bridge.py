@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Rust 缩略图模块单测（tests-comprehensive-refactor todo-9 补全）。
 
-覆盖 ``freeassetfilter.core.native.bridges.rust_thumbnail_bridge``：
+覆盖 ``sopeek.core.native.bridges.rust_thumbnail_bridge``：
 
 * **服务探测**：``RustThumbnailBridge`` 直接构造可用、``_supports_jpg`` /
   ``_supports_batch_jpg`` 能力标记（对应 conftest ``rust_available`` session
@@ -33,7 +33,7 @@ from typing import Any, List, Tuple
 import pytest
 from PIL import Image
 
-from freeassetfilter.core.native.bridges.rust_thumbnail_bridge import (
+from sopeek.core.native.bridges.rust_thumbnail_bridge import (
     RustThumbnailBridge,
 )
 
@@ -41,7 +41,7 @@ from freeassetfilter.core.native.bridges.rust_thumbnail_bridge import (
 pytestmark = pytest.mark.unit
 
 bridge = pytest.importorskip(
-    "freeassetfilter.core.native.bridges.rust_thumbnail_bridge"
+    "sopeek.core.native.bridges.rust_thumbnail_bridge"
 )
 
 
@@ -404,10 +404,10 @@ class TestFfmpegCapabilitiesExport:
     断言能力表非空。
     """
 
-    # 捆绑 ffmpeg（freeassetfilter/core/native/bin/ffmpeg.exe）的探测路径，
+    # 捆绑 ffmpeg（sopeek/core/native/bin/ffmpeg.exe）的探测路径，
     # 与 Rust 侧 `candidate_native_dir_paths` 解析逻辑保持一致。
     BUNDLED_FFMPEG = os.path.join(
-        "freeassetfilter", "core", "native", "bin", "ffmpeg.exe"
+        "sopeek", "core", "native", "bin", "ffmpeg.exe"
     )
 
     def _capabilities(self, inst) -> dict:

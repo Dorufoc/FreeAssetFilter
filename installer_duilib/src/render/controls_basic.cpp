@@ -9,13 +9,13 @@
 
 #include <d2d1_1helper.h>
 
-#include "render/render_context.h"  // faf::ComPtr（最小 COM RAII 指针）
+#include "render/render_context.h"  // spk::ComPtr（最小 COM RAII 指针）
 
 #include <algorithm>
 #include <atomic>
 #include <cmath>
 
-namespace faf {
+namespace spk {
 
 namespace {
 
@@ -457,4 +457,4 @@ void PathField::Render(ID2D1DeviceContext* dc, const Theme& theme) {
              DWRITE_TEXT_ALIGNMENT_LEADING, fg);
 }
 
-}  // namespace faf
+}  // namespace spk

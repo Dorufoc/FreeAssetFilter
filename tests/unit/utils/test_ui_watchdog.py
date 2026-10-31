@@ -21,8 +21,8 @@ from typing import Any
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from freeassetfilter.utils import perf_metrics as pm
-from freeassetfilter.utils import ui_watchdog as wd
+from sopeek.utils import perf_metrics as pm
+from sopeek.utils import ui_watchdog as wd
 
 pytestmark = pytest.mark.unit
 
@@ -36,8 +36,8 @@ def _clean_watchdog() -> Any:
 
 
 def test_disabled_is_noop(qapp: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
-    """未设置 FAF_UI_WATCHDOG 时不创建任何探针或线程。"""
-    monkeypatch.delenv("FAF_UI_WATCHDOG", raising=False)
+    """未设置 SPK_UI_WATCHDOG 时不创建任何探针或线程。"""
+    monkeypatch.delenv("SPK_UI_WATCHDOG", raising=False)
     before = threading.active_count()
 
     assert wd.install(qapp) is None
@@ -50,10 +50,10 @@ def test_enabled_records_stall_with_stack(
     qapp: QApplication, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """主线程阻塞 450ms → 记录一次卡顿并带栈归因。"""
-    monkeypatch.setenv("FAF_UI_WATCHDOG", "1")
-    monkeypatch.setenv("FAF_UI_WATCHDOG_INTERVAL_MS", "100")
-    monkeypatch.setenv("FAF_UI_WATCHDOG_STALL_MS", "200")
-    monkeypatch.setenv("FAF_UI_WATCHDOG_STACK_MS", "10")
+    monkeypatch.setenv("SPK_UI_WATCHDOG", "1")
+    monkeypatch.setenv("SPK_UI_WATCHDOG_INTERVAL_MS", "100")
+    monkeypatch.setenv("SPK_UI_WATCHDOG_STALL_MS", "200")
+    monkeypatch.setenv("SPK_UI_WATCHDOG_STACK_MS", "10")
 
     watchdog = wd.install(qapp)
     assert watchdog is not None
@@ -83,7 +83,7 @@ def test_install_is_idempotent(
     qapp: QApplication, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """重复 install 返回同一实例，不重复建线程。"""
-    monkeypatch.setenv("FAF_UI_WATCHDOG", "1")
+    monkeypatch.setenv("SPK_UI_WATCHDOG", "1")
     first = wd.install(qapp)
     threads_after_first = threading.active_count()
     second = wd.install(qapp)
@@ -96,7 +96,7 @@ def test_uninstall_reclaims_thread(
     qapp: QApplication, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """uninstall 后采样线程退出且实例清空。"""
-    monkeypatch.setenv("FAF_UI_WATCHDOG", "1")
+    monkeypatch.setenv("SPK_UI_WATCHDOG", "1")
     before = threading.active_count()
     watchdog = wd.install(qapp)
     assert watchdog is not None

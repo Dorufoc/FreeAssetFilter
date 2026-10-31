@@ -28,18 +28,18 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 # 短路径导入 bootstrap（与 tests/unit/ui/test_main_window.py 同款）。
-_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "freeassetfilter" / "ui")
+_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-import freeassetfilter.ui.theme  # noqa: E402  (注册 theme 短路径别名)
+import sopeek.ui.theme  # noqa: E402  (注册 theme 短路径别名)
 
 from theme import tm  # noqa: E402
-from freeassetfilter.ui.layout.settings_layout import (  # noqa: E402
+from sopeek.ui.layout.settings_layout import (  # noqa: E402
     APPEARANCE_PREVIEW_DEBOUNCE_MS,
     SettingsLayout,
 )
-from freeassetfilter.ui.theme import app_stylesheet as app_qss  # noqa: E402
+from sopeek.ui.theme import app_stylesheet as app_qss  # noqa: E402
 
 pytestmark = pytest.mark.unit
 

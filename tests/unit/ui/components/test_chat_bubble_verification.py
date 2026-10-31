@@ -51,11 +51,11 @@ from PySide6.QtWidgets import (
 )
 
 # 组件模块内部使用短路径导入（from theme import tm），要求 ui 目录在 sys.path。
-_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "freeassetfilter" / "ui")
+_UI_ROOT: str = str(Path(__file__).resolve().parents[4] / "sopeek" / "ui")
 if _UI_ROOT not in sys.path:
     sys.path.insert(0, _UI_ROOT)
 
-from freeassetfilter.ui.components.styled_chat_bubble import (  # noqa: E402
+from sopeek.ui.components.styled_chat_bubble import (  # noqa: E402
     BODY_FONT_SIZE,
     IMAGE_MAX_HEIGHT,
     IMAGE_WIDTH,
@@ -71,7 +71,7 @@ from freeassetfilter.ui.components.styled_chat_bubble import (  # noqa: E402
     file_badge_color,
     file_badge_text,
 )
-from freeassetfilter.ui.theme.app_stylesheet import (  # noqa: E402
+from sopeek.ui.theme.app_stylesheet import (  # noqa: E402
     apply_app_stylesheet,
     registered_widget_count,
     stylesheet_mode,
@@ -382,8 +382,8 @@ def _registered_rule(widget: QWidget) -> str:
     """取回该控件已注册的 QSS 片段文本（对两种下发模式均成立）。
 
     ``widget`` 模式（当前默认）片段原文直接落在控件自身，控件同时带
-    ``fafQssId`` 注册标记；``app`` 模式片段经作用域改写后进入应用级
-    样式表，需按 ``fafQssId`` 标记取回对应规则行。
+    ``spkQssId`` 注册标记；``app`` 模式片段经作用域改写后进入应用级
+    样式表，需按 ``spkQssId`` 标记取回对应规则行。
 
     Args:
         widget: 已注册 QSS 片段的控件。
@@ -393,11 +393,11 @@ def _registered_rule(widget: QWidget) -> str:
     """
     if stylesheet_mode() == "widget":
         return widget.styleSheet() or ""
-    scope = widget.property("fafQssId")
+    scope = widget.property("spkQssId")
     if not scope:
         return ""
     sheet = QApplication.instance().styleSheet() or ""
-    marker = f'fafQssId="{scope}"'
+    marker = f'spkQssId="{scope}"'
     return "\n".join(line for line in sheet.splitlines() if marker in line)
 
 
@@ -867,16 +867,16 @@ def test_bubble_styles_go_through_registry(
         "说明样式片段没有经注册中心下发"
     )
     if stylesheet_mode() == "widget":
-        # 逐控件下发：片段原文落在控件自身，控件必须带 fafQssId 注册标记，
+        # 逐控件下发：片段原文落在控件自身，控件必须带 spkQssId 注册标记，
         # 且不得出现 app 模式的作用域改写痕迹（参见 test_layouts.py 同款口径）。
         for widget in [bubble, *bubble.findChildren(QWidget)]:
             text: Optional[str] = widget.styleSheet()
             if not text:
                 continue
-            assert widget.property("fafQssId"), (
+            assert widget.property("spkQssId"), (
                 f"{type(widget).__name__} 存在非注册来源的直写样式表：{text[:60]!r}"
             )
-            assert "fafQssId" not in text, (
+            assert "spkQssId" not in text, (
                 f"{type(widget).__name__} 的片段被误按 app 模式作用域改写：{text[:60]!r}"
             )
     else:
@@ -889,5 +889,5 @@ def test_bubble_styles_go_through_registry(
 
     badge = _find_badge(bubble)
     assert _registered_rule(badge), (
-        "徽标未出现在注册中心下发内容中（fafQssId 作用域规则缺失）"
+        "徽标未出现在注册中心下发内容中（spkQssId 作用域规则缺失）"
     )

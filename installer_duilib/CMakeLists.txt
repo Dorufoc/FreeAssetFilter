@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(FreeAssetFilterInstaller LANGUAGES CXX)
+project(SopeekInstaller LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -14,24 +14,24 @@ file(GLOB CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/render/*.cpp"
 )
 
-add_executable(FreeAssetFilterInstaller WIN32
+add_executable(SopeekInstaller WIN32
     ${CONFIGURE_DEPENDS}
     resources/app.rc
 )
 
 # Todo 19（§17）：测试构建开关。默认 OFF ⇒ 生产构建分毫不变；仅测试 GUI 构建
-# （tools/build_test_gui.ps1）传 -DFAF_TESTMODE=ON。除本 include 外无其他改动。
+# （tools/build_test_gui.ps1）传 -DSPK_TESTMODE=ON。除本 include 外无其他改动。
 include(cmake/test_mode.cmake)
 
-target_compile_definitions(FreeAssetFilterInstaller PRIVATE
+target_compile_definitions(SopeekInstaller PRIVATE
     UNICODE _UNICODE NOMINMAX
     # MinGW 默认 _WIN32_WINNT=0x601 会隐藏 DCompositionCreateDevice2 等原型。
     _WIN32_WINNT=0x0A00
     WINVER=0x0A00)
-target_link_libraries(FreeAssetFilterInstaller PRIVATE
+target_link_libraries(SopeekInstaller PRIVATE
     d2d1 dwrite dcomp dxgi d3d11 dwmapi windowscodecs uxtheme uuid shcore
     comctl32 shell32 shlwapi ole32)
 # Keep the bootstrapper self-contained: users do not need the MSYS2 runtime.
-target_link_options(FreeAssetFilterInstaller PRIVATE -static-libgcc -static-libstdc++ -static)
-target_include_directories(FreeAssetFilterInstaller PRIVATE src)
-set_target_properties(FreeAssetFilterInstaller PROPERTIES OUTPUT_NAME "FreeAssetFilterInstaller")
+target_link_options(SopeekInstaller PRIVATE -static-libgcc -static-libstdc++ -static)
+target_include_directories(SopeekInstaller PRIVATE src)
+set_target_properties(SopeekInstaller PROPERTIES OUTPUT_NAME "SopeekInstaller")
