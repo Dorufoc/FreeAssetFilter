@@ -37,6 +37,7 @@ from PySide6.QtCore import (
     QEvent,
     QObject,
     QPoint,
+    QRect,
     QTimer,
     Signal,
     QAbstractNativeEventFilter,
@@ -94,6 +95,15 @@ from components.styled_loading import StyledLoading
 from components.theme_transition_overlay import (
     BackgroundTransitionOverlay,
     ContentTransitionOverlay,
+)
+# 设置窗口过渡：窗口内快照等比缩放（弹出感）+ 关闭原地淡出
+from components.window_transition import (
+    SETTINGS_WINDOW_CLOSE_MS,
+    SETTINGS_WINDOW_OPEN_MS,
+    SETTINGS_WINDOW_OPEN_SCALE,
+    SettingsWindowSnapshotLayer,
+    TransitionInputBlocker,
+    client_snapshot_geometry,
 )
 # 实验性原生 DWM 云母开关的底层桥接（dwmapi 薄封装，惰性加载，零 COM 初始化）
 from sopeek.ui.mica import winapi as mica_winapi
@@ -815,6 +825,9 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         # 设置窗口实例引用：防止局部变量被 GC 后窗口闪退；
         # 仅在设置窗口存活期间持有，关闭销毁后清空
         self._settings_window = None
+        # 设置窗口首次打开预热标记：启动加载层期间预建一次，避免用户首次
+        # 点击设置时再付 QSS/布局的一次性成本（实测约 0.3~0.5s）。
+        self._settings_prewarm_done = False
         # 设置窗口代际计数器：destroyed 信号发自 ~QObject，槽收到的 obj
         # 是基类包装（实测为 'QWidget'），`is obj` 身份比对恒失败；
         # 故创建窗口时递增代际并绑定到槽，槽内按代际比对清空引用
@@ -1674,6 +1687,7 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         QTimer.singleShot(0, self._ensure_floating_pool)
         # 全部真实布局已就绪：撤下启动加载覆盖层
         # （后台 FFmpeg/LUT 预热、缓存清理继续在背后跑，不阻塞使用）
+        self._prewarm_settings_window()
         self._dismiss_startup_overlay()
 
     def _ensure_floating_pool(self) -> None:
@@ -2080,9 +2094,24 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         窗口实例保存在 self._settings_window：若仅用函数局部变量持有，
         PySide6 会在函数返回后因 Python GC 销毁无父窗口的顶层窗口，
         导致设置窗口闪现后立即消失；destroyed 后释放引用以便下次重建。
+
+        显示交给 :meth:`SettingsWindow.present`：透明显示完成首帧后抓取
+        最终内容快照，在固定几何的窗口内从 104% 轻微收缩归位，既避免原生
+        窗口先露出空白底，也不会在缩放中重排设置页；首次打开还会在启动
+        加载层期间预热一次设置窗口。
         """
+        # 用户已经主动打开设置：不要再做启动期预热（若尚未开始）。
+        self._settings_prewarm_done = True
         win = self._settings_window
         if win is not None:
+            # 若正在播放关闭淡出，窗口仍处于 isVisible() 状态；必须先立即
+            # 收尾，否则会把正在消失的旧窗口重新聚焦，表现为点击设置无反应。
+            finish_close = getattr(win, "finish_close_animation_now", None)
+            if callable(finish_close):
+                try:
+                    finish_close()
+                except RuntimeError:
+                    pass
             try:
                 visible = win.isVisible()
             except RuntimeError:
@@ -2102,9 +2131,83 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         gen = self._settings_window_gen
         window.setAttribute(Qt.WA_DeleteOnClose, True)
         window.destroyed.connect(lambda _obj=None, _gen=gen: self._on_settings_window_closed(_gen))
-        window.show()
-        window.raise_()
-        window.activateWindow()
+        window.present()
+
+    def _prewarm_settings_window(self) -> None:
+        """启动加载层仍在时预建一次设置窗口，摊薄首次点击的样式/布局成本。
+
+        设置窗口每次打开都会新建，首次构造 + 原生 show 需要一次性完成
+        Qt 样式 polish / 字体度量 / 原生窗口创建（实测 0.3~0.5s）。这段
+        成本无法在点击后拆开，故在启动加载层仍可见时用透明屏外窗口预热
+        一次；预热结束后销毁，不参与真实设置窗口的生命周期。
+        """
+        if self._settings_prewarm_done or self._settings_window is not None:
+            return
+        self._settings_prewarm_done = True
+        # offscreen/minimal（测试/无显示器）不预热，避免额外窗口与耗时。
+        try:
+            if QApplication.platformName().strip().lower() in ("offscreen", "minimal"):
+                return
+        except Exception:  # noqa: BLE001 - 平台查询失败按不预热处理
+            return
+        overlay = self._startup_overlay
+        if overlay is None or not overlay.isVisible():
+            # 没有加载层遮挡时不要在主界面上制造一次可见卡顿。首次打开
+            # 仍走正常路径（会稍慢，但无预热副作用）。
+            return
+        prewarm = None
+        try:
+            prewarm = SettingsWindow(self)
+            self._prepare_settings_prewarm_window(prewarm)
+            prewarm.destroyed.connect(
+                lambda _obj=None: QTimer.singleShot(0, self._prune_qss_registrations)
+            )
+            prewarm.show()
+            prewarm.raise_()
+        except Exception as exc:  # noqa: BLE001 - 预热失败不能影响启动
+            debug(f"设置窗口启动预热失败：{exc}")
+        finally:
+            if prewarm is not None:
+                QTimer.singleShot(60, lambda w=prewarm: self._finish_settings_prewarm(w))
+
+    @staticmethod
+    def _prepare_settings_prewarm_window(prewarm: QWidget) -> None:
+        """把预热设置窗口配置成透明、屏外且不抢焦点。
+
+        关键回归：``SettingsWindow`` 继承 ``FramelessMainWindow``，窗口标志
+        默认带 ``Qt.ExpandedClientAreaHint``。Win11 + Qt 6.10 实测：带该 hint
+        的 owned 窗口即使设置了 ``WA_ShowWithoutActivating``，从屏外
+        ``show()`` 仍会让整个应用失活（``QApplication.applicationState()``
+        变为 ``ApplicationInactive``）。主窗口随后收不到 ``WindowActivate``，
+        Mica 的失焦防抖会把背景淡出并暂停，启动画面停在 G1 纯色，直到用户
+        点击主窗口才恢复。
+
+        预热只关心样式/布局/字体度量与原生建窗，因此去掉该 hint 即可：仍会
+        创建原生 HWND 并完成控件构建预热，只是不进入扩展客户区路径，从而
+        不影响主窗口的激活状态。
+
+        Args:
+            prewarm: 待 ``show()`` 的预热设置窗口。
+        """
+        prewarm.setAttribute(Qt.WA_DeleteOnClose, False)
+        prewarm.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        if hasattr(Qt, "ExpandedClientAreaHint"):
+            prewarm.setWindowFlags(
+                prewarm.windowFlags() & ~Qt.WindowType.ExpandedClientAreaHint
+            )
+        prewarm.setWindowOpacity(0.0)
+        prewarm.move(-10000, -10000)
+
+    def _finish_settings_prewarm(self, window) -> None:
+        """销毁启动期预热窗口（透明、屏外，不参与真实设置窗口状态）。"""
+        try:
+            window._close_pre_cleanup_done = True
+            window._skip_close_animation = True
+            window._revealed = True
+            window.close()
+            window.deleteLater()
+        except RuntimeError:
+            pass
 
     def _on_settings_window_closed(self, gen: object = None) -> None:
         """设置窗口被关闭/销毁（含主窗口关闭连带销毁）后释放引用。
@@ -3356,12 +3459,21 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
                 from shiboken6 import isValid
 
                 if isValid(self._settings_window):
+                    # 若正在播放关闭淡出，先立即收尾：主窗口退出不能被
+                    # 150ms 的视觉过渡拖住，也避免隐藏窗口残留。
+                    finish_close = getattr(
+                        self._settings_window, "finish_close_animation_now", None
+                    )
+                    if callable(finish_close):
+                        finish_close()
                     self._settings_window.close()
             except RuntimeError:
                 pass
             finally:
                 self._settings_window = None
-        self._dispose_mica()
+        # Mica 释放统一放在 closeEvent 末尾（所有清理完成后，见下方
+        # _dispose_mica）：预览器 cleanup / 浮窗退场都会触发局部重绘，提前
+        # dispose 会让重绘区域先露出主题 G1 纯色再关窗。
         # 全局浮窗：先于 flush_backup/dispose 关闭。计划契约——closeEvent 只
         # close 不置 None（置 None 仅限 set_floating_pool_enabled(False) 路径），
         # 故推导会持有自身引用的测试（断言 isHidden）不被销毁干扰。
@@ -3415,6 +3527,9 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
                 self._floating_pool.wait_for_exit_animation()
             except (RuntimeError, AttributeError):
                 pass
+        # Mica 必须活到所有清理 / 退场动画结束：预览区摘除控件、浮窗淡出等
+        # 局部重绘仍要取到有效视口层，否则会在窗口真正关闭前先闪一帧 G1。
+        self._dispose_mica()
         super().closeEvent(event)
 
     def changeEvent(self, event: QEvent) -> None:
@@ -3482,13 +3597,29 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
                 pass
 
     def _resume_background_renderers(self) -> None:
-        """恢复流体背景（重建首帧）；Mica 由下一次绘制按需重烘焙。"""
+        """恢复流体背景（重建首帧）；Mica 释放过的视口层在此按需重建。
+
+        P7.4 的失焦宽限 / 最小化会 ``release_cached_layers()`` 清掉整块视口层。
+        回到前台时必须显式 ``ensure_layer()``：仅恢复流体时 Mica 没有任何
+        重烘焙入口，绘制端会永久停留在主题 G1 兜底。
+        """
         try:
             from components.styled_fluid_background import StyledFluidBackground
 
             StyledFluidBackground.resume_all()
         except Exception:  # noqa: BLE001 - 可选组件
             pass
+        try:
+            mica = self._mica_material()
+        except Exception as exc:  # noqa: BLE001 - 退出/重建期控件可能已析构
+            debug(f"[背景恢复] 获取 Mica 材质失败：{exc}")
+            mica = None
+        ensure = getattr(mica, "ensure_layer", None)
+        if callable(ensure):
+            try:
+                ensure()
+            except Exception as exc:  # noqa: BLE001 - 恢复失败不影响窗口状态
+                debug(f"[背景恢复] Mica 层重建失败：{exc}")
 
     def _mica_material(self):
         """取主窗口 Mica 材质实例（GL/内置两条实现都兼容）。"""
@@ -4295,6 +4426,22 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._overlay_layout = None
         self._title_label = None
         self._close_btn = None
+        # ── 呈现/关闭过渡状态（见 present / closeEvent） ──
+        self._presented = False  # present() 只执行一次（避免重复 show 重播动画）
+        self._revealed = False  # 真实窗口是否已从透明态揭开
+        self._open_start_timer = None
+        self._open_snapshot_layer = None
+        self._open_target_geometry = None
+        self._open_animation_active = False
+        self._open_animation_enabled = False
+        self._open_input_blocker = None
+        self._close_fade = None
+        self._close_fade_timer = None
+        self._close_input_blocker = None
+        self._close_animation_active = False
+        self._skip_close_animation = False
+        self._close_pre_cleanup_done = False
+        self._close_resource_cleanup_done = False
 
         super().__init__(parent)
 
@@ -4305,6 +4452,14 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 定位：owned 窗口不显式定位时由 Windows 级联放置（落在屏幕右下），
         # 这里居中到宿主主窗口；无宿主时回退到鼠标所在屏幕中心。
         self._center_on_host()
+
+        # 顶层窗口自身的背景也必须设成主题色：Qt 在首次绘制完成前会用
+        # 顶层窗口的 palette 兜底填充，若沿用系统默认 palette（深色下是
+        # #1e1e1e、浅色下接近纯白），就会出现「打开时闪一下」的观感。
+        # 参见 _apply_theme_palette 的说明：QPalette::Window 是正式绘制前
+        # 的底层颜色，必须与主题一致。
+        _apply_theme_palette(self)
+        self.setAutoFillBackground(True)
 
         # 中央部件用纯 QWidget，保留本地无边框基类原生窗口特性；
         # tm.surface 不透明纯色背景（styled 弹窗同款），同时作为 mica 视图
@@ -4348,20 +4503,341 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._connect_host_background()
 
     def _center_on_host(self) -> None:
-        """居中到宿主主窗口；无宿主时回退到鼠标所在屏幕中心"""
+        """居中到宿主主窗口；无宿主时回退到鼠标所在屏幕中心。
+
+        注意：必须按**真实外框尺寸**（``frameGeometry``）计算。构造期
+        ``resize(700, 500)`` 只是逻辑尺寸，原生扩展帧会让实际外框变成
+        707×532；若用 ``width()/height()`` 居中，show 后窗口会再上移/右移
+        十几像素（表现为「从下往上抖一下」）。
+        """
         host = self.parentWidget()
+        try:
+            frame = self.frameGeometry()
+            frame_w = max(1, frame.width())
+            frame_h = max(1, frame.height())
+            # 外框相对 widget 左上角的偏移（扩展帧会带来负边距）。
+            off_x = frame.x() - self.x()
+            off_y = frame.y() - self.y()
+        except RuntimeError:
+            return
         if host is not None and host.isVisible():
             geo = host.geometry()
-            x = geo.x() + (geo.width() - self.width()) // 2
-            y = geo.y() + (geo.height() - self.height()) // 2
-            self.move(x, y)
+            x = geo.x() + (geo.width() - frame_w) // 2
+            y = geo.y() + (geo.height() - frame_h) // 2
+            self.move(x - off_x, y - off_y)
             return
         screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
         geo = screen.geometry()
-        self.move(
-            geo.x() + (geo.width() - self.width()) // 2,
-            geo.y() + (geo.height() - self.height()) // 2,
-        )
+        x = geo.x() + (geo.width() - frame_w) // 2
+        y = geo.y() + (geo.height() - frame_h) // 2
+        self.move(x - off_x, y - off_y)
+
+    # ── 呈现 / 缩放淡入与关闭淡出 ────────────────────────────────────
+
+    @staticmethod
+    def _window_animation_supported() -> bool:
+        """当前平台是否支持真实窗口过渡（offscreen/测试不播）。"""
+        try:
+            platform_name = QApplication.platformName().strip().lower()
+        except Exception:  # noqa: BLE001 - 平台查询失败按不支持处理
+            return False
+        return platform_name not in ("offscreen", "minimal")
+
+    def _window_animation_enabled(self) -> bool:
+        """设置窗口淡入淡出是否启用（平台支持 + 用户动画开关）。"""
+        if not self._window_animation_supported():
+            return False
+        try:
+            app = QApplication.instance()
+            manager = getattr(app, "settings_manager", None) if app is not None else None
+            return is_animation_enabled(
+                "settings_window", default=True, settings_manager=manager
+            )
+        except Exception as exc:  # noqa: BLE001 - 设置读取失败按默认开启
+            debug(f"读取设置窗口动画开关失败（按开启处理）：{exc}")
+            return True
+
+    def present(self) -> None:
+        """显示设置窗口。
+
+        关键约束：**窗口第一次对用户可见时，几何与内容都必须已经是终态**。
+
+        踩过的坑：
+        - 屏外 ``(-10000,-10000)`` 先 show 再移回主屏：DWM 会按另一块屏幕
+          计算扩展帧（705×532），移回后才异步重算成 707×532，导致「完全
+          弹出后又向右扩一小段」。
+        - 可见后再 ``raise_``/``activateWindow``：会再触发 1px 客户区微调。
+        - ``show()`` 之后才绘制首帧：DWM 会先用扩展帧的浅色玻璃底板填充
+          客户区，形成一帧灰白（深色主题下非常明显），表现为「闪白/卡顿」。
+          实测该白帧亮度 ~122（正常深色内容 ~29），持续约 33ms。
+
+        因此这里：在最终位置完成主题同步与样式下发，再以 ``opacity=0``
+        显示，让 Qt 在透明状态下完成首帧；随后在不移动窗口的前提下恢复
+        不透明。动画开启时，首帧完成后先挂窗口内快照层，再让窗口与快照
+        同时出现，由快照层完成 104% → 100% 的内容收缩（见
+        :meth:`_start_open_animation`）。
+        """
+        if self._presented:
+            self.raise_()
+            self.activateWindow()
+            return
+        self._presented = True
+        # offscreen/minimal（测试/无显示器）：保持即时显示语义。
+        if not self._window_animation_supported():
+            self._center_on_host()
+            self.show()
+            self._revealed = True
+            return
+        self._open_animation_enabled = self._window_animation_enabled()
+        try:
+            # 关键：**不要碰 windowOpacity，也不要移动窗口**。
+            #
+            # 实测三条硬约束（150% DPI）：
+            # 1. 先移到屏外 (-10000,-10000) 再移回：DWM 按另一块屏幕算扩展帧，
+            #    移回后异步重算成 707×532 → 可见后仍 resize。
+            # 2. show 之后再 move/raise/activate：触发 1px 客户区修正 → 抖动。
+            # 3. 切换 windowOpacity（哪怕 0→1）：同样触发 1px 位移 + 707 重算。
+            #
+            # 另外：``show()`` 之前先完成主题同步与全量样式下发（首次约
+            # 135ms），否则窗口已可见但内容还没画完，会露出空白。
+            #
+            # 实测排除项（不要重复尝试）：
+            # - ``repaint()`` 在隐藏窗口上不会真正绘制（PrintWindow 抓到纯黑）。
+            # - ``root.render()`` + 覆盖层会把未就绪的 Mica 渲染成白图贴在最上层，
+            #   导致整窗持续白屏 3 秒。
+            # - ``WM_ERASEBKGND`` 在设置窗口打开时一次都没到达，拦截它无效。
+            # - ``DWMWA_TRANSITIONS_FORCEDISABLED``：禁用 DWM 淡入后，Qt 首帧
+            #   尚未绘制的白色表面会被瞬间完全暴露，实测 3/3 次纯白（255），
+            #   比不禁用更严重。
+            #
+            # 正确做法：``show()`` 前设 opacity=0，让窗口在透明状态下完成首帧
+            # 绘制，再恢复不透明。实测 8/8 次无白帧。
+            self.setWindowOpacity(0.0)
+            self._center_on_host()
+            self._prepare_before_show()
+            self.show()
+            # 首帧在透明状态下完成后再决定：直接揭开，或播放内容收缩动画。
+            # 注意：这里不能提前把 ``_revealed`` 置真，否则动画分支会被
+            # ``_start_open_animation`` 的状态守卫当成已完成而跳过。
+            QTimer.singleShot(32, self._reveal_after_first_frame)
+        except Exception as exc:  # noqa: BLE001 - 过渡失败必须退回可用状态
+            debug(f"设置窗口呈现失败，退回普通显示：{exc}")
+            self._cancel_open_animation()
+            self._reveal_now()
+
+    def _reveal_after_first_frame(self) -> None:
+        """首帧绘制完成后揭开窗口，或启动内容收缩动画。
+
+        ``present()`` 在 ``show()`` 前把窗口设为 ``opacity=0``：窗口以透明
+        状态完成首次布局与绘制，避免 Qt 还没画好内容时白色表面被 DWM 合成
+        出来（实测这是「打开闪白」的真正来源）。
+
+        - 动画开启且时长 > 0：先让出一拍，等首帧与原生边框状态稳定后由
+          :meth:`_start_open_animation` 挂快照层，再恢复不透明。
+        - 否则：直接恢复不透明并标记揭开。
+
+        若窗口已在关闭流程中则跳过。
+        """
+        if getattr(self, "_skip_close_animation", False):
+            return
+        if getattr(self, "_close_animation_active", False):
+            return
+        try:
+            if not self.isVisible():
+                return
+        except RuntimeError:
+            return
+        if self._open_animation_enabled and int(SETTINGS_WINDOW_OPEN_MS) > 0:
+            self._schedule_open_animation()
+            return
+        try:
+            self.setWindowOpacity(1.0)
+        except RuntimeError:
+            pass
+        self._revealed = True
+
+    def _prime_first_frame(self) -> None:
+        """（已废弃）保留入口以兼容旧调用，当前不做任何事。
+
+        历史尝试与实测结论：
+
+        - ``repaint()``：隐藏窗口上不会真正绘制（PrintWindow 抓到纯黑）。
+        - ``root.render()`` + 覆盖层：会把尚未就绪的 Mica 渲染成白图贴到最
+          上层，导致整窗持续白屏数秒——实测确认必须移除。
+        - ``WM_ERASEBKGND``：设置窗口打开时该消息一次都没到达，拦截无效。
+
+        因此现在把"准备首帧"简化为：在 ``show()`` 前完成主题同步与样式
+        下发（见 :meth:`_prepare_before_show`），不再做任何预渲染。
+        """
+        return
+
+    def _schedule_open_animation(self) -> None:
+        """下一事件循环拍起播快照动画。
+
+        ``show()`` 已同步完成首次布局；这里只让出一拍，让首帧绘制与原生
+        边框状态先稳定，再抓快照，避免抓到半成品内容。
+        """
+        timer = self._open_start_timer
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._start_open_animation)
+            self._open_start_timer = timer
+        timer.start(0)
+
+    def _start_open_animation(self) -> None:
+        """抓最终内容快照，在**固定几何**的窗口内做轻微收缩弹出。
+
+        窗口几何全程不动：既没有 DWM 边框/阴影后补，也不存在 150% DPI 下
+        左右边缘落在半个物理像素、Qt 分别取整导致的横向抖动（实测中心会
+        左右摆 0.5~1.5 物理像素）。
+
+        缩放只发生在绘制期，且起始比例 >1，收缩过程中四周不会露出底色或
+        重排后的真实内容；末帧与真实内容逐像素一致，撤层无跳变。
+        """
+        if (
+            self._revealed
+            or self._open_animation_active
+            or self._close_animation_active
+            or self._skip_close_animation
+        ):
+            return
+        duration = max(0, int(SETTINGS_WINDOW_OPEN_MS))
+        scale = max(1.0, float(SETTINGS_WINDOW_OPEN_SCALE))
+        try:
+            if not self.isVisible():
+                self._reveal_now()
+                return
+            # 窗口已在 present() 中定位到最终位置；这里绝不能再 move，
+            # 否则会在窗口可见后触发 DWM 扩展帧重算（1px 抖动）。
+            target = QRect(self.geometry())
+        except RuntimeError:
+            return
+        if target.isEmpty() or duration <= 0:
+            self._reveal_now()
+            return
+        self._open_target_geometry = QRect(target)
+        layer = None
+        try:
+            self.repaint()
+            snapshot = self.grab()
+            if snapshot.isNull():
+                self._reveal_now()
+                return
+            # 按 Win32 真实客户区定位/裁剪快照：grab() 含 DWM 扩展帧覆盖
+            # 的边缘，直接铺满 widget 会在揭开时产生约 1px 的内容位移。
+            layer_rect, source_rect = client_snapshot_geometry(self, snapshot)
+            layer = SettingsWindowSnapshotLayer(
+                snapshot, source_rect, duration, scale, parent=self._root
+            )
+            layer.setGeometry(layer_rect)
+            layer.show()
+            layer.raise_()
+            layer.setFocus(Qt.OtherFocusReason)
+            self._open_snapshot_layer = layer
+            layer.finished.connect(self._on_open_animation_finished)
+
+            # 先在透明状态下把快照层的第一帧（104%）画进后备缓冲，再恢复
+            # 不透明；否则 DWM 可能先合成一帧未缩放的实时内容，表现为
+            # 「100% → 104% → 收缩」的闪跳。
+            layer.repaint()
+            self.repaint()
+            # 窗口直接以最终几何、完全不透明出现；只有内容做收缩。
+            # 注意：不要在这里 ``raise_``/``activateWindow``——窗口已可见，
+            # 再调用会触发客户区 1px 微调（横向抖动回归）。
+            self.setWindowOpacity(1.0)
+            self._open_animation_active = True
+            layer.start()
+        except Exception as exc:  # noqa: BLE001 - 动画失败直接显示
+            debug(f"设置窗口打开动画创建失败，直接显示：{exc}")
+            self._open_animation_active = False
+            if layer is not None:
+                try:
+                    layer.finished.disconnect(self._on_open_animation_finished)
+                except (RuntimeError, TypeError):
+                    pass
+                try:
+                    layer.hide()
+                    layer.close()
+                    layer.deleteLater()
+                except RuntimeError:
+                    pass
+            self._open_snapshot_layer = None
+            self._reveal_now()
+
+    def _on_open_animation_finished(self) -> None:
+        """缩放完成：撤掉快照层（幂等）。"""
+        if self._revealed:
+            return
+        self._reveal_now()
+
+    def _remove_open_snapshot_layer(self) -> None:
+        """销毁窗口内快照层（幂等）。
+
+        不主动 ``disconnect``：本方法可能在 ``finished`` 信号发射过程中被
+        调用，Qt 会对「发射中断连」发出警告；``_revealed`` 守卫已足够防止
+        重入，层销毁后连接也会随之释放。
+        """
+        layer = self._open_snapshot_layer
+        self._open_snapshot_layer = None
+        if layer is None:
+            return
+        try:
+            layer.hide()
+            layer.close()
+            layer.deleteLater()
+        except RuntimeError:
+            pass
+
+    def _stop_open_start_timer(self) -> None:
+        """停止打开动画起播定时器（幂等）。"""
+        timer = self._open_start_timer
+        self._open_start_timer = None
+        if timer is not None:
+            try:
+                timer.stop()
+            except RuntimeError:
+                pass
+
+    def _cancel_open_animation(self) -> None:
+        """取消进行中的进入过渡（关闭/异常路径；幂等）。"""
+        self._open_animation_active = False
+        self._open_animation_enabled = False
+        self._stop_open_start_timer()
+        self._remove_open_snapshot_layer()
+        self._open_target_geometry = None
+
+    def _reveal_now(self) -> None:
+        """撤掉快照层并揭开真实窗口（幂等）。
+
+        窗口几何全程不动，因此这里不做 ``setGeometry``；末帧快照与真实
+        内容逐像素一致，直接撤层即可。
+        """
+        if self._revealed:
+            return
+        if self._close_animation_active or self._skip_close_animation:
+            return
+        self._revealed = True
+        self._open_animation_active = False
+        self._open_animation_enabled = False
+        self._stop_open_start_timer()
+        self._open_target_geometry = None
+        try:
+            self.setWindowOpacity(1.0)
+        except RuntimeError:
+            self._remove_open_snapshot_layer()
+            return
+        if self._open_snapshot_layer is not None:
+            # 让窗口先绘制一帧（快照层仍盖着），下一拍再撤层。
+            QTimer.singleShot(0, self._finish_reveal)
+
+    def _finish_reveal(self) -> None:
+        """撤掉快照层（最终揭开；幂等）。
+
+        这里不调用 ``raise_``/``activateWindow``：窗口已经可见，再次置顶会
+        触发客户区 1px 微调，正是本次动画要避开的横向抖动。
+        """
+        self._remove_open_snapshot_layer()
 
     def _host_background_mode(self) -> str:
         """读取宿主主窗口当前背景模式；无宿主/非主窗口时返回空串。"""
@@ -4532,26 +5008,44 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._sync_theme()
 
     def showEvent(self, event) -> None:
-        """窗口显示/重新显示时刷新全量主题样式"""
+        """窗口显示/重新显示时刷新主题样式。
+
+        注意：这里**不能**做耗时操作。首次 ``apply_app_stylesheet()`` 实测
+        阻塞 135ms，若放在 showEvent 里，窗口已交给 DWM 但内容还没画出来，
+        用户会看到一帧空白（深色主题下就是闪白/卡顿）。
+
+        因此主题同步与全量样式下发都提前到 :meth:`present` 的 ``show()``
+        之前完成；这里只补发显示后才就绪的轻量项。
+        """
         super().showEvent(event)
-        self._sync_theme()
-        # 首次显示后同步一次共享层取样几何（此前不取 winId，避免在窗口
-        # 显示前强制原生化）。
+        # 共享层取样几何需要窗口已显示（此前不取 winId，避免提前原生化）。
         view = getattr(self, "_mica_view", None)
         if view is not None and not view.isHidden():
             try:
                 view.handle_window_resize()
             except (RuntimeError, AttributeError):
                 pass
-        # 样式下发兜底：widget 模式下每次 ``register_widget_qss`` 已把片段
-        # 直接下发到控件自身，本窗口首帧天然带自己的样式（历史"首帧无片段
-        # 回退到不含本窗片段的旧全表"缺陷不再存在）；此处仅补发 teardown
-        # 窗口等未能即时下发的积压项，以及进程生命周期内首次调用的全量
-        # 重下发（等价旧实现启动时那次应用级统一下发，让 Qt 重算布局缓存）。
-        apply_app_stylesheet()
+
+    def _prepare_before_show(self) -> None:
+        """在 ``show()`` 之前完成主题同步与全量样式下发。
+
+        这两步在首次打开时合计约 135ms（``apply_app_stylesheet`` 的首次
+        全量重下发）。必须在窗口可见前做完，否则会阻塞首帧、露出空白。
+        """
+        try:
+            self._sync_theme()
+        except Exception as exc:  # noqa: BLE001 - 主题同步失败不应阻塞显示
+            debug(f"设置窗口显示前同步主题失败：{exc}")
+        try:
+            apply_app_stylesheet()
+        except Exception as exc:  # noqa: BLE001 - 样式下发失败不应阻塞显示
+            debug(f"设置窗口显示前下发样式失败：{exc}")
 
     def _sync_theme(self) -> None:
         """强制刷新当前主题下的所有样式"""
+        # 顶层窗口兜底背景（首帧/QSS 未覆盖区域的底色）
+        _apply_theme_palette(self)
+        self.setAutoFillBackground(True)
         # 纯色背景（tm.surface 随主题变化）
         if self._root is not None:
             _apply_theme_palette(self._root)
@@ -4578,6 +5072,16 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
     def resizeEvent(self, event: QResizeEvent) -> None:
         """窗口缩放后让共享 Mica 背景按新客户区重新取样（不重烘焙）。"""
         super().resizeEvent(event)
+        # 打开动画期间窗口几何不变，但客户区仍可能在首帧微调：让快照层
+        # 跟随真实可见客户区，避免边缘露出。
+        layer = getattr(self, "_open_snapshot_layer", None)
+        if layer is not None:
+            try:
+                rect, _src = client_snapshot_geometry(self, layer.snapshot)
+                layer.setGeometry(rect)
+                layer.raise_()
+            except (RuntimeError, AttributeError):
+                pass
         view = getattr(self, "_mica_view", None)
         if view is not None and view.isVisible():
             try:
@@ -4619,16 +5123,62 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         return False
 
     def closeEvent(self, event) -> None:
-        """设置窗口关闭时触发暂存生命周期：未提交则自动清除缓存。
+        """设置窗口关闭时触发暂存生命周期，并按需播放固定尺寸淡出。
 
         右上角 ``✕`` 等同于「取消」：丢弃暂存并恢复界面至原始状态。
+
+        播放关闭过渡时：
+        1. 先跑原有暂存/外观清理；
+        2. 保持 Mica 与真实窗口外观不变，启动 ``windowOpacity 1→0`` 淡出；
+        3. 淡出结束后再释放 Mica / 断开宿主信号并真正 ``close()``
+           （``WA_DeleteOnClose`` 销毁）。
+
+        主窗口退出、offscreen/测试、动画关闭时仍走同步关闭，不拖慢退出。
         """
+        if self._skip_close_animation:
+            # 淡出收尾后的真实关闭：只接受事件，不再重复清理。
+            self._cancel_open_animation()
+            self._run_close_resource_cleanup_once()
+            event.accept()
+            super().closeEvent(event)
+            return
+        if self._close_animation_active:
+            # 关闭过渡已在播放：忽略重复关闭请求（收尾回调会自行 close）。
+            event.ignore()
+            return
+
+        self._run_close_pre_cleanup_once()
+        if not self._can_animate_close():
+            self._cancel_open_animation()
+            self._run_close_resource_cleanup_once()
+            event.accept()
+            super().closeEvent(event)
+            return
+
+        event.ignore()
+        self._cancel_open_animation()
+        if not self._start_close_fade():
+            self._finish_close_animation()
+
+    # ── 关闭清理 / 收尾 ─────────────────────────────────────────────
+
+    def _run_close_pre_cleanup_once(self) -> None:
+        """执行关闭前暂存钩子（幂等；淡出开始之前调用）。"""
+        if self._close_pre_cleanup_done:
+            return
+        self._close_pre_cleanup_done = True
         try:
             layout = getattr(self, "_settings_layout", None)
             if layout is not None and hasattr(layout, "on_host_closing"):
                 layout.on_host_closing()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - 关闭路径绝不抛出
             debug(f"设置窗口关闭钩子失败（暂存缓存可能未清理）：{exc}")
+
+    def _run_close_resource_cleanup_once(self) -> None:
+        """释放共享层订阅与宿主信号（幂等；淡出结束/立即关闭前调用）。"""
+        if self._close_resource_cleanup_done:
+            return
+        self._close_resource_cleanup_done = True
         # 先解除共享层订阅并释放借用材质，再让窗口树析构（QPixmap 必须在
         # Qt 对象仍有效时清理；源材质属于主窗口，dispose 内部只断连不销毁）。
         try:
@@ -4644,4 +5194,164 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
                 except (TypeError, RuntimeError):
                     pass
             self._host_signal_connected = False
-        super().closeEvent(event)
+
+    def _can_animate_close(self) -> bool:
+        """当前是否应播放关闭淡出过渡。"""
+        if self._skip_close_animation or self._close_animation_active:
+            return False
+        # 关闭淡出时长 <= 0：同步关闭（当前默认）。
+        if int(SETTINGS_WINDOW_CLOSE_MS) <= 0:
+            return False
+        # 只有经 present() 正常打开的窗口才播关闭过渡；测试/调试中直接
+        # show() 的窗口保持旧同步关闭语义。
+        if not self._presented:
+            return False
+        # 进入过渡尚未揭开真实窗口时直接关闭：此时窗口本身不可见，
+        # 再播淡出没有意义。
+        if not self._revealed:
+            return False
+        if not self._window_animation_enabled():
+            return False
+        try:
+            if QApplication.closingDown():
+                return False
+        except Exception:  # noqa: BLE001 - 退出期查询失败按可动画处理
+            pass
+        try:
+            if not self.isVisible():
+                return False
+        except RuntimeError:
+            return False
+        host = self.parentWidget()
+        if host is not None and getattr(host, "_close_in_progress", False):
+            # 主窗口正在退出：owned 窗口随宿主销毁，不播过渡、不拖延退出。
+            return False
+        return True
+
+    def _start_close_fade(self) -> bool:
+        """启动固定尺寸淡出；成功返回 True（几何全程不变）。"""
+        if self._skip_close_animation or self._close_animation_active:
+            return False
+        duration = max(0, int(SETTINGS_WINDOW_CLOSE_MS))
+        if duration <= 0:
+            return False
+        fade = None
+        try:
+            fade = QPropertyAnimation(self, b"windowOpacity", self)
+            fade.setDuration(duration)
+            fade.setStartValue(max(0.0, min(1.0, float(self.windowOpacity()))))
+            fade.setEndValue(0.0)
+            fade.setEasingCurve(QEasingCurve.Type.InCubic)
+            fade.finished.connect(self._on_close_fade_finished)
+            self._close_fade = fade
+            self._close_animation_active = True
+            self._close_input_blocker = self._install_transition_input_blocker()
+            # 兜底：个别平台/合成器可能不派发 finished；时间到后强制收尾，
+            # 绝不让设置窗口卡在淡出中途无法关闭。
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._on_close_fade_timeout)
+            timer.start(duration + 200)
+            self._close_fade_timer = timer
+            fade.start()
+            return True
+        except Exception as exc:  # noqa: BLE001 - 动画失败按普通关闭处理
+            debug(f"设置窗口淡出创建失败，直接关闭：{exc}")
+            self._close_animation_active = False
+            self._close_fade = None
+            timer = self._close_fade_timer
+            self._close_fade_timer = None
+            if timer is not None:
+                try:
+                    timer.stop()
+                except RuntimeError:
+                    pass
+            if fade is not None:
+                try:
+                    fade.stop()
+                    fade.deleteLater()
+                except RuntimeError:
+                    pass
+            self._remove_transition_input_blocker("_close_input_blocker")
+            return False
+
+    def _install_transition_input_blocker(
+        self,
+    ) -> Optional[TransitionInputBlocker]:
+        """创建覆盖客户区的透明输入挡板（失败返回 None）。
+
+        打开淡入与关闭淡出期间都使用：窗口仍是真实窗口，若不拦截，用户
+        可能在过渡的百毫秒内误点内部控件。
+        """
+        try:
+            blocker = TransitionInputBlocker(self)
+            blocker.setGeometry(self.rect())
+            blocker.show()
+            blocker.raise_()
+            blocker.setFocus(Qt.OtherFocusReason)
+            return blocker
+        except (RuntimeError, AttributeError) as exc:
+            debug(f"设置窗口过渡挡板创建失败：{exc}")
+            return None
+
+    def _remove_transition_input_blocker(self, attr: str) -> None:
+        """移除指定过渡挡板（幂等）。"""
+        blocker = getattr(self, attr, None)
+        setattr(self, attr, None)
+        if blocker is not None:
+            try:
+                blocker.hide()
+                blocker.deleteLater()
+            except RuntimeError:
+                pass
+
+    def _on_close_fade_finished(self) -> None:
+        """淡出完成：进入真正关闭收尾（幂等）。"""
+        if self._skip_close_animation:
+            return
+        self._finish_close_animation()
+
+    def _on_close_fade_timeout(self) -> None:
+        """兜底：淡出动画未发 finished 时强制收尾（幂等）。"""
+        self._close_fade_timer = None
+        if not self._close_animation_active or self._skip_close_animation:
+            return
+        debug("设置窗口淡出等待超时，强制关闭")
+        self._finish_close_animation()
+
+    def _finish_close_animation(self) -> None:
+        """关闭过渡结束：释放资源并真正关闭窗口（幂等）。"""
+        if self._skip_close_animation:
+            return
+        self._close_animation_active = False
+        timer = self._close_fade_timer
+        self._close_fade_timer = None
+        if timer is not None:
+            try:
+                timer.stop()
+            except RuntimeError:
+                pass
+        fade = self._close_fade
+        self._close_fade = None
+        if fade is not None:
+            try:
+                fade.stop()
+                fade.deleteLater()
+            except RuntimeError:
+                pass
+        self._remove_transition_input_blocker("_close_input_blocker")
+        try:
+            self.setWindowOpacity(0.0)
+        except RuntimeError:
+            pass
+        self._run_close_resource_cleanup_once()
+        self._skip_close_animation = True
+        try:
+            self.close()
+        except RuntimeError:
+            pass
+
+    def finish_close_animation_now(self) -> None:
+        """立即收尾进行中的关闭过渡（再次打开/主窗口退出时调用）。"""
+        if self._close_animation_active:
+            self._finish_close_animation()

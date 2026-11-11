@@ -71,6 +71,7 @@ import sys
 from ctypes import wintypes
 
 from PySide6.QtCore import QEvent, Qt, QTimer
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QMainWindow
 
 from sopeek.utils.app_logger import info, warning
@@ -95,6 +96,7 @@ _EDGE_BORDER = 8
 # 参与的窗口消息
 _WM_NCCALCSIZE = 0x0083
 _WM_NCHITTEST = 0x0084
+_WM_ERASEBKGND = 0x0014
 
 # HWND_MESSAGE = (HWND)-3。绝不能用 0xFFFFFFFF：那是 0x00000000FFFFFFFF 的
 # 正数句柄，SetParent 会以 ERROR_INVALID_WINDOW_HANDLE(1400) 失败。
@@ -143,6 +145,9 @@ MIN_QT_VERSION = (6, 10)
 
 #: 已声明原型的 user32 缓存（None 表示尚未初始化/不可用）。
 _user32 = None
+
+#: 已声明原型的 gdi32 缓存（仅 WM_ERASEBKGND 自绘背景使用）。
+_gdi32 = None
 
 
 def _format_call_stack(limit: int = 12) -> str:
@@ -220,7 +225,36 @@ def _get_user32():
     # （GA_PARENT=1），避免未声明 argtypes 时 HWND 按 32 位截断。
     lib.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
     lib.GetAncestor.restype = wintypes.HWND
+    # WM_ERASEBKGND 自绘背景：FillRect 属于 user32（不是 gdi32）。
+    lib.FillRect.argtypes = [
+        wintypes.HDC, ctypes.POINTER(wintypes.RECT), wintypes.HBRUSH,
+    ]
+    lib.FillRect.restype = ctypes.c_int
     _user32 = lib
+    return lib
+
+
+def _get_gdi32():
+    """返回已声明原型的 gdi32，不可用时返回 None。
+
+    仅用于 ``WM_ERASEBKGND`` 的自绘背景：``CreateSolidBrush`` /
+    ``DeleteObject`` 需要正确的 HBRUSH 句柄类型，否则 64 位下会被截断。
+    （``FillRect`` 属于 user32，在 :func:`_get_user32` 中声明。）
+    """
+    global _gdi32
+    if _gdi32 is not None:
+        return _gdi32
+    if sys.platform != "win32":
+        return None
+    try:
+        lib = ctypes.WinDLL("gdi32", use_last_error=True)
+    except OSError:  # pragma: no cover - 仅异常环境触发
+        return None
+    lib.CreateSolidBrush.argtypes = [wintypes.COLORREF]
+    lib.CreateSolidBrush.restype = wintypes.HBRUSH
+    lib.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+    lib.DeleteObject.restype = wintypes.BOOL
+    _gdi32 = lib
     return lib
 
 
@@ -420,6 +454,10 @@ class FramelessMainWindow(QMainWindow):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        #: ``WM_ERASEBKGND`` 自绘背景色（COLORREF）；None 表示不接管。
+        #: 由子类通过 :meth:`set_erase_background_color` 在普通代码路径写入，
+        #: 原生消息处理中直接读这个值，避免回调 Qt 造成重入。
+        self._erase_colorref = None
         flags = Qt.Window
         self._expanded_client_area = hasattr(Qt, "ExpandedClientAreaHint")
         if self._expanded_client_area:
@@ -529,7 +567,84 @@ class FramelessMainWindow(QMainWindow):
         if msg.message == _WM_NCHITTEST:
             return self._handle_nchittest(msg)
 
+        if msg.message == _WM_ERASEBKGND:
+            try:
+                if self._paint_erase_background(msg):
+                    return True, 1
+            except Exception:  # noqa: BLE001 - 原生路径绝不抛出
+                pass
+            return super().nativeEvent(eventType, message)
+
         return super().nativeEvent(eventType, message)
+
+    # ---- WM_ERASEBKGND：用主题色擦除，消除首帧白闪 ----
+    def _paint_erase_background(self, msg) -> bool:
+        """用缓存的窗口背景色填充被系统擦除的区域。
+
+        Windows 在 Qt 绘制之前会发送 ``WM_ERASEBKGND``，默认用系统背景刷
+        （通常是白色）擦除窗口。无边框窗口的客户区被扩展到整窗，这个白刷
+        会直接铺满可见区域，形成「打开弹窗时闪一下白」——深色主题下尤其
+        明显（实测该帧亮度 ~120~249，正常内容 ~29）。
+
+        这里改成用**预先缓存**的主题背景色填充，用户看到的就是主题底色，
+        与随后 Qt 绘制的首帧颜色一致，视觉上不再有白闪。
+
+        注意：原生消息处理中**绝不能回调 Qt**（``self.palette()`` 等可能
+        触发样式/布局计算，导致重入崩溃）。颜色由
+        :meth:`set_erase_background_color` 在普通代码路径提前写入。
+
+        Returns:
+            True 表示已处理（调用方应返回 ``(True, 1)`` 吞掉该消息）。
+        """
+        colorref = getattr(self, "_erase_colorref", None)
+        if colorref is None:
+            return False
+        user32 = _get_user32()
+        gdi32 = _get_gdi32()
+        if user32 is None or gdi32 is None:
+            return False
+        hwnd = self._msg_hwnd(msg)
+        if not int(hwnd or 0):
+            return False
+        try:
+            hdc = wintypes.HDC(int(msg.wParam or 0))
+        except (TypeError, ValueError):
+            return False
+        if not hdc:
+            return False
+        try:
+            rect = wintypes.RECT()
+            if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
+                return False
+            brush = gdi32.CreateSolidBrush(wintypes.COLORREF(int(colorref)))
+            if not brush:
+                return False
+            try:
+                user32.FillRect(hdc, ctypes.byref(rect), brush)
+            finally:
+                gdi32.DeleteObject(wintypes.HGDIOBJ(brush))
+        except Exception:  # noqa: BLE001 - 原生绘制失败时退回系统默认
+            return False
+        return True
+
+    def set_erase_background_color(self, color) -> None:
+        """缓存 ``WM_ERASEBKGND`` 使用的背景色（在普通代码路径调用）。
+
+        Args:
+            color: ``QColor``（取其 RGB）；``None`` 表示不再自绘背景。
+        """
+        if color is None:
+            self._erase_colorref = None
+            return
+        try:
+            # COLORREF 是 0x00BBGGRR（与 RGB 顺序相反）
+            self._erase_colorref = (
+                (int(color.blue()) << 16)
+                | (int(color.green()) << 8)
+                | int(color.red())
+            )
+        except (AttributeError, TypeError, ValueError):
+            self._erase_colorref = None
 
     # ---- 原生消息处理 ----
     def _msg_hwnd(self, msg) -> wintypes.HWND:

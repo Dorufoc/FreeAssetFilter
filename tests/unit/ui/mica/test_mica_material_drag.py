@@ -1056,6 +1056,156 @@ def test_native_backdrop_toggle_is_idempotent(qapp) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 失焦释放后的层自愈（回焦 / 最小化恢复）
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_layer_noop_when_layer_ready(qapp, monkeypatch) -> None:
+    """层仍有效时 ensure_layer 零开销返回，不重复烘焙。"""
+    widget, mica = _widget_with_mica(qapp)
+    _ready_mica(widget, mica)
+    refresh = mock.Mock()
+    monkeypatch.setattr(mica, "refresh_async", refresh)
+
+    try:
+        mica.ensure_layer()
+        refresh.assert_not_called()
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_release_then_ensure_requests_rebake(qapp, monkeypatch) -> None:
+    """释放层像素后 ensure_layer 必须重新提交一次异步烘焙（回焦自愈）。"""
+    widget, mica = _widget_with_mica(qapp)
+    _ready_mica(widget, mica)
+    refresh = mock.Mock()
+    monkeypatch.setattr(mica, "refresh_async", refresh)
+    monkeypatch.setattr(widget, "isVisible", lambda: True)
+    monkeypatch.setattr(mica, "_window_rect_tuple", lambda: (0, 0, *WIN))
+    monkeypatch.setattr(mica, "_virtual_rect", lambda: MONITOR_A)
+    monkeypatch.setattr(
+        mica,
+        "_layer_key_for",
+        lambda region, long: ("params", True, "sig", region, 2560),
+    )
+
+    try:
+        mica.release_cached_layers()
+        assert mica._layer is None
+        assert mica._layer_key is None
+        mica.ensure_layer()
+        refresh.assert_called_once()
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_ensure_layer_skips_bake_while_minimized(qapp, monkeypatch) -> None:
+    """最小化期间不重烘（层已释放），挂起标志留待恢复前台时补烘。"""
+    widget, mica = _widget_with_mica(qapp)
+    _ready_mica(widget, mica)
+    refresh = mock.Mock()
+    monkeypatch.setattr(mica, "refresh_async", refresh)
+    monkeypatch.setattr(widget, "isVisible", lambda: True)
+
+    class _MinimizedTop:
+        @staticmethod
+        def isMinimized() -> bool:
+            return True
+
+    monkeypatch.setattr(widget, "window", lambda: _MinimizedTop())
+
+    try:
+        mica.release_cached_layers()
+        mica.ensure_layer()
+        refresh.assert_not_called()
+        assert mica._rebuild_pending is True
+    finally:
+        # 先撤销 window() 替身，dispose 需要真实顶层控件解绑事件过滤器。
+        monkeypatch.undo()
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_ensure_layer_does_not_disturb_inflight_bake(qapp, monkeypatch) -> None:
+    """已有真实烘焙在途且 key 有效时，不重复起烘、不使在途结果失效。"""
+    widget, mica = _widget_with_mica(qapp)
+    _ready_mica(widget, mica)
+    refresh = mock.Mock()
+    monkeypatch.setattr(mica, "refresh_async", refresh)
+    monkeypatch.setattr(widget, "isVisible", lambda: True)
+
+    try:
+        mica._compositor.clear()
+        mica._worker_thread = mock.Mock()
+        mica._worker_speculative = False
+        old_key = mica._layer_key
+        mica.ensure_layer()
+        refresh.assert_not_called()
+        assert mica._layer_key is old_key
+    finally:
+        mica._worker_thread = None
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_maybe_rebake_rebuilds_when_layer_missing_even_if_key_matches(
+    qapp, monkeypatch
+) -> None:
+    """key 未变但层像素缺失（如被 release 清空）也必须重烘焙，不得提前返回。"""
+    widget, mica = _widget_with_mica(qapp)
+    _ready_mica(widget, mica)
+    refresh = mock.Mock()
+    monkeypatch.setattr(mica, "refresh_async", refresh)
+    monkeypatch.setattr(mica, "_window_rect_tuple", lambda: (0, 0, *WIN))
+    monkeypatch.setattr(mica, "_virtual_rect", lambda: MONITOR_A)
+    monkeypatch.setattr(
+        mica,
+        "_layer_key_for",
+        lambda region, long: mica._layer_key,
+    )
+
+    try:
+        # 模拟只清层、不清 key 的状态（防御其它清层路径）。
+        mica._compositor.clear()
+        assert mica._layer is None
+        mica._maybe_rebake(force=False)
+        refresh.assert_called_once()
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+def test_set_active_true_after_release_requests_rebake(qapp, monkeypatch) -> None:
+    """回焦（set_active(True)）在层已释放时必须触发重建，而不是只画纯色。"""
+    widget, mica = _widget_with_mica(qapp)
+    _ready_mica(widget, mica)
+    refresh = mock.Mock()
+    monkeypatch.setattr(mica, "refresh_async", refresh)
+    monkeypatch.setattr(widget, "isVisible", lambda: True)
+    monkeypatch.setattr(mica, "_window_rect_tuple", lambda: (0, 0, *WIN))
+    monkeypatch.setattr(mica, "_virtual_rect", lambda: MONITOR_A)
+    monkeypatch.setattr(
+        mica,
+        "_layer_key_for",
+        lambda region, long: ("params", True, "sig", region, 2560),
+    )
+
+    try:
+        mica.release_cached_layers()
+        mica.set_active(False)
+        mica._paused = True
+        mica._fade_alpha = 0.0
+        mica.set_active(True)
+        refresh.assert_called_once()
+        assert mica._paused is False
+    finally:
+        mica.dispose()
+        widget.deleteLater()
+
+
+# ---------------------------------------------------------------------------
 # 层缓存与 speculative 预烘（主题往返切换零烘焙）
 # ---------------------------------------------------------------------------
 

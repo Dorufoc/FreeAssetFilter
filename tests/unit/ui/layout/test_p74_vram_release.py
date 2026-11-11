@@ -99,6 +99,10 @@ def test_mica_release_cached_layers_clears_without_rebake(
     mica._speculative_key = "s"
     mica._speculative_extra = "e"
     mica._last_req = object()
+    mica._layer_key = ("params", True, "sig", (0, 0, 1920, 1080), 1920)
+    mica._layer_display_long = 1920
+    mica._refresh_retries = 2
+    mica._refresh_outcome = "fail"
 
     released = mica.release_cached_layers()
     assert released == 3  # 2 个缓存层 + 当前层像素
@@ -106,6 +110,12 @@ def test_mica_release_cached_layers_clears_without_rebake(
     assert mica._layer is None
     assert mica._layer_pixmap is None
     assert mica._speculative_key is None
+    # 层像素释放后判据 / 重试状态必须一并失效：否则回焦时 _maybe_rebake
+    # 会因 key 未变而误判层仍有效，永久停在纯色兜底。
+    assert mica._layer_key is None
+    assert mica._layer_display_long == 0
+    assert mica._refresh_retries == 0
+    assert mica._refresh_outcome is None
     assert rebaked == [], "释放不得触发重烘焙"
 
 
@@ -139,6 +149,40 @@ def test_main_window_suspend_path_touches_fluid_and_mica(
     )
     MainWindow._suspend_background_renderers(_Shim())
     assert calls == ["fluid", "mica"]
+
+
+def test_main_window_resume_path_ensures_mica_layer(
+    qapp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """回前台恢复路径必须通知 Mica 重建层（否则释放后永久停在纯色）。"""
+    from sopeek.ui.main_window import MainWindow
+
+    calls: List[str] = []
+
+    class _FakeMaterial:
+        def release_cached_layers(self) -> int:
+            return 0
+
+        def ensure_layer(self) -> None:
+            calls.append("ensure")
+
+    class _FakeBackgroundWidget:
+        mica = _FakeMaterial()
+
+    class _Shim:
+        _mica_background = _FakeBackgroundWidget()
+
+        @staticmethod
+        def _mica_material() -> Any:
+            return MainWindow._mica_material(_Shim())
+
+    monkeypatch.setattr(
+        StyledFluidBackground,
+        "resume_all",
+        classmethod(lambda cls: calls.append("fluid") or 1),
+    )
+    MainWindow._resume_background_renderers(_Shim())
+    assert calls == ["fluid", "ensure"]
 
 
 def test_mica_material_lookup_prefers_mica_property(qapp: Any) -> None:

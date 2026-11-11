@@ -838,6 +838,57 @@ class MicaMaterial(QObject):
         self._watchdog.start(BAKE_WATCHDOG_MS)
         thread.start()
 
+    def ensure_layer(self) -> None:
+        """确保当前存在可绘制的视口层（回焦 / 最小化恢复的自愈入口）。
+
+        层像素被 :meth:`release_cached_layers` 释放后，绘制端只能以主题 G1 兜底；
+        该方法在窗口重新激活时检查层是否仍然可用，缺失则提交**一次**异步重烘。
+        层已就绪时零开销直接返回，不会重复烘焙 / 不触发交叉过渡。
+
+        借用共享层的材质把请求转交源材质；源材质重建后经 ``layer_changed``
+        同步到借用方。
+        """
+        if self._disposed or self._native_backdrop:
+            return
+        if (
+            self._layer is not None
+            and self._layer_pixmap is not None
+            and not self._layer_pixmap.isNull()
+        ):
+            return
+        if self._borrowed:
+            src = self._layer_source()
+            if src is not None:
+                src.ensure_layer()
+            return
+        if not self._widget.isVisible():
+            # 显示前几何不可信：挂起，由 showEvent 后的首次刷新按真实几何起烘。
+            self._rebuild_pending = True
+            return
+        try:
+            top = self._widget.window()
+            if top is not None and top.isMinimized():
+                # 最小化期间不烘焙：层已被释放，恢复前台时再按需重建。
+                self._rebuild_pending = True
+                return
+        except (AttributeError, RuntimeError):
+            pass
+        if self._worker_thread is not None and not self._worker_speculative:
+            # 已有真实烘焙在途：key 仍有效时等它交付即可（避免启动期/回焦期
+            # 重复起烘）；key 已失效（release_cached_layers 刚清过）时标记续接，
+            # 由 _cleanup_worker 在旧结果被丢弃后按最新条件补烘。
+            if self._layer_key is None:
+                self._rebuild_pending = True
+            return
+        # 层判据 / 失败计数一并复位：释放后的第一次恢复必须能重新提交烘焙，
+        # 不能被释放前的 key 或已耗尽的 retry 计数拦住。
+        self._layer_key = None
+        self._layer_display_long = 0
+        self._rebuild_pending = False
+        self._refresh_retries = 0
+        self._refresh_outcome = None
+        self._maybe_rebake(force=False)
+
     def _background_fill_color(self) -> QColor:
         """无 Mica 内容态（失焦暂停 / 无产物兜底 / 淡入淡出底色）的背景填充色。
 
@@ -1431,8 +1482,12 @@ class MicaMaterial(QObject):
         """释放层缓存与当前层像素（P7.4，最小化/失焦宽限后调用）。
 
         与 :meth:`invalidate_cache` 不同：本方法**不触发重烘焙**，恢复时
-        由下一次绘制按需重建（代价是一次烘焙，收益是释整桌面层的
-        ``QPixmap``（双 4K 约 66MB））。
+        由 :meth:`ensure_layer`（回焦 / 最小化恢复）按需重建（代价是一次烘焙，
+        收益是释整桌面层的 ``QPixmap``（双 4K 约 66MB））。
+
+        层判据 ``_layer_key`` 必须随像素一并失效：否则恢复路径里的
+        :meth:`_maybe_rebake` 会因 key 未变而误判"层仍有效"，导致窗口永久停留
+        在纯色兜底（层像素已被释放，却不会再烘）。
 
         ``_layer`` / ``_pixmap`` 是经 ``ViewportCompositor`` 的属性视图，
         因此这里统一走 ``_compositor.clear()``，不直接赋值。
@@ -1452,6 +1507,12 @@ class MicaMaterial(QObject):
         self._speculative_key = None
         self._speculative_extra = None
         self._last_req = None
+        # 层像素已释放 ⇒ 层判据一并失效，恢复时 ensure_layer/_maybe_rebake
+        # 才能识别"无层"并重新提交烘焙。
+        self._layer_key = None
+        self._layer_display_long = 0
+        self._refresh_retries = 0
+        self._refresh_outcome = None
         return released
 
     def _stop_worker_thread(
@@ -1570,14 +1631,20 @@ class MicaMaterial(QObject):
     def set_active(self, active: bool) -> None:
         """设置主窗口焦点状态：失焦淡出隐藏并暂停绘制，回焦淡入恢复。
 
+        回焦时同时调用 :meth:`ensure_layer`：最小化 / 失焦宽限（P7.4）已释放
+        层像素时，仅靠淡入只能露出主题 G1 纯色，必须重新提交烘焙才能恢复云母。
+
         Args:
             active: 是否处于焦点。
         """
         if active == self._active:
+            if active:
+                self.ensure_layer()
             return
         self._active = active
         if active:
             self._start_fade_in()
+            self.ensure_layer()
         else:
             self._start_fade_out()
 
@@ -1747,16 +1814,26 @@ class MicaMaterial(QObject):
             return
         if not force and key == self._layer_key:
             layer = self._layer
-            stale_geometry = layer is not None and tuple(
-                int(v) for v in layer.win_size
-            ) != (int(win[2]), int(win[3]))
-            if not stale_geometry:
-                # key 未变化且层几何与当前窗口一致：层仍覆盖整块虚拟桌面，
-                # 无需重烘焙（窗口在桌面内平移 / 缩放 / 跨监视器、主题参数
-                # 未变，no-op）。
-                return
-            # key 未变但层 win_size 过期（陈旧几何层，如退化矩形起烘的产物）：
-            # 继续走下方的重烘 / 挂起逻辑，按当前几何自愈。
+            if layer is None:
+                # 同 key 的真实烘焙已在途：等交付即可，不要再起一份把它顶成
+                # 陈旧结果（启动首帧 / release 后的续接都可能走到这里）。
+                if self._worker_thread is not None and not self._worker_speculative:
+                    return
+                # 无在途烘焙 / 仅 speculative：继续重烘 —— 释放后的层缺失
+                # 必须自愈，不能因 key 未变而跳过。
+            else:
+                # win_size 过期（退化矩形起烘的产物）必须重烘自愈 —— 不能
+                # 因为 key 未变就把几何失配的层当作有效。
+                stale_geometry = tuple(
+                    int(v) for v in layer.win_size
+                ) != (int(win[2]), int(win[3]))
+                if not stale_geometry:
+                    # key 未变化且层几何与当前窗口一致：层仍覆盖整块虚拟桌面，
+                    # 无需重烘焙（窗口在桌面内平移 / 缩放 / 跨监视器、主题参数
+                    # 未变，no-op）。
+                    return
+                # key 未变但 win_size 过期：继续走下方的重烘 / 挂起逻辑，
+                # 按当前几何自愈。
         if self._worker_thread is not None:
             if self._worker_speculative:
                 # 真实请求抢占 speculative：**仅异步 quit，绝不主线程等待**。

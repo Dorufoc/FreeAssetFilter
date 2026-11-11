@@ -120,6 +120,8 @@ tests/
 | `test_import_compat.py` | `theme` / `components` 短路径与规范路径导入别名收敛 |
 | `test_main_window.py` | 主窗口结构与延迟面板构建 |
 | `test_main_window_settings_close.py` | 设置窗口关闭引用清理与 closeEvent 纵深防御 |
+| `test_settings_window_transition.py` | 设置窗口快照弹出与关闭状态机 |
+| `components/test_window_transition.py` | 设置窗口过渡辅助（窗口内快照、缩放参数、输入挡板） |
 | `components/test_custom_background.py` | 自定义窗口背景（cover / 快缩 / 持久化） |
 | `components/test_styled_basic.py` | 基础 styled 组件（按钮、输入、开关等） |
 | `components/test_styled_button_progress.py` | StyledButton 运行时进度模式 |

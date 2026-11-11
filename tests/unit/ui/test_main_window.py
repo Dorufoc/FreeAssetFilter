@@ -1237,6 +1237,27 @@ class TestSettingsWindow:
         win.deleteLater()
         qapp.processEvents()
 
+    def test_prewarm_window_strips_expanded_hint(self, qapp: QApplication) -> None:
+        """启动预热窗口不得带 ExpandedClientAreaHint（否则主窗口会失活）。
+
+        Win11 + Qt 6.10 实测：带该 hint 的 owned 窗口从屏外 show 会让整个
+        应用变为 ApplicationInactive，Mica 因失焦暂停而停在 G1 纯色，直到
+        用户点击主窗口。预热只需要样式/布局/建窗，必须去掉该 hint。
+        """
+        prewarm = QWidget()
+        try:
+            if hasattr(Qt, "ExpandedClientAreaHint"):
+                prewarm.setWindowFlags(Qt.Window | Qt.ExpandedClientAreaHint)
+            MainWindow._prepare_settings_prewarm_window(prewarm)
+            assert prewarm.testAttribute(Qt.WA_ShowWithoutActivating)
+            assert prewarm.windowOpacity() == 0.0
+            if hasattr(Qt, "ExpandedClientAreaHint"):
+                flags = prewarm.windowFlags()
+                assert not (flags & Qt.WindowType.ExpandedClientAreaHint)
+        finally:
+            prewarm.deleteLater()
+            qapp.processEvents()
+
     def test_event_filter_ignores_non_title_bar(self, qapp: QApplication) -> None:
         """未 show 时（无 windowHandle）标题栏左键拖拽返回 False，事件不吞。"""
         win = SettingsWindow()
@@ -2152,6 +2173,44 @@ class TestFloatingPoolWiring:
             window.closeEvent(event)
             assert event.isAccepted()
         finally:
+            window.deleteLater()
+            qapp.processEvents()
+
+    def test_close_event_disposes_mica_after_previewer_cleanup(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Mica 必须等预览器/信息面板清理之后再释放，避免预览区先闪 G1。"""
+        window = _make_floating_window(monkeypatch, floating_enabled=False)
+        original_dispose = window._dispose_mica
+        calls: list = []
+        try:
+            _build_all_panels(window)
+            assert window._previewer is not None
+            assert window._info_panel is not None
+
+            original_cleanup = window._previewer.cleanup
+
+            def _cleanup() -> None:
+                calls.append("previewer")
+                original_cleanup()
+
+            original_stop = window._info_panel.stop
+
+            def _stop() -> None:
+                calls.append("info")
+                original_stop()
+
+            monkeypatch.setattr(window._previewer, "cleanup", _cleanup)
+            monkeypatch.setattr(window._info_panel, "stop", _stop)
+            monkeypatch.setattr(window, "_dispose_mica", lambda: calls.append("mica"))
+
+            event = QCloseEvent()
+            window.closeEvent(event)
+
+            assert event.isAccepted()
+            assert calls == ["previewer", "info", "mica"]
+        finally:
+            original_dispose()
             window.deleteLater()
             qapp.processEvents()
 
