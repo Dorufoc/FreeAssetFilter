@@ -319,15 +319,17 @@ def _cleanup_tracked_dialogs(qapp: QApplication):
 class TestAboutPageDelegatesToUpdateCenter:
     """关于页检查更新已改为委托共享控制器与单弹窗。"""
 
-    def test_about_has_check_update_button(self, about_page: Any) -> None:
-        """关于页保留原位、原文案的检查更新按钮。"""
-        assert about_page._check_update_btn is not None
-        assert about_page._check_update_btn.text() == "检查更新"
+    def test_about_has_check_update_action(self, about_page: Any) -> None:
+        """关于页保留「图标 + 检查更新」轻量动作，不再使用文字按钮。"""
+        assert about_page._check_update_action is not None
+        assert about_page._check_update_action.text() == "检查更新"
+        assert about_page._check_update_action._icon_name == "title_update.svg"
+        assert not hasattr(about_page._check_update_action, "set_progress")
 
     def test_about_click_delegates_without_local_progress(
         self, about_page: Any, monkeypatch: Any
     ) -> None:
-        """点击只委托控制器：不在按钮上显示进度，也不打开浏览器。"""
+        """点击只委托控制器：动作不持有本地进度，也不打开浏览器。"""
         calls: list[bool] = []
 
         class _StubEntry:
@@ -339,14 +341,6 @@ class TestAboutPageDelegatesToUpdateCenter:
             "sopeek.ui.update_entry.get_update_entry_controller",
             lambda: _StubEntry(),
         )
-        progress_calls: list[float | None] = []
-        original = about_page._check_update_btn.set_progress
-
-        def _record(value: float | None) -> None:
-            progress_calls.append(value)
-            original(value)
-
-        monkeypatch.setattr(about_page._check_update_btn, "set_progress", _record)
         opened: list[Any] = []
 
         class _Desktop:
@@ -356,11 +350,11 @@ class TestAboutPageDelegatesToUpdateCenter:
 
         monkeypatch.setattr(sl_mod, "QDesktopServices", _Desktop)
 
-        about_page._check_update()
+        about_page._check_update_action.clicked.emit()
 
         assert calls == [True]
-        assert progress_calls == []
         assert opened == []
+        assert not hasattr(about_page._check_update_action, "set_progress")
 
     def test_about_double_click_delegates_each_time(
         self, about_page: Any, monkeypatch: Any
@@ -378,8 +372,8 @@ class TestAboutPageDelegatesToUpdateCenter:
             lambda: _StubEntry(),
         )
 
-        about_page._check_update()
-        about_page._check_update()
+        about_page._check_update_action.clicked.emit()
+        about_page._check_update_action.clicked.emit()
 
         assert calls == [True, True]
 

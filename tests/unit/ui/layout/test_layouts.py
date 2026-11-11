@@ -2267,10 +2267,10 @@ class TestSettingsLayout:
         _assert_layout_geometry(layout, qapp)
         layout.deleteLater()
 
-    def test_appearance_page_uses_floating_styled_scrollbar(
+    def test_settings_pages_use_floating_styled_scrollbar(
         self, qapp: QApplication,
     ) -> None:
-        """外观页包在浮动滚动区中：styled 浮动滚动条接管，原生滚动条隐藏。"""
+        """三页均包在浮动滚动区：styled 浮动滚动条接管，原生滚动条隐藏。"""
         from PySide6.QtWidgets import QScrollArea
 
         from components.styled_scroll_area import StyledScrollBar
@@ -2279,8 +2279,8 @@ class TestSettingsLayout:
         layout = SettingsLayout()
         scrolls = layout._stack.findChildren(QScrollArea)
         floating = [s for s in scrolls if isinstance(s, _FloatingScrollArea)]
-        # 通用页 + 外观页各有一处浮动滚动区（关于页为居中信息页，无长内容不外包）
-        assert len(floating) == 2
+        # 通用 / 外观 / 关于各有一处浮动滚动区
+        assert len(floating) == 3
 
         # 列表顺序：0 = 通用，1 = 外观，2 = 关于 → 外观卡在索引 1
         area = layout._stack.widget(1).findChild(_FloatingScrollArea)
@@ -2292,6 +2292,14 @@ class TestSettingsLayout:
         # 浮动条锚定挂在外观卡片（#SettingsCard）下，贴其右缘（而非滚动区自身）
         assert area._region is area.parent()
         assert area._floating_bar.parent() is area.parent()
+
+        # 关于页同样锚定在自身卡片右缘，默认无滚动时浮动条自动隐藏。
+        about_area = layout._stack.widget(2).findChild(_FloatingScrollArea)
+        assert about_area is not None
+        assert isinstance(about_area._floating_bar, StyledScrollBar)
+        assert about_area._region is about_area.parent()
+        assert about_area._floating_bar.parent() is about_area.parent()
+        assert about_area.widget() is layout._about_page
         # 平滑滚动在 showEvent 中初始化（未显示前未施加）
         assert area._scroller_ready is False
         safe_teardown(layout)
@@ -2615,6 +2623,84 @@ class TestSettingsLayout:
             assert layout._bottom_bar.isHidden() is False
         finally:
             safe_teardown(layout)
+
+    def test_about_contact_slot_preserves_size_hint(
+        self, qapp: QApplication,
+    ) -> None:
+        """联系面板展开/收起不改变关于页高度（预留插槽，页脚不跳）。"""
+        import sopeek.ui.layout.settings_layout as sl_mod
+
+        page = sl_mod.AboutSettingsPage()
+        try:
+            baseline = page.sizeHint().height()
+            assert page._contact_visible is False
+            assert page._contact_box.isHidden() is True
+
+            page._contact_link.clicked.emit()
+            qapp.processEvents()
+            assert page._contact_visible is True
+            assert page._contact_box.isHidden() is False
+            assert page.sizeHint().height() == baseline
+
+            page._contact_link.clicked.emit()
+            qapp.processEvents()
+            assert page._contact_visible is False
+            assert page._contact_box.isHidden() is True
+            assert page.sizeHint().height() == baseline
+        finally:
+            safe_teardown(page)
+
+    def test_about_links_open_expected_urls(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """仓库/许可链接分别打开固定 URL；联系链接只切换面板。"""
+        import sopeek.ui.layout.settings_layout as sl_mod
+
+        page = sl_mod.AboutSettingsPage()
+        opened: list[str] = []
+        try:
+            monkeypatch.setattr(
+                page, "_open_link", lambda url: opened.append(url)
+            )
+            page._repo_link.clicked.emit()
+            page._license_link.clicked.emit()
+            assert opened == [sl_mod.ABOUT_REPO_URL, sl_mod.ABOUT_LICENSE_URL]
+
+            page._contact_link.clicked.emit()
+            qapp.processEvents()
+            assert page._contact_visible is True
+            assert opened == [sl_mod.ABOUT_REPO_URL, sl_mod.ABOUT_LICENSE_URL]
+        finally:
+            safe_teardown(page)
+
+    def test_about_contact_closes_on_outside_click(
+        self, qapp: QApplication,
+    ) -> None:
+        """联系面板展开后，点击面板外任意位置自动收起。"""
+        import sopeek.ui.layout.settings_layout as sl_mod
+        from PySide6.QtTest import QTest
+
+        page = sl_mod.AboutSettingsPage()
+        page.resize(414, 329)
+        page.show()
+        qapp.processEvents()
+        try:
+            page._contact_link.clicked.emit()
+            qapp.processEvents()
+            assert page._contact_visible is True
+            assert page._contact_outside_filter_installed is True
+
+            QTest.mouseClick(
+                page._logo_label,
+                Qt.LeftButton,
+                pos=page._logo_label.rect().center(),
+            )
+            qapp.processEvents()
+            assert page._contact_visible is False
+            assert page._contact_outside_filter_installed is False
+        finally:
+            page.hide()
+            safe_teardown(page)
 
 
 # =============================================================================
