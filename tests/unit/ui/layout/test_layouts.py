@@ -2382,6 +2382,240 @@ class TestSettingsLayout:
         finally:
             safe_teardown(layout)
 
+    def test_page_switch_uses_directional_overlay(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """显示态切页：按页序方向起双快照遮罩，结束后恢复页面与底栏。"""
+        import sopeek.ui.layout.settings_layout as sl_mod
+
+        monkeypatch.setattr(
+            sl_mod, "is_animation_enabled", lambda *args, **kwargs: True
+        )
+        layout = SettingsLayout()
+        layout.resize(640, 480)
+        layout.show()
+        _pump_events(qapp, 50)
+        try:
+            layout._on_item_selected(1, "外观")
+            assert layout._stack.currentIndex() == 1
+            overlay = layout._page_transition_overlay
+            assert isinstance(overlay, sl_mod.PageSwitchOverlay)
+            # 目标页（外观）在通用页下方 → 旧内容上移、新内容自下方进入
+            assert overlay._direction == 1
+            card = layout._stack.currentWidget()
+            inner = layout._page_inner_widget(1)
+            assert inner is not None
+            # 动画只发生在卡片内页：卡片边框保持实时，内页被快照接管。
+            assert card.isHidden() is False
+            assert inner.isHidden() is True
+            assert overlay.parent() is card
+            # 遮罩铺满卡片（保证 DPR 对齐），但只绘制内页裁剪区。
+            assert overlay.geometry() == card.rect()
+            assert overlay._clip_rect == inner.geometry()
+            # 底栏不在快照内、也不参与位移：通用/外观之间保持实时可见。
+            assert layout._bottom_bar.isHidden() is False
+
+            layout._finish_page_transition()
+            _pump_events(qapp, 50)
+            assert layout._page_transition_overlay is None
+            assert card.isVisibleTo(layout) is True
+            assert inner.isVisibleTo(layout) is True
+            assert layout._bottom_bar.isHidden() is False
+        finally:
+            safe_teardown(layout)
+
+    def test_page_switch_keeps_card_geometry_stable(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """三个标签页的卡片尺寸一致：关于页隐藏底栏时用底边距补高。"""
+        import sopeek.ui.layout.settings_layout as sl_mod
+
+        monkeypatch.setattr(
+            sl_mod, "is_animation_enabled", lambda *args, **kwargs: True
+        )
+        layout = SettingsLayout()
+        layout.resize(720, 560)
+        layout.show()
+        _pump_events(qapp, 50)
+        try:
+            sizes = {}
+            for index, label in ((0, "通用"), (1, "外观"), (2, "关于")):
+                if layout._stack.currentIndex() != index:
+                    layout._on_item_selected(index, label)
+                    layout._finish_page_transition()
+                    _pump_events(qapp, 50)
+                card = layout._stack.currentWidget()
+                sizes[index] = (
+                    layout._stack.width(),
+                    layout._stack.height(),
+                    card.width(),
+                    card.height(),
+                )
+            assert len(set(sizes.values())) == 1
+            # 关于页底栏隐藏，但内容区底边距补回了底栏高度。
+            assert layout._bottom_bar.isHidden() is True
+            margins = layout._content_area.layout().contentsMargins()
+            assert margins.bottom() == (
+                sl_mod.SETTINGS_CONTENT_BOTTOM_MARGIN
+                + layout._bottom_bar.sizeHint().height()
+            )
+        finally:
+            safe_teardown(layout)
+
+    def test_page_switch_to_about_syncs_bottom_bar_after_finish(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """切到关于页：目标页在上方时反向；结束后底栏保持隐藏、返回后恢复。"""
+        import sopeek.ui.layout.settings_layout as sl_mod
+
+        monkeypatch.setattr(
+            sl_mod, "is_animation_enabled", lambda *args, **kwargs: True
+        )
+        layout = SettingsLayout()
+        layout.resize(640, 480)
+        layout.show()
+        _pump_events(qapp, 50)
+        try:
+            baseline_h = layout._stack.height()
+            layout._on_item_selected(2, "关于")
+            overlay = layout._page_transition_overlay
+            assert overlay is not None
+            assert overlay._direction == 1
+            # 底栏显隐在卡片之外，不属于内容动画；关于页仍隐藏底栏。
+            assert layout._bottom_bar.isHidden() is True
+            # 底栏隐藏不得改变卡片高度（纵向跳变的回归点）。
+            assert layout._stack.height() == baseline_h
+            inner = layout._page_inner_widget(2)
+            assert inner is not None and inner.isHidden() is True
+            assert layout._stack.currentWidget().isHidden() is False
+            layout._finish_page_transition()
+            _pump_events(qapp, 50)
+            assert layout._bottom_bar.isHidden() is True
+            assert layout._stack.height() == baseline_h
+            assert inner.isVisibleTo(layout) is True
+
+            layout._on_item_selected(0, "通用")
+            overlay = layout._page_transition_overlay
+            assert overlay is not None
+            assert overlay._direction == -1
+            # 底栏在卡片之外即时恢复，只有卡片内页内容播放动画。
+            assert layout._bottom_bar.isHidden() is False
+            assert layout._stack.height() == baseline_h
+            inner = layout._page_inner_widget(0)
+            assert inner is not None and inner.isHidden() is True
+            assert layout._stack.currentWidget().isHidden() is False
+            layout._finish_page_transition()
+            _pump_events(qapp, 50)
+            assert layout._bottom_bar.isHidden() is False
+            assert layout._stack.height() == baseline_h
+            assert inner.isVisibleTo(layout) is True
+        finally:
+            safe_teardown(layout)
+
+    def test_page_switch_without_animation_when_hidden(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """布局未显示时退化为立即切换，不创建遮罩。"""
+        import sopeek.ui.layout.settings_layout as sl_mod
+
+        monkeypatch.setattr(
+            sl_mod, "is_animation_enabled", lambda *args, **kwargs: True
+        )
+        layout = SettingsLayout()
+        try:
+            layout._on_item_selected(1, "外观")
+            assert layout._stack.currentIndex() == 1
+            assert layout._page_transition_overlay is None
+        finally:
+            safe_teardown(layout)
+
+    def test_page_switch_respects_animation_switch(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """动画开关关闭时显示态也直接切换。"""
+        import sopeek.ui.layout.settings_layout as sl_mod
+
+        monkeypatch.setattr(
+            sl_mod, "is_animation_enabled", lambda *args, **kwargs: False
+        )
+        layout = SettingsLayout()
+        layout.resize(640, 480)
+        layout.show()
+        _pump_events(qapp, 50)
+        try:
+            layout._on_item_selected(1, "外观")
+            assert layout._stack.currentIndex() == 1
+            assert layout._page_transition_overlay is None
+            inner = layout._page_inner_widget(1)
+            assert inner is not None and inner.isVisibleTo(layout) is True
+            assert layout._bottom_bar.isHidden() is False
+        finally:
+            safe_teardown(layout)
+
+    def test_page_switch_rapid_clicks_replace_overlay(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """连点：新遮罩替换在途遮罩，当前页立即落到最后点击目标。"""
+        import sopeek.ui.layout.settings_layout as sl_mod
+
+        monkeypatch.setattr(
+            sl_mod, "is_animation_enabled", lambda *args, **kwargs: True
+        )
+        layout = SettingsLayout()
+        layout.resize(640, 480)
+        layout.show()
+        _pump_events(qapp, 50)
+        try:
+            layout._on_item_selected(1, "外观")
+            first = layout._page_transition_overlay
+            assert first is not None
+
+            layout._on_item_selected(2, "关于")
+            second = layout._page_transition_overlay
+            assert second is not None
+            assert second is not first
+            assert layout._stack.currentIndex() == 2
+            assert second._direction == 1
+            assert second.parent() is layout._stack.currentWidget()
+            inner = layout._page_inner_widget(2)
+            assert inner is not None and inner.isHidden() is True
+
+            layout._finish_page_transition()
+            _pump_events(qapp, 50)
+            assert layout._page_transition_overlay is None
+            assert layout._bottom_bar.isHidden() is True
+            assert inner.isVisibleTo(layout) is True
+        finally:
+            safe_teardown(layout)
+
+    def test_page_switch_natural_finish_restores_content(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """动画自然跑完后恢复实时页面/底栏，不残留隐藏态。"""
+        import sopeek.ui.layout.settings_layout as sl_mod
+
+        monkeypatch.setattr(
+            sl_mod, "is_animation_enabled", lambda *args, **kwargs: True
+        )
+        layout = SettingsLayout()
+        layout.resize(640, 480)
+        layout.show()
+        _pump_events(qapp, 50)
+        try:
+            layout._on_item_selected(1, "外观")
+            assert layout._page_transition_overlay is not None
+            finished = _pump_until(
+                qapp,
+                lambda: layout._page_transition_overlay is None,
+                timeout_ms=1500,
+            )
+            assert finished is True
+            inner = layout._page_inner_widget(1)
+            assert inner is not None and inner.isVisibleTo(layout) is True
+            assert layout._bottom_bar.isHidden() is False
+        finally:
+            safe_teardown(layout)
+
 
 # =============================================================================
 # ui.layout.unified_previewer_layout

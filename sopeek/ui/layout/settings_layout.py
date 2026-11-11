@@ -13,8 +13,8 @@ from PySide6.QtWidgets import (
     QApplication, QScrollArea, QFileDialog,
 )
 from PySide6.QtCore import (
-    Qt, Signal, QRectF, QPropertyAnimation, QEasingCurve, Property, QPoint,
-    QEvent, QObject, QTimer, QUrl,
+    Qt, Signal, QRectF, QPropertyAnimation, QEasingCurve, Property,
+    QPoint, QEvent, QObject, QTimer, QUrl,
 )
 from PySide6.QtGui import (
     QPainter, QColor, QPaintEvent, QPen, QFont, QHideEvent, QCloseEvent,
@@ -48,7 +48,10 @@ from components.custom_background import (
     BACKGROUND_DIR_NAME,
     import_custom_background_image,
 )
-from components.theme_transition_overlay import ThemeTransitionOverlay
+from components.theme_transition_overlay import (
+    PageSwitchOverlay,
+    ThemeTransitionOverlay,
+)
 from sopeek.core.managers.settings_manager_v2 import (
     DEFAULT_SETTINGS_V2,
     SettingsManagerV2,
@@ -76,6 +79,20 @@ IMAGE_BG_TRANSPARENCY_DEFAULT = 80
 #: 比主窗口的径向扩散（450ms）略短，观感更轻快；时长即「点击后开始淡化
 #: 到结束」的一段，不含点击到动画起钟的同步段（见 _start_settings_overlay）。
 SETTINGS_THEME_FADE_MS = 300
+
+#: 设置页切换过渡时长（ms）：旧页快照沿页序方向轻移淡出，新页自反向
+#: 进入。与侧栏高亮两段各 180ms 接近，整体观感同步、不拖沓。
+SETTINGS_PAGE_SWITCH_MS = 200
+
+#: 设置页切换的纵向位移（逻辑像素）：只做页序方向提示，保持轻微。
+SETTINGS_PAGE_SWITCH_OFFSET = 8
+
+#: 设置页切换动画开关键（``appearance.animations.<key>``）。
+SETTINGS_PAGE_SWITCH_ANIMATION_KEY = "settings_page_switch"
+
+#: 内容区默认底边距（与卡片/底栏按钮统一对齐）。关于页隐藏底栏时，
+#: 用底边距补回底栏高度，保证三个标签页的卡片几何完全一致。
+SETTINGS_CONTENT_BOTTOM_MARGIN = 24
 
 #: 外观预览去抖窗口（ms）：连点 / 滑动条与色板拖动在此窗口内合并为一次
 #: 下发。首击仍立即生效（见 ``SettingsLayout._request_appearance_preview``），
@@ -2558,6 +2575,8 @@ class SettingsLayout(QWidget):
         # 底部按钮栏（关于页隐藏）与关于页在内容栈中的索引
         self._bottom_bar: QFrame | None = None
         self._about_page_index: int = -1
+        # 侧栏切页过渡遮罩（连点/收尾时按需 finish_now）。
+        self._page_transition_overlay: PageSwitchOverlay | None = None
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -2583,7 +2602,7 @@ class SettingsLayout(QWidget):
         self._content_area.setObjectName("SettingsContentArea")
         content_layout = QVBoxLayout(self._content_area)
         # 右/下 24px 与卡片、底栏按钮统一对齐；顶部留 12px 呼吸（标题栏下沿）。
-        content_layout.setContentsMargins(0, 12, 24, 24)
+        content_layout.setContentsMargins(0, 12, 24, SETTINGS_CONTENT_BOTTOM_MARGIN)
         content_layout.setSpacing(0)
 
         # 使用 QStackedWidget 实现多页面切换
@@ -2727,19 +2746,271 @@ class SettingsLayout(QWidget):
             about_page.refresh_theme()
 
     def _on_item_selected(self, index: int, label: str) -> None:
-        """侧边栏导航项选中回调"""
-        if 0 <= index < self._stack.count():
+        """侧边栏导航项选中回调（按页序方向播放切页过渡）。"""
+        self._switch_page(index)
+
+    def _switch_page(self, index: int) -> None:
+        """切换内容页：按页序方向播放纵向推入 + 交叉淡化。
+
+        动画只作用于卡片内页内容区：窗口、侧栏、卡片边框/圆角、
+        内边距与底栏均保持静止。目标页在当前页下方时旧内容上移淡出、
+        新内容自下方进入；目标页在上方时反向。布局不可见、动画关闭
+        或渲染失败时退化为立即切换；连点会先把在途遮罩的当前画面
+        渲染成图层，避免剩余淡出被硬切。
+
+        Args:
+            index: 目标页索引。
+        """
+        if not (0 <= index < self._stack.count()):
+            return
+        current = self._stack.currentIndex()
+        if index == current:
+            self._sync_bottom_bar(index)
+            return
+
+        if not self._should_animate_page_switch():
+            self._finish_page_transition()
             self._stack.setCurrentIndex(index)
+            self._sync_bottom_bar(index)
+            self._relayout_content()
+            return
+
+        current_card = self._stack.currentWidget()
+        old_inner = self._card_inner_widget(current_card)
+        if old_inner is None:
+            self._finish_page_transition()
+            self._stack.setCurrentIndex(index)
+            self._sync_bottom_bar(index)
+            self._relayout_content()
+            return
+
+        # 快照为「卡片大小的透明内页图层」：内页按卡片原点烘焙，避免
+        # DPR 下子控件半像素原点导致的重采样偏移；卡片底不参与快照，
+        # 叠回实时卡片背景时不会重复着色。连点则把在途遮罩的当前画面
+        # 渲染成同样的透明图层，保证从当下视觉继续。
+        if self._page_transition_overlay is not None:
+            old_snapshot = self._render_overlay_layer(current_card)
+        else:
+            old_snapshot = self._render_inner_layer(current_card, old_inner)
+        self._finish_page_transition()
+
+        direction = 1 if index > current else -1
+        self._stack.setCurrentIndex(index)
         self._sync_bottom_bar(index)
+        self._relayout_content()
+        new_card = self._stack.currentWidget()
+        new_inner = self._card_inner_widget(new_card)
+        if new_card is None or new_inner is None:
+            self._restore_transition_content()
+            self._relayout_content()
+            return
+        inner_rect = new_inner.geometry()
+        new_snapshot = self._render_inner_layer(new_card, new_inner)
+        if old_snapshot.isNull() or new_snapshot.isNull():
+            self._restore_transition_content()
+            self._relayout_content()
+            return
+
+        # 只隐藏卡片内页内容：卡片边框/圆角/内边距保持实时可见；遮罩
+        # 以内页矩形为固定视口，让快照在其中上下移动，动画不会移动
+        # 整个卡片或窗口。
+        new_inner.hide()
+        overlay: PageSwitchOverlay | None = None
+        try:
+            overlay = PageSwitchOverlay(
+                new_card,
+                old_snapshot,
+                new_snapshot,
+                duration_ms=SETTINGS_PAGE_SWITCH_MS,
+                direction=direction,
+                offset=SETTINGS_PAGE_SWITCH_OFFSET,
+                clip_rect=inner_rect,
+                easing=QEasingCurve.OutCubic,
+            )
+            overlay.finished.connect(self._on_page_transition_finished)
+            overlay.start()
+            self._page_transition_overlay = overlay
+        except Exception as exc:  # noqa: BLE001 - 遮罩失败退化为立即切换
+            debug(f"设置页切换过渡启动失败：{exc}")
+            if overlay is not None:
+                try:
+                    overlay.finish_now()
+                except Exception:  # noqa: BLE001 - 已销毁引用无需再收尾
+                    overlay.deleteLater()
+            self._page_transition_overlay = None
+            self._restore_transition_content()
+            self._relayout_content()
+
+    def _should_animate_page_switch(self) -> bool:
+        """返回是否播放切页过渡（布局可见 + 有实际尺寸 + 动画开关开启）。"""
+        if not self.isVisible():
+            return False
+        if self._content_area.width() <= 1 or self._content_area.height() <= 1:
+            return False
+        return is_animation_enabled(
+            SETTINGS_PAGE_SWITCH_ANIMATION_KEY, default=True
+        )
+
+    def _relayout_content(self) -> None:
+        """立即结算内容区 / 卡片 / 内页布局。"""
+        current_card = self._stack.currentWidget()
+        layouts = [
+            self._content_area.layout(),
+            self._stack.layout(),
+            current_card.layout() if current_card is not None else None,
+        ]
+        for layout in layouts:
+            if layout is not None:
+                layout.activate()
+
+    @staticmethod
+    def _card_inner_widget(card: QWidget | None) -> QWidget | None:
+        """返回设置卡片布局中的内页内容控件（滚动区 / 关于页）。"""
+        if card is None:
+            return None
+        layout = card.layout()
+        if layout is None or layout.count() <= 0:
+            return None
+        return layout.itemAt(0).widget()
+
+    def _page_inner_widget(self, index: int) -> QWidget | None:
+        """返回指定标签页卡片的内页内容控件。"""
+        return self._card_inner_widget(self._stack.widget(index))
+
+    @staticmethod
+    def _render_inner_layer(card: QWidget, inner: QWidget) -> QPixmap:
+        """把卡片内页渲染成卡片大小的透明图层。
+
+        内页按卡片原点烘焙（而非先抓内页再在别处贴图），确保高 DPI
+        下子控件的半像素原点与实时绘制一致；卡片背景不进入图层，
+        叠回实时卡片底时不会重复着色。
+
+        Args:
+            card: 内页所在卡片（决定图层尺寸与 DPR）。
+            inner: 卡片内页内容控件。
+
+        Returns:
+            QPixmap: 卡片大小的透明图层。
+        """
+        dpr = float(card.devicePixelRatioF()) or 1.0
+        pixmap = QPixmap(
+            max(1, int(round(card.width() * dpr))),
+            max(1, int(round(card.height() * dpr))),
+        )
+        pixmap.setDevicePixelRatio(dpr)
+        pixmap.fill(Qt.transparent)
+        inner.ensurePolished()
+        layout = inner.layout()
+        if layout is not None:
+            layout.activate()
+        if isinstance(inner, QScrollArea):
+            page = inner.widget()
+            if page is not None:
+                page.ensurePolished()
+                if page.layout() is not None:
+                    page.layout().activate()
+        # 首次显示的页面可能仍有挂起的布局请求：先结算再渲染，避免
+        # 快照落后于实时页面的首个绘制帧（切页起/终点出现跳变）。
+        QApplication.sendPostedEvents(None, QEvent.LayoutRequest)
+        painter = QPainter(pixmap)
+        try:
+            inner.render(painter, QPoint(inner.x(), inner.y()))
+        finally:
+            painter.end()
+        return pixmap
+
+    def _render_overlay_layer(self, card: QWidget) -> QPixmap:
+        """把在途切页遮罩的当前画面渲染成卡片大小的透明图层。
+
+        连点切换时用它作为下一段过渡的旧画面，避免从空白或已收尾的
+        状态重新开始。
+
+        Args:
+            card: 遮罩所在卡片（决定图层尺寸与 DPR）。
+
+        Returns:
+            QPixmap: 卡片大小的透明图层；无遮罩时为全透明图层。
+        """
+        dpr = float(card.devicePixelRatioF()) or 1.0
+        pixmap = QPixmap(
+            max(1, int(round(card.width() * dpr))),
+            max(1, int(round(card.height() * dpr))),
+        )
+        pixmap.setDevicePixelRatio(dpr)
+        pixmap.fill(Qt.transparent)
+        overlay = self._page_transition_overlay
+        if overlay is None:
+            return pixmap
+        painter = QPainter(pixmap)
+        try:
+            overlay.render(painter, QPoint(0, 0))
+        finally:
+            painter.end()
+        return pixmap
+
+    def _set_content_bottom_margin(self, reserved: int) -> None:
+        """设置内容区底边距：默认边距 + 需为隐藏底栏保留的高度。
+
+        Args:
+            reserved: 需额外保留的高度（逻辑像素；底栏隐藏时传其高度）。
+        """
+        layout = self._content_area.layout()
+        if layout is None:
+            return
+        margins = layout.contentsMargins()
+        layout.setContentsMargins(
+            margins.left(),
+            margins.top(),
+            margins.right(),
+            SETTINGS_CONTENT_BOTTOM_MARGIN + max(0, int(reserved)),
+        )
+
+    def _restore_transition_content(self) -> None:
+        """恢复过渡期间隐藏的实时内页（并同步目标页底栏显隐）。"""
+        self._sync_bottom_bar(self._stack.currentIndex())
+        self._relayout_content()
+        inner = self._page_inner_widget(self._stack.currentIndex())
+        if inner is not None:
+            inner.show()
+
+    def _finish_page_transition(self) -> None:
+        """立即收尾在途切页过渡（幂等；无遮罩时为空操作）。"""
+        overlay = self._page_transition_overlay
+        self._page_transition_overlay = None
+        if overlay is None:
+            return
+        try:
+            overlay.finish_now()
+        except RuntimeError:
+            # C++ 对象已销毁：兜底恢复可能仍处于隐藏态的实时内容。
+            self._restore_transition_content()
+
+    def _on_page_transition_finished(self) -> None:
+        """切页过渡收尾：清除引用并恢复实时内容。"""
+        self._page_transition_overlay = None
+        self._restore_transition_content()
 
     def _sync_bottom_bar(self, index: int) -> None:
-        """按当前页同步底部按钮栏显隐：关于页无可提交项，隐藏「重置/取消/保存」。"""
-        if self._bottom_bar is not None:
-            self._bottom_bar.setVisible(index != self._about_page_index)
+        """按当前页同步底部按钮栏显隐：关于页无可提交项，隐藏「重置/取消/保存」。
+
+        隐藏底栏时用内容区底边距补回其高度，保证通用/外观/关于三页的
+        卡片尺寸完全一致，避免切页时卡片高度纵向跳变。
+        """
+        if self._bottom_bar is None:
+            return
+        visible = index != self._about_page_index
+        reserved = 0 if visible else max(0, self._bottom_bar.sizeHint().height())
+        self._set_content_bottom_margin(reserved)
+        self._bottom_bar.setVisible(visible)
 
     def _on_theme_changed(self, _theme: str) -> None:
         """主题切换时刷新样式"""
         self.refresh_theme()
+
+    def hideEvent(self, event: QHideEvent) -> None:
+        """设置布局隐藏时收尾切页过渡，避免下次显示停留在隐藏页。"""
+        self._finish_page_transition()
+        super().hideEvent(event)
 
     # ── 底部按钮 ──────────────────────────────────────────────
 
@@ -2909,6 +3180,8 @@ class SettingsLayout(QWidget):
         透出下方已切换的新主题（时长 ``SETTINGS_THEME_FADE_MS``）。相比径向
         揭示（主窗口从主题按钮向外扩散），整窗淡化没有扩散硬边、观感更平滑。
         """
+        # 主题过渡会整窗抓拍：先收尾切页过渡，避免快照撞上隐藏态/双遮罩。
+        self._finish_page_transition()
         settings_window = (
             self._host_window if self._host_window is not None else self.window()
         )

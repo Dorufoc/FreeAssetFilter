@@ -27,7 +27,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from PySide6.QtCore import QEasingCurve, QEvent, QPoint, QPointF, QRectF, QSize, Qt
+from PySide6.QtCore import (
+    QEasingCurve, QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt,
+)
 from PySide6.QtGui import (
     QColor, QEnterEvent, QImage, QMouseEvent, QMoveEvent, QPainter,
     QPaintEvent, QPixmap, QRegion, QResizeEvent,
@@ -97,6 +99,7 @@ from sopeek.ui.components.styled_timeline import StyledTimeline  # noqa: E402
 from sopeek.ui.components.theme_transition_overlay import (  # noqa: E402
     BackgroundTransitionOverlay,
     ContentTransitionOverlay,
+    PageSwitchOverlay,
     ThemeTransitionOverlay,
 )
 
@@ -1428,6 +1431,128 @@ class TestContentTransitionOverlay:
         process_qt_events(qapp, ms=300)
         assert len(emitted) == 1
         assert overlay.is_finished() is True
+        safe_teardown(parent)
+
+
+# =============================================================================
+# ui.components.theme_transition_overlay — PageSwitchOverlay
+# =============================================================================
+class TestPageSwitchOverlay:
+    """PageSwitchOverlay：双快照方向、起止帧与收尾清理。"""
+
+    def test_construct_and_start(self, qapp: QApplication) -> None:
+        """构造 + start：默认 200ms/8px、几何贴合父级、鼠标穿透、可见。"""
+        parent = QWidget()
+        parent.resize(80, 60)
+        old = QPixmap(80, 60)
+        old.fill(QColor(255, 0, 0))
+        new = QPixmap(80, 60)
+        new.fill(QColor(0, 0, 255))
+        overlay = PageSwitchOverlay(parent, old, new)
+        assert overlay.DEFAULT_DURATION_MS == 200
+        assert overlay.DEFAULT_OFFSET == 8.0
+        assert overlay.geometry() == parent.rect()
+        assert overlay.testAttribute(Qt.WA_TransparentForMouseEvents)
+        overlay.start()
+        assert overlay.isVisibleTo(parent)
+        overlay.finish_now()
+        assert not overlay.isVisibleTo(parent)
+        safe_teardown(overlay)
+        safe_teardown(parent)
+
+    def test_clip_rect_limits_painted_area(
+        self, qapp: QApplication,
+    ) -> None:
+        """clip_rect：只绘制快照中的指定区域，周边保持透明。"""
+        parent = QWidget()
+        parent.resize(120, 80)
+        old = QPixmap(120, 80)
+        old.fill(QColor(255, 0, 0))
+        new = QPixmap(120, 80)
+        new.fill(QColor(0, 0, 255))
+        overlay = PageSwitchOverlay(
+            parent,
+            old,
+            new,
+            clip_rect=QRect(10, 8, 60, 40),
+        )
+        overlay._on_value_changed(1.0)  # 进度 0：只绘制旧快照
+        image = QImage(120, 80, QImage.Format_ARGB32)
+        image.fill(Qt.transparent)
+        overlay.render(
+            image,
+            QPoint(0, 0),
+            QRegion(0, 0, 120, 80),
+            QWidget.DrawChildren,
+        )
+        assert image.pixelColor(20, 20).red() >= 250
+        assert image.pixelColor(5, 5).alpha() == 0
+        assert image.pixelColor(80, 20).alpha() == 0
+        safe_teardown(overlay)
+        safe_teardown(parent)
+
+    @staticmethod
+    def _render(overlay: PageSwitchOverlay, progress: float) -> QImage:
+        """按给定进度渲染一帧（progress=0 旧页、1 新页）。"""
+        overlay._on_value_changed(1.0 - progress)
+        image = QImage(80, 60, QImage.Format_ARGB32)
+        image.fill(Qt.transparent)
+        overlay.render(
+            image,
+            QPoint(0, 0),
+            QRegion(0, 0, 80, 60),
+            QWidget.DrawChildren,
+        )
+        return image
+
+    def test_direction_down_moves_old_up_and_new_from_below(
+        self, qapp: QApplication,
+    ) -> None:
+        """目标页在下方：旧页上移淡出，新页自下方进入。"""
+        parent = QWidget()
+        parent.resize(80, 60)
+        old = QPixmap(80, 60)
+        old.fill(QColor(255, 0, 0))
+        new = QPixmap(80, 60)
+        new.fill(QColor(0, 0, 255))
+        overlay = PageSwitchOverlay(parent, old, new, direction=1, offset=8)
+
+        start = self._render(overlay, 0.0)
+        assert start.pixelColor(40, 30).red() >= 250
+        assert start.pixelColor(40, 30).alpha() == 255
+
+        quarter = self._render(overlay, 0.25)
+        # 旧页上移 2px：顶行仍有旧页；底行旧页已移出，露出新页上沿。
+        top = quarter.pixelColor(40, 0)
+        bottom = quarter.pixelColor(40, 59)
+        assert top.red() > 0 and top.blue() == 0
+        assert bottom.blue() > 0 and bottom.red() == 0
+        assert 0 < bottom.alpha() < 255
+
+        end = self._render(overlay, 1.0)
+        assert end.pixelColor(40, 30).blue() >= 250
+        assert end.pixelColor(40, 30).alpha() == 255
+        safe_teardown(overlay)
+        safe_teardown(parent)
+
+    def test_direction_up_moves_old_down_and_new_from_above(
+        self, qapp: QApplication,
+    ) -> None:
+        """目标页在上方：旧页下移淡出，新页自上方进入。"""
+        parent = QWidget()
+        parent.resize(80, 60)
+        old = QPixmap(80, 60)
+        old.fill(QColor(255, 0, 0))
+        new = QPixmap(80, 60)
+        new.fill(QColor(0, 0, 255))
+        overlay = PageSwitchOverlay(parent, old, new, direction=-1, offset=8)
+
+        quarter = self._render(overlay, 0.25)
+        top = quarter.pixelColor(40, 0)
+        bottom = quarter.pixelColor(40, 59)
+        assert top.blue() > 0 and top.red() == 0
+        assert bottom.red() > 0 and bottom.blue() == 0
+        safe_teardown(overlay)
         safe_teardown(parent)
 
 

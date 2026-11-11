@@ -6,6 +6,8 @@
   径向揭示或透明度淡出（设置窗口明暗切换）；
 - :class:`ContentTransitionOverlay`：主窗口内容层主题过渡（径向扩散 /
   淡出兜底）；
+- :class:`PageSwitchOverlay`：设置页切页过渡（双快照纵向推入 + 交叉
+  淡化：旧页沿页序方向轻移淡出、新页自反方向进入）；
 - :class:`BackgroundTransitionOverlay`：主窗口背景层交叉过渡（设置页
   切换窗口背景 / 氛围 / 换图：旧背景帧淡出、新层实时在底）。
 """
@@ -521,6 +523,140 @@ class ContentTransitionOverlay(_SnapshotTransitionOverlay):
         easing: QEasingCurve = QEasingCurve.InOutCubic,
     ) -> None:
         super().__init__(parent, snapshot, duration_ms, origin, easing)
+
+
+class PageSwitchOverlay(_SnapshotTransitionOverlay):
+    """设置页切页过渡：双快照纵向推入 + 交叉淡化。
+
+    旧页快照沿页序方向轻移并淡出，新页快照自相反方向进入并淡入：
+
+    - 目标页在当前页**下方**（``direction=1``）：旧页向上轻移淡出，
+      新页自下方进入并归位；
+    - 目标页在当前页**上方**（``direction=-1``）：反向。
+
+    与基类淡出模式共用同一套生命周期（鼠标穿透、父级 resize 立即收尾、
+    ``finish_now`` 幂等），仅替换绘制端。快照由调用方提供，可配合
+    ``anchor`` 指定落点、``clip_rect`` 限定固定视口；过渡期间调用方需
+    临时隐藏被快照接管的实时内容，避免新旧文字同时透出。
+    """
+
+    DEFAULT_DURATION_MS: int = 200
+    #: 默认纵向位移（逻辑像素）：只做页序方向提示，保持轻微。
+    DEFAULT_OFFSET: float = 8.0
+
+    def __init__(
+        self,
+        parent: QWidget,
+        old_snapshot: QPixmap,
+        new_snapshot: QPixmap,
+        duration_ms: int = DEFAULT_DURATION_MS,
+        direction: int = 1,
+        offset: float = DEFAULT_OFFSET,
+        anchor: QPoint | None = None,
+        clip_rect: QRect | None = None,
+        easing: QEasingCurve = QEasingCurve.OutCubic,
+    ) -> None:
+        """初始化切页过渡遮罩。
+
+        Args:
+            parent: 覆盖目标控件（设置页卡片；遮罩几何贴合其 rect）。
+            old_snapshot: 切换前画面图层（须在实时内容可见时生成）。
+            new_snapshot: 切换后画面图层（新页已切好并完成布局）。
+            duration_ms: 动画时长（毫秒，基类内部钳到下限 50）。
+            direction: ``1`` 表示目标页在当前页下方（旧页上移、新页从
+                下方进入）；``-1`` 表示目标页在上方（反向）。
+            offset: 纵向位移（逻辑像素）。
+            anchor: 快照在遮罩父级坐标系中的左上角（默认 ``0,0``）。
+            clip_rect: 固定视口矩形，只绘制快照落在该区域内的部分。
+                快照在其中上下移动，视口外（卡片边框/圆角/内边距）
+                保持实时。设置页切页时传卡片内页内容区。缺省为 None：
+                绘制整幅快照。
+            easing: 缓动曲线。
+        """
+        super().__init__(
+            parent,
+            old_snapshot,
+            duration_ms,
+            origin=None,
+            easing=easing,
+        )
+        self._new_snapshot = new_snapshot
+        self._direction = 1 if direction >= 0 else -1
+        self._offset = max(1.0, float(offset))
+        self._anchor = QPoint(anchor) if anchor is not None else QPoint(0, 0)
+        self._clip_rect = QRect(clip_rect) if clip_rect is not None else None
+
+    def _paint_fade(self) -> None:
+        """按进度绘制旧页移出淡出、新页自反方向进入淡入。"""
+        progress = 1.0 - self._opacity
+        painter = QPainter(self)
+        try:
+            painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            shift = self._offset * progress
+            self._draw_shifted(
+                painter,
+                self._snapshot,
+                -self._direction * shift,
+                1.0 - progress,
+            )
+            self._draw_shifted(
+                painter,
+                self._new_snapshot,
+                self._direction * (self._offset - shift),
+                progress,
+            )
+        finally:
+            painter.end()
+
+    def _draw_shifted(
+        self,
+        painter: QPainter,
+        snapshot: QPixmap,
+        y: float,
+        opacity: float,
+    ) -> None:
+        """按 1:1（物理像素一一对应）绘制快照到指定纵向偏移。
+
+        Args:
+            painter: 目标画笔。
+            snapshot: 待绘制快照。
+            y: 纵向偏移（逻辑像素，正数向下）。
+            opacity: 绘制透明度（0~1）。
+        """
+        if snapshot.isNull() or opacity <= 0.0:
+            return
+        clip = self._clip_rect
+        if clip is not None and clip.isEmpty():
+            return
+        dpr = float(snapshot.devicePixelRatio())
+        if dpr <= 0.0:
+            dpr = 1.0
+        painter.save()
+        try:
+            if clip is not None:
+                # 固定视口：快照内容在裁剪区内移动，裁剪区本身不动，
+                # 卡片边框/圆角/内边距等周边像素始终实时可见。
+                painter.setClipRect(
+                    QRectF(
+                        float(clip.x()),
+                        float(clip.y()),
+                        float(clip.width()),
+                        float(clip.height()),
+                    )
+                )
+            painter.setOpacity(max(0.0, min(1.0, float(opacity))))
+            painter.drawPixmap(
+                QRectF(
+                    float(self._anchor.x()),
+                    float(self._anchor.y()) + y,
+                    snapshot.width() / dpr,
+                    snapshot.height() / dpr,
+                ),
+                snapshot,
+                QRectF(0.0, 0.0, snapshot.width(), snapshot.height()),
+            )
+        finally:
+            painter.restore()
 
 
 class BackgroundTransitionOverlay(_SnapshotTransitionOverlay):
