@@ -130,6 +130,45 @@ class TestStagingCacheReadWrite:
         assert cache.set("appearance.theme", "dark") is False
         assert cache.dirty_keys() == ["appearance.theme"]
 
+    def test_revert_to_baseline_clears_dirty(self) -> None:
+        """改回原值即恢复干净：脏键消失、is_dirty 变 False。"""
+        cache = _make_cache()
+        assert cache.is_dirty() is False
+
+        cache.set("appearance.theme", "dark")
+        assert cache.is_dirty() is True
+        assert cache.dirty_keys() == ["appearance.theme"]
+
+        cache.set("appearance.theme", "light")  # 改回基线
+        assert cache.is_dirty() is False
+        assert cache.dirty_keys() == []
+
+    def test_revert_nested_dict_to_baseline_clears_dirty(self) -> None:
+        """嵌套字典（背景项）整段改回基线同样恢复干净。"""
+        cache = _make_cache()
+        base_bg = cache.get("appearance.background")
+        assert isinstance(base_bg, dict)
+
+        changed = dict(base_bg)
+        changed["mode"] = "image"
+        cache.set("appearance.background", changed)
+        assert cache.is_dirty() is True
+        assert cache.dirty_keys() == ["appearance.background.mode"]
+
+        cache.set("appearance.background", dict(base_bg))
+        assert cache.is_dirty() is False
+        assert cache.dirty_keys() == []
+
+    def test_multiple_keys_partial_revert_keeps_others_dirty(self) -> None:
+        """多键改动时只改回其中一个：其余键仍算脏。"""
+        cache = _make_cache()
+        cache.set("appearance.theme", "dark")
+        cache.set("appearance.accent_color", "#112233")
+
+        cache.set("appearance.theme", "light")
+        assert cache.is_dirty() is True
+        assert cache.dirty_keys() == ["appearance.accent_color"]
+
     def test_set_response_under_200ms(self) -> None:
         """单次 set 耗时远低于 200ms（质量门）。"""
         cache = _make_cache()
@@ -758,7 +797,10 @@ class TestAppearanceLivePreview:
             # 实时下发偏好值 + 背景（预览不落盘）
             assert "dark" in calls["mode"]
             assert len(calls["bg"]) >= 1
-            assert layout._staging_cache.is_dirty() is True
+            # 暂存已写入目标值（是否算脏取决于是否偏离基线，这里只验写入）。
+            assert (
+                layout._staging_cache.get("appearance.theme_mode") == "dark"
+            )
             fresh_after = SettingsManagerV2(tmp_file)
             fresh_after.load()
             assert fresh_after.get("appearance.theme_mode") == before_mode
@@ -854,6 +896,58 @@ class TestDirtyHintVisibility:
         finally:
             safe_teardown(layout)
 
+    def test_hint_hides_after_reverting_non_appearance_toggle(
+        self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """通用开关改回原状态 → 「有更改未保存」提示消失。"""
+        _patch_v2_to_tmp(monkeypatch, tmp_path)
+        _patch_overlay_noop(monkeypatch)
+        from sopeek.ui.layout.settings_layout import SettingsLayout
+
+        layout = SettingsLayout()
+        try:
+            hint = layout._dirty_hint
+            assert hint is not None
+            page = layout._general_page
+            original = page._ai_entry
+
+            page._on_ai_entry_toggled(not original)
+            assert hint.isHidden() is False
+
+            page._on_ai_entry_toggled(original)  # 改回原状态
+            assert hint.isHidden() is True
+            assert (
+                "general.enable_ai_entry"
+                not in layout._staging_cache.dirty_keys()
+            ), "改回原值后该键不应仍算脏"
+        finally:
+            safe_teardown(layout)
+
+    def test_hint_hides_after_reverting_perf_profile(
+        self, qapp: QApplication, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """性能档位改回原档位 → 提示消失。"""
+        _patch_v2_to_tmp(monkeypatch, tmp_path)
+        _patch_overlay_noop(monkeypatch)
+        from sopeek.ui.layout.settings_layout import SettingsLayout
+
+        layout = SettingsLayout()
+        try:
+            hint = layout._dirty_hint
+            assert hint is not None
+            page = layout._appearance_page
+            original = layout._staging_cache.get(
+                "performance.profile", page._perf_profile
+            )
+
+            page._apply_perf_profile("powersave" if original != "powersave" else "performance")
+            assert hint.isHidden() is False
+
+            page._apply_perf_profile(original)
+            assert hint.isHidden() is True
+        finally:
+            safe_teardown(layout)
+
 
 class TestCancelRollbackAppearance:
     """取消：把实时预览的外观回滚到打开设置窗口时的基线。"""
@@ -874,7 +968,7 @@ class TestCancelRollbackAppearance:
             layout._appearance_page._on_dark_toggle(flipped == "dark")
             # 预览已切到翻转值
             assert calls["mode"][-1] == flipped
-            assert layout._staging_cache.is_dirty() is True
+            assert layout._staging_cache.get("appearance.theme_mode") == flipped
 
             layout._on_cancel_clicked()
 

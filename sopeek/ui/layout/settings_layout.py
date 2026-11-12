@@ -1896,9 +1896,9 @@ class GeneralSettingsPage(QWidget):
         self._ai_entry: bool = False
         self._include_remote_drives: bool = False
         self._blank_right_click_go_back: bool = False
-        # 全局浮窗开关状态（默认开启；控件在 _build_ui 挂载，刷新时经
+        # 全局浮窗开关状态（默认关闭；控件在 _build_ui 挂载，刷新时经
         # None 守卫同步展示）
-        self._floating_pool_enabled: bool = True
+        self._floating_pool_enabled: bool = False
         # 全局浮窗贴边吸附开关状态（默认开启；作为全局浮窗的子选项，
         # 仅在浮窗开启时显示）
         self._floating_pool_snap_enabled: bool = True
@@ -2012,7 +2012,7 @@ class GeneralSettingsPage(QWidget):
         self._blank_back_row.set_control(self._blank_back_toggle)
         layout.addWidget(self._blank_back_row)
 
-        # ── 全局浮窗（默认开启）──
+        # ── 全局浮窗（默认关闭）──
         # 暂存隔离铁律：开关只写入 SettingsStagingCache
         # （general.floating_pool_enabled），点击「确定」才经 _submit_settings
         # 由主窗口 set_floating_pool_enabled 生效。
@@ -2020,7 +2020,7 @@ class GeneralSettingsPage(QWidget):
             title="全局浮窗",
             description="在桌面显示可拖入/拖出文件的悬浮窗",
         )
-        self._floating_pool_toggle = StyledToggle(checked=True, size="default")
+        self._floating_pool_toggle = StyledToggle(checked=False, size="default")
         self._floating_pool_toggle.toggled.connect(self._on_floating_pool_toggled)
         self._floating_pool_row.set_control(self._floating_pool_toggle)
         layout.addWidget(self._floating_pool_row)
@@ -2370,15 +2370,14 @@ class GeneralSettingsPage(QWidget):
         self._show_system_files = (
             saved_system if isinstance(saved_system, bool) else False
         )
-        # 全局浮窗默认开启：缺键/非法值一律回退 True（general 下首个
-        # 默认开启布尔）。
+        # 全局浮窗默认关闭：缺键/非法值一律回退 False（与 V2 默认树一致）。
         saved_floating_pool = self._staging_cache.get(
-            "general.floating_pool_enabled", True
+            "general.floating_pool_enabled", False
         )
         self._floating_pool_enabled = (
-            saved_floating_pool if isinstance(saved_floating_pool, bool) else True
+            saved_floating_pool if isinstance(saved_floating_pool, bool) else False
         )
-        # 贴边吸附默认开启：缺键/非法值一律回退 True（与浮窗开关同口径）。
+        # 贴边吸附默认开启：缺键/非法值一律回退 True（浮窗子选项，独立默认值）。
         saved_floating_pool_snap = self._staging_cache.get(
             "general.floating_pool_snap_enabled", True
         )
@@ -2387,7 +2386,7 @@ class GeneralSettingsPage(QWidget):
             if isinstance(saved_floating_pool_snap, bool)
             else True
         )
-        # 启动时检查更新默认开启：缺键/非法值一律回退 True（与浮窗同口径）。
+        # 启动时检查更新默认开启：缺键/非法值一律回退 True。
         saved_check_updates = self._staging_cache.get(
             "general.check_updates_on_startup", True
         )
@@ -3070,6 +3069,10 @@ class SettingsLayout(QWidget):
         self._last_submit_ms: float = 0.0
         # 外观实时预览：记录打开设置窗口时的 tm 外观基线（取消回滚用）。
         self._appearance_baseline: dict = self._capture_appearance_baseline()
+        # 本次会话是否已把外观预览下发到运行时（取消/关窗据此决定是否回滚）。
+        # 不能复用暂存脏标记：外观改回原值后暂存等于基线（不脏），但运行时
+        # 仍停留在最后一次预览值上，必须回滚。
+        self._appearance_preview_applied: bool = False
         # 背景图层最近一次已下发的图片文件名：滑块拖动预览时据此跳过图片重载。
         self._last_applied_bg_image: str = ""
         # 最近一次已下发图片的导入修订号：与文件名共同标识图片身份。单槽位
@@ -3602,15 +3605,16 @@ class SettingsLayout(QWidget):
             dirty = set()
         self._update_dirty_hint()
         # 仅当外观默认值确有变化时才重新预览（避免无谓过渡动画）。
-        if dirty & self._AUTO_SAVE_APPEARANCE_KEYS:
+        if self._has_appearance_dirty(dirty) or self._appearance_preview_applied:
             self._on_appearance_preview()
 
     def _on_cancel_clicked(self) -> None:
         """取消按钮 — 回滚实时预览的外观至打开时状态，丢弃暂存并关闭。"""
         self._flush_appearance_preview()
         try:
-            dirty = set(self._staging_cache.dirty_keys())
-            if dirty & self._AUTO_SAVE_APPEARANCE_KEYS:
+            # 以「本次是否下发过预览」判定，而非暂存脏标记：外观改回原值后
+            # 暂存与基线一致（不脏），但运行时仍停在预览值上，仍需回滚。
+            if self._appearance_preview_applied:
                 self._revert_appearance_to_baseline()
         except Exception as exc:
             debug(f"取消回滚外观失败（按无改动处理）：{exc}")
@@ -3635,6 +3639,7 @@ class SettingsLayout(QWidget):
     #: 外观类「自动保存」键：点 ✕ 关闭时自动落盘；且不计入「有更改未保存」提示。
     #: 其余键（``general.*``、``performance.profile``）属「非外观项」，只能经
     #: 「保存」按钮提交，✕ 关闭时静默丢弃。
+    #: 脏键按叶子收集（如 ``appearance.background.mode``），判定必须做前缀匹配。
     _AUTO_SAVE_APPEARANCE_KEYS: frozenset = frozenset({
         "appearance.theme_mode",
         "appearance.theme",
@@ -3642,6 +3647,33 @@ class SettingsLayout(QWidget):
         "appearance.accent_color",
         "appearance.background",
     })
+
+    @classmethod
+    def _is_appearance_key(cls, key: str) -> bool:
+        """判断脏键是否属于外观自动保存项（含其嵌套子键）。
+
+        Args:
+            key: 脏键点号路径（可能为叶子键，如 ``appearance.background.mode``）。
+
+        Returns:
+            bool: 属于外观项返回 True。
+        """
+        return any(
+            key == parent or key.startswith(parent + ".")
+            for parent in cls._AUTO_SAVE_APPEARANCE_KEYS
+        )
+
+    @classmethod
+    def _has_appearance_dirty(cls, dirty: set[str]) -> bool:
+        """判断脏键集合中是否含外观项（前缀匹配）。
+
+        Args:
+            dirty: ``SettingsStagingCache.dirty_keys()`` 的结果集合。
+
+        Returns:
+            bool: 含任一外观脏键返回 True。
+        """
+        return any(cls._is_appearance_key(key) for key in dirty)
 
     def _capture_appearance_baseline(self) -> dict:
         """记录打开设置窗口时 tm 的外观（深色模式 / 配色 / 背景），供取消回滚。
@@ -3826,6 +3858,9 @@ class SettingsLayout(QWidget):
         resolved_accent = (
             get_system_accent_color() if accent.lower() == "auto" else accent
         )
+        # 记录「本次会话已把外观下发到运行时」：取消/关窗据此决定是否回滚，
+        # 与暂存脏标记解耦（改回原值时暂存不脏，但运行时已变）。
+        self._appearance_preview_applied = True
 
         try:
             mode_changed = theme_mode != tm.get_theme_mode()
@@ -3884,6 +3919,8 @@ class SettingsLayout(QWidget):
         self._last_applied_bg_rev = -1
         self._last_applied_bg_state = None
         self._apply_staged_background_to_main_window(base.get("background", {}) or {})
+        # 运行时已回到基线：后续关窗/取消无需再次回滚。
+        self._appearance_preview_applied = False
 
     def _persist_appearance_only(self) -> None:
         """把暂存的外观三项落盘（点 ✕ 关闭自动保存；不触碰非外观项）。
@@ -3933,14 +3970,15 @@ class SettingsLayout(QWidget):
     def _update_dirty_hint(self) -> None:
         """按暂存脏键刷新底栏「有更改未保存」提示可见性。
 
-        仅当存在**非外观键**（``general.*`` / ``performance.*``）时显示——
-        外观项是即时项（点 ✕ 自动保存），无需提示。
+        脏键由暂存区与基线实时比对得出：把某项改回原值后不再算脏，提示
+        随之消失。仅当存在**非外观键**（``general.*`` / ``performance.*``）
+        时显示——外观项是即时项（点 ✕ 自动保存），无需提示。
         """
         if self._dirty_hint is None:
             return
         try:
             has_other = any(
-                key not in self._AUTO_SAVE_APPEARANCE_KEYS
+                not self._is_appearance_key(key)
                 for key in self._staging_cache.dirty_keys()
             )
         except Exception:
@@ -3992,15 +4030,15 @@ class SettingsLayout(QWidget):
         if layout_mode not in ("classic", "workspace"):
             layout_mode = "workspace"
         # 通用页：AI 入口 / 网络盘与光驱 / 空白区右键返回 / 显示隐藏文件 /
-        # 显示受保护系统文件开关（缺失/非法一律回退 False）；全局浮窗与
-        # 贴边吸附默认开启（缺失/非法回退 True）。
+        # 显示受保护系统文件开关（缺失/非法一律回退 False）；全局浮窗默认
+        # 关闭（缺失/非法回退 False），贴边吸附默认开启（缺失/非法回退 True）。
         if isinstance(staged_general, dict):
             ai_entry = staged_general.get("enable_ai_entry", False)
             include_remote = staged_general.get("include_remote_drives", False)
             blank_back = staged_general.get("blank_right_click_go_back", False)
             show_hidden = staged_general.get("show_hidden_files", False)
             show_system = staged_general.get("show_system_files", False)
-            floating_pool = staged_general.get("floating_pool_enabled", True)
+            floating_pool = staged_general.get("floating_pool_enabled", False)
             floating_pool_snap = staged_general.get(
                 "floating_pool_snap_enabled", True
             )
@@ -4010,7 +4048,7 @@ class SettingsLayout(QWidget):
             blank_back = False
             show_hidden = False
             show_system = False
-            floating_pool = True
+            floating_pool = False
             floating_pool_snap = True
         if not isinstance(ai_entry, bool):
             ai_entry = False
@@ -4026,7 +4064,7 @@ class SettingsLayout(QWidget):
         if not show_hidden:
             show_system = False
         if not isinstance(floating_pool, bool):
-            floating_pool = True
+            floating_pool = False
         if not isinstance(floating_pool_snap, bool):
             floating_pool_snap = True
         # 启动时检查更新：仅接受真实 bool（缺失/非法一律回退 True，与
@@ -4478,7 +4516,7 @@ class SettingsLayout(QWidget):
             dirty = set(self._staging_cache.dirty_keys())
         except Exception:
             dirty = set()
-        if dirty & self._AUTO_SAVE_APPEARANCE_KEYS:
+        if self._has_appearance_dirty(dirty):
             try:
                 self._persist_appearance_only()
             except Exception as exc:  # noqa: BLE001 - 落盘失败仅告警

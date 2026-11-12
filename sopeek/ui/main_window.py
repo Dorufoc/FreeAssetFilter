@@ -852,8 +852,8 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         # 通用功能开关（general.enable_ai_entry / general.include_remote_drives /
         # general.blank_right_click_go_back / general.show_hidden_files /
         # general.show_system_files / general.floating_pool_enabled /
-        # general.floating_pool_snap_enabled；前三者非法值一律回退 False，
-        # 隐藏/系统文件非法值回退 False，全局浮窗与贴边吸附非法值回退 True，
+        # general.floating_pool_snap_enabled；非法值回退：浮窗 False（默认关闭）、
+        # 贴边吸附 True（浮窗子选项），其余一律 False；
         # 提交时经 set_ai_entry_enabled / set_include_remote_drives /
         # set_blank_right_click_go_back / set_show_hidden_files /
         # set_show_system_files / set_floating_pool_enabled /
@@ -1053,10 +1053,10 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         ``general.show_hidden_files``（显示隐藏文件）、
         ``general.show_system_files``（显示系统文件）、
         ``general.floating_pool_enabled``（全局存储池浮窗）与
-        ``general.floating_pool_snap_enabled``（浮窗贴边吸附）。前五个开关
+        ``general.floating_pool_snap_enabled``（浮窗贴边吸附）。前六个开关
         缺失、类型非法一律回退 False（与 DEFAULT_SETTINGS_V2 默认一致）；
-        全局浮窗与贴边吸附是 ``general`` 下默认开启的布尔，缺失、类型非法
-        回退 True。隐藏/系统开关的 AND 语义由过滤层判定（系统开关只影响
+        全局浮窗默认关闭、贴边吸附默认开启，缺失与类型非法分别回退
+        False / True。隐藏/系统开关的 AND 语义由过滤层判定（系统开关只影响
         同时带「隐藏+系统」双重位的条目），此处不做归一化。
 
         Returns:
@@ -1069,7 +1069,7 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         blank_right_click_go_back = False
         show_hidden = False
         show_system = False
-        floating_pool = True
+        floating_pool = False
         floating_pool_snap = True
         try:
             app = QApplication.instance()
@@ -1085,7 +1085,7 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             )
             saved_hidden = v2.get("general.show_hidden_files", False)
             saved_system = v2.get("general.show_system_files", False)
-            saved_floating = v2.get("general.floating_pool_enabled", True)
+            saved_floating = v2.get("general.floating_pool_enabled", False)
             saved_floating_snap = v2.get(
                 "general.floating_pool_snap_enabled", True
             )
@@ -1099,7 +1099,7 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             show_hidden = saved_hidden if isinstance(saved_hidden, bool) else False
             show_system = saved_system if isinstance(saved_system, bool) else False
             floating_pool = (
-                saved_floating if isinstance(saved_floating, bool) else True
+                saved_floating if isinstance(saved_floating, bool) else False
             )
             floating_pool_snap = (
                 saved_floating_snap

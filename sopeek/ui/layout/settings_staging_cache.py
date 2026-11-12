@@ -128,7 +128,6 @@ class SettingsStagingCache:
         self._lock = threading.Lock()
         self._baseline: Dict[str, Any] = {}
         self._staged: Dict[str, Any] = {}
-        self._dirty_keys: set[str] = set()
         self._begun: bool = False
         self._last_set_ms: float = 0.0
         self._last_commit_ms: float = 0.0
@@ -146,7 +145,6 @@ class SettingsStagingCache:
         with self._lock:
             self._baseline = copy.deepcopy(snapshot)
             self._staged = staged
-            self._dirty_keys = set()
             self._begun = True
         if _DEBUG_ENABLED:
             print(f"[{STAGING_NAMESPACE}] begin keys={len(self._baseline)}")
@@ -178,6 +176,10 @@ class SettingsStagingCache:
     def set(self, key_path: str, value: Any) -> bool:
         """写入暂存区（所有控件修改的唯一入口，实时更新，<200ms）。
 
+        脏标记不在此维护：是否「有未保存修改」由暂存区与基线实时比对得出
+        （见 :meth:`is_dirty` / :meth:`dirty_keys`），因此把某项改回原值后
+        会自动恢复为干净状态，无需调用方显式清除。
+
         Args:
             key_path: 点号路径。
             value: 待暂存的值。
@@ -188,8 +190,6 @@ class SettingsStagingCache:
         t0 = time.perf_counter()
         with self._lock:
             changed = _set_by_path(self._staged, key_path, value)
-            if changed:
-                self._dirty_keys.add(key_path)
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         self._last_set_ms = elapsed_ms
         if _DEBUG_ENABLED:
@@ -206,22 +206,24 @@ class SettingsStagingCache:
             return copy.deepcopy(self._staged)
 
     def is_dirty(self) -> bool:
-        """返回是否有未提交的暂存修改。
+        """返回是否有未提交的暂存修改（暂存区与基线存在差异）。
 
         Returns:
-            bool: 脏返回 True。
+            bool: 脏返回 True；把改动全部改回基线后返回 False。
         """
         with self._lock:
-            return bool(self._dirty_keys)
+            return self._staged != self._baseline
 
     def dirty_keys(self) -> List[str]:
-        """返回脏键路径列表（调试用）。
+        """返回脏键路径列表（按叶子键收集，与基线逐叶比对）。
 
         Returns:
             List[str]: 脏键排序列表。
         """
         with self._lock:
-            return sorted(self._dirty_keys)
+            keys: set[str] = set()
+            self._collect_dirty(self._baseline, self._staged, "", keys)
+            return sorted(keys)
 
     # ── 提交 / 丢弃 / 重置 ─────────────────────────────────────
 
@@ -248,13 +250,11 @@ class SettingsStagingCache:
             base = copy.deepcopy(snapshot) if snapshot is not None else copy.deepcopy(self._staged)
             self._baseline = base
             self._staged = copy.deepcopy(base)
-            self._dirty_keys = set()
 
     def discard(self) -> None:
         """丢弃未提交的暂存，回滚到基线（取消/关闭未提交时调用）。"""
         with self._lock:
             self._staged = copy.deepcopy(self._baseline)
-            self._dirty_keys = set()
         if _DEBUG_ENABLED:
             print(f"[{STAGING_NAMESPACE}] discard -> baseline restored")
 
@@ -267,23 +267,28 @@ class SettingsStagingCache:
         staged = copy.deepcopy(defaults)
         with self._lock:
             self._staged = staged
-            # 与基线逐叶比对，记录脏键，便于提交时仅写差异
-            self._dirty_keys = set()
-            self._collect_dirty(self._baseline, self._staged, "")
         if _DEBUG_ENABLED:
-            print(f"[{STAGING_NAMESPACE}] reset_to_defaults dirty={len(self._dirty_keys)}")
+            print(
+                f"[{STAGING_NAMESPACE}] reset_to_defaults dirty={len(self.dirty_keys())}"
+            )
 
-    def _collect_dirty(self, base: Any, staged: Any, prefix: str) -> None:
-        """递归比对基线与暂存，收集差异叶键。"""
+    def _collect_dirty(
+        self,
+        base: Any,
+        staged: Any,
+        prefix: str,
+        out: set[str],
+    ) -> None:
+        """递归比对基线与暂存，把差异叶键收进 *out*。"""
         if isinstance(base, dict) and isinstance(staged, dict):
             for key in set(base) | set(staged):
                 child_prefix = f"{prefix}.{key}" if prefix else key
                 if key not in base or key not in staged:
-                    self._dirty_keys.add(child_prefix)
+                    out.add(child_prefix)
                 else:
-                    self._collect_dirty(base[key], staged[key], child_prefix)
+                    self._collect_dirty(base[key], staged[key], child_prefix, out)
         elif base != staged:
-            self._dirty_keys.add(prefix)
+            out.add(prefix)
 
     # ── 调试工具 ──────────────────────────────────────────────
 
@@ -294,12 +299,14 @@ class SettingsStagingCache:
             Dict[str, Any]: 含命名空间、基线/暂存深拷贝、脏键、耗时统计。
         """
         with self._lock:
+            keys: set[str] = set()
+            self._collect_dirty(self._baseline, self._staged, "", keys)
             return {
                 "namespace": STAGING_NAMESPACE,
                 "active": self._begun,
                 "baseline": copy.deepcopy(self._baseline),
                 "staged": copy.deepcopy(self._staged),
-                "dirty_keys": sorted(self._dirty_keys),
+                "dirty_keys": sorted(keys),
                 "last_set_ms": self._last_set_ms,
                 "last_commit_ms": self._last_commit_ms,
                 "commit_count": self._commit_count,
@@ -312,11 +319,13 @@ class SettingsStagingCache:
             Dict[str, Any]: 调试摘要字典。
         """
         with self._lock:
+            keys: set[str] = set()
+            self._collect_dirty(self._baseline, self._staged, "", keys)
             return {
                 "namespace": STAGING_NAMESPACE,
                 "active": self._begun,
-                "dirty": sorted(self._dirty_keys),
-                "dirty_count": len(self._dirty_keys),
+                "dirty": sorted(keys),
+                "dirty_count": len(keys),
                 "last_set_ms": round(self._last_set_ms, 3),
                 "last_commit_ms": round(self._last_commit_ms, 3),
                 "commit_count": self._commit_count,

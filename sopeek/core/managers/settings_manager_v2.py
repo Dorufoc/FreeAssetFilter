@@ -595,11 +595,11 @@ DEFAULT_SETTINGS_V2: Dict[str, Any] = {
         # 属性（如重定向后的桌面/下载/音乐等系统文件夹）的条目恒可见，
         # 与资源管理器口径一致。
         "show_system_files": False,
-        # 全局浮窗（设置页「通用」分类，默认开启——general 下第一个
-        # 默认开启的布尔）：在桌面显示可拖入/拖出文件的悬浮窗。
-        # 启动时由 MainWindow._load_general_toggles 读取；提交时经
-        # MainWindow.set_floating_pool_enabled 即时生效。
-        "floating_pool_enabled": True,
+        # 全局浮窗（设置页「通用」分类，默认关闭）：在桌面显示可拖入/
+        # 拖出文件的悬浮窗。默认关闭——浮窗是可选增强，不应在新装/缺键
+        # 的旧配置上自动出现在桌面。启动时由 MainWindow._load_general_toggles
+        # 读取；提交时经 MainWindow.set_floating_pool_enabled 即时生效。
+        "floating_pool_enabled": False,
         # 全局浮窗贴边吸附（设置页「通用」分类，默认开启）：浮窗拖动
         # 靠近屏幕边缘时自动吸附；关闭后仍夹回屏内、仅不吸附。启动时
         # 由 MainWindow._load_general_toggles 读取；提交时经
@@ -988,9 +988,10 @@ class SettingsManagerV2:
         # enable_ai_entry / include_remote_drives / blank_right_click_go_back /
         # show_hidden_files / show_system_files 为布尔白名单键，非布尔值
         # （含字符串 "true"）一律丢弃、回退默认 False；
-        # floating_pool_enabled / floating_pool_snap_enabled 同为布尔白名单键，
-        # 回退默认 True——不在此回读会导致用户关闭浮窗/吸附落盘 False 后
-        # 每次加载被静默丢弃（无法跨重启持久化，Oracle B1 回归守卫）。
+        # floating_pool_enabled 同为布尔白名单键，回退默认 False（默认关闭）；
+        # floating_pool_snap_enabled 回退默认 True（浮窗子选项）。不在此回读
+        # 会导致用户开关落盘后每次加载被静默丢弃（无法跨重启持久化，
+        # Oracle B1 回归守卫）。
         if "general" in loaded and isinstance(loaded["general"], dict):
             general_loaded = loaded["general"]
             staged_layout = general_loaded.get("layout_mode", None)

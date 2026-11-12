@@ -5594,7 +5594,10 @@ class TestGeneralSettingsPage:
         self, qapp: QApplication,
     ) -> None:
         """贴边吸附是全局浮窗的子选项：浮窗关闭即隐藏，开启即显示。"""
-        page = GeneralSettingsPage(staging_cache=self._make_cache("workspace"))
+        cache = self._make_cache("workspace")
+        # 浮窗默认关闭，先显式打开以验证「开 → 显示子项」的初始态。
+        cache.set("general.floating_pool_enabled", True)
+        page = GeneralSettingsPage(staging_cache=cache)
         assert page._floating_pool_enabled is True
         assert page._floating_pool_snap_row.isHidden() is False
 
@@ -5926,36 +5929,36 @@ class TestGeneralSettingsPage:
     def test_refresh_from_staging_restores_floating_pool(
         self, qapp: QApplication,
     ) -> None:
-        """refresh_from_staging：回读浮窗开关（缺键默认 True、非法回退 True）。"""
+        """refresh_from_staging：回读浮窗开关（缺键默认 False、非法回退 False）。"""
         cache = self._make_cache("workspace")  # 该快照不含 floating_pool_enabled
         page = GeneralSettingsPage(staging_cache=cache)
-        assert page._floating_pool_enabled is True
-
-        cache.set("general.floating_pool_enabled", False)
-        page.refresh_from_staging()
         assert page._floating_pool_enabled is False
+
+        cache.set("general.floating_pool_enabled", True)
+        page.refresh_from_staging()
+        assert page._floating_pool_enabled is True
 
         cache.set("general.floating_pool_enabled", "yes")
         page.refresh_from_staging()
-        assert page._floating_pool_enabled is True
+        assert page._floating_pool_enabled is False
         safe_teardown(page)
 
     def test_refresh_from_staging_applies_floating_pool_to_widget(
         self, qapp: QApplication,
     ) -> None:
-        """控件挂载后刷新把暂存状态写入真实开关（缺键默认 True、非法回退 True）。"""
+        """控件挂载后刷新把暂存状态写入真实开关（缺键默认 False、非法回退 False）。"""
         cache = self._make_cache("workspace")  # 快照不含 floating_pool_enabled
         page = GeneralSettingsPage(staging_cache=cache)
         assert page._floating_pool_toggle is not None
-        assert page._floating_pool_toggle.checked is True
-
-        cache.set("general.floating_pool_enabled", False)
-        page.refresh_from_staging()
         assert page._floating_pool_toggle.checked is False
+
+        cache.set("general.floating_pool_enabled", True)
+        page.refresh_from_staging()
+        assert page._floating_pool_toggle.checked is True
 
         cache.set("general.floating_pool_enabled", "yes")
         page.refresh_from_staging()
-        assert page._floating_pool_toggle.checked is True
+        assert page._floating_pool_toggle.checked is False
         safe_teardown(page)
 
     def test_floating_pool_row_built_and_in_refresh_theme(
@@ -5992,13 +5995,23 @@ class TestGeneralSettingsPage:
         cache = self._make_cache("workspace")
         page = GeneralSettingsPage(staging_cache=cache)
         assert page._floating_pool_toggle is not None
-        assert page._floating_pool_toggle.checked is True
+        assert page._floating_pool_toggle.checked is False
 
-        page._floating_pool_toggle.checked = False
+        page._floating_pool_toggle.checked = True
         qapp.processEvents()
 
+        assert page._floating_pool_enabled is True
+        assert cache.get("general.floating_pool_enabled") is True
+        safe_teardown(page)
+
+    def test_floating_pool_defaults_off_in_page(
+        self, qapp: QApplication,
+    ) -> None:
+        """缺键（新装/旧配置无该键）时浮窗默认关闭，吸附子项收起。"""
+        page = GeneralSettingsPage(staging_cache=self._make_cache("workspace"))
         assert page._floating_pool_enabled is False
-        assert cache.get("general.floating_pool_enabled") is False
+        assert page._floating_pool_toggle.checked is False
+        assert page._floating_pool_snap_row.isHidden() is True
         safe_teardown(page)
 
     def test_apply_staged_general_toggles_seven_args(self) -> None:
@@ -6091,7 +6104,8 @@ class TestGeneralSettingsPage:
         prev_mode = tm.get_theme_mode()
         layout = SettingsLayout()
         try:
-            layout._general_page._on_floating_pool_toggled(False)
+            # 默认关闭：暂存期不下发；保存后下发 False 并落盘。
+            assert layout._general_page._floating_pool_enabled is False
             qapp.processEvents()
             assert fake_mw.floating_calls == [], "暂存期不得下发主窗口"
 
@@ -6101,6 +6115,59 @@ class TestGeneralSettingsPage:
             saved = SettingsManagerV2(tmp_file)
             saved.load()
             assert saved.get("general.floating_pool_enabled") is False
+        finally:
+            try:
+                tm.set_theme_mode(prev_mode)
+            except Exception:
+                pass  # teardown 还原主题失败：忽略，避免影响断言
+            safe_teardown(layout)
+
+    def test_submit_floating_pool_enabled_true_round_trip(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """提交：用户打开浮窗 → 下发 True 并落盘 True（默认关闭不吞显式开启）。"""
+        import sopeek.ui.layout.settings_layout as sl_mod
+        from sopeek.core.managers.settings_manager_v2 import (
+            SettingsManagerV2,
+        )
+
+        tmp_file = str(tmp_path / "settings_v2.json")
+        monkeypatch.setattr(
+            sl_mod, "SettingsManagerV2", lambda *a, **k: SettingsManagerV2(tmp_file)
+        )
+        monkeypatch.setattr(
+            sl_mod.SettingsLayout,
+            "_apply_staged_perf_profile",
+            lambda self, profile: None,
+        )
+
+        class _FakeMainWindow:
+            def __init__(self) -> None:
+                self.floating_calls: list[bool] = []
+
+            def set_floating_pool_enabled(self, enabled: bool) -> None:
+                self.floating_calls.append(bool(enabled))
+
+        fake_mw = _FakeMainWindow()
+        monkeypatch.setattr(
+            sl_mod.AppearanceSettingsPage, "find_main_window", lambda self: fake_mw
+        )
+
+        from theme import tm
+
+        prev_mode = tm.get_theme_mode()
+        layout = SettingsLayout()
+        try:
+            layout._general_page._on_floating_pool_toggled(True)
+            qapp.processEvents()
+            assert fake_mw.floating_calls == [], "暂存期不得下发主窗口"
+
+            assert layout._submit_settings() is True
+            assert fake_mw.floating_calls == [True]
+
+            saved = SettingsManagerV2(tmp_file)
+            saved.load()
+            assert saved.get("general.floating_pool_enabled") is True
         finally:
             try:
                 tm.set_theme_mode(prev_mode)

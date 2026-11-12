@@ -2296,7 +2296,7 @@ class TestLoadGeneralTogglesConsistency:
     def test_load_general_toggles_returns_seven_tuple_with_bool(
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """返回 7 元组且各项为 bool：关闭读到 False、非法值回退 True。"""
+        """返回 7 元组且各项为 bool：关闭读到 False、非法值按各自默认回退。"""
         from sopeek.core.managers.settings_manager_v2 import (
             SettingsManagerV2,
         )
@@ -2320,7 +2320,7 @@ class TestLoadGeneralTogglesConsistency:
 
         v2.set("general.floating_pool_enabled", "not-a-bool")
         result_invalid_pool = MainWindow._load_general_toggles()
-        assert result_invalid_pool[5] is True
+        assert result_invalid_pool[5] is False
 
 
 def _pool_has_path(pool: Any, path: Any) -> bool:
