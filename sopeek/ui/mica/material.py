@@ -68,6 +68,7 @@ import atexit
 import logging
 import os
 import threading
+import time
 import weakref
 from typing import Optional, Tuple, Union
 
@@ -111,6 +112,7 @@ from .config import (
     FADE_DURATION_MS,
     G1_DARK,
     G1_LIGHT,
+    INITIAL_REVEAL_MS,
     SETTLE_INTERVAL_MS,
     SIGMA_MAX,
     SIGMA_MIN,
@@ -130,6 +132,7 @@ from components.custom_background import (
     create_linear_progress_animation,
 )
 from .source import WallpaperProvider
+from sopeek.utils.app_logger import debug as _log_debug
 
 _LOG = logging.getLogger(__name__)
 
@@ -591,6 +594,9 @@ class MicaMaterial(QObject):
         self._fade_anim.finished.connect(self._on_fade_finished)
         self._active = True
         self._paused = False
+        #: 层已交付但从未被用户看到过（交付时窗口未激活 → _hide_immediately）。
+        #: 窗口下一次激活时据此走首次揭示的长渐变，而不是普通回焦淡入。
+        self._reveal_pending = False
 
         # 交叉过渡（新层交付时的旧态 → 新态渐隐渐现，见 _start_xfade）：
         # `_xfade_backdrop` 是交付前屏幕背景外观的窗口尺寸快照 —— 常规切换时
@@ -836,6 +842,8 @@ class MicaMaterial(QObject):
         thread.finished.connect(lambda t=thread, w=worker: self._cleanup_worker(t, w))
         thread.started.connect(worker.run)
         self._watchdog.start(BAKE_WATCHDOG_MS)
+        self._bake_started_at = time.perf_counter()
+        _log_debug("Mica 烘焙提交（后台线程）")
         thread.start()
 
     def ensure_layer(self) -> None:
@@ -1643,7 +1651,11 @@ class MicaMaterial(QObject):
             return
         self._active = active
         if active:
-            self._start_fade_in()
+            # 层已交付但当时窗口未激活（走 _hide_immediately）→ 本次是用户
+            # 第一次真正看到云母层，用首次揭示的长渐变 + InOutCubic 补上。
+            reveal = bool(getattr(self, "_reveal_pending", False))
+            self._reveal_pending = False
+            self._start_fade_in(reset=reveal)
             self.ensure_layer()
         else:
             self._start_fade_out()
@@ -2285,6 +2297,19 @@ class MicaMaterial(QObject):
         was_shown = self._has_shown
         was_hidden = self._hide_until_new_layer
         self._hide_until_new_layer = False
+        _log_debug(
+            "Mica 层交付: 烘焙耗时=%dms active=%s has_shown=%s hidden=%s",
+            int(
+                (
+                    time.perf_counter()
+                    - getattr(self, "_bake_started_at", time.perf_counter())
+                )
+                * 1000
+            ),
+            self._active,
+            was_shown,
+            was_hidden,
+        )
         # 新层到达：若正处于松手淡化（旧裁剪 → 新裁剪），该淡化基于的旧层已
         # 被替换，立即停机，由新层直接接管（跨监视器等待期则由淡入揭示）。
         self._stop_settle_fade()
@@ -2491,31 +2516,63 @@ class MicaMaterial(QObject):
         """Mica 叠加层线性淡入（由当前透明度 → 1.0）。
 
         Args:
-            reset: 为 ``True`` 时强制从完全隐藏（0）揭示。
+            reset: 为 ``True`` 时强制从完全隐藏（0）揭示。首次揭示用
+                :data:`INITIAL_REVEAL_MS` + ``InOutCubic``（整窗纯色 → 整窗
+                壁纸的大跨度变化，175ms 线性会被读成硬切）；普通淡入沿用
+                ``FADE_DURATION_MS`` 线性，保持失焦/回焦的利落手感。
         """
         if reset:
             self._fade_alpha = 0.0
-        self._start_fade_to(1.0)
+            self._reveal_pending = False
+        self._start_fade_to(
+            1.0,
+            duration_ms=INITIAL_REVEAL_MS if reset else None,
+            # InOutCubic（两端慢、中间快）：起段几乎不动，让「纯色 → 壁纸」
+            # 的变化从静止开始渐进，而不是 OutCubic 那种「先冲上去再收尾」
+            # 的观感（后者会被读成「一下就出来了」）。
+            easing=QEasingCurve.InOutCubic if reset else None,
+        )
 
     def _start_fade_out(self) -> None:
         """Mica 叠加层线性淡出（由当前透明度 → 0.0）。"""
         self._start_fade_to(0.0)
 
-    def _start_fade_to(self, target: float) -> None:
-        """启动透明度线性渐变（target ∈ [0,1]，全程 FADE_DURATION_MS）。
+    def _start_fade_to(
+        self,
+        target: float,
+        duration_ms: Optional[int] = None,
+        easing: Optional[QEasingCurve] = None,
+    ) -> None:
+        """启动透明度渐变（target ∈ [0,1]）。
 
         起点取当前 ``_fade_alpha``（连打可无缝改向，与原时钟重启语义一致），
-        插值由 QVariantAnimation（Linear）承担。
+        插值由 QVariantAnimation 承担。
+
+        Args:
+            target: 目标透明度（0~1，越界钳制）。
+            duration_ms: 本次时长（毫秒）；``None`` 用 ``FADE_DURATION_MS``。
+            easing: 本次缓动曲线；``None`` 用 ``Linear``。
         """
         target = max(0.0, min(1.0, target))
         self._paused = False
         self._fade_from = self._fade_alpha
         self._fade_to = target
         self._fade_anim.stop()
+        self._fade_anim.setDuration(
+            max(1, int(duration_ms)) if duration_ms else FADE_DURATION_MS
+        )
+        self._fade_anim.setEasingCurve(easing or QEasingCurve.Linear)
         self._fade_anim.setStartValue(self._fade_from)
         self._fade_anim.setEndValue(self._fade_to)
         self._fade_anim.start()
         self._widget.update()
+        _log_debug(
+            "Mica 淡入: target=%.2f from=%.2f duration=%dms easing=%s",
+            self._fade_to,
+            self._fade_from,
+            self._fade_anim.duration(),
+            "InOutCubic" if easing is not None else "Linear",
+        )
 
     def _on_fade_value(self, value: float) -> None:
         """动画帧回调：写入透明度并触发重绘。"""
@@ -2537,11 +2594,17 @@ class MicaMaterial(QObject):
         self._fade_anim.stop()
 
     def _hide_immediately(self) -> None:
-        """失焦且 Mica 才就绪时：直接隐藏并停止绘制（同时停动画防回写）。"""
+        """失焦且 Mica 才就绪时：直接隐藏并停止绘制（同时停动画防回写）。
+
+        置 ``_reveal_pending``：本层从未被用户看到过，窗口下一次激活时必须
+        走首次揭示（``INITIAL_REVEAL_MS`` + OutCubic），而不是 175ms 的
+        普通回焦淡入——否则启动期窗口未激活时，长渐变会被静默降级掉。
+        """
         self._paused = True
         self._fade_alpha = 0.0
         self._fade_to = 0.0
         self._fade_anim.stop()
+        self._reveal_pending = True
 
     # ------------------------------------------------------------------
     # 交叉过渡（新层交付：旧态渐隐、新层渐现）

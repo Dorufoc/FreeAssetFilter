@@ -1122,6 +1122,17 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         """设置窗口基本属性"""
         self.setWindowTitle("Sopeek")
         self.resize(1200, 800)
+        # 顶层窗口自身也要有主题底色：延迟构建/替换 central widget 的间隙，
+        # 否则会露出 QMainWindow 的系统默认底色（深色系统 + 浅色主题 = 整窗闪黑）。
+        # 轻量壳/完整内容各自的 root palette 只覆盖 central widget，盖不住这里。
+        palette = self.palette()
+        palette.setColor(QPalette.Window, QColor(tm.surface))
+        self.setPalette(palette)
+        self.setAutoFillBackground(True)
+        # 同步原生擦除底色（WM_ERASEBKGND 路径，普通代码路径提前写入；
+        # 原生消息处理中不回调 Qt）。
+        if hasattr(self, "set_erase_background_color"):
+            self.set_erase_background_color(QColor(tm.surface))
 
     def _center_on_mouse_screen(self) -> None:
         """将窗口定位到鼠标指针所在屏幕的中心"""
@@ -1212,8 +1223,10 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             if self._startup_overlay_timer is not None:
                 self._startup_overlay_timer.start(self.STARTUP_OVERLAY_MAX_MS)
         if self._background_mode == "mica" and self._mica_background is not None:
-            self._start_mica_chain_preload()
-            QTimer.singleShot(0, self._start_mica_refresh)
+            # Mica 依赖链（numpy 等，约 0.15s）不在此处导入：它落在加载圈
+            # 可见期会直接造成一次 150ms 级停顿。改由 _finalize_panels 在
+            # 遮罩淡出后再安排（见 _schedule_mica_startup_refresh）。
+            self._mica_refresh_pending = True
 
     def _setup_content(self) -> None:
         """设置窗口内容"""
@@ -1442,8 +1455,24 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
         animation.finished.connect(overlay.hide)
         animation.finished.connect(overlay.deleteLater)
+        # 收尾链（Mica / 浮窗 / 设置预热）必须等遮罩**真正淡出完**再启动：
+        # 遮罩仍在屏上时跑 numpy 导入与烘焙提交，会直接冻结转圈的加载动画。
+        animation.finished.connect(self._start_post_startup_chain)
         self._startup_overlay_animation = animation  # 持引用防止提前回收
         animation.start()
+
+    def _start_post_startup_chain(self) -> None:
+        """遮罩淡出完成后启动收尾链（幂等）。
+
+        与 ``_run_post_startup_chain`` 分离的原因：本方法挂在淡出动画的
+        ``finished`` 上，只在该动画真正结束时触发一次；而 ``_dismiss_startup_overlay``
+        可能因为「最短展示时长」把淡出推迟到几百毫秒之后，那时若已提前起跑
+        收尾链，就会和还在转圈的加载动画抢主线程。
+        """
+        if getattr(self, "_post_startup_chain_started", False):
+            return
+        self._post_startup_chain_started = True
+        self._run_post_startup_chain()
 
     def _make_panel_placeholder(self) -> QLabel:
         """生成面板加载占位标签（'加载中…'），真实布局构建后移除。"""
@@ -1454,22 +1483,42 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         ))
         return label
 
+    #: 面板构建之间的强制让出间隔（ms）。面板构建是同步的，若四个都预排到
+    #: 同一轮事件循环（原来的 0/8/16/24ms 网格），加载圈一次绘制机会都拿不到，
+    #: 视觉上就是「圈停住 300ms」。改为链式：建完一个再排下一个，间隔 24ms
+    #: 保证加载圈至少能画一帧。
+    PANEL_BUILD_GAP_MS = 24
+
     def _build_panels_deferred(self) -> None:
         """窗口显示后分阶段构建各区域重型布局，避免启动白屏/长阻塞。
 
         文件选择器（最重）优先构建并显示，预览区、储存池、信息面板随后补齐；
         全部就绪后连接跨栏信号、刷新样式并应用默认比例（16:9 / 半高上限）。
+
+        构建**链式串行**：每次只排下一个面板，且间隔 ``PANEL_BUILD_GAP_MS``，
+        让加载圈在两次构建之间真正获得绘制机会（预排四个定时器会让它们在同
+        一轮事件循环里连续执行，形成一次 300ms 级的可见卡顿）。
         """
-        # 区域构建网格（毫秒）。只作“让每个区各自占一拍事件循环、先画再建下一区”
-        # 的节拍，不承担防白屏职责；30ms 间距会把四区齐备硬推到 ~90ms，
-        # 再叠加 120ms 的 finalize 网格，启动覆盖层就要多转 100ms+。
-        # 改为 8ms 步进：仍保证每区之间有一次绘制，但不再量化拉长。
-        QTimer.singleShot(0, lambda: self._build_panel("selector"))
-        QTimer.singleShot(8, lambda: self._build_panel("preview"))
-        QTimer.singleShot(16, lambda: self._build_panel("pool"))
-        QTimer.singleShot(24, lambda: self._build_panel("info"))
-        # 兜底：四区齐备时会由 _build_panel 立即收尾（见 _panels_ready_dispatched）。
-        QTimer.singleShot(32, self._finalize_panels)
+        self._build_panel_chain(["selector", "preview", "pool", "info"], 0)
+        # 兜底：四区齐备时由 _build_panel 立即收尾（见 _dispatch_panels_ready_if_complete）；
+        # 这个定时器只应对“某个面板构建失败、链提前断掉”的异常路径。
+        QTimer.singleShot(300, self._finalize_panels)
+
+    def _build_panel_chain(self, sides: list, index: int) -> None:
+        """按序构建面板：建完一个再排下一个，保证中间让出绘制。
+
+        Args:
+            sides: 待构建区域键序列。
+            index: 当前序号。
+        """
+        if index >= len(sides):
+            return
+        self._build_panel(sides[index])
+        if index + 1 < len(sides):
+            QTimer.singleShot(
+                self.PANEL_BUILD_GAP_MS,
+                lambda: self._build_panel_chain(sides, index + 1),
+            )
 
     def _replace_zone_placeholder(self, key: str, widget: QWidget) -> None:
         """移除指定区域的加载占位，并放入真实组件。"""
@@ -1489,7 +1538,39 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         单区域失败不应拖垮整体启动。布局模块在此处局部导入：本方法总在窗口
         显示后（``_build_panels_deferred``）才被调用，把它们的重型依赖留到
         首帧之后再加载（见模块顶部注释）。
+
+        “四区齐备即收尾”的判断放在本包装层而非实现体末尾：``info`` 分支在
+        实现体内提前 ``return``，判断若留在实现体末尾，最后一个面板永远不会
+        触发收尾，只能等兜底定时器（曾导致加载圈多转约 2 秒）。
         """
+        _panel_started = time.perf_counter()
+        try:
+            self._build_panel_impl(side)
+        finally:
+            debug(
+                f"[启动耗时] 面板构建 {side}: "
+                f"{(time.perf_counter() - _panel_started) * 1000:.0f}ms"
+            )
+        self._dispatch_panels_ready_if_complete()
+
+    def _dispatch_panels_ready_if_complete(self) -> None:
+        """四区齐备且尚未派发时，立即安排收尾（幂等）。"""
+        if getattr(self, "_panels_ready_dispatched", False):
+            return
+        if all(
+            widget is not None
+            for widget in (
+                self._file_selector,
+                self._file_pool,
+                self._previewer,
+                self._info_panel,
+            )
+        ):
+            self._panels_ready_dispatched = True
+            QTimer.singleShot(0, self._finalize_panels)
+
+    def _build_panel_impl(self, side: str) -> None:
+        """``_build_panel`` 的实现体（外层负责耗时统计）。"""
         if side == "info":
             # 信息面板：外面包一层卡片 QFrame（面板自绘且透明，卡片负责
             # 填充/描边/圆角，与统一预览器旧 PreviewerBottom 视觉一致）
@@ -1510,7 +1591,7 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             except Exception as exc:  # 单区域构建失败不应拖垮整个启动
                 warning(f"面板构建失败（{side}）: {exc}")
                 return
-            self._refresh_panel_styles()
+            self._refresh_panel_styles(full_refresh=False)
             return
 
         try:
@@ -1590,23 +1671,10 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         except Exception as exc:  # 单区域构建失败不应拖垮整个启动
             warning(f"面板构建失败（{side}）: {exc}")
             return
-        # 该区域刚就绪即刷新其边框/填充：即使其它区域尚未构建，也能让已就绪区正确显示
-        self._refresh_panel_styles()
-
-        # 四区一旦齐备就立刻收尾（连信号 + 应用比例 + 撤下加载覆盖层），
-        # 不等 120ms 网格与 60ms 重试：那两个定时器只是兜底，提前收尾能把
-        # “转圈”时长从「网格量化」降回「实际构建时长」。
-        if not getattr(self, "_panels_ready_dispatched", False) and all(
-            widget is not None
-            for widget in (
-                self._file_selector,
-                self._file_pool,
-                self._previewer,
-                self._info_panel,
-            )
-        ):
-            self._panels_ready_dispatched = True
-            QTimer.singleShot(0, self._finalize_panels)
+        # 该区域刚就绪即刷新其边框/填充：即使其它区域尚未构建，也能让已就绪区正确显示。
+        # 启动期不做整窗 repolish（加载圈可见，全树 polish 每次 20~50ms）；
+        # 整窗兜底刷新统一由 _finalize_panels 收尾时执行一次。
+        self._refresh_panel_styles(full_refresh=False)
 
     def _finalize_panels(self) -> None:
         """全部区域就绪后：连接跨栏信号、刷新样式、应用默认比例。
@@ -1622,7 +1690,7 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             return
         # 四区齐备的那一次调用即“结算点”：先把标志立起来，避免“提前收尾”
         # 与“120ms 网格/60ms 重试”重复连信号（Qt 默认允许重复连接）。
-        if all(
+        all_ready = all(
             widget is not None
             for widget in (
                 self._file_selector,
@@ -1630,7 +1698,8 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
                 self._previewer,
                 self._info_panel,
             )
-        ):
+        )
+        if all_ready:
             self._panels_finalized = True
         if self._file_selector is not None:
             # 信号连接：文件选择器 → 文件池
@@ -1656,7 +1725,8 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             #（文件夹预览器选中条目时面板显示该条目信息；取消时恢复）
             self._previewer.entry_selected.connect(self._on_previewer_entry_selected)
 
-        self._refresh_panel_styles()
+        # 整窗样式兜底只在四区齐备后做一次（启动期逐区构建已跳过整树 polish）。
+        self._refresh_panel_styles(full_refresh=all_ready)
 
         # 文件池就绪且跨栏信号已连接后再触发一次暂存池恢复。原实现在
         # showEvent 里按固定 100ms 延时触发，与 _build_panels_deferred 的
@@ -1664,7 +1734,12 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         # None，会让 load_backup() 抛 AttributeError 并中断整条恢复流程。
         if self._file_pool is not None and not getattr(self, "_restore_started", False):
             self._restore_started = True
-            QTimer.singleShot(0, self._check_and_restore_backup)
+            # 延后到遮罩淡出之后：备份恢复要读文件 + 建卡片，落在加载圈
+            # 可见期会再叠一段阻塞。
+            QTimer.singleShot(
+                self.STARTUP_OVERLAY_FADE_MS + 400,
+                self._check_and_restore_backup,
+            )
 
         # 仍有区域尚未就绪：延后重试连接（样式已由 _build_panel 渐进套用）
         if (
@@ -1677,18 +1752,109 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             return
         # 全部就绪：聚合叶子实测下限（底行最小高 / 预览器最小总高）→ 预览器
         # 最小尺寸 → 主窗口最小尺寸，再应用默认比例
+        _t0 = time.perf_counter()
         self._apply_leaf_minimums()
         self._apply_previewer_minimums()
         self._apply_window_minimums()
+        debug(f"[启动耗时] 最小尺寸聚合: {(time.perf_counter() - _t0) * 1000:.0f}ms")
         QTimer.singleShot(0, self._apply_default_layout)
-        # 全部真实布局已就绪：按需创建全局存储池浮窗（唯一入口，幂等 +
-        # 启用门；与上方恢复调度同为 singleShot(0)，让建窗落在事件循环
-        # 下一拍、不阻塞 finalize 收尾）
-        QTimer.singleShot(0, self._ensure_floating_pool)
-        # 全部真实布局已就绪：撤下启动加载覆盖层
-        # （后台 FFmpeg/LUT 预热、缓存清理继续在背后跑，不阻塞使用）
-        self._prewarm_settings_window()
-        self._dismiss_startup_overlay()
+        # 兜底：遮罩创建失败 / 被提前移除时淡出动画不会发出 finished，
+        # 收尾链（Mica、浮窗、设置预热）就永远不会启动。这里补一个延时兜底，
+        # `_start_post_startup_chain` 幂等，正常情况下不会重复执行。
+        # **必须在任何可能抛异常的步骤之前挂上**：此前一次改动漏了方法定义，
+        # `_preload_mica_chain_during_overlay` 抛 AttributeError 直接跳过了
+        # 兜底与撤遮罩，加载圈只能等 8 秒超时，表现为「转圈近 10 秒」。
+        QTimer.singleShot(
+            self.STARTUP_OVERLAY_MIN_MS + self.STARTUP_OVERLAY_FADE_MS + 100,
+            self._start_post_startup_chain,
+        )
+        # 遮罩仍在屏上时先做 Mica 依赖链的**导入**（主线程约 70~90ms）：
+        # 用户此时本来就在看转圈的加载动画，这段成本被自然吸收；烘焙提交与
+        # 浮窗/预热仍等淡出动画真正结束（见 _start_post_startup_chain）。
+        try:
+            self._preload_mica_chain_during_overlay()
+        except Exception as exc:  # noqa: BLE001 - 预导入失败不得阻断收尾
+            warning(f"Mica 依赖链预调度失败（不阻断启动收尾）: {exc}")
+        # 全部真实布局已就绪：撤下启动加载覆盖层。
+        # 收尾链（Mica 烘焙 / 浮窗 / 设置预热）由淡出动画的 finished 触发：
+        # 遮罩仍在屏上时跑这些同步成本会冻结转圈的加载动画。
+        _t0 = time.perf_counter()
+        try:
+            self._dismiss_startup_overlay()
+        except Exception as exc:  # noqa: BLE001 - 撤遮罩失败也要收尾
+            warning(f"撤下加载遮罩失败（改由兜底定时器收尾）: {exc}")
+        debug(f"[启动耗时] 撤下加载遮罩: {(time.perf_counter() - _t0) * 1000:.0f}ms")
+
+    #: 收尾链内各段相对链起点的间隔（ms）。三段各为 70~500ms 的同步成本，
+    #: 必须错开：Mica 最先（决定纯色期长短），浮窗让到揭示动画之后，
+    #: 设置预热最长放最后。
+    POST_STARTUP_MICA_DELAY_MS = 0
+    POST_STARTUP_FLOATING_DELAY_MS = 1200
+    POST_STARTUP_PREWARM_DELAY_MS = 2600
+
+    def _run_post_startup_chain(self) -> None:
+        """遮罩淡出完成后的串行收尾：Mica 烘焙 → 全局浮窗 → 设置窗口预热。
+
+        顺序与原因：
+
+        1. **Mica 烘焙**最先且不等：它是主窗口**自身**的视觉。遮罩淡出后
+           用户看到的是主题 G1 纯色底，云母层烘焙完才会渐显；越早提交烘焙，
+           纯色期越短。依赖链导入已在遮罩期完成（见
+           ``_preload_mica_chain_during_overlay``），这里只付提交成本。
+        2. **全局浮窗**次之，延到 1200ms：它创建时会阻塞 60~70ms，若与
+           Mica 层交付/揭示动画重叠，会把渐变打断成「闪一下变过去」。让到
+           揭示动画（600ms）结束之后再建。
+        3. **设置窗口预热**最后：完整构造约 480ms，是三者中唯一可能被
+           用户感知的一次停顿，因此排在最后、且再等 2.6 秒，让用户先拿到
+           可操作的主界面。
+
+        三段之间用定时器串行排队而非同步连做：连做会叠加成一次长冻结。
+        """
+        QTimer.singleShot(
+            self.POST_STARTUP_MICA_DELAY_MS,
+            self._schedule_mica_startup_refresh,
+        )
+        QTimer.singleShot(
+            self.POST_STARTUP_FLOATING_DELAY_MS,
+            self._ensure_floating_pool,
+        )
+        QTimer.singleShot(
+            self.POST_STARTUP_PREWARM_DELAY_MS,
+            self._prewarm_settings_window,
+        )
+
+    def _preload_mica_chain_during_overlay(self) -> None:
+        """加载遮罩仍在屏上时只做 Mica 依赖链导入（不提交烘焙）。
+
+        烘焙耗时实测 700ms 量级（后台线程），越早起跑越好；但主线程侧的
+        numpy 导入约 70~90ms，不能落在遮罩淡出之后——那时用户已看到主界面，
+        会被感知为一次卡顿。这里把**导入**安排在遮罩仍在转圈的阶段（用户
+        本来就在等），烘焙提交仍由遮罩淡出后的收尾链触发。
+
+        幂等：``_start_mica_chain_preload`` 自身带 ``_mica_preload_started``
+        守卫；重复调用零成本。
+        """
+        if self._mica_background is None or self._background_mode != "mica":
+            return
+        _t0 = time.perf_counter()
+        self._start_mica_chain_preload()
+        # 真实导入耗时由 _preload_mica_chain 自己的日志给出；这里只记录调度成本。
+        debug(
+            f"[启动耗时] Mica 依赖链预调度（遮罩期）: "
+            f"{(time.perf_counter() - _t0) * 1000:.0f}ms"
+        )
+
+    def _schedule_mica_startup_refresh(self) -> None:
+        """遮罩淡出后预热 Mica 依赖链并触发首次烘焙（启动期不占加载圈）。"""
+        if self._mica_background is None or self._background_mode != "mica":
+            return
+        _t0 = time.perf_counter()
+        self._start_mica_chain_preload()
+        debug(
+            f"[启动耗时] Mica 依赖链调度: "
+            f"{(time.perf_counter() - _t0) * 1000:.0f}ms"
+        )
+        QTimer.singleShot(0, self._start_mica_refresh)
 
     def _ensure_floating_pool(self) -> None:
         """按需创建全局存储池浮窗（唯一创建入口；幂等 + 启用门）。
@@ -1710,6 +1876,7 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             return
         if self._file_pool is None:
             return
+        _t0 = time.perf_counter()
         # 局部导入：浮窗依赖暂存池服务等模块，创建时才加载
         from sopeek.ui.floating_pool_window import FloatingPoolWindow
 
@@ -1741,6 +1908,9 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         except Exception as exc:  # noqa: BLE001 - 吸附意图下发失败不阻断建窗
             warning(f"浮窗贴边吸附意图应用失败: {exc}")
         floating.show()
+        debug(
+            f"[启动耗时] 全局浮窗创建: {(time.perf_counter() - _t0) * 1000:.0f}ms"
+        )
 
     def _elevated_drop_accepts_point(self, x: int, y: int) -> bool:
         """提权兜底命中测试：仅文件池区域内的落点接受。
@@ -2134,14 +2304,22 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         window.present()
 
     def _prewarm_settings_window(self) -> None:
-        """启动加载层仍在时预建一次设置窗口，摊薄首次点击的样式/布局成本。
+        """启动完成后预建一次设置窗口，摊薄首次点击的样式/布局成本。
 
         设置窗口每次打开都会新建，首次构造 + 原生 show 需要一次性完成
         Qt 样式 polish / 字体度量 / 原生窗口创建（实测 0.3~0.5s）。这段
-        成本无法在点击后拆开，故在启动加载层仍可见时用透明屏外窗口预热
-        一次；预热结束后销毁，不参与真实设置窗口的生命周期。
+        成本无法在点击后拆开，故在启动遮罩撤下、主界面稳定后用**不映射**
+        的屏外窗口预热一次；预热结束后销毁，不参与真实设置窗口的生命周期。
+
+        注意：本方法必须晚于启动遮罩淡出调用。同步构造会占满主线程，
+        若在加载圈仍可见时执行，会让圆圈明显卡顿。
         """
         if self._settings_prewarm_done or self._settings_window is not None:
+            return
+        try:
+            if not self.isVisible() or QApplication.closingDown():
+                return
+        except (RuntimeError, AttributeError):
             return
         self._settings_prewarm_done = True
         # offscreen/minimal（测试/无显示器）不预热，避免额外窗口与耗时。
@@ -2150,12 +2328,8 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
                 return
         except Exception:  # noqa: BLE001 - 平台查询失败按不预热处理
             return
-        overlay = self._startup_overlay
-        if overlay is None or not overlay.isVisible():
-            # 没有加载层遮挡时不要在主界面上制造一次可见卡顿。首次打开
-            # 仍走正常路径（会稍慢，但无预热副作用）。
-            return
         prewarm = None
+        prewarm_started = time.perf_counter()
         try:
             prewarm = SettingsWindow(self)
             self._prepare_settings_prewarm_window(prewarm)
@@ -2163,7 +2337,13 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
                 lambda _obj=None: QTimer.singleShot(0, self._prune_qss_registrations)
             )
             prewarm.show()
-            prewarm.raise_()
+            # WA_DontShowOnScreen 下 show() 只做布局/样式，不映射像素；
+            # 再强制一次原生 HWND 创建，保留建窗预热，但不会闪出窗口边框。
+            prewarm.winId()
+            debug(
+                "设置窗口启动预热完成: "
+                f"{(time.perf_counter() - prewarm_started) * 1000:.0f}ms"
+            )
         except Exception as exc:  # noqa: BLE001 - 预热失败不能影响启动
             debug(f"设置窗口启动预热失败：{exc}")
         finally:
@@ -2191,6 +2371,9 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         """
         prewarm.setAttribute(Qt.WA_DeleteOnClose, False)
         prewarm.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        # 永不映射像素：show() 只做布局/样式/原生建窗预热，避免 DWM 在
+        # 屏幕左上角先画一帧 700x500 的窗口边框（预热窗口一闪而过的根因）。
+        prewarm.setAttribute(Qt.WA_DontShowOnScreen, True)
         if hasattr(Qt, "ExpandedClientAreaHint"):
             prewarm.setWindowFlags(
                 prewarm.windowFlags() & ~Qt.WindowType.ExpandedClientAreaHint
@@ -2878,6 +3061,12 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
                     QColor(tm.surface),
                 )
                 root.setPalette(root_palette)
+            # 顶层窗口底色同步主题：延迟替换 central widget 时盖住系统默认底色。
+            top_palette = self.palette()
+            top_palette.setColor(QPalette.Window, QColor(tm.surface))
+            self.setPalette(top_palette)
+            if hasattr(self, "set_erase_background_color"):
+                self.set_erase_background_color(QColor(tm.surface))
             # 更新云母背景（重烘焙 luminosity，背景色绘制期生效，复用已模糊 base）
             if self._mica_background is not None:
                 self._mica_background.sync_theme()
@@ -2926,7 +3115,7 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
                 except Exception:  # noqa: BLE001 - 解冻失败不影响已应用的主题
                     pass
 
-    def _refresh_panel_styles(self) -> None:
+    def _refresh_panel_styles(self, full_refresh: bool = True) -> None:
         """刷新各区域组件的 styleSheet（主题切换 / 延迟构建逐区就绪时调用）。
 
         逐区守卫：仅对当前已构建的区域套用边框/填充，因此可在尚未全部就绪时
@@ -2936,6 +3125,13 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         注意：延迟构建时本方法在窗口已显示之后被调用，而对已显示控件设置
         styleSheet 不会自动重绘，必须对各分区控件强制 unpolish/polish 才能让
         边框/填充生效（与主题切换路径一致）。
+
+        Args:
+            full_refresh: 是否附带整窗 ``unpolish/polish`` 兜底。启动期逐区
+                构建时传 ``False``：此时只有刚建好的那个面板需要套样式，整窗
+                重刷会在加载圈可见期间重复付出全树 polish 成本（实测每次
+                20~50ms，逐区 5 次即造成明显卡顿）。启动收尾时统一做一次
+                整窗刷新即可（见 ``_finalize_panels``）。
         """
         # 语义 token：浅深模式 alpha 一致，仅按主题反转颜色亮度。
         fill_color = tm.qss_color(tm.panel_fill)
@@ -2967,9 +3163,12 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             self._info_card.style().unpolish(self._info_card)
             self._info_card.style().polish(self._info_card)
 
-        # 整窗级重刷（与主题切换路径一致，作为兜底确保所有已显示控件套用样式）
-        self.style().unpolish(self)
-        self.style().polish(self)
+        # 整窗级重刷（与主题切换路径一致，作为兜底确保所有已显示控件套用样式）。
+        # 启动期逐区构建传 full_refresh=False 跳过：整树 polish 是加载圈卡顿的
+        # 主要来源之一，改由 _finalize_panels 收尾时统一做一次。
+        if full_refresh:
+            self.style().unpolish(self)
+            self.style().polish(self)
 
     def _apply_default_layout(self) -> None:
         """应用当前布局模式的默认比例（窗口完成布局后调用）。
@@ -3337,11 +3536,16 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         只做导入（不构造 Qt 对象）；与 :meth:`_start_mica_chain_preload`
         的说明一致——原后台线程方案存在跨线程导入竞态，已废弃。
         """
+        _t0 = time.perf_counter()
         try:
             import sopeek.ui.mica.material  # noqa: F401 - 仅预热导入
         except Exception as e:  # noqa: BLE001 - 预热失败留主线程兜底导入
             warning(f"云母依赖链预导入失败（回退主线程导入）: {e}")
         finally:
+            debug(
+                f"[启动耗时] Mica 依赖链预导入: "
+                f"{(time.perf_counter() - _t0) * 1000:.0f}ms"
+            )
             try:
                 self._mica_chain_preloader.ready.emit()
             except RuntimeError:

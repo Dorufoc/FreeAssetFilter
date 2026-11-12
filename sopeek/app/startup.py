@@ -237,11 +237,16 @@ class StartupController(QObject):
 
     def _safe(self, name):
         def _runner():
+            started = time.perf_counter()
             try:
                 getattr(self, name)()
             except Exception as e:
                 error(f"启动回调 [{name}] 失败: {e}")
                 error(traceback.format_exc())
+            finally:
+                cost_ms = (time.perf_counter() - started) * 1000.0
+                if cost_ms >= 8.0:
+                    debug(f"[启动耗时] 启动任务 {name}: {cost_ms:.0f}ms")
         return _runner
 
     def _reapply_memory_budget(self) -> None:

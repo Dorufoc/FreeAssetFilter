@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import time
 
-from PySide6.QtCore import QEvent, QObject, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QRect, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPen
 from PySide6.QtWidgets import QWidget
 
@@ -187,6 +187,10 @@ class StyledLoading(QWidget):
         if self._timer is None:
             self._timer = QTimer(self)
             self._timer.setInterval(self.TICK_INTERVAL_MS)
+            # PreciseTimer：默认 CoarseTimer 允许 ±5% 抖动（16ms 即 ±0.8ms），
+            # 与显示器刷新不同步时会累积成肉眼可见的节奏不匀；精确定时 +
+            # 按真实时间推进相位，能让每帧角度增量稳定。
+            self._timer.setTimerType(Qt.TimerType.PreciseTimer)
             self._timer.timeout.connect(self._on_tick)
         self._last_tick = time.perf_counter()
         self._timer.start()
@@ -206,9 +210,14 @@ class StyledLoading(QWidget):
         self._last_tick = now
 
     def _on_tick(self) -> None:
-        """定时器回调：推进相位并请求重绘。"""
+        """定时器回调：推进相位并只重绘圆环所在区域。
+
+        遮罩模式下控件铺满整个客户区；``update()`` 全窗重绘每帧都要重写整块
+        遮罩底色，主线程稍有波动就会掉帧，观感是圆环「一跳一跳」。改为只
+        标记圆环外接小方块为脏区，单帧成本降到千分之一量级，动画恢复平滑。
+        """
         self._advance()
-        self.update()
+        self.update(self._spinner_dirty_rect())
 
     def showEvent(self, event) -> None:
         """显示时按需恢复旋转。"""
@@ -314,27 +323,16 @@ class StyledLoading(QWidget):
         head_deg = (90.0 - head_travel) % 360.0
         return head_deg, head_travel - tail_travel
 
-    def paintEvent(self, event: QPaintEvent) -> None:
-        """绘制遮罩（可选）与旋转圆环。"""
-        painter = QPainter(self)
-        if not painter.isActive():
-            return
+    def _spinner_geometry(self) -> tuple[QRectF, float]:
+        """返回圆环的绘制矩形与笔宽（``_paint_spinner`` 与脏区计算共用）。
 
-        try:
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        尺寸推导与历史实现完全一致：按档位取直径/笔宽，空间不足时等比缩小，
+        笔宽不超过半径（避免自交）。
 
-            if self._overlay:
-                # 遮罩底色：dim 半透明黑色压暗（在同色卡片/浅色内容上都能看出
-                # 「内容被遮住」）/ opaque 主题表面色实色（启动屏，只留圆环可见）
-                painter.fillRect(self.rect(), self._backdrop_color())
-
-            self._paint_spinner(painter)
-        finally:
-            if painter.isActive():
-                painter.end()
-
-    def _paint_spinner(self, painter: QPainter) -> None:
-        """在控件中心绘制纯色圆角运动弧。"""
+        Returns:
+            ``(circle_rect, stroke)``：圆环外接矩形与笔宽；尺寸非法时返回
+            ``(QRectF(), 0.0)``。
+        """
         config = self.SIZE_CONFIG[self._size]
         stroke = float(config["stroke"])
         diameter = float(config["size"])
@@ -346,14 +344,61 @@ class StyledLoading(QWidget):
             diameter *= ratio
             stroke = max(1.0, stroke * ratio)
         if diameter <= 0:
-            return
+            return QRectF(), 0.0
         # 笔宽不超过半径，避免自交
         stroke = min(stroke, diameter / 2.0)
 
         radius = (diameter - stroke) / 2.0
         cx = self.width() / 2.0
         cy = self.height() / 2.0
-        circle_rect = QRectF(cx - radius, cy - radius, radius * 2.0, radius * 2.0)
+        return QRectF(cx - radius, cy - radius, radius * 2.0, radius * 2.0), stroke
+
+    def _spinner_dirty_rect(self) -> QRect:
+        """返回圆环动画的最小重绘区域（外扩抗锯齿与笔宽余量）。
+
+        遮罩模式下本控件铺满整个客户区（1800×1200 物理像素量级）。若每帧
+        ``update()`` 全窗重绘，一帧要重写整块遮罩底色，16ms 内做不完就掉帧，
+        表现为圆环「一跳一跳」。只重绘圆环所在小方块即可让动画回到逐帧平滑。
+
+        Returns:
+            QRect: 圆环外接矩形外扩后的整数矩形，已与控件矩形求交。
+        """
+        circle, stroke = self._spinner_geometry()
+        if stroke <= 0.0 or circle.isNull():
+            return self.rect()
+        margin = stroke + 2.0  # 抗锯齿与 RoundCap 的外溢余量
+        return (
+            circle.adjusted(-margin, -margin, margin, margin)
+            .toAlignedRect()
+            .intersected(self.rect())
+        )
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        """绘制遮罩（可选）与旋转圆环。"""
+        painter = QPainter(self)
+        if not painter.isActive():
+            return
+
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+            if self._overlay:
+                # 遮罩底色：dim 半透明黑色压暗（在同色卡片/浅色内容上都能看出
+                # 「内容被遮住」）/ opaque 主题表面色实色（启动屏，只留圆环可见）。
+                # 注意：Qt 已把画笔裁剪到本次脏区，逐帧动画只重绘圆环小方块，
+                # 这里的全窗 fillRect 实际成本与脏区面积成正比。
+                painter.fillRect(self.rect(), self._backdrop_color())
+
+            self._paint_spinner(painter)
+        finally:
+            if painter.isActive():
+                painter.end()
+
+    def _paint_spinner(self, painter: QPainter) -> None:
+        """在控件中心绘制纯色圆角运动弧。"""
+        circle_rect, stroke = self._spinner_geometry()
+        if stroke <= 0.0 or circle_rect.isNull():
+            return
 
         painter.setBrush(Qt.BrushStyle.NoBrush)
 

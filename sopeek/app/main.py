@@ -784,26 +784,77 @@ def main(argv=None) -> int:
 
     controller = StartupController(app, window)
 
+    from PySide6.QtCore import QTimer
+
     # 关键首帧：先把轻量无边框窗口交给 Qt 显示，标题栏和 StyledLoading
     # 能在第一个事件循环周期内响应。完整内容与全局 QSS 均放到 show 之后。
+    #
+    # 首帧前保持透明：窗口 show() 后、Qt 尚未绘制首帧时，DWM 会先合成
+    # 扩展帧的玻璃底板（深色主题下表现为闪白）。这里复用设置窗口 present()
+    # 的验证方案：opacity=0 下完成首帧绘制，再恢复不透明；浅色主题下同时
+    # 避免未绘制帧透出深色桌面/系统默认底面（整窗闪黑）。
+    try:
+        window.setWindowOpacity(0.0)
+    except RuntimeError:
+        pass
     window.show()
+    try:
+        # 同步绘制轻量壳（自绘标题栏 + 不透明加载遮罩），确保揭开时
+        # 已有一帧完整内容，而不是让 DWM 拿未绘制的表面去合成。
+        window.repaint()
+    except RuntimeError:
+        pass
     info(f"[启动] 轻量窗口显示: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
 
-    from PySide6.QtCore import QTimer
+    # ── 启动卡顿探针（诊断用，零行为改变）─────────────────────────────
+    # 加载圈是普通 QWidget，靠主线程 16ms 定时器转动；主线程任何一次同步
+    # 阻塞都会让圆圈停一帧。这里用同样的 16ms 心跳测量「相邻两拍的间隔」，
+    # 超过阈值即记录一次阻塞及其发生时刻，用于定位是哪个构建步骤卡住了圈。
+    _probe = {
+        "last": time.perf_counter(),
+        "start": time.perf_counter(),
+        "worst": 0.0,
+    }
+    _stall_probe = QTimer(app)
+    _stall_probe.setInterval(16)
+
+    def _probe_tick() -> None:
+        now = time.perf_counter()
+        gap_ms = (now - _probe["last"]) * 1000.0
+        _probe["last"] = now
+        elapsed_ms = (now - _probe["start"]) * 1000.0
+        if gap_ms >= 40.0:
+            if gap_ms > _probe["worst"]:
+                _probe["worst"] = gap_ms
+            info(f"[启动卡顿] 主线程阻塞 {gap_ms:.0f}ms（启动后 {elapsed_ms:.0f}ms）")
+        if elapsed_ms > 12000.0:
+            _stall_probe.stop()
+            info(f"[启动卡顿] 探针结束，最大阻塞 {_probe['worst']:.0f}ms")
+
+    _stall_probe.timeout.connect(_probe_tick)
+    _stall_probe.start()
+    # 退出时一并停掉探针，避免窗口销毁后回调仍在排队。
+    app.aboutToQuit.connect(_stall_probe.stop)
 
     def _finish_deferred_ui() -> None:
         try:
             # 先立预算再建内容：线程池/内存档位必须在缓存增长前生效，
             # 但可以晚于首帧（用户已经看到窗口）。
+            _t0 = time.perf_counter()
             _init_runtime_budgets(app)
+            info(f"[启动耗时] 预算初始化: {(time.perf_counter()-_t0)*1000:.0f}ms")
+            _t0 = time.perf_counter()
             window.initialize_deferred_content()
+            info(f"[启动耗时] 内容构建: {(time.perf_counter()-_t0)*1000:.0f}ms")
             info(f"[启动] 完整内容初始化: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
         except Exception as e:
             error(f"[启动] 完整内容初始化失败: {e}")
         try:
             # A1 QSS 单例化：完整控件已注册片段后统一下发。
+            _t0 = time.perf_counter()
             if not apply_app_stylesheet():
                 warning("应用级样式表初始下发失败（各组件回退默认样式）")
+            info(f"[启动耗时] 全局样式下发: {(time.perf_counter()-_t0)*1000:.0f}ms")
         except Exception as e:
             warning(f"应用级样式表初始下发失败（各组件回退默认样式）: {e}")
         # 完整 UI 已交给事件循环后，再启动心跳/字体/缓存/FFmpeg 预热，
@@ -811,7 +862,18 @@ def main(argv=None) -> int:
         controller.schedule_startup_tasks()
         info(f"[启动] 启动任务已调度: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
 
-    QTimer.singleShot(0, _finish_deferred_ui)
+    def _reveal_main_window() -> None:
+        """首帧绘制完成后揭开主窗口，再开始构建重型内容。"""
+        try:
+            window.setWindowOpacity(1.0)
+        except RuntimeError:
+            # 窗口已在 32ms 内关闭/销毁：不再构建重内容。
+            return
+        info(f"[启动] 首帧揭开: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
+        QTimer.singleShot(0, _finish_deferred_ui)
+
+    # 让出一拍给首帧绘制与 DWM 状态稳定（与设置窗口 present() 的 32ms 一致）。
+    QTimer.singleShot(32, _reveal_main_window)
 
     # 无边框能力运行时检查（Qt<6.10 退化时显著告警，不阻塞启动）
     _warn_if_frameless_unsupported()
