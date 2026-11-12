@@ -60,13 +60,14 @@ class _GenerationTask(QRunnable):
     ``thread_pools.pool("decode")``；``run()`` 委托控制器执行体
     ``_run_generation``，token 失效丢弃结果与节流发射保持原语义
     （线程池持有引用，``run`` 结束后 AutoDelete 释放）。
+    投递为非阻塞：``start_*`` 不等待任务真正进入阻塞调用，后台完成经
+    Qt 队列信号回传 UI 线程。
 
     Args:
         controller: 所属 ThumbnailController（任务收尾与信号发射经由它）。
         file_paths: 待生成缩略图的文件路径列表。
         token: 任务启动时的世代快照。
         cancel_event: 与控制器共享的取消 Event（``cancel()`` 置位）。
-        started: 启动交会 Event，进入批量阻塞调用前置位。
     """
 
     def __init__(
@@ -75,7 +76,6 @@ class _GenerationTask(QRunnable):
         file_paths: list[str],
         token: int,
         cancel_event: threading.Event,
-        started: threading.Event,
     ) -> None:
         super().__init__()
         self.setAutoDelete(True)
@@ -83,11 +83,10 @@ class _GenerationTask(QRunnable):
         self._file_paths = file_paths
         self._token = token
         self._cancel_event = cancel_event
-        self._started = started
 
     def run(self) -> None:
         self._controller._run_generation(
-            self._file_paths, self._token, self._cancel_event, self._started
+            self._file_paths, self._token, self._cancel_event
         )
 
 
@@ -95,25 +94,24 @@ class _ClearTask(QRunnable):
     """清除任务 QRunnable：内部持有世代 token（清除任务无取消语义）。
 
     由 :meth:`ThumbnailController.start_clear` 投递到
-    ``thread_pools.pool("decode")``。
+    ``thread_pools.pool("decode")``；投递非阻塞，结果经 ``clear_finished``
+    信号回传。
 
     Args:
         controller: 所属 ThumbnailController（任务收尾与信号发射经由它）。
         token: 任务启动时的世代快照。
-        started: 启动交会 Event，进入磁盘删除前置位。
     """
 
     def __init__(
-        self, controller: ThumbnailController, token: int, started: threading.Event
+        self, controller: ThumbnailController, token: int
     ) -> None:
         super().__init__()
         self.setAutoDelete(True)
         self._controller = controller
         self._token = token
-        self._started = started
 
     def run(self) -> None:
-        self._controller._run_clear(self._token, self._started)
+        self._controller._run_clear(self._token)
 
 
 class ThumbnailController(QObject):
@@ -169,10 +167,12 @@ class ThumbnailController(QObject):
             return self._busy
 
     def start_generation(self, file_paths: list[str]) -> bool:
-        """启动批量缩略图生成（QThreadPool 后台任务）。
+        """启动批量缩略图生成（QThreadPool 后台任务，非阻塞）。
 
         收集阶段过滤非媒体文件与已有缩略图的文件（保序去重）；空任务
-        不投递任务，直接发射 ``batch_finished(0, 0)``。
+        不投递任务，直接发射 ``batch_finished(0, 0)``。收集使用
+        ThumbnailManager 的批量存在性接口（一次目录扫描），投递后立即
+        返回，**不等待**后台任务启动，避免冻结调用方线程。
 
         Args:
             file_paths: 候选文件路径列表。
@@ -194,21 +194,18 @@ class ThumbnailController(QObject):
             self.batch_finished.emit(0, 0)
             return True
 
-        # 启动交会：等价旧实现 Thread.start() 的线程引导保证——
-        # 旧实现 start() 返回前工作线程已开始执行，调用方紧随其后的
-        # 状态断言/释放操作不会跑在任务启动之前。线程池投递无此保证，
-        # 故在此有界等待任务进入阻塞调用（超时则放行，永不挂起 UI）。
-        started = threading.Event()
+        # 非阻塞投递：任务完成/进度经 Qt 队列信号回传，调用方线程不在
+        # 此等待工作线程启动（旧实现的 started.wait 是最长 10s 冻结点）。
         thread_pools.pool("decode").start(
-            _GenerationTask(self, pending_files, token, self._cancel_event, started)
+            _GenerationTask(self, pending_files, token, self._cancel_event)
         )
-        started.wait(timeout=10.0)
         return True
 
     def start_clear(self) -> bool:
-        """启动全部缩略图缓存清除（QThreadPool 后台任务）。
+        """启动全部缩略图缓存清除（QThreadPool 后台任务，非阻塞）。
 
-        清除为一次性磁盘删除操作，无取消语义。
+        清除为一次性磁盘删除操作，无取消语义；投递后立即返回，结果经
+        ``clear_finished`` 信号回传。
 
         Returns:
             bool: 成功启动返回 True；已有任务进行中返回 False。
@@ -221,11 +218,7 @@ class ThumbnailController(QObject):
             token = self._generation_token
             self._cancel_event.clear()
 
-        # 启动交会（同 start_generation）：有界等待清除任务进入磁盘删除，
-        # 超时放行，永不挂起调用方。
-        started = threading.Event()
-        thread_pools.pool("decode").start(_ClearTask(self, token, started))
-        started.wait(timeout=10.0)
+        thread_pools.pool("decode").start(_ClearTask(self, token))
         return True
 
     def cancel(self) -> None:
@@ -248,12 +241,22 @@ class ThumbnailController(QObject):
     def _collect_pending_files(self, file_paths: list[str]) -> list[str]:
         """收集阶段过滤：仅保留尚无缩略图的媒体文件（保序去重）。
 
+        优先调用 ``ThumbnailManager.filter_pending_media``：一次
+        ``os.scandir`` 建立缩略图目录索引、每路径只算 1 次 md5，避免逐
+        文件磁盘探测。管理器未提供该批量接口（如测试替身 / 旧版代理）
+        时退回等价逐文件语义。
+
         Args:
             file_paths: 候选文件路径列表。
 
         Returns:
             list[str]: 待生成缩略图的文件路径列表。
         """
+        manager = get_thumbnail_manager()
+        filter_pending = getattr(manager, "filter_pending_media", None)
+        if callable(filter_pending):
+            return list(filter_pending(file_paths))
+
         seen: set[str] = set()
         pending: list[str] = []
         for file_path in file_paths:
@@ -269,7 +272,6 @@ class ThumbnailController(QObject):
         file_paths: list[str],
         token: int,
         cancel_event: threading.Event,
-        started: threading.Event,
     ) -> None:
         """生成任务执行体（由 QRunnable 在线程池线程中调用）。
 
@@ -277,7 +279,6 @@ class ThumbnailController(QObject):
             file_paths: 待生成缩略图的文件路径列表。
             token: 任务启动时的世代快照，失效后丢弃全部事件。
             cancel_event: 与控制器共享的取消 Event（``cancel()`` 置位）。
-            started: 启动交会 Event，进入批量阻塞调用前置位。
         """
         ready_buffer: list[str] = []
         last_emit_time = time.monotonic()
@@ -321,7 +322,6 @@ class ThumbnailController(QObject):
 
         try:
             manager = get_thumbnail_manager()
-            started.set()
             success_count, processed_count = manager.create_thumbnails_batch(
                 file_paths,
                 progress_callback=_on_item_processed,
@@ -339,15 +339,13 @@ class ThumbnailController(QObject):
         finally:
             self._finish_task(token)
 
-    def _run_clear(self, token: int, started: threading.Event) -> None:
+    def _run_clear(self, token: int) -> None:
         """清除任务执行体（由 QRunnable 在线程池线程中调用，无取消语义）。
 
         Args:
             token: 任务启动时的世代快照，失效后丢弃结果。
-            started: 启动交会 Event，进入磁盘删除前置位。
         """
         try:
-            started.set()
             deleted_count = clear_all_thumbnails()
             if self._token_is_current(token):
                 self.clear_finished.emit(deleted_count)

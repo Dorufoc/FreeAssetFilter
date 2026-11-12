@@ -42,6 +42,91 @@ class _StartupWarmupSignals(QObject):
     finished = Signal()
 
 
+class _StartupCleanupSignals(QObject):
+    """启动期磁盘清理任务完成信号中转（主线程持有，跨线程队列投递）。
+
+    后台任务（``io`` 池）只跑磁盘 I/O 并按结果 emit；接收槽位于主线程，
+    因此 ``SettingsManager.save`` 等主线程约束在接收侧自然满足。
+    """
+
+    icon_cache_cleaned = Signal(int)
+    icon_cache_failed = Signal(str)
+    thumbnail_cleanup_finished = Signal(int, int, float, str)
+
+
+def _perform_thumbnail_cleanup(cleanup_period_days: int) -> tuple[int, int, str]:
+    """在调用线程执行缩略图磁盘清理（失败不抛，返回错误文本）。
+
+    Args:
+        cleanup_period_days: 清理周期（天）。
+
+    Returns:
+        tuple[int, int, str]: ``(删除数, 剩余数, 错误文本)``；成功时错误文本为
+        空串，失败时为异常描述且计数为 0。
+    """
+    try:
+        from sopeek.core.managers.thumbnail_manager import clean_thumbnails
+
+        deleted_count, remaining_count = clean_thumbnails(
+            cleanup_period_days=cleanup_period_days
+        )
+        return deleted_count, remaining_count, ""
+    except Exception as e:  # noqa: BLE001 - 清理失败不阻塞启动
+        return 0, 0, str(e)
+
+
+class _IconCacheCleanupTask(QRunnable):
+    """启动期图标缓存清理任务（投递 ``io`` 池，主线程只做调度）。
+
+    Args:
+        signals: 主线程持有的完成信号中转对象（跨线程队列投递）。
+    """
+
+    def __init__(self, signals: _StartupCleanupSignals) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._signals = signals
+
+    def run(self) -> None:  # noqa: D102 - QRunnable 接口
+        try:
+            from sopeek.utils.icon_utils import cleanup_icon_cache
+
+            removed = cleanup_icon_cache()
+            self._signals.icon_cache_cleaned.emit(int(removed or 0))
+        except Exception as e:  # noqa: BLE001 - 清理失败不阻塞启动
+            self._signals.icon_cache_failed.emit(str(e))
+
+
+class _ThumbnailCleanupTask(QRunnable):
+    """启动期缩略图缓存清理任务（投递 ``io`` 池）。
+
+    Args:
+        signals: 主线程持有的完成信号中转对象（跨线程队列投递）。
+        current_time: 本次清理时间戳（回主线程后写回 ``last_cleanup_time``）。
+        cleanup_period_days: 清理周期（天），由调度方按设置读取后传入。
+    """
+
+    def __init__(
+        self,
+        signals: _StartupCleanupSignals,
+        current_time: float,
+        cleanup_period_days: int,
+    ) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._signals = signals
+        self._current_time = current_time
+        self._cleanup_period_days = cleanup_period_days
+
+    def run(self) -> None:  # noqa: D102 - QRunnable 接口
+        deleted_count, remaining_count, error_message = _perform_thumbnail_cleanup(
+            self._cleanup_period_days
+        )
+        self._signals.thumbnail_cleanup_finished.emit(
+            deleted_count, remaining_count, self._current_time, error_message
+        )
+
+
 class StartupWarmupThread(QRunnable):
     """启动后后台预热任务：FFmpeg 工具链。
 
@@ -116,6 +201,14 @@ class StartupController(QObject):
         self._heartbeat = None
         self._warmup_thread = None
         self._update_signal_connected = False
+        # 启动期磁盘清理（io 池）的完成信号中转：后台只跑 I/O，回主线程
+        # 再写 settings / 打日志（SettingsManager.save 必须在主线程执行）。
+        self._cleanup_signals = _StartupCleanupSignals(self)
+        self._cleanup_signals.icon_cache_cleaned.connect(self._on_icon_cache_cleaned)
+        self._cleanup_signals.icon_cache_failed.connect(self._on_icon_cache_failed)
+        self._cleanup_signals.thumbnail_cleanup_finished.connect(
+            self._on_thumbnail_cleanup_finished
+        )
 
     # ── 调度入口 ────────────────────────────────────────────────
 
@@ -185,15 +278,23 @@ class StartupController(QObject):
     # ── 缓存清理 ────────────────────────────────────────────────
 
     def _cleanup_icon_cache(self) -> None:
-        """启动阶段磁盘图标缓存清理（最旧优先双阈值）。"""
-        try:
-            from sopeek.utils.icon_utils import cleanup_icon_cache
+        """把启动图标缓存清理投递到 ``io`` 池（listdir + 全量 mtime 不再占主线程）。
 
-            removed = cleanup_icon_cache()
-            if removed:
-                info(f"[启动] 图标缓存清理: 删除 {removed} 个文件")
-        except Exception as e:
-            warning(f"[启动] 图标缓存清理失败: {e}")
+        调度时点（0ms singleShot）与原实现一致；池模块延迟导入，不进入
+        「进程 → 首帧」关键路径。
+        """
+        from sopeek.core.pools import pool as get_pool
+
+        get_pool("io").start(_IconCacheCleanupTask(self._cleanup_signals))
+
+    def _on_icon_cache_cleaned(self, removed: int) -> None:
+        """主线程：记录图标缓存清理结果（日志语义与原实现一致）。"""
+        if removed:
+            info(f"[启动] 图标缓存清理: 删除 {removed} 个文件")
+
+    def _on_icon_cache_failed(self, message: str) -> None:
+        """主线程：记录图标缓存清理失败（不阻塞启动）。"""
+        warning(f"[启动] 图标缓存清理失败: {message}")
 
     def _schedule_thumbnail_cleanup(self) -> None:
         """按设置门控调度缩略图缓存清理（自动清理开且超过清理周期才执行）。"""
@@ -206,12 +307,29 @@ class StartupController(QObject):
             last_cleanup = sm.get("file_selector.last_cleanup_time", None) if sm else None
             now = time.time()
             if last_cleanup is None or (now - float(last_cleanup)) > (cleanup_period * 86400):
-                QTimer.singleShot(0, lambda: self._run_thumbnail_cleanup(now, cleanup_period))
+                QTimer.singleShot(0, lambda: self._dispatch_thumbnail_cleanup(now, cleanup_period))
         except Exception as e:
             warning(f"[启动] 缩略图清理调度失败: {e}")
 
+    def _dispatch_thumbnail_cleanup(
+        self, current_time: float, cleanup_period_days: int = 7
+    ) -> None:
+        """把缩略图缓存清理投递到 ``io`` 池（逐文件 exists/remove 移出主线程）。
+
+        Args:
+            current_time: 本次清理时间戳（回主线程后写回 ``last_cleanup_time``）。
+            cleanup_period_days: 清理周期（天）。
+        """
+        from sopeek.core.pools import pool as get_pool
+
+        get_pool("io").start(
+            _ThumbnailCleanupTask(
+                self._cleanup_signals, current_time, cleanup_period_days
+            )
+        )
+
     def _run_thumbnail_cleanup(self, current_time: float, cleanup_period_days: int = 7) -> None:
-        """执行缩略图缓存清理并记录本次清理时间。
+        """同步执行缩略图缓存清理并记录本次清理时间（保留直接调用语义）。
 
         Args:
             current_time: 本次清理时间戳（写回 ``last_cleanup_time``）。
@@ -220,23 +338,39 @@ class StartupController(QObject):
                 ``file_selector.cache_cleanup_period`` 读取后传入——
                 修复此前硬编码 7 天导致配置项实际不生效的问题。
         """
-        try:
-            from sopeek.core.managers.thumbnail_manager import clean_thumbnails
+        deleted_count, remaining_count, error_message = _perform_thumbnail_cleanup(
+            cleanup_period_days
+        )
+        self._on_thumbnail_cleanup_finished(
+            deleted_count, remaining_count, current_time, error_message
+        )
 
-            deleted_count, remaining_count = clean_thumbnails(
-                cleanup_period_days=cleanup_period_days
+    def _on_thumbnail_cleanup_finished(
+        self,
+        deleted_count: int,
+        remaining_count: int,
+        current_time: float,
+        error_message: str,
+    ) -> None:
+        """主线程：记录清理结果并把本次清理时间写回设置。
+
+        后台任务只做磁盘清理；``SettingsManager.save`` 必须在主线程执行，
+        故本槽由 ``_StartupCleanupSignals`` 从 io 线程队列投递到主线程。
+        """
+        if error_message:
+            warning(f"缩略图缓存清理失败: {error_message}")
+        else:
+            info(
+                f"[启动] 缩略图缓存清理完成: 删除 {deleted_count} 个文件，"
+                f"剩余 {remaining_count} 个文件"
             )
-            info(f"[启动] 缩略图缓存清理完成: 删除 {deleted_count} 个文件，剩余 {remaining_count} 个文件")
+        try:
+            sm = getattr(self.app, "settings_manager", None)
+            if sm is not None:
+                sm.set("file_selector.last_cleanup_time", current_time)
+                sm.save()
         except Exception as e:
-            warning(f"缩略图缓存清理失败: {e}")
-        finally:
-            try:
-                sm = getattr(self.app, "settings_manager", None)
-                if sm is not None:
-                    sm.set("file_selector.last_cleanup_time", current_time)
-                    sm.save()
-            except Exception as e:
-                warning(f"更新清理时间失败: {e}")
+            warning(f"更新清理时间失败: {e}")
 
     # ── 后台预热 ────────────────────────────────────────────────
 

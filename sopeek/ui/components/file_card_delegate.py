@@ -10,6 +10,7 @@ FileCardDelegate — 文件卡片委托，视觉风格精确匹配 StyledInfoCar
 所有颜色从 tm 获取，零硬编码。
 """
 
+import os
 from collections import OrderedDict
 from typing import Any, Dict, Optional
 
@@ -224,6 +225,101 @@ _LIST_SIZE_CACHE: Dict[tuple, tuple] = {}
 # QFont / QFontMetrics 缓存：(point_size, weight) → 对象（绘制热路径复用）
 _FONT_CACHE: Dict[tuple, "QFont"] = {}
 _FONT_METRICS_CACHE: Dict[tuple, "QFontMetrics"] = {}
+
+# 文本布局缓存：(name, max_w, title_size, title_weight) → (单行?, 行高, 首行, 次行)。
+# 键完整覆盖断行结果的全部输入（字体族固定为 "Microsoft YaHei UI"），同键结果
+# 恒定；LRU 上限 512 防大目录滚动后无界常驻。
+_TEXT_LAYOUT_CACHE: "OrderedDict[tuple, tuple]" = OrderedDict()
+_TEXT_LAYOUT_CACHE_CAP: int = 512
+
+# sizeHint 行级缓存上限：只保留最近绘制的行，避免万级目录下无界常驻。
+_SIZE_HINT_CACHE_CAP: int = 256
+# 池成员行级判断缓存上限（行号 + 池版本 + 行路径三元组）。
+_POOL_ROW_CACHE_CAP: int = 1024
+
+
+def _get_title_font(config: Dict[str, Any]) -> "QFont":
+    """获取标题字体（按 (point_size, weight) 缓存，绘制热路径复用）。
+
+    Args:
+        config: 当前卡片/列表配置（含 title_size / title_weight）。
+
+    Returns:
+        缓存的标题 QFont（调用方不得修改其属性）。
+    """
+    font_key = (config["title_size"], config["title_weight"])
+    font = _FONT_CACHE.get(font_key)
+    if font is None:
+        font = QFont("Microsoft YaHei UI", config["title_size"], config["title_weight"])
+        _FONT_CACHE[font_key] = font
+    return font
+
+
+def _get_title_metrics(config: Dict[str, Any]) -> "QFontMetrics":
+    """获取标题字体度量（与标题字体同键缓存）。
+
+    Args:
+        config: 当前卡片/列表配置（含 title_size / title_weight）。
+
+    Returns:
+        缓存的标题 QFontMetrics。
+    """
+    font_key = (config["title_size"], config["title_weight"])
+    fm = _FONT_METRICS_CACHE.get(font_key)
+    if fm is None:
+        fm = QFontMetrics(_get_title_font(config))
+        _FONT_METRICS_CACHE[font_key] = fm
+    return fm
+
+
+def _get_text_layout(name: str, max_w: int, config: Dict[str, Any]) -> tuple:
+    """计算文件名的断行/省略结果（按 (name, max_w, 字体) 做 LRU 缓存）。
+
+    与旧 ``_draw_text`` 内联逻辑逐字等价：先以整名宽度判断单行，放不下时
+    二分查找第一行最大可容纳字符数，余下部分 ``elidedText`` 省略。
+
+    Args:
+        name: 文件名。
+        max_w: 文本区域可用宽度（px，整数）。
+        config: 当前配置（提供标题字号/字重）。
+
+    Returns:
+        ``(单行?, 行高, 首行文本, 次行文本)``；次行为空串表示无第二行。
+    """
+    font_key = (config["title_size"], config["title_weight"])
+    key = (name, int(max_w), font_key[0], font_key[1])
+    cached = _TEXT_LAYOUT_CACHE.get(key)
+    if cached is not None:
+        _TEXT_LAYOUT_CACHE.move_to_end(key)
+        return cached
+    fm = _get_title_metrics(config)
+    line_height = fm.height()
+    if fm.horizontalAdvance(name) <= max_w:
+        result = (True, line_height, name, "")
+    else:
+        lo, hi = 0, len(name)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if fm.horizontalAdvance(name[:mid]) <= max_w:
+                lo = mid
+            else:
+                hi = mid - 1
+        first_line = name[:lo]
+        remaining = name[len(first_line):].strip()
+        second_line = (
+            fm.elidedText(remaining, Qt.ElideRight, max_w) if remaining else ""
+        )
+        result = (False, line_height, first_line, second_line)
+    _TEXT_LAYOUT_CACHE[key] = result
+    if len(_TEXT_LAYOUT_CACHE) > _TEXT_LAYOUT_CACHE_CAP:
+        _TEXT_LAYOUT_CACHE.popitem(last=False)
+    return result
+
+
+def clear_text_layout_cache() -> None:
+    """清空文本布局缓存（单测隔离/字体环境变化兜底）。"""
+    _TEXT_LAYOUT_CACHE.clear()
+
 
 # ── 图标缩放阶梯缓存（A3：消除 _draw_icon_pixmap 每帧 SmoothTransformation 重缩放）──
 # 不同卡片缩放/尺寸档位下 display_size 连续变化；按阶梯量化后同一档位复用
@@ -468,6 +564,16 @@ class FileCardDelegate(QStyledItemDelegate):
         self._layout_mode: str = "card"
         self._card_scale: float = 1.0
         self._pool_file_set: set[str] = set()  # 已存在于文件池中的文件路径集合
+        self._pool_version: int = 0            # 池版本号：set_pool_files 时自增
+        # 池成员行级判断缓存：row → (行路径, 池版本, 是否在池)；有界 LRU。
+        self._pool_row_cache: "OrderedDict[int, tuple]" = OrderedDict()
+
+        # sizeHint 行级结果缓存：(layout_mode, scale, row) → QSize；
+        # 模型复位/行增删/布局重排/CardWidthRole 变化时清空，键含模式与缩放档位。
+        self._size_hint_cache: "OrderedDict[tuple, QSize]" = OrderedDict()
+        # 已挂接失效信号的模型（避免重复连接；模型切换时先断开旧连接）。
+        self._hooked_model: Optional[object] = None
+        self._model_connections: list = []
 
         self._view: Optional[object] = None  # 关联视图（局部失效重绘用）
 
@@ -943,16 +1049,54 @@ class FileCardDelegate(QStyledItemDelegate):
         return gradient
 
     def set_pool_files(self, paths: set[str]) -> None:
-        """设置当前文件池中的文件路径集合，用于绘制"已在池中"边框标记。"""
-        import os
-        self._pool_file_set = {os.path.normcase(os.path.normpath(p)) for p in paths} if paths else set()
+        """设置当前文件池中的文件路径集合，用于绘制"已在池中"边框标记。
+
+        路径归一化每次池变化只做一遍；池版本自增使行级判断缓存整体失效。
+
+        Args:
+            paths: 文件池中的文件路径集合（可为已归一化集合，归一化幂等）。
+        """
+        self._pool_file_set = (
+            {os.path.normcase(os.path.normpath(p)) for p in paths} if paths else set()
+        )
+        self._pool_version += 1
+        self._pool_row_cache.clear()
 
     def _is_file_in_pool(self, file_path: str) -> bool:
         """检查文件是否在文件池中（O(1) 查询，路径已 normcase 标准化）。"""
         if not file_path or not self._pool_file_set:
             return False
-        import os
         return os.path.normcase(os.path.normpath(file_path)) in self._pool_file_set
+
+    def _is_row_in_pool(self, row: int, file_path: str) -> bool:
+        """按「行 + 池版本 + 当前行路径」缓存池成员判断（绘制热路径用）。
+
+        虚拟化滚动会复用行号，故缓存条目同时校验行路径是否一致；池集合变化
+        由池版本号整体失效。
+
+        Args:
+            row: 当前绘制的行号。
+            file_path: 该行对应的文件路径。
+
+        Returns:
+            该文件是否已在文件池中。
+        """
+        if not file_path or not self._pool_file_set:
+            return False
+        cached = self._pool_row_cache.get(row)
+        if (
+            cached is not None
+            and cached[0] == file_path
+            and cached[1] == self._pool_version
+        ):
+            self._pool_row_cache.move_to_end(row)
+            return cached[2]
+        in_pool = self._is_file_in_pool(file_path)
+        self._pool_row_cache[row] = (file_path, self._pool_version, in_pool)
+        self._pool_row_cache.move_to_end(row)
+        if len(self._pool_row_cache) > _POOL_ROW_CACHE_CAP:
+            self._pool_row_cache.popitem(last=False)
+        return in_pool
 
     def set_card_mode(self) -> None:
         self._layout_mode = "card"
@@ -1053,15 +1197,7 @@ class FileCardDelegate(QStyledItemDelegate):
         padding = int(config["padding"] * scale)
         gap = int(config["gap"] * scale)
         media_size = int(config["media_size"] * scale)
-        font_key = (config["title_size"], config["title_weight"])
-        font = _FONT_CACHE.get(font_key)
-        if font is None:
-            font = QFont("Microsoft YaHei UI", config["title_size"], config["title_weight"])
-            _FONT_CACHE[font_key] = font
-        fm = _FONT_METRICS_CACHE.get(font_key)
-        if fm is None:
-            fm = QFontMetrics(font)
-            _FONT_METRICS_CACHE[font_key] = fm
+        fm = _get_title_metrics(config)
         line_height = fm.height() + 2  # 行高 + 行间距
         text_height = line_height * 2  # 双行
         width = padding * 2 + media_size
@@ -1079,15 +1215,7 @@ class FileCardDelegate(QStyledItemDelegate):
             return cached
         padding = int(config["padding"] * scale)
         media_size = int(config["media_size"] * scale)
-        font_key = (config["title_size"], config["title_weight"])
-        font = _FONT_CACHE.get(font_key)
-        if font is None:
-            font = QFont("Microsoft YaHei UI", config["title_size"], config["title_weight"])
-            _FONT_CACHE[font_key] = font
-        fm = _FONT_METRICS_CACHE.get(font_key)
-        if fm is None:
-            fm = QFontMetrics(font)
-            _FONT_METRICS_CACHE[font_key] = fm
+        fm = _get_title_metrics(config)
         text_height = fm.height() + 4
         width = 200
         height = padding * 2 + max(media_size, text_height)
@@ -1100,6 +1228,35 @@ class FileCardDelegate(QStyledItemDelegate):
         option: Optional[QStyleOptionViewItem],
         index: Optional[QModelIndex],
     ) -> QSize:
+        """返回 item 的建议尺寸（行级结果缓存，消除 paint 内重复计算）。
+
+        尺寸只取决于「布局模式 + 卡片缩放 + 模型给出的 CardWidthRole」，故缓存
+        键为 ``(layout_mode, scale, row)``；模型复位/行增删/布局重排/CardWidthRole
+        变化时整体清空（见 ``_on_model_data_changed`` 等槽）。
+
+        Args:
+            option: 样式选项（当前实现未使用，保持基类签名）。
+            index: 模型索引；无效时返回配置默认尺寸。
+
+        Returns:
+            QSize: item 建议尺寸。
+        """
+        return self._cached_size_hint(option, index)
+
+    def _compute_size_hint(
+        self,
+        option: Optional[QStyleOptionViewItem],
+        index: Optional[QModelIndex],
+    ) -> QSize:
+        """未经缓存的 sizeHint 计算（原实现，行为不变）。
+
+        Args:
+            option: 样式选项（未使用）。
+            index: 模型索引。
+
+        Returns:
+            QSize: item 建议尺寸。
+        """
         if self._layout_mode == "card":
             config = CARD_CONFIG
             if index is not None and index.isValid():
@@ -1122,6 +1279,88 @@ class FileCardDelegate(QStyledItemDelegate):
                         return QSize(int(card_width), height)
             width, height = self._calc_list_size(config, self._card_scale)
             return QSize(width, height)
+
+    def _cached_size_hint(
+        self,
+        option: Optional[QStyleOptionViewItem],
+        index: Optional[QModelIndex],
+    ) -> QSize:
+        """带行级缓存的 sizeHint（键含布局模式与缩放档位）。
+
+        Args:
+            option: 样式选项。
+            index: 模型索引。
+
+        Returns:
+            QSize: item 建议尺寸（返回副本，避免调用方原地修改污染缓存）。
+        """
+        key = None
+        if index is not None and index.isValid():
+            try:
+                self._ensure_model_hooked(index.model())
+            except Exception as exc:
+                debug(f"挂接模型失效信号失败：{exc}")
+            key = (self._layout_mode, self._card_scale, index.row())
+            cached = self._size_hint_cache.get(key)
+            if cached is not None:
+                self._size_hint_cache.move_to_end(key)
+                return QSize(cached)
+        size = self._compute_size_hint(option, index)
+        if key is not None:
+            self._size_hint_cache[key] = QSize(size)
+            if len(self._size_hint_cache) > _SIZE_HINT_CACHE_CAP:
+                self._size_hint_cache.popitem(last=False)
+        return size
+
+    # ── 模型失效信号（sizeHint 行级缓存）─────────────────────────────────
+
+    def _ensure_model_hooked(self, model: Optional[object]) -> None:
+        """挂接模型失效信号，保证行级 sizeHint 缓存不会跨模型状态串值。
+
+        Args:
+            model: item 所属模型；``None`` 时仅记录，不连接。
+        """
+        if model is self._hooked_model:
+            return
+        for signal, slot in self._model_connections:
+            try:
+                signal.disconnect(slot)
+            except Exception:
+                pass  # 旧模型已销毁/未连接时忽略
+        self._model_connections = []
+        self._hooked_model = model
+        self._size_hint_cache.clear()
+        if model is None:
+            return
+        try:
+            pairs = (
+                (model.dataChanged, self._on_model_data_changed),
+                (model.modelReset, self._on_model_structure_changed),
+                (model.rowsInserted, self._on_model_structure_changed),
+                (model.rowsRemoved, self._on_model_structure_changed),
+                (model.layoutChanged, self._on_model_structure_changed),
+            )
+            for signal, slot in pairs:
+                signal.connect(slot)
+                self._model_connections.append((signal, slot))
+        except Exception as exc:
+            self._model_connections = []
+            debug(f"挂接模型失效信号失败：{exc}")
+
+    def _on_model_data_changed(
+        self,
+        _top_left: Optional[QModelIndex] = None,
+        _bottom_right: Optional[QModelIndex] = None,
+        roles: Optional[list] = None,
+    ) -> None:
+        """模型数据变化：仅 CardWidthRole（或未指定角色）影响 sizeHint 缓存。"""
+        if roles and CardWidthRole not in roles:
+            return
+        self._size_hint_cache.clear()
+
+    def _on_model_structure_changed(self, *_args) -> None:
+        """模型复位/行增删/布局重排：行号映射失效，清空 sizeHint 缓存。"""
+        self._size_hint_cache.clear()
 
     # ── paint ────────────────────────────────────────────────────────────
 
@@ -1163,7 +1402,7 @@ class FileCardDelegate(QStyledItemDelegate):
         is_selected = file_info.get("is_selected", False)
         is_previewing = file_info.get("is_previewing", False)
         is_hovered = bool(option.state & QStyle.State_MouseOver)
-        is_in_pool = self._is_file_in_pool(file_info.get("path", ""))
+        is_in_pool = self._is_row_in_pool(index.row(), file_info.get("path", ""))
 
         card_rect = self._resolve_card_rect(option, index)
 
@@ -1439,52 +1678,45 @@ class FileCardDelegate(QStyledItemDelegate):
         file_info: Dict[str, Any],
         align: int = Qt.AlignLeft,
     ) -> None:
+        """绘制文件名（单行居中或双行折行 + 第二行省略）。
+
+        断行/省略结果按 ``(name, max_w, 字体)`` 缓存（见 ``_get_text_layout``），
+        绘制坐标与算法与旧实现逐字一致。
+
+        Args:
+            painter: 已激活的 QPainter。
+            rect: 文本区域矩形。
+            config: 当前配置（标题字号/字重）。
+            file_info: 文件信息字典。
+            align: 水平对齐方式。
+        """
         colors = _get_colors()
         name = file_info.get("name", "")
 
-        font_key = (config["title_size"], config["title_weight"])
-        font = _FONT_CACHE.get(font_key)
-        if font is None:
-            font = QFont("Microsoft YaHei UI", config["title_size"], config["title_weight"])
-            _FONT_CACHE[font_key] = font
-        painter.setFont(font)
+        painter.setFont(_get_title_font(config))
         painter.setPen(colors["title"])
-        fm = _FONT_METRICS_CACHE.get(font_key)
-        if fm is None:
-            fm = QFontMetrics(font)
-            _FONT_METRICS_CACHE[font_key] = fm
 
         max_w = int(rect.width())
-        line_height = fm.height()
+        is_single, line_height, first_line, second_line = _get_text_layout(
+            name, max_w, config
+        )
         spacing = 2  # 行间距
         two_line_h = line_height * 2 + spacing
 
         # 文本块（单行 = 一行高，双行 = 两行高）整体在 rect 内垂直居中。
         # 不硬编码与 rect 顶部的间距：rect 高度随卡片缩放变化时，
         # 文本始终保持在卡片垂直中部；rect 高度不足时贴顶，避免溢出卡片底部。
-        block_h = line_height if fm.horizontalAdvance(name) <= max_w else two_line_h
+        block_h = line_height if is_single else two_line_h
         block_y = rect.y() + max(0, int((rect.height() - block_h) / 2))
 
         # 单行能放下 → 在文本块区域内垂直居中
-        if block_h == line_height:
+        if is_single:
             painter.drawText(
                 QRectF(rect.x(), block_y, max_w, line_height),
                 align | Qt.AlignVCenter,
-                name,
+                first_line,
             )
             return
-
-        # 双行：第一行尽量放满，第二行省略。
-        # 二分查找第一行能容纳的最大字符数（替代逐字符递减线性扫描，
-        # 将每次绘制的测量次数从 O(n) 降到 O(log n)）。
-        lo, hi = 0, len(name)
-        while lo < hi:
-            mid = (lo + hi + 1) // 2
-            if fm.horizontalAdvance(name[:mid]) <= max_w:
-                lo = mid
-            else:
-                hi = mid - 1
-        first_line = name[:lo]
 
         painter.drawText(
             QRectF(rect.x(), block_y, max_w, line_height),
@@ -1492,9 +1724,7 @@ class FileCardDelegate(QStyledItemDelegate):
             first_line,
         )
 
-        remaining = name[len(first_line):].strip()
-        if remaining:
-            second_line = fm.elidedText(remaining, Qt.ElideRight, max_w)
+        if second_line:
             painter.drawText(
                 QRectF(rect.x(), block_y + line_height + spacing, max_w, line_height),
                 align | Qt.AlignTop,

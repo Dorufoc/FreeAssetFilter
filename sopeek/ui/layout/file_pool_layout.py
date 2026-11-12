@@ -1051,17 +1051,56 @@ class FilePoolLayout(QWidget):
             self._update_empty_hint_geometry()
 
     def _on_pool_scrolled(self, _value: int) -> None:
-        """滚动时让所有卡片的 overlay 重新绘制（修复 QGraphicsEffect 缓存不同步）。"""
+        """滚动时只让**与视口相交**的卡片 overlay 重绘（修复 QGraphicsEffect 缓存不同步）。
+
+        卡片 overlay 是卡片的子控件，滚动时 Qt 不会自动重绘未被视口裁剪到的
+        部分；历史实现对全池卡片逐个 ``update_overlay()``，卡片多时每个滚动
+        节拍都有 O(N) 次重绘。这里改成把视口矩形映射到卡片容器坐标，只刷新
+        与「视口 ± 一个卡片高度」相交的卡片；保留 ``singleShot(0)`` 节流，
+        避免范围变化触发的连续 valueChanged 反复刷新。
+        """
         if self._pending_scroll_overlay_update:
             return
         self._pending_scroll_overlay_update = True
 
         def _update() -> None:
             self._pending_scroll_overlay_update = False
+            try:
+                visible_rect = self._visible_card_rect()
+            except (RuntimeError, AttributeError):
+                # 控件已被销毁（退出/重建路径）：退回全量刷新，保持原行为。
+                for card in self._card_widgets.values():
+                    card.update_overlay()
+                return
             for card in self._card_widgets.values():
-                card.update_overlay()
+                try:
+                    if card.isVisible() and visible_rect.intersects(card.geometry()):
+                        card.update_overlay()
+                except RuntimeError:
+                    # 卡片 C++ 对象已销毁但尚未从字典摘除：跳过。
+                    continue
 
         QTimer.singleShot(0, _update)
+
+    def _visible_card_rect(self) -> QRect:
+        """返回视口矩形（卡片容器坐标，上下各扩一个卡片高度）。
+
+        滚动期间 Qt 的 overlay 子控件需要按视口相对位置重绘；向外扩一个卡片
+        高度可覆盖「刚从视口边缘滑出/滑入」的卡片，避免边缘残留错位。
+
+        Returns:
+            QRect: 卡片容器坐标系下的可见区域（含一卡高度余量）。
+        """
+        viewport = self._scroll_area.viewport()
+        top_left = self._card_container.mapFrom(viewport, QPoint(0, 0))
+        rect = QRect(top_left, viewport.size())
+        margin = 0
+        for card in self._card_widgets.values():
+            try:
+                margin = max(margin, card.height())
+            except RuntimeError:
+                continue
+        return rect.adjusted(0, -margin, 0, margin)
 
     def showEvent(self, event) -> None:
         """首次显示时定位浮动滚动条。"""

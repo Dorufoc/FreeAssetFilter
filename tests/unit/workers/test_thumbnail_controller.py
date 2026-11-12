@@ -182,6 +182,23 @@ class _BlockingBatchManager:
                     return
         raise AssertionError(f"未找到待释放的批量调用: {file_paths}")
 
+    def has_call(self, file_paths: List[str]) -> bool:
+        """判断指定内容的批量调用是否已进入 ``create_thumbnails_batch``。
+
+        ``ThumbnailController.start_generation`` 现在非阻塞投递（不再有
+        ``started.wait`` 交会保证），测试在释放/取消前需有界轮询本方法，
+        确认后台任务已登记调用，从而与投递时序解耦。
+
+        Args:
+            file_paths: 当初传给 ``create_thumbnails_batch`` 的路径列表。
+
+        Returns:
+            bool: 对应调用已登记返回 True。
+        """
+        key: Tuple[str, ...] = tuple(file_paths)
+        with self._lock:
+            return key in self._calls
+
     def release_all(self) -> None:
         """释放全部阻塞事件（teardown 兜底）。"""
         with self._lock:
@@ -425,6 +442,11 @@ class TestBusyMutex:
             assert controller.start_clear() is False
             assert log.batch == []
 
+            # 非阻塞投递：先确认后台任务已进入批量调用（登记阻塞事件），
+            # 再释放，避免与投递时序竞争（生产端不再有主线程交会等待）
+            assert _pump_until(
+                qapp, lambda: fake.has_call(["Z:/fake/a.png"])
+            ), "生成任务未进入批量调用"
             fake.release_all()
             assert _pump_until(
                 qapp, lambda: bool(log.batch) and not controller.is_busy
@@ -483,6 +505,13 @@ class TestCancelSemantics:
             # 关键断言：cancel 后无需等待旧线程即可启动新任务
             assert controller.start_generation(paths_b) is True
             assert controller.is_busy is True
+
+            # 非阻塞投递：先确认两个后台任务均已进入批量调用，再按序释放
+            #（生产端不再有主线程交会等待，这里用有界轮询重建时序确定性）
+            assert _pump_until(
+                qapp,
+                lambda: fake.has_call(paths_a) and fake.has_call(paths_b),
+            ), "生成任务未进入批量调用"
 
             # 释放旧任务 A：其收尾事件（batch_finished(2,2)）必须被丢弃
             fake.release_call(paths_a)

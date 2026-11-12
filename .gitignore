@@ -115,3 +115,4 @@ sopeek/core/native/src/spk_updater/target/
 sopeek/core/native/src/cpp_lut_preview/build/
 outputs/*
 docs/native_capabilities.md
+docs/PERFORMANCE_AUDIT_REPORT.md

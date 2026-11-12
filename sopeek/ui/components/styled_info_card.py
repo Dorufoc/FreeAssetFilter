@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSizePolicy,
 )
@@ -12,7 +14,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QPainter, QColor, QPaintEvent, QFont, QFontMetrics,
     QPen, QBrush, QMouseEvent, QConicalGradient,
-    QLinearGradient, QPainterPath,
+    QLinearGradient, QPainterPath, QPixmap,
 )
 
 from theme import tm
@@ -35,11 +37,212 @@ _CARD_CONFIG_CACHE: dict = {}
 
 def _clear_info_card_color_cache(*_args) -> None:
     """主题/配色变化时清空配色缓存（兜底覆盖同主题重设、热更新）。"""
+    global _THEME_EPOCH
     _INFO_CARD_COLORS_CACHE.clear()
+    _THEME_EPOCH += 1
 
 
 tm.theme_changed.connect(_clear_info_card_color_cache)
 tm.colors_updated.connect(_clear_info_card_color_cache)
+
+
+# ── 绘制热路径缓存（全部有界 LRU / 固定小表，均有明确失效路径）─────────────
+# 主题色代次：tm.theme_changed / colors_updated 时自增，用于让依赖主题色的
+# 缓存（hover 渐变）整体失效，避免强调色/深色模式切换后串色。
+_THEME_EPOCH: int = 0
+
+# (family, point_size, weight) → QFont；字号/字重档位有限，LRU 上限 32。
+_FONT_CACHE: "OrderedDict[tuple, QFont]" = OrderedDict()
+_FONT_METRICS_CACHE: "OrderedDict[tuple, QFontMetrics]" = OrderedDict()
+_FONT_CACHE_CAP: int = 32
+
+# (icon cacheKey, 源宽, 源高, 目标逻辑尺寸, dpr) → 已平滑缩放 QPixmap；
+# 键含原图标识与源尺寸，图标替换即 miss；LRU 上限 128。
+_ICON_SCALE_CACHE: "OrderedDict[tuple, QPixmap]" = OrderedDict()
+_ICON_SCALE_CACHE_CAP: int = 128
+
+# (w, h, radius) → hover 遮罩圆角裁切路径；尺寸变化生成新键，LRU 上限 64。
+_HOVER_CLIP_CACHE: "OrderedDict[tuple, QPainterPath]" = OrderedDict()
+_HOVER_CLIP_CACHE_CAP: int = 64
+
+# (w, h, 是否纵向, 遮罩 alpha, 主题代次) → 静止态 hover 渐变；LRU 上限 64。
+_HOVER_GRAD_CACHE: "OrderedDict[tuple, QLinearGradient]" = OrderedDict()
+_HOVER_GRAD_CACHE_CAP: int = 64
+
+# (title, max_w, size, weight) → (单行?, 行高, 首行, 次行)；平铺标题断行结果。
+_TILE_TITLE_CACHE: "OrderedDict[tuple, tuple]" = OrderedDict()
+_TILE_TITLE_CACHE_CAP: int = 256
+
+# (text, max_w, size, weight) → 单行省略文本；标题/副标题每帧 elidedText 度量缓存。
+_ELIDE_CACHE: "OrderedDict[tuple, str]" = OrderedDict()
+_ELIDE_CACHE_CAP: int = 256
+
+# (配置字号/字重组合 + 是否有副标题/描述 + 是否平铺) → 文字块总高度。
+_TEXT_HEIGHT_CACHE: "OrderedDict[tuple, int]" = OrderedDict()
+_TEXT_HEIGHT_CACHE_CAP: int = 64
+
+
+def _get_font(family: str, point_size: int, weight: int) -> QFont:
+    """获取缓存的 QFont（绘制热路径避免每帧构造）。
+
+    Args:
+        family: 字体族名。
+        point_size: 字号（pt）。
+        weight: 字重（QFont.Weight 数值或 int）。
+
+    Returns:
+        缓存的 QFont（调用方不得修改其属性）。
+    """
+    key = (family, int(point_size), int(weight))
+    font = _FONT_CACHE.get(key)
+    if font is None:
+        font = QFont(family, int(point_size), int(weight))
+        _FONT_CACHE[key] = font
+        if len(_FONT_CACHE) > _FONT_CACHE_CAP:
+            _FONT_CACHE.popitem(last=False)
+    else:
+        _FONT_CACHE.move_to_end(key)
+    return font
+
+
+def _get_font_metrics(family: str, point_size: int, weight: int) -> QFontMetrics:
+    """获取缓存的 QFontMetrics（与 QFont 同键）。
+
+    Args:
+        family: 字体族名。
+        point_size: 字号（pt）。
+        weight: 字重。
+
+    Returns:
+        缓存的 QFontMetrics。
+    """
+    key = (family, int(point_size), int(weight))
+    fm = _FONT_METRICS_CACHE.get(key)
+    if fm is None:
+        fm = QFontMetrics(_get_font(family, point_size, weight))
+        _FONT_METRICS_CACHE[key] = fm
+        if len(_FONT_METRICS_CACHE) > _FONT_CACHE_CAP:
+            _FONT_METRICS_CACHE.popitem(last=False)
+    else:
+        _FONT_METRICS_CACHE.move_to_end(key)
+    return fm
+
+
+def _get_scaled_icon(pix: QPixmap, display_size: int) -> QPixmap:
+    """按目标逻辑尺寸平滑缩放图标（按原图标识 + 尺寸做 LRU 缓存）。
+
+    与旧内联 ``pix.scaled(..., KeepAspectRatio, SmoothTransformation)`` 完全等价：
+    目标物理尺寸 = display_size × dpr，缩放结果保留原 DPR。
+
+    Args:
+        pix: 源 QPixmap。
+        display_size: 目标逻辑显示尺寸（px）。
+
+    Returns:
+        缩放后的 QPixmap（保持原 DPR）。
+    """
+    dpr = pix.devicePixelRatio()
+    try:
+        key = (
+            int(pix.cacheKey()),
+            int(pix.width()),
+            int(pix.height()),
+            int(display_size),
+            round(float(dpr), 3),
+        )
+    except Exception:
+        key = None
+    if key is not None:
+        cached = _ICON_SCALE_CACHE.get(key)
+        if cached is not None and not cached.isNull():
+            _ICON_SCALE_CACHE.move_to_end(key)
+            return cached
+    target_phys = max(1, int(display_size * dpr))
+    scaled = pix.scaled(
+        target_phys, target_phys, Qt.KeepAspectRatio, Qt.SmoothTransformation
+    )
+    if key is not None:
+        _ICON_SCALE_CACHE[key] = scaled
+        if len(_ICON_SCALE_CACHE) > _ICON_SCALE_CACHE_CAP:
+            _ICON_SCALE_CACHE.popitem(last=False)
+    return scaled
+
+
+def _get_hover_clip_path(w: int, h: int, radius: int) -> QPainterPath:
+    """获取 hover 遮罩的圆角裁切路径（按 (w,h,radius) 缓存）。
+
+    Args:
+        w: 卡片宽度（px）。
+        h: 卡片高度（px）。
+        radius: 圆角半径（px）。
+
+    Returns:
+        整卡圆角 QPainterPath（缓存副本，调用方不得修改）。
+    """
+    key = (int(w), int(h), int(radius))
+    path = _HOVER_CLIP_CACHE.get(key)
+    if path is None:
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(0, 0, w, h), radius, radius)
+        _HOVER_CLIP_CACHE[key] = path
+        if len(_HOVER_CLIP_CACHE) > _HOVER_CLIP_CACHE_CAP:
+            _HOVER_CLIP_CACHE.popitem(last=False)
+    else:
+        _HOVER_CLIP_CACHE.move_to_end(key)
+    return path
+
+
+def _get_hover_gradient(
+    w: int,
+    h: int,
+    is_vertical: bool,
+    overlay_alpha: int,
+) -> QLinearGradient:
+    """获取静止态（滑入/淡入完成）hover 渐变（键含主题代次，避免串色）。
+
+    Args:
+        w: 卡片宽度（px）。
+        h: 卡片高度（px）。
+        is_vertical: 是否纵向卡（渐变方向不同）。
+        overlay_alpha: 遮罩色 alpha（0~255）。
+
+    Returns:
+        QLinearGradient（缓存副本，调用方不得修改）。
+    """
+    key = (int(w), int(h), bool(is_vertical), int(overlay_alpha), _THEME_EPOCH)
+    grad = _HOVER_GRAD_CACHE.get(key)
+    if grad is not None:
+        _HOVER_GRAD_CACHE.move_to_end(key)
+        return grad
+    if is_vertical:
+        grad = QLinearGradient(0, 0, 0, h)
+    else:
+        grad = QLinearGradient(0, 0, w, 0)
+    solid = QColor(tm.hover_veil)
+    solid.setAlpha(int(overlay_alpha))
+    grad.setColorAt(0.0, tm.transparent)
+    grad.setColorAt(0.2, tm.transparent)
+    grad.setColorAt(0.8, solid)
+    grad.setColorAt(1.0, solid)
+    _HOVER_GRAD_CACHE[key] = grad
+    if len(_HOVER_GRAD_CACHE) > _HOVER_GRAD_CACHE_CAP:
+        _HOVER_GRAD_CACHE.popitem(last=False)
+    return grad
+
+
+def clear_info_card_paint_cache() -> None:
+    """清空 info card 绘制热路径缓存（单测隔离/字体环境变化兜底）。
+
+    主题色依赖项（hover 渐变）由 ``_THEME_EPOCH`` 自动失效，无需在此处理。
+    """
+    _FONT_CACHE.clear()
+    _FONT_METRICS_CACHE.clear()
+    _ICON_SCALE_CACHE.clear()
+    _HOVER_CLIP_CACHE.clear()
+    _HOVER_GRAD_CACHE.clear()
+    _TILE_TITLE_CACHE.clear()
+    _ELIDE_CACHE.clear()
+    _TEXT_HEIGHT_CACHE.clear()
 
 
 class _CardOverlayWidget(QWidget):
@@ -833,31 +1036,64 @@ class StyledInfoCard(QWidget):
         ``FileCardDelegate._calc_card_size`` 得出的选择器卡高一致）；
         其余情况供 _apply_size（卡片定高）与 paintEvent（文字块垂直居中）共用，
         保证两处对文字高度的度量一致。
+
+        结果按「字号/字重组合 + 是否有副标题/描述 + 是否平铺瓦片」缓存
+        （字体族固定、度量只取决于字号字重），配置或内容标志变化即换键。
+
+        Args:
+            config: 当前布局配置。
+
+        Returns:
+            int: 文字块总高度（px）。
         """
-        font_title = QFont("Microsoft YaHei UI", config["title_size"], config["title_weight"])
-        fm = QFontMetrics(font_title)
+        has_subtitle = bool(self._subtitle)
+        has_desc = bool(self._desc)
+        tile = bool(self._tile_style and self._layout_mode == "vertical")
+        key = (
+            config["title_size"], config["title_weight"],
+            config["subtitle_size"], config["subtitle_weight"],
+            config["desc_size"], config["desc_weight"],
+            has_subtitle, has_desc, tile,
+        )
+        cached = _TEXT_HEIGHT_CACHE.get(key)
+        if cached is not None:
+            _TEXT_HEIGHT_CACHE.move_to_end(key)
+            return cached
 
-        if self._tile_style and self._layout_mode == "vertical":
+        fm = _get_font_metrics(
+            "Microsoft YaHei UI", config["title_size"], config["title_weight"]
+        )
+
+        if tile:
             # 平铺瓦片：双行标题预留（行高 + 2px 行距，与委托卡高口径一致）
-            return fm.height() * 2 + 4
+            result = fm.height() * 2 + 4
+        else:
+            title_h = fm.height()
 
-        title_h = fm.height()
+            subtitle_h = 0
+            if has_subtitle:
+                fm2 = _get_font_metrics(
+                    "Microsoft YaHei UI",
+                    config["subtitle_size"],
+                    config["subtitle_weight"],
+                )
+                subtitle_h = fm2.height()
 
-        subtitle_h = 0
-        if self._subtitle:
-            font_sub = QFont("Microsoft YaHei UI", config["subtitle_size"], config["subtitle_weight"])
-            fm2 = QFontMetrics(font_sub)
-            subtitle_h = fm2.height()
+            desc_h = 0
+            if has_desc:
+                fm3 = _get_font_metrics(
+                    "Microsoft YaHei UI", config["desc_size"], config["desc_weight"]
+                )
+                desc_h = fm3.height()
 
-        desc_h = 0
-        if self._desc:
-            font_desc = QFont("Microsoft YaHei UI", config["desc_size"], config["desc_weight"])
-            fm3 = QFontMetrics(font_desc)
-            desc_h = fm3.height()
+            text_gap = 4  # gap between text lines
+            text_lines = 1 + (1 if has_subtitle else 0) + (1 if has_desc else 0)
+            result = title_h + subtitle_h + desc_h + text_gap * (text_lines - 1)
 
-        text_gap = 4  # gap between text lines
-        text_lines = 1 + (1 if self._subtitle else 0) + (1 if self._desc else 0)
-        return title_h + subtitle_h + desc_h + text_gap * (text_lines - 1)
+        _TEXT_HEIGHT_CACHE[key] = result
+        if len(_TEXT_HEIGHT_CACHE) > _TEXT_HEIGHT_CACHE_CAP:
+            _TEXT_HEIGHT_CACHE.popitem(last=False)
+        return result
 
     def _apply_size(self):
         config = self._get_config()
@@ -1181,31 +1417,40 @@ class StyledInfoCard(QWidget):
                 painter.save()
                 # 遮罩受整卡圆角裁切：clip 用整卡 (0,0,w,h) 圆角，
                 # 滑入过程中进入侧边缘轮廓与卡片圆角完全重合，不会遮盖卡片圆角
-                clip_path = QPainterPath()
-                clip_path.addRoundedRect(QRectF(0, 0, w, h), radius, radius)
-                painter.setClipPath(clip_path)
-                # 透明度随动画进度缩放（拷贝共享缓存色，不修改缓存对象）
-                overlay_color = QColor(colors["hover_overlay"])
-                overlay_color.setAlpha(
-                    int(colors["hover_overlay"].alpha() * self._overlay_opacity)
-                )
-                if is_vertical:
-                    # 纵向卡：顶部透明 → 底部实色，遮罩从底部向上滑入
-                    y_shift = h * (1.0 - self._overlay_slide)
-                    hover_grad = QLinearGradient(0, 0, 0, h)
-                    panel_rect = QRectF(0, y_shift, w, h)
+                # （按 (w,h,radius) 缓存的路径，尺寸变化即生成新键）
+                painter.setClipPath(_get_hover_clip_path(w, h, radius))
+                if self._overlay_opacity >= 1.0:
+                    # 静止（淡入完成）态：透明度恒为 base alpha，渐变按
+                    # (w, h, 方向, alpha, 主题代次) 缓存；动画期间仍逐帧构造
+                    hover_grad = _get_hover_gradient(
+                        w, h, is_vertical, int(colors["hover_overlay"].alpha())
+                    )
+                    painter.setBrush(QBrush(hover_grad))
                 else:
-                    # 横向卡：左侧透明 → 右侧实色，遮罩从右侧向左滑入
-                    x_shift = w * (1.0 - self._overlay_slide)
-                    hover_grad = QLinearGradient(0, 0, w, 0)
-                    panel_rect = QRectF(x_shift, 0, w, h)
-                hover_grad.setColorAt(0.0, tm.transparent)
-                hover_grad.setColorAt(0.2, tm.transparent)
-                hover_grad.setColorAt(0.8, overlay_color)
-                hover_grad.setColorAt(1.0, overlay_color)
-                painter.setBrush(QBrush(hover_grad))
+                    # 透明度随动画进度缩放（拷贝共享缓存色，不修改缓存对象）
+                    overlay_color = QColor(colors["hover_overlay"])
+                    overlay_color.setAlpha(
+                        int(colors["hover_overlay"].alpha() * self._overlay_opacity)
+                    )
+                    if is_vertical:
+                        # 纵向卡：顶部透明 → 底部实色，遮罩从底部向上滑入
+                        hover_grad = QLinearGradient(0, 0, 0, h)
+                    else:
+                        # 横向卡：左侧透明 → 右侧实色，遮罩从右侧向左滑入
+                        hover_grad = QLinearGradient(0, 0, w, 0)
+                    hover_grad.setColorAt(0.0, tm.transparent)
+                    hover_grad.setColorAt(0.2, tm.transparent)
+                    hover_grad.setColorAt(0.8, overlay_color)
+                    hover_grad.setColorAt(1.0, overlay_color)
+                    painter.setBrush(QBrush(hover_grad))
                 # 面板尺寸与卡片同轮廓（整卡 (0,0,w,h)），随 slide 平移；
                 # 无论滑入滑出，进入侧轮廓始终由整卡圆角 clip 决定，与卡片圆角完全重合
+                if is_vertical:
+                    y_shift = h * (1.0 - self._overlay_slide)
+                    panel_rect = QRectF(0, y_shift, w, h)
+                else:
+                    x_shift = w * (1.0 - self._overlay_slide)
+                    panel_rect = QRectF(x_shift, 0, w, h)
                 painter.drawRoundedRect(panel_rect, radius, radius)
                 painter.restore()
 
@@ -1237,9 +1482,8 @@ class StyledInfoCard(QWidget):
                     # 物理像素（display_size × dpr），否则高 DPI 下逻辑尺寸会缩小 dpr 倍
                     #（恰好同尺寸时跳过缩放，避免无谓拷贝）
                     if lw != display_size or lh != display_size:
-                        target_phys = max(1, int(display_size * dpr))
-                        pix = pix.scaled(target_phys, target_phys,
-                                         Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                        # 按 (原图标识, 目标尺寸, DPR) LRU 缓存平滑缩放结果
+                        pix = _get_scaled_icon(pix, display_size)
                         dpr = pix.devicePixelRatio()
                         lw = pix.width() / dpr
                         lh = pix.height() / dpr
@@ -1249,7 +1493,7 @@ class StyledInfoCard(QWidget):
                     painter.drawPixmap(offset_x, offset_y, pix)
             elif self._media_icon:
                 # 字号按放大后的图标尺寸比例计算，视觉占比与填满的图标一致
-                icon_font = QFont(
+                icon_font = _get_font(
                     "Segoe UI Symbol",
                     max(icon_size, int(media_size * 0.6 * _MEDIA_ICON_SCALE)),
                     QFont.Normal,

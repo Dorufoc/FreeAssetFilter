@@ -783,6 +783,10 @@ class VideoPlayerLayout(QWidget):
 
     def stop_playback(self) -> None:
         """停止播放（异步提交，不阻塞 UI 线程）。"""
+        # 先把待提交的音量尾沿冲刷掉（避免隐藏/切换瞬间丢失最后一次拖动值）
+        if self._pending_volume_value is not None:
+            self._volume_apply_timer.stop()
+            self._flush_pending_volume()
         self._media_load_token += 1
         if self._media_load_task is not None:
             self._media_load_task.request_cancel()
@@ -1019,6 +1023,15 @@ class VideoPlayerLayout(QWidget):
         self._seek_debounce_timer.setSingleShot(True)
         self._seek_debounce_timer.setInterval(250)
         self._seek_debounce_timer.timeout.connect(self._flush_pending_seek)
+
+        # 音量拖动合并控制：滑块 valueChanged 每一步都会让 UI 线程同步等待
+        # MPV 串行队列往返；用尾沿防抖把拖动期 N 次调节合并为 1 次，最终值
+        # 仍会到达（停止播放前会强制冲刷，见 stop_playback）。
+        self._pending_volume_value: Optional[int] = None
+        self._volume_apply_timer = QTimer(self)
+        self._volume_apply_timer.setSingleShot(True)
+        self._volume_apply_timer.setInterval(50)
+        self._volume_apply_timer.timeout.connect(self._flush_pending_volume)
 
         # 音频元数据任务令牌与在途任务引用（todo-30：每次音频加载自增，
         # 陈旧结果丢弃；持有任务引用防止 Python 包装器提前 GC 导致
@@ -1395,8 +1408,30 @@ class VideoPlayerLayout(QWidget):
         self._pending_seek_value = None
 
     def _on_volume_change(self, value: float) -> None:
-        """音量调节"""
-        self._mpv_manager.set_volume(int(value * 100), component_id=self._component_id)
+        """音量调节（尾沿防抖合并，避免拖动期间每次事件一次 MPV 队列往返）。
+
+        Args:
+            value: 滑块音量（0.0–1.0）。
+        """
+        self._pending_volume_value = int(value * 100)
+        self._volume_apply_timer.start()
+
+    def _flush_pending_volume(self) -> None:
+        """提交最后一次待处理的音量值。
+
+        由尾沿防抖定时器或停止播放路径调用；无待处理值/管理器缺失时为空操作。
+        """
+        volume = self._pending_volume_value
+        if volume is None:
+            return
+        self._pending_volume_value = None
+        if not self._mpv_manager:
+            return
+        try:
+            self._mpv_manager.set_volume(volume, component_id=self._component_id)
+        except (RuntimeError, TypeError):
+            # 管理器已释放/销毁：丢弃该次音量提交，不阻塞 UI
+            pass
 
     def _on_mute_change(self, muted: bool) -> None:
         """静音切换"""

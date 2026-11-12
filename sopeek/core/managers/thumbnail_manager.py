@@ -26,7 +26,7 @@ import sys
 import threading
 import time
 from collections import OrderedDict, deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -838,6 +838,105 @@ class ThumbnailManager:
         """
         suffix = os.path.splitext(file_path)[1].lower()
         return suffix in self.IMAGE_FORMATS or suffix in self.VIDEO_FORMATS
+
+    def scan_thumbnail_names(self) -> set[str]:
+        """扫描缩略图缓存目录，返回现有缩略图文件名集合（小写）。
+
+        以单次 ``os.scandir`` 建立目录索引，供批量存在性判断复用，避免
+        逐文件 ``os.path.exists`` 的 O(N) 磁盘探测。目录不存在或读取失败
+        时返回已收集到的部分集合（等价于「未命中」），不抛异常。
+
+        Returns:
+            set[str]: 主格式（``THUMB_EXT_PRIMARY``）与兼容格式
+                （``THUMB_EXT_LEGACY``）缩略图文件名的小写集合。
+        """
+        names: set[str] = set()
+        try:
+            with os.scandir(self._thumb_dir) as entries:
+                for entry in entries:
+                    lowered_name = entry.name.lower()
+                    if lowered_name.endswith(
+                        (self.THUMB_EXT_PRIMARY, self.THUMB_EXT_LEGACY)
+                    ):
+                        names.add(lowered_name)
+        except OSError as exc:
+            debug(f"扫描缩略图目录失败 {self._thumb_dir}: {exc}")
+        return names
+
+    def _thumbnail_file_names(self, file_path: str) -> tuple[str, str]:
+        """计算文件对应的主格式 / 兼容格式缩略图文件名（每路径仅 1 次 md5）。
+
+        Args:
+            file_path: 原始文件路径。
+
+        Returns:
+            tuple[str, str]: (主格式文件名, 兼容格式文件名)。
+        """
+        file_hash = self._get_thumbnail_hash(file_path)
+        return (
+            f"{file_hash}{self.THUMB_EXT_PRIMARY}",
+            f"{file_hash}{self.THUMB_EXT_LEGACY}",
+        )
+
+    def has_thumbnail_in_names(
+        self, file_path: str, thumbnail_names: set[str]
+    ) -> bool:
+        """基于缩略图文件名索引判断单文件是否已有缩略图。
+
+        与 :meth:`has_thumbnail` 语义等价：主格式优先、兼容格式兜底；区别
+        在于使用预扫描索引而非逐文件磁盘探测与 perf 埋点，适合批量场景。
+
+        Args:
+            file_path: 原始文件路径。
+            thumbnail_names: :meth:`scan_thumbnail_names` 返回的文件名集合。
+
+        Returns:
+            bool: 索引中存在对应缩略图文件返回 True。
+        """
+        if not file_path:
+            return False
+        primary_name, legacy_name = self._thumbnail_file_names(file_path)
+        return primary_name in thumbnail_names or legacy_name in thumbnail_names
+
+    def filter_pending_media(self, file_paths: Iterable[str]) -> list[str]:
+        """批量过滤出尚需生成缩略图的媒体文件（保序去重）。
+
+        以单次 ``os.scandir`` 建立缩略图目录索引，每个路径仅计算 1 次
+        md5，替代逐文件 ``is_media_file + has_thumbnail`` 的重复哈希与
+        多次磁盘探测；批量路径不逐文件写 perf 埋点（整批统一记录一次）。
+
+        Args:
+            file_paths: 候选文件路径集合（可含重复项、空串与非媒体文件）。
+
+        Returns:
+            list[str]: 按输入顺序去重后、仍无缩略图的媒体文件路径列表。
+        """
+        with track_perf("thumbnail.filter_pending_media"):
+            thumbnail_names = self.scan_thumbnail_names()
+            seen: set[str] = set()
+            pending: list[str] = []
+            candidate_count = 0
+            for file_path in file_paths:
+                if not file_path or file_path in seen:
+                    continue
+                seen.add(file_path)
+                candidate_count += 1
+                if not self.is_media_file(file_path):
+                    continue
+                primary_name, legacy_name = self._thumbnail_file_names(file_path)
+                if primary_name in thumbnail_names or legacy_name in thumbnail_names:
+                    continue
+                pending.append(file_path)
+            set_perf_metadata(
+                "thumbnail.filter_pending_media", "candidates", candidate_count
+            )
+            set_perf_metadata(
+                "thumbnail.filter_pending_media", "indexed", len(thumbnail_names)
+            )
+            set_perf_metadata(
+                "thumbnail.filter_pending_media", "pending", len(pending)
+            )
+            return pending
 
     def is_image_file(self, file_path: str) -> bool:
         """

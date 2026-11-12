@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -370,7 +371,7 @@ class TestStartupController:
         assert received == [30]
 
     def test_schedule_thumbnail_cleanup_reads_config_period(
-        self, controller: Any, monkeypatch: Any
+        self, controller: Any, qapp: Any, monkeypatch: Any
     ) -> None:
         """调度读取 cache_cleanup_period 并在执行时按配置值调用。"""
         import sopeek.app.startup as startup_mod
@@ -413,7 +414,12 @@ class TestStartupController:
         )
         controller._schedule_thumbnail_cleanup()
         assert len(scheduled) == 1
-        scheduled[0][1]()  # 执行被调度的清理回调
+        scheduled[0][1]()  # 执行被调度的清理回调（投递到 io 池）
+        # 清理 I/O 已下移 io 线程池：泵事件等待后台任务完成（上限 2s）。
+        deadline = time.time() + 2.0
+        while not calls and time.time() < deadline:
+            qapp.processEvents()
+            time.sleep(0.01)
         assert calls == [30]
 
 
