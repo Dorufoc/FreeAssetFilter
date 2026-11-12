@@ -1791,7 +1791,7 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
     #: 必须错开：Mica 最先（决定纯色期长短），浮窗让到揭示动画之后，
     #: 设置预热最长放最后。
     POST_STARTUP_MICA_DELAY_MS = 0
-    POST_STARTUP_FLOATING_DELAY_MS = 1200
+    POST_STARTUP_FLOATING_DELAY_MS = 1800
     POST_STARTUP_PREWARM_DELAY_MS = 2600
 
     def _run_post_startup_chain(self) -> None:
@@ -1803,9 +1803,9 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
            用户看到的是主题 G1 纯色底，云母层烘焙完才会渐显；越早提交烘焙，
            纯色期越短。依赖链导入已在遮罩期完成（见
            ``_preload_mica_chain_during_overlay``），这里只付提交成本。
-        2. **全局浮窗**次之，延到 1200ms：它创建时会阻塞 60~70ms，若与
+        2. **全局浮窗**次之，延到 1800ms：它创建时会阻塞 60~70ms，若与
            Mica 层交付/揭示动画重叠，会把渐变打断成「闪一下变过去」。让到
-           揭示动画（600ms）结束之后再建。
+           揭示动画（烘焙交付后 900ms 渐入）结束之后再建。
         3. **设置窗口预热**最后：完整构造约 480ms，是三者中唯一可能被
            用户感知的一次停顿，因此排在最后、且再等 2.6 秒，让用户先拿到
            可操作的主界面。

@@ -114,7 +114,10 @@ FADE_DURATION_MS: int = 175
 #: 与 ``FADE_DURATION_MS`` 分开的原因：首次揭示是「整窗纯色 → 整窗模糊
 #: 壁纸」的大跨度变化，175ms 线性插值在人眼里接近硬切；这里给足时长让
 #: 渐变真正可见。启动路径见 ``MicaMaterial._start_fade_in(reset=True)``。
-INITIAL_REVEAL_MS: int = 600
+#: 900ms：整窗大跨度渐变在 600ms 下仍偏快（起段几乎静止、尾段收得急），
+#: 放慢到 900ms 后「纯色 → 壁纸」的过渡更平缓；浮窗创建因此延到 1800ms
+#: 避让（见 ``MainWindow.POST_STARTUP_FLOATING_DELAY_MS``）。
+INITIAL_REVEAL_MS: int = 900
 #: 新视口层交付后的交叉过渡时长（毫秒）：旧态快照打底、新层按进度淡入
 #: （主题 / 参数 / 壁纸切换的背景平滑过渡，见 ``MicaMaterial._start_xfade``）。
 #: 与内容层径向揭示（``ContentTransitionOverlay.DEFAULT_DURATION_MS``）

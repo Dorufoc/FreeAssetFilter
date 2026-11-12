@@ -2597,7 +2597,7 @@ class MicaMaterial(QObject):
         """失焦且 Mica 才就绪时：直接隐藏并停止绘制（同时停动画防回写）。
 
         置 ``_reveal_pending``：本层从未被用户看到过，窗口下一次激活时必须
-        走首次揭示（``INITIAL_REVEAL_MS`` + OutCubic），而不是 175ms 的
+        走首次揭示（``INITIAL_REVEAL_MS`` + InOutCubic），而不是 175ms 的
         普通回焦淡入——否则启动期窗口未激活时，长渐变会被静默降级掉。
         """
         self._paused = True

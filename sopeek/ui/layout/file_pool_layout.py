@@ -1315,14 +1315,15 @@ class FilePoolLayout(QWidget):
         """同步底栏重命名按钮的显隐、可用态、图标与提示文字。
 
         - 仅 grid（New 布局）显示；经典列表使用卡片悬浮重命名按钮；
-        - 空池禁用（无卡片可改名）；
+        - 空池隐藏（没有卡片可改名，留一个灰按钮只是噪声）；
         - 编辑态图标切换为 X，提示“退出重命名”。
         """
         button = getattr(self, "_rename_btn", None)
         if button is None:
             return
-        button.setVisible(self._view_mode == "grid")
-        button.setEnabled(bool(self._card_widgets))
+        has_cards = bool(self._card_widgets)
+        button.setVisible(self._view_mode == "grid" and has_cards)
+        button.setEnabled(has_cards)
         icon_name = "close.svg" if self._rename_edit_mode else "rename.svg"
         target_icon = str(self._icons_dir / icon_name)
         if getattr(self, "_rename_btn_icon_path", "") != target_icon:

@@ -579,7 +579,7 @@ class TestFilePoolLayout:
     def test_new_layout_rename_mode_toggle_and_card_click(
         self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """New 布局底栏重命名按钮：空池禁用、点击切换编辑态、卡片点击改名。"""
+        """New 布局底栏重命名按钮：空池隐藏、点击切换编辑态、卡片点击改名。"""
         import sopeek.ui.layout.file_pool_layout as fpl_mod
 
         monkeypatch.setattr(
@@ -595,7 +595,8 @@ class TestFilePoolLayout:
 
         layout.set_view_mode("grid")
         _pump_events(qapp)
-        assert layout._rename_btn.isHidden() is False
+        # New 布局空池：按钮隐藏（无卡片可改名），点击也不进入编辑态
+        assert layout._rename_btn.isHidden() is True
         assert layout._rename_btn.isEnabled() is False
         layout._rename_btn.click()
         assert layout.is_rename_mode() is False
@@ -604,6 +605,7 @@ class TestFilePoolLayout:
         layout.add_file({"path": file_path, "name": "rename_mode.png"})
         _pump_events(qapp)
         card = layout._card_widgets[file_path]
+        assert layout._rename_btn.isHidden() is False
         assert layout._rename_btn.isEnabled() is True
         assert card.is_rename_mode() is False
         assert str(layout._rename_btn._svg_icon_path).endswith("rename.svg")
@@ -669,7 +671,7 @@ class TestFilePoolLayout:
         assert layout._rename_btn.isHidden() is True
         assert all(not c.is_rename_mode() for c in layout._card_widgets.values())
 
-        # 清空池：退出编辑态，按钮随空池禁用
+        # 清空池：退出编辑态，按钮随空池隐藏
         layout.set_view_mode("grid")
         _pump_events(qapp)
         layout.set_rename_edit_mode(True)
@@ -678,6 +680,7 @@ class TestFilePoolLayout:
         _pump_events(qapp)
         assert layout.is_rename_mode() is False
         assert layout._rename_btn.isEnabled() is False
+        assert layout._rename_btn.isHidden() is True
 
         # 移除最后一张卡片：自动退出
         layout.add_file({"path": first, "name": os.path.basename(first)})
@@ -688,6 +691,7 @@ class TestFilePoolLayout:
         _pump_events(qapp)
         assert layout.is_rename_mode() is False
         assert layout._rename_btn.isEnabled() is False
+        assert layout._rename_btn.isHidden() is True
         layout.deleteLater()
 
     def test_apply_display_name_persists_backup_export_and_json(
