@@ -346,7 +346,9 @@ def _body() -> tuple[QWidget, QVBoxLayout]:
     return widget, layout
 
 
-def _dialog(title: str, body: QWidget, size: str = "default") -> StyledDialog:
+def _dialog(
+    title: str, body: QWidget, size: str = "default", parent: Optional[QWidget] = None
+) -> StyledDialog:
     """Build a non-animated dialog (deterministic close/untrack in tests)."""
     return StyledDialog(
         size=size,
@@ -354,6 +356,7 @@ def _dialog(title: str, body: QWidget, size: str = "default") -> StyledDialog:
         title=title,
         body_widget=body,
         animate=False,
+        parent=parent,
     )
 
 
@@ -616,7 +619,7 @@ def show_startup_update(parent: "QWidget", info: "UpdateInfo") -> StyledDialog:
     layout.addStretch(1)
 
     title = f"发现新版本 {remote}" if remote != "未知" else "发现新版本"
-    dialog = _dialog(title, body)
+    dialog = _dialog(title, body, parent=parent)
     dialog._body_label = body_label  # type: ignore[attr-defined]
 
     later = dialog.add_footer_button("稍后", variant="secondary")

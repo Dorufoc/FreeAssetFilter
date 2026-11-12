@@ -25,7 +25,14 @@ from sopeek.core.workers.thumbnail_controller import ThumbnailController
 from components.styled_button import StyledButton
 from components.styled_lineedit import StyledLineEdit
 from components.styled_context_menu import StyledContextMenu
-from components.styled_dialog import StyledDialog, FOOTER_RIGHT, FOOTER_CENTER, create_basic_dialog, _show_dialog
+from components.styled_dialog import (
+    StyledDialog,
+    FOOTER_RIGHT,
+    FOOTER_CENTER,
+    create_basic_dialog,
+    _show_dialog,
+    close_active_dialogs,
+)
 from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
 from components.styled_loading import StyledLoading
 from components.box_selection import BoxSelectionGesture
@@ -511,6 +518,9 @@ class FileSelectorLayout(QWidget):
         self._favorites_service = FavoritesService()
         self._filter_pattern: str = ""
         self._active_dialogs: List = []  # 保持弹窗引用，防止被 GC
+        # 弹窗种类 → 当前实例：同类弹窗已打开时只前置、不重复创建
+        # （模态负责挡住重复点击，这里兜底程序化/键盘入口与隐藏未销毁的实例）
+        self._dialog_kinds: Dict[str, Any] = {}
 
         # ── 缩略图生成 / 清除控制器（parent=self 防 GC）──
         # 生成进度文案（"done/total"），供生成中点击弹窗的提示语拼接
@@ -2639,7 +2649,12 @@ class FileSelectorLayout(QWidget):
         service.save(raw)
 
     def _show_favorites_dialog(self) -> None:
-        """显示收藏夹对话框（工具栏星标按钮）。"""
+        """显示收藏夹对话框（工具栏星标按钮）。
+
+        同类弹窗已打开时只前置已有实例（不重复弹出）。
+        """
+        if not self._claim_dialog("favorites"):
+            return
         favorites = self._get_favorites()
 
         body = QWidget()
@@ -2694,10 +2709,15 @@ class FileSelectorLayout(QWidget):
             body_layout.addWidget(list_widget)
 
         dialog = StyledDialog(
-            size="lg", title="收藏夹", body_widget=body, footer_type=FOOTER_RIGHT,
+            size="lg",
+            title="收藏夹",
+            body_widget=body,
+            footer_type=FOOTER_RIGHT,
+            parent=self._dialog_parent(),
+            modal=True,
         )
         dialog._favorites_list_widget = list_widget
-        self._track_dialog(dialog)
+        self._track_dialog(dialog, kind="favorites")
 
         close_btn = StyledButton("关闭", variant="primary")
         close_btn.clicked.connect(lambda: dialog.close_dialog(0))
@@ -2772,6 +2792,8 @@ class FileSelectorLayout(QWidget):
             message=f"确定要删除收藏 '{name}' 吗？",
             cancel_text="取消",
             confirm_text="删除",
+            parent=self._dialog_parent(),
+            modal=True,
         )
         self._track_dialog(dialog)
         dialog.finished.connect(
@@ -2796,7 +2818,13 @@ class FileSelectorLayout(QWidget):
 
     def _prompt_input(self, title: str, label_text: str, default_text: str,
                       on_confirm) -> None:
-        """通用输入弹窗：StyledDialog + StyledLineEdit，确认回调 on_confirm(text)。"""
+        """通用输入弹窗：StyledDialog + StyledLineEdit，确认回调 on_confirm(text)。
+
+        同类输入框已打开时只前置已有实例（不重复弹出）。
+        """
+        kind = f"prompt:{title}"
+        if not self._claim_dialog(kind):
+            return
         body = QWidget()
         register_widget_qss(body,("background: transparent;"))
         body_layout = QVBoxLayout(body)
@@ -2811,8 +2839,14 @@ class FileSelectorLayout(QWidget):
         edit.setText(default_text)
         body_layout.addWidget(edit)
 
-        dialog = StyledDialog(title=title, body_widget=body, footer_type=FOOTER_RIGHT)
-        self._track_dialog(dialog)
+        dialog = StyledDialog(
+            title=title,
+            body_widget=body,
+            footer_type=FOOTER_RIGHT,
+            parent=self._dialog_parent(),
+            modal=True,
+        )
+        self._track_dialog(dialog, kind=kind)
 
         cancel_btn = StyledButton("取消", variant="ghost")
         ok_btn = StyledButton("确定", variant="primary")
@@ -2844,7 +2878,13 @@ class FileSelectorLayout(QWidget):
         register_widget_qss(msg,(f"font-size: 14px; color: {tm.text.name()}; background: transparent;"))
         body_layout.addWidget(msg)
 
-        dialog = StyledDialog(title=title, body_widget=body, footer_type=FOOTER_CENTER)
+        dialog = StyledDialog(
+            title=title,
+            body_widget=body,
+            footer_type=FOOTER_CENTER,
+            parent=self._dialog_parent(),
+            modal=True,
+        )
         self._track_dialog(dialog)
         if on_closed is not None:
             # finished 信号带 result 参数，lambda 吞掉后调用无参回调
@@ -2855,13 +2895,83 @@ class FileSelectorLayout(QWidget):
         dialog._footer_layout.addWidget(ok_btn)
         _show_dialog(dialog)
 
-    def _track_dialog(self, dialog: StyledDialog) -> None:
-        """保持弹窗引用，finished 后自动释放，防止被 GC。"""
+    def _dialog_parent(self) -> Optional[QWidget]:
+        """返回新弹窗的宿主控件：栈顶存活弹窗（模态链）或本布局所在窗口。
+
+        弹窗套弹窗时以最内层弹窗为宿主，保证「确认框叠在设置框上」这类
+        场景中层级与模态作用域都正确（内层关闭后外层仍遮挡主界面）。
+
+        Returns:
+            Optional[QWidget]: 宿主控件；布局尚未挂到窗口时为 None。
+        """
+        for dialog in reversed(self._active_dialogs):
+            try:
+                if dialog.isVisible():
+                    return dialog
+            except RuntimeError:
+                continue
+        try:
+            return self.window()
+        except RuntimeError:
+            return None
+
+    def _claim_dialog(self, kind: str) -> bool:
+        """为某类弹窗占位：同类弹窗已打开时前置它并返回 False。
+
+        "已打开"包含退场动画进行中的实例？不包含——用户点关闭后应能立刻
+        重新打开，否则会有一段"点了没反应"的窗口期。
+
+        Args:
+            kind: 弹窗种类标识（如 ``"favorites"`` / ``"filter"``）。
+
+        Returns:
+            bool: True 表示调用方可以创建并显示新弹窗；False 表示已存在
+            存活实例（已前置），调用方应直接返回。
+        """
+        if not kind:
+            return True
+        existing = self._dialog_kinds.get(kind)
+        if existing is None:
+            return True
+        try:
+            # 关闭中 / 已隐藏 / 已销毁的实例不再占位
+            if getattr(existing, "_is_closing", False) or not existing.isVisible():
+                self._dialog_kinds.pop(kind, None)
+                return True
+            existing.raise_()
+            existing.activateWindow()
+            return False
+        except RuntimeError:
+            self._dialog_kinds.pop(kind, None)
+            return True
+
+    def _track_dialog(self, dialog: StyledDialog, kind: str = "") -> None:
+        """保持弹窗引用，finished 后自动释放，防止被 GC。
+
+        Args:
+            dialog: 待跟踪弹窗。
+            kind: 弹窗种类标识（可选）；用于同类去重，关闭时一并清理。
+        """
         self._active_dialogs.append(dialog)
-        dialog.finished.connect(
-            lambda *_: self._active_dialogs.remove(dialog)
-            if dialog in self._active_dialogs else None
-        )
+        if kind:
+            self._dialog_kinds[kind] = dialog
+
+        def _forget(*_args: Any) -> None:
+            # 身份比较：弹窗 C++ 对象可能已销毁，``in``/``==`` 会抛 RuntimeError
+            self._active_dialogs[:] = [
+                d for d in self._active_dialogs if d is not dialog
+            ]
+            if kind and self._dialog_kinds.get(kind) is dialog:
+                self._dialog_kinds.pop(kind, None)
+
+        # 监听 closing（关闭动作开始）而非 finished（退场动画结束）：
+        # 动画期间弹窗仍可见，但占位必须立刻释放，否则用户关掉弹窗后
+        # 立刻再点入口会「点了没反应」。
+        closing = getattr(dialog, "closing", None)
+        if closing is not None:
+            closing.connect(_forget)
+        dialog.finished.connect(_forget)
+        dialog.destroyed.connect(_forget)
 
     # ── 缩略图生成 / 清除 ──────────────────────────────────────────────────
 
@@ -2902,6 +3012,8 @@ class FileSelectorLayout(QWidget):
                 message=f"正在生成缩略图{progress_hint}，是否取消当前任务？",
                 cancel_text="继续生成",
                 confirm_text="取消任务",
+                parent=self._dialog_parent(),
+                modal=True,
             )
             self._track_dialog(dialog)
             dialog.finished.connect(
@@ -2948,6 +3060,8 @@ class FileSelectorLayout(QWidget):
             message="确定要清除全部缩略图缓存吗？此操作无法撤销。",
             cancel_text="取消",
             confirm_text="清除",
+            parent=self._dialog_parent(),
+            modal=True,
         )
         self._track_dialog(dialog)
         dialog.finished.connect(
@@ -3035,7 +3149,12 @@ class FileSelectorLayout(QWidget):
     # ── 筛选 ──────────────────────────────────────────────────────────────
 
     def _show_filter_dialog(self) -> None:
-        """显示筛选弹窗：输入文件名正则（不区分大小写），应用后重载目录。"""
+        """显示筛选弹窗：输入文件名正则（不区分大小写），应用后重载目录。
+
+        同类弹窗已打开时只前置已有实例（不重复弹出）。
+        """
+        if not self._claim_dialog("filter"):
+            return
         body = QWidget()
         register_widget_qss(body,("background: transparent;"))
         body_layout = QVBoxLayout(body)
@@ -3052,8 +3171,14 @@ class FileSelectorLayout(QWidget):
         edit.setText(self._filter_pattern)
         body_layout.addWidget(edit)
 
-        dialog = StyledDialog(title="筛选文件", body_widget=body, footer_type=FOOTER_RIGHT)
-        self._track_dialog(dialog)
+        dialog = StyledDialog(
+            title="筛选文件",
+            body_widget=body,
+            footer_type=FOOTER_RIGHT,
+            parent=self._dialog_parent(),
+            modal=True,
+        )
+        self._track_dialog(dialog, kind="filter")
 
         clear_btn = StyledButton("移除筛选", variant="ghost")
         cancel_btn = StyledButton("取消", variant="ghost")

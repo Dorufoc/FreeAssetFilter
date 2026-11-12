@@ -912,6 +912,15 @@ def main(argv=None) -> int:
         except Exception as e:
             debug(f"[退出] 兜底关闭全局浮窗失败: {e}")
 
+        # 1.65) 兜底关闭浮动弹窗（筛选/收藏夹/提示/更新等）：独立顶层窗口若
+        # 残留会让 quitOnLastWindowClosed 不触发，进程无法退出。
+        try:
+            from sopeek.ui.components.styled_dialog import close_active_dialogs
+
+            close_active_dialogs()
+        except Exception as e:
+            debug(f"[退出] 兜底关闭浮动弹窗失败: {e}")
+
         # 1.7) 排空命名线程池（P6.0/P6.2）：先让后台任务有界退场，
         # 再卸载卡顿哨兵；随后才进入 fd 捕获清理。
         try:

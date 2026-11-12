@@ -43,7 +43,10 @@ from sopeek.ui.components.styled_dialog import (  # noqa: E402
     FOOTER_RIGHT,
     SIZE_CONFIG,
     StyledDialog,
+    active_dialogs,
+    close_active_dialogs,
 )
+from sopeek.ui.components.modal_guard import get_modal_guard  # noqa: E402
 from sopeek.ui.layout import update_dialogs  # noqa: E402
 
 pytestmark = pytest.mark.unit
@@ -419,3 +422,249 @@ class TestMotionAnimation:
         assert dialog._is_closing is False
         assert dialog._animating is False
         assert dialog._anim_content_pixmap is None
+
+
+# =============================================================================
+# 宿主窗口归属与模态
+# =============================================================================
+class TestOwnershipAndModality:
+    """parent/modal 参数：owned 顶层窗口 + 自定义模态登记。"""
+
+    def test_parent_makes_owned_top_level_window(
+        self, qapp: QApplication, make_dialog: Callable[..., StyledDialog]
+    ) -> None:
+        """传入 parent → isWindow 为真且瞬态父窗口指向宿主窗口。"""
+        owner = QWidget()
+        owner.resize(400, 300)
+        owner.show()
+        qapp.processEvents()
+        try:
+            dialog = make_dialog(parent=owner)
+            dialog.show_dialog()
+            qapp.processEvents()
+
+            assert dialog.isWindow() is True, "owned 弹窗必须是顶层窗口（非子控件）"
+            assert dialog.parentWidget() is owner
+            handle = dialog.windowHandle()
+            assert handle is not None
+            assert handle.transientParent() is owner.windowHandle()
+        finally:
+            close_active_dialogs()
+            drain_deferred_deletes(qapp)
+            safe_teardown(owner)
+
+    def test_no_parent_stays_standalone(
+        self, qapp: QApplication, make_dialog: Callable[..., StyledDialog]
+    ) -> None:
+        """不传 parent 时保持历史行为（无宿主的顶层窗口）。"""
+        dialog = make_dialog()
+        dialog.show_dialog()
+        qapp.processEvents()
+        try:
+            assert dialog.isWindow() is True
+            assert dialog.parentWidget() is None
+        finally:
+            close_active_dialogs()
+            drain_deferred_deletes(qapp)
+
+    def test_modal_true_registers_guard(
+        self, qapp: QApplication, make_dialog: Callable[..., StyledDialog]
+    ) -> None:
+        """modal=True → 守卫登记该弹窗并遮挡宿主窗口。"""
+        owner = QWidget()
+        owner.resize(400, 300)
+        owner.show()
+        qapp.processEvents()
+        try:
+            dialog = make_dialog(parent=owner, modal=True)
+            dialog.show_dialog()
+            qapp.processEvents()
+
+            guard = get_modal_guard()
+            assert guard.active_dialog is dialog
+            assert guard.is_blocked(owner) is True
+        finally:
+            close_active_dialogs()
+            drain_deferred_deletes(qapp)
+            safe_teardown(owner)
+
+    def test_modal_false_does_not_block(
+        self, qapp: QApplication, make_dialog: Callable[..., StyledDialog]
+    ) -> None:
+        """modal=False（默认）→ 不登记守卫，宿主窗口不受影响。"""
+        owner = QWidget()
+        owner.resize(400, 300)
+        owner.show()
+        qapp.processEvents()
+        try:
+            dialog = make_dialog(parent=owner)
+            dialog.show_dialog()
+            qapp.processEvents()
+
+            assert get_modal_guard().is_blocked(owner) is False
+        finally:
+            close_active_dialogs()
+            drain_deferred_deletes(qapp)
+            safe_teardown(owner)
+
+    def test_closing_modal_dialog_unblocks(
+        self, qapp: QApplication, make_dialog: Callable[..., StyledDialog]
+    ) -> None:
+        """关闭模态弹窗后宿主窗口恢复可交互。"""
+        owner = QWidget()
+        owner.resize(400, 300)
+        owner.show()
+        qapp.processEvents()
+        try:
+            dialog = make_dialog(parent=owner, modal=True)
+            dialog.show_dialog()
+            qapp.processEvents()
+            assert get_modal_guard().is_blocked(owner) is True
+
+            dialog.close_dialog(0)
+            qapp.processEvents()
+
+            assert get_modal_guard().is_blocked(owner) is False
+        finally:
+            close_active_dialogs()
+            drain_deferred_deletes(qapp)
+            safe_teardown(owner)
+
+    def test_closing_during_exit_animation_unblocks_immediately(
+        self, qapp: QApplication, make_dialog: Callable[..., StyledDialog]
+    ) -> None:
+        """退场动画期间（窗口仍可见）模态与占位已解除，可立刻重开。
+
+        回归：用户关掉弹窗后立刻再点入口，不能因为 180ms 的退场动画而
+        「点了没反应」。
+        """
+        owner = QWidget()
+        owner.resize(400, 300)
+        owner.show()
+        qapp.processEvents()
+        try:
+            dialog = make_dialog(parent=owner, modal=True, animate=True)
+            dialog.show_dialog()
+            qapp.processEvents()
+            QTest.qWait(StyledDialog.ANIM_DURATION + 60)
+            qapp.processEvents()
+
+            dialog.close_dialog(0)
+            qapp.processEvents()
+
+            # 动画进行中：窗口仍可见，但遮挡已解除、存活表已反登记
+            assert dialog._is_closing is True
+            assert dialog.isVisible() is True
+            assert get_modal_guard().is_blocked(owner) is False
+            assert dialog not in active_dialogs()
+
+            QTest.qWait(StyledDialog.ANIM_DURATION + 60)
+            qapp.processEvents()
+            assert dialog.isVisible() is False
+        finally:
+            close_active_dialogs()
+            drain_deferred_deletes(qapp)
+            safe_teardown(owner)
+
+
+# =============================================================================
+# 存活弹窗登记与统一回收
+# =============================================================================
+class TestActiveDialogRegistry:
+    """``_show_dialog`` 登记 / 反登记与 ``close_active_dialogs``。"""
+
+    def test_show_registers_dialog(
+        self, qapp: QApplication, make_dialog: Callable[..., StyledDialog]
+    ) -> None:
+        """显示后进入存活表，关闭后自动移除。"""
+        dialog = make_dialog()
+        dialog.show_dialog()
+        qapp.processEvents()
+        try:
+            assert dialog in active_dialogs()
+
+            dialog.close_dialog(0)
+            qapp.processEvents()
+
+            assert dialog not in active_dialogs()
+        finally:
+            close_active_dialogs()
+            drain_deferred_deletes(qapp)
+
+    def test_destroyed_dialog_removed(
+        self, qapp: QApplication, make_dialog: Callable[..., StyledDialog]
+    ) -> None:
+        """销毁后自动从存活表移除（不留悬挂引用）。"""
+        dialog = make_dialog()
+        dialog.show_dialog()
+        qapp.processEvents()
+        assert dialog in active_dialogs()
+
+        dialog.deleteLater()
+        drain_deferred_deletes(qapp)
+
+        assert dialog not in active_dialogs()
+
+    def test_close_active_dialogs_closes_everything(
+        self, qapp: QApplication, make_dialog: Callable[..., StyledDialog]
+    ) -> None:
+        """统一回收关闭全部存活弹窗，且二次调用幂等。"""
+        first = make_dialog()
+        second = make_dialog()
+        first.show_dialog()
+        second.show_dialog()
+        qapp.processEvents()
+        assert len(active_dialogs()) >= 2
+
+        closed = close_active_dialogs()
+        qapp.processEvents()
+
+        assert closed >= 2
+        assert active_dialogs() == []
+        assert first.isVisible() is False
+        assert second.isVisible() is False
+        # 幂等：再次调用不抛异常
+        assert close_active_dialogs() == 0
+
+    def test_close_active_dialogs_filters_by_owner(
+        self, qapp: QApplication, make_dialog: Callable[..., StyledDialog]
+    ) -> None:
+        """传 owner_window 时只关闭该窗口拥有的弹窗。"""
+        owner = QWidget()
+        owner.resize(400, 300)
+        owner.show()
+        other = QWidget()
+        other.resize(400, 300)
+        other.show()
+        qapp.processEvents()
+        try:
+            owned = make_dialog(parent=owner)
+            standalone = make_dialog()
+            owned.show_dialog()
+            standalone.show_dialog()
+            qapp.processEvents()
+
+            close_active_dialogs(owner)
+            qapp.processEvents()
+
+            assert owned.isVisible() is False
+            assert standalone.isVisible() is True
+        finally:
+            close_active_dialogs()
+            drain_deferred_deletes(qapp)
+            safe_teardown(owner)
+            safe_teardown(other)
+
+    def test_close_skips_exit_animation(
+        self, qapp: QApplication, make_dialog: Callable[..., StyledDialog]
+    ) -> None:
+        """统一回收跳过退场动画（退出路径不能被动画拖住）。"""
+        dialog = make_dialog(animate=True)
+        dialog.show_dialog()
+        qapp.processEvents()
+
+        close_active_dialogs()
+        qapp.processEvents()
+
+        assert dialog._animate is False
+        assert dialog.isVisible() is False

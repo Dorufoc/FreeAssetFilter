@@ -86,10 +86,12 @@ from components.custom_background import BACKGROUND_DIR_NAME, CustomImageBackgro
 # 默认配置常量从纯数据模块 mica.config 取，避免连带 numpy（material 仍再导出）。
 from sopeek.ui.mica.config import DEFAULT_MICA_CONFIG
 from components.styled_button import StyledButton
+from components.modal_guard import MODAL_PASSTHROUGH_PROPERTY, get_modal_guard
 from components.styled_fluid_background import prewarm_top_level_rhi
 # 启动加载覆盖层：铺满整个客户区、垫在标题栏之下只显示一个旋转圆环
 # （见 MainWindow._setup_startup_overlay / _mount_startup_overlay）
 from components.styled_loading import StyledLoading
+from components.styled_dialog import close_active_dialogs
 # 内容层主题过渡遮罩（旧外观快照自绘淡出，轻量自绘替代整窗遮罩的两处卡顿源）
 # 与背景层交叉过渡遮罩（设置页切换窗口背景：旧背景帧淡出、新层实时在底）
 from components.theme_transition_overlay import (
@@ -2145,6 +2147,9 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         )
         self._close_btn.setFixedSize(32, 32)
         register_widget_qss(self._close_btn,(self._title_bar_close_style()))
+        # 弹窗模态期间仍放行 ✕：否则用户会被弹窗锁住、无法关闭主界面
+        # （见 components.modal_guard.MODAL_PASSTHROUGH_PROPERTY）。
+        self._close_btn.setProperty(MODAL_PASSTHROUGH_PROPERTY, True)
         self._close_btn.clicked.connect(self.close)
         header_layout.addWidget(self._close_btn)
 
@@ -3653,6 +3658,10 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             event.accept()
             return
         self._close_in_progress = True
+        # 先回收所有浮动弹窗（筛选/收藏夹/提示/更新等）：它们是独立顶层
+        # 窗口，若残留会让 quitOnLastWindowClosed 不触发，表现为「主界面关
+        # 了、弹窗还浮在桌面上」。
+        self._close_floating_dialogs()
         # 卸载应用级方向键导航过滤器（幂等），避免全局过滤器在窗口销毁后残留
         self._uninstall_nav_key_filter()
         # 连带关闭设置窗口：设置窗口是主窗口的 owned 子窗口，原生层会随宿主
@@ -3735,6 +3744,23 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         # 局部重绘仍要取到有效视口层，否则会在窗口真正关闭前先闪一帧 G1。
         self._dispose_mica()
         super().closeEvent(event)
+
+    @staticmethod
+    def _close_floating_dialogs() -> None:
+        """关闭所有存活的浮动弹窗（退出/关闭路径专用，幂等且不抛异常）。
+
+        这些弹窗是独立顶层窗口（``Qt.FramelessWindowHint`` / ``Qt.Dialog``），
+        不会随主窗口销毁而消失；残留会让 ``quitOnLastWindowClosed`` 判定
+        「还有窗口可见」，进程因此不退出。
+        """
+        try:
+            close_active_dialogs()
+        except Exception as exc:  # noqa: BLE001 - 关闭路径绝不被弹窗拖累
+            debug(f"关闭浮动弹窗失败（可能有窗口残留）：{exc}")
+        try:
+            get_modal_guard().clear()
+        except Exception:  # noqa: BLE001 - 无 QApplication 的极端场景
+            pass
 
     def changeEvent(self, event: QEvent) -> None:
         """窗口状态变化：失活时重置文件选择器的方向键导航状态。
@@ -5193,6 +5219,8 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._close_btn.setFixedSize(32, 32)
         self._close_btn.setText("✕")
         register_widget_qss(self._close_btn,(self._close_button_style()))
+        # 弹窗模态期间仍放行 ✕（与主窗口标题栏一致，见 modal_guard）
+        self._close_btn.setProperty(MODAL_PASSTHROUGH_PROPERTY, True)
         self._close_btn.clicked.connect(self.close)
         header_layout.addWidget(self._close_btn)
 
@@ -5339,6 +5367,15 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
         主窗口退出、offscreen/测试、动画关闭时仍走同步关闭，不拖慢退出。
         """
+        # 设置窗口拥有的弹窗（危险确认等）随宿主一起关闭，避免残留顶层窗口。
+        try:
+            close_active_dialogs(self)
+        except Exception as exc:  # noqa: BLE001 - 关闭路径绝不被弹窗拖累
+            debug(f"关闭设置窗口弹窗失败：{exc}")
+        try:
+            get_modal_guard().pop_owner(self)
+        except Exception:  # noqa: BLE001 - 无 QApplication 的极端场景
+            pass
         if self._skip_close_animation:
             # 淡出收尾后的真实关闭：只接受事件，不再重复清理。
             self._cancel_open_animation()

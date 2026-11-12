@@ -1208,6 +1208,8 @@ class AppearanceSettingsPage(QWidget):
                 title="导入失败",
                 message="背景图片导入失败，请确认所选文件为受支持的有效图片"
                         "（PNG / JPG / JPEG / BMP / WEBP / GIF）。",
+                parent=self.window(),
+                modal=True,
             )
             if force:
                 self._revert_bg_segment()
@@ -4253,6 +4255,8 @@ class SettingsLayout(QWidget):
                 ),
                 cancel_text="",
                 confirm_text="知道了",
+                parent=self.window(),
+                modal=True,
             )
         except Exception as exc:  # noqa: BLE001 - 提示失败不影响提交回滚结果
             debug(f"保存失败提示弹窗显示失败：{exc}")

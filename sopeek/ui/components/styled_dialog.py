@@ -22,6 +22,7 @@ from theme import tm
 
 from components.styled_button import StyledButton
 from components.paint_utils import render_soft_shadow, shadow_padding
+from components.modal_guard import get_modal_guard
 from sopeek.ui.theme.app_stylesheet import register_widget_qss
 
 
@@ -111,6 +112,10 @@ class StyledDialog(QWidget):
     ANIM_START_OFFSET_Y = 12
 
     finished = Signal(int)
+    #: 关闭动作**开始**时发射（退场动画之前）。``finished`` 要等动画播完，
+    #: 期间窗口仍可见；需要「点了关闭就算关掉」的语义（弹窗占位释放、
+    #: 模态解除、存活表反登记）必须挂这个信号。
+    closing = Signal(int)
 
     @staticmethod
     def _get_type_colors() -> dict[str, dict[str, str]]:
@@ -149,15 +154,23 @@ class StyledDialog(QWidget):
         show_close: bool = True,
         animate: bool = True,
         parent=None,
+        modal: bool = False,
     ):
-        # No parent -> top-level window
-        super().__init__(None)
+        # 有 parent 时作为其 owned 顶层窗口（Qt.Dialog）：弹窗不进任务栏、
+        # 始终浮在宿主之上、随宿主最小化/销毁；无 parent 时保持历史行为
+        # （纯顶层窗口）。注意只加 FramelessWindowHint 而不加 Qt.Dialog 会让
+        # 窗口退化成宿主内的**子控件**，故两者必须同时给。
+        super().__init__(parent)
+        if parent is not None:
+            self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         self._size = size if size in SIZE_CONFIG else "default"
         self._dialog_type = dialog_type if dialog_type in self._get_type_colors() else "default"
         self._footer_type = footer_type
         self._result = 0
         self._animate = animate
+        self._modal = bool(modal)
         self._is_closing = False
+        self._closing_emitted = False
         self._shown_once = False
         # Public footer API state: initialized before any footer/show path so
         # ``add_footer_button`` never raises ``AttributeError`` on a dialog
@@ -168,8 +181,9 @@ class StyledDialog(QWidget):
         # Drag support
         self._drag_pos: QPoint = None
 
-        # Frameless top-level window
-        self.setWindowFlags(Qt.FramelessWindowHint)
+        # Frameless top-level window（有 parent 时保留上面设置的 Qt.Dialog）
+        if parent is None:
+            self.setWindowFlags(Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
 
         # Register the OS-level window title with the dialog's own title so
@@ -444,7 +458,15 @@ class StyledDialog(QWidget):
     def close_dialog(self, result: int = 0):
         """Close the dialog with a result code."""
         self._result = result
+        self._emit_closing(result)
         self.close()
+
+    def _emit_closing(self, result: int) -> None:
+        """发射 ``closing`` 一次（幂等；非动画路径由 closeEvent 补发）。"""
+        if self._closing_emitted:
+            return
+        self._closing_emitted = True
+        self.closing.emit(result)
 
     def add_footer_button(self, text: str, variant: str = "primary") -> StyledButton:
         """Append a styled button to the dialog footer.
@@ -625,6 +647,9 @@ class StyledDialog(QWidget):
                 self._enter_start_timer.start()
 
     def closeEvent(self, event) -> None:
+        # 关闭动作开始即通知观察方（占位释放/模态解除/存活表反登记）：
+        # 退场动画期间窗口仍可见，等到 finished 就太晚了。
+        self._emit_closing(self._result)
         if (
             self._animate
             and not self._is_closing
@@ -872,27 +897,157 @@ def _measure_and_apply(dialog: StyledDialog) -> tuple[int, int]:
     return content_width, content_height
 
 
+#: 当前存活的弹窗（``_show_dialog`` 登记，``finished``/``destroyed`` 反登记）。
+#: 用于主窗口关闭时统一回收，避免「主界面没了、弹窗还浮在桌面上」。
+_live_dialogs: List[StyledDialog] = []
+
+
+def _forget_dialog(dialog: StyledDialog) -> None:
+    """从存活弹窗表中移除 ``dialog``（身份比较，幂等，可安全重入）。"""
+    global _live_dialogs
+    if not _live_dialogs:
+        return
+    _live_dialogs = [d for d in _live_dialogs if d is not dialog]
+
+
+def _register_dialog(dialog: StyledDialog) -> None:
+    """登记弹窗到存活表，并在关闭/销毁时自动反登记。
+
+    监听 ``closing``（关闭动作开始）而非 ``finished``（退场动画结束）：
+    动画期间窗口仍可见，但语义上已经关闭——统一回收与占位释放都必须
+    立刻生效。
+    """
+    _forget_dialog(dialog)
+    _live_dialogs.append(dialog)
+    closing = getattr(dialog, "closing", None)
+    if closing is not None:
+        try:
+            closing.connect(lambda *_: _forget_dialog(dialog))
+        except (RuntimeError, TypeError):
+            pass
+    try:
+        dialog.finished.connect(lambda *_: _forget_dialog(dialog))
+    except (RuntimeError, TypeError):
+        pass
+    try:
+        dialog.destroyed.connect(lambda *_: _forget_dialog(dialog))
+    except (RuntimeError, TypeError):
+        pass
+
+
+def active_dialogs() -> List[StyledDialog]:
+    """返回当前存活的弹窗快照（已剔除销毁/已关闭/关闭中的实例）。
+
+    Returns:
+        List[StyledDialog]: 存活弹窗列表（调用方持有的独立副本）。
+    """
+    alive: List[StyledDialog] = []
+    for dialog in _live_dialogs:
+        try:
+            if getattr(dialog, "_is_closing", False):
+                continue
+            if dialog.isVisible():
+                alive.append(dialog)
+        except RuntimeError:
+            continue
+    return alive
+
+
+def close_active_dialogs(owner_window: Optional[QWidget] = None) -> int:
+    """关闭当前存活的弹窗（主窗口/设置窗口关闭、程序退出时统一回收）。
+
+    刻意跳过退场动画（``_animate=False``）：退出路径不能被 180ms 的视觉
+    过渡拖住，也避免动画定时器在窗口销毁后回调。
+
+    Args:
+        owner_window: 只关闭该窗口拥有的弹窗；``None`` 关闭全部。
+
+    Returns:
+        int: 实际尝试关闭的弹窗数量。
+    """
+    targets: List[StyledDialog] = []
+    for dialog in list(_live_dialogs):
+        try:
+            if not dialog.isVisible() and not getattr(dialog, "_is_closing", False):
+                continue
+        except RuntimeError:
+            continue
+        targets.append(dialog)
+    if owner_window is not None:
+        filtered: List[StyledDialog] = []
+        for dialog in targets:
+            try:
+                if dialog.parentWidget() is owner_window:
+                    filtered.append(dialog)
+            except RuntimeError:
+                continue
+        targets = filtered
+    closed = 0
+    for dialog in targets:
+        try:
+            dialog._animate = False
+            dialog.close_dialog(0)
+            closed += 1
+        except (RuntimeError, AttributeError):
+            continue
+        finally:
+            _forget_dialog(dialog)
+    return closed
+
+
 def _show_dialog(dialog: StyledDialog):
     """Position dialog at screen center (where mouse is) and show it."""
     content_width, content_height = _measure_and_apply(dialog)
-    
-    # Move to screen center (cursor's screen so multi-monitor setups are honored)
-    cursor_pos = QCursor.pos()
-    screen = QApplication.screenAt(cursor_pos)
-    if not screen:
-        screen = QApplication.primaryScreen()
-    screen_geom = screen.availableGeometry()
-    # Center the visible content area (excluding the shadow margin) on the
-    # screen. Computing the offset from the content's own center prevents the
-    # visual drift caused by the shadow margin being double-counted.
-    cx = screen_geom.x() + (screen_geom.width() - content_width) // 2 - dialog.SHADOW_MARGIN
-    cy = screen_geom.y() + (screen_geom.height() - content_height) // 2 - dialog.SHADOW_MARGIN
-    dialog.move(max(screen_geom.x(), cx), max(screen_geom.y(), cy))
-    
+
+    # Owned dialogs center over their owner so a modal prompt always covers
+    # the window it blocks; standalone dialogs keep centering on the cursor's
+    # screen (multi-monitor aware).
+    owner = dialog.parentWidget()
+    anchor = None
+    if owner is not None:
+        try:
+            if owner.isVisible():
+                anchor = owner.window()
+        except RuntimeError:
+            anchor = None
+
+    if anchor is not None:
+        anchor_geom = anchor.frameGeometry()
+        cx = anchor_geom.x() + (anchor_geom.width() - content_width) // 2 - dialog.SHADOW_MARGIN
+        cy = anchor_geom.y() + (anchor_geom.height() - content_height) // 2 - dialog.SHADOW_MARGIN
+        screen_geom = QApplication.screenAt(anchor_geom.center())
+        if screen_geom is not None:
+            screen_geom = screen_geom.availableGeometry()
+    else:
+        # Move to screen center (cursor's screen so multi-monitor setups are honored)
+        cursor_pos = QCursor.pos()
+        screen = QApplication.screenAt(cursor_pos)
+        if not screen:
+            screen = QApplication.primaryScreen()
+        screen_geom = screen.availableGeometry()
+        # Center the visible content area (excluding the shadow margin) on the
+        # screen. Computing the offset from the content's own center prevents the
+        # visual drift caused by the shadow margin being double-counted.
+        cx = screen_geom.x() + (screen_geom.width() - content_width) // 2 - dialog.SHADOW_MARGIN
+        cy = screen_geom.y() + (screen_geom.height() - content_height) // 2 - dialog.SHADOW_MARGIN
+
+    if screen_geom is not None:
+        cx = max(screen_geom.x(), cx)
+        cy = max(screen_geom.y(), cy)
+    dialog.move(cx, cy)
+
     # Show at correct size and position
     dialog.show()
     dialog.raise_()
     dialog.activateWindow()
+
+    _register_dialog(dialog)
+    if getattr(dialog, "_modal", False):
+        try:
+            get_modal_guard().push(dialog, owner.window() if owner is not None else None)
+        except (RuntimeError, AttributeError):
+            pass
+
 
 
 def create_basic_dialog(
@@ -901,10 +1056,25 @@ def create_basic_dialog(
     cancel_text: str = "取消",
     confirm_text: str = "确认",
     animate: bool = True,
+    parent: Optional[QWidget] = None,
+    modal: bool = False,
 ) -> StyledDialog:
-    """Basic confirmation dialog."""
+    """Basic confirmation dialog.
+
+    Args:
+        title: 弹窗标题。
+        message: 主体文本。
+        cancel_text: 取消按钮文案（空串表示不显示）。
+        confirm_text: 确认按钮文案。
+        animate: 是否启用入场/出场动画。
+        parent: 宿主控件；传入后弹窗为宿主拥有的顶层窗口（``Qt.Dialog``），
+            关闭宿主时随之销毁。
+        modal: True 时以自定义模态遮挡宿主窗口（见 ``components.modal_guard``）。
+    """
     body = _make_body_label(message)
-    dialog = StyledDialog(animate=animate, title=title, body_widget=body)
+    dialog = StyledDialog(
+        animate=animate, title=title, body_widget=body, parent=parent, modal=modal
+    )
     if cancel_text:
         cancel_btn = StyledButton(cancel_text, variant="ghost")
         cancel_btn.clicked.connect(lambda: dialog.close_dialog(0))
@@ -936,6 +1106,8 @@ def create_custom_dialog(
     dialog_type: str = "default",
     show_close: bool = False,
     animate: bool = True,
+    parent: Optional[QWidget] = None,
+    modal: bool = False,
 ) -> StyledDialog:
     """兼容 CustomMessageBox 接口的多按钮弹窗。
 
@@ -948,6 +1120,8 @@ def create_custom_dialog(
         dialog_type: 弹窗类型（default/success/danger/info），影响图标。
         show_close: 是否显示右上角关闭按钮。
         animate: 是否启用入场/出场动画。
+        parent: 宿主控件（owned 顶层窗口，随宿主销毁）。
+        modal: True 时以自定义模态遮挡宿主窗口。
     """
     body = _make_body_label(message)
     footer_type = FOOTER_STACKED if vertical else FOOTER_RIGHT
@@ -958,6 +1132,8 @@ def create_custom_dialog(
         body_widget=body,
         footer_type=footer_type,
         show_close=show_close,
+        parent=parent,
+        modal=modal,
     )
     for idx, text in enumerate(buttons):
         variant_name = variants[idx] if variants and idx < len(variants) else "primary"
@@ -980,6 +1156,8 @@ def ask_custom_dialog(
     dialog_type: str = "default",
     show_close: bool = False,
     animate: bool = True,
+    parent: Optional[QWidget] = None,
+    modal: bool = False,
 ) -> int:
     """同步阻塞的多按钮弹窗：返回被点击按钮的索引（0-based）。
 
@@ -996,6 +1174,8 @@ def ask_custom_dialog(
         dialog_type: 弹窗类型（default/success/danger/info），影响图标。
         show_close: 是否显示右上角关闭按钮。
         animate: 是否启用入场/出场动画。
+        parent: 宿主控件（owned 顶层窗口，随宿主销毁）。
+        modal: True 时以自定义模态遮挡宿主窗口。
 
     Returns:
         int: 被点击按钮的索引；关闭路径兜底返回 0。
@@ -1009,6 +1189,8 @@ def ask_custom_dialog(
         dialog_type=dialog_type,
         show_close=show_close,
         animate=animate,
+        parent=parent,
+        modal=modal,
     )
     result: List[int] = [0]
     loop = QEventLoop()
@@ -1030,10 +1212,29 @@ def create_danger_dialog(
     cancel_text: str = "取消",
     confirm_text: str = "确认删除",
     animate: bool = True,
+    parent: Optional[QWidget] = None,
+    modal: bool = False,
 ) -> StyledDialog:
-    """Danger dialog with warning icon and red confirm button."""
+    """Danger dialog with warning icon and red confirm button.
+
+    Args:
+        title: 弹窗标题。
+        message: 主体文本。
+        cancel_text: 取消按钮文案（空串表示不显示）。
+        confirm_text: 确认按钮文案。
+        animate: 是否启用入场/出场动画。
+        parent: 宿主控件（owned 顶层窗口，随宿主销毁）。
+        modal: True 时以自定义模态遮挡宿主窗口。
+    """
     body = _make_body_label(message)
-    dialog = StyledDialog(animate=animate, dialog_type="danger", title=title, body_widget=body)
+    dialog = StyledDialog(
+        animate=animate,
+        dialog_type="danger",
+        title=title,
+        body_widget=body,
+        parent=parent,
+        modal=modal,
+    )
     if cancel_text:
         cancel_btn = StyledButton(cancel_text, variant="ghost")
         cancel_btn.clicked.connect(lambda: dialog.close_dialog(0))
@@ -1054,8 +1255,22 @@ def create_input_dialog(
     confirm_text: str = "确认",
     show_close: bool = False,
     animate: bool = True,
+    parent: Optional[QWidget] = None,
+    modal: bool = False,
 ) -> StyledDialog:
-    """Input dialog with a text field."""
+    """Input dialog with a text field.
+
+    Args:
+        title: 弹窗标题。
+        message: 输入框上方的说明文本。
+        placeholder: 输入框占位文案。
+        cancel_text: 取消按钮文案（空串表示不显示）。
+        confirm_text: 确认按钮文案。
+        show_close: 是否显示右上角关闭按钮。
+        animate: 是否启用入场/出场动画。
+        parent: 宿主控件（owned 顶层窗口，随宿主销毁）。
+        modal: True 时以自定义模态遮挡宿主窗口。
+    """
     body = QWidget()
     register_widget_qss(body,("background: transparent;"))
     body_layout = QVBoxLayout(body)
@@ -1081,7 +1296,12 @@ def create_input_dialog(
     body_layout.addWidget(input_field)
 
     dialog = StyledDialog(
-        animate=animate, title=title, body_widget=body, show_close=show_close,
+        animate=animate,
+        title=title,
+        body_widget=body,
+        show_close=show_close,
+        parent=parent,
+        modal=modal,
     )
     dialog._input_field = input_field
 
