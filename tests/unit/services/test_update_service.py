@@ -494,6 +494,10 @@ class TestVersionInfo:
         assert version == "1.0.0-alpha.5"
         assert date == "2026-05-22"
         assert version_info.RELEASES_URL == "https://github.com/Dorufoc/Sopeek/releases"
+        assert version_info.REPO_CANDIDATES == (
+            "Dorufoc/Sopeek",
+            "Dorufoc/FreeAssetFilter",
+        )
         assert RELEASES_URL == version_info.RELEASES_URL
 
     def test_missing_or_blank_file_has_safe_fallback(
@@ -659,6 +663,67 @@ class TestCheck:
         assert bridge.check_calls[0]["repo"] == "Dorufoc/Sopeek"
         assert bridge.check_calls[0]["current_version"] == "1.0.0-alpha.5"
         assert bridge.check_calls[0]["include_prerelease"] is True
+
+    def test_check_falls_back_to_official_repo_on_404(
+        self,
+        service_factory: Callable[..., Any],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """同名仓库 404 时回退到官方仓库并正常返回结果。"""
+        service, bridge = service_factory()
+        responses: list[dict[str, Any]] = [
+            {
+                "ok": False,
+                "error": {
+                    "code": "http_status",
+                    "message": "GitHub API 返回 HTTP 404",
+                    "retryable": True,
+                },
+            },
+            _available_check_response(),
+        ]
+
+        def fake_check(
+            params: dict[str, Any], request_id: str | None = None
+        ) -> dict[str, Any]:
+            bridge.check_calls.append(dict(params))
+            return responses[min(len(bridge.check_calls), len(responses)) - 1]
+
+        monkeypatch.setattr(bridge, "check", fake_check)
+        recorder = Recorder(service)
+        service.check(True)
+        assert _pump_until(lambda: len(recorder.check_finished) == 1)
+        _, manual, info, error = recorder.check_finished[0]
+        assert (manual, error) == (True, None)
+        assert isinstance(info, UpdateInfo)
+        assert info.update_available is True
+        assert [call["repo"] for call in bridge.check_calls] == [
+            "Dorufoc/Sopeek",
+            "Dorufoc/FreeAssetFilter",
+        ]
+
+    def test_check_does_not_fall_back_on_other_errors(
+        self, service_factory: Callable[..., Any]
+    ) -> None:
+        """非 404 错误不回退，直接作为检查失败上报。"""
+        service, bridge = service_factory(
+            check_response={
+                "ok": False,
+                "error": {
+                    "code": "network",
+                    "message": "检查更新失败",
+                    "retryable": True,
+                },
+            }
+        )
+        recorder = Recorder(service)
+        service.check(True)
+        assert _pump_until(lambda: len(recorder.check_finished) == 1)
+        _, _, info, error = recorder.check_finished[0]
+        assert info is None
+        assert isinstance(error, UpdateError)
+        assert error.code == "network"
+        assert [call["repo"] for call in bridge.check_calls] == ["Dorufoc/Sopeek"]
 
     def test_startup_no_update_emits_only_finished(
         self, service_factory: Callable[..., Any]

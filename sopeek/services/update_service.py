@@ -41,11 +41,11 @@ from sopeek.services import update_startup
 from sopeek.utils.app_logger import debug, warning
 from sopeek.utils.path_utils import get_app_data_path
 from sopeek.utils.version_info import (
+    REPO_CANDIDATES,
     get_local_build_date,
     get_local_version,
 )
 
-_REPO = "Dorufoc/Sopeek"
 _DISK_RESERVE = 64 * 1024 * 1024
 _ARTIFACT_RETRIES = 5
 _ARTIFACT_RETRY_DELAY = 0.05
@@ -137,6 +137,18 @@ def _coerce_bool(value: Any, default: bool = False) -> bool:
     if value is None:
         return default
     return bool(value)
+
+
+def _is_repo_not_found(error: UpdateError) -> bool:
+    """判断错误是否为 GitHub 仓库不存在（HTTP 404）。
+
+    Args:
+        error: 原生检查返回的错误。
+
+    Returns:
+        bool: 仓库不存在时返回 ``True``，用于触发回退仓库。
+    """
+    return error.code == "http_status" and "404" in (error.message or "")
 
 
 def sanitize_asset_name(raw: Any) -> Optional[str]:
@@ -610,13 +622,7 @@ class UpdateService(QObject):
         """在任务池执行原生检查并分发结果。"""
         try:
             self._bridge.ensure_started()
-            params = {
-                "repo": _REPO,
-                "current_version": get_local_version(),
-                "current_date": get_local_build_date(),
-                "include_prerelease": True,
-            }
-            response = self._bridge.check(params, request_id=request_id)
+            response = self._check_with_repo_fallback(request_id)
         except UpdaterBridgeError as exc:
             self._finish_check(request_id, None, self._error_from_exception(exc))
             return
@@ -632,6 +638,33 @@ class UpdateService(QObject):
         if not isinstance(result, dict):
             result = {}
         self._finish_check(request_id, self._info_from_result(result), None)
+
+    def _check_with_repo_fallback(self, request_id: str) -> Any:
+        """按 :data:`REPO_CANDIDATES` 顺序检查，仅在仓库 404 时切换候选。
+
+        Args:
+            request_id: 检查请求 id，透传给原生桥。
+
+        Returns:
+            Any: 原生 ``check`` 响应；全部候选失败时返回最后一个响应。
+        """
+        base_params = {
+            "current_version": get_local_version(),
+            "current_date": get_local_build_date(),
+            "include_prerelease": True,
+        }
+        response: Any = None
+        for index, repo in enumerate(REPO_CANDIDATES):
+            response = self._bridge.check(
+                {**base_params, "repo": repo}, request_id=request_id
+            )
+            if isinstance(response, dict) and response.get("ok", False):
+                return response
+            error = self._error_from_response(response)
+            if not _is_repo_not_found(error) or index == len(REPO_CANDIDATES) - 1:
+                return response
+            debug(f"更新仓库 {repo} 返回 404，回退到 {REPO_CANDIDATES[index + 1]}")
+        return response
 
     def _finish_check(
         self,

@@ -48,7 +48,7 @@ from theme import tm
 from sopeek.services.installer_launcher import InstallerLauncher
 from sopeek.services.update_service import get_update_service
 from sopeek.ui.theme.app_stylesheet import register_widget_qss
-from sopeek.utils.version_info import RELEASES_URL
+from sopeek.utils.version_info import RELEASE_URL_PREFIXES, RELEASES_URL
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from sopeek.services.update_service import UpdateInfo, UpdateService
@@ -60,7 +60,7 @@ _active_dialogs: Set[StyledDialog] = set()
 # Progress dialogs keyed by their download request id (one per request).
 _active_progress_dialogs: Dict[str, StyledDialog] = {}
 
-_RELEASES_PREFIX = f"{RELEASES_URL}/"
+_RELEASES_PREFIXES = tuple(prefix.lower() for prefix in RELEASE_URL_PREFIXES)
 _NOTES_MAX_HEIGHT = 240
 
 
@@ -268,7 +268,7 @@ def _release_url(info: "UpdateInfo") -> str:
         return RELEASES_URL
     if any(char.isspace() for char in candidate) or "\\" in candidate:
         return RELEASES_URL
-    if not candidate.lower().startswith(_RELEASES_PREFIX.lower()):
+    if not candidate.lower().startswith(_RELEASES_PREFIXES):
         return RELEASES_URL
     return candidate
 
