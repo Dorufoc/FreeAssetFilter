@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt, Signal, QObject, QRectF, QPoint, QSize, Property,
 from PySide6.QtGui import QPainter, QColor, QPaintEvent, QPen
 from PySide6.QtCore import QPropertyAnimation, QEasingCurve
 import math
+from sopeek.ui.components.icon_utils import render_svg_icon
 from sopeek.ui.theme.app_stylesheet import register_widget_qss
 
 
@@ -247,6 +248,14 @@ class SidebarIconWidget(QWidget):
         icon = self._icon_name
         painter = QPainter(self)
         try:
+            # 优先渲染 sopeek/icons/{icon}.svg 单色图标；文件缺失时回退矢量图元
+            if render_svg_icon(
+                painter,
+                icon,
+                QRectF(0, 0, self.width(), self.height()),
+                self._color,
+            ):
+                return
             painter.setRenderHint(QPainter.Antialiasing)
             painter.setPen(QPen(self._color, 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
             painter.setBrush(Qt.NoBrush)

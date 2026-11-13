@@ -3681,9 +3681,9 @@ class SettingsLayout(QWidget):
             parent=self,
         )
         # 侧边栏列表顺序 = 页面顺序：通用（第一项）→ 外观 → 关于
-        self._sidebar.add_item("通用", icon_svg="gear")
-        self._sidebar.add_item("外观", icon_svg="sun")
-        self._sidebar.add_item("关于", icon_svg="info")
+        self._sidebar.add_item("通用", icon_svg="general_settings")
+        self._sidebar.add_item("外观", icon_svg="appearance_settings")
+        self._sidebar.add_item("关于", icon_svg="about")
         self._sidebar.item_selected.connect(self._on_item_selected)
         main_layout.addWidget(self._sidebar)
 
