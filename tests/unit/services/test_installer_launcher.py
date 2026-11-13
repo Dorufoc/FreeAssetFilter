@@ -35,14 +35,20 @@ class FakeUpdateService:
         self.shutdown_ok = shutdown_ok
         self.verify_error = verify_error
         self.verify_calls: list[tuple[Path, str]] = []
+        self.verify_timeouts: list[float | None] = []
         self.shutdown_calls: list[float] = []
         self.ensure_calls = 0
 
     def verify_installer(
-        self, path: Path, sha256: str
+        self,
+        path: Path,
+        sha256: str,
+        *,
+        timeout: float | None = None,
     ) -> tuple[bool, int, int]:
         """记录并返回预设校验结果。"""
         self.verify_calls.append((path, sha256))
+        self.verify_timeouts.append(timeout)
         if self.verify_error is not None:
             raise self.verify_error
         return self.verified, self.identity[0], self.identity[1]
@@ -513,3 +519,135 @@ class TestLauncherStart:
         assert len(records["finished"]) == 1
         assert records["finished"][0][1:4] == (True, True, True)
         assert service.shutdown_calls == [4.0]
+
+
+class TestVerifyAndLaunchInstaller:
+    """启动前同步校验/拉起安装器（无 Qt 窗口）。"""
+
+    def _setup(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        **service_kwargs: Any,
+    ) -> tuple[FakeUpdateService, Path, str]:
+        monkeypatch.setattr(il, "get_app_data_path", lambda: str(tmp_path))
+        path, sha = _make_file(tmp_path)
+        identity = _identity_for(path)
+        service = FakeUpdateService(identity=identity, **service_kwargs)
+        monkeypatch.setattr(
+            il,
+            "_python_recheck",
+            lambda resolved, digest, rust_identity: (
+                None,
+                rust_identity,
+                True,
+            ),
+        )
+        return service, path, sha
+
+    def test_success_uses_timeout_and_launches(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        service, path, sha = self._setup(tmp_path, monkeypatch)
+        monkeypatch.setattr(il, "_shell_execute", lambda resolved: 33)
+        monkeypatch.setattr(il, "_get_last_error", lambda: 0)
+
+        result = il.verify_and_launch_installer(
+            service, str(path), sha, verify_timeout=7.5
+        )
+
+        assert result.launched is True
+        assert result.detail == ""
+        assert service.verify_timeouts == [7.5]
+        assert service.shutdown_calls == [4.0]
+
+    def test_verify_false_is_not_launched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        service, path, sha = self._setup(
+            tmp_path, monkeypatch, verified=False
+        )
+        shell_calls: list[Any] = []
+        monkeypatch.setattr(
+            il, "_shell_execute", lambda resolved: shell_calls.append(resolved)
+        )
+
+        result = il.verify_and_launch_installer(service, str(path), sha)
+
+        assert result.launched is False
+        assert "哈希校验未通过" in result.detail
+        assert shell_calls == []
+
+    def test_shutdown_failure_is_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        service, path, sha = self._setup(
+            tmp_path, monkeypatch, shutdown_ok=False
+        )
+
+        result = il.verify_and_launch_installer(service, str(path), sha)
+
+        assert result.launched is False
+        assert "更新组件未能关闭" in result.detail
+
+    def test_recheck_failure_is_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        service, path, sha = self._setup(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            il,
+            "_python_recheck",
+            lambda *args: (None, (0, 0), False),
+        )
+
+        result = il.verify_and_launch_installer(service, str(path), sha)
+
+        assert result.launched is False
+        assert "复核失败" in result.detail
+
+    def test_invalid_path_is_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        service, path, sha = self._setup(tmp_path, monkeypatch)
+        monkeypatch.setattr(il, "_launch_path", lambda _text: None)
+
+        result = il.verify_and_launch_installer(service, str(path), sha)
+
+        assert result.launched is False
+        assert "路径无效" in result.detail
+
+    def test_uac_cancel_is_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        service, path, sha = self._setup(tmp_path, monkeypatch)
+        monkeypatch.setattr(il, "_shell_execute", lambda resolved: 5)
+        monkeypatch.setattr(il, "_get_last_error", lambda: il.ERROR_CANCELLED)
+
+        result = il.verify_and_launch_installer(service, str(path), sha)
+
+        assert result.launched is False
+        assert "取消" in result.detail
+
+    def test_shell_error_is_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        service, path, sha = self._setup(tmp_path, monkeypatch)
+        monkeypatch.setattr(il, "_shell_execute", lambda resolved: 5)
+        monkeypatch.setattr(il, "_get_last_error", lambda: 5)
+
+        result = il.verify_and_launch_installer(service, str(path), sha)
+
+        assert result.launched is False
+        assert "错误码 5" in result.detail
+
+    def test_verify_exception_is_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        service, path, sha = self._setup(
+            tmp_path, monkeypatch, verify_error=RuntimeError("timeout")
+        )
+
+        result = il.verify_and_launch_installer(service, str(path), sha)
+
+        assert result.launched is False
+        assert "安装包校验失败" in result.detail

@@ -26,6 +26,7 @@ import ctypes
 from ctypes import wintypes
 import hashlib
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -709,3 +710,122 @@ def _normalize_result(
         None,
         "安装流程内部错误，已取消安装。",
     )
+
+
+@dataclass(frozen=True)
+class InstallerLaunchResult:
+    """同步校验/启动安装器的结果。
+
+    Attributes:
+        launched: 是否已成功拉起安装器。
+        detail: 失败原因；成功时为空串。
+    """
+
+    launched: bool
+    detail: str = ""
+
+
+def verify_and_launch_installer(
+    service: Any,
+    installer_path: str,
+    sha256: str,
+    *,
+    verify_timeout: Optional[float] = 10.0,
+) -> InstallerLaunchResult:
+    """校验安装包并直接拉起安装器（供下次启动的待安装更新路径使用）。
+
+    与 :class:`InstallerLauncher` 相比，本函数不创建任何 Qt 窗口/事件循环：
+    同步完成原生校验 -> 关闭 updater 边车 -> Python 独立复核 ->
+    ``ShellExecuteW(runas)``。失败时只返回可读原因，由调用方决定提示方式。
+
+    Args:
+        service: 已捕获的 ``UpdateService``（GUI 线程）。
+        installer_path: 下载服务返回的安装包路径。
+        sha256: 发布信息中的期望 SHA-256。
+        verify_timeout: 原生 verify 的等待上限（秒）；``None`` 使用桥默认值。
+
+    Returns:
+        InstallerLaunchResult: 是否成功启动及失败原因。
+    """
+    path_text = str(installer_path or "").strip()
+    digest = str(sha256 or "").strip()
+    if not path_text or not digest:
+        return InstallerLaunchResult(
+            False, "安装包校验信息不完整，已取消安装。"
+        )
+
+    resolved = _launch_path(path_text)
+    if resolved is None:
+        return InstallerLaunchResult(False, "安装包路径无效，已取消安装。")
+
+    handle: Optional[int] = None
+    try:
+        try:
+            if verify_timeout is None:
+                verified, volume_serial, file_index = (
+                    service.verify_installer(resolved, digest)
+                )
+            else:
+                verified, volume_serial, file_index = (
+                    service.verify_installer(
+                        resolved, digest, timeout=verify_timeout
+                    )
+                )
+        except Exception as exc:  # noqa: BLE001 - 启动路径返回可读原因
+            return InstallerLaunchResult(
+                False, f"安装包校验失败：{exc}"
+            )
+        if not verified:
+            return InstallerLaunchResult(
+                False, "安装包哈希校验未通过，已取消安装。"
+            )
+
+        try:
+            shutdown_ok = bool(service.shutdown(timeout=4.0))
+        except Exception as exc:  # noqa: BLE001 - 启动路径返回可读原因
+            return InstallerLaunchResult(
+                False, f"关闭更新组件失败：{exc}"
+            )
+        if not shutdown_ok:
+            return InstallerLaunchResult(
+                False, "更新组件未能关闭，已取消安装。"
+            )
+
+        try:
+            handle, _identity, recheck_ok = _python_recheck(
+                resolved,
+                digest,
+                (int(volume_serial), int(file_index)),
+            )
+        except Exception as exc:  # noqa: BLE001 - 启动路径返回可读原因
+            return InstallerLaunchResult(
+                False, f"安装包复核失败：{exc}"
+            )
+        if not recheck_ok:
+            return InstallerLaunchResult(
+                False, "安装包复核失败（哈希或文件标识不一致），已取消安装。"
+            )
+
+        try:
+            ret = _shell_execute(resolved)
+            last_error = _get_last_error()
+        finally:
+            _close_handle(handle)
+            handle = None
+
+        if ret > 32:
+            return InstallerLaunchResult(True)
+        if last_error == ERROR_CANCELLED:
+            return InstallerLaunchResult(
+                False, "已取消安装（用户取消了权限请求）。"
+            )
+        return InstallerLaunchResult(
+            False,
+            f"无法启动安装程序（错误码 {last_error or ret}），"
+            "请检查管理员权限后重试。",
+        )
+    except Exception as exc:  # noqa: BLE001 - 启动路径返回可读原因
+        return InstallerLaunchResult(False, f"更新安装失败：{exc}")
+    finally:
+        if handle is not None:
+            _close_handle(handle)

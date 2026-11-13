@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""End-to-end update flow: fake sidecar -> UpdateService -> dialogs/About page.
+"""End-to-end update flow: fake sidecar -> UpdateService -> dialogs/inline About page.
 
 The sidecar is ``tests/support/fake_updater.py`` launched through the real
 ``SpkUpdaterBridge`` command-injection seam. No network, installer or UAC
@@ -185,11 +185,23 @@ def flow_factory(
 
 
 def _make_about_page(monkeypatch: pytest.MonkeyPatch, service: UpdateService) -> Any:
-    """Create AboutSettingsPage bound to the isolated service."""
+    """Create AboutSettingsPage bound to an isolated inline session."""
+    from sopeek.ui import update_inline as inline_mod
+
+    session = inline_mod.InlineUpdateSession(service_factory=lambda: service)
     monkeypatch.setattr(
-        settings_mod, "get_update_service", lambda: service, raising=False
+        inline_mod,
+        "get_inline_update_session",
+        lambda *a, **k: session,
     )
-    return settings_mod.AboutSettingsPage()
+    monkeypatch.setattr(
+        inline_mod,
+        "get_inline_update_session_if_exists",
+        lambda: session,
+    )
+    page = settings_mod.AboutSettingsPage()
+    page._test_inline_session = session
+    return page
 
 
 def _find_available_dialog() -> Any:
@@ -200,15 +212,55 @@ def _find_available_dialog() -> Any:
     return None
 
 
-class TestAboutPageFlow:
-    """About page + real dialogs through the fake sidecar."""
+class TestPendingInstallLaunch:
+    """下次启动的同步校验/拉起路径使用同一套原生校验。"""
 
-    def test_close_pauses_and_late_finish_never_installs(
+    def test_verify_and_launch_with_fake_sidecar(
         self,
         flow_factory: Callable[..., Flow],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Close pauses, keeps part/meta, and a late finish does not install."""
+        """下载真实载荷后，同步校验通过并调用 ShellExecuteW。"""
+        flow = flow_factory({"SPK_FAKE_REAL_VERIFY": "1"})
+        monkeypatch.setattr(
+            launcher_mod, "get_app_data_path", lambda: flow.appdata
+        )
+        finished: list[tuple[str, str]] = []
+        flow.service.download_finished.connect(
+            lambda rid, path: finished.append((rid, path))
+        )
+
+        flow.service.start_download(_info())
+        assert _pump_until(lambda: bool(finished), 20)
+        shell_calls: list[Path] = []
+        monkeypatch.setattr(
+            launcher_mod,
+            "_shell_execute",
+            lambda resolved: shell_calls.append(resolved) or 33,
+        )
+        monkeypatch.setattr(launcher_mod, "_get_last_error", lambda: 0)
+
+        result = launcher_mod.verify_and_launch_installer(
+            flow.service, str(flow.dest), _SHA256
+        )
+
+        assert result.launched is True
+        assert result.detail == ""
+        assert shell_calls == [flow.dest.resolve()]
+        assert not flow.part.exists()
+
+
+class TestAboutPageFlow:
+    """About page + real sidecar through the inline update session."""
+
+    def test_inline_check_downloads_and_registers_pending_update(
+        self,
+        flow_factory: Callable[..., Flow],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """关于页内联检查自动下载，完成后登记待安装标记且不弹窗。"""
+        from sopeek.services import update_pending
+
         settings_writes: list[tuple[str, Any]] = []
         theme_calls: list[str] = []
         monkeypatch.setattr(
@@ -236,59 +288,51 @@ class TestAboutPageFlow:
         )
 
         flow = flow_factory()
+        monkeypatch.setattr(
+            update_pending, "get_app_data_path", lambda: flow.appdata
+        )
+        monkeypatch.setattr(
+            update_pending, "get_local_version", lambda: "1.0.0-alpha.5"
+        )
         page = _make_about_page(monkeypatch, flow.service)
+        session = page._test_inline_session
         try:
             # Startup check is already in flight; a manual check joins it.
             startup_id = flow.service.check(manual=False)
             page._check_update()
-            manual_id = page._request_id
-            assert manual_id == startup_id
-            assert page._check_active is True
-
-            assert _pump_until(lambda: _find_available_dialog() is not None, 10)
-            available = _find_available_dialog()
-            assert available is not None
-            available._download_button.click()
+            assert session.snapshot()["state"] == "checking"
+            assert session._request_id == startup_id
 
             assert _pump_until(
-                lambda: bool(dialogs_mod._active_progress_dialogs), 8
-            )
-            request_id = next(iter(dialogs_mod._active_progress_dialogs))
-            progress = dialogs_mod._active_progress_dialogs[request_id]
-            assert _pump_until(lambda: progress._download_index > 0, 8)
-
-            # A foreign request id must not change this dialog's state.
-            flow.service.download_state_changed.emit("download-999", "paused")
-            _pump(0.05)
-            assert progress._state != "paused"
-
-            progress.close()
-            assert _pump_until(
-                lambda: (flow.service.get_download_state(request_id) or ("",))[0]
-                in {"paused", "done"},
+                lambda: page._update_status.text().startswith("发现新版本"),
                 10,
             )
-            state = flow.service.get_download_state(request_id)
-            assert state is not None
-            state_name, downloaded, _total = state
-            assert state_name in {"paused", "done"}
-            assert flow.part.exists()
-            assert flow.meta.exists()
-            held = downloaded
-            _pump(0.25)
-            after = flow.service.get_download_state(request_id)
-            assert after is not None and after[1] == held
+            assert "正在下载更新..." in page._update_status.text()
+            assert page._check_update_action.text() == "检查更新"
+            assert _find_available_dialog() is None
+            assert dialogs_mod._active_progress_dialogs == {}
 
-            # Late terminal after close: the detached dialog must not install.
-            flow.service.download_finished.emit(request_id, str(flow.dest))
-            _pump(0.15)
+            assert _pump_until(
+                lambda: session.snapshot()["state"] == "downloaded", 20
+            )
+            assert page._update_status.text() == (
+                "更新包下载完成 · 将在下次启动时安装"
+            )
+            assert flow.dest.exists()
+            assert not flow.part.exists()
+
+            marker = flow.appdata / update_pending.PENDING_UPDATE_FILENAME
+            assert marker.is_file()
+            pending = update_pending.read_pending_update()
+            assert pending is not None
+            assert Path(pending.installer_path) == flow.dest.resolve()
             assert install_calls == []
-
             assert settings_writes == []
             assert theme_calls == []
             assert tm.get_theme_mode() == theme_before
             assert get_update_service_if_exists() is flow.service
         finally:
+            session.dispose()
             safe_teardown(page)
             page.deleteLater()
             drain_deferred_deletes()

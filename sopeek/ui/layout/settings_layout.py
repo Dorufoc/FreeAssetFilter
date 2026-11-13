@@ -6,11 +6,13 @@ from __future__ import annotations
 
 import copy
 import os
+import sys
 import time
 
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QFrame, QLabel, QStackedWidget,
     QApplication, QScrollArea, QFileDialog, QGraphicsOpacityEffect,
+    QSizePolicy,
 )
 from PySide6.QtCore import (
     Qt, Signal, QRectF, QPropertyAnimation, QEasingCurve, Property,
@@ -19,6 +21,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QPainter, QColor, QPaintEvent, QPen, QFont, QHideEvent, QCloseEvent,
     QConicalGradient, QBrush, QPixmap, QDesktopServices, QMouseEvent,
+    QShowEvent,
 )
 from PySide6.QtSvg import QSvgRenderer
 
@@ -196,6 +199,16 @@ ABOUT_CONTACT_FADE_MS = 160
 ABOUT_CONTACT_FADE_OUT_MS = 120
 #: 联系面板复用设置页子选项的动画开关（appearance.animations.<key>）。
 ABOUT_CONTACT_ANIMATION_KEY = "settings_sub_option"
+#: 「检查更新」忙碌态文字（图标位置换成圆圈加载动画）。
+ABOUT_UPDATE_CHECKING_TEXT = "正在检查更新"
+#: 内联结果行：最大宽度、与版本行的顶部间距、展开/收起时长、字号。
+ABOUT_STATUS_MAX_WIDTH = 380
+ABOUT_STATUS_SLOT_GAP = 6
+ABOUT_STATUS_REVEAL_MS = 180
+ABOUT_STATUS_COLLAPSE_MS = 140
+ABOUT_STATUS_ANIMATION_KEY = "settings_sub_option"
+ABOUT_STATUS_TEXT_SIZE = 12
+ABOUT_STATUS_MAX_HEIGHT = 16777215
 #: 页脚版权/署名。
 ABOUT_COPYRIGHT = "© 2026   Dorufoc & renmoren"
 #: 关于页字号令牌：身份区与联系面板的字号只允许引用这里。
@@ -2383,6 +2396,9 @@ class _AboutLink(QWidget):
     默认使用强调色文字；hover / 键盘 focus 时加深颜色，并按需给文字加
     下划线。可选前置单色 SVG 图标；整枚控件可点击、可用 Tab 聚焦、
     Enter/Space 触发。联系链接关闭下划线，避免展开后文字底部出现横线。
+
+    检查更新动作额外支持忙碌态：文字改为“正在检查更新”，原图标位置换成
+    圆圈加载动画，忙碌期间不响应点击。
     """
 
     _instance_count = 0
@@ -2400,11 +2416,14 @@ class _AboutLink(QWidget):
         super().__init__(parent)
         _AboutLink._instance_count += 1
         self._text = str(text)
+        self._normal_text = str(text)
         self._icon_name = str(icon_name or "")
         self._underline_on_hover = bool(underline_on_hover)
         self._hovered = False
         self._focused = False
+        self._busy = False
         self._icon_label: QLabel | None = None
+        self._spinner: QWidget | None = None
 
         self.setObjectName(f"AboutLink_{_AboutLink._instance_count}")
         self.setAttribute(Qt.WA_Hover, True)
@@ -2415,6 +2434,7 @@ class _AboutLink(QWidget):
         self.setAccessibleName(self._text)
 
         layout = QHBoxLayout(self)
+        self._layout = layout
         layout.setContentsMargins(pad_h, 0, pad_h, 0)
         layout.setSpacing(4)
 
@@ -2438,13 +2458,75 @@ class _AboutLink(QWidget):
         """返回链接文字（兼容测试与可访问性检查）。"""
         return self._text_label.text()
 
+    @property
+    def is_busy(self) -> bool:
+        """当前是否处于忙碌态。"""
+        return self._busy
+
+    def set_busy(self, busy: bool) -> None:
+        """切换忙碌态：文字/图标互换、点击禁用。
+
+        Args:
+            busy: True 显示“正在检查更新”+ 圆圈动画；False 恢复原动作。
+        """
+        busy = bool(busy)
+        if busy == self._busy:
+            return
+        self._busy = busy
+        if busy:
+            self._ensure_spinner()
+            if self._spinner is not None:
+                if self._icon_label is not None:
+                    self._icon_label.hide()
+                self._spinner.show()
+                start = getattr(self._spinner, "start", None)
+                if callable(start):
+                    start()
+            self._set_text(ABOUT_UPDATE_CHECKING_TEXT)
+            self.setCursor(Qt.ArrowCursor)
+            self.setFocusPolicy(Qt.NoFocus)
+            if self.hasFocus():
+                self.clearFocus()
+        else:
+            if self._spinner is not None:
+                stop = getattr(self._spinner, "stop", None)
+                if callable(stop):
+                    stop()
+                self._spinner.hide()
+            if self._icon_label is not None:
+                self._icon_label.show()
+            self._set_text(self._normal_text)
+            self.setCursor(Qt.PointingHandCursor)
+            self.setFocusPolicy(Qt.TabFocus)
+        self._apply_style()
+
+    def _ensure_spinner(self) -> None:
+        """按需创建 16px 圆圈动画并放在原图标位置。"""
+        if self._spinner is not None:
+            return
+        try:
+            from components.styled_loading import StyledLoading
+        except Exception as exc:  # noqa: BLE001 - 动画缺失时退化为原文
+            debug(f"创建关于页加载动画失败：{exc}")
+            return
+        spinner = StyledLoading(size="sm", auto_start=False, parent=self)
+        spinner.hide()
+        self._layout.insertWidget(0, spinner, 0, Qt.AlignVCenter)
+        self._spinner = spinner
+
+    def _set_text(self, text: str) -> None:
+        """更新显示文字与可访问名称。"""
+        self._text = str(text)
+        self._text_label.setText(self._text)
+        self.setAccessibleName(self._text)
+
     def refresh_theme(self) -> None:
         """主题切换时重算文字颜色、下划线与图标着色。"""
         self._apply_style()
 
     def _apply_style(self) -> None:
         """按当前 hover/focus 状态刷新文字与图标样式。"""
-        highlighted = self._hovered or self._focused
+        highlighted = not self._busy and (self._hovered or self._focused)
         color = tm.accent if highlighted else tm.accent_text
         text_color = tm.qss_color(color)
 
@@ -2500,6 +2582,9 @@ class _AboutLink(QWidget):
         super().focusOutEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt 虚函数名
+        if self._busy:
+            super().mouseReleaseEvent(event)
+            return
         if event.button() == Qt.LeftButton and self.rect().contains(
             event.position().toPoint()
         ):
@@ -2509,11 +2594,259 @@ class _AboutLink(QWidget):
         super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt 虚函数名
+        if self._busy:
+            super().keyPressEvent(event)
+            return
         if event.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
             self.clicked.emit()
             event.accept()
             return
         super().keyPressEvent(event)
+
+
+class _AboutStatusRow(QWidget):
+    """关于页内联更新结果行（默认 0 高度，展开时推动下方内容）。
+
+    结果行固定宽度并居中；展开/收起使用 ``maximumHeight`` + 透明度动画，
+    让分隔线、链接、联系插槽和页脚随布局平滑移动。页面不可见或全局关闭
+    动画时立即切换。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("AboutUpdateStatus")
+        self.setFixedWidth(ABOUT_STATUS_MAX_WIDTH)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Maximum)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, ABOUT_STATUS_SLOT_GAP, 0, 0)
+        layout.setSpacing(0)
+        self._layout = layout
+
+        self._label = QLabel("")
+        self._label.setAlignment(Qt.AlignCenter)
+        self._label.setWordWrap(True)
+        self._label.setFixedWidth(ABOUT_STATUS_MAX_WIDTH)
+        self._label.setTextFormat(Qt.PlainText)
+        layout.addWidget(self._label)
+
+        self._tone = "normal"
+        self._shown = False
+        self._height_anim: QPropertyAnimation | None = None
+        self._opacity_anim: QPropertyAnimation | None = None
+        self._opacity_effect: QGraphicsOpacityEffect | None = None
+
+        self._apply_style()
+        self._set_hidden()
+
+    def text(self) -> str:
+        """返回当前结果文字。"""
+        return self._label.text()
+
+    def show_text(
+        self,
+        text: str,
+        *,
+        danger: bool = False,
+        animate: bool = True,
+    ) -> None:
+        """显示/更新结果文字。
+
+        Args:
+            text: 结果行文案。
+            danger: True 使用 danger 色（失败态）。
+            animate: 是否允许播放高度/透明度动画。
+        """
+        text = str(text)
+        tone = "danger" if danger else "normal"
+        if (
+            self._shown
+            and text == self._label.text()
+            and tone == self._tone
+        ):
+            if not animate and (
+                self._height_anim is not None
+                or self._opacity_effect is not None
+            ):
+                self._apply_shown_instant()
+            return
+
+        was_shown = self._shown
+        tone_changed = tone != self._tone
+        self._tone = tone
+        self._label.setText(text)
+        if tone_changed:
+            self._apply_style()
+        target = self._target_height()
+        if (
+            was_shown
+            and self._height_anim is not None
+            and int(self._height_anim.endValue()) == target
+        ):
+            # 展开动画进行中只更新文字，避免每个百分比都重启高度动画。
+            return
+        self._stop_animations()
+
+        self.show()
+        self._shown = True
+
+        if not self._should_animate(animate):
+            self._apply_shown_instant()
+            return
+        if was_shown and abs(target - self.height()) <= 1:
+            self._apply_shown_instant()
+            return
+
+        start_height = max(0, self.height()) if was_shown else 0
+        self.setMaximumHeight(start_height)
+        effect = self._ensure_effect()
+        start_opacity = effect.opacity() if was_shown else 0.0
+
+        self._height_anim = QPropertyAnimation(
+            self, b"maximumHeight", self
+        )
+        self._height_anim.setDuration(ABOUT_STATUS_REVEAL_MS)
+        self._height_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._height_anim.setStartValue(start_height)
+        self._height_anim.setEndValue(target)
+        self._height_anim.finished.connect(self._on_show_finished)
+
+        self._opacity_anim = QPropertyAnimation(effect, b"opacity", self)
+        self._opacity_anim.setDuration(ABOUT_STATUS_REVEAL_MS)
+        self._opacity_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._opacity_anim.setStartValue(start_opacity)
+        self._opacity_anim.setEndValue(1.0)
+
+        self._height_anim.start()
+        self._opacity_anim.start()
+
+    def hide_text(self, animate: bool = True) -> None:
+        """收起结果行（不保留空行）。"""
+        if not self._shown and not self.isVisible():
+            self._set_hidden()
+            return
+        self._stop_animations()
+        start_height = max(0, self.height())
+        if not self._should_animate(animate) or start_height <= 0:
+            self._set_hidden()
+            return
+
+        effect = self._ensure_effect()
+        effect.setOpacity(1.0)
+        self.setMaximumHeight(start_height)
+
+        self._height_anim = QPropertyAnimation(
+            self, b"maximumHeight", self
+        )
+        self._height_anim.setDuration(ABOUT_STATUS_COLLAPSE_MS)
+        self._height_anim.setEasingCurve(QEasingCurve.InCubic)
+        self._height_anim.setStartValue(start_height)
+        self._height_anim.setEndValue(0)
+        self._height_anim.finished.connect(self._on_hide_finished)
+
+        self._opacity_anim = QPropertyAnimation(effect, b"opacity", self)
+        self._opacity_anim.setDuration(ABOUT_STATUS_COLLAPSE_MS)
+        self._opacity_anim.setEasingCurve(QEasingCurve.InCubic)
+        self._opacity_anim.setStartValue(1.0)
+        self._opacity_anim.setEndValue(0.0)
+
+        self._height_anim.start()
+        self._opacity_anim.start()
+
+    def refresh_theme(self) -> None:
+        """主题切换时重算结果文字颜色。"""
+        self._apply_style()
+
+    def _target_height(self) -> int:
+        """返回结果行完整展开后的目标高度。"""
+        label_height = self._label.heightForWidth(ABOUT_STATUS_MAX_WIDTH)
+        if label_height <= 0:
+            label_height = self._label.sizeHint().height()
+        return max(1, int(label_height) + ABOUT_STATUS_SLOT_GAP)
+
+    def _should_animate(self, animate: bool) -> bool:
+        """返回是否允许播放展开/收起动画。"""
+        if not animate or not self.isVisible():
+            return False
+        return is_animation_enabled(
+            ABOUT_STATUS_ANIMATION_KEY, default=True
+        )
+
+    def _apply_shown_instant(self) -> None:
+        """无动画展开到目标高度。"""
+        self._stop_animations()
+        self.show()
+        self._shown = True
+        self.setMaximumHeight(ABOUT_STATUS_MAX_HEIGHT)
+        self._clear_effect()
+        self.updateGeometry()
+
+    def _set_hidden(self) -> None:
+        """立即收起并隐藏结果行。"""
+        self._stop_animations()
+        self._clear_effect()
+        self._shown = False
+        self.setMaximumHeight(0)
+        self.hide()
+
+    def _on_show_finished(self) -> None:
+        """展开完成：解除高度约束并卸载临时透明度效果。"""
+        animation = self._height_anim
+        if animation is not None:
+            self._height_anim = None
+            animation.deleteLater()
+        opacity = self._opacity_anim
+        self._opacity_anim = None
+        if opacity is not None:
+            opacity.deleteLater()
+        self.setMaximumHeight(ABOUT_STATUS_MAX_HEIGHT)
+        self._clear_effect()
+        self.updateGeometry()
+
+    def _on_hide_finished(self) -> None:
+        """收起完成：隐藏并归零高度。"""
+        animation = self._height_anim
+        if animation is not None:
+            self._height_anim = None
+            animation.deleteLater()
+        opacity = self._opacity_anim
+        self._opacity_anim = None
+        if opacity is not None:
+            opacity.deleteLater()
+        self._set_hidden()
+
+    def _stop_animations(self) -> None:
+        """停止并回收在途动画（保留透明度效果供反向动画续接）。"""
+        for animation in (self._height_anim, self._opacity_anim):
+            if animation is not None:
+                animation.stop()
+                animation.deleteLater()
+        self._height_anim = None
+        self._opacity_anim = None
+
+    def _ensure_effect(self) -> QGraphicsOpacityEffect:
+        """按需创建结果行透明度效果。"""
+        if self._opacity_effect is None:
+            effect = QGraphicsOpacityEffect(self)
+            effect.setOpacity(1.0)
+            self.setGraphicsEffect(effect)
+            self._opacity_effect = effect
+        return self._opacity_effect
+
+    def _clear_effect(self) -> None:
+        """移除临时透明度效果，恢复原生绘制。"""
+        if self._opacity_effect is not None:
+            self.setGraphicsEffect(None)
+            self._opacity_effect = None
+
+    def _apply_style(self) -> None:
+        """按当前语气注册结果文字样式。"""
+        color = tm.danger if self._tone == "danger" else tm.text_secondary
+        register_widget_qss(self._label, (
+            f"background: transparent; border: none; "
+            f"color: {tm.qss_color(color)}; "
+            f"font-size: {ABOUT_STATUS_TEXT_SIZE}px;"
+        ))
 
 
 class AboutSettingsPage(QWidget):
@@ -2523,10 +2856,12 @@ class AboutSettingsPage(QWidget):
     联系信息不再插入/抽走页面高度，而是在链接行与页脚之间预留固定插槽：
     展开只播放透明度淡入，页面高度与页脚位置保持不动。
 
-    「检查更新」为图标 + 文字动作，是检查更新的唯一手动入口（弹出更新中心
-    弹窗：检查中 → 已是最新 / 发现新版本 / 检查失败四态），本页不在动作上
-    显示本地进度。不写入 ``SettingsStagingCache``、不触碰主窗口 / 磁盘——
-    本页无任何可提交设置项，天然遵循暂存隔离铁律。
+    「检查更新」为图标 + 文字动作。点击后动作原位切换为“正在检查更新”+
+    圆圈加载动画，检查完成恢复原动作，并在下一行居中显示结果（无更新/
+    失败/自动下载进度）。结果行默认 0 高度，展开时下方内容平滑下移。
+    下载完成只登记待安装更新，由下次启动在创建主窗口前拉起安装器；
+    本页不打开更新中心弹窗。不写入 ``SettingsStagingCache``、不触碰主窗口 /
+    磁盘——本页无任何可提交设置项，天然遵循暂存隔离铁律。
     """
 
     def __init__(self, parent=None):
@@ -2536,6 +2871,9 @@ class AboutSettingsPage(QWidget):
         self._tagline_label: QLabel | None = None
         self._version_label: QLabel | None = None
         self._check_update_action: _AboutLink | None = None
+        self._update_status: _AboutStatusRow | None = None
+        self._update_session: object | None = None
+        self._inline_update_info: object | None = None
         self._repo_link: _AboutLink | None = None
         self._contact_link: _AboutLink | None = None
         self._license_link: _AboutLink | None = None
@@ -2630,6 +2968,10 @@ class AboutSettingsPage(QWidget):
 
         version_row.addStretch(1)
         content.addLayout(version_row)
+
+        # ── 内联结果行：默认 0 高度；出现时展开并推动下方内容 ──
+        self._update_status = _AboutStatusRow()
+        content.addWidget(self._update_status, alignment=Qt.AlignHCenter)
 
         content.addSpacing(16)
 
@@ -2924,6 +3266,11 @@ class AboutSettingsPage(QWidget):
         self._toggle_contact_box()
         return False
 
+    def showEvent(self, event: QShowEvent) -> None:  # noqa: N802 - Qt 虚函数名
+        """页面显示时恢复已存在的内联更新会话状态。"""
+        super().showEvent(event)
+        self._attach_existing_update_session()
+
     def hideEvent(self, event: QHideEvent) -> None:  # noqa: N802 - Qt 虚函数名
         """离开关于页/隐藏窗口时收起联系面板并卸载事件过滤器。"""
         self._set_contact_outside_filter(False)
@@ -2932,14 +3279,274 @@ class AboutSettingsPage(QWidget):
             self._set_contact_instant(False)
         super().hideEvent(event)
 
-    def _check_update(self) -> None:
-        """检查更新：委托共享控制器打开更新中心单弹窗。"""
-        try:
-            from sopeek.ui.update_entry import get_update_entry_controller
+    # ── 内联检查更新 ────────────────────────────────────────────────
 
-            get_update_entry_controller().request_check()
+    def _check_update(self) -> None:
+        """检查更新：委托进程级内联 session，不打开更新中心弹窗。"""
+        session = self._ensure_update_session()
+        if session is None:
+            self._set_check_action_busy(False)
+            self._show_update_status(
+                "检查失败 · 更新组件不可用，请重新安装应用。",
+                danger=True,
+            )
+            return
+        session.start_check()
+
+    def _ensure_update_session(self):
+        """取得并绑定内联更新 session；失败返回 ``None``。"""
+        session = self._update_session
+        if session is not None and not bool(
+            getattr(session, "disposed", False)
+        ):
+            return session
+        try:
+            from sopeek.ui.update_inline import get_inline_update_session
+
+            session = get_inline_update_session()
         except Exception as exc:  # noqa: BLE001 - 入口失败不应拖垮设置页
-            warning(f"打开检查更新失败：{exc}")
+            warning(f"创建内联更新会话失败：{exc}")
+            return None
+        self._bind_update_session(session)
+        return session
+
+    def _attach_existing_update_session(self) -> None:
+        """页面重新显示时绑定/刷新已存在的内联 session。"""
+        session = self._update_session
+        if session is None or bool(getattr(session, "disposed", False)):
+            # 从未点过「检查更新」时不导入更新栈，保持关于页首开轻量。
+            if "sopeek.ui.update_inline" not in sys.modules:
+                return
+            try:
+                from sopeek.ui.update_inline import (
+                    get_inline_update_session_if_exists,
+                )
+
+                session = get_inline_update_session_if_exists()
+            except Exception as exc:  # noqa: BLE001 - 无会话时静默跳过
+                debug(f"读取内联更新会话失败：{exc}")
+                session = None
+            if session is None:
+                return
+            self._bind_update_session(session)
+        try:
+            snapshot = session.snapshot()
+        except (RuntimeError, AttributeError):
+            return
+        self._render_update_snapshot(snapshot, animate=False)
+
+    def _bind_update_session(self, session) -> None:
+        """连接内联 session 的全部展示信号。"""
+        if session is self._update_session:
+            return
+        self._update_session = session
+        for signal_name, slot in (
+            ("checking", self._on_inline_checking),
+            ("up_to_date", self._on_inline_up_to_date),
+            ("check_failed", self._on_inline_check_failed),
+            ("download_started", self._on_inline_download_started),
+            ("download_progress", self._on_inline_download_progress),
+            ("downloaded", self._on_inline_downloaded),
+            ("download_failed", self._on_inline_download_failed),
+        ):
+            signal = getattr(session, signal_name, None)
+            if signal is None:
+                continue
+            try:
+                signal.connect(slot)
+            except (RuntimeError, TypeError):
+                continue
+
+    def _render_update_snapshot(
+        self, snapshot: dict, *, animate: bool
+    ) -> None:
+        """按 session 快照恢复动作态与结果行。"""
+        from sopeek.ui.update_inline import (
+            STATE_CHECKING,
+            STATE_CHECK_FAILED,
+            STATE_DOWNLOADED,
+            STATE_DOWNLOADING,
+            STATE_DOWNLOAD_FAILED,
+            STATE_UP_TO_DATE,
+        )
+
+        state = str(snapshot.get("state") or "idle")
+        info = snapshot.get("info")
+        error = snapshot.get("error")
+
+        if state == STATE_CHECKING:
+            self._inline_update_info = None
+            self._set_check_action_busy(True)
+            self._hide_update_status(animate=animate)
+            return
+        if state == STATE_UP_TO_DATE:
+            self._inline_update_info = info
+            self._set_check_action_busy(False)
+            self._show_update_status(
+                "当前已是最新版本", animate=animate
+            )
+            return
+        if state == STATE_CHECK_FAILED:
+            self._inline_update_info = None
+            self._set_check_action_busy(False)
+            self._show_update_status(
+                f"检查失败 · {self._inline_error_text(error)}",
+                danger=True,
+                animate=animate,
+            )
+            return
+        if state == STATE_DOWNLOADING:
+            self._inline_update_info = info
+            self._set_check_action_busy(False)
+            self._show_download_progress(
+                info,
+                int(snapshot.get("downloaded") or 0),
+                int(snapshot.get("total") or 0),
+                animate=animate,
+            )
+            return
+        if state == STATE_DOWNLOADED:
+            self._inline_update_info = info
+            self._set_check_action_busy(False)
+            self._show_update_status(
+                "更新包下载完成 · 将在下次启动时安装",
+                animate=animate,
+            )
+            return
+        if state == STATE_DOWNLOAD_FAILED:
+            self._inline_update_info = info
+            self._set_check_action_busy(False)
+            self._show_update_status(
+                f"下载失败 · {self._inline_error_text(error)}",
+                danger=True,
+                animate=animate,
+            )
+            return
+        self._inline_update_info = None
+        self._set_check_action_busy(False)
+        self._hide_update_status(animate=animate)
+
+    def _on_inline_checking(self) -> None:
+        """检查开始：动作进入忙碌态，结果行收起。"""
+        self._inline_update_info = None
+        self._set_check_action_busy(True)
+        self._hide_update_status(animate=True)
+
+    def _on_inline_up_to_date(self, info: object) -> None:
+        """没有可用更新。"""
+        self._inline_update_info = info
+        self._set_check_action_busy(False)
+        self._show_update_status("当前已是最新版本")
+
+    def _on_inline_check_failed(self, error: object) -> None:
+        """检查失败。"""
+        self._inline_update_info = None
+        self._set_check_action_busy(False)
+        self._show_update_status(
+            f"检查失败 · {self._inline_error_text(error)}",
+            danger=True,
+        )
+
+    def _on_inline_download_started(self, info: object) -> None:
+        """发现新版本并开始自动下载。"""
+        self._inline_update_info = info
+        self._set_check_action_busy(False)
+        self._show_download_progress(info, 0, 0)
+
+    def _on_inline_download_progress(
+        self, downloaded: int, total: int
+    ) -> None:
+        """刷新下载百分比。"""
+        info = self._inline_update_info
+        if info is None:
+            return
+        self._set_check_action_busy(False)
+        self._show_download_progress(info, downloaded, total)
+
+    def _on_inline_downloaded(self, info: object, _path: str) -> None:
+        """下载完成并已登记下次启动安装。"""
+        self._inline_update_info = info
+        self._set_check_action_busy(False)
+        self._show_update_status(
+            "更新包下载完成 · 将在下次启动时安装"
+        )
+
+    def _on_inline_download_failed(
+        self, info: object, error: object
+    ) -> None:
+        """下载失败：直接显示失败原因（不带版本前缀）。"""
+        self._inline_update_info = info
+        self._set_check_action_busy(False)
+        self._show_update_status(
+            f"下载失败 · {self._inline_error_text(error)}",
+            danger=True,
+        )
+
+    def _set_check_action_busy(self, busy: bool) -> None:
+        """切换「检查更新」动作忙碌态。"""
+        if self._check_update_action is not None:
+            self._check_update_action.set_busy(busy)
+
+    def _show_update_status(
+        self,
+        text: str,
+        *,
+        danger: bool = False,
+        animate: bool = True,
+    ) -> None:
+        """显示/更新内联结果行。"""
+        if self._update_status is not None:
+            self._update_status.show_text(
+                text, danger=danger, animate=animate
+            )
+
+    def _hide_update_status(self, *, animate: bool = True) -> None:
+        """收起内联结果行（默认不留空行）。"""
+        if self._update_status is not None:
+            self._update_status.hide_text(animate=animate)
+
+    def _show_download_progress(
+        self,
+        info: object,
+        downloaded: int,
+        total: int,
+        *,
+        animate: bool = True,
+    ) -> None:
+        """显示「发现新版本 … · 正在下载更新...N%」。"""
+        version = self._inline_version_text(info)
+        prefix = f"发现新版本 {version}" if version else "发现新版本"
+        if total > 0:
+            percent = int(max(0, min(100, downloaded * 100 / total)))
+        else:
+            percent = 0
+        self._show_update_status(
+            f"{prefix} · 正在下载更新...{percent}%",
+            animate=animate,
+        )
+
+    @staticmethod
+    def _inline_version_text(info: object) -> str:
+        """从 UpdateInfo 提取用于显示的 ``vX.Y.Z`` 版本号。"""
+        remote = getattr(info, "remote", None)
+        if not isinstance(remote, dict):
+            remote = {}
+        text = str(remote.get("version") or remote.get("tag") or "").strip()
+        if text[:1] in ("v", "V"):
+            text = text[1:].strip()
+        return f"v{text}" if text else ""
+
+    @staticmethod
+    def _inline_error_text(error: object) -> str:
+        """把更新错误转换为结果行中的失败原因。"""
+        if getattr(error, "code", "") == "no_installer_asset":
+            return "该版本没有可用的安装包"
+        message = str(getattr(error, "message", "") or "").strip()
+        if not message:
+            message = str(error or "").strip()
+        if "Traceback" in message:
+            message = "更新检查失败，请稍后重试。"
+        return message or "未知错误"
 
     def _apply_about_styles(self) -> None:
         """按当前主题重注册关于页身份区、链接、联系面板与页脚样式。"""
@@ -2962,6 +3569,8 @@ class AboutSettingsPage(QWidget):
                 f"background: transparent; border: none; "
                 f"color: {tm.qss_color(tm.text_secondary)}; font-size: 12px;"
             ))
+        if self._update_status is not None:
+            self._update_status.refresh_theme()
         if self._divider is not None:
             register_widget_qss(self._divider, (
                 f"#AboutDivider {{ background: {tm.qss_color(tm.divider)};"

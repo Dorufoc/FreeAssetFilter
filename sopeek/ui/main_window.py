@@ -3623,7 +3623,14 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
                 self._info_panel.stop()
         except Exception as exc:
             debug(f"退出时信息面板停止失败：{exc}")
-        # 关闭更新弹窗并停止 spk_updater 边车，避免退出后残留子进程。
+        # 关闭更新弹窗/内联更新会话并停止 spk_updater 边车，避免退出后残留子进程。
+        try:
+            if "sopeek.ui.update_inline" in sys.modules:
+                from sopeek.ui.update_inline import reset_inline_update_session
+
+                reset_inline_update_session()
+        except Exception as exc:  # noqa: BLE001 - 退出路径不允许更新组件阻断
+            debug(f"退出时关闭内联更新会话失败：{exc}")
         try:
             from sopeek.ui.update_entry import reset_update_entry_controller
 

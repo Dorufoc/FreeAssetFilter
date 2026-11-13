@@ -196,7 +196,14 @@ def _reset_all_singletons() -> None:
 
     import sopeek.core.managers.thumbnail_manager as _thumbnail_module
 
-    # 更新入口控制器持有弹窗并订阅 UpdateService 信号，先释放再销毁服务。
+    # 更新入口控制器/内联会话持有弹窗或服务信号，先释放再销毁服务。
+    try:
+        if "sopeek.ui.update_inline" in sys.modules:
+            from sopeek.ui.update_inline import reset_inline_update_session
+
+            reset_inline_update_session()
+    except Exception:  # 清理阶段：内联会话可能尚未创建
+        pass
     try:
         from sopeek.ui.update_entry import reset_update_entry_controller
 
