@@ -278,7 +278,7 @@ python -m sopeek.app.main
 
 ### Interface Layout
 
-Sopeek offers two main interface layouts, switchable in **Settings → General → Interface Layout** (takes effect immediately after clicking "OK"), or instantly via the **layout switch button at the top-right** of the main window:
+Sopeek offers two main interface layouts, switchable in **Settings → General → Interface Layout** (takes effect immediately after clicking "OK"):
 
 ```
 ┌─────────────────┬─────────────────┬─────────────────┐
@@ -292,6 +292,8 @@ Sopeek offers two main interface layouts, switchable in **Settings → General �
 │                 │                 │                 │
 └─────────────────┴─────────────────┴─────────────────┘
 ```
+
+**Double-click any inner divider (panel edge)** to restore the current layout's default ratios (including automatic 16:9 preview sizing), replacing the old "Reset layout" button.
 
 ### Basic Operations
 

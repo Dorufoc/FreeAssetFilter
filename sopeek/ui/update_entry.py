@@ -1,8 +1,8 @@
 """检查更新入口控制器。
 
-主窗口标题栏与设置页「关于」页共用本控制器：同一个在途检查、同一个单弹窗
-（:class:`~sopeek.ui.layout.update_dialogs.UpdateCenterDialog`）、
-同一份结果。
+保留单弹窗检查更新流程的既有契约（测试与后续入口可复用）。当前主窗口
+标题栏精简后不再提供该入口；设置页「关于」页使用内联更新会话
+（:mod:`sopeek.ui.update_inline`），不走本控制器。
 
 职责边界：
 
@@ -30,7 +30,7 @@ MIN_CHECKING_VISIBLE_MS = 250
 
 
 class UpdateEntryController(QObject):
-    """两个入口共享的检查更新编排器。
+    """设置页「关于」页的检查更新编排器。
 
     Attributes:
         MIN_CHECKING_VISIBLE_MS: 检查中状态的最短展示时长（毫秒）。
@@ -68,7 +68,7 @@ class UpdateEntryController(QObject):
     def request_check(self) -> None:
         """发起或加入一次手动检查，并在弹窗内展示检查状态。
 
-        两个入口（标题栏 / 关于页）唯一调用点。重复调用只把已有弹窗前置，
+        「关于」页检查更新动作的唯一调用点。重复调用只把已有弹窗前置，
         不会重复派发检查。
         """
         if self._disposed:

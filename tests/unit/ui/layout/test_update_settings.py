@@ -488,7 +488,7 @@ class TestCheckUpdatesSubmit:
             qapp, monkeypatch, tmp_path
         )
         try:
-            # 关于页构造期会订阅更新服务信号（Todo 15）；提交路径不得新增调用。
+            # 关于页构造期不订阅更新服务；提交路径不得新增调用。
             calls.clear()
             layout._staging_cache.set(_KEY, False)
             assert layout._submit_settings() is True

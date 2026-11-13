@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Tuple
 
 import pytest
+from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 # 布局模块内部使用短路径导入（from theme import tm 等），要求 sopeek/ui
@@ -42,6 +44,8 @@ from sopeek.ui.layout.main_layout import (  # noqa: E402
     WORKSPACE_MODE,
     WORKSPACE_POOL_RATIO,
     MainLayout,
+    _LayoutSplitter,
+    _LayoutSplitterHandle,
     default_left_width,
 )
 from tests.support.qt_helpers import safe_teardown  # noqa: E402
@@ -489,5 +493,149 @@ class TestLeafMinimums:
             # 新下限：预览最小总高 408 生效（接近占满可用高，底行 = 余量）
             assert preview_h >= 408 - 2
             assert bottom_h <= max(0, v_avail - 408) + 2
+        finally:
+            safe_teardown(layout)
+
+
+class TestHandleDoubleClickReset:
+    """双击内部分隔条（栏边缘）→ 重置整个布局为当前模式默认比例。
+
+    替代已移除的标题栏「重置布局」按钮：任意一条内部分隔条双击都恢复全部
+    默认比例（含复位右竖条拖拽标记、恢复 16:9 自动维持）。
+    """
+
+    @staticmethod
+    def _double_click_handle(splitter, index: int = 1) -> None:
+        """双击 splitter 的第 ``index`` 条内部把手（默认唯一可见把手）。"""
+        handle = splitter.handle(index)
+        assert handle is not None
+        QTest.mouseDClick(handle, Qt.LeftButton, pos=handle.rect().center())
+
+    def test_handles_are_reset_aware(self, qapp: QApplication) -> None:
+        """每条分隔条均为 _LayoutSplitter，内部把手为重置手柄且带 tooltip。"""
+        layout = _show_layout(qapp, WORKSPACE_MODE, (1200, 800))
+        try:
+            for splitter in layout.splitters.values():
+                assert isinstance(splitter, _LayoutSplitter)
+                # handle(0)/handle(count) 是两端把手（通常隐藏）；内部把手
+                # 为 1..count-1，对应「栏边缘」。
+                for index in range(1, splitter.count()):
+                    handle = splitter.handle(index)
+                    assert isinstance(handle, _LayoutSplitterHandle)
+                    assert handle.toolTip() == "双击重置布局"
+        finally:
+            safe_teardown(layout)
+
+    def test_double_click_resets_workspace_layout(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """workspace：拖乱主横条/右竖条后双击把手 → 左栏 1/3、预览 16:9、底行 50:50。"""
+        monkeypatch.setattr(
+            "sopeek.ui.layout.main_layout.is_animation_enabled",
+            lambda *_args, **_kwargs: False,
+        )
+        layout = _show_layout(qapp, WORKSPACE_MODE, (1200, 800))
+        try:
+            main = layout.splitters["main"]
+            right = layout.splitters["right"]
+            bottom = layout.splitters["bottom"]
+
+            # 拖乱：左栏变窄、右竖条压到几乎全给底行（并置拖拽标记）
+            avail_w = layout.width() - HANDLE_WIDTH
+            main.setSizes([200, avail_w - 200])
+            v_avail = _right_available(layout)
+            right.setSizes([v_avail - 150, 150])
+            layout._on_right_splitter_moved(0, 1)
+            _pump_events(qapp)
+            assert layout._right_user_dragged is True
+
+            self._double_click_handle(main)
+            _pump_events(qapp)
+
+            assert layout._right_user_dragged is False
+            left_w = main.sizes()[0]
+            assert abs(left_w - default_left_width(layout.width())) <= 3
+            expect_preview = (
+                int(round(right.width() * 9.0 / 16.0)) + PREVIEW_CHROME_PX
+            )
+            assert abs(right.sizes()[0] - expect_preview) <= 3
+            pool_w, info_w = bottom.sizes()
+            assert abs(pool_w / max(1, pool_w + info_w) - WORKSPACE_POOL_RATIO) <= 0.03
+        finally:
+            safe_teardown(layout)
+
+    def test_double_click_resets_classic_layout(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """classic：拖乱三栏与右栏后双击把手 → 三栏 1:1:1、右栏各半。"""
+        monkeypatch.setattr(
+            "sopeek.ui.layout.main_layout.is_animation_enabled",
+            lambda *_args, **_kwargs: False,
+        )
+        layout = _show_layout(qapp, CLASSIC_MODE, (1200, 800))
+        try:
+            main = layout.splitters["main"]
+            right = layout.splitters["right"]
+            avail_w = layout.width() - 2 * HANDLE_WIDTH
+            main.setSizes([200, 200, avail_w - 400])
+            v_avail = _right_available(layout)
+            right.setSizes([v_avail - 100, 100])
+            _pump_events(qapp)
+
+            self._double_click_handle(right)
+            _pump_events(qapp)
+
+            third = default_left_width(layout.width())
+            for size in main.sizes():
+                assert abs(size - third) <= 3
+            preview_h, info_h = right.sizes()
+            assert abs(preview_h - info_h) <= 3
+        finally:
+            safe_teardown(layout)
+
+    def test_double_click_uses_animated_reset_when_enabled(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """动画开启：双击先启动渐变，渐变结束后落到默认尺寸。"""
+        monkeypatch.setattr(
+            "sopeek.ui.layout.main_layout.is_animation_enabled",
+            lambda *_args, **_kwargs: True,
+        )
+        layout = _show_layout(qapp, WORKSPACE_MODE, (1200, 800))
+        try:
+            main = layout.splitters["main"]
+            avail_w = layout.width() - HANDLE_WIDTH
+            main.setSizes([200, avail_w - 200])
+            _pump_events(qapp)
+
+            self._double_click_handle(main)
+            assert layout._reset_anim is not None  # 渐变已启动
+            _pump_events(qapp, 600)
+            assert layout._reset_anim is None  # 渐变已收尾
+            assert abs(main.sizes()[0] - default_left_width(layout.width())) <= 3
+        finally:
+            safe_teardown(layout)
+
+    def test_right_button_double_click_is_ignored(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """仅左键双击重置：右键双击不改比例。"""
+        monkeypatch.setattr(
+            "sopeek.ui.layout.main_layout.is_animation_enabled",
+            lambda *_args, **_kwargs: False,
+        )
+        layout = _show_layout(qapp, WORKSPACE_MODE, (1200, 800))
+        try:
+            main = layout.splitters["main"]
+            avail_w = layout.width() - HANDLE_WIDTH
+            main.setSizes([200, avail_w - 200])
+            _pump_events(qapp)
+            dragged_left = main.sizes()[0]
+
+            handle = main.handle(1)
+            QTest.mouseDClick(handle, Qt.RightButton, pos=handle.rect().center())
+            _pump_events(qapp)
+
+            assert main.sizes()[0] == dragged_left
         finally:
             safe_teardown(layout)

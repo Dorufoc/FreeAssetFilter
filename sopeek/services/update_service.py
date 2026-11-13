@@ -502,10 +502,32 @@ class UpdateService(QObject):
                 return ("paused", downloaded, total)
             return (state, downloaded, total)
 
-    def verify_installer(self, path: Path, sha256: str) -> tuple[bool, int, int]:
-        """调用原生 verify 校验安装包签名/卷序列号。"""
+    def verify_installer(
+        self,
+        path: Path,
+        sha256: str,
+        *,
+        timeout: Optional[float] = None,
+    ) -> tuple[bool, int, int]:
+        """调用原生 verify 校验安装包哈希/卷序列号。
+
+        Args:
+            path: 待校验安装包路径。
+            sha256: 发布信息中的期望 SHA-256。
+            timeout: 可选的本次请求等待上限（秒）；``None`` 使用桥默认值。
+                启动时待安装更新路径会传入较短超时，避免阻塞主窗口过久。
+
+        Returns:
+            tuple[bool, int, int]: ``(哈希是否匹配, 卷序列号, 文件索引)``。
+        """
         self._bridge.ensure_started()
-        response = self._bridge.verify({"path": str(path), "sha256": sha256})
+        params = {"path": str(path), "sha256": sha256}
+        if timeout is None:
+            response = self._bridge.verify(params)
+        else:
+            response = self._bridge.request(
+                "verify", params, timeout=timeout
+            )
         if not isinstance(response, dict) or not response.get("ok", False):
             raise self._error_from_response(response)
         result = response.get("result") or {}

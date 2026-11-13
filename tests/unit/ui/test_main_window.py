@@ -33,6 +33,7 @@ from PySide6.QtGui import (
     QPixmap,
     QShowEvent,
 )
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QWidget
 
 # main_window.py 自带 _ui_root bootstrap（第 22-30 行），
@@ -162,7 +163,11 @@ class TestMainWindowStructure:
         qapp.processEvents()
 
     def test_title_bar_buttons_exist(self, qapp: QApplication) -> None:
-        """标题栏按钮（最小化/最大化/关闭/主题/设置/重置布局/布局切换）均存在。"""
+        """标题栏按钮（最小化/最大化/关闭/主题/设置）均存在。
+
+        布局切换 / 重置布局 / 检查更新已从标题栏移除：布局切换与检查更新只
+        保留设置面板入口，重置布局改为双击内部分隔条（见 MainLayout）。
+        """
         window = MainWindow()
         for attr in (
             "_minimize_btn",
@@ -170,11 +175,32 @@ class TestMainWindowStructure:
             "_close_btn",
             "_theme_btn",
             "_settings_btn",
+        ):
+            assert getattr(window, attr) is not None, f"{attr} 缺失"
+        for removed_attr in (
             "_reset_layout_btn",
             "_layout_toggle_btn",
             "_update_btn",
         ):
-            assert getattr(window, attr) is not None, f"{attr} 缺失"
+            assert not hasattr(window, removed_attr), f"{removed_attr} 应已移除"
+        window.deleteLater()
+        qapp.processEvents()
+
+    def test_title_bar_shows_app_logo_before_name(
+        self, qapp: QApplication
+    ) -> None:
+        """标题栏：软件图标位于软件名称左侧（SPK-main.png 资源存在时）。"""
+        window = MainWindow()
+        label = window._title_icon_label
+        assert label is not None
+        pixmap = label.pixmap()
+        assert pixmap is not None and not pixmap.isNull()
+        assert label.width() == MainWindow.TITLE_BAR_LOGO_SIZE
+        assert label.height() == MainWindow.TITLE_BAR_LOGO_SIZE
+        header_layout = window._title_bar_header.layout()
+        assert header_layout.indexOf(label) < header_layout.indexOf(
+            window._title_label
+        )
         window.deleteLater()
         qapp.processEvents()
 
@@ -190,36 +216,14 @@ class TestMainWindowStructure:
             "_close_btn",
             "_theme_btn",
             "_settings_btn",
+        ):
+            assert getattr(window, attr) is not None
+        for removed_attr in (
             "_reset_layout_btn",
             "_layout_toggle_btn",
             "_update_btn",
         ):
-            assert getattr(window, attr) is not None
-        window.deleteLater()
-        qapp.processEvents()
-
-    def test_title_bar_update_button_delegates_to_controller(
-        self, qapp: QApplication, monkeypatch: Any
-    ) -> None:
-        """点击检查更新只委托共享控制器，按钮外观不反映检查状态。"""
-        window = MainWindow()
-        calls: list[bool] = []
-
-        class _StubEntry:
-            @staticmethod
-            def request_check() -> None:
-                calls.append(True)
-
-        monkeypatch.setattr(
-            "sopeek.ui.update_entry.get_update_entry_controller",
-            lambda: _StubEntry(),
-        )
-
-        window._update_btn.click()
-
-        assert calls == [True]
-        assert window._update_btn.isEnabled() is True
-        assert window._update_btn.progress() is None
+            assert not hasattr(window, removed_attr), f"{removed_attr} 应已移除"
         window.deleteLater()
         qapp.processEvents()
 
@@ -382,29 +386,32 @@ class TestMainWindowPanelBuild:
         window.deleteLater()
         qapp.processEvents()
 
-    def test_layout_toggle_button_switches_mode_and_icon(
-        self, qapp: QApplication
+    def test_splitter_double_click_resets_layout(
+        self, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """布局切换按钮：点击在 classic / workspace 间切换并同步图标与提示。"""
+        """双击内部分隔条（栏边缘）→ 委托 MainLayout 重置整个布局。"""
         window = MainWindow()
-        assert window.get_layout_mode() == "workspace"
-        assert window._layout_toggle_btn.toolTip() == "切换为经典三栏布局"
-
-        window._layout_toggle_btn.click()
-        assert window.get_layout_mode() == "classic"
-        assert window._layout_toggle_btn.toolTip() == "切换为预览优先布局"
-        assert str(window._layout_toggle_btn._svg_icon_path).endswith(
-            "layout_workspace.svg"
+        window._build_panel("preview")
+        window._build_panel("pool")
+        layout = window._main_layout
+        calls: list[bool] = []
+        monkeypatch.setattr(
+            layout,
+            "apply_default_ratios",
+            lambda **kwargs: calls.append(bool(kwargs.get("animated"))),
         )
-
-        window._layout_toggle_btn.click()
-        assert window.get_layout_mode() == "workspace"
-        assert window._layout_toggle_btn.toolTip() == "切换为经典三栏布局"
-        assert str(window._layout_toggle_btn._svg_icon_path).endswith(
-            "layout_classic.svg"
-        )
-        window.deleteLater()
-        qapp.processEvents()
+        # 关闭动画门控：重置走「立即应用」分支（按类所在模块打桩，
+        # 兼容 main_window 的短路径导入 layout.main_layout）。
+        module = sys.modules[type(layout).__module__]
+        monkeypatch.setattr(module, "is_animation_enabled", lambda *_a, **_k: False)
+        try:
+            handle = layout.splitters["main"].handle(1)
+            assert handle is not None
+            QTest.mouseDClick(handle, Qt.LeftButton)
+            assert calls == [False]
+        finally:
+            window.deleteLater()
+            qapp.processEvents()
 
 
 class TestMainWindowMinimumSizes:

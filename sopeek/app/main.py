@@ -753,6 +753,26 @@ def main(argv=None) -> int:
     except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError) as e:
         warning(f"写入运行实例信息失败: {e}")
 
+    # 启动前待安装更新：在创建主窗口/提权自愈之前校验并直接拉起安装器。
+    # 成功后本进程立即退出，让安装器接管；失败只提示并继续正常启动。
+    try:
+        from sopeek.app.pending_update import handle_pending_update
+
+        pending_launched = handle_pending_update()
+    except Exception as exc:  # noqa: BLE001 - 更新组件不得阻断启动
+        warning(f"处理待安装更新失败: {exc!r}")
+        pending_launched = False
+    if pending_launched:
+        try:
+            instance_guard._remove_runtime_instance_info(
+                expected_pid=os.getpid()
+            )
+        except Exception as exc:  # noqa: BLE001 - 退出路径不允许抛
+            debug(f"清理运行时实例信息失败: {exc!r}")
+        instance_guard._release_mutex(mutex_handle)
+        _cleanup_process_facilities(facilities)
+        return 0
+
     # 启动期提权自愈（task 13）：管理员运行时 UIPI 会拦截 Explorer 的
     # 拖入投放；询问用户是否以普通权限重启。必须在单实例互斥体已获取、
     # 主窗口构建之前执行（非提权路径零副作用）。

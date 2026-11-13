@@ -172,6 +172,7 @@ class FakeBridge:
         self.verify_entered = threading.Event()
         self.verify_calls: list[dict[str, Any]] = []
         self.verify_threads: list[threading.Thread] = []
+        self.request_calls: list[tuple[str, dict[str, Any], float | None]] = []
 
         self.stop_result = True
         self.stop_calls: list[float] = []
@@ -300,6 +301,22 @@ class FakeBridge:
         if self.cancel_error is not None:
             raise self.cancel_error
         return self.cancel_response
+
+    def request(
+        self,
+        cmd: str,
+        params: dict[str, Any] | None = None,
+        *,
+        timeout: float | None = None,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        """记录通用请求，verify 复用同一响应。"""
+        del request_id
+        payload = dict(params or {})
+        self.request_calls.append((cmd, payload, timeout))
+        if cmd == "verify":
+            return self.verify(payload)
+        raise AssertionError(f"unexpected command: {cmd}")
 
     def verify(self, params: dict[str, Any], request_id: str | None = None) -> dict[str, Any]:
         """记录 verify 参数与调用线程。"""
@@ -1558,6 +1575,24 @@ class TestCache:
         result = service.verify_installer(Path("C:/Setup.exe"), SHA)
         assert result == (True, 1, 2)
         assert bridge.verify_calls[0] == {"path": str(Path("C:/Setup.exe")), "sha256": SHA}
+
+    def test_verify_installer_honors_optional_timeout(
+        self, service_factory: Callable[..., Any]
+    ) -> None:
+        """启动路径可传入较短 verify 超时，避免阻塞主窗口过久。"""
+        service, bridge = service_factory()
+        result = service.verify_installer(
+            Path("C:/Setup.exe"), SHA, timeout=3.5
+        )
+
+        assert result == (True, 1, 2)
+        assert bridge.request_calls == [
+            (
+                "verify",
+                {"path": str(Path("C:/Setup.exe")), "sha256": SHA},
+                3.5,
+            )
+        ]
 
     def test_is_available_reprobes_and_shutdown_forwards(
         self, service_factory: Callable[..., Any]

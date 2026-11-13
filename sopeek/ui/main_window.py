@@ -79,6 +79,7 @@ from sopeek.ui.elevated_drop import ElevatedDropFallbackMixin
 from theme import tm
 
 from components.custom_background import BACKGROUND_DIR_NAME, CustomImageBackgroundWidget
+from components.app_logo import app_logo_pixmap
 # MicaMaterial（sopeek.ui.mica.material）不在模块级导入：它经
 # mica.engine 连带 numpy，导入约 0.16s，属「窗口出现前」关键路径。材质改为
 # 窗口显示后惰性创建（见 _MicaBackgroundMixin._ensure_mica_material），与既有
@@ -744,6 +745,11 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
     STARTUP_OVERLAY_MAX_MS = 8000
     STARTUP_OVERLAY_FADE_MS = 200
 
+    #: 标题栏软件图标（位于软件名称左侧）的逻辑像素边长。
+    TITLE_BAR_LOGO_SIZE = 20
+    #: 软件图标与标题文字之间的水平间距（px）。
+    TITLE_BAR_LOGO_GAP = 8
+
     #: 背景模式真正变化后发出（参数为目标模式）。设置窗口据此只在 mica
     #: 模式下显示共享层背景，切到 image / minimalist 时立即隐藏。
     background_mode_changed = Signal(str)
@@ -815,14 +821,12 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         # 自绘标题栏 QFrame：启动加载覆盖层据它做 stackUnder，使遮罩不透明底
         # 铺到标题栏区域、而标题栏文字与按钮仍留在遮罩之上（见 _mount_startup_overlay）
         self._title_bar_header = None
-        self._layout_toggle_btn = None
-        self._reset_layout_btn = None
-        self._update_btn = None
         self._settings_btn = None
         self._theme_btn = None
         self._minimize_btn = None
         self._maximize_btn = None
         self._title_label = None
+        self._title_icon_label = None
         self._close_btn = None
         # 设置窗口实例引用：防止局部变量被 GC 后窗口闪退；
         # 仅在设置窗口存活期间持有，关闭销毁后清空
@@ -2047,50 +2051,29 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         header_layout.setContentsMargins(16, 8, 16, 8)
         header_layout.setSpacing(0)
 
+        # 软件图标（位于软件名称左侧）：SPK-main.png 按 DPR 缩放；资源缺失时
+        # 跳过图标显示，标题文字保持原有起始位置（见 components.app_logo）。
+        logo = app_logo_pixmap(self.TITLE_BAR_LOGO_SIZE)
+        if not logo.isNull():
+            self._title_icon_label = QLabel()
+            self._title_icon_label.setObjectName("TitleBarLogo")
+            self._title_icon_label.setFixedSize(
+                self.TITLE_BAR_LOGO_SIZE, self.TITLE_BAR_LOGO_SIZE
+            )
+            self._title_icon_label.setAlignment(Qt.AlignCenter)
+            register_widget_qss(
+                self._title_icon_label,
+                "#TitleBarLogo { background: transparent; border: none; }",
+            )
+            self._title_icon_label.setPixmap(logo)
+            header_layout.addWidget(self._title_icon_label, 0, Qt.AlignVCenter)
+            header_layout.addSpacing(self.TITLE_BAR_LOGO_GAP)
+
         # 标题文字
         self._title_label = QLabel("Sopeek")
         register_widget_qss(self._title_label,(f'font-size: 14px; font-weight: 600; color: {tm.text.name()};'))
         header_layout.addWidget(self._title_label)
         header_layout.addStretch()
-
-        # 布局切换按钮（SVG图标）：在「预览优先 / 经典三栏」两种布局间切换
-        self._layout_toggle_btn = StyledButton(
-            "", variant="ghost", size="sm", icon=""
-        )
-        self._layout_toggle_btn.setFixedSize(32, 32)
-        register_widget_qss(self._layout_toggle_btn,(self._title_bar_button_style()))
-        self._layout_toggle_btn.clicked.connect(self._toggle_layout_mode)
-        header_layout.addWidget(self._layout_toggle_btn)
-        self._update_layout_toggle_button()
-
-        # 重置布局按钮（SVG图标）：把各区域位置大小恢复到默认值
-        reset_icon_path = icons_dir() / "refresh.svg"
-        self._reset_layout_btn = StyledButton(
-            "",
-            variant="ghost",
-            size="sm",
-            icon=str(reset_icon_path) if reset_icon_path.exists() else ""
-        )
-        self._reset_layout_btn.setFixedSize(32, 32)
-        register_widget_qss(self._reset_layout_btn,(self._title_bar_button_style()))
-        self._reset_layout_btn.setToolTip("重置布局")
-        self._reset_layout_btn.clicked.connect(self._reset_layout)
-        header_layout.addWidget(self._reset_layout_btn)
-
-        # 检查更新按钮（SVG图标）：弹出更新中心弹窗，按钮本身不反映检查状态
-        update_icon_path = icons_dir() / "title_update.svg"
-        self._update_btn = StyledButton(
-            "",
-            variant="ghost",
-            size="sm",
-            icon=str(update_icon_path) if update_icon_path.exists() else "",
-        )
-        self._update_btn.setObjectName("TitleBarUpdateButton")
-        self._update_btn.setFixedSize(32, 32)
-        register_widget_qss(self._update_btn, self._title_bar_button_style())
-        self._update_btn.setToolTip("检查更新")
-        self._update_btn.clicked.connect(self._on_check_update_clicked)
-        header_layout.addWidget(self._update_btn)
 
         # 设置按钮（SVG图标）
         settings_icon_path = icons_dir() / "setting.svg"
@@ -2157,15 +2140,6 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         header.installEventFilter(self)
         parent_layout.addWidget(header)
 
-    def _on_check_update_clicked(self) -> None:
-        """标题栏检查更新入口：委托共享控制器，按钮本身不反映任何状态。"""
-        try:
-            from sopeek.ui.update_entry import get_update_entry_controller
-
-            get_update_entry_controller().request_check()
-        except Exception as exc:  # noqa: BLE001 - 入口失败不应拖垮主窗口
-            warning(f"打开检查更新失败：{exc}")
-
     def _title_bar_button_style(self, font_size: str = "14px") -> str:
         """生成标题栏按钮的 styleSheet（使用 tm 当前颜色值）"""
         return f"""
@@ -2198,67 +2172,6 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             # 窗口已最大化，显示还原图标（max_2）
             if max_2_path.exists():
                 self._maximize_btn.set_svg_icon(str(max_2_path))
-    
-    def _reset_layout(self) -> None:
-        """把主界面各区域的位置大小恢复为当前布局模式的默认值（渐变过渡）"""
-        if self._main_layout is None:
-            return
-        self._main_layout.apply_default_ratios(
-            animated=is_animation_enabled("layout_reset", default=True)
-        )
-
-    def _toggle_layout_mode(self) -> None:
-        """布局切换按钮：在「预览优先」与「经典三栏」两种布局间即时切换。
-
-        与设置页「通用 → 界面布局」同一链路：先预抓拍旧外观快照（250ms
-        溶解过渡，受 layout_switch 动画门控），再 ``set_layout_mode``
-        即时重组布局，最后延迟写盘 ``general.layout_mode``，避免同步磁盘
-        IO 推迟过渡动画启动。按钮图标与提示由 ``set_layout_mode`` 内的
-        ``_update_layout_toggle_button`` 统一刷新，本方法不重复维护。
-        """
-        target = "classic" if self._layout_mode == "workspace" else "workspace"
-        self.begin_layout_transition()
-        if not self.set_layout_mode(target):
-            return
-        self._persist_layout_mode()
-
-    def _update_layout_toggle_button(self) -> None:
-        """按当前布局模式刷新切换按钮的图标与提示（图标=点击后的目标模式）。"""
-        btn = self._layout_toggle_btn
-        if btn is None:
-            return
-        if self._layout_mode == "workspace":
-            # 当前预览优先 → 点击切为经典三栏，显示经典布局图标
-            icon_path = icons_dir() / "layout_classic.svg"
-            btn.setToolTip("切换为经典三栏布局")
-        else:
-            icon_path = icons_dir() / "layout_workspace.svg"
-            btn.setToolTip("切换为预览优先布局")
-        if icon_path.exists():
-            btn.set_svg_icon(str(icon_path))
-
-    def _persist_layout_mode(self) -> None:
-        """延迟写盘布局偏好到 SettingsManagerV2（general.layout_mode）。
-
-        延迟到下一事件循环拍执行，避免同步磁盘 IO 推迟过渡动画启动；
-        回调内读取最新 ``_layout_mode``，快速连点只落最终值。失败仅告警，
-        不阻塞布局切换。
-        """
-
-        def _deferred_save() -> None:
-            try:
-                app = QApplication.instance()
-                v2 = getattr(app, "settings_manager", None)
-                if v2 is None:
-                    from sopeek.core.managers.settings_manager_v2 import SettingsManagerV2
-                    v2 = SettingsManagerV2()
-                    v2.load()
-                v2.set("general.layout_mode", self._layout_mode)
-                v2.save()
-            except Exception as exc:  # noqa: BLE001 - 延迟写盘失败仅告警
-                warning(f"布局设置保存失败（重启后可能回退）：{exc}")
-
-        QTimer.singleShot(0, _deferred_save)
 
     def _open_settings_window(self) -> None:
         """打开设置窗口（每次新建，关闭即销毁，不缓存窗口实例）。
@@ -2662,7 +2575,7 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         """
         # 新一轮布局切换：递增代际，作废上一轮过渡未收尾的恢复回调
         self._layout_transition_generation += 1
-        # 门控：布局切换动画关闭时跳过过渡（与 _reset_layout 的 layout_reset 同款）
+        # 门控：布局切换动画关闭时跳过过渡（与双击分隔条重置的 layout_reset 同款）
         if not is_animation_enabled("layout_switch", default=True):
             return
         try:
@@ -3099,10 +3012,6 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             if self._title_label is not None:
                 register_widget_qss(self._title_label,(f'font-size: 14px; font-weight: 600; color: {tm.text.name()};'))
             # 刷新所有标题栏按钮的 styleSheet（tm 颜色值已变化）
-            register_widget_qss(self._layout_toggle_btn,(self._title_bar_button_style()))
-            register_widget_qss(self._reset_layout_btn,(self._title_bar_button_style()))
-            if self._update_btn is not None:
-                register_widget_qss(self._update_btn,(self._title_bar_button_style()))
             register_widget_qss(self._settings_btn,(self._title_bar_button_style()))
             register_widget_qss(self._theme_btn,(self._title_bar_button_style()))
             register_widget_qss(self._minimize_btn,(self._title_bar_button_style()))
@@ -3714,7 +3623,14 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
                 self._info_panel.stop()
         except Exception as exc:
             debug(f"退出时信息面板停止失败：{exc}")
-        # 关闭更新弹窗并停止 spk_updater 边车，避免退出后残留子进程。
+        # 关闭更新弹窗/内联更新会话并停止 spk_updater 边车，避免退出后残留子进程。
+        try:
+            if "sopeek.ui.update_inline" in sys.modules:
+                from sopeek.ui.update_inline import reset_inline_update_session
+
+                reset_inline_update_session()
+        except Exception as exc:  # noqa: BLE001 - 退出路径不允许更新组件阻断
+            debug(f"退出时关闭内联更新会话失败：{exc}")
         try:
             from sopeek.ui.update_entry import reset_update_entry_controller
 
@@ -4330,7 +4246,6 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         if self._main_layout is None or self._splitter_container is None:
             # 轻量启动外壳阶段：仅记录偏好，构建时应用
             self._layout_mode = mode
-            self._update_layout_toggle_button()
             return True
         if mode == self._layout_mode:
             return True
@@ -4382,8 +4297,6 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         self._main_layout = new_layout
         self._zones = new_layout.zones
         self._layout_mode = mode
-        # 顶栏布局切换按钮随模式刷新（设置页切换与按钮点击同链路）
-        self._update_layout_toggle_button()
         # 统一操作按钮承载方式随布局切换（经典=底部栏 / New=预览器顶栏）
         if self._previewer is not None:
             self._previewer.set_actions_mode(mode == "workspace")

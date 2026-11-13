@@ -23,6 +23,7 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 import sopeek.ui.layout.settings_layout as sl_mod
 import sopeek.ui.layout.update_dialogs as ud_mod
+import sopeek.ui.update_inline as ui_mod
 from sopeek.services.update_service import UpdateError, UpdateInfo
 from sopeek.utils.version_info import RELEASES_URL
 from tests.support.qt_helpers import (
@@ -192,15 +193,65 @@ def dialog_calls(monkeypatch: Any) -> dict[str, list[Any]]:
     return calls
 
 
+class FakeInlineSession(QObject):
+    """关于页内联会话替身：只负责发射可控状态信号。"""
+
+    checking = Signal()
+    up_to_date = Signal(object)
+    check_failed = Signal(object)
+    download_started = Signal(object)
+    download_progress = Signal(int, int)
+    downloaded = Signal(object, str)
+    download_failed = Signal(object, object)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.state = ui_mod.STATE_IDLE
+        self.info: Any = None
+        self.error: Any = None
+        self.downloaded_bytes = 0
+        self.total_bytes = 0
+        self.start_calls = 0
+        self.disposed = False
+
+    def start_check(self) -> None:
+        self.start_calls += 1
+        self.state = ui_mod.STATE_CHECKING
+        self.checking.emit()
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "state": self.state,
+            "info": self.info,
+            "error": self.error,
+            "downloaded": self.downloaded_bytes,
+            "total": self.total_bytes,
+        }
+
+
+@pytest.fixture
+def fake_inline_session(qapp: QApplication) -> FakeInlineSession:
+    """提供可控的内联更新会话替身。"""
+    del qapp
+    return FakeInlineSession()
+
+
 @pytest.fixture
 def about_page(
     qapp: QApplication,
     monkeypatch: Any,
-    fake_service: FakeUpdateService,
+    fake_inline_session: FakeInlineSession,
 ) -> Any:
-    """构造绑定假服务的关于页，并在用例后安全销毁。"""
+    """构造绑定内联会话替身的关于页，并在用例后安全销毁。"""
     monkeypatch.setattr(
-        sl_mod, "get_update_service", lambda: fake_service, raising=False
+        ui_mod,
+        "get_inline_update_session",
+        lambda *a, **k: fake_inline_session,
+    )
+    monkeypatch.setattr(
+        ui_mod,
+        "get_inline_update_session_if_exists",
+        lambda: fake_inline_session,
     )
     page = sl_mod.AboutSettingsPage()
     try:
@@ -316,66 +367,318 @@ def _cleanup_tracked_dialogs(qapp: QApplication):
     ud_mod._active_progress_dialogs.clear()
 
 
-class TestAboutPageDelegatesToUpdateCenter:
-    """关于页检查更新已改为委托共享控制器与单弹窗。"""
+@pytest.fixture
+def no_about_animation(monkeypatch: Any) -> None:
+    """关于页结果行测试默认关闭动画，避免异步高度过渡干扰断言。"""
+    monkeypatch.setattr(
+        sl_mod, "is_animation_enabled", lambda *a, **k: False
+    )
 
-    def test_about_has_check_update_action(self, about_page: Any) -> None:
-        """关于页保留「图标 + 检查更新」轻量动作，不再使用文字按钮。"""
+
+class TestAboutPageInlineUpdate:
+    """关于页内联检查更新交互。"""
+
+    def test_initial_action_and_no_status_row(
+        self, about_page: Any
+    ) -> None:
+        """初始只有「检查更新」动作，结果行隐藏且 0 高度。"""
         assert about_page._check_update_action is not None
         assert about_page._check_update_action.text() == "检查更新"
-        assert about_page._check_update_action._icon_name == "title_update.svg"
-        assert not hasattr(about_page._check_update_action, "set_progress")
-
-    def test_about_click_delegates_without_local_progress(
-        self, about_page: Any, monkeypatch: Any
-    ) -> None:
-        """点击只委托控制器：动作不持有本地进度，也不打开浏览器。"""
-        calls: list[bool] = []
-
-        class _StubEntry:
-            @staticmethod
-            def request_check() -> None:
-                calls.append(True)
-
-        monkeypatch.setattr(
-            "sopeek.ui.update_entry.get_update_entry_controller",
-            lambda: _StubEntry(),
+        assert (
+            about_page._check_update_action._icon_name
+            == "title_update.svg"
         )
-        opened: list[Any] = []
+        assert about_page._update_status.isHidden() is True
+        assert about_page._update_status.maximumHeight() == 0
+        assert about_page._update_status.text() == ""
 
-        class _Desktop:
-            @staticmethod
-            def openUrl(url: Any) -> None:
-                opened.append(url)
-
-        monkeypatch.setattr(sl_mod, "QDesktopServices", _Desktop)
+    def test_click_switches_action_to_busy(
+        self,
+        qapp: QApplication,
+        about_page: Any,
+        fake_inline_session: FakeInlineSession,
+    ) -> None:
+        """点击后动作原位变为「正在检查更新」+ 圆圈动画。"""
+        about_page.resize(640, 600)
+        about_page.show()
+        qapp.processEvents()
 
         about_page._check_update_action.clicked.emit()
+        qapp.processEvents()
 
-        assert calls == [True]
-        assert opened == []
-        assert not hasattr(about_page._check_update_action, "set_progress")
+        action = about_page._check_update_action
+        assert fake_inline_session.start_calls == 1
+        assert action.text() == "正在检查更新"
+        assert action.is_busy is True
+        assert action._spinner is not None
+        assert action._spinner.isHidden() is False
+        assert action._icon_label.isHidden() is True
+        assert about_page._update_status.isHidden() is True
 
-    def test_about_double_click_delegates_each_time(
-        self, about_page: Any, monkeypatch: Any
+    def test_up_to_date_restores_action_and_shows_result(
+        self,
+        qapp: QApplication,
+        about_page: Any,
+        fake_inline_session: FakeInlineSession,
+        no_about_animation: None,
     ) -> None:
-        """连点两次都委托控制器；去重由控制器的在途请求负责。"""
-        calls: list[bool] = []
+        """检查完成恢复按钮，并在下一行显示“当前已是最新版本”。"""
+        about_page.resize(640, 600)
+        about_page.show()
+        qapp.processEvents()
+        baseline = about_page._divider.y()
 
-        class _StubEntry:
-            @staticmethod
-            def request_check() -> None:
-                calls.append(True)
+        about_page._check_update_action.clicked.emit()
+        info = _info()
+        fake_inline_session.state = ui_mod.STATE_UP_TO_DATE
+        fake_inline_session.info = info
+        fake_inline_session.up_to_date.emit(info)
+        qapp.processEvents()
 
-        monkeypatch.setattr(
-            "sopeek.ui.update_entry.get_update_entry_controller",
-            lambda: _StubEntry(),
+        action = about_page._check_update_action
+        assert action.text() == "检查更新"
+        assert action.is_busy is False
+        assert action._icon_label.isHidden() is False
+        assert about_page._update_status.text() == "当前已是最新版本"
+        assert about_page._update_status.isHidden() is False
+        assert about_page._divider.y() > baseline
+
+    def test_check_failure_text(
+        self,
+        qapp: QApplication,
+        about_page: Any,
+        fake_inline_session: FakeInlineSession,
+        no_about_animation: None,
+    ) -> None:
+        """检查失败显示原因。"""
+        about_page.show()
+        qapp.processEvents()
+        about_page._check_update_action.clicked.emit()
+
+        error = UpdateError("network")
+        fake_inline_session.state = ui_mod.STATE_CHECK_FAILED
+        fake_inline_session.error = error
+        fake_inline_session.check_failed.emit(error)
+        qapp.processEvents()
+
+        assert about_page._check_update_action.text() == "检查更新"
+        assert about_page._update_status.text() == (
+            "检查失败 · 网络连接失败，请检查网络后重试。"
         )
 
+    def test_download_progress_text(
+        self,
+        qapp: QApplication,
+        about_page: Any,
+        fake_inline_session: FakeInlineSession,
+        no_about_animation: None,
+    ) -> None:
+        """发现新版本后显示百分比进度。"""
+        about_page.show()
+        qapp.processEvents()
         about_page._check_update_action.clicked.emit()
-        about_page._check_update_action.clicked.emit()
+        info = _available_info()
 
-        assert calls == [True, True]
+        fake_inline_session.state = ui_mod.STATE_DOWNLOADING
+        fake_inline_session.info = info
+        fake_inline_session.download_started.emit(info)
+        fake_inline_session.download_progress.emit(45, 100)
+        qapp.processEvents()
+
+        assert about_page._check_update_action.text() == "检查更新"
+        assert about_page._check_update_action.is_busy is False
+        assert about_page._update_status.text() == (
+            "发现新版本 v1.0.0-alpha.6 · 正在下载更新...45%"
+        )
+
+    def test_missing_asset_failure_text(
+        self,
+        qapp: QApplication,
+        about_page: Any,
+        fake_inline_session: FakeInlineSession,
+        no_about_animation: None,
+    ) -> None:
+        """缺少安装包时直接显示“下载失败 · 该版本没有可用的安装包”。"""
+        about_page.show()
+        qapp.processEvents()
+        about_page._check_update_action.clicked.emit()
+        info = _available_info(asset=None)
+        error = UpdateError(
+            "no_installer_asset", "该版本没有可用的安装包"
+        )
+
+        fake_inline_session.state = ui_mod.STATE_DOWNLOAD_FAILED
+        fake_inline_session.info = info
+        fake_inline_session.error = error
+        fake_inline_session.download_failed.emit(info, error)
+        qapp.processEvents()
+
+        assert about_page._update_status.text() == (
+            "下载失败 · 该版本没有可用的安装包"
+        )
+
+    def test_download_completed_text(
+        self,
+        qapp: QApplication,
+        about_page: Any,
+        fake_inline_session: FakeInlineSession,
+        no_about_animation: None,
+    ) -> None:
+        """下载完成提示下次启动安装。"""
+        about_page.show()
+        qapp.processEvents()
+        about_page._check_update_action.clicked.emit()
+        info = _available_info()
+
+        fake_inline_session.state = ui_mod.STATE_DOWNLOADED
+        fake_inline_session.info = info
+        fake_inline_session.downloaded.emit(info, "C:/download/Setup.exe")
+        qapp.processEvents()
+
+        assert about_page._update_status.text() == (
+            "更新包下载完成 · 将在下次启动时安装"
+        )
+
+    def test_new_check_hides_previous_result(
+        self,
+        qapp: QApplication,
+        about_page: Any,
+        fake_inline_session: FakeInlineSession,
+        no_about_animation: None,
+    ) -> None:
+        """再次检查时结果行先收起，避免保留上一次结果。"""
+        about_page.show()
+        qapp.processEvents()
+        info = _info()
+        fake_inline_session.state = ui_mod.STATE_UP_TO_DATE
+        fake_inline_session.info = info
+        fake_inline_session.up_to_date.emit(info)
+        qapp.processEvents()
+        assert about_page._update_status.isHidden() is False
+
+        about_page._check_update_action.clicked.emit()
+        qapp.processEvents()
+
+        assert fake_inline_session.start_calls == 1
+        assert about_page._update_status.isHidden() is True
+        assert about_page._update_status.maximumHeight() == 0
+
+    def test_snapshot_restored_on_show(
+        self,
+        qapp: QApplication,
+        about_page: Any,
+        fake_inline_session: FakeInlineSession,
+    ) -> None:
+        """设置页重新打开时从会话快照恢复下载进度。"""
+        fake_inline_session.state = ui_mod.STATE_DOWNLOADING
+        fake_inline_session.info = _available_info()
+        fake_inline_session.downloaded_bytes = 70
+        fake_inline_session.total_bytes = 100
+
+        about_page.resize(640, 600)
+        about_page.show()
+        qapp.processEvents()
+
+        assert about_page._update_status.text() == (
+            "发现新版本 v1.0.0-alpha.6 · 正在下载更新...70%"
+        )
+
+    def test_session_creation_failure_shows_error(
+        self,
+        qapp: QApplication,
+        about_page: Any,
+        monkeypatch: Any,
+        no_about_animation: None,
+    ) -> None:
+        """内联会话不可用时给出检查失败文案，不抛异常。"""
+        about_page.show()
+        qapp.processEvents()
+
+        def boom(*_args: Any, **_kwargs: Any) -> Any:
+            raise RuntimeError("boom")
+
+        about_page._update_session = None
+        monkeypatch.setattr(ui_mod, "get_inline_update_session", boom)
+        monkeypatch.setattr(
+            ui_mod, "get_inline_update_session_if_exists", lambda: None
+        )
+        about_page._check_update_action.clicked.emit()
+        qapp.processEvents()
+
+        assert about_page._update_status.text() == (
+            "检查失败 · 更新组件不可用，请重新安装应用。"
+        )
+
+    def test_real_session_wiring_end_to_end(
+        self,
+        qapp: QApplication,
+        about_page: Any,
+        fake_service: FakeUpdateService,
+        monkeypatch: Any,
+        no_about_animation: None,
+    ) -> None:
+        """真实 InlineUpdateSession 与服务信号接入关于页后完整走通。"""
+        real_session = ui_mod.InlineUpdateSession(
+            service_factory=lambda: fake_service
+        )
+        real_session.MIN_CHECKING_VISIBLE_MS = 0
+        monkeypatch.setattr(
+            ui_mod,
+            "get_inline_update_session",
+            lambda *a, **k: real_session,
+        )
+        monkeypatch.setattr(
+            ui_mod,
+            "get_inline_update_session_if_exists",
+            lambda: real_session,
+        )
+        about_page._update_session = None
+        about_page.show()
+        qapp.processEvents()
+        try:
+            about_page._check_update_action.clicked.emit()
+            qapp.processEvents()
+            assert (
+                about_page._check_update_action.text()
+                == "正在检查更新"
+            )
+            assert fake_service.check_calls == [True]
+
+            info = _info()
+            real_session._checking_shown_at = 0.0
+            fake_service.check_finished.emit("check-1", True, info, None)
+            qapp.processEvents()
+
+            assert about_page._check_update_action.text() == "检查更新"
+            assert about_page._update_status.text() == "当前已是最新版本"
+        finally:
+            real_session.dispose()
+
+    def test_result_row_animates_when_enabled(
+        self,
+        qapp: QApplication,
+        about_page: Any,
+        fake_inline_session: FakeInlineSession,
+        monkeypatch: Any,
+    ) -> None:
+        """动画开启时结果行通过高度动画展开。"""
+        monkeypatch.setattr(
+            sl_mod, "is_animation_enabled", lambda *a, **k: True
+        )
+        about_page.resize(640, 600)
+        about_page.show()
+        qapp.processEvents()
+        about_page._check_update_action.clicked.emit()
+        info = _info()
+
+        fake_inline_session.up_to_date.emit(info)
+        qapp.processEvents()
+
+        row = about_page._update_status
+        assert row._height_anim is not None
+        QTest.qWait(300)
+        qapp.processEvents()
+        assert row.maximumHeight() == sl_mod.ABOUT_STATUS_MAX_HEIGHT
 
 
 class TestUpdateDetailsDialog:
