@@ -128,6 +128,77 @@ def _get_font_metrics(family: str, point_size: int, weight: int) -> QFontMetrics
     return fm
 
 
+def _get_elided_text(text: str, max_w: int, point_size: int, weight: int) -> str:
+    """获取单行省略文本（按 (文本, 宽度, 字号, 字重) 缓存 elidedText 结果）。
+
+    Args:
+        text: 原始文本。
+        max_w: 可用宽度（px，整数）。
+        point_size: 字号（pt）。
+        weight: 字重。
+
+    Returns:
+        省略后的文本（与 ``QFontMetrics.elidedText(EldeRight)`` 结果一致）。
+    """
+    key = (text, int(max_w), int(point_size), int(weight))
+    cached = _ELIDE_CACHE.get(key)
+    if cached is not None:
+        _ELIDE_CACHE.move_to_end(key)
+        return cached
+    fm = _get_font_metrics("Microsoft YaHei UI", point_size, weight)
+    result = fm.elidedText(text, Qt.ElideRight, int(max_w))
+    _ELIDE_CACHE[key] = result
+    if len(_ELIDE_CACHE) > _ELIDE_CACHE_CAP:
+        _ELIDE_CACHE.popitem(last=False)
+    return result
+
+
+def _get_tile_title_layout(
+    title: str, max_w: int, point_size: int, weight: int
+) -> tuple:
+    """计算平铺标题的断行/省略结果（按 (标题, 宽度, 字号, 字重) 缓存）。
+
+    与 ``FileCardDelegate._draw_text`` 的断行算法逐字一致：整名放得下 → 单行；
+    否则二分查找首行最大可容纳字符数，余下部分省略。
+
+    Args:
+        title: 标题文本。
+        max_w: 可用宽度（px，整数）。
+        point_size: 字号（pt）。
+        weight: 字重。
+
+    Returns:
+        ``(单行?, 行高, 首行文本, 次行文本)``；次行为空串表示无第二行。
+    """
+    key = (title, int(max_w), int(point_size), int(weight))
+    cached = _TILE_TITLE_CACHE.get(key)
+    if cached is not None:
+        _TILE_TITLE_CACHE.move_to_end(key)
+        return cached
+    fm = _get_font_metrics("Microsoft YaHei UI", point_size, weight)
+    line_height = fm.height()
+    if fm.horizontalAdvance(title) <= max_w:
+        result = (True, line_height, title, "")
+    else:
+        lo, hi = 0, len(title)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if fm.horizontalAdvance(title[:mid]) <= max_w:
+                lo = mid
+            else:
+                hi = mid - 1
+        first_line = title[:lo]
+        remaining = title[len(first_line):].strip()
+        second_line = (
+            fm.elidedText(remaining, Qt.ElideRight, max_w) if remaining else ""
+        )
+        result = (False, line_height, first_line, second_line)
+    _TILE_TITLE_CACHE[key] = result
+    if len(_TILE_TITLE_CACHE) > _TILE_TITLE_CACHE_CAP:
+        _TILE_TITLE_CACHE.popitem(last=False)
+    return result
+
+
 def _get_scaled_icon(pix: QPixmap, display_size: int) -> QPixmap:
     """按目标逻辑尺寸平滑缩放图标（按原图标识 + 尺寸做 LRU 缓存）。
 
@@ -1536,7 +1607,12 @@ class StyledInfoCard(QWidget):
                 painter.end()
 
     def _draw_text(self, painter: QPainter, rect: QRectF, config: dict, colors: dict):
-        """Draw title, subtitle, and description text lines."""
+        """Draw title, subtitle, and description text lines.
+
+        QFont/QFontMetrics 与单行省略结果均走模块级有界缓存（见
+        ``_get_font`` / ``_get_font_metrics`` / ``_get_elided_text``），
+        绘制坐标与省略算法与旧实现完全一致。
+        """
         if self._tile_style and self._layout_mode == "vertical":
             self._draw_tile_title(painter, rect, config, colors)
             return
@@ -1545,45 +1621,48 @@ class StyledInfoCard(QWidget):
         x = rect.x()
         max_w = rect.width()
         line_gap = 4
+        disabled_pen = tm.alpha_of(tm.mid, 60) if self._disabled else None
 
         # Title
         if self._title:
-            font = QFont("Microsoft YaHei UI", config["title_size"], config["title_weight"])
-            painter.setFont(font)
-            if self._disabled:
-                painter.setPen(tm.alpha_of(tm.mid, 60))
-            else:
-                painter.setPen(colors["title"])
-            fm = QFontMetrics(font)
-            elided = fm.elidedText(self._title, Qt.ElideRight, int(max_w))
-            painter.drawText(QRectF(x, y, max_w, fm.height()), Qt.AlignLeft | Qt.AlignTop, elided)
+            size = config["title_size"]
+            weight = config["title_weight"]
+            fm = _get_font_metrics("Microsoft YaHei UI", size, weight)
+            painter.setFont(_get_font("Microsoft YaHei UI", size, weight))
+            painter.setPen(disabled_pen if self._disabled else colors["title"])
+            elided = _get_elided_text(self._title, int(max_w), size, weight)
+            painter.drawText(
+                QRectF(x, y, max_w, fm.height()), Qt.AlignLeft | Qt.AlignTop, elided
+            )
             y += fm.height() + line_gap
 
         # Subtitle
         if self._subtitle:
-            font = QFont("Microsoft YaHei UI", config["subtitle_size"], config["subtitle_weight"])
-            painter.setFont(font)
-            if self._disabled:
-                painter.setPen(tm.alpha_of(tm.mid, 60))
-            else:
-                painter.setPen(colors["subtitle"])
-            fm = QFontMetrics(font)
-            elided = fm.elidedText(self._subtitle, Qt.ElideRight, int(max_w))
-            painter.drawText(QRectF(x, y, max_w, fm.height()), Qt.AlignLeft | Qt.AlignTop, elided)
+            size = config["subtitle_size"]
+            weight = config["subtitle_weight"]
+            fm = _get_font_metrics("Microsoft YaHei UI", size, weight)
+            painter.setFont(_get_font("Microsoft YaHei UI", size, weight))
+            painter.setPen(disabled_pen if self._disabled else colors["subtitle"])
+            elided = _get_elided_text(self._subtitle, int(max_w), size, weight)
+            painter.drawText(
+                QRectF(x, y, max_w, fm.height()), Qt.AlignLeft | Qt.AlignTop, elided
+            )
             y += fm.height() + line_gap
 
         # Description
         if self._desc:
-            font = QFont("Microsoft YaHei UI", config["desc_size"], config["desc_weight"])
-            painter.setFont(font)
-            if self._disabled:
-                painter.setPen(tm.alpha_of(tm.mid, 60))
-            else:
-                painter.setPen(colors["desc"])
-            fm = QFontMetrics(font)
+            size = config["desc_size"]
+            weight = config["desc_weight"]
+            fm = _get_font_metrics("Microsoft YaHei UI", size, weight)
+            painter.setFont(_get_font("Microsoft YaHei UI", size, weight))
+            painter.setPen(disabled_pen if self._disabled else colors["desc"])
             # Word wrap the description
             text_rect = QRectF(x, y, max_w, rect.bottom() - y)
-            painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, self._desc)
+            painter.drawText(
+                text_rect,
+                Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap,
+                self._desc,
+            )
 
     def _draw_tile_title(
         self, painter: QPainter, rect: QRectF, config: dict, colors: dict
@@ -1592,56 +1671,44 @@ class StyledInfoCard(QWidget):
 
         与 ``FileCardDelegate._draw_text`` 使用同一套换行算法（单行放不下的
         名称折为两行：第一行尽量放满，第二行省略号截断），保证网格瓦片卡
-        与文件选择器网格卡的文件名呈现完全一致。
+        与文件选择器网格卡的文件名呈现完全一致。断行/省略结果按
+        (标题, 宽度, 字号, 字重) 缓存，绘制坐标不变。
         """
         if not self._title:
             return
-        font = QFont("Microsoft YaHei UI", config["title_size"], config["title_weight"])
-        painter.setFont(font)
+        size = config["title_size"]
+        weight = config["title_weight"]
+        painter.setFont(_get_font("Microsoft YaHei UI", size, weight))
         if self._disabled:
             painter.setPen(tm.alpha_of(tm.mid, 60))
         else:
             painter.setPen(colors["title"])
-        fm = QFontMetrics(font)
         max_w = int(rect.width())
-        line_height = fm.height()
+        is_single, line_height, first_line, second_line = _get_tile_title_layout(
+            self._title, max_w, size, weight
+        )
         spacing = 2  # 行间距
         two_line_h = line_height * 2 + spacing
 
         # 文本块（单行/双行）整体在 rect 内垂直居中
-        block_h = (
-            line_height
-            if fm.horizontalAdvance(self._title) <= max_w
-            else two_line_h
-        )
+        block_h = line_height if is_single else two_line_h
         block_y = rect.y() + max(0, int((rect.height() - block_h) / 2))
 
-        if block_h == line_height:
+        if is_single:
             painter.drawText(
                 QRectF(rect.x(), block_y, max_w, line_height),
                 Qt.AlignHCenter | Qt.AlignVCenter,
-                self._title,
+                first_line,
             )
             return
 
-        # 双行：第一行尽量放满（二分查找最大可容纳字符数），第二行省略
-        lo, hi = 0, len(self._title)
-        while lo < hi:
-            mid = (lo + hi + 1) // 2
-            if fm.horizontalAdvance(self._title[:mid]) <= max_w:
-                lo = mid
-            else:
-                hi = mid - 1
-        first_line = self._title[:lo]
         painter.drawText(
             QRectF(rect.x(), block_y, max_w, line_height),
             Qt.AlignHCenter | Qt.AlignTop,
             first_line,
         )
 
-        remaining = self._title[len(first_line):].strip()
-        if remaining:
-            second_line = fm.elidedText(remaining, Qt.ElideRight, max_w)
+        if second_line:
             painter.drawText(
                 QRectF(rect.x(), block_y + line_height + spacing, max_w, line_height),
                 Qt.AlignHCenter | Qt.AlignTop,

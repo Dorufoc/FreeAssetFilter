@@ -369,6 +369,14 @@ class FileSelectorLayout(QWidget):
         self._file_list.setItemDelegate(self._card_delegate)
         # 注入视图引用：delegate 的 hover 图标缩放动画每帧触发 viewport 重绘
         self._card_delegate.set_view(self._file_list)
+
+        # 池状态增量刷新用的「归一化路径 → 行号」索引：目录加载/排序/行增删
+        # 时置空，下次池变化时重建一次（O(N_dir)），不再每次池变化全量扫描。
+        self._norm_row_index: Optional[Dict[str, int]] = None
+        self._file_model.modelReset.connect(self._invalidate_norm_row_index)
+        self._file_model.layoutChanged.connect(self._invalidate_norm_row_index)
+        self._file_model.rowsInserted.connect(self._invalidate_norm_row_index)
+        self._file_model.rowsRemoved.connect(self._invalidate_norm_row_index)
         self._file_list.setFrameShape(QFrame.NoFrame)
         register_widget_qss(self._file_list,("""
             QListView {
@@ -552,6 +560,8 @@ class FileSelectorLayout(QWidget):
 
         # 当前文件池路径集合（由 sync_pool_status 更新，"已在池中"标记局部重绘的 diff 基准）
         self._pool_paths: Set[str] = set()
+        # 上次池原始路径 → 归一化路径映射（增量 diff 用，避免每次全池 normpath）
+        self._pool_norm_by_raw: Dict[str, str] = {}
 
         # ── 框选多选（左键按住拖拽 = 橡皮筋框选）────────────────────────
         # 框内卡片进入"框选选中态"（虚线 accent 边框 + 半透明填充，不触发预览）；
@@ -3217,40 +3227,86 @@ class FileSelectorLayout(QWidget):
         except Exception as exc:
             debug(f"文件列表局部重绘失败：{exc}")
 
+    def _invalidate_norm_row_index(self, *_args) -> None:
+        """模型复位/排序重排/行增删时置空归一化路径索引（下次池变化重建）。"""
+        self._norm_row_index = None
+
+    def _get_norm_row_index(self) -> Dict[str, int]:
+        """获取（并缓存）「归一化路径 → 行号」索引。
+
+        目录/排序变化时由模型信号置空；重建成本 O(N_dir)，但只在目录发生变化
+        后的首次池状态同步时发生，替代原先「每次池变化都全量扫描模型」。
+
+        Returns:
+            Dict[str, int]: normcase(normpath(path)) 到行号的映射。
+        """
+        index = self._norm_row_index
+        if index is not None:
+            return index
+        model = self._file_model
+        index = {}
+        for row in range(model.rowCount()):
+            raw = model.get_file_info(model.index(row, 0)).get("path", "")
+            if raw:
+                index[os.path.normcase(os.path.normpath(raw))] = row
+        self._norm_row_index = index
+        return index
+
     def sync_pool_status(self, pool_paths: set[str]) -> None:
         """同步文件池中的路径集合到 delegate，刷新"已在池中"边框标记。
 
         同时缓存归一化路径集合到 _pool_paths，作为局部重绘的差异基准。
+        增量实现：仅对本次新增/移除的路径做归一化并查行号（O(|diff|)），
+        不再每次池变化遍历全模型；行解析异常时回退原全量扫描（绝不漏重绘）。
 
         Args:
             pool_paths: 文件池中的文件路径集合。
         """
-        new_pool = {
-            os.path.normcase(os.path.normpath(p)) for p in (pool_paths or set())
-        }
-        old_pool = self._pool_paths
-        self._pool_paths = new_pool
-        self._card_delegate.set_pool_files(pool_paths)
-        # A4 局部重绘：仅"池中态"翻转的行需要重绘；无变化时零重绘；
-        # 行解析失败时保守回退整 viewport（绝不漏重绘）。
-        if new_pool == old_pool:
+        raw_new = {p for p in (pool_paths or set()) if p}
+        raw_old = self._pool_norm_by_raw
+        added = [p for p in raw_new if p not in raw_old]
+        removed = [p for p in raw_old if p not in raw_new]
+        # 池集合完全未变（含空池重复同步）：零归一化、零重绘
+        if not added and not removed:
+            return
+        norm_by_raw: Dict[str, str] = {}
+        for path in added:
+            norm_by_raw[path] = os.path.normcase(os.path.normpath(path))
+        for path in raw_new:
+            if path not in norm_by_raw:
+                norm_by_raw[path] = raw_old[path]
+        changed_norms = {norm_by_raw[p] for p in added}
+        changed_norms.symmetric_difference_update(
+            {raw_old[p] for p in removed}
+        )
+        self._pool_norm_by_raw = norm_by_raw
+        self._pool_paths = set(norm_by_raw.values())
+        # delegate 侧每帧判断用的池集合：直接用已归一化集合（归一化幂等）
+        self._card_delegate.set_pool_files(self._pool_paths)
+        if not changed_norms:
             return
         changed_rows: list = []
-        lookup_failed = False
         try:
-            model = self._file_model
-            for row in range(model.rowCount()):
-                raw = model.get_file_info(model.index(row, 0)).get("path", "")
-                if not raw:
-                    continue
-                key = os.path.normcase(os.path.normpath(raw))
-                if (key in new_pool) != (key in old_pool):
+            index = self._get_norm_row_index()
+            for norm in changed_norms:
+                row = index.get(norm)
+                if row is not None:
                     changed_rows.append(row)
         except Exception:
-            lookup_failed = True
-        if lookup_failed:
-            self._file_list.viewport().update()
-            return
+            # 索引构建失败：保守回退原全量扫描（与旧实现一致）
+            changed_rows = []
+            try:
+                model = self._file_model
+                for row in range(model.rowCount()):
+                    raw = model.get_file_info(model.index(row, 0)).get("path", "")
+                    if not raw:
+                        continue
+                    key = os.path.normcase(os.path.normpath(raw))
+                    if key in changed_norms:
+                        changed_rows.append(row)
+            except Exception:
+                self._file_list.viewport().update()
+                return
         if not changed_rows:
             return
         self._invalidate_file_rows(changed_rows)

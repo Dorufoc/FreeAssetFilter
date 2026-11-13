@@ -156,6 +156,54 @@ class _ExportCopyRunnable(QRunnable):
             warning(f"导出线程异常: {ex}")
 
 
+def _write_backup_file(payload: dict, backup_file: str) -> None:
+    """把备份 payload 原子写入磁盘（tmp + ``os.replace``；失败静默）。
+
+    与历史实现保持完全一致的落盘格式（``ensure_ascii=False`` / ``indent=2``）
+    与容错语义（I/O / 类型错误一律吞掉，不影响主流程）。
+
+    Args:
+        payload: 已序列化的备份结构。
+        backup_file: 目标备份文件路径。
+    """
+    try:
+        tmp_file = f"{backup_file}.tmp"
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_file, backup_file)
+    except (IOError, OSError, TypeError, ValueError):
+        pass  # 静默失败，不影响主流程
+
+
+class _BackupWriteTask(QRunnable):
+    """储存池备份写盘任务（投递 ``io`` 池；单飞 + 最后一次胜出）。
+
+    主线程只把「已序列化的 payload」放进 owner 的待写槽；同一时刻至多一个
+    本任务在跑，它会循环取槽内最新 payload（写盘期间新增的请求覆盖旧值），
+    因此落盘顺序与最后一次提交一致，不会出现并发写乱序。
+
+    Args:
+        owner: 所属 FilePoolLayout（待写槽、锁与空闲事件由它持有）。
+    """
+
+    def __init__(self, owner: FilePoolLayout) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._owner = owner
+
+    def run(self) -> None:  # noqa: D102 - QRunnable 接口
+        owner = self._owner
+        while True:
+            with owner._backup_io_lock:
+                payload = owner._backup_io_pending
+                owner._backup_io_pending = None
+                if payload is None:
+                    owner._backup_io_active = False
+                    owner._backup_io_idle.set()
+                    return
+            _write_backup_file(payload, owner.backup_file)
+
+
 class _PoolCardsLayout(QLayout):
     """暂存池卡片布局：列表（单列全宽）/ 网格（流式多列）双模式。
 
@@ -448,10 +496,13 @@ class FilePoolLayout(QWidget):
         self._empty_hint.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self._apply_empty_hint_style()
 
-        # 滚动时刷新所有卡片的 overlay（修复 StyledInfoCard 的 QGraphicsEffect
+        # 滚动时刷新卡片的 overlay（修复 StyledInfoCard 的 QGraphicsEffect
         # 缓存导致 hover overlay 在滚动时不同步跟随）。使用 singleShot 节流，
         # 避免范围变化触发的连续 valueChanged 导致所有卡片反复重绘。
         self._pending_scroll_overlay_update = False
+        # 滚动 overlay 刷新的上下余量（≈ 一张卡片高度）：在几何同步的低频
+        # 路径缓存，滚动回调不再全量扫描卡片取最大值。
+        self._scroll_overlay_margin: int = 0
         area_vbar.valueChanged.connect(self._on_pool_scrolled)
 
         # 应用平滑滚动 + 边界回弹 + 触摸手势（与 FileSelectorLayout 一致）
@@ -487,6 +538,16 @@ class FilePoolLayout(QWidget):
         self._backup_save_timer = QTimer(self)
         self._backup_save_timer.setSingleShot(True)
         self._backup_save_timer.timeout.connect(self._flush_pending_backup_save)
+        # 备份写盘单飞状态（io 池）：主线程只做序列化，落盘任务串行化，
+        # 期间的重复请求按「最后一次胜出」合并，避免并发写乱序。
+        self._backup_io_lock = threading.Lock()
+        self._backup_io_pending: Optional[dict] = None
+        self._backup_io_active = False
+        self._backup_io_idle = threading.Event()
+        self._backup_io_idle.set()
+        # flush_backup_save_now 同步等待在途写盘的上限（秒）；超时后写盘
+        # 仍在后台继续，退出链的线程池排空会兜底完成。
+        self._backup_io_flush_timeout_s = 2.0
 
         # ── 允许外部拖放 ──────────────────────────────────────────────
         self.setAcceptDrops(True)
@@ -744,6 +805,8 @@ class FilePoolLayout(QWidget):
             self._sync_pool_card_geometry()
             # 空池提示随视口尺寸居中铺满
             self._update_empty_hint_geometry()
+            # 尺寸变化的低频路径做一次 overlay 全量兜底（滚动路径只刷可见卡）
+            self._refresh_all_card_overlays()
         # 池视口 / 卡片容器 / 卡片及其子控件：滚轮缩放 + 左键框选 + 右键批量移除
         is_pool_target = (
             obj is self._scroll_area.viewport()
@@ -1057,7 +1120,8 @@ class FilePoolLayout(QWidget):
         部分；历史实现对全池卡片逐个 ``update_overlay()``，卡片多时每个滚动
         节拍都有 O(N) 次重绘。这里改成把视口矩形映射到卡片容器坐标，只刷新
         与「视口 ± 一个卡片高度」相交的卡片；保留 ``singleShot(0)`` 节流，
-        避免范围变化触发的连续 valueChanged 反复刷新。
+        避免范围变化触发的连续 valueChanged 反复刷新。全量兜底只在
+        显示 / 视口尺寸变化等低频路径执行（见 :meth:`_refresh_all_card_overlays`）。
         """
         if self._pending_scroll_overlay_update:
             return
@@ -1069,8 +1133,7 @@ class FilePoolLayout(QWidget):
                 visible_rect = self._visible_card_rect()
             except (RuntimeError, AttributeError):
                 # 控件已被销毁（退出/重建路径）：退回全量刷新，保持原行为。
-                for card in self._card_widgets.values():
-                    card.update_overlay()
+                self._refresh_all_card_overlays()
                 return
             for card in self._card_widgets.values():
                 try:
@@ -1082,11 +1145,26 @@ class FilePoolLayout(QWidget):
 
         QTimer.singleShot(0, _update)
 
+    def _refresh_all_card_overlays(self) -> None:
+        """全量刷新所有卡片 overlay（仅显示 / 视口尺寸变化 / 重建等低频路径）。
+
+        滚动路径只刷可见卡片（见 :meth:`_on_pool_scrolled`）；为避免卡片从
+        不可见滚入、窗口显示 / resize 后 overlay 状态滞后，这些非滚动事件里
+        仍执行一次全量兜底。卡片 C++ 对象已销毁未摘除时静默跳过。
+        """
+        for card in self._card_widgets.values():
+            try:
+                card.update_overlay()
+            except RuntimeError:
+                continue
+
     def _visible_card_rect(self) -> QRect:
         """返回视口矩形（卡片容器坐标，上下各扩一个卡片高度）。
 
         滚动期间 Qt 的 overlay 子控件需要按视口相对位置重绘；向外扩一个卡片
-        高度可覆盖「刚从视口边缘滑出/滑入」的卡片，避免边缘残留错位。
+        高度可覆盖「刚从视口边缘滑出/滑入」的卡片，避免边缘残留错位。余量取
+        几何同步低频路径缓存的 ``_scroll_overlay_margin``（≈ 一张卡片高），
+        滚动回调不再全量扫描卡片。
 
         Returns:
             QRect: 卡片容器坐标系下的可见区域（含一卡高度余量）。
@@ -1094,21 +1172,17 @@ class FilePoolLayout(QWidget):
         viewport = self._scroll_area.viewport()
         top_left = self._card_container.mapFrom(viewport, QPoint(0, 0))
         rect = QRect(top_left, viewport.size())
-        margin = 0
-        for card in self._card_widgets.values():
-            try:
-                margin = max(margin, card.height())
-            except RuntimeError:
-                continue
+        margin = self._scroll_overlay_margin
         return rect.adjusted(0, -margin, 0, margin)
 
     def showEvent(self, event) -> None:
-        """首次显示时定位浮动滚动条。"""
+        """首次显示时定位浮动滚动条并全量兜底刷新卡片 overlay。"""
         super().showEvent(event)
         self._update_pool_scrollbar_geometry()
         self._update_pool_card_margins()
         self._sync_pool_card_geometry()
         self._update_empty_hint_visibility()
+        self._refresh_all_card_overlays()
 
     def _handle_card_zoom(self, event) -> None:
         """Ctrl+滚轮：缩放所有 StyledInfoCard 卡片尺寸（两种视图各自记忆）。"""
@@ -1134,6 +1208,7 @@ class FilePoolLayout(QWidget):
         # 卡片间距：列表随缩放（与选择器 list 模式一致）；网格固定 4px（与选择器网格一致）
         self._card_layout.setSpacing(4 if self._view_mode == "grid" else int(5 * new_scale))
         self._sync_pool_card_geometry()
+        self._refresh_all_card_overlays()
 
     # ── 视图模式（列表 / 网格）与几何同步 ─────────────────────────────
 
@@ -1186,6 +1261,7 @@ class FilePoolLayout(QWidget):
                 )
         self._card_layout.setSpacing(4 if is_grid else int(5 * self._card_scale))
         self._sync_pool_card_geometry()
+        self._refresh_all_card_overlays()
         self._update_rename_button()
 
     def get_view_mode(self) -> str:
@@ -1262,10 +1338,27 @@ class FilePoolLayout(QWidget):
 
     def _sync_pool_card_geometry(self) -> None:
         """按当前视图同步卡片几何（网格：列数/列宽；两种模式：容器高度）。"""
+        self._cache_scroll_overlay_margin()
         if self._view_mode == "grid":
             self._sync_grid_geometry()
         else:
             self._sync_card_container_height()
+
+    def _cache_scroll_overlay_margin(self) -> None:
+        """缓存滚动 overlay 刷新余量（≈ 一张卡片高度）。
+
+        卡片高度在池内基本统一，取任意一张已布局卡片的高度即可；本方法只在
+        几何同步的低频路径调用，滚动回调因此不再全量扫描卡片取最大值。
+        """
+        first_card = next(iter(self._card_widgets.values()), None)
+        if first_card is None:
+            return
+        try:
+            card_h = first_card.height()
+        except RuntimeError:
+            return
+        if card_h > 0:
+            self._scroll_overlay_margin = card_h
 
     def _sync_grid_geometry(self) -> None:
         """网格模式：按与文件选择器相同的算法重算列数/列宽并同步容器高度。
@@ -1344,23 +1437,51 @@ class FilePoolLayout(QWidget):
         self.save_backup(self._pending_backup_last_path)
 
     def flush_backup_save_now(self, last_path: Optional[str] = None) -> None:
-        """立即执行一次保存，通常用于退出前等必须落盘的场景。"""
+        """立即保存并在返回前等待落盘完成（重命名 / 退出等必须落盘场景）。
+
+        写盘本身在 ``io`` 池执行，不占主线程；本方法只做**有界等待**以保持
+        原有「返回即已落盘」的调用语义。超时（默认 2s）后写盘仍在后台继续，
+        退出链的 ``pools.shutdown`` 会兜底排空，不会丢数据。
+        """
         if last_path is not None:
             self._pending_backup_last_path = last_path
         if self._backup_save_timer.isActive():
             self._backup_save_timer.stop()
         self.save_backup(self._pending_backup_last_path)
+        self._wait_backup_io_idle()
 
     def save_backup(self, last_path: str = "All") -> None:
-        """保存当前文件列表到备份文件（原子写盘：tmp + replace）。"""
+        """序列化当前文件列表并异步入队保存（io 池原子写盘：tmp + replace）。
+
+        序列化仍在主线程（读取控件状态），JSON 编码 + 落盘 + ``os.replace``
+        交给 ``io`` 池；同一时刻只有一个写盘任务，期间重复请求合并为最后
+        一次提交，落盘内容与历史实现逐字节一致（``indent=2``）。
+        """
         try:
             backup_data = self._build_backup_payload(last_path)
-            tmp_file = f"{self.backup_file}.tmp"
-            with open(tmp_file, "w", encoding="utf-8") as f:
-                json.dump(backup_data, f, ensure_ascii=False, indent=2)
-            os.replace(tmp_file, self.backup_file)
+            self._enqueue_backup_write(backup_data)
         except (IOError, OSError, TypeError, ValueError):
             pass  # 静默失败，不影响主流程
+
+    def _enqueue_backup_write(self, payload: dict) -> None:
+        """把已序列化的 payload 交给 io 池（单飞；已有写手时覆盖待写槽）。
+
+        Args:
+            payload: 已序列化的备份结构（只含 JSON 安全类型）。
+        """
+        submit = False
+        with self._backup_io_lock:
+            self._backup_io_pending = payload
+            self._backup_io_idle.clear()
+            if not self._backup_io_active:
+                self._backup_io_active = True
+                submit = True
+        if submit:
+            thread_pools.pool("io").start(_BackupWriteTask(self))
+
+    def _wait_backup_io_idle(self) -> None:
+        """有界等待在途备份写盘完成（同步 flush 语义专用）。"""
+        self._backup_io_idle.wait(self._backup_io_flush_timeout_s)
 
     @classmethod
     def _serialize_backup_item(cls, file_info: dict) -> Optional[dict]:
