@@ -24,6 +24,7 @@ from PySide6.QtSvg import QSvgRenderer
 
 from theme import tm
 from theme.system_accent import get_system_accent_color
+from components.app_logo import app_logo_pixmap
 from components.styled_sidebar import StyledSidebar
 from components.styled_toggle import StyledToggle
 from components.styled_button import StyledButton
@@ -218,49 +219,6 @@ def _app_version() -> str:
         debug(f"读取版本号失败：{exc}")
         return ""
     return line[1:].strip() if line[:1] in ("v", "V") else line
-
-
-def _app_logo_pixmap(size: int) -> QPixmap:
-    """加载应用 logo（``SPK-main.png``）并按设备像素比缩放。
-
-    缩放目标为物理像素（逻辑尺寸 × devicePixelRatio），避免高分屏下模糊。
-    资源缺失或加载失败时返回空 ``QPixmap``（调用方据此跳过图标显示）。
-    """
-    # 候选路径：打包感知的资源路径优先，失败时回退 icons 目录。
-    candidates: list[str] = []
-    try:
-        from sopeek.utils.path_utils import get_resource_path
-
-        candidates.append(get_resource_path("sopeek/icons/SPK-main.png"))
-    except Exception:  # noqa: BLE001 - 路径工具异常时仅跳过该候选
-        pass
-    try:
-        from sopeek.core._paths import icons_dir
-
-        candidates.append(str(icons_dir() / "SPK-main.png"))
-    except Exception:  # noqa: BLE001 - 目录解析异常时仅跳过该候选
-        pass
-
-    pixmap = QPixmap()
-    for path in candidates:
-        pixmap = QPixmap(path)
-        if not pixmap.isNull():
-            break
-    if pixmap.isNull():
-        return pixmap
-
-    try:
-        app = QApplication.instance()
-        screen = app.primaryScreen() if app is not None else None
-        dpr = float(screen.devicePixelRatio()) if screen is not None else 1.0
-    except (RuntimeError, AttributeError, TypeError, ValueError):
-        dpr = 1.0
-    if dpr <= 0:
-        dpr = 1.0
-    target = max(1, int(round(size * dpr)))
-    scaled = pixmap.scaled(target, target, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-    scaled.setDevicePixelRatio(dpr)
-    return scaled
 
 
 def _about_icon_pixmap(icon_name: str, size: int, color: QColor) -> QPixmap:
@@ -2565,10 +2523,10 @@ class AboutSettingsPage(QWidget):
     联系信息不再插入/抽走页面高度，而是在链接行与页脚之间预留固定插槽：
     展开只播放透明度淡入，页面高度与页脚位置保持不动。
 
-    「检查更新」为图标 + 文字动作，与主窗口标题栏入口共用同一个更新弹窗
-    （检查中 → 已是最新 / 发现新版本 / 检查失败四态），本页不在动作上显示
-    本地进度。不写入 ``SettingsStagingCache``、不触碰主窗口 / 磁盘——本页
-    无任何可提交设置项，天然遵循暂存隔离铁律。
+    「检查更新」为图标 + 文字动作，是检查更新的唯一手动入口（弹出更新中心
+    弹窗：检查中 → 已是最新 / 发现新版本 / 检查失败四态），本页不在动作上
+    显示本地进度。不写入 ``SettingsStagingCache``、不触碰主窗口 / 磁盘——
+    本页无任何可提交设置项，天然遵循暂存隔离铁律。
     """
 
     def __init__(self, parent=None):
@@ -2619,7 +2577,7 @@ class AboutSettingsPage(QWidget):
         self._logo_label.setObjectName("AboutAppLogo")
         self._logo_label.setAlignment(Qt.AlignCenter)
         self._logo_label.setFixedSize(ABOUT_APP_LOGO_SIZE, ABOUT_APP_LOGO_SIZE)
-        logo = _app_logo_pixmap(ABOUT_APP_LOGO_SIZE)
+        logo = app_logo_pixmap(ABOUT_APP_LOGO_SIZE)
         if not logo.isNull():
             self._logo_label.setPixmap(logo)
         content.addWidget(self._logo_label, alignment=Qt.AlignHCenter)
@@ -2975,7 +2933,7 @@ class AboutSettingsPage(QWidget):
         super().hideEvent(event)
 
     def _check_update(self) -> None:
-        """检查更新：与标题栏共用单弹窗控制器。"""
+        """检查更新：委托共享控制器打开更新中心单弹窗。"""
         try:
             from sopeek.ui.update_entry import get_update_entry_controller
 

@@ -39,16 +39,28 @@ classic 比例：主横条 1:1:1、右竖条各半、信息区 ≤ 半高（与�
 
 布局切换（``MainWindow.set_layout_mode``）复用本模块：4 个叶子重新挂载即可，
 组件本身不销毁重建。
+
+分隔条交互：双击任一分隔条（栏边缘）把整个布局恢复为当前模式默认比例，
+替代旧版标题栏「重置布局」按钮；渐变时长 :data:`RESET_ANIM_DURATION_MS`，
+受 ``appearance.animations.layout_reset`` 开关门控（见
+:meth:`MainLayout._on_handle_double_clicked`）。
 """
 
 from __future__ import annotations
 
 from typing import Dict, Optional
 
-from PySide6.QtCore import Qt, QTimer, QEasingCurve, QVariantAnimation
-from PySide6.QtWidgets import QFrame, QSplitter, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt, QTimer, QEasingCurve, QVariantAnimation, Signal
+from PySide6.QtWidgets import (
+    QFrame,
+    QSplitter,
+    QSplitterHandle,
+    QVBoxLayout,
+    QWidget,
+)
 
 from sopeek.ui.theme.app_stylesheet import register_widget_qss
+from sopeek.utils.animation_settings import is_animation_enabled
 
 
 # ── 模式 ──────────────────────────────────────────────────────────────
@@ -113,6 +125,41 @@ _ZONE_OBJECT_NAMES = {
 }
 
 
+class _LayoutSplitterHandle(QSplitterHandle):
+    """主布局分隔条把手：双击（栏边缘）即请求整布局恢复默认比例。
+
+    ``QSplitterHandle`` 默认不消费双击事件；这里显式接管左键双击并发出
+    信号，由 :class:`MainLayout` 统一执行「重置整个布局」（与旧标题栏按钮
+    同一语义：所有分隔条回到当前模式默认值、复位拖拽标记、恢复 16:9 自动
+    维持）。仅左键双击生效，其它按键/事件交回基类。
+    """
+
+    doubleClicked = Signal()
+
+    def __init__(self, orientation: Qt.Orientation, splitter: QSplitter) -> None:
+        super().__init__(orientation, splitter)
+        # 手势入口的可发现性：按钮移除后靠悬停提示告知双击重置
+        self.setToolTip("双击重置布局")
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 - Qt 虚函数名
+        if event.button() == Qt.LeftButton:
+            event.accept()
+            self.doubleClicked.emit()
+            return
+        super().mouseDoubleClickEvent(event)
+
+
+class _LayoutSplitter(QSplitter):
+    """主布局专用分隔条：把手双击时转发 ``handleDoubleClicked``。"""
+
+    handleDoubleClicked = Signal()
+
+    def createHandle(self) -> QSplitterHandle:  # noqa: N802 - Qt 虚函数名
+        handle = _LayoutSplitterHandle(self.orientation(), self)
+        handle.doubleClicked.connect(self.handleDoubleClicked)
+        return handle
+
+
 class MainLayout(QWidget):
     """主布局装配容器：持有分割条树与 4 个区域占位框。
 
@@ -131,7 +178,7 @@ class MainLayout(QWidget):
         self.mode = mode if mode in MODES else DEFAULT_MODE
 
         self.zones: Dict[str, QFrame] = {}
-        self.splitters: Dict[str, QSplitter] = {}
+        self.splitters: Dict[str, "_LayoutSplitter"] = {}
         # 经典布局右列的底部操作栏槽位（workspace 模式为 None）
         self._classic_action_slot: Optional[QWidget] = None
 
@@ -230,12 +277,20 @@ class MainLayout(QWidget):
         # 主横条拖拽（左/右分界）：右侧宽度变化后同步 16:9（未拖拽右竖条时）
         self.splitters["main"].splitterMoved.connect(self._on_main_splitter_moved)
 
+        # 双击任一分隔条（栏边缘）→ 重置整个布局为当前模式默认比例
+        for splitter in self.splitters.values():
+            self._connect_splitter(splitter)
+
     # ── 构造辅助 ─────────────────────────────────────────────────────
 
     @staticmethod
-    def _make_splitter(orientation: Qt.Orientation) -> QSplitter:
-        """创建统一样式的分隔条（透明把手、10px、不可折叠）。"""
-        splitter = QSplitter(orientation)
+    def _make_splitter(orientation: Qt.Orientation) -> "_LayoutSplitter":
+        """创建统一样式的分隔条（透明把手、10px、不可折叠）。
+
+        返回 :class:`_LayoutSplitter`：其把手双击会发出
+        ``handleDoubleClicked``（由 :meth:`_connect_splitter` 接到重置）。
+        """
+        splitter = _LayoutSplitter(orientation)
         splitter.setHandleWidth(HANDLE_WIDTH)
         splitter.setChildrenCollapsible(False)
         register_widget_qss(
@@ -249,6 +304,10 @@ class MainLayout(QWidget):
             """,
         )
         return splitter
+
+    def _connect_splitter(self, splitter: "_LayoutSplitter") -> None:
+        """把分隔条把手双击接到「重置整个布局」处理器。"""
+        splitter.handleDoubleClicked.connect(self._on_handle_double_clicked)
 
     # ── 公共 API ─────────────────────────────────────────────────────
 
@@ -299,7 +358,7 @@ class MainLayout(QWidget):
 
         Args:
             animated: True 时用 :data:`RESET_ANIM_DURATION_MS` 的渐变把各区尺寸
-                从当前值平滑移到默认值（用户点「重置布局」路径）；False 时立即
+                从当前值平滑移到默认值（双击分隔条重置路径）；False 时立即
                 应用（首次布局 / 布局切换路径，避免启动与切布局时出现过渡）。
         """
         self._right_user_dragged = False
@@ -351,7 +410,7 @@ class MainLayout(QWidget):
         }
 
     def _animate_default_ratios(self) -> None:
-        """把各 splitter 尺寸从当前值渐变到默认值（用户重置布局路径）。"""
+        """把各 splitter 尺寸从当前值渐变到默认值（双击分隔条重置路径）。"""
         targets = self._default_target_sizes()
         if targets is None:
             return
@@ -483,6 +542,18 @@ class MainLayout(QWidget):
         if self.mode == WORKSPACE_MODE and not self._right_user_dragged:
             self._apply_workspace_ratios(force=False)
         self._ensure_bottom_cap()
+
+    def _on_handle_double_clicked(self) -> None:
+        """双击任一分隔条（栏边缘）：把整个布局恢复到当前模式默认比例。
+
+        替代已移除的标题栏「重置布局」按钮。动画受 ``layout_reset`` 开关
+        门控（默认开启）：开启时以 :data:`RESET_ANIM_DURATION_MS` 渐变到
+        默认值；关闭时立即应用。双击时先停掉在途渐变，避免两段动画叠加。
+        """
+        self._stop_reset_animation()
+        self.apply_default_ratios(
+            animated=is_animation_enabled("layout_reset", default=True)
+        )
 
     # ── 内部：比例计算 ───────────────────────────────────────────────
 
