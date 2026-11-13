@@ -608,7 +608,7 @@ class TestFilePoolLayout:
         assert layout._rename_btn.isHidden() is False
         assert layout._rename_btn.isEnabled() is True
         assert card.is_rename_mode() is False
-        assert str(layout._rename_btn._svg_icon_path).endswith("rename.svg")
+        assert str(layout._rename_btn._svg_icon_path).endswith("edit.svg")
 
         # 进入编辑态：卡片高亮、按钮变 X、提示切换
         layout._rename_btn.click()
@@ -634,7 +634,7 @@ class TestFilePoolLayout:
         _pump_events(qapp)
         assert layout.is_rename_mode() is False
         assert card.is_rename_mode() is False
-        assert str(layout._rename_btn._svg_icon_path).endswith("rename.svg")
+        assert str(layout._rename_btn._svg_icon_path).endswith("edit.svg")
         assert layout._rename_btn.toolTip() == "重命名"
         layout.deleteLater()
 

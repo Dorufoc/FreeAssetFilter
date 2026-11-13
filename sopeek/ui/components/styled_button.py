@@ -220,6 +220,15 @@ class StyledButton(QPushButton):
                 svg_content
             )
 
+            # CSS 类填色（如 <style>.b{fill:rgba(0,0,0,0.9)}</style>）同样统一到
+            # 目标色：这类图标没有 fill 属性，上面的属性替换与下面的根元素补
+            # fill 都覆盖不到，深色主题下会残留近黑色而看不清。
+            svg_content = re.sub(
+                r'(fill|stroke)(\s*:\s*)(?!transparent|none|url\()([^;}"\']+)',
+                lambda m: f'{m.group(1)}{m.group(2)}{color_hex}',
+                svg_content
+            )
+
             # 对没有 fill 属性的 SVG 根元素添加默认 fill
             # 处理例如 github.svg/setting.svg 中 path 元素无 fill 属性的情况
             svg_content = re.sub(

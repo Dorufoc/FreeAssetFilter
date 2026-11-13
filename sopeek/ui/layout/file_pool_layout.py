@@ -612,8 +612,8 @@ class FilePoolLayout(QWidget):
         # 将按钮区域推到右侧
         bottom_layout.addStretch(1)
 
-        # 图标按钮 — rename.svg（仅 New 布局网格视图显示）
-        rename_icon = str(icons_dir / "rename.svg")
+        # 图标按钮 — edit.svg（仅 New 布局网格视图显示）
+        rename_icon = str(icons_dir / "edit.svg")
         self._rename_btn = StyledButton(
             "", variant="ghost", size="sm", icon=rename_icon
         )
@@ -1324,7 +1324,7 @@ class FilePoolLayout(QWidget):
         has_cards = bool(self._card_widgets)
         button.setVisible(self._view_mode == "grid" and has_cards)
         button.setEnabled(has_cards)
-        icon_name = "close.svg" if self._rename_edit_mode else "rename.svg"
+        icon_name = "close.svg" if self._rename_edit_mode else "edit.svg"
         target_icon = str(self._icons_dir / icon_name)
         if getattr(self, "_rename_btn_icon_path", "") != target_icon:
             button.set_svg_icon(target_icon)
