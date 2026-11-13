@@ -405,6 +405,7 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         _exit_waiters: 关闭后要执行的回调（如 ``deleteLater``）。
         _exit_guard: 退出兜底定时器（``EXIT_BUDGET_MS`` 超时直接关闭）。
         _count: 池内条目数（折叠态计数徽标）。
+        _panel_warmed: 展开内容是否已做过一次离屏预热渲染（仅首次展开需要）。
         _content: 展开态内容容器（可见性跟随 ``_expanded``）。
         _count_label: 标题栏计数标签（文本 ``存储池 (N)``）。
         _collapse_button: 标题栏折叠按钮（短横线图标，点击收回为折叠态小圆形）。
@@ -627,6 +628,8 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         self._fade = 1.0
         self._count = 0
         self._shown_once = False
+        # 展开内容首次上屏的预热门（首次展开前离屏渲染一次，见 _warm_panel_render）。
+        self._panel_warmed = False
 
         # 入场 / 出场（整体缩放 + 透明度）状态与预算兜底。
         self._entrance_done = False
@@ -817,6 +820,15 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         整体几何再夹回真实工作区，由 ``morphProgress`` 的展开形变承担全部
         动效。
 
+        展开还有两条**首帧正确性**保障（历史缺陷：首次展开时圆形先闪在面板
+        左上角再跳到锚定角，二次展开才正常）：
+
+        * 几何跳变之前先 :meth:`_warm_panel_render` 把展开内容的首次上屏
+          工作离屏做完，跳变后的首帧绘制不再背着几十毫秒的重活；
+        * 几何跳变之后立刻 ``repaint()`` 同步画出 ``morph == 0`` 的首帧，
+          再启动形变——分层窗口在合成器取到新位图前会继续显示旧位图
+          （64×64 的圆形被顶在新窗口原点），同步绘制让该窗口期不可见。
+
         收起：``_expanded`` 立即为 False（对外状态同步可断言），但**几何落定
         推迟到收拢动画结束**——可见窗口先播放面板缩回圆形的形变，再一次性
         把窗口缩到 ``COLLAPSED_SIZE``。收拢前同样按**当前位置**重算锚定边
@@ -843,10 +855,19 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
             target = self._anchored_rect(target_size)
             self._stop_move_animation()
             self._settle_timer.stop()
+            # 首次展开：先把展开内容的首次上屏工作（容器布局 / QSS 抛光 /
+            # 条目行首绘）在**窗口几何跳变之前**离屏做完，见 _warm_panel_render。
+            self._warm_panel_render(target_size)
             self._internal_moving = True
             self.setGeometry(target)
             self._internal_moving = False
             self._apply_state_geometry()
+            # 几何跳变后必须**同步**画出 morph=0 的首帧再启动形变：分层窗口
+            # （WA_TranslucentBackground）在合成器取到新位图之前，会继续用
+            # **旧位图**顶在新窗口原点显示——旧位图是 64×64 的折叠圆形，于是
+            # 圆形先落在面板左上角、随后才跳到锚定角，用户感知为「展开动画的
+            # 起始角不对 / 先在别处闪一下」。同步 repaint 后该窗口期不再可见。
+            self.repaint()
             self._animate_morph(1.0)
             self.update()
             return
@@ -862,6 +883,46 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
             self._animate_morph(0.0, finished=self._finish_collapse)
             return
         self._finish_collapse()
+
+    def _warm_panel_render(self, target_size: QSize) -> None:
+        """首次展开前把展开内容离屏渲染一次（预热，仅一次）。
+
+        展开内容的首次上屏（容器布局、QSS 抛光、条目行 / 空态首绘、图标
+        贴图）是几十毫秒级的重活。历史实现把它排在**窗口几何跳变之后**：
+        分层窗口（``WA_TranslucentBackground``）在合成器取到新位图之前会继续
+        用**旧位图**顶在新窗口原点显示——旧位图是 64×64 的折叠圆形，于是
+        圆形先落在面板**左上角**、再跳到锚定角开始扩散，用户感知为「首次
+        展开动画的起始角不对 / 先在别的位置闪一下」。二次展开时这些工作早已
+        缓存，所以看起来正常。
+
+        这里在几何跳变**之前**、按目标尺寸把内容容器离屏 ``grab()`` 一次：
+        布局与首绘全部落在离屏 pixmap 上（内容此刻仍隐藏、且窗口尚未放大，
+        屏幕上不会有任何可见变化），跳变后的首帧绘制随即变得廉价。
+
+        Args:
+            target_size: 展开态窗口尺寸（内容容器据此布局）。
+        """
+        if self._panel_warmed:
+            return
+        self._panel_warmed = True
+        content = getattr(self, "_content", None)
+        if content is None:
+            return
+        saved_geometry = content.geometry()
+        try:
+            content.ensurePolished()
+            content.resize(target_size)
+            layout = content.layout()
+            if layout is not None:
+                layout.activate()
+            for child in content.findChildren(QWidget):
+                child.ensurePolished()
+            # 离屏渲染一次：把条目行首绘 / 图标 / 字体度量等缓存都填好。
+            content.grab()
+        except Exception as exc:  # noqa: BLE001 - 预热失败绝不阻断展开
+            debug(f"[floating_pool] 展开内容预热渲染失败：{exc}")
+        finally:
+            content.setGeometry(saved_geometry)
 
     def _finish_collapse(self) -> None:
         """收拢落定：缩回折叠尺寸、按收拢时重算的锚定边、复位形变 / 蒙版并重绘。
@@ -1135,6 +1196,8 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         """
         self._apply_label_styles()
         self.update()
+        # 主题 / 配色变化会重新注册子控件 QSS：下一次展开前重新预热一次。
+        self._panel_warmed = False
         for row in self._rows:
             try:
                 row.refresh_icon()
@@ -2379,6 +2442,8 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         self._empty_hint.setVisible(valid == 0)
         self._count = valid
         self._pending_items = None
+        # 条目行是新建 widget：下一次展开前需重新做一次离屏预热渲染。
+        self._panel_warmed = False
         self.update()
 
     def _clear_rows(self) -> None:

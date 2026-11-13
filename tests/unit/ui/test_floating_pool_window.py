@@ -2213,6 +2213,134 @@ def test_expand_runs_morph_and_clears_content_mask(
         window.deleteLater()
 
 
+def test_first_expand_paints_anchor_frame_before_morph(
+    qapp: QApplication,
+) -> None:
+    """首次展开先同步画出 ``morph == 0`` 的锚定角首帧，再启动形变。
+
+    回归背景（用户实测）：本轮首次展开时圆形先闪在**面板左上角**、随后才
+    跳到锚定角；折叠再展开（第二次）才正常。根因是几何跳变与首帧绘制之间
+    排着展开内容首次上屏的几十毫秒工作，分层窗口在这段时间里仍用旧位图
+    （64×64 折叠圆形）顶在新窗口原点合成。修复后首帧是同步 ``repaint``
+    出的 ``morph == 0`` 帧，圆形必须仍在锚定角。
+    """
+    import sopeek.ui.floating_pool_window as fpw
+
+    order: list[str] = []
+    frames: list[tuple[float, float]] = []
+    original_repaint = fpw.FloatingPoolWindow.repaint
+    original_animate = fpw.FloatingPoolWindow._animate_morph
+
+    def recording_repaint(self) -> None:  # noqa: ANN001
+        card = self._card_rect()
+        order.append("repaint")
+        frames.append(
+            (self._morph, card.right() if self._anchor_right else card.left())
+        )
+        original_repaint(self)
+
+    def recording_animate(self, target, finished=None) -> None:  # noqa: ANN001
+        order.append(f"animate:{target}")
+        original_animate(self, target, finished)
+
+    window = FloatingPoolWindow()
+    try:
+        window.show()
+        qapp.processEvents()
+        window.set_items([])
+        qapp.processEvents()
+
+        fpw.FloatingPoolWindow.repaint = recording_repaint
+        fpw.FloatingPoolWindow._animate_morph = recording_animate
+        try:
+            window.set_expanded(True)
+        finally:
+            fpw.FloatingPoolWindow.repaint = original_repaint
+            fpw.FloatingPoolWindow._animate_morph = original_animate
+
+        assert order == ["repaint", "animate:1.0"], (
+            f"展开必须先同步绘制首帧再启动形变，实际顺序 {order}"
+        )
+        first_morph, first_anchor_edge = frames[0]
+        assert first_morph == 0.0, f"首帧形变进度应为 0（实际 {first_morph}）"
+        expected_edge = (
+            float(window.width()) - fpw._CARD_MARGIN
+            if window._anchor_right
+            else float(fpw._CARD_MARGIN)
+        )
+        assert first_anchor_edge == pytest.approx(expected_edge), (
+            "首帧圆形未落在锚定角（会看出「起始角不对」）"
+        )
+
+        assert _wait_until(lambda: window._morph >= 1.0)
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_first_expand_warms_panel_before_geometry_jump(
+    qapp: QApplication,
+) -> None:
+    """首次展开的离屏预热必须发生在**窗口几何跳变之前**。
+
+    预热（展开内容布局 / QSS 抛光 / 条目行首绘）若排在几何跳变之后，分层
+    窗口会用旧位图顶在新窗口原点合成，首帧即「错角」。这里断言预热被调用
+    时窗口仍是折叠态几何。
+    """
+    import sopeek.ui.floating_pool_window as fpw
+
+    seen: list[QSize] = []
+    original_warm = fpw.FloatingPoolWindow._warm_panel_render
+
+    def recording_warm(self, target_size) -> None:  # noqa: ANN001
+        seen.append(self.size())
+        original_warm(self, target_size)
+
+    window = FloatingPoolWindow()
+    try:
+        window.show()
+        qapp.processEvents()
+        assert window._panel_warmed is False
+
+        fpw.FloatingPoolWindow._warm_panel_render = recording_warm
+        try:
+            window.set_expanded(True)
+        finally:
+            fpw.FloatingPoolWindow._warm_panel_render = original_warm
+
+        assert seen == [COLLAPSED_SIZE], (
+            f"预热未在折叠态几何下完成（实际几何 {seen}）"
+        )
+        assert window._panel_warmed is True
+        assert _wait_until(lambda: window._morph >= 1.0)
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_panel_warm_resets_when_rows_rebuilt(
+    qapp: QApplication,
+) -> None:
+    """条目重建 / 主题刷新后必须重新预热（新 widget 的首绘同样昂贵）。"""
+    window = FloatingPoolWindow()
+    try:
+        window._panel_warmed = True
+        window.set_items(
+            [
+                {"path": f"D:/tmp/warm_reset_{i}.txt", "size": 10 * i}
+                for i in range(3)
+            ]
+        )
+        window._rebuild_list()
+        assert window._panel_warmed is False, "条目行重建后未重置预热门"
+
+        window._panel_warmed = True
+        window._on_theme_refresh()
+        assert window._panel_warmed is False, "主题刷新后未重置预热门"
+    finally:
+        window.deleteLater()
+
+
 def test_expand_never_overshoots_terminal_values(
     qapp: QApplication,
 ) -> None:
