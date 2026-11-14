@@ -24,6 +24,7 @@ from components.styled_button import StyledButton
 from components.paint_utils import render_soft_shadow, shadow_padding
 from components.modal_guard import get_modal_guard
 from sopeek.ui.theme.app_stylesheet import register_widget_qss
+from sopeek.ui.components.icon_utils import render_svg_icon
 
 
 # ── Constants ──────────────────────────────────────────────────────
@@ -805,16 +806,22 @@ class DialogIconCircle(QWidget):
         painter = QPainter(self)
         try:
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            rect = QRectF(0, 0, 40, 40)
+            if self._icon_type == "success":
+                # 成功态：整块区域直接显示 check_mark 大图标——不绘制圆角
+                # 半透明主题色底、也不留上下左右内边距，图标即占据原底色位置。
+                if render_svg_icon(painter, "check_mark", rect, self._icon_color):
+                    return
+
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(self._bg_color)
             # Web CSS: border-radius: var(--radius-md) = 8px
-            painter.drawRoundedRect(QRectF(0, 0, 40, 40), 8, 8)
+            painter.drawRoundedRect(rect, 8, 8)
 
             painter.setPen(self._icon_color)
             font = QFont("Segoe UI Symbol", 14)
             font.setWeight(QFont.Weight.Bold)
             painter.setFont(font)
-            rect = QRectF(0, 0, 40, 40)
             if self._icon_type == "success":
                 painter.drawText(rect, Qt.AlignCenter, "✓")
             elif self._icon_type == "danger":

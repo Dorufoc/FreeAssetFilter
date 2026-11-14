@@ -1063,7 +1063,7 @@ class FileSelectorLayout(QWidget):
         self._arrow_btn.raise_()
         self._path_input.installEventFilter(self)
 
-        star_icon = str(icons_dir / "star.svg")
+        star_icon = str(icons_dir / "star_add.svg")
         self._star_btn = StyledButton("", variant="ghost", size="sm", icon=star_icon)
         self._star_btn.setFixedSize(32, 32)
         nav_row.addWidget(self._star_btn)

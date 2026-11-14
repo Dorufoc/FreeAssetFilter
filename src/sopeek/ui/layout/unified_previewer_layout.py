@@ -194,14 +194,14 @@ class UnifiedPreviewerLayout(QWidget):
 
         与底栏按钮功能一致（同一处理器），形态为 ghost 32×32 图标按钮；
         默认无父级、不显示，注入宿主（预览器顶栏 / 本容器统一工具栏）后显示。
-        图标：share.svg（复制）/ open_with.svg（系统打开）/
-        locate.svg（定位目录）/ close.svg（清除预览）。
+        图标：share.svg（复制）/ default_open_with.svg（系统打开）/
+        locate_path.svg（定位目录）/ close.svg（清除预览）。
         """
         icons_dir = get_icons_dir()
         specs = (
             ("share.svg", "复制到剪切板", self._on_copy_to_clipboard_clicked),
-            ("open_with.svg", "使用系统默认方式打开", self._on_open_with_system_clicked),
-            ("locate.svg", "定位到所在目录", self._on_locate_requested),
+            ("default_open_with.svg", "使用系统默认方式打开", self._on_open_with_system_clicked),
+            ("locate_path.svg", "定位到所在目录", self._on_locate_requested),
             ("close.svg", "清除预览", self._on_clear_preview_clicked),
         )
         self._top_buttons = []

@@ -258,7 +258,8 @@ InstallerWindow::InstallerWindow(HINSTANCE instance, std::wstring payload, std::
                                  std::wstring installDir, AppMode mode, std::wstring decisionPath,
                                  DWORD setupPid, std::uint64_t payloadTimeoutMs, DWORD helperPid,
                                  std::wstring uninstallRequestPath,
-                                 std::wstring uninstallResultPath)
+                                 std::wstring uninstallResultPath,
+                                 std::uint64_t payloadBytes)
     : instance_(instance),
       payload_(std::move(payload)),
       resultPath_(std::move(resultPath)),
@@ -269,6 +270,7 @@ InstallerWindow::InstallerWindow(HINSTANCE instance, std::wstring payload, std::
       uninstallResultPath_(std::move(uninstallResultPath)),
       setupPid_(setupPid),
       payloadTimeoutMs_(payloadTimeoutMs) {
+    payloadBytes_ = payloadBytes;
     // §15/Todo 15：/installdir（重装预填）优先。产品默认目录只属于安装模式；
     // 维护/卸载缺少 /installdir 时由 main.cpp 从当前 exe 父目录推导（C4）。这里
     // 绝不再对非安装模式回退 Program Files，否则直接卸载可能指向错误目录。
@@ -1703,7 +1705,7 @@ void InstallerWindow::EnsurePages() {
     // UI-fix：许可页页内「下一步」按钮已移除——门控由 UpdateNavButtons() 读 state_.agreed。
 
     configurePage_ = std::make_unique<spk::ConfigurePage>(state_);
-    configurePage_->SetPayloadDir(payload_);
+    configurePage_->SetPayloadDir(payload_, payloadBytes_);
     configurePage_->SetOwner(window_);
     configurePage_->BindAnimator(&animator_);
     configurePage_->BindText(&textFactory_);

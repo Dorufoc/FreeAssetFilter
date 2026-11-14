@@ -41,11 +41,11 @@ from sopeek.services import update_startup
 from sopeek.utils.app_logger import debug, warning
 from sopeek.utils.path_utils import get_app_data_path
 from sopeek.utils.version_info import (
+    REPO_CANDIDATES,
     get_local_build_date,
     get_local_version,
 )
 
-_REPO = "Dorufoc/Sopeek"
 _DISK_RESERVE = 64 * 1024 * 1024
 _ARTIFACT_RETRIES = 5
 _ARTIFACT_RETRY_DELAY = 0.05
@@ -137,6 +137,18 @@ def _coerce_bool(value: Any, default: bool = False) -> bool:
     if value is None:
         return default
     return bool(value)
+
+
+def _is_repo_not_found(error: UpdateError) -> bool:
+    """判断错误是否为 GitHub 仓库不存在（HTTP 404）。
+
+    Args:
+        error: 原生检查返回的错误。
+
+    Returns:
+        bool: 仓库不存在时返回 ``True``，用于触发回退仓库。
+    """
+    return error.code == "http_status" and "404" in (error.message or "")
 
 
 def sanitize_asset_name(raw: Any) -> Optional[str]:
@@ -265,6 +277,9 @@ class UpdateService(QObject):
             self._download_counter = itertools.count(1)
             self._check_request_id: Optional[str] = None
             self._check_manual: set[bool] = set()
+            # 是否把 GitHub 预发布版（prerelease）纳入比较。默认 True 保持启动检查等
+            # 既有行为不变；关于页由用户勾选「获取测试版」后显式传入。
+            self._check_include_prerelease: bool = True
             self.check_finished.connect(self._on_check_finished)
 
             self._download_request_id: Optional[str] = None
@@ -285,12 +300,15 @@ class UpdateService(QObject):
     # ------------------------------------------------------------------
     # 公开入口
     # ------------------------------------------------------------------
-    def check(self, manual: bool = False) -> str:
+    def check(self, manual: bool = False, include_prerelease: bool = True) -> str:
         """发起或加入一次更新检查。
 
         Args:
             manual: ``True`` 表示用户手动检查，失败会通过 ``check_finished``
                 报告；``False`` 表示启动检查，失败只写日志。
+            include_prerelease: 是否把 GitHub 上的预发布版纳入比较。默认 ``True``
+                保持既有行为（启动检查照旧）；关于页由用户勾选「获取测试版」后
+                显式传入 ``False``／``True``。已有在途检查时以先发起者为准。
 
         Returns:
             str: 请求 id；同一在途检查返回同一 id。
@@ -306,6 +324,7 @@ class UpdateService(QObject):
             request_id = f"check-{next(self._check_counter)}"
             self._check_request_id = request_id
             self._check_manual = {bool(manual)}
+            self._check_include_prerelease = bool(include_prerelease)
 
         self.check_started.emit(request_id, bool(manual))
         self._task_pool.start(
@@ -610,13 +629,7 @@ class UpdateService(QObject):
         """在任务池执行原生检查并分发结果。"""
         try:
             self._bridge.ensure_started()
-            params = {
-                "repo": _REPO,
-                "current_version": get_local_version(),
-                "current_date": get_local_build_date(),
-                "include_prerelease": True,
-            }
-            response = self._bridge.check(params, request_id=request_id)
+            response = self._check_with_repo_fallback(request_id)
         except UpdaterBridgeError as exc:
             self._finish_check(request_id, None, self._error_from_exception(exc))
             return
@@ -633,6 +646,34 @@ class UpdateService(QObject):
             result = {}
         self._finish_check(request_id, self._info_from_result(result), None)
 
+    def _check_with_repo_fallback(self, request_id: str) -> Any:
+        """按 :data:`REPO_CANDIDATES` 顺序检查，仅在仓库 404 时切换候选。
+
+        Args:
+            request_id: 检查请求 id，透传给原生桥。
+
+        Returns:
+            Any: 原生 ``check`` 响应；全部候选失败时返回最后一个响应。
+        """
+        base_params = {
+            "current_version": get_local_version(),
+            "current_date": get_local_build_date(),
+            # 由发起本次检查的调用方决定（关于页「获取测试版」勾选状态）。
+            "include_prerelease": self._check_include_prerelease,
+        }
+        response: Any = None
+        for index, repo in enumerate(REPO_CANDIDATES):
+            response = self._bridge.check(
+                {**base_params, "repo": repo}, request_id=request_id
+            )
+            if isinstance(response, dict) and response.get("ok", False):
+                return response
+            error = self._error_from_response(response)
+            if not _is_repo_not_found(error) or index == len(REPO_CANDIDATES) - 1:
+                return response
+            debug(f"更新仓库 {repo} 返回 404，回退到 {REPO_CANDIDATES[index + 1]}")
+        return response
+
     def _finish_check(
         self,
         request_id: str,
@@ -646,6 +687,8 @@ class UpdateService(QObject):
             manuals = set(self._check_manual)
             self._check_request_id = None
             self._check_manual = set()
+            # 复位为默认值，避免影响下一次未显式传参的检查。
+            self._check_include_prerelease = True
 
         if error is not None:
             if True in manuals:

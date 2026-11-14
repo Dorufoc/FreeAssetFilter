@@ -14,8 +14,29 @@ from typing import Optional
 
 from sopeek.utils.path_utils import get_resource_path
 
+#: 当前程序（产品）名称，用于优先匹配同名 GitHub 仓库。
+PROGRAM_NAME = "Sopeek"
+
+#: GitHub 仓库所有者。
+REPO_OWNER = "Dorufoc"
+
+#: 程序同名仓库不存在（HTTP 404）时的回退仓库名。
+FALLBACK_REPO_NAME = "FreeAssetFilter"
+
+#: 更新检查仓库候选（``owner/name``）：优先与当前程序同名的仓库，
+#: 该仓库返回 404 时回退到 ``FreeAssetFilter``。
+REPO_CANDIDATES: tuple[str, ...] = (
+    f"{REPO_OWNER}/{PROGRAM_NAME}",
+    f"{REPO_OWNER}/{FALLBACK_REPO_NAME}",
+)
+
 #: GitHub Releases 页面，供手动下载与更新提示复用。
-RELEASES_URL = "https://github.com/Dorufoc/Sopeek/releases"
+RELEASES_URL = f"https://github.com/{REPO_CANDIDATES[0]}/releases"
+
+#: 更新对话框中允许打开的发布页前缀（覆盖全部候选仓库）。
+RELEASE_URL_PREFIXES: tuple[str, ...] = tuple(
+    f"https://github.com/{repo}/releases/" for repo in REPO_CANDIDATES
+)
 
 _VERSION_FILE = "SPKVERSION"
 _FALLBACK_VERSION = "0.0.0"

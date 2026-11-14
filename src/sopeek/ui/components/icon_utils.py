@@ -13,8 +13,12 @@ Usage:
     render_icon(painter, "checkmark", rect, QColor("#07c160"))
 """
 
-from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QPainter, QPainterPath, QColor, QPen
+from typing import Optional
+
+from PySide6.QtCore import QRectF, Qt, QPointF
+from PySide6.QtGui import QPainter, QPainterPath, QColor, QPen, QPixmap
+from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtWidgets import QApplication
 
 # ---------------------------------------------------------------------------
 # Icon command reference
@@ -553,3 +557,123 @@ def render_icon(
         painter.drawPath(path)
     finally:
         painter.restore()
+
+
+# ---------------------------------------------------------------------------
+# SVG file icons (sopeek/resources/icons/*.svg, monochrome tinted)
+# ---------------------------------------------------------------------------
+
+_svg_renderer_cache: dict[str, Optional[QSvgRenderer]] = {}
+_svg_pixmap_cache: dict[tuple, QPixmap] = {}
+
+
+def _svg_renderer(name: str) -> Optional[QSvgRenderer]:
+    """Return a cached QSvgRenderer for ``sopeek/resources/icons/{name}.svg``.
+
+    Returns None (also cached) when the file is missing or invalid, so the
+    caller can fall back to QPainter primitives.
+    """
+    if name in _svg_renderer_cache:
+        return _svg_renderer_cache[name]
+    renderer: Optional[QSvgRenderer] = None
+    try:
+        # 重构后 _paths 位于包根（src/sopeek/_paths.py），不再是 sopeek.core._paths。
+        from sopeek._paths import icons_dir
+
+        path = icons_dir() / f"{name}.svg"
+        if path.is_file():
+            candidate = QSvgRenderer(str(path))
+            if candidate.isValid():
+                renderer = candidate
+    except Exception:  # noqa: BLE001 - icon lookup must never raise
+        renderer = None
+    _svg_renderer_cache[name] = renderer
+    return renderer
+
+
+def _screen_dpr() -> float:
+    """Current primary-screen device pixel ratio (>= 1.0)."""
+    try:
+        app = QApplication.instance()
+        screen = app.primaryScreen() if app is not None else None
+        dpr = float(screen.devicePixelRatio()) if screen is not None else 1.0
+    except (RuntimeError, AttributeError, TypeError, ValueError):
+        dpr = 1.0
+    return dpr if dpr > 0 else 1.0
+
+
+def svg_tinted_pixmap(name: str, size: int, color: QColor) -> QPixmap:
+    """Render ``sopeek/resources/icons/{name}.svg`` as a monochrome tinted pixmap.
+
+    The whole SVG is colored via ``CompositionMode_SourceIn``, so it does not
+    depend on whether the file declares fill/stroke.  Results are cached by
+    (name, size, color, dpr).
+
+    Args:
+        name: File name (without ``.svg``) inside ``sopeek/resources/icons/``.
+        size: Logical pixel size.
+        color: Target monochrome color.
+
+    Returns:
+        QPixmap: Tinted icon; null pixmap when the SVG is missing/invalid.
+    """
+    dpr = _screen_dpr()
+    cache_key = (name, int(size), color.rgba(), dpr)
+    cached = _svg_pixmap_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    renderer = _svg_renderer(name)
+    if renderer is None:
+        return QPixmap()
+    target = max(1, int(round(size * dpr)))
+    base = QPixmap(target, target)
+    base.fill(Qt.transparent)
+    painter = QPainter(base)
+    try:
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        renderer.render(painter)
+    finally:
+        painter.end()
+
+    tinted = QPixmap(target, target)
+    tinted.fill(Qt.transparent)
+    painter = QPainter(tinted)
+    try:
+        painter.drawPixmap(0, 0, base)
+        painter.setCompositionMode(QPainter.CompositionMode_SourceIn)
+        painter.fillRect(tinted.rect(), color)
+    finally:
+        painter.end()
+    tinted.setDevicePixelRatio(dpr)
+    _svg_pixmap_cache[cache_key] = tinted
+    return tinted
+
+
+def render_svg_icon(
+    painter: QPainter,
+    name: str,
+    rect: QRectF,
+    color: QColor,
+) -> bool:
+    """Render a tinted SVG file icon centered inside *rect*.
+
+    Args:
+        painter: Active painter (opacity/composition of the caller applies).
+        name: File name (without ``.svg``) inside ``sopeek/resources/icons/``.
+        rect: Target rectangle in painter coordinates.
+        color: Target monochrome color.
+
+    Returns:
+        bool: True when drawn; False when the SVG is missing/invalid so
+        callers can fall back to other drawing primitives.
+    """
+    side = min(rect.width(), rect.height())
+    if side <= 0:
+        return False
+    pixmap = svg_tinted_pixmap(name, int(round(side)), color)
+    if pixmap.isNull():
+        return False
+    x = rect.x() + (rect.width() - side) / 2.0
+    y = rect.y() + (rect.height() - side) / 2.0
+    painter.drawPixmap(QPointF(x, y), pixmap)
+    return True

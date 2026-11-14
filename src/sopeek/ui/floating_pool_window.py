@@ -146,7 +146,7 @@ from PySide6.QtWidgets import (
 from components.styled_icon_button import StyledIconButton
 from components.styled_scroll_area import StyledScrollArea
 from sopeek.services.staging_pool_service import StagingPoolService
-from sopeek.ui.components.icon_utils import render_icon
+from sopeek.ui.components.icon_utils import render_svg_icon
 from sopeek.ui.components.styled_context_menu import StyledContextMenu
 from sopeek.ui.elevated_drop import ElevatedDropFallbackMixin
 from sopeek.ui.theme.app_stylesheet import register_widget_qss
@@ -1573,9 +1573,9 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
             )
             painter.setOpacity(icon_opacity * self._fade)
             side = min(23.0, card.height() * 0.42)
-            render_icon(
+            render_svg_icon(
                 painter,
-                "download",
+                "land",
                 QRectF(
                     center.x() - side / 2.0,
                     center.y() - side / 2.0,
@@ -1583,7 +1583,6 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
                     side,
                 ),
                 tm.accent_text if highlight else tm.text,
-                1.7,
             )
             self._set_paint_opacity(painter, 1.0)
 
@@ -1653,7 +1652,7 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
             icon_side,
             icon_side,
         )
-        render_icon(painter, "download", icon_rect, tm.accent_text, 1.6)
+        render_svg_icon(painter, "land", icon_rect, tm.accent_text)
 
         if self._anchor_right:
             text_left = card.left() + 52.0
@@ -3038,12 +3037,11 @@ class _EmptyState(QWidget):
         center_y = self.height() / 2.0
 
         side = 34.0
-        render_icon(
+        render_svg_icon(
             painter,
-            "download",
+            "land",
             QRectF((width - side) / 2.0, center_y - 62.0, side, side),
             tm.alpha_of(tm.text_hint, 62),
-            1.4,
         )
 
         painter.setFont(_ui_font(12, QFont.Weight.Medium))

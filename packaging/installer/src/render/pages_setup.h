@@ -71,7 +71,9 @@ public:
     explicit ConfigurePage(AppState& state);
 
     // payload 根目录（所需空间的来源；由宿主经 /payload 提供）。
-    void SetPayloadDir(std::wstring dir);
+    // knownBytes > 0 时直接采用（NSIS 传入的构建期精确值，GUI 先于载荷解压启动，
+    // 运行时遍历只能得到部分和）；0 表示未知，回退为运行时枚举。
+    void SetPayloadDir(std::wstring dir, unsigned long long knownBytes = 0);
 
     // 「浏览」按钮点击时需要 HWND 作为对话框 owner；由宿主注入。
     void SetOwner(HWND owner) { owner_ = owner; }

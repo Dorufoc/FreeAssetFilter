@@ -1,0 +1,415 @@
+name: Nightly Release
+
+# 每天自动打一次包，发布为预发布（prerelease）的 Nightly，并且只保留最新一份；
+# 也可以手动触发，选择 stable 通道发布正式版。
+#
+# 发布说明里的「更新日志」= 上一次打包的提交 到 本次打包的提交 之间的全部 commit，
+# 每条带 短哈希 + 提交时间 + 标题。上次打包的基准取 Nightly 标签（stable 取上一个
+# 正式标签）；**首次运行没有基准时只列最近 FIRST_RUN_COMMITS 条提交**（默认 10）——
+# 首版与上次发布之间往往积累了大量提交，全部列出会把说明刷爆。
+#
+# 前提（重要）：schedule 只会在**仓库默认分支**上生效。请把仓库默认分支设为
+# main-v2（或把本文件同步到旧的默认分支上），否则定时任务不会被调度。
+# 构建始终 checkout main-v2，与默认分支是什么无关。
+
+on:
+  schedule:
+    # UTC 18:00 = 北京时间次日 02:00。
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: '发布通道：nightly = 夜间版（预发布，覆盖旧的 nightly）；stable = 正式版'
+        required: true
+        default: nightly
+        type: choice
+        options:
+          - nightly
+          - stable
+
+# 需要写 Release / 需要打 tag。
+permissions:
+  contents: write
+
+# 发布型任务不要并发：避免两次运行同时删/建同一个 nightly release。
+concurrency:
+  group: nightly-release
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: '3.9'
+  PYINSTALLER_VERSION: '6.22.3'
+  BUILD_BRANCH: main-v2
+  NIGHTLY_TAG: nightly
+  # 单次发布说明里最多列出的提交数，防止异常长区间把说明刷爆。
+  MAX_COMMITS: '300'
+  # 首次发布（没有上一次构建基线）时只列最近多少个提交。
+  FIRST_RUN_COMMITS: '10'
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout main-v2
+        uses: actions/checkout@v4
+        with:
+          ref: main-v2
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install Python dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install "pyinstaller==$env:PYINSTALLER_VERSION"
+          python -c "import PyInstaller, sys; print('PyInstaller', PyInstaller.__version__, 'on', sys.version)"
+
+      - name: Ensure native toolchain (NSIS / MinGW / CMake)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if (-not (Test-Path 'C:\Program Files\CMake\bin\cmake.exe') -and
+              -not (Get-Command cmake -ErrorAction SilentlyContinue)) {
+            throw 'CMake is not available on this runner.'
+          }
+
+          if (-not (Test-Path 'C:\Program Files (x86)\NSIS\makensis.exe')) {
+            Write-Host 'NSIS not found at the default path; installing via Chocolatey...'
+            choco install nsis -y --no-progress
+          }
+
+          if (-not (Test-Path 'C:\msys64\mingw64\bin\g++.exe')) {
+            if (-not (Test-Path 'C:\msys64\usr\bin\pacman.exe')) {
+              throw 'MSYS2 is not available on this runner; cannot obtain MinGW g++.'
+            }
+            Write-Host 'MinGW g++ not found; installing mingw-w64-x86_64-gcc via pacman...'
+            & 'C:\msys64\usr\bin\pacman.exe' -S --noconfirm --needed mingw-w64-x86_64-gcc
+            if ($LASTEXITCODE -ne 0) { throw "pacman failed with exit code $LASTEXITCODE" }
+          }
+
+          & 'C:\msys64\mingw64\bin\g++.exe' --version | Select-Object -First 1
+          if (Test-Path 'C:\Program Files (x86)\NSIS\makensis.exe') {
+            & 'C:\Program Files (x86)\NSIS\makensis.exe' /VERSION
+          }
+
+      - name: Resolve tool paths
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $cmake = 'C:\Program Files\CMake\bin\cmake.exe'
+          if (-not (Test-Path $cmake)) { $cmake = (Get-Command cmake).Source }
+
+          $nsis = 'C:\Program Files (x86)\NSIS\makensis.exe'
+          if (-not (Test-Path $nsis)) {
+            $found = Get-ChildItem 'C:\Program Files*\NSIS\makensis.exe' -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+            if (-not $found) { throw 'makensis.exe not found.' }
+            $nsis = $found.FullName
+          }
+
+          $mingw = 'C:\msys64\mingw64\bin'
+          if (-not (Test-Path (Join-Path $mingw 'g++.exe'))) { throw 'MinGW g++ not found.' }
+
+          "SPK_CMAKE=$cmake"     >> $env:GITHUB_ENV
+          "SPK_NSIS=$nsis"       >> $env:GITHUB_ENV
+          "SPK_MINGW_BIN=$mingw" >> $env:GITHUB_ENV
+          Write-Host "cmake=$cmake"
+          Write-Host "nsis=$nsis"
+          Write-Host "mingw=$mingw"
+
+      - name: Prepare version (SPKVERSION)
+        id: ver
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # schedule 事件没有 inputs，缺省按 nightly 处理。
+          $channel = '${{ github.event.inputs.channel }}'
+          if ([string]::IsNullOrWhiteSpace($channel)) { $channel = 'nightly' }
+          Write-Host "channel=$channel"
+          python tools/prepare_release_version.py --channel $channel --github-output $env:GITHUB_OUTPUT
+          Write-Host '--- SPKVERSION after preparation ---'
+          Get-Content SPKVERSION
+
+      - name: Build (payload + installer + NSIS)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # 用 pwsh 7 调用：脚本含中文，pwsh 默认按 UTF-8 读取，不依赖 BOM。
+          pwsh -NoProfile -ExecutionPolicy Bypass -File tools/build_release.ps1
+
+      - name: Collect artifacts and checksums
+        id: pack
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # 成品名形如 Sopeek-<版本>-<平台>-<架构>.exe，按模式取最新一个。
+          $setup = Get-ChildItem -LiteralPath 'build' -Filter 'Sopeek-*.exe' -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $setup) {
+            throw 'Installer package not found (expected build/Sopeek-<version>-<platform>-<arch>.exe).'
+          }
+          Write-Host "Installer package: $($setup.Name) ($($setup.Length) bytes)"
+
+          # 对外只公开「最终安装包」的校验值。GUI 与 MinGW 运行库属于构建中间产物，
+          # 不随 Release 发布，也不再出现在 SHA256SUMS.txt 里。
+          if (-not (Test-Path -LiteralPath $setup.FullName)) {
+            throw "Missing installer package: $($setup.FullName)"
+          }
+          if ((Get-Item -LiteralPath $setup.FullName).Length -le 0) {
+            throw "Empty installer package: $($setup.FullName)"
+          }
+
+          $line = '{0}  {1}' -f (Get-FileHash -LiteralPath $setup.FullName -Algorithm SHA256).Hash, $setup.Name
+          $line | Set-Content -LiteralPath 'build/SHA256SUMS.txt' -Encoding ASCII
+          Write-Host $line
+
+          "installer_path=$($setup.FullName)" >> $env:GITHUB_OUTPUT
+          "installer_name=$($setup.Name)" >> $env:GITHUB_OUTPUT
+          "installer_size=$($setup.Length)" >> $env:GITHUB_OUTPUT
+
+      - name: Compose release notes (commit log since previous build)
+        id: notes
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHANNEL: ${{ steps.ver.outputs.channel }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          BUILD_DATE: ${{ steps.ver.outputs.build_date }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $channel = $env:CHANNEL
+          $maxCommits = [int]$env:MAX_COMMITS
+          $repo = '${{ github.repository }}'
+          $server = '${{ github.server_url }}'
+          $head = (git rev-parse HEAD).Trim()
+
+          # 关键：GitHub 上的 tag 不在本地，取回后才能解析上次打包的提交。
+          git fetch --force --quiet --tags origin 2>$null | Out-Null
+
+          $prev = $null
+          $baseline = ''
+          if ($channel -eq 'nightly') {
+            $tag = $env:NIGHTLY_TAG
+            $resolved = git rev-parse --verify --quiet "refs/tags/$tag^{commit}" 2>$null
+            if ($LASTEXITCODE -eq 0 -and $resolved) {
+              $prev = $resolved.Trim()
+              $baseline = "上次 Nightly 构建（tag ``$tag``）"
+            }
+          } else {
+            $described = git describe --tags --abbrev=0 --exclude="$($env:NIGHTLY_TAG)" 'HEAD^' 2>$null
+            if ($LASTEXITCODE -eq 0 -and $described) {
+              $prev = (git rev-parse --verify --quiet "$($described.Trim())^{commit}").Trim()
+              $baseline = "上一个正式版本（tag ``$($described.Trim())``）"
+            }
+          }
+
+          $firstRun = $false
+          if ($prev -and $prev -ne $head) {
+            $rangeArgs = @("$prev..$head")
+            $limit = $maxCommits
+          } else {
+            # 首次发布 / 基准不可用：没有「上一次打包」，只列最近 N 条提交，
+            # 避免把从上次发版到今天的整段历史一次性刷出来。
+            $prev = $null
+            $firstRun = $true
+            $limit = [int]$env:FIRST_RUN_COMMITS
+            $rangeArgs = @($head)
+            $baseline = "首次发布（无上一次构建基线），仅列出最近 $limit 条提交"
+          }
+
+          # 用完整哈希生成可点击链接：用户需要能点进 Commit 查看实际改动详情。
+          $raw = @(& git log @rangeArgs --no-merges --pretty=format:'%H%x1f%cI%x1f%s' -n $limit 2>$null)
+          $raw = @($raw | Where-Object { $_ -and $_.Trim() })
+
+          $md = [System.Collections.Generic.List[string]]::new()
+          if ($channel -eq 'nightly') {
+            $md.Add("# Nightly $($env:VERSION)")
+          } else {
+            $md.Add("# Sopeek $($env:VERSION)")
+          }
+          $md.Add('')
+
+          # 开头的定性说明：这是自动构建、实验性、不稳定，详情要自己点 Commit 看。
+          if ($channel -eq 'nightly') {
+            $md.Add('> ⚠️ **本版本为每日自动更新的 Nightly 自动构建版本。**')
+            $md.Add('>')
+            $md.Add('> 它由 GitHub Actions 每天自动打包，包含最新的、尚未经过完整验证的改动，**具有实验性质，并且相当不稳定**，请避免在生产环境或重要数据上使用。')
+            $md.Add('>')
+            $md.Add('> 下方更新日志仅按 **Commit 标题** 自动拼接汇总；每条改动的**实际内容、影响范围与已知问题，请点击对应的 Commit 哈希查看详情**，据此判断本次构建真正包含的功能性修改与问题修复。')
+          } else {
+            $md.Add('> **本版本为正式发布版本。**')
+            $md.Add('>')
+            $md.Add('> 下方更新日志按 **Commit 标题** 自动拼接汇总，具体改动细节请点击对应的 Commit 哈希查看。')
+          }
+          $md.Add('')
+
+          $md.Add('| 项 | 值 |')
+          $md.Add('| --- | --- |')
+          $md.Add("| 通道 | ``$channel`` |")
+          $md.Add("| 版本 | ``$($env:VERSION)`` |")
+          $md.Add("| 构建日期 | ``$($env:BUILD_DATE)`` |")
+          $md.Add("| 提交 | ``$($head.Substring(0, [Math]::Min(12, $head.Length)))`` |")
+          $md.Add('')
+
+          $compareUrl = if ($prev) { "$server/$repo/compare/$prev...$head" } else { '' }
+
+          $md.Add('## 更新日志')
+          $md.Add('')
+          $md.Add("基线：$baseline")
+          if ($compareUrl) {
+            $md.Add('')
+            $md.Add("对比：$compareUrl")
+          }
+          $md.Add('')
+
+          if ($raw.Count -eq 0) {
+            $md.Add('（本次打包与上次打包之间没有新的提交）')
+          } else {
+            if ($channel -eq 'nightly') {
+              $md.Add('以下为本次自动构建相对上一次打包包含的提交（仅标题汇总，具体改动请点击哈希查看）：')
+            } else {
+              $md.Add('本次发布包含的提交（仅标题汇总，具体改动请点击哈希查看）：')
+            }
+            $md.Add('')
+            foreach ($line in $raw) {
+              $parts = $line -split ([char]0x1f), 3
+              if ($parts.Count -lt 3) { continue }
+              $fullSha = $parts[0].Trim()
+              $shortSha = $fullSha.Substring(0, [Math]::Min(7, $fullSha.Length))
+              $when = $parts[1].Trim()
+              $subject = $parts[2].Trim() -replace '`', "'"
+              $md.Add("- [``$shortSha``]($server/$repo/commit/$fullSha) · $when · $subject")
+            }
+            if (-not $firstRun -and $raw.Count -ge $limit) {
+              $md.Add('')
+              $md.Add("（提交较多，仅列出最近 $limit 条）")
+            }
+          }
+
+          # 日志段之后的收尾说明。
+          $md.Add('')
+          $md.Add('---')
+          $md.Add('')
+          $md.Add('## 说明')
+          $md.Add('')
+          if ($channel -eq 'nightly') {
+            $md.Add('- 本页面由每日自动构建覆盖更新，**只保留最新一份 Nightly**。')
+            $md.Add('- 提交标题未必能完整反映改动范围，**请以 Commit 详情为准**判断本次构建的功能性修改与问题修复。')
+            $md.Add('- 该版本为实验性构建，可能存在功能缺失、行为变更或崩溃等情况。')
+            $md.Add('- 反馈问题请提交 Issue，并附上版本号、构建日期与 `data/log` 目录中的日志。')
+          } else {
+            $md.Add('- 提交标题未必能完整反映改动范围，请以 Commit 详情为准。')
+            $md.Add('- 反馈问题请提交 Issue，并附上版本号与 `data/log` 目录中的日志。')
+          }
+
+          $md.Add('')
+          $md.Add('## 安装包与校验值')
+          $md.Add('')
+          $md.Add('校验值仅针对下面的最终安装包；GUI、运行库等构建中间产物不对外发布。')
+          $md.Add('')
+          $md.Add('| 文件 | SHA256 |')
+          $md.Add('| --- | --- |')
+          foreach ($sum in Get-Content 'build/SHA256SUMS.txt') {
+            if ($sum -match '^([0-9A-Fa-f]{64})\s+(.+)$') {
+              $md.Add("| ``$($matches[2])`` | ``$($matches[1])`` |")
+            }
+          }
+
+          $md | Set-Content -LiteralPath 'build/release-notes.md' -Encoding utf8
+          Write-Host '--- release-notes.md ---'
+          Get-Content 'build/release-notes.md'
+          "commit_count=$($raw.Count)" >> $env:GITHUB_OUTPUT
+          if ($prev) { "base_sha=$prev" >> $env:GITHUB_OUTPUT }
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sopeek-setup-${{ steps.ver.outputs.channel }}-${{ steps.ver.outputs.build_date_compact }}
+          path: |
+            build/Sopeek-*.exe
+            build/SHA256SUMS.txt
+            build/release-notes.md
+            build/release-manifest.json
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Publish nightly prerelease (replace previous)
+        if: steps.ver.outputs.channel == 'nightly'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = $env:NIGHTLY_TAG
+
+          # 只保留一份最新 Nightly：先删掉上一次的 release 与 tag（不存在则忽略）。
+          $existing = gh release view $tag --json tagName --jq '.tagName' 2>$null
+          if ($LASTEXITCODE -eq 0 -and $existing) {
+            Write-Host "Deleting previous nightly release '$tag'..."
+            gh release delete $tag --yes --cleanup-tag
+            if ($LASTEXITCODE -ne 0) { throw 'Failed to delete the previous nightly release.' }
+          } else {
+            Write-Host 'No previous nightly release to delete.'
+          }
+
+          gh release create $tag `
+            '${{ steps.pack.outputs.installer_path }}' `
+            'build/SHA256SUMS.txt' `
+            --prerelease `
+            --title "Nightly ${{ steps.ver.outputs.build_date }}" `
+            --notes-file 'build/release-notes.md' `
+            --target '${{ github.sha }}'
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to create the nightly release.' }
+          Write-Host "Nightly release updated: $tag (commits: ${{ steps.notes.outputs.commit_count }})"
+
+      - name: Publish stable release
+        if: steps.ver.outputs.channel == 'stable'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = '${{ steps.ver.outputs.version_tag }}'
+          if ([string]::IsNullOrWhiteSpace($tag)) { throw 'Empty release tag.' }
+
+          # 正式版不允许静默覆盖：同名 tag 已存在就失败，交由人工处理。
+          gh release view $tag --json tagName 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            throw "Release '$tag' already exists; bump SPKVERSION or delete the existing release first."
+          }
+
+          gh release create $tag `
+            '${{ steps.pack.outputs.installer_path }}' `
+            'build/SHA256SUMS.txt' `
+            --title "Sopeek $tag" `
+            --notes-file 'build/release-notes.md' `
+            --target '${{ github.sha }}'
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to create the stable release.' }
+          Write-Host "Stable release published: $tag (commits: ${{ steps.notes.outputs.commit_count }})"
+
+      - name: Summarize
+        shell: pwsh
+        run: |
+          @(
+            '## Build summary',
+            '',
+            '| 项 | 值 |',
+            '| --- | --- |',
+            '| 通道 | `${{ steps.ver.outputs.channel }}` |',
+            '| 版本 | `${{ steps.ver.outputs.version }}` |',
+            '| 构建日期 | `${{ steps.ver.outputs.build_date }}` |',
+            '| 提交 | `${{ github.sha }}` |',
+            '| 更新日志条目 | ${{ steps.notes.outputs.commit_count }} |',
+            '| 安装包大小 | ${{ steps.pack.outputs.installer_size }} 字节 |'
+          ) | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY

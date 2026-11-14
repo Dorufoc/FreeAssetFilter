@@ -8,6 +8,7 @@ import copy
 import os
 import sys
 import time
+from typing import Optional
 
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QFrame, QLabel, QStackedWidget,
@@ -3277,7 +3278,17 @@ class AboutSettingsPage(QWidget):
     # ── 内联检查更新 ────────────────────────────────────────────────
 
     def _check_update(self) -> None:
-        """检查更新：委托进程级内联 session，不打开更新中心弹窗。"""
+        """检查更新：先弹出自定义确认弹窗，再委托进程级内联 session。
+
+        点击按钮不会立刻发起网络检查——用户需在弹窗里确认，并决定是否勾选
+        「获取测试版」（勾选才检查 GitHub 预发布版）。
+        """
+        include_prerelease = self._ask_update_channel()
+        if include_prerelease is None:
+            # 用户取消：不发起检查，按钮保持空闲态。
+            self._set_check_action_busy(False)
+            return
+
         session = self._ensure_update_session()
         if session is None:
             self._set_check_action_busy(False)
@@ -3286,7 +3297,17 @@ class AboutSettingsPage(QWidget):
                 danger=True,
             )
             return
-        session.start_check()
+        session.start_check(include_prerelease=include_prerelease)
+
+    def _ask_update_channel(self) -> Optional[bool]:
+        """弹窗询问是否检查更新；返回是否包含测试版，``None`` 表示取消。"""
+        try:
+            from sopeek.ui.layout.update_dialogs import show_check_update_prompt
+
+            return show_check_update_prompt(self.window())
+        except Exception as exc:  # noqa: BLE001 - 弹窗不可用不应让入口失效
+            warning(f"打开检查更新弹窗失败，按正式版继续：{exc}")
+            return False
 
     def _ensure_update_session(self):
         """取得并绑定内联更新 session；失败返回 ``None``。"""
@@ -3676,9 +3697,9 @@ class SettingsLayout(QWidget):
             parent=self,
         )
         # 侧边栏列表顺序 = 页面顺序：通用（第一项）→ 外观 → 关于
-        self._sidebar.add_item("通用", icon_svg="gear")
-        self._sidebar.add_item("外观", icon_svg="sun")
-        self._sidebar.add_item("关于", icon_svg="info")
+        self._sidebar.add_item("通用", icon_svg="general_settings")
+        self._sidebar.add_item("外观", icon_svg="appearance_settings")
+        self._sidebar.add_item("关于", icon_svg="about")
         self._sidebar.item_selected.connect(self._on_item_selected)
         main_layout.addWidget(self._sidebar)
 

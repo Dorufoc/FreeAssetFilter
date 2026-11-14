@@ -4,6 +4,18 @@ project(SopeekInstaller LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# 安装器 GUI 自身的版本资源。build.ps1 从仓库根目录的 SPKVERSION 计算后以 -D 传入；
+# 缺省 0.0.0 只用于「单独 cmake 配置」和测试构建，保证任何情况下都能编译。
+set(SPK_VERSION_MAJOR "0" CACHE STRING "SopeekInstaller version major")
+set(SPK_VERSION_MINOR "0" CACHE STRING "SopeekInstaller version minor")
+set(SPK_VERSION_PATCH "0" CACHE STRING "SopeekInstaller version patch")
+set(SPK_VERSION_BUILD "0" CACHE STRING "SopeekInstaller version build")
+set(SPK_VERSION_STRING "0.0.0" CACHE STRING "SopeekInstaller display version")
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/resources/version.h.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/version_gen.h"
+    @ONLY)
+
 # 自动收集源文件（§13）：新增 .cpp 无需再改本文件。resources/app.rc 仍显式列出。
 # 说明：此处以 CONFIGURE_DEPENDS 作为 GLOB 结果集合的变量名（与计划冻结写法
 # `file(GLOB CONFIGURE_DEPENDS "src/*.cpp" "src/render/*.cpp")` 一致），由
@@ -33,5 +45,5 @@ target_link_libraries(SopeekInstaller PRIVATE
     comctl32 shell32 shlwapi ole32)
 # Keep the bootstrapper self-contained: users do not need the MSYS2 runtime.
 target_link_options(SopeekInstaller PRIVATE -static-libgcc -static-libstdc++ -static)
-target_include_directories(SopeekInstaller PRIVATE src)
+target_include_directories(SopeekInstaller PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}")
 set_target_properties(SopeekInstaller PROPERTIES OUTPUT_NAME "SopeekInstaller")
