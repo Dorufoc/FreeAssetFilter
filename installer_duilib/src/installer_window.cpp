@@ -430,7 +430,11 @@ bool InstallerWindow::CreateAppWindow() {
 
     if (payload_.empty()) payload_ = L".";
     std::error_code ec;
-    if (!fs::exists(fs::path(payload_), ec)) {
+    const bool payloadExists = fs::exists(fs::path(payload_), ec);
+    // 维护/卸载模式启动时载荷尚未解包：setup 只在用户选择「修复」后才释放载荷并写
+    // payload.ready 哨兵（卸载则完全不需要载荷）。因此「载荷目录缺失」只有安装模式
+    // 才是真错误；否则维护窗口会在一切正常时也顶一条红色「未找到安装载荷目录」。
+    if (mode_ == AppMode::Install && !payloadExists) {
         errorText_ = L"错误：未找到安装载荷目录：" + payload_;
     }
 
@@ -445,7 +449,8 @@ bool InstallerWindow::CreateAppWindow() {
             ToHex(ex) + L" noredirbitmap=" + std::to_wstring((ex & WS_EX_NOREDIRECTIONBITMAP) ? 1 : 0) +
             L" rect=" + std::to_wstring(wr.right - wr.left) + L"x" + std::to_wstring(wr.bottom - wr.top) +
             L" dpi=" + std::to_wstring(dpi_));
-    DiagLog(std::wstring(L"payload_exists=") + std::to_wstring(errorText_.empty() ? 1 : 0));
+    DiagLog(std::wstring(L"payload_exists=") + std::to_wstring(payloadExists ? 1 : 0) +
+            L" mode=" + std::to_wstring(static_cast<int>(mode_)));
     // Todo 15 证据：/installdir 解析值（或默认值）已进入共享状态（Location 页数据源）。
     DiagLog(L"state installDir=" + state_.installDir);
 

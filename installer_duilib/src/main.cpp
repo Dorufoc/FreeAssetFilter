@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstdlib>  // _wtoi（/auto:page= 解析）
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -93,6 +94,10 @@ struct ParsedArgs {
     AppMode autoMode = AppMode::Install;
     std::wstring autoAction;
     std::wstring autoDeleteUserData;
+    // /version-decision：只比较「已安装版本 vs 本安装包版本」后立即退出（见
+    // RunVersionDecision）。供 NSIS 在 .onInit 里决定走「升级」还是「维护」。
+    bool versionDecision = false;
+    std::wstring packageVersion;  // /package-version <s>：本次安装包版本
 #ifdef SPK_TESTMODE
     std::wstring testDumpPath;
 #endif
@@ -135,6 +140,64 @@ std::wstring BuildOriginalArguments(int argc, wchar_t** argv) {
         result += QuoteArgument(argv[i] ? argv[i] : L"");
     }
     return result;
+}
+
+// 双击安装目录里的卸载 EXE（SopeekUninstall.exe）时命令行不含任何模式参数。
+// 这种启动绝不能落到「安装」模式（会把应用重新装一遍），而应转交 NSIS 卸载助手
+// UninstallHelper.exe——它与「设置 → 应用」使用同一条链路：助手持有卸载引擎锁，
+// 再以 /uninstall 唤起本 UI 显示卸载确认页。
+constexpr wchar_t kUninstallerExeName[] = L"SopeekUninstall.exe";
+constexpr wchar_t kUninstallHelperExeName[] = L"UninstallHelper.exe";
+
+// SelfExePath 的定义在下方（需要先用于卸载引导判定）。
+std::wstring SelfExePath();
+
+bool HasExplicitMode(const ParsedArgs& args) {
+    return args.maintenance || args.uninstall || args.uninstallLauncher ||
+           args.uninstallHelper || args.elevated;
+}
+
+// exe 文件名是否为安装目录里的卸载 UI。大小写不敏感（Windows 语义）。
+bool IsInstalledUninstallerBinary() {
+    const std::wstring self = SelfExePath();
+    if (self.empty()) return false;
+    const std::wstring leaf = std::filesystem::path(self).filename().wstring();
+    return _wcsicmp(leaf.c_str(), kUninstallerExeName) == 0;
+}
+
+// 把「双击卸载 EXE」转交给 UninstallHelper.exe。返回 true 表示已成功转交。
+bool RelayToUninstallHelper() {
+    const std::wstring self = SelfExePath();
+    if (self.empty()) return false;
+
+    const std::filesystem::path installDir =
+        std::filesystem::path(self).parent_path();
+    const std::filesystem::path helper = installDir / kUninstallHelperExeName;
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(helper, ec)) {
+        MessageBoxW(nullptr,
+                    L"未找到卸载组件 UninstallHelper.exe，无法卸载。\n"
+                    L"请在「设置 → 应用 → 已安装的应用」中找到 Sopeek 并卸载。",
+                    L"Sopeek", MB_OK | MB_ICONERROR);
+        return false;
+    }
+
+    std::wstring parameters = L"/uninstall-launcher /installdir ";
+    parameters += QuoteArgument(installDir.wstring());
+    parameters += L" /ui ";
+    parameters += QuoteArgument(self);
+
+    const HINSTANCE launched =
+        ShellExecuteW(nullptr, L"open", helper.c_str(), parameters.c_str(),
+                      installDir.c_str(), SW_SHOWNORMAL);
+    if (reinterpret_cast<INT_PTR>(launched) <= 32) {
+        MessageBoxW(nullptr,
+                    L"无法启动卸载程序。\n"
+                    L"请在「设置 → 应用 → 已安装的应用」中找到 Sopeek 并卸载。",
+                    L"Sopeek", MB_OK | MB_ICONERROR);
+        return false;
+    }
+    return true;
 }
 
 // 非负十进制 DWORD；空/前缀负号/尾随垃圾/溢出一律返回 0（调用方按缺省处理）。
@@ -242,6 +305,13 @@ ParsedArgs ParseArguments(int argc, wchar_t** argv) {
                 args.payloadBytes = ParseNonNegativeU64(value);
                 ++i;
             }
+        } else if (_wcsicmp(arg, L"/version-decision") == 0) {
+            args.versionDecision = true;
+        } else if (_wcsicmp(arg, L"/package-version") == 0) {
+            if (const wchar_t* value = valueAt(i)) {
+                args.packageVersion = value;
+                ++i;
+            }
         } else if (_wcsicmp(arg, L"/auto") == 0) {
             args.autoDrive = true;
         } else if (_wcsnicmp(arg, kAutoOptsPrefix, LiteralLength(kAutoOptsPrefix)) == 0) {
@@ -290,6 +360,96 @@ std::wstring SelfExePath() {
         }
         buffer.resize(buffer.size() * 2);
     }
+}
+
+// ---------------------------------------------------------------------------
+// 版本判定（/version-decision）
+//
+// NSIS 的 .onInit 在检测到已安装产品后，需要决定走「升级」还是「维护」：
+//   已安装版本 < 本安装包版本 → 升级（按全新安装流程覆盖文件）
+//   已安装版本 ≥ 本安装包版本 → 维护（修复/卸载）
+// 版本串比较放在 C++ 里做（NSIS 脚本做多段数值比较既啰嗦又易错）。
+//
+// 已安装版本来自 <安装目录>\_internal\SPKVERSION 首行（随 payload 一起落地，
+// 与注册表 DisplayVersion 同源但更可靠、且不依赖注册表状态）。
+// ---------------------------------------------------------------------------
+
+struct VersionQuad {
+    long long parts[4] = {0, 0, 0, 0};
+};
+
+// 「.nightly-YYYYMMDD」后缀折算进第 4 段（YYYYMMDD 在 32/64 位整数内），
+// 这样 2.0.0.nightly-20261114 > 2.0.0，且同一天的 nightly 判定为相同版本。
+VersionQuad ParseVersionQuad(std::wstring raw) {
+    VersionQuad out;
+    const auto isDigit = [](wchar_t ch) { return ch >= L'0' && ch <= L'9'; };
+
+    while (!raw.empty() && (raw.front() == L' ' || raw.front() == L'\t')) raw.erase(raw.begin());
+    while (!raw.empty() && (raw.back() == L' ' || raw.back() == L'\t' || raw.back() == L'\r' ||
+                            raw.back() == L'\n')) {
+        raw.pop_back();
+    }
+    if (!raw.empty() && (raw.front() == L'v' || raw.front() == L'V')) raw.erase(raw.begin());
+
+    const std::wstring nightlyTag = L".nightly-";
+    const std::size_t nightlyPos = raw.find(nightlyTag);
+    if (nightlyPos != std::wstring::npos) {
+        const std::wstring stamp = raw.substr(nightlyPos + nightlyTag.size());
+        if (stamp.size() >= 8 &&
+            std::all_of(stamp.begin(), stamp.begin() + 8, isDigit)) {
+            out.parts[3] = std::stoll(stamp.substr(0, 8));
+        }
+        raw = raw.substr(0, nightlyPos);
+    }
+
+    std::size_t field = 0;
+    std::size_t pos = 0;
+    while (field < 3 && pos <= raw.size()) {
+        const std::size_t dot = raw.find(L'.', pos);
+        const std::wstring token =
+            raw.substr(pos, dot == std::wstring::npos ? std::wstring::npos : dot - pos);
+        long long value = 0;
+        bool anyDigit = false;
+        for (const wchar_t ch : token) {
+            if (!isDigit(ch)) break;  // 例：1.0.0-alpha.5 的 alpha 段忽略
+            value = value * 10 + (ch - L'0');
+            anyDigit = true;
+        }
+        out.parts[field++] = anyDigit ? value : 0;
+        if (dot == std::wstring::npos) break;
+        pos = dot + 1;
+    }
+    return out;
+}
+
+int CompareVersionQuad(const VersionQuad& left, const VersionQuad& right) {
+    for (int i = 0; i < 4; ++i) {
+        if (left.parts[i] < right.parts[i]) return -1;
+        if (left.parts[i] > right.parts[i]) return 1;
+    }
+    return 0;
+}
+
+// 读取 <installDir>\_internal\SPKVERSION 的首行；失败返回空串。
+std::wstring ReadInstalledVersion(const std::wstring& installDir) {
+    if (installDir.empty()) return {};
+    const std::filesystem::path versionFile =
+        std::filesystem::path(installDir) / L"_internal" / L"SPKVERSION";
+    std::wifstream input(versionFile);
+    if (!input.is_open()) return {};
+    std::wstring line;
+    std::getline(input, line);
+    return line;
+}
+
+// 退出码：0 = 已安装同版本或更新（维护）；10 = 已安装更旧（升级）。
+// 无法判定（读不到已安装版本）时返回 0，即按维护处理——与既有行为一致、更保守。
+int RunVersionDecision(const ParsedArgs& args) {
+    const std::wstring installedRaw = ReadInstalledVersion(args.installDir);
+    if (installedRaw.empty()) return 0;
+    const VersionQuad installed = ParseVersionQuad(installedRaw);
+    const VersionQuad package = ParseVersionQuad(args.packageVersion);
+    return CompareVersionQuad(installed, package) < 0 ? 10 : 0;
 }
 
 // 当前进程 token 的 user SID（字符串形式）。失败返回空串。
@@ -604,6 +764,18 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
     if (argv) LocalFree(argv);
     argv = nullptr;
 #endif
+
+    // /version-decision：仅比较版本并退出（NSIS 用它决定「升级 / 维护」），
+    // 必须在任何模式判定、单实例互斥体与窗口创建之前返回。
+    if (args.versionDecision) {
+        return RunVersionDecision(args);
+    }
+
+    // 双击安装目录里的卸载 EXE：无任何模式参数，且自身文件名就是卸载体。
+    // 转交 UninstallHelper.exe（与「设置 → 应用」同一条卸载链路），然后退出。
+    if (!HasExplicitMode(args) && IsInstalledUninstallerBinary()) {
+        return RelayToUninstallHelper() ? 0 : 1;
+    }
 
     const AppMode mode = SelectMode(args);
 

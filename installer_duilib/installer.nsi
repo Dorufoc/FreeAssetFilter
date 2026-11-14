@@ -15,7 +15,7 @@ RequestExecutionLevel admin
 !endif
 ManifestDPIAware true
 Name "Sopeek Installer"
-; Output override: build.ps1 always passes -DSPK_OUTFILE=..\build\Sopeek-<版本>-<平台>-<架构>.exe
+; Output override: build.ps1 always passes -DSPK_OUTFILE=..\build\Sopeek-<version>-<platform>-<arch>.exe
 ; (e.g. Sopeek-2.0.0-windows-x64.exe) so the packaged file name carries product,
 ; version and target platform/arch. The fallback below keeps a bare
 ; `makensis installer.nsi` invocation, and QA builds pass their own isolated path.
@@ -543,11 +543,29 @@ engineMutexClear:
 
   ; T15 installed detection is exactly: app exe OR _internal. No other signal
   ; (result INI, shortcuts, Add/Remove entry) may force maintenance mode.
-  IfFileExists "$INSTDIR\Sopeek.exe" installed 0
-  IfFileExists "$INSTDIR\_internal" installed 0
+  ;
+  ; Upgrade vs maintenance: when the installed version is OLDER than this package,
+  ; run the normal install flow over the existing directory (an in-place upgrade);
+  ; when it is the same or newer, enter maintenance (repair / uninstall).
+  ; The comparison lives in the GUI (/version-decision, C++ side) because multi-part
+  ; numeric comparison is error-prone in NSIS script. Exit codes: 10 = upgrade,
+  ; 0 = maintenance. Any other code (helper failed) falls back to maintenance.
+  IfFileExists "$INSTDIR\Sopeek.exe" 0 spkCheckInternal
+  Goto spkEvaluateInstalled
+spkCheckInternal:
+  IfFileExists "$INSTDIR\_internal" 0 spkFreshInstall
+spkEvaluateInstalled:
+  ClearErrors
+  ExecWait '"$GuiTempExe" /version-decision /installdir "$INSTDIR" /package-version "${SPK_PRODUCT_VERSION}"' $0
+  ${If} $0 == 10
+    Goto spkFreshInstall
+  ${EndIf}
+  Goto installed
 
-  ; Fresh install: behavior is unchanged. The only difference is that the GUI
-  ; now runs from the temp copy (with libwinpthread-1.dll next to it).
+spkFreshInstall:
+  ; Fresh install (or in-place upgrade when the installed version is older).
+  ; The only difference is that the GUI now runs from the temp copy (with
+  ; libwinpthread-1.dll next to it).
   ; Test branch drives the GUI unattended: /auto:opts=<bits> (contract §17)
   ; automates 欢迎→…→完成 with the frozen option bits (default 1101);
   ; production branch stays interactive (no /auto flag).
@@ -1099,6 +1117,14 @@ unArgOrigLocal:
 unArgIgnore:
   Goto unArgLoop
 unArgDone:
+  ; Double-clicking UninstallHelper.exe in the install directory passes no arguments.
+  ; Without this default the helper branch would wait forever for a UI request that
+  ; never arrives (the user sees "double-clicking the uninstaller does nothing").
+  ; Note: this script is compiled as ACP, so keep comments ASCII-only.
+  StrCmp $UnArgMode "" 0 unArgModeDone
+  StrCmp $UnArgSilent "1" unArgModeDone
+  StrCpy $UnArgMode "launcher"
+unArgModeDone:
   StrCmp $UnArgInstallDir "" unArgDirDone
   StrCpy $INSTDIR $UnArgInstallDir
 unArgDirDone:

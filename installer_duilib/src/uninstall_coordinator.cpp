@@ -79,6 +79,18 @@ bool UninstallCoordinator::Start(std::wstring* error) {
         return fail(L"卸载请求或结果文件路径为空，无法开始卸载。");
     }
 
+    // 上一次卸载可能留下终态 result（例如上次以失败/取消结束）。NSIS helper 会先把
+    // 自己复制到 %TEMP%\~nsu*.tmp 再执行 un.onInit，删除旧 result 的时机晚于本 UI 的
+    // 轮询起点，于是旧终态会被当成「本次」的结果——表现为「提示卸载失败，实际却已经
+    // 卸载完成」。这里在启动 helper 前先清掉它，确保此后出现的 result 必定属于本次。
+    if (!::DeleteFileW(resultPath_.c_str())) {
+        const DWORD deleteError = ::GetLastError();
+        if (deleteError != ERROR_FILE_NOT_FOUND && deleteError != ERROR_PATH_NOT_FOUND) {
+            return fail(L"无法清理上一次的卸载结果文件（可能仍被其他进程占用）：" +
+                        resultPath_);
+        }
+    }
+
     // D5/T12：必须先写 request，再启动 helper（helper 启动后会立刻读取它）。
     wchar_t exePath[32768] = {};
     const DWORD exeLen = GetModuleFileNameW(nullptr, exePath, ARRAYSIZE(exePath));
@@ -156,6 +168,11 @@ void UninstallCoordinator::Worker() {
     protocol::UninstallStage lastStage = protocol::UninstallStage::Started;
     int lastPermille = -1;
 
+    // NSIS 卸载器的「自复制到 %TEMP% 后原进程退出」交接窗口（见下）。
+    constexpr ULONGLONG kHelperExitGraceMs = 15000ULL;
+    ULONGLONG helperExitedAtMs = 0;
+    DWORD helperExitCode = 0;
+
     for (;;) {
         if (stop_.load()) return;
         if (WaitForSingleObject(stopEvent_, 0) == WAIT_OBJECT_0) return;
@@ -184,15 +201,30 @@ void UninstallCoordinator::Worker() {
             }
         }
 
-        // helper 提前退出：先做最后一次终态读取（helper 可能刚写完 done 就退出），
-        // 仍读不到才按失败收口。绝不根据“进程没了”推断卸载成功。
+        // helper 提前退出：先做最后一次终态读取（helper 可能刚写完 done 就退出）。
+        // 注意 NSIS 卸载器会先把自身复制到 %TEMP%\~nsu*.tmp 再在那里执行，原进程随即
+        // 以 0 退出——这是「交接」，不是失败。直接判失败会让 UI 报「卸载未完成」，
+        // 而复制体随后其实已经卸载成功。因此这里只记下退出时刻，给复制体一个宽限窗口：
+        // 期间出现 result 就继续按 result 走，始终不出现才判定失败。绝不根据「进程没了」
+        // 推断卸载成功。
         if (helperProcess_ && WaitForSingleObject(helperProcess_, 0) == WAIT_OBJECT_0) {
             if (TryReadTerminal()) return;
             DWORD exitCode = 0;
             GetExitCodeProcess(helperProcess_, &exitCode);
-            SetFailed(L"卸载程序在完成前退出（代码 " + std::to_wstring(exitCode) + L"）。");
-            PostTerminal(protocol::UninstallStage::Failed);
-            return;
+            CloseHandle(helperProcess_);
+            helperProcess_ = nullptr;
+            if (helperExitedAtMs == 0) helperExitedAtMs = GetTickCount64();
+            helperExitCode = exitCode;
+        }
+        if (helperProcess_ == nullptr && helperExitedAtMs != 0) {
+            if (::GetFileAttributesW(resultPath_.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                helperExitedAtMs = 0;  // 复制体已接手，后续完全由 result 驱动
+            } else if (GetTickCount64() - helperExitedAtMs >= kHelperExitGraceMs) {
+                SetFailed(L"卸载程序在完成前退出（代码 " +
+                          std::to_wstring(helperExitCode) + L"）。");
+                PostTerminal(protocol::UninstallStage::Failed);
+                return;
+            }
         }
 
         if (GetTickCount64() - startTick >= kResultTimeoutMs) {

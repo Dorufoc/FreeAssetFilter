@@ -107,7 +107,7 @@ MaintenancePage::MaintenancePage(AppState& state) : state_(state) {
     version_ = state_.installedVersion;
     detected_ = state_.installDetected;
 
-    repairButton_.SetLabel(L"修复");
+    repairButton_.SetLabel(L"修复 / 更新");
     repairButton_.SetStyle(Button::Accent);
     repairButton_.SetOnClick([this]() {
         if (onRepair_) onRepair_();
@@ -233,7 +233,7 @@ void MaintenancePage::Render(ID2D1DeviceContext* dc, const Theme& theme) {
     // 标题 / 副标题（T7 固定文案）。
     DrawLineText(dc, text_, L"Sopeek 维护", titleRect_, fontsize::Title,
                  weight::SemiBold, DWRITE_TEXT_ALIGNMENT_CENTER, theme.textPrimary);
-    DrawLineText(dc, text_, L"修复程序文件，或卸载应用。你的文档和导出文件不会被删除。",
+    DrawLineText(dc, text_, L"修复程序文件，或用当前安装包更新到该版本，或卸载应用。你的文档和导出文件不会被删除。",
                  subtitleRect_, fontsize::Body, weight::Regular, DWRITE_TEXT_ALIGNMENT_CENTER,
                  theme.textSecondary);
 
