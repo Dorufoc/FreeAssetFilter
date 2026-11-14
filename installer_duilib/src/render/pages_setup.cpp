@@ -239,11 +239,13 @@ ConfigurePage::ConfigurePage(AppState& state) : state_(state) {
     SyncFromState();
 }
 
-void ConfigurePage::SetPayloadDir(std::wstring dir) {
+void ConfigurePage::SetPayloadDir(std::wstring dir, unsigned long long knownBytes) {
     payloadDir_ = std::move(dir);
-    // payload 枚举是唯一的 O(文件数) 目录遍历；只在设置载荷目录时（启动期）执行一次并缓存，
-    // 切页 / 缩放不再重复枚举（Layout 无 I/O，RecomputeSpace 只读缓存）。
-    payloadTotalBytes_ = PayloadTotalBytes(payloadDir_);
+    // 生产装配：NSIS 先启动 GUI、后释放载荷，此刻遍历 payload 只能得到「解压到一半」
+    // 的部分和（曾导致「所需空间」明显偏小）。因此优先采用 NSIS 传入的构建期精确值
+    // （/payload-bytes），完全不扫描；仅当未提供时才回退运行时枚举（测试/独立调用）。
+    // 枚举仍是唯一的 O(文件数) 遍历，结果缓存，切页/缩放不再重复。
+    payloadTotalBytes_ = knownBytes > 0 ? knownBytes : PayloadTotalBytes(payloadDir_);
     RecomputeSpace();
 }
 

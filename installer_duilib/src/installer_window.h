@@ -62,7 +62,8 @@ public:
                     std::wstring decisionPath = {}, DWORD setupPid = 0,
                     std::uint64_t payloadTimeoutMs = 0, DWORD helperPid = 0,
                     std::wstring uninstallRequestPath = {},
-                    std::wstring uninstallResultPath = {});
+                    std::wstring uninstallResultPath = {},
+                    std::uint64_t payloadBytes = 0);
     ~InstallerWindow();
 
     InstallerWindow(const InstallerWindow&) = delete;
@@ -258,6 +259,8 @@ private:
     std::wstring payload_;
     std::wstring resultPath_;
     std::wstring errorText_;
+    // 构建期精确的 payload 字节数（/payload-bytes，0 = 未知 ⇒ 配置页回退运行时扫描）。
+    std::uint64_t payloadBytes_{0};
 
     // --- T10：模式 / 跨进程生命周期状态（T11-T13 消费）---
     AppMode mode_{AppMode::Install};      // 启动模式（标题栏与关闭语义分流）

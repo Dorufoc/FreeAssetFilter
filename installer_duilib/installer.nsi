@@ -41,17 +41,35 @@ ShowInstDetails nevershow
 ; Setup / uninstaller icon: project icon (SPK-setup.ico) instead of the default NSIS icon.
 Icon "..\sopeek\icons\SPK-setup.ico"
 UninstallIcon "..\sopeek\icons\SPK-setup.ico"
-; Numeric version 1.0.0.5; string versions come from SPKVERSION (1.0.0-alpha.5).
-VIProductVersion "1.0.0.5"
+; Version metadata is derived from SPKVERSION by build.ps1 and passed in with -D, so a
+; nightly build reports its own version instead of a frozen literal. The !ifndef
+; fallbacks keep a bare `makensis installer.nsi` (and the test-build pipeline) working.
+!ifndef SPK_PRODUCT_VERSION
+  !define SPK_PRODUCT_VERSION "0.0.0"
+!endif
+; VIProductVersion must be four dot-separated integers in 0..65535.
+!ifndef SPK_PRODUCT_VERSION_NUMERIC
+  !define SPK_PRODUCT_VERSION_NUMERIC "0.0.0.0"
+!endif
+!ifndef SPK_FILE_VERSION
+  !define SPK_FILE_VERSION "${SPK_PRODUCT_VERSION}"
+!endif
+VIProductVersion "${SPK_PRODUCT_VERSION_NUMERIC}"
 VIAddVersionKey /LANG=1033 "ProductName" "Sopeek"
 VIAddVersionKey /LANG=1033 "FileDescription" "Sopeek"
-VIAddVersionKey /LANG=1033 "FileVersion" "1.0.0-alpha.5"
-VIAddVersionKey /LANG=1033 "ProductVersion" "1.0.0-alpha.5"
+VIAddVersionKey /LANG=1033 "FileVersion" "${SPK_FILE_VERSION}"
+VIAddVersionKey /LANG=1033 "ProductVersion" "${SPK_PRODUCT_VERSION}"
 VIAddVersionKey /LANG=1033 "CompanyName" "Dorufoc & renmoren"
 VIAddVersionKey /LANG=1033 "LegalCopyright" "Copyright (c) 2026 Dorufoc & renmoren"
 
 !define APP "Sopeek.exe"
 !define PAYLOAD "..\build\pyinstall\Sopeek"
+; Exact payload size in bytes, measured by build.ps1 before packaging and forwarded
+; to the GUI. 0 means "unknown" (e.g. a test/QA build that omits the define) and the
+; GUI falls back to scanning the payload directory itself.
+!ifndef PAYLOAD_BYTES
+  !define PAYLOAD_BYTES 0
+!endif
 ; Result protocol: the GUI install engine is the ONLY writer of this INI; NSIS is a
 ; pure reader. Only the terminal `abort` key (written last by the GUI) means
 ; "finished" - file existence alone is never used as the readiness signal.
@@ -540,10 +558,10 @@ engineMutexClear:
   StrCpy $R3 "${SPK_AUTO_PROFILE}"
 installOptsReady:
   ClearErrors
-  Exec '"$GuiTempExe" /payload "$PLUGINSDIR\payload" /result "${RESULT_INI}" /installdir "$INSTDIR" /auto:opts=$R3'
+  Exec '"$GuiTempExe" /payload "$PLUGINSDIR\payload" /result "${RESULT_INI}" /installdir "$INSTDIR" /payload-bytes ${PAYLOAD_BYTES} /auto:opts=$R3'
 !else
   ClearErrors
-  Exec '"$GuiTempExe" /payload "$PLUGINSDIR\payload" /result "${RESULT_INI}" /installdir "$INSTDIR"'
+  Exec '"$GuiTempExe" /payload "$PLUGINSDIR\payload" /result "${RESULT_INI}" /installdir "$INSTDIR" /payload-bytes ${PAYLOAD_BYTES}'
 !endif
   ; H3/F1: a refused Exec (missing image, ACL, AV) has no error code of its own;
   ; without this it fell through to the liveness wait and exited 0 after 10s.
@@ -1321,7 +1339,7 @@ startmenuDone:
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SopeekTest" "QuietUninstallString" '"$INSTDIR\UninstallHelper.exe" /S /installdir "$INSTDIR"'
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SopeekTest" "InstallLocation" "$INSTDIR"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SopeekTest" "DisplayIcon" '"$INSTDIR\Sopeek.exe"'
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SopeekTest" "DisplayVersion" "1.0.0-alpha.5"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SopeekTest" "DisplayVersion" "${SPK_PRODUCT_VERSION}"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SopeekTest" "Publisher" "Dorufoc & renmoren"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SopeekTest" "URLInfoAbout" "https://github.com/Dorufoc/Sopeek"
   ; EstimatedSize is a DWORD in KB (${GetSize} with /S=0K returns the total in KB in $0).
@@ -1334,7 +1352,7 @@ startmenuDone:
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Sopeek" "QuietUninstallString" '"$INSTDIR\UninstallHelper.exe" /S /installdir "$INSTDIR"'
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Sopeek" "InstallLocation" "$INSTDIR"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Sopeek" "DisplayIcon" '"$INSTDIR\Sopeek.exe"'
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Sopeek" "DisplayVersion" "1.0.0-alpha.5"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Sopeek" "DisplayVersion" "${SPK_PRODUCT_VERSION}"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Sopeek" "Publisher" "Dorufoc & renmoren"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Sopeek" "URLInfoAbout" "https://github.com/Dorufoc/Sopeek"
   ; EstimatedSize is a DWORD in KB (${GetSize} with /S=0K returns the total in KB in $0).

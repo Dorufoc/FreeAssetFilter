@@ -78,6 +78,9 @@ struct ParsedArgs {
     DWORD helperPid = 0;
     DWORD setupPid = 0;
     std::uint64_t payloadTimeoutMs = 0;
+    // /payload-bytes <n>：构建期精确统计的 payload 字节数（NSIS 传入）。0 = 未知，
+    // GUI 回退为运行时扫描（GUI 先于载荷解压启动，扫描可能只能得到部分和）。
+    std::uint64_t payloadBytes = 0;
     bool maintenance = false;
     bool uninstall = false;
     bool elevated = false;
@@ -232,6 +235,11 @@ ParsedArgs ParseArguments(int argc, wchar_t** argv) {
         } else if (_wcsicmp(arg, L"/payload-timeout") == 0) {
             if (const wchar_t* value = valueAt(i)) {
                 args.payloadTimeoutMs = ParseNonNegativeU64(value);
+                ++i;
+            }
+        } else if (_wcsicmp(arg, L"/payload-bytes") == 0) {
+            if (const wchar_t* value = valueAt(i)) {
+                args.payloadBytes = ParseNonNegativeU64(value);
                 ++i;
             }
         } else if (_wcsicmp(arg, L"/auto") == 0) {
@@ -717,7 +725,7 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 
     InstallerWindow window(instance, args.payload, args.resultPath, args.installDir, mode,
                            args.decisionPath, args.setupPid, args.payloadTimeoutMs,
-                           args.helperPid);
+                           args.helperPid, {}, {}, args.payloadBytes);
 #ifdef SPK_TESTMODE
     // 测试构建：/auto 及其维护/卸载扩展参数才真正驱动无人值守流程；生产构建
     // 解析后直接丢弃（EnableAutoDrive 为 no-op，交互行为完全不变）。
