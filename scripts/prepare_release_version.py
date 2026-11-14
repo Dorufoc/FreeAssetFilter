@@ -78,7 +78,10 @@ def prepare(project_root: Path, channel: str, build_day: date, dry_run: bool) ->
         if not dry_run:
             updated = [new_first_line, build_date_iso] + lines[2:]
             text = "\n".join(updated).rstrip("\n") + "\n"
-            version_path.write_text(text, encoding="utf-8", newline="\n")
+            # 注意：Path.write_text(newline=...) 是 Python 3.10+ 才支持的参数，
+            # 而打包环境固定为 Python 3.9，因此这里用 open() 显式指定换行符。
+            with version_path.open("w", encoding="utf-8", newline="\n") as handle:
+                handle.write(text)
     else:
         # 正式版：版本号与日期都由人工维护，此处只读取。
         display_version = base
