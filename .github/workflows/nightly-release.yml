@@ -145,15 +145,24 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          powershell -ExecutionPolicy Bypass -File scripts/build_release.ps1
+          # 用 pwsh 7 调用：脚本含中文，pwsh 默认按 UTF-8 读取，不依赖 BOM。
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build_release.ps1
 
       - name: Collect artifacts and checksums
         id: pack
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          # 成品名形如 Sopeek-<版本>-<平台>-<架构>.exe，按模式取最新一个。
+          $setup = Get-ChildItem -LiteralPath 'build' -Filter 'Sopeek-*.exe' -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $setup) {
+            throw 'Installer package not found (expected build/Sopeek-<version>-<platform>-<arch>.exe).'
+          }
+          Write-Host "Installer package: $($setup.Name) ($($setup.Length) bytes)"
+
           $files = @(
-            'build/Sopeek_NSIS_Setup.exe',
+            $setup.FullName,
             'build/installer/SopeekInstaller.exe',
             'build/installer/libwinpthread-1.dll'
           )
@@ -168,8 +177,9 @@ jobs:
           $lines | Set-Content -LiteralPath 'build/SHA256SUMS.txt' -Encoding ASCII
           Get-Content 'build/SHA256SUMS.txt' | ForEach-Object { Write-Host $_ }
 
-          $size = (Get-Item 'build/Sopeek_NSIS_Setup.exe').Length
-          "installer_size=$size" >> $env:GITHUB_OUTPUT
+          "installer_path=$($setup.FullName)" >> $env:GITHUB_OUTPUT
+          "installer_name=$($setup.Name)" >> $env:GITHUB_OUTPUT
+          "installer_size=$($setup.Length)" >> $env:GITHUB_OUTPUT
 
       - name: Compose release notes (commit log since previous build)
         id: notes
@@ -328,7 +338,7 @@ jobs:
         with:
           name: sopeek-setup-${{ steps.ver.outputs.channel }}-${{ steps.ver.outputs.build_date_compact }}
           path: |
-            build/Sopeek_NSIS_Setup.exe
+            build/Sopeek-*.exe
             build/SHA256SUMS.txt
             build/release-notes.md
             build/release-manifest.json
@@ -355,7 +365,7 @@ jobs:
           }
 
           gh release create $tag `
-            'build/Sopeek_NSIS_Setup.exe' `
+            '${{ steps.pack.outputs.installer_path }}' `
             'build/SHA256SUMS.txt' `
             --prerelease `
             --title "Nightly ${{ steps.ver.outputs.build_date }}" `
@@ -381,7 +391,7 @@ jobs:
           }
 
           gh release create $tag `
-            'build/Sopeek_NSIS_Setup.exe' `
+            '${{ steps.pack.outputs.installer_path }}' `
             'build/SHA256SUMS.txt' `
             --title "Sopeek $tag" `
             --notes-file 'build/release-notes.md' `

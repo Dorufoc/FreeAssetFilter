@@ -81,6 +81,22 @@ $numericVersion = "$fieldMajor.$fieldMinor.$fieldPatch.$fieldBuild"
 Write-Host "Installer version: $displayVersion (numeric $numericVersion)"
 
 # ---------------------------------------------------------------------------
+# Package naming: <app>-<version>-<platform>-<arch>.exe
+# 例如 Sopeek-2.0.0-windows-x64.exe、Sopeek-2.0.0.nightly-20261114-windows-x64.exe
+#
+# 平台/架构描述的是「这个包适配的系统」而不是 NSIS 存根自身的位数：NSIS 3 存根固定
+# 是 32 位，但 payload 安装到 $PROGRAMFILES64，因此包面向 64 位 Windows。将来若出
+# arm64 版本，用环境变量覆盖即可，无需改文件名逻辑。
+# ---------------------------------------------------------------------------
+$targetPlatform = if ($env:SPK_TARGET_PLATFORM) { $env:SPK_TARGET_PLATFORM.Trim() } else { 'windows' }
+$targetArch = if ($env:SPK_TARGET_ARCH) { $env:SPK_TARGET_ARCH.Trim() } else { 'x64' }
+$setupFileName = "Sopeek-$displayVersion-$targetPlatform-$targetArch.exe"
+# 相对 installer.nsi 所在目录，避免把含空格的绝对路径塞进 makensis 的 -D 参数。
+$setupOutRel = "..\build\$setupFileName"
+$setupOutAbs = Join-Path $root $setupOutRel
+Write-Host "Setup package: $setupFileName"
+
+# ---------------------------------------------------------------------------
 # Compile the GUI.
 # ---------------------------------------------------------------------------
 if (Test-Path (Join-Path $build 'CMakeCache.txt')) { Remove-Item -LiteralPath $build -Recurse -Force }
@@ -123,6 +139,9 @@ Write-Host "Payload bytes: $payloadBytes"
     "/DPAYLOAD_BYTES=$payloadBytes" `
     "/DSPK_PRODUCT_VERSION=$displayVersion" `
     "/DSPK_PRODUCT_VERSION_NUMERIC=$numericVersion" `
+    "/DSPK_OUTFILE=$setupOutRel" `
     (Join-Path $root 'installer.nsi')
 if ($LASTEXITCODE -ne 0) { throw 'NSIS build failed' }
-Write-Host "Built: $installerOut"
+if (-not (Test-Path -LiteralPath $setupOutAbs)) { throw "NSIS did not produce the expected package: $setupOutAbs" }
+Write-Host "Built GUI   : $installerOut"
+Write-Host "Built setup : $setupOutAbs"

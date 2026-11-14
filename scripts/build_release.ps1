@@ -57,7 +57,6 @@ $VersionFile = Join-Path $RepoRoot 'SPKVERSION'
 $PayloadRoot = Join-Path $RepoRoot 'build\pyinstall\Sopeek'
 $InstallerExe = Join-Path $RepoRoot 'build\installer\SopeekInstaller.exe'
 $InstallerDll = Join-Path $RepoRoot 'build\installer\libwinpthread-1.dll'
-$SetupExe     = Join-Path $RepoRoot 'build\Sopeek_NSIS_Setup.exe'
 
 if (-not $ManifestPath) { $ManifestPath = Join-Path $RepoRoot 'build\release-manifest.json' }
 
@@ -100,6 +99,18 @@ function Resolve-Python {
     if (Test-Path -LiteralPath $venv) { return $venv }
     $cmd = Get-Command python -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
+    return $null
+}
+
+# 安装包文件名形如 Sopeek-<版本>-<平台>-<架构>.exe（版本含 nightly 后缀时会更长），
+# 因此按模式取「最新的一个」，而不是写死文件名。
+function Resolve-SetupExe {
+    param([string]$BuildDir)
+    $candidates = @(Get-ChildItem -LiteralPath $BuildDir -Filter 'Sopeek-*.exe' -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending)
+    if ($candidates.Count -gt 0) { return $candidates[0].FullName }
+    $legacy = Join-Path $BuildDir 'Sopeek_NSIS_Setup.exe'
+    if (Test-Path -LiteralPath $legacy) { return $legacy }
     return $null
 }
 
@@ -228,11 +239,19 @@ if ($SkipInstaller) {
 # ---------------------------------------------------------------------------
 Write-Step '3/4' '产物校验与哈希'
 
+# 安装包名带版本/平台/架构，按模式解析（跳过安装器构建时可能为空）。
+$SetupExe = Resolve-SetupExe -BuildDir (Join-Path $RepoRoot 'build')
+if (-not $SkipInstaller -and -not $SetupExe) {
+    Fail '未找到安装包产物（期望 build\Sopeek-<版本>-<平台>-<架构>.exe）。' 1
+}
+
 $artifacts = @(
     @{ Path = $InstallerExe; Name = 'SopeekInstaller.exe' },
-    @{ Path = $InstallerDll; Name = 'libwinpthread-1.dll' },
-    @{ Path = $SetupExe;     Name = 'Sopeek_NSIS_Setup.exe' }
+    @{ Path = $InstallerDll; Name = 'libwinpthread-1.dll' }
 )
+if ($SetupExe) {
+    $artifacts += @{ Path = $SetupExe; Name = (Split-Path -Leaf $SetupExe) }
+}
 
 $skipPaths = @()
 if ($SkipInstaller) {

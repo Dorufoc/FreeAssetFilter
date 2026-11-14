@@ -15,8 +15,10 @@ RequestExecutionLevel admin
 !endif
 ManifestDPIAware true
 Name "Sopeek Installer"
-; Output override for isolated QA builds: pass -DSPK_OUTFILE=<path> on the
-; makensis command line; the default below is the unchanged production artifact.
+; Output override: build.ps1 always passes -DSPK_OUTFILE=..\build\Sopeek-<版本>-<平台>-<架构>.exe
+; (e.g. Sopeek-2.0.0-windows-x64.exe) so the packaged file name carries product,
+; version and target platform/arch. The fallback below keeps a bare
+; `makensis installer.nsi` invocation, and QA builds pass their own isolated path.
 !ifndef SPK_OUTFILE
   !define SPK_OUTFILE "..\build\Sopeek_NSIS_Setup.exe"
 !endif
