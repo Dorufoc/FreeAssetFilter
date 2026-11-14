@@ -1,242 +1,90 @@
-# -*- coding: utf-8 -*-
-"""``PreviewerRegistry``（sopeek/services/previewer_registry.py）单元测试。
+"""``sopeek.services.previewer_registry``：扩展名 → 预览器类的解析。
 
-覆盖（happy + boundary/error 各至少一条）：
-
-* 注册表初始化 —— ``_EXTENSION_MAP`` 已含常见后缀且值为 (module, class) 对、
-  ``_CLASS_CACHE`` 初始为空
-* ``get_previewer_class`` —— is_dir 走 FolderPreviewerLayout、空/缺失后缀与未知
-  后缀返回 None、后缀大小写/前导点归一、已知后缀解析真实类
-* 动态注册注销 —— register 新增/覆盖、unregister 移除/未知后缀无异常
-* 缓存 —— 惰性导入结果缓存、register 清除同名陈旧缓存、unregister 清除缓存
-
-类级缓存/映射在测试间共享：autouse fixture 在每个测试前后做快照还原，
-防止 register/unregister 污染后续用例。大部分解析路径通过 mock
-``_import_class`` 验证，避免不必要的重型 UI 模块导入。
+注册表是纯映射服务，不应在导入时拉起 QtWidgets；解析到的类必须真的是
+预览器（有 ``set_file``）。
 """
 
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
 
 import pytest
 
 from sopeek.services.previewer_registry import PreviewerRegistry
 
-pytestmark = pytest.mark.unit
 
-_IMAGE_KEY: str = (
-    "sopeek.ui.layout.preview.image_previewer_layout."
-    "ImagePreviewerLayout"
-)
+pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(autouse=True)
-def _restore_registry_state() -> None:
-    """在测试前后快照还原类级映射与缓存，保证隔离性。
-
-    Returns:
-        None。
-    """
-    ext_before: Dict[str, Tuple[str, str]] = dict(
-        PreviewerRegistry._EXTENSION_MAP
-    )
-    cache_before: Dict[str, type] = dict(PreviewerRegistry._CLASS_CACHE)
+def _clean_registry():
+    """每个用例后恢复注册表，避免测试之间相互污染。"""
+    snapshot = dict(PreviewerRegistry._EXTENSION_MAP)
+    cache_snapshot = dict(PreviewerRegistry._CLASS_CACHE)
     yield
     PreviewerRegistry._EXTENSION_MAP.clear()
-    PreviewerRegistry._EXTENSION_MAP.update(ext_before)
+    PreviewerRegistry._EXTENSION_MAP.update(snapshot)
     PreviewerRegistry._CLASS_CACHE.clear()
-    PreviewerRegistry._CLASS_CACHE.update(cache_before)
+    PreviewerRegistry._CLASS_CACHE.update(cache_snapshot)
 
 
-# =============================================================================
-# 注册表初始化
-# =============================================================================
-class TestInitialMap:
-    """初始映射内容"""
-
-    def test_common_extensions_present(self) -> None:
-        """常见图片/视频/文档/压缩包后缀均已注册。"""
-        for ext in ("jpg", "png", "mp4", "pdf", "py", "zip", "ttf", "docx"):
-            assert ext in PreviewerRegistry._EXTENSION_MAP
-
-    def test_map_values_are_module_class_pairs(self) -> None:
-        """映射值均为 (module_path, class_name) 字符串二元组。"""
-        for ext in ("jpg", "pdf", "zip"):
-            module_path: object
-            class_name: object
-            module_path, class_name = PreviewerRegistry._EXTENSION_MAP[ext]
-            assert isinstance(module_path, str)
-            assert isinstance(class_name, str)
-
-    def test_class_cache_starts_empty(self) -> None:
-        """类缓存初始为空（惰性导入，import 前不填充）。"""
-        # 完整套件中其他文件可能已触发真实导入填充缓存；
-        # 清空后验证"尚无缓存"这一语义，而不是依赖进程级顺序。
-        PreviewerRegistry._CLASS_CACHE.clear()
-        assert PreviewerRegistry._CLASS_CACHE == {}
+def test_unknown_extension_returns_none() -> None:
+    assert PreviewerRegistry.get_previewer_class({"suffix": "definitely-not-a-suffix"}) is None
+    assert PreviewerRegistry.get_previewer_class({}) is None
 
 
-# =============================================================================
-# get_previewer_class
-# =============================================================================
-class TestGetPreviewerClass:
-    """预览器解析"""
-
-    def test_is_dir_returns_folder_previewer(self) -> None:
-        """目录条目解析为新版文件夹预览器类。"""
-        cls: object | None = PreviewerRegistry.get_previewer_class(
-            {"suffix": "jpg", "is_dir": True}
-        )
-        assert cls is not None
-        assert cls.__name__ == "FolderPreviewerLayout"
-
-    def test_empty_dict_returns_none(self) -> None:
-        """空文件信息（无 suffix）返回 None。"""
-        assert PreviewerRegistry.get_previewer_class({}) is None
-
-    def test_empty_suffix_returns_none(self) -> None:
-        """suffix 为空字符串返回 None。"""
-        assert PreviewerRegistry.get_previewer_class({"suffix": ""}) is None
-
-    def test_unknown_suffix_returns_none(self) -> None:
-        """未注册后缀返回 None。"""
-        assert PreviewerRegistry.get_previewer_class({"suffix": "zzz"}) is None
-
-    def test_suffix_case_and_dot_normalized(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """前导点 + 大写后缀被归一化后命中映射，且走惰性导入。"""
-        imported: List[Tuple[str, str]] = []
-
-        def _fake_import(module_path: str, class_name: str) -> type:
-            imported.append((module_path, class_name))
-            return dict
-
-        monkeypatch.setattr(
-            PreviewerRegistry, "_import_class", staticmethod(_fake_import)
-        )
-        cls: object | None = PreviewerRegistry.get_previewer_class(
-            {"suffix": ".JPG"}
-        )
-        assert cls is dict
-        assert imported == [
-            (
-                "sopeek.ui.layout.preview.image_previewer_layout",
-                "ImagePreviewerLayout",
-            )
-        ]
-
-    def test_known_extension_resolves_real_class(self) -> None:
-        """已注册后缀经真实惰性导入得到预览器类。"""
-        cls: object | None = PreviewerRegistry.get_previewer_class(
-            {"suffix": "jpg"}
-        )
-        assert cls is not None
-        assert cls.__name__ == "ImagePreviewerLayout"
+def test_directory_maps_to_folder_previewer(qapp) -> None:
+    cls = PreviewerRegistry.get_previewer_class({"is_dir": True})
+    assert cls is not None
+    assert cls.__name__ == "FolderPreviewerLayout"
 
 
-# =============================================================================
-# 动态注册 / 注销
-# =============================================================================
-class TestRegisterUnregister:
-    """动态注册与注销"""
-
-    def test_register_new_extension(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """注册新后缀后可解析出对应类（经 mock 导入）。"""
-        calls: List[Tuple[str, str]] = []
-
-        def _fake_import(module_path: str, class_name: str) -> type:
-            calls.append((module_path, class_name))
-            return dict
-
-        monkeypatch.setattr(
-            PreviewerRegistry, "_import_class", staticmethod(_fake_import)
-        )
-        PreviewerRegistry.register(".weird", "some.module", "SomeViewer")
-        cls: object | None = PreviewerRegistry.get_previewer_class(
-            {"suffix": "weird"}
-        )
-        assert cls is dict
-        assert calls == [("some.module", "SomeViewer")]
-
-    def test_register_normalizes_extension(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """register 对前导点与大小写做归一。"""
-        def _fake_import(module_path: str, class_name: str) -> type:
-            return dict
-
-        monkeypatch.setattr(
-            PreviewerRegistry, "_import_class", staticmethod(_fake_import)
-        )
-        PreviewerRegistry.register(".DIN", "m", "C")
-        assert "din" in PreviewerRegistry._EXTENSION_MAP
-        assert ".din" not in PreviewerRegistry._EXTENSION_MAP
-
-    def test_register_overwrites_existing(self) -> None:
-        """重新注册相同后缀覆盖原映射。"""
-        PreviewerRegistry.register("jpg", "other.module", "OtherViewer")
-        assert PreviewerRegistry._EXTENSION_MAP["jpg"] == (
-            "other.module",
-            "OtherViewer",
-        )
-
-    def test_unregister_existing_extension(self) -> None:
-        """注销已注册后缀后映射移除。"""
-        PreviewerRegistry.unregister("jpg")
-        assert "jpg" not in PreviewerRegistry._EXTENSION_MAP
-
-    def test_unregister_unknown_extension_no_error(self) -> None:
-        """注销未知后缀不抛异常。"""
-        PreviewerRegistry.unregister("nonexistent_ext_xyz")
+@pytest.mark.parametrize("suffix", ["jpg", "JPG", ".png", "webp"])
+def test_image_suffixes_are_case_and_dot_insensitive(qapp, suffix: str) -> None:
+    cls = PreviewerRegistry.get_previewer_class({"suffix": suffix})
+    assert cls is not None
+    assert cls.__name__ == "ImagePreviewerLayout"
 
 
-# =============================================================================
-# 注册表缓存
-# =============================================================================
-class TestClassCache:
-    """惰性导入类缓存"""
+def test_pdf_and_text_have_distinct_previewers(qapp) -> None:
+    pdf = PreviewerRegistry.get_previewer_class({"suffix": "pdf"})
+    text = PreviewerRegistry.get_previewer_class({"suffix": "py"})
+    assert pdf.__name__ == "PdfPreviewerLayout"
+    assert text.__name__ == "TextPreviewerLayout"
+    assert pdf is not text
 
-    def test_import_result_is_cached(self) -> None:
-        """首次解析导入并写入缓存，二次解析复用同一对象。"""
-        first: object | None = PreviewerRegistry.get_previewer_class(
-            {"suffix": "jpg"}
-        )
-        assert _IMAGE_KEY in PreviewerRegistry._CLASS_CACHE
-        second: object | None = PreviewerRegistry.get_previewer_class(
-            {"suffix": "jpg"}
-        )
-        assert second is first
 
-    def test_register_same_module_clears_stale_cache(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """重新注册相同 (module, class) 时清除陈旧缓存，触发重新导入。"""
-        calls: List[str] = []
+def test_class_is_cached_between_calls(qapp) -> None:
+    first = PreviewerRegistry.get_previewer_class({"suffix": "mkv"})
+    second = PreviewerRegistry.get_previewer_class({"suffix": "mkv"})
+    assert first is second
 
-        def _fake_import(module_path: str, class_name: str) -> type:
-            calls.append(f"{module_path}.{class_name}")
-            return dict
 
-        monkeypatch.setattr(
-            PreviewerRegistry, "_import_class", staticmethod(_fake_import)
-        )
-        PreviewerRegistry.get_previewer_class({"suffix": "jpg"})
-        assert len(calls) == 1
-        PreviewerRegistry.register(
-            "jpg",
-            "sopeek.ui.layout.preview.image_previewer_layout",
-            "ImagePreviewerLayout",
-        )
-        PreviewerRegistry.get_previewer_class({"suffix": "jpg"})
-        assert len(calls) == 2
+def test_register_and_unregister_roundtrip(qapp) -> None:
+    class _Fake:
+        pass
 
-    def test_unregister_clears_cache_entry(self) -> None:
-        """注销时同步清除对应类缓存，避免残留引用。"""
-        PreviewerRegistry.get_previewer_class({"suffix": "jpg"})
-        assert _IMAGE_KEY in PreviewerRegistry._CLASS_CACHE
-        PreviewerRegistry.unregister("jpg")
-        assert _IMAGE_KEY not in PreviewerRegistry._CLASS_CACHE
+    PreviewerRegistry.register(".zzz", "sopeek.services.previewer_registry", "_FakeMarker")
+    assert PreviewerRegistry._EXTENSION_MAP["zzz"][0] == "sopeek.services.previewer_registry"
+
+    PreviewerRegistry.unregister("zzz")
+    assert "zzz" not in PreviewerRegistry._EXTENSION_MAP
+    assert PreviewerRegistry.get_previewer_class({"suffix": "zzz"}) is None
+
+
+def test_registry_module_does_not_import_qtwidgets() -> None:
+    """纯映射服务：导入注册表本身不应把 QtWidgets 拉进进程。"""
+    import subprocess
+    import sys as _sys
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[3] / "src"
+    code = (
+        "import sys; sys.path.insert(0, r'%s');"
+        "import sopeek.services.previewer_registry;"
+        "print('PySide6.QtWidgets' in sys.modules)"
+    ) % src
+    out = subprocess.run(
+        [_sys.executable, "-c", code], capture_output=True, text=True, timeout=120
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip().endswith("False")

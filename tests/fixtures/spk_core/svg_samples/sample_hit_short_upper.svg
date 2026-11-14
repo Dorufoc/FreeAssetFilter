@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120">
+  <path d="M0 0h20v20z" STROKE="#FFFFFF"/>
+  <rect FILL="#FFF"/>
+  <rect stroke="#000"/>
+  <rect fill="#FFFFFF"/>
+  <path style="fill: #000"/>
+  <circle fill="#0A59F7"/>
+  <rect stroke="#CECECE"/>
+</svg>

@@ -1,490 +1,480 @@
-<p align="center"><strong>该项目将于不久后推出2.0版本，即将更名为 Sopeek 品牌，敬请期待。届时该项目将以全新面貌带来全新体验。</strong></p>
-
 <div align="center">
 
-<img src="sopeek/icons/SPK-main.png" alt="Sopeek Logo" width="128" height="128">
+
+
+<img src="assets/Sopeek.png" alt="Sopeek Logo" width="128" height="128">
 
 # Sopeek
 
 **一款强大的多功能文件预览与管理工具，让文件浏览如丝般高效顺滑**
+[![License](https://img.shields.io/badge/License-AGPL--3.0-orange?style=flat-square)](LICENSE)[![Python](https://img.shields.io/badge/Python-3.9%2B-blue?style=flat-square&logo=python)](https://www.python.org/)[![PySide6](https://img.shields.io/badge/PySide6-6.10%2B-green?style=flat-square&logo=qt)](https://wiki.qt.io/Qt_for_Python)[![Platform](https://img.shields.io/badge/Platform-Windows-purple?style=flat-square&logo=windows)](https://www.microsoft.com/windows)
 
-[![GitHub Release](https://img.shields.io/github/v/release/Dorufoc/Sopeek?style=flat-square\&logo=github\&color=blue)](https://github.com/Dorufoc/Sopeek/releases)
-[![Python Version](https://img.shields.io/badge/Python-3.9%2B-blue?style=flat-square\&logo=python)](https://www.python.org/)
-[![PySide6](https://img.shields.io/badge/PySide6-6.10%2B-green?style=flat-square\&logo=qt)](https://wiki.qt.io/Qt_for_Python)
-[![License](https://img.shields.io/badge/License-AGPL--3.0-orange?style=flat-square)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-Windows-purple?style=flat-square\&logo=windows)](https://www.microsoft.com/windows)
+[快速开始](#快速开始) • [功能特性](#功能特性) • [支持格式](#支持格式) • [使用说明](#使用说明) • [常见问题](#常见问题) • [开发指南](#开发指南)
 
-[English](README_EN.md) • [功能预览](#-功能预览) • [快速开始](#-快速开始) • [功能特性](#-功能特性) • [安装指南](#-安装指南) • [使用说明](#-使用说明) • [技术架构](#-技术架构) • [开发指南](#-开发指南) • [贡献指南](#-贡献指南)
+**简体中文** | [English](README_EN.md)
 
-<img src="sopeek/icons/example1.png" alt="Sopeek Screenshot" width="800">
+![Sopeek 界面预览](assets/example1.png)
 
 </div>
 
-***
+---
 
-![Stone Badge](https://stone.professorlee.work/api/stone/Dorufoc/Sopeek)
+## 核心亮点
 
-## 功能预览
+Sopeek 是一款面向 Windows 的桌面级文件浏览、筛选与预览工具。它把「找文件 → 挑文件 → 看文件」压缩进同一个工作流，内置 8 个预览器类（图像 / 视频音频 / PDF / Office / 文本代码 / 压缩包 / 字体 / 文件夹），可识别近 100 种扩展名：
 
-### 核心亮点
+- **浏览**：卡片式缩略图 / 列表双视图，框选多选、拖拽入池、收藏夹、历史导航；
+- **整理**：文件储存池支持重命名、批量导出、路径数据导入导出与自动备份；
+- **预览**：图像、视频、音频、PDF、Office、文本/代码、压缩包、字体、文件夹全覆盖；
+- **性能**：扫描、排序、语法高亮、EXIF、哈希、编码探测、SVG 换色、7z 列表等热点由 Rust / C++ 原生扩展承担。
 
-- **极速启动** - 优化的预加载机制，秒级启动体验
-- **专业预览** - 支持 100+ 种文件格式，覆盖图像、视频、音频、文档
-- **三栏布局** - 文件浏览、筛选、预览一气呵成的高效工作流
-- **深色模式** - 支持深色/浅色主题切换，呵护您的眼睛
-- **高性能** - C++ 核心算法 + 异步加载，流畅不卡顿
+| 能力           | 说明                                                         |
+| -------------- | ------------------------------------------------------------ |
+| **统一工作流** | 文件选择器 + 文件储存池 + 预览器/信息面板，支持「经典」与「New（预览优先）」两种布局 |
+| **多格式预览** | 8 个预览器覆盖图像、视频、音频、PDF、Office、文本/代码、压缩包、字体与文件夹 |
+| **原生加速**   | `spk_core`（Rust）承担扫描/排序/高亮/Markdown/字体解析/哈希/编码探测/EXIF/复制/SVG/7z 列表；`thumbnail_generator`（Rust）负责缩略图解码 |
+| **视频播放**   | 基于 libmpv 直连渲染，支持倍速、音轨/字幕切换、全屏浮动控制栏 |
+| **全局浮窗**   | 桌面常驻的储存池圆形入口，支持拖入文件、点击展开、贴边吸附与位置记忆 |
 
-***
+---
 
 ## 快速开始
 
-### 环境要求
+### 方式一：预编译安装包（推荐）
 
-| 项目         | 要求                    |
-| ---------- | --------------------- |
-| **操作系统**   | Windows 10/11 (64位)   |
-| **Python** | 3.9 或更高版本             |
-| **PySide6** | 6.10 或更高版本（无边框窗口基于 Qt 6.10+ 原生 ExpandedClientAreaHint） |
-| **内存**     | 建议 4GB 以上             |
-| **显卡**     | 支持 OpenGL 的显卡（用于视频播放） |
+[📦 下载 Windows 安装包](https://github.com/Dorufoc/Sopeek/releases)
 
-### 一键安装
+安装器提供：安装、修复、卸载三种维护路径；卸载时可勾选「同时删除用户数据（设置、缓存、日志）」；
+安装目录默认为 `%ProgramFiles%\Sopeek`，需管理员权限。
+
+### 方式二：从源码运行
 
 ```bash
-# 克隆仓库
+#原生模块已提供预编译产物，源码运行无需额外工具链。
+
+# 1. 克隆仓库
 git clone https://github.com/Dorufoc/Sopeek.git
 cd Sopeek
 
-# 创建虚拟环境（推荐）
-python -m venv venv
-venv\Scripts\activate
+# 2. 创建并激活虚拟环境
+python -m venv .venv
+.venv\Scripts\activate
 
-# 安装依赖
+# 3. 安装依赖
 pip install -r requirements.txt
 
-# 运行应用
+# 4. 可编辑安装（src 布局必需，安装后可在任意目录运行 sopeek 命令）
+pip install -e .
+
+# 5. 启动
 python -m sopeek.app.main
 ```
 
-### 常见问题
-
-<details>
-<summary><b>启动时提示缺少 DLL 文件？</b></summary>
-
-请安装 [Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe) 后重试。
-
-</details>
-
-<details>
-<summary><b>视频无法播放？</b></summary>
-
-请确保显卡驱动已更新，并支持 OpenGL 3.0 以上版本。
-
-</details>
-
-<details>
-<summary><b>安装依赖时报错，提示需要编译工具？</b></summary>
-
-部分依赖包（如 `rawpy`、`numpy` 等）需要在本地编译，请确保已安装以下工具之一：
-
-**方案一：安装 Microsoft C++ 生成工具（推荐）**
-
-1. 下载 [Microsoft C++ 生成工具](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
-2. 安装"使用 C++ 的桌面开发"工作负载
-3. 重新运行 `pip install -r requirements.txt`
-
-**方案二：使用预编译 wheel 包**
+不想安装也行，把 `src/` 临时放进搜索路径即可：
 
 ```bash
-# 先升级 pip
-python -m pip install --upgrade pip
-
-# 如果在特殊网络环境下，使用镜像加速下载预编译包
-pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+set PYTHONPATH=src
+python -m sopeek.app.main
 ```
 
-**方案三：安装 Visual Studio（完整版）**
+> 仓库采用 `src/` 布局：仓库根**没有** `sopeek/` 目录，因此直接在根目录执行
+> `python -m sopeek.app.main` 会报 `No module named sopeek`。用上面两种方式之一即可。
 
-- 安装 [Visual Studio Community](https://visualstudio.microsoft.com/downloads/)
-- 选择"使用 C++ 的桌面开发"组件
+### 命令行参数
 
-</details>
+| 参数                 | 说明                                                 |
+| -------------------- | ---------------------------------------------------- |
+| `--open-path <路径>` | 启动后直接导航到指定目录（传入文件时打开其所在目录） |
 
-***
+---
 
 ## 功能特性
 
 ### 文件管理
 
-| 功能          | 描述                 |
-| ----------- | ------------------ |
-| **智能文件浏览器** | 卡片式布局，支持缩略图显示，直观高效 |
-| **文件临时存储池** | 快速收藏和整理选中文件，支持批量导出 |
-| **多选与拖拽**   | 支持多文件选择、长按拖拽操作     |
-| **路径导航**    | 快速跳转、历史记录、路径收藏     |
-| **智能筛选**    | 按文件类型、日期、大小快速筛选    |
+| 功能 | 描述 |
+| --- | --- |
+| **智能文件浏览器** | 卡片式缩略图与列表双视图，列数随宽度自适应，Ctrl+滚轮缩放 |
+| **框选多选** | 左键拖拽橡皮筋框选；右键点已选卡片批量加入储存池 |
+| **导航与收藏** | 返回上级、刷新、路径跳转、全部磁盘视图、路径收藏夹、历史记录 |
+| **筛选与排序** | 文件名正则筛选（不区分大小写）；8 种排序（名称/修改时间/大小/创建时间，各升降序） |
+| **隐藏项控制** | 可选显示隐藏文件与受保护的系统文件（两级开关） |
+| **缩略图管理** | 后台批量生成、按需清除缓存 |
+| **文件储存池** | 网格 / 列表展示，重命名、删除、清空、导出文件、导入/导出路径数据、自动备份 |
 
-### 文件预览
+### 预览器能力
 
-| 类型      | 支持格式                                     | 特色功能            |
-| ------- | ---------------------------------------- | --------------- |
-| **图像**  | JPG, PNG, GIF, RAW, PSD, HEIC, AVIF, SVG | 便捷查看、色彩分析       |
-| **视频**  | MP4, MOV, AVI, MKV, MXF                  | MPV 内核、LUT 实时预览 |
-| **音频**  | MP3, WAV, FLAC, OGG, AAC                 | 元数据显示、高效播放      |
-| **文档**  | PDF, DOCX, XLSX, PPTX, TXT, MD           | 完整预览、代码语法高亮     |
-| **压缩包** | ZIP, RAR, 7Z, TAR                        | 无需解压即可查看内容      |
-| **字体**  | TTF, OTF, WOFF                           | 实时渲染预览          |
+| 预览器 | 特色 |
+| --- | --- |
+| **图像** | 异步解码、50%–500% 缩放、翻转、旋转、取色器、GIF 播放/暂停、全屏 |
+| **音视频 ** | libmpv 渲染；空格播放暂停、方向键 seek/音量、数字键倍速、音轨与字幕选择、全屏浮动控制栏；音频模式带流体背景与元信息面板 |
+| **PDF** | 原生渲染、页码跳转、50%–300% 缩放、缩略图索引抽屉、文本选择 |
+| **Office** | 按 LibreOffice → MS Office / WPS COM → 纯 Python 顺序自动降级，统一转 PDF 视图渲染 |
+| **文本 / 代码** | Markdown 渲染、语法高亮、源码/渲染切换、全屏、站内搜索抽屉、字号 8–32px |
+| **压缩包** | 无需解压浏览条目、全包递归搜索、按需输入密码、选中项/全部解压（同名自动改名不覆盖） |
+| **字体** | TTF/OTF/WOFF/WOFF2/EOT 加载渲染、字号与字重调节（支持可变字体） |
+| **文件夹** | 目录内容列表、自动监听刷新、隐藏/系统项过滤 |
 
-### 个性化设置
+### 文件信息面板
 
-- **主题系统** - 深色/浅色模式，支持自定义配色方案
-- **DPI 自适应** - 完美支持 4K/8K 高分辨率屏幕
-- **字体设置** - 可自定义界面字体和大小
-- **缩略图缓存** - 智能缓存机制，提升浏览速度
+预览区下方的信息面板与预览器联动：文件名、路径、大小、类型与创建/修改时间常驻显示；「详细信息」按文件类型展开（图像尺寸与 EXIF 常用子集、视频时长与画面参数、音频标签等），「哈希值」在后台按 1 MiB 粒度汇报进度并计算 MD5 / SHA1 / SHA256。结果写入 `data/file_info_cache.json` 共享缓存，二次打开无需重算。
 
-### 性能优化
+### 个性化与性能
 
-- **异步加载** - 缩略图后台生成，不阻塞主线程
-- **C++ 扩展** - 核心算法使用 C++ 实现，性能卓越
-- **内存管理** - 智能缓存清理，优化内存占用
-- **启动加速** - 预加载机制，快速启动应用
-- **独显加速** - 设置页开启「使用硬件加速」后，下次启动经独显启动器运行
+- **性能档位**：性能 / 均衡 / 省电三档，统一约束线程池与缓存上限；
+- **硬件加速**：可选独显启动器（`SPK-Launcher.exe`），为混合显卡机型强制高性能适配器；
+- **启动体验**：窗口先出首帧，三栏布局分阶段构建，重活全部后台；
+- **内存预算**：按可用内存自动选档，显存由纹理上限约束；
+- **线程预算**：5 个命名线程池 + 原生 rayon 池统一控制在 32 线程内，避免长任务饿死预览首帧。
 
-### 功能对比
+---
 
-| 功能     | Sopeek | QuickLook | Seer   | Explorer |
-| ------ | --------------- | --------- | ------ | -------- |
-| 图像预览   | ✅ 100+ 格式       | ✅ 常见格式    | ✅ 常见格式 | ⚠️ 有限    |
-| 视频播放   | ✅ 内置播放器         | ⚠️ 需插件    | ⚠️ 需插件 | ❌        |
-| RAW 支持 | ✅ 完整支持          | ⚠️ 部分     | ⚠️ 部分  | ❌        |
-| PSD 预览 | ✅ 图层支持          | ❌         | ❌      | ❌        |
-| LUT 还原 | ✅ 实时预览          | ❌         | ❌      | ❌        |
-| 操作布局   | ✅ 三栏布局          | ❌         | ❌      | ✅        |
-| 开源免费   | ✅ AGPL-3.0      | ✅ GPL     | ❌ 付费   | ✅        |
+## 支持格式
 
-***
+### 图像
 
-## 支持的格式
+| 类别 | 格式 |
+| --- | --- |
+| 常见 | JPG / JPEG / PNG / GIF / BMP / TIFF / WEBP / SVG / ICO / ICON |
+| 现代 | AVIF / HEIC / HEIF |
+| RAW | CR2 / CR3 / CRW / NEF / NRW / ARW / DNG / ORF / SRF / SR2 / SRW / RAF / RW2 / PEF / PTX / X3F |
+| 专业 | PSD |
 
-### 图像格式 (30+)
+> 缩略图与解码层还额外识别 3FR、IIQ、R3D 等更多 RAW 变体；是否可预览以预览器注册表为准。
 
-| 类别         | 格式                                               |
-| ---------- | ------------------------------------------------ |
-| **常见格式**   | JPG, JPEG, PNG, GIF, BMP, WEBP, TIFF, SVG        |
-| **现代格式**   | AVIF, HEIC, HEIF, JP2, JXR                       |
-| **RAW 格式** | CR2, CR3, NEF, ARW, DNG, ORF, RAF, RW2, PEF, X3F |
-| **专业格式**   | PSD, PSB, XCF, TGA, ICO, ICNS, DDS               |
+### 视频
 
-### 视频格式 (20+)
+MP4 / MOV / AVI / MKV / M4V / WMV / WEBM / MPG / OGV / RMVB / VOB / MXF / M2TS / MTS / TS / 3GP
 
-| 类别       | 格式                                       |
-| -------- | ---------------------------------------- |
-| **常见格式** | MP4, MOV, AVI, MKV, WMV, FLV, WEBM       |
-| **专业格式** | MXF, VOB, M2TS, TS, MTS, M2T, DV, ProRes |
-| **移动设备** | 3GP, M4V, MPEG, MPG, HEVC, H.264         |
+> 播放器内部还支持 FLV / MPEG 等 FFmpeg 可解容器（用于手动选片与后续扩展），
+> 但文件列表中的默认预览映射以上述注册表条目为准。
 
-**视频功能**：
+### 音频
 
-- 基于 MPV 的高性能播放
-- 支持 LUT (.cube) 实时调色
-- 速度控制
-- 音量控制
+MP3 / WAV / FLAC / OGG / WMA / M4A / OPUS / AIFF / APE
 
-### 音频格式 (10+)
+### 文档与代码
 
-MP3, WAV, FLAC, OGG, WMA, AAC, M4A, OPUS, AIFF, APE, MKA, AC3
+| 类别 | 格式 |
+| --- | --- |
+| PDF | PDF |
+| Office | DOC / DOCX / XLS / XLSX / PPT / PPTX |
+| 文本 | TXT / MD / RST |
+| 代码 | PY / JAVA / CPP / C / H / CS / JS / HTML / CSS / PHP / GO / RB / SWIFT / KT / JSON / XML / YML / YAML 等 |
 
-**音频功能**：
+> 代码高亮内置 50+ 份 TextMate 语法定义（含 Rust、Shell、SQL、Lua、Dart、Docker、Makefile 等），并可回退 Pygments。
 
-- 元数据显示（ID3、专辑封面）
-- 背景样式现代化
+### 压缩包
 
-### 文档格式 (50+)
+ZIP / RAR / 7Z / TAR / GZ / TGZ / BZ2 / XZ / ISO
 
-| 类别                  | 格式                                               |
-| ------------------- | ------------------------------------------------ |
-| **PDF**             | PDF（完整预览、缩放）                                     |
-| **Office**              | DOC, DOCX, XLS, XLSX, PPT, PPTX（随应用自动安装，开箱即用） |
-| **文本**              | TXT, MD, RST, RTF, CSV, JSON, XML, YAML          |
-| **代码**              | Python, JavaScript, C++, Java, Go, Rust 等 50+ 语言 |
+### 字体
 
-### 压缩包格式 (10+)
+TTF / OTF / WOFF / WOFF2 / EOT
 
-ZIP, RAR, 7Z, TAR, GZ, BZ2, XZ, LZMA, ISO, CAB, ARJ
-
-### 字体格式 (5+)
-
-TTF, OTF, WOFF, WOFF2, EOT
-
-***
-
-## 安装指南
-
-### 方法一：预编译版本（推荐）
-
-下载最新的预编译版本：
-
-- [📦 下载 Windows 安装包](https://github.com/Dorufoc/Sopeek/releases)
-
-### 方法二：从源码安装
-
-#### 1. 克隆仓库
-
-```bash
-git clone https://github.com/Dorufoc/Sopeek.git
-cd Sopeek
-```
-
-#### 2. 创建虚拟环境
-
-```bash
-python -m venv venv
-venv\Scripts\activate  # Windows
-```
-
-#### 3. 安装依赖
-
-```bash
-pip install -r requirements.txt
-```
-
-#### 4. 构建 C++ 扩展（可选，仅 LUT 预览；仓库已含 cp39-x64 预编译版本）
-
-```bash
-# 构建 LUT 预览模块（MSVC 环境；MinGW 可改用 setup_mingw.py）
-cd sopeek/core/native/src/cpp_lut_preview
-python setup.py build_ext --inplace
-```
-
-#### 5. 运行应用
-
-```bash
-python -m sopeek.app.main
-```
-
-### 系统要求详情
-
-| 组件       | 最低要求                        | 推荐配置                        |
-| -------- | --------------------------- | --------------------------- |
-| **操作系统** | Windows 10                  | Windows 11                  |
-| **处理器**  | Intel Core i3 / AMD Ryzen 3 | Intel Core i5 / AMD Ryzen 5 |
-| **内存**   | 4 GB RAM                    | 8 GB RAM                    |
-| **存储**   | 900MB 可用空间                  | 1 GB 可用空间                   |
-| **显卡**   | 具有视频加速的现代集成显卡               | Nvidia/AMD现代独立显卡            |
-
-***
+---
 
 ## 使用说明
 
 ### 界面布局
 
-主界面提供两种布局，可在 **设置 → 通用 → 界面布局** 中切换（点击「确定」后立即生效）：
+在 **设置 → 通用 → 界面布局** 中切换（点击「确定」后立即生效）：
 
-**新布局（预览优先，默认）**
+**New 布局**
 
 ```
-┌──────────┬───────────────────────────────┐
-│          │                               │
-│  文件    │          文件预览              │
-│  选择    │                               │
-│          ├───────────────┬───────────────┤
-│          │    文件储存    │   文件信息     │
-└──────────┴───────────────┴───────────────┘
+┌──────────────┬──────────────────────────────────┐
+│              │                                  │
+│   文件选择器   |            文件预览               │
+│              ├────────────────┬─────────────────┤
+│              │    文件储存池    |    文件信息      │
+└──────────────┴────────────────┴─────────────────┘
 ```
 
-- 文件选择器独占左栏全高（默认占界面宽度 1/3，可拖拽调整；最小宽以顶栏/底栏
-  完整显示图标与文字为准，网格列数随实际宽度自适应）；
-- 预览区位于右上，**显示画布默认 16:9**：16:9 素材（如 4096×2304 图片）
-  按窗口自适应时正好铺满显示区左右与上下（可拖拽调整 / 拖拽前随窗口缩放自动维持）；
-  显示区最小 640×360（16:9），拖竖向分隔条只改高度、不反向调整宽度；
-- 文件储存池以网格卡片展示（自动列数，默认最小缩放，Ctrl+滚轮可缩放），
-  与文件信息面板并排位于预览区下方，两者默认各占界面宽度约 1/3（底行 50:50）；
-  底行最小高度 = max(储存池一行卡片 + 其底栏, 信息面板最小高)；
-- 复制到剪切板 / 系统打开 / 定位目录 / 清除预览等操作按钮位于预览器顶栏
-  （视频、音频、Office 预览时同样提供统一工具栏）。
+- 文件选择器独占左栏全高，默认约占界面宽度 1/3；
+- 预览区位于右上，**显示画布默认 16:9**，窗口缩放时自动维持；显示区最小 640×360；
+- 储存池与信息面板并排位于预览区下方，默认按 **50 : 50** 分宽（即约各占界面 1/3）；底行高度上限为右区可用高度的一半；
+- 统一操作按钮（复制到剪切板 / 系统打开 / 定位目录 / 清除预览）位于预览器顶栏。
 
 **经典三栏**
 
 ```
 ┌──────────────┬──────────────┬──────────────┐
-│              │              │              │
-│   文件选择器  │   文件储存池  │   文件预览器  │
-│              │              │  （上：预览） │
-│  • 浏览文件夹 │  • 收藏文件   │  （下：信息） │
-│  • 缩略图显示 │  • 批量管理   │  • 全屏查看   │
-│              │              │              │
+│              │              │   文件预览    │
+│   文件选择器   │   文件储存池  ├──────────────┤
+│              │              │   文件信息    │
+│              │              ├──────────────┤
+│              │              │   操作栏      │
 └──────────────┴──────────────┴──────────────┘
 ```
 
-两种布局的三处/五处分隔条均支持拖拽调整；底行（信息区）高度上限为右区可用高度的一半，保证预览区始终占主导。窗口被拖到过小尺寸时由主窗口最小尺寸兜底（不会再压到区域不可用：窗口小于各区域最小尺寸之和时停止缩放）。
+- 三栏默认各占 1/3；右列中预览与信息默认各占一半高度，信息区上限为右区可用高度的一半；
+- 统一操作栏位于右列最底部，与左/中两栏底栏同底对齐；
+- 把分隔条拖到储存池最小宽后继续拖动即可折叠该栏，拖回即恢复（仅储存池可折叠）。
 
-**双击任一分隔条（栏边缘）** 即可把当前布局恢复为默认比例（含预览区 16:9 自动维持），替代旧版的「重置布局」按钮。
 
-- **最小尺寸口径**：右侧「预览器 + 信息」列的最小宽度以预览操作栏完整显示图标与文字为准（两个文字按钮各自压到最小宽）；信息面板最小宽 = 「修改时间」行单行完整显示，最小高 = 文件名 + 地址 + 首行信息 + 折叠入口行；
-- **文件地址单行显示**，超长时中间省略；悬停提示与单击复制仍为全文；
-- **折叠储存池**（经典布局）：把分隔条拖到储存池最小宽后继续拖动即把储存池折叠隐藏（只剩选择器与右列两栏），拖回即恢复；仅储存池可折叠，预览区/信息区不可。
+**通用交互**
 
-> 经典布局下，预览操作栏（复制 / 系统打开 / 定位 / 清除）位于右列**最底部**
-> （文件信息面板下方），与左侧文件选择器、文件储存池的底栏同底对齐；
-> New 布局下这些操作移到预览器顶栏。经典布局三栏默认各占 **1/3** 宽度。
+所有分隔条均可拖拽；**双击任一分隔条**可将整个布局重置为当前模式的默认比例；窗口缩小到各区域最小尺寸之和时停止缩放。
 
 ### 基本操作
 
-| 默认操作     | 说明       |
-| -------- | -------- |
-| **左键单击** | 选中文件并预览  |
-| **右键单击** | 打开上下文菜单  |
-| **长按拖拽** | 将文件拖到存储池 |
+| 操作 | 说明 |
+| --- | --- |
+| 左键单击 | 选中文件并预览 |
+| 左键拖拽（空白区） | 框选多个文件 |
+| 右键单击卡片 | 加入储存池 |
+| 右键单击已选卡片 | 批量加入储存池 |
+| 右键单击文件信息 | 复制该条目 |
+| 右键双击任一文件信息 | 复制全部条目 |
+| 拖拽文件到储存池 / 浮窗 | 加入储存池 |
 
-### 文件选择器
+### 键盘快捷键（视频 / 音频）
 
-- **导航栏**：快速切换目录、返回上级、刷新列表
-- **空白区右键**：返回上一级（历史优先，与"返回上级"一致）
-- **筛选器**：按文件类型快速筛选（图像/视频/音频/文档/全部）
-- **排序**：按名称、日期、大小、类型排序
-- **视图模式**：缩略图/列表模式切换
+| 按键 | 功能 |
+| --- | --- |
+| `空格` | 播放 / 暂停 |
+| `←` / `→` | 快退 / 快进 |
+| `↑` / `↓` | 音量增减 |
+| `1` / `2` / `3` | 切换 1x / 2x / 3x 倍速 |
+| `` ` `` | 切换 0.5x 倍速 |
+| `Esc` | 退出全屏（全屏模式下） |
 
-### 文件存储池
+### 用户数据位置
 
-- **添加文件**：从选择器拖拽或点击添加按钮
-- **清空池子**：一键清空所有文件
-- **导出/导入数据**：将选中文件的路径数据文件进行存取
-- **导出文件**：将选中文件导出到指定目录
+设置、缩略图缓存、日志（`logs/`）、背景图与文件信息缓存统一位于：
 
-### 文件预览器
+```
+%LOCALAPPDATA%\Sopeek\data
+```
 
-- **自适应布局**：根据内容类型自动调整
-- **详细信息**：显示文件元数据
-- **操作按钮**：打开、复制文件、在文件夹中显示
+源码运行与安装版共用同一数据目录；测试环境会通过 `SPK_DATA_DIR` 重定向到临时目录，不会污染真实数据。
+
+---
+
+## 常见问题
+
+<details>
+<summary><b>启动时提示缺少 DLL？</b></summary>
+
+
+安装 [Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe)。
+若缺的是 `libmpv-2.dll` 等随包文件，说明工作区不完整（`src/sopeek/core/native/bin/` 被清空），重新检出该目录即可。
+</details>
+
+<details>
+<summary><b>`No module named sopeek`？</b></summary>
+
+
+仓库是 `src/` 布局。先 `pip install -e .`，或临时 `set PYTHONPATH=src`。
+</details>
+
+<details>
+<summary><b>视频无法播放？</b></summary>
+
+
+确认 `src/sopeek/core/native/bin/libmpv-2.dll` 存在；显卡驱动过旧时可在设置中关闭「使用硬件加速」，回退到软件渲染。
+</details>
+
+<details>
+<summary><b>Office 文档预览失败？</b></summary>
+
+
+xlsx 与旧版二进制格式（doc/xls/ppt）依赖 LibreOffice 或 MS Office / WPS；docx/pptx 在无外部后端时可纯 Python 降级渲染。
+</details>
+
+<details>
+<summary><b>安装依赖时报错，提示需要编译工具？</b></summary>
+
+
+部分依赖（如 `rawpy`、`numpy`）可能需要本地编译：
+
+1. 安装 [Microsoft C++ 生成工具](https://visualstudio.microsoft.com/visual-cpp-build-tools/)，勾选「使用 C++ 的桌面开发」；
+2. 升级 pip 后重试：`python -m pip install --upgrade pip`；
+3. 网络受限时可用镜像：`pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple`。
+   </details>
+
+<details>
+<summary><b>改完图标 / 语法文件后不生效？</b></summary>
+运行时资源在 `src/sopeek/resources/`，路径统一由 `sopeek/_paths.py` 解析；打包后资源位于 `_internal/sopeek/resources/`。
+</details>
+
+运行时资源在 `src/sopeek/resources/`，路径统一由 `sopeek/_paths.py` 解析；打包后资源位于 `_internal/sopeek/resources/`。
+
+---
 
 ## 技术架构
 
-### 核心技术栈
+### 技术栈
 
-```
-Sopeek
-├── GUI 框架: PySide6 (Qt6) - 跨平台图形界面
-├── 图像处理: Pillow + rawpy - 图像解码与处理
-├── 视频播放: MPV (libmpv) - 高性能视频播放
-├── 音频处理: mutagen - 元数据读取
-├── 压缩包: 7z.exe 命令行工具 - 归档文件处理
-├── 语法高亮: Syntect + Pygments - 代码语法高亮
-└── 扩展模块: C++/Rust (扫描/排序/哈希/EXIF/字体/高亮/Markdown/SVG/7z、缩略图、Mica 云母、LUT 预览) - 性能关键算法
-```
+| 层 | 技术 |
+| --- | --- |
+| GUI | PySide6（Qt 6.10）+ 自研无边框窗口、Mica 云母引擎、styled 组件库 |
+| 图像 | Pillow、pillow-heif、pillow-avif-plugin、rawpy、psd-tools、NumPy |
+| 视频 / 音频 | libmpv（直连渲染）、mutagen、FFmpeg / ffprobe |
+| 文档 | PyMuPDF、python-docx、openpyxl、python-pptx、mammoth、Markdown |
+| 压缩包 | 7-Zip（`7z.exe`）命令行 + 原生列表接口 |
+| 高亮 | 原生 `spk_core` 高亮 + TextMate 语法（50+ 种）+ Pygments 回退 |
+| 原生扩展 | Rust（扫描/排序/高亮/哈希/EXIF/字体/SVG/7z/PDF 选词/目录流式）、Rust（缩略图解码）、C++（Mica 渲染、LUT 预览） |
+| 打包 | PyInstaller onedir + 自研 C++ 安装器（MinGW/CMake）+ NSIS |
 
 ### 项目结构
 
 ```
-Sopeek/
-├── sopeek/
-│   ├── app/                    # 应用入口（main / startup / instance_guard）
-│   ├── core/                   # 核心管理与原生桥
-│   │   ├── managers/           # 设置 V2 / 心跳 / MPV / 缩略图管理器
-│   │   ├── workers/            # 目录扫描、盘符枚举、存储池任务、缩略图控制器
-│   │   ├── preview/            # 图像色彩工具、SVG 渲染器
-│   │   └── native/             # 原生桥 bridges/、平台适配、bin/ 二进制、src/ Rust 与 C++ 源码
-│   ├── services/               # 业务服务层（文件 / 预览 / Office / PDF / 图像解码 / 存储池等）
-│   ├── ui/                     # 界面层（无边框窗口、主窗口）
-│   │   ├── components/         # styled_* 组件库
-│   │   ├── layout/             # 三栏布局与各预览器
-│   │   ├── mica/               # Mica 云母背景引擎
-│   │   └── theme/              # 主题系统
-│   ├── utils/                  # 通用工具（路径 / 日志 / 高亮 / 性能埋点等）
-│   ├── docs/                   # 第三方组件与许可证清单
-│   └── icons/                  # 界面与文件类型图标资源
-├── launcher/                   # 独显启动器（C 源码 + 构建脚本；SPK-Launcher.exe 本地构建，不入库）
-├── installer_duilib/           # 自研安装器（C++/NSIS 源码与构建脚本）
-├── scripts/                    # 辅助脚本（GUI 测试截图工具）
-├── tests/                      # 测试体系（详见 tests/README.md）
-├── data/                       # 运行期数据（本地生成、gitignore）：settings_v2.json、缩略图缓存、日志
-├── requirements.txt            # Python 依赖清单
-├── Pyinstall_build.py          # PyInstaller 打包脚本
-├── README.md                   # 项目说明
-└── LICENSE                     # 许可证
+.
+├── src/sopeek/                  # 唯一可导入根（Python 包）
+│   ├── _paths.py                # 所有路径的唯一事实来源
+│   ├── _import_compat.py        # theme/components 短路径 ↔ sopeek.ui.* 收敛
+│   ├── app/                     # 入口、启动编排、单实例守卫、待安装更新
+│   ├── core/
+│   │   ├── managers/            # 设置 V2 / 心跳 / MPV / 缩略图
+│   │   ├── workers/             # 目录扫描、盘符枚举、储存池任务、缩略图控制器
+│   │   ├── preview/             # 图像色彩工具、SVG 渲染器
+│   │   └── native/              # 原生桥、平台适配、bin/ 运行时二进制
+│   ├── services/                # 预览器注册表、文件信息、Office/PDF、更新、AI 等
+│   ├── ui/
+│   │   ├── components/          # styled_* 组件库（60+ 个控件模块）
+│   │   ├── layout/              # 三栏布局、各预览器、设置页
+│   │   ├── mica/                # Mica 云母背景引擎
+│   │   └── theme/               # 主题令牌与样式表
+│   ├── utils/                   # 路径、日志、语法高亮、LUT、版本信息等
+│   └── resources/               # icons / syntax / shaders / docs（随包分发）
+├── native/                      # 原生源码（构建输入，不参与 import）
+│   ├── spk_core/                #   Rust cdylib：扫描/排序/高亮/哈希/EXIF…
+│   ├── thumbnail_rust/          #   Rust cdylib：缩略图解码
+│   ├── spk_updater/             #   Rust exe：更新边车（NDJSON over stdio）
+│   ├── cpp_mica_render/         #   C++/MSVC：D3D11 Mica 渲染
+│   └── cpp_lut_preview/         #   C++/pybind11：LUT 预览扩展
+├── packaging/
+│   ├── build.py                 # PyInstaller 打包入口
+│   ├── runtime_compat.py        # 冻结态运行时钩子
+│   ├── installer/               # C++ 安装器 + NSIS 脚本
+│   └── launcher/                # 独显启动器 SPK-Launcher.exe
+├── tools/                       # 冒烟、更新器联调、品牌检查、截图工具
+├── assets/                      # README 用的品牌图与截图
+├── tests/                       # 单元 / 集成测试与二进制夹具
+├── pyproject.toml               # 项目元数据 + ruff + pytest 配置
+├── requirements.txt / requirements-dev.txt
+├── SPKVERSION                   # 运行时唯一版本来源
+└── LICENSE
 ```
 
-### 架构特点
+### 架构要点
 
-- **MVC 模式**：清晰的模型-视图-控制器分离
-- **单例模式**：核心管理器（设置、缩略图、播放器）
-- **信号-槽机制**：组件间松耦合通信
-- **多线程设计**：后台处理不阻塞 UI
-- **插件化组件**：易于扩展新的文件类型支持
+- **服务层与 UI 分离**：`services/` 承担数据、协议与后台任务编排，界面状态与控件构造留在 `ui/`，两侧通过信号槽通信；
+- **原生可选**：所有原生能力经 `sopeek.core.native.api` 访问，DLL 缺失或导出缺失一律返回 `False`/`None`，由 Python 实现回退，**不会崩溃进程**；
+- **暂存隔离**：设置页所有改动先写入暂存缓存，点击「确定」才下发运行时并落盘；
+- **线程预算**：命名线程池（interactive / decode / io / net / background）+ 原生 rayon 池，总量受控；
+- **单实例**：互斥体 + 运行时实例信息，重复启动静默退出。
 
-***
+---
+
+## 环境要求
+
+| 项目     | 要求                                                         |
+| -------- | ------------------------------------------------------------ |
+| 操作系统 | Windows 10 / 11（64 位）                                     |
+| Python   | 3.9 及以上（开发与打包均按 3.9 验证）                        |
+| PySide6  | 6.10 及以上（无边框窗口依赖 Qt 6.10 的原生能力）             |
+| 运行库   | [Visual C++ Redistributable 2015–2022 x64](https://aka.ms/vs/17/release/vc_redist.x64.exe) |
+| 显卡     | 支持 OpenGL 的显卡（视频播放与流体背景）                     |
+
+> 运行时二进制（`libmpv-2.dll`、`spk_core.dll`、`thumbnail_generator.dll`、`ffmpeg.exe`、`7z.exe` 等）随包分发，克隆后**无需 Rust / C++ 工具链**即可直接运行。
+
+---
 
 ## 开发指南
 
-### 开发环境搭建
-
-#### 1. 克隆仓库并创建分支
+### 开发环境
 
 ```bash
-git clone https://github.com/Dorufoc/Sopeek.git
-cd Sopeek
-git checkout -b feature/your-feature-name
+pip install -r requirements.txt -r requirements-dev.txt
+pip install -e .
 ```
 
-#### 2. 安装开发依赖
+### 常用命令
 
 ```bash
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
+# Lint（只启用缺陷类规则 E9 + F）
+ruff check .
+
+# 编译检查
+python -m compileall -q src
+
+# 冒烟：全量导入 + 离屏启动主窗口
+python tools/smoke_app.py
+python tools/smoke_app.py --imports   # 只跑导入
+python tools/smoke_app.py --app       # 只跑离屏启动
 ```
 
-#### 3. 配置 IDE
-
-推荐使用 VS Code 或 PyCharm，配置以下插件：
-
-- Python 扩展
-- Qt for Python 扩展
-- Black 格式化工具
-
-### 构建 C++ 扩展
+### 测试
 
 ```bash
-# LUT 预览模块（唯一仍在维护的 C++ 扩展；MSVC 环境）
-cd sopeek/core/native/src/cpp_lut_preview
-python setup.py build_ext --inplace
-
-# MinGW 环境改用：
-python setup_mingw.py build_ext --inplace
+pytest                       # 默认跳过 gui 标记
+pytest -m unit               # 只跑单元测试
+pytest -m integration        # 跨模块集成测试
+pytest tests/unit/utils -v   # 指定目录
 ```
+
+测试约定：
+
+- `tests/` 目录层级镜像 `src/sopeek/`；
+- `tests/conftest.py` 自动注入 `src/` 到 `sys.path`，并把 `SPK_DATA_DIR` 重定向到临时目录；
+- Qt 测试使用离屏后端（`QT_QPA_PLATFORM=offscreen`），需要真实显示器的用 `@pytest.mark.gui`；
+- `tests/fixtures/` 存放不可再生的二进制夹具（媒体、缩略图、编码样本）。
+
+### 版本号
+
+`SPKVERSION` 是运行时唯一版本来源（更新检查读它，第一行版本号、第二行构建日期）；
+`pyproject.toml` 的 `version` 仅服务本地 `pip install -e .`，发版时无需同步修改。
+`sopeek.__version__` 在包初始化时从 `SPKVERSION` 读取。
+
+### 构建原生模块
+
+产物统一装回 `src/sopeek/core/native/bin/`：
+
+```bash
+# Rust（需要 cargo）
+cargo build --release --manifest-path native/spk_core/Cargo.toml
+cargo build --release --manifest-path native/thumbnail_rust/Cargo.toml
+python native/spk_updater/build_updater.py      # 构建并安装 spk_updater.exe
+
+# C++（需要 MSVC / Windows SDK）
+python native/cpp_mica_render/build.py          # 构建并安装 mica_render.dll
+python native/cpp_lut_preview/setup.py build_ext --inplace   # LUT 扩展（可选）
+
+# 独显启动器（MSVC 或 MinGW）
+powershell -ExecutionPolicy Bypass -File packaging/launcher/build_launcher.ps1
+```
+
+### 打包与安装器
+
+```bash
+# 1. PyInstaller onedir 打包（产物在 build/pyinstall/Sopeek）
+python packaging/build.py
+# 可选：--no-clean 保留旧输出；--skip-build 仅清理与校验
+
+# 2. 安装器引导程序（需要 CMake + MinGW）
+powershell -ExecutionPolicy Bypass -File packaging/installer/build.ps1
+
+# 3. NSIS 安装包（build.ps1 最后一步调用 makensis）
+#    产物：build/installer/SopeekInstaller.exe → build/Sopeek_NSIS_Setup.exe
+```
+
+### 新增文件类型预览支持
+
+1. 在 `src/sopeek/ui/layout/preview/` 下新增预览器布局类，实现入口方法 `set_file(path, ...)`；
+2. 在 `src/sopeek/services/previewer_registry.py` 的 `_EXTENSION_MAP` 中登记「扩展名 → (模块路径, 类名)」（惰性导入，不影响首屏）；
+3. 在 `src/sopeek/resources/icons/` 补充文件类型图标（沿用「X – 3.svg」命名）。
 
 ### 代码规范
 
-- **类型注解**：所有函数添加类型注解
-- **文档字符串**：使用 Google Style Docstrings
-- **命名规范**：
-  - 类名：PascalCase
-  - 函数/变量：snake\_case
-  - 常量：UPPER\_SNAKE\_CASE
+- 遵循 PEP 8，函数添加类型注解；
+- 文档字符串使用 Google Style；
+- 类名 PascalCase、函数/变量 snake_case、常量 UPPER_SNAKE_CASE；
+- 提交信息建议使用 Conventional Commits（`feat:` / `fix:` / `refactor:` / `docs:`）。
 
-### 打包应用
-
-发布链共三步（启动器可选）：构建独显启动器 → PyInstaller 生成安装器载荷 → 自研安装器打包。
-
-```bash
-# 1) 构建独显启动器（可选；构建后安装版才能启用「使用硬件加速」）
-powershell -ExecutionPolicy Bypass -File launcher/build_launcher.ps1
-
-# 2) 生成 PyInstaller 载荷 → build/pyinstall/Sopeek
-python Pyinstall_build.py
-# 可选参数：--no-clean 保留旧构建输出；--skip-build 仅清理与验证
-
-# 3) 构建安装器（需要 CMake + MinGW + NSIS）
-powershell -ExecutionPolicy Bypass -File installer_duilib/build.ps1
-# 产物：build/installer/SopeekInstaller.exe、build/Sopeek_NSIS_Setup.exe
-```
-
-### 添加新的文件预览支持
-
-1. **创建预览器布局** 在 `sopeek/ui/layout/preview/` 下新增布局类（可参考 `image_previewer_layout.py`），实现与统一预览器约定的入口方法 `set_file(path, ...)`；
-2. **注册文件类型** 在 `sopeek/services/previewer_registry.py` 的 `_EXTENSION_MAP` 中登记「扩展名 → (模块路径, 类名)」映射（惰性导入，不影响首屏加载）；
-3. **添加图标** 在 `sopeek/icons/` 添加文件类型图标（命名沿用 v3 多彩系列「X – 3.svg」）。
-
-***
+---
 
 ## 贡献指南
 
@@ -493,7 +483,7 @@ powershell -ExecutionPolicy Bypass -File installer_duilib/build.ps1
 ### 贡献流程
 
 1. **Fork 仓库** - 点击右上角的 Fork 按钮
-2. **克隆仓库** - `git clone https://github.com/your-username/Sopeek.git`
+2. **克隆仓库** - `git clone https://github.com/Dorufoc/Sopeek.git`
 3. **创建分支** - `git checkout -b feature/AmazingFeature`
 4. **提交更改** - `git commit -m 'Add some AmazingFeature'`
 5. **推送分支** - `git push origin feature/AmazingFeature`
@@ -521,65 +511,61 @@ powershell -ExecutionPolicy Bypass -File installer_duilib/build.ps1
 - **功能请求**：描述功能、使用场景、预期效果
 - **问题咨询**：提供详细的环境信息和操作步骤
 
-***
-
-## 路线图
-
-### 已完成功能
-
-- [x] 基础文件浏览和预览
-- [x] 图像格式支持（30+ 格式）
-- [x] 视频播放功能（基于 MPV）
-- [x] 音频播放和波形显示
-- [x] PDF 和 Office 文档预览
-- [x] 压缩包浏览
-- [x] 字体预览
-- [x] 深色/浅色主题切换
-- [x] 文件存储池功能
-- [x] 缩略图缓存系统
-- [x] ISO文件稳定预览
-
-### 计划中（未开始）
-
-- [ ] 文件导出智能化分类（暂缓）
-- [ ] 时间线与智能筛选工具（暂缓）
-- [ ] 插件系统架构（暂缓）
-
-### 可能会实现的功能
-
-- [ ] macOS 和 Linux 支持
-- [ ] 网络文件系统支持（SMB/NFS）
-- [ ] AI 智能标签和分类
-- [ ] 协作和分享功能
-- [ ] 移动端&网页端配套应用
-
-### 长期愿景
-
-成为开源社区最强大的文件预览和管理工具，为创意工作者提供高效的数字资产管理解决方案。
-
-***
+---
 
 ## 安全说明
 
-### 依赖安全
+### 项目安全
 
-- 所有依赖库均来自官方 PyPI 仓库
-- 定期更新依赖以修复安全漏洞
-- 使用 `pip-audit` 进行依赖安全检查
+- 所有依赖来自官方 PyPI；
+- 更新包下载后校验 SHA-256；
+- AI 账户密钥使用 Windows DPAPI 加密存储；
 
 ### 漏洞报告
 
 如果您发现了安全漏洞，请不要在公开 Issue 中披露，请发送邮件至：
 
-<dorufoc@outlook.com>
+[dorufoc@outlook.com](mailto:dorufoc@outlook.com)
 
 我们会在 48 小时内回复，并尽快修复漏洞。
 
-***
+---
+
+## 致谢
+
+### 长期愿景
+
+成为开源社区中最好用的文件预览与数字资产管理工具之一，为创意工作者提供高效、克制的桌面体验。
+
+### 核心依赖
+
+- [Qt for Python (PySide6)](https://wiki.qt.io/Qt_for_Python) — 跨平台 GUI 框架
+- [Pillow](https://python-pillow.org/) / [pillow-heif](https://github.com/bigcat88/pillow_heif) / [pillow-avif-plugin](https://github.com/bigcat88/pillow_avif) / [rawpy](https://github.com/letmaik/rawpy) / [psd-tools](https://github.com/psd-tools/psd-tools) — 图像解码
+- [mpv](https://mpv.io/) — 视频播放内核
+- [FFmpeg](https://ffmpeg.org/) — 媒体探测与转码
+- [7-Zip](https://www.7-zip.org/) — 压缩包处理
+- [PyMuPDF](https://pymupdf.readthedocs.io/) — PDF 渲染
+- [Pygments](https://pygments.org/) / [Syntect](https://github.com/trishume/syntect) — 语法高亮
+- [NumPy](https://numpy.org/) — 数值计算
+- [mutagen](https://mutagen.readthedocs.io/) — 音频元数据
+- [chardet](https://github.com/chardet/chardet) / [ExifRead](https://github.com/ianare/exif-py) — 编码探测与 EXIF
+- 第三方组件完整许可见 [`src/sopeek/resources/docs/THIRD_PARTY_NOTICES.md`](src/sopeek/resources/docs/THIRD_PARTY_NOTICES.md)
+
+### 字体
+
+- [Fira Code](https://github.com/tonsky/FiraCode) — 代码字体
+- 庞门正道标题体 — 中文标题字体
+
+### 贡献者
+
+- [@Dorufoc](https://github.com/Dorufoc) — 项目创始人 & 核心开发者
+- [@renmoren](https://github.com/renmoren) — 核心开发者
+
+---
 
 ## 许可证
 
-本项目基于 [AGPL-3.0](LICENSE) 许可证开源。
+本项目基于 [AGPL-3.0](LICENSE) 开源。
 
 ```
 Sopeek - 多功能文件预览与管理工具
@@ -596,78 +582,11 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU Affero General Public License for more details.
 ```
 
-***
-
-## 致谢
-
-### 核心依赖
-
-感谢以下开源项目的贡献：
-
-#### GUI 框架
-
-- [Qt for Python (PySide6)](https://wiki.qt.io/Qt_for_Python) - 跨平台 GUI 框架
-
-#### 图像处理
-
-- [Pillow](https://python-pillow.org/) - Python 图像处理库
-- [pillow-heif](https://github.com/bigcat88/pillow_heif) - HEIF/HEIC 格式支持
-- [pillow-avif](https://github.com/python-pillow/Pillow) - AVIF 格式支持
-- [rawpy](https://github.com/letmaik/rawpy) - RAW 图像处理
-- [psd-tools](https://github.com/psd-tools/psd-tools) - PSD 文件解析
-
-#### 视频与音频
-
-- [MPV](https://mpv.io/) - 高性能视频播放器
-- [mutagen](https://mutagen.readthedocs.io/) - 音频元数据处理
-
-#### 文档处理
-
-- [Pygments](https://pygments.org/) - 代码语法高亮
-- [Markdown](https://python-markdown.github.io/) - Markdown 解析
-
-#### 压缩包处理
-
-- [7-Zip](https://www.7-zip.org/) - 7z 格式开源实现与 LZMA/LZMA2 算法
-
-#### 语法高亮
-
-- [Syntect](https://github.com/trishume/syntect) - 高性能语法高亮引擎
-- [vscode-textmate](https://github.com/microsoft/vscode-textmate) - TextMate 语法解析库
-
-#### 科学计算
-
-- [NumPy](https://numpy.org/) - 科学计算库
-
-#### 文本与编码
-
-- [chardet](https://github.com/chardet/chardet) - 字符编码检测
-- [ExifRead](https://github.com/ianare/exif-py) - EXIF 数据读取
-
-### 资源致谢
-
-- 字体：使用 [Fira Code](https://github.com/tonsky/FiraCode) 作为代码字体
-- 中文字体：使用庞门正道标题体
-
-### 特别贡献者
-
-感谢所有为项目做出贡献的开发者：
-
-- [@Dorufoc](https://github.com/Dorufoc) - 项目创始人 & 核心开发者
-- [@renmoren](https://github.com/renmoren) - 核心开发者
-
-### 相关项目
-
-- [mpv](https://github.com/mpv-player/mpv) - 命令行视频播放器
-- [vscode-textmate](https://github.com/microsoft/vscode-textmate) - TextMate 语法解析库
-
-***
+---
 
 <div align="center">
 
 **⭐ 如果这个项目对您有帮助，请给我们一个 Star！**
-
-[🐛 提交 Bug](https://github.com/Dorufoc/Sopeek/issues) • [💡 功能建议](https://github.com/Dorufoc/Sopeek/issues) • [🤝 参与贡献](https://github.com/Dorufoc/Sopeek/pulls)
 
 Made with ❤️ by [Dorufoc](https://github.com/Dorufoc) & [renmoren](https://github.com/renmoren)
 

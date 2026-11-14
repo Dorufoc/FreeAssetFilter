@@ -1,0 +1,101 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sopeek"
+# 注意：运行时唯一版本来源是仓库根的 SPKVERSION（更新检查读它）。
+# 这里的 version 只用于 `pip install -e .` 的本地元数据，不参与发布，
+# 发版时不需要同步修改（改 SPKVERSION 即可）。
+version = "1.0.0a5"
+description = "Sopeek —— 面向素材整理与预览的 Windows 桌面工具（PySide6）"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Dorufoc | renmoren" },
+]
+keywords = ["asset", "preview", "pyside6", "desktop"]
+classifiers = [
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Environment :: Win32 (MS Windows)",
+    "Operating System :: Microsoft :: Windows",
+]
+# 依赖清单仍以 requirements.txt 为唯一事实来源（含注释说明），此处不重复列出，
+# 避免两处版本范围漂移。安装开发环境请用：
+#   pip install -r requirements.txt -r requirements-dev.txt
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Dorufoc/Sopeek"
+Releases = "https://github.com/Dorufoc/Sopeek/releases"
+
+[project.scripts]
+# 可编辑安装后的启动入口；等价的未安装方式见 README。
+sopeek = "sopeek.app.main:main"
+
+[tool.setuptools]
+# src 布局：唯一的可导入根是 src/，仓库根不再放 Python 包。
+package-dir = { "" = "src" }
+# 运行时二进制与资源随包分发（PyInstaller 之外的 `pip install -e .` 路径）。
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["sopeek*"]
+
+[tool.setuptools.package-data]
+# 开发期直接运行（未冻结）时需要从包内读取的资源。
+sopeek = [
+    "resources/**/*",
+    "core/native/bin/**/*",
+]
+
+# ── Lint ────────────────────────────────────────────────────────────────────
+# 只选“所有 Python 项目都该当成错误”的缺陷类规则：
+#   E9 —— 语法 / 运行时错误（E901/E902/E999）
+#   F  —— Pyflakes（未定义名 F821、未使用导入、重复 dict 键、非法 f-string 等）
+# 样式规则（UP/SIM/PERF/BLE/RUF/I）刻意不启用：它们不是本项目的既定约定，
+# 一旦开启会把真正有价值的缺陷淹没在历史风格债里。若将来要立风格门槛，
+# 应作为独立变更（配合 fix-on-commit / CI）单独引入。
+[tool.ruff]
+target-version = "py39"
+line-length = 120
+exclude = [
+    ".venv",
+    "build",
+    "dist",
+    "native",
+    "packaging/installer",
+    "src/sopeek/resources",
+    # 夹具是“故意保留缺陷”的样本（如未使用的 import），不参与 lint。
+    "tests/fixtures",
+]
+
+[tool.ruff.lint]
+select = ["E9", "F"]
+
+# ── pytest ──────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["CVS", "_darcs", "{arch}", "*.egg", ".venv", ".tox", "native", "build", "dist"]
+timeout = 30
+timeout_method = "thread"
+addopts = "-p no:cacheprovider --tb=short -m \"not gui\" --strict-markers"
+markers = [
+    "unit: 单个模块的单元测试",
+    "widgets: 自定义 QWidget 测试",
+    "components: UI 组件测试",
+    "integration: 跨组件流程测试",
+    "gui: 需要真实显示器的可视化测试（默认不跑）",
+    "benchmark: 性能基准测试",
+    "visual: 视觉回归测试",
+    "slow: 耗时较长、需要放宽超时的测试",
+    "mpv: 依赖 libmpv-2.dll 的测试",
+    "office: Office 文档相关测试",
+    "com: COM 互操作测试",
+    "rust: Rust 原生扩展测试",
+]

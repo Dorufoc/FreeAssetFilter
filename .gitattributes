@@ -1,4 +1,130 @@
-# 编码测试样本（GBK/Big5/Shift-JIS 等）是"二进制测试数据"：禁止 Git 任何
-# 文本/行尾转换。否则 Windows core.autocrlf=true 检出时会把样本里的 LF
-# 改成 CRLF，污染字节并使逐字节断言的测试失败（如 text 预览器三个编码用例）。
-tests/support/spk_core_fixtures/encoding_samples/** -text
+# ============================================================
+# Sopeek .gitattributes
+# ============================================================
+# 目标：
+#   1. 文本文件行尾可预期（Windows 脚本 CRLF、源码/文档 LF）；
+#   2. 二进制与测试夹具逐字节不变，避免 autocrlf 检出时污染；
+#   3. 让 GitHub linguist 正确统计语言，不把夹具算进源码。
+#
+# 规则按出现顺序生效，后写的覆盖先写的：通用规则在上，例外在下。
+# ============================================================
+
+# --- 基线：由 Git 自动判定文本 / 二进制 ---
+* text=auto
+
+# ------------------------------------------------------------
+# Windows 脚本：必须 CRLF
+# ------------------------------------------------------------
+# .ps1 在部分 PowerShell 版本下对 LF 容忍度差；.bat/.cmd 的 goto/label
+# 解析对行尾敏感；NSIS 与 .rc 亦按 Windows 惯例处理。
+*.ps1           text eol=crlf
+*.bat           text eol=crlf
+*.cmd           text eol=crlf
+*.nsi           text eol=crlf
+*.rc            text eol=crlf
+
+# ------------------------------------------------------------
+# 源码与文档：统一 LF
+# ------------------------------------------------------------
+*.py            text eol=lf
+*.pyi           text eol=lf
+*.rs            text eol=lf
+*.toml          text eol=lf
+*.cfg           text eol=lf
+*.ini           text eol=lf
+*.txt           text eol=lf
+*.md            text eol=lf
+*.json          text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+*.csv           text eol=lf
+*.svg           text eol=lf
+*.c             text eol=lf
+*.h             text eol=lf
+*.cpp           text eol=lf
+*.hpp           text eol=lf
+*.def           text eol=lf
+*.cmake         text eol=lf
+CMakeLists.txt  text eol=lf
+*.frag          text eol=lf
+*.vert          text eol=lf
+*.glsl          text eol=lf
+
+# ------------------------------------------------------------
+# 二进制：禁止行尾转换，也禁止文本 diff
+# ------------------------------------------------------------
+# 运行时二进制随包分发（src/sopeek/core/native/bin/），
+# 必须原样入库，任何字节改动都会导致加载失败。
+*.dll           binary
+*.exe           binary
+*.pyd           binary
+*.lib           binary
+*.so            binary
+*.dylib         binary
+*.qsb           binary
+
+# 图像 / 字体 / 文档
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.gif           binary
+*.webp          binary
+*.bmp           binary
+*.ico           binary
+*.icns          binary
+*.tif           binary
+*.tiff          binary
+*.psd           binary
+*.ttf           binary
+*.otf           binary
+*.woff          binary
+*.woff2         binary
+*.pdf           binary
+
+# 媒体夹具
+*.mp4           binary
+*.mkv           binary
+*.mov           binary
+*.avi           binary
+*.wmv           binary
+*.webm          binary
+*.mpg           binary
+*.mxf           binary
+*.m2ts          binary
+*.mts           binary
+*.3gp           binary
+*.flv           binary
+*.vob           binary
+
+# 归档
+*.7z            binary
+*.zip           binary
+*.rar           binary
+*.gz            binary
+*.xz            binary
+*.bz2           binary
+
+# ------------------------------------------------------------
+# 测试夹具：逐字节断言，禁止一切转换
+# ------------------------------------------------------------
+# tests/fixtures/ 下是不可再生的对拍样本：
+#   - encoding_samples/（GBK / Big5 / Shift-JIS / Latin-1 原始字节）
+#   - seven_zip_samples/slt_output_gbk.txt（7z 输出的 GBK 字节）
+#   - media/sample_mpegts.ts（MPEG-TS 视频，扩展名与 TypeScript 撞车）
+# 若被 autocrlf 改写为 CRLF，编码探测与逐字节断言会直接失败。
+# 故整棵夹具树按二进制处理，不参与行尾转换与文本 diff。
+# 同时显式 -eol：否则上方 *.txt text eol=lf 会残留 eol=lf 属性，
+# 虽然 git 规定 text 未设置时 eol 不生效，但依赖这条隐式规则过于脆弱。
+tests/fixtures/**   -text -eol
+
+# 夹具生成脚本是源码而非样本，恢复为普通文本便于评审 diff。
+tests/fixtures/spk_core/generate_fixtures.py  text eol=lf
+
+# ------------------------------------------------------------
+# linguist：统计口径
+# ------------------------------------------------------------
+# 夹具、第三方资源、预编译二进制不计入语言占比。
+tests/fixtures/**                 linguist-vendored
+src/sopeek/resources/syntax/**    linguist-vendored
+src/sopeek/core/native/bin/**     linguist-vendored
+assets/**                         linguist-documentation

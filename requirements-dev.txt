@@ -4,3 +4,7 @@ pytest-cov>=6.0
 # 并发 / 线程预算与内存探针测试依赖（缺失时相关模块在收集阶段即
 # ImportError，导致 `pytest tests/` 无法启动）。
 psutil>=5.9
+# 构建 / 打包（packaging/build.py 依赖）
+pyinstaller>=6.0
+# Lint（配置见 pyproject.toml 的 [tool.ruff]）
+ruff>=0.6

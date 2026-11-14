@@ -1,0 +1,115 @@
+Path = sample_archive.7z
+Size = 0
+Type = 7z
+Physical Size = 4096
+Headers Size = 172
+Method = LZMA2:24
+Solid = +
+Blocks = 1
+
+----------
+Path = docs\
+Folder = +
+Size = 0
+Packs = 0
+Attributes = D_....A
+Encrypted = -
+Method = 
+Block = 0
+
+----------
+Path = docs\readme_中文.txt
+Size = 256
+Packs = 256
+Attributes = ...._A
+Encrypted = -
+Method = LZMA2:24
+Block = 0
+CRC = 12345678
+Modified = 2026-09-05 10:30:00
+
+----------
+Path = docs\说明文档.txt
+Size = 512
+Packs = 512
+Attributes = ...._A
+Encrypted = -
+Method = LZMA2:24
+Block = 0
+CRC = 9ABCDEF0
+Modified = 2026-09-05 10:35:00
+
+----------
+Path = docs\.hidden_config
+Size = 64
+Packs = 64
+Attributes = ...._A
+Encrypted = -
+Method = LZMA2:24
+Block = 0
+CRC = 11111111
+Modified = 2026-09-05 10:40:00
+
+----------
+Path = docs\sub\
+Folder = +
+Size = 0
+Packs = 0
+Attributes = D_....A
+Encrypted = -
+Method = 
+Block = 0
+
+----------
+Path = docs\sub\data.csv
+Size = 128
+Packs = 128
+Attributes = ...._A
+Encrypted = -
+Method = LZMA2:24
+Block = 0
+CRC = 22222222
+Modified = 2026-09-05 10:45:00
+
+----------
+Path = src\
+Folder = +
+Size = 0
+Packs = 0
+Attributes = D_....A
+Encrypted = -
+Method = 
+Block = 0
+
+----------
+Path = src\main.py
+Size = 1024
+Packs = 1024
+Attributes = ...._A
+Encrypted = -
+Method = LZMA2:24
+Block = 0
+CRC = 33333333
+Modified = 2026-09-05 10:50:00
+
+----------
+Path = license.txt
+Size = 2048
+Packs = 2048
+Attributes = ...._A
+Encrypted = -
+Method = LZMA2:24
+Block = 0
+CRC = AABBCCDD
+Modified = 2026-09-05 11:00:00
+
+----------
+Path = sample_archive.7z
+Size = 4096
+Packs = 4096
+Attributes = ...._A
+Encrypted = -
+Method = LZMA2:24
+Block = 0
+CRC = 44444444
+Modified = 2026-09-05 09:00:00
