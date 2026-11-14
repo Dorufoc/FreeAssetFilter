@@ -154,6 +154,14 @@ desktop.ini
 .kagent/
 .claude/
 .cursor/
+.omo/
+.demo_out/
+.qoder/
+.opencode/
+.reasonix/
+.workbuddy/
+.zcode/
+.dsh-acl-recovery/
 
 # ------------------------------------------------------------
 # 安装器本地运行期残留（GUI 引擎写出的结果 INI 落到仓库内时的兜底）
@@ -165,6 +173,12 @@ packaging/installer/install-result.ini
 # ------------------------------------------------------------
 *.cache
 .icon_cache/
+.probe_head_tree/
+.probe_venv/
+.VSCodeCounter/
+outputs/
+tests/gui/screenshots/*
+.acl-recovery/
 
 # ------------------------------------------------------------
 # 说明：以下历史规则在重构后不再需要，故未保留
@@ -182,3 +196,6 @@ packaging/installer/install-result.ini
 #   这些路径在重构后已不存在（原生源码 → native/，安装器 → packaging/installer/，
 #   启动器 → packaging/launcher/），对应的规则由上方按新路径书写的规则替代。
 
+AGENTS.md
+launcher/SPK-Launcher.exe
+launcher/SPK-Launcher.lib
