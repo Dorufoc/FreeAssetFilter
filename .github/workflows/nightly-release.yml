@@ -161,21 +161,18 @@ jobs:
           }
           Write-Host "Installer package: $($setup.Name) ($($setup.Length) bytes)"
 
-          $files = @(
-            $setup.FullName,
-            'build/installer/SopeekInstaller.exe',
-            'build/installer/libwinpthread-1.dll'
-          )
-          foreach ($f in $files) {
-            if (-not (Test-Path -LiteralPath $f)) { throw "Missing build artifact: $f" }
-            if ((Get-Item -LiteralPath $f).Length -le 0) { throw "Empty build artifact: $f" }
+          # 对外只公开「最终安装包」的校验值。GUI 与 MinGW 运行库属于构建中间产物，
+          # 不随 Release 发布，也不再出现在 SHA256SUMS.txt 里。
+          if (-not (Test-Path -LiteralPath $setup.FullName)) {
+            throw "Missing installer package: $($setup.FullName)"
+          }
+          if ((Get-Item -LiteralPath $setup.FullName).Length -le 0) {
+            throw "Empty installer package: $($setup.FullName)"
           }
 
-          $lines = foreach ($f in $files) {
-            '{0}  {1}' -f (Get-FileHash -LiteralPath $f -Algorithm SHA256).Hash, (Split-Path -Leaf $f)
-          }
-          $lines | Set-Content -LiteralPath 'build/SHA256SUMS.txt' -Encoding ASCII
-          Get-Content 'build/SHA256SUMS.txt' | ForEach-Object { Write-Host $_ }
+          $line = '{0}  {1}' -f (Get-FileHash -LiteralPath $setup.FullName -Algorithm SHA256).Hash, $setup.Name
+          $line | Set-Content -LiteralPath 'build/SHA256SUMS.txt' -Encoding ASCII
+          Write-Host $line
 
           "installer_path=$($setup.FullName)" >> $env:GITHUB_OUTPUT
           "installer_name=$($setup.Name)" >> $env:GITHUB_OUTPUT
@@ -317,7 +314,9 @@ jobs:
           }
 
           $md.Add('')
-          $md.Add('## 安装包')
+          $md.Add('## 安装包与校验值')
+          $md.Add('')
+          $md.Add('校验值仅针对下面的最终安装包；GUI、运行库等构建中间产物不对外发布。')
           $md.Add('')
           $md.Add('| 文件 | SHA256 |')
           $md.Add('| --- | --- |')
