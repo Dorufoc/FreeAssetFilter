@@ -71,6 +71,10 @@ launcher/SPK-Launcher.lib
 
 # --- Dotfiles (agent workspaces, code index) ---
 .*
+# GitHub Actions 工作流必须入库，否则 CI 永远不会被调度。
+# 规则顺序有讲究：先放行目录本身，git 才会进入其中枚举文件。
+!.github/
+!.github/**
 
 # --- Design/markdown notes (not source code) ---
 # `*.md` 会忽略仓库里所有 Markdown，因此正式的开发者文档必须在下方显式放行。
