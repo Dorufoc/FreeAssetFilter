@@ -489,10 +489,17 @@ class TestVersionInfo:
     """Local version and build-date parsing."""
 
     def test_reads_real_version_and_build_date(self) -> None:
+        # 版本号以仓库根目录 SPKVERSION 为唯一来源，会随发版变化；这里校验
+        # 「解析结果与文件内容一致」而不是写死某个版本，避免发版即挂测试。
+        version_file = Path(__file__).resolve().parents[3] / "SPKVERSION"
+        lines = version_file.read_text(encoding="utf-8-sig").splitlines()
+        expected_version = lines[0].strip().lstrip("vV")
+        expected_date = lines[1].strip() if len(lines) > 1 else None
+
         version = version_info.get_local_version()
         date = version_info.get_local_build_date()
-        assert version == "1.0.0-alpha.5"
-        assert date == "2026-05-22"
+        assert version == expected_version
+        assert date == expected_date
         assert version_info.RELEASES_URL == "https://github.com/Dorufoc/Sopeek/releases"
         assert version_info.REPO_CANDIDATES == (
             "Dorufoc/Sopeek",
@@ -661,8 +668,20 @@ class TestCheck:
         assert not hasattr(info, "release_url")
         assert bridge.ensure_calls == 1
         assert bridge.check_calls[0]["repo"] == "Dorufoc/Sopeek"
-        assert bridge.check_calls[0]["current_version"] == "1.0.0-alpha.5"
+        assert bridge.check_calls[0]["current_version"] == version_info.get_local_version()
         assert bridge.check_calls[0]["include_prerelease"] is True
+
+    def test_include_prerelease_flag_is_forwarded(
+        self, service_factory: Callable[..., Any]
+    ) -> None:
+        """``include_prerelease=False`` 必须原样传给原生桥（仅查正式版）。"""
+        service, bridge = service_factory(
+            check_response={"ok": True, "result": {"update_available": False}}
+        )
+        request_id = service.check(True, include_prerelease=False)
+        assert request_id
+        assert _pump_until(lambda: bridge.check_calls)
+        assert bridge.check_calls[0]["include_prerelease"] is False
 
     def test_check_falls_back_to_official_repo_on_404(
         self,

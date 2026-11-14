@@ -35,6 +35,7 @@ class FakeUpdateService(QObject):
         self.next_download_id = "download-1"
         self.emit_started = True
         self.check_calls: list[bool] = []
+        self.include_prerelease_calls: list[bool] = []
         self.start_download_calls: list[UpdateInfo] = []
         self.download_states: dict[str, tuple[str, int, int]] = {}
         self.cleared = False
@@ -42,8 +43,9 @@ class FakeUpdateService(QObject):
     def is_available(self) -> bool:
         return self.available
 
-    def check(self, manual: bool = False) -> str:
+    def check(self, manual: bool = False, include_prerelease: bool = True) -> str:
         self.check_calls.append(bool(manual))
+        self.include_prerelease_calls.append(bool(include_prerelease))
         if self.emit_started:
             self.check_started.emit(self.next_check_id, bool(manual))
         return self.next_check_id

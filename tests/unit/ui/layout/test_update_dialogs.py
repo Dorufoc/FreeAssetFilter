@@ -34,6 +34,18 @@ from tests.support.qt_helpers import (
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _auto_confirm_update_prompt(monkeypatch: Any) -> None:
+    """关于页点击「检查更新」现在会先弹确认弹窗。
+
+    既有用例只关心内联检查本身，这里统一按「仅检查正式版」放行；确认弹窗
+    自身的交互由 ``test_update_check_prompt.py`` 覆盖。
+    """
+    monkeypatch.setattr(
+        ud_mod, "show_check_update_prompt", lambda parent=None: False
+    )
+
+
 class FakeUpdateService(QObject):
     """最小更新服务替身：信号与生产契约一致，行为完全可控。
 
@@ -62,6 +74,7 @@ class FakeUpdateService(QObject):
         self.emit_started = True
         self.emit_result: tuple[object, object] | None = None
         self.check_calls: list[bool] = []
+        self.include_prerelease_calls: list[bool] = []
         self.shutdown_calls = 0
         self.next_download_id = "download-1"
         self.start_download_calls: list[UpdateInfo] = []
@@ -76,9 +89,10 @@ class FakeUpdateService(QObject):
         """返回可配置的可用性（不启动子进程）。"""
         return self.available
 
-    def check(self, manual: bool = False) -> str:
+    def check(self, manual: bool = False, include_prerelease: bool = True) -> str:
         """记录手动检查并返回固定请求 id。"""
         self.check_calls.append(bool(manual))
+        self.include_prerelease_calls.append(bool(include_prerelease))
         request_id = self.next_id
         if self.emit_started:
             self.check_started.emit(request_id, bool(manual))
@@ -212,10 +226,12 @@ class FakeInlineSession(QObject):
         self.downloaded_bytes = 0
         self.total_bytes = 0
         self.start_calls = 0
+        self.include_prerelease_calls: list[bool] = []
         self.disposed = False
 
-    def start_check(self) -> None:
+    def start_check(self, include_prerelease: bool = False) -> None:
         self.start_calls += 1
+        self.include_prerelease_calls.append(bool(include_prerelease))
         self.state = ui_mod.STATE_CHECKING
         self.checking.emit()
 

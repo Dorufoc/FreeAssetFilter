@@ -188,6 +188,11 @@ def _make_about_page(monkeypatch: pytest.MonkeyPatch, service: UpdateService) ->
     """Create AboutSettingsPage bound to an isolated inline session."""
     from sopeek.ui import update_inline as inline_mod
 
+    # 关于页点击「检查更新」现在会先弹确认弹窗；集成流程只关注检查/下载本身，
+    # 这里统一按「仅检查正式版」放行（弹窗交互由 test_update_check_prompt 覆盖）。
+    monkeypatch.setattr(
+        dialogs_mod, "show_check_update_prompt", lambda parent=None: False
+    )
     session = inline_mod.InlineUpdateSession(service_factory=lambda: service)
     monkeypatch.setattr(
         inline_mod,

@@ -102,8 +102,13 @@ class InlineUpdateSession(QObject):
         """会话是否已销毁。"""
         return self._disposed
 
-    def start_check(self) -> None:
-        """发起或加入一次手动检查；检查/下载在途时忽略重复调用。"""
+    def start_check(self, include_prerelease: bool = False) -> None:
+        """发起或加入一次手动检查；检查/下载在途时忽略重复调用。
+
+        Args:
+            include_prerelease: 是否把 GitHub 预发布版纳入检查。默认 ``False``，
+                关于页只有在用户于确认弹窗中勾选「获取测试版」时才传 ``True``。
+        """
         if self._disposed or self._state == STATE_CHECKING:
             return
         if self._download_id is not None:
@@ -133,7 +138,9 @@ class InlineUpdateSession(QObject):
             return
 
         try:
-            request_id = service.check(manual=True)
+            request_id = service.check(
+                manual=True, include_prerelease=bool(include_prerelease)
+            )
         except Exception:  # noqa: BLE001 - 派发失败给出可重试错误
             self._schedule_check_error(UpdateError("internal"))
             return

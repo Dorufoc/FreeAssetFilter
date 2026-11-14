@@ -277,6 +277,9 @@ class UpdateService(QObject):
             self._download_counter = itertools.count(1)
             self._check_request_id: Optional[str] = None
             self._check_manual: set[bool] = set()
+            # 是否把 GitHub 预发布版（prerelease）纳入比较。默认 True 保持启动检查等
+            # 既有行为不变；关于页由用户勾选「获取测试版」后显式传入。
+            self._check_include_prerelease: bool = True
             self.check_finished.connect(self._on_check_finished)
 
             self._download_request_id: Optional[str] = None
@@ -297,12 +300,15 @@ class UpdateService(QObject):
     # ------------------------------------------------------------------
     # 公开入口
     # ------------------------------------------------------------------
-    def check(self, manual: bool = False) -> str:
+    def check(self, manual: bool = False, include_prerelease: bool = True) -> str:
         """发起或加入一次更新检查。
 
         Args:
             manual: ``True`` 表示用户手动检查，失败会通过 ``check_finished``
                 报告；``False`` 表示启动检查，失败只写日志。
+            include_prerelease: 是否把 GitHub 上的预发布版纳入比较。默认 ``True``
+                保持既有行为（启动检查照旧）；关于页由用户勾选「获取测试版」后
+                显式传入 ``False``／``True``。已有在途检查时以先发起者为准。
 
         Returns:
             str: 请求 id；同一在途检查返回同一 id。
@@ -318,6 +324,7 @@ class UpdateService(QObject):
             request_id = f"check-{next(self._check_counter)}"
             self._check_request_id = request_id
             self._check_manual = {bool(manual)}
+            self._check_include_prerelease = bool(include_prerelease)
 
         self.check_started.emit(request_id, bool(manual))
         self._task_pool.start(
@@ -651,7 +658,8 @@ class UpdateService(QObject):
         base_params = {
             "current_version": get_local_version(),
             "current_date": get_local_build_date(),
-            "include_prerelease": True,
+            # 由发起本次检查的调用方决定（关于页「获取测试版」勾选状态）。
+            "include_prerelease": self._check_include_prerelease,
         }
         response: Any = None
         for index, repo in enumerate(REPO_CANDIDATES):
@@ -679,6 +687,8 @@ class UpdateService(QObject):
             manuals = set(self._check_manual)
             self._check_request_id = None
             self._check_manual = set()
+            # 复位为默认值，避免影响下一次未显式传参的检查。
+            self._check_include_prerelease = True
 
         if error is not None:
             if True in manuals:

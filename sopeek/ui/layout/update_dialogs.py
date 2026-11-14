@@ -3,6 +3,8 @@
 This module hosts all user-facing update dialogs built on
 :class:`~sopeek.ui.components.styled_dialog.StyledDialog`:
 
+* ``show_check_update_prompt`` — About page entry: confirm the check and choose
+  whether GitHub prereleases ("获取测试版") are included
 * ``show_no_update`` — already up to date / skipped-tag notice
 * ``show_check_error`` — manual check failure with retry
 * ``show_update_available`` — release notes + download / release-page actions
@@ -40,6 +42,7 @@ from PySide6.QtGui import QCloseEvent, QDesktopServices, QKeyEvent
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QLayout, QVBoxLayout, QWidget
 
 from components.styled_dialog import StyledDialog
+from components.styled_checkbox import StyledCheckbox
 from components.styled_loading import StyledLoading
 from components.styled_progress import StyledProgress
 from components.styled_textarea import StyledTextarea
@@ -48,7 +51,7 @@ from theme import tm
 from sopeek.services.installer_launcher import InstallerLauncher
 from sopeek.services.update_service import get_update_service
 from sopeek.ui.theme.app_stylesheet import register_widget_qss
-from sopeek.utils.version_info import RELEASE_URL_PREFIXES, RELEASES_URL
+from sopeek.utils.version_info import RELEASE_URL_PREFIXES, RELEASES_URL, get_local_version
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from sopeek.services.update_service import UpdateInfo, UpdateService
@@ -383,6 +386,97 @@ def _place_over_parent(dialog: StyledDialog, parent: Optional[QWidget]) -> None:
 # ---------------------------------------------------------------------------
 # Public dialogs
 # ---------------------------------------------------------------------------
+
+
+def show_check_update_prompt(parent: Optional[QWidget] = None) -> Optional[bool]:
+    """Ask whether to check for updates, and whether to include prereleases.
+
+    This is the entry dialog of the About page's "检查更新" action: the About
+    page never starts a check directly, the user confirms here first. The
+    "获取测试版" checkbox decides whether GitHub prereleases are considered.
+
+    Args:
+        parent: Owner widget used for positioning (may be ``None``).
+
+    Returns:
+        Optional[bool]: ``None`` when the user cancels (nothing is checked);
+        ``True`` when "获取测试版" was checked (prereleases included);
+        ``False`` when only stable releases should be checked.
+    """
+    body, layout = _body()
+
+    _label(
+        layout,
+        "将连接到 GitHub 检查是否有可用的新版本。",
+        "UpdateCheckPromptMessage",
+    )
+
+    local = get_local_version()
+    if local:
+        current = local if local.lower().startswith("v") else f"v{local}"
+        _label(
+            layout,
+            f"当前版本：{current}",
+            "UpdateCheckPromptVersion",
+            font_size=12,
+            hint=True,
+        )
+
+    layout.addSpacing(6)
+    prerelease_box = StyledCheckbox(checked=False, size="default", text="获取测试版")
+    prerelease_box.setObjectName("UpdateCheckPrereleaseCheckbox")
+    layout.addWidget(prerelease_box)
+
+    _label(
+        layout,
+        "测试版为 GitHub 上的预发布构建，可能包含不稳定改动；"
+        "不勾选时仅检查正式发布版。",
+        "UpdateCheckPromptHint",
+        font_size=12,
+        hint=True,
+    )
+    layout.addStretch(1)
+
+    dialog = _dialog("检查更新", body, parent=parent)
+    dialog.setObjectName("UpdateCheckPromptDialog")
+    dialog._prerelease_checkbox = prerelease_box  # type: ignore[attr-defined]
+
+    state: dict[str, Optional[bool]] = {"value": None}
+    loop_finished = [False]
+    loop = QEventLoop()
+
+    def _choose(value: Optional[bool]) -> None:
+        state["value"] = value
+        dialog.close_dialog(1 if value is not None else 0)
+
+    def _close_loop(*_args: Any) -> None:
+        if loop_finished[0]:
+            return
+        loop_finished[0] = True
+        loop.quit()
+
+    cancel_button = dialog.add_footer_button("取消", variant="secondary")
+    cancel_button.setObjectName("UpdateCheckPromptCancel")
+    cancel_button.clicked.connect(lambda: _choose(None))
+
+    confirm_button = dialog.add_footer_button("检查更新", variant="primary")
+    confirm_button.setObjectName("UpdateCheckPromptConfirm")
+    confirm_button.clicked.connect(lambda: _choose(bool(prerelease_box.checked)))
+    dialog._confirm_button = confirm_button  # type: ignore[attr-defined]
+
+    # 关闭（X / Esc）也视为取消，必须唤醒事件循环，否则调用方会挂住。
+    dialog.finished.connect(_close_loop)
+    dialog.destroyed.connect(_close_loop)
+
+    # 应用级模态：确认弹窗打开期间不响应设置页的再次点击，避免叠加多个弹窗。
+    dialog.setWindowModality(Qt.ApplicationModal)
+
+    _track_dialog(dialog)
+    dialog.show_dialog()
+    _place_over_parent(dialog, parent)
+    if not loop_finished[0]:
+        loop.exec()
+    return state["value"]
 
 
 def show_no_update(info: "UpdateInfo") -> StyledDialog:
