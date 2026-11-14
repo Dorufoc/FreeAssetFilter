@@ -1,7 +1,0 @@
-// 由 CMake 从 installer_duilib/build.ps1 传入的版本号生成（configure_file）。
-// 不要手工编辑：真正的版本来源是仓库根目录的 SPKVERSION。
-#define SPK_VERSION_MAJOR @SPK_VERSION_MAJOR@
-#define SPK_VERSION_MINOR @SPK_VERSION_MINOR@
-#define SPK_VERSION_PATCH @SPK_VERSION_PATCH@
-#define SPK_VERSION_BUILD @SPK_VERSION_BUILD@
-#define SPK_VERSION_STRING "@SPK_VERSION_STRING@"

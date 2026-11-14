@@ -46,9 +46,10 @@ from urllib.request import (
 # must exist before any ``sopeek`` module reads it.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-_REPO_ROOT: Path = Path(__file__).resolve().parent.parent
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+# 本脚本位于仓库根的 tools/；src 布局下可导入根是 src/。
+_SRC_ROOT: Path = Path(__file__).resolve().parent.parent / "src"
+if str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
 
 
 def _prepare_data_dir() -> Path:
@@ -92,7 +93,7 @@ from sopeek.utils.path_utils import get_app_data_path  # noqa: E402
 _QT_APP: Optional[QCoreApplication] = None
 
 DEFAULT_PREFLIGHT: Path = (
-    _REPO_ROOT / ".omo" / "evidence" / "rust-native-updater" / "preflight.txt"
+    _SRC_ROOT.parent / ".omo" / "evidence" / "rust-native-updater" / "preflight.txt"
 )
 RELEASES_API: str = (
     "https://api.github.com/repos/Dorufoc/Sopeek/releases?per_page=30"

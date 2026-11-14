@@ -11,6 +11,11 @@
 弹窗是同步模态（内部 QEventLoop），因此测试用 ``QTimer.singleShot`` 在弹窗
 出现后驱动按钮，并保证任何异常路径都会关闭弹窗释放事件循环。
 
+本文件随 src 布局重构一并迁入 ``tests/unit/ui/layout/``，因此：
+
+* 一律使用 ``sopeek.ui.*`` 规范路径导入，不再依赖 ``components.*`` 短路径；
+* Qt 清理工具改为本文件内的最小实现，不再依赖已删除的 ``tests/support``。
+
 验证命令：
     $env:QT_QPA_PLATFORM='offscreen'
     python -m pytest tests/unit/ui/layout/test_update_check_prompt.py -v
@@ -21,27 +26,95 @@ from __future__ import annotations
 from typing import Any, Callable, Optional
 
 import pytest
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, QTimer, Qt
 from PySide6.QtWidgets import QApplication, QLabel
 
 import sopeek.ui.layout.settings_layout as sl_mod
 import sopeek.ui.layout.update_dialogs as ud_mod
-from components.styled_button import StyledButton
-from components.styled_checkbox import StyledCheckbox
-from components.styled_dialog import StyledDialog
-from tests.support.qt_helpers import drain_deferred_deletes, safe_teardown
+from sopeek.ui.components.styled_button import StyledButton
+from sopeek.ui.components.styled_checkbox import StyledCheckbox
+from sopeek.ui.components.styled_dialog import StyledDialog
 
 pytestmark = pytest.mark.unit
 
 DIALOG_OBJECT_NAME = "UpdateCheckPromptDialog"
 
 
+def drain_deferred_deletes(rounds: int = 4) -> None:
+    """显式派发 ``DeferredDelete``，让 ``deleteLater`` 真正落地。
+
+    ``processEvents()`` 对 ``deleteLater`` 的派发不可靠（窗口未 ``show()``
+    或从未进入 ``exec()`` 时尤其如此），因此按 Qt 官方途径直接投递
+    ``QEvent.DeferredDelete``，再做一轮普通事件泵让销毁级联。
+
+    Args:
+        rounds: 派发轮数；销毁可能级联产生新的延迟删除，故多轮。
+    """
+    app = QCoreApplication.instance()
+    if app is None:
+        return
+    for _ in range(max(1, rounds)):
+        QCoreApplication.sendPostedEvents(None, int(QEvent.DeferredDelete))
+        app.processEvents()
+
+
+def safe_teardown(widget: Optional[QObject]) -> None:
+    """安全销毁一个 Qt widget/对象。
+
+    按 close → deleteLater 顺序清理，并对已销毁的 C++ 对象（``RuntimeError``）
+    或 ``None`` 输入做防御。
+
+    Args:
+        widget: 待销毁对象；``None`` 时直接返回。
+    """
+    if widget is None:
+        return
+    try:
+        close = getattr(widget, "close", None)
+        if callable(close):
+            close()
+    except RuntimeError:
+        return
+    try:
+        widget.deleteLater()
+    except RuntimeError:
+        return
+
+
+def _prompt_dialogs() -> list[StyledDialog]:
+    """返回当前所有存活的确认弹窗（由旧到新）。"""
+    return [
+        widget
+        for widget in QApplication.topLevelWidgets()
+        if isinstance(widget, StyledDialog)
+        and widget.objectName() == DIALOG_OBJECT_NAME
+    ]
+
+
 def _prompt_dialog() -> Optional[StyledDialog]:
-    """在顶层窗口里找到确认弹窗（不依赖模块内部存活表）。"""
-    for widget in QApplication.topLevelWidgets():
-        if isinstance(widget, StyledDialog) and widget.objectName() == DIALOG_OBJECT_NAME:
-            return widget
-    return None
+    """返回本次刚创建的确认弹窗（最新的那个）。
+
+    弹窗关闭后不会立即销毁（``StyledDialog`` 走动画退场，未设
+    ``WA_DeleteOnClose``），因此同一进程里跑多个用例时
+    ``topLevelWidgets()`` 会累积历史实例；取最后一个才是本次的弹窗，
+    否则会把点击事件投给已经关闭的旧窗口，令事件循环无人唤醒。
+    """
+    dialogs = _prompt_dialogs()
+    return dialogs[-1] if dialogs else None
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_prompt_dialogs() -> Any:
+    """每个用例前后清掉残留弹窗，避免跨用例互相干扰。"""
+    for dialog in _prompt_dialogs():
+        safe_teardown(dialog)
+    drain_deferred_deletes()
+    try:
+        yield
+    finally:
+        for dialog in _prompt_dialogs():
+            safe_teardown(dialog)
+        drain_deferred_deletes()
 
 
 def _button(dialog: StyledDialog, object_name: str) -> StyledButton:

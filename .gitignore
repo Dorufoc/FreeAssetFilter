@@ -1,122 +1,184 @@
 # ============================================================
 # Sopeek .gitignore
 # ============================================================
-# 策略：跟踪所有源码（Python + C++ + Rust），
-# 忽略构建中间产物（target/、build/、__pycache__/ 等）。
-# 预编译的 .pyd/.dll 也跟踪，方便直接运行。
+# 策略：
+#   - 源码全部入库（Python src/ 布局 + native/ 下 Rust / C++ 源码）；
+#   - 预编译运行时二进制入库（src/sopeek/core/native/bin/），保证克隆即可运行；
+#   - 只忽略构建中间产物、虚拟环境、缓存与本地运行期数据。
+#
+# 两条刻意不做的全局忽略（历史配置曾因此踩坑）：
+#   1. 不用 `.*` 忽略所有点文件 —— 那会连带屏蔽 tests/fixtures 里的
+#      .hidden_config / .hidden_token（夹具需要它们）以及 .github/。
+#   2. 不用 `*.md` 忽略所有 Markdown —— 那会连带屏蔽 README.md、
+#      README_EN.md、THIRD_PARTY_NOTICES.md 与夹具里的 .md 样本，
+#      只能靠一长串 `!` 规则回捞，极易漏配。
+#   两条规则改为在下方按目录精确忽略。
 # ============================================================
 
-# --- Python cache ---
+# ------------------------------------------------------------
+# Python 缓存与字节码
+# ------------------------------------------------------------
 __pycache__/
+# 显式逐个列出，不用 *.py[cod]：该模式中的 d 会匹配 *.pyd，
+# 而 .pyd 是随包分发的原生扩展（lut_preview_cpp.pyd），必须入库。
 *.pyc
 *.pyo
-*.egg-info/
+*$py.class
 
-# --- Virtual environments ---
+# ------------------------------------------------------------
+# 虚拟环境
+# ------------------------------------------------------------
 .venv/
 venv/
 env/
+ENV/
 
-# --- Runtime data (user-specific, regenerated on launch) ---
+# ------------------------------------------------------------
+# 打包 / 分发元数据
+# ------------------------------------------------------------
+*.egg-info/
+.eggs/
+build/lib/
+dist/
+*.egg
+
+# ------------------------------------------------------------
+# 构建产物（仓库根 build/ 为打包与安装器共用输出目录）
+# ------------------------------------------------------------
+# packaging/build.py      → build/pyinstall/Sopeek
+# packaging/installer     → build/installer/SopeekInstaller.exe
+#                           build/Sopeek_NSIS_Setup.exe
+#                           build/test-installer/
+# 带尾斜杠只匹配目录，不会误伤 packaging/installer/build.ps1。
+build/
+
+# PyInstaller / Nuitka
+*.spec
+nuitka-crash-report.xml
+
+# ------------------------------------------------------------
+# Rust 构建缓存（native/ 下三个 crate 各自产生 target/）
+# ------------------------------------------------------------
+target/
+
+# ------------------------------------------------------------
+# C++ / MSVC 构建中间产物
+# ------------------------------------------------------------
+# native/cpp_mica_render/build.py   → native/cpp_mica_render/build/
+# native/cpp_lut_preview/setup.py   → native/cpp_lut_preview/build/
+native/cpp_mica_render/build/
+native/cpp_lut_preview/build/
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.idb
+*.tlog
+*.lastbuildstate
+
+# 注意：不要忽略 *.dll / *.pyd / *.exe —— 运行时二进制随包分发，
+# src/sopeek/core/native/bin/ 下的它们必须入库。只在下面按具体路径排除产物。
+
+# ------------------------------------------------------------
+# 安装器 / 启动器本地构建产物
+# ------------------------------------------------------------
+packaging/installer/build/
+packaging/launcher/SPK-Launcher.exe
+packaging/launcher/SPK-Launcher.exp
+packaging/launcher/SPK-Launcher.lib
+packaging/launcher/*.obj
+packaging/launcher/*.res
+
+# ------------------------------------------------------------
+# 测试与覆盖率
+# ------------------------------------------------------------
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+test_results/
+cov_*.json
+tests/log/
+
+# ------------------------------------------------------------
+# 运行期数据
+# ------------------------------------------------------------
+# 正式运行期数据位于 %LOCALAPPDATA%\Sopeek\data（见 sopeek/_paths.py），
+# 不在仓库内；以下为本地调试时用 SPK_DATA_DIR 重定向到仓库的情形。
 data/
-config/
+logs/
+*.log
 
-# --- IDE & editor files ---
+# ------------------------------------------------------------
+# 临时文件
+# ------------------------------------------------------------
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+*~
+*备份*
+*backup*
+
+# ------------------------------------------------------------
+# IDE / 编辑器
+# ------------------------------------------------------------
 .vscode/
 .idea/
 *.swp
 *.swo
-*~
+*.sublime-workspace
+
+# ------------------------------------------------------------
+# 操作系统文件
+# ------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# ------------------------------------------------------------
+# 本地 AI / 代理工作区（非项目内容）
+# ------------------------------------------------------------
+# 按目录名精确忽略，不使用 `.*` 以免误伤真实点文件。
 .trae/
 .deepseek/
 .kagent/
+.claude/
+.cursor/
 
-# --- OS files ---
-.DS_Store
-Thumbs.db
+# ------------------------------------------------------------
+# 安装器本地运行期残留（GUI 引擎写出的结果 INI 落到仓库内时的兜底）
+# ------------------------------------------------------------
+packaging/installer/install-result.ini
 
-# --- Logs & temp files ---
-*.log
-*.tmp
-*.temp
-
-# --- Test & coverage artifacts ---
-.pytest_cache/
-test_results/
-.coverage
-coverage.xml
-htmlcov/
-cov_*.json
+# ------------------------------------------------------------
+# 其他缓存
+# ------------------------------------------------------------
 *.cache
 .icon_cache/
-tests/gui/screenshots/
-tests/log/
 
-# --- Build artifacts (PyInstaller, Nuitka) ---
-build/
-dist/
-*.spec
-*.obj
-nuitka-crash-report.xml
+# ------------------------------------------------------------
+# 说明：以下历史规则在重构后不再需要，故未保留
+# ------------------------------------------------------------
+# `!.github/` / `!.github/**`
+#   旧配置用 `.*` 一刀切忽略所有点文件，再靠这两条把 CI 工作流捞回来。
+#   本文件已改为「按目录名精确忽略」（见上方 .trae/ 等），`.github/` 天然不被
+#   忽略，无需放行规则；`git check-ignore .github/workflows/nightly-release.yml`
+#   应为「未命中」。
+# `*.md` + `!tests/README.md` + `!sopeek/docs/...` + `!docs/*.md`
+#   旧配置全局忽略 Markdown 再逐个回捞，已由本文件开头的说明废弃。
+# `test_*.py` + `!tests/**/test_*.py`
+#   旧配置全局忽略 test_*.py 再回捞，属于同类反模式，已废弃。
+# `sopeek/core/native/src/**`、`installer_duilib/`、`launcher/`、`docs/*.md`
+#   这些路径在重构后已不存在（原生源码 → native/，安装器 → packaging/installer/，
+#   启动器 → packaging/launcher/），对应的规则由上方按新路径书写的规则替代。
 
-# --- Native build outputs (源码目录不得提交编译产物) ---
-sopeek/core/native/src/**/*.pyd
-sopeek/core/native/src/**/*.dll
-
-# --- Installer / launcher runtime outputs (每次构建重新生成) ---
-installer_duilib/install-result.ini
-launcher/SPK-Launcher.exe
-launcher/SPK-Launcher.exp
-launcher/SPK-Launcher.lib
-
-# --- Dotfiles (agent workspaces, code index) ---
-.*
-# GitHub Actions 工作流必须入库，否则 CI 永远不会被调度。
-# 规则顺序有讲究：先放行目录本身，git 才会进入其中枚举文件。
-!.github/
-!.github/**
-
-# --- Design/markdown notes (not source code) ---
-# `*.md` 会忽略仓库里所有 Markdown，因此正式的开发者文档必须在下方显式放行。
-# 注意：不要把 `docs/` 整个目录排除，否则父目录被剪枝后，里面的文件无法再用 `!` 重新包含。
-*.cube
-*.md
-!tests/README.md
-!sopeek/docs/THIRD_PARTY_NOTICES.md
-!docs/*.md
-
-# --- Test fixtures ---
-# 夹具树需完整入库（含隐藏文件、Markdown、中文名、多层目录），供 native-oracle 逐字段对拍。
-# 必须置于 .* 与 *.md 之后才能覆盖它们。
-!tests/support/spk_core_fixtures/**
-# 上一条的重新包含会连带放行夹具树内的 Python 缓存，这里再次排除。
-tests/support/spk_core_fixtures/**/__pycache__/
-tests/support/spk_core_fixtures/**/*.pyc
-
-# --- Backup & refactor notes ---
-*备份*
-*backup*
-FIX_SUMMARY.md
-EXIT_BLOCK_FIX_SUMMARY.md
-
-# --- Test/demo scripts ---
-test_*.py
-!tests/
-!tests/test_*.py
-!tests/**/test_*.py
-
-# ============================================================
-# CORE/NATIVE/ — track source code, ignore build intermediates
-# ============================================================
-
-# Rust build cache (target/ is entirely reproducible)
-sopeek/core/native/src/color_extractor_rust/target/
-sopeek/core/native/src/thumbnail_rust/target/
-sopeek/core/native/src/spk_core/target/
-sopeek/core/native/src/spk_updater/target/
-
-# C++ build directory (msvc .obj, .lib, .exp intermediate files)
-sopeek/core/native/src/cpp_lut_preview/build/
-outputs/*
-docs/native_capabilities.md
-docs/PERFORMANCE_AUDIT_REPORT.md

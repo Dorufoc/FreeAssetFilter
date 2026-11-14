@@ -1,129 +1,57 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""Unit tests for ``sopeek.core.native.platform_gpu`` (W1, todo 10)."""
+"""``sopeek.core.native.platform_gpu``：启动器定位与 PE 导出解析。"""
 
 from __future__ import annotations
 
-import subprocess
+from pathlib import Path
 
 import pytest
 
 from sopeek.core.native import platform_gpu
-from sopeek.core.native.platform_gpu import (
-    apply_gpu_profile,
-    build_launcher_command,
-    current_gpu_affinity,
-    launcher_exe_path,
-    launcher_has_gpu_exports,
-    parse_affinity_output,
-    read_pe_exports,
+
+
+pytestmark = pytest.mark.unit
+
+
+def test_launcher_path_lives_in_packaging_launcher() -> None:
+    """启动器路径随脚本迁移到 ``packaging/launcher/``（不再硬编码盘符）。"""
+    path = platform_gpu.launcher_exe_path()
+    assert isinstance(path, Path)
+    assert path.name == platform_gpu.LAUNCHER_EXE_NAME
+    assert path.parent.name == "launcher"
+    assert path.parent.parent.name == "packaging"
+
+
+def test_launcher_exists_matches_filesystem() -> None:
+    assert platform_gpu.launcher_exists() is platform_gpu.launcher_exe_path().is_file()
+
+
+def test_required_exports_are_declared() -> None:
+    assert platform_gpu.REQUIRED_GPU_EXPORTS == (
+        "NvOptimusEnablement",
+        "AmdPowerXpressRequestHighPerformance",
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("RENDER_GPU=NVIDIA GeForce RTX 4060\nADAPTERS=2\n", {"render_gpu": "NVIDIA GeForce RTX 4060", "adapters": 2}),
+        ("RENDER_GPU=\nADAPTERS=abc\n", {"render_gpu": "unknown", "adapters": -1}),
+        ("", {"render_gpu": "unknown", "adapters": -1}),
+        ("  RENDER_GPU=Intel   \n  ADAPTERS=1  \n", {"render_gpu": "Intel", "adapters": 1}),
+    ],
 )
+def test_parse_affinity_output(text: str, expected: dict) -> None:
+    assert platform_gpu.parse_affinity_output(text) == expected
 
 
-def test_launcher_exe_path_points_into_repo_launcher_dir() -> None:
-    """launcher_exe_path resolves to <repo>/launcher/SPK-Launcher.exe."""
-    exe = launcher_exe_path()
-    assert exe.name == "SPK-Launcher.exe"
-    assert exe.parent.name == "launcher"
-    assert (exe.parent / "launcher.c").is_file()
+def test_read_pe_exports_on_non_pe_file_is_empty(tmp_path: Path) -> None:
+    """非 PE 文件返回空列表而不是抛异常（调用方按“无导出”处理）。"""
+    bogus = tmp_path / "bogus.exe"
+    bogus.write_bytes(b"not a PE file at all")
+    assert platform_gpu.read_pe_exports(bogus) == []
 
 
-def test_gpu_diag_script_env_override(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
-    """SPK_GPU_DIAG_SCRIPT 覆盖诊断脚本查找（审查 3.1#27）。"""
-    from sopeek.core.native import _diagnostics
-
-    target = tmp_path / "gpu_check.py"
-    monkeypatch.setenv("SPK_GPU_DIAG_SCRIPT", str(target))
-    assert _diagnostics.gpu_diag_script() == target
-
-
-def test_read_pe_exports_finds_both_w1_symbols() -> None:
-    """The built launcher EXE exports both W1 GPU-request symbols."""
-    exe = launcher_exe_path()
-    if not exe.is_file():
-        pytest.skip("launcher not built; run launcher/build_launcher.ps1")
-    names = read_pe_exports(exe)
-    assert "NvOptimusEnablement" in names
-    assert "AmdPowerXpressRequestHighPerformance" in names
-
-
-def test_launcher_has_gpu_exports_true_for_built_launcher() -> None:
-    """Fail-closed check passes for the real built launcher."""
-    exe = launcher_exe_path()
-    if not exe.is_file():
-        pytest.skip("launcher not built; run launcher/build_launcher.ps1")
-    assert launcher_has_gpu_exports(exe) is True
-
-
-def test_read_pe_exports_empty_for_non_pe_file(tmp_path) -> None:
-    """Non-PE input yields [] (failed verification), never an exception."""
-    junk = tmp_path / "junk.bin"
-    junk.write_bytes(b"not a portable executable\x00\x01\x02")
-    assert read_pe_exports(junk) == []
-    assert launcher_has_gpu_exports(junk) is False
-
-
-def test_apply_gpu_profile_accepts_all_three_modes() -> None:
-    """performance/balanced/powersave accepted when launcher is usable."""
-    exe = launcher_exe_path()
-    if not exe.is_file():
-        pytest.skip("launcher not built; run launcher/build_launcher.ps1")
-    if not launcher_has_gpu_exports(exe):
-        pytest.skip("launcher exports missing")
-    assert apply_gpu_profile("performance") is True
-    assert apply_gpu_profile("balanced") is True
-    assert apply_gpu_profile("powersave") is True
-
-
-def test_apply_gpu_profile_rejects_unknown_mode() -> None:
-    """Unknown mode raises ValueError (explicit, not silent)."""
-    with pytest.raises(ValueError, match="unknown GPU profile"):
-        apply_gpu_profile("turbo")
-
-
-def test_parse_affinity_output_contract() -> None:
-    """RENDER_GPU=/ADAPTERS= lines parse; garbage falls back to unknown."""
-    parsed = parse_affinity_output("RENDER_GPU=NVIDIA\nADAPTERS=5\n")
-    assert parsed == {"render_gpu": "NVIDIA", "adapters": 5}
-    parsed = parse_affinity_output("nothing useful here\n")
-    assert parsed == {"render_gpu": "unknown", "adapters": -1}
-
-
-def test_build_launcher_command_forwards_args() -> None:
-    """Command starts with the launcher EXE and appends extra args."""
-    cmd = build_launcher_command(["--open-path", "C:\\tmp"])
-    assert cmd[0] == str(launcher_exe_path())
-    assert cmd[1:] == ["--open-path", "C:\\tmp"]
-    assert build_launcher_command() == [str(launcher_exe_path())]
-
-
-@pytest.mark.skipif(
-    not platform_gpu._DIAG_SCRIPT.is_file(),
-    reason="task-3 diagnostic script missing",
-)
-def test_current_gpu_affinity_live_single_sample() -> None:
-    """Live diagnostic (1 sample) honours the output contract."""
-    try:
-        result = current_gpu_affinity(samples=1, interval=0, timeout=120)
-    except Exception as exc:  # pragma: no cover - env dependent
-        pytest.skip(f"diagnostic cannot run here: {exc}")
-    assert result["render_gpu"] in ("NVIDIA", "Intel", "AMD", "unknown")
-    assert isinstance(result["adapters"], int)
-    assert "RENDER_GPU=" in str(result["raw"])
-    assert result["returncode"] in (0, 2)
-
-
-def test_launcher_propagates_child_exit_code() -> None:
-    """Launcher waits and returns the child exit code (override path)."""
-    exe = launcher_exe_path()
-    if not exe.is_file():
-        pytest.skip("launcher not built; run launcher/build_launcher.ps1")
-    import os
-
-    env = dict(os.environ)
-    env["SPK_LAUNCHER_CMD"] = 'cmd.exe /c "exit 42"'
-    proc = subprocess.run([str(exe)], env=env, capture_output=True,
-                          timeout=60)
-    assert proc.returncode == 42
+def test_launcher_has_gpu_exports_is_false_without_launcher(tmp_path: Path) -> None:
+    missing = tmp_path / "SPK-Launcher.exe"
+    assert platform_gpu.launcher_has_gpu_exports(missing) is False

@@ -1,3 +1,0 @@
-"""Alpha entry."""
-
-print("alpha")

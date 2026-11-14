@@ -137,7 +137,7 @@ jobs:
           $channel = '${{ github.event.inputs.channel }}'
           if ([string]::IsNullOrWhiteSpace($channel)) { $channel = 'nightly' }
           Write-Host "channel=$channel"
-          python scripts/prepare_release_version.py --channel $channel --github-output $env:GITHUB_OUTPUT
+          python tools/prepare_release_version.py --channel $channel --github-output $env:GITHUB_OUTPUT
           Write-Host '--- SPKVERSION after preparation ---'
           Get-Content SPKVERSION
 
@@ -146,7 +146,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           # 用 pwsh 7 调用：脚本含中文，pwsh 默认按 UTF-8 读取，不依赖 BOM。
-          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build_release.ps1
+          pwsh -NoProfile -ExecutionPolicy Bypass -File tools/build_release.ps1
 
       - name: Collect artifacts and checksums
         id: pack

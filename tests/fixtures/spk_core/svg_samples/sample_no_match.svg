@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120">
+  <rect width="120" height="120" fill="#123456"/>
+  <circle cx="60" cy="60" r="30" stroke="#abcdef" stroke-width="2" fill="none"/>
+  <path d="M0 0l20 20v20z" fill="#010101"/>
+  <path d="M30 30l20 20v20z" style="fill: #ffeedd" fill="none"/>
+  <path d="M60 60l20 20v20z" style="stroke: #fedcba" fill="none"/>
+  <text x="10" y="110" fill="#808080">no match</text>
+</svg>
