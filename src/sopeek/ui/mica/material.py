@@ -80,6 +80,7 @@ from PySide6.QtCore import (
     QObject,
     QRect,
     QRectF,
+    Qt,
     QThread,
     QTimer,
     Signal,
@@ -190,6 +191,35 @@ def _settle_fade_ms_from_env() -> int:
         return max(0, int(float(raw)))
     except ValueError:
         return _SETTLE_FADE_DEFAULT_MS
+
+
+def _application_is_active() -> bool:
+    """当前应用是否处于激活态（Mica 焦点状态的应用级判据）。
+
+    ``QApplication.activeWindow()`` 只适合判断“哪一个窗口活跃”，在设置窗 /
+    弹出层 / 菜单抢焦点的瞬间还可能短暂为 ``None``；用它做一次性防抖会
+    把材质永久锁死在失活态。应用级信号（``applicationStateChanged`` /
+    ``focusWindowChanged``）才是 Mica 应跟随的真实状态：
+
+    * 应用仍在前台（哪怕焦点在设置窗、对话框、菜单或工具浮层上）→ 保持；
+    * 整个应用切到后台 → 淡出。
+
+    Returns:
+        bool: True 表示应用处于 ``ApplicationActive``。无 QApplication 或
+        offscreen/minimal 无窗口系统时按活跃处理，避免把材质误判为暂停
+        （无头截图 / 烟雾测试仍需渲染 Mica）。
+    """
+    app = QApplication.instance()
+    if app is None:
+        return True
+    try:
+        # offscreen / minimal 没有真实窗口系统：applicationState 恒为
+        # Inactive，若据此隐藏会让无头截图 / 烟雾测试永远拿不到 Mica。
+        if QApplication.platformName().strip().lower() in ("offscreen", "minimal"):
+            return True
+        return app.applicationState() == Qt.ApplicationState.ApplicationActive
+    except (RuntimeError, AttributeError):
+        return True
 
 
 def _layer_display_long(region: Tuple[int, int, int, int]) -> int:
@@ -637,7 +667,10 @@ class MicaMaterial(QObject):
         self._opacity_timer.setInterval(250)
         self._opacity_timer.timeout.connect(self._on_opacity_settle)
 
-        # 焦点感知（失焦淡出并暂停绘制）
+        # 焦点感知（整个应用失焦时淡出并暂停绘制）。
+        # 判据是“应用激活”而非“本窗口激活”：设置窗 / 收藏夹 / 筛选 / 菜单 /
+        # 工具浮层都是本应用的独立顶层窗口，它们抢焦点时必须保持主窗口 Mica；
+        # 只有整个应用切到后台才移除。详见 _application_is_active。
         self._focus_whitelist: set = set()
         self._deactivate_timer = QTimer(self._widget)
         self._deactivate_timer.setSingleShot(True)
@@ -646,6 +679,7 @@ class MicaMaterial(QObject):
         top = self._widget.window()
         if top is not None:
             top.installEventFilter(self)
+        self._activation_signals_bound = False
 
         if layer_source is not None:
             try:
@@ -658,6 +692,11 @@ class MicaMaterial(QObject):
                 self._layer_source_ref = None
             else:
                 self._adopt_shared_layer()
+
+        # 初始状态跟随应用激活：材质可能在应用已失活（设置窗预热、后台启动）
+        # 时构造，默认 _active=True 会让它先显示一帧 Mica 再被纠正。此处直接
+        # 对齐，失活时走无动画隐藏并保留首次揭示标记。
+        self._bind_application_activation()
 
         if not lazy:
             self.refresh()
@@ -1587,6 +1626,11 @@ class MicaMaterial(QObject):
     def dispose(self) -> None:
         """释放资源：阻止重试、移除焦点过滤器、回收在途线程。窗口关闭时调用。"""
         self._disposed = True
+        # 应用级信号连接必须先断：否则窗口树正在析构时仍会收到应用状态事件。
+        try:
+            self._unbind_application_activation()
+        except (RuntimeError, AttributeError) as exc:
+            _LOG.debug("Mica 应用状态信号解绑失败：%s", exc)
         # 共享层借用方只解除订阅，绝不 dispose 源材质（源窗口可能仍在运行）。
         src = self._layer_source()
         if src is not None:
@@ -1637,17 +1681,29 @@ class MicaMaterial(QObject):
             self._stop_worker_thread(thread, worker)
 
     def set_active(self, active: bool) -> None:
-        """设置主窗口焦点状态：失焦淡出隐藏并暂停绘制，回焦淡入恢复。
+        """设置 Mica 激活状态：应用失焦淡出隐藏并暂停绘制，回焦淡入恢复。
+
+        语义是**应用级激活**，不是单个顶层窗口的激活：设置窗 / 对话框 / 菜单
+        抢到焦点时应用仍在前台，主窗口 Mica 必须保持。只有整个应用切到后台
+        才淡出。
 
         回焦时同时调用 :meth:`ensure_layer`：最小化 / 失焦宽限（P7.4）已释放
         层像素时，仅靠淡入只能露出主题 G1 纯色，必须重新提交烘焙才能恢复云母。
+        即使状态未变化也补一次整窗重绘（``update``），让焦点转移期间可能残留
+        的局部 G1 区域自愈为 Mica。
 
         Args:
-            active: 是否处于焦点。
+            active: 应用是否处于前台激活态。
         """
+        if getattr(self, "_disposed", False):
+            return
         if active == self._active:
             if active:
                 self.ensure_layer()
+                try:
+                    self._widget.update()
+                except RuntimeError:
+                    pass
             return
         self._active = active
         if active:
@@ -1674,13 +1730,124 @@ class MicaMaterial(QObject):
         }
 
     # ------------------------------------------------------------------
-    # 事件过滤（焦点感知）
+    # 应用级激活感知
+    # ------------------------------------------------------------------
+
+    def _bind_application_activation(self) -> None:
+        """订阅应用级激活信号，并让初始状态与当前应用状态对齐。
+
+        为什么不能只看本窗口的 ``WindowActivate``：设置窗、收藏夹/筛选等
+        ``Qt.Dialog``、菜单与 ``Qt.Tool`` 浮层都是本应用的独立顶层窗口。
+        它们获得焦点时，主窗口本身不会再收到 ``WindowActivate``；若只靠
+        窗口级事件，主窗口 Material 会永久停留在失焦暂停态。
+
+        ``applicationStateChanged`` 覆盖整个应用切前台/后台；
+        ``focusWindowChanged`` 覆盖“焦点在应用内部窗口之间转移”，两者一起
+        才能同时满足“切到设置窗保持”和“点击弹窗回来立即恢复”。
+        """
+        app = QApplication.instance()
+        if app is not None:
+            bound = False
+            try:
+                app.applicationStateChanged.connect(
+                    self._on_application_state_changed
+                )
+                bound = True
+            except (RuntimeError, AttributeError, TypeError) as exc:
+                _LOG.debug("Mica 应用状态信号绑定失败：%s", exc)
+            if hasattr(app, "focusWindowChanged"):
+                try:
+                    app.focusWindowChanged.connect(self._on_focus_window_changed)
+                    bound = True
+                except (RuntimeError, AttributeError, TypeError) as exc:
+                    _LOG.debug("Mica 焦点窗口信号绑定失败：%s", exc)
+            self._activation_signals_bound = bound
+
+        # 构造时应用可能已失活（设置窗预热 / 后台启动）：直接对齐，不播放
+        # 淡入淡出。失活走 _hide_immediately，保留首次可见时的揭示渐变。
+        self._active = _application_is_active()
+        if not self._active:
+            self._hide_immediately()
+
+    def _unbind_application_activation(self) -> None:
+        """释放应用级激活信号连接（幂等；窗口关闭 / 析构路径调用）。"""
+        if not getattr(self, "_activation_signals_bound", False):
+            return
+        self._activation_signals_bound = False
+        app = QApplication.instance()
+        if app is None:
+            return
+        try:
+            app.applicationStateChanged.disconnect(
+                self._on_application_state_changed
+            )
+        except (RuntimeError, TypeError, AttributeError):
+            pass
+        try:
+            app.focusWindowChanged.disconnect(self._on_focus_window_changed)
+        except (RuntimeError, TypeError, AttributeError):
+            pass
+
+    def _host_alive(self) -> bool:
+        """宿主控件是否仍可访问（Qt 包装对象已析构时返回 False）。"""
+        try:
+            self._widget.isVisible()
+            return True
+        except RuntimeError:
+            return False
+
+    def _on_application_state_changed(self, state) -> None:
+        """应用前台/后台切换：前台立即恢复，后台走失焦防抖。
+
+        Args:
+            state: ``Qt.ApplicationState`` 新状态。
+        """
+        if self._disposed:
+            return
+        if not self._host_alive():
+            self._disposed = True
+            return
+        if state == Qt.ApplicationState.ApplicationActive:
+            self._deactivate_timer.stop()
+            self.set_active(True)
+        elif not self._deactivate_timer.isActive():
+            self._deactivate_timer.start()
+
+    def _on_focus_window_changed(self, window) -> None:
+        """应用内焦点窗口变化：任一窗口获得焦点即恢复所有材质。
+
+        Args:
+            window: 应用当前获得键盘焦点的 ``QWindow``；无焦点时为 ``None``。
+        """
+        if self._disposed:
+            return
+        if not self._host_alive():
+            self._disposed = True
+            return
+        if window is not None:
+            self._deactivate_timer.stop()
+            self.set_active(True)
+        elif not self._deactivate_timer.isActive():
+            # 菜单关闭 / 窗口切换的瞬态空档：不立即淡出，交给应用状态复查。
+            self._deactivate_timer.start()
+
+    # ------------------------------------------------------------------
+    # 事件过滤（焦点感知快速路径）
     # ------------------------------------------------------------------
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802 (Qt 命名)
-        """顶层窗口激活 / 失焦事件：驱动 Mica 淡入恢复 / 淡出隐藏。"""
-        top = self._widget.window()
-        if obj is top:
+        """顶层窗口激活 / 失焦事件：Mica 恢复 / 防抖淡出的快速路径。
+
+        最终是否隐藏以应用级激活状态为准（见 ``_on_deactivate_check``）：
+        本窗口失焦但应用仍在前台（例如焦点交给设置窗/菜单）时保持 Mica。
+        """
+        if self._disposed:
+            return False
+        try:
+            top = self._widget.window()
+        except RuntimeError:
+            return False
+        if top is not None and obj is top:
             etype = event.type()
             if etype == QEvent.Type.WindowActivate:
                 if self._deactivate_timer.isActive():
@@ -1695,9 +1862,21 @@ class MicaMaterial(QObject):
         """判断窗口是否落在失焦白名单（含作为主窗口子对话框的父链归属）。"""
         if window is None:
             return False
-        if window in self._focus_whitelist:
+        try:
+            top = self._widget.window()
+        except RuntimeError:
+            return False
+        if window is top:
             return True
-        top = self._widget.window()
+        # 白名单存的是 weakref.ref：必须解引用后比较，不能拿 QWidget 直接
+        # 和 weakref 做 ``in`` 判断（历史实现恒为 False）。
+        for ref in tuple(self._focus_whitelist):
+            try:
+                candidate = ref()
+            except TypeError:
+                continue
+            if candidate is window:
+                return True
         p = window.parent()
         while p is not None:
             if p is top:
@@ -1706,13 +1885,26 @@ class MicaMaterial(QObject):
         return False
 
     def _on_deactivate_check(self) -> None:
-        """失焦防抖复查：仅当焦点真正离开整个应用时才隐藏；若仍在应用内（含白名单
-        窗口）则保持显示。"""
-        active = QApplication.activeWindow()
-        if active is None:
-            self.set_active(False)
-        elif not self._is_in_focus_whitelist(active):
-            self.set_active(True)
+        """失焦防抖复查：以**应用**激活状态为准，而不是某个顶层窗口。
+
+        旧实现读一次 ``QApplication.activeWindow()``：
+        - 转到设置窗/弹窗时它属于应用内窗口，分支什么都不做；
+        - 窗口切换瞬间它可能为 ``None``，一次误判就会把材质永久锁死。
+        应用级状态不会因内部窗口切换而变化，因此这里只判断应用是否前台。
+        """
+        if self._disposed:
+            return
+        if not self._host_alive():
+            self._disposed = True
+            return
+        active = _application_is_active()
+        _log_debug(
+            "Mica 激活复查: app_active=%s material_active=%s paused=%s",
+            active,
+            self._active,
+            self._paused,
+        )
+        self.set_active(active)
 
     # ------------------------------------------------------------------
     # 烘焙调度

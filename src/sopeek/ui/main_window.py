@@ -3671,6 +3671,31 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         except Exception:  # noqa: BLE001 - 无 QApplication 的极端场景
             pass
 
+    @staticmethod
+    def _application_is_active() -> bool:
+        """当前应用是否处于前台激活态（不是单个窗口是否 active）。
+
+        设置窗 / 收藏夹 / 筛选 / 菜单 / 工具浮层都是本应用的独立顶层窗口；
+        它们获得焦点时主窗口 ``isActiveWindow()`` 为 False，但应用仍在前台，
+        主窗口的 Mica 与后台渲染缓存不应被当作“切到后台”处理。
+
+        Returns:
+            bool: ``QApplication.applicationState()`` 为 ``ApplicationActive``。
+            无 QApplication 或查询失败时保守返回 False（沿用原失焦语义）；
+            offscreen / minimal 无窗口系统时按 True 处理，保留离屏渲染语义。
+        """
+        app = QApplication.instance()
+        if app is None:
+            return False
+        try:
+            # offscreen / minimal 无真实窗口系统，applicationState 恒为
+            # Inactive；按“活跃”处理以保留离屏渲染 / 截图语义。
+            if QApplication.platformName().strip().lower() in ("offscreen", "minimal"):
+                return True
+            return app.applicationState() == Qt.ApplicationState.ApplicationActive
+        except (RuntimeError, AttributeError):
+            return False
+
     def changeEvent(self, event: QEvent) -> None:
         """窗口状态变化：失活时重置文件选择器的方向键导航状态。
 
@@ -3687,11 +3712,21 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             and self._file_selector is not None
         ):
             self._file_selector.reset_nav_state()
-        # P7.4：失焦（非最小化）只停 tick，30s 宽限后才释放纹理——
+        # P7.4：应用失焦（非最小化）只停 tick，30s 宽限后才释放纹理——
         # 重建管线约 4ms，立即释放会在快速切窗/截图时闪一帧。
+        #
+        # 判据必须是「整个应用是否前台」而不是「主窗口是否 active」：
+        # 打开设置窗 / 对话框 / 菜单时主窗口会失活，但应用仍在前台，主窗口
+        # 仍可见并需要 Mica。若按 isActiveWindow 释放，30s 后主窗口可见区域
+        # 会退化成主题 G1（局部重绘处尤其明显），且要等主窗口自己再次激活
+        # 才会重建。
         if event.type() == QEvent.ActivationChange:
             try:
-                if self.isActiveWindow() or self.isMinimized():
+                if (
+                    self.isActiveWindow()
+                    or self.isMinimized()
+                    or self._application_is_active()
+                ):
                     self._cancel_idle_texture_release()
                     # 宽限期可能已经到期并执行过 suspend（释放了流体 GPU 控件）：
                     # 回到前台必须恢复，否则 `_renderer` 仍是 `gpu` 而
@@ -3738,9 +3773,9 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
     def _resume_background_renderers(self) -> None:
         """恢复流体背景（重建首帧）；Mica 释放过的视口层在此按需重建。
 
-        P7.4 的失焦宽限 / 最小化会 ``release_cached_layers()`` 清掉整块视口层。
-        回到前台时必须显式 ``ensure_layer()``：仅恢复流体时 Mica 没有任何
-        重烘焙入口，绘制端会永久停留在主题 G1 兜底。
+        P7.4 的应用失活宽限 / 最小化会 ``release_cached_layers()`` 清掉整块
+        视口层。回到前台时必须显式 ``ensure_layer()``：仅恢复流体时 Mica 没有
+        任何重烘焙入口，绘制端会永久停留在主题 G1 兜底。
         """
         try:
             from components.styled_fluid_background import StyledFluidBackground
@@ -3774,7 +3809,7 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         return None
 
     def _schedule_idle_texture_release(self) -> None:
-        """显式失焦后 30s 释放纹理（P7.4）；重复调度不叠加。"""
+        """应用失焦后 30s 释放纹理（P7.4）；重复调度不叠加。"""
         if getattr(self, "_idle_texture_timer", None) is not None:
             return
         timer = QTimer(self)
@@ -3796,10 +3831,15 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             pass
 
     def _on_idle_texture_timeout(self) -> None:
-        """宽限期到期：若仍未激活且未最小化，释放纹理（P7.4）。"""
+        """宽限期到期：仅当应用仍失活且窗口未最小化时释放纹理（P7.4）。
+
+        主窗口失活不等于应用失活：打开设置窗 / 对话框 / 菜单时应用仍在前台，
+        主窗口仍可见，必须保留 Mica 视口层（且设置窗共享同一块层，强行释放
+        也省不到内存，只会让主窗口可见区域退化成 G1）。
+        """
         self._idle_texture_timer = None
         try:
-            if self.isActiveWindow() or self.isMinimized():
+            if self.isMinimized() or self._application_is_active():
                 return
         except RuntimeError:
             return
