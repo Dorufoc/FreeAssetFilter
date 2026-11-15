@@ -1,4 +1,4 @@
-name: Mirror Release (GitHub -> GitCode)
+name: Mirror Release (GitHub to GitCode)
 
 # GitCode 托管 Runner 只有 Linux（Ubuntu 24.04 / openEuler），无法本地构建
 # Windows 发布包（PyInstaller + NSIS + MinGW）。因此本流水线不重建，而是把
