@@ -337,3 +337,49 @@ class TestRepoFallback:
         assert isinstance(error, UpdateError)
         assert error.code == "http_status"
         assert len(bridge.check_calls) == len(REPO_CANDIDATES)
+
+
+class TestUpdateSource:
+    """检查请求按持久化的 ``update.source`` 选择 API 基地址与仓库候选。"""
+
+    def test_default_source_uses_github_api_base(
+        self, service_factory: Callable[..., tuple[UpdateService, FakeBridge]]
+    ) -> None:
+        """默认（github）→ 请求 GitHub API，仓库仍按候选顺序回退。"""
+        service, bridge = service_factory()
+        recorder = Recorder(service)
+        service.check(True)
+        assert _pump_until(lambda: len(recorder.check_finished) == 1)
+        assert bridge.check_calls[0]["api_base"] == "https://api.github.com"
+        assert bridge.check_calls[0]["repo"] == REPO_CANDIDATES[0]
+
+    def test_gitcode_source_uses_domestic_api_base(
+        self,
+        service_factory: Callable[..., tuple[UpdateService, FakeBridge]],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """选择 gitcode → 请求 GitCode v5 API 与镜像仓库。"""
+        monkeypatch.setattr(
+            update_service_module, "read_update_source_key", lambda: "gitcode"
+        )
+        service, bridge = service_factory()
+        recorder = Recorder(service)
+        service.check(True)
+        assert _pump_until(lambda: len(recorder.check_finished) == 1)
+        assert bridge.check_calls[0]["api_base"] == "https://gitcode.com/api/v5"
+        assert bridge.check_calls[0]["repo"] == "Dorufoc/FreeAssetFilter"
+
+    def test_unknown_source_falls_back_to_github(
+        self,
+        service_factory: Callable[..., tuple[UpdateService, FakeBridge]],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """未知/非法设置值 → 回退默认 GitHub 源。"""
+        monkeypatch.setattr(
+            update_service_module, "read_update_source_key", lambda: "unknown"
+        )
+        service, bridge = service_factory()
+        recorder = Recorder(service)
+        service.check(True)
+        assert _pump_until(lambda: len(recorder.check_finished) == 1)
+        assert bridge.check_calls[0]["api_base"] == "https://api.github.com"

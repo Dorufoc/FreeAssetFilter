@@ -17,6 +17,8 @@ import os
 import threading
 from typing import Any, Dict, Optional
 
+from sopeek.utils.version_info import UPDATE_SOURCES
+
 
 # =============================================================================
 # 全量组件配色 — 用于向后兼容 legacy get_color() / render_qss() 调用
@@ -521,6 +523,9 @@ PERFORMANCE_PROFILES: tuple[str, str, str] = (
 #: 默认性能档位：均衡。
 DEFAULT_PERFORMANCE_PROFILE: str = "balanced"
 
+#: 已登记的更新源标识（唯一事实来源是 ``version_info.UPDATE_SOURCES``）。
+UPDATE_SOURCE_KEYS: tuple[str, ...] = tuple(UPDATE_SOURCES)
+
 
 # ── V2 分类树默认值 ──────────────────────────────────────────────
 # "分类树 v2" — 全新的扁平化配置参数结构，按功能域分组。
@@ -609,6 +614,12 @@ DEFAULT_SETTINGS_V2: Dict[str, Any] = {
         # 静默检查新版本（每 24 小时最多一次）。启动策略每次直读该键，
         # 提交时经 SettingLayout._submit_settings 落盘。
         "check_updates_on_startup": True,
+    },
+    "update": {
+        # 更新检查源（设置页「检查更新」页，默认 GitHub）：
+        # "github"（官方 GitHub） | "gitcode"（GitCode 国内镜像）。
+        # 启动检查与手动检查都读取该键；设置页修改先暂存，点击「确定」后生效。
+        "source": "github",
     },
 }
 
@@ -1033,6 +1044,16 @@ class SettingsManagerV2:
                 merged["general"]["check_updates_on_startup"] = (
                     staged_check_updates
                 )
+
+        # update 域合并：source 只接受已登记的更新源标识（github/gitcode），
+        # 旧文件缺键或非法值时回退默认 github（不抛异常）。
+        if "update" in loaded and isinstance(loaded["update"], dict):
+            staged_source = loaded["update"].get("source", None)
+            if (
+                isinstance(staged_source, str)
+                and staged_source in UPDATE_SOURCE_KEYS
+            ):
+                merged["update"]["source"] = staged_source
 
         # 保留磁盘上不在默认树中的顶层域（如 app / file_selector /
         # file_staging / video 等运行时数据），避免每次加载/合并写盘时

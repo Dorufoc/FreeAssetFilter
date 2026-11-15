@@ -15,13 +15,17 @@
 from __future__ import annotations
 
 import itertools
+import re
 import shutil
 import threading
 import time
 import unicodedata
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 from PySide6.QtCore import (
     QCoreApplication,
@@ -41,9 +45,12 @@ from sopeek.services import update_startup
 from sopeek.utils.app_logger import debug, warning
 from sopeek.utils.path_utils import get_app_data_path
 from sopeek.utils.version_info import (
+    DEFAULT_UPDATE_SOURCE,
     REPO_CANDIDATES,
+    UpdateSource,
     get_local_build_date,
     get_local_version,
+    get_update_source,
 )
 
 _DISK_RESERVE = 64 * 1024 * 1024
@@ -78,6 +85,25 @@ RETRYABLE_CODES = frozenset({"network", "http_status", "rate_limited", "timeout"
 
 #: 兼容内部测试/调用方的旧命名。
 _ERROR_MESSAGES = ERROR_MESSAGES
+
+
+def read_update_source_key() -> str:
+    """读取持久化的更新源设置（``update.source``）。
+
+    设置页的修改先进入暂存缓存、点击「确定」才落盘，因此这里读到的是
+    已生效的更新源；读取失败或值非法时回退默认源，绝不阻断更新检查。
+
+    Returns:
+        str: 更新源标识（如 ``github`` / ``gitcode``）。
+    """
+    try:
+        from sopeek.core.managers.settings_manager_v2 import SettingsManagerV2
+
+        value = SettingsManagerV2().get("update.source", DEFAULT_UPDATE_SOURCE)
+    except Exception as exc:  # noqa: BLE001 - 设置读取失败不得阻断更新检查
+        warning(f"读取更新源设置失败，回退默认源: {exc!r}")
+        return DEFAULT_UPDATE_SOURCE
+    return value if isinstance(value, str) else DEFAULT_UPDATE_SOURCE
 
 
 @dataclass(frozen=True)
@@ -151,9 +177,175 @@ def _is_repo_not_found(error: UpdateError) -> bool:
     return error.code == "http_status" and "404" in (error.message or "")
 
 
+#: 发布资产中的校验清单文件名（GitHub 与 GitCode 使用同一命名）。
+_CHECKSUM_ASSET_NAME = "SHA256SUMS.txt"
+#: 允许探测/下载的发布源主机（与原生下载白名单保持一致）。
+_UPDATE_ASSET_HOSTS = frozenset(
+    {"github.com", "api.github.com", "gitcode.com", "api.gitcode.com"}
+)
+#: 安装包探测请求的 User-Agent。
+_ASSET_USER_AGENT = "Sopeek-Updater"
+#: ``SHA256SUMS.txt`` 行格式：``<64 位十六进制>  <文件名>``（可带 ``*`` 前缀）。
+_SUM_LINE_PATTERN = re.compile(r"^([0-9A-Fa-f]{64})\s+\*?(.+)$")
+
+
+def _is_sha256_hex(value: Any) -> bool:
+    """判断值是否为 64 位十六进制 SHA256。
+
+    Args:
+        value: 待判断的值。
+
+    Returns:
+        bool: 合法 SHA256 字符串返回 ``True``。
+    """
+    return (
+        isinstance(value, str)
+        and len(value.strip()) == 64
+        and all(character in "0123456789abcdefABCDEF" for character in value.strip())
+    )
+
+
+def _checksums_url(download_url: str) -> Optional[str]:
+    """由安装包地址推导同目录的 ``SHA256SUMS.txt`` 地址。
+
+    GitCode 的 Release 资产不返回 ``digest`` / ``size``，但发布包旁边会带上一份
+    校验清单（镜像脚本保证与 GitHub 一致）。GitHub 与 GitCode 的资产路径都是
+    ``.../releases/download/<tag>/<file>``，替换文件名即可。
+
+    Args:
+        download_url: 安装包下载地址。
+
+    Returns:
+        Optional[str]: 校验清单地址；主机不受信任或路径异常时返回 ``None``。
+    """
+    parts = urlsplit(download_url)
+    if parts.scheme != "https" or parts.hostname not in _UPDATE_ASSET_HOSTS:
+        return None
+    directory, separator, _name = parts.path.rpartition("/")
+    if not separator or not directory:
+        return None
+    return urlunsplit(
+        (parts.scheme, parts.netloc, f"{directory}/{_CHECKSUM_ASSET_NAME}", "", "")
+    )
+
+
+def _parse_sha256sums(text: str, filename: str) -> Optional[str]:
+    """从校验清单中取出指定文件的 SHA256。
+
+    Args:
+        text: ``SHA256SUMS.txt`` 全文。
+        filename: 目标文件名（与安装包资产名一致）。
+
+    Returns:
+        Optional[str]: 小写 SHA256；清单中没有该文件时返回 ``None``。
+    """
+    for line in text.splitlines():
+        match = _SUM_LINE_PATTERN.match(line.strip())
+        if match and match.group(2).strip() == filename:
+            return match.group(1).lower()
+    return None
+
+
+def _fetch_text(url: str, timeout: float = 20.0) -> Optional[str]:
+    """GET 一个文本资产；任何失败都返回 ``None`` 而不影响更新检查。
+
+    Args:
+        url: 文本资产地址。
+        timeout: 超时秒数。
+
+    Returns:
+        Optional[str]: 解码后的文本（最多读取 256 KiB）。
+    """
+    request = urllib.request.Request(
+        url, headers={"User-Agent": _ASSET_USER_AGENT}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            if response.status != 200:
+                return None
+            return response.read(256 * 1024).decode("utf-8", "replace")
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        debug(f"获取校验清单失败: {exc!r}")
+        return None
+
+
+def _probe_remote_size(url: str, timeout: float = 20.0) -> int:
+    """探测远端安装包大小：先 HEAD，拿不到再用单字节 Range 请求。
+
+    Args:
+        url: 安装包地址。
+        timeout: 单次请求超时秒数。
+
+    Returns:
+        int: 字节数；无法探测时返回 0。
+    """
+    headers = {"User-Agent": _ASSET_USER_AGENT, "Accept-Encoding": "identity"}
+    try:
+        request = urllib.request.Request(url, method="HEAD", headers=headers)
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            length = _coerce_int(response.headers.get("Content-Length"))
+            if length > 0:
+                return length
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        debug(f"HEAD 探测安装包大小失败: {exc!r}")
+
+    try:
+        ranged = urllib.request.Request(
+            url, headers={**headers, "Range": "bytes=0-0"}
+        )
+        with urllib.request.urlopen(ranged, timeout=timeout) as response:
+            content_range = response.headers.get("Content-Range") or ""
+            _prefix, separator, total = content_range.rpartition("/")
+            if separator:
+                return _coerce_int(total)
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        debug(f"Range 探测安装包大小失败: {exc!r}")
+    return 0
+
+
+def _hydrate_asset(asset: Any) -> None:
+    """为缺少 ``sha256`` / ``size`` 的发布资产补齐元数据。
+
+    仅 GitCode 源会触发（其接口不返回 ``digest`` / ``size``）：从同目录的
+    ``SHA256SUMS.txt`` 取校验值，用 HEAD 探测安装包大小。任何失败都保持原样，
+    让后续下载给出既有的明确错误，而不是让检查整体失败。
+
+    Args:
+        asset: 原生 check 返回的 ``asset`` 字典。
+    """
+    if not isinstance(asset, dict):
+        return
+    name = asset.get("name")
+    url = asset.get("download_url")
+    if not isinstance(name, str) or not name or not isinstance(url, str) or not url:
+        return
+
+    need_sha = not _is_sha256_hex(asset.get("sha256"))
+    need_size = _coerce_size(asset.get("size")) <= 0
+    if not need_sha and not need_size:
+        return
+
+    if need_sha:
+        checksums_url = _checksums_url(url)
+        text = _fetch_text(checksums_url) if checksums_url else None
+        digest = _parse_sha256sums(text, name) if text else None
+        if digest:
+            asset["sha256"] = digest
+            debug(f"已从 {_CHECKSUM_ASSET_NAME} 补齐 {name} 的 SHA256")
+        else:
+            debug(f"{name} 缺少 SHA256，且未能从校验清单补齐")
+
+    if need_size:
+        size = _probe_remote_size(url)
+        if size > 0:
+            asset["size"] = size
+            debug(f"已探测 {name} 的大小：{size} 字节")
+        else:
+            debug(f"{name} 大小未知，且远端未返回 Content-Length")
+
+
 def _is_prerelease_build(version: str) -> bool:
     """判断本地版本号是否属于预发布/夜间版通道。
-
     版本号唯一来源是 ``SPKVERSION``，两种预发布形态都会带连字符：
     ``1.0.0-alpha.5``（语义化预发布）与 ``2.0.0.nightly-20261114``（夜间版）。
 
@@ -295,6 +487,8 @@ class UpdateService(QObject):
             # 是否把 GitHub 预发布版（prerelease）纳入比较。默认 True 保持启动检查等
             # 既有行为不变；关于页由用户勾选「获取测试版」后显式传入。
             self._check_include_prerelease: bool = True
+            # 本次检查使用的更新源（来自持久化的 update.source 设置）。
+            self._check_source: UpdateSource = get_update_source(DEFAULT_UPDATE_SOURCE)
             self.check_finished.connect(self._on_check_finished)
 
             self._download_request_id: Optional[str] = None
@@ -328,6 +522,7 @@ class UpdateService(QObject):
         Returns:
             str: 请求 id；同一在途检查返回同一 id。
         """
+        source = get_update_source(read_update_source_key())
         with self._dispatch_lock:
             active = self._check_request_id
             if active is not None:
@@ -340,6 +535,7 @@ class UpdateService(QObject):
             self._check_request_id = request_id
             self._check_manual = {bool(manual)}
             self._check_include_prerelease = bool(include_prerelease)
+            self._check_source = source
 
         self.check_started.emit(request_id, bool(manual))
         self._task_pool.start(
@@ -665,10 +861,16 @@ class UpdateService(QObject):
         result = response.get("result") or {}
         if not isinstance(result, dict):
             result = {}
+        # GitCode 源的发布资产不带 digest/size，检查结果发往 UI 前补齐，
+        # 否则「有更新」但下载会因为缺少校验值被拒绝。
+        _hydrate_asset(result.get("asset"))
         self._finish_check(request_id, self._info_from_result(result), None)
 
     def _check_with_repo_fallback(self, request_id: str) -> Any:
-        """按 :data:`REPO_CANDIDATES` 顺序检查，仅在仓库 404 时切换候选。
+        """按当前更新源的仓库候选顺序检查，仅在仓库 404 时切换候选。
+
+        更新源（GitHub 官方 / GitCode 国内）由 ``update.source`` 设置决定，
+        API 基地址与仓库候选一并取自该源，避免跨源混用。
 
         Args:
             request_id: 检查请求 id，透传给原生桥。
@@ -676,23 +878,26 @@ class UpdateService(QObject):
         Returns:
             Any: 原生 ``check`` 响应；全部候选失败时返回最后一个响应。
         """
+        source = self._check_source
+        repos = source.repos or REPO_CANDIDATES
         base_params = {
             "current_version": get_local_version(),
             "current_date": get_local_build_date(),
             # 由发起本次检查的调用方决定（关于页「获取测试版」勾选状态）。
             "include_prerelease": self._check_include_prerelease,
+            "api_base": source.api_base,
         }
         response: Any = None
-        for index, repo in enumerate(REPO_CANDIDATES):
+        for index, repo in enumerate(repos):
             response = self._bridge.check(
                 {**base_params, "repo": repo}, request_id=request_id
             )
             if isinstance(response, dict) and response.get("ok", False):
                 return response
             error = self._error_from_response(response)
-            if not _is_repo_not_found(error) or index == len(REPO_CANDIDATES) - 1:
+            if not _is_repo_not_found(error) or index == len(repos) - 1:
                 return response
-            debug(f"更新仓库 {repo} 返回 404，回退到 {REPO_CANDIDATES[index + 1]}")
+            debug(f"更新仓库 {repo} 返回 404，回退到 {repos[index + 1]}")
         return response
 
     def _finish_check(

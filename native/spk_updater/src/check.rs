@@ -9,7 +9,7 @@ use serde_json::{json, Map, Value};
 use crate::error::{AppError, ErrorCode};
 use crate::http::{
     apply_common_headers, check_agent, classify_status, parse_rate_limit_remaining,
-    validate_api_base, GITHUB_ACCEPT, GITHUB_API_VERSION,
+    validate_api_base, GITHUB_ACCEPT, GITHUB_API_BASE, GITHUB_API_VERSION,
 };
 use crate::release;
 use crate::version::evaluate_update;
@@ -52,7 +52,7 @@ impl CheckParams {
             Some(_) => return Err(bad_params("include_prerelease 必须是布尔值")),
         };
         let api_base = match object.get("api_base") {
-            None | Some(Value::Null) => validate_api_base("https://api.github.com")?,
+            None | Some(Value::Null) => validate_api_base(GITHUB_API_BASE)?,
             Some(Value::String(base)) => validate_api_base(base)?,
             Some(_) => return Err(bad_params("api_base 必须是字符串")),
         };

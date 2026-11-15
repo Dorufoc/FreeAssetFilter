@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Optional
@@ -37,6 +38,69 @@ RELEASES_URL = f"https://github.com/{REPO_CANDIDATES[0]}/releases"
 RELEASE_URL_PREFIXES: tuple[str, ...] = tuple(
     f"https://github.com/{repo}/releases/" for repo in REPO_CANDIDATES
 )
+
+
+@dataclass(frozen=True)
+class UpdateSource:
+    """一个可选更新源（API 基地址 + 仓库候选 + 发布页）。
+
+    Attributes:
+        key: 设置值（``update.source``）使用的稳定标识。
+        label: 设置页下拉展示文案。
+        api_base: ``spk_updater`` ``check`` 使用的 API 基地址；原生端只接受
+            白名单内的固定地址（GitHub 官方或 GitCode v5）。
+        repos: ``owner/name`` 候选仓库；首个返回 404 时按顺序回退。
+        releases_url: 发布页首页（结果缺少 ``html_url`` 时的兜底链接）。
+    """
+
+    key: str
+    label: str
+    api_base: str
+    repos: tuple[str, ...]
+    releases_url: str
+
+
+#: GitHub 官方源（默认）。
+GITHUB_SOURCE: UpdateSource = UpdateSource(
+    key="github",
+    label="GitHub（官方）",
+    api_base="https://api.github.com",
+    repos=REPO_CANDIDATES,
+    releases_url=RELEASES_URL,
+)
+
+#: GitCode 国内镜像源（Gitee 风格的 v5 API，发布列表字段与 GitHub 兼容）。
+GITCODE_SOURCE: UpdateSource = UpdateSource(
+    key="gitcode",
+    label="GitCode（国内）",
+    api_base="https://gitcode.com/api/v5",
+    repos=(f"{REPO_OWNER}/{FALLBACK_REPO_NAME}",),
+    releases_url=f"https://gitcode.com/{REPO_OWNER}/{FALLBACK_REPO_NAME}/releases",
+)
+
+#: 全部可选更新源（顺序即设置页下拉顺序）。
+UPDATE_SOURCES: dict[str, UpdateSource] = {
+    source.key: source for source in (GITHUB_SOURCE, GITCODE_SOURCE)
+}
+
+#: 默认更新源。
+DEFAULT_UPDATE_SOURCE: str = GITHUB_SOURCE.key
+
+
+def get_update_source(key: object) -> UpdateSource:
+    """按设置值解析更新源。
+
+    Args:
+        key: ``update.source`` 的设置值；大小写与空白会被忽略。
+
+    Returns:
+        UpdateSource: 匹配的更新源；未知/非法值回退 :data:`DEFAULT_UPDATE_SOURCE`。
+    """
+    if isinstance(key, str):
+        source = UPDATE_SOURCES.get(key.strip().lower())
+        if source is not None:
+            return source
+    return UPDATE_SOURCES[DEFAULT_UPDATE_SOURCE]
 
 _VERSION_FILE = "SPKVERSION"
 _FALLBACK_VERSION = "0.0.0"

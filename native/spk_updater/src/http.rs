@@ -31,6 +31,12 @@ pub const GITHUB_API_VERSION: &str = "2022-11-28";
 /// Requested by GitHub's REST API; also identifies us in their logs.
 pub const USER_AGENT: &str = concat!("Sopeek-Updater/", env!("CARGO_PKG_VERSION"));
 
+/// Official GitHub REST API base (default update source).
+pub const GITHUB_API_BASE: &str = "https://api.github.com";
+
+/// GitCode v5 API base (domestic mirror; GitHub-shaped release list).
+pub const GITCODE_API_BASE: &str = "https://gitcode.com/api/v5";
+
 /// Snapshot of the per-phase timeouts applied to one agent.
 ///
 /// `None` means "no limit for this phase". Timeouts are kept as data so tests
@@ -136,31 +142,39 @@ pub fn classify_status(status: u16, remaining: Option<u64>) -> Option<AppError> 
     ))
 }
 
-/// Validates the only two accepted API bases (plan C1).
+/// Validates the accepted API bases (plan C1).
 ///
-/// Production must use `https://api.github.com` on the default port. Tests may
-/// use `http://127.0.0.1:<nonzero-port>` for a local stub. Everything else -
-/// userinfo, lookalike hosts, explicit non-default ports, paths, queries,
-/// fragments, other schemes - is rejected with `bad_params`.
+/// Production accepts exactly two pinned GitHub-API-compatible bases on the
+/// default port:
+///
+/// * `https://api.github.com` (official releases);
+/// * `https://gitcode.com/api/v5` (domestic mirror, Gitee-style v5 API).
+///
+/// Tests may use `http://127.0.0.1:<nonzero-port>` for a local stub. Everything
+/// else - userinfo, lookalike hosts, explicit non-default ports, unexpected
+/// paths, queries, fragments, other schemes - is rejected with `bad_params`.
 pub fn validate_api_base(raw: &str) -> Result<String, AppError> {
     let url = Url::parse(raw.trim())
         .map_err(|error| bad_params(format!("api_base 不是合法 URL：{error}")))?;
     if !url.username().is_empty() || url.password().is_some() {
         return Err(bad_params("api_base 不能包含用户名或密码"));
     }
-    if url.query().is_some() || url.fragment().is_some() || !matches!(url.path(), "" | "/") {
-        return Err(bad_params("api_base 不能包含路径、查询或片段"));
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(bad_params("api_base 不能包含查询或片段"));
     }
 
     match url.scheme() {
         "https" => {
-            if url.host_str() != Some("api.github.com") {
-                return Err(bad_params("api_base 只允许 https://api.github.com"));
-            }
             if url.port().is_some() && url.port() != Some(443) {
-                return Err(bad_params("api_base 只允许 GitHub 默认端口 443"));
+                return Err(bad_params("api_base 只允许默认端口 443"));
             }
-            Ok("https://api.github.com".to_owned())
+            match (url.host_str(), url.path()) {
+                (Some("api.github.com"), "" | "/") => Ok(GITHUB_API_BASE.to_owned()),
+                (Some("gitcode.com"), "/api/v5" | "/api/v5/") => Ok(GITCODE_API_BASE.to_owned()),
+                _ => Err(bad_params(
+                    "api_base 只允许 https://api.github.com 或 https://gitcode.com/api/v5",
+                )),
+            }
         }
         "http" => {
             if url.host_str() != Some("127.0.0.1") {
@@ -299,11 +313,13 @@ mod tests {
     }
 
     #[test]
-    fn check_api_base_accepts_only_pinned_github_or_loopback() {
+    fn check_api_base_accepts_only_pinned_github_gitcode_or_loopback() {
         for accepted in [
             "https://api.github.com",
             "https://api.github.com/",
             "https://api.github.com:443",
+            "https://gitcode.com/api/v5",
+            "https://gitcode.com/api/v5/",
             "http://127.0.0.1:18080",
         ] {
             let base = validate_api_base(accepted).expect(accepted);
@@ -325,6 +341,15 @@ mod tests {
             "https://api.github.com/evil",
             "https://api.github.com?x=1",
             "https://api.github.com#frag",
+            "https://gitcode.com",
+            "https://gitcode.com/",
+            "https://gitcode.com/api",
+            "https://gitcode.com/api/v6",
+            "https://gitcode.com/api/v5/repos",
+            "https://gitcode.com.evil.com/api/v5",
+            "https://gitcode.com@evil.com/api/v5",
+            "http://gitcode.com/api/v5",
+            "https://gitcode.com:8443/api/v5",
         ] {
             let error = validate_api_base(rejected).expect_err(rejected);
             assert_eq!(error.code, ErrorCode::BadParams, "{rejected}");

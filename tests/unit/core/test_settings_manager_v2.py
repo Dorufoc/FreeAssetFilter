@@ -109,6 +109,26 @@ def test_get_all_returns_a_copy(manager: SettingsManagerV2) -> None:
     assert manager.get("version") == 2
 
 
+def test_update_source_defaults_to_github(manager: SettingsManagerV2) -> None:
+    """更新源默认 github；旧文件缺键时由默认树补齐。"""
+    assert manager.get("update.source") == "github"
+    assert DEFAULT_SETTINGS_V2["update"]["source"] == "github"
+
+
+def test_update_source_whitelist_round_trip(manager: SettingsManagerV2) -> None:
+    """gitcode 可持久化；非法值在加载合并时回退默认 github。"""
+    manager.load()
+    manager.set("update.source", "gitcode")
+    manager.save()
+    assert SettingsManagerV2(manager.file_path).get("update.source") == "gitcode"
+
+    path = Path(manager.file_path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["update"]["source"] = "not-a-source"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert SettingsManagerV2(manager.file_path).get("update.source") == "github"
+
+
 def test_write_is_atomic_via_temp_replace(manager: SettingsManagerV2) -> None:
     """写盘经 ``<file>.tmp`` + ``os.replace``：结束后不应残留临时文件。"""
     manager.load()

@@ -35,6 +35,7 @@ from components.styled_segmented import StyledSegmented
 from components.styled_slider import StyledSlider
 from components.styled_loading import StyledLoading
 from components.styled_progress import StyledProgress
+from components.styled_combobox import StyledComboBox
 from components.settings_card import (
     SETTINGS_FIELD_LABEL_WIDTH,
     SETTINGS_GROUP_GAP,
@@ -74,10 +75,13 @@ from sopeek.utils.app_logger import debug, warning
 from sopeek.utils.animation_settings import is_animation_enabled
 from sopeek.utils.path_utils import get_app_data_path
 from sopeek.utils.version_info import (
+    DEFAULT_UPDATE_SOURCE,
     RELEASE_URL_PREFIXES,
     RELEASES_URL,
+    UPDATE_SOURCES,
     get_local_build_date,
     get_local_version,
+    get_update_source,
 )
 from sopeek.ui.theme.app_stylesheet import register_widget_qss
 
@@ -2798,6 +2802,11 @@ def _is_prerelease_version(version: str) -> bool:
     return "-" in str(version or "").strip()
 
 
+def _update_source_options() -> tuple[tuple[str, str], ...]:
+    """返回「更新源」下拉选项 ``(设置值, 展示文案)``，顺序即展示顺序。"""
+    return tuple((source.key, source.label) for source in UPDATE_SOURCES.values())
+
+
 def _inline_error_text(error: object) -> str:
     """把更新错误转换为可读的失败原因。"""
     if getattr(error, "code", "") == "no_installer_asset":
@@ -2984,9 +2993,21 @@ class UpdateSettingsPage(QWidget):
         options_group.setContentsMargins(0, 0, 0, 0)
         options_group.setSpacing(SETTINGS_ROW_GAP)
 
+        self._source_row = SettingsRow(
+            title="更新源",
+            description="检查新版本使用的发布源；国内网络建议选择 GitCode（点击确定后生效）",
+        )
+        self._source_combo = StyledComboBox(
+            items=[label for _key, label in _update_source_options()],
+            size="sm",
+        )
+        self._source_combo.selection_made.connect(self._on_source_selected)
+        self._source_row.set_control(self._source_combo)
+        options_group.addWidget(self._source_row)
+
         self._prerelease_row = SettingsRow(
             title="获取测试版",
-            description="检查 GitHub 预发布构建，可能包含不稳定改动",
+            description="检查当前更新源的预发布构建，可能包含不稳定改动",
         )
         self._prerelease_toggle = StyledToggle(
             checked=self._include_prerelease, size="default"
@@ -3012,7 +3033,7 @@ class UpdateSettingsPage(QWidget):
     # ── 暂存 / 开关 ──────────────────────────────────────────────────
 
     def refresh_from_staging(self) -> None:
-        """按暂存缓存同步「启动时检查更新」开关（重置/取消后调用）。"""
+        """按暂存缓存同步「更新源」与「启动时检查更新」（重置/取消后调用）。"""
         if self._staging_cache is None:
             return
         raw = self._staging_cache.get(
@@ -3024,6 +3045,22 @@ class UpdateSettingsPage(QWidget):
             self._startup_toggle.checked = value
         finally:
             self._startup_updating = False
+
+        source_key = get_update_source(
+            self._staging_cache.get("update.source", DEFAULT_UPDATE_SOURCE)
+        ).key
+        option_keys = [key for key, _label in _update_source_options()]
+        self._source_combo.setCurrentIndex(option_keys.index(source_key))
+
+    def _on_source_selected(self, label: str) -> None:
+        """更新源下拉：只写暂存，点击确定才落盘生效。"""
+        if self._staging_cache is None:
+            return
+        for key, title in _update_source_options():
+            if title == label:
+                self._staging_cache.set("update.source", key)
+                self.staged_changed.emit()
+                return
 
     def _on_startup_toggled(self, checked: bool) -> None:
         """启动时检查更新开关：只写暂存，点击保存才落盘。"""
@@ -3488,10 +3525,12 @@ class UpdateSettingsPage(QWidget):
         for row in (
             self._version_row,
             self._check_row,
+            self._source_row,
             self._prerelease_row,
             self._startup_row,
         ):
             _refresh_settings_item_text(row)
+        self._source_combo.update()
         apply_settings_value_style(self._version_value_label)
         self._apply_status_style()
 
@@ -4547,6 +4586,15 @@ class SettingsLayout(QWidget):
             check_updates_on_startup = True
         if not isinstance(check_updates_on_startup, bool):
             check_updates_on_startup = True
+        # 更新源：只接受已登记标识（github/gitcode），缺失/非法回退默认源。
+        # 本键只落盘，下一次检查更新（手动或启动）才读取。
+        staged_update = staged.get("update", {}) if isinstance(staged, dict) else {}
+        if isinstance(staged_update, dict):
+            update_source = get_update_source(
+                staged_update.get("source", DEFAULT_UPDATE_SOURCE)
+            ).key
+        else:
+            update_source = DEFAULT_UPDATE_SOURCE
 
         # 性能档位：只接受三档合法值，缺失/非法回退 balanced（与 V2 合并口径一致）。
         # 使用硬件加速：布尔白名单键，非布尔值回退 False。
@@ -4575,6 +4623,7 @@ class SettingsLayout(QWidget):
         v2: SettingsManagerV2 | None = None
         _unset_value = object()
         prev_check_updates_on_startup: object = _unset_value
+        prev_update_source: object = _unset_value
 
         # 设置窗口过渡：与实时预览同款整窗交叉淡入淡出（单实例去重）；
         # 遮罩创建失败仅告警，不阻塞提交本身。
@@ -4645,6 +4694,9 @@ class SettingsLayout(QWidget):
             prev_check_updates_on_startup = v2.get(
                 "general.check_updates_on_startup", True
             )
+            prev_update_source = v2.get(
+                "update.source", DEFAULT_UPDATE_SOURCE
+            )
             v2.set("appearance.theme_mode", theme_mode)
             v2.set("appearance.theme", theme)
             v2.set("appearance.accent_color", saved_accent)
@@ -4667,6 +4719,7 @@ class SettingsLayout(QWidget):
             v2.set(
                 "general.check_updates_on_startup", check_updates_on_startup
             )
+            v2.set("update.source", update_source)
             v2.set("performance.profile", perf_profile)
             v2.set("performance.hardware_acceleration", hw_accel)
             v2.save()
@@ -4692,6 +4745,11 @@ class SettingsLayout(QWidget):
                     )
                 except Exception as rollback_exc:
                     debug(f"回滚启动检查更新设置失败：{rollback_exc}")
+            if v2 is not None and prev_update_source is not _unset_value:
+                try:
+                    v2.set("update.source", prev_update_source)
+                except Exception as rollback_exc:
+                    debug(f"回滚更新源设置失败：{rollback_exc}")
             self._notify_save_failure(exc)
             return False
 

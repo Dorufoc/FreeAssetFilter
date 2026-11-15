@@ -1567,6 +1567,11 @@ pub fn validate_download_url(raw: &str, allow_insecure_localhost: bool) -> Resul
             domain == "github.com"
                 || domain == "api.github.com"
                 || domain.ends_with(".githubusercontent.com")
+                || domain == "gitcode.com"
+                || domain == "api.gitcode.com"
+                || domain.ends_with(".gitcode.com")
+                // GitCode 的附件落在华为 OBS，下载会被重定向到该对象存储域名。
+                || domain.ends_with(".myhuaweicloud.com")
         }
         Host::Ipv4(_) | Host::Ipv6(_) => false,
     };
@@ -2105,8 +2110,12 @@ mod tests {
             "https://github.com.evil.com/x.exe",
             "https://api.github.com.evil.com/x.exe",
             "https://evilgithubusercontent.com/x.exe",
+            "https://gitcode.com.evil.com/x.exe",
+            "https://evilgitcode.com/x.exe",
             "https://user:pass@github.com/x.exe",
+            "https://user:pass@gitcode.com/x.exe",
             "https://github.com:8443/x.exe",
+            "https://gitcode.com:8443/x.exe",
             "https://127.0.0.1/x.exe",
         ];
         for raw in unsafe_cases {
@@ -2120,6 +2129,22 @@ mod tests {
         assert!(
             validate_download_url("https://release-assets.githubusercontent.com/x", false).is_ok()
         );
+        assert!(validate_download_url(
+            "https://gitcode.com/Dorufoc/FreeAssetFilter/releases/download/nightly/x.exe",
+            false
+        )
+        .is_ok());
+        assert!(validate_download_url("https://api.gitcode.com/api/v5/x", false).is_ok());
+        assert!(validate_download_url("https://cdn-img.gitcode.com/x.exe", false).is_ok());
+        assert!(
+            validate_download_url(
+                "https://sopeek-releases.obs.cn-north-4.myhuaweicloud.com/x.exe",
+                false
+            )
+            .is_ok()
+        );
+        assert!(validate_download_url("http://gitcode.com/x.exe", false).is_err());
+        assert!(validate_download_url("https://evilmyhuaweicloud.com/x.exe", false).is_err());
 
         let error = validate_download_url("http://127.0.0.1:8080/x.exe", false).expect_err("http");
         assert_eq!(error.code, ErrorCode::UnsafeUrl);
