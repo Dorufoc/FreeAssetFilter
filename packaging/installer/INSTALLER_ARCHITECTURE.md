@@ -239,7 +239,7 @@ done=0               ; 0 | 1（终端键）
 生命周期 QA（只跑 `SPK_TESTMODE` 测试 setup）：
 
 ```powershell
-& .\installer_duilib\tools\qa_installer_lifecycle.ps1 -Mode all
+& .\packaging\installer\tools\qa_installer_lifecycle.ps1 -Mode all
 ```
 
 - `-Mode`：`fresh`、`repair`、`cancel`、`second-instance`、`uninstall`、`failure`、
@@ -256,7 +256,7 @@ done=0               ; 0 | 1（终端键）
 页面截图/回归：
 
 ```powershell
-& .\installer_duilib\tools\capture_installer.ps1 -Mode maintenance -Page 5 `
+& .\packaging\installer\tools\capture_installer.ps1 -Mode maintenance -Page 5 `
     -Out .omo\evidence\installer-repair-uninstall\t19\maintenance-page-5.png
 ```
 
@@ -268,7 +268,7 @@ done=0               ; 0 | 1（终端键）
 在仓库根目录执行：
 
 ```powershell
-& .\installer_duilib\build.ps1
+& .\packaging\installer\build.ps1
 ```
 
 构建要求：
@@ -287,8 +287,8 @@ done=0               ; 0 | 1（终端键）
   平台/架构描述的是包所适配的系统（64 位 Windows），不是 NSIS 存根自身的位数。
   可用 `SPK_TARGET_PLATFORM` / `SPK_TARGET_ARCH` 覆盖。
 
-**生产重建铁律**：修改本目录（`installer_duilib/**`）下任何代码/脚本/NSIS 后，必须在仓库根目录重新执行
-`& .\installer_duilib\build.ps1` 并重新生成上述两个产物。**仅重建测试 GUI/测试安装包
+**生产重建铁律**：修改本目录（`packaging/installer/**`）下任何代码/脚本/NSIS 后，必须在仓库根目录重新执行
+`& .\packaging\installer\build.ps1` 并重新生成上述两个产物。**仅重建测试 GUI/测试安装包
 （`tools\build_test_gui.ps1`、`tools\build_test_installer.ps1`，带 `SPK_TESTMODE`）不算完成**，
 因为测试构建与出厂产品不一致。
 
