@@ -7,11 +7,10 @@
 # Sopeek
 
 **A powerful, all-in-one file preview and management tool that makes browsing files silky smooth and efficient**
+
 [![License](https://img.shields.io/badge/License-AGPL--3.0-orange?style=flat-square)](LICENSE)[![Python](https://img.shields.io/badge/Python-3.9%2B-blue?style=flat-square&logo=python)](https://www.python.org/)[![PySide6](https://img.shields.io/badge/PySide6-6.10%2B-green?style=flat-square&logo=qt)](https://wiki.qt.io/Qt_for_Python)[![Platform](https://img.shields.io/badge/Platform-Windows-purple?style=flat-square&logo=windows)](https://www.microsoft.com/windows)
 
-[Quick Start](#quick-start) • [Features](#features) • [Supported Formats](#supported-formats) • [Usage](#usage) • [FAQ](#faq) • [Development Guide](#development-guide)
-
-**English** | [简体中文](README.md)
+[简体中文](README.md) • [Quick Start](#quick-start) • [Features](#features) • [Supported Formats](#supported-formats) • [Usage](#usage) • [FAQ](#faq) • [Development Guide](#development-guide)
 
 ![Sopeek UI preview](assets/example1.png)
 
@@ -30,11 +29,17 @@ Sopeek is a desktop-grade file browsing, filtering and preview tool for Windows.
 
 | Capability | Description |
 | -------------- | ------------------------------------------------------------ |
-| **Unified workflow** | File browser + asset pool + previewer/info panel, with two layouts: "Classic" and "New (preview-first)" |
+| **Unified workflow** | File browser + asset pool + previewer/info panel, with two layouts: "Classic" and "New" |
 | **Multi-format preview** | 8 previewers covering images, video, audio, PDF, Office, text/code, archives, fonts, and folders |
 | **Native acceleration** | `spk_core` (Rust) handles scanning/sorting/highlighting/Markdown/font parsing/hashing/encoding detection/EXIF/copying/SVG/7z listing; `thumbnail_generator` (Rust) handles thumbnail decoding |
 | **Video playback** | Direct rendering through libmpv, with playback speed control, audio-track/subtitle switching, and a floating fullscreen control bar |
 | **Global floating window** | A persistent circular asset-pool entry on the desktop, supporting file drops, click-to-expand, edge snapping, and position memory |
+
+---
+
+## Note
+
+The repository has not been renamed yet; for any path involving the repository name, **please change it manually** to the original repository name: `FreeAssetFilter`
 
 ---
 
@@ -49,9 +54,9 @@ The default install directory is `%ProgramFiles%\Sopeek`, and administrator priv
 
 ### Option 2: Run from source
 
-```bash
-# Prebuilt artifacts for the native modules are included, so running from source needs no extra toolchain.
+Prebuilt artifacts for the native modules are included, so running from source needs no extra toolchain.
 
+```bash
 # 1. Clone the repository
 git clone https://github.com/Dorufoc/Sopeek.git
 cd Sopeek
@@ -70,7 +75,7 @@ pip install -e .
 python -m sopeek.app.main
 ```
 
-If you would rather not install anything, just put `src/` on the search path temporarily:
+If you prefer not to install, please put `src/` on the search path temporarily:
 
 ```bash
 set PYTHONPATH=src
@@ -105,7 +110,7 @@ python -m sopeek.app.main
 ### Previewer capabilities
 
 | Previewer | Highlights |
-| --- | --- |
+| :-- | --- |
 | **Image** | Asynchronous decoding, 50%–500% zoom, flip, rotate, color picker, GIF play/pause, fullscreen |
 | **Video & audio** | libmpv rendering; Space to play/pause, arrow keys to seek/change volume, number keys for playback speed, audio-track and subtitle selection, floating fullscreen control bar; audio mode features a fluid background and a metadata panel |
 | **PDF** | Native rendering, page jumping, 50%–300% zoom, thumbnail index drawer, text selection |
@@ -134,7 +139,7 @@ The info panel below the preview area works in tandem with the previewer: file n
 ### Images
 
 | Category | Formats |
-| --- | --- |
+| :-- | :-- |
 | Common | JPG / JPEG / PNG / GIF / BMP / TIFF / WEBP / SVG / ICO / ICON |
 | Modern | AVIF / HEIC / HEIF |
 | RAW | CR2 / CR3 / CRW / NEF / NRW / ARW / DNG / ORF / SRF / SR2 / SRW / RAF / RW2 / PEF / PTX / X3F |
@@ -182,14 +187,7 @@ Switch under **Settings → General → Interface layout** (takes effect immedia
 
 **New layout**
 
-```
-┌──────────────┬───────────────────────────────────────┐
-│              │                                       │
-│ File Browser │             File Preview              │
-│              ├──────────────────┬────────────────────┤
-│              │    Asset Pool    │     File Info      │
-└──────────────┴──────────────────┴────────────────────┘
-```
+![New layout](assets/example2.png)
 
 - The file browser occupies the full height of the left column, taking about 1/3 of the window width by default;
 - The preview area sits in the top right, with a **default 16:9 display canvas** that is maintained as the window resizes; the display area has a minimum of 640×360;
@@ -198,15 +196,7 @@ Switch under **Settings → General → Interface layout** (takes effect immedia
 
 **Classic three-column**
 
-```
-┌──────────────┬──────────────┬────────────────────┐
-│              │              │     File Preview   │
-│ File Browser │  Asset Pool  ├────────────────────┤
-│              │              │      File Info     │
-│              │              ├────────────────────┤
-│              │              │       Actions      │
-└──────────────┴──────────────┴────────────────────┘
-```
+![Classic three-column](assets/example3.png)
 
 - The three columns each take 1/3 by default; in the right column the preview and info areas each take half the height by default, and the info area is capped at half of the available height on the right;
 - The unified action bar sits at the very bottom of the right column and is bottom-aligned with the footers of the left and middle columns;
@@ -254,51 +244,35 @@ Source runs and the installed build share the same data directory; in test envir
 
 ## FAQ
 
-<details>
-<summary><b>Missing DLL on startup?</b></summary>
-
+**▷ Missing DLL on startup?**
 
 Install the [Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe).
 If the missing file is a bundled one such as `libmpv-2.dll`, the working copy is incomplete (`src/sopeek/core/native/bin/` was emptied); just check that directory out again.
-</details>
 
-<details>
-<summary><b>`No module named sopeek`?</b></summary>
-
+**▷ `No module named sopeek`?**
 
 The repository uses the `src/` layout. Run `pip install -e .` first, or temporarily `set PYTHONPATH=src`.
-</details>
 
-<details>
-<summary><b>Video won't play?</b></summary>
-
+**▷ Video won't play?**
 
 Make sure `src/sopeek/core/native/bin/libmpv-2.dll` exists; if the graphics driver is too old, disable "Use hardware acceleration" in Settings to fall back to software rendering.
-</details>
 
-<details>
-<summary><b>Office document preview fails?</b></summary>
-
+**▷ Office document preview fails?**
 
 xlsx and legacy binary formats (doc/xls/ppt) rely on LibreOffice or MS Office / WPS; docx/pptx can fall back to pure-Python rendering when no external backend is available.
-</details>
 
-<details>
-<summary><b>Installing dependencies fails, asking for build tools?</b></summary>
-
+**▷ Installing dependencies fails, asking for build tools?**
 
 Some dependencies (such as `rawpy` and `numpy`) may require local compilation:
 
 1. Install [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) and check "Desktop development with C++";
 2. Upgrade pip and try again: `python -m pip install --upgrade pip`;
 3. On restricted networks, use a mirror: `pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple`.
-   </details>
 
-<details>
-<summary><b>Changes to icons / syntax files don't take effect?</b></summary>
+
+**▷ Changes to icons / syntax files don't take effect?**
 
 Runtime resources live in `src/sopeek/resources/`, and all paths are resolved by `sopeek/_paths.py`; after packaging, resources live in `_internal/sopeek/resources/`.
-</details>
 
 ---
 
@@ -415,8 +389,6 @@ pytest -m integration        # cross-module integration tests
 pytest tests/unit/utils -v   # a specific directory
 ```
 
-Testing conventions:
-
 - The `tests/` hierarchy mirrors `src/sopeek/`;
 - `tests/conftest.py` automatically injects `src/` into `sys.path` and redirects `SPK_DATA_DIR` to a temporary directory;
 - Qt tests use the offscreen backend (`QT_QPA_PLATFORM=offscreen`); tests that need a real display use `@pytest.mark.gui`;
@@ -430,7 +402,7 @@ the `version` in `pyproject.toml` only serves local `pip install -e .` and does 
 
 ### Building native modules
 
-All artifacts are installed back into `src/sopeek/core/native/bin/`:
+All artifacts are installed back into `src/sopeek/core/native/bin/`
 
 ```bash
 # Rust (requires cargo)
@@ -457,8 +429,12 @@ python packaging/build.py
 powershell -ExecutionPolicy Bypass -File packaging/installer/build.ps1
 
 # 3. NSIS installer (build.ps1 calls makensis as its last step)
-#    Artifacts: build/installer/SopeekInstaller.exe → build/Sopeek_NSIS_Setup.exe
+#    Artifacts: build/installer/SopeekInstaller.exe → build/Sopeek-<version>-<platform>-<arch>.exe
+#    e.g. build/Sopeek-2.0.0-windows-x64.exe
 ```
+
+For installer architecture, cross-process protocols, maintenance/uninstall flows and QA details,
+see [`packaging/installer/INSTALLER_ARCHITECTURE.md`](packaging/installer/INSTALLER_ARCHITECTURE.md).
 
 ### Adding preview support for a new file type
 
@@ -522,19 +498,12 @@ We welcome contributions of every kind — bug fixes, new features, documentatio
 
 ### Vulnerability reporting
 
-If you discover a security vulnerability, please do not disclose it in a public issue. Instead, email:
-
-[dorufoc@outlook.com](mailto:dorufoc@outlook.com)
-
-We will respond within 48 hours and fix the vulnerability as soon as possible.
+- If you discover a security vulnerability, please do not disclose it in a public issue. Instead, email: [dorufoc@outlook.com](mailto:dorufoc@outlook.com)
+- We will respond within 48 hours and fix the vulnerability as soon as possible.
 
 ---
 
 ## Acknowledgements
-
-### Long-term vision
-
-To become one of the most usable file preview and digital asset management tools in the open-source community, giving creative professionals an efficient, restrained desktop experience.
 
 ### Core dependencies
 
@@ -554,6 +523,10 @@ To become one of the most usable file preview and digital asset management tools
 
 - [Fira Code](https://github.com/tonsky/FiraCode) — code font
 - Pangmen Zhengdao Title Font — Chinese title font
+
+### Long-term vision
+
+To become one of the most usable file preview and digital asset management tools in the open-source community, giving creative professionals an efficient, restrained desktop experience.
 
 ### Contributors
 

@@ -1,10 +1,7 @@
 # Sopeek 安装器（D2D1 + DirectComposition / WinUI3 风格）
 
-该目录是 Sopeek 的新安装器工程边界，替代旧 Inno Setup 前端。GUI 是一个自研 C++ Win32 程序：
+该目录是 Sopeek 安装器（C++ GUI + NSIS 封装）的工程目录。GUI 是一个自研 C++ Win32 程序：
 无边框窗口 + DirectComposition 合成 + Win11 Mica 背景，固定 900×600 DIP（逻辑像素）画布。
-
-> 历史记录：初版骨架中的 `src/duilib/`（duilib.h / duilib.cpp 死代码）与 `resources/layout.xml` 已删除，
-> 渲染全部由 `src/render/` 承载。此处仅作文档留痕，工程内已无任何引用。
 
 ## 架构
 
@@ -17,7 +14,7 @@
 | 深浅色 | 跟随系统：读取 `AppsUseLightTheme` + `WM_SETTINGCHANGE`（ImmersiveColorSet）实时切换 |
 | DPI | Per-Monitor-V2（`main.cpp` WinMain 最早期调用；动态 `GetProcAddress` 回退 `shcore` / `user32`）；绘制全程 DIP（96 基准），仅缓冲/窗口尺寸用物理像素 |
 | 动画 | 自研 `spk::Animator`（缓动曲线 + 逐 tick 采样日志）；遵循 `SPI_GETCLIENTAREAANIMATION`（减少动画时禁用过渡） |
-| 自包含 | 静态链接（`-static-libgcc -static-libstdc++ -static`），不依赖 MSYS2 运行库 |
+| 自包含 | 静态链接 libgcc/libstdc++（`-static-libgcc -static-libstdc++ -static`），仅附带 `libwinpthread-1.dll` |
 
 ## 页面模型（安装 5 页 + 维护/卸载页）
 
@@ -30,10 +27,14 @@
 2. **许可协议（1）** —— `LICENSE` RCDATA 内嵌滚动框；未勾选同意时「下一步」禁用。
 3. **配置（2）** —— 安装位置与安装选项合并在同一页：路径预填（NSIS 经 `/installdir "$INSTDIR"` 传入）、
    浏览（IFileOpenDialog，失败回退 `SHBrowseForFolderW`）、所需/可用空间与可写探测；
-   桌面快捷方式=开、开始菜单=开、开机自启=关、完成后启动=开（默认值冻结）。
+   桌面快捷方式=开、开始菜单=开、开机自启=关、安装完成后启动=开（默认值冻结）。
 4. **安装进度（3）** —— 真实字节进度（permille `0..1000`，每文件完成回调并按 ~30fps 节流）；
    取消 = 安全停止 + 清理本次已写入文件。
-5. **完成（4）** —— 「打开安装目录」/「立即启动」（去提权，见下文 UAC 章节）。
+5. **完成（4）** —— 英雄页：成功图标 + 软件名称/版本 + 大按钮「立即启动」（去提权，见下文 UAC 章节）；
+   页面内没有「打开安装目录」按钮。
+
+> 配置页的「安装完成后启动」目前只写入配置状态，安装完成页不读取该选项；完成页始终显示
+> 「立即启动」按钮，点击即启动。
 
 ### 维护 / 卸载流程（5..7）
 
@@ -50,14 +51,19 @@
 
 | 模式 | 入口 | 交接过程 | 终态 |
 | --- | --- | --- | --- |
-| 全新安装 | 运行 setup，未检测到已安装 | setup 持 `SetupMutex` → 解包临时 GUI → GUI 交互收集选项并复制 payload → 写 `install-result.ini` → setup 释放 payload、等待终端键 → `Section Install` 写卸载栈/快捷方式/注册表 | GUI 完成页；setup 退出 |
+| 全新安装 | 运行 setup，未检测到已安装 | setup 持 `SetupMutex` → 解包临时 GUI 并启动 → setup 立即解包 payload、写 `payload.ready` 后等待终端键 → GUI 交互收集选项、等哨兵后复制 payload → 写 `install-result.ini` → setup 走 `Section Install` 写卸载栈/快捷方式/注册表 | GUI 完成页；setup 退出 |
 | 修复 | 已安装时再次运行 setup → 维护页「修复」 | GUI 预检 → 关闭运行中的应用 → 写 `maintenance-decision.ini`（`action=repair`）→ setup 回写 `ack=1`、释放 payload → GUI 覆盖式复制 → setup 走同一 `Section Install` 刷新元数据 | 成功 = 完成页（可选启动）；失败/取消 = 消息页 |
-| 卸载 | 应用和功能 → `UninstallHelper.exe /uninstall-launcher`（或 `QuietUninstallString` 静默路径） | helper 启动 `SopeekUninstall.exe /uninstall` → UI 确认页写 `uninstall-request.ini` → helper 等待请求 → 分阶段删除 → 写 `uninstall-result.ini` → 等待 `ui_done`/UI 退出 → 删除 UI/DLL 后退出（helper 自身可能残留） | UI 完成页；helper 退出 |
+| 卸载（交互） | 应用和功能 → `UninstallHelper.exe /uninstall-launcher` | helper 启动 `SopeekUninstall.exe /uninstall` → UI 确认页写 `uninstall-request.ini` → helper 等待请求 → 分阶段删除 → 写 `uninstall-result.ini` → 等待 `ui_done`/UI 退出 → 删除 UI/DLL 后退出（helper 自身可能残留） | UI 完成页；helper 退出 |
+| 卸载（静默） | `QuietUninstallString` → `UninstallHelper.exe /S`；或 launcher 找不到 UI 时自动降级 | 不启动 UI、不写 request；`delete_user_data` 强制为 0，直接分阶段删除并写 `uninstall-result.ini` | 无 UI；helper 退出 |
 | 取消 | 维护页「取消」、卸载确认页「取消」、或关闭维护窗口 | 维护：写 `action=cancel` 后退出，setup 回 `ack=1` 并 `Abort`；维护模式的卸载确认页「取消」只返回维护页；`/uninstall` 模式的确认页「取消」写 `schema=1 cancelled=1` 后退出 | 不删除任何文件 |
 | 第二实例 | 再次运行 setup / 第二个维护 UI | `SetupMutex` 或 `MaintenanceMutex` 已存在 → 激活已有窗口并退出，不重放 payload、不覆盖 decision/result、不写注册表 | 原实例继续 |
 
 已安装判定只有两个信号：`$INSTDIR\Sopeek.exe` 或 `$INSTDIR\_internal`。结果 INI、快捷方式、
 Add/Remove 条目都不能强制进入维护模式。
+
+检测到安装后，setup 先调用 GUI 的 `/version-decision` 比较 `_internal\SPKVERSION` 与本安装包版本：
+已安装版本更旧 → 按全新安装流程原地升级；相同或更新 → 进入维护页。版本判定失败（退出码非 `10`）
+也回退到维护流程。
 
 ## 单实例互斥体（三个独立所有权）
 
@@ -97,13 +103,17 @@ GUI 解析入口：`src/main.cpp`。下表只列实际存在的参数。
 | --- | --- |
 | `/installdir <path>` | 安装目录；也用于维护/卸载定位协议 INI |
 | `/payload <dir>` | payload 目录（默认 `.`） |
+| `/payload-bytes <n>` | 构建期统计的 payload 精确字节数；`0` 或缺省时 GUI 回退为运行时扫描 |
 | `/result <file>` | 安装结果 INI（默认 `payload\..\install-result.ini`） |
+| `/version-decision` | 只比较已安装版本与本包版本后立即退出：`10` = 升级，`0` = 维护 |
+| `/package-version <ver>` | `/version-decision` 使用的本安装包版本 |
 | `/maintenance` | 进入维护模式（必须同时提供 `/decision`，否则显示可见错误页） |
 | `/uninstall` | 进入卸载模式（入口为卸载确认页 6） |
 | `/decision <file>` | 维护决策 INI 路径（`maintenance-decision.ini`） |
 | `/setup-pid <pid>` | setup 进程 PID；用于监视 setup 提前退出 |
 | `/payload-timeout <ms>` | 等待 `payload.ready` 的超时（`0` = 引擎默认） |
-| `/helper <path>`、`/helper-pid <pid>`、`/ui <path>` | NSIS helper → UI 的内部交接参数；UI 不消费 `/helper`、`/ui` |
+| `/helper <path>`、`/ui <path>` | NSIS helper → UI 的内部交接参数；UI 只解析，不消费 |
+| `/helper-pid <pid>` | 启动 UI 的 helper PID；非 0 表示 helper 已启动 UI，协调器只附着而不重复启动 helper |
 | `/elevated`、`/orig-sid <sid>`、`/orig-localappdata <path>` | 提权重启与交互用户一致性校验 |
 | `/S`、`/uninstall-launcher`、`/uninstall-helper` | NSIS helper 内部标志；UI 只解析，不映射为 GUI 模式 |
 | `/auto` | 开启无人值守（**仅 `SPK_TESTMODE` 构建生效**） |
@@ -114,14 +124,16 @@ GUI 解析入口：`src/main.cpp`。下表只列实际存在的参数。
 | `/auto:delete-user-data=0\|1` | 卸载确认页的用户数据选择 |
 | `/test-dump-maintenance=<file>` | 仅 `SPK_TESTMODE` 的诊断钩子：写维护检测结果后立即退出 |
 
-**`/auto:*` 只存在于测试构建。** 生产构建会解析这些参数，但 `EnableAutoDrive` 是 no-op，生产 setup 与
-UI 始终交互运行。`/auto:page=6` 只是停在卸载确认页，**不是**卸载动作；要执行卸载必须另给
+**`/auto:*` 只存在于测试构建。** 生产构建会解析这些参数，但 `EnableAutoDrive` 是 no-op，生产构建
+始终由 GUI 交互运行、不启用无人值守。`/auto:page=6` 只是停在卸载确认页，**不是**卸载动作；要执行卸载必须另给
 `/auto:action=uninstall`，并通过 `/maintenance` 或 `/uninstall` 进入对应流程。
 
 ## 跨进程 INI 协议
 
-所有协议 INI 位于安装目录，路径由双方按 `installDir` 推导；节名/键名常量见
-`src/render/maintenance_protocol.h`。就绪判定只认终端键，绝不把「文件存在」当作完成。
+维护/卸载协议 INI（`maintenance-decision.ini`、`uninstall-request.ini`、`uninstall-result.ini`）
+位于安装目录，路径由双方按 `installDir` 推导；安装结果 INI 由 `/result` 指定（生产为
+`$PLUGINSDIR\install-result.ini`）。节名/键名常量见 `src/render/maintenance_protocol.h`。
+就绪判定只认终端键，绝不把「文件存在」当作完成。
 
 ### `maintenance-decision.ini`（GUI → setup）
 
@@ -160,14 +172,15 @@ schema=1
 stage=started        ; 见下方阶段
 permille=0           ; 0..1000
 error=               ; stage=failed 时的原因
-warning=             ; done 之后的清理告警（不改变终态）
+warning=             ; 清理告警（不改变终态）
 done=0               ; 0 | 1（终端键）
 ```
 
 阶段与进度：`started`(0) → `removing_shortcuts`(100) → `removing_registry`(300) →
 `removing_files`(500) → `removing_user_data`(800) → `done`(1000)；`failed` / `cancelled` 不是成功终态。
-终端判定 = `done=1` 且 `stage` 为 `done` / `failed` / `cancelled`。`warning` 只在 `done=1` 后有意义，
-常见值：`install-dir-not-empty`、`user-data-custom-overlap`、`ui-timeout`、`reboot_pending`。
+终端判定 = `done=1` 且 `stage` 为 `done` / `failed` / `cancelled`。`warning` 主要记录 `done=1` 之后的
+清理告警，失败路径也可能附带；终态始终以 `stage` / `done` 为准。常见值：`install-dir-not-empty`、
+`user-data-custom-overlap`、`ui-timeout`、`reboot_pending`、`ui-launch-failed`。
 
 ### `install-result.ini`（GUI → setup，冻结 schema）
 
@@ -187,7 +200,7 @@ done=0               ; 0 | 1（终端键）
   不在本次 payload 清单里的旧文件（尽力而为，被占用则保留，不影响成功判定）。
 - **用户数据保留**：修复不删除配置、缓存、日志或任何用户数据；只恢复程序文件。
 - **成功**：写 `action=repair` → setup ack 并释放 payload → GUI 写安装结果 → setup 走同一
-  `Section Install` 刷新快捷方式、卸载信息与选项元数据 → 完成页（可选「立即启动」，默认不勾选）。
+  `Section Install` 刷新快捷方式、卸载信息与选项元数据 → 完成页（可选「立即启动 Sopeek」，默认不勾选）。
 - **失败/取消**：**不回滚**，已覆盖的文件保持原样；错误统一带 `repair-` 前缀。窗口停留在维护模式的
   可见消息页并说明原因，绝不自动关闭或伪造成功；关闭窗口即退出（若尚未写过决策则补写 `cancel`）。
   不会出现部分删除类的破坏性动作。
@@ -245,19 +258,18 @@ done=0               ; 0 | 1（终端键）
 - `-Mode`：`fresh`、`repair`、`cancel`、`second-instance`、`uninstall`、`failure`、
   `shortcut-isolation`、`uac-cancel`、`all`。
 - 可选 `-Keep` 保留测试状态/证据现场，便于复现；不加时脚本会清理测试目录、进程、键与快捷方式。
-- 证据目录默认 `.omo/evidence/sopeek-installer/t20/`：`transcript.log`、`summary.json`、
-  各场景 `.diag.log` 与截图。历史 T20 独立 `-Mode all` 证据（重定向后）位于
-  `.omo/evidence/installer-repair-uninstall/t20-retarget-all/`：exit 0、overall PASS、elapsed 298.2s。
-- 四个环境受限 SKIP（非失败）：`failure-kill-helper`（无法确定性杀 helper 窗口）、
-  `failure-kill-setup-repair`（修复过快，无法确定性杀等待中的 setup）、
-  `failure-readonly-nospace`（提权会话绕过 ACL，磁盘未接近满）、
-  `uac-cancel`（提权会话，需标准用户/手工 UAC 取消）。
+- 证据目录默认 `.omo/evidence/sopeek-installer/t20/`（脚本内默认值，可用 `-EvidenceDir` 重定向）：
+  `transcript.log`、`summary.json`、各场景 `.diag.log` 与截图。
+- 在提权或环境受限的会话中，部分失败注入场景会标记为 SKIP（非失败）：`failure-kill-helper`
+  （无法确定性杀 helper 窗口）、`failure-kill-setup-repair`（修复过快，无法确定性杀等待中的 setup）、
+  `failure-readonly-nospace`（提权会话绕过 ACL，磁盘未接近满）、`uac-cancel`（提权会话，
+  需标准用户或手工 UAC 取消）。
 
 页面截图/回归：
 
 ```powershell
 & .\packaging\installer\tools\capture_installer.ps1 -Mode maintenance -Page 5 `
-    -Out .omo\evidence\installer-repair-uninstall\t19\maintenance-page-5.png
+    -Out .omo\evidence\installer\maintenance-page-5.png
 ```
 
 页面范围：`install` 0..4、`maintenance` 5/6、`uninstall` 6；`maintenance -Page 6` 会自动追加
@@ -273,8 +285,8 @@ done=0               ; 0 | 1（终端键）
 
 构建要求：
 
-- `C:\msys64\mingw64\bin\g++.exe`
-- `C:\msys64\mingw64\bin\mingw32-make.exe`
+- MSYS2 MinGW64 工具链（默认 `C:\msys64\mingw64\bin`）：`g++.exe`、`windres.exe`、
+  `mingw32-make.exe`、`objdump.exe`
 - `C:\Program Files\CMake\bin\cmake.exe`
 - `C:\Program Files (x86)\NSIS\makensis.exe`
 
@@ -292,7 +304,7 @@ done=0               ; 0 | 1（终端键）
 （`tools\build_test_gui.ps1`、`tools\build_test_installer.ps1`，带 `SPK_TESTMODE`）不算完成**，
 因为测试构建与出厂产品不一致。
 
-重建后核对哈希与大小（不要在本文件硬编码某次构建的哈希；以 T30 最终重建结果为准）：
+重建后核对哈希与大小（不要在本文件硬编码某次构建的哈希；以本次实际构建结果为准）：
 
 ```powershell
 Get-FileHash .\build\installer\SopeekInstaller.exe -Algorithm SHA256
@@ -303,14 +315,15 @@ Get-Item .\build\installer\SopeekInstaller.exe, .\build\Sopeek-*.exe |
 
 ## 部署结构
 
-GUI 将 `build/pyinstall/Sopeek` 的内容复制到用户选择的安装目录：
+GUI 只把 `build/pyinstall/Sopeek` 的 payload 内容复制到用户选择的安装目录；卸载栈由 NSIS
+`Section Install` 安装。最终安装目录结构：
 
 ```text
-{app}\Sopeek.exe
-{app}\_internal\...
-{app}\SopeekUninstall.exe
-{app}\UninstallHelper.exe
-{app}\libwinpthread-1.dll
+{app}\Sopeek.exe              # payload（GUI 复制）
+{app}\_internal\...           # payload（GUI 复制）
+{app}\SopeekUninstall.exe     # 卸载 UI（NSIS 安装）
+{app}\UninstallHelper.exe     # 卸载 helper（NSIS 安装）
+{app}\libwinpthread-1.dll     # MinGW runtime（NSIS 安装）
 ```
 
 NSIS 不再显示默认安装页面，唯一可见的前端是 C++ GUI 窗口。NSIS 负责封装 payload、管理员权限、
@@ -336,6 +349,8 @@ NSIS 不再显示默认安装页面，唯一可见的前端是 C++ GUI 窗口。
   - `install_engine.{h,cpp}`（无窗口安装/修复引擎：payload 哨兵等待、字节进度、取消清理、修复跳过用户数据）、
     `launch_forward.{h,cpp}`（去提权启动转发）。
 - `resources/app.rc` —— 应用图标、Logo RCDATA、`LICENSE` / `SPKVERSION` RCDATA、完整 VERSIONINFO。
+- `resources/version.h.in` —— VERSIONINFO 模板，构建时由 CMake 写入 `version_gen.h`。
+- `cmake/test_mode.cmake` —— `SPK_TESTMODE` 测试构建开关（默认 OFF）。
 - `installer.nsi` —— NSIS 封装、单实例互斥体、同用户提权、payload 临时释放、`payload.ready` 哨兵、
   维护决策/安装结果等待、条件化快捷方式 / Run 键、安装卸载栈、分阶段卸载（双注册表视图、用户数据保留）。
 - `tools/` —— `build_test_gui.ps1` / `build_test_installer.ps1`（测试构建）、`qa_installer_lifecycle.ps1`
@@ -351,4 +366,5 @@ NSIS 不再显示默认安装页面，唯一可见的前端是 C++ GUI 窗口。
   标准用户账户不可见（需按用户迁移时另行处理）。
 - GUI 本身是提权 NSIS `Exec` 的子进程（继承管理员令牌），因此**完成后启动必须去提权**：
   通过 `ShellExecuteW("open", "explorer.exe", "<INSTDIR>\Sopeek.exe")` 由 explorer 代为转发，
-  使目标进程以**标准用户令牌**运行；未勾选「完成后启动」时绝不启动，目标 exe 缺失时窗口内提示且不崩溃。
+  使目标进程以**标准用户令牌**运行。安装完成页的「立即启动」按钮点击即执行该转发；
+  目标 exe 缺失时窗口内提示且不崩溃。

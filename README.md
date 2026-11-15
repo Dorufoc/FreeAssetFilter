@@ -7,11 +7,10 @@
 # Sopeek
 
 **一款强大的多功能文件预览与管理工具，让文件浏览如丝般高效顺滑**
+
 [![License](https://img.shields.io/badge/License-AGPL--3.0-orange?style=flat-square)](LICENSE)[![Python](https://img.shields.io/badge/Python-3.9%2B-blue?style=flat-square&logo=python)](https://www.python.org/)[![PySide6](https://img.shields.io/badge/PySide6-6.10%2B-green?style=flat-square&logo=qt)](https://wiki.qt.io/Qt_for_Python)[![Platform](https://img.shields.io/badge/Platform-Windows-purple?style=flat-square&logo=windows)](https://www.microsoft.com/windows)
 
-[快速开始](#快速开始) • [功能特性](#功能特性) • [支持格式](#支持格式) • [使用说明](#使用说明) • [常见问题](#常见问题) • [开发指南](#开发指南)
-
-**简体中文** | [English](README_EN.md)
+[English](README_EN.md) • [快速开始](#快速开始) • [功能特性](#功能特性) • [支持格式](#支持格式) • [使用说明](#使用说明) • [常见问题](#常见问题) • [开发指南](#开发指南)
 
 ![Sopeek 界面预览](assets/example1.png)
 
@@ -30,11 +29,17 @@ Sopeek 是一款面向 Windows 的桌面级文件浏览、筛选与预览工具�
 
 | 能力           | 说明                                                         |
 | -------------- | ------------------------------------------------------------ |
-| **统一工作流** | 文件选择器 + 文件储存池 + 预览器/信息面板，支持「经典」与「New（预览优先）」两种布局 |
+| **统一工作流** | 文件选择器 + 文件储存池 + 预览器/信息面板，支持「经典」与「New」两种布局 |
 | **多格式预览** | 8 个预览器覆盖图像、视频、音频、PDF、Office、文本/代码、压缩包、字体与文件夹 |
 | **原生加速**   | `spk_core`（Rust）承担扫描/排序/高亮/Markdown/字体解析/哈希/编码探测/EXIF/复制/SVG/7z 列表；`thumbnail_generator`（Rust）负责缩略图解码 |
 | **视频播放**   | 基于 libmpv 直连渲染，支持倍速、音轨/字幕切换、全屏浮动控制栏 |
 | **全局浮窗**   | 桌面常驻的储存池圆形入口，支持拖入文件、点击展开、贴边吸附与位置记忆 |
+
+---
+
+## 注意
+
+由于仓库暂未改名，涉及仓库名称的路径**请手动更改**为原仓库名：`FreeAssetFilter`
 
 ---
 
@@ -49,9 +54,9 @@ Sopeek 是一款面向 Windows 的桌面级文件浏览、筛选与预览工具�
 
 ### 方式二：从源码运行
 
-```bash
-#原生模块已提供预编译产物，源码运行无需额外工具链。
+原生模块已提供预编译产物，源码运行无需额外工具链。
 
+```bash
 # 1. 克隆仓库
 git clone https://github.com/Dorufoc/Sopeek.git
 cd Sopeek
@@ -70,7 +75,7 @@ pip install -e .
 python -m sopeek.app.main
 ```
 
-不想安装也行，把 `src/` 临时放进搜索路径即可：
+如不想安装，请把 `src/` 临时放进搜索路径：
 
 ```bash
 set PYTHONPATH=src
@@ -105,9 +110,9 @@ python -m sopeek.app.main
 ### 预览器能力
 
 | 预览器 | 特色 |
-| --- | --- |
+| :-- | --- |
 | **图像** | 异步解码、50%–500% 缩放、翻转、旋转、取色器、GIF 播放/暂停、全屏 |
-| **音视频 ** | libmpv 渲染；空格播放暂停、方向键 seek/音量、数字键倍速、音轨与字幕选择、全屏浮动控制栏；音频模式带流体背景与元信息面板 |
+| **音视频** | libmpv 渲染；空格播放暂停、方向键 seek/音量、数字键倍速、音轨与字幕选择、全屏浮动控制栏；音频模式带流体背景与元信息面板 |
 | **PDF** | 原生渲染、页码跳转、50%–300% 缩放、缩略图索引抽屉、文本选择 |
 | **Office** | 按 LibreOffice → MS Office / WPS COM → 纯 Python 顺序自动降级，统一转 PDF 视图渲染 |
 | **文本 / 代码** | Markdown 渲染、语法高亮、源码/渲染切换、全屏、站内搜索抽屉、字号 8–32px |
@@ -134,7 +139,7 @@ python -m sopeek.app.main
 ### 图像
 
 | 类别 | 格式 |
-| --- | --- |
+| :-- | :-- |
 | 常见 | JPG / JPEG / PNG / GIF / BMP / TIFF / WEBP / SVG / ICO / ICON |
 | 现代 | AVIF / HEIC / HEIF |
 | RAW | CR2 / CR3 / CRW / NEF / NRW / ARW / DNG / ORF / SRF / SR2 / SRW / RAF / RW2 / PEF / PTX / X3F |
@@ -182,33 +187,20 @@ TTF / OTF / WOFF / WOFF2 / EOT
 
 **New 布局**
 
-```
-┌──────────────┬──────────────────────────────────┐
-│              │                                  │
-│   文件选择器   |            文件预览               │
-│              ├────────────────┬─────────────────┤
-│              │    文件储存池    |    文件信息      │
-└──────────────┴────────────────┴─────────────────┘
-```
+![New布局](assets/example2.png)
 
 - 文件选择器独占左栏全高，默认约占界面宽度 1/3；
 - 预览区位于右上，**显示画布默认 16:9**，窗口缩放时自动维持；显示区最小 640×360；
 - 储存池与信息面板并排位于预览区下方，默认按 **50 : 50** 分宽（即约各占界面 1/3）；底行高度上限为右区可用高度的一半；
 - 统一操作按钮（复制到剪切板 / 系统打开 / 定位目录 / 清除预览）位于预览器顶栏。
 
+
 **经典三栏**
 
-```
-┌──────────────┬──────────────┬──────────────┐
-│              │              │   文件预览    │
-│   文件选择器   │   文件储存池  ├──────────────┤
-│              │              │   文件信息    │
-│              │              ├──────────────┤
-│              │              │   操作栏      │
-└──────────────┴──────────────┴──────────────┘
-```
+![经典三栏](assets/example3.png)
 
 - 三栏默认各占 1/3；右列中预览与信息默认各占一半高度，信息区上限为右区可用高度的一半；
+
 - 统一操作栏位于右列最底部，与左/中两栏底栏同底对齐；
 - 把分隔条拖到储存池最小宽后继续拖动即可折叠该栏，拖回即恢复（仅储存池可折叠）。
 
@@ -254,50 +246,33 @@ TTF / OTF / WOFF / WOFF2 / EOT
 
 ## 常见问题
 
-<details>
-<summary><b>启动时提示缺少 DLL？</b></summary>
-
+**▷ 启动时提示缺少 DLL？**
 
 安装 [Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe)。
 若缺的是 `libmpv-2.dll` 等随包文件，说明工作区不完整（`src/sopeek/core/native/bin/` 被清空），重新检出该目录即可。
-</details>
 
-<details>
-<summary><b>`No module named sopeek`？</b></summary>
-
+**▷ `No module named sopeek`？**
 
 仓库是 `src/` 布局。先 `pip install -e .`，或临时 `set PYTHONPATH=src`。
-</details>
 
-<details>
-<summary><b>视频无法播放？</b></summary>
-
+**▷ 视频无法播放？**
 
 确认 `src/sopeek/core/native/bin/libmpv-2.dll` 存在；显卡驱动过旧时可在设置中关闭「使用硬件加速」，回退到软件渲染。
-</details>
 
-<details>
-<summary><b>Office 文档预览失败？</b></summary>
-
+**▷ Office 文档预览失败？**
 
 xlsx 与旧版二进制格式（doc/xls/ppt）依赖 LibreOffice 或 MS Office / WPS；docx/pptx 在无外部后端时可纯 Python 降级渲染。
-</details>
 
-<details>
-<summary><b>安装依赖时报错，提示需要编译工具？</b></summary>
-
+**▷ 安装依赖时报错，提示需要编译工具？**
 
 部分依赖（如 `rawpy`、`numpy`）可能需要本地编译：
 
 1. 安装 [Microsoft C++ 生成工具](https://visualstudio.microsoft.com/visual-cpp-build-tools/)，勾选「使用 C++ 的桌面开发」；
 2. 升级 pip 后重试：`python -m pip install --upgrade pip`；
 3. 网络受限时可用镜像：`pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple`。
-   </details>
 
-<details>
-<summary><b>改完图标 / 语法文件后不生效？</b></summary>
-运行时资源在 `src/sopeek/resources/`，路径统一由 `sopeek/_paths.py` 解析；打包后资源位于 `_internal/sopeek/resources/`。
-</details>
+
+**▷ 改完图标 / 语法文件后不生效？**
 
 运行时资源在 `src/sopeek/resources/`，路径统一由 `sopeek/_paths.py` 解析；打包后资源位于 `_internal/sopeek/resources/`。
 
@@ -416,8 +391,6 @@ pytest -m integration        # 跨模块集成测试
 pytest tests/unit/utils -v   # 指定目录
 ```
 
-测试约定：
-
 - `tests/` 目录层级镜像 `src/sopeek/`；
 - `tests/conftest.py` 自动注入 `src/` 到 `sys.path`，并把 `SPK_DATA_DIR` 重定向到临时目录；
 - Qt 测试使用离屏后端（`QT_QPA_PLATFORM=offscreen`），需要真实显示器的用 `@pytest.mark.gui`；
@@ -431,7 +404,7 @@ pytest tests/unit/utils -v   # 指定目录
 
 ### 构建原生模块
 
-产物统一装回 `src/sopeek/core/native/bin/`：
+产物统一装回 `src/sopeek/core/native/bin/`
 
 ```bash
 # Rust（需要 cargo）
@@ -458,8 +431,12 @@ python packaging/build.py
 powershell -ExecutionPolicy Bypass -File packaging/installer/build.ps1
 
 # 3. NSIS 安装包（build.ps1 最后一步调用 makensis）
-#    产物：build/installer/SopeekInstaller.exe → build/Sopeek_NSIS_Setup.exe
+#    产物：build/installer/SopeekInstaller.exe → build/Sopeek-<版本>-<平台>-<架构>.exe
+#    例如 build/Sopeek-2.0.0-windows-x64.exe
 ```
+
+安装器架构、跨进程协议、维护/卸载流程与 QA 细节见
+[`packaging/installer/INSTALLER_ARCHITECTURE.md`](packaging/installer/INSTALLER_ARCHITECTURE.md)。
 
 ### 新增文件类型预览支持
 
@@ -523,19 +500,15 @@ powershell -ExecutionPolicy Bypass -File packaging/installer/build.ps1
 
 ### 漏洞报告
 
-如果您发现了安全漏洞，请不要在公开 Issue 中披露，请发送邮件至：
+- 如果您发现了安全漏洞，请不要在公开 Issue 中披露，请发送邮件至：[dorufoc@outlook.com](mailto:dorufoc@outlook.com)
 
-[dorufoc@outlook.com](mailto:dorufoc@outlook.com)
 
-我们会在 48 小时内回复，并尽快修复漏洞。
+- 我们会在 48 小时内回复，并尽快修复漏洞。
+
 
 ---
 
 ## 致谢
-
-### 长期愿景
-
-成为开源社区中最好用的文件预览与数字资产管理工具之一，为创意工作者提供高效、克制的桌面体验。
 
 ### 核心依赖
 
@@ -555,6 +528,10 @@ powershell -ExecutionPolicy Bypass -File packaging/installer/build.ps1
 
 - [Fira Code](https://github.com/tonsky/FiraCode) — 代码字体
 - 庞门正道标题体 — 中文标题字体
+
+### 长期愿景
+
+成为开源社区中最好用的文件预览与数字资产管理工具之一，为创意工作者提供高效、克制的桌面体验。
 
 ### 贡献者
 

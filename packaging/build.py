@@ -228,7 +228,7 @@ def collect_data_files() -> List[Tuple[str, str]]:
     else:
         print_warning("未找到 shaders 目录")
 
-    # 6. 收集 docs 目录（设置页「关于」内嵌预览器加载 THIRD_PARTY_NOTICES.md）
+    # 6. 收集 docs 目录（随包分发第三方许可清单，履行告知义务）
     docs_dir = project_root / "src" / "sopeek" / "resources" / "docs"
     docs_extensions = {".md", ".txt", ".html"}
     if docs_dir.exists():

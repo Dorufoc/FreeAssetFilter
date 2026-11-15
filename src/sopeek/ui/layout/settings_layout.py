@@ -21,7 +21,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QPainter, QColor, QPaintEvent, QPen, QFont, QHideEvent, QCloseEvent,
-    QConicalGradient, QBrush, QPixmap, QDesktopServices, QMouseEvent,
+    QConicalGradient, QBrush, QPixmap, QDesktopServices,
     QShowEvent,
 )
 from PySide6.QtSvg import QSvgRenderer
@@ -167,12 +167,18 @@ def _refresh_settings_item_text(item: QWidget | None) -> None:
         sub_branch.update()
 
 
-# ── 关于页应用信息（居中身份区 + 版本/更新 + 链接 + 联系 + 版权） ──
+# ── 关于页应用信息（居中身份区 + 版本/更新 + 链接 + 版权） ──
 ABOUT_APP_NAME = "Sopeek"
 ABOUT_APP_TAGLINE = "一款强大的多功能文件预览与管理工具，让文件浏览如丝般高效顺滑"
 ABOUT_APP_LOGO_SIZE = 72
-ABOUT_REPO_URL = "https://github.com/Dorufoc/Sopeek"
-ABOUT_LICENSE_URL = "https://github.com/Dorufoc/Sopeek/blob/master/LICENSE"
+#: 仓库根地址与默认分支：文档 / 许可外链都由它们派生，改仓库名或分支时只改这里。
+ABOUT_REPO_URL = "https://github.com/Dorufoc/FreeAssetFilter"
+ABOUT_REPO_BRANCH = "main-v2"
+ABOUT_THIRD_PARTY_URL = (
+    f"{ABOUT_REPO_URL}/blob/{ABOUT_REPO_BRANCH}"
+    "/src/sopeek/resources/docs/THIRD_PARTY_NOTICES.md"
+)
+ABOUT_LICENSE_URL = f"{ABOUT_REPO_URL}/blob/{ABOUT_REPO_BRANCH}/LICENSE"
 #: 身份区各元素间距（px）：logo→名称、名称→简介、简介→版本行。
 ABOUT_LOGO_NAME_GAP = 6
 ABOUT_NAME_TAGLINE_GAP = 4
@@ -190,16 +196,6 @@ ABOUT_LINK_ICON_SIZE = 16
 ABOUT_LINK_SEPARATOR_GAP = 6
 #: 版本号与「检查更新」图标动作的字号（px）。
 ABOUT_LINK_TEXT_SIZE = 12
-#: 「联系我们」展开后的软卡片尺寸与淡入/淡出时长（ms）。
-ABOUT_CONTACT_NAME = "Dorufoc"
-ABOUT_CONTACT_EMAIL = "dorufoc@outlook.com"
-ABOUT_CONTACT_PANEL_WIDTH = 280
-ABOUT_CONTACT_PANEL_HEIGHT = 50
-ABOUT_CONTACT_SLOT_GAP = 12
-ABOUT_CONTACT_FADE_MS = 160
-ABOUT_CONTACT_FADE_OUT_MS = 120
-#: 联系面板复用设置页子选项的动画开关（appearance.animations.<key>）。
-ABOUT_CONTACT_ANIMATION_KEY = "settings_sub_option"
 #: 「检查更新」忙碌态文字（图标位置换成圆圈加载动画）。
 ABOUT_UPDATE_CHECKING_TEXT = "正在检查更新"
 #: 内联结果行：最大宽度、与版本行的顶部间距、展开/收起时长、字号。
@@ -212,12 +208,10 @@ ABOUT_STATUS_TEXT_SIZE = 12
 ABOUT_STATUS_MAX_HEIGHT = 16777215
 #: 页脚版权/署名。
 ABOUT_COPYRIGHT = "© 2026   Dorufoc & renmoren"
-#: 关于页字号令牌：身份区与联系面板的字号只允许引用这里。
+#: 关于页字号令牌：身份区的字号只允许引用这里。
 ABOUT_APP_NAME_CSS = "font-size: 20px; font-weight: 600;"
 ABOUT_TAGLINE_CSS = "font-size: 12px;"
 ABOUT_FOOTER_CSS = "font-size: 11px;"
-ABOUT_CONTACT_NAME_CSS = "font-size: 13px; font-weight: 500;"
-ABOUT_CONTACT_EMAIL_CSS = "font-size: 12px;"
 #: 关于页图标（单色 SVG）渲染缓存：key → 已着色 pixmap。
 _ABOUT_ICON_CACHE: dict[tuple, QPixmap] = {}
 
@@ -2389,9 +2383,9 @@ class GeneralSettingsPage(QWidget):
 class _AboutLink(QWidget):
     """关于页的轻量链接 / 图标动作（无按钮底色）。
 
-    默认使用强调色文字；hover / 键盘 focus 时加深颜色，并按需给文字加
-    下划线。可选前置单色 SVG 图标；整枚控件可点击、可用 Tab 聚焦、
-    Enter/Space 触发。联系链接关闭下划线，避免展开后文字底部出现横线。
+    默认使用强调色文字；hover / 键盘 focus 时加深颜色，并给文字加下划线。
+    可选前置单色 SVG 图标；整枚控件可点击、可用 Tab 聚焦、Enter/Space
+    触发。
 
     检查更新动作额外支持忙碌态：文字改为“正在检查更新”，原图标位置换成
     圆圈加载动画，忙碌期间不响应点击。
@@ -2604,8 +2598,8 @@ class _AboutStatusRow(QWidget):
     """关于页内联更新结果行（默认 0 高度，展开时推动下方内容）。
 
     结果行固定宽度并居中；展开/收起使用 ``maximumHeight`` + 透明度动画，
-    让分隔线、链接、联系插槽和页脚随布局平滑移动。页面不可见或全局关闭
-    动画时立即切换。
+    让分隔线、链接和页脚随布局平滑移动。页面不可见或全局关闭动画时立即
+    切换。
     """
 
     def __init__(self, parent=None):
@@ -2846,11 +2840,11 @@ class _AboutStatusRow(QWidget):
 
 
 class AboutSettingsPage(QWidget):
-    """关于页面 — 居中身份区、版本/更新、链接、联系人浮层与版权。
+    """关于页面 — 居中身份区、版本/更新、链接与版权。
 
     构图参考 macOS About 面板：横向单一中轴；纵向内容块在页脚上方居中。
-    联系信息不再插入/抽走页面高度，而是在链接行与页脚之间预留固定插槽：
-    展开只播放透明度淡入，页面高度与页脚位置保持不动。
+    「仓库页面」「第三方组件许可」「开源许可」均为外链，经系统默认浏览器
+    打开项目对应网页。
 
     「检查更新」为图标 + 文字动作。点击后动作原位切换为“正在检查更新”+
     圆圈加载动画，检查完成恢复原动作，并在下一行居中显示结果（无更新/
@@ -2871,19 +2865,11 @@ class AboutSettingsPage(QWidget):
         self._update_session: object | None = None
         self._inline_update_info: object | None = None
         self._repo_link: _AboutLink | None = None
-        self._contact_link: _AboutLink | None = None
+        self._third_party_link: _AboutLink | None = None
         self._license_link: _AboutLink | None = None
         self._divider: QFrame | None = None
         self._separator_labels: list[QLabel] = []
         self._link_widgets: list[_AboutLink] = []
-        self._contact_slot: QWidget | None = None
-        self._contact_box: QFrame | None = None
-        self._contact_name_label: QLabel | None = None
-        self._contact_email_label: QLabel | None = None
-        self._contact_opacity: QGraphicsOpacityEffect | None = None
-        self._contact_anim: QPropertyAnimation | None = None
-        self._contact_visible: bool = False
-        self._contact_outside_filter_installed: bool = False
         self._footer_label: QLabel | None = None
         self._build_ui()
         self.refresh_theme()
@@ -2980,7 +2966,7 @@ class AboutSettingsPage(QWidget):
 
         content.addSpacing(14)
 
-        # ── 链接行：仓库页面 · 联系我们 ▾ · 开源许可 ──
+        # ── 链接行：仓库页面 · 第三方组件许可 · 开源许可 ──
         links_row = QHBoxLayout()
         links_row.setContentsMargins(0, 0, 0, 0)
         links_row.setSpacing(0)
@@ -2997,12 +2983,12 @@ class AboutSettingsPage(QWidget):
         links_row.addWidget(self._make_separator())
         links_row.addSpacing(ABOUT_LINK_SEPARATOR_GAP)
 
-        self._contact_link = _AboutLink(
-            "联系我们", underline_on_hover=False
+        self._third_party_link = _AboutLink("第三方组件许可")
+        self._third_party_link.setToolTip(ABOUT_THIRD_PARTY_URL)
+        self._third_party_link.clicked.connect(
+            lambda: self._open_link(ABOUT_THIRD_PARTY_URL)
         )
-        self._contact_link.setToolTip("展开联系信息")
-        self._contact_link.clicked.connect(self._toggle_contact_box)
-        links_row.addWidget(self._contact_link, 0, Qt.AlignVCenter)
+        links_row.addWidget(self._third_party_link, 0, Qt.AlignVCenter)
 
         links_row.addSpacing(ABOUT_LINK_SEPARATOR_GAP)
         links_row.addWidget(self._make_separator())
@@ -3017,48 +3003,6 @@ class AboutSettingsPage(QWidget):
         links_row.addStretch(1)
         content.addLayout(links_row)
 
-        content.addSpacing(ABOUT_CONTACT_SLOT_GAP)
-
-        # ── 联系插槽：高度始终存在；展开只做淡入，不推页脚 ──
-        self._contact_slot = QWidget()
-        self._contact_slot.setFixedSize(
-            ABOUT_CONTACT_PANEL_WIDTH, ABOUT_CONTACT_PANEL_HEIGHT
-        )
-        slot_layout = QVBoxLayout(self._contact_slot)
-        slot_layout.setContentsMargins(0, 0, 0, 0)
-        slot_layout.setSpacing(0)
-
-        self._contact_box = QFrame()
-        self._contact_box.setObjectName("AboutContactBox")
-        self._contact_box.setFrameShape(QFrame.NoFrame)
-        self._contact_box.setAttribute(Qt.WA_StyledBackground, True)
-        self._contact_box.setFixedSize(
-            ABOUT_CONTACT_PANEL_WIDTH, ABOUT_CONTACT_PANEL_HEIGHT
-        )
-        contact_layout = QVBoxLayout(self._contact_box)
-        contact_layout.setContentsMargins(14, 5, 14, 5)
-        contact_layout.setSpacing(2)
-
-        self._contact_name_label = QLabel(ABOUT_CONTACT_NAME)
-        self._contact_name_label.setAlignment(Qt.AlignCenter)
-        contact_layout.addWidget(self._contact_name_label)
-
-        self._contact_email_label = QLabel(ABOUT_CONTACT_EMAIL)
-        self._contact_email_label.setAlignment(Qt.AlignCenter)
-        self._contact_email_label.setTextInteractionFlags(
-            Qt.TextSelectableByMouse
-        )
-        self._contact_email_label.setCursor(Qt.IBeamCursor)
-        contact_layout.addWidget(self._contact_email_label)
-
-        # 透明度效果只在淡入/淡出期间临时挂载；稳定态不保留 effect，
-        # 避免滚动/缩放后 QGraphicsOpacityEffect 缓存导致面板不刷新。
-        self._contact_box.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self._contact_box.setVisible(False)
-        slot_layout.addWidget(self._contact_box)
-
-        content.addWidget(self._contact_slot, alignment=Qt.AlignHCenter)
-
         layout.addLayout(content)
         layout.addStretch(1)
 
@@ -3069,7 +3013,7 @@ class AboutSettingsPage(QWidget):
         self._link_widgets = [
             self._check_update_action,
             self._repo_link,
-            self._contact_link,
+            self._third_party_link,
             self._license_link,
         ]
 
@@ -3090,190 +3034,10 @@ class AboutSettingsPage(QWidget):
         except Exception as exc:  # noqa: BLE001 - 打开失败不影响设置页其余功能
             debug(f"打开链接失败：{exc}")
 
-    def _toggle_contact_box(self) -> None:
-        """切换联系信息面板显隐（点击「联系我们」或面板外区域）。"""
-        self._contact_visible = not self._contact_visible
-        if self._contact_link is not None:
-            self._contact_link.setToolTip(
-                "收起联系信息" if self._contact_visible else "展开联系信息"
-            )
-        self._apply_contact_visibility()
-
-    def _apply_contact_visibility(self) -> None:
-        """按当前状态播放淡入/淡出；页面不可见或关闭动画时立即切换。"""
-        panel = self._contact_box
-        if panel is None:
-            return
-        visible = self._contact_visible
-        self._set_contact_outside_filter(visible)
-        if not self.isVisible() or not is_animation_enabled(
-            ABOUT_CONTACT_ANIMATION_KEY, default=True
-        ):
-            self._set_contact_instant(visible)
-            return
-
-        # 收起时面板已经隐藏：无需动画，直接保持隐藏。
-        if not visible and panel.isHidden():
-            self._set_contact_instant(False)
-            return
-
-        self._stop_contact_animation()
-        panel_was_visible = panel.isVisible()
-        effect = self._ensure_contact_effect()
-        start = effect.opacity() if panel_was_visible else 0.0
-        if not visible and not panel_was_visible:
-            start = 1.0
-        target = 1.0 if visible else 0.0
-        if abs(start - target) < 0.001:
-            self._set_contact_instant(visible)
-            return
-
-        panel.setVisible(True)
-        panel.setAttribute(Qt.WA_TransparentForMouseEvents, not visible)
-        effect.setOpacity(start)
-
-        animation = QPropertyAnimation(effect, b"opacity", self)
-        animation.setDuration(
-            ABOUT_CONTACT_FADE_MS if visible else ABOUT_CONTACT_FADE_OUT_MS
-        )
-        animation.setStartValue(start)
-        animation.setEndValue(target)
-        animation.setEasingCurve(
-            QEasingCurve.OutCubic if visible else QEasingCurve.InCubic
-        )
-        animation.finished.connect(self._on_contact_animation_finished)
-        self._contact_anim = animation
-        animation.start()
-
-    def _ensure_contact_effect(self) -> QGraphicsOpacityEffect:
-        """按需创建联系面板透明度效果（动画结束后立即卸载）。"""
-        if self._contact_opacity is None and self._contact_box is not None:
-            effect = QGraphicsOpacityEffect(self._contact_box)
-            self._contact_box.setGraphicsEffect(effect)
-            self._contact_opacity = effect
-        assert self._contact_opacity is not None
-        return self._contact_opacity
-
-    def _detach_contact_effect(self) -> None:
-        """卸载临时透明度效果，恢复面板原生绘制（避免滚动后缓存不刷新）。"""
-        if self._contact_box is not None:
-            self._contact_box.setGraphicsEffect(None)
-        self._contact_opacity = None
-
-    def _set_contact_instant(self, visible: bool) -> None:
-        """无动画地应用联系面板显隐状态（插槽高度保持不变）。"""
-        self._stop_contact_animation()
-        self._detach_contact_effect()
-        self._set_contact_outside_filter(visible)
-        panel = self._contact_box
-        if panel is None:
-            return
-        panel.setVisible(visible)
-        panel.setAttribute(Qt.WA_TransparentForMouseEvents, not visible)
-        if visible:
-            self._ensure_contact_visible()
-
-    def _stop_contact_animation(self) -> None:
-        """停止并回收在途联系面板动画。"""
-        if self._contact_anim is not None:
-            animation = self._contact_anim
-            self._contact_anim = None
-            animation.stop()
-            animation.deleteLater()
-
-    def _on_contact_animation_finished(self) -> None:
-        """动画结束：卸载临时 effect；展开确保可见，收起隐藏但保留插槽。"""
-        animation = self._contact_anim
-        if animation is None or self.sender() is not animation:
-            return
-        self._contact_anim = None
-        animation.deleteLater()
-        panel = self._contact_box
-        if not self._contact_visible:
-            if panel is not None:
-                panel.setVisible(False)
-                panel.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-            self._detach_contact_effect()
-            return
-        self._detach_contact_effect()
-        if panel is not None:
-            panel.setVisible(True)
-            panel.setAttribute(Qt.WA_TransparentForMouseEvents, False)
-        self._ensure_contact_visible()
-
-    def _ensure_contact_visible(self) -> None:
-        """最小必要滚动：仅当联系插槽被视口裁切时补到完整可见。"""
-        slot = self._contact_slot
-        if slot is None:
-            return
-        parent = self.parentWidget()
-        while parent is not None and not isinstance(parent, QScrollArea):
-            parent = parent.parentWidget()
-        if isinstance(parent, QScrollArea):
-            parent.ensureWidgetVisible(slot, 0, 10)
-
-    def _set_contact_outside_filter(self, active: bool) -> None:
-        """按需安装应用级事件过滤器，用于点击面板外自动收起。
-
-        仅在页面可见时安装；页面隐藏/销毁时移除，避免过滤器在后台
-        误收其它标签页/窗口的点击。
-        """
-        active = bool(active and self.isVisible())
-        if active == self._contact_outside_filter_installed:
-            return
-        app = QApplication.instance()
-        if app is None:
-            self._contact_outside_filter_installed = False
-            return
-        if active:
-            app.installEventFilter(self)
-        else:
-            app.removeEventFilter(self)
-        self._contact_outside_filter_installed = active
-
-    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt 虚函数名
-        """联系面板展开时：点击面板/联系链接之外自动收起。"""
-        if not self._contact_visible:
-            return False
-
-        if event.type() == QEvent.ApplicationDeactivate:
-            self._toggle_contact_box()
-            return False
-
-        if event.type() != QEvent.MouseButtonPress or not isinstance(
-            event, QMouseEvent
-        ):
-            return False
-
-        panel = self._contact_box
-        link = self._contact_link
-        if panel is None:
-            return False
-
-        global_pos = event.globalPosition().toPoint()
-        if panel.rect().contains(panel.mapFromGlobal(global_pos)):
-            return False
-        if link is not None and link.rect().contains(
-            link.mapFromGlobal(global_pos)
-        ):
-            # 联系链接自身负责“再次点击收起”，这里不能抢先切换。
-            return False
-
-        self._toggle_contact_box()
-        return False
-
     def showEvent(self, event: QShowEvent) -> None:  # noqa: N802 - Qt 虚函数名
         """页面显示时恢复已存在的内联更新会话状态。"""
         super().showEvent(event)
         self._attach_existing_update_session()
-
-    def hideEvent(self, event: QHideEvent) -> None:  # noqa: N802 - Qt 虚函数名
-        """离开关于页/隐藏窗口时收起联系面板并卸载事件过滤器。"""
-        self._set_contact_outside_filter(False)
-        if self._contact_visible:
-            self._contact_visible = False
-            self._set_contact_instant(False)
-        super().hideEvent(event)
 
     # ── 内联检查更新 ────────────────────────────────────────────────
 
@@ -3565,7 +3329,7 @@ class AboutSettingsPage(QWidget):
         return message or "未知错误"
 
     def _apply_about_styles(self) -> None:
-        """按当前主题重注册关于页身份区、链接、联系面板与页脚样式。"""
+        """按当前主题重注册关于页身份区、链接与页脚样式。"""
         if self._logo_label is not None:
             register_widget_qss(self._logo_label, (
                 "#AboutAppLogo { background: transparent; border: none; }"
@@ -3601,23 +3365,6 @@ class AboutSettingsPage(QWidget):
             register_widget_qss(self._footer_label, (
                 f"background: transparent; border: none; "
                 f"color: {tm.qss_color(tm.text_secondary)}; {ABOUT_FOOTER_CSS}"
-            ))
-        if self._contact_box is not None:
-            register_widget_qss(self._contact_box, (
-                f"#AboutContactBox {{ background: {tm.qss_rgba(tm.text, 4)};"
-                f" border: 1px solid {tm.qss_rgba(tm.mid, 20)};"
-                f" border-radius: 8px; }}"
-            ))
-        if self._contact_name_label is not None:
-            register_widget_qss(self._contact_name_label, (
-                f"background: transparent; border: none; color: {tm.text.name()};"
-                f" {ABOUT_CONTACT_NAME_CSS}"
-            ))
-        if self._contact_email_label is not None:
-            register_widget_qss(self._contact_email_label, (
-                f"background: transparent; border: none; "
-                f"color: {tm.qss_color(tm.text_secondary)};"
-                f" {ABOUT_CONTACT_EMAIL_CSS}"
             ))
         for link in self._link_widgets:
             link.refresh_theme()
@@ -3733,7 +3480,7 @@ class SettingsLayout(QWidget):
         appearance_scroll.attach_floating_bar_region(appearance_card)
         self._stack.addWidget(appearance_card)
 
-        # 页面 2：关于（居中身份区 + 链接 + 联系插槽；包进滚动区，
+        # 页面 2：关于（居中身份区 + 外链；包进滚动区，
         # 小窗口下可滚动访问，默认尺寸下内容居中且不出现滚动条）
         self._about_page = AboutSettingsPage()
         about_scroll = self._wrap_page_in_scroll(self._about_page)
