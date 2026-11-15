@@ -7,11 +7,10 @@ use std::sync::OnceLock;
 
 use chrono::NaiveDate;
 use regex::Regex;
-use semver::Version;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, ErrorCode};
-use crate::version::parse_tag;
+use crate::version::{parse_version, VersionKey};
 
 /// Maximum number of characters kept from a release body.
 pub const MAX_NOTES_CHARS: usize = 20_000;
@@ -19,6 +18,10 @@ pub const MAX_NOTES_CHARS: usize = 20_000;
 pub const RELEASE_HTML_PREFIX: &str = "https://github.com/Dorufoc/Sopeek/releases/";
 
 const WIN10_WIN11_X64_SETUP_SCORE: u32 = 100;
+/// Current naming: `Sopeek-<version>-windows-x64.exe`.
+const SOPEEK_PLATFORM_SCORE: u32 = 90;
+/// Current naming for a non-x64 architecture; still selectable, ranked lower.
+const SOPEEK_PLATFORM_SCORE_SECONDARY_ARCH: u32 = 80;
 const SETUP_SCORE: u32 = 50;
 
 /// One entry of the GitHub `GET /releases` list.
@@ -96,19 +99,86 @@ pub fn resolve_releases(json: &str, include_prerelease: bool) -> Result<Selected
 
 /// Scores an installer candidate, or returns `None` when it is not eligible.
 ///
-/// A candidate must end in `.exe` (case-insensitive) and its basename must
-/// contain `setup` (case-insensitive). `win10_win11_x64_setup` outranks a plain
-/// `setup`; portable/launcher executables never qualify.
+/// Three naming schemes are recognised:
+///
+/// * `*_win10_win11_x64_Setup.exe` (legacy, highest score);
+/// * any other `*setup*.exe`;
+/// * `Sopeek-<version>-windows-<arch>.exe` (current product naming).
+///
+/// Uninstallers, portable builds and launchers never qualify.
 fn setup_exe_score(name: &str) -> Option<u32> {
     let lower = name.to_ascii_lowercase();
-    if !lower.ends_with(".exe") || !lower.contains("setup") {
+    if !lower.ends_with(".exe") {
+        return None;
+    }
+    if lower.contains("uninstall") || lower.contains("portable") || lower.contains("launcher") {
         return None;
     }
     if lower.contains("win10_win11_x64_setup") {
-        Some(WIN10_WIN11_X64_SETUP_SCORE)
-    } else {
-        Some(SETUP_SCORE)
+        return Some(WIN10_WIN11_X64_SETUP_SCORE);
     }
+    if lower.contains("setup") {
+        return Some(SETUP_SCORE);
+    }
+    platform_installer_score(&lower)
+}
+
+/// Scores `sopeek-<version>-windows-<arch>.exe`, the current product naming.
+fn platform_installer_score(lower: &str) -> Option<u32> {
+    let stem = lower.strip_suffix(".exe")?;
+    let rest = stem.strip_prefix("sopeek-")?;
+    let (version, arch) = rest.rsplit_once("-windows-")?;
+    if version.is_empty() {
+        return None;
+    }
+    match arch {
+        "x64" => Some(SOPEEK_PLATFORM_SCORE),
+        "arm64" | "x86" => Some(SOPEEK_PLATFORM_SCORE_SECONDARY_ARCH),
+        _ => None,
+    }
+}
+
+/// Strips a case-insensitive `.exe` suffix.
+fn strip_exe_suffix(name: &str) -> Option<&str> {
+    let (stem, extension) = name.rsplit_once('.')?;
+    if !extension.eq_ignore_ascii_case("exe") {
+        return None;
+    }
+    Some(stem)
+}
+
+/// Extracts `<version>` from `Sopeek-<version>-windows-<arch>.exe`.
+///
+/// The installer filename always embeds the packaged version, which is what
+/// lets a nightly release (whose tag is the fixed flag `nightly`) still be
+/// compared: `Sopeek-2.0.0.nightly-20261114-windows-x64.exe`.
+fn asset_version(name: &str) -> Option<VersionKey> {
+    let stem = strip_exe_suffix(name)?;
+    let rest = stem
+        .strip_prefix("Sopeek-")
+        .or_else(|| stem.strip_prefix("sopeek-"))?;
+    let (version, _arch) = rest.rsplit_once("-windows-")?;
+    parse_version(version).ok()
+}
+
+/// Derives a comparable version for a release.
+///
+/// The tag is authoritative when it actually is a version. Everything else
+/// (the `nightly` flag tag, or a hand-made tag) falls back to the installer
+/// asset name so the newest published build still compares correctly.
+fn release_version(release: &Release) -> Option<VersionKey> {
+    if let Some(tag) = release.tag_name.as_deref() {
+        let tag = tag.trim();
+        if !tag.is_empty() {
+            if let Ok(version) = parse_version(tag) {
+                return Some(version);
+            }
+        }
+    }
+    release
+        .assets
+        .iter()
+        .find_map(|asset| asset.name.as_deref().and_then(asset_version))
 }
 
 /// Picks the best installer asset in a release.
@@ -133,10 +203,11 @@ pub fn select_installer_asset(assets: &[Asset]) -> Option<&Asset> {
 /// Selects the release to advertise to the UI (plan C2).
 ///
 /// Drafts are always filtered; prereleases are filtered unless
-/// `include_prerelease` is set. Invalid tags are skipped. Among releases that
-/// contain a usable setup `.exe`, the highest semver wins (same version ->
-/// later `published_at`). When the newest eligible tag has no installer, the
-/// next usable release is chosen and the skipped tag is reported.
+/// `include_prerelease` is set. Releases whose version cannot be derived from
+/// either the tag or the installer asset name are skipped. Among releases that
+/// contain a usable installer `.exe`, the highest version wins (same version ->
+/// later `published_at`). When the newest eligible release has no installer,
+/// the next usable release is chosen and the skipped tag is reported.
 pub fn select_release(
     releases: &[Release],
     include_prerelease: bool,
@@ -152,15 +223,9 @@ pub fn select_release(
         return Err(no_release());
     }
 
-    let parsed: Vec<(&Release, Version)> = eligible
+    let parsed: Vec<(&Release, VersionKey)> = eligible
         .iter()
-        .filter_map(|release| {
-            let tag = release.tag_name.as_deref()?.trim();
-            if tag.is_empty() {
-                return None;
-            }
-            parse_tag(tag).ok().map(|version| (*release, version))
-        })
+        .filter_map(|release| release_version(release).map(|version| (*release, version)))
         .collect();
     if parsed.is_empty() {
         return Err(no_release());
@@ -198,7 +263,7 @@ pub fn select_release(
 
     let (notes, notes_truncated) = normalize_notes(chosen_release.body.as_deref());
     let remote = RemoteRelease {
-        version: chosen_version.to_string(),
+        version: chosen_version.display(),
         tag: chosen_release.tag_name.clone().unwrap_or_default(),
         date: extract_build_date(
             chosen_release.body.as_deref(),
@@ -254,11 +319,14 @@ fn published_at_date(published_at: Option<&str>) -> Option<String> {
     Some(date.format("%Y-%m-%d").to_string())
 }
 
-/// `构建日期：YYYY/MM/DD` with ASCII or full-width colon and `/` or `-`.
+/// `构建日期` followed by `YYYY/MM/DD` or `YYYY-MM-DD`.
+///
+/// Accepts the prose form (`构建日期：2026/05/22`, ASCII or full-width colon) and
+/// the release-table form written by the CI notes (`| 构建日期 | `2026-11-14` |`).
 fn build_date_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
-        Regex::new(r"构建日期\s*[：:]\s*(\d{4})[/-](\d{1,2})[/-](\d{1,2})")
+        Regex::new(r"构建日期[^0-9]{0,8}(\d{4})[/-](\d{1,2})[/-](\d{1,2})")
             .expect("build-date regex must compile")
     })
 }
@@ -654,6 +722,121 @@ mod tests {
             .as_deref(),
             Some("https://github.com/Dorufoc/Sopeek/releases/tag/v1.0.0")
         );
+    }
+
+    #[test]
+    fn release_asset_scoring_accepts_the_current_platform_naming() {
+        let candidates = vec![
+            asset("SopeekUninstall.exe", 10),
+            asset("SPK-Launcher.exe", 5),
+            asset("Sopeek-2.0.0-windows-arm64.exe", 20),
+            asset("Sopeek-2.0.0-windows-x64.exe", 30),
+            asset("Sopeek-2.0.0-windows-x64.zip", 1),
+            asset("SHA256SUMS.txt", 113),
+        ];
+
+        let selected = select_installer_asset(&candidates).expect("platform installer wins");
+        assert_eq!(
+            selected.name.as_deref(),
+            Some("Sopeek-2.0.0-windows-x64.exe")
+        );
+        assert_eq!(
+            setup_exe_score("Sopeek-2.0.0-windows-arm64.exe"),
+            Some(SOPEEK_PLATFORM_SCORE_SECONDARY_ARCH)
+        );
+        for rejected in [
+            "SopeekUninstall.exe",
+            "SPK-Launcher.exe",
+            "Sopeek-2.0.0-windows-x64.zip",
+            "Sopeek-2.0.0-windows-",
+            "SHA256SUMS.txt",
+        ] {
+            assert_eq!(
+                setup_exe_score(rejected),
+                None,
+                "{rejected} must be rejected"
+            );
+        }
+
+        // The current naming outranks a plain legacy `*setup*.exe`.
+        let mixed = vec![
+            asset("Sopeek_Setup.exe", 1_000),
+            asset("Sopeek-2.0.0-windows-x64.exe", 2_000),
+        ];
+        assert_eq!(
+            select_installer_asset(&mixed).map(|asset| asset.name.clone().unwrap_or_default()),
+            Some("Sopeek-2.0.0-windows-x64.exe".to_owned())
+        );
+    }
+
+    #[test]
+    fn release_nightly_tag_takes_its_version_from_the_installer_asset() {
+        let json = r#"[
+            {"tag_name":"nightly","name":"Nightly 2026-11-14","draft":false,"prerelease":true,
+             "published_at":"2026-11-14T05:10:53Z",
+             "body":"| 项 | 值 |\n| --- | --- |\n| 构建日期 | `2026-11-14` |\n",
+             "assets":[
+               {"name":"SHA256SUMS.txt","size":113,
+                "digest":"sha256:a0a2f9f44f2c071fe5650ecc6340201736fcc05feb28eb059cfd3e7f19e5fce7",
+                "browser_download_url":"https://github.com/Dorufoc/FreeAssetFilter/releases/download/nightly/SHA256SUMS.txt"},
+               {"name":"Sopeek-2.0.0.nightly-20261114-windows-x64.exe","size":156450341,
+                "digest":"sha256:fa7448b2ea7b4edd6c221a5e9312616e78b6b2cd272bf963393bfef26469e274",
+                "browser_download_url":"https://github.com/Dorufoc/FreeAssetFilter/releases/download/nightly/Sopeek-2.0.0.nightly-20261114-windows-x64.exe"}]},
+            {"tag_name":"v1.0.0-alpha.5","name":"v1.0.0-alpha.5","draft":false,"prerelease":false,
+             "published_at":"2026-05-22T02:45:14Z",
+             "assets":[
+               {"name":"FreeAssetFilter-1.0.0-alpha.5_win10_win11_x64_Setup.exe","size":165532201,
+                "digest":"sha256:23bdf81b043f416da4dd533ee2dcc09e8cb167d67c4090130f9b591518f2dc39",
+                "browser_download_url":"https://github.com/Dorufoc/FreeAssetFilter/releases/download/v1.0.0-alpha.5/FreeAssetFilter-1.0.0-alpha.5_win10_win11_x64_Setup.exe"}]}
+        ]"#;
+        let releases = parse_releases(json).expect("parse inline releases");
+
+        let selected = select_release(&releases, true).expect("nightly is selectable");
+        assert_eq!(selected.remote.version, "2.0.0.nightly-20261114");
+        assert_eq!(selected.remote.tag, "nightly");
+        assert!(selected.remote.prerelease);
+        assert_eq!(
+            selected.asset.name,
+            "Sopeek-2.0.0.nightly-20261114-windows-x64.exe"
+        );
+        assert_eq!(
+            selected.remote.date.as_deref(),
+            Some("2026-11-14"),
+            "the release-table build date must be read"
+        );
+        assert_eq!(selected.skipped_newer_tag, None);
+
+        // Without prereleases only the legacy release remains.
+        let stable = select_release(&releases, false).expect("legacy release selectable");
+        assert_eq!(stable.remote.version, "1.0.0-alpha.5");
+        assert_eq!(
+            stable.asset.name,
+            "FreeAssetFilter-1.0.0-alpha.5_win10_win11_x64_Setup.exe"
+        );
+    }
+
+    #[test]
+    fn release_asset_version_requires_the_product_naming() {
+        assert!(asset_version("Sopeek-2.0.0-windows-x64.exe").is_some());
+        assert_eq!(
+            asset_version("Sopeek-2.0.0.nightly-20261114-windows-x64.exe")
+                .expect("nightly version")
+                .display(),
+            "2.0.0.nightly-20261114"
+        );
+        for rejected in [
+            "Sopeek-Setup.exe",
+            "SopeekUninstall.exe",
+            "FreeAssetFilter-1.0.0-alpha.5_win10_win11_x64_Setup.exe",
+            "Sopeek-2.0.0-windows-x64.zip",
+            "portable.exe",
+        ] {
+            assert_eq!(
+                asset_version(rejected),
+                None,
+                "{rejected} must not derive a version"
+            );
+        }
     }
 
     #[test]

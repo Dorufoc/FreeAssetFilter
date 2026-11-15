@@ -151,6 +151,21 @@ def _is_repo_not_found(error: UpdateError) -> bool:
     return error.code == "http_status" and "404" in (error.message or "")
 
 
+def _is_prerelease_build(version: str) -> bool:
+    """判断本地版本号是否属于预发布/夜间版通道。
+
+    版本号唯一来源是 ``SPKVERSION``，两种预发布形态都会带连字符：
+    ``1.0.0-alpha.5``（语义化预发布）与 ``2.0.0.nightly-20261114``（夜间版）。
+
+    Args:
+        version: 版本号字符串，可能带前导 ``v``/``V``。
+
+    Returns:
+        bool: 预发布构建返回 ``True``，正式版返回 ``False``。
+    """
+    return "-" in str(version or "").strip().lstrip("vV")
+
+
 def sanitize_asset_name(raw: Any) -> Optional[str]:
     """按 Rust ``sanitize_asset_name`` 规则清洗发布资产名。
 
@@ -578,6 +593,10 @@ class UpdateService(QObject):
         顺序固定为：可用性探测 -> 策略判断 -> 写入尝试时间 -> 派发检查。
         服务不可用或未到期时直接返回，且不触碰 ``check_state.json``。
 
+        检查通道跟随「已安装构建」：正式版用户只在手动检查并勾选「获取测试版」
+        时才看得到夜间版，已安装预发布版/夜间版的用户则在启动检查里继续接收
+        同通道更新。
+
         Args:
             window: 预留的主窗口引用，服务本身不使用。
 
@@ -590,7 +609,9 @@ class UpdateService(QObject):
         if not update_startup.should_check_on_startup():
             return None
         update_startup.record_check_attempt()
-        return self.check(False)
+        return self.check(
+            False, include_prerelease=_is_prerelease_build(get_local_version())
+        )
 
     def shutdown(self, timeout: float = 4.0) -> bool:
         """停止原生 updater 子进程。"""
@@ -709,10 +730,10 @@ class UpdateService(QObject):
         info: Optional[UpdateInfo],
         error: Optional[UpdateError],
     ) -> None:
-        """启动检查成功时按标签去重后发出 ``startup_update_available``。
+        """启动检查成功时按版本去重后发出 ``startup_update_available``。
 
         该槽由 ``check_finished`` 派发，因此在 GUI 线程排队执行；只在启动检查
-        成功且确实有更新、且标签与上次已提醒标签不同时提醒一次。
+        成功且确实有更新、且去重键与上次已提醒键不同时提醒一次。
 
         Args:
             request_id: 检查请求 id（仅用于日志）。
@@ -738,11 +759,21 @@ class UpdateService(QObject):
 
     @staticmethod
     def _notification_tag(info: UpdateInfo) -> str:
-        """提取通知去重标签；优先 ``tag``，缺失时回退版本号。"""
+        """提取通知去重标签：优先版本号，缺失时回退发布标签。
+
+        夜间版发布固定使用同一个标签 ``nightly``，只有版本号能区分不同日期的
+        构建，因此去重键必须以版本号为先。
+
+        Args:
+            info: 检查结果快照。
+
+        Returns:
+            str: 去重键；没有可用字段时返回空串。
+        """
         remote = info.remote if isinstance(info.remote, dict) else {}
-        tag = remote.get("tag")
+        tag = remote.get("version")
         if not isinstance(tag, str) or not tag:
-            tag = remote.get("version")
+            tag = remote.get("tag")
         if tag is None or tag == "":
             return ""
         return str(tag)

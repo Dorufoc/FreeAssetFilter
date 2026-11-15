@@ -35,7 +35,8 @@ def build(debug: bool, install: bool) -> int:
     """
     here = Path(__file__).resolve().parent
     # 产物安装位置：<repo>/src/sopeek/core/native/bin/（随包运行时目录）
-    bin_dir = here.parent.parent.parent / "src" / "sopeek" / "core" / "native" / "bin"
+    # src 布局下 crate 位于 <repo>/native/spk_updater，故上溯两级即仓库根。
+    bin_dir = here.parent.parent / "src" / "sopeek" / "core" / "native" / "bin"
 
     command: list[str] = ["cargo", "build", "--manifest-path", str(here / "Cargo.toml")]
     if not debug:

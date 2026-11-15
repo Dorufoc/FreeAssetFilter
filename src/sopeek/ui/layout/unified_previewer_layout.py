@@ -754,8 +754,15 @@ class UnifiedPreviewerLayout(QWidget):
         Args:
             file_info: 文件信息字典
         """
-        # 获取预览器类
-        previewer_class = self._get_previewer_class(file_info)
+        # 获取预览器类（导入失败时降级为「无法预览」，并记录日志——冻结包
+        # 缺失预览器模块时没有日志就只剩一个永远不加载的占位区，无法排查）
+        try:
+            previewer_class = self._get_previewer_class(file_info)
+        except Exception as exc:  # noqa: BLE001 - 预览器导入失败不影响其余 UI
+            warning(
+                f"预览器导入失败（{file_info.get('path', '')}）: {exc}"
+            )
+            previewer_class = None
         if previewer_class is None:
             previewer_class = UnsupportedPreviewerLayout
         
@@ -800,8 +807,12 @@ class UnifiedPreviewerLayout(QWidget):
                 # 添加到布局
                 if self._content_layout is not None:
                     self._content_layout.addWidget(self._current_preview_widget)
-            except Exception:  # noqa: BLE001
-                # 创建失败，显示占位符
+            except Exception as exc:  # noqa: BLE001
+                # 创建失败，显示占位符（必须留日志：静默吞掉会让打包环境
+                # 的预览器缺失表现为「预览区永远空白」而难以定位）
+                warning(
+                    f"预览器创建失败（{previewer_class.__name__}）: {exc}"
+                )
                 self._show_placeholder()
                 return
         
