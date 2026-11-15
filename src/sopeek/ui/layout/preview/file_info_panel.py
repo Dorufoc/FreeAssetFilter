@@ -10,7 +10,9 @@
 - 底侧常驻两行小字入口（滚动区外固定）：「详细信息」「哈希值」——
   独立展开/收起、独立计算、互不触发；展开内容（含 EXIF 常用子集与
   「展开全部 N 条标签」命中链接）作为画布区块追加并自动滚到底部。
-- 单击某字段值 = 复制该值（右上角短暂提示）；右键 = 复制该字段/复制全部。
+- 单击某字段值 = 复制该值；右键单击信息区 = 复制全部信息。两者都在底部
+  折叠入口行居中弹出「✓ 已复制 / ✓ 已复制全部信息」短暂提示（无右键菜单），
+  提示以淡入淡出过渡显隐（受 ``appearance.animations.copy_toast`` 开关门控）。
 - 哈希展开时画布内自绘细进度条与百分比。
 - 全部耗时采集在工作线程执行；切换文件/清空后旧结果作废（令牌守卫）；
   哈希与详细信息（不含 EXIF）写入共享缓存 data/file_info_cache.json。
@@ -28,12 +30,14 @@ from typing import Any, Dict, List, Optional, Tuple
 import sopeek.ui  # noqa: F401  (副作用：把 sopeek/ui 加入 sys.path)
 
 from sopeek.utils.app_logger import debug
-from components.styled_context_menu import StyledContextMenu
+from components.icon_utils import svg_tinted_pixmap
 from components.styled_scroll_area import StyledScrollArea, StyledScrollBar
 from PySide6.QtCore import (
+    QEasingCurve,
     QEvent,
     QObject,
     QPoint,
+    QPropertyAnimation,
     QRect,
     QRunnable,
     QSize,
@@ -45,6 +49,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QMouseEvent, QPainter
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QSizePolicy,
@@ -57,6 +62,7 @@ from theme import tm
 from sopeek.core.native import api as _native_api
 from sopeek.services import file_info_service as fis
 from sopeek.ui.theme.app_stylesheet import register_widget_qss
+from sopeek.utils.animation_settings import is_animation_enabled
 
 # 注：耗时采集走 QThreadPool 全局池（QRunnable 用完即弃）；面板持有在途
 # 任务引用（``self._tasks``）防 GC，切文件时协作式取消 + 令牌守卫，无
@@ -1085,27 +1091,12 @@ class _InfoCanvas(QWidget):
         super().mouseReleaseEvent(event)
 
     def contextMenuEvent(self, event) -> None:  # noqa: N802
-        pos = event.pos()
-        row = self._row_at(pos)
-        menu = StyledContextMenu(parent=self)
-        if row is not None:
-            value = row.value
+        """右键单击信息区 = 复制全部信息（不弹菜单，与双击语义合并后的唯一入口）。
 
-            def _copy_field() -> None:
-                QApplication.clipboard().setText(value)
-                self._panel._show_copy_toast()
-
-            def _copy_path() -> None:
-                QApplication.clipboard().setText(str(self._panel._summary.get("path", "")))
-                self._panel._show_copy_toast()
-
-            menu.add_item("复制该字段", callback=_copy_field)
-            if row.label != "文件路径":
-                menu.add_separator()
-                menu.add_item("复制文件路径", callback=_copy_path)
-        menu.add_separator()
-        menu.add_item("复制全部信息", callback=self._panel._copy_all)
-        menu.exec(event.globalPos())
+        命中范围为整个画布（含空白区/分区标题）：菜单已移除，若只在命中
+        字段行时才响应，右键空白处会出现「点了没反应」的空手感。
+        """
+        self._panel._copy_all()
         event.accept()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
@@ -1144,6 +1135,10 @@ class FileInfoPanel(QWidget):
 
     _HASH_LABELS = ("MD5", "SHA1", "SHA256")
     _TOAST_INTERVAL_MS = 3000  # 「已复制」提示停留时长（连续复制时重置计时）
+    _TOAST_ICON_SIZE = 12  # 对勾图标边长（px，固定值，与 12px 文案同视觉重量）
+    _TOAST_ICON_GAP = 4  # 图标与文案间距（px）
+    _TOAST_FADE_IN_MS = 140  # 提示淡入时长（ms）
+    _TOAST_FADE_OUT_MS = 220  # 提示淡出时长（ms，比淡入略慢更柔和）
     #: 最小宽度参考值：修改时间行完整单行显示口径（"0000-00-00 00:00"）
     _MIN_WIDTH_VALUE_TEXT = "0000-00-00 00:00"
     #: 最小宽度兜底标签（无文件时标签列宽的基准）
@@ -1235,10 +1230,30 @@ class FileInfoPanel(QWidget):
         fold_layout.addWidget(self._hash_link)
         root.addWidget(self._fold_bar)
 
-        # 「已复制」提示：居中叠在折叠入口行上方
-        self._toast_label = QLabel("", self._fold_bar)
-        self._toast_label.hide()
+        # 「已复制」提示：居中叠在折叠入口行上方（图标 + 文案整组居中）
+        # 图标与文案装进同一个容器，整组共用一个 QGraphicsOpacityEffect，
+        # 淡入淡出只改一处 opacity，不会出现图标/文字错帧。
+        self._toast = QWidget(self._fold_bar)
+        self._toast.hide()
+        self._toast.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        toast_layout = QHBoxLayout(self._toast)
+        toast_layout.setContentsMargins(0, 0, 0, 0)
+        toast_layout.setSpacing(self._TOAST_ICON_GAP)
+
+        self._toast_icon = QLabel("", self._toast)
+        self._toast_icon.setFixedSize(self._TOAST_ICON_SIZE, self._TOAST_ICON_SIZE)
+        self._toast_icon.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        toast_layout.addWidget(self._toast_icon, 0, Qt.AlignVCenter)
+
+        self._toast_label = QLabel("", self._toast)
         self._toast_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        toast_layout.addWidget(self._toast_label, 0, Qt.AlignVCenter)
+
+        self._toast_effect = QGraphicsOpacityEffect(self._toast)
+        self._toast_effect.setOpacity(0.0)
+        self._toast.setGraphicsEffect(self._toast_effect)
+        self._toast_fade: Optional[QPropertyAnimation] = None
+
         self._toast_timer = QTimer(self)
         self._toast_timer.setSingleShot(True)
         self._toast_timer.setInterval(self._TOAST_INTERVAL_MS)
@@ -1267,6 +1282,7 @@ class FileInfoPanel(QWidget):
     def set_file(self, file_info: Optional[dict]) -> None:
         """切换预览文件；None 表示清空。"""
         self.stop()
+        self._hide_copy_toast_immediately()
         self._file_token += 1
         self._file_info = dict(file_info) if file_info else None
         self._summary = {"name": "", "path": ""}
@@ -1570,29 +1586,138 @@ class FileInfoPanel(QWidget):
         self._toast_label.setStyleSheet(
             f"color: {color}; font-size: 12px; background: transparent;"
         )
+        self._refresh_toast_icon()
 
-    def _show_copy_toast(self) -> None:
+    def _toast_icon_size(self) -> int:
+        """对勾图标边长（固定 ``_TOAST_ICON_SIZE``，比 12px 文案略小更轻盈）。
+
+        固定值而非随折叠行高自适应：折叠行仅 12px，自适应会把图标顶到与
+        文案等高的 12px，视觉上偏大。
+
+        Returns:
+            int: 边长 px。
+        """
+        return self._TOAST_ICON_SIZE
+
+    def _refresh_toast_icon(self) -> None:
+        """按当前主题次要文字色重绘 toast 前置对勾图标（缺失时静默降级为纯文字）。"""
+        if not hasattr(self, "_toast_icon"):
+            return
+        size = self._toast_icon_size()
+        pixmap = svg_tinted_pixmap("check", size, _fold_text_color())
+        if pixmap.isNull():
+            self._toast_icon.clear()
+            self._toast_icon.hide()
+            return
+        self._toast_icon.setFixedSize(size, size)
+        self._toast_icon.setPixmap(pixmap)
+
+    def _should_animate_toast(self) -> bool:
+        """返回是否播放提示淡入淡出（面板可见 + 全局动画开关开启）。"""
+        if not self.isVisible():
+            return False
+        return is_animation_enabled("copy_toast", default=True)
+
+    def _stop_toast_fade(self) -> None:
+        """停止并回收在途淡入淡出动画。"""
+        animation = self._toast_fade
+        if animation is not None:
+            self._toast_fade = None
+            animation.stop()
+            animation.deleteLater()
+
+    def _fade_toast(self, target: float, duration_ms: int, on_finished=None) -> None:
+        """把提示整组的不透明度动画到 *target*。
+
+        Args:
+            target: 目标不透明度（0.0~1.0）。
+            duration_ms: 时长（ms）。
+            on_finished: 动画结束回调（可选）；先释放动画引用再回调，
+                避免回调里对「正在 finished 的动画」再 stop/deleteLater。
+        """
+        self._stop_toast_fade()
+        animation = QPropertyAnimation(self._toast_effect, b"opacity", self)
+        animation.setDuration(max(0, int(duration_ms)))
+        # 缓动沿用全项目统一的 Cubic 系（淡入 OutCubic、淡出 InCubic），
+        # 不使用弹簧曲线。
+        animation.setEasingCurve(
+            QEasingCurve.OutCubic if target > 0.5 else QEasingCurve.InCubic
+        )
+        animation.setStartValue(float(self._toast_effect.opacity()))
+        animation.setEndValue(float(target))
+
+        def _release() -> None:
+            if self._toast_fade is animation:
+                self._toast_fade = None
+            animation.deleteLater()
+            if on_finished is not None:
+                on_finished()
+
+        animation.finished.connect(_release)
+        self._toast_fade = animation
+        animation.start()
+
+    def _show_copy_toast(self, text: str = "已复制") -> None:
+        """在折叠入口行居中显示「✓ + 文案」提示（淡入，连续触发时重置计时）。
+
+        Args:
+            text: 提示文案；单击条目为「已复制」，复制全部为「已复制全部信息」。
+        """
         if not hasattr(self, "_toast_label"):
             return
-        self._toast_label.setText("\u5df2\u590d\u5236")
+        self._toast_label.setText(text)
+        self._refresh_toast_icon()
         self._toast_timer.stop()
         self._toast_timer.start()
-        self._toast_label.show()
-        self._toast_label.raise_()
+
+        self._toast.adjustSize()
+        self._toast.show()
+        self._toast.raise_()
         self._position_toast()
+        if self._should_animate_toast():
+            # 反向打断淡出时从当前不透明度续接，避免跳回全透明。
+            self._fade_toast(1.0, self._TOAST_FADE_IN_MS)
+        else:
+            self._stop_toast_fade()
+            self._toast_effect.setOpacity(1.0)
         QTimer.singleShot(0, self._position_toast)
 
     def _hide_copy_toast(self) -> None:
-        self._toast_label.hide()
+        """淡出并隐藏提示（动画关闭或面板不可见时立即隐藏）。"""
+        self._toast_timer.stop()
+        if not hasattr(self, "_toast") or self._toast.isHidden():
+            return
+        if not self._should_animate_toast():
+            self._hide_copy_toast_immediately()
+            return
+        self._fade_toast(0.0, self._TOAST_FADE_OUT_MS, self._on_toast_faded_out)
+
+    def _hide_copy_toast_immediately(self) -> None:
+        """立即隐藏提示并复位不透明度（切文件/清空/动画关闭路径）。"""
+        self._stop_toast_fade()
+        if not hasattr(self, "_toast"):
+            return
+        self._toast.hide()
+        self._toast_effect.setOpacity(0.0)
+
+    def _on_toast_faded_out(self) -> None:
+        """淡出完成：隐藏提示并复位不透明度（供下次淡入使用）。"""
+        self._stop_toast_fade()
+        self._toast.hide()
+        self._toast_effect.setOpacity(0.0)
 
     def _position_toast(self) -> None:
-        if not self._toast_label.isVisible():
+        """图标 + 文案整组在折叠入口行内水平/垂直居中。"""
+        # 用 isHidden() 而非 isVisible()：面板本身尚未 show() 时子控件
+        # isVisible() 恒为 False，会把首次定位整段跳过（离屏测试亦如此）。
+        if self._toast.isHidden():
             return
-        self._toast_label.adjustSize()
+        self._toast.adjustSize()
         bar_width = self._fold_bar.width()
-        x = max(0, (bar_width - self._toast_label.width()) // 2)
-        y = max(0, (self._fold_bar.height() - self._toast_label.height()) // 2)
-        self._toast_label.move(x, y)
+        bar_height = self._fold_bar.height()
+        x = max(0, (bar_width - self._toast.width()) // 2)
+        y = max(0, (bar_height - self._toast.height()) // 2)
+        self._toast.move(x, y)
 
     # ------------------------------------------------------------------
     # 悬浮滚动条
@@ -1663,6 +1788,9 @@ class FileInfoPanel(QWidget):
     # ------------------------------------------------------------------
 
     def _copy_all(self) -> None:
+        """复制当前文件的全部信息（右键单击信息区触发），并提示已复制。"""
+        if self._file_info is None:
+            return
         lines = ["文件信息", "=" * 20]
         lines.append(f"文件名: {self._summary['name']}")
         lines.append(f"文件路径: {self._summary['path']}")
@@ -1677,6 +1805,7 @@ class FileInfoPanel(QWidget):
             for label in self._HASH_LABELS:
                 lines.append(f"{label}: {self._hash['values'].get(label, fis.UNAVAILABLE)}")
         QApplication.clipboard().setText("\n".join(lines))
+        self._show_copy_toast("已复制全部信息")
 
     def _scroll_to_bottom(self) -> None:
         def _do_scroll() -> None:

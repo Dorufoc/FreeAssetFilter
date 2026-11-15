@@ -215,8 +215,8 @@ All splitters are draggable; **double-clicking any splitter** resets the entire 
 | Left drag (empty area) | Rubber-band select multiple files |
 | Right click a card | Add to the asset pool |
 | Right click a selected card | Batch-add to the asset pool |
-| Right click file info | Copy that entry |
-| Right double-click any file info | Copy all entries |
+| Left click file info | Copy that entry |
+| Right click file info | Copy all info |
 | Drag a file onto the asset pool / floating window | Add to the asset pool |
 
 ### Keyboard shortcuts (video / audio)
