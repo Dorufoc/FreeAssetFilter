@@ -1,7 +1,7 @@
 """检查更新入口控制器。
 
 保留单弹窗检查更新流程的既有契约（测试与后续入口可复用）。当前主窗口
-标题栏精简后不再提供该入口；设置页「关于」页使用内联更新会话
+标题栏精简后不再提供该入口；设置页「检查更新」页使用内联更新会话
 （:mod:`sopeek.ui.update_inline`），不走本控制器。
 
 职责边界：
@@ -30,7 +30,7 @@ MIN_CHECKING_VISIBLE_MS = 250
 
 
 class UpdateEntryController(QObject):
-    """设置页「关于」页的检查更新编排器。
+    """设置页「检查更新」页（旧弹窗入口）的检查更新编排器。
 
     Attributes:
         MIN_CHECKING_VISIBLE_MS: 检查中状态的最短展示时长（毫秒）。

@@ -1,13 +1,15 @@
-"""关于页内联更新检查/下载编排。
+"""设置页「检查更新」页的内联更新检查/下载编排。
 
-关于页不再打开更新中心弹窗，而是通过本模块的进程级 session 直接订阅
-``UpdateService``：检查中、检查结果与自动下载进度都通过信号交给关于页
+检查更新页不再打开更新中心弹窗，而是通过本模块的进程级 session 直接订阅
+``UpdateService``：检查中、检查结果与自动下载进度都通过信号交给设置页
 内联展示。
 
 设计边界：
 
 * session 不持有任何 QWidget，设置窗口关闭后仍可继续下载并登记待安装更新；
 * 只认领 ``manual=True`` 且 request id 匹配的检查结果；
+* 正式版更新保持自动下载；GitHub 预发布版（测试版）只进入等待确认状态，
+  由设置页展示版本与更新说明后，用户选择「下载更新」或「跳过此版本」；
 * 下载完成后只写 ``pending_update.json``，实际安装由下次启动的引导层完成；
 * 保持 :class:`sopeek.ui.update_entry.UpdateEntryController` 的单弹窗契约
   不变；本模块不改变其行为。
@@ -32,9 +34,26 @@ STATE_IDLE = "idle"
 STATE_CHECKING = "checking"
 STATE_UP_TO_DATE = "up_to_date"
 STATE_CHECK_FAILED = "check_failed"
+STATE_UPDATE_AVAILABLE = "update_available"
+STATE_UPDATE_SKIPPED = "update_skipped"
 STATE_DOWNLOADING = "downloading"
 STATE_DOWNLOADED = "downloaded"
 STATE_DOWNLOAD_FAILED = "download_failed"
+
+
+def _is_prerelease_update(info: object) -> bool:
+    """判断更新结果是否为 GitHub 预发布版（测试版）。
+
+    优先读取原生更新器返回的 ``remote.prerelease``；缺失时回退按版本号
+    中的连字符（如 ``1.0.0-alpha.5`` / ``2.0.0.nightly-20261114``）判断。
+    """
+    remote = getattr(info, "remote", None)
+    if not isinstance(remote, dict):
+        remote = {}
+    if bool(remote.get("prerelease")):
+        return True
+    version = str(remote.get("version") or remote.get("tag") or "").strip()
+    return "-" in version
 
 
 def _positive_int(value: Any) -> int:
@@ -58,6 +77,8 @@ class InlineUpdateSession(QObject):
     checking = Signal()
     up_to_date = Signal(object)
     check_failed = Signal(object)
+    update_available = Signal(object)
+    update_skipped = Signal(object)
     download_started = Signal(object)
     download_progress = Signal(int, int)
     downloaded = Signal(object, str)
@@ -107,9 +128,11 @@ class InlineUpdateSession(QObject):
 
         Args:
             include_prerelease: 是否把 GitHub 预发布版纳入检查。默认 ``False``，
-                关于页只有在用户于确认弹窗中勾选「获取测试版」时才传 ``True``。
+                设置页「检查更新」页按「获取测试版」开关传入。
         """
         if self._disposed or self._state == STATE_CHECKING:
+            return
+        if self._state == STATE_UPDATE_AVAILABLE:
             return
         if self._download_id is not None:
             return
@@ -161,6 +184,42 @@ class InlineUpdateSession(QObject):
             "total": self._total,
             "installer_path": self._installer_path,
         }
+
+    def start_pending_download(self) -> bool:
+        """下载当前等待确认的测试版更新。
+
+        Returns:
+            bool: 存在等待确认的更新并已派发下载返回 ``True``；否则 ``False``。
+        """
+        if self._disposed or self._state != STATE_UPDATE_AVAILABLE:
+            return False
+        info = self._info
+        if info is None or self._download_id is not None:
+            return False
+        self._state = STATE_DOWNLOADING
+        self._error = None
+        self._downloaded = 0
+        self._total = 0
+        self._installer_path = ""
+        self._start_download(info)
+        return True
+
+    def skip_pending_update(self) -> bool:
+        """跳过当前等待确认的测试版更新，不下载、不安装。
+
+        Returns:
+            bool: 存在等待确认的更新并已跳过返回 ``True``；否则 ``False``。
+        """
+        if self._disposed or self._state != STATE_UPDATE_AVAILABLE:
+            return False
+        info = self._info
+        self._state = STATE_UPDATE_SKIPPED
+        self._error = None
+        self._downloaded = 0
+        self._total = 0
+        self._installer_path = ""
+        self.update_skipped.emit(info)
+        return True
 
     def dispose(self) -> None:
         """断开服务订阅并标记会话不可用（幂等）。"""
@@ -312,9 +371,18 @@ class InlineUpdateSession(QObject):
             return
 
         if bool(getattr(info, "update_available", False)):
-            self._state = STATE_DOWNLOADING
             self._info = info
-            self._start_download(info)
+            self._error = None
+            self._downloaded = 0
+            self._total = 0
+            self._installer_path = ""
+            if _is_prerelease_update(info):
+                # 测试版不自动下载：交由设置页展示版本/说明并让用户确认。
+                self._state = STATE_UPDATE_AVAILABLE
+                self.update_available.emit(info)
+            else:
+                self._state = STATE_DOWNLOADING
+                self._start_download(info)
             return
 
         self._state = STATE_UP_TO_DATE
@@ -510,6 +578,8 @@ __all__ = [
     "STATE_DOWNLOADING",
     "STATE_DOWNLOAD_FAILED",
     "STATE_IDLE",
+    "STATE_UPDATE_AVAILABLE",
+    "STATE_UPDATE_SKIPPED",
     "STATE_UP_TO_DATE",
     "get_inline_update_session",
     "get_inline_update_session_if_exists",

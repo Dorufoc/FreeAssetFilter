@@ -107,6 +107,7 @@ class StyledButton(QPushButton):
         loading: bool = False,
         parent=None,
         icon_position: str = "left",
+        icon_anchor: str = "",
     ):
         # 兼容旧调用：部分旧布局曾把 SVG 路径作为第一个位置参数传入。
         # 路径必须进入 SVG 字段，绝不能作为按钮文字显示。
@@ -127,6 +128,7 @@ class StyledButton(QPushButton):
         self._block = block
         self._loading = loading
         self._icon_position = icon_position if icon_position in ("left", "right") else "left"
+        self._icon_anchor = str(icon_anchor or "")
         self._state = "normal"
         self._hovered = False
         self._pressed = False
@@ -337,7 +339,17 @@ class StyledButton(QPushButton):
                 fm = QFontMetrics(font)
                 text_w = fm.horizontalAdvance(text)
                 padding = config["padding_h"] * 2
-                self.setMinimumWidth(text_w + padding)
+                icon_extra = 0
+                if self._svg_icon_path:
+                    # SVG 图标 + 文字：图标与字号接近；锚点内嵌时左右各留 4px。
+                    icon_size = config["font_size"] + 1
+                    if self._icon_anchor and self._icon_anchor in text:
+                        icon_extra = icon_size + 8
+                    else:
+                        icon_extra = icon_size + 6
+                elif self._icon:
+                    icon_extra = max(config["font_size"], 14) + 8
+                self.setMinimumWidth(text_w + padding + icon_extra)
 
     def _get_colors(self) -> dict:
         color_map = self._get_color_map()
@@ -612,26 +624,107 @@ class StyledButton(QPushButton):
                 )
             
             elif self._svg_icon_path:
-                # SVG 图标按钮（完全矢量渲染，无位图转换）
-                icon_size = max(font_size, 16)
-                # 计算图标绘制区域，居中显示
-                icon_rect = QRectF(cx - icon_size / 2, cy - icon_size / 2, icon_size, icon_size)
-                
-                # 获取带颜色的 SVG 内容
+                # SVG 图标按钮：支持「纯图标」与「图标 + 文字」两种形态。
                 colored_svg = self._get_colored_svg_content(text_color)
-                
+                renderer = None
                 if colored_svg:
-                    # 检查缓存中是否有该颜色的渲染器（key 含主题维度，见 _get_colored_svg_content）
                     color_key = (text_color.name(), tm.is_dark_theme())
                     if color_key not in self._svg_content_cache:
-                        # 创建新的渲染器（动态修改颜色的 SVG）
-                        renderer = QSvgRenderer(colored_svg.encode('utf-8'))
-                        if renderer.isValid():
-                            self._svg_content_cache[color_key] = renderer
-                    
-                    # 使用缓存的渲染器直接渲染（矢量，无锯齿）
+                        candidate = QSvgRenderer(colored_svg.encode("utf-8"))
+                        if candidate.isValid():
+                            self._svg_content_cache[color_key] = candidate
                     renderer = self._svg_content_cache.get(color_key)
-                    if renderer:
+
+                if self.text():
+                    # 图标缩到与文字接近的大小，并按文字大写字母的视觉中心对齐，
+                    # 避免 SVG 图标相对文字偏高/偏低。
+                    icon_size = font_size + 1
+                    font_text = QFont(
+                        "Microsoft YaHei UI", font_size, QFont.Normal
+                    )
+                    fm_text = QFontMetrics(font_text)
+                    text_width = fm_text.horizontalAdvance(self.text())
+                    text_top = btn_y + (btn_h - fm_text.height()) / 2.0
+                    baseline = text_top + fm_text.ascent()
+                    icon_center_y = baseline - fm_text.capHeight() / 2.0
+
+                    anchor_index = (
+                        self.text().find(self._icon_anchor)
+                        if self._icon_anchor
+                        else -1
+                    )
+                    if anchor_index >= 0:
+                        # 锚点内嵌：把图标插到指定文字前面（如「前往[图标]Github…」）。
+                        prefix = self.text()[:anchor_index]
+                        suffix = self.text()[anchor_index:]
+                        prefix_w = fm_text.horizontalAdvance(prefix)
+                        suffix_w = fm_text.horizontalAdvance(suffix)
+                        icon_gap = 4
+                        content_w = (
+                            prefix_w + icon_gap + icon_size + icon_gap + suffix_w
+                        )
+                        start_x = cx - content_w / 2.0
+                        prefix_x = start_x
+                        icon_x = prefix_x + prefix_w + icon_gap
+                        text_x = icon_x + icon_size + icon_gap
+                        if renderer is not None:
+                            renderer.render(
+                                painter,
+                                QRectF(
+                                    icon_x,
+                                    icon_center_y - icon_size / 2.0,
+                                    icon_size,
+                                    icon_size,
+                                ),
+                            )
+                        painter.setFont(font_text)
+                        painter.setPen(text_color)
+                        painter.drawText(
+                            QRectF(prefix_x, btn_y, prefix_w, btn_h),
+                            Qt.AlignLeft | Qt.AlignVCenter,
+                            prefix,
+                        )
+                        painter.drawText(
+                            QRectF(text_x, btn_y, suffix_w, btn_h),
+                            Qt.AlignLeft | Qt.AlignVCenter,
+                            suffix,
+                        )
+                    else:
+                        gap = 6
+                        content_w = icon_size + gap + text_width
+                        start_x = cx - content_w / 2.0
+                        if self._icon_position == "right":
+                            text_x = start_x
+                            icon_x = start_x + text_width + gap
+                        else:
+                            icon_x = start_x
+                            text_x = start_x + icon_size + gap
+                        if renderer is not None:
+                            renderer.render(
+                                painter,
+                                QRectF(
+                                    icon_x,
+                                    icon_center_y - icon_size / 2.0,
+                                    icon_size,
+                                    icon_size,
+                                ),
+                            )
+                        painter.setFont(font_text)
+                        painter.setPen(text_color)
+                        painter.drawText(
+                            QRectF(text_x, btn_y, text_width, btn_h),
+                            Qt.AlignLeft | Qt.AlignVCenter,
+                            self.text(),
+                        )
+                else:
+                    icon_size = max(font_size, 16)
+                    icon_rect = QRectF(
+                        cx - icon_size / 2,
+                        cy - icon_size / 2,
+                        icon_size,
+                        icon_size,
+                    )
+                    if renderer is not None:
                         renderer.render(painter, icon_rect)
 
             elif self.text():

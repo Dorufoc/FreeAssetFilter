@@ -4,7 +4,7 @@
 只覆盖远端 ``main-v2`` 在这一轮里新增的两条行为，取代原先被整体删除的
 1654 行 ``tests/unit/services/test_update_service.py``：
 
-* ``include_prerelease`` 原样透传给原生桥（关于页「获取测试版」勾选状态）；
+* ``include_prerelease`` 原样透传给原生桥（检查更新页「获取测试版」开关状态）；
 * 仓库 404 时按 ``REPO_CANDIDATES`` 回退，非 404 错误不回退。
 
 测试坚持从公开信号 ``check_finished`` 观察结果，并用 ``FakeBridge`` 替代

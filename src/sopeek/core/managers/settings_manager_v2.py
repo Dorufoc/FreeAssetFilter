@@ -605,7 +605,7 @@ DEFAULT_SETTINGS_V2: Dict[str, Any] = {
         # 由 MainWindow._load_general_toggles 读取；提交时经
         # MainWindow.set_floating_pool_snap_enabled 即时生效。
         "floating_pool_snap_enabled": True,
-        # 启动时检查更新（设置页「通用」分类，默认开启）：应用启动后
+        # 启动时检查更新（设置页「检查更新」页，默认开启）：应用启动后
         # 静默检查新版本（每 24 小时最多一次）。启动策略每次直读该键，
         # 提交时经 SettingLayout._submit_settings 落盘。
         "check_updates_on_startup": True,
