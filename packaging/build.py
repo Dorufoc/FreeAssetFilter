@@ -351,6 +351,26 @@ def collect_hidden_imports() -> List[str]:
         "shiboken6",
     ]
 
+    # 预览器布局模块（``sopeek/ui/layout/preview/*.py``）：``PreviewerRegistry``
+    # 用 ``importlib.import_module`` 按字符串加载这些模块，PyInstaller 的静态
+    # 分析看不到这层字符串映射，必须显式声明。缺失时冻结包内并不报错退出，
+    # 而是在 ``UnifiedPreviewerLayout._load_preview`` 抛 ModuleNotFoundError，
+    # 表现为「任何文件都无法预览：预览区恒为未加载状态、文件信息栏空白」，
+    # 源码运行却完全正常（极易漏测）。清单直接从注册表派生，新增预览器自动纳入。
+    from sopeek.services.previewer_registry import PreviewerRegistry
+
+    preview_modules = {
+        module_path for module_path, _cls in PreviewerRegistry._EXTENSION_MAP.values()
+    }
+    # 文件夹预览器由 ``file_info["is_dir"]`` 分支触发，不在扩展名映射里。
+    preview_modules.add("sopeek.ui.layout.preview.folder_previewer_layout")
+    for _module in sorted(preview_modules):
+        if importlib.util.find_spec(_module) is not None:
+            hidden_imports.append(_module)
+            print_info(f"收集预览器隐藏导入: {_module}")
+        else:
+            print_warning(f"跳过缺失的预览器模块: {_module}")
+
     # Office 转换后端（T12 / Metis B1-E10）：office_converter.py 的这些第三方库
     # 都在方法内部惰性导入（docx→mammoth、pptx→python-pptx、xlsx→openpyxl、
     # COM→pythoncom/win32com.client）。PyInstaller 静态分析对函数体内 import 的

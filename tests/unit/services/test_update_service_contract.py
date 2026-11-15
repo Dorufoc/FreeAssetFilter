@@ -202,6 +202,85 @@ class TestIncludePrerelease:
         assert bridge.check_calls[0]["include_prerelease"] is True
 
 
+class TestStartupChannel:
+    """启动检查的通道必须跟随「已安装构建」，而不是无条件包含测试版。"""
+
+    @pytest.mark.parametrize(
+        ("version", "expected"),
+        [
+            ("2.0.0", False),
+            ("v2.0.0", False),
+            ("2.0.0.nightly-20261114", True),
+            ("v2.0.0.nightly-20261114", True),
+            ("1.0.0-alpha.5", True),
+            ("", False),
+        ],
+    )
+    def test_prerelease_detection(self, version: str, expected: bool) -> None:
+        """夜间版与语义化预发布版都算预发布构建。"""
+        assert update_service_module._is_prerelease_build(version) is expected
+
+    @pytest.mark.parametrize(
+        ("local_version", "expected"),
+        [("2.0.0", False), ("2.0.0.nightly-20261114", True)],
+    )
+    def test_startup_check_follows_installed_build(
+        self,
+        service_factory: Callable[..., tuple[UpdateService, FakeBridge]],
+        monkeypatch: pytest.MonkeyPatch,
+        local_version: str,
+        expected: bool,
+    ) -> None:
+        """启动检查按本地构建的通道派发 ``include_prerelease``。"""
+        service, bridge = service_factory()
+        recorder = Recorder(service)
+        monkeypatch.setattr(
+            update_service_module, "get_local_version", lambda: local_version
+        )
+        monkeypatch.setattr(
+            update_service_module.update_startup,
+            "should_check_on_startup",
+            lambda now=None: True,
+        )
+        monkeypatch.setattr(
+            update_service_module.update_startup,
+            "record_check_attempt",
+            lambda now=None: True,
+        )
+
+        request_id = service.maybe_startup_check()
+
+        assert isinstance(request_id, str) and request_id
+        assert _pump_until(lambda: len(recorder.check_finished) == 1)
+        assert bridge.check_calls[0]["include_prerelease"] is expected
+
+    def test_notification_dedupe_prefers_version(self) -> None:
+        """夜间版固定标签 ``nightly`` 无法去重，去重键必须用版本号。"""
+        info = UpdateInfo(
+            local_version="2.0.0",
+            local_date="2026-11-01",
+            update_available=True,
+            reason="newer_version",
+            skipped_newer_tag=None,
+            remote={"version": "2.0.0.nightly-20261114", "tag": "nightly"},
+            asset=None,
+        )
+        assert UpdateService._notification_tag(info) == "2.0.0.nightly-20261114"
+
+    def test_notification_tag_falls_back_to_release_tag(self) -> None:
+        """缺少版本号时回退发布标签。"""
+        info = UpdateInfo(
+            local_version="1.0.0",
+            local_date=None,
+            update_available=True,
+            reason="newer_version",
+            skipped_newer_tag=None,
+            remote={"tag": "v9.9.9"},
+            asset=None,
+        )
+        assert UpdateService._notification_tag(info) == "v9.9.9"
+
+
 class TestRepoFallback:
     """同名仓库 404 时回退到官方仓库；其他错误不回退。"""
 

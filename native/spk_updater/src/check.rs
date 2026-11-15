@@ -510,6 +510,42 @@ mod tests {
     }
 
     #[test]
+    fn nightly_local_version_is_comparable_against_the_nightly_release() {
+        let body = r#"[
+            {"tag_name":"nightly","name":"Nightly 2026-11-14","draft":false,"prerelease":true,
+             "published_at":"2026-11-14T05:10:53Z",
+             "body":"| 项 | 值 |\n| --- | --- |\n| 构建日期 | `2026-11-14` |\n",
+             "assets":[
+               {"name":"Sopeek-2.0.0.nightly-20261114-windows-x64.exe","size":156450341,
+                "digest":"sha256:fa7448b2ea7b4edd6c221a5e9312616e78b6b2cd272bf963393bfef26469e274",
+                "browser_download_url":"https://github.com/Dorufoc/FreeAssetFilter/releases/download/nightly/Sopeek-2.0.0.nightly-20261114-windows-x64.exe"}]}
+        ]"#;
+        let (base, rx, handle) = start_stub(200, body.to_owned(), Vec::new());
+        let value = json!({
+            "repo": REPO,
+            "current_version": "2.0.0.nightly-20261114",
+            "current_date": "2026-11-13",
+            "include_prerelease": true,
+            "api_base": base,
+        });
+        let parsed = CheckParams::from_value(&value).expect("valid params");
+
+        let result = execute_check(&parsed).expect("a nightly install must be comparable");
+
+        let _ = rx.recv_timeout(Duration::from_secs(5));
+        handle.join().expect("stub thread");
+
+        assert_eq!(result["remote"]["version"], json!("2.0.0.nightly-20261114"));
+        assert_eq!(result["remote"]["tag"], json!("nightly"));
+        assert_eq!(
+            result["asset"]["name"],
+            json!("Sopeek-2.0.0.nightly-20261114-windows-x64.exe")
+        );
+        assert_eq!(result["reason"], json!("rebuild"));
+        assert_eq!(result["update_available"], json!(true));
+    }
+
+    #[test]
     fn protocol_check_command_dispatches_to_check() {
         let body = fixture_body(&["v1.0.0-alpha.6"]);
         let (base, rx, handle) = start_stub(200, body, Vec::new());

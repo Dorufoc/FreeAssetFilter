@@ -125,10 +125,12 @@ def record_check_attempt(now: Optional[float] = None) -> bool:
 
 
 def record_notified_tag(tag: str) -> bool:
-    """记录已提醒过的发布标签。
+    """记录已提醒过的版本去重键。
 
     Args:
-        tag: 发布标签（优先 ``remote["tag"]``，缺失时回退版本号）。
+        tag: 去重键（由 ``UpdateService._notification_tag`` 产生，优先远端
+            版本号，缺失时回退发布标签；夜间版固定标签 ``nightly`` 无法区分
+            每日构建，因此以版本号为准）。
 
     Returns:
         bool: 状态写入是否成功。
