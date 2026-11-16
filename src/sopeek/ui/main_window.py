@@ -3696,6 +3696,32 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         except (RuntimeError, AttributeError):
             return False
 
+    def _restore_default_focus_if_needed(self) -> None:
+        """主窗口激活且完全没有焦点控件时，把默认焦点落到文件列表。
+
+        Qt 在顶层窗口激活时若 ``focusWidget()`` 为空，会自动聚焦 Tab 顺序
+        第一个可聚焦控件；主窗口里该控件是文件选择器的路径框。用户关闭
+        设置窗/对话框后路径框会因此「被动获焦」。这里在激活事件内显式指定
+        默认落点（文件列表），不改动任何已有焦点。
+
+        仅在无焦点且没有活动弹出窗口时生效；控件未就绪时静默跳过。
+        """
+        try:
+            if getattr(self, "_close_in_progress", False):
+                return
+            if self.focusWidget() is not None:
+                return
+            if QApplication.activePopupWidget() is not None:
+                return
+            selector = self._file_selector
+            if selector is None:
+                return
+            focus_file_list = getattr(selector, "focus_file_list", None)
+            if callable(focus_file_list):
+                focus_file_list()
+        except RuntimeError:
+            pass
+
     def changeEvent(self, event: QEvent) -> None:
         """窗口状态变化：失活时重置文件选择器的方向键导航状态。
 
@@ -3706,6 +3732,12 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             event: 触发的窗口事件。
         """
         super().changeEvent(event)
+        # 从「无焦点」状态重新激活（典型：设置窗/对话框关闭、Alt+Tab 回窗）
+        # 时，Qt 会把焦点自动交给 Tab 顺序第一个可聚焦控件——即路径框。
+        # 在激活的当拍先落到文件列表，避免路径框被动获焦，并保证方向键
+        # 文件导航立即可用；已有焦点时不做任何改动。
+        if event.type() == QEvent.ActivationChange and self.isActiveWindow():
+            self._restore_default_focus_if_needed()
         if (
             event.type() == QEvent.ActivationChange
             and not self.isActiveWindow()
@@ -3893,6 +3925,25 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         # 只处理鼠标按下事件
         if event.type() != QEvent.Type.MouseButtonPress:
             return False
+
+        # 点击路径框以外区域时释放其焦点：NoFocus 功能按钮不会接管焦点，
+        # 若不释放，后续打开/关闭弹窗时 Qt 会把焦点原样还给路径框。
+        # 可聚焦目标在鼠标事件到达前已由 Qt 接管焦点，此处只处理 NoFocus
+        # 控件/空白区域；释放后把默认落点交给文件列表。
+        try:
+            if (
+                not getattr(self, "_close_in_progress", False)
+                and obj.window() is self
+            ):
+                selector = self._file_selector
+                if selector is not None:
+                    release = getattr(
+                        selector, "release_path_focus_on_outside_click", None
+                    )
+                    if callable(release) and release(obj):
+                        selector.focus_file_list()
+        except RuntimeError:
+            pass
 
         # 只处理左键
         if event.button() != Qt.LeftButton:
