@@ -406,6 +406,8 @@ the `version` in `pyproject.toml` only serves local `pip install -e .` and does 
 
 All artifacts are installed back into `src/sopeek/core/native/bin/`
 
+> `cargo build` only produces `native/spk_core/target/release/spk_core.dll`; it does **not** automatically overwrite the runtime directory. The application loads `src/sopeek/core/native/bin/spk_core.dll` first, so copy the artifact manually after building and verify its timestamp/hash. `build.cmd` does not rebuild Rust modules either. A Low-integrity (Low IL) terminal may be unable to write that directory due to no-write-up, leaving the old DLL in use.
+
 ```bash
 # Rust (requires cargo)
 cargo build --release --manifest-path native/spk_core/Cargo.toml

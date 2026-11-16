@@ -408,6 +408,8 @@ pytest tests/unit/utils -v   # 指定目录
 
 产物统一装回 `src/sopeek/core/native/bin/`
 
+> `cargo build` 只生成 `native/spk_core/target/release/spk_core.dll`，**不会**自动覆盖运行时目录。应用优先加载 `src/sopeek/core/native/bin/spk_core.dll`，构建后请手动复制并确认时间戳 / 哈希；`build.cmd` 也不会重新编译 Rust 模块。低完整性（Low IL）终端可能因 no-write-up 无法写入该目录，导致继续运行旧 DLL。
+
 ```bash
 # Rust（需要 cargo）
 cargo build --release --manifest-path native/spk_core/Cargo.toml

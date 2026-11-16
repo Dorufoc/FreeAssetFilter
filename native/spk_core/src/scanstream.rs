@@ -7,7 +7,8 @@
 //!
 //! 行结构与 `spk_scan_directory` 的 7 键一致，**额外带 `attrs`**（Windows
 //! `st_file_attributes` 同源）：UI 侧的隐藏/系统过滤依赖它，缺失会导致
-//! 「打开隐藏文件」开关失效——这是本模块存在的唯一理由。
+//! 「打开隐藏文件」开关失效——这是本模块存在的唯一理由。`attrs` 必须取
+//! 链接自身（`DirEntry::metadata`，不跟随重解析点），不能取目标属性。
 //!
 //! 契约：
 //! * 游标同时存活上限 [`MAX_CURSORS`]，超出返回 0（调用方回退 Python）；
@@ -68,14 +69,9 @@ pub fn next_batch(handle: u64, max: usize) -> Option<Vec<Entry>> {
         };
         // read_dir 迭代项本身失败（罕见）→ 跳过，与整目录扫描语义一致。
         let Ok(dir_entry) = item else { continue };
-        let name = dir_entry.file_name().to_string_lossy().into_owned();
-        let full_path = dir_entry.path();
-        // P2.1：符号链接补一次跟随 stat，其余直接复用 WIN32_FIND_DATA。
-        let meta = match dir_entry.file_type() {
-            Ok(file_type) if file_type.is_symlink() => std::fs::metadata(&full_path),
-            _ => dir_entry.metadata(),
-        };
-        if let Some(entry) = scan::entry_from_metadata(name, full_path, &meta) {
+        // 与整目录扫描共用同一构建入口：junction/符号链接的 attrs 必须
+        // 取链接自身（不跟随目标），否则 Hidden/System 位会丢失。
+        if let Some(entry) = scan::entry_from_dir_entry(&dir_entry) {
             batch.push(entry);
         }
     }

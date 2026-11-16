@@ -115,6 +115,26 @@ def test_update_source_defaults_to_github(manager: SettingsManagerV2) -> None:
     assert DEFAULT_SETTINGS_V2["update"]["source"] == "github"
 
 
+def test_general_hidden_system_flags_round_trip(manager: SettingsManagerV2) -> None:
+    """隐藏/系统文件两个布尔键可持久化，且非布尔值加载时回退 False。"""
+    manager.load()
+    assert manager.set("general.show_hidden_files", True) is True
+    assert manager.set("general.show_system_files", True) is True
+    manager.save()
+
+    reloaded = SettingsManagerV2(manager.file_path)
+    assert reloaded.get("general.show_hidden_files") is True
+    assert reloaded.get("general.show_system_files") is True
+
+    data = json.loads(Path(manager.file_path).read_text(encoding="utf-8"))
+    data["general"]["show_hidden_files"] = "true"
+    data["general"]["show_system_files"] = 1
+    Path(manager.file_path).write_text(json.dumps(data), encoding="utf-8")
+    invalid = SettingsManagerV2(manager.file_path)
+    assert invalid.get("general.show_hidden_files") is False
+    assert invalid.get("general.show_system_files") is False
+
+
 def test_update_source_whitelist_round_trip(manager: SettingsManagerV2) -> None:
     """gitcode 可持久化；非法值在加载合并时回退默认 github。"""
     manager.load()
