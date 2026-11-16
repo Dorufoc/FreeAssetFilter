@@ -638,6 +638,49 @@ def _inactive_color() -> QColor:
     return QColor(tm.mid) if tm.is_dark_theme() else QColor(tm.text_secondary)
 
 
+class _NavContainer(QWidget):
+    """侧栏导航项容器：把行两侧留白上的点击转发给同一行的导航项。
+
+    导航项本身只有行宽减去左右各 12px 留白（例如 220px 侧栏里是
+    196px），高亮条（x=5，宽 3px）和左右留白都不在 item 的热区内。
+    这些区域视觉上属于同一行标签，但此前点击不会命中任何控件，表现为
+    「点标签没反应」。本容器只负责补齐热区：按 y 坐标找到对应行并触发
+    与直接点击 item 完全相同的 ``clicked`` 链路，视觉布局与 hover 绘制
+    保持不变（留白区只切换鼠标指针，不额外画底色）。
+    """
+
+    def __init__(self, sidebar: "StyledSidebar", parent=None) -> None:
+        super().__init__(parent)
+        self._sidebar = sidebar
+        self.setMouseTracking(True)
+
+    def _row_at(self, pos: QPoint):
+        """返回 *pos*（容器坐标）纵向命中的导航项；未命中返回 None。"""
+        for item in self._sidebar._items:
+            geo = item.geometry()
+            if geo.y() <= pos.y() < geo.y() + geo.height():
+                return item
+        return None
+
+    def mousePressEvent(self, event):
+        """左键按在行留白 / 高亮条竖槽时，转发为对应行的选中。"""
+        if event.button() == Qt.LeftButton:
+            item = self._row_at(event.position().toPoint())
+            if item is not None:
+                item.clicked.emit()
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        """留白区也显示可点击指针，避免整行热区与光标反馈不一致。"""
+        item = self._row_at(event.position().toPoint())
+        self.setCursor(
+            Qt.PointingHandCursor if item is not None else Qt.ArrowCursor
+        )
+        super().mouseMoveEvent(event)
+
+
 class StyledSidebar(QWidget):
     """Styled sidebar matching the web component exactly."""
     item_selected = Signal(int, str)
@@ -655,6 +698,10 @@ class StyledSidebar(QWidget):
         self._active_index = -1
         self._items = []
         self._animating = False
+        # 高亮条动画的当前动画组与代际号：连点时取消旧动画并从当前
+        # 视觉位置重新起步，保证最后一次点击的目标不会丢失。
+        self._highlight_anim_group = None
+        self._highlight_anim_generation = 0
         self.setFixedWidth(self.COMPACT_WIDTH if compact else width)
         # 支持透明背景以显示Mica效果，否则使用默认深色背景
         register_widget_qss(self,("background-color: transparent;" if transparent else f"background-color:{tm.surface.name()};"))
@@ -686,7 +733,7 @@ class StyledSidebar(QWidget):
             "#SidebarScroll { border:none; background:transparent; }"))
         register_widget_qss(scroll.viewport(),("background: transparent;"))
 
-        nc = QWidget()
+        nc = _NavContainer(self)
         register_widget_qss(nc,("background: transparent;"))
         nl = QVBoxLayout(nc)
         nl.setContentsMargins(12, 8, 12, 8)
@@ -765,6 +812,9 @@ class StyledSidebar(QWidget):
             ))
         # 紧凑态标题（首字母 logo）以 accent 着色：强调色变化需重注册。
         self._apply_title_style(self._compact)
+        # 主题/字号变化可能改变项几何；无动画时顺手把高亮条对齐到活动项。
+        if not self._animating:
+            self._sync_highlight_to_active()
 
     def _get_item_bar_rect(self, index: int) -> tuple:
         """Get the (x, top_y, bottom_y) of the highlight bar for an item, relative to sidebar."""
@@ -787,36 +837,85 @@ class StyledSidebar(QWidget):
         self._highlight_bar.move(int(x), 0)
         self._highlight_bar.set_bar_geometry(top, bottom)
 
+    def _stop_highlight_animation(self) -> None:
+        """停止在途高亮动画并把代际号推进一格（幂等）。"""
+        self._highlight_anim_generation += 1
+        group = self._highlight_anim_group
+        self._highlight_anim_group = None
+        if group is not None:
+            try:
+                group.stop()
+            except RuntimeError:
+                pass
+            try:
+                group.deleteLater()
+            except RuntimeError:
+                pass
+        self._animating = False
+
+    def _sync_highlight_to_active(self) -> None:
+        """不做动画，直接把高亮条对齐到当前活动项。
+
+        用于 resize / 重新显示 / 点击已激活项等没有切换目标的场景，
+        避免布局变化或外部状态更新后高亮条停留在旧位置。
+        """
+        if not (0 <= self._active_index < len(self._items)):
+            return
+        bar_x, bar_top, bar_bottom = self._get_item_bar_rect(self._active_index)
+        self._highlight_bar.move(int(bar_x), 0)
+        self._set_bar(bar_x, bar_top, bar_bottom)
+        self._highlight_bar.show_bar()
+
     def _animate_highlight(self, old_index: int, new_index: int):
-        """Two-phase animation: stretch (ease-in) → restore (ease-out)."""
-        if old_index == new_index:
+        """从高亮条**当前视觉位置**重新起步，动画到最新选中项。
+
+        历史实现只在 ``not self._animating`` 时启动动画：连点时后续
+        点击只更新活动项，动画仍结束在旧目标上，导致「标签已切换、
+        高亮条却停在旧页」（截图中的错位）。现在每次都取消在途动画，
+        从当前条位置向最新目标做「拉伸 → 回弹」，最后一次点击一定有
+        对应动画；``old_index`` 仅保留用于兼容调用方。
+
+        Args:
+            old_index: 切换前的活动索引（不再作为动画起点，起点取条
+                的实时几何，连点中途也不会跳变）。
+            new_index: 最新目标页索引。
+        """
+        if not (0 <= new_index < len(self._items)):
             return
-        if old_index < 0 or new_index < 0:
-            bar_x, bar_top, bar_bottom = self._get_item_bar_rect(new_index)
-            self._set_bar(bar_x, bar_top, bar_bottom)
+        target_x, target_top, target_bottom = self._get_item_bar_rect(new_index)
+
+        if not self._highlight_bar._visible:
+            self._set_bar(target_x, target_top, target_bottom)
+            self._highlight_bar.show_bar()
             return
 
+        current_top = float(self._highlight_bar._top_y)
+        current_bottom = float(self._highlight_bar._bottom_y)
+        current_center = (current_top + current_bottom) / 2.0
+        target_center = (target_top + target_bottom) / 2.0
+        if abs(current_center - target_center) < 0.5:
+            # 已经在目标位置：直接对齐，避免无意义的 360ms 动画。
+            self._set_bar(target_x, target_top, target_bottom)
+            return
+
+        self._stop_highlight_animation()
+        generation = self._highlight_anim_generation
         self._animating = True
-        old_x, old_top, old_bottom = self._get_item_bar_rect(old_index)
-        new_x, new_top, new_bottom = self._get_item_bar_rect(new_index)
-        going_down = new_index > old_index
+        going_down = target_center > current_center
 
-        # Use the new item's x position
-        bar_x = new_x
-
-        # --- Phase 1: Stretch (ease-in) ---
+        # --- Phase 1: Stretch (ease-in)，起点取条当前实际位置 ---
         if going_down:
-            # Top fixed, bottom stretches down
-            s1_top_start, s1_top_end = old_top, old_top
-            s1_bottom_start, s1_bottom_end = old_bottom, new_bottom
+            # 顶部固定，底部向目标下沿拉伸
+            s1_top_start = s1_top_end = current_top
+            s1_bottom_start, s1_bottom_end = current_bottom, target_bottom
         else:
-            # Bottom fixed, top stretches up
-            s1_top_start, s1_top_end = old_top, new_top
-            s1_bottom_start, s1_bottom_end = old_bottom, old_bottom
+            # 底部固定，顶部向目标上沿拉伸
+            s1_top_start, s1_top_end = current_top, target_top
+            s1_bottom_start = s1_bottom_end = current_bottom
 
         self._highlight_bar.show_bar()
-        self._highlight_bar.move(int(bar_x), 0)
-        self._set_bar(bar_x, s1_top_start, s1_bottom_start)
+        self._highlight_bar.move(int(target_x), 0)
+        self._set_bar(target_x, s1_top_start, s1_bottom_start)
 
         anim_t = QPropertyAnimation(self._highlight_bar, b"top_y", self._highlight_bar)
         anim_t.setDuration(180)
@@ -833,24 +932,46 @@ class StyledSidebar(QWidget):
         phase1 = QParallelAnimationGroup(self._highlight_bar)
         phase1.addAnimation(anim_t)
         phase1.addAnimation(anim_b)
+        self._highlight_anim_group = phase1
+
+        def _on_highlight_finished(group: QParallelAnimationGroup) -> None:
+            if generation != self._highlight_anim_generation:
+                return
+            if self._highlight_anim_group is group:
+                self._highlight_anim_group = None
+            self._animating = False
+            group.deleteLater()
+            # 外部路径（非点击）若在动画期间改了活动项，收尾时对齐，
+            # 保证高亮条与活动项永不长期错位。
+            if 0 <= self._active_index < len(self._items):
+                _, top, bottom = self._get_item_bar_rect(self._active_index)
+                if (
+                    abs(top - self._highlight_bar._top_y) > 0.5
+                    or abs(bottom - self._highlight_bar._bottom_y) > 0.5
+                ):
+                    self._sync_highlight_to_active()
 
         # --- Phase 2: Restore (ease-out) ---
         def start_phase2():
-            self._highlight_bar.hide_bar()
-            # Start from slightly stretched state at new position
+            if generation != self._highlight_anim_generation:
+                return
+            if self._highlight_anim_group is phase1:
+                self._highlight_anim_group = None
+            phase1.deleteLater()
+            # 从略过冲的位置回弹到目标位置
             overshoot = 5.0
             if going_down:
-                # New bar: bottom fixed, top starts slightly above (overshoot)
-                start_t, end_t = new_top - overshoot, new_top
-                start_b, end_b = new_bottom, new_bottom
+                start_t, end_t = target_top - overshoot, target_top
+                start_b, end_b = target_bottom, target_bottom
             else:
-                # New bar: top fixed, bottom starts slightly below (overshoot)
-                start_t, end_t = new_top, new_top
-                start_b, end_b = new_bottom + overshoot, new_bottom
+                start_t, end_t = target_top, target_top
+                start_b, end_b = target_bottom + overshoot, target_bottom
 
+            # 与旧实现一致：拉伸段结束到回弹段起点之间条会“换形”，
+            # 先隐藏再显示，确保换形的那一帧不会被绘制出来。
+            self._highlight_bar.hide_bar()
+            self._set_bar(target_x, start_t, start_b)
             self._highlight_bar.show_bar()
-            self._highlight_bar.move(int(bar_x), 0)
-            self._set_bar(bar_x, start_t, start_b)
 
             r_anim_t = QPropertyAnimation(self._highlight_bar, b"top_y", self._highlight_bar)
             r_anim_t.setDuration(180)
@@ -867,7 +988,8 @@ class StyledSidebar(QWidget):
             phase2 = QParallelAnimationGroup(self._highlight_bar)
             phase2.addAnimation(r_anim_t)
             phase2.addAnimation(r_anim_b)
-            phase2.finished.connect(lambda: setattr(self, '_animating', False))
+            self._highlight_anim_group = phase2
+            phase2.finished.connect(lambda g=phase2: _on_highlight_finished(g))
             phase2.start()
 
         phase1.finished.connect(start_phase2)
@@ -875,14 +997,23 @@ class StyledSidebar(QWidget):
 
     def _on_item_clicked(self, ci):
         old_index = self._active_index
+        new_index = -1
         for i, item in enumerate(self._items):
             item._set_active(item is ci)
             if item is ci:
-                self._active_index = i
-                self.item_selected.emit(i, item._label)
-        
-        if old_index != self._active_index and not self._animating:
-            self._animate_highlight(old_index, self._active_index)
+                new_index = i
+        if new_index < 0:
+            return
+        self._active_index = new_index
+        self.item_selected.emit(new_index, ci._label)
+
+        if old_index != new_index or self._animating:
+            # 无论是否有在途动画，都把最新目标交给动画层重定向；
+            # 连点不再丢目标，也不会把高亮条永久留在旧页。
+            self._animate_highlight(old_index, new_index)
+        else:
+            # 点击已激活项：若历史上因异常留下错位，顺手对齐。
+            self._sync_highlight_to_active()
 
     def set_compact(self, compact):
         self._compact = compact
@@ -1028,14 +1159,12 @@ class StyledSidebar(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._highlight_bar.resize(3, self.height())
-        if self._active_index >= 0 and self._active_index < len(self._items):
-            bar_x, top, bottom = self._get_item_bar_rect(self._active_index)
-            self._highlight_bar.move(int(bar_x), 0)
-            self._highlight_bar.set_bar_geometry(top, bottom)
+        # 高亮条动画进行中时由动画自身驱动 y 区间；宽度动画（收起/展开）
+        # 只改宽度，不打断条的目标，避免两套几何互相覆盖。
+        if not self._animating:
+            self._sync_highlight_to_active()
 
     def showEvent(self, event):
         super().showEvent(event)
-        if self._active_index >= 0 and self._active_index < len(self._items):
-            bar_x, top, bottom = self._get_item_bar_rect(self._active_index)
-            self._highlight_bar.move(int(bar_x), 0)
-            self._highlight_bar.set_bar_geometry(top, bottom)
+        if not self._animating:
+            self._sync_highlight_to_active()
