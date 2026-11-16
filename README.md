@@ -422,6 +422,50 @@ python native/cpp_lut_preview/setup.py build_ext --inplace   # LUT 扩展（可�
 powershell -ExecutionPolicy Bypass -File packaging/launcher/build_launcher.ps1
 ```
 
+### 一键构建（推荐）
+
+双击仓库根目录的 `build.cmd` 即可完成整条发布链路：
+
+1. PyInstaller 打包主程序 payload；
+2. CMake + MinGW 编译安装器界面；
+3. NSIS 封装最终安装包；
+4. 校验产物并输出 SHA256。
+
+构建日志写入 `build/logs/build-<时间戳>.log`。无论成功或失败，窗口都会停住；失败时还会打印日志最后 40 行和保留的临时目录路径。
+
+**中文路径处理**：CMake + MinGW 无法可靠处理中文路径。脚本检测到仓库路径包含非 ASCII 字符时会明确提示，但不会中止，而是自动把工作区复制到纯英文临时目录继续构建：
+
+- 优先使用 C 盘根目录，例如 `C:\SopeekBuild_20261116_153012_a1b2c3`；
+- C 盘可用空间不足 5 GB 时，依次尝试 D、E……；
+- 所有本地磁盘都不满足 5 GB 或都不可写时才会报错；
+- 成功后产物复制回 `build\` 并删除临时目录；失败时保留临时目录便于排查。
+
+**依赖**：脚本不会自动安装依赖。首次使用请先准备 `.venv` 并安装：
+
+```powershell
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe -m pip install pyinstaller==6.22.3
+```
+
+> 注意三个产物不要混淆：
+>
+> - `build\pyinstall\Sopeek\Sopeek.exe`：主程序 payload，不是安装包；
+> - `build\installer\SopeekInstaller.exe`：安装器界面组件，不能单独双击运行；
+> - `build\Sopeek-<版本>-windows-x64.exe`：最终安装包。
+
+### 打包维护注意
+
+日常业务代码改动不需要修改打包脚本；每次构建都会复制当前工作区（排除 `.git`、`.venv`、`build` 与缓存），未提交的改动也会进入临时目录。以下结构性改动需要同步维护：
+
+- 新增 Python 依赖：更新 `requirements.txt` 并安装到 `.venv`；动态导入加入 `packaging/build.py` 的 hidden imports。
+- 新增资源目录或文件后缀：更新 `packaging/build.py` 的 `collect_data_files()`。
+- 新增/重命名原生 DLL/EXE：更新 `collect_binaries()` 和 `verify_output()`。
+- 修改主程序入口、产品名、版本格式或最终安装包命名：同步更新 `packaging/build.py`、`packaging/installer/*`、`tools/build_release.ps1` 和 CI workflow。
+- 移动 `src`、`packaging`、`native`、`tools` 等顶层目录：必须先同步脚本中的相对路径。
+
+CI 使用 `tools/build_release.ps1`，不经过 `build.cmd`；纯英文 CI 路径不会触发临时目录切换，双击窗口暂停逻辑也不影响 CI。
+
 ### 打包与安装器
 
 ```bash

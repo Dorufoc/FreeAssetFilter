@@ -779,6 +779,19 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 
     const AppMode mode = SelectMode(args);
 
+#ifndef SPK_TESTMODE
+    // 生产环境的安装器 GUI 只是 NSIS 父进程的子组件，必须由安装包带 /payload
+    // 启动。直接双击 build\installer\SopeekInstaller.exe 时给出可见错误页，
+    // 避免用户把它误当成最终安装包，并在 Program Files 权限检查或合成进度上误判。
+    if (mode == AppMode::Install && args.payload.empty()) {
+        return ShowStartupError(
+            instance, L"无法直接运行",
+            L"这是 Sopeek 安装程序的界面组件，不能单独双击运行。"
+            L"请双击最终安装包 Sopeek-<版本>-windows-x64.exe。",
+            mode, args);
+    }
+#endif
+
     // C4：先保证 installDir 非空且与模式匹配，再进入 /test-dump-maintenance、身份
     // 校验或窗口创建。维护/卸载无法推导时显示可见启动错误并返回非零，绝不回退
     // Program Files（避免直接卸载指向错误目录）。

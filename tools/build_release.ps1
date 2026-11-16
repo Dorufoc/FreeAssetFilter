@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Sopeek 一键发布构建：主程序打包 -> 安装器编译 -> NSIS 封装 -> 产物校验与哈希。
 
@@ -13,6 +13,11 @@
       4. 产物校验与哈希    检查三个产物存在且非空，输出 SHA256 并写入清单
 
     脚本本身不执行任何 git 操作（不 add / commit / push）。
+
+    如果仓库路径包含非 ASCII 字符（如中文），CMake + MinGW 无法可靠构建。脚本会
+    明确提示该路径不受支持，但不会中止，而是把工作区镜像到纯英文临时目录继续：
+    优先 C 盘根目录，C 盘可用空间不足 5 GB 时依次尝试 D、E……；成功后把产物复制
+    回原仓库 build\ 并清理临时目录，失败时保留临时目录便于排查。
 
 .PARAMETER SkipPyInstaller
     跳过第 2 步，复用已有的 build/pyinstall/Sopeek 产物（仅改动安装器时使用）。
@@ -46,10 +51,41 @@ param(
     [switch]$SkipInstaller,
     [switch]$SkipBrandGate,
     [string[]]$PyInstallerArgs = @(),
-    [string]$ManifestPath
+    [string]$ManifestPath,
+    # 内部参数：中文路径重定向到英文临时目录时，通过 JSON 文件传递原始参数，
+    # 避免把含空格/以 - 开头的 PyInstaller 参数重新拼成命令行。
+    [string]$BuildSettingsPath,
+    [switch]$FromAsciiWorkspace
 )
 
 $ErrorActionPreference = 'Stop'
+
+# 与 build.cmd 的 chcp 65001 保持一致，避免中文日志和子进程输出按 GBK 误读。
+try {
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [Console]::OutputEncoding = $utf8NoBom
+    $OutputEncoding = $utf8NoBom
+} catch { }
+
+# 读取内部参数文件。仅用于父进程把本次构建参数原样交给临时目录中的子构建。
+if ($BuildSettingsPath) {
+    if (-not (Test-Path -LiteralPath $BuildSettingsPath)) {
+        throw "找不到构建参数文件：$BuildSettingsPath"
+    }
+    $buildSettings = Get-Content -LiteralPath $BuildSettingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($null -ne $buildSettings.skipPyInstaller) { $SkipPyInstaller = [bool]$buildSettings.skipPyInstaller }
+    if ($null -ne $buildSettings.skipInstaller)   { $SkipInstaller   = [bool]$buildSettings.skipInstaller }
+    if ($null -ne $buildSettings.skipBrandGate)   { $SkipBrandGate   = [bool]$buildSettings.skipBrandGate }
+    if ($null -ne $buildSettings.pyInstallerArgs) {
+        $PyInstallerArgs = @($buildSettings.pyInstallerArgs |
+            Where-Object { $null -ne $_ } |
+            ForEach-Object { [string]$_ })
+    }
+    if ($null -ne $buildSettings.manifestPath -and
+        -not [string]::IsNullOrWhiteSpace([string]$buildSettings.manifestPath)) {
+        $ManifestPath = [string]$buildSettings.manifestPath
+    }
+}
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot  = Split-Path -Parent $ScriptDir
@@ -60,7 +96,17 @@ $InstallerDll = Join-Path $RepoRoot 'build\installer\libwinpthread-1.dll'
 
 if (-not $ManifestPath) { $ManifestPath = Join-Path $RepoRoot 'build\release-manifest.json' }
 
+# 中文路径重定向时，临时目录不会复制 .venv；通过环境变量让子构建继续使用
+# 原仓库里的虚拟环境解释器，避免把 1 GB 左右的 .venv 复制到临时目录。
+if (-not $env:SPK_PYTHON) {
+    $repoVenvPython = Join-Path $RepoRoot '.venv\Scripts\python.exe'
+    if (Test-Path -LiteralPath $repoVenvPython) {
+        $env:SPK_PYTHON = $repoVenvPython
+    }
+}
+
 $TotalWatch = [System.Diagnostics.Stopwatch]::StartNew()
+$BuildStartUtc = [DateTime]::UtcNow
 
 function Write-Step {
     param([string]$Index, [string]$Text)
@@ -93,8 +139,11 @@ function Fail {
     exit $Code
 }
 
-# 优先使用仓库内 .venv，其次回退到 PATH 上的 python。
+# 优先使用 SPK_PYTHON / 仓库内 .venv，其次回退到 PATH 上的 python。
 function Resolve-Python {
+    if ($env:SPK_PYTHON -and (Test-Path -LiteralPath $env:SPK_PYTHON)) {
+        return $env:SPK_PYTHON
+    }
     $venv = Join-Path $RepoRoot '.venv\Scripts\python.exe'
     if (Test-Path -LiteralPath $venv) { return $venv }
     $cmd = Get-Command python -ErrorAction SilentlyContinue
@@ -112,6 +161,372 @@ function Resolve-SetupExe {
     $legacy = Join-Path $BuildDir 'Sopeek_NSIS_Setup.exe'
     if (Test-Path -LiteralPath $legacy) { return $legacy }
     return $null
+}
+
+# ---------------------------------------------------------------------------
+# 中文路径处理：CMake/MinGW 不能可靠处理非 ASCII 源码路径。这里不中止，
+# 而是把工作区镜像到纯英文临时目录继续打包，成功后把产物复制回原仓库。
+# ---------------------------------------------------------------------------
+function Test-NonAsciiPath {
+    param([string]$Path)
+    return ($Path -match '[^\x00-\x7F]')
+}
+
+function Get-AsciiWorkspaceDrive {
+    $minFreeBytes = [int64]5GB
+    $drives = @([System.IO.DriveInfo]::GetDrives() |
+        Where-Object {
+            $_.DriveType -eq [System.IO.DriveType]::Fixed -and $_.IsReady
+        })
+    # C 盘优先，其余按盘符顺序（D、E……）。
+    $drives = @($drives | Sort-Object `
+        @{ Expression = { if ($_.Name -ieq 'C:\') { 0 } else { 1 } } }, `
+        @{ Expression = { $_.Name } })
+
+    if ($drives.Count -eq 0) {
+        throw '没有找到可用的本地固定磁盘，无法创建纯英文临时构建目录。'
+    }
+
+    $reports = New-Object System.Collections.Generic.List[string]
+    foreach ($drive in $drives) {
+        $free = [int64]$drive.AvailableFreeSpace
+        $freeGb = [math]::Round($free / 1GB, 2)
+        if ($free -lt $minFreeBytes) {
+            Write-Warn ("{0} 可用 {1} GB，小于 5 GB，跳过。" -f $drive.Name, $freeGb)
+            $reports.Add(("{0} 可用 {1} GB（不足 5 GB）" -f $drive.Name, $freeGb))
+            continue
+        }
+
+        $probe = Join-Path $drive.RootDirectory.FullName `
+            ('SopeekBuildProbe_' + [guid]::NewGuid().ToString('N'))
+        try {
+            New-Item -ItemType Directory -Path $probe -ErrorAction Stop | Out-Null
+            Remove-Item -LiteralPath $probe -Recurse -Force -ErrorAction Stop
+            Write-Ok ("临时构建盘：{0}（可用 {1} GB）" -f $drive.Name, $freeGb)
+            return $drive.RootDirectory.FullName
+        } catch {
+            Write-Warn ("{0} 不可写，跳过：{1}" -f $drive.Name, $_.Exception.Message)
+            $reports.Add(("{0} 不可写：{1}" -f $drive.Name, $_.Exception.Message))
+            if (Test-Path -LiteralPath $probe) {
+                try { Remove-Item -LiteralPath $probe -Recurse -Force -ErrorAction Stop } catch { }
+            }
+        }
+    }
+
+    throw ("没有本地磁盘满足临时构建目录要求（至少 5 GB 可用空间且可写）。`n" +
+        "已检查：`n  " + ($reports -join "`n  "))
+}
+
+function Copy-DirectoryTree {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [switch]$Mirror
+    )
+
+    if (-not (Test-Path -LiteralPath $Source)) {
+        throw "源目录不存在：$Source"
+    }
+    $destParent = Split-Path -Parent $Destination
+    if ($destParent -and -not (Test-Path -LiteralPath $destParent)) {
+        New-Item -ItemType Directory -Force -Path $destParent | Out-Null
+    }
+
+    $rcArgs = @($Source, $Destination)
+    if ($Mirror) { $rcArgs += '/MIR' } else { $rcArgs += '/E' }
+    $rcArgs += @('/COPY:DAT', '/DCOPY:T', '/R:2', '/W:1', '/NFL', '/NDL', '/NJH', '/NJS', '/NP')
+    if (-not $Mirror) {
+        $rcArgs += @('/XD', '.git', '.venv', 'build', 'dist', 'target', 'node_modules',
+            '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache',
+            '/XF', '*.pyc', '*.pyo')
+    }
+
+    $output = @(& robocopy @rcArgs 2>&1)
+    $code = $LASTEXITCODE
+    if ($code -ge 8) {
+        $tail = ($output | Select-Object -Last 15) -join "`n"
+        throw ("目录复制失败（robocopy 退出码 {0}）：`n{1}" -f $code, $tail)
+    }
+}
+
+function Write-BuildSettingsFile {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    # manifestPath 留空：子构建写临时目录内的清单，父进程复制回原仓库指定的位置。
+    [pscustomobject]@{
+        skipPyInstaller = [bool]$SkipPyInstaller
+        skipInstaller   = [bool]$SkipInstaller
+        skipBrandGate   = [bool]$SkipBrandGate
+        pyInstallerArgs = @([string[]]$PyInstallerArgs)
+        manifestPath    = $null
+    } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $Path -Encoding UTF8
+}
+
+function Invoke-AsciiWorkspaceBuild {
+    $workspace = $null
+    $workspaceRepo = $null
+
+    try {
+        Write-Host ''
+        Write-Host ("=" * 68) -ForegroundColor DarkGray
+        Write-Host '[路径] 切换到纯英文临时构建目录' -ForegroundColor Cyan
+        Write-Host ("=" * 68) -ForegroundColor DarkGray
+        Write-Warn "仓库路径包含非 ASCII 字符（如中文），CMake + MinGW 不支持在该路径下构建。"
+        Write-Note ("原仓库：$RepoRoot")
+
+        $driveRoot = Get-AsciiWorkspaceDrive
+        $workspaceName = 'SopeekBuild_{0}_{1}' -f `
+            (Get-Date -Format 'yyyyMMdd_HHmmss'), `
+            ([guid]::NewGuid().ToString('N').Substring(0, 6))
+        $workspace = Join-Path $driveRoot $workspaceName
+        New-Item -ItemType Directory -Path $workspace -ErrorAction Stop | Out-Null
+        Write-Note ("临时目录：$workspace")
+
+        [pscustomobject]@{
+            sourceRepo = $RepoRoot
+            createdAt  = (Get-Date).ToString('o')
+            processId  = $PID
+        } | ConvertTo-Json -Depth 3 |
+            Set-Content -LiteralPath (Join-Path $workspace 'workspace.json') -Encoding UTF8
+
+        $workspaceRepo = Join-Path $workspace 'repo'
+        Copy-DirectoryTree -Source $RepoRoot -Destination $workspaceRepo
+        Write-Ok '源码已镜像到英文临时目录（排除 .git / .venv / build / 缓存）。'
+
+        if ($SkipPyInstaller) {
+            $sourcePayload = Join-Path $PayloadRoot 'Sopeek.exe'
+            if (-not (Test-Path -LiteralPath $sourcePayload)) {
+                throw "已指定 -SkipPyInstaller，但现有 payload 缺少主程序：$sourcePayload"
+            }
+            if (-not (Test-Path -LiteralPath (Join-Path $PayloadRoot '_internal'))) {
+                throw "已指定 -SkipPyInstaller，但现有 payload 缺少 _internal 目录：$PayloadRoot"
+            }
+            Copy-DirectoryTree -Source $PayloadRoot `
+                -Destination (Join-Path $workspaceRepo 'build\pyinstall\Sopeek') -Mirror
+            Write-Ok '已有 payload 已复制到临时目录。'
+        }
+
+        $settingsPath = Join-Path $workspace 'build-settings.json'
+        Write-BuildSettingsFile -Path $settingsPath
+
+        $childScript = Join-Path $workspaceRepo 'tools\build_release.ps1'
+        if (-not (Test-Path -LiteralPath $childScript)) {
+            throw "临时目录缺少构建脚本：$childScript"
+        }
+
+        $powerShellExe = (Get-Process -Id $PID).Path
+        if (-not $powerShellExe -or -not (Test-Path -LiteralPath $powerShellExe)) {
+            throw '无法定位当前 PowerShell 解释器，不能启动临时目录中的子构建。'
+        }
+
+        Write-Host ''
+        Write-Host ("在临时目录继续构建：{0}" -f $workspaceRepo) -ForegroundColor Cyan
+        Push-Location $workspaceRepo
+        try {
+            # 通过管道把子进程输出重新写入当前 PowerShell 主机，这样双击包装脚本的
+            # Start-Transcript 才能记录 CMake / MinGW / NSIS / PyInstaller 的完整输出。
+            & $powerShellExe -NoProfile -ExecutionPolicy Bypass `
+                -File $childScript -BuildSettingsPath $settingsPath -FromAsciiWorkspace `
+                2>&1 | ForEach-Object { Write-Host $_ }
+            $childCode = $LASTEXITCODE
+        } finally {
+            Pop-Location
+        }
+
+        if ($null -eq $childCode) { $childCode = 1 }
+        $childCode = [int]$childCode
+        if ($childCode -ne 0) {
+            Write-Host ''
+            Write-Host ("子构建失败（退出码 {0}）。" -f $childCode) -ForegroundColor Red
+            Write-Host ("临时工作目录已保留：$workspace") -ForegroundColor Yellow
+            Write-Host ("排查完成后可删除：Remove-Item -LiteralPath '$workspace' -Recurse -Force") `
+                -ForegroundColor DarkGray
+            return $childCode
+        }
+
+        Write-Host ''
+        Write-Host ("=" * 68) -ForegroundColor DarkGray
+        Write-Host '[复制] 把临时目录产物复制回原仓库' -ForegroundColor Cyan
+        Write-Host ("=" * 68) -ForegroundColor DarkGray
+
+        if (-not $SkipPyInstaller) {
+            $tempPayload = Join-Path $workspaceRepo 'build\pyinstall\Sopeek'
+            if (-not (Test-Path -LiteralPath (Join-Path $tempPayload 'Sopeek.exe'))) {
+                throw "临时构建没有生成 payload：$tempPayload"
+            }
+            Copy-DirectoryTree -Source $tempPayload `
+                -Destination (Join-Path $RepoRoot 'build\pyinstall\Sopeek') -Mirror
+            Write-Ok 'payload 已复制回原仓库。'
+        }
+
+        if (-not $SkipInstaller) {
+            $tempInstallerDir = Join-Path $workspaceRepo 'build\installer'
+            if (-not (Test-Path -LiteralPath $tempInstallerDir)) {
+                throw "临时构建没有生成安装器目录：$tempInstallerDir"
+            }
+            Copy-DirectoryTree -Source $tempInstallerDir `
+                -Destination (Join-Path $RepoRoot 'build\installer') -Mirror
+            Write-Ok '安装器 GUI 与运行库已复制回原仓库。'
+
+            $tempBuildDir = Join-Path $workspaceRepo 'build'
+            $tempSetups = @(Get-ChildItem -LiteralPath $tempBuildDir -Filter 'Sopeek-*.exe' `
+                -File -ErrorAction SilentlyContinue)
+            if ($tempSetups.Count -eq 0) {
+                throw "临时构建没有生成最终安装包：$tempBuildDir\Sopeek-*.exe"
+            }
+
+            $destBuildDir = Join-Path $RepoRoot 'build'
+            if (-not (Test-Path -LiteralPath $destBuildDir)) {
+                New-Item -ItemType Directory -Force -Path $destBuildDir | Out-Null
+            }
+            foreach ($setup in $tempSetups) {
+                $destSetup = Join-Path $destBuildDir $setup.Name
+                Copy-Item -LiteralPath $setup.FullName -Destination $destSetup -Force
+                $srcHash = (Get-FileHash -LiteralPath $setup.FullName -Algorithm SHA256).Hash
+                $dstHash = (Get-FileHash -LiteralPath $destSetup -Algorithm SHA256).Hash
+                if ($srcHash -ne $dstHash) {
+                    throw "安装包复制校验失败：$destSetup"
+                }
+                Write-Ok ("安装包已复制并校验：$destSetup")
+            }
+        }
+
+        $tempManifest = Join-Path $workspaceRepo 'build\release-manifest.json'
+        if (-not (Test-Path -LiteralPath $tempManifest)) {
+            throw "临时构建没有生成发布清单：$tempManifest"
+        }
+        $destManifest = $ManifestPath
+        if ([string]::IsNullOrWhiteSpace($destManifest)) {
+            $destManifest = Join-Path $RepoRoot 'build\release-manifest.json'
+        }
+        $destManifest = [System.IO.Path]::GetFullPath($destManifest)
+        $manifestDir = Split-Path -Parent $destManifest
+        if ($manifestDir -and -not (Test-Path -LiteralPath $manifestDir)) {
+            New-Item -ItemType Directory -Force -Path $manifestDir | Out-Null
+        }
+        Copy-Item -LiteralPath $tempManifest -Destination $destManifest -Force
+        Write-Ok ("发布清单已复制：$destManifest")
+
+        $tempGate = Join-Path $workspaceRepo 'build\brand-gate.json'
+        if (Test-Path -LiteralPath $tempGate) {
+            Copy-Item -LiteralPath $tempGate `
+                -Destination (Join-Path $RepoRoot 'build\brand-gate.json') -Force
+        }
+
+        $TotalWatch.Stop()
+        Write-Host ''
+        Write-Host '==================== BUILD SUMMARY (relocated) ====================' -ForegroundColor Cyan
+        $summaryVersion = (Get-Content -LiteralPath $VersionFile -TotalCount 1).Trim()
+        Write-Host ("  版本        : {0}" -f $summaryVersion)
+        Write-Host ("  总耗时      : {0:N1} s" -f $TotalWatch.Elapsed.TotalSeconds)
+        Write-Host ("  临时目录    : {0}" -f $workspace)
+        if (-not $SkipInstaller) {
+            $copiedSetups = @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'build') `
+                -Filter 'Sopeek-*.exe' -File -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending)
+            if ($copiedSetups.Count -gt 0) {
+                $finalSetup = $copiedSetups[0]
+                Write-Host ("  安装包      : {0}" -f $finalSetup.FullName)
+                Write-Host ("  SHA256      : {0}" -f `
+                    (Get-FileHash -LiteralPath $finalSetup.FullName -Algorithm SHA256).Hash)
+            }
+        } else {
+            Write-Host ("  payload     : {0}" -f (Join-Path $PayloadRoot 'Sopeek.exe'))
+        }
+        Write-Host '====================================================================' -ForegroundColor Cyan
+        Write-Host ''
+
+        try {
+            Remove-Item -LiteralPath $workspace -Recurse -Force -ErrorAction Stop
+            Write-Ok '临时工作目录已清理。'
+        } catch {
+            Write-Warn ("临时目录清理失败，可手动删除：$workspace")
+            Write-Note ("原因：$($_.Exception.Message)")
+        }
+
+        return 0
+    } catch {
+        Write-Host ''
+        Write-Host ("BUILD FAILED: " + $_.Exception.Message) -ForegroundColor Red
+        Write-Host ''
+        if ($workspace -and (Test-Path -LiteralPath $workspace)) {
+            Write-Host "临时工作目录已保留，便于排查。" -ForegroundColor Yellow
+            Write-Host ("  {0}" -f $workspace) -ForegroundColor Yellow
+            Write-Host ("排查完成后可删除：Remove-Item -LiteralPath '$workspace' -Recurse -Force") `
+                -ForegroundColor DarkGray
+        }
+        return 1
+    }
+}
+
+# ---------------------------------------------------------------------------
+# 中文路径提示 + 打包契约检查（复制临时目录之前先 fail-fast）
+# ---------------------------------------------------------------------------
+$nonAsciiRepo = Test-NonAsciiPath -Path $RepoRoot
+if ($nonAsciiRepo) {
+    Write-Warn "仓库路径包含非 ASCII 字符（如中文）：$RepoRoot"
+    Write-Note 'CMake + MinGW 不支持该路径；预检通过后会自动切换到纯英文临时目录继续构建。'
+}
+
+$contractFiles = New-Object System.Collections.Generic.List[string]
+$contractFiles.Add($VersionFile)
+if (-not $SkipPyInstaller) {
+    $contractFiles.Add((Join-Path $RepoRoot 'packaging\build.py'))
+    $contractFiles.Add((Join-Path $RepoRoot 'src\sopeek\app\main.py'))
+}
+if (-not $SkipInstaller) {
+    $contractFiles.Add((Join-Path $RepoRoot 'packaging\installer\build.ps1'))
+    $contractFiles.Add((Join-Path $RepoRoot 'packaging\installer\CMakeLists.txt'))
+    $contractFiles.Add((Join-Path $RepoRoot 'packaging\installer\installer.nsi'))
+}
+$missingContract = @($contractFiles | Where-Object { -not (Test-Path -LiteralPath $_) })
+if ($missingContract.Count -gt 0) {
+    Fail ("缺少打包契约文件，项目结构可能已变更：`n  " + ($missingContract -join "`n  ")) 2
+}
+
+if ($SkipPyInstaller) {
+    $existingPayloadExe = Join-Path $PayloadRoot 'Sopeek.exe'
+    if (-not (Test-Path -LiteralPath $existingPayloadExe)) {
+        Fail "已指定 -SkipPyInstaller，但现有 payload 缺少主程序：$existingPayloadExe（请先完整构建一次）" 2
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $PayloadRoot '_internal'))) {
+        Fail "已指定 -SkipPyInstaller，但现有 payload 缺少 _internal 目录：$PayloadRoot" 2
+    }
+}
+
+if (-not $SkipPyInstaller) {
+    $preflightPython = Resolve-Python
+    if (-not $preflightPython) {
+        Fail '未找到 Python 解释器（.venv 或 PATH）。' 2
+    }
+
+    & $preflightPython -c "import PyInstaller" 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Fail @"
+当前 Python 环境缺少 PyInstaller，无法打包主程序。
+Python：$preflightPython
+
+请先安装依赖，例如：
+  $preflightPython -m pip install -r requirements.txt
+  $preflightPython -m pip install pyinstaller==6.22.3
+"@ 2
+    }
+
+    & $preflightPython -c "import PySide6" 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Fail @"
+当前 Python 环境缺少 PySide6，无法打包主程序。
+Python：$preflightPython
+
+请先安装依赖：
+  $preflightPython -m pip install -r requirements.txt
+"@ 2
+    }
+}
+
+if ($nonAsciiRepo -and -not $FromAsciiWorkspace) {
+    $asciiExitCode = Invoke-AsciiWorkspaceBuild
+    exit $asciiExitCode
 }
 
 # ---------------------------------------------------------------------------
@@ -210,8 +625,16 @@ if (-not (Test-Path -LiteralPath $payloadInternal)) {
     Fail "payload 缺少 _internal 目录：$payloadInternal" 1
 }
 
+$payloadExeItem = Get-Item -LiteralPath $payloadExe
+if ($payloadExeItem.Length -le 0) {
+    Fail "payload 主程序为空文件：$payloadExe" 1
+}
 $payloadBytes = (Get-ChildItem -LiteralPath $PayloadRoot -Recurse -File |
     Measure-Object -Property Length -Sum).Sum
+if ($null -eq $payloadBytes) { $payloadBytes = 0 }
+if ($payloadBytes -le 0) {
+    Fail "payload 目录为空：$PayloadRoot" 1
+}
 Write-Ok ("payload：{0:N1} MB" -f ($payloadBytes / 1MB))
 
 # ---------------------------------------------------------------------------
@@ -243,6 +666,14 @@ Write-Step '3/4' '产物校验与哈希'
 $SetupExe = Resolve-SetupExe -BuildDir (Join-Path $RepoRoot 'build')
 if (-not $SkipInstaller -and -not $SetupExe) {
     Fail '未找到安装包产物（期望 build\Sopeek-<版本>-<平台>-<架构>.exe）。' 1
+}
+if (-not $SkipInstaller -and $SetupExe) {
+    # 防止 NSIS 静默失败时把上一次的旧安装包当成本次产物。
+    $setupItem = Get-Item -LiteralPath $SetupExe
+    if ($setupItem.LastWriteTimeUtc -lt $BuildStartUtc) {
+        Fail ("安装包不是本次构建生成的（最后写入 {0}）：{1}" -f `
+            $setupItem.LastWriteTime, $SetupExe) 1
+    }
 }
 
 $artifacts = @(

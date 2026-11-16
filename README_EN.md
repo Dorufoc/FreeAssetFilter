@@ -420,6 +420,26 @@ python native/cpp_lut_preview/setup.py build_ext --inplace   # LUT extension (op
 powershell -ExecutionPolicy Bypass -File packaging/launcher/build_launcher.ps1
 ```
 
+### One-click build (recommended)
+
+Double-click `build.cmd` in the repository root. It runs the full release chain: PyInstaller payload, CMake + MinGW installer GUI, NSIS packaging, and artifact verification. Logs are written to `build/logs/build-<timestamp>.log`, and the window always stays open.
+
+If the repository path contains non-ASCII characters, the script warns that CMake + MinGW cannot build there but keeps going by mirroring the workspace into an ASCII temporary directory: C: is preferred, then D:/E: when C: has less than 5 GB free, and it fails only when no local disk has 5 GB free and is writable. Artifacts are copied back to `build\` on success; the temporary workspace is kept on failure for diagnosis.
+
+Dependencies are not installed automatically. Prepare them first:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe -m pip install pyinstaller==6.22.3
+```
+
+> Do not confuse the three artifacts:
+>
+> - `build\pyinstall\Sopeek\Sopeek.exe` is the application payload, not the installer;
+> - `build\installer\SopeekInstaller.exe` is the installer UI component and cannot run standalone;
+> - `build\Sopeek-<version>-windows-x64.exe` is the final installer.
+
 ### Packaging and installer
 
 ```bash
