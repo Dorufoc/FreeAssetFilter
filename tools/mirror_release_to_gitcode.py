@@ -26,6 +26,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import urllib.error
@@ -45,8 +46,11 @@ DEFAULT_NIGHTLY_TAG = "nightly"
 INSTALLER_PATTERN = re.compile(r"^Sopeek-.+\.exe$", re.IGNORECASE)
 CHECKSUM_ASSET_NAME = "SHA256SUMS.txt"
 
-#: 单次下载/上传的超时（秒）。
+#: 单次下载/普通 API 请求的超时（秒）。
 HTTP_TIMEOUT = 300
+
+#: 单次上传的整体超时（秒）；跨洲上传 100MB+ 需要较长时间。
+UPLOAD_TIMEOUT = 3600
 
 
 class MirrorError(RuntimeError):
@@ -465,6 +469,73 @@ def _create_release(
     raise MirrorError(f"创建 Release {tag} 失败：{last_error}")
 
 
+def _put_file(
+    url: str, headers: dict[str, str], file_path: Path, token: str
+) -> tuple[int, bytes]:
+    """把本地文件 PUT 到预签名地址。
+
+    优先用系统 ``curl``：Python ``urllib`` 以 8KB 小块发送文件对象，在跨洲高延迟
+    链路上吞吐极低（实测 156MB 超过 45 分钟仍未完成），curl 使用大缓冲且支持重试。
+
+    Args:
+        url: 预签名上传地址。
+        headers: 上传所需请求头（不含 ``Content-Length``）。
+        file_path: 待上传文件。
+        token: GitCode 令牌（用于错误脱敏）。
+
+    Returns:
+        tuple[int, bytes]: HTTP 状态码与响应体。
+    """
+    curl = shutil.which("curl")
+    if not curl:
+        with file_path.open("rb") as handle:
+            return _request(
+                "PUT", url, data=handle, headers=headers, timeout=UPLOAD_TIMEOUT
+            )
+
+    fd, body_path = tempfile.mkstemp(prefix="spk-upload-")
+    os.close(fd)
+    command = [curl, "-sS", "-X", "PUT", "--upload-file", str(file_path)]
+    for key, value in headers.items():
+        if key.lower() == "content-length":
+            continue
+        command += ["-H", f"{key}: {value}"]
+    command += [
+        "-o",
+        body_path,
+        "-w",
+        "%{http_code}",
+        "--max-time",
+        str(UPLOAD_TIMEOUT),
+        "--retry",
+        "2",
+        "--retry-delay",
+        "5",
+        url,
+    ]
+    try:
+        completed = subprocess.run(
+            command, capture_output=True, text=True, check=False
+        )
+    except OSError as error:
+        Path(body_path).unlink(missing_ok=True)
+        raise MirrorError(f"调用 curl 上传失败：{error}") from error
+    try:
+        body = Path(body_path).read_bytes()
+    finally:
+        Path(body_path).unlink(missing_ok=True)
+    code = completed.stdout.strip()
+    if completed.returncode != 0:
+        raise MirrorError(
+            f"curl 上传失败（exit {completed.returncode}）："
+            f"{_redact(completed.stderr.strip()[:300], token)}"
+        )
+    try:
+        return int(code), body
+    except ValueError as error:
+        raise MirrorError(f"curl 返回了非法状态码：{code!r}") from error
+
+
 def _upload_asset(
     repo: str, tag: str, token: str, file_path: Path
 ) -> None:
@@ -507,14 +578,7 @@ def _upload_asset(
     size = file_path.stat().st_size
     upload_headers["Content-Length"] = str(size)
     log(f"上传 {file_path.name}（{size} 字节）...")
-    with file_path.open("rb") as handle:
-        status, response = _request(
-            "PUT",
-            upload_url,
-            data=handle,
-            headers=upload_headers,
-            timeout=HTTP_TIMEOUT,
-        )
+    status, response = _put_file(upload_url, upload_headers, file_path, token)
     if status not in (200, 201, 204):
         raise MirrorError(
             f"上传 {file_path.name} 失败（HTTP {status}）: "
