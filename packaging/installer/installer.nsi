@@ -396,12 +396,22 @@ FunctionEnd
 
 ; T15 helper: same payload release + sentinel as the pre-T15 fresh-install flow.
 Function ReleasePayload
+  Delete "$PLUGINSDIR\payload.error"
   SetOutPath "$PLUGINSDIR\payload"
   File /r "${PAYLOAD}\*"
+  ; A silent/partial extraction must never leave the GUI waiting for a sentinel
+  ; that will never appear. Verify the primary payload entry before signalling
+  ; readiness; on failure write payload.error so the GUI can fail fast with a
+  ; user-facing message instead of sitting at 50% until the long timeout.
+  IfFileExists "$PLUGINSDIR\payload\Sopeek.exe" 0 payloadReleaseFailed
+  IfFileExists "$PLUGINSDIR\payload\_internal\*.*" 0 payloadReleaseFailed
   ; Payload-ready sentinel: written AFTER the payload release above completes and
   ; OUTSIDE the payload directory. The GUI waits for this before pre-scanning and
   ; copying. WriteINIStr takes 4 parameters: file / section / key / value.
   WriteINIStr "$PLUGINSDIR\payload.ready" "ready" "ready" "1"
+  Return
+payloadReleaseFailed:
+  WriteINIStr "$PLUGINSDIR\payload.error" "error" "message" "payload-release-failed"
 FunctionEnd
 
 ; T15 helper: the unchanged install-result wait. Readiness is a non-empty terminal
@@ -604,10 +614,10 @@ installed:
   ; T20 runtime hook: /auto:mode=maintenance + action for unattended QA.
   ReadEnvStr $R2 "SPK_QA_MAINTENANCE_EXTRA"
   ClearErrors
-  Exec '"$GuiTempExe" /maintenance /payload "$PLUGINSDIR\payload" /result "${RESULT_INI}" /installdir "$INSTDIR" /decision "$DecisionIni" /setup-pid $SetupPid $R2'
+  Exec '"$GuiTempExe" /maintenance /payload "$PLUGINSDIR\payload" /result "${RESULT_INI}" /installdir "$INSTDIR" /decision "$DecisionIni" /setup-pid $SetupPid /payload-bytes ${PAYLOAD_BYTES} $R2'
 !else
   ClearErrors
-  Exec '"$GuiTempExe" /maintenance /payload "$PLUGINSDIR\payload" /result "${RESULT_INI}" /installdir "$INSTDIR" /decision "$DecisionIni" /setup-pid $SetupPid'
+  Exec '"$GuiTempExe" /maintenance /payload "$PLUGINSDIR\payload" /result "${RESULT_INI}" /installdir "$INSTDIR" /decision "$DecisionIni" /setup-pid $SetupPid /payload-bytes ${PAYLOAD_BYTES}'
 !endif
   ; H3/F1: same fail-fast as the fresh-install Exec. No process -> no decision
   ; file can ever appear, so waiting would just burn the 30-minute timeout.

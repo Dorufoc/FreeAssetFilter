@@ -35,7 +35,6 @@ from components.styled_segmented import StyledSegmented
 from components.styled_slider import StyledSlider
 from components.styled_loading import StyledLoading
 from components.styled_progress import StyledProgress
-from components.styled_combobox import StyledComboBox
 from components.settings_card import (
     SETTINGS_FIELD_LABEL_WIDTH,
     SETTINGS_GROUP_GAP,
@@ -76,9 +75,10 @@ from sopeek.utils.animation_settings import is_animation_enabled
 from sopeek.utils.path_utils import get_app_data_path
 from sopeek.utils.version_info import (
     DEFAULT_UPDATE_SOURCE,
+    GITHUB_SOURCE,
+    GITCODE_SOURCE,
     RELEASE_URL_PREFIXES,
     RELEASES_URL,
-    UPDATE_SOURCES,
     get_local_build_date,
     get_local_version,
     get_update_source,
@@ -2802,11 +2802,6 @@ def _is_prerelease_version(version: str) -> bool:
     return "-" in str(version or "").strip()
 
 
-def _update_source_options() -> tuple[tuple[str, str], ...]:
-    """返回「更新源」下拉选项 ``(设置值, 展示文案)``，顺序即展示顺序。"""
-    return tuple((source.key, source.label) for source in UPDATE_SOURCES.values())
-
-
 def _inline_error_text(error: object) -> str:
     """把更新错误转换为可读的失败原因。"""
     if getattr(error, "code", "") == "no_installer_asset":
@@ -2824,8 +2819,9 @@ class UpdateSettingsPage(QWidget):
 
     「检查更新」按钮直接启动进程级内联会话，不再弹出确认弹窗；
     「获取测试版」开关在本次设置页会话内生效（默认跟随本地版本通道）。
-    「启动时检查更新」仍写入 ``general.check_updates_on_startup`` 暂存键，
-    由设置页统一保存，保持暂存隔离语义。
+    「启用国内源加速」开关写入 ``update.source``（开=gitcode，关=github），
+    「启动时检查更新」写入 ``general.check_updates_on_startup``；两者都由
+    设置页统一保存，保持暂存隔离语义。
 
     更新检查/下载在设置窗口关闭后仍由 ``InlineUpdateSession`` 继续；
     本页只负责展示，不直接安装更新。
@@ -2845,6 +2841,7 @@ class UpdateSettingsPage(QWidget):
         self._include_prerelease = _is_prerelease_version(
             get_local_version()
         )
+        self._source_updating = False
         self._startup_updating = False
         self._status_tone = "normal"
         self._current_release_url = RELEASES_URL
@@ -2993,16 +2990,10 @@ class UpdateSettingsPage(QWidget):
         options_group.setContentsMargins(0, 0, 0, 0)
         options_group.setSpacing(SETTINGS_ROW_GAP)
 
-        self._source_row = SettingsRow(
-            title="更新源",
-            description="检查新版本使用的发布源；国内网络建议选择 GitCode（点击确定后生效）",
-        )
-        self._source_combo = StyledComboBox(
-            items=[label for _key, label in _update_source_options()],
-            size="sm",
-        )
-        self._source_combo.selection_made.connect(self._on_source_selected)
-        self._source_row.set_control(self._source_combo)
+        self._source_row = SettingsRow(title="启用国内源加速")
+        self._source_toggle = StyledToggle(checked=False, size="default")
+        self._source_toggle.toggled.connect(self._on_source_toggled)
+        self._source_row.set_control(self._source_toggle)
         options_group.addWidget(self._source_row)
 
         self._prerelease_row = SettingsRow(
@@ -3049,18 +3040,21 @@ class UpdateSettingsPage(QWidget):
         source_key = get_update_source(
             self._staging_cache.get("update.source", DEFAULT_UPDATE_SOURCE)
         ).key
-        option_keys = [key for key, _label in _update_source_options()]
-        self._source_combo.setCurrentIndex(option_keys.index(source_key))
+        self._source_updating = True
+        try:
+            self._source_toggle.checked = source_key == GITCODE_SOURCE.key
+        finally:
+            self._source_updating = False
 
-    def _on_source_selected(self, label: str) -> None:
-        """更新源下拉：只写暂存，点击确定才落盘生效。"""
-        if self._staging_cache is None:
+    def _on_source_toggled(self, checked: bool) -> None:
+        """国内源加速开关：只写暂存，点击确定才落盘生效。"""
+        if self._source_updating or self._staging_cache is None:
             return
-        for key, title in _update_source_options():
-            if title == label:
-                self._staging_cache.set("update.source", key)
-                self.staged_changed.emit()
-                return
+        self._staging_cache.set(
+            "update.source",
+            GITCODE_SOURCE.key if checked else GITHUB_SOURCE.key,
+        )
+        self.staged_changed.emit()
 
     def _on_startup_toggled(self, checked: bool) -> None:
         """启动时检查更新开关：只写暂存，点击保存才落盘。"""
@@ -3530,7 +3524,7 @@ class UpdateSettingsPage(QWidget):
             self._startup_row,
         ):
             _refresh_settings_item_text(row)
-        self._source_combo.update()
+        self._source_toggle.update()
         apply_settings_value_style(self._version_value_label)
         self._apply_status_style()
 

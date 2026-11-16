@@ -173,10 +173,10 @@ private:
     // T11：安装/修复共用同一引擎启动路径。缺省 Fresh 保持安装 0..4 的既有行为；
     // 维护修复传 InstallMode::Repair（失败/取消不回滚，由 T6 引擎语义保证）。
     void StartInstall(spk::InstallMode mode = spk::InstallMode::Fresh);
-    // UI-fix（进度 UX）：安装/修复初始化阶段的 UI 侧合成进度斜坡。引擎等待
-    // payload.ready 与递归预扫描期间没有进度回调，故由窗口在 0..500 间匀速推进；
-    // 首个真实 permille>0 到达即停止，并按当前值作为 base 映射后续真实进度。
-    // 仅 UI 状态，不改变引擎 permille 契约，也不伪造安装成功。
+    // UI-fix（进度 UX）：安装/修复等待 payload.ready 阶段，按 NSIS 实际写出的
+    // payload 字节数在 0..500 间推进真实解包进度；首个真实 permille>0 到达即
+    // 停止等待阶段，并按当前值作为 base 映射后续真实复制进度。仅 UI 状态，
+    // 不改变引擎 permille 契约，也不伪造安装成功。
     void BeginInitProgress();
     void AdvanceInitProgress(double now_ms);
     void EndInitProgress(int raw_permille);
@@ -325,12 +325,16 @@ private:
     HANDLE installThread_{};
     int progressPermille_{0};
 
-    // UI-fix（进度 UX）：初始化合成斜坡 / 真实进度映射 / 完成前停留状态（UI 线程独占）。
-    bool initProgressActive_{false};        // 斜坡进行中（首个真实进度前）
+    // UI-fix（进度 UX）：payload 解包真实进度 / 后续真实进度映射 / 完成前停留状态。
+    bool initProgressActive_{false};        // 解包等待阶段（首个真实进度前）
     bool progressMappingActive_{false};     // 后续真实 permille 走 base 映射
-    int progressMappingBasePermille_{0};    // 映射 base = 斜坡结束时的当前进度
-    double initProgressStartMs_{0.0};       // 斜坡起点（spk::SteadyNowMs 口径）
-    double lastInitProgressUpdateMs_{0.0};  // ~80ms 节流
+    int progressMappingBasePermille_{0};    // 映射 base = 解包阶段结束时的当前进度
+    double initProgressStartMs_{0.0};       // 解包阶段起点（spk::SteadyNowMs 口径）
+    double lastInitProgressUpdateMs_{0.0};  // ~500ms 目录扫描节流
+    std::uint64_t prepareLastBytes_{0};     // 上次观测到的已解包字节数
+    double prepareStallStartMs_{0.0};       // 字节数最后一次增长的时间
+    bool prepareStallWarned_{false};        // 停顿提示是否已显示
+    int prepareLastDiagBucket_{0};          // 每跨 10% 记录一次诊断
     bool completionHold_{false};            // 100% 停留中（等待完成页切换定时器）
 
     // --- Todo 13：安装引擎接线状态（worker 写 / UI 读；跨线程一律 atomic 或 mutex）---

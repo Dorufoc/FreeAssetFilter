@@ -6,6 +6,7 @@
 * 「获取测试版」默认值跟随本地版本通道；
 * 点击检查更新直接调用内联 session（不再弹确认框）；
 * 检查/下载各状态的状态文案、进度条、更新详情与按钮状态；
+* 「启用国内源加速」开关在 github / gitcode 之间切换并写入暂存；
 * 「启动时检查更新」写入暂存并发出 ``staged_changed``；
 * 关于Sopeek 页不再承载版本/更新控件。
 
@@ -96,6 +97,9 @@ def test_version_info_uses_spkversion(
     assert page._release_link_button.isHidden() is True
     assert page._release_link_button.text() == "前往Github查看此更新"
     assert not hasattr(page._check_row, "desc_label")
+    assert not hasattr(page._source_row, "desc_label")
+    assert page._source_row.title_label.text() == "启用国内源加速"
+    assert page._source_toggle.checked is False
     assert hasattr(page._prerelease_row, "desc_label")
     assert hasattr(page._startup_row, "desc_label")
 
@@ -401,6 +405,44 @@ def test_snapshot_restores_downloading_state(
     assert "v9.9.9" in page._status_label.text()
     assert page._progress.value == pytest.approx(0.25)
     assert page._check_button.isEnabled() is False
+
+
+def test_domestic_source_toggle_writes_staging(
+    page: sl_mod.UpdateSettingsPage,
+) -> None:
+    """国内源开关：开启写 gitcode，关闭回默认 github，并发出变更信号。"""
+    cache = page._staging_cache
+    assert cache is not None
+    emitted: list[bool] = []
+    page.staged_changed.connect(lambda: emitted.append(True))
+
+    page._source_toggle.checked = True
+    assert cache.get("update.source") == "gitcode"
+    assert emitted == [True]
+
+    page._source_toggle.checked = False
+    assert cache.get("update.source") == "github"
+    assert emitted == [True, True]
+
+
+def test_refresh_from_staging_restores_domestic_source_toggle(
+    page: sl_mod.UpdateSettingsPage,
+) -> None:
+    """重置/取消后按暂存恢复国内源开关，且不反向写回暂存。"""
+    cache = page._staging_cache
+    assert cache is not None
+    emitted: list[bool] = []
+    page.staged_changed.connect(lambda: emitted.append(True))
+
+    cache.set("update.source", "gitcode")
+    page.refresh_from_staging()
+    assert page._source_toggle.checked is True
+    assert emitted == []
+
+    cache.set("update.source", "github")
+    page.refresh_from_staging()
+    assert page._source_toggle.checked is False
+    assert emitted == []
 
 
 def test_startup_toggle_writes_staging(page: sl_mod.UpdateSettingsPage) -> None:

@@ -238,7 +238,7 @@ function Copy-DirectoryTree {
     if (-not $Mirror) {
         $rcArgs += @('/XD', '.git', '.venv', 'build', 'dist', 'target', 'node_modules',
             '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache',
-            '/XF', '*.pyc', '*.pyo')
+            '/XF', '*.pyc', '*.pyo', '*.spec')
     }
 
     $output = @(& robocopy @rcArgs 2>&1)
