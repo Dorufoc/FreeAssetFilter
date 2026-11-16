@@ -4,7 +4,7 @@ Custom Image Background Widget
 以用户自选图片作为窗口背景层：
 1. cover 等比覆盖算法（完全覆盖窗口、居中裁切、严禁拉伸变形）
 2. 交互期快速缩放 + 稳定后平滑缓存的绘制策略（与 Mica 一致）
-3. 固定单槽位持久化导入（复制到 data/backgrounds/ 下）
+3. 固定单槽位持久化导入（复制到 assets/backgrounds/ 下）
 
 与 Mica 的核心差异：几何计算只与窗口尺寸相关，与窗口屏幕位置完全无关——
 图像固定于窗口客户区，不随窗口移动而偏移或重新裁切。
@@ -33,7 +33,7 @@ from PySide6.QtWidgets import QWidget
 
 from theme import tm
 from sopeek.utils.app_logger import warning
-from sopeek.utils.path_utils import get_app_data_path
+from sopeek._paths import backgrounds_dir
 
 # ---------------------------------------------------------------------------
 # 模块常量
@@ -41,7 +41,7 @@ from sopeek.utils.path_utils import get_app_data_path
 
 # 允许导入的背景图片扩展名白名单（小写比较）。
 BACKGROUND_IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif"})
-# get_app_data_path() 下的持久化子目录名。
+# 持久化子目录名（相对 ``<data>/assets``）。
 BACKGROUND_DIR_NAME = "backgrounds"
 # 固定单槽位文件名前缀（同名覆盖，保证同一时刻仅存在一张背景图）。
 BACKGROUND_FILENAME_PREFIX = "custom_background"
@@ -590,7 +590,7 @@ def import_custom_background_image(src_path: str) -> Optional[str]:
     """将外部图片导入为自定义背景（复制到持久化目录，固定单槽位）。
 
     校验通过后将源文件以 ``custom_background.<ext>`` 为名覆盖复制到
-    ``get_app_data_path()/backgrounds/`` 下——同一时刻仅保留一张背景图。
+    ``<data>/assets/backgrounds/`` 下——同一时刻仅保留一张背景图。
 
     Args:
         src_path: 源图片文件路径。
@@ -614,7 +614,7 @@ def import_custom_background_image(src_path: str) -> Optional[str]:
         warning(f"背景图片导入失败：文件无法解码为有效图片: {src_path!r}")
         return None
 
-    dest_dir = os.path.join(get_app_data_path(), BACKGROUND_DIR_NAME)
+    dest_dir = str(backgrounds_dir())
     os.makedirs(dest_dir, exist_ok=True)
     dest = os.path.join(dest_dir, BACKGROUND_FILENAME_PREFIX + ext)
     try:

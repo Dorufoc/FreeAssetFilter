@@ -305,21 +305,17 @@ def validate_lut_file(file_path: str) -> Tuple[bool, str]:
 
 
 def get_lut_storage_dir() -> str:
-    """获取LUT存储目录（应用数据目录下，源码态与冻结态一致）。"""
-    from sopeek._paths import get_app_data_path
+    """获取 LUT 存储目录 ``<data>/assets/luts``。"""
+    from sopeek._paths import luts_dir
 
-    lut_dir = get_app_data_path() / "luts"
-    lut_dir.mkdir(parents=True, exist_ok=True)
-    return str(lut_dir)
+    return str(luts_dir())
 
 
 def get_lut_preview_dir() -> str:
-    """获取LUT预览图存储目录（应用数据目录下，源码态与冻结态一致）。"""
-    from sopeek._paths import get_app_data_path
+    """获取 LUT 预览图存储目录 ``<data>/cache/lut_previews``。"""
+    from sopeek._paths import lut_previews_dir
 
-    preview_dir = get_app_data_path() / "lut_previews"
-    preview_dir.mkdir(parents=True, exist_ok=True)
-    return str(preview_dir)
+    return str(lut_previews_dir())
 
 
 def copy_lut_file(source_path: str, lut_id: Optional[str] = None) -> Tuple[bool, str]:

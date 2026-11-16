@@ -133,10 +133,16 @@ def test_get_resource_path_missing_file_returns_path_under_a_known_root() -> Non
     assert not Path(resolved).exists()
 
 
-def test_get_app_data_path_creates_thumbnails_subdir(_isolated_data_dir: Path) -> None:
+def test_get_app_data_path_does_not_create_unrelated_subdirs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """路径解析只创建数据根，不再顺手创建 thumbnails 等无关目录。"""
+    fresh = tmp_path / "fresh-data"
+    monkeypatch.setenv("SPK_DATA_DIR", str(fresh))
     data_dir = Path(path_utils.get_app_data_path())
-    assert data_dir == _isolated_data_dir
-    assert (data_dir / "thumbnails").is_dir()
+    assert data_dir == fresh
+    assert data_dir.is_dir()
+    assert not (data_dir / "thumbnails").exists()
 
 
 def test_get_safe_dll_paths_returns_existing_dll_files() -> None:

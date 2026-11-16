@@ -218,7 +218,9 @@ done=0               ; 0 | 1（终端键）
 - **程序文件**：`_internal`（保留 `_internal\data`）、`Sopeek.exe`、旧版 `Uninstall.exe`、
   临时/退休的 UI 与 DLL 文件。
 - **用户数据（仅 `delete_user_data=1`）**：
-  - 规范目录 `%LOCALAPPDATA%\Sopeek`（测试为 `%LOCALAPPDATA%\SopeekTestUserData`）；
+  - 规范目录 `%LOCALAPPDATA%\Sopeek`（测试为 `%LOCALAPPDATA%\SopeekTestUserData`），
+    其下 `data\` 是应用全部运行期数据的根（`config` / `assets` / `state` / `cache` /
+    `logs` / `updates` / `diagnostics` / `temp`）；
   - `$INSTDIR\data`；
   - `$INSTDIR\_internal\data`。
 - **`SPK_DATA_DIR` 自定义目录始终保留**：即使 `delete_user_data=1` 也不会删除它；若它与上述任一目标

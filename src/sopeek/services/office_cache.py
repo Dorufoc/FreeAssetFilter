@@ -14,16 +14,14 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 Office 转换 PDF 缓存模块（T8）。
 
 将 COM/LibreOffice 后端产出的 PDF 按源文件 ``(path, mtime_ns, size)`` 键缓存到
-``data/office_cache/``，命中时跳过重复转换；清理按「7 天过期 + 大小上限」
+``<data>/cache/office/``，命中时跳过重复转换；清理按「7 天过期 + 大小上限」
 驱逐，最旧优先，幂等且永不抛出。缓存目录不可写时全部函数降级为
 “不缓存”（转换流程照常进行）。
 
 设计要点：
 - 普通模块（非单例、无 ``_instance``、无需注册到 ``reset_singletons``）；
 - 缓存目录在**调用期**解析（非模块导入期快照），便于测试 monkeypatch；
-- 必须使用 ``sopeek.utils.path_utils.get_app_data_path()``（开发
-  环境返回项目根 ``data/``），**不是** ``sopeek._paths`` 的
-  包内版本 —— 两者同名不同义，本模块刻意选择 utils 变体（见下方护栏注释）。
+- 路径唯一来源是 :mod:`sopeek._paths`。
 """
 
 from __future__ import annotations
@@ -35,17 +33,7 @@ import threading
 import time
 from pathlib import Path
 
-from sopeek.utils import path_utils
 from sopeek.utils.app_logger import debug, warning
-
-# ⚠️ .gitignore 护栏（请勿删除/修改） ────────────────────────────────────
-# 仓库 `.gitignore` 第 21 行的 `data/` 规则已覆盖本缓存目录
-# （``data/office_cache/``，源自 ``utils.path_utils.get_app_data_path()``）。
-# 缓存属运行期再生成数据，不应进入版本控制。
-# **不要** 为 office_cache 追加任何 .gitignore 规则 —— 那将破坏此设计意图。
-
-# 缓存子目录名（相对 get_app_data_path() 的 data/）。
-OFFICE_CACHE_DIR_NAME: str = "office_cache"
 
 # 缓存条目超过该天数即视为过期（清理时优先删除）。镜像 ThumbnailManager
 # 的 MAX_THUMB_CACHE_* 常量风格。
@@ -80,19 +68,19 @@ _PERIODIC_CLEANUP_STOP_REQUESTED: threading.Event | None = None
 
 def office_cache_dir() -> Path:
     """
-    惰性解析缓存目录 = ``path_utils.get_app_data_path() / "office_cache"``。
+    惰性解析缓存目录 = ``<data>/cache/office``。
 
     在调用期解析（而非模块导入期快照），使测试可通过 monkeypatch
-    ``sopeek.utils.path_utils.get_app_data_path`` 或本函数将缓存
-    重定向到 ``tmp_path``。
+    ``sopeek._paths.office_cache_dir`` 或本函数将缓存重定向到临时目录。
 
     Returns
     -------
     Path
-        缓存目录绝对路径（``get_app_data_path()`` 内部会确保 data/ 存在；
-        本函数不负责创建 office_cache 子目录）。
+        缓存目录绝对路径（本函数不负责创建 ``cache/office`` 子目录）。
     """
-    return Path(path_utils.get_app_data_path()) / OFFICE_CACHE_DIR_NAME
+    from sopeek import _paths
+
+    return _paths.office_cache_dir()
 
 
 # ── 内部工具 ───────────────────────────────────────────────────────────
@@ -473,7 +461,6 @@ __all__ = [
     "MAX_OFFICE_CACHE_AGE_DAYS",
     "MAX_OFFICE_CACHE_SIZE_MB",
     "OFFICE_CACHE_CLEANUP_INTERVAL_SECONDS",
-    "OFFICE_CACHE_DIR_NAME",
     "OFFICE_CACHE_TARGET_BYTES",
     "OFFICE_CACHE_TARGET_SIZE_MB",
     "cleanup_cache",

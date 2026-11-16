@@ -22,7 +22,7 @@ from sopeek.utils.version_info import UPDATE_SOURCES
 
 # =============================================================================
 # 全量组件配色 — 用于向后兼容 legacy get_color() / render_qss() 调用
-# 内嵌 JSON 字符串，settings_v2.json 丢失时作为自动生成的模板。
+# 内嵌 JSON 字符串，settings.json 丢失时作为自动生成的模板。
 # =============================================================================
 _DEFAULT_COLORS_JSON = json.loads("""\
 {
@@ -529,7 +529,7 @@ UPDATE_SOURCE_KEYS: tuple[str, ...] = tuple(UPDATE_SOURCES)
 
 # ── V2 分类树默认值 ──────────────────────────────────────────────
 # "分类树 v2" — 全新的扁平化配置参数结构，按功能域分组。
-# colors 包含所有配色数据（简化 + 全量组件），settings_v2.json 丢失时
+# colors 包含所有配色数据（简化 + 全量组件），settings.json 丢失时
 # 自动以此为模板生成。
 DEFAULT_SETTINGS_V2: Dict[str, Any] = {
     "version": 2,
@@ -548,7 +548,7 @@ DEFAULT_SETTINGS_V2: Dict[str, Any] = {
         # 自定义窗口背景（设置窗口「外观」页「窗口背景」区块）
         "background": {
             "mode": "mica",   # 背景模式："mica"（云母） | "image"（图像） | "minimalist"（简约）
-            "image": "",      # 自定义图片文件名（位于 data/backgrounds/ 下，空字符串 = 未设置）
+            "image": "",      # 自定义图片文件名（位于 assets/backgrounds/ 下，空字符串 = 未设置）
             "ambient": True,  # 弥散氛围开关（简约模式下将主题色作为背景氛围层，默认开启）
             "blur": 0,        # 图像模式模糊半径（整数 px，0-200，默认不模糊）
             "transparency": 80,  # 图像模式透明度（%，0-100，默认 80% 很透明）
@@ -675,22 +675,19 @@ def _set_by_path(data: Dict[str, Any], key_path: str, value: Any) -> None:
 
 
 def _default_settings_path() -> str:
-    """返回默认的 V2 设置文件路径（应用可写数据目录下）。
+    """返回默认设置文件路径 ``<data>/config/settings.json``。
 
-    统一经 :func:`sopeek.utils.path_utils.get_app_data_path` 解析：
-
-    - 开发环境：仓库根 ``data/settings_v2.json``（行为与历史一致）；
-    - 冻结（打包）环境：``%LOCALAPPDATA%\\Sopeek\\data``——
-      安装目录（默认 Program Files）普通用户不可写，历史实现按
-      ``__file__`` 推导落到 ``_internal/data``，导致安装版设置无法保存；
-    - ``SPK_DATA_DIR`` 环境变量优先（测试隔离 / 便携部署）。
+    统一经 :func:`sopeek._paths.settings_file` 解析；首次访问前触发一次
+    存储布局迁移，避免新代码先写出默认文件而阻断旧设置迁移。
 
     Returns:
         str: 默认设置文件绝对路径。
     """
-    from sopeek.utils.path_utils import get_app_data_path
+    from sopeek.storage_layout import ensure_layout
+    from sopeek._paths import settings_file
 
-    return os.path.join(get_app_data_path(), "settings_v2.json")
+    ensure_layout()
+    return str(settings_file())
 
 
 class SettingsManagerV2:
@@ -700,7 +697,7 @@ class SettingsManagerV2:
     支持点号分隔的 key 路径读写（如 ``appearance.theme``）。
     线程安全：内部使用可重入锁（``RLock``）保护所有读写操作。
 
-    存储位置：应用数据目录 ``data/settings_v2.json``（原子写盘 + 大小校验）。
+    存储位置：应用数据目录 ``config/settings.json``（原子写盘 + 大小校验）。
     写盘为「按改动键合并」语义：:meth:`save` 只回写本次改动过的键，
     不会用内存快照整份覆盖磁盘，防止多实例相互丢更新（2026-10 修复）。
     """
@@ -713,7 +710,7 @@ class SettingsManagerV2:
 
         Args:
             file_path: JSON 文件路径。为 ``None`` 时使用
-                应用数据目录下的 ``settings_v2.json``。
+                应用数据目录下的 ``config/settings.json``。
         """
         # 使用可重入锁：get()/get_all() 在持锁状态下会调用 load()，
         # 非重入 Lock 会在此自锁死锁（历史缺陷，2026-09 修复）。
@@ -758,7 +755,23 @@ class SettingsManagerV2:
                 with _FILE_IO_LOCK:
                     self._settings = self._read_disk_settings()
             except (json.JSONDecodeError, OSError, ValueError):
-                self._settings = self._copy_defaults()
+                from sopeek.utils.atomic_json import quarantine_corrupt
+
+                recovered: Optional[Dict[str, Any]] = None
+                backup_path = f"{self._file_path}.bak"
+                try:
+                    if os.path.getsize(backup_path) <= self.MAX_SETTINGS_FILE_BYTES:
+                        with open(backup_path, "r", encoding="utf-8") as f:
+                            backup_data = json.load(f)
+                        if isinstance(backup_data, dict):
+                            recovered = self._merge_with_defaults(backup_data)
+                except (OSError, json.JSONDecodeError, ValueError):
+                    recovered = None
+
+                quarantine_corrupt(self._file_path)
+                self._settings = (
+                    recovered if recovered is not None else self._copy_defaults()
+                )
                 with _FILE_IO_LOCK:
                     self._write()
 
@@ -907,16 +920,17 @@ class SettingsManagerV2:
     def _write(self) -> None:
         """将 ``self._settings`` 原子写入 JSON 文件（已处于锁内）。
 
-        先写 ``<file>.tmp`` 再 ``os.replace`` 原子替换，避免进程崩溃/
-        断电时截断 settings_v2.json 导致用户配置丢失。
+        使用统一原子写工具：同目录临时文件 → ``fsync`` → ``os.replace``；
+        写入前保留一份 ``settings.json.bak``，主文件损坏时可回退。
         """
-        settings_dir = os.path.dirname(self._file_path)
-        if settings_dir:
-            os.makedirs(settings_dir, exist_ok=True)
-        tmp_path = f"{self._file_path}.tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(self._settings, f, ensure_ascii=False, indent=4)
-        os.replace(tmp_path, self._file_path)
+        from sopeek.utils.atomic_json import write_json_atomic
+
+        write_json_atomic(
+            self._file_path,
+            self._settings,
+            indent=4,
+            backup=True,
+        )
 
     def _copy_defaults(self) -> Dict[str, Any]:
         """深拷贝默认 V2 设置。"""

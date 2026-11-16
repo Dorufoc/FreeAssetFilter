@@ -52,8 +52,8 @@ class StagingPoolService(BaseService):
     _class_lock: threading.Lock = threading.Lock()
     """类级别锁，用于 __new__ 和 __init__ 的线程安全。"""
 
-    #: 暂存池备份文件名（data/ 下的唯一事实来源；UI 布局层据此拼路径）。
-    BACKUP_FILE_NAME: str = "staging_pool_backup.json"
+    #: 暂存池备份文件名（新布局位于 ``state/staging_pool.json``）。
+    BACKUP_FILE_NAME: str = "staging_pool.json"
 
     _BACKUP_STRING_FIELDS: Tuple[str, ...] = (
         "name",

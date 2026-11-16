@@ -4,9 +4,9 @@
 
 * 读取 ``general.check_updates_on_startup``（每次调用都读，不缓存进程标志）；
 * 响应 ``SPK_DISABLE_UPDATE_CHECK`` 环境变量门控；
-* 通过 ``check_state.json`` 持久化 24 小时尝试节流与"每版本一次提醒"去重。
+* 通过 ``state/update_check.json`` 持久化 24 小时尝试节流与"每版本一次提醒"去重。
 
-状态文件位于 :func:`get_app_data_path` 目录下，采用同目录临时文件 +
+状态文件位于 ``<data>/state`` 目录下，采用同目录临时文件 +
 :func:`os.replace` 的原子写法；文件损坏或读写失败一律降级为"空状态 / 检查失败"，
 绝不让启动流程因更新检查崩溃。
 """
@@ -22,13 +22,12 @@ from pathlib import Path
 from typing import Any, Optional
 
 from sopeek.utils.app_logger import debug, warning
-from sopeek.utils.path_utils import get_app_data_path
 
 #: 两次自动检查之间的最小间隔（24 小时）。
 CHECK_INTERVAL_SECONDS = 24 * 3600
 
 #: 启动检查状态文件名。
-CHECK_STATE_FILENAME = "check_state.json"
+CHECK_STATE_FILENAME = "update_check.json"
 
 #: 关闭自动检查的环境变量。
 DISABLE_ENV_VAR = "SPK_DISABLE_UPDATE_CHECK"
@@ -40,9 +39,11 @@ def check_state_path() -> Path:
     """返回启动检查状态文件路径。
 
     Returns:
-        Path: ``get_app_data_path()/check_state.json``。
+        Path: ``<data>/state/update_check.json``。
     """
-    return Path(get_app_data_path()) / CHECK_STATE_FILENAME
+    from sopeek._paths import update_check_file
+
+    return update_check_file()
 
 
 def read_check_state() -> dict[str, Any]:

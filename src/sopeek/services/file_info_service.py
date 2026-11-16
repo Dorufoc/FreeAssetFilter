@@ -5,7 +5,7 @@
 - 基础信息：stat / 轻量读头采集（图片、音频、视频、文本、压缩包、字体）
 - 详细信息：按类型展开计算（含 EXIF 常用子集与全量标签）
 - 哈希值：MD5 / SHA1 / SHA256 单次读盘并行计算
-- 缓存：data/file_info_cache.json（与旧版同路径同名，内部结构全新，
+- 缓存：``<data>/cache/file_info.json``（与旧版同结构，路径统一到新布局，
   version=2，仅缓存详细信息 rows 与哈希；文件 mtime_ns/size 变动自动失效）
 
 本模块不得导入 PySide6 / UI 组件，便于脱离界面做单元测试。
@@ -93,20 +93,15 @@ except ImportError:  # pragma: no cover - 依赖缺失时的兜底
 # ---------------------------------------------------------------------------
 
 CACHE_VERSION = 2
-CACHE_FILE_NAME = "file_info_cache.json"
+CACHE_FILE_NAME = "file_info.json"
 
 
 def _default_cache_path() -> Path:
-    """默认缓存路径：统一走 ``utils.path_utils.get_app_data_path()``。
+    """默认缓存路径：``<data>/cache/file_info.json``。"""
+    from sopeek._paths import file_info_cache_file
 
-    与 office_cache / thumbnails 等缓存通路同源（项目根 ``data/``），
-    替代原先硬编码的三级父目录推导。
-    """
-    from sopeek.utils.path_utils import get_app_data_path
-    return Path(get_app_data_path()) / CACHE_FILE_NAME
+    return file_info_cache_file()
 
-
-_DEFAULT_CACHE_PATH = _default_cache_path()
 
 # 表示「无法获取 / 无值」的通用占位
 UNAVAILABLE = "-"
@@ -210,10 +205,10 @@ def _cache_key(path: str) -> str:
 
 
 def get_cache_path(cache_path: Optional[str] = None) -> Path:
-    """解析缓存文件路径（测试可注入临时路径）。"""
+    """解析缓存文件路径（测试可注入临时路径；默认路径每次惰性解析）。"""
     if cache_path:
         return Path(cache_path)
-    return _DEFAULT_CACHE_PATH
+    return _default_cache_path()
 
 
 def _read_store(cache_path: Optional[str] = None) -> Dict[str, Any]:
@@ -314,11 +309,9 @@ def write_cached(
                 files.pop(stale_key, None)
         cache_file = get_cache_path(cache_path)
         try:
-            cache_file.parent.mkdir(parents=True, exist_ok=True)
-            tmp_file = cache_file.with_suffix(".json.tmp")
-            with open(tmp_file, "w", encoding="utf-8") as f:
-                json.dump(store, f, ensure_ascii=False, indent=2)
-            os.replace(tmp_file, cache_file)
+            from sopeek.utils.atomic_json import write_json_atomic
+
+            write_json_atomic(cache_file, store, indent=2, backup=False)
         except OSError as exc:
             error(f"[file_info_service] 写入缓存失败: {exc}")
 

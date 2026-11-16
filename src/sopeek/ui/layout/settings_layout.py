@@ -50,10 +50,7 @@ from components.settings_card import (
 )
 from components.styled_dialog import create_danger_dialog
 from components.styled_color_picker import _ColorPanel
-from components.custom_background import (
-    BACKGROUND_DIR_NAME,
-    import_custom_background_image,
-)
+from components.custom_background import import_custom_background_image
 from components.theme_transition_overlay import (
     PageSwitchOverlay,
     ThemeTransitionOverlay,
@@ -72,7 +69,7 @@ from sopeek.core.native.platform_timing import (
 from sopeek.ui.layout.settings_staging_cache import SettingsStagingCache
 from sopeek.utils.app_logger import debug, warning
 from sopeek.utils.animation_settings import is_animation_enabled
-from sopeek.utils.path_utils import get_app_data_path
+from sopeek._paths import backgrounds_dir
 from sopeek.utils.version_info import (
     DEFAULT_UPDATE_SOURCE,
     GITHUB_SOURCE,
@@ -1220,12 +1217,10 @@ class AppearanceSettingsPage(QWidget):
         """当前背景图片在持久化目录中的绝对路径。
 
         Returns:
-            str: ``get_app_data_path()/backgrounds/<文件名>`` 拼接结果；
+            str: ``<data>/assets/backgrounds/<文件名>`` 拼接结果；
             未设置文件名时返回目录路径（调用方需先判空）。
         """
-        return os.path.join(
-            get_app_data_path(), BACKGROUND_DIR_NAME, self._bg_image_name
-        )
+        return str(backgrounds_dir() / self._bg_image_name)
 
     def background_image_revision(self) -> int:
         """当前背景图片的导入修订号（每次成功导入 +1）。
@@ -4896,9 +4891,7 @@ class SettingsLayout(QWidget):
             if mw is None:
                 return
             if mode == "image" and image_name:
-                image_path = os.path.join(
-                    get_app_data_path(), BACKGROUND_DIR_NAME, image_name
-                )
+                image_path = str(backgrounds_dir() / image_name)
                 # 图片只在切换/更换时下发一次；滑块拖动预览（同一图片）仅更新
                 # 参数，避免每帧重载图片造成卡顿与闪烁。同名覆盖的新图片靠
                 # 修订号变化识别，仍会重新下发并触发交叉淡入。

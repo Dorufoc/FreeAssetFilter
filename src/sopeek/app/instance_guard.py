@@ -5,7 +5,7 @@ Sopeek 单实例守卫（instance_guard）
 --------------------------------------------
 自引导层（``sopeek/app/main.py``）拆分出的进程级设施，职责：
 
-  - 运行时实例信息（``data/runtime_instance.json``）写 / 读 / 删
+  - 运行时实例信息（``state/runtime_instance.json``）写 / 读 / 删
   - Windows 进程守卫：PID 存活判定、进程映像路径、保守身份校验、强制终止
   - 互斥体（``Sopeek_SingleInstance_Mutex``）获取；检测到"已在运行"时
     静默退出（不弹模态框、不创建第二个窗口），强制终止后重启工具保留
@@ -23,7 +23,6 @@ import time
 from typing import Optional
 
 from sopeek.utils.app_logger import debug, error, info, warning
-from sopeek.utils.path_utils import get_app_data_path
 
 _MUTEX_NAME: str = "Sopeek_SingleInstance_Mutex"
 _ERROR_ALREADY_EXISTS: int = 183  # ERROR_ALREADY_EXISTS
@@ -34,8 +33,10 @@ _ERROR_ALREADY_EXISTS: int = 183  # ERROR_ALREADY_EXISTS
 # ──────────────────────────────────────────────────────────────
 
 def _get_runtime_info_file_path() -> str:
-    """获取运行实例信息文件路径。"""
-    return os.path.join(get_app_data_path(), "runtime_instance.json")
+    """获取运行实例信息文件路径 ``<data>/state/runtime_instance.json``。"""
+    from sopeek._paths import runtime_instance_file
+
+    return str(runtime_instance_file())
 
 
 def _write_runtime_instance_info() -> dict:
@@ -93,6 +94,25 @@ def _remove_runtime_instance_info(expected_pid: Optional[int] = None) -> None:
 # ──────────────────────────────────────────────────────────────
 # Windows 进程守卫
 # ──────────────────────────────────────────────────────────────
+
+def _prune_stale_runtime_info() -> None:
+    """启动时清理上一进程崩溃后残留的运行实例信息。
+
+    记录里的 PID 仍存活（例如另一个实例）时保留文件；PID 已退出或文件损坏
+    则删除，避免残留状态误导单实例冲突处理。
+    """
+    try:
+        info = _read_runtime_instance_info()
+        if info is None:
+            # 文件不存在或已损坏：损坏文件由读取函数返回 None，这里清掉。
+            _remove_runtime_instance_info()
+            return
+        pid = info.get("pid")
+        if not _is_process_running(pid):
+            _remove_runtime_instance_info()
+    except Exception as exc:  # noqa: BLE001 - 清理失败不得阻断启动
+        debug(f"清理残留运行实例信息失败：{exc}")
+
 
 def _is_process_running(pid) -> bool:
     """判断指定 PID 是否仍在运行（非 Windows 一律 False）。"""

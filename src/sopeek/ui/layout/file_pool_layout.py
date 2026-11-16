@@ -61,8 +61,7 @@ from components.file_card_delegate import (
 )
 from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
 from components.styled_dialog import create_input_dialog, ask_custom_dialog
-from sopeek.utils.path_utils import get_app_data_path
-from sopeek._paths import icons_dir
+from sopeek._paths import icons_dir, staging_pool_file
 from sopeek.services.staging_pool_service import StagingPoolService
 from sopeek.core.workers.staging_tasks import MD5CalculationTask
 from sopeek.core.native import api as native_api
@@ -523,9 +522,7 @@ class FilePoolLayout(QWidget):
         self._box_gesture.finished.connect(self._on_box_gesture_finished)
 
         # ── 备份系统 ────────────────────────────────────────────────────
-        self.backup_file = os.path.join(
-            get_app_data_path(), StagingPoolService.BACKUP_FILE_NAME
-        )
+        self.backup_file = str(staging_pool_file())
         self._suspend_backup_save = False
         self._pending_backup_last_path = "All"
         self._backup_save_delay_ms = 1500

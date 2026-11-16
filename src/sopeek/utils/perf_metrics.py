@@ -47,7 +47,6 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Deque, Dict, Iterable, Optional
 
 from sopeek.utils.app_logger import debug, info, warning
-from sopeek.utils.path_utils import get_app_data_path
 
 
 def _truthy_env(name: str, default: str = "1") -> bool:
@@ -253,7 +252,6 @@ class PerfMetricsRegistry:
         self._lock = threading.RLock()
         self._events: Dict[str, PerfEventStats] = {}
         self._global_counters: Dict[str, int] = defaultdict(int)
-        self._snapshot_dir = os.path.join(get_app_data_path(), "performance")
         self._sample_limit = self._read_sample_limit()
         debug(f"PerfMetricsRegistry initialized, enabled={self._enabled}, sample_limit={self._sample_limit}")
 
@@ -384,9 +382,12 @@ class PerfMetricsRegistry:
         snapshot = self.snapshot()
         try:
             if output_path is None:
-                os.makedirs(self._snapshot_dir, exist_ok=True)
+                from sopeek._paths import performance_dir
+
+                snapshot_dir = str(performance_dir())
+                os.makedirs(snapshot_dir, exist_ok=True)
                 timestamp = time.strftime("%Y%m%d_%H%M%S")
-                output_path = os.path.join(self._snapshot_dir, f"perf_metrics_{timestamp}.json")
+                output_path = os.path.join(snapshot_dir, f"perf_metrics_{timestamp}.json")
             else:
                 output_dir = os.path.dirname(output_path)
                 if output_dir:

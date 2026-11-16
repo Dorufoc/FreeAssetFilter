@@ -122,7 +122,7 @@ python -m sopeek.app.main
 
 ### File info panel
 
-The info panel below the preview area works in tandem with the previewer: file name, path, size, type, and created/modified times are always shown; "Details" expands according to file type (common EXIF subset plus image dimensions, video duration and picture parameters, audio tags, etc.), while "Hashes" computes MD5 / SHA1 / SHA256 in the background with progress reported in 1 MiB steps. Results are written to the shared cache `data/file_info_cache.json`, so reopening a file requires no recomputation.
+The info panel below the preview area works in tandem with the previewer: file name, path, size, type, and created/modified times are always shown; "Details" expands according to file type (common EXIF subset plus image dimensions, video duration and picture parameters, audio tags, etc.), while "Hashes" computes MD5 / SHA1 / SHA256 in the background with progress reported in 1 MiB steps. Results are written to the shared cache `cache/file_info.json`, so reopening a file requires no recomputation.
 
 ### Personalization and performance
 
@@ -232,13 +232,29 @@ All splitters are draggable; **double-clicking any splitter** resets the entire 
 
 ### User data location
 
-Settings, thumbnail cache, logs (`logs/`), background images, and the file info cache all live in:
+All runtime data lives in:
 
 ```
 %LOCALAPPDATA%\Sopeek\data
 ```
 
-Source runs and the installed build share the same data directory; in test environments `SPK_DATA_DIR` redirects it to a temporary directory so real data is never touched.
+The directory is split by purpose; only `config/` and `assets/` hold irreplaceable user data:
+
+```
+data/
+├─ config/           # settings, AI accounts, favorites
+├─ assets/           # background image, LUT files
+├─ state/            # last path, staging pool, update state, runtime instance
+├─ cache/            # thumbnails, icons, Office conversions, LUT previews, file info
+├─ logs/             # runtime logs (200MB cap, 7-day compression, 20-day archive cleanup)
+├─ updates/download/ # installer downloads
+├─ diagnostics/      # performance snapshots and diagnostics
+└─ temp/office/      # Office conversion temp files (purged after 24 hours)
+```
+
+Deleting `cache/`, `logs/`, `diagnostics/`, `temp/`, or `updates/` loses no settings or user assets — the app rebuilds them automatically.
+
+Source runs and the installed build share the same data directory; in test environments `SPK_DATA_DIR` redirects it to a temporary directory so real data is never touched. Files left in the old flat layout are migrated automatically on first launch.
 
 ---
 

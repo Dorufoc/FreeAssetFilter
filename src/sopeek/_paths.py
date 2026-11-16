@@ -153,19 +153,210 @@ def version_file() -> Path:
     return repo_root() / "SPKVERSION"
 
 
-def get_app_data_path() -> Path:
-    """返回应用数据目录（可写）。
+# ── 用户可写数据目录（运行期唯一事实来源） ──────────────────────────────
+#
+# 布局（v2）：
+#   <root>/config      用户配置
+#   <root>/state       会话/应用状态
+#   <root>/assets      用户导入资源（背景、LUT）
+#   <root>/cache       可再生缓存
+#   <root>/logs        日志
+#   <root>/updates     更新下载
+#   <root>/diagnostics 诊断/性能产物
+#   <root>/temp        应用自有临时目录
+#
+# 只有本模块允许解析 ``SPK_DATA_DIR`` / ``LOCALAPPDATA``；其他模块必须调用
+# 下列具名 getter，禁止再自行拼 ``data/...`` 相对路径。
 
-    委托 :func:`sopeek.utils.path_utils.get_app_data_path`，保证原生侧与 UI 侧
-    共用同一个运行时根：``SPK_DATA_DIR`` 优先，否则
-    ``%LOCALAPPDATA%\\Sopeek\\data``。目录不存在时创建。
+
+def _default_app_data_root() -> Path:
+    """返回默认数据根 ``%LOCALAPPDATA%\\Sopeek\\data``（不创建）。"""
+    local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+    if not local_appdata:
+        local_appdata = os.path.join(os.path.expanduser("~"), "AppData", "Local")
+    return Path(local_appdata) / "Sopeek" / "data"
+
+
+def app_data_root() -> Path:
+    """返回应用数据根目录（``SPK_DATA_DIR`` 优先），按需创建。
+
+    ``SPK_DATA_DIR`` 每次调用都重新读取，不做进程内缓存——测试隔离与便携
+    部署可以在运行期切换目录。相对路径按当前工作目录解析为绝对路径。
+
+    Returns:
+        Path: 数据根绝对路径。
+    """
+    override = os.environ.get("SPK_DATA_DIR", "").strip()
+    if override:
+        root = Path(os.path.expanduser(override))
+        if not root.is_absolute():
+            root = Path(os.path.abspath(str(root)))
+    else:
+        root = _default_app_data_root()
+    root = Path(os.path.abspath(str(root)))
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def get_app_data_path() -> Path:
+    """返回应用数据目录（兼容旧 API，等价于 :func:`app_data_root`）。
 
     Returns:
         Path: 应用数据目录绝对路径。
     """
-    from sopeek.utils.path_utils import get_app_data_path as _get_app_data_path
+    return app_data_root()
 
-    return Path(_get_app_data_path())
+
+def _ensure_dir(path: Path) -> Path:
+    """确保目录存在并返回同一路径。"""
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def config_dir() -> Path:
+    """返回用户配置目录 ``<root>/config``。"""
+    return _ensure_dir(app_data_root() / "config")
+
+
+def state_dir() -> Path:
+    """返回会话/应用状态目录 ``<root>/state``。"""
+    return _ensure_dir(app_data_root() / "state")
+
+
+def assets_dir() -> Path:
+    """返回用户导入资源根目录 ``<root>/assets``。"""
+    return _ensure_dir(app_data_root() / "assets")
+
+
+def cache_dir() -> Path:
+    """返回可再生缓存根目录 ``<root>/cache``。"""
+    return _ensure_dir(app_data_root() / "cache")
+
+
+def logs_dir() -> Path:
+    """返回日志目录 ``<root>/logs``。"""
+    return _ensure_dir(app_data_root() / "logs")
+
+
+def updates_dir() -> Path:
+    """返回更新根目录 ``<root>/updates``。"""
+    return _ensure_dir(app_data_root() / "updates")
+
+
+def diagnostics_dir() -> Path:
+    """返回诊断/性能产物根目录 ``<root>/diagnostics``。"""
+    return _ensure_dir(app_data_root() / "diagnostics")
+
+
+def temp_dir() -> Path:
+    """返回应用自有临时根目录 ``<root>/temp``。"""
+    return _ensure_dir(app_data_root() / "temp")
+
+
+# ── 具体目录 ─────────────────────────────────────────────────────────
+
+
+def backgrounds_dir() -> Path:
+    """返回自定义背景目录 ``<root>/assets/backgrounds``。"""
+    return _ensure_dir(assets_dir() / "backgrounds")
+
+
+def luts_dir() -> Path:
+    """返回用户 LUT 目录 ``<root>/assets/luts``。"""
+    return _ensure_dir(assets_dir() / "luts")
+
+
+def icon_cache_dir() -> Path:
+    """返回图标缓存目录 ``<root>/cache/icons``。"""
+    return _ensure_dir(cache_dir() / "icons")
+
+
+def thumbnails_dir() -> Path:
+    """返回缩略图缓存目录 ``<root>/cache/thumbnails``。"""
+    return _ensure_dir(cache_dir() / "thumbnails")
+
+
+def office_cache_dir() -> Path:
+    """返回 Office 转 PDF 缓存目录 ``<root>/cache/office``。"""
+    return _ensure_dir(cache_dir() / "office")
+
+
+def lut_previews_dir() -> Path:
+    """返回 LUT 预览缓存目录 ``<root>/cache/lut_previews``。"""
+    return _ensure_dir(cache_dir() / "lut_previews")
+
+
+def updates_download_dir() -> Path:
+    """返回安装包下载目录 ``<root>/updates/download``。"""
+    return _ensure_dir(updates_dir() / "download")
+
+
+def performance_dir() -> Path:
+    """返回性能快照目录 ``<root>/diagnostics/performance``。"""
+    return _ensure_dir(diagnostics_dir() / "performance")
+
+
+def probes_dir() -> Path:
+    """返回原生诊断探针目录 ``<root>/diagnostics/probes``。"""
+    return _ensure_dir(diagnostics_dir() / "probes")
+
+
+def office_temp_dir() -> Path:
+    """返回 Office 转换临时目录 ``<root>/temp/office``。"""
+    return _ensure_dir(temp_dir() / "office")
+
+
+# ── 具体文件 ─────────────────────────────────────────────────────────
+
+
+def settings_file() -> Path:
+    """返回设置文件 ``<root>/config/settings.json``。"""
+    return config_dir() / "settings.json"
+
+
+def ai_accounts_file() -> Path:
+    """返回 AI 账号配置 ``<root>/config/ai_accounts.json``。"""
+    return config_dir() / "ai_accounts.json"
+
+
+def favorites_file() -> Path:
+    """返回收藏夹 ``<root>/config/favorites.json``。"""
+    return config_dir() / "favorites.json"
+
+
+def last_path_file() -> Path:
+    """返回上次浏览路径 ``<root>/state/last_path.json``。"""
+    return state_dir() / "last_path.json"
+
+
+def staging_pool_file() -> Path:
+    """返回暂存池备份 ``<root>/state/staging_pool.json``。"""
+    return state_dir() / "staging_pool.json"
+
+
+def update_check_file() -> Path:
+    """返回更新检查状态 ``<root>/state/update_check.json``。"""
+    return state_dir() / "update_check.json"
+
+
+def pending_update_file() -> Path:
+    """返回待安装更新标记 ``<root>/state/pending_update.json``。"""
+    return state_dir() / "pending_update.json"
+
+
+def runtime_instance_file() -> Path:
+    """返回运行实例信息 ``<root>/state/runtime_instance.json``。"""
+    return state_dir() / "runtime_instance.json"
+
+
+def file_info_cache_file() -> Path:
+    """返回文件信息缓存 ``<root>/cache/file_info.json``。"""
+    return cache_dir() / "file_info.json"
+
+
+def layout_version_file() -> Path:
+    """返回存储布局版本标记 ``<root>/.layout_version.json``。"""
+    return app_data_root() / ".layout_version.json"
 
 
 def soffice_paths() -> List[Path]:
@@ -234,6 +425,35 @@ __all__ = [
     "native_source_root",
     "launcher_dir",
     "version_file",
+    "app_data_root",
     "get_app_data_path",
+    "config_dir",
+    "state_dir",
+    "assets_dir",
+    "cache_dir",
+    "logs_dir",
+    "updates_dir",
+    "diagnostics_dir",
+    "temp_dir",
+    "backgrounds_dir",
+    "luts_dir",
+    "icon_cache_dir",
+    "thumbnails_dir",
+    "office_cache_dir",
+    "lut_previews_dir",
+    "updates_download_dir",
+    "performance_dir",
+    "probes_dir",
+    "office_temp_dir",
+    "settings_file",
+    "ai_accounts_file",
+    "favorites_file",
+    "last_path_file",
+    "staging_pool_file",
+    "update_check_file",
+    "pending_update_file",
+    "runtime_instance_file",
+    "file_info_cache_file",
+    "layout_version_file",
     "soffice_paths",
 ]

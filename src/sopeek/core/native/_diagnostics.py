@@ -6,8 +6,8 @@
 * 未指定且处于开发态（源码运行，``sys.frozen`` 为假）时，沿用仓库内
   ``.omo/evidence/performance-ceiling-optimization`` 证据目录，保留原有
   开发工作流与测试断言；
-* 冻结/打包态落盘到 ``<exe目录>/data/diagnostics``，与 ``app_logger``
-  冻结态写 ``<exe目录>/data/logs`` 的既有约定一致，避免写只读的程序目录。
+* 冻结/打包态落盘到 ``<data>/diagnostics/probes``，与用户数据目录同源，
+  避免写只读的程序目录。
 
 诊断脚本查找（如 GPU affinity 探针）
 ------------------------------------
@@ -40,14 +40,16 @@ def diagnostics_root() -> Path:
 
     Returns:
         * 设置了 ``SPK_EVIDENCE_DIR`` 时：该目录；
-        * 冻结态：``<exe目录>/data/diagnostics``；
+        * 冻结态：``<data>/diagnostics/probes``；
         * 开发态：仓库 ``.omo/evidence/performance-ceiling-optimization``。
     """
     override = os.environ.get("SPK_EVIDENCE_DIR", "").strip()
     if override:
         return Path(override)
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent / "data" / "diagnostics"
+        from sopeek._paths import probes_dir
+
+        return probes_dir()
     return _repo_root() / REPO_EVIDENCE_REL
 
 

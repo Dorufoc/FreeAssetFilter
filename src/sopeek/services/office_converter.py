@@ -337,10 +337,52 @@ def _remove_temp_profile(
                 )
 
 
+def _office_temp_root() -> Path:
+    """返回应用自有的 Office 临时根目录（``<data>/temp/office``）。"""
+    from sopeek._paths import office_temp_dir
+
+    return Path(office_temp_dir())
+
+
+def _remove_temp_dir(path: Path, attempts: int = 3, delay: float = 0.3) -> None:
+    """尽力删除本次转换的临时目录；失败只告警，残留由启动清理兜底。"""
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            if attempt + 1 < attempts:
+                time.sleep(delay)
+            else:
+                warning(f"[OfficeConverter] 清理临时转换目录失败: {exc}")
+
+
+def _cleanup_temp_artifact(path: Path | str) -> None:
+    """缓存成功后删除临时 PDF 及其专属目录。
+
+    仅删除 ``temp/office`` 内的路径；缓存写入失败时调用方不应调用本函数，
+    以保证预览仍能读取原临时文件。
+    """
+    artifact = Path(path)
+    try:
+        root = _office_temp_root()
+        resolved = Path(os.path.abspath(str(artifact)))
+        root_resolved = Path(os.path.abspath(str(root)))
+        if not str(resolved).lower().startswith(str(root_resolved).lower()):
+            return
+        parent = resolved.parent
+        if os.path.normcase(str(parent)) == os.path.normcase(str(root_resolved)):
+            artifact.unlink(missing_ok=True)
+        else:
+            _remove_temp_dir(parent)
+    except OSError:
+        pass
+
+
 class OfficeConverter:
     """
-    Office 转换分派服务（普通类，非单例，classmethod 风格）。
-
     职责：
     1. 能力探测 —— 每次 ``convert()`` 调用时运行时重新评估
        MS Office / WPS COM 与 LibreOffice 的可用性，探测函数永不抛出；
@@ -741,9 +783,15 @@ class OfficeConverter:
             thread_id = threading.get_ident()
             profile_dir: Path | None = None
             out_dir: Path | None = None
+            keep_out_dir = False
             try:
-                profile_dir = Path(tempfile.mkdtemp(prefix="spk_lo_"))
-                out_dir = Path(tempfile.mkdtemp(prefix="spk_lo_out_"))
+                temp_root = _office_temp_root()
+                profile_dir = Path(
+                    tempfile.mkdtemp(prefix="lo_profile_", dir=str(temp_root))
+                )
+                out_dir = Path(
+                    tempfile.mkdtemp(prefix="lo_out_", dir=str(temp_root))
+                )
                 output_pdf = out_dir / f"{Path(path).stem}.pdf"
                 profile_flag = (
                     "-env:UserInstallation=file:///"
@@ -814,6 +862,7 @@ class OfficeConverter:
                                 f"输出目录：{out_dir}"
                             ),
                         )
+                    keep_out_dir = True
                     return ConversionResult(
                         content_type="pdf",
                         content=output_pdf,
@@ -824,6 +873,8 @@ class OfficeConverter:
             finally:
                 if profile_dir is not None:
                     _remove_temp_profile(profile_dir)
+                if out_dir is not None and not keep_out_dir:
+                    _remove_temp_dir(out_dir)
 
     @classmethod
     def _convert_with_com(
@@ -993,8 +1044,9 @@ class OfficeConverter:
                 detail=f"不受支持的 Office 后缀：{suffix}",
             )
 
-        out_dir = Path(tempfile.gettempdir())
-        out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = Path(
+            tempfile.mkdtemp(prefix="com_", dir=str(_office_temp_root()))
+        )
         output = out_dir / (
             f"{cls._safe_output_stem(path)}_com_{uuid.uuid4().hex}.pdf"
         )
@@ -1004,6 +1056,7 @@ class OfficeConverter:
         stage = "启动 Office"
         extra_details: list[str] = []
         conversion_failed = False
+        keep_out_dir = False
         try:
             # Metis C4：按顺序尝试 ProgID，任一成功即使用。
             dispatch_errors: list[str] = []
@@ -1085,6 +1138,7 @@ class OfficeConverter:
                     ),
                 )
 
+            keep_out_dir = True
             return ConversionResult(
                 content_type="pdf",
                 content=output,
@@ -1116,6 +1170,8 @@ class OfficeConverter:
             # 也降低误伤用户同时打开的 Office 进程的概率。
             if conversion_failed or quit_failed:
                 cls._cleanup_orphan_processes(task_started_at)
+            if not keep_out_dir:
+                _remove_temp_dir(out_dir)
 
     @staticmethod
     def _dispatch_office_app(client: Any, prog_id: str) -> Any:
@@ -2030,6 +2086,17 @@ class OfficeConverter:
             cached_path = put_cache(file_info, result.content)
         except Exception:
             return result
+
+        # 缓存成功（返回路径与源产物不同）后立即删除本次临时目录；
+        # 缓存失败/降级时 put_cache 原样返回源路径，保留给预览读取。
+        try:
+            if os.path.normcase(os.path.abspath(str(cached_path))) != os.path.normcase(
+                os.path.abspath(str(result.content))
+            ):
+                _cleanup_temp_artifact(result.content)
+        except OSError:
+            pass
+
         return ConversionResult(
             content_type=result.content_type,
             content=cached_path,

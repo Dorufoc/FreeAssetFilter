@@ -87,7 +87,7 @@ from sopeek.services.update_service import (  # noqa: E402
     UpdateService,
     sanitize_asset_name,
 )
-from sopeek.utils.path_utils import get_app_data_path  # noqa: E402
+from sopeek._paths import updates_download_dir  # noqa: E402
 
 #: Keeps the CLI-owned ``QCoreApplication`` alive for the whole process.
 _QT_APP: Optional[QCoreApplication] = None
@@ -1077,7 +1077,7 @@ def _run_download(
         return base
 
     started = time.monotonic()
-    download_dir = Path(get_app_data_path()) / "download"
+    download_dir = updates_download_dir()
     dest = download_dir / name
     part = dest.with_name(dest.name + ".part")
     part_meta = dest.with_name(dest.name + ".part.json")
@@ -1450,7 +1450,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "preflight": preflight,
         "preflight_recovery_note": PREFLIGHT_RECOVERY_NOTE,
         "data_dir": str(_DATA_DIR),
-        "download_dir": str(Path(get_app_data_path()) / "download"),
+        "download_dir": str(updates_download_dir()),
         "ok": False,
         "verdict": "FAIL",
     }

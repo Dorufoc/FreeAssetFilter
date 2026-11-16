@@ -6,10 +6,10 @@ Sopeek 收藏夹服务模块
 提供文件收藏夹的 CRUD 操作，支持持久化到 JSON 文件。
 """
 
-import json
 import os
 from typing import List, Optional
 
+from sopeek._paths import favorites_file as _favorites_file
 from sopeek.services.base import BaseService
 from sopeek.utils.app_logger import warning
 
@@ -29,17 +29,16 @@ class FavoritesService(BaseService):
 
         Args:
             favorites_file: 收藏夹 JSON 文件路径。
-                           默认为项目根目录下的 data/favorites.json。
+                           默认为 ``<data>/config/favorites.json``。
         """
         super().__init__()
         if favorites_file is not None:
             self.favorites_file: str = favorites_file
         else:
-            self.favorites_file: str = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                "data",
-                "favorites.json",
-            )
+            from sopeek.storage_layout import ensure_layout
+
+            ensure_layout()
+            self.favorites_file = str(_favorites_file())
         self._favorites: List[str] = []
         self._loaded: bool = False
 
@@ -71,17 +70,23 @@ class FavoritesService(BaseService):
             return self._favorites
 
         try:
-            with open(self.favorites_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            from sopeek.utils.atomic_json import read_json
+
+            data = read_json(
+                self.favorites_file,
+                default=None,
+                use_backup=True,
+                quarantine=True,
+            )
             if isinstance(data, list):
                 self._favorites = data
-            else:
+            elif data is not None:
                 warning(
                     f"FavoritesService: 收藏夹文件顶层非列表，已按空列表处理："
                     f"{self.favorites_file}"
                 )
                 self._favorites = []
-        except (json.JSONDecodeError, OSError, ValueError) as exc:
+        except (OSError, ValueError, TypeError) as exc:
             # 文件损坏/不可读：按空列表继续，但必须留痕（含文件路径），
             # 便于用户发现收藏数据异常。
             warning(
@@ -93,21 +98,34 @@ class FavoritesService(BaseService):
         self._loaded = True
         return self._favorites
 
-    def save(self, favorites: List[str]) -> None:
-        """将收藏路径列表持久化到 JSON 文件。
+    def save(self, favorites: List[str]) -> bool:
+        """将收藏路径列表原子持久化到 JSON 文件。
 
         Args:
             favorites: 要保存的路径列表。
-        """
-        parent = os.path.dirname(self.favorites_file)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
 
-        with open(self.favorites_file, "w", encoding="utf-8") as f:
-            json.dump(favorites, f, ensure_ascii=False, indent=2)
+        Returns:
+            bool: 写入成功返回 True；权限/磁盘错误返回 False 并记录日志。
+        """
+        from sopeek.utils.atomic_json import write_json_atomic
+
+        try:
+            write_json_atomic(
+                self.favorites_file,
+                list(favorites),
+                indent=2,
+                backup=True,
+            )
+        except OSError as exc:
+            warning(
+                f"FavoritesService: 收藏夹写入失败："
+                f"{self.favorites_file}（{type(exc).__name__}: {exc}）"
+            )
+            return False
 
         self._favorites = list(favorites)
         self._loaded = True
+        return True
 
     def add(self, path: str) -> bool:
         """添加路径到收藏夹。

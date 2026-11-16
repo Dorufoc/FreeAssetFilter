@@ -9,7 +9,6 @@ import shutil
 import sys
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QListView, QLabel, QAbstractItemView, QApplication, QListWidget, QListWidgetItem
@@ -18,9 +17,8 @@ from PySide6.QtCore import Qt, Signal, QSize, QTimer, QEvent, QMargins, QObject,
 from sopeek.core import pools as thread_pools
 
 from theme import tm
-from sopeek.utils.path_utils import get_app_data_path
 from sopeek.utils.app_logger import debug
-from sopeek._paths import icons_dir as get_icons_dir
+from sopeek._paths import icons_dir as get_icons_dir, last_path_file
 from sopeek.core.workers.thumbnail_controller import ThumbnailController
 from components.styled_button import StyledButton
 from components.styled_lineedit import StyledLineEdit
@@ -998,7 +996,7 @@ class FileSelectorLayout(QWidget):
 
     # ── 上次路径恢复 ─────────────────────────────────────────────────────
     def _try_restore_last_path(self) -> bool:
-        save_file = Path(get_app_data_path()) / "last_path.json"
+        save_file = last_path_file()
         try:
             if not save_file.exists():
                 return False
@@ -1014,17 +1012,22 @@ class FileSelectorLayout(QWidget):
         return False
 
     def _save_last_path(self, path: str) -> None:
-        save_file = Path(get_app_data_path()) / "last_path.json"
+        save_file = last_path_file()
         try:
-            import json
-            with open(save_file, "w", encoding="utf-8") as f:
-                json.dump({"last_path": os.path.abspath(path)}, f, ensure_ascii=False, indent=2)
+            from sopeek.utils.atomic_json import write_json_atomic
+
+            write_json_atomic(
+                save_file,
+                {"last_path": os.path.abspath(path)},
+                indent=2,
+                backup=False,
+            )
         except Exception as exc:
             debug(f"保存路径历史失败：{exc}")
 
     def _clear_last_path(self) -> None:
         """删除 last_path.json，使下次启动不恢复任何路径，直接落到 All。"""
-        save_file = Path(get_app_data_path()) / "last_path.json"
+        save_file = last_path_file()
         try:
             save_file.unlink(missing_ok=True)
         except Exception as exc:
