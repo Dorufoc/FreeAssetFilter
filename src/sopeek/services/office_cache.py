@@ -13,7 +13,7 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 Office 转换 PDF 缓存模块（T8）。
 
-将 LO/COM 后端产出的 PDF 按源文件 ``(path, mtime_ns, size)`` 键缓存到
+将 COM/LibreOffice 后端产出的 PDF 按源文件 ``(path, mtime_ns, size)`` 键缓存到
 ``data/office_cache/``，命中时跳过重复转换；清理按「7 天过期 + 大小上限」
 驱逐，最旧优先，幂等且永不抛出。缓存目录不可写时全部函数降级为
 “不缓存”（转换流程照常进行）。

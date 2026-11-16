@@ -114,7 +114,7 @@ python -m sopeek.app.main
 | **Image** | Asynchronous decoding, 50%–500% zoom, flip, rotate, color picker, GIF play/pause, fullscreen |
 | **Video & audio** | libmpv rendering; Space to play/pause, arrow keys to seek/change volume, number keys for playback speed, audio-track and subtitle selection, floating fullscreen control bar; audio mode features a fluid background and a metadata panel |
 | **PDF** | Native rendering, page jumping, 50%–300% zoom, thumbnail index drawer, text selection |
-| **Office** | Automatic fallback chain LibreOffice → MS Office / WPS COM → pure Python, rendered uniformly as a PDF view |
+| **Office** | Automatic fallback chain MS Office / WPS COM → LibreOffice → pure Python; PDF when an external backend is available, otherwise docx→HTML, pptx→outline, xlsx→HTML table |
 | **Text / code** | Markdown rendering, syntax highlighting, source/rendered toggle, fullscreen, in-app search drawer, font size 8–32 px |
 | **Archive** | Browse entries without extracting, recursive search across the whole archive, password prompt on demand, extract selection/all (name clashes are auto-renamed, never overwritten) |
 | **Font** | TTF/OTF/WOFF/WOFF2/EOT loading and rendering, font-size and weight adjustment (variable fonts supported) |
@@ -259,7 +259,9 @@ Make sure `src/sopeek/core/native/bin/libmpv-2.dll` exists; if the graphics driv
 
 **▷ Office document preview fails?**
 
-xlsx and legacy binary formats (doc/xls/ppt) rely on LibreOffice or MS Office / WPS; docx/pptx can fall back to pure-Python rendering when no external backend is available.
+Legacy binary formats (doc/xls/ppt) rely on MS Office / WPS or LibreOffice; docx/pptx/xlsx can fall back to pure-Python rendering when no external backend is available (docx→HTML, pptx→text outline, xlsx→HTML table). The xlsx fallback only shows the first rows/columns and does not preserve charts, images, or merged-cell layout.A PPTX with zero slides shows an empty state directly without launching PowerPoint.
+
+Office previews prefer the local Office suite through COM. Office may start minimized in the background and exits automatically when conversion finishes; LibreOffice is used as a fallback when COM is unavailable or conversion fails. To avoid starting Office entirely, make COM unavailable (for example, uninstall Office/WPS) and use LibreOffice only. When conversion fails, click "Copy error info" in the error view to copy a full diagnostic report (version, file, backend, technical details and log path). 
 
 **▷ Installing dependencies fails, asking for build tools?**
 

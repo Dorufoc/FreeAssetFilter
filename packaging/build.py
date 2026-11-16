@@ -378,7 +378,7 @@ def collect_hidden_imports() -> List[str]:
     office_hidden_imports = (
         "mammoth",      # docx → HTML 降级（office_converter.py `import mammoth`）
         "pptx",         # pptx → 大纲（office_converter.py `from pptx import Presentation`）
-        "openpyxl",     # xlsx → TSV 表格（office_converter.py `import openpyxl`）
+        "openpyxl",     # xlsx → HTML 表格（office_converter.py `import openpyxl`）
         "docx",         # python-docx（requirements.txt 声明依赖；运行时由 mammoth 处理）
         "pythoncom",    # COM 后端（office_converter.py `import pythoncom`）
         "pywintypes",   # pythoncom 的伴随 DLL 模块（hook-pywintypes 收集 pywintypes311.dll）

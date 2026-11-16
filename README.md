@@ -114,7 +114,7 @@ python -m sopeek.app.main
 | **图像** | 异步解码、50%–500% 缩放、翻转、旋转、取色器、GIF 播放/暂停、全屏 |
 | **音视频** | libmpv 渲染；空格播放暂停、方向键 seek/音量、数字键倍速、音轨与字幕选择、全屏浮动控制栏；音频模式带流体背景与元信息面板 |
 | **PDF** | 原生渲染、页码跳转、50%–300% 缩放、缩略图索引抽屉、文本选择 |
-| **Office** | 按 LibreOffice → MS Office / WPS COM → 纯 Python 顺序自动降级，统一转 PDF 视图渲染 |
+| **Office** | 按 MS Office / WPS COM → LibreOffice → 纯 Python 顺序自动降级；有外部后端时转 PDF，无后端时 docx→HTML、pptx→大纲、xlsx→HTML 表格 |
 | **文本 / 代码** | Markdown 渲染、语法高亮、源码/渲染切换、全屏、站内搜索抽屉、字号 8–32px |
 | **压缩包** | 无需解压浏览条目、全包递归搜索、按需输入密码、选中项/全部解压（同名自动改名不覆盖） |
 | **字体** | TTF/OTF/WOFF/WOFF2/EOT 加载渲染、字号与字重调节（支持可变字体） |
@@ -261,7 +261,9 @@ TTF / OTF / WOFF / WOFF2 / EOT
 
 **▷ Office 文档预览失败？**
 
-xlsx 与旧版二进制格式（doc/xls/ppt）依赖 LibreOffice 或 MS Office / WPS；docx/pptx 在无外部后端时可纯 Python 降级渲染。
+旧版二进制格式（doc/xls/ppt）依赖 MS Office / WPS 或 LibreOffice；docx/pptx/xlsx 在无外部后端时可纯 Python 降级渲染（docx→HTML、pptx→文本大纲、xlsx→HTML 表格）。xlsx 的表格降级仅显示前若干行/列，不保留图表、图片、合并单元格等版式。零幻灯片的 PPTX 会直接显示空状态，不会拉起 PowerPoint。
+
+Office 预览优先通过 COM 调用本机 Office，转换期间 Office 可能在后台或最小化启动，并在完成后自动退出；COM 不可用或转换失败时会回退到 LibreOffice。若希望完全不启动 Office，需要让 COM 不可用（例如不安装 Office/WPS）并仅使用 LibreOffice。转换失败时，错误视图中的「复制错误信息」可复制完整诊断（版本、文件、后端、技术详情与日志路径）。
 
 **▷ 安装依赖时报错，提示需要编译工具？**
 
