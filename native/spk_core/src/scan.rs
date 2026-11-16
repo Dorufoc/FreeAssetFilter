@@ -5,6 +5,8 @@
 //! - `os.listdir` ↔ `std::fs::read_dir`（枚举顺序不同无妨，对拍按 name 键序无关比较）；
 //! - 每项一次 stat（`std::fs::metadata`，跟随符号链接 == `os.stat`），
 //!   `is_dir = meta.file_type().is_dir()`（复用同一次 metadata，不再二次 stat）；
+//! - `attrs` 取链接自身（`DirEntry::metadata`，不跟随重解析点）；junction/
+//!   symlink 的 Hidden/System 位不能从跟随目标后的 metadata 读取；
 //! - `suffix = os.path.splitext(name)[1].lower().lstrip(".")`、目录为空串；
 //! - `modified/created = fromtimestamp(...).strftime("%Y-%m-%d %H:%M")`
 //!   （本地时区，Rust 侧 `chrono::Local`）；
@@ -73,41 +75,76 @@ pub fn scan_directory_impl(path: &Path) -> Result<Vec<Entry>, i32> {
     for item in read_dir {
         // read_dir 迭代项本身失败（罕见）→ 跳过，与逐项错误跳过语义一致。
         let Ok(dir_entry) = item else { continue };
-        let name = dir_entry.file_name().to_string_lossy().into_owned();
-        let full_path = dir_entry.path();
-        // P2.1：Windows 上 `DirEntry::metadata()` 直接复用 `read_dir` 缓存的
-        // `WIN32_FIND_DATA`（零额外 syscall）；原实现每项一次
-        // `std::fs::metadata` = 每项一次 `CreateFileW`（实测 10k 条目约 200–300ms）。
-        // 符号链接保持原语义（跟随目标）：仅对链接项补一次 `std::fs::metadata`。
-        let meta = match dir_entry.file_type() {
-            Ok(file_type) if file_type.is_symlink() => std::fs::metadata(&full_path),
-            _ => dir_entry.metadata(),
-        };
-        if let Some(entry) = entry_from_metadata(name, full_path, &meta) {
+        if let Some(entry) = entry_from_dir_entry(&dir_entry) {
             entries.push(entry);
         }
     }
     Ok(entries)
 }
 
-/// 把「文件名 + 完整路径 + stat 结果」转为条目；metadata 为 Err（权限等）→ None（跳过）。
+/// 从 `ReadDir` 条目构建条目；属性位取链接自身，其余字段跟随目标。
 ///
-/// 独立成函数以便在 Windows 上直接以注入的 `Err(PermissionDenied)` 模拟
-/// 不可读条目（见 `dir_samples/PERMISSIONS_NOTE.txt`；icacls deny 需提权且
-/// 污染 checkout，故夹具不构造真实不可读文件）。
+/// P2.1：Windows 上 `DirEntry::metadata()` 直接复用 `read_dir` 缓存的
+/// `WIN32_FIND_DATA`（零额外 syscall），且不跟随重解析点——这正是
+/// `attrs` 必须的来源。符号链接/junction 的其他字段保持原语义（跟随
+/// 目标）：仅对链接项补一次 `std::fs::metadata`。
+///
+/// 历史缺陷：若把跟随后的 metadata 同时用于 `attrs`，junction 的
+/// Hidden/System 位会变成目标目录的属性，导致隐藏文件过滤失效
+/// （例如 `C:\Documents and Settings` → `C:\Users`）。
+pub(crate) fn entry_from_dir_entry(dir_entry: &std::fs::DirEntry) -> Option<Entry> {
+    let name = dir_entry.file_name().to_string_lossy().into_owned();
+    let full_path = dir_entry.path();
+    // 链接自身属性（不跟随）；非链接时与 `meta` 为同一份缓存。
+    let own_meta = dir_entry.metadata();
+    let is_symlink = matches!(
+        dir_entry.file_type(),
+        Ok(file_type) if file_type.is_symlink()
+    );
+    let (meta, link_attrs) = if is_symlink {
+        (
+            std::fs::metadata(&full_path),
+            own_meta.as_ref().ok().map(file_attributes),
+        )
+    } else {
+        (own_meta, None)
+    };
+    entry_from_metadata_with_attrs(name, full_path, &meta, link_attrs)
+}
+
+/// 兼容入口：无链接属性覆盖时按 `metadata` 自身取属性（仅测试使用）。
+#[cfg(test)]
 pub(crate) fn entry_from_metadata(
     name: String,
     full_path: PathBuf,
     meta: &IoResult<Metadata>,
 ) -> Option<Entry> {
+    entry_from_metadata_with_attrs(name, full_path, meta, None)
+}
+
+/// 把「文件名 + 完整路径 + stat 结果」转为条目；metadata 为 Err（权限等）→ None（跳过）。
+///
+/// `attrs_override` 用于 reparse point：`meta` 可能是跟随目标后的结果，
+/// 而 Hidden/System 必须取链接自身（见 [`entry_from_dir_entry`]）。
+fn entry_from_metadata_with_attrs(
+    name: String,
+    full_path: PathBuf,
+    meta: &IoResult<Metadata>,
+    attrs_override: Option<u32>,
+) -> Option<Entry> {
     match meta {
-        Ok(m) => Some(build_entry(&name, &full_path, m)),
+        Ok(m) => Some(build_entry(&name, &full_path, m, attrs_override)),
         Err(_) => None,
     }
 }
 
 /// 由单次 stat 结果构造条目（字段计算核心）。
-fn build_entry(name: &str, full_path: &Path, meta: &Metadata) -> Entry {
+fn build_entry(
+    name: &str,
+    full_path: &Path,
+    meta: &Metadata,
+    attrs_override: Option<u32>,
+) -> Entry {
     let is_dir = meta.file_type().is_dir();
     let modified = meta
         .modified()
@@ -122,7 +159,7 @@ fn build_entry(name: &str, full_path: &Path, meta: &Metadata) -> Entry {
         modified,
         created,
         suffix: compute_suffix(name, is_dir),
-        attrs: file_attributes(meta),
+        attrs: attrs_override.unwrap_or_else(|| file_attributes(meta)),
     }
 }
 
@@ -305,6 +342,27 @@ mod tests {
         }
     }
 
+    /// 直接给链接自身设置 Windows 属性位。
+    ///
+    /// 注意：`attrib +H` 会作用于 junction 目标，不能用于构造本用例；
+    /// `SetFileAttributesW` 则作用于传入路径本身。
+    #[cfg(windows)]
+    fn set_file_attributes(path: &Path, attrs: u32) -> bool {
+        use std::os::windows::ffi::OsStrExt;
+
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn SetFileAttributesW(lp_file_name: *const u16, attrs: u32) -> i32;
+        }
+
+        let wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        unsafe { SetFileAttributesW(wide.as_ptr(), attrs) != 0 }
+    }
+
     /// 断言字符串符合 `%Y-%m-%d %H:%M` 形态（16 字符）。
     fn assert_fmt_time(s: &str) {
         assert_eq!(s.len(), 16, "时间串长度应为 16: {s:?}");
@@ -368,6 +426,62 @@ mod tests {
         for e in &entries {
             assert_eq!(e.suffix, "", "前导点文件 suffix 应为空串: {}", e.name);
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn junction_attrs_are_taken_from_link_not_target() {
+        use std::os::windows::fs::MetadataExt;
+
+        const HIDDEN: u32 = 0x2;
+        const SYSTEM: u32 = 0x4;
+        const DIRECTORY: u32 = 0x10;
+        const REPARSE_POINT: u32 = 0x400;
+
+        let td = TestDir::new("junction_attrs");
+        let target = td.dir("target");
+        let link = td.path.join("link");
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&target)
+            .status()
+            .expect("应能启动 cmd 创建 junction");
+        assert!(status.success(), "mklink /J 创建 junction 失败");
+        assert!(
+            set_file_attributes(&link, DIRECTORY | HIDDEN | SYSTEM),
+            "给 junction 链接自身设置 Hidden+System 失败"
+        );
+        // 前置断言：目标目录未带 Hidden/System，确保测试只可能从链接取到双重位。
+        let target_attrs = std::fs::metadata(&target)
+            .expect("读取 target metadata")
+            .file_attributes();
+        assert_eq!(
+            target_attrs & (HIDDEN | SYSTEM),
+            0,
+            "target 不应带 Hidden/System（实际 {target_attrs:#x}）"
+        );
+
+        let entries = scan_directory_impl(&td.path).expect("扫描 junction 父目录应成功");
+        let entry = entries
+            .iter()
+            .find(|e| e.name == "link")
+            .expect("扫描结果应包含 junction");
+        assert!(entry.is_dir, "junction 目标为目录，is_dir 应为 true");
+        assert_eq!(
+            entry.attrs & (HIDDEN | SYSTEM),
+            HIDDEN | SYSTEM,
+            "attrs 必须来自链接自身，不能取目标属性（实际 {:#x}）",
+            entry.attrs
+        );
+        assert_ne!(
+            entry.attrs & REPARSE_POINT,
+            0,
+            "链接自身的 ReparsePoint 位应保留（实际 {:#x}）",
+            entry.attrs
+        );
+
+        let _ = std::fs::remove_dir(&link);
     }
 
     #[test]

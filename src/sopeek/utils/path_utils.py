@@ -19,7 +19,6 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 import sys
 import os
 import re
-import shutil
 from typing import List, Optional, Set
 
 # 延迟导入logger，避免循环依赖
@@ -119,9 +118,6 @@ def _init_allowed_paths():
     src_root = os.path.join(project_root, 'src')
     _ALLOWED_BASE_PATHS = [
         project_root,
-        os.path.join(project_root, 'data'),
-        os.path.join(project_root, 'config'),
-        os.path.join(project_root, 'thumbnails'),
         os.path.join(project_root, 'native'),
         os.path.join(project_root, 'packaging'),
         src_root,
@@ -129,6 +125,16 @@ def _init_allowed_paths():
         os.path.join(src_root, 'sopeek', 'resources'),
         os.path.join(src_root, 'sopeek', 'core', 'native', 'bin'),
     ]
+
+    # 运行期数据根（LocalAppData）下的所有子目录都允许访问。
+    try:
+        from sopeek._paths import app_data_root
+
+        _ALLOWED_BASE_PATHS.append(str(app_data_root()))
+    except Exception as exc:
+        logger = _get_logger()
+        if logger:
+            logger.debug(f"应用数据根加入白名单失败: {exc}")
     
     # 添加用户文档目录（用于打开视频文件）
     try:
@@ -533,153 +539,32 @@ def get_resource_path(relative_path):
         return os.path.abspath(relative_path)
 
 
-_APP_DATA_PATH_CACHE = None
+def get_app_data_path():
+    """获取应用程序数据目录（兼容旧 API）。
 
-
-def _resolve_frozen_data_dir() -> str:
-    """解析默认的用户可写应用数据目录（冻结态与源码态一致）。
-
-    默认位于 ``%LOCALAPPDATA%\\Sopeek\\data``。历史实现把数据目录
-    放在 exe 所在目录（默认 ``C:\\Program Files``，普通用户不可写），
-    导致设置/背景图保存失败、重启回退默认；源码态则写在仓库 ``data/``
-    下，重命名后仍会落回旧目录。``LOCALAPPDATA`` 缺失时回退到用户
-    目录下的 ``AppData\\Local``。
+    等价于 :func:`sopeek._paths.app_data_root`：``SPK_DATA_DIR`` 优先且每次
+    重新读取；未设置时统一为 ``%LOCALAPPDATA%\\Sopeek\\data``。
 
     Returns:
-        str: 默认数据目录绝对路径。
+        str: 应用数据根目录绝对路径。
     """
-    local_appdata = os.environ.get('LOCALAPPDATA', '').strip()
-    if not local_appdata:
-        local_appdata = os.path.join(os.path.expanduser("~"), "AppData", "Local")
-    return os.path.join(local_appdata, "Sopeek", "data")
+    from sopeek._paths import app_data_root
 
-
-def _migrate_legacy_frozen_data(data_dir: str) -> None:
-    """冻结态一次性搬家：旧安装目录下的用户数据 → 新的可写数据目录。
-
-    历史旧位置：
-
-    - ``<exe>/_internal/data/``：``SettingsManagerV2`` 按 ``__file__``
-      推导的路径（设置文件曾落在 ``_internal/data/settings_v2.json``）；
-    - ``<exe>/data/``：早期 ``get_app_data_path`` 冻结态解析的路径
-      （背景图、上次路径等）。
-
-    只搬用户数据（设置文件、背景图目录、上次路径、暂存备份、文件信息
-    缓存）；缩略图 / Office 缓存 / 日志 / 性能快照等可再生文件不搬。
-    目标已存在同名项时跳过；任何失败仅记日志，绝不阻断启动。
-
-    Args:
-        data_dir: 新的可写数据目录（须已创建）。
-    """
-    try:
-        app_dir = (
-            os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else ""
-        )
-        if not app_dir:
-            return
-        legacy_dirs = [
-            os.path.join(app_dir, "_internal", "data"),
-            os.path.join(app_dir, "data"),
-        ]
-
-        # 1) 设置文件（最关键）：目标缺失时按候选顺序复制第一个存在的。
-        target_settings = os.path.join(data_dir, "settings_v2.json")
-        if not os.path.exists(target_settings):
-            for legacy_dir in legacy_dirs:
-                source = os.path.join(legacy_dir, "settings_v2.json")
-                if os.path.isfile(source):
-                    shutil.copy2(source, target_settings)
-                    break
-
-        # 2) 其余用户数据文件。
-        for file_name in (
-            "last_path.json",
-            "staging_pool_backup.json",
-            "file_info_cache.json",
-        ):
-            target = os.path.join(data_dir, file_name)
-            if os.path.exists(target):
-                continue
-            for legacy_dir in legacy_dirs:
-                source = os.path.join(legacy_dir, file_name)
-                if os.path.isfile(source):
-                    shutil.copy2(source, target)
-                    break
-
-        # 3) 自定义背景图目录。
-        target_backgrounds = os.path.join(data_dir, "backgrounds")
-        if not os.path.exists(target_backgrounds):
-            for legacy_dir in legacy_dirs:
-                source = os.path.join(legacy_dir, "backgrounds")
-                if os.path.isdir(source):
-                    shutil.copytree(source, target_backgrounds)
-                    break
-    except Exception as exc:
-        # 搬家失败不影响启动：用户仍可从旧位置手动拷贝。
-        logger = _get_logger()
-        if logger:
-            logger.warning(f"旧数据目录搬家失败（不影响启动）: {exc}")
-
-
-def get_app_data_path():
-    """获取应用程序数据目录（用于存储配置、数据等）。
-
-    ``SPK_DATA_DIR`` 环境变量优先**且不缓存**：显式指定时每次都直接返回该
-    目录（测试隔离 / 便携部署用，与 ``SPK_EVIDENCE_DIR`` 的既有约定一致），
-    不受进程内此前解析结果影响。未设置时冻结/开发态统一为
-    ``%LOCALAPPDATA%\\Sopeek\\data``（用户可写；安装目录默认位于
-    Program Files，历史实现写在那里会因权限失败），结果进程内缓存。
-    冻结态首次解析时执行一次性旧数据搬家
-    （见 :func:`_migrate_legacy_frozen_data`）。
-    """
-    global _APP_DATA_PATH_CACHE
-
-    override = os.environ.get('SPK_DATA_DIR', '').strip()
-    if override:
-        data_dir = override
-        cacheable = False
-    else:
-        if _APP_DATA_PATH_CACHE is not None:
-            return _APP_DATA_PATH_CACHE
-        cacheable = True
-        data_dir = _resolve_frozen_data_dir()
-
-    try:
-        os.makedirs(data_dir, exist_ok=True)
-        os.makedirs(os.path.join(data_dir, 'thumbnails'), exist_ok=True)
-    except Exception as e:
-        logger = _get_logger()
-        if logger:
-            logger.error(f"创建数据目录失败: {e}")
-        raise
-
-    if cacheable:
-        if getattr(sys, 'frozen', False):
-            _migrate_legacy_frozen_data(data_dir)
-        _APP_DATA_PATH_CACHE = data_dir
-    return data_dir
+    return str(app_data_root())
 
 
 def get_config_path():
-    """获取配置文件目录"""
-    if getattr(sys, 'frozen', False):
-        # 打包环境：使用exe所在目录下的config文件夹
-        app_dir = os.path.dirname(sys.executable)
-        config_dir = os.path.join(app_dir, 'config')
-    else:
-        # 开发环境：使用项目根目录下的config文件夹
-        config_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'config')
-    
-    # 确保目录存在
-    try:
-        os.makedirs(config_dir, exist_ok=True)
-    except Exception as e:
-        logger = _get_logger()
-        if logger:
-            logger.error(f"创建配置目录失败: {e}")
-        raise
-    
-    return config_dir
+    """获取用户配置目录（兼容旧 API，等价于 ``<data>/config``）。
+
+    历史实现返回 exe/仓库下的 ``config/``；该位置在安装版不可写且从未被
+    实际使用。现在统一指向用户数据目录下的 ``config``。
+
+    Returns:
+        str: 配置目录绝对路径。
+    """
+    from sopeek._paths import config_dir
+
+    return str(config_dir())
 
 
 def validate_file_path(path: str, max_length: int = MAX_PATH_LENGTH, allow_relative: bool = False) -> bool:

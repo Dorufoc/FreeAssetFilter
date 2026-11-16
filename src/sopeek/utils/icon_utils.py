@@ -16,7 +16,6 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 """
 
 import os
-import sys
 import struct
 import time
 import hashlib
@@ -24,6 +23,7 @@ import ctypes
 from ctypes import windll, byref, sizeof
 from ctypes.wintypes import (DWORD, MAX_PATH, HANDLE, UINT,
                            LPCWSTR, BOOL, HICON)
+from typing import Optional
 
 # 导入日志模块
 from sopeek.utils.app_logger import debug, warning
@@ -32,33 +32,23 @@ from sopeek.utils.app_logger import debug, warning
 _ICON_CACHE_DIR = None
 
 
-def _get_icon_cache_dir() -> str:
-    """获取图标缓存目录（位于data/cache/icons）"""
+def _get_icon_cache_dir() -> Optional[str]:
+    """获取图标缓存目录（``<data>/cache/icons``）。
+
+    主目录不可写时直接禁用磁盘缓存并返回 None——不再把缓存写到
+    ``~/.sopeek_icon_cache`` 这类卸载器不知道的隐藏位置。
+    """
     global _ICON_CACHE_DIR
     if _ICON_CACHE_DIR is not None:
         return _ICON_CACHE_DIR
 
     try:
-        try:
-            from sopeek.utils.path_utils import get_app_data_path
-            data_dir = get_app_data_path()
-        except Exception:
-            if getattr(sys, 'frozen', False):
-                data_dir = os.path.join(os.path.dirname(sys.executable), 'data')
-            else:
-                current_file = os.path.abspath(__file__)
-                data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(current_file))), 'data')
+        from sopeek._paths import icon_cache_dir
 
-        _ICON_CACHE_DIR = os.path.join(data_dir, 'cache', 'icons')
-        if not os.path.exists(_ICON_CACHE_DIR):
-            os.makedirs(_ICON_CACHE_DIR, exist_ok=True)
+        _ICON_CACHE_DIR = str(icon_cache_dir())
     except Exception as e:
         debug(f"创建图标缓存目录失败: {e}")
-        _ICON_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".sopeek_icon_cache")
-        try:
-            os.makedirs(_ICON_CACHE_DIR, exist_ok=True)
-        except Exception:
-            _ICON_CACHE_DIR = None
+        _ICON_CACHE_DIR = None
 
     return _ICON_CACHE_DIR
 

@@ -54,9 +54,9 @@ from sopeek.core.preview.image_color_utils import (
 from sopeek.utils.app_logger import debug, error, info, warning
 from sopeek.utils.path_utils import (
     contains_injection_chars,
-    get_app_data_path,
     validate_safe_path,
 )
+from sopeek._paths import thumbnails_dir
 from sopeek.utils.perf_metrics import (
     increment_perf_counter,
     set_perf_metadata,
@@ -321,7 +321,7 @@ class ThumbnailManager:
         self.dpi_scale = dpi_scale
 
         # 缩略图缓存目录
-        self._thumb_dir = os.path.join(get_app_data_path(), 'thumbnails')
+        self._thumb_dir = str(thumbnails_dir())
         os.makedirs(self._thumb_dir, exist_ok=True)
 
         # 视频帧缓存：文件路径 -> VideoFrameCache

@@ -144,7 +144,7 @@ def service_factory(
     appdata = tmp_path / "appdata"
     appdata.mkdir(parents=True)
     monkeypatch.setattr(
-        update_service_module, "get_app_data_path", lambda: appdata
+        update_service_module, "_download_dir", lambda: appdata / "download"
     )
 
     created: list[tuple[UpdateService, FakeBridge]] = []

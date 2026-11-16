@@ -15,7 +15,7 @@
   提示以淡入淡出过渡显隐（受 ``appearance.animations.copy_toast`` 开关门控）。
 - 哈希展开时画布内自绘细进度条与百分比。
 - 全部耗时采集在工作线程执行；切换文件/清空后旧结果作废（令牌守卫）；
-  哈希与详细信息（不含 EXIF）写入共享缓存 data/file_info_cache.json。
+  哈希与详细信息（不含 EXIF）写入共享缓存 ``<data>/cache/file_info.json``。
 """
 
 from __future__ import annotations

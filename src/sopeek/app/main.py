@@ -713,6 +713,31 @@ def main(argv=None) -> int:
     info("程序启动")
     _start_ts = time.perf_counter()
 
+    # 存储布局：必须早于 SettingsManagerV2 / 硬件加速判断，确保旧设置先迁移。
+    try:
+        from sopeek.storage_layout import cleanup_storage, ensure_layout
+
+        layout_report = ensure_layout()
+        layout_errors = layout_report.get("errors") or []
+        if layout_errors:
+            warning(
+                f"[存储] 布局迁移存在 {len(layout_errors)} 个问题，"
+                "旧文件已保留，详见 diagnostics/migration-*.json"
+            )
+        active_log = None
+        try:
+            active_log = get_logger().get_log_file_path()
+        except Exception:
+            pass
+        threading.Thread(
+            target=cleanup_storage,
+            kwargs={"active_log_path": active_log},
+            name="storage-cleanup",
+            daemon=True,
+        ).start()
+    except Exception as exc:  # noqa: BLE001 - 存储初始化不得阻断启动
+        warning(f"[存储] 布局初始化失败（继续启动）: {exc}")
+
     # 内部子进程分流（在任何 Qt 初始化之前，保证 worker 轻量启动）
     worker_type, worker_payload = _parse_internal_worker_args(argv)
     if worker_type == "thumbnail":
@@ -751,6 +776,7 @@ def main(argv=None) -> int:
     mutex_handle = instance_guard._acquire_single_instance()
 
     try:
+        instance_guard._prune_stale_runtime_info()
         instance_guard._write_runtime_instance_info()
     except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError) as e:
         warning(f"写入运行实例信息失败: {e}")
@@ -973,12 +999,16 @@ def main(argv=None) -> int:
         except Exception as e:
             warning(f"[退出] last_exit_time 写入失败: {e}")
 
-        # 4) 显式 flush 全部日志 handler
+        # 4) 显式 flush 全部日志 handler，并停止每日日志维护线程
         try:
             for handler in getattr(get_logger(), "logger", None).handlers or []:
                 handler.flush()
         except Exception as exc:
             debug(f"退出时刷新日志句柄失败：{exc}")
+        try:
+            get_logger().stop_maintenance()
+        except Exception as exc:
+            debug(f"停止日志维护线程失败：{exc}")
 
         # 5) 清理实例信息与互斥体
         try:

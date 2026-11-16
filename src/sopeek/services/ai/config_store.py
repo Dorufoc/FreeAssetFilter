@@ -3,19 +3,21 @@ from __future__ import annotations
 
 import base64
 import ctypes
-import json
 import os
-import tempfile
 from pathlib import Path
 from typing import Any
 
-from sopeek.utils.path_utils import get_app_data_path
+from sopeek._paths import ai_accounts_file
+from sopeek.utils.atomic_json import read_json, write_json_atomic
 from .models import AIAccountConfig, AIConfigError, AIProvider
 
 
 class AIConfigStore:
     def __init__(self, path: str | None = None) -> None:
-        self.path = Path(path or get_app_data_path()) / "ai_accounts.json"
+        from sopeek.storage_layout import ensure_layout
+
+        ensure_layout()
+        self.path = Path(path or ai_accounts_file())
 
     @staticmethod
     def _protect(value: str) -> str:
@@ -38,21 +40,19 @@ class AIConfigStore:
         finally: ctypes.windll.kernel32.LocalFree(out.pbData)
 
     def load(self) -> dict[str, Any]:
-        if not self.path.exists(): return {"version": 1, "current": "", "accounts": []}
-        try:
-            value = json.loads(self.path.read_text(encoding="utf-8")); return value if isinstance(value, dict) else {}
-        except (OSError, ValueError) as exc: raise AIConfigError("AI 配置损坏") from exc
+        if not self.path.exists():
+            return {"version": 1, "current": "", "accounts": []}
+        value = read_json(self.path, default=None, use_backup=True, quarantine=True)
+        if value is None:
+            raise AIConfigError("AI 配置损坏")
+        return value if isinstance(value, dict) else {}
 
     def save(self, accounts: list[AIAccountConfig], current: str = "") -> None:
         payload = {"version": 1, "current": current, "accounts": []}
         for account in accounts:
             item = {"account_id": account.account_id, "name": account.name, "provider": account.provider.value, "base_url": account.base_url, "model": account.model, "api_key": self._protect(account.api_key), "temperature": account.temperature, "max_tokens": account.max_tokens, "timeout": account.timeout, "headers": dict(account.headers), "reasoning_enabled": account.reasoning_enabled, "reasoning_effort": account.reasoning_effort, "reasoning_budget": account.reasoning_budget, "top_p": account.top_p, "response_format": account.response_format, "tool_choice": account.tool_choice, "user": account.user, "prefix": account.prefix, "strict_tools": account.strict_tools}
             payload["accounts"].append(item)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd, temp = tempfile.mkstemp(prefix="ai_accounts_", suffix=".tmp", dir=str(self.path.parent)); os.close(fd)
-        try: Path(temp).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"); os.replace(temp, self.path)
-        finally:
-            if os.path.exists(temp): os.unlink(temp)
+        write_json_atomic(self.path, payload, indent=2, backup=True)
 
     def accounts(self) -> list[AIAccountConfig]:
         result = []

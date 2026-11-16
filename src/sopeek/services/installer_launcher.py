@@ -34,7 +34,7 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal
 from PySide6.QtWidgets import QApplication
 
 from sopeek.utils.app_logger import debug, warning
-from sopeek.utils.path_utils import get_app_data_path, is_path_within_base
+from sopeek.utils.path_utils import is_path_within_base
 
 # Windows constants used by the independent recheck and elevation launch.
 GENERIC_READ = 0x80000000
@@ -49,7 +49,6 @@ _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 _READ_CHUNK = 1024 * 1024
 
 #: Download directory is the only allowed installer source.
-DOWNLOAD_DIRNAME = "download"
 
 
 class _FILETIME(ctypes.Structure):
@@ -282,10 +281,17 @@ def _safe_delete(path: Optional[Path]) -> None:
         warning(f"删除安装包失败: {exc!r}")
 
 
+def _download_root() -> Path:
+    """Return the only allowed installer source directory."""
+    from sopeek._paths import updates_download_dir
+
+    return updates_download_dir()
+
+
 def _launch_path(path_text: str) -> Optional[Path]:
     """Resolve and validate an installer path before elevation.
 
-    The path must live under ``<app_data>/download`` (realpath boundary),
+    The path must live under ``<app_data>/updates/download`` (realpath boundary),
     be a regular file, and have an exact ``.exe`` suffix.
 
     Args:
@@ -300,7 +306,7 @@ def _launch_path(path_text: str) -> Optional[Path]:
         candidate = Path(path_text)
         if not candidate.is_absolute():
             return None
-        base = Path(get_app_data_path()) / DOWNLOAD_DIRNAME
+        base = _download_root()
         if not is_path_within_base(str(candidate), str(base)):
             return None
         resolved = Path(os.path.realpath(str(candidate)))

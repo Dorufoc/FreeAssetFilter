@@ -22,14 +22,11 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from sopeek.utils.app_logger import debug, warning
-from sopeek.utils.path_utils import get_app_data_path, is_path_within_base
+from sopeek.utils.path_utils import is_path_within_base
 from sopeek.utils.version_info import get_local_version
 
 #: 待安装更新状态文件名。
 PENDING_UPDATE_FILENAME = "pending_update.json"
-
-#: 下载目录名（与 ``installer_launcher.DOWNLOAD_DIRNAME`` 保持一致）。
-DOWNLOAD_DIRNAME = "download"
 
 #: 当前标记结构版本。
 SCHEMA_VERSION = 1
@@ -67,14 +64,18 @@ def pending_update_path() -> Path:
     """返回待安装更新标记路径。
 
     Returns:
-        Path: ``get_app_data_path()/pending_update.json``。
+        Path: ``<data>/state/pending_update.json``。
     """
-    return Path(get_app_data_path()) / PENDING_UPDATE_FILENAME
+    from sopeek._paths import pending_update_file
+
+    return pending_update_file()
 
 
 def _download_root() -> Path:
-    """返回允许存放安装包的下载目录。"""
-    return Path(get_app_data_path()) / DOWNLOAD_DIRNAME
+    """返回允许存放安装包的下载目录 ``<data>/updates/download``。"""
+    from sopeek._paths import updates_download_dir
+
+    return updates_download_dir()
 
 
 def _normalize_version(raw: Any) -> str:

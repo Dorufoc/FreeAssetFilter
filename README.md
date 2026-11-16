@@ -122,7 +122,7 @@ python -m sopeek.app.main
 
 ### 文件信息面板
 
-预览区下方的信息面板与预览器联动：文件名、路径、大小、类型与创建/修改时间常驻显示；「详细信息」按文件类型展开（图像尺寸与 EXIF 常用子集、视频时长与画面参数、音频标签等），「哈希值」在后台按 1 MiB 粒度汇报进度并计算 MD5 / SHA1 / SHA256。结果写入 `data/file_info_cache.json` 共享缓存，二次打开无需重算。
+预览区下方的信息面板与预览器联动：文件名、路径、大小、类型与创建/修改时间常驻显示；「详细信息」按文件类型展开（图像尺寸与 EXIF 常用子集、视频时长与画面参数、音频标签等），「哈希值」在后台按 1 MiB 粒度汇报进度并计算 MD5 / SHA1 / SHA256。结果写入 `cache/file_info.json` 共享缓存，二次打开无需重算。
 
 ### 个性化与性能
 
@@ -234,13 +234,29 @@ TTF / OTF / WOFF / WOFF2 / EOT
 
 ### 用户数据位置
 
-设置、缩略图缓存、日志（`logs/`）、背景图与文件信息缓存统一位于：
+所有运行期数据统一位于：
 
 ```
 %LOCALAPPDATA%\Sopeek\data
 ```
 
-源码运行与安装版共用同一数据目录；测试环境会通过 `SPK_DATA_DIR` 重定向到临时目录，不会污染真实数据。
+目录按用途分类，只有 `config/` 与 `assets/` 是不可再生的用户数据：
+
+```
+data/
+├─ config/           # 设置、AI 账号、收藏夹
+├─ assets/           # 背景图、LUT 文件
+├─ state/            # 上次路径、暂存池、更新状态、运行实例
+├─ cache/            # 缩略图、图标、Office 转换、LUT 预览、文件信息
+├─ logs/             # 运行日志（200MB 上限，7 天压缩，20 天清理压缩包）
+├─ updates/download/ # 安装包下载
+├─ diagnostics/      # 性能快照与诊断产物
+└─ temp/office/      # Office 转换临时目录（24 小时后自动清理）
+```
+
+删除 `cache/`、`logs/`、`diagnostics/`、`temp/`、`updates/` 不会丢失任何配置或用户资源，应用会自动重建。
+
+源码运行与安装版共用同一数据目录；测试环境会通过 `SPK_DATA_DIR` 重定向到临时目录，不会污染真实数据。旧版本留下的平铺文件会在首次启动时自动迁移到上述分类目录。
 
 ---
 
@@ -407,6 +423,8 @@ pytest tests/unit/utils -v   # 指定目录
 ### 构建原生模块
 
 产物统一装回 `src/sopeek/core/native/bin/`
+
+> `cargo build` 只生成 `native/spk_core/target/release/spk_core.dll`，**不会**自动覆盖运行时目录。应用优先加载 `src/sopeek/core/native/bin/spk_core.dll`，构建后请手动复制并确认时间戳 / 哈希；`build.cmd` 也不会重新编译 Rust 模块。低完整性（Low IL）终端可能因 no-write-up 无法写入该目录，导致继续运行旧 DLL。
 
 ```bash
 # Rust（需要 cargo）

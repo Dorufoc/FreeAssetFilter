@@ -1038,13 +1038,15 @@ class AppLogger:
             cls._instance = super().__new__(cls)
         return cls._instance
     
-    def __init__(self, log_level=logging.DEBUG, max_log_files=5):
+    def __init__(self, log_level=logging.DEBUG, max_log_files=None, start_maintenance=True):
         """
         初始化日志管理器
-        
+
         Args:
             log_level: 日志级别，默认为 DEBUG
-            max_log_files: 保留的最大日志文件数量
+            max_log_files: 可选的日志文件数量上限；默认 ``None`` 表示不限制
+                （按 200MB 总大小 + 7 天压缩 + 20 天删除管理）。
+            start_maintenance: 是否启动每日后台维护线程（测试可关闭）。
         """
         if AppLogger._initialized:
             return
@@ -1059,6 +1061,8 @@ class AppLogger:
         os.makedirs(self.log_dir, exist_ok=True)
         
         self.log_file = self._create_log_file()
+        self._maintenance_stop = threading.Event()
+        self._maintenance_thread = None
         
         # 设置日志格式 - 包含组件来源信息
         self.formatter = ComponentSourceFormatter(
@@ -1074,25 +1078,21 @@ class AppLogger:
         # 添加控制台处理器（如果可用）
         self._add_console_handler()
         
-        # 清理旧日志文件
-        self._cleanup_old_logs()
+        # 启动时执行一次日志保留维护，并启动每日后台维护
+        self._maintain_logs()
+        if start_maintenance:
+            self._start_maintenance_thread()
         
         AppLogger._initialized = True
         
         self._log_startup_info()
         
     def _get_log_dir(self):
-        """获取日志目录路径（应用数据根下的 ``logs``）。"""
+        """获取日志目录路径（``<data>/logs``）。"""
         try:
-            # 直接复用路径工具的默认根，避免经 get_app_data_path 的
-            # 失败日志路径在 logger 构造期形成递归。
-            from sopeek.utils.path_utils import _resolve_frozen_data_dir
+            from sopeek._paths import logs_dir
 
-            data_dir = (
-                os.environ.get('SPK_DATA_DIR', '').strip()
-                or _resolve_frozen_data_dir()
-            )
-            return os.path.join(data_dir, 'logs')
+            return str(logs_dir())
         except Exception:
             local_appdata = os.environ.get('LOCALAPPDATA', '').strip()
             if not local_appdata:
@@ -1133,27 +1133,40 @@ class AppLogger:
             console_handler.addFilter(self.component_filter)
             self.logger.addHandler(console_handler)
     
-    def _cleanup_old_logs(self):
-        """清理旧的日志文件，只保留最新的 max_log_files 个"""
+    def _maintain_logs(self):
+        """执行一次日志保留维护（压缩旧日志 / 清理过期压缩包 / 限制总大小）。"""
         try:
-            log_files = [
-                f for f in os.listdir(self.log_dir) 
-                if f.startswith('app_') and f.endswith('.log')
-            ]
-            log_files.sort(key=lambda f: os.path.getmtime(
-                os.path.join(self.log_dir, f)
-            ), reverse=True)
-            
-            for old_file in log_files[self.max_log_files:]:
-                try:
-                    os.remove(os.path.join(self.log_dir, old_file))
-                except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-                    _write_bootstrap_fallback(f"[警告] 删除旧日志文件失败 - 文件操作错误: {e}")
-        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-            _write_bootstrap_fallback(f"[警告] 清理旧日志文件失败 - 文件操作错误: {e}")
-        except (ValueError, TypeError) as e:
-            _write_bootstrap_fallback(f"[警告] 清理旧日志文件失败 - 数据转换错误: {e}")
+            from sopeek.utils.log_retention import maintain_logs
+
+            maintain_logs(
+                self.log_dir,
+                active_log_path=self.log_file,
+                max_files=self.max_log_files,
+            )
+        except Exception as e:
+            _write_bootstrap_fallback(f"[警告] 日志保留维护失败: {e}")
     
+    def _start_maintenance_thread(self):
+        """启动每日日志维护守护线程（不阻塞进程退出）。"""
+        def _loop():
+            while not self._maintenance_stop.wait(24 * 3600):
+                self._maintain_logs()
+
+        self._maintenance_thread = threading.Thread(
+            target=_loop,
+            name="log-retention",
+            daemon=True,
+        )
+        self._maintenance_thread.start()
+    
+    def stop_maintenance(self):
+        """停止每日维护线程（幂等）。"""
+        self._maintenance_stop.set()
+        thread = self._maintenance_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=0.2)
+        self._maintenance_thread = None
+
     # 注：与模块级便捷函数一致，全部接受 ``*args``——logging 只在启用该级别时
     # 才做 ``msg % args``，热路径用 ``debug("x=%s", x)`` 可完全避免字符串拼接。
     def debug(self, msg, *args):

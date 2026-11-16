@@ -87,11 +87,9 @@ def test_validate_accepts_good_cube(tmp_path: Path) -> None:
 
 
 def test_storage_and_preview_dirs_under_app_data(_isolated_data_dir: Path) -> None:
-    """LUT 存储目录落在应用数据目录下（``SPK_DATA_DIR`` 隔离生效）。"""
+    """LUT 存储/预览目录落在应用数据目录的新分类子目录下。"""
     storage = Path(get_lut_storage_dir())
     preview = Path(get_lut_preview_dir())
-    assert storage.parent == _isolated_data_dir
-    assert preview.parent == _isolated_data_dir
-    assert storage.name == "luts"
-    assert preview.name == "lut_previews"
+    assert storage == _isolated_data_dir / "assets" / "luts"
+    assert preview == _isolated_data_dir / "cache" / "lut_previews"
     assert storage.is_dir() and preview.is_dir()

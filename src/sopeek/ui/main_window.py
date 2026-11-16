@@ -71,7 +71,7 @@ from sopeek.ui.elevated_drop import ElevatedDropFallbackMixin
 # from theme import tm 与从 sopeek.ui.theme import tm 指向同一实例
 from theme import tm
 
-from components.custom_background import BACKGROUND_DIR_NAME, CustomImageBackgroundWidget
+from components.custom_background import CustomImageBackgroundWidget
 from components.app_logo import app_logo_pixmap
 # MicaMaterial（sopeek.ui.mica.material）不在模块级导入：它经
 # mica.engine 连带 numpy，导入约 0.16s，属「窗口出现前」关键路径。材质改为
@@ -112,8 +112,7 @@ from sopeek.ui.mica import winapi as mica_winapi
 # SettingsWindow 实例化时再导入，避免启动路径加载 styled_sidebar /
 # color_picker 等组件。
 
-from sopeek.utils.path_utils import get_app_data_path
-from sopeek._paths import icons_dir
+from sopeek._paths import backgrounds_dir, icons_dir
 from sopeek.utils.animation_settings import is_animation_enabled
 from sopeek.utils.app_logger import debug, warning
 # perf_metrics / StagingPoolService 同为首屏关键路径让位：分别由绘制埋点
@@ -956,7 +955,7 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
 
         读取 ``appearance.background`` 节点：mode 仅接受 "mica" / "image" /
         "minimalist"（非法值回退 "mica"），image 为持久化目录
-        （data/backgrounds/）下的文件名（空字符串表示未设置，统一转为 str），
+        （assets/backgrounds/）下的文件名（空字符串表示未设置，统一转为 str），
         ambient 缺失时默认 True（经 bool() 归一），blur 钳制到 0~200px
         整数（默认 0），transparency 归一到 0~100（默认 80，很透明）。
         中间版本的 opacity（不透明度 %）键按 transparency = 100 - opacity
@@ -1293,8 +1292,8 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         # 启动恢复：按持久化文件名拼绝对路径加载自定义背景；文件缺失时
         # 组件内部回退纯色并记日志，不抛异常（见 CustomImageBackgroundWidget.set_image）
         if self._background_image_name:
-            background_image_path = os.path.join(
-                get_app_data_path(), BACKGROUND_DIR_NAME, self._background_image_name
+            background_image_path = str(
+                backgrounds_dir() / self._background_image_name
             )
             self._custom_background.set_image(background_image_path)
         # 启动恢复图像可调参数（模糊度/透明度，无图时仅存状态不绘制）

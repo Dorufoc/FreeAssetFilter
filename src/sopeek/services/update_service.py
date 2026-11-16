@@ -43,7 +43,6 @@ from sopeek.core.native.bridges.spk_updater_bridge import (
 )
 from sopeek.services import update_startup
 from sopeek.utils.app_logger import debug, warning
-from sopeek.utils.path_utils import get_app_data_path
 from sopeek.utils.version_info import (
     DEFAULT_UPDATE_SOURCE,
     REPO_CANDIDATES,
@@ -55,6 +54,13 @@ from sopeek.utils.version_info import (
 
 _DISK_RESERVE = 64 * 1024 * 1024
 _ARTIFACT_RETRIES = 5
+
+
+def _download_dir() -> Path:
+    """返回安装包下载目录 ``<data>/updates/download``。"""
+    from sopeek._paths import updates_download_dir
+
+    return updates_download_dir()
 _ARTIFACT_RETRY_DELAY = 0.05
 
 ERROR_MESSAGES: dict[str, str] = {
@@ -599,7 +605,7 @@ class UpdateService(QObject):
             return request_id
 
         try:
-            download_dir = Path(get_app_data_path()) / "download"
+            download_dir = _download_dir()
             dest = download_dir / str(sanitize_asset_name((info.asset or {}).get("name")))
         except (OSError, TypeError):
             with self._dispatch_lock:
@@ -787,7 +793,7 @@ class UpdateService(QObject):
         """按启动策略发起一次非阻塞更新检查。
 
         顺序固定为：可用性探测 -> 策略判断 -> 写入尝试时间 -> 派发检查。
-        服务不可用或未到期时直接返回，且不触碰 ``check_state.json``。
+        服务不可用或未到期时直接返回，且不触碰 ``state/update_check.json``。
 
         检查通道跟随「已安装构建」：正式版用户只在手动检查并勾选「获取测试版」
         时才看得到夜间版，已安装预发布版/夜间版的用户则在启动检查里继续接收
@@ -1028,7 +1034,7 @@ class UpdateService(QObject):
         if asset.get("size") is None:
             return "bad_params"
         try:
-            download_dir = Path(get_app_data_path()) / "download"
+            download_dir = _download_dir()
             download_dir.mkdir(parents=True, exist_ok=True)
             free = shutil.disk_usage(download_dir).free
         except OSError:
@@ -1080,7 +1086,7 @@ class UpdateService(QObject):
             self._fail_request(request_id, UpdateError("bad_params"))
             return
         try:
-            dest = Path(get_app_data_path()) / "download" / sanitized
+            dest = _download_dir() / sanitized
             params = {
                 "source_url": asset.get("download_url"),
                 "dest_path": str(dest),
@@ -1480,7 +1486,7 @@ class UpdateService(QObject):
         if not name:
             return None
         try:
-            return Path(get_app_data_path()) / "download" / name
+            return _download_dir() / name
         except OSError:
             return None
 
