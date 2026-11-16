@@ -13,12 +13,12 @@ name: Mirror Release (GitHub to GitCode)
 #      流水线自带的 ATOMGIT_TOKEN；
 #   3. 可选配置 GH_TOKEN 以提高 GitHub API 的限流额度（匿名每小时 60 次）。
 #
-# 触发：每天 UTC 20:30（北京时间次日 04:30，给 GitHub 的 UTC 18:00 夜间构建
-# 预留 2.5 小时），也可在「流水线」页手动触发并指定通道与 tag。
+# 触发：**已停用定时任务**。GitCode 目前只在 API 层提供流水线，网页端没有
+# 「流水线 / 密钥与变量」入口，无法配置写权限令牌，定时运行只会以 403 失败。
+# 镜像改由 GitHub Actions 的 .github/workflows/mirror-to-gitcode.yml 执行；
+# 本文件保留为待 GitCode 开放 Secrets UI 后的备用入口，仅支持手动触发。
 
 on:
-  schedule:
-    - cron: '30 20 * * *'
   workflow_dispatch:
     inputs:
       channel:

@@ -6,7 +6,8 @@
 而是把 GitHub Actions 已构建好的同款资产（安装包 + ``SHA256SUMS.txt``）原样
 发布到 GitCode 的同名 Release，保证两个平台的发行资产完全一致。
 
-用法（在 GitCode 流水线中由 ``.gitcode/workflows/mirror-release.yml`` 调用）::
+用法（由 GitHub Actions 的 ``.github/workflows/mirror-to-gitcode.yml`` 调用；
+GitCode 流水线因网页端缺少 Secrets 入口而无法写 Release）::
 
     GITCODE_TOKEN=xxx python3 tools/mirror_release_to_gitcode.py --channel auto
 
@@ -186,8 +187,71 @@ def _release_exists(repo: str, tag: str, token: str) -> bool:
     raise MirrorError(f"查询 GitCode Release 失败（HTTP {status}）: {body[:300]!r}")
 
 
-def _delete_release(repo: str, tag: str, token: str) -> None:
-    """删除 GitCode 上指定 tag 的 Release（不存在视为成功）。
+def _redact(text: str, token: str) -> str:
+    """把错误信息中可能出现的令牌替换为 ``***``。
+
+    Args:
+        text: 原始文本（通常是响应体）。
+        token: 需要隐藏的令牌。
+
+    Returns:
+        str: 脱敏后的文本。
+    """
+    if token:
+        return text.replace(token, "***")
+    return text
+
+
+def _update_release(
+    repo: str,
+    tag: str,
+    name: str,
+    body: str,
+    prerelease: bool,
+    token: str,
+) -> None:
+    """原地更新 GitCode 上已存在的 Release。
+
+    GitCode 的 Release 接口不支持 ``DELETE``（返回 405），因此夜间版采用
+    「PATCH 更新标题/说明 + 覆盖上传同名资产」的语义，tag 保持不变。
+
+    Args:
+        repo: ``owner/name``。
+        tag: Release tag。
+        name: Release 标题。
+        body: Release 说明（与 GitHub 完全一致）。
+        prerelease: 是否预发布（nightly 为 True）。
+        token: GitCode 访问令牌。
+
+    Raises:
+        MirrorError: 更新失败。
+    """
+    payload = {
+        "name": name,
+        "body": body,
+        "prerelease": prerelease,
+        "tag_name": tag,
+    }
+    status, response = _gitcode_request(
+        "PATCH",
+        f"/repos/{repo}/releases/{tag}",
+        token,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    if status not in (200, 201):
+        raise MirrorError(
+            f"更新 Release {tag} 失败（HTTP {status}）: "
+            f"{_redact(repr(response[:300]), token)}"
+        )
+    log(f"已更新 GitCode Release {tag}（标题/说明/预发布标记）")
+
+
+def _delete_remote_assets(repo: str, tag: str, token: str) -> None:
+    """删除 Release 上已有的附件，为夜间版覆盖上传腾出位置。
+
+    GitCode 不支持 ``DELETE`` Release（405），也不支持 ``overwrite`` 上传
+    （回调会返回 400），但支持按附件 ID 删除。
 
     Args:
         repo: ``owner/name``。
@@ -195,30 +259,39 @@ def _delete_release(repo: str, tag: str, token: str) -> None:
         token: GitCode 访问令牌。
 
     Raises:
-        MirrorError: 删除失败（非 2xx 且非 404）。
+        MirrorError: 读取附件列表或删除失败。
     """
-    status, body = _gitcode_request(
-        "DELETE", f"/repos/{repo}/releases/{tag}", token
-    )
-    if status in (200, 204, 404):
-        log(f"已删除旧的 Release {tag}（HTTP {status}）")
-        return
-    raise MirrorError(f"删除 Release {tag} 失败（HTTP {status}）: {body[:300]!r}")
+    status, body = _gitcode_request("GET", f"/repos/{repo}/releases/{tag}", token)
+    if status != 200:
+        raise MirrorError(
+            f"读取 Release {tag} 附件失败（HTTP {status}）: "
+            f"{_redact(repr(body[:300]), token)}"
+        )
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except json.JSONDecodeError as error:
+        raise MirrorError(f"Release {tag} 响应不是 JSON: {error}") from error
 
-
-def _delete_tag_best_effort(repo: str, tag: str, token: str) -> None:
-    """尽力删除同名 tag，让新建的 Release 能指向最新提交。
-
-    GitCode 的 tag 删除接口不在公开文档中，失败不影响主流程；若 tag 仍存在，
-    创建 Release 时会回退为不带 ``target_commitish``。
-
-    Args:
-        repo: ``owner/name``。
-        tag: tag 名称。
-        token: GitCode 访问令牌。
-    """
-    status, _body = _gitcode_request("DELETE", f"/repos/{repo}/tags/{tag}", token)
-    log(f"清理 tag {tag} 结果：HTTP {status}")
+    asset_ids = [
+        int(asset["id"])
+        for asset in payload.get("assets") or []
+        if isinstance(asset, dict)
+        and asset.get("type") == "attach"
+        and asset.get("id") is not None
+    ]
+    for asset_id in asset_ids:
+        status, response = _gitcode_request(
+            "DELETE",
+            f"/repos/{repo}/releases/{tag}/attach_files/{asset_id}",
+            token,
+        )
+        if status not in (200, 204, 404):
+            raise MirrorError(
+                f"删除附件 {asset_id} 失败（HTTP {status}）: "
+                f"{_redact(repr(response[:300]), token)}"
+            )
+    if asset_ids:
+        log(f"已清理 {len(asset_ids)} 个旧附件")
 
 
 def _select_assets(release: dict[str, Any]) -> list[dict[str, Any]]:
@@ -444,7 +517,8 @@ def _upload_asset(
         )
     if status not in (200, 201, 204):
         raise MirrorError(
-            f"上传 {file_path.name} 失败（HTTP {status}）: {response[:300]!r}"
+            f"上传 {file_path.name} 失败（HTTP {status}）: "
+            f"{_redact(repr(response[:300]), token)}"
         )
 
 
@@ -563,14 +637,12 @@ def mirror_release(
     log(f"源 Release：{tag}（{name}，prerelease={prerelease}）")
     log(f"资产：{', '.join(asset_names)}")
 
-    if token and _release_exists(gitcode_repo, tag, token):
+    exists = bool(token) and _release_exists(gitcode_repo, tag, token)
+    if exists:
         if not prerelease:
             log(f"GitCode 已存在正式版 {tag}，跳过（正式版不做静默覆盖）")
             return f"{tag}: 已存在，跳过"
-        log(f"GitCode 已存在 {tag}，按 nightly 语义覆盖")
-        if not dry_run:
-            _delete_release(gitcode_repo, tag, token)
-            _delete_tag_best_effort(gitcode_repo, tag, token)
+        log(f"GitCode 已存在 {tag}，原地更新并按同名覆盖资产")
 
     if dry_run:
         log("dry-run：跳过下载与写操作")
@@ -579,9 +651,13 @@ def mirror_release(
     files = _download_assets(assets, work_dir)
     _verify_checksums(work_dir)
 
-    _create_release(
-        gitcode_repo, tag, name, body, prerelease, target_commitish, token
-    )
+    if exists:
+        _update_release(gitcode_repo, tag, name, body, prerelease, token)
+        _delete_remote_assets(gitcode_repo, tag, token)
+    else:
+        _create_release(
+            gitcode_repo, tag, name, body, prerelease, target_commitish, token
+        )
     for file_path in files:
         _upload_asset(gitcode_repo, tag, token, file_path)
 
