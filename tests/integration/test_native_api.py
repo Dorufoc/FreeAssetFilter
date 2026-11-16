@@ -6,6 +6,8 @@ DLL 缺失、导出缺失、FFI 报错都只能表现为 ``False`` / ``None``，
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from sopeek.core.native import api as native_api
@@ -26,8 +28,9 @@ def test_unknown_capability_is_false() -> None:
 
 def test_bundled_spk_core_offers_core_capabilities() -> None:
     """随包 ``spk_core.dll`` 应至少提供扫描/排序/高亮（缺失说明资源坏了）。"""
-    assert native_api.supports("scan") is True
-    assert native_api.supports("sort") is True
+    # The shipped spk_core is a Windows DLL. Other hosts use Python for both.
+    assert native_api.supports("scan") is (os.name == "nt")
+    assert native_api.supports("sort") is (os.name == "nt")
 
 
 def test_scan_directory_of_real_folder_returns_entries(tmp_path) -> None:

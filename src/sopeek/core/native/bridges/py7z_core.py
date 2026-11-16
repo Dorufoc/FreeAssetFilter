@@ -17,6 +17,7 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 import os
 import subprocess
+import shutil
 import re
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
@@ -86,6 +87,12 @@ class Py7zCore:
             FileNotFoundError: 如果找不到 7z.exe
         """
         if self._7z_exe_path and os.path.exists(self._7z_exe_path):
+            return self._7z_exe_path
+
+        if os.name != "nt":
+            self._7z_exe_path = shutil.which("7zz") or shutil.which("7z")
+            if not self._7z_exe_path:
+                raise FileNotFoundError("未找到 7-Zip，请安装 7zz 或 7z 并将其加入 PATH")
             return self._7z_exe_path
 
         # 可能的 7z.exe 路径列表

@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import ctypes
+import os
 from ctypes import wintypes
 from typing import Any, Dict, Optional
 
@@ -54,8 +55,9 @@ class _MEMORYSTATUSEX(ctypes.Structure):
     ]
 
 
-_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
-_psapi = ctypes.WinDLL("psapi", use_last_error=True)  # type: ignore[attr-defined]
+if os.name == "nt":
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    _psapi = ctypes.WinDLL("psapi", use_last_error=True)  # type: ignore[attr-defined]
 _bound = False
 
 
@@ -89,6 +91,8 @@ def read_process_memory() -> Dict[str, Optional[int]]:
         "peak_rss_bytes": None,
         "pagefile_bytes": None,
     }
+    if os.name != "nt":
+        return result
     try:
         _bind()
         counters = _PROCESS_MEMORY_COUNTERS_EX()
@@ -119,6 +123,8 @@ def read_system_memory() -> Dict[str, Optional[int]]:
         "avail_phys_bytes": None,
         "load_percent": None,
     }
+    if os.name != "nt":
+        return result
     try:
         _bind()
         status = _MEMORYSTATUSEX()

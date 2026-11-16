@@ -414,6 +414,8 @@ def _warn_if_frameless_unsupported() -> None:
     退化表现：窗口带完整原生标题栏、丢失最大化动画，等同于「无边框方案失效」。
     日志用 error 级别，并在主窗口显示后弹出一次提示框（不阻塞启动）。
     """
+    if sys.platform != "win32":
+        return
     try:
         from sopeek.ui.frameless_window import frameless_runtime_status
 
@@ -640,7 +642,7 @@ def _maybe_relaunch_with_gpu_launcher(argv: list[str]) -> bool:
         bool: True 表示已发起重启，调用方应立即结束当前进程；
         False 表示继续正常启动。
     """
-    if os.environ.get(_GPU_LAUNCHED_ENV) == "1":
+    if sys.platform != "win32" or os.environ.get(_GPU_LAUNCHED_ENV) == "1":
         return False
     if not _hardware_acceleration_enabled():
         return False

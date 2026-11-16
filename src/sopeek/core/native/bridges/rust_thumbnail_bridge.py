@@ -125,6 +125,9 @@ class RustThumbnailBridge:
         # 这里不再预加载任何 OpenCV 相关 DLL，避免误依赖外部环境。
 
     def _load(self):
+        # 当前随仓版本只分发 Windows DLL，其他平台直接使用现有回退解码器。
+        if os.name != "nt":
+            return
         debug("开始加载 Rust 原生引擎")
         self._prepare_local_runtime()
         for path in self._candidate_paths():

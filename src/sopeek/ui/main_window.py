@@ -2127,6 +2127,9 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         self._close_btn.setProperty(MODAL_PASSTHROUGH_PROPERTY, True)
         self._close_btn.clicked.connect(self.close)
         header_layout.addWidget(self._close_btn)
+        if sys.platform == "darwin":
+            for button in (self._minimize_btn, self._maximize_btn, self._close_btn):
+                button.hide()
 
         # 安装事件过滤器用于拖拽
         header.installEventFilter(self)
@@ -5223,6 +5226,8 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 安装事件过滤器用于拖拽
         header.installEventFilter(self)
         parent_layout.addWidget(header)
+        if sys.platform == "darwin":
+            header.hide()  # The native title bar already has the title and close button.
 
     def _close_button_style(self) -> str:
         """生成关闭按钮的 styleSheet"""

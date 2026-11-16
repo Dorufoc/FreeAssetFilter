@@ -43,11 +43,25 @@ def _make_cache() -> SettingsStagingCache:
 
 
 @pytest.fixture
-def page(qapp: Any) -> Iterator[sl_mod.UpdateSettingsPage]:
-    """创建检查更新页并在用例结束后销毁。"""
+def page(qapp: Any, monkeypatch: pytest.MonkeyPatch) -> Iterator[sl_mod.UpdateSettingsPage]:
+    """在所有测试主机上验证 Windows 更新器的页面行为。"""
+    monkeypatch.setattr(sl_mod, "WINDOWS_UPDATER_AVAILABLE", True)
     widget = sl_mod.UpdateSettingsPage(staging_cache=_make_cache())
     try:
         yield widget
+    finally:
+        widget.close()
+        widget.deleteLater()
+        qapp.processEvents()
+
+
+def test_source_install_update_page(qapp: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sl_mod, "WINDOWS_UPDATER_AVAILABLE", False)
+    widget = sl_mod.UpdateSettingsPage(staging_cache=_make_cache())
+    try:
+        assert widget._check_row.isHidden() and widget._startup_row.isHidden()
+        assert not widget._release_link_button.isHidden()
+        assert widget._current_release_url == RELEASES_URL
     finally:
         widget.close()
         widget.deleteLater()

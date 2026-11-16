@@ -18,6 +18,7 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 from __future__ import annotations
 
 import importlib
+import sys
 from typing import Dict, Optional
 
 
@@ -186,6 +187,12 @@ class PreviewerRegistry:
         if entry is None:
             return None
 
+        if sys.platform == "darwin" and entry == (
+            "sopeek.ui.layout.preview.video_player_layout", "VideoPlayerLayout"
+        ):
+            return cls._import_class(
+                "sopeek.ui.layout.preview.qt_media_previewer", "QtMediaPreviewer"
+            )
         module_path, class_name = entry
         return cls._import_class(module_path, class_name)
 

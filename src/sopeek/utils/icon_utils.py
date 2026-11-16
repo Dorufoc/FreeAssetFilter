@@ -20,7 +20,7 @@ import struct
 import time
 import hashlib
 import ctypes
-from ctypes import windll, byref, sizeof
+from ctypes import byref, sizeof
 from ctypes.wintypes import (DWORD, MAX_PATH, HANDLE, UINT,
                            LPCWSTR, BOOL, HICON)
 from typing import Optional
@@ -209,26 +209,35 @@ class GUID(ctypes.Structure):
     ]
 
 # 加载Windows DLL
-shell32 = windll.shell32
-user32 = windll.user32
-ole32 = windll.ole32
+DestroyIcon = None
+if os.name == "nt":
+    from ctypes import windll
 
-# 定义Windows API函数
-SHGetFileInfoW = shell32.SHGetFileInfoW
-SHGetFileInfoW.argtypes = [LPCWSTR, DWORD, ctypes.POINTER(SHFILEINFOW), DWORD, UINT]
-SHGetFileInfoW.restype = HANDLE
+    shell32 = windll.shell32
+    user32 = windll.user32
+    ole32 = windll.ole32
 
-DestroyIcon = user32.DestroyIcon
-DestroyIcon.argtypes = [HICON]
-DestroyIcon.restype = BOOL
+    # 定义Windows API函数
+    SHGetFileInfoW = shell32.SHGetFileInfoW
+    SHGetFileInfoW.argtypes = [LPCWSTR, DWORD, ctypes.POINTER(SHFILEINFOW), DWORD, UINT]
+    SHGetFileInfoW.restype = HANDLE
 
-SHGetKnownFolderPath = shell32.SHGetKnownFolderPath
-SHGetKnownFolderPath.argtypes = [ctypes.POINTER(GUID), DWORD, HANDLE, ctypes.POINTER(ctypes.c_wchar_p)]
-SHGetKnownFolderPath.restype = ctypes.c_long
+    DestroyIcon = user32.DestroyIcon
+    DestroyIcon.argtypes = [HICON]
+    DestroyIcon.restype = BOOL
 
-CoTaskMemFree = ole32.CoTaskMemFree
-CoTaskMemFree.argtypes = [ctypes.c_void_p]
-CoTaskMemFree.restype = None
+    SHGetKnownFolderPath = shell32.SHGetKnownFolderPath
+    SHGetKnownFolderPath.argtypes = [ctypes.POINTER(GUID), DWORD, HANDLE, ctypes.POINTER(ctypes.c_wchar_p)]
+    SHGetKnownFolderPath.restype = ctypes.c_long
+
+    CoTaskMemFree = ole32.CoTaskMemFree
+    CoTaskMemFree.argtypes = [ctypes.c_void_p]
+    CoTaskMemFree.restype = None
+
+    # 定义ExtractIconEx函数
+    ExtractIconExW = shell32.ExtractIconExW
+    ExtractIconExW.argtypes = [LPCWSTR, ctypes.c_int, ctypes.POINTER(HICON), ctypes.POINTER(HICON), UINT]
+    ExtractIconExW.restype = UINT
 
 # IShellItemImageFactory 相关定义 - 用于获取高质量图标
 SIIGBF_RESIZETOFIT = 0x00000000
@@ -332,11 +341,6 @@ def get_lnk_target(lnk_path):
         debug(f"解析LNK文件失败: {lnk_path}, 错误: {e}")
         return None
 
-# 定义ExtractIconEx函数
-ExtractIconExW = shell32.ExtractIconExW
-ExtractIconExW.argtypes = [LPCWSTR, ctypes.c_int, ctypes.POINTER(HICON), ctypes.POINTER(HICON), UINT]
-ExtractIconExW.restype = UINT
-
 def get_all_icons_from_exe(file_path):
     """
     从EXE文件中提取所有可用的图标
@@ -348,6 +352,8 @@ def get_all_icons_from_exe(file_path):
         list - 包含所有图标信息的列表，每个元素是(dict):
             {"hicon": HICON, "index": int, "width": int, "height": int}
     """
+    if os.name != "nt":
+        return []
     debug(f"提取EXE图标: {file_path}")
     icons = []
 
@@ -535,6 +541,8 @@ def get_highest_resolution_icon(file_path, desired_size=256):
         Returns:
         HICON - 图标句柄，如果获取失败则返回None
     """
+    if os.name != "nt":
+        return None
     debug(f"获取高分辨率图标: {file_path}, 期望尺寸: {desired_size}")
     try:
         # 检查文件类型
@@ -655,6 +663,8 @@ def get_icon_from_shell_item_image_factory(file_path, size=256):
         Returns:
         HICON - 图标句柄，如果获取失败则返回None
     """
+    if os.name != "nt":
+        return None
     debug(f"使用IShellItemImageFactory获取图标: {file_path}, 尺寸: {size}")
     try:
         # 定义必要的 COM 接口
@@ -830,6 +840,8 @@ def hicon_to_pixmap(hicon, size, qt_app, device_pixel_ratio=None, keep_original_
         Returns:
         QPixmap - 如果转换成功则返回Pixmap，否则返回None
     """
+    if os.name != "nt":
+        return None
     debug(f"HICON转QPixmap: size={size}, keep_original={keep_original_size}")
     try:
         from PySide6.QtGui import QPixmap, QImage, QGuiApplication

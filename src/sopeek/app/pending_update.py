@@ -38,6 +38,8 @@ def handle_pending_update() -> bool:
         bool: ``True`` 表示安装器已成功拉起，调用方应立即退出当前进程；
         ``False`` 表示没有待安装更新或启动失败，继续正常启动。
     """
+    if sys.platform != "win32":
+        return False
     try:
         result = apply_pending_update()
     except Exception as exc:  # noqa: BLE001 - 启动路径不允许更新组件阻断
