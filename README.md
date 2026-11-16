@@ -114,7 +114,7 @@ python -m sopeek.app.main
 | **图像** | 异步解码、50%–500% 缩放、翻转、旋转、取色器、GIF 播放/暂停、全屏 |
 | **音视频** | libmpv 渲染；空格播放暂停、方向键 seek/音量、数字键倍速、音轨与字幕选择、全屏浮动控制栏；音频模式带流体背景与元信息面板 |
 | **PDF** | 原生渲染、页码跳转、50%–300% 缩放、缩略图索引抽屉、文本选择 |
-| **Office** | 按 LibreOffice → MS Office / WPS COM → 纯 Python 顺序自动降级，统一转 PDF 视图渲染 |
+| **Office** | 按 MS Office / WPS COM → LibreOffice → 纯 Python 顺序自动降级；有外部后端时转 PDF，无后端时 docx→HTML、pptx→大纲、xlsx→HTML 表格 |
 | **文本 / 代码** | Markdown 渲染、语法高亮、源码/渲染切换、全屏、站内搜索抽屉、字号 8–32px |
 | **压缩包** | 无需解压浏览条目、全包递归搜索、按需输入密码、选中项/全部解压（同名自动改名不覆盖） |
 | **字体** | TTF/OTF/WOFF/WOFF2/EOT 加载渲染、字号与字重调节（支持可变字体） |
@@ -261,7 +261,9 @@ TTF / OTF / WOFF / WOFF2 / EOT
 
 **▷ Office 文档预览失败？**
 
-xlsx 与旧版二进制格式（doc/xls/ppt）依赖 LibreOffice 或 MS Office / WPS；docx/pptx 在无外部后端时可纯 Python 降级渲染。
+旧版二进制格式（doc/xls/ppt）依赖 MS Office / WPS 或 LibreOffice；docx/pptx/xlsx 在无外部后端时可纯 Python 降级渲染（docx→HTML、pptx→文本大纲、xlsx→HTML 表格）。xlsx 的表格降级仅显示前若干行/列，不保留图表、图片、合并单元格等版式。零幻灯片的 PPTX 会直接显示空状态，不会拉起 PowerPoint。
+
+Office 预览优先通过 COM 调用本机 Office，转换期间 Office 可能在后台或最小化启动，并在完成后自动退出；COM 不可用或转换失败时会回退到 LibreOffice。若希望完全不启动 Office，需要让 COM 不可用（例如不安装 Office/WPS）并仅使用 LibreOffice。转换失败时，错误视图中的「复制错误信息」可复制完整诊断（版本、文件、后端、技术详情与日志路径）。
 
 **▷ 安装依赖时报错，提示需要编译工具？**
 
@@ -419,6 +421,50 @@ python native/cpp_lut_preview/setup.py build_ext --inplace   # LUT 扩展（可�
 # 独显启动器（MSVC 或 MinGW）
 powershell -ExecutionPolicy Bypass -File packaging/launcher/build_launcher.ps1
 ```
+
+### 一键构建（推荐）
+
+双击仓库根目录的 `build.cmd` 即可完成整条发布链路：
+
+1. PyInstaller 打包主程序 payload；
+2. CMake + MinGW 编译安装器界面；
+3. NSIS 封装最终安装包；
+4. 校验产物并输出 SHA256。
+
+构建日志写入 `build/logs/build-<时间戳>.log`。无论成功或失败，窗口都会停住；失败时还会打印日志最后 40 行和保留的临时目录路径。
+
+**中文路径处理**：CMake + MinGW 无法可靠处理中文路径。脚本检测到仓库路径包含非 ASCII 字符时会明确提示，但不会中止，而是自动把工作区复制到纯英文临时目录继续构建：
+
+- 优先使用 C 盘根目录，例如 `C:\SopeekBuild_20261116_153012_a1b2c3`；
+- C 盘可用空间不足 5 GB 时，依次尝试 D、E……；
+- 所有本地磁盘都不满足 5 GB 或都不可写时才会报错；
+- 成功后产物复制回 `build\` 并删除临时目录；失败时保留临时目录便于排查。
+
+**依赖**：脚本不会自动安装依赖。首次使用请先准备 `.venv` 并安装：
+
+```powershell
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe -m pip install pyinstaller==6.22.3
+```
+
+> 注意三个产物不要混淆：
+>
+> - `build\pyinstall\Sopeek\Sopeek.exe`：主程序 payload，不是安装包；
+> - `build\installer\SopeekInstaller.exe`：安装器界面组件，不能单独双击运行；
+> - `build\Sopeek-<版本>-windows-x64.exe`：最终安装包。
+
+### 打包维护注意
+
+日常业务代码改动不需要修改打包脚本；每次构建都会复制当前工作区（排除 `.git`、`.venv`、`build` 与缓存），未提交的改动也会进入临时目录。以下结构性改动需要同步维护：
+
+- 新增 Python 依赖：更新 `requirements.txt` 并安装到 `.venv`；动态导入加入 `packaging/build.py` 的 hidden imports。
+- 新增资源目录或文件后缀：更新 `packaging/build.py` 的 `collect_data_files()`。
+- 新增/重命名原生 DLL/EXE：更新 `collect_binaries()` 和 `verify_output()`。
+- 修改主程序入口、产品名、版本格式或最终安装包命名：同步更新 `packaging/build.py`、`packaging/installer/*`、`tools/build_release.ps1` 和 CI workflow。
+- 移动 `src`、`packaging`、`native`、`tools` 等顶层目录：必须先同步脚本中的相对路径。
+
+CI 使用 `tools/build_release.ps1`，不经过 `build.cmd`；纯英文 CI 路径不会触发临时目录切换，双击窗口暂停逻辑也不影响 CI。
 
 ### 打包与安装器
 

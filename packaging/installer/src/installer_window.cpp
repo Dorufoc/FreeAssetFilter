@@ -96,9 +96,14 @@ constexpr ULONGLONG kProgressPostIntervalMs = 33;  // §10：进度 PostMessage 
 // UI-fix（进度 UX）：初始化合成斜坡 + 完成前 100% 停留（仅 UI 状态，不改引擎契约）。
 constexpr UINT_PTR kCompletionHoldTimerId = 3;  // 完成页切换专用一次性定时器
 constexpr UINT kCompletionHoldMs = 500;         // 100% 停留总时长：220ms 填充动画后仍留 ~280ms 满格可见
-constexpr ULONGLONG kInitRampMs = 8000;         // 0→50% 匀速斜坡总时长
-constexpr int kInitRampMaxPermille = 500;       // 斜坡上限（50%）
-constexpr ULONGLONG kInitRampUpdateMs = 80;     // 斜坡推进节流
+// 安装前 payload 解包阶段：不再使用固定 8s 合成斜坡，而是按 NSIS 实际写出的
+// payload 字节数推进 0..50%。这样大包解压几十秒时进度条仍有真实反馈，不会
+// 8s 冲到 50% 后长时间看起来卡死。
+constexpr ULONGLONG kPreparePollMs = 500;         // 目录字节统计节流
+constexpr int kPrepareProgressMaxPermille = 500;  // 解包阶段上限（50%）
+constexpr int kPrepareUnknownMaxPermille = 200;   // 总大小未知时的保守上限
+constexpr ULONGLONG kPrepareUnknownRampMs = 15000;
+constexpr ULONGLONG kPrepareStallWarnMs = 10000;  // 字节数长时间不增长时提示
 #ifdef SPK_TESTMODE
 // Todo 19（§17）：/auto 测试驱动常量——仅测试构建编入（生产零残留）。
 constexpr UINT_PTR kAutoTimerId = 2;  // 驱动定时器（独立于 ~16ms 动画 tick）
@@ -1342,8 +1347,16 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         }
         // 超时/失败：引擎已写 abort=1 + error=；T13 统一显示可见、可关闭的错误页，
         // 窗口保持打开（不自动退出）。关闭时 WriteCancelResult 受 resultWritten_ 保护。
-        ShowError(L"安装失败", error.empty() ? L"安装失败" : (L"安装失败：" + error), L"关闭",
-                  L"");
+        std::wstring friendlyError = error;
+        if (error == L"payload-release-failed" || error == L"repair-payload-release-failed") {
+            friendlyError = L"安装文件解压失败。请检查磁盘空间，或暂时关闭杀毒软件后重试。";
+        } else if (error == L"payload-timeout" || error == L"repair-payload-timeout") {
+            friendlyError = L"等待安装文件解压超时。请检查磁盘空间后重新运行安装包。";
+        } else if (error == L"payload-missing" || error == L"repair-payload-missing") {
+            friendlyError = L"找不到安装文件。请重新运行安装包。";
+        }
+        ShowError(L"安装失败", friendlyError.empty() ? L"安装失败" : (L"安装失败：" + friendlyError),
+                  L"关闭", L"");
         return 0;
     }
 
@@ -1530,10 +1543,10 @@ void InstallerWindow::StartInstall(spk::InstallMode mode) {
     }
 }
 
-// UI-fix（进度 UX）：安装/修复初始化合成斜坡。引擎在 payload.ready 等待与递归预扫描
-// 期间不产生任何进度回调，UI 因此长时间停在 0%；这里由窗口自身在 0..500 permille 间
-// 以固定线性速度推进（约 8s 到达 50%），给用户正向反馈。该进度只存在于 UI 状态，
-// 不写结果 INI、不触碰引擎、不伪造安装成功；首个真实进度到达即停止（EndInitProgress）。
+// UI-fix（进度 UX）：安装/修复等待 payload.ready 期间，NSIS 正在把内嵌 payload
+// 解包到临时目录。这里按实际写出的 payload 字节数在 0..500 permille 间推进真实
+// 解包进度，避免旧的“8 秒冲到 50% 后长时间停住”。该进度只存在于 UI 状态，
+// 不写结果 INI、不触碰引擎、不伪造安装成功；首个真实复制进度到达即停止。
 void InstallerWindow::BeginInitProgress() {
     const bool repair = state_.operation == Operation::Repair;
     initProgressActive_ = true;
@@ -1542,27 +1555,97 @@ void InstallerWindow::BeginInitProgress() {
     completionHold_ = false;
     initProgressStartMs_ = spk::SteadyNowMs();
     lastInitProgressUpdateMs_ = initProgressStartMs_;
+    prepareLastBytes_ = 0;
+    prepareStallStartMs_ = initProgressStartMs_;
+    prepareStallWarned_ = false;
+    prepareLastDiagBucket_ = 0;
     progressPermille_ = 0;
     if (progressPage_) {
         progressPage_->SetProgressPermille(0);
-        progressPage_->SetStageText(repair ? L"正在准备修复环境" : L"正在准备安装环境");
-        progressPage_->SetNotice(L"一切都在顺利进行，请稍候。");
+        progressPage_->SetStageText(repair ? L"正在准备修复文件" : L"正在准备安装文件");
+        progressPage_->SetNotice(repair ? L"正在解压修复所需的安装文件，请稍候…"
+                                        : L"正在解压安装文件，请稍候…");
     }
     DiagLog(std::wstring(L"init progress start mode=") + (repair ? L"1" : L"0"));
 }
 
-// 仅 UI 侧推进：installing_ 且斜坡激活时按 ~80ms 节流匀速推进；只允许前进（单调）。
+// 仅 UI 侧推进：等待 payload.ready 期间按 NSIS 实际写出的 payload 字节数推进。
+// 扫描节流 500ms，只允许前进（单调）；总大小未知时退化为保守的慢速 UI 进度。
 void InstallerWindow::AdvanceInitProgress(double now_ms) {
     if (!installing_ || !initProgressActive_) return;
-    if (now_ms - lastInitProgressUpdateMs_ < static_cast<double>(kInitRampUpdateMs)) return;
+    if (now_ms - lastInitProgressUpdateMs_ < static_cast<double>(kPreparePollMs)) return;
     lastInitProgressUpdateMs_ = now_ms;
-    const double elapsed = std::max(0.0, now_ms - initProgressStartMs_);
-    const int target = std::min(
-        kInitRampMaxPermille,
-        static_cast<int>(elapsed * kInitRampMaxPermille / static_cast<double>(kInitRampMs)));
+
+    const std::uint64_t bytes = static_cast<std::uint64_t>(spk::PayloadTotalBytes(payload_));
+    if (bytes != prepareLastBytes_) {
+        prepareLastBytes_ = bytes;
+        prepareStallStartMs_ = now_ms;
+        prepareStallWarned_ = false;
+    }
+
+    const bool repair = state_.operation == Operation::Repair;
+    int target = progressPermille_;
+    if (payloadBytes_ > 0) {
+        const std::uint64_t total = payloadBytes_;
+        const std::uint64_t capped = std::min(bytes, total);
+        const int extractedPermille = static_cast<int>(std::min<std::uint64_t>(
+            static_cast<std::uint64_t>(kPrepareProgressMaxPermille),
+            capped * static_cast<std::uint64_t>(kPrepareProgressMaxPermille) / total));
+        target = std::max(target, extractedPermille);
+    } else {
+        // 维护/测试调用未提供 /payload-bytes 时，仍给出缓慢前进的反馈，
+        // 但永远不把合成进度推到 50%，避免再次出现“满格等待”。
+        const double elapsed = std::max(0.0, now_ms - initProgressStartMs_);
+        const int fallback = std::min<int>(
+            kPrepareUnknownMaxPermille,
+            static_cast<int>(elapsed * kPrepareUnknownMaxPermille /
+                             static_cast<double>(kPrepareUnknownRampMs)));
+        target = std::max(target, fallback);
+    }
+
     if (target > progressPermille_) {
         progressPermille_ = target;
         if (progressPage_) progressPage_->SetProgressPermille(target);
+    }
+
+    const bool waitingForExtraction = (payloadBytes_ == 0 || bytes < payloadBytes_);
+    const bool stalled = waitingForExtraction &&
+        (now_ms - prepareStallStartMs_ >= static_cast<double>(kPrepareStallWarnMs));
+    if (progressPage_) {
+        if (stalled) {
+            // 停顿提示必须持续显示；不能下一轮又被字节计数文案覆盖。
+            progressPage_->SetStageText(L"正在等待安装文件解压");
+            progressPage_->SetNotice(repair
+                ? L"正在等待修复文件解压；如果长时间没有变化，请检查磁盘空间或杀毒软件。"
+                : L"正在等待安装文件解压；如果长时间没有变化，请检查磁盘空间或杀毒软件。");
+        } else if (payloadBytes_ > 0 && bytes >= payloadBytes_) {
+            progressPage_->SetStageText(L"正在完成安装文件解压");
+            progressPage_->SetNotice(L"安装文件已解压，正在校验并准备安装…");
+        } else if (payloadBytes_ > 0) {
+            progressPage_->SetStageText(L"正在解压安装文件");
+            progressPage_->SetNotice(spk::FormatBytes(bytes) + L" / " +
+                                     spk::FormatBytes(payloadBytes_));
+        } else {
+            progressPage_->SetStageText(L"正在解压安装文件");
+            if (bytes > 0) {
+                progressPage_->SetNotice(spk::FormatBytes(bytes) + L" 已读取，请稍候…");
+            } else {
+                progressPage_->SetNotice(L"正在读取安装文件，请稍候…");
+            }
+        }
+    }
+    if (stalled && !prepareStallWarned_) {
+        prepareStallWarned_ = true;
+        DiagLog(L"prepare stalled bytes=" + std::to_wstring(bytes) + L" total=" +
+                std::to_wstring(payloadBytes_));
+    }
+
+    const int diagBucket = progressPermille_ / 100;
+    if (diagBucket > prepareLastDiagBucket_) {
+        prepareLastDiagBucket_ = diagBucket;
+        DiagLog(L"prepare progress bytes=" + std::to_wstring(bytes) + L" total=" +
+                std::to_wstring(payloadBytes_) + L" permille=" +
+                std::to_wstring(progressPermille_));
     }
 }
 
@@ -1573,7 +1656,7 @@ void InstallerWindow::EndInitProgress(int raw_permille) {
     const bool repair = state_.operation == Operation::Repair;
     initProgressActive_ = false;
     progressMappingActive_ = true;
-    progressMappingBasePermille_ = std::clamp(progressPermille_, 0, kInitRampMaxPermille);
+    progressMappingBasePermille_ = std::clamp(progressPermille_, 0, kPrepareProgressMaxPermille);
     if (progressPage_) {
         progressPage_->SetStageText(L"");  // 回到 ProgressStepText 常规阶段文案
         progressPage_->SetNotice(repair ? L"修复过程中请勿关闭窗口" : L"正在安装文件，请稍候。");

@@ -78,7 +78,7 @@ GITCODE_SOURCE: UpdateSource = UpdateSource(
     releases_url=f"https://gitcode.com/{REPO_OWNER}/{FALLBACK_REPO_NAME}/releases",
 )
 
-#: 全部可选更新源（顺序即设置页下拉顺序）。
+#: 全部可选更新源（设置页用开关在 github / gitcode 间切换）。
 UPDATE_SOURCES: dict[str, UpdateSource] = {
     source.key: source for source in (GITHUB_SOURCE, GITCODE_SOURCE)
 }

@@ -32,9 +32,11 @@ from typing import Any, Optional
 # 见 sopeek/ui/__init__.py；此处不再按目录层级手工计算。
 import sopeek.ui  # noqa: F401  (副作用：把 sopeek/ui 加入 sys.path)
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
+    QHBoxLayout,
     QLabel,
     QStackedLayout,
     QTextBrowser,
@@ -43,9 +45,12 @@ from PySide6.QtWidgets import (
 )
 
 from theme import tm
+from components.styled_button import StyledButton
 from components.styled_loading import StyledLoading
 from sopeek.services.office_converter_worker import OfficeConverterWorker
+from sopeek.services.office_error_report import build_office_error_report
 from sopeek.ui.theme.app_stylesheet import register_widget_qss
+from sopeek.utils.app_logger import error
 
 
 class OfficePreviewerLayout(QWidget):
@@ -98,11 +103,20 @@ class OfficePreviewerLayout(QWidget):
         self._generation: int = 0
         self._current_worker: Optional[OfficeConverterWorker] = None
         self._current_suffix: str = ""
+        self._current_path: str = ""
         self._cleaned_up: bool = False
         self._pdf: Optional[Any] = None
         self._pdf_holder_layout: Optional[QVBoxLayout] = None
+        self._last_error_message: str = ""
+        self._last_error_report: str = ""
 
         self._init_ui()
+
+        # 复制按钮的“已复制”短暂反馈
+        self._copy_reset_timer = QTimer(self)
+        self._copy_reset_timer.setSingleShot(True)
+        self._copy_reset_timer.timeout.connect(self._reset_copy_button)
+
         # 主题切换：占位/错误提示色随主题刷新
         tm.theme_changed.connect(self._on_theme_changed)
 
@@ -111,12 +125,34 @@ class OfficePreviewerLayout(QWidget):
         register_widget_qss(self._placeholder,(
             f"color: {tm.qss_color(tm.text_hint)}; font-size: 14px; background: transparent;"
         ))
-        register_widget_qss(self._error_view,(
-            f"color: {tm.qss_color(tm.text_hint)}; font-size: 14px; background: transparent; padding: 24px;"
-        ))
+        self._apply_error_styles()
         self._html_view.viewport().update()
         self._outline_view.viewport().update()
         self.update()
+
+    def _apply_error_styles(self) -> None:
+        """应用错误视图的主题色（标题 / 消息 / 指引）。"""
+        register_widget_qss(
+            self._error_title,
+            (
+                f"color: {tm.qss_color(tm.text)}; font-size: 18px; "
+                "font-weight: 600; background: transparent;"
+            ),
+        )
+        register_widget_qss(
+            self._error_message,
+            (
+                f"color: {tm.qss_color(tm.text_secondary)}; font-size: 14px; "
+                "background: transparent;"
+            ),
+        )
+        register_widget_qss(
+            self._error_hint,
+            (
+                f"color: {tm.qss_color(tm.text_hint)}; font-size: 12px; "
+                "background: transparent;"
+            ),
+        )
 
     # ── UI 初始化 ─────────────────────────────────────────────────────────
 
@@ -164,14 +200,62 @@ class OfficePreviewerLayout(QWidget):
         self._outline_view.setObjectName("OfficePreviewerOutlineView")
         self._content_stack.addWidget(self._outline_view)
 
-        # index 3：错误视图
-        self._error_view = QLabel("")
+        # index 3：错误视图（标题 + 可选中消息 + 复制按钮）
+        self._error_view = QWidget()
         self._error_view.setObjectName("OfficePreviewerErrorView")
-        self._error_view.setAlignment(Qt.AlignCenter)
-        self._error_view.setWordWrap(True)
-        register_widget_qss(self._error_view,(
-            f"color: {tm.qss_color(tm.text_hint)}; font-size: 14px; background: transparent; padding: 24px;"
-        ))
+        error_layout = QVBoxLayout(self._error_view)
+        error_layout.setContentsMargins(32, 32, 32, 32)
+        error_layout.setSpacing(12)
+        error_layout.addStretch(1)
+
+        self._error_title = QLabel("Office 文档预览失败")
+        self._error_title.setObjectName("OfficePreviewerErrorTitle")
+        self._error_title.setAlignment(Qt.AlignCenter)
+        self._error_title.setWordWrap(True)
+        error_layout.addWidget(self._error_title)
+
+        self._error_message = QLabel("")
+        self._error_message.setObjectName("OfficePreviewerErrorMessage")
+        self._error_message.setAlignment(Qt.AlignCenter)
+        self._error_message.setWordWrap(True)
+        self._error_message.setTextInteractionFlags(
+            Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
+        )
+        # 长错误消息不应撑出预览区
+        self._error_message.setMaximumWidth(760)
+        error_layout.addWidget(self._error_message, 0, Qt.AlignHCenter)
+
+        self._error_hint = QLabel(
+            "可尝试安装 LibreOffice 作为备用转换引擎；"
+            "若问题持续，请复制错误信息反馈。"
+        )
+        self._error_hint.setObjectName("OfficePreviewerErrorHint")
+        self._error_hint.setAlignment(Qt.AlignCenter)
+        self._error_hint.setWordWrap(True)
+        self._error_hint.setMaximumWidth(760)
+        error_layout.addWidget(self._error_hint, 0, Qt.AlignHCenter)
+
+        self._error_actions = QHBoxLayout()
+        self._error_actions.setContentsMargins(0, 8, 0, 0)
+        self._error_actions.setSpacing(8)
+        self._error_actions.setAlignment(Qt.AlignCenter)
+        self._copy_error_btn = StyledButton(
+            "复制错误信息", variant="secondary", size="sm"
+        )
+        self._copy_error_btn.setObjectName("OfficePreviewerCopyError")
+        self._copy_error_btn.setToolTip(
+            "复制完整错误信息（含技术详情与日志路径）"
+        )
+        self._copy_error_btn.clicked.connect(self._copy_error_report)
+        # 固定为默认文案宽度，避免“已复制”反馈时按钮宽度跳动。
+        self._copy_error_btn.setMinimumWidth(
+            self._copy_error_btn.sizeHint().width()
+        )
+        self._error_actions.addWidget(self._copy_error_btn)
+        error_layout.addLayout(self._error_actions)
+        error_layout.addStretch(1)
+
+        self._apply_error_styles()
         self._content_stack.addWidget(self._error_view)
 
         # index 4：PDF 视图（懒内嵌 PdfPreviewerLayout）
@@ -223,14 +307,24 @@ class OfficePreviewerLayout(QWidget):
 
         suffix = str(normalized.get("suffix", "") or "").lower().lstrip(".")
         self._current_suffix = suffix
+        self._current_path = str(normalized.get("path", "") or "")
 
         worker = OfficeConverterWorker(dict(normalized or {}))
         worker.converted.connect(
             lambda payload, g=gen: self._on_converted(payload, g)
         )
-        worker.failed.connect(
-            lambda message, g=gen: self._on_failed(message, g)
-        )
+        # 新 worker 同时提供 failed_with_report；旧测试替身只有 failed。
+        failed_with_report = getattr(worker, "failed_with_report", None)
+        if failed_with_report is not None:
+            failed_with_report.connect(
+                lambda message, report, g=gen: self._on_failed(
+                    message, report, g
+                )
+            )
+        else:
+            worker.failed.connect(
+                lambda message, g=gen: self._on_failed(message, "", g)
+            )
         self._current_worker = worker
         worker.start()
 
@@ -289,7 +383,7 @@ class OfficePreviewerLayout(QWidget):
         self._current_worker = None
         if worker is None:
             return
-        for signal_name in ("converted", "failed"):
+        for signal_name in ("converted", "failed", "failed_with_report"):
             try:
                 getattr(worker, signal_name).disconnect()
             except (RuntimeError, TypeError, AttributeError):
@@ -307,7 +401,12 @@ class OfficePreviewerLayout(QWidget):
         """清空旧视图内容，回到覆盖层（同实例重分派时调用）。"""
         self._html_view.clear()
         self._outline_view.clear()
-        self._error_view.clear()
+        self._last_error_message = ""
+        self._last_error_report = ""
+        self._error_title.setText("Office 文档预览失败")
+        self._error_message.clear()
+        self._error_hint.setVisible(True)
+        self._reset_copy_button()
         self._placeholder.setText("正在转换 Office 文档…")
         self._loading_spinner.setVisible(True)
         self._content_stack.setCurrentWidget(self._overlay)
@@ -335,19 +434,21 @@ class OfficePreviewerLayout(QWidget):
         else:
             self._route_pdf(payload)
 
-    def _on_failed(self, message: str, gen: int) -> None:
-        """``failed`` 路由：显示错误视图。
+    def _on_failed(self, message: str, report: str, gen: int) -> None:
+        """``failed_with_report`` 路由：显示错误视图并保存完整报告。
 
         Parameters
         ----------
         message : str
             错误 / 取消 / 超时提示文案。
+        report : str
+            完整错误报告（含技术详情、版本、日志路径）；用于一键复制。
         gen : int
             信号发射时捕获的 generation；与当前不符即过期，直接丢弃。
         """
         if gen != self._generation:
             return
-        self._show_error(message)
+        self._show_error(message, report)
 
     # ── 内部：视图切换 ─────────────────────────────────────────────────────
 
@@ -363,11 +464,56 @@ class OfficePreviewerLayout(QWidget):
         self._outline_view.setPlainText(content)
         self._content_stack.setCurrentWidget(self._outline_view)
 
-    def _show_error(self, message: str) -> None:
-        """显示错误提示视图。"""
+    def _show_error(self, message: str, report: str = "") -> None:
+        """显示错误提示视图，并保存可一键复制的完整报告。"""
         self._loading_spinner.setVisible(False)
-        self._error_view.setText(message)
+        self._last_error_message = str(message or "")
+        self._last_error_report = str(report or "")
+        self._error_title.setText(self._error_title_for(self._last_error_message))
+        self._error_message.setText(self._last_error_message or "未知错误")
+        # 取消属于用户主动操作，不展示“安装 LibreOffice”之类排障指引。
+        self._error_hint.setVisible("取消" not in self._last_error_message)
+        self._reset_copy_button()
         self._content_stack.setCurrentWidget(self._error_view)
+
+    @staticmethod
+    def _error_title_for(message: str) -> str:
+        """按失败类型返回错误视图标题。"""
+        if "取消" in message:
+            return "Office 转换已取消"
+        if "超时" in message:
+            return "Office 转换超时"
+        return "Office 文档预览失败"
+
+    def _reset_copy_button(self) -> None:
+        """恢复复制按钮的默认文案与可用状态。"""
+        timer = getattr(self, "_copy_reset_timer", None)
+        if timer is not None:
+            timer.stop()
+        self._copy_error_btn.setText("复制错误信息")
+        self._copy_error_btn.setEnabled(
+            bool(self._last_error_report or self._last_error_message)
+        )
+
+    def _copy_error_report(self) -> None:
+        """复制完整错误报告（无报告时用当前上下文兜底生成）。"""
+        report = self._last_error_report
+        if not report:
+            try:
+                report = build_office_error_report(
+                    self._last_error_message or "未知错误",
+                    file_path=self._current_path,
+                    suffix=self._current_suffix,
+                )
+            except Exception:  # noqa: BLE001 - 兜底报告失败则退回短消息
+                report = self._last_error_message or "未知错误"
+        try:
+            QApplication.clipboard().setText(report)
+        except Exception as exc:  # noqa: BLE001 - 剪贴板不可用时仅记日志
+            error(f"[OfficePreviewerLayout] 复制错误信息失败: {exc}")
+            return
+        self._copy_error_btn.setText("已复制")
+        self._copy_reset_timer.start(1500)
 
     def _route_pdf(self, path: str) -> None:
         """PDF 负载路由：懒内嵌 PdfPreviewerLayout 渲染并切换到 PDF 视图。

@@ -14,26 +14,57 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 Office 转换分派服务
 普通类（非单例），classmethod 风格（镜像 ImageDecoderService）。
 能力探测（LibreOffice / MS Office / WPS COM）+ 后端分派：
-按「LibreOffice → COM → 纯 Python」顺序自动降级，每个后缀定义允许的后端集合；
-docx/pptx 无外部后端时可纯 Python 降级，xlsx 与旧二进制格式一样仅接受
-LO/COM 转 PDF（无外部后端时返回安装提示）。
+按「MS Office / WPS COM → LibreOffice → 纯 Python」顺序自动降级，每个后缀
+定义允许的后端集合；docx/pptx/xlsx 无外部后端时可纯 Python 降级
+（HTML / 文本大纲 / HTML 表格），旧二进制格式（doc/xls/ppt）仅接受
+COM/LibreOffice 转 PDF（无外部后端时返回安装提示）。
 """
 
 from __future__ import annotations
 
+import html
+import os
 import shutil
 import subprocess
 import tempfile
 import threading
 import time
+import traceback
 import uuid
+import zipfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType
+from typing import Any
+from xml.etree import ElementTree
 
 from sopeek.utils.app_logger import debug, warning
+
+
+def _hidden_subprocess_kwargs() -> dict:
+    """返回 Windows 下隐藏子进程控制台窗口的 ``subprocess`` 参数。
+
+    Sopeek 以 ``--windowed`` 打包，父进程没有控制台；此时启动 ``powershell``
+    等控制台程序会弹出一个黑色命令窗口。``CREATE_NO_WINDOW`` 配合
+    ``STARTUPINFO`` 的 ``SW_HIDE`` 可确保子进程完全不可见。非 Windows 平台
+    返回空字典，调用方可直接 ``**`` 展开。
+    """
+    if os.name != "nt":
+        return {}
+    kwargs: dict = {}
+    flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    if flags:
+        kwargs["creationflags"] = flags
+    try:
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        kwargs["startupinfo"] = startupinfo
+    except Exception as exc:  # noqa: BLE001 - 隐藏失败不应阻断转换
+        debug(f"[OfficeConverter] 构造隐藏子进程参数失败: {exc}")
+    return kwargs
 
 # ── 结果对象 ─────────────────────────────────────────────────────────────
 
@@ -45,21 +76,31 @@ class ConversionResult:
     Attributes
     ----------
     content_type :
-        结果内容类型：``"pdf"``（LO/COM 转 PDF）、``"html"``（docx 降级）、
+        结果内容类型：``"pdf"``（COM/LibreOffice 转 PDF）、``"html"``（docx 降级）、
         ``"outline"``（pptx 降级）、``"error"``。
     content :
         结果内容：转换产物路径（``Path``）或内联内容字符串（``str``）。
     backend_used :
-        实际生效的后端标识：``"libreoffice"`` / ``"com"`` / ``"pure-python"``
+        实际生效的后端标识：``"com"`` / ``"libreoffice"`` / ``"pure-python"``
         / ``"error"``。
     message :
         附加说明或错误提示文案。
+    detail :
+        面向排障的技术详情（COM HRESULT / 异常描述 / 命令等）。
+        UI 的「复制错误信息」会把它连同文件、版本、日志路径一起复制，
+        默认不在预览界面直接展示。
+    failed_backend :
+        实际失败的后端标识（``"com"`` / ``"libreoffice"`` / ``"pure-python"``）。
+        仅在 ``content_type="error"`` 时有意义；``backend_used="error"`` 时
+        用它保留失败来源，便于报告区分。
     """
 
     content_type: str
     content: str | Path
     backend_used: str
     message: str = ""
+    detail: str = ""
+    failed_backend: str = ""
 
 
 # ── 常量（不可变） ───────────────────────────────────────────────────────
@@ -72,29 +113,37 @@ SUPPORTED_SUFFIXES: frozenset[str] = frozenset({
     "docx", "pptx", "xlsx", "doc", "xls", "ppt",
 })
 
-# OOXML 现代格式。docx/pptx 无外部后端时仍可纯 Python 降级；xlsx 预览只保留
-# PDF 视图，因此与旧二进制格式一致：无 LO/COM 时仅提示安装
-# （见 ``ERROR_MESSAGE``），不提供纯 Python 降级。
+# OOXML 现代格式。docx/pptx/xlsx 在无外部后端时均可纯 Python 降级：
+# docx→HTML、pptx→文本大纲、xlsx→HTML 表格（只保留值与基础网格）。
 MODERN_SUFFIXES: frozenset[str] = frozenset({"docx", "pptx", "xlsx"})
 
-# OOXML 之前的旧二进制格式：无 LO/COM 时仅提示安装，不提供纯 Python 降级。
+# OOXML 之前的旧二进制格式：无 COM/LibreOffice 时仅提示安装，不提供纯 Python 降级。
 LEGACY_SUFFIXES: frozenset[str] = frozenset({"doc", "xls", "ppt"})
 
 # 每个后缀允许的后端集合（元组顺序即分派优先级）。只读常量，运行期不修改。
 _ALLOWED_BACKENDS: Mapping[str, tuple[str, ...]] = MappingProxyType({
-    "docx": ("libreoffice", "com", "pure-python"),
-    "pptx": ("libreoffice", "com", "pure-python"),
-    "xlsx": ("libreoffice", "com"),
-    "doc": ("libreoffice", "com"),
-    "xls": ("libreoffice", "com"),
-    "ppt": ("libreoffice", "com"),
+    "docx": ("com", "libreoffice", "pure-python"),
+    "pptx": ("com", "libreoffice", "pure-python"),
+    "xlsx": ("com", "libreoffice", "pure-python"),
+    "doc": ("com", "libreoffice"),
+    "xls": ("com", "libreoffice"),
+    "ppt": ("com", "libreoffice"),
 })
 
 # 纯 Python 降级（T7）各后缀对应的内容类型。只读常量。
 _PURE_PYTHON_CONTENT_TYPE: Mapping[str, str] = MappingProxyType({
     "docx": "html",
     "pptx": "outline",
+    "xlsx": "html",
 })
+
+# xlsx → HTML 表格降级的安全上限：预览只展示有代表性的前若干行/列，
+# 避免超大工作簿把 UI 线程 / QTextBrowser 卡死。运行期读取，便于测试
+# 通过 monkeypatch 缩小阈值。
+XLSX_MAX_PREVIEW_ROWS: int = 200
+XLSX_MAX_PREVIEW_COLS: int = 50
+XLSX_MAX_PREVIEW_SHEETS: int = 10
+XLSX_MAX_PREVIEW_CELLS: int = 20000
 
 # COM 探测的 ProgID 顺序（镜像 ``tests/conftest.py`` 的 ``com_available`` fixture）。
 _COM_PROG_IDS: tuple[str, ...] = (
@@ -106,7 +155,7 @@ _COM_PROG_IDS: tuple[str, ...] = (
     "Kwpp.Application",
 )
 
-# 无外部后端（doc/xls/ppt 与 xlsx）时的安装提示文案（精确匹配计划措辞）。
+# 无外部后端（doc/xls/ppt legacy）时的安装提示文案（精确匹配计划措辞）。
 ERROR_MESSAGE = "请安装 Microsoft Office/WPS Office 或 LibreOffice 插件以获得完整预览"
 
 # LibreOffice 后端默认转换超时（秒）。T5/T9：测试通过注入更短的 ``timeout``
@@ -209,7 +258,7 @@ def _lo_degraded_result(message: str) -> ConversionResult:
     )
 
 
-def _lo_error_result(message: str) -> ConversionResult:
+def _lo_error_result(message: str, *, detail: str = "") -> ConversionResult:
     """
     生成 LibreOffice 后端的错误结果（``content_type="error"``）。
 
@@ -217,17 +266,21 @@ def _lo_error_result(message: str) -> ConversionResult:
     ----------
     message : str
         明确的中文错误提示文案。
+    detail : str
+        面向排障的技术详情（命令、退出码、输出目录等）。
 
     Returns
     -------
     ConversionResult
-        ``backend_used="error"`` 的错误结果。
+        ``backend_used="error"`` 且携带失败后端标识的错误结果。
     """
     return ConversionResult(
         content_type="error",
         content="",
         backend_used="error",
         message=message,
+        detail=detail,
+        failed_backend="libreoffice",
     )
 
 
@@ -289,11 +342,11 @@ class OfficeConverter:
     Office 转换分派服务（普通类，非单例，classmethod 风格）。
 
     职责：
-    1. 能力探测 —— 每次 ``convert()`` 调用时运行时重新评估 LibreOffice /
-       MS Office / WPS COM 的可用性，探测函数永不抛出；
-    2. 后端分派 —— 按「LO → COM → 纯 Python」顺序为每个后缀选择允许的
-       后端；doc/xls/ppt（legacy）与 xlsx 在 LO/COM 均不可用时返回安装
-       提示后端（无纯 Python 降级）。
+    1. 能力探测 —— 每次 ``convert()`` 调用时运行时重新评估
+       MS Office / WPS COM 与 LibreOffice 的可用性，探测函数永不抛出；
+    2. 后端分派 —— 按「COM → LibreOffice → 纯 Python」顺序为每个后缀
+       选择允许的后端；doc/xls/ppt（legacy）在 COM/LO 均不可用时返回
+       安装提示后端（无纯 Python 降级）；xlsx 还可落到 HTML 表格。
 
     本类无 ``__init__`` 实例状态，全部入口为 classmethod；缓存清理
     （T8）通过 ``_maybe_cleanup_cache()`` 在 ``convert()`` 入口幂等触发。
@@ -310,12 +363,17 @@ class OfficeConverter:
     @classmethod
     def convert(cls, file_info: dict) -> ConversionResult:
         """
-        按「缓存命中 → LO → COM → 纯 Python」顺序处理 *file_info*。
+        按「缓存命中 → COM → LibreOffice → 纯 Python」顺序处理 *file_info*。
 
         先查缓存（T8 缓存 + 本任务接线）：命中直接返回
         ``backend_used="cache"`` 的 PDF 结果，**不调用任何转换后端**；
-        未命中则按 LO → COM → 纯 Python 顺序分派，并在产物为 PDF 时
-        写入缓存供下次复用。
+        未命中则按 COM → LibreOffice → 纯 Python 顺序分派，并在产物为
+        PDF 时写入缓存供下次复用。
+
+        与旧实现不同：某一后端**尝试后失败**（返回 ``content_type="error"``）
+        会继续尝试下一个允许的后端，而不是立刻把错误交给 UI。例如 pptx 的
+        COM 导出失败后仍可落到纯 Python 大纲；docx 可落到 HTML。全部后端
+        失败时聚合错误并保留每个后端的技术详情，供「复制错误信息」使用。
 
         Parameters
         ----------
@@ -352,14 +410,119 @@ class OfficeConverter:
         if suffix not in _ALLOWED_BACKENDS:
             return cls._unsupported_result(suffix)
 
-        for backend in _ALLOWED_BACKENDS[suffix]:
-            result = cls._try_backend(backend, file_info, suffix)
-            if result is not None:
-                # 仅 PDF 产物（LO/COM）落缓存，pure-python 文本产物不缓存
-                return cls._cache_pdf_result(file_info, result)
+        # 零幻灯片 PPTX 预检：PowerPoint 无法把“没有幻灯片”的演示文稿导出为
+        # PDF（SaveAs 会抛 0x80004005），且完全没必要为此拉起 Office。
+        # 这里在分派前用 OOXML 包结构离线判断，直接返回空状态文案。
+        if suffix == "pptx":
+            path = cls._extract_path(file_info)
+            if path and cls._pptx_slide_count(path) == 0:
+                return ConversionResult(
+                    content_type="outline",
+                    content="该演示文稿没有幻灯片。",
+                    backend_used="pure-python",
+                    message="演示文稿没有幻灯片，无需转换",
+                )
 
-        # legacy 格式（doc/xls/ppt）与 xlsx 在 LO/COM 均不可用时走到这里。
+        failures: list[ConversionResult] = []
+        for backend in _ALLOWED_BACKENDS[suffix]:
+            try:
+                result = cls._try_backend(backend, file_info, suffix)
+            except Exception as e:  # noqa: BLE001 - 后端异常不得突破 convert()
+                warning(f"[OfficeConverter] {backend} 后端异常，视为失败: {e}")
+                failures.append(
+                    ConversionResult(
+                        content_type="error",
+                        content="",
+                        backend_used="error",
+                        message=f"{backend} 转换异常：{e}",
+                        detail=traceback.format_exc(),
+                        failed_backend=backend,
+                    )
+                )
+                continue
+
+            if result is None:
+                # 后端不可用：继续下一级。
+                continue
+            if result.content_type == "error":
+                # 后端尝试过但失败：记录错误后继续尝试下一级（若有）。
+                failures.append(result)
+                continue
+            # 仅 PDF 产物（COM/LO）落缓存，pure-python 文本产物不缓存
+            return cls._cache_pdf_result(file_info, result)
+
+        if failures:
+            return cls._aggregate_failures(suffix, failures)
+
+        # legacy 格式（doc/xls/ppt）在 COM/LO 均不可用时走到这里。
         return cls._error_backend(suffix)
+
+    @classmethod
+    def _aggregate_failures(
+        cls,
+        suffix: str,
+        failures: list[ConversionResult],
+    ) -> ConversionResult:
+        """聚合所有后端的失败结果，保留完整技术详情。
+
+        展示用 ``message`` 取最后一个后端（通常是最终尝试的纯 Python 或
+        COM）的文案；``detail`` 按后端顺序拼接，供 UI 一键复制。
+
+        Parameters
+        ----------
+        suffix : str
+            归一化小写后缀，仅用于日志标识。
+        failures : list[ConversionResult]
+            按分派顺序收集的非空错误结果。
+
+        Returns
+        -------
+        ConversionResult
+            ``content_type="error"`` 的聚合错误结果。
+        """
+        primary = failures[-1]
+        detail_parts: list[str] = []
+        for failure in failures:
+            backend = failure.failed_backend or failure.backend_used or "unknown"
+            part = f"[{backend}] {failure.message}"
+            if failure.detail:
+                part += f"\n{failure.detail}"
+            detail_parts.append(part)
+        debug(
+            f"[OfficeConverter] {suffix} 全部后端失败，共 {len(failures)} 条错误"
+        )
+        return ConversionResult(
+            content_type="error",
+            content="",
+            backend_used="error",
+            message=primary.message or ERROR_MESSAGE,
+            detail="\n\n".join(detail_parts),
+            failed_backend=primary.failed_backend or "error",
+        )
+
+    @staticmethod
+    def _pptx_slide_count(path: str) -> int | None:
+        """离线读取 pptx 幻灯片数量；无法读取时返回 ``None``。
+
+        只使用标准库解析 OOXML 包，不依赖 python-pptx，也绝不启动 Office。
+        ``ppt/presentation.xml`` 中缺少 ``<p:sldIdLst>`` 或列表为空即视为
+        0 张幻灯片——PowerPoint 无法把这种文件导出为 PDF。
+        """
+        try:
+            with zipfile.ZipFile(path) as archive:
+                xml = archive.read("ppt/presentation.xml")
+            root = ElementTree.fromstring(xml)
+        except Exception as e:  # noqa: BLE001 - 预检失败按未知处理
+            debug(f"[OfficeConverter] 读取 pptx 幻灯片数量失败: {e}")
+            return None
+
+        namespace = {
+            "p": "http://schemas.openxmlformats.org/presentationml/2006/main"
+        }
+        slide_list = root.find("p:sldIdLst", namespace)
+        if slide_list is None:
+            return 0
+        return len(slide_list.findall("p:sldId", namespace))
 
     # ── 能力探测（永不抛出；探测放服务内供运行时重新评估） ─────────────
 
@@ -399,60 +562,59 @@ class OfficeConverter:
         )
 
     @classmethod
-    def _com_available(cls) -> bool:
+    def _com_available(cls, suffix: str = "") -> bool:
         """
         探测 MS Office / WPS COM 组件是否可用。永不抛出。
 
-        镜像 ``tests/conftest.py`` 的 ``com_available`` fixture：优先注册表
-        探测 6 个 ProgID（不启动任何进程），仅当注册表探测不可行时回退到
-        ``win32com.client.Dispatch`` try/except（finally 中尽力 ``Quit()``）。
+        **只做注册表探测，绝不实际 Dispatch**：旧实现在注册表缺失时会
+        ``Dispatch`` 一个隐藏实例来验证，既可能拉起 Office 窗口/进程，也让
+        一次预览启动两次 Office。这里改为只读注册表，并同时检查 32/64 位
+        视图（HKCR 的合并视图取决于当前 Python 位数，32 位 Office 安装在
+        64 位 Python 下可能只在 32 位视图可见）。
+
+        Parameters
+        ----------
+        suffix : str
+            归一化小写后缀；提供时只探测该格式相关的 ProgID
+            （pptx 不再因为 Word 已安装而误判 COM 可用）。
 
         Returns
         -------
         bool
-            任一 Office/WPS ProgID 可实例化则为 ``True``，否则为 ``False``。
+            任一相关 Office/WPS ProgID 已注册则为 ``True``，否则为 ``False``。
         """
-        prog_ids = _COM_PROG_IDS
+        prog_ids = cls._com_prog_ids(suffix) if suffix else _COM_PROG_IDS
+        if not prog_ids:
+            return False
 
-        # 优先注册表探测
         try:
             import winreg
         except ImportError:
-            winreg = None
-
-        if winreg is not None:
-            try:
-                for prog_id in prog_ids:
-                    try:
-                        winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, prog_id)
-                        return True
-                    except OSError:
-                        continue
-            except Exception as e:
-                debug(f"[OfficeConverter] 注册表探测 COM 异常: {e}")
-                return False
-
-        # 回退：COM Dispatch 探测（可能短暂启动隐藏实例）
-        try:
-            import win32com.client
-        except Exception:
             return False
 
-        app = None
-        for prog_id in prog_ids:
-            try:
-                app = win32com.client.Dispatch(prog_id)
-                return True
-            except Exception:
-                continue
-            finally:
-                if app is not None:
-                    try:
-                        app.Quit()
-                    except Exception as exc:
-                        debug(f"COM 应用退出失败（可能存在残留进程）：{exc}")
-                    app = None
+        access_modes = [0]
+        for name in ("KEY_WOW64_64KEY", "KEY_WOW64_32KEY"):
+            flag = getattr(winreg, name, 0)
+            if flag and flag not in access_modes:
+                access_modes.append(flag)
 
+        for prog_id in prog_ids:
+            for access in access_modes:
+                try:
+                    winreg.OpenKey(
+                        winreg.HKEY_CLASSES_ROOT,
+                        prog_id,
+                        0,
+                        winreg.KEY_READ | access,
+                    )
+                    return True
+                except OSError:
+                    continue
+                except Exception as e:  # noqa: BLE001 - 探测异常视为不可用
+                    debug(
+                        f"[OfficeConverter] 注册表探测 {prog_id} 异常: {e}"
+                    )
+                    continue
         return False
 
     # ── 分派内部实现 ─────────────────────────────────────────────────
@@ -468,13 +630,14 @@ class OfficeConverter:
         尝试单个 *backend*：先探测可用性，可用则调用对应转换方法。
 
         探测函数抛出的任何异常都在此捕获并视为不可用（返回 ``None``，
-        由调用方降级到下一级），绝不向上传播。纯 Python 后端在 T4 阶段
-        恒可用（占位实现，T7 替换为真实提取并在依赖缺失时返回 ``None``）。
+        由调用方降级到下一级），绝不向上传播。纯 Python 后端不参与
+        能力探测：docx/pptx 直接尝试，依赖缺失时返回错误结果，由
+        ``convert()`` 继续聚合或降级。
 
         Parameters
         ----------
         backend : str
-            ``"libreoffice"`` / ``"com"`` / ``"pure-python"``。
+            ``"com"`` / ``"libreoffice"`` / ``"pure-python"``。
         file_info : dict
             与 ``convert()`` 一致的文件信息。
         suffix : str
@@ -497,7 +660,7 @@ class OfficeConverter:
 
         if backend == "com":
             try:
-                available = cls._com_available()
+                available = cls._com_available(suffix)
             except Exception as e:
                 warning(f"[OfficeConverter] COM 探测异常，视为不可用: {e}")
                 available = False
@@ -597,15 +760,24 @@ class OfficeConverter:
                     str(path),
                 ]
 
+                command_text = " ".join(command)
                 try:
                     proc = subprocess.Popen(
                         command,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
+                        **_hidden_subprocess_kwargs(),
                     )
                 except Exception as e:
                     warning(f"[OfficeConverter] LibreOffice 启动失败: {e}")
-                    return _lo_error_result(f"LibreOffice 转换失败：{e}")
+                    return _lo_error_result(
+                        f"LibreOffice 转换失败：{e}",
+                        detail=(
+                            f"命令：{command_text}\n"
+                            f"二进制：{binary}\n"
+                            f"异常：{e!r}"
+                        ),
+                    )
 
                 # T9 取消 seam：句柄注册到当前线程，成功/失败都必须清理。
                 _ACTIVE_LO_POPEN[thread_id] = proc
@@ -616,16 +788,31 @@ class OfficeConverter:
                         _terminate_lo_process(proc)
                         return _lo_error_result(
                             f"LibreOffice 转换超时（超过 {timeout} 秒），"
-                            "已终止 soffice 进程"
+                            "已终止 soffice 进程",
+                            detail=(
+                                f"命令：{command_text}\n"
+                                f"超时：{timeout} 秒\n"
+                                f"输出目录：{out_dir}"
+                            ),
                         )
                     if proc.returncode != 0:
                         return _lo_error_result(
                             "LibreOffice 转换失败：soffice 退出码 "
-                            f"{proc.returncode}"
+                            f"{proc.returncode}",
+                            detail=(
+                                f"命令：{command_text}\n"
+                                f"退出码：{proc.returncode}\n"
+                                f"输出目录：{out_dir}"
+                            ),
                         )
                     if not output_pdf.is_file() or output_pdf.stat().st_size == 0:
                         return _lo_error_result(
-                            "LibreOffice 转换失败：soffice 退出但未生成 PDF 文件"
+                            "LibreOffice 转换失败：soffice 退出但未生成 PDF 文件",
+                            detail=(
+                                f"命令：{command_text}\n"
+                                f"期望输出：{output_pdf}\n"
+                                f"输出目录：{out_dir}"
+                            ),
                         )
                     return ConversionResult(
                         content_type="pdf",
@@ -661,11 +848,17 @@ class OfficeConverter:
         使用，不做品牌区分。
 
         pywin32（pythoncom / win32com.client）惰性导入只在方法内部；
-        导入失败返回错误结果。自动化设置：``DisplayAlerts=False``（真实 QA
-        验证 PowerPoint 接受）、``Visible=False``（仅 Word/Excel 允许，PowerPoint
-        禁止隐藏主窗口故改用 ``WindowState=2`` 最小化）、``ReadOnly=True``；
-        ``app.Quit()`` 收尾在 ``finally``。PowerPoint 换用 ``SaveAs(路径, 32)``
-        （真实 QA 验证 win32com 动态分派不接受 ``PrintRange`` 参数）。
+        导入失败返回错误结果。自动化设置：``DispatchEx`` 优先（独立实例，
+        不劫持用户已打开的 Office 窗口）、``Visible=False``（仅 Word/Excel
+        稳定允许；PowerPoint 禁止隐藏主窗口，改为尽力尝试 + ``WindowState=2``
+        最小化）、``ReadOnly=True``、``AutomationSecurity=3``（禁用宏）；
+        ``app.Quit()`` 收尾在 ``finally``。
+
+        PowerPoint 导出 PDF 使用 ``SaveAs(路径, 32)``：无窗口打开时先直接
+        保存；若特定版本/文件在 ``WithWindow=False`` 下拒绝保存，则关闭后
+        以“有窗口 + 最小化”重新打开再试一次。零幻灯片 pptx 会在 ``convert()``
+        入口被离线预检拦截，根本不会拉起 PowerPoint（PowerPoint 无法导出
+        没有幻灯片的演示文稿）。
 
         Parameters
         ----------
@@ -715,8 +908,13 @@ class OfficeConverter:
                 results.append(
                     cls._com_convert_in_task(path, suffix, task_started_at)
                 )
-            except Exception as e:
-                results.append(cls._com_error_result(f"COM 转换失败：{e}"))
+            except Exception as e:  # noqa: BLE001 - 任务线程兜底
+                results.append(
+                    cls._com_error_result(
+                        f"COM 转换失败：{e}",
+                        detail=traceback.format_exc(),
+                    )
+                )
             finally:
                 pythoncom.CoUninitialize()
 
@@ -733,7 +931,7 @@ class OfficeConverter:
         return results[0]
 
     @staticmethod
-    def _com_error_result(message: str) -> ConversionResult:
+    def _com_error_result(message: str, *, detail: str = "") -> ConversionResult:
         """
         生成 COM 后端的错误结果（``content_type="error"``）。
 
@@ -741,17 +939,21 @@ class OfficeConverter:
         ----------
         message : str
             明确的中文错误提示文案。
+        detail : str
+            面向排障的技术详情（HRESULT / 阶段 / 输出路径等）。
 
         Returns
         -------
         ConversionResult
-            ``backend_used="error"`` 的错误结果。
+            ``backend_used="error"`` 且携带失败后端标识的错误结果。
         """
         return ConversionResult(
             content_type="error",
             content="",
             backend_used="error",
             message=message,
+            detail=detail,
+            failed_backend="com",
         )
 
     @classmethod
@@ -779,72 +981,109 @@ class OfficeConverter:
         Returns
         -------
         ConversionResult
-            成功返回 ``content`` 为产物 PDF 的 ``Path``；失败返回错误结果。
+            成功返回 ``content`` 为产物 PDF 的 ``Path``；失败返回错误结果，
+            ``detail`` 含可复制的阶段 / HRESULT / 描述。
         """
         import win32com.client  # noqa: PLC0415
 
         prog_ids = cls._com_prog_ids(suffix)
         if not prog_ids:
-            return cls._com_error_result(f"COM 转换失败：不支持的后缀 {suffix}")
+            return cls._com_error_result(
+                f"COM 转换失败：不支持的后缀 {suffix}",
+                detail=f"不受支持的 Office 后缀：{suffix}",
+            )
+
+        out_dir = Path(tempfile.gettempdir())
+        out_dir.mkdir(parents=True, exist_ok=True)
+        output = out_dir / (
+            f"{cls._safe_output_stem(path)}_com_{uuid.uuid4().hex}.pdf"
+        )
 
         app = None
         document = None
+        stage = "启动 Office"
+        extra_details: list[str] = []
+        conversion_failed = False
         try:
             # Metis C4：按顺序尝试 ProgID，任一成功即使用。
+            dispatch_errors: list[str] = []
             for prog_id in prog_ids:
                 try:
-                    app = win32com.client.Dispatch(prog_id)
+                    app = cls._dispatch_office_app(win32com.client, prog_id)
                     break
                 except Exception as e:
                     warning(f"[OfficeConverter] COM 启动 {prog_id} 失败: {e}")
+                    dispatch_errors.append(f"{prog_id}: {e!r}")
             if app is None:
                 return cls._com_error_result(
-                    "COM 转换失败：未能启动 MS Office/WPS（请确认已安装）"
+                    "COM 转换失败：未能启动 MS Office/WPS（请确认已安装）",
+                    detail="\n".join(dispatch_errors)
+                    or "所有候选 ProgID 均无法实例化",
                 )
 
-            app.DisplayAlerts = False
-            if suffix in ("ppt", "pptx"):
-                # PowerPoint 禁止隐藏主窗口（COM 异常 -2147352567 ...
-                # "Application.Visible : Invalid request. Hiding the
-                # application window is not allowed."）。改用最小化窗口
-                # 替代（ppWindowMinimized = 2），既不弹大窗口也不违反
-                # PowerPoint 的限制（真实 QA 验证合法）。
-                app.WindowState = 2
-            else:
-                app.Visible = False
+            stage = "配置 Office 实例"
+            cls._configure_office_app(app, suffix)
 
-            out_dir = Path(tempfile.gettempdir())
-            out_dir.mkdir(parents=True, exist_ok=True)
-            output = out_dir / f"{Path(path).stem}_com_{uuid.uuid4().hex}.pdf"
+            stage = "打开文档"
+            document = cls._open_com_document(app, path, suffix)
 
+            stage = "导出 PDF"
             if suffix in ("doc", "docx"):
-                document = app.Documents.Open(
-                    path,
-                    ReadOnly=True,
-                )
                 # wdExportFormatPDF = 17
                 document.ExportAsFixedFormat(str(output), 17)
             elif suffix in ("xls", "xlsx"):
-                document = app.Workbooks.Open(
-                    path,
-                    ReadOnly=True,
-                    UpdateLinks=0,
-                )
-                # xlTypePDF = 0
-                document.ActiveSheet.ExportAsFixedFormat(0, str(output))
+                # xlTypePDF = 0。Workbook 级导出，避免只导出当前工作表。
+                document.ExportAsFixedFormat(0, str(output))
             else:  # ppt / pptx
-                document = app.Presentations.Open(
-                    path,
-                    ReadOnly=True,
-                    WithWindow=False,
-                )
                 # ppSaveAsPDF = 32。真实 QA 验证：win32com 动态分派对
                 # PowerPoint 的 SaveAs 没有 PrintRange 参数（传它报
                 # "unexpected keyword argument 'PrintRange'"），故不传。
-                document.SaveAs(str(output), 32)
+                try:
+                    document.SaveAs(str(output), 32)
+                except Exception as first_error:
+                    warning(
+                        "[OfficeConverter] PowerPoint 无窗口 SaveAs 失败，"
+                        f"尝试带窗口重试: {first_error}"
+                    )
+                    extra_details.append(
+                        "无窗口 SaveAs 失败：\n"
+                        + cls._format_com_error(
+                            first_error,
+                            stage="导出 PDF（无窗口 SaveAs）",
+                            source_path=path,
+                            output_path=str(output),
+                        )
+                    )
+                    # 部分 PowerPoint 版本/文件在 WithWindow=False 下拒绝保存。
+                    # 关闭后以“有窗口 + 最小化”重新打开再试一次；窗口只在
+                    # 首次失败时短暂出现，正常文件不会走到这里。
+                    cls._close_com_document(document, suffix)
+                    document = None
+                    document = app.Presentations.Open(
+                        path,
+                        ReadOnly=True,
+                        Untitled=False,
+                        WithWindow=True,
+                    )
+                    try:
+                        app.WindowState = 2
+                    except Exception as exc:  # noqa: BLE001
+                        debug(
+                            "设置 PowerPoint WindowState 失败（忽略）: "
+                            f"{exc}"
+                        )
+                    document.SaveAs(str(output), 32)
 
             if not output.is_file() or output.stat().st_size == 0:
-                return cls._com_error_result("COM 转换失败：未生成 PDF 产物")
+                return cls._com_error_result(
+                    "COM 转换失败：未生成 PDF 产物",
+                    detail=cls._com_error_detail(
+                        stage=stage,
+                        source_path=path,
+                        output_path=output,
+                        extra="\n".join(extra_details),
+                    ),
+                )
 
             return ConversionResult(
                 content_type="pdf",
@@ -852,20 +1091,235 @@ class OfficeConverter:
                 backend_used="com",
             )
         except Exception as e:
+            conversion_failed = True
             warning(f"[OfficeConverter] COM 转换异常: {e}")
-            return cls._com_error_result(f"COM 转换失败：{e}")
+            return cls._com_error_result(
+                cls._com_friendly_message(suffix, stage),
+                detail=cls._format_com_error(
+                    e,
+                    stage=stage,
+                    source_path=path,
+                    output_path=str(output),
+                    extra="\n".join(extra_details),
+                ),
+            )
         finally:
-            if document is not None:
-                try:
-                    document.Close(False)
-                except Exception as exc:
-                    debug(f"COM 文档关闭失败（可能存在文件占用）：{exc}")
+            cls._close_com_document(document, suffix)
+            quit_failed = False
             if app is not None:
                 try:
                     app.Quit()
                 except Exception as exc:
+                    quit_failed = True
                     debug(f"COM 应用退出失败（可能存在残留进程）：{exc}")
-            cls._cleanup_orphan_processes(task_started_at)
+            # 成功且 Quit 正常时不启动 PowerShell：既省一次子进程开销，
+            # 也降低误伤用户同时打开的 Office 进程的概率。
+            if conversion_failed or quit_failed:
+                cls._cleanup_orphan_processes(task_started_at)
+
+    @staticmethod
+    def _dispatch_office_app(client: Any, prog_id: str) -> Any:
+        """优先 ``DispatchEx`` 创建独立实例，失败时回退 ``Dispatch``。
+
+        ``DispatchEx`` 不会复用用户已打开的 Office 实例，避免把用户的窗口
+        ``Visible=False`` 或 ``Quit()`` 掉；部分 WPS 版本不支持时回退。
+
+        Parameters
+        ----------
+        client : Any
+            ``win32com.client`` 模块。
+        prog_id : str
+            目标 ProgID。
+
+        Returns
+        -------
+        Any
+            已创建的 COM Application 对象。
+        """
+        dispatch_ex = getattr(client, "DispatchEx", None)
+        if callable(dispatch_ex):
+            try:
+                return dispatch_ex(prog_id)
+            except Exception as exc:  # noqa: BLE001 - 回退 Dispatch
+                debug(f"DispatchEx({prog_id}) 失败，回退 Dispatch: {exc}")
+        return client.Dispatch(prog_id)
+
+    @staticmethod
+    def _configure_office_app(app: Any, suffix: str) -> None:
+        """设置隐藏 / 静默 / 禁用宏等 automation 属性。
+
+        PowerPoint 禁止 ``Visible=False``，失败只记调试日志；Word/Excel
+        则必须尽快隐藏。所有属性设置均为 best-effort，不因单个属性失败
+        中断转换。
+        """
+        if suffix in ("ppt", "pptx"):
+            # PowerPoint 禁止 Visible=False（会抛 "Hiding the application
+            # window is not allowed."），只做最小化；演示文稿本身用
+            # WithWindow=False 打开，不会出现编辑窗口。
+            try:
+                app.WindowState = 2  # ppWindowMinimized
+            except Exception as exc:  # noqa: BLE001
+                debug(f"设置 PowerPoint WindowState 失败（忽略）: {exc}")
+            try:
+                app.DisplayAlerts = 1  # ppAlertsNone
+            except Exception as exc:  # noqa: BLE001
+                debug(f"设置 PowerPoint DisplayAlerts 失败（忽略）: {exc}")
+        else:
+            # Word/Excel 支持隐藏主窗口；尽早设置，避免窗口停留。
+            try:
+                app.Visible = False
+            except Exception as exc:  # noqa: BLE001
+                debug(f"设置 Office Visible=False 失败（忽略）: {exc}")
+            try:
+                app.DisplayAlerts = False
+            except Exception as exc:  # noqa: BLE001
+                debug(f"设置 Office DisplayAlerts 失败（忽略）: {exc}")
+
+        # msoAutomationSecurityForceDisable = 3：预览不受信任文档时不执行宏。
+        try:
+            app.AutomationSecurity = 3
+        except Exception as exc:  # noqa: BLE001
+            debug(f"设置 Office AutomationSecurity 失败（忽略）: {exc}")
+
+    @staticmethod
+    def _open_com_document(app: Any, path: str, suffix: str) -> Any:
+        """按格式打开文档（只读），返回 Document / Workbook / Presentation。"""
+        if suffix in ("doc", "docx"):
+            return app.Documents.Open(path, ReadOnly=True)
+        if suffix in ("xls", "xlsx"):
+            return app.Workbooks.Open(path, ReadOnly=True, UpdateLinks=0)
+        return app.Presentations.Open(
+            path,
+            ReadOnly=True,
+            Untitled=False,
+            WithWindow=False,
+        )
+
+    @staticmethod
+    def _close_com_document(document: Any, suffix: str) -> None:
+        """按格式关闭文档。
+
+        PowerPoint 的 ``Presentation.Close`` **不接受参数**；旧实现统一传
+        ``False`` 会静默失败，导致演示文稿未关闭、``Quit()`` 退出不干净。
+        """
+        if document is None:
+            return
+        try:
+            if suffix in ("ppt", "pptx"):
+                document.Close()
+            else:
+                document.Close(False)
+        except Exception as exc:  # noqa: BLE001 - 关闭失败仅记录
+            debug(f"COM 文档关闭失败（可能存在文件占用）：{exc}")
+
+    @staticmethod
+    def _safe_output_stem(path: str) -> str:
+        """截断并清理源文件名，避免 MAX_PATH / 非法字符导致导出失败。"""
+        stem = Path(path).stem or "office"
+        cleaned = "".join(
+            ch if ch not in '<>:"/\\|?*' else "_" for ch in stem
+        )
+        return cleaned[:40] or "office"
+
+    @staticmethod
+    def _com_error_detail(
+        *,
+        stage: str,
+        source_path: str,
+        output_path: Path,
+        extra: str = "",
+    ) -> str:
+        """构造“未生成产物”类错误的技术详情。"""
+        lines = [
+            f"阶段：{stage}",
+            f"源文件：{source_path}",
+            f"输出文件：{output_path}",
+        ]
+        if extra:
+            lines.extend(["", extra])
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_com_error(
+        exc: BaseException,
+        *,
+        stage: str,
+        source_path: str = "",
+        output_path: str = "",
+        extra: str = "",
+    ) -> str:
+        """把 ``pywintypes.com_error`` 格式化为可复制的中文诊断块。
+
+        ``com_error.args`` 的典型结构为
+        ``(hresult, strerror, excepinfo, argerror)``，其中 ``excepinfo``
+        为 ``(wCode, source, description, helpFile, helpContext, scode)``。
+        非 COM 异常也能安全处理（只输出 ``repr``）。
+        """
+        lines: list[str] = []
+        if stage:
+            lines.append(f"阶段：{stage}")
+        if source_path:
+            lines.append(f"源文件：{source_path}")
+        if output_path:
+            lines.append(f"输出文件：{output_path}")
+
+        args = getattr(exc, "args", ())
+        hresult = args[0] if len(args) > 0 else None
+        text = args[1] if len(args) > 1 else None
+        excepinfo = args[2] if len(args) > 2 else None
+        argerror = args[3] if len(args) > 3 else None
+
+        if isinstance(hresult, int):
+            lines.append(f"HRESULT：0x{hresult & 0xFFFFFFFF:08X}")
+        if text:
+            lines.append(f"错误说明：{text}")
+        if isinstance(excepinfo, (tuple, list)):
+            fields = list(excepinfo) + [None] * 6
+            code, source, description, help_file, help_context, scode = (
+                fields[:6]
+            )
+            if code:
+                lines.append(f"异常代码：{code}")
+            if source:
+                lines.append(f"来源：{source}")
+            if description:
+                lines.append(f"描述：{description}")
+            if help_file:
+                lines.append(f"帮助文件：{help_file}")
+            if help_context:
+                lines.append(f"帮助上下文：{help_context}")
+            if isinstance(scode, int):
+                lines.append(f"内部错误码：0x{scode & 0xFFFFFFFF:08X}")
+        if argerror:
+            lines.append(f"参数错误：{argerror}")
+        lines.append(f"原始异常：{exc!r}")
+        if extra:
+            lines.extend(["", extra])
+        return "\n".join(lines)
+
+    @staticmethod
+    def _com_friendly_message(suffix: str, stage: str) -> str:
+        """把失败阶段翻译成面向用户的中文短消息。"""
+        app_name = {
+            "doc": "Word",
+            "docx": "Word",
+            "xls": "Excel",
+            "xlsx": "Excel",
+            "ppt": "PowerPoint",
+            "pptx": "PowerPoint",
+        }.get(suffix, "Office")
+        if stage == "启动 Office":
+            return f"COM 转换失败：无法启动 {app_name}（请确认已安装并激活）"
+        if stage == "配置 Office 实例":
+            return f"COM 转换失败：{app_name} 初始化失败"
+        if stage == "打开文档":
+            return (
+                f"COM 转换失败：{app_name} 无法打开该文档"
+                "（可能已损坏、被占用或受保护）"
+            )
+        if stage == "导出 PDF":
+            return f"COM 转换失败：{app_name} 导出 PDF 失败"
+        return f"COM 转换失败：{app_name} 转换失败"
 
     @staticmethod
     def _com_prog_ids(suffix: str) -> tuple[str, ...]:
@@ -928,6 +1382,7 @@ class OfficeConverter:
                 capture_output=True,
                 timeout=15,
                 check=False,
+                **_hidden_subprocess_kwargs(),
             )
             if stdout.returncode != 0:
                 debug(
@@ -945,12 +1400,12 @@ class OfficeConverter:
         suffix: str,
     ) -> ConversionResult:
         """
-        纯 Python 后端：docx→HTML、pptx→大纲；失败时返回错误结果。
+        纯 Python 后端：docx→HTML、pptx→大纲、xlsx→HTML 表格。
 
-        仅当 LibreOffice 与 COM 均不可用时被调用（现代格式 docx/pptx）。
-        全部第三方库（mammoth / python-pptx）都在各方法内部按需惰性导入
-        （Metis B4-4）—— 模块加载不依赖任何 Office 库。xlsx 不支持纯
-        Python 降级（预览只保留 PDF 视图），不会分派到本方法。
+        仅在 LibreOffice 与 COM 均不可用或转换失败后被调用（现代格式
+        docx/pptx/xlsx）。全部第三方库（mammoth / python-pptx / openpyxl）
+        都在各方法内部按需惰性导入（Metis B4-4）—— 模块加载不依赖任何
+        Office 库。
 
         Parameters
         ----------
@@ -964,6 +1419,7 @@ class OfficeConverter:
         ConversionResult
             - docx：``content_type="html"``，``content`` 为 mammoth 生成的 HTML 字符串；
             - pptx：``content_type="outline"``，``content`` 为逐页纯文本大纲；
+            - xlsx：``content_type="html"``，``content`` 为 HTML 表格（含 sheet 名）；
             - 其他后缀（防御性兜底，正常分派不会到达）：错误结果；
             - 依赖缺失 / 解析失败：``backend_used="error"`` 的错误结果，绝不抛出；
             - 文件缺失 / 路径无效：保持 ``content_type`` 与 ``backend_used`` 的
@@ -973,12 +1429,15 @@ class OfficeConverter:
             return cls._pure_python_docx(file_info)
         if suffix == "pptx":
             return cls._pure_python_pptx(file_info)
-        # 其他后缀（doc/xls/ppt/xlsx）或未知后缀的防御性兜底 —— 正常分派不会走到这里。
+        if suffix == "xlsx":
+            return cls._pure_python_xlsx(file_info)
+        # 其他后缀（doc/xls/ppt）或未知后缀的防御性兜底 —— 正常分派不会走到这里。
         return ConversionResult(
             content_type="error",
             content="",
             backend_used="pure-python",
             message=ERROR_MESSAGE,
+            failed_backend="pure-python",
         )
 
     # ── 纯 Python 后端各格式实现（T7；所有第三方库导入均为惰性） ───────
@@ -1010,14 +1469,18 @@ class OfficeConverter:
         except ImportError:
             warning("[OfficeConverter] mammoth 不可用，docx 纯 Python 降级失败")
             return cls._pure_python_error_result(
-                "无法预览 docx 文档：缺少 mammoth 库，请安装依赖后重试"
+                "无法预览 docx 文档：缺少 mammoth 库，请安装依赖后重试",
+                detail="ImportError: mammoth",
             )
 
         try:
             converted = mammoth.convert_to_html(path)
         except Exception as e:
             warning(f"[OfficeConverter] docx 转换失败: {e}")
-            return cls._pure_python_error_result(f"docx 文档解析失败：{e}")
+            return cls._pure_python_error_result(
+                f"docx 文档解析失败：{e}",
+                detail=traceback.format_exc(),
+            )
 
         return ConversionResult(
             content_type="html",
@@ -1054,16 +1517,28 @@ class OfficeConverter:
         except ImportError:
             warning("[OfficeConverter] python-pptx 不可用，pptx 纯 Python 降级失败")
             return cls._pure_python_error_result(
-                "无法预览 pptx 演示文稿：缺少 python-pptx 库，请安装依赖后重试"
+                "无法预览 pptx 演示文稿：缺少 python-pptx 库，请安装依赖后重试",
+                detail="ImportError: python-pptx",
             )
 
         try:
             presentation = Presentation(path)
         except Exception as e:
             warning(f"[OfficeConverter] pptx 解析失败: {e}")
-            return cls._pure_python_error_result(f"pptx 文件解析失败：{e}")
+            return cls._pure_python_error_result(
+                f"pptx 文件解析失败：{e}",
+                detail=traceback.format_exc(),
+            )
+
+        if len(presentation.slides) == 0:
+            return ConversionResult(
+                content_type="outline",
+                content="该演示文稿没有幻灯片。",
+                backend_used="pure-python",
+            )
 
         pages: list[str] = []
+        has_text = False
         for page_no, slide in enumerate(presentation.slides, start=1):
             lines: list[str] = []
             for shape in slide.shapes:
@@ -1073,12 +1548,251 @@ class OfficeConverter:
                     text = "".join(run.text for run in paragraph.runs).strip()
                     if text:
                         lines.append(text)
+            if lines:
+                has_text = True
             pages.append(f"--- 第 {page_no} 页 ---\n" + "\n".join(lines))
+
+        if not has_text:
+            return cls._pure_python_error_result(
+                "pptx 中未找到可预览的文本内容（可能是纯图片幻灯片）"
+            )
 
         return ConversionResult(
             content_type="outline",
             content="\n\n".join(pages),
             backend_used="pure-python",
+        )
+
+    @classmethod
+    def _pure_python_xlsx(cls, file_info: dict) -> ConversionResult:
+        """xlsx → HTML 表格（openpyxl）。失败时返回结果而不抛出。
+
+        只读取单元格值（``data_only=True``），不执行公式、不保留图表 /
+        图片 / 合并单元格版式。超大工作簿按模块级上限截断，避免阻塞 UI。
+
+        Parameters
+        ----------
+        file_info : dict
+            含 ``"path"`` 的文件信息。
+
+        Returns
+        -------
+        ConversionResult
+            ``content_type="html"`` 且 ``content`` 为 HTML 表格；
+            依赖缺失 / 解析失败时为错误结果，绝不抛出。
+        """
+        path = cls._extract_path(file_info)
+        if path is None:
+            return cls._degraded_result("xlsx", "未提供有效的文件路径")
+        if not Path(path).is_file():
+            return cls._degraded_result("xlsx", f"文件不存在或不可读：{path}")
+
+        try:
+            import openpyxl
+        except ImportError:
+            warning("[OfficeConverter] openpyxl 不可用，xlsx 纯 Python 降级失败")
+            return cls._pure_python_error_result(
+                "无法预览 xlsx 表格：缺少 openpyxl 库，请安装依赖后重试",
+                detail="ImportError: openpyxl",
+            )
+
+        try:
+            workbook = openpyxl.load_workbook(
+                path,
+                read_only=True,
+                data_only=True,
+            )
+        except Exception as e:
+            warning(f"[OfficeConverter] xlsx 解析失败: {e}")
+            return cls._pure_python_error_result(
+                f"xlsx 文件解析失败：{e}",
+                detail=traceback.format_exc(),
+            )
+
+        try:
+            html_content = cls._render_xlsx_html(workbook)
+        except Exception as e:
+            warning(f"[OfficeConverter] xlsx 表格渲染失败: {e}")
+            return cls._pure_python_error_result(
+                f"xlsx 表格渲染失败：{e}",
+                detail=traceback.format_exc(),
+            )
+        finally:
+            try:
+                workbook.close()
+            except Exception as exc:  # noqa: BLE001 - 关闭失败仅记录
+                debug(f"[OfficeConverter] 关闭 xlsx 工作簿失败（忽略）: {exc}")
+
+        return ConversionResult(
+            content_type="html",
+            content=html_content,
+            backend_used="pure-python",
+        )
+
+    @classmethod
+    def _render_xlsx_html(cls, workbook: Any) -> str:
+        """把 openpyxl 工作簿渲染为受限的 HTML 表格。
+
+        每个可见工作表渲染为一张表：首行按表头加粗，空单元格用
+        ``&nbsp;`` 保持网格。超过 ``XLSX_MAX_PREVIEW_*`` 上限时截断并
+        追加提示，避免超大工作簿拖垮 QTextBrowser。
+        """
+        row_limit = max(1, int(XLSX_MAX_PREVIEW_ROWS))
+        col_limit = max(1, int(XLSX_MAX_PREVIEW_COLS))
+        sheet_limit = max(1, int(XLSX_MAX_PREVIEW_SHEETS))
+        cell_limit = max(1, int(XLSX_MAX_PREVIEW_CELLS))
+
+        parts: list[str] = [
+            '<div style="font-family: sans-serif;">',
+            '<p style="font-size: 12px;">'
+            "纯 Python 表格预览：公式显示缓存值，图表 / 图片 / "
+            "合并单元格版式不保留。"
+            "</p>",
+        ]
+        rendered_sheets = 0
+        total_cells = 0
+        stopped_for_cells = False
+
+        for worksheet in workbook.worksheets:
+            if getattr(worksheet, "sheet_state", "visible") != "visible":
+                continue
+            if rendered_sheets >= sheet_limit:
+                parts.append(
+                    f'<p style="font-size: 12px;">仅显示前 {sheet_limit} 个工作表，'
+                    "完整内容请安装 LibreOffice 或使用 Excel 查看。</p>"
+                )
+                break
+
+            rendered_sheets += 1
+            parts.append(
+                f"<h3>工作表：{html.escape(str(worksheet.title))}</h3>"
+            )
+            rows_html: list[str] = []
+            row_truncated = False
+            col_truncated = False
+            sheet_has_value = False
+
+            # read_only 模式下 max_column / max_row 有时为 None：有值时按实际
+            # 范围渲染，避免把 3 列的小表渲染成 50 列空白网格；无值时逐行
+            # 去掉尾部空单元格。
+            sheet_max_col = getattr(worksheet, "max_column", None) or 0
+            sheet_max_row = getattr(worksheet, "max_row", None) or 0
+            if sheet_max_col > col_limit:
+                col_truncated = True
+            if sheet_max_row > row_limit:
+                row_truncated = True
+            effective_cols = min(sheet_max_col, col_limit) if sheet_max_col else 0
+
+            iter_kwargs: dict = {
+                "min_row": 1,
+                "min_col": 1,
+                "values_only": True,
+            }
+            if effective_cols > 0:
+                iter_kwargs["max_col"] = effective_cols
+            if sheet_max_row > 0:
+                iter_kwargs["max_row"] = min(sheet_max_row, row_limit)
+
+            for row_index, row in enumerate(
+                worksheet.iter_rows(**iter_kwargs),
+                start=1,
+            ):
+                if row_index > row_limit:
+                    row_truncated = True
+                    break
+                if total_cells >= cell_limit:
+                    stopped_for_cells = True
+                    break
+
+                values = list(row)
+                if len(values) > col_limit:
+                    values = values[:col_limit]
+                    col_truncated = True
+                if sheet_max_col == 0:
+                    while values and (
+                        values[-1] is None or str(values[-1]) == ""
+                    ):
+                        values.pop()
+                remaining = cell_limit - total_cells
+                if len(values) > remaining:
+                    values = values[:remaining]
+                    stopped_for_cells = True
+                total_cells += len(values)
+                if any(
+                    value is not None and str(value) != ""
+                    for value in values
+                ):
+                    sheet_has_value = True
+
+                tag = "th" if row_index == 1 else "td"
+                cells_html = "".join(
+                    f"<{tag}>{cls._xlsx_cell_html(value)}</{tag}>"
+                    for value in values
+                )
+                if not cells_html:
+                    cells_html = "<td>&nbsp;</td>"
+                rows_html.append(f"<tr>{cells_html}</tr>")
+
+                if stopped_for_cells:
+                    break
+
+            if rows_html and sheet_has_value:
+                parts.append(
+                    '<table border="1" cellspacing="0" cellpadding="4">'
+                    + "".join(rows_html)
+                    + "</table>"
+                )
+            else:
+                parts.append("<p>（空工作表）</p>")
+
+            if row_truncated and col_truncated:
+                scope = f"{row_limit} 行 × {col_limit} 列"
+            elif row_truncated:
+                scope = f"{row_limit} 行"
+            elif col_truncated:
+                scope = f"{col_limit} 列"
+            else:
+                scope = ""
+            if scope:
+                parts.append(
+                    f'<p style="font-size: 12px;">仅显示前 {scope}，'
+                    "完整内容请安装 LibreOffice 或使用 Excel 查看。</p>"
+                )
+            if stopped_for_cells:
+                parts.append(
+                    '<p style="font-size: 12px;">内容过多，仅显示前 '
+                    f"{cell_limit} 个单元格，完整内容请安装 LibreOffice "
+                    "或使用 Excel 查看。</p>"
+                )
+                break
+
+        if rendered_sheets == 0:
+            parts.append("<p>工作簿没有可见工作表。</p>")
+
+        parts.append("</div>")
+        return "".join(parts)
+
+    @staticmethod
+    def _xlsx_cell_html(value: Any) -> str:
+        """把单元格值转成安全的 HTML 片段（空值用 ``&nbsp;`` 保持网格）。"""
+        if value is None:
+            return "&nbsp;"
+        if isinstance(value, datetime):
+            text = value.isoformat(sep=" ")
+        elif hasattr(value, "isoformat"):
+            try:
+                text = value.isoformat()
+            except Exception:  # noqa: BLE001 - 非标准日期对象退回 str
+                text = str(value)
+        else:
+            text = str(value)
+        if not text:
+            return "&nbsp;"
+        text = html.escape(text)
+        return (
+            text.replace("\r\n", "\n")
+            .replace("\r", "")
+            .replace("\n", "<br>")
         )
 
     @staticmethod
@@ -1136,7 +1850,11 @@ class OfficeConverter:
         )
 
     @staticmethod
-    def _pure_python_error_result(message: str) -> ConversionResult:
+    def _pure_python_error_result(
+        message: str,
+        *,
+        detail: str = "",
+    ) -> ConversionResult:
         """
         依赖缺失或解析失败时的错误结果（``backend_used="error"``）。
 
@@ -1144,6 +1862,8 @@ class OfficeConverter:
         ----------
         message : str
             明确的错误提示文案（中文）。
+        detail : str
+            面向排障的技术详情（异常堆栈 / 缺失依赖名等）。
 
         Returns
         -------
@@ -1155,6 +1875,8 @@ class OfficeConverter:
             content="",
             backend_used="error",
             message=message,
+            detail=detail,
+            failed_backend="pure-python",
         )
 
     # ── 错误 / 提示结果 ───────────────────────────────────────────────
@@ -1162,8 +1884,8 @@ class OfficeConverter:
     @classmethod
     def _error_backend(cls, suffix: str) -> ConversionResult:
         """
-        legacy 格式（doc/xls/ppt）与 xlsx（仅 PDF 预览）在 LO/COM 均不可用
-        时的安装提示后端。
+        仅 legacy 格式（doc/xls/ppt）在 COM/LibreOffice 均不可用时走到这里。
+        xlsx 已有纯 Python HTML 表格降级，不再返回该安装提示。
 
         Parameters
         ----------
@@ -1296,7 +2018,7 @@ class OfficeConverter:
         is_pdf_artifact = (
             result.content_type == "pdf"
             and isinstance(result.content, Path)
-            and result.backend_used in ("libreoffice", "com")
+            and result.backend_used in ("com", "libreoffice")
         )
         if not is_pdf_artifact:
             return result
@@ -1313,6 +2035,8 @@ class OfficeConverter:
             content=cached_path,
             backend_used=result.backend_used,
             message=result.message,
+            detail=result.detail,
+            failed_backend=result.failed_backend,
         )
 
     # ── 内部工具 ─────────────────────────────────────────────────────

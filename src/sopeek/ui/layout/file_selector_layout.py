@@ -3435,6 +3435,55 @@ class FileSelectorLayout(QWidget):
             return
         self._invalidate_file_rows(changed_rows)
 
+    # ── 焦点管理 ────────────────────────────────────────────────────────────
+
+    def focus_file_list(self) -> None:
+        """把键盘焦点交给文件列表（窗口激活/弹窗关闭后的默认落点）。
+
+        主窗口从「无焦点」状态重新激活时，Qt 会按 Tab 顺序自动聚焦第一个
+        可聚焦控件；本组件的路径框恰好是主窗口内第一个可聚焦控件，容易在
+        设置窗/对话框关闭后被被动聚焦。``MainWindow`` 在激活兜底中调用本
+        方法，把默认落点固定到文件列表。
+
+        幂等且防御：文件列表尚未构建、不可见或禁用时静默返回。
+        """
+        file_list = getattr(self, "_file_list", None)
+        if file_list is None:
+            return
+        try:
+            if not file_list.isVisible() or not file_list.isEnabled():
+                return
+            file_list.setFocus(Qt.ActiveWindowFocusReason)
+        except RuntimeError:
+            pass
+
+    def release_path_focus_on_outside_click(self, target: QWidget) -> bool:
+        """点击路径框以外区域时释放路径框焦点。
+
+        仅当路径框仍有焦点时执行。鼠标按下前 Qt 已按 ClickFocus/StrongFocus
+        规则把焦点交给可聚焦目标；若此时路径框仍有焦点，说明点击目标是
+        NoFocus 控件（项目里大量自绘按钮）或空白区域，需要主动释放，否则
+        后续打开/关闭弹窗时 Qt 会把焦点原样还给路径框。
+
+        Args:
+            target: 本次鼠标按下的目标控件。
+
+        Returns:
+            bool: True 表示本次确实释放了路径框焦点。
+        """
+        path_input = getattr(self, "_path_input", None)
+        if path_input is None:
+            return False
+        try:
+            if target is path_input or path_input.isAncestorOf(target):
+                return False
+            if not path_input.hasFocus():
+                return False
+            path_input.clearFocus()
+            return True
+        except RuntimeError:
+            return False
+
     # ── 预览状态管理 ────────────────────────────────────────────────────────
 
     def set_previewing_file(self, file_path: str) -> None:

@@ -219,6 +219,9 @@ InstallResult InstallEngine::Run(const InstallOptions& options, InstallMode mode
 
     // ---- 1. §11：先等哨兵（必须早于预扫描）；循环每 ~100ms 检查 cancel ----
     const fs::path sentinel = PayloadSentinelPath(fs::path(payload_));
+    // NSIS 解包失败时写入的错误哨兵。优先于超时检查，让 GUI 立即显示可操作错误，
+    // 而不是让用户对着 0..50% 的进度条等满整个 payload 超时。
+    const fs::path errorSentinel = sentinel.parent_path() / L"payload.error";
     const std::uint64_t timeoutMs =
         payloadTimeoutMs_ != 0 ? payloadTimeoutMs_ : PayloadTimeoutMs();
     const auto waitStart = std::chrono::steady_clock::now();
@@ -227,6 +230,11 @@ InstallResult InstallEngine::Run(const InstallOptions& options, InstallMode mode
         if (cancel.load()) {
             result.cancelled = true;
             result.error = L"cancelled";
+            return Finalize(result, options);
+        }
+        std::error_code errorEc;
+        if (fs::exists(errorSentinel, errorEc) && !errorEc) {
+            result.error = L"payload-release-failed";
             return Finalize(result, options);
         }
         const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(

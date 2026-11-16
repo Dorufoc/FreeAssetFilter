@@ -1,9 +1,23 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $build = Join-Path $root 'build'
 # 本脚本位于 packaging/installer/，仓库根在上两级（重构前在 installer_duilib/，只上一级）。
 # 后续所有跨目录路径都以 $repoRoot 为基准，避免每处再各自数层级。
 $repoRoot = Split-Path -Parent (Split-Path -Parent $root)
+
+# CMake writes the source path as UTF-8 bytes while mingw32-make interprets them
+# with the active ANSI code page. A non-ASCII repository path therefore fails
+# halfway through the build, often without a visible error when launched by
+# double-click. Fail fast here and point users at the supported entry point.
+if ($repoRoot -match '[^\x00-\x7F]') {
+    throw @"
+检测到仓库路径包含非 ASCII 字符（中文），CMake + MinGW 无法可靠构建：
+  $repoRoot
+
+请改为双击仓库根目录的 build.cmd。它会提示中文路径不受支持，并自动切换到
+纯英文临时目录继续完成打包。
+"@
+}
 
 # Tool resolution: an explicit environment override wins, then the usual local
 # install location, then PATH. CI runners keep CMake/NSIS/MSYS2 elsewhere than this
@@ -102,6 +116,29 @@ $setupOutAbs = Join-Path $repoRoot "build\$setupFileName"
 Write-Host "Setup package: $setupFileName"
 
 # ---------------------------------------------------------------------------
+# Payload preflight MUST run before compiling the GUI. Otherwise a standalone
+# installer build produces a plausible-looking SopeekInstaller.exe and only
+# then fails with "Missing payload", which users easily mistake for the final
+# installer.
+# ---------------------------------------------------------------------------
+$payloadDir = Join-Path $repoRoot 'build\pyinstall\Sopeek'
+$payloadExe = Join-Path $payloadDir 'Sopeek.exe'
+$payloadInternal = Join-Path $payloadDir '_internal'
+if (-not (Test-Path -LiteralPath $payloadExe)) {
+    throw "Missing payload executable: $payloadExe. Run python packaging/build.py first."
+}
+if (-not (Test-Path -LiteralPath $payloadInternal)) {
+    throw "Missing payload _internal directory: $payloadInternal. Run python packaging/build.py first."
+}
+$payloadBytes = (Get-ChildItem -LiteralPath $payloadDir -Recurse -File |
+    Measure-Object -Property Length -Sum).Sum
+if ($null -eq $payloadBytes) { $payloadBytes = 0 }
+if ($payloadBytes -le 0) {
+    throw "Payload directory is empty: $payloadDir"
+}
+Write-Host "Payload: $payloadDir ($payloadBytes bytes)"
+
+# ---------------------------------------------------------------------------
 # Compile the GUI.
 # ---------------------------------------------------------------------------
 if (Test-Path (Join-Path $build 'CMakeCache.txt')) { Remove-Item -LiteralPath $build -Recurse -Force }
@@ -117,28 +154,32 @@ New-Item -ItemType Directory -Force -Path $build | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed' }
 & $cmake --build $build --config Release
 if ($LASTEXITCODE -ne 0) { throw 'CMake build failed' }
+$guiOut = Join-Path $build 'SopeekInstaller.exe'
+if (-not (Test-Path -LiteralPath $guiOut)) { throw "CMake did not produce the installer GUI: $guiOut" }
 $objdump = Join-Path $mingw 'objdump.exe'
-$deps = (& $objdump -p (Join-Path $build 'SopeekInstaller.exe') | Select-String 'DLL Name') -join "`n"
+$deps = (& $objdump -p $guiOut | Select-String 'DLL Name') -join "`n"
 if ($deps -match 'libgcc_s_seh-1|libstdc\+\+-6') { throw "Bootstrapper still depends on MSYS2 runtime:`n$deps" }
 $installerOut = Join-Path $repoRoot 'build\installer\SopeekInstaller.exe'
 $runtimeDll = Join-Path $mingw 'libwinpthread-1.dll'
 if (-not (Test-Path $runtimeDll)) { throw "Missing MinGW runtime: $runtimeDll" }
 New-Item -ItemType Directory -Force -Path (Split-Path $installerOut) | Out-Null
-Copy-Item (Join-Path $build 'SopeekInstaller.exe') $installerOut -Force
-Copy-Item $runtimeDll (Join-Path (Split-Path $installerOut) 'libwinpthread-1.dll') -Force
+Copy-Item -LiteralPath $guiOut -Destination $installerOut -Force
+Copy-Item -LiteralPath $runtimeDll `
+    -Destination (Join-Path (Split-Path $installerOut) 'libwinpthread-1.dll') -Force
 
 # ---------------------------------------------------------------------------
 # Package with NSIS.
 # ---------------------------------------------------------------------------
-# Payload size is measured HERE (before packaging) and handed to the GUI via NSIS.
-# The GUI starts before the payload is extracted, so a runtime directory scan would
-# report a partial sum; this compile-time value is the exact installed payload size.
-$payloadDir = Join-Path $repoRoot 'build\pyinstall\Sopeek'
-if (-not (Test-Path -LiteralPath $payloadDir)) { throw "Missing payload: $payloadDir" }
-$payloadBytes = (Get-ChildItem -LiteralPath $payloadDir -Recurse -File |
-    Measure-Object -Property Length -Sum).Sum
-if ($null -eq $payloadBytes) { $payloadBytes = 0 }
+# Payload size was measured before compiling the GUI and is forwarded to the
+# bootstrapper via NSIS. The GUI starts before extraction, so a runtime scan
+# would only see a partial sum.
 Write-Host "Payload bytes: $payloadBytes"
+
+# Remove the expected output first: if makensis fails silently, a stale package
+# from a previous build must not be mistaken for this run's artifact.
+if (Test-Path -LiteralPath $setupOutAbs) {
+    Remove-Item -LiteralPath $setupOutAbs -Force
+}
 
 & $nsis `
     "/DPAYLOAD_BYTES=$payloadBytes" `
@@ -148,5 +189,7 @@ Write-Host "Payload bytes: $payloadBytes"
     (Join-Path $root 'installer.nsi')
 if ($LASTEXITCODE -ne 0) { throw 'NSIS build failed' }
 if (-not (Test-Path -LiteralPath $setupOutAbs)) { throw "NSIS did not produce the expected package: $setupOutAbs" }
+$setupItem = Get-Item -LiteralPath $setupOutAbs
+if ($setupItem.Length -le 0) { throw "NSIS produced an empty package: $setupOutAbs" }
 Write-Host "Built GUI   : $installerOut"
 Write-Host "Built setup : $setupOutAbs"
