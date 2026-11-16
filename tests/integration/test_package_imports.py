@@ -51,7 +51,7 @@ def test_every_python_package_dir_has_init() -> None:
     #: 补 ``__init__.py`` 只是把它们变成正规包，双份加载的风险要靠
     #: ``_import_compat`` 扩展别名才能消除——那是独立议题，此处只做登记，
     #: 不把重构范围扩大。新增目录仍必须带 ``__init__.py``。
-    namespace_dirs = {"ui\\layout", "ui\\layout\\preview"}
+    namespace_dirs = {"ui/layout", "ui/layout/preview"}
 
     missing = [
         str(directory.relative_to(PACKAGE_DIR))
@@ -59,7 +59,7 @@ def test_every_python_package_dir_has_init() -> None:
         if directory.is_dir()
         and "__pycache__" not in directory.parts
         and any(directory.glob("*.py"))
-        and str(directory.relative_to(PACKAGE_DIR)) not in namespace_dirs
+        and directory.relative_to(PACKAGE_DIR).as_posix() not in namespace_dirs
         and not (directory / "__init__.py").is_file()
     ]
     assert missing == []

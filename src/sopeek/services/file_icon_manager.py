@@ -66,6 +66,7 @@ class FileIconManager(QObject):
     #: 单价缓存语义），但三项之和超过本预算时按 LRU 跨缓存淘汰。
     _ICON_CACHE_FAMILY_BUDGET: int = 256
 
+    thumbnails_changed = Signal(list)
     system_icon_loaded = Signal(str)  # 系统图标异步加载完成通知
 
     # 文件后缀常量集合
@@ -397,15 +398,17 @@ class FileIconManager(QObject):
         if not file_path:
             return QPixmap()
 
+        thumb_path = get_existing_thumbnail_path(file_path)
         thumb_key = (
             "thumb",
             os.path.normcase(file_path),
+            thumb_path,
             icon_size,
             dpr,
         )
         thumb_qp_key = f"spk_fim_thumb_{hash(thumb_key)}"
 
-        # 1. thumb 键 L1 / L2 查询（命中时跳过磁盘 stat 与解码）
+        # 1. thumb 键 L1 / L2 查询（版本已核对，命中时跳过图像解码）
         with self._cache_lock:
             thumb_cached = self._icon_cache.get(thumb_key)
             if thumb_cached is not None and not thumb_cached.isNull():
@@ -419,8 +422,7 @@ class FileIconManager(QObject):
                 self._trim_cache()
             return thumb_qp_cached
 
-        # 2. 磁盘缩略图（get_existing_thumbnail_path 内部含短 TTL 存在性缓存）
-        thumb_path = get_existing_thumbnail_path(file_path)
+        # 2. 当前源文件版本对应的磁盘缩略图
         if thumb_path and os.path.exists(thumb_path):
             pixmap = QPixmap(thumb_path)
             if pixmap and not pixmap.isNull():

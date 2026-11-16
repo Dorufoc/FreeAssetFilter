@@ -1029,6 +1029,7 @@ class AppearanceSettingsPage(QWidget):
         self._hw_toggle.toggled.connect(self._on_hw_accel_toggled)
         self._hw_row.set_control(self._hw_toggle)
         perf_group.addWidget(self._hw_row)
+        self._hw_row.setVisible(sys.platform == "win32")
         layout.addLayout(perf_group)
 
         layout.addStretch(1)
@@ -2813,6 +2814,9 @@ def _inline_error_text(error: object) -> str:
     return message or "未知错误"
 
 
+WINDOWS_UPDATER_AVAILABLE = sys.platform == "win32"
+
+
 class UpdateSettingsPage(QWidget):
     """检查更新页 — 版本信息、手动检查、进度与更新选项。
 
@@ -3232,6 +3236,15 @@ class UpdateSettingsPage(QWidget):
         self._hide_progress()
         self._hide_update_details()
         self._hide_pending_actions()
+        if not WINDOWS_UPDATER_AVAILABLE:
+            self._set_status("此平台的源码版请从项目仓库更新。")
+            self._check_row.hide()
+            self._source_row.hide()
+            self._prerelease_row.hide()
+            self._startup_row.hide()
+            self._release_link_button.setText("查看发布页面")
+            self._release_link_button.show()
+            return
         self._set_status(UPDATE_STATUS_IDLE_TEXT, tone="normal")
         self._set_check_button(UPDATE_BUTTON_CHECK, True)
 

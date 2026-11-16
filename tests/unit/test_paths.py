@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,26 @@ from sopeek import _paths
 
 
 pytestmark = pytest.mark.unit
+
+
+def test_mac_data_root_uses_application_support(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(_paths.sys, "platform", "darwin")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    assert _paths._default_app_data_root() == tmp_path / "Library" / "Application Support" / "Sopeek" / "data"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS instance lock")
+def test_mac_data_directory_lock_releases_after_close() -> None:
+    from sopeek.app.instance_guard import _acquire_single_instance, _release_mutex
+
+    lock = _acquire_single_instance()
+    try:
+        with pytest.raises(SystemExit) as duplicate:
+            _acquire_single_instance()
+        assert duplicate.value.code == 0
+    finally:
+        _release_mutex(lock)
+    _release_mutex(_acquire_single_instance())
 
 
 def test_package_dir_is_importable_package_root() -> None:
@@ -86,3 +107,28 @@ def test_soffice_paths_never_raises_and_is_deduplicated() -> None:
     assert len(paths) == len(set(paths))
     for path in paths:
         assert path.is_dir()
+
+def test_mac_soffice_in_user_applications_or_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from sopeek.services.office_converter import _resolve_soffice_binary
+
+    if sys.platform != "darwin":
+        pytest.skip("macOS application directories")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    bundle_bin = tmp_path / "Applications" / "LibreOffice.app" / "Contents" / "MacOS"
+    bundle_bin.mkdir(parents=True)
+    path_bin = tmp_path / "path"
+    path_bin.mkdir()
+    for directory in (bundle_bin, path_bin):
+        command = directory / "soffice"
+        command.touch(mode=0o755)
+    monkeypatch.setenv("PATH", str(path_bin))
+    candidates = _paths.soffice_paths()
+    assert bundle_bin in candidates and path_bin in candidates
+    assert candidates.index(bundle_bin) < candidates.index(path_bin)
+    # Keep system-wide installations on the test host outside this fixture.
+    monkeypatch.setattr(_paths, "soffice_paths", lambda: [bundle_bin, path_bin])
+    assert _resolve_soffice_binary() == bundle_bin / "soffice"
+    (bundle_bin / "soffice").unlink()
+    assert _resolve_soffice_binary() == path_bin / "soffice"
+    (path_bin / "soffice").chmod(0o644)
+    assert _resolve_soffice_binary() is None

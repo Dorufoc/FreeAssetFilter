@@ -943,7 +943,7 @@ class FileSelectorLayout(QWidget):
         ``include_remote=False``（默认）仅加载物理磁盘（固定盘/可移动盘/
         RAM 盘）；True 时额外包含网络/映射盘与光驱。Windows 上经
         ``GetLogicalDrives`` 位掩码 + ``GetDriveTypeW`` 类型过滤后逐个
-        ``os.stat``；非 Windows 回退为根目录 ``/`` 一个条目。
+        ``os.stat``；macOS 额外提供个人文件夹与宗卷，其他平台回退为根目录 ``/`` 一个条目。
 
         Args:
             include_remote: 网络/映射盘与光驱开关；``None`` 时取静态默认
@@ -988,10 +988,14 @@ class FileSelectorLayout(QWidget):
                     "size": 0, "modified": modified, "created": created, "suffix": "",
                 })
         else:
-            entries.append({
-                "name": "/", "path": "/", "is_dir": True,
-                "size": 0, "modified": "", "created": "", "suffix": "",
-            })
+            locations = [("/", "/")]
+            if sys.platform == "darwin":
+                locations[:0] = [("个人文件夹", os.path.expanduser("~")), ("宗卷", "/Volumes")]
+            for name, path in locations:
+                entries.append({
+                    "name": name, "path": path, "is_dir": True,
+                    "size": 0, "modified": "", "created": "", "suffix": "",
+                })
         return entries
 
     # ── 上次路径恢复 ─────────────────────────────────────────────────────
@@ -3125,6 +3129,7 @@ class FileSelectorLayout(QWidget):
         for file_path in file_paths:
             icon_manager.clear_cache(file_path)
         self._file_model.emit_icon_changed(file_paths)
+        icon_manager.thumbnails_changed.emit(file_paths)
 
     def _on_thumbnail_batch_finished(self, success_count: int, processed_count: int) -> None:
         """生成完成槽：恢复按钮；空任务（无可生成项）时弹轻提示。"""

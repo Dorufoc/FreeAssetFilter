@@ -8,7 +8,7 @@ name = "sopeek"
 # 这里的 version 只用于 `pip install -e .` 的本地元数据，不参与发布，
 # 发版时不需要同步修改（改 SPKVERSION 即可）。
 version = "1.0.0a5"
-description = "Sopeek —— 面向素材整理与预览的 Windows 桌面工具（PySide6）"
+description = "Sopeek —— 面向素材整理与预览的 桌面工具（PySide6）"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { file = "LICENSE" }
@@ -23,6 +23,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Environment :: Win32 (MS Windows)",
     "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS :: MacOS X",
 ]
 # 依赖清单仍以 requirements.txt 为唯一事实来源（含注释说明），此处不重复列出，
 # 避免两处版本范围漂移。安装开发环境请用：

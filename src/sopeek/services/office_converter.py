@@ -156,7 +156,10 @@ _COM_PROG_IDS: tuple[str, ...] = (
 )
 
 # 无外部后端（doc/xls/ppt legacy）时的安装提示文案（精确匹配计划措辞）。
-ERROR_MESSAGE = "请安装 Microsoft Office/WPS Office 或 LibreOffice 插件以获得完整预览"
+ERROR_MESSAGE = (
+    "请安装 Microsoft Office/WPS Office 或 LibreOffice 插件以获得完整预览"
+    if os.name == "nt" else "请安装 LibreOffice 以预览旧版 Office 格式。"
+)
 
 # LibreOffice 后端默认转换超时（秒）。T5/T9：测试通过注入更短的 ``timeout``
 # 验证超时路径；soffice 卡死时由 ``_convert_with_libreoffice`` 终止并强杀。
@@ -208,7 +211,7 @@ def _resolve_soffice_binary() -> Path | None:
     在候选目录中定位 soffice 可执行文件。绝不抛出。
 
     复用 T2 ``soffice_paths()`` 返回的「目录」候选列表，逐个探测
-    ``soffice.exe`` / ``soffice.com``；惰性导入为保证测试 monkeypatch
+    本平台的可执行文件；惰性导入为保证测试 monkeypatch
     ``sopeek._paths.soffice_paths`` 生效（探测异常一律视为不可用）。
 
     Returns
@@ -222,13 +225,11 @@ def _resolve_soffice_binary() -> Path | None:
     except Exception as e:
         warning(f"[OfficeConverter] 解析 soffice 路径失败: {e}")
         return None
-    for base in candidates:
-        base_dir = Path(base)
-        if not base_dir.is_dir():
-            continue
-        for name in ("soffice.exe", "soffice.com"):
+    names = ("soffice.exe", "soffice.com") if os.name == "nt" else ("soffice",)
+    for base_dir in candidates:
+        for name in names:
             candidate = base_dir / name
-            if candidate.is_file():
+            if candidate.is_file() and os.access(candidate, os.X_OK):
                 return candidate
     return None
 
@@ -570,38 +571,8 @@ class OfficeConverter:
 
     @classmethod
     def _soffice_available(cls) -> bool:
-        """
-        探测 LibreOffice soffice 是否可用。永不抛出。
-
-        复用 T2 的 ``sopeek._paths.soffice_paths()``：
-        任一候选目录存在 ``soffice.exe`` / ``soffice.com`` 即视为可用；
-        导入或调用失败一律视为不可用（返回 ``False``）。
-
-        Returns
-        -------
-        bool
-            ``True`` 表示存在可达的 soffice 可执行文件。
-        """
-        try:
-            from sopeek._paths import soffice_paths
-        except (ImportError, AttributeError) as e:
-            debug(f"[OfficeConverter] 无法导入 soffice_paths: {e}")
-            return False
-
-        try:
-            candidates = soffice_paths()
-        except Exception as e:
-            debug(f"[OfficeConverter] soffice_paths() 探测异常: {e}")
-            return False
-
-        return any(
-            Path(p).is_dir()
-            and any(
-                (Path(p) / name).is_file()
-                for name in ("soffice.exe", "soffice.com")
-            )
-            for p in candidates
-        )
+        """检查可用于转换的本地 LibreOffice 程序，不启动进程。"""
+        return _resolve_soffice_binary() is not None
 
     @classmethod
     def _com_available(cls, suffix: str = "") -> bool:
@@ -731,7 +702,7 @@ class OfficeConverter:
            标识的降级结果（镜像 T7 ``_degraded_result`` 约定，兼容 T4 分派
            路由测试），绝不启动子进程；
         2. 二进制解析 —— ``_resolve_soffice_binary()`` 复用 T2
-           ``soffice_paths()`` 候选目录探测 ``soffice.exe``/``soffice.com``，
+           ``soffice_paths()`` 候选目录探测本平台可执行文件，
            未找到即错误结果（不抛出）；
         3. 串行化 —— 模块级 ``_LO_CONVERSION_LOCK`` 包裹「启动 + 等待」全程
            （soffice 为单实例程序，同一时刻只允许一个转换运行）；
@@ -793,10 +764,7 @@ class OfficeConverter:
                     tempfile.mkdtemp(prefix="lo_out_", dir=str(temp_root))
                 )
                 output_pdf = out_dir / f"{Path(path).stem}.pdf"
-                profile_flag = (
-                    "-env:UserInstallation=file:///"
-                    + profile_dir.as_posix().lstrip("/")
-                )
+                profile_flag = "-env:UserInstallation=" + profile_dir.as_uri()
                 command = [
                     str(binary),
                     "--headless",

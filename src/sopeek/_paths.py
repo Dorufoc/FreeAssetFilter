@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 from pathlib import Path
 from typing import List
 
@@ -170,7 +171,9 @@ def version_file() -> Path:
 
 
 def _default_app_data_root() -> Path:
-    """返回默认数据根 ``%LOCALAPPDATA%\\Sopeek\\data``（不创建）。"""
+    """返回平台用户数据根；Windows 为 ``%LOCALAPPDATA%\\Sopeek\\data``（不创建）。"""
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Sopeek" / "data"
     local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
     if not local_appdata:
         local_appdata = os.path.join(os.path.expanduser("~"), "AppData", "Local")
@@ -362,52 +365,29 @@ def layout_version_file() -> Path:
 def soffice_paths() -> List[Path]:
     """返回可能包含 soffice 的目录列表（去重、按探测顺序）。
 
-    依次探测：
-
-    1. ``%ProgramFiles%\\LibreOffice\\program``
-    2. ``%ProgramFiles(x86)%\\LibreOffice\\program``
-    3. ``shutil.which`` 找到的 ``soffice``/``soffice.com`` 所在目录
-    4. :func:`native_bin_dir`（便携版预留位置）
-
-    永不抛异常、永不启动 soffice——只做路径探测。
-
-    Returns:
-        List[Path]: 去重且存在性过滤后的候选目录；未检测到 LibreOffice 时为空列表。
+    先查系统与用户安装位置，然后查 PATH 和应用自带目录。
+    这里只检查目录，不启动外部程序。
     """
     candidates: List[Path] = []
-
-    # 1/2: 标准 Windows 安装位置（环境变量优先，硬编码兜底）。
-    for program_files in (
-        os.environ.get("ProgramFiles", r"C:\Program Files"),
-        os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
-    ):
-        program_dir = Path(program_files) / "LibreOffice" / "program"
-        if program_dir.is_dir() and any(
-            (program_dir / name).is_file() for name in ("soffice.exe", "soffice.com")
+    if sys.platform == "win32":
+        for program_files in (
+            os.environ.get("ProgramFiles", r"C:\Program Files"),
+            os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
         ):
-            candidates.append(program_dir)
+            candidates.append(Path(program_files) / "LibreOffice" / "program")
+    elif sys.platform == "darwin":
+        for applications in (Path("/Applications"), Path.home() / "Applications"):
+            candidates.append(applications / "LibreOffice.app" / "Contents" / "MacOS")
 
-    # 3: PATH 查找——取已解析二进制所在目录。
-    for name in ("soffice", "soffice.com"):
-        try:
-            found = shutil.which(name)
-        except Exception:
-            continue
+    names = ("soffice", "soffice.com") if sys.platform == "win32" else ("soffice",)
+    for name in names:
+        found = shutil.which(name)
         if found:
-            candidates.append(Path(found).resolve().parent)
+            # 保留 PATH 上的命令名（符号链接目标的文件名可能不同）。
+            candidates.append(Path(found).parent.resolve())
 
-    # 4: 便携版/应用目录预留位置。
-    native_bin = native_bin_dir()
-    if native_bin.is_dir():
-        candidates.append(native_bin)
-
-    seen: set = set()
-    result: List[Path] = []
-    for candidate in candidates:
-        if candidate not in seen:
-            seen.add(candidate)
-            result.append(candidate)
-    return result
+    candidates.append(native_bin_dir())
+    return list(dict.fromkeys(path for path in candidates if path.is_dir()))
 
 
 __all__ = [

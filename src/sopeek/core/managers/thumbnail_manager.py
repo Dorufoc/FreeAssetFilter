@@ -28,6 +28,7 @@ import time
 from collections import OrderedDict, deque
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
@@ -165,12 +166,36 @@ class VideoFrameCache:
         self.current_bytes = 0
 
 
-@dataclass
-class SvgRenderCacheEntry:
-    """SVG 渲染缓存条目"""
-    image: any
-    mtime: float
-    last_validated_at: float
+# 随仓 Windows 解码器的进程缓存只按原件路径索引。平时保留并发，
+# 版本切换时等旧任务退出后再清缓存，避免迟到的任务把旧像素写回来。
+_native_condition = threading.Condition()
+_native_versions: dict[str, str] = {}
+_native_active = 0
+
+
+@contextmanager
+def _native_source_versions(bridge, versions: dict[str, str]):
+    global _native_active
+    with _native_condition:
+        while (
+            len(_native_versions) >= 8192
+            or any(path in _native_versions and _native_versions[path] != key
+                   for path, key in versions.items())
+        ):
+            if _native_active:
+                _native_condition.wait()
+                continue
+            if not bridge.clear_cache():
+                raise RuntimeError("原生缩略图缓存清理失败")
+            _native_versions.clear()
+        _native_versions.update(versions)
+        _native_active += 1
+    try:
+        yield
+    finally:
+        with _native_condition:
+            _native_active -= 1
+            _native_condition.notify_all()
 
 
 class ThumbnailManager:
@@ -288,7 +313,6 @@ class ThumbnailManager:
 
     # SVG 渲染缓存限制
     MAX_SVG_CACHE_ENTRIES = 256
-    SVG_CACHE_REVALIDATE_INTERVAL_SECONDS = 1.0
     PATH_EXISTS_CACHE_TTL_SECONDS = 1.0
     PATH_EXISTS_CACHE_MAX_ENTRIES = 8192
 
@@ -351,18 +375,12 @@ class ThumbnailManager:
         self._subprocess_decode_stats_lock = threading.Lock()
         self._subprocess_decode_stats = self._make_empty_subprocess_decode_stats()
 
-        # SVG 渲染缓存：file_path -> SvgRenderCacheEntry
-        self._svg_render_cache: OrderedDict[str, SvgRenderCacheEntry] = OrderedDict()
+        # 与磁盘缓存共享源文件版本键。
+        self._svg_render_cache: OrderedDict[str, Image.Image] = OrderedDict()
         self._svg_cache_lock = threading.Lock()
         self._path_exists_cache: dict[str, tuple[bool, float]] = {}
         self._path_exists_cache_lock = threading.Lock()
         set_perf_metadata("thumbnail.load_svg_image", "max_entries", self.MAX_SVG_CACHE_ENTRIES)
-        set_perf_metadata(
-            "thumbnail.load_svg_image",
-            "revalidate_interval_ms",
-            int(self.SVG_CACHE_REVALIDATE_INTERVAL_SECONDS * 1000),
-        )
-
         # 正在处理的视频文件集合（用于请求去重）
         self._processing_videos: set[str] = set()
         self._processing_lock = threading.Lock()
@@ -558,90 +576,26 @@ class ThumbnailManager:
         """更新 SVG 缓存当前容量指标。调用方需持有 SVG 缓存锁。"""
         set_perf_metadata("thumbnail.load_svg_image", "current_entries", len(self._svg_render_cache))
 
-    def _pop_svg_cache_entry_locked(self, file_path: str) -> SvgRenderCacheEntry | None:
-        """弹出 SVG 缓存条目并释放缓存图像。调用方需持有 SVG 缓存锁。"""
-        entry = self._svg_render_cache.pop(file_path, None)
-        if entry is not None:
-            self._close_pil_image_quietly(entry.image)
-        return entry
-
-    def _get_cached_svg_image(self, file_path: str):
-        """优先走热缓存命中，仅在冷命中时重新校验 mtime。"""
-        event_name = "thumbnail.load_svg_image"
-        now = time.monotonic()
-
+    def _get_cached_svg_image(self, version: str):
         with self._svg_cache_lock:
-            entry = self._svg_render_cache.get(file_path)
-            if entry is None:
-                increment_perf_counter(event_name, "cache_miss")
-                self._set_svg_cache_metadata_locked()
+            image = self._svg_render_cache.get(version)
+            if image is None:
+                increment_perf_counter("thumbnail.load_svg_image", "cache_miss")
                 return None
+            self._svg_render_cache.move_to_end(version)
+            increment_perf_counter("thumbnail.load_svg_image", "cache_hit")
+            return image.copy()
 
-            if now - entry.last_validated_at < self.SVG_CACHE_REVALIDATE_INTERVAL_SECONDS:
-                self._svg_render_cache.move_to_end(file_path)
-                increment_perf_counter(event_name, "cache_hit")
-                increment_perf_counter(event_name, "hot_cache_hit")
-                self._set_svg_cache_metadata_locked()
-                return entry.image.copy()
-
-        try:
-            current_mtime = os.path.getmtime(file_path)
-        except OSError:
-            increment_perf_counter(event_name, "stat_failure")
-            with self._svg_cache_lock:
-                if self._pop_svg_cache_entry_locked(file_path) is not None:
-                    increment_perf_counter(event_name, "stat_invalidated")
-                increment_perf_counter(event_name, "cache_miss")
-                self._set_svg_cache_metadata_locked()
-            return None
-
+    def _store_svg_cache_image(self, version: str, img) -> None:
         with self._svg_cache_lock:
-            entry = self._svg_render_cache.get(file_path)
-            if entry is None:
-                increment_perf_counter(event_name, "cache_miss")
-                self._set_svg_cache_metadata_locked()
-                return None
-
-            if entry.mtime != current_mtime:
-                self._pop_svg_cache_entry_locked(file_path)
-                increment_perf_counter(event_name, "stale_invalidated")
-                increment_perf_counter(event_name, "cache_miss")
-                self._set_svg_cache_metadata_locked()
-                return None
-
-            entry.last_validated_at = now
-            self._svg_render_cache.move_to_end(file_path)
-            increment_perf_counter(event_name, "cache_hit")
-            increment_perf_counter(event_name, "revalidated_cache_hit")
-            self._set_svg_cache_metadata_locked()
-            return entry.image.copy()
-
-    def _store_svg_cache_image(self, file_path: str, img) -> None:
-        """缓存 SVG 渲染结果，并维护 LRU 淘汰。"""
-        event_name = "thumbnail.load_svg_image"
-
-        try:
-            file_mtime = os.path.getmtime(file_path)
-        except OSError:
-            increment_perf_counter(event_name, "store_stat_failure")
-            return
-
-        cached_copy = img.copy()
-        now = time.monotonic()
-
-        with self._svg_cache_lock:
-            self._pop_svg_cache_entry_locked(file_path)
-            self._svg_render_cache[file_path] = SvgRenderCacheEntry(
-                image=cached_copy,
-                mtime=file_mtime,
-                last_validated_at=now,
-            )
-
+            old_image = self._svg_render_cache.pop(version, None)
+            if old_image is not None:
+                self._close_pil_image_quietly(old_image)
+            self._svg_render_cache[version] = img.copy()
             while len(self._svg_render_cache) > self.MAX_SVG_CACHE_ENTRIES:
-                _, evicted_entry = self._svg_render_cache.popitem(last=False)
-                self._close_pil_image_quietly(evicted_entry.image)
-                increment_perf_counter(event_name, "cache_eviction")
-
+                _, image = self._svg_render_cache.popitem(last=False)
+                self._close_pil_image_quietly(image)
+                increment_perf_counter("thumbnail.load_svg_image", "cache_eviction")
             self._set_svg_cache_metadata_locked()
 
     def _shutdown_thumbnail_batch_executor_async(
@@ -754,12 +708,22 @@ class ThumbnailManager:
         """
         return self._thumb_dir
 
-    def _get_thumbnail_hash(self, file_path: str) -> str:
-        """
-        获取文件路径对应的缩略图哈希名
-        """
-        md5_hash = hashlib.md5(file_path.encode('utf-8'))
-        return md5_hash.hexdigest()[:16]
+    def _get_thumbnail_hash(self, file_path: str) -> str | None:
+        """以原件身份及修改状态区分同路径的不同版本（含原子替换）。"""
+        path = os.path.normcase(os.path.abspath(file_path))
+        try:
+            st = os.stat(file_path)
+            revision = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+        except OSError:
+            return None
+        digest = hashlib.sha256(os.fsencode(path) + b"\0" + repr(revision).encode("ascii"))
+        return digest.hexdigest()[:32]
+
+    def _thumbnail_paths(self, file_path: str) -> tuple[str, str]:
+        primary, legacy = self._thumbnail_file_names(file_path)
+        if not primary:
+            return "", ""
+        return os.path.join(self._thumb_dir, primary), os.path.join(self._thumb_dir, legacy)
 
     def get_thumbnail_path(self, file_path: str) -> str:
         """
@@ -771,15 +735,13 @@ class ThumbnailManager:
         Returns:
             str: 缩略图文件路径
         """
-        file_hash = self._get_thumbnail_hash(file_path)
-        return os.path.join(self._thumb_dir, f"{file_hash}{self.THUMB_EXT_PRIMARY}")
+        return self._thumbnail_paths(file_path)[0]
 
     def get_legacy_thumbnail_path(self, file_path: str) -> str:
         """
         获取历史 PNG 缩略图路径（兼容旧缓存）
         """
-        file_hash = self._get_thumbnail_hash(file_path)
-        return os.path.join(self._thumb_dir, f"{file_hash}{self.THUMB_EXT_LEGACY}")
+        return self._thumbnail_paths(file_path)[1]
 
     def get_existing_thumbnail_path(self, file_path: str) -> str | None:
         """
@@ -787,8 +749,7 @@ class ThumbnailManager:
         优先返回主格式 JPG；若不存在则回退到历史/兼容 PNG。
         """
         with track_perf("thumbnail.get_existing_thumbnail_path"):
-            thumbnail_path = self.get_thumbnail_path(file_path)
-            legacy_path = self.get_legacy_thumbnail_path(file_path)
+            thumbnail_path, legacy_path = self._thumbnail_paths(file_path)
             existing = self._get_existing_thumbnail_path_from_paths(thumbnail_path, legacy_path)
             if existing:
                 increment_perf_counter("thumbnail.get_existing_thumbnail_path", "cache_hit")
@@ -863,7 +824,7 @@ class ThumbnailManager:
         return names
 
     def _thumbnail_file_names(self, file_path: str) -> tuple[str, str]:
-        """计算文件对应的主格式 / 兼容格式缩略图文件名（每路径仅 1 次 md5）。
+        """计算文件对应的主格式 / 兼容格式缩略图文件名（两种格式共用一次源文件状态读取）。
 
         Args:
             file_path: 原始文件路径。
@@ -872,6 +833,8 @@ class ThumbnailManager:
             tuple[str, str]: (主格式文件名, 兼容格式文件名)。
         """
         file_hash = self._get_thumbnail_hash(file_path)
+        if file_hash is None:
+            return "", ""
         return (
             f"{file_hash}{self.THUMB_EXT_PRIMARY}",
             f"{file_hash}{self.THUMB_EXT_LEGACY}",
@@ -901,7 +864,7 @@ class ThumbnailManager:
         """批量过滤出尚需生成缩略图的媒体文件（保序去重）。
 
         以单次 ``os.scandir`` 建立缩略图目录索引，每个路径仅计算 1 次
-        md5，替代逐文件 ``is_media_file + has_thumbnail`` 的重复哈希与
+        版本键，替代逐文件 ``is_media_file + has_thumbnail`` 的重复哈希与
         多次磁盘探测；批量路径不逐文件写 perf 埋点（整批统一记录一次）。
 
         Args:
@@ -1056,13 +1019,11 @@ class ThumbnailManager:
             Optional[str]: 缩略图路径，生成失败返回None
         """
         with track_perf("thumbnail.create_thumbnail"):
-            if not self._get_cached_path_exists(file_path):
+            thumbnail_path, legacy_thumbnail_path = self._thumbnail_paths(file_path)
+            if not thumbnail_path:
                 increment_perf_counter("thumbnail.create_thumbnail", "missing_source")
                 warning(f"文件不存在: {file_path}")
                 return None
-
-            thumbnail_path = self.get_thumbnail_path(file_path)
-            legacy_thumbnail_path = self.get_legacy_thumbnail_path(file_path)
 
             # 如果缩略图已存在且不强制重新生成，优先返回 JPG，其次兼容历史 PNG
             if not force_regenerate:
@@ -1119,6 +1080,9 @@ class ThumbnailManager:
                         result = self._create_video_thumbnail(file_path, thumbnail_path)
                     else:
                         result = None
+
+                if result and self.get_thumbnail_path(file_path) != thumbnail_path:
+                    return None
 
                 # 如果成功生成，更新访问时间
                 if result and self._get_cached_path_exists(result, force_refresh=True):
@@ -1258,16 +1222,18 @@ class ThumbnailManager:
             try:
                 if self._is_native_available():
                     # P4.1：优先让 Rust 直接落盘（字节不回传、不在 Python 逐张写）。
-                    batch_statuses = self._rust_bridge.generate_batch_to_paths(
-                        file_paths,
-                        [item["thumbnail_path"] for item in items],
-                        dpi_scaled_size,
-                        dpi_scaled_size,
-                    )
-                    if batch_statuses is None:
-                        batch_jpgs = self._rust_bridge.generate_jpg_batch(
-                            file_paths, dpi_scaled_size, dpi_scaled_size
+                    versions = {item["file_path"]: item["thumbnail_path"] for item in items}
+                    with _native_source_versions(self._rust_bridge, versions):
+                        batch_statuses = self._rust_bridge.generate_batch_to_paths(
+                            file_paths,
+                            [item["thumbnail_path"] for item in items],
+                            dpi_scaled_size,
+                            dpi_scaled_size,
                         )
+                        if batch_statuses is None:
+                            batch_jpgs = self._rust_bridge.generate_jpg_batch(
+                                file_paths, dpi_scaled_size, dpi_scaled_size
+                            )
             except Exception as e:  # noqa: BLE001  # broad catch intentional at thumbnail pipeline
                 warning(f"Rust批量生成失败，逐项回退: {e}")
                 batch_statuses = None
@@ -1381,15 +1347,14 @@ class ThumbnailManager:
                     break
 
                 file_path, callback_file_data = _normalize_batch_file_data(file_data)
-                if not file_path or not self._get_cached_path_exists(file_path):
+                thumbnail_path, legacy_thumbnail_path = self._thumbnail_paths(file_path)
+                if not thumbnail_path:
                     increment_perf_counter("thumbnail.create_thumbnails_batch", "missing_source")
                     processed_count += 1
                     if progress_callback:
                         progress_callback(processed_count, total_count, callback_file_data, False)
                     continue
 
-                thumbnail_path = self.get_thumbnail_path(file_path)
-                legacy_thumbnail_path = self.get_legacy_thumbnail_path(file_path)
                 existing = self._get_existing_thumbnail_path_from_paths(thumbnail_path, legacy_thumbnail_path)
 
                 if existing:
@@ -1591,6 +1556,8 @@ class ThumbnailManager:
                     result_items = []
 
                 for item, success, result_path in result_items:
+                    if success and self.get_thumbnail_path(item["file_path"]) != item["thumbnail_path"]:
+                        success = False
                     if success:
                         success_count += 1
 
@@ -1809,7 +1776,12 @@ class ThumbnailManager:
                 increment_perf_counter("thumbnail.create_native_thumbnail", "bridge_unavailable")
                 return None, STATUS_BRIDGE_UNAVAILABLE
 
-            result, status = self._run_native_generation_chain(file_path, thumbnail_path)
+            try:
+                with _native_source_versions(self._rust_bridge, {file_path: thumbnail_path}):
+                    result, status = self._run_native_generation_chain(file_path, thumbnail_path)
+            except RuntimeError as exc:
+                warning(str(exc))
+                return None, STATUS_BRIDGE_UNAVAILABLE
             if result is None and status == STATUS_TOO_LARGE:
                 warning(f"图像尺寸超限，跳过缩略图生成且不重试Python解码: {file_path}, status={status}")
             return result, status
@@ -2652,7 +2624,10 @@ class ThumbnailManager:
                 from PySide6.QtGui import QImage, QPainter
                 from PySide6.QtSvg import QSvgRenderer
 
-                cached_img = self._get_cached_svg_image(file_path)
+                version = self._get_thumbnail_hash(file_path)
+                if version is None:
+                    return None, False
+                cached_img = self._get_cached_svg_image(version)
                 if cached_img is not None:
                     return cached_img, True
 
@@ -2737,7 +2712,7 @@ class ThumbnailManager:
 
                 # 创建PIL图像
                 img = Image.frombytes("RGBA", (width, height), img_data)
-                self._store_svg_cache_image(file_path, img)
+                self._store_svg_cache_image(version, img)
                 increment_perf_counter(event_name, "render_success")
                 return img, True
 
@@ -2791,7 +2766,7 @@ class ThumbnailManager:
 
             with self._svg_cache_lock:
                 for entry in self._svg_render_cache.values():
-                    self._close_pil_image_quietly(entry.image)
+                    self._close_pil_image_quietly(entry)
                 self._svg_render_cache.clear()
                 self._set_svg_cache_metadata_locked()
 
@@ -2949,8 +2924,9 @@ def _run_batch_video_thumbnail_subprocess(file_path: str, dpi_scale: float, pref
     """批量视频缩略图子进程入口"""
     try:
         manager = get_thumbnail_manager(dpi_scale)
-        thumbnail_path = manager.get_thumbnail_path(file_path)
-        legacy_thumbnail_path = manager.get_legacy_thumbnail_path(file_path)
+        thumbnail_path, legacy_thumbnail_path = manager._thumbnail_paths(file_path)
+        if not thumbnail_path:
+            return 2
 
         result = None
         skip_python_retry = False
@@ -2965,7 +2941,7 @@ def _run_batch_video_thumbnail_subprocess(file_path: str, dpi_scale: float, pref
         if result is None and not skip_python_retry:
             result = manager._create_video_thumbnail_ffmpeg(file_path, thumbnail_path)
 
-        if result and os.path.exists(result):
+        if result and os.path.exists(result) and manager.get_thumbnail_path(file_path) == thumbnail_path:
             return 0
         return 2
     except Exception:  # noqa: BLE001  # broad catch intentional at thumbnail pipeline

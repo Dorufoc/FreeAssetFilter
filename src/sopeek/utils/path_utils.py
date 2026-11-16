@@ -18,6 +18,7 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 import sys
 import os
+import ntpath
 import re
 from typing import List, Optional, Set
 
@@ -204,7 +205,10 @@ def is_sensitive_path(path: str) -> bool:
     
     # 规范化路径
     try:
-        normalized_path = os.path.normpath(os.path.abspath(path))
+        # 用户数据可能自 Windows 迁移。盘符/UNC 使用其原始语义，
+        # 避免 POSIX abspath 把它们拼接进当前工作目录。
+        path_module = ntpath if ntpath.splitdrive(path)[0] else os.path
+        normalized_path = path_module.abspath(path)
     except Exception:
         return True  # 无法解析的路径视为敏感路径
     

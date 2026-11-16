@@ -52,7 +52,7 @@ The repository has not been renamed yet; for any path involving the repository n
 The installer offers three maintenance paths: install, repair, and uninstall; uninstalling lets you optionally check "also delete user data (settings, cache, logs)".
 The default install directory is `%ProgramFiles%\Sopeek`, and administrator privileges are required.
 
-### Option 2: Run from source
+### Option 2: Run from source on Windows
 
 Prebuilt artifacts for the native modules are included, so running from source needs no extra toolchain.
 
@@ -84,6 +84,20 @@ python -m sopeek.app.main
 
 > The repository uses the `src/` layout: there is **no** `sopeek/` directory at the repository root, so running
 > `python -m sopeek.app.main` directly from the root fails with `No module named sopeek`. Use one of the two approaches above.
+
+### Run from source on an Apple Silicon Mac
+
+From the repository root, create an environment with ARM64 Python 3.11. To open a particular folder at startup, append `--open-path "/path/to/assets"` to the last command.
+
+```sh
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python -m pip install -e .
+python -m sopeek.app.main
+```
+
+macOS uses native window decorations, Qt Multimedia for audio/video preview and Python for file copying. Archive preview requires `7zz` or `7z` on your `PATH`. Office previews can use LibreOffice from `/Applications/LibreOffice.app` or `soffice` on the `PATH` for PDF rendering, with built-in content previews as a fallback. Media playback supports play, pause and seeking. Format support depends on the available codecs. The installer, in-app updater, Explorer integration and mpv-specific playback controls apply to Windows.
 
 ### Command-line arguments
 
@@ -232,7 +246,7 @@ All splitters are draggable; **double-clicking any splitter** resets the entire 
 
 ### User data location
 
-All runtime data lives in:
+The macOS default is `~/Library/Application Support/Sopeek/data`. Windows uses the following directory.
 
 ```
 %LOCALAPPDATA%\Sopeek\data
@@ -364,13 +378,13 @@ Runtime resources live in `src/sopeek/resources/`, and all paths are resolved by
 
 | Item | Requirement |
 | -------- | ------------------------------------------------------------ |
-| OS | Windows 10 / 11 (64-bit) |
-| Python | 3.9 or later (both development and packaging are validated against 3.9) |
+| OS | Windows 10 / 11 (64-bit), or an Apple Silicon Mac running from source |
+| Python | 3.9 or later (Windows development and packaging use 3.9, macOS source runs use 3.11) |
 | PySide6 | 6.10 or later (the frameless window relies on native capabilities in Qt 6.10) |
 | Runtime | [Visual C++ Redistributable 2015–2022 x64](https://aka.ms/vs/17/release/vc_redist.x64.exe) |
 | GPU | OpenGL-capable graphics card (video playback and fluid background) |
 
-> Runtime binaries (`libmpv-2.dll`, `spk_core.dll`, `thumbnail_generator.dll`, `ffmpeg.exe`, `7z.exe`, etc.) ship with the package, so a fresh clone runs **without any Rust / C++ toolchain**.
+> Windows runtime binaries (`libmpv-2.dll`, `spk_core.dll`, `thumbnail_generator.dll`, `ffmpeg.exe`, `7z.exe`, etc.) ship with the package, so a fresh clone runs **without any Rust / C++ toolchain**.
 
 ---
 

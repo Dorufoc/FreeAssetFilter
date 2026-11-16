@@ -52,7 +52,7 @@ Sopeek 是一款面向 Windows 的桌面级文件浏览、筛选与预览工具�
 安装器提供：安装、修复、卸载三种维护路径；卸载时可勾选「同时删除用户数据（设置、缓存、日志）」；
 安装目录默认为 `%ProgramFiles%\Sopeek`，需管理员权限。
 
-### 方式二：从源码运行
+### 方式二：Windows 从源码运行
 
 原生模块已提供预编译产物，源码运行无需额外工具链。
 
@@ -84,6 +84,20 @@ python -m sopeek.app.main
 
 > 仓库采用 `src/` 布局：仓库根**没有** `sopeek/` 目录，因此直接在根目录执行
 > `python -m sopeek.app.main` 会报 `No module named sopeek`。用上面两种方式之一即可。
+
+### Apple Silicon Mac 从源码运行
+
+在本仓库根目录，用 ARM64 版 Python 3.11 创建环境。启动命令也可接受 `--open-path "/路径/素材目录"`。
+
+```sh
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python -m pip install -e .
+python -m sopeek.app.main
+```
+
+Mac 使用系统窗口、Qt Multimedia 音视频预览和 Python 文件复制。预览压缩包时，需要在 `PATH` 中提供 `7zz` 或 `7z`。Office 文档可选用 `/Applications/LibreOffice.app` 或 `PATH` 中的 `soffice` 渲染为 PDF，未安装时使用内置的内容预览。音视频可播放、暂停和定位，具体格式取决于本机解码器。Windows 安装器、程序内更新、资源管理器集成和 mpv 专属播放控件仅适用于 Windows。
 
 ### 命令行参数
 
@@ -234,7 +248,7 @@ TTF / OTF / WOFF / WOFF2 / EOT
 
 ### 用户数据位置
 
-所有运行期数据统一位于：
+Windows 默认目录如下。macOS 默认使用 `~/Library/Application Support/Sopeek/data`。
 
 ```
 %LOCALAPPDATA%\Sopeek\data
@@ -366,13 +380,13 @@ Office 预览优先通过 COM 调用本机 Office，转换期间 Office 可能�
 
 | 项目     | 要求                                                         |
 | -------- | ------------------------------------------------------------ |
-| 操作系统 | Windows 10 / 11（64 位）                                     |
-| Python   | 3.9 及以上（开发与打包均按 3.9 验证）                        |
+| 操作系统 | Windows 10 / 11（64 位），Apple Silicon Mac 可从源码运行 |
+| Python   | 3.9 及以上（Windows 开发与打包按 3.9 验证，Mac 源码运行按 3.11 验证）                        |
 | PySide6  | 6.10 及以上（无边框窗口依赖 Qt 6.10 的原生能力）             |
 | 运行库   | [Visual C++ Redistributable 2015–2022 x64](https://aka.ms/vs/17/release/vc_redist.x64.exe) |
 | 显卡     | 支持 OpenGL 的显卡（视频播放与流体背景）                     |
 
-> 运行时二进制（`libmpv-2.dll`、`spk_core.dll`、`thumbnail_generator.dll`、`ffmpeg.exe`、`7z.exe` 等）随包分发，克隆后**无需 Rust / C++ 工具链**即可直接运行。
+> Windows 运行时二进制（`libmpv-2.dll`、`spk_core.dll`、`thumbnail_generator.dll`、`ffmpeg.exe`、`7z.exe` 等）随包分发，克隆后**无需 Rust / C++ 工具链**即可直接运行。
 
 ---
 

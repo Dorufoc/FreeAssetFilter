@@ -108,8 +108,8 @@ _THREAD_SEQ = itertools.count(1)
 _THREAD_NAMES: Dict[int, str] = {}
 _NAMED = threading.local()
 
-_KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
 try:  # pragma: no cover - 旧系统无此 API
+    _KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
     _SET_THREAD_DESCRIPTION = _KERNEL32.SetThreadDescription
     _SET_THREAD_DESCRIPTION.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
     _SET_THREAD_DESCRIPTION.restype = ctypes.c_long

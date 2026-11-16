@@ -269,8 +269,22 @@ def _acquire_single_instance():
     第二个实例的退出必须是有界的（验收要求 10 秒内退出）。
 
     Returns:
-        mutex 句柄（int），仅当本进程成为唯一实例时返回。
+        Windows 互斥体句柄或 macOS 的文件锁，仅由持有者释放。
     """
+    if sys.platform == "darwin":
+        import fcntl
+        from sopeek._paths import runtime_instance_file
+
+        path = runtime_instance_file().with_suffix(".lock")
+        lock = path.open("a")
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            lock.close()
+            info("another instance already running; exiting")
+            sys.exit(0)
+        return lock
+
     if sys.platform != "win32":
         return None
 
@@ -298,6 +312,9 @@ def _acquire_single_instance():
 
 def _release_mutex(mutex_handle) -> None:
     """释放单实例互斥体句柄。"""
+    if sys.platform == "darwin" and mutex_handle is not None:
+        mutex_handle.close()
+        return
     if not mutex_handle or sys.platform != "win32":
         return
     import ctypes

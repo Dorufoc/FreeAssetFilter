@@ -405,6 +405,8 @@ class StartupController(QObject):
         之前连接（且只连一次），这样即使服务在 ``maybe_startup_check``
         内同步发出信号也不会漏掉通知。
         """
+        if os.name != "nt":
+            return  # The updater sidecar and release artifacts are Windows-only.
         from sopeek.services.update_service import get_update_service
 
         service = get_update_service()

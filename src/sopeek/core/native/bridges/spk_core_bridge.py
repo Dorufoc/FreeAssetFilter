@@ -251,6 +251,8 @@ class SpkCoreBridge:
 
     def _load(self) -> None:
         """按候选路径顺序加载第一个可用的 DLL。"""
+        if os.name != "nt":
+            return  # The bundled runtime is a Windows DLL.
         debug("开始加载 spk_core 原生核心")
         self._prepare_local_runtime()
         for path in self._candidate_paths():

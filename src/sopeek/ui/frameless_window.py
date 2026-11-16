@@ -117,7 +117,10 @@ _SWP_FRAME_RECALC = (
 _TITLEBAR_CLASS = "_q_titlebar"
 
 #: EnumChildWindows 回调原型（找到目标时返回 FALSE 以停止枚举）。
-_ENUM_CHILD_PROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+_ENUM_CHILD_PROC = (
+    ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    if sys.platform == "win32" else None
+)
 
 #: 顶层 ``_q_titlebar`` 逐个查找的上限（FindWindowExW 循环）。
 #: 实测该窗口**不在 ``EnumWindows`` 的枚举结果里**（654 个顶层窗口 / 151 个类名
@@ -457,6 +460,9 @@ class FramelessMainWindow(QMainWindow):
         #: 由子类通过 :meth:`set_erase_background_color` 在普通代码路径写入，
         #: 原生消息处理中直接读这个值，避免回调 Qt 造成重入。
         self._erase_colorref = None
+        if sys.platform != "win32":
+            self._expanded_client_area = False
+            return  # Keep the platform-native title bar and window controls.
         flags = Qt.Window
         self._expanded_client_area = hasattr(Qt, "ExpandedClientAreaHint")
         if self._expanded_client_area:
@@ -501,7 +507,7 @@ class FramelessMainWindow(QMainWindow):
 
         重建同时记录诊断信息（见 :meth:`_log_win_id_change`），用于定位触发源。
         """
-        if e.type() == QEvent.Type.WinIdChange:
+        if sys.platform == "win32" and e.type() == QEvent.Type.WinIdChange:
             self._log_win_id_change()
             self.reapply_native_window_effects()
         return super().event(e)
@@ -853,6 +859,8 @@ class FramelessMainWindow(QMainWindow):
         4. 再排一次延迟隐藏——Qt 可能在本同步回调返回之后才把标题栏
            ``SW_SHOW``，只做同步隐藏会输掉这个时序竞争。
         """
+        if sys.platform != "win32":
+            return
         self._strip_system_menu()
         self._hide_qt_titlebar(deep=True)
         self._refresh_native_frame()
