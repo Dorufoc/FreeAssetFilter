@@ -1570,6 +1570,10 @@ pub fn validate_download_url(raw: &str, allow_insecure_localhost: bool) -> Resul
                 || domain == "gitcode.com"
                 || domain == "api.gitcode.com"
                 || domain.ends_with(".gitcode.com")
+                // GitCode 的下载地址目前由 atomgit.com 提供（附件 CDN 仍走 gitcode.com）。
+                || domain == "atomgit.com"
+                || domain == "api.atomgit.com"
+                || domain.ends_with(".atomgit.com")
                 // GitCode 的附件落在华为 OBS，下载会被重定向到该对象存储域名。
                 || domain.ends_with(".myhuaweicloud.com")
         }
@@ -2136,6 +2140,13 @@ mod tests {
         .is_ok());
         assert!(validate_download_url("https://api.gitcode.com/api/v5/x", false).is_ok());
         assert!(validate_download_url("https://cdn-img.gitcode.com/x.exe", false).is_ok());
+        assert!(validate_download_url(
+            "https://atomgit.com/Dorufoc/FreeAssetFilter/releases/download/nightly/x.exe",
+            false
+        )
+        .is_ok());
+        assert!(validate_download_url("https://api.atomgit.com/api/v5/x", false).is_ok());
+        assert!(validate_download_url("https://atomgit.com.evil.com/x.exe", false).is_err());
         assert!(
             validate_download_url(
                 "https://sopeek-releases.obs.cn-north-4.myhuaweicloud.com/x.exe",
