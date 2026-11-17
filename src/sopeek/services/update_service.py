@@ -187,7 +187,14 @@ def _is_repo_not_found(error: UpdateError) -> bool:
 _CHECKSUM_ASSET_NAME = "SHA256SUMS.txt"
 #: 允许探测/下载的发布源主机（与原生下载白名单保持一致）。
 _UPDATE_ASSET_HOSTS = frozenset(
-    {"github.com", "api.github.com", "gitcode.com", "api.gitcode.com"}
+    {
+        "github.com",
+        "api.github.com",
+        "gitcode.com",
+        "api.gitcode.com",
+        "atomgit.com",
+        "api.atomgit.com",
+    }
 )
 #: 安装包探测请求的 User-Agent。
 _ASSET_USER_AGENT = "Sopeek-Updater"
