@@ -917,6 +917,13 @@ def main(argv=None) -> int:
         except RuntimeError:
             # 窗口已在 32ms 内关闭/销毁：不再构建重内容。
             return
+        # 从终端 / IDE 启动时 Windows 前台可能仍停留在启动器：Qt 的
+        # activateWindow() 只会更新内部激活状态，键盘事件仍发往启动器。
+        # 在首帧可见后、构建重内容前补一次原生前台激活（只执行一次）。
+        try:
+            window.ensure_startup_foreground()
+        except Exception as exc:  # noqa: BLE001 - 激活失败不得阻断启动
+            debug(f"[启动] 主窗口前台激活失败: {exc!r}")
         info(f"[启动] 首帧揭开: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
         QTimer.singleShot(0, _finish_deferred_ui)
 
@@ -940,7 +947,17 @@ def main(argv=None) -> int:
         except Exception as e:
             warning(f"[退出] 引导层清理失败: {e}")
 
-        # 1.5) 回收 Mica GPU 渲染器常驻线程（若本会话启用过 GPU 烘焙）。
+        # 1.5) 先回收 Mica 烘焙线程（有界 join），再释放 GPU 渲染器。
+        # 顺序不能反：烘焙线程在途时正阻塞在 gpu_bake，先停渲染器会让它
+        # 等到 job 超时甚至降级 CPU 烘焙，拖长退出；且线程若在解释器收尾
+        # 时才被销毁，Qt 会 qFatal → 0xC0000409。
+        try:
+            from sopeek.ui.mica.material import shutdown_worker_threads
+            shutdown_worker_threads(2000)
+        except Exception as e:
+            warning(f"[退出] Mica 烘焙线程回收失败: {e}")
+
+        # 1.55) 回收 Mica GPU 渲染器常驻线程（若本会话启用过 GPU 烘焙）。
         # 有界 join（DISPOSE_JOIN_MS），卡死时只停用不强杀，守护线程不阻塞退出。
         try:
             from sopeek.ui.mica.gpu import shutdown_gpu_renderer

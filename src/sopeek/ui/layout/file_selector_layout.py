@@ -294,7 +294,13 @@ class FileSelectorLayout(QWidget):
     file_selected = Signal(dict)
     file_selection_changed = Signal(dict, bool)
     preview_cancel_requested = Signal()
+    #: Enter 在文件卡片上完成预览后，请求主窗口把键盘焦点移交给文件预览器。
+    preview_focus_requested = Signal()
     toggle_pool_requested = Signal(dict)  # 右键直连：添加/移除文件池
+    #: 一批缩略图就绪（路径列表）：储存池据此刷新自己的卡片图标。
+    thumbnails_ready = Signal(list)
+    #: 缩略图被清除（路径列表，空表示全清）：储存池据此回落类型图标。
+    thumbnails_cleared = Signal(list)
     add_files_to_pool_requested = Signal(list)  # 框选批量加入储存池（file_info 列表，add-only）
     remove_files_from_pool_requested = Signal(list)  # 框选全部已在池时批量移出储存池（file_info 列表）
     # 异步目录加载：后台线程收集完成后发射（path, entries 或 None, token）
@@ -471,6 +477,12 @@ class FileSelectorLayout(QWidget):
         self._nav_cursor_row: int = -1
         self._nav_last_key: int = 0
         self._nav_model_key: Optional[Tuple[Any, int, str]] = None
+        # 批量选择态（Alt+方向键进入）：与框选互斥，Tab 一次性入池。
+        self._batch_mode: bool = False
+        self._batch_selected: set = set()
+        self._batch_anchor: str = ""
+        # 进入新目录后是否自动把光标落到第一个非文件夹条目（见 _finalize_stream）
+        self._pending_auto_select: bool = False
         # 异步目录加载：递增 token 丢弃过期结果（快速连续导航场景）
         self._async_load_token: int = 0
         self._dir_entries_ready.connect(self._on_dir_entries_ready)
@@ -580,6 +592,9 @@ class FileSelectorLayout(QWidget):
             hit_test=self._box_hit_test,
             on_hits=self._apply_box_hits,
         )
+
+        # 注册快捷键处理器（区域 selector；Escape 消费链也在此登记）
+        self._register_shortcuts()
 
     # ── 事件过滤器：在 QListView resize 前更新网格 ──────────────────────
 
@@ -873,6 +888,9 @@ class FileSelectorLayout(QWidget):
         direction = self._infer_navigation_direction(self._current_path, "All")
         started = direction != 0 and self._file_list.begin_path_transition(direction)
         self._load_directory_async("All", direction if started else 0)
+        # 与进入目录一致：All 视图落地后也保持「无光标、无预览高亮」，
+        # 由首次方向键落位（否则旧目录的预览路径若命中某个盘符会复活成锚点）。
+        self._pending_auto_select = True
         # 注：盘符过滤开关由 _load_directory_async → _DirectoryStreamRunnable
         # 在派发时快照 self._include_remote_drives，线程内不读实例状态。
         self._current_path = "All"
@@ -1937,6 +1955,14 @@ class FileSelectorLayout(QWidget):
                 model.set_files(settled)
             self._update_grid_size()
             final_n = len(settled)
+        if self._pending_auto_select:
+            # 进入新目录后**不**自动选中 / 不自动预览（用户要求：保持无高亮），
+            # 只在首次按方向键时由 handle_nav_key_press 落到第一个非文件夹条目。
+            # 必须连旧目录的预览路径一起清掉：``_resolve_anchor_row`` 会把它
+            # 当锚点，退回上级目录时该路径仍存在，首次方向键就会从旧卡片继续，
+            # 而不是落位到第一个条目。
+            self._pending_auto_select = False
+            self.clear_previewing_state()
         self._update_file_count(final_n)
         if self._pending_locate_path:
             self._handle_pending_locate()
@@ -2016,6 +2042,11 @@ class FileSelectorLayout(QWidget):
             self._apply_all_entries(entries)
         else:
             self._apply_directory_entries(path, entries)
+        if self._pending_auto_select:
+            # 与流式收尾（_finalize_stream）同口径：新目录落地后保持
+            # 「无光标、无预览高亮」，首次方向键再落位到第一个条目。
+            self._pending_auto_select = False
+            self.clear_previewing_state()
         if direction != 0:
             self._file_list.finish_path_transition(direction)
         self._handle_pending_locate()
@@ -2221,6 +2252,8 @@ class FileSelectorLayout(QWidget):
             inferred = self._infer_navigation_direction(self._current_path, path)
             if inferred != 0 and self._file_list.begin_path_transition(inferred):
                 direction = inferred
+        # 进入新目录后把光标落到第一个非文件夹条目（见 _finalize_stream）
+        self._pending_auto_select = True
         self._load_directory_async(
             path, direction, initial=initial, rollback_history=True
         )
@@ -2380,6 +2413,7 @@ class FileSelectorLayout(QWidget):
             if path == "All":
                 self._navigate_to_all()
                 return
+            self._pending_auto_select = True
             self._load_directory_with_transition(path, -1)
             self._save_last_path(path)
             return
@@ -2387,6 +2421,7 @@ class FileSelectorLayout(QWidget):
             # 向上回退到上级目录，替换历史栈防止循环
             parent = os.path.dirname(self._current_path)
             if parent and parent != self._current_path and os.path.isdir(parent):
+                self._pending_auto_select = True
                 self._load_directory_with_transition(parent, -1)
                 self._nav_history = [parent]
                 self._history_index = 0
@@ -2451,6 +2486,9 @@ class FileSelectorLayout(QWidget):
         file_path = self._file_model.data(index, FilePathRole)
         if not file_path:
             return
+        # 同步键盘光标：鼠标点到哪里，后续方向键就从哪里继续
+        # （否则方向键会从上一次手势停留处继续，与视觉焦点脱节）。
+        self._sync_nav_cursor(file_path)
         is_dir = bool(self._file_model.data(index, IsDirRole))
         if is_dir:
             self._navigate_to(file_path)
@@ -2490,7 +2528,9 @@ class FileSelectorLayout(QWidget):
         return {
             "name": self._file_model.data(idx, FileNameRole) or "",
             "path": file_path,
-            "is_dir": False,
+            # 真实 is_dir：文件夹也能入池（与右键入池口径一致），下游
+            # FilePoolLayout / FileInfoPanel 据此走目录分支。
+            "is_dir": bool(self._file_model.data(idx, IsDirRole) or False),
             "size": int(self._file_model.data(idx, FileSizeRole) or 0),
             "modified": self._file_model.data(idx, ModifiedRole) or "",
             "created": self._file_model.data(idx, CreatedRole) or "",
@@ -2524,6 +2564,8 @@ class FileSelectorLayout(QWidget):
         file_path: str = self._file_model.data(index, FilePathRole) or ""
         if not file_path:
             return
+        # 右键同样视为定位：同步键盘光标
+        self._sync_nav_cursor(file_path)
         if file_path in self._file_model.get_selected_files():
             # 命中框选中的卡片：全部已在池中 → 批量移出；否则批量加入（add-only）
             infos = self._selected_file_infos()
@@ -2651,10 +2693,18 @@ class FileSelectorLayout(QWidget):
         service.save(raw)
 
     def _show_favorites_dialog(self) -> None:
-        """显示收藏夹对话框（工具栏星标按钮）。
+        """显示收藏夹对话框（工具栏星标按钮 / ``Ctrl+G``）。
 
-        同类弹窗已打开时只前置已有实例（不重复弹出）。
+        已打开时再次触发 = 关闭（对称开关）。
         """
+        existing = self._dialog_kinds.get("favorites")
+        if existing is not None:
+            try:
+                if not getattr(existing, "_is_closing", False) and existing.isVisible():
+                    existing.close_dialog(0)
+                    return
+            except RuntimeError:
+                self._dialog_kinds.pop("favorites", None)
         if not self._claim_dialog("favorites"):
             return
         favorites = self._get_favorites()
@@ -3023,6 +3073,8 @@ class FileSelectorLayout(QWidget):
             )
             return
         paths = self._collect_thumbnail_targets()
+        self._thumb_scope = "current"
+        self._thumb_requested_total = len(paths)
         self._enter_generation_busy()
         # 空任务由 controller 同步 emit batch_finished(0,0)，
         # 槽内恢复按钮并弹轻提示，随后才回到这里返回
@@ -3054,28 +3106,24 @@ class FileSelectorLayout(QWidget):
         self._show_message_dialog("缩略图", "已取消缩略图生成任务")
 
     def _on_clear_thumbnails(self) -> None:
-        """「清除缩略图」按钮：确认对话框后启动全量缩略图缓存清除。"""
-        if self._thumb_controller.is_busy:
-            return  # 防御：按钮已禁用，正常不可达
-        dialog = create_basic_dialog(
-            title="清除缩略图",
-            message="确定要清除全部缩略图缓存吗？此操作无法撤销。",
-            cancel_text="取消",
-            confirm_text="清除",
-            parent=self._dialog_parent(),
-            modal=True,
-        )
-        self._track_dialog(dialog)
-        dialog.finished.connect(
-            lambda result: self._start_clear_thumbnails() if result == 1 else None
-        )
+        """「清除缩略图」按钮：确认后清除**当前目录**的缩略图缓存。
 
-    def _start_clear_thumbnails(self) -> None:
-        """确认清除后启动清除任务：禁用按钮 + 后台执行。"""
+        与 ``Shift+Q`` 统一为按路径清除（不再全量清除其它目录的缓存）。
+        """
+        self.clear_thumbnails_for_paths(self._collect_thumbnail_targets())
+
+    def _start_clear_thumbnails(self, paths=None) -> None:
+        """确认清除后启动清除任务：禁用按钮 + 后台执行。
+
+        Args:
+            paths: ``None`` = 全量清除；列表 = 只清这些源文件的缓存。
+        """
         if self._thumb_controller.is_busy:
             return  # 确认框打开期间已有新任务启动，交给该任务的槽恢复按钮
+        # 记录本次清除的源文件路径：清除完成后按路径通知储存池回落类型图标
+        self._clearing_paths = list(paths) if paths else []
         self._set_thumbnail_buttons_busy(True, "清除中...")
-        if not self._thumb_controller.start_clear():
+        if not self._thumb_controller.start_clear(paths):
             self._set_thumbnail_buttons_busy(False)
 
     def _set_thumbnail_buttons_busy(self, busy: bool, text: str = "") -> None:
@@ -3125,21 +3173,61 @@ class FileSelectorLayout(QWidget):
         for file_path in file_paths:
             icon_manager.clear_cache(file_path)
         self._file_model.emit_icon_changed(file_paths)
+        # 通知储存池：同一批文件若在池中，必须重取图标（否则一直显示旧图）
+        try:
+            self.thumbnails_ready.emit(list(file_paths))
+        except RuntimeError:
+            pass
 
     def _on_thumbnail_batch_finished(self, success_count: int, processed_count: int) -> None:
-        """生成完成槽：恢复按钮；空任务（无可生成项）时弹轻提示。"""
+        """生成完成槽：恢复按钮；空任务（无可生成项）时弹轻提示。
+
+        提示按**触发来源 + 真实数量**拼文案：储存池里按 ``Q`` 不该说「所选
+        文件」，而应明确指出池内共有多少个文件没有被生成。
+        """
         self._set_thumbnail_buttons_busy(False)
-        if processed_count == 0:
-            self._show_message_dialog("生成缩略图", "所选文件均已有缩略图或无媒体文件")
+        if processed_count <= 0 and success_count <= 0:
+            scope = getattr(self, "_thumb_scope", "current")
+            total = int(getattr(self, "_thumb_requested_total", 0) or 0)
+            if total <= 0:
+                # 按钮路径直接调控制器，没有经过 generate_thumbnails_for_paths，
+                # 拿不到准确数量时退回不含数字的通用文案。
+                message = "所选文件均已有缩略图或不是媒体文件"
+            elif scope == "pool":
+                message = f"储存池 {total} 个文件均已有缩略图或不是媒体文件"
+            else:
+                message = f"所选 {total} 个文件均已有缩略图或不是媒体文件"
+            self._show_message_dialog("生成缩略图", message)
+            self._thumb_scope = "current"
+            self._thumb_requested_total = 0
+            return
+        # 精确诊断：有失败时明确告知数量与常见原因，不改变生成本身的行为。
+        failed = max(0, int(processed_count) - int(success_count))
+        if failed > 0:
+            self._show_message_dialog(
+                "生成缩略图",
+                f"成功 {success_count} 个，失败 {failed} 个"
+                "（格式不支持、文件损坏或尺寸超限）",
+            )
+        self._thumb_scope = "current"
+        self._thumb_requested_total = 0
 
     def _on_thumbnails_cleared(self, deleted_count: int) -> None:
-        """清除完成槽：全清图标缓存 + 全行刷新图标 + 弹结果通知。"""
+        """清除完成槽：全清图标缓存 + 全行刷新图标 + 通知储存池回落图标。"""
         FileIconManager().clear_cache()
         model = self._file_model
         if model.rowCount() > 0:
             top = model.index(0, 0)
             bottom = model.index(model.rowCount() - 1, 0)
             model.dataChanged.emit(top, bottom, [IconPixmapRole])
+        # 储存池卡片持有的是加入时的旧 pixmap，必须按路径重取（回落类型图标），
+        # 否则用户会看到「已清除但池里仍是旧缩略图」。
+        cleared = list(getattr(self, "_clearing_paths", []) or [])
+        self._clearing_paths = []
+        try:
+            self.thumbnails_cleared.emit(cleared)
+        except RuntimeError:
+            pass
         self._set_thumbnail_buttons_busy(False)
         self._show_message_dialog("清除缩略图", f"已清除 {deleted_count} 个缩略图缓存文件")
 
@@ -3153,8 +3241,16 @@ class FileSelectorLayout(QWidget):
     def _show_filter_dialog(self) -> None:
         """显示筛选弹窗：输入文件名正则（不区分大小写），应用后重载目录。
 
-        同类弹窗已打开时只前置已有实例（不重复弹出）。
+        ``Ctrl+F`` 是对称开关：已打开时再按关闭。
         """
+        existing = self._dialog_kinds.get("filter")
+        if existing is not None:
+            try:
+                if not getattr(existing, "_is_closing", False) and existing.isVisible():
+                    existing.close_dialog(0)
+                    return
+            except RuntimeError:
+                self._dialog_kinds.pop("filter", None)
         if not self._claim_dialog("filter"):
             return
         body = QWidget()
@@ -3460,6 +3556,30 @@ class FileSelectorLayout(QWidget):
         except RuntimeError:
             pass
 
+    def focus_first_entry(self) -> None:
+        """把焦点交给文件列表并把导航光标刷新到第一个卡片。
+
+        用于预览器（压缩包 / 文件夹）根目录 Esc 回跳：焦点回到本区域时，
+        方向键应从第一张卡片开始，而不是沿上一次离开时的光标继续。落点
+        口径与「进入目录后首次按方向键」一致：优先第一个非文件夹条目，
+        全是文件夹时取第 0 行（见 :meth:`_first_entry_row`）。
+
+        只写导航光标状态并滚动到可见，**不**改动预览高亮
+        （``set_previewing_file``），因此不会触发预览内容切换。
+        """
+        row = self._first_entry_row()
+        if row >= 0:
+            path = self._row_path(row)
+            if path:
+                self._nav_cursor_row = row
+                self._nav_cursor_path = path
+                # 重置手势链：下一次方向键视为全新手势，从落点行起算
+                self._nav_active = False
+                self._nav_last_key = 0
+                self._nav_model_key = self._nav_model_signature()
+                self._scroll_to_file(path)
+        self.focus_file_list()
+
     def release_path_focus_on_outside_click(self, target: QWidget) -> bool:
         """点击路径框以外区域时释放路径框焦点。
 
@@ -3524,8 +3644,13 @@ class FileSelectorLayout(QWidget):
         self._invalidate_file_rows(dirty_rows)
 
     def clear_previewing_state(self) -> None:
-        """清除所有卡片的预览状态。"""
+        """清除所有卡片的预览状态，并清空键盘光标。
+
+        取消预览后选择器必须回到「无任何卡片带光标」的状态：否则下一次
+        方向键会从被取消的那张卡继续，与用户看到的高亮位置脱节。
+        """
         self.set_previewing_file("")
+        self.clear_nav_cursor()
 
     # ── 定位 ──────────────────────────────────────────────────────────
 
@@ -3569,6 +3694,8 @@ class FileSelectorLayout(QWidget):
         model_file_path = self._locate_model_file_path(file_path)
         if model_file_path:
             self.set_previewing_file(model_file_path)
+            # 同步键盘光标，使后续方向键从定位处继续
+            self._sync_nav_cursor(model_file_path)
             # 目录过渡动画（120ms）结束后再滚动，避免与过渡快照错位
             QTimer.singleShot(180, lambda p=model_file_path: self._scroll_to_file(p))
 
@@ -3609,9 +3736,26 @@ class FileSelectorLayout(QWidget):
 
         MainWindow 在主窗口失活时调用；模型重填（目录切换）路径同样调用，
         保证旧目录的光标行/手势不会残留在新目录的模型上。
+
+        注意**不清** ``_nav_cursor_path``：窗口失活/目录重填后仍希望方向键
+        从原光标继续（``_resolve_anchor_row`` 以路径优先）。需要彻底「无光标」
+        语义时调用 :meth:`clear_nav_cursor`。
         """
         self._nav_active = False
         self._nav_cursor_row = -1
+        self._nav_model_key = None
+
+    def clear_nav_cursor(self) -> None:
+        """彻底清空方向键光标与手势状态（幂等）。
+
+        与 :meth:`reset_nav_state` 的区别：本方法连 ``_nav_cursor_path`` 一起
+        清掉，使选择器进入真正的「无任何卡片带光标」状态——取消预览后即
+        属于该状态，下一次方向键应重新落位到第一张卡片。
+        """
+        self._nav_active = False
+        self._nav_cursor_row = -1
+        self._nav_cursor_path = ""
+        self._nav_last_key = 0
         self._nav_model_key = None
 
     def _nav_cols(self) -> int:
@@ -3666,38 +3810,46 @@ class FileSelectorLayout(QWidget):
             return ""
         return self._file_model.data(self._file_model.index(row, 0), FilePathRole) or ""
 
-    def _scan_file_row(self, row: int, step: int) -> Optional[int]:
-        """沿模型顺序扫描下一个/上一个非目录行（跨目录连续跳过、环绕）。
+    def _scan_file_row(
+        self, row: int, step: int, *, skip_dirs: bool = False
+    ) -> Optional[int]:
+        """沿模型顺序扫描下一个/上一个行（跨目录连续、环绕）。
 
         Args:
             row: 起始模型行号。
             step: 步进方向（+1 向前 / -1 向后）。
+            skip_dirs: True 时跳过目录（图像预览器语义）；False 时**包含
+                目录**（文件选择器语义——文件夹也可预览，回车进入）。
 
         Returns:
-            Optional[int]: 命中的非目录行号；全模型皆目录或空模型返回 None。
+            Optional[int]: 命中行号；空模型或全部被跳过时返回 None。
         """
         n = self._file_model.rowCount()
         if n == 0:
             return None
         for i in range(1, n + 1):
             r = (row + step * i) % n
-            if not self._row_is_dir(r):
-                return r
+            if skip_dirs and self._row_is_dir(r):
+                continue
+            return r
         return None
 
-    def _grid_step_row(self, row: int, delta_rows: int) -> Optional[int]:
-        """卡片网格的垂直步进：按模型行算上/下相邻格，再吸附到最近非目录。
+    def _grid_step_row(
+        self, row: int, delta_rows: int, *, skip_dirs: bool = False
+    ) -> Optional[int]:
+        """卡片网格的垂直步进：按模型行算上/下相邻格。
 
         ``cols`` 计全部格子（含目录），故上下相邻格必须由模型行 ``divmod``
-        得出（不能用"文件序"步进——目录占用的格子会错位）；目标网格行整体
-        皆目录时返回 None，由调用方回退为文件序扫描。
+        得出（不能用"文件序"步进——目录占用的格子会错位）。
 
         Args:
             row: 起始模型行号。
             delta_rows: 行步进（+1 向下 / -1 向上）。
+            skip_dirs: True 时跳过目录（并吸附到同行最近的非目录）；
+                False 时直接返回同列目标格（含目录）。
 
         Returns:
-            Optional[int]: 命中的非目录行号；空模型或目标行无文件返回 None。
+            Optional[int]: 命中的行号；空模型返回 None。
         """
         cols = self._nav_cols()
         n = self._file_model.rowCount()
@@ -3708,6 +3860,9 @@ class FileSelectorLayout(QWidget):
         ng = (grid_row + delta_rows) % total
         start = ng * cols
         end = min(start + cols, n)
+        if not skip_dirs:
+            target = start + grid_col
+            return target if target < end else start
         for r in sorted(range(start, end), key=lambda r: (abs((r - start) - grid_col), r)):
             if not self._row_is_dir(r):
                 return r
@@ -3776,35 +3931,41 @@ class FileSelectorLayout(QWidget):
         if fresh:
             self._nav_model_key = sig
         if fresh:
-            base = self._resolve_anchor_row()
+            # 行号优先（同一目录内鼠标点击/上次手势的落点），其次才回退到
+            # 路径解析（``_resolve_anchor_row``）。目录切换后光标与预览态
+            # 都已被清空，因此这里拿不到任何锚点 → 落位到第一个条目。
+            base = self._nav_cursor_row
+            if base < 0:
+                base = self._resolve_anchor_row()
+            if base < 0:
+                # 首次按方向键且无光标：直接把光标落位到第一张卡片，**不再
+                # 额外移动一格**——用户要求「取消预览后按任意方向键都先选中
+                # 第一个卡片」。预览内容仍由 release 统一加载。
+                if self._land_on_first_entry(key):
+                    return True
         else:
             base = self._nav_cursor_row
         target: Optional[int]
         if base < 0:
-            # 新手势无锚点：+ 方向取第一个文件、- 方向取最后一个文件（跳过目录）
-            target = None
-            rows = range(n) if step > 0 else range(n - 1, -1, -1)
-            for r in rows:
-                if not self._row_is_dir(r):
-                    target = r
-                    break
-            if target is None:
-                return False
+            # 仍无锚点（空目录 / 全为文件夹且无光标）：+ 方向取首行、
+            # - 方向取末行（**含文件夹**，与「方向键可在所有条目间移动」一致）。
+            target = 0 if step > 0 else n - 1
         elif direction == "col":
-            # 左右方向：离散点按 = 每次前进一个文件（跨目录连续跳过、环绕）
+            # 左右方向：离散点按 = 每次前进一个条目（含文件夹、环绕）
             target = self._scan_file_row(base, step)
         elif self._view_mode == "list":
             target = self._scan_file_row(base, step)
         else:
-            # 卡片模式：优先按模型行网格上下步进；目标行整行皆目录时回退
-            # 文件序扫描。必须用显式 None 判断：合法目标行 0 是 falsy，
-            # `or` 兜底会把"环绕到首行"误换成文件序邻居。
+            # 卡片模式：优先按模型行网格上下步进（保持列对齐）；目标格
+            # 越界时回退为顺序扫描。必须用显式 None 判断：合法目标行 0
+            # 是 falsy，`or` 兜底会把"环绕到首行"误换成顺序邻居。
             grid_target = self._grid_step_row(base, step)
-            target = (
-                grid_target
-                if grid_target is not None
-                else self._scan_file_row(base, step)
-            )
+            if grid_target is not None and grid_target != base:
+                target = grid_target
+            else:
+                # 只有一行卡片（上下无相邻行）时网格步进会回到原格，
+                # 此时退化为顺序扫描，保证方向键始终有可见响应。
+                target = self._scan_file_row(base, step)
         if target is None:
             return False
         self._nav_cursor_row = target
@@ -3841,6 +4002,560 @@ class FileSelectorLayout(QWidget):
             return True
         self.file_selected.emit(info)
         return True
+
+    # ── 快捷键（注册表驱动） ──────────────────────────────────────────────
+
+    def _register_shortcuts(self) -> None:
+        """登记选择器区域的全部快捷键处理器（``cleanup`` 时按 owner 注销）。"""
+        try:
+            from sopeek.core.shortcuts import shortcut_dispatcher
+
+            dispatcher = shortcut_dispatcher()
+            dispatcher.handlers.register_many(
+                {
+                    "selector.enter": self._shortcut_enter,
+                    "selector.toggle_pool": self._toggle_pool_current,
+                    "selector.filter": self._show_filter_dialog,
+                    "selector.favorites": self._show_favorites_dialog,
+                    "selector.refresh": self._reload_directory,
+                    "selector.sort_menu": self._shortcut_sort_menu,
+                    "selector.gen_thumbs": self.generate_thumbnails_for_current_path,
+                    "selector.clear_thumbs": self.clear_thumbnails_for_current_path,
+                    "selector.batch_up": lambda: self.enter_batch_mode(
+                        int(Qt.Key.Key_Up), -1, axis="row"
+                    ),
+                    "selector.batch_down": lambda: self.enter_batch_mode(
+                        int(Qt.Key.Key_Down), +1, axis="row"
+                    ),
+                    "selector.batch_left": lambda: self.enter_batch_mode(
+                        int(Qt.Key.Key_Left), -1, axis="col"
+                    ),
+                    "selector.batch_right": lambda: self.enter_batch_mode(
+                        int(Qt.Key.Key_Right), +1, axis="col"
+                    ),
+                },
+                owner=self,
+            )
+            # 方向键采用「按下只移高亮、松开才加载预览」的手势语义：
+            # press 走 handle_nav_key_press，release 走 handle_nav_key_release。
+            for action_id, qt_key in (
+                ("selector.nav_up", Qt.Key.Key_Up),
+                ("selector.nav_down", Qt.Key.Key_Down),
+                ("selector.nav_left", Qt.Key.Key_Left),
+                ("selector.nav_right", Qt.Key.Key_Right),
+            ):
+                key_value = int(qt_key)
+                dispatcher.handlers.register(
+                    action_id,
+                    lambda k=key_value: self.handle_nav_key_press(k),
+                    owner=self,
+                )
+                dispatcher.handlers.register(
+                    f"{action_id}.release",
+                    lambda k=key_value: self.handle_nav_key_release(k),
+                    owner=self,
+                )
+            dispatcher.register_escape_provider("selector", self)
+        except Exception as exc:  # noqa: BLE001 - 快捷键登记失败不阻塞界面
+            from sopeek.utils.app_logger import warning
+
+            warning(f"文件选择器快捷键登记失败: {exc}")
+
+    def _unregister_shortcuts(self) -> None:
+        """注销本组件登记的快捷键处理器（清理路径调用，幂等）。"""
+        try:
+            from sopeek.core.shortcuts import shortcut_dispatcher
+
+            dispatcher = shortcut_dispatcher()
+            dispatcher.handlers.unregister_owner(self)
+            dispatcher.unregister_escape_provider("selector")
+        except Exception:  # noqa: BLE001 - 清理阶段忽略
+            pass
+
+    # ── Escape 消费链 ────────────────────────────────────────────────────
+
+    def escape_handlers(self) -> list:
+        """返回 ``Esc`` 消费链（按优先级，返回 True 表示已消费）。"""
+        return [
+            self._esc_cancel_path_edit,
+            self._esc_exit_batch,
+            self._esc_clear_box,
+            self._esc_go_parent,
+        ]
+
+    def _esc_cancel_path_edit(self) -> bool:
+        """路径框有焦点时取消编辑并回填当前路径。"""
+        path_input = getattr(self, "_path_input", None)
+        if path_input is None:
+            return False
+        try:
+            if not path_input.hasFocus():
+                return False
+        except RuntimeError:
+            return False
+        self._update_path_input(self._current_path)
+        path_input.clearFocus()
+        return True
+
+    def _esc_exit_batch(self) -> bool:
+        """批量态 → 退出（保留已选高亮）。"""
+        if not self._batch_mode:
+            return False
+        self.exit_batch_mode(keep_selection=True)
+        return True
+
+    def _esc_clear_box(self) -> bool:
+        """框选态 → 清除框选（批量态的选中由 ``_esc_exit_batch`` 处理）。"""
+        if self._batch_mode:
+            return False
+        try:
+            if not self._file_model.get_selected_files():
+                return False
+        except (AttributeError, RuntimeError):
+            return False
+        self.clear_box_selection()
+        return True
+
+    def _esc_go_parent(self) -> bool:
+        """返回上一级（始终消费）。"""
+        self._go_back()
+        return True
+
+    # ── 批量选择 ─────────────────────────────────────────────────────────
+
+    def enter_batch_mode(
+        self, qt_key: int, step: int, *, axis: str = "linear"
+    ) -> None:
+        """``Alt+方向键``：进入批量态并以当前卡片为起点移动一格。
+
+        Args:
+            qt_key: 方向键键码（用于滚动/手势签名）。
+            step: 步进方向（+1 前进 / -1 后退）。
+            axis: ``"row"`` 按网格整行上下、``"col"`` 同行左右、
+                ``"linear"`` 顺序移动。
+        """
+        if not self._batch_mode:
+            self._batch_mode = True
+            # 与框选互斥：两种多选态同时存在会让 Tab 入池语义分叉。
+            self.clear_box_selection()
+            anchor_row = self._resolve_anchor_row()
+            if anchor_row < 0 and self._file_model.rowCount() > 0:
+                anchor_row = 0
+            self._batch_anchor = (
+                self._row_path(anchor_row) if anchor_row >= 0 else ""
+            )
+            if self._batch_anchor:
+                self._batch_selected = {self._batch_anchor}
+                self._nav_cursor_row = anchor_row
+                self._nav_cursor_path = self._batch_anchor
+        self._batch_step(qt_key, step, axis=axis)
+
+    def _batch_step(
+        self, qt_key: int, step: int, *, axis: str = "linear"
+    ) -> None:
+        """批量态下推进光标，把**经过的卡片**逐个加入选中集合。
+
+        用户明确要求：不做矩形范围扩展。方向键每移动一格，只把落到的
+        卡片加入选区，之前选中的保持——因此选区可以不连续（例如从某行
+        某列直接跳到上一行同列）。
+
+        Args:
+            qt_key: 方向键键码。
+            step: 步进方向。
+            axis: ``"row"`` 按网格整行上下、``"col"`` 同行左右、
+                ``"linear"`` 顺序移动。
+        """
+        self._nav_last_key = qt_key
+        current = self._nav_cursor_row
+        if current < 0:
+            current = self._resolve_anchor_row()
+        if current < 0:
+            return
+        target = self._batch_target_row(current, step, axis)
+        if target is None or target == current:
+            return
+        path = self._row_path(target)
+        if not path:
+            return
+        self._nav_cursor_row = target
+        self._nav_cursor_path = path
+        self.set_previewing_file(path)
+        self._scroll_to_file(path)
+        # 只加入落点卡片，不做区间/矩形填充
+        self._batch_selected.add(path)
+        self._invalidate_batch_rows()
+
+    def _batch_target_row(
+        self, current: int, step: int, axis: str
+    ) -> Optional[int]:
+        """按轴计算批量选择的下一格（不环绕，边界处停住）。"""
+        n = self._file_model.rowCount()
+        if n <= 0 or current < 0 or current >= n:
+            return None
+        if axis == "row":
+            cols = self._nav_cols()
+            target = current + step * cols
+            return target if 0 <= target < n else current
+        if axis == "col":
+            cols = self._nav_cols()
+            grid_row, col = divmod(current, cols)
+            target_col = col + step
+            if target_col < 0 or target_col >= cols:
+                return current
+            target = grid_row * cols + target_col
+            return target if target < n else current
+        target = current + step
+        return target if 0 <= target < n else current
+
+    def _batch_rows_between(self, anchor_row: int, current_row: int) -> set:
+        """（保留）返回锚点与当前格之间的路径集合。
+
+        当前批量选择语义是「方向键经过即加入」，不再使用矩形区间；本方法
+        仅保留给可能的后续需求，避免删除后被外部引用。
+        """
+        n = self._file_model.rowCount()
+        if n <= 0:
+            return set()
+        cols = self._nav_cols()
+        a = max(0, min(anchor_row, n - 1))
+        c = max(0, min(current_row, n - 1))
+        if cols <= 1:
+            lo, hi = sorted((a, c))
+            return {
+                p
+                for p in (self._row_path(r) for r in range(lo, hi + 1))
+                if p
+            }
+        ar, ac = divmod(a, cols)
+        cr, cc = divmod(c, cols)
+        r0, r1 = sorted((ar, cr))
+        c0, c1 = sorted((ac, cc))
+        selected = set()
+        for r in range(r0, r1 + 1):
+            for col in range(c0, c1 + 1):
+                idx = r * cols + col
+                if 0 <= idx < n:
+                    p = self._row_path(idx)
+                    if p:
+                        selected.add(p)
+        return selected
+
+    def exit_batch_mode(self, *, keep_selection: bool = True) -> None:
+        """退出批量态。
+
+        Args:
+            keep_selection: True 保留已选高亮（``Esc``）；False 清除
+                （``Tab`` 入池后）。
+        """
+        if not self._batch_mode:
+            return
+        self._batch_mode = False
+        if not keep_selection:
+            self._batch_selected.clear()
+        self._invalidate_batch_rows()
+    def _invalidate_batch_rows(self) -> None:
+        """把 ``_batch_selected`` 同步到模型的框选选中态（橡皮筋同一套视觉）。
+
+        批量选择必须复用框选的 ``IsSelectedRole``（虚线 accent 边框 +
+        半透明填充），否则用户看不到「哪些卡片被选中了」。
+        """
+        model = self._file_model
+        try:
+            current = model.get_selected_rows()
+        except (AttributeError, RuntimeError):
+            return
+        desired = set()
+        for path in self._batch_selected:
+            row = model.get_row(path) if path else -1
+            if row >= 0:
+                desired.add(row)
+        to_select = desired - current
+        to_deselect = current - desired
+        if to_select:
+            model.set_rows_selected(to_select, True)
+        if to_deselect:
+            model.set_rows_selected(to_deselect, False)
+        rows = sorted(desired | current)
+        if rows:
+            self._invalidate_file_rows(rows)
+        else:
+            try:
+                self._file_list.viewport().update()
+            except RuntimeError:
+                pass
+
+    # ── Enter：进入文件夹 / 预览并移交焦点 ─────────────────────────────────
+
+    def _shortcut_enter(self) -> bool:
+        """``Enter``：批量态无操作；目录进入；文件预览并请求移交焦点。
+
+        文件卡片不再用系统默认程序打开（外部打开由全局 ``Ctrl+K`` 承担），
+        而是先在应用内预览，再经 ``preview_focus_requested`` 由主窗口把
+        键盘焦点交给预览器，便于随后用预览器快捷键操作。
+        """
+        if self._batch_mode:
+            # 批量态的入池统一由 Tab 承担，Enter 不执行任何操作。
+            return True
+        path = self._previewing_file_path or self._nav_cursor_path
+        if not path:
+            return True
+        row = self._file_model.get_row(path)
+        if row < 0:
+            return True
+        if self._row_is_dir(row):
+            self._navigate_to(path)
+            return True
+        info = self._build_file_info_for_path(path)
+        if info is not None:
+            # 复用单击/方向键的预览链路；同文件重复触发由主窗口去重。
+            self.file_selected.emit(info)
+            self.preview_focus_requested.emit()
+        return True
+
+    def _commit_batch_to_pool(self) -> None:
+        """把批量选中的条目一次性加入储存池，并退出批量态。"""
+        infos = []
+        for path in sorted(self._batch_selected):
+            info = self._build_file_info_for_path(path)
+            if info is not None:
+                infos.append(info)
+        self.exit_batch_mode(keep_selection=False)
+        if infos:
+            self.add_files_to_pool_requested.emit(infos)
+
+    # ── Tab：加入 / 移出储存池 ───────────────────────────────────────────
+
+    def _toggle_pool_current(self) -> bool:
+        """``Tab``：批量态全部入池；否则切换当前光标卡片的池状态。"""
+        if self._batch_mode:
+            self._commit_batch_to_pool()
+            return True
+        path = self._previewing_file_path or self._nav_cursor_path
+        if not path:
+            return True
+        info = self._build_file_info_for_path(path)
+        if info is None:
+            return True
+        if self.has_pool_status(path):
+            self.remove_files_from_pool_requested.emit([info])
+        else:
+            self.add_files_to_pool_requested.emit([info])
+        return True
+
+    def has_pool_status(self, path: str) -> bool:
+        """判断路径是否已在储存池（与 ``sync_pool_status`` 同归一化口径）。
+
+        Args:
+            path: 文件路径。
+
+        Returns:
+            bool: 已在池中返回 True。
+        """
+        if not path or not self._pool_paths:
+            return False
+        return os.path.normcase(os.path.normpath(path)) in self._pool_paths
+
+    # ── 排序菜单 ─────────────────────────────────────────────────────────
+
+    def _shortcut_sort_menu(self) -> bool:
+        """``Ctrl+L``：打开排序菜单，关闭后焦点回到文件列表。"""
+        self._show_sort_menu()
+        self.focus_file_list()
+        return True
+
+    # ── 缩略图（当前路径） ───────────────────────────────────────────────
+
+    def generate_thumbnails_for_current_path(self) -> bool:
+        """``Q``：为当前路径下所有可生成缩略图的文件生成缩略图。"""
+        return self.generate_thumbnails_for_paths(self._collect_thumbnail_targets())
+
+    def generate_thumbnails_for_paths(
+        self, paths: list, *, scope: str = "current"
+    ) -> bool:
+        """为指定文件列表生成缩略图（``Q`` 与储存池共用）。
+
+        Args:
+            paths: 候选文件路径列表（非媒体 / 已有缩略图的由控制器过滤）。
+            scope: 触发来源，``"current"``（当前目录）或 ``"pool"``（储存池）。
+                仅用于提示文案，避免在储存池里说「当前目录没有…」。
+
+        Returns:
+            bool: 已启动或给出提示返回 True。
+        """
+        if self._thumb_controller.is_busy:
+            self._show_message_dialog("缩略图", "缩略图任务进行中，请稍候")
+            return True
+        if not paths:
+            if scope == "pool":
+                self._show_message_dialog("缩略图", "储存池没有文件")
+            else:
+                self._show_message_dialog("缩略图", "当前目录没有可生成缩略图的文件")
+            return True
+        # 记录来源与请求数：任务空转结束时按真实数字给出提示
+        self._thumb_scope = scope
+        self._thumb_requested_total = len(paths)
+        self._enter_generation_busy()
+        if not self._thumb_controller.start_generation(list(paths)):
+            self._set_thumbnail_buttons_busy(False)
+        return True
+
+    def clear_thumbnails_for_current_path(self) -> bool:
+        """``Shift+Q``：清除当前路径下所有文件的缩略图缓存。"""
+        return self.clear_thumbnails_for_paths(self._collect_thumbnail_targets())
+
+    def clear_thumbnails_for_paths(self, paths: list) -> bool:
+        """清除指定文件的缩略图缓存（``Shift+Q`` 与储存池共用）。
+
+        Args:
+            paths: 目标源文件路径列表。
+
+        Returns:
+            bool: 已处理返回 True。
+        """
+        if self._thumb_controller.is_busy:
+            return True
+        if not paths:
+            return True
+        dialog = create_basic_dialog(
+            title="清除缩略图",
+            message=(
+                f"确定要清除这 {len(paths)} 个文件的缩略图缓存吗？"
+                "此操作无法撤销。"
+            ),
+            cancel_text="取消",
+            confirm_text="清除",
+            parent=self._dialog_parent(),
+            modal=True,
+        )
+        self._track_dialog(dialog)
+        dialog.finished.connect(
+            lambda result: self._start_clear_thumbnails(list(paths))
+            if result == 1
+            else None
+        )
+        return True
+
+    # ── 供预览器复用的光标推进 ───────────────────────────────────────────
+
+    def advance_cursor(self, step: int, *, skip_dirs: bool = False):
+        """按方向推进光标并返回落点文件信息（不触发预览加载）。
+
+        供图像预览器 ``←→`` 切文件复用：与方向键手势共用同一个光标，
+        但推进规则可独立（预览器跳过文件夹）。
+
+        Args:
+            step: +1 下一个 / -1 上一个。
+            skip_dirs: 是否跳过文件夹。
+
+        Returns:
+            Optional[dict]: 落点文件信息；无可用落点时 ``None``。
+        """
+        rows = self._file_model.rowCount()
+        if rows <= 0:
+            return None
+        base = self._resolve_anchor_row()
+        if base < 0:
+            base = 0 if step > 0 else rows - 1
+        target = self._scan_file_row(base, step, skip_dirs=skip_dirs)
+        if target is None:
+            return None
+        path = self._row_path(target)
+        if not path:
+            return None
+        self._nav_cursor_row = target
+        self._nav_cursor_path = path
+        self.set_previewing_file(path)
+        self._scroll_to_file(path)
+        return self._build_file_info_for_path(path)
+
+    def _auto_select_first_entry(self) -> None:
+        """（已废弃）进入目录后自动选中并预览第一个条目。
+
+        保留方法名仅为兼容旧调用点；实际行为已改为
+        :meth:`_prime_cursor_first_entry`（只定位光标、不预览）。
+        """
+        self._prime_cursor_first_entry()
+
+    def _first_entry_row(self) -> int:
+        """第一个非文件夹条目的模型行号（无文件时回退首行）。
+
+        目录（文件夹）排在前面是默认排序口径，但「第一次按方向键落位」应
+        落在可预览的文件上，而不是先落到文件夹；全是文件夹时退回第 0 行，
+        保证任何模型都能落位。
+
+        Returns:
+            int: 目标模型行号；空模型返回 -1。
+        """
+        n = self._file_model.rowCount()
+        if n <= 0:
+            return -1
+        for row in range(n):
+            if not self._row_is_dir(row):
+                return row
+        return 0
+
+    def _prime_cursor_first_entry(self) -> bool:
+        """把键盘光标预置到**第一个非文件夹条目**（不加载预览、不高亮）。
+
+        用户要求：进入目录后保持「无高亮、无预览」，直到第一次按方向键才
+        落到第一个非文件夹条目并加载预览。本方法只写光标状态，由
+        :meth:`handle_nav_key_press` 在首次按键时调用。
+
+        Returns:
+            bool: 成功预置光标返回 True。
+        """
+        target = self._first_entry_row()
+        if target < 0:
+            return False
+        path = self._row_path(target)
+        if not path:
+            return False
+        self._nav_cursor_row = target
+        self._nav_cursor_path = path
+        return True
+
+    def _land_on_first_entry(self, key: int) -> bool:
+        """无光标时首次按方向键：直接把光标**落位**到第一个条目。
+
+        与 :meth:`handle_nav_key_press` 的步进语义区分：落位不再额外移动
+        一格，因此无论按 ↑↓←→ 哪个方向，首次按键都只把光标放到第一张卡片
+        （用户明确要求）。预览内容仍由 :meth:`handle_nav_key_release` 在
+        松开时统一加载一次。
+
+        Args:
+            key: 本次按下的 Qt 键值（写入手势签名）。
+
+        Returns:
+            bool: 落位成功返回 True；空模型 / 行无路径返回 False。
+        """
+        if not self._prime_cursor_first_entry():
+            return False
+        path = self._nav_cursor_path
+        if not path:
+            return False
+        self._nav_active = True
+        self._nav_last_key = key
+        self.set_previewing_file(path)
+        self._scroll_to_file(path)
+        return True
+
+    def _sync_nav_cursor(self, file_path: str) -> None:
+        """把键盘光标同步到指定路径（鼠标点击 / 定位时调用）。
+
+        Args:
+            file_path: 目标文件路径；不在当前模型中时静默忽略。
+        """
+        if not file_path:
+            return
+        row = self._file_model.get_row(file_path)
+        if row < 0:
+            return
+        self._nav_cursor_row = row
+        self._nav_cursor_path = self._row_path(row)
+        # 让下一次方向键视为「新手势」，从点击处重新起算
+        self._nav_active = False
+        self._nav_last_key = 0
+        self._nav_model_key = self._nav_model_signature()
 
     # ── 网格布局 ──────────────────────────────────────────────────────────
 
@@ -4008,8 +4723,18 @@ class FileSelectorLayout(QWidget):
     def _show_sort_menu(self) -> None:
         """显示排序方式下拉菜单（8 种模式，当前模式打勾）。
 
+        已打开时再次触发 = 关闭（``Ctrl+L`` 对称开关）。
         使用 StyledContextMenu 实现，与 web 端下拉样式保持一致。
         """
+        active = getattr(self, "_active_sort_menu", None)
+        if active is not None:
+            try:
+                if active.isVisible():
+                    active.close()
+                    self._active_sort_menu = None
+                    return
+            except RuntimeError:
+                self._active_sort_menu = None
         menu = StyledContextMenu(parent=self._sort_btn)
         for mode in range(8):
             menu.add_item(
@@ -4019,7 +4744,12 @@ class FileSelectorLayout(QWidget):
                 callback=lambda m=mode: self._set_sort_mode(m),
             )
         btn = self._sort_btn
-        menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+        self._active_sort_menu = menu
+        try:
+            menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+        finally:
+            if getattr(self, "_active_sort_menu", None) is menu:
+                self._active_sort_menu = None
 
     def _set_sort_mode(self, mode: int) -> None:
         """切换排序模式：raw 缓存可用则内存重排，否则重扫当前目录。

@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Optional
 from xml.etree import ElementTree
 
 from sopeek.utils.app_logger import debug, warning
@@ -162,9 +162,21 @@ ERROR_MESSAGE = "请安装 Microsoft Office/WPS Office 或 LibreOffice 插件以
 # 验证超时路径；soffice 卡死时由 ``_convert_with_libreoffice`` 终止并强杀。
 SOFFICE_CONVERSION_TIMEOUT: float = 30.0
 
+# COM 后端等待任务线程返回的上限（秒）。取消对 COM 无效（无法安全中断
+# RPC），因此必须有界等待，避免 worker 线程永久挂住、预览器无法回收。
+COM_CONVERSION_JOIN_TIMEOUT: float = 120.0
+
 # LibreOffice 转换串行化锁：soffice 为单实例程序，同一时刻只允许一个转换
 # 运行（跨线程）。模块级锁包裹「启动 + 等待」全程（T5 串行化测试契约）。
 _LO_CONVERSION_LOCK: threading.Lock = threading.Lock()
+
+# COM 转换串行化锁：MS Office / WPS 的 COM 实例虽然每次 ``DispatchEx`` 新建，
+# 但「导出 PDF」阶段多个实例并行会让 RPC 调用互相干扰，且失败路径的孤儿
+# 清理（``_cleanup_orphan_processes``）按进程名 + 启动时间筛选，**无法区分
+# 是哪个预览器的实例**——并发时会把另一个仍在使用的 Excel/Word 一起杀掉，
+# 触发 RPC 断开（0x80010108 / 0x800706be / 0x800706ba）这类 SEH 异常，
+# Python 捕获不到 → 进程崩溃。因此 COM 转换必须串行执行。
+_COM_CONVERSION_LOCK: threading.Lock = threading.Lock()
 
 # T9 取消 seam：正在进行的 soffice ``Popen`` 句柄注册表，键为执行线程的
 # ``threading.get_ident()``。转换完成 / 失败后必须在 ``finally`` 中清空对应
@@ -452,6 +464,14 @@ class OfficeConverter:
         if suffix not in _ALLOWED_BACKENDS:
             return cls._unsupported_result(suffix)
 
+        # OOXML 包完整性预检（docx/xlsx/pptx）：扩展名合法但文件损坏 /
+        # 伪造扩展名时，MS Office 的 COM ``Open()`` 会抛出 SEH 异常
+        # （0x800706be 等），Python 无法捕获 → 进程直接崩溃。这里在分派
+        # 任何后端之前用标准库校验 ZIP 结构，非法即返回可读提示。
+        integrity = cls._check_ooxml_integrity(suffix, file_info)
+        if integrity is not None:
+            return integrity
+
         # 零幻灯片 PPTX 预检：PowerPoint 无法把“没有幻灯片”的演示文稿导出为
         # PDF（SaveAs 会抛 0x80004005），且完全没必要为此拉起 Office。
         # 这里在分派前用 OOXML 包结构离线判断，直接返回空状态文案。
@@ -541,6 +561,96 @@ class OfficeConverter:
             detail="\n\n".join(detail_parts),
             failed_backend=primary.failed_backend or "error",
         )
+
+    @classmethod
+    def _check_ooxml_integrity(
+        cls, suffix: str, file_info: dict
+    ) -> Optional["ConversionResult"]:
+        """包完整性预检（docx/xlsx/pptx 的 ZIP 容器 + doc/xls/ppt 的 OLE 头）。
+
+        非法包若交给 MS Office 的 COM ``Open()``，会抛出 SEH 异常
+        （``0x800706be`` / ``0x800706ba``），Python 捕获不到 → 进程崩溃。
+        因此必须在分派任何后端之前离线校验。
+
+        Args:
+            suffix: 归一化扩展名。
+            file_info: 预览文件信息（取 ``path``）。
+
+        Returns:
+            Optional[ConversionResult]: 非法时返回「文件已损坏或无法处理」
+            错误结果；合法（或无法判定）时返回 ``None`` 继续正常流程。
+        """
+        if suffix not in ("docx", "xlsx", "pptx", "doc", "xls", "ppt"):
+            return None
+        path = cls._extract_path(file_info)
+        if not path:
+            return None
+        try:
+            if not Path(path).is_file():
+                return None
+        except OSError:
+            return None
+        # 空文件：合法但无内容 → 直接给空预览，不启动任何 Office 后端
+        # （0 字节文档交给 COM 同样可能触发 SEH 崩溃）。
+        try:
+            if Path(path).stat().st_size == 0:
+                return ConversionResult(
+                    content_type="outline",
+                    content="",
+                    backend_used="pure-python",
+                    message="文件为空，无可预览内容",
+                )
+        except OSError:
+            return None
+
+        if suffix in ("docx", "xlsx", "pptx"):
+            if zipfile.is_zipfile(path):
+                return None
+            warning(
+                f"[OfficeConverter] OOXML 包结构非法，跳过 Office 后端: {path}"
+            )
+            return ConversionResult(
+                content_type="error",
+                content="",
+                backend_used="error",
+                message="文件已损坏或无法处理",
+                detail="OOXML 包结构校验失败（不是有效的 ZIP 容器）",
+                failed_backend="integrity",
+            )
+
+        # legacy 格式（doc/xls/ppt）是 OLE 复合文档，魔数为
+        # D0 CF 11 E0 A1 B1 1A E1。头不符说明不是有效的复合文档，
+        # 交给 COM Open() 会走同样的 SEH 崩溃路径。
+        if cls._looks_like_ole_compound(path):
+            return None
+        warning(
+            f"[OfficeConverter] OLE 复合文档头非法，跳过 Office 后端: {path}"
+        )
+        return ConversionResult(
+            content_type="error",
+            content="",
+            backend_used="error",
+            message="文件已损坏或无法处理",
+            detail="OLE 复合文档头校验失败（不是有效的 .doc/.xls/.ppt）",
+            failed_backend="integrity",
+        )
+
+    @staticmethod
+    def _looks_like_ole_compound(path: str) -> bool:
+        """文件头是否为 OLE 复合文档魔数（``D0CF11E0A1B11AE1``）。
+
+        Args:
+            path: 待检测文件路径。
+
+        Returns:
+            bool: 命中魔数返回 True；读取失败时保守返回 True（不拦截）。
+        """
+        try:
+            with open(path, "rb") as handle:
+                header = handle.read(8)
+        except OSError:
+            return True
+        return header == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 
     @staticmethod
     def _pptx_slide_count(path: str) -> int | None:
@@ -956,9 +1066,12 @@ class OfficeConverter:
         def _com_task() -> None:
             pythoncom.CoInitialize()
             try:
-                results.append(
-                    cls._com_convert_in_task(path, suffix, task_started_at)
-                )
+                # COM 转换串行化：见 _COM_CONVERSION_LOCK 说明。锁必须包住
+                # 整个「打开 → 导出 → Quit」流程，否则并发实例仍会互相干扰。
+                with _COM_CONVERSION_LOCK:
+                    results.append(
+                        cls._com_convert_in_task(path, suffix, task_started_at)
+                    )
             except Exception as e:  # noqa: BLE001 - 任务线程兜底
                 results.append(
                     cls._com_error_result(
@@ -975,7 +1088,23 @@ class OfficeConverter:
             daemon=True,
         )
         thread.start()
-        thread.join()
+        # 有界等待：取消对 COM 无效（见 OfficeConverterWorker 说明），若任务
+        # 线程卡在 RPC 上无限阻塞，worker 线程会永久挂住且无法回收。超时后
+        # 放弃等待并返回可读错误——任务线程是 daemon，随进程退出。
+        thread.join(timeout=COM_CONVERSION_JOIN_TIMEOUT)
+
+        if thread.is_alive():
+            warning(
+                "[OfficeConverter] COM 转换超时未返回，放弃等待"
+                f"（{COM_CONVERSION_JOIN_TIMEOUT:.0f}s）: {path}"
+            )
+            return cls._com_error_result(
+                "COM 转换超时：Office 未在限定时间内完成转换",
+                detail=(
+                    f"任务线程超过 {COM_CONVERSION_JOIN_TIMEOUT:.0f} 秒未返回；"
+                    "常见原因：Office 弹出了隐藏的对话框，或文档过大。"
+                ),
+            )
 
         if not results:
             return cls._com_error_result("COM 转换失败：任务线程未返回结果")
@@ -2133,6 +2262,7 @@ class OfficeConverter:
 
 
 __all__ = [
+    "COM_CONVERSION_JOIN_TIMEOUT",
     "ConversionResult",
     "ERROR_MESSAGE",
     "LEGACY_SUFFIXES",

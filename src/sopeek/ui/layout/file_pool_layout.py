@@ -60,7 +60,11 @@ from components.file_card_delegate import (
     calc_grid_cell,
 )
 from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
-from components.styled_dialog import create_input_dialog, ask_custom_dialog
+from components.styled_dialog import (
+    ask_custom_dialog,
+    create_basic_dialog,
+    create_input_dialog,
+)
 from sopeek._paths import icons_dir, staging_pool_file
 from sopeek.services.staging_pool_service import StagingPoolService
 from sopeek.core.workers.staging_tasks import MD5CalculationTask
@@ -357,9 +361,13 @@ class FilePoolLayout(QWidget):
     item_left_clicked = Signal(dict)       # 左键点击某个池条目时发出
     item_right_clicked = Signal(dict)      # 右键点击某个池条目时发出
     preview_cancel_requested = Signal()    # 需要取消预览时发出
+    #: Enter 在池内卡片上完成预览后，请求主窗口把键盘焦点移交给文件预览器。
+    preview_focus_requested = Signal()
     update_progress = Signal(int)          # 进度更新信号（导出等操作）
     _export_finished = Signal(int, int, object)  # 导出完成信号（成功数, 失败数, 错误列表）
     pool_changed = Signal()                # 池内容变更（添加/移除/清空），通知选择器刷新状态
+    #: 池变空且焦点原本在池内：请求宿主把焦点回退到一个可用区域。
+    focus_exhausted = Signal()
     _folder_size_ready = Signal(str, object)  # 文件夹大小就绪（路径, 大小），worker 线程经此信号回主线程更新 UI
 
     def __init__(self, parent=None):
@@ -390,6 +398,8 @@ class FilePoolLayout(QWidget):
         self.previewing_file_path: Optional[str] = None
         self._card_widgets: dict[str, StyledInfoCard] = {}  # path → card
         self._removing_paths: set[str] = set()  # 正在播放移除动画的路径
+        # 空池焦点回退信号的一次性守卫（再次加入卡片时复位）。
+        self._focus_exhausted_emitted = False
 
         # ── InfoCard 创建/移除动画 ──────────────────────────────────────
         self._card_motion_duration_ms = 100
@@ -459,6 +469,10 @@ class FilePoolLayout(QWidget):
         # 且随 _card_scale 缩放：gap = int(5 * scale)），此处同样按当前缩放计算。
         self._card_layout.setSpacing(int(5 * self._card_scale))
         self._scroll_area.setWidget(self._card_container)
+        # 空池不是焦点区：QScrollArea 默认 StrongFocus，若不关闭，点击空白
+        # 视口会把焦点交给滚动区，空池就“获得焦点”了。update_stats() 会按
+        # 池内容在 StrongFocus / NoFocus 之间切换。
+        self._scroll_area.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         content_layout = QVBoxLayout(self._content_area)
         content_layout.setContentsMargins(0, 0, 0, 0)
@@ -555,6 +569,18 @@ class FilePoolLayout(QWidget):
         self.setMinimumHeight(self.minimum_row_height())
         # 底栏重命名按钮初始状态（经典列表视图隐藏）
         self._update_rename_button()
+
+        # ── 键盘导航状态 ────────────────────────────────────────────────
+        #: 键盘光标所在卡片路径（视觉顺序推进，见 advance_cursor）
+        self._cursor_path: str = ""
+        #: 批量选择态（Alt+方向键进入；Tab 批量移出）
+        self._batch_mode: bool = False
+        self._batch_selected: set = set()
+        #: 布局模式（三栏下禁用 Ctrl+滚轮 缩放，由主窗口下发）
+        self._layout_mode: str = "workspace"
+
+        # 注册快捷键处理器（区域 pool；Escape 消费链也在此登记）
+        self._register_shortcuts()
 
     # ═════════════════════════════════════════════════════════════════════
     #  底栏（骨架保留部分）
@@ -751,6 +777,48 @@ class FilePoolLayout(QWidget):
             except (RuntimeError, AttributeError) as exc:
                 # 卡片已销毁（移除动画与主题刷新交错）：跳过该卡片。
                 debug(f"刷新储存池卡片图标失败（已销毁）：{exc}")
+
+    def refresh_thumbnails(self, paths: list) -> None:
+        """指定路径的缩略图已重新生成 / 被清除：清缓存并重绘对应卡片。
+
+        文件选择器生成缩略图时只刷新自己的模型行；池内卡片持有的是加入
+        时的旧 pixmap，必须按路径重新取图，否则会一直显示旧图标，并让后续
+        ``Q`` 提示误判为「均已生成」。
+
+        Args:
+            paths: 受影响的源文件路径列表；**空列表表示全部刷新**
+                （``Shift+Q`` 全清后池内所有卡片都要回落类型图标）。
+        """
+        if not self._card_widgets:
+            return
+        targets = {os.path.normpath(p) for p in paths or () if p}
+        if not targets and not paths:
+            # 空列表 = 全清：刷新所有卡片（含类型图标回落）
+            self._refresh_card_icons()
+            return
+        from sopeek.services.file_icon_manager import FileIconManager
+
+        icon_manager = FileIconManager()
+        info_by_path = {}
+        for file_info in self.items or ():
+            path = os.path.normpath(file_info.get("path", ""))
+            if path:
+                info_by_path[path] = file_info
+        for path in targets:
+            try:
+                icon_manager.clear_cache(path)
+            except (RuntimeError, AttributeError):
+                pass
+            card = self._card_widgets.get(path)
+            file_info = info_by_path.get(path)
+            if card is None or not file_info:
+                continue
+            try:
+                pixmap = self._get_file_icon_pixmap(file_info)
+                if pixmap and not pixmap.isNull():
+                    card.set_media_pixmap(pixmap)
+            except (RuntimeError, AttributeError):
+                continue
 
     def _apply_empty_hint_style(self) -> None:
         """刷新空池引导提示样式（次级提示文字色，随主题/强调色变化）。"""
@@ -1176,7 +1244,13 @@ class FilePoolLayout(QWidget):
         self._refresh_all_card_overlays()
 
     def _handle_card_zoom(self, event) -> None:
-        """Ctrl+滚轮：缩放所有 StyledInfoCard 卡片尺寸（两种视图各自记忆）。"""
+        """Ctrl+滚轮：缩放所有 StyledInfoCard 卡片尺寸（两种视图各自记忆）。
+
+        经典三栏布局下不提供缩放（按产品定义），事件穿透为普通滚动。
+        """
+        if getattr(self, "_layout_mode", "workspace") == "classic":
+            event.ignore()
+            return
         delta = event.angleDelta().y()
         if delta > 0:
             new_scale = min(self._card_scale_max, self._card_scale + 0.1)
@@ -1926,15 +2000,26 @@ class FilePoolLayout(QWidget):
             pass
         return 1.0
 
-    def remove_file(self, file_path: str) -> None:
-        """从暂存池移除文件。"""
+    def remove_file(self, file_path: str, *, cancel_preview: bool = True) -> None:
+        """从暂存池移除文件。
+
+        Args:
+            file_path: 目标文件路径。
+            cancel_preview: 移除的正是当前预览文件时，是否同时取消预览。
+                ``Tab`` 键移出时传 ``False``——用户只想改变「是否在池」，
+                不应连带清空预览。
+        """
         normalized_path = os.path.normpath(file_path)
         if normalized_path not in self._card_widgets:
             return
         if normalized_path in self._removing_paths:
             return
-        if (self.previewing_file_path
-                and os.path.normcase(normalized_path) == os.path.normcase(self.previewing_file_path)):
+        if (
+            cancel_preview
+            and self.previewing_file_path
+            and os.path.normcase(normalized_path)
+            == os.path.normcase(self.previewing_file_path)
+        ):
             self.previewing_file_path = None
             self.preview_cancel_requested.emit()
 
@@ -2140,6 +2225,9 @@ class FilePoolLayout(QWidget):
         card = self._card_widgets.pop(file_path, None)
         if card is not None:
             card.deleteLater()
+        # 光标指向被移除的卡片：清空光标，使下一次方向键重新落位到第一张
+        if getattr(self, "_cursor_path", "") == file_path:
+            self._cursor_path = ""
         # 同步清理框选集合中的该路径（卡片已删，仅需移除记录）
         self._box_selected_paths.discard(file_path)
         self.items = [f for f in self.items if os.path.normpath(f.get("path", "")) != file_path]
@@ -2367,6 +2455,22 @@ class FilePoolLayout(QWidget):
         self._count_label.setText(f"{total_items}个条目")
         self._size_label.setText(self._format_file_size(total_size))
         self._update_empty_hint_visibility()
+        # 空池不可成为焦点区；池重新有内容后恢复滚动区聚焦能力，并复位
+        # “已请求回退焦点”的一次性守卫。
+        focus_was_inside = self._focus_is_inside()
+        self._apply_focus_policy()
+        if self.items:
+            self._focus_exhausted_emitted = False
+        elif focus_was_inside and not self._focus_exhausted_emitted:
+            self._focus_exhausted_emitted = True
+            for widget in (self._scroll_area, QApplication.focusWidget()):
+                if widget is None:
+                    continue
+                try:
+                    widget.clearFocus()
+                except RuntimeError:
+                    pass
+            self.focus_exhausted.emit()
         # 池内最后一张卡片被移除 / 清空后自动退出重命名编辑态
         if self._rename_edit_mode and not self._card_widgets:
             self.set_rename_edit_mode(False)
@@ -2396,6 +2500,34 @@ class FilePoolLayout(QWidget):
         norm = os.path.normpath(file_path) if file_path else ""
         return norm in self._card_widgets
 
+    def has_items(self) -> bool:
+        """池内是否有条目（空池不是合法焦点区）。"""
+        return bool(self.items)
+
+    def _apply_focus_policy(self) -> None:
+        """按池内容切换滚动区焦点策略：空池 NoFocus / 有卡片 StrongFocus。"""
+        try:
+            self._scroll_area.setFocusPolicy(
+                Qt.FocusPolicy.StrongFocus
+                if self.has_items()
+                else Qt.FocusPolicy.NoFocus
+            )
+        except RuntimeError:
+            pass
+
+    def _focus_is_inside(self) -> bool:
+        """当前键盘焦点是否位于池子树内（焦点回退判定用）。"""
+        try:
+            widget = QApplication.focusWidget()
+        except RuntimeError:
+            return False
+        if widget is None:
+            return False
+        try:
+            return widget is self or self.isAncestorOf(widget)
+        except RuntimeError:
+            return False
+
     def get_pool_paths(self) -> set[str]:
         """返回当前池中所有文件的路径集合。"""
         return set(self._card_widgets.keys())
@@ -2408,6 +2540,9 @@ class FilePoolLayout(QWidget):
             return
         # 单击卡片 = 预览 + 清除框选选中态（"点击其他地方"即取消多选）
         self.clear_box_selection()
+        # 同步键盘光标：鼠标点到哪张，后续方向键就从哪张继续（与文件选择器
+        # 同口径）。此处不抢焦点、不滚动——只更新光标状态与描边。
+        self._sync_cursor_to(file_path)
         norm_path = os.path.normpath(file_path) if file_path else ""
         if (norm_path
                 and self.previewing_file_path
@@ -2433,6 +2568,486 @@ class FilePoolLayout(QWidget):
             if p and os.path.normpath(str(p)) == norm_path:
                 self.item_right_clicked.emit(fi)
                 break
+
+    # ── 快捷键（注册表驱动） ──────────────────────────────────────────────
+
+    def _register_shortcuts(self) -> None:
+        """登记储存池区域的快捷键处理器。"""
+        try:
+            from sopeek.core.shortcuts import shortcut_dispatcher
+
+            dispatcher = shortcut_dispatcher()
+            dispatcher.handlers.register_many(
+                {
+                    "pool.enter": self._shortcut_enter,
+                    "pool.toggle_pool": self._toggle_pool_current,
+                    "pool.nav_up": lambda: self.advance_cursor(-1, axis="row"),
+                    "pool.nav_down": lambda: self.advance_cursor(+1, axis="row"),
+                    "pool.nav_left": lambda: self.advance_cursor(-1, axis="col"),
+                    "pool.nav_right": lambda: self.advance_cursor(+1, axis="col"),
+                    "pool.batch_up": lambda: self.enter_batch_mode(-1, axis="row"),
+                    "pool.batch_down": lambda: self.enter_batch_mode(+1, axis="row"),
+                    "pool.batch_left": lambda: self.enter_batch_mode(-1, axis="col"),
+                    "pool.batch_right": lambda: self.enter_batch_mode(+1, axis="col"),
+                },
+                owner=self,
+            )
+            dispatcher.register_escape_provider("pool", self)
+        except Exception as exc:  # noqa: BLE001 - 快捷键登记失败不阻塞界面
+            from sopeek.utils.app_logger import warning
+
+            warning(f"储存池快捷键登记失败: {exc}")
+
+    def _unregister_shortcuts(self) -> None:
+        """注销本组件登记的快捷键处理器（清理路径调用，幂等）。"""
+        try:
+            from sopeek.core.shortcuts import shortcut_dispatcher
+
+            dispatcher = shortcut_dispatcher()
+            dispatcher.handlers.unregister_owner(self)
+            dispatcher.unregister_escape_provider("pool")
+        except Exception:  # noqa: BLE001 - 清理阶段忽略
+            pass
+
+    # ── 布局模式（三栏禁用 Ctrl+滚轮 缩放） ───────────────────────────────
+
+    def set_layout_mode(self, mode: str) -> None:
+        """下发布局模式。
+
+        Args:
+            mode: ``"classic"``（经典三栏，禁用卡片缩放）或
+                ``"workspace"``（New 预览优先）。
+        """
+        self._layout_mode = mode if mode in ("classic", "workspace") else "workspace"
+
+    # ── 键盘光标 ─────────────────────────────────────────────────────────
+
+    def _ordered_paths(self) -> list:
+        """返回当前视觉顺序的卡片路径（按 y/x 排序，跳过移除中项）。"""
+        items = []
+        for path, card in self._card_widgets.items():
+            if path in self._removing_paths:
+                continue
+            try:
+                if card.isHidden():
+                    continue
+                items.append((card.y(), card.x(), path))
+            except RuntimeError:
+                continue
+        return [path for _, _, path in sorted(items)]
+
+    def _grid_columns(self) -> int:
+        """推算网格模式的列数（按卡片 x 坐标聚类）。
+
+        池是绝对定位容器，没有现成的列数属性。用卡片实际 x 坐标去重计数
+        最稳（缩放、布局切换后都成立）；列表模式恒为 1。
+
+        Returns:
+            int: 列数（≥1）。
+        """
+        if self._view_mode != "grid":
+            return 1
+        xs = set()
+        for path, card in self._card_widgets.items():
+            if path in self._removing_paths:
+                continue
+            try:
+                if card.isHidden():
+                    continue
+                xs.add(card.x())
+            except RuntimeError:
+                continue
+        return max(1, len(xs))
+
+    def advance_cursor(self, step: int, *, axis: str = "linear") -> bool:
+        """方向键推进键盘光标（首尾环绕）。
+
+        网格模式下 ``axis="row"`` 按「上一行/下一行同列」跳转，``axis="col"``
+        按同行左右移动；列表模式两者都退化为顺序 ±1。与文件选择器的
+        ``_grid_step_row`` 语义对齐。
+
+        无光标（首次进入池 / 光标卡片已被移除）时，任意方向键只把光标
+        **落位**到第一张卡片，不额外步进一格——与文件选择器「首次按方向键
+        先落位」的手感一致。
+
+        Args:
+            step: -1 上一个 / +1 下一个。
+            axis: ``"row"``（上下，按列步进）、``"col"``（左右，±1）、
+                ``"linear"``（顺序 ±1）。
+
+        Returns:
+            bool: 光标已移动返回 True。
+        """
+        order = self._ordered_paths()
+        if not order:
+            return False
+        current = getattr(self, "_cursor_path", "")
+        try:
+            index = order.index(current)
+        except ValueError:
+            # 无光标 / 光标路径已不在池中：落位到第一张，不步进
+            self._set_cursor(order[0])
+            return True
+
+        if axis == "row":
+            cols = self._grid_columns()
+            # 网格按整行跳（保持列对齐）；列表模式 cols == 1，退化为顺序 ±1
+            index = (index + step * max(1, cols)) % len(order)
+        else:
+            index = (index + step) % len(order)
+
+        target = order[index]
+        self._set_cursor(target)
+        return True
+
+    def _set_cursor(self, path: str) -> None:
+        """设置键盘光标（清旧态、置新态、聚焦并滚动到可见）。
+
+        Args:
+            path: 目标卡片路径。
+        """
+        old_path = getattr(self, "_cursor_path", "")
+        if old_path and old_path != path:
+            old_card = self._card_widgets.get(old_path)
+            if old_card is not None:
+                try:
+                    old_card.set_keyboard_focused(False)
+                except RuntimeError:
+                    pass
+        self._cursor_path = path
+        card = self._card_widgets.get(path)
+        if card is None:
+            return
+        try:
+            card.set_keyboard_focused(True)
+            card.setFocus()
+        except RuntimeError:
+            return
+        self._scroll_card_into_view(card)
+
+    def _sync_cursor_to(self, path: str) -> None:
+        """只更新键盘光标状态与描边（不抢焦点、不滚动）。
+
+        鼠标点击卡片时调用：与文件选择器的 ``_sync_nav_cursor`` 同口径，
+        使「点哪张，方向键就从哪张继续」；同时避免点击后 ``setFocus``
+        把焦点从卡片内部按钮抢走。
+
+        Args:
+            path: 目标卡片路径（不在池中时静默忽略）。
+        """
+        if not path:
+            return
+        norm = os.path.normpath(path)
+        if norm not in self._card_widgets:
+            return
+        old_path = getattr(self, "_cursor_path", "")
+        if old_path and old_path != norm:
+            old_card = self._card_widgets.get(old_path)
+            if old_card is not None:
+                try:
+                    old_card.set_keyboard_focused(False)
+                except RuntimeError:
+                    pass
+        self._cursor_path = norm
+        card = self._card_widgets.get(norm)
+        if card is None:
+            return
+        try:
+            card.set_keyboard_focused(True)
+        except RuntimeError:
+            pass
+
+    def _scroll_card_into_view(self, card) -> None:
+        """把卡片滚动到池视口内（上下各留 8px 边距）。
+
+        池是 ``QScrollArea`` + 绝对定位子控件（不是 QAbstractItemView），
+        没有 ``scrollTo``，因此手工换算到竖直滚动条数值。
+
+        Args:
+            card: 目标卡片控件。
+        """
+        try:
+            viewport = self._scroll_area.viewport()
+        except RuntimeError:
+            return
+        if viewport is None:
+            return
+        try:
+            top = card.mapTo(viewport, QPoint(0, 0)).y()
+            bottom = top + card.height()
+        except RuntimeError:
+            return
+        bar = self._scroll_area.verticalScrollBar()
+        margin = 8
+        viewport_h = viewport.height()
+        if viewport_h <= 0:
+            return
+        if top < margin:
+            bar.setValue(bar.value() + top - margin)
+        elif bottom > viewport_h - margin:
+            bar.setValue(bar.value() + bottom - (viewport_h - margin))
+
+    def focus_first_card(self) -> bool:
+        """把焦点交给第一张卡片（焦点区切换用）。
+
+        Returns:
+            bool: 有卡片并聚焦成功返回 True。
+        """
+        order = self._ordered_paths()
+        if not order:
+            return False
+        self._set_cursor(order[0])
+        return True
+
+    # ── Enter / Tab ──────────────────────────────────────────────────────
+
+    def _shortcut_enter(self) -> bool:
+        """``Enter``：批量态下**完全无操作**；否则预览当前卡片并移交焦点。
+
+        批量移出统一由 ``Tab`` 触发（用户明确要求），避免「Enter 误清空
+        整个选区」这类破坏性操作。再次按下 Enter 不会取消预览（开关语义
+        只属于鼠标单击），只把键盘焦点交给预览器。
+        """
+        if getattr(self, "_batch_mode", False):
+            return True
+        path = getattr(self, "_cursor_path", "") or self.previewing_file_path
+        if not path:
+            return True
+        # 重命名编辑态：沿用单击语义打开重命名弹窗，不移交焦点。
+        if self._rename_edit_mode and self._view_mode == "grid":
+            self.rename_file_by_path(path)
+            return True
+        if not self._is_previewing_path(path):
+            # 复用单击预览链路（同步光标、清除框选、触发 item_left_clicked）。
+            self._handle_card_clicked(path)
+        self.preview_focus_requested.emit()
+        return True
+
+    def _is_previewing_path(self, file_path: str) -> bool:
+        """判断路径是否就是当前池内预览文件（归一化比较）。
+
+        Args:
+            file_path: 待判定路径。
+
+        Returns:
+            bool: 与 ``previewing_file_path`` 指向同一文件时返回 True。
+        """
+        current = self.previewing_file_path or ""
+        if not current or not file_path:
+            return False
+        return os.path.normcase(os.path.normpath(current)) == os.path.normcase(
+            os.path.normpath(file_path)
+        )
+
+    def _toggle_pool_current(self) -> bool:
+        """``Tab``：批量态下把选中的卡片全部移出；否则移出当前卡片。
+
+        移出时**不取消预览**：``Tab`` 只控制「是否在池」，预览态由其它
+        操作负责。移出后把键盘光标移到下一个可用卡片，避免焦点丢失。
+        """
+        if getattr(self, "_batch_mode", False):
+            # 批量态：Tab = 一次性移出全部选中项（Enter 不再承担该职责）
+            self._commit_batch_remove()
+            return True
+        path = getattr(self, "_cursor_path", "")
+        if not path:
+            return True
+        order = self._ordered_paths()
+        try:
+            index = order.index(path)
+        except ValueError:
+            index = 0
+        self.remove_file(path, cancel_preview=False)
+        # 光标移到原位置的下一个卡片（环绕）；池空则清空光标
+        remaining = [p for p in order if p != path]
+        if remaining:
+            self._set_cursor(remaining[index % len(remaining)])
+        else:
+            self._cursor_path = ""
+        return True
+
+    # ── 批量选择 ─────────────────────────────────────────────────────────
+
+    def enter_batch_mode(self, step: int, *, axis: str = "linear") -> None:
+        """``Alt+方向键``：进入批量态并以当前卡片为起点移动一格。
+
+        Args:
+            step: -1 上一个 / +1 下一个。
+            axis: ``"row"`` 按网格整行上下、``"col"`` 同行左右、
+                ``"linear"`` 顺序移动。
+        """
+        order = self._ordered_paths()
+        if not order:
+            return
+        if not getattr(self, "_batch_mode", False):
+            self._batch_mode = True
+            self.clear_box_selection()
+            anchor = getattr(self, "_cursor_path", "") or order[0]
+            self._batch_selected = {anchor}
+            self._batch_anchor_path = anchor
+        anchor = getattr(self, "_batch_anchor_path", "") or (
+            getattr(self, "_cursor_path", "") or order[0]
+        )
+        current = getattr(self, "_cursor_path", "") or anchor
+        try:
+            index = order.index(current)
+        except ValueError:
+            index = 0
+        target_index = self._batch_target_index(index, step, axis, len(order))
+        if target_index == index:
+            return
+        target = order[target_index]
+        self._set_cursor(target)
+        # 只加入落点卡片：选区可不连续（用户明确要求，不做矩形扩展）
+        self._batch_selected.add(target)
+        self._refresh_batch_selection()
+
+    def _batch_target_index(
+        self, index: int, step: int, axis: str, total: int
+    ) -> int:
+        """按轴计算批量选择的下一格（不环绕，边界处停住）。"""
+        if total <= 0:
+            return index
+        if axis == "row":
+            cols = self._grid_columns()
+            if cols > 1:
+                target = index + step * cols
+                return target if 0 <= target < total else index
+            target = index + step
+            return target if 0 <= target < total else index
+        if axis == "col":
+            cols = self._grid_columns()
+            if cols <= 1:
+                target = index + step
+                return target if 0 <= target < total else index
+            grid_row, col = divmod(index, cols)
+            target_col = col + step
+            if target_col < 0 or target_col >= cols:
+                return index
+            target = grid_row * cols + target_col
+            return target if target < total else index
+        target = index + step
+        return target if 0 <= target < total else index
+
+    def _batch_paths_between(
+        self, order: list, anchor_index: int, current_index: int
+    ) -> set:
+        """返回锚点与当前格之间矩形范围内的全部路径。"""
+        if not order:
+            return set()
+        cols = self._grid_columns()
+        a = max(0, min(anchor_index, len(order) - 1))
+        c = max(0, min(current_index, len(order) - 1))
+        if cols <= 1:
+            lo, hi = sorted((a, c))
+            return set(order[lo:hi + 1])
+        ar, ac = divmod(a, cols)
+        cr, cc = divmod(c, cols)
+        r0, r1 = sorted((ar, cr))
+        c0, c1 = sorted((ac, cc))
+        selected = set()
+        for r in range(r0, r1 + 1):
+            for col in range(c0, c1 + 1):
+                idx = r * cols + col
+                if 0 <= idx < len(order):
+                    selected.add(order[idx])
+        return selected
+
+    def exit_batch_mode(self, *, keep_selection: bool = True) -> None:
+        """退出批量态。
+
+        Args:
+            keep_selection: True 保留已选（``Esc``）；False 清除。
+        """
+        if not getattr(self, "_batch_mode", False):
+            return
+        self._batch_mode = False
+        if not keep_selection:
+            self._batch_selected = set()
+        self._refresh_batch_selection()
+
+    def _refresh_batch_selection(self) -> None:
+        """按 ``_batch_selected`` 刷新卡片选中态。
+
+        复用框选的 ``set_selected``（虚线 accent 边框 + 半透明填充），
+        使批量选择与橡皮筋框选**视觉完全一致**（用户要求）。
+        """
+        for path, card in self._card_widgets.items():
+            try:
+                card.set_selected(path in self._batch_selected)
+            except RuntimeError:
+                continue
+        self._box_selected_paths = set(self._batch_selected)
+
+    def _commit_batch_remove(self) -> None:
+        """把批量选中的卡片一次性移出储存池（带确认对话框）。"""
+        paths = [p for p in self._batch_selected if p in self._card_widgets]
+        self.exit_batch_mode(keep_selection=False)
+        if not paths:
+            return
+        dialog = create_basic_dialog(
+            title="批量移出",
+            message=f"确定要把选中的 {len(paths)} 个条目移出储存池吗？",
+            cancel_text="取消",
+            confirm_text="移出",
+            parent=self.window(),
+            modal=True,
+        )
+
+        def _on_finished(result: int) -> None:
+            if result != 1:
+                return
+            for path in paths:
+                self.remove_file(path)
+
+        dialog.finished.connect(_on_finished)
+        dialog.show()
+
+    # ── Escape 消费链 ────────────────────────────────────────────────────
+
+    def escape_handlers(self) -> list:
+        """返回 ``Esc`` 消费链（储存池无上级，故只有三级）。"""
+        return [
+            self._esc_exit_rename,
+            self._esc_exit_batch,
+            self._esc_clear_box,
+        ]
+
+    def _esc_exit_rename(self) -> bool:
+        """重命名编辑态 → 退出。"""
+        if not self._rename_edit_mode:
+            return False
+        self.set_rename_edit_mode(False)
+        return True
+
+    def _esc_exit_batch(self) -> bool:
+        """批量态 → 退出并保留已选高亮。"""
+        if not getattr(self, "_batch_mode", False):
+            return False
+        self.exit_batch_mode(keep_selection=True)
+        return True
+
+    def _esc_clear_box(self) -> bool:
+        """框选态 → 清除框选。"""
+        if not self._box_selected_paths:
+            return False
+        self.clear_box_selection()
+        return True
+
+    # ── 缩略图目标（供主窗口委托给选择器执行） ───────────────────────────
+
+    def thumbnail_paths(self) -> list:
+        """返回池内全部**文件**路径（跳过文件夹，供 Q / Shift+Q 使用）。"""
+        paths = []
+        for info in self.items or ():
+            if not isinstance(info, dict):
+                continue
+            if info.get("is_dir"):
+                continue
+            path = str(info.get("path") or "")
+            if path:
+                paths.append(path)
+        return paths
 
     # ═════════════════════════════════════════════════════════════════════
     #  重命名

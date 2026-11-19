@@ -24,6 +24,44 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QFont, QCursor, QMouseEvent, QPainter, QPaintEvent, QColor
 
+# ── 打开态抽屉登记表 ────────────────────────────────────────────
+#: 当前处于打开态的抽屉（按打开顺序，末尾为最顶层）。
+#: 抽屉是**普通子控件**（不是 ``Qt.Popup`` 顶层窗口），
+#: ``QApplication.activePopupWidget()`` 感知不到，必须自行登记。
+_open_drawers: "list[StyledDrawer]" = []
+
+
+def open_drawer_count() -> int:
+    """返回当前处于打开态的抽屉数量。
+
+    Returns:
+        int: 打开态抽屉数量（含打开动画进行中的）。
+    """
+    return len(_open_drawers)
+
+
+def close_top_drawer() -> bool:
+    """关闭最顶层（最后打开）的抽屉。
+
+    供快捷键派发器在 ``Esc`` 时优先消费：抽屉是普通子控件，焦点在抽屉内部
+    列表时 ``Esc`` 会先被列表消费或根本传不到抽屉自身的事件过滤器，因此
+    由派发器统一收口。
+
+    Returns:
+        bool: 有抽屉被关闭返回 True。
+    """
+    while _open_drawers:
+        drawer = _open_drawers[-1]
+        try:
+            if drawer.is_open:
+                drawer.close_drawer()
+                return True
+        except RuntimeError:
+            pass
+        # 已失效 / 已关闭的条目直接摘除后继续尝试下一个
+        _open_drawers.pop()
+    return False
+
 from theme import tm
 from components.paint_utils import render_soft_shadow, shadow_padding
 from sopeek.ui.theme.app_stylesheet import register_widget_qss
@@ -144,6 +182,12 @@ class StyledDrawer(QWidget):
 
         self.setObjectName("StyledDrawer")
         self.installEventFilter(self)
+        #: 打开期间是否已把过滤器挂到 QApplication（关闭时卸下）。
+        #: 抽屉是普通子控件，焦点落在内部列表时按键到不了抽屉自身，
+        #: 必须挂在应用级才能收口 Esc 与方向键。
+        self._app_filter_installed = False
+        #: 打开前拥有焦点的控件：关闭后把焦点还回去（避免落到路径框）。
+        self._focus_before_open: Optional[QWidget] = None
 
         # When no parent, behave as a full-screen overlay window
         if parent is None:
@@ -330,11 +374,52 @@ class StyledDrawer(QWidget):
     # ── Event filter (Escape) ──
 
     def eventFilter(self, obj: QWidget, event: QEvent) -> bool:  # type: ignore[override]
+        """``Esc`` 关闭抽屉 + 打开期间的方向键空间导航。
+
+        ``Esc`` 主路径由快捷键派发器统一收口（见
+        ``dispatcher._close_top_drawer_if_any``），因为焦点落在抽屉内部列表时
+        事件可能到不了本过滤器。此处保留兜底，覆盖「派发器未安装」的场景。
+
+        方向键：抽屉内的搜索框 / 列表 / 按钮之间按**几何邻近**移动焦点，
+        使「搜索框按 ↓ 到结果列表、按 ↑ 回搜索框」成立。仅当焦点确实在抽屉
+        内部且按键无修饰键时接管。
+        """
         if event.type() == QEvent.KeyPress and self._is_open:
             ke = event  # type: QKeyEvent
-            if ke.key() == Qt.Key_Escape:
+            # 下拉框 / 菜单弹出时方向键归弹层所有
+            if QApplication.activePopupWidget() is not None:
+                return super().eventFilter(obj, event)
+            # 只处理焦点确实落在抽屉内部的按键：应用级过滤器会看到全应用的
+            # 按键，若不判断归属，抽屉打开动画期间会把别处的 Esc 也吃掉。
+            focused = QApplication.focusWidget()
+            inside = False
+            if focused is not None:
+                try:
+                    inside = (
+                        focused is self.panel or self.panel.isAncestorOf(focused)
+                    )
+                except RuntimeError:
+                    inside = False
+            if not inside:
+                return super().eventFilter(obj, event)
+            if (
+                ke.key() == Qt.Key_Escape
+                and ke.modifiers() == Qt.KeyboardModifier.NoModifier
+            ):
                 self.close_drawer()
                 return True
+            if ke.modifiers() == Qt.KeyboardModifier.NoModifier:
+                direction = {
+                    Qt.Key.Key_Up: "up",
+                    Qt.Key.Key_Down: "down",
+                    Qt.Key.Key_Left: "left",
+                    Qt.Key.Key_Right: "right",
+                }.get(ke.key())
+                if direction is not None:
+                    from . import spatial_focus_nav
+
+                    if spatial_focus_nav.move_focus(self.panel, direction):
+                        return True
         return super().eventFilter(obj, event)
 
     # ── Public API ──
@@ -381,7 +466,16 @@ class StyledDrawer(QWidget):
     def open_drawer(self) -> None:
         if self._is_open or self._animating:
             return
+        # 记录打开前的焦点，关闭后还回去（否则会落到主窗口默认落点=路径框）
+        try:
+            focused = QApplication.focusWidget()
+        except RuntimeError:
+            focused = None
+        if focused is not None and not self.isAncestorOf(focused):
+            self._focus_before_open = focused
         self._is_open = True
+        if self not in _open_drawers:
+            _open_drawers.append(self)
         self._animating = True
 
         self._update_container_geom()
@@ -395,6 +489,7 @@ class StyledDrawer(QWidget):
         self._panel.raise_()
         self.show()
         self.raise_()
+        self._install_app_filter()
 
         self._backdrop_anim.setStartValue(0.0)
         self._backdrop_anim.setEndValue(1.0)
@@ -408,6 +503,10 @@ class StyledDrawer(QWidget):
         if not self._is_open or self._animating:
             return
         self._is_open = False
+        try:
+            _open_drawers.remove(self)
+        except ValueError:
+            pass
         self._animating = True
 
         self._backdrop_anim.setStartValue(1.0)
@@ -418,6 +517,30 @@ class StyledDrawer(QWidget):
         self._slide_anim.setEndValue(self._start_pos)
         self._slide_anim.start()
 
+    # ── Application-level filter ──
+
+    def _install_app_filter(self) -> None:
+        """把事件过滤器挂到 ``QApplication``（幂等，打开期间生效）。"""
+        if self._app_filter_installed:
+            return
+        app = QApplication.instance()
+        if app is None:
+            return
+        app.installEventFilter(self)
+        self._app_filter_installed = True
+
+    def _remove_app_filter(self) -> None:
+        """从 ``QApplication`` 卸下事件过滤器（幂等）。"""
+        if not self._app_filter_installed:
+            return
+        self._app_filter_installed = False
+        app = QApplication.instance()
+        if app is not None:
+            try:
+                app.removeEventFilter(self)
+            except RuntimeError:
+                pass
+
     # ── Animation callback ──
 
     def _on_slide_finished(self) -> None:
@@ -425,5 +548,22 @@ class StyledDrawer(QWidget):
         if self._is_open:
             self.opened.emit()
         else:
+            self._remove_app_filter()
             self.hide()
+            self._restore_focus_after_close()
             self.closed.emit()
+
+    def _restore_focus_after_close(self) -> None:
+        """关闭后把焦点还给打开前的控件（无效时交给调用方默认逻辑）。"""
+        target = self._focus_before_open
+        self._focus_before_open = None
+        if target is None:
+            return
+        try:
+            from shiboken6 import isValid
+
+            if not isValid(target) or not target.isVisible():
+                return
+            target.setFocus(Qt.FocusReason.OtherFocusReason)
+        except Exception:  # noqa: BLE001 - 焦点恢复失败不影响关闭
+            pass

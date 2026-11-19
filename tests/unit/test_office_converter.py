@@ -180,6 +180,114 @@ def test_ppt_uses_save_as_pdf_and_parameterless_close(
             Path(result.content).unlink(missing_ok=True)
 
 
+def test_com_conversions_are_serialized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """并发 COM 转换必须串行（避免孤儿清理互杀实例 → 进程崩溃）。"""
+    import threading as _threading
+    import time as _time
+
+    from sopeek.services import office_converter as conv_mod
+
+    active = {"now": 0, "max": 0}
+    lock = _threading.Lock()
+
+    def fake_task(cls, path, suffix, task_started_at):
+        with lock:
+            active["now"] += 1
+            active["max"] = max(active["max"], active["now"])
+        _time.sleep(0.05)
+        with lock:
+            active["now"] -= 1
+        return conv_mod.ConversionResult(
+            content_type="pdf",
+            content=str(tmp_path / "out.pdf"),
+            backend_used="com",
+        )
+
+    monkeypatch.setattr(
+        OfficeConverter,
+        "_com_convert_in_task",
+        classmethod(fake_task),
+    )
+    # 绕过 pywin32 探测与缓存
+    import types
+    import sys
+
+    pythoncom = types.ModuleType("pythoncom")
+    pythoncom.CoInitialize = lambda: None
+    pythoncom.CoUninitialize = lambda: None
+    monkeypatch.setitem(sys.modules, "pythoncom", pythoncom)
+    client = types.ModuleType("win32com.client")
+    win32com = types.ModuleType("win32com")
+    win32com.__path__ = []
+    win32com.client = client
+    monkeypatch.setitem(sys.modules, "win32com", win32com)
+    monkeypatch.setitem(sys.modules, "win32com.client", client)
+
+    source = tmp_path / "demo.docx"
+    source.write_bytes(b"PK\x03\x04fake")
+
+    threads = [
+        _threading.Thread(
+            target=OfficeConverter._convert_with_com,
+            args=({"path": str(source), "suffix": "docx"}, "docx"),
+        )
+        for _ in range(3)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert active["max"] == 1, f"COM 转换并发执行（峰值 {active['max']}）"
+
+
+def test_com_join_timeout_returns_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """任务线程不返回时，有界等待后返回可读错误而非无限阻塞。"""
+    import sys
+    import types
+    import time as _time
+
+    from sopeek.services import office_converter as conv_mod
+
+    def hang(cls, path, suffix, task_started_at):
+        _time.sleep(2.0)
+        return conv_mod.ConversionResult(
+            content_type="pdf", content="", backend_used="com"
+        )
+
+    monkeypatch.setattr(
+        OfficeConverter, "_com_convert_in_task", classmethod(hang)
+    )
+    monkeypatch.setattr(conv_mod, "COM_CONVERSION_JOIN_TIMEOUT", 0.1)
+
+    pythoncom = types.ModuleType("pythoncom")
+    pythoncom.CoInitialize = lambda: None
+    pythoncom.CoUninitialize = lambda: None
+    monkeypatch.setitem(sys.modules, "pythoncom", pythoncom)
+    client = types.ModuleType("win32com.client")
+    win32com = types.ModuleType("win32com")
+    win32com.__path__ = []
+    win32com.client = client
+    monkeypatch.setitem(sys.modules, "win32com", win32com)
+    monkeypatch.setitem(sys.modules, "win32com.client", client)
+
+    source = tmp_path / "slow.docx"
+    source.write_bytes(b"PK\x03\x04fake")
+
+    result = OfficeConverter._convert_with_com(
+        {"path": str(source), "suffix": "docx"}, "docx"
+    )
+
+    assert result.content_type == "error"
+    assert "超时" in result.message
+
+
 def test_ppt_retries_with_window_when_windowless_save_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -300,6 +408,159 @@ def test_zero_slide_pptx_is_rejected_before_any_backend(
 
     assert result.content_type == "outline"
     assert result.content == "该演示文稿没有幻灯片。"
+    assert result.backend_used == "pure-python"
+
+
+def test_corrupt_ooxml_is_rejected_before_any_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """损坏的 docx/xlsx/pptx 必须在分派后端前被拦下（防 COM 崩溃）。"""
+    monkeypatch.setattr(
+        OfficeConverter,
+        "_maybe_cleanup_cache",
+        classmethod(lambda cls: None),
+    )
+    monkeypatch.setattr(
+        OfficeConverter,
+        "_get_cache_path_safe",
+        staticmethod(lambda file_info: None),
+    )
+
+    def fail_if_called(cls, backend, file_info, suffix):
+        raise AssertionError(f"损坏文件不应分派到后端 {backend}")
+
+    monkeypatch.setattr(
+        OfficeConverter,
+        "_try_backend",
+        classmethod(fail_if_called),
+    )
+
+    for suffix in ("docx", "xlsx", "pptx"):
+        source = tmp_path / f"broken.{suffix}"
+        source.write_bytes(b"this is definitely not a zip container")
+        result = OfficeConverter.convert({"path": str(source), "suffix": suffix})
+        assert result.content_type == "error", suffix
+        assert result.message == "文件已损坏或无法处理", suffix
+        assert result.failed_backend == "integrity", suffix
+
+
+def test_corrupt_legacy_ole_is_rejected_before_any_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """损坏的 doc/xls/ppt（非 OLE 复合文档）必须在分派前拦下（防 COM 崩溃）。"""
+    monkeypatch.setattr(
+        OfficeConverter,
+        "_maybe_cleanup_cache",
+        classmethod(lambda cls: None),
+    )
+    monkeypatch.setattr(
+        OfficeConverter,
+        "_get_cache_path_safe",
+        staticmethod(lambda file_info: None),
+    )
+
+    def fail_if_called(cls, backend, file_info, suffix):
+        raise AssertionError(f"损坏文件不应分派到后端 {backend}")
+
+    monkeypatch.setattr(
+        OfficeConverter,
+        "_try_backend",
+        classmethod(fail_if_called),
+    )
+
+    for suffix in ("doc", "xls", "ppt"):
+        source = tmp_path / f"broken.{suffix}"
+        source.write_bytes(b"not an OLE compound document at all")
+        result = OfficeConverter.convert({"path": str(source), "suffix": suffix})
+        assert result.content_type == "error", suffix
+        assert result.message == "文件已损坏或无法处理", suffix
+        assert result.failed_backend == "integrity", suffix
+
+
+def test_valid_ole_header_passes_integrity_check(tmp_path: Path) -> None:
+    """带 OLE 魔数的 legacy 文件应通过预检（继续正常后端流程）。"""
+    source = tmp_path / "real.doc"
+    source.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64)
+
+    assert OfficeConverter._looks_like_ole_compound(str(source)) is True
+    assert (
+        OfficeConverter._check_ooxml_integrity(
+            "doc", {"path": str(source), "suffix": "doc"}
+        )
+        is None
+    )
+
+
+def test_ole_probe_is_conservative_on_read_error(tmp_path: Path) -> None:
+    """读取失败时保守放行（返回 True），不误判为损坏。"""
+    missing = tmp_path / "nope.doc"
+    assert OfficeConverter._looks_like_ole_compound(str(missing)) is True
+
+
+def test_empty_legacy_office_yields_empty_preview(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """0 字节 doc/xls/ppt 同样给空预览，不启动 Office。"""
+    monkeypatch.setattr(
+        OfficeConverter,
+        "_maybe_cleanup_cache",
+        classmethod(lambda cls: None),
+    )
+    monkeypatch.setattr(
+        OfficeConverter,
+        "_get_cache_path_safe",
+        staticmethod(lambda file_info: None),
+    )
+
+    def fail_if_called(cls, backend, file_info, suffix):
+        raise AssertionError(f"空文件不应分派到后端 {backend}")
+
+    monkeypatch.setattr(
+        OfficeConverter,
+        "_try_backend",
+        classmethod(fail_if_called),
+    )
+
+    source = tmp_path / "empty.doc"
+    source.write_bytes(b"")
+    result = OfficeConverter.convert({"path": str(source), "suffix": "doc"})
+    assert result.content_type == "outline"
+    assert result.backend_used == "pure-python"
+
+
+def test_empty_ooxml_yields_empty_preview_without_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """0 字节的 Office 文件应显示空预览，而不是报错或启动 Office。"""
+    monkeypatch.setattr(
+        OfficeConverter,
+        "_maybe_cleanup_cache",
+        classmethod(lambda cls: None),
+    )
+    monkeypatch.setattr(
+        OfficeConverter,
+        "_get_cache_path_safe",
+        staticmethod(lambda file_info: None),
+    )
+
+    def fail_if_called(cls, backend, file_info, suffix):
+        raise AssertionError(f"空文件不应分派到后端 {backend}")
+
+    monkeypatch.setattr(
+        OfficeConverter,
+        "_try_backend",
+        classmethod(fail_if_called),
+    )
+
+    source = tmp_path / "empty.docx"
+    source.write_bytes(b"")
+    result = OfficeConverter.convert({"path": str(source), "suffix": "docx"})
+    assert result.content_type == "outline"
+    assert result.content == ""
     assert result.backend_used == "pure-python"
 
 

@@ -12,18 +12,12 @@ from typing import Optional
 import os
 
 from PySide6.QtWidgets import (
-    QAbstractSlider,
-    QAbstractSpinBox,
     QApplication,
-    QComboBox,
     QFrame,
     QGraphicsOpacityEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
-    QPlainTextEdit,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -114,7 +108,11 @@ from sopeek.ui.mica import winapi as mica_winapi
 
 from sopeek._paths import backgrounds_dir, icons_dir
 from sopeek.utils.animation_settings import is_animation_enabled
-from sopeek.utils.app_logger import debug, warning
+from sopeek.utils.app_logger import debug, info, warning
+from sopeek.utils.win32_foreground import (
+    force_foreground_window,
+    is_foreground_window,
+)
 # perf_metrics / StagingPoolService 同为首屏关键路径让位：分别由绘制埋点
 # （MicaBackgroundWidgetCpu.paintEvent）与 closeEvent 局部导入。
 from sopeek.ui.theme.app_stylesheet import (
@@ -791,8 +789,29 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         self._previewer = None
         self._info_panel = None
         self._info_card = None
-        # 应用级方向键导航过滤器安装标记（幂等安装/卸载，见 _install_nav_key_filter）
-        self._nav_filter_installed: bool = False
+        # 快捷键派发器安装标记（幂等安装/卸载，见 _install_shortcut_dispatcher）
+        self._shortcut_installed: bool = False
+        # 快捷键派发器实例（由 _install_shortcut_dispatcher 赋值）
+        self._shortcuts = None
+        # 快捷键处理器是否已接线（见 _setup_shortcuts）
+        self._shortcuts_wired: bool = False
+        # 进入预览器前的焦点区（path/selector/pool/info）：压缩包/文件夹
+        # 预览器在根目录再按 Esc 时据此把焦点交还（见 _on_preview_root_escape）
+        self._zone_before_preview: str = ""
+        # 最近一次真正绘制过焦点描边的区域：鼠标点击据此去重，避免
+        # focusChanged 先把快捷键区域改到点击处后导致「跨区点击不高亮」，
+        # 同时保证同一焦点区内连续点击不重复闪烁（见 _sync_region_from_click）。
+        self._last_flash_zone: str = ""
+        # 「预览 / 储存 / 信息全空」时，从文件选择器切区的第一次按键先停在
+        # 选择器并高亮它；下一次才继续到路径框（见 _focus_next_zone）。
+        self._empty_cycle_selector_stay: bool = False
+        # 启动默认焦点是否已补（正式启动先显示轻量外壳，窗口激活时四区尚未
+        # 构建；见 _focus_selector_on_startup）
+        self._startup_focus_applied: bool = False
+        # 启动期是否已尝试切到 Windows 原生前台（见 ensure_startup_foreground）
+        self._startup_foreground_done: bool = False
+        # 倍速键按下前的倍速（长按回滚用）
+        self._media_prev_speed: float = 1.0
         # 全局存储池浮窗：实例引用 + 三个信号连接对象。连接对象必须存引用
         # （供 set_floating_pool_enabled(False) 精确断开——lambda 槽无法按
         # 方法断连）；唯一创建入口为 _ensure_floating_pool。
@@ -925,12 +944,12 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         else:
             self._setup_content()
 
-        # 应用级方向键导航过滤器：内容就绪后安装（幂等）。同时挂到 destroyed
-        # 做兜底卸载——未经 closeEvent 的销毁路径（测试/异常）不得在全局
+        # 快捷键派发器：内容就绪后安装（幂等）。同时挂到 destroyed 做兜底
+        # 卸载——未经 closeEvent 的销毁路径（测试/异常）不得在全局
         # QApplication 上残留过滤器；槽内含 try/except RuntimeError 防御
         # 析构中途调用（此时 C++ 对象已在拆除）。
-        self.destroyed.connect(lambda *_: self._uninstall_nav_key_filter())
-        self._install_nav_key_filter()
+        self.destroyed.connect(lambda *_: self._uninstall_shortcut_dispatcher())
+        self._install_shortcut_dispatcher()
 
         # 将窗口定位到鼠标所在屏幕的中心
         self._center_on_mouse_screen()
@@ -1703,10 +1722,26 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             # 信号连接：文件选择器 → 文件池
             self._file_selector.toggle_pool_requested.connect(self._on_toggle_pool_requested)
             self._file_selector.add_files_to_pool_requested.connect(self._on_add_files_to_pool_requested)
+            # 缩略图按路径回填：池内卡片同步刷新（Q 生成后不再显示旧图标）
+            self._file_selector.thumbnails_ready.connect(self._file_pool.refresh_thumbnails)
+            # 缩略图被清除：池内卡片回落类型图标（Shift+Q 后不再显示旧缩略图）
+            self._file_selector.thumbnails_cleared.connect(self._file_pool.refresh_thumbnails)
             self._file_selector.remove_files_from_pool_requested.connect(self._on_remove_files_from_pool_requested)
             self._file_selector.file_selected.connect(self._on_file_selected)
             self._file_selector.preview_cancel_requested.connect(self._on_preview_cancelled)
+            # Enter 预览文件 → 焦点移交预览器（防重复连接：按实例判等）
+            if getattr(self, "_preview_focus_selector", None) is not self._file_selector:
+                self._preview_focus_selector = self._file_selector
+                self._file_selector.preview_focus_requested.connect(
+                    self._on_preview_focus_requested
+                )
         if self._file_pool is not None:
+            # Enter 预览池内文件 → 焦点移交预览器（防重复连接：按实例判等）
+            if getattr(self, "_preview_focus_pool", None) is not self._file_pool:
+                self._preview_focus_pool = self._file_pool
+                self._file_pool.preview_focus_requested.connect(
+                    self._on_preview_focus_requested
+                )
             # 信号连接：文件池 → 文件选择器（同步"已在池中"边框标记）
             self._file_pool.pool_changed.connect(self._on_pool_contents_changed)
             # 信号连接：文件池 → 统一预览器（左键点击文件池卡片时预览）
@@ -1715,6 +1750,19 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             self._file_pool.preview_cancel_requested.connect(self._on_preview_cancelled)
             # 信号连接：文件池右键点击 → 移除文件池并取消选中
             self._file_pool.item_right_clicked.connect(self._on_pool_item_right_clicked)
+            # 空池收走焦点 → 回退到文件选择器并高亮（防重复连接：按实例判等）
+            if getattr(self, "_pool_focus_fallback", None) is not self._file_pool:
+                self._pool_focus_fallback = self._file_pool
+                self._file_pool.focus_exhausted.connect(
+                    self._on_leaf_focus_exhausted
+                )
+        if self._info_panel is not None:
+            # 信息面板被清空且焦点原本在面板内 → 回退到文件选择器并高亮
+            if getattr(self, "_info_focus_fallback", None) is not self._info_panel:
+                self._info_focus_fallback = self._info_panel
+                self._info_panel.focus_exhausted.connect(
+                    self._on_leaf_focus_exhausted
+                )
         if self._previewer is not None:
             # 信号连接：统一预览器底栏 → 定位到所在目录 / 清除预览
             self._previewer.locate_requested.connect(self._on_previewer_locate_requested)
@@ -1722,6 +1770,16 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             # 信号连接：预览器内层条目选中 → 文件信息面板联动
             #（文件夹预览器选中条目时面板显示该条目信息；取消时恢复）
             self._previewer.entry_selected.connect(self._on_previewer_entry_selected)
+            # 信号连接：预览器请求切上/下一个文件（图像 ←→）→ 文件选择器推进
+            self._previewer.file_nav_requested.connect(self._on_previewer_file_nav)
+            # 根目录 Esc（压缩包/文件夹预览器）→ 焦点交还进入预览器前的焦点区
+            self._previewer.set_root_escape_handler(self._on_preview_root_escape)
+
+        # 快捷键处理器接线（全局 / 焦点区 / 媒体委托）。幂等：四区齐备可能
+        # 触发两次 finalize（提前收尾 + 兜底定时器），内部有 _shortcuts_wired 守卫。
+        self._setup_shortcuts()
+        # 储存池布局模式（三栏禁缩放）随构建结果下发一次
+        self._apply_pool_layout_mode()
 
         # 整窗样式兜底只在四区齐备后做一次（启动期逐区构建已跳过整树 polish）。
         self._refresh_panel_styles(full_refresh=all_ready)
@@ -1756,6 +1814,11 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         self._apply_window_minimums()
         debug(f"[启动耗时] 最小尺寸聚合: {(time.perf_counter() - _t0) * 1000:.0f}ms")
         QTimer.singleShot(0, self._apply_default_layout)
+        # 首次启动补默认焦点：正式启动先显示轻量外壳，窗口激活时四区尚未
+        # 构建，ActivationChange 的兜底拿不到文件选择器；若不补一次，启动
+        # 完成后 focusWidget() 为空，方向键 / Enter 导航不可用。延后一帧，
+        # 等默认比例应用完、列表完成首次布局再落焦点。
+        QTimer.singleShot(0, self._focus_selector_on_startup)
         # 兜底：遮罩创建失败 / 被提前移除时淡出动画不会发出 finished，
         # 收尾链（Mica、浮窗、设置预热）就永远不会启动。这里补一个延时兜底，
         # `_start_post_startup_chain` 幂等，正常情况下不会重复执行。
@@ -3319,6 +3382,18 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
                     return
         self._show_preview(file_info)
 
+    def _on_preview_focus_requested(self) -> None:
+        """选择器 / 储存池 Enter 预览后，把键盘焦点移交给预览器。
+
+        必须延后一帧：文件类型切换时预览器控件在 ``set_file`` 里刚被创建，
+        此时尚未完成布局，同步 ``setFocus()`` 会因不可见而失效（实测焦点
+        留在原列表）。延后一帧后由 ``_focus_zone`` 统一做真实焦点校验与
+        预览区焦点描边；预览器不可聚焦时静默保持原焦点。
+        """
+        from sopeek.core.shortcuts import defer_call
+
+        defer_call(lambda: self._focus_zone("preview"))
+
     def _on_pool_item_clicked(self, file_info: dict) -> None:
         """处理文件池卡片的左键点击事件，预览该文件"""
         file_path = file_info.get("path", "")
@@ -3334,6 +3409,97 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             self._previewer.clear_preview()
         if self._info_panel is not None:
             self._info_panel.clear()
+        self._release_preview_shortcut_region()
+        self._restore_selector_focus_after_cancel()
+
+    def _release_preview_shortcut_region(self) -> None:
+        """取消预览后把快捷键区域从 ``preview.*`` 收回选择器（幂等）。
+
+        为什么不能只依赖焦点转移：区域由 ``QApplication.focusChanged`` 驱动，
+        而取消预览会销毁内层预览器（其 handler 已注销）。若焦点因平台差异
+        没有真正改变（Qt 仍认为焦点在预览器外壳 / 顶层窗口重分配延迟），
+        ``focusChanged`` 不发射，``region()`` 就**陈旧地停留在 ``preview.*``**。
+        此时方向键按预览区查表，找不到任何 handler，也不会回落到 selector，
+        表现为「取消预览后按方向键完全没反应」。
+
+        因此在取消预览时无条件把区域收回 ``selector``：预览已不存在，任何
+        预览区语义都已失效，方向键理应操作左侧文件卡片。
+        """
+        shortcuts = getattr(self, "_shortcuts", None)
+        if shortcuts is None:
+            return
+        try:
+            region = str(shortcuts.region())
+            if region.startswith("preview.") or region == "fullscreen":
+                shortcuts.replace_region("selector")
+        except RuntimeError:
+            pass
+
+    def _restore_selector_focus_after_cancel(self) -> None:
+        """取消预览后把焦点兜底回文件列表（幂等，控件缺失时静默）。
+
+        取消预览的常见触发点是预览器顶/底栏的「清除预览」按钮——这些按钮
+        是 ``NoFocus`` 控件，预览器随即被销毁，Qt 会按 Tab 顺序把焦点交给
+        主窗口第一个可聚焦控件，也就是选择器的路径框。焦点一旦落在路径框，
+        方向键会被输入框吃掉（``selector.nav_*`` 根本不派发），用户就会看到
+        「取消预览后按方向键没反应」。
+
+        因此这里在焦点「不在任何既有面板」时兜底到文件列表；已经落在
+        储存池（仍有卡片）/ 选择器内的焦点保持不变（例如再次点击储存池卡片
+        取消预览，不应把焦点从池里抢走）。信息面板会随取消预览一并清空，
+        空面板不是焦点区：它通过 ``focus_exhausted`` 先行回退到文件选择器
+        并高亮，不会把焦点留在空信息区。
+
+        预览器控件走 ``deleteLater()``：真正销毁发生在下一轮事件循环，销毁
+        时 Qt 仍可能把焦点塞回预览区或路径框（顶层窗口销毁后的焦点重分配）。
+        故在当拍兜底一次后，再于下一轮事件循环复查一次（同样幂等）。
+        """
+        if not self._move_focus_out_of_dead_preview():
+            return
+        try:
+            QTimer.singleShot(0, self._move_focus_out_of_dead_preview)
+        except RuntimeError:
+            pass
+
+    def _on_leaf_focus_exhausted(self) -> None:
+        """空池 / 空信息面板收走焦点后，回退到文件选择器并高亮。
+
+        信号只在「焦点原本在该叶子内、且叶子已经变空」时发出。弹层/关闭
+        过程中不抢焦点：此时焦点的归属由弹层或窗口关闭链负责。
+        """
+        try:
+            if QApplication.activePopupWidget() is not None:
+                return
+        except RuntimeError:
+            return
+        if getattr(self, "_close_in_progress", False):
+            return
+        self._focus_selector_with_flash()
+
+    def _move_focus_out_of_dead_preview(self) -> bool:
+        """焦点不在既有面板时把它交给文件列表，并高亮回退目标。
+
+        预览器销毁后焦点可能被 Qt 甩到路径框或顶层窗口；此时回退到文件
+        列表并闪一次选择器描边，让用户看见焦点落点（用户要求：焦点直接
+        回退，高亮回退到的焦点范围）。
+
+        Returns:
+            bool: 本次确实请求了文件列表聚焦返回 True。
+        """
+        selector = self._file_selector
+        if selector is None:
+            return False
+        try:
+            if QApplication.activePopupWidget() is not None:
+                return False
+            if getattr(self, "_close_in_progress", False):
+                return False
+            for zone in ("selector", "pool", "info"):
+                if self._zone_has_keyboard_focus(zone):
+                    return False
+            return self._focus_selector_with_flash()
+        except RuntimeError:
+            return False
 
     def _on_previewer_locate_requested(self, file_info: dict) -> None:
         """处理统一预览器底栏"定位到所在目录"请求：导航左侧选择器并高亮文件"""
@@ -3563,8 +3729,8 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         # 窗口，若残留会让 quitOnLastWindowClosed 不触发，表现为「主界面关
         # 了、弹窗还浮在桌面上」。
         self._close_floating_dialogs()
-        # 卸载应用级方向键导航过滤器（幂等），避免全局过滤器在窗口销毁后残留
-        self._uninstall_nav_key_filter()
+        # 卸载快捷键派发器与焦点监听（幂等），避免全局过滤器在窗口销毁后残留
+        self._uninstall_shortcut_dispatcher()
         # 连带关闭设置窗口：设置窗口是主窗口的 owned 子窗口，原生层会随宿主
         # 关闭，此处显式 close 使其走 WA_DeleteOnClose 及时销毁并释放引用，
         # 避免隐藏后残留孤儿实例
@@ -3714,6 +3880,81 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
                 return
             selector = self._file_selector
             if selector is None:
+                return
+            focus_file_list = getattr(selector, "focus_file_list", None)
+            if callable(focus_file_list):
+                focus_file_list()
+        except RuntimeError:
+            pass
+
+    def ensure_startup_foreground(self) -> None:
+        """启动首帧后把窗口切到 Windows 原生前台（一次性）。
+
+        从终端 / IDE 启动时，启动器通常仍持有 Windows 前台；前台锁会让
+        Qt 的 ``activateWindow()`` / ``raise_()`` 只更新 Qt 内部激活状态，
+        ``GetForegroundWindow()`` 仍指向启动器。键盘事件按原生前台窗口
+        路由，方向键因此进不了本窗口。这里在首帧揭示后补一次原生激活。
+
+        只执行一次，后续用户 Alt+Tab 离开时不会再次抢焦点；关闭中 /
+        不可见 / 最小化 / 离屏测试环境 / 已有活动弹层时静默跳过。
+        """
+        if getattr(self, "_startup_foreground_done", False):
+            return
+        self._startup_foreground_done = True
+        try:
+            if getattr(self, "_close_in_progress", False):
+                return
+            if QApplication.closingDown():
+                return
+            if not self.isVisible() or self.isMinimized():
+                return
+            if sys.platform != "win32":
+                return
+            if QApplication.platformName().strip().lower() in ("offscreen", "minimal"):
+                return
+            if QApplication.activePopupWidget() is not None:
+                return
+            hwnd = int(self.winId())
+            if not hwnd:
+                return
+            # 正常双击启动时系统通常已给前台权限，Qt 这一步即成功；从终端 /
+            # IDE 启动时会被前台锁拒绝，再由原生兜底重试。
+            self.raise_()
+            self.activateWindow()
+            if is_foreground_window(hwnd):
+                debug("[启动] 原生前台已是主窗口")
+                return
+            if force_foreground_window(hwnd):
+                info("[启动] 原生前台激活成功")
+            else:
+                warning("[启动] 原生前台激活失败：键盘输入可能仍发往前台窗口")
+        except (RuntimeError, AttributeError) as exc:
+            debug(f"[启动] 原生前台激活异常: {exc!r}")
+
+    def _focus_selector_on_startup(self) -> None:
+        """首次完整布局后把默认焦点落到文件选择器（一次性）。
+
+        正式启动先显示轻量外壳，窗口激活时四区尚未构建，``ActivationChange``
+        的默认焦点兜底拿不到 ``_file_selector``；若不再补一次，启动完成后
+        ``focusWidget()`` 为空，方向键 / Enter 文件导航不可用。
+
+        只纠正「无焦点」与「路径框被动获焦」：用户或其它区域已建立的真实
+        焦点不抢。控件未就绪 / 关闭中 / 有活动弹层时静默跳过。
+        """
+        if getattr(self, "_startup_focus_applied", False):
+            return
+        self._startup_focus_applied = True
+        try:
+            if getattr(self, "_close_in_progress", False):
+                return
+            if QApplication.activePopupWidget() is not None:
+                return
+            selector = self._file_selector
+            if selector is None:
+                return
+            path_input = getattr(selector, "_path_input", None)
+            current = self.focusWidget()
+            if current is not None and current is not path_input:
                 return
             focus_file_list = getattr(selector, "focus_file_list", None)
             if callable(focus_file_list):
@@ -3877,44 +4118,21 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         self._suspend_background_renderers()
 
     def eventFilter(self, obj: QWidget, event: QEvent) -> bool:
-        """事件过滤器 - 应用级方向键导航捕获 + 标题栏拖拽。
+        """事件过滤器 - 标题栏拖拽（快捷键已迁至 ShortcutDispatcher）。
 
-        本过滤器同时挂在 QApplication（应用级，见 _install_nav_key_filter）
-        与自绘标题栏 header 上。应用级分支在主窗口激活时把方向键交给文件
-        选择器做文件导航（全屏预览宿主是独立顶层窗口，届时主窗口失活，
-        本分支自然不生效，全屏内方向键保持预览器自身语义）；鼠标分支保持
-        既有标题栏拖拽逻辑不变。
+        本过滤器只挂在自绘标题栏 header 上，负责「在标题栏空白区按下左键时
+        启动系统窗口拖动」。方向键文件导航已由
+        :class:`sopeek.core.shortcuts.dispatcher.ShortcutDispatcher` 的
+        区域栈接管，此处不再处理键盘事件。
 
         Args:
-            obj: 事件接收对象（应用级过滤时可能不是 QWidget）。
+            obj: 事件接收对象。
             event: 待过滤事件。
 
         Returns:
             bool: True 表示事件已被本过滤器消费。
         """
-        t = event.type()
-        if t in (QEvent.KeyPress, QEvent.KeyRelease):
-            k = event.key()
-            if (
-                k in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down)
-                and self._nav_should_capture()
-            ):
-                if t == QEvent.KeyPress:
-                    if (
-                        self._file_selector is not None
-                        and self._file_selector.handle_nav_key_press(k)
-                    ):
-                        event.accept()
-                        return True
-                elif not event.isAutoRepeat():
-                    if (
-                        self._file_selector is not None
-                        and self._file_selector.handle_nav_key_release(k)
-                    ):
-                        event.accept()
-                        return True
-
-        # ---- 既有鼠标 / 标题栏拖拽逻辑自此继续（未改动）----
+        # ---- 鼠标 / 标题栏拖拽逻辑 ----
         # 应用级过滤下 obj 可能是非 QWidget（如 QApplication）：负向守卫兜底，
         # 且本方法任何路径都必须显式返回 bool（返回 None 会让 PySide6 对每个
         # 未捕获的全局事件报 RuntimeWarning）。
@@ -3924,6 +4142,11 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         # 只处理鼠标按下事件
         if event.type() != QEvent.Type.MouseButtonPress:
             return False
+
+        # 鼠标点击主窗口内任意位置（含按钮/卡片）：把快捷键区域切到点击所在
+        # 区域；仅当焦点区实际发生变化时才闪一次描边。必须放在「按钮提前
+        # return」之前，否则点按钮时区域不会跟随。
+        self._sync_region_from_click(obj, button=event.button())
 
         # 点击路径框以外区域时释放其焦点：NoFocus 功能按钮不会接管焦点，
         # 若不释放，后续打开/关闭弹窗时 Qt 会把焦点原样还给路径框。
@@ -3953,84 +4176,1100 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         if child is not None and isinstance(child, StyledButton):
             return False  # 让按钮正常工作
 
-        # 在标题栏上拖拽移动窗口
-        if obj.objectName() == "TitleBar" and self.windowHandle():
+        # 在标题栏上拖拽移动窗口（只处理本窗口；应用级过滤器也会看到
+        # 设置窗口的标题栏，不能让它去拖主窗口）
+        if (
+            obj.objectName() == "TitleBar"
+            and obj.window() is self
+            and self.windowHandle()
+        ):
             self.windowHandle().startSystemMove()
             return True
 
         return False
 
-    # ──── 应用级方向键导航过滤器（arrow-key-file-preview-nav） ──────────
+    def _sync_region_from_click(
+        self, obj: QWidget, *, button: Qt.MouseButton = Qt.LeftButton
+    ) -> None:
+        """鼠标点击时把快捷键区域同步到点击所在区域，并按需闪一次描边。
 
-    def _nav_should_capture(self) -> bool:
-        """判断当前是否应捕获方向键做文件选择器导航。
+        去重依据是「上一次已经高亮过的区域」，而不是当前的快捷键区域：
+        点击可聚焦控件时 Qt 会先发 ``focusChanged``（``_on_shortcut_focus_changed``
+        已把区域改到点击处），若与当前区域比较会误判为「没变化」而漏掉高亮。
+        同一焦点区内连续点击时区域不变，因此不会重复闪烁；跨区点击或键盘
+        切换仍会正常高亮。
 
-        按以下顺序短路（任一条命中即不捕获；全部通过才捕获）：
+        左键点击**空的**预览区 / 储存池 / 信息面板的空白内容面时不切换区域：
+        这些空区域不是焦点区，直接回退到文件选择器并高亮选择器（回退目标
+        必须与真实焦点一致）。
 
-        1. 主窗口未激活（全屏预览宿主是独立顶层窗口，此时主窗口失活 →
-           全屏自然免除）；
-        2. ``QApplication.activeWindow()`` 不是本窗口（Windows 可能拒绝
-           前台激活，兜底判定）；
-        3. 存在活动弹出窗口（菜单/下拉等自行消费方向键）；
-        4. 无焦点控件；
-        5. 焦点控件不属于本窗口；
-        6. 焦点在单行编辑框（路径框/搜索框的插入符导航优先）；
-        7. 焦点在可编辑多行文本（只读文本预览不豁免，箭头切换文件）；
-        8. 焦点在自旋框/下拉框/滑块（控件自身键盘导航优先）；
-        9. 焦点在文件储存池或其子树（池内导航优先）。
+        Args:
+            obj: 鼠标事件目标控件。
+            button: 触发的鼠标按键；只有左键执行空区焦点回退。
+        """
+        shortcuts = getattr(self, "_shortcuts", None)
+        if shortcuts is None or not isinstance(obj, QWidget):
+            return
+        try:
+            if obj.window() is not self:
+                return
+        except RuntimeError:
+            return
+        is_left_click = button == Qt.LeftButton
+        if is_left_click:
+            # 鼠标建立了新的焦点语境：下一次键盘切区重新从「先停在选择器」
+            # 开始判断（见 _focus_next_zone）。
+            self._empty_cycle_selector_stay = False
+            clicked_zone = self._click_zone_name(obj)
+            if (
+                clicked_zone in ("preview", "pool", "info")
+                and not self._zone_can_take_focus(clicked_zone)
+                and self._is_blank_click_in_zone(obj, clicked_zone)
+            ):
+                self._focus_selector_with_flash(
+                    flash=getattr(self, "_last_flash_zone", "") != "selector"
+                )
+                return
+        region = self._resolve_shortcut_region(obj)
+        if region is None or region == "app":
+            return
+        self._remember_zone_before_preview(region)
+        zone_name = {
+            "path": "path",
+            "selector": "selector",
+            "pool": "pool",
+            "info": "info",
+        }.get(region)
+        if zone_name is None and str(region).startswith("preview."):
+            zone_name = "preview"
+        if region != shortcuts.region():
+            shortcuts.replace_region(region)
+        if zone_name and zone_name != getattr(self, "_last_flash_zone", ""):
+            self._flash_zone_focus(zone_name)
+
+    def _click_zone_name(self, obj: QWidget) -> str:
+        """按控件归属解析点击所在焦点区（空区域也返回其区名）。
+
+        与 :meth:`_resolve_shortcut_region` 的区别：后者对空预览区会回退成
+        ``selector``，而这里必须先认出「用户点的其实是空预览区」，才能走
+        焦点回退与选择器高亮。
+
+        Args:
+            obj: 鼠标事件目标控件。
 
         Returns:
-            bool: True 表示方向键应被主窗口捕获用于文件导航。
+            str: ``path`` / ``selector`` / ``preview`` / ``pool`` / ``info``；
+                不属于主界面四个叶子区时返回空串。
         """
-        if not self.isActiveWindow():
+        if self._is_descendant_of(obj, self._previewer):
+            return "preview"
+        if self._is_descendant_of(obj, self._file_pool):
+            return "pool"
+        if self._is_descendant_of(obj, self._info_panel) or self._is_descendant_of(
+            obj, getattr(self, "_info_card", None)
+        ):
+            return "info"
+        if self._is_descendant_of(obj, self._file_selector):
+            path_input = getattr(self._file_selector, "_path_input", None)
+            return "path" if obj is path_input else "selector"
+        return ""
+
+    def _is_blank_click_in_zone(self, obj: QWidget, zone_name: str) -> bool:
+        """点击是否落在指定空区域的内容面（而非按钮/输入框等控件）上。
+
+        只有内容面的空白点击才触发“回退到文件选择器”。空池底栏的「导入/
+        导出数据」等按钮属于可操作控件，点它们不应把焦点抢走。
+
+        Args:
+            obj: 鼠标事件目标控件。
+            zone_name: ``preview`` / ``pool`` / ``info``。
+
+        Returns:
+            bool: 空白内容面返回 True。
+        """
+        try:
+            if zone_name == "pool":
+                pool = self._file_pool
+                if pool is None:
+                    return False
+                return obj in (
+                    pool,
+                    pool._scroll_area,
+                    pool._scroll_area.viewport(),
+                    pool._card_container,
+                    pool._empty_hint,
+                    self._zones.get("pool"),
+                )
+            if zone_name == "info":
+                panel = self._info_panel
+                if panel is None:
+                    return False
+                return obj in (
+                    panel,
+                    panel._scroll_area,
+                    panel._scroll_area.viewport(),
+                    panel._canvas,
+                    getattr(self, "_info_card", None),
+                    self._zones.get("info"),
+                )
+            if zone_name == "preview":
+                previewer = self._previewer
+                if previewer is None:
+                    return False
+                return obj in (
+                    previewer,
+                    previewer._content_top,
+                    previewer._placeholder_label,
+                    self._zones.get("preview"),
+                )
+        except (AttributeError, RuntimeError):
             return False
-        if QApplication.activeWindow() is not self:
+        return False
+
+    def _zone_can_take_focus(self, name: str) -> bool:
+        """指定区域当前是否有可接收键盘焦点的内容。
+
+        “空池 / 空信息面板 / 空预览区”不是焦点区；键盘切区与鼠标点击回退
+        都以此为准，不能只看「区域存在」或「控件已构建」。
+
+        Args:
+            name: 区名（path/selector/preview/pool/info）。
+
+        Returns:
+            bool: 当前可聚焦返回 True。
+        """
+        try:
+            if name == "path":
+                selector = self._file_selector
+                path_input = getattr(selector, "_path_input", None)
+                return path_input is not None and path_input.isVisible()
+            if name == "selector":
+                file_list = getattr(self._file_selector, "_file_list", None)
+                return file_list is not None and file_list.isVisible()
+            if name == "preview":
+                previewer = self._previewer
+                return bool(
+                    previewer is not None and previewer.has_active_preview()
+                )
+            if name == "pool":
+                pool = self._file_pool
+                return bool(pool is not None and pool.has_items())
+            if name == "info":
+                panel = self._info_panel
+                return bool(panel is not None and panel.has_file())
+        except (AttributeError, RuntimeError):
             return False
-        if QApplication.activePopupWidget() is not None:
+        return False
+
+    def _focus_selector_with_flash(self, *, flash: bool = True) -> bool:
+        """把焦点回退到文件选择器，并把快捷键区域切回 ``selector``。
+
+        空区域点击 / 区域失去内容 / 三块全空时键盘切区的统一回退入口。
+        可选择是否闪一次选择器描边（同一焦点区内连续点击时调用方会关掉
+        闪烁，沿用既有的描边去重口径）。
+
+        Args:
+            flash: True 时闪一次选择器分区描边。
+
+        Returns:
+            bool: 文件选择器存在并已请求聚焦返回 True。
+        """
+        selector = self._file_selector
+        if selector is None:
             return False
-        fw = QApplication.focusWidget()
-        if fw is None:
+        focus_file_list = getattr(selector, "focus_file_list", None)
+        if not callable(focus_file_list):
             return False
-        if fw.window() is not self:
+        try:
+            focus_file_list()
+        except RuntimeError:
             return False
-        if isinstance(fw, QLineEdit):
+        shortcuts = getattr(self, "_shortcuts", None)
+        if shortcuts is not None:
+            try:
+                shortcuts.replace_region("selector")
+            except RuntimeError:
+                pass
+        if flash:
+            self._flash_zone_focus("selector")
+        return True
+
+    # ──── 快捷键派发器（作用域栈 + 焦点区遍历） ────────────────────
+
+    #: New（预览优先）布局的焦点区顺序。
+    _ZONE_ORDER_WORKSPACE = ("path", "selector", "preview", "pool", "info")
+    #: 经典三栏布局的焦点区顺序。
+    _ZONE_ORDER_CLASSIC = ("path", "selector", "pool", "preview", "info")
+
+    def _install_shortcut_dispatcher(self) -> None:
+        """幂等安装快捷键派发器并连接区域解析。
+
+        派发器是**应用级**事件过滤器（装在 ``QApplication``），因为需要覆盖
+        全屏宿主、设置窗口等独立顶层窗口。区域由 ``focusChanged`` 实时维护。
+        """
+        if getattr(self, "_shortcut_installed", False):
+            return
+        try:
+            app = QApplication.instance()
+            if app is None:
+                return
+            from sopeek.core.shortcuts import shortcut_dispatcher
+
+            self._shortcuts = shortcut_dispatcher()
+            self._shortcuts.install(app)
+            app.focusChanged.connect(self._on_shortcut_focus_changed)
+            # 应用整体失活（切到别的程序）时兜底收尾长按：否则倍速会一直
+            # 停在临时值。这是唯一保留的「非松手」收尾入口。
+            app.applicationStateChanged.connect(self._on_app_state_changed)
+            # 主窗口自身的鼠标过滤器也挂到应用级：点击 NoFocus 按钮 / 卡片时
+            # 焦点不会变化，只有应用级过滤才能看到点击并把区域切过去。
+            app.installEventFilter(self)
+            self._window_filter_installed = True
+            self._shortcut_installed = True
+        except Exception as exc:  # noqa: BLE001 - 快捷键系统失败不阻塞启动
+            warning(f"快捷键派发器安装失败: {exc}")
+
+    def _uninstall_shortcut_dispatcher(self) -> None:
+        """幂等卸载派发器与焦点监听（``destroyed`` 槽中调用，容错 RuntimeError）。"""
+        if not getattr(self, "_shortcut_installed", False):
+            return
+        self._shortcut_installed = False
+        app = QApplication.instance()
+        if app is not None:
+            if getattr(self, "_window_filter_installed", False):
+                self._window_filter_installed = False
+                try:
+                    app.removeEventFilter(self)
+                except RuntimeError:
+                    pass
+            try:
+                app.focusChanged.disconnect(self._on_shortcut_focus_changed)
+            except (RuntimeError, TypeError):
+                pass
+            try:
+                app.applicationStateChanged.disconnect(self._on_app_state_changed)
+            except (RuntimeError, TypeError):
+                pass
+        try:
+            from sopeek.core.shortcuts import shortcut_dispatcher
+
+            dispatcher = shortcut_dispatcher()
+            # 子组件也各自登记过 handler：主窗口关闭时一并注销，
+            # 避免同一进程内重建主窗口（测试 / 重新登录）时残留旧控件引用。
+            for child in (
+                getattr(self, "_file_selector", None),
+                getattr(self, "_file_pool", None),
+                getattr(self, "_info_panel", None),
+            ):
+                unregister = getattr(child, "_unregister_shortcuts", None)
+                if callable(unregister):
+                    try:
+                        unregister()
+                    except RuntimeError:
+                        pass
+            dispatcher.handlers.unregister_owner(self)
+            dispatcher.uninstall()
+        except Exception:  # noqa: BLE001 - 拆除阶段忽略
+            pass
+
+    def _on_app_state_changed(self, state) -> None:
+        """应用激活状态变化：失活时兜底收尾长按（恢复临时倍速）。
+
+        点击音量按钮 / 移动鼠标只改变窗口内焦点，**不会**触发这里；只有
+        整个应用失去激活（切到别的程序）才会收尾。
+        """
+        try:
+            from PySide6.QtCore import Qt as _Qt
+
+            if state == _Qt.ApplicationState.ApplicationInactive:
+                shortcuts = getattr(self, "_shortcuts", None)
+                if shortcuts is not None:
+                    shortcuts.finish_long_press_if_any()
+        except (RuntimeError, AttributeError):
+            pass
+
+    def _on_shortcut_focus_changed(self, _old, new) -> None:
+        """焦点变化：重算区域栈。
+
+        注意**不**在此处收尾长按：长按倍速期间点击音量按钮 / 移动鼠标都会
+        触发焦点变化，若强制收尾会让倍速「自己恢复」（用户实测反馈）。
+        长按只由真实 ``KeyRelease``、预览器 ``cleanup`` 或主窗口失活收尾。
+        """
+        shortcuts = getattr(self, "_shortcuts", None)
+        if shortcuts is None:
+            return
+        region = self._resolve_shortcut_region(new)
+        if region is None:
+            return
+        self._remember_zone_before_preview(region)
+        if region != shortcuts.region():
+            shortcuts.replace_region(region)
+
+    def _resolve_shortcut_region(self, widget: Optional[QWidget]):
+        """按焦点归属解析快捷键区域（自上而下，先命中先返回）。
+
+        Args:
+            widget: 当前焦点控件（可为 ``None``）。
+
+        Returns:
+            str | None: 区域名；``None`` 表示「不在本窗口内，保持原区域」。
+        """
+        if widget is None:
+            return "app"
+        try:
+            if (
+                self._settings_window is not None
+                and widget.window() is self._settings_window
+            ):
+                return "settings"
+            if widget.window() is not self:
+                # 全屏宿主等其它顶层窗口由进出全屏的代码显式 push/pop。
+                return None
+        except RuntimeError:
+            return None
+        if self._is_descendant_of(widget, self._file_selector):
+            path_input = getattr(self._file_selector, "_path_input", None)
+            if path_input is not None and widget is path_input:
+                return "path"
+            return "selector"
+        if self._is_descendant_of(widget, self._file_pool):
+            return "pool"
+        if self._is_descendant_of(widget, self._info_panel):
+            return "info"
+        if self._is_descendant_of(widget, self._previewer):
+            # 预览器已清空（无当前内层预览器）：预览区只剩占位符，方向键没有
+            # 可操作对象。归属按「文件选择器」处理，让取消预览后焦点残留在
+            # 预览区时，方向键仍能落到左侧卡片，而不是变成无响应的死键。
+            # 只对「空预览器」生效：未知类型的预览器仍走 _preview_region_of
+            # 的 app 回落，避免影响 Office 等未登记预览器的既有行为。
+            if getattr(self._previewer, "_current_preview_type", None) is None:
+                return "selector"
+            return self._preview_region_of(self._previewer)
+        return "app"
+
+    @staticmethod
+    def _is_descendant_of(
+        widget: QWidget, ancestor: Optional[QWidget]
+    ) -> bool:
+        """``widget`` 是否等于 ``ancestor`` 或位于其子树（``None`` 安全）。
+
+        Args:
+            widget: 待判定控件。
+            ancestor: 祖先控件。
+
+        Returns:
+            bool: 位于子树内返回 True。
+        """
+        if ancestor is None or widget is None:
             return False
-        if isinstance(fw, (QTextEdit, QPlainTextEdit)) and not fw.isReadOnly():
+        try:
+            return widget is ancestor or ancestor.isAncestorOf(widget)
+        except RuntimeError:
             return False
-        if isinstance(fw, (QAbstractSpinBox, QComboBox, QAbstractSlider)):
+
+    @staticmethod
+    def _preview_region_of(previewer) -> str:
+        """把当前内层预览器类映射为区域名（未知类回退 ``app``）。
+
+        Args:
+            previewer: ``UnifiedPreviewerLayout`` 实例。
+
+        Returns:
+            str: 区域名。
+        """
+        mapping = {
+            "VideoPlayerLayout": "preview.media",
+            "ImagePreviewerLayout": "preview.image",
+            "PdfPreviewerLayout": "preview.pdf",
+            "TextPreviewerLayout": "preview.text",
+            "FontPreviewerLayout": "preview.font",
+            "ArchivePreviewerLayout": "preview.archive",
+            "FolderPreviewerLayout": "preview.folder",
+            "UnsupportedPreviewerLayout": "preview.unsupported",
+        }
+        cls = getattr(previewer, "_current_preview_type", None)
+        return mapping.get(getattr(cls, "__name__", ""), "app")
+
+    # ── 焦点区遍历 ──────────────────────────────────────────────
+
+    #: 可作为「预览器 Esc 回跳目标」的焦点区（含卡片的区域）。
+    _ZONE_REGIONS = ("path", "selector", "pool", "info")
+
+    def _remember_zone_before_preview(self, region) -> None:
+        """记录最近一次非预览焦点区（预览器根目录 Esc 的回跳目标）。
+
+        预览器自身切换（``preview.*``）不覆盖记录，因此记录值始终是「进入
+        预览器之前」的焦点区；``app`` / ``settings`` / ``fullscreen`` 同样
+        不覆盖（它们不是卡片区）。
+
+        Args:
+            region: 本次解析出的快捷键区域名。
+        """
+        if region in self._ZONE_REGIONS:
+            self._zone_before_preview = str(region)
+
+    def _current_zone_name(self) -> str:
+        """把当前区域映射为焦点区名（path/selector/preview/pool/info）。"""
+        shortcuts = getattr(self, "_shortcuts", None)
+        region = shortcuts.region() if shortcuts is not None else "app"
+        if region in ("path", "selector", "pool", "info"):
+            return region
+        if region.startswith("preview.") or region == "fullscreen":
+            return "preview"
+        return ""
+
+    def _focus_next_zone(self, step: int) -> bool:
+        """按当前布局顺序把焦点切到上/下一个**可聚焦**区域。
+
+        空预览区 / 空储存池 / 空信息面板不是焦点区：逐区尝试时直接跳过。
+        当右侧三区全空时：
+
+        - 第一次从文件选择器切区：停在文件选择器并高亮它（没有别处可去，
+          仍要给出可见反馈）；
+        - 再按一次：继续到路径框，保证路径框始终可达。
+
+        当前区域本身已失去内容（例如池刚被清空）时，先回退到文件选择器并
+        高亮，而不是把焦点留在失效区域。
+
+        Args:
+            step: +1 下一个 / -1 上一个。
+
+        Returns:
+            bool: 发生了一次焦点切换或选择器回退高亮返回 True。
+        """
+        order = (
+            self._ZONE_ORDER_CLASSIC
+            if getattr(self, "_layout_mode", "workspace") == "classic"
+            else self._ZONE_ORDER_WORKSPACE
+        )
+        content_zones = ("preview", "pool", "info")
+        all_empty = not any(
+            self._zone_can_take_focus(zone) for zone in content_zones
+        )
+        if not all_empty:
+            self._empty_cycle_selector_stay = False
+        current = self._current_zone_name()
+        # 当前区已无内容（焦点残留在刚清空的池/信息面板/预览区）：回退到
+        # 文件选择器并高亮；若三区全空，下一次按键再去路径框。
+        if current in content_zones and not self._zone_can_take_focus(current):
+            self._empty_cycle_selector_stay = all_empty
+            return self._focus_selector_with_flash()
+        # 三区全空：从文件选择器切区的第一次按键先停在选择器并高亮，
+        # 下一次才继续到路径框（用户明确要求的「先停一下」语义）。
+        if all_empty and current == "selector":
+            if self._empty_cycle_selector_stay:
+                self._empty_cycle_selector_stay = False
+                if self._focus_zone("path"):
+                    return True
+                return self._focus_selector_with_flash()
+            self._empty_cycle_selector_stay = True
+            return self._focus_selector_with_flash()
+        try:
+            index = order.index(current)
+        except ValueError:
+            index = -1
+        for offset in range(1, len(order) + 1):
+            target = order[(index + step * offset) % len(order)]
+            if target == current:
+                continue
+            if self._focus_zone(target):
+                if all_empty and target == "selector":
+                    # 从路径框切回文件选择器后，下一次按键直接去路径框，
+                    # 避免在同一个选择器上重复“停一下”。
+                    self._empty_cycle_selector_stay = True
+                return True
+        # 找不到其它可聚焦区：至少把焦点收回文件选择器并高亮，不能静默
+        # 无响应（用户看到按键没反应会以为快捷键失效）。
+        return self._focus_selector_with_flash()
+
+    def _on_preview_root_escape(self) -> bool:
+        """压缩包/文件夹预览器已在根目录再按 Esc：焦点交还进入前的焦点区。
+
+        回跳目标按「记录区 → 文件选择器 → 储存池 → 信息面板」去重顺序尝试：
+        目标区不可聚焦（空池 / 无信息条目）时继续找下一个可聚焦区。光标
+        刷新到目标区第一个卡片，并闪一次焦点描边（由 ``_focus_zone`` 完成）。
+
+        Returns:
+            bool: 有区域成功接管焦点返回 True（Esc 随之消费）。
+        """
+        preferred = getattr(self, "_zone_before_preview", "") or "selector"
+        if preferred not in self._ZONE_REGIONS:
+            preferred = "selector"
+        candidates = [preferred]
+        for fallback in ("selector", "pool", "info"):
+            if fallback not in candidates:
+                candidates.append(fallback)
+        for name in candidates:
+            if self._focus_zone(name, first=True):
+                return True
+        return False
+
+    def _flash_zone_focus(self, zone_name: str) -> None:
+        """在指定区域闪一次焦点描边（焦点区实际发生切换时调用）。
+
+        同时记录本次高亮区域，供 :meth:`_sync_region_from_click` 去重：
+        键盘切换后再用鼠标点击同一区域不会重复高亮。
+
+        Args:
+            zone_name: ``path`` / ``selector`` / ``preview`` / ``pool`` / ``info``。
+                ``path`` 只高亮路径输入框本身，不覆盖整个左栏。
+        """
+        layout = self._main_layout
+        if layout is None:
+            return
+        if zone_name == "path":
+            path_input = getattr(self._file_selector, "_path_input", None)
+            if path_input is None:
+                return
+            flash_widget = getattr(layout, "flash_widget", None)
+            if callable(flash_widget):
+                try:
+                    flash_widget(path_input)
+                except RuntimeError:
+                    return
+            self._last_flash_zone = zone_name
+            return
+        flash = getattr(layout, "flash_zone_focus", None)
+        if callable(flash):
+            try:
+                flash(zone_name)
+            except RuntimeError:
+                return
+            self._last_flash_zone = zone_name
+
+    def _focus_zone(self, name: str, *, first: bool = False) -> bool:
+        """把键盘焦点交给指定区域。
+
+        Args:
+            name: 区名（path/selector/pool/preview/info）。
+            first: True 时把该区键盘光标刷新到第一个卡片（预览器根目录
+                Esc 回跳用）；储存池 / 信息面板的聚焦方法本身即回首卡。
+
+        Returns:
+            bool: 成功聚焦返回 True。
+        """
+        mapping = {
+            "path": lambda: self._file_selector._path_input.setFocus(),
+            "selector": lambda: (
+                self._file_selector.focus_first_entry()
+                if first
+                else self._file_selector.focus_file_list()
+            ),
+            "pool": lambda: self._file_pool.focus_first_card(),
+            "preview": lambda: self._previewer.focus_active_previewer(),
+            "info": lambda: self._info_panel.focus_canvas(),
+        }
+        fn = mapping.get(name)
+        if fn is None:
             return False
-        pool = self._file_pool
-        if pool is not None and (fw is pool or pool.isAncestorOf(fw)):
+        try:
+            fn()
+        except (AttributeError, RuntimeError) as exc:
+            debug(f"焦点区切换失败（{name}）: {exc}")
+            return False
+        # 目标区可能「方法返回 True 但实际没拿到焦点」（空池 / 无预览器）：
+        # 必须以真实焦点归属判定，否则 _focus_next_zone 会停在原地。
+        if not self._zone_has_keyboard_focus(name):
+            return False
+        self._flash_zone_focus(name)
+        return True
+
+    def _zone_has_keyboard_focus(self, name: str) -> bool:
+        """当前真实键盘焦点是否落在指定区域。
+
+        Args:
+            name: 区域名（path/selector/pool/preview/info）。
+
+        Returns:
+            bool: 焦点在该区域内返回 True。
+        """
+        widget = QApplication.focusWidget()
+        if widget is None:
+            return False
+        try:
+            if name == "path":
+                return widget is self._file_selector._path_input
+            if name == "selector":
+                return (
+                    self._is_descendant_of(widget, self._file_selector)
+                    and widget is not self._file_selector._path_input
+                )
+            if name == "pool":
+                return self._is_descendant_of(widget, self._file_pool)
+            if name == "preview":
+                return self._is_descendant_of(widget, self._previewer)
+            if name == "info":
+                return self._is_descendant_of(widget, self._info_panel)
+        except (AttributeError, RuntimeError):
+            return False
+        return False
+
+    # ── 快捷键处理器接线 ────────────────────────────────────────
+
+    #: 选择器 / 储存池共用、需委托给「当前预览器」的媒体动作。
+    _MEDIA_DELEGATION = (
+        ("play_pause", "toggle_play_pause"),
+        ("seek_back", "seek_backward"),
+        ("seek_forward", "seek_forward"),
+        ("volume_up", "volume_up"),
+        ("volume_down", "volume_down"),
+    )
+
+    #: 倍速动作 → 目标倍速。
+    _MEDIA_SPEEDS = (
+        ("speed_1", 1.0),
+        ("speed_2", 2.0),
+        ("speed_3", 3.0),
+        ("speed_half", 0.5),
+    )
+
+    def _setup_shortcuts(self) -> None:
+        """登记主窗口层的快捷键处理器（全局 / 焦点区 / 媒体委托）。
+
+        选择器、储存池、信息面板、各预览器的处理器由各自
+        ``_register_shortcuts()`` 登记；本方法只处理「跨组件转发方」。
+        """
+        if getattr(self, "_shortcuts_wired", False):
+            return
+        try:
+            from sopeek.core.shortcuts import shortcut_dispatcher
+
+            dispatcher = shortcut_dispatcher()
+            self._shortcuts = dispatcher
+            dispatcher.handlers.register_many(
+                {
+                    "global.open_settings": self._shortcut_open_settings,
+                    "global.open_in_explorer": self._shortcut_open_in_explorer,
+                    "global.open_with_default": self._shortcut_open_with_default,
+                    "global.locate_in_app": self._shortcut_locate_in_app,
+                    "nav.next_zone": lambda: self._focus_next_zone(+1),
+                    "nav.prev_zone": lambda: self._focus_next_zone(-1),
+                    "nav.next_zone_f6": lambda: self._focus_next_zone(+1),
+                    "nav.prev_zone_f6": lambda: self._focus_next_zone(-1),
+                },
+                owner=self,
+            )
+
+            for prefix in ("selector", "pool"):
+                for action, method in self._MEDIA_DELEGATION:
+                    dispatcher.handlers.register(
+                        f"{prefix}.{action}",
+                        self._make_media_call(method),
+                        owner=self,
+                    )
+                for action, speed in self._MEDIA_SPEEDS:
+                    dispatcher.handlers.register(
+                        f"{prefix}.{action}.press",
+                        self._make_media_speed_press(speed),
+                        owner=self,
+                    )
+                    dispatcher.handlers.register(
+                        f"{prefix}.{action}.release",
+                        self._make_media_speed_release(),
+                        owner=self,
+                    )
+
+            # 储存池的缩略图动作委托给文件选择器的控制器执行（池内无控制器）
+            dispatcher.handlers.register_many(
+                {
+                    "pool.gen_thumbs": self._shortcut_pool_gen_thumbs,
+                    "pool.clear_thumbs": self._shortcut_pool_clear_thumbs,
+                },
+                owner=self,
+            )
+
+            # 全屏切换在非预览器区域也生效：注册表已把 5 个 *.fullscreen 动作
+            # 声明到 app / selector / pool / info / path，这里为每个区域补一份
+            # 「转发到当前预览器」的备用 handler（派发器优先取 {id}@{region}）。
+            for region in ("app", "selector", "pool", "info", "path"):
+                for action_id in (
+                    "preview.media.fullscreen",
+                    "preview.image.fullscreen",
+                    "preview.pdf.fullscreen",
+                    "preview.text.fullscreen",
+                    "preview.font.fullscreen",
+                ):
+                    dispatcher.handlers.register(
+                        f"{action_id}@{region}",
+                        self._shortcut_toggle_fullscreen,
+                        owner=self,
+                    )
+
+            # 预览器抽屉 / 内联搜索键：焦点在文件选择器或储存池时也应生效，
+            # 且必须是真正的 toggle（第二次按下关闭）。
+            for region in ("app", "selector", "pool", "info", "path", "fullscreen"):
+                for action_id in (
+                    "preview.pdf.toggle_index",
+                    "preview.text.toggle_search",
+                    "preview.archive.toggle_search",
+                ):
+                    dispatcher.handlers.register(
+                        f"{action_id}@{region}",
+                        lambda a=action_id: self._shortcut_toggle_preview_ui(a),
+                        owner=self,
+                    )
+            self._shortcuts_wired = True
+        except Exception as exc:  # noqa: BLE001 - 快捷键接线失败不阻塞主界面
+            warning(f"快捷键处理器接线失败: {exc}")
+
+    # ── 媒体委托 ────────────────────────────────────────────────
+
+    def _shortcut_pool_gen_thumbs(self) -> bool:
+        """``Q``（池内）：为储存池中的全部文件生成缩略图。"""
+        if self._file_selector is None or self._file_pool is None:
+            return True
+        return self._file_selector.generate_thumbnails_for_paths(
+            self._file_pool.thumbnail_paths(), scope="pool"
+        )
+
+    def _shortcut_pool_clear_thumbs(self) -> bool:
+        """``Shift+Q``（池内）：清除储存池中全部文件的缩略图缓存。"""
+        if self._file_selector is None or self._file_pool is None:
+            return True
+        return self._file_selector.clear_thumbnails_for_paths(
+            self._file_pool.thumbnail_paths()
+        )
+
+    def _active_media_previewer(self):
+        """返回当前内层预览器（非媒体时同样返回，调用方按属性判断）。"""
+        previewer = self._previewer
+        if previewer is None:
+            return None
+        return getattr(previewer, "_current_preview_widget", None)
+
+    def _make_media_call(self, method: str):
+        """生成「转发到当前预览器某方法」的零参处理器。
+
+        Args:
+            method: 预览器上的方法名（如 ``toggle_play_pause``）。
+
+        Returns:
+            Callable[[], None]: 处理器；无媒体预览器时静默无操作。
+        """
+
+        def _call() -> None:
+            target = self._active_media_previewer()
+            fn = getattr(target, method, None)
+            if callable(fn):
+                try:
+                    fn()
+                except RuntimeError:
+                    pass
+
+        return _call
+
+    def _current_media_speed(self) -> float:
+        """读取当前预览器倍速（无媒体预览器时回退 1.0）。"""
+        target = self._active_media_previewer()
+        value = getattr(target, "current_speed", None)
+        try:
+            return float(value) if value is not None else 1.0
+        except (TypeError, ValueError):
+            return 1.0
+
+    def _apply_media_speed(self, speed: float) -> None:
+        """把目标倍速下发给当前预览器（无媒体预览器时无操作）。"""
+        target = self._active_media_previewer()
+        fn = getattr(target, "set_speed", None)
+        if callable(fn):
+            try:
+                fn(speed)
+            except RuntimeError:
+                pass
+
+    def _make_media_speed_press(self, speed: float):
+        """生成倍速键「按下」处理器（立即生效，保证短按零延迟）。
+
+        优先走预览器的 ``begin_temp_speed``（切速 + 常显 OSD，长按期间提示
+        不自动隐藏）；预览器未提供该接口时回退为纯切速。
+
+        Args:
+            speed: 目标倍速。
+
+        Returns:
+            Callable[[], None]: 处理器。
+        """
+
+        def _press() -> None:
+            self._media_prev_speed = self._current_media_speed()
+            target = self._active_media_previewer()
+            fn = getattr(target, "begin_temp_speed", None)
+            if callable(fn):
+                try:
+                    fn(speed)
+                    return
+                except (RuntimeError, TypeError):
+                    pass
+            self._apply_media_speed(speed)
+
+        return _press
+
+    def _make_media_speed_release(self):
+        """生成倍速键「释放」处理器（长按回滚 + 收掉常显提示）。
+
+        优先走预览器的 ``end_temp_speed``（结束常显 → 长按回滚 / 短按保持，
+        随后普通提示自动隐藏）；未提供时回退为「仅长按回滚」。
+
+        Returns:
+            Callable[[bool], None]: 接收 ``long_pressed`` 的处理器。
+        """
+
+        def _release(long_pressed: bool) -> None:
+            target = self._active_media_previewer()
+            fn = getattr(target, "end_temp_speed", None)
+            if callable(fn):
+                try:
+                    fn(bool(long_pressed))
+                    return
+                except (RuntimeError, TypeError):
+                    pass
+            if long_pressed:
+                self._apply_media_speed(getattr(self, "_media_prev_speed", 1.0))
+
+        return _release
+
+    # ── 全局动作 ────────────────────────────────────────────────
+
+    def _shortcut_toggle_fullscreen(self) -> bool:
+        """``Ctrl+\\``：对当前预览器切换全屏（任何区域都可触发）。
+
+        延后一帧执行：全屏进出会把预览器 reparent 到独立顶层窗口，
+        在按键事件链内直接做会触发原生窗口重建期崩溃。
+
+        Returns:
+            bool: 有可全屏预览器并已排程返回 True。
+        """
+        previewer = self._previewer
+        widget = (
+            getattr(previewer, "_current_preview_widget", None)
+            if previewer is not None
+            else None
+        )
+        toggle = getattr(widget, "_on_maxsize_toggle", None)
+        if not callable(toggle):
+            return False
+        from sopeek.core.shortcuts import defer_call
+
+        defer_call(toggle)
+        return True
+
+    def _shortcut_toggle_preview_ui(self, action_id: str) -> bool:
+        """把预览器抽屉 / 内联搜索键转发给当前预览器（任何区域可用）。
+
+        Args:
+            action_id: 预览器动作 id。
+
+        Returns:
+            bool: 当前预览器支持该动作并已调用返回 True。
+        """
+        previewer = self._previewer
+        widget = (
+            getattr(previewer, "_current_preview_widget", None)
+            if previewer is not None
+            else None
+        )
+        if widget is None:
+            return False
+        method_name = {
+            "preview.pdf.toggle_index": "_toggle_index_drawer",
+            "preview.text.toggle_search": "_toggle_search_drawer",
+            "preview.archive.toggle_search": "_toggle_search",
+        }.get(action_id)
+        if method_name is None:
+            return False
+        method = getattr(widget, method_name, None)
+        if not callable(method):
+            return False
+        try:
+            method()
+        except RuntimeError:
             return False
         return True
 
-    def _install_nav_key_filter(self) -> None:
-        """幂等安装应用级方向键导航过滤器（安装到 QApplication）。
-
-        无 QApplication（极端独立场景）或已安装时直接返回，不重复安装。
-        """
-        qapp = QApplication.instance()
-        if qapp is None or getattr(self, "_nav_filter_installed", False):
+    def _apply_pool_layout_mode(self) -> None:
+        """把当前布局模式下发给储存池（三栏禁用卡片缩放）。幂等。"""
+        pool = self._file_pool
+        if pool is None:
             return
-        qapp.installEventFilter(self)
-        self._nav_filter_installed = True
-
-    def _uninstall_nav_key_filter(self) -> None:
-        """幂等卸载应用级方向键导航过滤器。
-
-        先清标记再移除：本方法可在 ``destroyed`` 信号槽中执行（C++ 对象
-        正在拆除），``removeEventFilter`` 可能抛 ``RuntimeError``，此时
-        Qt 已在 ~QObject 内自动摘除本过滤器，忽略即可。
-        """
-        if not getattr(self, "_nav_filter_installed", False):
-            return
-        self._nav_filter_installed = False
-        qapp = QApplication.instance()
-        if qapp is not None:
+        setter = getattr(pool, "set_layout_mode", None)
+        if callable(setter):
             try:
-                qapp.removeEventFilter(self)
+                setter(self._layout_mode)
             except RuntimeError:
                 pass
+
+    def _on_previewer_file_nav(self, step: int) -> None:
+        """预览器请求切上/下一个文件（图像 ``←→``）。
+
+        光标推进交给文件选择器（同一份光标状态），但**跳过文件夹**：
+        预览器应连续停留在同类内容上，不应因为遇到文件夹而切换预览器类型。
+
+        Args:
+            step: +1 下一个 / -1 上一个。
+        """
+        selector = self._file_selector
+        if selector is None:
+            return
+        try:
+            info = selector.advance_cursor(step, skip_dirs=True)
+        except Exception as exc:  # noqa: BLE001 - 导航失败不影响当前预览
+            debug(f"预览器切文件失败: {exc}")
+            return
+        if info:
+            self._show_preview(info)
+
+    def _shortcut_open_settings(self) -> bool:
+        """``Ctrl+I``：打开设置；已打开则关闭（对称切换）。
+
+        全屏时先退出全屏再打开设置——全屏宿主是独立顶层窗口，直接在其上叠
+        设置窗口会打乱窗口层级与生命周期（实测闪退）。
+
+        Returns:
+            bool: 始终返回 True（消费事件）。
+        """
+        window = getattr(self, "_settings_window", None)
+        visible = False
+        if window is not None:
+            try:
+                visible = bool(window.isVisible())
+            except RuntimeError:
+                window = None
+                visible = False
+        if visible:
+            try:
+                window.close()
+            except RuntimeError:
+                pass
+            return True
+
+        # 全屏中：先退出全屏（延后一帧，避免在按键事件链内 reparent），
+        # 再打开设置窗口。
+        if self._is_fullscreen_active():
+            from sopeek.core.shortcuts import defer_call
+
+            defer_call(self._leave_fullscreen_then_open_settings)
+            return True
+
+        self._open_settings_window()
+        return True
+
+    def _is_fullscreen_active(self) -> bool:
+        """当前是否有预览器处于全屏。
+
+        Returns:
+            bool: 有全屏预览器返回 True。
+        """
+        shortcuts = getattr(self, "_shortcuts", None)
+        if shortcuts is not None and shortcuts.region() == "fullscreen":
+            return True
+        previewer = self._previewer
+        widget = (
+            getattr(previewer, "_current_preview_widget", None)
+            if previewer is not None
+            else None
+        )
+        return bool(getattr(widget, "_fullscreen", False))
+
+    def _leave_fullscreen_then_open_settings(self) -> None:
+        """退出当前全屏预览器，然后打开设置窗口（供 ``Ctrl+I`` 全屏路径使用）。"""
+        previewer = self._previewer
+        widget = (
+            getattr(previewer, "_current_preview_widget", None)
+            if previewer is not None
+            else None
+        )
+        exit_fn = getattr(widget, "_exit_fullscreen", None)
+        if callable(exit_fn):
+            try:
+                exit_fn()
+            except Exception as exc:  # noqa: BLE001 - 退出全屏失败仍要能开设置
+                debug(f"退出全屏失败（继续打开设置）: {exc}")
+        self._open_settings_window()
+
+    def _current_preview_path(self) -> str:
+        """返回当前预览文件的绝对路径（无预览时为空串）。"""
+        previewer = self._previewer
+        if previewer is None:
+            return ""
+        getter = getattr(previewer, "current_file_info", None)
+        if not callable(getter):
+            return ""
+        try:
+            info = getter()
+        except Exception:  # noqa: BLE001 - 读取失败按无预览处理
+            return ""
+        if not isinstance(info, dict):
+            return ""
+        path = str(info.get("path") or "")
+        return os.path.abspath(path) if path else ""
+
+    def _shortcut_open_in_explorer(self) -> bool:
+        """``Ctrl+M``：在系统文件资源管理器中打开并选中当前文件。
+
+        归档内文件 / 已删除文件的路径在磁盘上不存在，``explorer /select,``
+        会静默失败。此时回退到「打开最近的已存在父目录」，至少让用户看到
+        所在位置，而不是按键毫无反应。
+        """
+        path = self._current_preview_path()
+        if not path or not os.path.isabs(path):
+            return True
+        import subprocess
+
+        if os.path.exists(path):
+            try:
+                subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+            except Exception as exc:  # noqa: BLE001 - 打开失败仅记录
+                warning(f"在资源管理器中打开失败: {exc}")
+            return True
+
+        # 回退：逐级向上找到第一个存在的目录
+        fallback_dir = os.path.dirname(os.path.normpath(path))
+        while fallback_dir and not os.path.isdir(fallback_dir):
+            parent = os.path.dirname(fallback_dir)
+            if parent == fallback_dir:
+                fallback_dir = ""
+                break
+            fallback_dir = parent
+        if not fallback_dir:
+            warning(f"在资源管理器中打开失败：路径不存在 {path}")
+            return True
+        try:
+            subprocess.Popen(["explorer", os.path.normpath(fallback_dir)])
+        except Exception as exc:  # noqa: BLE001 - 打开失败仅记录
+            warning(f"在资源管理器中打开目录失败: {exc}")
+        return True
+
+    def _shortcut_open_with_default(self) -> bool:
+        """``Ctrl+K``：用系统默认方式打开当前文件。"""
+        path = self._current_preview_path()
+        if not path or not os.path.exists(path):
+            return True
+        try:
+            os.startfile(path)  # noqa: S606 - Windows 平台预期行为
+        except Exception as exc:  # noqa: BLE001 - 打开失败仅记录
+            warning(f"使用系统默认方式打开失败: {exc}")
+        return True
+
+    def _shortcut_locate_in_app(self) -> bool:
+        """``Ctrl+O``：文件选择器跳转到当前文件所在目录并高亮。"""
+        path = self._current_preview_path()
+        if not path:
+            return True
+        previewer = self._previewer
+        getter = getattr(previewer, "current_file_info", None) if previewer else None
+        info = None
+        if callable(getter):
+            try:
+                info = getter()
+            except Exception:  # noqa: BLE001 - 读取失败按无预览处理
+                info = None
+        if not isinstance(info, dict):
+            info = {"path": path}
+        try:
+            self._file_selector.locate_file(dict(info))
+        except Exception as exc:  # noqa: BLE001 - 定位失败仅记录
+            warning(f"应用内定位失败: {exc}")
+        return True
 
     # ---- Public API ----
 
@@ -4329,6 +5568,7 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         if self._main_layout is None or self._splitter_container is None:
             # 轻量启动外壳阶段：仅记录偏好，构建时应用
             self._layout_mode = mode
+            self._apply_pool_layout_mode()
             return True
         if mode == self._layout_mode:
             return True
@@ -4380,6 +5620,8 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         self._main_layout = new_layout
         self._zones = new_layout.zones
         self._layout_mode = mode
+        # 储存池：三栏布局禁用 Ctrl+滚轮 缩放（New 布局保留）
+        self._apply_pool_layout_mode()
         # 统一操作按钮承载方式随布局切换（经典=底部栏 / New=预览器顶栏）
         if self._previewer is not None:
             self._previewer.set_actions_mode(mode == "workspace")

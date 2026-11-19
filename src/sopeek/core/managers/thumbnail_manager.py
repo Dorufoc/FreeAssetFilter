@@ -2758,6 +2758,47 @@ class ThumbnailManager:
             import gc
             gc.collect()
 
+    def clear_thumbnails_for(self, file_paths) -> int:
+        """按文件路径**精确**清除对应缩略图缓存（不触碰其它文件）。
+
+        与 :meth:`clear_all_thumbnails` 的区别：本方法用
+        ``get_thumbnail_path`` 的 md5 规则逐文件定位，**不做 glob 通配**，
+        因此不会误删同名/同前缀缓存。
+
+        Args:
+            file_paths: 目标源文件路径可迭代对象。
+
+        Returns:
+            int: 实际删除的缓存文件数。
+        """
+        deleted = 0
+        for file_path in file_paths or ():
+            if not file_path:
+                continue
+            candidates = []
+            try:
+                candidates.append(self.get_thumbnail_path(str(file_path)))
+                candidates.append(self.get_legacy_thumbnail_path(str(file_path)))
+            except Exception as exc:  # noqa: BLE001 - 路径异常跳过该文件
+                debug(f"[ThumbnailManager] 计算缩略图路径失败 {file_path}: {exc}")
+                continue
+            for candidate in candidates:
+                try:
+                    if os.path.isfile(candidate):
+                        os.remove(candidate)
+                        self._set_cached_path_exists(candidate, False)
+                        deleted += 1
+                except OSError as exc:
+                    debug(f"[ThumbnailManager] 删除缩略图失败 {candidate}: {exc}")
+
+        # 清掉内存里的帧缓存（键是**源文件路径**，不是缩略图路径）。
+        with self._frame_cache_lock:
+            for file_path in file_paths or ():
+                cache = self._frame_caches.pop(str(file_path), None)
+                if cache is not None:
+                    cache.clear()
+        return deleted
+
     def clear_all_thumbnails(self) -> int:
         """
         清理所有缩略图缓存

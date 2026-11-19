@@ -50,7 +50,18 @@ from __future__ import annotations
 
 from typing import Dict, Optional
 
-from PySide6.QtCore import Qt, QTimer, QEasingCurve, QVariantAnimation, Signal
+from PySide6.QtCore import (
+    Property,
+    QEasingCurve,
+    QRect,
+    QRectF,
+    Qt,
+    QTimer,
+    QVariantAnimation,
+    Signal,
+    QPropertyAnimation,
+)
+from PySide6.QtGui import QPainter, QPaintEvent, QPen
 from PySide6.QtWidgets import (
     QFrame,
     QSplitter,
@@ -60,6 +71,7 @@ from PySide6.QtWidgets import (
 )
 
 from sopeek.ui.theme.app_stylesheet import register_widget_qss
+from sopeek.ui.theme import tm
 from sopeek.utils.animation_settings import is_animation_enabled
 
 
@@ -158,6 +170,95 @@ class _LayoutSplitter(QSplitter):
         handle = _LayoutSplitterHandle(self.orientation(), self)
         handle.doubleClicked.connect(self.handleDoubleClicked)
         return handle
+
+
+class _ZoneFocusRing(QWidget):
+    """区域焦点描边层：在指定区域容器上绘制 accent 细边框。
+
+    为什么需要独立一层：4 个区域容器（``MainZone*``）的边框/填充由叶子组件
+    各自的 section 样式绘制，直接改容器的 QSS 会被叶子组件覆盖。这里用一层
+    **鼠标穿透**的透明覆盖控件专门画焦点描边，与业务绘制完全解耦。
+
+    在焦点区实际发生切换时显示（键盘切换或鼠标点击到其它区域）；同一焦点区内
+    连续点击不重复高亮。显示约 1.2 秒后自动淡出，避免长期占用视觉注意力。
+    """
+
+    #: 描边宽度（逻辑像素）。
+    BORDER_WIDTH = 2
+    #: 显示后自动淡出的延时（ms）。
+    FADE_DELAY_MS = 1200
+    #: 淡出时长（ms）。
+    FADE_MS = 260
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self._opacity = 1.0
+        self._fade = QPropertyAnimation(self, b"ring_opacity", self)
+        self._fade.setDuration(self.FADE_MS)
+        self._fade.setEasingCurve(QEasingCurve.OutCubic)
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(self.FADE_DELAY_MS)
+        self._timer.timeout.connect(self._start_fade)
+        self.hide()
+
+    @Property(float)
+    def ring_opacity(self) -> float:
+        """描边透明度（0~1）。"""
+        return self._opacity
+
+    @ring_opacity.setter
+    def ring_opacity(self, value: float) -> None:
+        self._opacity = max(0.0, min(1.0, float(value)))
+        self.update()
+
+    def flash(self, geometry_rect: QRect) -> None:
+        """在指定矩形上闪一次焦点描边。
+
+        Args:
+            geometry_rect: 目标区域相对父控件的矩形。
+        """
+        self._timer.stop()
+        self._fade.stop()
+        self.setGeometry(geometry_rect)
+        self._opacity = 1.0
+        self.show()
+        self.raise_()
+        self.update()
+        self._timer.start()
+
+    def _start_fade(self) -> None:
+        """启动淡出动画，结束后隐藏。"""
+        self._fade.stop()
+        self._fade.setStartValue(self._opacity)
+        self._fade.setEndValue(0.0)
+        try:
+            self._fade.finished.disconnect(self.hide)
+        except (RuntimeError, TypeError):
+            pass
+        self._fade.finished.connect(self.hide)
+        self._fade.start()
+
+    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802 - Qt 虚函数名
+        """绘制圆角 accent 描边（跟随主题强调色）。"""
+        painter = QPainter(self)
+        if not painter.isActive():
+            return
+        try:
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setOpacity(self._opacity)
+            pen = QPen(tm.accent, self.BORDER_WIDTH)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            inset = self.BORDER_WIDTH / 2.0
+            rect = QRectF(self.rect()).adjusted(inset, inset, -inset, -inset)
+            painter.drawRoundedRect(rect, 8.0, 8.0)
+        finally:
+            painter.end()
 
 
 class MainLayout(QWidget):
@@ -277,6 +378,10 @@ class MainLayout(QWidget):
         # 主横条拖拽（左/右分界）：右侧宽度变化后同步 16:9（未拖拽右竖条时）
         self.splitters["main"].splitterMoved.connect(self._on_main_splitter_moved)
 
+        # 区域焦点描边层：覆盖整个布局，鼠标穿透，按需 flash
+        self._zone_focus_ring = _ZoneFocusRing(self)
+        self._zone_focus_ring.setGeometry(self.rect())
+
         # 双击任一分隔条（栏边缘）→ 重置整个布局为当前模式默认比例
         for splitter in self.splitters.values():
             self._connect_splitter(splitter)
@@ -314,6 +419,43 @@ class MainLayout(QWidget):
     def zone(self, name: str) -> Optional[QFrame]:
         """返回指定区域容器（selector / preview / pool / info）。"""
         return self.zones.get(name)
+
+    def flash_zone_focus(self, name: str) -> None:
+        """在指定区域上闪一次焦点描边（焦点区实际发生切换时调用）。
+
+        Args:
+            name: 区域名（selector / preview / pool / info）；未知名称静默忽略。
+        """
+        zone = self.zones.get(name)
+        if zone is None:
+            return
+        ring = getattr(self, "_zone_focus_ring", None)
+        if ring is None:
+            return
+        try:
+            rect = QRect(zone.mapTo(self, zone.rect().topLeft()), zone.size())
+        except RuntimeError:
+            return
+        ring.flash(rect)
+
+    def flash_widget(self, widget: Optional[QWidget]) -> None:
+        """在任意子控件上闪一次焦点描边（如路径输入框）。
+
+        Args:
+            widget: 目标控件；``None`` 或已销毁时静默忽略。
+        """
+        if widget is None:
+            return
+        ring = getattr(self, "_zone_focus_ring", None)
+        if ring is None:
+            return
+        try:
+            rect = QRect(
+                widget.mapTo(self, widget.rect().topLeft()), widget.size()
+            )
+        except RuntimeError:
+            return
+        ring.flash(rect)
 
     def classic_action_slot(self) -> Optional[QWidget]:
         """经典布局右列的底部操作栏槽位（信息面板下方）。
@@ -484,6 +626,9 @@ class MainLayout(QWidget):
         super().resizeEvent(event)
         if self.width() <= 0 or self.height() <= 0:
             return
+        ring = getattr(self, "_zone_focus_ring", None)
+        if ring is not None:
+            ring.setGeometry(self.rect())
         if not self._defaults_applied:
             # 几何首次就绪：应用默认比例（置位 _defaults_applied）
             if self.mode == WORKSPACE_MODE:

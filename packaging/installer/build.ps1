@@ -98,16 +98,25 @@ $numericVersion = "$fieldMajor.$fieldMinor.$fieldPatch.$fieldBuild"
 Write-Host "Installer version: $displayVersion (numeric $numericVersion)"
 
 # ---------------------------------------------------------------------------
-# Package naming: <app>-<version>-<platform>-<arch>.exe
-# 例如 Sopeek-2.0.0-windows-x64.exe、Sopeek-2.0.0.nightly-20261114-windows-x64.exe
+# Package naming: <app>-<version>-<platform>-<arch>-<timestamp>.exe
+# 例如 Sopeek-2.0.0-windows-x64-261118153045.exe、
+#      Sopeek-2.0.0.nightly-20261114-windows-x64-261118153045.exe
+#
+# 时间戳是本地时间的 yyMMddHHmmss（年只取后两位），让每次构建产出唯一文件名：
+# 同名产物不会被静默覆盖，下载或比对不同构建时也不会混淆。格式化显式使用
+# InvariantCulture，避免非公历文化（如佛历）把年份算偏。
 #
 # 平台/架构描述的是「这个包适配的系统」而不是 NSIS 存根自身的位数：NSIS 3 存根固定
 # 是 32 位，但 payload 安装到 $PROGRAMFILES64，因此包面向 64 位 Windows。将来若出
 # arm64 版本，用环境变量覆盖即可，无需改文件名逻辑。
+#
+# 注意：native/spk_updater 按 `Sopeek-<版本>-windows-<架构>[-<时间戳>].exe` 解析
+# 发布资产（见 native/spk_updater/src/release.rs），改这里的命名格式时必须同步更新。
 # ---------------------------------------------------------------------------
 $targetPlatform = if ($env:SPK_TARGET_PLATFORM) { $env:SPK_TARGET_PLATFORM.Trim() } else { 'windows' }
 $targetArch = if ($env:SPK_TARGET_ARCH) { $env:SPK_TARGET_ARCH.Trim() } else { 'x64' }
-$setupFileName = "Sopeek-$displayVersion-$targetPlatform-$targetArch.exe"
+$buildStamp = (Get-Date).ToString('yyMMddHHmmss', [System.Globalization.CultureInfo]::InvariantCulture)
+$setupFileName = "Sopeek-$displayVersion-$targetPlatform-$targetArch-$buildStamp.exe"
 # 相对 installer.nsi 所在目录（packaging/installer/），避免把含空格的绝对路径塞进
 # makensis 的 -D 参数；installer.nsi 自身也按「上两级 = 仓库根」解析（见该文件的
 # Icon / PAYLOAD / File 指令）。

@@ -436,7 +436,12 @@ class _OSDWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setWindowFlags(
+            Qt.Tool
+            | Qt.FramelessWindowHint
+            | Qt.WindowStaysOnTopHint
+            | Qt.WindowDoesNotAcceptFocus
+        )
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setFocusPolicy(Qt.NoFocus)
@@ -513,6 +518,11 @@ class _OSDWidget(QWidget):
         # 目标控件（OSD 相对于此控件定位）
         self._target_widget: Optional[QWidget] = None
 
+        # 顶层化：OSD 必须**脱离**浮动控制栏的父子关系，否则控制栏 3~6 秒
+        # 自动隐藏时会把作为其子窗口的 OSD 一起带走（音频模式实测：
+        # 长按倍速标签会自己消失）。改为无父顶层窗口，由 StyledPlayerBar
+        # 持引用防 GC，显示前按目标控件重新定位。
+        self.setParent(None)
         self.adjustSize()
 
     def set_target_widget(self, widget: QWidget):
@@ -580,8 +590,18 @@ class _OSDWidget(QWidget):
 
         self.move(x, y)
         self.show()
+        # 顶层窗口必须显式提升，否则会被全屏预览宿主等其它顶层窗口压住
         self.raise_()
-        self._hide_timer.start(duration)
+        if duration > 0:
+            self._hide_timer.start(duration)
+        else:
+            # duration <= 0：常显，等调用方显式 hide_now()
+            self._hide_timer.stop()
+
+    def hide_now(self) -> None:
+        """立即隐藏 OSD（用于常显消息的收尾）。"""
+        self._hide_timer.stop()
+        self._hide()
 
     def _hide(self):
         """隐藏 OSD"""
@@ -763,7 +783,9 @@ class StyledPlayerBar(QWidget):
         tm.colors_updated.connect(self._on_theme_changed_icons)
 
         # OSD overlay
-        self._osd_widget = _OSDWidget(self)
+        # 无父顶层窗口：不随控制栏隐藏（控制栏 3~6 秒自动隐藏时 OSD 仍可见）。
+        # 由本组件持引用防止被 GC 回收。
+        self._osd_widget = _OSDWidget(None)
 
     @property
     def _icons_dir(self) -> str:
@@ -1113,6 +1135,22 @@ class StyledPlayerBar(QWidget):
         if not hasattr(self, '_osd_widget'):
             return
         self._osd_widget.show_message(message, duration)
+
+    def show_osd_sticky(self, message: str) -> None:
+        """显示常显 OSD（长按临时倍速期间保持可见）。
+
+        Args:
+            message: 文本消息，如 ``"2.0x"``。
+        """
+        if not hasattr(self, '_osd_widget'):
+            return
+        self._osd_widget.show_message(message, 0)
+
+    def hide_osd(self) -> None:
+        """立即隐藏常显 OSD。"""
+        if not hasattr(self, '_osd_widget'):
+            return
+        self._osd_widget.hide_now()
 
     def show_seek_osd(self, current_time: float, total_duration: float, direction: str, duration: int = 2000) -> None:
         """显示 OSD seek 进度

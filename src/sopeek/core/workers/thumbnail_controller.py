@@ -33,7 +33,6 @@ from sopeek.core.managers.thumbnail_manager import (
     is_media_file,
 )
 
-
 def _extract_file_path(file_data: str | dict) -> str:
     """从批量回调透传的文件项中提取文件路径。
 
@@ -103,15 +102,17 @@ class _ClearTask(QRunnable):
     """
 
     def __init__(
-        self, controller: ThumbnailController, token: int
+        self, controller: ThumbnailController, token: int, paths=None
     ) -> None:
         super().__init__()
         self.setAutoDelete(True)
         self._controller = controller
         self._token = token
+        #: ``None`` = 全量清除；列表 = 只清这些文件的缓存。
+        self._paths = None if paths is None else list(paths)
 
     def run(self) -> None:
-        self._controller._run_clear(self._token)
+        self._controller._run_clear(self._token, self._paths)
 
 
 class ThumbnailController(QObject):
@@ -201,11 +202,12 @@ class ThumbnailController(QObject):
         )
         return True
 
-    def start_clear(self) -> bool:
-        """启动全部缩略图缓存清除（QThreadPool 后台任务，非阻塞）。
+    def start_clear(self, paths=None) -> bool:
+        """启动缩略图缓存清除（QThreadPool 后台任务，非阻塞）。
 
-        清除为一次性磁盘删除操作，无取消语义；投递后立即返回，结果经
-        ``clear_finished`` 信号回传。
+        Args:
+            paths: ``None`` = 全量清除（历史语义，供内部与测试使用）；
+                列表 = 只清除这些**源文件**对应的缓存（``Shift+Q`` 用）。
 
         Returns:
             bool: 成功启动返回 True；已有任务进行中返回 False。
@@ -218,7 +220,7 @@ class ThumbnailController(QObject):
             token = self._generation_token
             self._cancel_event.clear()
 
-        thread_pools.pool("decode").start(_ClearTask(self, token))
+        thread_pools.pool("decode").start(_ClearTask(self, token, paths))
         return True
 
     def cancel(self) -> None:
@@ -339,14 +341,18 @@ class ThumbnailController(QObject):
         finally:
             self._finish_task(token)
 
-    def _run_clear(self, token: int) -> None:
+    def _run_clear(self, token: int, paths=None) -> None:
         """清除任务执行体（由 QRunnable 在线程池线程中调用，无取消语义）。
 
         Args:
             token: 任务启动时的世代快照，失效后丢弃结果。
+            paths: ``None`` = 全量清除；列表 = 只清这些源文件对应的缓存。
         """
         try:
-            deleted_count = clear_all_thumbnails()
+            if paths is None:
+                deleted_count = clear_all_thumbnails()
+            else:
+                deleted_count = get_thumbnail_manager().clear_thumbnails_for(paths)
             if self._token_is_current(token):
                 self.clear_finished.emit(deleted_count)
         except Exception as exc:  # noqa: BLE001  # 后台任务兜底，经 failed 信号回传

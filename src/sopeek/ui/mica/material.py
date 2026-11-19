@@ -70,7 +70,7 @@ import os
 import threading
 import time
 import weakref
-from typing import Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import numpy as np
 from PySide6.QtCore import (
@@ -447,6 +447,97 @@ class _BakeWorker(QObject):
 #: 存活材质弱引用集合：进程退出兜底释放用（见
 #: :func:`_dispose_live_materials_at_exit` 与 :meth:`MicaMaterial.dispose`）。
 _LIVE_MATERIALS: weakref.WeakSet = weakref.WeakSet()
+
+#: 已 ``quit`` 但可能仍在运行的烘焙线程（模块级**强引用**）。
+#: 为什么必须由模块托管：``QThread`` 的 Python 包装在 C++ 线程仍运行时被
+#: 析构，Qt 会 ``qFatal("QThread: Destroyed while thread is still running")``
+#: → ``abort()`` → Windows 退出码 ``0xC0000409``。测试进程退出、窗口快速
+#: 关闭后 GC 回收材质、以及生产端「开窗即关」都会命中该路径。
+_RETIRED_THREADS: List[QThread] = []
+_RETIRED_THREADS_LOCK = threading.Lock()
+
+
+def _retire_thread(thread: Optional[QThread]) -> None:
+    """把已 ``quit`` 的烘焙线程登记进进程级强引用表。
+
+    登记后 Python 不会在 C++ 线程仍在运行时销毁 ``QThread``；线程自然结束
+    时经 ``finished`` 自动移出并 ``deleteLater``。``_retired_threads`` 旧实现
+    在超过 4 个时对最老线程 ``deleteLater``，若其仍在运行同样会触发 qFatal，
+    本实现不设上限、绝不删除运行中的线程。
+
+    Args:
+        thread: 待登记的线程；``None`` 时为空操作。
+    """
+    if thread is None:
+        return
+    with _RETIRED_THREADS_LOCK:
+        if any(item is thread for item in _RETIRED_THREADS):
+            return
+        _RETIRED_THREADS.append(thread)
+    try:
+        thread.finished.connect(lambda t=thread: _forget_retired_thread(t))
+    except RuntimeError:
+        pass
+
+
+def _forget_retired_thread(thread: Optional[QThread]) -> None:
+    """线程自然结束后移出登记表并安排 ``deleteLater``。
+
+    Args:
+        thread: 已结束（或已失效）的线程；``None`` 时为空操作。
+    """
+    if thread is None:
+        return
+    with _RETIRED_THREADS_LOCK:
+        for index, item in enumerate(_RETIRED_THREADS):
+            if item is thread:
+                del _RETIRED_THREADS[index]
+                break
+    try:
+        thread.deleteLater()
+    except RuntimeError:
+        pass
+
+
+def shutdown_worker_threads(timeout_ms: float = 5000.0) -> None:
+    """进程退出前回收 Mica 烘焙线程（幂等，绝不抛出）。
+
+    两步：先把仍未 ``dispose`` 的材质收尾（覆盖「窗口未关、直接 quit」的
+    路径），再对所有登记线程 ``quit`` + 有界 ``wait``，保证 Python 收尾阶段
+    不存在「运行中的 QThread 被析构」。
+
+    Args:
+        timeout_ms: 全部线程共享的等待上限（毫秒）。
+    """
+    try:
+        from shiboken6 import isValid
+    except Exception:  # noqa: BLE001 - 无 shiboken 时跳过有效性判断
+        isValid = None  # type: ignore[assignment]
+
+    for mica in list(_LIVE_MATERIALS):
+        try:
+            if isValid is not None and not isValid(mica):
+                continue
+            if not getattr(mica, "_disposed", False):
+                mica.dispose()
+        except Exception:  # noqa: BLE001 - 退出兜底绝不允许抛出
+            pass
+
+    with _RETIRED_THREADS_LOCK:
+        threads = list(_RETIRED_THREADS)
+    deadline = time.monotonic() + max(0.0, float(timeout_ms)) / 1000.0
+    for thread in threads:
+        try:
+            if thread.isFinished():
+                _forget_retired_thread(thread)
+                continue
+            thread.quit()
+            remaining = max(0, int((deadline - time.monotonic()) * 1000))
+            thread.wait(remaining)
+            if thread.isFinished():
+                _forget_retired_thread(thread)
+        except RuntimeError:
+            continue
 
 
 class MicaMaterial(QObject):
@@ -1572,10 +1663,11 @@ class MicaMaterial(QObject):
         后续任意 GPU 调用可能在原生层野内存访问（组合跑测试时偶发
         ``0xC0000005``）。本辅助只做协作式退出。
 
-        P6.3：默认**不阻塞主线程**——``quit()`` 后把线程放进
-        ``_retired_threads`` 强引用列表（上限 4，超出后对最老的
-        ``deleteLater``），并连接 ``finished → deleteLater``。仅在
-        ``SPK_MICA_BLOCKING_STOP=1`` 或应用正在关闭时才 ``wait(2000)``。
+        P6.3：默认**不阻塞主线程**——``quit()`` 后把线程登记进模块级强引用表
+        （见 :func:`_retire_thread`），线程结束时自动移出并 ``deleteLater``。
+        仅在 ``SPK_MICA_BLOCKING_STOP=1`` 或应用正在关闭时才 ``wait(2000)``。
+        强引用表保证「窗口/材质先被回收、线程后结束」的路径不会在 Python
+        析构阶段销毁运行中的 ``QThread``（否则 Qt ``qFatal`` → 0xC0000409）。
 
         Args:
             thread: 目标 QThread；``None`` 或已结束时仍会清理 worker。
@@ -1588,21 +1680,7 @@ class MicaMaterial(QObject):
                         thread.quit()
                     except Exception:  # noqa: BLE001 - 线程回收失败不向上抛
                         pass
-                    try:
-                        thread.finished.connect(thread.deleteLater)
-                    except Exception:  # noqa: BLE001
-                        pass
-                    retired = getattr(self, "_retired_threads", None)
-                    if retired is None:
-                        retired = []
-                        self._retired_threads = retired
-                    retired.append(thread)
-                    while len(retired) > 4:
-                        oldest = retired.pop(0)
-                        try:
-                            oldest.deleteLater()
-                        except Exception:  # noqa: BLE001
-                            pass
+                    _retire_thread(thread)
                     blocking = os.environ.get(
                         "SPK_MICA_BLOCKING_STOP", ""
                     ).strip().lower() in {"1", "true", "yes", "on"}
@@ -3078,7 +3156,15 @@ def _dispose_live_materials_at_exit() -> None:
     ``0xC0000005``；显式 :meth:`MicaMaterial.dispose` 后 6/6 通过）。应用与
     测试的受控退出链已有等价处理，本钩子只覆盖「未销毁控件直接退出」的
     脚本与异常路径；解析对象已失效/已释放时静默跳过，绝不抛出。
+
+    同时先回收已登记的在途烘焙线程（见 :func:`shutdown_worker_threads`）：
+    即使材质已被 ``dispose``（``_worker_thread`` 已让出），仍在运行的
+    ``QThread`` 也必须 join 后才能进入解释器收尾。
     """
+    try:
+        shutdown_worker_threads(2000)
+    except Exception:  # noqa: BLE001 - 退出兜底绝不允许抛出
+        pass
     try:
         from shiboken6 import isValid
     except Exception:  # noqa: BLE001 - 无 shiboken 时跳过有效性判断
@@ -3105,4 +3191,5 @@ __all__ = [
     "MicaMaterial",
     "MicaWidget",
     "MicaWindow",
+    "shutdown_worker_threads",
 ]

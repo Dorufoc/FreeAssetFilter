@@ -18,7 +18,7 @@ pub const MAX_NOTES_CHARS: usize = 20_000;
 pub const RELEASE_HTML_PREFIX: &str = "https://github.com/Dorufoc/Sopeek/releases/";
 
 const WIN10_WIN11_X64_SETUP_SCORE: u32 = 100;
-/// Current naming: `Sopeek-<version>-windows-x64.exe`.
+/// Current naming: `Sopeek-<version>-windows-x64[-<yyMMddHHmmss>].exe`.
 const SOPEEK_PLATFORM_SCORE: u32 = 90;
 /// Current naming for a non-x64 architecture; still selectable, ranked lower.
 const SOPEEK_PLATFORM_SCORE_SECONDARY_ARCH: u32 = 80;
@@ -103,7 +103,7 @@ pub fn resolve_releases(json: &str, include_prerelease: bool) -> Result<Selected
 ///
 /// * `*_win10_win11_x64_Setup.exe` (legacy, highest score);
 /// * any other `*setup*.exe`;
-/// * `Sopeek-<version>-windows-<arch>.exe` (current product naming).
+/// * `Sopeek-<version>-windows-<arch>[-<yyMMddHHmmss>].exe` (current product naming).
 ///
 /// Uninstallers, portable builds and launchers never qualify.
 fn setup_exe_score(name: &str) -> Option<u32> {
@@ -123,7 +123,15 @@ fn setup_exe_score(name: &str) -> Option<u32> {
     platform_installer_score(&lower)
 }
 
-/// Scores `sopeek-<version>-windows-<arch>.exe`, the current product naming.
+/// `true` for the `yyMMddHHmmss` build stamp appended by `packaging/installer/build.ps1`.
+///
+/// The stamp makes every build's file name unique, so the architecture must be
+/// matched after dropping the optional trailing `-<12 digits>` segment.
+fn is_build_stamp(text: &str) -> bool {
+    text.len() == 12 && text.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// Scores `sopeek-<version>-windows-<arch>[-<timestamp>].exe`, the current product naming.
 fn platform_installer_score(lower: &str) -> Option<u32> {
     let stem = lower.strip_suffix(".exe")?;
     let rest = stem.strip_prefix("sopeek-")?;
@@ -131,6 +139,10 @@ fn platform_installer_score(lower: &str) -> Option<u32> {
     if version.is_empty() {
         return None;
     }
+    let arch = match arch.rsplit_once('-') {
+        Some((arch, stamp)) if is_build_stamp(stamp) => arch,
+        _ => arch,
+    };
     match arch {
         "x64" => Some(SOPEEK_PLATFORM_SCORE),
         "arm64" | "x86" => Some(SOPEEK_PLATFORM_SCORE_SECONDARY_ARCH),
@@ -147,11 +159,13 @@ fn strip_exe_suffix(name: &str) -> Option<&str> {
     Some(stem)
 }
 
-/// Extracts `<version>` from `Sopeek-<version>-windows-<arch>.exe`.
+/// Extracts `<version>` from `Sopeek-<version>-windows-<arch>[-<timestamp>].exe`.
 ///
 /// The installer filename always embeds the packaged version, which is what
 /// lets a nightly release (whose tag is the fixed flag `nightly`) still be
-/// compared: `Sopeek-2.0.0.nightly-20261114-windows-x64.exe`.
+/// compared: `Sopeek-2.0.0.nightly-20261114-windows-x64-261118153045.exe`.
+/// The optional build timestamp sits right of `-windows-`, so splitting there
+/// keeps the version segment untouched.
 fn asset_version(name: &str) -> Option<VersionKey> {
     let stem = strip_exe_suffix(name)?;
     let rest = stem
@@ -766,6 +780,56 @@ mod tests {
         assert_eq!(
             select_installer_asset(&mixed).map(|asset| asset.name.clone().unwrap_or_default()),
             Some("Sopeek-2.0.0-windows-x64.exe".to_owned())
+        );
+    }
+
+    #[test]
+    fn release_asset_scoring_accepts_the_build_timestamp_suffix() {
+        // packaging/installer/build.ps1 appends `-<yyMMddHHmmss>` so every build
+        // has a unique file name; the arch segment must still be recognised.
+        assert_eq!(
+            setup_exe_score("Sopeek-2.0.0-windows-x64-261118153045.exe"),
+            Some(SOPEEK_PLATFORM_SCORE)
+        );
+        assert_eq!(
+            setup_exe_score("Sopeek-2.0.0.nightly-20261114-windows-arm64-261118153045.exe"),
+            Some(SOPEEK_PLATFORM_SCORE_SECONDARY_ARCH)
+        );
+        assert_eq!(
+            asset_version("Sopeek-2.0.0-windows-x64-261118153045.exe")
+                .expect("timestamped version")
+                .display(),
+            "2.0.0"
+        );
+        assert_eq!(
+            asset_version("Sopeek-2.0.0.nightly-20261114-windows-x64-261118153045.exe")
+                .expect("timestamped nightly version")
+                .display(),
+            "2.0.0.nightly-20261114"
+        );
+
+        // Only a 12-digit stamp may follow the arch; anything else is not the
+        // current product naming and must not be selected.
+        for rejected in [
+            "Sopeek-2.0.0-windows-x64-26111815304.exe",
+            "Sopeek-2.0.0-windows-x64-2611181530456.exe",
+            "Sopeek-2.0.0-windows-x64-build.exe",
+        ] {
+            assert_eq!(
+                setup_exe_score(rejected),
+                None,
+                "{rejected} must be rejected"
+            );
+        }
+
+        // x64 still outranks a timestamped arm64 build.
+        let candidates = vec![
+            asset("Sopeek-2.0.0-windows-arm64-261118153045.exe", 20),
+            asset("Sopeek-2.0.0-windows-x64-261118153045.exe", 30),
+        ];
+        assert_eq!(
+            select_installer_asset(&candidates).map(|asset| asset.name.clone().unwrap_or_default()),
+            Some("Sopeek-2.0.0-windows-x64-261118153045.exe".to_owned())
         );
     }
 

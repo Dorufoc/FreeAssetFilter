@@ -508,6 +508,31 @@ class StyledButton(QPushButton):
                     config["radius"],
                 )
 
+            # 键盘焦点描边：弹窗内用方向键把焦点移到按钮上时，必须有可见
+            # 反馈（用户实测要求）。只在 hasFocus() 时绘制，鼠标用户不受影响。
+            # 按钮通常铺满自身控件矩形，描边必须画在**内部**（外侧会被裁掉）；
+            # primary / danger 的底色本身就是 accent，用白色描边保证对比度。
+            if self.hasFocus() and self.isEnabled():
+                ring_color = (
+                    QColor(255, 255, 255, 220)
+                    if self._variant in ("primary", "danger")
+                    else tm.accent
+                )
+                painter.setBrush(Qt.NoBrush)
+                painter.setPen(QPen(ring_color, 2))
+                inset = 1.5
+                painter.drawRoundedRect(
+                    QRectF(
+                        btn_x + inset,
+                        btn_y + inset,
+                        btn_w - inset * 2,
+                        btn_h - inset * 2,
+                    ),
+                    config["radius"] - inset,
+                    config["radius"] - inset,
+                )
+                painter.setPen(Qt.NoPen)
+
             # 进度模式：spinner + 百分比文本组合水平居中（优先于 loading 分支）
             if self._progress is not None:
                 progress_text = f"{int(round(self._progress * 100))}%"

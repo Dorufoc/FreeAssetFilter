@@ -23,7 +23,7 @@
 import inspect
 import os
 import sys
-from typing import Optional
+from typing import Callable, Optional
 
 from PySide6.QtCore import QMimeData, QUrl, Qt, Signal
 from PySide6.QtWidgets import (
@@ -89,6 +89,9 @@ class UnifiedPreviewerLayout(QWidget):
     clear_requested = Signal()
     # 预览器内层条目选中（文件夹预览器选中变化时转发；None 表示取消选中）
     entry_selected = Signal(object)
+    # 预览器请求切换上/下一个文件（+1 下一个 / -1 上一个），由主窗口转发给
+    # 文件选择器执行「跳过文件夹、末尾环绕」的光标推进。
+    file_nav_requested = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -114,6 +117,8 @@ class UnifiedPreviewerLayout(QWidget):
         self._top_host: Optional[QWidget] = None
         #: 无顶栏预览器时由本容器提供的统一工具栏（懒创建）
         self._own_toolbar: Optional[PreviewToolbarFrame] = None
+        #: 内层预览器根目录 Esc 的宿主回调（MainWindow 下发；返回是否已接管）
+        self._root_escape_handler: Optional[Callable[[], bool]] = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -569,6 +574,81 @@ class UnifiedPreviewerLayout(QWidget):
         self._update_bottom_buttons()
         self._show_placeholder()
 
+    # ── 焦点 / 全局动作转发 ────────────────────────────────────────────
+
+    def set_root_escape_handler(
+        self, handler: Optional[Callable[[], bool]]
+    ) -> None:
+        """登记内层预览器「根目录 Esc」的宿主回调（主窗口下发）。
+
+        Args:
+            handler: 无参可调用对象，返回 True 表示主窗口已把焦点交回
+                进入预览器前的焦点区；``None`` 表示无宿主。
+        """
+        self._root_escape_handler = handler
+        self._apply_root_escape_handler(self._current_preview_widget)
+
+    def _forward_root_escape(self) -> bool:
+        """把内层预览器的根目录 Esc 转发给主窗口（无宿主时不消费）。"""
+        handler = self._root_escape_handler
+        if handler is None:
+            return False
+        try:
+            return bool(handler())
+        except RuntimeError:
+            return False
+
+    def _apply_root_escape_handler(self, widget: Optional[QWidget]) -> None:
+        """把根目录 Esc 转发器下发给支持该协议的预览器（幂等）。"""
+        if widget is None:
+            return
+        setter = getattr(widget, "set_root_escape_handler", None)
+        if not callable(setter):
+            return
+        try:
+            setter(self._forward_root_escape)
+        except (RuntimeError, TypeError):
+            pass
+
+    def has_active_preview(self) -> bool:
+        """当前是否有可聚焦的内层预览器（空预览区不是焦点区）。
+
+        Returns:
+            bool: 有内层预览器返回 True；空占位状态返回 False。
+        """
+        return self._current_preview_widget is not None
+
+    def focus_active_previewer(self) -> bool:
+        """把键盘焦点交给当前内层预览器（焦点区切换用）。
+
+        Returns:
+            bool: 聚焦成功返回 True；空占位状态返回 False。
+        """
+        widget = self._current_preview_widget
+        if widget is None:
+            return False
+        # 文件夹 / 压缩包：焦点必须落到内部文件列表，否则方向键无处可去
+        focus_list = getattr(widget, "focus_internal_list", None)
+        if callable(focus_list):
+            try:
+                if focus_list():
+                    return True
+            except RuntimeError:
+                pass
+        try:
+            widget.setFocus()
+        except RuntimeError:
+            return False
+        return True
+
+    def request_open_with_system(self) -> None:
+        """用系统默认方式打开当前预览文件（``Ctrl+K`` 复用）。"""
+        self._on_open_with_system_clicked()
+
+    def request_locate(self) -> None:
+        """请求定位当前预览文件所在目录（``Ctrl+O`` 亦可直接调选择器）。"""
+        self._on_locate_requested()
+
     def set_ai_entry_enabled(self, enabled: bool) -> None:
         """运行时切换 AI 功能入口（幂等；主窗口设置提交路径调用）。
 
@@ -687,6 +767,9 @@ class UnifiedPreviewerLayout(QWidget):
         if self._placeholder_label is None:
             self._placeholder_label = QLabel("选择文件以预览内容")
             self._placeholder_label.setAlignment(Qt.AlignCenter)
+            # 空预览区不是焦点区：占位文字不可获得键盘焦点，点击空白处由
+            # 主窗口统一回退到文件选择器。
+            self._placeholder_label.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             register_widget_qss(self._placeholder_label,(
                 f"color: {tm.qss_color(tm.text_hint)}; font-size: 14px; background: transparent;"
             ))
@@ -795,12 +878,23 @@ class UnifiedPreviewerLayout(QWidget):
                 self._apply_hidden_system_flags(self._current_preview_widget)
                 # 运行中操作宿主变化通知（Office 转换完成后 PDF 顶栏接管时迁移按钮）
                 self._connect_action_host_changed(self._current_preview_widget)
+                # 根目录 Esc 宿主回调下发（压缩包/文件夹预览器消费）
+                self._apply_root_escape_handler(self._current_preview_widget)
                 # 内层条目选中信号转发（文件夹预览器等；主窗口据此联动信息面板）
                 if hasattr(self._current_preview_widget, "entry_selected"):
                     try:
                         self._current_preview_widget.entry_selected.connect(
                             self.entry_selected.emit
                         )
+                    except (RuntimeError, AttributeError):
+                        pass
+                # 预览器请求切换上/下一个文件（图像 ←→）转发给主窗口
+                nav_signal = getattr(
+                    self._current_preview_widget, "file_nav_requested", None
+                )
+                if nav_signal is not None:
+                    try:
+                        nav_signal.connect(self.file_nav_requested.emit)
                     except (RuntimeError, AttributeError):
                         pass
                 

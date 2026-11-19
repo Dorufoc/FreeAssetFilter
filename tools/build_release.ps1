@@ -9,7 +9,7 @@
       2. 主程序打包        python packaging/build.py  ->  build/pyinstall/Sopeek/
       3. 安装器构建        packaging/installer/build.ps1（CMake+MinGW 编译 GUI，再调用 makensis）
                            ->  build/installer/SopeekInstaller.exe
-                           ->  build/Sopeek-<版本>-<平台>-<架构>.exe
+                           ->  build/Sopeek-<版本>-<平台>-<架构>-<时间戳>.exe
       4. 产物校验与哈希    检查三个产物存在且非空，输出 SHA256 并写入清单
 
     脚本本身不执行任何 git 操作（不 add / commit / push）。
@@ -151,8 +151,8 @@ function Resolve-Python {
     return $null
 }
 
-# 安装包文件名形如 Sopeek-<版本>-<平台>-<架构>.exe（版本含 nightly 后缀时会更长），
-# 因此按模式取「最新的一个」，而不是写死文件名。
+# 安装包文件名形如 Sopeek-<版本>-<平台>-<架构>-<时间戳>.exe（版本含 nightly 后缀
+# 或时间戳使名字更长），因此按模式取「最新的一个」，而不是写死文件名。
 function Resolve-SetupExe {
     param([string]$BuildDir)
     $candidates = @(Get-ChildItem -LiteralPath $BuildDir -Filter 'Sopeek-*.exe' -File -ErrorAction SilentlyContinue |
@@ -161,6 +161,40 @@ function Resolve-SetupExe {
     $legacy = Join-Path $BuildDir 'Sopeek_NSIS_Setup.exe'
     if (Test-Path -LiteralPath $legacy) { return $legacy }
     return $null
+}
+
+# 每次构建都会产出新的时间戳安装包；只保留最近 N 个，避免 build/ 无限膨胀。
+# 匹配范围严格限定为「时间戳命名」的正式安装包：旧命名（Sopeek-<版本>-windows-x64.exe）、
+# 手动放进来的其他 exe 以及 build/test-installer 都不会被删除。
+function Remove-OldSetups {
+    param(
+        [Parameter(Mandatory = $true)][string]$BuildDir,
+        [int]$Keep = 3,
+        # 本次刚构建的产物永远不删：即使系统时钟/文件复制导致 mtime 倒挂也不误删。
+        [string[]]$Protect = @()
+    )
+
+    if ($Keep -lt 1) { return }
+    if (-not (Test-Path -LiteralPath $BuildDir)) { return }
+
+    $protected = @($Protect |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        ForEach-Object { [System.IO.Path]::GetFullPath($_) })
+    $namePattern = '^Sopeek-.+-windows-(x64|arm64|x86)-\d{12}\.exe$'
+    $setups = @(Get-ChildItem -LiteralPath $BuildDir -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match $namePattern } |
+        Sort-Object LastWriteTime -Descending)
+    if ($setups.Count -le $Keep) { return }
+
+    foreach ($stale in ($setups | Select-Object -Skip $Keep)) {
+        if ($protected -contains $stale.FullName) { continue }
+        try {
+            Remove-Item -LiteralPath $stale.FullName -Force -ErrorAction Stop
+            Write-Note ("清理旧安装包：" + $stale.Name)
+        } catch {
+            Write-Warn ("旧安装包删除失败（可手动清理）：{0}（{1}）" -f $stale.FullName, $_.Exception.Message)
+        }
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -379,6 +413,7 @@ function Invoke-AsciiWorkspaceBuild {
             if (-not (Test-Path -LiteralPath $destBuildDir)) {
                 New-Item -ItemType Directory -Force -Path $destBuildDir | Out-Null
             }
+            $copiedSetups = @()
             foreach ($setup in $tempSetups) {
                 $destSetup = Join-Path $destBuildDir $setup.Name
                 Copy-Item -LiteralPath $setup.FullName -Destination $destSetup -Force
@@ -387,8 +422,12 @@ function Invoke-AsciiWorkspaceBuild {
                 if ($srcHash -ne $dstHash) {
                     throw "安装包复制校验失败：$destSetup"
                 }
+                $copiedSetups += $destSetup
                 Write-Ok ("安装包已复制并校验：$destSetup")
             }
+
+            # 父进程在复制完清单后就退出，走不到主流程末尾的清理；这里补一次。
+            Remove-OldSetups -BuildDir $destBuildDir -Protect $copiedSetups
         }
 
         $tempManifest = Join-Path $workspaceRepo 'build\release-manifest.json'
@@ -665,7 +704,7 @@ Write-Step '3/4' '产物校验与哈希'
 # 安装包名带版本/平台/架构，按模式解析（跳过安装器构建时可能为空）。
 $SetupExe = Resolve-SetupExe -BuildDir (Join-Path $RepoRoot 'build')
 if (-not $SkipInstaller -and -not $SetupExe) {
-    Fail '未找到安装包产物（期望 build\Sopeek-<版本>-<平台>-<架构>.exe）。' 1
+    Fail '未找到安装包产物（期望 build\Sopeek-<版本>-<平台>-<架构>-<时间戳>.exe）。' 1
 }
 if (-not $SkipInstaller -and $SetupExe) {
     # 防止 NSIS 静默失败时把上一次的旧安装包当成本次产物。
@@ -743,6 +782,11 @@ if (Test-Path -LiteralPath $nsiPath) {
             Write-Warn ("版本不一致：installer.nsi 为 {0}，SPKVERSION 为 {1}" -f $v, $expected)
         }
     }
+}
+
+# 只保留最近 3 个时间戳安装包；-SkipInstaller 时不碰历史产物。
+if (-not $SkipInstaller) {
+    Remove-OldSetups -BuildDir (Join-Path $RepoRoot 'build') -Protect $SetupExe
 }
 
 # ---------------------------------------------------------------------------

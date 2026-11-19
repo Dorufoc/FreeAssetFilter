@@ -20,7 +20,9 @@
   解压与搜索透传密码；
 - 排序：名称/大小/修改时间/类型，升/降序（目录优先固定）；
 - 搜索：按关键词在整个压缩包内递归查找（结果显示完整相对路径，
-  双击目录可直接跳转）。
+  双击目录可直接跳转）；
+- 键盘：包内列表首行 ``↑`` 跳到包内搜索框（未展开时自动展开），
+  搜索框 ``↓`` 回列表首行、``Esc`` 退出搜索并把焦点交还列表。
 
 明确不计划：应用内「包内文件预览」（双击文件保持无动作）。
 """
@@ -28,7 +30,7 @@
 import sys
 import threading
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 # 短路径导入（components.* / theme.*）的 sys.path 由 sopeek.ui 包统一注入，
 # 见 sopeek/ui/__init__.py；此处不再按目录层级手工计算。
@@ -43,6 +45,7 @@ from PySide6.QtCore import (
     QAbstractListModel,
     QEvent,
     QEventLoop,
+    QItemSelectionModel,
     QModelIndex,
     QObject,
     QPoint,
@@ -55,6 +58,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QFont,
+    QKeyEvent,
     QMouseEvent,
     QPainter,
     QPainterPath,
@@ -493,11 +497,13 @@ class _ArchiveListView(QListView):
     - 单击条目选中，点击空白处取消全部选中
     - 鼠标侧键（XButton1，后退键）返回上一级
     - 仅左键双击目录进入；Enter 激活目录同理
+    - 首行按 ``↑`` 把焦点上行交给顶栏的包内搜索框
     """
 
     back_requested = Signal()  # 请求返回上一级（鼠标侧键）
     dir_activated = Signal(str)  # 请求进入指定子目录（名称）
     dir_entry_activated = Signal(dict)  # 请求进入搜索结果中的目录（完整条目）
+    search_requested = Signal()  # 首行按 ↑：请求把焦点交给包内搜索框
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -522,14 +528,81 @@ class _ArchiveListView(QListView):
     def _index_entry(self, index: QModelIndex) -> Optional[dict]:
         return index.data(_ArchiveListModel.EntryRole)
 
-    def _handle_mouse_press_select(self, pos: Any) -> None:
-        """处理按下点选：空白处取消选中（含警示行不可选中）。"""
-        index = self.indexAt(pos)
-        if index.isValid() and self._index_kind(index) != "warning":
-            self.setCurrentIndex(index)
-        else:
-            self.clearSelection()
-            self.setCurrentIndex(QModelIndex())
+    def _first_selectable_index(self) -> QModelIndex:
+        """返回第一条可选条目的索引（警示行不可选，自动跳过）。"""
+        model = self.model()
+        if model is None:
+            return QModelIndex()
+        for row in range(model.rowCount()):
+            index = model.index(row, 0)
+            if index.flags() & Qt.ItemIsSelectable:
+                return index
+        return QModelIndex()
+
+    def _at_first_entry(self) -> bool:
+        """当前光标是否停在本列表首个可选条目（警示行不算）。"""
+        current = self.currentIndex()
+        first = self._first_selectable_index()
+        if not current.isValid() or not first.isValid():
+            return False
+        return current.row() == first.row()
+
+    def focus_first_entry(self) -> bool:
+        """把焦点落到首个可选条目（跳过警示行）并滚入可视区。
+
+        供「搜索框按 ↓ 回列表」与「退出搜索后还原焦点」复用：落位后
+        用户可直接 ``Enter`` 进入目录，也可继续用 ``↑↓`` 移动。
+
+        Returns:
+            bool: 列表可见并聚焦成功返回 True。
+        """
+        try:
+            if not self.isVisible():
+                return False
+            index = self._first_selectable_index()
+            if index.isValid():
+                self.setCurrentIndex(index)
+                self.scrollTo(index)
+            self.setFocus(Qt.FocusReason.OtherFocusReason)
+        except RuntimeError:
+            return False
+        return True
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        """方向键：无选中项时先落位首条；首行 ``↑`` 上行到包内搜索框。
+
+        模型重建后 Qt 会在 show / 获得焦点时把 ``currentIndex`` 自动置为
+        第 0 行（警示行或首条，且不带选中态），原生方向键会再走一格，
+        导致首次按键跳过第一个条目。这里先落位并消费该键。
+
+        首行再按无修饰 ``↑`` 时焦点交给顶栏搜索框（``search_requested``）；
+        ``Shift+↑`` / ``Ctrl+↑`` 等多选组合仍保持 Qt 原生语义。
+        """
+        key = event.key()
+        if key in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right):
+            if not self.selectionModel().hasSelection():
+                index = self._first_selectable_index()
+                if index.isValid():
+                    self.setCurrentIndex(index)
+                    self.selectionModel().select(
+                        index, QItemSelectionModel.ClearAndSelect
+                    )
+                    self.scrollTo(index)
+                    event.accept()
+                    return
+            if (
+                key == Qt.Key_Up
+                and event.modifiers()
+                in (
+                    Qt.KeyboardModifier.NoModifier,
+                    Qt.KeyboardModifier.KeypadModifier,
+                )
+                and self._at_first_entry()
+            ):
+                self.search_requested.emit()
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
     def _handle_mouse_press_select(self, pos: Any) -> None:
         """按下点选：空白处/警示行取消选中（测试与内部共用入口）。"""
@@ -806,12 +879,103 @@ class ArchivePreviewerLayout(QWidget):
         self._extract_worker: Optional[_ArchiveExtractWorker] = None
         self._extract_cancel_event: Optional[threading.Event] = None
         self._extract_progress: Optional[QProgressDialog] = None
+        # 根目录 Esc 的宿主回调（由 UnifiedPreviewerLayout 下发；返回 True
+        # 表示宿主已接管焦点，Esc 随之消费；独立运行时保持 None 不消费）
+        self._root_escape_handler: Optional[Callable[[], bool]] = None
 
         self._icon_manager = FileIconManager()
 
         self._init_ui()
         self._connect_theme()
         self._apply_section_styles()
+        # 注册快捷键处理器（区域 preview.archive）
+        self._register_shortcuts()
+
+    # ── 快捷键（注册表驱动） ──────────────────────────────────────────────
+
+    def _register_shortcuts(self) -> None:
+        """登记压缩包预览区域的快捷键处理器。"""
+        try:
+            from sopeek.core.shortcuts import shortcut_dispatcher
+
+            dispatcher = shortcut_dispatcher()
+            dispatcher.handlers.register_many(
+                {
+                    "preview.archive.toggle_search": self._toggle_search,
+                    "preview.archive.enter_dir": self._enter_selected_dir,
+                },
+                owner=self,
+            )
+            dispatcher.register_escape_provider("preview.archive", self)
+        except Exception as exc:  # noqa: BLE001 - 快捷键登记失败不阻塞预览
+            from sopeek.utils.app_logger import warning
+
+            warning(f"压缩包预览器快捷键登记失败: {exc}")
+
+    def _unregister_shortcuts(self) -> None:
+        """注销本预览器登记的快捷键处理器（幂等）。"""
+        try:
+            from sopeek.core.shortcuts import shortcut_dispatcher
+
+            dispatcher = shortcut_dispatcher()
+            dispatcher.handlers.unregister_owner(self)
+            dispatcher.unregister_escape_provider("preview.archive")
+        except Exception:  # noqa: BLE001 - 清理阶段忽略
+            pass
+
+    def escape_handlers(self) -> list:
+        """``Esc`` 消费链：退搜索 → 返回包内上一级 → 根目录交还宿主焦点。"""
+        return [
+            self._esc_exit_search,
+            self._esc_go_parent_archive,
+            self._esc_root_to_host,
+        ]
+
+    def _esc_exit_search(self) -> bool:
+        """搜索态 → 退出搜索并恢复目录视图。"""
+        if not getattr(self, "_search_mode", False):
+            return False
+        self._exit_search_mode()
+        return True
+
+    def _esc_go_parent_archive(self) -> bool:
+        """返回压缩包内上一级（根目录 / 加载中不消费，交给上层）。"""
+        if self._loading or not getattr(self, "_current_path", ""):
+            return False
+        self.go_to_parent()
+        return True
+
+    def _esc_root_to_host(self) -> bool:
+        """根目录 Esc：请求宿主把焦点交回进入预览器前的焦点区。
+
+        Returns:
+            bool: 宿主接管（或未登记）返回其处理结果；仍在包内子目录 /
+            独立运行时返回 False（不消费，交给上层）。
+        """
+        if self._current_path:
+            return False
+        handler = self._root_escape_handler
+        if handler is None:
+            return False
+        try:
+            return bool(handler())
+        except RuntimeError:
+            return False
+
+    def _enter_selected_dir(self) -> bool:
+        """``Enter``：进入当前选中的目录条目。
+
+        Returns:
+            bool: 已进入返回 True（文件条目返回 False，不消费）。
+        """
+        try:
+            index = self._view.currentIndex()
+        except RuntimeError:
+            return False
+        if not index.isValid():
+            return False
+        self._on_view_activated(index)
+        return True
 
     # ── UI 初始化 ─────────────────────────────────────────────────────────────
 
@@ -910,6 +1074,7 @@ class ArchivePreviewerLayout(QWidget):
         self._view.dir_activated.connect(self._enter_dir)
         self._view.dir_entry_activated.connect(self._enter_search_dir)
         self._view.activated.connect(self._on_view_activated)
+        self._view.search_requested.connect(self._focus_search_edit)
         self._content_stack.addWidget(self._view)
 
         self._overlay = QWidget()
@@ -982,8 +1147,43 @@ class ArchivePreviewerLayout(QWidget):
         """统一操作按钮宿主：返回本预览器顶栏（New 布局注入用）。"""
         return self._top_bar
 
+    def set_root_escape_handler(
+        self, handler: Optional[Callable[[], bool]]
+    ) -> None:
+        """登记「根目录 Esc」宿主回调（UnifiedPreviewerLayout 下发）。
+
+        Args:
+            handler: 无参可调用对象，返回 True 表示宿主已接管焦点；
+                ``None`` 表示无宿主（独立运行），Esc 保持不消费。
+        """
+        self._root_escape_handler = handler
+
+    def focus_internal_list(self) -> bool:
+        """把键盘焦点交给包内文件列表，并清掉旧当前项。
+
+        清掉当前项是为了让进入预览器后的第一次方向键从第 1 行开始；
+        鼠标单击仍按 QListView 原生行为选中条目。
+
+        Returns:
+            bool: 列表可见并成功聚焦返回 True。
+        """
+        view = getattr(self, "_view", None)
+        if view is None:
+            return False
+        try:
+            if not view.isVisible():
+                return False
+            view.clearSelection()
+            view.setCurrentIndex(QModelIndex())
+            view.setFocus(Qt.FocusReason.OtherFocusReason)
+        except RuntimeError:
+            return False
+        return True
+
     def cleanup(self) -> None:
         """清理当前浏览状态（宿主切换/清除预览时调用）。"""
+        # 注销本预览器登记的快捷键处理器（避免陈旧 handler 残留）
+        self._unregister_shortcuts()
         self._token += 1
         self._loading = False
         self._load_worker = None
@@ -1231,12 +1431,51 @@ class ArchivePreviewerLayout(QWidget):
     # ── 搜索 ────────────────────────────────────────────────────────────────
 
     def eventFilter(self, obj: Any, event: Any) -> bool:  # noqa: N802
-        """搜索框 Esc：退出搜索并恢复目录视图。"""
+        """搜索框按键：``Esc`` 退出搜索、``↓`` 回到包内列表首行。"""
         if obj is self._search_edit and event.type() == QEvent.KeyPress:
             if event.key() == Qt.Key_Escape:
                 self._exit_search_mode()
                 return True
+            if (
+                event.key() == Qt.Key_Down
+                and event.modifiers()
+                in (
+                    Qt.KeyboardModifier.NoModifier,
+                    Qt.KeyboardModifier.KeypadModifier,
+                )
+            ):
+                if self._focus_list_first_entry():
+                    return True
         return super().eventFilter(obj, event)
+
+    def _focus_search_edit(self) -> None:
+        """把键盘焦点交给包内搜索框（包内列表首行按 ``↑`` 触发）。
+
+        搜索框未展开时先打开（等同按一次搜索按钮）；已展开时保留关键词
+        并全选，便于直接改写。
+        """
+        try:
+            if not self._search_edit.isVisible():
+                self._toggle_search()
+                return
+            self._search_edit.setFocus(Qt.FocusReason.OtherFocusReason)
+            self._search_edit.selectAll()
+        except RuntimeError:
+            pass
+
+    def _focus_list_first_entry(self) -> bool:
+        """把键盘焦点交给包内列表首行（搜索框 ``↓`` / 退出搜索时触发）。
+
+        Returns:
+            bool: 列表可见并聚焦成功返回 True。
+        """
+        view = getattr(self, "_view", None)
+        if view is None:
+            return False
+        try:
+            return view.focus_first_entry()
+        except RuntimeError:
+            return False
 
     def _toggle_search(self) -> None:
         """搜索按钮：在路径框与搜索框之间切换。"""
@@ -1299,11 +1538,16 @@ class ArchivePreviewerLayout(QWidget):
         error(f"搜索压缩包失败: {message}")
 
     def _exit_search_mode(self) -> None:
-        """退出搜索：恢复路径框与目录列表（用缓存，不重扫）。"""
+        """退出搜索：恢复路径框与目录列表（用缓存，不重扫）。
+
+        搜索框持有焦点时把焦点交还包内列表首行，避免焦点停在即将隐藏的
+        输入框上（``Esc`` / 删空关键词两条路径都会走到这里）。
+        """
         self._search_debounce.stop()
         self._search_token += 1
         self._search_mode = False
         self._search_keyword = ""
+        had_focus = self._search_edit.hasFocus()
         self._search_edit.blockSignals(True)
         self._search_edit.clear()
         self._search_edit.blockSignals(False)
@@ -1321,6 +1565,8 @@ class ArchivePreviewerLayout(QWidget):
                 self._show_overlay(_PLACEHOLDER_DIR_EMPTY)
             else:
                 self._show_overlay(_PLACEHOLDER_ROOT_EMPTY)
+        if had_focus:
+            self._focus_list_first_entry()
 
     def _reset_search_ui(self) -> None:
         """把搜索 UI 恢复到初始（隐藏搜索框、显示路径框）。"""

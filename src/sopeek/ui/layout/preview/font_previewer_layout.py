@@ -688,6 +688,50 @@ class FontPreviewerLayout(QWidget):
 
         self._init_ui()
         self._connect_theme()
+        # 注册快捷键处理器（区域 preview.font，全屏同样生效）
+        self._register_shortcuts()
+
+    # ── 快捷键（注册表驱动） ──────────────────────────────────────────────
+
+    def _register_shortcuts(self) -> None:
+        """登记字体预览区域的快捷键处理器。"""
+        try:
+            from sopeek.core.shortcuts import defer_call, shortcut_dispatcher
+
+            dispatcher = shortcut_dispatcher()
+            dispatcher.handlers.register_many(
+                {
+                    "preview.font.weight_up": lambda: self._step_weight(+100),
+                    "preview.font.weight_down": lambda: self._step_weight(-100),
+                    "preview.font.size_up": lambda: self._on_wheel_font_size_change(+1),
+                    "preview.font.size_down": lambda: self._on_wheel_font_size_change(-1),
+                    "preview.font.fullscreen": lambda: defer_call(self._on_maxsize_toggle),
+                },
+                owner=self,
+            )
+        except Exception as exc:  # noqa: BLE001 - 快捷键登记失败不阻塞预览
+            from sopeek.utils.app_logger import warning
+
+            warning(f"字体预览器快捷键登记失败: {exc}")
+
+    def _unregister_shortcuts(self) -> None:
+        """注销本预览器登记的快捷键处理器（幂等）。"""
+        try:
+            from sopeek.core.shortcuts import shortcut_dispatcher
+
+            shortcut_dispatcher().handlers.unregister_owner(self)
+        except Exception:  # noqa: BLE001 - 清理阶段忽略
+            pass
+
+    def _step_weight(self, delta: int) -> None:
+        """``←`` / ``→``：字重加减（100 一档，钳制 100–900）。
+
+        Args:
+            delta: 字重增量（+100 / -100）。
+        """
+        new_weight = max(100, min(900, int(self._current_weight) + int(delta)))
+        if new_weight != self._current_weight:
+            self._apply_weight(new_weight)
         self._apply_default_panel_styles()
 
     def _init_ui(self) -> None:
@@ -1528,6 +1572,10 @@ class FontPreviewerLayout(QWidget):
         if not self._fullscreen_host.attach(self):
             return
         self._fullscreen_host.show_fullscreen()
+        # 快捷键区域切到 fullscreen（宿主是独立顶层窗口，focusChanged 解析不到）
+        from sopeek.core.shortcuts import enter_fullscreen_region
+
+        enter_fullscreen_region()
         self._maxsize_btn.set_svg_icon(self._minisize_icon_path)
         self._maxsize_btn.setToolTip("还原")
         self._fullscreen = True
@@ -1540,6 +1588,10 @@ class FontPreviewerLayout(QWidget):
         self._discard_zoom_popup()
         self._discard_weight_popup()
         self._fullscreen_host.exit_fullscreen()
+        # 快捷键区域退回主窗口
+        from sopeek.core.shortcuts import exit_fullscreen_region
+
+        exit_fullscreen_region()
         self._fullscreen_host.deleteLater()
         self._fullscreen_host = None
         self._maxsize_btn.set_svg_icon(self._maxsize_icon_path)
@@ -1552,6 +1604,8 @@ class FontPreviewerLayout(QWidget):
 
     def cleanup(self) -> None:
         """清理资源；若处于全屏先退出，避免内嵌 widget 被直接销毁。"""
+        # 注销本预览器登记的快捷键处理器（避免陈旧 handler 残留）
+        self._unregister_shortcuts()
         if self._fullscreen:
             self._exit_fullscreen()
         self._cancel_load()

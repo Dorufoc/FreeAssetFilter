@@ -45,7 +45,15 @@ from PySide6.QtCore import (
     QTimer,
     Signal,
 )
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QMouseEvent, QPainter
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetrics,
+    QMouseEvent,
+    QPainter,
+    QPen,
+)
+from PySide6.QtCore import QRectF
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -423,6 +431,11 @@ class _InfoCanvas(QWidget):
         self._items: List[_CanvasItem] = []
         self._hover_row: Optional[_CanvasItem] = None
         self._hover_link_action: Optional[str] = None
+        #: 键盘光标索引（指向 ``focusable_items()`` 列表，-1 = 未激活）
+        self._focus_index: int = -1
+        # 空面板不是焦点区：初始无文件时不可聚焦；set_file() 会按内容切换为
+        # StrongFocus（有文件） / NoFocus（空状态）。
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._dot_frame = 0
         self._dot_timer = QTimer(self)
         self._dot_timer.setInterval(260)
@@ -444,6 +457,14 @@ class _InfoCanvas(QWidget):
         self._last_width = self.width()
         self._sync_dot_timer()
         self.update()
+
+    def reset_focus_index(self) -> None:
+        """清空键盘光标（切换文件时必须调用）。
+
+        不清空会让新文件的键盘浏览从**旧文件的索引**起算：旧文件有 20 行、
+        新文件只有 5 行时，首次按 ``↑↓`` 会跳到越界位置或直接无反应。
+        """
+        self._focus_index = -1
 
     def set_hash_progress(self, percent: int) -> None:
         self._panel._hash["percent"] = max(0, min(100, int(percent)))
@@ -950,6 +971,15 @@ class _InfoCanvas(QWidget):
                 )
                 continue
 
+            # 键盘光标描边（最后统一绘制在聚焦条目上方，避免被后续条目覆盖）
+        focus_item = self.focus_item()
+        if focus_item is not None and self.hasFocus():
+            painter.setPen(QPen(tm.accent, 1.5))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(
+                QRectF(focus_item.rect).adjusted(2.0, 1.0, -2.0, -1.0), 4.0, 4.0
+            )
+
         painter.end()
 
     def _advance_dots(self) -> None:
@@ -974,6 +1004,97 @@ class _InfoCanvas(QWidget):
     # ------------------------------------------------------------------
     # 交互（全部以 _items 的 rect 为唯一命中依据）
     # ------------------------------------------------------------------
+
+    # ── 键盘光标（信息面板方向键 / Enter） ────────────────────────────────
+
+    def reset_to_first_item(self) -> None:
+        """把键盘光标重置到第 1 个可复制条目并滚到顶部。
+
+        用户要求：每次焦点进入信息面板（含同一文件再次进入）都从首行开始，
+        而不是接着上次离开的行。
+        """
+        self._focus_index = -1
+        items = self.focusable_items()
+        if not items:
+            self.update()
+            return
+        self._focus_index = 0
+        self._scroll_to_item(items[0])
+        self.update()
+
+    def focusInEvent(self, event) -> None:  # noqa: N802 - Qt 虚函数名
+        """获得键盘焦点时回到首行（焦点区切换 / 鼠标进入后一致）。"""
+        super().focusInEvent(event)
+        self.reset_to_first_item()
+
+    def focusable_items(self) -> List[_CanvasItem]:
+        """返回可复制条目（``is_field`` 为 True 的行）。
+
+        Returns:
+            List[_CanvasItem]: 可被键盘光标选中的条目。
+        """
+        return [item for item in self._items if item.is_field]
+
+    def focus_item(self) -> Optional[_CanvasItem]:
+        """返回当前键盘光标指向的条目（无则 None）。"""
+        items = self.focusable_items()
+        if 0 <= self._focus_index < len(items):
+            return items[self._focus_index]
+        return None
+
+    def move_focus(self, step: int) -> bool:
+        """``↑`` / ``↓``：在可复制条目间移动键盘光标（首尾环绕）。
+
+        Args:
+            step: -1 上一条 / +1 下一条。
+
+        Returns:
+            bool: 有可聚焦条目并移动成功返回 True。
+        """
+        items = self.focusable_items()
+        if not items:
+            return False
+        if self._focus_index < 0:
+            self._focus_index = 0 if step > 0 else len(items) - 1
+        else:
+            self._focus_index = (self._focus_index + step) % len(items)
+        self._scroll_to_item(items[self._focus_index])
+        self.update()
+        return True
+
+    def activate_focus(self) -> bool:
+        """``Enter``：复制当前键盘光标指向的条目值。
+
+        Returns:
+            bool: 复制成功返回 True。
+        """
+        item = self.focus_item()
+        if item is None:
+            return False
+        QApplication.clipboard().setText(item.value)
+        self._panel._show_copy_toast()
+        return True
+
+    def _scroll_to_item(self, item: _CanvasItem) -> None:
+        """把条目滚动到可视化区域内（上下各留 12px 边距）。
+
+        Args:
+            item: 目标条目。
+        """
+        try:
+            bar = self._panel._scroll_area.verticalScrollBar()
+            viewport_h = self._panel._scroll_area.viewport().height()
+        except (AttributeError, RuntimeError):
+            return
+        if viewport_h <= 0:
+            return
+        margin = 12
+        top = item.rect.top()
+        bottom = item.rect.bottom()
+        if top < bar.value() + margin:
+            bar.setValue(max(0, top - margin))
+        elif bottom > bar.value() + viewport_h - margin:
+            bar.setValue(bottom - viewport_h + margin)
 
     def _row_at(self, pos: QPoint) -> Optional[_CanvasItem]:
         for item in reversed(self._items):
@@ -1132,6 +1253,8 @@ class FileInfoPanel(QWidget):
     details_loaded = Signal()
     hashes_loaded = Signal()
     media_loaded = Signal()  # 视频/音频媒体 light 行后台采集完成（异步到达）
+    #: 面板变空且焦点原本在面板内：请求宿主把焦点回退到一个可用区域。
+    focus_exhausted = Signal()
 
     _HASH_LABELS = ("MD5", "SHA1", "SHA256")
     _TOAST_INTERVAL_MS = 3000  # 「已复制」提示停留时长（连续复制时重置计时）
@@ -1175,6 +1298,8 @@ class FileInfoPanel(QWidget):
         tm.colors_updated.connect(self._on_theme_changed)
         self._sync_canvas()
         self._apply_minimums()
+        # 注册快捷键处理器（区域 info）
+        self._register_shortcuts()
 
     # ------------------------------------------------------------------
     # UI 骨架（固定外壳；内容全部由画布自绘）
@@ -1195,6 +1320,9 @@ class FileInfoPanel(QWidget):
         self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         # 原生垂直条仅作为滚动模型/平滑滚动通道；视觉交给悬浮条
         self._scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # 空面板不可成为焦点区：滚动区默认 StrongFocus，若不关闭，点击空白
+        # 画布时焦点会沿祖先链落到滚动区，空面板就“获得焦点”了。
+        self._scroll_area.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._native_vbar = self._scroll_area.verticalScrollBar()
         root.addWidget(self._scroll_area, stretch=1)
 
@@ -1279,11 +1407,43 @@ class FileInfoPanel(QWidget):
             or (self._expanded == "hashes" and self._hash.get("status") == "loading")
         )
 
+    def has_file(self) -> bool:
+        """当前是否有可展示的文件信息。
+
+        空面板不是合法焦点区（无条目可导航），宿主据此跳过该区域并回退
+        焦点；有文件时才允许 ``StrongFocus`` 聚焦画布。
+
+        Returns:
+            bool: 有当前文件信息返回 True。
+        """
+        return self._file_info is not None
+
+    def _apply_focus_policy(self) -> None:
+        """按当前是否有文件切换画布/滚动区的焦点策略。
+
+        两者都必须参与：``QScrollArea`` 默认 ``StrongFocus``，空状态下若
+        不关闭，点击画布空白区会沿祖先链把焦点交给滚动区，空面板即“可
+        获得焦点”。有文件时恢复 ``StrongFocus``，供画布按键导航。
+        """
+        policy = (
+            Qt.FocusPolicy.StrongFocus
+            if self.has_file()
+            else Qt.FocusPolicy.NoFocus
+        )
+        try:
+            self._canvas.setFocusPolicy(policy)
+            self._scroll_area.setFocusPolicy(policy)
+        except RuntimeError:
+            pass
+
     def set_file(self, file_info: Optional[dict]) -> None:
         """切换预览文件；None 表示清空。"""
         self.stop()
         self._hide_copy_toast_immediately()
         self._file_token += 1
+        # 清空前记录焦点是否在面板内：清空后必须主动回退，不能让一个已经
+        # 空的面板继续持有键盘焦点（Qt 的 focusPolicy 变化不会自动清焦点）。
+        focus_was_inside = self._focus_is_inside()
         self._file_info = dict(file_info) if file_info else None
         self._summary = {"name": "", "path": ""}
         self._rows = []
@@ -1306,6 +1466,36 @@ class FileInfoPanel(QWidget):
             self._start_media_light_rows(file_info)
         self._sync_canvas()
         self._apply_minimums()
+        self._apply_focus_policy()
+        # 切换文件必须重置键盘光标：否则新文件的方向键浏览会沿用旧文件
+        # 的行索引（旧文件行数更多时会越界，更少时首次按键无反应）。
+        self._canvas.reset_focus_index()
+        if not self.has_file() and focus_was_inside:
+            try:
+                focused = QApplication.focusWidget()
+            except RuntimeError:
+                focused = None
+            for widget in (self._canvas, self._scroll_area, focused):
+                if widget is None:
+                    continue
+                try:
+                    widget.clearFocus()
+                except RuntimeError:
+                    pass
+            self.focus_exhausted.emit()
+
+    def _focus_is_inside(self) -> bool:
+        """当前键盘焦点是否位于本面板子树内（焦点回退判定用）。"""
+        try:
+            widget = QApplication.focusWidget()
+        except RuntimeError:
+            return False
+        if widget is None:
+            return False
+        try:
+            return widget is self or self.isAncestorOf(widget)
+        except RuntimeError:
+            return False
 
     # ------------------------------------------------------------------
     # 最小尺寸（供主窗口推导区域 / 窗口下限）
@@ -1349,6 +1539,55 @@ class FileInfoPanel(QWidget):
         root = self.layout()
         spacing = int(root.spacing()) if root is not None else 6
         return canvas_h + max(0, spacing) + self._fold_bar.sizeHint().height()
+
+    # ── 快捷键（注册表驱动） ──────────────────────────────────────────────
+
+    def focus_canvas(self) -> bool:
+        """把键盘焦点交给信息画布（焦点区切换用）。
+
+        空面板没有可导航条目，不是合法焦点区：直接返回 False，宿主会跳过
+        该区域继续找下一个可聚焦区，而不是把焦点停在一个空面板上。
+
+        Returns:
+            bool: 有文件且聚焦请求成功返回 True；空面板返回 False。
+        """
+        if not self.has_file():
+            return False
+        try:
+            self._canvas.setFocus()
+            self._canvas.reset_to_first_item()
+        except RuntimeError:
+            return False
+        return True
+
+    def _register_shortcuts(self) -> None:
+        """登记信息面板区域的快捷键处理器。"""
+        try:
+            from sopeek.core.shortcuts import shortcut_dispatcher
+
+            dispatcher = shortcut_dispatcher()
+            dispatcher.handlers.register_many(
+                {
+                    "info.nav_up": lambda: self._canvas.move_focus(-1),
+                    "info.nav_down": lambda: self._canvas.move_focus(+1),
+                    "info.copy_current": self._canvas.activate_focus,
+                    "info.copy_all": self._copy_all,
+                },
+                owner=self,
+            )
+        except Exception as exc:  # noqa: BLE001 - 快捷键登记失败不阻塞界面
+            from sopeek.utils.app_logger import warning
+
+            warning(f"信息面板快捷键登记失败: {exc}")
+
+    def _unregister_shortcuts(self) -> None:
+        """注销本组件登记的快捷键处理器（幂等）。"""
+        try:
+            from sopeek.core.shortcuts import shortcut_dispatcher
+
+            shortcut_dispatcher().handlers.unregister_owner(self)
+        except Exception:  # noqa: BLE001 - 清理阶段忽略
+            pass
 
     def _apply_minimums(self) -> None:
         """刷新最小宽度（随行数据）与最小高度（固定口径，随字体度量）。"""
@@ -1804,6 +2043,10 @@ class FileInfoPanel(QWidget):
         if self._hash["status"] == "done":
             for label in self._HASH_LABELS:
                 lines.append(f"{label}: {self._hash['values'].get(label, fis.UNAVAILABLE)}")
+        elif self._expanded == "hashes":
+            # 哈希正在计算：明确标注，避免用户误以为复制漏项
+            for label in self._HASH_LABELS:
+                lines.append(f"{label}: （计算中）")
         QApplication.clipboard().setText("\n".join(lines))
         self._show_copy_toast("已复制全部信息")
 

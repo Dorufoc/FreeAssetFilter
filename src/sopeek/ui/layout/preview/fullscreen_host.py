@@ -52,6 +52,10 @@ class PreviewFullscreenHost(QWidget):
         # 持续焦点守卫状态：原顶层窗口（main window）引用 + 是否已连接信号
         self._main_window: Optional[QWidget] = None
         self._focus_guard_active = False
+        #: 正在把按键转发给内容控件的重入守卫。
+        #: ``sendEvent(content, event)`` 在 content 不处理时会让事件沿父链
+        #: 冒泡回宿主，再次进入本函数造成无限递归 → 原生栈溢出崩溃。
+        self._forwarding_key = False
 
         self._host_layout = QVBoxLayout(self)
         self._host_layout.setContentsMargins(0, 0, 0, 0)
@@ -233,9 +237,16 @@ class PreviewFullscreenHost(QWidget):
                 focused is content or content.isAncestorOf(focused)
             )
             if not in_content:
-                QApplication.sendEvent(content, event)
-                if event.isAccepted():
-                    return
+                # 转发给内容控件。必须带重入守卫：content 不处理时事件会沿
+                # 父链冒泡回宿主 → 再次进入这里 → 无限递归导致崩溃。
+                if not self._forwarding_key:
+                    self._forwarding_key = True
+                    try:
+                        QApplication.sendEvent(content, event)
+                    finally:
+                        self._forwarding_key = False
+                event.accept()
+                return
         super().keyPressEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:

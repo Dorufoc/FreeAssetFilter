@@ -2,7 +2,7 @@
 
 from PySide6.QtWidgets import QWidget, QApplication
 from PySide6.QtCore import Qt, Signal, Property, QRectF, QPropertyAnimation, QEasingCurve
-from PySide6.QtGui import QPainter, QColor, QPen, QPaintEvent, QFont, QFontMetrics
+from PySide6.QtGui import QPainter, QColor, QPen, QPaintEvent, QFont, QFontMetrics, QKeyEvent
 
 from theme import tm
 
@@ -55,6 +55,12 @@ class StyledCheckbox(QWidget):
         self._press_progress = 0.0
         self._scale_progress = 1.0 if (checked or indeterminate) else 0.0
         self._bg_progress = 1.0 if (checked or indeterminate) else 0.0
+        # 键盘焦点态（Tab / setFocus 进入时绘制 accent 描边）
+        self._focused = False
+        # 键盘支持：StrongFocus 才能被 Tab 聚焦；sp_owns_keys 让全局快捷键
+        # 派发器把 Space / Enter 让给本控件（而不是被区域动作抢走）。
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setProperty("sp_owns_keys", True)
 
         config = self._get_config()
         self._box_size = config["box"]
@@ -240,6 +246,37 @@ class StyledCheckbox(QWidget):
         if self._enabled:
             self.checked = not self._checked
 
+    # ── Keyboard ────────────────────────────────────────────────
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 - Qt 虚函数名
+        """键盘操作：``Space`` / ``Enter`` 切换勾选态。
+
+        Args:
+            event: 键盘事件。
+        """
+        if event.key() in (
+            Qt.Key.Key_Space,
+            Qt.Key.Key_Return,
+            Qt.Key.Key_Enter,
+        ):
+            if self._enabled:
+                self.toggle()
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
+    def focusInEvent(self, event) -> None:  # noqa: N802 - Qt 虚函数名
+        """获得焦点：绘制 accent 描边（仅键盘 / Tab 聚焦时可见）。"""
+        self._focused = True
+        self.update()
+        super().focusInEvent(event)
+
+    def focusOutEvent(self, event) -> None:  # noqa: N802 - Qt 虚函数名
+        """失去焦点：清除描边。"""
+        self._focused = False
+        self.update()
+        super().focusOutEvent(event)
+
     # ── Mouse / hover events ────────────────────────────────────
 
     def mousePressEvent(self, event):
@@ -363,6 +400,16 @@ class StyledCheckbox(QWidget):
             painter.setPen(QPen(border_color, 1))
             painter.setBrush(Qt.NoBrush)
             painter.drawRoundedRect(box_x + 0.5, box_y + 0.5, box - 1, box - 1, radius, radius)
+
+            # 键盘焦点描边：在勾选框外再画一圈 accent 圆角矩形。
+            # 仅在通过 Tab / setFocus 聚焦且启用时绘制，鼠标点击不留焦点框。
+            if self._focused and self._enabled:
+                painter.setPen(QPen(tm.accent, 1.5))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawRoundedRect(
+                    box_x - 2.0, box_y - 2.0, box + 4.0, box + 4.0,
+                    radius + 2.0, radius + 2.0,
+                )
 
             # Draw checkmark or indeterminate line
             if self._checked or self._indeterminate:

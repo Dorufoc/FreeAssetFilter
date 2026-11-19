@@ -248,8 +248,8 @@ done=0               ; 0 | 1（终端键）
 
 测试构建**不写生产注册表、不写生产 Run 键、不创建生产快捷方式、不触碰生产安装目录**；测试 setup 为
 `RequestExecutionLevel user` 并完全跳过提权。生产构建的 GUI/Setup 分别为
-`build/installer/SopeekInstaller.exe` 与 `build/Sopeek-<版本>-<平台>-<架构>.exe`
-（例如 `build/Sopeek-2.0.0-windows-x64.exe`）；
+`build/installer/SopeekInstaller.exe` 与 `build/Sopeek-<版本>-<平台>-<架构>-<时间戳>.exe`
+（例如 `build/Sopeek-2.0.0-windows-x64-261118153045.exe`）；
 测试产物在 `build/test-installer/`，QA 只运行测试 setup。
 
 ## QA
@@ -298,11 +298,13 @@ done=0               ; 0 | 1（终端键）
 输出：
 
 - `build/installer/SopeekInstaller.exe`：独立 GUI 安装器（同目录附 `libwinpthread-1.dll`）。
-- `build/Sopeek-<版本>-<平台>-<架构>.exe`：最终安装包。名称由 `build.ps1` 依据
-  `SPKVERSION` 生成，例如 `Sopeek-2.0.0-windows-x64.exe`、
-  `Sopeek-2.0.0.nightly-20261114-windows-x64.exe`（nightly 版由 CI 改写 `SPKVERSION`）；
+- `build/Sopeek-<版本>-<平台>-<架构>-<时间戳>.exe`：最终安装包。名称由 `build.ps1` 依据
+  `SPKVERSION` 与构建时间生成，例如 `Sopeek-2.0.0-windows-x64-261118153045.exe`、
+  `Sopeek-2.0.0.nightly-20261114-windows-x64-261118153045.exe`（nightly 版由 CI 改写
+  `SPKVERSION`）；时间戳为本地时间的 `yyMMddHHmmss`（年只取后两位），使每次构建产物唯一。
   平台/架构描述的是包所适配的系统（64 位 Windows），不是 NSIS 存根自身的位数。
   可用 `SPK_TARGET_PLATFORM` / `SPK_TARGET_ARCH` 覆盖。
+  构建结束后 `build/` 下只保留最近 3 个时间戳安装包（`tools/build_release.ps1` 清理）。
 
 **生产重建铁律**：修改本目录（`packaging/installer/**`）下任何代码/脚本/NSIS 后，必须在仓库根目录重新执行
 `& .\packaging\installer\build.ps1` 并重新生成上述两个产物。**仅重建测试 GUI/测试安装包

@@ -256,9 +256,12 @@ class ImagePreviewerLayout(QWidget):
 
     Signals:
         close_requested: 关闭预览请求信号
+        file_nav_requested: 请求切换到上/下一个文件（+1 下一个 / -1 上一个），
+            由 ``UnifiedPreviewerLayout`` 转发给主窗口与文件选择器。
     """
 
     close_requested = Signal()
+    file_nav_requested = Signal(int)
 
     def __init__(
         self,
@@ -317,6 +320,56 @@ class ImagePreviewerLayout(QWidget):
 
         self._init_ui()
         self._connect_theme()
+        # 注册快捷键处理器（区域 preview.image，全屏同样生效）
+        self._register_shortcuts()
+
+    # ── 快捷键（注册表驱动） ──────────────────────────────────────────────
+
+    def _register_shortcuts(self) -> None:
+        """登记图像预览区域的快捷键处理器。"""
+        try:
+            from sopeek.core.shortcuts import defer_call, shortcut_dispatcher
+
+            dispatcher = shortcut_dispatcher()
+            dispatcher.handlers.register_many(
+                {
+                    "preview.image.prev_file": lambda: self.file_nav_requested.emit(-1),
+                    "preview.image.next_file": lambda: self.file_nav_requested.emit(+1),
+                    "preview.image.zoom_in": lambda: self._zoom_step(+10),
+                    "preview.image.zoom_out": lambda: self._zoom_step(-10),
+                    "preview.image.zoom_fit": self._fit_to_view,
+                    "preview.image.rotate_cw": self._rotate_cw,
+                    "preview.image.flip_h": self._toggle_flip_h,
+                    "preview.image.flip_v": self._toggle_flip_v,
+                    "preview.image.color_picker": self._toggle_color_picker,
+                    "preview.image.gif_toggle": self._toggle_gif_playback,
+                    "preview.image.fullscreen": lambda: defer_call(self._on_maxsize_toggle),
+                },
+                owner=self,
+            )
+        except Exception as exc:  # noqa: BLE001 - 快捷键登记失败不阻塞预览
+            from sopeek.utils.app_logger import warning
+
+            warning(f"图像预览器快捷键登记失败: {exc}")
+
+    def _unregister_shortcuts(self) -> None:
+        """注销本预览器登记的快捷键处理器（幂等）。"""
+        try:
+            from sopeek.core.shortcuts import shortcut_dispatcher
+
+            shortcut_dispatcher().handlers.unregister_owner(self)
+        except Exception:  # noqa: BLE001 - 清理阶段忽略
+            pass
+
+    def _zoom_step(self, delta: int) -> None:
+        """``+`` / ``-``：缩放 ±10%（钳制 50%–500%，与 Ctrl+滚轮同口径）。
+
+        Args:
+            delta: 百分比增量（+10 / -10）。
+        """
+        new_pct = max(50, min(500, int(self._zoom_pct) + int(delta)))
+        if new_pct != self._zoom_pct:
+            self._apply_zoom_pct(new_pct)
 
     def _init_ui(self) -> None:
         """初始化顶栏 + 内容区布局。"""
@@ -1320,6 +1373,10 @@ class ImagePreviewerLayout(QWidget):
         if not self._fullscreen_host.attach(self):
             return
         self._fullscreen_host.show_fullscreen()
+        # 快捷键区域切到 fullscreen（宿主是独立顶层窗口，focusChanged 解析不到）
+        from sopeek.core.shortcuts import enter_fullscreen_region
+
+        enter_fullscreen_region()
         self._maxsize_btn.set_svg_icon(self._minisize_icon_path)
         self._maxsize_btn.setToolTip("还原")
         self._fullscreen = True
@@ -1331,6 +1388,10 @@ class ImagePreviewerLayout(QWidget):
             return
         self._discard_zoom_popup()
         self._fullscreen_host.exit_fullscreen()
+        # 快捷键区域退回主窗口
+        from sopeek.core.shortcuts import exit_fullscreen_region
+
+        exit_fullscreen_region()
         self._fullscreen_host.deleteLater()
         self._fullscreen_host = None
         self._maxsize_btn.set_svg_icon(self._maxsize_icon_path)
@@ -1343,6 +1404,8 @@ class ImagePreviewerLayout(QWidget):
 
     def cleanup(self) -> None:
         """清理资源；若处于全屏先退出，避免内嵌 widget 被直接销毁。"""
+        # 注销本预览器登记的快捷键处理器（避免陈旧 handler 残留）
+        self._unregister_shortcuts()
         if self._fullscreen:
             self._exit_fullscreen()
         self._cancel_decode_worker()

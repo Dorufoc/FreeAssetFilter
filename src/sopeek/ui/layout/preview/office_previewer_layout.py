@@ -102,6 +102,10 @@ class OfficePreviewerLayout(QWidget):
 
         self._generation: int = 0
         self._current_worker: Optional[OfficeConverterWorker] = None
+        # 已请求取消、仍在收尾的 worker 强引用（finished 时移除）。
+        # 见 ``_cancel_worker``：避免 Python 侧引用消失导致运行中的 QThread
+        # 被回收而 abort 进程。
+        self._retiring_workers: set = set()
         self._current_suffix: str = ""
         self._current_path: str = ""
         self._cleaned_up: bool = False
@@ -388,6 +392,24 @@ class OfficePreviewerLayout(QWidget):
                 getattr(worker, signal_name).disconnect()
             except (RuntimeError, TypeError, AttributeError):
                 pass
+        # 线程仍在运行时不立即销毁：QThread 在运行中被销毁会打印
+        # 「QThread: Destroyed while thread is still running」并直接 abort。
+        # 只挂 finished → deleteLater，让线程自然收尾后再回收。
+        try:
+            if worker.isRunning():
+                worker.request_cancel()
+                # 强引用托管到回收集合：`finished` 是 Qt 信号，deleteLater
+                # 只保证 C++ 侧延后析构；若 Python 侧最后一个引用随本方法
+                # 返回而消失，PySide 会立即回收 QThread 包装对象，仍可能
+                # 命中「运行中销毁」。集合在 finished 时移除条目，引用自然释放。
+                self._retiring_workers.add(worker)
+                worker.finished.connect(
+                    lambda w=worker: self._release_retired_worker(w)
+                )
+                worker.finished.connect(worker.deleteLater)
+                return
+        except (RuntimeError, AttributeError):
+            pass
         retire = getattr(worker, "retire", None)
         try:
             if callable(retire):
@@ -395,6 +417,13 @@ class OfficePreviewerLayout(QWidget):
             else:
                 worker.cleanup()
         except (RuntimeError, TypeError):
+            pass
+
+    def _release_retired_worker(self, worker: Any) -> None:
+        """线程结束：从回收集合移除（幂等，控件已销毁时静默）。"""
+        try:
+            self._retiring_workers.discard(worker)
+        except (RuntimeError, AttributeError):
             pass
 
     def _reset_views(self) -> None:
@@ -472,13 +501,19 @@ class OfficePreviewerLayout(QWidget):
         self._error_title.setText(self._error_title_for(self._last_error_message))
         self._error_message.setText(self._last_error_message or "未知错误")
         # 取消属于用户主动操作，不展示“安装 LibreOffice”之类排障指引。
-        self._error_hint.setVisible("取消" not in self._last_error_message)
+        self._error_hint.setVisible(
+            "取消" not in self._last_error_message
+            and "损坏" not in self._last_error_message
+            and "无法处理" not in self._last_error_message
+        )
         self._reset_copy_button()
         self._content_stack.setCurrentWidget(self._error_view)
 
     @staticmethod
     def _error_title_for(message: str) -> str:
         """按失败类型返回错误视图标题。"""
+        if "损坏" in message or "无法处理" in message:
+            return "文件已损坏或无法处理"
         if "取消" in message:
             return "Office 转换已取消"
         if "超时" in message:

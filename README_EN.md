@@ -25,6 +25,7 @@ Sopeek is a desktop-grade file browsing, filtering and preview tool for Windows.
 - **Browse**: card-style thumbnail and list views, rubber-band multi-select, drag-to-pool, favorites, history navigation;
 - **Organize**: the asset pool supports renaming, batch export, path-data import/export, and automatic backups;
 - **Preview**: full coverage of images, video, audio, PDF, Office, text/code, archives, fonts, and folders;
+- **Keyboard-first**: focus-zone switching, file navigation, preview hand-off, pooling, filtering/sorting and playback control all work without a mouse;
 - **Performance**: scanning, sorting, syntax highlighting, EXIF, hashing, encoding detection, SVG recoloring, 7z listing and other hot paths are handled by Rust / C++ native extensions.
 
 | Capability | Description |
@@ -211,24 +212,132 @@ All splitters are draggable; **double-clicking any splitter** resets the entire 
 
 | Operation | Description |
 | --- | --- |
-| Left click | Select a file and preview it |
-| Left drag (empty area) | Rubber-band select multiple files |
-| Right click a card | Add to the asset pool |
+| Left click a file card | Select and preview it |
+| Left drag a card / empty area | Rubber-band select multiple files |
+| Right click a card not in the pool | Add to the asset pool |
+| Right click a card already in the pool | Remove from the asset pool |
 | Right click a selected card | Batch-add to the asset pool |
+| Right click a pool card | Remove from the asset pool |
 | Left click file info | Copy that entry |
 | Right click file info | Copy all info |
 | Drag a file onto the asset pool / floating window | Add to the asset pool |
+| `Ctrl+wheel` (file browser / asset pool) | Zoom cards (asset pool: New layout only) |
+| Double-click any splitter | Reset layout proportions |
+| Mouse side "Back" button | Go to the parent directory in the file browser / archive preview |
 
-### Keyboard shortcuts (video / audio)
+### Keyboard shortcuts
+
+All bindings use **physical key codes**, so Caps Lock, keyboard layout and Chinese IME state do not affect them. Bindings are fixed in this version and cannot be customized.
+
+Keyboard-only workflow:
+
+1. Use `Ctrl+arrows` or `F6` to move between focus zones: path box → file browser → preview → asset pool → info panel (in the classic layout the pool comes before the preview). The active zone flashes once; empty zones are skipped.
+2. In the file browser, use the arrow keys to move and preview; `Enter` enters a folder or hands a file to the previewer.
+3. `Tab` adds/removes the current item from the asset pool; `Alt+arrows` enters batch selection (in the file browser, batch `Tab` adds all selected; in the pool, it removes the whole batch).
+4. `Ctrl+F` / `Ctrl+G` / `Ctrl+H` / `Ctrl+L` open filter, favorites, refresh and sort; `Q` / `Shift+Q` generate/clear thumbnails.
+5. `Ctrl+\` enters/exits previewer fullscreen; `Esc` closes popups/drawers or steps back through the current zone.
+
+#### Global keys and focus zones
 
 | Key | Function |
 | --- | --- |
-| `Space` | Play / pause |
-| `←` / `→` | Seek backward / forward |
-| `↑` / `↓` | Volume up / down |
-| `1` / `2` / `3` | Switch to 1x / 2x / 3x playback speed |
-| `` ` `` | Switch to 0.5x playback speed |
-| `Esc` | Exit fullscreen (in fullscreen mode) |
+| `Ctrl+I` | Open / close Settings |
+| `Ctrl+M` | Reveal the current file in File Explorer |
+| `Ctrl+K` | Open the current file with the system default app |
+| `Ctrl+O` | Locate the current file inside the app |
+| `Ctrl+→` / `Ctrl+↓` / `F6` | Next focus zone |
+| `Ctrl+←` / `Ctrl+↑` / `Shift+F6` | Previous focus zone |
+
+#### File browser
+
+| Key | Function |
+| --- | --- |
+| `↑` / `↓` | Previous / next entry (including folders); holding only moves the highlight, preview loads on release |
+| `←` / `→` | Previous / next entry in file order |
+| `Enter` | Enter a folder; for a file, preview it and hand focus to the previewer |
+| `Tab` | Add / remove the current item from the pool; in batch mode, add all selected |
+| `Alt+arrows` | Enter batch selection and move one step |
+| `Space` | Play / pause when the current preview is audio/video |
+| `1` / `2` / `3` / backtick | Playback speed: short press switches and keeps; long press applies temporarily and restores on release |
+| `Shift+←` / `Shift+→` | Seek back / forward 5 seconds (hold to repeat) |
+| `Shift+↑` / `Shift+↓` | Volume +5 / −5 (hold to repeat) |
+| `Ctrl+F` / `Ctrl+G` / `Ctrl+H` / `Ctrl+L` | Filter / favorites / refresh / sort |
+| `Q` / `Shift+Q` | Generate / clear thumbnails for the current path |
+
+> `Ctrl+F` / `Ctrl+G` / `Ctrl+H` / `Ctrl+L` work anywhere in the main window, not only when the file list has focus.
+
+#### Asset pool
+
+| Key | Function |
+| --- | --- |
+| `↑` / `↓` / `←` / `→` | Move through cards in visual order |
+| `Enter` | Preview the current card and hand focus to the previewer |
+| `Tab` | Remove the current card; in batch mode, remove all selected (confirmation required) |
+| `Alt+arrows` | Batch selection |
+| `Space` / `1` / `2` / `3` / backtick | Play/pause and playback speed |
+| `Shift+←` / `Shift+→` / `Shift+↑` / `Shift+↓` | Seek back / forward 5 seconds, volume −5 / +5 |
+| `Q` / `Shift+Q` | Generate / clear thumbnails for pool items |
+
+#### File info panel
+
+| Key | Function |
+| --- | --- |
+| `↑` / `↓` | Move between copyable entries |
+| `Enter` | Copy the highlighted entry |
+| `Ctrl+Enter` | Copy all information for the current file |
+
+#### Previewers
+
+| Previewer | Keys | Function |
+| --- | --- | --- |
+| Image | `←` / `→` | Previous / next file (folders skipped, wraps around) |
+| Image | `+` / `=` / `-` / `0` | Zoom in / out / fit to window (50%–500%) |
+| Image | `R` / `H` / `V` | Rotate clockwise / flip horizontally / flip vertically |
+| Image | `I` / `Space` | Color picker / GIF play-pause |
+| Video & audio | `Space` / `M` | Play-pause / mute toggle |
+| Video & audio | `←` / `→` / `↑` / `↓` | Seek back / forward 5 seconds, volume ±5 |
+| Video & audio | `1` / `2` / `3` / backtick | Playback speed (short press switches / long press temporary) |
+| PDF | `↑` / `↓` / `PageUp` / `PageDown` | Scroll / previous page / next page |
+| PDF | `+` / `-` / `0` | Zoom in / out / fit page width |
+| PDF | `Shift+F` / `Ctrl+C` | Toggle index drawer / copy selected text |
+| Text & code | `↑` / `↓` / `+` / `-` / `Ctrl+0` | Scroll / font size ±1 / reset font size |
+| Text & code | `Shift+F` / `Ctrl+E` | Search drawer / source-rendered toggle |
+| Font | `←` / `→` / `+` / `-` | Weight −/+ and size −/+ |
+| Archive | `Shift+F` / `Enter` | Search the whole archive / enter the selected directory |
+| Folder | `Enter` | Enter the selected subdirectory |
+
+> Image, video/audio, PDF, text and font previewers use `Ctrl+\` (on Chinese keyboards, `Ctrl+、`) to enter/exit fullscreen; archive and folder previews have no fullscreen.
+
+#### Dialogs and controls
+
+| Key | Function |
+| --- | --- |
+| `Esc` | Close dialog / drawer / dropdown |
+| `Enter` | Activate the focused button; when focus is not on a button, activate the primary button |
+| `↑` `↓` `←` `→` | Move focus between controls by geometric proximity |
+| `Tab` / `Shift+Tab` | Move along the default focus chain |
+| `Space` / `Enter` | Toggle a checkbox |
+| `↑` / `↓` | Change the current value when a combo box is collapsed; move the highlight when expanded |
+| `Space` / `Enter` | Open the dropdown; `Enter` selects the highlighted item when expanded |
+| `←` `→` `Home` `End` | Switch segments |
+
+#### How `Esc` steps back
+
+- **Global**: close the topmost drawer → close the dialog (same as cancel) → exit fullscreen.
+- **File browser**: cancel path editing → exit batch selection (keep selection) → clear rubber-band selection → go to parent.
+- **Asset pool**: exit rename mode → exit batch selection (keep selection) → clear rubber-band selection.
+- **Archive / folder preview**: exit search / go to parent; at the root, hand focus back to the zone you came from.
+- **Image preview**: exit color-picker mode.
+- **PDF / text preview**: close the index or search drawer.
+- **Video/audio, Office, etc.**: bubble up to the main window, which clears rubber-band selection.
+
+#### Notes
+
+- When any popup is open (context menu, dropdown, dialog, drawer, floating panel), global and zone keys are silent by default. Only toggle keys such as filter, favorites, sort and search drawers may pass through. When a `QMenu` is open, only the sort menu `Ctrl+L` can toggle it closed; all other keys are left to menu navigation.
+- When focus is inside an editable input (filter box, path box, search box, AI input), printable characters are reserved for typing. `Shift+F` only types an uppercase `F`; use `Ctrl+Shift+F` or press `Esc` to leave the input before toggling a drawer.
+- In the main window, `Tab` is bound to add/remove from the asset pool and cannot move focus; use `Ctrl+arrows` / `F6`. In dialogs and the Settings window, `Tab` still follows the default focus chain.
+- `Esc` in image, video/audio, PDF, text and font previewers only handles that previewer's sub-state and does not return focus to the file browser; use `Ctrl+←` / `F6`. Only archive/folder previews return focus at their root.
+- Keyboard-only covers browsing, previewing, pooling, filtering/sorting and playback control in the main window. Switching Settings sidebar tabs, pool rename/import/export, the previewer top-bar copy/clear buttons, all sliders and drag gestures still require a mouse.
 
 ### User data location
 
@@ -456,7 +565,7 @@ python -m venv .venv
 >
 > - `build\pyinstall\Sopeek\Sopeek.exe` is the application payload, not the installer;
 > - `build\installer\SopeekInstaller.exe` is the installer UI component and cannot run standalone;
-> - `build\Sopeek-<version>-windows-x64.exe` is the final installer.
+> - `build\Sopeek-<version>-windows-x64-<timestamp>.exe` is the final installer (timestamp is the build time as `yyMMddHHmmss`, e.g. `Sopeek-2.0.0-windows-x64-261118153045.exe`).
 
 ### Packaging and installer
 
@@ -469,8 +578,9 @@ python packaging/build.py
 powershell -ExecutionPolicy Bypass -File packaging/installer/build.ps1
 
 # 3. NSIS installer (build.ps1 calls makensis as its last step)
-#    Artifacts: build/installer/SopeekInstaller.exe → build/Sopeek-<version>-<platform>-<arch>.exe
-#    e.g. build/Sopeek-2.0.0-windows-x64.exe
+#    Artifacts: build/installer/SopeekInstaller.exe → build/Sopeek-<version>-<platform>-<arch>-<timestamp>.exe
+#    e.g. build/Sopeek-2.0.0-windows-x64-261118153045.exe
+#    (timestamp = local build time as yyMMddHHmmss, two-digit year)
 ```
 
 For installer architecture, cross-process protocols, maintenance/uninstall flows and QA details,

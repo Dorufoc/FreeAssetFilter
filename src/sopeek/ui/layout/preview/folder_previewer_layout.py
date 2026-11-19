@@ -27,7 +27,7 @@
 import os
 import sys
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 # 短路径导入（components.* / theme.*）的 sys.path 由 sopeek.ui 包统一注入，
 # 见 sopeek/ui/__init__.py；此处不再按目录层级手工计算。
@@ -39,6 +39,7 @@ from components.styled_loading import StyledLoading
 from PySide6.QtCore import (
     QAbstractListModel,
     QFileSystemWatcher,
+    QItemSelectionModel,
     QModelIndex,
     QObject,
     QRectF,
@@ -50,6 +51,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QFont,
+    QKeyEvent,
     QMouseEvent,
     QPainter,
     QPainterPath,
@@ -575,6 +577,38 @@ class _FolderListView(QListView):
     def _index_entry(self, index: QModelIndex) -> Optional[dict]:
         return index.data(_FolderListModel.EntryRole)
 
+    def _first_selectable_index(self) -> QModelIndex:
+        """返回第一条可选条目的索引（不可选条目跳过；无条目返回无效索引）。"""
+        model = self.model()
+        if model is None:
+            return QModelIndex()
+        for row in range(model.rowCount()):
+            index = model.index(row, 0)
+            if index.flags() & Qt.ItemIsSelectable:
+                return index
+        return QModelIndex()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        """方向键：无选中项时先把光标落位到第一个条目，再交给 Qt 原生移动。
+
+        为什么需要这一层：模型重建后列表的 ``currentIndex`` 会被 Qt 在
+        show / 获得焦点时自动置为第 0 行（不带选中态，视觉上没有光标）。
+        此时原生方向键会从第 0 行再走一格，导致首次按键跳过第一个条目。
+        """
+        key = event.key()
+        if key in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right):
+            if not self.selectionModel().hasSelection():
+                index = self._first_selectable_index()
+                if index.isValid():
+                    self.setCurrentIndex(index)
+                    self.selectionModel().select(
+                        index, QItemSelectionModel.ClearAndSelect
+                    )
+                    self.scrollTo(index)
+                    event.accept()
+                    return
+        super().keyPressEvent(event)
+
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         """鼠标按下：侧键返回 / 单击条目选中 / 空白取消选中。"""
         if event.button() == Qt.XButton1:
@@ -738,12 +772,88 @@ class FolderPreviewerLayout(QWidget):
         self._watcher_debounce.timeout.connect(self._on_refresh_debounce)
         # 最近一次对外发射的选中条目路径（去重，避免重复 set_file 信息面板）
         self._last_selected_path: Optional[str] = None
+        # 根目录 Esc 的宿主回调（由 UnifiedPreviewerLayout 下发；返回 True
+        # 表示宿主已接管焦点，Esc 随之消费；独立运行时保持 None 不消费）
+        self._root_escape_handler: Optional[Callable[[], bool]] = None
 
         self._icon_manager = FileIconManager()
 
         self._init_ui()
         self._connect_theme()
         self._apply_section_styles()
+        # 注册快捷键处理器（区域 preview.folder）
+        self._register_shortcuts()
+
+    # ── 快捷键（注册表驱动） ──────────────────────────────────────────────
+
+    def _register_shortcuts(self) -> None:
+        """登记文件夹预览区域的快捷键处理器。"""
+        try:
+            from sopeek.core.shortcuts import shortcut_dispatcher
+
+            dispatcher = shortcut_dispatcher()
+            dispatcher.handlers.register(
+                "preview.folder.enter_dir", self._enter_selected_dir, owner=self
+            )
+            dispatcher.register_escape_provider("preview.folder", self)
+        except Exception as exc:  # noqa: BLE001 - 快捷键登记失败不阻塞预览
+            from sopeek.utils.app_logger import warning
+
+            warning(f"文件夹预览器快捷键登记失败: {exc}")
+
+    def _unregister_shortcuts(self) -> None:
+        """注销本预览器登记的快捷键处理器（幂等）。"""
+        try:
+            from sopeek.core.shortcuts import shortcut_dispatcher
+
+            dispatcher = shortcut_dispatcher()
+            dispatcher.handlers.unregister_owner(self)
+            dispatcher.unregister_escape_provider("preview.folder")
+        except Exception:  # noqa: BLE001 - 清理阶段忽略
+            pass
+
+    def escape_handlers(self) -> list:
+        """``Esc`` 消费链：返回上一级，已在根目录则把焦点交还宿主。"""
+        return [self._esc_go_parent_folder, self._esc_root_to_host]
+
+    def _esc_go_parent_folder(self) -> bool:
+        """返回上一级目录（已在根 / 加载中不消费）。"""
+        if self._loading or not self._current_rel:
+            return False
+        self.go_to_parent()
+        return True
+
+    def _esc_root_to_host(self) -> bool:
+        """根目录 Esc：请求宿主把焦点交回进入预览器前的焦点区。
+
+        Returns:
+            bool: 宿主接管（或未登记）返回其处理结果；仍在子目录 /
+            独立运行时返回 False（不消费，交给上层）。
+        """
+        if self._current_rel:
+            return False
+        handler = self._root_escape_handler
+        if handler is None:
+            return False
+        try:
+            return bool(handler())
+        except RuntimeError:
+            return False
+
+    def _enter_selected_dir(self) -> bool:
+        """``Enter``：进入当前选中的子目录。
+
+        Returns:
+            bool: 已进入返回 True（文件条目返回 False，不消费）。
+        """
+        try:
+            index = self._view.currentIndex()
+        except RuntimeError:
+            return False
+        if not index.isValid():
+            return False
+        self._on_view_activated(index)
+        return True
 
     # ── UI 初始化 ─────────────────────────────────────────────────────────────
 
@@ -862,12 +972,47 @@ class FolderPreviewerLayout(QWidget):
         """统一操作按钮宿主：返回本预览器顶栏（New 布局注入用）。"""
         return self._top_bar
 
+    def set_root_escape_handler(
+        self, handler: Optional[Callable[[], bool]]
+    ) -> None:
+        """登记「根目录 Esc」宿主回调（UnifiedPreviewerLayout 下发）。
+
+        Args:
+            handler: 无参可调用对象，返回 True 表示宿主已接管焦点；
+                ``None`` 表示无宿主（独立运行），Esc 保持不消费。
+        """
+        self._root_escape_handler = handler
+
+    def focus_internal_list(self) -> bool:
+        """把键盘焦点交给内部文件列表，并清掉旧当前项。
+
+        清掉当前项是为了让进入预览器后的**第一次方向键**从第 1 行开始
+        （用户实测要求）；鼠标单击仍按 QListView 原生行为选中条目。
+
+        Returns:
+            bool: 列表可见并成功聚焦返回 True。
+        """
+        view = getattr(self, "_view", None)
+        if view is None:
+            return False
+        try:
+            if not view.isVisible():
+                return False
+            view.clearSelection()
+            view.setCurrentIndex(QModelIndex())
+            view.setFocus(Qt.FocusReason.OtherFocusReason)
+        except RuntimeError:
+            return False
+        return True
+
     def cleanup(self) -> None:
         """清理当前浏览状态（宿主切换/清除预览时调用）。
 
         同步停止目录监听与防抖定时器；若此前有选中条目，向外发一次
         None 让宿主信息面板恢复（避免残留已失效条目的展示）。
         """
+        # 注销本预览器登记的快捷键处理器（避免陈旧 handler 残留）
+        self._unregister_shortcuts()
         self._token += 1
         self._loading = False
         self._scan_worker = None

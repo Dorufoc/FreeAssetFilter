@@ -153,11 +153,11 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          # 成品名形如 Sopeek-<版本>-<平台>-<架构>.exe，按模式取最新一个。
+          # 成品名形如 Sopeek-<版本>-<平台>-<架构>-<时间戳>.exe，按模式取最新一个。
           $setup = Get-ChildItem -LiteralPath 'build' -Filter 'Sopeek-*.exe' -File -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $setup) {
-            throw 'Installer package not found (expected build/Sopeek-<version>-<platform>-<arch>.exe).'
+            throw 'Installer package not found (expected build/Sopeek-<version>-<platform>-<arch>-<timestamp>.exe).'
           }
           Write-Host "Installer package: $($setup.Name) ($($setup.Length) bytes)"
 

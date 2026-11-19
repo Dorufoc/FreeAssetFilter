@@ -7,15 +7,26 @@ Provides:
 """
 
 from PySide6.QtWidgets import (
+    QAbstractButton,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QLineEdit,
+    QPushButton, QLineEdit, QComboBox, QTextEdit, QPlainTextEdit,
     QApplication,
 )
 from PySide6.QtCore import (
+    QEvent,
     Qt, Signal, QObject, QEventLoop, QPropertyAnimation, QEasingCurve, Property, QRect, QRectF, QPoint,
     QTimer,
 )
-from PySide6.QtGui import QPainter, QColor, QPaintEvent, QFont, QCursor, QMouseEvent, QPixmap
+from PySide6.QtGui import (
+    QPainter,
+    QColor,
+    QPaintEvent,
+    QFont,
+    QCursor,
+    QMouseEvent,
+    QPixmap,
+    QKeyEvent,
+)
 from typing import Dict, List, Optional
 
 from theme import tm
@@ -44,6 +55,31 @@ SIZE_CONFIG = {
     "default": {"width": 400},
     "lg": {"width": 560},
 }
+
+#: 判定「纯按键」时忽略的修饰位。
+#:
+#: - ``KeypadModifier``：小键盘 Enter / 方向键只表示按键来源，不改变语义；
+#: - ``GroupSwitchModifier``：输入法组字切换键，与弹窗操作无关。
+_IGNORED_MODIFIERS = (
+    int(Qt.KeyboardModifier.KeypadModifier.value)
+    | int(Qt.KeyboardModifier.GroupSwitchModifier.value)
+)
+
+
+def _is_plain_key(event: QKeyEvent) -> bool:
+    """按键是否未携带 Ctrl / Alt / Shift / Meta 等语义修饰键。
+
+    小键盘按键会带 ``KeypadModifier``，若用「修饰键必须为 0」严格判断，
+    小键盘 Enter / 方向键会完全失效。这里与快捷键注册表（``bindings.py``）
+    保持同一口径：只忽略「不改变语义」的修饰位。
+
+    Args:
+        event: 键盘事件。
+
+    Returns:
+        bool: 只有无意义修饰位（或无修饰键）时返回 True。
+    """
+    return (int(event.modifiers().value) & ~_IGNORED_MODIFIERS) == 0
 
 
 class DialogAnimationEffect(QObject):
@@ -178,6 +214,8 @@ class StyledDialog(QWidget):
         # whose footer was never built (FOOTER_NONE) or that was never shown.
         self._footer_layout = None
         self._show_started = False
+        #: 应用级方向键过滤器是否已安装（打开期间安装，关闭时卸下）
+        self._nav_filter_installed = False
 
         # Drag support
         self._drag_pos: QPoint = None
@@ -462,6 +500,332 @@ class StyledDialog(QWidget):
         self._emit_closing(result)
         self.close()
 
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 - Qt 虚函数名
+        """弹窗键盘处理：``Esc`` 关闭、``Enter`` 执行焦点按钮、方向键空间导航。
+
+        ``StyledDialog`` 继承 ``QWidget`` 而非 ``QDialog``，因此**没有**
+        ``QDialog`` 自带的 ``Esc → reject()`` / ``Enter → 默认按钮`` 行为，
+        这几类语义都必须在此显式补齐：
+
+        - ``Esc``（无修饰键）：关闭弹窗，``result=0``；
+        - ``Enter`` / ``Return``：**优先执行当前拥有焦点的按钮**；只有焦点
+          不在任何按钮上（输入框 / 弹窗自身）时，才回退到默认按钮（首个
+          ``primary`` / ``danger``，或唯一按钮）；
+        - ``↑↓←→``：按**几何邻近**移动焦点（见 ``spatial_focus_nav``），
+          使「按 ↓ 到下方按钮、按 ←→ 切横向按钮、按 ↑ 回输入框」成立。
+
+        ``Ctrl+Esc`` 等带修饰键的组合不处理，避免与系统 / 输入法冲突；
+        小键盘 Enter / 方向键携带的 ``KeypadModifier`` 不算语义修饰键。
+
+        Args:
+            event: 键盘事件。
+        """
+        key = event.key()
+        plain_key = _is_plain_key(event)
+
+        if key == Qt.Key.Key_Escape and plain_key:
+            self.close_dialog(0)
+            event.accept()
+            return
+
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and plain_key:
+            if self._activate_focused_button():
+                event.accept()
+                return
+            if self._activate_default_button():
+                event.accept()
+                return
+
+        if key in (
+            Qt.Key.Key_Up,
+            Qt.Key.Key_Down,
+            Qt.Key.Key_Left,
+            Qt.Key.Key_Right,
+        ) and plain_key:
+            from . import spatial_focus_nav
+
+            direction = {
+                Qt.Key.Key_Up: "up",
+                Qt.Key.Key_Down: "down",
+                Qt.Key.Key_Left: "left",
+                Qt.Key.Key_Right: "right",
+            }[key]
+            if spatial_focus_nav.move_focus(self, direction):
+                event.accept()
+                return
+
+        super().keyPressEvent(event)
+
+    def _install_nav_filter(self) -> None:
+        """安装应用级方向键过滤器（幂等；打开期间生效）。"""
+        if self._nav_filter_installed:
+            return
+        app = QApplication.instance()
+        if app is None:
+            return
+        app.installEventFilter(self)
+        self._nav_filter_installed = True
+
+    def _remove_nav_filter(self) -> None:
+        """卸下应用级方向键过滤器（幂等）。"""
+        if not self._nav_filter_installed:
+            return
+        self._nav_filter_installed = False
+        app = QApplication.instance()
+        if app is not None:
+            try:
+                app.removeEventFilter(self)
+            except RuntimeError:
+                pass
+
+    def eventFilter(self, obj: QObject, event) -> bool:  # noqa: N802
+        """应用级按键拦截：让弹窗的空间焦点导航与焦点按钮优先。
+
+        ``QLineEdit`` 默认把 ``↑↓←→`` 当作光标移动 / 历史导航，导致「按 ↓
+        到下方按钮」失效；同时按钮获得焦点后，Enter 也不能再绕过它去触发
+        默认主按钮。这里在应用级抢先处理：只要焦点在本弹窗内，就按「焦点
+        按钮 → 默认按钮」的顺序派发 Enter，方向键交给
+        :mod:`spatial_focus_nav`。
+
+        Args:
+            obj: 事件目标对象。
+            event: 待过滤事件。
+
+        Returns:
+            bool: True 表示事件已被消费。
+        """
+        if event.type() != QEvent.Type.KeyPress:
+            return False
+        if not self._nav_filter_installed:
+            return False
+        # 下拉框 / 菜单弹出时按键归弹层所有
+        if QApplication.activePopupWidget() is not None:
+            return False
+        if not _is_plain_key(event):
+            return False
+
+        focused = QApplication.focusWidget()
+        if focused is None:
+            # 首次按键早于延时落焦：立即补一次，保证按键不丢
+            self._focus_initial_widget()
+            focused = QApplication.focusWidget()
+        try:
+            owns_keyboard = bool(self.isActiveWindow()) or (
+                focused is not None
+                and (focused is self or self.isAncestorOf(focused))
+            )
+        except RuntimeError:
+            return False
+        if not owns_keyboard:
+            return False
+
+        key = event.key()
+
+        # Esc：即使焦点停在按钮/输入框上，也必须关闭弹窗
+        if key == Qt.Key.Key_Escape:
+            self.close_dialog(0)
+            event.accept()
+            return True
+
+        # Enter：焦点按钮优先；无按钮焦点时才回退到默认主按钮。
+        # 多行文本编辑保留换行语义，不在这里拦截。
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if isinstance(focused, (QTextEdit, QPlainTextEdit)):
+                return False
+            if self._activate_focused_button():
+                event.accept()
+                return True
+            if self._activate_default_button():
+                event.accept()
+                return True
+            return False
+
+        direction = {
+            Qt.Key.Key_Up: "up",
+            Qt.Key.Key_Down: "down",
+            Qt.Key.Key_Left: "left",
+            Qt.Key.Key_Right: "right",
+        }.get(key)
+        if direction is None:
+            return False
+        from . import spatial_focus_nav
+
+        if spatial_focus_nav.move_focus(self, direction):
+            event.accept()
+            return True
+        return False
+
+    def _enable_footer_button_focus(self) -> None:
+        """让弹窗内的操作按钮可被键盘聚焦。
+
+        ``StyledButton`` 全局是 ``NoFocus``（自绘按钮、鼠标专用）。但弹窗
+        需要「按 ↓ 到按钮、按 ←→ 切按钮、按 Enter 触发」，因此仅对本弹窗
+        内的按钮放开焦点。标题栏 ✕ 保持 Qt 默认策略：它不会被选为初始
+        落焦或默认按钮，但用户主动把焦点移上去时，Enter 仍会执行它。
+
+        注意：不能只遍历 ``_footer_layout``——部分构造路径（``footer_type``
+        为 ``FOOTER_NONE`` 后惰性建 footer）在 ``showEvent`` 时该属性仍为
+        ``None``，必须遍历整个子树。
+        """
+        for button in self.findChildren(QAbstractButton):
+            try:
+                if self._is_close_button(button):
+                    continue
+                button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            except (AttributeError, RuntimeError):
+                continue
+
+    def _focus_initial_widget(self) -> None:
+        """把键盘焦点显式交给弹窗内的首个合理控件。
+
+        优先级：正文里的输入控件 → 主按钮 / 危险按钮 → 其它非关闭按钮。
+        真实窗口下 Qt 不保证自动落焦（实测 ``focusWidget()`` 为 ``None``），
+        而弹窗的 Enter / 方向键都依赖「焦点在弹窗内」，故必须显式设置。
+
+        如果焦点已经在本弹窗的可见子控件上，则**不再重设**：``showEvent``
+        会安排 0 / 80 / 200 / 350ms 多次延时落焦，入场动画结束也会再调一次；
+        若无条件重设，用户刚用方向键移到的按钮会被后续调用抢回输入框。
+        """
+        try:
+            if self._is_closing or not self.isVisible():
+                return
+        except RuntimeError:
+            return
+
+        focused = QApplication.focusWidget()
+        if focused is not None:
+            try:
+                if (
+                    focused is not self
+                    and self.isAncestorOf(focused)
+                    and focused.isVisible()
+                ):
+                    return
+            except RuntimeError:
+                return
+
+        def _usable(widget: QWidget) -> bool:
+            try:
+                return (
+                    widget.isVisible()
+                    and widget.isEnabled()
+                    and widget.focusPolicy() != Qt.FocusPolicy.NoFocus
+                )
+            except RuntimeError:
+                return False
+
+        # 1) 正文输入控件
+        for cls in (QLineEdit, QTextEdit, QPlainTextEdit, QComboBox):
+            for widget in self.findChildren(cls):
+                if _usable(widget):
+                    widget.setFocus(Qt.FocusReason.OtherFocusReason)
+                    return
+
+        # 2) footer 主按钮 / 危险按钮
+        buttons = []
+        for button in self.findChildren(QAbstractButton):
+            if self._is_close_button(button) or not _usable(button):
+                continue
+            buttons.append(button)
+        preferred = [
+            b for b in buttons
+            if getattr(b, "_variant", "") in ("primary", "danger")
+        ]
+        target = preferred[0] if preferred else (buttons[0] if buttons else None)
+        if target is not None:
+            try:
+                target.setFocus(Qt.FocusReason.OtherFocusReason)
+                return
+            except RuntimeError:
+                pass
+
+        # 3) 兜底：弹窗自身接键
+        try:
+            self.setFocus(Qt.FocusReason.OtherFocusReason)
+        except RuntimeError:
+            pass
+
+    def _is_close_button(self, button: QAbstractButton) -> bool:
+        """判断是否为标题栏的 ✕ 关闭按钮。
+
+        Args:
+            button: 待判定按钮。
+
+        Returns:
+            bool: 是关闭按钮返回 True。
+        """
+        try:
+            return button.text().strip() == "✕"
+        except RuntimeError:
+            return False
+
+    def _activate_focused_button(self) -> bool:
+        """执行当前拥有焦点的按钮（Enter 的第一优先级）。
+
+        焦点在 footer 操作按钮、正文内按钮或标题栏 ✕ 上都算：用户既然把
+        焦点移到了某个按钮，Enter 就必须执行它，而不是绕过去点默认主按钮。
+
+        Returns:
+            bool: 找到并触发了焦点按钮返回 True。
+        """
+        try:
+            focused = QApplication.focusWidget()
+        except RuntimeError:
+            return False
+        if not isinstance(focused, QAbstractButton):
+            return False
+        try:
+            if not focused.isEnabled():
+                return False
+            # 应用级过滤器理论上只在弹窗拥有键盘时生效；这里再兜底一次，
+            # 避免把事件目标窗口里的按钮误当成弹窗按钮。
+            if not self.isAncestorOf(focused):
+                return False
+            focused.click()
+        except RuntimeError:
+            return False
+        return True
+
+    def _activate_default_button(self) -> bool:
+        """触发默认按钮（首个 primary / danger，或唯一按钮）。
+
+        仅在焦点**不在任何按钮上**（输入框 / 弹窗自身）时作为回退调用；
+        焦点按钮由 :meth:`_activate_focused_button` 优先处理。
+
+        Returns:
+            bool: 找到并触发了按钮返回 True。
+        """
+        candidates = []
+        for button in self.findChildren(QAbstractButton):
+            try:
+                # 入场动画期间内容层被 setVisible(False) 暂存为快照，
+                # 按钮 isVisible() 为 False 但仍可点击；用 isHidden() 判断。
+                if button.isHidden() or not button.isEnabled():
+                    continue
+            except RuntimeError:
+                continue
+            if self._is_close_button(button):
+                continue
+            candidates.append(button)
+        if not candidates:
+            return False
+        if len(candidates) == 1:
+            target = candidates[0]
+        else:
+            preferred = [
+                b
+                for b in candidates
+                if getattr(b, "_variant", "") in ("primary", "danger")
+            ]
+            if not preferred:
+                return False
+            target = preferred[0]
+        try:
+            target.click()
+        except RuntimeError:
+            return False
+        return True
+
     def _emit_closing(self, result: int) -> None:
         """发射 ``closing`` 一次（幂等；非动画路径由 closeEvent 补发）。"""
         if self._closing_emitted:
@@ -612,6 +976,8 @@ class StyledDialog(QWidget):
         self._anim_progress = 1.0
         if self._content_widget is not None:
             self._content_widget.setVisible(True)
+        # 入场动画结束、内容层恢复可见后，把焦点落到首个控件
+        self._focus_initial_widget()
         self.update()
 
     def _start_enter_motion(self) -> None:
@@ -631,6 +997,29 @@ class StyledDialog(QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        # 登记到存活弹窗表：供快捷键派发器做上下文阻断。
+        # 放在 showEvent 而非仅 _show_dialog，是为了覆盖直接 ``dialog.show()``
+        # 的调用方（如储存池重命名弹窗）。
+        try:
+            _register_dialog(self)
+        except Exception:  # noqa: BLE001 - 登记失败不影响弹窗显示
+            pass
+        # 应用级方向键过滤器：输入框（QLineEdit）会自己消费 ↑↓←→，
+        # 必须在应用级抢先拦截，弹窗内的空间焦点导航才生效。
+        self._install_nav_filter()
+        # footer 按钮放开焦点（StyledButton 全局 NoFocus，弹窗需要键盘可达）
+        self._enable_footer_button_focus()
+        # 入场动画会把内容层临时隐藏成快照，子控件此时无法聚焦；先把焦点
+        # 收到弹窗自身，保证动画期间 Enter / Esc 也能被应用级过滤器处理。
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setFocus(Qt.FocusReason.OtherFocusReason)
+        # 真实窗口下 Qt 常常不会自动把焦点交给弹窗子控件（实测 focusWidget
+        # 为 None，导致 Enter / 方向键全部失效）。下一轮事件循环显式落焦；
+        # 再补一次延时落焦，覆盖入场动画 / 窗口激活晚于首次 showEvent 的情况。
+        QTimer.singleShot(0, self._focus_initial_widget)
+        QTimer.singleShot(80, self._focus_initial_widget)
+        QTimer.singleShot(200, self._focus_initial_widget)
+        QTimer.singleShot(350, self._focus_initial_widget)
         # Gate for the public footer API: once the dialog has been shown,
         # footer composition is frozen. Independent of animation state and
         # never reset by hide(), unlike ``_shown_once`` / isVisible().
@@ -651,6 +1040,8 @@ class StyledDialog(QWidget):
         # 关闭动作开始即通知观察方（占位释放/模态解除/存活表反登记）：
         # 退场动画期间窗口仍可见，等到 finished 就太晚了。
         self._emit_closing(self._result)
+        # 卸下应用级方向键过滤器（避免弹窗关闭后仍在拦截其它控件）
+        self._remove_nav_filter()
         if (
             self._animate
             and not self._is_closing
@@ -915,6 +1306,23 @@ def _forget_dialog(dialog: StyledDialog) -> None:
     if not _live_dialogs:
         return
     _live_dialogs = [d for d in _live_dialogs if d is not dialog]
+
+
+def live_dialog_count() -> int:
+    """返回当前存活的 ``StyledDialog`` 数量（供快捷键派发器做上下文阻断）。
+
+    ``StyledDialog`` 继承 ``QWidget``（非 ``QDialog``），且用的是
+    ``Qt.Dialog`` 标志而非 ``Qt.Popup``，因此既不命中
+    ``QApplication.activePopupWidget()`` 也不命中
+    ``QApplication.activeModalWidget()``。派发器必须通过本计数判断。
+
+    关闭动画期间弹窗仍在 ``_live_dialogs`` 内，但语义上已关闭——这里保持
+    「计入」，即宁可多阻断约 180ms，也不抢弹窗内的按键。
+
+    Returns:
+        int: 存活弹窗数量。
+    """
+    return len(_live_dialogs)
 
 
 def _register_dialog(dialog: StyledDialog) -> None:

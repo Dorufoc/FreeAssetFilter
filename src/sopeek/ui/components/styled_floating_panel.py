@@ -19,6 +19,21 @@ from PySide6.QtGui import (
 
 from theme import tm
 
+# ── 可见浮层面板登记表 ──────────────────────────────────────────
+#: 当前可见的浮层面板（供快捷键派发器做上下文阻断）。
+#: 浮层面板虽是 ``Qt.Tool`` 顶层窗口，但带 ``WA_ShowWithoutActivating``，
+#: ``QApplication.activePopupWidget()`` 不一定能感知，故自行登记。
+_open_panels: "set[FloatingPanel]" = set()
+
+
+def open_panel_count() -> int:
+    """返回当前可见的浮层面板数量。
+
+    Returns:
+        int: 可见浮层面板数量。
+    """
+    return len(_open_panels)
+
 
 class FloatingPanel(QWidget):
     """半透明圆角浮层面板基类。
@@ -342,11 +357,13 @@ class FloatingPanel(QWidget):
     def showEvent(self, event) -> None:
         """显示时安装外部点击/Esc 关闭过滤（若启用）。"""
         super().showEvent(event)
+        _open_panels.add(self)
         if self._dismiss_on_outside_click or self._dismiss_on_escape:
             self._install_dismiss_filter()
 
     def hideEvent(self, event) -> None:
         """隐藏时停止动画、重置内部关闭状态并移除事件过滤。"""
+        _open_panels.discard(self)
         self._fade.stop()
         self._slide.stop()
         self._closing = False

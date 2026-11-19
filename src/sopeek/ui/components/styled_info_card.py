@@ -492,6 +492,11 @@ class StyledInfoCard(QWidget):
         self.setAttribute(Qt.WA_Hover, True)
         self.setAttribute(Qt.WA_StyledBackground, False)
         self.setMouseTracking(False)
+        # 键盘光标支持：NoFocus → StrongFocus 才能被 setFocus() 聚焦（储存池
+        # 方向键导航的前置条件）。paintEvent 完全自绘、不使用 QStyle，因此
+        # Qt 不会自动绘制系统焦点框——焦点态由 _keyboard_focused 自己画。
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._keyboard_focused = False
 
         # Hover animation (media scale + overlay fade)
         self._hover_anim = QPropertyAnimation(self, b"overlay_opacity")
@@ -781,6 +786,22 @@ class StyledInfoCard(QWidget):
     def is_rename_mode(self) -> bool:
         """返回当前是否处于重命名编辑态。"""
         return self._is_rename_mode
+
+    def set_keyboard_focused(self, focused: bool) -> None:
+        """设置「键盘光标」态（与 hover / 选中 / 预览 / 重命名正交）。
+
+        仅用于储存池的键盘方向键导航：鼠标用户永远不会置位，因此不改变
+        现有观感。绘制的是 ``tm.accent`` 2px 实线圆角边框，与「框选选中」
+        的虚线边框、「预览」的流光边框均可区分。
+
+        Args:
+            focused: True 绘制键盘焦点描边，False 清除。
+        """
+        focused = bool(focused)
+        if self._keyboard_focused == focused:
+            return
+        self._keyboard_focused = focused
+        self.update()
 
     def set_previewing(self, previewing: bool) -> None:
         """设置预览状态。
@@ -1475,6 +1496,14 @@ class StyledInfoCard(QWidget):
             painter.setPen(border_pen)
             painter.setBrush(bg_color)
             painter.drawRoundedRect(draw_rect, radius, radius)
+
+            # 键盘光标描边（储存池方向键导航）：2px 主题色实线，
+            # 覆盖在状态边框之上，与「框选选中」虚线、「预览」流光区分。
+            if self._keyboard_focused and not self._disabled:
+                focus_rect = QRectF(0, 0, w, h).adjusted(1.0, 1.0, -1.0, -1.0)
+                painter.setPen(QPen(tm.accent, 2.0))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawRoundedRect(focus_rect, radius, radius)
 
             painter.setPen(Qt.NoPen)
 

@@ -1389,6 +1389,10 @@ class _SearchState:
 # 文本预览器布局
 # ──────────────────────────────────────────────────────────────────────────────
 
+#: 文本 / 代码预览的默认字号（px）。``Ctrl+0`` 重置到此值。
+_DEFAULT_TEXT_FONT_SIZE = 13
+
+
 class TextPreviewerLayout(QWidget):
     """文本预览器布局。
 
@@ -1473,6 +1477,100 @@ class TextPreviewerLayout(QWidget):
 
         self._init_ui()
         self._connect_theme()
+        # 注册快捷键处理器（区域 preview.text，全屏同样生效）
+        self._register_shortcuts()
+
+    # ── 快捷键（注册表驱动） ──────────────────────────────────────────────
+
+    def _register_shortcuts(self) -> None:
+        """登记文本 / 代码预览区域的快捷键处理器。"""
+        try:
+            from sopeek.core.shortcuts import defer_call, shortcut_dispatcher
+
+            dispatcher = shortcut_dispatcher()
+            dispatcher.handlers.register_many(
+                {
+                    "preview.text.scroll_up": lambda: self._scroll_lines(-1),
+                    "preview.text.scroll_down": lambda: self._scroll_lines(+1),
+                    "preview.text.font_up": lambda: self._on_wheel_font_size_change(+1),
+                    "preview.text.font_down": lambda: self._on_wheel_font_size_change(-1),
+                    "preview.text.font_reset": lambda: self._apply_font_size_from_zoom(
+                        _DEFAULT_TEXT_FONT_SIZE
+                    ),
+                    "preview.text.toggle_search": self._toggle_search_drawer,
+                    "preview.text.toggle_render": self._on_render_toggle,
+                    "preview.text.fullscreen": lambda: defer_call(self._on_maxsize_toggle),
+                },
+                owner=self,
+            )
+            dispatcher.register_escape_provider("preview.text", self)
+        except Exception as exc:  # noqa: BLE001 - 快捷键登记失败不阻塞预览
+            from sopeek.utils.app_logger import warning
+
+            warning(f"文本预览器快捷键登记失败: {exc}")
+
+    def _unregister_shortcuts(self) -> None:
+        """注销本预览器登记的快捷键处理器（幂等）。"""
+        try:
+            from sopeek.core.shortcuts import shortcut_dispatcher
+
+            dispatcher = shortcut_dispatcher()
+            dispatcher.handlers.unregister_owner(self)
+            dispatcher.unregister_escape_provider("preview.text")
+        except Exception:  # noqa: BLE001 - 清理阶段忽略
+            pass
+
+    def escape_handlers(self) -> list:
+        """``Esc`` 消费链：先关搜索抽屉，再关 AI 抽屉。"""
+        return [self._esc_close_search, self._esc_close_ai]
+
+    def _esc_close_search(self) -> bool:
+        """搜索抽屉打开时关闭它。"""
+        drawer = getattr(self, "_search_drawer", None)
+        if drawer is None or not drawer.is_open:
+            return False
+        drawer.close_drawer()
+        return True
+
+    def _esc_close_ai(self) -> bool:
+        """AI 抽屉打开时关闭它。"""
+        drawer = getattr(self, "_ai_drawer", None)
+        if drawer is None or not drawer.is_open:
+            return False
+        drawer.close_drawer()
+        return True
+
+    def _scroll_lines(self, direction: int) -> None:
+        """``↑`` / ``↓``：上下翻动视口高度的 80%。
+
+        Args:
+            direction: -1 向上 / +1 向下。
+        """
+        widget = self._active_text_widget()
+        if widget is None:
+            return
+        bar = widget.verticalScrollBar()
+        step = int(bar.pageStep() * 0.8)
+        bar.setValue(bar.value() + step * direction)
+
+    def _active_text_widget(self):
+        """返回当前可见视图的文本控件（覆盖层可见时返回 None）。
+
+        ``_content_stack`` 是 ``QStackedLayout``：0 = 源码视图，
+        1 = Markdown 渲染视图，2 = 加载 / 错误覆盖层。
+
+        Returns:
+            Optional[QTextEdit]: 当前视图的文本控件。
+        """
+        try:
+            index = self._content_stack.currentIndex()
+        except (AttributeError, RuntimeError):
+            return None
+        if index == 0:
+            return getattr(self._source_view, "_text_edit", None)
+        if index == 1:
+            return getattr(self._markdown_view, "_text_browser", None)
+        return None
         self._apply_stylesheet()
 
         # 默认面板样式（独立运行与主窗口调用保持一致）
@@ -2134,6 +2232,35 @@ class TextPreviewerLayout(QWidget):
             self._search_drawer.close_drawer()
         else:
             self._search_drawer.open_drawer()
+            # 打开后把焦点交给搜索框（抽屉是覆盖层，不会自动抢焦点）。
+            # 动画约 220ms，结束再聚焦一次，保证用户直接输入即可。
+            QTimer.singleShot(0, self._focus_search_input)
+            QTimer.singleShot(260, self._focus_search_input)
+
+    def _focus_search_input(self) -> None:
+        """把键盘焦点放到搜索输入框（抽屉已关闭时忽略）。"""
+        try:
+            if not self._search_drawer.is_open:
+                return
+            self._search_input.setFocus(Qt.FocusReason.OtherFocusReason)
+        except (AttributeError, RuntimeError):
+            pass
+
+    def _focus_search_results(self) -> None:
+        """把键盘焦点放到搜索结果列表首项（无结果时回退搜索框）。"""
+        try:
+            if not self._search_drawer.is_open:
+                return
+            results = getattr(self, "_search_list", None)
+            if results is None:
+                return
+            if self._search_model.rowCount() > 0:
+                results.setFocus(Qt.FocusReason.OtherFocusReason)
+                results.setCurrentIndex(self._search_model.index(0, 0))
+            else:
+                self._search_input.setFocus(Qt.FocusReason.OtherFocusReason)
+        except (AttributeError, RuntimeError):
+            pass
 
     def _toggle_ai_drawer(self) -> None:
         """切换 AI 侧边面板的展开/收起（抽屉未创建时为空操作）。"""
@@ -2313,6 +2440,13 @@ class TextPreviewerLayout(QWidget):
         else:
             self._search_status.setText(f"找到 {total_label} 项匹配")
 
+        # 搜索完成：把焦点交给结果列表，用户可直接用 ↑↓ 在结果间移动
+        # （用户要求：点搜索后焦点不应停留在搜索框）。
+        # 立即与延迟各做一次：立即保证响应，延迟覆盖抽屉动画/批量填充
+        # 完成后焦点被其它控件抢走的情况。
+        QTimer.singleShot(0, self._focus_search_results)
+        QTimer.singleShot(120, self._focus_search_results)
+
     def _load_more_results(self) -> None:
         """继续搜索并追加下一批结果。"""
         if self._search_state is None or not self._search_state.has_more:
@@ -2404,6 +2538,8 @@ class TextPreviewerLayout(QWidget):
 
     def cleanup(self) -> None:
         """清理预览内容并重置为覆盖层。"""
+        # 注销本预览器登记的快捷键处理器（避免陈旧 handler 残留）
+        self._unregister_shortcuts()
         if self._fullscreen:
             self._exit_fullscreen()
         # 销毁缩放弹窗，避免清理后残留悬浮窗口（Qt 父级已保证随预览器销毁）
@@ -2836,6 +2972,10 @@ class TextPreviewerLayout(QWidget):
         if not self._fullscreen_host.attach(self):
             return
         self._fullscreen_host.show_fullscreen()
+        # 快捷键区域切到 fullscreen（宿主是独立顶层窗口，focusChanged 解析不到）
+        from sopeek.core.shortcuts import enter_fullscreen_region
+
+        enter_fullscreen_region()
         self._maxsize_btn.set_svg_icon(self._minisize_icon_path)
         self._maxsize_btn.setToolTip("还原")
         self._fullscreen = True
@@ -2847,6 +2987,10 @@ class TextPreviewerLayout(QWidget):
             return
         self._discard_zoom_popup()
         self._fullscreen_host.exit_fullscreen()
+        # 快捷键区域退回主窗口
+        from sopeek.core.shortcuts import exit_fullscreen_region
+
+        exit_fullscreen_region()
         self._fullscreen_host.deleteLater()
         self._fullscreen_host = None
         self._maxsize_btn.set_svg_icon(self._maxsize_icon_path)

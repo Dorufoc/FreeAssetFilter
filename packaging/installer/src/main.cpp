@@ -787,7 +787,7 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
         return ShowStartupError(
             instance, L"无法直接运行",
             L"这是 Sopeek 安装程序的界面组件，不能单独双击运行。"
-            L"请双击最终安装包 Sopeek-<版本>-windows-x64.exe。",
+            L"请双击最终安装包 Sopeek-<版本>-windows-x64-<时间戳>.exe。",
             mode, args);
     }
 #endif

@@ -316,19 +316,35 @@ class OfficeConverterWorker(QThread):
     # ── 取消 / 超时的真实终止机制 ────────────────────────────────────
 
     def _terminate_active_subprocess(self, grace: float | None = None) -> None:
-        """终止正在进行的转换：LO 子进程 kill，或 COM 孤儿清理。
+        """终止正在进行的转换：只终止**本次转换自己的** soffice 子进程。
 
-        优先通过 T5 seam 按本 worker 线程 ident 找到注册的 soffice ``Popen``
-        并杀死；未找到（COM 后端 / 尚未启动 / 已结束）则降级为 best-effort
-        孤儿进程清理（COM 场景）。
+        关键安全约束（崩溃修复）：只有通过 T5 seam 按本 worker 线程 ident
+        拿到 ``Popen`` 时才终止子进程。拿不到说明当前后端是 COM（没有
+        ``Popen`` 句柄），此时**绝不做孤儿进程清理**——COM 转换仍在
+        ``_com_convert_in_task`` 中同步使用着 Excel/Word 实例，从外部
+        ``Stop-Process -Force`` 掉它会触发 RPC 断开（``0x80010108`` /
+        ``0x800706be`` / ``0x800706ba``）这类 SEH 异常，Python 捕获不到，
+        直接让整个进程崩溃（实测日志 `QThread: Destroyed` + 进程 abort）。
+
+        COM 场景的取消语义退化为「标记 ``_cancel_requested`` + 抑制结果
+        发射」：转换自行走完 ``finally``（``app.Quit()`` 关闭实例），
+        失败/退出不干净时的孤儿清理由 ``_com_convert_in_task`` 的
+        ``finally`` 负责——那里实例已不再被使用，清理是安全的。
+
+        Args:
+            grace: terminate() 后的宽限秒数；``None`` 用 ``_KILL_GRACE``。
         """
         if grace is None:
             grace = self._KILL_GRACE
         proc = self._wait_for_active_popen(self._CANCEL_POPEN_WAIT)
         if proc is not None:
             self._kill_popen(proc, grace)
-        else:
-            self._sweep_orphan_processes()
+            return
+        # COM 后端：不做孤儿清理（会杀死正在使用的 Office 实例 → 进程崩溃）。
+        debug(
+            "[OfficeConverterWorker] 取消：当前后端无 soffice 子进程（COM），"
+            "跳过孤儿进程清理以避免终止正在使用的 Office 实例"
+        )
 
     def _wait_for_active_popen(self, timeout: float) -> Any:
         """轮询等待本 worker 线程的 soffice ``Popen`` 注册进 T5 seam。

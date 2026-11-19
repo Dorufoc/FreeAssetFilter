@@ -15,10 +15,10 @@ RequestExecutionLevel admin
 !endif
 ManifestDPIAware true
 Name "Sopeek Installer"
-; Output override: build.ps1 always passes -DSPK_OUTFILE=..\..\build\Sopeek-<version>-<platform>-<arch>.exe
-; (e.g. Sopeek-2.0.0-windows-x64.exe) so the packaged file name carries product,
-; version and target platform/arch. The fallback below keeps a bare
-; `makensis installer.nsi` invocation, and QA builds pass their own isolated path.
+; Output override: build.ps1 always passes -DSPK_OUTFILE=..\..\build\Sopeek-<version>-<platform>-<arch>-<timestamp>.exe
+; (e.g. Sopeek-2.0.0-windows-x64-261118153045.exe) so the packaged file name carries
+; product, version, target platform/arch and build time. The fallback below keeps a
+; bare `makensis installer.nsi` invocation, and QA builds pass their own isolated path.
 !ifndef SPK_OUTFILE
   !define SPK_OUTFILE "..\..\build\Sopeek_NSIS_Setup.exe"
 !endif

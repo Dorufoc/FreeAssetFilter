@@ -516,6 +516,111 @@ class PdfPreviewerLayout(QWidget):
         self._index_drawer.hide()
         self._connect_theme()
         self._connect_focus_tracking()
+        # 注册快捷键处理器（区域 preview.pdf，全屏同样生效）
+        self._register_shortcuts()
+
+    # ── 快捷键（注册表驱动） ──────────────────────────────────────────────
+
+    def _register_shortcuts(self) -> None:
+        """登记 PDF 预览区域的快捷键处理器。"""
+        try:
+            from sopeek.core.shortcuts import defer_call, shortcut_dispatcher
+
+            dispatcher = shortcut_dispatcher()
+            dispatcher.handlers.register_many(
+                {
+                    "preview.pdf.scroll_up": lambda: self._scroll_pages(-1),
+                    "preview.pdf.scroll_down": lambda: self._scroll_pages(+1),
+                    "preview.pdf.page_prev": lambda: self._goto_page_relative(-1),
+                    "preview.pdf.page_next": lambda: self._goto_page_relative(+1),
+                    "preview.pdf.zoom_in": self._renderer.zoom_in,
+                    "preview.pdf.zoom_out": self._renderer.zoom_out,
+                    "preview.pdf.zoom_reset": self._renderer.fit_to_page,
+                    "preview.pdf.toggle_index": self._toggle_index_drawer,
+                    "preview.pdf.copy_selection": self._copy_selection_if_any,
+                    "preview.pdf.fullscreen": lambda: defer_call(self._on_maxsize_toggle),
+                },
+                owner=self,
+            )
+            dispatcher.register_escape_provider("preview.pdf", self)
+        except Exception as exc:  # noqa: BLE001 - 快捷键登记失败不阻塞预览
+            from sopeek.utils.app_logger import warning
+
+            warning(f"PDF 预览器快捷键登记失败: {exc}")
+
+    def _unregister_shortcuts(self) -> None:
+        """注销本预览器登记的快捷键处理器（幂等）。"""
+        try:
+            from sopeek.core.shortcuts import shortcut_dispatcher
+
+            dispatcher = shortcut_dispatcher()
+            dispatcher.handlers.unregister_owner(self)
+            dispatcher.unregister_escape_provider("preview.pdf")
+        except Exception:  # noqa: BLE001 - 清理阶段忽略
+            pass
+
+    def escape_handlers(self) -> list:
+        """``Esc`` 消费链：先关索引抽屉，再关 AI 抽屉。"""
+        return [self._esc_close_index, self._esc_close_ai]
+
+    def _esc_close_index(self) -> bool:
+        """索引抽屉打开时关闭它。"""
+        drawer = getattr(self, "_index_drawer", None)
+        if drawer is None or not drawer.is_open:
+            return False
+        drawer.close_drawer()
+        return True
+
+    def _esc_close_ai(self) -> bool:
+        """AI 抽屉打开时关闭它。"""
+        drawer = getattr(self, "_ai_drawer", None)
+        if drawer is None or not drawer.is_open:
+            return False
+        drawer.close_drawer()
+        return True
+
+    def _scroll_pages(self, direction: int) -> None:
+        """``↑`` / ``↓``：上下翻动视口高度的 80%（带边界钳制）。
+
+        ``NativePdfRenderer`` 用 ``_view.offset_y`` 表达「视口中心对应的
+        文档 Y」，直接加减后交给 ``_clamp_offset`` 收边。
+
+        Args:
+            direction: -1 向上 / +1 向下。
+        """
+        view = getattr(self._renderer, "_view", None)
+        if view is None:
+            return
+        view.offset_y += view.view_height * 0.8 * direction
+        self._renderer._clamp_offset(view.zoom_level)
+        self._renderer._submit_render_for_visible_pages()
+        self._renderer.update()
+
+    def _goto_page_relative(self, step: int) -> None:
+        """``PgUp`` / ``PgDn``：相对翻页。
+
+        ``_current_page`` 是 1-based 显示值，``go_to_page`` 接收 0-based。
+
+        Args:
+            step: -1 上一页 / +1 下一页。
+        """
+        target = max(1, min(int(self._total_pages), int(self._current_page) + step))
+        if target == self._current_page:
+            return
+        self._renderer.go_to_page(target - 1)
+        self._current_page = target
+
+    def _copy_selection_if_any(self) -> bool:
+        """``Ctrl+C``：有选区时复制并消费；无选区返回 False 放行。
+
+        Returns:
+            bool: 已复制返回 True；无选区返回 False（事件继续下传）。
+        """
+        view = getattr(self._renderer, "_view", None)
+        if view is None or not view.selected_character_rects:
+            return False
+        self._renderer._copy_selected_text()
+        return True
 
     def _init_ui(self) -> None:
         """初始化顶栏 + 内容区布局。"""
@@ -1008,6 +1113,10 @@ class PdfPreviewerLayout(QWidget):
         if not self._fullscreen_host.attach(self):
             return
         self._fullscreen_host.show_fullscreen()
+        # 快捷键区域切到 fullscreen（宿主是独立顶层窗口，focusChanged 解析不到）
+        from sopeek.core.shortcuts import enter_fullscreen_region
+
+        enter_fullscreen_region()
         self._maxsize_btn.set_svg_icon(self._minisize_icon_path)
         self._maxsize_btn.setToolTip("还原")
         self._fullscreen = True
@@ -1019,6 +1128,10 @@ class PdfPreviewerLayout(QWidget):
             return
         self._discard_zoom_popup()
         self._fullscreen_host.exit_fullscreen()
+        # 快捷键区域退回主窗口
+        from sopeek.core.shortcuts import exit_fullscreen_region
+
+        exit_fullscreen_region()
         self._fullscreen_host.deleteLater()
         self._fullscreen_host = None
         self._maxsize_btn.set_svg_icon(self._maxsize_icon_path)
@@ -1031,6 +1144,8 @@ class PdfPreviewerLayout(QWidget):
 
     def cleanup(self) -> None:
         """清理资源；若处于全屏先退出，避免内嵌 widget 被直接销毁。"""
+        # 注销本预览器登记的快捷键处理器（避免陈旧 handler 残留）
+        self._unregister_shortcuts()
         if self._fullscreen:
             self._exit_fullscreen()
         # 防御：确保离开预览器前缩放弹窗被销毁（Qt 父级已保证随预览器销毁）

@@ -9,7 +9,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QPainter, QColor, QPaintEvent, QFont, QFontMetrics, QMouseEvent, QPolygonF,
-    QPen,
+    QPen, QKeyEvent,
 )
 from theme import tm
 
@@ -44,6 +44,17 @@ class _ComboItemWidget(QWidget):
     def hover_progress(self, v: float):
         self._hover_progress = v
         self.update()
+
+    def set_selected(self, selected: bool) -> None:
+        """更新选中态并重绘（键盘 ↑↓ 移动高亮时调用）。
+
+        Args:
+            selected: True 表示当前高亮项。
+        """
+        selected = bool(selected)
+        if self._selected != selected:
+            self._selected = selected
+            self.update()
 
     def paintEvent(self, event: QPaintEvent):
         p = QPainter(self)
@@ -160,6 +171,7 @@ class _ComboPopup(QWidget):
         font_size = font_size_map.get(size, 13)
 
         item_index = 0
+        self._item_widgets: list[_ComboItemWidget] = []
         for item in items:
             if item == "---":
                 divider = _ComboDivider()
@@ -168,6 +180,7 @@ class _ComboPopup(QWidget):
                 w = _ComboItemWidget(item, item_index == current_index, font_size)
                 w.clicked.connect(lambda idx=item_index: self._on_item_clicked(idx))
                 layout.addWidget(w)
+                self._item_widgets.append(w)
                 item_index += 1
 
         layout.addStretch()
@@ -254,6 +267,65 @@ class _ComboPopup(QWidget):
     def _on_item_clicked(self, index: int):
         self.item_selected.emit(index)
 
+    # ── 键盘导航（由 StyledComboBox.keyPressEvent 转发） ─────────
+
+    def handle_key(self, key: int) -> None:
+        """处理弹层展开态下的按键。
+
+        ``_ComboPopup`` 是 ``Qt.Tool`` + ``WA_ShowWithoutActivating`` 的
+        顶层窗口，**键盘焦点始终留在触发器 ``StyledComboBox`` 上**，因此
+        本方法由触发器转发调用，弹层自身不设焦点。
+
+        Args:
+            key: Qt 键码。
+        """
+        if key == Qt.Key.Key_Escape:
+            # -1 约定为「外部取消」：不改变当前值，仅关闭。
+            self._on_item_clicked(-1)
+            return
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self._on_item_clicked(self._current_index)
+            return
+        if key == Qt.Key.Key_Up:
+            self._move_highlight(-1)
+            return
+        if key == Qt.Key.Key_Down:
+            self._move_highlight(+1)
+
+    def _move_highlight(self, step: int) -> None:
+        """移动弹层内高亮（跳过 ``---`` 分隔项并环绕）。
+
+        Args:
+            step: -1 向上 / +1 向下。
+        """
+        n = len(self._items)
+        if n <= 0:
+            return
+        idx = self._current_index
+        for _ in range(n):
+            idx = (idx + step) % n
+            if self._items[idx] != "---":
+                break
+        else:
+            return
+        self._current_index = idx
+        self._refresh_item_states()
+
+    def _refresh_item_states(self) -> None:
+        """按 ``_current_index`` 重绘各项选中态。
+
+        真实条目序号与 ``_items`` 下标可能因 ``---`` 分隔项而错位，因此
+        逐项推导：只有非分隔项才占用一个 widget。
+        """
+        visual = 0
+        for item in self._items:
+            if item == "---":
+                continue
+            if visual >= len(self._item_widgets):
+                break
+            self._item_widgets[visual].set_selected(visual == self._current_index)
+            visual += 1
+
     def close_animated(self):
         """Slide up + fade out for smooth dismiss."""
         self._closing_internally = True
@@ -331,6 +403,11 @@ class StyledComboBox(QWidget):
         self._chevron_anim.setEasingCurve(QEasingCurve.OutCubic)
 
         self._popup = None
+
+        # 键盘支持：StrongFocus 才能被 Tab/setFocus 聚焦；sp_owns_keys 让全局
+        # 快捷键派发器知道「本控件自己处理方向键」，避免区域层的 ↑↓ 被抢走。
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setProperty("sp_owns_keys", True)
 
     # ── animated properties ────────────────────────────────
 
@@ -605,6 +682,67 @@ class StyledComboBox(QWidget):
         if event.button() == Qt.LeftButton:
             self._toggle()
             event.accept()
+
+    # ── keyboard ───────────────────────────────────────────
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 - Qt 虚函数名
+        """键盘操作：↑↓ 切换值、Space/Enter 展开、展开后交给弹层导航。
+
+        未展开时 ``↑`` / ``↓`` **直接在当前值上切换**（不展开弹层），
+        ``Space`` / ``Enter`` 展开；展开后 ``↑↓`` 移动高亮、``Enter``
+        选中、``Esc`` 取消（不改变当前值）。
+
+        Args:
+            event: 键盘事件。
+        """
+        key = event.key()
+        if self._open:
+            popup = self._popup
+            if popup is not None:
+                popup.handle_key(key)
+                event.accept()
+                return
+        else:
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+                self._open_popup()
+                event.accept()
+                return
+            if key == Qt.Key.Key_Up:
+                self._step_index(-1)
+                event.accept()
+                return
+            if key == Qt.Key.Key_Down:
+                self._step_index(+1)
+                event.accept()
+                return
+            if key == Qt.Key.Key_Escape:
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
+    def _step_index(self, step: int) -> None:
+        """在当前值上直接步进（跳过 ``---`` 分隔项并环绕）。
+
+        Args:
+            step: -1 上一个 / +1 下一个。
+        """
+        n = len(self._items)
+        if n <= 0:
+            return
+        idx = self._current_index
+        for _ in range(n):
+            idx = (idx + step) % n
+            if self._items[idx] != "---":
+                break
+        else:
+            return
+        if idx == self._current_index:
+            return
+        self._current_index = idx
+        self._title_only = False
+        self.current_index_changed.emit(idx)
+        self.selection_made.emit(self.currentText())
+        self.update()
 
     def enterEvent(self, event):
         self._hover_anim.stop()

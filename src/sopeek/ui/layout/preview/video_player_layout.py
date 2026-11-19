@@ -302,6 +302,72 @@ class _MediaTracksTask(QRunnable):
         self._signals.done.emit(self._token, audio_tracks, subtitle_tracks)
 
 
+class _TempSpeed:
+    """倍速键的三态状态机（短按切换 / 长按临时）。
+
+    语义：
+    - 按下即切到目标倍速（保证短按零延迟反馈，不必等松手），并把 OSD
+      切为**常显**——长按期间无论多久提示都不会自动隐藏；
+    - 超时后进入长按态（由派发器的 ``_LongPressState`` 标记）；
+    - 松开时先结束常显：长按回滚到按下前的倍速（``set_speed`` 自带普通
+      2 秒 OSD，随后自动隐藏），短按保持新倍速并给一次普通 2 秒 OSD。
+
+    状态机是**布局级单实例**（而非每个倍速一个），因此 ``_prev`` 在
+    press / release 之间天然连续；``_active`` 守卫同时挡住长按期间系统
+    autoRepeat 的重复按下，避免把 ``_prev`` 覆盖成临时倍速。
+
+    ``_player`` 只按鸭子类型使用（``current_speed`` / ``set_speed`` /
+    ``show_speed_osd_sticky`` / ``hide_speed_osd`` / ``show_speed_osd``），
+    便于用桩对象做纯 Python 单测。
+    """
+
+    __slots__ = ("_player", "_prev", "_active")
+
+    def __init__(self, player: Any) -> None:
+        self._player = player
+        self._prev = 1.0
+        self._active = False
+
+    def press(self, speed: float) -> None:
+        """按下：记录原倍速、立即切换，并常显倍速提示。
+
+        Args:
+            speed: 本次按下的目标倍速。
+        """
+        if self._active:
+            return
+        self._prev = self._player.current_speed
+        self._active = True
+        self._player.set_speed(float(speed))
+        # 长按期间当前倍速必须一直显示：改为常显 OSD，松手再收尾
+        self._player.show_speed_osd_sticky(float(speed))
+
+    def release(self, long_pressed: bool) -> None:
+        """松开：先结束常显，再按短按 / 长按分别收尾。
+
+        Args:
+            long_pressed: 本次按下是否已达到长按阈值。
+        """
+        if not self._active:
+            return
+        self._active = False
+        # 结束常显；后续的普通 OSD 由 set_speed / show_speed_osd 重新计时
+        self._player.hide_speed_osd()
+        if long_pressed:
+            self._player.set_speed(self._prev)
+        else:
+            # 短按：保持当前倍速，给一次普通 2 秒 OSD
+            self._player.show_speed_osd(self._player.current_speed)
+
+    def cancel(self) -> None:
+        """静默丢弃在途长按（预览销毁时用；不改倍速、不出 OSD）。
+
+        置 ``_active`` 为假后，迟到的 ``release`` 变为空操作，避免已销毁
+        的播放器被回写倍速。
+        """
+        self._active = False
+
+
 class VideoPlayerLayout(QWidget):
     """
     视频播放器布局
@@ -661,6 +727,15 @@ class VideoPlayerLayout(QWidget):
 
     def cleanup(self) -> None:
         """清理资源，断开所有信号（可重复调用，不阻塞 UI 线程）。"""
+        # 注销本预览器登记的快捷键处理器（避免陈旧 handler 残留）
+        self._unregister_shortcuts()
+        # 长按期间销毁预览：静默丢弃在途长按并收掉常显倍速提示，
+        # 否则常显定时器会一直重申 OSD，松手又落在已销毁的播放器上。
+        try:
+            self._temp_speed.cancel()
+        except AttributeError:
+            pass
+        self.hide_speed_osd()
         if getattr(self, "_cleaned_up", False):
             return
         self._cleaned_up = True
@@ -1000,6 +1075,8 @@ class VideoPlayerLayout(QWidget):
         self._duration = 0.0
         self._current_position = 0.0
         self._current_speed = 1.0
+        # 长按临时倍速状态机（布局级单实例，press / release 共享 _prev）
+        self._temp_speed = _TempSpeed(self)
         # 进度显示初始化的重试计数（每次文件加载重置，见 _on_file_loaded）
         self._progress_init_attempts = 0
 
@@ -1034,6 +1111,9 @@ class VideoPlayerLayout(QWidget):
         # 布局切换挂起/恢复状态（main_window.set_layout_mode 配对调用）
         self._layout_switch_suspend_state: Optional[Dict[str, Any]] = None
         self._layout_switch_resume_pending: Optional[Dict[str, Any]] = None
+
+        # 注册快捷键处理器（区域 preview.media，全屏同样生效）
+        self._register_shortcuts()
 
     def _embed_mpv_window(self) -> None:
         """将 MPV 窗口嵌入到 _video_surface"""
@@ -1109,45 +1189,101 @@ class VideoPlayerLayout(QWidget):
             self.setFocus()
         return super().eventFilter(watched, event)
 
-    # ── 键盘快捷操作（移植自旧版 VideoPlayer / DetachedVideoWindow） ──
+    # ── 键盘快捷操作（注册表驱动，见 sopeek.core.shortcuts） ──────────
 
-    def keyPressEvent(self, event) -> None:
-        """键盘快捷操作：空格播放/暂停、方向键 seek/音量、数字键倍速。
+    def _register_shortcuts(self) -> None:
+        """登记媒体预览区域的快捷键处理器。
 
-        Esc 键不在此处理——全屏模式下由 PreviewFullscreenHost 捕获并发出
-        escapePressed 退出全屏，与旧版 DetachedVideoWindow 捕获 Esc 后
-        reattach 的行为保持一致。
+        键位定义在 ``registry.py``（``preview.media.*``），此处只绑定
+        具体方法。倍速键走「按下立即生效 + 长按释放回滚」的三态语义，
+        由 ``SpeedShortcut`` 封装。
         """
-        key = event.key()
-        if key == Qt.Key_Space:
-            self.toggle_play_pause()
-            event.accept()
-        elif key == Qt.Key_Left:
-            self.seek_backward()
-            event.accept()
-        elif key == Qt.Key_Right:
-            self.seek_forward()
-            event.accept()
-        elif key == Qt.Key_Up:
-            self.volume_up()
-            event.accept()
-        elif key == Qt.Key_Down:
-            self.volume_down()
-            event.accept()
-        elif key == Qt.Key_1:
-            self.set_speed(1.0)
-            event.accept()
-        elif key == Qt.Key_2:
-            self.set_speed(2.0)
-            event.accept()
-        elif key == Qt.Key_3:
-            self.set_speed(3.0)
-            event.accept()
-        elif key == Qt.Key_QuoteLeft:  # ` 键
-            self.set_speed(0.5)
-            event.accept()
-        else:
-            super().keyPressEvent(event)
+        try:
+            from sopeek.core.shortcuts import defer_call, shortcut_dispatcher
+
+            dispatcher = shortcut_dispatcher()
+            dispatcher.handlers.register_many(
+                {
+                    "preview.media.play_pause": self.toggle_play_pause,
+                    "preview.media.seek_back": lambda: self.seek_backward(5.0),
+                    "preview.media.seek_forward": lambda: self.seek_forward(5.0),
+                    "preview.media.volume_up": lambda: self.volume_up(5),
+                    "preview.media.volume_down": lambda: self.volume_down(5),
+                    "preview.media.toggle_mute": self._toggle_mute,
+                    "preview.media.fullscreen": lambda: defer_call(self._on_maxsize_toggle),
+                },
+                owner=self,
+            )
+            # 倍速：布局级单实例状态机，press / release 天然共享 _prev。
+            for action_id, speed in (
+                ("preview.media.speed_1", 1.0),
+                ("preview.media.speed_2", 2.0),
+                ("preview.media.speed_3", 3.0),
+                ("preview.media.speed_half", 0.5),
+            ):
+                dispatcher.handlers.register(
+                    f"{action_id}.press",
+                    lambda s=speed: self.begin_temp_speed(s),
+                    owner=self,
+                )
+                dispatcher.handlers.register(
+                    f"{action_id}.release", self.end_temp_speed, owner=self
+                )
+        except Exception as exc:  # noqa: BLE001 - 快捷键登记失败不阻塞预览
+            from sopeek.utils.app_logger import warning
+
+            warning(f"媒体预览器快捷键登记失败: {exc}")
+
+    def _unregister_shortcuts(self) -> None:
+        """注销本预览器登记的快捷键处理器（幂等）。"""
+        try:
+            from sopeek.core.shortcuts import shortcut_dispatcher
+
+            shortcut_dispatcher().handlers.unregister_owner(self)
+        except Exception:  # noqa: BLE001 - 清理阶段忽略
+            pass
+
+    @property
+    def current_speed(self) -> float:
+        """当前播放倍速（长按倍速回滚用）。"""
+        return float(getattr(self, "_current_speed", 1.0) or 1.0)
+
+    def begin_temp_speed(self, speed: float) -> None:
+        """倍速键按下：立即切速并常显倍速提示（长按期间不自动隐藏）。
+
+        预览器自身与主窗口（选择器 / 储存池区域）两条委托路径都走这里，
+        保证音频与视频、各焦点区域的倍速提示行为完全一致。
+
+        Args:
+            speed: 目标倍速。
+        """
+        self._temp_speed.press(speed)
+
+    def end_temp_speed(self, long_pressed: bool) -> None:
+        """倍速键松开：结束常显提示，长按回滚 / 短按保持。
+
+        Args:
+            long_pressed: 本次按下是否已达到长按阈值。
+        """
+        self._temp_speed.release(bool(long_pressed))
+
+    def _toggle_mute(self) -> bool:
+        """``M``：切换静音并显示 OSD。
+
+        Returns:
+            bool: 操作成功返回 True。
+        """
+        if not self._mpv_manager or not self._mpv_manager.is_initialized():
+            return False
+        muted = not self._mpv_manager.is_muted()
+        ok = self._mpv_manager.set_muted(muted, component_id=self._component_id)
+        if ok:
+            self._player_bar.show_osd("静音" if muted else "取消静音")
+        return ok
+
+    def _on_maxsize_toggle(self) -> None:
+        """``Ctrl+\\``：进入 / 退出播放器全屏（对称切换）。"""
+        self._on_fullscreen_toggled(not self._fullscreen)
 
     def mousePressEvent(self, event) -> None:
         """点击预览区域（占位覆盖层等）时获取键盘焦点。"""
@@ -1263,6 +1399,53 @@ class VideoPlayerLayout(QWidget):
             self._player_bar.set_speed(f"{speed:.1f}x")
             self._player_bar.show_osd(f"{speed:.1f}x")
         return success
+
+    def show_speed_osd_sticky(self, speed: float) -> None:
+        """常显当前倍速（长按临时倍速期间）。
+
+        视频路径上还有位置 / 状态等其它 OSD 写入，会覆盖或重启隐藏定时器，
+        因此这里额外启动一个保持定时器周期性重申，保证长按期间始终可见。
+        """
+        self._sticky_speed = float(speed)
+        try:
+            self._player_bar.show_osd_sticky(f"{speed:.1f}x")
+        except (AttributeError, RuntimeError):
+            return
+        timer = getattr(self, "_sticky_speed_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setInterval(400)
+            timer.timeout.connect(self._reassert_sticky_speed_osd)
+            self._sticky_speed_timer = timer
+        timer.start()
+
+    def _reassert_sticky_speed_osd(self) -> None:
+        """周期性重申常显倍速 OSD（覆盖其它 OSD 写入）。"""
+        speed = getattr(self, "_sticky_speed", None)
+        if speed is None:
+            return
+        try:
+            self._player_bar.show_osd_sticky(f"{speed:.1f}x")
+        except (AttributeError, RuntimeError):
+            pass
+
+    def hide_speed_osd(self) -> None:
+        """结束常显倍速 OSD。"""
+        self._sticky_speed = None
+        timer = getattr(self, "_sticky_speed_timer", None)
+        if timer is not None:
+            timer.stop()
+        try:
+            self._player_bar.hide_osd()
+        except (AttributeError, RuntimeError):
+            pass
+
+    def show_speed_osd(self, speed: float) -> None:
+        """普通 2 秒倍速提示（短按松手后）。"""
+        try:
+            self._player_bar.show_osd(f"{speed:.1f}x")
+        except (AttributeError, RuntimeError):
+            pass
 
     def _connect_player_signals(self) -> None:
         """StyledPlayerBar → VideoPlayerLayout → MPVManager"""
@@ -1632,6 +1815,10 @@ class VideoPlayerLayout(QWidget):
             # 宿主窗口里只剩一块纯色底（实测 ready=False / tex=None）。
             self._fullscreen_rhi_prewarm = prewarm_top_level_rhi(self._fullscreen_host)
             self._fullscreen_host.show_fullscreen()
+            # 快捷键区域切到 fullscreen（宿主是独立顶层窗口，focusChanged 解析不到）
+            from sopeek.core.shortcuts import enter_fullscreen_region
+
+            enter_fullscreen_region()
             # 全屏切换会让 MPV 重新配置输出（可能瞬时 buffering），叠加层会把
             # stack 切到加载遮罩页；音频页不可见时流体 QRhiWidget 不会初始化，
             # 回到内嵌布局后就会残留一块与四周割裂的区域。这里主动恢复当前媒体页。
@@ -1665,6 +1852,10 @@ class VideoPlayerLayout(QWidget):
         self._suppress_hide_stop = True
         try:
             self._fullscreen_host.exit_fullscreen()
+            # 快捷键区域退回主窗口
+            from sopeek.core.shortcuts import exit_fullscreen_region
+
+            exit_fullscreen_region()
         finally:
             self._suppress_hide_stop = False
         self._fullscreen_host.deleteLater()
