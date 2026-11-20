@@ -4,8 +4,8 @@ name: Nightly Release
 # 也可以手动触发，选择 stable 通道发布正式版。
 #
 # 发布说明里的「更新日志」= 上一次打包的提交 到 本次打包的提交 之间的全部 commit，
-# 每条带 短哈希 + 提交时间 + 标题。上次打包的基准取 Nightly 标签（stable 取上一个
-# 正式标签）；**首次运行没有基准时只列最近 FIRST_RUN_COMMITS 条提交**（默认 10）——
+# 每条带 短哈希 + 提交时间 + 标题。上次打包的基准取最新的 nightly-<YYYYMMDD> 标签
+# （stable 取上一个正式标签）；**首次运行没有基准时只列最近 FIRST_RUN_COMMITS 条提交**（默认 10）——
 # 首版与上次发布之间往往积累了大量提交，全部列出会把说明刷爆。
 #
 # 前提（重要）：schedule 只会在**仓库默认分支**上生效。请把仓库默认分支设为
@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       channel:
-        description: '发布通道：nightly = 夜间版（预发布，覆盖旧的 nightly）；stable = 正式版'
+        description: '发布通道：nightly = 夜间版（预发布，tag 为 nightly-<YYYYMMDD>，删除旧的 nightly* 发布）；stable = 正式版'
         required: true
         default: nightly
         type: choice
@@ -31,7 +31,7 @@ on:
 permissions:
   contents: write
 
-# 发布型任务不要并发：避免两次运行同时删/建同一个 nightly release。
+# 发布型任务不要并发：避免两次运行同时删/建 nightly release。
 concurrency:
   group: nightly-release
   cancel-in-progress: false
@@ -40,7 +40,9 @@ env:
   PYTHON_VERSION: '3.9'
   PYINSTALLER_VERSION: '6.22.3'
   BUILD_BRANCH: main-v2
-  NIGHTLY_TAG: nightly
+  # 夜间版标签前缀：实际 tag 为 nightly-<YYYYMMDD>（如 nightly-20261120），
+  # 兼容清理历史遗留的裸 nightly tag/release。
+  NIGHTLY_TAG_PREFIX: nightly
   # 单次发布说明里最多列出的提交数，防止异常长区间把说明刷爆。
   MAX_COMMITS: '300'
   # 首次发布（没有上一次构建基线）时只列最近多少个提交。
@@ -186,6 +188,7 @@ jobs:
           CHANNEL: ${{ steps.ver.outputs.channel }}
           VERSION: ${{ steps.ver.outputs.version }}
           BUILD_DATE: ${{ steps.ver.outputs.build_date }}
+          BUILD_DATE_COMPACT: ${{ steps.ver.outputs.build_date_compact }}
         run: |
           $ErrorActionPreference = 'Stop'
           $channel = $env:CHANNEL
@@ -200,14 +203,25 @@ jobs:
           $prev = $null
           $baseline = ''
           if ($channel -eq 'nightly') {
-            $tag = $env:NIGHTLY_TAG
-            $resolved = git rev-parse --verify --quiet "refs/tags/$tag^{commit}" 2>$null
-            if ($LASTEXITCODE -eq 0 -and $resolved) {
-              $prev = $resolved.Trim()
-              $baseline = "上次 Nightly 构建（tag ``$tag``）"
+            # 基准 = 除本次 tag 外最新的 nightly-<YYYYMMDD> tag；
+            # 没有 nightly-* 时回退到历史遗留的裸 nightly tag。
+            $currentTag = "$($env:NIGHTLY_TAG_PREFIX)-$($env:BUILD_DATE_COMPACT)"
+            $prevTag = @(git tag --list "$($env:NIGHTLY_TAG_PREFIX)-*" --sort=-refname 2>$null) |
+              Where-Object { $_ -and $_.Trim() -and $_.Trim() -ne $currentTag } |
+              Select-Object -First 1
+            if (-not $prevTag) {
+              $legacy = @(git tag --list "$($env:NIGHTLY_TAG_PREFIX)" 2>$null) | Select-Object -First 1
+              if ($legacy) { $prevTag = $legacy.Trim() }
+            }
+            if ($prevTag) {
+              $resolved = git rev-parse --verify --quiet "$($prevTag.Trim())^{commit}" 2>$null
+              if ($LASTEXITCODE -eq 0 -and $resolved) {
+                $prev = $resolved.Trim()
+                $baseline = "上次 Nightly 构建（tag ``$($prevTag.Trim())``）"
+              }
             }
           } else {
-            $described = git describe --tags --abbrev=0 --exclude="$($env:NIGHTLY_TAG)" 'HEAD^' 2>$null
+            $described = git describe --tags --abbrev=0 --exclude="$($env:NIGHTLY_TAG_PREFIX)*" 'HEAD^' 2>$null
             if ($LASTEXITCODE -eq 0 -and $described) {
               $prev = (git rev-parse --verify --quiet "$($described.Trim())^{commit}").Trim()
               $baseline = "上一个正式版本（tag ``$($described.Trim())``）"
@@ -349,19 +363,22 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_DATE_COMPACT: ${{ steps.ver.outputs.build_date_compact }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $tag = $env:NIGHTLY_TAG
+          # 本次 tag 形如 nightly-20261120（按构建日期命名）。
+          $tag = "$($env:NIGHTLY_TAG_PREFIX)-$($env:BUILD_DATE_COMPACT)"
 
-          # 只保留一份最新 Nightly：先删掉上一次的 release 与 tag（不存在则忽略）。
-          $existing = gh release view $tag --json tagName --jq '.tagName' 2>$null
-          if ($LASTEXITCODE -eq 0 -and $existing) {
-            Write-Host "Deleting previous nightly release '$tag'..."
-            gh release delete $tag --yes --cleanup-tag
-            if ($LASTEXITCODE -ne 0) { throw 'Failed to delete the previous nightly release.' }
-          } else {
-            Write-Host 'No previous nightly release to delete.'
+          # 只保留一份最新 Nightly：删掉所有历史 nightly* release 与 tag
+          # （含旧的裸 nightly tag，以及同一天重复触发时的同名 release）。
+          $old = @(gh release list --limit 200 --json tagName --jq '.[].tagName' 2>$null) |
+            Where-Object { $_ -and $_ -match "^$($env:NIGHTLY_TAG_PREFIX)(-\d{8})?$" }
+          foreach ($name in $old) {
+            Write-Host "Deleting previous nightly release '$name'..."
+            gh release delete $name --yes --cleanup-tag
+            if ($LASTEXITCODE -ne 0) { throw "Failed to delete the previous nightly release '$name'." }
           }
+          if (-not $old) { Write-Host 'No previous nightly release to delete.' }
 
           gh release create $tag `
             '${{ steps.pack.outputs.installer_path }}' `
@@ -371,7 +388,7 @@ jobs:
             --notes-file 'build/release-notes.md' `
             --target '${{ github.sha }}'
           if ($LASTEXITCODE -ne 0) { throw 'Failed to create the nightly release.' }
-          Write-Host "Nightly release updated: $tag (commits: ${{ steps.notes.outputs.commit_count }})"
+          Write-Host "Nightly release published: $tag (commits: ${{ steps.notes.outputs.commit_count }})"
 
       - name: Publish stable release
         if: steps.ver.outputs.channel == 'stable'

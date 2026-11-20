@@ -10,7 +10,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, ErrorCode};
-use crate::version::{parse_version, VersionKey};
+use crate::version::{parse_version, Stage, VersionKey};
 
 /// Maximum number of characters kept from a release body.
 pub const MAX_NOTES_CHARS: usize = 20_000;
@@ -214,9 +214,21 @@ pub fn select_installer_asset(assets: &[Asset]) -> Option<&Asset> {
         .map(|(_, _, asset)| asset)
 }
 
+/// Effective prerelease verdict for channel filtering.
+///
+/// The API flag alone is not enough: GitCode's release mirror drops
+/// `prerelease` (it models the state as `release_status`), so a nightly
+/// published as prerelease on GitHub arrives with `prerelease: false`.
+/// A derived version in the nightly shape (`X.Y.Z.nightly-YYYYMMDD`) is
+/// therefore treated as a prerelease regardless of the flag.
+fn is_prerelease_release(release: &Release, version: &VersionKey) -> bool {
+    release.prerelease.unwrap_or(false) || matches!(version.stage, Stage::Nightly(_))
+}
+
 /// Selects the release to advertise to the UI (plan C2).
 ///
-/// Drafts are always filtered; prereleases are filtered unless
+/// Drafts are always filtered; prereleases (API flag or nightly version
+/// shape, see [`is_prerelease_release`]) are filtered unless
 /// `include_prerelease` is set. Releases whose version cannot be derived from
 /// either the tag or the installer asset name are skipped. Among releases that
 /// contain a usable installer `.exe`, the highest version wins (same version ->
@@ -226,20 +238,18 @@ pub fn select_release(
     releases: &[Release],
     include_prerelease: bool,
 ) -> Result<SelectedRelease, AppError> {
-    let eligible: Vec<&Release> = releases
+    let published: Vec<&Release> = releases
         .iter()
-        .filter(|release| {
-            !release.draft.unwrap_or(false)
-                && (include_prerelease || !release.prerelease.unwrap_or(false))
-        })
+        .filter(|release| !release.draft.unwrap_or(false))
         .collect();
-    if eligible.is_empty() {
+    if published.is_empty() {
         return Err(no_release());
     }
 
-    let parsed: Vec<(&Release, VersionKey)> = eligible
+    let parsed: Vec<(&Release, VersionKey)> = published
         .iter()
         .filter_map(|release| release_version(release).map(|version| (*release, version)))
+        .filter(|(release, version)| include_prerelease || !is_prerelease_release(release, version))
         .collect();
     if parsed.is_empty() {
         return Err(no_release());
@@ -276,6 +286,7 @@ pub fn select_release(
     };
 
     let (notes, notes_truncated) = normalize_notes(chosen_release.body.as_deref());
+    let prerelease = is_prerelease_release(chosen_release, chosen_version);
     let remote = RemoteRelease {
         version: chosen_version.display(),
         tag: chosen_release.tag_name.clone().unwrap_or_default(),
@@ -284,7 +295,7 @@ pub fn select_release(
             chosen_release.published_at.as_deref(),
         ),
         published_at: chosen_release.published_at.clone(),
-        prerelease: chosen_release.prerelease.unwrap_or(false),
+        prerelease,
         html_url: sanitize_html_url(chosen_release.html_url.as_deref()),
         notes,
         notes_truncated,
@@ -877,6 +888,48 @@ mod tests {
             stable.asset.name,
             "FreeAssetFilter-1.0.0-alpha.5_win10_win11_x64_Setup.exe"
         );
+    }
+
+    #[test]
+    fn release_nightly_shape_counts_as_prerelease_without_the_api_flag() {
+        // GitCode mirrors lose the prerelease flag (release_status instead);
+        // the nightly version shape must still gate the stable channel.
+        let json = r#"[
+            {"tag_name":"nightly-20261116","name":"Nightly 2026-11-16","draft":false,"prerelease":false,
+             "published_at":"2026-11-15T14:24:56Z",
+             "body":"| 构建日期 | `2026-11-16` |\n",
+             "assets":[
+               {"name":"Sopeek-2.0.0.nightly-20261116-windows-x64.exe","size":156262121,
+                "digest":"sha256:a032d8fd9ab880d44b2d216220c278f15997ed4a4e45c6eb90615c4401527b33",
+                "browser_download_url":"https://gitcode.com/Dorufoc/FreeAssetFilter/releases/download/nightly-20261116/Sopeek-2.0.0.nightly-20261116-windows-x64.exe"}]},
+            {"tag_name":"v2.0.0","name":"Sopeek v2.0.0","draft":false,"prerelease":false,
+             "published_at":"2026-11-13T02:00:00Z",
+             "assets":[
+               {"name":"Sopeek-2.0.0-windows-x64.exe","size":156000000,
+                "digest":"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "browser_download_url":"https://gitcode.com/Dorufoc/FreeAssetFilter/releases/download/v2.0.0/Sopeek-2.0.0-windows-x64.exe"}]}
+        ]"#;
+        let releases = parse_releases(json).expect("parse inline releases");
+
+        // Stable channel: the unflagged nightly must not outrank the release.
+        let stable = select_release(&releases, false).expect("release selectable");
+        assert_eq!(stable.remote.version, "2.0.0");
+        assert_eq!(stable.remote.tag, "v2.0.0");
+        assert!(!stable.remote.prerelease);
+
+        // Prerelease channel: the nightly wins and is reported as prerelease.
+        let nightly = select_release(&releases, true).expect("nightly selectable");
+        assert_eq!(nightly.remote.version, "2.0.0.nightly-20261116");
+        assert_eq!(nightly.remote.tag, "nightly-20261116");
+        assert!(
+            nightly.remote.prerelease,
+            "the nightly shape must override the lost mirror flag"
+        );
+
+        // Only the unflagged nightly exists: the stable channel finds nothing.
+        let only_nightly = &releases[..1];
+        let error = select_release(only_nightly, false).expect_err("stable must skip the nightly");
+        assert_eq!(error.code, ErrorCode::NoRelease);
     }
 
     #[test]
