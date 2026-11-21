@@ -1,54 +1,39 @@
-# Sopeek 安装器（D2D1 + DirectComposition / WinUI3 风格）
+# Sopeek 安装器（D2D1 + DirectComposition / Install Design 复刻）
 
 该目录是 Sopeek 安装器（C++ GUI + NSIS 封装）的工程目录。GUI 是一个自研 C++ Win32 程序：
-无边框窗口 + DirectComposition 合成 + Win11 Mica 背景，固定 900×600 DIP（逻辑像素）画布。
+无边框窗口 + DirectComposition 合成，固定 **640×540 DIP**（逻辑像素）画布。
 
-## 架构
+配置页保留同意勾选。两份协议通过各自的链接进入独立阅读页（`License=1`），「返回」按钮与配置页主按钮位置一致。正文区域在 Mica 上使用单层半透明底色、等宽左右内边距和浮动滚动条。滚轮、高精度触控板滚动、Windows 触摸平移及键盘都可滚动正文。
 
-| 层 | 技术 |
-| --- | --- |
-| 渲染底座 | D3D11 设备（硬件失败回退 WARP）+ D2D1 设备上下文（`ID2D1Factory1`）+ DirectWrite 文本 |
-| 合成 | DirectComposition（`IDCompositionDesktopDevice`）；窗口 `WS_EX_NOREDIRECTIONBITMAP`，视觉树 `Present` → `Commit` 提交帧 |
-| 窗口配方 | 无边框：`WM_NCCALCSIZE`(wParam=TRUE) 返回 0 自绘非客户区 + DWM 圆角（`DWMWA_WINDOW_CORNER_PREFERENCE`）+ 固定尺寸（`WM_GETMINMAXINFO` 钳制、无最大化） |
-| 背景 | **Win11**：`DWMWA_SYSTEMBACKDROP_TYPE` Mica（OS build ≥ 22621；仅左栏/内容卡/底部条按 alpha 绘制，其余透明让 Mica 透出）。**Win10 降级**：不透明 Mica 风格渐变底 + 透明外扩边距内的 DComp 自绘阴影（不使用 `SetWindowRgn`）。 |
-| 深浅色 | 跟随系统：读取 `AppsUseLightTheme` + `WM_SETTINGCHANGE`（ImmersiveColorSet）实时切换 |
-| DPI | Per-Monitor-V2（`main.cpp` WinMain 最早期调用；动态 `GetProcAddress` 回退 `shcore` / `user32`）；绘制全程 DIP（96 基准），仅缓冲/窗口尺寸用物理像素 |
-| 动画 | 自研 `spk::Animator`（缓动曲线 + 逐 tick 采样日志）；遵循 `SPI_GETCLIENTAREAANIMATION`（减少动画时禁用过渡） |
-| 自包含 | 静态链接 libgcc/libstdc++（`-static-libgcc -static-libstdc++ -static`），仅附带 `libwinpthread-1.dll` |
+### 安装流程（4 页）
 
-## 页面模型（安装 5 页 + 维护/卸载页）
+1. **英雄页 / 欢迎（0）** —— 优先绘制 `install_design/bg.png`（`IDR_HERO_BG`=106），按设计稿词标区域等比定位；位图不可用时回退至矢量图形。
+   页面保留「全能 · 高效 · 开源」（24 DIP）、「文件管理器」（32 DIP 粗体）和黑色「下一步」按钮。
+2. **安装配置（2）** —— 设计稿 `安装配置.svg`：标题「安装配置」、路径框（564x36，右侧内嵌「浏览」，
+   点击框内任意位置即打开 IFileOpenDialog，失败回退 `SHBrowseForFolderW`）、「可用空间 / 预计所需」、
+   三个复选项（开机自启动=关、添加到右键菜单=开、在桌面创建快捷方式=开）、同意勾选（含两个协议链接）、
+   黑色胶囊「下一步 >」+「返回」文字链。**未勾选同意、目标不可写或可用空间不足时「下一步」禁用**（40% 不透明度）。
+3. **正在安装（3）** —— 窗口中部保留留白，底部显示 564×12 DIP 进度轨道、阶段文案与整数百分比，补充说明与阶段文案左对齐。
+   **取消由标题栏 ✕ / ESC 触发**（走既有 `RaiseCancelIntent` → 引擎安全停止 + 清理本次写入）。
+   真实字节进度（permille `0..1000`，每文件完成回调并按 ~30fps 节流）；进入进度页时 NSIS 可能仍在把
+   内嵌 payload 解包到临时目录，此阶段按实际已解包字节推进至 80%，收到解包完成确认后，由文件复制及安装收尾接管 80%–100%。
+   复制结束后进度停在 99.9%（界面按整数显示 99%）等待 NSIS 收尾，确认成功后显示 100% 并进入完成页。
+   解包长时间没有字节增长时会显示可见提示，`payload.error` 出现时立即中止并展示可操作错误。
+4. **安装完成（4）** —— 设计稿 `安装完成.svg`：同一组品牌图形 +「安装完成」(32px bold) +
+   黑色胶囊「立即体验」（去提权启动，见下文 UAC 章节）+「退出」文字链。
+   所有完成页共用 `bg.png`，卸载完成页主按钮为「再见」。
 
-页面枚举唯一来源是 `src/render/app_state.h`，顺序冻结：`Welcome=0`、`License`、`Configure`、`Progress`、
-`Finish`、`Maintenance=5`、`UninstallConfirm=6`、`Message=7`。维护/卸载页只允许追加到末尾，禁止重排 0..4。
-
-### 安装流程（5 页）
-
-1. **欢迎（0）** —— Logo、版本号（运行期取自 `SPKVERSION` 资源）、入场动画。
-2. **许可协议（1）** —— `LICENSE` RCDATA 内嵌滚动框；未勾选同意时「下一步」禁用。
-3. **配置（2）** —— 安装位置与安装选项合并在同一页：路径预填（NSIS 经 `/installdir "$INSTDIR"` 传入）、
-   浏览（IFileOpenDialog，失败回退 `SHBrowseForFolderW`）、所需/可用空间与可写探测；
-   桌面快捷方式=开、开始菜单=开、开机自启=关、安装完成后启动=开（默认值冻结）。
-4. **安装进度（3）** —— 真实字节进度（permille `0..1000`，每文件完成回调并按 ~30fps 节流）；
-   取消 = 安全停止 + 清理本次已写入文件。进入进度页时 NSIS 可能仍在把内嵌 payload
-   解包到临时目录；此阶段按实际已解包字节推进 `0..500` permille，解包完成后由真实
-   复制进度接管到 1000。解包长时间没有字节增长时会显示可见提示，`payload.error`
-   出现时立即中止并展示可操作错误。
-5. **完成（4）** —— 英雄页：成功图标 + 软件名称/版本 + 大按钮「立即启动」（去提权，见下文 UAC 章节）；
-   页面内没有「打开安装目录」按钮。
-
-> 配置页的「安装完成后启动」目前只写入配置状态，安装完成页不读取该选项；完成页始终显示
-> 「立即启动」按钮，点击即启动。
+> 设计稿没有「开始菜单快捷方式」「安装完成后启动」勾选项：前者恒为创建（`startmenu=1` 写入结果 INI），
+> 后者由完成页「立即体验」承担。
 
 ### 维护 / 卸载流程（5..7）
 
-- **维护页（5）** —— 显示检测到的安装目录、版本与状态；提供「修复」「卸载」「取消」。
-  未检测到安装（`Sopeek.exe` 与 `_internal` 均不存在）时不进入维护页，改为显示可见错误页且不能修复。
-- **卸载确认页（6）** —— 展示删除范围；「同时删除用户数据（设置、缓存、日志）」复选框默认关闭；
-  提供「卸载」「取消」。`/uninstall` 模式的入口页就是本页。
+- **维护英雄页（5）** —— 根据版本提供「更新 / 修复」或「修复 / 卸载」。
+- **卸载英雄页（6）与卸载选项（8）** —— 先显示 `bg.png` 英雄页，再进入安装配置样式的选项页，仅显示一个默认关闭的用户数据删除复选框。
 - **通用消息页（7）** —— 关闭运行中的应用、修复失败/取消、卸载失败等可见错误与忙态；
   窗口保持打开，不会静默成功或自动关闭。
 
-`tools/capture_installer.ps1` 的页面范围与上述一致：`install` 0..4、`maintenance` 5/6、`uninstall` 6。
+`tools/capture_installer.ps1` 支持 `install` 0–4、`maintenance` 5/6/8、`uninstall` 6/8。协议页为 1，测试环境变量 `SPK_TEST_OPEN_SHEET=eula` 可选择用户协议。
 
 ## 生命周期与模式
 
@@ -64,9 +49,9 @@
 已安装判定只有两个信号：`$INSTDIR\Sopeek.exe` 或 `$INSTDIR\_internal`。结果 INI、快捷方式、
 Add/Remove 条目都不能强制进入维护模式。
 
-检测到安装后，setup 先调用 GUI 的 `/version-decision` 比较 `_internal\SPKVERSION` 与本安装包版本：
-已安装版本更旧 → 按全新安装流程原地升级；相同或更新 → 进入维护页。版本判定失败（退出码非 `10`）
-也回退到维护流程。
+已检测到安装时直接进入维护英雄页，由 GUI 比较安装包与已装版本。新版提供「更新」「修复」，
+同版提供「修复」「卸载」，旧版提供「卸载」。更新与修复先显示锁定的历史安装配置，
+用户再次同意协议后才启动操作。新版安装包需要同版本安装包才能修复已装版本。
 
 ## 单实例互斥体（三个独立所有权）
 
@@ -190,7 +175,11 @@ done=0               ; 0 | 1（终端键）
 - **路径**：NSIS 经 `/result "<绝对路径>"` 传入（生产为 `$PLUGINSDIR\install-result.ini`）；GUI 默认回退 `payload\..\install-result.ini`。
 - **编码**：`WritePrivateProfileStringW`（UTF-16LE）。写入前**先以 UTF-16LE + BOM 预创建**文件；BOM 预创建只允许发生在结果写入例程内（安装/取消结束时），严禁在启动或开始安装时创建。
 - **写入顺序**：先写 `[spk]` 占位节（`schema=1`，保证 `[install]` 永不为文件首节），随后写 `[install]`：
-  - `dir`（安装目录，UTF-16）、`abort`（`0|1`，**恒写且最后写**）、`error`（成功为空串）、`desktop` / `startmenu` / `autostart`（`0|1`）。
+  - `dir`（安装目录，UTF-16）、`abort`（`0|1`，**恒写且最后写**）、`error`（成功为空串）、`desktop` / `startmenu` / `autostart` / `ctxmenu`（`0|1`）。
+    `ctxmenu` 为 2026-11 设计稿新增的「添加到右键菜单」，由 `Section Install` 落成
+    `HKLM\Software\Classes\Directory\shell\Sopeek` 与 `HKLM\Software\Classes\*\shell\Sopeek`
+    （默认值「用 Sopeek 打开」，`Icon` = `"$INSTDIR\Sopeek.exe",0`，`command` = `"$INSTDIR\Sopeek.exe" "%1"`）；
+    值为 0 时删除这两个键（幂等清理），并把 `OptCtxMenu` 写入 `HKCU\Software\Sopeek`。
   - **无 `launch` 键** —— 完成后启动由 GUI 独占实现，NSIS 不消费。
 - **NSIS 就绪判定** = `[install] abort` 终端键非空（**不是**文件存在）：GUI 先创建文件、后填内容，仅凭存在性会误判；`dir` 写回严格发生在就绪之后。
 
@@ -214,7 +203,10 @@ done=0               ; 0 | 1（终端键）
 
 - **快捷方式**：桌面与开始菜单（测试构建使用 `SopeekTest.lnk`）。
 - **注册表**：卸载键（生产 `HKLM\...\Uninstall\Sopeek` 64 位视图，并清理遗留 32 位视图）
-  与安装信息键（生产 `HKCU\Software\Sopeek`）。
+  与安装信息键（生产 `HKCU\Software\Sopeek`）。另含资源管理器右键菜单动词
+  `HKLM\Software\Classes\Directory\shell\Sopeek` 与 `HKLM\Software\Classes\*\shell\Sopeek`
+  （父键递归删除 `command` 子键；删除前先 `ReadRegStr` 预检存在性——`DeleteRegKey` 对不存在的键
+  会置错误标志，不预检会让从未勾选过右键菜单的正常卸载误报失败）。
 - **程序文件**：`_internal`（保留 `_internal\data`）、`Sopeek.exe`、旧版 `Uninstall.exe`、
   临时/退休的 UI 与 DLL 文件。
 - **用户数据（仅 `delete_user_data=1`）**：
@@ -245,6 +237,8 @@ done=0               ; 0 | 1（终端键）
 | 自定义 `SPK_DATA_DIR` | `%LOCALAPPDATA%\SopeekTestSpkData` |
 | 互斥体 | `Local\Sopeek*Mutex.Test` |
 | 快捷方式 | `SopeekTest.lnk`（桌面/开始菜单） |
+| 右键菜单动词 | `HKCU\Software\Classes\Directory\shell\SopeekTest` / `HKCU\Software\Classes\*\shell\SopeekTest` |
+| 选项 DWORD | `HKCU\Software\SopeekTest` 的 `OptDesktop` / `OptStartmenu` / `OptAutostart` / `OptCtxMenu` |
 
 测试构建**不写生产注册表、不写生产 Run 键、不创建生产快捷方式、不触碰生产安装目录**；测试 setup 为
 `RequestExecutionLevel user` 并完全跳过提权。生产构建的 GUI/Setup 分别为
@@ -277,8 +271,14 @@ done=0               ; 0 | 1（终端键）
     -Out .omo\evidence\installer\maintenance-page-5.png
 ```
 
-页面范围：`install` 0..4、`maintenance` 5/6、`uninstall` 6；`maintenance -Page 6` 会自动追加
-`/auto:action=uninstall`，仅用于导航到确认页。
+页面范围：`install` 0/2/3/4（页 1 = License 已废弃，`/auto:page=1` 会落到 2）、`maintenance` 5/6、
+`uninstall` 6；`maintenance -Page 6` 会自动追加 `/auto:action=uninstall`，仅用于导航到确认页。
+
+两个**仅测试构建**的 QA 环境变量（与 `/auto:*` 同性质，生产构建零残留）：
+
+| 变量 | 作用 |
+| --- | --- |
+| `SPK_TEST_OPEN_SHEET=agpl\|eula` | 配合 `/auto:page=1` 选择独立协议阅读页的内容 |
 
 ## 构建与产物
 
@@ -339,29 +339,42 @@ NSIS 不再显示默认安装页面，唯一可见的前端是 C++ GUI 窗口。
 ## 文件清单
 
 - `src/main.cpp` —— WinMain、进程 DPI 感知、命令行解析、模式选择、提权重启、单实例接入。
-- `src/installer_window.{h,cpp}` —— 无边框 DComp 窗口、Mica/降级路径、8 页状态机接线、模式分发、
-  修复/卸载编排、输入分发、安装线程接线。
+- `src/installer_window.{h,cpp}` —— 无边框 DComp 窗口、窗口卡片/标题栏绘制、8 页状态机接线、模式分发、
+  修复/卸载编排、输入分发、安装线程接线、协议弹窗宿主。
 - `src/maintenance_detector.{h,cpp}` —— 只读检测安装目录/版本/选项。
 - `src/single_instance.{h,cpp}` —— `MaintenanceMutex` 与既有窗口激活。
 - `src/process_control.{h,cpp}` —— 精确关闭运行中的应用、提权检测。
 - `src/uninstall_coordinator.{h,cpp}` / `src/uninstall_protocol.{h,cpp}` —— 卸载请求/结果/决策 INI 与 UI 侧编排。
 - `src/render/` —— 渲染与 UI 模块：
-  - `render_context.{h,cpp}`（D3D11 / D2D1 / DComp 底座）、`layout.{h,cpp}`（900×600 DIP shell 几何唯一来源）；
-  - `theme.{h,cpp}`（token 表）、`text.{h,cpp}` / `glyphs.{h,cpp}` / `logo.{h,cpp}`、`animation.{h,cpp}`；
-  - `controls_base.h` / `controls_basic.{h,cpp}`（Button / CheckBox / PathField）/ `controls_feedback.{h,cpp}`（ProgressBar / LicenseBox / StepItem）；
-  - `pages_welcome.{h,cpp}` / `pages_setup.{h,cpp}` / `pages_progress.{h,cpp}` / `pages_maintenance.{h,cpp}`
-    （安装 5 页 + 维护/卸载/消息页实现）、`app_state.h`（页面/选项/操作状态唯一来源）、
+  - `render_context.{h,cpp}`（D3D11 / D2D1 / DComp 底座）、`layout.{h,cpp}`（640×540 DIP shell 几何唯一来源 +
+    `PageOffsetDip`）；
+  - `theme.{h,cpp}`（唯一 token 表：设计稿浅色实测值 + 深色反推值）、`text.{h,cpp}` / `glyphs.{h,cpp}` /
+    `logo.{h,cpp}`、`animation.{h,cpp}`；
+  - `hero_art.{h,cpp}` + `hero_art_paths.inc` —— 设计稿品牌图形（四圆 + Sopeek 词标）的矢量重放：
+    `.inc` 由 `tools/gen_hero_art.py` 从 `install_design/英雄页.svg` 的 `组_48` 生成（174 条命令，
+    弧线已转三次贝塞尔，非零环绕），运行期只做 MoveTo/CubicTo/Close；
+  - `controls_base.h` / `controls_basic.{h,cpp}`（Button：黑色胶囊 / 文字链；CheckBox：29x29 设计稿样式；
+    PathField：浅灰输入框 + 内嵌「浏览」）/ `controls_feedback.{h,cpp}`（ProgressBar / LicenseBox / StepItem）；
+  - `pages_welcome.{h,cpp}`（英雄页 + `design::` 几何常量 + `BaselineRect`/`CenteredBaselineRect`）/
+    `pages_setup.{h,cpp}`（安装配置）/ `pages_progress.{h,cpp}`（正在安装 + 安装完成）/
+    `pages_maintenance.{h,cpp}`（维护/卸载/消息页）、`license_sheet.{h,cpp}`（协议全文模态弹窗）、
+    `app_state.h`（页面/选项/操作状态唯一来源）、
     `maintenance_protocol.h`（互斥体、注册表键、INI 名/键、阶段与超时唯一来源）、
     `messages.h`（冻结的 `WM_INSTALL_*`/permille 契约）；
   - `install_engine.{h,cpp}`（无窗口安装/修复引擎：payload 哨兵等待、字节进度、取消清理、修复跳过用户数据）、
     `launch_forward.{h,cpp}`（去提权启动转发）。
-- `resources/app.rc` —— 应用图标、Logo RCDATA、`LICENSE` / `SPKVERSION` RCDATA、完整 VERSIONINFO。
+- `resources/app.rc` —— 应用图标、Logo RCDATA、`LICENSE` / `SPKVERSION` / `IDR_USERAGREEMENT`(104) /
+  `IDR_HERO_BG`(106) RCDATA、完整 VERSIONINFO。
+  `IDR_HERO_BG` 直接引用 `src/sopeek/resources/icons/install_design/bg.png`（设计稿背景图，单一数据源）。
+- `resources/user-agreement.txt` —— 用户协议全文（UTF-8，内嵌为 `IDR_USERAGREEMENT`，可直接替换）。
 - `resources/version.h.in` —— VERSIONINFO 模板，构建时由 CMake 写入 `version_gen.h`。
 - `cmake/test_mode.cmake` —— `SPK_TESTMODE` 测试构建开关（默认 OFF）。
 - `installer.nsi` —— NSIS 封装、单实例互斥体、同用户提权、payload 临时释放、`payload.ready` 哨兵、
-  维护决策/安装结果等待、条件化快捷方式 / Run 键、安装卸载栈、分阶段卸载（双注册表视图、用户数据保留）。
+  维护决策/安装结果等待、条件化快捷方式 / Run 键 / 右键菜单动词、安装卸载栈、分阶段卸载
+  （双注册表视图、用户数据保留）。**该文件必须是带 BOM 的 UTF-8**（中文菜单文案 + makensis 的编码判定）。
 - `tools/` —— `build_test_gui.ps1` / `build_test_installer.ps1`（测试构建）、`qa_installer_lifecycle.ps1`
-  （生命周期 QA）、`capture_installer.ps1`（页面截图）、`make_stub_payload.ps1`（测试 payload）。
+  （生命周期 QA）、`capture_installer.ps1`（页面截图）、`make_stub_payload.ps1`（测试 payload）、
+  `gen_hero_art.py`（从设计稿 SVG 重新生成词标路径数据）。
 - `CMakeLists.txt` —— MinGW 构建；源文件经 `file(GLOB ...)` 自动收集（`src/*.cpp` + `src/render/*.cpp`，
   新增 `.cpp` 无需改本文件），`resources/app.rc` 显式列出。
 - `build.ps1` —— MSYS2 MinGW64 + CMake + NSIS 一键构建入口。

@@ -64,8 +64,9 @@ public:
     }
 
     void Clear() {
+        CancelPointer();
+        FocusWidget(nullptr);
         widgets_.clear();
-        focused_ = nullptr;
     }
 
     const std::vector<Widget*>& Widgets() const noexcept { return widgets_; }
@@ -76,14 +77,48 @@ public:
         if (event.kind == InputEvent::Key) {
             return focused_ ? focused_->OnInput(event) : false;
         }
-        for (std::size_t i = 0; i < widgets_.size(); ++i) {
-            Widget* widget = widgets_[i];
+        if (event.kind == InputEvent::Up) {
+            Widget* target = pressed_;
+            pressed_ = nullptr;  // 激活回调可能立即换页或打开系统对话框。
+            if (!target) return false;
+            target->OnInput(event);
+            return true;  // 区域外松开也需要刷新按下态。
+        }
+        Widget* hit = nullptr;
+        for (Widget* widget : widgets_) {
             if (widget->HitTest(event.x, event.y)) {
-                if (event.kind == InputEvent::Down && widget->IsFocusable()) FocusWidget(widget);
-                return widget->OnInput(event);
+                hit = widget;
+                break;
             }
         }
-        return false;
+        if (event.kind == InputEvent::Move) {
+            if (pressed_) {
+                pressed_->OnInput(event);
+                return true;
+            }
+            const bool changed = hovered_ != hit;
+            if (changed && hovered_) hovered_->OnInput(event);
+            hovered_ = hit;
+            return (hit && hit->OnInput(event)) || changed;
+        }
+        if (!hit) return false;
+        if (event.kind == InputEvent::Down) {
+            if (hit->IsFocusable()) FocusWidget(hit);
+            if (!hit->OnInput(event)) return false;
+            pressed_ = hit;
+            return true;
+        }
+        return hit->OnInput(event);
+    }
+
+    bool HasPointerPress() const noexcept { return pressed_ != nullptr; }
+
+    void CancelPointer() {
+        // 失去捕获时，以控件区域外的松手结束拖拽，不触发点击。
+        if (pressed_) pressed_->OnInput({InputEvent::Up, -1.0f, -1.0f});
+        if (hovered_) hovered_->OnInput({InputEvent::Move, -1.0f, -1.0f});
+        pressed_ = nullptr;
+        hovered_ = nullptr;
     }
 
     void FocusWidget(Widget* widget) {
@@ -127,6 +162,8 @@ public:
 private:
     std::vector<Widget*> widgets_;
     Widget* focused_ = nullptr;
+    Widget* hovered_ = nullptr;
+    Widget* pressed_ = nullptr;
 };
 
 }  // namespace spk

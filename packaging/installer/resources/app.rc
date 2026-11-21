@@ -45,7 +45,7 @@ END
 IDR_LOGO RCDATA "..\\..\\..\\src\\sopeek\\resources\\icons\\SPK-setup.png"
 
 // License full text + version string, consumed by the welcome/license pages
-// (src/render/pages_welcome.cpp, Todo 9). RCDATA points directly at the repo-root
+// (src/render/pages_welcome.cpp). RCDATA points directly at the repo-root
 // files - no copies. Append-only per §13; existing ids (IDI_APP=100, IDR_LOGO=101,
 // `1 VERSIONINFO`) are never renumbered. Values must match pages_welcome.h.
 #ifndef IDR_LICENSE
@@ -56,3 +56,17 @@ IDR_LOGO RCDATA "..\\..\\..\\src\\sopeek\\resources\\icons\\SPK-setup.png"
 #endif
 IDR_LICENSE RCDATA "..\\..\\..\\LICENSE"
 IDR_SPKVERSION RCDATA "..\\..\\..\\SPKVERSION"
+
+// 2026-11 设计稿改版新增（append-only）：
+//   IDR_USERAGREEMENT = 104：配置页「用户协议」链接弹窗的全文（本目录下的 UTF-8 文本）。
+//   IDR_HERO_BG       = 106：英雄页（欢迎/完成）的背景图形（透明底 PNG，柔化双圆 + 词标）。
+//                             直接引用设计稿目录里的 bg.png，保证只有一个数据源。
+#ifndef IDR_USERAGREEMENT
+#define IDR_USERAGREEMENT 104
+#endif
+#ifndef IDR_HERO_BG
+#define IDR_HERO_BG 106
+#endif
+IDR_USERAGREEMENT RCDATA "user-agreement.txt"
+IDR_HERO_BG RCDATA "..\\..\\..\\src\\sopeek\\resources\\icons\\install_design\\bg.png"
+

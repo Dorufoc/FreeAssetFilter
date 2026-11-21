@@ -181,6 +181,8 @@ bool WriteInstallResultIni(const std::wstring& resultPath, const std::wstring& d
     write(L"desktop", BoolText(options.desktop));
     write(L"startmenu", BoolText(options.startmenu));
     write(L"autostart", BoolText(options.autostart));
+    // 2026-11 设计稿：右键菜单选项（NSIS Section Install 消费；缺失时按 0 处理）。
+    write(L"ctxmenu", BoolText(options.ctxmenu));
     // error 恒写：成功为空串（GetPrivateProfileString 读回空串，语义一致）。
     write(L"error", error.c_str());
     // §1 终端键：abort 恒被写入，且必须是最后一个键（NSIS 仅当它非空才认为就绪）。

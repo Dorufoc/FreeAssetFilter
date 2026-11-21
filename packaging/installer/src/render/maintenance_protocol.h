@@ -50,6 +50,7 @@ inline constexpr wchar_t kValueInstallDir[] = L"InstallDir";
 inline constexpr wchar_t kValueInstallLocation[] = L"InstallLocation";
 inline constexpr wchar_t kValueOptDesktop[] = L"OptDesktop";
 inline constexpr wchar_t kValueOptStartmenu[] = L"OptStartmenu";
+inline constexpr wchar_t kValueOptContextMenu[] = L"OptCtxMenu";
 inline constexpr wchar_t kValueOptAutostart[] = L"OptAutostart";
 inline constexpr wchar_t kValueVersion[] = L"Version";
 
@@ -108,6 +109,7 @@ inline constexpr wchar_t kKeyWarning[] = L"warning";
 inline constexpr wchar_t kKeyDone[] = L"done";
 
 // maintenance action 值（D3）。
+inline constexpr wchar_t kActionUpdate[] = L"update";
 inline constexpr wchar_t kActionRepair[] = L"repair";
 inline constexpr wchar_t kActionUninstall[] = L"uninstall";
 inline constexpr wchar_t kActionCancel[] = L"cancel";

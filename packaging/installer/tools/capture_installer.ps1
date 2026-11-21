@@ -39,7 +39,7 @@
                 additionally passes /auto:action=uninstall to navigate
                 Maintenance -> UninstallConfirm.
     uninstall : launch with /uninstall /decision <ini> /installdir <dir> and
-                capture the immediate UninstallConfirm page 6 (no fixture;
+                capture the uninstall hero (6) or data checklist (8) (no fixture;
                 page 6 is the entry page of this mode).
 
   -AutoArgs passes extra pre-formed test CLI tokens (for example
@@ -74,7 +74,7 @@ param(
     [string]$Payload = '',
     [string]$Scratch = 'C:\Users\89553\AppData\Local\Temp\opencode\spk_t19',
     [ValidateSet('install', 'maintenance', 'uninstall')][string]$Mode = 'install',
-    [ValidateRange(0, 7)][int]$Page = 0,
+    [ValidateRange(0, 8)][int]$Page = 0,
     [int]$PadPx = 24,
     [int]$MarkerTimeoutMs = 90000,
     [int]$SettleMs = 550,
@@ -359,15 +359,10 @@ if ($Baseline) {
 if (-not (Test-Path -LiteralPath $Exe -PathType Leaf)) { Fail 1 "Exe not found: $Exe" }
 $exeFull = (Resolve-Path -LiteralPath $Exe).Path
 
-# Explicit mode/page contract: never silently capture a page the mode cannot
-# reach. Install keeps the original 0..4 wizard; maintenance owns 5/6;
-# uninstall starts on the confirmation page 6.
-$pageRanges = @{ install = @(0, 4); maintenance = @(5, 6); uninstall = @(6, 6) }
-$lo = $pageRanges[$Mode][0]
-$hi = $pageRanges[$Mode][1]
-if ($Page -lt $lo -or $Page -gt $hi) {
-    Fail 1 ("unsupported -Mode/-Page combination: Mode=$Mode Page=$Page " +
-            "(supported $lo..$hi). install=0..4, maintenance=5/6, uninstall=6.")
+# Reject pages that cannot be reached in the selected mode.
+$pageSets = @{ install = @(0, 1, 2, 3, 4); maintenance = @(5, 6, 8); uninstall = @(6, 8) }
+if ($Page -notin $pageSets[$Mode]) {
+    Fail 1 "unsupported -Mode/-Page combination: Mode=$Mode Page=$Page (supported $($pageSets[$Mode] -join ', '))."
 }
 foreach ($a in $AutoArgs) {
     if ([string]::IsNullOrWhiteSpace($a)) { Fail 1 "-AutoArgs contains an empty token" }
@@ -498,10 +493,10 @@ $autoAction = $null
 foreach ($a in $AutoArgs) {
     if ($a -match '^/auto:action=(.+)$') { $autoAction = $matches[1] }
 }
-if ($Mode -eq 'maintenance' -and $Page -eq 6) {
+if (($Mode -eq 'maintenance' -and $Page -in @(6, 8)) -or ($Mode -eq 'uninstall' -and $Page -eq 8)) {
     # The only automatic path from Maintenance (5) to UninstallConfirm (6).
     if ($null -ne $autoAction -and $autoAction -notmatch '^uninstall$') {
-        Fail 1 "maintenance page 6 requires /auto:action=uninstall; got '$autoAction'"
+        Fail 1 "uninstall navigation requires /auto:action=uninstall; got '$autoAction'"
     }
     if ($null -eq $autoAction) { $argParts.Add('/auto:action=uninstall') }
 }
@@ -567,8 +562,8 @@ if ($CreateSentinel -and -not $sentinelPrecreated) {
 }
 
 $txt = Read-DiagText $diag
-if ($txt -notmatch '(?m)^payload_exists=1\s*$') {
-    $payloadDetail = if ($txt -match '(?m)^payload_exists=0\s*$') { 'payload_exists=0' } else { 'payload_exists line missing' }
+if ($txt -notmatch '(?m)^payload_exists=1\b') {
+    $payloadDetail = if ($txt -match '(?m)^payload_exists=0\b') { 'payload_exists=0' } else { 'payload_exists line missing' }
     Fail 1 "payload directory check failed ($payloadDetail): $Payload; refusing to save a screenshot that may contain the error banner (diag=$diag)"
 }
 if ($Mode -eq 'maintenance' -and $txt -notmatch 'maintenance detect .*detected=1') {

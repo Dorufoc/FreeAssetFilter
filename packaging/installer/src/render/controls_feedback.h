@@ -74,7 +74,7 @@ private:
     std::string marqueeName_;
 };
 
-// WinUI3 可滚动许可框：圆角面板 + 细滚动条 + 滚轮 + 拖拽滚动，顶/底边缘淡出遮罩。
+// 透明协议正文与 Fluent 浮动滚动条。正文对称排版，轨道独立叠加在右侧。
 // 长文本（AGPL 全文）由调用方经 SetText 提供；渲染用 IDWriteTextLayout 自动换行。
 // 滚动仅做状态/数值运算，**不阻塞 UI 线程**（无同步等待、无复制）。
 class LicenseBox : public Widget {
@@ -118,8 +118,9 @@ public:
 private:
     void EnsureLayout() const;
     void SetTargetOffset(float target, bool animate);
-    D2D1_RECT_F PanelRect() const;
-    D2D1_RECT_F ContentRect() const;    // 去掉内边距 + 右侧滚动条
+    D2D1_RECT_F ContentRect() const;
+    bool HitsScrollbar(float x, float y) const;
+    void UpdateScrollbarHover(bool hovered);
     float ViewportHeight() const;
 
     D2D1_RECT_F bounds_{};
@@ -129,18 +130,23 @@ private:
     IDWriteFactory* writeFactory_ = nullptr;
     Animator* animator_ = nullptr;
     AnimValue* scrollAnim_ = nullptr;
+    AnimValue* scrollbarAnim_ = nullptr;
 
     mutable IDWriteTextLayout* layout_ = nullptr;  // owned；布局失效时重建
     mutable bool layoutDirty_ = true;
     mutable float contentHeight_ = 0.0f;
 
     float targetOffset_ = 0.0f;   // 期望偏移（动画终点）
+    float ThumbHeight() const;
     bool dragging_ = false;
+    bool draggingThumb_ = false;
+    bool scrollbarHovered_ = false;
     float dragStartY_ = 0.0f;
     float dragStartOffset_ = 0.0f;
     bool focused_ = false;
 
     std::string scrollName_;
+    std::string scrollbarName_;
 };
 
 // WinUI3 步骤指示器单项：步骤点 + 连接线 + 标签。

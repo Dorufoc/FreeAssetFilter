@@ -32,19 +32,8 @@ namespace fs = std::filesystem;
 
 namespace {
 
-// 追加需求（2026-10-18）：顶部横向 3 节点进度带【协议】【配置】【部署】。
-// 欢迎/完成页为英雄页（无步骤区、无底部导航）。
-constexpr const wchar_t* kStepLabels[3] = {L"协议", L"配置", L"部署"};
-// Todo 12：底部导航按钮尺寸（DIP）。中心落在 bottomBar 垂直中线。
-constexpr float kNavButtonW = 112.0f;
-constexpr float kNavButtonH = 36.0f;
-constexpr float kNavBackCenterX = 680.0f;  // 上一步按钮中心 X（DIP）
-constexpr float kNavNextCenterX = 816.0f;  // 下一步按钮中心 X（DIP）
-// UI-fix：页托管底部条按钮（取消 / 完成）的统一几何（画布 DIP）。
-// 页坐标 = 画布 + shadowMarginDip_（Win10 兜底外扩边距；页 Render 用 Identity 变换）。
-constexpr float kFooterRightEdgeX = 872.0f;  // 页操作按钮右缘（画布）
-constexpr float kCancelButtonW = 96.0f;      // 「取消」宽度
-constexpr int kStepCount = 3;
+// 2026-11 设计稿改版：顶部步骤带（协议/配置/部署）与底部按钮条已整体删除——
+// 设计稿只有「自绘标题栏 + 整页内容」，每个页面自带主按钮/返回链接。
 
 // T12：UninstallStage → Progress 页阶段文案（wParam/lParam 只传枚举，中文只在此映射）。
 const wchar_t* UninstallStageLabel(spk::UninstallStage stage) {
@@ -86,23 +75,19 @@ namespace {
 
 constexpr wchar_t kWindowClass[] = L"SopeekInstaller";  // §4 冻结类名
 // T10：标题按启动模式设置（自绘标题栏与 CreateWindowExW 共用同一来源）。
+// 安装模式在窗口与任务栏使用同一个标题。
 constexpr wchar_t kTitleInstall[] = L"Sopeek 安装程序";
-constexpr wchar_t kTitleMaintenance[] = L"Sopeek 维护";
-constexpr wchar_t kTitleUninstall[] = L"Sopeek 卸载";
+constexpr wchar_t kTitleMaintenance[] = L"Sopeek维护";
+constexpr wchar_t kTitleUninstall[] = L"Sopeek卸载";
 constexpr UINT_PTR kTickTimerId = 1;
 constexpr UINT kTickIntervalMs = 16;      // §2 主循环 ~16ms 驱动动画 tick
 constexpr int kWin10ShadowMarginDip = 12; // §4 Win10 兜底透明外扩边距（DIP）
 constexpr ULONGLONG kProgressPostIntervalMs = 33;  // §10：进度 PostMessage 节流 ~30fps
-// UI-fix（进度 UX）：初始化合成斜坡 + 完成前 100% 停留（仅 UI 状态，不改引擎契约）。
-constexpr UINT_PTR kCompletionHoldTimerId = 3;  // 完成页切换专用一次性定时器
-constexpr UINT kCompletionHoldMs = 500;         // 100% 停留总时长：220ms 填充动画后仍留 ~280ms 满格可见
-// 安装前 payload 解包阶段：不再使用固定 8s 合成斜坡，而是按 NSIS 实际写出的
-// payload 字节数推进 0..50%。这样大包解压几十秒时进度条仍有真实反馈，不会
-// 8s 冲到 50% 后长时间看起来卡死。
-constexpr ULONGLONG kPreparePollMs = 500;         // 目录字节统计节流
-constexpr int kPrepareProgressMaxPermille = 500;  // 解包阶段上限（50%）
-constexpr int kPrepareUnknownMaxPermille = 200;   // 总大小未知时的保守上限
-constexpr ULONGLONG kPrepareUnknownRampMs = 15000;
+constexpr UINT_PTR kCompletionHoldTimerId = 3;
+constexpr UINT kCompletionHoldMs = 500;
+constexpr ULONGLONG kPreparePollMs = 500;  // 目录字节统计节流
+constexpr int kExtractionEndPermille = 800;
+constexpr int kUnconfirmedMaxPermille = 999;
 constexpr ULONGLONG kPrepareStallWarnMs = 10000;  // 字节数长时间不增长时提示
 #ifdef SPK_TESTMODE
 // Todo 19（§17）：/auto 测试驱动常量——仅测试构建编入（生产零残留）。
@@ -115,6 +100,14 @@ constexpr int kCanvasW = static_cast<int>(spk::layout::kCanvasWidth);
 constexpr int kCanvasH = static_cast<int>(spk::layout::kCanvasHeight);
 
 // T10：启动模式 → 窗口标题（唯一映射点；构造期写入 windowTitle_）。
+const wchar_t* ApplyOperationLabel(Operation operation) {
+    switch (operation) {
+        case Operation::Repair: return L"修复";
+        case Operation::Update: return L"更新";
+        default: return L"安装";
+    }
+}
+
 const wchar_t* TitleForMode(AppMode mode) {
     switch (mode) {
         case AppMode::Maintenance: return kTitleMaintenance;
@@ -219,21 +212,6 @@ bool IsInstalledAppRunning(const std::wstring& installDir) {
     return running;
 }
 
-bool AppsUseLightTheme() {
-    DWORD value = 1;
-    DWORD size = sizeof(value);
-    DWORD type = 0;
-    HKEY key = nullptr;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER,
-                      L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", 0,
-                      KEY_READ, &key) == ERROR_SUCCESS) {
-        RegQueryValueExW(key, L"AppsUseLightTheme", nullptr, &type,
-                         reinterpret_cast<LPBYTE>(&value), &size);
-        RegCloseKey(key);
-    }
-    return value != 0;
-}
-
 // §5/Todo 4：真实 OS build 判定。`GetVersionEx` 在无 manifest 时会撒谎（返回 6.2），
 // 故经 `ntdll!RtlGetVersion` 取真实 build。返回 true 表示 build >= 22621（Win11 Mica 可用）。
 bool WindowsBuild22621OrLater() {
@@ -305,11 +283,15 @@ InstallerWindow::InstallerWindow(HINSTANCE instance, std::wstring payload, std::
         }
     }
     UpdateWindowTitle();  // T13：windowTitle_ 初始化（window_ 尚为空，仅落字符串）
-    // T11/D9：setup 退出 watchdog —— 只监视（SYNCHRONIZE），绝不终止 setup 进程。
-    // 打开失败（PID 已消失/无权限）时保持空句柄：此时无法区分“PID 无效”和“setup 已
-    // 退出”，贸然中止会误杀正常安装；wait-for-payload 的最终超时仍由 NSIS 侧兜底。
+    // 现在就打开原进程，避免稍后 PID 被复用。只监视并查询最终退出码。
     if (setupPid_ != 0) {
-        setupProcess_ = OpenProcess(SYNCHRONIZE, FALSE, setupPid_);
+        setupProcess_ = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, setupPid_);
+        if (!setupProcess_ && startupErrorTitle_.empty()) {
+            startupErrorTitle_ = L"无法连接安装程序";
+            startupErrorBody_ = L"无法监视安装程序的结果，请关闭窗口并重新运行安装包。";
+            exitCode_ = 1;
+            maintenanceSuppressDecision_ = true;
+        }
         DiagLog(L"setup watchdog pid=" + std::to_wstring(setupPid_) + L" opened=" +
                 std::to_wstring(setupProcess_ ? 1 : 0));
     }
@@ -336,10 +318,10 @@ InstallerWindow::~InstallerWindow() {
     // render_.Shutdown()（含 CoUninitialize）之前析构，避免在失效 COM 单元上 Release。
     // 新增的英雄页同样先于 COM 拆卸。
     maintenancePage_.reset();
+    uninstallHeroPage_.reset();
     uninstallConfirmPage_.reset();
     messagePage_.reset();
     welcomePage_.reset();
-    licensePage_.reset();
     configurePage_.reset();
     progressPage_.reset();
     finishPage_.reset();
@@ -483,57 +465,41 @@ bool InstallerWindow::CreateAppWindow() {
 }
 
 void InstallerWindow::InstallDwmEffects() {
-    darkMode_ = !AppsUseLightTheme();
-    BOOL dark = darkMode_ ? TRUE : FALSE;
+    // 固定浅色外观，包括 DWM 的系统背景。
+    const BOOL dark = FALSE;
     const HRESULT darkHr =
         DwmSetWindowAttribute(window_, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
 
     // §4 圆角；失败 ⇒ Win10 兜底（不用 SetWindowRgn，改透明外扩边距 + DComp 自绘阴影）。
+    // 设计稿圆角 13 由 DrawWindowCard 自绘；DWM 的 DWMWCP_ROUND（8）只负责把窗口
+    // 外轮廓裁圆（13 的弧线整体落在 8 的裁剪区内，不产生可见影响）并给阴影定形。
     DWM_WINDOW_CORNER_PREFERENCE pref = DWMWCP_ROUND;
     cornerOk_ = SUCCEEDED(DwmSetWindowAttribute(window_, DWMWA_WINDOW_CORNER_PREFERENCE, &pref,
                                                 sizeof(pref)));
 
-    // §5/Todo 4：Mica backdrop 仅在 build >= 22621 时尝试；更旧的系统（Win10）**不得**
-    // 强设该未知 DWMWA，必须静默跳过。backdrop 失败或旧系统 ⇒ 走与 §4 相同的 Win10 兜底分支。
+    // 窗口底 = **DWM 浅色 Mica**（用户 2026-11-21 要求：不要纯白底）。Mica 仅在
+    // build >= 22621 存在；更旧的系统（Win10）不得强设该未知 DWMWA，静默跳过并走兜底。
     backdropBuildOk_ = WindowsBuild22621OrLater();
     if (backdropBuildOk_) {
-        DWM_SYSTEMBACKDROP_TYPE backdrop = DWMSBT_MAINWINDOW;
+        const DWM_SYSTEMBACKDROP_TYPE backdrop = DWMSBT_TABBEDWINDOW;  // Mica Alt
         backdropOk_ = SUCCEEDED(DwmSetWindowAttribute(window_, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop,
                                                       sizeof(backdrop)));
     } else {
         backdropOk_ = false;  // build<22621：不设置该属性（Win10 静默跳过）
     }
-    win10Fallback_ = !cornerOk_ || !backdropOk_;
+
+    // 扩展帧到完整客户区，让原生 Mica 直接透过透明的 DirectComposition 图层。
+    MARGINS margins{-1, -1, -1, -1};
+    extendOk_ = backdropOk_ && SUCCEEDED(DwmExtendFrameIntoClientArea(window_, &margins));
+    win10Fallback_ = !cornerOk_ || !backdropOk_ || !extendOk_;
     shadowMarginDip_ = win10Fallback_ ? kWin10ShadowMarginDip : 0;
 
-    // §4 候选：帧扩展，使 Mica 覆盖客户区；由冒烟实测裁决保留或忽略。
-    MARGINS margins{-1, -1, -1, -1};
-    extendOk_ = SUCCEEDED(DwmExtendFrameIntoClientArea(window_, &margins));
-
     DiagLog(L"dwm build22621=" + std::to_wstring(backdropBuildOk_ ? 1 : 0) + L" corner=" +
-            std::to_wstring(cornerOk_ ? 1 : 0) + L" backdrop=" +
+            std::to_wstring(cornerOk_ ? 1 : 0) + L" backdropMica=" +
             std::to_wstring(backdropOk_ ? 1 : 0) + L" darkHr=" +
             ToHex(static_cast<DWORD>(darkHr)) + L" extend=" + std::to_wstring(extendOk_ ? 1 : 0) +
-            L" dark=" + std::to_wstring(darkMode_ ? 1 : 0) + L" win10fallback=" +
+            L" dark=0 win10fallback=" +
             std::to_wstring(win10Fallback_ ? 1 : 0));
-}
-
-void InstallerWindow::ApplyDarkMode(bool dark) {
-    darkMode_ = dark;
-    BOOL flag = dark ? TRUE : FALSE;
-    DwmSetWindowAttribute(window_, DWMWA_USE_IMMERSIVE_DARK_MODE, &flag, sizeof(flag));
-    dirty_ = true;
-}
-
-void InstallerWindow::RefreshSystemTheme() {
-    const bool dark = !AppsUseLightTheme();
-    if (dark != darkMode_) {
-        ApplyDarkMode(dark);  // §5：重设 DWMWA_USE_IMMERSIVE_DARK_MODE
-        DiagLog(L"system theme switch dark=" + std::to_wstring(dark ? 1 : 0));
-    } else {
-        dirty_ = true;  // 主题未变也重绘（DWM 颜色化可能改变 Mica 色调）
-    }
-    Render();
 }
 
 void InstallerWindow::UpdateWindowTitle() {
@@ -544,18 +510,11 @@ void InstallerWindow::UpdateWindowTitle() {
 }
 
 void InstallerWindow::Layout() {
-    // §6：shell 几何唯一来源 = spk::ComputeShellLayout(bool hero)（纯 DIP 计算，不依赖 DPI）。
-    // 标题栏最小化/关闭命中区、步骤带、内容卡片、底部条均由该结果提供。
-    // 模式由当前页 + 操作类型决定（英雄页 欢迎/完成/维护/卸载确认/消息 无步骤带/底部条；
-    // Repair/Uninstall 复用 Progress/Finish 时也必须是英雄页几何——与 SetPage 同一判据）。
+    // §6：shell 几何唯一来源 = spk::ComputeShellLayout（纯 DIP 计算，不依赖 DPI）。
+    // 新版只有一个外壳形状：标题栏 56 + 整页内容（设计稿没有步骤带/底部条）。
     shellLayout_ = spk::ComputeShellLayout(spk::IsHeroPage(state_.page) ||
                                            state_.operation != Operation::Install);
-    // Todo 12：shell 几何变化后重排步骤栏/导航按钮/当前页（页面构造前为空操作）。
-    if (pagesReady_) {
-        LayoutStepBar();
-        LayoutFooterButtons();
-        LayoutPages();
-    }
+    if (pagesReady_) LayoutPages();
 }
 
 int InstallerWindow::MarginPx() const {
@@ -610,8 +569,7 @@ void InstallerWindow::Tick() {
     // 引擎在下一个轮询点安全停止（引擎收尾后由 WM_INSTALL_DONE 展示终止原因）。
     CheckSetupWatchdog();
     const double nowMs = spk::SteadyNowMs();
-    // UI-fix（进度 UX）：初始化合成斜坡先于动画推进——仅 UI 侧 0→50% 匀速，
-    // 首个真实进度或安装结束时停止（不触碰引擎/结果 INI）。
+    // 先同步解压进度，再推进动画。
     AdvanceInitProgress(nowMs);
     const bool worked = animator_.Tick(nowMs);  // 推进 + §16 每 tick 采样/边界行
     if (dirty_ || worked) {
@@ -669,46 +627,42 @@ void InstallerWindow::Render() {
 }
 
 void InstallerWindow::DrawContent(ID2D1DeviceContext* ctx) {
-    const spk::Theme theme = spk::GetTheme(darkMode_);  // §13：唯一 token 表
+    const spk::Theme theme = spk::LightTheme();  // §13：唯一 token 表
     const float m = static_cast<float>(shadowMarginDip_);
     ctx->SetTransform(D2D1::Matrix3x2F::Translation(m, m));
 
-    // 入场动画进度（减少动画/无入场动画时为 1）：乘入各层/文字 alpha，构成 WinUI3 淡入。
+    // 入场动画进度（减少动画/无入场动画时为 1）：乘入各层/文字 alpha，构成淡入。
     introAlpha_ = introAnim_ ? introAnim_->Value() : 1.0f;
 
-    // Todo 12：步骤栏 / 导航按钮与 shell 层共享入场进度（同帧动画协同，§16 tick 驱动）。
-    spk::Theme faded = theme;
-    faded.card.a *= introAlpha_;
-    faded.cardStroke.a *= introAlpha_;
-    faded.textPrimary.a *= introAlpha_;
-    faded.textSecondary.a *= introAlpha_;
-    faded.accent.a *= introAlpha_;
-    faded.hover.a *= introAlpha_;
-    faded.pressed.a *= introAlpha_;
-    faded.divider.a *= introAlpha_;
+    DrawWindowCard(ctx, theme, introAlpha_);
 
-    // §5：Win10 降级先铺一层不透明 Mica 风格渐变底（与 §4 Win10 兜底同一分支）；
-    //     Win11 **不铺**，保持透明让 DWM Mica 透出（严禁整面不透明，会遮死 Mica）。
-    if (win10Fallback_) DrawMicaFallbackBase(ctx, theme, introAlpha_);
-
-    // §5：左栏（半透明层）/ 内容卡片 / 底部条各按自身 alpha 绘制；其余区域保持透明。
-    DrawShellLayers(ctx, theme, introAlpha_);
-
-    // --- Todo 12：步骤栏 + 当前页 + 导航按钮（状态唯一来源 = AppState::page，§12）---
-    if (pagesReady_) {
-        // 追加需求：英雄页（欢迎/完成）无步骤带——仅向导页绘制 3 个横向节点。
-        // T10：Repair/Uninstall 一律不画安装步骤带（operation 非 Install 时）。
-        if (state_.operation == Operation::Install && !spk::IsHeroPage(state_.page)) {
-            for (int i = 0; i < kStepCount; ++i) stepItems_[i].Render(ctx, faded);
+    ctx->SetTransform(D2D1::Matrix3x2F::Identity());
+    const auto card = PageRect();
+    ctx->PushAxisAlignedClip(card, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    const auto drawPage = [&](int page, float opacity, float offset) {
+        if (opacity <= 0.0f) return;
+        ctx->SetTransform(D2D1::Matrix3x2F::Identity());
+        const bool translucent = opacity < 1.0f;
+        if (translucent) {
+            auto layer = D2D1::LayerParameters1(card);
+            layer.opacity = opacity;
+            ctx->PushLayer(layer, nullptr);
         }
-        // 页内 Render 自行 SetTransform（会覆盖 shell 平移），渲染后再恢复边距平移。
-        RenderActivePage(ctx, faded);
-        ctx->SetTransform(D2D1::Matrix3x2F::Translation(m, m));
-        // UI-fix：导航按钮按页面可见性绘制（英雄页全隐藏；Progress 隐藏；Configure 由门控决定）。
-        if (navBackVisible_) backButton_.Render(ctx, faded);
-        if (navNextVisible_) nextButton_.Render(ctx, faded);
+        ctx->SetTransform(D2D1::Matrix3x2F::Translation(offset, 0.0f));
+        RenderPage(ctx, theme, page);
+        ctx->SetTransform(D2D1::Matrix3x2F::Identity());
+        if (translucent) ctx->PopLayer();
+    };
+    const float progress = pageTransition_ ? pageTransition_->Value() : 1.0f;
+    constexpr float slideDip = 18.0f;
+    if (progress < 1.0f && previousPage_ >= 0) {
+        drawPage(previousPage_, introAlpha_ * (1.0f - progress), -pageDirection_ * slideDip * progress);
     }
+    drawPage(state_.page, introAlpha_ * progress, pageDirection_ * slideDip * (1.0f - progress));
+    ctx->PopAxisAlignedClip();
 
+
+    ctx->SetTransform(D2D1::Matrix3x2F::Translation(m, m));
     DrawTitleBar(ctx, theme, introAlpha_);
 
     if (!errorText_.empty()) {
@@ -716,175 +670,160 @@ void InstallerWindow::DrawContent(ID2D1DeviceContext* ctx) {
         const float cardW = s.contentCard.right - s.contentCard.left;
         DrawTextLine(ctx, errorText_, s.contentCard.left + spk::spacing::M,
                      s.contentCard.top + spk::spacing::M, cardW - 2.0f * spk::spacing::M,
-                     spk::fontsize::Body + spk::spacing::S, spk::fontsize::Body,
+                     spk::fontsize::Body16 + spk::spacing::S, spk::fontsize::Body16,
                      D2D1::ColorF(0.85f, 0.20f, 0.20f, introAlpha_));
     }
 
     ctx->SetTransform(D2D1::Matrix3x2F::Identity());
 }
 
-void InstallerWindow::DrawMicaFallbackBase(ID2D1DeviceContext* ctx, const spk::Theme& theme,
-                                           float alpha) {
+void InstallerWindow::DrawWindowCard(ID2D1DeviceContext* ctx, const spk::Theme& theme,
+                                     float alpha) {
     const float W = spk::layout::kCanvasWidth;
     const float H = spk::layout::kCanvasHeight;
     const float m = static_cast<float>(shadowMarginDip_);
 
-    // §4 Win10 兜底的 (可选) 自绘柔化阴影：只显现在透明外扩边距内。§14 规定阴影断言
-    // 须用桌面 DC，故此阴影仅近似；真正的阴影/圆角证明归 Todo 20 真机截图。
-    if (m > 0.0f) {
-        spk::ComPtr<ID2D1SolidColorBrush> shadow;
-        if (SUCCEEDED(ctx->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 0.10f * alpha),
-                                                 shadow.GetAddressOf()))) {
-            const int steps = 5;
-            for (int i = steps - 1; i >= 0; --i) {
-                const float grow =
-                    (static_cast<float>(i) + 1.0f) * (m / static_cast<float>(steps)) * 0.6f;
-                const float r = spk::radius::Medium + grow;
-                ctx->FillRoundedRectangle(
-                    D2D1::RoundedRect(D2D1::RectF(-grow, -grow, W + grow, H + grow), r, r),
-                    shadow.Get());
+    // 交换链已经清为透明。支持 Mica 时将客户区底色与圆角交给 DWM。
+    // 无 Mica 时，使用自绘阴影与浅灰渐变圆角卡片。
+    if (win10Fallback_) {
+        if (m > 0.0f) {
+            spk::ComPtr<ID2D1SolidColorBrush> shadow;
+            if (SUCCEEDED(ctx->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 0.10f * alpha),
+                                                     shadow.GetAddressOf()))) {
+                const int steps = 5;
+                for (int i = steps - 1; i >= 0; --i) {
+                    const float grow =
+                        (static_cast<float>(i) + 1.0f) * (m / static_cast<float>(steps)) * 0.6f;
+                    const float r = spk::radius::Window + grow;
+                    ctx->FillRoundedRectangle(
+                        D2D1::RoundedRect(D2D1::RectF(-grow, -grow, W + grow, H + grow), r, r),
+                        shadow.Get());
+                }
+            }
+        }
+
+        // 不透明 Mica 风格渐变底（兜底路径必须不透明，否则透出桌面）。
+        const D2D1_GRADIENT_STOP stops[2] = {
+            {0.0f, D2D1::ColorF(0.980f, 0.980f, 0.980f, alpha)},
+            {1.0f, D2D1::ColorF(0.925f, 0.925f, 0.925f, alpha)},
+        };
+        spk::ComPtr<ID2D1GradientStopCollection> coll;
+        if (SUCCEEDED(ctx->CreateGradientStopCollection(stops, 2, coll.GetAddressOf()))) {
+            spk::ComPtr<ID2D1LinearGradientBrush> base;
+            if (SUCCEEDED(ctx->CreateLinearGradientBrush(
+                    D2D1::LinearGradientBrushProperties(D2D1::Point2F(0, 0), D2D1::Point2F(0, H)),
+                    coll.Get(), base.GetAddressOf()))) {
+                ctx->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(0, 0, W, H),
+                                                            spk::radius::Window,
+                                                            spk::radius::Window),
+                                          base.Get());
             }
         }
     }
 
-    // §5 Win10 兜底：不透明 Mica 风格渐变底；明暗单一来源 = Theme.isDark。
-    D2D1_GRADIENT_STOP stops[2] = {};
-    if (theme.isDark) {
-        stops[0] = {0.0f, D2D1::ColorF(0.176f, 0.176f, 0.176f, alpha)};
-        stops[1] = {1.0f, D2D1::ColorF(0.102f, 0.102f, 0.102f, alpha)};
-    } else {
-        stops[0] = {0.0f, D2D1::ColorF(0.980f, 0.980f, 0.980f, alpha)};
-        stops[1] = {1.0f, D2D1::ColorF(0.925f, 0.925f, 0.925f, alpha)};
-    }
-    spk::ComPtr<ID2D1GradientStopCollection> coll;
-    if (FAILED(ctx->CreateGradientStopCollection(stops, 2, coll.GetAddressOf()))) return;
-    spk::ComPtr<ID2D1LinearGradientBrush> base;
-    if (FAILED(ctx->CreateLinearGradientBrush(
-            D2D1::LinearGradientBrushProperties(D2D1::Point2F(0, 0), D2D1::Point2F(0, H)),
-            coll.Get(), base.GetAddressOf()))) {
-        return;
-    }
-    ctx->FillRoundedRectangle(
-        D2D1::RoundedRect(D2D1::RectF(0, 0, W, H), spk::radius::Medium, spk::radius::Medium),
-        base.Get());
-}
-
-void InstallerWindow::DrawShellLayers(ID2D1DeviceContext* ctx, const spk::Theme& theme,
-                                      float alpha) {
-    // §6：矩形全部来自 layout（纯 DIP），此处不再硬编码 railW/bottomH/margin/card rect。
-    const spk::ShellLayout& s = shellLayout_;
-
-    // §5：Win10 层为不透明；Win11 层保留 token alpha（半透明，透出 Mica）。
-    // 入场 alpha 再乘入（淡入）。
-    auto layer = [&](D2D1_COLOR_F c) -> D2D1_COLOR_F {
-        if (win10Fallback_) c.a = 1.0f;
-        c.a *= alpha;
-        return c;
-    };
-    auto faded = [&](D2D1_COLOR_F c) -> D2D1_COLOR_F {
-        c.a *= alpha;
-        return c;
-    };
-
-    spk::ComPtr<ID2D1SolidColorBrush> card;
-    if (FAILED(ctx->CreateSolidColorBrush(layer(theme.card), card.GetAddressOf()))) return;
-    // 内容卡片已移除：窗口直接承载内容（用户要求，全页面统一，无嵌套容器）。contentCard 仍作为页面内容/内边距区域。
-
-    // 底部条（英雄页 bottomBar 为空矩形 → 跳过绘制/分隔线）。
-    if (s.bottomBar.right > s.bottomBar.left && s.bottomBar.bottom > s.bottomBar.top) {
-        ctx->FillRectangle(s.bottomBar, card.Get());
-    }
-
-    // 追加需求：顶部横向步骤带只在向导页存在（英雄页 stepper 为空 → 跳过）。
-    // 步骤节点/连接线/标签由 DrawContent() 内的 StepItem::Render 绘制；此处只画步骤带下缘分隔线。
-    if (s.stepper.right > s.stepper.left && s.stepper.bottom > s.stepper.top) {
-        spk::ComPtr<ID2D1SolidColorBrush> divider;
-        if (SUCCEEDED(ctx->CreateSolidColorBrush(faded(theme.divider), divider.GetAddressOf()))) {
-            ctx->DrawLine(D2D1::Point2F(s.stepper.left, s.stepper.bottom),
-                          D2D1::Point2F(s.stepper.right, s.stepper.bottom), divider.Get(), 1.0f);
-        }
+    // 1px 玻璃描边：跟随 DWM 的圆角半径（Win11 8 DIP；兜底路径用设计稿的 13）。
+    const float radius = win10Fallback_ ? spk::radius::Window : spk::radius::Medium;
+    D2D1_COLOR_F stroke = theme.windowStroke;
+    stroke.a *= alpha;
+    spk::ComPtr<ID2D1SolidColorBrush> strokeBrush;
+    if (SUCCEEDED(ctx->CreateSolidColorBrush(stroke, strokeBrush.GetAddressOf()))) {
+        const D2D1_ROUNDED_RECT inner =
+            D2D1::RoundedRect(D2D1::RectF(0.5f, 0.5f, W - 0.5f, H - 0.5f), radius - 0.5f,
+                              radius - 0.5f);
+        ctx->DrawRoundedRectangle(inner, strokeBrush.Get(), 1.0f);
     }
 }
-
 void InstallerWindow::DrawTitleBar(ID2D1DeviceContext* ctx, const spk::Theme& theme, float alpha) {
     const spk::ShellLayout& s = shellLayout_;
-    const float titleH = s.titleBar.bottom;
-    // 标题文字右边界让出两个窗口按钮命中区（layout 常量）。
-    const float titleW =
-        s.titleBar.right - 2.0f * spk::layout::kWindowButtonWidth - spk::spacing::M;
 
-    D2D1_COLOR_F primary = theme.textPrimary;
-    primary.a *= alpha;
-    D2D1_COLOR_F dividerColor = theme.divider;
-    dividerColor.a *= alpha;
+    auto tint = [alpha](D2D1_COLOR_F c) {
+        c.a *= alpha;
+        return c;
+    };
 
-    // §5：标题栏区域保持透明（Win11 让 Mica 透出）；文字/字形用 token 前色，底部一条分隔线。
-    // T10：标题文字来自构造期按 mode 设置的 windowTitle_（CreateWindowExW 同源）。
-    DrawTextLine(ctx, windowTitle_, spk::spacing::M, 0, titleW, titleH, spk::fontsize::Caption,
-                 primary);
+    // 标题栏直接延续 Mica。以系统按钮中心为共同纵向基准。
+    const float centerY = (s.minButton.top + s.minButton.bottom) * 0.5f;
+    const float logoLeft = spk::design::kTitleLogoLeft;
+    const float logoSize = spk::design::kTitleLogoSize;
+    if (logoBitmap_.IsLoaded()) {
+        const float top = centerY - logoSize * 0.5f;
+        ctx->DrawBitmap(logoBitmap_.Bitmap(), D2D1::RectF(logoLeft, top, logoLeft + logoSize, top + logoSize),
+                        alpha, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+    }
+    const float textLeft = logoLeft + logoSize + spk::spacing::S;
+    const float textHeight = 28.0f;
+    DrawTextLine(ctx, windowTitle_, textLeft, centerY - textHeight * 0.5f,
+                 s.minButton.left - spk::spacing::M - textLeft, textHeight,
+                 spk::fontsize::Body, tint(theme.textPrimary), spk::weight::SemiBold,
+                 DWRITE_TEXT_ALIGNMENT_LEADING);
 
-    // 窗口按钮（最小化/关闭）悬停/按下背景填充。
-    // 视觉态派生自状态机：hot = 光标悬停命中；armed = 已按下且光标仍在同一按钮上（移出即灭）。
+    // 窗口按钮悬停底（最小化：中性叠加；关闭：Windows 标准红）。
     const bool minHot = hoverButton_ == WindowButton::Minimize;
     const bool minArmed = minHot && armedButton_ == WindowButton::Minimize;
     const bool closeHot = hoverButton_ == WindowButton::Close;
     const bool closeArmed = closeHot && armedButton_ == WindowButton::Close;
 
-    // 最小化：中性叠加（复用 theme.hover / pressed token），字形颜色不变。
     if (minHot) {
         D2D1_COLOR_F fill = minArmed ? theme.pressed : theme.hover;
         fill.a *= alpha;
-        spk::ComPtr<ID2D1SolidColorBrush> minBg;
-        if (SUCCEEDED(ctx->CreateSolidColorBrush(fill, minBg.GetAddressOf()))) {
-            ctx->FillRectangle(s.minButton, minBg.Get());
+        spk::ComPtr<ID2D1SolidColorBrush> bg;
+        if (SUCCEEDED(ctx->CreateSolidColorBrush(fill, bg.GetAddressOf()))) {
+            ctx->FillRoundedRectangle(
+                D2D1::RoundedRect(s.minButton, spk::radius::Small + 2.0f,
+                                  spk::radius::Small + 2.0f),
+                bg.Get());
         }
     }
-    // 关闭：Windows 标准红填充（悬停 #C42B1C / 按下 #B0251A），覆盖整个 46x32 命中区。
     if (closeHot) {
         D2D1_COLOR_F fill = closeArmed ? CloseArmedRed() : CloseHoverRed();
         fill.a *= alpha;
-        spk::ComPtr<ID2D1SolidColorBrush> closeBg;
-        if (SUCCEEDED(ctx->CreateSolidColorBrush(fill, closeBg.GetAddressOf()))) {
-            ctx->FillRectangle(s.closeButton, closeBg.Get());
+        spk::ComPtr<ID2D1SolidColorBrush> bg;
+        if (SUCCEEDED(ctx->CreateSolidColorBrush(fill, bg.GetAddressOf()))) {
+            ctx->FillRoundedRectangle(
+                D2D1::RoundedRect(s.closeButton, spk::radius::Small + 2.0f,
+                                  spk::radius::Small + 2.0f),
+                bg.Get());
         }
     }
 
+    // 最小化「—」：设计稿 12.5x2 @ 中心 (583.7,29)。
+    const float mcx = (s.minButton.left + s.minButton.right) * 0.5f;
+    const float mcy = (s.minButton.top + s.minButton.bottom) * 0.5f;
+    const auto ink = tint(theme.chromeInk);
     spk::ComPtr<ID2D1SolidColorBrush> stroke;
-    if (SUCCEEDED(ctx->CreateSolidColorBrush(primary, stroke.GetAddressOf()))) {
-        const float mcx = (s.minButton.left + s.minButton.right) * 0.5f;
-        const float mcy = (s.minButton.top + s.minButton.bottom) * 0.5f;
-        ctx->DrawLine(D2D1::Point2F(mcx - 6, mcy), D2D1::Point2F(mcx + 6, mcy), stroke.Get(), 1.0f);
-    }
-    // ✕ 字形：悬停/按下时转白（红底对比），否则保持原前色。
-    D2D1_COLOR_F closeGlyph = primary;
-    if (closeHot) closeGlyph = D2D1::ColorF(1.0f, 1.0f, 1.0f, alpha);
-    spk::ComPtr<ID2D1SolidColorBrush> closeStroke;
-    if (SUCCEEDED(ctx->CreateSolidColorBrush(closeGlyph, closeStroke.GetAddressOf()))) {
-        const float ccx = (s.closeButton.left + s.closeButton.right) * 0.5f;
-        const float ccy = (s.closeButton.top + s.closeButton.bottom) * 0.5f;
-        ctx->DrawLine(D2D1::Point2F(ccx - 5, ccy - 5), D2D1::Point2F(ccx + 5, ccy + 5), closeStroke.Get(), 1.0f);
-        ctx->DrawLine(D2D1::Point2F(ccx - 5, ccy + 5), D2D1::Point2F(ccx + 5, ccy - 5), closeStroke.Get(), 1.0f);
+    if (SUCCEEDED(ctx->CreateSolidColorBrush(ink, stroke.GetAddressOf()))) {
+        ctx->DrawLine(D2D1::Point2F(mcx - 6.25f, mcy), D2D1::Point2F(mcx + 6.25f, mcy),
+                      stroke.Get(), 1.5f);
     }
 
-    spk::ComPtr<ID2D1SolidColorBrush> divider;
-    if (SUCCEEDED(ctx->CreateSolidColorBrush(dividerColor, divider.GetAddressOf()))) {
-        ctx->DrawLine(D2D1::Point2F(0, titleH), D2D1::Point2F(s.titleBar.right, titleH),
-                      divider.Get(), 1.0f);
+    // 关闭「✕」：设计稿 14x15 @ 中心 (614.5,29)；悬停时转白（红底对比）。
+    const float ccx = (s.closeButton.left + s.closeButton.right) * 0.5f;
+    const float ccy = (s.closeButton.top + s.closeButton.bottom) * 0.5f;
+    spk::ComPtr<ID2D1SolidColorBrush> closeStroke;
+    if (SUCCEEDED(ctx->CreateSolidColorBrush(closeHot ? D2D1::ColorF(1, 1, 1, alpha) : ink,
+                                              closeStroke.GetAddressOf()))) {
+        ctx->DrawLine(D2D1::Point2F(ccx - 7.0f, ccy - 7.0f), D2D1::Point2F(ccx + 7.0f, ccy + 7.0f),
+                      closeStroke.Get(), 1.5f);
+        ctx->DrawLine(D2D1::Point2F(ccx - 7.0f, ccy + 7.0f), D2D1::Point2F(ccx + 7.0f, ccy - 7.0f),
+                      closeStroke.Get(), 1.5f);
     }
 }
 
 void InstallerWindow::DrawTextLine(ID2D1DeviceContext* ctx, const std::wstring& text, float x, float y,
                                    float width, float height, float sizeDip,
-                                   const D2D1_COLOR_F& color, DWRITE_FONT_WEIGHT weight) {
+                                   const D2D1_COLOR_F& color, DWRITE_FONT_WEIGHT weight,
+                                   DWRITE_TEXT_ALIGNMENT align) {
     IDWriteFactory* dwrite = render_.WriteFactory();
     if (!dwrite) return;
+    // 族名与页内文字同源（设计稿 = Microsoft YaHei；TextFactory 负责探测与回退）。
+    const std::wstring family = textFactory_.IsReady() ? textFactory_.Family() : std::wstring(L"Segoe UI");
     spk::ComPtr<IDWriteTextFormat> format;
-    if (FAILED(dwrite->CreateTextFormat(L"Segoe UI", nullptr, weight,
+    if (FAILED(dwrite->CreateTextFormat(family.c_str(), nullptr, weight,
                                         DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, sizeDip,
                                         L"zh-cn", format.GetAddressOf()))) {
         return;
     }
-    format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+    format->SetTextAlignment(align);
     format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     spk::ComPtr<ID2D1SolidColorBrush> brush;
     if (FAILED(ctx->CreateSolidColorBrush(color, brush.GetAddressOf()))) return;
@@ -899,6 +838,47 @@ void InstallerWindow::ClientPointToDip(POINT p, float* dx, float* dy) const {
     const float scale = spk::ClientPxToDipScale(dpi_);
     *dx = (static_cast<float>(p.x) - m) * scale;
     *dy = (static_cast<float>(p.y) - m) * scale;
+}
+
+void InstallerWindow::EndLicensePan() {
+    if (!licensePanActive_) return;
+    licensePanActive_ = false;
+    licenseSheet_.Box().OnInput({spk::InputEvent::Up, -1.0f, -1.0f});
+    RequestAnimTick();
+}
+
+bool InstallerWindow::HandleLicensePan(const GESTUREINFO& gesture) {
+    if (!pagesReady_ || state_.page != License || gesture.dwID != GID_PAN) return false;
+
+    POINT point{gesture.ptsLocation.x, gesture.ptsLocation.y};
+    if (!ScreenToClient(window_, &point)) {
+        EndLicensePan();
+        return false;
+    }
+    float dx = 0.0f, dy = 0.0f;
+    ClientPointToDip(point, &dx, &dy);
+    if (pageTransition_) dx -= pageDirection_ * 18.0f * (1.0f - pageTransition_->Value());
+
+    auto& box = licenseSheet_.Box();
+    const auto& bounds = box.Bounds();
+    // 手势命中整个正文，交给正文中轴的拖动路径，避开浮动滚动条的鼠标热区。
+    const float dragX = (bounds.left + bounds.right) * 0.5f;
+    if (gesture.dwFlags & GF_BEGIN) {
+        EndLicensePan();
+        if (!box.HitTest(dx, dy) || box.MaxScroll() <= 0.0f) return false;
+        auto& host = ActivePageHost();
+        host.CancelPointer();
+        if (GetCapture() == window_) ReleaseCapture();
+        host.FocusWidget(&box);
+        licensePanActive_ = box.OnInput({spk::InputEvent::Down, dragX, dy});
+    } else if (licensePanActive_) {
+        // Windows 连续投递惯性阶段的坐标，沿用同一拖动直到 GF_END。
+        box.OnInput({spk::InputEvent::Move, dragX, dy});
+    }
+    if (!licensePanActive_) return false;
+    if (gesture.dwFlags & GF_END) EndLicensePan();
+    RequestAnimTick();
+    return true;
 }
 
 // --- 自绘标题栏窗口按钮（最小化/关闭）状态机 ---------------------------------
@@ -993,7 +973,42 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         return HTCLIENT;
     }
 
+    if (msg == WM_GESTURENOTIFY) {
+        const auto* notify = reinterpret_cast<const GESTURENOTIFYSTRUCT*>(lp);
+        bool inBody = false;
+        if (pagesReady_ && state_.page == License && notify &&
+            notify->cbSize >= sizeof(GESTURENOTIFYSTRUCT)) {
+            POINT point{notify->ptsLocation.x, notify->ptsLocation.y};
+            if (ScreenToClient(hwnd, &point)) {
+                float dx = 0.0f, dy = 0.0f;
+                ClientPointToDip(point, &dx, &dy);
+                if (pageTransition_) dx -= pageDirection_ * 18.0f * (1.0f - pageTransition_->Value());
+                auto& box = licenseSheet_.Box();
+                inBody = box.HitTest(dx, dy) && box.MaxScroll() > 0.0f;
+            }
+        }
+        constexpr DWORD vertical = GC_PAN_WITH_SINGLE_FINGER_VERTICALLY;
+        GESTURECONFIG config{GID_PAN, GC_PAN | GC_PAN_WITH_INERTIA | (inBody ? vertical : 0),
+                             inBody ? GC_PAN_WITH_SINGLE_FINGER_HORIZONTALLY : vertical};
+        SetGestureConfig(hwnd, 0, 1, &config, sizeof(config));
+        return DefWindowProcW(hwnd, msg, wp, lp);
+    }
+    if (msg == WM_GESTURE) {
+        const auto handle = reinterpret_cast<HGESTUREINFO>(lp);
+        GESTUREINFO gesture{};
+        gesture.cbSize = sizeof(gesture);
+        if (GetGestureInfo(handle, &gesture)) {
+            if (gesture.dwID == GID_BEGIN || gesture.dwID == GID_END) EndLicensePan();
+            if (HandleLicensePan(gesture)) {
+                CloseGestureInfoHandle(handle);
+                return 0;
+            }
+        }
+        return DefWindowProcW(hwnd, msg, wp, lp);
+    }
+
     if (msg == WM_LBUTTONDOWN) {
+        EndLicensePan();  // 新的单击可立即中断手势惯性，返回按钮照常响应。
         POINT p{static_cast<LONG>(static_cast<short>(LOWORD(lp))),
                 static_cast<LONG>(static_cast<short>(HIWORD(lp)))};
         float dx = 0, dy = 0;
@@ -1018,7 +1033,9 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         ev.kind = spk::InputEvent::Down;
         ev.x = dx;
         ev.y = dy;
-        DispatchPointer(ev);
+        DispatchPageInput(ev);
+        if (ActivePageHost().HasPointerPress())
+            SetCapture(hwnd);
         return 0;
     }
 
@@ -1041,7 +1058,8 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         ev.kind = spk::InputEvent::Up;
         ev.x = dx;
         ev.y = dy;
-        DispatchPointer(ev);
+        DispatchPageInput(ev);
+        if (GetCapture() == hwnd) ReleaseCapture();
         return 0;
     }
 
@@ -1063,13 +1081,15 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         ev.kind = spk::InputEvent::Move;
         ev.x = dx;
         ev.y = dy;
-        DispatchPointer(ev);
+        if (!licensePanActive_) DispatchPageInput(ev);
         return 0;
     }
 
     // 光标离开窗口/客户区：复位悬停填充，并允许下次移动重新注册 TME_LEAVE。
     if (msg == WM_MOUSELEAVE) {
         trackingLeave_ = false;
+        if (GetCapture() != hwnd && !licensePanActive_)
+            DispatchPageInput({spk::InputEvent::Move, -1.0f, -1.0f});
         if (hoverButton_ != WindowButton::None) {
             hoverButton_ = WindowButton::None;
             RequestAnimTick();
@@ -1078,7 +1098,15 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     // 捕获丢失（被其它窗口抢走 / 显式释放）→ 清 armed，避免按钮停在按下红态。
-    if (msg == WM_CAPTURECHANGED) {
+    if (msg == WM_KILLFOCUS) EndLicensePan();
+    if (msg == WM_CAPTURECHANGED || msg == WM_CANCELMODE) {
+        EndLicensePan();
+        auto& host = ActivePageHost();
+        if (host.HasPointerPress()) {
+            host.CancelPointer();
+            RequestAnimTick();
+        }
+        if (msg == WM_CANCELMODE && GetCapture() == hwnd) ReleaseCapture();
         if (armedButton_ != WindowButton::None) {
             armedButton_ = WindowButton::None;
             RequestAnimTick();
@@ -1096,15 +1124,10 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         if (pagesReady_) {
             spk::InputEvent ev{};
             ev.kind = spk::InputEvent::Wheel;
-            // 页内坐标 = 画布 DIP + Win10 兜底外扩边距（页布局同偏移，见 PageRect）。
-            const float m = static_cast<float>(shadowMarginDip_);
-            ev.x = dx + m;
-            ev.y = dy + m;
+            ev.x = dx;
+            ev.y = dy;
             ev.key = GET_WHEEL_DELTA_WPARAM(wp);
-            if (ActivePageHost().Dispatch(ev)) {
-                UpdateNavButtons();
-                RequestAnimTick();
-            }
+            DispatchPageInput(ev);
         }
         return 0;
     }
@@ -1113,7 +1136,13 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_KEYDOWN) {
         const int vk = static_cast<int>(wp);
         const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+        // 长按激活键或 ESC 时，一次物理按键只触发一个页面动作。
+        if ((lp & (1L << 30)) && (vk == VK_SPACE || vk == VK_RETURN || vk == VK_ESCAPE)) return 0;
         if (vk == VK_ESCAPE) {
+            if (state_.page == License) {
+                GoBack();
+                return 0;
+            }
             OnEscape();
             return 0;
         }
@@ -1129,10 +1158,7 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
             ev.kind = spk::InputEvent::Key;
             ev.key = vk;
             ev.shift = shift;
-            if (ActivePageHost().Dispatch(ev)) {
-                UpdateNavButtons();
-                RequestAnimTick();
-            }
+            DispatchPageInput(ev);
         }
         return 0;
     }
@@ -1176,11 +1202,11 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         OnDpiChanged(LOWORD(wp) ? LOWORD(wp) : HIWORD(wp), reinterpret_cast<const RECT*>(lp));
         return 0;
     }
-    // §5 实时跟随系统深浅色：ImmersiveColorSet 设置变更 → 重读注册表、重设深色属性、重绘。
-    // wParam 为 SPI_SETTINGCHANGE（0x000A；MinGW 的 winuser.h 未导出该名，故用字面量）。
-    if (msg == WM_SETTINGCHANGE && wp == 0x000A && lp != 0 &&
+    if (msg == WM_SETTINGCHANGE && lp != 0 &&
         lstrcmpiW(reinterpret_cast<LPCWSTR>(lp), L"ImmersiveColorSet") == 0) {
-        RefreshSystemTheme();
+        const BOOL dark = FALSE;
+        DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+        RequestAnimTick();
         return 0;
     }
     // §5 DWM 颜色化变化（强调色 / 明暗）→ 置脏重绘（让 Mica 色调同步）。
@@ -1218,6 +1244,7 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
             DestroyWindow(hwnd);
             return 0;
         }
+        if (awaitingSetupExit_) return 0;  // 结果已提交，不能再取消 NSIS 收尾。
         // T10：非 Install 模式的关闭语义分流到 T11/T12 的接缝方法（写 decision /
         // ui_done 等业务由后续 todo 完成；本 todo 不在此写 INI、不终止进程）。
         if (mode_ == AppMode::Maintenance) {
@@ -1247,33 +1274,25 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         PostQuitMessage(exitCode_);
         return 0;
     }
-    if (msg == WM_INSTALL_PROGRESS) {  // §10：wParam = 引擎真实 permille 0..1000
-        // UI-fix（进度 UX）：初始化斜坡期间——首个真实进度（>0）到达即停止斜坡，
-        // 把此后所有真实值单调映射进 base..1000；0 不结束斜坡（引擎可能先报 0）。
+    if (msg == WM_INSTALL_PROGRESS) {
+        if (!installing_) return 0;
+        // 首条复制消息也能确认解压结束，处理消息早于目录轮询的情况。
         const int raw = std::clamp(static_cast<int>(wp), 0, 1000);
-        if (initProgressActive_) {
-            if (raw > 0) {
-                EndInitProgress(raw);
-                RequestAnimTick();
-            }
-            return 0;  // raw == 0：保持斜坡，不结束初始化
+        if (initProgressActive_) EndInitProgress();
+        // 写入结果、NSIS 收尾均在复制之后。只有成功确认才能显示 100%。
+        const int mapped = kExtractionEndPermille +
+            raw * (kUnconfirmedMaxPermille - kExtractionEndPermille) / 1000;
+        if (mapped > progressPermille_) {
+            progressPermille_ = mapped;
+            if (progressPage_) progressPage_->SetProgressPermille(mapped);
+            if (raw == 1000) DiagLog(L"copy progress raw=1000 mapped=" + std::to_wstring(mapped));
         }
-        if (progressMappingActive_) {
-            const int base = std::clamp(progressMappingBasePermille_, 0, 1000);
-            const int mapped = raw >= 1000 ? 1000 : base + (raw * (1000 - base)) / 1000;
-            if (mapped > progressPermille_) progressPermille_ = mapped;  // 单调，不回退
-        } else {
-            progressPermille_ = raw;
-        }
-        // Todo 12：转发到 Progress 页（页面只消费 permille；合成斜坡状态只在窗口侧）。
-        if (progressPage_) progressPage_->SetProgressPermille(progressPermille_);
-        RequestAnimTick();  // 置脏 + 确保 tick 定时器在跑（可能在闲置被 KillTimer）
+        RequestAnimTick();
         return 0;
     }
     if (msg == WM_INSTALL_DONE) {  // wParam：1 = 成功；0 = 取消/超时/失败（引擎已写 §1 INI）
-        // UI-fix（进度 UX）：终点一律结束合成斜坡与映射（成功路径随后进入 100% 停留）。
+        // 结束解压目录扫描，成功路径随后进入 100% 停留。
         initProgressActive_ = false;
-        progressMappingActive_ = false;
         installing_ = false;
         keepTickAlive_ = false;  // T11：操作结束，允许 tick 定时器在闲置时停表
         if (installThread_) {
@@ -1286,7 +1305,8 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
         // T11：setup 提前退出会置 cancel_ + installTimedOut_，但 UI 文案必须以
         // “安装程序已退出，操作已终止”为准（不得显示成用户取消或自动关窗）。
         const bool setupExited = state_.setupExited;
-        const bool repair = state_.operation == Operation::Repair;
+        const bool repair = state_.operation == Operation::Repair || state_.operation == Operation::Update;
+        const std::wstring action = ApplyOperationLabel(state_.operation);
         std::wstring error;
         {
             std::lock_guard<std::mutex> lock(errorMutex_);
@@ -1298,7 +1318,24 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
                 std::to_wstring(setupExited ? 1 : 0) + L" repair=" +
                 std::to_wstring(repair ? 1 : 0) + L" error=" + error);
 
-        // UI-fix（进度 UX）：成功 + 关闭待决 = 保持既有「立即销毁」行为（不做 100% 停留）。
+        if (ok && setupPid_ != 0) {
+            // 引擎成功只表示复制已完成。NSIS 消费结果后还要部署卸载器、注册表与快捷方式。
+            if (!resultWritten_) {
+                ShowError(action + L"失败", L"无法将文件复制结果提交给安装程序。", L"关闭", L"");
+                return 0;
+            }
+            awaitingSetupExit_ = true;
+            keepTickAlive_ = true;
+            if (progressPage_) {
+                progressPage_->SetCancellable(false);
+                progressPage_->SetStageText(L"正在完成安装配置");
+                progressPage_->SetNotice(L"正在等待安装程序确认结果，请稍候。");
+            }
+            CheckSetupWatchdog();  // setup 可能在 WM_INSTALL_DONE 入队前已经退出。
+            RequestAnimTick();
+            return 0;
+        }
+        // 裸 GUI 的独立运行与截图路径继续使用引擎终态。
         if (ok && closePending_) {
             KillTickTimer();
             DestroyWindow(hwnd);
@@ -1312,12 +1349,12 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
                 return 0;
             }
             if (setupExited) {
-                ShowError(L"修复已终止", L"安装程序已退出，操作已终止", L"关闭", L"");
+                ShowError(action + L"已终止", L"安装程序已退出，操作已终止", L"关闭", L"");
             } else if (cancelled) {
-                ShowError(L"修复已取消", L"修复未完成，已写入的程序文件保持原样。", L"关闭", L"");
+                ShowError(action + L"已取消", action + L"未完成，已写入的程序文件保持原样。", L"关闭", L"");
             } else {
-                ShowError(L"修复失败",
-                          error.empty() ? L"修复过程中出现未知错误。" : (L"修复失败：" + error),
+                ShowError(action + L"失败",
+                          error.empty() ? action + L"过程中出现未知错误。" : (action + L"失败：" + error),
                           L"关闭", L"");
             }
             return 0;
@@ -1364,7 +1401,22 @@ LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 void InstallerWindow::SetPage(int page) {
+    EndLicensePan();
     // §12：页面唯一来源 = AppState::page；进入页面统一走 ApplyPageEntry（Synced + Layout）。
+    ActivePageHost().CancelPointer();
+    ActivePageHost().FocusWidget(nullptr);
+    const int from = state_.page;
+    if (page != from && !reduceMotion_) {
+        previousPage_ = from;
+        // 进度和完成页也用于维护流程，其枚举号不能用于判断前进方向。
+        pageDirection_ = (page == Welcome || (page == Maintenance && (from == UninstallConfirm || from == Configure || from == Message)) ||
+                          (page == UninstallConfirm && from == UninstallChecklist) ||
+                          (page == Configure && from == License))
+                             ? -1.0f : 1.0f;
+        pageTransition_ = &animator_.Animate("pageTransition", 0.0f, 1.0f, 245.0f,
+                                             spk::easing::Entrance);
+        DiagLog(L"page transition " + std::to_wstring(from) + L"->" + std::to_wstring(page));
+    }
     state_.page = page;
     // 追加需求：英雄页（欢迎/完成）⇄ 向导页切换时 shell 几何不同（有无步骤带/底部条），
     // 必须在布局页面之前重算，否则页/步骤带/导航按钮会沿用旧几何。
@@ -1388,6 +1440,7 @@ void InstallerWindow::WriteAbortResult(const std::wstring& error) {
     options.desktop = state_.optDesktop;
     options.startmenu = state_.optStartmenu;
     options.autostart = state_.optAutostart;
+    options.ctxmenu = state_.optContextMenu;
     if (spk::WriteInstallResultIni(resultPath_, state_.installDir, /*abort=*/true, error, options)) {
         resultWritten_ = true;
     }
@@ -1459,6 +1512,7 @@ void InstallerWindow::InstallThread() {
     options.desktop = state_.optDesktop;
     options.startmenu = state_.optStartmenu;
     options.autostart = state_.optAutostart;
+    options.ctxmenu = state_.optContextMenu;
 
     // Todo 13：真实引擎 = §11 哨兵等待 → 预扫描 → 逐文件复制（permille 上报）→
     // §3 取消清理 → §1 结果 INI。引擎内无 HWND/COM，结果 INI 由其唯一写入器完成。
@@ -1468,7 +1522,7 @@ void InstallerWindow::InstallThread() {
         engine.Run(options, installMode_, cancel_, [this](int permille) {
             // §10：PostMessage 节流 ~30fps；终值 1000 恒发（节流不得吞掉终值）。
             const ULONGLONG now = GetTickCount64();
-            if (permille >= 1000 || now - lastProgressPostTick_ >= kProgressPostIntervalMs) {
+            if (permille == 0 || permille >= 1000 || now - lastProgressPostTick_ >= kProgressPostIntervalMs) {
                 lastProgressPostTick_ = now;
                 PostMessageW(window_, WM_INSTALL_PROGRESS, static_cast<WPARAM>(permille), 0);
             }
@@ -1494,11 +1548,9 @@ void InstallerWindow::StartInstall(spk::InstallMode mode) {
     installCancelled_ = false;
     installTimedOut_ = false;
     progressPermille_ = 0;
-    // UI-fix（进度 UX）：重置初始化斜坡 / 映射 / 完成停留状态（含失败后重装路径）。
+    lastProgressPostTick_ = 0;
+    // 重置解压与完成停留状态（含失败后重装路径）。
     initProgressActive_ = false;
-    progressMappingActive_ = false;
-    progressMappingBasePermille_ = 0;
-    initProgressStartMs_ = 0.0;
     lastInitProgressUpdateMs_ = 0.0;
     completionHold_ = false;
     if (window_) KillTimer(window_, kCompletionHoldTimerId);
@@ -1512,18 +1564,17 @@ void InstallerWindow::StartInstall(spk::InstallMode mode) {
     keepTickAlive_ = true;
     if (mode == spk::InstallMode::Repair) {
         // T11：repair 复用 Progress 页 —— operation 是唯一来源（SetPage/布局/步骤栏均读它）。
-        state_.operation = Operation::Repair;
+        if (state_.operation != Operation::Update) state_.operation = Operation::Repair;
     } else {
         state_.operation = Operation::Install;
     }
     SetPage(Progress);
     if (mode == spk::InstallMode::Repair && progressPage_) {
-        progressPage_->SetKind(spk::ProgressPage::Kind::Repair);
+        progressPage_->SetKind(state_.operation);
         progressPage_->SetCancellable(false);  // 修复中不允许取消/ESC/X
-        progressPage_->SetNotice(L"修复过程中请勿关闭窗口");
+        progressPage_->SetNotice(std::wstring(ApplyOperationLabel(state_.operation)) + L"过程中请勿关闭窗口");
     }
-    // UI-fix（进度 UX）：引擎等待 payload/预扫描期间没有真实回调，先启动 UI 侧 0→50%
-    // 匀速斜坡（正向前景文案）；首个真实 permille>0 到达时在 WM_INSTALL_PROGRESS 结束。
+    // 解压进度由暂存目录中实际释放的字节驱动。
     BeginInitProgress();
     DiagLog(std::wstring(L"install start dir=") + state_.installDir + L" mode=" +
             std::to_wstring(mode == spk::InstallMode::Repair ? 1 : 0));
@@ -1532,49 +1583,48 @@ void InstallerWindow::StartInstall(spk::InstallMode mode) {
         installing_ = false;
         keepTickAlive_ = false;
         initProgressActive_ = false;
-        progressMappingActive_ = false;
         completionHold_ = false;
         WriteAbortResult(L"thread-create-failed");  // §1：失败必须写 error=
         if (mode == spk::InstallMode::Repair) {
-            ShowError(L"无法开始修复", L"修复线程创建失败，程序文件未改动。", L"关闭", L"");
+            const std::wstring action = ApplyOperationLabel(state_.operation);
+            ShowError(L"无法开始" + action, action + L"线程创建失败，程序文件未改动。", L"关闭", L"");
         } else {
             ShowError(L"无法开始安装", L"安装线程创建失败，程序文件未改动。", L"关闭", L"");
         }
     }
 }
 
-// UI-fix（进度 UX）：安装/修复等待 payload.ready 期间，NSIS 正在把内嵌 payload
-// 解包到临时目录。这里按实际写出的 payload 字节数在 0..500 permille 间推进真实
-// 解包进度，避免旧的“8 秒冲到 50% 后长时间停住”。该进度只存在于 UI 状态，
-// 不写结果 INI、不触碰引擎、不伪造安装成功；首个真实复制进度到达即停止。
+// 解压阶段按 NSIS 已释放的字节推进，payload.ready 是切换阶段的边界。
 void InstallerWindow::BeginInitProgress() {
-    const bool repair = state_.operation == Operation::Repair;
     initProgressActive_ = true;
-    progressMappingActive_ = false;
-    progressMappingBasePermille_ = 0;
     completionHold_ = false;
-    initProgressStartMs_ = spk::SteadyNowMs();
-    lastInitProgressUpdateMs_ = initProgressStartMs_;
+    lastInitProgressUpdateMs_ = spk::SteadyNowMs() - static_cast<double>(kPreparePollMs);
     prepareLastBytes_ = 0;
-    prepareStallStartMs_ = initProgressStartMs_;
+    prepareStallStartMs_ = spk::SteadyNowMs();
     prepareStallWarned_ = false;
     prepareLastDiagBucket_ = 0;
     progressPermille_ = 0;
     if (progressPage_) {
         progressPage_->SetProgressPermille(0);
-        progressPage_->SetStageText(repair ? L"正在准备修复文件" : L"正在准备安装文件");
-        progressPage_->SetNotice(repair ? L"正在解压修复所需的安装文件，请稍候…"
-                                        : L"正在解压安装文件，请稍候…");
+        const std::wstring action = ApplyOperationLabel(state_.operation);
+        progressPage_->SetStageText(L"正在准备" + action + L"文件");
+        progressPage_->SetNotice(L"正在解压" + action + L"文件，请稍候…");
     }
-    DiagLog(std::wstring(L"init progress start mode=") + (repair ? L"1" : L"0"));
+    DiagLog(L"init progress start");
 }
 
 // 仅 UI 侧推进：等待 payload.ready 期间按 NSIS 实际写出的 payload 字节数推进。
-// 扫描节流 500ms，只允许前进（单调）；总大小未知时退化为保守的慢速 UI 进度。
+// 扫描节流 500ms，只允许前进。总大小未知时显示已解压字节数。
 void InstallerWindow::AdvanceInitProgress(double now_ms) {
     if (!installing_ || !initProgressActive_) return;
     if (now_ms - lastInitProgressUpdateMs_ < static_cast<double>(kPreparePollMs)) return;
     lastInitProgressUpdateMs_ = now_ms;
+
+    std::error_code sentinelError;
+    if (std::filesystem::exists(spk::PayloadSentinelPath(payload_), sentinelError)) {
+        EndInitProgress();
+        return;
+    }
 
     const std::uint64_t bytes = static_cast<std::uint64_t>(spk::PayloadTotalBytes(payload_));
     if (bytes != prepareLastBytes_) {
@@ -1583,24 +1633,10 @@ void InstallerWindow::AdvanceInitProgress(double now_ms) {
         prepareStallWarned_ = false;
     }
 
-    const bool repair = state_.operation == Operation::Repair;
     int target = progressPermille_;
     if (payloadBytes_ > 0) {
-        const std::uint64_t total = payloadBytes_;
-        const std::uint64_t capped = std::min(bytes, total);
-        const int extractedPermille = static_cast<int>(std::min<std::uint64_t>(
-            static_cast<std::uint64_t>(kPrepareProgressMaxPermille),
-            capped * static_cast<std::uint64_t>(kPrepareProgressMaxPermille) / total));
-        target = std::max(target, extractedPermille);
-    } else {
-        // 维护/测试调用未提供 /payload-bytes 时，仍给出缓慢前进的反馈，
-        // 但永远不把合成进度推到 50%，避免再次出现“满格等待”。
-        const double elapsed = std::max(0.0, now_ms - initProgressStartMs_);
-        const int fallback = std::min<int>(
-            kPrepareUnknownMaxPermille,
-            static_cast<int>(elapsed * kPrepareUnknownMaxPermille /
-                             static_cast<double>(kPrepareUnknownRampMs)));
-        target = std::max(target, fallback);
+        const auto fraction = static_cast<long double>(std::min(bytes, payloadBytes_)) / payloadBytes_;
+        target = std::max(target, static_cast<int>(fraction * kExtractionEndPermille));
     }
 
     if (target > progressPermille_) {
@@ -1615,12 +1651,10 @@ void InstallerWindow::AdvanceInitProgress(double now_ms) {
         if (stalled) {
             // 停顿提示必须持续显示；不能下一轮又被字节计数文案覆盖。
             progressPage_->SetStageText(L"正在等待安装文件解压");
-            progressPage_->SetNotice(repair
-                ? L"正在等待修复文件解压；如果长时间没有变化，请检查磁盘空间或杀毒软件。"
-                : L"正在等待安装文件解压；如果长时间没有变化，请检查磁盘空间或杀毒软件。");
+            progressPage_->SetNotice(L"如果长时间没有变化，请检查磁盘空间或杀毒软件。");
         } else if (payloadBytes_ > 0 && bytes >= payloadBytes_) {
             progressPage_->SetStageText(L"正在完成安装文件解压");
-            progressPage_->SetNotice(L"安装文件已解压，正在校验并准备安装…");
+            progressPage_->SetNotice(L"正在等待解压完成确认…");
         } else if (payloadBytes_ > 0) {
             progressPage_->SetStageText(L"正在解压安装文件");
             progressPage_->SetNotice(spk::FormatBytes(bytes) + L" / " +
@@ -1649,36 +1683,26 @@ void InstallerWindow::AdvanceInitProgress(double now_ms) {
     }
 }
 
-// 首个真实进度到达：停止斜坡，记录当前进度作为映射 base；此后真实 permille 0..1000
-// 线性映射到 base..1000（整数除法；1000 恒映射 1000），保证进度条绝不回退。
-void InstallerWindow::EndInitProgress(int raw_permille) {
+void InstallerWindow::EndInitProgress() {
     if (!initProgressActive_) return;
-    const bool repair = state_.operation == Operation::Repair;
     initProgressActive_ = false;
-    progressMappingActive_ = true;
-    progressMappingBasePermille_ = std::clamp(progressPermille_, 0, kPrepareProgressMaxPermille);
+    progressPermille_ = kExtractionEndPermille;
     if (progressPage_) {
-        progressPage_->SetStageText(L"");  // 回到 ProgressStepText 常规阶段文案
-        progressPage_->SetNotice(repair ? L"修复过程中请勿关闭窗口" : L"正在安装文件，请稍候。");
+        progressPage_->SetProgressPermille(progressPermille_);
+        progressPage_->SetStageText(L"正在复制文件");
+        progressPage_->SetNotice(L"");
     }
-    const int raw = std::clamp(raw_permille, 0, 1000);
-    const int base = progressMappingBasePermille_;
-    const int mapped = raw >= 1000 ? 1000 : base + (raw * (1000 - base)) / 1000;
-    progressPermille_ = mapped;
-    if (progressPage_) progressPage_->SetProgressPermille(mapped);
-    DiagLog(L"init progress end base=" + std::to_wstring(base) + L" raw=" +
-            std::to_wstring(raw) + L" mapped=" + std::to_wstring(mapped));
+    DiagLog(L"extraction complete permille=" + std::to_wstring(progressPermille_));
 }
 
 // 成功收尾：先把进度条置满并停留 ~300ms（让 220ms 填充动画可见），再由 WM_TIMER(id=3)
 // 切到完成页。保持 tick 存活以便该帧被绘制。
 void InstallerWindow::BeginCompletionHold() {
-    const bool repair = state_.operation == Operation::Repair;
     progressPermille_ = 1000;
     if (progressPage_) {
         progressPage_->SetProgressPermille(1000);
         progressPage_->SetStageText(L"完成");
-        progressPage_->SetNotice(repair ? L"修复完成，正在进入完成页…" : L"安装完成，正在进入完成页…");
+        progressPage_->SetNotice(std::wstring(ApplyOperationLabel(state_.operation)) + L"完成，正在进入完成页…");
     }
     keepTickAlive_ = true;
     RequestAnimTick();
@@ -1710,9 +1734,6 @@ void InstallerWindow::StartUninstall() {
     // UI-fix（进度 UX）：卸载路径不受初始化斜坡/映射/完成停留影响（行为不变），
     // 但完整复位相关状态并与 StartInstall 对称（含杀掉可能陈旧的停留定时器）。
     initProgressActive_ = false;
-    progressMappingActive_ = false;
-    progressMappingBasePermille_ = 0;
-    initProgressStartMs_ = 0.0;
     lastInitProgressUpdateMs_ = 0.0;
     completionHold_ = false;
     if (window_) KillTimer(window_, kCompletionHoldTimerId);
@@ -1773,24 +1794,27 @@ void InstallerWindow::EnsurePages() {
     ID2D1DeviceContext* dc = render_.DeviceContext();
     if (!dwrite || !dc) return;  // render 未就绪：稍后重试
 
-    textFactory_.Initialize(dwrite);
+    // 设计稿用 Microsoft YaHei（Latin 与 CJK 同一族）；TextFactory 会在缺失时回退。
+    textFactory_.Initialize(dwrite, L"Microsoft YaHei", L"Segoe UI");
     glyphFont_.Initialize(dwrite);
-    logoBitmap_.Load(dc);
+    logoBitmap_.Load(dc);            // 标题栏 26x26 图标（IDR_LOGO）
+    heroBgBitmap_.Load(dc, 106);     // 英雄页背景图（IDR_HERO_BG，透明底）
+    heroArt_.Initialize(render_.D2DFactory());  // 品牌图形（矢量，一次构建）
+    if (!spk::ReadUtf8Resource(104, userAgreementText_)) {  // IDR_USERAGREEMENT
+        userAgreementText_ = L"（用户协议资源缺失：IDR_USERAGREEMENT 104 未编入安装器）";
+    }
+    if (!spk::ReadUtf8Resource(102, licenseText_)) {  // IDR_LICENSE
+        licenseText_ = L"（许可协议资源缺失：IDR_LICENSE 102 未编入安装器）";
+    }
 
     welcomePage_ = std::make_unique<spk::WelcomePage>(state_);
     welcomePage_->BindAnimator(&animator_);
     welcomePage_->BindText(&textFactory_);
     welcomePage_->BindGlyphs(&glyphFont_);
-    welcomePage_->SetLogo(&logoBitmap_);
-    // 追加需求：欢迎页为英雄页——页内大按钮「下一步」承担前进（无底部导航）。
+    welcomePage_->SetHeroArt(&heroArt_);
+    welcomePage_->SetBackground(&heroBgBitmap_);
+    // 欢迎页为英雄页——页内大按钮「下一步」承担前进（设计稿无许可页，直达配置页）。
     welcomePage_->SetOnNextIntent([this]() { GoNext(); });
-
-    licensePage_ = std::make_unique<spk::LicensePage>(state_);
-    licensePage_->BindAnimator(&animator_);
-    licensePage_->BindText(&textFactory_);
-    licensePage_->BindGlyphs(&glyphFont_);
-    licensePage_->BindWriteFactory(dwrite);
-    // UI-fix：许可页页内「下一步」按钮已移除——门控由 UpdateNavButtons() 读 state_.agreed。
 
     configurePage_ = std::make_unique<spk::ConfigurePage>(state_);
     configurePage_->SetPayloadDir(payload_, payloadBytes_);
@@ -1798,8 +1822,12 @@ void InstallerWindow::EnsurePages() {
     configurePage_->BindAnimator(&animator_);
     configurePage_->BindText(&textFactory_);
     configurePage_->BindGlyphs(&glyphFont_);
-    // Todo 15 证据：Configure 页 PathField 的实际持值（= /installdir 预填结果；页面进入
-    // 时 ApplyPageEntry → SyncFromState 会再次从此值同步）。
+    configurePage_->SetOnNext([this]() { GoNext(); });
+    configurePage_->SetOnBack([this]() { GoBack(); });
+    configurePage_->SetOnOpenDocument([this](bool userAgreement) {
+        OpenLicensePage(userAgreement);
+    });
+    // Todo 15 证据：Configure 页 PathField 的实际持值（= /installdir 预填结果）。
     DiagLog(L"configure prefill field=" + configurePage_->Field().Path());
 
     progressPage_ = std::make_unique<spk::ProgressPage>(state_);
@@ -1812,18 +1840,31 @@ void InstallerWindow::EnsurePages() {
     finishPage_->BindAnimator(&animator_);
     finishPage_->BindText(&textFactory_);
     finishPage_->BindGlyphs(&glyphFont_);
-    finishPage_->SetLogo(&logoBitmap_);  // 英雄页图标（成功对勾由页内动画绘制，Logo 备用）
-    // 追加需求：完成页为英雄页——大按钮「立即启动」= 无条件去提权启动 + 关窗。
+    finishPage_->SetHeroArt(&heroArt_);
+    finishPage_->SetBackground(&heroBgBitmap_);
+    // 完成页：「立即体验」= 去提权启动 + 关窗；「退出」= 直接关窗。
     finishPage_->SetOnFinishIntent([this]() { OnFinishIntent(); });
+    finishPage_->SetOnExitIntent([this]() { PostMessageW(window_, WM_CLOSE, 0, 0); });
 
     // T10：三个英雄页（T7）。回调仅接到本类的占位接缝；T11/T12/T13 替换为真实业务。
     maintenancePage_ = std::make_unique<spk::MaintenancePage>(state_);
     maintenancePage_->BindAnimator(&animator_);
     maintenancePage_->BindText(&textFactory_);
     maintenancePage_->BindGlyphs(&glyphFont_);
+    maintenancePage_->SetBackground(&heroBgBitmap_);
+    maintenancePage_->SetOnUpdate([this]() { ConfigureMaintenance(Operation::Update); });
     maintenancePage_->SetOnRepair([this]() { OnMaintenanceRepairIntent(); });
     maintenancePage_->SetOnUninstall([this]() { OnMaintenanceUninstallIntent(); });
     maintenancePage_->SetOnCancel([this]() { OnMaintenanceCancelIntent(); });
+
+    uninstallHeroPage_ = std::make_unique<spk::UninstallConfirmPage>(state_);
+    uninstallHeroPage_->SetChecklist(false);
+    uninstallHeroPage_->SetBackground(&heroBgBitmap_);
+    uninstallHeroPage_->BindAnimator(&animator_);
+    uninstallHeroPage_->BindText(&textFactory_);
+    uninstallHeroPage_->BindGlyphs(&glyphFont_);
+    uninstallHeroPage_->SetOnConfirm([this]() { SetPage(UninstallChecklist); });
+    uninstallHeroPage_->SetOnCancel([this]() { OnUninstallCancelIntent(); });
 
     uninstallConfirmPage_ = std::make_unique<spk::UninstallConfirmPage>(state_);
     uninstallConfirmPage_->BindAnimator(&animator_);
@@ -1839,31 +1880,10 @@ void InstallerWindow::EnsurePages() {
     messagePage_->SetOnPrimary([this]() { OnMessagePrimaryIntent(); });
     messagePage_->SetOnSecondary([this]() { OnMessageSecondaryIntent(); });
 
-    for (int i = 0; i < kStepCount; ++i) {
-        stepItems_[i].SetIndex(i);
-        stepItems_[i].SetLabel(kStepLabels[i]);
-        stepItems_[i].SetLast(i == kStepCount - 1);
-        stepItems_[i].BindAnimator(&animator_);
-        stepItems_[i].BindText(&textFactory_);
-        stepItems_[i].BindGlyphs(&glyphFont_);
-    }
-
-    backButton_.SetLabel(L"上一步");
-    backButton_.SetStyle(spk::Button::Secondary);
-    backButton_.SetOnClick([this]() { GoBack(); });
-    backButton_.BindAnimator(&animator_);
-    backButton_.BindText(&textFactory_);
-    backButton_.BindGlyphs(&glyphFont_);
-
-    nextButton_.SetLabel(L"下一步");
-    nextButton_.SetStyle(spk::Button::Accent);
-    nextButton_.SetOnClick([this]() { GoNext(); });
-    nextButton_.BindAnimator(&animator_);
-    nextButton_.BindText(&textFactory_);
-    nextButton_.BindGlyphs(&glyphFont_);
-
-    shellHost_.Add(&backButton_);
-    shellHost_.Add(&nextButton_);
+    licenseSheet_.BindText(&textFactory_);
+    licenseSheet_.BindWriteFactory(dwrite);
+    licenseSheet_.BindAnimator(&animator_);
+    licenseSheet_.BackButton().SetOnClick([this]() { GoBack(); });
 
     pagesReady_ = true;
     // T14：启动期致命错误优先于任何模式初始化（维护模式绝不能因此进入
@@ -1886,13 +1906,12 @@ void InstallerWindow::EnsurePages() {
             shellLayout_ = spk::ComputeShellLayout(
                 spk::IsHeroPage(state_.page) || state_.operation != Operation::Install);
         }
-        LayoutStepBar();
-        LayoutFooterButtons();
         ApplyPageEntry();
     }
     RequestAnimTick();
-    DiagLog(L"pages ready count=8");
+    DiagLog(L"pages ready count=7");
 }
+
 
 D2D1_RECT_F InstallerWindow::PageRect() const {
     // 页内容矩形 = 内容卡片 + Win10 兜底外扩边距（页布局与命中坐标同偏移）。
@@ -1901,54 +1920,13 @@ D2D1_RECT_F InstallerWindow::PageRect() const {
     return D2D1::RectF(c.left + m, c.top + m, c.right + m, c.bottom + m);
 }
 
-void InstallerWindow::LayoutStepBar() {
-    // 追加需求：横向 3 节点进度带——stepItems_ 均分 stepper 宽度（每列一段；节点居列底、
-    // 标签居列中、连接线自上一列中心到本列节点）。
-    const D2D1_RECT_F& band = shellLayout_.stepper;
-    const float colW = (band.right - band.left) / static_cast<float>(kStepCount);
-    for (int i = 0; i < kStepCount; ++i) {
-        stepItems_[i].SetOrientation(spk::StepItem::Orientation::Horizontal);
-        const float left = band.left + colW * static_cast<float>(i);
-        stepItems_[i].SetBounds(D2D1::RectF(left, band.top, left + colW, band.bottom));
-    }
-}
-
-// UI-fix：底部按钮条统一布局——外壳导航按钮（画布坐标）+ 页托管按钮（取消/打开目录/完成，
-// 页坐标 = 画布 + shadowMarginDip_）。页面自身 Layout 不再摆放这些按钮；本函数在每次页面
-// Layout（Layout/EnsurePages/LayoutPages/ApplyPageEntry）之后调用，保持按钮与 shell 几何同步。
-void InstallerWindow::LayoutFooterButtons() {
-    const D2D1_RECT_F& bar = shellLayout_.bottomBar;
-    // 追加需求：英雄页（欢迎/完成）bottomBar 为空矩形 → 无底部条（导航/页托管按钮均不参与）。
-    const bool hasBar = bar.right > bar.left && bar.bottom > bar.top;
-    const float cy = hasBar ? (bar.top + bar.bottom) * 0.5f : 0.0f;
-    backButton_.SetBounds(D2D1::RectF(kNavBackCenterX - kNavButtonW * 0.5f,
-                                      cy - kNavButtonH * 0.5f,
-                                      kNavBackCenterX + kNavButtonW * 0.5f,
-                                      cy + kNavButtonH * 0.5f));
-    nextButton_.SetBounds(D2D1::RectF(kNavNextCenterX - kNavButtonW * 0.5f,
-                                      cy - kNavButtonH * 0.5f,
-                                      kNavNextCenterX + kNavButtonW * 0.5f,
-                                      cy + kNavButtonH * 0.5f));
-    if (!pagesReady_) return;
-
-    const float m = static_cast<float>(shadowMarginDip_);
-    const float rowTop = cy - kNavButtonH * 0.5f + m;
-    const float rowBottom = cy + kNavButtonH * 0.5f + m;
-    if (progressPage_ && hasBar) {
-        progressPage_->CancelButton().SetBounds(D2D1::RectF(
-            kFooterRightEdgeX - kCancelButtonW + m, rowTop, kFooterRightEdgeX + m, rowBottom));
-    }
-    // 追加需求：完成页「立即启动」大按钮改由 FinishPage::Layout 自行居中摆放（英雄页无底部条），
-    // 外壳不再托管 openDir/finish 按钮（二者已从 FinishPage 删除）。
-}
-
 void InstallerWindow::LayoutPages() {
     if (!pagesReady_) return;
     const D2D1_RECT_F card = PageRect();
     switch (state_.page) {
         case Welcome: welcomePage_->Layout(card); break;
-        case License: licensePage_->Layout(card); break;
         case Configure: configurePage_->Layout(card); break;
+        case License: licenseSheet_.Layout(card); break;
         case Progress:
             // T10：Repair/Uninstall 复用 Progress 页 —— 布局前同步操作类型。
             progressPage_->SetKind(state_.operation);
@@ -1960,12 +1938,11 @@ void InstallerWindow::LayoutPages() {
             finishPage_->Layout(card);
             break;
         case Maintenance: maintenancePage_->Layout(card); break;
-        case UninstallConfirm: uninstallConfirmPage_->Layout(card); break;
+        case UninstallConfirm: uninstallHeroPage_->Layout(card); break;
+        case UninstallChecklist: uninstallConfirmPage_->Layout(card); break;
         case Message: messagePage_->Layout(card); break;
         default: break;
     }
-    // UI-fix：页面 Layout 之后刷新底部条（页托管按钮随页布局同步）。
-    LayoutFooterButtons();
 }
 
 void InstallerWindow::ApplyPageEntry() {
@@ -1973,14 +1950,12 @@ void InstallerWindow::ApplyPageEntry() {
     const D2D1_RECT_F card = PageRect();
     switch (state_.page) {
         case Welcome:
-            welcomePage_->ResetIntro();
             welcomePage_->SyncFromState();
             welcomePage_->Layout(card);
             break;
         case License:
-            licensePage_->ResetIntro();
-            licensePage_->SyncFromState();
-            licensePage_->Layout(card);
+            licenseSheet_.Layout(card);
+            licenseSheet_.Enter();
             break;
         case Configure:
             configurePage_->OnEnter();
@@ -2003,6 +1978,9 @@ void InstallerWindow::ApplyPageEntry() {
             maintenancePage_->Layout(card);
             break;
         case UninstallConfirm:
+            uninstallHeroPage_->Layout(card);
+            break;
+        case UninstallChecklist:
             // T12：每次进入确认页都重置为“不删除用户数据”（D15 C3 默认 false）。
             state_.deleteUserData = false;
             uninstallConfirmPage_->SyncFromState();
@@ -2014,110 +1992,37 @@ void InstallerWindow::ApplyPageEntry() {
         default:
             break;
     }
-    SyncStepBar();
-    UpdateNavButtons();
-    // UI-fix：页面切换后重摆底部条（含页托管的取消/完成按钮）。
-    LayoutFooterButtons();
-    // 追加需求：英雄页⇄向导页切换会改变 shell 几何（步骤带有无）——必须按当前几何重排步骤带，
-    // 否则向导页的 3 个横向节点会沿用英雄页的空 bounds（不可见）。
-    LayoutStepBar();
-}
-
-void InstallerWindow::SyncStepBar() {
-    // 追加需求：页 → 3 节点映射（License→0「协议」/ Configure→1「配置」/ Progress→2「部署」）；
-    // 英雄页（欢迎/完成）无步骤带 → 映射为 -1（不点亮任何节点）。
-    // T10：仅安装操作映射 0/1/2；修复/卸载（含复用 Progress 页）一律 -1。
-    int step = -1;
-    if (state_.operation == Operation::Install) {
-        switch (state_.page) {
-            case License: step = 0; break;
-            case Configure: step = 1; break;
-            case Progress: step = 2; break;
-            default: step = -1; break;
-        }
-    }
-    for (int i = 0; i < kStepCount; ++i) stepItems_[i].SetStep(i, step);
-}
-
-void InstallerWindow::UpdateNavButtons() {
-    if (!pagesReady_) return;
-    bool canBack = false;
-    bool canNext = false;
-    // UI-fix：按页面决定外壳导航按钮的可见性（期间始终禁用，见下方门控）。
-    // 追加需求：英雄页（欢迎/完成）全隐藏——前进/启动由页内大按钮承担。
-    switch (state_.page) {
-        case Welcome:
-            navBackVisible_ = false;  // 英雄页无外壳导航
-            navNextVisible_ = false;
-            break;
-        case License:
-            navBackVisible_ = true;
-            navNextVisible_ = true;
-            canNext = state_.agreed;
-            canBack = true;
-            break;
-        case Configure:
-            navBackVisible_ = true;
-            navNextVisible_ = true;
-            canNext = configurePage_ && configurePage_->CanProceed();
-            canBack = true;
-            break;
-        // T10：安装/修复/卸载的进度与完成页均无外壳导航（页内按钮自行摆放）；
-        // 维护 / 卸载确认 / 消息页为英雄页，同样隐藏外壳导航。
-        case Progress:
-        case Finish:
-        case Maintenance:
-        case UninstallConfirm:
-        case Message:
-        default:
-            navBackVisible_ = false;
-            navNextVisible_ = false;
-            break;
-    }
-    if (installing_ || uninstallRunning_) {  // 「安装/卸载中不可返回/前进」
-        canBack = false;
-        canNext = false;
-    }
-    // UI-fix：下一步按钮文案随页面切换（配置页 = 「安装」）。
-    nextButton_.SetLabel(state_.page == Configure ? L"安装" : L"下一步");
-    backButton_.SetEnabled(canBack);
-    nextButton_.SetEnabled(canNext);
 }
 
 void InstallerWindow::GoNext() {
     if (installing_) return;
     switch (state_.page) {
         case Welcome:
-            SetPage(License);
-            break;
-        case License:
-            if (!state_.agreed) return;  // 未勾选同意不得前进
-            SetPage(Configure);
+            SetPage(Configure);  // 设计稿没有许可协议页：欢迎页直达配置页
             break;
         case Configure:
-            if (!configurePage_ || !configurePage_->CanProceed()) return;  // 不可写/空间不足
-            configurePage_->SyncToState();  // 四选项写回 AppState
-            StartInstall();  // 内部 SetPage(Progress) + 起安装线程
+            if (!configurePage_ || !configurePage_->CanProceed()) return;  // 不可写/空间不足/未同意
+            configurePage_->SyncToState();  // 三个选项 + 同意写回 AppState
+            if (mode_ == AppMode::Maintenance) StartRepair();
+            else StartInstall();
             break;
         default:
             return;  // Progress/Finish 无下一步
     }
-    UpdateNavButtons();
 }
 
 void InstallerWindow::GoBack() {
     if (installing_) return;  // 「安装中不可返回」
     switch (state_.page) {
         case License:
-            SetPage(Welcome);
+            SetPage(Configure);
             break;
         case Configure:
-            SetPage(License);
+            SetPage(mode_ == AppMode::Maintenance ? Maintenance : Welcome);
             break;
         default:
             return;  // Welcome/Progress/Finish 无上一步
     }
-    UpdateNavButtons();
 }
 
 void InstallerWindow::RaiseCancelIntent() {
@@ -2147,6 +2052,11 @@ void InstallerWindow::OnEscape() {
 //   → 成功 Finish(Repair) / 失败 Message（窗口保持打开）。
 // 取消 / WM_CLOSE / ESC 在维护模式下写一次 cancel decision 后关窗；修复进行中一律忽略。
 
+void InstallerWindow::SetMaintenanceOffer(MaintenanceOffer offer, std::wstring installedVersion) {
+    maintenanceOffer_ = offer;
+    installedPackageVersion_ = std::move(installedVersion);
+}
+
 void InstallerWindow::EnterMaintenanceMode() {
     if (!maintenancePage_) return;
     // T11：Detect 是唯一的安装判定来源（exe 或 _internal 存在）；版本/选项一并读取。
@@ -2154,9 +2064,11 @@ void InstallerWindow::EnterMaintenanceMode() {
     if (!maintenanceInfo_.installDir.empty()) {
         state_.installDir = maintenanceInfo_.installDir;  // 归一化后的路径（D10）
     }
-    state_.installedVersion = maintenanceInfo_.version;
+    state_.installedVersion = installedPackageVersion_.empty() ? maintenanceInfo_.version : installedPackageVersion_;
+    maintenancePage_->SetOffer(maintenanceOffer_);
+    DiagLog(L"maintenance offer=" + std::to_wstring(static_cast<int>(maintenanceOffer_)));
     state_.installDetected = maintenanceInfo_.detected;
-    maintenancePage_->SetInfo(maintenanceInfo_.installDir, maintenanceInfo_.version,
+    maintenancePage_->SetInfo(maintenanceInfo_.installDir, state_.installedVersion,
                               maintenanceInfo_.detected, maintenanceInfo_.complete);
     DiagLog(L"maintenance detect dir=" + maintenanceInfo_.installDir + L" detected=" +
             std::to_wstring(maintenanceInfo_.detected ? 1 : 0) + L" complete=" +
@@ -2223,12 +2135,36 @@ bool InstallerWindow::WriteMaintenanceDecisionOnce(MaintenanceAction action) {
     return ok;
 }
 
+void InstallerWindow::ConfigureMaintenance(Operation operation) {
+    if (mode_ != AppMode::Maintenance || !maintenanceInfo_.detected || installing_ || closingApp_) return;
+    if (maintenanceOffer_ == MaintenanceOffer::UninstallOnly) return;
+    if (operation == Operation::Update && maintenanceOffer_ != MaintenanceOffer::Update) return;
+    if (operation == Operation::Repair && maintenanceOffer_ == MaintenanceOffer::Update) {
+        DiagLog(L"repair requires matching package");
+        ShowError(L"需要同版本安装包",
+                  L"要修复当前版本，请运行与已安装的 Sopeek 版本相同的安装包：" + state_.installedVersion,
+                  L"返回", MessageAction::ReturnToMaintenance, L"", MessageAction::None);
+        return;
+    }
+    state_.operation = operation;
+    state_.optDesktop = maintenanceInfo_.optDesktop;
+    state_.optStartmenu = maintenanceInfo_.optStartmenu;
+    state_.optAutostart = maintenanceInfo_.optAutostart;
+    state_.optContextMenu = maintenanceInfo_.optContextMenu;
+    state_.optLaunchAfterRepair = false;
+    state_.agreed = false;
+    configurePage_->SetMaintenanceMode(operation);
+    SetPage(Configure);
+}
+
 void InstallerWindow::StartRepair() {
     if (mode_ != AppMode::Maintenance) {
         DiagLog(L"repair intent ignored outside maintenance mode");
         return;
     }
-    if (installing_ || closingApp_) return;  // 已在进行中：防重入
+    if (installing_ || closingApp_ || !state_.agreed) return;
+    const bool updating = state_.operation == Operation::Update;
+    if (maintenanceOffer_ != (updating ? MaintenanceOffer::Update : MaintenanceOffer::Repair)) return;
 
     std::wstring error;
     if (!RepairPreflight(&error)) {
@@ -2236,16 +2172,9 @@ void InstallerWindow::StartRepair() {
         // suppress 必须在展示前置位：X/ESC 走 OnMaintenanceCloseIntent 也不得补写 cancel。
         maintenanceSuppressDecision_ = true;
         DiagLog(L"repair preflight failed: " + error);
-        ShowError(L"无法修复", error, L"关闭", L"");
+        ShowError(updating ? L"无法更新" : L"无法修复", error, L"关闭", L"");
         return;
     }
-
-    // T11：选项沿用 Detect 的注册表/推断结果；修复完成页的「立即启动」默认不勾选。
-    state_.operation = Operation::Repair;
-    state_.optDesktop = maintenanceInfo_.optDesktop;
-    state_.optStartmenu = maintenanceInfo_.optStartmenu;
-    state_.optAutostart = maintenanceInfo_.optAutostart;
-    state_.optLaunchAfterRepair = false;
 
     if (!IsInstalledAppRunning(state_.installDir)) {
         // 未运行：直接写 decision 并开始修复。
@@ -2267,7 +2196,8 @@ void InstallerWindow::StartRepair() {
     messagePrimaryAction_ = MessageAction::None;
     messageSecondaryAction_ = MessageAction::None;
     messagePage_->SetContent(L"正在关闭 Sopeek",
-                             L"修复前需要先关闭正在运行的 Sopeek，请稍候。", L"", L"",
+                             updating ? L"更新前需要先关闭正在运行的 Sopeek，请稍候。"
+                                      : L"修复前需要先关闭正在运行的 Sopeek，请稍候。", L"", L"",
                              false);
     messagePage_->SetBusy(true, L"正在关闭…");
     SetPage(Message);
@@ -2287,14 +2217,16 @@ void InstallerWindow::StartRepair() {
 void InstallerWindow::BeginRepairInstall() {
     if (state_.setupExited) {
         // setup 已退出：不再开始任何写操作（避免无主修复）。
-        ShowError(L"修复已终止", L"安装程序已退出，操作已终止", L"关闭", L"");
+        ShowError(std::wstring(ApplyOperationLabel(state_.operation)) + L"已终止",
+                  L"安装程序已退出，操作已终止", L"关闭", L"");
         return;
     }
-    if (!WriteMaintenanceDecisionOnce(MaintenanceAction::Repair)) {
+    const bool updating = state_.operation == Operation::Update;
+    if (!WriteMaintenanceDecisionOnce(updating ? MaintenanceAction::Update : MaintenanceAction::Repair)) {
         // decision 写不进去就不能开始修复：setup 无法获知 repair 意图。
         // 同样在展示前置 suppress —— 关闭（X/ESC）也不得再补写 cancel。
         maintenanceSuppressDecision_ = true;
-        ShowError(L"无法开始修复", L"无法写入维护决定文件，修复未开始。", L"关闭", L"");
+        ShowError(updating ? L"无法开始更新" : L"无法开始修复", L"无法写入维护决定文件，操作未开始。", L"关闭", L"");
         return;
     }
     StartInstall(spk::InstallMode::Repair);
@@ -2352,6 +2284,9 @@ void InstallerWindow::HandleMessageAction(MessageAction action) {
             WriteMaintenanceDecisionOnce(MaintenanceAction::Cancel);
             PostMessageW(window_, WM_CLOSE, 0, 0);
             return;
+        case MessageAction::ReturnToMaintenance:
+            SetPage(Maintenance);
+            return;
         case MessageAction::RetryRepair:
             StartRepair();
             return;
@@ -2406,13 +2341,41 @@ void InstallerWindow::FinishInstallThread() {
 }
 
 void InstallerWindow::CheckSetupWatchdog() {
-    if (!setupProcess_ || state_.setupExited) return;
+    if (!setupProcess_) return;
+    if (awaitingSetupExit_) {
+        const DWORD wait = WaitForSingleObject(setupProcess_, 0);
+        if (wait == WAIT_TIMEOUT) return;
+        awaitingSetupExit_ = false;
+        keepTickAlive_ = false;
+        DWORD code = 0;
+        const bool known = wait == WAIT_OBJECT_0 && GetExitCodeProcess(setupProcess_, &code);
+        DiagLog(L"setup final exit=" + (known ? std::to_wstring(code) : std::wstring(L"unknown")));
+        if (known && code == 0 && !state_.setupExited) {
+            if (closePending_) {
+                DestroyWindow(window_);
+            } else {
+                BeginCompletionHold();
+            }
+        } else {
+            ShowError(std::wstring(ApplyOperationLabel(state_.operation)) + L"失败",
+                      !known ? L"无法确认安装程序的最终结果。" : state_.setupExited && !code
+                          ? L"安装程序提前退出，操作已终止。"
+                          : L"安装程序未能完成配置，退出码为 " + std::to_wstring(code) + L"。",
+                      L"关闭", L"");
+        }
+        return;
+    }
+    if (state_.setupExited) return;
     // T12：维护卸载在 setup ack 后，setup 主动退出属于正常收尾（D15 C2），
     // 不得按“setup 提前退出”中止卸载。
     if (uninstallRunning_) return;
     // 仅在操作进行中监视：维护页/完成页停留时 setup 退出属于正常收尾，不应中止。
     if (!installing_ && !closingApp_) return;
     if (WaitForSingleObject(setupProcess_, 0) != WAIT_OBJECT_0) return;
+    // NSIS 可在 worker 提交结果后、WM_INSTALL_DONE 到达之前退出。此时让
+    // WM_INSTALL_DONE 消费引擎结果，再按原进程的退出码收尾。
+    if (installing_ && (resultWritten_ || GetPrivateProfileIntW(
+            L"install", L"abort", -1, resultPath_.c_str()) == 0)) return;
     state_.setupExited = true;
     cancel_ = true;             // 引擎在下一个轮询点安全停止（repair 不回滚）
     installTimedOut_ = true;    // 保留既有超时分流语义，UI 文案以 setupExited 为准
@@ -2424,12 +2387,13 @@ void InstallerWindow::CheckSetupWatchdog() {
 
 void InstallerWindow::OnMaintenanceRepairIntent() {
     DiagLog(L"maintenance repair intent");
-    StartRepair();
+    ConfigureMaintenance(Operation::Repair);
 }
 
 void InstallerWindow::OnMaintenanceUninstallIntent() {
     // T11：只导航到卸载确认页（页 6）；request/helper/进程收尾全部归 T12。
     // 导航本身不写 decision（只有用户最终选择 uninstall 时才由 T12 写）。
+    if (maintenanceOffer_ == MaintenanceOffer::Update) return;
     DiagLog(L"maintenance uninstall intent -> UninstallConfirm");
     SetPage(UninstallConfirm);
 }
@@ -2499,6 +2463,10 @@ void InstallerWindow::OnUninstallCancelIntent() {
     // T12：维护模式的确认页取消 → 返回维护页（不关窗、不写 decision）；
     // /uninstall 模式：helper 启动的 UI 先写 cancelled=1 再退出，直接启动则直接退出。
     if (installing_ || closingApp_ || uninstallRunning_) return;
+    if (state_.page == UninstallChecklist) {
+        SetPage(UninstallConfirm);
+        return;
+    }
     if (mode_ == AppMode::Maintenance) {
         DiagLog(L"uninstall cancel -> Maintenance");
         SetPage(Maintenance);
@@ -2668,7 +2636,7 @@ void InstallerWindow::OnMaintenanceCloseIntent() {
             } else {
                 DiagLog(L"maintenance uninstall finish ui_done skipped (coordinator failed/absent)");
             }
-        } else if (state_.page == UninstallConfirm) {
+        } else if ((state_.page == UninstallConfirm || state_.page == UninstallChecklist)) {
             // 保留确认页原有的取消行为；这仍是未启动卸载的取消。
             WriteMaintenanceDecisionOnce(MaintenanceAction::Cancel);
         } else {
@@ -2708,20 +2676,15 @@ void InstallerWindow::OnUninstallCloseIntent() {
     if (window_) DestroyWindow(window_);
 }
 
-bool InstallerWindow::DispatchPointer(const spk::InputEvent& event) {
+bool InstallerWindow::DispatchPageInput(const spk::InputEvent& event) {
     if (!pagesReady_) return false;
-    // 外壳导航按钮（画布坐标；外壳层经 Translation(m,m) 绘制与命中）。
-    bool consumed = shellHost_.Dispatch(event);
-    // 当前页（页布局含 Win10 外扩边距，故命中坐标同偏移）。
-    spk::InputEvent pageEvent = event;
-    const float m = static_cast<float>(shadowMarginDip_);
-    pageEvent.x += m;
-    pageEvent.y += m;
-    if (ActivePageHost().Dispatch(pageEvent)) consumed = true;
-    if (consumed) {
-        UpdateNavButtons();
-        RequestAnimTick();
-    }
+    // 控件命中区均为画布 DIP；ClientPointToDip 已扣除 Win10 阴影外扩边距。
+    auto local = event;
+    if (pageTransition_) local.x -= pageDirection_ * 18.0f * (1.0f - pageTransition_->Value());
+    const bool consumed = state_.page == Configure && configurePage_
+        ? configurePage_->OnInput(local)
+        : ActivePageHost().Dispatch(local);
+    if (consumed) RequestAnimTick();
     return consumed;
 }
 
@@ -2730,32 +2693,45 @@ spk::WidgetHost& InstallerWindow::ActivePageHost() {
     if (!pagesReady_) return empty;
     switch (state_.page) {
         case Welcome: return welcomePage_->Host();
-        case License: return licensePage_->Host();
+        case License: return licenseSheet_.Host();
         case Configure: return configurePage_->Host();
         case Progress: return progressPage_->Host();
         case Finish: return finishPage_->Host();
         case Maintenance: return maintenancePage_->Host();
-        case UninstallConfirm: return uninstallConfirmPage_->Host();
+        case UninstallConfirm: return uninstallHeroPage_->Host();
+        case UninstallChecklist: return uninstallConfirmPage_->Host();
         case Message: return messagePage_->Host();
         default: return empty;
     }
 }
 
-void InstallerWindow::RenderActivePage(ID2D1DeviceContext* ctx, const spk::Theme& theme) {
+void InstallerWindow::RenderPage(ID2D1DeviceContext* ctx, const spk::Theme& theme, int page) {
     if (!pagesReady_ || !ctx) return;
-    switch (state_.page) {
+    switch (page) {
         case Welcome: spk::RenderWelcome(ctx, theme, *welcomePage_); break;
-        case License: spk::RenderLicense(ctx, theme, *licensePage_); break;
+        case License: licenseSheet_.Render(ctx, theme); break;
         case Configure: spk::RenderConfigure(ctx, theme, *configurePage_); break;
         // T10：页 3/4 的 Kind 已在 ApplyPageEntry/LayoutPages 中按 state_.operation
         // 同步（SetKind 会重建 Tab 顺序，禁止在逐帧渲染路径重复调用）。
         case Progress: spk::RenderProgress(ctx, theme, *progressPage_); break;
         case Finish: spk::RenderFinish(ctx, theme, *finishPage_); break;
         case Maintenance: spk::RenderMaintenance(ctx, theme, *maintenancePage_); break;
-        case UninstallConfirm: spk::RenderUninstallConfirm(ctx, theme, *uninstallConfirmPage_); break;
+        case UninstallConfirm: spk::RenderUninstallConfirm(ctx, theme, *uninstallHeroPage_); break;
+        case UninstallChecklist: spk::RenderUninstallConfirm(ctx, theme, *uninstallConfirmPage_); break;
         case Message: spk::RenderMessage(ctx, theme, *messagePage_); break;
         default: break;
     }
+}
+
+void InstallerWindow::OpenLicensePage(bool userAgreement) {
+    if (!pagesReady_ || state_.page != Configure) return;
+    if (userAgreement) {
+        licenseSheet_.SetContent(L"用户协议", userAgreementText_);
+    } else {
+        licenseSheet_.SetContent(L"开源协议（GNU AGPL-3.0）", licenseText_);
+    }
+    SetPage(License);
+    DiagLog(L"license page open user_agreement=" + std::to_wstring(userAgreement ? 1 : 0));
 }
 
 // ==================== Todo 19（§17）：/auto 无人值守测试驱动 ====================
@@ -2768,7 +2744,7 @@ void InstallerWindow::EnableAutoDrive(AutoDriveOptions options) {
     autoDriveEnabled_ = true;
     autoProfile_ = std::move(options.profile);  // 空串 = 全默认档
     // T14/D15 H6：合法 stopPage 扩展到 Welcome..Message（0..7）；越界/负值 = 不停。
-    autoStopPage_ = (options.stopPage >= Welcome && options.stopPage <= Message)
+    autoStopPage_ = (options.stopPage >= Welcome && options.stopPage <= UninstallChecklist)
                         ? options.stopPage
                         : -1;
     // T14：维护/卸载扩展参数只在测试构建存储；生产构建整个结构体被丢弃。
@@ -2823,7 +2799,7 @@ void InstallerWindow::AutoDriveTick() {
     if (!autoDriveEnabled_ || autoHalted_) return;
     const int page = state_.page;
     // 到站：/auto:page=N 抵达第 N 页后停住（N=0 时首 tick 即停，不推进任何一页）。
-    if (autoStopPage_ >= 0 && page >= autoStopPage_) {
+    if (autoStopPage_ == page) {
         autoHalted_ = true;
         DiagLog(L"auto stop reached page=" + std::to_wstring(page));
         StopAutoDrive();
@@ -2847,12 +2823,16 @@ void InstallerWindow::AutoDriveTick() {
     // T14/D15 H6：维护页按 /auto:action=repair|uninstall|cancel 推进；缺省/未知
     // 动作时停在维护页（不替用户做危险决定）。
     if (page == Maintenance) {
-        if (actionIs(L"repair")) {
+        if (actionIs(L"update") && maintenanceOffer_ == MaintenanceOffer::Update) {
+            ConfigureMaintenance(Operation::Update);
+            return;
+        }
+        if (actionIs(L"repair") && maintenanceOffer_ != MaintenanceOffer::UninstallOnly) {
             DiagLog(L"auto maintenance action=repair");
             OnMaintenanceRepairIntent();
             return;
         }
-        if (actionIs(L"uninstall")) {
+        if (actionIs(L"uninstall") && maintenanceOffer_ != MaintenanceOffer::Update) {
             DiagLog(L"auto maintenance action=uninstall");
             OnMaintenanceUninstallIntent();
             return;
@@ -2870,8 +2850,12 @@ void InstallerWindow::AutoDriveTick() {
 
     // T14/D15 H6：卸载确认页按 /auto:action=uninstall|cancel 推进；uninstall 时
     // 可先写入 /auto:delete-user-data=0|1，再走既有确认入口。
-    if (page == UninstallConfirm) {
+    if (page == UninstallConfirm || page == UninstallChecklist) {
         if (actionIs(L"uninstall")) {
+            if (page == UninstallConfirm) {
+                SetPage(UninstallChecklist);
+                return;
+            }
             if (!autoDeleteUserData_.empty()) {
                 const bool deleteUserData = autoDeleteUserData_ == L"1";
                 if (state_.deleteUserData != deleteUserData) {
@@ -2902,7 +2886,8 @@ void InstallerWindow::AutoDriveTick() {
             OnMessageSecondaryIntent();
             return;
         }
-        if (messagePrimaryAction_ != MessageAction::None) {
+        if (messagePrimaryAction_ != MessageAction::None &&
+            messagePrimaryAction_ != MessageAction::ReturnToMaintenance) {
             DiagLog(L"auto message action=" +
                     std::to_wstring(static_cast<int>(messagePrimaryAction_)));
             OnMessagePrimaryIntent();
@@ -2917,16 +2902,21 @@ void InstallerWindow::AutoDriveTick() {
     DiagLog(L"auto advance page=" + std::to_wstring(page));
     switch (page) {
         case Welcome:
-            GoNext();
+            GoNext();  // 设计稿没有许可页：直达配置页
             break;
         case License:
-            // 许可门控 = state_.agreed（GoNext 只读 AppState）→ 等效用户勾选同意。
-            state_.agreed = true;
-            if (licensePage_) licensePage_->SyncFromState();
-            GoNext();
+            GoBack();
             break;
         case Configure:
-            // 门控 = 目录可写 + 空间足够（ConfigurePage::CanProceed）；默认预填即可过。
+            if (autoStopPage_ == License) {
+                wchar_t document[16] = {};
+                GetEnvironmentVariableW(L"SPK_TEST_OPEN_SHEET", document, ARRAYSIZE(document));
+                OpenLicensePage(_wcsicmp(document, L"eula") == 0);
+                break;
+            }
+            // 门控 = 目录可写 + 空间足够 + 已勾选同意；/auto 场景自动置同意。
+            state_.agreed = true;
+            if (configurePage_) configurePage_->SyncFromState();
             // GoNext → ConfigurePage::SyncToState() + StartInstall()（进入进度页）。
             GoNext();
             break;

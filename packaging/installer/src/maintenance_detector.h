@@ -34,6 +34,7 @@ struct MaintenanceInfo {
     bool optDesktop = true;
     bool optStartmenu = true;
     bool optAutostart = false;
+    bool optContextMenu = false;  // Older installs without this option never enabled the verb.
     bool optionsInferred = false;
 };
 

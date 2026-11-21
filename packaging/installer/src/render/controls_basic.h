@@ -26,9 +26,9 @@
 
 namespace spk {
 
-// 强调/次要按钮。圆角 4；hover = hover token 叠加，pressed = pressed token 叠加 +
-// 轻微缩放（按下时缩到 0.98 并整体微移），focus = accent 外描边；支持纯文字或
-// 「字形 + 文字」。禁用态不响应输入、不参与 Tab、降低整体不透明度。
+// 设计稿按钮：主按钮 = 黑色胶囊（152x36, r8, 白字 18px，可选尾部「>」）；
+// 次要按钮 = 纯文字链接（16px，无底色无描边，hover 减淡）。禁用态整体降到 40%。
+// 状态过渡（hover/pressed）沿用 AnimValue；按下仍有 0.98 轻微缩放。
 class Button : public Widget {
 public:
     enum Style { Accent, Secondary };
@@ -42,6 +42,10 @@ public:
         hasGlyph_ = true;
     }
     void SetStyle(Style style) { style_ = style; }
+    // 主按钮标签右侧的「>」箭头（设计稿：仅「下一步」有，「立即体验」没有）。
+    void SetTrailingChevron(bool on) { trailingChevron_ = on; }
+    // 标签字号覆盖（0 = 用设计稿默认：主按钮 18 / 文字链接 16）。
+    void SetLabelSize(float sizeDip) { labelSize_ = sizeDip; }
     void SetEnabled(bool enabled);
     void SetOnClick(std::function<void()> cb) { onClick_ = std::move(cb); }
 
@@ -78,6 +82,8 @@ private:
     std::wstring label_;
     wchar_t glyph_ = 0;
     bool hasGlyph_ = false;
+    bool trailingChevron_ = false;
+    float labelSize_ = 0.0f;
     Style style_ = Secondary;
     bool enabled_ = true;
     bool hovered_ = false;
@@ -98,14 +104,19 @@ private:
     const GlyphFont* glyphs_ = nullptr;
 };
 
-// WinUI3 方形复选框。盒子 20x20 DIP、圆角 4；勾选为 Fluent Check 字形；切换约
-// 150ms 动画（checkAnim）。未勾/已勾/悬停/按压四态。文字标签在盒右侧。
+// 设计稿复选框：盒子 29x29 DIP、圆角 8、1px #8F8F8F 描边（未勾）。
+// 勾选态 = 3px 黑环 + 2px 白缝 + 19x19 黑块（r3）+ 白色对勾（设计稿叠层）。
+// 切换约 150ms 动画（checkAnim）。文字标签在盒右侧 8 DIP，16px。
 class CheckBox : public Widget {
 public:
     void SetBounds(const D2D1_RECT_F& rect) { bounds_ = rect; }
     const D2D1_RECT_F& Bounds() const noexcept { return bounds_; }
 
     void SetLabel(std::wstring label) { label_ = std::move(label); }
+    const std::wstring& Label() const noexcept { return label_; }
+    // 盒子边长（DIP）。0 = 设计稿默认 29。
+    void SetBoxSize(float size) { boxSize_ = size; }
+    float BoxSize() const noexcept { return boxSize_; }
     void SetChecked(bool checked);
     bool Checked() const noexcept { return checked_; }
     void SetEnabled(bool enabled);
@@ -135,6 +146,7 @@ private:
 
     D2D1_RECT_F bounds_{};
     std::wstring label_;
+    float boxSize_ = 29.0f;
     bool checked_ = false;
     bool enabled_ = true;
     bool hovered_ = false;
@@ -151,8 +163,9 @@ private:
     const GlyphFont* glyphs_ = nullptr;
 };
 
-// 只读路径输入框。圆角 4；cardStroke 描边，hover 加亮，focus = accent 描边。
-// 文本中间省略（保留盘符/根与末段）。
+// 设计稿路径框：564x36、圆角 8、#EEEEEE 填充 + #E9E9E9 描边、18px #878787 文字。
+// 右侧内嵌一个「浏览」文字动作（设计稿没有独立按钮，用户选择内嵌方案）。
+// 文本中间省略（保留盘符/根与末段）；点击框内任意位置 = 触发浏览。
 class PathField : public Widget {
 public:
     void SetBounds(const D2D1_RECT_F& rect) { bounds_ = rect; }
@@ -160,6 +173,8 @@ public:
 
     void SetPath(std::wstring path) { path_ = std::move(path); }
     const std::wstring& Path() const noexcept { return path_; }
+    // 右侧内嵌动作文案（空 = 不绘制、不占位）。
+    void SetActionLabel(std::wstring label) { actionLabel_ = std::move(label); }
     void SetEnabled(bool enabled) {
         enabled_ = enabled;
         if (!enabled_) {
@@ -180,6 +195,12 @@ public:
     bool Hovered() const noexcept { return hovered_; }
     bool Focused() const noexcept { return focused_; }
     bool Activated() const noexcept { return activated_; }
+    // 取出并清除「已点击」闩锁（宿主在分发后检查，避免重复打开对话框）。
+    bool TakeActivated() {
+        const bool value = activated_;
+        activated_ = false;
+        return value;
+    }
 
     // 中间省略：保留头 head 个与尾 tail 个字符，以 U+2026 连接。
     static std::wstring MiddleEllipsize(const std::wstring& path, std::size_t head, std::size_t tail);
@@ -187,6 +208,7 @@ public:
 private:
     D2D1_RECT_F bounds_{};
     std::wstring path_;
+    std::wstring actionLabel_;
     bool enabled_ = true;
     bool hovered_ = false;
     bool focused_ = false;

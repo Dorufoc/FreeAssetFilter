@@ -448,7 +448,9 @@ MaintenanceInfo Detect(const std::wstring& installDir) {
     if (!startmenuPersisted) info.optStartmenu = InferStartmenuOption();
     if (!autostartPersisted) info.optAutostart = InferAutostartOption(exePath);
 
-    info.optionsInferred = !desktopPersisted || !startmenuPersisted || !autostartPersisted;
+    const bool contextMenuPersisted = readOption(protocol::kValueOptContextMenu, info.optContextMenu);
+    info.optionsInferred = !desktopPersisted || !startmenuPersisted || !autostartPersisted ||
+                           !contextMenuPersisted;
     return info;
 }
 
@@ -472,6 +474,7 @@ bool WriteMaintenanceDump(const MaintenanceInfo& info, const std::wstring& iniPa
     writeBool(kDumpKeyOptDesktop, info.optDesktop);
     writeBool(kDumpKeyOptStartmenu, info.optStartmenu);
     writeBool(kDumpKeyOptAutostart, info.optAutostart);
+    writeBool(L"opt_ctxmenu", info.optContextMenu);
     writeBool(kDumpKeyOptionsInferred, info.optionsInferred);
 
     // 刷盘（跨进程/后续读取可见；M4 同款收尾）。

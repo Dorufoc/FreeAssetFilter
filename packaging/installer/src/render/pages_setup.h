@@ -2,21 +2,28 @@
 //
 // pages_setup.h - 安装向导页面「安装配置」（安装位置 + 安装选项合并单屏）。
 //
-// 追加需求（2026-10-18）：原「安装位置」与「安装选项」两页合并为单屏 `ConfigurePage`
-//（5 页模型：Welcome / License / Configure / Progress / Finish）。页面状态一律读写
-// AppState（Frozen contracts §12），四个安装选项默认值遵循 §2（桌面=1、开始菜单=1、
-// 开机自启=0、完成后启动=1）。
+// 视觉唯一依据：`src/sopeek/resources/icons/install_design/安装配置.svg`。
+// 画布 640x540 DIP（design 坐标减 (640,268)）：
+//   标题「安装配置」        32px bold / 基线 114 / 左缘 102
+//   「安装路径」            16px / 基线 169 / 左缘 75
+//   路径框 564x36 r8        (38,180)，右侧内嵌「浏览」文字，18px #878787 路径
+//   「可用空间：… 预计所需 …」16px / 基线 240 / 左缘 43
+//   三个复选项 29px         (44/223/415, 267)，标签 16px 基线 287
+//   同意行                  复选框 (167,375)，文字 16px 基线 395 / 左缘 204
+//   黑色胶囊「下一步 >」     152x36 (244,427)
+//   「返回」文字链接          16px 基线 503 / 水平居中
 //
-// 坐标与绘制全程 DIP（§6）：本文件不乘 DPI，由宿主的 ID2D1DeviceContext::SetDpi
-// 负责放大。控件全部复用 Todo 7 的 Button / CheckBox / PathField（不重复实现）。
+// 设计稿的文字对象以 x=960（窗口中心）作为左边缘，导致整体右偏；经用户确认按
+// 「真正居中」实现（字号/字重/几何不变）。同意行的「开源协议」「用户协议」是
+// 可点击链接（悬停加下划线），点击后进入独立协议阅读页。
 //
-// 文件夹选择主路径 = IFileOpenDialog（FOS_PICKFOLDERS）；SHBrowseForFolderW 仅在
-// COM 失败时作回退。
+// 页面状态一律读写 AppState（Frozen contracts §12）。坐标/绘制全程 DIP（§6）。
 //
 #include <windows.h>
 
 #include <d2d1_1.h>
 
+#include <functional>
 #include <string>
 
 #include "render/animation.h"
@@ -40,7 +47,7 @@ std::wstring FormatBytes(unsigned long long bytes);
 unsigned long long PayloadTotalBytes(const std::wstring& payloadDir);
 
 // 目标盘可用空间（GetDiskFreeSpaceExW 的「调用者可用」值）。`dir` 即使尚不存在也
-// 适用——按路径的根（如 `C:\`）查询；无根（相对路径）时退回当前目录。失败返回
+// 适用——按实际最近的已存在目录查询，支持挂载点。失败返回
 // false 且不修改 out。
 bool VolumeFreeBytes(const std::wstring& dir, unsigned long long& out);
 
@@ -63,9 +70,8 @@ bool ProbeWritable(const std::wstring& dir, std::wstring& errorOut);
 
 // ============================== 页面「安装配置」 ===========================
 
-// Configure 页（安装位置 + 安装选项合并）：PathField + 「浏览」按钮 + 所需/可用空间 +
-// 不可写内联错误 + 四个安装选项 CheckBox（桌面快捷方式 / 开始菜单 / 开机自启 /
-// 完成后启动）。option 状态直接写入 AppState（§12），默认按 §2。
+// 配置页：路径框 + 三个安装选项（开机自启动 / 添加到右键菜单 / 桌面快捷方式）
+// + 同意勾选（含「开源协议」「用户协议」链接）+ 下一步 / 返回。
 class ConfigurePage {
 public:
     explicit ConfigurePage(AppState& state);
@@ -75,7 +81,7 @@ public:
     // 运行时遍历只能得到部分和）；0 表示未知，回退为运行时枚举。
     void SetPayloadDir(std::wstring dir, unsigned long long knownBytes = 0);
 
-    // 「浏览」按钮点击时需要 HWND 作为对话框 owner；由宿主注入。
+    // 「浏览」需要 HWND 作为对话框 owner；由宿主注入。
     void SetOwner(HWND owner) { owner_ = owner; }
 
     // 依赖注入（宿主构造后绑定；均可为空——为空时退化为无动画 / 无文字）。
@@ -83,21 +89,25 @@ public:
     void BindText(const TextFactory* text);
     void BindGlyphs(const GlyphFont* glyphs);
 
-    // 依内容卡片矩形（DIP）布局控件——纯几何、零文件系统 I/O（切页/缩放可安全高频调用）。
+    // 依内容卡片矩形布局控件——纯几何、零文件系统 I/O（切页/缩放可安全高频调用）。
     void Layout(const D2D1_RECT_F& contentCard);
 
     // 进入本页钩子（ApplyPageEntry 调用）：SyncFromState + RefreshWritable。
     // 唯一带 I/O 的入口，保证进入配置页时 下一步 门控（CanProceed）即已定妥。
     void OnEnter();
+    // 更新与修复显示已保存的配置，只允许重新确认协议。
+    void SetMaintenanceMode(Operation operation);
 
     void Render(ID2D1DeviceContext* dc, const Theme& theme);
 
-    // 输入/Tab 分发宿主（Todo 12 负责事件翻译）。
+    // 输入/Tab 分发宿主（Tab 顺序：路径框 → 三个选项 → 同意 → 下一步 → 返回）。
     WidgetHost& Host() noexcept { return host_; }
 
-    // 从 AppState 同步（如 /installdir 预填后调用）：路径框 + 四个复选框。
+    bool OnInput(const InputEvent& event);
+
+    // 从 AppState 同步（如 /installdir 预填后调用）：路径框 + 三个复选框 + 同意。
     void SyncFromState();
-    // 把四个复选框状态写回 AppState（§12）——离开页面/下一步时调用。
+    // 把三个复选框状态写回 AppState（§12）——离开页面/下一步时调用。
     void SyncToState();
 
     // 打开文件夹选择对话框；成功后回填 AppState.installDir + PathField 并重估可写。
@@ -105,50 +115,69 @@ public:
 
     // 重估目标可写性（写内联错误 + 门控）。返回是否可写。
     bool RefreshWritable();
+    // 依 canProceed_/agreed 刷新「下一步」可用性（外壳与页内都会调用）。
+    void RefreshGating();
 
-    // 状态（供 Todo 12 门控「安装」+ 证据断言）。
-    bool CanProceed() const noexcept { return canProceed_; }
+    // 页面意图（由外壳注入）。
+    void SetOnNext(std::function<void()> cb) { onNext_ = std::move(cb); }
+    void SetOnBack(std::function<void()> cb) { onBack_ = std::move(cb); }
+    // kind: false = 开源协议（AGPL 全文），true = 用户协议。
+    void SetOnOpenDocument(std::function<void(bool userAgreement)> cb) {
+        onOpenDocument_ = std::move(cb);
+    }
+
+    // 状态（供外壳门控「安装」+ 证据断言）。
+    bool CanProceed() const noexcept { return canProceed_ && state_.agreed; }
+    bool PathWritable() const noexcept { return canProceed_; }
     bool HasInlineError() const noexcept { return !error_.empty(); }
     const std::wstring& InlineError() const noexcept { return error_; }
-    unsigned long long RequiredBytes() const noexcept { return requiredBytes_; }
-    unsigned long long FreeBytes() const noexcept { return freeBytes_; }
     const std::wstring& RequiredText() const noexcept { return requiredText_; }
     const std::wstring& FreeText() const noexcept { return freeText_; }
     bool SpaceSufficient() const noexcept { return spaceSufficient_; }
 
     PathField& Field() noexcept { return pathField_; }
-    Button& BrowseButton() noexcept { return browseButton_; }
-    CheckBox& DesktopBox() noexcept { return desktop_; }
-    CheckBox& StartmenuBox() noexcept { return startmenu_; }
     CheckBox& AutostartBox() noexcept { return autostart_; }
-    CheckBox& LaunchBox() noexcept { return launch_; }
+    CheckBox& ContextMenuBox() noexcept { return ctxmenu_; }
+    CheckBox& DesktopBox() noexcept { return desktop_; }
+    CheckBox& AgreeBox() noexcept { return agree_; }
+    Button& NextButton() noexcept { return nextButton_; }
+    Button& BackButton() noexcept { return backButton_; }
 
 private:
     void RecomputeSpace();
+    float Measure(const std::wstring& s, float size, DWRITE_FONT_WEIGHT weight) const;
+    void LayoutAgreementLine();
+    void DrawAgreementLine(ID2D1DeviceContext* dc, const Theme& theme);
 
     AppState& state_;  // 借用（§12 共享状态）
+    Operation operation_ = Operation::Install;
     std::wstring payloadDir_;
     HWND owner_ = nullptr;
 
     PathField pathField_;
-    Button browseButton_;
-    CheckBox desktop_;
-    CheckBox startmenu_;
     CheckBox autostart_;
-    CheckBox launch_;
+    CheckBox ctxmenu_;
+    CheckBox desktop_;
+    CheckBox agree_;
+    Button ossLink_;
+    Button eulaLink_;
+    Button nextButton_;
+    Button backButton_;
     WidgetHost host_;
 
     const TextFactory* text_ = nullptr;
     const GlyphFont* glyphs_ = nullptr;
 
     D2D1_RECT_F card_{};
-    D2D1_RECT_F headingRect_{};
-    D2D1_RECT_F subtitleRect_{};
-    D2D1_RECT_F requiredRect_{};
-    D2D1_RECT_F freeRect_{};
+    D2D1_RECT_F titleRect_{};
+    D2D1_RECT_F fieldLabelRect_{};
+    D2D1_RECT_F spaceRect_{};
     D2D1_RECT_F errorRect_{};
-    D2D1_RECT_F optionHeadingRect_{};
-    D2D1_RECT_F optionSubtitleRect_{};
+    // 同意行分段（前缀 / 开源协议 / 中间 / 用户协议）与其命中矩形。
+    D2D1_RECT_F agreePrefixRect_{};
+    D2D1_RECT_F agreeMiddleRect_{};
+    D2D1_RECT_F agreeLineRect_{};
+    int hoveredLink_ = 0;  // 0 = 无，1 = 开源协议，2 = 用户协议
 
     unsigned long long payloadTotalBytes_ = 0;  // payload 总字节缓存（仅 SetPayloadDir 遍历一次）
     unsigned long long requiredBytes_ = 0;
@@ -158,11 +187,16 @@ private:
     std::wstring error_;
     bool spaceSufficient_ = true;
     bool canProceed_ = true;
+    bool pathActivatedArmed_ = false;
+
+    std::function<void()> onNext_;
+    std::function<void()> onBack_;
+    std::function<void(bool)> onOpenDocument_;
 };
 
-// ============================== Todo 12 接线入口 ===========================
+// ============================== 接线入口 ===================================
 
-// 页面「安装配置」渲染入口（薄包装，供 Todo 12 调用）。
+// 页面「安装配置」渲染入口（薄包装，供 installer_window 调用）。
 void RenderConfigure(ID2D1DeviceContext* dc, const Theme& theme, ConfigurePage& page);
 
 }  // namespace spk

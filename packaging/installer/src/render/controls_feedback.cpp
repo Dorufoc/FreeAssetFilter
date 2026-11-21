@@ -105,28 +105,12 @@ void DrawCheckMark(ID2D1DeviceContext* dc, float cx, float cy, float r,
     dc->DrawLine(p1, p2, brush.Get(), strokeWidth, stroke.Get());
 }
 
-// 顶/底边缘淡出遮罩：color（面板色）在该矩形内由不透明渐隐到透明。
-void DrawFadeMask(ID2D1DeviceContext* dc, const D2D1_COLOR_F& color, const D2D1_RECT_F& rect,
-                  bool topToBottom) {
-    if (rect.bottom - rect.top < 1.0f || rect.right - rect.left < 1.0f) return;
-    D2D1_COLOR_F cIn = color;
-    D2D1_COLOR_F cOut = color;
-    cOut.a = 0.0f;
-    const D2D1_GRADIENT_STOP stops[2] = {
-        {0.0f, topToBottom ? cIn : cOut},
-        {1.0f, topToBottom ? cOut : cIn},
-    };
-    ComPtr<ID2D1GradientStopCollection> coll;
-    if (FAILED(dc->CreateGradientStopCollection(stops, 2, coll.GetAddressOf()))) return;
-    ComPtr<ID2D1LinearGradientBrush> brush;
-    if (FAILED(dc->CreateLinearGradientBrush(
-            D2D1::LinearGradientBrushProperties(D2D1::Point2F(rect.left, rect.top),
-                                                D2D1::Point2F(rect.left, rect.bottom)),
-            coll.Get(), brush.GetAddressOf()))) {
-        return;
-    }
-    dc->FillRectangle(rect, brush.Get());
-}
+// Match the application's StyledScrollBar dimensions and OutCubic timing.
+constexpr float kScrollbarRestWidth = 4.0f;
+constexpr float kScrollbarHotWidth = 6.0f;
+constexpr float kScrollbarInset = 2.0f;
+constexpr float kScrollbarHitWidth = 12.0f;
+constexpr CubicBezier kScrollbarEase{1.0f / 3.0f, 1.0f, 2.0f / 3.0f, 1.0f};
 
 }  // namespace
 
@@ -201,36 +185,45 @@ void ProgressBar::Render(ID2D1DeviceContext* dc, const Theme& theme) {
     const float h = bounds_.bottom - bounds_.top;
     if (w <= 0.0f || h <= 0.0f) return;
 
-    const float r = std::min(radius::Small, h * 0.5f);  // 圆角 4（矮条时钳到半高）
+    // 设计稿「矩形_146」：12 高胶囊轨道（r6）#EEEEEE + 1px #E9E9E9 描边，
+    // 内部 8 高胶囊填充（r4，黑色 80%），四周各留 2 DIP 内边距。
+    const float r = std::min(radius::Track, h * 0.5f);
     const D2D1_ROUNDED_RECT track = D2D1::RoundedRect(bounds_, r, r);
 
-    // 轨道底色。
-    ComPtr<ID2D1SolidColorBrush> trackBrush = MakeBrush(dc, theme.cardStroke);
+    ComPtr<ID2D1SolidColorBrush> trackBrush = MakeBrush(dc, theme.fieldFill);
     if (trackBrush) dc->FillRoundedRectangle(track, trackBrush.Get());
+    ComPtr<ID2D1SolidColorBrush> strokeBrush = MakeBrush(dc, theme.fieldStroke);
+    if (strokeBrush) dc->DrawRoundedRectangle(track, strokeBrush.Get(), 1.0f);
 
-    ComPtr<ID2D1SolidColorBrush> fillBrush = MakeBrush(dc, theme.accent);
+    ComPtr<ID2D1SolidColorBrush> fillBrush = MakeBrush(dc, theme.trackProgress);
     if (!fillBrush) return;
+
+    const float pad = std::min(2.0f, h * 0.25f);
+    const float fillH = std::max(1.0f, h - 2.0f * pad);
+    const float fillR = std::min(radius::TrackFill, fillH * 0.5f);
+    const float innerLeft = bounds_.left + pad;
+    const float innerW = std::max(0.0f, w - 2.0f * pad);
+    const D2D1_RECT_F inner =
+        D2D1::RectF(innerLeft, bounds_.top + pad, innerLeft + innerW, bounds_.top + pad + fillH);
 
     if (indeterminate_) {
         EnsureMarquee();
         const float phase = MarqueePhase();
-        const float barW = w * 0.35f;
-        const float barLeft = bounds_.left - barW + phase * (w + barW);
-        const D2D1_RECT_F bar = D2D1::RectF(barLeft, bounds_.top, barLeft + barW, bounds_.bottom);
-        dc->PushAxisAlignedClip(bounds_, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-        dc->FillRoundedRectangle(D2D1::RoundedRect(bar, r, r), fillBrush.Get());
+        const float barW = innerW * 0.35f;
+        const float barLeft = innerLeft - barW + phase * (innerW + barW);
+        const D2D1_RECT_F bar = D2D1::RectF(barLeft, inner.top, barLeft + barW, inner.bottom);
+        dc->PushAxisAlignedClip(inner, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        dc->FillRoundedRectangle(D2D1::RoundedRect(bar, fillR, fillR), fillBrush.Get());
         dc->PopAxisAlignedClip();
         return;
     }
 
     const float frac = FillFraction();
     if (frac <= 0.0f) return;
-    const float fillRight = bounds_.left + w * frac;
-    // 裁切到填充宽度后整块填充圆角轨道：左端圆角、右端齐平。
-    dc->PushAxisAlignedClip(D2D1::RectF(bounds_.left, bounds_.top, fillRight, bounds_.bottom),
-                            D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    dc->FillRoundedRectangle(track, fillBrush.Get());
-    dc->PopAxisAlignedClip();
+    const float fillWidth = innerW * frac;
+    const float capRadius = std::min(fillR, fillWidth * 0.5f);
+    const auto fill = D2D1::RectF(inner.left, inner.top, inner.left + fillWidth, inner.bottom);
+    dc->FillRoundedRectangle(D2D1::RoundedRect(fill, capRadius, fillR), fillBrush.Get());
 }
 
 // ============================== LicenseBox ==================================
@@ -263,19 +256,35 @@ void LicenseBox::BindWriteFactory(IDWriteFactory* factory) {
 }
 
 void LicenseBox::BindAnimator(Animator* animator) {
+    scrollAnim_ = nullptr;
+    scrollbarAnim_ = nullptr;
     animator_ = animator;
-    if (animator_) scrollName_ = SerialName("license", g_feedbackSerial.fetch_add(1), "scroll");
+    if (animator_) {
+        const unsigned serial = g_feedbackSerial.fetch_add(1, std::memory_order_relaxed);
+        scrollName_ = SerialName("license", serial, "scroll");
+        scrollbarName_ = SerialName("license", serial, "scrollbar");
+    }
 }
 
-D2D1_RECT_F LicenseBox::PanelRect() const { return bounds_; }
-
 D2D1_RECT_F LicenseBox::ContentRect() const {
-    const float pad = spacing::M;
-    const float scrollbarReserve = 6.0f + spacing::XS;  // 4px 滚动条 + 间隙
-    D2D1_RECT_F r = D2D1::RectF(bounds_.left + pad, bounds_.top + pad, bounds_.right - pad,
-                                bounds_.bottom - pad);
-    r.right -= scrollbarReserve;
-    return r;
+    return D2D1::RectF(bounds_.left + spacing::M, bounds_.top + spacing::M,
+                       bounds_.right - spacing::M, bounds_.bottom - spacing::M);
+}
+
+bool LicenseBox::HitsScrollbar(float x, float y) const {
+    const auto content = ContentRect();
+    return x >= bounds_.right - kScrollbarHitWidth && x <= bounds_.right &&
+           y >= content.top && y <= content.bottom && MaxScroll() > 0.0f;
+}
+
+void LicenseBox::UpdateScrollbarHover(bool hovered) {
+    if (hovered == scrollbarHovered_) return;
+    const float from = scrollbarAnim_ ? scrollbarAnim_->Value() : (scrollbarHovered_ ? 1.0f : 0.0f);
+    scrollbarHovered_ = hovered;
+    scrollbarAnim_ = animator_ && !animator_->ReduceMotion()
+        ? &animator_->Animate(scrollbarName_, from, hovered ? 1.0f : 0.0f,
+                             120.0f, kScrollbarEase)
+        : nullptr;
 }
 
 float LicenseBox::ViewportHeight() const {
@@ -339,12 +348,12 @@ float LicenseBox::ScrollOffset() const {
 
 void LicenseBox::SetTargetOffset(float target, bool animate) {
     const float clamped = std::clamp(target, 0.0f, MaxScroll());
+    const float from = ScrollOffset();
     targetOffset_ = clamped;
     if (!animate || !animator_) {
         scrollAnim_ = nullptr;  // 立即到位
         return;
     }
-    const float from = scrollAnim_ ? scrollAnim_->Value() : clamped;
     if (from == clamped) {
         scrollAnim_ = nullptr;
         return;
@@ -362,6 +371,11 @@ bool LicenseBox::AtBottom() const {
     return ScrollOffset() >= maxScroll - 0.5f;
 }
 
+float LicenseBox::ThumbHeight() const {
+    const float h = ViewportHeight();
+    return std::clamp(h * h / std::max(ContentHeight(), 1.0f), std::min(24.0f, h), h);
+}
+
 bool LicenseBox::HitTest(float x, float y) const {
     return x >= bounds_.left && x <= bounds_.right && y >= bounds_.top && y <= bounds_.bottom;
 }
@@ -370,9 +384,12 @@ bool LicenseBox::OnInput(const InputEvent& event) {
     switch (event.kind) {
         case InputEvent::Wheel: {
             // key 为带符号滚动量（WHEEL_DELTA 单位）；正 = 向上滚。
-            const float notches = static_cast<float>(event.key) / 120.0f;
+            const float notches = static_cast<float>(event.key) / static_cast<float>(WHEEL_DELTA);
             const float step = fontsize::Body * 3.0f;
-            SetTargetOffset(targetOffset_ - notches * step, true);
+            // Sub-notch deltas arrive in quick succession; preserve each fractional DIP
+            // without starting another easing curve before the previous frame is visible.
+            const bool discrete = event.key % WHEEL_DELTA == 0;
+            SetTargetOffset(std::clamp(targetOffset_, 0.0f, MaxScroll()) - notches * step, discrete);
             return true;
         }
         case InputEvent::Down:
@@ -380,21 +397,37 @@ bool LicenseBox::OnInput(const InputEvent& event) {
                 dragging_ = true;
                 dragStartY_ = event.y;
                 dragStartOffset_ = ScrollOffset();
+                SetScrollOffset(dragStartOffset_);
+                const auto content = ContentRect();
+                const float max = MaxScroll();
+                draggingThumb_ = HitsScrollbar(event.x, event.y);
+                UpdateScrollbarHover(draggingThumb_);
+                if (draggingThumb_) {
+                    const float thumbH = ThumbHeight();
+                    const float top = content.top + (ViewportHeight() - thumbH) * dragStartOffset_ / max;
+                    if (event.y < top || event.y > top + thumbH) {
+                        dragging_ = draggingThumb_ = false;
+                        SetTargetOffset(dragStartOffset_ + (event.y < top ? -1 : 1) * ViewportHeight(), true);
+                    }
+                }
                 return true;
             }
             return false;
         case InputEvent::Move:
             if (dragging_) {
-                SetTargetOffset(dragStartOffset_ - (event.y - dragStartY_), false);
+                const float ratio = draggingThumb_ ? MaxScroll() / std::max(1.0f, ViewportHeight() - ThumbHeight()) : -1.0f;
+                SetTargetOffset(dragStartOffset_ + ratio * (event.y - dragStartY_), false);
                 return true;
             }
+            UpdateScrollbarHover(HitsScrollbar(event.x, event.y));
             return HitTest(event.x, event.y);
-        case InputEvent::Up:
-            if (dragging_) {
-                dragging_ = false;
-                return true;
-            }
-            return false;
+        case InputEvent::Up: {
+            const bool wasDragging = dragging_;
+            dragging_ = false;
+            draggingThumb_ = false;
+            UpdateScrollbarHover(HitsScrollbar(event.x, event.y));
+            return wasDragging;
+        }
         case InputEvent::Key: {
             const float step = fontsize::Body * 3.0f;
             const float page = std::max(1.0f, ViewportHeight() * 0.9f);
@@ -418,21 +451,10 @@ void LicenseBox::OnFocus(bool focused) { focused_ = focused; }
 void LicenseBox::Render(ID2D1DeviceContext* dc, const Theme& theme) {
     if (!dc) return;
     EnsureLayout();
-    const float w = bounds_.right - bounds_.left;
-    const float h = bounds_.bottom - bounds_.top;
-    if (w <= 0.0f || h <= 0.0f) return;
-
-    // 圆角面板 + 描边（focus = accent）。
-    const D2D1_ROUNDED_RECT panel =
-        D2D1::RoundedRect(PanelRect(), radius::Medium, radius::Medium);
-    ComPtr<ID2D1SolidColorBrush> card = MakeBrush(dc, theme.card);
-    if (card) dc->FillRoundedRectangle(panel, card.Get());
-    const D2D1_COLOR_F stroke = focused_ ? theme.accent : theme.cardStroke;
-    ComPtr<ID2D1SolidColorBrush> strokeBrush = MakeBrush(dc, stroke);
-    if (strokeBrush) dc->DrawRoundedRectangle(panel, strokeBrush.Get(), focused_ ? 1.6f : 1.0f);
-
     const D2D1_RECT_F c = ContentRect();
+    if (c.right <= c.left || c.bottom <= c.top) return;
     const float offset = ScrollOffset();
+    if (auto background = MakeBrush(dc, theme.card)) dc->FillRectangle(bounds_, background.Get());
 
     // 文本裁剪：滚动的唯一体现是 DrawTextLayout 原点上移 offset。
     dc->PushAxisAlignedClip(c, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -445,35 +467,26 @@ void LicenseBox::Render(ID2D1DeviceContext* dc, const Theme& theme) {
     }
     dc->PopAxisAlignedClip();
 
-    // 顶/底边缘淡出遮罩（用面板色渐隐，营造「内容在边缘溶入面板」）。
-    const float fadeH = std::min(16.0f, (c.bottom - c.top) * 0.25f);
-    DrawFadeMask(dc, theme.card, D2D1::RectF(c.left, c.top, c.right, c.top + fadeH), true);
-    DrawFadeMask(dc, theme.card, D2D1::RectF(c.left, c.bottom - fadeH, c.right, c.bottom), false);
-
-    // 细滚动条（仅在内容溢出时）。
     const float maxScroll = MaxScroll();
-    if (maxScroll > 0.0f) {
-        const float trackX = bounds_.right - spacing::S - 4.0f;
-        const float trackTop = c.top;
-        const float trackBot = c.bottom;
-        const float trackH = trackBot - trackTop;
-        ComPtr<ID2D1SolidColorBrush> tb = MakeBrush(dc, theme.cardStroke);
-        if (tb) {
-            dc->FillRoundedRectangle(
-                D2D1::RoundedRect(D2D1::RectF(trackX, trackTop, trackX + 4.0f, trackBot), 2.0f, 2.0f),
-                tb.Get());
+    if (maxScroll <= 0.0f) return;
+
+    const float hover = scrollbarAnim_ ? scrollbarAnim_->Value() : (scrollbarHovered_ ? 1.0f : 0.0f);
+    const float width = kScrollbarRestWidth + (kScrollbarHotWidth - kScrollbarRestWidth) * hover;
+    const float right = bounds_.right - kScrollbarInset;
+    const float left = std::max(bounds_.left, right - width);
+    if (hover > 0.0f) {
+        auto track = MakeBrush(dc, ScaleAlpha(theme.textSecondary, hover * 0.18f));
+        if (track) {
+            dc->FillRoundedRectangle(D2D1::RoundedRect(
+                D2D1::RectF(left, c.top, right, c.bottom), width * 0.5f, width * 0.5f), track.Get());
         }
-        float thumbH = trackH * (trackH / std::max(contentHeight_, 1.0f));
-        thumbH = std::clamp(thumbH, 24.0f, trackH);
-        const float t = std::clamp(offset / maxScroll, 0.0f, 1.0f);
-        const float thumbY = trackTop + t * (trackH - thumbH);
-        ComPtr<ID2D1SolidColorBrush> hb = MakeBrush(dc, ScaleAlpha(theme.textSecondary, 0.7f));
-        if (hb) {
-            dc->FillRoundedRectangle(
-                D2D1::RoundedRect(D2D1::RectF(trackX, thumbY, trackX + 4.0f, thumbY + thumbH), 2.0f,
-                                  2.0f),
-                hb.Get());
-        }
+    }
+    const float thumbHeight = ThumbHeight();
+    const float thumbY = c.top + (ViewportHeight() - thumbHeight) * offset / maxScroll;
+    auto thumb = MakeBrush(dc, ScaleAlpha(theme.textSecondary, 0.7f + 0.3f * hover));
+    if (thumb) {
+        dc->FillRoundedRectangle(D2D1::RoundedRect(
+            D2D1::RectF(left, thumbY, right, thumbY + thumbHeight), width * 0.5f, width * 0.5f), thumb.Get());
     }
 }
 

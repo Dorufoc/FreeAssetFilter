@@ -10,8 +10,7 @@
 //   * 构造后由宿主注入 Animator / TextFactory / GlyphFont（均可为空——为空时控件
 //     退化为无动画 / 无文字，绝不会崩溃）；
 //   * `Layout(contentCard)` 只做纯几何计算，不做任何 I/O；
-//   * `Render(dc, theme)` 只消费 theme.h 的既有 token（红警示沿用 pages_welcome /
-//     pages_progress 已有的 `(0.85, 0.20, 0.20)` 警示色，**不新增 token**）；
+//   * `Render(dc, theme)` 使用配置页的主题与字号，只在绘制时平移 PageOffsetDip；
 //   * `Host()` 返回页面唯一的 WidgetHost（注册顺序即 Tab 顺序），输入与 Tab 分发
 //     复用 controls_base.h 的既有路径。
 //
@@ -36,7 +35,6 @@
 
 #include <functional>
 #include <string>
-#include <vector>
 
 #include "render/animation.h"
 #include "render/app_state.h"
@@ -48,19 +46,11 @@
 
 namespace spk {
 
+class LogoBitmap;
+
 // ============================== Maintenance 页（Page=5） ====================
 
-// 维护页（英雄页）：标题 + 副标题 + 安装路径/版本/完整性 + 「修复」「卸载」「取消」。
-//
-// 按钮语义（T11 注入回调；未注入时点击安全无操作）：
-//   * 修复   —— Accent 风格；仅在 `detected == true` 时可用（未检测到安装时禁用）；
-//   * 卸载   —— Secondary 风格；始终可用（部分安装的残留也需要可清理路径）；
-//   * 取消   —— Secondary 风格；始终可用。
-//
-// `SetInfo` 直接对应 MaintenanceInfo（T2）的四个关键字段；构造时先用
-// AppState.installDir / installedVersion / installDetected 做初值，T11 在
-// `Detect()` 之后调用 SetInfo 覆盖。`complete == false` 时页面以警示色提示
-// “程序文件不完整，建议执行修复”；`detected == false` 时提示未检测到安装。
+// 新版本显示更新和修复，同版本显示修复和卸载，卸载入口仅显示卸载。
 class MaintenancePage {
 public:
     // state 仅借用（读取初值），生命周期必须长于本页。
@@ -71,14 +61,12 @@ public:
     void BindText(const TextFactory* text);
     void BindGlyphs(const GlyphFont* glyphs);
 
-    // T11：进入维护页后以 MaintenanceInfo 填充。
-    //   installDir —— 安装目录（空串显示「未检测到」）；
-    //   version    —— 已安装版本（空串显示「未知」）；
-    //   detected   —— 是否检测到已安装（false 时禁用「修复」）；
-    //   complete   —— 程序文件是否完整（false 时显示修复建议）。
     void SetInfo(std::wstring installDir, std::wstring version, bool detected, bool complete);
+    void SetOffer(MaintenanceOffer offer);
+    void SetBackground(const LogoBitmap* background) { background_ = background; }
 
     // ---- 意图回调（均为无参 void()；由 T11 注入）----
+    void SetOnUpdate(std::function<void()> cb);
     void SetOnRepair(std::function<void()> cb);
     void SetOnUninstall(std::function<void()> cb);
     void SetOnCancel(std::function<void()> cb);
@@ -98,57 +86,43 @@ public:
     bool Detected() const noexcept { return detected_; }
     bool Complete() const noexcept { return complete_; }
 
+    Button& UpdateButton() noexcept { return updateButton_; }
     Button& RepairButton() noexcept { return repairButton_; }
     Button& UninstallButton() noexcept { return uninstallButton_; }
     Button& CancelButton() noexcept { return cancelButton_; }
 
 private:
-    void UpdateButtonStates();
+    void UpdateActions();
     void RelayoutIfReady();
 
-    AppState& state_;  // 借用（仅构造期读取初值）
     std::wstring installDir_;
     std::wstring version_;
     bool detected_ = false;
     bool complete_ = false;
 
+    MaintenanceOffer offer_ = MaintenanceOffer::Repair;
+    Button updateButton_;
     Button repairButton_;
     Button uninstallButton_;
     Button cancelButton_;
     WidgetHost host_;
 
     const TextFactory* text_ = nullptr;
+    const LogoBitmap* background_ = nullptr;
 
+    std::function<void()> onUpdate_;
     std::function<void()> onRepair_;
     std::function<void()> onUninstall_;
     std::function<void()> onCancel_;
 
     D2D1_RECT_F card_{};
     D2D1_RECT_F titleRect_{};
-    D2D1_RECT_F subtitleRect_{};
-    D2D1_RECT_F pathRect_{};
-    D2D1_RECT_F versionRect_{};
-    D2D1_RECT_F statusRect_{};
-    D2D1_RECT_F warningRect_{};
-    D2D1_RECT_F repairRect_{};
-    D2D1_RECT_F uninstallRect_{};
-    D2D1_RECT_F cancelRect_{};
+    D2D1_RECT_F detailRect_{};
 };
 
 // ============================== UninstallConfirm 页（Page=6） ==============
 
-// 卸载确认页（英雄页）：删除范围说明 + 「同时删除用户数据（设置、缓存、日志）」
-// 复选框（默认 false）+ 「卸载」「取消」。
-//
-// 复选框直接绑定 AppState.deleteUserData（§12）：
-//   * SyncFromState()：state → 复选框（T12 进入页面时先置 false 再调用）；
-//   * SyncToState()  ：复选框 → state（T12 点击「卸载」时调用）；
-//   * 勾选/取消勾选时也即时写回 state（与 LicensePage 的同意勾选一致），保证
-//     Layout / 重绘不会回退用户的选择。
-//
-// 文案遵循 D15 C3：`%LOCALAPPDATA%\Sopeek`、`$INSTDIR\data`、
-// `$INSTDIR\_internal\data` 为已知用户数据；`SPK_DATA_DIR` 自定义目录永不删除；
-// 未知用户文件与用户导出的文件不会被删除。
+// 卸载欢迎与选项页复用同一布局实现，数据删除选项只出现在第二页。
 class UninstallConfirmPage {
 public:
     // state 仅借用；生命周期必须长于本页。
@@ -158,6 +132,9 @@ public:
     void BindAnimator(Animator* animator);
     void BindText(const TextFactory* text);
     void BindGlyphs(const GlyphFont* glyphs);
+
+    void SetBackground(const LogoBitmap* background) { background_ = background; }
+    void SetChecklist(bool checklist);
 
     // ---- 意图回调（均为无参 void()；由 T12 注入）----
     void SetOnConfirm(std::function<void()> cb);
@@ -189,17 +166,14 @@ private:
 
     const TextFactory* text_ = nullptr;
 
+    const LogoBitmap* background_ = nullptr;
+    bool checklist_ = true;
+
     std::function<void()> onConfirm_;
     std::function<void()> onCancel_;
 
     D2D1_RECT_F card_{};
     D2D1_RECT_F titleRect_{};
-    D2D1_RECT_F introRect_{};
-    D2D1_RECT_F headingRect_{};
-    std::vector<D2D1_RECT_F> scopeRects_;
-    D2D1_RECT_F checkboxRect_{};
-    D2D1_RECT_F confirmRect_{};
-    D2D1_RECT_F cancelRect_{};
 };
 
 // ============================== Message 页（Page=7） =======================

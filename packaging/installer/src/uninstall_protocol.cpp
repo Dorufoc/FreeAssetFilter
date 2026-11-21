@@ -347,6 +347,9 @@ bool WriteMaintenanceDecision(const std::wstring& path, MaintenanceAction action
 
     const wchar_t* actionText = nullptr;
     switch (action) {
+        case MaintenanceAction::Update:
+            actionText = proto::kActionUpdate;
+            break;
         case MaintenanceAction::Repair:
             actionText = proto::kActionRepair;
             break;

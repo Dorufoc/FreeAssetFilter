@@ -26,6 +26,9 @@ public:
 
     bool IsReady() const noexcept { return factory_ != nullptr; }
 
+    // 底层 DWrite 工厂（非拥有）。需要自建 IDWriteTextLayout 度量文字宽度时使用。
+    IDWriteFactory* Factory() const noexcept { return factory_; }
+
     // 实际选定的族名（preferred 命中则为 preferred，否则 fallback）。
     const std::wstring& Family() const noexcept { return family_; }
 

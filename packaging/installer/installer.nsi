@@ -1,6 +1,11 @@
-Unicode true
+﻿Unicode true
 ; Prioritize smallest installer size over build/extraction speed.
 ; Keep bootstrap files independently extractable so the GUI appears immediately.
+; Section Install writes the shortcuts, the autostart Run value, the Explorer
+; context-menu verbs (ctxmenu=1 -> Directory\shell\Sopeek and *\shell\Sopeek) and
+; the Add/Remove metadata; Section Uninstall removes each of them again.
+; Keep this file UTF-8 with BOM: the context-menu labels are Chinese and makensis
+; reads a BOM-less script as ACP, which it rejects as bad text encoding.
 SetCompressor lzma
 SetCompressorDictSize 64
 !include LogicLib.nsh
@@ -554,26 +559,12 @@ engineMutexClear:
   ; T15 installed detection is exactly: app exe OR _internal. No other signal
   ; (result INI, shortcuts, Add/Remove entry) may force maintenance mode.
   ;
-  ; Upgrade vs maintenance: when the installed version is OLDER than this package,
-  ; run the normal install flow over the existing directory (an in-place upgrade);
-  ; when it is the same or newer, enter maintenance (repair / uninstall).
-  ; The comparison lives in the GUI (/version-decision, C++ side) because multi-part
-  ; numeric comparison is error-prone in NSIS script. Exit codes: 10 = upgrade,
-  ; 0 = maintenance. Any other code (helper failed) falls back to maintenance.
-  IfFileExists "$INSTDIR\Sopeek.exe" 0 spkCheckInternal
-  Goto spkEvaluateInstalled
-spkCheckInternal:
-  IfFileExists "$INSTDIR\_internal" 0 spkFreshInstall
-spkEvaluateInstalled:
-  ClearErrors
-  ExecWait '"$GuiTempExe" /version-decision /installdir "$INSTDIR" /package-version "${SPK_PRODUCT_VERSION}"' $0
-  ${If} $0 == 10
-    Goto spkFreshInstall
-  ${EndIf}
-  Goto installed
+  ; Existing installations always enter maintenance. The GUI compares versions
+  ; and offers only the valid actions for this package.
+  IfFileExists "$INSTDIR\Sopeek.exe" installed
+  IfFileExists "$INSTDIR\_internal" installed
 
-spkFreshInstall:
-  ; Fresh install (or in-place upgrade when the installed version is older).
+  ; Fresh install.
   ; The only difference is that the GUI now runs from the temp copy (with
   ; libwinpthread-1.dll next to it).
   ; Test branch drives the GUI unattended: /auto:opts=<bits> (contract §17)
@@ -588,10 +579,10 @@ spkFreshInstall:
   StrCpy $R3 "${SPK_AUTO_PROFILE}"
 installOptsReady:
   ClearErrors
-  Exec '"$GuiTempExe" /payload "$PLUGINSDIR\payload" /result "${RESULT_INI}" /installdir "$INSTDIR" /payload-bytes ${PAYLOAD_BYTES} /auto:opts=$R3'
+  Exec '"$GuiTempExe" /payload "$PLUGINSDIR\payload" /result "${RESULT_INI}" /installdir "$INSTDIR" /setup-pid $SetupPid /payload-bytes ${PAYLOAD_BYTES} /auto:opts=$R3'
 !else
   ClearErrors
-  Exec '"$GuiTempExe" /payload "$PLUGINSDIR\payload" /result "${RESULT_INI}" /installdir "$INSTDIR" /payload-bytes ${PAYLOAD_BYTES}'
+  Exec '"$GuiTempExe" /payload "$PLUGINSDIR\payload" /result "${RESULT_INI}" /installdir "$INSTDIR" /setup-pid $SetupPid /payload-bytes ${PAYLOAD_BYTES}'
 !endif
   ; H3/F1: a refused Exec (missing image, ACL, AV) has no error code of its own;
   ; without this it fell through to the liveness wait and exited 0 after 10s.
@@ -614,10 +605,10 @@ installed:
   ; T20 runtime hook: /auto:mode=maintenance + action for unattended QA.
   ReadEnvStr $R2 "SPK_QA_MAINTENANCE_EXTRA"
   ClearErrors
-  Exec '"$GuiTempExe" /maintenance /payload "$PLUGINSDIR\payload" /result "${RESULT_INI}" /installdir "$INSTDIR" /decision "$DecisionIni" /setup-pid $SetupPid /payload-bytes ${PAYLOAD_BYTES} $R2'
+  Exec '"$GuiTempExe" /maintenance /package-version "${SPK_PRODUCT_VERSION}" /payload "$PLUGINSDIR\payload" /result "${RESULT_INI}" /installdir "$INSTDIR" /decision "$DecisionIni" /setup-pid $SetupPid /payload-bytes ${PAYLOAD_BYTES} $R2'
 !else
   ClearErrors
-  Exec '"$GuiTempExe" /maintenance /payload "$PLUGINSDIR\payload" /result "${RESULT_INI}" /installdir "$INSTDIR" /decision "$DecisionIni" /setup-pid $SetupPid /payload-bytes ${PAYLOAD_BYTES}'
+  Exec '"$GuiTempExe" /maintenance /package-version "${SPK_PRODUCT_VERSION}" /payload "$PLUGINSDIR\payload" /result "${RESULT_INI}" /installdir "$INSTDIR" /decision "$DecisionIni" /setup-pid $SetupPid /payload-bytes ${PAYLOAD_BYTES}'
 !endif
   ; H3/F1: same fail-fast as the fresh-install Exec. No process -> no decision
   ; file can ever appear, so waiting would just burn the 30-minute timeout.
@@ -659,8 +650,10 @@ decisionGuiGone:
   Call CloseSetupMutex
   Abort
 decisionReady:
-  StrCmp $0 "repair" 0 decisionNonRepair
-  ; repair: ack FIRST, then release payload + sentinel, then the unchanged
+  StrCmp $0 "repair" decisionApply
+  StrCmp $0 "update" decisionApply decisionNonRepair
+ decisionApply:
+  ; repair/update: ack FIRST, then release payload + sentinel, then the unchanged
   ; install-result wait (repair success lets Section Install refresh metadata).
   ClearErrors
   WriteINIStr "$DecisionIni" "${DECISION_SECTION}" "${DECISION_KEY_ACK}" "1"
@@ -1361,6 +1354,42 @@ startmenuRemove:
 !endif
 startmenuDone:
 
+  ; Optional Explorer context-menu entries ("open with Sopeek") for directories and
+  ; for files, driven by the result INI (the GUI defaults ctxmenu to 1). A menu left
+  ; behind by an earlier install is removed when the flag is 0. Production writes the
+  ; machine-wide HKLM keys in the native 64-bit view (the view this section already
+  ; selected above); test builds write the isolated SopeekTest verbs under HKCU and
+  ; can never touch a production key.
+  ReadINIStr $0 "${RESULT_INI}" "install" "ctxmenu"
+  StrCmp $0 "1" 0 ctxmenuRemove
+!ifdef SPK_TESTMODE
+  WriteRegStr HKCU "Software\Classes\Directory\shell\SopeekTest" "" "用 Sopeek 打开"
+  WriteRegStr HKCU "Software\Classes\Directory\shell\SopeekTest" "Icon" '"$INSTDIR\Sopeek.exe",0'
+  WriteRegStr HKCU "Software\Classes\Directory\shell\SopeekTest\command" "" '"$INSTDIR\Sopeek.exe" "%1"'
+  WriteRegStr HKCU "Software\Classes\*\shell\SopeekTest" "" "用 Sopeek 打开"
+  WriteRegStr HKCU "Software\Classes\*\shell\SopeekTest" "Icon" '"$INSTDIR\Sopeek.exe",0'
+  WriteRegStr HKCU "Software\Classes\*\shell\SopeekTest\command" "" '"$INSTDIR\Sopeek.exe" "%1"'
+!else
+  WriteRegStr HKLM "Software\Classes\Directory\shell\Sopeek" "" "用 Sopeek 打开"
+  WriteRegStr HKLM "Software\Classes\Directory\shell\Sopeek" "Icon" '"$INSTDIR\Sopeek.exe",0'
+  WriteRegStr HKLM "Software\Classes\Directory\shell\Sopeek\command" "" '"$INSTDIR\Sopeek.exe" "%1"'
+  WriteRegStr HKLM "Software\Classes\*\shell\Sopeek" "" "用 Sopeek 打开"
+  WriteRegStr HKLM "Software\Classes\*\shell\Sopeek" "Icon" '"$INSTDIR\Sopeek.exe",0'
+  WriteRegStr HKLM "Software\Classes\*\shell\Sopeek\command" "" '"$INSTDIR\Sopeek.exe" "%1"'
+!endif
+  Goto ctxmenuDone
+ctxmenuRemove:
+  ; Idempotent cleanup: deleting the verb key also removes its command subkey, and a
+  ; missing key is a no-op (the user installed this option once and unchecked it now).
+!ifdef SPK_TESTMODE
+  DeleteRegKey HKCU "Software\Classes\Directory\shell\SopeekTest"
+  DeleteRegKey HKCU "Software\Classes\*\shell\SopeekTest"
+!else
+  DeleteRegKey HKLM "Software\Classes\Directory\shell\Sopeek"
+  DeleteRegKey HKLM "Software\Classes\*\shell\Sopeek"
+!endif
+ctxmenuDone:
+
   ; T16: install-info metadata. Test builds use the isolated per-user test key;
   ; production uses the production key.
 !ifdef SPK_TESTMODE
@@ -1412,14 +1441,20 @@ optStartmenuOn:
   StrCmp $6 "1" optAutostartOn
   StrCpy $6 0
 optAutostartOn:
+  ReadINIStr $7 "${RESULT_INI}" "install" "ctxmenu"
+  StrCmp $7 "1" optCtxMenuOn
+  StrCpy $7 0
+optCtxMenuOn:
 !ifdef SPK_TESTMODE
   WriteRegDWORD HKCU "Software\SopeekTest" "OptDesktop" $4
   WriteRegDWORD HKCU "Software\SopeekTest" "OptStartmenu" $5
   WriteRegDWORD HKCU "Software\SopeekTest" "OptAutostart" $6
+  WriteRegDWORD HKCU "Software\SopeekTest" "OptCtxMenu" $7
 !else
   WriteRegDWORD HKCU "Software\Sopeek" "OptDesktop" $4
   WriteRegDWORD HKCU "Software\Sopeek" "OptStartmenu" $5
   WriteRegDWORD HKCU "Software\Sopeek" "OptAutostart" $6
+  WriteRegDWORD HKCU "Software\Sopeek" "OptCtxMenu" $7
 !endif
 
   ; Optional autostart Run value (production only). Test builds must never read,
@@ -1451,10 +1486,12 @@ uninstallUiRenameFailed:
   Rename "$INSTDIR\SopeekUninstall.exe.old" "$INSTDIR\SopeekUninstall.exe"
   Goto uninstallPayloadFailed
 uninstallHelperFailed:
+  SetErrorLevel 2
   Delete "$INSTDIR\SopeekUninstall.exe.old"
   Delete "$INSTDIR\libwinpthread-1.dll.old"
   Abort
 uninstallPayloadFailed:
+  SetErrorLevel 2
   Delete "$INSTDIR\SopeekUninstall.exe.tmp"
   Delete "$INSTDIR\libwinpthread-1.dll.tmp"
   Abort
@@ -1500,6 +1537,54 @@ unSecStartDone:
   StrCpy $1 "300"
   Call un.WriteProgress
   SetRegView 64
+
+  ; Explorer context-menu verbs written by Section Install, removed in the same
+  ; native 64-bit view (production HKLM; test HKCU test verbs). Deleting the parent
+  ; verb key also removes its command subkey. A missing key is a normal no-op, so
+  ; existence is checked first (DeleteRegKey on an absent key sets the error flag).
+!ifdef SPK_TESTMODE
+  ReadRegStr $2 HKCU "Software\Classes\Directory\shell\SopeekTest" ""
+  StrCmp $2 "" unSecCtxMenuDirDone
+  ClearErrors
+  DeleteRegKey HKCU "Software\Classes\Directory\shell\SopeekTest"
+  IfErrors unSecCtxMenuDirFail
+  Goto unSecCtxMenuDirDone
+unSecCtxMenuDirFail:
+  StrCpy $UnErrorText "HKCU\Software\Classes\Directory\shell\SopeekTest"
+  Goto unSecFail
+unSecCtxMenuDirDone:
+  ReadRegStr $2 HKCU "Software\Classes\*\shell\SopeekTest" ""
+  StrCmp $2 "" unSecCtxMenuDone
+  ClearErrors
+  DeleteRegKey HKCU "Software\Classes\*\shell\SopeekTest"
+  IfErrors unSecCtxMenuFileFail
+  Goto unSecCtxMenuDone
+unSecCtxMenuFileFail:
+  StrCpy $UnErrorText "HKCU\Software\Classes\*\shell\SopeekTest"
+  Goto unSecFail
+unSecCtxMenuDone:
+!else
+  ReadRegStr $2 HKLM "Software\Classes\Directory\shell\Sopeek" ""
+  StrCmp $2 "" unSecCtxMenuDirDone
+  ClearErrors
+  DeleteRegKey HKLM "Software\Classes\Directory\shell\Sopeek"
+  IfErrors unSecCtxMenuDirFail
+  Goto unSecCtxMenuDirDone
+unSecCtxMenuDirFail:
+  StrCpy $UnErrorText "HKLM\Software\Classes\Directory\shell\Sopeek"
+  Goto unSecFail
+unSecCtxMenuDirDone:
+  ReadRegStr $2 HKLM "Software\Classes\*\shell\Sopeek" ""
+  StrCmp $2 "" unSecCtxMenuDone
+  ClearErrors
+  DeleteRegKey HKLM "Software\Classes\*\shell\Sopeek"
+  IfErrors unSecCtxMenuFileFail
+  Goto unSecCtxMenuDone
+unSecCtxMenuFileFail:
+  StrCpy $UnErrorText "HKLM\Software\Classes\*\shell\Sopeek"
+  Goto unSecFail
+unSecCtxMenuDone:
+!endif
 !ifndef SPK_TESTMODE
   ; Run value: remove only the quote-consistent value written by Section Install.
   ReadRegStr $2 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Sopeek"

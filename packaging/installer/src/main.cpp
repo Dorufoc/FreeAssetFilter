@@ -16,7 +16,10 @@
 #include <cstdlib>  // _wtoi（/auto:page= 解析）
 #include <filesystem>
 #include <fstream>
+#include <regex>
+#include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -365,91 +368,85 @@ std::wstring SelfExePath() {
 // ---------------------------------------------------------------------------
 // 版本判定（/version-decision）
 //
-// NSIS 的 .onInit 在检测到已安装产品后，需要决定走「升级」还是「维护」：
-//   已安装版本 < 本安装包版本 → 升级（按全新安装流程覆盖文件）
-//   已安装版本 ≥ 本安装包版本 → 维护（修复/卸载）
-// 版本串比较放在 C++ 里做（NSIS 脚本做多段数值比较既啰嗦又易错）。
-//
-// 已安装版本来自 <安装目录>\_internal\SPKVERSION 首行（随 payload 一起落地，
-// 与注册表 DisplayVersion 同源但更可靠、且不依赖注册表状态）。
-// ---------------------------------------------------------------------------
+// 比较结果供同一个 GUI 入口和命令行判定复用。夜间版高于同核心正式版。
+enum class VersionDecision { Same = 0, Update = 10, NewerInstalled = 11, Unknown = 12 };
 
-struct VersionQuad {
-    long long parts[4] = {0, 0, 0, 0};
+struct VersionKey {
+    std::vector<std::wstring> core;
+    std::vector<std::wstring> prerelease;
+    std::wstring nightly;
 };
 
-// 「.nightly-YYYYMMDD」后缀折算进第 4 段（YYYYMMDD 在 32/64 位整数内），
-// 这样 2.0.0.nightly-20261114 > 2.0.0，且同一天的 nightly 判定为相同版本。
-VersionQuad ParseVersionQuad(std::wstring raw) {
-    VersionQuad out;
-    const auto isDigit = [](wchar_t ch) { return ch >= L'0' && ch <= L'9'; };
-
-    while (!raw.empty() && (raw.front() == L' ' || raw.front() == L'\t')) raw.erase(raw.begin());
-    while (!raw.empty() && (raw.back() == L' ' || raw.back() == L'\t' || raw.back() == L'\r' ||
-                            raw.back() == L'\n')) {
-        raw.pop_back();
-    }
-    if (!raw.empty() && (raw.front() == L'v' || raw.front() == L'V')) raw.erase(raw.begin());
-
-    const std::wstring nightlyTag = L".nightly-";
-    const std::size_t nightlyPos = raw.find(nightlyTag);
-    if (nightlyPos != std::wstring::npos) {
-        const std::wstring stamp = raw.substr(nightlyPos + nightlyTag.size());
-        if (stamp.size() >= 8 &&
-            std::all_of(stamp.begin(), stamp.begin() + 8, isDigit)) {
-            out.parts[3] = std::stoll(stamp.substr(0, 8));
-        }
-        raw = raw.substr(0, nightlyPos);
-    }
-
-    std::size_t field = 0;
-    std::size_t pos = 0;
-    while (field < 3 && pos <= raw.size()) {
-        const std::size_t dot = raw.find(L'.', pos);
-        const std::wstring token =
-            raw.substr(pos, dot == std::wstring::npos ? std::wstring::npos : dot - pos);
-        long long value = 0;
-        bool anyDigit = false;
-        for (const wchar_t ch : token) {
-            if (!isDigit(ch)) break;  // 例：1.0.0-alpha.5 的 alpha 段忽略
-            value = value * 10 + (ch - L'0');
-            anyDigit = true;
-        }
-        out.parts[field++] = anyDigit ? value : 0;
-        if (dot == std::wstring::npos) break;
-        pos = dot + 1;
-    }
-    return out;
+std::vector<std::wstring> SplitIdentifiers(const std::wstring& text) {
+    std::vector<std::wstring> values;
+    std::wistringstream input(text);
+    std::wstring field;
+    while (std::getline(input, field, L'.')) values.push_back(std::move(field));
+    return values;
 }
 
-int CompareVersionQuad(const VersionQuad& left, const VersionQuad& right) {
-    for (int i = 0; i < 4; ++i) {
-        if (left.parts[i] < right.parts[i]) return -1;
-        if (left.parts[i] > right.parts[i]) return 1;
-    }
-    return 0;
+bool ParseVersion(std::wstring raw, VersionKey& out) {
+    const auto first = raw.find_first_not_of(L" \t\r\n\ufeff");
+    if (first == std::wstring::npos) return false;
+    raw = raw.substr(first, raw.find_last_not_of(L" \t\r\n") - first + 1);
+    static const std::wregex pattern(
+        LR"([vV]?([0-9]+\.[0-9]+\.[0-9]+)(?:\.nightly-([0-9]{8})|(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?))");
+    std::wsmatch match;
+    if (!std::regex_match(raw, match, pattern)) return false;
+    out.core = SplitIdentifiers(match[1].str());
+    out.nightly = match[2].str();
+    out.prerelease = SplitIdentifiers(match[3].str());
+    return true;
 }
 
-// 读取 <installDir>\_internal\SPKVERSION 的首行；失败返回空串。
+int CompareNumber(const std::wstring& a, const std::wstring& b) {
+    const auto normalize = [](const std::wstring& s) {
+        const auto pos = s.find_first_not_of(L'0');
+        return std::wstring_view(s).substr(pos == std::wstring::npos ? s.size() : pos);
+    };
+    const auto left = normalize(a);
+    const auto right = normalize(b);
+    if (left.size() != right.size()) return left.size() < right.size() ? -1 : 1;
+    return left.compare(right);
+}
+
+int CompareVersion(const VersionKey& left, const VersionKey& right) {
+    for (size_t i = 0; i < left.core.size(); ++i) {
+        const int cmp = CompareNumber(left.core[i], right.core[i]);
+        if (cmp) return cmp;
+    }
+    if (!left.nightly.empty() || !right.nightly.empty()) return left.nightly.compare(right.nightly);
+    const auto& a = left.prerelease;
+    const auto& b = right.prerelease;
+    if (a.empty() != b.empty()) return a.empty() ? 1 : -1;
+    for (size_t i = 0; i < std::min(a.size(), b.size()); ++i) {
+        const bool numericA = a[i].find_first_not_of(L"0123456789") == std::wstring::npos;
+        const bool numericB = b[i].find_first_not_of(L"0123456789") == std::wstring::npos;
+        if (numericA != numericB) return numericA ? -1 : 1;
+        const int cmp = numericA ? CompareNumber(a[i], b[i]) : a[i].compare(b[i]);
+        if (cmp) return cmp;
+    }
+    return a.size() < b.size() ? -1 : (a.size() > b.size() ? 1 : 0);
+}
+
 std::wstring ReadInstalledVersion(const std::wstring& installDir) {
     if (installDir.empty()) return {};
-    const std::filesystem::path versionFile =
-        std::filesystem::path(installDir) / L"_internal" / L"SPKVERSION";
-    std::wifstream input(versionFile);
-    if (!input.is_open()) return {};
-    std::wstring line;
-    std::getline(input, line);
-    return line;
+    std::ifstream input(std::filesystem::path(installDir) / L"_internal" / L"SPKVERSION", std::ios::binary);
+    std::string bytes;
+    std::getline(input, bytes);
+    if (bytes.compare(0, 3, "\xef\xbb\xbf") == 0) bytes.erase(0, 3);
+    if (bytes.empty() || bytes.size() > 512) return {};
+    if (bytes.back() == '\r') bytes.pop_back();
+    return std::wstring(bytes.begin(), bytes.end());  // SPKVERSION 版本号只允许 ASCII。
 }
 
-// 退出码：0 = 已安装同版本或更新（维护）；10 = 已安装更旧（升级）。
-// 无法判定（读不到已安装版本）时返回 0，即按维护处理——与既有行为一致、更保守。
-int RunVersionDecision(const ParsedArgs& args) {
-    const std::wstring installedRaw = ReadInstalledVersion(args.installDir);
-    if (installedRaw.empty()) return 0;
-    const VersionQuad installed = ParseVersionQuad(installedRaw);
-    const VersionQuad package = ParseVersionQuad(args.packageVersion);
-    return CompareVersionQuad(installed, package) < 0 ? 10 : 0;
+VersionDecision DecideVersion(const std::wstring& installed, const std::wstring& package) {
+    VersionKey left, right;
+    if (!ParseVersion(installed, left) || !ParseVersion(package, right)) return VersionDecision::Unknown;
+    const int order = CompareVersion(left, right);
+    if (order < 0) return VersionDecision::Update;
+    if (order > 0) return VersionDecision::NewerInstalled;
+    return VersionDecision::Same;
 }
 
 // 当前进程 token 的 user SID（字符串形式）。失败返回空串。
@@ -768,7 +765,7 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
     // /version-decision：仅比较版本并退出（NSIS 用它决定「升级 / 维护」），
     // 必须在任何模式判定、单实例互斥体与窗口创建之前返回。
     if (args.versionDecision) {
-        return RunVersionDecision(args);
+        return static_cast<int>(DecideVersion(ReadInstalledVersion(args.installDir), args.packageVersion));
     }
 
     // 双击安装目录里的卸载 EXE：无任何模式参数，且自身文件名就是卸载体。
@@ -911,6 +908,14 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
     InstallerWindow window(instance, args.payload, args.resultPath, args.installDir, mode,
                            args.decisionPath, args.setupPid, args.payloadTimeoutMs,
                            args.helperPid, {}, {}, args.payloadBytes);
+    if (mode == AppMode::Maintenance) {
+        const auto installedVersion = ReadInstalledVersion(args.installDir);
+        const auto comparison = DecideVersion(installedVersion, args.packageVersion);
+        const auto offer = comparison == VersionDecision::Update ? MaintenanceOffer::Update
+                           : comparison == VersionDecision::NewerInstalled ? MaintenanceOffer::UninstallOnly
+                                                                          : MaintenanceOffer::Repair;
+        window.SetMaintenanceOffer(offer, installedVersion);
+    }
 #ifdef SPK_TESTMODE
     // 测试构建：/auto 及其维护/卸载扩展参数才真正驱动无人值守流程；生产构建
     // 解析后直接丢弃（EnableAutoDrive 为 no-op，交互行为完全不变）。

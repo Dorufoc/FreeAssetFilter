@@ -23,23 +23,21 @@
 #include "render/animation.h"      // §16：帧时钟 / 缓动 / 可动画值 / 可观测性
 #include "render/app_state.h"
 #include "render/controls_base.h"      // §13/Todo 3：Widget / WidgetHost / InputEvent
-#include "render/controls_basic.h"     // Todo 7：Button（底部导航按钮）
-#include "render/controls_feedback.h"  // Todo 8：StepItem（左栏步骤栏）
+#include "render/controls_basic.h"     // Todo 7：Button（页内主按钮）
+#include "render/controls_feedback.h"  // Todo 8：ProgressBar / LicenseBox
 #include "render/glyphs.h"             // Todo 3：GlyphFont
+#include "render/hero_art.h"           // 设计稿品牌图形（英雄页/完成页）
 #include "render/install_engine.h"     // T11：InstallMode（StartInstall 的模式参数）
 #include "render/layout.h"  // §6：shell 矩形几何唯一来源（纯 DIP）
-#include "render/logo.h"    // Todo 3：LogoBitmap（欢迎页）
+#include "render/license_sheet.h"  // 独立协议阅读页
+#include "render/logo.h"    // Todo 3：LogoBitmap（标题栏图标 / 宣传图解码）
 #include "render/render_context.h"
 #include "render/text.h"    // Todo 3：TextFactory
 #include "render/theme.h"  // §5/§13：唯一 token 表（LightTheme/DarkTheme/GetTheme）
 
-// Todo 9/10/11 的页文件只在此前向声明；完整头仅在 installer_window.cpp 中包含
-// （页面对象以 std::unique_ptr 持有，析构在 cpp 内完成——见 Todo 12 接线）。
-// T10：维护 / 卸载确认 / 通用消息页同样只前向声明；T12 的卸载协调器仅以
-// std::shared_ptr 持有时无需完整类型（析构器类型擦除），实现由 T12 提供。
+// 页面对象只在此前向声明；完整头仅在 installer_window.cpp 中包含（unique_ptr 持有）。
 namespace spk {
 class WelcomePage;
-class LicensePage;
 class ConfigurePage;
 class ProgressPage;
 class FinishPage;
@@ -65,6 +63,8 @@ public:
                     std::wstring uninstallResultPath = {},
                     std::uint64_t payloadBytes = 0);
     ~InstallerWindow();
+    void SetMaintenanceOffer(MaintenanceOffer offer, std::wstring installedVersion);
+
 
     InstallerWindow(const InstallerWindow&) = delete;
     InstallerWindow& operator=(const InstallerWindow&) = delete;
@@ -104,8 +104,6 @@ private:
     // --- window shell ---
     bool CreateAppWindow();
     void InstallDwmEffects();      // 圆角 / Mica backdrop（build<22621 关闭）/ 深色模式 / 帧扩展（候选）
-    void ApplyDarkMode(bool dark); // §5：重设 DWMWA_USE_IMMERSIVE_DARK_MODE + 置脏
-    void RefreshSystemTheme();     // §5 实时切换：重读注册表 → 应用 → 重绘
     // T13：标题唯一同步点——windowTitle_ 是自绘标题栏文字，SetWindowTextW 同步
     // 原生窗口标题（任务栏/Alt+Tab）。构造期与窗口创建后各调用一次。
     void UpdateWindowTitle();
@@ -113,15 +111,15 @@ private:
     void OnSizeChanged(UINT widthPx, UINT heightPx);
     void OnDpiChanged(UINT newDpi, const RECT* suggested);
 
-    // --- rendering (placeholder shell; 页面/布局归后续 todo) ---
+    // --- rendering ---
     void Render();
     void Tick();
     void DrawContent(ID2D1DeviceContext* ctx);
-    void DrawMicaFallbackBase(ID2D1DeviceContext* ctx, const spk::Theme& theme,
-                              float alpha);                                  // §5 Win10 不透明渐变底
-    void DrawShellLayers(ID2D1DeviceContext* ctx, const spk::Theme& theme,
-                         float alpha);                                       // §5 左栏/内容卡/底部条
+    void DrawWindowCard(ID2D1DeviceContext* ctx, const spk::Theme& theme,
+                        float alpha);  // 设计稿窗口卡片（白底 + 1px 描边 + Win10 自绘阴影）
     void DrawTitleBar(ID2D1DeviceContext* ctx, const spk::Theme& theme, float alpha);
+    // 「开源协议 / 用户协议」页面入口（userAgreement=false ⇒ AGPL 全文）。
+    void OpenLicensePage(bool userAgreement);
 
     // --- 自绘标题栏窗口按钮（最小化/关闭）悬停与按下状态机 ---
     // 按下不立即激活：仅当「同一按钮上按下并在其上松开」才执行动作；移出后松开即取消
@@ -140,33 +138,28 @@ private:
     // UI-fix：新增可选 weight 形参（品牌头产品名需要 SemiBold；缺省 Regular 行为不变）。
     void DrawTextLine(ID2D1DeviceContext* ctx, const std::wstring& text, float x, float y,
                       float width, float height, float sizeDip, const D2D1_COLOR_F& color,
-                      DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_NORMAL);
+                      DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_NORMAL,
+                      DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING);
 
     // --- input helpers (DIP) ---
     void ClientPointToDip(POINT p, float* dx, float* dy) const;
+    bool HandleLicensePan(const GESTUREINFO& gesture);
+    void EndLicensePan();
     int MarginPx() const;
 
-    // --- page state machine wiring（Todo 12：把 9/10/11 页文件接入外壳）---
+    // --- page state machine wiring ---
     // 页面唯一来源 = AppState::page（§12）；本组方法只做接线，不改页内部实现。
-    void EnsurePages();      // render 就绪后惰性构造/绑定 5 页 + 步骤区 + 导航按钮
-    void ApplyPageEntry();   // 进入/切换页面：入场动效 + SyncFromState + Layout + 步骤栏/按钮刷新
+    void EnsurePages();      // render 就绪后惰性构造/绑定各页 + 窗口级资源
+    void ApplyPageEntry();   // 进入/切换页面：入场动效 + SyncFromState + Layout
     void LayoutPages();      // 仅按当前 shell 几何重排当前页（不含入场重置）
-    void SyncStepBar();      // 把 state_.page 推入 StepItem 状态（映射到 3 节点）
-    void UpdateNavButtons(); // 依页面/安装态/门控启用或禁用 上一步/下一步
-    void GoNext();           // 下一步（安装中无效；Configure→Progress 触发安装）
-    void GoBack();           // 上一步（安装中无效；Welcome/Finish/Progress 无效）
+    void GoNext();           // 欢迎 → 配置；配置 → 开始安装（设计稿没有许可页）
+    void GoBack();           // 配置 → 欢迎（安装中无效）
     void RaiseCancelIntent();// 抬高取消意图（Progress 页 RequestCancel）；不写结果文件
-    // T13：ESC 与 WM_CLOSE 完全同义——安装中由 WM_CLOSE 置 closePending_ 并取消，
-    // Repair/Uninstall Progress 则由各自 CloseIntent 忽略；此处不再提前拦截。
     void OnEscape();
     D2D1_RECT_F PageRect() const;  // 页内容矩形 = contentCard + Win10 兜底外扩边距
     spk::WidgetHost& ActivePageHost();  // 当前页的输入/Tab 宿主
-    void RenderActivePage(ID2D1DeviceContext* ctx, const spk::Theme& theme);
-    bool DispatchPointer(const spk::InputEvent& event);  // 外壳导航按钮 + 当前页分发
-    void LayoutStepBar();
-    // UI-fix：总布局页脚——外壳导航按钮（画布坐标）+ 页托管按钮（取消/打开目录/完成，
-    // 页坐标 = 画布 + shadowMarginDip_）。每次页面 Layout 之后必须调用。
-    void LayoutFooterButtons();
+    void RenderPage(ID2D1DeviceContext* ctx, const spk::Theme& theme, int page);
+    bool DispatchPageInput(const spk::InputEvent& event);
 
     // --- install engine（Todo 13：真实引擎 = render/install_engine.h） ---
     void SetPage(int page);
@@ -179,7 +172,7 @@ private:
     // 不改变引擎 permille 契约，也不伪造安装成功。
     void BeginInitProgress();
     void AdvanceInitProgress(double now_ms);
-    void EndInitProgress(int raw_permille);
+    void EndInitProgress();
     // UI-fix：成功收尾时先在 100% 停留一个短定时器（让 220ms 填充动画可见），
     // 再由 WM_TIMER(id=3) 切到完成页；避免 SetPage(Finish) 抢在绘制之前。
     void BeginCompletionHold();
@@ -216,12 +209,14 @@ private:
         Close,              // 走统一 WM_CLOSE 路径（维护模式尚未写决策时补 cancel）
         CloseNoDecision,    // 明确禁止写 decision（未检测到安装 / 修复预检失败）
         CancelMaintenance,  // 写 maintenance cancel（一次性守卫）后关窗
+        ReturnToMaintenance,
         RetryRepair,        // 重新执行 StartRepair（关闭已安装应用失败后的重试）
         RetryUninstall,     // 重新执行卸载确认检查（关闭已安装应用失败后的重试）
     };
     // 进入维护模式：Detect + MaintenancePage::SetInfo + 页 5；未检测到安装 → Message。
     void EnterMaintenanceMode();
     // 修复意图：预检 →（已安装应用运行中则异步关闭）→ 写 decision → Progress + 引擎。
+    void ConfigureMaintenance(Operation operation);
     void StartRepair();
     // T12：卸载意图（维护模式先 decision+ack；/uninstall 只写 request 并按 helperPid
     // 决定是否启动 helper）→ Progress + 协调器。
@@ -268,7 +263,8 @@ private:
     DWORD helperPid_{0};                  // T12：/helper-pid（非 0 = helper 已启动 UI）
     std::wstring uninstallRequestPath_;   // T12：uninstall-request.ini
     std::wstring uninstallResultPath_;    // T12：uninstall-result.ini
-    HANDLE setupProcess_{};               // T11：setup 退出 watchdog（OpenProcess(SYNCHRONIZE)）
+    HANDLE setupProcess_{};               // 持有原进程，退出后仍可查询最终状态码。
+    bool awaitingSetupExit_{false};       // 引擎已提交成功结果，NSIS 正在收尾。
     DWORD setupPid_{0};                   // T10：保存 setup 进程 PID，T11 据此打开 setupProcess_
     std::uint64_t payloadTimeoutMs_{0};   // T6：引擎 payload 哨兵超时（0 = 环境/内置默认）
     spk::MaintenanceInfo maintenanceInfo_{};  // T11：Detect() 结果
@@ -295,6 +291,8 @@ private:
     std::mutex closeMutex_;                    // 保护 closeError_/closeForced_（worker 写 / UI 读）
     std::wstring closeError_;
     bool closeForced_{false};
+    MaintenanceOffer maintenanceOffer_{MaintenanceOffer::Repair};
+    std::wstring installedPackageVersion_;
     MessageAction messagePrimaryAction_{MessageAction::None};
     MessageAction messageSecondaryAction_{MessageAction::None};
 
@@ -303,7 +301,6 @@ private:
     bool renderReady_{false};
     bool dirty_{true};
     bool installing_{false};
-    bool darkMode_{false};
 
     // window metrics / recipe decision
     UINT dpi_{96};
@@ -320,16 +317,14 @@ private:
     WindowButton hoverButton_{WindowButton::None};  // 当前光标悬停的窗口按钮（驱动填充）
     WindowButton armedButton_{WindowButton::None};  // 已按下并 SetCapture 的按钮（松开命中才激活）
     bool trackingLeave_{false};                     // TrackMouseEvent(TME_LEAVE) 是否已注册
+    bool licensePanActive_{false};                  // 正文已收到手势起点，等待平移结束
 
     UINT_PTR tickTimer_{0};
     HANDLE installThread_{};
     int progressPermille_{0};
 
-    // UI-fix（进度 UX）：payload 解包真实进度 / 后续真实进度映射 / 完成前停留状态。
-    bool initProgressActive_{false};        // 解包等待阶段（首个真实进度前）
-    bool progressMappingActive_{false};     // 后续真实 permille 走 base 映射
-    int progressMappingBasePermille_{0};    // 映射 base = 解包阶段结束时的当前进度
-    double initProgressStartMs_{0.0};       // 解包阶段起点（spk::SteadyNowMs 口径）
+    // UI-fix（进度 UX）：解包、复制与完成确认。
+    bool initProgressActive_{false};        // 解压阶段（payload.ready 确认前）
     double lastInitProgressUpdateMs_{0.0};  // ~500ms 目录扫描节流
     std::uint64_t prepareLastBytes_{0};     // 上次观测到的已解包字节数
     double prepareStallStartMs_{0.0};       // 字节数最后一次增长的时间
@@ -349,35 +344,34 @@ private:
 
     // §16 动画：帧时钟 + 可动画值 + 采样日志 sink（生产接 DiagLog）。
     spk::Animator animator_;
+    spk::AnimValue* pageTransition_{nullptr};
+    int previousPage_{-1};
+    float pageDirection_{1.0f};
     spk::AnimValue* introAnim_{nullptr};  // 外壳入场动画（0→1，减少动画时不创建）
     float introAlpha_{1.0f};              // 入场进度 → shell 层全局不透明度
     bool reduceMotion_{false};            // SPI_GETCLIENTAREAANIMATION 关闭动画时为 true
 
-    // --- Todo 12：页面对象 + 左栏步骤栏 + 底部导航按钮 ---
+    // --- 页面对象 + 窗口级绘图资源 ---
     // 依赖注入对象须先于页面声明/构造（页面借用其地址），销毁序相反 → 页面先析构。
     spk::TextFactory textFactory_;
     spk::GlyphFont glyphFont_;
-    spk::LogoBitmap logoBitmap_;
+    spk::LogoBitmap logoBitmap_;    // 标题栏 26x26 图标（IDR_LOGO）
+    spk::LogoBitmap heroBgBitmap_;  // 英雄页背景图（IDR_HERO_BG，透明底 PNG）
+    spk::HeroArt heroArt_;          // 设计稿品牌图形（矢量，一次构建）
+    spk::LicenseSheet licenseSheet_;  // 独立协议阅读页
+    std::wstring licenseText_;        // AGPL 全文（IDR_LICENSE）
+    std::wstring userAgreementText_;  // 用户协议全文（IDR_USERAGREEMENT）
     bool pagesReady_{false};
 
     std::unique_ptr<spk::WelcomePage> welcomePage_;
-    std::unique_ptr<spk::LicensePage> licensePage_;
-    std::unique_ptr<spk::ConfigurePage> configurePage_;  // 追加需求：Location+Options 合并为 Configure
+    std::unique_ptr<spk::ConfigurePage> configurePage_;
     std::unique_ptr<spk::ProgressPage> progressPage_;
     std::unique_ptr<spk::FinishPage> finishPage_;
-    // T10：维护 / 卸载确认 / 通用消息页（T7 实现；均为英雄页）。
+    // T10：维护 / 卸载确认 / 通用消息页（均为英雄页）。
     std::unique_ptr<spk::MaintenancePage> maintenancePage_;
+    std::unique_ptr<spk::UninstallConfirmPage> uninstallHeroPage_;
     std::unique_ptr<spk::UninstallConfirmPage> uninstallConfirmPage_;
     std::unique_ptr<spk::MessagePage> messagePage_;
-
-    spk::Button backButton_;
-    spk::Button nextButton_;
-    // UI-fix：按页面控制导航按钮可见性（Welcome 隐藏「上一步」；Progress/Finish 全隐藏），
-    // 由 UpdateNavButtons() 随页面切换更新、DrawContent() 据此跳过绘制。
-    bool navBackVisible_{false};
-    bool navNextVisible_{false};
-    spk::WidgetHost shellHost_;
-    std::array<spk::StepItem, 3> stepItems_{};  // 追加需求：3 节点【协议】【配置】【部署】
 
     // --- Todo 19：/auto 测试驱动内部状态（仅 SPK_TESTMODE 构建编入；生产零残留）---
 #ifdef SPK_TESTMODE

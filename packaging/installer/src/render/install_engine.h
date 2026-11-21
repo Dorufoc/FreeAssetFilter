@@ -36,6 +36,9 @@ struct InstallOptions {
     bool desktop = true;
     bool startmenu = true;
     bool autostart = false;
+    // 2026-11 设计稿新增：「添加到右键菜单」→ 结果 INI 的 `ctxmenu=0|1`，
+    // 由 NSIS Section Install 落成资源管理器右键菜单项。
+    bool ctxmenu = true;
 };
 
 // 引擎运行模式（T6/D4）。Fresh = 既有安装/重装语义（失败清理本次写入）；
