@@ -775,6 +775,10 @@ def main(argv=None) -> int:
     # 单实例互斥体（冲突时内部处理并退出进程）
     mutex_handle = instance_guard._acquire_single_instance()
 
+    # 第二实例唤醒事件：本实例持有句柄并低频轮询；后续实例置位它来唤回主窗口。
+    # 创建失败不阻断启动（仅失去唤回能力）。
+    activation_event = instance_guard._create_activation_event()
+
     try:
         instance_guard._prune_stale_runtime_info()
         instance_guard._write_runtime_instance_info()
@@ -798,6 +802,7 @@ def main(argv=None) -> int:
         except Exception as exc:  # noqa: BLE001 - 退出路径不允许抛
             debug(f"清理运行时实例信息失败: {exc!r}")
         instance_guard._release_mutex(mutex_handle)
+        instance_guard._release_activation_event(activation_event)
         _cleanup_process_facilities(facilities)
         return 0
 
@@ -853,6 +858,27 @@ def main(argv=None) -> int:
     except RuntimeError:
         pass
     info(f"[启动] 轻量窗口显示: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
+
+    # ── 第二实例唤回轮询（低频，400ms 一次，开销可忽略）──────────────
+    # 第二个实例发现互斥体已存在时会置位命名事件后静默退出；本实例消费到
+    # 信号即唤回并置前主窗口。定时器绑定 app 生命周期，句柄由局部变量持有
+    # 防止被 GC。
+    _activation_poll = QTimer(app)
+    _activation_poll.setInterval(400)
+
+    def _poll_activation_event() -> None:
+        if not activation_event:
+            return
+        if not instance_guard._consume_activation_event(activation_event):
+            return
+        try:
+            window.restore_main_window()
+        except RuntimeError:
+            # 窗口已销毁（极端退出时序）：忽略本次唤回。
+            pass
+
+    _activation_poll.timeout.connect(_poll_activation_event)
+    _activation_poll.start()
 
     # ── 启动卡顿探针（诊断用，零行为改变）─────────────────────────────
     # 加载圈是普通 QWidget，靠主线程 16ms 定时器转动；主线程任何一次同步
@@ -937,9 +963,16 @@ def main(argv=None) -> int:
     exit_done = [False]
 
     def on_app_exit():
+        nonlocal activation_event
         if exit_done[0]:
             return
         exit_done[0] = True
+
+        # 0) 停掉第二实例唤回轮询（句柄在步骤 5 统一释放）
+        try:
+            _activation_poll.stop()
+        except RuntimeError:
+            pass
 
         # 1) 引导层后台线程与心跳先行停止
         try:
@@ -1027,12 +1060,14 @@ def main(argv=None) -> int:
         except Exception as exc:
             debug(f"停止日志维护线程失败：{exc}")
 
-        # 5) 清理实例信息与互斥体
+        # 5) 清理实例信息、互斥体与唤醒事件（事件释放幂等）
         try:
             instance_guard._remove_runtime_instance_info(expected_pid=os.getpid())
         except Exception as exc:
             debug(f"清理运行时实例信息失败：{exc}")
         instance_guard._release_mutex(mutex_handle)
+        instance_guard._release_activation_event(activation_event)
+        activation_event = None
 
     app.aboutToQuit.connect(on_app_exit)
     atexit.register(on_app_exit)
@@ -1042,6 +1077,7 @@ def main(argv=None) -> int:
 
     # 兜底收尾（on_app_exit 中已清理，此处幂等重入）
     _cleanup_process_facilities(facilities)
+    instance_guard._release_activation_event(activation_event)
 
     non_daemon_alive = [
         t for t in threading.enumerate()

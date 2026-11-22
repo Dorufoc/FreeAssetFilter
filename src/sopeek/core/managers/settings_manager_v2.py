@@ -614,6 +614,11 @@ DEFAULT_SETTINGS_V2: Dict[str, Any] = {
         # 静默检查新版本（每 24 小时最多一次）。启动策略每次直读该键，
         # 提交时经 SettingLayout._submit_settings 落盘。
         "check_updates_on_startup": True,
+        # 关闭主窗口时的行为（设置页「通用」分类，默认 "ask"）：
+        # "ask"（每次询问） | "tray"（最小化到系统托盘） | "quit"（直接退出）。
+        # 启动时由 MainWindow._load_close_action 读取，提交时经
+        # MainWindow.set_close_action 下发。
+        "close_action": "ask",
     },
     "update": {
         # 更新检查源（设置页「检查更新」页，默认 GitHub）：
@@ -1014,7 +1019,9 @@ class SettingsManagerV2:
         # show_hidden_files / show_system_files 为布尔白名单键，非布尔值
         # （含字符串 "true"）一律丢弃、回退默认 False；
         # floating_pool_enabled 同为布尔白名单键，回退默认 False（默认关闭）；
-        # floating_pool_snap_enabled 回退默认 True（浮窗子选项）。不在此回读
+        # floating_pool_snap_enabled 回退默认 True（浮窗子选项）。
+        # close_action 为字符串白名单键（ask/tray/quit），回退默认 "ask"。
+        # 不在此回读
         # 会导致用户开关落盘后每次加载被静默丢弃（无法跨重启持久化，
         # Oracle B1 回归守卫）。
         if "general" in loaded and isinstance(loaded["general"], dict):
@@ -1058,6 +1065,15 @@ class SettingsManagerV2:
                 merged["general"]["check_updates_on_startup"] = (
                     staged_check_updates
                 )
+            # close_action 为字符串白名单键（"ask"/"tray"/"quit"）：
+            # 非字符串或不在白名单内（含旧文件缺键）一律保留默认 "ask"。
+            staged_close_action = general_loaded.get("close_action", None)
+            if isinstance(staged_close_action, str) and staged_close_action in (
+                "ask",
+                "tray",
+                "quit",
+            ):
+                merged["general"]["close_action"] = staged_close_action
 
         # update 域合并：source 只接受已登记的更新源标识（github/gitcode），
         # 旧文件缺键或非法值时回退默认 github（不抛异常）。

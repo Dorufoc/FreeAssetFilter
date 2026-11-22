@@ -1847,6 +1847,10 @@ class GeneralSettingsPage(QWidget):
     LAYOUT_LABELS: tuple[str, ...] = ("经典", "New")
     LAYOUT_INDEX: dict[str, int] = {"classic": 0, "workspace": 1}
 
+    # 关闭主窗口行为与分段索引的双向映射（顺序与 _build_ui 添加顺序一致）。
+    CLOSE_ACTIONS: tuple[str, ...] = ("ask", "tray", "quit")
+    CLOSE_ACTION_LABELS: tuple[str, ...] = ("每次询问", "最小化到托盘", "直接退出")
+
     #: 通用页任一设置项发生用户改动时发出，宿主据此刷新「有更改未保存」提示。
     #: 通用页设置属「非外观项」，不实时生效、只能经「保存」按钮提交。
     staged_changed = Signal()
@@ -1874,6 +1878,11 @@ class GeneralSettingsPage(QWidget):
         self._layout_updating: bool = False  # 编程式切换分段控件的守卫标志
         self._layout_segmented: StyledSegmented | None = None
         self._layout_row: SettingsRow | None = None
+        # 关闭主窗口行为状态（默认 "ask"；初值由 refresh_from_staging
+        # 从暂存缓存读取）
+        self._close_action: str = "ask"
+        self._close_action_row: SettingsRow | None = None
+        self._close_action_segmented: StyledSegmented | None = None
         # 通用功能开关状态（初值由 refresh_from_staging 从暂存缓存读取）
         self._ai_entry: bool = False
         self._include_remote_drives: bool = False
@@ -1990,6 +1999,22 @@ class GeneralSettingsPage(QWidget):
         self._blank_back_row.set_control(self._blank_back_toggle)
         layout.addWidget(self._blank_back_row)
 
+        # ── 关闭主窗口时（每次询问 / 最小化到托盘 / 直接退出）──
+        # 暂存隔离铁律：切换只写入 SettingsStagingCache（general.close_action），
+        # 点击「确定」才经 _submit_settings 下发主窗口并落盘。
+        self._close_action_row = SettingsRow(
+            title="关闭主窗口时",
+            description="点击关闭按钮时询问，或直接最小化到系统托盘",
+        )
+        self._close_action_segmented = StyledSegmented(variant="pill", size="sm")
+        for label in self.CLOSE_ACTION_LABELS:
+            self._close_action_segmented.add_segment(label)
+        self._close_action_segmented.current_changed.connect(
+            self._on_close_action_changed
+        )
+        self._close_action_row.set_control(self._close_action_segmented)
+        layout.addWidget(self._close_action_row)
+
         # ── 全局浮窗（默认关闭）──
         # 暂存隔离铁律：开关只写入 SettingsStagingCache
         # （general.floating_pool_enabled），点击「确定」才经 _submit_settings
@@ -2044,6 +2069,17 @@ class GeneralSettingsPage(QWidget):
             self._layout_mode = self.LAYOUT_MODES[index]
             self._staging_cache.set("general.layout_mode", self._layout_mode)
             self._sync_description_text()
+            self.staged_changed.emit()
+
+    def _on_close_action_changed(self, index: int) -> None:
+        """关闭行为分段切换：只写入暂存缓存（不触碰主窗口与磁盘）。"""
+        if self._general_updating:
+            return
+        if 0 <= index < len(self.CLOSE_ACTIONS):
+            self._close_action = self.CLOSE_ACTIONS[index]
+            self._staging_cache.set(
+                "general.close_action", self._close_action
+            )
             self.staged_changed.emit()
 
     def _on_ai_entry_toggled(self, checked: bool) -> None:
@@ -2199,6 +2235,16 @@ class GeneralSettingsPage(QWidget):
                 self._floating_pool_snap_row.set_revealed(
                     self._floating_pool_enabled, animated=animated
                 )
+            if self._close_action_segmented is not None:
+                # 关闭行为分段：守卫内同步选中项，不触发暂存写入。
+                target = (
+                    self.CLOSE_ACTIONS.index(self._close_action)
+                    if self._close_action in self.CLOSE_ACTIONS
+                    else 0
+                )
+                self._close_action_segmented.set_current_index(
+                    target, animate=False
+                )
         finally:
             self._general_updating = False
 
@@ -2339,6 +2385,13 @@ class GeneralSettingsPage(QWidget):
             if isinstance(saved_floating_pool_snap, bool)
             else True
         )
+        # 关闭主窗口行为默认 "ask"：缺键/非法值一律回退 "ask"（与 V2 默认树一致）。
+        saved_close_action = self._staging_cache.get("general.close_action", "ask")
+        self._close_action = (
+            saved_close_action
+            if saved_close_action in self.CLOSE_ACTIONS
+            else "ask"
+        )
         self._sync_layout_segment()
         self._sync_general_toggles()
         self._sync_description_text()
@@ -2352,6 +2405,7 @@ class GeneralSettingsPage(QWidget):
             self._hidden_row,
             self._system_row,
             self._blank_back_row,
+            self._close_action_row,
             self._floating_pool_row,
             self._floating_pool_snap_row,
         ):
@@ -4640,6 +4694,14 @@ class SettingsLayout(QWidget):
             floating_pool = False
         if not isinstance(floating_pool_snap, bool):
             floating_pool_snap = True
+        # 关闭主窗口行为：只接受 "ask"/"tray"/"quit"，缺失/非法回退 "ask"
+        #（与 V2 合并口径一致）。
+        if isinstance(staged_general, dict):
+            close_action = staged_general.get("close_action", "ask")
+        else:
+            close_action = "ask"
+        if close_action not in ("ask", "tray", "quit"):
+            close_action = "ask"
         # 启动时检查更新：仅接受真实 bool（缺失/非法一律回退 True，与
         # V2 合并口径一致）；本键只落盘，不触发网络或更新服务。
         if isinstance(staged_general, dict):
@@ -4732,7 +4794,8 @@ class SettingsLayout(QWidget):
             self._apply_staged_layout_mode_to_main_window(layout_mode)
 
             # 通用页：AI 入口 / 网络盘与光驱 / 空白区右键返回 / 显示隐藏文件 /
-            # 显示受保护系统文件 / 全局浮窗 / 贴边吸附下发（失败仅警告，不阻断提交）
+            # 显示受保护系统文件 / 全局浮窗 / 贴边吸附 / 关闭行为下发
+            #（失败仅警告，不阻断提交）
             self._apply_staged_general_toggles_to_main_window(
                 ai_entry,
                 include_remote,
@@ -4741,6 +4804,7 @@ class SettingsLayout(QWidget):
                 show_system,
                 floating_pool,
                 floating_pool_snap,
+                close_action,
             )
 
             # 性能档位应用（仅提交路径调用；顺序：定时器档位 → 进程电源策略
@@ -4780,6 +4844,7 @@ class SettingsLayout(QWidget):
             v2.set("general.show_system_files", show_system)
             v2.set("general.floating_pool_enabled", floating_pool)
             v2.set("general.floating_pool_snap_enabled", floating_pool_snap)
+            v2.set("general.close_action", close_action)
             v2.set(
                 "general.check_updates_on_startup", check_updates_on_startup
             )
@@ -4980,6 +5045,7 @@ class SettingsLayout(QWidget):
         show_system_files: bool,
         floating_pool: bool,
         floating_pool_snap: bool,
+        close_action: str,
     ) -> None:
         """将暂存的通用页开关应用到主窗口（仅提交路径调用）。
 
@@ -4989,7 +5055,8 @@ class SettingsLayout(QWidget):
         显示受保护系统文件控制文件选择器的可见性过滤，全局浮窗控制
         桌面浮窗的存在（``set_floating_pool_enabled`` 建/拆窗），贴边
         吸附控制浮窗拖动靠边时的自动吸附（``set_floating_pool_snap_enabled``）。
-        失败仅记录 warning，不阻断整体提交。
+        关闭行为经 ``set_close_action`` 下发（仅更新内存态，落盘由调用方
+        完成）。失败仅记录 warning，不阻断整体提交。
 
         Args:
             ai_entry: 是否启用 AI 入口。
@@ -4999,6 +5066,7 @@ class SettingsLayout(QWidget):
             show_system_files: 是否额外显示受保护系统文件/文件夹。
             floating_pool: 是否启用全局存储池浮窗。
             floating_pool_snap: 是否启用浮窗贴边吸附。
+            close_action: 关闭主窗口行为（"ask" | "tray" | "quit"）。
         """
         try:
             mw = self._appearance_page.find_main_window()
@@ -5027,6 +5095,9 @@ class SettingsLayout(QWidget):
             )
             if floating_pool_snap_setter is not None:
                 floating_pool_snap_setter(floating_pool_snap)
+            close_action_setter = getattr(mw, "set_close_action", None)
+            if close_action_setter is not None:
+                close_action_setter(close_action)
         except Exception as exc:  # noqa: BLE001 - 开关下发失败不阻断提交
             from sopeek.utils.app_logger import warning
 
@@ -5034,7 +5105,8 @@ class SettingsLayout(QWidget):
                 "通用功能开关下发失败"
                 f"（AI={ai_entry}, 远程盘={include_remote}, 空白右键返回={blank_back},"
                 f" 隐藏文件={show_hidden_files}, 系统文件={show_system_files},"
-                f" 全局浮窗={floating_pool}, 贴边吸附={floating_pool_snap}）: {exc}"
+                f" 全局浮窗={floating_pool}, 贴边吸附={floating_pool_snap},"
+                f" 关闭行为={close_action}）: {exc}"
             )
 
     def _apply_staged_perf_profile(self, profile: str) -> None:

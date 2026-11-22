@@ -822,6 +822,19 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         self._floating_pool_conn_hide = None
         # closeEvent 重入保护（退场动画期间的有界事件循环会放行其他事件）。
         self._close_in_progress = False
+        # 强制退出标记：托盘「彻底退出」或用户在关闭询问中选择退出时置 True，
+        # 使 closeEvent 跳过关闭询问与托盘挂起，直接走清理路径（见 closeEvent）。
+        self._force_quit = False
+        # 关闭询问弹窗是否正在显示：防重入，弹窗期间再次关闭按「取消」处理。
+        self._close_dialog_open = False
+        # 系统托盘状态：控制器实例、是否已判定不可用（避免反复重试创建）、
+        # 是否已挂起（隐藏窗口并卸载预览/背景渲染资源），以及挂起前的
+        # 预览器与信息面板文件快照（恢复时据此重新加载，见 _suspend_for_tray）。
+        self._tray_controller = None
+        self._tray_unavailable = False
+        self._tray_suspended = False
+        self._tray_preview_file = None
+        self._tray_info_file = None
         # 启动加载覆盖层：唯一加载动画，铺满整个客户区并垫在标题栏之下，
         # 三栏就绪后淡出（见 _setup_startup_overlay / _dismiss_startup_overlay）
         self._startup_overlay = None
@@ -866,6 +879,11 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         background_saved = self._load_background_settings()
         # 主界面布局模式（general.layout_mode；非法值回退 workspace）
         self._layout_mode = self._load_layout_settings()
+        # 关闭主窗口行为（general.close_action；非法值回退 "ask"）：
+        # "ask"（每次询问） | "tray"（最小化到系统托盘） | "quit"（直接退出）。
+        # 启动值在下方通用开关解包之后从 V2 读取；提交时经
+        # set_close_action 即时生效（落盘由设置页完成）。
+        self._close_action: str = "ask"
         # 通用功能开关（general.enable_ai_entry / general.include_remote_drives /
         # general.blank_right_click_go_back / general.show_hidden_files /
         # general.show_system_files / general.floating_pool_enabled /
@@ -884,6 +902,7 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             self._floating_pool_enabled,
             self._floating_pool_snap_enabled,
         ) = self._load_general_toggles()
+        self._close_action = self._load_close_action()
         self._background_mode = background_saved.get("mode", "mica")
         self._background_image_name = background_saved.get("image", "")
         self._background_ambient = bool(background_saved.get("ambient", True))
@@ -1134,6 +1153,30 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             floating_pool,
             floating_pool_snap,
         )
+
+    @staticmethod
+    def _load_close_action() -> str:
+        """启动时读取关闭主窗口行为（``general.close_action``）。
+
+        取值 "ask"（每次询问）、"tray"（最小化到系统托盘）或 "quit"
+        （直接退出）；缺失/非法一律回退 "ask"（与 DEFAULT_SETTINGS_V2
+        默认一致）。
+
+        Returns:
+            str: 关闭行为："ask"、"tray" 或 "quit"。
+        """
+        try:
+            # 优先复用应用引导层提前加载的设置管理器，避免启动期二次磁盘加载。
+            app = QApplication.instance()
+            v2 = getattr(app, "settings_manager", None)
+            if v2 is None:
+                from sopeek.core.managers.settings_manager_v2 import SettingsManagerV2
+                v2 = SettingsManagerV2()
+                v2.load()
+            behavior = v2.get("general.close_action", "ask")
+        except Exception:
+            behavior = "ask"
+        return behavior if behavior in ("ask", "tray", "quit") else "ask"
 
     def _setup_window(self) -> None:
         """设置窗口基本属性"""
@@ -3724,7 +3767,44 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         if self._close_in_progress:
             event.accept()
             return
+        # 关闭分流：托盘挂起 / 直接退出 / 询问用户。判定放在重入保护之后、
+        # 清理之前——「托盘挂起」只隐藏窗口（ignore 事件），绝不执行清理；
+        # 应用已在退出（closingDown / 会话保存）或已强制退出时不再询问。
+        bypass_prompt = bool(self._force_quit) or QApplication.closingDown()
+        if not bypass_prompt:
+            is_saving_session = getattr(QApplication, "isSavingSession", None)
+            if callable(is_saving_session):
+                try:
+                    bypass_prompt = bool(is_saving_session())
+                except (RuntimeError, TypeError):
+                    pass
+        if not bypass_prompt:
+            action = self._close_action
+            if action == "tray":
+                if self._enter_tray_mode():
+                    event.ignore()
+                    return
+                warning("系统托盘不可用，关闭窗口改为直接退出")
+                self._force_quit = True
+            elif action == "quit":
+                self._force_quit = True
+            else:
+                # "ask" 及任何非法值：询问用户
+                choice = self._ask_close_choice()
+                if choice == "cancel":
+                    event.ignore()
+                    return
+                if choice == "tray":
+                    if self._enter_tray_mode():
+                        event.ignore()
+                        return
+                    warning("系统托盘不可用，关闭窗口改为直接退出")
+                    self._force_quit = True
+                else:
+                    self._force_quit = True
         self._close_in_progress = True
+        # 真正退出前先销毁托盘图标，避免退出后桌面残留托盘项。
+        self._dispose_tray()
         # 先回收所有浮动弹窗（筛选/收藏夹/提示/更新等）：它们是独立顶层
         # 窗口，若残留会让 quitOnLastWindowClosed 不触发，表现为「主界面关
         # 了、弹窗还浮在桌面上」。
@@ -3734,23 +3814,7 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         # 连带关闭设置窗口：设置窗口是主窗口的 owned 子窗口，原生层会随宿主
         # 关闭，此处显式 close 使其走 WA_DeleteOnClose 及时销毁并释放引用，
         # 避免隐藏后残留孤儿实例
-        if self._settings_window is not None:
-            try:
-                from shiboken6 import isValid
-
-                if isValid(self._settings_window):
-                    # 若正在播放关闭淡出，先立即收尾：主窗口退出不能被
-                    # 150ms 的视觉过渡拖住，也避免隐藏窗口残留。
-                    finish_close = getattr(
-                        self._settings_window, "finish_close_animation_now", None
-                    )
-                    if callable(finish_close):
-                        finish_close()
-                    self._settings_window.close()
-            except RuntimeError:
-                pass
-            finally:
-                self._settings_window = None
+        self._close_settings_window_now()
         # Mica 释放统一放在 closeEvent 末尾（所有清理完成后，见下方
         # _dispose_mica）：预览器 cleanup / 浮窗退场都会触发局部重绘，提前
         # dispose 会让重绘区域先露出主题 G1 纯色再关窗。
@@ -3818,6 +3882,33 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         # 局部重绘仍要取到有效视口层，否则会在窗口真正关闭前先闪一帧 G1。
         self._dispose_mica()
         super().closeEvent(event)
+
+    def _close_settings_window_now(self) -> None:
+        """立即关闭设置窗口（跳过关闭淡出动画，幂等且不抛异常）。
+
+        设置窗口是主窗口的 owned 子窗口，关闭主窗口 / 进入托盘挂起前都要
+        显式收尾：先 ``finish_close_animation_now`` 结束视觉过渡，再 ``close``
+        使其走 ``WA_DeleteOnClose`` 及时销毁，最后清空引用避免孤儿实例。
+        """
+        window = self._settings_window
+        if window is None:
+            return
+        try:
+            from shiboken6 import isValid
+
+            if isValid(window):
+                # 若正在播放关闭淡出，先立即收尾：退出 / 托盘挂起不能被
+                # 150ms 的视觉过渡拖住，也避免隐藏窗口残留。
+                finish_close = getattr(
+                    window, "finish_close_animation_now", None
+                )
+                if callable(finish_close):
+                    finish_close()
+                window.close()
+        except RuntimeError:
+            pass
+        finally:
+            self._settings_window = None
 
     @staticmethod
     def _close_floating_dialogs() -> None:
@@ -5538,6 +5629,383 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             floating.set_snap_enabled(self._floating_pool_snap_enabled)
         except Exception as exc:  # noqa: BLE001 - 吸附开关下发失败不抛给调用方
             warning(f"浮窗贴边吸附开关应用失败: {exc}")
+
+    def set_close_action(self, behavior: str) -> None:
+        """运行时更新关闭主窗口行为（设置提交路径调用；幂等）。
+
+        仅更新内存态 ``_close_action``，不落盘（落盘由设置页提交完成）。
+        非法值按 "ask" 处理，调用方无需预先校验。
+
+        Args:
+            behavior: 关闭行为，"ask" | "tray" | "quit"。
+        """
+        valid = behavior in ("ask", "tray", "quit")
+        self._close_action = behavior if valid else "ask"
+        debug(f"关闭主窗口行为已更新: {self._close_action}")
+
+    # ── 关闭询问 / 系统托盘 ─────────────────────────────────────────────
+
+    def _ask_close_choice(self) -> str:
+        """弹出关闭询问弹窗并阻塞等待用户选择。
+
+        用 ``StyledDialog`` 手动构建（``ask_custom_dialog`` 不支持勾选框）：
+        说明文字 + 「记住我的选择」勾选框 + 三个按钮。用户勾选记住时立即
+        持久化到 ``general.close_action``（绝不落盘 "ask"）。
+
+        Returns:
+            str: "tray"（最小化到托盘）、"quit"（直接退出）或 "cancel"
+            （取消 / ESC / 关闭按钮 / 异常兜底）。
+        """
+        if getattr(self, "_close_dialog_open", False):
+            return "cancel"
+        if QApplication.instance() is None:
+            return "cancel"
+
+        self._close_dialog_open = True
+        dlg = None
+        try:
+            from PySide6.QtCore import QEventLoop
+
+            from components.styled_checkbox import StyledCheckbox
+            from components.styled_dialog import (
+                FOOTER_STACKED,
+                StyledDialog,
+                _show_dialog,
+            )
+
+            body = QWidget()
+            register_widget_qss(body, "background: transparent;")
+            body_layout = QVBoxLayout(body)
+            body_layout.setContentsMargins(0, 0, 0, 0)
+            body_layout.setSpacing(12)
+            message = QLabel(
+                "选择直接退出程序，或最小化到系统托盘继续运行；"
+                "全局悬浮窗会保持可用。"
+            )
+            message.setWordWrap(True)
+            register_widget_qss(
+                message,
+                f"font-size: 13.5px; color: {tm.qss_color(tm.text_secondary)};"
+                " background: transparent;",
+            )
+            body_layout.addWidget(message)
+            remember = StyledCheckbox(text="记住我的选择")
+            body_layout.addWidget(remember)
+            body_layout.addStretch(1)
+
+            dlg = StyledDialog(
+                title="关闭 Sopeek",
+                body_widget=body,
+                footer_type=FOOTER_STACKED,
+                show_close=False,
+                animate=True,
+                parent=self,
+                modal=True,
+            )
+            dlg.add_footer_button("最小化到托盘", "primary").clicked.connect(
+                lambda: dlg.close_dialog(10)
+            )
+            dlg.add_footer_button("直接退出", "danger").clicked.connect(
+                lambda: dlg.close_dialog(20)
+            )
+            dlg.add_footer_button("取消", "ghost").clicked.connect(
+                lambda: dlg.close_dialog(0)
+            )
+
+            result = [0]
+            loop = QEventLoop()
+
+            def _record(code: int) -> None:
+                result[0] = int(code)
+                if loop.isRunning():
+                    loop.quit()
+
+            # ``closing`` 在关闭动作开始时发射（含 ESC / 关闭按钮路径），
+            # ``finished`` 在退场动画结束后补发；两者都连以覆盖全部路径。
+            dlg.closing.connect(_record)
+            dlg.finished.connect(_record)
+            _show_dialog(dlg)
+            loop.exec()
+
+            choice = {10: "tray", 20: "quit"}.get(result[0], "cancel")
+            if remember.checked and choice in ("tray", "quit"):
+                self._persist_close_action(choice)
+            return choice
+        except Exception as exc:  # noqa: BLE001 - 询问失败按取消处理，不阻断关闭
+            warning(f"关闭询问弹窗失败（按取消处理）：{exc}")
+            return "cancel"
+        finally:
+            self._close_dialog_open = False
+            if dlg is not None:
+                # 延迟销毁：等退场动画播完再回收，避免弹窗突然消失。
+                def _dispose_dialog() -> None:
+                    try:
+                        dlg.deleteLater()
+                    except RuntimeError:
+                        pass
+
+                QTimer.singleShot(400, _dispose_dialog)
+
+    def _persist_close_action(self, behavior: str) -> None:
+        """把「记住我的选择」立即落盘到 ``general.close_action``。
+
+        Args:
+            behavior: 仅接受 "tray" / "quit"；其它值直接忽略（绝不落盘 ask）。
+        """
+        if behavior not in ("tray", "quit"):
+            return
+        try:
+            from sopeek.core.managers.settings_manager_v2 import SettingsManagerV2
+
+            v2 = SettingsManagerV2()
+            v2.set("general.close_action", behavior)
+            v2.save()
+            self._close_action = behavior
+        except Exception as exc:  # noqa: BLE001 - 落盘失败不影响本次关闭
+            warning(f"保存关闭主窗口行为失败：{exc}")
+
+    def _create_tray_controller(self) -> QObject:
+        """创建托盘控制器（单点构造入口，测试可 monkeypatch）。
+
+        Returns:
+            QObject: ``TrayController`` 实例（父对象为主窗口）。
+        """
+        from sopeek.ui.tray_controller import TrayController
+
+        return TrayController(parent=self)
+
+    def _ensure_tray_controller(self) -> Optional[QObject]:
+        """惰性创建并接线托盘控制器；不可用时记录状态并返回 None。
+
+        托盘不可用（无桌面会话 / 无托盘区 / 构造失败）时置
+        ``_tray_unavailable``，后续调用直接返回 None，避免反复重试。
+
+        Returns:
+            Optional[QObject]: 可用的托盘控制器；不可用时为 None。
+        """
+        if getattr(self, "_tray_unavailable", False):
+            return None
+        controller = getattr(self, "_tray_controller", None)
+        if controller is not None:
+            return controller
+        try:
+            controller = self._create_tray_controller()
+        except Exception as exc:  # noqa: BLE001 - 托盘创建失败按不可用降级
+            warning(f"系统托盘创建失败（关闭将直接退出）：{exc}")
+            self._tray_unavailable = True
+            return None
+        if controller is None or not getattr(controller, "is_available", False):
+            warning("系统托盘不可用（关闭将直接退出）")
+            self._tray_unavailable = True
+            return None
+        try:
+            controller.open_requested.connect(self.restore_main_window)
+            controller.quit_requested.connect(self.quit_from_tray)
+        except (RuntimeError, AttributeError) as exc:
+            warning(f"系统托盘信号接线失败（关闭将直接退出）：{exc}")
+            self._tray_unavailable = True
+            return None
+        self._tray_controller = controller
+        try:
+            controller.show()
+        except RuntimeError:
+            pass
+        return controller
+
+    def _enter_tray_mode(self) -> bool:
+        """关闭设置窗、挂起预览与背景渲染后隐藏主窗口，进入托盘运行。
+
+        Returns:
+            bool: 成功进入托盘模式返回 True；托盘不可用 / 隐藏失败返回 False。
+        """
+        if self._ensure_tray_controller() is None:
+            return False
+        try:
+            self._close_settings_window_now()
+        except Exception as exc:  # noqa: BLE001 - 设置窗收尾失败不阻断挂起
+            debug(f"进入托盘前关闭设置窗口失败：{exc}")
+        # 隐藏后残留的独立顶层弹窗（筛选/收藏夹/提示等）会继续浮在桌面上，
+        # 与「退居托盘」语义冲突，故一并回收（幂等）。
+        self._close_floating_dialogs()
+        try:
+            self._suspend_for_tray()
+        except Exception as exc:  # noqa: BLE001 - 挂起失败仍继续隐藏
+            warning(f"进入托盘前挂起预览失败：{exc}")
+        try:
+            QApplication.setQuitOnLastWindowClosed(False)
+            self.hide()
+        except (RuntimeError, TypeError) as exc:
+            warning(f"进入系统托盘失败（恢复直接退出）：{exc}")
+            try:
+                QApplication.setQuitOnLastWindowClosed(True)
+            except (RuntimeError, TypeError):
+                pass
+            return False
+        return True
+
+    def _dispose_tray(self) -> None:
+        """销毁托盘控制器并清空引用（幂等，真正退出时调用）。"""
+        controller = getattr(self, "_tray_controller", None)
+        self._tray_controller = None
+        if controller is None:
+            return
+        try:
+            controller.dispose()
+        except RuntimeError:
+            pass
+
+    def _suspend_for_tray(self) -> None:
+        """挂起预览器 / 信息面板与后台渲染资源，供托盘模式长期驻留。
+
+        记录当前预览与信息面板文件快照后清空预览（释放视频/文档占用），
+        再释放内存缓存与流体/Mica 纹理。重复调用不重复执行。
+        """
+        if getattr(self, "_tray_suspended", False):
+            return
+        previewer = getattr(self, "_previewer", None)
+        info_panel = getattr(self, "_info_panel", None)
+
+        preview_info = (
+            self._read_current_file_info(previewer) if previewer is not None else None
+        )
+        self._tray_preview_file = preview_info
+
+        # 信息面板没有独立的“当前文件”接口，沿用预览文件快照；若未来提供
+        # 同形态读取入口则优先使用其自身值。
+        info_file = preview_info
+        if info_panel is not None:
+            panel_file = self._read_current_file_info(info_panel)
+            if panel_file is not None:
+                info_file = panel_file
+        self._tray_info_file = info_file
+
+        if previewer is not None:
+            try:
+                previewer.clear_preview()
+            except (RuntimeError, AttributeError) as exc:
+                debug(f"进入托盘时清空预览失败：{exc}")
+        if info_panel is not None:
+            try:
+                info_panel.stop()
+            except (RuntimeError, AttributeError) as exc:
+                debug(f"进入托盘时停止信息面板失败：{exc}")
+        try:
+            from sopeek.core.memory_budget import get_memory_budget
+
+            get_memory_budget().release_caches()
+        except Exception as exc:  # noqa: BLE001 - 缓存释放失败不影响挂起
+            debug(f"进入托盘时释放内存缓存失败：{exc}")
+        try:
+            self._suspend_background_renderers()
+        except Exception as exc:  # noqa: BLE001 - 渲染挂起失败不影响挂起
+            debug(f"进入托盘时挂起背景渲染失败：{exc}")
+        self._tray_suspended = True
+
+    @staticmethod
+    def _read_current_file_info(owner: object) -> Optional[dict]:
+        """读取控件当前文件信息（兼容属性与 ``current_file_info()`` 方法）。
+
+        Args:
+            owner: 预览器 / 信息面板等可能暴露当前文件的控件。
+
+        Returns:
+            Optional[dict]: 文件信息副本；无当前文件或读取失败返回 None。
+        """
+        try:
+            raw = getattr(owner, "current_file_info", None)
+            if callable(raw):
+                raw = raw()
+        except (RuntimeError, AttributeError, TypeError):
+            return None
+        return dict(raw) if isinstance(raw, dict) else None
+
+    def _resume_from_tray(self) -> None:
+        """从托盘挂起态恢复：还原退出策略、后台渲染与预览内容。
+
+        仅在确实挂起过时执行（避免重复加载）；恢复后清空快照记录。
+        """
+        if not getattr(self, "_tray_suspended", False):
+            return
+        try:
+            QApplication.setQuitOnLastWindowClosed(True)
+        except (RuntimeError, TypeError):
+            pass
+        try:
+            self._resume_background_renderers()
+        except Exception as exc:  # noqa: BLE001 - 恢复失败不影响窗口显示
+            debug(f"从托盘恢复背景渲染失败：{exc}")
+
+        preview_info = getattr(self, "_tray_preview_file", None)
+        previewer = getattr(self, "_previewer", None)
+        if preview_info is not None and previewer is not None:
+            try:
+                previewer.set_file(preview_info)
+            except (RuntimeError, AttributeError) as exc:
+                debug(f"从托盘恢复预览失败：{exc}")
+        info_file = getattr(self, "_tray_info_file", None)
+        info_panel = getattr(self, "_info_panel", None)
+        if info_file is not None and info_panel is not None:
+            try:
+                info_panel.set_file(info_file)
+            except (RuntimeError, AttributeError) as exc:
+                debug(f"从托盘恢复信息面板失败：{exc}")
+
+        self._tray_preview_file = None
+        self._tray_info_file = None
+        self._tray_suspended = False
+
+    def restore_main_window(self) -> None:
+        """从托盘挂起态唤回主窗口（托盘「打开主界面」/ 第二实例唤回共用）。
+
+        先恢复挂起期间卸载的预览与渲染资源，再显示、抬升并激活窗口；
+        Windows 桌面上补一次原生前台激活（与启动期 ``ensure_startup_foreground``
+        同一守卫口径，离屏环境不调用）。
+        """
+        if getattr(self, "_close_in_progress", False):
+            return
+        if getattr(self, "_tray_suspended", False):
+            try:
+                self._resume_from_tray()
+            except Exception as exc:  # noqa: BLE001 - 恢复失败仍显示窗口
+                warning(f"从托盘恢复预览失败：{exc}")
+        try:
+            if self.isMinimized():
+                self.showNormal()
+            elif not self.isVisible():
+                self.show()
+        except RuntimeError:
+            return
+        try:
+            self.raise_()
+            self.activateWindow()
+        except RuntimeError:
+            pass
+        try:
+            if sys.platform != "win32":
+                return
+            if QApplication.platformName().strip().lower() in ("offscreen", "minimal"):
+                return
+            hwnd = int(self.internalWinId())
+            if hwnd:
+                force_foreground_window(hwnd)
+        except (RuntimeError, AttributeError, TypeError) as exc:
+            debug(f"从托盘唤回时原生前台激活失败：{exc}")
+
+    def quit_from_tray(self) -> None:
+        """从托盘彻底退出（幂等）：销毁托盘、关闭主窗口并结束事件循环。"""
+        self._force_quit = True
+        self._dispose_tray()
+        try:
+            self.close()
+        except RuntimeError:
+            pass
+        # closeEvent 可能因重入保护直接 accept；无论如何都确保事件循环退出。
+        app = QApplication.instance()
+        if app is not None:
+            try:
+                app.quit()
+            except RuntimeError:
+                pass
 
     def set_layout_mode(self, mode: str) -> bool:
         """切换主界面布局模式（运行时重组，叶子组件重新挂载、不销毁重建）。

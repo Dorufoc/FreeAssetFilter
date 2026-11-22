@@ -9,6 +9,8 @@ Sopeek 单实例守卫（instance_guard）
   - Windows 进程守卫：PID 存活判定、进程映像路径、保守身份校验、强制终止
   - 互斥体（``Sopeek_SingleInstance_Mutex``）获取；检测到"已在运行"时
     静默退出（不弹模态框、不创建第二个窗口），强制终止后重启工具保留
+  - 唤醒事件（``Sopeek_SingleInstance_Activate``）：第二个实例退出前置位
+    该命名自动重置事件，已在运行的实例轮询消费后唤回并置前主窗口
 
 本模块为纯逻辑 + Windows API 封装，不含 Qt 对象（弹窗在需要时惰性创建）。
 """
@@ -26,6 +28,9 @@ from sopeek.utils.app_logger import debug, error, info, warning
 
 _MUTEX_NAME: str = "Sopeek_SingleInstance_Mutex"
 _ERROR_ALREADY_EXISTS: int = 183  # ERROR_ALREADY_EXISTS
+_ACTIVATION_EVENT_NAME: str = "Local\\Sopeek_SingleInstance_Activate"
+_EVENT_MODIFY_STATE: int = 0x0002
+_WAIT_OBJECT_0: int = 0x00000000
 
 
 # ──────────────────────────────────────────────────────────────
@@ -258,6 +263,116 @@ def _restart_current_application() -> None:
 
 
 # ──────────────────────────────────────────────────────────────
+# 第二实例唤醒事件
+# ──────────────────────────────────────────────────────────────
+
+def _create_activation_event() -> Optional[int]:
+    """创建（或打开）命名自动重置唤醒事件，供本实例轮询消费。
+
+    事件为自动重置、初始未触发；第一个实例创建后持有句柄，后续实例通过
+    ``_signal_existing_instance`` 置位它来请求唤回主窗口。
+
+    Returns:
+        事件句柄（int）；非 Windows 或创建失败返回 None（不抛异常）。
+    """
+    if sys.platform != "win32":
+        return None
+
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateEventW.argtypes = [
+        wintypes.LPVOID, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR,
+    ]
+    kernel32.CreateEventW.restype = wintypes.HANDLE
+
+    try:
+        event_handle = kernel32.CreateEventW(None, False, False, _ACTIVATION_EVENT_NAME)
+    except Exception as exc:  # noqa: BLE001 - 唤醒事件失败不得阻断启动
+        debug(f"创建单实例唤醒事件失败：{exc}")
+        return None
+    if not event_handle:
+        debug("创建单实例唤醒事件失败：句柄为空")
+        return None
+    return event_handle
+
+
+def _signal_existing_instance() -> bool:
+    """置位已运行实例的唤醒事件，请求其唤回主窗口。
+
+    Returns:
+        置位成功返回 True；事件不存在或调用失败返回 False（不抛异常）。
+    """
+    if sys.platform != "win32":
+        return False
+
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.OpenEventW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.OpenEventW.restype = wintypes.HANDLE
+    kernel32.SetEvent.argtypes = [wintypes.HANDLE]
+    kernel32.SetEvent.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    try:
+        event_handle = kernel32.OpenEventW(_EVENT_MODIFY_STATE, False, _ACTIVATION_EVENT_NAME)
+    except Exception as exc:  # noqa: BLE001 - 唤醒失败不阻断退出
+        debug(f"打开单实例唤醒事件失败：{exc}")
+        return False
+    if not event_handle:
+        debug("打开单实例唤醒事件失败：已运行实例未创建事件")
+        return False
+    try:
+        signaled = bool(kernel32.SetEvent(event_handle))
+        if not signaled:
+            debug("置位单实例唤醒事件失败")
+        return signaled
+    finally:
+        kernel32.CloseHandle(event_handle)
+
+
+def _consume_activation_event(handle) -> bool:
+    """非阻塞消费唤醒事件（自动重置事件被消费后自动清除信号）。
+
+    Args:
+        handle: ``_create_activation_event`` 返回的事件句柄。
+
+    Returns:
+        事件已触发返回 True；未触发、句柄为空或非 Windows 返回 False。
+    """
+    if sys.platform != "win32" or not handle:
+        return False
+
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+
+    try:
+        return kernel32.WaitForSingleObject(handle, 0) == _WAIT_OBJECT_0
+    except Exception as exc:  # noqa: BLE001 - 轮询失败不得影响事件循环
+        debug(f"消费单实例唤醒事件失败：{exc}")
+        return False
+
+
+def _release_activation_event(handle) -> None:
+    """释放唤醒事件句柄（幂等；空句柄与非 Windows 直接返回）。"""
+    if not handle or sys.platform != "win32":
+        return
+    import ctypes
+    try:
+        ctypes.windll.kernel32.CloseHandle(handle)
+    except Exception as exc:
+        debug(f"关闭单实例唤醒事件句柄失败：{exc}")
+
+
+# ──────────────────────────────────────────────────────────────
 # 单实例入口
 # ──────────────────────────────────────────────────────────────
 
@@ -289,9 +404,11 @@ def _acquire_single_instance():
     if kernel32.GetLastError() != _ERROR_ALREADY_EXISTS:
         return mutex_handle
 
-    # 已有实例：静默、有界退出。这里绝不弹模态框（弹窗会阻塞第二个进程，
+    # 已有实例：先请求唤回其主窗口（失败不阻断退出），再静默、有界退出。
+    # 这里绝不弹模态框（弹窗会阻塞第二个进程，
     # 违反 T18「10 秒内退出且无第二个窗口」的验收），也不创建任何窗口。
     info("another instance already running; exiting")
+    _signal_existing_instance()
     kernel32.CloseHandle(mutex_handle)
     sys.exit(0)
 

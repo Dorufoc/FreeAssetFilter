@@ -135,6 +135,32 @@ def test_general_hidden_system_flags_round_trip(manager: SettingsManagerV2) -> N
     assert invalid.get("general.show_system_files") is False
 
 
+def test_general_close_action_default_and_whitelist(manager: SettingsManagerV2) -> None:
+    """general.close_action 默认 "ask"；非法值回退，合法 tray/quit 被保留。"""
+    assert DEFAULT_SETTINGS_V2["general"]["close_action"] == "ask"
+    assert manager.get("general.close_action") == "ask"
+
+    manager.load()
+    manager.set("general.close_action", "tray")
+    manager.save()
+    assert SettingsManagerV2(manager.file_path).get("general.close_action") == "tray"
+
+    path = Path(manager.file_path)
+    for invalid in ("minimize", 123, None):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["general"]["close_action"] = invalid
+        path.write_text(json.dumps(data), encoding="utf-8")
+        assert (
+            SettingsManagerV2(manager.file_path).get("general.close_action")
+            == "ask"
+        )
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["general"]["close_action"] = "quit"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert SettingsManagerV2(manager.file_path).get("general.close_action") == "quit"
+
+
 def test_update_source_whitelist_round_trip(manager: SettingsManagerV2) -> None:
     """gitcode 可持久化；非法值在加载合并时回退默认 github。"""
     manager.load()
