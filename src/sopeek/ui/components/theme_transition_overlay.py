@@ -185,6 +185,9 @@ class _SnapshotTransitionOverlay(QWidget):
         self._active: bool = False
         # 已启动标志：start() 幂等（连点去重路径会先 finish_now 再替换）。
         self._started: bool = False
+        # 起钟已排定标志：True 表示动画启动已提交（普通路径在 start() 内排定，
+        # 暂缓路径在 mark_ready() 内排定）；防止重复 mark_ready 重复 _anim.start()。
+        self._start_scheduled: bool = False
 
         self.setAttribute(Qt.WA_StyledBackground, False)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
@@ -204,7 +207,7 @@ class _SnapshotTransitionOverlay(QWidget):
 
     # ── 动画 ─────────────────────────────────────────────────────────────
 
-    def start(self) -> None:
+    def start(self, defer_animation: bool = False) -> None:
         """显示遮罩、布置动画参数，并把起钟推迟到下一事件循环拍。
 
         起钟推迟（见 :meth:`_start_animation_if_live`）的原因：调用方
@@ -214,7 +217,18 @@ class _SnapshotTransitionOverlay(QWidget):
         时钟从内容全部就绪起算，揭示时长完整、扩散观感均匀；期间遮罩已
         以整幅旧外观呈现（半径 0），界面状态与点击前一致，无闪变。
 
+        冷启动首次点击时目标主题外观（QSS/调色板/内容重绘）可能尚未就绪，
+        默认的一拍推迟不足以保证遮罩动画开始时新主题已绘制完成，会出现
+        「圆形遮罩先动、新界面后到」的视觉卡顿。此类调用方传
+        ``defer_animation=True``：遮罩仅显示旧外观静态快照，不起钟；待目标
+        界面就绪后由调用方调 :meth:`mark_ready` 再起钟（见主窗口就绪观察器）。
+        主题切换本身始终非阻塞——是否起钟只影响遮罩动画，不影响主题翻转。
+
         幂等：已启动/已结束的实例直接忽略。
+
+        Args:
+            defer_animation: True 时只显示静态快照、不起动动画时钟，等待
+                :meth:`mark_ready`；False（默认）保持历史一拍推迟起钟行为。
         """
         if self._started or self._finished:
             return
@@ -237,6 +251,24 @@ class _SnapshotTransitionOverlay(QWidget):
             self._anim.setStartValue(1.0)
             self._anim.setEndValue(0.0)
         self._active = True
+        if not defer_animation:
+            self._schedule_start()
+
+    def mark_ready(self) -> None:
+        """目标主题外观就绪后调用：排定动画起钟（幂等，多次调用只起一次钟）。
+
+        仅对以 ``start(defer_animation=True)`` 启动的实例有意义；普通路径在
+        ``start()`` 内已排定起钟，本方法不会重复排定。已结束的实例静默跳过。
+        """
+        if self._finished or self._start_scheduled:
+            return
+        self._schedule_start()
+
+    def _schedule_start(self) -> None:
+        """把起钟排定到下一事件循环拍（幂等，内部以 ``_start_scheduled`` 去重）。"""
+        if self._start_scheduled:
+            return
+        self._start_scheduled = True
         QTimer.singleShot(0, self._start_animation_if_live)
 
     def _start_animation_if_live(self) -> None:
@@ -278,6 +310,7 @@ class _SnapshotTransitionOverlay(QWidget):
             return
         self._finished = True
         self._active = False
+        self._start_scheduled = False
         # 解绑父级事件过滤器：遮罩销毁后不留悬空过滤钩子。
         parent = self.parentWidget()
         if parent is not None:

@@ -376,8 +376,10 @@ class ThemeManager(QObject):
 
     @property
     def panel_border(self) -> QColor:
-        """主区域面板描边：两种模式均使用 mid，保持 50% alpha。"""
-        return self.alpha_of(self.mid, 50)
+        """主区域面板描边：均使用 mid，浅色 36% alpha、深色 50% alpha。"""
+        if self._dark_mode:
+            return self.alpha_of(self.mid, 50)
+        return self.alpha_of(self.mid, 36)
 
     @property
     def hover_veil(self) -> QColor:

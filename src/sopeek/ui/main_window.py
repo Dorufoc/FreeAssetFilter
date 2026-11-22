@@ -98,6 +98,11 @@ from components.window_transition import (
 # 实验性原生 DWM 云母开关的底层桥接（dwmapi 薄封装，惰性加载，零 COM 初始化）
 from sopeek.ui.mica import winapi as mica_winapi
 
+# 主题切换「目标外观就绪」等待上限（毫秒）：遮罩起钟前若目标主题外观
+# （QSS/调色板/内容重绘）尚未完成，最多等待此时间；超时强制放行，避免
+# 极端情况下观察器收不到 Paint 事件导致遮罩永不揭幕（见就绪观察器）。
+THEME_READY_TIMEOUT_MS: int = 350
+
 # 三栏布局模块（FileSelectorLayout / FilePoolLayout / UnifiedPreviewerLayout）
 # 不在模块级导入：它们连同 thumbnail_manager / file_card_delegate / numpy 等
 # 约 0.2s 的重型依赖会被算进「窗口出现前」的关键路径。三栏本就在窗口显示后
@@ -128,18 +133,13 @@ except ImportError:
 
 
 # ── 米卡效果固定参数（按深浅色主题各一组） ─────────────────────────────
-# 设置页不再提供米卡滑动条：参数为产品定值，随主题自动切换。
-# 亮色模式 → 饱和度 1×、对比度 1×、模糊 200px、透明度 65%；
-# 深色模式 → 饱和度 2×、对比度 1×、模糊 200px、透明度 80%。
-# 亮色底板收敛：浅色底亮度高，壁纸色满强度 + 高饱和会把整窗染成壁纸色
-# （面板被整体染色、层次消失），故大幅降饱和、降透明，只保留极淡的
-# 壁纸色相与明暗起伏（磨砂玻璃质感仍来自亮度场）。
+
 FIXED_MICA_PARAMS: dict = {
     "light": {
         "blur_radius": 200,
-        "saturation": 1.0,
+        "saturation": 8.0,
         "contrast": 1.0,
-        "tint_opacity": 65,
+        "tint_opacity": 98,
     },
     "dark": {
         "blur_radius": 200,
@@ -864,6 +864,11 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         self._settings_window_gen = 0
         # 内容层主题过渡遮罩（单实例去重引用；见 _start_content_theme_transition）
         self._content_theme_overlay: QWidget | None = None
+        # 主题切换「目标外观就绪」观察器（冷启动首次点击时遮罩暂缓起钟，
+        # 待内容层完成一次实际重绘后再放行；见 _arm_theme_ready）
+        self._theme_ready_seq: int = 0
+        self._theme_ready_filter: QObject | None = None
+        self._theme_ready_timer: QTimer | None = None
         # 布局切换代际计数：新一轮切换递增，作废上一轮未收尾的恢复回调
         self._layout_transition_generation: int = 0
         # 背景层交叉过渡遮罩（单实例去重引用；见 _start_background_transition）
@@ -2438,7 +2443,9 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         except Exception as exc:  # noqa: BLE001 - 剪枝失败不影响窗口生命周期
             debug(f"关闭后 QSS 注册表剪枝失败：{exc}")
 
-    def _start_content_theme_transition(self, mode: str = "reveal") -> None:
+    def _start_content_theme_transition(
+        self, mode: str = "reveal", defer_until_ready: bool = False
+    ) -> Optional[ContentTransitionOverlay]:
         """启动内容层过渡：切前抓整窗外观快照，切后按模式揭示/淡出/玻璃扫过。
 
         Args:
@@ -2456,6 +2463,13 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
                   整窗旧外观快照 1→0 线性淡出、露出已切好的实时新布局。时长
                   ``ContentTransitionOverlay.DISSOLVE_DURATION_MS``（250ms），
                   缓动 ``QEasingCurve.Linear``。
+
+            defer_until_ready: 是否暂缓遮罩动画起钟直到目标主题外观就绪
+                （仅对 reveal/fade 有效；dissolve 始终立即起播）。主题切换
+                本身非阻塞——此参数只决定遮罩何时开演，不影响主题翻转时序。
+
+        Returns:
+            已创建并启动的遮罩实例；无内容窗口/快照失败时返回 None。
 
         快照抓取 ``_root``（背景层 + 内容层）而非仅内容子树：面板填充
         多为 5%~72% alpha，内容层单独抓拍几乎全透明，铺到已切换的新内容
@@ -2477,7 +2491,7 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             mode_name = "fade"
         content = self._content
         if content is None or not content.isVisible():
-            return
+            return None
         # 单实例去重：上一过渡未结束则立即完成，避免连点叠加多层遮罩
         prev = self._content_theme_overlay
         if prev is not None:
@@ -2488,10 +2502,13 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             self._content_theme_overlay = None
         size = content.size()
         if size.isEmpty():
-            return
+            return None
         snapshot = self._capture_theme_snapshot(size, content.devicePixelRatioF())
         if snapshot is None or snapshot.isNull():
-            return
+            return None
+        # dissolve 始终立即起播（布局切换链路目标是实时新布局、无 QSS 刷新等待）；
+        # reveal/fade 走主题链路时按 defer_until_ready 决定是否暂缓起钟。
+        defer = defer_until_ready and mode_name != "dissolve"
         if mode_name == "dissolve":
             # 布局切换：整窗快照 250ms 线性溶解，不依赖主题按钮几何
             overlay = ContentTransitionOverlay(
@@ -2509,7 +2526,8 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             # 透明度淡出：整幅平滑渐隐（异常/显式兜底路径）
             overlay = ContentTransitionOverlay(content, snapshot)
         self._content_theme_overlay = overlay
-        overlay.start()
+        overlay.start(defer_animation=defer)
+        return overlay
 
     def _capture_theme_snapshot(
         self, size, dpr: float
@@ -2576,6 +2594,99 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             return snapshot
         except Exception:  # noqa: BLE001 - 快照失败不阻塞主题切换本身
             return None
+
+    def _arm_theme_ready(self, overlay: ContentTransitionOverlay) -> None:
+        """布设「目标外观就绪」观察器：等内容层完成一次真实重绘再放行遮罩起钟。
+
+        与遮罩 ``start(defer_animation=True)`` 配套（见 ``begin_theme_transition``）：
+
+        - 事件过滤器挂在 ``self._content`` 上监听 :class:`QEvent.Paint`：主题翻转
+          （``tm.set_theme``）同步刷新 QSS/调色板后，内容层在其后第一次实际
+          重绘即视为「目标界面已准备好」，此时才 ``overlay.mark_ready()`` 放行
+          圆形遮罩/透明度动画——避免冷启动首击「遮罩先动、新界面后到」的卡顿。
+        - 超时兜底：极端情况下若收不到 Paint（内容隐藏/被遮挡等），用
+          ``THEME_READY_TIMEOUT_MS`` 定时器强制放行，保证遮罩终会揭幕。
+
+        只持弱观察引用（不过度延长遮罩寿命），并在下一次 ``_arm`` 或
+        ``_disarm`` 时替换/拆除上一轮观察器；不在此处调用 ``processEvents``，
+        主题翻转仍由调用方同步完成，本方法纯被动观察。每轮 ``_arm`` 会先
+        ``_disarm``（递增代际作废旧回调），再取新代际号绑定本轮的过滤器/定时器。
+
+        Args:
+            overlay: 已以 ``defer_animation=True`` 启动的内容层遮罩。
+        """
+        self._disarm_theme_ready()
+        seq = self._theme_ready_seq
+        content = self._content
+        if content is None:
+            overlay.mark_ready()
+            return
+
+        class _ThemeReadyFilter(QObject):
+            """监听目标控件绘制事件的临时过滤器（无状态，回调转交主窗口）。"""
+
+            def __init__(self, owner: "MainWindow", target_seq: int) -> None:
+                super().__init__(owner)
+                self._owner = owner
+                self._seq = target_seq
+
+            def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802 - Qt 命名
+                if event.type() == QEvent.Paint and watched is self._owner._content:
+                    self._owner._on_theme_ready(self._seq)
+                return False
+
+        filter_obj = _ThemeReadyFilter(self, seq)
+        self._theme_ready_filter = filter_obj
+        content.installEventFilter(filter_obj)
+
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.setObjectName("theme_ready_timeout")
+        timer.timeout.connect(lambda: self._on_theme_ready(seq))
+        self._theme_ready_timer = timer
+        timer.start(THEME_READY_TIMEOUT_MS)
+
+    def _on_theme_ready(self, seq: int) -> None:
+        """就绪回调（Paint 事件或超时触发）：代际有效则放行遮罩起钟并拆观察器。"""
+        if seq != self._theme_ready_seq:
+            return
+        overlay = self._content_theme_overlay
+        if overlay is None:
+            self._disarm_theme_ready()
+            return
+        from shiboken6 import isValid
+
+        if not isValid(overlay):
+            self._disarm_theme_ready()
+            return
+        if not overlay.is_finished():
+            overlay.mark_ready()
+        self._disarm_theme_ready()
+
+    def _disarm_theme_ready(self) -> None:
+        """拆除主题就绪观察器（事件过滤器 + 定时器），幂等；递增代际使旧回调失效。"""
+        self._theme_ready_seq += 1
+        filter_obj = self._theme_ready_filter
+        if filter_obj is not None:
+            content = self._content
+            if content is not None:
+                try:
+                    content.removeEventFilter(filter_obj)
+                except (RuntimeError, TypeError):
+                    pass
+            try:
+                filter_obj.deleteLater()
+            except RuntimeError:
+                pass
+            self._theme_ready_filter = None
+        timer = self._theme_ready_timer
+        if timer is not None:
+            try:
+                timer.stop()
+                timer.deleteLater()
+            except RuntimeError:
+                pass
+            self._theme_ready_timer = None
 
     def _blit_gl_mica_into(self, painter: QPainter) -> None:
         """把 GL 版 Mica 背景的帧缓冲补画进快照（CPU 版已由 render 覆盖）。
@@ -2648,11 +2759,21 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         ``tm.set_theme*/set_theme_mode/apply_system_theme`` 之前都必须先调
         用本方法，否则背景层 ``sync_theme`` 因无 ``_pending_backdrop`` 退化
         为裸 ``update()``，重绘间隙漏出 ``_root`` 形成闪现。
+
+        内容层遮罩以 ``defer_animation=True`` 启动（静态快照立刻铺住旧外观），
+        但圆形遮罩/透明度动画起钟交给「目标外观就绪」观察器：待主题翻转同步
+        刷新 QSS/调色板、内容层完成一次真实重绘后才 ``mark_ready()`` 放行，
+        消除冷启动首击「遮罩先动、新界面后到」的视觉卡顿。主题翻转本身仍是非
+        阻塞的——本方法只布设观察器，不等待、不 ``processEvents``。快照失败时
+        遮罩未创建、观察器也不布设，切换照常进行。
         """
+        overlay: ContentTransitionOverlay | None = None
         try:
-            self._start_content_theme_transition()
+            overlay = self._start_content_theme_transition(defer_until_ready=True)
         except Exception:  # noqa: BLE001 - 快照失败不阻塞主题切换本身
             pass
+        if overlay is not None:
+            self._arm_theme_ready(overlay)
         try:
             self._capture_background_pre_theme_state()
         except Exception:  # noqa: BLE001 - 抓拍失败不阻塞主题切换
