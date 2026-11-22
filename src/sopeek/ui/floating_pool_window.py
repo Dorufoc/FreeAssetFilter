@@ -30,18 +30,24 @@
 * **拖入胶囊（Drag-over）**：外部 URL 拖入后窗口横向拉伸（固定边不动、向
   屏幕内侧生长）成胶囊，卡片圆角仍是高度的一半，因此形变永远是「圆 → 胶囊」的
   连续过渡；提示文案随拉伸进度淡入。
-* **成功回弹（Drop Success）**：接收成功后卡片按关键帧做
-  ``1.00 → 0.90 → 1.10 → 0.975 → 1.02 → 1.00`` 的弹性缩放（squish &
-  bounce），随后与展开动画叠加，形成「接住并摊开」的观感。
+* **接收确认（Drop Success）**：接收成功后卡片做一次「下压 → 回到终值」的
+  单调缩放确认（``1.00 → 0.955 → 1.00``），全程不越过 ``PULSE_SCALE_MAX``，
+  不存在任何弹性回弹 / 震荡；折叠态同时启动展开形变，两者同步起止。
 * **展开面板（Click-to-Expand）**：点击圆形入口后，卡片从锚定角的圆形
-  向外扩散成圆角矩形（``morphProgress`` 0→1，``QEasingCurve.OutQuart``），
-  内容容器同步 mask 到卡片区域，实现「逐步揭示」；收拢时反向播放，动画
-  结束才落定窗口尺寸（圆形恰好落在原位，几何跳变不可见）。形变缓动到
-  终值即结束，**不叠加缩放回弹**（越过终态尺寸的弹性抖动已按实测反馈移除）。
+  向外扩散成圆角矩形（``morphProgress`` 0→1），内容容器同步 mask 到卡片
+  区域，实现「逐步揭示」；收拢时反向播放，动画结束才落定窗口尺寸（圆形
+  恰好落在原位，几何跳变不可见）。形变收敛到终值即结束，**不叠加任何
+  缩放回弹**。
+
+所有样式切换动画共用同一份动画规格（:data:`STYLE_ANIM_DURATION_MS` /
+:data:`STYLE_ANIM_EASING`）：时长与非线性缓动曲线完全一致，播放速率统一
+保持 Qt 默认的 1.0，多属性同场切换（如入场 / 出场 / 接收确认）严格同步
+启动、同步结束；``OutCubic`` 在 ``[0, 1]`` 上单调，且各 Property
+setter 统一钳制在预设上下界内，因此任何过渡都不会越过起止值产生回弹。
 
 所有动画都是 ``QPropertyAnimation`` 驱动本类的 Qt Property（``morphProgress``
-/ ``dragProgress`` / ``hoverProgress`` / ``pulseScale``），帧内只做绘制与
-一次 ``setFixedSize``，不阻塞事件循环。
+/ ``dragProgress`` / ``hoverProgress`` / ``pulseScale`` / ``fadeProgress``），
+帧内只做绘制与一次 ``setFixedSize``，不阻塞事件循环。
 
 本模块实现窗口骨架（折叠 / 展开两态、主题化圆角自绘背景与拖动定位）、
 外部 URL 拖入链路（``dragEnterEvent`` / ``dragMoveEvent`` /
@@ -54,7 +60,7 @@ exec 返回后经 :meth:`FloatingPoolWindow._on_drag_finished` 判定落点，
 外部落点发 ``remove_file_requested``，自窗 / 宿主窗口及其 owned 对话框落点
 视为取消）。拖动松手后（``moveEvent`` 静默 ``SETTLE_DELAY_MS`` 启发式）会先
 把超出屏幕的窗口完整夹回可用区、再按 ``SNAP_THRESHOLD`` 对四边贴边吸附，位移
-统一经 :meth:`FloatingPoolWindow._animate_move` 的惯性启停缓动完成（可用
+统一经 :meth:`FloatingPoolWindow._animate_move` 的统一缓出规格完成（可用
 ``set_snap_enabled`` 关闭吸附，关闭后仍夹回）。配套测试见
 ``tests/unit/ui/test_floating_pool_window.py``。
 
@@ -66,15 +72,11 @@ Module constants:
     TITLE_BAR_HEIGHT: 展开态标题栏条带高度（拖动热点区）。
     INITIAL_INSET: 初始定位相对屏幕右上角的内缩距离（px）。
     SNAP_THRESHOLD: 松手后外边缘距屏幕可用区对应边 ≤ 该值时吸附（px）。
-    SNAP_DURATION_MS: 夹回 / 吸附位移动画时长（ms，惯性启停缓动）。
     SETTLE_DELAY_MS: 系统移动循环结束的静默判定窗口（ms，无移动后触发吸附）。
-    MORPH_DURATION_MS: 圆形 → 面板的展开形变时长（ms）。
-    COLLAPSE_DURATION_MS: 面板 → 圆形的收拢形变时长（ms）。
-    DRAG_STRETCH_DURATION_MS: 圆形 → 胶囊的横向拉伸时长（ms）。
-    HOVER_DURATION_MS: 悬停微光过渡时长（ms）。
-    SUCCESS_BOUNCE_MS: 成功接收回弹动画时长（ms）。
-    ENTRANCE_DURATION_MS: 首次入场（整体缩放 + 透明度）动画时长（ms）。
-    EXIT_DURATION_MS: 出场（整体缩放 + 透明度）动画时长（ms）。
+    STYLE_ANIM_DURATION_MS: 全部样式切换动画的统一时长（ms）。
+    STYLE_ANIM_EASING: 全部样式切换动画的统一非线性缓动（单调、无越界）。
+    PULSE_SCALE_MIN / PULSE_SCALE_MAX: 卡片缩放的预设上下界（任何动画都不得越界）。
+    PRESS_SCALE: 折叠态按下的压缩倍率（位于缩放预设界内）。
     ENTRANCE_SCALE_FROM / EXIT_SCALE_TO: 入场起始 / 出场终止绘制缩放。
     ENTRANCE_BUDGET_MS: 启动兜底预算（自构造起超时则直接显示，不播动画）。
     EXIT_BUDGET_MS: 退出兜底预算（超时直接关闭，绝不拖累主程序退出）。
@@ -94,6 +96,7 @@ from PySide6.QtCore import (
     QEasingCurve,
     QEventLoop,
     QMimeData,
+    QObject,
     QParallelAnimationGroup,
     QPoint,
     QPointF,
@@ -175,32 +178,27 @@ INITIAL_INSET = 16
 SNAP_THRESHOLD = 24
 """int: 拖动松手后外边缘距屏幕可用区对应边 ≤ 该值时触发吸附（px）。"""
 
-SNAP_DURATION_MS = 220
-"""int: 夹回 / 吸附 / 展开重定位位移动画时长（ms，``QEasingCurve.InOutCubic``）。"""
-
 SETTLE_DELAY_MS = 150
 """int: 系统移动循环结束的静默判定窗口（ms，无移动事件后触发吸附）。"""
 
-MORPH_DURATION_MS = 320
-"""int: 圆形 → 展开面板的形变时长（ms，``QEasingCurve.OutQuart``）。"""
+STYLE_ANIM_DURATION_MS = 240
+"""int: 全部样式切换动画的统一时长（ms，不随属性 / 方向区分）。"""
 
-COLLAPSE_DURATION_MS = 200
-"""int: 展开面板 → 圆形的收拢时长（ms，``QEasingCurve.InCubic``）。"""
+STYLE_ANIM_EASING = QEasingCurve.OutCubic
+"""QEasingCurve.Type: 全部样式切换动画的统一非线性缓动。
 
-DRAG_STRETCH_DURATION_MS = 240
-"""int: 拖入时圆形 → 胶囊的横向拉伸时长（ms）。"""
+``OutCubic`` 把 ``t ∈ [0, 1]`` 单调映射到 ``[0, 1]``，不会越过起止值，
+因此从数学上排除了弹簧式回弹 / 震荡；所有样式属性共享同一条曲线。
+"""
 
-HOVER_DURATION_MS = 160
-"""int: 悬停微光 / 轻微放大的过渡时长（ms）。"""
+PULSE_SCALE_MIN = 0.92
+"""float: 卡片缩放的预设下界（入场起始缩放同值，任何动画都不得低于它）。"""
 
-SUCCESS_BOUNCE_MS = 520
-"""int: 成功接收的 squish & bounce 关键帧动画时长（ms）。"""
+PULSE_SCALE_MAX = 1.0
+"""float: 卡片缩放的预设上界（任何动画都不得越过 1.0，杜绝放大回弹）。"""
 
-ENTRANCE_DURATION_MS = 240
-"""int: 首次入场（整体缩放 + 透明度）动画时长（ms，``OutQuart`` / ``OutCubic``）。"""
-
-EXIT_DURATION_MS = 200
-"""int: 出场（整体缩放 + 透明度）动画时长（ms，``InCubic``）。"""
+PRESS_SCALE = 0.955
+"""float: 折叠态按下的压缩倍率（位于 :data:`PULSE_SCALE_MIN` 与上界之间）。"""
 
 ENTRANCE_SCALE_FROM = 0.92
 """float: 入场起始绘制缩放（终态为 1.0）。"""
@@ -251,7 +249,7 @@ _ROW_RADIUS = 8
 """int: 条目行卡片的圆角半径。"""
 
 _CARD_MARGIN = 4
-"""int: 卡片相对窗口边界的留白（px），用于绘制外发光与回弹缩放余量。"""
+"""int: 卡片相对窗口边界的留白（px），用于绘制外发光。"""
 
 _PANEL_RADIUS = 14
 """int: 展开面板卡片的圆角半径。"""
@@ -396,7 +394,7 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         _anchor_bottom: 展开是否以下缘为固定边（False = 上缘固定）
         _drag_progress: 拖入胶囊的拉伸进度（0 = 圆形，1 = 胶囊）。
         _hover_progress: 悬停微光进度（0–1）。
-        _pulse: 绘制缩放倍率（回弹 / 按压反馈，静止时为 1.0）。
+        _pulse: 绘制缩放倍率（按压 / 入场出场，恒在预设缩放界内，静止时为 1.0）。
         _fade: 整体绘制不透明度（入场 / 出场淡入淡出系数，静止时为 1.0）。
         _entrance_done: 入场是否已结束（含跳过）。
         _entrance_expired: 启动预算（5s）是否已耗尽（耗尽后一律不播入场）。
@@ -525,7 +523,7 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         """返回绘制缩放倍率。
 
         Returns:
-            float: 静止 1.0；按压 < 1，回弹 > 1。
+            float: 静止 1.0；按压 < 1，且恒不超过 1.0。
         """
         return self._pulse
 
@@ -533,16 +531,16 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         """写入绘制缩放倍率并请求重绘。
 
         Args:
-            value: 缩放倍率（钳制到 0.80–1.25）。
+            value: 缩放倍率（钳制到 ``PULSE_SCALE_MIN..PULSE_SCALE_MAX``）。
         """
-        value = max(0.80, min(1.25, float(value)))
+        value = max(PULSE_SCALE_MIN, min(PULSE_SCALE_MAX, float(value)))
         if value == self._pulse:
             return
         self._pulse = value
         self.update()
 
     pulseScale = Property(float, _get_pulse, _set_pulse)
-    """float: 卡片绘制缩放倍率（按压 squish / 成功回弹）。"""
+    """float: 卡片绘制缩放倍率（按压 / 入场出场，恒在预设缩放界内）。"""
 
     def _get_fade(self) -> float:
         """返回整体绘制不透明度（入场 / 出场淡入淡出系数）。
@@ -858,10 +856,24 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
             # 首次展开：先把展开内容的首次上屏工作（容器布局 / QSS 抛光 /
             # 条目行首绘）在**窗口几何跳变之前**离屏做完，见 _warm_panel_render。
             self._warm_panel_render(target_size)
+            # 展开前清掉按压 / 反馈缩放：几何跳变的首帧必须是未缩放的圆形，
+            # 否则围绕锚定角的缩放会让卡片在跳变瞬间产生可见位移感。
+            self._stop_animation("_pulse_anim")
+            self.pulseScale = PULSE_SCALE_MAX
+            content = getattr(self, "_content", None)
+            if content is not None:
+                content.setVisible(False)
+            # 尺寸与位置一次落定，并挂起更新直到首帧准备完毕：避免
+            # setGeometry 与随后的 setFixedSize 各触发一次中间重绘，在
+            # 分层窗口上表现为「旧位图被新几何拉伸」的位置闪烁。
+            self.setUpdatesEnabled(False)
             self._internal_moving = True
+            # 一次 setGeometry 同时落定尺寸与位置（避免 resize / move 两次
+            # 原生调用各产生一次中间合成帧）。
             self.setGeometry(target)
             self._internal_moving = False
-            self._apply_state_geometry()
+            self._apply_state_geometry(target_size)
+            self.setUpdatesEnabled(True)
             # 几何跳变后必须**同步**画出 morph=0 的首帧再启动形变：分层窗口
             # （WA_TranslucentBackground）在合成器取到新位图之前，会继续用
             # **旧位图**顶在新窗口原点显示——旧位图是 64×64 的折叠圆形，于是
@@ -1007,18 +1019,24 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         )
         return QSize(EXPANDED_SIZE.width(), clamped)
 
-    def _apply_state_geometry(self) -> None:
+    def _apply_state_geometry(self, size: Optional[QSize] = None) -> None:
         """把当前状态的固定尺寸应用到窗口（``setFixedSize``）。
 
         同时同步展开内容容器的几何、可见性与裁剪蒙版（折叠态隐藏内容，
         保证圆形入口自绘干净）。
+
+        Args:
+            size: 已确定的目标尺寸；None 时按当前状态重新计算。展开路径传入
+                几何跳变前算好的尺寸，避免移动后再算一次导致二次 resize。
         """
-        self.setFixedSize(self._target_size())
+        self.setFixedSize(self._target_size() if size is None else size)
         content = getattr(self, "_content", None)
         if content is not None:
             content.setGeometry(self.rect())
+            # 先应用裁剪蒙版再显示：展开首帧的内容只应出现在形变圆形内，
+            # 顺序反了会有一帧露出整块面板内容。
+            self._sync_content_mask()
             content.setVisible(self._expanded)
-        self._sync_content_mask()
 
     def _apply_collapsed_geometry(self) -> None:
         """折叠态宽度变化（拖入拉伸）：固定锚定边并向屏幕内侧生长。"""
@@ -1332,6 +1350,11 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
     def _card_radius(self, card: QRectF) -> float:
         """返回卡片圆角半径（折叠态恒为高度一半，展开态插值到面板圆角）。
 
+        展开 / 收拢时起点必须取**折叠圆形自身的半径**（常量），不能用不断
+        变大的 ``card.height() / 2``：后者会让圆角在形变前期几乎不收敛、
+        末期再突然收到面板圆角，与卡片 / 内容按同一 ``_morph`` 缓出展开的
+        速度明显不一致。改为常量起点后，圆角与卡片面积同步缓出变化。
+
         Args:
             card: 当前卡片矩形。
 
@@ -1341,28 +1364,28 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         if not self._visual_expanded:
             return card.height() / 2.0
         progress = self._morph
-        radius = card.height() / 2.0 * (1.0 - progress) + _PANEL_RADIUS * progress
+        collapsed_radius = (COLLAPSED_SIZE.height() - 2.0 * _CARD_MARGIN) / 2.0
+        radius = collapsed_radius * (1.0 - progress) + _PANEL_RADIUS * progress
         return max(_PANEL_RADIUS * 0.6, min(radius, card.height() / 2.0))
 
     def _effective_pulse(self, card: QRectF) -> float:
-        """把回弹缩放钳制在留白余量内（放大不得越出窗口被裁切）。
+        """把绘制缩放钳制在预设缩放界内（恒不超过 1.0，不会越出窗口）。
 
         Args:
-            card: 当前卡片矩形。
+            card: 当前卡片矩形（保留参数以贴合绘制调用签名）。
 
         Returns:
             float: 实际使用的缩放倍率。
         """
-        span = max(1.0, min(card.width(), card.height()))
-        limit = 1.0 + (2.0 * _CARD_MARGIN) / span
-        return max(0.80, min(self._pulse, limit))
+        del card
+        return max(PULSE_SCALE_MIN, min(self._pulse, PULSE_SCALE_MAX))
 
     def paintEvent(self, event: QPaintEvent) -> None:
         """自绘主题化卡片：渐变底 + 玻璃边缘 + 拖放发光 + 圆形入口内容。
 
         配色实时取自主题（``tm`` 语义 token），与
         ``styled_floating_panel.FloatingPanel.paintEvent`` 同口径；拖放高亮
-        沿用 ``dragActive`` 动态属性，悬停 / 拖入 / 回弹由动画进度驱动。
+        沿用 ``dragActive`` 动态属性，悬停 / 拖入 / 接收确认由动画进度驱动。
 
         Args:
             event: 绘制事件（未直接使用）。
@@ -1713,20 +1736,41 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
             pass
         anim.deleteLater()
 
+    def _new_style_animation(
+        self,
+        prop: bytes,
+        parent: Optional[QObject] = None,
+    ) -> QPropertyAnimation:
+        """创建已套用统一样式动画规格的 ``QPropertyAnimation``。
+
+        这是全部样式切换动画的**唯一**配置入口：时长与缓动曲线都在此统一
+        写入（播放速率保持 Qt 默认 1.0），调用方只负责起止值与关键帧，
+        避免各属性各配一套。
+
+        Args:
+            prop: 目标 Qt Property 名（如 ``b"morphProgress"``）。
+            parent: 父对象；None 时归本窗口。
+
+        Returns:
+            QPropertyAnimation: 已统一配置、尚未启动的动画。
+        """
+        anim = QPropertyAnimation(self, prop, self if parent is None else parent)
+        anim.setDuration(STYLE_ANIM_DURATION_MS)
+        anim.setEasingCurve(STYLE_ANIM_EASING)
+        # 播放速率保持 Qt 默认 1.0：所有动画同速，避免出现快慢差异。
+        return anim
+
     def _animate_morph(
         self,
         target: float,
         finished: Optional[Callable[[], None]] = None,
     ) -> None:
-        """播放圆形 ↔ 面板形变动画。
+        """播放圆形 ↔ 面板形变动画（展开 / 收拢共用同一规格）。
 
         窗口不可见时不播放（无人观看，也让测试的同步语义保持确定），直接
-        落定数值并调用 ``finished``。
-
-        展开方向只用 ``QEasingCurve.OutQuart`` 缓动收敛到终值后直接结束，
-        **不**再串联任何缩放脉冲：历史上曾在形变结束后叠加一个
-        ``1.0 → 0.982 → 1.008 → 1.0`` 的「落定回弹」，其中 ``1.008`` 越过
-        终态尺寸，用户实测表现为面板展开到末期又轻微鼓一下（弹性溢出）。
+        落定数值并调用 ``finished``。缓动收敛到终值后直接结束，**不**串联
+        任何缩放脉冲：历史上曾在形变结束后叠加越过终态尺寸的「落定回弹」，
+        用户实测表现为面板展开到末期又轻微鼓一下（弹性溢出）。
 
         Args:
             target: 目标进度（0 = 圆形，1 = 面板）。
@@ -1739,12 +1783,7 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
                 finished()
             return
 
-        expanding = target > self._morph
-        anim = QPropertyAnimation(self, b"morphProgress", self)
-        anim.setDuration(MORPH_DURATION_MS if expanding else COLLAPSE_DURATION_MS)
-        anim.setEasingCurve(
-            QEasingCurve.OutQuart if expanding else QEasingCurve.InCubic
-        )
+        anim = self._new_style_animation(b"morphProgress")
         anim.setStartValue(self._morph)
         anim.setEndValue(target)
         if finished is not None:
@@ -1784,11 +1823,7 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
 
         self._settle_timer.stop()
         self._geometry_anim_active = True
-        anim = QPropertyAnimation(self, b"dragProgress", self)
-        anim.setDuration(DRAG_STRETCH_DURATION_MS)
-        anim.setEasingCurve(
-            QEasingCurve.OutCubic if active else QEasingCurve.InOutCubic
-        )
+        anim = self._new_style_animation(b"dragProgress")
         anim.setStartValue(self._drag_progress)
         anim.setEndValue(target)
         anim.finished.connect(self._on_geometry_anim_finished)
@@ -1810,64 +1845,47 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         if not self.isVisible():
             self.hoverProgress = target
             return
-        anim = QPropertyAnimation(self, b"hoverProgress", self)
-        anim.setDuration(HOVER_DURATION_MS)
-        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim = self._new_style_animation(b"hoverProgress")
         anim.setStartValue(self._hover_progress)
         anim.setEndValue(target)
         anim.finished.connect(lambda: setattr(self, "_hover_anim", None))
         self._hover_anim = anim
         anim.start()
 
-    def _animate_pulse(
-        self,
-        keys: Sequence[tuple],
-        duration: int,
-        easing: QEasingCurve.Type = QEasingCurve.OutCubic,
-    ) -> None:
-        """播放卡片缩放关键帧动画（按压 / 回弹）。
+    def _animate_pulse(self, keys: Sequence[tuple]) -> None:
+        """播放卡片缩放关键帧动画（统一时长 / 缓动 / 速率）。
+
+        ``keys`` 的缩放值会经 ``pulseScale`` setter 钳制在
+        ``PULSE_SCALE_MIN..PULSE_SCALE_MAX``，且 ``STYLE_ANIM_EASING`` 在
+        ``[0, 1]`` 上单调，因此关键帧之间的插值同样不会越过预设边界。
 
         Args:
             keys: ``(时间占比, 缩放倍率)`` 序列，首尾应分别覆盖 0 与 1。
-            duration: 动画时长（ms）。
-            easing: 段间缓动曲线。
         """
         self._stop_animation("_pulse_anim")
         if not self.isVisible():
             self.pulseScale = keys[-1][1]
             return
-        anim = QPropertyAnimation(self, b"pulseScale", self)
-        anim.setDuration(duration)
-        anim.setEasingCurve(easing)
+        anim = self._new_style_animation(b"pulseScale")
         for position, value in keys:
             anim.setKeyValueAt(float(position), float(value))
         anim.finished.connect(lambda: setattr(self, "_pulse_anim", None))
         self._pulse_anim = anim
         anim.start()
 
-    def _play_success_bounce(self) -> None:
-        """播放「文件已接收」的 squish & bounce 弹性缩放。"""
-        self._animate_pulse(
-            (
-                (0.0, 1.0),
-                (0.16, 0.90),
-                (0.40, 1.10),
-                (0.62, 0.975),
-                (0.82, 1.02),
-                (1.0, 1.0),
-            ),
-            SUCCESS_BOUNCE_MS,
-        )
+    def _play_press_feedback(self) -> None:
+        """播放一次「下压 → 回到终值」的接收确认（单调，无越界回弹）。
 
-    def _play_receive_press(self) -> None:
-        """播放「面板已展开时又拖入文件」的轻微下压确认（关键帧全程 ≤ 1.0）。
-
-        只做一次下压再回到终值，不产生越过终态尺寸的弹性抖动；展开形变本身
-        不再叠加任何缩放脉冲（见 :meth:`_animate_morph`）。
+        折叠态与展开态共用同一条关键帧：全程落在
+        ``PULSE_SCALE_MIN..PULSE_SCALE_MAX`` 内且先降后升，由统一动画规格
+        驱动；折叠态紧随其后的展开形变使用同一时长 / 缓动，两者同步起止。
         """
         self._animate_pulse(
-            ((0.0, 1.0), (0.45, 0.982), (1.0, 1.0)),
-            240,
+            (
+                (0.0, PULSE_SCALE_MAX),
+                (0.5, PRESS_SCALE),
+                (1.0, PULSE_SCALE_MAX),
+            )
         )
 
     # ── 入场 / 出场（整体缩放 + 透明度）──────────────────────────
@@ -1875,10 +1893,13 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
     def _play_entrance(self) -> None:
         """播放首次入场：整体缩放（``0.92 → 1.0``）+ 透明度（``0 → 1``）。
 
-        两段动画并行、均用非线性缓动（缩放 ``OutQuart``、透明度
-        ``OutCubic``），避免浮窗硬切入桌面。只播一次（``_shown_once`` 门）；
-        入场预算已耗尽（:meth:`_on_entrance_budget_exceeded`）或窗口不可见时
-        直接落定终态，不播动画。
+        两段动画并行、共用同一份统一规格（时长 / 非线性缓动，速率恒为
+        Qt 默认 1.0），在同一个 ``QParallelAnimationGroup`` 中严格同步
+        启动、同步结束；
+        避免浮窗硬切入桌面，也避免两个属性出现先后时序差。只播一次
+        （``_shown_once`` 门）；入场预算已耗尽
+        （:meth:`_on_entrance_budget_exceeded`）或窗口不可见时直接落定终态，
+        不播动画。
         """
         self._stop_animation("_entrance_anim")
         if self._entrance_expired or not self.isVisible():
@@ -1888,14 +1909,10 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         self._pulse = ENTRANCE_SCALE_FROM
         self._fade = 0.0
         group = QParallelAnimationGroup(self)
-        fade = QPropertyAnimation(self, b"fadeProgress", group)
-        fade.setDuration(ENTRANCE_DURATION_MS)
-        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade = self._new_style_animation(b"fadeProgress", group)
         fade.setStartValue(0.0)
         fade.setEndValue(1.0)
-        scale = QPropertyAnimation(self, b"pulseScale", group)
-        scale.setDuration(ENTRANCE_DURATION_MS)
-        scale.setEasingCurve(QEasingCurve.OutQuart)
+        scale = self._new_style_animation(b"pulseScale", group)
         scale.setStartValue(ENTRANCE_SCALE_FROM)
         scale.setEndValue(1.0)
         group.addAnimation(fade)
@@ -1971,18 +1988,17 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         self._play_exit_fade()
 
     def _play_exit_fade(self) -> None:
-        """播放出场：整体缩放（``1.0 → 0.92``）+ 透明度（``1 → 0``），结束后关闭。"""
+        """播放出场：整体缩放（``1.0 → 0.92``）+ 透明度（``1 → 0``），结束后关闭。
+
+        与入场对称：两条属性动画共用统一规格并在同一并行组内同步起止。
+        """
         if self._exit_finished or self._exit_anim is not None:
             return
         group = QParallelAnimationGroup(self)
-        fade = QPropertyAnimation(self, b"fadeProgress", group)
-        fade.setDuration(EXIT_DURATION_MS)
-        fade.setEasingCurve(QEasingCurve.InCubic)
+        fade = self._new_style_animation(b"fadeProgress", group)
         fade.setStartValue(self._fade)
         fade.setEndValue(0.0)
-        scale = QPropertyAnimation(self, b"pulseScale", group)
-        scale.setDuration(EXIT_DURATION_MS)
-        scale.setEasingCurve(QEasingCurve.InCubic)
+        scale = self._new_style_animation(b"pulseScale", group)
         scale.setStartValue(self._pulse)
         scale.setEndValue(EXIT_SCALE_TO)
         group.addAnimation(fade)
@@ -2281,8 +2297,8 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
 
         依次遍历 ``mimeData().urls()``：``toLocalFile()`` 为空、路径不存在、
         同一事件内重复或 ``build_file_info`` 返回 ``None`` 的条目一律跳过。
-        处理完全部 URL 后清除高亮；若有条目成功发射且当前为折叠态，则播放
-        接收回弹并自动展开窗口。本方法**只发射信号**，不触碰主池数据源。
+        处理完全部 URL 后清除高亮；若有条目成功发射，则播放接收确认，折叠态
+        还会自动展开窗口。本方法**只发射信号**，不触碰主池数据源。
 
         Args:
             event: 拖放事件。
@@ -2346,12 +2362,12 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         return emitted
 
     def _finish_external_drop(self, emitted: int) -> None:
-        """外部拖放收尾：有成功入池条目且处于折叠态时回弹并自动展开。
+        """外部拖放收尾：有成功入池条目时给出接收确认 / 展开面板。
 
         OLE ``dropEvent`` 与提权兜底（:meth:`_elevated_drop_accept_paths`）
-        共用，保证两条链路行为一致。回弹在展开形变之前起跑（缩放作用于
-        圆形入口），随后卡片向外扩散并露出列表，形成「接住 → 摊开」的
-        连续观感。
+        共用，保证两条链路行为一致。已展开时只播一次单调下压确认；折叠态
+        直接展开，**不**在几何跳变期间叠加缩放反馈——缩放围绕锚定角进行，
+        与展开同拍会放大「首帧位置闪烁」的观感，展开形变本身即是反馈。
 
         Args:
             emitted: 本次拖放实际发射 ``add_file_requested`` 的次数。
@@ -2359,9 +2375,8 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         if not emitted:
             return
         if self.is_expanded():
-            self._play_receive_press()
+            self._play_press_feedback()
             return
-        self._play_success_bounce()
         self.set_expanded(True)
 
     def _elevated_drop_accept_paths(self, paths: list[str]) -> None:
@@ -2549,7 +2564,9 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
                 self._start_system_move()
             else:
                 self._press_pos = event.position().toPoint()
-                self._animate_pulse(((0.0, 1.0), (1.0, 0.955)), 110)
+                self._animate_pulse(
+                    ((0.0, PULSE_SCALE_MAX), (1.0, PRESS_SCALE))
+                )
             event.accept()
             return
         super().mousePressEvent(event)
@@ -2568,21 +2585,26 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
             ).manhattanLength()
             if delta > QApplication.startDragDistance():
                 self._press_pos = None
-                self._animate_pulse(((0.0, 0.955), (1.0, 1.0)), 160)
+                self._animate_pulse(
+                    ((0.0, PRESS_SCALE), (1.0, PULSE_SCALE_MAX))
+                )
                 self._start_system_move()
                 event.accept()
                 return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        """折叠态待决手势：未超阈值释放则回弹并展开窗口。
+        """折叠态待决手势：未超阈值释放则展开窗口。
+
+        展开路径不再叠加缩放回弹：``set_expanded`` 会先把缩放复位到终值，
+        保证几何跳变后的首帧是未缩放的圆形，避免与展开形变同拍时产生
+        位置闪烁感。
 
         Args:
             event: 鼠标事件。
         """
         if self._press_pos is not None and event.button() == Qt.LeftButton:
             self._press_pos = None
-            self._animate_pulse(((0.0, 0.955), (0.55, 1.028), (1.0, 1.0)), 260)
             self.set_expanded(True)
             event.accept()
             return
@@ -2701,12 +2723,13 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
         self._animate_move(QPoint(x, y))
 
     def _animate_move(self, target: QPoint) -> None:
-        """以惯性启停缓动把窗口移动到 ``target``（尺寸不变）。
+        """以统一缓出规格把窗口移动到 ``target``（尺寸不变）。
 
-        ``QPropertyAnimation(self, b"pos")``，时长 ``SNAP_DURATION_MS``，
-        缓动 ``QEasingCurve.InOutCubic``。启动前清静默定时器并停掉在途动画；
-        动画期间 ``_internal_moving`` 为 True（``moveEvent`` 不再重启静默定时器），
-        结束后复位。目标与当前位置相同时直接返回（不产生动画）。
+        ``QPropertyAnimation(self, b"pos")``，与全部样式切换共用
+        :data:`STYLE_ANIM_DURATION_MS` / :data:`STYLE_ANIM_EASING`。启动前
+        清静默定时器并停掉在途动画；动画期间 ``_internal_moving`` 为 True
+        （``moveEvent`` 不再重启静默定时器），结束后复位。目标与当前位置
+        相同时直接返回（不产生动画）。
 
         Args:
             target: 目标左上角全局坐标。
@@ -2715,9 +2738,7 @@ class FloatingPoolWindow(ElevatedDropFallbackMixin, QWidget):
             return
         self._settle_timer.stop()
         self._stop_move_animation()
-        anim = QPropertyAnimation(self, b"pos", self)
-        anim.setDuration(SNAP_DURATION_MS)
-        anim.setEasingCurve(QEasingCurve.InOutCubic)
+        anim = self._new_style_animation(b"pos")
         anim.setStartValue(self.pos())
         anim.setEndValue(target)
         anim.finished.connect(self._on_move_animation_finished)
