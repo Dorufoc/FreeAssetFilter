@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Sopeek 的「稀疏包」（sparse package / package with external location）清单。
+
+  Windows 11 的新版（现代）右键菜单只接受具备包标识的应用声明出来的命令，
+  纯注册表动词只能进「显示更多选项」里的经典菜单。因此这里给已经安装好的
+  传统 Win32 目录申请一个包标识：包本身只含本清单与图标，可执行文件与
+  SopeekShellExt.dll 仍留在安装目录（ExternalLocation）。
+
+  构建时替换的占位符：
+    {{VERSION}}   —— 四段版本号（如 2.0.0.0），来自 SPKVERSION。
+    {{PUBLISHER}} —— 必须与签名证书 Subject 完全一致。
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
+  xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap10 com desktop4 desktop5 rescap">
+
+  <Identity
+    Name="Sopeek.ShellMenu"
+    Publisher="{{PUBLISHER}}"
+    Version="{{VERSION}}"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Sopeek 右键菜单</DisplayName>
+    <PublisherDisplayName>Sopeek</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <!-- 稀疏包：真正的程序文件留在安装目录，由 Add-AppxPackage -ExternalLocation 指定。 -->
+    <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="zh-CN" />
+    <Resource Language="en-US" />
+  </Resources>
+
+  <!-- 稀疏包：真正的程序文件留在安装目录，由 Add-AppxPackage -ExternalLocation 指定。 -->
+
+  <Applications>
+    <Application
+      Id="Sopeek"
+      Executable="Sopeek.exe"
+      uap10:TrustLevel="mediumIL"
+      uap10:RuntimeBehavior="win32App">
+      <!-- AppListEntry="none"：这个包只是给传统安装目录申请「包标识」用来在
+           Windows 11 现代右键菜单里声明命令，本身不是一个独立应用。若省略它，
+           开始菜单会同时出现「经典快捷方式」和「包应用」两个一模一样的 Sopeek
+           图标（2026-11-27 实测）。隐藏包入口后，开始菜单只剩安装器创建的
+           快捷方式；任务栏图标与 shell:AppsFolder 启动都不受影响。 -->
+      <uap:VisualElements
+        DisplayName="Sopeek"
+        Description="Sopeek 文件预览与管理"
+        AppListEntry="none"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png" />
+      <Extensions>
+        <!-- 包内 COM 服务器声明：新版菜单的枚举依赖「清单里把 CLSID 注册为
+             windows.comServer」，仅写注册表 CLSID 不会出现在现代菜单里
+             （官方文档 Add a File Explorer context menu command to a packaged
+             desktop app 的第 2 步）。Path 是包相对路径：稀疏包下它相对
+             ExternalLocation（即 $INSTDIR）解析。 -->
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:SurrogateServer DisplayName="Sopeek context menu">
+              <com:Class
+                Id="02F1BD14-A1B5-4B9E-9E10-C756D537FDA0"
+                Path="SopeekShellExt.dll"
+                ThreadingModel="STA" />
+              <com:Class
+                Id="39F01A4C-DD1D-48D2-8FB3-0E0C76B336BC"
+                Path="SopeekShellExt.dll"
+                ThreadingModel="STA" />
+            </com:SurrogateServer>
+          </com:ComServer>
+        </com:Extension>
+        <!-- 新版右键菜单：文件 / 文件夹 / 文件夹空白处各一条命令。
+             Category 由 desktop4 定义；Directory 与 Directory\Background 只在
+             desktop5 的 ItemType 里被允许，所以条目本身用 desktop5:ItemType。 -->
+        <desktop4:Extension Category="windows.fileExplorerContextMenus">
+          <desktop4:FileExplorerContextMenus>
+            <desktop5:ItemType Type="*">
+              <desktop5:Verb Id="SopeekOpenFile" Clsid="02F1BD14-A1B5-4B9E-9E10-C756D537FDA0" />
+            </desktop5:ItemType>
+            <desktop5:ItemType Type="Directory">
+              <desktop5:Verb Id="SopeekOpenFolder" Clsid="39F01A4C-DD1D-48D2-8FB3-0E0C76B336BC" />
+            </desktop5:ItemType>
+            <desktop5:ItemType Type="Directory\Background">
+              <desktop5:Verb Id="SopeekOpenBackground" Clsid="39F01A4C-DD1D-48D2-8FB3-0E0C76B336BC" />
+            </desktop5:ItemType>
+          </desktop4:FileExplorerContextMenus>
+        </desktop4:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

@@ -1,0 +1,241 @@
+{
+  "name": "Sopeek Promo Design Tokens",
+  "version": "1.0.0",
+  "description": "宣传站点与主界面复刻共用的设计令牌。唯一实现来源是 promo/assets/tokens.css；本文件是它的机器可读快照，改动时两边同步。产品窗口部分直接映射 Sopeek 自身的 ThemeManager 语义令牌。",
+  "source": "promo/assets/tokens.css",
+  "updated": "2026-11-26",
+
+  "color": {
+    "brand": {
+      "accent": {
+        "value": "#3a9dcb",
+        "note": "取自主界面默认强调色 colors.json → accent.primary，用于按钮、下划线、进度、焦点环"
+      },
+      "accent-hover": { "value": "#348eb6", "note": "ThemeManager.accent_hover = _darken(accent, 0.9)（HSV 明度 90%）" },
+      "accent-press": { "value": "#2e7da2", "note": "ThemeManager.accent_active = _darken(accent, 0.8)" },
+      "accent-text": { "value": "#3a9dcb", "note": "深色 = 原 accent；浅色 = accent_text = _darken(accent,0.72) ≈ #2a7192" },
+      "accent-ink": {
+        "value": "#ffffff",
+        "note": "accent 实底上的文字色：StyledButton primary text = tm.white；readable_on(#3a9dcb)（L=0.29<0.35）同为白"
+      },
+      "accent-shadow": { "value": "rgba(58,157,203,0.298)", "note": "primary 按钮投影 = accent_alpha(76)" },
+      "danger": { "value": "#ef4444" },
+      "warning": { "value": "#f59e0b" },
+      "info": { "value": "#3b82f6" },
+      "violet": { "value": "#8b5cf6" },
+      "signal": {
+        "value": "#07c160",
+        "note": "产品内 accent 的出厂默认值（绿色）；站点用蓝色，与产品界面主色一致"
+      }
+    },
+
+    "product": {
+      "dark": {
+        "surface": { "value": "#1a1a1a", "note": "ThemeManager: gray.g1" },
+        "fill": { "value": "#3e3e3e", "note": "gray.g2，进度轨/次级填充" },
+        "mid": { "value": "#888888", "note": "所有 alpha 派生的基准灰" },
+        "text": { "value": "#ffffff" },
+        "panel": { "value": "rgba(255,255,255,0.05)", "note": "panel_fill = alpha(text,5%)" },
+        "bar": { "value": "rgba(255,255,255,0.05)", "note": "bar_fill = alpha(text,5%)" },
+        "card": { "value": "rgba(26,26,26,0.85)", "note": "card_fill = alpha(surface,85%)" },
+        "card-hover": { "value": "overlay(hover_veil)", "note": "hover = card_fill 上叠 alpha(mid,25%) veil（file_card_delegate hover_overlay）" },
+        "hover-veil": { "value": "rgba(136,136,136,0.25)", "note": "hover_veil = alpha(mid,25%)" },
+        "subtle": { "value": "rgba(136,136,136,0.2)", "note": "subtle_fill = alpha(mid,20%)" },
+        "divider": { "value": "rgba(136,136,136,0.3)", "note": "divider = alpha(mid,30%)" },
+        "panel-border": { "value": "rgba(136,136,136,0.5)", "note": "panel_border = alpha(mid,50%)" },
+        "control-border": { "value": "rgba(136,136,136,0.3)", "note": "control_border = alpha(mid,30%)" },
+        "control-border-strong": { "value": "rgba(136,136,136,0.5)", "note": "control_border_strong = alpha(mid,50%)" },
+        "card-border": { "value": "rgba(136,136,136,0.3)", "note": "card_border = alpha(mid,30%)" },
+        "text-2": { "value": "#888888", "note": "text_secondary 深色 = mid 实色" },
+        "text-3": { "value": "rgba(136,136,136,0.6)", "note": "text_hint = alpha(mid,60%)" },
+        "text-disabled": { "value": "rgba(136,136,136,0.4)", "note": "text_disabled = alpha(mid,40%)" },
+        "track": { "value": "rgba(136,136,136,0.4)", "note": "track_fill = alpha(mid,40%)" },
+        "ghost-hover": { "value": "rgba(255,255,255,0.15)", "note": "ghost 按钮 / 标题栏按钮 hover = alpha(text,15%)" },
+        "btn-bg": { "value": "rgba(136,136,136,0.2)", "note": "secondary bg = alpha(mid,20%)" },
+        "btn-bg-hover": { "value": "rgba(136,136,136,0.5)", "note": "secondary bg_hover = alpha(mid,50%)" },
+        "btn-bg-active": { "value": "rgba(136,136,136,0.4)", "note": "secondary bg_active = alpha(mid,40%)" },
+        "btn-border": { "value": "rgba(136,136,136,0.4)", "note": "secondary border = alpha(mid,40%)" },
+        "btn-border-hover": { "value": "rgba(136,136,136,0.6)", "note": "secondary border_hover = alpha(mid,60%)" },
+        "input-fill": { "value": "rgba(26,26,26,0.3)", "note": "StyledLineEdit 深色填充 = alpha(surface,30%)" },
+        "menu-border": { "value": "rgba(136,136,136,0.4)", "note": "菜单/对话框描边 = alpha(mid,40%)" },
+        "menu-hover": { "value": "rgba(62,62,62,0.6)", "note": "菜单项 hover（深色）= alpha(fill,60%)" },
+        "seg-bg": { "value": "rgba(136,136,136,0.26)", "note": "StyledSegmented 容器底（深色）= alpha(mid,26%)" },
+        "accent-sel": { "value": "rgba(58,157,203,0.4)", "note": "文件卡选中底（深色）= alpha(accent,40%)" },
+        "scrim": { "value": "rgba(0,0,0,0.502)", "note": "scrim = black 128/255" },
+        "scroll-alphas": { "value": "0.4 / 0.8 / 1.0", "note": "scroll_handle_alphas = (102,204,255)" },
+        "mica-tint": { "value": "rgba(32,32,32,0.72)", "note": "Mica 着色 #202020B4" },
+        "mica-fallback": { "value": "#202020" }
+      },
+      "light": {
+        "surface": { "value": "#f5f5f5" },
+        "fill": { "value": "#e0e0e0" },
+        "mid": { "value": "#888888" },
+        "text": { "value": "#1a1a1a" },
+        "panel": { "value": "rgba(245,245,245,0.05)", "note": "panel_fill = alpha(surface,5%)" },
+        "bar": { "value": "rgba(245,245,245,0.05)" },
+        "card": { "value": "rgba(255,255,255,0.85)", "note": "card_fill = alpha(white,85%)" },
+        "card-border": { "value": "rgba(26,26,26,0.3)", "note": "card_border = alpha(text,30%)" },
+        "hover-veil": { "value": "rgba(26,26,26,0.25)" },
+        "subtle": { "value": "rgba(26,26,26,0.2)" },
+        "divider": { "value": "rgba(26,26,26,0.3)" },
+        "panel-border": { "value": "rgba(136,136,136,0.36)", "note": "浅色 panel_border = alpha(mid,36%)" },
+        "control-border": { "value": "rgba(26,26,26,0.3)", "note": "control_border = alpha(text,30%)" },
+        "control-border-strong": { "value": "rgba(26,26,26,0.5)" },
+        "text-2": { "value": "rgba(26,26,26,0.6)", "note": "text_secondary = alpha(text,60%)" },
+        "text-3": { "value": "rgba(26,26,26,0.55)", "note": "text_hint = alpha(text,55%)" },
+        "text-disabled": { "value": "rgba(26,26,26,0.38)" },
+        "track": { "value": "rgba(26,26,26,0.4)", "note": "track_fill = alpha(text,40%)" },
+        "progress-track": { "value": "rgba(26,26,26,0.08)", "note": "StyledProgress 浅色轨 = alpha(text,8%)" },
+        "ghost-hover": { "value": "rgba(26,26,26,0.15)" },
+        "input-fill": { "value": "rgba(245,245,245,0.72)", "note": "StyledLineEdit 浅色填充 = alpha(surface,72%)" },
+        "menu-hover": { "value": "rgba(58,157,203,0.16)", "note": "菜单项 hover（浅色）= alpha(accent,16%)" },
+        "seg-bg": { "value": "rgba(26,26,26,0.06)" },
+        "accent-sel": { "value": "rgba(58,157,203,0.32)" },
+        "accent-text": { "value": "#2a7192", "note": "accent_text = _darken(accent,0.72)，≈4.9:1" },
+        "scrim": { "value": "rgba(245,245,245,0.502)" },
+        "scroll-alphas": { "value": "0.55 / 0.75 / 0.95", "note": "scroll_handle_alphas = (140,191,242)" },
+        "mica-tint": { "value": "rgba(245,245,245,0.7)" }
+      }
+    },
+
+    "site": {
+      "dark": {
+        "canvas": { "value": "#070b0b", "note": "近黑偏青，比纯黑更有空气感" },
+        "canvas-2": { "value": "#0b1211" },
+        "ink": { "value": "#eef4f2" },
+        "ink-soft": { "value": "#c7d6d2" },
+        "ink-muted": { "value": "#8ea39e" },
+        "ink-faint": { "value": "#5f736e" },
+        "panel": { "value": "rgba(255,255,255,0.033)" },
+        "panel-2": { "value": "rgba(255,255,255,0.055)" },
+        "panel-solid": { "value": "#101716", "note": "mock 舞台/终端底色" },
+        "hairline": { "value": "rgba(160,205,194,0.14)", "note": "带绿相的细线，避免死灰" },
+        "hairline-strong": { "value": "rgba(160,205,194,0.26)" },
+        "accent-soft": { "value": "rgba(58,157,203,0.16)" },
+        "accent-glow": { "value": "rgba(58,157,203,0.32)" },
+        "amber": { "value": "#e9a94b", "note": "第二强调，仅用于少量标注与代码注释" }
+      },
+      "light": {
+        "canvas": { "value": "#eef1ef" },
+        "canvas-2": { "value": "#f7f8f7" },
+        "ink": { "value": "#0d1a18" },
+        "ink-muted": { "value": "#556661" },
+        "ink-faint": { "value": "#7d8c88" },
+        "accent": { "value": "#3a9dcb", "note": "与产品一致：accent 实底不压深；文字/图标强调用 accent-text #2a7192" }
+      }
+    }
+  },
+
+  "typography": {
+    "family": {
+      "display": { "value": "\"Bahnschrift\", \"Segoe UI Variable Display\", \"Segoe UI\", system-ui, sans-serif", "note": "Windows 自带的窄体工程字体，标题有机械感且零下载" },
+      "body": { "value": "\"Segoe UI Variable Text\", \"Segoe UI\", \"Microsoft YaHei UI\", system-ui, sans-serif" },
+      "mono": { "value": "\"Cascadia Mono\", \"Cascadia Code\", Consolas, \"Courier New\", monospace" }
+    },
+    "size": {
+      "micro": { "value": "10px" },
+      "label": { "value": "11px" },
+      "xs": { "value": "12px" },
+      "sm": { "value": "13px" },
+      "base": { "value": "15px" },
+      "md": { "value": "17px" },
+      "lg": { "value": "21px" },
+      "xl": { "value": "28px" },
+      "2xl": { "value": "38px" },
+      "3xl": { "value": "clamp(44px, 6vw, 76px)" },
+      "display": { "value": "clamp(72px, 13vw, 176px)" },
+      "hero": { "value": "clamp(44px, 5.4vw, 84px)", "note": "中文标题实际使用档，display 档留给英文/数字大字" }
+    },
+    "weight": {
+      "regular": { "value": 400 },
+      "medium": { "value": 500 },
+      "semibold": { "value": 600 },
+      "bold": { "value": 700 }
+    },
+    "leading": {
+      "tight": { "value": 1.06, "note": "大标题" },
+      "snug": { "value": 1.25 },
+      "normal": { "value": 1.55 },
+      "loose": { "value": 1.85, "note": "终端/代码块" }
+    },
+    "tracking": {
+      "display": { "value": "-0.02em" },
+      "eyebrow": { "value": "0.18em", "note": "小写字距拉开，做标签感" },
+      "mono": { "value": "0.02em" }
+    }
+  },
+
+  "space": {
+    "1": { "value": "4px" },
+    "2": { "value": "8px" },
+    "3": { "value": "12px" },
+    "4": { "value": "16px" },
+    "5": { "value": "24px" },
+    "6": { "value": "32px" },
+    "7": { "value": "48px" },
+    "8": { "value": "64px" },
+    "9": { "value": "96px" },
+    "10": { "value": "136px" },
+    "gutter": { "value": "clamp(20px, 4.2vw, 64px)" },
+    "section-y": { "value": "clamp(72px, 11vh, 140px)" }
+  },
+
+  "radius": {
+    "xs": { "value": "4px" },
+    "sm": { "value": "6px" },
+    "md": { "value": "8px" },
+    "lg": { "value": "10px" },
+    "xl": { "value": "12px" },
+    "2xl": { "value": "16px" },
+    "pill": { "value": "999px" },
+    "window": { "value": "12px", "note": "站点里的窗口外框；真实应用由 DWM 绘制圆角" },
+    "panel": { "value": "8px", "note": "三栏内每张卡片（真机实测）" },
+    "card": { "value": "6px", "note": "file_card_delegate CARD_CONFIG/LIST_CONFIG radius" },
+    "button": { "value": "4 / 5 / 8px", "note": "StyledButton sm/default/lg" },
+    "input": { "value": "6px", "note": "StyledLineEdit/Textarea/Combobox radius（sm/default/lg 均 6，combobox lg=8）" },
+    "menu": { "value": "8px", "note": "StyledContextMenu / StyledDialog(12)" },
+    "control": { "value": "6px", "note": "输入类控件统一 6px" }
+  },
+
+  "motion": {
+    "ease": {
+      "out": { "value": "cubic-bezier(.16, 1, .3, 1)", "note": "绝大多数入场" },
+      "in-out": { "value": "cubic-bezier(.65, 0, .35, 1)" },
+      "spring": { "value": "cubic-bezier(.34, 1.56, .64, 1)", "note": "仅用于按压回弹，产品内不用弹簧" }
+    },
+    "duration": {
+      "1": { "value": "120ms", "note": "hover / 微反馈" },
+      "2": { "value": "190ms" },
+      "3": { "value": "280ms", "note": "面板/分隔条重排" },
+      "4": { "value": "460ms" },
+      "5": { "value": "760ms", "note": "大块入场" },
+      "reveal": { "value": "820ms" }
+    }
+  },
+
+  "layout": {
+    "shell-max": { "value": "1440px" },
+    "titlebar-height": { "value": "48px", "note": "main_window._create_title_bar setFixedHeight(48)，内容边距 16/8/16/8" },
+    "titlebar-btn": { "value": "32×32px", "note": "ghost sm 图标按钮，hover alpha(text,15)，关闭键 hover danger" },
+    "panel-gap": { "value": "10px", "note": "三栏内部卡片间距" },
+    "splitter": { "value": "10px", "note": "分隔条完全透明，仅保留 resize 光标" },
+    "selector-card-head": { "value": "88px", "note": "路径行(36) + 工具行" },
+    "bottom-bar": { "value": "48px" },
+    "card-grid": { "value": "46px 列宽 / 69px 高", "note": "默认缩放下 387px 栏宽正好 7 列" },
+    "card-zoom": { "value": "0.5 – 2.0，步进 0.1", "note": "Ctrl + 滚轮" },
+    "button-height": { "value": "28 / 32 / 40px", "note": "StyledButton sm/default/lg（绘制高度，控件高 ×1.2）" },
+    "input-height": { "value": "30 / 36 / 44px", "note": "StyledLineEdit sm/default/lg" },
+    "toggle": { "value": "36×20 / 44×24 / 52×28px", "note": "StyledToggle，旋钮绘制 0.8×，行程 20" },
+    "checkbox": { "value": "14 / 18 / 22px", "note": "StyledCheckbox box，圆角 3/4/5" },
+    "slider": { "value": "轨 4/6/8，手柄 Ø12/16/20", "note": "StyledSlider sm/default/lg" },
+    "scrollbar": { "value": "手柄 4px（hover/按下 6px）+ 边缘留白 2px", "note": "StyledScrollBar，最小柄长 30px" }
+  },
+
+  "breakpoints": {
+    "xl": { "value": "1240px" },
+    "lg": { "value": "1100px" },
+    "md": { "value": "980px" },
+    "sm": { "value": "860px" },
+    "xs": { "value": "620px" }
+  }
+}

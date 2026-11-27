@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>演示片 · Sopeek</title>
+<meta name="description" content="Sopeek 的 42 秒产品演示片：完全由 Canvas 逐帧绘制的确定性动画，可播放、可拖动时间轴、可定格任意一帧。">
+<meta name="theme-color" content="#070b0b">
+<link rel="icon" href="assets/Sopeek.png">
+<link rel="stylesheet" href="assets/tokens.css?v=20261127b">
+<link rel="stylesheet" href="assets/site.css?v=20261127b">
+<style>
+  [hidden] { display: none !important; }
+  .ico { width: 16px; height: 16px; display: block; flex: none; }
+
+  .reel-page { padding: calc(64px + clamp(30px, 5vh, 60px)) 0 clamp(50px, 8vh, 90px); }
+  .reel-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 30px; flex-wrap: wrap; }
+  .reel-head h1 {
+    font-family: var(--font-display);
+    font-size: clamp(32px, 4.4vw, 62px);
+    line-height: 1.02;
+    letter-spacing: -0.035em;
+    margin-top: 14px;
+  }
+  .reel-head h1 em { font-style: normal; color: var(--accent); }
+  .reel-head .lead { max-width: 46ch; font-size: var(--fs-sm); line-height: 1.9; color: var(--ink-muted); }
+  .reel-head .lead code { font-family: var(--font-mono); font-size: .92em; color: var(--ink-soft); }
+
+  .reel-stage {
+    position: relative;
+    margin-top: clamp(22px, 3vw, 34px);
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-xl);
+    background: #05090a;
+    overflow: hidden;
+    box-shadow: 0 60px 120px -70px rgba(0, 0, 0, .9);
+  }
+  .reel-stage canvas { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; }
+
+  .reel-controls {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 16px;
+    border-top: 1px solid var(--hairline);
+    background: rgba(255, 255, 255, .02);
+    flex-wrap: wrap;
+  }
+  .reel-btn {
+    display: grid;
+    place-items: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border: 1px solid var(--hairline-strong);
+    color: var(--ink);
+    transition: background var(--dur-1) linear, border-color var(--dur-1) linear;
+  }
+  .reel-btn:hover { background: var(--accent-soft); border-color: transparent; }
+  .reel-btn svg { width: 15px; height: 15px; }
+
+  .reel-track { position: relative; flex: 1; min-width: 220px; height: 26px; display: flex; align-items: center; }
+  .reel-track .rail { position: absolute; left: 0; right: 0; height: 4px; border-radius: 2px; background: rgba(136, 136, 136, .28); }
+  .reel-track .prog { position: absolute; left: 0; height: 4px; border-radius: 2px; background: var(--accent); width: 0; }
+  .reel-track .head { position: absolute; left: 0; width: 10px; height: 10px; margin-left: -5px; border-radius: 50%;
+    background: #fff; box-shadow: 0 0 0 3px rgba(58, 157, 203, .25); }
+  .reel-track input[type="range"] {
+    position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer;
+  }
+  .reel-time { font-family: var(--font-mono); font-size: 11px; color: var(--ink-muted); letter-spacing: .04em; }
+  .reel-time b { color: var(--ink); font-weight: 500; }
+  .reel-rate { display: flex; gap: 2px; }
+  .reel-rate button { font-family: var(--font-mono); font-size: 10px; padding: 5px 8px; border-radius: 5px;
+    color: var(--ink-faint); }
+  .reel-rate button[aria-pressed="true"] { background: var(--accent-soft); color: var(--ink); }
+
+  .reel-grid { display: grid; grid-template-columns: 1.05fr .95fr; gap: clamp(24px, 4vw, 54px);
+    margin-top: clamp(30px, 4vw, 48px); }
+  .reel-chapters { display: grid; gap: 1px; background: var(--hairline); border-top: 1px solid var(--hairline); }
+  .reel-chapter {
+    display: grid;
+    grid-template-columns: 62px 1fr auto;
+    gap: 14px;
+    align-items: baseline;
+    padding: 14px 2px;
+    background: var(--canvas);
+    border-bottom: 1px solid var(--hairline);
+    text-align: left;
+    transition: color var(--dur-1) linear;
+  }
+  .reel-chapter:hover { color: var(--accent); }
+  .reel-chapter .t { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-faint); }
+  .reel-chapter b { font-size: 13px; font-weight: 500; color: inherit; }
+  .reel-chapter span.d { display: block; margin-top: 3px; font-size: 11px; color: var(--ink-faint); line-height: 1.6; }
+  .reel-chapter .n { font-family: var(--font-mono); font-size: 10px; color: var(--ink-faint); }
+  .reel-chapter.is-current { color: var(--accent); }
+  .reel-chapter.is-current .t, .reel-chapter.is-current .n { color: var(--accent); }
+
+  .reel-notes h3 { font-family: var(--font-mono); font-size: 10px; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--ink-faint); }
+  .reel-notes p { margin-top: 12px; font-size: 12px; line-height: 1.9; color: var(--ink-muted); }
+  .reel-notes ul { margin-top: 12px; display: grid; gap: 8px; font-size: 12px; color: var(--ink-muted); }
+  /* li 必须保持块级流：grid/flex 会把内部 <code> 块化成独立网格项，导致多行文字互相压叠 */
+  .reel-notes li { display: block; position: relative; padding-left: 14px; line-height: 1.7; }
+  .reel-notes li::before { content: "▸"; position: absolute; left: 0; top: 0; color: var(--accent); }
+  .reel-notes code { display: inline; font-family: var(--font-mono); font-size: 11px; color: var(--ink-soft); }
+  .reel-code { margin-top: 18px; border: 1px solid var(--hairline); border-radius: var(--r-md);
+    background: #0a0f0e; padding: 14px 16px; font-family: var(--font-mono); font-size: 11px;
+    line-height: 1.85; color: var(--ink-muted); overflow-x: auto; }
+  .reel-code b { color: var(--accent); font-weight: 500; }
+  .reel-code i { color: var(--ink-faint); font-style: normal; }
+
+  @media (max-width: 900px) {
+    .reel-grid { grid-template-columns: 1fr; }
+    .reel-track { min-width: 140px; }
+  }
+</style>
+</head>
+<body>
+
+<a class="skip-link" href="#reel">跳到演示片</a>
+<div class="grain" aria-hidden="true"></div>
+
+<header class="topbar" id="topbar">
+  <a class="brand" href="index.html">
+    <img src="assets/Sopeek.png" alt="" width="26" height="26">
+    Sopeek<span class="ver">v2.0.0</span>
+  </a>
+  <nav class="nav" aria-label="主导航">
+    <a href="index.html#workflow">工作流</a>
+    <a href="index.html#previewers">预览器</a>
+    <a href="index.html#formats">格式</a>
+    <a href="index.html#interface">界面</a>
+    <a href="index.html#keys">快捷键</a>
+    <a href="video.html" aria-current="page">演示片</a>
+  </nav>
+  <div class="topbar-spacer"></div>
+  <div class="topbar-actions">
+    <button class="icon-btn" id="themeToggle" type="button" aria-label="切换深浅色">
+      <svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-moon"></use></svg>
+    </button>
+    <a class="icon-btn" href="https://github.com/Dorufoc/Sopeek" target="_blank" rel="noopener" aria-label="GitHub 仓库">
+      <svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-github"></use></svg>
+    </a>
+    <a class="btn btn--primary btn--sm" href="https://github.com/Dorufoc/Sopeek/releases" target="_blank" rel="noopener">
+      下载安装包
+      <svg class="ico arrow" aria-hidden="true"><use href="assets/icons.svg#i-arrow-right"></use></svg>
+    </a>
+  </div>
+</header>
+
+<main class="reel-page" id="reel">
+  <div class="shell">
+
+    <div class="reel-head">
+      <div>
+        <p class="eyebrow">Showreel · 42s · 16:9 · 逐帧确定性</p>
+        <h1>42 秒，<br>看它怎么把文件<em>翻个面</em></h1>
+      </div>
+      <p class="lead">
+        不是录屏，是代码画的。整片由 <code>render(t)</code> 一个纯函数驱动——
+        给同一个 <code>t</code> 永远出同一帧，没有随机数、没有 <code>Date.now()</code>、没有 CSS 动画。
+        所以你可以在这里随便拖时间轴定格，也可以把它当无头录制的源。
+      </p>
+    </div>
+
+    <div class="reel-stage">
+      <canvas id="reelCanvas" width="1280" height="720" aria-label="Sopeek 产品演示动画"></canvas>
+      <div class="reel-controls">
+        <button class="reel-btn" id="reelPlay" type="button" aria-label="播放">
+          <svg aria-hidden="true" id="reelPlayIcon"><use href="assets/icons.svg#i-play"></use></svg>
+        </button>
+        <div class="reel-track">
+          <div class="rail"></div>
+          <div class="prog" id="reelProg"></div>
+          <div class="head" id="reelHeadBar"></div>
+          <input id="reelSeek" type="range" min="0" max="42" step="0.01" value="0" aria-label="时间轴">
+        </div>
+        <span class="reel-time"><b id="reelNow">00:00.0</b> / 00:42.0</span>
+        <div class="reel-rate" role="group" aria-label="播放速度">
+          <button type="button" data-rate="0.5" aria-pressed="false">.5×</button>
+          <button type="button" data-rate="1" aria-pressed="true">1×</button>
+          <button type="button" data-rate="2" aria-pressed="false">2×</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="reel-grid">
+      <div>
+        <p class="eyebrow" style="margin-bottom:14px">分镜</p>
+        <div class="reel-chapters" id="reelChapters">
+          <button class="reel-chapter" type="button" data-at="0">
+            <span class="t">00:00</span>
+            <span><b>片头</b><span class="d">Logo、银幕呼吸光、产品名与一句话定位</span></span>
+            <span class="n">01</span>
+          </button>
+          <button class="reel-chapter" type="button" data-at="4.6">
+            <span class="t">00:04</span>
+            <span><b>三栏立起来</b><span class="d">标题栏、选择器、储存池、预览器依次落位</span></span>
+            <span class="n">02</span>
+          </button>
+          <button class="reel-chapter" type="button" data-at="10.2">
+            <span class="t">00:10</span>
+            <span><b>卡片飞进储存池</b><span class="d">从网格选中 → 沿弧线入池 → 计数与体积实时更新</span></span>
+            <span class="n">03</span>
+          </button>
+          <button class="reel-chapter" type="button" data-at="16.4">
+            <span class="t">00:16</span>
+            <span><b>预览器切换</b><span class="d">图像 → 视频 → PDF → 代码，同一个画布四种渲染</span></span>
+            <span class="n">04</span>
+          </button>
+          <button class="reel-chapter" type="button" data-at="23.4">
+            <span class="t">00:23</span>
+            <span><b>格式墙</b><span class="d">一百多个扩展名滚动成墙</span></span>
+            <span class="n">05</span>
+          </button>
+          <button class="reel-chapter" type="button" data-at="29.2">
+            <span class="t">00:29</span>
+            <span><b>原生加速</b><span class="d">Rust 导出计数、线程预算、三档性能</span></span>
+            <span class="n">06</span>
+          </button>
+          <button class="reel-chapter" type="button" data-at="35.4">
+            <span class="t">00:35</span>
+            <span><b>收尾</b><span class="d">Sopeek 字标、下载入口、AGPL-3.0</span></span>
+            <span class="n">07</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="reel-notes">
+        <h3>它是怎么做的</h3>
+        <p>
+          页面加载后先注册字体与徽标位图，再暴露一个全局对象：
+          <code>window.SopeekReel = { duration, render(t), play(), pause(), seek(t) }</code>。
+          播放器只做两件事——推进时钟、调用 <code>render(t)</code>；画面里没有任何自身状态。
+        </p>
+        <ul>
+          <li>确定性：同一 <code>t</code> 重复渲染，像素完全相同（可用 <code>render(18.4)</code> 验证）。</li>
+          <li>无外部依赖：徽标来自 <code>assets/Sopeek.png</code>，字体走 Windows 自带 Bahnschrift / Segoe UI，不请求 CDN。</li>
+          <li>可录：任一时刻都能定格、逐帧步进，方便无头截图或 OBS 采样。</li>
+          <li>可剪：分镜时间点是常量数组，改时长只改一个数字。</li>
+        </ul>
+        <div class="reel-code"><i>// 控制台里直接玩</i>
+SopeekReel.<b>pause</b>()
+SopeekReel.<b>render</b>(18.4)   <i>// 定格到第 18.4 秒</i>
+SopeekReel.<b>duration</b>       <i>// 42</i></div>
+        <p style="margin-top:16px">
+          需要真正的 MP4 时，用 <code>render(t)</code> 按 30fps 逐帧出图再编码即可；
+          这一页刻意不内嵌视频文件，保持仓库轻量、也避免自动播放与编码器差异。
+        </p>
+      </div>
+    </div>
+
+    <footer class="footer" style="margin-top:clamp(46px,7vw,88px)">
+      <div class="footer-top">
+        <div class="footer-brand">
+          <img src="assets/Sopeek.png" alt="" width="36" height="36">
+          <div><b>Sopeek</b><span>把「找文件 → 挑文件 → 看文件」压进一个窗口</span></div>
+        </div>
+        <div class="footer-cols">
+          <div class="footer-col">
+            <h5>页面</h5>
+            <a href="index.html">项目介绍</a>
+          </div>
+          <div class="footer-col">
+            <h5>深入</h5>
+            <a href="index.html#formats">支持格式</a>
+            <a href="index.html#keys">快捷键</a>
+            <a href="index.html#architecture">技术架构</a>
+          </div>
+          <div class="footer-col">
+            <h5>项目</h5>
+            <a href="https://github.com/Dorufoc/Sopeek" target="_blank" rel="noopener">GitHub</a>
+            <a href="https://github.com/Dorufoc/Sopeek/releases" target="_blank" rel="noopener">发布版本</a>
+            <a href="README.md">宣传页说明</a>
+          </div>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>Sopeek v2.0.0 · AGPL-3.0 · Windows 10 / 11 x64</span>
+        <span class="mono">deterministic canvas · 42s · 1280×720</span>
+      </div>
+    </footer>
+  </div>
+</main>
+
+<script src="assets/site.js?v=20261127b" defer></script>
+<script src="assets/showreel.js?v=20261127b" defer></script>
+</body>
+</html>

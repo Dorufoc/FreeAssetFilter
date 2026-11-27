@@ -139,6 +139,60 @@ if (-not (Test-Path -LiteralPath $payloadExe)) {
 if (-not (Test-Path -LiteralPath $payloadInternal)) {
     throw "Missing payload _internal directory: $payloadInternal. Run python packaging/build.py first."
 }
+
+# ---------------------------------------------------------------------------
+# Native Explorer integration. The shell extension DLL ships inside the payload:
+# install_engine copies the payload tree verbatim, and Section Install registers
+# "$INSTDIR\SopeekShellExt.dll" as the IExplorerCommand server behind the
+# 「用Sopeek软件打开」/「使用Sopeek打开」 verbs. Building it here keeps the
+# packaged DLL, the CLSIDs in installer.nsi and the app version in lockstep.
+# Built before payloadBytes is measured so the size forwarded to NSIS is exact.
+# ---------------------------------------------------------------------------
+$shellExtScript = Join-Path $repoRoot 'packaging\shell_ext\build.ps1'
+if (-not (Test-Path -LiteralPath $shellExtScript)) {
+    throw "Missing shell extension build script: $shellExtScript"
+}
+$shellExtBuild = Join-Path $repoRoot 'build\shell_ext'
+$shellExtDll = Join-Path $shellExtBuild 'SopeekShellExt.dll'
+& $shellExtScript -CMake $cmake -MinGWBin $mingw -Destination $payloadDir -BuildDir $shellExtBuild
+if (-not (Test-Path -LiteralPath $shellExtDll)) {
+    throw "Shell extension build produced no DLL: $shellExtDll"
+}
+Write-Host "Shell extension: $shellExtDll"
+
+# ---------------------------------------------------------------------------
+# Windows 11 modern context menu. The top-level menu only lists commands declared
+# by an application with package identity, so the payload also carries a signed
+# sparse package (SopeekShellMenu.msix + .cer + register/unregister scripts).
+# Section Install registers it for the installing user during production install;
+# uninstall Stage 3 removes it. Both the classic verbs and the package point at the
+# same CLSIDs and the same "$INSTDIR\SopeekShellExt.dll".
+# ---------------------------------------------------------------------------
+$shellMenuScript = Join-Path $repoRoot 'packaging\shell_menu\build.ps1'
+if (-not (Test-Path -LiteralPath $shellMenuScript)) {
+    throw "Missing shell menu package build script: $shellMenuScript"
+}
+& $shellMenuScript -OutputDirectory $payloadDir
+foreach ($artifact in @('SopeekShellMenu.msix', 'SopeekShellMenu.cer', 'shell_menu_register.ps1', 'resources.pri')) {
+    $path = Join-Path $payloadDir $artifact
+    if (-not (Test-Path -LiteralPath $path)) {
+        throw "Shell menu build produced no $artifact in $payloadDir"
+    }
+}
+Write-Host "Shell menu package: $(Join-Path $payloadDir 'SopeekShellMenu.msix')"
+
+# Sparse package logos are resolved from the external location at run time (not from
+# the msix). Without Assets\ next to Sopeek.exe the taskbar shows a blank placeholder
+# for windows started through the packaged command, so ship the logo set with the app.
+$shellMenuAssets = Join-Path $repoRoot 'packaging\shell_menu\Assets'
+if (-not (Test-Path -LiteralPath $shellMenuAssets)) {
+    throw "Missing sparse package assets: $shellMenuAssets"
+}
+$payloadAssets = Join-Path $payloadDir 'Assets'
+if (Test-Path -LiteralPath $payloadAssets) { Remove-Item -LiteralPath $payloadAssets -Recurse -Force }
+Copy-Item -LiteralPath $shellMenuAssets -Destination $payloadAssets -Recurse -Force
+Write-Host "Sparse package assets: $payloadAssets"
+
 $payloadBytes = (Get-ChildItem -LiteralPath $payloadDir -Recurse -File |
     Measure-Object -Property Length -Sum).Sum
 if ($null -eq $payloadBytes) { $payloadBytes = 0 }

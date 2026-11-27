@@ -176,10 +176,39 @@ done=0               ; 0 | 1（终端键）
 - **编码**：`WritePrivateProfileStringW`（UTF-16LE）。写入前**先以 UTF-16LE + BOM 预创建**文件；BOM 预创建只允许发生在结果写入例程内（安装/取消结束时），严禁在启动或开始安装时创建。
 - **写入顺序**：先写 `[spk]` 占位节（`schema=1`，保证 `[install]` 永不为文件首节），随后写 `[install]`：
   - `dir`（安装目录，UTF-16）、`abort`（`0|1`，**恒写且最后写**）、`error`（成功为空串）、`desktop` / `startmenu` / `autostart` / `ctxmenu`（`0|1`）。
-    `ctxmenu` 为 2026-11 设计稿新增的「添加到右键菜单」，由 `Section Install` 落成
-    `HKLM\Software\Classes\Directory\shell\Sopeek` 与 `HKLM\Software\Classes\*\shell\Sopeek`
-    （默认值「用 Sopeek 打开」，`Icon` = `"$INSTDIR\Sopeek.exe",0`，`command` = `"$INSTDIR\Sopeek.exe" "%1"`）；
-    值为 0 时删除这两个键（幂等清理），并把 `OptCtxMenu` 写入 `HKCU\Software\Sopeek`。
+    `ctxmenu` 为「添加到右键菜单」，由 `Section Install` 落成（生产写 HKLM 64 位视图，测试写隔离的 HKCU）：
+    - 两个 COM 类：`Software\Classes\CLSID\{...}\InprocServer32` → `"$INSTDIR\SopeekShellExt.dll"`，`ThreadingModel=Apartment`；
+    - 文件动词 `Software\Classes\*\shell\SopeekOpenFile`（默认值「用Sopeek软件打开」，
+      `%1`，`MultiSelectModel=Single`）；
+    - 文件夹动词 `Software\Classes\Directory\shell\SopeekOpenFolder`（`%1`）与
+      文件夹空白处动词 `Software\Classes\Directory\Background\shell\SopeekOpenFolder`（`%V`），
+      默认值均为「使用Sopeek打开」。
+    每个动词都写 `Icon` = `"$INSTDIR\Sopeek.exe",0`、`ExplorerCommandHandler` = 对应 CLSID（Windows 11
+    经典菜单「显示更多选项」读取该值），以及 `command` 子键（`"$INSTDIR\Sopeek.exe" --open-path "%1|%V"`）
+    供 Windows 10 与不支持 `IExplorerCommand` 的旧版本回退。值为 0 时删除上述动词与 CLSID 键（幂等清理），
+    并把 `OptCtxMenu` 写入 `HKCU\Software\Sopeek`。注册/删除后调用
+    `shell32::SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, 0, 0)` 让资源管理器立即重读菜单。
+    - **Windows 11 顶层（现代）菜单另需稀疏包**：现代菜单只枚举具备包标识的应用通过清单声明的命令，
+      纯注册表动词只能进「显示更多选项」。因此生产构建先写 CLSID、随后**在写动词之前**调用
+      `RegisterShellMenuPackage`，执行 `shell_menu_register.ps1`：
+      导入 `SopeekShellMenu.cer` 到 `LocalMachine\TrustedPeople` →
+      `Add-AppxPackage -Path "$INSTDIR\SopeekShellMenu.msix" -ExternalLocation "$INSTDIR"`，
+      结果写 `$INSTDIR\shell_menu_status.txt`（`status=ok|failed|missing`）；同版本重装若报
+      `0x80073CFB`（同标识不同内容），脚本先 `Remove-AppxPackage` 再注册。
+      包清单（`packaging/shell_menu/AppxManifest.xml`）必须**同时**声明两段扩展：
+      `com:Extension Category="windows.comServer"`（两个 `com:Class`，`Path="SopeekShellExt.dll"`，
+      `ThreadingModel="STA"`）与 `desktop4:Extension Category="windows.fileExplorerContextMenus"`
+      （三条 `desktop5:ItemType`：`*` / `Directory` / `Directory\Background`，`Verb/@Clsid` 指向同两个
+      CLSID）。**缺 comServer 段时现代菜单会静默跳过这些动词**（包状态仍为 Ok），这是本项目踩过的坑。
+      注册表动词仍然照常写入，作为 Windows 10 与「显示更多选项」以及包注册失败时的回退。
+      清单的 `uap:VisualElements` logo 由系统在 **ExternalLocation（安装目录）** 解析，不从 msix 读取，
+      因此 payload 里额外带一份 `Assets\`（`build.ps1` 从 `packaging/shell_menu/Assets` 复制）：
+      缺它不影响菜单与功能，但从现代菜单启动的应用在任务栏上会显示空白方块。卸载 Stage 3 一并
+      `RMDir /r "$INSTDIR\Assets"`。
+      注册成功后安装器会询问是否重启资源管理器（静默安装直接重启），DLL 与新包命令都要等它重载。
+      失败只记日志、不阻断安装（禁用旁加载的机器仍可用经典菜单）。测试构建跳过该步，
+      保持 HKCU 隔离与免提权。
+      卸载在 Stage 3 删除文件前调用 `un.RemoveShellMenuPackage` 注销包并按记录的指纹删除证书。
   - **无 `launch` 键** —— 完成后启动由 GUI 独占实现，NSIS 不消费。
 - **NSIS 就绪判定** = `[install] abort` 终端键非空（**不是**文件存在）：GUI 先创建文件、后填内容，仅凭存在性会误判；`dir` 写回严格发生在就绪之后。
 
@@ -203,8 +232,9 @@ done=0               ; 0 | 1（终端键）
 
 - **快捷方式**：桌面与开始菜单（测试构建使用 `SopeekTest.lnk`）。
 - **注册表**：卸载键（生产 `HKLM\...\Uninstall\Sopeek` 64 位视图，并清理遗留 32 位视图）
-  与安装信息键（生产 `HKCU\Software\Sopeek`）。另含资源管理器右键菜单动词
-  `HKLM\Software\Classes\Directory\shell\Sopeek` 与 `HKLM\Software\Classes\*\shell\Sopeek`
+  与安装信息键（生产 `HKCU\Software\Sopeek`）。另含资源管理器右键菜单：三处动词
+  `Software\Classes\*\shell\SopeekOpenFile`、`Directory\shell\SopeekOpenFolder`、
+  `Directory\Background\shell\SopeekOpenFolder`、两个 CLSID 键，以及旧版动词 `Sopeek`
   （父键递归删除 `command` 子键；删除前先 `ReadRegStr` 预检存在性——`DeleteRegKey` 对不存在的键
   会置错误标志，不预检会让从未勾选过右键菜单的正常卸载误报失败）。
 - **程序文件**：`_internal`（保留 `_internal\data`）、`Sopeek.exe`、旧版 `Uninstall.exe`、
@@ -237,7 +267,8 @@ done=0               ; 0 | 1（终端键）
 | 自定义 `SPK_DATA_DIR` | `%LOCALAPPDATA%\SopeekTestSpkData` |
 | 互斥体 | `Local\Sopeek*Mutex.Test` |
 | 快捷方式 | `SopeekTest.lnk`（桌面/开始菜单） |
-| 右键菜单动词 | `HKCU\Software\Classes\Directory\shell\SopeekTest` / `HKCU\Software\Classes\*\shell\SopeekTest` |
+| 右键菜单动词 | `HKCU\Software\Classes\*\shell\SopeekOpenFileTest` / `Directory\shell\SopeekOpenFolderTest` / `Directory\Background\shell\SopeekOpenFolderTest`（旧版 `SopeekTest` 一并清理） |
+| 右键菜单 CLSID | `{ADD20484-57FF-4DEB-8561-AC7F04CAFDCB}`（文件）/ `{430F8D9E-4290-46F8-8E40-E38DAB04C5BD}`（文件夹） |
 | 选项 DWORD | `HKCU\Software\SopeekTest` 的 `OptDesktop` / `OptStartmenu` / `OptAutostart` / `OptCtxMenu` |
 
 测试构建**不写生产注册表、不写生产 Run 键、不创建生产快捷方式、不触碰生产安装目录**；测试 setup 为

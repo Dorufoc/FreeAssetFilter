@@ -2,8 +2,10 @@
 ; Prioritize smallest installer size over build/extraction speed.
 ; Keep bootstrap files independently extractable so the GUI appears immediately.
 ; Section Install writes the shortcuts, the autostart Run value, the Explorer
-; context-menu verbs (ctxmenu=1 -> Directory\shell\Sopeek and *\shell\Sopeek) and
-; the Add/Remove metadata; Section Uninstall removes each of them again.
+; context-menu verbs (ctxmenu=1 -> *\shell\SopeekOpenFile plus
+; Directory\shell\SopeekOpenFolder and Directory\Background\shell\SopeekOpenFolder,
+; served by the in-proc IExplorerCommand handler in SopeekShellExt.dll) and the
+; Add/Remove metadata; Section Uninstall removes each of them again.
 ; Keep this file UTF-8 with BOM: the context-menu labels are Chinese and makensis
 ; reads a BOM-less script as ACP, which it rejects as bad text encoding.
 SetCompressor lzma
@@ -71,6 +73,30 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "Copyright (c) 2026 Dorufoc & renmor
 
 !define APP "Sopeek.exe"
 !define PAYLOAD "..\..\build\pyinstall\Sopeek"
+
+; ── Explorer 右键菜单（in-proc COM 扩展）────────────────────────────────────
+; 两个独立命令，由随 payload 安装的 SopeekShellExt.dll（IExplorerCommand）
+; 提供，Windows 10 经典菜单与 Windows 11 现代菜单共用同一份注册：
+;   * "用Sopeek软件打开"   —— 任意文件（不注册任何后缀关联）
+;   * "使用Sopeek打开"     —— 文件夹图标与文件夹空白处
+; 生产与测试各用一对 CLSID：测试构建只写 HKCU，同一个 CLSID 在用户级注册会
+; 遮蔽 HKLM 的生产注册，因此测试绝不能复用生产 GUID。
+!define SPK_SHELLEXT_DLL "SopeekShellExt.dll"
+!ifdef SPK_TESTMODE
+  !define SPK_CTX_ROOT "HKCU"
+  !define SPK_CTX_FILE_CLSID "{ADD20484-57FF-4DEB-8561-AC7F04CAFDCB}"
+  !define SPK_CTX_FOLDER_CLSID "{430F8D9E-4290-46F8-8E40-E38DAB04C5BD}"
+  !define SPK_CTX_FILE_VERB "SopeekOpenFileTest"
+  !define SPK_CTX_FOLDER_VERB "SopeekOpenFolderTest"
+  !define SPK_CTX_LEGACY_VERB "SopeekTest"
+!else
+  !define SPK_CTX_ROOT "HKLM"
+  !define SPK_CTX_FILE_CLSID "{02F1BD14-A1B5-4B9E-9E10-C756D537FDA0}"
+  !define SPK_CTX_FOLDER_CLSID "{39F01A4C-DD1D-48D2-8FB3-0E0C76B336BC}"
+  !define SPK_CTX_FILE_VERB "SopeekOpenFile"
+  !define SPK_CTX_FOLDER_VERB "SopeekOpenFolder"
+  !define SPK_CTX_LEGACY_VERB "Sopeek"
+!endif
 ; Exact payload size in bytes, measured by build.ps1 before packaging and forwarded
 ; to the GUI. 0 means "unknown" (e.g. a test/QA build that omits the define) and the
 ; GUI falls back to scanning the payload directory itself.
@@ -399,6 +425,206 @@ guiCopyFailed:
   Abort
 FunctionEnd
 
+; Shell-extension upgrade helper (called before the install engine copies the
+; payload): a previously installed SopeekShellExt.dll may still be mapped into a
+; running explorer.exe. A mapped image cannot be overwritten, so CopyFileExW
+; would fail with a sharing violation and the whole install would abort with
+; "copy-failed: SopeekShellExt.dll" (install_engine.cpp). Such an image can be
+; renamed, so park it under .old and let the engine write a fresh file. The old
+; copy is deleted immediately when nothing holds it; /REBOOTOK covers the case
+; where explorer.exe still has it loaded. Uninstall Stage 3 already sweeps
+; *.old/*.tmp leftovers.
+Function ParkStaleShellExt
+  StrCpy $R9 "0"  ; 0 = 旧扩展没被占用，新 DLL 直接生效；1 = 仍被 explorer 映射
+  IfFileExists "$INSTDIR\${SPK_SHELLEXT_DLL}" 0 parkShellExtDone
+  Delete "$INSTDIR\${SPK_SHELLEXT_DLL}.old"
+  ClearErrors
+  Rename "$INSTDIR\${SPK_SHELLEXT_DLL}" "$INSTDIR\${SPK_SHELLEXT_DLL}.old"
+  IfErrors parkShellExtDone
+  ClearErrors
+  Delete "$INSTDIR\${SPK_SHELLEXT_DLL}.old"
+  IfFileExists "$INSTDIR\${SPK_SHELLEXT_DLL}.old" 0 parkShellExtDone
+  ; 改名成功但删不掉 ⇒ 旧的 shell 扩展 DLL 仍被某个 explorer.exe 映射。
+  ; 这种情况下 explorer 的类工厂缓存里还留着旧对象，光换文件不会生效：
+  ; 记下标记，注册完成后由 RestartExplorerForShellExt 处理。
+  StrCpy $R9 "1"
+  Delete /REBOOTOK "$INSTDIR\${SPK_SHELLEXT_DLL}.old"
+parkShellExtDone:
+FunctionEnd
+
+; Windows 11 modern context menu (production only).
+;
+; The modern top-level menu only enumerates commands declared by an application
+; that carries package identity; the plain ExplorerCommandHandler registry verbs
+; register above therefore land in "Show more options" only. The payload ships a
+; sparse package (SopeekShellMenu.msix) whose manifest declares the same two
+; CLSIDs for * / Directory / Directory\Background, and register.ps1 trusts the
+; signing certificate and registers the package against $INSTDIR through
+; Add-AppxPackage -ExternalLocation.
+;
+; Failure is a warning, never an install abort: the classic menu still works and a
+; policy-locked machine (sideloading disabled) must still be able to install.
+; Production-only: test builds never reference it (HKCU isolation, no elevation),
+; and an unreferenced Function would trip makensis warning 6010 under /WX.
+!ifndef SPK_TESTMODE
+Function RegisterShellMenuPackage
+  ; 稀疏包 + windows.fileExplorerContextMenus 只有 Windows 11（build 22000+）才支持。
+  ; Windows 10 上注册这个包不会产生任何现代菜单项，却会让开始菜单多出一个
+  ; 与经典快捷方式重名的入口，所以直接跳过（此时只剩注册表动词 → 经典菜单）。
+  ReadRegStr $R7 HKLM "SOFTWARE\Microsoft\Windows NT\CurrentVersion" CurrentBuildNumber
+  IntOp $R7 $R7 + 0
+  IntCmpU $R7 22000 0 shellMenuSkipOs 0
+  IfFileExists "$INSTDIR\SopeekShellMenu.msix" 0 shellMenuMissing
+  IfFileExists "$INSTDIR\shell_menu_register.ps1" 0 shellMenuMissing
+  DetailPrint "Registering shell menu package"
+  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\shell_menu_register.ps1" -InstallDir "$INSTDIR"'
+  Pop $1
+  Pop $2
+  StrCmp $1 "0" 0 shellMenuFailed
+  DetailPrint "Shell menu package registered"
+  ; 新版菜单的清单注册由 Explorer 在启动时读入（以及按 CLSID 缓存命令对象），
+  ; 所以注册成功后同样需要重启 Explorer 才能看到新条目：与「旧 DLL 被映射」
+  ; 共用同一个重启流程，避免用户装完却看不到任何新菜单。
+  StrCpy $R9 "1"
+  ; Diagnostic breadcrumb: silent installs have no UI to read DetailPrint from, and
+  ; the modern-menu feature is the one part that can be blocked by machine policy.
+  FileOpen $3 "$INSTDIR\shell_menu_status.txt" w
+  FileWrite $3 "status=ok$\r$\n"
+  FileClose $3
+  Goto shellMenuDone
+shellMenuFailed:
+  DetailPrint "Shell menu package registration failed (exit=$1): $2"
+  FileOpen $3 "$INSTDIR\shell_menu_status.txt" w
+  FileWrite $3 "status=failed$\r$\nexit=$1$\r$\n$2$\r$\n"
+  FileClose $3
+  ; The modern menu is the one feature machine policy can silently block, and a
+  ; user who ticked 添加到右键菜单 deserves to know it only landed in the classic
+  ; menu. Silent installs must stay silent, so no dialog there.
+  IfSilent shellMenuDone
+  MessageBox MB_ICONEXCLAMATION|MB_OK "Sopeek 已安装完成，但 Windows 11 新版右键菜单的注册未成功。$\r$\n$\r$\n经典（显示更多选项）右键菜单仍然可用。$\r$\n诊断信息：$INSTDIR\shell_menu_status.txt"
+  Goto shellMenuDone
+shellMenuSkipOs:
+  DetailPrint "Shell menu package skipped: Windows 10 has no modern context menu"
+  ; 旧版本（2.0.0 之前）没有做系统门禁，Windows 10 上可能残留一个已注册的同名
+  ; 包入口（开始菜单会多一个重名图标）。这里主动撤掉，保证「有且只有一个」。
+  IfFileExists "$INSTDIR\shell_menu_unregister.ps1" 0 shellMenuSkipOsNoUnreg
+  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\shell_menu_unregister.ps1" -InstallDir "$INSTDIR"'
+  Pop $1
+  Pop $2
+shellMenuSkipOsNoUnreg:
+  FileOpen $3 "$INSTDIR\shell_menu_status.txt" w
+  FileWrite $3 "status=skipped-os$\r$\n"
+  FileClose $3
+  Goto shellMenuDone
+shellMenuMissing:
+  DetailPrint "Shell menu package missing from $INSTDIR"
+  FileOpen $3 "$INSTDIR\shell_menu_status.txt" w
+  FileWrite $3 "status=missing$\r$\n"
+  FileClose $3
+  IfSilent shellMenuDone
+  MessageBox MB_ICONEXCLAMATION|MB_OK "安装包缺少新版右键菜单所需的组件，Windows 11 新版右键菜单将不可用。$\r$\n$\r$\n经典（显示更多选项）右键菜单仍然可用。"
+shellMenuDone:
+FunctionEnd
+
+; Remove the sparse package when the user installs/repairs with the context-menu
+; checkbox cleared. Shares the uninstall-time script: it drops the package for the
+; current user and removes the exact certificate thumbprint recorded at install.
+; Missing script/files are a no-op (nothing was ever registered).
+Function UnregisterShellMenuPackage
+  IfFileExists "$INSTDIR\shell_menu_unregister.ps1" 0 unShellMenuKeepDone
+  DetailPrint "Removing shell menu package"
+  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\shell_menu_unregister.ps1" -InstallDir "$INSTDIR"'
+  Pop $1
+  Pop $2
+  StrCmp $1 "0" unShellMenuKeepDone
+  DetailPrint "Shell menu package removal failed (exit=$1): $2"
+unShellMenuKeepDone:
+FunctionEnd
+
+; A shell extension that is already mapped into explorer.exe keeps serving the
+; OLD code even after its file is replaced: the shell caches the class factory per
+; CLSID, so clicking the menu item runs the previous DLL (symptom: the new log
+; lines never appear, and a background click that the old build could not resolve
+; still does nothing). ParkStaleShellExt raises $R9=1 in exactly that case; the
+; only reliable cure is to restart explorer so it loads the freshly installed DLL.
+; Fresh installs never reach here with $R9=1, so nothing is restarted needlessly.
+
+; Wait until the rebuilt shell is actually up. Killing explorer.exe clears the
+; foreground window; re-activating the installer before the tray/desktop windows
+; exist would just be refused again by the foreground lock.
+Function WaitForShellReady
+  StrCpy $4 0
+shellWaitLoop:
+  FindWindow $R0 "Shell_TrayWnd" ""
+  StrCmp $R0 0 shellWaitTick
+  FindWindow $R1 "Progman" ""
+  StrCmp $R1 0 shellWaitTick
+  Return
+shellWaitTick:
+  Sleep 300
+  IntOp $4 $4 + 300
+  IntCmp $4 12000 shellWaitGiveUp 0 shellWaitGiveUp
+  Goto shellWaitLoop
+shellWaitGiveUp:
+  DetailPrint "Shell did not report ready within 12s; re-activating anyway"
+FunctionEnd
+
+; Bring the installer UI back to the foreground after the explorer restart.
+;
+; It must run in the GUI process: an inactive process cannot call
+; SetForegroundWindow for a window it does not own (the foreground lock rejects
+; it), which is exactly why the window could not be re-activated by clicking.
+; The GUI registered this private message at startup; the message handler then
+; tries SetForegroundWindow, AttachThreadInput and SwitchToThisWindow in order.
+Function RestoreInstallerForeground
+  FindWindow $R0 "SopeekInstaller" ""
+  StrCmp $R0 0 restoreFgDone
+  System::Call 'user32::RegisterWindowMessageW(w "SopeekInstallerRestoreForeground") i .r1'
+  StrCmp $R1 0 restoreFgFallback
+  ; PostMessage (not SendMessage): the setup process must never block on the GUI
+  ; thread, and the GUI can re-activate itself whenever its loop picks the message up.
+  System::Call 'user32::PostMessageW(p $R0, i $R1, p 0, p 0)'
+  DetailPrint "Requested installer window re-activation"
+  Goto restoreFgDone
+restoreFgFallback:
+  ; Extremely unlikely (registration failed): fall back to a cross-process raise.
+  System::Call 'user32::SetForegroundWindow(p $R0)'
+restoreFgDone:
+FunctionEnd
+Function RestartExplorerForShellExt
+  StrCmp $R9 "1" 0 restartShellDone
+  IfSilent restartShellSilent
+  MessageBox MB_YESNO|MB_ICONQUESTION "右键菜单扩展已更新，但需要重启资源管理器才会加载新版本（旧版本可能仍被占用，或新版菜单尚未刷新）。$\r$\n$\r$\n现在重启资源管理器让新菜单立即生效吗？$\r$\n（会关闭当前打开的资源管理器窗口，随后自动重新打开；选“否”则重启电脑后生效。）" IDNO restartShellDeclined
+restartShellSilent:
+  DetailPrint "Restarting explorer to load the new shell extension"
+  nsExec::ExecToStack 'taskkill /f /im explorer.exe'
+  Pop $1
+  Pop $2
+  Sleep 1500
+  Exec '"$WINDIR\explorer.exe"'
+  ; Wait for the shell to actually come back before touching activation: killing
+  ; explorer.exe clears the foreground window, and the rebuilt shell may grab it
+  ; again. Polling the desktop/taskbar windows is the cheapest reliable signal.
+  Call WaitForShellReady
+  ; Explorer 冷启动会在数秒内陆续创建任务栏/桌面窗口，并反复把前台抢回去；
+  ; 单次请求很容易被后到的 shell 窗口覆盖，所以分几次投递，每次都让 GUI 重新
+  ; 打开一轮重试窗口（GUI 侧已在最前面判断「已是前台就立刻返回」）。
+  Call RestoreInstallerForeground
+  Sleep 1200
+  Call RestoreInstallerForeground
+  Sleep 2000
+  Call RestoreInstallerForeground
+  Sleep 3000
+  Call RestoreInstallerForeground
+  Goto restartShellDone
+restartShellDeclined:
+  FileOpen $3 "$INSTDIR\shell_menu_status.txt" a
+  FileWrite $3 "explorer_restart=pending$\r$\n"
+  FileClose $3
+restartShellDone:
+FunctionEnd
+!endif
+
 ; T15 helper: same payload release + sentinel as the pre-T15 fresh-install flow.
 Function ReleasePayload
   Delete "$PLUGINSDIR\payload.error"
@@ -555,6 +781,7 @@ engineMutexClear:
   File "..\..\build\installer\libwinpthread-1.dll"
 !endif
   Call PrepareGuiCopy
+  Call ParkStaleShellExt
 
   ; T15 installed detection is exactly: app exe OR _internal. No other signal
   ; (result INI, shortcuts, Add/Remove entry) may force maintenance mode.
@@ -780,6 +1007,21 @@ Function un.AddWarning
   Return
 unAddWarningSet:
   StrCpy $UnWarning "$0"
+FunctionEnd
+
+; Remove the Windows 11 modern-menu sparse package (and the signing certificate it
+; trusted). Called from uninstall Stage 3 while shell_menu_unregister.ps1 and the
+; package manifest still exist in $INSTDIR. Failures are logged only: the menu
+; integration is optional and must never turn a working uninstall into an error.
+Function un.RemoveShellMenuPackage
+  IfFileExists "$INSTDIR\shell_menu_unregister.ps1" 0 unShellMenuSkip
+  DetailPrint "Removing shell menu package"
+  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\shell_menu_unregister.ps1" -InstallDir "$INSTDIR"'
+  Pop $1
+  Pop $2
+  StrCmp $1 "0" unShellMenuSkip
+  DetailPrint "Shell menu package removal failed (exit=$1): $2"
+unShellMenuSkip:
 FunctionEnd
 
 ; Strip trailing backslashes from $R5 (keeps drive roots usable for prefix
@@ -1354,41 +1596,108 @@ startmenuRemove:
 !endif
 startmenuDone:
 
-  ; Optional Explorer context-menu entries ("open with Sopeek") for directories and
-  ; for files, driven by the result INI (the GUI defaults ctxmenu to 1). A menu left
-  ; behind by an earlier install is removed when the flag is 0. Production writes the
-  ; machine-wide HKLM keys in the native 64-bit view (the view this section already
-  ; selected above); test builds write the isolated SopeekTest verbs under HKCU and
+  ; Optional Explorer context-menu integration, driven by the result INI (the GUI
+  ; defaults ctxmenu to 1). A registration left behind by an earlier install is
+  ; removed when the flag is 0. Both commands are served by SopeekShellExt.dll,
+  ; which the payload installs next to Sopeek.exe:
+  ;   * "用Sopeek软件打开" for any file  (*\shell\SopeekOpenFile)
+  ;   * "使用Sopeek打开"   for a folder  (Directory\shell\SopeekOpenFolder)
+  ;                        and its empty background
+  ;                        (Directory\Background\shell\SopeekOpenFolder)
+  ; ExplorerCommandHandler is the value the Windows 11 modern menu reads; the
+  ; command subkey keeps the Windows 10 classic menu (and older builds) working
+  ; without a COM handler. Production writes the machine-wide HKLM keys in the
+  ; native 64-bit view selected above; test builds write isolated HKCU keys and
   ; can never touch a production key.
   ReadINIStr $0 "${RESULT_INI}" "install" "ctxmenu"
   StrCmp $0 "1" 0 ctxmenuRemove
-!ifdef SPK_TESTMODE
-  WriteRegStr HKCU "Software\Classes\Directory\shell\SopeekTest" "" "用 Sopeek 打开"
-  WriteRegStr HKCU "Software\Classes\Directory\shell\SopeekTest" "Icon" '"$INSTDIR\Sopeek.exe",0'
-  WriteRegStr HKCU "Software\Classes\Directory\shell\SopeekTest\command" "" '"$INSTDIR\Sopeek.exe" "%1"'
-  WriteRegStr HKCU "Software\Classes\*\shell\SopeekTest" "" "用 Sopeek 打开"
-  WriteRegStr HKCU "Software\Classes\*\shell\SopeekTest" "Icon" '"$INSTDIR\Sopeek.exe",0'
-  WriteRegStr HKCU "Software\Classes\*\shell\SopeekTest\command" "" '"$INSTDIR\Sopeek.exe" "%1"'
-!else
-  WriteRegStr HKLM "Software\Classes\Directory\shell\Sopeek" "" "用 Sopeek 打开"
-  WriteRegStr HKLM "Software\Classes\Directory\shell\Sopeek" "Icon" '"$INSTDIR\Sopeek.exe",0'
-  WriteRegStr HKLM "Software\Classes\Directory\shell\Sopeek\command" "" '"$INSTDIR\Sopeek.exe" "%1"'
-  WriteRegStr HKLM "Software\Classes\*\shell\Sopeek" "" "用 Sopeek 打开"
-  WriteRegStr HKLM "Software\Classes\*\shell\Sopeek" "Icon" '"$INSTDIR\Sopeek.exe",0'
-  WriteRegStr HKLM "Software\Classes\*\shell\Sopeek\command" "" '"$INSTDIR\Sopeek.exe" "%1"'
+
+  ; One CLSID per command: the title is then fixed and independent of context.
+  WriteRegStr ${SPK_CTX_ROOT} "Software\Classes\CLSID\${SPK_CTX_FILE_CLSID}" "" "Sopeek file context menu"
+  WriteRegStr ${SPK_CTX_ROOT} "Software\Classes\CLSID\${SPK_CTX_FILE_CLSID}\InprocServer32" "" '"$INSTDIR\${SPK_SHELLEXT_DLL}"'
+  WriteRegStr ${SPK_CTX_ROOT} "Software\Classes\CLSID\${SPK_CTX_FILE_CLSID}\InprocServer32" "ThreadingModel" "Apartment"
+  WriteRegStr ${SPK_CTX_ROOT} "Software\Classes\CLSID\${SPK_CTX_FOLDER_CLSID}" "" "Sopeek folder context menu"
+  WriteRegStr ${SPK_CTX_ROOT} "Software\Classes\CLSID\${SPK_CTX_FOLDER_CLSID}\InprocServer32" "" '"$INSTDIR\${SPK_SHELLEXT_DLL}"'
+  WriteRegStr ${SPK_CTX_ROOT} "Software\Classes\CLSID\${SPK_CTX_FOLDER_CLSID}\InprocServer32" "ThreadingModel" "Apartment"
+
+  ; Files: a standalone menu entry; no file-extension association is written.
+  ; (Verbs are written after the sparse-package step: on Windows 11 the package
+  ; commands already cover both menus, so writing them too would duplicate.)
+  ; Folders: right-clicking the folder icon. %1 is the folder itself.
+  ; Empty space inside a folder: %V is the folder; the COM handler resolves the
+  ; same folder through the Explorer site (IShellView / ShellWindows fallback).
+
+  ; Windows 11 modern menu: register the sparse package BEFORE the verbs so a
+  ; registration failure can be reported in the same step. Production only:
+  ; test builds must stay HKCU-isolated and never require elevation.
+!ifndef SPK_TESTMODE
+  Call RegisterShellMenuPackage
 !endif
+
+  ; 注册表动词照常写入：它们是 Windows 10 与「显示更多选项」的可靠回退，也是
+  ; 包注册被策略拦下时唯一还能用的入口。若 Windows 11 同时枚举包命令与注册表
+  ; 动词、导致经典菜单出现重复条目，再按实测结果收敛（宁可重复，不可缺失）。
+  WriteRegStr ${SPK_CTX_ROOT} "Software\Classes\*\shell\${SPK_CTX_FILE_VERB}" "" "用Sopeek软件打开"
+  WriteRegStr ${SPK_CTX_ROOT} "Software\Classes\*\shell\${SPK_CTX_FILE_VERB}" "Icon" '"$INSTDIR\Sopeek.exe",0'
+  WriteRegStr ${SPK_CTX_ROOT} "Software\Classes\*\shell\${SPK_CTX_FILE_VERB}" "ExplorerCommandHandler" "${SPK_CTX_FILE_CLSID}"
+  WriteRegStr ${SPK_CTX_ROOT} "Software\Classes\*\shell\${SPK_CTX_FILE_VERB}" "MultiSelectModel" "Single"
+  WriteRegStr ${SPK_CTX_ROOT} "Software\Classes\*\shell\${SPK_CTX_FILE_VERB}\command" "" '"$INSTDIR\Sopeek.exe" --open-path "%1"'
+
+  WriteRegStr ${SPK_CTX_ROOT} "Software\Classes\Directory\shell\${SPK_CTX_FOLDER_VERB}" "" "使用Sopeek打开"
+  WriteRegStr ${SPK_CTX_ROOT} "Software\Classes\Directory\shell\${SPK_CTX_FOLDER_VERB}" "Icon" '"$INSTDIR\Sopeek.exe",0'
+  WriteRegStr ${SPK_CTX_ROOT} "Software\Classes\Directory\shell\${SPK_CTX_FOLDER_VERB}" "ExplorerCommandHandler" "${SPK_CTX_FOLDER_CLSID}"
+  WriteRegStr ${SPK_CTX_ROOT} "Software\Classes\Directory\shell\${SPK_CTX_FOLDER_VERB}\command" "" '"$INSTDIR\Sopeek.exe" --open-path "%1"'
+
+  WriteRegStr ${SPK_CTX_ROOT} "Software\Classes\Directory\Background\shell\${SPK_CTX_FOLDER_VERB}" "" "使用Sopeek打开"
+  WriteRegStr ${SPK_CTX_ROOT} "Software\Classes\Directory\Background\shell\${SPK_CTX_FOLDER_VERB}" "Icon" '"$INSTDIR\Sopeek.exe",0'
+  WriteRegStr ${SPK_CTX_ROOT} "Software\Classes\Directory\Background\shell\${SPK_CTX_FOLDER_VERB}" "ExplorerCommandHandler" "${SPK_CTX_FOLDER_CLSID}"
+  WriteRegStr ${SPK_CTX_ROOT} "Software\Classes\Directory\Background\shell\${SPK_CTX_FOLDER_VERB}\command" "" '"$INSTDIR\Sopeek.exe" --open-path "%V"'
+  Goto ctxmenuLegacyCleanup
+
+ctxmenuLegacyCleanup:
+  ; Drop the pre-2.0 ("用 Sopeek 打开") verbs, which pointed at Directory\shell
+  ; instead of the background and never passed --open-path.
+  ClearErrors
+  DeleteRegKey ${SPK_CTX_ROOT} "Software\Classes\Directory\shell\${SPK_CTX_LEGACY_VERB}"
+  DeleteRegKey ${SPK_CTX_ROOT} "Software\Classes\Directory\Background\shell\${SPK_CTX_LEGACY_VERB}"
+  DeleteRegKey ${SPK_CTX_ROOT} "Software\Classes\*\shell\${SPK_CTX_LEGACY_VERB}"
   Goto ctxmenuDone
 ctxmenuRemove:
-  ; Idempotent cleanup: deleting the verb key also removes its command subkey, and a
-  ; missing key is a no-op (the user installed this option once and unchecked it now).
-!ifdef SPK_TESTMODE
-  DeleteRegKey HKCU "Software\Classes\Directory\shell\SopeekTest"
-  DeleteRegKey HKCU "Software\Classes\*\shell\SopeekTest"
-!else
-  DeleteRegKey HKLM "Software\Classes\Directory\shell\Sopeek"
-  DeleteRegKey HKLM "Software\Classes\*\shell\Sopeek"
-!endif
+  ; Idempotent cleanup: deleting a parent verb key also removes its command
+  ; subkey, and a missing key is a no-op (the option was never enabled).
+  ClearErrors
+  DeleteRegKey ${SPK_CTX_ROOT} "Software\Classes\*\shell\${SPK_CTX_FILE_VERB}"
+  DeleteRegKey ${SPK_CTX_ROOT} "Software\Classes\Directory\shell\${SPK_CTX_FOLDER_VERB}"
+  DeleteRegKey ${SPK_CTX_ROOT} "Software\Classes\Directory\Background\shell\${SPK_CTX_FOLDER_VERB}"
+  DeleteRegKey ${SPK_CTX_ROOT} "Software\Classes\Directory\shell\${SPK_CTX_LEGACY_VERB}"
+  DeleteRegKey ${SPK_CTX_ROOT} "Software\Classes\Directory\Background\shell\${SPK_CTX_LEGACY_VERB}"
+  DeleteRegKey ${SPK_CTX_ROOT} "Software\Classes\*\shell\${SPK_CTX_LEGACY_VERB}"
+  DeleteRegKey ${SPK_CTX_ROOT} "Software\Classes\CLSID\${SPK_CTX_FILE_CLSID}"
+  DeleteRegKey ${SPK_CTX_ROOT} "Software\Classes\CLSID\${SPK_CTX_FOLDER_CLSID}"
 ctxmenuDone:
+  ; Ask the shell to re-read associations/menu registrations. SHCNE_ASSOCCHANGED
+  ; (0x08000000) + SHCNF_IDLIST (0) is enough for the new verbs to appear (or
+  ; disappear) without an Explorer restart.
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
+
+  ; Windows 11 modern menu follow-up. Production only — test builds must stay
+  ; HKCU-isolated and never require elevation. The package itself was already
+  ; registered above (before the verbs); here we only tear it down when the
+  ; checkbox was cleared, or reload Explorer so the freshly written
+  ; registrations are picked up.
+!ifndef SPK_TESTMODE
+  StrCmp $0 "1" shellMenuReload
+  ; The user cleared the checkbox: an already-registered sparse package has to go
+  ; too, otherwise its manifest-declared entries keep showing in the modern menu
+  ; while the CLSIDs they point at were just deleted (clicking would do nothing).
+  Call UnregisterShellMenuPackage
+  Goto shellMenuSkip
+shellMenuReload:
+  ; The new DLL only takes effect once explorer reloads it, and the newly
+  ; registered package commands only appear after the shell re-reads the manifest.
+  Call RestartExplorerForShellExt
+shellMenuSkip:
+!endif
 
   ; T16: install-info metadata. Test builds use the isolated per-user test key;
   ; production uses the production key.
@@ -1538,53 +1847,102 @@ unSecStartDone:
   Call un.WriteProgress
   SetRegView 64
 
-  ; Explorer context-menu verbs written by Section Install, removed in the same
-  ; native 64-bit view (production HKLM; test HKCU test verbs). Deleting the parent
-  ; verb key also removes its command subkey. A missing key is a normal no-op, so
-  ; existence is checked first (DeleteRegKey on an absent key sets the error flag).
-!ifdef SPK_TESTMODE
-  ReadRegStr $2 HKCU "Software\Classes\Directory\shell\SopeekTest" ""
-  StrCmp $2 "" unSecCtxMenuDirDone
+  ; Explorer context-menu registrations written by Section Install, removed in the
+  ; same native 64-bit view (production HKLM; test HKCU test keys). Deleting the
+  ; parent verb key also removes its command subkey. A missing key is a normal
+  ; no-op, so existence is checked first (DeleteRegKey on an absent key sets the
+  ; error flag). The legacy "用 Sopeek 打开" verbs are removed as well so an
+  ; upgrade cannot leave a half-working entry behind.
+  ReadRegStr $2 ${SPK_CTX_ROOT} "Software\Classes\*\shell\${SPK_CTX_FILE_VERB}" ""
+  StrCmp $2 "" unSecCtxFileDone
   ClearErrors
-  DeleteRegKey HKCU "Software\Classes\Directory\shell\SopeekTest"
-  IfErrors unSecCtxMenuDirFail
-  Goto unSecCtxMenuDirDone
-unSecCtxMenuDirFail:
-  StrCpy $UnErrorText "HKCU\Software\Classes\Directory\shell\SopeekTest"
+  DeleteRegKey ${SPK_CTX_ROOT} "Software\Classes\*\shell\${SPK_CTX_FILE_VERB}"
+  IfErrors unSecCtxFileFail
+  Goto unSecCtxFileDone
+unSecCtxFileFail:
+  StrCpy $UnErrorText "${SPK_CTX_ROOT}\Software\Classes\*\shell\${SPK_CTX_FILE_VERB}"
   Goto unSecFail
-unSecCtxMenuDirDone:
-  ReadRegStr $2 HKCU "Software\Classes\*\shell\SopeekTest" ""
-  StrCmp $2 "" unSecCtxMenuDone
+unSecCtxFileDone:
+
+  ReadRegStr $2 ${SPK_CTX_ROOT} "Software\Classes\Directory\shell\${SPK_CTX_FOLDER_VERB}" ""
+  StrCmp $2 "" unSecCtxFolderDone
   ClearErrors
-  DeleteRegKey HKCU "Software\Classes\*\shell\SopeekTest"
-  IfErrors unSecCtxMenuFileFail
-  Goto unSecCtxMenuDone
-unSecCtxMenuFileFail:
-  StrCpy $UnErrorText "HKCU\Software\Classes\*\shell\SopeekTest"
+  DeleteRegKey ${SPK_CTX_ROOT} "Software\Classes\Directory\shell\${SPK_CTX_FOLDER_VERB}"
+  IfErrors unSecCtxFolderFail
+  Goto unSecCtxFolderDone
+unSecCtxFolderFail:
+  StrCpy $UnErrorText "${SPK_CTX_ROOT}\Software\Classes\Directory\shell\${SPK_CTX_FOLDER_VERB}"
   Goto unSecFail
-unSecCtxMenuDone:
-!else
-  ReadRegStr $2 HKLM "Software\Classes\Directory\shell\Sopeek" ""
-  StrCmp $2 "" unSecCtxMenuDirDone
+unSecCtxFolderDone:
+
+  ReadRegStr $2 ${SPK_CTX_ROOT} "Software\Classes\Directory\Background\shell\${SPK_CTX_FOLDER_VERB}" ""
+  StrCmp $2 "" unSecCtxBackgroundDone
   ClearErrors
-  DeleteRegKey HKLM "Software\Classes\Directory\shell\Sopeek"
-  IfErrors unSecCtxMenuDirFail
-  Goto unSecCtxMenuDirDone
-unSecCtxMenuDirFail:
-  StrCpy $UnErrorText "HKLM\Software\Classes\Directory\shell\Sopeek"
+  DeleteRegKey ${SPK_CTX_ROOT} "Software\Classes\Directory\Background\shell\${SPK_CTX_FOLDER_VERB}"
+  IfErrors unSecCtxBackgroundFail
+  Goto unSecCtxBackgroundDone
+unSecCtxBackgroundFail:
+  StrCpy $UnErrorText "${SPK_CTX_ROOT}\Software\Classes\Directory\Background\shell\${SPK_CTX_FOLDER_VERB}"
   Goto unSecFail
-unSecCtxMenuDirDone:
-  ReadRegStr $2 HKLM "Software\Classes\*\shell\Sopeek" ""
-  StrCmp $2 "" unSecCtxMenuDone
+unSecCtxBackgroundDone:
+
+  ReadRegStr $2 ${SPK_CTX_ROOT} "Software\Classes\Directory\shell\${SPK_CTX_LEGACY_VERB}" ""
+  StrCmp $2 "" unSecLegacyDirDone
   ClearErrors
-  DeleteRegKey HKLM "Software\Classes\*\shell\Sopeek"
-  IfErrors unSecCtxMenuFileFail
-  Goto unSecCtxMenuDone
-unSecCtxMenuFileFail:
-  StrCpy $UnErrorText "HKLM\Software\Classes\*\shell\Sopeek"
+  DeleteRegKey ${SPK_CTX_ROOT} "Software\Classes\Directory\shell\${SPK_CTX_LEGACY_VERB}"
+  IfErrors unSecLegacyDirFail
+  Goto unSecLegacyDirDone
+unSecLegacyDirFail:
+  StrCpy $UnErrorText "${SPK_CTX_ROOT}\Software\Classes\Directory\shell\${SPK_CTX_LEGACY_VERB}"
   Goto unSecFail
-unSecCtxMenuDone:
-!endif
+unSecLegacyDirDone:
+
+  ReadRegStr $2 ${SPK_CTX_ROOT} "Software\Classes\Directory\Background\shell\${SPK_CTX_LEGACY_VERB}" ""
+  StrCmp $2 "" unSecLegacyBgDone
+  ClearErrors
+  DeleteRegKey ${SPK_CTX_ROOT} "Software\Classes\Directory\Background\shell\${SPK_CTX_LEGACY_VERB}"
+  IfErrors unSecLegacyBgFail
+  Goto unSecLegacyBgDone
+unSecLegacyBgFail:
+  StrCpy $UnErrorText "${SPK_CTX_ROOT}\Software\Classes\Directory\Background\shell\${SPK_CTX_LEGACY_VERB}"
+  Goto unSecFail
+unSecLegacyBgDone:
+
+  ReadRegStr $2 ${SPK_CTX_ROOT} "Software\Classes\*\shell\${SPK_CTX_LEGACY_VERB}" ""
+  StrCmp $2 "" unSecLegacyFileDone
+  ClearErrors
+  DeleteRegKey ${SPK_CTX_ROOT} "Software\Classes\*\shell\${SPK_CTX_LEGACY_VERB}"
+  IfErrors unSecLegacyFileFail
+  Goto unSecLegacyFileDone
+unSecLegacyFileFail:
+  StrCpy $UnErrorText "${SPK_CTX_ROOT}\Software\Classes\*\shell\${SPK_CTX_LEGACY_VERB}"
+  Goto unSecFail
+unSecLegacyFileDone:
+
+  ReadRegStr $2 ${SPK_CTX_ROOT} "Software\Classes\CLSID\${SPK_CTX_FILE_CLSID}" ""
+  StrCmp $2 "" unSecCtxFileClsidDone
+  ClearErrors
+  DeleteRegKey ${SPK_CTX_ROOT} "Software\Classes\CLSID\${SPK_CTX_FILE_CLSID}"
+  IfErrors unSecCtxFileClsidFail
+  Goto unSecCtxFileClsidDone
+unSecCtxFileClsidFail:
+  StrCpy $UnErrorText "${SPK_CTX_ROOT}\Software\Classes\CLSID\${SPK_CTX_FILE_CLSID}"
+  Goto unSecFail
+unSecCtxFileClsidDone:
+
+  ReadRegStr $2 ${SPK_CTX_ROOT} "Software\Classes\CLSID\${SPK_CTX_FOLDER_CLSID}" ""
+  StrCmp $2 "" unSecCtxFolderClsidDone
+  ClearErrors
+  DeleteRegKey ${SPK_CTX_ROOT} "Software\Classes\CLSID\${SPK_CTX_FOLDER_CLSID}"
+  IfErrors unSecCtxFolderClsidFail
+  Goto unSecCtxFolderClsidDone
+unSecCtxFolderClsidFail:
+  StrCpy $UnErrorText "${SPK_CTX_ROOT}\Software\Classes\CLSID\${SPK_CTX_FOLDER_CLSID}"
+  Goto unSecFail
+unSecCtxFolderClsidDone:
+
+  ; Rebuild the shell's cached menu state so the entries disappear immediately.
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 !ifndef SPK_TESTMODE
   ; Run value: remove only the quote-consistent value written by Section Install.
   ReadRegStr $2 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Sopeek"
@@ -1682,6 +2040,11 @@ unSecUninst32Done:
   StrCpy $1 "500"
   Call un.WriteProgress
 
+  ; Windows 11 modern menu: unregister the sparse package while its scripts and
+  ; manifest are still on disk (they are deleted below). Best effort — a package
+  ; that was never registered, or a policy-blocked machine, must not fail the uninstall.
+  Call un.RemoveShellMenuPackage
+
   ; _internal app files, preserving only _internal\data (handled by stage 4).
   StrCpy $R5 "$INSTDIR\_internal"
   StrCpy $R6 "data"
@@ -1690,6 +2053,32 @@ unSecUninst32Done:
   Call un.DeleteTree
   StrCmp $UnFailedPath "" 0 unSecPathFail
 unSecInternalDone:
+
+  ; Shell extension DLL. Explorer may still have it mapped in-proc, so a normal
+  ; delete can fail even though the registration is already gone. Fall back to a
+  ; reboot-time delete and record it as a post-done warning, never a stage failure.
+  IfFileExists "$INSTDIR\${SPK_SHELLEXT_DLL}" 0 unSecShellExtDone
+  ClearErrors
+  Delete "$INSTDIR\${SPK_SHELLEXT_DLL}"
+  IfFileExists "$INSTDIR\${SPK_SHELLEXT_DLL}" 0 unSecShellExtDone
+  Delete /REBOOTOK "$INSTDIR\${SPK_SHELLEXT_DLL}"
+  IfFileExists "$INSTDIR\${SPK_SHELLEXT_DLL}" 0 unSecShellExtDone
+  StrCpy $0 "reboot_pending"
+  Call un.AddWarning
+unSecShellExtDone:
+
+  ; 升级时 ParkStaleShellExt 会把仍被 Explorer 映射的旧 DLL 改名成 .old；
+  ; 若卸载不清掉它，目录非空会让 RMDir 失败并落到 install-dir-not-empty 警告，
+  ; 连带 QA 的 Finish 页断言变得不稳定。这里同样先删、再排队重启删除。
+  IfFileExists "$INSTDIR\${SPK_SHELLEXT_DLL}.old" 0 unSecShellExtOldDone
+  ClearErrors
+  Delete "$INSTDIR\${SPK_SHELLEXT_DLL}.old"
+  IfFileExists "$INSTDIR\${SPK_SHELLEXT_DLL}.old" 0 unSecShellExtOldDone
+  Delete /REBOOTOK "$INSTDIR\${SPK_SHELLEXT_DLL}.old"
+  IfFileExists "$INSTDIR\${SPK_SHELLEXT_DLL}.old" 0 unSecShellExtOldDone
+  StrCpy $0 "reboot_pending"
+  Call un.AddWarning
+unSecShellExtOldDone:
 
   IfFileExists "$INSTDIR\Sopeek.exe" 0 unSecAppDone
   Delete "$INSTDIR\Sopeek.exe"
@@ -1726,6 +2115,28 @@ unSecTempUiTmpDone:
   StrCpy $UnErrorText "$INSTDIR\libwinpthread-1.dll.tmp"
   Goto unSecFail
 unSecTempDllTmpDone:
+  ; Windows 11 modern-menu integration files. The package itself was unregistered
+  ; at the top of this stage, so these are inert leftovers; a locked file becomes a
+  ; reboot-pending warning instead of failing the uninstall.
+  Delete "$INSTDIR\SopeekShellMenu.msix"
+  Delete "$INSTDIR\SopeekShellMenu.cer"
+  Delete "$INSTDIR\shell_menu_register.ps1"
+  Delete "$INSTDIR\shell_menu_unregister.ps1"
+  Delete "$INSTDIR\shell_menu_installed.txt"
+  Delete "$INSTDIR\shell_menu_status.txt"
+  ; Resource index for the external location: without it the taskbar falls back to
+  ; the plated logo (accent-colour square behind the icon).
+  Delete "$INSTDIR\resources.pri"
+  IfFileExists "$INSTDIR\SopeekShellMenu.msix" 0 unSecShellMenuFilesDone
+  Delete /REBOOTOK "$INSTDIR\SopeekShellMenu.msix"
+unSecShellMenuFilesDone:
+  IfFileExists "$INSTDIR\SopeekShellMenu.msix" 0 unSecShellMenuCerDone
+  StrCpy $0 "reboot_pending"
+  Call un.AddWarning
+unSecShellMenuCerDone:
+  ; Sparse package logo set shipped next to Sopeek.exe (taskbar icon for windows
+  ; started through the packaged command). Inert once the package is unregistered.
+  RMDir /r "$INSTDIR\Assets"
   Goto unSecUserData
 
   ; ---- Stage 4: user data -------------------------------------------------

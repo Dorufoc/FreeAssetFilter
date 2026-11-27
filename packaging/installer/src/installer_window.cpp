@@ -74,6 +74,18 @@ D2D1_COLOR_F CloseArmedRed() { return D2D1::ColorF(0.690f, 0.145f, 0.102f, 1.0f)
 namespace {
 
 constexpr wchar_t kWindowClass[] = L"SopeekInstaller";  // §4 冻结类名
+// setup（NSIS）重启 Explorer 之后用它给本窗口发消息（RegisterWindowMessageW），
+// 让窗口所属进程自己把界面抢回前台（跨进程 SetForegroundWindow 会被前台锁拒绝）。
+constexpr wchar_t kRestoreForegroundMessageName[] = L"SopeekInstallerRestoreForeground";
+// 重启 Explorer 后壳层重建的轮询参数。Explorer 冷启动会在数秒内陆续创建任务栏/桌面
+// 窗口并反复抢走前台，所以重试窗口要覆盖这段区间（60 × 150ms ≈ 9s）；setup 侧还会
+// 分几次投递同一个请求消息，每次都会把这段重试窗口重新打开一次。
+constexpr DWORD kForegroundRestoreRetryMs = 150;
+constexpr int kForegroundRestoreRetries = 60;
+// 置顶脉冲有轻微闪烁，只按间隔做几次，不参与每次尝试。
+constexpr int kForegroundTopmostEveryAttempts = 12;
+// 连续多少次探测到「别的程序已在前台」就放弃抢焦点（把控制权让给用户）。
+constexpr int kForegroundOtherAppStreakStop = 4;
 // T10：标题按启动模式设置（自绘标题栏与 CreateWindowExW 共用同一来源）。
 // 安装模式在窗口与任务栏使用同一个标题。
 constexpr wchar_t kTitleInstall[] = L"Sopeek 安装程序";
@@ -443,6 +455,11 @@ bool InstallerWindow::CreateAppWindow() {
 
     ShowWindow(window_, SW_SHOW);
     UpdateWindow(window_);
+
+    // 注册「重提前台」私有消息：setup 在重启 Explorer 之后 PostMessage 到本窗口，
+    // 由本进程把界面抢回前台（详见 RestoreForeground 的注释）。
+    restoreForegroundMessage_ = RegisterWindowMessageW(kRestoreForegroundMessageName);
+    DiagLog(std::wstring(L"restore_fg_msg=") + std::to_wstring(restoreForegroundMessage_));
 
     // §16 + 减少动画：SPI_GETCLIENTAREAANIMATION 已在上方 SetWindowPos 之前读取
     // （ApplyReduceMotion 必须先于 OnSizeChanged()/EnsurePages()），此处不再重复调用；
@@ -907,6 +924,151 @@ void InstallerWindow::PerformWindowButtonAction(WindowButton button) {
     }
 }
 
+// Explorer 重启后的一小段时间里，系统会停在「没有前台窗口」或「前台停在新 shell 的
+// 任务栏/桌面窗口上」的状态：此时任何进程的 SetForegroundWindow 都会被前台锁拒绝，
+// 用户看到的现象就是「所有窗口都点不动，必须点一下任务栏才能恢复」。
+// 这两个小工具用于判定该状态并解锁。
+bool IsShellPlaceholderForeground(HWND foreground) {
+    if (foreground == nullptr) return true;  // 空前台正是锁死态
+    wchar_t cls[64] = {};
+    if (GetClassNameW(foreground, cls, ARRAYSIZE(cls)) == 0) return false;
+    return wcscmp(cls, L"Shell_TrayWnd") == 0 || wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0 ||
+           wcscmp(cls, L"Progman") == 0 || wcscmp(cls, L"WorkerW") == 0;
+}
+
+// 合成一次最小键盘输入（Alt 按下并抬起）。Windows 的前台激活规则里有一条
+// 「进程收到过最后一次输入事件」，合成输入正好满足它，从而在不碰用户其它窗口的
+// 前提下解除前台锁——等价于用户「点了一下」，但不会真的切换用户正在用的程序。
+void PulseTrustedInput() {
+    INPUT inputs[2] = {};
+    inputs[0].type = INPUT_KEYBOARD;
+    inputs[0].ki.wVk = VK_MENU;
+    inputs[1].type = INPUT_KEYBOARD;
+    inputs[1].ki.wVk = VK_MENU;
+    inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(ARRAYSIZE(inputs), inputs, sizeof(INPUT));
+}
+
+bool InstallerWindow::RestoreForeground() {
+    HWND hwnd = window_;
+    if (hwnd == nullptr || !IsWindow(hwnd)) {
+        DiagLog(L"restore foreground skipped: window gone");
+        return false;
+    }
+
+    // Explorer 重建期间窗口可能被最小化/隐藏：先恢复可见，否则任何置前调用都无效。
+    if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+    if (!IsWindowVisible(hwnd)) ShowWindow(hwnd, SW_SHOWNORMAL);
+
+    // 已经是前台：重复请求直接成功返回，避免 setup 多次投递时反复折腾窗口。
+    if (GetForegroundWindow() == hwnd) {
+        DiagLog(L"restore foreground already active");
+        SetFocus(hwnd);
+        return true;
+    }
+
+    // SetForegroundWindow 在 Windows 上有「前台锁」：只要系统里还有别的进程持有前台，
+    // 跨进程置前就会被拒绝；taskkill explorer.exe 之后前台窗口为空，直接调用通常可成，
+    // 但 Explorer 重建过程中前台可能又被新 shell 抢走，所以这里做有限次重试。
+    const HWND foregroundBefore = GetForegroundWindow();
+    bool restored = false;
+    int otherAppStreak = 0;
+    for (int attempt = 1; attempt <= kForegroundRestoreRetries && !restored; ++attempt) {
+        const HWND foregroundNow = GetForegroundWindow();
+        if (foregroundNow == hwnd) {
+            restored = true;
+            DiagLog(L"restore foreground ok=preexisting attempt=" + std::to_wstring(attempt));
+            break;
+        }
+
+        // 用户已经开始操作别的程序（shell 占位窗口之外的真实应用窗口）：停止争抢，
+        // 否则每次安装结束都会把用户从正在做的事情里拽出来。
+        if (!IsShellPlaceholderForeground(foregroundNow)) {
+            if (++otherAppStreak >= kForegroundOtherAppStreakStop) {
+                DiagLog(L"restore foreground stop=user-active attempt=" + std::to_wstring(attempt));
+                break;
+            }
+        } else {
+            otherAppStreak = 0;
+            // shell 占位（含空前台）时合成一次输入来解除前台锁：前 10 次必做，
+            // 之后每 5 次补一次，避免长时间空转反复注入按键。
+            if (attempt <= 10 || (attempt % 5) == 0) PulseTrustedInput();
+        }
+
+        SetForegroundWindow(hwnd);
+        if (GetForegroundWindow() == hwnd) {
+            restored = true;
+            DiagLog(L"restore foreground ok=direct attempt=" + std::to_wstring(attempt));
+            break;
+        }
+
+        // 前台锁拒绝：临时附加到当前前台线程的输入队列，再置前（与
+        // single_instance.cpp 的 ActivateExistingWindow 同一手法）。
+        const HWND foreground = GetForegroundWindow();
+        const DWORD foregroundThread =
+            foreground != nullptr ? GetWindowThreadProcessId(foreground, nullptr) : 0;
+        const DWORD currentThread = GetCurrentThreadId();
+        if (foregroundThread != 0 && foregroundThread != currentThread &&
+            AttachThreadInput(currentThread, foregroundThread, TRUE)) {
+            BringWindowToTop(hwnd);
+            SetForegroundWindow(hwnd);
+            SetActiveWindow(hwnd);
+            AttachThreadInput(currentThread, foregroundThread, FALSE);
+        }
+        if (GetForegroundWindow() == hwnd) {
+            restored = true;
+            DiagLog(L"restore foreground ok=attach attempt=" + std::to_wstring(attempt));
+            break;
+        }
+
+        // 最后一条兼容路径：SwitchToThisWindow 会绕开前台锁（系统用它实现任务栏切换），
+        // 在 Explorer 刚重建、前台仍为空时最有效。
+        SwitchToThisWindow(hwnd, TRUE);
+        if (GetForegroundWindow() == hwnd) {
+            restored = true;
+            DiagLog(L"restore foreground ok=switch attempt=" + std::to_wstring(attempt));
+            break;
+        }
+
+        // 置顶脉冲只按间隔做：它能让窗口在视觉上立刻浮出，但对前台激活没有帮助，
+        // 每次都做会明显闪烁，所以约每 12 次尝试（≈1.8s）补一次。
+        if ((attempt % kForegroundTopmostEveryAttempts) == 0) {
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            SetForegroundWindow(hwnd);
+            if (GetForegroundWindow() == hwnd) {
+                restored = true;
+                DiagLog(L"restore foreground ok=topmost attempt=" + std::to_wstring(attempt));
+                break;
+            }
+        }
+
+        Sleep(kForegroundRestoreRetryMs);
+    }
+
+    // 即使激活仍被系统拒绝，也要保证窗口浮在最上层：置顶脉冲让用户一眼能看到它，
+    // 之后的普通点击即可正常接管（否则窗口可能停在别的窗口后面，看起来「点不动」）。
+    if (!restored) {
+        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        SetForegroundWindow(hwnd);
+        restored = GetForegroundWindow() == hwnd;
+        DiagLog(std::wstring(L"restore foreground fallback topmost ok=") +
+                std::to_wstring(restored ? 1 : 0) + L" foreground_before=" +
+                ToHex(static_cast<DWORD>(reinterpret_cast<std::uintptr_t>(foregroundBefore))) +
+                L" foreground_now=" +
+                ToHex(static_cast<DWORD>(reinterpret_cast<std::uintptr_t>(GetForegroundWindow()))));
+    }
+
+    // 焦点落在窗口内，键盘操作（Tab/Enter/Esc）才能直接生效。
+    SetFocus(hwnd);
+    return restored;
+}
+
 LRESULT CALLBACK InstallerWindow::WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     auto* self = reinterpret_cast<InstallerWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     if (msg == WM_NCCREATE) {
@@ -919,6 +1081,12 @@ LRESULT CALLBACK InstallerWindow::WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPA
 
 LRESULT InstallerWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
     HWND hwnd = window_;
+
+    // setup 重启 Explorer 之后发来的「抢回前台」请求（见 RestoreForeground）。
+    if (restoreForegroundMessage_ != 0 && msg == restoreForegroundMessage_) {
+        RestoreForeground();
+        return 0;
+    }
 
     // 自绘非客户区：客户区 = 整窗（§4）。DWM 仍按 WS_CAPTION|WS_THICKFRAME 提供圆角/阴影。
     if (msg == WM_NCCALCSIZE) {
@@ -2893,11 +3061,16 @@ void InstallerWindow::AutoDriveTick() {
             OnMessagePrimaryIntent();
             return;
         }
-        autoHalted_ = true;
-        DiagLog(L"auto message waiting action=" + autoAction_);
-        StopAutoDrive();
+        // busy 态（正在关闭 app / 正在收尾）是瞬时等待：定时器必须继续跑，
+        // 否则卸载收尾后切到 Finish 页再也不会被推进，QA 等不到
+        // 'auto drive complete page=4'。只记一次，避免每个 tick 刷屏。
+        if (!autoMessageWaitLogged_) {
+            autoMessageWaitLogged_ = true;
+            DiagLog(L"auto message waiting action=" + autoAction_);
+        }
         return;
     }
+    autoMessageWaitLogged_ = false;
 
     DiagLog(L"auto advance page=" + std::to_wstring(page));
     switch (page) {

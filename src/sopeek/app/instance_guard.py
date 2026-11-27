@@ -373,15 +373,107 @@ def _release_activation_event(handle) -> None:
 
 
 # ──────────────────────────────────────────────────────────────
+# 外部「打开路径」请求（资源管理器右键菜单）
+# ──────────────────────────────────────────────────────────────
+
+def _get_open_request_file_path() -> str:
+    """获取外部打开请求文件路径 ``<data>/state/open_request.json``。"""
+    from sopeek._paths import open_request_file
+
+    return str(open_request_file())
+
+
+def _write_open_request(open_path: str) -> bool:
+    """原子写入外部打开请求，供已运行的主实例轮询消费。
+
+    第二个实例在置位唤醒事件**之前**调用本函数，保证主实例被唤醒时文件已经
+    可见（否则会出现「窗口置前但没导航」的竞态）。先写临时文件再
+    ``os.replace``，避免主实例读到半截 JSON。
+
+    Args:
+        open_path: 资源管理器传入的目标路径（文件或文件夹）。
+
+    Returns:
+        写入成功返回 True；失败返回 False（调用方仍应继续置位唤醒事件）。
+    """
+    request_file = _get_open_request_file_path()
+    temp_file = request_file + ".tmp"
+    payload = {
+        "path": os.path.abspath(open_path),
+        "ts": time.time(),
+        "pid": os.getpid(),
+    }
+    try:
+        os.makedirs(os.path.dirname(request_file), exist_ok=True)
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_file, request_file)
+        return True
+    except (OSError, IOError, ValueError) as exc:
+        warning(f"写入外部打开请求失败：{exc}")
+        try:
+            os.remove(temp_file)
+        except OSError:
+            pass
+        return False
+
+
+def _read_and_clear_open_request() -> Optional[str]:
+    """读取并删除外部打开请求，返回其中的路径。
+
+    主实例轮询到唤醒事件后调用；读完立即删除，因此同一次右键只导航一次。
+    文件缺失、损坏或路径无效时返回 None。
+
+    Returns:
+        规范化后的绝对路径；无有效请求返回 None。
+    """
+    request_file = _get_open_request_file_path()
+    if not os.path.exists(request_file):
+        return None
+    try:
+        with open(request_file, "r", encoding="utf-8") as f:
+            request = json.load(f)
+    except (OSError, IOError, ValueError, TypeError):
+        request = None
+    finally:
+        try:
+            os.remove(request_file)
+        except OSError:
+            pass
+    if not isinstance(request, dict):
+        return None
+    path = request.get("path")
+    if not isinstance(path, str) or not path.strip():
+        return None
+    return path
+
+
+def _discard_open_request() -> None:
+    """删除可能残留的打开请求（启动时调用，避免消费上次崩溃遗留的请求）。"""
+    request_file = _get_open_request_file_path()
+    try:
+        os.remove(request_file)
+    except OSError:
+        pass
+
+
+# ──────────────────────────────────────────────────────────────
 # 单实例入口
 # ──────────────────────────────────────────────────────────────
 
-def _acquire_single_instance():
+def _acquire_single_instance(open_path: Optional[str] = None):
     """获取单实例互斥体；已存在实例时静默退出进程（不返回）。
 
     检测到 ``ERROR_ALREADY_EXISTS`` 时立即关闭本次创建的互斥体句柄并
     ``sys.exit(0)``：不得弹任何模态框，也不得创建第二个可见窗口。
     第二个实例的退出必须是有界的（验收要求 10 秒内退出）。
+
+    Args:
+        open_path: 本次启动要打开的路径（来自资源管理器右键菜单的
+            ``--open-path``）。已运行实例存在时先把它写进打开请求文件，
+            再置位唤醒事件，让主实例完成「唤回窗口 + 导航」两件事。
 
     Returns:
         mutex 句柄（int），仅当本进程成为唯一实例时返回。
@@ -404,10 +496,12 @@ def _acquire_single_instance():
     if kernel32.GetLastError() != _ERROR_ALREADY_EXISTS:
         return mutex_handle
 
-    # 已有实例：先请求唤回其主窗口（失败不阻断退出），再静默、有界退出。
-    # 这里绝不弹模态框（弹窗会阻塞第二个进程，
+    # 已有实例：先把打开请求落盘，再请求唤回其主窗口（失败不阻断退出），
+    # 最后静默、有界退出。这里绝不弹模态框（弹窗会阻塞第二个进程，
     # 违反 T18「10 秒内退出且无第二个窗口」的验收），也不创建任何窗口。
     info("another instance already running; exiting")
+    if open_path:
+        _write_open_request(open_path)
     _signal_existing_instance()
     kernel32.CloseHandle(mutex_handle)
     sys.exit(0)

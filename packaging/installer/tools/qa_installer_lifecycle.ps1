@@ -113,6 +113,23 @@ function Remove-TestState {
     foreach ($k in @($TestUninstallKey, $TestAppKey)) {
         if (Test-Path -LiteralPath $k) { Remove-Item -LiteralPath $k -Recurse -Force -ErrorAction SilentlyContinue }
     }
+    # Context-menu state lives under HKCU\Software\Classes (never under the
+    # Sopeek app key), so Remove-TestState used to leave it behind and every QA
+    # run inherited menu entries pointing at a deleted install. Clear it by the
+    # exact test-only verb/CLSID names; production names are never touched.
+    $testCtxMenuKeys = @(
+        'HKCU:\Software\Classes\*\shell\SopeekOpenFileTest'
+        'HKCU:\Software\Classes\Directory\shell\SopeekOpenFolderTest'
+        'HKCU:\Software\Classes\Directory\Background\shell\SopeekOpenFolderTest'
+        'HKCU:\Software\Classes\Directory\shell\SopeekTest'
+        'HKCU:\Software\Classes\Directory\Background\shell\SopeekTest'
+        'HKCU:\Software\Classes\*\shell\SopeekTest'
+        'HKCU:\Software\Classes\CLSID\{ADD20484-57FF-4DEB-8561-AC7F04CAFDCB}'
+        'HKCU:\Software\Classes\CLSID\{430F8D9E-4290-46F8-8E40-E38DAB04C5BD}'
+    )
+    foreach ($k in $testCtxMenuKeys) {
+        if (Test-Path -LiteralPath $k) { Remove-Item -LiteralPath $k -Recurse -Force -ErrorAction SilentlyContinue }
+    }
     foreach ($s in @($DesktopShortcut, $StartMenuShortcut)) {
         if (Test-Path -LiteralPath $s) { Remove-Item -LiteralPath $s -Force -ErrorAction SilentlyContinue }
     }
@@ -414,10 +431,14 @@ function Install-Fresh([string]$Tag = 'fresh') {
     Assert-True (Test-Path -LiteralPath (Join-Path $TestInstallDir 'UninstallHelper.exe')) 'UninstallHelper installed'
     Assert-True (Test-Path -LiteralPath $TestUninstallKey) 'test uninstall registry key exists'
     Assert-True (-not (Test-Path -LiteralPath $DesktopShortcut)) 'options=0000: no test desktop shortcut'
-    Assert-True (-not (Test-Path -LiteralPath $StartMenuShortcut)) 'options=0000: no test start-menu shortcut'
+    # pages_setup.cpp SyncToState forces optStartmenu = 1 for an install (the
+    # design has no Start-Menu checkbox), so the isolated test shortcut is
+    # expected even with option bits 0000. Production shortcut paths are
+    # guarded separately by the Snapshot-Production comparison below.
+    Assert-True (Test-Path -LiteralPath $StartMenuShortcut) 'options=0000: isolated test start-menu shortcut created'
     $after = Snapshot-Production
     Assert-True ($before -eq $after) 'production artifacts/keys/shortcuts unchanged after fresh install'
-    Add-Result 'fresh' 'PASS' 'install, registry, no shortcuts, production untouched'
+    Add-Result 'fresh' 'PASS' 'install, registry, isolated test start-menu shortcut, production untouched'
 }
 
 function Ensure-Installed {

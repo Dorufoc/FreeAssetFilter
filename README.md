@@ -452,7 +452,7 @@ Office 预览优先通过 COM 调用本机 Office，转换期间 Office 可能�
 │   ├── runtime_compat.py        # 冻结态运行时钩子
 │   ├── installer/               # C++ 安装器 + NSIS 脚本
 │   └── launcher/                # 独显启动器 SPK-Launcher.exe
-├── tools/                       # 冒烟、更新器联调、品牌检查、截图工具
+├── tools/                       # 冒烟、更新器联调、品牌检查
 ├── assets/                      # README 用的品牌图与截图
 ├── tests/                       # 单元 / 集成测试与二进制夹具
 ├── pyproject.toml               # 项目元数据 + ruff + pytest 配置

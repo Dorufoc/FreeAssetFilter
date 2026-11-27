@@ -1036,6 +1036,10 @@ class _DateInput(QWidget):
         return tm.control_border
 
     @property
+    def _border_color(self) -> QColor:
+        return tm.control_border
+
+    @property
     def _accent_primary(self) -> QColor:
         return tm.accent
 
@@ -1164,8 +1168,11 @@ class _DateInput(QWidget):
         if self._disabled:
             text_color = tm.mid
         painter.setPen(text_color)
+        text_w = self.width() - cfg["padding_r"] - cfg["padding_l"] + 4
+        if text_w > 0:
+            display_text = painter.fontMetrics().elidedText(display_text, Qt.ElideRight, text_w)
         painter.drawText(
-            QRectF(cfg["padding_l"], 0, self.width() - cfg["padding_r"] - cfg["padding_l"] + 4, h),
+            QRectF(cfg["padding_l"], 0, text_w, h),
             Qt.AlignVCenter | Qt.AlignLeft,
             display_text
         )

@@ -1,0 +1,705 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sopeek — 把「看文件」从五分钟压到一瞬</title>
+    <meta
+      name="description"
+      content="Sopeek 是面向 Windows 的桌面级文件浏览、筛选与预览工具：三栏工作流、8 类预览器、100+ 格式原地渲染，Rust 原生加速。"
+    />
+    <meta name="theme-color" content="#070b0b" />
+    <meta property="og:title" content="Sopeek — Windows 文件预览与管理" />
+    <meta
+      property="og:description"
+      content="选择器 / 储存池 / 预览器三栏同屏；图像、音视频、PDF、Office、代码、压缩包、字体、文件夹共 100+ 格式。"
+    />
+    <link rel="icon" href="assets/Sopeek.png" />
+    <link rel="stylesheet" href="assets/tokens.css?v=20261127f" />
+    <link rel="stylesheet" href="assets/site.css?v=20261127f" />
+    <style>
+      .ico {
+        width: 18px;
+        height: 18px;
+        flex: none;
+      }
+      .notes3 {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 1px;
+        background: var(--hairline);
+        border: 1px solid var(--hairline);
+      }
+      .notes3 > div {
+        background: var(--canvas);
+        padding: clamp(20px, 2.2vw, 30px);
+      }
+      .notes3 h4 {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        font-family: var(--font-body);
+        font-size: var(--fs-sm);
+        font-weight: 600;
+        letter-spacing: 0;
+      }
+      .notes3 h4 svg {
+        width: 15px;
+        height: 15px;
+        color: var(--accent-text);
+      }
+      .notes3 ul {
+        margin: 14px 0 0;
+        padding: 0;
+        list-style: none;
+        display: grid;
+        gap: 7px;
+        font-size: var(--fs-xs);
+        line-height: 1.7;
+        color: var(--ink-muted);
+      }
+      .notes3 li {
+        display: flex;
+        gap: 8px;
+      }
+      .notes3 li::before {
+        content: "—";
+        color: var(--accent-text);
+        flex: none;
+      }
+      @media (max-width: 900px) {
+        .notes3 {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">跳到正文</a>
+    <div class="grain" aria-hidden="true"></div>
+
+    <!-- ============ 顶栏 ============ -->
+    <header class="topbar" id="topbar">
+      <a class="brand" href="index.html" aria-label="Sopeek 首页">
+        <img src="assets/Sopeek.png" alt="" width="26" height="26" />
+        Sopeek
+        <span class="ver">v2.0.0</span>
+      </a>
+      <nav class="nav" aria-label="页面导航">
+        <a href="#workflow">工作流</a>
+        <a href="#previewers">预览器</a>
+        <a href="#formats">格式</a>
+        <a href="#interface">界面</a>
+        <a href="#shortcuts">快捷键</a>
+        <a href="#architecture">架构</a>
+        <a href="#start">开始</a>
+        <a href="video.html">演示片</a>
+      </nav>
+      <span class="topbar-spacer"></span>
+      <div class="topbar-actions">
+        <button class="icon-btn" id="themeToggle" type="button" aria-label="切换深浅色">
+          <svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-moon" /></svg>
+        </button>
+        <a class="icon-btn" href="https://github.com/Dorufoc/Sopeek" aria-label="GitHub 仓库">
+          <svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-github" /></svg>
+        </a>
+        <a class="btn btn--primary btn--sm" href="#start">
+          下载安装包
+          <svg class="ico arrow" aria-hidden="true"><use href="assets/icons.svg#i-arrow-right" /></svg>
+        </a>
+      </div>
+    </header>
+
+    <main id="main">
+      <!-- ============ 首屏 ============ -->
+      <section class="hero">
+        <div class="hero-bg" aria-hidden="true"></div>
+        <div class="grid-bg" aria-hidden="true"></div>
+
+        <div class="hero-inner">
+          <div class="hero-eyebrow eyebrow">Windows · 文件预览与管理</div>
+          <h1>
+            <span class="line"><span>把「看文件」</span></span>
+            <span class="line"><span>从五分钟压到<em>一瞬</em></span></span>
+          </h1>
+          <p class="hero-sub">
+            左边选文件，中间攒素材，右边直接看。Sopeek 把
+            <strong>找 → 挑 → 看</strong>
+            三个动作装进同一块屏幕：8 类预览器、100+ 格式原地渲染、Rust 原生扫描与哈希，全程不离开窗口。
+          </p>
+          <div class="hero-cta">
+            <a class="btn btn--primary" href="#start">
+              获取 Sopeek
+              <svg class="ico arrow" aria-hidden="true"><use href="assets/icons.svg#i-download" /></svg>
+            </a>
+            <a class="btn btn--ghost" href="#interface">
+              查看界面布局
+              <svg class="ico" aria-hidden="true"><use href="assets/icons.svg#i-windows" /></svg>
+            </a>
+            <a class="btn btn--ghost" href="video.html">观看演示片</a>
+          </div>
+
+          <div class="hero-meta">
+            <div class="stat"><b>8</b><span>预览器类型</span></div>
+            <div class="stat"><b>100+</b><span>可识别扩展名</span></div>
+            <div class="stat"><b>20</b><span>Rust 原生导出</span></div>
+            <div class="stat"><b>≤32</b><span>线程预算上限</span></div>
+          </div>
+        </div>
+
+        <div class="scroll-cue"><i aria-hidden="true"></i>SCROLL</div>
+      </section>
+
+      <!-- ============ 格式跑马灯 ============ -->
+      <div class="marquee" aria-hidden="true">
+        <div class="marquee-track">
+          <span>JPG</span><span>PNG</span><span>AVIF</span><span>HEIC</span><span>RAW</span><span>PSD</span>
+          <span>MP4</span><span>MKV</span><span>MOV</span><span>WEBM</span><span>FLAC</span><span>APE</span>
+          <span>PDF</span><span>DOCX</span><span>XLSX</span><span>PPTX</span><span>MD</span><span>PY</span>
+          <span>ZIP</span><span>7Z</span><span>RAR</span><span>TAR</span><span>TTF</span><span>WOFF2</span>
+        </div>
+        <div class="marquee-track">
+          <span>JPG</span><span>PNG</span><span>AVIF</span><span>HEIC</span><span>RAW</span><span>PSD</span>
+          <span>MP4</span><span>MKV</span><span>MOV</span><span>WEBM</span><span>FLAC</span><span>APE</span>
+          <span>PDF</span><span>DOCX</span><span>XLSX</span><span>PPTX</span><span>MD</span><span>PY</span>
+          <span>ZIP</span><span>7Z</span><span>RAR</span><span>TAR</span><span>TTF</span><span>WOFF2</span>
+        </div>
+      </div>
+
+      <!-- ============ 01 工作流 ============ -->
+      <section class="section" id="workflow">
+        <div class="shell">
+          <div class="section-head">
+            <div class="section-index"><b>01</b>FLOW</div>
+            <div>
+              <h2 class="section-title">一个工作流，<br />替你关掉 <em>四个窗口</em></h2>
+              <p class="section-lead">
+                资源管理器里翻目录、看图软件里放大、播放器里拖进度、PDF 阅读器里找页码——这些动作在 Sopeek
+                里被压成一条直线。左侧选择器负责「找」，中间储存池负责「挑」，右侧预览器负责「看」，三者共享同一套选中状态与同一套快捷键。
+              </p>
+            </div>
+          </div>
+
+          <div class="section-body">
+            <div class="rail">SELECT · STAGE · INSPECT</div>
+            <div class="flow">
+              <article class="flow-step">
+                <div class="n">01</div>
+                <h3>找</h3>
+                <p>选择器把目录摊平成卡片墙：缩略图直接告诉你这是什么，而不是让你先记文件名。</p>
+                <ul>
+                  <li>卡片 / 列表双视图，列数自适应，Ctrl+滚轮缩放</li>
+                  <li>文件名正则筛选，不区分大小写</li>
+                  <li>名称 / 修改时间 / 大小 / 创建时间 × 升序降序 = 8 种排序</li>
+                  <li>路径收藏夹 + 历史 + 全部磁盘一览</li>
+                  <li>隐藏文件 / 受保护系统文件两级开关</li>
+                  <li>后台批量生成缩略图，按需清理缓存</li>
+                </ul>
+              </article>
+
+              <article class="flow-step">
+                <div class="n">02</div>
+                <h3>挑</h3>
+                <p>左键拖出一块橡皮筋框选，右键把整批文件塞进储存池——它是工作区里唯一「会留下」的地方。</p>
+                <ul>
+                  <li>左键拖拽框选，右键已选批量入池</li>
+                  <li>储存池网格 / 列表两种视图，可重命名、删除、清空</li>
+                  <li>导出文件、导入导出路径、自动备份</li>
+                  <li>文件可直接拖进池，也可拖进桌面浮窗</li>
+                  <li>整个池可折叠，给预览器让出宽度</li>
+                </ul>
+              </article>
+
+              <article class="flow-step">
+                <div class="n">03</div>
+                <h3>看</h3>
+                <p>选中即预览，舞台按文件类型自动换装：图像、视频、音频、PDF、Office、代码、压缩包、字体、文件夹。</p>
+                <ul>
+                  <li>8 类预览器，近 100 种扩展名</li>
+                  <li>详细信息按类型展开（EXIF / 时长 / 音频标签）</li>
+                  <li>MD5 / SHA1 / SHA256 后台流式哈希，带进度</li>
+                  <li>统一操作栏：复制、系统打开、定位目录、清除预览</li>
+                  <li>预览器画布默认 16:9，可按窗口自适应</li>
+                </ul>
+              </article>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 02 预览器 ============ -->
+      <section class="section" id="previewers">
+        <div class="shell">
+          <div class="section-head">
+            <div class="section-index"><b>02</b>PREVIEW</div>
+            <div>
+              <h2 class="section-title">一个画布，<em>按类型换装</em></h2>
+              <p class="section-lead">
+                预览器不是「打开方式」，而是画布的一部分：切换文件时只换装内部实现，顶栏、操作栏、全屏行为保持一致。七类预览器共享同一套外壳，只是内部实现按格式族换装。
+              </p>
+            </div>
+          </div>
+
+          <div class="section-body">
+            <div class="rail">PREVIEWERS</div>
+            <div class="rack">
+              <div class="rack-list" aria-label="预览器列表">
+                <div class="rack-row">
+                  <span class="idx">01</span>
+                  <span class="name">图像<small>缩放 50%–500%、翻转旋转、取色器、GIF 逐帧</small></span>
+                  <span class="fmt">JPG PNG AVIF HEIC RAW PSD</span>
+                </div>
+                <div class="rack-row">
+                  <span class="idx">02</span>
+                  <span class="name">音频<small>流体背景 + 元信息面板，空格播放暂停</small></span>
+                  <span class="fmt">MP3 FLAC WAV APE</span>
+                </div>
+                <div class="rack-row">
+                  <span class="idx">03</span>
+                  <span class="name">PDF<small>原生渲染、页码跳转、缩略图抽屉、文本选择</small></span>
+                  <span class="fmt">PDF</span>
+                </div>
+                <div class="rack-row">
+                  <span class="idx">04</span>
+                  <span class="name">文本 / 代码<small>Markdown 渲染、语法高亮、源码与渲染切换</small></span>
+                  <span class="fmt">MD PY TS JSON YML</span>
+                </div>
+                <div class="rack-row">
+                  <span class="idx">05</span>
+                  <span class="name">压缩包<small>不解压浏览、全包递归搜索、按需密码</small></span>
+                  <span class="fmt">ZIP RAR 7Z TAR ISO</span>
+                </div>
+                <div class="rack-row">
+                  <span class="idx">06</span>
+                  <span class="name">字体<small>字号字重实时试排，支持可变字体轴</small></span>
+                  <span class="fmt">TTF OTF WOFF2 EOT</span>
+                </div>
+                <div class="rack-row">
+                  <span class="idx">07</span>
+                  <span class="name">文件夹<small>目录列表、自动监听刷新、隐藏项过滤</small></span>
+                  <span class="fmt">DIRECTORY</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 03 格式 ============ -->
+      <section class="section" id="formats">
+        <div class="shell">
+          <div class="section-head">
+            <div class="section-index"><b>03</b>FORMATS</div>
+            <div>
+              <h2 class="section-title">近 100 种扩展名，<em>不用另装软件</em></h2>
+              <p class="section-lead">
+                预览器按「格式族」注册：同一族共享解码管线与降级策略。原生库缺失时自动回退纯 Python
+                实现，功能不减、只是慢一点，应用不会因此崩溃。
+              </p>
+            </div>
+          </div>
+
+          <div class="section-body">
+            <div class="rail">FORMAT MATRIX</div>
+            <div class="formats">
+              <div class="format-group">
+                <header><h3>图像</h3><span class="count">32</span></header>
+                <div class="exts">
+                  <span class="ext">JPG</span><span class="ext">JPEG</span><span class="ext">PNG</span>
+                  <span class="ext">GIF</span><span class="ext">BMP</span><span class="ext">TIFF</span>
+                  <span class="ext">WEBP</span><span class="ext">SVG</span><span class="ext">ICO</span>
+                  <span class="ext">AVIF</span><span class="ext">HEIC</span><span class="ext">HEIF</span>
+                  <span class="ext">PSD</span><span class="ext">CR2</span><span class="ext">CR3</span>
+                  <span class="ext">NEF</span><span class="ext">ARW</span><span class="ext">DNG</span>
+                  <span class="ext">ORF</span><span class="ext">RAF</span><span class="ext">RW2</span>
+                  <span class="ext">PEF</span><span class="ext">SRW</span><span class="ext">X3F</span>
+                </div>
+                <p class="note">现代编码走 pillow-heif / pillow-avif，RAW 走 rawpy，PSD 走 psd-tools 合成预览。</p>
+              </div>
+
+              <div class="format-group">
+                <header><h3>视频 / 音频</h3><span class="count">24</span></header>
+                <div class="exts">
+                  <span class="ext">MP4</span><span class="ext">MOV</span><span class="ext">AVI</span>
+                  <span class="ext">MKV</span><span class="ext">M4V</span><span class="ext">WMV</span>
+                  <span class="ext">WEBM</span><span class="ext">MPG</span><span class="ext">OGV</span>
+                  <span class="ext">RMVB</span><span class="ext">VOB</span><span class="ext">MXF</span>
+                  <span class="ext">M2TS</span><span class="ext">TS</span><span class="ext">3GP</span>
+                  <span class="ext">MP3</span><span class="ext">WAV</span><span class="ext">FLAC</span>
+                  <span class="ext">OGG</span><span class="ext">WMA</span><span class="ext">M4A</span>
+                  <span class="ext">OPUS</span><span class="ext">AIFF</span><span class="ext">APE</span>
+                </div>
+                <p class="note">libmpv 直连，全局队列串行访问；音频模式换装流体背景与元信息面板。</p>
+              </div>
+
+              <div class="format-group">
+                <header><h3>文档 / 文本</h3><span class="count">28</span></header>
+                <div class="exts">
+                  <span class="ext">PDF</span><span class="ext">DOC</span><span class="ext">DOCX</span>
+                  <span class="ext">XLS</span><span class="ext">XLSX</span><span class="ext">PPT</span>
+                  <span class="ext">PPTX</span><span class="ext">TXT</span><span class="ext">MD</span>
+                  <span class="ext">RST</span><span class="ext">PY</span><span class="ext">JAVA</span>
+                  <span class="ext">CPP</span><span class="ext">C</span><span class="ext">H</span>
+                  <span class="ext">CS</span><span class="ext">JS</span><span class="ext">HTML</span>
+                  <span class="ext">CSS</span><span class="ext">PHP</span><span class="ext">GO</span>
+                  <span class="ext">RB</span><span class="ext">SWIFT</span><span class="ext">KT</span>
+                  <span class="ext">JSON</span><span class="ext">XML</span><span class="ext">YML</span>
+                  <span class="ext">YAML</span>
+                </div>
+                <p class="note">50+ 套 TextMate 语法，未命中时回退 Pygments；编码探测走 chardetng。</p>
+              </div>
+
+              <div class="format-group">
+                <header><h3>压缩包 / 字体</h3><span class="count">17</span></header>
+                <div class="exts">
+                  <span class="ext">ZIP</span><span class="ext">RAR</span><span class="ext">7Z</span>
+                  <span class="ext">TAR</span><span class="ext">GZ</span><span class="ext">TGZ</span>
+                  <span class="ext">BZ2</span><span class="ext">XZ</span><span class="ext">ISO</span>
+                  <span class="ext">TTF</span><span class="ext">OTF</span><span class="ext">WOFF</span>
+                  <span class="ext">WOFF2</span><span class="ext">EOT</span>
+                </div>
+                <p class="note">压缩包用 7-Zip 命令行列目录，不解压即可浏览与全包搜索；字体解析由 Rust 完成。</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 04 界面 ============ -->
+      <section class="section" id="interface">
+        <div class="shell">
+          <div class="section-head">
+            <div class="section-index"><b>04</b>LAYOUT</div>
+            <div>
+              <h2 class="section-title">两种布局，<em>同一种秩序</em></h2>
+              <p class="section-lead">
+                经典三栏把「选择 / 暂存 / 预览」平均分给三块；New 布局让选择器独占左栏，预览拿到更宽的画布，储存池与信息面板退到下方并排。切换只改排列，不改组件。
+              </p>
+            </div>
+          </div>
+
+          <div class="section-body">
+            <div class="rail">SPLIT · STACK · FLOAT</div>
+            <div>
+              <div class="notes3">
+                <div>
+                  <h4><svg><use href="assets/icons.svg#i-command" /></svg>操作习惯</h4>
+                  <ul>
+                    <li>左键单击选中并预览；鼠标侧键后退</li>
+                    <li>卡片或空白处拖拽框选，右键已选批量入池</li>
+                    <li>单击信息条目复制，右键复制全部字段</li>
+                    <li>分隔条可拖、双击重置；经典布局储存池可折叠</li>
+                    <li>Ctrl+方向键或 F6 在三个区域间切焦点</li>
+                  </ul>
+                </div>
+                <div>
+                  <h4><svg><use href="assets/icons.svg#i-layers" /></svg>三个区域</h4>
+                  <ul>
+                    <li>选择器：路径栏、6 个 28px 导航按钮、72×102 卡片网格、底部状态</li>
+                    <li>储存池：攒素材的地方，跨目录保留顺序</li>
+                    <li>预览器：顶栏四个统一操作 + 类型化舞台</li>
+                    <li>信息面板：常驻字段 + 按类型展开 + 流式哈希</li>
+                    <li>预览画布默认 16:9、最小 640×360</li>
+                  </ul>
+                </div>
+                <div>
+                  <h4><svg><use href="assets/icons.svg#i-bolt" /></svg>桌面浮窗</h4>
+                  <ul>
+                    <li>常驻桌面的圆形入口，把文件拖进去即入池</li>
+                    <li>展开后是一块精简储存池，贴边自动吸附</li>
+                    <li>记住上次位置，开机随应用一起回来</li>
+                    <li>与主窗口共享同一份池与同一份顺序</li>
+                    <li>适合「一边看网页一边攒素材」的场景</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 05 快捷键 ============ -->
+      <section class="section" id="shortcuts">
+        <div class="shell">
+          <div class="section-head">
+            <div class="section-index"><b>05</b>KEYS</div>
+            <div>
+              <h2 class="section-title">手不用离开<em>主键区</em></h2>
+              <p class="section-lead">
+                三栏各有一套方向键语义，但都从同一组修饰键出发。悬停右侧任意一行，对应的键会在左边的键盘上点亮。
+              </p>
+            </div>
+          </div>
+
+          <div class="section-body">
+            <div class="rail">KEYMAP</div>
+            <div class="keys-layout">
+              <div>
+                <div class="keyboard" aria-hidden="true">
+                  <div class="kb-row">
+                    <span class="key" data-key="esc">Esc</span>
+                    <span class="key" data-key="1">1</span>
+                    <span class="key" data-key="2">2</span>
+                    <span class="key" data-key="3">3</span>
+                    <span class="key" data-key="`">`</span>
+                    <span class="key w2" data-key="space">Space</span>
+                    <span class="key" data-key="tab">Tab</span>
+                    <span class="key" data-key="ctrl">Ctrl</span>
+                    <span class="key" data-key="shift">Shift</span>
+                    <span class="key" data-key="alt">Alt</span>
+                  </div>
+                  <div class="kb-row">
+                    <span class="key" data-key="q">Q</span>
+                    <span class="key" data-key="w">W</span>
+                    <span class="key" data-key="e">E</span>
+                    <span class="key" data-key="r">R</span>
+                    <span class="key" data-key="t">T</span>
+                    <span class="key" data-key="y">Y</span>
+                    <span class="key" data-key="i">I</span>
+                    <span class="key" data-key="o">O</span>
+                    <span class="key" data-key="k">K</span>
+                    <span class="key" data-key="l">L</span>
+                  </div>
+                  <div class="kb-row">
+                    <span class="key" data-key="f">F</span>
+                    <span class="key" data-key="g">G</span>
+                    <span class="key" data-key="h">H</span>
+                    <span class="key" data-key="m">M</span>
+                    <span class="key" data-key="enter">Enter</span>
+                    <span class="key" data-key="+">+</span>
+                    <span class="key" data-key="-">-</span>
+                    <span class="key" data-key="0">0</span>
+                  </div>
+                  <div class="kb-row">
+                    <span class="key" data-key="f6">F6</span>
+                    <span class="key w2" data-key="shift f6">Shift+F6</span>
+                    <span class="key w2" data-key="ctrl \">Ctrl+\</span>
+                    <span class="key w2" data-key="ctrl e">Ctrl+E</span>
+                    <span class="key w2" data-key="ctrl c">Ctrl+C</span>
+                    <span class="key w2" data-key="left">←</span>
+                    <span class="key" data-key="up">↑</span>
+                    <span class="key" data-key="down">↓</span>
+                    <span class="key" data-key="right">→</span>
+                  </div>
+                </div>
+                <div class="kb-caption">
+                  <kbd>hover</kbd> 悬停右侧快捷键条目以点亮按键
+                </div>
+              </div>
+
+              <div class="shortcut-groups">
+                <div class="sc-group">
+                  <h4>全局</h4>
+                  <div class="sc-row" data-keys="ctrl i"><span>设置</span><span class="sc-keys"><kbd>Ctrl</kbd><kbd>I</kbd></span></div>
+                  <div class="sc-row" data-keys="ctrl m"><span>资源管理器定位</span><span class="sc-keys"><kbd>Ctrl</kbd><kbd>M</kbd></span></div>
+                  <div class="sc-row" data-keys="ctrl k"><span>系统打开</span><span class="sc-keys"><kbd>Ctrl</kbd><kbd>K</kbd></span></div>
+                  <div class="sc-row" data-keys="ctrl o"><span>应用内定位</span><span class="sc-keys"><kbd>Ctrl</kbd><kbd>O</kbd></span></div>
+                  <div class="sc-row" data-keys="ctrl left"><span>在区域间移动焦点</span><span class="sc-keys"><kbd>Ctrl</kbd><kbd>←</kbd></span></div>
+                  <div class="sc-row" data-keys="f6"><span>切换焦点区</span><span class="sc-keys"><kbd>F6</kbd></span></div>
+                </div>
+
+                <div class="sc-group">
+                  <h4>选择器</h4>
+                  <div class="sc-row" data-keys="left up down right"><span>导航</span><span class="sc-keys"><kbd>← ↑ ↓ →</kbd></span></div>
+                  <div class="sc-row" data-keys="enter"><span>进入文件夹 / 预览</span><span class="sc-keys"><kbd>Enter</kbd></span></div>
+                  <div class="sc-row" data-keys="tab"><span>加入 / 移出储存池</span><span class="sc-keys"><kbd>Tab</kbd></span></div>
+                  <div class="sc-row" data-keys="alt left"><span>批量加入 / 移出</span><span class="sc-keys"><kbd>Alt</kbd><kbd>←</kbd></span></div>
+                  <div class="sc-row" data-keys="ctrl f"><span>筛选</span><span class="sc-keys"><kbd>Ctrl</kbd><kbd>F</kbd></span></div>
+                  <div class="sc-row" data-keys="ctrl g"><span>收藏路径</span><span class="sc-keys"><kbd>Ctrl</kbd><kbd>G</kbd></span></div>
+                  <div class="sc-row" data-keys="ctrl h"><span>刷新</span><span class="sc-keys"><kbd>Ctrl</kbd><kbd>H</kbd></span></div>
+                  <div class="sc-row" data-keys="ctrl l"><span>排序</span><span class="sc-keys"><kbd>Ctrl</kbd><kbd>L</kbd></span></div>
+                  <div class="sc-row" data-keys="q"><span>生成缩略图</span><span class="sc-keys"><kbd>Q</kbd></span></div>
+                </div>
+
+                <div class="sc-group">
+                  <h4>播放</h4>
+                  <div class="sc-row" data-keys="space"><span>播放 / 暂停</span><span class="sc-keys"><kbd>Space</kbd></span></div>
+                  <div class="sc-row" data-keys="1 2 3 `"><span>倍速</span><span class="sc-keys"><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd><kbd>`</kbd></span></div>
+                  <div class="sc-row" data-keys="shift left right"><span>快退 / 快进 5 秒</span><span class="sc-keys"><kbd>Shift</kbd><kbd>← →</kbd></span></div>
+                  <div class="sc-row" data-keys="shift up down"><span>音量</span><span class="sc-keys"><kbd>Shift</kbd><kbd>↑ ↓</kbd></span></div>
+                  <div class="sc-row" data-keys="ctrl \"><span>预览器全屏</span><span class="sc-keys"><kbd>Ctrl</kbd><kbd>\</kbd></span></div>
+                </div>
+
+                <div class="sc-group">
+                  <h4>图像 / PDF</h4>
+                  <div class="sc-row" data-keys="+ - 0"><span>放大 / 缩小 / 原始比例</span><span class="sc-keys"><kbd>+</kbd><kbd>−</kbd><kbd>0</kbd></span></div>
+                  <div class="sc-row" data-keys="r h"><span>旋转 / 水平翻转</span><span class="sc-keys"><kbd>R</kbd><kbd>H</kbd></span></div>
+                  <div class="sc-row" data-keys="i"><span>取色器</span><span class="sc-keys"><kbd>I</kbd></span></div>
+                  <div class="sc-row" data-keys="shift f"><span>PDF 缩略图抽屉</span><span class="sc-keys"><kbd>Shift</kbd><kbd>F</kbd></span></div>
+                  <div class="sc-row" data-keys="ctrl c"><span>复制 PDF 选中文字</span><span class="sc-keys"><kbd>Ctrl</kbd><kbd>C</kbd></span></div>
+                </div>
+
+                <div class="sc-group">
+                  <h4>文本 / 压缩包</h4>
+                  <div class="sc-row" data-keys="shift f"><span>站内搜索 / 全包搜索</span><span class="sc-keys"><kbd>Shift</kbd><kbd>F</kbd></span></div>
+                  <div class="sc-row" data-keys="ctrl e"><span>源码 / 渲染切换</span><span class="sc-keys"><kbd>Ctrl</kbd><kbd>E</kbd></span></div>
+                  <div class="sc-row" data-keys="enter"><span>压缩包内进入目录</span><span class="sc-keys"><kbd>Enter</kbd></span></div>
+                  <div class="sc-row" data-keys="esc"><span>逐级关闭浮层</span><span class="sc-keys"><kbd>Esc</kbd></span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 06 架构 ============ -->
+      <section class="section" id="architecture">
+        <div class="shell">
+          <div class="section-head">
+            <div class="section-index"><b>06</b>ENGINE</div>
+            <div>
+              <h2 class="section-title">重活交给 Rust，<em>界面只负责画</em></h2>
+              <p class="section-lead">
+                目录扫描、排序、高亮、Markdown、字体解析、哈希、编码探测、EXIF、批量复制、SVG 换色、7z 列表、PDF 取词——这些高频路径被移进
+                spk_core（cdylib）。界面线程只拿结果。
+              </p>
+            </div>
+          </div>
+
+          <div class="section-body">
+            <div class="rail">ARCHITECTURE</div>
+            <div>
+              <div class="metrics">
+                <div class="metric"><b>20<i>×</i></b><span>spk_* 原生导出</span></div>
+                <div class="metric"><b>5</b><span>命名线程池</span></div>
+                <div class="metric"><b>32</b><span>线程预算上限</span></div>
+                <div class="metric"><b>3<i>级</i></b><span>Office 降级链</span></div>
+              </div>
+
+              <div class="stack">
+                <div class="stack-layer">
+                  <span class="tag">UI</span>
+                  <span class="desc"><b>PySide6 6.10 + 自研无边框窗口</b>：原生 ExpandedClientAreaHint 方案保留最大化动画与 Aero Snap，Mica 走 dwmapi 薄封装，样式全部由 styled 组件在代码里生成。</span>
+                  <span class="lang">PYTHON / QSS</span>
+                </div>
+                <div class="stack-layer">
+                  <span class="tag">SERVICE</span>
+                  <span class="desc"><b>9 个业务服务与 UI 解耦</b>：previewer_registry 按扩展名路由，file_service 管文件操作，favorites / thumbnail / settings 各自单例，测试可脱离窗口运行。</span>
+                  <span class="lang">PYTHON</span>
+                </div>
+                <div class="stack-layer">
+                  <span class="tag">NATIVE</span>
+                  <span class="desc"><b>spk_core + thumbnail_rust + spk_updater</b>：ctypes 桥接，DLL 缺失或调用失败时回退 Python 实现；更新器是独立 Rust 控制台程序，依赖白名单已冻结。</span>
+                  <span class="lang">RUST</span>
+                </div>
+                <div class="stack-layer">
+                  <span class="tag">RENDER</span>
+                  <span class="desc"><b>cpp_mica_render / cpp_lut_preview</b>：云母着色与 LUT 预览的 C++ 加速路径，与 Python 侧共用同一套参数。</span>
+                  <span class="lang">C++ / pybind</span>
+                </div>
+                <div class="stack-layer">
+                  <span class="tag">PACK</span>
+                  <span class="desc"><b>PyInstaller onedir + 自研 C++ 安装器 + NSIS</b>：安装包按 <code>Sopeek-&lt;版本&gt;-windows-&lt;架构&gt;.exe</code> 命名，版本号唯一来源是 SPKVERSION。</span>
+                  <span class="lang">PYINSTALLER / NSIS</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 07 开始 ============ -->
+      <section class="section" id="start">
+        <div class="shell">
+          <div class="section-head">
+            <div class="section-index"><b>07</b>START</div>
+            <div>
+              <h2 class="section-title">装上，<em>就不想再开资源管理器</em></h2>
+              <p class="section-lead">两种进入方式：拿现成安装包，或者从源码跑起来。后者需要 Python 与 PySide6。</p>
+            </div>
+          </div>
+
+          <div class="section-body">
+            <div class="rail">INSTALL</div>
+            <div class="start">
+              <div class="terminal">
+                <div class="terminal-bar"><i></i><i></i><i></i><span>powershell — sopeek</span></div>
+                <pre><span class="c"># 1 · 安装包（推荐）</span>
+<span class="p">›</span> Sopeek-2.0.0-windows-x64.exe
+<span class="p">›</span> 双击安装，首次启动会预热原生库
+
+<span class="c"># 2 · 从源码运行</span>
+<span class="p">›</span> git clone https://github.com/Dorufoc/Sopeek.git
+<span class="p">›</span> cd Sopeek
+<span class="p">›</span> python -m venv .venv
+<span class="p">›</span> .venv\Scripts\activate
+<span class="p">›</span> pip install -r requirements.txt
+<span class="p">›</span> python -m sopeek.app.main
+
+<span class="c"># 3 · 指定目录启动</span>
+<span class="p">›</span> python -m sopeek.app.main <span class="s">--open-path "D:\Assets"</span></pre>
+              </div>
+
+              <div class="start-notes">
+                <div class="note-card">
+                  <h4><svg><use href="assets/icons.svg#i-windows" /></svg>环境要求</h4>
+                  <p>Windows 10 / 11 64 位；源码运行需要 Python 3.9+ 与 PySide6 6.10+（无边框方案的下限）。视频播放额外需要 OpenGL 3.0+。</p>
+                </div>
+                <div class="note-card">
+                  <h4><svg><use href="assets/icons.svg#i-shield" /></svg>你的数据</h4>
+                  <p>
+                    配置、缓存、缩略图与哈希结果都在 <code>%LOCALAPPDATA%\Sopeek\data</code>，可用 <code>SPK_DATA_DIR</code>
+                    改位置。其中 <code>config</code> 与 <code>assets</code> 不可再生，备份请整目录复制。
+                  </p>
+                </div>
+                <div class="note-card">
+                  <h4><svg><use href="assets/icons.svg#i-book" /></svg>许可证</h4>
+                  <p>AGPL-3.0。修改并通过网络提供服务时需要开源；本地自用不受影响。本项目不收集遥测，所有解析在本地完成。</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- ============ 页脚 ============ -->
+    <footer class="footer">
+      <div class="shell">
+        <div class="footer-top">
+          <div class="footer-brand">
+            <img src="assets/Sopeek.png" alt="" width="36" height="36" />
+            <div>
+              <p style="font-family: var(--font-display); font-size: 17px; font-weight: 700">Sopeek</p>
+              <p style="margin-top: 6px; font-size: var(--fs-xs); color: var(--ink-muted); line-height: 1.7">
+                Windows 桌面级文件浏览、筛选与预览工具。三栏工作流、8 类预览器、100+ 格式，Rust 原生加速。
+              </p>
+            </div>
+          </div>
+          <div class="footer-cols">
+            <div class="footer-col">
+              <h5>产品</h5>
+              <a href="#workflow">工作流</a>
+              <a href="#previewers">预览器</a>
+              <a href="#formats">支持格式</a>
+              <a href="#interface">界面布局</a>
+              <a href="#shortcuts">快捷键</a>
+            </div>
+            <div class="footer-col">
+              <h5>深入</h5>
+              <a href="#architecture">技术架构</a>
+              <a href="video.html">介绍视频</a>
+              <a href="DESIGN.md">设计说明</a>
+              <a href="design-tokens.json">设计令牌</a>
+            </div>
+            <div class="footer-col">
+              <h5>项目</h5>
+              <a href="https://github.com/Dorufoc/Sopeek">GitHub</a>
+              <a href="https://github.com/Dorufoc/Sopeek/issues">Issues</a>
+              <a href="https://github.com/Dorufoc/Sopeek/releases">Releases</a>
+              <a href="https://github.com/Dorufoc/Sopeek/blob/main-v2/LICENSE">AGPL-3.0</a>
+            </div>
+          </div>
+        </div>
+        <div class="footer-bottom">
+          <span>© 2026 Sopeek · v2.0.0</span>
+          <span class="mono">页面本身也是项目的一部分：纯 HTML / CSS / JS，无框架、无追踪</span>
+        </div>
+      </div>
+    </footer>
+
+    <script src="assets/site.js?v=20261127f" defer></script>
+  </body>
+</html>
+
+

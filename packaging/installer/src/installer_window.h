@@ -76,6 +76,15 @@ public:
     // 初始化流程，关闭时只销毁窗口（不写 decision/request/result/注册表）。
     void SetStartupError(std::wstring title, std::wstring body);
 
+    // 安装器收尾阶段（NSIS 已重启 Explorer）由 setup 进程发来注册消息触发：
+    // 把本窗口重新提到前台并抢回焦点。
+    //
+    // 为什么必须由本进程做：taskkill explorer.exe 之后前台窗口被清空，随后
+    // Explorer 重建；跨进程 SetForegroundWindow 会被前台锁拒绝，只有窗口
+    // 所属进程自己调用（并可回退到 AttachThreadInput / SwitchToThisWindow）
+    // 才能稳定生效。返回 true 表示窗口最终确实在前台。
+    bool RestoreForeground();
+
     // --- Todo 19（§17）/T14：/auto 无人值守测试驱动入口（仅 SPK_TESTMODE 有行为）---
     // 由 main.cpp 在 SPK_TESTMODE 构建中调用（生产构建解析 /auto 后直接丢弃、
     // 不会调用此处；即便调用亦为 no-op，交互行为保持不变）。
@@ -251,6 +260,10 @@ private:
 
     HINSTANCE instance_{};
     HWND window_{};
+    // setup（NSIS）在重启 Explorer 之后 PostMessage 的注册消息 id（0 = 未注册）。
+    // 注册消息名见 installer_window.cpp 的 kRestoreForegroundMessageName；
+    // 消息到达时调用 RestoreForeground()。
+    UINT restoreForegroundMessage_{0};
     std::wstring payload_;
     std::wstring resultPath_;
     std::wstring errorText_;
@@ -389,5 +402,9 @@ private:
     std::wstring autoDeleteUserData_;
     UINT_PTR autoTimer_{0};          // 驱动专用定时器（与动画 tick 定时器独立）
     bool autoHalted_{false};         // 到站/完成后不再推进（防重复标记）
+    // Message 页 busy 态只是「正在关闭 app / 正在收尾」的瞬时等待，不能像
+    // 到站那样 StopAutoDrive，否则后续 Finish 页永远等不到推进日志
+    // （QA 断言 'auto drive complete page=4' 会一直等到超时）。
+    bool autoMessageWaitLogged_{false};
 #endif
 };

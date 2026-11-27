@@ -518,6 +518,12 @@ class FileSelectorLayout(QWidget):
         self._pending_history_rollback: bool = False
         # 挂起定位：locate_file 异步导航后，等条目落地再高亮/滚动目标卡片
         self._pending_locate_path: str = ""
+        # 挂起定位是否要顺带开始预览：右键菜单「用Sopeek软件打开」传入文件时，
+        # 光有预览态高亮不够，必须真正把文件交给预览器（见 _emit_preview_for_path）。
+        self._pending_locate_preview: bool = False
+        # ``file_selected`` 是否已有接收者：主窗口在 _finalize_panels 里才连信号，
+        # 而右键菜单的定位+预览可能更早发生，没有接收者时 emit 会被丢弃。
+        self._preview_sink_ready: bool = False
         # raw entries 缓存：最近一次目录加载的原始（未筛选未排序）条目，
         # 与 _current_path 绑定；排序切换/筛选应用据此内存重排，不再重扫磁盘。
         self._raw_entries: List[Dict[str, Any]] = []
@@ -868,10 +874,34 @@ class FileSelectorLayout(QWidget):
     def _init_navigation(self) -> None:
         app = QApplication.instance()
         initial_navigate_path = getattr(app, "initial_navigate_path", None)
+        # 右键菜单对「普通文件」传入的是文件本身：导航到其目录后还要定位选中，
+        # 否则用户看不出究竟打开了哪个文件（目录请求没有该字段）。
+        initial_locate_path = getattr(app, "initial_locate_path", None)
+        debug(
+            f"初始导航: navigate={initial_navigate_path!r} locate={initial_locate_path!r} "
+            f"cwd={os.getcwd()!r}"
+        )
+        if not (isinstance(initial_locate_path, str) and os.path.isfile(initial_locate_path)):
+            initial_locate_path = None
         if initial_navigate_path and os.path.isdir(initial_navigate_path):
             # 启动首次加载走异步路径，避免大目录 listdir+stat 阻塞首屏
             self._navigate_to(initial_navigate_path, transition=False, initial=True)
+            # 定位请求必须在 _navigate_to 之后再登记：它内部的
+            # _load_directory_async 会清空 _pending_locate_path（每次新导航都
+            # 丢弃上一次的定位目标），提前赋值会被这里覆盖掉。
+            if initial_locate_path:
+                self._pending_locate_path = initial_locate_path
+                # 启动时用 --open-path 传入的是文件：定位之外还要预览，才算
+                # 「用 Sopeek 打开了这个文件」。
+                self._pending_locate_preview = True
             return
+        if initial_locate_path:
+            # 导航目标缺失但文件存在：退化为按文件所在目录导航
+            file_dir = os.path.dirname(initial_locate_path)
+            if file_dir and self._navigate_to(file_dir, transition=False, initial=True):
+                self._pending_locate_path = initial_locate_path
+                self._pending_locate_preview = True
+                return
         if self._try_restore_last_path():
             return
         self._navigate_to_all()
@@ -1676,6 +1706,7 @@ class FileSelectorLayout(QWidget):
         self._pending_initial_load = initial
         self._pending_history_rollback = rollback_history
         self._pending_locate_path = ""
+        self._pending_locate_preview = False
         self._stream_active_token = token
         self._reset_stream_pipeline(path)
         self._update_path_input(path)
@@ -2074,14 +2105,61 @@ class FileSelectorLayout(QWidget):
         """应用挂起的定位请求：条目落地后高亮目标卡片并滚动到可见。"""
         file_path = self._pending_locate_path
         if not file_path:
+            self._pending_locate_preview = False
             return
         self._pending_locate_path = ""
+        want_preview = self._pending_locate_preview
+        self._pending_locate_preview = False
         model_file_path = self._locate_model_file_path(file_path)
         if not model_file_path:
+            # 常见于目录里没有该文件（被删除/被筛选隐藏），此时只导航不定位。
+            debug(f"定位跳过（当前列表无此条目）: {file_path}")
             return
         self.set_previewing_file(model_file_path)
+        debug(f"定位文件卡片: {model_file_path}")
+        if want_preview:
+            self._emit_preview_for_path(model_file_path)
         # 目录过渡动画（120ms）结束后再滚动，避免与过渡快照错位
         QTimer.singleShot(180, lambda p=model_file_path: self._scroll_to_file(p))
+
+    def _emit_preview_for_path(self, model_file_path: str, attempt: int = 0) -> None:
+        """把定位到的文件真正交给预览器（``file_selected``）。
+
+        ``set_previewing_file`` 只改卡片的预览态样式，不会加载预览内容；正常
+        点击卡片走 ``_on_file_clicked`` → ``file_selected``。右键菜单打开文件
+        没有点击动作，因此必须在这里补发同一个信号，否则用户会看到「卡片
+        亮着但预览区空白」。
+
+        Args:
+            model_file_path: 模型内条目的完整路径。
+            attempt: 内部重试计数（信号无人接收时按 200ms 退避重发，最多 5 次）。
+        """
+        info = self._build_file_info_for_path(model_file_path)
+        if info is None:
+            debug(f"预览跳过（构造文件信息失败）: {model_file_path}")
+            return
+        if not getattr(self, "_preview_sink_ready", False) and attempt < 5:
+            # 主窗口要等四区齐备才连信号（_finalize_panels），而首次导航可能
+            # 更早就完成了定位；此时 emit 会被 Qt 直接丢弃，故退避重发。
+            debug(f"预览延后（信号暂无接收者，第 {attempt + 1} 次重试）: {model_file_path}")
+            QTimer.singleShot(
+                200,
+                lambda: self._emit_preview_for_path(model_file_path, attempt + 1),
+            )
+            return
+        debug(f"开始预览（外部打开）: {model_file_path}")
+        self.file_selected.emit(info)
+
+    def set_preview_sink_ready(self, ready: bool = True) -> None:
+        """标记 ``file_selected`` 是否已被主窗口连接（幂等）。
+
+        只有主窗口连上信号之后，``_emit_preview_for_path`` 才可以直接 emit；
+        否则请求会因无接收者被 Qt 丢弃，只能按退避重试等待连接建立。
+
+        Args:
+            ready: True 表示预览信号已有接收者。
+        """
+        self._preview_sink_ready = bool(ready)
 
     @staticmethod
     def _shrink_thumbnail_caches(reason: str) -> None:
@@ -3654,7 +3732,7 @@ class FileSelectorLayout(QWidget):
 
     # ── 定位 ──────────────────────────────────────────────────────────
 
-    def locate_file(self, file_info: Dict[str, Any]) -> None:
+    def locate_file(self, file_info: Dict[str, Any], preview: bool = False) -> None:
         """定位到预览文件的所在目录：导航文件列表并高亮滚动到该文件卡片。
 
         与旧版"定位到所在目录"语义一致：左侧文件选择器切到目标目录并定位
@@ -3662,6 +3740,8 @@ class FileSelectorLayout(QWidget):
 
         Args:
             file_info: 目标文件信息（须含 'path'）。
+            preview: 定位完成后是否立即开始预览该文件。右键菜单「用Sopeek
+                软件打开」传 True；单纯定位（如跳转到某文件）保持 False。
         """
         if not file_info:
             return
@@ -3687,6 +3767,7 @@ class FileSelectorLayout(QWidget):
             # 异步导航：条目落地后由 _on_dir_entries_ready → _handle_pending_locate
             # 完成高亮与滚动（此处仅登记挂起目标）
             self._pending_locate_path = file_path
+            self._pending_locate_preview = preview
             return
 
         # 目标目录即当前目录：立即高亮目标文件卡片（用 model 中实际存储的
@@ -3696,8 +3777,38 @@ class FileSelectorLayout(QWidget):
             self.set_previewing_file(model_file_path)
             # 同步键盘光标，使后续方向键从定位处继续
             self._sync_nav_cursor(model_file_path)
+            if preview:
+                self._emit_preview_for_path(model_file_path)
             # 目录过渡动画（120ms）结束后再滚动，避免与过渡快照错位
             QTimer.singleShot(180, lambda p=model_file_path: self._scroll_to_file(p))
+
+    def open_external_path(self, path: str) -> bool:
+        """打开来自外部的路径请求（资源管理器右键菜单 / 单实例转发）。
+
+        目录 → 直接导航进入；文件 → 进入其所在目录并定位选中该文件。
+        「已在该目录」时目录请求只做一次无副作用的成功返回，避免重复加载。
+
+        Args:
+            path: 目标绝对路径（目录或文件）。
+
+        Returns:
+            请求已派发返回 True；路径无效或不存在返回 False。
+        """
+        if not isinstance(path, str) or not path.strip():
+            return False
+        normalized = os.path.abspath(path)
+        if os.path.isdir(normalized):
+            current = self._current_path or ""
+            if current and os.path.normcase(current) == os.path.normcase(normalized):
+                return True
+            return self._navigate_to(normalized)
+        if os.path.isfile(normalized):
+            # locate_file 内部处理「同目录立即定位 / 异目录导航后异步定位」；
+            # 条目落地后由 _on_dir_entries_ready → _handle_pending_locate 收尾。
+            # preview=True：右键菜单打开文件时，定位之外还要真正开始预览。
+            self.locate_file({"path": normalized}, preview=True)
+            return True
+        return False
 
     def _locate_model_file_path(self, file_path: str) -> Optional[str]:
         """在 model 中按路径（忽略大小写）查找文件，返回 model 存储的路径。

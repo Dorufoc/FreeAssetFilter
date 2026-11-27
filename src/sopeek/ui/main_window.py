@@ -789,6 +789,16 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         self._previewer = None
         self._info_panel = None
         self._info_card = None
+        # 内容尚未构建时收到的外部打开请求（资源管理器右键菜单），
+        # 由 initialize_deferred_content 末尾消费（见 open_external_path）。
+        self._pending_external_open_path = None
+        # 预览器尚未构建时收到的预览请求：_show_preview 只暂存，等
+        # initialize_deferred_content 末尾统一兑现（否则右键菜单在启动早期
+        # 打开文件时 previewer 还是 None，请求会被静默丢掉）。
+        self._pending_preview_file_info = None
+        # 信息面板比预览器更晚构建；预览已生效但信息面板还不存在时暂存一份，
+        # 由 _finalize_panels 在面板齐备后补填（否则右侧信息区会一直是空的）。
+        self._pending_info_file_info = None
         # 快捷键派发器安装标记（幂等安装/卸载，见 _install_shortcut_dispatcher）
         self._shortcut_installed: bool = False
         # 快捷键派发器实例（由 _install_shortcut_dispatcher 赋值）
@@ -1292,6 +1302,49 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             # 可见期会直接造成一次 150ms 级停顿。改由 _finalize_panels 在
             # 遮罩淡出后再安排（见 _schedule_mica_startup_refresh）。
             self._mica_refresh_pending = True
+        # 内容构建期间收到的右键菜单打开请求在此兑现：文件选择器此时才存在，
+        # 之前只能暂存（见 open_external_path）。
+        pending_open = self._pending_external_open_path
+        self._pending_external_open_path = None
+        if pending_open:
+            self.open_external_path(pending_open)
+        # 预览器此前尚不存在而暂存的预览请求，此刻兑现（见 _show_preview）；
+        # 预览器仍未就绪时 _flush_pending_preview 会按帧退避重试。
+        self._flush_pending_preview()
+
+    def _flush_pending_preview(self, attempt: int = 0) -> None:
+        """兑现暂存的预览请求（右键菜单在预览器就绪前打开文件时用）。
+
+        面板由 ``QTimer`` 分帧构建，因此「内容已初始化」不等于「预览器已存在」：
+        暂存后要按 120ms 步进重试，最多约 3s，仍失败则丢弃并记日志。
+
+        Args:
+            attempt: 内部重试计数。
+        """
+        info = self._pending_preview_file_info
+        if info is None:
+            return
+        if self._previewer is None:
+            if attempt < 25:
+                QTimer.singleShot(120, lambda: self._flush_pending_preview(attempt + 1))
+            else:
+                warning(f"预览放弃（预览器始终未就绪）: {info.get('path', '')}")
+            return
+        self._pending_preview_file_info = None
+        debug(
+            f"兑现延后预览: {info.get('path', '')} "
+            f"previewer={type(self._previewer).__name__} attempt={attempt}"
+        )
+        self._previewer.set_file(info)
+        if self._info_panel is not None:
+            self._info_panel.set_file(info)
+        else:
+            self._pending_info_file_info = info
+        getter = getattr(self._previewer, "current_file_info", None)
+        try:
+            debug(f"兑现后预览器当前文件: {(getter() or {}).get('path', '') if callable(getter) else 'n/a'}")
+        except Exception as exc:  # noqa: BLE001 - 仅诊断日志
+            debug(f"兑现后读取预览器状态失败: {exc}")
 
     def _setup_content(self) -> None:
         """设置窗口内容"""
@@ -1668,6 +1721,18 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
                 from layout.file_selector_layout import FileSelectorLayout
 
                 self._file_selector = FileSelectorLayout(zone)
+                # 立即连接 file_selected：首次导航在下方提前派发，右键菜单
+                # （--open-path 传文件）的「定位 + 预览」可能在 _finalize_panels
+                # 之前就发出信号；那时尚未连接会让请求静默丢失（实测现象：
+                # 卡片进入预览态，但预览区与文件信息区都是空白）。
+                try:
+                    self._file_selector.file_selected.connect(self._on_file_selected)
+                    self._selector_file_selected_connected = True
+                    # 告知选择器「预览信号已有人接收」：它据此决定是否可以
+                    # 立即发出右键菜单的定位+预览，否则会按 200ms 退避重试。
+                    self._file_selector.set_preview_sink_ready(True)
+                except Exception as exc:  # noqa: BLE001 - 连接失败不阻塞构建
+                    warning(f"文件选中信号提前连接失败: {exc}")
                 # 网络盘/光驱开关随启动读取结果下发（「All」视图盘符过滤）
                 try:
                     self._file_selector.set_include_remote_drives(
@@ -1766,6 +1831,15 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         )
         if all_ready:
             self._panels_finalized = True
+        if self._info_panel is not None and self._pending_info_file_info is not None:
+            pending_info = self._pending_info_file_info
+            self._pending_info_file_info = None
+            debug(f"补填信息面板: {pending_info.get('path', '')}")
+            self._info_panel.set_file(pending_info)
+        if self._previewer is not None:
+            # 预览器就绪即兑现启动期暂存的预览请求（右键菜单在构建过程中
+            # 打开文件时会走这里），避免等到下一次点击才显示内容。
+            self._flush_pending_preview()
         if self._file_selector is not None:
             # 信号连接：文件选择器 → 文件池
             self._file_selector.toggle_pool_requested.connect(self._on_toggle_pool_requested)
@@ -1775,7 +1849,10 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             # 缩略图被清除：池内卡片回落类型图标（Shift+Q 后不再显示旧缩略图）
             self._file_selector.thumbnails_cleared.connect(self._file_pool.refresh_thumbnails)
             self._file_selector.remove_files_from_pool_requested.connect(self._on_remove_files_from_pool_requested)
-            self._file_selector.file_selected.connect(self._on_file_selected)
+            if not getattr(self, "_selector_file_selected_connected", False):
+                self._file_selector.file_selected.connect(self._on_file_selected)
+                self._selector_file_selected_connected = True
+            self._file_selector.set_preview_sink_ready(True)
             self._file_selector.preview_cancel_requested.connect(self._on_preview_cancelled)
             # Enter 预览文件 → 焦点移交预览器（防重复连接：按实例判等）
             if getattr(self, "_preview_focus_selector", None) is not self._file_selector:
@@ -3523,17 +3600,48 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
         self._file_selector.sync_pool_status(pool_paths)
 
     def _show_preview(self, file_info: dict) -> None:
-        """统一预览入口：同步驱动预览器与文件信息面板（任一缺失时守卫跳过）。"""
+        """统一预览入口：同步驱动预览器与文件信息面板（任一缺失时守卫跳过）。
+
+        内容尚未构建（``_previewer is None``）时不能直接丢弃：右键菜单可能在
+        启动早期就把文件交进来，此时选择器已能定位但预览器还没创建。请求先
+        暂存，由 ``initialize_deferred_content`` 末尾兑现。
+        """
+        if self._previewer is None:
+            self._pending_preview_file_info = file_info
+            debug(f"预览延后（预览器未就绪）: {file_info.get('path', '')}")
+            # 内容已构建完成后预览器仍可能缺失（面板由定时器/分帧构建），此时
+            # initialize_deferred_content 的末尾兑现已经跑过，必须自己排一次重试，
+            # 否则请求永远躺在暂存里（实测：卡片进入预览态但预览区空白）。
+            if getattr(self, "_deferred_content_ready", False):
+                QTimer.singleShot(120, lambda: self._flush_pending_preview())
+            return
+        self._pending_preview_file_info = None
+        debug(
+            f"应用预览: {file_info.get('path', '')} previewer={type(self._previewer).__name__} "
+            f"info_panel={'yes' if self._info_panel is not None else 'no'}"
+        )
         if self._previewer is not None:
             self._previewer.set_file(file_info)
         if self._info_panel is not None:
             self._info_panel.set_file(file_info)
+        else:
+            # 信息面板后建：先记账，面板就绪时由 _finalize_panels 补填。
+            self._pending_info_file_info = file_info
 
     def _on_file_selected(self, file_info: dict) -> None:
-        """处理文件选择器的文件选中事件，同步预览态到文件池与自身卡片"""
+        """处理文件选择器的文件选中事件，同步预览态到文件池与自身卡片。
+
+        必须容忍「面板尚未构建完」的早期选中：右键菜单的定位+预览可能在
+        ``_finalize_panels`` 之前就发出 ``file_selected``，此时文件池 / 预览器
+        仍是 ``None``；直接调用会抛 ``AttributeError`` 并中断整个处理链，表现
+        为「卡片进入预览态但预览区与信息区空白」（实测）。
+        """
         file_path = file_info.get("path", "")
-        self._file_selector.set_previewing_file(file_path)
-        self._file_pool.set_previewing_file(file_path)
+        debug(f"选中文件: {file_path} previewer={type(self._previewer).__name__ if self._previewer else 'None'}")
+        if self._file_selector is not None:
+            self._file_selector.set_previewing_file(file_path)
+        if self._file_pool is not None:
+            self._file_pool.set_previewing_file(file_path)
         getter = getattr(self._previewer, "current_file_info", None) if self._previewer is not None else None
         if callable(getter):
             try:
@@ -3543,6 +3651,7 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             if isinstance(current, dict):
                 cur = current.get("path", "")
                 if cur and os.path.normcase(os.path.normpath(cur)) == os.path.normcase(os.path.normpath(file_info.get("path", ""))):
+                    debug(f"选中文件跳过预览（已是当前文件）: {cur}")
                     return
         self._show_preview(file_info)
 
@@ -6111,6 +6220,40 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
                 force_foreground_window(hwnd)
         except (RuntimeError, AttributeError, TypeError) as exc:
             debug(f"从托盘唤回时原生前台激活失败：{exc}")
+
+    def open_external_path(self, path: str) -> bool:
+        """导航到外部请求的路径（资源管理器右键菜单）。
+
+        文件夹 → 直接进入该目录；普通文件 → 进入其所在目录并选中、滚动到
+        该文件。内容尚未构建（启动早期）时先暂存，由
+        :meth:`initialize_deferred_content` 末尾消费。
+
+        Args:
+            path: 右键菜单传入的绝对路径（目录或文件）。
+
+        Returns:
+            已立即处理返回 True；暂存待稍后处理、路径无效或选择器不可用时
+            返回 False（不抛异常）。
+        """
+        if not isinstance(path, str) or not path.strip():
+            return False
+        normalized = os.path.normpath(path)
+        if not os.path.exists(normalized):
+            warning(f"外部打开请求的路径不存在：{normalized}")
+            return False
+        if not getattr(self, "_deferred_content_ready", False):
+            self._pending_external_open_path = normalized
+            return False
+        selector = self._file_selector
+        if selector is None:
+            self._pending_external_open_path = normalized
+            return False
+        try:
+            selector.open_external_path(normalized)
+        except (RuntimeError, ValueError, OSError) as exc:
+            warning(f"外部打开请求导航失败：{exc}")
+            return False
+        return True
 
     def quit_from_tray(self) -> None:
         """从托盘彻底退出（幂等）：销毁托盘、关闭主窗口并结束事件循环。"""

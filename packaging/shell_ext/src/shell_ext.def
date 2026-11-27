@@ -1,0 +1,4 @@
+LIBRARY SopeekShellExt
+EXPORTS
+    DllCanUnloadNow
+    DllGetClassObject

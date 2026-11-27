@@ -2,9 +2,10 @@
 # Sopeek .gitignore
 # ============================================================
 # 策略：
-#   - 源码全部入库（Python src/ 布局 + native/ 下 Rust / C++ 源码）；
+#   - 源码全部入库（src/ 下的 Python 源码、native/ 下的 Rust / C++ 源码、
+#     packaging/ 下的构建脚本与资源、tests/ 与 tools/ 脚本）；
 #   - 预编译运行时二进制入库（src/sopeek/core/native/bin/），保证克隆即可运行；
-#   - 只忽略构建中间产物、虚拟环境、缓存与本地运行期数据。
+#   - 只忽略构建中间产物、虚拟环境、缓存、日志、临时文件与本地运行期数据。
 #
 # 两条刻意不做的全局忽略（历史配置曾因此踩坑）：
 #   1. 不用 `.*` 忽略所有点文件 —— 那会连带屏蔽 tests/fixtures 里的
@@ -16,7 +17,7 @@
 # ============================================================
 
 # ------------------------------------------------------------
-# Python 缓存与字节码
+# 1. Python 缓存与字节码
 # ------------------------------------------------------------
 __pycache__/
 # 显式逐个列出，不用 *.py[cod]：该模式中的 d 会匹配 *.pyd，
@@ -26,7 +27,7 @@ __pycache__/
 *$py.class
 
 # ------------------------------------------------------------
-# 虚拟环境
+# 2. 虚拟环境
 # ------------------------------------------------------------
 .venv/
 venv/
@@ -34,7 +35,7 @@ env/
 ENV/
 
 # ------------------------------------------------------------
-# 打包 / 分发元数据
+# 3. 打包 / 分发元数据
 # ------------------------------------------------------------
 *.egg-info/
 .eggs/
@@ -43,7 +44,7 @@ dist/
 *.egg
 
 # ------------------------------------------------------------
-# 构建产物（仓库根 build/ 为打包与安装器共用输出目录）
+# 4. 构建产物（仓库根 build/ 为打包与安装器共用输出目录）
 # ------------------------------------------------------------
 # packaging/build.py      → build/pyinstall/Sopeek
 # packaging/installer     → build/installer/SopeekInstaller.exe
@@ -57,12 +58,12 @@ build/
 nuitka-crash-report.xml
 
 # ------------------------------------------------------------
-# Rust 构建缓存（native/ 下三个 crate 各自产生 target/）
+# 5. Rust 构建缓存（native/ 下各 crate 各自产生 target/）
 # ------------------------------------------------------------
 target/
 
 # ------------------------------------------------------------
-# C++ / MSVC 构建中间产物
+# 6. C++ / MSVC 构建中间产物
 # ------------------------------------------------------------
 # native/cpp_mica_render/build.py   → native/cpp_mica_render/build/
 # native/cpp_lut_preview/setup.py   → native/cpp_lut_preview/build/
@@ -80,63 +81,78 @@ native/cpp_lut_preview/build/
 # src/sopeek/core/native/bin/ 下的它们必须入库。只在下面按具体路径排除产物。
 
 # ------------------------------------------------------------
-# 安装器 / 启动器本地构建产物
+# 7. 安装器 / 启动器本地构建产物
 # ------------------------------------------------------------
 packaging/installer/build/
+# packaging/shell_ext/build.ps1 默认 -BuildDir 为仓库内 build/shell_ext；
+# 这里只看住手工在源码目录里跑 cmake 时产生的 in-source 构建目录。
+packaging/shell_ext/build/
 packaging/launcher/SPK-Launcher.exe
 packaging/launcher/SPK-Launcher.exp
 packaging/launcher/SPK-Launcher.lib
 packaging/launcher/*.obj
 packaging/launcher/*.res
 
+# 安装器 GUI 引擎写出的结果 INI 落到仓库内时的兜底
+packaging/installer/install-result.ini
+
 # ------------------------------------------------------------
-# 测试与覆盖率
+# 8. 测试与覆盖率
 # ------------------------------------------------------------
 .pytest_cache/
+.pytest_tmp/
 .ruff_cache/
 .mypy_cache/
+.pylint.d/
+.hypothesis/
 .tox/
 .nox/
 .coverage
 .coverage.*
 coverage.xml
+cov_*.json
 htmlcov/
 test_results/
-cov_*.json
 tests/log/
+tests/gui/screenshots/*
 
 # ------------------------------------------------------------
-# 运行期数据
+# 9. 运行期数据与日志
 # ------------------------------------------------------------
-# 正式运行期数据位于 %LOCALAPPDATA%\Sopeek\data（见 sopeek/_paths.py），
+# 正式运行期数据位于 %LOCALAPPDATA%\Sopeek\data（见 src/sopeek/_paths.py），
 # 不在仓库内；以下为本地调试时用 SPK_DATA_DIR 重定向到仓库的情形。
 data/
 logs/
 *.log
+*.log.*
 
 # ------------------------------------------------------------
-# 临时文件
+# 10. 临时文件
 # ------------------------------------------------------------
 *.tmp
 *.temp
 *.bak
 *.orig
 *.rej
+*.crdownload
 *~
 *备份*
 *backup*
 
 # ------------------------------------------------------------
-# IDE / 编辑器
+# 11. IDE / 编辑器
 # ------------------------------------------------------------
 .vscode/
 .idea/
+.vs/
+*.suo
+*.user
 *.swp
 *.swo
 *.sublime-workspace
 
 # ------------------------------------------------------------
-# 操作系统文件
+# 12. 操作系统文件
 # ------------------------------------------------------------
 .DS_Store
 .DS_Store?
@@ -146,12 +162,16 @@ ehthumbs.db
 desktop.ini
 
 # ------------------------------------------------------------
-# 本地 AI / 代理工作区（非项目内容）
+# 13. 本地 AI / 代理工作区（非项目内容）
 # ------------------------------------------------------------
 # 按目录名精确忽略，不使用 `.*` 以免误伤真实点文件。
+# 注意：.github/ 与 .gitcode/ 承载 CI 工作流，必须入库，故不在此列。
 .trae/
+.trae-html-share-packages/
 .deepseek/
 .kagent/
+.kilo/
+.kilocode/
 .claude/
 .cursor/
 .omo/
@@ -161,25 +181,41 @@ desktop.ini
 .reasonix/
 .workbuddy/
 .zcode/
+.agents/
+.continue/
+.codegraph/
 .dsh-acl-recovery/
 .output/
 
 # ------------------------------------------------------------
-# 安装器本地运行期残留（GUI 引擎写出的结果 INI 落到仓库内时的兜底）
+# 14. 本地调试 / 截图临时工作区
 # ------------------------------------------------------------
-packaging/installer/install-result.ini
+# .screenshots/ 是本地调试用的临时目录（探针脚本、临时截图、mock 运行期数据），
+# 内含更新包下载缓存，体积可达数百 MB，一律不入库。
+.screenshots/
 
 # ------------------------------------------------------------
-# 其他缓存
+# 15. 其他缓存
 # ------------------------------------------------------------
 *.cache
+.cache/
 .icon_cache/
 .probe_head_tree/
 .probe_venv/
 .VSCodeCounter/
 outputs/
-tests/gui/screenshots/*
 .acl-recovery/
+node_modules/
+
+# ------------------------------------------------------------
+# 16. 本地个人配置（不入库）
+# ------------------------------------------------------------
+AGENTS.md
+# 仓库根 launcher/ 仅存放本地启动器编译输出（正式产物由 packaging/launcher 生成）
+launcher/SPK-Launcher.exe
+launcher/SPK-Launcher.exp
+launcher/SPK-Launcher.lib
+launcher/*.obj
 
 # ------------------------------------------------------------
 # 说明：以下历史规则在重构后不再需要，故未保留
@@ -196,7 +232,3 @@ tests/gui/screenshots/*
 # `sopeek/core/native/src/**`、`installer_duilib/`、`launcher/`、`docs/*.md`
 #   这些路径在重构后已不存在（原生源码 → native/，安装器 → packaging/installer/，
 #   启动器 → packaging/launcher/），对应的规则由上方按新路径书写的规则替代。
-
-AGENTS.md
-launcher/SPK-Launcher.exe
-launcher/SPK-Launcher.lib

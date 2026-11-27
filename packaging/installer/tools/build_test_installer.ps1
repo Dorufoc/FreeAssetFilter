@@ -255,11 +255,37 @@ if ($badProductionKeys.Count -gt 0) {
     throw "NSIS test-isolation assertion failed: test mode touches a production key:`n$(($badProductionKeys | ForEach-Object { $_.Text.Trim() }) -join "`n")"
 }
 
+# The context-menu (ctxmenu) verbs and CLSIDs are written through ${SPK_CTX_*}
+# defines so production and test share one block. A textual scan cannot see
+# macro expansion, so verify the test branch's defines themselves and then
+# accept a ctxmenu operation only when it routes root + verb/CLSID through
+# those verified defines (or names a SopeekTest key directly).
+$ctxMenuDefineChecks = @(
+    @{ Label = 'test ctxmenu registry root'; Exact = '!define SPK_CTX_ROOT "HKCU"' }
+    @{ Label = 'test ctxmenu file CLSID'; Exact = '!define SPK_CTX_FILE_CLSID "{ADD20484-57FF-4DEB-8561-AC7F04CAFDCB}"' }
+    @{ Label = 'test ctxmenu folder CLSID'; Exact = '!define SPK_CTX_FOLDER_CLSID "{430F8D9E-4290-46F8-8E40-E38DAB04C5BD}"' }
+    @{ Label = 'test ctxmenu file verb'; Exact = '!define SPK_CTX_FILE_VERB "SopeekOpenFileTest"' }
+    @{ Label = 'test ctxmenu folder verb'; Exact = '!define SPK_CTX_FOLDER_VERB "SopeekOpenFolderTest"' }
+    @{ Label = 'test ctxmenu legacy verb'; Exact = '!define SPK_CTX_LEGACY_VERB "SopeekTest"' }
+)
+foreach ($ctxMenuCheck in $ctxMenuDefineChecks) {
+    Assert-ActiveTestLine -Records $nsiRecords -Label $ctxMenuCheck.Label -Exact $ctxMenuCheck.Exact | Out-Null
+}
+
+function Test-CtxMenuIsolated([string] $text) {
+    if ($text -match 'SopeekTest') { return $true }
+    if ($text -notmatch '\$\{SPK_CTX_ROOT\}') { return $false }
+    if ($text -notmatch '\$\{SPK_CTX_(?:FILE|FOLDER)_(?:CLSID|VERB)\}|\$\{SPK_CTX_LEGACY_VERB\}') { return $false }
+    # Every verified define above resolves inside HKCU\Software\Classes with a
+    # test-only verb/CLSID; a production Sopeek key here would still be a bug.
+    return ($text -notmatch 'Software\\Sopeek(?!Test)')
+}
+
 $testWriteRegStr = @($activeRegistryLines | Where-Object { $_.Text -match '\bWriteRegStr\b' })
 if ($testWriteRegStr.Count -eq 0) {
     throw 'NSIS test-isolation assertion failed: test mode has no WriteRegStr'
 }
-$badWriteRegStr = @($testWriteRegStr | Where-Object { $_.Text -notmatch 'SopeekTest' })
+$badWriteRegStr = @($testWriteRegStr | Where-Object { -not (Test-CtxMenuIsolated $_.Text) })
 if ($badWriteRegStr.Count -gt 0) {
     throw "NSIS test-isolation assertion failed: test-mode WriteRegStr is not under SopeekTest:`n$(($badWriteRegStr | ForEach-Object { $_.Text.Trim() }) -join "`n")"
 }
@@ -268,7 +294,7 @@ $testDeleteRegKey = @($activeRegistryLines | Where-Object { $_.Text -match '\bDe
 if ($testDeleteRegKey.Count -eq 0) {
     throw 'NSIS test-isolation assertion failed: test mode has no DeleteRegKey'
 }
-$badDeleteRegKey = @($testDeleteRegKey | Where-Object { $_.Text -notmatch 'SopeekTest' })
+$badDeleteRegKey = @($testDeleteRegKey | Where-Object { -not (Test-CtxMenuIsolated $_.Text) })
 if ($badDeleteRegKey.Count -gt 0) {
     throw "NSIS test-isolation assertion failed: test-mode DeleteRegKey is not under SopeekTest:`n$(($badDeleteRegKey | ForEach-Object { $_.Text.Trim() }) -join "`n")"
 }

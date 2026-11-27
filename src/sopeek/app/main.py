@@ -251,6 +251,19 @@ def _resolve_initial_navigate_path(argv) -> str | None:
     return None
 
 
+def _resolve_initial_locate_path(argv) -> str | None:
+    """由 --open-path 解析启动后需要定位高亮的文件路径（目录返回 None）。
+
+    右键菜单对普通文件必须「打开所在文件夹并选中该文件」，只导航到目录会让
+    用户看不出点了哪个文件，因此文件路径单独传给文件选择器做定位。
+    """
+    open_path = _extract_open_path_arg(argv)
+    if not open_path:
+        return None
+    open_path = os.path.normpath(open_path)
+    return open_path if os.path.isfile(open_path) else None
+
+
 # ──────────────────────────────────────────────────────────────
 # Windows 进程级设置
 # ──────────────────────────────────────────────────────────────
@@ -303,7 +316,7 @@ def _init_settings_manager(app) -> None:
     info("[启动] SettingsManagerV2 初始化完成")
 
 
-def _create_application(argv, initial_navigate_path):
+def _create_application(argv, initial_navigate_path, initial_locate_path=None):
     """创建 QApplication 并挂载应用级属性。"""
     from PySide6.QtWidgets import QApplication
     from PySide6.QtGui import QIcon, QPixmapCache
@@ -330,6 +343,8 @@ def _create_application(argv, initial_navigate_path):
 
     # 右键菜单初始导航路径（文件选择器启动时消费）
     app.initial_navigate_path = initial_navigate_path
+    # 右键菜单启动时定位的文件（文件选择器导航完成后选中并滚动到它）
+    app.initial_locate_path = initial_locate_path
     # 设置管理器：主窗口构造前加载（MainWindow 读取背景/恢复设置时复用）
     _init_settings_manager(app)
 
@@ -758,8 +773,10 @@ def main(argv=None) -> int:
     sys.argv[0] = os.path.abspath(__file__)
     _setup_windows_process()
 
-    # 初始导航路径（--open-path）
+    # 初始导航路径（--open-path）：资源管理器右键菜单传入选中的文件或文件夹
     initial_navigate_path = _resolve_initial_navigate_path(argv)
+    initial_locate_path = _resolve_initial_locate_path(argv)
+    requested_open_path = _extract_open_path_arg(argv)
 
     # UI 短路径导入（components/theme/layout ...）由 sopeek.ui 包在导入时注入，
     # 见 sopeek/ui/__init__.py；此处只需确保该包已被导入。
@@ -769,11 +786,16 @@ def main(argv=None) -> int:
     facilities = _install_process_facilities()
 
     # QApplication 与应用级属性
-    app = _create_application(argv, initial_navigate_path)
+    app = _create_application(argv, initial_navigate_path, initial_locate_path)
     info(f"[启动] QApplication 创建: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
 
-    # 单实例互斥体（冲突时内部处理并退出进程）
-    mutex_handle = instance_guard._acquire_single_instance()
+    # 单实例互斥体（冲突时内部处理并退出进程）。把本次要打开的路径一并传入：
+    # 已有实例时会先落盘打开请求再置位唤醒事件，让主实例导航到右键位置。
+    #
+    # 先清掉上次崩溃可能残留的打开请求，再取互斥体：只有取得互斥体之后，别的
+    # 进程才开始写新请求，因此这次清理不会误删刚写入的请求。
+    instance_guard._discard_open_request()
+    mutex_handle = instance_guard._acquire_single_instance(requested_open_path)
 
     # 第二实例唤醒事件：本实例持有句柄并低频轮询；后续实例置位它来唤回主窗口。
     # 创建失败不阻断启动（仅失去唤回能力）。
@@ -871,11 +893,19 @@ def main(argv=None) -> int:
             return
         if not instance_guard._consume_activation_event(activation_event):
             return
+        # 资源管理器右键菜单启动的第二个实例会先写打开请求再置位事件；读到
+        # 请求时导航到该位置，否则只做「唤回并置前」。
+        open_path = instance_guard._read_and_clear_open_request()
         try:
             window.restore_main_window()
         except RuntimeError:
             # 窗口已销毁（极端退出时序）：忽略本次唤回。
-            pass
+            return
+        if open_path:
+            try:
+                window.open_external_path(open_path)
+            except (RuntimeError, ValueError, OSError) as exc:
+                warning(f"处理外部打开请求失败: {exc}")
 
     _activation_poll.timeout.connect(_poll_activation_event)
     _activation_poll.start()

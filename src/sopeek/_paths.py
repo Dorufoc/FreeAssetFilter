@@ -349,6 +349,17 @@ def runtime_instance_file() -> Path:
     return state_dir() / "runtime_instance.json"
 
 
+def open_request_file() -> Path:
+    """返回外部「打开路径」请求 ``<root>/state/open_request.json``。
+
+    资源管理器右键菜单会以 ``--open-path`` 启动第二个进程；当主实例已运行时，
+    第二个进程把目标路径写入本文件并置位唤醒事件，主实例轮询消费后导航到该
+    位置。使用文件而不是命令行转发，是因为命名管道/窗口消息在跨会话与权限
+    边界上都更脆弱，而 state 目录天然是每个用户私有的。
+    """
+    return state_dir() / "open_request.json"
+
+
 def file_info_cache_file() -> Path:
     """返回文件信息缓存 ``<root>/cache/file_info.json``。"""
     return cache_dir() / "file_info.json"
