@@ -5,11 +5,13 @@ from __future__ import annotations
 import math
 import time
 
-from PySide6.QtCore import QEvent, QObject, QRect, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QRect, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPen
 from PySide6.QtWidgets import QWidget
 
 from theme import tm
+
+from sopeek.core.managers.frame_scheduler import frame_scheduler
 
 
 class StyledLoading(QWidget):
@@ -44,7 +46,8 @@ class StyledLoading(QWidget):
 
     # 弧长伸缩（呼吸）周期，毫秒；一个周期内圆环平均转过一圈
     CYCLE_MS = 1400
-    # 定时器间隔（约 60fps）
+    # 已废弃：旋转现由帧调度器逐帧驱动（见 ``_start_timer``），仅保留常量
+    # 供历史引用；实际节拍跟随显示器刷新率。
     TICK_INTERVAL_MS = 16
     # 弧长伸缩的上下限（角度）；振幅受正弦调制约束，MAX-MIN 需小于 229°
     MIN_SWEEP_DEG = 40.0
@@ -84,7 +87,7 @@ class StyledLoading(QWidget):
         self._user_stopped = not self._auto_start
         self._phase_ms = 0.0
         self._last_tick = time.perf_counter()
-        self._timer: QTimer | None = None
+        self._timer_active: bool = False
         self._overlay_parent: QWidget | None = None
 
         if not self._overlay:
@@ -156,7 +159,7 @@ class StyledLoading(QWidget):
     @property
     def is_running(self) -> bool:
         """是否正在旋转（只读）。"""
-        return self._timer is not None and self._timer.isActive()
+        return self._timer_active
 
     def start(self) -> None:
         """开始（或恢复）旋转，幂等。"""
@@ -181,26 +184,31 @@ class StyledLoading(QWidget):
             self.stop()
 
     def _start_timer(self) -> None:
-        """启动旋转定时器（已激活时直接返回）。"""
-        if self._timer is not None and self._timer.isActive():
+        """订阅帧调度器驱动旋转（已激活时直接返回）。
+
+        旋转是每显示帧的连续动画：旧实现固定 16 ms（≈63 fps）在 120/144/240 Hz
+        屏幕上会明显滞后；改为跟随面板刷新率，相位仍按真实时间推进，因此任意
+        刷新率下转速一致。空闲时调度器会自动降到 30 Hz 省电。
+        """
+        if self._timer_active:
             return
-        if self._timer is None:
-            self._timer = QTimer(self)
-            self._timer.setInterval(self.TICK_INTERVAL_MS)
-            # PreciseTimer：默认 CoarseTimer 允许 ±5% 抖动（16ms 即 ±0.8ms），
-            # 与显示器刷新不同步时会累积成肉眼可见的节奏不匀；精确定时 +
-            # 按真实时间推进相位，能让每帧角度增量稳定。
-            self._timer.setTimerType(Qt.TimerType.PreciseTimer)
-            self._timer.timeout.connect(self._on_tick)
+        self._timer_active = True
         self._last_tick = time.perf_counter()
-        self._timer.start()
+        frame_scheduler().subscribe(
+            f"loading.spinner:{id(self)}",
+            self._on_tick,
+            hz=None,
+            priority=4,
+            owner=self,
+        )
 
     def _stop_timer(self) -> None:
-        """停止旋转定时器并结算已经过的时间。"""
-        if self._timer is None or not self._timer.isActive():
+        """取消帧订阅并结算已经过的时间。"""
+        if not self._timer_active:
             return
         self._advance()
-        self._timer.stop()
+        self._timer_active = False
+        frame_scheduler().unsubscribe(f"loading.spinner:{id(self)}")
 
     def _advance(self) -> None:
         """按真实经过时间推进周期相位（恒定节奏，与定时器抖动解耦）。"""

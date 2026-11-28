@@ -45,6 +45,7 @@ from sopeek.core.native.bridges.rust_thumbnail_bridge import (
     STATUS_OK,
     STATUS_TOO_LARGE,
 )
+from sopeek.core.managers.thumbnail_alpha import has_alpha_source
 from sopeek.core.preview.image_color_utils import (
     load_raw_image,
     normalize_pil_image,
@@ -257,6 +258,9 @@ class ThumbnailManager:
     # 缩略图缓存格式（优先 JPG，兼容历史 PNG）
     THUMB_EXT_PRIMARY = '.jpg'
     THUMB_EXT_LEGACY = '.png'
+    # 透明缩略图写 PNG 的压缩级别：1 = 最快（默认 6 慢一个量级，而缩略图尺寸下
+    # 体积差异可忽略）。透明素材生成时宁可多占几十 KB，也不要拖慢批量。
+    THUMB_PNG_COMPRESS_LEVEL = 1
 
     # 视频帧读取最大重试次数
     MAX_FRAME_READ_RETRIES = 3
@@ -356,6 +360,11 @@ class ThumbnailManager:
         self._svg_cache_lock = threading.Lock()
         self._path_exists_cache: dict[str, tuple[bool, float]] = {}
         self._path_exists_cache_lock = threading.Lock()
+        # 透明通道嗅探结果：file_path -> (mtime_ns, 是否带 alpha)。
+        # 生成批处理会对同一文件多次询问（入队、批量失败回退、单张补算），
+        # 缓存避免重复读文件头。
+        self._alpha_source_cache: dict[str, tuple[int, bool]] = {}
+        self._alpha_source_cache_lock = threading.Lock()
         set_perf_metadata("thumbnail.load_svg_image", "max_entries", self.MAX_SVG_CACHE_ENTRIES)
         set_perf_metadata(
             "thumbnail.load_svg_image",
@@ -780,6 +789,102 @@ class ThumbnailManager:
         """
         file_hash = self._get_thumbnail_hash(file_path)
         return os.path.join(self._thumb_dir, f"{file_hash}{self.THUMB_EXT_LEGACY}")
+
+    def _has_alpha_source(self, file_path: str) -> bool:
+        """判断源文件是否需要保留透明通道（结果按 mtime 缓存）。
+
+        Args:
+            file_path: 源文件绝对路径。
+
+        Returns:
+            bool: True 表示缩略图应以 PNG 落盘，False 表示走既有 JPEG 主线。
+        """
+        try:
+            mtime_ns = os.stat(file_path).st_mtime_ns
+        except OSError:
+            return False
+
+        with self._alpha_source_cache_lock:
+            cached = self._alpha_source_cache.get(file_path)
+            if cached is not None and cached[0] == mtime_ns:
+                return cached[1]
+
+        result = has_alpha_source(file_path)
+        with self._alpha_source_cache_lock:
+            if len(self._alpha_source_cache) > 4096:
+                self._alpha_source_cache.clear()
+            self._alpha_source_cache[file_path] = (mtime_ns, result)
+        return result
+
+    @staticmethod
+    def _alpha_is_used(image) -> bool:
+        """判断 RGBA 图里是否真的存在半透明/全透明像素。"""
+        try:
+            alpha = image.getchannel("A")
+        except (ValueError, AttributeError):
+            return False
+        try:
+            return alpha.getextrema()[0] < 255
+        finally:
+            close = getattr(alpha, "close", None)
+            if close is not None:
+                try:
+                    close()
+                except Exception:  # noqa: BLE001, S110  # broad catch intentional at thumbnail pipeline
+                    pass
+
+    def _discard_thumbnail_file(self, path: str) -> None:
+        """删除同一文件的另一种格式缩略图，避免主/兼容格式并存导致读错。"""
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+            self._set_cached_path_exists(path, False)
+        except OSError:
+            pass
+
+    def _save_alpha_thumbnail(self, image, file_path: str) -> str | None:
+        """把带透明通道的缩略图落盘。
+
+        PNG 走 ``THUMB_EXT_LEGACY``（``.png``）路径 —— 读取侧本就 JPG/PNG 双查，
+        无需改缓存查找逻辑；写 PNG 时顺手删掉同哈希的旧 JPG，避免读到不透明的
+        历史结果。整张图完全不透明时回退 JPEG，不白付 PNG 编码成本。
+
+        Args:
+            image: PIL 图像（RGBA 或可转换的任意模式）。
+            file_path: 源文件绝对路径（用于推导缩略图路径）。
+
+        Returns:
+            Optional[str]: 实际落盘路径；失败返回 None。
+        """
+        from PIL import Image  # noqa: F401  # 仅为类型/编码器可用性兜底
+
+        png_path = self.get_legacy_thumbnail_path(file_path)
+        jpg_path = self.get_thumbnail_path(file_path)
+        try:
+            if image.mode != "RGBA":
+                image = image.convert("RGBA")
+            os.makedirs(os.path.dirname(png_path), exist_ok=True)
+
+            if not self._alpha_is_used(image):
+                if image.mode != "RGB":
+                    image = image.convert("RGB")
+                image.save(jpg_path, format="JPEG", quality=self.QUALITY)
+                self._set_cached_path_exists(jpg_path, True)
+                self._discard_thumbnail_file(png_path)
+                return jpg_path
+
+            image.save(
+                png_path,
+                format="PNG",
+                compress_level=self.THUMB_PNG_COMPRESS_LEVEL,
+                optimize=False,
+            )
+            self._set_cached_path_exists(png_path, True)
+            self._discard_thumbnail_file(jpg_path)
+            return png_path
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at thumbnail pipeline
+            warning(f"透明缩略图落盘失败: {file_path}, {e}")
+            return None
 
     def get_existing_thumbnail_path(self, file_path: str) -> str | None:
         """
@@ -1252,29 +1357,45 @@ class ThumbnailManager:
 
             dpi_scaled_size = int(self.BASE_SIZE * self.dpi_scale)
             file_paths = [item["file_path"] for item in items]
+            # 透明素材不能走原生 JPEG 批量（透明像素会被压成黑底）：先按嗅探结果
+            # 分流，批量接口只处理其余项，透明项单独走 RGBA + PNG 通道。
+            alpha_flags = [self._has_alpha_source(path) for path in file_paths]
+            batch_indexes = [i for i, is_alpha in enumerate(alpha_flags) if not is_alpha]
             batch_jpgs: list[bytes | None] = []
             batch_statuses: list[int] | None = None
 
             try:
-                if self._is_native_available():
+                if self._is_native_available() and batch_indexes:
                     # P4.1：优先让 Rust 直接落盘（字节不回传、不在 Python 逐张写）。
                     batch_statuses = self._rust_bridge.generate_batch_to_paths(
-                        file_paths,
-                        [item["thumbnail_path"] for item in items],
+                        [file_paths[i] for i in batch_indexes],
+                        [items[i]["thumbnail_path"] for i in batch_indexes],
                         dpi_scaled_size,
                         dpi_scaled_size,
                     )
                     if batch_statuses is None:
                         batch_jpgs = self._rust_bridge.generate_jpg_batch(
-                            file_paths, dpi_scaled_size, dpi_scaled_size
+                            [file_paths[i] for i in batch_indexes],
+                            dpi_scaled_size,
+                            dpi_scaled_size,
                         )
             except Exception as e:  # noqa: BLE001  # broad catch intentional at thumbnail pipeline
                 warning(f"Rust批量生成失败，逐项回退: {e}")
                 batch_statuses = None
-                batch_jpgs = [None for _ in items]
+                batch_jpgs = [None for _ in batch_indexes]
 
-            if batch_statuses is None and len(batch_jpgs) < len(items):
-                batch_jpgs.extend([None] * (len(items) - len(batch_jpgs)))
+            # 批量结果按原始下标对齐回填；透明项留 None，由单发通道处理。
+            full_statuses: list[int] | None = None
+            if batch_statuses is not None:
+                full_statuses = [int(STATUS_BRIDGE_UNAVAILABLE)] * len(items)
+                for slot, index in enumerate(batch_indexes):
+                    if slot < len(batch_statuses):
+                        full_statuses[index] = batch_statuses[slot]
+
+            full_jpgs: list[bytes | None] = [None] * len(items)
+            for slot, index in enumerate(batch_indexes):
+                if slot < len(batch_jpgs):
+                    full_jpgs[index] = batch_jpgs[slot]
 
             for index, item in enumerate(items):
                 file_path = item["file_path"]
@@ -1285,10 +1406,20 @@ class ThumbnailManager:
                 success = False
 
                 try:
-                    if batch_statuses is not None:
+                    if alpha_flags[index]:
+                        # 透明素材：原生 RGBA 回传 + PNG 落盘（decode 仍在 Rust 内）
+                        item_status = STATUS_BRIDGE_UNAVAILABLE
+                        result_path, item_status = self._create_native_thumbnail_with_status(
+                            file_path, thumbnail_path, legacy_thumbnail_path
+                        )
+                        if result_path is None and item_status != STATUS_TOO_LARGE:
+                            result_path = self._create_image_thumbnail(
+                                file_path, legacy_thumbnail_path
+                            )
+                    elif full_statuses is not None:
                         status = (
-                            batch_statuses[index]
-                            if index < len(batch_statuses)
+                            full_statuses[index]
+                            if index < len(full_statuses)
                             else -5
                         )
                         if status == 0:
@@ -1304,9 +1435,7 @@ class ThumbnailManager:
                                     file_path, legacy_thumbnail_path
                                 )
                     else:
-                        jpg_bytes = (
-                            batch_jpgs[index] if index < len(batch_jpgs) else None
-                        )
+                        jpg_bytes = full_jpgs[index] if index < len(full_jpgs) else None
                         if jpg_bytes:
                             with open(thumbnail_path, "wb") as f:
                                 f.write(jpg_bytes)
@@ -1832,6 +1961,65 @@ class ThumbnailManager:
                 return status
         return STATUS_BRIDGE_UNAVAILABLE
 
+    def _run_native_alpha_chain(self, file_path: str, size: int) -> tuple[str | None, int]:
+        """原生解码 + RGBA 回传 + PNG 落盘（仅透明素材走这条链）。
+
+        解码与缩放仍在 Rust 内完成，Python 只做一次 ``frombytes`` 与 PNG 编码，
+        相比「整文件回退到 PIL 解码」省掉最贵的一步。
+
+        Args:
+            file_path: 源文件绝对路径。
+            size: 目标长边像素数。
+
+        Returns:
+            Tuple[Optional[str], int]: ``(缩略图路径或 None, 状态码)``。
+        """
+        try:
+            from PIL import Image  # noqa: PLC0415  # 惰性导入，避免启动期加载
+
+            generated, status = self._rust_bridge.generate_rgba_with_status(
+                file_path, size, size
+            )
+            if not generated:
+                increment_perf_counter("thumbnail.create_native_thumbnail", "alpha_rgba_miss")
+                return None, status
+
+            raw, width, height, channels = generated
+            if channels not in (3, 4):
+                increment_perf_counter("thumbnail.create_native_thumbnail", "invalid_channels")
+                return None, STATUS_DECODE_FAILED
+
+            expected_len: int = width * height * channels
+            if len(raw) != expected_len:
+                increment_perf_counter(
+                    "thumbnail.create_native_thumbnail", "rgba_shape_mismatch"
+                )
+                warning(
+                    f"RGBA 缓冲长度与维度不一致，回退Python解码: {file_path}, "
+                    f"len={len(raw)}, expect={expected_len} ({width}x{height}x{channels})"
+                )
+                return None, STATUS_DECODE_FAILED
+
+            image = None
+            try:
+                mode = "RGBA" if channels == 4 else "RGB"
+                image = Image.frombytes(mode, (width, height), raw)
+                saved = self._save_alpha_thumbnail(image, file_path)
+            finally:
+                if image is not None:
+                    try:
+                        image.close()
+                    except Exception:  # noqa: BLE001, S110  # broad catch intentional at thumbnail pipeline
+                        pass
+
+            if saved is None:
+                return None, STATUS_INTERNAL
+            increment_perf_counter("thumbnail.create_native_thumbnail", "alpha_png")
+            return saved, STATUS_OK
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at thumbnail pipeline
+            warning(f"透明缩略图原生链路失败: {file_path}, {e}")
+            return None, STATUS_INTERNAL
+
     def _run_native_generation_chain(self, file_path: str, thumbnail_path: str) -> tuple[str | None, int]:
         """执行三级原生生成链并透传最终状态码。
 
@@ -1840,6 +2028,19 @@ class ThumbnailManager:
         """
         try:
             dpi_scaled_size = int(self.BASE_SIZE * self.dpi_scale)
+
+            # 带透明通道的源（SVG/PNG/WebP/GIF/ICO…）先走 RGBA 通道：
+            # 原生 JPEG 直出会把透明像素压成黑底，必须由 Python 侧落 PNG。
+            # 这里只多一次 RGBA 回传 + PNG 编码，解码与缩放仍在 Rust 内完成。
+            if self._has_alpha_source(file_path) and _ensure_pil():
+                alpha_status: int = STATUS_OK
+                alpha_path, alpha_status = self._run_native_alpha_chain(
+                    file_path, dpi_scaled_size
+                )
+                if alpha_path is not None:
+                    return alpha_path, STATUS_OK
+                if alpha_status == STATUS_TOO_LARGE:
+                    return None, STATUS_TOO_LARGE
 
             # 优先使用 Rust 直接 JPG 输出，降低磁盘 IO 与批量预览开销
             jpg_bytes, jpg_status = self._rust_bridge.generate_jpg_with_status(
@@ -1949,6 +2150,14 @@ class ThumbnailManager:
 
             # 使用thumbnail方法生成缩略图，保持宽高比
             img.thumbnail((dpi_scaled_size, dpi_scaled_size), Image.Resampling.LANCZOS)
+
+            # 透明素材（SVG/PNG/WebP/GIF/ICO…）写 PNG 保留 alpha：
+            # JPEG 没有透明通道，会把透明区压成黑底。全不透明时该方法内部
+            # 会自动回退 JPEG，不会为“名义带 alpha”的图白付 PNG 编码成本。
+            if self._has_alpha_source(file_path):
+                alpha_saved = self._save_alpha_thumbnail(img, file_path)
+                if alpha_saved is not None:
+                    return alpha_saved
 
             # 直接输出保持原始比例的缩略图，避免补白后在 JPEG 中显示为白边
             if img.mode == 'RGBA':
@@ -2648,7 +2857,7 @@ class ThumbnailManager:
 
         try:
             with track_perf(event_name):
-                from PySide6.QtCore import Qt
+                from PySide6.QtCore import QRectF, Qt
                 from PySide6.QtGui import QImage, QPainter
                 from PySide6.QtSvg import QSvgRenderer
 
@@ -2703,15 +2912,18 @@ class ThumbnailManager:
                 painter.setRenderHint(QPainter.Antialiasing, True)
                 painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
 
-                # 计算缩放因子 - 保持原始宽高比
-                if default_size.width() > 0 and default_size.height() > 0:
-                    scale_x = render_width / default_size.width()
-                    scale_y = render_height / default_size.height()
-                    painter.scale(scale_x, scale_y)
-
-                renderer.render(painter)
-
-                # 转换为RGBA8888格式
+                # 注意：不要再用 painter.scale() 手工缩放。QSvgRenderer.render(painter)
+                # 会把 SVG 的 viewBox 按比例映射到画笔的 viewport（这里就是整张
+                # 256×256 的 qimage），再叠加一次 painter.scale 就是双重放大：
+                # 200×200 的 SVG 实测圆直径 232px（应为 112px）并越过右／下边界被裁掉。
+                renderer.render(painter, QRectF(0.0, 0.0, float(render_width), float(render_height)))
+                # 必须在 convertToFormat 之前结束画笔：转换会新建 QImage 并覆盖
+                # `qimage` 变量，旧 QImage 的引用计数立刻归零被销毁，而画笔仍指
+                # 着它 —— Qt 会打印「Cannot destroy paint device that is being
+                # painted」，随后的 painter.end() 作用在已释放的设备上直接 abort
+                # （实测批量生成 SVG 缩略图时崩溃）。
+                painter.end()
+                painter = None
                 if qimage.format() != QImage.Format_RGBA8888:
                     qimage = qimage.convertToFormat(QImage.Format_RGBA8888)
 
@@ -2754,9 +2966,10 @@ class ThumbnailManager:
                     pass
             qimage = None
             renderer = None
-            # 强制垃圾回收
-            import gc
-            gc.collect()
+            # 这里原来每张 SVG 都 gc.collect()，是为了掩盖「设备被提前销毁」的
+            # 生命周期错误；根因已在转换前结束画笔修掉，不再需要全量 GC ——
+            # 缩略图是并发批处理，每个文件一次全量回收会长时间占用 GIL，
+            # 让主线程掉帧。
 
     def clear_thumbnails_for(self, file_paths) -> int:
         """按文件路径**精确**清除对应缩略图缓存（不触碰其它文件）。

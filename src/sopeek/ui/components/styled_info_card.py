@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections import OrderedDict
 
 from PySide6.QtWidgets import (
@@ -19,6 +20,8 @@ from PySide6.QtGui import (
 
 from theme import tm
 from components.styled_button import StyledButton
+
+from sopeek.core.managers.frame_scheduler import frame_scheduler
 
 
 # 图标相对 media 区域的放大系数：>1 时图标超出 media 区域边界绘制，视觉更大。
@@ -513,11 +516,10 @@ class StyledInfoCard(QWidget):
         self._card_scale_anim.setDuration(120)
         self._card_scale_anim.setEasingCurve(QEasingCurve.OutBack)
 
-        # 预览态渐变边框旋转动画：焦点绕卡片中心旋转（16ms/帧，循环）
+        # 预览态渐变边框旋转动画：焦点绕卡片中心旋转（逐帧，角度按墙钟推进）
         self._preview_angle: float = 0.0
-        self._preview_anim_timer = QTimer(self)
-        self._preview_anim_timer.setInterval(16)
-        self._preview_anim_timer.timeout.connect(self._advance_preview_gradient)
+        self._preview_anim_active: bool = False
+        self._preview_anim_started: float = 0.0
 
         # Overlay buttons (created as child widgets, hidden by default)
         self._overlay_widget = None
@@ -719,9 +721,31 @@ class StyledInfoCard(QWidget):
         """获取预览态边框颜色（主题 text 色，取自全局主题 tm）。"""
         return QColor(self._secondary_color)
 
+    def _start_preview_anim(self) -> None:
+        """启动预览态边框渐变旋转（每显示帧一次，角度按墙钟推进）。"""
+        if self._preview_anim_active:
+            return
+        self._preview_anim_active = True
+        self._preview_anim_started = time.perf_counter()
+        frame_scheduler().subscribe(
+            f"info_card.preview:{id(self)}",
+            self._advance_preview_gradient,
+            hz=None,
+            priority=4,
+            owner=self,
+        )
+
+    def _stop_preview_anim(self) -> None:
+        """停止预览态边框渐变旋转。"""
+        if not self._preview_anim_active:
+            return
+        self._preview_anim_active = False
+        frame_scheduler().unsubscribe(f"info_card.preview:{id(self)}")
+
     def _advance_preview_gradient(self) -> None:
-        """推进预览态边框渐变焦点旋转（循环动画，16ms/帧）。"""
-        self._preview_angle = (self._preview_angle + 1.0) % 360.0
+        """推进预览态边框渐变焦点旋转（每秒 62.5°，与刷新率无关）。"""
+        elapsed = time.perf_counter() - self._preview_anim_started
+        self._preview_angle = (elapsed * 62.5) % 360.0
         self.update()
 
     def _make_preview_gradient(self, rect: QRectF, angle_deg: float) -> QConicalGradient:
@@ -815,10 +839,10 @@ class StyledInfoCard(QWidget):
                 # 保留当前 hover 状态：新规范下预览态 hover 仍叠加 25% 主题色覆盖层
                 self._trigger_preview_animation()
                 # 预览态启动渐变边框旋转动画（循环，退出预览时停止）
-                if not self._preview_anim_timer.isActive():
-                    self._preview_anim_timer.start()
+                if not self._preview_anim_active:
+                    self._start_preview_anim()
             else:
-                self._preview_anim_timer.stop()
+                self._stop_preview_anim()
                 self._preview_angle = 0.0
                 self._trigger_unpreview_animation()
             self.preview_state_changed.emit(previewing, self._file_path)

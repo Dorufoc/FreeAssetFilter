@@ -55,6 +55,8 @@ from typing import Optional, Tuple
 from PySide6.QtCore import QElapsedTimer, QRect, QRectF
 from PySide6.QtGui import QColor, QPainter, QPixmap
 
+from sopeek.core.managers.frame_scheduler import panel_frame_ms
+
 from .drag import ViewportLayer, layer_to_source_clamped
 
 __all__ = [
@@ -243,14 +245,28 @@ class ViewportCompositor:
         """当前目标呈现间隔（毫秒）：由实测绘制成本自适应得出。
 
         取 ``成本 EMA / PRESENT_BUDGET``，并钳制到
-        ``[MIN_PRESENT_INTERVAL_MS, MAX_PRESENT_INTERVAL_MS]``。绘制只要够便宜
-        （< 4.8 ms）就锁定在下限 16 ms —— 即逐帧呈现，无感知延迟。
+        ``[min_interval_ms(), MAX_PRESENT_INTERVAL_MS]``。下限是**当前面板的
+        一帧**（240Hz → 4.17 ms，60Hz → 16.7 ms），而不是写死的 16 ms：
+        否则 240Hz 面上拖动窗口的背景最多只能跑到 62fps。绘制只要够便宜
+        就按面板帧间隔逐帧呈现，昂贵时按成本自动降频。
 
         Returns:
             目标间隔（毫秒）。
         """
         raw = self._cost_ema / PRESENT_BUDGET
-        return max(MIN_PRESENT_INTERVAL_MS, min(MAX_PRESENT_INTERVAL_MS, raw))
+        return max(self.min_interval_ms(), min(MAX_PRESENT_INTERVAL_MS, raw))
+
+    def min_interval_ms(self) -> float:
+        """呈现间隔下限：当前面板一帧的毫秒数。
+
+        Returns:
+            面板帧间隔（毫秒）；无 GUI/探测失败时回退
+            :data:`MIN_PRESENT_INTERVAL_MS`。
+        """
+        try:
+            return max(1.0, panel_frame_ms())
+        except Exception:  # noqa: BLE001 - 探测失败不得影响呈现
+            return MIN_PRESENT_INTERVAL_MS
 
     def advise(self, win: Tuple[int, int, int, int]) -> int:
         """询问"此刻是否需要把窗口背景重新呈现一次"。

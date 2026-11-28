@@ -72,6 +72,9 @@ mod dirhandle;
 /// 流式扫描游标（P3.4：`ReadDir` 迭代器跨批推进，带 `attrs` 旁路）。
 mod scanstream;
 
+/// vsync 相位对齐帧时钟（R7/P4：`spk_frameclock_*`，见 [`frameclock`] 模块文档）。
+mod frameclock;
+
 // ---------------------------------------------------------------------------
 // 状态码（与 thumbnail_rust 语义对齐）
 // ---------------------------------------------------------------------------
@@ -249,11 +252,12 @@ pub extern "C" fn spk_free_message(msg: *mut c_char) {
 pub extern "C" fn spk_abi_version() -> *mut c_char {
     catch_to_ptr(|| {
         let payload = format!(
-            "{{\"abi\":1,\"version\":\"{}\",\"max_json_bytes\":{},\"handles\":true,\"handle_cap\":{},\"scan_stream\":true,\"scan_stream_cap\":{}}}",
+            "{{\"abi\":1,\"version\":\"{}\",\"max_json_bytes\":{},\"handles\":true,\"handle_cap\":{},\"scan_stream\":true,\"scan_stream_cap\":{},\"frame_clock\":{}}}",
             SPK_CORE_VERSION,
             MAX_JSON_BYTES,
             dirhandle::MAX_HANDLES,
-            scanstream::MAX_CURSORS
+            scanstream::MAX_CURSORS,
+            frameclock::exported()
         );
         alloc_json_message(&payload)
     })

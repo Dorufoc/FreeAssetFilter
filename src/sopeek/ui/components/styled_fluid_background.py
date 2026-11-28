@@ -708,7 +708,13 @@ class StyledFluidBackground(QWidget):
             self._gpu_widget = None
 
     def _start_animation(self) -> None:
-        """Register the ~30 FPS HeartbeatManager tick callback."""
+        """Register the per-display-frame HeartbeatManager tick callback.
+
+        使用 ``use_fast_tick=True``：流体背景是持续动画，必须跟随显示器刷新率
+        （240Hz 面板即 240fps）。此前走普通心跳且被 CoarseTimer 量化，
+        实测只有 21fps，是"界面帧率明显低于屏幕上限"的主要来源之一。
+        空闲时帧调度器会自动降到 30fps 省电（见 frame_scheduler）。
+        """
         self._time_state = self._create_time_state()
         # Reset the wall-clock baseline so the first post-start delta
         # measures from here instead of from an arbitrarily old tick.
@@ -721,6 +727,7 @@ class StyledFluidBackground(QWidget):
                 priority=3,
                 every_n_ticks=1,
                 owner=self,
+                use_fast_tick=True,
             )
         except ValueError:
             pass

@@ -63,7 +63,7 @@ import struct
 import sys
 import threading
 from collections.abc import Callable
-from ctypes import POINTER, c_char_p, c_double, c_int, c_size_t, c_uint64, c_void_p
+from ctypes import POINTER, c_char_p, c_double, c_int, c_int64, c_size_t, c_uint64, c_void_p
 from pathlib import Path
 from typing import Optional
 
@@ -182,6 +182,7 @@ class SpkCoreBridge:
         self._supports_dir_handle = False
         self._supports_dir_rows_pod = False
         self._supports_scan_stream = False
+        self._supports_frame_clock = False
         self._abi_info = None
         self._dll_directory_handle = None
         self._load()
@@ -298,6 +299,7 @@ class SpkCoreBridge:
         self._supports_parse_7z_list = False
         self._supports_pdf_select_words = False
         self._supports_pdf_select_indices = False
+        self._supports_frame_clock = False
 
         self._native_free_message = dll.spk_free_message
         self._native_free_message.argtypes = [c_void_p]
@@ -536,6 +538,40 @@ class SpkCoreBridge:
         except Exception:  # noqa: BLE001
             self._supports_dir_rows_pod = False
 
+        # 帧时钟（vsync 相位对齐）：整套导出要么全绑、要么全不绑。缺任何一个
+        # 都说明是旧 DLL，此时 FrameScheduler 走自己的 QTimer 路径。
+        try:
+            dll.spk_frameclock_create.argtypes = [c_double]
+            dll.spk_frameclock_create.restype = c_uint64
+            dll.spk_frameclock_set_rate.argtypes = [c_uint64, c_double]
+            dll.spk_frameclock_set_rate.restype = c_int
+            dll.spk_frameclock_wait.argtypes = [c_uint64, c_int]
+            dll.spk_frameclock_wait.restype = c_int64
+            dll.spk_frameclock_stop.argtypes = [c_uint64]
+            dll.spk_frameclock_stop.restype = c_int
+            dll.spk_frameclock_resume.argtypes = [c_uint64]
+            dll.spk_frameclock_resume.restype = c_int
+            dll.spk_frameclock_free.argtypes = [c_uint64]
+            dll.spk_frameclock_free.restype = c_int
+            dll.spk_frameclock_stats.argtypes = [c_uint64]
+            dll.spk_frameclock_stats.restype = c_void_p
+            dll.spk_frameclock_probe.argtypes = []
+            dll.spk_frameclock_probe.restype = c_void_p
+            dll.spk_frameclock_now_ns.argtypes = []
+            dll.spk_frameclock_now_ns.restype = c_int64
+            self._native_frameclock_create = dll.spk_frameclock_create
+            self._native_frameclock_set_rate = dll.spk_frameclock_set_rate
+            self._native_frameclock_wait = dll.spk_frameclock_wait
+            self._native_frameclock_stop = dll.spk_frameclock_stop
+            self._native_frameclock_resume = dll.spk_frameclock_resume
+            self._native_frameclock_free = dll.spk_frameclock_free
+            self._native_frameclock_stats = dll.spk_frameclock_stats
+            self._native_frameclock_probe = dll.spk_frameclock_probe
+            self._native_frameclock_now_ns = dll.spk_frameclock_now_ns
+            self._supports_frame_clock = True
+        except Exception:  # noqa: BLE001
+            self._supports_frame_clock = False
+
     def free_message(self, raw) -> None:
         """释放 Rust 侧堆分配的 JSON 字符串指针（null 安全）。
 
@@ -596,6 +632,134 @@ class SpkCoreBridge:
         finally:
             if raw is not None:
                 self.free_message(raw)
+
+    # ------------------------------------------------------------------
+    # 帧时钟（vsync 相位对齐调度器）
+    # ------------------------------------------------------------------
+
+    @property
+    def supports_frame_clock(self) -> bool:
+        """DLL 是否提供整套帧时钟导出（旧 DLL 为 ``False``）。"""
+        return bool(self._available and self._supports_frame_clock)
+
+    def frameclock_create(self, hz: float) -> int:
+        """创建帧时钟实例。
+
+        Args:
+            hz: 目标帧率；越界值由 native 侧夹到合法范围。
+
+        Returns:
+            int: 非零句柄；不可用或失败返回 0（调用方回退 QTimer）。
+        """
+        if not self.supports_frame_clock:
+            return 0
+        return self._call_handle(
+            lambda: int(self._native_frameclock_create(float(hz))),
+            default=0,
+            name="frameclock_create",
+        )
+
+    def frameclock_set_rate(self, handle: int, hz: float) -> bool:
+        """切换目标帧率（可随时调用，不打断在途 ``wait``）。
+
+        Args:
+            handle: 时钟句柄。
+            hz: 新目标帧率。
+
+        Returns:
+            bool: 是否成功。
+        """
+        if not self.supports_frame_clock or not handle:
+            return False
+        return bool(
+            self._call_handle(
+                lambda: self._native_frameclock_set_rate(int(handle), float(hz)),
+                default=-1,
+                name="frameclock_set_rate",
+                transform=lambda code: code == 0,
+            )
+        )
+
+    def frameclock_wait(self, handle: int, timeout_ms: int) -> int:
+        """阻塞等到下一帧。
+
+        Args:
+            handle: 时钟句柄。
+            timeout_ms: 本次等待上限（毫秒）。
+
+        Returns:
+            int: 正数为帧序号；负数错误码（``-1`` 参数、``-2`` 句柄、
+                ``-3`` 超时、``-4`` 已停止、``-5`` 时钟不可用）。
+        """
+        if not self.supports_frame_clock or not handle:
+            return -5
+        try:
+            return int(self._native_frameclock_wait(int(handle), int(timeout_ms)))
+        except Exception as e:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            warning(f"spk_core 帧时钟 wait 失败: {e}")
+            return -5
+
+    def frameclock_stop(self, handle: int) -> bool:
+        """停止时钟（在途 ``wait`` 立即返回 ``-4``）。"""
+        if not self.supports_frame_clock or not handle:
+            return False
+        return bool(
+            self._call_handle(
+                lambda: self._native_frameclock_stop(int(handle)),
+                default=-1,
+                name="frameclock_stop",
+                transform=lambda code: code == 0,
+            )
+        )
+
+    def frameclock_resume(self, handle: int) -> bool:
+        """恢复时钟（序号继续递增）。"""
+        if not self.supports_frame_clock or not handle:
+            return False
+        return bool(
+            self._call_handle(
+                lambda: self._native_frameclock_resume(int(handle)),
+                default=-1,
+                name="frameclock_resume",
+                transform=lambda code: code == 0,
+            )
+        )
+
+    def frameclock_free(self, handle: int) -> bool:
+        """释放时钟句柄（幂等）。"""
+        if not self.supports_frame_clock or not handle:
+            return False
+        return bool(
+            self._call_handle(
+                lambda: self._native_frameclock_free(int(handle)),
+                default=-1,
+                name="frameclock_free",
+                transform=lambda code: code == 0,
+            )
+        )
+
+    def frameclock_stats(self, handle: int) -> Optional[dict]:
+        """读取时钟统计（间隔分位、除数、相位误差、锁相状态）。"""
+        if not self.supports_frame_clock or not handle:
+            return None
+        return self._call_json_object_export(
+            lambda: self._native_frameclock_stats(int(handle))
+        )
+
+    def frameclock_probe(self) -> Optional[dict]:
+        """探测合成器/定时器能力（周期、是否合成、高精度定时器）。"""
+        if not self.supports_frame_clock:
+            return None
+        return self._call_json_object_export(lambda: self._native_frameclock_probe())
+
+    def frameclock_now_ns(self) -> int:
+        """读取时钟同源的单调纳秒时间戳（与间隔统计同一时基）。"""
+        if not self.supports_frame_clock:
+            return 0
+        try:
+            return int(self._native_frameclock_now_ns())
+        except Exception:  # noqa: BLE001  # broad catch intentional at ctypes FFI boundary
+            return 0
 
     def scan_begin(self, path: str) -> int:
         """打开流式扫描游标（P3.4）；失败返回 0（调用方回退 Python）。

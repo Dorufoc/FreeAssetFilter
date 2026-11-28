@@ -411,12 +411,12 @@ class VideoPlayerLayout(QWidget):
         self._connect_manager_signals()
         self._connect_theme()
 
-        # 注册状态同步心跳回调（每 3 个 tick ~99ms，匹配旧的 100ms QTimer）
+        # 注册状态同步心跳回调（墙钟 100ms 周期，与帧率无关）
         # 用作 positionChanged 信号丢帧时的保底更新
         HeartbeatManager().register_tick_callback(
             f"video_player_layout_sync_{id(self)}",
             self._heartbeat_sync,
-            every_n_ticks=3,
+            interval_ms=100.0,
             owner=self,
             priority=1,
         )
@@ -1986,8 +1986,8 @@ class VideoPlayerLayout(QWidget):
     def _heartbeat_sync(self) -> None:
         """心跳轮询：MPV positionChanged 信号丢帧时的保底更新
 
-        每 ~99ms 由 HeartbeatManager 调用，读取 MPV 缓存的位置/时长，
-        确保进度条始终平滑更新（参考旧的 VideoPlayer._heartbeat_sync）。
+        每 100ms（墙钟周期，与帧率无关）由 HeartbeatManager 调用，读取 MPV
+        缓存的位置/时长，确保进度条始终平滑更新（参考旧的 VideoPlayer._heartbeat_sync）。
         """
         if not self._mpv_manager or not self._mpv_manager.is_initialized():
             return

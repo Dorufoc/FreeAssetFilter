@@ -19,7 +19,7 @@
 当前已接线的窗口边界
 ----------------------
 :class:`~sopeek.core.managers.heartbeat_manager.HeartbeatManager`
-的 fast-tick（60fps 动画）窗口：首个 ``use_fast_tick`` 回调注册
+的 fast-tick（逐显示帧动画）窗口：首个 ``use_fast_tick`` 回调注册
 （``_maybe_start_fast_timer``）即 begin，最后一个注销 / ``stop()``
 （``_maybe_stop_fast_timer``）即 end。该挂接受 ``SPK_HIGHRES_TIMER=1``
 环境变量门控（默认关闭），正式打开时机为 todo 14 三档开关落地后由

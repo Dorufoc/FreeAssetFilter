@@ -1,9 +1,12 @@
 """Styled Progress component - matches web progress bar exactly."""
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy
-from PySide6.QtCore import Qt, QRectF, QPropertyAnimation, QEasingCurve, Property, QTimer
-from PySide6.QtGui import QColor, QPainter, QPaintEvent, QFont
+from PySide6.QtCore import Qt, QRectF, QPropertyAnimation, QEasingCurve, Property
+from PySide6.QtGui import QColor, QPainter, QPaintEvent, QFont, QHideEvent, QShowEvent
+import time
+
 from theme import tm
+from sopeek.core.managers.frame_scheduler import frame_scheduler
 from sopeek.ui.theme.app_stylesheet import register_widget_qss
 
 
@@ -65,6 +68,8 @@ class StyledProgress(QWidget):
         self._label_value = label_value
         self._label_inline = label_inline
         self._stripe_offset = 0.0
+        self._stripe_started = 0.0
+        self._stripe_active = False
 
         self._label_layout = None
         self._inline_label = None
@@ -72,8 +77,19 @@ class StyledProgress(QWidget):
 
         self._setup_ui()
 
-        if striped:
+        if striped and self.isVisible():
             self._start_stripe_animation()
+
+    def showEvent(self, event: QShowEvent) -> None:
+        """可见时才订阅条纹节拍（隐藏的进度条不应常驻占帧）。"""
+        super().showEvent(event)
+        if self._striped:
+            self._start_stripe_animation()
+
+    def hideEvent(self, event: QHideEvent) -> None:
+        """隐藏即停表，回到空闲降频。"""
+        self._stop_stripe_animation()
+        super().hideEvent(event)
 
     def _setup_ui(self):
         config = self.SIZE_CONFIG[self._size]
@@ -136,13 +152,37 @@ class StyledProgress(QWidget):
         self.setFixedHeight(total_h)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-    def _start_stripe_animation(self):
-        self._stripe_timer = QTimer(self)
-        self._stripe_timer.timeout.connect(self._on_stripe_tick)
-        self._stripe_timer.start(50)
+    #: 条纹移动一个完整周期的时间（毫秒）。旧实现 50 ms 走 1/16，即 800 ms。
+    _STRIPE_PERIOD_MS = 800.0
 
-    def _on_stripe_tick(self):
-        self._stripe_offset = (self._stripe_offset + 1) % 16
+    def _start_stripe_animation(self) -> None:
+        """启动条纹滚动（60Hz 订阅 + 墙钟相位，与显示帧率无关）。"""
+        if self._stripe_active:
+            return
+        self._stripe_active = True
+        self._stripe_started = time.monotonic()
+        frame_scheduler().subscribe(
+            f"progress.stripe:{id(self)}",
+            self._on_stripe_tick,
+            hz=60.0,
+            priority=4,
+            owner=self,
+        )
+
+    def _stop_stripe_animation(self) -> None:
+        """停止条纹滚动（隐藏 / 非线性视图时释放帧预算）。"""
+        if not self._stripe_active:
+            return
+        self._stripe_active = False
+        frame_scheduler().unsubscribe(f"progress.stripe:{id(self)}")
+
+    def _on_stripe_tick(self) -> None:
+        """按墙钟时间推进条纹偏移（高刷下速度不变）。"""
+        elapsed_ms = (time.monotonic() - self._stripe_started) * 1000.0
+        offset = (elapsed_ms / self._STRIPE_PERIOD_MS * 16.0) % 16.0
+        if offset == self._stripe_offset:
+            return
+        self._stripe_offset = offset
         if self._track_widget:
             self._track_widget.stripe_offset = self._stripe_offset
 

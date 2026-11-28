@@ -736,17 +736,20 @@ class SettingsManagerV2:
 
     # ── 加载 / 保存 ───────────────────────────────────────────────
 
-    def load(self) -> Dict[str, Any]:
+    def load(self, force: bool = False) -> Dict[str, Any]:
         """从磁盘加载 V2 设置。
 
         若文件不存在或损坏，返回默认 V2 分类树并写盘。
         多次调用安全——首次加载后返回缓存。
 
+        Args:
+            force: 为 ``True`` 时忽略缓存重新读盘（外部写入后刷新用）。
+
         Returns:
             Dict[str, Any]: V2 设置字典。
         """
         with self._lock:
-            if self._loaded:
+            if self._loaded and not force:
                 return self._settings
 
             if not os.path.exists(self._file_path):

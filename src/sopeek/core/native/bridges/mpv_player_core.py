@@ -567,7 +567,7 @@ class MPVPlayerCore(QObject):
         self._initialized = False
         self._signal_process_interval_ms = 100
         # 使用 HeartbeatManager 驱动信号队列处理（替代 QTimer）
-        # 每 3 个 normal tick（~99ms）执行一次，保持与原 100ms QTimer 相近的频率
+        # 按墙钟 100ms 周期触发（interval_ms 与帧率无关，等价于原来的 100ms QTimer）
         self._heartbeat_signal_id: str = f"mpv_player_core_{id(self)}_signal"
         try:
             _hm = HeartbeatManager()
@@ -575,7 +575,7 @@ class MPVPlayerCore(QObject):
                 self._heartbeat_signal_id,
                 self._process_signal_queue,
                 priority=1,
-                every_n_ticks=3,
+                interval_ms=float(self._signal_process_interval_ms),
                 owner=self,
             )
         except Exception:

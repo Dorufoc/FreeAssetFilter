@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from PySide6.QtWidgets import QPushButton, QSizePolicy
-from PySide6.QtCore import Qt, QRectF, QTimer, QPropertyAnimation, QEasingCurve, Property
+from PySide6.QtCore import Qt, QRectF, QPropertyAnimation, QEasingCurve, Property
 from PySide6.QtGui import QPainter, QColor, QPaintEvent, QFont, QPen, QFontMetrics, QPainterPath
 from PySide6.QtSvg import QSvgRenderer
 from pathlib import Path
+import time
+
 from theme import tm
+from sopeek.core.managers.frame_scheduler import frame_scheduler
 
 # 按钮配色映射缓存：(is_dark) → color_map。主题切换时以 is_dark_theme()
 # 为 key 自动失效，避免每次 paintEvent 重复解析主题颜色；并监听
@@ -132,7 +135,8 @@ class StyledButton(QPushButton):
         self._state = "normal"
         self._hovered = False
         self._pressed = False
-        self._spinner_angle = 0
+        self._spinner_angle = 0.0
+        self._spinner_started = 0.0
         self._scale = 1.0
         self._scale_anim = None
         self._progress: float | None = None  # 运行时进度值（None = 非进度模式）
@@ -147,9 +151,9 @@ class StyledButton(QPushButton):
         if icon_value and (icon_value.lower().endswith('.svg') or Path(icon_value).exists()):
             self._load_svg_icon(icon_value)
         
-        # spinner 定时器统一惰性管理：loading 模式启动后不停止（旧行为）；
+        # spinner 统一惰性管理：loading 模式启动后不停止（旧行为）；
         # 进度模式按需启停（见 set_progress / _start_spinner_timer）
-        self._timer = None
+        self._spinner_active = False
         if self._loading:
             self._start_spinner_timer()
 
@@ -246,8 +250,13 @@ class StyledButton(QPushButton):
         except Exception:
             return ""
 
-    def _spin(self):
-        self._spinner_angle = (self._spinner_angle + 6) % 360
+    #: spinner 旋转一圈的周期（秒）。旧实现 30 ms 走 6°，即 1.8 s 一圈。
+    _SPINNER_PERIOD_S = 1.8
+
+    def _spin(self) -> None:
+        """按墙钟时间推进 spinner 角度（与帧率无关，高刷下不会变快）。"""
+        elapsed = time.monotonic() - self._spinner_started
+        self._spinner_angle = (elapsed / self._SPINNER_PERIOD_S) * 360.0 % 360.0
         self.update()
 
     def set_progress(self, value: float | None) -> None:
@@ -282,17 +291,26 @@ class StyledButton(QPushButton):
         return self._progress
 
     def _start_spinner_timer(self) -> None:
-        """惰性创建并启动 spinner 定时器（30ms 驱动 _spin 旋转）。"""
-        if self._timer is None:
-            self._timer = QTimer(self)
-            self._timer.timeout.connect(self._spin)
-        if not self._timer.isActive():
-            self._timer.start(30)
+        """启动 spinner 动画（跟随显示器刷新率逐帧重绘）。"""
+        if self._spinner_active:
+            return
+        self._spinner_active = True
+        if self._spinner_started <= 0.0:
+            self._spinner_started = time.monotonic()
+        frame_scheduler().subscribe(
+            f"button.spinner:{id(self)}",
+            self._spin,
+            hz=None,
+            priority=4,
+            owner=self,
+        )
 
     def _stop_spinner_timer(self) -> None:
-        """停止 spinner 定时器（未创建 / 未激活时不做任何事）。"""
-        if self._timer is not None and self._timer.isActive():
-            self._timer.stop()
+        """停止 spinner 动画（未激活时不做任何事）。"""
+        if not self._spinner_active:
+            return
+        self._spinner_active = False
+        frame_scheduler().unsubscribe(f"button.spinner:{id(self)}")
 
     # ── Scale property for animation ─────────────────────────────
 

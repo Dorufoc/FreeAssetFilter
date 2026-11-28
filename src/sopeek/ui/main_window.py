@@ -1844,10 +1844,19 @@ class MainWindow(ElevatedDropFallbackMixin, _FramelessNativeEffectsMixin, Framel
             # 信号连接：文件选择器 → 文件池
             self._file_selector.toggle_pool_requested.connect(self._on_toggle_pool_requested)
             self._file_selector.add_files_to_pool_requested.connect(self._on_add_files_to_pool_requested)
-            # 缩略图按路径回填：池内卡片同步刷新（Q 生成后不再显示旧图标）
-            self._file_selector.thumbnails_ready.connect(self._file_pool.refresh_thumbnails)
-            # 缩略图被清除：池内卡片回落类型图标（Shift+Q 后不再显示旧缩略图）
-            self._file_selector.thumbnails_cleared.connect(self._file_pool.refresh_thumbnails)
+            # 缩略图按路径回填：池内卡片同步刷新（Q 生成后不再显示旧图标）。
+            # 必须守卫 _file_pool：本方法可能在池区尚未建成时被调用（WinIdChange
+            # 早于 _build_panel 触发），此时直接取 .refresh_thumbnails 会抛
+            # AttributeError 并中断后续所有跨栏连接；池区就绪后的下一次
+            # _finalize_panels 调用会补上这两条连接。
+            if self._file_pool is not None:
+                self._file_selector.thumbnails_ready.connect(
+                    self._file_pool.refresh_thumbnails
+                )
+                # 缩略图被清除：池内卡片回落类型图标（Shift+Q 后不再显示旧缩略图）
+                self._file_selector.thumbnails_cleared.connect(
+                    self._file_pool.refresh_thumbnails
+                )
             self._file_selector.remove_files_from_pool_requested.connect(self._on_remove_files_from_pool_requested)
             if not getattr(self, "_selector_file_selected_connected", False):
                 self._file_selector.file_selected.connect(self._on_file_selected)

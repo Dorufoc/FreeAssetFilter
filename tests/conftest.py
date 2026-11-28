@@ -35,6 +35,9 @@ SRC_DIR = REPO_ROOT / "src"
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 #: 关掉 Qt 的硬件渲染要求（离屏后端下无用且可能刷警告）。
 os.environ.setdefault("QT_OPENGL", "software")
+#: 单测固定走 QTimer 帧节拍：vsync 时钟泵会起后台线程等 vblank，离屏环境下
+#: 既无意义又会让时序断言变得不确定。时钟路径有自己的用例（显式打开）。
+os.environ.setdefault("SPK_FRAME_CLOCK", "0")
 
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))

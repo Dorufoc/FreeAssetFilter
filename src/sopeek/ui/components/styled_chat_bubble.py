@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple
+import time
 
 from PySide6.QtCore import (
     QEasingCurve,
@@ -28,7 +29,6 @@ from PySide6.QtCore import (
     QRectF,
     QSize,
     Qt,
-    QTimer,
     Property,
     Signal,
 )
@@ -52,6 +52,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sopeek.core.managers.frame_scheduler import frame_scheduler
 from sopeek.ui.theme.app_stylesheet import register_widget_qss
 from theme import tm
 
@@ -609,18 +610,26 @@ class _TypingDots(QWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._phase = 0
+        self._started_at = 0.0
         self.setFixedSize(
             self.DOT_SIZE * 3 + self.SPACING * 2,
             self.DOT_SIZE + 6,
         )
-        self._timer = QTimer(self)
-        self._timer.setInterval(33)
-        self._timer.timeout.connect(self._tick)
-        self._timer.start()
+        # 装饰性循环动画：用 60Hz 订阅（不占满面板帧率，避免常驻空转耗电）。
+        self._callback_id = f"chat.typing_dots:{id(self)}"
+        self._started_at = time.monotonic()
+        frame_scheduler().subscribe(
+            self._callback_id,
+            self._tick,
+            hz=60.0,
+            priority=4,
+            owner=self,
+        )
 
     def _tick(self) -> None:
-        """推进动画相位并重绘。"""
-        self._phase = (self._phase + 33) % self.CYCLE_MS
+        """按墙钟时间推进动画相位并重绘（帧率无关）。"""
+        elapsed_ms = (time.monotonic() - self._started_at) * 1000.0
+        self._phase = int(elapsed_ms) % self.CYCLE_MS
         self.update()
 
     def _keyframe(self, offset_index: int) -> float:

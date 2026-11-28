@@ -695,9 +695,10 @@ class MPVManager(QObject):
     def _register_signal_pump_callback(self) -> None:
         """注册 HeartbeatManager tick 回调用于泵浦核心信号队列.
 
-        每 3 个 normal tick（~99ms）执行一次 _pump_core_signals，
-        驱动 MPV 核心的信号队列处理和健康探测。使用 every_n_ticks=3
-        保持与原 100ms QTimer 相近的泵浦频率（33ms × 3 = 99ms）。
+        按墙钟 100ms 周期执行一次 _pump_core_signals（``interval_ms`` 与帧率
+        无关），驱动 MPV 核心的信号队列处理和健康探测。历史上这里是
+        ``every_n_ticks=3``（33ms × 3 ≈ 99ms），帧率提升后帧计数会变快，
+        故改为显式墙钟周期以保持既有泵浦节奏。
         """
         try:
             hm = HeartbeatManager()
@@ -705,7 +706,7 @@ class MPVManager(QObject):
                 "mpv_manager_signal_pump",
                 self._pump_core_signals,
                 priority=1,
-                every_n_ticks=3,
+                interval_ms=100.0,
                 owner=self,
             )
             info("信号泵浦 heartbeat 回调已注册")

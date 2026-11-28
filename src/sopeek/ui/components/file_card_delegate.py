@@ -10,6 +10,7 @@ FileCardDelegate — 文件卡片委托，视觉风格精确匹配 StyledInfoCar
 所有颜色从 tm 获取，零硬编码。
 """
 
+import math
 import os
 from collections import OrderedDict
 from typing import Any, Dict, Optional
@@ -18,10 +19,10 @@ from sopeek.utils.app_logger import debug
 
 from PySide6.QtCore import (
     QModelIndex,
+    QPointF,
     QRect,
     QRectF,
     QSize,
-    QTimer,
     Qt,
 )
 from PySide6.QtGui import (
@@ -38,6 +39,9 @@ from PySide6.QtWidgets import QStyledItemDelegate, QStyle, QStyleOptionViewItem
 
 from theme import tm
 
+import time
+
+from sopeek.core.managers.frame_scheduler import frame_scheduler
 from sopeek.utils.perf_metrics import begin_frame, end_frame
 
 from components.file_list_model import (
@@ -69,8 +73,16 @@ _STATE_IN_POOL: int = 1        # 状态位：已在文件池
 _STATE_PREVIEWING: int = 2     # 状态位：预览中
 _STATE_BOX_SELECTED: int = 4   # 状态位：框选选中（不触发预览，虚线边框标识）
 _STATE_ANIM_DURATION_MS: int = 200   # 状态过渡时长
-_STATE_ANIM_INTERVAL_MS: int = 16    # 动画帧间隔
+_STATE_ANIM_INTERVAL_MS: int = 16    # 动画帧间隔（历史值，现由帧调度器按 _HOVER_FPS 驱动）
 _HOVER_ANIM_DURATION_MS: int = 120   # hover 覆盖层过渡时长（比状态过渡短）
+#: hover / 预览渐变等"装饰性"过渡的目标帧率。
+#:
+#: 它们每帧都会让整行卡片重绘（一次格子绘制 ~0.3ms，几十个可见格子就是
+#: 十几毫秒），按显示帧率（240Hz）跑会把主线程占满、交互延迟飙到 40ms+。
+#: 60Hz 对人眼已完全连贯，且让出时间给输入处理。
+_HOVER_FPS: float = 60.0
+#: 预览态渐变边框旋转的目标帧率（视觉上是缓慢旋转，60Hz 足够）。
+_DECOR_FPS: float = 60.0
 
 
 class _VisualState:
@@ -204,6 +216,10 @@ def _get_file_type_display(suffix: str, is_dir: bool = False) -> str:
         return _FILE_TYPE_MAP[suffix_lower]
     return f"{suffix_lower.upper()} 文件"
 
+
+#: 行级 pixmap 缓存条数上限（每条约 200×180 逻辑像素 ≈ 100KB，512 条约 50MB；
+#: 超限时按插入序淘汰较早的一半，避免整块清空导致的重新光栅化尖峰）。
+_ROW_PIXMAP_LIMIT = 512
 
 _COLORS_CACHE: Dict[bool, Dict[str, Any]] = {}
 
@@ -579,23 +595,30 @@ class FileCardDelegate(QStyledItemDelegate):
 
         self._view: Optional[object] = None  # 关联视图（局部失效重绘用）
 
-        # 预览态渐变边框旋转动画：焦点绕卡片中心旋转（16ms/帧）
+        # 预览态渐变边框旋转动画：焦点绕卡片中心旋转（逐帧，角度按墙钟推进）
         self._preview_angle: float = 0.0          # 渐变焦点当前角度（度）
         self._preview_painted: bool = False        # 最近一帧是否有预览态卡片被绘制
-        self._preview_anim_timer = QTimer(self)
-        self._preview_anim_timer.setInterval(16)
-        self._preview_anim_timer.timeout.connect(self._advance_preview_gradient)
+        self._preview_anim_active: bool = False
+        self._preview_anim_started: float = 0.0
 
         # 卡片状态过渡动画（默认 ↔ 池中 ↔ 预览中：背景/边框颜色插值 + 交叉淡化）
         self._last_state: Dict[int, int] = {}       # row → 最近一次绘制时的状态位
         self._last_path: Dict[int, str] = {}        # row → 最近一次绘制的文件路径（检测 row 复用）
         self._transitions: Dict[int, _StateTransition] = {}  # row → 进行中的过渡
+        # 行级绘制缓存：滚动一次会让 QListView 整视口重绘（30+ 行 × ≈1.4ms，
+        # 实测一次滚轮就能阻塞 ~40ms → 帧率掉到 20~30fps）。静态行（无过渡、
+        # 无 hover 淡入淡出、非预览）的画面与绘制位置无关，缓存成 QPixmap 后
+        # 滚动只需 blit，单行成本降到 ~0.1ms。
+        self._row_pixmaps: Dict[tuple, QPixmap] = {}
+        # 行级模型数据缓存：每行绘制要发 11 次 model.data() 虚调用（实测
+        # ≈0.2ms/行，30 行/帧就是 6ms），滚动时这些数据并不会变，故按行缓存，
+        # 由 dataChanged / 结构变化信号整体失效。
+        self._info_cache: Dict[int, Dict[str, Any]] = {}
         # hover 覆盖层透明度过渡（进入淡入 / 离开淡出，120ms）
         self._hover_overlay_progress: Dict[int, float] = {}  # row → 覆盖层当前透明度（0~1）
         self._hover_targets: Dict[int, bool] = {}            # row → hover 目标状态（True=淡入/False=淡出）
-        self._state_anim_timer = QTimer(self)
-        self._state_anim_timer.setInterval(_STATE_ANIM_INTERVAL_MS)
-        self._state_anim_timer.timeout.connect(self._advance_state_transitions)
+        self._state_anim_active: bool = False
+        self._state_anim_last: float = 0.0
 
     def set_view(self, view) -> None:
         """设置关联视图：局部失效重绘（_invalidate_rows）经由其 viewport。
@@ -643,17 +666,43 @@ class FileCardDelegate(QStyledItemDelegate):
         except Exception as exc:
             debug(f"卡片视口局部重绘失败：{exc}")
 
+    # ── 预览态渐变边框旋转（跟随显示帧率）──────────────────────────────────
+
+    def _start_preview_anim(self) -> None:
+        """启动预览态渐变旋转（每显示帧一次，角度按墙钟推进）。"""
+        if self._preview_anim_active:
+            return
+        self._preview_anim_active = True
+        if self._preview_anim_started <= 0.0:
+            self._preview_anim_started = time.perf_counter()
+        frame_scheduler().subscribe(
+            f"delegate.preview:{id(self)}",
+            self._advance_preview_gradient,
+            hz=_DECOR_FPS,
+            priority=4,
+            owner=self,
+        )
+
+    def _stop_preview_anim(self) -> None:
+        """停止预览态渐变旋转（不再重绘）。"""
+        if not self._preview_anim_active:
+            return
+        self._preview_anim_active = False
+        frame_scheduler().unsubscribe(f"delegate.preview:{id(self)}")
+
     def _advance_preview_gradient(self) -> None:
         """推进预览态边框渐变焦点旋转（循环动画）。
 
         仅当最近一帧有预览态卡片被绘制时保持运行；预览消失后自动停止，
-        避免持续重绘消耗。
+        避免持续重绘消耗。角度由墙钟时间换算（旧实现 16 ms 走 1°），
+        因此在任意刷新率下转速一致。
         """
         if not self._preview_painted:
-            self._preview_anim_timer.stop()
+            self._stop_preview_anim()
             return
         self._preview_painted = False
-        self._preview_angle = (self._preview_angle + 1.0) % 360.0
+        elapsed = time.perf_counter() - self._preview_anim_started
+        self._preview_angle = (elapsed * 62.5) % 360.0
         # A4 局部重绘：渐变焦点只影响预览态卡片行，按行矩形失效。
         preview_rows = [
             row for row, mask in self._last_state.items()
@@ -663,14 +712,38 @@ class FileCardDelegate(QStyledItemDelegate):
 
     # ── 卡片状态过渡动画（默认 ↔ 池中 ↔ 预览中）─────────────────────────────
 
+    def _start_state_anim(self) -> None:
+        """启动状态过渡动画（每显示帧一次，步长按实际帧间隔计算）。"""
+        if self._state_anim_active:
+            return
+        self._state_anim_active = True
+        self._state_anim_last = time.perf_counter()
+        frame_scheduler().subscribe(
+            f"delegate.state:{id(self)}",
+            self._advance_state_transitions,
+            hz=_HOVER_FPS,
+            priority=4,
+            owner=self,
+        )
+
+    def _stop_state_anim(self) -> None:
+        """停止状态过渡动画。"""
+        if not self._state_anim_active:
+            return
+        self._state_anim_active = False
+        frame_scheduler().unsubscribe(f"delegate.state:{id(self)}")
+
     def _advance_state_transitions(self) -> None:
-        """推进所有进行中的卡片状态过渡与 hover 覆盖层过渡；无动画时停止定时器。"""
+        """推进所有进行中的卡片状态过渡与 hover 覆盖层过渡；无动画时停止订阅。"""
+        now = time.perf_counter()
+        dt_ms = max(0.0, (now - self._state_anim_last) * 1000.0)
+        self._state_anim_last = now
         # A4 局部重绘：本帧变化的行（含刚收敛的行）按行矩形失效。
         dirty_rows: set = set()
         settled: list = []
         # 推进卡片状态过渡（默认 ↔ 池中 ↔ 预览中）
-        if self._transitions:
-            step = _STATE_ANIM_INTERVAL_MS / float(_STATE_ANIM_DURATION_MS)
+        if self._transitions and dt_ms > 0.0:
+            step = dt_ms / float(_STATE_ANIM_DURATION_MS)
             finished = []
             for row, tr in self._transitions.items():
                 tr.t = min(1.0, tr.t + step)
@@ -681,8 +754,8 @@ class FileCardDelegate(QStyledItemDelegate):
             dirty_rows.update(finished)
 
         # 推进 hover 覆盖层透明度过渡（进入淡入 / 离开淡出）
-        if self._hover_targets:
-            hover_step = _STATE_ANIM_INTERVAL_MS / float(_HOVER_ANIM_DURATION_MS)
+        if self._hover_targets and dt_ms > 0.0:
+            hover_step = dt_ms / float(_HOVER_ANIM_DURATION_MS)
             for row, target in list(self._hover_targets.items()):
                 cur = self._hover_overlay_progress.get(row, 0.0)
                 if target:
@@ -697,7 +770,7 @@ class FileCardDelegate(QStyledItemDelegate):
                         self._hover_overlay_progress.pop(row, None)
 
         if not self._transitions and not self._hover_targets:
-            self._state_anim_timer.stop()
+            self._stop_state_anim()
             # 收敛帧仍需重绘最终态行（不能直接 return 不画）。
             self._invalidate_rows(dirty_rows | set(settled))
             return
@@ -724,8 +797,8 @@ class FileCardDelegate(QStyledItemDelegate):
                 self._hover_targets.pop(row, None)
                 return
             self._hover_targets[row] = False
-        if not self._state_anim_timer.isActive():
-            self._state_anim_timer.start()
+        if not self._state_anim_active:
+            self._start_state_anim()
 
     def _sync_state_transition(
         self,
@@ -782,8 +855,8 @@ class FileCardDelegate(QStyledItemDelegate):
             to_v = self._resolve_visual(mask)
             self._transitions[row] = _StateTransition(from_v, to_v)
             self._last_state[row] = mask
-            if not self._state_anim_timer.isActive():
-                self._state_anim_timer.start()
+            if not self._state_anim_active:
+                self._start_state_anim()
 
     def _resolve_visual(self, mask: int) -> _VisualState:
         """根据状态位解析卡片的静态视觉参数。
@@ -934,8 +1007,8 @@ class FileCardDelegate(QStyledItemDelegate):
                 )
                 pen = QPen(border_brush, border_width)
                 self._preview_painted = True
-                if not self._preview_anim_timer.isActive():
-                    self._preview_anim_timer.start()
+                if not self._preview_anim_active:
+                    self._start_preview_anim()
             elif is_selected:
                 # 框选选中态：accent 虚线边框（与预览流光/池中实线区分）
                 border_width = 1.5
@@ -1008,8 +1081,8 @@ class FileCardDelegate(QStyledItemDelegate):
             grad = self._make_preview_gradient(draw_rect, self._preview_angle)
             brush = QBrush(self._scaled_gradient(grad, alpha_factor))
             self._preview_painted = True
-            if not self._preview_anim_timer.isActive():
-                self._preview_anim_timer.start()
+            if not self._preview_anim_active:
+                self._start_preview_anim()
         else:
             brush = QBrush(self._scaled_color(visual.border_color, alpha_factor))
         pen = QPen(brush, width)
@@ -1332,6 +1405,7 @@ class FileCardDelegate(QStyledItemDelegate):
         self._model_connections = []
         self._hooked_model = model
         self._size_hint_cache.clear()
+        self._info_cache.clear()
         if model is None:
             return
         try:
@@ -1355,7 +1429,14 @@ class FileCardDelegate(QStyledItemDelegate):
         _bottom_right: Optional[QModelIndex] = None,
         roles: Optional[list] = None,
     ) -> None:
-        """模型数据变化：仅 CardWidthRole（或未指定角色）影响 sizeHint 缓存。"""
+        """模型数据变化：行数据缓存无条件失效，sizeHint 缓存仅宽度相关时失效。
+
+        行数据缓存（``_info_cache``）必须对**任何**角色失效：缩略图到位时模型
+        只发 ``[IconPixmapRole]``，若跟着 sizeHint 一起只认 ``CardWidthRole``，
+        就会出现「缩略图已生成、可视行却一直是占位图标，滚动或重新导航才刷
+        新」的问题。sizeHint 只受卡片宽度影响，仍按角色过滤。
+        """
+        self._info_cache.clear()
         if roles and CardWidthRole not in roles:
             return
         self._size_hint_cache.clear()
@@ -1363,6 +1444,7 @@ class FileCardDelegate(QStyledItemDelegate):
     def _on_model_structure_changed(self, *_args) -> None:
         """模型复位/行增删/布局重排：行号映射失效，清空 sizeHint 缓存。"""
         self._size_hint_cache.clear()
+        self._info_cache.clear()
 
     # ── paint ────────────────────────────────────────────────────────────
 
@@ -1400,7 +1482,15 @@ class FileCardDelegate(QStyledItemDelegate):
         # 因网格偏移溢出到相邻 item 区域而形成残影
         painter.setClipRect(option.rect)
 
-        file_info = self._get_file_info(index)
+        # 挂接模型失效信号（`is` 比较，挂接后零开销）。不能只依赖 sizeHint：
+        # 网格尺寸固定时 Qt 不一定逐行调用 sizeHint，若等待它来挂接，
+        # 缩略图到位发出的 dataChanged 可能永远到不了这里，行数据缓存就会
+        # 一直返回占位图标。
+        try:
+            self._ensure_model_hooked(index.model())
+        except Exception as exc:
+            debug(f"挂接模型失效信号失败：{exc}")
+        file_info = self._cached_file_info(index)
         is_selected = file_info.get("is_selected", False)
         is_previewing = file_info.get("is_previewing", False)
         is_hovered = bool(option.state & QStyle.State_MouseOver)
@@ -1424,6 +1514,13 @@ class FileCardDelegate(QStyledItemDelegate):
         self._sync_hover_overlay(index, is_hovered)
         hover_overlay_progress = self._hover_overlay_progress.get(index.row(), 0.0)
 
+        if self._paint_row_cached(
+            painter, card_rect, index, file_info, is_hovered, is_selected,
+            is_previewing, is_in_pool, transition, hover_overlay_progress,
+        ):
+            painter.restore()
+            return
+
         if self._layout_mode == "card":
             self._paint_card(
                 painter, card_rect, file_info, is_hovered, is_selected, is_previewing,
@@ -1438,6 +1535,144 @@ class FileCardDelegate(QStyledItemDelegate):
             )
 
         painter.restore()
+
+    def _cached_file_info(self, index: QModelIndex) -> Dict[str, Any]:
+        """按行缓存 ``_get_file_info`` 的结果（供 paint 热路径使用）。
+
+        滚动时每帧要画 30+ 行，每行 ``_get_file_info`` 会发 11 次 ``model.data()``
+        虚调用（实测 ≈0.2ms/行 → 每帧 ~6ms）。行数据只在 ``dataChanged`` /
+        ``modelReset`` / 行增删 / 布局重排时变化，故缓存并在那些信号里整体失效。
+
+        Args:
+            index: 模型索引。
+
+        Returns:
+            文件信息字典（同一行在同一代内返回同一个字典对象）。
+        """
+        row = index.row()
+        cached = self._info_cache.get(row)
+        if cached is not None:
+            return cached
+        info = self._get_file_info(index)
+        self._info_cache[row] = info
+        return info
+
+    def _paint_row_cached(
+        self,
+        painter: QPainter,
+        card_rect: QRectF,
+        index: QModelIndex,
+        file_info: Dict[str, Any],
+        is_hovered: bool,
+        is_selected: bool,
+        is_previewing: bool,
+        is_in_pool: bool,
+        transition: Optional[_StateTransition],
+        hover_overlay_progress: float,
+    ) -> bool:
+        """用行级 pixmap 缓存绘制「静态行」，命中即返回 True。
+
+        滚动一次会让 QListView 重绘整个视口（30+ 行 × ≈1.4ms），实测单次滚轮
+        就阻塞 ~40ms、帧率掉到 20~30fps。静态行的画面只取决于「文件信息 +
+        状态 + 尺寸 + 配色」，与绘制位置无关，因此可以缓存成 QPixmap 后直接
+        blit。动态状态（状态过渡、预览流光、hover 淡入淡出）不缓存，交回原
+        路径保证动画逐帧正确。
+
+        Args:
+            painter: 外层绘制器。
+            card_rect: 卡片矩形（逻辑坐标，相对视口）。
+            index: 模型索引。
+            file_info: 文件信息字典。
+            is_hovered: 是否悬停。
+            is_selected: 是否框选选中。
+            is_previewing: 是否预览中。
+            is_in_pool: 是否已在文件池。
+            transition: 进行中的状态过渡。
+            hover_overlay_progress: hover 覆盖层透明度进度。
+
+        Returns:
+            True 表示已用缓存画完，调用方不应再画；False 表示需要原路径绘制。
+        """
+        if transition is not None or is_previewing:
+            return False
+        if 0.003 < hover_overlay_progress < 0.997:
+            # hover 覆盖层正在淡入/淡出：每帧透明度都不同，缓存必然过期
+            return False
+        width = card_rect.width()
+        height = card_rect.height()
+        if width < 1.0 or height < 1.0:
+            return False
+
+        device = painter.device()
+        dpr = float(device.devicePixelRatioF() or 1.0) if device is not None else 1.0
+        # 落位点必须落在整数设备像素上：DPI 缩放 1.5 时，逻辑坐标 13 对应
+        # 设备像素 19.5，blit 会被重采样成模糊边。这里把落位点吸附到设备像素
+        # 网格，小数部分（<1 逻辑像素）留进 pixmap 内部，既避免重采样又保持
+        # 与直接绘制完全相同的亚像素相位。
+        origin_x = math.floor(card_rect.x())
+        origin_y = math.floor(card_rect.y())
+        offset_x = round(card_rect.x() - origin_x, 3)
+        offset_y = round(card_rect.y() - origin_y, 3)
+        key = (
+            index.row(),
+            file_info.get("path", ""),
+            file_info.get("name", ""),
+            file_info.get("size", 0),
+            file_info.get("modified", ""),
+            file_info.get("suffix", ""),
+            bool(file_info.get("is_drive", False)),
+            file_info.get("usage_ratio"),
+            # 图标/缩略图异步到达后必须重画，故把 pixmap 身份纳入缓存键
+            id(file_info.get("icon_pixmap")),
+            round(width, 1),
+            round(height, 1),
+            offset_x,
+            offset_y,
+            dpr,
+            is_hovered,
+            is_selected,
+            is_in_pool,
+            round(hover_overlay_progress, 2),
+            id(_get_colors()),
+            self._layout_mode,
+        )
+        pixmap = self._row_pixmaps.get(key)
+        if pixmap is None:
+            phys_w = max(1, int(math.ceil((width + offset_x) * dpr)))
+            phys_h = max(1, int(math.ceil((height + offset_y) * dpr)))
+            pixmap = QPixmap(phys_w, phys_h)
+            if pixmap.isNull():
+                return False
+            pixmap.setDevicePixelRatio(dpr)
+            pixmap.fill(Qt.transparent)
+            row_painter = QPainter(pixmap)
+            try:
+                row_painter.setRenderHint(QPainter.Antialiasing)
+                row_painter.setRenderHint(QPainter.TextAntialiasing)
+                row_rect = QRectF(offset_x, offset_y, width, height)
+                if self._layout_mode == "card":
+                    self._paint_card(
+                        row_painter, row_rect, file_info, is_hovered, is_selected,
+                        is_previewing, is_in_pool=is_in_pool, transition=None,
+                        hover_overlay_progress=hover_overlay_progress,
+                    )
+                else:
+                    self._paint_list(
+                        row_painter, row_rect, file_info, is_hovered, is_selected,
+                        is_previewing, is_in_pool=is_in_pool, transition=None,
+                        hover_overlay_progress=hover_overlay_progress,
+                    )
+            finally:
+                row_painter.end()
+            if len(self._row_pixmaps) >= _ROW_PIXMAP_LIMIT:
+                # 淘汰较早的一半而不是整块清空：清空会让下一次滚动把所有可见行
+                # 重新光栅化（一次 30 行 ≈ 10ms 的卡顿尖峰），而按插入序丢一半
+                # 只影响已经滚出视口的历史行。
+                for stale in list(self._row_pixmaps)[: len(self._row_pixmaps) // 2]:
+                    self._row_pixmaps.pop(stale, None)
+            self._row_pixmaps[key] = pixmap
+        painter.drawPixmap(QPointF(origin_x, origin_y), pixmap)
+        return True
 
     def _resolve_card_rect(
         self,
@@ -1732,3 +1967,4 @@ class FileCardDelegate(QStyledItemDelegate):
                 align | Qt.AlignTop,
                 second_line,
             )
+
